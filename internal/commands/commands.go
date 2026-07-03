@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
@@ -25,6 +26,7 @@ type app struct {
 	selectGitHubBackend func(context.Context, string) (auth.GitHubBackendSelection, error)
 	newGitHubBackend    func(context.Context, auth.GitHubBackendSelection) (github.Backend, error)
 	gitHubBackendToken  func(context.Context, auth.GitHubBackendSelection) (string, error)
+	runnerPreflight     func(context.Context, commentrunner.Config) commentrunner.PreflightReport
 }
 
 type commandFunc func(context.Context, []string) int
@@ -61,6 +63,8 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return a.runVerify(ctx, args[1:])
 	case "verify-links":
 		return a.runVerifyLinks(ctx, args[1:])
+	case "runner":
+		return a.runRunner(ctx, args[1:])
 	default:
 		a.errorf("unknown command %q\n", args[0])
 		a.printUsage()
@@ -110,7 +114,9 @@ Usage:
   issue-spec link --repo owner/repo --from SPEC-001 --from-issue N --to TASK-001 --to-issue M
   issue-spec status --repo owner/repo --proposal N [--design N] [--implement N]
   issue-spec verify --repo owner/repo --proposal N --design N --implement N [--durable-spec path]
-  issue-spec verify-links --repo owner/repo --proposal N --design N --implement N`)
+  issue-spec verify-links --repo owner/repo --proposal N --design N --implement N
+  issue-spec runner poll --repo owner/repo --runner login --once --dry-run
+  issue-spec runner preflight --repo owner/repo --runner login`)
 }
 
 func newFlagSet(name string, errOut io.Writer) *flag.FlagSet {
