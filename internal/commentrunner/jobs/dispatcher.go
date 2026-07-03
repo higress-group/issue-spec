@@ -60,6 +60,7 @@ type SandboxRequest struct {
 	WorkspacePath        string
 	AcpxWorkingDirectory string
 	AcpxBinary           string
+	IssueSpecBinary      string
 	ExtraEnv             map[string]string
 	RuntimeHome          string
 	RuntimeGHConfigDir   string
@@ -411,6 +412,7 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 		WorkspacePath:        binding.SandboxWorkspacePath,
 		AcpxWorkingDirectory: binding.AcpxWorkingDirectory,
 		AcpxBinary:           "acpx",
+		IssueSpecBinary:      d.IssueSpecBinary,
 		ExtraEnv:             d.CoordinatorExtraEnv,
 		RuntimeHome:          runtimePaths.home,
 		RuntimeGHConfigDir:   runtimePaths.ghConfigDir,
@@ -945,6 +947,11 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, error) {
 	cfg.TempGHConfigDir = firstNonEmpty(req.RuntimeGHConfigDir, cfg.TempGHConfigDir)
 	cfg.TempXDGConfigHome = firstNonEmpty(req.RuntimeXDGConfigHome, cfg.TempXDGConfigHome)
 	cfg.TempCodexHome = firstNonEmpty(req.RuntimeCodexHome, cfg.TempCodexHome)
+	readOnlyBinds, err := requestReadOnlyBinds(req)
+	if err != nil {
+		return sandbox.Config{}, err
+	}
+	cfg.ReadOnlyBinds = appendUniqueCleanAbsPaths(cfg.ReadOnlyBinds, readOnlyBinds...)
 	if len(req.ExtraEnv) > 0 {
 		if cfg.ExtraEnv == nil {
 			cfg.ExtraEnv = map[string]string{}
@@ -971,7 +978,30 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, error) {
 	if err := mirrorHostGHAuth(&cfg); err != nil {
 		return sandbox.Config{}, err
 	}
+	if err := mirrorHostCodexConfig(&cfg); err != nil {
+		return sandbox.Config{}, err
+	}
 	return cfg, nil
+}
+
+func requestReadOnlyBinds(req SandboxRequest) ([]string, error) {
+	var out []string
+	for _, path := range []string{req.AcpxBinary, req.IssueSpecBinary} {
+		path = strings.TrimSpace(path)
+		if path == "" || !filepath.IsAbs(path) {
+			continue
+		}
+		clean := filepath.Clean(path)
+		info, err := os.Stat(clean)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox executable bind unavailable for %s: %w", clean, err)
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("sandbox executable bind path is a directory: %s", clean)
+		}
+		out = append(out, clean)
+	}
+	return out, nil
 }
 
 type sessionRuntimePaths struct {
@@ -1117,6 +1147,103 @@ func copyGHConfigDir(source, dest string) error {
 		}
 		return os.Chmod(target, 0o600)
 	})
+}
+
+var codexRuntimeFiles = []string{"auth.json", "config.toml", "version.json", "installation_id"}
+
+func mirrorHostCodexConfig(cfg *sandbox.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("sandbox config is required")
+	}
+	source := hostCodexConfigDir(*cfg)
+	if source == "" || strings.TrimSpace(cfg.TempCodexHome) == "" {
+		return nil
+	}
+	source = filepath.Clean(source)
+	info, err := os.Stat(source)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("inspect host Codex config %s: %w", source, err)
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	destinations := []string{cfg.TempCodexHome}
+	if strings.TrimSpace(cfg.TempHome) != "" {
+		destinations = append(destinations, filepath.Join(cfg.TempHome, ".codex"))
+	}
+	for _, dest := range appendUniqueCleanAbsPaths(nil, destinations...) {
+		if sameCleanPath(source, dest) {
+			continue
+		}
+		if err := copyLimitedCodexConfig(source, dest); err != nil {
+			return fmt.Errorf("materialize host Codex config from %s to %s: %w", source, dest, err)
+		}
+	}
+	return nil
+}
+
+func hostCodexConfigDir(cfg sandbox.Config) string {
+	hostEnv := cfg.HostEnv
+	if hostEnv == nil {
+		hostEnv = os.Environ()
+	}
+	if value := envValue(hostEnv, "CODEX_HOME"); value != "" {
+		return value
+	}
+	if value := envValue(hostEnv, "HOME"); value != "" {
+		return filepath.Join(value, ".codex")
+	}
+	return ""
+}
+
+func copyLimitedCodexConfig(source, dest string) error {
+	if err := os.MkdirAll(dest, 0o700); err != nil {
+		return err
+	}
+	for _, name := range codexRuntimeFiles {
+		sourcePath := filepath.Join(source, name)
+		targetPath := filepath.Join(dest, name)
+		info, err := os.Lstat(sourcePath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				_ = os.Remove(targetPath)
+				continue
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || info.IsDir() || !info.Mode().IsRegular() {
+			_ = os.Remove(targetPath)
+			continue
+		}
+		data, err := os.ReadFile(sourcePath)
+		if err != nil {
+			return err
+		}
+		if targetInfo, err := os.Lstat(targetPath); err == nil {
+			if targetInfo.IsDir() {
+				return fmt.Errorf("target %s is a directory", targetPath)
+			}
+			if err := os.Remove(targetPath); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		mode := info.Mode().Perm()
+		if mode == 0 {
+			mode = 0o600
+		}
+		if err := os.WriteFile(targetPath, data, mode); err != nil {
+			return err
+		}
+		if err := os.Chmod(targetPath, mode); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func envValue(entries []string, name string) string {
@@ -1397,6 +1524,24 @@ func appendUnique(values []string, value string) []string {
 		}
 	}
 	return append(values, value)
+}
+
+func appendUniqueCleanAbsPaths(values []string, paths ...string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values)+len(paths))
+	for _, path := range append(values, paths...) {
+		path = strings.TrimSpace(path)
+		if path == "" || !filepath.IsAbs(path) {
+			continue
+		}
+		path = filepath.Clean(path)
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	return out
 }
 
 func removeString(values []string, value string) []string {

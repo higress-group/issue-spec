@@ -137,6 +137,10 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 			return Command{}, nil, fmt.Errorf("%w: %s must be absolute: %s", ErrSandboxConfigInvalid, item.name, item.value)
 		}
 	}
+	chdir, err := sandboxWorkingDirectory(target.Dir, cfg.WorkspacePath)
+	if err != nil {
+		return Command{}, nil, err
+	}
 
 	args := []string{"--die-with-parent", "--clearenv"}
 	for _, entry := range env {
@@ -144,8 +148,9 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		args = append(args, "--setenv", name, value)
 	}
 
+	workspacePath := filepath.Clean(cfg.WorkspacePath)
 	mounts := []Mount{
-		{Source: cfg.WorkspacePath, Destination: "/workspace", Mode: "rw"},
+		{Source: workspacePath, Destination: "/workspace", Mode: "rw"},
 		{Destination: "/tmp", Mode: "tmpfs"},
 		{Source: cfg.TempHome, Destination: "/tmp/issue-spec-home", Mode: "rw"},
 		{Source: cfg.TempGHConfigDir, Destination: "/tmp/issue-spec-gh", Mode: "rw"},
@@ -154,19 +159,123 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		{Destination: "/dev", Mode: "dev"},
 	}
 
-	args = append(args, "--bind", cfg.WorkspacePath, "/workspace", "--chdir", "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg", "--proc", "/proc", "--dev", "/dev")
+	args = append(args, "--bind", workspacePath, "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg", "--proc", "/proc", "--dev", "/dev")
 	if strings.TrimSpace(cfg.TempCodexHome) != "" {
 		mounts = append(mounts, Mount{Source: cfg.TempCodexHome, Destination: "/tmp/issue-spec-codex", Mode: "rw"})
 		args = append(args, "--dir", "/tmp/issue-spec-codex", "--bind", cfg.TempCodexHome, "/tmp/issue-spec-codex")
 	}
-	for _, bind := range systemReadOnlyBinds(cfg) {
+	systemBinds := systemReadOnlyBinds(cfg)
+	for _, bind := range systemBinds {
 		args = append(args, "--ro-bind", bind, bind)
 		mounts = append(mounts, Mount{Source: bind, Destination: bind, Mode: "ro"})
 	}
+	seenDirs := map[string]bool{
+		"/":                     true,
+		"/tmp":                  true,
+		"/workspace":            true,
+		"/tmp/issue-spec-home":  true,
+		"/tmp/issue-spec-gh":    true,
+		"/tmp/issue-spec-xdg":   true,
+		"/tmp/issue-spec-codex": true,
+		"/proc":                 true,
+		"/dev":                  true,
+	}
+	if workspacePath != "/workspace" {
+		args, mounts = appendBindParentDirs(args, mounts, workspacePath, seenDirs, systemBinds)
+		args = append(args, "--bind", workspacePath, workspacePath)
+		mounts = append(mounts, Mount{Source: workspacePath, Destination: workspacePath, Mode: "rw"})
+	}
+	coveredRoots := append([]string{}, systemBinds...)
+	coveredRoots = append(coveredRoots, workspacePath)
+	for _, bind := range readOnlyBinds(cfg) {
+		if coveredByMount(bind, coveredRoots) {
+			continue
+		}
+		args, mounts = appendBindParentDirs(args, mounts, bind, seenDirs, coveredRoots)
+		args = append(args, "--ro-bind", bind, bind)
+		mounts = append(mounts, Mount{Source: bind, Destination: bind, Mode: "ro"})
+	}
+	args = append(args, "--chdir", chdir)
 	args = append(args, "--", target.Binary)
 	args = append(args, target.Args...)
 
 	return Command{Binary: bwrapPath, Args: args, Stdin: append([]byte(nil), target.Stdin...)}, mounts, nil
+}
+
+func sandboxWorkingDirectory(targetDir, workspacePath string) (string, error) {
+	targetDir = strings.TrimSpace(targetDir)
+	if targetDir == "" {
+		return "/workspace", nil
+	}
+	if !filepath.IsAbs(targetDir) {
+		return "", fmt.Errorf("%w: target working directory must be absolute under bubblewrap: %s", ErrSandboxConfigInvalid, targetDir)
+	}
+	dir := filepath.Clean(targetDir)
+	workspace := filepath.Clean(workspacePath)
+	if dir == "/workspace" || dir == workspace || pathInside(workspace, dir) {
+		return dir, nil
+	}
+	return "", fmt.Errorf("%w: target working directory %s is outside workspace %s", ErrSandboxConfigInvalid, dir, workspace)
+}
+
+func pathInside(root, path string) bool {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	if root == "/" {
+		return path != "/"
+	}
+	return strings.HasPrefix(path, root+string(os.PathSeparator))
+}
+
+func appendBindParentDirs(args []string, mounts []Mount, destination string, seen map[string]bool, coveredRoots []string) ([]string, []Mount) {
+	for _, dir := range bindParentDirs(destination) {
+		if seen[dir] || coveredByMount(dir, coveredRoots) {
+			continue
+		}
+		seen[dir] = true
+		args = append(args, "--dir", dir)
+		mounts = append(mounts, Mount{Destination: dir, Mode: "dir"})
+	}
+	return args, mounts
+}
+
+func bindParentDirs(destination string) []string {
+	parent := filepath.Dir(filepath.Clean(destination))
+	if parent == "." || parent == "/" {
+		return nil
+	}
+	var reversed []string
+	for parent != "/" && parent != "." {
+		reversed = append(reversed, parent)
+		next := filepath.Dir(parent)
+		if next == parent {
+			break
+		}
+		parent = next
+	}
+	dirs := make([]string, 0, len(reversed))
+	for i := len(reversed) - 1; i >= 0; i-- {
+		dirs = append(dirs, reversed[i])
+	}
+	return dirs
+}
+
+func coveredByMount(path string, roots []string) bool {
+	path = filepath.Clean(path)
+	for _, root := range roots {
+		root = filepath.Clean(strings.TrimSpace(root))
+		if root == "." || !filepath.IsAbs(root) || root == "/tmp" {
+			continue
+		}
+		if path == root || pathInside(root, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func readOnlyBinds(cfg Config) []string {
+	return cleanBinds(cfg.ReadOnlyBinds, false)
 }
 
 func systemReadOnlyBinds(cfg Config) []string {

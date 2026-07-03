@@ -119,6 +119,35 @@ func TestPrepareMergesTrustedCommandEnvWithoutReintroducingHostSecrets(t *testin
 	}
 }
 
+func TestPrepareUnsafeLeavesAbsoluteBinaryPathUnchanged(t *testing.T) {
+	workspacePath := testAbsPath("workspace")
+	binaryPath := testAbsPath("tmp/issue-spec-runner-e2e-001/bin/issue-spec")
+	cfg := Config{
+		UnsafeNoSandbox:   true,
+		WorkspacePath:     workspacePath,
+		TempHome:          testAbsPath("home"),
+		TempGHConfigDir:   testAbsPath("gh"),
+		TempXDGConfigHome: testAbsPath("xdg"),
+		TempCodexHome:     testAbsPath("codex"),
+		ReadOnlyBinds:     []string{binaryPath},
+		HostEnv:           []string{"PATH=/usr/bin"},
+	}
+
+	prepared, err := Prepare(context.Background(), cfg, Command{Binary: binaryPath, Args: []string{"auth", "status", "--json"}}, Dependencies{})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	if prepared.Command.Binary != binaryPath {
+		t.Fatalf("Binary = %q, want unchanged %q", prepared.Command.Binary, binaryPath)
+	}
+	if prepared.Command.Dir != workspacePath {
+		t.Fatalf("Dir = %q, want workspace %q", prepared.Command.Dir, workspacePath)
+	}
+	if len(prepared.Metadata.Mounts) != 0 {
+		t.Fatalf("unsafe mode should not build bwrap mounts: %+v", prepared.Metadata.Mounts)
+	}
+}
+
 func TestPreflightUnsafeDoesNotRequireBwrap(t *testing.T) {
 	_, err := Preflight(context.Background(), Config{UnsafeNoSandbox: true}, Dependencies{
 		LookPath: func(string) (string, error) {

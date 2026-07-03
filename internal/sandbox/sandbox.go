@@ -54,6 +54,7 @@ type Config struct {
 	ExtraEnv            map[string]string
 	DisableProxyEnv     bool
 	SystemReadOnlyBinds []string
+	ReadOnlyBinds       []string
 }
 
 type Command struct {

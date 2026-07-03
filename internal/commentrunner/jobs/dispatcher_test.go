@@ -717,6 +717,149 @@ func TestSandboxRunnerRefreshesExistingRuntimeGHConfig(t *testing.T) {
 	}
 }
 
+func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
+	temp := t.TempDir()
+	hostGH := filepath.Join(temp, "host-gh")
+	hostCodex := filepath.Join(temp, "host-codex")
+	workspacePath := filepath.Join(temp, "workspace")
+	runtimeHome := filepath.Join(workspacePath, ".sessions", "runtime", "home")
+	runtimeCodex := filepath.Join(workspacePath, ".sessions", "runtime", "codex")
+	for _, dir := range []string{hostGH, hostCodex, workspacePath} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeFileWithMode(t, filepath.Join(hostCodex, "auth.json"), []byte(`{"token":"codex"}`), 0o600)
+	writeFileWithMode(t, filepath.Join(hostCodex, "config.toml"), []byte("model = \"gpt-5\"\n"), 0o640)
+	writeFileWithMode(t, filepath.Join(hostCodex, "version.json"), []byte(`{"version":"1"}`), 0o644)
+	writeFileWithMode(t, filepath.Join(hostCodex, "installation_id"), []byte("install-1\n"), 0o600)
+	writeFileWithMode(t, filepath.Join(hostCodex, "settings.json"), []byte(`{"ignored":true}`), 0o600)
+
+	env, err := (SandboxRunner{Config: sandbox.Config{
+		UnsafeNoSandbox: true,
+		HostGHConfigDir: hostGH,
+		HostEnv:         []string{"CODEX_HOME=" + hostCodex, "HOME=" + filepath.Join(temp, "host-home")},
+	}}).Prepare(context.Background(), SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           "acpx",
+		RuntimeHome:          runtimeHome,
+		RuntimeGHConfigDir:   filepath.Join(workspacePath, ".sessions", "runtime", "gh"),
+		RuntimeXDGConfigHome: filepath.Join(workspacePath, ".sessions", "runtime", "xdg"),
+		RuntimeCodexHome:     runtimeCodex,
+	})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	if env.Sandbox.TempPaths["CODEX_HOME"] != runtimeCodex {
+		t.Fatalf("runtime CODEX_HOME = %q, want %q", env.Sandbox.TempPaths["CODEX_HOME"], runtimeCodex)
+	}
+	for _, dest := range []string{runtimeCodex, filepath.Join(runtimeHome, ".codex")} {
+		assertFileContentAndMode(t, filepath.Join(dest, "auth.json"), `{"token":"codex"}`, 0o600)
+		assertFileContentAndMode(t, filepath.Join(dest, "config.toml"), "model = \"gpt-5\"\n", 0o640)
+		assertFileContentAndMode(t, filepath.Join(dest, "version.json"), `{"version":"1"}`, 0o644)
+		assertFileContentAndMode(t, filepath.Join(dest, "installation_id"), "install-1\n", 0o600)
+		if _, err := os.Stat(filepath.Join(dest, "settings.json")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("non-allowlisted Codex file was copied to %s: %v", dest, err)
+		}
+	}
+}
+
+func TestSandboxRunnerSkipsMissingHostCodexConfig(t *testing.T) {
+	temp := t.TempDir()
+	hostGH := filepath.Join(temp, "host-gh")
+	workspacePath := filepath.Join(temp, "workspace")
+	for _, dir := range []string{hostGH, workspacePath} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := (SandboxRunner{Config: sandbox.Config{
+		UnsafeNoSandbox: true,
+		HostGHConfigDir: hostGH,
+		HostEnv:         []string{"CODEX_HOME=" + filepath.Join(temp, "missing-codex")},
+	}}).Prepare(context.Background(), SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           "acpx",
+		RuntimeHome:          filepath.Join(workspacePath, ".sessions", "runtime", "home"),
+		RuntimeGHConfigDir:   filepath.Join(workspacePath, ".sessions", "runtime", "gh"),
+		RuntimeXDGConfigHome: filepath.Join(workspacePath, ".sessions", "runtime", "xdg"),
+		RuntimeCodexHome:     filepath.Join(workspacePath, ".sessions", "runtime", "codex"),
+	})
+	if err != nil {
+		t.Fatalf("Prepare returned error for missing Codex config: %v", err)
+	}
+}
+
+func TestSandboxRunnerBwrapPreservesHostCWDAndBindsIssueSpecBinaryForChildAuth(t *testing.T) {
+	temp := t.TempDir()
+	hostGH := filepath.Join(temp, "host-gh")
+	workspacePath := filepath.Join(temp, "workspace")
+	issueSpecPath := filepath.Join(temp, "issue-spec-runner-e2e-001", "bin", "issue-spec")
+	for _, dir := range []string{hostGH, workspacePath, filepath.Dir(issueSpecPath)} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeFileWithMode(t, issueSpecPath, []byte("#!/bin/sh\n"), 0o700)
+
+	runner := &recordingBwrapRunner{}
+	env, err := (SandboxRunner{Config: sandbox.Config{
+		BwrapPath:           "/usr/bin/bwrap",
+		HostGHConfigDir:     hostGH,
+		HostEnv:             []string{"PATH=/usr/bin", "GH_TOKEN=host-secret", "ISSUE_SPEC_TOKEN=issue-secret"},
+		SystemReadOnlyBinds: []string{"/usr"},
+	}, Deps: sandbox.Dependencies{Runner: runner}}).Prepare(context.Background(), SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           "acpx",
+		IssueSpecBinary:      issueSpecPath,
+		RuntimeHome:          filepath.Join(workspacePath, ".sessions", "runtime", "home"),
+		RuntimeGHConfigDir:   filepath.Join(workspacePath, ".sessions", "runtime", "gh"),
+		RuntimeXDGConfigHome: filepath.Join(workspacePath, ".sessions", "runtime", "xdg"),
+		RuntimeCodexHome:     filepath.Join(workspacePath, ".sessions", "runtime", "codex"),
+	})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	if env.WorkingDirectory != workspacePath {
+		t.Fatalf("WorkingDirectory = %q, want host workspace path %q", env.WorkingDirectory, workspacePath)
+	}
+	if !stringSliceContains(env.Sandbox.EnvDecisions, "token_unset:GH_TOKEN") || !stringSliceContains(env.Sandbox.EnvDecisions, "token_unset:ISSUE_SPEC_TOKEN") {
+		t.Fatalf("token scrub decisions missing from sandbox metadata: %+v", env.Sandbox.EnvDecisions)
+	}
+
+	dispatcher := Dispatcher{IssueSpecBinary: issueSpecPath}
+	if err := dispatcher.preflightChildAuth(context.Background(), env); err != nil {
+		t.Fatalf("child auth preflight returned error: %v", err)
+	}
+	cmd := runner.finalCommand
+	assertCommandArgSequence(t, cmd.Args, "--bind", workspacePath, "/workspace")
+	assertCommandArgSequence(t, cmd.Args, "--bind", workspacePath, workspacePath)
+	assertCommandArgSequence(t, cmd.Args, "--dir", filepath.Dir(filepath.Dir(issueSpecPath)))
+	assertCommandArgSequence(t, cmd.Args, "--dir", filepath.Dir(issueSpecPath))
+	assertCommandArgSequence(t, cmd.Args, "--ro-bind", issueSpecPath, issueSpecPath)
+	assertCommandArgSequence(t, cmd.Args, "--chdir", workspacePath)
+	assertCommandArgSequence(t, cmd.Args, "--", issueSpecPath, "auth", "status", "--json")
+	assertCommandArgSequenceMissing(t, cmd.Args, "--bind", filepath.Dir(filepath.Dir(issueSpecPath)), filepath.Dir(filepath.Dir(issueSpecPath)))
+	for _, arg := range cmd.Args {
+		if strings.Contains(arg, "GH_TOKEN") || strings.Contains(arg, "ISSUE_SPEC_TOKEN") || strings.Contains(arg, "host-secret") || strings.Contains(arg, "issue-secret") {
+			t.Fatalf("token material leaked into bwrap args: %v", cmd.Args)
+		}
+	}
+}
+
 func TestSandboxRunnerFailsFastWhenHostGHAuthMissing(t *testing.T) {
 	temp := t.TempDir()
 	workspacePath := filepath.Join(temp, "workspace")
@@ -832,6 +975,77 @@ func assertWritebackStatuses(t *testing.T, writebacks *fakeWriteback, want ...st
 			t.Fatalf("writeback %d status = %s, want %s", i, writebacks.requests[i].Status, status)
 		}
 	}
+}
+
+func writeFileWithMode(t *testing.T, path string, data []byte, mode os.FileMode) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertFileContentAndMode(t *testing.T, path, wantContent string, wantMode os.FileMode) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != wantContent {
+		t.Fatalf("%s content = %q, want %q", path, string(data), wantContent)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != wantMode {
+		t.Fatalf("%s mode = %o, want %o", path, got, wantMode)
+	}
+}
+
+func assertCommandArgSequence(t *testing.T, args []string, want ...string) {
+	t.Helper()
+	if commandArgsContainSequence(args, want...) {
+		return
+	}
+	t.Fatalf("args missing sequence %v in %v", want, args)
+}
+
+func assertCommandArgSequenceMissing(t *testing.T, args []string, want ...string) {
+	t.Helper()
+	if commandArgsContainSequence(args, want...) {
+		t.Fatalf("args unexpectedly contained sequence %v in %v", want, args)
+	}
+}
+
+func commandArgsContainSequence(args []string, want ...string) bool {
+	for i := 0; i <= len(args)-len(want); i++ {
+		ok := true
+		for j := range want {
+			if args[i+j] != want[j] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func testBinding(id string) workspace.Binding {
@@ -1048,6 +1262,24 @@ type recordingSandboxRunner struct {
 func (r *recordingSandboxRunner) Run(_ context.Context, command sandbox.Command) (sandbox.Result, error) {
 	r.command = command
 	return sandbox.Result{}, nil
+}
+
+type recordingBwrapRunner struct {
+	finalCommand sandbox.Command
+}
+
+func (r *recordingBwrapRunner) Run(_ context.Context, command sandbox.Command) (sandbox.Result, error) {
+	switch {
+	case len(command.Args) == 1 && command.Args[0] == "--version":
+		return sandbox.Result{Stdout: []byte("bubblewrap 0.8.0\n")}, nil
+	case len(command.Args) == 1 && command.Args[0] == "--help":
+		return sandbox.Result{Stdout: []byte("usage: --perms\n")}, nil
+	case commandArgsContainSequence(command.Args, "--", "/usr/bin/env", "true"):
+		return sandbox.Result{}, nil
+	default:
+		r.finalCommand = command
+		return sandbox.Result{Stdout: []byte(`{"ok":true,"auth":{"host":"github.com","source":"gh","user":"bot"},"backend":{"name":"gh","selection_source":"auto:gh"}}`)}, nil
+	}
 }
 
 type fakeAuthProbeRunner struct {

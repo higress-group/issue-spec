@@ -115,6 +115,7 @@ func TestLinuxPrepareBuildsBwrapCommand(t *testing.T) {
 	}
 	assertArgSequence(t, cmd.Args, "--clearenv")
 	assertArgSequence(t, cmd.Args, "--bind", "/tmp/workspace", "/workspace")
+	assertArgSequence(t, cmd.Args, "--bind", "/tmp/workspace", "/tmp/workspace")
 	assertArgSequence(t, cmd.Args, "--chdir", "/workspace")
 	assertArgSequence(t, cmd.Args, "--perms", "0700", "--tmpfs", "/tmp")
 	assertArgSequence(t, cmd.Args, "--bind", "/tmp/gh", "/tmp/issue-spec-gh")
@@ -131,6 +132,63 @@ func TestLinuxPrepareBuildsBwrapCommand(t *testing.T) {
 	if prepared.Metadata.SandboxProvider != ProviderBubblewrap || prepared.Metadata.FSBoundary != FSBoundaryWorkspace {
 		t.Fatalf("unexpected metadata: %+v", prepared.Metadata)
 	}
+}
+
+func TestLinuxPrepareBindsWorkspaceAtOriginalPathForHostCWD(t *testing.T) {
+	runner := capableBwrapRunner(t)
+	workspacePath := "/tmp/issue-spec-runner/workspace"
+	cfg := Config{
+		BwrapPath:           "/usr/bin/bwrap",
+		WorkspacePath:       workspacePath,
+		TempHome:            "/tmp/home",
+		TempGHConfigDir:     "/tmp/gh",
+		TempXDGConfigHome:   "/tmp/xdg",
+		TempCodexHome:       "/tmp/codex",
+		HostEnv:             []string{"PATH=/usr/bin"},
+		SystemReadOnlyBinds: []string{"/usr"},
+	}
+	prepared, err := Prepare(context.Background(), cfg, Command{
+		Binary: "acpx",
+		Args:   []string{"--cwd", workspacePath, "codex", "set-mode", "agent-full-access"},
+		Dir:    workspacePath,
+	}, Dependencies{Runner: runner})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	assertArgSequence(t, prepared.Command.Args, "--bind", workspacePath, "/workspace")
+	assertArgSequence(t, prepared.Command.Args, "--dir", "/tmp/issue-spec-runner")
+	assertArgSequence(t, prepared.Command.Args, "--bind", workspacePath, workspacePath)
+	assertArgSequence(t, prepared.Command.Args, "--chdir", workspacePath)
+	assertArgSequence(t, prepared.Command.Args, "--", "acpx", "--cwd", workspacePath)
+	assertArgSequenceMissing(t, prepared.Command.Args, "--bind", "/tmp/issue-spec-runner", "/tmp/issue-spec-runner")
+	assertArgSequenceMissing(t, prepared.Command.Args, "--ro-bind", "/tmp", "/tmp")
+}
+
+func TestLinuxPrepareAddsReadOnlyFileBindWithTmpfsParents(t *testing.T) {
+	runner := capableBwrapRunner(t)
+	issueSpecPath := "/tmp/issue-spec-runner-e2e-001/bin/issue-spec"
+	systemIssueSpecPath := "/usr/local/bin/issue-spec"
+	cfg := Config{
+		BwrapPath:           "/usr/bin/bwrap",
+		WorkspacePath:       "/tmp/workspace",
+		TempHome:            "/tmp/home",
+		TempGHConfigDir:     "/tmp/gh",
+		TempXDGConfigHome:   "/tmp/xdg",
+		TempCodexHome:       "/tmp/codex",
+		HostEnv:             []string{"PATH=/usr/bin"},
+		SystemReadOnlyBinds: []string{"/usr"},
+		ReadOnlyBinds:       []string{issueSpecPath, systemIssueSpecPath},
+	}
+	prepared, err := Prepare(context.Background(), cfg, Command{Binary: issueSpecPath, Args: []string{"auth", "status", "--json"}, Dir: "/tmp/workspace"}, Dependencies{Runner: runner})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	assertArgSequence(t, prepared.Command.Args, "--dir", "/tmp/issue-spec-runner-e2e-001")
+	assertArgSequence(t, prepared.Command.Args, "--dir", "/tmp/issue-spec-runner-e2e-001/bin")
+	assertArgSequence(t, prepared.Command.Args, "--ro-bind", issueSpecPath, issueSpecPath)
+	assertArgSequence(t, prepared.Command.Args, "--", issueSpecPath, "auth", "status", "--json")
+	assertArgSequenceMissing(t, prepared.Command.Args, "--bind", "/tmp/issue-spec-runner-e2e-001", "/tmp/issue-spec-runner-e2e-001")
+	assertArgSequenceMissing(t, prepared.Command.Args, "--ro-bind", systemIssueSpecPath, systemIssueSpecPath)
 }
 
 func argsContain(args []string, want string) bool {
@@ -157,4 +215,35 @@ func assertArgSequence(t *testing.T, args []string, want ...string) {
 		}
 	}
 	t.Fatalf("args missing sequence %v in %v", want, args)
+}
+
+func assertArgSequenceMissing(t *testing.T, args []string, want ...string) {
+	t.Helper()
+	for i := 0; i <= len(args)-len(want); i++ {
+		ok := true
+		for j := range want {
+			if args[i+j] != want[j] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			t.Fatalf("args unexpectedly contained sequence %v in %v", want, args)
+		}
+	}
+}
+
+func capableBwrapRunner(t *testing.T) Runner {
+	t.Helper()
+	return runnerFunc(func(ctx context.Context, command Command) (Result, error) {
+		_ = ctx
+		switch {
+		case len(command.Args) == 1 && command.Args[0] == "--version":
+			return Result{Stdout: []byte("bubblewrap 0.8.0\n")}, nil
+		case len(command.Args) == 1 && command.Args[0] == "--help":
+			return Result{Stdout: []byte("usage: --perms\n")}, nil
+		default:
+			return Result{}, nil
+		}
+	})
 }
