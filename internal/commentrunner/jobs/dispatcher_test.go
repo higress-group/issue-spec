@@ -36,6 +36,11 @@ type fakeWorkspace struct {
 	prepareN int
 }
 
+type fakeCanceller struct {
+	calls []string
+	err   error
+}
+
 func (f *fakeWorkspace) PrepareNew(spec workspace.WorkspaceSpec) (*model.WorkspaceState, error) {
 	f.prepareN++
 	f.path = "/tmp/" + spec.WorkspaceID
@@ -54,6 +59,11 @@ func (f *fakeWorkspace) Lock(path string) (func() error, error) {
 	}
 	f.locked = true
 	return func() error { f.locked = false; return nil }, nil
+}
+
+func (f *fakeCanceller) CancelTurn(_ context.Context, sessionID string) error {
+	f.calls = append(f.calls, sessionID)
+	return f.err
 }
 
 type fakeAcpx struct {
@@ -172,5 +182,68 @@ func TestDispatcherLockRelease(t *testing.T) {
 	ws.locked = false
 	if _, err := d.RunResume(context.Background(), DispatchRequest{Repo: "o/r", RepoKey: "o/r", IssueNumber: 1, IssueKey: "o/r#1", Prompt: "x", PublicSessionID: "pub-1", WorkspaceID: "pub-1"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDispatcherStartupReconcileAndCancel(t *testing.T) {
+	store := &fakeStore{}
+	ws := &fakeWorkspace{}
+	ac := &fakeAcpx{res: acpx.SessionResult{SessionID: "sess-1"}}
+	backend := &fakeBackend{}
+	canceller := &fakeCanceller{}
+	d := Dispatcher{Store: store, Workspace: ws, Acpx: ac, Backend: backend, Canceller: canceller, Now: func() time.Time { return time.Unix(200, 0) }}
+	_ = store.Update(func(st *model.RunnerState) error {
+		rs := state.EnsureRepo(st, "o/r")
+		rs.Jobs["job-active"] = &model.JobState{ID: "job-active", PublicSessionID: "sess-active", Status: "running"}
+		rs.Jobs["job-complete"] = &model.JobState{ID: "job-complete", PublicSessionID: "sess-complete", Status: "done"}
+		rs.Jobs["job-failed"] = &model.JobState{ID: "job-failed", PublicSessionID: "sess-failed", Status: "failed"}
+		rs.Jobs["job-ambiguous"] = &model.JobState{ID: "job-ambiguous", PublicSessionID: "sess-ambiguous", Status: "ambiguous"}
+		return nil
+	})
+	if err := d.ReconcileStartup(context.Background(), "o/r"); err != nil {
+		t.Fatal(err)
+	}
+	rs := store.st.Repos["o/r"]
+	if rs.Jobs["job-active"].Status != "running" || rs.Jobs["job-complete"].Status != "done" || rs.Jobs["job-failed"].Status != "failed" || rs.Jobs["job-ambiguous"].Status != "interrupted" {
+		t.Fatalf("reconcile = %+v", rs.Jobs)
+	}
+	_ = store.Update(func(st *model.RunnerState) error {
+		rs := state.EnsureRepo(st, "o/r")
+		rs.Workspaces["pub-1"] = &model.WorkspaceState{ID: "pub-1", Path: "/tmp/pub-1", Repo: "o/r"}
+		rs.Jobs["job-cancel"] = &model.JobState{ID: "job-cancel", PublicSessionID: "pub-1", WorkspaceID: "pub-1", Status: "running"}
+		return nil
+	})
+	job, err := d.Cancel(context.Background(), DispatchRequest{Repo: "o/r", RepoKey: "o/r", IssueNumber: 1, IssueKey: "o/r#1", PublicSessionID: "pub-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != "cancelled" || len(canceller.calls) != 1 || canceller.calls[0] != "pub-1" {
+		t.Fatalf("cancel = %+v %#v", job, canceller.calls)
+	}
+	if rs.Jobs["job-cancel"].Status != "cancelled" {
+		t.Fatalf("cancel state = %+v", rs.Jobs["job-cancel"])
+	}
+}
+
+func TestDispatcherCancelRejectsUnsupportedAndReleasesLock(t *testing.T) {
+	store := &fakeStore{}
+	ws := &fakeWorkspace{}
+	ac := &fakeAcpx{res: acpx.SessionResult{SessionID: "sess-1"}}
+	backend := &fakeBackend{}
+	canceller := &fakeCanceller{err: errors.New("turn-level cancellation unsupported")}
+	d := Dispatcher{Store: store, Workspace: ws, Acpx: ac, Backend: backend, Canceller: canceller}
+	_ = store.Update(func(st *model.RunnerState) error {
+		rs := state.EnsureRepo(st, "o/r")
+		rs.Jobs["job-1"] = &model.JobState{ID: "job-1", PublicSessionID: "pub-1", Status: "running"}
+		return nil
+	})
+	if _, err := d.Cancel(context.Background(), DispatchRequest{Repo: "o/r", RepoKey: "o/r", PublicSessionID: "pub-1"}); err == nil {
+		t.Fatal("expected cancel failure")
+	}
+	if len(canceller.calls) != 1 {
+		t.Fatalf("cancel calls = %#v", canceller.calls)
+	}
+	if got := store.st.Repos["o/r"].Jobs["job-1"].Status; got != "running" {
+		t.Fatalf("state mutated on failed cancel: %s", got)
 	}
 }

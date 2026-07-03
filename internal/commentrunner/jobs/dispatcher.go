@@ -30,6 +30,10 @@ type AcpxRunner interface {
 	Run(context.Context, acpx.SessionRequest) (acpx.SessionResult, error)
 }
 
+type TurnCanceller interface {
+	CancelTurn(context.Context, string) error
+}
+
 type WritebackBackend interface {
 	writeback.Backend
 }
@@ -38,6 +42,7 @@ type Dispatcher struct {
 	Store     Store
 	Workspace WorkspaceManager
 	Acpx      AcpxRunner
+	Canceller TurnCanceller
 	Backend   WritebackBackend
 	Now       func() time.Time
 }
@@ -64,6 +69,29 @@ func (d Dispatcher) RunNew(ctx context.Context, req DispatchRequest) (*model.Job
 
 func (d Dispatcher) RunResume(ctx context.Context, req DispatchRequest) (*model.JobState, error) {
 	return d.run(ctx, req, false)
+}
+
+func (d Dispatcher) ReconcileStartup(ctx context.Context, repoKey string) error {
+	if d.Store == nil || d.Backend == nil {
+		return fmt.Errorf("dispatcher dependencies are required")
+	}
+	now := d.now()
+	return d.Store.Update(func(st *model.RunnerState) error {
+		rs := state.EnsureRepo(st, repoKey)
+		for _, job := range rs.Jobs {
+			switch job.Status {
+			case "dispatched", "running":
+				if job.AcpxID != "" {
+					job.Status = "running"
+				}
+				job.UpdatedAt = now
+			case "ambiguous":
+				job.Status = "interrupted"
+				job.UpdatedAt = now
+			}
+		}
+		return nil
+	})
 }
 
 func (d Dispatcher) run(ctx context.Context, req DispatchRequest, isNew bool) (*model.JobState, error) {
@@ -196,6 +224,51 @@ func (d Dispatcher) initJob(rs *model.RepoState, req DispatchRequest, now time.T
 	rs.Acpx[job.ID] = &model.AcpxState{ID: job.ID, Metadata: map[string]string{}}
 	rs.Idempotency[dispatchKey(req, isNew)] = model.IdempotencyRecord{Key: dispatchKey(req, isNew), Kind: "job", ResourceID: job.ID, CreatedAt: now}
 	return job, true, nil
+}
+
+func (d Dispatcher) Cancel(ctx context.Context, req DispatchRequest) (*model.JobState, error) {
+	if d.Store == nil || d.Backend == nil || d.Canceller == nil {
+		return nil, fmt.Errorf("dispatcher dependencies are required")
+	}
+	now := d.now()
+	var out *model.JobState
+	var repoKey string
+	err := d.Store.Update(func(st *model.RunnerState) error {
+		rs := state.EnsureRepo(st, req.RepoKey)
+		repoKey = req.RepoKey
+		job := jobForCancellation(rs, req.PublicSessionID)
+		if job == nil {
+			return fmt.Errorf("cancel target not found")
+		}
+		out = job
+		if err := d.Canceller.CancelTurn(ctx, job.PublicSessionID); err != nil {
+			return err
+		}
+		job.Status = "cancelled"
+		job.UpdatedAt = now
+		if rs.Cancellation == nil {
+			rs.Cancellation = map[string]model.CancellationState{}
+		}
+		rs.Cancellation[job.PublicSessionID] = model.CancellationState{Key: job.PublicSessionID, JobID: job.ID, CancelledAt: now}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	_ = d.writeStatus(ctx, DispatchRequest{Repo: req.Repo, RepoKey: repoKey, IssueNumber: req.IssueNumber, IssueKey: req.IssueKey, Prompt: req.Prompt}, out, "cancelled", nil)
+	return out, nil
+}
+
+func jobForCancellation(rs *model.RepoState, publicSessionID string) *model.JobState {
+	if rs == nil {
+		return nil
+	}
+	for _, job := range rs.Jobs {
+		if job != nil && job.PublicSessionID == publicSessionID {
+			return job
+		}
+	}
+	return nil
 }
 
 func (d Dispatcher) fail(ctx context.Context, req DispatchRequest, job *model.JobState, err error, terminal string) (*model.JobState, error) {
