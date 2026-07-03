@@ -46,6 +46,7 @@ type Config struct {
 	TempHome          string
 	TempGHConfigDir   string
 	TempXDGConfigHome string
+	TempCodexHome     string
 	HostGHConfigDir   string
 
 	HostEnv             []string
@@ -147,6 +148,7 @@ type EnvMetadata struct {
 	Home          string
 	GHConfigDir   string
 	XDGConfigHome string
+	CodexHome     string
 }
 
 type Mount struct {
@@ -202,14 +204,15 @@ type envPaths struct {
 	home          string
 	ghConfigDir   string
 	xdgConfigHome string
+	codexHome     string
 }
 
 func hostEnvPaths(cfg Config) envPaths {
-	return envPaths{home: cfg.TempHome, ghConfigDir: cfg.TempGHConfigDir, xdgConfigHome: cfg.TempXDGConfigHome}
+	return envPaths{home: cfg.TempHome, ghConfigDir: cfg.TempGHConfigDir, xdgConfigHome: cfg.TempXDGConfigHome, codexHome: cfg.TempCodexHome}
 }
 
 func sandboxEnvPaths() envPaths {
-	return envPaths{home: "/tmp/issue-spec-home", ghConfigDir: "/tmp/issue-spec-gh", xdgConfigHome: "/tmp/issue-spec-xdg"}
+	return envPaths{home: "/tmp/issue-spec-home", ghConfigDir: "/tmp/issue-spec-gh", xdgConfigHome: "/tmp/issue-spec-xdg", codexHome: "/tmp/issue-spec-codex"}
 }
 
 type envBuildResult struct {
@@ -233,12 +236,17 @@ func scrubEnvironment(cfg Config, paths envPaths, requireTempPaths bool) envBuil
 	}
 	allowed := stringSet(allowlist)
 	proxies := stringSet(proxyEnvNames)
+	codexHome := ""
+	if strings.TrimSpace(cfg.TempCodexHome) != "" {
+		codexHome = paths.codexHome
+	}
 
 	values := map[string]string{}
 	meta := EnvMetadata{
 		Home:          paths.home,
 		GHConfigDir:   paths.ghConfigDir,
 		XDGConfigHome: paths.xdgConfigHome,
+		CodexHome:     codexHome,
 	}
 	for _, entry := range hostEnv {
 		name, value, ok := strings.Cut(entry, "=")
@@ -279,6 +287,9 @@ func scrubEnvironment(cfg Config, paths envPaths, requireTempPaths bool) envBuil
 	if paths.xdgConfigHome != "" {
 		values["XDG_CONFIG_HOME"] = paths.xdgConfigHome
 	}
+	if codexHome != "" {
+		values["CODEX_HOME"] = codexHome
+	}
 
 	meta.ProxyInherited = sortedUnique(meta.ProxyInherited)
 	meta.TokenUnset = sortedUnique(meta.TokenUnset)
@@ -302,6 +313,7 @@ func mergeCommandEnv(baseEntries, commandEntries []string, cfg Config, meta *Env
 		"HOME":            true,
 		"GH_CONFIG_DIR":   true,
 		"XDG_CONFIG_HOME": true,
+		"CODEX_HOME":      true,
 	}
 	for _, entry := range commandEntries {
 		name, value, ok := strings.Cut(entry, "=")

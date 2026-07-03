@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -60,6 +61,10 @@ type SandboxRequest struct {
 	AcpxWorkingDirectory string
 	AcpxBinary           string
 	ExtraEnv             map[string]string
+	RuntimeHome          string
+	RuntimeGHConfigDir   string
+	RuntimeXDGConfigHome string
+	RuntimeCodexHome     string
 }
 
 type ExecutionEnvironment struct {
@@ -395,11 +400,19 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
+	runtimePaths, err := stableSessionRuntimePaths(firstNonEmpty(binding.Workspace.Path, binding.SandboxWorkspacePath, binding.AcpxWorkingDirectory), job.Repo, publicID)
+	if err != nil {
+		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
+	}
 	env, err := d.Sandbox.Prepare(ctx, SandboxRequest{
 		WorkspacePath:        binding.SandboxWorkspacePath,
 		AcpxWorkingDirectory: binding.AcpxWorkingDirectory,
 		AcpxBinary:           "acpx",
 		ExtraEnv:             d.CoordinatorExtraEnv,
+		RuntimeHome:          runtimePaths.home,
+		RuntimeGHConfigDir:   runtimePaths.ghConfigDir,
+		RuntimeXDGConfigHome: runtimePaths.xdgConfigHome,
+		RuntimeCodexHome:     runtimePaths.codexHome,
 	})
 	if err != nil {
 		return env, runnercontext.Bundle{}, "", err
@@ -806,6 +819,10 @@ func (p SandboxRunner) Prepare(ctx context.Context, req SandboxRequest) (Executi
 func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, error) {
 	cfg := p.Config
 	cfg.WorkspacePath = firstNonEmpty(req.WorkspacePath, cfg.WorkspacePath)
+	cfg.TempHome = firstNonEmpty(req.RuntimeHome, cfg.TempHome)
+	cfg.TempGHConfigDir = firstNonEmpty(req.RuntimeGHConfigDir, cfg.TempGHConfigDir)
+	cfg.TempXDGConfigHome = firstNonEmpty(req.RuntimeXDGConfigHome, cfg.TempXDGConfigHome)
+	cfg.TempCodexHome = firstNonEmpty(req.RuntimeCodexHome, cfg.TempCodexHome)
 	if len(req.ExtraEnv) > 0 {
 		if cfg.ExtraEnv == nil {
 			cfg.ExtraEnv = map[string]string{}
@@ -814,7 +831,7 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, error) {
 			cfg.ExtraEnv[key] = value
 		}
 	}
-	if cfg.TempHome == "" || cfg.TempGHConfigDir == "" || cfg.TempXDGConfigHome == "" {
+	if cfg.TempHome == "" || cfg.TempGHConfigDir == "" || cfg.TempXDGConfigHome == "" || cfg.TempCodexHome == "" {
 		root, err := os.MkdirTemp("", "issue-spec-runner-*")
 		if err != nil {
 			return sandbox.Config{}, err
@@ -822,8 +839,9 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, error) {
 		cfg.TempHome = firstNonEmpty(cfg.TempHome, filepath.Join(root, "home"))
 		cfg.TempGHConfigDir = firstNonEmpty(cfg.TempGHConfigDir, filepath.Join(root, "gh"))
 		cfg.TempXDGConfigHome = firstNonEmpty(cfg.TempXDGConfigHome, filepath.Join(root, "xdg"))
+		cfg.TempCodexHome = firstNonEmpty(cfg.TempCodexHome, filepath.Join(root, "codex"))
 	}
-	for _, dir := range []string{cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome} {
+	for _, dir := range []string{cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return sandbox.Config{}, err
 		}
@@ -834,9 +852,54 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, error) {
 	return cfg, nil
 }
 
+type sessionRuntimePaths struct {
+	home          string
+	ghConfigDir   string
+	xdgConfigHome string
+	codexHome     string
+}
+
+func stableSessionRuntimePaths(workspaceRoot, repo, publicID string) (sessionRuntimePaths, error) {
+	root, err := stableSessionRuntimeRoot(workspaceRoot, repo, publicID)
+	if err != nil {
+		return sessionRuntimePaths{}, err
+	}
+	return sessionRuntimePaths{
+		home:          filepath.Join(root, "home"),
+		ghConfigDir:   filepath.Join(root, "gh"),
+		xdgConfigHome: filepath.Join(root, "xdg"),
+		codexHome:     filepath.Join(root, "codex"),
+	}, nil
+}
+
+func stableSessionRuntimeRoot(workspaceRoot, repo, publicID string) (string, error) {
+	workspaceRoot = strings.TrimSpace(workspaceRoot)
+	repo = strings.TrimSpace(repo)
+	publicID = strings.TrimSpace(publicID)
+	if workspaceRoot == "" {
+		return "", fmt.Errorf("workspace root is required for session runtime paths")
+	}
+	if repo == "" {
+		return "", fmt.Errorf("repo is required for session runtime paths")
+	}
+	if publicID == "" {
+		return "", fmt.Errorf("public session id is required for session runtime paths")
+	}
+	absRoot, err := filepath.Abs(workspaceRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace root for session runtime paths: %w", err)
+	}
+	cleanRoot := filepath.Clean(absRoot)
+	sum := sha256.Sum256([]byte(repo + "\x00" + publicID + "\x00" + cleanRoot))
+	return filepath.Join(cleanRoot, ".sessions", hex.EncodeToString(sum[:16])), nil
+}
+
 func mirrorHostGHAuth(cfg *sandbox.Config) error {
 	if cfg == nil {
 		return fmt.Errorf("sandbox config is required")
+	}
+	if info, err := os.Stat(filepath.Join(cfg.TempGHConfigDir, "hosts.yml")); err == nil && !info.IsDir() {
+		return nil
 	}
 	source, err := hostGHConfigDir(*cfg)
 	if err != nil {
@@ -904,6 +967,11 @@ func copyGHConfigDir(source, dest string) error {
 		}
 		if entry.IsDir() {
 			return os.MkdirAll(target, 0o700)
+		}
+		if _, err := os.Lstat(target); err == nil {
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -1130,6 +1198,9 @@ func tempPaths(meta sandbox.EnvMetadata) map[string]string {
 	}
 	if meta.XDGConfigHome != "" {
 		out["XDG_CONFIG_HOME"] = meta.XDGConfigHome
+	}
+	if meta.CodexHome != "" {
+		out["CODEX_HOME"] = meta.CodexHome
 	}
 	if len(out) == 0 {
 		return nil

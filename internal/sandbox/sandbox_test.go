@@ -14,6 +14,7 @@ func TestPrepareUnsafeScrubsEnvAndExposesMetadata(t *testing.T) {
 		TempHome:          testAbsPath("home"),
 		TempGHConfigDir:   testAbsPath("gh"),
 		TempXDGConfigHome: testAbsPath("xdg"),
+		TempCodexHome:     testAbsPath("codex"),
 		HostEnv: []string{
 			"PATH=/usr/bin",
 			"FOO=bar",
@@ -50,6 +51,7 @@ func TestPrepareUnsafeScrubsEnvAndExposesMetadata(t *testing.T) {
 		"HOME":            cfg.TempHome,
 		"GH_CONFIG_DIR":   cfg.TempGHConfigDir,
 		"XDG_CONFIG_HOME": cfg.TempXDGConfigHome,
+		"CODEX_HOME":      cfg.TempCodexHome,
 		"SAFE_EXTRA":      "1",
 	} {
 		if got := env[name]; got != want {
@@ -72,6 +74,7 @@ func TestPrepareMergesTrustedCommandEnvWithoutReintroducingHostSecrets(t *testin
 		TempHome:          testAbsPath("home"),
 		TempGHConfigDir:   testAbsPath("gh"),
 		TempXDGConfigHome: testAbsPath("xdg"),
+		TempCodexHome:     testAbsPath("codex"),
 		HostEnv: []string{
 			"PATH=/usr/bin",
 			"UNLISTED_HOST=value",
@@ -86,6 +89,7 @@ func TestPrepareMergesTrustedCommandEnvWithoutReintroducingHostSecrets(t *testin
 		"SAFE_COMMAND_ENV=1",
 		"GH_TOKEN=command-secret",
 		"HOME=/not-the-sandbox-home",
+		"CODEX_HOME=/not-the-codex-home",
 	}
 
 	prepared, err := Prepare(context.Background(), cfg, Command{Binary: "acpx", Env: commandEnv}, Dependencies{})
@@ -99,6 +103,7 @@ func TestPrepareMergesTrustedCommandEnvWithoutReintroducingHostSecrets(t *testin
 		"SAFE_COMMAND_ENV":                  "1",
 		"HOME":                              cfg.TempHome,
 		"GH_CONFIG_DIR":                     cfg.TempGHConfigDir,
+		"CODEX_HOME":                        cfg.TempCodexHome,
 	} {
 		if got := env[name]; got != want {
 			t.Fatalf("%s = %q, want %q in env %v", name, got, want, prepared.Command.Env)

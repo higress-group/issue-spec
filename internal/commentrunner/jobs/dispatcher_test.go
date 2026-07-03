@@ -182,6 +182,124 @@ func TestRunNextResumeReusesSessionMappingAndWorkspace(t *testing.T) {
 	}
 }
 
+func TestRunNextNewAndResumeUseSameStableRuntimeHome(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 11, 30, 0, 0, time.UTC)
+	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	binding := workspace.Binding{
+		Workspace:            state.WorkspaceMetadata{ID: "ws-stable", Path: workspacePath, Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-stable"},
+		AcpxWorkingDirectory: workspacePath,
+		SandboxWorkspacePath: workspacePath,
+	}
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-stable-new",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		CoordinatorKind:       "codex",
+		Model:                 "gpt-5.5[xhigh]",
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "alice",
+		TriggerCommentID:      211,
+		CommandID:             "cmd-stable-new",
+		CommandName:           "new",
+		CommandPrompt:         "start stable runtime",
+		CommandIdempotencyKey: "cmd-key-stable-new",
+		StatusWritebackKey:    "status-stable-new",
+		Status:                state.StatusQueued,
+		CreatedAt:             now,
+		FirstObservedComment: state.SeenComment{
+			Repo:                          "o/r",
+			IssueNumber:                   30,
+			CommentID:                     211,
+			HTMLURL:                       "https://github.com/o/r/issues/30#issuecomment-211",
+			AuthorLogin:                   "alice",
+			FirstObservedBodyHash:         "sha256:stable-new",
+			StatusWritebackIdempotencyKey: "status-stable-new",
+		},
+	})
+	workspaces := &fakeWorkspaces{binding: binding}
+	sandbox := &fakeSandbox{}
+	writebacks := &fakeWriteback{}
+	coordinator := &fakeCoordinator{
+		newResult:    dispatchResult("ps-stable", "rec-stable", "turn-new", completedSummary()),
+		resumeResult: dispatchResult("ps-stable", "rec-stable", "turn-resume", completedSummary()),
+	}
+	dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
+	dispatcher.Sandbox = sandbox
+	dispatcher.PublicSessionID = func() (string, error) { return "ps-stable", nil }
+
+	if result, err := dispatcher.RunNext(context.Background()); err != nil || result.Status != state.StatusCompleted {
+		t.Fatalf("new RunNext result=%+v err=%v", result, err)
+	}
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-stable-resume",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		PublicSessionID:       "ps-stable",
+		CoordinatorKind:       "codex",
+		Model:                 "gpt-5.5[xhigh]",
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "bob",
+		TriggerCommentID:      212,
+		CommandID:             "cmd-stable-resume",
+		CommandName:           "resume",
+		CommandPrompt:         "continue stable runtime",
+		CommandIdempotencyKey: "cmd-key-stable-resume",
+		StatusWritebackKey:    "status-stable-resume",
+		Status:                state.StatusQueued,
+		CreatedAt:             now.Add(time.Minute),
+		FirstObservedComment: state.SeenComment{
+			Repo:                  "o/r",
+			IssueNumber:           30,
+			CommentID:             212,
+			HTMLURL:               "https://github.com/o/r/issues/30#issuecomment-212",
+			AuthorLogin:           "bob",
+			FirstObservedBodyHash: "sha256:stable-resume",
+		},
+	})
+	if result, err := dispatcher.RunNext(context.Background()); err != nil || result.Status != state.StatusCompleted {
+		t.Fatalf("resume RunNext result=%+v err=%v", result, err)
+	}
+	if len(sandbox.requests) != 2 {
+		t.Fatalf("sandbox request count = %d, want 2", len(sandbox.requests))
+	}
+	newReq, resumeReq := sandbox.requests[0], sandbox.requests[1]
+	if newReq.RuntimeHome == "" || newReq.RuntimeHome != resumeReq.RuntimeHome {
+		t.Fatalf("runtime HOME not stable: new=%q resume=%q", newReq.RuntimeHome, resumeReq.RuntimeHome)
+	}
+	if filepath.Join(newReq.RuntimeHome, ".acpx", "sessions", "index.json") != filepath.Join(resumeReq.RuntimeHome, ".acpx", "sessions", "index.json") {
+		t.Fatalf("acpx session index path changed: new=%q resume=%q", newReq.RuntimeHome, resumeReq.RuntimeHome)
+	}
+	wantRoot, err := stableSessionRuntimeRoot(workspacePath, "o/r", "ps-stable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newReq.RuntimeHome != filepath.Join(wantRoot, "home") || newReq.RuntimeGHConfigDir != filepath.Join(wantRoot, "gh") || newReq.RuntimeXDGConfigHome != filepath.Join(wantRoot, "xdg") || newReq.RuntimeCodexHome != filepath.Join(wantRoot, "codex") {
+		t.Fatalf("runtime paths not under stable root %s: %+v", wantRoot, newReq)
+	}
+	if !strings.HasPrefix(newReq.RuntimeHome, filepath.Join(workspacePath, ".sessions")+string(os.PathSeparator)) {
+		t.Fatalf("runtime HOME %q is not under workspace .sessions", newReq.RuntimeHome)
+	}
+}
+
+func TestStableSessionRuntimePathsSeparatePublicSessions(t *testing.T) {
+	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	left, err := stableSessionRuntimePaths(workspacePath, "o/r", "ps-left")
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := stableSessionRuntimePaths(workspacePath, "o/r", "ps-right")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left.home == right.home || filepath.Join(left.home, ".acpx", "sessions", "index.json") == filepath.Join(right.home, ".acpx", "sessions", "index.json") {
+		t.Fatalf("different public sessions share a runtime HOME: left=%q right=%q", left.home, right.home)
+	}
+	if left.ghConfigDir == right.ghConfigDir || left.codexHome == right.codexHome {
+		t.Fatalf("different public sessions share runtime config dirs: left=%+v right=%+v", left, right)
+	}
+}
+
 func TestRunNextFailurePersistsFailedStateAndBoundedError(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
@@ -405,6 +523,101 @@ func TestSandboxRunnerMirrorsHostGHAuthIntoSandboxConfigDir(t *testing.T) {
 	}
 }
 
+func TestSandboxRunnerUsesRequestRuntimePaths(t *testing.T) {
+	temp := t.TempDir()
+	hostGH := filepath.Join(temp, "host-gh")
+	workspacePath := filepath.Join(temp, "workspace")
+	runtimeRoot := filepath.Join(workspacePath, ".sessions", "runtime")
+	if err := os.MkdirAll(hostGH, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspacePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req := SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           "acpx",
+		RuntimeHome:          filepath.Join(runtimeRoot, "home"),
+		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
+		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
+		RuntimeCodexHome:     filepath.Join(runtimeRoot, "codex"),
+	}
+	runner := SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: true, HostGHConfigDir: hostGH}}
+	first, err := runner.Prepare(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first Prepare returned error: %v", err)
+	}
+	second, err := runner.Prepare(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second Prepare returned error: %v", err)
+	}
+	for name, want := range map[string]string{
+		"HOME":            req.RuntimeHome,
+		"GH_CONFIG_DIR":   req.RuntimeGHConfigDir,
+		"XDG_CONFIG_HOME": req.RuntimeXDGConfigHome,
+		"CODEX_HOME":      req.RuntimeCodexHome,
+	} {
+		if got := first.Sandbox.TempPaths[name]; got != want {
+			t.Fatalf("first %s = %q, want %q", name, got, want)
+		}
+		if got := second.Sandbox.TempPaths[name]; got != want {
+			t.Fatalf("second %s = %q, want %q", name, got, want)
+		}
+	}
+	firstIndex := filepath.Join(first.Sandbox.TempPaths["HOME"], ".acpx", "sessions", "index.json")
+	secondIndex := filepath.Join(second.Sandbox.TempPaths["HOME"], ".acpx", "sessions", "index.json")
+	if firstIndex != secondIndex {
+		t.Fatalf("acpx named session index path changed: first=%q second=%q", firstIndex, secondIndex)
+	}
+}
+
+func TestSandboxRunnerDoesNotOverwriteExistingRuntimeGHConfig(t *testing.T) {
+	temp := t.TempDir()
+	hostGH := filepath.Join(temp, "host-gh")
+	runtimeGH := filepath.Join(temp, "workspace", ".sessions", "runtime", "gh")
+	workspacePath := filepath.Join(temp, "workspace")
+	if err := os.MkdirAll(hostGH, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(runtimeGH, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspacePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: host\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	existing := []byte("github.com:\n  oauth_token: runtime\n")
+	if err := os.WriteFile(filepath.Join(runtimeGH, "hosts.yml"), existing, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := (SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: true, HostGHConfigDir: hostGH}}).Prepare(context.Background(), SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           "acpx",
+		RuntimeHome:          filepath.Join(temp, "workspace", ".sessions", "runtime", "home"),
+		RuntimeGHConfigDir:   runtimeGH,
+		RuntimeXDGConfigHome: filepath.Join(temp, "workspace", ".sessions", "runtime", "xdg"),
+		RuntimeCodexHome:     filepath.Join(temp, "workspace", ".sessions", "runtime", "codex"),
+	})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(runtimeGH, "hosts.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(existing) {
+		t.Fatalf("runtime gh hosts.yml was overwritten: %q", got)
+	}
+}
+
 func TestSandboxRunnerFailsFastWhenHostGHAuthMissing(t *testing.T) {
 	temp := t.TempDir()
 	workspacePath := filepath.Join(temp, "workspace")
@@ -472,7 +685,7 @@ func testDispatcher(store *memoryStore, workspaces *fakeWorkspaces, coordinator 
 		Store:             store,
 		Repositories:      fakeRepoResolver{},
 		Workspaces:        workspaces,
-		Sandbox:           fakeSandbox{},
+		Sandbox:           &fakeSandbox{},
 		Acpx:              fakeAcpxFactory{coordinator: coordinator},
 		Writeback:         writebacks,
 		Clock:             fixedClock(now),
@@ -644,9 +857,20 @@ func (f *fakeWorkspaces) ReleaseLock(state.SessionLock) error {
 	return nil
 }
 
-type fakeSandbox struct{}
+type fakeSandbox struct {
+	requests []SandboxRequest
+	env      ExecutionEnvironment
+	err      error
+}
 
-func (fakeSandbox) Prepare(context.Context, SandboxRequest) (ExecutionEnvironment, error) {
+func (f *fakeSandbox) Prepare(_ context.Context, req SandboxRequest) (ExecutionEnvironment, error) {
+	f.requests = append(f.requests, req)
+	if f.err != nil {
+		return ExecutionEnvironment{}, f.err
+	}
+	if f.env.WorkingDirectory != "" || f.env.Runner != nil || f.env.Sandbox.SandboxProvider != "" {
+		return f.env, nil
+	}
 	return ExecutionEnvironment{
 		WorkingDirectory: "/workspace",
 		Sandbox:          state.SandboxMetadata{Enabled: true, SandboxProvider: "bubblewrap", FSBoundary: "workspace"},

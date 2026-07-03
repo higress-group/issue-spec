@@ -125,7 +125,11 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		{"temporary HOME path", cfg.TempHome},
 		{"temporary GH_CONFIG_DIR path", cfg.TempGHConfigDir},
 		{"temporary XDG_CONFIG_HOME path", cfg.TempXDGConfigHome},
+		{"temporary CODEX_HOME path", cfg.TempCodexHome},
 	} {
+		if item.name == "temporary CODEX_HOME path" && strings.TrimSpace(item.value) == "" {
+			continue
+		}
 		if strings.TrimSpace(item.value) == "" {
 			return Command{}, nil, fmt.Errorf("%w: %s is required", ErrSandboxConfigInvalid, item.name)
 		}
@@ -151,6 +155,10 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	}
 
 	args = append(args, "--bind", cfg.WorkspacePath, "/workspace", "--chdir", "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg", "--proc", "/proc", "--dev", "/dev")
+	if strings.TrimSpace(cfg.TempCodexHome) != "" {
+		mounts = append(mounts, Mount{Source: cfg.TempCodexHome, Destination: "/tmp/issue-spec-codex", Mode: "rw"})
+		args = append(args, "--dir", "/tmp/issue-spec-codex", "--bind", cfg.TempCodexHome, "/tmp/issue-spec-codex")
+	}
 	for _, bind := range systemReadOnlyBinds(cfg) {
 		args = append(args, "--ro-bind", bind, bind)
 		mounts = append(mounts, Mount{Source: bind, Destination: bind, Mode: "ro"})
