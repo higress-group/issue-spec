@@ -108,16 +108,24 @@ type Dispatcher struct {
 }
 
 type Result struct {
-	Executed bool                  `json:"executed"`
-	JobID    string                `json:"job_id,omitempty"`
-	Status   state.LifecycleStatus `json:"status,omitempty"`
-	Reason   string                `json:"reason,omitempty"`
-	Error    string                `json:"error,omitempty"`
+	Executed       bool                  `json:"executed"`
+	JobID          string                `json:"job_id,omitempty"`
+	CancellationID string                `json:"cancellation_id,omitempty"`
+	Status         state.LifecycleStatus `json:"status,omitempty"`
+	Reason         string                `json:"reason,omitempty"`
+	Error          string                `json:"error,omitempty"`
 }
 
 func (d *Dispatcher) RunNext(ctx context.Context) (Result, error) {
 	if err := d.validate(); err != nil {
 		return Result{}, err
+	}
+	cancel, ok, err := d.nextQueuedCancellation(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	if ok {
+		return d.cancel(ctx, cancel)
 	}
 	job, ok, err := d.nextQueuedJob(ctx)
 	if err != nil {

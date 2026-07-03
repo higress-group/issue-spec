@@ -30,6 +30,7 @@ type app struct {
 	gitHubBackendToken  func(context.Context, auth.GitHubBackendSelection) (string, error)
 	runnerPreflight     func(context.Context, commentrunner.Config) commentrunner.PreflightReport
 	runnerIntake        func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error)
+	runnerReconcile     func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error)
 	runnerDispatch      func(context.Context, commentrunner.Config) (jobs.Result, error)
 }
 

@@ -141,8 +141,17 @@ func TestRunnerPollWithoutDryRunRunsIntakeAndOneDispatch(t *testing.T) {
 	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
 		return commentrunner.PreflightReport{OK: true, Config: cfg}
 	}
+	var callOrder []string
+	app.runnerReconcile = func(_ context.Context, cfg commentrunner.Config) (jobs.ReconcileResult, error) {
+		callOrder = append(callOrder, "reconcile")
+		if cfg.WorkspaceRoot != "/tmp/workspaces" {
+			t.Fatalf("config not passed to reconcile: %+v", cfg)
+		}
+		return jobs.ReconcileResult{Reconciled: 1, Running: 1}, nil
+	}
 	intakeCalled := false
 	app.runnerIntake = func(_ context.Context, cfg commentrunner.Config, opts intake.Options) (intake.Result, error) {
+		callOrder = append(callOrder, "intake")
 		intakeCalled = true
 		if opts.DryRun {
 			t.Fatal("non-dry-run poll must persist intake")
@@ -154,6 +163,7 @@ func TestRunnerPollWithoutDryRunRunsIntakeAndOneDispatch(t *testing.T) {
 	}
 	dispatchCalled := false
 	app.runnerDispatch = func(_ context.Context, cfg commentrunner.Config) (jobs.Result, error) {
+		callOrder = append(callOrder, "dispatch")
 		dispatchCalled = true
 		if cfg.WorkspaceRoot != "/tmp/workspaces" {
 			t.Fatalf("config not passed to dispatch: %+v", cfg)
@@ -175,11 +185,14 @@ func TestRunnerPollWithoutDryRunRunsIntakeAndOneDispatch(t *testing.T) {
 	if !intakeCalled || !dispatchCalled {
 		t.Fatalf("expected intake and dispatch to run: intake=%v dispatch=%v", intakeCalled, dispatchCalled)
 	}
+	if strings.Join(callOrder, ",") != "reconcile,intake,dispatch" {
+		t.Fatalf("unexpected call order: %v", callOrder)
+	}
 	var got runnerDryRunResult
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Mode != "run" || got.Dispatch == nil || got.Dispatch.Status != state.StatusCompleted {
+	if got.Mode != "run" || got.Reconcile == nil || got.Dispatch == nil || got.Dispatch.Status != state.StatusCompleted {
 		t.Fatalf("unexpected run output: %+v", got)
 	}
 }

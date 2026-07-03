@@ -31,6 +31,7 @@ type runnerDryRunResult struct {
 	Actions   []string                      `json:"actions"`
 	Config    commentrunner.Config          `json:"config"`
 	Preflight commentrunner.PreflightReport `json:"preflight"`
+	Reconcile *jobs.ReconcileResult         `json:"reconcile,omitempty"`
 	Intake    *intake.Result                `json:"intake,omitempty"`
 	Dispatch  *jobs.Result                  `json:"dispatch,omitempty"`
 	Error     string                        `json:"error,omitempty"`
@@ -59,29 +60,37 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 	}
 	if !opts.DryRun {
 		report := a.runRunnerPreflight(ctx, cfg)
+		var reconcileResult *jobs.ReconcileResult
 		var intakeResult *intake.Result
 		var dispatchResult *jobs.Result
 		runErr := ""
 		if report.OK {
-			result, err := a.runRunnerIntake(ctx, cfg, intake.Options{})
+			reconcile, err := a.runRunnerReconcile(ctx, cfg)
 			if err != nil {
 				runErr = err.Error()
 			} else {
-				intakeResult = &result
-				dispatch, err := a.runRunnerDispatch(ctx, cfg)
+				reconcileResult = &reconcile
+				result, err := a.runRunnerIntake(ctx, cfg, intake.Options{})
 				if err != nil {
 					runErr = err.Error()
+				} else {
+					intakeResult = &result
+					dispatch, err := a.runRunnerDispatch(ctx, cfg)
+					if err != nil {
+						runErr = err.Error()
+					}
+					dispatchResult = &dispatch
 				}
-				dispatchResult = &dispatch
 			}
 		}
 		result := runnerDryRunResult{
 			OK:        report.OK && runErr == "",
 			Mode:      "run",
 			Once:      opts.Once,
-			Actions:   []string{"load trusted runner config", "run preflight checks", "poll configured repositories once", "dispatch at most one ready job"},
+			Actions:   []string{"load trusted runner config", "run preflight checks", "reconcile in-flight jobs before polling", "poll configured repositories once", "process one cancellation or dispatch one ready job"},
 			Config:    cfg,
 			Preflight: report,
+			Reconcile: reconcileResult,
 			Intake:    intakeResult,
 			Dispatch:  dispatchResult,
 			Error:     runErr,
@@ -308,6 +317,44 @@ func (a *app) runRunnerIntake(ctx context.Context, cfg commentrunner.Config, opt
 	return intake.RunOnce(ctx, cfg, runnerBackend, store, opts)
 }
 
+func (a *app) runRunnerReconcile(ctx context.Context, cfg commentrunner.Config) (jobs.ReconcileResult, error) {
+	if a.runnerReconcile != nil {
+		return a.runnerReconcile(ctx, cfg)
+	}
+	selection, err := a.selectBackend(ctx, cfg.Hostname)
+	if err != nil {
+		return jobs.ReconcileResult{}, err
+	}
+	backend, err := a.backendForSelection(ctx, selection)
+	if err != nil {
+		return jobs.ReconcileResult{}, err
+	}
+	runnerBackend, ok := backend.(github.RunnerOperations)
+	if !ok {
+		return jobs.ReconcileResult{}, fmt.Errorf("selected GitHub backend does not support runner status writeback")
+	}
+	store, err := crstate.OpenFileStore(cfg.StatePath)
+	if err != nil {
+		return jobs.ReconcileResult{}, err
+	}
+	defer store.Close()
+	dispatcher := jobs.Dispatcher{
+		Store: store,
+		Workspaces: workspace.Manager{
+			Root:      cfg.WorkspaceRoot,
+			Retention: cfg.WorkspaceRetention.Duration,
+		},
+		Sandbox: jobs.SandboxRunner{Config: sandbox.Config{
+			UnsafeNoSandbox: cfg.UnsafeNoSandbox,
+			BwrapPath:       cfg.BwrapPath,
+			TempGHConfigDir: cfg.GHConfigDir,
+		}},
+		Acpx:      jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg)},
+		Writeback: &writeback.Service{GitHub: runnerBackend, Store: store},
+	}
+	return dispatcher.Reconcile(ctx)
+}
+
 func (a *app) runRunnerDispatch(ctx context.Context, cfg commentrunner.Config) (jobs.Result, error) {
 	if a.runnerDispatch != nil {
 		return a.runnerDispatch(ctx, cfg)
@@ -358,6 +405,7 @@ func plannedRunnerPollActions(cfg commentrunner.Config, once bool) []string {
 		"load trusted runner config",
 		"run preflight checks",
 		cycle + ": " + strings.Join(cfg.Repositories, ", "),
+		"on real runs: reconcile in-flight jobs before polling new comments",
 		"check notification intake and repository comments fallback",
 		"dry-run only: skip GitHub writes, state persistence, workspace changes, sandbox execution, and acpx dispatch",
 	}
@@ -385,6 +433,9 @@ func (a *app) printRunnerPoll(result runnerDryRunResult) {
 	fmt.Fprintln(a.out, "runner poll")
 	fmt.Fprintf(a.out, "repositories: %s\n", strings.Join(result.Config.Repositories, ", "))
 	a.printPreflightReport(result.Preflight)
+	if result.Reconcile != nil {
+		fmt.Fprintf(a.out, "reconcile: reconciled=%d running=%d completed=%d failed=%d cancelled=%d interrupted=%d queued=%d\n", result.Reconcile.Reconciled, result.Reconcile.Running, result.Reconcile.Completed, result.Reconcile.Failed, result.Reconcile.Cancelled, result.Reconcile.Interrupted, result.Reconcile.Queued)
+	}
 	if result.Intake != nil {
 		fmt.Fprintf(a.out, "intake: commands=%d jobs=%d cancellations=%d next_poll=%s\n", len(result.Intake.Commands), len(result.Intake.Jobs), len(result.Intake.Cancellations), result.Intake.Next.PollAt.Format(time.RFC3339))
 	}
