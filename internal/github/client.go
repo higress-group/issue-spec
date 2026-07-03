@@ -18,7 +18,11 @@ type Client struct {
 	Host       string
 	BaseURL    string
 	Token      string
-	HTTPClient *http.Client
+	HTTPClient HTTPDoer
+}
+
+type HTTPDoer interface {
+	Do(*http.Request) (*http.Response, error)
 }
 
 type APIError struct {
@@ -53,11 +57,15 @@ type Issue struct {
 }
 
 type Comment struct {
-	ID      int64  `json:"id"`
-	HTMLURL string `json:"html_url"`
-	URL     string `json:"url"`
-	Body    string `json:"body"`
-	User    *User  `json:"user,omitempty"`
+	ID          int64     `json:"id"`
+	HTMLURL     string    `json:"html_url"`
+	URL         string    `json:"url"`
+	IssueURL    string    `json:"issue_url,omitempty"`
+	IssueNumber int       `json:"-"`
+	Body        string    `json:"body"`
+	User        *User     `json:"user,omitempty"`
+	CreatedAt   time.Time `json:"created_at,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at,omitempty"`
 }
 
 type LabelResult struct {
@@ -140,15 +148,18 @@ type CheckRun struct {
 
 func NewClient(host, token string) *Client {
 	host = normalizeHost(host)
-	return &Client{
-		Host:       host,
-		BaseURL:    baseURL(host),
-		Token:      token,
-		HTTPClient: &http.Client{Timeout: 30 * time.Second},
-	}
+	return newClientWithHTTPDoer(host, baseURL(host), token, nil)
 }
 
 func NewClientWithBaseURL(host, baseURL, token string, httpClient *http.Client) *Client {
+	return newClientWithHTTPDoer(host, baseURL, token, httpClient)
+}
+
+func NewClientWithHTTPDoer(host, baseURL, token string, httpClient HTTPDoer) *Client {
+	return newClientWithHTTPDoer(host, baseURL, token, httpClient)
+}
+
+func newClientWithHTTPDoer(host, baseURL, token string, httpClient HTTPDoer) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
