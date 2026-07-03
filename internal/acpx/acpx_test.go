@@ -83,6 +83,51 @@ func TestResumeValidatesStableRecordBeforeDispatch(t *testing.T) {
 	}
 }
 
+func TestResumeAcceptsMessagesOnlySnapshotBeforeDispatch(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-1","messages":[{"User":{"content":[{"Text":"seed prompt"}]}}]}`},
+		{stdout: "done\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```\n"},
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-2","messages":[{"User":{"content":[{"Text":"seed prompt"}]}},{"Agent":{"content":[{"Text":"done"}]}}]}`},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	result, err := adapter.Resume(context.Background(), ResumeRequest{
+		PublicSessionID:   "pub-1",
+		StableRecordID:    "rec-1",
+		Prompt:            "continue",
+		MinHistoryEntries: 1,
+	})
+	if err != nil {
+		t.Fatalf("Resume returned error: %v", err)
+	}
+	if result.Metadata.HistoryLength != 2 || result.Metadata.LastTurnID != "turn-2" {
+		t.Fatalf("unexpected metadata: %+v", result.Metadata)
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("recorded %d commands, want pre-refresh, prompt, post-refresh", len(runner.commands))
+	}
+}
+
+func TestResumeRejectsEmptyMessagesSnapshotBeforeDispatch(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","messages":[]}`},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	_, err := adapter.Resume(context.Background(), ResumeRequest{
+		PublicSessionID:   "pub-1",
+		StableRecordID:    "rec-1",
+		Prompt:            "continue",
+		MinHistoryEntries: 1,
+	})
+	if !errors.Is(err, ErrResumeMismatch) {
+		t.Fatalf("Resume error = %v, want ErrResumeMismatch", err)
+	}
+	if len(runner.commands) != 1 {
+		t.Fatalf("resume dispatched after empty messages snapshot; commands=%d", len(runner.commands))
+	}
+}
+
 func TestResumeNoWaitQueuesPromptWithoutSummaryRequirement(t *testing.T) {
 	runner := &fakeRunner{responses: []fakeResponse{
 		{stdout: `{"acpxRecordId":"rec-1","history":[{"id":"seed"}]}`},
@@ -234,6 +279,32 @@ func TestNewSessionRecoversSummaryFromRefreshedAcpxMessagesWhenPromptStdoutMissi
 	}
 	if len(runner.commands) != 3 {
 		t.Fatalf("recorded %d commands, want create, prompt, refresh", len(runner.commands))
+	}
+}
+
+func TestParseMetadataDerivesHistoryLengthFromMessages(t *testing.T) {
+	meta, err := ParseMetadata([]byte(`{"acpxRecordId":"rec-1","messages":[{"User":{}},{"Agent":{}},{"User":{}}]}`))
+	if err != nil {
+		t.Fatalf("ParseMetadata returned error: %v", err)
+	}
+	if meta.HistoryLength != 3 {
+		t.Fatalf("HistoryLength = %d, want 3", meta.HistoryLength)
+	}
+
+	explicit, err := ParseMetadata([]byte(`{"acpxRecordId":"rec-1","historyLength":1,"messages":[{},{}]}`))
+	if err != nil {
+		t.Fatalf("ParseMetadata with explicit historyLength returned error: %v", err)
+	}
+	if explicit.HistoryLength != 1 {
+		t.Fatalf("explicit HistoryLength = %d, want 1", explicit.HistoryLength)
+	}
+
+	history, err := ParseMetadata([]byte(`{"acpxRecordId":"rec-1","history":[{}],"messages":[{},{}]}`))
+	if err != nil {
+		t.Fatalf("ParseMetadata with history returned error: %v", err)
+	}
+	if history.HistoryLength != 1 {
+		t.Fatalf("history-derived HistoryLength = %d, want 1", history.HistoryLength)
 	}
 }
 
@@ -492,7 +563,6 @@ func e2eSessionShowWithAgentContentText(agentText string) string {
   "acpxSessionId": "acpx-2",
   "agentSessionId": "codex-2",
   "lastTurnId": "turn-2",
-  "historyLength": 2,
   "messages": [
     {"User": {"content": [{"Text": ` + strconv.Quote(userExample) + `}]}},
     {"Agent": {"content": [` + strings.Join(content, ",") + `]}}

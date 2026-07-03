@@ -1262,19 +1262,42 @@ func flattenScalars(prefix string, values map[string]any, out map[string]string)
 
 func historyLength(values map[string]any) int {
 	for _, key := range []string{"historyLength", "history_length", "turnCount", "turn_count"} {
-		if value, ok := values[key].(float64); ok {
-			return int(value)
+		if value, ok := metadataInt(values[key]); ok {
+			return value
 		}
 	}
-	for _, key := range []string{"history", "entries", "turns", "turnHistory", "turn_history"} {
-		if arr, ok := values[key].([]any); ok {
-			return len(arr)
-		}
+	if entries := historyValue(values); entries != nil {
+		return len(entries)
 	}
-	if nested, ok := values["history"].(map[string]any); ok {
-		if arr, ok := nested["entries"].([]any); ok {
-			return len(arr)
-		}
+	if messages, ok := values["messages"].([]any); ok {
+		return len(messages)
 	}
 	return 0
+}
+
+func metadataInt(value any) (int, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed), true
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case json.Number:
+		if parsed, err := typed.Int64(); err == nil {
+			return int(parsed), true
+		}
+		if parsed, err := strconv.ParseFloat(typed.String(), 64); err == nil {
+			return int(parsed), true
+		}
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return 0, false
+		}
+		if parsed, err := strconv.Atoi(trimmed); err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
 }
