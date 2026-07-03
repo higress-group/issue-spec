@@ -125,11 +125,18 @@ func (d *Dispatcher) markCancellationRunning(ctx context.Context, cancel state.C
 
 func findCancellationTarget(st *state.RunnerState, cancel state.Cancellation) (state.Job, bool, bool) {
 	session, sessionOK := st.GetPublicSession(cancel.Repo, cancel.TargetPublicSessionID)
-	if !sessionOK {
-		return state.Job{}, false, false
-	}
 	var terminalJob state.Job
-	if session.LastJobID != "" {
+	if cancel.TargetJobID != "" {
+		if job, ok := st.Jobs[cancel.TargetJobID]; ok && job.Repo == cancel.Repo && job.PublicSessionID == cancel.TargetPublicSessionID {
+			if job.Status == state.StatusDispatched || job.Status == state.StatusRunning || job.Status == state.StatusQueued {
+				return job, true, false
+			}
+			if job.Status.Terminal() {
+				terminalJob = job
+			}
+		}
+	}
+	if sessionOK && session.LastJobID != "" {
 		if job, ok := st.Jobs[session.LastJobID]; ok && job.Repo == cancel.Repo && job.PublicSessionID == cancel.TargetPublicSessionID {
 			if job.Status == state.StatusDispatched || job.Status == state.StatusRunning || job.Status == state.StatusQueued {
 				return job, true, false

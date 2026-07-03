@@ -10,9 +10,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/github"
 )
 
@@ -411,6 +413,7 @@ func processComment(ctx context.Context, backend Backend, cfg commentrunner.Conf
 		report.ParseRejection = parse.Rejection
 		report.Reason = string(parse.Rejection.Reason)
 		report.Message = parse.Rejection.Message
+		writeRejectedCommand(ctx, backend, cfg, st, recorded, report, now, result)
 		result.Commands = append(result.Commands, report)
 	case commentrunner.ParseStatusAccepted:
 		processCandidate(ctx, backend, cfg, policy, st, recorded, parse.Candidate, source, now, result)
@@ -419,16 +422,33 @@ func processComment(ctx context.Context, backend Backend, cfg commentrunner.Conf
 
 func processCandidate(ctx context.Context, backend Backend, cfg commentrunner.Config, policy commentrunner.AuthorizationPolicy, st *crstate.RunnerState, seen crstate.SeenComment, candidate commentrunner.CommandCandidate, source string, now time.Time, result *Result) {
 	authRepo := candidate.Repo
-	if candidate.Verb == commentrunner.VerbResume || candidate.Verb == commentrunner.VerbCancel {
+	cancelTargetJobID := ""
+	if candidate.Verb == commentrunner.VerbResume {
 		session, ok := st.GetPublicSession(candidate.Repo, candidate.PublicSessionID)
 		if !ok {
 			report := candidateReport(source, candidate, CommandStatusRejected)
 			report.Reason = ReasonSessionNotFound
 			report.Message = "public session id was not found in this repository"
+			writeRejectedCommand(ctx, backend, cfg, st, seen, report, now, result)
 			result.Commands = append(result.Commands, report)
 			return
 		}
 		authRepo = session.Repo
+	}
+	if candidate.Verb == commentrunner.VerbCancel {
+		if session, ok := st.GetPublicSession(candidate.Repo, candidate.PublicSessionID); ok {
+			authRepo = session.Repo
+		} else if job, ok := activeCancelTarget(st, candidate.Repo, candidate.PublicSessionID); ok {
+			authRepo = job.Repo
+			cancelTargetJobID = job.ID
+		} else {
+			report := candidateReport(source, candidate, CommandStatusRejected)
+			report.Reason = ReasonSessionNotFound
+			report.Message = "public session id was not found in this repository"
+			writeRejectedCommand(ctx, backend, cfg, st, seen, report, now, result)
+			result.Commands = append(result.Commands, report)
+			return
+		}
 	}
 	authz := commentrunner.AuthorizeCandidateForRepo(ctx, backend, candidate, authRepo, policy)
 	if !authz.Allowed {
@@ -436,6 +456,7 @@ func processCandidate(ctx context.Context, backend Backend, cfg commentrunner.Co
 		report.Authorization = authz
 		report.Reason = string(authz.Reason)
 		report.Message = authz.Message
+		writeRejectedCommand(ctx, backend, cfg, st, seen, report, now, result)
 		result.Commands = append(result.Commands, report)
 		return
 	}
@@ -445,10 +466,11 @@ func processCandidate(ctx context.Context, backend Backend, cfg commentrunner.Co
 			report.Authorization = authz
 			report.Reason = ReasonCancellationDisabled
 			report.Message = "runner cancellation is disabled by configuration"
+			writeRejectedCommand(ctx, backend, cfg, st, seen, report, now, result)
 			result.Commands = append(result.Commands, report)
 			return
 		}
-		queueCancellation(st, seen, candidate, source, authz, now, result)
+		queueCancellation(st, seen, candidate, source, authz, cancelTargetJobID, now, result)
 		return
 	}
 	queueJob(cfg, st, seen, candidate, source, authz, now, result)
@@ -513,7 +535,7 @@ func queueJob(cfg commentrunner.Config, st *crstate.RunnerState, seen crstate.Se
 	})
 }
 
-func queueCancellation(st *crstate.RunnerState, seen crstate.SeenComment, candidate commentrunner.CommandCandidate, source string, authz commentrunner.AuthorizationResult, now time.Time, result *Result) {
+func queueCancellation(st *crstate.RunnerState, seen crstate.SeenComment, candidate commentrunner.CommandCandidate, source string, authz commentrunner.AuthorizationResult, targetJobID string, now time.Time, result *Result) {
 	cancel := crstate.Cancellation{
 		ID:                    stableID("cancel", candidate.IdempotencyKey),
 		IdempotencyKey:        candidate.IdempotencyKey,
@@ -521,6 +543,7 @@ func queueCancellation(st *crstate.RunnerState, seen crstate.SeenComment, candid
 		TriggerCommentID:      candidate.TriggerCommentID,
 		CancelingUserLogin:    candidate.Commenter,
 		TargetPublicSessionID: candidate.PublicSessionID,
+		TargetJobID:           targetJobID,
 		Status:                crstate.StatusQueued,
 		CreatedAt:             now,
 	}
@@ -561,6 +584,165 @@ func queueCancellation(st *crstate.RunnerState, seen crstate.SeenComment, candid
 		PublicSessionID: candidate.PublicSessionID,
 		Created:         created,
 	})
+}
+
+func activeCancelTarget(st *crstate.RunnerState, repo, publicID string) (crstate.Job, bool) {
+	if st == nil || strings.TrimSpace(repo) == "" || strings.TrimSpace(publicID) == "" {
+		return crstate.Job{}, false
+	}
+	for _, status := range []crstate.LifecycleStatus{crstate.StatusRunning, crstate.StatusDispatched, crstate.StatusQueued} {
+		for _, job := range st.ListJobs() {
+			if job.Repo == repo && job.PublicSessionID == publicID && job.Status == status {
+				return job, true
+			}
+		}
+	}
+	return crstate.Job{}, false
+}
+
+func writeRejectedCommand(ctx context.Context, backend Backend, cfg commentrunner.Config, st *crstate.RunnerState, seen crstate.SeenComment, report CommandReport, now time.Time, result *Result) {
+	if result == nil || result.DryRun || st == nil {
+		return
+	}
+	if strings.TrimSpace(report.Repo) == "" || report.Issue <= 0 || report.CommentID == 0 {
+		return
+	}
+	key := rejectedStatusWritebackKey(report)
+	seen.StatusWritebackIdempotencyKey = key
+	if report.CommandID != "" {
+		seen.ProducedCommandCandidate = true
+		seen.CommandCandidateID = report.CommandID
+		seen.CommandName = string(report.Verb)
+	}
+	st.SeenComments[crstate.SeenCommentKey(seen.Repo, seen.CommentID)] = seen
+
+	job := rejectedWritebackJob(cfg, seen, report, key, now)
+	service := &writeback.Service{
+		GitHub: backend,
+		Store:  runnerStateWritebackStore{state: st},
+		Clock:  func() time.Time { return now },
+	}
+	if _, err := service.Write(ctx, writeback.Request{
+		Job:         job,
+		Status:      crstate.StatusRejected,
+		Phase:       rejectedPhase(report),
+		Diagnostics: []string{rejectedDiagnostic(report)},
+	}); err != nil {
+		result.OK = false
+		result.Diagnostics = append(result.Diagnostics, Diagnostic{
+			Source:  report.Source,
+			Repo:    report.Repo,
+			Issue:   report.Issue,
+			Message: "rejected command writeback: " + boundedOneLine(err.Error(), 512),
+		})
+	}
+}
+
+type runnerStateWritebackStore struct {
+	state *crstate.RunnerState
+}
+
+func (s runnerStateWritebackStore) Update(ctx context.Context, mutate func(*crstate.RunnerState) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.state == nil {
+		return fmt.Errorf("intake writeback state is required")
+	}
+	if mutate == nil {
+		return nil
+	}
+	if err := mutate(s.state); err != nil {
+		return err
+	}
+	s.state.Normalize()
+	return nil
+}
+
+func rejectedWritebackJob(cfg commentrunner.Config, seen crstate.SeenComment, report CommandReport, key string, now time.Time) crstate.Job {
+	commandName := string(report.Verb)
+	if commandName == "" {
+		commandName = "rejected"
+	}
+	commandID := report.CommandID
+	if commandID == "" {
+		commandID = stableID("cmd", key)
+	}
+	createdAt := report.FirstObservedAt
+	if createdAt.IsZero() {
+		createdAt = seen.FirstObservedAt
+	}
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	seen.StatusWritebackIdempotencyKey = key
+	return crstate.Job{
+		ID:                   stableID("job", key),
+		Repo:                 report.Repo,
+		IssueNumber:          report.Issue,
+		PublicSessionID:      report.PublicSessionID,
+		CoordinatorKind:      cfg.Agent.Kind,
+		Model:                cfg.Agent.Model,
+		TriggeringUserLogin:  report.Commenter,
+		TriggerCommentID:     report.CommentID,
+		CommandID:            commandID,
+		CommandName:          commandName,
+		StatusWritebackKey:   key,
+		Status:               crstate.StatusRejected,
+		CreatedAt:            createdAt,
+		UpdatedAt:            now,
+		FinishedAt:           now,
+		FirstObservedComment: seen,
+		SourceLabels:         []string{report.Source},
+		Diagnostics:          []string{rejectedDiagnostic(report)},
+	}
+}
+
+func rejectedStatusWritebackKey(report CommandReport) string {
+	base := fmt.Sprintf("rejected-command-v1:%s:%d:%d:%s:%s", report.Repo, report.Issue, report.CommentID, report.Status, report.Reason)
+	return "status:" + stableID("rejected", base)
+}
+
+func rejectedPhase(report CommandReport) string {
+	switch {
+	case report.Status == CommandStatusUnauthorized:
+		return "command-unauthorized"
+	case report.Reason == ReasonSessionNotFound:
+		return "unknown-session"
+	case report.Reason == ReasonCancellationDisabled:
+		return "cancellation-disabled"
+	default:
+		return "command-rejected"
+	}
+}
+
+func rejectedDiagnostic(report CommandReport) string {
+	parts := []string{"command " + report.Status}
+	if report.Reason != "" {
+		parts = append(parts, "reason="+report.Reason)
+	}
+	if report.Authorization.Reason != "" {
+		parts = append(parts, "auth="+string(report.Authorization.Reason))
+	}
+	if report.Message != "" {
+		parts = append(parts, "message="+report.Message)
+	}
+	return boundedOneLine(strings.Join(parts, "; "), 512)
+}
+
+func boundedOneLine(value string, maxBytes int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if maxBytes <= 0 || len([]byte(value)) <= maxBytes {
+		return value
+	}
+	for len([]byte(value)) > maxBytes-3 {
+		_, size := utf8.DecodeLastRuneInString(value)
+		if size <= 0 {
+			return "..."
+		}
+		value = value[:len(value)-size]
+	}
+	return value + "..."
 }
 
 func ensureRepoState(st *crstate.RunnerState, cfg commentrunner.Config, repo string) {

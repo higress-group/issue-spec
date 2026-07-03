@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,6 +49,9 @@ type fakeBackend struct {
 	repoCommentOpts        []github.CommentListOptions
 	collaboratorLookups    []string
 	permissionLookupErrFor string
+	createdRunnerComments  []github.Comment
+	updatedRunnerComments  []github.Comment
+	nextRunnerCommentID    int64
 }
 
 func (b *fakeBackend) GetUser(context.Context) (github.User, []string, error) {
@@ -95,12 +99,30 @@ func (b *fakeBackend) GetIssueContext(context.Context, string, int, github.Condi
 	return github.IssueContextResult{}, nil
 }
 
-func (b *fakeBackend) CreateRunnerComment(context.Context, string, int, string) (github.RunnerCommentResult, error) {
-	return github.RunnerCommentResult{}, nil
+func (b *fakeBackend) CreateRunnerComment(_ context.Context, repo string, issue int, body string) (github.RunnerCommentResult, error) {
+	id := b.nextRunnerCommentID
+	if id == 0 {
+		id = 9000 + int64(len(b.createdRunnerComments)+1)
+	}
+	b.nextRunnerCommentID = id + 1
+	comment := github.Comment{
+		ID:          id,
+		HTMLURL:     "https://github.com/" + repo + "/issues/" + strconv.Itoa(issue) + "#issuecomment-" + strconv.FormatInt(id, 10),
+		IssueNumber: issue,
+		Body:        body,
+	}
+	b.createdRunnerComments = append(b.createdRunnerComments, comment)
+	return github.RunnerCommentResult{Comment: comment}, nil
 }
 
-func (b *fakeBackend) UpdateRunnerComment(context.Context, string, int64, string) (github.RunnerCommentResult, error) {
-	return github.RunnerCommentResult{}, nil
+func (b *fakeBackend) UpdateRunnerComment(_ context.Context, repo string, commentID int64, body string) (github.RunnerCommentResult, error) {
+	comment := github.Comment{
+		ID:      commentID,
+		HTMLURL: "https://github.com/" + repo + "/issues/0#issuecomment-" + strconv.FormatInt(commentID, 10),
+		Body:    body,
+	}
+	b.updatedRunnerComments = append(b.updatedRunnerComments, comment)
+	return github.RunnerCommentResult{Comment: comment}, nil
 }
 
 func TestRunOnceDeduplicatesNotificationAndFallbackDelivery(t *testing.T) {
@@ -174,11 +196,19 @@ func TestRunOnceRejectsUnauthorizedAndMalformedCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Jobs) != 0 || len(store.state.Jobs) != 0 {
+	if len(result.Jobs) != 0 {
 		t.Fatalf("unexpected dispatchable jobs: result=%+v state=%+v", result.Jobs, store.state.Jobs)
 	}
 	if !hasStatus(result.Commands, CommandStatusUnauthorized) || !hasStatus(result.Commands, CommandStatusRejected) {
 		t.Fatalf("expected unauthorized and malformed reports: %+v", result.Commands)
+	}
+	if len(backend.createdRunnerComments) != 2 {
+		t.Fatalf("rejected commands should create durable status comments: %+v", backend.createdRunnerComments)
+	}
+	for _, job := range store.state.Jobs {
+		if job.Status != crstate.StatusRejected || job.StatusWritebackKey == "" {
+			t.Fatalf("rejected command job not persisted safely: %+v", job)
+		}
 	}
 }
 
@@ -203,6 +233,113 @@ func TestRunOnceCreatesResumeCandidateForKnownSession(t *testing.T) {
 	}
 	if len(result.Jobs) != 1 || result.Jobs[0].Verb != commentrunner.VerbResume || result.Jobs[0].PublicSessionID != "sess-1" {
 		t.Fatalf("resume candidate not queued: %+v", result.Jobs)
+	}
+}
+
+func TestRunOnceQueuesCancelForActiveJobWithoutPublicSessionMapping(t *testing.T) {
+	st := crstate.NewState()
+	if err := st.UpsertJob(crstate.Job{
+		ID:                  "job-running-new",
+		Repo:                "o/r",
+		IssueNumber:         30,
+		PublicSessionID:     "ps-live",
+		TriggeringUserLogin: "alice",
+		TriggerCommentID:    900,
+		CommandName:         "new",
+		Status:              crstate.StatusRunning,
+		CreatedAt:           testNow.Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeBackend{
+		user:          github.User{Login: "bot"},
+		permissions:   map[string]string{"alice": "write"},
+		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes"`, 60)},
+		repoComments:  github.IssueCommentsResult{Comments: []github.Comment{commandComment(302, 30, "alice", "/cancel ps-live")}},
+	}
+	store := &fakeStore{state: st}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Cancellations) != 1 || result.Cancellations[0].PublicSessionID != "ps-live" {
+		t.Fatalf("active in-flight /new cancellation not queued: %+v commands=%+v", result.Cancellations, result.Commands)
+	}
+	cancel := firstCancellation(store.state.Cancellations)
+	if cancel.TargetJobID != "job-running-new" || cancel.Status != crstate.StatusQueued {
+		t.Fatalf("cancellation did not retain active target: %+v", cancel)
+	}
+	if len(backend.createdRunnerComments) != 0 {
+		t.Fatalf("authorized cancellation should not create rejected writeback: %+v", backend.createdRunnerComments)
+	}
+}
+
+func TestRunOnceRejectedWritebackDoesNotEchoUnauthorizedPrompt(t *testing.T) {
+	secretPrompt := strings.Repeat("secret-token-", 80)
+	backend := &fakeBackend{
+		user:          github.User{Login: "bot"},
+		permissions:   map[string]string{"mallory": "read"},
+		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes"`, 60)},
+		repoComments:  github.IssueCommentsResult{Comments: []github.Comment{commandComment(303, 4, "mallory", "/new "+secretPrompt)}},
+	}
+	store := &fakeStore{state: crstate.NewState()}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("mallory"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Jobs) != 0 || !hasStatus(result.Commands, CommandStatusUnauthorized) {
+		t.Fatalf("unauthorized command should be rejected without a queued job: %+v", result)
+	}
+	if len(backend.createdRunnerComments) != 1 {
+		t.Fatalf("expected one rejected writeback, got %+v", backend.createdRunnerComments)
+	}
+	body := backend.createdRunnerComments[0].Body
+	if !strings.Contains(body, "| Status | `rejected` |") || !strings.Contains(body, "command unauthorized") {
+		t.Fatalf("rejected writeback missing status/diagnostic:\n%s", body)
+	}
+	if strings.Contains(body, secretPrompt) || strings.Contains(body, "secret-token-secret-token-secret-token") {
+		t.Fatalf("rejected writeback echoed unauthorized prompt:\n%s", body)
+	}
+}
+
+func TestRunOnceWritesRejectedStatusForUnknownSessionAndDisabledCancellation(t *testing.T) {
+	st := crstate.NewState()
+	if err := st.UpsertPublicSession(crstate.PublicSession{
+		Repo:            "o/r",
+		PublicSessionID: "ps-known",
+		IssueNumber:     4,
+		AcpxRecordID:    "rec-known",
+		Status:          crstate.StatusRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeBackend{
+		user:          github.User{Login: "bot"},
+		permissions:   map[string]string{"alice": "write"},
+		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes"`, 60)},
+		repoComments: github.IssueCommentsResult{Comments: []github.Comment{
+			commandComment(304, 4, "alice", "/resume ps-missing continue"),
+			commandComment(305, 4, "alice", "/cancel ps-known"),
+		}},
+	}
+	cfg := testConfig()
+	cfg.CancellationEnabled = false
+	store := &fakeStore{state: st}
+
+	result, err := RunOnce(context.Background(), cfg, backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Jobs) != 0 || len(result.Cancellations) != 0 {
+		t.Fatalf("rejected commands should not queue work: jobs=%+v cancellations=%+v", result.Jobs, result.Cancellations)
+	}
+	if len(backend.createdRunnerComments) != 2 {
+		t.Fatalf("expected rejected writebacks for unknown session and disabled cancellation: %+v", backend.createdRunnerComments)
+	}
+	if !strings.Contains(backend.createdRunnerComments[0].Body, "unknown-session") || !strings.Contains(backend.createdRunnerComments[1].Body, "cancellation-disabled") {
+		t.Fatalf("rejected writebacks missing phases:\n--- first ---\n%s\n--- second ---\n%s", backend.createdRunnerComments[0].Body, backend.createdRunnerComments[1].Body)
 	}
 }
 
@@ -342,4 +479,11 @@ func hasStatus(reports []CommandReport, status string) bool {
 		}
 	}
 	return false
+}
+
+func firstCancellation(cancellations map[string]crstate.Cancellation) crstate.Cancellation {
+	for _, cancellation := range cancellations {
+		return cancellation
+	}
+	return crstate.Cancellation{}
 }

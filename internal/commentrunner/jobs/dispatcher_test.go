@@ -225,6 +225,94 @@ func TestRunNextFailurePersistsFailedStateAndBoundedError(t *testing.T) {
 	}
 }
 
+func TestRunNextSkipsLockedQueuedJobAndDispatchesLaterSession(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 12, 30, 0, 0, time.UTC)
+	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-locked", Path: "/tmp/ws-locked", Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-locked"}
+	seedState(t, store, func(st *state.RunnerState) error {
+		if err := st.UpsertWorkspace(resumeWorkspace); err != nil {
+			return err
+		}
+		if err := st.UpsertPublicSession(state.PublicSession{
+			Repo:            "o/r",
+			PublicSessionID: "ps-locked",
+			IssueNumber:     30,
+			AcpxRecordID:    "rec-locked",
+			CreatorLogin:    "alice",
+			Status:          state.StatusRunning,
+			Workspace:       resumeWorkspace,
+			Lock:            state.SessionLock{OwnerJobID: "job-active"},
+			CreatedAt:       now.Add(-time.Hour),
+		}); err != nil {
+			return err
+		}
+		if _, _, err := st.CreateCommandJob(state.Job{
+			ID:                    "job-locked-old",
+			Repo:                  "o/r",
+			IssueNumber:           30,
+			PublicSessionID:       "ps-locked",
+			CoordinatorKind:       "codex",
+			Model:                 "gpt-5.5[xhigh]",
+			TriggeringUserLogin:   "bob",
+			TriggerCommentID:      401,
+			CommandID:             "cmd-locked-old",
+			CommandName:           "resume",
+			CommandPrompt:         "continue locked work",
+			CommandIdempotencyKey: "cmd-key-locked-old",
+			StatusWritebackKey:    "status-locked-old",
+			Status:                state.StatusQueued,
+			CreatedAt:             now.Add(-time.Minute),
+		}); err != nil {
+			return err
+		}
+		_, _, err := st.CreateCommandJob(state.Job{
+			ID:                    "job-new-later",
+			Repo:                  "o/r",
+			IssueNumber:           30,
+			CoordinatorKind:       "codex",
+			Model:                 "gpt-5.5[xhigh]",
+			SessionCreatorLogin:   "carol",
+			TriggeringUserLogin:   "carol",
+			TriggerCommentID:      402,
+			CommandID:             "cmd-new-later",
+			CommandName:           "new",
+			CommandPrompt:         "start independent work",
+			CommandIdempotencyKey: "cmd-key-new-later",
+			StatusWritebackKey:    "status-new-later",
+			Status:                state.StatusQueued,
+			CreatedAt:             now,
+		})
+		return err
+	})
+	workspaces := &fakeWorkspaces{
+		binding:      testBinding("ws-new-later"),
+		lockedJobIDs: map[string]bool{"job-locked-old": true},
+	}
+	writebacks := &fakeWriteback{}
+	coordinator := &fakeCoordinator{newResult: dispatchResult("ps-new-later", "rec-new-later", "turn-new-later", completedSummary())}
+	dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
+	dispatcher.PublicSessionID = func() (string, error) { return "ps-new-later", nil }
+
+	result, err := dispatcher.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("RunNext returned error: %v", err)
+	}
+	if !result.Executed || result.JobID != "job-new-later" || result.Status != state.StatusCompleted {
+		t.Fatalf("later runnable job was not dispatched: %+v", result)
+	}
+	if len(coordinator.resumePrompts) != 0 || len(coordinator.newPrompts) != 1 {
+		t.Fatalf("unexpected coordinator dispatches: new=%d resume=%d", len(coordinator.newPrompts), len(coordinator.resumePrompts))
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusRunning, state.StatusCompleted)
+	st := loadState(t, store)
+	if st.Jobs["job-locked-old"].Status != state.StatusQueued {
+		t.Fatalf("locked old job should stay queued: %+v", st.Jobs["job-locked-old"])
+	}
+	if st.Jobs["job-new-later"].Status != state.StatusCompleted {
+		t.Fatalf("later job not completed: %+v", st.Jobs["job-new-later"])
+	}
+}
+
 func TestSandboxRunnerMirrorsHostGHAuthIntoSandboxConfigDir(t *testing.T) {
 	temp := t.TempDir()
 	hostGH := filepath.Join(temp, "host-gh")
@@ -461,6 +549,7 @@ func (fakeRepoResolver) ResolveRepository(context.Context, string) (RepositoryIn
 type fakeWorkspaces struct {
 	binding             workspace.Binding
 	err                 error
+	lockedJobIDs        map[string]bool
 	prepareNewCalled    bool
 	resolveResumeCalled bool
 	released            bool
@@ -483,6 +572,9 @@ func (f *fakeWorkspaces) ResolveResume(context.Context, workspace.ResumeRequest)
 }
 
 func (f *fakeWorkspaces) AcquireLock(_ context.Context, req workspace.LockRequest) (state.SessionLock, error) {
+	if f.lockedJobIDs[req.JobID] {
+		return state.SessionLock{}, workspace.ErrLocked
+	}
 	return state.SessionLock{OwnerJobID: req.JobID, WorkspaceLockToken: "token", WorkspaceLockPath: "/tmp/lock"}, nil
 }
 

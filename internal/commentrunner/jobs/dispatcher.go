@@ -127,18 +127,30 @@ func (d *Dispatcher) RunNext(ctx context.Context) (Result, error) {
 	if ok {
 		return d.cancel(ctx, cancel)
 	}
-	job, ok, err := d.nextQueuedJob(ctx)
-	if err != nil {
-		return Result{}, err
+	skipped := map[string]bool{}
+	var locked Result
+	for {
+		job, ok, err := d.nextQueuedJob(ctx, skipped)
+		if err != nil {
+			return Result{}, err
+		}
+		if !ok {
+			if locked.Reason != "" {
+				return locked, nil
+			}
+			return Result{Reason: ErrNoReadyJob.Error()}, nil
+		}
+		result, err := d.runJob(ctx, job)
+		if err != nil {
+			result.Error = safeError(err)
+		}
+		if err == nil && result.Reason == "session_locked" && !result.Executed {
+			locked = result
+			skipped[job.ID] = true
+			continue
+		}
+		return result, err
 	}
-	if !ok {
-		return Result{Reason: ErrNoReadyJob.Error()}, nil
-	}
-	result, err := d.runJob(ctx, job)
-	if err != nil {
-		result.Error = safeError(err)
-	}
-	return result, err
 }
 
 func (d *Dispatcher) validate() error {
@@ -166,14 +178,14 @@ func (d *Dispatcher) validate() error {
 	return nil
 }
 
-func (d *Dispatcher) nextQueuedJob(ctx context.Context) (state.Job, bool, error) {
+func (d *Dispatcher) nextQueuedJob(ctx context.Context, skipped map[string]bool) (state.Job, bool, error) {
 	st, err := d.Store.Load(ctx)
 	if err != nil {
 		return state.Job{}, false, err
 	}
 	jobs := st.ListJobs()
 	for _, job := range jobs {
-		if job.Status == state.StatusQueued {
+		if job.Status == state.StatusQueued && !skipped[job.ID] {
 			return job, true, nil
 		}
 	}
