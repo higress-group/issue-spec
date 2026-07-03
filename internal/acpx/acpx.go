@@ -32,6 +32,14 @@ const (
 	CoordinatorSummaryFence = "issue_spec_coordinator_summary"
 )
 
+var retryableSetModeBackoffs = []time.Duration{
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+	time.Second,
+	2 * time.Second,
+	2 * time.Second,
+}
+
 var (
 	ErrInvalidConfig     = errors.New("invalid acpx config")
 	ErrCommandFailed     = errors.New("acpx command failed")
@@ -572,8 +580,57 @@ func (a *Adapter) applyMode(ctx context.Context, sessionName string) error {
 	if strings.TrimSpace(a.cfg.Mode) == "" {
 		return nil
 	}
-	_, err := a.run(ctx, "set-mode", a.BuildSetModeCommand(sessionName))
-	return err
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		_, err := a.run(ctx, "set-mode", a.BuildSetModeCommand(sessionName))
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isRetryableAcpxQueueError(err) || attempt >= len(retryableSetModeBackoffs) {
+			return lastErr
+		}
+		if err := sleepContext(ctx, retryableSetModeBackoffs[attempt]); err != nil {
+			return fmt.Errorf("wait before retrying set-mode: %w", err)
+		}
+	}
+}
+
+func sleepContext(ctx context.Context, duration time.Duration) error {
+	if duration <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func isRetryableAcpxQueueError(err error) bool {
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) {
+		return false
+	}
+	var envelope struct {
+		Error struct {
+			Data struct {
+				Retryable  bool   `json:"retryable"`
+				DetailCode string `json:"detailCode"`
+				Origin     string `json:"origin"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(commandErr.Result.Stdout, &envelope) != nil {
+		return false
+	}
+	if !envelope.Error.Data.Retryable {
+		return false
+	}
+	return strings.EqualFold(envelope.Error.Data.DetailCode, "QUEUE_NOT_ACCEPTING_REQUESTS") || strings.EqualFold(envelope.Error.Data.Origin, "queue")
 }
 
 type promptDispatch struct {

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	contextbundle "github.com/higress-group/issue-spec/internal/commentrunner/context"
 )
@@ -172,6 +173,60 @@ func TestResumeSkipsSetModeWhenSnapshotAlreadyHasDesiredMode(t *testing.T) {
 		if strings.Contains(strings.Join(command.Args, " "), "set-mode") {
 			t.Fatalf("resume should not set already-applied mode: %+v", command.Args)
 		}
+	}
+}
+
+func TestResumeRetriesRetryableSetModeQueueError(t *testing.T) {
+	withSetModeBackoffs(t, []time.Duration{0})
+	retryableQueue := `{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Session queue owner is running but not accepting set_mode requests","data":{"detailCode":"QUEUE_NOT_ACCEPTING_REQUESTS","origin":"queue","retryable":true}}}`
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-1","messages":[{"User":{"content":[{"Text":"seed prompt"}]}}]}`},
+		{stdout: retryableQueue, exitCode: 1},
+		{stdout: `{}`},
+		{stdout: "done\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```\n"},
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-2","messages":[{"User":{"content":[{"Text":"seed prompt"}]}},{"Agent":{"content":[{"Text":"done"}]}}]}`},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace", Mode: "agent-full-access"}, runner)
+
+	result, err := adapter.Resume(context.Background(), ResumeRequest{
+		PublicSessionID:   "pub-1",
+		StableRecordID:    "rec-1",
+		Prompt:            "continue",
+		MinHistoryEntries: 1,
+	})
+	if err != nil {
+		t.Fatalf("Resume returned error: %v", err)
+	}
+	if !result.Output.SummaryFound {
+		t.Fatalf("summary not parsed after retry: %+v", result.Output)
+	}
+	if len(runner.commands) != 5 {
+		t.Fatalf("recorded %d commands, want pre-refresh, set-mode retry, set-mode success, prompt, post-refresh", len(runner.commands))
+	}
+	assertArgs(t, runner.commands[1].Args, []string{"--cwd", "/workspace", "--format", "json", "--json-strict", "--approve-reads", "codex", "set-mode", "agent-full-access", "-s", "pub-1"})
+	assertArgs(t, runner.commands[2].Args, []string{"--cwd", "/workspace", "--format", "json", "--json-strict", "--approve-reads", "codex", "set-mode", "agent-full-access", "-s", "pub-1"})
+}
+
+func TestResumeDoesNotRetryNonRetryableSetModeError(t *testing.T) {
+	withSetModeBackoffs(t, []time.Duration{0})
+	nonRetryable := `{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"mode rejected","data":{"detailCode":"MODE_REJECTED","origin":"cli","retryable":false}}}`
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-1","messages":[{"User":{"content":[{"Text":"seed prompt"}]}}]}`},
+		{stdout: nonRetryable, exitCode: 1},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace", Mode: "agent-full-access"}, runner)
+
+	_, err := adapter.Resume(context.Background(), ResumeRequest{
+		PublicSessionID:   "pub-1",
+		StableRecordID:    "rec-1",
+		Prompt:            "continue",
+		MinHistoryEntries: 1,
+	})
+	if err == nil {
+		t.Fatal("expected non-retryable set-mode error")
+	}
+	if len(runner.commands) != 2 {
+		t.Fatalf("recorded %d commands, want pre-refresh and one set-mode only", len(runner.commands))
 	}
 }
 
@@ -599,6 +654,15 @@ func (f *fakeRunner) Run(ctx context.Context, command Command) (CommandResult, e
 		Stderr:   []byte(response.stderr),
 		ExitCode: response.exitCode,
 	}, response.err
+}
+
+func withSetModeBackoffs(t *testing.T, backoffs []time.Duration) {
+	t.Helper()
+	original := retryableSetModeBackoffs
+	retryableSetModeBackoffs = append([]time.Duration(nil), backoffs...)
+	t.Cleanup(func() {
+		retryableSetModeBackoffs = original
+	})
 }
 
 const validSummaryJSON = `{"status":"completed","artifacts":[{"kind":"typed_comment","id":"PROCESS-NC-010","url":"https://github.com/higress-group/issue-spec/issues/30#issuecomment-1","action":"updated"}],"commands":[{"name":"issue-spec comment upsert","exit_code":0,"artifact_id":"PROCESS-NC-010","stdout_summary":"updated","stderr_summary":""}],"children":[{"id":"child-1","native_id":"native-1","role":"worker","process_id":"PROCESS-NC-010","status":"done","evidence":"tests passed"}],"processes":[{"process_id":"PROCESS-NC-010","task_id":"TASK-015","status":"done","evidence":"adapter tests passed"}],"diagnostics":[]}`
