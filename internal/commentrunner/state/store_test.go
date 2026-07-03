@@ -244,6 +244,31 @@ func TestLifecycleTransitionsAndReconciliationAPI(t *testing.T) {
 	}
 }
 
+func TestWorkspaceMetadataHelpers(t *testing.T) {
+	state := NewState()
+	now := time.Unix(20, 0).UTC()
+	workspace := WorkspaceMetadata{
+		ID:              "ws-1",
+		Path:            "/work/ws-1",
+		Repo:            "o/r",
+		CloneURL:        "https://github.com/o/r.git",
+		Branch:          "issue-spec-ws-1",
+		Ref:             "main",
+		CheckoutSHA:     "abc123",
+		RetentionPolicy: "delete_after_last_used=1h0m0s",
+		CleanupAfter:    now.Add(time.Hour),
+	}
+	if err := state.UpsertWorkspace(workspace); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := state.GetWorkspace("ws-1"); !ok || got.Path != "/work/ws-1" {
+		t.Fatalf("workspace not indexed: %+v ok=%v", got, ok)
+	}
+	if err := state.UpsertWorkspace(WorkspaceMetadata{ID: "missing"}); err == nil {
+		t.Fatal("expected incomplete workspace metadata to be rejected")
+	}
+}
+
 func TestSchemaFriendlyZeroValues(t *testing.T) {
 	var state RunnerState
 	state.Normalize()

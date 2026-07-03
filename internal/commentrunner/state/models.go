@@ -176,9 +176,11 @@ type WorkspaceMetadata struct {
 	CloneURL        string    `json:"clone_url,omitempty"`
 	Branch          string    `json:"branch,omitempty"`
 	Ref             string    `json:"ref,omitempty"`
+	CheckoutSHA     string    `json:"checkout_sha,omitempty"`
 	CreatedAt       time.Time `json:"created_at,omitempty"`
 	LastUsedAt      time.Time `json:"last_used_at,omitempty"`
 	RetentionPolicy string    `json:"retention_policy,omitempty"`
+	CleanupAfter    time.Time `json:"cleanup_after,omitempty"`
 	Dirty           bool      `json:"dirty,omitempty"`
 	Uncertain       bool      `json:"uncertain,omitempty"`
 }
@@ -444,6 +446,27 @@ func (s *RunnerState) UpsertJob(job Job) error {
 		s.Idempotency.StatusWritebacks[job.StatusWritebackKey] = job.StatusWritebackKey
 	}
 	return nil
+}
+
+func (s *RunnerState) UpsertWorkspace(workspace WorkspaceMetadata) error {
+	s.Normalize()
+	if strings.TrimSpace(workspace.ID) == "" {
+		return fmt.Errorf("workspace id is required")
+	}
+	if strings.TrimSpace(workspace.Path) == "" {
+		return fmt.Errorf("workspace path is required")
+	}
+	if strings.TrimSpace(workspace.Repo) == "" {
+		return fmt.Errorf("workspace repo is required")
+	}
+	s.Workspaces[workspace.ID] = workspace
+	return nil
+}
+
+func (s *RunnerState) GetWorkspace(id string) (WorkspaceMetadata, bool) {
+	s.Normalize()
+	workspace, ok := s.Workspaces[strings.TrimSpace(id)]
+	return workspace, ok
 }
 
 func (s *RunnerState) UpdateJobStatus(jobID string, next LifecycleStatus, at time.Time, diagnostics ...string) (Job, error) {
