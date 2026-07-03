@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/testkit"
@@ -51,7 +52,7 @@ func TestRunNextPersistsUnsafeSandboxMarkersAndKeepsCallerContext(t *testing.T) 
 		Store:           store,
 		Repositories:    testkit.RepoResolver{},
 		Workspaces:      &testkit.Workspaces{Binding: binding},
-		Sandbox:         &testkit.Sandbox{Env: jobs.ExecutionEnvironment{WorkingDirectory: binding.AcpxWorkingDirectory, Sandbox: state.SandboxMetadata{UnsafeNoSandbox: true, SandboxProvider: "none", FSBoundary: "disabled", Diagnostics: "unsafe no-sandbox mode explicitly selected"}}},
+		Sandbox:         &testkit.Sandbox{Env: jobs.ExecutionEnvironment{WorkingDirectory: binding.AcpxWorkingDirectory, Sandbox: state.SandboxMetadata{UnsafeNoSandbox: true, SandboxProvider: "none", FSBoundary: "disabled", Diagnostics: "unsafe no-sandbox mode explicitly selected"}, Runner: successfulAuthRunner{}}},
 		Acpx:            &testkit.AcpxFactory{Coordinator: coordinator},
 		Writeback:       writebacks,
 		Clock:           testkit.Clock{Time: now},
@@ -84,4 +85,12 @@ func TestRunNextPersistsUnsafeSandboxMarkersAndKeepsCallerContext(t *testing.T) 
 	if !final.Sandbox.UnsafeNoSandbox || final.Sandbox.FSBoundary != "disabled" {
 		t.Fatalf("unsafe sandbox metadata missing from writeback job snapshot: %+v", final.Sandbox)
 	}
+}
+
+type successfulAuthRunner struct{}
+
+func (successfulAuthRunner) Run(context.Context, acpx.Command) (acpx.CommandResult, error) {
+	return acpx.CommandResult{
+		Stdout: []byte(`{"ok":true,"auth":{"host":"github.com","source":"gh","user":"bot"},"backend":{"name":"gh","selection_source":"auto:gh"}}`),
+	}, nil
 }

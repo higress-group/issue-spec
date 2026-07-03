@@ -30,6 +30,30 @@ func TestRootUsageDocumentsRunnerCommand(t *testing.T) {
 	}
 }
 
+func TestIssueSpecBinaryForRunnerUsesCurrentExecutable(t *testing.T) {
+	old := runnerExecutable
+	t.Cleanup(func() { runnerExecutable = old })
+	runnerExecutable = func() (string, error) {
+		return "/tmp/issue-spec-runner-e2e-001/bin/issue-spec", nil
+	}
+
+	if got := issueSpecBinaryForRunner(); got != "/tmp/issue-spec-runner-e2e-001/bin/issue-spec" {
+		t.Fatalf("issueSpecBinaryForRunner() = %q", got)
+	}
+}
+
+func TestIssueSpecBinaryForRunnerFallsBackToCommandName(t *testing.T) {
+	old := runnerExecutable
+	t.Cleanup(func() { runnerExecutable = old })
+	runnerExecutable = func() (string, error) {
+		return "", errors.New("executable unavailable")
+	}
+
+	if got := issueSpecBinaryForRunner(); got != "issue-spec" {
+		t.Fatalf("issueSpecBinaryForRunner() = %q", got)
+	}
+}
+
 func TestRunnerPollDryRunJSONUsesTrustedConfigAndPreflight(t *testing.T) {
 	clearCommandAuthEnv(t)
 	var out, errOut bytes.Buffer

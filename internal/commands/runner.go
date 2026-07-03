@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -36,6 +37,8 @@ type runnerDryRunResult struct {
 	Dispatch  *jobs.Result                  `json:"dispatch,omitempty"`
 	Error     string                        `json:"error,omitempty"`
 }
+
+var runnerExecutable = os.Executable
 
 func (a *app) runRunner(ctx context.Context, args []string) int {
 	if len(args) == 0 {
@@ -467,11 +470,20 @@ func (a *app) runRunnerDispatch(ctx context.Context, cfg commentrunner.Config) (
 			BwrapPath:       cfg.BwrapPath,
 			HostGHConfigDir: cfg.GHConfigDir,
 		}},
-		Acpx:      jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg)},
-		Artifacts: &jobs.IssueSpecArtifactProvider{GitHub: runnerBackend},
-		Writeback: &writeback.Service{GitHub: runnerBackend, Store: store},
+		Acpx:            jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg)},
+		Artifacts:       &jobs.IssueSpecArtifactProvider{GitHub: runnerBackend},
+		Writeback:       &writeback.Service{GitHub: runnerBackend, Store: store},
+		IssueSpecBinary: issueSpecBinaryForRunner(),
 	}
 	return dispatcher.RunNext(ctx)
+}
+
+func issueSpecBinaryForRunner() string {
+	path, err := runnerExecutable()
+	if err == nil && strings.TrimSpace(path) != "" {
+		return strings.TrimSpace(path)
+	}
+	return "issue-spec"
 }
 
 func plannedRunnerPollActions(cfg commentrunner.Config, once bool) []string {

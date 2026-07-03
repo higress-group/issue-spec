@@ -343,6 +343,105 @@ func TestRunNextFailurePersistsFailedStateAndBoundedError(t *testing.T) {
 	}
 }
 
+func TestRunNextFailsBeforeAcpxWhenChildAuthProbeFails(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 12, 5, 0, 0, time.UTC)
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-auth-fail",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "alice",
+		TriggerCommentID:      313,
+		CommandID:             "cmd-auth-fail",
+		CommandName:           "new",
+		CommandPrompt:         "do work",
+		CommandIdempotencyKey: "cmd-key-auth-fail",
+		StatusWritebackKey:    "status-auth-fail",
+		Status:                state.StatusQueued,
+		CreatedAt:             now,
+	})
+	probe := &fakeAuthProbeRunner{result: acpx.CommandResult{
+		Stdout: []byte(`{"ok":false,"host":"github.com","error":"gh backend token invalid","backend":{"name":"gh","selection_source":"auto:gh"}}`),
+	}}
+	workspaces := &fakeWorkspaces{binding: testBinding("ws-auth-fail")}
+	writebacks := &fakeWriteback{}
+	coordinator := &fakeCoordinator{newResult: dispatchResult("ps-auth-fail", "rec-auth-fail", "turn-auth-fail", completedSummary())}
+	dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
+	dispatcher.Sandbox = &fakeSandbox{env: ExecutionEnvironment{
+		WorkingDirectory: "/workspace",
+		Sandbox:          state.SandboxMetadata{SandboxProvider: "none", FSBoundary: "disabled"},
+		Runner:           probe,
+	}}
+	dispatcher.PublicSessionID = func() (string, error) { return "ps-auth-fail", nil }
+
+	result, err := dispatcher.RunNext(context.Background())
+	if err == nil {
+		t.Fatal("RunNext succeeded, want child auth failure")
+	}
+	if result.Status != state.StatusFailed || !strings.Contains(result.Error, "pre-acpx child auth probe failed") || !strings.Contains(result.Error, "backend=gh") {
+		t.Fatalf("unexpected result: %+v err=%v", result, err)
+	}
+	if len(coordinator.newPrompts) != 0 || len(coordinator.resumePrompts) != 0 {
+		t.Fatalf("acpx ran despite auth preflight failure: new=%d resume=%d", len(coordinator.newPrompts), len(coordinator.resumePrompts))
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusFailed)
+	if writebacks.requests[0].Phase != "child-auth" || writebacks.requests[0].Err == nil {
+		t.Fatalf("auth failure was not visible through failed writeback: %+v", writebacks.requests[0])
+	}
+	job := loadState(t, store).Jobs["job-auth-fail"]
+	if job.Status != state.StatusFailed || len(job.Diagnostics) != 1 || !strings.Contains(job.Diagnostics[0], "child-auth:") {
+		t.Fatalf("auth failure was not persisted as controlled child-auth failure: %+v", job)
+	}
+	if len(probe.commands) != 1 || probe.commands[0].Binary != "issue-spec" || strings.Join(probe.commands[0].Args, " ") != "auth status --json" {
+		t.Fatalf("unexpected auth probe command: %+v", probe.commands)
+	}
+}
+
+func TestRunNextAuthProbeSuccessUsesConfiguredIssueSpecBinaryAndAllowsAcpxDispatch(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 12, 10, 0, 0, time.UTC)
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-auth-ok",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "alice",
+		TriggerCommentID:      323,
+		CommandID:             "cmd-auth-ok",
+		CommandName:           "new",
+		CommandPrompt:         "do work",
+		CommandIdempotencyKey: "cmd-key-auth-ok",
+		StatusWritebackKey:    "status-auth-ok",
+		Status:                state.StatusQueued,
+		CreatedAt:             now,
+	})
+	probe := &fakeAuthProbeRunner{}
+	workspaces := &fakeWorkspaces{binding: testBinding("ws-auth-ok")}
+	writebacks := &fakeWriteback{}
+	coordinator := &fakeCoordinator{newResult: dispatchResult("ps-auth-ok", "rec-auth-ok", "turn-auth-ok", completedSummary())}
+	dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
+	dispatcher.Sandbox = &fakeSandbox{env: ExecutionEnvironment{
+		WorkingDirectory: "/workspace",
+		Sandbox:          state.SandboxMetadata{SandboxProvider: "none", FSBoundary: "disabled"},
+		Runner:           probe,
+	}}
+	dispatcher.PublicSessionID = func() (string, error) { return "ps-auth-ok", nil }
+	dispatcher.IssueSpecBinary = "/tmp/issue-spec-runner-e2e-001/bin/issue-spec"
+
+	result, err := dispatcher.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("RunNext returned error: %v", err)
+	}
+	if result.Status != state.StatusCompleted || len(coordinator.newPrompts) != 1 {
+		t.Fatalf("auth success did not allow dispatch: result=%+v prompts=%d", result, len(coordinator.newPrompts))
+	}
+	if len(probe.commands) != 1 || probe.commands[0].Binary != "/tmp/issue-spec-runner-e2e-001/bin/issue-spec" || strings.Join(probe.commands[0].Args, " ") != "auth status --json" {
+		t.Fatalf("unexpected auth probe command: %+v", probe.commands)
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusRunning, state.StatusCompleted)
+}
+
 func TestRunNextSummaryFailurePersistsSessionMapping(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 12, 15, 0, 0, time.UTC)
@@ -575,7 +674,7 @@ func TestSandboxRunnerUsesRequestRuntimePaths(t *testing.T) {
 	}
 }
 
-func TestSandboxRunnerDoesNotOverwriteExistingRuntimeGHConfig(t *testing.T) {
+func TestSandboxRunnerRefreshesExistingRuntimeGHConfig(t *testing.T) {
 	temp := t.TempDir()
 	hostGH := filepath.Join(temp, "host-gh")
 	runtimeGH := filepath.Join(temp, "workspace", ".sessions", "runtime", "gh")
@@ -592,8 +691,8 @@ func TestSandboxRunnerDoesNotOverwriteExistingRuntimeGHConfig(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: host\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	existing := []byte("github.com:\n  oauth_token: runtime\n")
-	if err := os.WriteFile(filepath.Join(runtimeGH, "hosts.yml"), existing, 0o600); err != nil {
+	stale := []byte("github.com:\n  oauth_token: stale-runtime\n")
+	if err := os.WriteFile(filepath.Join(runtimeGH, "hosts.yml"), stale, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -613,8 +712,8 @@ func TestSandboxRunnerDoesNotOverwriteExistingRuntimeGHConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(existing) {
-		t.Fatalf("runtime gh hosts.yml was overwritten: %q", got)
+	if string(got) != "github.com:\n  oauth_token: host\n" {
+		t.Fatalf("runtime gh hosts.yml was not refreshed from host config: %q", got)
 	}
 }
 
@@ -646,7 +745,7 @@ func TestSandboxedRunnerPreservesAdapterCommandEnv(t *testing.T) {
 		TempHome:          filepath.Join(temp, "home"),
 		TempGHConfigDir:   filepath.Join(temp, "gh"),
 		TempXDGConfigHome: filepath.Join(temp, "xdg"),
-		HostEnv:           []string{"PATH=/usr/bin", "UNLISTED_HOST=value", "GH_TOKEN=host-secret"},
+		HostEnv:           []string{"PATH=/usr/bin", "UNLISTED_HOST=value", "GH_TOKEN=host-secret", "GITHUB_TOKEN=github-secret", "ISSUE_SPEC_TOKEN=issue-secret"},
 		EnvAllowlist:      []string{"PATH"},
 	}
 	for _, dir := range []string{cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome} {
@@ -662,6 +761,8 @@ func TestSandboxedRunnerPreservesAdapterCommandEnv(t *testing.T) {
 			"ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1",
 			"UNLISTED_HOST=value",
 			"GH_TOKEN=command-secret",
+			"GITHUB_TOKEN=command-github-secret",
+			"ISSUE_SPEC_TOKEN=command-issue-secret",
 		},
 	})
 	if err != nil {
@@ -671,8 +772,10 @@ func TestSandboxedRunnerPreservesAdapterCommandEnv(t *testing.T) {
 	if env["ACPX_CLAUDE_INCLUDE_USER_SETTINGS"] != "1" || env["PATH"] != "/custom/bin" {
 		t.Fatalf("trusted adapter env was not preserved: %v", runner.command.Env)
 	}
-	if _, ok := env["GH_TOKEN"]; ok {
-		t.Fatalf("token env leaked into sandbox command: %v", runner.command.Env)
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "ISSUE_SPEC_TOKEN"} {
+		if _, ok := env[name]; ok {
+			t.Fatalf("token env %s leaked into sandbox command: %v", name, runner.command.Env)
+		}
 	}
 	if _, ok := env["UNLISTED_HOST"]; ok {
 		t.Fatalf("unchanged host env leaked into sandbox command: %v", runner.command.Env)
@@ -869,11 +972,16 @@ func (f *fakeSandbox) Prepare(_ context.Context, req SandboxRequest) (ExecutionE
 		return ExecutionEnvironment{}, f.err
 	}
 	if f.env.WorkingDirectory != "" || f.env.Runner != nil || f.env.Sandbox.SandboxProvider != "" {
-		return f.env, nil
+		env := f.env
+		if env.Runner == nil {
+			env.Runner = &fakeAuthProbeRunner{}
+		}
+		return env, nil
 	}
 	return ExecutionEnvironment{
 		WorkingDirectory: "/workspace",
 		Sandbox:          state.SandboxMetadata{Enabled: true, SandboxProvider: "bubblewrap", FSBoundary: "workspace"},
+		Runner:           &fakeAuthProbeRunner{},
 	}, nil
 }
 
@@ -940,6 +1048,21 @@ type recordingSandboxRunner struct {
 func (r *recordingSandboxRunner) Run(_ context.Context, command sandbox.Command) (sandbox.Result, error) {
 	r.command = command
 	return sandbox.Result{}, nil
+}
+
+type fakeAuthProbeRunner struct {
+	commands []acpx.Command
+	result   acpx.CommandResult
+	err      error
+}
+
+func (r *fakeAuthProbeRunner) Run(_ context.Context, command acpx.Command) (acpx.CommandResult, error) {
+	r.commands = append(r.commands, command)
+	result := r.result
+	if result.Stdout == nil && result.Stderr == nil && result.ExitCode == 0 && r.err == nil {
+		result.Stdout = []byte(`{"ok":true,"auth":{"host":"github.com","source":"gh","user":"bot"},"backend":{"name":"gh","selection_source":"auto:gh"}}`)
+	}
+	return result, r.err
 }
 
 func envEntriesMap(entries []string) map[string]string {

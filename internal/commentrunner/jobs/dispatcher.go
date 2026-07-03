@@ -257,6 +257,9 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 	if err != nil {
 		return d.fail(ctx, job.ID, "execution-inputs", err)
 	}
+	if err := d.preflightChildAuth(ctx, env); err != nil {
+		return d.fail(ctx, job.ID, "child-auth", err)
+	}
 	coordinator, err := d.Acpx.NewCoordinator(env)
 	if err != nil {
 		return d.fail(ctx, job.ID, "acpx", err)
@@ -435,6 +438,125 @@ func (d *Dispatcher) dispatchAcpx(ctx context.Context, coordinator Coordinator, 
 	default:
 		return acpx.DispatchResult{}, fmt.Errorf("unsupported command %q", command)
 	}
+}
+
+type childAuthStatus struct {
+	OK     bool   `json:"ok"`
+	Host   string `json:"host"`
+	Source string `json:"source"`
+	Error  string `json:"error"`
+	Auth   struct {
+		Host   string `json:"host"`
+		Source string `json:"source"`
+		User   string `json:"user"`
+	} `json:"auth"`
+	Backend struct {
+		Name            string `json:"name"`
+		SelectionSource string `json:"selection_source"`
+		TokenSource     string `json:"token_source"`
+	} `json:"backend"`
+}
+
+func (d *Dispatcher) preflightChildAuth(ctx context.Context, env ExecutionEnvironment) error {
+	if env.Runner == nil {
+		return fmt.Errorf("pre-acpx child auth probe unavailable: execution runner is missing")
+	}
+	result, runErr := env.Runner.Run(ctx, acpx.Command{
+		Binary: firstNonEmpty(d.IssueSpecBinary, "issue-spec"),
+		Args:   []string{"auth", "status", "--json"},
+		Dir:    env.WorkingDirectory,
+	})
+	status, parseErr := parseChildAuthStatus(result.Stdout)
+	if runErr != nil || result.ExitCode != 0 {
+		return fmt.Errorf("pre-acpx child auth probe failed: %s", childAuthCommandDiagnostics(result, status, parseErr, runErr))
+	}
+	if parseErr != nil {
+		return fmt.Errorf("pre-acpx child auth probe failed: parse issue-spec auth status --json: %w; %s", parseErr, childAuthRawDiagnostics(result, nil))
+	}
+	if !status.OK {
+		return fmt.Errorf("pre-acpx child auth probe failed: %s", childAuthStatusDiagnostic(status, result))
+	}
+	return nil
+}
+
+func parseChildAuthStatus(stdout []byte) (childAuthStatus, error) {
+	var status childAuthStatus
+	if len(strings.TrimSpace(string(stdout))) == 0 {
+		return status, fmt.Errorf("empty stdout")
+	}
+	if err := json.Unmarshal(stdout, &status); err != nil {
+		return status, err
+	}
+	return status, nil
+}
+
+func childAuthCommandDiagnostics(result acpx.CommandResult, status childAuthStatus, parseErr error, runErr error) string {
+	var parts []string
+	if parseErr == nil {
+		if diag := childAuthStatusDiagnostic(status, result); diag != "" {
+			parts = append(parts, diag)
+		}
+	}
+	if raw := childAuthRawDiagnostics(result, runErr); raw != "" {
+		parts = append(parts, raw)
+	}
+	if len(parts) == 0 {
+		return "issue-spec auth status --json did not complete successfully"
+	}
+	return safeString(strings.Join(parts, "; "), 600)
+}
+
+func childAuthStatusDiagnostic(status childAuthStatus, result acpx.CommandResult) string {
+	var parts []string
+	if status.Host != "" {
+		parts = append(parts, "host="+status.Host)
+	} else if status.Auth.Host != "" {
+		parts = append(parts, "host="+status.Auth.Host)
+	}
+	if status.Source != "" {
+		parts = append(parts, "source="+status.Source)
+	} else if status.Auth.Source != "" {
+		parts = append(parts, "source="+status.Auth.Source)
+	}
+	if status.Auth.User != "" {
+		parts = append(parts, "user="+status.Auth.User)
+	}
+	if status.Backend.Name != "" {
+		parts = append(parts, "backend="+status.Backend.Name)
+	}
+	if status.Backend.SelectionSource != "" {
+		parts = append(parts, "backend_selection="+status.Backend.SelectionSource)
+	}
+	if status.Backend.TokenSource != "" {
+		parts = append(parts, "backend_token_source="+status.Backend.TokenSource)
+	}
+	if strings.TrimSpace(status.Error) != "" {
+		parts = append(parts, "error="+strings.TrimSpace(status.Error))
+	}
+	if result.ExitCode != 0 {
+		parts = append(parts, fmt.Sprintf("exit=%d", result.ExitCode))
+	}
+	if len(parts) == 0 {
+		return "ok=false"
+	}
+	return safeString(strings.Join(parts, " "), 600)
+}
+
+func childAuthRawDiagnostics(result acpx.CommandResult, runErr error) string {
+	var parts []string
+	if strings.TrimSpace(string(result.Stderr)) != "" {
+		parts = append(parts, "stderr="+safeString(string(result.Stderr), 300))
+	}
+	if strings.TrimSpace(string(result.Stdout)) != "" {
+		parts = append(parts, "stdout="+safeString(string(result.Stdout), 300))
+	}
+	if result.ExitCode != 0 {
+		parts = append(parts, fmt.Sprintf("exit=%d", result.ExitCode))
+	}
+	if runErr != nil {
+		parts = append(parts, "error="+runErr.Error())
+	}
+	return safeString(strings.Join(parts, " "), 600)
 }
 
 func (d *Dispatcher) markRunning(ctx context.Context, original state.Job, command runnercontext.CommandVerb, publicID string, session state.PublicSession, binding workspace.Binding, sandboxMeta state.SandboxMetadata, bundle runnercontext.Bundle, token string, lock state.SessionLock) error {
@@ -898,9 +1020,6 @@ func mirrorHostGHAuth(cfg *sandbox.Config) error {
 	if cfg == nil {
 		return fmt.Errorf("sandbox config is required")
 	}
-	if info, err := os.Stat(filepath.Join(cfg.TempGHConfigDir, "hosts.yml")); err == nil && !info.IsDir() {
-		return nil
-	}
 	source, err := hostGHConfigDir(*cfg)
 	if err != nil {
 		return err
@@ -968,10 +1087,23 @@ func copyGHConfigDir(source, dest string) error {
 		if entry.IsDir() {
 			return os.MkdirAll(target, 0o700)
 		}
-		if _, err := os.Lstat(target); err == nil {
-			return nil
-		} else if !errors.Is(err, os.ErrNotExist) {
+		info, err := os.Lstat(target)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
+		}
+		if err == nil {
+			if info.IsDir() {
+				return fmt.Errorf("target %s is a directory", target)
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				if err := os.Remove(target); err != nil {
+					return err
+				}
+			} else if info.Mode().IsRegular() {
+				if err := os.Chmod(target, 0o600); err != nil {
+					return err
+				}
+			}
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -980,7 +1112,10 @@ func copyGHConfigDir(source, dest string) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, 0o600)
+		if err := os.WriteFile(target, data, 0o600); err != nil {
+			return err
+		}
+		return os.Chmod(target, 0o600)
 	})
 }
 
