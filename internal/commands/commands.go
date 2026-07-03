@@ -15,6 +15,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
+	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
@@ -29,6 +30,7 @@ type app struct {
 	gitHubBackendToken  func(context.Context, auth.GitHubBackendSelection) (string, error)
 	runnerPreflight     func(context.Context, commentrunner.Config) commentrunner.PreflightReport
 	runnerIntake        func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error)
+	runnerDispatch      func(context.Context, commentrunner.Config) (jobs.Result, error)
 }
 
 type commandFunc func(context.Context, []string) int

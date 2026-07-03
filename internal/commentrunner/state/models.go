@@ -132,6 +132,7 @@ type Job struct {
 	StatusCommentURL      string                  `json:"status_comment_url,omitempty"`
 	CommandID             string                  `json:"command_id,omitempty"`
 	CommandName           string                  `json:"command_name,omitempty"`
+	CommandPrompt         string                  `json:"command_prompt,omitempty"`
 	CommandIdempotencyKey string                  `json:"command_idempotency_key,omitempty"`
 	StatusWritebackKey    string                  `json:"status_writeback_key,omitempty"`
 	Status                LifecycleStatus         `json:"status,omitempty"`

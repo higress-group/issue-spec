@@ -10,7 +10,12 @@ import (
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
+	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
+	"github.com/higress-group/issue-spec/internal/github"
+	"github.com/higress-group/issue-spec/internal/sandbox"
+	"github.com/higress-group/issue-spec/internal/workspace"
 )
 
 type runnerCommandOptions struct {
@@ -27,6 +32,7 @@ type runnerDryRunResult struct {
 	Config    commentrunner.Config          `json:"config"`
 	Preflight commentrunner.PreflightReport `json:"preflight"`
 	Intake    *intake.Result                `json:"intake,omitempty"`
+	Dispatch  *jobs.Result                  `json:"dispatch,omitempty"`
 	Error     string                        `json:"error,omitempty"`
 }
 
@@ -52,7 +58,44 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 		return 2
 	}
 	if !opts.DryRun {
-		a.errorf("runner poll dispatch is not implemented by the command/config/preflight foundation; rerun with --dry-run to inspect planned work\n")
+		report := a.runRunnerPreflight(ctx, cfg)
+		var intakeResult *intake.Result
+		var dispatchResult *jobs.Result
+		runErr := ""
+		if report.OK {
+			result, err := a.runRunnerIntake(ctx, cfg, intake.Options{})
+			if err != nil {
+				runErr = err.Error()
+			} else {
+				intakeResult = &result
+				dispatch, err := a.runRunnerDispatch(ctx, cfg)
+				if err != nil {
+					runErr = err.Error()
+				}
+				dispatchResult = &dispatch
+			}
+		}
+		result := runnerDryRunResult{
+			OK:        report.OK && runErr == "",
+			Mode:      "run",
+			Once:      opts.Once,
+			Actions:   []string{"load trusted runner config", "run preflight checks", "poll configured repositories once", "dispatch at most one ready job"},
+			Config:    cfg,
+			Preflight: report,
+			Intake:    intakeResult,
+			Dispatch:  dispatchResult,
+			Error:     runErr,
+		}
+		if opts.JSON {
+			if code := a.outputJSON(result); code != 0 {
+				return code
+			}
+		} else {
+			a.printRunnerPoll(result)
+		}
+		if result.OK {
+			return 0
+		}
 		return 1
 	}
 	report := a.runRunnerPreflight(ctx, cfg)
@@ -265,6 +308,46 @@ func (a *app) runRunnerIntake(ctx context.Context, cfg commentrunner.Config, opt
 	return intake.RunOnce(ctx, cfg, runnerBackend, store, opts)
 }
 
+func (a *app) runRunnerDispatch(ctx context.Context, cfg commentrunner.Config) (jobs.Result, error) {
+	if a.runnerDispatch != nil {
+		return a.runnerDispatch(ctx, cfg)
+	}
+	selection, err := a.selectBackend(ctx, cfg.Hostname)
+	if err != nil {
+		return jobs.Result{}, err
+	}
+	backend, err := a.backendForSelection(ctx, selection)
+	if err != nil {
+		return jobs.Result{}, err
+	}
+	runnerBackend, ok := backend.(github.RunnerOperations)
+	if !ok {
+		return jobs.Result{}, fmt.Errorf("selected GitHub backend does not support runner status writeback")
+	}
+	store, err := crstate.OpenFileStore(cfg.StatePath)
+	if err != nil {
+		return jobs.Result{}, err
+	}
+	defer store.Close()
+	dispatcher := jobs.Dispatcher{
+		Store:        store,
+		Repositories: jobs.StaticRepositoryResolver{Hostname: cfg.Hostname},
+		Workspaces: workspace.Manager{
+			Root:      cfg.WorkspaceRoot,
+			Retention: cfg.WorkspaceRetention.Duration,
+		},
+		Sandbox: jobs.SandboxRunner{Config: sandbox.Config{
+			UnsafeNoSandbox: cfg.UnsafeNoSandbox,
+			BwrapPath:       cfg.BwrapPath,
+			TempGHConfigDir: cfg.GHConfigDir,
+		}},
+		Acpx:      jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg)},
+		Artifacts: jobs.NoopArtifactProvider{},
+		Writeback: &writeback.Service{GitHub: runnerBackend, Store: store},
+	}
+	return dispatcher.RunNext(ctx)
+}
+
 func plannedRunnerPollActions(cfg commentrunner.Config, once bool) []string {
 	cfg = cfg.Normalized()
 	cycle := "poll configured repositories continuously"
@@ -295,6 +378,21 @@ func (a *app) printRunnerDryRun(result runnerDryRunResult) {
 	}
 	if result.Error != "" {
 		fmt.Fprintf(a.out, "intake error: %s\n", result.Error)
+	}
+}
+
+func (a *app) printRunnerPoll(result runnerDryRunResult) {
+	fmt.Fprintln(a.out, "runner poll")
+	fmt.Fprintf(a.out, "repositories: %s\n", strings.Join(result.Config.Repositories, ", "))
+	a.printPreflightReport(result.Preflight)
+	if result.Intake != nil {
+		fmt.Fprintf(a.out, "intake: commands=%d jobs=%d cancellations=%d next_poll=%s\n", len(result.Intake.Commands), len(result.Intake.Jobs), len(result.Intake.Cancellations), result.Intake.Next.PollAt.Format(time.RFC3339))
+	}
+	if result.Dispatch != nil {
+		fmt.Fprintf(a.out, "dispatch: executed=%v job=%s status=%s reason=%s\n", result.Dispatch.Executed, result.Dispatch.JobID, result.Dispatch.Status, result.Dispatch.Reason)
+	}
+	if result.Error != "" {
+		fmt.Fprintf(a.out, "runner error: %s\n", result.Error)
 	}
 }
 

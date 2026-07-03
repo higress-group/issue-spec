@@ -467,6 +467,7 @@ func queueJob(cfg commentrunner.Config, st *crstate.RunnerState, seen crstate.Se
 		TriggerCommentID:      candidate.TriggerCommentID,
 		CommandID:             candidate.ID,
 		CommandName:           string(candidate.Verb),
+		CommandPrompt:         candidate.Prompt,
 		CommandIdempotencyKey: candidate.IdempotencyKey,
 		Status:                crstate.StatusQueued,
 		CreatedAt:             now,

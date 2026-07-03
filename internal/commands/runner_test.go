@@ -12,6 +12,8 @@ import (
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
+	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
+	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 )
 
 func TestRootUsageDocumentsRunnerCommand(t *testing.T) {
@@ -132,13 +134,31 @@ func TestRunnerPollDryRunIntakeErrorReturnsFailure(t *testing.T) {
 	}
 }
 
-func TestRunnerPollWithoutDryRunDoesNotDispatchOrPreflight(t *testing.T) {
+func TestRunnerPollWithoutDryRunRunsIntakeAndOneDispatch(t *testing.T) {
 	clearCommandAuthEnv(t)
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
-	app.runnerPreflight = func(context.Context, commentrunner.Config) commentrunner.PreflightReport {
-		t.Fatal("preflight should not run when poll would dispatch")
-		return commentrunner.PreflightReport{}
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	intakeCalled := false
+	app.runnerIntake = func(_ context.Context, cfg commentrunner.Config, opts intake.Options) (intake.Result, error) {
+		intakeCalled = true
+		if opts.DryRun {
+			t.Fatal("non-dry-run poll must persist intake")
+		}
+		if cfg.RunnerIdentity != "issue-spec-bot" {
+			t.Fatalf("config not passed to intake: %+v", cfg)
+		}
+		return intake.Result{OK: true}, nil
+	}
+	dispatchCalled := false
+	app.runnerDispatch = func(_ context.Context, cfg commentrunner.Config) (jobs.Result, error) {
+		dispatchCalled = true
+		if cfg.WorkspaceRoot != "/tmp/workspaces" {
+			t.Fatalf("config not passed to dispatch: %+v", cfg)
+		}
+		return jobs.Result{Executed: true, JobID: "job-1", Status: state.StatusCompleted}, nil
 	}
 	code := app.runRunner(context.Background(), []string{
 		"poll",
@@ -147,11 +167,19 @@ func TestRunnerPollWithoutDryRunDoesNotDispatchOrPreflight(t *testing.T) {
 		"--state", "/tmp/state.json",
 		"--workspace-root", "/tmp/workspaces",
 		"--once",
+		"--json",
 	})
-	if code != 1 {
-		t.Fatalf("exit code = %d, want 1, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0, stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "not implemented") {
-		t.Fatalf("expected not implemented guard, stderr=%q", errOut.String())
+	if !intakeCalled || !dispatchCalled {
+		t.Fatalf("expected intake and dispatch to run: intake=%v dispatch=%v", intakeCalled, dispatchCalled)
+	}
+	var got runnerDryRunResult
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Mode != "run" || got.Dispatch == nil || got.Dispatch.Status != state.StatusCompleted {
+		t.Fatalf("unexpected run output: %+v", got)
 	}
 }
