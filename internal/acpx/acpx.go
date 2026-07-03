@@ -880,11 +880,11 @@ func parseLatestCoordinatorSummaryFromText(text, stderr string, bounds contextbu
 }
 
 func agentMessageTextCandidates(values map[string]any) []string {
+	candidates := flatAgentMessageTextCandidates(values)
 	messages, ok := values["messages"].([]any)
 	if !ok {
-		return nil
+		return candidates
 	}
-	var candidates []string
 	for _, message := range messages {
 		messageMap, ok := message.(map[string]any)
 		if !ok {
@@ -899,6 +899,27 @@ func agentMessageTextCandidates(values map[string]any) []string {
 				candidates = append(candidates, text)
 			}
 		}
+	}
+	return candidates
+}
+
+func flatAgentMessageTextCandidates(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var candidates []string
+	for _, key := range keys {
+		lower := strings.ToLower(key)
+		if !strings.HasPrefix(lower, "messages.") || !strings.Contains(lower, ".agent.") || !strings.HasSuffix(lower, ".text") {
+			continue
+		}
+		text, ok := values[key].(string)
+		if !ok || !strings.Contains(text, CoordinatorSummaryFence) {
+			continue
+		}
+		candidates = append(candidates, text)
 	}
 	return candidates
 }
@@ -944,6 +965,9 @@ func collectOutputCandidates(value any, out *[]string) {
 	case map[string]any:
 		for _, key := range outputCandidateKeys(typed) {
 			collectText(typed[key], out)
+		}
+		for _, text := range flatAgentMessageTextCandidates(typed) {
+			*out = append(*out, text)
 		}
 	case []any:
 		for _, item := range typed {

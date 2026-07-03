@@ -63,6 +63,43 @@ func TestNewSessionCodexDispatchesWithStableRecordAndSummary(t *testing.T) {
 	assertArgs(t, runner.commands[3].Args, []string{"--cwd", "/workspace", "--format", "json", "--json-strict", "--model", "gpt-5.5[xhigh]", "--approve-all", "--non-interactive-permissions", "fail", "codex", "sessions", "show", "pub-1"})
 }
 
+func TestNewSessionRecoversSummaryFromFlattenedAgentMessageText(t *testing.T) {
+	userExample := "prompt example\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```"
+	agentOutput := "done\n```issue_spec_coordinator_summary{\n" + strings.TrimPrefix(validSummaryJSON, "{") + "\n```"
+	sessionShow := `{
+		"acpxRecordId":"rec-1",
+		"acpxSessionId":"acpx-2",
+		"lastTurnId":"turn-2",
+		"messages.0.User.content.0.Text":` + strconv.Quote(userExample) + `,
+		"messages.1.Agent.content.7.Text":` + strconv.Quote(agentOutput) + `
+	}`
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","acpxSessionId":"acpx-1","history":[{"id":"seed"}]}`},
+		{stdout: `{}`},
+		{stdout: "assistant output without coordinator summary"},
+		{stdout: sessionShow},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace", Mode: "agent-full-access"}, runner)
+
+	result, err := adapter.NewSession(context.Background(), NewSessionRequest{
+		PublicSessionID:      "pub-1",
+		Prompt:               "create test artifact",
+		TurnCorrelationToken: "turn-token-1",
+	})
+	if err != nil {
+		t.Fatalf("NewSession returned error: %v", err)
+	}
+	if !result.Output.SummaryFound || result.Output.Summary.Status != "completed" {
+		t.Fatalf("flattened agent summary was not recovered: %+v", result.Output)
+	}
+	if result.Output.Summary.Artifacts[0].ID != "PROCESS-NC-010" {
+		t.Fatalf("unexpected recovered summary: %+v", result.Output.Summary)
+	}
+	if !strings.Contains(result.Output.ReplyText, "done") {
+		t.Fatalf("reply text missing recovered agent output: %q", result.Output.ReplyText)
+	}
+}
+
 func TestResumeValidatesStableRecordBeforeDispatch(t *testing.T) {
 	runner := &fakeRunner{responses: []fakeResponse{
 		{stdout: `{"acpxRecordId":"other-rec","history":[{"id":"seed"}]}`},
