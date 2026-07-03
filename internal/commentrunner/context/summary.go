@@ -91,6 +91,29 @@ func ParseCoordinatorSummary(data []byte, bounds SummaryBounds) (CoordinatorSumm
 	return summary, nil
 }
 
+func ExtractCoordinatorSummary(reply string, bounds SummaryBounds) (CoordinatorSummary, bool, error) {
+	const fence = "```issue_spec_coordinator_summary"
+	start := strings.Index(reply, fence)
+	if start < 0 {
+		return CoordinatorSummary{}, false, nil
+	}
+	afterFence := reply[start+len(fence):]
+	lineEnd := strings.Index(afterFence, "\n")
+	if lineEnd < 0 {
+		return CoordinatorSummary{}, true, fmt.Errorf("coordinator summary fence has no body")
+	}
+	body := afterFence[lineEnd+1:]
+	end := strings.Index(body, "\n```")
+	if end < 0 {
+		return CoordinatorSummary{}, true, fmt.Errorf("coordinator summary fence is not closed")
+	}
+	summary, err := ParseCoordinatorSummary([]byte(strings.TrimSpace(body[:end])), bounds)
+	if err != nil {
+		return CoordinatorSummary{}, true, err
+	}
+	return summary, true, nil
+}
+
 func ValidateCoordinatorSummary(summary CoordinatorSummary, bounds SummaryBounds) error {
 	bounds = normalizeSummaryBounds(bounds)
 	switch summary.Status {
