@@ -145,6 +145,36 @@ func TestResumeAcceptsMessagesOnlySnapshotBeforeDispatch(t *testing.T) {
 	}
 }
 
+func TestResumeSkipsSetModeWhenSnapshotAlreadyHasDesiredMode(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-1","acpx.desired_mode_id":"agent-full-access","messages":[{"User":{"content":[{"Text":"seed prompt"}]}}]}`},
+		{stdout: "done\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```\n"},
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-2","acpx.desired_mode_id":"agent-full-access","messages":[{"User":{"content":[{"Text":"seed prompt"}]}},{"Agent":{"content":[{"Text":"done"}]}}]}`},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace", Mode: "agent-full-access"}, runner)
+
+	result, err := adapter.Resume(context.Background(), ResumeRequest{
+		PublicSessionID:   "pub-1",
+		StableRecordID:    "rec-1",
+		Prompt:            "continue",
+		MinHistoryEntries: 1,
+	})
+	if err != nil {
+		t.Fatalf("Resume returned error: %v", err)
+	}
+	if !result.Output.SummaryFound {
+		t.Fatalf("summary not parsed: %+v", result.Output)
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("recorded %d commands, want pre-refresh, prompt, post-refresh", len(runner.commands))
+	}
+	for _, command := range runner.commands {
+		if strings.Contains(strings.Join(command.Args, " "), "set-mode") {
+			t.Fatalf("resume should not set already-applied mode: %+v", command.Args)
+		}
+	}
+}
+
 func TestResumeRejectsEmptyMessagesSnapshotBeforeDispatch(t *testing.T) {
 	runner := &fakeRunner{responses: []fakeResponse{
 		{stdout: `{"acpxRecordId":"rec-1","messages":[]}`},

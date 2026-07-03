@@ -326,8 +326,10 @@ func (a *Adapter) Resume(ctx context.Context, req ResumeRequest) (DispatchResult
 	if before.HistoryLength < req.MinHistoryEntries {
 		return DispatchResult{}, fmt.Errorf("%w: history length %d is below required %d", ErrResumeMismatch, before.HistoryLength, req.MinHistoryEntries)
 	}
-	if err := a.applyMode(ctx, sessionName); err != nil {
-		return DispatchResult{}, err
+	if !metadataHasMode(before, a.cfg.Mode) {
+		if err := a.applyMode(ctx, sessionName); err != nil {
+			return DispatchResult{}, err
+		}
 	}
 	dispatch, dispatchErr := a.dispatchPrompt(ctx, sessionName, req.Prompt, req.NoWait, req.TurnCorrelationToken)
 	if dispatchErr != nil {
@@ -739,6 +741,19 @@ func metadataContains(meta Metadata, needle string) bool {
 	}
 	for key, value := range meta.Raw {
 		if strings.Contains(key, needle) || strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func metadataHasMode(meta Metadata, mode string) bool {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		return true
+	}
+	for _, key := range []string{"acpx.desired_mode_id", "acpx.current_mode_id", "desiredMode", "desired_mode", "mode"} {
+		if strings.TrimSpace(meta.Raw[key]) == mode {
 			return true
 		}
 	}
