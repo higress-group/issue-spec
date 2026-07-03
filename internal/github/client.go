@@ -60,6 +60,92 @@ type Comment struct {
 	User    *User  `json:"user,omitempty"`
 }
 
+type Notification struct {
+	ID        string    `json:"id"`
+	Unread    bool      `json:"unread"`
+	Reason    string    `json:"reason"`
+	UpdatedAt time.Time `json:"updated_at"`
+	URL       string    `json:"url"`
+	Subject   struct {
+		Title            string `json:"title"`
+		URL              string `json:"url"`
+		LatestCommentURL string `json:"latest_comment_url"`
+		Type             string `json:"type"`
+	} `json:"subject"`
+}
+
+type Subscription struct {
+	Subscribed bool `json:"subscribed"`
+	Ignored    bool `json:"ignored"`
+}
+
+type Permission struct {
+	Permission string `json:"permission"`
+}
+
+type RepositoryIssueComment struct {
+	Comment
+	IssueNumber int    `json:"issue_number"`
+	IssueURL    string `json:"issue_url"`
+}
+
+type ResponseMetadata struct {
+	StatusCode         int
+	Headers            http.Header
+	ETag               string
+	LastModified       string
+	PollInterval       string
+	RateLimitLimit     int
+	RateLimitRemaining int
+	RateLimitReset     string
+	NotModified        bool
+}
+
+type NotificationListOptions struct {
+	All           bool
+	Participating bool
+	Since         *time.Time
+	Before        *time.Time
+	PerPage       int
+	Page          int
+	ETag          string
+	LastModified  string
+}
+
+type NotificationCommentOptions struct {
+	ETag         string
+	LastModified string
+}
+
+type RepositoryIssueCommentOptions struct {
+	Since   *time.Time
+	PerPage int
+	Page    int
+}
+
+func (o NotificationListOptions) query() url.Values {
+	q := url.Values{}
+	if o.All {
+		q.Set("all", "true")
+	}
+	if o.Participating {
+		q.Set("participating", "true")
+	}
+	if o.Since != nil {
+		q.Set("since", o.Since.UTC().Format(time.RFC3339))
+	}
+	if o.Before != nil {
+		q.Set("before", o.Before.UTC().Format(time.RFC3339))
+	}
+	if o.PerPage > 0 {
+		q.Set("per_page", strconv.Itoa(o.PerPage))
+	}
+	if o.Page > 0 {
+		q.Set("page", strconv.Itoa(o.Page))
+	}
+	return q
+}
+
 type LabelResult struct {
 	Name    string `json:"name"`
 	Created bool   `json:"created"`
@@ -219,6 +305,56 @@ func (c *Client) CreateComment(ctx context.Context, repo string, issueNumber int
 	return comment, err
 }
 
+func (c *Client) ListNotifications(ctx context.Context, opts NotificationListOptions) ([]Notification, ResponseMetadata, error) {
+	return c.listNotificationsPages(ctx, opts)
+}
+
+func (c *Client) WatchRepository(ctx context.Context, repo string) (Subscription, ResponseMetadata, error) {
+	var sub Subscription
+	var meta ResponseMetadata
+	resp, err := c.do(ctx, http.MethodPut, "/repos/"+repo+"/subscription", map[string]any{"subscribed": true}, &sub)
+	if err != nil {
+		return Subscription{}, meta, err
+	}
+	meta = responseMetadata(resp)
+	return sub, meta, nil
+}
+
+func (c *Client) GetNotificationComments(ctx context.Context, threadURL string, opts NotificationCommentOptions) ([]Comment, ResponseMetadata, error) {
+	var all []Comment
+	meta, err := c.listCommentPages(ctx, threadURL+"/comments", nil, opts.ETag, opts.LastModified, &all)
+	return all, meta, err
+}
+
+func (c *Client) ListRepositoryIssueComments(ctx context.Context, repo string, opts RepositoryIssueCommentOptions) ([]RepositoryIssueComment, ResponseMetadata, error) {
+	var all []RepositoryIssueComment
+	query := url.Values{}
+	if opts.PerPage > 0 {
+		query.Set("per_page", strconv.Itoa(opts.PerPage))
+	} else {
+		query.Set("per_page", "100")
+	}
+	if opts.Page > 0 {
+		query.Set("page", strconv.Itoa(opts.Page))
+	}
+	if opts.Since != nil {
+		query.Set("since", opts.Since.UTC().Format(time.RFC3339))
+	}
+	meta, err := c.listIssueCommentPages(ctx, "/repos/"+repo+"/issues/comments", query, &all)
+	return all, meta, err
+}
+
+func (c *Client) GetCollaboratorPermission(ctx context.Context, repo, user string) (Permission, ResponseMetadata, error) {
+	var perm Permission
+	var meta ResponseMetadata
+	resp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/collaborators/%s/permission", repo, url.PathEscape(user)), nil, &perm)
+	if err != nil {
+		return Permission{}, meta, err
+	}
+	meta = responseMetadata(resp)
+	return perm, meta, nil
+}
+
 func (c *Client) UpdateComment(ctx context.Context, repo string, commentID int64, body string) (Comment, error) {
 	var comment Comment
 	err := c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, commentID), map[string]string{"body": body}, &comment)
@@ -350,6 +486,146 @@ func (c *Client) doJSON(ctx context.Context, method, path string, in any, out an
 	return err
 }
 
+func (c *Client) listNotificationsPages(ctx context.Context, opts NotificationListOptions) ([]Notification, ResponseMetadata, error) {
+	query := opts.query()
+	meta := ResponseMetadata{}
+	var all []Notification
+	for page := 1; ; page++ {
+		q := cloneQuery(query)
+		if q.Get("per_page") == "" {
+			q.Set("per_page", "100")
+		}
+		if q.Get("page") == "" {
+			q.Set("page", strconv.Itoa(page))
+		}
+		var pageItems []Notification
+		resp, err := c.doConditional(ctx, http.MethodGet, withQuery("/notifications", q), nil, &pageItems, opts.ETag, opts.LastModified)
+		if resp != nil {
+			meta = responseMetadata(resp)
+			if meta.NotModified {
+				return all, meta, nil
+			}
+		}
+		if err != nil {
+			return nil, meta, err
+		}
+		if len(pageItems) == 0 {
+			return all, meta, nil
+		}
+		all = append(all, pageItems...)
+		if len(pageItems) < 100 {
+			return all, meta, nil
+		}
+	}
+}
+
+func (c *Client) listCommentPages(ctx context.Context, path string, query url.Values, etag, lastModified string, out *[]Comment) (ResponseMetadata, error) {
+	meta := ResponseMetadata{}
+	for page := 1; ; page++ {
+		q := cloneQuery(query)
+		if q.Get("per_page") == "" {
+			q.Set("per_page", "100")
+		}
+		if q.Get("page") == "" {
+			q.Set("page", strconv.Itoa(page))
+		}
+		var items []Comment
+		resp, err := c.doConditional(ctx, http.MethodGet, withQuery(path, q), nil, &items, etag, lastModified)
+		if resp != nil {
+			meta = responseMetadata(resp)
+			if meta.NotModified {
+				return meta, nil
+			}
+		}
+		if err != nil {
+			return meta, err
+		}
+		*out = append(*out, items...)
+		if len(items) < 100 {
+			return meta, nil
+		}
+	}
+}
+
+func (c *Client) listIssueCommentPages(ctx context.Context, path string, query url.Values, out *[]RepositoryIssueComment) (ResponseMetadata, error) {
+	meta := ResponseMetadata{}
+	for page := 1; ; page++ {
+		q := cloneQuery(query)
+		if q.Get("per_page") == "" {
+			q.Set("per_page", "100")
+		}
+		if q.Get("page") == "" {
+			q.Set("page", strconv.Itoa(page))
+		}
+		var items []RepositoryIssueComment
+		resp, err := c.doConditional(ctx, http.MethodGet, withQuery(path, q), nil, &items, "", "")
+		if resp != nil {
+			meta = responseMetadata(resp)
+		}
+		if err != nil {
+			return meta, err
+		}
+		*out = append(*out, items...)
+		if len(items) < 100 {
+			return meta, nil
+		}
+	}
+}
+
+func (c *Client) doConditional(ctx context.Context, method, path string, in any, out any, etag, lastModified string) (*http.Response, error) {
+	var body io.Reader
+	if in != nil {
+		data, err := json.Marshal(in)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(data)
+	}
+	endpoint, err := c.endpoint(path)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("User-Agent", "issue-spec")
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
+	if lastModified != "" {
+		req.Header.Set("If-Modified-Since", lastModified)
+	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified {
+		return resp, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return resp, &APIError{Method: method, URL: endpoint, StatusCode: resp.StatusCode, Body: redactTokenValue(string(data), c.Token)}
+	}
+	if out != nil {
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+			return resp, fmt.Errorf("decode GitHub response from %s: %w", endpoint, err)
+		}
+	} else {
+		io.Copy(io.Discard, resp.Body)
+	}
+	return resp, nil
+}
+
 func (c *Client) do(ctx context.Context, method, path string, in any, out any) (*http.Response, error) {
 	var body io.Reader
 	if in != nil {
@@ -384,6 +660,9 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) (
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotModified {
+		return resp, nil
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return resp, &APIError{Method: method, URL: endpoint, StatusCode: resp.StatusCode, Body: redactTokenValue(string(data), c.Token)}
@@ -397,6 +676,53 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) (
 		return resp, fmt.Errorf("decode GitHub response from %s: %w", endpoint, err)
 	}
 	return resp, nil
+}
+
+func responseMetadata(resp *http.Response) ResponseMetadata {
+	meta := ResponseMetadata{StatusCode: resp.StatusCode, Headers: resp.Header.Clone()}
+	meta.ETag = resp.Header.Get("ETag")
+	meta.LastModified = resp.Header.Get("Last-Modified")
+	meta.PollInterval = resp.Header.Get("X-Poll-Interval")
+	meta.RateLimitLimit, _ = strconv.Atoi(resp.Header.Get("X-RateLimit-Limit"))
+	meta.RateLimitRemaining, _ = strconv.Atoi(resp.Header.Get("X-RateLimit-Remaining"))
+	meta.RateLimitReset = resp.Header.Get("X-RateLimit-Reset")
+	meta.NotModified = resp.StatusCode == http.StatusNotModified
+	return meta
+}
+
+func cloneQuery(query url.Values) url.Values {
+	out := url.Values{}
+	for k, v := range query {
+		out[k] = append([]string(nil), v...)
+	}
+	return out
+}
+
+func withQuery(path string, query url.Values) string {
+	if len(query) == 0 {
+		return path
+	}
+	return path + "?" + query.Encode()
+}
+
+func pageSize(v url.Values) int {
+	if n, _ := strconv.Atoi(v.Get("per_page")); n > 0 {
+		return n
+	}
+	return 100
+}
+
+func lenValue(out any) int {
+	switch v := out.(type) {
+	case *[]Notification:
+		return len(*v)
+	case *[]Comment:
+		return len(*v)
+	case *[]RepositoryIssueComment:
+		return len(*v)
+	default:
+		return 0
+	}
 }
 
 func (c *Client) endpoint(path string) (string, error) {

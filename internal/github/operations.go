@@ -22,6 +22,17 @@ type Operations interface {
 	ListCheckRuns(context.Context, string, string) ([]CheckRun, error)
 }
 
+// RunnerOperations is the runner-facing GitHub surface used by the polling
+// workflow. It extends the existing command-facing API without changing it.
+type RunnerOperations interface {
+	Operations
+	ListNotifications(context.Context, NotificationListOptions) ([]Notification, ResponseMetadata, error)
+	WatchRepository(context.Context, string) (Subscription, ResponseMetadata, error)
+	GetNotificationComments(context.Context, string, NotificationCommentOptions) ([]Comment, ResponseMetadata, error)
+	ListRepositoryIssueComments(context.Context, string, RepositoryIssueCommentOptions) ([]RepositoryIssueComment, ResponseMetadata, error)
+	GetCollaboratorPermission(context.Context, string, string) (Permission, ResponseMetadata, error)
+}
+
 type BackendInfo struct {
 	Name string
 	Kind string
