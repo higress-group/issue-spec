@@ -203,6 +203,40 @@ func TestNewSessionReturnsPartialDispatchErrorWithMetadataOnSummaryFailure(t *te
 	}
 }
 
+func TestNewSessionRecoversSummaryFromRefreshedAcpxMessagesWhenPromptStdoutMissing(t *testing.T) {
+	agentText := "```issue_spec_coordinator_summary" + e2eSummaryJSON + "\n```"
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","acpxSessionId":"acpx-1","agentSessionId":"codex-1","history":[{"id":"seed"}]}`},
+		{stdout: "assistant output without coordinator summary"},
+		{stdout: e2eSessionShowWithAgentContentText(agentText)},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	result, err := adapter.NewSession(context.Background(), NewSessionRequest{
+		PublicSessionID:      "pub-1",
+		Prompt:               "please implement TASK-015",
+		TurnCorrelationToken: "turn-token-1",
+	})
+	if err != nil {
+		t.Fatalf("NewSession returned error: %v", err)
+	}
+	if result.Metadata.StableRecordID != "rec-1" || result.Metadata.LastTurnID != "turn-2" {
+		t.Fatalf("metadata was not refreshed: %+v", result.Metadata)
+	}
+	if !result.Output.SummaryFound || result.Output.Summary.Status != "completed" {
+		t.Fatalf("summary was not recovered: %+v", result.Output)
+	}
+	if got := result.Output.Summary.Diagnostics[0].Message; got != "No native sub-agents were dispatched because the task was handled locally." {
+		t.Fatalf("diagnostic message = %q", got)
+	}
+	if !strings.Contains(result.Output.RawStdout, "proposal #36") {
+		t.Fatalf("recovered output did not come from Agent content Text: %q", result.Output.RawStdout)
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("recorded %d commands, want create, prompt, refresh", len(runner.commands))
+	}
+}
+
 func TestClaudeCommandShapeSetsUserSettingsAndAllowedTools(t *testing.T) {
 	adapter := newTestAdapter(t, Config{
 		CWD:                       "/workspace",
@@ -254,6 +288,23 @@ func TestParseTurnOutputAcceptsSummaryBodyPrefixOnFenceOpener(t *testing.T) {
 	}
 	if output.ReplyText != "done" {
 		t.Fatalf("reply text = %q, want done", output.ReplyText)
+	}
+}
+
+func TestParseTurnOutputAcceptsE2EFragmentWithStringDiagnostics(t *testing.T) {
+	reply := "```issue_spec_coordinator_summary" + e2eSummaryJSON + "\n```"
+	output, err := ParseTurnOutput([]byte(reply), nil, contextbundle.SummaryBounds{})
+	if err != nil {
+		t.Fatalf("ParseTurnOutput returned error: %v", err)
+	}
+	if !output.SummaryFound || output.Summary.Status != "completed" {
+		t.Fatalf("summary not parsed from E2E fragment: %+v", output)
+	}
+	if got := output.Summary.Diagnostics[0].Message; got != "No native sub-agents were dispatched because the task was handled locally." {
+		t.Fatalf("diagnostic message = %q", got)
+	}
+	if output.Summary.Commands[0].ArtifactID != "" || output.Summary.Commands[0].ArtifactURL != "" {
+		t.Fatalf("nullable command refs should decode as empty strings: %+v", output.Summary.Commands[0])
 	}
 }
 
@@ -413,3 +464,38 @@ func (f *fakeRunner) Run(ctx context.Context, command Command) (CommandResult, e
 }
 
 const validSummaryJSON = `{"status":"completed","artifacts":[{"kind":"typed_comment","id":"PROCESS-NC-010","url":"https://github.com/higress-group/issue-spec/issues/30#issuecomment-1","action":"updated"}],"commands":[{"name":"issue-spec comment upsert","exit_code":0,"artifact_id":"PROCESS-NC-010","stdout_summary":"updated","stderr_summary":""}],"children":[{"id":"child-1","native_id":"native-1","role":"worker","process_id":"PROCESS-NC-010","status":"done","evidence":"tests passed"}],"processes":[{"process_id":"PROCESS-NC-010","task_id":"TASK-015","status":"done","evidence":"adapter tests passed"}],"diagnostics":[]}`
+
+const e2eSummaryJSON = `{
+  "status": "completed",
+  "artifacts": [
+    {"kind": "issue", "id": "36", "url": "https://github.com/higress-group/issue-spec/issues/36", "action": "created"}
+  ],
+  "commands": [
+    {"name": "issue-spec proposal create", "exit_code": 0, "artifact_id": null, "artifact_url": null, "stdout_summary": "proposal #36", "stderr_summary": null}
+  ],
+  "children": [],
+  "processes": [
+    {"process_id": "NATIVE-023", "status": "done", "evidence": "recovered summary from refreshed acpx message history"}
+  ],
+  "diagnostics": ["No native sub-agents were dispatched because the task was handled locally."]
+}`
+
+func e2eSessionShowWithAgentContentText(agentText string) string {
+	content := make([]string, 0, 19)
+	for i := 0; i < 18; i++ {
+		content = append(content, `{"Text":"working chunk `+strconv.Itoa(i)+`"}`)
+	}
+	content = append(content, `{"Text":`+strconv.Quote(agentText)+`}`)
+	userExample := "Prompt example, not terminal output.\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```"
+	return `{
+  "acpxRecordId": "rec-1",
+  "acpxSessionId": "acpx-2",
+  "agentSessionId": "codex-2",
+  "lastTurnId": "turn-2",
+  "historyLength": 2,
+  "messages": [
+    {"User": {"content": [{"Text": ` + strconv.Quote(userExample) + `}]}},
+    {"Agent": {"content": [` + strings.Join(content, ",") + `]}}
+  ]
+}`
+}

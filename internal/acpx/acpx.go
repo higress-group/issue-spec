@@ -272,7 +272,7 @@ func (a *Adapter) NewSession(ctx context.Context, req NewSessionRequest) (Dispat
 			return DispatchResult{}, dispatchErr
 		}
 	}
-	refreshed, refreshErr := a.Refresh(ctx, SessionRef{
+	snapshot, refreshErr := a.refreshSnapshot(ctx, SessionRef{
 		PublicSessionID: req.PublicSessionID,
 		SessionName:     sessionName,
 		StableRecordID:  meta.StableRecordID,
@@ -280,8 +280,8 @@ func (a *Adapter) NewSession(ctx context.Context, req NewSessionRequest) (Dispat
 	if refreshErr != nil {
 		return DispatchResult{}, refreshErr
 	}
-	if refreshed.StableRecordID != meta.StableRecordID {
-		return DispatchResult{}, fmt.Errorf("%w: refreshed record %q does not match new record %q", ErrResumeMismatch, refreshed.StableRecordID, meta.StableRecordID)
+	if snapshot.Metadata.StableRecordID != meta.StableRecordID {
+		return DispatchResult{}, fmt.Errorf("%w: refreshed record %q does not match new record %q", ErrResumeMismatch, snapshot.Metadata.StableRecordID, meta.StableRecordID)
 	}
 	result := DispatchResult{
 		PublicSessionID: req.PublicSessionID,
@@ -290,10 +290,14 @@ func (a *Adapter) NewSession(ctx context.Context, req NewSessionRequest) (Dispat
 		EnsuredSession:  req.UseEnsure,
 		NoWait:          dispatch.noWait,
 		Queued:          dispatch.noWait,
-		Metadata:        refreshed,
+		Metadata:        snapshot.Metadata,
 		Output:          dispatch.output,
 	}
 	if dispatchErr != nil {
+		if output, ok := recoverPromptOutputFromSnapshot(snapshot, dispatch.output, a.cfg.SummaryBounds); ok {
+			result.Output = output
+			return result, nil
+		}
 		return result, &PartialDispatchError{Result: result, Err: dispatchErr}
 	}
 	return result, nil
@@ -332,7 +336,7 @@ func (a *Adapter) Resume(ctx context.Context, req ResumeRequest) (DispatchResult
 			return DispatchResult{}, dispatchErr
 		}
 	}
-	after, refreshErr := a.Refresh(ctx, SessionRef{
+	afterSnapshot, refreshErr := a.refreshSnapshot(ctx, SessionRef{
 		PublicSessionID: req.PublicSessionID,
 		SessionName:     sessionName,
 		StableRecordID:  req.StableRecordID,
@@ -340,7 +344,7 @@ func (a *Adapter) Resume(ctx context.Context, req ResumeRequest) (DispatchResult
 	if refreshErr != nil {
 		return DispatchResult{}, refreshErr
 	}
-	if err := validateResumeContinuity(before, after, req.TurnCorrelationToken); err != nil {
+	if err := validateResumeContinuity(before, afterSnapshot.Metadata, req.TurnCorrelationToken); err != nil {
 		return DispatchResult{}, err
 	}
 	result := DispatchResult{
@@ -348,10 +352,14 @@ func (a *Adapter) Resume(ctx context.Context, req ResumeRequest) (DispatchResult
 		SessionName:     sessionName,
 		NoWait:          dispatch.noWait,
 		Queued:          dispatch.noWait,
-		Metadata:        after,
+		Metadata:        afterSnapshot.Metadata,
 		Output:          dispatch.output,
 	}
 	if dispatchErr != nil {
+		if output, ok := recoverPromptOutputFromSnapshot(afterSnapshot, dispatch.output, a.cfg.SummaryBounds); ok {
+			result.Output = output
+			return result, nil
+		}
 		return result, &PartialDispatchError{Result: result, Err: dispatchErr}
 	}
 	return result, nil
@@ -817,6 +825,111 @@ func firstTerminalOutput(candidates []string, bounds contextbundle.SummaryBounds
 	return TurnOutput{}, false, parseErr
 }
 
+func recoverPromptOutputFromSnapshot(snapshot sessionSnapshot, original TurnOutput, bounds contextbundle.SummaryBounds) (TurnOutput, bool) {
+	candidates := agentMessageTextCandidates(snapshot.Values)
+	for i := len(candidates) - 1; i >= 0; i-- {
+		candidate := strings.TrimSpace(candidates[i])
+		if candidate == "" {
+			continue
+		}
+		output, err := ParseTurnOutput([]byte(candidate), []byte(original.RawStderr), bounds)
+		if err == nil && output.SummaryFound {
+			return output, true
+		}
+		if errors.Is(err, ErrAmbiguousSummary) {
+			output, err = parseLatestCoordinatorSummaryFromText(candidate, original.RawStderr, bounds)
+			if err == nil && output.SummaryFound {
+				return output, true
+			}
+		}
+	}
+	return TurnOutput{}, false
+}
+
+func parseLatestCoordinatorSummaryFromText(text, stderr string, bounds contextbundle.SummaryBounds) (TurnOutput, error) {
+	blocks, err := contextbundle.FindCoordinatorSummaryBlocks(text)
+	if err != nil {
+		return TurnOutput{}, err
+	}
+	if len(blocks) == 0 {
+		return TurnOutput{}, ErrSummaryNotFound
+	}
+	var parseErr error
+	for i := len(blocks) - 1; i >= 0; i-- {
+		block := blocks[i]
+		summaryJSON := strings.TrimSpace(block.Body)
+		summary, err := contextbundle.ParseCoordinatorSummary([]byte(summaryJSON), bounds)
+		if err != nil {
+			parseErr = err
+			continue
+		}
+		return TurnOutput{
+			ReplyText:    strings.TrimSpace(text[:block.Start] + text[block.End:]),
+			SummaryJSON:  summaryJSON,
+			Summary:      summary,
+			Diagnostics:  strings.TrimSpace(stderr),
+			RawStdout:    text,
+			RawStderr:    stderr,
+			SummaryFound: true,
+		}, nil
+	}
+	if parseErr == nil {
+		parseErr = ErrSummaryNotFound
+	}
+	return TurnOutput{}, parseErr
+}
+
+func agentMessageTextCandidates(values map[string]any) []string {
+	messages, ok := values["messages"].([]any)
+	if !ok {
+		return nil
+	}
+	var candidates []string
+	for _, message := range messages {
+		messageMap, ok := message.(map[string]any)
+		if !ok {
+			continue
+		}
+		agentValue, ok := valueForKeyFold(messageMap, "Agent")
+		if !ok {
+			continue
+		}
+		for _, text := range contentTextEntries(agentValue) {
+			if strings.Contains(text, CoordinatorSummaryFence) {
+				candidates = append(candidates, text)
+			}
+		}
+	}
+	return candidates
+}
+
+func contentTextEntries(value any) []string {
+	var out []string
+	appendContentTextEntries(value, &out)
+	return out
+}
+
+func appendContentTextEntries(value any, out *[]string) {
+	switch typed := value.(type) {
+	case string:
+		if strings.TrimSpace(typed) != "" {
+			*out = append(*out, typed)
+		}
+	case []any:
+		for _, item := range typed {
+			appendContentTextEntries(item, out)
+		}
+	case map[string]any:
+		if text, ok := stringForKeyFold(typed, "Text"); ok {
+			*out = append(*out, text)
+			return
+		}
+		if content, ok := valueForKeyFold(typed, "content"); ok {
+			appendContentTextEntries(content, out)
+		}
+	}
+}
+
 func outputCandidates(value any, fallback []string) []string {
 	var out []string
 	collectOutputCandidates(value, &out)
@@ -1079,6 +1192,27 @@ func firstString(values map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func valueForKeyFold(values map[string]any, want string) (any, bool) {
+	for key, value := range values {
+		if strings.EqualFold(key, want) {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func stringForKeyFold(values map[string]any, want string) (string, bool) {
+	value, ok := valueForKeyFold(values, want)
+	if !ok {
+		return "", false
+	}
+	text, ok := value.(string)
+	if !ok || strings.TrimSpace(text) == "" {
+		return "", false
+	}
+	return text, true
 }
 
 func stringValue(value any) string {

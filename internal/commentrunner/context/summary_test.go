@@ -27,6 +27,28 @@ func TestParseCoordinatorSummaryAcceptsProvenanceOnlySchema(t *testing.T) {
 	}
 }
 
+func TestParseCoordinatorSummaryAcceptsE2EStringDiagnosticsAndNullCommandRefs(t *testing.T) {
+	summary, err := ParseCoordinatorSummary([]byte(`{
+  "status": "completed",
+  "artifacts": [
+    {"kind": "issue", "id": "36", "url": "https://github.com/higress-group/issue-spec/issues/36", "action": "created"}
+  ],
+  "commands": [
+    {"name": "issue-spec proposal create", "exit_code": 0, "artifact_id": null, "artifact_url": null, "stdout_summary": "proposal #36", "stderr_summary": null}
+  ],
+  "diagnostics": ["No native sub-agents were dispatched because the task was handled locally."]
+}`), SummaryBounds{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := summary.Diagnostics[0].Message; got != "No native sub-agents were dispatched because the task was handled locally." {
+		t.Fatalf("diagnostic message = %q", got)
+	}
+	if summary.Commands[0].ArtifactID != "" || summary.Commands[0].ArtifactURL != "" || summary.Commands[0].StderrSummary != "" {
+		t.Fatalf("nullable command refs should decode as empty strings: %+v", summary.Commands[0])
+	}
+}
+
 func TestParseCoordinatorSummaryRejectsMalformedOrOversizedOutput(t *testing.T) {
 	_, err := ParseCoordinatorSummary([]byte(`{"status":"queued"}`), SummaryBounds{})
 	if err == nil {

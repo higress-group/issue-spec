@@ -70,6 +70,35 @@ type DiagnosticSummary struct {
 	Message  string `json:"message"`
 }
 
+func (d *DiagnosticSummary) UnmarshalJSON(data []byte) error {
+	var message string
+	if err := json.Unmarshal(data, &message); err == nil {
+		d.Severity = ""
+		d.Message = message
+		return nil
+	}
+
+	var object struct {
+		Severity string `json:"severity,omitempty"`
+		Message  string `json:"message"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&object); err != nil {
+		return err
+	}
+	var extra struct{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("diagnostic contains multiple JSON values")
+		}
+		return err
+	}
+	d.Severity = object.Severity
+	d.Message = object.Message
+	return nil
+}
+
 type CoordinatorSummaryBlock struct {
 	Start int
 	End   int
