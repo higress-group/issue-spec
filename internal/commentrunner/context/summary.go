@@ -80,6 +80,7 @@ func (d *DiagnosticSummary) UnmarshalJSON(data []byte) error {
 
 	var object struct {
 		Severity string `json:"severity,omitempty"`
+		Level    string `json:"level,omitempty"`
 		Message  string `json:"message"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -95,6 +96,9 @@ func (d *DiagnosticSummary) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	d.Severity = object.Severity
+	if d.Severity == "" {
+		d.Severity = object.Level
+	}
 	d.Message = object.Message
 	return nil
 }

@@ -49,6 +49,24 @@ func TestParseCoordinatorSummaryAcceptsE2EStringDiagnosticsAndNullCommandRefs(t 
 	}
 }
 
+func TestParseCoordinatorSummaryAcceptsDiagnosticLevelAlias(t *testing.T) {
+	summary, err := ParseCoordinatorSummary([]byte(`{
+  "status": "completed",
+  "diagnostics": [
+    {"level": "info", "message": "runner recovered summary from acpx history"}
+  ]
+}`), SummaryBounds{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := summary.Diagnostics[0].Severity; got != "info" {
+		t.Fatalf("diagnostic severity = %q, want info", got)
+	}
+	if got := summary.Diagnostics[0].Message; got != "runner recovered summary from acpx history" {
+		t.Fatalf("diagnostic message = %q", got)
+	}
+}
+
 func TestParseCoordinatorSummaryRejectsMalformedOrOversizedOutput(t *testing.T) {
 	_, err := ParseCoordinatorSummary([]byte(`{"status":"queued"}`), SummaryBounds{})
 	if err == nil {
