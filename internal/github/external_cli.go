@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -207,9 +208,11 @@ type ExternalCLIAPIRequest struct {
 	Operation string
 	Method    string
 	Endpoint  string
+	Headers   http.Header
 	Query     url.Values
 	Body      any
 	Paginate  bool
+	Include   bool
 }
 
 func (r ExternalCLIAPIRequest) Validate() error {

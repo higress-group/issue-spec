@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -79,7 +80,31 @@ func (g *GHCLI) RunAPI(ctx context.Context, host string, request ExternalCLIAPIR
 	return g.cli.RunAPI(ctx, host, request)
 }
 
-func (g *GHCLI) runAuth(ctx context.Context, host, operation string, args []string) (ExternalCLIResult, error) {
+func (g *GHCLI) runAPIRaw(ctx context.Context, host string, request ExternalCLIAPIRequest) (ExternalCLIResult, ExternalCLICommand, error) {
+	if err := request.Validate(); err != nil {
+		return ExternalCLIResult{}, ExternalCLICommand{}, err
+	}
+	hostArgs, err := g.cli.hostArgs(host)
+	if err != nil {
+		return ExternalCLIResult{}, ExternalCLICommand{}, err
+	}
+	command, err := g.cli.Descriptor.APIAdapter.BuildCommand(g.cli.Descriptor.Identity, hostArgs, request)
+	if err != nil {
+		return ExternalCLIResult{}, ExternalCLICommand{}, err
+	}
+	command.Operation = request.Operation
+	command.Host = normalizeHost(host)
+	command.Method = strings.ToUpper(strings.TrimSpace(request.Method))
+	command.Endpoint = strings.TrimSpace(request.Endpoint)
+	result, runErr := g.cli.Runner.RunCLI(ctx, command)
+	return result, command, runErr
+}
+
+func (g *GHCLI) commandError(command ExternalCLICommand, result ExternalCLIResult, runErr error) error {
+	return g.cli.Descriptor.ErrorAdapter.CommandError(g.cli.Descriptor, command, result, runErr, g.cli.Redactor)
+}
+
+func (g *GHCLI) runAuthRaw(ctx context.Context, host, operation string, args []string) (ExternalCLIResult, ExternalCLICommand, error) {
 	args = append(append([]string{}, args...), ghHostArgs(host)...)
 	command := ExternalCLICommand{
 		Binary:    g.cli.Descriptor.Identity.Binary,
@@ -87,7 +112,16 @@ func (g *GHCLI) runAuth(ctx context.Context, host, operation string, args []stri
 		Operation: operation,
 		Host:      normalizeHost(host),
 	}
-	return g.cli.run(ctx, command)
+	result, runErr := g.cli.Runner.RunCLI(ctx, command)
+	return result, command, runErr
+}
+
+func (g *GHCLI) runAuth(ctx context.Context, host, operation string, args []string) (ExternalCLIResult, error) {
+	result, command, err := g.runAuthRaw(ctx, host, operation, args)
+	if err != nil || result.ExitCode != 0 {
+		return result, g.cli.Descriptor.ErrorAdapter.CommandError(g.cli.Descriptor, command, result, err, g.cli.Redactor)
+	}
+	return result, nil
 }
 
 type ghHostAdapter struct{}
@@ -114,15 +148,42 @@ func (GHAPIAdapter) BuildCommand(identity ExternalCLIIdentity, hostArgs []string
 	method := strings.ToUpper(strings.TrimSpace(request.Method))
 	endpoint := endpointWithQuery(strings.TrimSpace(request.Endpoint), request.Query)
 	args := []string{"api", "--method", method, "--header", githubAPIVersion}
+	args = append(args, ghAPIHeaderArgs(request.Headers)...)
 	args = append(args, hostArgs...)
 	if request.Paginate {
 		args = append(args, "--paginate")
+	}
+	if request.Include {
+		args = append(args, "--include")
 	}
 	if body != nil {
 		args = append(args, "--input", "-")
 	}
 	args = append(args, endpoint)
 	return ExternalCLICommand{Binary: identity.Binary, Args: args, Stdin: body}, nil
+}
+
+func ghAPIHeaderArgs(headers map[string][]string) []string {
+	keys := make([]string, 0, len(headers))
+	for key := range headers {
+		if strings.TrimSpace(key) != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	var args []string
+	for _, key := range keys {
+		values := append([]string{}, headers[key]...)
+		sort.Strings(values)
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			args = append(args, "--header", strings.TrimSpace(key)+": "+value)
+		}
+	}
+	return args
 }
 
 func endpointWithQuery(endpoint string, query url.Values) string {
