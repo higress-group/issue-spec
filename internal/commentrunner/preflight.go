@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/github"
 )
 
 const (
@@ -40,8 +41,14 @@ type PreflightReport struct {
 
 type PreflightDependencies struct {
 	SelectBackend func(context.Context, string) (auth.GitHubBackendSelection, error)
+	OpenBackend   func(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error)
 	LookPath      func(string) (string, error)
 	RunCommand    func(context.Context, string, ...string) ([]byte, error)
+}
+
+type PreflightRunnerBackend interface {
+	BackendInfo() github.BackendInfo
+	GetRepositorySubscription(context.Context, string) (github.RepositorySubscriptionResult, error)
 }
 
 func RunPreflight(ctx context.Context, cfg Config, deps PreflightDependencies) PreflightReport {
@@ -55,6 +62,7 @@ func RunPreflight(ctx context.Context, cfg Config, deps PreflightDependencies) P
 	}
 
 	selection, backendErr := deps.SelectBackend(ctx, cfg.Hostname)
+	var runnerBackend PreflightRunnerBackend
 	if backendErr != nil {
 		report.add(PreflightCheck{Name: "github-backend", Status: CheckError, Detail: backendErr.Error(), Hint: "Run issue-spec auth status --json or configure ISSUE_SPEC_GITHUB_BACKEND."})
 	} else {
@@ -63,6 +71,14 @@ func RunPreflight(ctx context.Context, cfg Config, deps PreflightDependencies) P
 			Status: CheckOK,
 			Detail: fmt.Sprintf("%s backend selected for %s (%s)", selection.Name, selection.Host, selection.SelectionSource),
 		})
+		var err error
+		runnerBackend, err = deps.OpenBackend(ctx, selection)
+		if err != nil {
+			report.add(PreflightCheck{Name: "runner-backend", Status: CheckError, Detail: err.Error(), Hint: "Selected GitHub backend must support runner repository subscription checks."})
+		} else {
+			info := runnerBackend.BackendInfo()
+			report.add(PreflightCheck{Name: "runner-backend", Status: CheckOK, Detail: fmt.Sprintf("%s backend ready for %s", info.Name, info.Host)})
+		}
 	}
 
 	if needsGHCheck(cfg, selection, backendErr) {
@@ -72,11 +88,7 @@ func RunPreflight(ctx context.Context, cfg Config, deps PreflightDependencies) P
 	}
 
 	for _, repo := range cfg.Repositories {
-		report.add(PreflightCheck{
-			Name:   "repository-watch:" + repo,
-			Status: CheckSkipped,
-			Detail: "subscription/watch verification is exposed as a preflight slot; runner GitHub backend operations are implemented by later tasks",
-		})
+		report.add(repositoryWatchCheck(ctx, repo, runnerBackend, backendErr))
 	}
 
 	if cfg.GHConfigDir == "" {
@@ -104,6 +116,9 @@ func (d PreflightDependencies) withDefaults() PreflightDependencies {
 			return auth.SelectGitHubBackend(ctx, host)
 		}
 	}
+	if d.OpenBackend == nil {
+		d.OpenBackend = defaultPreflightRunnerBackend
+	}
 	if d.LookPath == nil {
 		d.LookPath = exec.LookPath
 	}
@@ -114,6 +129,60 @@ func (d PreflightDependencies) withDefaults() PreflightDependencies {
 		}
 	}
 	return d
+}
+
+func defaultPreflightRunnerBackend(_ context.Context, selection auth.GitHubBackendSelection) (PreflightRunnerBackend, error) {
+	switch selection.Name {
+	case auth.GitHubBackendNameREST:
+		if strings.TrimSpace(selection.Token.Value) == "" {
+			return nil, fmt.Errorf("rest GitHub backend selected without a token")
+		}
+		return github.NewClient(selection.Host, selection.Token.Value), nil
+	case auth.GitHubBackendNameGH:
+		return github.NewGHBackend(github.GHBackendOptions{Host: selection.Host})
+	default:
+		return nil, fmt.Errorf("unsupported GitHub backend %q", selection.Name)
+	}
+}
+
+func repositoryWatchCheck(ctx context.Context, repo string, backend PreflightRunnerBackend, backendErr error) PreflightCheck {
+	check := PreflightCheck{Name: "repository-watch:" + repo}
+	if backendErr != nil {
+		check.Status = CheckError
+		check.Detail = "cannot verify repository subscription because GitHub backend selection failed: " + backendErr.Error()
+		return check
+	}
+	if backend == nil {
+		check.Status = CheckError
+		check.Detail = "cannot verify repository subscription because runner backend is unavailable"
+		check.Hint = "Configure a runner-capable GitHub backend before polling."
+		return check
+	}
+	result, err := backend.GetRepositorySubscription(ctx, repo)
+	if err != nil {
+		check.Status = CheckError
+		check.Detail = "subscription lookup failed: " + err.Error()
+		check.Hint = "Ensure the runner identity can read the repository subscription and has watched the repository."
+		return check
+	}
+	if !result.Subscription.Subscribed {
+		check.Status = CheckError
+		check.Detail = "runner identity is not subscribed to repository notifications"
+		check.Hint = "Watch the repository with notifications enabled before starting the runner."
+		return check
+	}
+	if result.Subscription.Ignored {
+		check.Status = CheckError
+		check.Detail = "runner identity is ignoring repository notifications"
+		check.Hint = "Unignore repository notifications before starting the runner."
+		return check
+	}
+	check.Status = CheckOK
+	check.Detail = "repository notifications are watched"
+	if result.Subscription.Reason != "" {
+		check.Detail += " (" + result.Subscription.Reason + ")"
+	}
+	return check
 }
 
 func (r *PreflightReport) add(check PreflightCheck) {

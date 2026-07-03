@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/github"
 )
 
 func TestPreflightReportsMissingBwrapAndAcpx(t *testing.T) {
@@ -22,6 +23,7 @@ func TestPreflightReportsMissingBwrapAndAcpx(t *testing.T) {
 				SelectionSource: "test",
 			}, nil
 		},
+		OpenBackend: watchedPreflightBackend,
 		LookPath: func(name string) (string, error) {
 			if name == "gh" {
 				return "/test/bin/gh", nil
@@ -60,6 +62,7 @@ func TestPreflightUnsafeNoSandboxSkipsBwrapAndMarksBoundaryDisabled(t *testing.T
 				SelectionSource: "test",
 			}, nil
 		},
+		OpenBackend: watchedPreflightBackend,
 		LookPath: func(name string) (string, error) {
 			switch name {
 			case "gh":
@@ -83,6 +86,39 @@ func TestPreflightUnsafeNoSandboxSkipsBwrapAndMarksBoundaryDisabled(t *testing.T
 	bwrap := findCheck(t, report, "bwrap")
 	if bwrap.Status != CheckSkipped {
 		t.Fatalf("bwrap not skipped in unsafe mode: %+v", bwrap)
+	}
+}
+
+func TestPreflightFailsWhenRepositoryWatchCannotBeConfirmed(t *testing.T) {
+	cfg := testPreflightConfig()
+	cfg.UnsafeNoSandbox = true
+	report := RunPreflight(context.Background(), cfg, PreflightDependencies{
+		SelectBackend: func(context.Context, string) (auth.GitHubBackendSelection, error) {
+			return auth.GitHubBackendSelection{
+				Mode:            auth.GitHubBackendModeREST,
+				Name:            auth.GitHubBackendNameREST,
+				Kind:            auth.GitHubBackendKindREST,
+				Host:            "github.com",
+				SelectionSource: "test",
+			}, nil
+		},
+		OpenBackend: func(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error) {
+			return fakePreflightBackend{subscription: github.RepositorySubscription{Subscribed: false}}, nil
+		},
+		LookPath: func(name string) (string, error) {
+			if name == "acpx" {
+				return "/test/bin/acpx", nil
+			}
+			return "", errors.New("missing")
+		},
+	})
+
+	if report.OK {
+		t.Fatalf("preflight unexpectedly OK: %+v", report)
+	}
+	watch := findCheck(t, report, "repository-watch:o/r")
+	if watch.Status != CheckError || !strings.Contains(watch.Detail, "not subscribed") {
+		t.Fatalf("unexpected repository watch check: %+v", watch)
 	}
 }
 
@@ -113,4 +149,21 @@ func findCheck(t *testing.T, report PreflightReport, name string) PreflightCheck
 	}
 	t.Fatalf("missing preflight check %q in %+v", name, report.Checks)
 	return PreflightCheck{}
+}
+
+func watchedPreflightBackend(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error) {
+	return fakePreflightBackend{subscription: github.RepositorySubscription{Subscribed: true, Reason: "subscribed"}}, nil
+}
+
+type fakePreflightBackend struct {
+	subscription github.RepositorySubscription
+	err          error
+}
+
+func (f fakePreflightBackend) BackendInfo() github.BackendInfo {
+	return github.BackendInfo{Name: "fake", Host: "github.com"}
+}
+
+func (f fakePreflightBackend) GetRepositorySubscription(context.Context, string) (github.RepositorySubscriptionResult, error) {
+	return github.RepositorySubscriptionResult{Subscription: f.subscription}, f.err
 }

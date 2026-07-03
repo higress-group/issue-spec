@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type RunnerPreflightResult struct {
@@ -405,6 +406,11 @@ func parseHTTPMetadata(headerBlock []byte) (ResponseMetadata, error) {
 }
 
 func metadataFromHeaders(statusCode int, headers http.Header) ResponseMetadata {
+	resetUnix := atoi64Header(headers, "X-RateLimit-Reset")
+	var resetAt time.Time
+	if resetUnix > 0 {
+		resetAt = time.Unix(resetUnix, 0).UTC()
+	}
 	return ResponseMetadata{
 		StatusCode:          statusCode,
 		NotModified:         statusCode == http.StatusNotModified,
@@ -416,7 +422,8 @@ func metadataFromHeaders(statusCode int, headers http.Header) ResponseMetadata {
 			Limit:     atoiHeader(headers, "X-RateLimit-Limit"),
 			Remaining: atoiHeader(headers, "X-RateLimit-Remaining"),
 			Used:      atoiHeader(headers, "X-RateLimit-Used"),
-			ResetUnix: atoi64Header(headers, "X-RateLimit-Reset"),
+			ResetUnix: resetUnix,
+			ResetAt:   resetAt,
 			Resource:  headers.Get("X-RateLimit-Resource"),
 		},
 	}

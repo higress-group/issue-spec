@@ -71,6 +71,7 @@ type GitHubBackendSelection struct {
 
 type GitHubBackendSelectionOptions struct {
 	GHAuthenticated func(context.Context, string) error
+	Mode            *GitHubBackendMode
 }
 
 type credentialFile struct {
@@ -100,7 +101,7 @@ func SelectGitHubBackend(ctx context.Context, host string) (GitHubBackendSelecti
 
 func SelectGitHubBackendWithOptions(ctx context.Context, host string, opts GitHubBackendSelectionOptions) (GitHubBackendSelection, error) {
 	host = NormalizeHost(host)
-	mode, err := GitHubBackendModeFromEnv()
+	mode, err := gitHubBackendModeForSelection(opts)
 	selection := GitHubBackendSelection{Mode: mode, Host: host}
 	if err != nil {
 		return selection, err
@@ -146,6 +147,17 @@ func SelectGitHubBackendWithOptions(ctx context.Context, host string, opts GitHu
 		return selection, fmt.Errorf("%w; gh authentication probe failed for %s: %v", err, host, probeErr)
 	}
 	return selectGHBackend(mode, host, "auto:gh"), nil
+}
+
+func gitHubBackendModeForSelection(opts GitHubBackendSelectionOptions) (GitHubBackendMode, error) {
+	if opts.Mode != nil {
+		mode := *opts.Mode
+		if _, err := ParseGitHubBackendMode(string(mode)); err != nil {
+			return mode, err
+		}
+		return mode, nil
+	}
+	return GitHubBackendModeFromEnv()
 }
 
 func (s GitHubBackendSelection) Diagnostics() GitHubBackendDiagnostics {

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
 	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/github"
 )
 
 func TestRootUsageDocumentsRunnerCommand(t *testing.T) {
@@ -138,6 +141,41 @@ func TestRunnerPollDryRunIntakeErrorReturnsFailure(t *testing.T) {
 	}
 }
 
+func TestRunnerPollDryRunIntakeNotOKReturnsFailure(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	app.runnerIntake = func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error) {
+		return intake.Result{OK: false, Diagnostics: []intake.Diagnostic{{Message: "notification failed"}}}, nil
+	}
+	app.runnerDispatch = func(context.Context, commentrunner.Config) (jobs.Result, error) {
+		t.Fatal("dry-run must not dispatch jobs")
+		return jobs.Result{}, nil
+	}
+	code := app.runRunner(context.Background(), []string{
+		"poll",
+		"--repo", "o/r",
+		"--runner", "issue-spec-bot",
+		"--state", "/tmp/state.json",
+		"--workspace-root", "/tmp/workspaces",
+		"--dry-run",
+		"--json",
+	})
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var got runnerDryRunResult
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.OK || got.Intake == nil || !strings.Contains(got.Error, "intake reported failure") {
+		t.Fatalf("unexpected dry-run result: %+v", got)
+	}
+}
+
 func TestRunnerPollWithoutDryRunRunsIntakeAndOneDispatch(t *testing.T) {
 	clearCommandAuthEnv(t)
 	var out, errOut bytes.Buffer
@@ -199,4 +237,170 @@ func TestRunnerPollWithoutDryRunRunsIntakeAndOneDispatch(t *testing.T) {
 	if got.Mode != "run" || got.Reconcile == nil || got.Dispatch == nil || got.Dispatch.Status != state.StatusCompleted {
 		t.Fatalf("unexpected run output: %+v", got)
 	}
+}
+
+func TestRunnerPollStopsBeforeDispatchWhenIntakeNotOK(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	app.runnerReconcile = func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error) {
+		return jobs.ReconcileResult{}, nil
+	}
+	app.runnerIntake = func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error) {
+		return intake.Result{OK: false, Diagnostics: []intake.Diagnostic{{Message: "rate limited"}}}, nil
+	}
+	app.runnerDispatch = func(context.Context, commentrunner.Config) (jobs.Result, error) {
+		t.Fatal("dispatch must not run after intake reported failure")
+		return jobs.Result{}, nil
+	}
+	code := app.runRunner(context.Background(), []string{
+		"poll",
+		"--repo", "o/r",
+		"--runner", "issue-spec-bot",
+		"--state", "/tmp/state.json",
+		"--workspace-root", "/tmp/workspaces",
+		"--once",
+		"--json",
+	})
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var got runnerDryRunResult
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.OK || got.Dispatch != nil || got.Intake == nil || !strings.Contains(got.Error, "intake reported failure") {
+		t.Fatalf("unexpected run output: %+v", got)
+	}
+}
+
+func TestRunnerPollWithoutOnceLoopsUntilContextCancellation(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	reconcileCalls := 0
+	app.runnerReconcile = func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error) {
+		reconcileCalls++
+		return jobs.ReconcileResult{}, nil
+	}
+	intakeCalls := 0
+	app.runnerIntake = func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error) {
+		intakeCalls++
+		return intake.Result{OK: true, Next: intake.NextStep{PollAfter: 0}}, nil
+	}
+	dispatchCalls := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app.runnerDispatch = func(context.Context, commentrunner.Config) (jobs.Result, error) {
+		dispatchCalls++
+		if dispatchCalls == 2 {
+			cancel()
+		}
+		return jobs.Result{Reason: "no ready job"}, nil
+	}
+	code := app.runRunner(ctx, []string{
+		"poll",
+		"--repo", "o/r",
+		"--runner", "issue-spec-bot",
+		"--state", "/tmp/state.json",
+		"--workspace-root", "/tmp/workspaces",
+		"--json",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if reconcileCalls != 2 || intakeCalls != 2 || dispatchCalls != 2 {
+		t.Fatalf("loop calls reconcile=%d intake=%d dispatch=%d", reconcileCalls, intakeCalls, dispatchCalls)
+	}
+}
+
+func TestRunnerBackendFlagOverridesEnvForEveryPhase(t *testing.T) {
+	clearCommandAuthEnv(t)
+	t.Setenv(auth.GitHubBackendEnv, "gh")
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = func(context.Context, string) (auth.GitHubBackendSelection, error) {
+		t.Fatal("runner must not use env-only backend selector")
+		return auth.GitHubBackendSelection{}, nil
+	}
+	var selectedModes []auth.GitHubBackendMode
+	app.selectRunnerBackend = func(_ context.Context, host string, mode auth.GitHubBackendMode) (auth.GitHubBackendSelection, error) {
+		selectedModes = append(selectedModes, mode)
+		return auth.GitHubBackendSelection{
+			Mode:            mode,
+			Name:            auth.GitHubBackendNameREST,
+			Kind:            auth.GitHubBackendKindREST,
+			Host:            host,
+			SelectionSource: "test",
+			Token:           auth.Token{Value: "token", Host: host},
+		}, nil
+	}
+	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) {
+		return &runnerPhaseBackend{fakeGitHubBackend: fakeGitHubBackend{info: github.BackendInfo{Name: "rest", Kind: "rest", Host: "github.com"}}}, nil
+	}
+	code := app.runRunner(context.Background(), []string{
+		"poll",
+		"--repo", "o/r",
+		"--runner", "issue-spec-bot",
+		"--backend", "rest",
+		"--state", t.TempDir() + "/state.json",
+		"--workspace-root", t.TempDir(),
+		"--once",
+		"--unsafe-no-sandbox",
+		"--acpx-path", os.Args[0],
+		"--json",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if len(selectedModes) < 4 {
+		t.Fatalf("selected modes = %v, want preflight/intake/reconcile/dispatch", selectedModes)
+	}
+	for _, mode := range selectedModes {
+		if mode != auth.GitHubBackendModeREST {
+			t.Fatalf("selected mode = %s, want flag rest; all modes=%v", mode, selectedModes)
+		}
+	}
+}
+
+type runnerPhaseBackend struct {
+	fakeGitHubBackend
+}
+
+func (b *runnerPhaseBackend) PollNotifications(context.Context, github.NotificationListOptions) (github.NotificationListResult, error) {
+	return github.NotificationListResult{Metadata: github.ResponseMetadata{StatusCode: http.StatusNotModified, NotModified: true}}, nil
+}
+
+func (b *runnerPhaseBackend) GetRepositorySubscription(context.Context, string) (github.RepositorySubscriptionResult, error) {
+	return github.RepositorySubscriptionResult{Subscription: github.RepositorySubscription{Subscribed: true, Reason: "subscribed"}}, nil
+}
+
+func (b *runnerPhaseBackend) GetIssueContext(context.Context, string, int, github.ConditionalRequest) (github.IssueContextResult, error) {
+	return github.IssueContextResult{}, nil
+}
+
+func (b *runnerPhaseBackend) ListIssueCommentsPage(context.Context, string, int, github.CommentListOptions) (github.IssueCommentsResult, error) {
+	return github.IssueCommentsResult{Metadata: github.ResponseMetadata{StatusCode: http.StatusOK}}, nil
+}
+
+func (b *runnerPhaseBackend) ListRepositoryIssueCommentsPage(context.Context, string, github.CommentListOptions) (github.IssueCommentsResult, error) {
+	return github.IssueCommentsResult{Metadata: github.ResponseMetadata{StatusCode: http.StatusOK}}, nil
+}
+
+func (b *runnerPhaseBackend) GetCollaboratorPermission(context.Context, string, string) (github.CollaboratorPermissionResult, error) {
+	return github.CollaboratorPermissionResult{Permission: github.CollaboratorPermission{Permission: "write"}, CanWrite: true}, nil
+}
+
+func (b *runnerPhaseBackend) CreateRunnerComment(context.Context, string, int, string) (github.RunnerCommentResult, error) {
+	return github.RunnerCommentResult{}, nil
+}
+
+func (b *runnerPhaseBackend) UpdateRunnerComment(context.Context, string, int64, string) (github.RunnerCommentResult, error) {
+	return github.RunnerCommentResult{}, nil
 }

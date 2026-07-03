@@ -26,6 +26,7 @@ type app struct {
 	err io.Writer
 
 	selectGitHubBackend func(context.Context, string) (auth.GitHubBackendSelection, error)
+	selectRunnerBackend func(context.Context, string, auth.GitHubBackendMode) (auth.GitHubBackendSelection, error)
 	newGitHubBackend    func(context.Context, auth.GitHubBackendSelection) (github.Backend, error)
 	gitHubBackendToken  func(context.Context, auth.GitHubBackendSelection) (string, error)
 	runnerPreflight     func(context.Context, commentrunner.Config) commentrunner.PreflightReport
@@ -83,6 +84,7 @@ func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 		out:                 out,
 		err:                 errOut,
 		selectGitHubBackend: defaultSelectGitHubBackend,
+		selectRunnerBackend: defaultSelectRunnerBackend,
 		newGitHubBackend:    defaultNewGitHubBackend,
 		gitHubBackendToken:  defaultGitHubBackendToken,
 	}
@@ -95,6 +97,13 @@ var ghLookPath = exec.LookPath
 func defaultSelectGitHubBackend(ctx context.Context, host string) (auth.GitHubBackendSelection, error) {
 	return auth.SelectGitHubBackendWithOptions(ctx, host, auth.GitHubBackendSelectionOptions{
 		GHAuthenticated: ghAuthenticated,
+	})
+}
+
+func defaultSelectRunnerBackend(ctx context.Context, host string, mode auth.GitHubBackendMode) (auth.GitHubBackendSelection, error) {
+	return auth.SelectGitHubBackendWithOptions(ctx, host, auth.GitHubBackendSelectionOptions{
+		GHAuthenticated: ghAuthenticated,
+		Mode:            &mode,
 	})
 }
 
@@ -154,6 +163,14 @@ func (a *app) selectBackend(ctx context.Context, host string) (auth.GitHubBacken
 		return a.selectGitHubBackend(ctx, host)
 	}
 	return defaultSelectGitHubBackend(ctx, host)
+}
+
+func (a *app) selectBackendForRunner(ctx context.Context, cfg commentrunner.Config) (auth.GitHubBackendSelection, error) {
+	cfg = cfg.Normalized()
+	if a.selectRunnerBackend != nil {
+		return a.selectRunnerBackend(ctx, cfg.Hostname, cfg.GitHubBackend)
+	}
+	return defaultSelectRunnerBackend(ctx, cfg.Hostname, cfg.GitHubBackend)
 }
 
 func (a *app) backendForSelection(ctx context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {

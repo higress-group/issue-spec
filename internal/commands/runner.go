@@ -60,52 +60,41 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 	}
 	if !opts.DryRun {
 		report := a.runRunnerPreflight(ctx, cfg)
-		var reconcileResult *jobs.ReconcileResult
-		var intakeResult *intake.Result
-		var dispatchResult *jobs.Result
-		runErr := ""
-		if report.OK {
-			reconcile, err := a.runRunnerReconcile(ctx, cfg)
-			if err != nil {
-				runErr = err.Error()
-			} else {
-				reconcileResult = &reconcile
-				result, err := a.runRunnerIntake(ctx, cfg, intake.Options{})
-				if err != nil {
-					runErr = err.Error()
-				} else {
-					intakeResult = &result
-					dispatch, err := a.runRunnerDispatch(ctx, cfg)
-					if err != nil {
-						runErr = err.Error()
-					}
-					dispatchResult = &dispatch
-				}
+		if !report.OK {
+			result := runnerDryRunResult{
+				OK:        false,
+				Mode:      "run",
+				Once:      opts.Once,
+				Actions:   actualRunnerPollActions(cfg, opts.Once),
+				Config:    cfg,
+				Preflight: report,
 			}
-		}
-		result := runnerDryRunResult{
-			OK:        report.OK && runErr == "",
-			Mode:      "run",
-			Once:      opts.Once,
-			Actions:   []string{"load trusted runner config", "run preflight checks", "reconcile in-flight jobs before polling", "poll configured repositories once", "process one cancellation or dispatch one ready job"},
-			Config:    cfg,
-			Preflight: report,
-			Reconcile: reconcileResult,
-			Intake:    intakeResult,
-			Dispatch:  dispatchResult,
-			Error:     runErr,
-		}
-		if opts.JSON {
-			if code := a.outputJSON(result); code != 0 {
+			if code := a.printRunnerPollResult(result, opts.JSON); code != 0 {
 				return code
 			}
-		} else {
-			a.printRunnerPoll(result)
+			return 1
 		}
-		if result.OK {
-			return 0
+		for {
+			if err := ctx.Err(); err != nil {
+				return 0
+			}
+			result := a.runRunnerPollCycle(ctx, cfg, opts, report)
+			if code := a.printRunnerPollResult(result, opts.JSON); code != 0 {
+				return code
+			}
+			if !result.OK {
+				if ctx.Err() != nil {
+					return 0
+				}
+				return 1
+			}
+			if opts.Once {
+				return 0
+			}
+			if !waitForNextRunnerPoll(ctx, result.Intake) {
+				return 0
+			}
 		}
-		return 1
 	}
 	report := a.runRunnerPreflight(ctx, cfg)
 	var intakeResult *intake.Result
@@ -116,6 +105,9 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 			intakeErr = err.Error()
 		} else {
 			intakeResult = &result
+			if !result.OK {
+				intakeErr = "intake reported failure"
+			}
 		}
 	}
 	result := runnerDryRunResult{
@@ -142,6 +134,80 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 		return 0
 	}
 	return 1
+}
+
+func (a *app) runRunnerPollCycle(ctx context.Context, cfg commentrunner.Config, opts runnerCommandOptions, report commentrunner.PreflightReport) runnerDryRunResult {
+	var reconcileResult *jobs.ReconcileResult
+	var intakeResult *intake.Result
+	var dispatchResult *jobs.Result
+	runErr := ""
+	reconcile, err := a.runRunnerReconcile(ctx, cfg)
+	if err != nil {
+		runErr = err.Error()
+	} else {
+		reconcileResult = &reconcile
+		result, err := a.runRunnerIntake(ctx, cfg, intake.Options{})
+		if err != nil {
+			runErr = err.Error()
+		} else {
+			intakeResult = &result
+			if !result.OK {
+				runErr = "intake reported failure"
+			} else {
+				dispatch, err := a.runRunnerDispatch(ctx, cfg)
+				if err != nil {
+					runErr = err.Error()
+				}
+				dispatchResult = &dispatch
+			}
+		}
+	}
+	return runnerDryRunResult{
+		OK:        report.OK && runErr == "",
+		Mode:      "run",
+		Once:      opts.Once,
+		Actions:   actualRunnerPollActions(cfg, opts.Once),
+		Config:    cfg,
+		Preflight: report,
+		Reconcile: reconcileResult,
+		Intake:    intakeResult,
+		Dispatch:  dispatchResult,
+		Error:     runErr,
+	}
+}
+
+func (a *app) printRunnerPollResult(result runnerDryRunResult, jsonOut bool) int {
+	if jsonOut {
+		return a.outputJSON(result)
+	}
+	a.printRunnerPoll(result)
+	return 0
+}
+
+func waitForNextRunnerPoll(ctx context.Context, result *intake.Result) bool {
+	delay := time.Duration(0)
+	if result != nil {
+		delay = result.Next.PollAfter
+		if delay <= 0 && !result.Next.PollAt.IsZero() {
+			delay = time.Until(result.Next.PollAt)
+		}
+	}
+	if delay <= 0 {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+			return true
+		}
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func (a *app) runRunnerPreflightCommand(ctx context.Context, args []string) int {
@@ -289,7 +355,20 @@ func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) 
 		return a.runnerPreflight(ctx, cfg)
 	}
 	return commentrunner.RunPreflight(ctx, cfg, commentrunner.PreflightDependencies{
-		SelectBackend: a.selectBackend,
+		SelectBackend: func(ctx context.Context, _ string) (auth.GitHubBackendSelection, error) {
+			return a.selectBackendForRunner(ctx, cfg)
+		},
+		OpenBackend: func(ctx context.Context, selection auth.GitHubBackendSelection) (commentrunner.PreflightRunnerBackend, error) {
+			backend, err := a.backendForSelection(ctx, selection)
+			if err != nil {
+				return nil, err
+			}
+			runnerBackend, ok := backend.(commentrunner.PreflightRunnerBackend)
+			if !ok {
+				return nil, fmt.Errorf("selected GitHub backend does not support runner preflight")
+			}
+			return runnerBackend, nil
+		},
 	})
 }
 
@@ -297,7 +376,7 @@ func (a *app) runRunnerIntake(ctx context.Context, cfg commentrunner.Config, opt
 	if a.runnerIntake != nil {
 		return a.runnerIntake(ctx, cfg, opts)
 	}
-	selection, err := a.selectBackend(ctx, cfg.Hostname)
+	selection, err := a.selectBackendForRunner(ctx, cfg)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -321,7 +400,7 @@ func (a *app) runRunnerReconcile(ctx context.Context, cfg commentrunner.Config) 
 	if a.runnerReconcile != nil {
 		return a.runnerReconcile(ctx, cfg)
 	}
-	selection, err := a.selectBackend(ctx, cfg.Hostname)
+	selection, err := a.selectBackendForRunner(ctx, cfg)
 	if err != nil {
 		return jobs.ReconcileResult{}, err
 	}
@@ -359,7 +438,7 @@ func (a *app) runRunnerDispatch(ctx context.Context, cfg commentrunner.Config) (
 	if a.runnerDispatch != nil {
 		return a.runnerDispatch(ctx, cfg)
 	}
-	selection, err := a.selectBackend(ctx, cfg.Hostname)
+	selection, err := a.selectBackendForRunner(ctx, cfg)
 	if err != nil {
 		return jobs.Result{}, err
 	}
@@ -389,7 +468,7 @@ func (a *app) runRunnerDispatch(ctx context.Context, cfg commentrunner.Config) (
 			TempGHConfigDir: cfg.GHConfigDir,
 		}},
 		Acpx:      jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg)},
-		Artifacts: jobs.NoopArtifactProvider{},
+		Artifacts: &jobs.IssueSpecArtifactProvider{GitHub: runnerBackend},
 		Writeback: &writeback.Service{GitHub: runnerBackend, Store: store},
 	}
 	return dispatcher.RunNext(ctx)
@@ -408,6 +487,21 @@ func plannedRunnerPollActions(cfg commentrunner.Config, once bool) []string {
 		"on real runs: reconcile in-flight jobs before polling new comments",
 		"check notification intake and repository comments fallback",
 		"dry-run only: skip GitHub writes, state persistence, workspace changes, sandbox execution, and acpx dispatch",
+	}
+}
+
+func actualRunnerPollActions(cfg commentrunner.Config, once bool) []string {
+	cfg = cfg.Normalized()
+	cycle := "poll configured repositories continuously"
+	if once {
+		cycle = "poll configured repositories once"
+	}
+	return []string{
+		"load trusted runner config",
+		"run preflight checks",
+		"reconcile in-flight jobs before polling",
+		cycle + ": " + strings.Join(cfg.Repositories, ", "),
+		"process one cancellation or dispatch one ready job",
 	}
 }
 
