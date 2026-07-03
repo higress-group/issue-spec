@@ -191,6 +191,43 @@ func (e *CommandError) Unwrap() error {
 	return ErrCommandFailed
 }
 
+type OutputSummaryError struct {
+	Err error
+}
+
+func (e *OutputSummaryError) Error() string {
+	if e == nil || e.Err == nil {
+		return "coordinator summary parse failed"
+	}
+	return e.Err.Error()
+}
+
+func (e *OutputSummaryError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+type PartialDispatchError struct {
+	Result DispatchResult
+	Err    error
+}
+
+func (e *PartialDispatchError) Error() string {
+	if e == nil || e.Err == nil {
+		return "partial acpx dispatch failed"
+	}
+	return e.Err.Error()
+}
+
+func (e *PartialDispatchError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 func NewAdapter(cfg Config, runner CommandRunner) (*Adapter, error) {
 	cfg = normalizeConfig(cfg)
 	if err := validateConfig(cfg); err != nil {
@@ -228,9 +265,12 @@ func (a *Adapter) NewSession(ctx context.Context, req NewSessionRequest) (Dispat
 		return DispatchResult{}, err
 	}
 
-	dispatch, err := a.dispatchPrompt(ctx, sessionName, req.Prompt, req.NoWait, req.TurnCorrelationToken)
-	if err != nil {
-		return DispatchResult{}, err
+	dispatch, dispatchErr := a.dispatchPrompt(ctx, sessionName, req.Prompt, req.NoWait, req.TurnCorrelationToken)
+	if dispatchErr != nil {
+		var summaryErr *OutputSummaryError
+		if !errors.As(dispatchErr, &summaryErr) {
+			return DispatchResult{}, dispatchErr
+		}
 	}
 	refreshed, refreshErr := a.Refresh(ctx, SessionRef{
 		PublicSessionID: req.PublicSessionID,
@@ -243,7 +283,7 @@ func (a *Adapter) NewSession(ctx context.Context, req NewSessionRequest) (Dispat
 	if refreshed.StableRecordID != meta.StableRecordID {
 		return DispatchResult{}, fmt.Errorf("%w: refreshed record %q does not match new record %q", ErrResumeMismatch, refreshed.StableRecordID, meta.StableRecordID)
 	}
-	return DispatchResult{
+	result := DispatchResult{
 		PublicSessionID: req.PublicSessionID,
 		SessionName:     sessionName,
 		NewSession:      !req.UseEnsure,
@@ -252,7 +292,11 @@ func (a *Adapter) NewSession(ctx context.Context, req NewSessionRequest) (Dispat
 		Queued:          dispatch.noWait,
 		Metadata:        refreshed,
 		Output:          dispatch.output,
-	}, nil
+	}
+	if dispatchErr != nil {
+		return result, &PartialDispatchError{Result: result, Err: dispatchErr}
+	}
+	return result, nil
 }
 
 func (a *Adapter) Resume(ctx context.Context, req ResumeRequest) (DispatchResult, error) {
@@ -281,9 +325,12 @@ func (a *Adapter) Resume(ctx context.Context, req ResumeRequest) (DispatchResult
 	if err := a.applyMode(ctx, sessionName); err != nil {
 		return DispatchResult{}, err
 	}
-	dispatch, err := a.dispatchPrompt(ctx, sessionName, req.Prompt, req.NoWait, req.TurnCorrelationToken)
-	if err != nil {
-		return DispatchResult{}, err
+	dispatch, dispatchErr := a.dispatchPrompt(ctx, sessionName, req.Prompt, req.NoWait, req.TurnCorrelationToken)
+	if dispatchErr != nil {
+		var summaryErr *OutputSummaryError
+		if !errors.As(dispatchErr, &summaryErr) {
+			return DispatchResult{}, dispatchErr
+		}
 	}
 	after, refreshErr := a.Refresh(ctx, SessionRef{
 		PublicSessionID: req.PublicSessionID,
@@ -296,14 +343,18 @@ func (a *Adapter) Resume(ctx context.Context, req ResumeRequest) (DispatchResult
 	if err := validateResumeContinuity(before, after, req.TurnCorrelationToken); err != nil {
 		return DispatchResult{}, err
 	}
-	return DispatchResult{
+	result := DispatchResult{
 		PublicSessionID: req.PublicSessionID,
 		SessionName:     sessionName,
 		NoWait:          dispatch.noWait,
 		Queued:          dispatch.noWait,
 		Metadata:        after,
 		Output:          dispatch.output,
-	}, nil
+	}
+	if dispatchErr != nil {
+		return result, &PartialDispatchError{Result: result, Err: dispatchErr}
+	}
+	return result, nil
 }
 
 func (a *Adapter) Refresh(ctx context.Context, ref SessionRef) (Metadata, error) {
@@ -536,7 +587,11 @@ func (a *Adapter) dispatchPrompt(ctx context.Context, sessionName, prompt string
 	}
 	output, err := ParseTurnOutput(result.Stdout, result.Stderr, a.cfg.SummaryBounds)
 	if err != nil {
-		return promptDispatch{}, err
+		return promptDispatch{output: TurnOutput{
+			Diagnostics: commandDiagnostics(result, nil),
+			RawStdout:   string(result.Stdout),
+			RawStderr:   string(result.Stderr),
+		}}, &OutputSummaryError{Err: err}
 	}
 	return promptDispatch{output: output}, nil
 }
@@ -616,7 +671,7 @@ func metadataFromValues(values map[string]any, refreshedAt time.Time) Metadata {
 func ParseTurnOutput(stdout, stderr []byte, bounds contextbundle.SummaryBounds) (TurnOutput, error) {
 	rawStdout := string(stdout)
 	rawStderr := string(stderr)
-	blocks, err := findSummaryBlocks(rawStdout)
+	blocks, err := contextbundle.FindCoordinatorSummaryBlocks(rawStdout)
 	if err != nil {
 		return TurnOutput{}, err
 	}
@@ -635,12 +690,12 @@ func ParseTurnOutput(stdout, stderr []byte, bounds contextbundle.SummaryBounds) 
 		return TurnOutput{}, ErrAmbiguousSummary
 	}
 	block := blocks[0]
-	summaryJSON := strings.TrimSpace(block.body)
+	summaryJSON := strings.TrimSpace(block.Body)
 	summary, err := contextbundle.ParseCoordinatorSummary([]byte(summaryJSON), bounds)
 	if err != nil {
 		return TurnOutput{}, err
 	}
-	reply := strings.TrimSpace(rawStdout[:block.start] + rawStdout[block.end:])
+	reply := strings.TrimSpace(rawStdout[:block.Start] + rawStdout[block.End:])
 	return TurnOutput{
 		ReplyText:    reply,
 		SummaryJSON:  summaryJSON,
@@ -1088,53 +1143,4 @@ func historyLength(values map[string]any) int {
 		}
 	}
 	return 0
-}
-
-type fencedBlock struct {
-	start int
-	end   int
-	body  string
-}
-
-func findSummaryBlocks(text string) ([]fencedBlock, error) {
-	var blocks []fencedBlock
-	offset := 0
-	for offset < len(text) {
-		lineEnd := strings.IndexByte(text[offset:], '\n')
-		if lineEnd == -1 {
-			lineEnd = len(text)
-		} else {
-			lineEnd += offset + 1
-		}
-		line := strings.TrimSpace(strings.TrimSuffix(text[offset:lineEnd], "\n"))
-		if strings.HasPrefix(line, "```") && strings.TrimSpace(strings.TrimPrefix(line, "```")) == CoordinatorSummaryFence {
-			bodyStart := lineEnd
-			closeStart, closeEnd, ok := findClosingFence(text, bodyStart)
-			if !ok {
-				return nil, fmt.Errorf("coordinator summary fence is not closed")
-			}
-			blocks = append(blocks, fencedBlock{start: offset, end: closeEnd, body: text[bodyStart:closeStart]})
-			offset = closeEnd
-			continue
-		}
-		offset = lineEnd
-	}
-	return blocks, nil
-}
-
-func findClosingFence(text string, offset int) (int, int, bool) {
-	for offset < len(text) {
-		lineEnd := strings.IndexByte(text[offset:], '\n')
-		if lineEnd == -1 {
-			lineEnd = len(text)
-		} else {
-			lineEnd += offset + 1
-		}
-		line := strings.TrimSpace(strings.TrimSuffix(text[offset:lineEnd], "\n"))
-		if strings.HasPrefix(line, "```") {
-			return offset, lineEnd, true
-		}
-		offset = lineEnd
-	}
-	return 0, 0, false
 }

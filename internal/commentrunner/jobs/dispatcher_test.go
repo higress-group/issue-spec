@@ -225,6 +225,67 @@ func TestRunNextFailurePersistsFailedStateAndBoundedError(t *testing.T) {
 	}
 }
 
+func TestRunNextSummaryFailurePersistsSessionMapping(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 12, 15, 0, 0, time.UTC)
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-summary-fail",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "alice",
+		TriggerCommentID:      333,
+		CommandID:             "cmd-summary-fail",
+		CommandName:           "new",
+		CommandPrompt:         "do work",
+		CommandIdempotencyKey: "cmd-key-summary-fail",
+		StatusWritebackKey:    "status-summary-fail",
+		Status:                state.StatusQueued,
+		CreatedAt:             now,
+	})
+	workspaces := &fakeWorkspaces{binding: testBinding("ws-summary-fail")}
+	writebacks := &fakeWriteback{}
+	partial := dispatchResult("ps-summary-fail", "rec-summary-fail", "turn-summary-fail", runnercontext.CoordinatorSummary{})
+	partial.Output = acpx.TurnOutput{RawStdout: "assistant output without coordinator summary"}
+	coordinator := &fakeCoordinator{
+		newErr: &acpx.PartialDispatchError{
+			Result: partial,
+			Err:    &acpx.OutputSummaryError{Err: acpx.ErrSummaryNotFound},
+		},
+	}
+	dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
+	dispatcher.PublicSessionID = func() (string, error) { return "ps-summary-fail", nil }
+	dispatcher.TurnCorrelationID = func() (string, error) { return "turn-token-summary-fail", nil }
+
+	result, err := dispatcher.RunNext(context.Background())
+	if !errors.Is(err, acpx.ErrSummaryNotFound) {
+		t.Fatalf("RunNext error = %v, want ErrSummaryNotFound", err)
+	}
+	if result.Status != state.StatusFailed || result.JobID != "job-summary-fail" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusRunning, state.StatusFailed)
+
+	st := loadState(t, store)
+	job := st.Jobs["job-summary-fail"]
+	if job.Status != state.StatusFailed || job.PublicSessionID != "ps-summary-fail" || job.AcpxRecordID != "rec-summary-fail" {
+		t.Fatalf("failed job did not retain dispatch metadata: %+v", job)
+	}
+	if job.CoordinatorSummary != "" || len(job.CLIDirect) != 0 {
+		t.Fatalf("invalid summary should not be persisted as provenance: summary=%q cli=%+v", job.CoordinatorSummary, job.CLIDirect)
+	}
+	session, ok := st.GetPublicSession("o/r", "ps-summary-fail")
+	if !ok || session.Status != state.StatusFailed || session.AcpxRecordID != "rec-summary-fail" || session.Workspace.ID != "ws-summary-fail" || session.LastJobID != "job-summary-fail" || session.Lock.OwnerJobID != "" {
+		t.Fatalf("public session mapping missing after summary failure: %+v ok=%v", session, ok)
+	}
+	if _, ok := st.GetWorkspace("ws-summary-fail"); !ok {
+		t.Fatalf("workspace metadata was not indexed: %+v", st.Workspaces)
+	}
+	if !workspaces.released {
+		t.Fatal("workspace lock was not released")
+	}
+}
+
 func TestRunNextSkipsLockedQueuedJobAndDispatchesLaterSession(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 12, 30, 0, 0, time.UTC)
@@ -603,18 +664,20 @@ func (f fakeAcpxFactory) NewCoordinator(ExecutionEnvironment) (Coordinator, erro
 type fakeCoordinator struct {
 	newResult     acpx.DispatchResult
 	resumeResult  acpx.DispatchResult
+	newErr        error
+	resumeErr     error
 	newPrompts    []string
 	resumePrompts []string
 }
 
 func (f *fakeCoordinator) NewSession(_ context.Context, req acpx.NewSessionRequest) (acpx.DispatchResult, error) {
 	f.newPrompts = append(f.newPrompts, req.Prompt)
-	return f.newResult, nil
+	return f.newResult, f.newErr
 }
 
 func (f *fakeCoordinator) Resume(_ context.Context, req acpx.ResumeRequest) (acpx.DispatchResult, error) {
 	f.resumePrompts = append(f.resumePrompts, req.Prompt)
-	return f.resumeResult, nil
+	return f.resumeResult, f.resumeErr
 }
 
 type fakeWriteback struct {

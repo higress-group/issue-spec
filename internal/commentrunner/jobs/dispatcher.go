@@ -282,10 +282,17 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 	dispatch, err := d.dispatchAcpx(ctx, coordinator, command, publicID, session, prompt, token)
 	if err != nil {
 		releaseLock()
+		var partial *acpx.PartialDispatchError
+		if errors.As(err, &partial) && hasStableDispatchMetadata(partial.Result) {
+			return d.failWithDispatchMetadata(ctx, job.ID, command, publicID, session, binding.Workspace, partial.Result, "coordinator-summary", err)
+		}
 		return d.fail(ctx, job.ID, "acpx", err)
 	}
 	if err := validateDispatchSummary(dispatch); err != nil {
 		releaseLock()
+		if hasStableDispatchMetadata(dispatch) {
+			return d.failWithDispatchMetadata(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, "coordinator-summary", err)
+		}
 		return d.fail(ctx, job.ID, "coordinator-summary", err)
 	}
 	terminal := statusFromSummary(dispatch.Output.Summary)
@@ -549,6 +556,82 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 		}
 		return st.UpsertPublicSession(session)
 	})
+}
+
+func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, phase string, cause error) (Result, error) {
+	now := d.now()
+	msg := safeError(cause)
+	var failed state.Job
+	updateErr := d.Store.Update(ctx, func(st *state.RunnerState) error {
+		st.Normalize()
+		job, ok := st.Jobs[jobID]
+		if !ok {
+			return fmt.Errorf("job %q not found", jobID)
+		}
+		if job.Status.Terminal() {
+			failed = job
+			return nil
+		}
+		next, err := st.UpdateJobStatus(jobID, state.StatusFailed, now, safeString(phase+": "+msg, 1024))
+		if err != nil {
+			return err
+		}
+		meta := acpxMetadata(dispatch.Metadata, now)
+		next.PublicSessionID = publicID
+		next.AcpxRecordID = meta.StableRecordID
+		next.Acpx = meta
+		next.Workspace = workspaceMeta
+		next.Workspace.LastUsedAt = now
+		next.DispatchIntent.AcpxRecordID = meta.StableRecordID
+		if err := st.UpsertWorkspace(next.Workspace); err != nil {
+			return err
+		}
+		if err := st.UpsertJob(next); err != nil {
+			return err
+		}
+		if command == runnercontext.CommandNew {
+			session = state.PublicSession{
+				Repo:            next.Repo,
+				PublicSessionID: publicID,
+				IssueNumber:     next.IssueNumber,
+				AcpxRecordID:    meta.StableRecordID,
+				CreatorLogin:    next.SessionCreatorLogin,
+				CreatedAt:       firstTime(next.CreatedAt, now),
+			}
+		}
+		session.Status = state.StatusFailed
+		session.AcpxRecordID = meta.StableRecordID
+		session.Acpx = meta
+		session.Workspace = next.Workspace
+		session.LastUsedAt = now
+		session.LastJobID = next.ID
+		session.Lock = state.SessionLock{}
+		session.Queue.PendingJobIDs = removeString(session.Queue.PendingJobIDs, next.ID)
+		if session.Repo == "" {
+			session.Repo = next.Repo
+		}
+		if session.PublicSessionID == "" {
+			session.PublicSessionID = publicID
+		}
+		if session.IssueNumber == 0 {
+			session.IssueNumber = next.IssueNumber
+		}
+		if session.CreatorLogin == "" {
+			session.CreatorLogin = next.SessionCreatorLogin
+		}
+		if err := st.UpsertPublicSession(session); err != nil {
+			return err
+		}
+		failed = next
+		return nil
+	})
+	if updateErr != nil {
+		return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: safeError(updateErr)}, updateErr
+	}
+	if failed.ID != "" && d.Writeback != nil {
+		_, _ = d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase, Err: cause})
+	}
+	return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: msg}, cause
 }
 
 func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error) (Result, error) {
@@ -926,6 +1009,10 @@ func validateDispatchSummary(dispatch acpx.DispatchResult) error {
 		return acpx.ErrSummaryNotFound
 	}
 	return runnercontext.ValidateCoordinatorSummary(dispatch.Output.Summary, runnercontext.SummaryBounds{})
+}
+
+func hasStableDispatchMetadata(dispatch acpx.DispatchResult) bool {
+	return strings.TrimSpace(dispatch.Metadata.StableRecordID) != ""
 }
 
 func statusFromSummary(summary runnercontext.CoordinatorSummary) state.LifecycleStatus {

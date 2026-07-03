@@ -175,6 +175,34 @@ func TestResumeAcceptsCorrelationTokenEvidenceInHistory(t *testing.T) {
 	}
 }
 
+func TestNewSessionReturnsPartialDispatchErrorWithMetadataOnSummaryFailure(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","acpxSessionId":"acpx-1","agentSessionId":"codex-1","history":[{"id":"seed"}]}`},
+		{stdout: "assistant output without coordinator summary"},
+		{stdout: `{"acpxRecordId":"rec-1","acpxSessionId":"acpx-2","agentSessionId":"codex-2","lastTurnId":"turn-2","history":[{"id":"seed"},{"id":"turn-2"}]}`},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	result, err := adapter.NewSession(context.Background(), NewSessionRequest{
+		PublicSessionID:      "pub-1",
+		Prompt:               "please implement TASK-015",
+		TurnCorrelationToken: "turn-token-1",
+	})
+	var partial *PartialDispatchError
+	if !errors.As(err, &partial) || !errors.Is(err, ErrSummaryNotFound) {
+		t.Fatalf("NewSession error = %v, want PartialDispatchError wrapping ErrSummaryNotFound", err)
+	}
+	if result.Metadata.StableRecordID != "rec-1" || partial.Result.Metadata.LastTurnID != "turn-2" {
+		t.Fatalf("partial metadata was not refreshed: result=%+v partial=%+v", result.Metadata, partial.Result.Metadata)
+	}
+	if result.Output.RawStdout == "" || result.Output.SummaryFound {
+		t.Fatalf("partial output should preserve raw stdout without a parsed summary: %+v", result.Output)
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("recorded %d commands, want create, prompt, refresh", len(runner.commands))
+	}
+}
+
 func TestClaudeCommandShapeSetsUserSettingsAndAllowedTools(t *testing.T) {
 	adapter := newTestAdapter(t, Config{
 		CWD:                       "/workspace",
@@ -212,6 +240,20 @@ func TestParseTurnOutputRejectsMissingMalformedAndAmbiguousSummary(t *testing.T)
 	_, err = ParseTurnOutput([]byte(ambiguous), nil, contextbundle.SummaryBounds{})
 	if !errors.Is(err, ErrAmbiguousSummary) {
 		t.Fatalf("ambiguous summary error = %v, want ErrAmbiguousSummary", err)
+	}
+}
+
+func TestParseTurnOutputAcceptsSummaryBodyPrefixOnFenceOpener(t *testing.T) {
+	reply := "done\n```issue_spec_coordinator_summary{\n" + strings.TrimPrefix(validSummaryJSON, "{") + "\n```\n"
+	output, err := ParseTurnOutput([]byte(reply), nil, contextbundle.SummaryBounds{})
+	if err != nil {
+		t.Fatalf("ParseTurnOutput returned error: %v", err)
+	}
+	if !output.SummaryFound || output.Summary.Status != "completed" {
+		t.Fatalf("summary not parsed from malformed opener: %+v", output)
+	}
+	if output.ReplyText != "done" {
+		t.Fatalf("reply text = %q, want done", output.ReplyText)
 	}
 }
 

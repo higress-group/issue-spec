@@ -70,6 +70,12 @@ type DiagnosticSummary struct {
 	Message  string `json:"message"`
 }
 
+type CoordinatorSummaryBlock struct {
+	Start int
+	End   int
+	Body  string
+}
+
 func ParseCoordinatorSummary(data []byte, bounds SummaryBounds) (CoordinatorSummary, error) {
 	bounds = normalizeSummaryBounds(bounds)
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -92,26 +98,87 @@ func ParseCoordinatorSummary(data []byte, bounds SummaryBounds) (CoordinatorSumm
 }
 
 func ExtractCoordinatorSummary(reply string, bounds SummaryBounds) (CoordinatorSummary, bool, error) {
-	const fence = "```issue_spec_coordinator_summary"
-	start := strings.Index(reply, fence)
-	if start < 0 {
+	blocks, err := FindCoordinatorSummaryBlocks(reply)
+	if err != nil {
+		return CoordinatorSummary{}, true, err
+	}
+	if len(blocks) == 0 {
 		return CoordinatorSummary{}, false, nil
 	}
-	afterFence := reply[start+len(fence):]
-	lineEnd := strings.Index(afterFence, "\n")
-	if lineEnd < 0 {
+	if len(blocks) > 1 {
+		return CoordinatorSummary{}, true, fmt.Errorf("multiple coordinator summaries found")
+	}
+	body := strings.TrimSpace(blocks[0].Body)
+	if body == "" {
 		return CoordinatorSummary{}, true, fmt.Errorf("coordinator summary fence has no body")
 	}
-	body := afterFence[lineEnd+1:]
-	end := strings.Index(body, "\n```")
-	if end < 0 {
-		return CoordinatorSummary{}, true, fmt.Errorf("coordinator summary fence is not closed")
-	}
-	summary, err := ParseCoordinatorSummary([]byte(strings.TrimSpace(body[:end])), bounds)
+	summary, err := ParseCoordinatorSummary([]byte(body), bounds)
 	if err != nil {
 		return CoordinatorSummary{}, true, err
 	}
 	return summary, true, nil
+}
+
+func FindCoordinatorSummaryBlocks(text string) ([]CoordinatorSummaryBlock, error) {
+	var blocks []CoordinatorSummaryBlock
+	offset := 0
+	for offset < len(text) {
+		lineEnd := strings.IndexByte(text[offset:], '\n')
+		if lineEnd == -1 {
+			lineEnd = len(text)
+		} else {
+			lineEnd += offset + 1
+		}
+		line := strings.TrimSpace(strings.TrimSuffix(text[offset:lineEnd], "\n"))
+		bodyPrefix, ok := coordinatorSummaryBodyPrefix(line)
+		if ok {
+			closeStart, closeEnd, closed := findClosingSummaryFence(text, lineEnd)
+			if !closed {
+				return nil, fmt.Errorf("coordinator summary fence is not closed")
+			}
+			blocks = append(blocks, CoordinatorSummaryBlock{
+				Start: offset,
+				End:   closeEnd,
+				Body:  bodyPrefix + text[lineEnd:closeStart],
+			})
+			offset = closeEnd
+			continue
+		}
+		offset = lineEnd
+	}
+	return blocks, nil
+}
+
+func coordinatorSummaryBodyPrefix(line string) (string, bool) {
+	const fence = "```issue_spec_coordinator_summary"
+	if !strings.HasPrefix(line, fence) {
+		return "", false
+	}
+	suffix := strings.TrimSpace(strings.TrimPrefix(line, fence))
+	if suffix == "" {
+		return "", true
+	}
+	if strings.HasPrefix(suffix, "{") {
+		return suffix, true
+	}
+	return "", false
+}
+
+func findClosingSummaryFence(text string, offset int) (int, int, bool) {
+	for offset < len(text) {
+		lineEnd := strings.IndexByte(text[offset:], '\n')
+		if lineEnd == -1 {
+			lineEnd = len(text)
+		} else {
+			lineEnd += offset + 1
+		}
+		line := strings.TrimSpace(strings.TrimSuffix(text[offset:lineEnd], "\n"))
+		if strings.HasPrefix(line, "```") {
+			return offset, lineEnd, true
+		}
+		offset = lineEnd
+	}
+	return 0, 0, false
 }
 
 func ValidateCoordinatorSummary(summary CoordinatorSummary, bounds SummaryBounds) error {

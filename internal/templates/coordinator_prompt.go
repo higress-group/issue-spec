@@ -43,6 +43,8 @@ func CoordinatorPrompt(bundle runnercontext.Bundle, opts CoordinatorPromptOption
 	b.WriteString("\n```\n\n")
 	b.WriteString("## Required Coordinator Summary\n\n")
 	b.WriteString("When your turn is complete, include one JSON object in a fenced `issue_spec_coordinator_summary` block:\n\n")
+	b.WriteString("- The opening fence must be exactly ```issue_spec_coordinator_summary on its own line.\n")
+	b.WriteString("- Start the JSON object on the next line; do not append `{` or any JSON text to the opening fence line.\n\n")
 	b.WriteString("```issue_spec_coordinator_summary\n")
 	fmt.Fprintf(&b, `{
   "status": "completed",

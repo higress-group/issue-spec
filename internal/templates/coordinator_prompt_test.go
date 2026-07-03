@@ -24,6 +24,8 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 		"invoking existing issue-spec CLI commands",
 		"prefer native Codex sub-agents or Claude Task agents",
 		"issue_spec_coordinator_summary",
+		"opening fence must be exactly ```issue_spec_coordinator_summary on its own line",
+		"Start the JSON object on the next line",
 		`"source_label": "authorized_command"`,
 		`"source_label": "issue_spec_artifact"`,
 		`"trust": "untrusted_artifact_data"`,

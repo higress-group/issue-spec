@@ -70,6 +70,24 @@ trailing text`
 	}
 }
 
+func TestExtractCoordinatorSummaryAcceptsBodyPrefixOnFenceOpener(t *testing.T) {
+	reply := `work completed
+
+` + "```issue_spec_coordinator_summary{" + `
+  "status": "completed",
+  "artifacts": [{"kind": "typed_comment", "id": "PROCESS-001", "action": "updated"}],
+  "commands": [{"name": "issue-spec comment upsert", "exit_code": 0}]
+}
+` + "```"
+	summary, found, err := ExtractCoordinatorSummary(reply, SummaryBounds{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || summary.Status != "completed" || summary.Artifacts[0].ID != "PROCESS-001" {
+		t.Fatalf("summary=%+v found=%v", summary, found)
+	}
+}
+
 func TestExtractCoordinatorSummaryReportsMissingCloseFence(t *testing.T) {
 	_, found, err := ExtractCoordinatorSummary("```issue_spec_coordinator_summary\n{}", SummaryBounds{})
 	if !found || err == nil || !strings.Contains(err.Error(), "not closed") {
