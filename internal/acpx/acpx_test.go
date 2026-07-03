@@ -529,6 +529,26 @@ func TestParseTurnOutputAcceptsE2EFragmentWithStringDiagnostics(t *testing.T) {
 	}
 }
 
+func TestParseTurnOutputAcceptsMalformedFenceWithLevelDiagnostic(t *testing.T) {
+	reply := "done```issue_spec_coordinator_summary{\n" +
+		`"status":"completed",` +
+		`"artifacts":[{"kind":"typed_comment","id":"PROCESS-937","url":"https://github.com/higress-group/issue-spec/issues/37#issuecomment-4878702092","action":"created"}],` +
+		`"commands":[{"name":"/tmp/issue-spec","exit_code":0,"artifact_id":"PROCESS-937","artifact_url":"https://github.com/higress-group/issue-spec/issues/37#issuecomment-4878702092","stdout_summary":"created PROCESS-937","stderr_summary":""}],` +
+		`"children":[],"processes":[{"process_id":"PROCESS-937","status":"done","evidence":"recorded"}],` +
+		`"diagnostics":[{"level":"info","message":"sandbox read failed before execution"}]` +
+		"\n}\n```"
+	output, err := ParseTurnOutput([]byte(reply), nil, contextbundle.SummaryBounds{})
+	if err != nil {
+		t.Fatalf("ParseTurnOutput returned error: %v", err)
+	}
+	if !output.SummaryFound || output.Summary.Artifacts[0].ID != "PROCESS-937" {
+		t.Fatalf("summary not parsed: %+v", output)
+	}
+	if got := output.Summary.Diagnostics[0].Severity; got != "info" {
+		t.Fatalf("diagnostic severity = %q, want info", got)
+	}
+}
+
 func TestCancelProbeAndCancelUseCommandRunner(t *testing.T) {
 	runner := &fakeRunner{responses: []fakeResponse{
 		{stdout: "cancel help"},

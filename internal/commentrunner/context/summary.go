@@ -153,16 +153,22 @@ func ExtractCoordinatorSummary(reply string, bounds SummaryBounds) (CoordinatorS
 }
 
 func FindCoordinatorSummaryBlocks(text string) ([]CoordinatorSummaryBlock, error) {
+	const fence = "```issue_spec_coordinator_summary"
 	var blocks []CoordinatorSummaryBlock
 	offset := 0
 	for offset < len(text) {
-		lineEnd := strings.IndexByte(text[offset:], '\n')
+		startRel := strings.Index(text[offset:], fence)
+		if startRel == -1 {
+			break
+		}
+		start := offset + startRel
+		lineEnd := strings.IndexByte(text[start:], '\n')
 		if lineEnd == -1 {
 			lineEnd = len(text)
 		} else {
-			lineEnd += offset + 1
+			lineEnd += start + 1
 		}
-		line := strings.TrimSpace(strings.TrimSuffix(text[offset:lineEnd], "\n"))
+		line := strings.TrimSpace(strings.TrimSuffix(text[start:lineEnd], "\n"))
 		bodyPrefix, ok := coordinatorSummaryBodyPrefix(line)
 		if ok {
 			closeStart, closeEnd, closed := findClosingSummaryFence(text, lineEnd)
@@ -170,14 +176,14 @@ func FindCoordinatorSummaryBlocks(text string) ([]CoordinatorSummaryBlock, error
 				return nil, fmt.Errorf("coordinator summary fence is not closed")
 			}
 			blocks = append(blocks, CoordinatorSummaryBlock{
-				Start: offset,
+				Start: start,
 				End:   closeEnd,
 				Body:  bodyPrefix + text[lineEnd:closeStart],
 			})
 			offset = closeEnd
 			continue
 		}
-		offset = lineEnd
+		offset = start + len(fence)
 	}
 	return blocks, nil
 }
