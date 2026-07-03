@@ -57,6 +57,10 @@ func TestRunnerPollDryRunJSONUsesTrustedConfigAndPreflight(t *testing.T) {
 			Next:   intake.NextStep{PollAt: time.Date(2026, 7, 3, 12, 1, 0, 0, time.UTC)},
 		}, nil
 	}
+	app.runnerDispatch = func(context.Context, commentrunner.Config) (jobs.Result, error) {
+		t.Fatal("runner dry-run must not dispatch jobs")
+		return jobs.Result{}, nil
+	}
 
 	code := app.runRunner(context.Background(), []string{
 		"poll",

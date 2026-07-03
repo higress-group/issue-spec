@@ -214,6 +214,53 @@ func TestCompatibilityArchiveCreatePRKeepsLocalGitOperations(t *testing.T) {
 	}
 }
 
+func TestCompatibilityCLIAndSandboxCrossCompileWithoutCgo(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skipf("go binary is required for cross-compile compatibility test: %v", err)
+	}
+	root := filepath.Clean(filepath.Join("..", ".."))
+	outDir := t.TempDir()
+	targets := []struct {
+		name string
+		pkg  string
+		goos string
+	}{
+		{name: "cli-linux", pkg: "./cmd/issue-spec", goos: "linux"},
+		{name: "cli-darwin", pkg: "./cmd/issue-spec", goos: "darwin"},
+		{name: "cli-windows", pkg: "./cmd/issue-spec", goos: "windows"},
+		{name: "sandbox-linux", pkg: "./internal/sandbox", goos: "linux"},
+		{name: "sandbox-darwin", pkg: "./internal/sandbox", goos: "darwin"},
+		{name: "sandbox-windows", pkg: "./internal/sandbox", goos: "windows"},
+	}
+	for _, target := range targets {
+		t.Run(target.name, func(t *testing.T) {
+			output := filepath.Join(outDir, target.name+".test")
+			if target.goos == "windows" {
+				output += ".exe"
+			}
+			cmd := exec.Command("go", "test", "-c", target.pkg, "-o", output)
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "GOOS="+target.goos, "GOARCH=amd64", "CGO_ENABLED=0")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("cross compile %s for %s failed: %v\n%s", target.pkg, target.goos, err, strings.TrimSpace(string(out)))
+			}
+		})
+	}
+
+	linuxImpl, err := os.ReadFile(filepath.Join(root, "internal", "sandbox", "bwrap_linux.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsupportedImpl, err := os.ReadFile(filepath.Join(root, "internal", "sandbox", "bwrap_unsupported.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(linuxImpl), "//go:build linux") || !strings.Contains(string(unsupportedImpl), "//go:build !linux") {
+		t.Fatal("sandbox bwrap implementations must keep explicit Linux and non-Linux build tags")
+	}
+}
+
 type archiveCompatibilityClient struct {
 	fakeGitHubBackend
 	createPullRequest func(context.Context, string, github.CreatePullRequestOptions) (github.PullRequest, error)

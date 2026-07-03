@@ -106,6 +106,31 @@ func TestResumeNoWaitQueuesPromptWithoutSummaryRequirement(t *testing.T) {
 	assertArgs(t, runner.commands[1].Args, []string{"--cwd", "/workspace", "--format", "quiet", "--deny-all", "codex", "--file", "-", "-s", "pub-1", "--no-wait"})
 }
 
+func TestAdapterDoesNotAddHardTurnDeadline(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","history":[{"id":"seed"}]}`},
+		{stdout: "queued"},
+		{stdout: `{"acpxRecordId":"rec-1","history":[{"id":"seed"}]}`},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	_, err := adapter.Resume(context.Background(), ResumeRequest{
+		PublicSessionID:   "pub-1",
+		StableRecordID:    "rec-1",
+		Prompt:            "long running work stays externally visible",
+		NoWait:            true,
+		MinHistoryEntries: 1,
+	})
+	if err != nil {
+		t.Fatalf("Resume returned error: %v", err)
+	}
+	for i, hasDeadline := range runner.contextDeadlines {
+		if hasDeadline {
+			t.Fatalf("acpx command %d received an adapter-added deadline: %+v", i, runner.contextDeadlines)
+		}
+	}
+}
+
 func TestClaudeCommandShapeSetsUserSettingsAndAllowedTools(t *testing.T) {
 	adapter := newTestAdapter(t, Config{
 		CWD:                       "/workspace",
@@ -222,12 +247,15 @@ type fakeResponse struct {
 }
 
 type fakeRunner struct {
-	commands  []Command
-	responses []fakeResponse
+	commands         []Command
+	responses        []fakeResponse
+	contextDeadlines []bool
 }
 
 func (f *fakeRunner) Run(ctx context.Context, command Command) (CommandResult, error) {
 	f.commands = append(f.commands, command)
+	_, hasDeadline := ctx.Deadline()
+	f.contextDeadlines = append(f.contextDeadlines, hasDeadline)
 	if len(f.responses) == 0 {
 		return CommandResult{}, nil
 	}
