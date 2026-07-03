@@ -32,12 +32,18 @@ const (
 	CoordinatorSummaryFence = "issue_spec_coordinator_summary"
 )
 
-var retryableSetModeBackoffs = []time.Duration{
+var retryableQueueBackoffs = []time.Duration{
 	250 * time.Millisecond,
 	500 * time.Millisecond,
 	time.Second,
 	2 * time.Second,
-	2 * time.Second,
+	4 * time.Second,
+	8 * time.Second,
+	8 * time.Second,
+	8 * time.Second,
+	8 * time.Second,
+	8 * time.Second,
+	8 * time.Second,
 }
 
 var (
@@ -632,10 +638,10 @@ func (a *Adapter) runWithRetryableQueue(ctx context.Context, name string, comman
 		}
 		lastResult = result
 		lastErr = err
-		if !isRetryableAcpxQueueError(err) || attempt >= len(retryableSetModeBackoffs) {
+		if !isRetryableAcpxQueueError(err) || attempt >= len(retryableQueueBackoffs) {
 			return lastResult, lastErr
 		}
-		if err := sleepContext(ctx, retryableSetModeBackoffs[attempt]); err != nil {
+		if err := sleepContext(ctx, retryableQueueBackoffs[attempt]); err != nil {
 			return lastResult, fmt.Errorf("wait before retrying %s: %w", name, err)
 		}
 	}

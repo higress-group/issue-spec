@@ -102,7 +102,7 @@ func TestNewSessionRecoversSummaryFromFlattenedAgentMessageText(t *testing.T) {
 }
 
 func TestNewSessionRetriesPromptQueueNotAcceptingError(t *testing.T) {
-	withSetModeBackoffs(t, []time.Duration{0})
+	withQueueBackoffs(t, []time.Duration{0})
 	runner := &fakeRunner{responses: []fakeResponse{
 		{stdout: `{"acpxRecordId":"rec-1","acpxSessionId":"acpx-1","agentSessionId":"codex-1","history":[{"id":"seed"}]}`},
 		{stderr: "Session queue owner is running but not accepting queue requests", exitCode: 1},
@@ -205,7 +205,7 @@ func TestResumeSkipsSetModeWhenSnapshotAlreadyHasDesiredMode(t *testing.T) {
 }
 
 func TestResumeRetriesRetryableSetModeQueueError(t *testing.T) {
-	withSetModeBackoffs(t, []time.Duration{0})
+	withQueueBackoffs(t, []time.Duration{0})
 	retryableQueue := `{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Session queue owner is running but not accepting set_mode requests","data":{"detailCode":"QUEUE_NOT_ACCEPTING_REQUESTS","origin":"queue","retryable":true}}}`
 	runner := &fakeRunner{responses: []fakeResponse{
 		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-1","messages":[{"User":{"content":[{"Text":"seed prompt"}]}}]}`},
@@ -236,7 +236,7 @@ func TestResumeRetriesRetryableSetModeQueueError(t *testing.T) {
 }
 
 func TestResumeDoesNotRetryNonRetryableSetModeError(t *testing.T) {
-	withSetModeBackoffs(t, []time.Duration{0})
+	withQueueBackoffs(t, []time.Duration{0})
 	nonRetryable := `{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"mode rejected","data":{"detailCode":"MODE_REJECTED","origin":"cli","retryable":false}}}`
 	runner := &fakeRunner{responses: []fakeResponse{
 		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-1","messages":[{"User":{"content":[{"Text":"seed prompt"}]}}]}`},
@@ -704,12 +704,12 @@ func (f *fakeRunner) Run(ctx context.Context, command Command) (CommandResult, e
 	}, response.err
 }
 
-func withSetModeBackoffs(t *testing.T, backoffs []time.Duration) {
+func withQueueBackoffs(t *testing.T, backoffs []time.Duration) {
 	t.Helper()
-	original := retryableSetModeBackoffs
-	retryableSetModeBackoffs = append([]time.Duration(nil), backoffs...)
+	original := retryableQueueBackoffs
+	retryableQueueBackoffs = append([]time.Duration(nil), backoffs...)
 	t.Cleanup(func() {
-		retryableSetModeBackoffs = original
+		retryableQueueBackoffs = original
 	})
 }
 
