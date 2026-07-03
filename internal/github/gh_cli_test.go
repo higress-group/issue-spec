@@ -215,6 +215,59 @@ func TestGHAPIAdapterOmitsDefaultHost(t *testing.T) {
 	}
 }
 
+func TestGHAPIIncludeParsesHeadersAndStatus(t *testing.T) {
+	runner := &recordingCLIRunner{
+		result: ExternalCLIResult{Stdout: []byte("HTTP/1.1 200 OK\r\nX-Poll-Interval: 60\r\nX-RateLimit-Remaining: 9\r\n\r\n{\"ok\":true}")},
+	}
+	cli, err := NewGHCLI(GHCLIOptions{Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := cli.RunAPI(context.Background(), "github.com", ExternalCLIAPIRequest{
+		Method:   http.MethodGet,
+		Endpoint: "/notifications",
+		Include:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != 200 {
+		t.Fatalf("status = %d, want 200", result.Status)
+	}
+	if got := result.Headers.Get("X-Poll-Interval"); got != "60" {
+		t.Fatalf("poll interval = %q", got)
+	}
+	if got := result.Headers.Get("X-RateLimit-Remaining"); got != "9" {
+		t.Fatalf("rate limit remaining = %q", got)
+	}
+	if string(result.Stdout) != `{"ok":true}` {
+		t.Fatalf("body = %q", string(result.Stdout))
+	}
+}
+
+func TestGHAPI304MapsToNoChange(t *testing.T) {
+	runner := &recordingCLIRunner{
+		result: ExternalCLIResult{ExitCode: 1, Stdout: []byte("HTTP/1.1 304 Not Modified\r\n\r\n")},
+	}
+	cli, err := NewGHCLI(GHCLIOptions{Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := cli.RunAPI(context.Background(), "github.com", ExternalCLIAPIRequest{
+		Method:   http.MethodGet,
+		Endpoint: "/notifications",
+		Include:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != 304 || result.ExitCode != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
 func TestGHBackendInfo(t *testing.T) {
 	backend, err := NewGHBackend(GHBackendOptions{Host: "https://ghe.example.com/"})
 	if err != nil {

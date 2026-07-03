@@ -1,8 +1,12 @@
 package github
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -76,7 +80,98 @@ func (g *GHCLI) Token(ctx context.Context, host string) (string, error) {
 }
 
 func (g *GHCLI) RunAPI(ctx context.Context, host string, request ExternalCLIAPIRequest) (ExternalCLIResult, error) {
-	return g.cli.RunAPI(ctx, host, request)
+	if err := request.Validate(); err != nil {
+		return ExternalCLIResult{}, err
+	}
+	command, err := g.cli.Descriptor.APIAdapter.BuildCommand(g.cli.Descriptor.Identity, mustHostArgs(g.cli, host), request)
+	if err != nil {
+		return ExternalCLIResult{}, err
+	}
+	command.Operation = request.Operation
+	command.Host = normalizeHost(host)
+	command.Method = strings.ToUpper(strings.TrimSpace(request.Method))
+	command.Endpoint = strings.TrimSpace(request.Endpoint)
+	result, runErr := g.cli.Runner.RunCLI(ctx, command)
+	if ghResult, ok := parseGHAPIResult(result); ok {
+		result = ghResult
+	}
+	if isGHNoChange(result) {
+		return result, nil
+	}
+	if runErr != nil || result.ExitCode != 0 {
+		return result, g.cli.Descriptor.ErrorAdapter.CommandError(g.cli.Descriptor, command, result, runErr, g.cli.Redactor)
+	}
+	return result, nil
+}
+
+func mustHostArgs(cli *ExternalCLI, host string) []string {
+	hostArgs, _ := cli.hostArgs(host)
+	return hostArgs
+}
+
+func isGHNoChange(result ExternalCLIResult) bool {
+	if result.ExitCode != 1 || result.Status != http.StatusNotModified {
+		return false
+	}
+	return len(result.Stdout) == 0 && len(result.Stderr) == 0
+}
+
+func parseGHAPIResult(result ExternalCLIResult) (ExternalCLIResult, bool) {
+	if len(result.Stdout) == 0 {
+		return result, false
+	}
+	headers, body, status, ok := splitGHResponse(result.Stdout)
+	if !ok {
+		return result, false
+	}
+	result.Stdout = body
+	result.Headers = headers
+	result.Status = status
+	return result, true
+}
+
+func splitGHResponse(data []byte) (http.Header, []byte, int, bool) {
+	br := bufio.NewReader(bytes.NewReader(data))
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return nil, nil, 0, false
+	}
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "HTTP/") {
+		return nil, nil, 0, false
+	}
+	parts := strings.SplitN(line, " ", 3)
+	if len(parts) < 2 {
+		return nil, nil, 0, false
+	}
+	status, _ := parseInt(strings.TrimSpace(parts[1]))
+	headers := http.Header{}
+	for {
+		hline, err := br.ReadString('\n')
+		if err != nil {
+			return nil, nil, 0, false
+		}
+		hline = strings.TrimRight(hline, "\r\n")
+		if hline == "" {
+			break
+		}
+		if idx := strings.IndexByte(hline, ':'); idx > 0 {
+			headers.Add(strings.TrimSpace(hline[:idx]), strings.TrimSpace(hline[idx+1:]))
+		}
+	}
+	body, _ := io.ReadAll(br)
+	return headers, body, status, true
+}
+
+func parseInt(v string) (int, error) {
+	n := 0
+	for _, r := range v {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("invalid int")
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n, nil
 }
 
 func (g *GHCLI) runAuth(ctx context.Context, host, operation string, args []string) (ExternalCLIResult, error) {
@@ -117,6 +212,9 @@ func (GHAPIAdapter) BuildCommand(identity ExternalCLIIdentity, hostArgs []string
 	args = append(args, hostArgs...)
 	if request.Paginate {
 		args = append(args, "--paginate")
+	}
+	if request.Include {
+		args = append(args, "--include")
 	}
 	if body != nil {
 		args = append(args, "--input", "-")

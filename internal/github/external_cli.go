@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -144,6 +145,8 @@ type ExternalCLIResult struct {
 	Stdout   []byte
 	Stderr   []byte
 	ExitCode int
+	Status   int
+	Headers  http.Header
 }
 
 type ExternalCLIRunner interface {
@@ -210,6 +213,7 @@ type ExternalCLIAPIRequest struct {
 	Query     url.Values
 	Body      any
 	Paginate  bool
+	Include   bool
 }
 
 func (r ExternalCLIAPIRequest) Validate() error {

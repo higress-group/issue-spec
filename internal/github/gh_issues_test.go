@@ -94,6 +94,19 @@ func TestGHBackendIssueOperationsCommandConstructionAndDecoding(t *testing.T) {
 			},
 		},
 		{
+			name:   "collaborator permission",
+			stdout: `{"permission":"write"}`,
+			call: func(b *GHBackend) (any, error) {
+				return b.GetCollaboratorPermission(context.Background(), "o/r", "octocat")
+			},
+			wantArgs: []string{"api", "--method", http.MethodGet, "--header", githubAPIVersion, "/repos/o/r/collaborators/octocat/permission"},
+			assertion: func(t *testing.T, got any) {
+				if got.(string) != "write" {
+					t.Fatalf("permission = %q", got)
+				}
+			},
+		},
+		{
 			name:   "update comment",
 			stdout: `{"id":101,"html_url":"https://github.com/o/r/issues/9#issuecomment-101","url":"https://api.github.com/repos/o/r/issues/comments/101","body":"updated"}`,
 			call: func(b *GHBackend) (any, error) {
@@ -145,6 +158,34 @@ func TestGHBackendIssueOperationsCommandConstructionAndDecoding(t *testing.T) {
 			}
 			tt.assertion(t, got)
 		})
+	}
+}
+
+func TestGHBackendListNotificationsFiltersRepoAndCapturesMetadata(t *testing.T) {
+	runner := &recordingCLIRunner{
+		result: ExternalCLIResult{Stdout: []byte("HTTP/1.1 200 OK\r\nX-Poll-Interval: 60\r\nX-RateLimit-Limit: 60\r\nX-RateLimit-Remaining: 59\r\n\r\n[{\"id\":\"1\",\"reason\":\"mention\",\"unread\":true,\"repository\":{\"full_name\":\"o/r\"},\"subject\":{\"title\":\"issue\",\"type\":\"Issue\",\"url\":\"https://github.com/o/r/issues/1\"}}]")},
+	}
+	backend, err := NewGHBackend(GHBackendOptions{Host: "github.com", CLIOptions: GHCLIOptions{Runner: runner}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	notifications, meta, status, headers, err := backend.ListNotifications(context.Background(), "o/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notifications) != 1 || notifications[0].ID != "1" {
+		t.Fatalf("notifications = %+v", notifications)
+	}
+	if status != 200 || headers.Get("X-Poll-Interval") != "60" {
+		t.Fatalf("status=%d headers=%v", status, headers)
+	}
+	if meta.Remaining != "59" || meta.Limit != "60" {
+		t.Fatalf("rate metadata = %+v", meta)
+	}
+	wantArgs := []string{"api", "--method", http.MethodGet, "--header", githubAPIVersion, "--include", "/notifications?all=false&participating=true"}
+	if !reflect.DeepEqual(runner.command.Args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", runner.command.Args, wantArgs)
 	}
 }
 

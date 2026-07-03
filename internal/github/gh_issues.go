@@ -8,6 +8,29 @@ import (
 	"strings"
 )
 
+type GHRateLimitMetadata struct {
+	Remaining string
+	Limit     string
+	Reset     string
+	Used      string
+	Resource  string
+}
+
+type GHNotification struct {
+	ID      string `json:"id"`
+	Reason  string `json:"reason"`
+	Unread  bool   `json:"unread"`
+	Updated string `json:"updated_at"`
+	Subject struct {
+		Title string `json:"title"`
+		URL   string `json:"url"`
+		Type  string `json:"type"`
+	} `json:"subject"`
+	Repository struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
+}
+
 func (b *GHBackend) GetUser(ctx context.Context) (User, []string, error) {
 	var user User
 	if err := b.runJSON(ctx, ExternalCLIAPIRequest{
@@ -88,6 +111,60 @@ func (b *GHBackend) CreateComment(ctx context.Context, repo string, issueNumber 
 	return comment, err
 }
 
+func (b *GHBackend) ListNotifications(ctx context.Context, repo string) ([]GHNotification, GHRateLimitMetadata, int, http.Header, error) {
+	var notifications []GHNotification
+	result, err := b.runRaw(ctx, ExternalCLIAPIRequest{
+		Operation: "ListNotifications",
+		Method:    http.MethodGet,
+		Endpoint:  "/notifications",
+		Query:     url.Values{"participating": {"true"}, "all": {"false"}},
+		Include:   true,
+	})
+	if err != nil {
+		return nil, GHRateLimitMetadata{}, 0, nil, err
+	}
+	meta := ghRateLimitMetadata(result.Headers)
+	if err := DecodeCLIJSON(result.Stdout, &notifications); err != nil {
+		return nil, meta, result.Status, result.Headers, err
+	}
+	if repo != "" {
+		filtered := notifications[:0]
+		for _, n := range notifications {
+			if strings.EqualFold(n.Repository.FullName, repo) {
+				filtered = append(filtered, n)
+			}
+		}
+		notifications = filtered
+	}
+	return notifications, meta, result.Status, result.Headers, nil
+}
+
+func (b *GHBackend) ListRepositoryIssueComments(ctx context.Context, repo string) ([]Comment, error) {
+	var comments []Comment
+	if err := b.runPagedJSON(ctx, ExternalCLIAPIRequest{
+		Operation: "ListRepositoryIssueComments",
+		Method:    http.MethodGet,
+		Endpoint:  "/repos/" + repo + "/issues/comments",
+		Query:     url.Values{"per_page": {"100"}},
+		Paginate:  true,
+	}, &comments); err != nil {
+		return nil, err
+	}
+	return comments, nil
+}
+
+func (b *GHBackend) GetCollaboratorPermission(ctx context.Context, repo, user string) (string, error) {
+	var out struct {
+		Permission string `json:"permission"`
+	}
+	err := b.runJSON(ctx, ExternalCLIAPIRequest{
+		Operation: "GetCollaboratorPermission",
+		Method:    http.MethodGet,
+		Endpoint:  fmt.Sprintf("/repos/%s/collaborators/%s/permission", repo, url.PathEscape(user)),
+	}, &out)
+	return out.Permission, err
+}
+
 func (b *GHBackend) UpdateComment(ctx context.Context, repo string, commentID int64, body string) (Comment, error) {
 	var comment Comment
 	err := b.runJSON(ctx, ExternalCLIAPIRequest{
@@ -134,10 +211,24 @@ func (b *GHBackend) runJSON(ctx context.Context, request ExternalCLIAPIRequest, 
 	return DecodeCLIJSON(result.Stdout, out)
 }
 
+func (b *GHBackend) runRaw(ctx context.Context, request ExternalCLIAPIRequest) (ExternalCLIResult, error) {
+	return b.cli.RunAPI(ctx, b.Host, request)
+}
+
 func (b *GHBackend) runPagedJSON(ctx context.Context, request ExternalCLIAPIRequest, out any) error {
 	result, err := b.cli.RunAPI(ctx, b.Host, request)
 	if err != nil {
 		return err
 	}
 	return DecodeCLIJSONPageStream(result.Stdout, out)
+}
+
+func ghRateLimitMetadata(headers http.Header) GHRateLimitMetadata {
+	return GHRateLimitMetadata{
+		Remaining: headers.Get("X-RateLimit-Remaining"),
+		Limit:     headers.Get("X-RateLimit-Limit"),
+		Reset:     headers.Get("X-RateLimit-Reset"),
+		Used:      headers.Get("X-RateLimit-Used"),
+		Resource:  headers.Get("X-RateLimit-Resource"),
+	}
 }
