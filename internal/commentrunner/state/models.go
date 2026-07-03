@@ -84,10 +84,11 @@ type FallbackCadence struct {
 }
 
 type RateLimitState struct {
-	Limit     int       `json:"limit,omitempty"`
-	Remaining int       `json:"remaining,omitempty"`
-	ResetAt   time.Time `json:"reset_at,omitempty"`
-	Resource  string    `json:"resource,omitempty"`
+	Limit             int       `json:"limit,omitempty"`
+	Remaining         int       `json:"remaining,omitempty"`
+	ResetAt           time.Time `json:"reset_at,omitempty"`
+	Resource          string    `json:"resource,omitempty"`
+	RetryAfterSeconds int       `json:"retry_after_seconds,omitempty"`
 }
 
 type PreflightRecord struct {

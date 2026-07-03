@@ -21,6 +21,7 @@ func TestGHRunnerPollNotificationsUsesIncludedConditionalAPI(t *testing.T) {
 			"X-Poll-Interval":       "60",
 			"X-RateLimit-Remaining": "4998",
 			"X-RateLimit-Reset":     "1783066200",
+			"Retry-After":           "7",
 		}, `[
 			{"id":"n2","unread":true,"reason":"mention","subject":{"type":"PullRequest","url":"https://api.github.com/repos/o/r/issues/8"},"repository":{"full_name":"o/r"}}
 		]`))),
@@ -45,6 +46,9 @@ func TestGHRunnerPollNotificationsUsesIncludedConditionalAPI(t *testing.T) {
 	}
 	if result.Metadata.RateLimit.ResetAt != time.Unix(1783066200, 0).UTC() {
 		t.Fatalf("rate limit reset = %+v", result.Metadata.RateLimit)
+	}
+	if result.Metadata.RateLimit.RetryAfterSeconds != 7 {
+		t.Fatalf("retry after = %+v", result.Metadata.RateLimit)
 	}
 	wantArgs := []string{
 		"api",

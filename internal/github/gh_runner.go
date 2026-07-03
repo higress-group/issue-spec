@@ -419,12 +419,13 @@ func metadataFromHeaders(statusCode int, headers http.Header) ResponseMetadata {
 		ETag:                headers.Get("ETag"),
 		LastModified:        headers.Get("Last-Modified"),
 		RateLimit: RateLimitMetadata{
-			Limit:     atoiHeader(headers, "X-RateLimit-Limit"),
-			Remaining: atoiHeader(headers, "X-RateLimit-Remaining"),
-			Used:      atoiHeader(headers, "X-RateLimit-Used"),
-			ResetUnix: resetUnix,
-			ResetAt:   resetAt,
-			Resource:  headers.Get("X-RateLimit-Resource"),
+			Limit:             atoiHeader(headers, "X-RateLimit-Limit"),
+			Remaining:         atoiHeader(headers, "X-RateLimit-Remaining"),
+			Used:              atoiHeader(headers, "X-RateLimit-Used"),
+			ResetUnix:         resetUnix,
+			ResetAt:           resetAt,
+			Resource:          headers.Get("X-RateLimit-Resource"),
+			RetryAfterSeconds: atoiHeader(headers, "Retry-After"),
 		},
 	}
 }

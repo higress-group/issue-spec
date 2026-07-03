@@ -42,6 +42,7 @@ type fakeBackend struct {
 	user                   github.User
 	permissions            map[string]string
 	notifications          github.NotificationListResult
+	notificationErr        error
 	issueComments          map[int]github.IssueCommentsResult
 	repoComments           github.IssueCommentsResult
 	notificationOpts       []github.NotificationListOptions
@@ -63,7 +64,7 @@ func (b *fakeBackend) GetUser(context.Context) (github.User, []string, error) {
 
 func (b *fakeBackend) PollNotifications(_ context.Context, opts github.NotificationListOptions) (github.NotificationListResult, error) {
 	b.notificationOpts = append(b.notificationOpts, opts)
-	return b.notifications, nil
+	return b.notifications, b.notificationErr
 }
 
 func (b *fakeBackend) ListIssueCommentsPage(_ context.Context, _ string, issue int, opts github.CommentListOptions) (github.IssueCommentsResult, error) {
@@ -408,8 +409,119 @@ func TestRunOnceUsesConditionalCursorsAndRateLimitNextStep(t *testing.T) {
 	if result.Next.PollAt != resetAt {
 		t.Fatalf("next poll = %s, want rate reset %s", result.Next.PollAt, resetAt)
 	}
+	notificationCursor := store.state.Repositories["o/r"].NotificationCursor
+	if notificationCursor.ETag != `"new-notes"` || notificationCursor.XPollIntervalSeconds != 120 || notificationCursor.LastSuccessfulPollAt != testNow {
+		t.Fatalf("notification cursor not saved from success metadata: %+v", notificationCursor)
+	}
+	if notificationCursor.RateLimit.Remaining != 0 || !notificationCursor.RateLimit.ResetAt.Equal(resetAt) {
+		t.Fatalf("notification rate limit not saved: %+v", notificationCursor.RateLimit)
+	}
 	if store.state.Repositories["o/r"].NotificationThreadCursors["8"].ETag != `"new-thread"` {
 		t.Fatalf("thread cursor not saved: %+v", store.state.Repositories["o/r"].NotificationThreadCursors["8"])
+	}
+}
+
+func TestRunOnceNotificationErrorRateLimitResetDefersNextPoll(t *testing.T) {
+	st := crstate.NewState()
+	st.Repositories["o/r"] = crstate.RepositoryState{
+		Repo: "o/r",
+		FallbackCadence: crstate.FallbackCadence{
+			Enabled:         true,
+			IntervalSeconds: 300,
+			NextPollAt:      testNow.Add(time.Hour),
+		},
+	}
+	resetAt := testNow.Add(15 * time.Minute)
+	backend := &fakeBackend{
+		user:            github.User{Login: "bot"},
+		notificationErr: errors.New("notifications forbidden"),
+		notifications: github.NotificationListResult{Metadata: github.ResponseMetadata{
+			StatusCode: http.StatusForbidden,
+			RateLimit:  github.RateLimitMetadata{Remaining: 0, ResetAt: resetAt},
+		}},
+	}
+	store := &fakeStore{state: st}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OK {
+		t.Fatalf("result OK = true, want notification diagnostic: %+v", result)
+	}
+	if result.Next.PollAt != resetAt {
+		t.Fatalf("next poll = %s, want rate reset %s", result.Next.PollAt, resetAt)
+	}
+	cursor := store.state.Repositories["o/r"].NotificationCursor
+	if cursor.LastStatusCode != http.StatusForbidden || !cursor.RateLimit.ResetAt.Equal(resetAt) || cursor.RateLimit.Remaining != 0 {
+		t.Fatalf("notification error metadata not persisted: %+v", cursor)
+	}
+	if !cursor.LastSuccessfulPollAt.IsZero() {
+		t.Fatalf("error metadata marked as successful poll: %+v", cursor)
+	}
+}
+
+func TestRunOnceNotificationErrorRetryAfterDefersNextPoll(t *testing.T) {
+	st := crstate.NewState()
+	st.Repositories["o/r"] = crstate.RepositoryState{
+		Repo: "o/r",
+		FallbackCadence: crstate.FallbackCadence{
+			Enabled:         true,
+			IntervalSeconds: 300,
+			NextPollAt:      testNow.Add(time.Hour),
+		},
+	}
+	retryAfter := 2 * time.Minute
+	backend := &fakeBackend{
+		user:            github.User{Login: "bot"},
+		notificationErr: errors.New("notifications throttled"),
+		notifications: github.NotificationListResult{Metadata: github.ResponseMetadata{
+			StatusCode: http.StatusTooManyRequests,
+			RateLimit:  github.RateLimitMetadata{RetryAfterSeconds: int(retryAfter.Seconds())},
+		}},
+	}
+	store := &fakeStore{state: st}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OK {
+		t.Fatalf("result OK = true, want notification diagnostic: %+v", result)
+	}
+	if result.Next.PollAfter != retryAfter || result.Next.PollAt != testNow.Add(retryAfter) {
+		t.Fatalf("next poll = after %s at %s, want Retry-After %s", result.Next.PollAfter, result.Next.PollAt, retryAfter)
+	}
+	cursor := store.state.Repositories["o/r"].NotificationCursor
+	if cursor.LastStatusCode != http.StatusTooManyRequests || cursor.RateLimit.RetryAfterSeconds != int(retryAfter.Seconds()) {
+		t.Fatalf("notification Retry-After metadata not persisted: %+v", cursor)
+	}
+}
+
+func TestComputeNextStepUsesBackoffMetadataFromAllCursors(t *testing.T) {
+	cfg := testConfig()
+	st := crstate.NewState()
+	st.Repositories["o/r"] = crstate.RepositoryState{
+		Repo:               "o/r",
+		NotificationCursor: crstate.CursorState{XPollIntervalSeconds: 120},
+		RepositoryCommentCursor: crstate.CursorState{
+			RateLimit: crstate.RateLimitState{Remaining: 0, ResetAt: testNow.Add(4 * time.Minute)},
+		},
+		NotificationThreadCursors: map[string]crstate.CursorState{
+			"8": {
+				LastPollAt: testNow,
+				RateLimit:  crstate.RateLimitState{RetryAfterSeconds: int((7 * time.Minute).Seconds())},
+			},
+		},
+		IssueCommentCursors: map[string]crstate.CursorState{
+			"9": {RateLimit: crstate.RateLimitState{Remaining: 0, ResetAt: testNow.Add(6 * time.Minute)}},
+		},
+	}
+
+	next := computeNextStep(cfg, st, testNow)
+	want := testNow.Add(7 * time.Minute)
+	if next.PollAt != want || next.RateLimitResetAt != (time.Time{}) {
+		t.Fatalf("next step = %+v, want poll at Retry-After %s without reset winner", next, want)
 	}
 }
 

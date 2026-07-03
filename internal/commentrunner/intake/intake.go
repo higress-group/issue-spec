@@ -179,6 +179,9 @@ func RunOnce(ctx context.Context, cfg commentrunner.Config, backend Backend, sto
 
 	notifications, notificationMeta, err := pollNotifications(ctx, backend, st, cfg.Repositories)
 	if err != nil {
+		if hasResponseMetadata(notificationMeta) {
+			applyNotificationMetadata(&st, cfg.Repositories, notificationMeta, now)
+		}
 		result.OK = false
 		result.Diagnostics = append(result.Diagnostics, Diagnostic{Source: SourceNotification, Message: err.Error()})
 	} else {
@@ -277,6 +280,11 @@ func intakeIssueComments(ctx context.Context, backend Backend, cfg commentrunner
 			Page:               page,
 		})
 		if err != nil {
+			if hasResponseMetadata(commentsResult.Metadata) {
+				cursor = updateCursor(cursor, fmt.Sprintf("issue-comments:%s#%d", repo, issueNumber), commentsResult.Metadata, now)
+				repoState.NotificationThreadCursors[cursorKey] = cursor
+				st.Repositories[repo] = repoState
+			}
 			result.OK = false
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Source: source, Repo: repo, Issue: issueNumber, Message: err.Error()})
 			return
@@ -310,6 +318,11 @@ func intakeFallback(ctx context.Context, backend Backend, cfg commentrunner.Conf
 			Since:              sinceFromCursor(cursor),
 		})
 		if err != nil {
+			if hasResponseMetadata(commentsResult.Metadata) {
+				cursor = updateCursor(cursor, "repo-comments:"+repo, commentsResult.Metadata, now)
+				repoState.RepositoryCommentCursor = cursor
+				st.Repositories[repo] = repoState
+			}
 			result.OK = false
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Source: SourceRepositoryFallback, Repo: repo, Message: err.Error()})
 			break
@@ -809,11 +822,30 @@ func updateCursor(cursor crstate.CursorState, resource string, meta github.Respo
 
 func rateLimit(meta github.ResponseMetadata) crstate.RateLimitState {
 	return crstate.RateLimitState{
-		Limit:     meta.RateLimit.Limit,
-		Remaining: meta.RateLimit.Remaining,
-		ResetAt:   meta.RateLimit.ResetAt,
-		Resource:  meta.RateLimit.Resource,
+		Limit:             meta.RateLimit.Limit,
+		Remaining:         meta.RateLimit.Remaining,
+		ResetAt:           meta.RateLimit.ResetAt,
+		Resource:          meta.RateLimit.Resource,
+		RetryAfterSeconds: meta.RateLimit.RetryAfterSeconds,
 	}
+}
+
+func hasResponseMetadata(meta github.ResponseMetadata) bool {
+	return meta.StatusCode != 0 ||
+		meta.ETag != "" ||
+		meta.LastModified != "" ||
+		meta.PollIntervalSeconds > 0 ||
+		meta.RateLimit.Limit != 0 ||
+		meta.RateLimit.Remaining != 0 ||
+		meta.RateLimit.Used != 0 ||
+		meta.RateLimit.ResetUnix != 0 ||
+		!meta.RateLimit.ResetAt.IsZero() ||
+		meta.RateLimit.Resource != "" ||
+		meta.RateLimit.RetryAfterSeconds > 0 ||
+		meta.Pagination.NextURL != "" ||
+		meta.Pagination.PrevURL != "" ||
+		meta.Pagination.FirstURL != "" ||
+		meta.Pagination.LastURL != ""
 }
 
 func fallbackDue(repoState crstate.RepositoryState, now time.Time) bool {
@@ -833,19 +865,14 @@ func computeNextStep(cfg commentrunner.Config, st crstate.RunnerState, now time.
 	pollAfter := cfg.PollInterval.Duration
 	var resetAt time.Time
 	for _, repo := range cfg.Repositories {
-		cursor := st.Repositories[repo].NotificationCursor
-		if cursor.XPollIntervalSeconds > 0 {
-			headerAfter := time.Duration(cursor.XPollIntervalSeconds) * time.Second
-			if headerAfter > pollAfter {
-				pollAfter = headerAfter
-			}
+		repoState := st.Repositories[repo]
+		applyCursorBackoff(repoState.NotificationCursor, now, &pollAfter, &resetAt)
+		applyCursorBackoff(repoState.RepositoryCommentCursor, now, &pollAfter, &resetAt)
+		for _, cursor := range repoState.NotificationThreadCursors {
+			applyCursorBackoff(cursor, now, &pollAfter, &resetAt)
 		}
-		if cursor.RateLimit.Remaining == 0 && !cursor.RateLimit.ResetAt.IsZero() && cursor.RateLimit.ResetAt.After(now) {
-			wait := cursor.RateLimit.ResetAt.Sub(now)
-			if wait > pollAfter {
-				pollAfter = wait
-				resetAt = cursor.RateLimit.ResetAt
-			}
+		for _, cursor := range repoState.IssueCommentCursors {
+			applyCursorBackoff(cursor, now, &pollAfter, &resetAt)
 		}
 	}
 	nextFallback := time.Time{}
@@ -863,8 +890,38 @@ func computeNextStep(cfg commentrunner.Config, st crstate.RunnerState, now time.
 		PollAt:           now.Add(pollAfter),
 		FallbackAfter:    cfg.FallbackInterval.Duration,
 		FallbackAt:       nextFallback,
-		Reason:           "poll interval, X-Poll-Interval, and rate-limit metadata evaluated",
+		Reason:           "poll interval, X-Poll-Interval, rate-limit reset, and Retry-After metadata evaluated",
 		RateLimitResetAt: resetAt,
+	}
+}
+
+func applyCursorBackoff(cursor crstate.CursorState, now time.Time, pollAfter *time.Duration, resetAt *time.Time) {
+	if cursor.XPollIntervalSeconds > 0 {
+		headerAfter := time.Duration(cursor.XPollIntervalSeconds) * time.Second
+		if headerAfter > *pollAfter {
+			*pollAfter = headerAfter
+			*resetAt = time.Time{}
+		}
+	}
+	if cursor.RateLimit.RetryAfterSeconds > 0 {
+		retryAt := now.Add(time.Duration(cursor.RateLimit.RetryAfterSeconds) * time.Second)
+		if !cursor.LastPollAt.IsZero() {
+			retryAt = cursor.LastPollAt.Add(time.Duration(cursor.RateLimit.RetryAfterSeconds) * time.Second)
+		}
+		if retryAt.After(now) {
+			wait := retryAt.Sub(now)
+			if wait > *pollAfter {
+				*pollAfter = wait
+				*resetAt = time.Time{}
+			}
+		}
+	}
+	if cursor.RateLimit.Remaining == 0 && !cursor.RateLimit.ResetAt.IsZero() && cursor.RateLimit.ResetAt.After(now) {
+		wait := cursor.RateLimit.ResetAt.Sub(now)
+		if wait > *pollAfter {
+			*pollAfter = wait
+			*resetAt = cursor.RateLimit.ResetAt
+		}
 	}
 }
 
