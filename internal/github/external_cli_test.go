@@ -169,17 +169,6 @@ func TestDecodeCLIJSONPageStreams(t *testing.T) {
 	}
 }
 
-type recordingCLIRunner struct {
-	command ExternalCLICommand
-	result  ExternalCLIResult
-	err     error
-}
-
-func (r *recordingCLIRunner) RunCLI(_ context.Context, command ExternalCLICommand) (ExternalCLIResult, error) {
-	r.command = command
-	return r.result, r.err
-}
-
 type fakeAPIAdapter struct {
 	subcommand []string
 }

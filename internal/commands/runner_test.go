@@ -79,6 +79,37 @@ func TestRunnerPollDryRunJSONIncludesConfigAndPreflight(t *testing.T) {
 	}
 }
 
+func TestRunnerPollDryRunUnsafeModeAndNoWatchdogFlags(t *testing.T) {
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	code := app.runRunnerPoll(context.Background(), []string{
+		"--repo", "o/r",
+		"--once",
+		"--dry-run",
+		"--unsafe-no-sandbox",
+		"--bwrap-path", "",
+		"--acpx-path", "",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr=%q", code, errOut.String())
+	}
+	got := out.String()
+	for _, want := range []string{
+		"[ok] unsafe-mode: unsafe no-sandbox mode requested",
+		"[ok] bwrap: missing bwrap path: configure --bwrap-path to enable sandbox preflight",
+		"[ok] acpx: missing acpx path: configure --acpx-path to enable acpx dispatch",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("dry-run output missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"watchdog", "process guard", "hard timeout"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("dry-run output unexpectedly mentions %q:\n%s", unwanted, got)
+		}
+	}
+}
+
 func TestRunnerPollRequiresOnceDryRun(t *testing.T) {
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
