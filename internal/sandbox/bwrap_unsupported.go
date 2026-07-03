@@ -10,5 +10,6 @@ type Bubblewrap struct {
 }
 
 func (b Bubblewrap) Preflight(context.Context, PreflightOptions) error { return ErrUnsupported }
-func (b Bubblewrap) Run(context.Context, CommandSpec) (Result, error)  { return Result{}, ErrUnsupported }
-
+func (b Bubblewrap) Run(context.Context, CommandSpec) (Result, error) {
+	return Result{}, ErrUnsupported
+}

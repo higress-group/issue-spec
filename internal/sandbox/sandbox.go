@@ -11,7 +11,7 @@ import (
 
 const (
 	DefaultWorkspacePath = "/workspace"
-	DefaultTmpPath        = "/tmp"
+	DefaultTmpPath       = "/tmp"
 )
 
 var ErrUnsupported = errors.New("issue-spec runner sandbox requires Linux and bubblewrap with --perms support")
@@ -52,7 +52,7 @@ type CommandSpec struct {
 
 type ExecRunner struct {
 	Config Config
-	Runner  Runner
+	Runner Runner
 }
 
 type UnsafeResult struct {
