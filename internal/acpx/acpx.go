@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -125,6 +126,30 @@ type TurnOutput struct {
 	RawStdout    string
 	RawStderr    string
 	SummaryFound bool
+}
+
+const (
+	ReconcileStatusRunning     = "running"
+	ReconcileStatusCompleted   = "completed"
+	ReconcileStatusFailed      = "failed"
+	ReconcileStatusCancelled   = "cancelled"
+	ReconcileStatusInterrupted = "interrupted"
+)
+
+type TurnReconcileRequest struct {
+	PublicSessionID      string
+	SessionName          string
+	StableRecordID       string
+	TurnCorrelationToken string
+	LastTurnID           string
+}
+
+type TurnReconcileResult struct {
+	Status      string
+	Metadata    Metadata
+	Output      TurnOutput
+	Ambiguous   bool
+	Diagnostics string
 }
 
 type Capabilities struct {
@@ -268,6 +293,9 @@ func (a *Adapter) Resume(ctx context.Context, req ResumeRequest) (DispatchResult
 	if refreshErr != nil {
 		return DispatchResult{}, refreshErr
 	}
+	if err := validateResumeContinuity(before, after, req.TurnCorrelationToken); err != nil {
+		return DispatchResult{}, err
+	}
 	return DispatchResult{
 		PublicSessionID: req.PublicSessionID,
 		SessionName:     sessionName,
@@ -279,23 +307,31 @@ func (a *Adapter) Resume(ctx context.Context, req ResumeRequest) (DispatchResult
 }
 
 func (a *Adapter) Refresh(ctx context.Context, ref SessionRef) (Metadata, error) {
+	snapshot, err := a.refreshSnapshot(ctx, ref)
+	if err != nil {
+		return Metadata{}, err
+	}
+	return snapshot.Metadata, nil
+}
+
+func (a *Adapter) refreshSnapshot(ctx context.Context, ref SessionRef) (sessionSnapshot, error) {
 	cmd := a.BuildRefreshCommand(sessionName(ref.PublicSessionID, ref.SessionName))
 	result, err := a.run(ctx, "sessions show", cmd)
 	if err != nil {
-		return Metadata{}, err
+		return sessionSnapshot{}, err
 	}
-	meta, err := ParseMetadata(result.Stdout)
+	snapshot, err := parseSessionSnapshot(result.Stdout)
 	if err != nil {
-		return Metadata{}, fmt.Errorf("parse session metadata: %w", err)
+		return sessionSnapshot{}, fmt.Errorf("parse session metadata: %w", err)
 	}
-	meta.SessionName = sessionName(ref.PublicSessionID, ref.SessionName)
-	if err := validateStableMetadata(meta); err != nil {
-		return Metadata{}, err
+	snapshot.Metadata.SessionName = sessionName(ref.PublicSessionID, ref.SessionName)
+	if err := validateStableMetadata(snapshot.Metadata); err != nil {
+		return sessionSnapshot{}, err
 	}
-	if ref.StableRecordID != "" && meta.StableRecordID != ref.StableRecordID {
-		return Metadata{}, fmt.Errorf("%w: record %q does not match expected %q", ErrResumeMismatch, meta.StableRecordID, ref.StableRecordID)
+	if ref.StableRecordID != "" && snapshot.Metadata.StableRecordID != ref.StableRecordID {
+		return sessionSnapshot{}, fmt.Errorf("%w: record %q does not match expected %q", ErrResumeMismatch, snapshot.Metadata.StableRecordID, ref.StableRecordID)
 	}
-	return meta, nil
+	return snapshot, nil
 }
 
 func (a *Adapter) ProbeCapabilities(ctx context.Context) (Capabilities, error) {
@@ -322,6 +358,25 @@ func (a *Adapter) Cancel(ctx context.Context, ref SessionRef) (CancelResult, err
 		return CancelResult{}, err
 	}
 	return CancelResult{Confirmed: true, Diagnostics: commandDiagnostics(result, nil)}, nil
+}
+
+func (a *Adapter) ReconcileTurn(ctx context.Context, req TurnReconcileRequest) (TurnReconcileResult, error) {
+	sessionName := sessionName(req.PublicSessionID, req.SessionName)
+	if strings.TrimSpace(req.PublicSessionID) == "" {
+		return TurnReconcileResult{}, fmt.Errorf("%w: public session id is required", ErrInvalidConfig)
+	}
+	if strings.TrimSpace(req.StableRecordID) == "" {
+		return TurnReconcileResult{}, fmt.Errorf("%w: stable acpx record id is required", ErrInvalidConfig)
+	}
+	snapshot, err := a.refreshSnapshot(ctx, SessionRef{
+		PublicSessionID: req.PublicSessionID,
+		SessionName:     sessionName,
+		StableRecordID:  req.StableRecordID,
+	})
+	if err != nil {
+		return TurnReconcileResult{}, err
+	}
+	return reconcileSnapshot(snapshot, req, a.cfg.SummaryBounds), nil
 }
 
 func (a *Adapter) BuildNewSessionCommand(sessionName string, ensure bool) Command {
@@ -495,22 +550,56 @@ func (a *Adapter) run(ctx context.Context, name string, command Command) (Comman
 }
 
 func ParseMetadata(data []byte) (Metadata, error) {
+	snapshot, err := parseSessionSnapshot(data)
+	if err != nil {
+		return Metadata{}, err
+	}
+	return snapshot.Metadata, nil
+}
+
+type sessionSnapshot struct {
+	Metadata Metadata
+	History  []historyEntry
+	Values   map[string]any
+	Text     []string
+}
+
+type historyEntry struct {
+	ID   string
+	Text []string
+	Raw  map[string]any
+}
+
+func parseSessionSnapshot(data []byte) (sessionSnapshot, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
-		return Metadata{}, fmt.Errorf("empty acpx metadata")
+		return sessionSnapshot{}, fmt.Errorf("empty acpx metadata")
 	}
 	now := time.Now().UTC()
 	var values map[string]any
 	if err := json.Unmarshal(trimmed, &values); err != nil {
 		line := firstNonEmptyLine(string(trimmed))
 		if line == "" {
-			return Metadata{}, err
+			return sessionSnapshot{}, err
 		}
-		return Metadata{StableRecordID: line, RefreshedAt: now, Raw: map[string]string{"text": line}}, nil
+		return sessionSnapshot{
+			Metadata: Metadata{StableRecordID: line, RefreshedAt: now, Raw: map[string]string{"text": line}},
+			Text:     []string{line},
+		}, nil
 	}
+	meta := metadataFromValues(values, now)
+	return sessionSnapshot{
+		Metadata: meta,
+		History:  historyEntries(values),
+		Values:   values,
+		Text:     collectStrings(values),
+	}, nil
+}
+
+func metadataFromValues(values map[string]any, refreshedAt time.Time) Metadata {
 	raw := map[string]string{}
 	flattenScalars("", values, raw)
-	meta := Metadata{
+	return Metadata{
 		StableRecordID:    firstString(values, "acpxRecordId", "acpx_record_id", "recordId", "record_id", "id", "stableRecordId", "stable_record_id"),
 		TrueSessionID:     firstString(values, "acpxSessionId", "acpx_session_id", "sessionId", "session_id", "trueSessionId", "true_session_id"),
 		ProviderSessionID: firstString(values, "agentSessionId", "agent_session_id", "providerSessionId", "provider_session_id"),
@@ -519,10 +608,9 @@ func ParseMetadata(data []byte) (Metadata, error) {
 		SessionName:       firstString(values, "name", "sessionName", "session_name"),
 		CWD:               firstString(values, "cwd", "workingDirectory", "working_directory"),
 		HistoryLength:     historyLength(values),
-		RefreshedAt:       now,
+		RefreshedAt:       refreshedAt,
 		Raw:               raw,
 	}
-	return meta, nil
 }
 
 func ParseTurnOutput(stdout, stderr []byte, bounds contextbundle.SummaryBounds) (TurnOutput, error) {
@@ -562,6 +650,255 @@ func ParseTurnOutput(stdout, stderr []byte, bounds contextbundle.SummaryBounds) 
 		RawStderr:    rawStderr,
 		SummaryFound: true,
 	}, nil
+}
+
+func validateResumeContinuity(before, after Metadata, token string) error {
+	var evidence []string
+	if after.HistoryLength > before.HistoryLength {
+		evidence = append(evidence, fmt.Sprintf("history length advanced from %d to %d", before.HistoryLength, after.HistoryLength))
+	}
+	if strings.TrimSpace(after.LastTurnID) != "" && after.LastTurnID != before.LastTurnID {
+		evidence = append(evidence, fmt.Sprintf("last turn advanced from %q to %q", before.LastTurnID, after.LastTurnID))
+	}
+	if strings.TrimSpace(token) != "" && metadataContains(after, token) {
+		evidence = append(evidence, "turn correlation token was found in refreshed metadata")
+	}
+	if len(evidence) > 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: resume dispatch did not produce history, turn id, or correlation evidence in refreshed metadata", ErrResumeMismatch)
+}
+
+func metadataContains(meta Metadata, needle string) bool {
+	needle = strings.TrimSpace(needle)
+	if needle == "" {
+		return false
+	}
+	for key, value := range meta.Raw {
+		if strings.Contains(key, needle) || strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func reconcileSnapshot(snapshot sessionSnapshot, req TurnReconcileRequest, bounds contextbundle.SummaryBounds) TurnReconcileResult {
+	token := strings.TrimSpace(req.TurnCorrelationToken)
+	lastTurn := strings.TrimSpace(req.LastTurnID)
+	tokenEvidence := token != "" && snapshotContains(snapshot, token)
+	turnEvidence := lastTurn != "" && strings.TrimSpace(snapshot.Metadata.LastTurnID) != "" && snapshot.Metadata.LastTurnID != lastTurn
+
+	var candidates []string
+	for _, entry := range snapshot.History {
+		switch {
+		case token != "" && stringsContain(entry.Text, token):
+			candidates = append(candidates, outputCandidates(entry.Raw, entry.Text)...)
+		case !tokenEvidence && turnEvidence && entry.ID != "" && entry.ID == snapshot.Metadata.LastTurnID:
+			candidates = append(candidates, outputCandidates(entry.Raw, entry.Text)...)
+		}
+	}
+	if tokenEvidence || turnEvidence {
+		candidates = append(candidates, outputCandidates(snapshot.Values, snapshot.Text)...)
+	}
+	output, found, parseErr := firstTerminalOutput(candidates, bounds)
+	if found {
+		return TurnReconcileResult{
+			Status:      statusFromTurnOutput(output),
+			Metadata:    snapshot.Metadata,
+			Output:      output,
+			Diagnostics: reconciliationEvidence(tokenEvidence, turnEvidence, "terminal coordinator summary recovered"),
+		}
+	}
+
+	diagnostic := reconciliationEvidence(tokenEvidence, turnEvidence, "terminal coordinator summary was not recoverable")
+	if parseErr != nil {
+		diagnostic += ": " + parseErr.Error()
+	}
+	if !tokenEvidence && !turnEvidence {
+		diagnostic = "turn correlation token was not found in acpx history and last turn id did not advance"
+	}
+	return TurnReconcileResult{
+		Status:      ReconcileStatusInterrupted,
+		Metadata:    snapshot.Metadata,
+		Ambiguous:   true,
+		Diagnostics: diagnostic,
+	}
+}
+
+func statusFromTurnOutput(output TurnOutput) string {
+	if output.Summary.Status == "completed" {
+		return ReconcileStatusCompleted
+	}
+	return ReconcileStatusFailed
+}
+
+func reconciliationEvidence(tokenEvidence, turnEvidence bool, suffix string) string {
+	var parts []string
+	if tokenEvidence {
+		parts = append(parts, "turn correlation token found")
+	}
+	if turnEvidence {
+		parts = append(parts, "last turn id advanced")
+	}
+	parts = append(parts, suffix)
+	return strings.Join(parts, "; ")
+}
+
+func firstTerminalOutput(candidates []string, bounds contextbundle.SummaryBounds) (TurnOutput, bool, error) {
+	var parseErr error
+	for _, candidate := range uniqueStrings(candidates) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		output, err := ParseTurnOutput([]byte(candidate), nil, bounds)
+		if err == nil && output.SummaryFound {
+			return output, true, nil
+		}
+		if err != nil && !errors.Is(err, ErrSummaryNotFound) {
+			parseErr = err
+		}
+	}
+	return TurnOutput{}, false, parseErr
+}
+
+func outputCandidates(value any, fallback []string) []string {
+	var out []string
+	collectOutputCandidates(value, &out)
+	if len(out) == 0 && len(fallback) > 0 {
+		out = append(out, strings.Join(fallback, "\n"))
+	}
+	return out
+}
+
+func collectOutputCandidates(value any, out *[]string) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range outputCandidateKeys(typed) {
+			collectText(typed[key], out)
+		}
+	case []any:
+		for _, item := range typed {
+			collectOutputCandidates(item, out)
+		}
+	}
+}
+
+func outputCandidateKeys(values map[string]any) []string {
+	preferred := []string{
+		"output", "lastOutput", "last_output", "stdout", "rawStdout", "raw_stdout",
+		"reply", "response", "assistant", "message", "content", "text", "transcript",
+	}
+	seen := map[string]bool{}
+	var keys []string
+	for _, key := range preferred {
+		if _, ok := values[key]; ok {
+			keys = append(keys, key)
+			seen[key] = true
+		}
+	}
+	var dynamic []string
+	for key := range values {
+		lower := strings.ToLower(key)
+		if !seen[key] && (strings.Contains(lower, "output") || strings.Contains(lower, "response") || strings.Contains(lower, "reply")) {
+			dynamic = append(dynamic, key)
+		}
+	}
+	sort.Strings(dynamic)
+	return append(keys, dynamic...)
+}
+
+func historyEntries(values map[string]any) []historyEntry {
+	rawEntries := historyValue(values)
+	out := make([]historyEntry, 0, len(rawEntries))
+	for _, raw := range rawEntries {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, historyEntry{
+			ID:   firstString(entry, "id", "turnId", "turn_id", "lastTurnId", "last_turn_id"),
+			Text: collectStrings(entry),
+			Raw:  entry,
+		})
+	}
+	return out
+}
+
+func historyValue(values map[string]any) []any {
+	for _, key := range []string{"history", "entries", "turns", "turnHistory", "turn_history"} {
+		if arr, ok := values[key].([]any); ok {
+			return arr
+		}
+	}
+	if nested, ok := values["history"].(map[string]any); ok {
+		if arr, ok := nested["entries"].([]any); ok {
+			return arr
+		}
+	}
+	return nil
+}
+
+func snapshotContains(snapshot sessionSnapshot, needle string) bool {
+	return stringsContain(snapshot.Text, needle)
+}
+
+func stringsContain(values []string, needle string) bool {
+	needle = strings.TrimSpace(needle)
+	if needle == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func collectStrings(value any) []string {
+	var out []string
+	collectText(value, &out)
+	return out
+}
+
+func collectText(value any, out *[]string) {
+	switch typed := value.(type) {
+	case string:
+		if strings.TrimSpace(typed) != "" {
+			*out = append(*out, typed)
+		}
+	case float64, bool:
+		if text := stringValue(typed); text != "" {
+			*out = append(*out, text)
+		}
+	case []any:
+		for _, item := range typed {
+			collectText(item, out)
+		}
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			collectText(typed[key], out)
+		}
+	}
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func normalizeConfig(cfg Config) Config {
@@ -717,6 +1054,19 @@ func flattenScalars(prefix string, values map[string]any, out map[string]string)
 		}
 		if nested, ok := value.(map[string]any); ok {
 			flattenScalars(name, nested, out)
+			continue
+		}
+		if arr, ok := value.([]any); ok {
+			for i, item := range arr {
+				itemName := name + "." + strconv.Itoa(i)
+				if s := stringValue(item); s != "" {
+					out[itemName] = s
+					continue
+				}
+				if nested, ok := item.(map[string]any); ok {
+					flattenScalars(itemName, nested, out)
+				}
+			}
 		}
 	}
 }

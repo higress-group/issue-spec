@@ -247,7 +247,7 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	workspaceRetention := fs.Duration("workspace-retention", 0, "managed workspace retention duration")
 	bwrapPath := fs.String("bwrap-path", "", "bubblewrap binary path")
 	unsafeNoSandbox := fs.Bool("unsafe-no-sandbox", false, "explicitly disable the default bubblewrap filesystem boundary")
-	ghConfigDir := fs.String("gh-config-dir", "", "temporary gh config directory for sandboxed issue-spec CLI auth")
+	ghConfigDir := fs.String("gh-config-dir", "", "host gh config directory to mirror for sandboxed issue-spec CLI auth")
 	allowCancel := fs.Bool("allow-cancel", true, "allow authorized cancellation commands")
 	codexFullAccess := fs.Bool("codex-agent-full-access", true, "require Codex agent-full-access policy for workflow CLI/shell work")
 	claudeIncludeSettings := fs.Bool("claude-include-user-settings", true, "set ACPX_CLAUDE_INCLUDE_USER_SETTINGS for Claude Code")
@@ -426,7 +426,7 @@ func (a *app) runRunnerReconcile(ctx context.Context, cfg commentrunner.Config) 
 		Sandbox: jobs.SandboxRunner{Config: sandbox.Config{
 			UnsafeNoSandbox: cfg.UnsafeNoSandbox,
 			BwrapPath:       cfg.BwrapPath,
-			TempGHConfigDir: cfg.GHConfigDir,
+			HostGHConfigDir: cfg.GHConfigDir,
 		}},
 		Acpx:      jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg)},
 		Writeback: &writeback.Service{GitHub: runnerBackend, Store: store},
@@ -465,7 +465,7 @@ func (a *app) runRunnerDispatch(ctx context.Context, cfg commentrunner.Config) (
 		Sandbox: jobs.SandboxRunner{Config: sandbox.Config{
 			UnsafeNoSandbox: cfg.UnsafeNoSandbox,
 			BwrapPath:       cfg.BwrapPath,
-			TempGHConfigDir: cfg.GHConfigDir,
+			HostGHConfigDir: cfg.GHConfigDir,
 		}},
 		Acpx:      jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg)},
 		Artifacts: &jobs.IssueSpecArtifactProvider{GitHub: runnerBackend},

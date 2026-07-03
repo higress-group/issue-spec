@@ -14,24 +14,8 @@ import (
 
 var ErrReconciliationUnsupported = errors.New("acpx turn reconciliation unsupported")
 
-type TurnReconcileRequest struct {
-	Job                  state.Job
-	PublicSessionID      string
-	StableRecordID       string
-	TurnCorrelationToken string
-	LastTurnID           string
-}
-
-type TurnReconcileResult struct {
-	Status      state.LifecycleStatus
-	Metadata    acpx.Metadata
-	Output      acpx.TurnOutput
-	Ambiguous   bool
-	Diagnostics string
-}
-
 type TurnReconciler interface {
-	ReconcileTurn(context.Context, TurnReconcileRequest) (TurnReconcileResult, error)
+	ReconcileTurn(context.Context, acpx.TurnReconcileRequest) (acpx.TurnReconcileResult, error)
 }
 
 type MetadataRefresher interface {
@@ -140,8 +124,7 @@ func (d *Dispatcher) reconcileJob(ctx context.Context, job state.Job) (Reconcile
 		return d.interrupt(ctx, job, previous, "restart reconciliation setup: "+safeError(err))
 	}
 	if reconciler, ok := coordinator.(TurnReconciler); ok {
-		reconciled, err := reconciler.ReconcileTurn(ctx, TurnReconcileRequest{
-			Job:                  job,
+		reconciled, err := reconciler.ReconcileTurn(ctx, acpx.TurnReconcileRequest{
 			PublicSessionID:      ref.PublicSessionID,
 			StableRecordID:       ref.StableRecordID,
 			TurnCorrelationToken: job.DispatchIntent.TurnCorrelationToken,
@@ -178,19 +161,20 @@ func (d *Dispatcher) coordinatorForStoredJob(ctx context.Context, job state.Job)
 	return d.Acpx.NewCoordinator(env)
 }
 
-func (d *Dispatcher) applyReconcile(ctx context.Context, job state.Job, previous state.LifecycleStatus, reconciled TurnReconcileResult) (ReconcileJob, error) {
+func (d *Dispatcher) applyReconcile(ctx context.Context, job state.Job, previous state.LifecycleStatus, reconciled acpx.TurnReconcileResult) (ReconcileJob, error) {
 	diagnostic := strings.TrimSpace(reconciled.Diagnostics)
-	if reconciled.Ambiguous || reconciled.Status == state.StatusInterrupted {
+	status := state.LifecycleStatus(reconciled.Status)
+	if reconciled.Ambiguous || status == state.StatusInterrupted {
 		if diagnostic == "" {
 			diagnostic = "turn state is ambiguous after runner restart"
 		}
 		return d.interrupt(ctx, job, previous, diagnostic)
 	}
-	switch reconciled.Status {
+	switch status {
 	case state.StatusRunning, state.StatusDispatched:
 		return d.recoveredRunning(ctx, job, previous, reconciled.Metadata, diagnostic)
 	case state.StatusCompleted, state.StatusFailed, state.StatusCancelled:
-		return d.recoveredTerminal(ctx, job, previous, reconciled, diagnostic)
+		return d.recoveredTerminal(ctx, job, previous, status, reconciled, diagnostic)
 	default:
 		if diagnostic == "" {
 			diagnostic = fmt.Sprintf("invalid reconciled status %q", reconciled.Status)
@@ -232,9 +216,8 @@ func (d *Dispatcher) recoveredRunning(ctx context.Context, job state.Job, previo
 	return ReconcileJob{JobID: job.ID, PublicSessionID: running.PublicSessionID, PreviousStatus: previous, Status: state.StatusRunning, Action: "running", Diagnostic: diagnostic}, nil
 }
 
-func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previous state.LifecycleStatus, reconciled TurnReconcileResult, diagnostic string) (ReconcileJob, error) {
+func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previous, terminal state.LifecycleStatus, reconciled acpx.TurnReconcileResult, diagnostic string) (ReconcileJob, error) {
 	now := d.now()
-	terminal := reconciled.Status
 	var final state.Job
 	lock := d.storedLock(ctx, job)
 	if err := d.Store.Update(ctx, func(st *state.RunnerState) error {

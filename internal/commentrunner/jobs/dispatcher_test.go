@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/github"
+	"github.com/higress-group/issue-spec/internal/sandbox"
 	"github.com/higress-group/issue-spec/internal/workspace"
 )
 
@@ -219,6 +222,98 @@ func TestRunNextFailurePersistsFailedStateAndBoundedError(t *testing.T) {
 	job := loadState(t, store).Jobs["job-fail"]
 	if job.Status != state.StatusFailed || len(job.Diagnostics) != 1 || len([]byte(job.Diagnostics[0])) > 1024 {
 		t.Fatalf("failed lifecycle state not safely persisted: %+v", job)
+	}
+}
+
+func TestSandboxRunnerMirrorsHostGHAuthIntoSandboxConfigDir(t *testing.T) {
+	temp := t.TempDir()
+	hostGH := filepath.Join(temp, "host-gh")
+	workspacePath := filepath.Join(temp, "workspace")
+	if err := os.MkdirAll(hostGH, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspacePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	env, err := (SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: true, HostGHConfigDir: hostGH}}).Prepare(context.Background(), SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           "acpx",
+	})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	sandboxGH := env.Sandbox.TempPaths["GH_CONFIG_DIR"]
+	if sandboxGH == "" {
+		t.Fatalf("sandbox GH_CONFIG_DIR not recorded: %+v", env.Sandbox)
+	}
+	if _, err := os.Stat(filepath.Join(sandboxGH, "hosts.yml")); err != nil {
+		t.Fatalf("host gh auth was not mirrored into %s: %v", sandboxGH, err)
+	}
+}
+
+func TestSandboxRunnerFailsFastWhenHostGHAuthMissing(t *testing.T) {
+	temp := t.TempDir()
+	workspacePath := filepath.Join(temp, "workspace")
+	if err := os.MkdirAll(workspacePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := (SandboxRunner{Config: sandbox.Config{
+		UnsafeNoSandbox: true,
+		HostGHConfigDir: filepath.Join(temp, "missing-gh"),
+	}}).Prepare(context.Background(), SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           "acpx",
+	})
+	if err == nil || !strings.Contains(err.Error(), "sandbox gh auth unavailable") || !strings.Contains(err.Error(), "sandbox GH_CONFIG_DIR") {
+		t.Fatalf("Prepare error = %v, want exact sandbox auth path failure", err)
+	}
+}
+
+func TestSandboxedRunnerPreservesAdapterCommandEnv(t *testing.T) {
+	temp := t.TempDir()
+	cfg := sandbox.Config{
+		UnsafeNoSandbox:   true,
+		WorkspacePath:     temp,
+		TempHome:          filepath.Join(temp, "home"),
+		TempGHConfigDir:   filepath.Join(temp, "gh"),
+		TempXDGConfigHome: filepath.Join(temp, "xdg"),
+		HostEnv:           []string{"PATH=/usr/bin", "UNLISTED_HOST=value", "GH_TOKEN=host-secret"},
+		EnvAllowlist:      []string{"PATH"},
+	}
+	for _, dir := range []string{cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := &recordingSandboxRunner{}
+	_, err := (sandboxedRunner{cfg: cfg, deps: sandbox.Dependencies{Runner: runner}}).Run(context.Background(), acpx.Command{
+		Binary: "acpx",
+		Env: []string{
+			"PATH=/custom/bin",
+			"ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1",
+			"UNLISTED_HOST=value",
+			"GH_TOKEN=command-secret",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	env := envEntriesMap(runner.command.Env)
+	if env["ACPX_CLAUDE_INCLUDE_USER_SETTINGS"] != "1" || env["PATH"] != "/custom/bin" {
+		t.Fatalf("trusted adapter env was not preserved: %v", runner.command.Env)
+	}
+	if _, ok := env["GH_TOKEN"]; ok {
+		t.Fatalf("token env leaked into sandbox command: %v", runner.command.Env)
+	}
+	if _, ok := env["UNLISTED_HOST"]; ok {
+		t.Fatalf("unchanged host env leaked into sandbox command: %v", runner.command.Env)
 	}
 }
 
@@ -458,6 +553,26 @@ func (f *fakeWriteback) Write(_ context.Context, req writeback.Request) (writeba
 type fixedClock time.Time
 
 func (c fixedClock) Now() time.Time { return time.Time(c) }
+
+type recordingSandboxRunner struct {
+	command sandbox.Command
+}
+
+func (r *recordingSandboxRunner) Run(_ context.Context, command sandbox.Command) (sandbox.Result, error) {
+	r.command = command
+	return sandbox.Result{}, nil
+}
+
+func envEntriesMap(entries []string) map[string]string {
+	out := map[string]string{}
+	for _, entry := range entries {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok {
+			out[name] = value
+		}
+	}
+	return out
+}
 
 func first(values []string) string {
 	if len(values) == 0 {

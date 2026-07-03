@@ -733,7 +733,121 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, error) {
 			return sandbox.Config{}, err
 		}
 	}
+	if err := mirrorHostGHAuth(&cfg); err != nil {
+		return sandbox.Config{}, err
+	}
 	return cfg, nil
+}
+
+func mirrorHostGHAuth(cfg *sandbox.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("sandbox config is required")
+	}
+	source, err := hostGHConfigDir(*cfg)
+	if err != nil {
+		return err
+	}
+	source = filepath.Clean(source)
+	hostsPath := filepath.Join(source, "hosts.yml")
+	if info, err := os.Stat(hostsPath); err != nil || info.IsDir() {
+		return fmt.Errorf("sandbox gh auth unavailable: %s is missing; sandbox GH_CONFIG_DIR will be %s (host source %s)", hostsPath, sandboxGHConfigDir(*cfg), source)
+	}
+	if sameCleanPath(source, cfg.TempGHConfigDir) {
+		return nil
+	}
+	if err := copyGHConfigDir(source, cfg.TempGHConfigDir); err != nil {
+		return fmt.Errorf("mirror host gh auth from %s to sandbox GH_CONFIG_DIR %s: %w", source, sandboxGHConfigDir(*cfg), err)
+	}
+	if info, err := os.Stat(filepath.Join(cfg.TempGHConfigDir, "hosts.yml")); err != nil || info.IsDir() {
+		return fmt.Errorf("sandbox gh auth unavailable after mirror: %s is missing; sandbox GH_CONFIG_DIR will be %s", filepath.Join(cfg.TempGHConfigDir, "hosts.yml"), sandboxGHConfigDir(*cfg))
+	}
+	return nil
+}
+
+func hostGHConfigDir(cfg sandbox.Config) (string, error) {
+	if strings.TrimSpace(cfg.HostGHConfigDir) != "" {
+		return strings.TrimSpace(cfg.HostGHConfigDir), nil
+	}
+	hostEnv := cfg.HostEnv
+	if hostEnv == nil {
+		hostEnv = os.Environ()
+	}
+	if value := envValue(hostEnv, "GH_CONFIG_DIR"); value != "" {
+		return value, nil
+	}
+	if value := envValue(hostEnv, "XDG_CONFIG_HOME"); value != "" {
+		return filepath.Join(value, "gh"), nil
+	}
+	if value := envValue(hostEnv, "HOME"); value != "" {
+		return filepath.Join(value, ".config", "gh"), nil
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve host gh config dir: %w", err)
+	}
+	if strings.TrimSpace(dir) == "" {
+		return "", fmt.Errorf("resolve host gh config dir: user config dir is empty")
+	}
+	return filepath.Join(dir, "gh"), nil
+}
+
+func copyGHConfigDir(source, dest string) error {
+	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dest, rel)
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o700)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o600)
+	})
+}
+
+func envValue(entries []string, name string) string {
+	prefix := name + "="
+	for _, entry := range entries {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(entry, prefix))
+		}
+	}
+	return ""
+}
+
+func sandboxGHConfigDir(cfg sandbox.Config) string {
+	if cfg.UnsafeNoSandbox {
+		return cfg.TempGHConfigDir
+	}
+	return "/tmp/issue-spec-gh"
+}
+
+func sameCleanPath(left, right string) bool {
+	leftAbs, leftErr := filepath.Abs(filepath.Clean(left))
+	rightAbs, rightErr := filepath.Abs(filepath.Clean(right))
+	if leftErr == nil {
+		left = leftAbs
+	}
+	if rightErr == nil {
+		right = rightAbs
+	}
+	return left == right
 }
 
 type sandboxedRunner struct {

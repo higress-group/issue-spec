@@ -19,8 +19,8 @@ func TestReconcileRunningCompletedPatchesStateWritebackAndReleasesLock(t *testin
 
 	writebacks := &fakeWriteback{store: store}
 	workspaces := &fakeWorkspaces{binding: testBinding("unused")}
-	coordinator := &fakeReconcileCoordinator{reconcileResult: TurnReconcileResult{
-		Status: state.StatusCompleted,
+	coordinator := &fakeReconcileCoordinator{reconcileResult: acpx.TurnReconcileResult{
+		Status: acpx.ReconcileStatusCompleted,
 		Metadata: acpx.Metadata{
 			StableRecordID: "rec-reconcile",
 			LastTurnID:     "turn-recovered",
@@ -98,7 +98,7 @@ func TestReconcileAmbiguousMarksInterruptedAndDirty(t *testing.T) {
 
 	writebacks := &fakeWriteback{store: store}
 	workspaces := &fakeWorkspaces{binding: testBinding("unused")}
-	coordinator := &fakeReconcileCoordinator{reconcileResult: TurnReconcileResult{
+	coordinator := &fakeReconcileCoordinator{reconcileResult: acpx.TurnReconcileResult{
 		Ambiguous:   true,
 		Diagnostics: "turn token was not found in acpx history",
 	}}
@@ -330,7 +330,7 @@ func (f staticAcpxFactory) NewCoordinator(ExecutionEnvironment) (Coordinator, er
 }
 
 type fakeReconcileCoordinator struct {
-	reconcileResult TurnReconcileResult
+	reconcileResult acpx.TurnReconcileResult
 	reconcileErr    error
 	reconcileCalls  int
 }
@@ -343,7 +343,7 @@ func (f *fakeReconcileCoordinator) Resume(context.Context, acpx.ResumeRequest) (
 	return acpx.DispatchResult{}, errors.New("unexpected resume")
 }
 
-func (f *fakeReconcileCoordinator) ReconcileTurn(context.Context, TurnReconcileRequest) (TurnReconcileResult, error) {
+func (f *fakeReconcileCoordinator) ReconcileTurn(context.Context, acpx.TurnReconcileRequest) (acpx.TurnReconcileResult, error) {
 	f.reconcileCalls++
 	return f.reconcileResult, f.reconcileErr
 }

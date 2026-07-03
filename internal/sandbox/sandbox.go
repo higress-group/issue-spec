@@ -46,6 +46,7 @@ type Config struct {
 	TempHome          string
 	TempGHConfigDir   string
 	TempXDGConfigHome string
+	HostGHConfigDir   string
 
 	HostEnv             []string
 	EnvAllowlist        []string
@@ -172,7 +173,7 @@ func Prepare(ctx context.Context, cfg Config, target Command, deps Dependencies)
 		if env.err != nil {
 			return PreparedCommand{Metadata: meta}, env.err
 		}
-		target.Env = env.entries
+		target.Env = mergeCommandEnv(env.entries, target.Env, cfg, &meta.Env)
 		if target.Dir == "" {
 			target.Dir = cfg.WorkspacePath
 		}
@@ -188,7 +189,8 @@ func Prepare(ctx context.Context, cfg Config, target Command, deps Dependencies)
 	if env.err != nil {
 		return PreparedCommand{Metadata: meta}, env.err
 	}
-	command, mounts, err := buildBwrapCommand(cfg, target, env.entries, meta.BwrapPath)
+	commandEnv := mergeCommandEnv(env.entries, target.Env, cfg, &meta.Env)
+	command, mounts, err := buildBwrapCommand(cfg, target, commandEnv, meta.BwrapPath)
 	meta.Mounts = mounts
 	if err != nil {
 		return PreparedCommand{Metadata: meta}, err
@@ -287,6 +289,64 @@ func scrubEnvironment(cfg Config, paths envPaths, requireTempPaths bool) envBuil
 		entries = append(entries, name+"="+values[name])
 	}
 	return envBuildResult{entries: entries, metadata: meta}
+}
+
+func mergeCommandEnv(baseEntries, commandEntries []string, cfg Config, meta *EnvMetadata) []string {
+	values := envMapFromEntries(baseEntries)
+	hostValues := cfg.HostEnv
+	if hostValues == nil {
+		hostValues = os.Environ()
+	}
+	host := envMapFromEntries(hostValues)
+	protected := map[string]bool{
+		"HOME":            true,
+		"GH_CONFIG_DIR":   true,
+		"XDG_CONFIG_HOME": true,
+	}
+	for _, entry := range commandEntries {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok || name == "" || protected[name] {
+			continue
+		}
+		if isTokenEnv(name) {
+			if meta != nil {
+				meta.TokenUnset = append(meta.TokenUnset, name)
+			}
+			continue
+		}
+		if trustedCommandEnvName(name) {
+			values[name] = value
+			continue
+		}
+		if hostValue, ok := host[name]; ok && hostValue == value {
+			continue
+		}
+		values[name] = value
+	}
+	if meta != nil {
+		meta.TokenUnset = sortedUnique(meta.TokenUnset)
+		meta.Set = sortedKeys(values)
+	}
+	entries := make([]string, 0, len(values))
+	for _, name := range sortedKeys(values) {
+		entries = append(entries, name+"="+values[name])
+	}
+	return entries
+}
+
+func trustedCommandEnvName(name string) bool {
+	return strings.HasPrefix(name, "ACPX_")
+}
+
+func envMapFromEntries(entries []string) map[string]string {
+	out := map[string]string{}
+	for _, entry := range entries {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok && name != "" {
+			out[name] = value
+		}
+	}
+	return out
 }
 
 func unsafeMetadata(cfg Config, env EnvMetadata) Metadata {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -86,7 +87,7 @@ func TestResumeNoWaitQueuesPromptWithoutSummaryRequirement(t *testing.T) {
 	runner := &fakeRunner{responses: []fakeResponse{
 		{stdout: `{"acpxRecordId":"rec-1","history":[{"id":"seed"}]}`},
 		{stdout: "queued"},
-		{stdout: `{"acpxRecordId":"rec-1","history":[{"id":"seed"}]}`},
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-queued","history":[{"id":"seed"},{"id":"turn-queued"}]}`},
 	}}
 	adapter := newTestAdapter(t, Config{CWD: "/workspace", MaxPermissions: PermissionDenyAll}, runner)
 
@@ -110,7 +111,7 @@ func TestAdapterDoesNotAddHardTurnDeadline(t *testing.T) {
 	runner := &fakeRunner{responses: []fakeResponse{
 		{stdout: `{"acpxRecordId":"rec-1","history":[{"id":"seed"}]}`},
 		{stdout: "queued"},
-		{stdout: `{"acpxRecordId":"rec-1","history":[{"id":"seed"}]}`},
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-queued","history":[{"id":"seed"},{"id":"turn-queued"}]}`},
 	}}
 	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
 
@@ -128,6 +129,49 @@ func TestAdapterDoesNotAddHardTurnDeadline(t *testing.T) {
 		if hasDeadline {
 			t.Fatalf("acpx command %d received an adapter-added deadline: %+v", i, runner.contextDeadlines)
 		}
+	}
+}
+
+func TestResumeRejectsStableRecordOnlyPostDispatchRefresh(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-1","history":[{"id":"turn-1"}]}`},
+		{stdout: "done\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```\n"},
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-1","history":[{"id":"turn-1"}]}`},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	_, err := adapter.Resume(context.Background(), ResumeRequest{
+		PublicSessionID:      "pub-1",
+		StableRecordID:       "rec-1",
+		Prompt:               "continue",
+		MinHistoryEntries:    1,
+		TurnCorrelationToken: "turn-token-stale",
+	})
+	if !errors.Is(err, ErrResumeMismatch) {
+		t.Fatalf("Resume error = %v, want ErrResumeMismatch", err)
+	}
+}
+
+func TestResumeAcceptsCorrelationTokenEvidenceInHistory(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-1","history":[{"id":"turn-1"}]}`},
+		{stdout: "done\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```\n"},
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-1","history":[{"id":"turn-1"},{"id":"turn-1b","prompt":"issue-spec-turn-correlation: turn-token-ok"}]}`},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	result, err := adapter.Resume(context.Background(), ResumeRequest{
+		PublicSessionID:      "pub-1",
+		StableRecordID:       "rec-1",
+		Prompt:               "continue",
+		MinHistoryEntries:    1,
+		TurnCorrelationToken: "turn-token-ok",
+	})
+	if err != nil {
+		t.Fatalf("Resume returned error: %v", err)
+	}
+	if result.Metadata.StableRecordID != "rec-1" {
+		t.Fatalf("unexpected result metadata: %+v", result.Metadata)
 	}
 }
 
@@ -209,6 +253,64 @@ func TestCancelUnsupportedDoesNotPretendCancelled(t *testing.T) {
 	}
 	if !result.Unsupported || result.Confirmed {
 		t.Fatalf("unsupported cancel result not explicit: %+v", result)
+	}
+}
+
+func TestReconcileTurnRecoversTerminalOutputFromCorrelatedHistory(t *testing.T) {
+	output := "Recovered.\n\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```"
+	sessionJSON := `{
+		"acpxRecordId":"rec-1",
+		"lastTurnId":"turn-2",
+		"history":[
+			{"id":"turn-1","output":"previous"},
+			{"id":"turn-2","prompt":"issue-spec-turn-correlation: turn-token-2","output":` + strconv.Quote(output) + `}
+		]
+	}`
+	runner := &fakeRunner{responses: []fakeResponse{{stdout: sessionJSON}}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	result, err := adapter.ReconcileTurn(context.Background(), TurnReconcileRequest{
+		PublicSessionID:      "pub-1",
+		StableRecordID:       "rec-1",
+		TurnCorrelationToken: "turn-token-2",
+		LastTurnID:           "turn-1",
+	})
+	if err != nil {
+		t.Fatalf("ReconcileTurn returned error: %v", err)
+	}
+	if result.Status != ReconcileStatusCompleted || !result.Output.SummaryFound || result.Ambiguous {
+		t.Fatalf("terminal turn was not recovered: %+v", result)
+	}
+	if result.Metadata.LastTurnID != "turn-2" {
+		t.Fatalf("metadata not refreshed: %+v", result.Metadata)
+	}
+}
+
+func TestReconcileTurnMarksAmbiguousWhenTerminalCannotBeProven(t *testing.T) {
+	sessionJSON := `{
+		"acpxRecordId":"rec-1",
+		"lastTurnId":"turn-2",
+		"history":[
+			{"id":"turn-2","prompt":"issue-spec-turn-correlation: turn-token-2","output":"assistant output without summary"}
+		]
+	}`
+	runner := &fakeRunner{responses: []fakeResponse{{stdout: sessionJSON}}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	result, err := adapter.ReconcileTurn(context.Background(), TurnReconcileRequest{
+		PublicSessionID:      "pub-1",
+		StableRecordID:       "rec-1",
+		TurnCorrelationToken: "turn-token-2",
+		LastTurnID:           "turn-1",
+	})
+	if err != nil {
+		t.Fatalf("ReconcileTurn returned error: %v", err)
+	}
+	if result.Status != ReconcileStatusInterrupted || !result.Ambiguous {
+		t.Fatalf("ambiguous turn should be interrupted, got %+v", result)
+	}
+	if !strings.Contains(result.Diagnostics, "terminal coordinator summary was not recoverable") {
+		t.Fatalf("diagnostics did not explain ambiguity: %q", result.Diagnostics)
 	}
 }
 

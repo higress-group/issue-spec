@@ -92,9 +92,9 @@ func RunPreflight(ctx context.Context, cfg Config, deps PreflightDependencies) P
 	}
 
 	if cfg.GHConfigDir == "" {
-		report.add(PreflightCheck{Name: "sandbox-gh-config", Status: CheckSkipped, Detail: "temporary GH_CONFIG_DIR will be prepared by dispatch implementation"})
+		report.add(PreflightCheck{Name: "sandbox-gh-config", Status: CheckSkipped, Detail: "host gh auth config will be mirrored into the dispatch sandbox"})
 	} else {
-		report.add(PreflightCheck{Name: "sandbox-gh-config", Status: CheckOK, Detail: "configured GH_CONFIG_DIR: " + cfg.GHConfigDir})
+		report.add(PreflightCheck{Name: "sandbox-gh-config", Status: CheckOK, Detail: "host GH_CONFIG_DIR source: " + cfg.GHConfigDir})
 	}
 
 	report.add(PreflightCheck{Name: "unsafe-no-sandbox", Status: unsafeSandboxStatus(cfg), Detail: unsafeSandboxDetail(cfg)})

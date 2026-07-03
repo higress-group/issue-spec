@@ -65,6 +65,55 @@ func TestPrepareUnsafeScrubsEnvAndExposesMetadata(t *testing.T) {
 	}
 }
 
+func TestPrepareMergesTrustedCommandEnvWithoutReintroducingHostSecrets(t *testing.T) {
+	cfg := Config{
+		UnsafeNoSandbox:   true,
+		WorkspacePath:     testAbsPath("workspace"),
+		TempHome:          testAbsPath("home"),
+		TempGHConfigDir:   testAbsPath("gh"),
+		TempXDGConfigHome: testAbsPath("xdg"),
+		HostEnv: []string{
+			"PATH=/usr/bin",
+			"UNLISTED_HOST=value",
+			"GH_TOKEN=host-secret",
+		},
+		EnvAllowlist: []string{"PATH"},
+	}
+	commandEnv := []string{
+		"PATH=/custom/bin",
+		"UNLISTED_HOST=value",
+		"ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1",
+		"SAFE_COMMAND_ENV=1",
+		"GH_TOKEN=command-secret",
+		"HOME=/not-the-sandbox-home",
+	}
+
+	prepared, err := Prepare(context.Background(), cfg, Command{Binary: "acpx", Env: commandEnv}, Dependencies{})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	env := envMap(prepared.Command.Env)
+	for name, want := range map[string]string{
+		"PATH":                              "/custom/bin",
+		"ACPX_CLAUDE_INCLUDE_USER_SETTINGS": "1",
+		"SAFE_COMMAND_ENV":                  "1",
+		"HOME":                              cfg.TempHome,
+		"GH_CONFIG_DIR":                     cfg.TempGHConfigDir,
+	} {
+		if got := env[name]; got != want {
+			t.Fatalf("%s = %q, want %q in env %v", name, got, want, prepared.Command.Env)
+		}
+	}
+	for _, name := range []string{"GH_TOKEN", "UNLISTED_HOST"} {
+		if _, ok := env[name]; ok {
+			t.Fatalf("%s should not be reintroduced from command env: %v", name, prepared.Command.Env)
+		}
+	}
+	if !contains(prepared.Metadata.Env.TokenUnset, "GH_TOKEN") {
+		t.Fatalf("token skip not recorded: %+v", prepared.Metadata.Env)
+	}
+}
+
 func TestPreflightUnsafeDoesNotRequireBwrap(t *testing.T) {
 	_, err := Preflight(context.Background(), Config{UnsafeNoSandbox: true}, Dependencies{
 		LookPath: func(string) (string, error) {
