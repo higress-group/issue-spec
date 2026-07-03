@@ -5,9 +5,12 @@ import (
 	"flag"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
+	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
+	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
 )
 
 type runnerCommandOptions struct {
@@ -23,6 +26,8 @@ type runnerDryRunResult struct {
 	Actions   []string                      `json:"actions"`
 	Config    commentrunner.Config          `json:"config"`
 	Preflight commentrunner.PreflightReport `json:"preflight"`
+	Intake    *intake.Result                `json:"intake,omitempty"`
+	Error     string                        `json:"error,omitempty"`
 }
 
 func (a *app) runRunner(ctx context.Context, args []string) int {
@@ -51,6 +56,16 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 		return 1
 	}
 	report := a.runRunnerPreflight(ctx, cfg)
+	var intakeResult *intake.Result
+	intakeErr := ""
+	if report.OK {
+		result, err := a.runRunnerIntake(ctx, cfg, intake.Options{DryRun: true})
+		if err != nil {
+			intakeErr = err.Error()
+		} else {
+			intakeResult = &result
+		}
+	}
 	result := runnerDryRunResult{
 		OK:        report.OK,
 		Mode:      "dry-run",
@@ -58,6 +73,11 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 		Actions:   plannedRunnerPollActions(cfg, opts.Once),
 		Config:    cfg,
 		Preflight: report,
+		Intake:    intakeResult,
+		Error:     intakeErr,
+	}
+	if intakeErr != "" {
+		result.OK = false
 	}
 	if opts.JSON {
 		if code := a.outputJSON(result); code != 0 {
@@ -66,7 +86,7 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 	} else {
 		a.printRunnerDryRun(result)
 	}
-	if report.OK {
+	if result.OK {
 		return 0
 	}
 	return 1
@@ -221,6 +241,30 @@ func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) 
 	})
 }
 
+func (a *app) runRunnerIntake(ctx context.Context, cfg commentrunner.Config, opts intake.Options) (intake.Result, error) {
+	if a.runnerIntake != nil {
+		return a.runnerIntake(ctx, cfg, opts)
+	}
+	selection, err := a.selectBackend(ctx, cfg.Hostname)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	backend, err := a.backendForSelection(ctx, selection)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	runnerBackend, ok := backend.(intake.Backend)
+	if !ok {
+		return intake.Result{}, fmt.Errorf("selected GitHub backend does not support runner intake")
+	}
+	store, err := crstate.OpenFileStore(cfg.StatePath)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	defer store.Close()
+	return intake.RunOnce(ctx, cfg, runnerBackend, store, opts)
+}
+
 func plannedRunnerPollActions(cfg commentrunner.Config, once bool) []string {
 	cfg = cfg.Normalized()
 	cycle := "poll configured repositories continuously"
@@ -232,7 +276,7 @@ func plannedRunnerPollActions(cfg commentrunner.Config, once bool) []string {
 		"run preflight checks",
 		cycle + ": " + strings.Join(cfg.Repositories, ", "),
 		"check notification intake and repository comments fallback",
-		"dry-run only: skip GitHub writes, state mutation, workspace changes, sandbox execution, and acpx dispatch",
+		"dry-run only: skip GitHub writes, state persistence, workspace changes, sandbox execution, and acpx dispatch",
 	}
 }
 
@@ -246,6 +290,12 @@ func (a *app) printRunnerDryRun(result runnerDryRunResult) {
 		fmt.Fprintf(a.out, "- %s\n", action)
 	}
 	a.printPreflightReport(result.Preflight)
+	if result.Intake != nil {
+		fmt.Fprintf(a.out, "intake: commands=%d jobs=%d cancellations=%d next_poll=%s\n", len(result.Intake.Commands), len(result.Intake.Jobs), len(result.Intake.Cancellations), result.Intake.Next.PollAt.Format(time.RFC3339))
+	}
+	if result.Error != "" {
+		fmt.Fprintf(a.out, "intake error: %s\n", result.Error)
+	}
 }
 
 func (a *app) printPreflightReport(report commentrunner.PreflightReport) {
