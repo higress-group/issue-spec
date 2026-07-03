@@ -101,6 +101,34 @@ func TestNewSessionRecoversSummaryFromFlattenedAgentMessageText(t *testing.T) {
 	}
 }
 
+func TestNewSessionRetriesPromptQueueNotAcceptingError(t *testing.T) {
+	withSetModeBackoffs(t, []time.Duration{0})
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","acpxSessionId":"acpx-1","agentSessionId":"codex-1","history":[{"id":"seed"}]}`},
+		{stderr: "Session queue owner is running but not accepting queue requests", exitCode: 1},
+		{stdout: "done\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```\n"},
+		{stdout: `{"acpxRecordId":"rec-1","acpxSessionId":"acpx-2","lastTurnId":"turn-2","history":[{"id":"seed"},{"id":"turn-2"}]}`},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	result, err := adapter.NewSession(context.Background(), NewSessionRequest{
+		PublicSessionID:      "pub-1",
+		Prompt:               "create test artifact",
+		TurnCorrelationToken: "turn-token-1",
+	})
+	if err != nil {
+		t.Fatalf("NewSession returned error: %v", err)
+	}
+	if !result.Output.SummaryFound {
+		t.Fatalf("summary not parsed after prompt retry: %+v", result.Output)
+	}
+	if len(runner.commands) != 4 {
+		t.Fatalf("recorded %d commands, want create, prompt retry, prompt success, refresh", len(runner.commands))
+	}
+	assertArgs(t, runner.commands[1].Args, []string{"--cwd", "/workspace", "--format", "quiet", "--approve-reads", "codex", "--file", "-", "-s", "pub-1"})
+	assertArgs(t, runner.commands[2].Args, []string{"--cwd", "/workspace", "--format", "quiet", "--approve-reads", "codex", "--file", "-", "-s", "pub-1"})
+}
+
 func TestResumeValidatesStableRecordBeforeDispatch(t *testing.T) {
 	runner := &fakeRunner{responses: []fakeResponse{
 		{stdout: `{"acpxRecordId":"other-rec","history":[{"id":"seed"}]}`},

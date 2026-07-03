@@ -580,57 +580,8 @@ func (a *Adapter) applyMode(ctx context.Context, sessionName string) error {
 	if strings.TrimSpace(a.cfg.Mode) == "" {
 		return nil
 	}
-	var lastErr error
-	for attempt := 0; ; attempt++ {
-		_, err := a.run(ctx, "set-mode", a.BuildSetModeCommand(sessionName))
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-		if !isRetryableAcpxQueueError(err) || attempt >= len(retryableSetModeBackoffs) {
-			return lastErr
-		}
-		if err := sleepContext(ctx, retryableSetModeBackoffs[attempt]); err != nil {
-			return fmt.Errorf("wait before retrying set-mode: %w", err)
-		}
-	}
-}
-
-func sleepContext(ctx context.Context, duration time.Duration) error {
-	if duration <= 0 {
-		return nil
-	}
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
-func isRetryableAcpxQueueError(err error) bool {
-	var commandErr *CommandError
-	if !errors.As(err, &commandErr) {
-		return false
-	}
-	var envelope struct {
-		Error struct {
-			Data struct {
-				Retryable  bool   `json:"retryable"`
-				DetailCode string `json:"detailCode"`
-				Origin     string `json:"origin"`
-			} `json:"data"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(commandErr.Result.Stdout, &envelope) != nil {
-		return false
-	}
-	if !envelope.Error.Data.Retryable {
-		return false
-	}
-	return strings.EqualFold(envelope.Error.Data.DetailCode, "QUEUE_NOT_ACCEPTING_REQUESTS") || strings.EqualFold(envelope.Error.Data.Origin, "queue")
+	_, err := a.runWithRetryableQueue(ctx, "set-mode", a.BuildSetModeCommand(sessionName))
+	return err
 }
 
 type promptDispatch struct {
@@ -641,7 +592,7 @@ type promptDispatch struct {
 func (a *Adapter) dispatchPrompt(ctx context.Context, sessionName, prompt string, noWait bool, token string) (promptDispatch, error) {
 	effectiveNoWait := noWait || a.cfg.NoWait
 	cmd := a.BuildPromptCommand(sessionName, []byte(prompt), effectiveNoWait, token)
-	result, err := a.run(ctx, "prompt", cmd)
+	result, err := a.runWithRetryableQueue(ctx, "prompt", cmd)
 	if err != nil {
 		return promptDispatch{}, err
 	}
@@ -669,6 +620,70 @@ func (a *Adapter) run(ctx context.Context, name string, command Command) (Comman
 		return result, &CommandError{Name: name, Command: command, Result: result, RunError: err}
 	}
 	return result, nil
+}
+
+func (a *Adapter) runWithRetryableQueue(ctx context.Context, name string, command Command) (CommandResult, error) {
+	var lastResult CommandResult
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		result, err := a.run(ctx, name, command)
+		if err == nil {
+			return result, nil
+		}
+		lastResult = result
+		lastErr = err
+		if !isRetryableAcpxQueueError(err) || attempt >= len(retryableSetModeBackoffs) {
+			return lastResult, lastErr
+		}
+		if err := sleepContext(ctx, retryableSetModeBackoffs[attempt]); err != nil {
+			return lastResult, fmt.Errorf("wait before retrying %s: %w", name, err)
+		}
+	}
+}
+
+func sleepContext(ctx context.Context, duration time.Duration) error {
+	if duration <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func isRetryableAcpxQueueError(err error) bool {
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) {
+		return false
+	}
+	if isRetryableAcpxQueueJSON(commandErr.Result.Stdout) {
+		return true
+	}
+	text := strings.ToLower(string(commandErr.Result.Stdout) + "\n" + string(commandErr.Result.Stderr))
+	return strings.Contains(text, "queue owner is running but not accepting")
+}
+
+func isRetryableAcpxQueueJSON(data []byte) bool {
+	var envelope struct {
+		Error struct {
+			Data struct {
+				Retryable  bool   `json:"retryable"`
+				DetailCode string `json:"detailCode"`
+				Origin     string `json:"origin"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(data, &envelope) != nil {
+		return false
+	}
+	if !envelope.Error.Data.Retryable {
+		return false
+	}
+	return strings.EqualFold(envelope.Error.Data.DetailCode, "QUEUE_NOT_ACCEPTING_REQUESTS") || strings.EqualFold(envelope.Error.Data.Origin, "queue")
 }
 
 func ParseMetadata(data []byte) (Metadata, error) {
