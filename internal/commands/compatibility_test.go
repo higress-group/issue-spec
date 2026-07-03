@@ -226,6 +226,10 @@ func (c archiveCompatibilityClient) CreatePullRequest(ctx context.Context, repo 
 	return github.PullRequest{}, errors.New("unused")
 }
 
+func (archiveCompatibilityClient) CollaboratorPermission(context.Context, string, string) (string, error) {
+	return "", errors.New("unused")
+}
+
 func runTestGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)

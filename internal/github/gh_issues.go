@@ -176,6 +176,18 @@ func (b *GHBackend) UpdateComment(ctx context.Context, repo string, commentID in
 	return comment, err
 }
 
+func (b *GHBackend) CollaboratorPermission(ctx context.Context, repo, user string) (string, error) {
+	var out struct {
+		Permission string `json:"permission"`
+	}
+	err := b.runJSON(ctx, ExternalCLIAPIRequest{
+		Operation: "CollaboratorPermission",
+		Method:    http.MethodGet,
+		Endpoint:  fmt.Sprintf("/repos/%s/collaborators/%s/permission", repo, user),
+	}, &out)
+	return out.Permission, err
+}
+
 func (b *GHBackend) CreateLabel(ctx context.Context, repo, name, color, description string) (LabelResult, error) {
 	var out struct {
 		Name string `json:"name"`

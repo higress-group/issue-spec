@@ -11,6 +11,7 @@ type Operations interface {
 	ListIssueComments(context.Context, string, int) ([]Comment, error)
 	CreateComment(context.Context, string, int, string) (Comment, error)
 	UpdateComment(context.Context, string, int64, string) (Comment, error)
+	CollaboratorPermission(context.Context, string, string) (string, error)
 	CreateLabel(context.Context, string, string, string, string) (LabelResult, error)
 	GetPullRequest(context.Context, string, int) (PullRequest, error)
 	CreatePullRequest(context.Context, string, CreatePullRequestOptions) (PullRequest, error)

@@ -691,6 +691,10 @@ func (fakeGitHubBackend) UpdateComment(context.Context, string, int64, string) (
 	return github.Comment{}, errors.New("unused")
 }
 
+func (fakeGitHubBackend) CollaboratorPermission(context.Context, string, string) (string, error) {
+	return "", errors.New("unused")
+}
+
 func (fakeGitHubBackend) CreateLabel(context.Context, string, string, string, string) (github.LabelResult, error) {
 	return github.LabelResult{}, errors.New("unused")
 }

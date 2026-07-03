@@ -152,6 +152,10 @@ type LabelResult struct {
 	Skipped bool   `json:"skipped"`
 }
 
+type CollaboratorPermission struct {
+	Permission string `json:"permission"`
+}
+
 type PullRequest struct {
 	Number  int    `json:"number"`
 	HTMLURL string `json:"html_url"`
@@ -359,6 +363,12 @@ func (c *Client) UpdateComment(ctx context.Context, repo string, commentID int64
 	var comment Comment
 	err := c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, commentID), map[string]string{"body": body}, &comment)
 	return comment, err
+}
+
+func (c *Client) CollaboratorPermission(ctx context.Context, repo, user string) (string, error) {
+	var out CollaboratorPermission
+	err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/collaborators/%s/permission", repo, user), nil, &out)
+	return out.Permission, err
 }
 
 func (c *Client) CreateLabel(ctx context.Context, repo, name, color, description string) (LabelResult, error) {
