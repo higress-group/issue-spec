@@ -11,157 +11,11 @@ import (
 	"strings"
 )
 
-type RunnerOperations interface {
-	CheckRunnerAuth(context.Context) error
-	CheckRunnerPreflight(context.Context, string) (RunnerPreflightResult, error)
-	PollNotifications(context.Context, NotificationPollOptions) (NotificationPollResult, error)
-	GetRepositorySubscription(context.Context, string) (RepositorySubscriptionResult, error)
-	ListRepositoryIssueComments(context.Context, string, RepositoryIssueCommentsOptions) (IssueCommentsResult, error)
-	ListRunnerIssueComments(context.Context, string, int, IssueCommentsOptions) (IssueCommentsResult, error)
-	GetRunnerIssue(context.Context, string, int) (IssueContextResult, error)
-	GetCollaboratorPermission(context.Context, string, string) (CollaboratorPermissionResult, error)
-	CreateRunnerIssueComment(context.Context, string, int, string) (IssueCommentResult, error)
-	UpdateRunnerIssueComment(context.Context, string, int64, string) (IssueCommentResult, error)
-}
-
-type RunnerResponseMetadata struct {
-	StatusCode          int             `json:"status_code"`
-	NotModified         bool            `json:"not_modified,omitempty"`
-	Headers             http.Header     `json:"headers,omitempty"`
-	PollIntervalSeconds int             `json:"poll_interval_seconds,omitempty"`
-	ETag                string          `json:"etag,omitempty"`
-	LastModified        string          `json:"last_modified,omitempty"`
-	RateLimit           RunnerRateLimit `json:"rate_limit,omitempty"`
-}
-
-type RunnerRateLimit struct {
-	Limit     int    `json:"limit,omitempty"`
-	Remaining int    `json:"remaining,omitempty"`
-	Used      int    `json:"used,omitempty"`
-	Reset     int64  `json:"reset,omitempty"`
-	Resource  string `json:"resource,omitempty"`
-}
-
-type NotificationPollOptions struct {
-	All           bool
-	Participating bool
-	Since         string
-	Before        string
-	ETag          string
-	LastModified  string
-	PerPage       int
-}
-
-type NotificationPollResult struct {
-	Notifications []Notification         `json:"notifications"`
-	Metadata      RunnerResponseMetadata `json:"metadata"`
-}
-
-type Notification struct {
-	ID         string              `json:"id"`
-	Unread     bool                `json:"unread"`
-	Reason     string              `json:"reason"`
-	UpdatedAt  string              `json:"updated_at"`
-	LastReadAt string              `json:"last_read_at"`
-	URL        string              `json:"url"`
-	Subject    NotificationSubject `json:"subject"`
-	Repository RepositorySummary   `json:"repository"`
-}
-
-type NotificationSubject struct {
-	Title            string `json:"title"`
-	URL              string `json:"url"`
-	LatestCommentURL string `json:"latest_comment_url"`
-	Type             string `json:"type"`
-}
-
-type RepositorySummary struct {
-	ID            int64  `json:"id"`
-	Name          string `json:"name"`
-	FullName      string `json:"full_name"`
-	HTMLURL       string `json:"html_url"`
-	DefaultBranch string `json:"default_branch"`
-	Owner         *User  `json:"owner,omitempty"`
-}
-
-type RepositorySubscription struct {
-	Subscribed bool   `json:"subscribed"`
-	Ignored    bool   `json:"ignored"`
-	Reason     string `json:"reason"`
-	CreatedAt  string `json:"created_at"`
-	URL        string `json:"url"`
-}
-
-type RepositorySubscriptionResult struct {
-	Subscription RepositorySubscription `json:"subscription"`
-	Metadata     RunnerResponseMetadata `json:"metadata"`
-}
-
-type RepositoryIssueCommentsOptions struct {
-	Since        string
-	ETag         string
-	LastModified string
-	PerPage      int
-}
-
-type IssueCommentsOptions struct {
-	ETag         string
-	LastModified string
-	PerPage      int
-}
-
-type IssueCommentsResult struct {
-	Comments []RunnerIssueComment   `json:"comments"`
-	Metadata RunnerResponseMetadata `json:"metadata"`
-}
-
-type RunnerIssueComment struct {
-	ID          int64  `json:"id"`
-	HTMLURL     string `json:"html_url"`
-	URL         string `json:"url"`
-	IssueURL    string `json:"issue_url"`
-	IssueNumber int    `json:"issue_number,omitempty"`
-	Body        string `json:"body"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
-	User        *User  `json:"user,omitempty"`
-}
-
-type IssueCommentResult struct {
-	Comment  RunnerIssueComment     `json:"comment"`
-	Metadata RunnerResponseMetadata `json:"metadata"`
-}
-
-type IssueContextResult struct {
-	Issue    Issue                  `json:"issue"`
-	Metadata RunnerResponseMetadata `json:"metadata"`
-}
-
-type CollaboratorPermission struct {
-	Permission string `json:"permission"`
-	RoleName   string `json:"role_name"`
-	User       *User  `json:"user,omitempty"`
-}
-
-func (p CollaboratorPermission) AllowsWrite() bool {
-	switch strings.ToLower(strings.TrimSpace(p.Permission)) {
-	case "write", "maintain", "admin":
-		return true
-	default:
-		return false
-	}
-}
-
-type CollaboratorPermissionResult struct {
-	Permission CollaboratorPermission `json:"permission"`
-	Metadata   RunnerResponseMetadata `json:"metadata"`
-}
-
 type RunnerPreflightResult struct {
 	Backend      BackendInfo            `json:"backend"`
 	User         User                   `json:"user"`
 	Subscription RepositorySubscription `json:"subscription"`
-	Metadata     RunnerResponseMetadata `json:"metadata"`
+	Metadata     ResponseMetadata       `json:"metadata"`
 }
 
 type GHRunnerErrorKind string
@@ -214,7 +68,7 @@ func (b *GHBackend) CheckRunnerAuth(ctx context.Context) error {
 	if err == nil && result.ExitCode == 0 {
 		return nil
 	}
-	return b.wrapRunnerCommandError("CheckRunnerAuth", command, result, err, RunnerResponseMetadata{})
+	return b.wrapRunnerCommandError("CheckRunnerAuth", command, result, err, ResponseMetadata{})
 }
 
 func (b *GHBackend) CheckRunnerPreflight(ctx context.Context, repo string) (RunnerPreflightResult, error) {
@@ -249,7 +103,7 @@ func (b *GHBackend) CheckRunnerPreflight(ctx context.Context, repo string) (Runn
 	return out, nil
 }
 
-func (b *GHBackend) GetRunnerUser(ctx context.Context) (User, RunnerResponseMetadata, error) {
+func (b *GHBackend) GetRunnerUser(ctx context.Context) (User, ResponseMetadata, error) {
 	var user User
 	metadata, err := b.runRunnerJSON(ctx, ExternalCLIAPIRequest{
 		Operation: "GetRunnerUser",
@@ -259,30 +113,31 @@ func (b *GHBackend) GetRunnerUser(ctx context.Context) (User, RunnerResponseMeta
 	return user, metadata, err
 }
 
-func (b *GHBackend) PollNotifications(ctx context.Context, opts NotificationPollOptions) (NotificationPollResult, error) {
-	query := url.Values{"per_page": {strconv.Itoa(perPage(opts.PerPage))}}
+func (b *GHBackend) PollNotifications(ctx context.Context, opts NotificationListOptions) (NotificationListResult, error) {
+	endpoint := opts.Page.CursorURL
+	query := url.Values{}
+	if endpoint == "" {
+		endpoint = "/notifications"
+		query.Set("per_page", strconv.Itoa(perPage(opts.Page.PerPage, defaultRunnerNotificationsPerPage)))
+		addTimeQuery(query, "since", opts.Since)
+		addTimeQuery(query, "before", opts.Before)
+	}
 	if opts.All {
 		query.Set("all", "true")
 	}
 	if opts.Participating {
 		query.Set("participating", "true")
 	}
-	if strings.TrimSpace(opts.Since) != "" {
-		query.Set("since", strings.TrimSpace(opts.Since))
-	}
-	if strings.TrimSpace(opts.Before) != "" {
-		query.Set("before", strings.TrimSpace(opts.Before))
-	}
 	var notifications []Notification
 	metadata, err := b.runRunnerJSONPages(ctx, ExternalCLIAPIRequest{
 		Operation: "PollNotifications",
 		Method:    http.MethodGet,
-		Endpoint:  "/notifications",
+		Endpoint:  endpoint,
 		Headers:   conditionalHeaders(opts.ETag, opts.LastModified),
 		Query:     query,
 		Paginate:  true,
 	}, "", &notifications)
-	return NotificationPollResult{Notifications: notifications, Metadata: metadata}, err
+	return NotificationListResult{Notifications: notifications, Metadata: metadata}, err
 }
 
 func (b *GHBackend) GetRepositorySubscription(ctx context.Context, repo string) (RepositorySubscriptionResult, error) {
@@ -295,48 +150,55 @@ func (b *GHBackend) GetRepositorySubscription(ctx context.Context, repo string) 
 	return RepositorySubscriptionResult{Subscription: subscription, Metadata: metadata}, err
 }
 
-func (b *GHBackend) ListRepositoryIssueComments(ctx context.Context, repo string, opts RepositoryIssueCommentsOptions) (IssueCommentsResult, error) {
-	query := url.Values{"per_page": {strconv.Itoa(perPage(opts.PerPage))}}
-	if strings.TrimSpace(opts.Since) != "" {
-		query.Set("since", strings.TrimSpace(opts.Since))
+func (b *GHBackend) ListRepositoryIssueCommentsPage(ctx context.Context, repo string, opts CommentListOptions) (IssueCommentsResult, error) {
+	endpoint := opts.Page.CursorURL
+	query := url.Values{}
+	if endpoint == "" {
+		endpoint = "/repos/" + repo + "/issues/comments"
+		query.Set("per_page", strconv.Itoa(perPage(opts.Page.PerPage, defaultRunnerCommentsPerPage)))
+		addTimeQuery(query, "since", opts.Since)
 	}
-	var comments []RunnerIssueComment
+	var comments []Comment
 	metadata, err := b.runRunnerJSONPages(ctx, ExternalCLIAPIRequest{
-		Operation: "ListRepositoryIssueComments",
+		Operation: "ListRepositoryIssueCommentsPage",
 		Method:    http.MethodGet,
-		Endpoint:  "/repos/" + repo + "/issues/comments",
+		Endpoint:  endpoint,
 		Headers:   conditionalHeaders(opts.ETag, opts.LastModified),
 		Query:     query,
 		Paginate:  true,
 	}, "", &comments)
-	populateIssueNumbers(comments)
+	annotateCommentIssueNumbers(comments, 0)
 	return IssueCommentsResult{Comments: comments, Metadata: metadata}, err
 }
 
-func (b *GHBackend) ListRunnerIssueComments(ctx context.Context, repo string, issueNumber int, opts IssueCommentsOptions) (IssueCommentsResult, error) {
-	var comments []RunnerIssueComment
+func (b *GHBackend) ListIssueCommentsPage(ctx context.Context, repo string, issueNumber int, opts CommentListOptions) (IssueCommentsResult, error) {
+	endpoint := opts.Page.CursorURL
+	query := url.Values{}
+	if endpoint == "" {
+		endpoint = fmt.Sprintf("/repos/%s/issues/%d/comments", repo, issueNumber)
+		query.Set("per_page", strconv.Itoa(perPage(opts.Page.PerPage, defaultRunnerCommentsPerPage)))
+		addTimeQuery(query, "since", opts.Since)
+	}
+	var comments []Comment
 	metadata, err := b.runRunnerJSONPages(ctx, ExternalCLIAPIRequest{
-		Operation: "ListRunnerIssueComments",
+		Operation: "ListIssueCommentsPage",
 		Method:    http.MethodGet,
-		Endpoint:  fmt.Sprintf("/repos/%s/issues/%d/comments", repo, issueNumber),
+		Endpoint:  endpoint,
 		Headers:   conditionalHeaders(opts.ETag, opts.LastModified),
-		Query:     url.Values{"per_page": {strconv.Itoa(perPage(opts.PerPage))}},
+		Query:     query,
 		Paginate:  true,
 	}, "", &comments)
-	for i := range comments {
-		if comments[i].IssueNumber == 0 {
-			comments[i].IssueNumber = issueNumber
-		}
-	}
+	annotateCommentIssueNumbers(comments, issueNumber)
 	return IssueCommentsResult{Comments: comments, Metadata: metadata}, err
 }
 
-func (b *GHBackend) GetRunnerIssue(ctx context.Context, repo string, issueNumber int) (IssueContextResult, error) {
+func (b *GHBackend) GetIssueContext(ctx context.Context, repo string, issueNumber int, conditional ConditionalRequest) (IssueContextResult, error) {
 	var issue Issue
 	metadata, err := b.runRunnerJSON(ctx, ExternalCLIAPIRequest{
-		Operation: "GetRunnerIssue",
+		Operation: "GetIssueContext",
 		Method:    http.MethodGet,
 		Endpoint:  fmt.Sprintf("/repos/%s/issues/%d", repo, issueNumber),
+		Headers:   conditionalHeaders(conditional.ETag, conditional.LastModified),
 	}, &issue)
 	return IssueContextResult{Issue: issue, Metadata: metadata}, err
 }
@@ -348,13 +210,13 @@ func (b *GHBackend) GetCollaboratorPermission(ctx context.Context, repo, login s
 		Method:    http.MethodGet,
 		Endpoint:  fmt.Sprintf("/repos/%s/collaborators/%s/permission", repo, url.PathEscape(login)),
 	}, &permission)
-	return CollaboratorPermissionResult{Permission: permission, Metadata: metadata}, err
+	return CollaboratorPermissionResult{Permission: permission, CanWrite: permissionAllowsWrite(permission.Permission), Metadata: metadata}, err
 }
 
-func (b *GHBackend) CreateRunnerIssueComment(ctx context.Context, repo string, issueNumber int, body string) (IssueCommentResult, error) {
-	var comment RunnerIssueComment
+func (b *GHBackend) CreateRunnerComment(ctx context.Context, repo string, issueNumber int, body string) (RunnerCommentResult, error) {
+	var comment Comment
 	metadata, err := b.runRunnerJSON(ctx, ExternalCLIAPIRequest{
-		Operation: "CreateRunnerIssueComment",
+		Operation: "CreateRunnerComment",
 		Method:    http.MethodPost,
 		Endpoint:  fmt.Sprintf("/repos/%s/issues/%d/comments", repo, issueNumber),
 		Body:      map[string]string{"body": body},
@@ -362,13 +224,13 @@ func (b *GHBackend) CreateRunnerIssueComment(ctx context.Context, repo string, i
 	if comment.IssueNumber == 0 {
 		comment.IssueNumber = issueNumber
 	}
-	return IssueCommentResult{Comment: comment, Metadata: metadata}, err
+	return RunnerCommentResult{Comment: comment, Metadata: metadata}, err
 }
 
-func (b *GHBackend) UpdateRunnerIssueComment(ctx context.Context, repo string, commentID int64, body string) (IssueCommentResult, error) {
-	var comment RunnerIssueComment
+func (b *GHBackend) UpdateRunnerComment(ctx context.Context, repo string, commentID int64, body string) (RunnerCommentResult, error) {
+	var comment Comment
 	metadata, err := b.runRunnerJSON(ctx, ExternalCLIAPIRequest{
-		Operation: "UpdateRunnerIssueComment",
+		Operation: "UpdateRunnerComment",
 		Method:    http.MethodPatch,
 		Endpoint:  fmt.Sprintf("/repos/%s/issues/comments/%d", repo, commentID),
 		Body:      map[string]string{"body": body},
@@ -376,10 +238,10 @@ func (b *GHBackend) UpdateRunnerIssueComment(ctx context.Context, repo string, c
 	if comment.IssueNumber == 0 {
 		comment.IssueNumber = issueNumberFromAPIURL(comment.IssueURL)
 	}
-	return IssueCommentResult{Comment: comment, Metadata: metadata}, err
+	return RunnerCommentResult{Comment: comment, Metadata: metadata}, err
 }
 
-func (b *GHBackend) runRunnerJSON(ctx context.Context, request ExternalCLIAPIRequest, out any) (RunnerResponseMetadata, error) {
+func (b *GHBackend) runRunnerJSON(ctx context.Context, request ExternalCLIAPIRequest, out any) (ResponseMetadata, error) {
 	metadata, body, err := b.runIncludedAPI(ctx, request)
 	if err != nil || metadata.NotModified || out == nil {
 		return metadata, err
@@ -390,7 +252,7 @@ func (b *GHBackend) runRunnerJSON(ctx context.Context, request ExternalCLIAPIReq
 	return metadata, nil
 }
 
-func (b *GHBackend) runRunnerJSONPages(ctx context.Context, request ExternalCLIAPIRequest, envelopeKey string, out any) (RunnerResponseMetadata, error) {
+func (b *GHBackend) runRunnerJSONPages(ctx context.Context, request ExternalCLIAPIRequest, envelopeKey string, out any) (ResponseMetadata, error) {
 	metadata, body, err := b.runIncludedAPI(ctx, request)
 	if err != nil || metadata.NotModified || out == nil {
 		return metadata, err
@@ -407,7 +269,7 @@ func (b *GHBackend) runRunnerJSONPages(ctx context.Context, request ExternalCLIA
 	return metadata, nil
 }
 
-func (b *GHBackend) runIncludedAPI(ctx context.Context, request ExternalCLIAPIRequest) (RunnerResponseMetadata, []byte, error) {
+func (b *GHBackend) runIncludedAPI(ctx context.Context, request ExternalCLIAPIRequest) (ResponseMetadata, []byte, error) {
 	request.Include = true
 	result, command, runErr := b.cli.runAPIRaw(ctx, b.Host, request)
 	metadata, body, parseErr := DecodeCLIHTTPResponse(result.Stdout)
@@ -436,7 +298,7 @@ func (b *GHBackend) runIncludedAPI(ctx context.Context, request ExternalCLIAPIRe
 	return metadata, body, nil
 }
 
-func (b *GHBackend) wrapRunnerCommandError(operation string, command ExternalCLICommand, result ExternalCLIResult, runErr error, metadata RunnerResponseMetadata) error {
+func (b *GHBackend) wrapRunnerCommandError(operation string, command ExternalCLICommand, result ExternalCLIResult, runErr error, metadata ResponseMetadata) error {
 	kind := GHRunnerErrorCommand
 	if isMissingCLIError(result, runErr) {
 		kind = GHRunnerErrorMissingCLI
@@ -463,17 +325,17 @@ func isMissingCLIError(result ExternalCLIResult, err error) bool {
 	return strings.Contains(message, "executable file not found") || strings.Contains(message, "no such file or directory")
 }
 
-func DecodeCLIHTTPResponse(data []byte) (RunnerResponseMetadata, []byte, error) {
+func DecodeCLIHTTPResponse(data []byte) (ResponseMetadata, []byte, error) {
 	normalized := bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 	cursor := 0
 	for cursor < len(normalized) && normalized[cursor] == '\n' {
 		cursor++
 	}
 	if !bytes.HasPrefix(normalized[cursor:], []byte("HTTP/")) {
-		return RunnerResponseMetadata{}, data, nil
+		return ResponseMetadata{}, data, nil
 	}
 
-	var metadata RunnerResponseMetadata
+	var metadata ResponseMetadata
 	var bodies bytes.Buffer
 	for cursor < len(normalized) {
 		for cursor < len(normalized) && normalized[cursor] == '\n' {
@@ -516,10 +378,10 @@ func DecodeCLIHTTPResponse(data []byte) (RunnerResponseMetadata, []byte, error) 
 	return metadata, bodies.Bytes(), nil
 }
 
-func parseHTTPMetadata(headerBlock []byte) (RunnerResponseMetadata, error) {
+func parseHTTPMetadata(headerBlock []byte) (ResponseMetadata, error) {
 	lines := strings.Split(string(headerBlock), "\n")
 	if len(lines) == 0 {
-		return RunnerResponseMetadata{}, fmt.Errorf("decode gh included response: empty header block")
+		return ResponseMetadata{}, fmt.Errorf("decode gh included response: empty header block")
 	}
 	statusCode := 0
 	for _, field := range strings.Fields(lines[0]) {
@@ -529,7 +391,7 @@ func parseHTTPMetadata(headerBlock []byte) (RunnerResponseMetadata, error) {
 		}
 	}
 	if statusCode == 0 {
-		return RunnerResponseMetadata{}, fmt.Errorf("decode gh included response: missing HTTP status in %q", lines[0])
+		return ResponseMetadata{}, fmt.Errorf("decode gh included response: missing HTTP status in %q", lines[0])
 	}
 	headers := http.Header{}
 	for _, line := range lines[1:] {
@@ -542,19 +404,19 @@ func parseHTTPMetadata(headerBlock []byte) (RunnerResponseMetadata, error) {
 	return metadataFromHeaders(statusCode, headers), nil
 }
 
-func metadataFromHeaders(statusCode int, headers http.Header) RunnerResponseMetadata {
-	return RunnerResponseMetadata{
+func metadataFromHeaders(statusCode int, headers http.Header) ResponseMetadata {
+	return ResponseMetadata{
 		StatusCode:          statusCode,
 		NotModified:         statusCode == http.StatusNotModified,
 		Headers:             headers,
 		PollIntervalSeconds: atoiHeader(headers, "X-Poll-Interval"),
 		ETag:                headers.Get("ETag"),
 		LastModified:        headers.Get("Last-Modified"),
-		RateLimit: RunnerRateLimit{
+		RateLimit: RateLimitMetadata{
 			Limit:     atoiHeader(headers, "X-RateLimit-Limit"),
 			Remaining: atoiHeader(headers, "X-RateLimit-Remaining"),
 			Used:      atoiHeader(headers, "X-RateLimit-Used"),
-			Reset:     atoi64Header(headers, "X-RateLimit-Reset"),
+			ResetUnix: atoi64Header(headers, "X-RateLimit-Reset"),
 			Resource:  headers.Get("X-RateLimit-Resource"),
 		},
 	}
@@ -602,22 +464,14 @@ func conditionalHeaders(etag, lastModified string) http.Header {
 	return headers
 }
 
-func perPage(value int) int {
+func perPage(value, defaultValue int) int {
 	if value <= 0 {
-		return 100
+		return defaultValue
 	}
 	if value > 100 {
 		return 100
 	}
 	return value
-}
-
-func populateIssueNumbers(comments []RunnerIssueComment) {
-	for i := range comments {
-		if comments[i].IssueNumber == 0 {
-			comments[i].IssueNumber = issueNumberFromAPIURL(comments[i].IssueURL)
-		}
-	}
 }
 
 func issueNumberFromAPIURL(rawURL string) int {

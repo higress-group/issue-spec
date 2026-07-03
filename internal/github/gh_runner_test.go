@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGHRunnerPollNotificationsUsesIncludedConditionalAPI(t *testing.T) {
@@ -24,13 +25,13 @@ func TestGHRunnerPollNotificationsUsesIncludedConditionalAPI(t *testing.T) {
 		]`))),
 	}}}
 	backend := newTestGHBackend(t, "ghe.example.com", runner)
+	since := time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC)
 
-	result, err := backend.PollNotifications(context.Background(), NotificationPollOptions{
-		All:          true,
-		Since:        "2026-07-03T10:00:00Z",
-		ETag:         `"old"`,
-		LastModified: "Fri, 03 Jul 2026 09:00:00 GMT",
-		PerPage:      50,
+	result, err := backend.PollNotifications(context.Background(), NotificationListOptions{
+		ConditionalRequest: ConditionalRequest{ETag: `"old"`, LastModified: "Fri, 03 Jul 2026 09:00:00 GMT"},
+		All:                true,
+		Since:              &since,
+		Page:               RunnerPageOptions{PerPage: 50},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +68,7 @@ func TestGHRunnerTreats304AsNoChange(t *testing.T) {
 	}
 	backend := newTestGHBackend(t, "github.com", runner)
 
-	result, err := backend.PollNotifications(context.Background(), NotificationPollOptions{ETag: `"same"`})
+	result, err := backend.PollNotifications(context.Background(), NotificationListOptions{ConditionalRequest: ConditionalRequest{ETag: `"same"`}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +91,8 @@ func TestGHRunnerCommentListingAndWritePrimitives(t *testing.T) {
 	}}
 	backend := newTestGHBackend(t, "github.com", runner)
 
-	repoComments, err := backend.ListRepositoryIssueComments(context.Background(), "o/r", RepositoryIssueCommentsOptions{Since: "2026-07-03T10:00:00Z"})
+	since := time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC)
+	repoComments, err := backend.ListRepositoryIssueCommentsPage(context.Background(), "o/r", CommentListOptions{Since: &since})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +104,7 @@ func TestGHRunnerCommentListingAndWritePrimitives(t *testing.T) {
 		t.Fatalf("repo comments args = %#v, want %#v", runner.commands[0].Args, wantArgs)
 	}
 
-	issueComments, err := backend.ListRunnerIssueComments(context.Background(), "o/r", 7, IssueCommentsOptions{PerPage: 25})
+	issueComments, err := backend.ListIssueCommentsPage(context.Background(), "o/r", 7, CommentListOptions{Page: RunnerPageOptions{PerPage: 25}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +115,7 @@ func TestGHRunnerCommentListingAndWritePrimitives(t *testing.T) {
 	if !reflect.DeepEqual(runner.commands[1].Args, wantArgs) {
 		t.Fatalf("issue comments args = %#v, want %#v", runner.commands[1].Args, wantArgs)
 	}
-	created, err := backend.CreateRunnerIssueComment(context.Background(), "o/r", 7, "created")
+	created, err := backend.CreateRunnerComment(context.Background(), "o/r", 7, "created")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +128,7 @@ func TestGHRunnerCommentListingAndWritePrimitives(t *testing.T) {
 	}
 	assertJSONBody(t, runner.commands[2].Stdin, map[string]any{"body": "created"})
 
-	updated, err := backend.UpdateRunnerIssueComment(context.Background(), "o/r", 301, "updated")
+	updated, err := backend.UpdateRunnerComment(context.Background(), "o/r", 301, "updated")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +152,7 @@ func TestGHRunnerIssueContextPermissionAndPreflight(t *testing.T) {
 	}}
 	backend := newTestGHBackend(t, "github.com", runner)
 
-	issue, err := backend.GetRunnerIssue(context.Background(), "o/r", 7)
+	issue, err := backend.GetIssueContext(context.Background(), "o/r", 7, ConditionalRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +164,7 @@ func TestGHRunnerIssueContextPermissionAndPreflight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !permission.Permission.AllowsWrite() || permission.Permission.User.Login != "octocat" {
+	if !permission.CanWrite || permission.Permission.User.Login != "octocat" {
 		t.Fatalf("permission = %+v", permission)
 	}
 	wantArgs := []string{"api", "--method", http.MethodGet, "--header", githubAPIVersion, "--include", "/repos/o/r/collaborators/octo%20cat/permission"}
@@ -205,7 +207,7 @@ func TestGHRunnerErrorClassificationAndRedaction(t *testing.T) {
 			err: errors.New("exit status 1"),
 		}
 		backend := newTestGHBackend(t, "github.com", runner)
-		_, err := backend.PollNotifications(context.Background(), NotificationPollOptions{})
+		_, err := backend.PollNotifications(context.Background(), NotificationListOptions{})
 		if !IsGHRunnerErrorKind(err, GHRunnerErrorAuth) {
 			t.Fatalf("err = %v, want auth classification", err)
 		}
@@ -231,7 +233,7 @@ func TestGHRunnerErrorClassificationAndRedaction(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = backend.PollNotifications(context.Background(), NotificationPollOptions{})
+		_, err = backend.PollNotifications(context.Background(), NotificationListOptions{})
 		if !IsGHRunnerErrorKind(err, GHRunnerErrorAPI) {
 			t.Fatalf("err = %v, want api classification", err)
 		}

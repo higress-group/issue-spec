@@ -139,10 +139,11 @@ func (f *fakePermissionBackend) GetUser(context.Context) (github.User, []string,
 	return f.user, nil, nil
 }
 
-func (f *fakePermissionBackend) GetCollaboratorPermission(_ context.Context, repo, username string) (github.CollaboratorPermission, error) {
+func (f *fakePermissionBackend) GetCollaboratorPermission(_ context.Context, repo, username string) (github.CollaboratorPermissionResult, error) {
 	f.lastRepo = repo
 	if f.permissionErr != nil {
-		return github.CollaboratorPermission{}, f.permissionErr
+		return github.CollaboratorPermissionResult{}, f.permissionErr
 	}
-	return github.CollaboratorPermission{Permission: f.permissions[repo+"|"+username]}, nil
+	permission := github.CollaboratorPermission{Permission: f.permissions[repo+"|"+username]}
+	return github.CollaboratorPermissionResult{Permission: permission}, nil
 }

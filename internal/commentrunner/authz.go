@@ -9,7 +9,7 @@ import (
 
 type PermissionBackend interface {
 	GetUser(context.Context) (github.User, []string, error)
-	GetCollaboratorPermission(context.Context, string, string) (github.CollaboratorPermission, error)
+	GetCollaboratorPermission(context.Context, string, string) (github.CollaboratorPermissionResult, error)
 }
 
 type AuthorizationPolicy struct {
@@ -100,11 +100,11 @@ func AuthorizeRequest(ctx context.Context, backend PermissionBackend, req Author
 		return deny(AuthReasonCommenterNotAllowed, "commenter is not allowed by runner policy", req, runnerLogin, "")
 	}
 
-	permission, err := backend.GetCollaboratorPermission(ctx, req.Repo, req.Commenter)
+	permissionResult, err := backend.GetCollaboratorPermission(ctx, req.Repo, req.Commenter)
 	if err != nil {
 		return deny(AuthReasonPermissionLookupFailed, "repository permission lookup failed", req, runnerLogin, "")
 	}
-	perm := strings.ToLower(strings.TrimSpace(permission.Permission))
+	perm := strings.ToLower(strings.TrimSpace(permissionResult.Permission.Permission))
 	if !writeEquivalentPermission(perm) {
 		return deny(AuthReasonInsufficientPermission, "commenter does not have write-equivalent repository permission", req, runnerLogin, perm)
 	}
