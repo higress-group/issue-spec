@@ -19,6 +19,7 @@ type PollingState struct {
 	RepoCursor          string    `json:"repo_cursor,omitempty"`
 	ETag                string    `json:"etag,omitempty"`
 	LastModified        string    `json:"last_modified,omitempty"`
+	PollInterval        string    `json:"poll_interval,omitempty"`
 	RateLimitRemaining  int       `json:"rate_limit_remaining,omitempty"`
 	RateLimitReset      time.Time `json:"rate_limit_reset,omitempty"`
 }
