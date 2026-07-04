@@ -438,6 +438,72 @@ func TestPreflightAcceptsClaudeCredentialsForClaudeAgent(t *testing.T) {
 	}
 }
 
+func TestPreflightAcceptsClaudeSettingsEnvForClaudeAgent(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		file     string
+		contents string
+	}{
+		{name: "settings.json auth token", file: "settings.json", contents: `{"env":{"ANTHROPIC_BASE_URL":"https://api.example.com","ANTHROPIC_AUTH_TOKEN":"sk-third-party"}}`},
+		{name: "settings.json api key", file: "settings.json", contents: `{"env":{"ANTHROPIC_API_KEY":"sk-third-party"}}`},
+		{name: "settings.local.json auth token", file: "settings.local.json", contents: `{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-third-party"}}`},
+		{name: "apiKeyHelper", file: "settings.json", contents: `{"apiKeyHelper":"/usr/local/bin/anthropic-key"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			claudeHome := filepath.Join(home, ".claude")
+			if err := os.MkdirAll(claudeHome, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(claudeHome, tc.file), []byte(tc.contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", home)
+			t.Setenv("CODEX_HOME", filepath.Join(home, "missing-codex"))
+			cfg := testPreflightConfigWithoutAuth()
+			cfg.Agent.Kind = AgentClaude
+			cfg.UnsafeNoSandbox = true
+
+			report := RunPreflight(context.Background(), cfg, passingPreflightDependencies(t))
+			if !report.OK {
+				t.Fatalf("preflight should accept claude settings env for claude agent: %+v", report)
+			}
+			claude := findCheck(t, report, "claude-auth")
+			if claude.Status != CheckOK || !strings.Contains(claude.Detail, tc.file) {
+				t.Fatalf("unexpected claude auth check: %+v", claude)
+			}
+		})
+	}
+}
+
+func TestPreflightRejectsClaudeSettingsWithoutAnthropicAuth(t *testing.T) {
+	home := t.TempDir()
+	claudeHome := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeHome, "settings.json"), []byte(`{"env":{"SOME_OTHER":"value"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, "missing-codex"))
+	cfg := testPreflightConfigWithoutAuth()
+	cfg.Agent.Kind = AgentClaude
+	cfg.UnsafeNoSandbox = true
+
+	report := RunPreflight(context.Background(), cfg, passingPreflightDependencies(t))
+	if report.OK {
+		t.Fatalf("preflight unexpectedly OK without any claude auth source: %+v", report)
+	}
+	claude := findCheck(t, report, "claude-auth")
+	if claude.Status != CheckError || !strings.Contains(claude.Detail, "Claude Code auth unavailable") {
+		t.Fatalf("unexpected claude auth check: %+v", claude)
+	}
+	if !strings.Contains(claude.Hint, "settings.json") || !strings.Contains(claude.Hint, "claude login") {
+		t.Fatalf("claude auth hint should mention both settings.json and claude login: %+v", claude)
+	}
+}
+
 func testPreflightConfig(t *testing.T) Config {
 	t.Helper()
 	home := t.TempDir()

@@ -3,6 +3,7 @@ package commentrunner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -447,6 +448,12 @@ func claudeUserSettingsCheck(cfg Config) PreflightCheck {
 	return PreflightCheck{Name: "claude-user-settings", Status: CheckWarning, Detail: "disabled; Claude auth/settings may not be visible to acpx"}
 }
 
+// claudeAuthEnvNames are the settings.json env keys that let Claude Code
+// authenticate against an Anthropic-compatible API (including third-party
+// gateways) without an interactive `claude login`, i.e. without
+// ~/.claude/.credentials.json.
+var claudeAuthEnvNames = []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"}
+
 func claudeAuthCheck() PreflightCheck {
 	home := hostHomeDir()
 	if strings.TrimSpace(home) == "" {
@@ -454,19 +461,59 @@ func claudeAuthCheck() PreflightCheck {
 			Name:   "claude-auth",
 			Status: CheckError,
 			Detail: "Claude Code auth unavailable: cannot resolve host HOME",
-			Hint:   "Run claude login with a normal HOME before starting the runner.",
+			Hint:   "Run claude login with a normal HOME, or set an Anthropic API key in ~/.claude/settings.json env, before starting the runner.",
 		}
 	}
-	credentials := filepath.Join(home, ".claude", ".credentials.json")
-	if err := requireReadableRegularFile(credentials); err != nil {
-		return PreflightCheck{
-			Name:   "claude-auth",
-			Status: CheckError,
-			Detail: "Claude Code auth unavailable: " + err.Error(),
-			Hint:   "Run claude login with the same HOME that starts the runner. Claude Code uses host ~/.claude/.credentials.json, not CODEX_HOME.",
+	claudeDir := filepath.Join(home, ".claude")
+	credentials := filepath.Join(claudeDir, ".credentials.json")
+	if err := requireReadableRegularFile(credentials); err == nil {
+		return PreflightCheck{Name: "claude-auth", Status: CheckOK, Detail: "host Claude Code auth source: " + credentials}
+	}
+	// Third-party API users authenticate via ~/.claude/settings.json env
+	// (ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY, usually with ANTHROPIC_BASE_URL)
+	// and never run `claude login`, so .credentials.json is absent. settings.json
+	// is mirrored into the sandbox HOME and read by Claude Code, so it is a valid
+	// auth source. Host env vars are not, because the sandbox scrubs them.
+	if source, ok := claudeSettingsAuthSource(claudeDir); ok {
+		return PreflightCheck{Name: "claude-auth", Status: CheckOK, Detail: "host Claude Code auth source: " + source}
+	}
+	return PreflightCheck{
+		Name:   "claude-auth",
+		Status: CheckError,
+		Detail: fmt.Sprintf("Claude Code auth unavailable: no readable %s and no Anthropic API key in %s env", credentials, filepath.Join(claudeDir, "settings.json")),
+		Hint:   "Run claude login with the same HOME that starts the runner, or configure ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY (with ANTHROPIC_BASE_URL) in ~/.claude/settings.json env for a third-party API. Host env vars are stripped by the sandbox, so they must live in settings.json.",
+	}
+}
+
+// claudeSettingsAuthSource reports whether settings.json or settings.local.json
+// in claudeDir provides Anthropic API auth via their env block (or apiKeyHelper),
+// returning a human-readable description of the source that satisfied the check.
+func claudeSettingsAuthSource(claudeDir string) (string, bool) {
+	// settings.local.json overrides settings.json in Claude Code, but either one
+	// on its own is enough to authenticate, so accept whichever provides a key.
+	for _, name := range []string{"settings.local.json", "settings.json"} {
+		path := filepath.Join(claudeDir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var settings struct {
+			Env          map[string]string `json:"env"`
+			APIKeyHelper string            `json:"apiKeyHelper"`
+		}
+		if err := json.Unmarshal(data, &settings); err != nil {
+			continue
+		}
+		for _, key := range claudeAuthEnvNames {
+			if strings.TrimSpace(settings.Env[key]) != "" {
+				return fmt.Sprintf("%s (%s)", path, key), true
+			}
+		}
+		if strings.TrimSpace(settings.APIKeyHelper) != "" {
+			return fmt.Sprintf("%s (apiKeyHelper)", path), true
 		}
 	}
-	return PreflightCheck{Name: "claude-auth", Status: CheckOK, Detail: "host Claude Code auth source: " + credentials}
+	return "", false
 }
 
 func claudeAllowedToolsCheck(cfg Config) PreflightCheck {
