@@ -85,6 +85,10 @@ func TestRunnerPollDryRunJSONUsesTrustedConfigAndPreflight(t *testing.T) {
 			Next:   intake.NextStep{PollAt: time.Date(2026, 7, 3, 12, 1, 0, 0, time.UTC)},
 		}, nil
 	}
+	app.runnerReconcile = func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error) {
+		t.Fatal("runner dry-run must not reconcile or clean workspaces")
+		return jobs.ReconcileResult{}, nil
+	}
 	app.runnerDispatch = func(context.Context, commentrunner.Config) (jobs.Result, error) {
 		t.Fatal("runner dry-run must not dispatch jobs")
 		return jobs.Result{}, nil
@@ -176,6 +180,9 @@ func TestRunnerPollUsesDefaultStateAndWorkspaceRoot(t *testing.T) {
 	}
 	if captured.WorkspaceRoot != filepath.Join(root, "workspaces") {
 		t.Fatalf("WorkspaceRoot = %q", captured.WorkspaceRoot)
+	}
+	if captured.WorkspaceRetention.Duration != 7*24*time.Hour {
+		t.Fatalf("WorkspaceRetention = %s, want 168h", captured.WorkspaceRetention.Duration)
 	}
 }
 
@@ -327,6 +334,9 @@ func TestRunnerPollWithoutDryRunRunsIntakeAndOneDispatch(t *testing.T) {
 		if cfg.WorkspaceRoot != "/tmp/workspaces" {
 			t.Fatalf("config not passed to reconcile: %+v", cfg)
 		}
+		if cfg.WorkspaceRetention.Duration != 7*24*time.Hour {
+			t.Fatalf("default workspace retention not passed to reconcile: %s", cfg.WorkspaceRetention.Duration)
+		}
 		return jobs.ReconcileResult{Reconciled: 1, Running: 1}, nil
 	}
 	intakeCalled := false
@@ -347,6 +357,9 @@ func TestRunnerPollWithoutDryRunRunsIntakeAndOneDispatch(t *testing.T) {
 		dispatchCalled = true
 		if cfg.WorkspaceRoot != "/tmp/workspaces" {
 			t.Fatalf("config not passed to dispatch: %+v", cfg)
+		}
+		if cfg.WorkspaceRetention.Duration != 7*24*time.Hour {
+			t.Fatalf("default workspace retention not passed to dispatch: %s", cfg.WorkspaceRetention.Duration)
 		}
 		return jobs.Result{Executed: true, JobID: "job-1", Status: state.StatusCompleted}, nil
 	}

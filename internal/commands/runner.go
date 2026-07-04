@@ -257,7 +257,7 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	agent := fs.String("agent", "", "coordinator code agent: codex or claude")
 	model := fs.String("model", "", "coordinator model/profile name")
 	workspaceRoot := fs.String("workspace-root", "", "managed workspace root")
-	workspaceRetention := fs.Duration("workspace-retention", 0, "managed workspace retention duration")
+	workspaceRetention := fs.Duration("workspace-retention", 0, "managed workspace retention duration for expired inactive workspaces; default 168h")
 	bwrapPath := fs.String("bwrap-path", "", "bubblewrap binary path")
 	unsafeNoSandbox := fs.Bool("unsafe-no-sandbox", false, "explicitly disable the default bubblewrap filesystem boundary")
 	ghConfigDir := fs.String("gh-config-dir", "", "host gh config directory to mirror for sandboxed issue-spec CLI auth")
@@ -513,7 +513,7 @@ func plannedRunnerPollActions(cfg commentrunner.Config, once bool) []string {
 		"load trusted runner config",
 		"run preflight checks",
 		cycle + ": " + strings.Join(cfg.Repositories, ", "),
-		"on real runs: reconcile in-flight jobs before polling new comments",
+		"on real runs: reconcile in-flight jobs and clean up expired non-active workspaces before polling new comments",
 		"check notification intake and repository comments fallback",
 		"dry-run only: skip GitHub writes, state persistence, workspace changes, sandbox execution, and acpx dispatch",
 	}
@@ -532,7 +532,7 @@ func actualRunnerPollActions(cfg commentrunner.Config, once bool) []string {
 	return []string{
 		"load trusted runner config",
 		"run preflight checks",
-		"reconcile in-flight jobs before polling",
+		"reconcile in-flight jobs and clean up expired non-active workspaces before polling",
 		cycle + ": " + strings.Join(cfg.Repositories, ", "),
 		dispatchAction,
 	}
@@ -562,6 +562,10 @@ func (a *app) printRunnerPoll(result runnerDryRunResult) {
 	a.printPreflightReport(result.Preflight)
 	if result.Reconcile != nil {
 		fmt.Fprintf(a.out, "reconcile: reconciled=%d running=%d completed=%d failed=%d cancelled=%d interrupted=%d queued=%d\n", result.Reconcile.Reconciled, result.Reconcile.Running, result.Reconcile.Completed, result.Reconcile.Failed, result.Reconcile.Cancelled, result.Reconcile.Interrupted, result.Reconcile.Queued)
+		if len(result.Reconcile.WorkspaceCleanup) > 0 {
+			removed, kept, failed := workspaceCleanupCounts(result.Reconcile.WorkspaceCleanup)
+			fmt.Fprintf(a.out, "workspace cleanup: removed=%d kept=%d failed=%d\n", removed, kept, failed)
+		}
 	}
 	if result.Intake != nil {
 		fmt.Fprintf(a.out, "intake: commands=%d jobs=%d cancellations=%d next_poll=%s\n", len(result.Intake.Commands), len(result.Intake.Jobs), len(result.Intake.Cancellations), result.Intake.Next.PollAt.Format(time.RFC3339))
@@ -576,6 +580,20 @@ func (a *app) printRunnerPoll(result runnerDryRunResult) {
 	if result.Error != "" {
 		fmt.Fprintf(a.out, "runner error: %s\n", result.Error)
 	}
+}
+
+func workspaceCleanupCounts(results []workspace.CleanupResult) (removed, kept, failed int) {
+	for _, result := range results {
+		switch result.Action {
+		case "removed", "would_remove":
+			removed++
+		case "failed", "rejected":
+			failed++
+		default:
+			kept++
+		}
+	}
+	return removed, kept, failed
 }
 
 func (a *app) printPreflightReport(report commentrunner.PreflightReport) {

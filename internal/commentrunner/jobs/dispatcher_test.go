@@ -1632,6 +1632,9 @@ type fakeWorkspaces struct {
 	binding             workspace.Binding
 	bindings            map[string]workspace.Binding
 	err                 error
+	cleanupRequests     []workspace.CleanupRequest
+	cleanupResults      []workspace.CleanupResult
+	cleanupErr          error
 	lockedJobIDs        map[string]bool
 	prepareNewCalled    bool
 	resolveResumeCalled bool
@@ -1675,6 +1678,13 @@ func (f *fakeWorkspaces) ReleaseLock(state.SessionLock) error {
 	defer f.mu.Unlock()
 	f.released = true
 	return nil
+}
+
+func (f *fakeWorkspaces) Cleanup(_ context.Context, req workspace.CleanupRequest) ([]workspace.CleanupResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cleanupRequests = append(f.cleanupRequests, req)
+	return append([]workspace.CleanupResult(nil), f.cleanupResults...), f.cleanupErr
 }
 
 type fakeSandbox struct {

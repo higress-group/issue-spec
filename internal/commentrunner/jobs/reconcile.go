@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
+	"github.com/higress-group/issue-spec/internal/workspace"
 )
 
 var ErrReconciliationUnsupported = errors.New("acpx turn reconciliation unsupported")
@@ -22,16 +24,21 @@ type MetadataRefresher interface {
 	Refresh(context.Context, acpx.SessionRef) (acpx.Metadata, error)
 }
 
+type WorkspaceCleaner interface {
+	Cleanup(context.Context, workspace.CleanupRequest) ([]workspace.CleanupResult, error)
+}
+
 type ReconcileResult struct {
-	Reconciled  int            `json:"reconciled"`
-	Queued      int            `json:"queued"`
-	Running     int            `json:"running"`
-	Completed   int            `json:"completed"`
-	Failed      int            `json:"failed"`
-	Cancelled   int            `json:"cancelled"`
-	Interrupted int            `json:"interrupted"`
-	Jobs        []ReconcileJob `json:"jobs,omitempty"`
-	Diagnostics []string       `json:"diagnostics,omitempty"`
+	Reconciled       int                       `json:"reconciled"`
+	Queued           int                       `json:"queued"`
+	Running          int                       `json:"running"`
+	Completed        int                       `json:"completed"`
+	Failed           int                       `json:"failed"`
+	Cancelled        int                       `json:"cancelled"`
+	Interrupted      int                       `json:"interrupted"`
+	Jobs             []ReconcileJob            `json:"jobs,omitempty"`
+	WorkspaceCleanup []workspace.CleanupResult `json:"workspace_cleanup,omitempty"`
+	Diagnostics      []string                  `json:"diagnostics,omitempty"`
 }
 
 type ReconcileJob struct {
@@ -75,6 +82,9 @@ func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 			}
 		}
 	}
+	cleanup, diagnostics := d.cleanupExpiredWorkspaces(ctx)
+	result.WorkspaceCleanup = cleanup
+	result.Diagnostics = append(result.Diagnostics, diagnostics...)
 	return result, nil
 }
 
@@ -111,6 +121,130 @@ func (r *ReconcileResult) add(item ReconcileJob) {
 	case state.StatusInterrupted:
 		r.Interrupted++
 	}
+}
+
+func (d *Dispatcher) cleanupExpiredWorkspaces(ctx context.Context) ([]workspace.CleanupResult, []string) {
+	cleaner, ok := d.Workspaces.(WorkspaceCleaner)
+	if !ok || cleaner == nil {
+		return nil, nil
+	}
+	st, err := d.Store.Load(ctx)
+	if err != nil {
+		return nil, []string{"workspace cleanup state load: " + safeError(err)}
+	}
+	workspaces, activeIDs := cleanupWorkspacesFromState(st)
+	if len(workspaces) == 0 {
+		return nil, nil
+	}
+	results, err := cleaner.Cleanup(ctx, workspace.CleanupRequest{
+		Workspaces: workspaces,
+		ActiveIDs:  activeIDs,
+	})
+	diagnostics := workspaceCleanupDiagnostics(results, err)
+	removedIDs := removedWorkspaceIDs(results)
+	if len(removedIDs) > 0 {
+		if err := d.removeCleanedWorkspaces(ctx, removedIDs); err != nil {
+			diagnostics = append(diagnostics, "workspace cleanup state update: "+safeError(err))
+		}
+	}
+	return results, diagnostics
+}
+
+func cleanupWorkspacesFromState(st state.RunnerState) ([]state.WorkspaceMetadata, map[string]bool) {
+	st.Normalize()
+	byID := map[string]state.WorkspaceMetadata{}
+	addWorkspace := func(workspace state.WorkspaceMetadata) {
+		id := strings.TrimSpace(workspace.ID)
+		if id == "" || strings.TrimSpace(workspace.Path) == "" {
+			return
+		}
+		workspace.ID = id
+		if _, exists := byID[id]; !exists {
+			byID[id] = workspace
+		}
+	}
+	protect := func(activeIDs map[string]bool, workspace state.WorkspaceMetadata) {
+		id := strings.TrimSpace(workspace.ID)
+		if id != "" {
+			activeIDs[id] = true
+		}
+	}
+
+	for _, workspace := range st.Workspaces {
+		addWorkspace(workspace)
+	}
+	for _, job := range st.Jobs {
+		addWorkspace(job.Workspace)
+	}
+	for _, session := range st.PublicSessions {
+		addWorkspace(session.Workspace)
+	}
+
+	activeIDs := map[string]bool{}
+	for _, job := range st.Jobs {
+		switch job.Status {
+		case state.StatusQueued, state.StatusDispatched, state.StatusRunning, state.StatusInterrupted:
+			protect(activeIDs, job.Workspace)
+			if session, ok := st.GetPublicSession(job.Repo, job.PublicSessionID); ok {
+				protect(activeIDs, session.Workspace)
+			}
+		}
+	}
+	for _, session := range st.PublicSessions {
+		if !session.Status.Terminal() || strings.TrimSpace(session.Lock.OwnerJobID) != "" || len(session.Queue.PendingJobIDs) > 0 {
+			protect(activeIDs, session.Workspace)
+		}
+	}
+
+	ids := make([]string, 0, len(byID))
+	for id := range byID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	workspaces := make([]state.WorkspaceMetadata, 0, len(ids))
+	for _, id := range ids {
+		workspaces = append(workspaces, byID[id])
+	}
+	return workspaces, activeIDs
+}
+
+func workspaceCleanupDiagnostics(results []workspace.CleanupResult, err error) []string {
+	var diagnostics []string
+	for _, result := range results {
+		if result.Action == "failed" || result.Action == "rejected" {
+			diagnostics = append(diagnostics, fmt.Sprintf("workspace cleanup %s %s: %s", result.Action, result.WorkspaceID, result.Reason))
+		}
+	}
+	if err != nil && len(diagnostics) == 0 {
+		diagnostics = append(diagnostics, "workspace cleanup: "+safeError(err))
+	}
+	return diagnostics
+}
+
+func removedWorkspaceIDs(results []workspace.CleanupResult) map[string]bool {
+	removed := map[string]bool{}
+	for _, result := range results {
+		if result.Removed && strings.TrimSpace(result.WorkspaceID) != "" {
+			removed[strings.TrimSpace(result.WorkspaceID)] = true
+		}
+	}
+	if len(removed) == 0 {
+		return nil
+	}
+	return removed
+}
+
+func (d *Dispatcher) removeCleanedWorkspaces(ctx context.Context, removedIDs map[string]bool) error {
+	if len(removedIDs) == 0 {
+		return nil
+	}
+	return d.Store.Update(ctx, func(st *state.RunnerState) error {
+		st.Normalize()
+		for id := range removedIDs {
+			delete(st.Workspaces, id)
+		}
+		return nil
+	})
 }
 
 func (d *Dispatcher) reconcileJob(ctx context.Context, job state.Job) (ReconcileJob, error) {

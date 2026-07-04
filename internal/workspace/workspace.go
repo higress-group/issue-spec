@@ -505,11 +505,17 @@ func (m Manager) Cleanup(ctx context.Context, req CleanupRequest) ([]CleanupResu
 		}
 		result.Path = path
 		cleanupAfter := workspace.CleanupAfter
-		if cleanupAfter.IsZero() {
-			lastUsed := workspace.LastUsedAt
-			if lastUsed.IsZero() {
-				lastUsed = workspace.CreatedAt
+		lastUsed := workspace.LastUsedAt
+		if lastUsed.IsZero() {
+			lastUsed = workspace.CreatedAt
+		}
+		if !lastUsed.IsZero() {
+			lastUsedCleanupAfter := lastUsed.Add(nm.Retention)
+			if cleanupAfter.IsZero() || cleanupAfter.Before(lastUsedCleanupAfter) {
+				cleanupAfter = lastUsedCleanupAfter
 			}
+		}
+		if cleanupAfter.IsZero() {
 			cleanupAfter = lastUsed.Add(nm.Retention)
 		}
 		if now.Before(cleanupAfter) {

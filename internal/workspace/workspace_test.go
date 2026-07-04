@@ -301,6 +301,7 @@ func TestCleanupHonorsActiveDirtyAndRetentionDecisions(t *testing.T) {
 	now := time.Unix(4000, 0).UTC()
 	activePath := mkdirWorkspace(t, root, "active")
 	recentPath := mkdirWorkspace(t, root, "recent")
+	staleDeadlinePath := mkdirWorkspace(t, root, "stale-deadline")
 	dirtyPath := mkdirWorkspace(t, root, "dirty")
 	expiredPath := mkdirWorkspace(t, root, "expired")
 	manager := Manager{Root: root, Retention: time.Hour, Now: func() time.Time { return now }}
@@ -308,6 +309,7 @@ func TestCleanupHonorsActiveDirtyAndRetentionDecisions(t *testing.T) {
 	workspaces := []state.WorkspaceMetadata{
 		{ID: "active", Path: activePath, Repo: "o/r", LastUsedAt: now.Add(-3 * time.Hour)},
 		{ID: "recent", Path: recentPath, Repo: "o/r", LastUsedAt: now.Add(-30 * time.Minute)},
+		{ID: "stale-deadline", Path: staleDeadlinePath, Repo: "o/r", LastUsedAt: now.Add(-30 * time.Minute), CleanupAfter: now.Add(-time.Hour)},
 		{ID: "dirty", Path: dirtyPath, Repo: "o/r", LastUsedAt: now.Add(-3 * time.Hour), Dirty: true},
 		{ID: "expired", Path: expiredPath, Repo: "o/r", LastUsedAt: now.Add(-3 * time.Hour)},
 	}
@@ -320,10 +322,11 @@ func TestCleanupHonorsActiveDirtyAndRetentionDecisions(t *testing.T) {
 		actions[result.WorkspaceID] = result.Action + ":" + result.Reason
 	}
 	want := map[string]string{
-		"active":  "kept:active",
-		"recent":  "kept:within_retention",
-		"dirty":   "kept:dirty_or_uncertain",
-		"expired": "removed:expired",
+		"active":         "kept:active",
+		"recent":         "kept:within_retention",
+		"stale-deadline": "kept:within_retention",
+		"dirty":          "kept:dirty_or_uncertain",
+		"expired":        "removed:expired",
 	}
 	if !reflect.DeepEqual(actions, want) {
 		t.Fatalf("cleanup decisions = %#v, want %#v", actions, want)
@@ -333,6 +336,9 @@ func TestCleanupHonorsActiveDirtyAndRetentionDecisions(t *testing.T) {
 	}
 	if _, err := os.Stat(recentPath); err != nil {
 		t.Fatalf("recent workspace removed: %v", err)
+	}
+	if _, err := os.Stat(staleDeadlinePath); err != nil {
+		t.Fatalf("recent workspace with stale cleanup deadline removed: %v", err)
 	}
 }
 

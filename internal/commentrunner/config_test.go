@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
 )
@@ -23,6 +24,9 @@ func TestDefaultConfigFromEnvUsesUnifiedIssueSpecHomeDir(t *testing.T) {
 	}
 	if cfg.WorkspaceRoot != filepath.Join(root, "workspaces") {
 		t.Fatalf("WorkspaceRoot = %q", cfg.WorkspaceRoot)
+	}
+	if cfg.WorkspaceRetention.Duration != 7*24*time.Hour {
+		t.Fatalf("WorkspaceRetention = %s, want 168h", cfg.WorkspaceRetention.Duration)
 	}
 }
 
