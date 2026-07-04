@@ -486,8 +486,14 @@ func claudeAuthCheck() PreflightCheck {
 }
 
 // claudeSettingsAuthSource reports whether settings.json or settings.local.json
-// in claudeDir provides Anthropic API auth via their env block (or apiKeyHelper),
-// returning a human-readable description of the source that satisfied the check.
+// in claudeDir provides Anthropic API auth via their env block, returning a
+// human-readable description of the source that satisfied the check.
+//
+// Only the env block is honored: the settings files themselves are mirrored into
+// the sandbox (see claudeRuntimeDirFiles) and Claude Code reads their env inline,
+// so it is genuinely available at runtime. apiKeyHelper is deliberately NOT
+// accepted here — it points to an external script that the sandbox does not carry
+// in, so trusting it would let preflight pass while the runner fails at runtime.
 func claudeSettingsAuthSource(claudeDir string) (string, bool) {
 	// settings.local.json overrides settings.json in Claude Code, but either one
 	// on its own is enough to authenticate, so accept whichever provides a key.
@@ -498,8 +504,7 @@ func claudeSettingsAuthSource(claudeDir string) (string, bool) {
 			continue
 		}
 		var settings struct {
-			Env          map[string]string `json:"env"`
-			APIKeyHelper string            `json:"apiKeyHelper"`
+			Env map[string]string `json:"env"`
 		}
 		if err := json.Unmarshal(data, &settings); err != nil {
 			continue
@@ -508,9 +513,6 @@ func claudeSettingsAuthSource(claudeDir string) (string, bool) {
 			if strings.TrimSpace(settings.Env[key]) != "" {
 				return fmt.Sprintf("%s (%s)", path, key), true
 			}
-		}
-		if strings.TrimSpace(settings.APIKeyHelper) != "" {
-			return fmt.Sprintf("%s (apiKeyHelper)", path), true
 		}
 	}
 	return "", false

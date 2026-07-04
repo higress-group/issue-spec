@@ -447,7 +447,6 @@ func TestPreflightAcceptsClaudeSettingsEnvForClaudeAgent(t *testing.T) {
 		{name: "settings.json auth token", file: "settings.json", contents: `{"env":{"ANTHROPIC_BASE_URL":"https://api.example.com","ANTHROPIC_AUTH_TOKEN":"sk-third-party"}}`},
 		{name: "settings.json api key", file: "settings.json", contents: `{"env":{"ANTHROPIC_API_KEY":"sk-third-party"}}`},
 		{name: "settings.local.json auth token", file: "settings.local.json", contents: `{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-third-party"}}`},
-		{name: "apiKeyHelper", file: "settings.json", contents: `{"apiKeyHelper":"/usr/local/bin/anthropic-key"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
@@ -477,12 +476,63 @@ func TestPreflightAcceptsClaudeSettingsEnvForClaudeAgent(t *testing.T) {
 }
 
 func TestPreflightRejectsClaudeSettingsWithoutAnthropicAuth(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		contents string
+	}{
+		// Unrelated env key only.
+		{name: "unrelated env", contents: `{"env":{"SOME_OTHER":"value"}}`},
+		// Empty/whitespace values must not count as a key.
+		{name: "empty value", contents: `{"env":{"ANTHROPIC_AUTH_TOKEN":"   "}}`},
+		// Malformed JSON falls through to the error path rather than panicking.
+		{name: "malformed json", contents: `{"env":`},
+		// apiKeyHelper is intentionally NOT accepted: the helper script is not
+		// carried into the sandbox, so trusting it would green preflight while the
+		// runner fails at runtime.
+		{name: "apiKeyHelper only", contents: `{"apiKeyHelper":"/usr/local/bin/anthropic-key"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			claudeHome := filepath.Join(home, ".claude")
+			if err := os.MkdirAll(claudeHome, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(claudeHome, "settings.json"), []byte(tc.contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", home)
+			t.Setenv("CODEX_HOME", filepath.Join(home, "missing-codex"))
+			cfg := testPreflightConfigWithoutAuth()
+			cfg.Agent.Kind = AgentClaude
+			cfg.UnsafeNoSandbox = true
+
+			report := RunPreflight(context.Background(), cfg, passingPreflightDependencies(t))
+			if report.OK {
+				t.Fatalf("preflight unexpectedly OK without any claude auth source: %+v", report)
+			}
+			claude := findCheck(t, report, "claude-auth")
+			if claude.Status != CheckError || !strings.Contains(claude.Detail, "Claude Code auth unavailable") {
+				t.Fatalf("unexpected claude auth check: %+v", claude)
+			}
+			if !strings.Contains(claude.Hint, "settings.json") || !strings.Contains(claude.Hint, "claude login") {
+				t.Fatalf("claude auth hint should mention both settings.json and claude login: %+v", claude)
+			}
+		})
+	}
+}
+
+func TestPreflightClaudeSettingsLocalTakesPrecedence(t *testing.T) {
 	home := t.TempDir()
 	claudeHome := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeHome, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// settings.json has no usable auth; settings.local.json supplies it. The
+	// check must accept the pair and attribute the source to settings.local.json.
 	if err := os.WriteFile(filepath.Join(claudeHome, "settings.json"), []byte(`{"env":{"SOME_OTHER":"value"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeHome, "settings.local.json"), []byte(`{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-third-party"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
@@ -492,15 +542,12 @@ func TestPreflightRejectsClaudeSettingsWithoutAnthropicAuth(t *testing.T) {
 	cfg.UnsafeNoSandbox = true
 
 	report := RunPreflight(context.Background(), cfg, passingPreflightDependencies(t))
-	if report.OK {
-		t.Fatalf("preflight unexpectedly OK without any claude auth source: %+v", report)
+	if !report.OK {
+		t.Fatalf("preflight should accept auth from settings.local.json: %+v", report)
 	}
 	claude := findCheck(t, report, "claude-auth")
-	if claude.Status != CheckError || !strings.Contains(claude.Detail, "Claude Code auth unavailable") {
+	if claude.Status != CheckOK || !strings.Contains(claude.Detail, "settings.local.json") {
 		t.Fatalf("unexpected claude auth check: %+v", claude)
-	}
-	if !strings.Contains(claude.Hint, "settings.json") || !strings.Contains(claude.Hint, "claude login") {
-		t.Fatalf("claude auth hint should mention both settings.json and claude login: %+v", claude)
 	}
 }
 
