@@ -70,7 +70,7 @@ func TestRunnerPollHelpShowsOptionsAndDefaults(t *testing.T) {
 		"Usage:",
 		"issue-spec runner poll [options]",
 		"--max-concurrency int",
-		"maximum concurrent runner jobs (default: 8)",
+		"maximum concurrent runner jobs (default: 3)",
 		"--poll-interval duration",
 		"notification poll interval (default: 1m0s)",
 		"--async-dispatch",
@@ -100,7 +100,7 @@ func TestRunnerPreflightHelpShowsSharedOptionsOnly(t *testing.T) {
 	for _, want := range []string{
 		"issue-spec runner preflight [options]",
 		"--max-concurrency int",
-		"maximum concurrent runner jobs (default: 8)",
+		"maximum concurrent runner jobs (default: 3)",
 		"--workspace-retention duration",
 		"(default: 168h0m0s)",
 	} {
@@ -271,8 +271,8 @@ func TestRunnerPollUsesDefaultStateAndWorkspaceRoot(t *testing.T) {
 	if captured.WorkspaceRetention.Duration != 7*24*time.Hour {
 		t.Fatalf("WorkspaceRetention = %s, want 168h", captured.WorkspaceRetention.Duration)
 	}
-	if captured.MaxConcurrentJobs != 8 {
-		t.Fatalf("MaxConcurrentJobs = %d, want 8", captured.MaxConcurrentJobs)
+	if captured.MaxConcurrentJobs != 3 {
+		t.Fatalf("MaxConcurrentJobs = %d, want 3", captured.MaxConcurrentJobs)
 	}
 }
 

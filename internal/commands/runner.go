@@ -472,7 +472,7 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 			GitHubBackend:       auth.GitHubBackendModeAuto,
 			PollInterval:        commentrunner.NewDuration(time.Minute),
 			FallbackInterval:    commentrunner.NewDuration(5 * time.Minute),
-			MaxConcurrentJobs:   8,
+			MaxConcurrentJobs:   3,
 			AcpxPath:            "acpx",
 			Agent:               commentrunner.DefaultAgentConfig(),
 			WorkspaceRetention:  commentrunner.NewDuration(7 * 24 * time.Hour),
