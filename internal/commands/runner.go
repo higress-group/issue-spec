@@ -62,6 +62,9 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 		return 2
 	}
 	if !opts.DryRun {
+		if !opts.JSON {
+			a.printRunnerPollStart(cfg, opts.Once)
+		}
 		report := a.runRunnerPreflight(ctx, cfg)
 		if !report.OK {
 			result := runnerDryRunResult{
@@ -72,14 +75,25 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 				Config:    cfg,
 				Preflight: report,
 			}
-			if code := a.printRunnerPollResult(result, opts.JSON); code != 0 {
-				return code
+			if opts.JSON {
+				if code := a.outputJSON(result); code != 0 {
+					return code
+				}
+			} else {
+				a.printPreflightReport(report)
 			}
 			return 1
+		}
+		if !opts.JSON {
+			a.printPreflightReport(report)
+			fmt.Fprintln(a.out, "polling: started")
 		}
 		for {
 			if err := ctx.Err(); err != nil {
 				return 0
+			}
+			if !opts.JSON {
+				fmt.Fprintln(a.out, "poll cycle: running")
 			}
 			result := a.runRunnerPollCycle(ctx, cfg, opts, report)
 			if code := a.printRunnerPollResult(result, opts.JSON); code != 0 {
@@ -553,6 +567,26 @@ func actualRunnerPollActions(cfg commentrunner.Config, once bool) []string {
 	}
 }
 
+func (a *app) printRunnerPollStart(cfg commentrunner.Config, once bool) {
+	cfg = cfg.Normalized()
+	mode := "continuous"
+	if once {
+		mode = "once"
+	}
+	fmt.Fprintln(a.out, "runner poll starting")
+	fmt.Fprintf(a.out, "repositories: %s\n", strings.Join(cfg.Repositories, ", "))
+	fmt.Fprintf(a.out, "runner: %s\n", cfg.RunnerIdentity)
+	fmt.Fprintf(a.out, "agent: %s", cfg.Agent.Kind)
+	if cfg.Agent.Model != "" {
+		fmt.Fprintf(a.out, " model=%s", cfg.Agent.Model)
+	}
+	fmt.Fprintln(a.out)
+	fmt.Fprintf(a.out, "state: %s\n", cfg.StatePath)
+	fmt.Fprintf(a.out, "workspace_root: %s\n", cfg.WorkspaceRoot)
+	fmt.Fprintf(a.out, "poll_interval: %s fallback_interval: %s mode: %s\n", cfg.PollInterval.Duration, cfg.FallbackInterval.Duration, mode)
+	fmt.Fprintln(a.out, "preflight: running")
+}
+
 func (a *app) printRunnerDryRun(result runnerDryRunResult) {
 	fmt.Fprintln(a.out, "runner poll dry-run")
 	fmt.Fprintf(a.out, "repositories: %s\n", strings.Join(result.Config.Repositories, ", "))
@@ -572,9 +606,7 @@ func (a *app) printRunnerDryRun(result runnerDryRunResult) {
 }
 
 func (a *app) printRunnerPoll(result runnerDryRunResult) {
-	fmt.Fprintln(a.out, "runner poll")
-	fmt.Fprintf(a.out, "repositories: %s\n", strings.Join(result.Config.Repositories, ", "))
-	a.printPreflightReport(result.Preflight)
+	fmt.Fprintln(a.out, "poll cycle: completed")
 	if result.Reconcile != nil {
 		fmt.Fprintf(a.out, "reconcile: reconciled=%d running=%d completed=%d failed=%d cancelled=%d interrupted=%d queued=%d\n", result.Reconcile.Reconciled, result.Reconcile.Running, result.Reconcile.Completed, result.Reconcile.Failed, result.Reconcile.Cancelled, result.Reconcile.Interrupted, result.Reconcile.Queued)
 		if len(result.Reconcile.WorkspaceCleanup) > 0 {

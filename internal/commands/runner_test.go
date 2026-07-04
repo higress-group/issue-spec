@@ -463,6 +463,67 @@ func TestRunnerPollWithoutDryRunRunsIntakeAndOneDispatch(t *testing.T) {
 	}
 }
 
+func TestRunnerPollTextOutputPrintsStartupAndPreflightOnce(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{
+			OK:     true,
+			Config: cfg,
+			Checks: []commentrunner.PreflightCheck{{
+				Name:   "github-backend",
+				Status: commentrunner.CheckOK,
+				Detail: "gh backend selected",
+			}},
+		}
+	}
+	app.runnerReconcile = func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error) {
+		return jobs.ReconcileResult{}, nil
+	}
+	app.runnerIntake = func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error) {
+		return intake.Result{OK: true, Next: intake.NextStep{PollAfter: 0}}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dispatchCalls := 0
+	app.runnerDispatch = func(context.Context, commentrunner.Config) (jobs.Result, error) {
+		dispatchCalls++
+		if dispatchCalls == 2 {
+			cancel()
+		}
+		return jobs.Result{Reason: "no ready queued job"}, nil
+	}
+
+	code := app.runRunner(ctx, []string{
+		"poll",
+		"--repo", "o/r",
+		"--runner", "issue-spec-bot",
+		"--state", "/tmp/state.json",
+		"--workspace-root", "/tmp/workspaces",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"runner poll starting",
+		"state: /tmp/state.json",
+		"workspace_root: /tmp/workspaces",
+		"preflight: running",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output missing %q:\n%s", want, text)
+		}
+	}
+	if got := strings.Count(text, "github-backend: ok"); got != 1 {
+		t.Fatalf("preflight checks printed %d times, want 1:\n%s", got, text)
+	}
+	if got := strings.Count(text, "poll cycle: completed"); got != 2 {
+		t.Fatalf("poll cycles printed %d times, want 2:\n%s", got, text)
+	}
+}
+
 func TestRunnerPollStopsBeforeDispatchWhenIntakeNotOK(t *testing.T) {
 	clearCommandAuthEnv(t)
 	var out, errOut bytes.Buffer

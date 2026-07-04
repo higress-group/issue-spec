@@ -110,6 +110,24 @@ issue-spec auth status --hostname ghe.example.com --json
 
 `issue-spec runner` can watch repository issue comments and launch a headless acpx coordinator agent when an authorized maintainer comments a command.
 
+Minimal start:
+
+```bash
+gh auth login
+issue-spec runner poll \
+  --repo owner/repo \
+  --runner "$(gh api user --jq .login)" \
+  --agent codex
+```
+
+By default, the runner only accepts command comments from the same GitHub account that `gh` is logged in as. That keeps the default fail-closed: the account running the poller is the only account that can trigger `/new`, `/resume`, or `/cancel` unless additional users are explicitly configured.
+
+Make sure that GitHub account watches the repository with issue and PR notifications enabled. A preflight check can verify the local `gh` authentication, repository access, watch state, sandbox prerequisites, acpx, and selected agent:
+
+```bash
+issue-spec runner preflight --repo owner/repo --runner "$(gh api user --jq .login)"
+```
+
 Supported command comments:
 
 ```text
@@ -120,15 +138,7 @@ Supported command comments:
 
 `/new` creates a fresh public runner session, clones the target repository into a managed workspace, starts acpx from that workspace, and writes a status comment containing the public session id. `/resume` reuses that public session and workspace. Public sessions are repository-scoped and shared by authorized repository maintainers; they are not private user sessions.
 
-Before running the poller, authenticate GitHub and make sure the runner identity watches the repository with issue and PR notifications enabled:
-
-```bash
-gh auth login
-issue-spec auth status --json
-issue-spec runner preflight --repo owner/repo --runner "$(gh api user --jq .login)"
-```
-
-Use a dry run to check configuration and intake without creating GitHub comments, changing runner state, creating workspaces, or dispatching acpx:
+Use a dry run to check configuration and intake without creating GitHub comments, changing runner state, creating workspaces, or dispatching acpx. Dry-run still reads GitHub notifications and comments, so the first run on a busy repository can take noticeably longer than later real poll cycles that persist cursors:
 
 ```bash
 issue-spec runner poll \
@@ -137,16 +147,6 @@ issue-spec runner poll \
   --once \
   --dry-run \
   --json
-```
-
-Start a real poller:
-
-```bash
-issue-spec runner poll \
-  --repo owner/repo \
-  --runner "$(gh api user --jq .login)" \
-  --allowed-user maintainer \
-  --agent codex
 ```
 
 Useful runner options:
