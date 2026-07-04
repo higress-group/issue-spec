@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -71,6 +72,7 @@ type SandboxRequest struct {
 
 type ExecutionEnvironment struct {
 	WorkingDirectory string
+	AcpxBinary       string
 	Sandbox          state.SandboxMetadata
 	Runner           acpx.CommandRunner
 }
@@ -109,6 +111,7 @@ type Dispatcher struct {
 	Clock               Clock
 	PublicSessionID     IDGenerator
 	TurnCorrelationID   IDGenerator
+	AcpxBinary          string
 	IssueSpecBinary     string
 	CoordinatorExtraEnv map[string]string
 }
@@ -638,7 +641,7 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 	env, err := d.Sandbox.Prepare(ctx, SandboxRequest{
 		WorkspacePath:        execBinding.SandboxWorkspacePath,
 		AcpxWorkingDirectory: execBinding.AcpxWorkingDirectory,
-		AcpxBinary:           "acpx",
+		AcpxBinary:           firstNonEmpty(d.AcpxBinary, acpx.DefaultBinary),
 		IssueSpecBinary:      d.IssueSpecBinary,
 		ExtraEnv:             d.CoordinatorExtraEnv,
 		RuntimeHome:          runtimePaths.home,
@@ -1176,31 +1179,40 @@ type SandboxRunner struct {
 }
 
 func (p SandboxRunner) Prepare(ctx context.Context, req SandboxRequest) (ExecutionEnvironment, error) {
-	cfg, err := p.config(req)
+	cfg, resolvedAcpxBinary, err := p.config(req)
 	if err != nil {
 		return ExecutionEnvironment{}, err
 	}
-	prepared, err := sandbox.Prepare(ctx, cfg, sandbox.Command{Binary: firstNonEmpty(req.AcpxBinary, "acpx"), Dir: req.AcpxWorkingDirectory}, p.Deps)
+	acpxBinary := firstNonEmpty(resolvedAcpxBinary, req.AcpxBinary, "acpx")
+	prepared, err := sandbox.Prepare(ctx, cfg, sandbox.Command{Binary: acpxBinary, Dir: req.AcpxWorkingDirectory}, p.Deps)
 	env := ExecutionEnvironment{
 		WorkingDirectory: firstNonEmpty(req.AcpxWorkingDirectory, req.WorkspacePath),
+		AcpxBinary:       acpxBinary,
 		Sandbox:          sandboxMetadata(prepared.Metadata, err),
-		Runner:           sandboxedRunner{cfg: cfg, deps: p.Deps},
+		Runner:           sandboxedRunner{cfg: cfg, deps: p.Deps, acpxBinary: firstNonEmpty(req.AcpxBinary, "acpx"), resolvedAcpxBinary: resolvedAcpxBinary},
 	}
 	return env, err
 }
 
-func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, error) {
+func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, error) {
 	cfg := p.Config
 	cfg.WorkspacePath = firstNonEmpty(req.WorkspacePath, cfg.WorkspacePath)
 	cfg.TempHome = firstNonEmpty(req.RuntimeHome, cfg.TempHome)
 	cfg.TempGHConfigDir = firstNonEmpty(req.RuntimeGHConfigDir, cfg.TempGHConfigDir)
 	cfg.TempXDGConfigHome = firstNonEmpty(req.RuntimeXDGConfigHome, cfg.TempXDGConfigHome)
 	cfg.TempCodexHome = firstNonEmpty(req.RuntimeCodexHome, cfg.TempCodexHome)
-	readOnlyBinds, err := requestReadOnlyBinds(req)
-	if err != nil {
-		return sandbox.Config{}, err
+	acpxBinary := firstNonEmpty(req.AcpxBinary, acpx.DefaultBinary)
+	var pathPrefixes []string
+	var resolvedAcpxBinary string
+	if !cfg.UnsafeNoSandbox {
+		readOnlyBinds, prefixes, resolvedBinary, err := requestReadOnlyBinds(req, acpxBinary, sandboxLookPath(p.Deps))
+		if err != nil {
+			return sandbox.Config{}, "", err
+		}
+		cfg.ReadOnlyBinds = appendUniqueCleanAbsPaths(cfg.ReadOnlyBinds, readOnlyBinds...)
+		pathPrefixes = prefixes
+		resolvedAcpxBinary = resolvedBinary
 	}
-	cfg.ReadOnlyBinds = appendUniqueCleanAbsPaths(cfg.ReadOnlyBinds, readOnlyBinds...)
 	if len(req.ExtraEnv) > 0 {
 		if cfg.ExtraEnv == nil {
 			cfg.ExtraEnv = map[string]string{}
@@ -1209,10 +1221,13 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, error) {
 			cfg.ExtraEnv[key] = value
 		}
 	}
+	if !cfg.UnsafeNoSandbox {
+		addSandboxPATHPrefixes(&cfg, pathPrefixes...)
+	}
 	if cfg.TempHome == "" || cfg.TempGHConfigDir == "" || cfg.TempXDGConfigHome == "" || cfg.TempCodexHome == "" {
 		root, err := os.MkdirTemp("", "issue-spec-runner-*")
 		if err != nil {
-			return sandbox.Config{}, err
+			return sandbox.Config{}, "", err
 		}
 		cfg.TempHome = firstNonEmpty(cfg.TempHome, filepath.Join(root, "home"))
 		cfg.TempGHConfigDir = firstNonEmpty(cfg.TempGHConfigDir, filepath.Join(root, "gh"))
@@ -1221,39 +1236,179 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, error) {
 	}
 	for _, dir := range []string{cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return sandbox.Config{}, err
+			return sandbox.Config{}, "", err
 		}
 	}
 	if err := mirrorHostGHAuth(&cfg); err != nil {
-		return sandbox.Config{}, err
+		return sandbox.Config{}, "", err
 	}
 	if err := mirrorHostCodexConfig(&cfg); err != nil {
-		return sandbox.Config{}, err
+		return sandbox.Config{}, "", err
 	}
 	if err := mirrorHostClaudeConfig(&cfg); err != nil {
-		return sandbox.Config{}, err
+		return sandbox.Config{}, "", err
 	}
-	return cfg, nil
+	return cfg, resolvedAcpxBinary, nil
 }
 
-func requestReadOnlyBinds(req SandboxRequest) ([]string, error) {
+func requestReadOnlyBinds(req SandboxRequest, acpxBinary string, lookPath func(string) (string, error)) ([]string, []string, string, error) {
 	var out []string
-	for _, path := range []string{req.AcpxBinary, req.IssueSpecBinary} {
-		path = strings.TrimSpace(path)
-		if path == "" || !filepath.IsAbs(path) {
-			continue
-		}
-		clean := filepath.Clean(path)
-		info, err := os.Stat(clean)
-		if err != nil {
-			return nil, fmt.Errorf("sandbox executable bind unavailable for %s: %w", clean, err)
-		}
-		if info.IsDir() {
-			return nil, fmt.Errorf("sandbox executable bind path is a directory: %s", clean)
-		}
-		out = append(out, clean)
+	var pathPrefixes []string
+	acpxBinds, acpxPathPrefixes, resolvedAcpxBinary, err := acpxExecutableReadOnlyBinds(acpxBinary, lookPath)
+	if err != nil {
+		return nil, nil, "", err
 	}
-	return out, nil
+	out = append(out, acpxBinds...)
+	pathPrefixes = append(pathPrefixes, acpxPathPrefixes...)
+	issueSpecBinds, err := executableFileReadOnlyBind(req.IssueSpecBinary, lookPath)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	out = append(out, issueSpecBinds...)
+	return appendUniqueCleanAbsPaths(nil, out...), appendUniqueCleanAbsPaths(nil, pathPrefixes...), resolvedAcpxBinary, nil
+}
+
+func sandboxLookPath(deps sandbox.Dependencies) func(string) (string, error) {
+	if deps.LookPath != nil {
+		return deps.LookPath
+	}
+	return exec.LookPath
+}
+
+func acpxExecutableReadOnlyBinds(binary string, lookPath func(string) (string, error)) ([]string, []string, string, error) {
+	path, err := resolveExecutablePath(binary, lookPath)
+	if err != nil || path == "" {
+		return nil, nil, "", err
+	}
+	if roots, binDir, target := nodeGlobalPackageReadOnlyBinds(path, "acpx"); len(roots) > 0 {
+		return roots, []string{binDir}, target, nil
+	}
+	return []string{path}, nil, path, nil
+}
+
+func executableFileReadOnlyBind(binary string, lookPath func(string) (string, error)) ([]string, error) {
+	path, err := resolveExecutablePath(binary, lookPath)
+	if err != nil || path == "" {
+		return nil, err
+	}
+	return []string{path}, nil
+}
+
+func resolveExecutablePath(binary string, lookPath func(string) (string, error)) (string, error) {
+	binary = strings.TrimSpace(binary)
+	if binary == "" {
+		return "", nil
+	}
+	path := binary
+	if !filepath.IsAbs(path) {
+		if lookPath == nil {
+			lookPath = exec.LookPath
+		}
+		resolved, err := lookPath(path)
+		if err != nil {
+			return "", fmt.Errorf("sandbox executable bind lookup failed for %q: %w", binary, err)
+		}
+		path = resolved
+	}
+	clean := filepath.Clean(path)
+	info, err := os.Stat(clean)
+	if err != nil {
+		return "", fmt.Errorf("sandbox executable bind unavailable for %s: %w", clean, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("sandbox executable bind path is a directory: %s", clean)
+	}
+	return clean, nil
+}
+
+func nodeGlobalPackageReadOnlyBinds(path, packageName string) ([]string, string, string) {
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, "", ""
+	}
+	packageName = strings.TrimSpace(packageName)
+	if packageName == "" {
+		packageName = filepath.Base(path)
+	}
+	pkgRoot, ok := nodeGlobalPackageRoot(realPath, packageName)
+	if !ok {
+		return nil, "", ""
+	}
+	prefix := filepath.Dir(filepath.Dir(filepath.Dir(pkgRoot)))
+	binDir := filepath.Join(prefix, "bin")
+	if !pathExists(filepath.Join(binDir, "node")) {
+		return nil, "", ""
+	}
+	if !pathExists(pkgRoot) {
+		return nil, "", ""
+	}
+	target := filepath.Join(binDir, filepath.Base(path))
+	if !pathExists(target) {
+		target = realPath
+	}
+	return appendUniqueCleanAbsPaths(nil, binDir, pkgRoot), filepath.Clean(binDir), filepath.Clean(target)
+}
+
+func nodeGlobalPackageRoot(realPath, packageName string) (string, bool) {
+	realPath = filepath.Clean(strings.TrimSpace(realPath))
+	parts := strings.Split(realPath, string(os.PathSeparator))
+	for i := 0; i+3 < len(parts); i++ {
+		if parts[i] == "lib" && parts[i+1] == "node_modules" && parts[i+2] == packageName {
+			rootParts := append([]string(nil), parts[:i+3]...)
+			root := strings.Join(rootParts, string(os.PathSeparator))
+			if filepath.IsAbs(realPath) && !strings.HasPrefix(root, string(os.PathSeparator)) {
+				root = string(os.PathSeparator) + root
+			}
+			return filepath.Clean(root), true
+		}
+	}
+	return "", false
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func addSandboxPATHPrefixes(cfg *sandbox.Config, dirs ...string) {
+	dirs = appendUniqueCleanAbsPaths(nil, dirs...)
+	if len(dirs) == 0 {
+		return
+	}
+	if cfg.ExtraEnv == nil {
+		cfg.ExtraEnv = map[string]string{}
+	}
+	current := cfg.ExtraEnv["PATH"]
+	if current == "" {
+		current = envValue(cfg.HostEnv, "PATH")
+	}
+	if current == "" {
+		current = os.Getenv("PATH")
+	}
+	if current == "" {
+		current = "/usr/bin:/bin"
+	}
+	cfg.ExtraEnv["PATH"] = prependPathEntries(current, dirs...)
+}
+
+func prependPathEntries(current string, prefixes ...string) string {
+	seen := map[string]bool{}
+	var parts []string
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		parts = append(parts, value)
+	}
+	for _, prefix := range prefixes {
+		add(filepath.Clean(prefix))
+	}
+	for _, part := range strings.Split(current, string(os.PathListSeparator)) {
+		add(part)
+	}
+	return strings.Join(parts, string(os.PathListSeparator))
 }
 
 type sessionRuntimePaths struct {
@@ -1610,11 +1765,16 @@ func sameCleanPath(left, right string) bool {
 }
 
 type sandboxedRunner struct {
-	cfg  sandbox.Config
-	deps sandbox.Dependencies
+	cfg                sandbox.Config
+	deps               sandbox.Dependencies
+	acpxBinary         string
+	resolvedAcpxBinary string
 }
 
 func (r sandboxedRunner) Run(ctx context.Context, command acpx.Command) (acpx.CommandResult, error) {
+	if shouldUseResolvedAcpxBinary(command.Binary, r.acpxBinary, r.resolvedAcpxBinary) {
+		command.Binary = strings.TrimSpace(r.resolvedAcpxBinary)
+	}
 	prepared, err := sandbox.Prepare(ctx, r.cfg, sandbox.Command(command), r.deps)
 	if err != nil {
 		return acpx.CommandResult{}, err
@@ -1627,6 +1787,31 @@ func (r sandboxedRunner) Run(ctx context.Context, command acpx.Command) (acpx.Co
 	return acpx.CommandResult(result), err
 }
 
+func shouldUseResolvedAcpxBinary(binary, requested, resolved string) bool {
+	binary = strings.TrimSpace(binary)
+	requested = strings.TrimSpace(requested)
+	resolved = strings.TrimSpace(resolved)
+	if binary == "" || resolved == "" {
+		return false
+	}
+	if requested == "" {
+		requested = acpx.DefaultBinary
+	}
+	if binary == requested || binary == resolved {
+		return true
+	}
+	if !filepath.IsAbs(binary) && binary == filepath.Base(requested) && binary == filepath.Base(resolved) {
+		return true
+	}
+	if filepath.IsAbs(binary) && filepath.IsAbs(requested) && sameCleanPath(binary, requested) {
+		return true
+	}
+	if filepath.IsAbs(binary) && filepath.IsAbs(resolved) && sameCleanPath(binary, resolved) {
+		return true
+	}
+	return false
+}
+
 type AcpxAdapterFactory struct {
 	Config acpx.Config
 }
@@ -1634,6 +1819,7 @@ type AcpxAdapterFactory struct {
 func (f AcpxAdapterFactory) NewCoordinator(env ExecutionEnvironment) (Coordinator, error) {
 	cfg := f.Config
 	cfg.CWD = firstNonEmpty(env.WorkingDirectory, cfg.CWD)
+	cfg.Binary = firstNonEmpty(env.AcpxBinary, cfg.Binary)
 	return acpx.NewAdapter(cfg, env.Runner)
 }
 

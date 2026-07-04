@@ -286,7 +286,7 @@ func (d *Dispatcher) coordinatorForStoredJob(ctx context.Context, job state.Job)
 	env, err := d.Sandbox.Prepare(ctx, SandboxRequest{
 		WorkspacePath:        job.Workspace.Path,
 		AcpxWorkingDirectory: job.Workspace.Path,
-		AcpxBinary:           acpx.DefaultBinary,
+		AcpxBinary:           firstNonEmpty(d.AcpxBinary, acpx.DefaultBinary),
 		ExtraEnv:             d.CoordinatorExtraEnv,
 	})
 	if err != nil {

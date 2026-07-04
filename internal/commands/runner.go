@@ -474,8 +474,9 @@ func (a *app) runRunnerReconcile(ctx context.Context, cfg commentrunner.Config) 
 			BwrapPath:       cfg.BwrapPath,
 			HostGHConfigDir: cfg.GHConfigDir,
 		}},
-		Acpx:      jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg)},
-		Writeback: &writeback.Service{GitHub: runnerBackend, Store: store},
+		Acpx:       jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg)},
+		Writeback:  &writeback.Service{GitHub: runnerBackend, Store: store},
+		AcpxBinary: cfg.AcpxPath,
 	}
 	return dispatcher.Reconcile(ctx)
 }
@@ -516,6 +517,7 @@ func (a *app) runRunnerDispatch(ctx context.Context, cfg commentrunner.Config) (
 		Acpx:            jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg)},
 		Artifacts:       &jobs.IssueSpecArtifactProvider{GitHub: runnerBackend},
 		Writeback:       &writeback.Service{GitHub: runnerBackend, Store: store},
+		AcpxBinary:      cfg.AcpxPath,
 		IssueSpecBinary: issueSpecBinaryForRunner(),
 	}
 	if cfg.MaxConcurrentJobs > 1 {
