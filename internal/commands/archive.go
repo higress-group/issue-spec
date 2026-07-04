@@ -72,7 +72,7 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 	}
 	outputPath := strings.TrimSpace(*output)
 	if outputPath == "" {
-		outputPath = filepath.Join("openspec", "specs", *capability, "spec.md")
+		outputPath = filepath.Join("issue-spec", "specs", *capability, "spec.md")
 	}
 	if *createPR {
 		prResult, err := a.createDurableSpecPR(ctx, client, repo, issue.HTMLURL, specs, durableSpecPROptions{

@@ -153,6 +153,87 @@ Compatibility rollout checks:
 - `archive durable-spec --create-pr` still uses local `git` for fetch, worktree, commit, and push. The selected GitHub backend is used only for GitHub API reads and PR creation.
 - Live GitHub or real-`gh` smoke tests are optional for local rollout. When they are not run, record the reason with the verification evidence and rely on fake-runner/unit coverage.
 
+## Runner: Comment-Triggered Workflows
+
+`issue-spec runner` can watch repository issue comments and launch a headless acpx coordinator agent when an authorized maintainer comments a command.
+
+Supported command comments:
+
+```text
+/new <prompt>
+/resume <public-session-id> <prompt>
+/cancel <public-session-id>
+```
+
+`/new` creates a fresh public runner session, clones the target repository into a managed workspace, starts acpx from that workspace, and writes a status comment containing the public session id. `/resume` reuses that public session and workspace. Public sessions are repository-scoped and shared by authorized repository maintainers; they are not private user sessions.
+
+Before running the poller, authenticate GitHub and make sure the runner identity watches the repository with issue and PR notifications enabled:
+
+```bash
+gh auth login
+issue-spec auth status --json
+issue-spec runner preflight --repo owner/repo --runner "$(gh api user --jq .login)"
+```
+
+Use a dry run to check configuration and intake without creating GitHub comments, changing runner state, creating workspaces, or dispatching acpx:
+
+```bash
+issue-spec runner poll \
+  --repo owner/repo \
+  --runner "$(gh api user --jq .login)" \
+  --once \
+  --dry-run \
+  --json
+```
+
+Start a real poller:
+
+```bash
+issue-spec runner poll \
+  --repo owner/repo \
+  --runner "$(gh api user --jq .login)" \
+  --agent codex
+```
+
+Useful runner options:
+
+- `--backend auto|gh|rest` selects the GitHub backend. The default `auto` follows the same auth selection as other issue-spec commands.
+- `--state <path>` stores durable runner state. The default is `~/.issue-spec/runner-state.json`.
+- `--workspace-root <path>` stores managed repository clones. The default is `~/.issue-spec/workspaces`.
+- `--poll-interval` and `--fallback-interval` control notification polling and lower-frequency repository comment fallback.
+- `--max-concurrency <n>` can run independent sessions in parallel. Commands for the same public session are serialized by a workspace/session lock.
+- `--agent codex|claude` selects the coordinator agent through acpx. `--model <name>` passes the configured model/profile to acpx.
+- `--gh-config-dir <path>` selects the host GitHub CLI config directory mirrored into the sandbox. By default the runner derives it from the host GitHub CLI environment.
+- `--allow-cancel=false` disables `/cancel` intake.
+
+On Linux, runner dispatch uses bubblewrap by default to keep coordinator filesystem writes inside the managed workspace while still allowing network access for GitHub, model, and package operations. Install bubblewrap or set `ISSUE_SPEC_BWRAP_PATH` / `--bwrap-path` when it is not on `PATH`. If bubblewrap is unavailable or unsupported, the runner fails preflight instead of silently running without isolation.
+
+Use `--unsafe-no-sandbox` only as an explicit operator choice:
+
+```bash
+issue-spec runner poll --repo owner/repo --runner maintainer --unsafe-no-sandbox
+```
+
+Unsafe mode disables the filesystem boundary and marks status comments and durable state with `sandbox_provider=none` and `fs_boundary=disabled`. Regular issue-spec CLI commands remain cross-platform; the default sandboxed runner dispatch path requires Linux unless unsafe mode is explicitly selected.
+
+For Codex-backed runs, the runner defaults to requiring agent full access so the coordinator can run issue-spec CLI commands, shell commands, tests, and native subagents inside the managed workspace:
+
+```bash
+issue-spec runner poll --repo owner/repo --runner maintainer --agent codex --model gpt-5.5[xhigh]
+```
+
+For Claude Code-backed runs, include the tools needed by the issue-spec workflow:
+
+```bash
+issue-spec runner poll \
+  --repo owner/repo \
+  --runner maintainer \
+  --agent claude \
+  --claude-allowed-tools Task,Bash
+```
+
+The acpx-launched coordinator creates or updates proposal, design, typed-comment, review, verify, and archive artifacts by running existing issue-spec CLI commands inside the sandbox. The outer runner owns authorization, job lifecycle status comments, workspace isolation, restart reconciliation, cancellation state, and bounded provenance writeback.
+
 ## Why issue-spec
 
 ### Active specs stay out of the code repository
@@ -288,10 +369,14 @@ issue-spec review sync --repo owner/repo --pr 4 --implement 3 --id REVIEW-001
 issue-spec review finding --repo owner/repo --pr 4 --path internal/foo.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-001 --spec SPEC-001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "What must be fixed."
 issue-spec review reply --repo owner/repo --pr 4 --comment-id 123456 --finding FINDING-001 --process PROCESS-001 --status resolved --body "Fixed in the latest patch."
 
-issue-spec verify --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --durable-spec openspec/specs/issue-spec-cli/spec.md
+issue-spec verify --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --durable-spec issue-spec/specs/issue-spec-cli/spec.md
 
 issue-spec archive durable-spec --repo owner/repo --proposal 1 --capability issue-spec-cli
 issue-spec archive durable-spec --repo owner/repo --proposal 1 --capability issue-spec-cli --create-pr --branch issue-spec/durable-spec-issue-spec-cli
+
+issue-spec runner preflight --repo owner/repo --runner login
+issue-spec runner poll --repo owner/repo --runner login --once --dry-run
+issue-spec runner poll --repo owner/repo --runner login --agent codex
 ```
 
 ## Development

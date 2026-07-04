@@ -141,6 +141,63 @@ func TestCompatibilityCommentListPreservesTypedCommentLinksWithGHBackend(t *test
 	}
 }
 
+func TestCompatibilityArchiveDefaultPathUsesIssueSpecSpecs(t *testing.T) {
+	t.Chdir(t.TempDir())
+	specBody, err := model.EnsureTypedBody("SPEC", "SPEC-001", `## Requirement: Default archive path
+
+The archive command MUST write durable specs under issue-spec/specs by default.
+
+### Scenario: Render durable spec
+
+- **WHEN** archive durable-spec runs without --output
+- **THEN** it writes issue-spec/specs/<capability>/spec.md.
+`, model.BodyOptions{
+		Agent:  "Compatibility Worker",
+		Status: "confirmed",
+		Scope:  "archive path",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
+		return fakeGitHubBackend{
+			info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
+			getIssue: func(_ context.Context, repo string, issueNumber int) (github.Issue, error) {
+				if repo != "o/r" || issueNumber != 9 {
+					t.Fatalf("unexpected issue lookup repo=%q issue=%d", repo, issueNumber)
+				}
+				return github.Issue{Number: 9, HTMLURL: "https://github.com/o/r/issues/9"}, nil
+			},
+			listIssueComments: func(_ context.Context, repo string, issueNumber int) ([]github.Comment, error) {
+				if repo != "o/r" || issueNumber != 9 {
+					t.Fatalf("unexpected comment list repo=%q issue=%d", repo, issueNumber)
+				}
+				return []github.Comment{{
+					ID:      1,
+					HTMLURL: "https://github.com/o/r/issues/9#issuecomment-1",
+					URL:     "https://api.github.com/repos/o/r/issues/comments/1",
+					Body:    specBody,
+				}}, nil
+			},
+		}, nil
+	}
+
+	code := app.runArchive(context.Background(), []string{"durable-spec", "--repo", "o/r", "--proposal", "9", "--capability", "compat"})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join("issue-spec", "specs", "compat", "spec.md")); err != nil {
+		t.Fatalf("default durable spec path missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join("openspec", "specs", "compat", "spec.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old openspec path should not be written, stat err=%v", err)
+	}
+}
+
 func TestCompatibilityArchiveCreatePRKeepsLocalGitOperations(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git binary is required for local archive compatibility test: %v", err)
@@ -194,7 +251,7 @@ func TestCompatibilityArchiveCreatePRKeepsLocalGitOperations(t *testing.T) {
 		Body: "## Requirement: Durable archive compatibility\n\nThe archive command MUST keep local git operations local.\n\n### Scenario: Create durable archive PR\n\n- **WHEN** the coordinator creates the durable archive PR\n- **THEN** issue-spec uses local git for worktree changes.\n",
 	}}, durableSpecPROptions{
 		Capability: "compat",
-		OutputPath: "openspec/specs/compat/spec.md",
+		OutputPath: "issue-spec/specs/compat/spec.md",
 		Branch:     "issue-spec/durable-spec-compat",
 		Base:       "main",
 		Title:      "docs: archive compat spec",

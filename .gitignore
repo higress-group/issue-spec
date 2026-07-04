@@ -1,3 +1,7 @@
 /issue-spec
+!/issue-spec/
+/issue-spec/*
+!/issue-spec/specs/
+!/issue-spec/specs/**
 *.test
 coverage.out
