@@ -506,6 +506,12 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	codexFullAccess := fs.Bool("codex-agent-full-access", defaults.Agent.CodexAgentFullAccess, "require Codex agent-full-access policy for workflow CLI/shell work")
 	claudeFullAccess := fs.Bool("claude-agent-full-access", defaults.Agent.ClaudeAgentFullAccess, "require Claude agent-full-access policy for workflow CLI/shell work")
 	claudeIncludeSettings := fs.Bool("claude-include-user-settings", defaults.Agent.ClaudeIncludeUserSettings, "set ACPX_CLAUDE_INCLUDE_USER_SETTINGS for Claude Code")
+	// Logging flags
+	logDir := fs.String("log-dir", defaults.LogDir, "directory for persistent diagnostic logs; default is a sibling 'logs/' directory beside the state file")
+	logMaxSize := fs.Int("log-max-size", defaults.LogMaxSizeMB, "maximum log file size in MB before rotation (default: 10MB)")
+	logMaxFiles := fs.Int("log-max-files", defaults.LogMaxFiles, "maximum number of rotated log files to retain (default: 5)")
+	logRetention := fs.Int("log-retention", defaults.LogRetentionDays, "log retention duration in days (default: 30 days)")
+	logRawCapture := fs.Int("log-raw-capture", defaults.LogRawCaptureKB, "maximum raw stdout/stderr capture size in KB (default: 100KB)")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	fs.Var(&repoValues, "repo", "repository owner/name; repeat or comma-separate for multiple repositories")
 	fs.Var(&allowedUsers, "allowed-user", "GitHub login allowed to trigger runner commands; repeat or comma-separate, and users still need write-equivalent repository permission")
@@ -637,6 +643,21 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	}
 	if seen["claude-allowed-tools"] {
 		cfg.Agent.ClaudeAllowedTools = claudeTools.Values()
+	}
+	if seen["log-dir"] {
+		cfg.LogDir = *logDir
+	}
+	if seen["log-max-size"] {
+		cfg.LogMaxSizeMB = *logMaxSize
+	}
+	if seen["log-max-files"] {
+		cfg.LogMaxFiles = *logMaxFiles
+	}
+	if seen["log-retention"] {
+		cfg.LogRetentionDays = *logRetention
+	}
+	if seen["log-raw-capture"] {
+		cfg.LogRawCaptureKB = *logRawCapture
 	}
 	cfg, err = commentrunner.ApplyDefaultRunnerScopePaths(cfg, seen["state"], seen["workspace-root"])
 	if err != nil {
