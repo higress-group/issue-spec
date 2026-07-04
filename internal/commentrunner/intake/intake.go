@@ -275,6 +275,7 @@ func intakeIssueComments(ctx context.Context, backend Backend, cfg commentrunner
 	repoState := st.Repositories[repo]
 	cursorKey := strconv.Itoa(issueNumber)
 	cursor := repoState.NotificationThreadCursors[cursorKey]
+	lastSuccessfulPollAt := cursor.LastSuccessfulPollAt
 	pendingCursor := cursor
 	page := github.RunnerPageOptions{}
 	for {
@@ -284,7 +285,12 @@ func intakeIssueComments(ctx context.Context, backend Backend, cfg commentrunner
 		})
 		if err != nil {
 			if hasResponseMetadata(commentsResult.Metadata) {
-				cursor = updateCursor(cursor, fmt.Sprintf("issue-comments:%s#%d", repo, issueNumber), commentsResult.Metadata, now)
+				if cursor.Cursor == "" && page.CursorURL != "" {
+					cursor.Cursor = page.CursorURL
+				}
+				cursor = updateCursorErrorMetadata(cursor, fmt.Sprintf("issue-comments:%s#%d", repo, issueNumber), commentsResult.Metadata, now)
+				cursor.LastSuccessfulPollAt = lastSuccessfulPollAt
+				repoState = st.Repositories[repo]
 				repoState.NotificationThreadCursors[cursorKey] = cursor
 				st.Repositories[repo] = repoState
 			}
@@ -843,6 +849,17 @@ func updateCursor(cursor crstate.CursorState, resource string, meta github.Respo
 	}
 	if !meta.NotModified && (meta.StatusCode == 0 || meta.StatusCode < 400) {
 		cursor.LastSuccessfulPollAt = now
+	}
+	return cursor
+}
+
+func updateCursorErrorMetadata(cursor crstate.CursorState, resource string, meta github.ResponseMetadata, now time.Time) crstate.CursorState {
+	cursor.Resource = resource
+	cursor.LastPollAt = now
+	cursor.LastStatusCode = meta.StatusCode
+	cursor.RateLimit = rateLimit(meta)
+	if meta.PollIntervalSeconds > 0 {
+		cursor.XPollIntervalSeconds = meta.PollIntervalSeconds
 	}
 	return cursor
 }
