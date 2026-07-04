@@ -182,17 +182,17 @@ The runner MUST own job lifecycle status writeback while allowing the sandboxed 
 #### Scenario: public status content
 
 - **WHEN** the runner writes a status comment
-- **THEN** it SHALL include non-sensitive provenance such as runner job id, public session id, trigger comment id, triggering user, current turn user, session creator when known, agent/model, sandbox provider and filesystem boundary, coordinator summary, bounded diagnostics, and relevant CLI artifact references.
+- **THEN** it SHALL keep the visible issue comment concise by including lifecycle status, current phase when known, the public session id, terminal `/resume` guidance when available, and a short result summary with relevant workflow artifact references.
 
-#### Scenario: sensitive identifiers
+#### Scenario: durable provenance
 
-- **WHEN** raw provider session ids, local filesystem details beyond the managed workspace summary, or detailed diagnostics are available
-- **THEN** the runner SHALL keep sensitive details in durable state unless a future policy explicitly makes them public.
+- **WHEN** runner ids, trigger comment ids, user metadata, agent/model details, sandbox metadata, CLI command names, stdout/stderr summaries, child/process evidence, or detailed diagnostics are available
+- **THEN** the runner SHALL keep those details in durable state instead of expanding them in the visible public issue comment unless a future policy explicitly makes them public.
 
 #### Scenario: workflow artifact writes
 
 - **WHEN** the coordinator needs to create or update proposal, design, typed-comment, link, review, verify, or archive artifacts
-- **THEN** it SHALL invoke existing issue-spec CLI commands inside the sandbox using runner-provided GitHub authentication access, while the runner captures bounded command and artifact provenance rather than applying a custom workflow-action envelope.
+- **THEN** it SHALL invoke existing issue-spec CLI commands inside the sandbox using runner-provided GitHub authentication access, while the runner captures bounded command and artifact provenance in durable state rather than applying a custom workflow-action envelope.
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/24#issuecomment-4865331607
