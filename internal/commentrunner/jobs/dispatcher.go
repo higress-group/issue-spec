@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/acpx"
@@ -115,11 +116,13 @@ type Dispatcher struct {
 
 type Result struct {
 	Executed       bool                  `json:"executed"`
+	ExecutedCount  int                   `json:"executed_count,omitempty"`
 	JobID          string                `json:"job_id,omitempty"`
 	CancellationID string                `json:"cancellation_id,omitempty"`
 	Status         state.LifecycleStatus `json:"status,omitempty"`
 	Reason         string                `json:"reason,omitempty"`
 	Error          string                `json:"error,omitempty"`
+	Results        []Result              `json:"results,omitempty"`
 }
 
 func (d *Dispatcher) RunNext(ctx context.Context) (Result, error) {
@@ -133,6 +136,34 @@ func (d *Dispatcher) RunNext(ctx context.Context) (Result, error) {
 	if ok {
 		return d.cancel(ctx, cancel)
 	}
+	return d.runNextJob(ctx)
+}
+
+func (d *Dispatcher) RunReady(ctx context.Context, maxConcurrentJobs int) (Result, error) {
+	if err := d.validate(); err != nil {
+		return Result{}, err
+	}
+	cancel, ok, err := d.nextQueuedCancellation(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	if ok {
+		return d.cancel(ctx, cancel)
+	}
+	if maxConcurrentJobs <= 1 {
+		return d.runNextJob(ctx)
+	}
+	jobs, err := d.claimReadyJobs(ctx, maxConcurrentJobs)
+	if err != nil {
+		return Result{}, err
+	}
+	if len(jobs) == 0 {
+		return Result{Reason: ErrNoReadyJob.Error()}, nil
+	}
+	return d.runClaimedJobs(ctx, jobs)
+}
+
+func (d *Dispatcher) runNextJob(ctx context.Context) (Result, error) {
 	skipped := map[string]bool{}
 	var locked Result
 	for {
@@ -155,8 +186,199 @@ func (d *Dispatcher) RunNext(ctx context.Context) (Result, error) {
 			skipped[job.ID] = true
 			continue
 		}
-		return result, err
+		return withJobExecutedCount(result), err
 	}
+}
+
+func (d *Dispatcher) claimReadyJobs(ctx context.Context, maxJobs int) ([]state.Job, error) {
+	if maxJobs <= 0 {
+		maxJobs = 1
+	}
+	now := d.now()
+	claimed := make([]state.Job, 0, maxJobs)
+	err := d.Store.Update(ctx, func(st *state.RunnerState) error {
+		st.Normalize()
+		activeSessions := activePublicSessionKeys(st)
+		for _, job := range st.ListJobs() {
+			if len(claimed) >= maxJobs {
+				break
+			}
+			if job.Status != state.StatusQueued {
+				continue
+			}
+			publicID := strings.TrimSpace(job.PublicSessionID)
+			command := runnercontext.CommandVerb(strings.TrimSpace(job.CommandName))
+			if command == runnercontext.CommandNew && publicID == "" {
+				id, err := d.generateUniquePublicSessionID(st, job.Repo, activeSessions)
+				if err != nil {
+					return err
+				}
+				publicID = id
+			}
+			sessionKey := publicSessionKey(job.Repo, publicID)
+			if sessionKey != "" && activeSessions[sessionKey] {
+				continue
+			}
+			next, err := st.UpdateJobStatus(job.ID, state.StatusDispatched, now)
+			if err != nil {
+				return err
+			}
+			next.PublicSessionID = publicID
+			if err := st.UpsertJob(next); err != nil {
+				return err
+			}
+			claimed = append(claimed, next)
+			if sessionKey != "" {
+				activeSessions[sessionKey] = true
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return claimed, nil
+}
+
+func (d *Dispatcher) generateUniquePublicSessionID(st *state.RunnerState, repo string, activeSessions map[string]bool) (string, error) {
+	const maxAttempts = 32
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		id, err := d.generatePublicSessionID()
+		if err != nil {
+			return "", err
+		}
+		key := publicSessionKey(repo, id)
+		if key == "" {
+			return id, nil
+		}
+		if activeSessions[key] {
+			continue
+		}
+		if _, exists := st.GetPublicSession(repo, id); exists {
+			continue
+		}
+		return id, nil
+	}
+	return "", fmt.Errorf("could not allocate unique public session id after %d attempts", maxAttempts)
+}
+
+func activePublicSessionKeys(st *state.RunnerState) map[string]bool {
+	active := map[string]bool{}
+	for _, job := range st.Jobs {
+		if !job.Status.NeedsReconciliation() {
+			continue
+		}
+		if key := publicSessionKey(job.Repo, job.PublicSessionID); key != "" {
+			active[key] = true
+		}
+	}
+	for _, session := range st.PublicSessions {
+		if session.Lock.OwnerJobID == "" && !session.Status.NeedsReconciliation() {
+			continue
+		}
+		if key := publicSessionKey(session.Repo, session.PublicSessionID); key != "" {
+			active[key] = true
+		}
+	}
+	return active
+}
+
+func publicSessionKey(repo, publicID string) string {
+	repo = strings.TrimSpace(repo)
+	publicID = strings.TrimSpace(publicID)
+	if repo == "" || publicID == "" {
+		return ""
+	}
+	return state.PublicSessionKey(repo, publicID)
+}
+
+type jobRunResult struct {
+	result Result
+	err    error
+}
+
+func (d *Dispatcher) runClaimedJobs(ctx context.Context, jobs []state.Job) (Result, error) {
+	results := make([]jobRunResult, len(jobs))
+	var wg sync.WaitGroup
+	for i, job := range jobs {
+		i, job := i, job
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result, err := d.runJob(ctx, job)
+			if err != nil {
+				result.Error = safeError(err)
+			}
+			if err == nil && result.Reason == "session_locked" && !result.Executed {
+				if releaseErr := d.releaseDispatchClaim(ctx, job.ID); releaseErr != nil {
+					result.Error = safeError(releaseErr)
+					err = releaseErr
+				}
+			}
+			results[i] = jobRunResult{result: result, err: err}
+		}()
+	}
+	wg.Wait()
+	return aggregateJobRunResults(results)
+}
+
+func (d *Dispatcher) releaseDispatchClaim(ctx context.Context, jobID string) error {
+	now := d.now()
+	return d.Store.Update(ctx, func(st *state.RunnerState) error {
+		job, ok := st.Jobs[jobID]
+		if !ok {
+			return fmt.Errorf("job %q not found", jobID)
+		}
+		if job.Status != state.StatusDispatched || !job.StartedAt.IsZero() {
+			return nil
+		}
+		job.Status = state.StatusQueued
+		job.DispatchedAt = time.Time{}
+		job.UpdatedAt = now
+		return st.UpsertJob(job)
+	})
+}
+
+func aggregateJobRunResults(results []jobRunResult) (Result, error) {
+	if len(results) == 0 {
+		return Result{Reason: ErrNoReadyJob.Error()}, nil
+	}
+	if len(results) == 1 {
+		return withJobExecutedCount(results[0].result), results[0].err
+	}
+	aggregate := Result{Results: make([]Result, 0, len(results))}
+	var firstErr error
+	for _, item := range results {
+		result := item.result
+		result.Results = nil
+		result.ExecutedCount = 0
+		aggregate.Results = append(aggregate.Results, result)
+		if result.Executed {
+			aggregate.Executed = true
+			aggregate.ExecutedCount++
+		}
+		if aggregate.JobID == "" && result.JobID != "" {
+			aggregate.JobID = result.JobID
+			aggregate.Status = result.Status
+		}
+		if aggregate.Reason == "" && result.Reason != "" {
+			aggregate.Reason = result.Reason
+		}
+		if aggregate.Error == "" && result.Error != "" {
+			aggregate.Error = result.Error
+		}
+		if firstErr == nil && item.err != nil {
+			firstErr = item.err
+		}
+	}
+	return aggregate, firstErr
+}
+
+func withJobExecutedCount(result Result) Result {
+	if result.Executed && result.JobID != "" && result.ExecutedCount == 0 {
+		result.ExecutedCount = 1
+	}
+	return result
 }
 
 func (d *Dispatcher) validate() error {

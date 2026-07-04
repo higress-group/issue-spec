@@ -712,6 +712,113 @@ func TestRunOncePreservesThreadPaginationAfterMetadataBearingPageError(t *testin
 	}
 }
 
+func TestRunOnceResumesThreadPaginationAfterMetadataBearingPageError(t *testing.T) {
+	const nextURL = "https://api.github.test/repos/o/r/issues/8/comments?per_page=100&page=2"
+	retryAfter := 2 * time.Minute
+	st := crstate.NewState()
+	st.Repositories["o/r"] = crstate.RepositoryState{
+		Repo: "o/r",
+		NotificationThreadCursors: map[string]crstate.CursorState{
+			"8": {},
+		},
+		FallbackCadence: crstate.FallbackCadence{
+			Enabled:         true,
+			IntervalSeconds: 300,
+			NextPollAt:      testNow.Add(time.Hour),
+		},
+	}
+	backend := &fakeBackend{
+		user:        github.User{Login: "bot"},
+		permissions: map[string]string{"alice": "write"},
+		notifications: github.NotificationListResult{
+			Notifications: []github.Notification{notification(8)},
+			Metadata:      meta(http.StatusOK, `"notes-v1"`, 0),
+		},
+		repoComments: github.IssueCommentsResult{Metadata: meta(http.StatusNotModified, `"repo"`, 0)},
+	}
+	calls := 0
+	backend.listIssueCommentsPage = func(issue int, opts github.CommentListOptions) (github.IssueCommentsResult, error) {
+		if issue != 8 {
+			t.Fatalf("issue = %d, want 8", issue)
+		}
+		calls++
+		switch calls {
+		case 1:
+			if opts.Page.CursorURL != "" {
+				t.Fatalf("first page CursorURL = %q", opts.Page.CursorURL)
+			}
+			return github.IssueCommentsResult{
+				Metadata: github.ResponseMetadata{
+					StatusCode: http.StatusOK,
+					ETag:       `"thread-page-1"`,
+					Pagination: github.PaginationMetadata{NextURL: nextURL},
+				},
+			}, nil
+		case 2:
+			if opts.Page.CursorURL != nextURL {
+				t.Fatalf("second page CursorURL = %q, want %q", opts.Page.CursorURL, nextURL)
+			}
+			return github.IssueCommentsResult{
+				Metadata: github.ResponseMetadata{
+					StatusCode:          http.StatusServiceUnavailable,
+					ETag:                `"error-etag"`,
+					PollIntervalSeconds: 90,
+					RateLimit: github.RateLimitMetadata{
+						RetryAfterSeconds: int(retryAfter.Seconds()),
+					},
+				},
+			}, errors.New("temporary page 2 outage")
+		case 3:
+			if opts.Page.CursorURL != "" {
+				t.Fatalf("resumed first page CursorURL = %q", opts.Page.CursorURL)
+			}
+			if opts.ETag != `"thread-page-1"` {
+				t.Fatalf("resumed first page ETag = %q, want page-1 ETag", opts.ETag)
+			}
+			return github.IssueCommentsResult{Metadata: meta(http.StatusNotModified, `"thread-page-1"`, 0)}, nil
+		case 4:
+			if opts.Page.CursorURL != nextURL {
+				t.Fatalf("resumed second page CursorURL = %q, want %q", opts.Page.CursorURL, nextURL)
+			}
+			return github.IssueCommentsResult{
+				Comments: []github.Comment{commandComment(602, 8, "alice", "/new from page two")},
+				Metadata: meta(http.StatusOK, `"thread-complete"`, 0),
+			}, nil
+		default:
+			t.Fatalf("unexpected issue comments call %d", calls)
+			return github.IssueCommentsResult{}, nil
+		}
+	}
+	store := &fakeStore{state: st}
+
+	first, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.OK || len(first.Diagnostics) != 1 {
+		t.Fatalf("metadata-bearing page error should be diagnostic failure: ok=%v diagnostics=%+v", first.OK, first.Diagnostics)
+	}
+	cursor := store.state.Repositories["o/r"].NotificationThreadCursors["8"]
+	if cursor.ETag != `"thread-page-1"` || cursor.Cursor != nextURL {
+		t.Fatalf("thread pagination cursor not preserved after first run: %+v", cursor)
+	}
+
+	second, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.OK || len(second.Jobs) != 1 || second.Jobs[0].TriggerComment != 602 {
+		t.Fatalf("page 2 command was not queued after resume: ok=%v jobs=%+v diagnostics=%+v", second.OK, second.Jobs, second.Diagnostics)
+	}
+	if calls != 4 {
+		t.Fatalf("issue comment calls = %d, want 4", calls)
+	}
+	cursor = store.state.Repositories["o/r"].NotificationThreadCursors["8"]
+	if cursor.ETag != `"thread-complete"` || cursor.Cursor != "" {
+		t.Fatalf("completed thread cursor = %+v", cursor)
+	}
+}
+
 func TestRunOnceContinuesThreadPaginationAfterPageOneNotModifiedWithPendingCursor(t *testing.T) {
 	const nextURL = "https://api.github.test/repos/o/r/issues/8/comments?per_page=100&page=2"
 	st := crstate.NewState()

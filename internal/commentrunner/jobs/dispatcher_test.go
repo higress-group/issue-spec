@@ -6,7 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -692,6 +694,286 @@ func TestRunNextSkipsLockedQueuedJobAndDispatchesLaterSession(t *testing.T) {
 	}
 }
 
+func TestRunReadyWithCapStartsDifferentPublicSessionsTogether(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 12, 45, 0, 0, time.UTC)
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-new-a",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		CoordinatorKind:       "codex",
+		Model:                 "gpt-5.5[xhigh]",
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "alice",
+		TriggerCommentID:      501,
+		CommandID:             "cmd-new-a",
+		CommandName:           "new",
+		CommandPrompt:         "start independent work a",
+		CommandIdempotencyKey: "cmd-key-new-a",
+		StatusWritebackKey:    "status-new-a",
+		Status:                state.StatusQueued,
+		CreatedAt:             now,
+	})
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-new-b",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		CoordinatorKind:       "codex",
+		Model:                 "gpt-5.5[xhigh]",
+		SessionCreatorLogin:   "bob",
+		TriggeringUserLogin:   "bob",
+		TriggerCommentID:      502,
+		CommandID:             "cmd-new-b",
+		CommandName:           "new",
+		CommandPrompt:         "start independent work b",
+		CommandIdempotencyKey: "cmd-key-new-b",
+		StatusWritebackKey:    "status-new-b",
+		Status:                state.StatusQueued,
+		CreatedAt:             now.Add(time.Second),
+	})
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	coordinator := &fakeCoordinator{
+		onNew: func(_ context.Context, req acpx.NewSessionRequest) (acpx.DispatchResult, error) {
+			started <- req.PublicSessionID
+			<-release
+			return dispatchResult(req.PublicSessionID, "rec-"+req.PublicSessionID, "turn-"+req.PublicSessionID, completedSummary()), nil
+		},
+	}
+	workspaces := &fakeWorkspaces{bindings: map[string]workspace.Binding{
+		"job-new-a": testBinding("ws-new-a"),
+		"job-new-b": testBinding("ws-new-b"),
+	}}
+	writebacks := &fakeWriteback{}
+	dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
+	publicIDs := []string{"ps-new-a", "ps-new-b"}
+	dispatcher.PublicSessionID = func() (string, error) {
+		if len(publicIDs) == 0 {
+			return "", errors.New("unexpected public session id allocation")
+		}
+		id := publicIDs[0]
+		publicIDs = publicIDs[1:]
+		return id, nil
+	}
+
+	type runOutcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan runOutcome, 1)
+	go func() {
+		result, err := dispatcher.RunReady(context.Background(), 2)
+		done <- runOutcome{result: result, err: err}
+	}()
+	gotStarted := collectStartedPublicSessions(t, started, 2)
+	close(release)
+	outcome := <-done
+	if outcome.err != nil {
+		t.Fatalf("RunReady returned error: %v result=%+v", outcome.err, outcome.result)
+	}
+	if outcome.result.ExecutedCount != 2 || len(outcome.result.Results) != 2 {
+		t.Fatalf("batch result did not include two executions: %+v", outcome.result)
+	}
+	sort.Strings(gotStarted)
+	if strings.Join(gotStarted, ",") != "ps-new-a,ps-new-b" {
+		t.Fatalf("started public sessions = %v, want both allocated sessions", gotStarted)
+	}
+	st := loadState(t, store)
+	if st.Jobs["job-new-a"].Status != state.StatusCompleted || st.Jobs["job-new-b"].Status != state.StatusCompleted {
+		t.Fatalf("jobs not completed after batch dispatch: a=%+v b=%+v", st.Jobs["job-new-a"], st.Jobs["job-new-b"])
+	}
+}
+
+func TestRunReadySameSessionPreservesFIFO(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 13, 0, 0, 0, time.UTC)
+	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-same-session", Path: "/tmp/ws-same-session", Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-same-session"}
+	seedState(t, store, func(st *state.RunnerState) error {
+		if err := st.UpsertWorkspace(resumeWorkspace); err != nil {
+			return err
+		}
+		if err := st.UpsertPublicSession(state.PublicSession{
+			Repo:            "o/r",
+			PublicSessionID: "ps-same",
+			IssueNumber:     30,
+			AcpxRecordID:    "rec-same",
+			CreatorLogin:    "alice",
+			Status:          state.StatusCompleted,
+			Workspace:       resumeWorkspace,
+			CreatedAt:       now.Add(-time.Hour),
+			LastUsedAt:      now.Add(-time.Minute),
+		}); err != nil {
+			return err
+		}
+		if _, _, err := st.CreateCommandJob(state.Job{
+			ID:                    "job-same-first",
+			Repo:                  "o/r",
+			IssueNumber:           30,
+			PublicSessionID:       "ps-same",
+			CoordinatorKind:       "codex",
+			Model:                 "gpt-5.5[xhigh]",
+			TriggeringUserLogin:   "bob",
+			TriggerCommentID:      511,
+			CommandID:             "cmd-same-first",
+			CommandName:           "resume",
+			CommandPrompt:         "first same-session resume",
+			CommandIdempotencyKey: "cmd-key-same-first",
+			StatusWritebackKey:    "status-same-first",
+			Status:                state.StatusQueued,
+			CreatedAt:             now,
+		}); err != nil {
+			return err
+		}
+		_, _, err := st.CreateCommandJob(state.Job{
+			ID:                    "job-same-second",
+			Repo:                  "o/r",
+			IssueNumber:           30,
+			PublicSessionID:       "ps-same",
+			CoordinatorKind:       "codex",
+			Model:                 "gpt-5.5[xhigh]",
+			TriggeringUserLogin:   "carol",
+			TriggerCommentID:      512,
+			CommandID:             "cmd-same-second",
+			CommandName:           "resume",
+			CommandPrompt:         "second same-session resume",
+			CommandIdempotencyKey: "cmd-key-same-second",
+			StatusWritebackKey:    "status-same-second",
+			Status:                state.StatusQueued,
+			CreatedAt:             now.Add(time.Second),
+		})
+		return err
+	})
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	coordinator := &fakeCoordinator{
+		onResume: func(_ context.Context, req acpx.ResumeRequest) (acpx.DispatchResult, error) {
+			switch {
+			case strings.Contains(req.Prompt, "first same-session resume"):
+				started <- "job-same-first"
+			case strings.Contains(req.Prompt, "second same-session resume"):
+				started <- "job-same-second"
+			default:
+				started <- "unknown"
+			}
+			<-release
+			return dispatchResult(req.PublicSessionID, "rec-same", "turn-"+req.PublicSessionID, completedSummary()), nil
+		},
+	}
+	workspaces := &fakeWorkspaces{binding: workspace.Binding{Workspace: resumeWorkspace, AcpxWorkingDirectory: resumeWorkspace.Path, SandboxWorkspacePath: resumeWorkspace.Path}}
+	writebacks := &fakeWriteback{}
+	dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
+
+	type runOutcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan runOutcome, 1)
+	go func() {
+		result, err := dispatcher.RunReady(context.Background(), 2)
+		done <- runOutcome{result: result, err: err}
+	}()
+	first := collectStartedPublicSessions(t, started, 1)
+	if first[0] != "job-same-first" {
+		t.Fatalf("first started job = %s, want job-same-first", first[0])
+	}
+	st := loadState(t, store)
+	if st.Jobs["job-same-second"].Status != state.StatusQueued {
+		t.Fatalf("second same-session job should remain queued while first runs: %+v", st.Jobs["job-same-second"])
+	}
+	close(release)
+	outcome := <-done
+	if outcome.err != nil {
+		t.Fatalf("first RunReady returned error: %v result=%+v", outcome.err, outcome.result)
+	}
+	if outcome.result.JobID != "job-same-first" || outcome.result.ExecutedCount != 1 {
+		t.Fatalf("first RunReady dispatched wrong job: %+v", outcome.result)
+	}
+
+	result, err := dispatcher.RunReady(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("second RunReady returned error: %v", err)
+	}
+	second := collectStartedPublicSessions(t, started, 1)
+	if second[0] != "job-same-second" || result.JobID != "job-same-second" {
+		t.Fatalf("second RunReady did not preserve FIFO: started=%v result=%+v", second, result)
+	}
+}
+
+func TestRunReadyMaxConcurrencyOneDispatchesSerially(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 13, 15, 0, 0, time.UTC)
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-serial-a",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		CoordinatorKind:       "codex",
+		Model:                 "gpt-5.5[xhigh]",
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "alice",
+		TriggerCommentID:      521,
+		CommandID:             "cmd-serial-a",
+		CommandName:           "new",
+		CommandPrompt:         "serial work a",
+		CommandIdempotencyKey: "cmd-key-serial-a",
+		StatusWritebackKey:    "status-serial-a",
+		Status:                state.StatusQueued,
+		CreatedAt:             now,
+	})
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-serial-b",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		CoordinatorKind:       "codex",
+		Model:                 "gpt-5.5[xhigh]",
+		SessionCreatorLogin:   "bob",
+		TriggeringUserLogin:   "bob",
+		TriggerCommentID:      522,
+		CommandID:             "cmd-serial-b",
+		CommandName:           "new",
+		CommandPrompt:         "serial work b",
+		CommandIdempotencyKey: "cmd-key-serial-b",
+		StatusWritebackKey:    "status-serial-b",
+		Status:                state.StatusQueued,
+		CreatedAt:             now.Add(time.Second),
+	})
+	coordinator := &fakeCoordinator{
+		onNew: func(_ context.Context, req acpx.NewSessionRequest) (acpx.DispatchResult, error) {
+			return dispatchResult(req.PublicSessionID, "rec-"+req.PublicSessionID, "turn-"+req.PublicSessionID, completedSummary()), nil
+		},
+	}
+	workspaces := &fakeWorkspaces{bindings: map[string]workspace.Binding{
+		"job-serial-a": testBinding("ws-serial-a"),
+		"job-serial-b": testBinding("ws-serial-b"),
+	}}
+	writebacks := &fakeWriteback{}
+	dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
+	publicIDs := []string{"ps-serial-a", "ps-serial-b"}
+	dispatcher.PublicSessionID = func() (string, error) {
+		id := publicIDs[0]
+		publicIDs = publicIDs[1:]
+		return id, nil
+	}
+
+	first, err := dispatcher.RunReady(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("first RunReady returned error: %v", err)
+	}
+	if first.JobID != "job-serial-a" || first.ExecutedCount != 1 {
+		t.Fatalf("first RunReady did not dispatch only the first job: %+v", first)
+	}
+	st := loadState(t, store)
+	if st.Jobs["job-serial-a"].Status != state.StatusCompleted || st.Jobs["job-serial-b"].Status != state.StatusQueued {
+		t.Fatalf("max-concurrency=1 did not behave serially: a=%+v b=%+v", st.Jobs["job-serial-a"], st.Jobs["job-serial-b"])
+	}
+	second, err := dispatcher.RunReady(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("second RunReady returned error: %v", err)
+	}
+	if second.JobID != "job-serial-b" || second.ExecutedCount != 1 {
+		t.Fatalf("second RunReady did not dispatch queued job: %+v", second)
+	}
+}
+
 func TestSandboxRunnerMirrorsHostGHAuthIntoSandboxConfigDir(t *testing.T) {
 	temp := t.TempDir()
 	hostGH := filepath.Join(temp, "host-gh")
@@ -1129,6 +1411,22 @@ func assertWritebackStatuses(t *testing.T, writebacks *fakeWriteback, want ...st
 	}
 }
 
+func collectStartedPublicSessions(t *testing.T, started <-chan string, count int) []string {
+	t.Helper()
+	got := make([]string, 0, count)
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for len(got) < count {
+		select {
+		case id := <-started:
+			got = append(got, id)
+		case <-timer.C:
+			t.Fatalf("timed out waiting for %d started jobs; got %v", count, got)
+		}
+	}
+	return got
+}
+
 func writeFileWithMode(t *testing.T, path string, data []byte, mode os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -1278,6 +1576,7 @@ func dispatchResult(publicID, recordID, turnID string, summary runnercontext.Coo
 }
 
 type memoryStore struct {
+	mu    sync.Mutex
 	state state.RunnerState
 }
 
@@ -1286,7 +1585,13 @@ func newMemoryStore() *memoryStore {
 }
 
 func (s *memoryStore) Load(context.Context) (state.RunnerState, error) {
-	data, err := json.Marshal(s.state)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneRunnerState(s.state)
+}
+
+func cloneRunnerState(in state.RunnerState) (state.RunnerState, error) {
+	data, err := json.Marshal(in)
 	if err != nil {
 		return state.RunnerState{}, err
 	}
@@ -1302,7 +1607,9 @@ func (s *memoryStore) Update(_ context.Context, mutate func(*state.RunnerState) 
 	if mutate == nil {
 		return errors.New("mutate is required")
 	}
-	next, err := s.Load(context.Background())
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next, err := cloneRunnerState(s.state)
 	if err != nil {
 		return err
 	}
@@ -1321,7 +1628,9 @@ func (fakeRepoResolver) ResolveRepository(context.Context, string) (RepositoryIn
 }
 
 type fakeWorkspaces struct {
+	mu                  sync.Mutex
 	binding             workspace.Binding
+	bindings            map[string]workspace.Binding
 	err                 error
 	lockedJobIDs        map[string]bool
 	prepareNewCalled    bool
@@ -1329,15 +1638,22 @@ type fakeWorkspaces struct {
 	released            bool
 }
 
-func (f *fakeWorkspaces) PrepareNew(context.Context, workspace.NewRequest) (workspace.Binding, error) {
+func (f *fakeWorkspaces) PrepareNew(_ context.Context, req workspace.NewRequest) (workspace.Binding, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.prepareNewCalled = true
 	if f.err != nil {
 		return workspace.Binding{}, f.err
+	}
+	if binding, ok := f.bindings[req.JobID]; ok {
+		return binding, nil
 	}
 	return f.binding, nil
 }
 
 func (f *fakeWorkspaces) ResolveResume(context.Context, workspace.ResumeRequest) (workspace.Binding, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.resolveResumeCalled = true
 	if f.err != nil {
 		return workspace.Binding{}, f.err
@@ -1346,6 +1662,8 @@ func (f *fakeWorkspaces) ResolveResume(context.Context, workspace.ResumeRequest)
 }
 
 func (f *fakeWorkspaces) AcquireLock(_ context.Context, req workspace.LockRequest) (state.SessionLock, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.lockedJobIDs[req.JobID] {
 		return state.SessionLock{}, workspace.ErrLocked
 	}
@@ -1353,17 +1671,22 @@ func (f *fakeWorkspaces) AcquireLock(_ context.Context, req workspace.LockReques
 }
 
 func (f *fakeWorkspaces) ReleaseLock(state.SessionLock) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.released = true
 	return nil
 }
 
 type fakeSandbox struct {
+	mu       sync.Mutex
 	requests []SandboxRequest
 	env      ExecutionEnvironment
 	err      error
 }
 
 func (f *fakeSandbox) Prepare(_ context.Context, req SandboxRequest) (ExecutionEnvironment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.requests = append(f.requests, req)
 	if f.err != nil {
 		return ExecutionEnvironment{}, f.err
@@ -1391,30 +1714,52 @@ func (f fakeAcpxFactory) NewCoordinator(ExecutionEnvironment) (Coordinator, erro
 }
 
 type fakeCoordinator struct {
+	mu            sync.Mutex
 	newResult     acpx.DispatchResult
 	resumeResult  acpx.DispatchResult
 	newErr        error
 	resumeErr     error
 	newPrompts    []string
 	resumePrompts []string
+	onNew         func(context.Context, acpx.NewSessionRequest) (acpx.DispatchResult, error)
+	onResume      func(context.Context, acpx.ResumeRequest) (acpx.DispatchResult, error)
 }
 
-func (f *fakeCoordinator) NewSession(_ context.Context, req acpx.NewSessionRequest) (acpx.DispatchResult, error) {
+func (f *fakeCoordinator) NewSession(ctx context.Context, req acpx.NewSessionRequest) (acpx.DispatchResult, error) {
+	f.mu.Lock()
 	f.newPrompts = append(f.newPrompts, req.Prompt)
-	return f.newResult, f.newErr
+	onNew := f.onNew
+	result := f.newResult
+	err := f.newErr
+	f.mu.Unlock()
+	if onNew != nil {
+		return onNew(ctx, req)
+	}
+	return result, err
 }
 
-func (f *fakeCoordinator) Resume(_ context.Context, req acpx.ResumeRequest) (acpx.DispatchResult, error) {
+func (f *fakeCoordinator) Resume(ctx context.Context, req acpx.ResumeRequest) (acpx.DispatchResult, error) {
+	f.mu.Lock()
 	f.resumePrompts = append(f.resumePrompts, req.Prompt)
-	return f.resumeResult, f.resumeErr
+	onResume := f.onResume
+	result := f.resumeResult
+	err := f.resumeErr
+	f.mu.Unlock()
+	if onResume != nil {
+		return onResume(ctx, req)
+	}
+	return result, err
 }
 
 type fakeWriteback struct {
+	mu       sync.Mutex
 	store    *memoryStore
 	requests []writeback.Request
 }
 
 func (f *fakeWriteback) Write(_ context.Context, req writeback.Request) (writeback.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.requests = append(f.requests, req)
 	id := req.Job.StatusCommentID
 	if id == 0 {

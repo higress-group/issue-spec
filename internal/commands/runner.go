@@ -485,6 +485,9 @@ func (a *app) runRunnerDispatch(ctx context.Context, cfg commentrunner.Config) (
 		Writeback:       &writeback.Service{GitHub: runnerBackend, Store: store},
 		IssueSpecBinary: issueSpecBinaryForRunner(),
 	}
+	if cfg.MaxConcurrentJobs > 1 {
+		return dispatcher.RunReady(ctx, cfg.MaxConcurrentJobs)
+	}
 	return dispatcher.RunNext(ctx)
 }
 
@@ -518,12 +521,16 @@ func actualRunnerPollActions(cfg commentrunner.Config, once bool) []string {
 	if once {
 		cycle = "poll configured repositories once"
 	}
+	dispatchAction := "process one cancellation or dispatch one ready job"
+	if cfg.MaxConcurrentJobs > 1 {
+		dispatchAction = fmt.Sprintf("process one cancellation or dispatch up to %d ready jobs", cfg.MaxConcurrentJobs)
+	}
 	return []string{
 		"load trusted runner config",
 		"run preflight checks",
 		"reconcile in-flight jobs before polling",
 		cycle + ": " + strings.Join(cfg.Repositories, ", "),
-		"process one cancellation or dispatch one ready job",
+		dispatchAction,
 	}
 }
 
@@ -556,7 +563,11 @@ func (a *app) printRunnerPoll(result runnerDryRunResult) {
 		fmt.Fprintf(a.out, "intake: commands=%d jobs=%d cancellations=%d next_poll=%s\n", len(result.Intake.Commands), len(result.Intake.Jobs), len(result.Intake.Cancellations), result.Intake.Next.PollAt.Format(time.RFC3339))
 	}
 	if result.Dispatch != nil {
-		fmt.Fprintf(a.out, "dispatch: executed=%v job=%s status=%s reason=%s\n", result.Dispatch.Executed, result.Dispatch.JobID, result.Dispatch.Status, result.Dispatch.Reason)
+		if result.Dispatch.ExecutedCount > 1 {
+			fmt.Fprintf(a.out, "dispatch: executed=%v jobs=%d first_job=%s status=%s reason=%s\n", result.Dispatch.Executed, result.Dispatch.ExecutedCount, result.Dispatch.JobID, result.Dispatch.Status, result.Dispatch.Reason)
+		} else {
+			fmt.Fprintf(a.out, "dispatch: executed=%v job=%s status=%s reason=%s\n", result.Dispatch.Executed, result.Dispatch.JobID, result.Dispatch.Status, result.Dispatch.Reason)
+		}
 	}
 	if result.Error != "" {
 		fmt.Fprintf(a.out, "runner error: %s\n", result.Error)
