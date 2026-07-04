@@ -393,10 +393,20 @@ func typeRank(commentType string) int {
 }
 
 func typedCommentMetadata(tc model.TypedComment) string {
-	lines := []string{
-		"Type: " + tc.Type,
-		"ID: " + tc.ID,
+	var lines []string
+	if tc.Agent != "" {
+		lines = append(lines, "Agent: "+tc.Agent)
 	}
+	if tc.AgentSessionID != "" {
+		lines = append(lines, "Agent Session ID: "+tc.AgentSessionID)
+	}
+	if tc.AgentSessionSource != "" {
+		lines = append(lines, "Agent Session Source: "+tc.AgentSessionSource)
+	}
+	lines = append(lines,
+		"Type: "+tc.Type,
+		"ID: "+tc.ID,
+	)
 	if tc.Status != "" {
 		lines = append(lines, "Status: "+tc.Status)
 	}

@@ -34,6 +34,7 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	id := fs.String("id", "", "typed comment id")
 	bodyFile := fs.String("body-file", "", "markdown body file, or - for stdin")
 	agent := fs.String("agent", "Coordinator", "logical agent identity")
+	agentSession := addAgentSessionFlag(fs)
 	status := fs.String("status", "draft", "typed comment status")
 	scope := fs.String("scope", "N/A", "typed comment scope")
 	jsonOut := fs.Bool("json", false, "write JSON output")
@@ -53,7 +54,8 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	if !ok {
 		return 2
 	}
-	body, err := model.EnsureTypedBody(*commentType, *id, rawBody, model.BodyOptions{Agent: *agent, Status: *status, Scope: *scope})
+	session := resolveWriterSession(*agentSession)
+	body, err := model.EnsureTypedBody(*commentType, *id, rawBody, model.BodyOptions{Agent: *agent, AgentSessionID: session.ID, AgentSessionSource: session.Source, Status: *status, Scope: *scope})
 	if err != nil {
 		a.errorf("prepare typed comment body: %v\n", err)
 		return 2

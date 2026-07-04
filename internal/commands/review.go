@@ -44,6 +44,7 @@ func (a *app) runReviewFinding(ctx context.Context, args []string) int {
 	bodyFile := fs.String("body-file", "", "finding body file, or - for stdin")
 	bodyText := fs.String("body", "", "finding body text")
 	agent := fs.String("agent", "Review Agent", "logical agent identity")
+	agentSession := addAgentSessionFlag(fs)
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -77,7 +78,8 @@ func (a *app) runReviewFinding(ctx context.Context, args []string) int {
 		a.errorf("auth required for review finding on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
 	}
-	result, err := createReviewFinding(ctx, client, repo, *prFlag, *pathFlag, *lineFlag, *id, *severity, *processID, *specID, *specURL, *agent, body)
+	session := resolveWriterSession(*agentSession)
+	result, err := createReviewFinding(ctx, client, repo, *prFlag, *pathFlag, *lineFlag, *id, *severity, *processID, *specID, *specURL, *agent, session, body)
 	if err != nil {
 		a.errorf("create review finding: %v\n", err)
 		return 1
@@ -105,6 +107,7 @@ func (a *app) runReviewReply(ctx context.Context, args []string) int {
 	bodyFile := fs.String("body-file", "", "reply body file, or - for stdin")
 	bodyText := fs.String("body", "", "reply body text")
 	agent := fs.String("agent", "Worker Agent", "logical agent identity")
+	agentSession := addAgentSessionFlag(fs)
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -134,7 +137,8 @@ func (a *app) runReviewReply(ctx context.Context, args []string) int {
 		a.errorf("auth required for review reply on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
 	}
-	result, err := replyReviewFinding(ctx, client, repo, *prFlag, *commentID, *findingID, *processID, *status, *agent, body)
+	session := resolveWriterSession(*agentSession)
+	result, err := replyReviewFinding(ctx, client, repo, *prFlag, *commentID, *findingID, *processID, *status, *agent, session, body)
 	if err != nil {
 		a.errorf("reply to review finding: %v\n", err)
 		return 1
@@ -158,6 +162,7 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 	implementFlag := fs.String("implement", "", "implement issue number or URL")
 	id := fs.String("id", "", "REVIEW id to upsert")
 	agent := fs.String("agent", "Coordinator", "logical agent identity")
+	agentSession := addAgentSessionFlag(fs)
 	scope := fs.String("scope", "pr-review", "review scope")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
@@ -211,7 +216,8 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 		return 1
 	}
 	report := buildReviewSyncReport(pr, reviewComments, issueComments, status, checkRuns)
-	body, err := renderReviewSyncComment(*id, *agent, *scope, pr.HTMLURL, report)
+	session := resolveWriterSession(*agentSession)
+	body, err := renderReviewSyncComment(*id, *agent, session, *scope, pr.HTMLURL, report)
 	if err != nil {
 		a.errorf("render review sync comment: %v\n", err)
 		return 1
@@ -269,7 +275,7 @@ func createReviewFinding(ctx context.Context, client interface {
 	ListPullRequestFiles(context.Context, string, int) ([]github.PullRequestFile, error)
 	ListPullRequestReviewComments(context.Context, string, int) ([]github.PullRequestReviewComment, error)
 	CreatePullRequestReviewComment(context.Context, string, int, string, string, string, int, string) (github.PullRequestReviewComment, error)
-}, repo string, prNumber int, path string, line int, findingID, severity, processID, specID, specURL, agent, findingBody string) (reviewFindingResult, error) {
+}, repo string, prNumber int, path string, line int, findingID, severity, processID, specID, specURL, agent string, session writerSession, findingBody string) (reviewFindingResult, error) {
 	path = strings.TrimSpace(path)
 	findingID = strings.TrimSpace(findingID)
 	processID = strings.TrimSpace(processID)
@@ -310,7 +316,7 @@ func createReviewFinding(ctx context.Context, client interface {
 	if err != nil {
 		return reviewFindingResult{}, err
 	}
-	body, err := model.RenderFindingBody(agent, findingID, severity, processID, specID, specURL, findingBody, "open", path, line)
+	body, err := model.RenderFindingBodyWithSession(agent, session.ID, session.Source, findingID, severity, processID, specID, specURL, findingBody, "open", path, line)
 	if err != nil {
 		return reviewFindingResult{}, err
 	}
@@ -336,7 +342,7 @@ func createReviewFinding(ctx context.Context, client interface {
 func replyReviewFinding(ctx context.Context, client interface {
 	ListPullRequestReviewComments(context.Context, string, int) ([]github.PullRequestReviewComment, error)
 	ReplyPullRequestReviewComment(context.Context, string, int, int64, string) (github.PullRequestReviewComment, error)
-}, repo string, prNumber int, parentCommentID int64, findingID, processID, status, agent, replyBody string) (reviewReplyResult, error) {
+}, repo string, prNumber int, parentCommentID int64, findingID, processID, status, agent string, session writerSession, replyBody string) (reviewReplyResult, error) {
 	findingID = strings.TrimSpace(findingID)
 	processID = strings.TrimSpace(processID)
 	status = model.NormalizeFindingStatus(status)
@@ -374,7 +380,7 @@ func replyReviewFinding(ctx context.Context, client interface {
 	if !foundParent {
 		return reviewReplyResult{}, fmt.Errorf("parent PR review comment %d not found on PR #%d", parentCommentID, prNumber)
 	}
-	body, err := model.RenderFindingReplyBody(agent, findingID, processID, status, replyBody)
+	body, err := model.RenderFindingReplyBodyWithSession(agent, session.ID, session.Source, findingID, processID, status, replyBody)
 	if err != nil {
 		return reviewReplyResult{}, err
 	}
@@ -396,30 +402,33 @@ func replyReviewFinding(ctx context.Context, client interface {
 }
 
 type reviewSyncReport struct {
-	OK                 bool            `json:"ok"`
-	PR                 int             `json:"pr"`
-	PRURL              string          `json:"pr_url"`
-	RationaleComments  int             `json:"rationale_comments"`
-	ActionableFindings []reviewFinding `json:"actionable_findings"`
-	BlockingFindings   []reviewFinding `json:"blocking_findings"`
-	ResolvedFindings   []reviewFinding `json:"resolved_findings"`
-	IssueComments      int             `json:"issue_comments"`
-	FailedChecks       []reviewCheck   `json:"failed_checks"`
-	PendingChecks      []reviewCheck   `json:"pending_checks"`
-	PassedChecks       []reviewCheck   `json:"passed_checks"`
+	OK                 bool                 `json:"ok"`
+	PR                 int                  `json:"pr"`
+	PRURL              string               `json:"pr_url"`
+	RationaleComments  int                  `json:"rationale_comments"`
+	ActionableFindings []reviewFinding      `json:"actionable_findings"`
+	BlockingFindings   []reviewFinding      `json:"blocking_findings"`
+	ResolvedFindings   []reviewFinding      `json:"resolved_findings"`
+	IssueComments      int                  `json:"issue_comments"`
+	Diagnostics        []metadataDiagnostic `json:"diagnostics,omitempty"`
+	FailedChecks       []reviewCheck        `json:"failed_checks"`
+	PendingChecks      []reviewCheck        `json:"pending_checks"`
+	PassedChecks       []reviewCheck        `json:"passed_checks"`
 }
 
 type reviewFinding struct {
-	ID        string `json:"id,omitempty"`
-	CommentID int64  `json:"comment_id"`
-	URL       string `json:"url"`
-	Path      string `json:"path"`
-	Line      int    `json:"line"`
-	Severity  string `json:"severity"`
-	Status    string `json:"status"`
-	Process   string `json:"process,omitempty"`
-	Spec      string `json:"spec,omitempty"`
-	Summary   string `json:"summary"`
+	ID                 string `json:"id,omitempty"`
+	CommentID          int64  `json:"comment_id"`
+	URL                string `json:"url"`
+	Path               string `json:"path"`
+	Line               int    `json:"line"`
+	Severity           string `json:"severity"`
+	Status             string `json:"status"`
+	Process            string `json:"process,omitempty"`
+	Spec               string `json:"spec,omitempty"`
+	AgentSessionID     string `json:"agent_session_id,omitempty"`
+	AgentSessionSource string `json:"agent_session_source,omitempty"`
+	Summary            string `json:"summary"`
 }
 
 type reviewCheck struct {
@@ -442,11 +451,13 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 		}
 	}
 	for _, comment := range reviewComments {
-		if _, ok, err := model.FindRationaleMarker(comment.Body); err == nil && ok {
+		if rationale, ok, err := model.FindRationaleMarker(comment.Body); err == nil && ok {
 			report.RationaleComments++
+			report.Diagnostics = append(report.Diagnostics, artifactSessionDiagnostics("RATIONALE/"+rationale.Process, comment.HTMLURL, rationale.AgentSessionID, rationale.AgentSessionSource)...)
 			continue
 		}
-		if _, ok, err := model.FindFindingReplyMarker(comment.Body); err == nil && ok {
+		if reply, ok, err := model.FindFindingReplyMarker(comment.Body); err == nil && ok {
+			report.Diagnostics = append(report.Diagnostics, artifactSessionDiagnostics("FINDING_REPLY/"+reply.Finding, comment.HTMLURL, reply.AgentSessionID, reply.AgentSessionSource)...)
 			continue
 		}
 		if comment.InReplyToID != 0 {
@@ -455,17 +466,20 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 		finding, ok, err := model.FindFindingMarker(comment.Body)
 		if err == nil && ok {
 			item := reviewFinding{
-				ID:        finding.ID,
-				CommentID: comment.ID,
-				URL:       comment.HTMLURL,
-				Path:      firstNonEmpty(finding.Path, comment.Path),
-				Line:      firstPositive(finding.Line, comment.Line),
-				Severity:  finding.Severity,
-				Status:    finding.Status,
-				Process:   finding.Process,
-				Spec:      finding.Spec,
-				Summary:   firstFindingSummary(comment.Body),
+				ID:                 finding.ID,
+				CommentID:          comment.ID,
+				URL:                comment.HTMLURL,
+				Path:               firstNonEmpty(finding.Path, comment.Path),
+				Line:               firstPositive(finding.Line, comment.Line),
+				Severity:           finding.Severity,
+				Status:             finding.Status,
+				Process:            finding.Process,
+				Spec:               finding.Spec,
+				AgentSessionID:     finding.AgentSessionID,
+				AgentSessionSource: finding.AgentSessionSource,
+				Summary:            firstFindingSummary(comment.Body),
 			}
+			report.Diagnostics = append(report.Diagnostics, artifactSessionDiagnostics("FINDING/"+finding.ID, comment.HTMLURL, finding.AgentSessionID, finding.AgentSessionSource)...)
 			if model.IsTerminalFindingStatus(item.Status) || resolvedByParent[comment.ID] {
 				item.Status = "resolved"
 				report.ResolvedFindings = append(report.ResolvedFindings, item)
@@ -522,7 +536,7 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 	return report
 }
 
-func renderReviewSyncComment(id, agent, scope, prURL string, report reviewSyncReport) (string, error) {
+func renderReviewSyncComment(id, agent string, session writerSession, scope, prURL string, report reviewSyncReport) (string, error) {
 	status := "done"
 	if !report.OK {
 		status = "blocked"
@@ -530,10 +544,12 @@ func renderReviewSyncComment(id, agent, scope, prURL string, report reviewSyncRe
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n", model.RenderMarker("REVIEW", id, 1))
 	b.WriteString(model.RenderHeader("REVIEW", id, model.BodyOptions{
-		Agent:  agent,
-		Status: status,
-		Scope:  scope,
-		Links:  map[string][]string{"Implement Issue": {"N/A"}, "PR": {prURL}},
+		Agent:              agent,
+		AgentSessionID:     session.ID,
+		AgentSessionSource: session.Source,
+		Status:             status,
+		Scope:              scope,
+		Links:              map[string][]string{"Implement Issue": {"N/A"}, "PR": {prURL}},
 	}))
 	b.WriteString("\n\n## Review Sync Summary\n\n")
 	fmt.Fprintf(&b, "- PR: %s\n", prURL)
@@ -638,7 +654,7 @@ func firstFindingSummary(body string) string {
 }
 
 func isFindingMetadataLine(line string) bool {
-	for _, prefix := range []string{"Agent:", "Type:", "ID:", "Finding:", "Severity:", "Status:", "Process:", "Spec:", "Spec Comment:"} {
+	for _, prefix := range []string{"Agent:", "Agent Session ID:", "Agent Session Source:", "Type:", "ID:", "Finding:", "Severity:", "Status:", "Process:", "Spec:", "Spec Comment:"} {
 		if strings.HasPrefix(line, prefix) {
 			return true
 		}

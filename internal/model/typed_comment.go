@@ -30,23 +30,27 @@ var AllowedStatuses = map[string]bool{
 }
 
 type TypedComment struct {
-	Marker  Marker              `json:"marker"`
-	Agent   string              `json:"agent"`
-	Type    string              `json:"type"`
-	ID      string              `json:"id"`
-	Status  string              `json:"status"`
-	Scope   string              `json:"scope"`
-	Links   map[string][]string `json:"links"`
-	Body    string              `json:"-"`
-	Errors  []string            `json:"errors,omitempty"`
-	HasHead bool                `json:"has_header"`
+	Marker             Marker              `json:"marker"`
+	Agent              string              `json:"agent"`
+	AgentSessionID     string              `json:"agent_session_id,omitempty"`
+	AgentSessionSource string              `json:"agent_session_source,omitempty"`
+	Type               string              `json:"type"`
+	ID                 string              `json:"id"`
+	Status             string              `json:"status"`
+	Scope              string              `json:"scope"`
+	Links              map[string][]string `json:"links"`
+	Body               string              `json:"-"`
+	Errors             []string            `json:"errors,omitempty"`
+	HasHead            bool                `json:"has_header"`
 }
 
 type BodyOptions struct {
-	Agent  string
-	Status string
-	Scope  string
-	Links  map[string][]string
+	Agent              string
+	AgentSessionID     string
+	AgentSessionSource string
+	Status             string
+	Scope              string
+	Links              map[string][]string
 }
 
 func ParseTypedComment(body string) TypedComment {
@@ -93,6 +97,12 @@ func ParseTypedComment(body string) TypedComment {
 		switch key {
 		case "Agent":
 			tc.Agent = value
+			tc.HasHead = true
+		case "Agent Session ID":
+			tc.AgentSessionID = value
+			tc.HasHead = true
+		case "Agent Session Source":
+			tc.AgentSessionSource = value
 			tc.HasHead = true
 		case "Type":
 			if tc.Type != "" && tc.Type != strings.ToUpper(value) {
@@ -188,7 +198,10 @@ func EnsureTypedBody(commentType, id, body string, opts BodyOptions) (string, er
 			return "", errors.New(strings.Join(tc.Errors, "; "))
 		}
 		if !HasTypedMarker(body) {
-			return RenderMarker(commentType, id, 1) + "\n" + strings.TrimLeft(body, "\n"), nil
+			body = RenderMarker(commentType, id, 1) + "\n" + strings.TrimLeft(body, "\n")
+		}
+		if opts.AgentSessionID != "" || opts.AgentSessionSource != "" {
+			return StampTypedSessionMetadata(body, opts.AgentSessionID, opts.AgentSessionSource)
 		}
 		return body, nil
 	}
@@ -205,6 +218,12 @@ func RenderHeader(commentType, id string, opts BodyOptions) string {
 	keys := []string{"Proposal Issue", "Design Issue", "Implement Issue", "Related Comments", "PR"}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Agent: %s\n", valueOr(opts.Agent, "Coordinator"))
+	if strings.TrimSpace(opts.AgentSessionID) != "" {
+		fmt.Fprintf(&b, "Agent Session ID: %s\n", strings.TrimSpace(opts.AgentSessionID))
+	}
+	if strings.TrimSpace(opts.AgentSessionSource) != "" {
+		fmt.Fprintf(&b, "Agent Session Source: %s\n", strings.TrimSpace(opts.AgentSessionSource))
+	}
 	fmt.Fprintf(&b, "Type: %s\n", strings.ToUpper(commentType))
 	fmt.Fprintf(&b, "ID: %s\n", id)
 	fmt.Fprintf(&b, "Status: %s\n", valueOr(opts.Status, "draft"))
@@ -218,6 +237,70 @@ func RenderHeader(commentType, id string, opts BodyOptions) string {
 		fmt.Fprintf(&b, "- %s: %s\n", key, strings.Join(values, ", "))
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func StampTypedSessionMetadata(body, sessionID, sessionSource string) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	sessionSource = strings.TrimSpace(sessionSource)
+	if sessionID == "" && sessionSource == "" {
+		return body, nil
+	}
+	tc := ParseTypedComment(body)
+	if !tc.HasHead {
+		return "", errors.New("typed comment is missing visible header")
+	}
+	if len(tc.Errors) > 0 {
+		return "", errors.New(strings.Join(tc.Errors, "; "))
+	}
+	lines := strings.Split(body, "\n")
+	agentIndex := -1
+	sessionIDIndex := -1
+	sessionSourceIndex := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "Agent:"):
+			agentIndex = i
+		case strings.HasPrefix(trimmed, "Agent Session ID:"):
+			sessionIDIndex = i
+		case strings.HasPrefix(trimmed, "Agent Session Source:"):
+			sessionSourceIndex = i
+		case strings.HasPrefix(trimmed, "Type:"):
+			if agentIndex == -1 {
+				return "", errors.New("typed comment is missing Agent")
+			}
+			if sessionSource != "" {
+				lines = upsertHeaderLine(lines, &sessionSourceIndex, sessionIDIndex, agentIndex+1, "Agent Session Source: "+sessionSource)
+			}
+			if sessionID != "" {
+				lines = upsertHeaderLine(lines, &sessionIDIndex, agentIndex, agentIndex+1, "Agent Session ID: "+sessionID)
+			}
+			return strings.Join(lines, "\n"), nil
+		}
+	}
+	return "", errors.New("typed comment is missing Type header")
+}
+
+func upsertHeaderLine(lines []string, index *int, afterIndex, fallbackIndex int, line string) []string {
+	if *index >= 0 {
+		lines[*index] = line
+		return lines
+	}
+	insertAt := fallbackIndex
+	if afterIndex >= 0 {
+		insertAt = afterIndex + 1
+	}
+	if insertAt < 0 {
+		insertAt = 0
+	}
+	if insertAt > len(lines) {
+		insertAt = len(lines)
+	}
+	lines = append(lines, "")
+	copy(lines[insertAt+1:], lines[insertAt:])
+	lines[insertAt] = line
+	*index = insertAt
+	return lines
 }
 
 func IsLikelyTyped(body string) bool {
@@ -284,6 +367,33 @@ func defaultLinks(in map[string][]string) map[string][]string {
 			continue
 		}
 		out[key] = values
+	}
+	return out
+}
+
+func visibleMetadata(body string) map[string]string {
+	out := map[string]string{}
+	started := false
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "<!--") {
+			continue
+		}
+		if trimmed == "" {
+			if started {
+				break
+			}
+			continue
+		}
+		key, value, ok := strings.Cut(trimmed, ":")
+		if !ok {
+			if started {
+				break
+			}
+			continue
+		}
+		started = true
+		out[strings.TrimSpace(key)] = strings.TrimSpace(value)
 	}
 	return out
 }

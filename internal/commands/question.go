@@ -38,6 +38,7 @@ func (a *app) runQuestionCreate(ctx context.Context, args []string) int {
 	assumption := fs.String("assumption", "", "default assumption while blocked")
 	statusFlag := fs.String("status", "", "override status")
 	agent := fs.String("agent", "Coordinator", "logical agent identity")
+	agentSession := addAgentSessionFlag(fs)
 	scope := fs.String("scope", "N/A", "question scope")
 	related := fs.String("related", "", "comma-separated related comment URLs")
 	jsonOut := fs.Bool("json", false, "write JSON output")
@@ -88,15 +89,18 @@ func (a *app) runQuestionCreate(ctx context.Context, args []string) int {
 	if values := parseCSVLinks(*related); len(values) > 0 {
 		links["Related Comments"] = values
 	}
+	session := resolveWriterSession(*agentSession)
 	body, err := templates.QuestionComment(templates.QuestionOptions{
-		ID:         *id,
-		Agent:      *agent,
-		Status:     status,
-		Scope:      *scope,
-		Blocking:   *blocking,
-		Question:   questionText,
-		Assumption: *assumption,
-		Links:      links,
+		ID:                 *id,
+		Agent:              *agent,
+		AgentSessionID:     session.ID,
+		AgentSessionSource: session.Source,
+		Status:             status,
+		Scope:              *scope,
+		Blocking:           *blocking,
+		Question:           questionText,
+		Assumption:         *assumption,
+		Links:              links,
 	})
 	if err != nil {
 		a.errorf("render question body: %v\n", err)
