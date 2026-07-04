@@ -150,8 +150,8 @@ issue-spec runner poll \
 
 Useful runner options:
 
-- `--state <path>` stores durable runner state. The default is `~/.issue-spec/runner-state.json`.
-- `--workspace-root <path>` stores managed repository clones. The default is `~/.issue-spec/workspaces`.
+- `--state <path>` stores durable runner state. By default, single-repository runners use `~/.issue-spec/runners/<host>/<owner>/<repo>/<runner>/state.json`; multi-repository runners use a stable shared scope under `~/.issue-spec/runners/<host>/multi/.../<runner>/state.json`.
+- `--workspace-root <path>` stores managed repository clones. By default, it uses the same runner scope with a `workspaces` directory beside `state.json`. Explicit paths are used as provided.
 - `--poll-interval` and `--fallback-interval` control notification polling and lower-frequency repository comment fallback.
 - `--max-concurrency <n>` can run independent sessions in parallel. Commands for the same public session are serialized by a workspace/session lock.
 - `--agent codex|claude` selects the coordinator agent through acpx. `--model <name>` passes the configured model/profile to acpx.

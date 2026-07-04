@@ -108,6 +108,9 @@ func TestRunnerPollDryRunJSONUsesTrustedConfigAndPreflight(t *testing.T) {
 	if captured.GitHubBackend != auth.GitHubBackendModeGH || !captured.UnsafeNoSandbox || len(captured.Repositories) != 2 {
 		t.Fatalf("runner config not passed to preflight: %+v", captured)
 	}
+	if captured.StatePath != "/tmp/state.json" || captured.WorkspaceRoot != "/tmp/workspaces" {
+		t.Fatalf("explicit runner paths were rewritten: %+v", captured)
+	}
 	var got runnerDryRunResult
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatal(err)
@@ -167,13 +170,82 @@ func TestRunnerPollUsesDefaultStateAndWorkspaceRoot(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
-	root := filepath.Join(home, ".issue-spec")
-	if captured.StatePath != filepath.Join(root, "runner-state.json") {
+	root := filepath.Join(home, ".issue-spec", "runners", "github.com", "o", "r", "issue-spec-bot")
+	if captured.StatePath != filepath.Join(root, "state.json") {
 		t.Fatalf("StatePath = %q", captured.StatePath)
 	}
 	if captured.WorkspaceRoot != filepath.Join(root, "workspaces") {
 		t.Fatalf("WorkspaceRoot = %q", captured.WorkspaceRoot)
 	}
+}
+
+func TestRunnerPollDefaultPathsIsolateReposAndRunners(t *testing.T) {
+	clearCommandAuthEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
+
+	cfgA := captureRunnerPollConfig(t, "--repo", "o/one", "--runner", "bot")
+	cfgB := captureRunnerPollConfig(t, "--repo", "o/two", "--runner", "bot")
+	cfgC := captureRunnerPollConfig(t, "--repo", "o/one", "--runner", "other-bot")
+
+	if cfgA.StatePath == cfgB.StatePath || cfgA.WorkspaceRoot == cfgB.WorkspaceRoot {
+		t.Fatalf("different repos share paths: cfgA=%+v cfgB=%+v", cfgA, cfgB)
+	}
+	if cfgA.StatePath == cfgC.StatePath || cfgA.WorkspaceRoot == cfgC.WorkspaceRoot {
+		t.Fatalf("different runners share paths: cfgA=%+v cfgC=%+v", cfgA, cfgC)
+	}
+}
+
+func TestRunnerPollMultipleReposUsesStableSharedDefaultScope(t *testing.T) {
+	clearCommandAuthEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
+
+	cfgA := captureRunnerPollConfig(t, "--repo", "b/two", "--repo", "a/one", "--runner", "bot")
+	cfgB := captureRunnerPollConfig(t, "--repo", "a/one", "--repo", "b/two", "--runner", "bot")
+
+	if cfgA.StatePath != cfgB.StatePath || cfgA.WorkspaceRoot != cfgB.WorkspaceRoot {
+		t.Fatalf("multi repo scope is not stable: cfgA=%+v cfgB=%+v", cfgA, cfgB)
+	}
+	multiRoot := filepath.Join(home, ".issue-spec", "runners", "github.com", "multi")
+	if !strings.HasPrefix(cfgA.StatePath, multiRoot+string(filepath.Separator)) {
+		t.Fatalf("StatePath = %q, want under %q", cfgA.StatePath, multiRoot)
+	}
+	if !strings.HasPrefix(cfgA.WorkspaceRoot, multiRoot+string(filepath.Separator)) {
+		t.Fatalf("WorkspaceRoot = %q, want under %q", cfgA.WorkspaceRoot, multiRoot)
+	}
+}
+
+func captureRunnerPollConfig(t *testing.T, args ...string) commentrunner.Config {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	var captured commentrunner.Config
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		captured = cfg
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	app.runnerIntake = func(_ context.Context, _ commentrunner.Config, opts intake.Options) (intake.Result, error) {
+		if !opts.DryRun {
+			t.Fatal("config capture must run intake in dry-run mode")
+		}
+		return intake.Result{OK: true, DryRun: true}, nil
+	}
+	app.runnerDispatch = func(context.Context, commentrunner.Config) (jobs.Result, error) {
+		t.Fatal("dry-run must not dispatch jobs")
+		return jobs.Result{}, nil
+	}
+
+	runArgs := append([]string{"poll", "--dry-run", "--json"}, args...)
+	code := app.runRunner(context.Background(), runArgs)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	return captured
 }
 
 func TestRunnerPollDryRunIntakeErrorReturnsFailure(t *testing.T) {

@@ -2,10 +2,13 @@ package commentrunner
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -108,6 +111,36 @@ func DefaultAgentConfig() AgentConfig {
 	}
 }
 
+func ApplyDefaultRunnerScopePaths(cfg Config, statePathExplicit, workspaceRootExplicit bool) (Config, error) {
+	cfg = cfg.Normalized()
+	if statePathExplicit && workspaceRootExplicit {
+		return cfg, nil
+	}
+	statePath, workspaceRoot, err := DefaultRunnerScopePaths(cfg)
+	if err != nil {
+		return Config{}, err
+	}
+	if !statePathExplicit {
+		cfg.StatePath = statePath
+	}
+	if !workspaceRootExplicit {
+		cfg.WorkspaceRoot = workspaceRoot
+	}
+	return cfg, nil
+}
+
+func DefaultRunnerScopePaths(cfg Config) (string, string, error) {
+	cfg = cfg.Normalized()
+	segments, err := runnerScopeSegments(cfg)
+	if err != nil {
+		return "", "", err
+	}
+	stateBase, workspaceBase := defaultRunnerScopeBaseDirs()
+	stateRoot := filepath.Join(append([]string{stateBase, "runners"}, segments...)...)
+	workspaceRoot := filepath.Join(append([]string{workspaceBase, "runners"}, segments...)...)
+	return filepath.Join(stateRoot, "state.json"), filepath.Join(workspaceRoot, "workspaces"), nil
+}
+
 func (c Config) Normalized() Config {
 	c.Hostname = auth.NormalizeHost(c.Hostname)
 	if c.Hostname == "" {
@@ -177,6 +210,97 @@ func (c Config) Validate() error {
 	return nil
 }
 
+func runnerScopeSegments(cfg Config) ([]string, error) {
+	host := safePathSegment(strings.ToLower(auth.NormalizeHost(cfg.Hostname)))
+	runner := safePathSegment(strings.ToLower(strings.TrimSpace(cfg.RunnerIdentity)))
+	if strings.TrimSpace(cfg.RunnerIdentity) == "" {
+		return nil, fmt.Errorf("--runner is required")
+	}
+	repos := normalizeStringList(cfg.Repositories)
+	if len(repos) == 0 {
+		return nil, fmt.Errorf("at least one --repo is required")
+	}
+	canonicalRepos, err := canonicalReposForScope(repos)
+	if err != nil {
+		return nil, err
+	}
+	if len(canonicalRepos) == 1 {
+		parts := strings.Split(canonicalRepos[0], "/")
+		return []string{host, safePathSegment(parts[0]), safePathSegment(parts[1]), runner}, nil
+	}
+	return []string{host, "multi", multiRepoScopeSegment(canonicalRepos), runner}, nil
+}
+
+func canonicalReposForScope(repos []string) ([]string, error) {
+	out := make([]string, 0, len(repos))
+	seen := map[string]bool{}
+	for _, repo := range repos {
+		repo = strings.TrimSpace(repo)
+		if _, err := github.ParseRepo(repo); err != nil {
+			return nil, err
+		}
+		parts := strings.Split(repo, "/")
+		canonical := strings.ToLower(strings.TrimSpace(parts[0])) + "/" + strings.ToLower(strings.TrimSpace(parts[1]))
+		if canonical == "/" || seen[canonical] {
+			continue
+		}
+		out = append(out, canonical)
+		seen[canonical] = true
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func multiRepoScopeSegment(canonicalRepos []string) string {
+	var labels []string
+	for _, repo := range canonicalRepos {
+		parts := strings.Split(repo, "/")
+		labels = append(labels, safePathSegment(parts[0]+"-"+parts[1]))
+	}
+	label := strings.Join(labels, "+")
+	if label == "" {
+		label = "repos"
+	}
+	const maxLabelLength = 48
+	if len(label) > maxLabelLength {
+		label = strings.TrimRight(label[:maxLabelLength], "-_.+")
+	}
+	if label == "" {
+		label = "repos"
+	}
+	sum := sha256.Sum256([]byte(strings.Join(canonicalRepos, "\n")))
+	return label + "-" + hex.EncodeToString(sum[:])[:12]
+}
+
+func safePathSegment(value string) string {
+	value = strings.TrimSpace(value)
+	var b strings.Builder
+	lastReplacement := false
+	for _, r := range value {
+		if isSafePathSegmentRune(r) {
+			b.WriteRune(r)
+			lastReplacement = false
+			continue
+		}
+		if !lastReplacement {
+			b.WriteByte('-')
+			lastReplacement = true
+		}
+	}
+	segment := strings.Trim(b.String(), "-.")
+	if segment == "" || segment == "." || segment == ".." {
+		return "default"
+	}
+	return segment
+}
+
+func isSafePathSegmentRune(r rune) bool {
+	return r >= 'a' && r <= 'z' ||
+		r >= 'A' && r <= 'Z' ||
+		r >= '0' && r <= '9' ||
+		r == '-' || r == '_' || r == '.'
+}
+
 func normalizeStringList(values []string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -207,6 +331,13 @@ func defaultWorkspaceRoot() string {
 	return legacyDefaultWorkspaceRoot()
 }
 
+func defaultRunnerScopeBaseDirs() (string, string) {
+	if dir, ok := defaultIssueSpecDir(); ok {
+		return dir, dir
+	}
+	return legacyDefaultStateDir(), legacyDefaultWorkspaceDir()
+}
+
 func defaultIssueSpecDir() (string, bool) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -229,15 +360,23 @@ func isFilesystemRoot(path string) bool {
 }
 
 func legacyDefaultStatePath() string {
+	return filepath.Join(legacyDefaultStateDir(), "runner-state.json")
+}
+
+func legacyDefaultStateDir() string {
 	if dir, err := os.UserConfigDir(); err == nil && strings.TrimSpace(dir) != "" {
-		return filepath.Join(dir, "issue-spec", "runner-state.json")
+		return filepath.Join(dir, "issue-spec")
 	}
-	return filepath.Join(".issue-spec", "runner-state.json")
+	return ".issue-spec"
 }
 
 func legacyDefaultWorkspaceRoot() string {
+	return filepath.Join(legacyDefaultWorkspaceDir(), "runner-workspaces")
+}
+
+func legacyDefaultWorkspaceDir() string {
 	if dir, err := os.UserCacheDir(); err == nil && strings.TrimSpace(dir) != "" {
-		return filepath.Join(dir, "issue-spec", "runner-workspaces")
+		return filepath.Join(dir, "issue-spec")
 	}
-	return filepath.Join(".issue-spec", "runner-workspaces")
+	return ".issue-spec"
 }

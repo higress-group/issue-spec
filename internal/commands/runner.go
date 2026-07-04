@@ -355,7 +355,11 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	if seen["claude-allowed-tools"] {
 		cfg.Agent.ClaudeAllowedTools = claudeTools.Values()
 	}
-	cfg = cfg.Normalized()
+	cfg, err = commentrunner.ApplyDefaultRunnerScopePaths(cfg, seen["state"], seen["workspace-root"])
+	if err != nil {
+		a.errorf("%v\n", err)
+		return commentrunner.Config{}, opts, false
+	}
 	if err := cfg.Validate(); err != nil {
 		a.errorf("%v\n", err)
 		return commentrunner.Config{}, opts, false
