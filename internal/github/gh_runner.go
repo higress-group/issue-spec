@@ -242,6 +242,16 @@ func (b *GHBackend) UpdateRunnerComment(ctx context.Context, repo string, commen
 	return RunnerCommentResult{Comment: comment, Metadata: metadata}, err
 }
 
+func (b *GHBackend) AddCommentReaction(ctx context.Context, repo string, commentID int64, content string) (RunnerReactionResult, error) {
+	metadata, err := b.runRunnerJSON(ctx, ExternalCLIAPIRequest{
+		Operation: "AddCommentReaction",
+		Method:    http.MethodPost,
+		Endpoint:  fmt.Sprintf("/repos/%s/issues/comments/%d/reactions", repo, commentID),
+		Body:      map[string]string{"content": content},
+	}, nil)
+	return RunnerReactionResult{Metadata: metadata}, err
+}
+
 func (b *GHBackend) runRunnerJSON(ctx context.Context, request ExternalCLIAPIRequest, out any) (ResponseMetadata, error) {
 	metadata, body, err := b.runIncludedAPI(ctx, request)
 	if err != nil || metadata.NotModified || out == nil {

@@ -100,6 +100,10 @@ func (b *artifactBackend) UpdateRunnerComment(context.Context, string, int64, st
 	return github.RunnerCommentResult{}, nil
 }
 
+func (b *artifactBackend) AddCommentReaction(context.Context, string, int64, string) (github.RunnerReactionResult, error) {
+	return github.RunnerReactionResult{}, nil
+}
+
 func stringSlicesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

@@ -29,6 +29,7 @@ type RunnerOperations interface {
 	GetCollaboratorPermission(context.Context, string, string) (CollaboratorPermissionResult, error)
 	CreateRunnerComment(context.Context, string, int, string) (RunnerCommentResult, error)
 	UpdateRunnerComment(context.Context, string, int64, string) (RunnerCommentResult, error)
+	AddCommentReaction(context.Context, string, int64, string) (RunnerReactionResult, error)
 }
 
 type ConditionalRequest struct {
@@ -117,6 +118,10 @@ type CollaboratorPermissionResult struct {
 
 type RunnerCommentResult struct {
 	Comment  Comment
+	Metadata ResponseMetadata
+}
+
+type RunnerReactionResult struct {
 	Metadata ResponseMetadata
 }
 
@@ -273,6 +278,11 @@ func (c *Client) UpdateRunnerComment(ctx context.Context, repo string, commentID
 	annotateCommentIssueNumbers(comments, 0)
 	comment = comments[0]
 	return RunnerCommentResult{Comment: comment, Metadata: meta}, nil
+}
+
+func (c *Client) AddCommentReaction(ctx context.Context, repo string, commentID int64, content string) (RunnerReactionResult, error) {
+	meta, err := c.doRunnerJSON(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/comments/%d/reactions", repo, commentID), nil, map[string]string{"content": content}, ConditionalRequest{}, false, nil)
+	return RunnerReactionResult{Metadata: meta}, err
 }
 
 func (c *Client) doRunnerJSON(ctx context.Context, method, path string, query url.Values, in any, conditional ConditionalRequest, allowNotModified bool, out any) (ResponseMetadata, error) {

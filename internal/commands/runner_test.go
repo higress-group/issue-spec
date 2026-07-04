@@ -539,3 +539,7 @@ func (b *runnerPhaseBackend) CreateRunnerComment(context.Context, string, int, s
 func (b *runnerPhaseBackend) UpdateRunnerComment(context.Context, string, int64, string) (github.RunnerCommentResult, error) {
 	return github.RunnerCommentResult{}, nil
 }
+
+func (b *runnerPhaseBackend) AddCommentReaction(context.Context, string, int64, string) (github.RunnerReactionResult, error) {
+	return github.RunnerReactionResult{}, nil
+}

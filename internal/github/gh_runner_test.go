@@ -96,6 +96,7 @@ func TestGHRunnerCommentListingAndWritePrimitives(t *testing.T) {
 		{Stdout: includedHTTP(http.StatusOK, nil, `[{"id":201,"body":"issue comment"}]`)},
 		{Stdout: includedHTTP(http.StatusCreated, nil, `{"id":301,"issue_url":"https://api.github.com/repos/o/r/issues/7","body":"created"}`)},
 		{Stdout: includedHTTP(http.StatusOK, nil, `{"id":301,"issue_url":"https://api.github.com/repos/o/r/issues/7","body":"updated"}`)},
+		{Stdout: includedHTTP(http.StatusCreated, map[string]string{"X-RateLimit-Remaining": "40"}, `{"id":401,"content":"eyes"}`)},
 	}}
 	backend := newTestGHBackend(t, "github.com", runner)
 
@@ -148,6 +149,19 @@ func TestGHRunnerCommentListingAndWritePrimitives(t *testing.T) {
 		t.Fatalf("update args = %#v, want %#v", runner.commands[3].Args, wantArgs)
 	}
 	assertJSONBody(t, runner.commands[3].Stdin, map[string]any{"body": "updated"})
+
+	reaction, err := backend.AddCommentReaction(context.Background(), "o/r", 301, "eyes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reaction.Metadata.StatusCode != http.StatusCreated || reaction.Metadata.RateLimit.Remaining != 40 {
+		t.Fatalf("reaction metadata = %+v", reaction.Metadata)
+	}
+	wantArgs = []string{"api", "--method", http.MethodPost, "--header", githubAPIVersion, "--include", "--input", "-", "/repos/o/r/issues/comments/301/reactions"}
+	if !reflect.DeepEqual(runner.commands[4].Args, wantArgs) {
+		t.Fatalf("reaction args = %#v, want %#v", runner.commands[4].Args, wantArgs)
+	}
+	assertJSONBody(t, runner.commands[4].Stdin, map[string]any{"content": "eyes"})
 }
 
 func TestGHRunnerIssueContextPermissionAndPreflight(t *testing.T) {

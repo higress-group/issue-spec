@@ -38,6 +38,12 @@ func (s *fakeStore) Save(_ context.Context, st crstate.RunnerState) error {
 	return nil
 }
 
+type fakeReaction struct {
+	repo      string
+	commentID int64
+	content   string
+}
+
 type fakeBackend struct {
 	user                   github.User
 	permissions            map[string]string
@@ -53,7 +59,9 @@ type fakeBackend struct {
 	permissionLookupErrFor string
 	createdRunnerComments  []github.Comment
 	updatedRunnerComments  []github.Comment
+	commentReactions       []fakeReaction
 	nextRunnerCommentID    int64
+	addReactionErr         error
 }
 
 func (b *fakeBackend) GetUser(context.Context) (github.User, []string, error) {
@@ -130,6 +138,14 @@ func (b *fakeBackend) UpdateRunnerComment(_ context.Context, repo string, commen
 	return github.RunnerCommentResult{Comment: comment}, nil
 }
 
+func (b *fakeBackend) AddCommentReaction(_ context.Context, repo string, commentID int64, content string) (github.RunnerReactionResult, error) {
+	b.commentReactions = append(b.commentReactions, fakeReaction{repo: repo, commentID: commentID, content: content})
+	if b.addReactionErr != nil {
+		return github.RunnerReactionResult{}, b.addReactionErr
+	}
+	return github.RunnerReactionResult{Metadata: meta(http.StatusCreated, "", 0)}, nil
+}
+
 func TestRunOnceDeduplicatesNotificationAndFallbackDelivery(t *testing.T) {
 	comment := commandComment(101, 7, "alice", "/new fix the flaky test")
 	backend := &fakeBackend{
@@ -152,6 +168,9 @@ func TestRunOnceDeduplicatesNotificationAndFallbackDelivery(t *testing.T) {
 	}
 	if !result.OK || len(result.Jobs) != 1 || !result.Jobs[0].Created {
 		t.Fatalf("result jobs = %+v diagnostics=%+v", result.Jobs, result.Diagnostics)
+	}
+	if len(backend.commentReactions) != 1 || backend.commentReactions[0].commentID != 101 || backend.commentReactions[0].content != queuedJobReactionContent {
+		t.Fatalf("queued job reaction = %+v, want one eyes reaction on trigger comment", backend.commentReactions)
 	}
 	if len(store.state.Jobs) != 1 {
 		t.Fatalf("stored jobs = %d, want 1", len(store.state.Jobs))
@@ -203,6 +222,9 @@ func TestRunOnceRejectsUnauthorizedAndMalformedCommands(t *testing.T) {
 	}
 	if len(result.Jobs) != 0 {
 		t.Fatalf("unexpected dispatchable jobs: result=%+v state=%+v", result.Jobs, store.state.Jobs)
+	}
+	if len(backend.commentReactions) != 0 {
+		t.Fatalf("rejected commands should not add reactions: %+v", backend.commentReactions)
 	}
 	if !hasStatus(result.Commands, CommandStatusUnauthorized) || !hasStatus(result.Commands, CommandStatusRejected) {
 		t.Fatalf("expected unauthorized and malformed reports: %+v", result.Commands)
@@ -278,6 +300,9 @@ func TestRunOnceQueuesCancelForActiveJobWithoutPublicSessionMapping(t *testing.T
 	if len(backend.createdRunnerComments) != 0 {
 		t.Fatalf("authorized cancellation should not create rejected writeback: %+v", backend.createdRunnerComments)
 	}
+	if len(backend.commentReactions) != 0 {
+		t.Fatalf("authorized cancellation should not add queued job reaction: %+v", backend.commentReactions)
+	}
 }
 
 func TestRunOnceRejectedWritebackDoesNotEchoUnauthorizedPrompt(t *testing.T) {
@@ -340,6 +365,9 @@ func TestRunOnceWritesRejectedStatusForUnknownSessionAndDisabledCancellation(t *
 	if len(result.Jobs) != 0 || len(result.Cancellations) != 0 {
 		t.Fatalf("rejected commands should not queue work: jobs=%+v cancellations=%+v", result.Jobs, result.Cancellations)
 	}
+	if len(backend.commentReactions) != 0 {
+		t.Fatalf("unknown session or rejected cancel should not add reactions: %+v", backend.commentReactions)
+	}
 	if len(backend.createdRunnerComments) != 2 {
 		t.Fatalf("expected rejected writebacks for unknown session and disabled cancellation: %+v", backend.createdRunnerComments)
 	}
@@ -366,8 +394,36 @@ func TestRunOnceDryRunReportsWithoutSavingState(t *testing.T) {
 	if !result.DryRun || len(result.Jobs) != 1 {
 		t.Fatalf("dry-run result missing job report: %+v", result)
 	}
+	if len(backend.commentReactions) != 0 {
+		t.Fatalf("dry-run should not add reactions: %+v", backend.commentReactions)
+	}
 	if store.saves != 0 || len(store.state.Jobs) != 0 {
 		t.Fatalf("dry-run saved state: saves=%d jobs=%d", store.saves, len(store.state.Jobs))
+	}
+}
+
+func TestRunOnceReactionFailureDoesNotBlockQueuedJob(t *testing.T) {
+	backend := &fakeBackend{
+		user:           github.User{Login: "bot"},
+		permissions:    map[string]string{"alice": "write"},
+		notifications:  github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes"`, 60)},
+		repoComments:   github.IssueCommentsResult{Comments: []github.Comment{commandComment(402, 5, "alice", "/new keep going")}},
+		addReactionErr: errors.New("reaction failed"),
+	}
+	store := &fakeStore{state: crstate.NewState()}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || len(result.Jobs) != 1 || len(store.state.Jobs) != 1 {
+		t.Fatalf("reaction failure blocked queue: ok=%v jobs=%+v stored=%+v", result.OK, result.Jobs, store.state.Jobs)
+	}
+	if len(backend.commentReactions) != 1 || backend.commentReactions[0].commentID != 402 {
+		t.Fatalf("reaction attempt = %+v, want one attempt", backend.commentReactions)
+	}
+	if len(result.Diagnostics) != 1 || !strings.Contains(result.Diagnostics[0].Message, "queued job reaction: reaction failed") {
+		t.Fatalf("reaction failure diagnostic = %+v", result.Diagnostics)
 	}
 }
 

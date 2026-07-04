@@ -31,6 +31,8 @@ const (
 
 	ReasonSessionNotFound      = "session_not_found"
 	ReasonCancellationDisabled = "cancellation_disabled"
+
+	queuedJobReactionContent = "eyes"
 )
 
 type Backend interface {
@@ -493,10 +495,10 @@ func processCandidate(ctx context.Context, backend Backend, cfg commentrunner.Co
 		queueCancellation(st, seen, candidate, source, authz, cancelTargetJobID, now, result)
 		return
 	}
-	queueJob(cfg, st, seen, candidate, source, authz, now, result)
+	queueJob(ctx, backend, cfg, st, seen, candidate, source, authz, now, result)
 }
 
-func queueJob(cfg commentrunner.Config, st *crstate.RunnerState, seen crstate.SeenComment, candidate commentrunner.CommandCandidate, source string, authz commentrunner.AuthorizationResult, now time.Time, result *Result) {
+func queueJob(ctx context.Context, backend Backend, cfg commentrunner.Config, st *crstate.RunnerState, seen crstate.SeenComment, candidate commentrunner.CommandCandidate, source string, authz commentrunner.AuthorizationResult, now time.Time, result *Result) {
 	job := crstate.Job{
 		ID:                    stableID("job", candidate.IdempotencyKey),
 		Repo:                  candidate.Repo,
@@ -553,6 +555,24 @@ func queueJob(cfg commentrunner.Config, st *crstate.RunnerState, seen crstate.Se
 		PublicSessionID: candidate.PublicSessionID,
 		Created:         created,
 	})
+	addQueuedJobReaction(ctx, backend, candidate, source, result)
+}
+
+func addQueuedJobReaction(ctx context.Context, backend Backend, candidate commentrunner.CommandCandidate, source string, result *Result) {
+	if result == nil || result.DryRun {
+		return
+	}
+	if strings.TrimSpace(candidate.Repo) == "" || candidate.TriggerCommentID == 0 {
+		return
+	}
+	if _, err := backend.AddCommentReaction(ctx, candidate.Repo, candidate.TriggerCommentID, queuedJobReactionContent); err != nil {
+		result.Diagnostics = append(result.Diagnostics, Diagnostic{
+			Source:  source,
+			Repo:    candidate.Repo,
+			Issue:   candidate.Issue,
+			Message: "queued job reaction: " + boundedOneLine(err.Error(), 512),
+		})
+	}
 }
 
 func queueCancellation(st *crstate.RunnerState, seen crstate.SeenComment, candidate commentrunner.CommandCandidate, source string, authz commentrunner.AuthorizationResult, targetJobID string, now time.Time, result *Result) {

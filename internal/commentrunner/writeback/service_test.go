@@ -257,6 +257,10 @@ func (f *fakeRunnerOps) UpdateRunnerComment(_ context.Context, _ string, comment
 	}, nil
 }
 
+func (f *fakeRunnerOps) AddCommentReaction(context.Context, string, int64, string) (github.RunnerReactionResult, error) {
+	return github.RunnerReactionResult{}, nil
+}
+
 func (f *fakeRunnerOps) PollNotifications(context.Context, github.NotificationListOptions) (github.NotificationListResult, error) {
 	return github.NotificationListResult{}, nil
 }

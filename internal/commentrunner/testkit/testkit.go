@@ -122,13 +122,21 @@ type RunnerBackend struct {
 	CollaboratorLookups      []string
 	CreatedRunnerComments    []github.Comment
 	UpdatedRunnerComments    []github.Comment
+	CommentReactions         []CommentReaction
 	PermissionLookupErrFor   string
 	NotificationErr          error
 	IssueCommentsErr         error
 	RepositoryCommentsErr    error
 	CreateRunnerCommentErr   error
 	UpdateRunnerCommentErr   error
+	AddCommentReactionErr    error
 	NextRunnerCommentID      int64
+}
+
+type CommentReaction struct {
+	Repo      string
+	CommentID int64
+	Content   string
 }
 
 func (b *RunnerBackend) GetUser(context.Context) (github.User, []string, error) {
@@ -214,6 +222,14 @@ func (b *RunnerBackend) UpdateRunnerComment(_ context.Context, repo string, comm
 	}
 	b.UpdatedRunnerComments = append(b.UpdatedRunnerComments, comment)
 	return github.RunnerCommentResult{Comment: comment, Metadata: Metadata(http.StatusOK, "", 0)}, nil
+}
+
+func (b *RunnerBackend) AddCommentReaction(_ context.Context, repo string, commentID int64, content string) (github.RunnerReactionResult, error) {
+	b.CommentReactions = append(b.CommentReactions, CommentReaction{Repo: repo, CommentID: commentID, Content: content})
+	if b.AddCommentReactionErr != nil {
+		return github.RunnerReactionResult{}, b.AddCommentReactionErr
+	}
+	return github.RunnerReactionResult{Metadata: Metadata(http.StatusCreated, "", 0)}, nil
 }
 
 func RunnerConfig() commentrunner.Config {

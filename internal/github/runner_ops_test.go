@@ -219,7 +219,7 @@ func TestRunnerSubscriptionPermissionAndWriteMapping(t *testing.T) {
 }
 
 func TestRunnerCommentCreateUpdateReturnMetadata(t *testing.T) {
-	var createdBody, updatedBody string
+	var createdBody, updatedBody, reactionContent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/repos/o/r/issues/5/comments":
@@ -239,6 +239,15 @@ func TestRunnerCommentCreateUpdateReturnMetadata(t *testing.T) {
 			updatedBody = payload["body"]
 			w.Header().Set("Retry-After", "3")
 			json.NewEncoder(w).Encode(Comment{ID: 30, IssueURL: serverURL(r) + "/repos/o/r/issues/5", HTMLURL: "https://github.com/o/r/issues/5#issuecomment-30", Body: updatedBody})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/o/r/issues/comments/30/reactions":
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			reactionContent = payload["content"]
+			w.Header().Set("X-RateLimit-Remaining", "41")
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"id":1,"content":"eyes"}`)
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
 		}
@@ -266,6 +275,17 @@ func TestRunnerCommentCreateUpdateReturnMetadata(t *testing.T) {
 	}
 	if updated.Metadata.RateLimit.RetryAfterSeconds != 3 {
 		t.Fatalf("updated metadata = %+v", updated.Metadata)
+	}
+
+	reaction, err := client.AddCommentReaction(context.Background(), "o/r", 30, "eyes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reactionContent != "eyes" {
+		t.Fatalf("reaction content = %q", reactionContent)
+	}
+	if reaction.Metadata.StatusCode != http.StatusCreated || reaction.Metadata.RateLimit.Remaining != 41 {
+		t.Fatalf("reaction metadata = %+v", reaction.Metadata)
 	}
 }
 
