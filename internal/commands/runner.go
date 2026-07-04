@@ -89,6 +89,12 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 				if ctx.Err() != nil {
 					return 0
 				}
+				if !opts.Once && runnerPollRecoverableIntakeFailure(result) {
+					if !waitForNextRunnerPoll(ctx, result.Intake) {
+						return 0
+					}
+					continue
+				}
 				return 1
 			}
 			if opts.Once {
@@ -137,6 +143,10 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 		return 0
 	}
 	return 1
+}
+
+func runnerPollRecoverableIntakeFailure(result runnerDryRunResult) bool {
+	return result.Intake != nil && !result.Intake.OK
 }
 
 func (a *app) runRunnerPollCycle(ctx context.Context, cfg commentrunner.Config, opts runnerCommandOptions, report commentrunner.PreflightReport) runnerDryRunResult {

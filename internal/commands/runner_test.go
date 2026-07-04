@@ -301,6 +301,75 @@ func TestRunnerPollStopsBeforeDispatchWhenIntakeNotOK(t *testing.T) {
 	}
 }
 
+func TestRunnerPollWithoutOnceBacksOffAfterIntakeNotOK(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	var callOrder []string
+	reconcileCalls := 0
+	app.runnerReconcile = func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error) {
+		callOrder = append(callOrder, "reconcile")
+		reconcileCalls++
+		return jobs.ReconcileResult{}, nil
+	}
+	retryAfter := 25 * time.Millisecond
+	var firstFailureAt time.Time
+	intakeCalls := 0
+	app.runnerIntake = func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error) {
+		callOrder = append(callOrder, "intake")
+		intakeCalls++
+		switch intakeCalls {
+		case 1:
+			firstFailureAt = time.Now()
+			return intake.Result{
+				OK:          false,
+				Diagnostics: []intake.Diagnostic{{Source: "notification", Message: "rate limited"}},
+				Next:        intake.NextStep{PollAfter: retryAfter, PollAt: firstFailureAt.Add(retryAfter)},
+			}, nil
+		case 2:
+			if waited := time.Since(firstFailureAt); waited < retryAfter {
+				t.Fatalf("second intake ran before retry backoff elapsed: waited=%s want>=%s", waited, retryAfter)
+			}
+			return intake.Result{OK: true, Next: intake.NextStep{PollAfter: 0}}, nil
+		default:
+			t.Fatalf("unexpected intake call %d", intakeCalls)
+			return intake.Result{}, nil
+		}
+	}
+	dispatchCalls := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app.runnerDispatch = func(context.Context, commentrunner.Config) (jobs.Result, error) {
+		callOrder = append(callOrder, "dispatch")
+		dispatchCalls++
+		cancel()
+		return jobs.Result{Reason: "no ready job"}, nil
+	}
+	code := app.runRunner(ctx, []string{
+		"poll",
+		"--repo", "o/r",
+		"--runner", "issue-spec-bot",
+		"--state", "/tmp/state.json",
+		"--workspace-root", "/tmp/workspaces",
+		"--json",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if reconcileCalls != 2 || intakeCalls != 2 || dispatchCalls != 1 {
+		t.Fatalf("loop calls reconcile=%d intake=%d dispatch=%d", reconcileCalls, intakeCalls, dispatchCalls)
+	}
+	if got := strings.Join(callOrder, ","); got != "reconcile,intake,reconcile,intake,dispatch" {
+		t.Fatalf("unexpected call order: %s", got)
+	}
+	if !strings.Contains(out.String(), "rate limited") || !strings.Contains(out.String(), "intake reported failure") {
+		t.Fatalf("failed intake diagnostics missing from output:\n%s", out.String())
+	}
+}
+
 func TestRunnerPollWithoutOnceLoopsUntilContextCancellation(t *testing.T) {
 	clearCommandAuthEnv(t)
 	var out, errOut bytes.Buffer
