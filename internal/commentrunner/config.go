@@ -194,13 +194,48 @@ func normalizeStringList(values []string) []string {
 }
 
 func defaultStatePath() string {
+	if dir, ok := defaultIssueSpecDir(); ok {
+		return filepath.Join(dir, "runner-state.json")
+	}
+	return legacyDefaultStatePath()
+}
+
+func defaultWorkspaceRoot() string {
+	if dir, ok := defaultIssueSpecDir(); ok {
+		return filepath.Join(dir, "workspaces")
+	}
+	return legacyDefaultWorkspaceRoot()
+}
+
+func defaultIssueSpecDir() (string, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false
+	}
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return "", false
+	}
+	home = filepath.Clean(home)
+	if !filepath.IsAbs(home) || isFilesystemRoot(home) {
+		return "", false
+	}
+	return filepath.Join(home, ".issue-spec"), true
+}
+
+func isFilesystemRoot(path string) bool {
+	clean := filepath.Clean(path)
+	return clean == filepath.Dir(clean)
+}
+
+func legacyDefaultStatePath() string {
 	if dir, err := os.UserConfigDir(); err == nil && strings.TrimSpace(dir) != "" {
 		return filepath.Join(dir, "issue-spec", "runner-state.json")
 	}
 	return filepath.Join(".issue-spec", "runner-state.json")
 }
 
-func defaultWorkspaceRoot() string {
+func legacyDefaultWorkspaceRoot() string {
 	if dir, err := os.UserCacheDir(); err == nil && strings.TrimSpace(dir) != "" {
 		return filepath.Join(dir, "issue-spec", "runner-workspaces")
 	}

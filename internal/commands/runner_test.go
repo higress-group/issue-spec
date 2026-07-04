@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -131,6 +132,47 @@ func TestRunnerRejectsInvalidConfig(t *testing.T) {
 	})
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestRunnerPollUsesDefaultStateAndWorkspaceRoot(t *testing.T) {
+	clearCommandAuthEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
+
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	var captured commentrunner.Config
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		captured = cfg
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	app.runnerIntake = func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error) {
+		return intake.Result{OK: true, DryRun: true}, nil
+	}
+	app.runnerDispatch = func(context.Context, commentrunner.Config) (jobs.Result, error) {
+		t.Fatal("dry-run must not dispatch jobs")
+		return jobs.Result{}, nil
+	}
+
+	code := app.runRunner(context.Background(), []string{
+		"poll",
+		"--repo", "o/r",
+		"--runner", "issue-spec-bot",
+		"--dry-run",
+		"--json",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	root := filepath.Join(home, ".issue-spec")
+	if captured.StatePath != filepath.Join(root, "runner-state.json") {
+		t.Fatalf("StatePath = %q", captured.StatePath)
+	}
+	if captured.WorkspaceRoot != filepath.Join(root, "workspaces") {
+		t.Fatalf("WorkspaceRoot = %q", captured.WorkspaceRoot)
 	}
 }
 
