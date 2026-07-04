@@ -185,6 +185,9 @@ func TestRunnerPollUsesDefaultStateAndWorkspaceRoot(t *testing.T) {
 	if captured.WorkspaceRetention.Duration != 7*24*time.Hour {
 		t.Fatalf("WorkspaceRetention = %s, want 168h", captured.WorkspaceRetention.Duration)
 	}
+	if captured.MaxConcurrentJobs != 8 {
+		t.Fatalf("MaxConcurrentJobs = %d, want 8", captured.MaxConcurrentJobs)
+	}
 }
 
 func TestRunnerPollDefaultPathsIsolateReposAndRunners(t *testing.T) {

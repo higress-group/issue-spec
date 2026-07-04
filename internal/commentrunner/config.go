@@ -98,7 +98,7 @@ func DefaultConfigFromEnv() (Config, error) {
 		StatePath:           defaultStatePath(),
 		PollInterval:        NewDuration(time.Minute),
 		FallbackInterval:    NewDuration(5 * time.Minute),
-		MaxConcurrentJobs:   1,
+		MaxConcurrentJobs:   8,
 		AcpxPath:            "acpx",
 		Agent:               DefaultAgentConfig(),
 		WorkspaceRoot:       defaultWorkspaceRoot(),
