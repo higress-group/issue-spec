@@ -53,6 +53,7 @@ type AgentConfig struct {
 	Kind                      string   `json:"kind"`
 	Model                     string   `json:"model,omitempty"`
 	CodexAgentFullAccess      bool     `json:"codex_agent_full_access"`
+	ClaudeAgentFullAccess     bool     `json:"claude_agent_full_access"`
 	ClaudeIncludeUserSettings bool     `json:"claude_include_user_settings"`
 	ClaudeAllowedTools        []string `json:"claude_allowed_tools,omitempty"`
 }
@@ -111,8 +112,9 @@ func DefaultAgentConfig() AgentConfig {
 	return AgentConfig{
 		Kind:                      AgentCodex,
 		CodexAgentFullAccess:      true,
+		ClaudeAgentFullAccess:     true,
 		ClaudeIncludeUserSettings: true,
-		ClaudeAllowedTools:        []string{"Task", "Bash"},
+		ClaudeAllowedTools:        nil, // Nil means no tool restrictions (allow all)
 	}
 }
 

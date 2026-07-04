@@ -1849,7 +1849,10 @@ func (f AcpxAdapterFactory) NewCoordinator(env ExecutionEnvironment) (Coordinato
 func NewAcpxConfig(cfg commentrunner.Config) acpx.Config {
 	cfg = cfg.Normalized()
 	permissions := acpx.PermissionApproveReads
-	if cfg.Agent.CodexAgentFullAccess {
+	if cfg.Agent.Kind == commentrunner.AgentCodex && cfg.Agent.CodexAgentFullAccess {
+		permissions = acpx.PermissionApproveAll
+	}
+	if cfg.Agent.Kind == commentrunner.AgentClaude && cfg.Agent.ClaudeAgentFullAccess {
 		permissions = acpx.PermissionApproveAll
 	}
 	mode := ""

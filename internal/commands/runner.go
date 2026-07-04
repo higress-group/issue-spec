@@ -504,6 +504,7 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	ghConfigDir := fs.String("gh-config-dir", "", "host gh config directory to mirror for sandboxed issue-spec CLI auth")
 	allowCancel := fs.Bool("allow-cancel", defaults.CancellationEnabled, "allow authorized cancellation commands")
 	codexFullAccess := fs.Bool("codex-agent-full-access", defaults.Agent.CodexAgentFullAccess, "require Codex agent-full-access policy for workflow CLI/shell work")
+	claudeFullAccess := fs.Bool("claude-agent-full-access", defaults.Agent.ClaudeAgentFullAccess, "require Claude agent-full-access policy for workflow CLI/shell work")
 	claudeIncludeSettings := fs.Bool("claude-include-user-settings", defaults.Agent.ClaudeIncludeUserSettings, "set ACPX_CLAUDE_INCLUDE_USER_SETTINGS for Claude Code")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	fs.Var(&repoValues, "repo", "repository owner/name; repeat or comma-separate for multiple repositories")
@@ -627,6 +628,9 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	}
 	if seen["codex-agent-full-access"] {
 		cfg.Agent.CodexAgentFullAccess = *codexFullAccess
+	}
+	if seen["claude-agent-full-access"] {
+		cfg.Agent.ClaudeAgentFullAccess = *claudeFullAccess
 	}
 	if seen["claude-include-user-settings"] {
 		cfg.Agent.ClaudeIncludeUserSettings = *claudeIncludeSettings

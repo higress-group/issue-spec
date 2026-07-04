@@ -357,6 +357,7 @@ func addAgentChecks(report *PreflightReport, cfg Config, deps PreflightDependenc
 		report.add(codexAccessCheck(cfg))
 		report.add(codexACPCheck(deps))
 		report.add(codexAuthCheck())
+		report.add(PreflightCheck{Name: "claude-agent-full-access", Status: CheckSkipped, Detail: "configured agent is codex"})
 		report.add(PreflightCheck{Name: "claude-user-settings", Status: CheckSkipped, Detail: "configured agent is codex"})
 		report.add(PreflightCheck{Name: "claude-auth", Status: CheckSkipped, Detail: "configured agent is codex"})
 		report.add(PreflightCheck{Name: "claude-allowed-tools", Status: CheckSkipped, Detail: "configured agent is codex"})
@@ -364,6 +365,7 @@ func addAgentChecks(report *PreflightReport, cfg Config, deps PreflightDependenc
 		report.add(PreflightCheck{Name: "codex-agent-full-access", Status: CheckSkipped, Detail: "configured agent is claude"})
 		report.add(PreflightCheck{Name: "codex-acp", Status: CheckSkipped, Detail: "configured agent is claude"})
 		report.add(PreflightCheck{Name: "codex-auth", Status: CheckSkipped, Detail: "configured agent is claude"})
+		report.add(claudeAgentFullAccessCheck(cfg))
 		report.add(claudeUserSettingsCheck(cfg))
 		report.add(claudeAuthCheck())
 		report.add(claudeAllowedToolsCheck(cfg))
@@ -382,6 +384,13 @@ func codexAccessCheck(cfg Config) PreflightCheck {
 		return PreflightCheck{Name: "codex-agent-full-access", Status: CheckOK, Detail: "enabled"}
 	}
 	return PreflightCheck{Name: "codex-agent-full-access", Status: CheckWarning, Detail: "disabled; Codex child CLI/shell workflow work may fail"}
+}
+
+func claudeAgentFullAccessCheck(cfg Config) PreflightCheck {
+	if cfg.Agent.ClaudeAgentFullAccess {
+		return PreflightCheck{Name: "claude-agent-full-access", Status: CheckOK, Detail: "enabled"}
+	}
+	return PreflightCheck{Name: "claude-agent-full-access", Status: CheckWarning, Detail: "disabled; Claude child CLI/shell workflow work may fail"}
 }
 
 func codexACPCheck(deps PreflightDependencies) PreflightCheck {
@@ -461,6 +470,10 @@ func claudeAuthCheck() PreflightCheck {
 }
 
 func claudeAllowedToolsCheck(cfg Config) PreflightCheck {
+	// Empty (nil) means no tool restrictions - all tools allowed
+	if len(cfg.Agent.ClaudeAllowedTools) == 0 {
+		return PreflightCheck{Name: "claude-allowed-tools", Status: CheckOK, Detail: "all tools allowed"}
+	}
 	have := map[string]bool{}
 	for _, tool := range cfg.Agent.ClaudeAllowedTools {
 		have[strings.ToLower(tool)] = true
