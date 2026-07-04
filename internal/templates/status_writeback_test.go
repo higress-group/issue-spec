@@ -65,6 +65,38 @@ func TestRenderRunnerStatusCommentIncludesSafePublicFields(t *testing.T) {
 	if strings.Contains(body, "runner wrote") || strings.Contains(body, "action envelope") {
 		t.Fatalf("body claims artifact ownership or action envelope:\n%s", body)
 	}
+	if strings.Contains(body, "## Continue Session") || strings.Contains(body, "/resume s_123") {
+		t.Fatalf("running status should not invite resume:\n%s", body)
+	}
+}
+
+func TestRenderRunnerStatusCommentIncludesResumeGuidanceForTerminalSession(t *testing.T) {
+	body, err := RenderRunnerStatusComment(RunnerStatusComment{
+		Status:          "completed",
+		PublicSessionID: "s_123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"## Continue Session",
+		"/resume s_123 <answer or next instruction>",
+		"runner only sends `/resume` command comments to the coordinator",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("terminal body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestRenderRunnerStatusCommentSkipsResumeGuidanceWithoutPublicSession(t *testing.T) {
+	body, err := RenderRunnerStatusComment(RunnerStatusComment{Status: "completed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, "## Continue Session") || strings.Contains(body, "/resume ") {
+		t.Fatalf("empty public session should not render resume guidance:\n%s", body)
+	}
 }
 
 func TestRunnerStatusMarkerRoundTrip(t *testing.T) {

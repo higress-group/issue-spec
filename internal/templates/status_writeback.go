@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	runnercontext "github.com/higress-group/issue-spec/internal/commentrunner/context"
+	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
 )
 
 const (
@@ -89,6 +90,7 @@ func RenderRunnerStatusComment(comment RunnerStatusComment) (string, error) {
 		tableRow(&b, "Sandbox warning", "unsafe no-sandbox mode requested; filesystem boundary disabled")
 	}
 
+	writeResumeGuidance(&b, comment)
 	writeCoordinatorSummary(&b, comment)
 	writeDiagnostics(&b, comment)
 	return b.String(), nil
@@ -207,6 +209,19 @@ func writeCoordinatorSummary(b *strings.Builder, comment RunnerStatusComment) {
 		fmt.Fprintf(b, "- Stored coordinator CLI provenance %d: %s\n", i+1, inlineText(line, comment.MaxTextBytes))
 	}
 	b.WriteString("\nThe runner records this as bounded provenance. Workflow artifacts are written by the sandboxed coordinator through existing issue-spec CLI commands.\n")
+}
+
+func writeResumeGuidance(b *strings.Builder, comment RunnerStatusComment) {
+	sessionID := strings.TrimSpace(comment.PublicSessionID)
+	if sessionID == "" || !crstate.LifecycleStatus(strings.TrimSpace(comment.Status)).Terminal() {
+		return
+	}
+	b.WriteString("\n## Continue Session\n\n")
+	b.WriteString("To continue this public session, create a new issue comment that starts with:\n\n")
+	b.WriteString("```text\n")
+	fmt.Fprintf(b, "/resume %s <answer or next instruction>\n", cleanOneLine(sessionID))
+	b.WriteString("```\n\n")
+	b.WriteString("Ordinary follow-up comments are recorded on GitHub, but the runner only sends `/resume` command comments to the coordinator.\n")
 }
 
 func writeDiagnostics(b *strings.Builder, comment RunnerStatusComment) {

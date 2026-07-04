@@ -138,6 +138,14 @@ Supported command comments:
 
 `/new` creates a fresh public runner session, clones the target repository into a managed workspace, starts acpx from that workspace, and writes a status comment containing the public session id. `/resume` reuses that public session and workspace. Public sessions are repository-scoped and shared by authorized repository maintainers; they are not private user sessions.
 
+Coordinator-human discussion is explicit. The sandboxed coordinator can use the mirrored GitHub auth to ask clarification questions. Blocking workflow decisions should be recorded as `QUESTION` typed comments; lightweight clarification can use ordinary issue timeline comments, for example with `gh issue comment <issue> --repo owner/repo --body-file <file>`. GitHub issue comments are flat timeline comments, not nested replies under a specific issue comment; the coordinator should link the trigger comment or status comment and include the public session id. To continue the same acpx session, an authorized maintainer must create a new command comment:
+
+```text
+/resume <public-session-id> <answer or next instruction>
+```
+
+Ordinary follow-up comments remain visible on GitHub but are ignored by runner intake. The runner status comment includes the public session id and a `/resume` template.
+
 Use a dry run to check configuration and intake without creating GitHub comments, changing runner state, creating workspaces, or dispatching acpx. Dry-run still reads GitHub notifications and comments, so the first run on a busy repository can take noticeably longer than later real poll cycles that persist cursors:
 
 ```bash
