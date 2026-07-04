@@ -282,7 +282,18 @@ func systemReadOnlyBinds(cfg Config) []string {
 	if len(cfg.SystemReadOnlyBinds) > 0 {
 		return cleanBinds(cfg.SystemReadOnlyBinds, false)
 	}
-	return cleanBinds([]string{"/usr", "/bin", "/lib", "/lib64", "/etc/ssl/certs", "/etc/pki", "/etc/alternatives"}, true)
+	return cleanBinds([]string{
+		"/usr",
+		"/bin",
+		"/lib",
+		"/lib64",
+		"/etc/ssl/certs",
+		"/etc/pki",
+		"/etc/alternatives",
+		"/etc/resolv.conf",
+		"/etc/hosts",
+		"/etc/nsswitch.conf",
+	}, true)
 }
 
 func cleanBinds(paths []string, existingOnly bool) []string {
