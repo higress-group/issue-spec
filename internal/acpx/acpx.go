@@ -39,11 +39,16 @@ var retryableQueueBackoffs = []time.Duration{
 	2 * time.Second,
 	4 * time.Second,
 	8 * time.Second,
-	8 * time.Second,
-	8 * time.Second,
-	8 * time.Second,
-	8 * time.Second,
-	8 * time.Second,
+	15 * time.Second,
+	30 * time.Second,
+	30 * time.Second,
+	30 * time.Second,
+	30 * time.Second,
+	30 * time.Second,
+	30 * time.Second,
+	30 * time.Second,
+	30 * time.Second,
+	30 * time.Second,
 }
 
 var (

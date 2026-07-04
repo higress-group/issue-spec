@@ -129,6 +129,48 @@ func TestNewSessionRetriesPromptQueueNotAcceptingError(t *testing.T) {
 	assertArgs(t, runner.commands[2].Args, []string{"--cwd", "/workspace", "--format", "quiet", "--approve-reads", "codex", "--file", "-", "-s", "pub-1"})
 }
 
+func TestResumeRetriesPromptQueueNotAcceptingUntilAccepted(t *testing.T) {
+	withQueueBackoffs(t, []time.Duration{0, 0, 0})
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-1","messages":[{"User":{"content":[{"Text":"seed prompt"}]}}]}`},
+		{stderr: "Session queue owner is running but not accepting queue requests", exitCode: 1},
+		{stderr: "Session queue owner is running but not accepting queue requests", exitCode: 1},
+		{stderr: "Session queue owner is running but not accepting queue requests", exitCode: 1},
+		{stdout: "done\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```\n"},
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-2","messages":[{"User":{"content":[{"Text":"seed prompt"}]}},{"Agent":{"content":[{"Text":"done"}]}}]}`},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	result, err := adapter.Resume(context.Background(), ResumeRequest{
+		PublicSessionID:   "pub-1",
+		StableRecordID:    "rec-1",
+		Prompt:            "continue",
+		MinHistoryEntries: 1,
+	})
+	if err != nil {
+		t.Fatalf("Resume returned error: %v", err)
+	}
+	if !result.Output.SummaryFound {
+		t.Fatalf("summary not parsed after prompt retries: %+v", result.Output)
+	}
+	if len(runner.commands) != 6 {
+		t.Fatalf("recorded %d commands, want pre-refresh, 4 prompt attempts, post-refresh", len(runner.commands))
+	}
+	for i := 1; i <= 4; i++ {
+		assertArgs(t, runner.commands[i].Args, []string{"--cwd", "/workspace", "--format", "quiet", "--approve-reads", "codex", "--file", "-", "-s", "pub-1"})
+	}
+}
+
+func TestRetryableQueueBackoffBudgetCoversQueueOwnerStartupWindow(t *testing.T) {
+	var total time.Duration
+	for _, backoff := range retryableQueueBackoffs {
+		total += backoff
+	}
+	if total < 5*time.Minute {
+		t.Fatalf("retryable queue backoff budget = %s, want at least 5m", total)
+	}
+}
+
 func TestResumeValidatesStableRecordBeforeDispatch(t *testing.T) {
 	runner := &fakeRunner{responses: []fakeResponse{
 		{stdout: `{"acpxRecordId":"other-rec","history":[{"id":"seed"}]}`},
