@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -30,6 +31,8 @@ import (
 var ErrNoReadyJob = errors.New("no ready queued job")
 
 const workspaceLockResidualDiagnostic = "workspace lock recovered from residual lock file"
+
+var authDiagnosticSecretPattern = regexp.MustCompile(`(?i)(["']?[a-z0-9_]*(?:token|secret)[a-z0-9_]*["']?\s*[:=]\s*["']?)([^"',\s}]+)`)
 
 type Store interface {
 	Load(context.Context) (state.RunnerState, error)
@@ -484,9 +487,14 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 	if err != nil {
 		return d.fail(ctx, job.ID, "execution-inputs", err)
 	}
-	if err := d.preflightChildAuth(ctx, env); err != nil {
+	authDiagnostic, err := d.preflightChildAuth(ctx, env)
+	if err != nil {
+		if sandboxDiagnostic := appendSandboxDiagnostic(env.Sandbox.Diagnostics); sandboxDiagnostic != "" {
+			err = fmt.Errorf("%w; sandbox diagnostics: %s", err, sandboxDiagnostic)
+		}
 		return d.fail(ctx, job.ID, "child-auth", err)
 	}
+	env.Sandbox.Diagnostics = appendSandboxDiagnostic(env.Sandbox.Diagnostics, authDiagnostic)
 	coordinator, err := d.Acpx.NewCoordinator(env)
 	if err != nil {
 		return d.fail(ctx, job.ID, "acpx", err)
@@ -718,26 +726,33 @@ type childAuthStatus struct {
 	} `json:"backend"`
 }
 
-func (d *Dispatcher) preflightChildAuth(ctx context.Context, env ExecutionEnvironment) error {
+func (d *Dispatcher) preflightChildAuth(ctx context.Context, env ExecutionEnvironment) (string, error) {
 	if env.Runner == nil {
-		return fmt.Errorf("pre-acpx child auth probe unavailable: execution runner is missing")
+		return "", fmt.Errorf("pre-acpx child auth probe unavailable: execution runner is missing")
 	}
-	result, runErr := env.Runner.Run(ctx, acpx.Command{
-		Binary: firstNonEmpty(d.IssueSpecBinary, "issue-spec"),
-		Args:   []string{"auth", "status", "--json"},
-		Dir:    env.WorkingDirectory,
-	})
-	status, parseErr := parseChildAuthStatus(result.Stdout)
-	if runErr != nil || result.ExitCode != 0 {
-		return fmt.Errorf("pre-acpx child auth probe failed: %s", childAuthCommandDiagnostics(result, status, parseErr, runErr))
+	var failures []string
+	for attempt := 1; attempt <= 2; attempt++ {
+		result, runErr := env.Runner.Run(ctx, acpx.Command{
+			Binary: firstNonEmpty(d.IssueSpecBinary, "issue-spec"),
+			Args:   []string{"auth", "status", "--json"},
+			Dir:    env.WorkingDirectory,
+		})
+		status, parseErr := parseChildAuthStatus(result.Stdout)
+		if runErr == nil && result.ExitCode == 0 && parseErr == nil && status.OK {
+			return childAuthSuccessDiagnostic(status, attempt), nil
+		}
+		failure := childAuthCommandDiagnostics(result, status, parseErr, runErr)
+		failures = append(failures, fmt.Sprintf("attempt=%d %s", attempt, failure))
+		if attempt == 1 && shouldRetryChildAuthProbe(result, status, parseErr, runErr) {
+			continue
+		}
+		detail := safeString(strings.Join(failures, "; "), 800)
+		if parseErr != nil && runErr == nil && result.ExitCode == 0 {
+			return "child_auth_probe: ok=false " + detail, fmt.Errorf("pre-acpx child auth probe failed: parse issue-spec auth status --json: %w; %s", parseErr, childAuthRawDiagnostics(result, nil))
+		}
+		return "child_auth_probe: ok=false " + detail, fmt.Errorf("pre-acpx child auth probe failed: %s", detail)
 	}
-	if parseErr != nil {
-		return fmt.Errorf("pre-acpx child auth probe failed: parse issue-spec auth status --json: %w; %s", parseErr, childAuthRawDiagnostics(result, nil))
-	}
-	if !status.OK {
-		return fmt.Errorf("pre-acpx child auth probe failed: %s", childAuthStatusDiagnostic(status, result))
-	}
-	return nil
+	return "child_auth_probe: ok=false", fmt.Errorf("pre-acpx child auth probe failed")
 }
 
 func parseChildAuthStatus(stdout []byte) (childAuthStatus, error) {
@@ -751,12 +766,26 @@ func parseChildAuthStatus(stdout []byte) (childAuthStatus, error) {
 	return status, nil
 }
 
+func childAuthSuccessDiagnostic(status childAuthStatus, attempt int) string {
+	if attempt <= 0 {
+		attempt = 1
+	}
+	parts := []string{"child_auth_probe:", "ok=true", fmt.Sprintf("attempt=%d", attempt)}
+	if attempt > 1 {
+		parts = append(parts, fmt.Sprintf("retries=%d", attempt-1))
+	}
+	parts = append(parts, childAuthStatusParts(status, acpx.CommandResult{})...)
+	return safeString(strings.Join(parts, " "), 600)
+}
+
 func childAuthCommandDiagnostics(result acpx.CommandResult, status childAuthStatus, parseErr error, runErr error) string {
 	var parts []string
 	if parseErr == nil {
 		if diag := childAuthStatusDiagnostic(status, result); diag != "" {
 			parts = append(parts, diag)
 		}
+	} else {
+		parts = append(parts, "parse_error="+sanitizeAuthDiagnosticText(parseErr.Error()))
 	}
 	if raw := childAuthRawDiagnostics(result, runErr); raw != "" {
 		parts = append(parts, raw)
@@ -768,6 +797,14 @@ func childAuthCommandDiagnostics(result acpx.CommandResult, status childAuthStat
 }
 
 func childAuthStatusDiagnostic(status childAuthStatus, result acpx.CommandResult) string {
+	parts := childAuthStatusParts(status, result)
+	if len(parts) == 0 {
+		return "ok=false"
+	}
+	return safeString(strings.Join(parts, " "), 600)
+}
+
+func childAuthStatusParts(status childAuthStatus, result acpx.CommandResult) []string {
 	var parts []string
 	if status.Host != "" {
 		parts = append(parts, "host="+status.Host)
@@ -792,32 +829,86 @@ func childAuthStatusDiagnostic(status childAuthStatus, result acpx.CommandResult
 		parts = append(parts, "backend_token_source="+status.Backend.TokenSource)
 	}
 	if strings.TrimSpace(status.Error) != "" {
-		parts = append(parts, "error="+strings.TrimSpace(status.Error))
+		parts = append(parts, "error="+sanitizeAuthDiagnosticText(status.Error))
 	}
 	if result.ExitCode != 0 {
 		parts = append(parts, fmt.Sprintf("exit=%d", result.ExitCode))
 	}
-	if len(parts) == 0 {
-		return "ok=false"
-	}
-	return safeString(strings.Join(parts, " "), 600)
+	return parts
 }
 
 func childAuthRawDiagnostics(result acpx.CommandResult, runErr error) string {
 	var parts []string
 	if strings.TrimSpace(string(result.Stderr)) != "" {
-		parts = append(parts, "stderr="+safeString(string(result.Stderr), 300))
+		parts = append(parts, "stderr="+safeString(sanitizeAuthDiagnosticText(string(result.Stderr)), 300))
 	}
 	if strings.TrimSpace(string(result.Stdout)) != "" {
-		parts = append(parts, "stdout="+safeString(string(result.Stdout), 300))
+		parts = append(parts, "stdout="+safeString(sanitizeAuthDiagnosticText(string(result.Stdout)), 300))
 	}
 	if result.ExitCode != 0 {
 		parts = append(parts, fmt.Sprintf("exit=%d", result.ExitCode))
 	}
 	if runErr != nil {
-		parts = append(parts, "error="+runErr.Error())
+		parts = append(parts, "error="+sanitizeAuthDiagnosticText(runErr.Error()))
 	}
 	return safeString(strings.Join(parts, " "), 600)
+}
+
+func shouldRetryChildAuthProbe(result acpx.CommandResult, status childAuthStatus, parseErr error, runErr error) bool {
+	if runErr != nil {
+		return true
+	}
+	if parseErr == nil && !status.OK && authStatusUsesGH(status) {
+		return true
+	}
+	text := strings.ToLower(string(result.Stdout) + "\n" + string(result.Stderr) + "\n" + status.Error)
+	for _, marker := range []string{
+		"token invalid",
+		"token is invalid",
+		"gh authentication probe failed",
+		"gh backend unavailable",
+		"gh auth status",
+		"hosts.yml",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func authStatusUsesGH(status childAuthStatus) bool {
+	for _, value := range []string{status.Source, status.Auth.Source, status.Backend.Name, status.Backend.SelectionSource, status.Backend.TokenSource} {
+		if strings.Contains(strings.ToLower(value), "gh") {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeAuthDiagnosticText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return authDiagnosticSecretPattern.ReplaceAllString(value, "${1}[redacted]")
+}
+
+func appendSandboxDiagnostic(existing string, diagnostics ...string) string {
+	var parts []string
+	if strings.TrimSpace(existing) != "" {
+		parts = append(parts, strings.TrimSpace(existing))
+	}
+	for _, diagnostic := range diagnostics {
+		diagnostic = strings.TrimSpace(diagnostic)
+		if diagnostic != "" {
+			parts = append(parts, diagnostic)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return safeString(strings.Join(parts, "; "), 2048)
 }
 
 func (d *Dispatcher) markRunning(ctx context.Context, original state.Job, command runnercontext.CommandVerb, publicID string, session state.PublicSession, binding workspace.Binding, sandboxMeta state.SandboxMetadata, bundle runnercontext.Bundle, token string, lock state.SessionLock) error {
@@ -1179,22 +1270,26 @@ type SandboxRunner struct {
 }
 
 func (p SandboxRunner) Prepare(ctx context.Context, req SandboxRequest) (ExecutionEnvironment, error) {
-	cfg, resolvedAcpxBinary, err := p.config(req)
+	cfg, resolvedAcpxBinary, ghAuthMirror, err := p.config(req)
 	if err != nil {
 		return ExecutionEnvironment{}, err
 	}
 	acpxBinary := firstNonEmpty(resolvedAcpxBinary, req.AcpxBinary, "acpx")
 	prepared, err := sandbox.Prepare(ctx, cfg, sandbox.Command{Binary: acpxBinary, Dir: req.AcpxWorkingDirectory}, p.Deps)
+	metadata := prepared.Metadata
+	if diagnostic := ghAuthMirror.diagnostic(); diagnostic != "" {
+		metadata.Diagnostics = append(metadata.Diagnostics, diagnostic)
+	}
 	env := ExecutionEnvironment{
 		WorkingDirectory: firstNonEmpty(req.AcpxWorkingDirectory, req.WorkspacePath),
 		AcpxBinary:       acpxBinary,
-		Sandbox:          sandboxMetadata(prepared.Metadata, err),
+		Sandbox:          sandboxMetadata(metadata, err),
 		Runner:           sandboxedRunner{cfg: cfg, deps: p.Deps, acpxBinary: firstNonEmpty(req.AcpxBinary, "acpx"), resolvedAcpxBinary: resolvedAcpxBinary},
 	}
 	return env, err
 }
 
-func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, error) {
+func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAuthMirrorResult, error) {
 	cfg := p.Config
 	cfg.WorkspacePath = firstNonEmpty(req.WorkspacePath, cfg.WorkspacePath)
 	cfg.TempHome = firstNonEmpty(req.RuntimeHome, cfg.TempHome)
@@ -1207,7 +1302,7 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, error
 	if !cfg.UnsafeNoSandbox {
 		readOnlyBinds, prefixes, resolvedBinary, err := requestReadOnlyBinds(req, acpxBinary, sandboxLookPath(p.Deps))
 		if err != nil {
-			return sandbox.Config{}, "", err
+			return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 		}
 		cfg.ReadOnlyBinds = appendUniqueCleanAbsPaths(cfg.ReadOnlyBinds, readOnlyBinds...)
 		pathPrefixes = prefixes
@@ -1227,7 +1322,7 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, error
 	if cfg.TempHome == "" || cfg.TempGHConfigDir == "" || cfg.TempXDGConfigHome == "" || cfg.TempCodexHome == "" {
 		root, err := os.MkdirTemp("", "issue-spec-runner-*")
 		if err != nil {
-			return sandbox.Config{}, "", err
+			return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 		}
 		cfg.TempHome = firstNonEmpty(cfg.TempHome, filepath.Join(root, "home"))
 		cfg.TempGHConfigDir = firstNonEmpty(cfg.TempGHConfigDir, filepath.Join(root, "gh"))
@@ -1236,19 +1331,20 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, error
 	}
 	for _, dir := range []string{cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return sandbox.Config{}, "", err
+			return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 		}
 	}
-	if err := mirrorHostGHAuth(&cfg); err != nil {
-		return sandbox.Config{}, "", err
+	ghAuthMirror, err := mirrorHostGHAuth(&cfg)
+	if err != nil {
+		return sandbox.Config{}, "", ghAuthMirror, err
 	}
 	if err := mirrorHostCodexConfig(&cfg); err != nil {
-		return sandbox.Config{}, "", err
+		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
 	if err := mirrorHostClaudeConfig(&cfg); err != nil {
-		return sandbox.Config{}, "", err
+		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
-	return cfg, resolvedAcpxBinary, nil
+	return cfg, resolvedAcpxBinary, ghAuthMirror, nil
 }
 
 func requestReadOnlyBinds(req SandboxRequest, acpxBinary string, lookPath func(string) (string, error)) ([]string, []string, string, error) {
@@ -1441,6 +1537,14 @@ type sessionRuntimePaths struct {
 	codexHome     string
 }
 
+type ghAuthMirrorResult struct {
+	HostConfigDir    string
+	HostConfigSource string
+	RuntimeConfigDir string
+	SandboxConfigDir string
+	Action           string
+}
+
 func stableSessionRuntimePaths(workspacePath, repo, publicID string) (sessionRuntimePaths, error) {
 	root, err := stableSessionRuntimeRoot(workspacePath, repo, publicID)
 	if err != nil {
@@ -1480,56 +1584,82 @@ func stableSessionRuntimeRoot(workspacePath, repo, publicID string) (string, err
 	return filepath.Join(runtimeBase, ".sessions", hex.EncodeToString(sum[:16])), nil
 }
 
-func mirrorHostGHAuth(cfg *sandbox.Config) error {
-	if cfg == nil {
-		return fmt.Errorf("sandbox config is required")
+func (r ghAuthMirrorResult) diagnostic() string {
+	var parts []string
+	add := func(key, value string) {
+		if strings.TrimSpace(value) != "" {
+			parts = append(parts, fmt.Sprintf("%s=%q", key, value))
+		}
 	}
-	source, err := hostGHConfigDir(*cfg)
-	if err != nil {
-		return err
+	add("host_config_dir", r.HostConfigDir)
+	add("host_config_source", r.HostConfigSource)
+	add("runtime_gh_config_dir", r.RuntimeConfigDir)
+	add("sandbox_gh_config_dir", r.SandboxConfigDir)
+	add("action", r.Action)
+	if len(parts) == 0 {
+		return ""
 	}
-	source = filepath.Clean(source)
-	hostsPath := filepath.Join(source, "hosts.yml")
-	if info, err := os.Stat(hostsPath); err != nil || info.IsDir() {
-		return fmt.Errorf("sandbox gh auth unavailable: %s is missing; sandbox GH_CONFIG_DIR will be %s (host source %s)", hostsPath, sandboxGHConfigDir(*cfg), source)
-	}
-	if sameCleanPath(source, cfg.TempGHConfigDir) {
-		return nil
-	}
-	if err := copyGHConfigDir(source, cfg.TempGHConfigDir); err != nil {
-		return fmt.Errorf("mirror host gh auth from %s to sandbox GH_CONFIG_DIR %s: %w", source, sandboxGHConfigDir(*cfg), err)
-	}
-	if info, err := os.Stat(filepath.Join(cfg.TempGHConfigDir, "hosts.yml")); err != nil || info.IsDir() {
-		return fmt.Errorf("sandbox gh auth unavailable after mirror: %s is missing; sandbox GH_CONFIG_DIR will be %s", filepath.Join(cfg.TempGHConfigDir, "hosts.yml"), sandboxGHConfigDir(*cfg))
-	}
-	return nil
+	return safeString("gh_auth_mirror: "+strings.Join(parts, " "), 600)
 }
 
-func hostGHConfigDir(cfg sandbox.Config) (string, error) {
+func mirrorHostGHAuth(cfg *sandbox.Config) (ghAuthMirrorResult, error) {
+	if cfg == nil {
+		return ghAuthMirrorResult{}, fmt.Errorf("sandbox config is required")
+	}
+	result := ghAuthMirrorResult{
+		RuntimeConfigDir: filepath.Clean(cfg.TempGHConfigDir),
+		SandboxConfigDir: sandboxGHConfigDir(*cfg),
+	}
+	source, sourceLabel, err := hostGHConfigDirWithSource(*cfg)
+	if err != nil {
+		return result, err
+	}
+	source = filepath.Clean(source)
+	result.HostConfigDir = source
+	result.HostConfigSource = sourceLabel
+	hostsPath := filepath.Join(source, "hosts.yml")
+	if info, err := os.Stat(hostsPath); err != nil || info.IsDir() {
+		return result, fmt.Errorf("sandbox gh auth unavailable: %s is missing; sandbox GH_CONFIG_DIR will be %s (host source %s)", hostsPath, sandboxGHConfigDir(*cfg), source)
+	}
+	if sameCleanPath(source, cfg.TempGHConfigDir) {
+		result.Action = "shared"
+		return result, nil
+	}
+	if err := copyGHConfigDir(source, cfg.TempGHConfigDir); err != nil {
+		return result, fmt.Errorf("mirror host gh auth from %s to sandbox GH_CONFIG_DIR %s: %w", source, sandboxGHConfigDir(*cfg), err)
+	}
+	if info, err := os.Stat(filepath.Join(cfg.TempGHConfigDir, "hosts.yml")); err != nil || info.IsDir() {
+		return result, fmt.Errorf("sandbox gh auth unavailable after mirror: %s is missing; sandbox GH_CONFIG_DIR will be %s", filepath.Join(cfg.TempGHConfigDir, "hosts.yml"), sandboxGHConfigDir(*cfg))
+	}
+	result.Action = "copied"
+	return result, nil
+}
+
+func hostGHConfigDirWithSource(cfg sandbox.Config) (string, string, error) {
 	if strings.TrimSpace(cfg.HostGHConfigDir) != "" {
-		return strings.TrimSpace(cfg.HostGHConfigDir), nil
+		return strings.TrimSpace(cfg.HostGHConfigDir), "config", nil
 	}
 	hostEnv := cfg.HostEnv
 	if hostEnv == nil {
 		hostEnv = os.Environ()
 	}
 	if value := envValue(hostEnv, "GH_CONFIG_DIR"); value != "" {
-		return value, nil
+		return value, "GH_CONFIG_DIR", nil
 	}
 	if value := envValue(hostEnv, "XDG_CONFIG_HOME"); value != "" {
-		return filepath.Join(value, "gh"), nil
+		return filepath.Join(value, "gh"), "XDG_CONFIG_HOME", nil
 	}
 	if value := envValue(hostEnv, "HOME"); value != "" {
-		return filepath.Join(value, ".config", "gh"), nil
+		return filepath.Join(value, ".config", "gh"), "HOME", nil
 	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve host gh config dir: %w", err)
+		return "", "", fmt.Errorf("resolve host gh config dir: %w", err)
 	}
 	if strings.TrimSpace(dir) == "" {
-		return "", fmt.Errorf("resolve host gh config dir: user config dir is empty")
+		return "", "", fmt.Errorf("resolve host gh config dir: user config dir is empty")
 	}
-	return filepath.Join(dir, "gh"), nil
+	return filepath.Join(dir, "gh"), "os.UserConfigDir", nil
 }
 
 func copyGHConfigDir(source, dest string) error {
@@ -1795,6 +1925,9 @@ type sandboxedRunner struct {
 }
 
 func (r sandboxedRunner) Run(ctx context.Context, command acpx.Command) (acpx.CommandResult, error) {
+	if _, err := mirrorHostGHAuth(&r.cfg); err != nil {
+		return acpx.CommandResult{}, fmt.Errorf("refresh sandbox gh auth before command: %w", err)
+	}
 	if shouldUseResolvedAcpxBinary(command.Binary, r.acpxBinary, r.resolvedAcpxBinary) {
 		command.Binary = strings.TrimSpace(r.resolvedAcpxBinary)
 	}
