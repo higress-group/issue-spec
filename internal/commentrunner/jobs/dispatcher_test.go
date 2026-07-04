@@ -1412,8 +1412,11 @@ func TestSandboxRunnerBwrapBindsResolvedNVMStyleAcpxInstall(t *testing.T) {
 	acpxPackageDir := filepath.Join(nodePrefix, "lib", "node_modules", "acpx")
 	realAcpxPackageDir := filepath.Join(realNodePrefix, "lib", "node_modules", "acpx")
 	acpxDistDir := filepath.Join(realAcpxPackageDir, "dist")
+	npmPackageDir := filepath.Join(nodePrefix, "lib", "node_modules", "npm")
+	realNpmPackageDir := filepath.Join(realNodePrefix, "lib", "node_modules", "npm")
+	npmBinDir := filepath.Join(realNpmPackageDir, "bin")
 	acpxPath := filepath.Join(acpxBinDir, "acpx")
-	for _, dir := range []string{hostGH, workspacePath, realAcpxBinDir, acpxDistDir} {
+	for _, dir := range []string{hostGH, workspacePath, realAcpxBinDir, acpxDistDir, npmBinDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -1423,11 +1426,20 @@ func TestSandboxRunnerBwrapBindsResolvedNVMStyleAcpxInstall(t *testing.T) {
 	}
 	writeFileWithMode(t, filepath.Join(realAcpxBinDir, "node"), []byte("#!/bin/sh\n"), 0o700)
 	writeFileWithMode(t, filepath.Join(acpxDistDir, "cli.js"), []byte("#!/usr/bin/env node\n"), 0o700)
+	writeFileWithMode(t, filepath.Join(npmBinDir, "npm-cli.js"), []byte("#!/usr/bin/env node\n"), 0o700)
+	writeFileWithMode(t, filepath.Join(npmBinDir, "npx-cli.js"), []byte("#!/usr/bin/env node\n"), 0o700)
 	if err := os.Symlink("../lib/node_modules/acpx/dist/cli.js", filepath.Join(realAcpxBinDir, "acpx")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../lib/node_modules/npm/bin/npm-cli.js", filepath.Join(realAcpxBinDir, "npm")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../lib/node_modules/npm/bin/npx-cli.js", filepath.Join(realAcpxBinDir, "npx")); err != nil {
 		t.Fatal(err)
 	}
 	resolvedAcpxBinDir := mustEvalSymlinks(t, acpxBinDir)
 	resolvedAcpxPackageDir := mustEvalSymlinks(t, acpxPackageDir)
+	resolvedNpmPackageDir := mustEvalSymlinks(t, npmPackageDir)
 	resolvedAcpxPath := filepath.Join(resolvedAcpxBinDir, "acpx")
 
 	runner := &recordingBwrapRunner{}
@@ -1465,9 +1477,41 @@ func TestSandboxRunnerBwrapBindsResolvedNVMStyleAcpxInstall(t *testing.T) {
 	cmd := runner.finalCommand
 	assertCommandArgSequence(t, cmd.Args, "--ro-bind", resolvedAcpxBinDir, resolvedAcpxBinDir)
 	assertCommandArgSequence(t, cmd.Args, "--ro-bind", resolvedAcpxPackageDir, resolvedAcpxPackageDir)
+	assertCommandArgSequence(t, cmd.Args, "--ro-bind", resolvedNpmPackageDir, resolvedNpmPackageDir)
 	assertCommandArgSequence(t, cmd.Args, "--setenv", "PATH", resolvedAcpxBinDir+":/usr/bin")
 	assertCommandArgSequence(t, cmd.Args, "--", resolvedAcpxPath, "--help")
 	assertCommandArgSequenceMissing(t, cmd.Args, "--ro-bind", acpxPath, acpxPath)
+}
+
+func TestNodeGlobalBinPackageRootsIncludesStandaloneNpxPackage(t *testing.T) {
+	prefix := t.TempDir()
+	binDir := filepath.Join(prefix, "bin")
+	npmBinDir := filepath.Join(prefix, "lib", "node_modules", "npm", "bin")
+	npxBinDir := filepath.Join(prefix, "lib", "node_modules", "npx", "bin")
+	for _, dir := range []string{binDir, npmBinDir, npxBinDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFileWithMode(t, filepath.Join(npmBinDir, "npm-cli.js"), []byte("#!/usr/bin/env node\n"), 0o700)
+	writeFileWithMode(t, filepath.Join(npxBinDir, "npx-cli.js"), []byte("#!/usr/bin/env node\n"), 0o700)
+	if err := os.Symlink("../lib/node_modules/npm/bin/npm-cli.js", filepath.Join(binDir, "npm")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../lib/node_modules/npx/bin/npx-cli.js", filepath.Join(binDir, "npx")); err != nil {
+		t.Fatal(err)
+	}
+
+	resolvedPrefix := mustEvalSymlinks(t, prefix)
+	roots := nodeGlobalBinPackageRoots(binDir, "npm", "npx")
+	for _, want := range []string{
+		filepath.Join(resolvedPrefix, "lib", "node_modules", "npm"),
+		filepath.Join(resolvedPrefix, "lib", "node_modules", "npx"),
+	} {
+		if !containsCleanPath(roots, want) {
+			t.Fatalf("roots = %#v, want %s", roots, want)
+		}
+	}
 }
 
 func TestAcpxAdapterFactoryUsesExecutionEnvironmentBinary(t *testing.T) {
@@ -1669,6 +1713,16 @@ func assertCommandArgSequenceMissing(t *testing.T, args []string, want ...string
 	if commandArgsContainSequence(args, want...) {
 		t.Fatalf("args unexpectedly contained sequence %v in %v", want, args)
 	}
+}
+
+func containsCleanPath(paths []string, want string) bool {
+	want = filepath.Clean(want)
+	for _, path := range paths {
+		if filepath.Clean(path) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func mustEvalSymlinks(t *testing.T, path string) string {

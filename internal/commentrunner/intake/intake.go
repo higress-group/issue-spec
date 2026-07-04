@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -81,6 +82,7 @@ type Result struct {
 	DryRun        bool              `json:"dry_run"`
 	StartedAt     time.Time         `json:"started_at"`
 	FinishedAt    time.Time         `json:"finished_at"`
+	Notification  NotificationPoll  `json:"notification"`
 	Repositories  []RepositoryCycle `json:"repositories,omitempty"`
 	Commands      []CommandReport   `json:"commands,omitempty"`
 	Jobs          []JobCandidate    `json:"jobs,omitempty"`
@@ -90,10 +92,51 @@ type Result struct {
 }
 
 type RepositoryCycle struct {
-	Repo             string    `json:"repo"`
-	NotificationSeen int       `json:"notification_seen,omitempty"`
-	FallbackDue      bool      `json:"fallback_due"`
-	FallbackNextAt   time.Time `json:"fallback_next_at,omitempty"`
+	Repo                     string       `json:"repo"`
+	NotificationSeen         int          `json:"notification_seen,omitempty"`
+	NotificationSeenThreads  int          `json:"notification_seen_threads,omitempty"`
+	FallbackDue              bool         `json:"fallback_due"`
+	FallbackExecuted         bool         `json:"fallback_executed"`
+	FallbackNextAt           time.Time    `json:"fallback_next_at,omitempty"`
+	RepositoryCommentsCursor CursorReport `json:"repository_comments_cursor,omitempty"`
+	FallbackMessage          string       `json:"fallback_message,omitempty"`
+}
+
+type NotificationPoll struct {
+	Poller                     string       `json:"poller"`
+	ConfiguredIdentity         string       `json:"configured_identity,omitempty"`
+	TokenEnv                   string       `json:"token_env,omitempty"`
+	StatusCode                 int          `json:"status_code,omitempty"`
+	NotModified                bool         `json:"not_modified,omitempty"`
+	ConditionalETag            bool         `json:"conditional_etag"`
+	ConditionalLastModified    bool         `json:"conditional_last_modified"`
+	PollIntervalSeconds        int          `json:"poll_interval_seconds,omitempty"`
+	MatchedNotifications       int          `json:"matched_notifications"`
+	MatchedNotificationThreads int          `json:"matched_notification_threads"`
+	MatchedRepositories        []string     `json:"matched_repositories,omitempty"`
+	Cursor                     CursorReport `json:"cursor,omitempty"`
+	Message                    string       `json:"message,omitempty"`
+}
+
+type CursorReport struct {
+	Resource             string         `json:"resource,omitempty"`
+	LastStatusCode       int            `json:"last_status_code,omitempty"`
+	ETagSet              bool           `json:"etag_set"`
+	LastModifiedSet      bool           `json:"last_modified_set"`
+	CursorURLSet         bool           `json:"cursor_url_set"`
+	LastSeenID           int64          `json:"last_seen_id,omitempty"`
+	LastSeenAt           time.Time      `json:"last_seen_at,omitempty"`
+	LastPollAt           time.Time      `json:"last_poll_at,omitempty"`
+	LastSuccessfulPollAt time.Time      `json:"last_successful_poll_at,omitempty"`
+	XPollIntervalSeconds int            `json:"x_poll_interval_seconds,omitempty"`
+	RateLimit            *RateLimitInfo `json:"rate_limit,omitempty"`
+}
+
+type RateLimitInfo struct {
+	Remaining         int       `json:"remaining,omitempty"`
+	ResetAt           time.Time `json:"reset_at,omitempty"`
+	Resource          string    `json:"resource,omitempty"`
+	RetryAfterSeconds int       `json:"retry_after_seconds,omitempty"`
 }
 
 type CommandReport struct {
@@ -201,6 +244,7 @@ func RunOnce(ctx context.Context, cfg commentrunner.Config, backend Backend, sto
 	if notificationBackend == nil {
 		notificationBackend = backend
 	}
+	notificationCursorBefore := notificationCursor(st, cfg.Repositories)
 	notifications, notificationMeta, err := pollNotifications(ctx, notificationBackend, st, cfg.Repositories)
 	if err != nil {
 		if hasResponseMetadata(notificationMeta) {
@@ -212,21 +256,21 @@ func RunOnce(ctx context.Context, cfg commentrunner.Config, backend Backend, sto
 		applyNotificationMetadata(&st, cfg.Repositories, notificationMeta, now)
 		intakeNotifications(ctx, backend, cfg, policy, &st, cache, notifications, repoSet, now, &result)
 	}
+	result.Notification = notificationPollReport(cfg, notificationCursorBefore, notificationCursor(st, cfg.Repositories), notificationMeta, notifications, repoSet, err)
 
 	for _, repo := range cfg.Repositories {
 		cycle := RepositoryCycle{Repo: repo}
-		for _, notification := range notifications {
-			if strings.EqualFold(notification.Repository.FullName, repo) {
-				cycle.NotificationSeen++
-			}
-		}
+		cycle.NotificationSeen, cycle.NotificationSeenThreads = notificationCountsForRepo(notifications, repo)
 		repoState := st.Repositories[repo]
 		cycle.FallbackDue = fallbackDue(repoState, now)
 		if cycle.FallbackDue {
+			cycle.FallbackExecuted = true
 			intakeFallback(ctx, backend, cfg, policy, &st, cache, repo, now, &result)
 			repoState = st.Repositories[repo]
 		}
 		cycle.FallbackNextAt = repoState.FallbackCadence.NextPollAt
+		cycle.RepositoryCommentsCursor = cursorReport(repoState.RepositoryCommentCursor)
+		cycle.FallbackMessage = fallbackCycleMessage(cycle)
 		result.Repositories = append(result.Repositories, cycle)
 	}
 
@@ -260,7 +304,7 @@ func zeroAuthorizationPolicy(policy commentrunner.AuthorizationPolicy) bool {
 func pollNotifications(ctx context.Context, backend NotificationBackend, st crstate.RunnerState, repos []string) ([]github.Notification, github.ResponseMetadata, error) {
 	cursor := notificationCursor(st, repos)
 	result, err := backend.PollNotifications(ctx, github.NotificationListOptions{
-		ConditionalRequest: github.ConditionalRequest{ETag: cursor.ETag, LastModified: cursor.LastModified},
+		ConditionalRequest: conditionalRequestFromCursor(cursor),
 		All:                true,
 	})
 	if err != nil {
@@ -275,8 +319,8 @@ func pollNotifications(ctx context.Context, backend NotificationBackend, st crst
 func intakeNotifications(ctx context.Context, backend Backend, cfg commentrunner.Config, policy commentrunner.AuthorizationPolicy, st *crstate.RunnerState, cache *runCache, notifications []github.Notification, repoSet map[string]bool, now time.Time, result *Result) {
 	seenThreads := map[string]bool{}
 	for _, notification := range notifications {
-		repo := strings.TrimSpace(notification.Repository.FullName)
-		if !repoSet[repo] {
+		repo, ok := repoFromSet(notification.Repository.FullName, repoSet)
+		if !ok {
 			continue
 		}
 		issueNumber := notificationIssueNumber(notification)
@@ -305,7 +349,7 @@ func intakeIssueComments(ctx context.Context, backend Backend, cfg commentrunner
 	page := github.RunnerPageOptions{}
 	for {
 		commentsResult, err := backend.ListIssueCommentsPage(ctx, repo, issueNumber, github.CommentListOptions{
-			ConditionalRequest: github.ConditionalRequest{ETag: cursor.ETag, LastModified: cursor.LastModified},
+			ConditionalRequest: conditionalRequestFromCursor(cursor),
 			Page:               page,
 		})
 		if err != nil {
@@ -353,7 +397,7 @@ func intakeFallback(ctx context.Context, backend Backend, cfg commentrunner.Conf
 	page := github.RunnerPageOptions{}
 	for {
 		commentsResult, err := backend.ListRepositoryIssueCommentsPage(ctx, repo, github.CommentListOptions{
-			ConditionalRequest: github.ConditionalRequest{ETag: cursor.ETag, LastModified: cursor.LastModified},
+			ConditionalRequest: conditionalRequestFromCursor(cursor),
 			Page:               page,
 			Since:              sinceFromCursor(cursor),
 		})
@@ -940,6 +984,155 @@ func notificationCursor(st crstate.RunnerState, repos []string) crstate.CursorSt
 	return crstate.CursorState{}
 }
 
+func notificationPollReport(cfg commentrunner.Config, cursorBefore, cursorAfter crstate.CursorState, meta github.ResponseMetadata, notifications []github.Notification, repoSet map[string]bool, pollErr error) NotificationPoll {
+	cfg = cfg.Normalized()
+	report := NotificationPoll{
+		Poller:                  "main_runner",
+		ConfiguredIdentity:      cfg.RunnerIdentity,
+		StatusCode:              meta.StatusCode,
+		NotModified:             meta.NotModified,
+		ConditionalETag:         cursorETag(cursorBefore.ETag) != "",
+		ConditionalLastModified: strings.TrimSpace(cursorBefore.LastModified) != "",
+		PollIntervalSeconds:     meta.PollIntervalSeconds,
+		Cursor:                  cursorReport(cursorAfter),
+	}
+	if cfg.NotificationTokenEnv != "" {
+		report.Poller = "notification_runner"
+		report.ConfiguredIdentity = cfg.NotificationIdentity
+		report.TokenEnv = cfg.NotificationTokenEnv
+	}
+	report.MatchedNotifications, report.MatchedNotificationThreads, report.MatchedRepositories = notificationMatchCounts(notifications, repoSet)
+	report.Message = notificationPollMessage(report, pollErr)
+	return report
+}
+
+func notificationMatchCounts(notifications []github.Notification, repoSet map[string]bool) (int, int, []string) {
+	seenRepos := map[string]bool{}
+	seenThreads := map[string]bool{}
+	for _, notification := range notifications {
+		repo, ok := repoFromSet(notification.Repository.FullName, repoSet)
+		if !ok {
+			continue
+		}
+		seenRepos[repo] = true
+		issueNumber := notificationIssueNumber(notification)
+		if issueNumber <= 0 {
+			continue
+		}
+		seenThreads[strings.ToLower(repo)+"#"+strconv.Itoa(issueNumber)] = true
+	}
+	var repos []string
+	for repo := range seenRepos {
+		repos = append(repos, repo)
+	}
+	sort.Strings(repos)
+	return len(matchedNotifications(notifications, repoSet)), len(seenThreads), repos
+}
+
+func matchedNotifications(notifications []github.Notification, repoSet map[string]bool) []github.Notification {
+	var matched []github.Notification
+	for _, notification := range notifications {
+		if _, ok := repoFromSet(notification.Repository.FullName, repoSet); ok {
+			matched = append(matched, notification)
+		}
+	}
+	return matched
+}
+
+func notificationCountsForRepo(notifications []github.Notification, repo string) (int, int) {
+	seenThreads := map[int]bool{}
+	count := 0
+	for _, notification := range notifications {
+		if !strings.EqualFold(strings.TrimSpace(notification.Repository.FullName), repo) {
+			continue
+		}
+		count++
+		if issueNumber := notificationIssueNumber(notification); issueNumber > 0 {
+			seenThreads[issueNumber] = true
+		}
+	}
+	return count, len(seenThreads)
+}
+
+func repoFromSet(repo string, repoSet map[string]bool) (string, bool) {
+	repo = strings.TrimSpace(repo)
+	if repoSet[repo] {
+		return repo, true
+	}
+	for configured := range repoSet {
+		if strings.EqualFold(configured, repo) {
+			return configured, true
+		}
+	}
+	return "", false
+}
+
+func notificationPollMessage(report NotificationPoll, pollErr error) string {
+	if pollErr != nil {
+		return "notification poll failed; repository comments fallback runs only for repositories whose fallback interval is due"
+	}
+	if report.NotModified {
+		return "HTTP 304 Not Modified means GitHub reported no notification changes for this poller and stored cursor; repository comments fallback still runs when due"
+	}
+	if report.StatusCode == 0 {
+		return "notification poll completed without HTTP metadata"
+	}
+	if report.MatchedNotifications == 0 {
+		return "notification poll returned no matching notifications for configured repositories"
+	}
+	return "notification poll returned matching notifications; unique issue and pull request threads will be scanned once"
+}
+
+func cursorReport(cursor crstate.CursorState) CursorReport {
+	var rateLimit *RateLimitInfo
+	if cursor.RateLimit.Remaining != 0 ||
+		!cursor.RateLimit.ResetAt.IsZero() ||
+		cursor.RateLimit.Resource != "" ||
+		cursor.RateLimit.RetryAfterSeconds > 0 {
+		rateLimit = &RateLimitInfo{
+			Remaining:         cursor.RateLimit.Remaining,
+			ResetAt:           cursor.RateLimit.ResetAt,
+			Resource:          cursor.RateLimit.Resource,
+			RetryAfterSeconds: cursor.RateLimit.RetryAfterSeconds,
+		}
+	}
+	return CursorReport{
+		Resource:             cursor.Resource,
+		LastStatusCode:       cursor.LastStatusCode,
+		ETagSet:              cursorETag(cursor.ETag) != "",
+		LastModifiedSet:      strings.TrimSpace(cursor.LastModified) != "",
+		CursorURLSet:         strings.TrimSpace(cursor.Cursor) != "",
+		LastSeenID:           cursor.LastSeenID,
+		LastSeenAt:           cursor.LastSeenAt,
+		LastPollAt:           cursor.LastPollAt,
+		LastSuccessfulPollAt: cursor.LastSuccessfulPollAt,
+		XPollIntervalSeconds: cursor.XPollIntervalSeconds,
+		RateLimit:            rateLimit,
+	}
+}
+
+func conditionalRequestFromCursor(cursor crstate.CursorState) github.ConditionalRequest {
+	return github.ConditionalRequest{
+		ETag:         cursorETag(cursor.ETag),
+		LastModified: cursor.LastModified,
+	}
+}
+
+func cursorETag(value string) string {
+	value = strings.TrimSpace(value)
+	if value == `""` || strings.EqualFold(value, `W/""`) {
+		return ""
+	}
+	return value
+}
+
+func fallbackCycleMessage(cycle RepositoryCycle) string {
+	if cycle.FallbackExecuted {
+		return "repository comments fallback executed because fallback interval was due"
+	}
+	return "repository comments fallback skipped until fallback_next_at"
+}
+
 func applyNotificationMetadata(st *crstate.RunnerState, repos []string, meta github.ResponseMetadata, now time.Time) {
 	for _, repo := range repos {
 		repoState := st.Repositories[repo]
@@ -950,11 +1143,16 @@ func applyNotificationMetadata(st *crstate.RunnerState, repos []string, meta git
 
 func updateCursor(cursor crstate.CursorState, resource string, meta github.ResponseMetadata, now time.Time) crstate.CursorState {
 	cursor.Resource = resource
+	cursor.ETag = cursorETag(cursor.ETag)
 	cursor.LastPollAt = now
 	cursor.LastStatusCode = meta.StatusCode
 	cursor.RateLimit = rateLimit(meta)
-	if meta.ETag != "" {
-		cursor.ETag = meta.ETag
+	rawETag := meta.ETag
+	if strings.TrimSpace(rawETag) == "" && meta.Headers != nil {
+		rawETag = meta.Headers.Get("ETag")
+	}
+	if strings.TrimSpace(rawETag) != "" {
+		cursor.ETag = cursorETag(rawETag)
 	}
 	if meta.LastModified != "" {
 		cursor.LastModified = meta.LastModified
@@ -975,6 +1173,7 @@ func updateCursor(cursor crstate.CursorState, resource string, meta github.Respo
 
 func updateCursorErrorMetadata(cursor crstate.CursorState, resource string, meta github.ResponseMetadata, now time.Time) crstate.CursorState {
 	cursor.Resource = resource
+	cursor.ETag = cursorETag(cursor.ETag)
 	cursor.LastPollAt = now
 	cursor.LastStatusCode = meta.StatusCode
 	cursor.RateLimit = rateLimit(meta)

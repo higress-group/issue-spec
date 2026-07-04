@@ -1346,7 +1346,8 @@ func nodeGlobalPackageReadOnlyBinds(path, packageName string) ([]string, string,
 	if !pathExists(target) {
 		target = realPath
 	}
-	return appendUniqueCleanAbsPaths(nil, binDir, pkgRoot), filepath.Clean(binDir), filepath.Clean(target)
+	roots := append([]string{binDir, pkgRoot}, nodeGlobalBinPackageRoots(binDir, "npm", "npx")...)
+	return appendUniqueCleanAbsPaths(nil, roots...), filepath.Clean(binDir), filepath.Clean(target)
 }
 
 func nodeGlobalPackageRoot(realPath, packageName string) (string, bool) {
@@ -1363,6 +1364,28 @@ func nodeGlobalPackageRoot(realPath, packageName string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func nodeGlobalBinPackageRoots(binDir string, names ...string) []string {
+	var roots []string
+	for _, name := range names {
+		target := filepath.Join(binDir, name)
+		realPath, err := filepath.EvalSymlinks(target)
+		if err != nil {
+			continue
+		}
+		// npm usually ships the npx shim, but standalone npx packages can also exist.
+		packageNames := []string{name}
+		if name != "npm" {
+			packageNames = append(packageNames, "npm")
+		}
+		for _, packageName := range packageNames {
+			if root, ok := nodeGlobalPackageRoot(realPath, packageName); ok && pathExists(root) {
+				roots = append(roots, root)
+			}
+		}
+	}
+	return appendUniqueCleanAbsPaths(nil, roots...)
 }
 
 func pathExists(path string) bool {

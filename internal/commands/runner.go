@@ -486,7 +486,11 @@ func defaultRunnerNotificationBackend(_ context.Context, cfg commentrunner.Confi
 	if cfg.NotificationTokenEnv == "" {
 		return nil, nil
 	}
-	token := strings.TrimSpace(os.Getenv(cfg.NotificationTokenEnv))
+	rawToken, ok := os.LookupEnv(cfg.NotificationTokenEnv)
+	if !ok {
+		return nil, fmt.Errorf("%s is unset; export a notification bot token or omit --notification-runner", cfg.NotificationTokenEnv)
+	}
+	token := strings.TrimSpace(rawToken)
 	if token == "" {
 		return nil, fmt.Errorf("%s is empty; export a notification bot token or omit --notification-runner", cfg.NotificationTokenEnv)
 	}
@@ -629,13 +633,7 @@ func (a *app) printRunnerPollStart(cfg commentrunner.Config, once bool) {
 	fmt.Fprintln(a.out, "runner poll starting")
 	fmt.Fprintf(a.out, "repositories: %s\n", strings.Join(cfg.Repositories, ", "))
 	fmt.Fprintf(a.out, "runner: %s\n", cfg.RunnerIdentity)
-	if cfg.NotificationTokenEnv != "" {
-		identity := cfg.NotificationIdentity
-		if identity == "" {
-			identity = "token from " + cfg.NotificationTokenEnv
-		}
-		fmt.Fprintf(a.out, "notification_runner: %s\n", identity)
-	}
+	a.printNotificationRunnerConfig(cfg)
 	fmt.Fprintf(a.out, "agent: %s", cfg.Agent.Kind)
 	if cfg.Agent.Model != "" {
 		fmt.Fprintf(a.out, " model=%s", cfg.Agent.Model)
@@ -651,6 +649,7 @@ func (a *app) printRunnerDryRun(result runnerDryRunResult) {
 	fmt.Fprintln(a.out, "runner poll dry-run")
 	fmt.Fprintf(a.out, "repositories: %s\n", strings.Join(result.Config.Repositories, ", "))
 	fmt.Fprintf(a.out, "runner: %s\n", result.Config.RunnerIdentity)
+	a.printNotificationRunnerConfig(result.Config)
 	fmt.Fprintf(a.out, "backend: %s\n", result.Config.GitHubBackend)
 	fmt.Fprintln(a.out, "planned actions:")
 	for _, action := range result.Actions {
@@ -658,7 +657,7 @@ func (a *app) printRunnerDryRun(result runnerDryRunResult) {
 	}
 	a.printPreflightReport(result.Preflight)
 	if result.Intake != nil {
-		fmt.Fprintf(a.out, "intake: commands=%d jobs=%d cancellations=%d next_poll=%s\n", len(result.Intake.Commands), len(result.Intake.Jobs), len(result.Intake.Cancellations), result.Intake.Next.PollAt.Format(time.RFC3339))
+		a.printIntakeReport(result.Intake)
 	}
 	if result.Error != "" {
 		fmt.Fprintf(a.out, "intake error: %s\n", result.Error)
@@ -675,7 +674,7 @@ func (a *app) printRunnerPoll(result runnerDryRunResult) {
 		}
 	}
 	if result.Intake != nil {
-		fmt.Fprintf(a.out, "intake: commands=%d jobs=%d cancellations=%d next_poll=%s\n", len(result.Intake.Commands), len(result.Intake.Jobs), len(result.Intake.Cancellations), result.Intake.Next.PollAt.Format(time.RFC3339))
+		a.printIntakeReport(result.Intake)
 	}
 	if result.Dispatch != nil {
 		if result.Dispatch.ExecutedCount > 1 {
@@ -687,6 +686,170 @@ func (a *app) printRunnerPoll(result runnerDryRunResult) {
 	if result.Error != "" {
 		fmt.Fprintf(a.out, "runner error: %s\n", result.Error)
 	}
+}
+
+func (a *app) printNotificationRunnerConfig(cfg commentrunner.Config) {
+	cfg = cfg.Normalized()
+	if cfg.NotificationTokenEnv == "" {
+		fmt.Fprintf(a.out, "notification_runner: main runner backend token_env=none\n")
+		return
+	}
+	identity := cfg.NotificationIdentity
+	if identity == "" {
+		identity = "token from " + cfg.NotificationTokenEnv
+	}
+	fmt.Fprintf(a.out, "notification_runner: %s token_env=%s token=%s\n", identity, cfg.NotificationTokenEnv, envValueState(cfg.NotificationTokenEnv))
+}
+
+func envValueState(name string) string {
+	value, ok := os.LookupEnv(strings.TrimSpace(name))
+	if !ok {
+		return "unset"
+	}
+	if strings.TrimSpace(value) == "" {
+		return "empty"
+	}
+	return "set"
+}
+
+func (a *app) printIntakeReport(result *intake.Result) {
+	if result == nil {
+		return
+	}
+	fmt.Fprintf(a.out, "intake: commands=%d jobs=%d cancellations=%d next_poll=%s\n", len(result.Commands), len(result.Jobs), len(result.Cancellations), formatTime(result.Next.PollAt))
+	a.printNotificationPoll(result.Notification)
+	for _, repo := range result.Repositories {
+		fmt.Fprintf(a.out, "repo %s: notification_seen=%d notification_threads=%d fallback_due=%v fallback_executed=%v fallback_next=%s repo_comments_cursor=%s\n",
+			repo.Repo,
+			repo.NotificationSeen,
+			repo.NotificationSeenThreads,
+			repo.FallbackDue,
+			repo.FallbackExecuted,
+			formatTime(repo.FallbackNextAt),
+			formatCursorReport(repo.RepositoryCommentsCursor),
+		)
+		if repo.FallbackMessage != "" {
+			fmt.Fprintf(a.out, "repo %s: %s\n", repo.Repo, repo.FallbackMessage)
+		}
+	}
+	for _, diagnostic := range result.Diagnostics {
+		fmt.Fprintf(a.out, "diagnostic: %s\n", formatDiagnostic(diagnostic))
+	}
+}
+
+func (a *app) printNotificationPoll(report intake.NotificationPoll) {
+	fmt.Fprintf(a.out, "notification poll: poller=%s", valueOr(report.Poller, "unknown"))
+	if report.ConfiguredIdentity != "" {
+		fmt.Fprintf(a.out, " identity=%s", report.ConfiguredIdentity)
+	}
+	if report.TokenEnv != "" {
+		fmt.Fprintf(a.out, " token_env=%s", report.TokenEnv)
+	}
+	fmt.Fprintf(a.out, " status=%s conditional_etag=%v conditional_last_modified=%v notifications=%d threads=%d cursor=%s\n",
+		formatStatus(report.StatusCode, report.NotModified),
+		report.ConditionalETag,
+		report.ConditionalLastModified,
+		report.MatchedNotifications,
+		report.MatchedNotificationThreads,
+		formatCursorReport(report.Cursor),
+	)
+	if report.PollIntervalSeconds > 0 {
+		fmt.Fprintf(a.out, "notification poll: x_poll_interval=%ds\n", report.PollIntervalSeconds)
+	}
+	if len(report.MatchedRepositories) > 0 {
+		fmt.Fprintf(a.out, "notification poll: matched_repositories=%s\n", strings.Join(report.MatchedRepositories, ", "))
+	}
+	if report.Message != "" {
+		fmt.Fprintf(a.out, "notification poll: %s\n", report.Message)
+	}
+}
+
+func formatStatus(statusCode int, notModified bool) string {
+	if statusCode == 0 {
+		return "unknown"
+	}
+	if notModified || statusCode == 304 {
+		return "304 Not Modified"
+	}
+	return fmt.Sprintf("%d", statusCode)
+}
+
+func formatCursorReport(cursor intake.CursorReport) string {
+	parts := []string{
+		fmt.Sprintf("status=%s", formatStatus(cursor.LastStatusCode, cursor.LastStatusCode == 304)),
+		fmt.Sprintf("etag=%s", setState(cursor.ETagSet)),
+		fmt.Sprintf("last_modified=%s", setState(cursor.LastModifiedSet)),
+		fmt.Sprintf("next_cursor=%s", setState(cursor.CursorURLSet)),
+	}
+	if cursor.Resource != "" {
+		parts = append(parts, "resource="+cursor.Resource)
+	}
+	if cursor.LastSeenID != 0 {
+		parts = append(parts, fmt.Sprintf("last_seen_id=%d", cursor.LastSeenID))
+	}
+	if !cursor.LastSeenAt.IsZero() {
+		parts = append(parts, "last_seen_at="+cursor.LastSeenAt.Format(time.RFC3339))
+	}
+	if !cursor.LastPollAt.IsZero() {
+		parts = append(parts, "last_poll_at="+cursor.LastPollAt.Format(time.RFC3339))
+	}
+	if !cursor.LastSuccessfulPollAt.IsZero() {
+		parts = append(parts, "last_success_at="+cursor.LastSuccessfulPollAt.Format(time.RFC3339))
+	}
+	if cursor.XPollIntervalSeconds > 0 {
+		parts = append(parts, fmt.Sprintf("x_poll_interval=%ds", cursor.XPollIntervalSeconds))
+	}
+	if cursor.RateLimit != nil {
+		parts = append(parts, fmt.Sprintf("rate_remaining=%d", cursor.RateLimit.Remaining))
+		if !cursor.RateLimit.ResetAt.IsZero() {
+			parts = append(parts, "rate_reset="+cursor.RateLimit.ResetAt.Format(time.RFC3339))
+		}
+		if cursor.RateLimit.RetryAfterSeconds > 0 {
+			parts = append(parts, fmt.Sprintf("retry_after=%ds", cursor.RateLimit.RetryAfterSeconds))
+		}
+		if cursor.RateLimit.Resource != "" {
+			parts = append(parts, "rate_resource="+cursor.RateLimit.Resource)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatDiagnostic(diagnostic intake.Diagnostic) string {
+	parts := []string{}
+	if diagnostic.Source != "" {
+		parts = append(parts, "source="+diagnostic.Source)
+	}
+	if diagnostic.Repo != "" {
+		parts = append(parts, "repo="+diagnostic.Repo)
+	}
+	if diagnostic.Issue != 0 {
+		parts = append(parts, fmt.Sprintf("issue=%d", diagnostic.Issue))
+	}
+	if diagnostic.Message != "" {
+		parts = append(parts, "message="+diagnostic.Message)
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatTime(value time.Time) string {
+	if value.IsZero() {
+		return "unknown"
+	}
+	return value.Format(time.RFC3339)
+}
+
+func setState(ok bool) string {
+	if ok {
+		return "set"
+	}
+	return "unset"
+}
+
+func valueOr(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func workspaceCleanupCounts(results []workspace.CleanupResult) (removed, kept, failed int) {

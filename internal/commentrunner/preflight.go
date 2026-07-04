@@ -24,7 +24,8 @@ const (
 
 const (
 	bwrapInstallHint = "Install or upgrade bubblewrap, or explicitly rerun with --unsafe-no-sandbox to disable the filesystem boundary."
-	acpxInstallHint  = "npm install -g acpx@latest"
+	codexACPPackage  = "@agentclientprotocol/codex-acp@^0.0.44"
+	acpxInstallHint  = "Install Node.js/npm, then run `npm install -g acpx@latest`; Codex sessions also need npx access to " + codexACPPackage + " (allow npm registry access or pre-cache it with `npm cache add " + codexACPPackage + "`)."
 )
 
 type PreflightCheck struct {
@@ -137,7 +138,7 @@ func RunPreflight(ctx context.Context, cfg Config, deps PreflightDependencies) P
 	}
 
 	report.add(binaryCheck(deps, "acpx", cfg.AcpxPath, acpxInstallHint))
-	addAgentChecks(&report, cfg)
+	addAgentChecks(&report, cfg, deps)
 	report.finish()
 	return report
 }
@@ -185,7 +186,11 @@ func defaultPreflightNotificationBackend(_ context.Context, cfg Config) (Preflig
 	if cfg.NotificationTokenEnv == "" {
 		return nil, nil
 	}
-	token := strings.TrimSpace(os.Getenv(cfg.NotificationTokenEnv))
+	rawToken, ok := os.LookupEnv(cfg.NotificationTokenEnv)
+	if !ok {
+		return nil, fmt.Errorf("%s is unset", cfg.NotificationTokenEnv)
+	}
+	token := strings.TrimSpace(rawToken)
 	if token == "" {
 		return nil, fmt.Errorf("%s is empty", cfg.NotificationTokenEnv)
 	}
@@ -345,17 +350,19 @@ func unsafeSandboxDetail(cfg Config) string {
 	return "default bubblewrap sandbox remains required"
 }
 
-func addAgentChecks(report *PreflightReport, cfg Config) {
+func addAgentChecks(report *PreflightReport, cfg Config, deps PreflightDependencies) {
 	report.add(PreflightCheck{Name: "configured-agent", Status: CheckOK, Detail: configuredAgentDetail(cfg)})
 	switch cfg.Agent.Kind {
 	case AgentCodex:
 		report.add(codexAccessCheck(cfg))
+		report.add(codexACPCheck(deps))
 		report.add(codexAuthCheck())
 		report.add(PreflightCheck{Name: "claude-user-settings", Status: CheckSkipped, Detail: "configured agent is codex"})
 		report.add(PreflightCheck{Name: "claude-auth", Status: CheckSkipped, Detail: "configured agent is codex"})
 		report.add(PreflightCheck{Name: "claude-allowed-tools", Status: CheckSkipped, Detail: "configured agent is codex"})
 	case AgentClaude:
 		report.add(PreflightCheck{Name: "codex-agent-full-access", Status: CheckSkipped, Detail: "configured agent is claude"})
+		report.add(PreflightCheck{Name: "codex-acp", Status: CheckSkipped, Detail: "configured agent is claude"})
 		report.add(PreflightCheck{Name: "codex-auth", Status: CheckSkipped, Detail: "configured agent is claude"})
 		report.add(claudeUserSettingsCheck(cfg))
 		report.add(claudeAuthCheck())
@@ -375,6 +382,31 @@ func codexAccessCheck(cfg Config) PreflightCheck {
 		return PreflightCheck{Name: "codex-agent-full-access", Status: CheckOK, Detail: "enabled"}
 	}
 	return PreflightCheck{Name: "codex-agent-full-access", Status: CheckWarning, Detail: "disabled; Codex child CLI/shell workflow work may fail"}
+}
+
+func codexACPCheck(deps PreflightDependencies) PreflightCheck {
+	npxPath, npxErr := deps.LookPath("npx")
+	npmPath, npmErr := deps.LookPath("npm")
+	var missing []string
+	if npxErr != nil {
+		missing = append(missing, "npx")
+	}
+	if npmErr != nil {
+		missing = append(missing, "npm")
+	}
+	if len(missing) > 0 {
+		return PreflightCheck{
+			Name:   "codex-acp",
+			Status: CheckError,
+			Detail: fmt.Sprintf("acpx codex provider spawns `npx -y %s`, but %s not found", codexACPPackage, strings.Join(missing, " and ")),
+			Hint:   acpxInstallHint,
+		}
+	}
+	return PreflightCheck{
+		Name:   "codex-acp",
+		Status: CheckOK,
+		Detail: fmt.Sprintf("npx=%s npm=%s package=%s", npxPath, npmPath, codexACPPackage),
+	}
 }
 
 func codexAuthCheck() PreflightCheck {

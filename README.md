@@ -128,6 +128,8 @@ Make sure that GitHub account watches the repository with issue and PR notificat
 issue-spec runner preflight --repo owner/repo --runner "$(gh api user --jq .login)"
 ```
 
+Codex-backed runner dispatch uses acpx's Codex provider, which spawns `npx -y @agentclientprotocol/codex-acp@^0.0.44` before starting Codex. The runner preflight checks `acpx`, `npm`, and `npx`; hosts without npm registry access should pre-cache the package with `npm cache add @agentclientprotocol/codex-acp@^0.0.44` before starting the runner.
+
 For faster detection of comments written by the main runner account, use a dedicated notification-only GitHub account. GitHub notifications are user-specific and may not produce a new notification for comments authored by the same account that polls notifications. Without a notification-only account, self-authored command comments are still discovered by the lower-frequency repository comments fallback; this conservative default avoids aggressive all-comment polling and reduces the chance of hitting GitHub API limits.
 
 Create a bot or service account, watch the repository with issue and PR notifications enabled, and export a token that can read repository notifications:

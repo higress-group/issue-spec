@@ -217,6 +217,18 @@ func TestRunOnceFallbackRecoversCommentMissingFromNotifications(t *testing.T) {
 	if len(result.Jobs) != 1 || result.Jobs[0].Repo != "o/r" || result.Jobs[0].Issue != 9 {
 		t.Fatalf("fallback did not create expected job: %+v", result.Jobs)
 	}
+	if result.Notification.StatusCode != http.StatusNotModified || !result.Notification.NotModified || result.Notification.MatchedNotificationThreads != 0 {
+		t.Fatalf("notification poll report = %+v, want 304 with no matched threads", result.Notification)
+	}
+	if !strings.Contains(result.Notification.Message, "HTTP 304 Not Modified means") {
+		t.Fatalf("notification 304 message missing explanation: %+v", result.Notification)
+	}
+	if len(result.Repositories) != 1 || !result.Repositories[0].FallbackExecuted {
+		t.Fatalf("fallback execution not reported: %+v", result.Repositories)
+	}
+	if result.Repositories[0].RepositoryCommentsCursor.LastStatusCode != http.StatusOK || result.Repositories[0].RepositoryCommentsCursor.LastSeenID != 102 {
+		t.Fatalf("repository comments cursor not reported: %+v", result.Repositories[0].RepositoryCommentsCursor)
+	}
 	if len(backend.issueCommentOpts) != 0 {
 		t.Fatalf("notification comments fetched despite no notification: %+v", backend.issueCommentOpts)
 	}
@@ -249,8 +261,11 @@ func TestRunOnceUsesDedicatedNotificationBackendOnlyForNotificationPoll(t *testi
 	store := &fakeStore{state: st}
 	opts := testOptions("alice")
 	opts.NotificationBackend = notificationBackend
+	cfg := testConfig()
+	cfg.NotificationIdentity = "notify-bot"
+	cfg.NotificationTokenEnv = "BOT_TOKEN"
 
-	result, err := RunOnce(context.Background(), testConfig(), mainBackend, store, opts)
+	result, err := RunOnce(context.Background(), cfg, mainBackend, store, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,6 +274,12 @@ func TestRunOnceUsesDedicatedNotificationBackendOnlyForNotificationPoll(t *testi
 	}
 	if len(notificationBackend.notificationOpts) != 1 {
 		t.Fatalf("notification backend poll calls = %d, want 1", len(notificationBackend.notificationOpts))
+	}
+	if result.Notification.Poller != "notification_runner" || result.Notification.StatusCode != http.StatusOK || result.Notification.MatchedNotificationThreads != 1 {
+		t.Fatalf("notification poll report = %+v, want dedicated poller with one matched thread", result.Notification)
+	}
+	if !result.Notification.Cursor.ETagSet || result.Notification.ConditionalETag {
+		t.Fatalf("notification cursor should report saved etag but no pre-poll conditional etag: %+v", result.Notification)
 	}
 	if len(mainBackend.notificationOpts) != 0 {
 		t.Fatalf("main backend should not poll notifications: %+v", mainBackend.notificationOpts)
@@ -271,6 +292,43 @@ func TestRunOnceUsesDedicatedNotificationBackendOnlyForNotificationPoll(t *testi
 	}
 	if store.state.Repositories["o/r"].NotificationCursor.ETag != `"bot-notes-v1"` {
 		t.Fatalf("notification cursor not saved from bot backend: %+v", store.state.Repositories["o/r"].NotificationCursor)
+	}
+}
+
+func TestRunOnceIgnoresEmptyQuotedNotificationETag(t *testing.T) {
+	st := crstate.NewState()
+	st.Repositories["o/r"] = crstate.RepositoryState{
+		Repo: "o/r",
+		NotificationCursor: crstate.CursorState{
+			ETag:         `""`,
+			LastModified: "Sat, 04 Jul 2026 10:53:22 GMT",
+		},
+	}
+	backend := &fakeBackend{
+		user:        github.User{Login: "bot"},
+		permissions: map[string]string{"alice": "write"},
+		notifications: github.NotificationListResult{Metadata: github.ResponseMetadata{
+			StatusCode:   http.StatusOK,
+			Headers:      http.Header{"Etag": []string{`""`}},
+			LastModified: "Sat, 04 Jul 2026 11:42:00 GMT",
+		}},
+		repoComments: github.IssueCommentsResult{Metadata: meta(http.StatusNotModified, `"repo"`, 0)},
+	}
+	store := &fakeStore{state: st}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := backend.notificationOpts[0].ETag; got != "" {
+		t.Fatalf("notification ETag = %q, want empty", got)
+	}
+	if !result.Notification.ConditionalLastModified || result.Notification.ConditionalETag {
+		t.Fatalf("notification conditional report = %+v, want Last-Modified only", result.Notification)
+	}
+	cursor := store.state.Repositories["o/r"].NotificationCursor
+	if cursor.ETag != "" || result.Notification.Cursor.ETagSet {
+		t.Fatalf("notification cursor kept empty quoted ETag: cursor=%+v report=%+v", cursor, result.Notification.Cursor)
 	}
 }
 

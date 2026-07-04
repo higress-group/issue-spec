@@ -363,8 +363,8 @@ func (c *Client) doRunnerJSON(ctx context.Context, method, path string, query ur
 }
 
 func (c ConditionalRequest) apply(req *http.Request) {
-	if strings.TrimSpace(c.ETag) != "" {
-		req.Header.Set("If-None-Match", c.ETag)
+	if etag := usableETag(c.ETag); etag != "" {
+		req.Header.Set("If-None-Match", etag)
 	}
 	if strings.TrimSpace(c.LastModified) != "" {
 		req.Header.Set("If-Modified-Since", c.LastModified)
@@ -379,7 +379,7 @@ func responseMetadata(resp *http.Response) ResponseMetadata {
 	meta := ResponseMetadata{
 		StatusCode:   resp.StatusCode,
 		Headers:      headers,
-		ETag:         headers.Get("ETag"),
+		ETag:         usableETag(headers.Get("ETag")),
 		LastModified: headers.Get("Last-Modified"),
 		RateLimit: RateLimitMetadata{
 			Resource: headers.Get("X-RateLimit-Resource"),
@@ -407,6 +407,14 @@ func responseMetadata(resp *http.Response) ResponseMetadata {
 		meta.RateLimit.RetryAfterSeconds = value
 	}
 	return meta
+}
+
+func usableETag(value string) string {
+	value = strings.TrimSpace(value)
+	if value == `""` || strings.EqualFold(value, `W/""`) {
+		return ""
+	}
+	return value
 }
 
 func addPageQuery(query url.Values, page RunnerPageOptions, defaultPerPage int) {

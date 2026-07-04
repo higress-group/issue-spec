@@ -72,6 +72,46 @@ func TestRunnerPollNotificationsHandles304AndMetadata(t *testing.T) {
 	}
 }
 
+func TestRunnerPollNotificationsIgnoresEmptyQuotedETag(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("If-None-Match"); got != "" {
+			t.Fatalf("If-None-Match = %q, want omitted", got)
+		}
+		if got := r.Header.Get("If-Modified-Since"); got != "Sat, 04 Jul 2026 10:53:22 GMT" {
+			t.Fatalf("If-Modified-Since = %q", got)
+		}
+		w.Header().Set("ETag", `""`)
+		w.Header().Set("Last-Modified", "Sat, 04 Jul 2026 11:42:00 GMT")
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL("github.com", server.URL, "token", server.Client())
+	result, err := client.PollNotifications(context.Background(), NotificationListOptions{
+		ConditionalRequest: ConditionalRequest{ETag: `""`, LastModified: "Sat, 04 Jul 2026 10:53:22 GMT"},
+		All:                true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Metadata.ETag != "" || result.Metadata.LastModified == "" {
+		t.Fatalf("metadata = %+v, want empty ETag and Last-Modified", result.Metadata)
+	}
+}
+
+func TestUsableETagKeepsNonEmptyValidators(t *testing.T) {
+	for _, value := range []string{`"etag-1"`, `W/"weak-etag"`} {
+		if got := usableETag(" " + value + " "); got != value {
+			t.Fatalf("usableETag(%q) = %q, want %q", value, got, value)
+		}
+	}
+	for _, value := range []string{`""`, `W/""`, " "} {
+		if got := usableETag(value); got != "" {
+			t.Fatalf("usableETag(%q) = %q, want empty", value, got)
+		}
+	}
+}
+
 func TestRunnerRepositoryIssueCommentsFallbackPaginationAndCursor(t *testing.T) {
 	since := time.Date(2026, 7, 3, 9, 0, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

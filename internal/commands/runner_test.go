@@ -395,6 +395,29 @@ func TestDefaultRunnerNotificationBackendFailsClosedWhenTokenEmpty(t *testing.T)
 	}
 }
 
+func TestDefaultRunnerNotificationBackendFailsClosedWhenTokenUnset(t *testing.T) {
+	unsetEnvForTest(t, "BOT_TOKEN")
+	backend, err := defaultRunnerNotificationBackend(context.Background(), commentrunner.Config{NotificationTokenEnv: "BOT_TOKEN"})
+	if err == nil || !strings.Contains(err.Error(), "BOT_TOKEN is unset") {
+		t.Fatalf("defaultRunnerNotificationBackend error = %v, backend=%T", err, backend)
+	}
+}
+
+func unsetEnvForTest(t *testing.T, name string) {
+	t.Helper()
+	oldValue, hadValue := os.LookupEnv(name)
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if hadValue {
+			_ = os.Setenv(name, oldValue)
+			return
+		}
+		_ = os.Unsetenv(name)
+	})
+}
+
 func captureRunnerPollConfig(t *testing.T, args ...string) commentrunner.Config {
 	t.Helper()
 	var out, errOut bytes.Buffer
@@ -616,6 +639,89 @@ func TestRunnerPollTextOutputPrintsStartupAndPreflightOnce(t *testing.T) {
 	}
 	if got := strings.Count(text, "poll cycle: completed"); got != 2 {
 		t.Fatalf("poll cycles printed %d times, want 2:\n%s", got, text)
+	}
+}
+
+func TestRunnerPollTextOutputIncludesNotificationDiagnostics(t *testing.T) {
+	clearCommandAuthEnv(t)
+	t.Setenv("BOT_TOKEN", "secret-token-value")
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	app.runnerReconcile = func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error) {
+		return jobs.ReconcileResult{}, nil
+	}
+	app.runnerIntake = func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error) {
+		now := time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+		return intake.Result{
+			OK: true,
+			Notification: intake.NotificationPoll{
+				Poller:                     "notification_runner",
+				ConfiguredIdentity:         "notify-bot",
+				TokenEnv:                   "BOT_TOKEN",
+				StatusCode:                 http.StatusNotModified,
+				NotModified:                true,
+				ConditionalETag:            true,
+				MatchedNotifications:       0,
+				MatchedNotificationThreads: 0,
+				Cursor: intake.CursorReport{
+					Resource:             "notifications",
+					LastStatusCode:       http.StatusNotModified,
+					ETagSet:              true,
+					LastPollAt:           now,
+					XPollIntervalSeconds: 90,
+				},
+				Message: "HTTP 304 Not Modified means GitHub reported no notification changes for this poller and stored cursor; repository comments fallback still runs when due",
+			},
+			Repositories: []intake.RepositoryCycle{{
+				Repo:             "o/r",
+				FallbackDue:      true,
+				FallbackExecuted: true,
+				FallbackNextAt:   now.Add(5 * time.Minute),
+				RepositoryCommentsCursor: intake.CursorReport{
+					Resource:       "repo-comments:o/r",
+					LastStatusCode: http.StatusOK,
+					ETagSet:        true,
+					LastSeenID:     123,
+				},
+				FallbackMessage: "repository comments fallback executed because fallback interval was due",
+			}},
+			Next: intake.NextStep{PollAt: now.Add(time.Minute)},
+		}, nil
+	}
+	app.runnerDispatch = func(context.Context, commentrunner.Config) (jobs.Result, error) {
+		return jobs.Result{Reason: "no ready queued job"}, nil
+	}
+
+	code := app.runRunner(context.Background(), []string{
+		"poll",
+		"--repo", "o/r",
+		"--runner", "maintainer",
+		"--notification-runner", "notify-bot",
+		"--notification-token-env", "BOT_TOKEN",
+		"--state", "/tmp/state.json",
+		"--workspace-root", "/tmp/workspaces",
+		"--once",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"notification_runner: notify-bot token_env=BOT_TOKEN token=set",
+		"notification poll: poller=notification_runner identity=notify-bot token_env=BOT_TOKEN status=304 Not Modified",
+		"HTTP 304 Not Modified means",
+		"fallback_due=true fallback_executed=true",
+		"repo_comments_cursor=status=200 etag=set",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "secret-token-value") {
+		t.Fatalf("output leaked token value:\n%s", text)
 	}
 }
 

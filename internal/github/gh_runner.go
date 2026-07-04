@@ -444,7 +444,7 @@ func metadataFromHeaders(statusCode int, headers http.Header) ResponseMetadata {
 		NotModified:         statusCode == http.StatusNotModified,
 		Headers:             headers,
 		PollIntervalSeconds: atoiHeader(headers, "X-Poll-Interval"),
-		ETag:                headers.Get("ETag"),
+		ETag:                usableETag(headers.Get("ETag")),
 		LastModified:        headers.Get("Last-Modified"),
 		RateLimit: RateLimitMetadata{
 			Limit:             atoiHeader(headers, "X-RateLimit-Limit"),
@@ -491,8 +491,8 @@ func looksLikeHTTPStatus(data []byte) bool {
 
 func conditionalHeaders(etag, lastModified string) http.Header {
 	headers := http.Header{}
-	if strings.TrimSpace(etag) != "" {
-		headers.Set("If-None-Match", strings.TrimSpace(etag))
+	if etag := usableETag(etag); etag != "" {
+		headers.Set("If-None-Match", etag)
 	}
 	if strings.TrimSpace(lastModified) != "" {
 		headers.Set("If-Modified-Since", strings.TrimSpace(lastModified))

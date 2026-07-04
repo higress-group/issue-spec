@@ -66,6 +66,20 @@ func TestGHRunnerPollNotificationsUsesIncludedConditionalAPI(t *testing.T) {
 	}
 }
 
+func TestGHRunnerConditionalHeadersIgnoreEmptyQuotedETag(t *testing.T) {
+	headers := conditionalHeaders(`""`, "Sat, 04 Jul 2026 10:53:22 GMT")
+	if got := headers.Get("If-None-Match"); got != "" {
+		t.Fatalf("If-None-Match = %q, want omitted", got)
+	}
+	if got := headers.Get("If-Modified-Since"); got != "Sat, 04 Jul 2026 10:53:22 GMT" {
+		t.Fatalf("If-Modified-Since = %q", got)
+	}
+	meta := metadataFromHeaders(http.StatusOK, http.Header{"Etag": []string{`""`}})
+	if meta.ETag != "" {
+		t.Fatalf("metadata ETag = %q, want empty", meta.ETag)
+	}
+}
+
 func TestGHRunnerTreats304AsNoChange(t *testing.T) {
 	runner := &sequenceCLIRunner{
 		results: []ExternalCLIResult{{

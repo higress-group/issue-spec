@@ -69,8 +69,8 @@ func TestPreflightUnsafeNoSandboxSkipsBwrapAndMarksBoundaryDisabled(t *testing.T
 			switch name {
 			case "gh":
 				return "/test/bin/gh", nil
-			case "acpx":
-				return "/test/bin/acpx", nil
+			case "acpx", "npm", "npx":
+				return "/test/bin/" + name, nil
 			case "bwrap":
 				t.Fatal("bwrap lookup should be skipped in unsafe mode")
 			}
@@ -91,6 +91,40 @@ func TestPreflightUnsafeNoSandboxSkipsBwrapAndMarksBoundaryDisabled(t *testing.T
 	}
 }
 
+func TestPreflightFailsCodexACPToolchainWhenNpxMissing(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	report := RunPreflight(context.Background(), cfg, PreflightDependencies{
+		SelectBackend: func(context.Context, string) (auth.GitHubBackendSelection, error) {
+			return auth.GitHubBackendSelection{
+				Mode:            auth.GitHubBackendModeGH,
+				Name:            auth.GitHubBackendNameGH,
+				Kind:            auth.GitHubBackendKindCLI,
+				Host:            "github.com",
+				SelectionSource: "test",
+			}, nil
+		},
+		OpenBackend: watchedPreflightBackend,
+		LookPath: func(name string) (string, error) {
+			switch name {
+			case "gh", "acpx", "npm":
+				return "/test/bin/" + name, nil
+			case "bwrap":
+				t.Fatal("bwrap lookup should be skipped in unsafe mode")
+			}
+			return "", errors.New("missing")
+		},
+	})
+
+	if report.OK {
+		t.Fatalf("preflight unexpectedly OK without npx: %+v", report)
+	}
+	check := findCheck(t, report, "codex-acp")
+	if check.Status != CheckError || !strings.Contains(check.Detail, "npx -y "+codexACPPackage) || !strings.Contains(check.Detail, "npx not found") || !strings.Contains(check.Hint, "acpx") || !strings.Contains(check.Hint, codexACPPackage) {
+		t.Fatalf("unexpected codex-acp check: %+v", check)
+	}
+}
+
 func TestPreflightFailsWhenRepositoryWatchCannotBeConfirmed(t *testing.T) {
 	cfg := testPreflightConfig(t)
 	cfg.UnsafeNoSandbox = true
@@ -108,8 +142,9 @@ func TestPreflightFailsWhenRepositoryWatchCannotBeConfirmed(t *testing.T) {
 			return fakePreflightBackend{subscription: github.RepositorySubscription{Subscribed: false}}, nil
 		},
 		LookPath: func(name string) (string, error) {
-			if name == "acpx" {
-				return "/test/bin/acpx", nil
+			switch name {
+			case "acpx", "npm", "npx":
+				return "/test/bin/" + name, nil
 			}
 			return "", errors.New("missing")
 		},
@@ -150,8 +185,9 @@ func TestPreflightUsesNotificationBackendForRepositoryWatchWhenConfigured(t *tes
 			}, nil
 		},
 		LookPath: func(name string) (string, error) {
-			if name == "acpx" {
-				return "/test/bin/acpx", nil
+			switch name {
+			case "acpx", "npm", "npx":
+				return "/test/bin/" + name, nil
 			}
 			return "", errors.New("missing")
 		},
@@ -194,8 +230,9 @@ func TestPreflightNamesNotificationWatchWhenNotificationBackendUnavailable(t *te
 			return nil, errors.New("bot token missing")
 		},
 		LookPath: func(name string) (string, error) {
-			if name == "acpx" {
-				return "/test/bin/acpx", nil
+			switch name {
+			case "acpx", "npm", "npx":
+				return "/test/bin/" + name, nil
 			}
 			return "", errors.New("missing")
 		},
@@ -235,8 +272,9 @@ func TestPreflightSkipsNotificationBackendWhenNotConfigured(t *testing.T) {
 			return nil, nil
 		},
 		LookPath: func(name string) (string, error) {
-			if name == "acpx" {
-				return "/test/bin/acpx", nil
+			switch name {
+			case "acpx", "npm", "npx":
+				return "/test/bin/" + name, nil
 			}
 			return "", errors.New("missing")
 		},
@@ -259,6 +297,29 @@ func TestDefaultPreflightNotificationBackendFailsClosedWhenTokenEmpty(t *testing
 	if err == nil || !strings.Contains(err.Error(), "BOT_TOKEN is empty") {
 		t.Fatalf("defaultPreflightNotificationBackend error = %v, backend=%T", err, backend)
 	}
+}
+
+func TestDefaultPreflightNotificationBackendFailsClosedWhenTokenUnset(t *testing.T) {
+	unsetEnvForTest(t, "BOT_TOKEN")
+	backend, err := defaultPreflightNotificationBackend(context.Background(), Config{NotificationTokenEnv: "BOT_TOKEN"})
+	if err == nil || !strings.Contains(err.Error(), "BOT_TOKEN is unset") {
+		t.Fatalf("defaultPreflightNotificationBackend error = %v, backend=%T", err, backend)
+	}
+}
+
+func unsetEnvForTest(t *testing.T, name string) {
+	t.Helper()
+	oldValue, hadValue := os.LookupEnv(name)
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if hadValue {
+			_ = os.Setenv(name, oldValue)
+			return
+		}
+		_ = os.Unsetenv(name)
+	})
 }
 
 func TestPreflightRejectsNotificationIdentityMismatch(t *testing.T) {
@@ -285,8 +346,9 @@ func TestPreflightRejectsNotificationIdentityMismatch(t *testing.T) {
 			}, nil
 		},
 		LookPath: func(name string) (string, error) {
-			if name == "acpx" {
-				return "/test/bin/acpx", nil
+			switch name {
+			case "acpx", "npm", "npx":
+				return "/test/bin/" + name, nil
 			}
 			return "", errors.New("missing")
 		},
@@ -424,7 +486,7 @@ func passingPreflightDependencies(t *testing.T) PreflightDependencies {
 		OpenBackend: watchedPreflightBackend,
 		LookPath: func(name string) (string, error) {
 			switch name {
-			case "gh", "acpx":
+			case "gh", "acpx", "npm", "npx":
 				return "/test/bin/" + name, nil
 			case "bwrap":
 				t.Fatal("bwrap lookup should be skipped in unsafe mode")
