@@ -38,7 +38,10 @@ func TestPrepareNewClonesChecksOutBranchAndReturnsMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPath := filepath.Join(root, "ws-1")
+	wantPath, err := canonicalPath(filepath.Join(root, "ws-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if binding.Workspace.Path != wantPath || binding.AcpxWorkingDirectory != wantPath || binding.SandboxWorkspacePath != wantPath {
 		t.Fatalf("unexpected workspace paths: %+v", binding)
 	}
@@ -111,6 +114,44 @@ func TestResolveResumeValidatesStoredWorkspaceAndRefreshesRetention(t *testing.T
 	_, err = manager.ResolveResume(context.Background(), ResumeRequest{Workspace: state.WorkspaceMetadata{ID: "ws-x", Path: filepath.Join(root, "..", "outside")}})
 	if err == nil || !strings.Contains(err.Error(), "escapes workspace root") {
 		t.Fatalf("expected path escape rejection, got %v", err)
+	}
+}
+
+func TestResolveResumeAcceptsRealpathWorkspaceUnderSymlinkedRoot(t *testing.T) {
+	realRoot := t.TempDir()
+	linkParent := t.TempDir()
+	linkRoot := filepath.Join(linkParent, "workspaces")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	pathViaLink := filepath.Join(linkRoot, "ws-1")
+	if err := os.MkdirAll(pathViaLink, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	realPath, err := filepath.EvalSymlinks(pathViaLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(2100, 0).UTC()
+	runner := &fakeGitRunner{t: t, topLevel: realPath, remote: "https://github.com/o/r.git", branch: "issue-spec-ws-1"}
+	manager := Manager{Root: linkRoot, Retention: 2 * time.Hour, Runner: runner, Now: func() time.Time { return now }}
+
+	binding, err := manager.ResolveResume(context.Background(), ResumeRequest{
+		Repo:     "o/r",
+		CloneURL: "https://github.com/o/r.git",
+		Workspace: state.WorkspaceMetadata{
+			ID:       "ws-1",
+			Path:     realPath,
+			Repo:     "o/r",
+			CloneURL: "https://github.com/o/r.git",
+			Branch:   "issue-spec-ws-1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.Workspace.Path != realPath || binding.AcpxWorkingDirectory != realPath || binding.SandboxWorkspacePath != realPath {
+		t.Fatalf("resume did not preserve canonical workspace path: %+v", binding)
 	}
 }
 

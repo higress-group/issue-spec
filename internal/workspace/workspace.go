@@ -542,6 +542,10 @@ func (m Manager) normalized() (Manager, string, error) {
 	if err != nil {
 		return Manager{}, "", err
 	}
+	absRoot, err = canonicalPath(absRoot)
+	if err != nil {
+		return Manager{}, "", err
+	}
 	if m.Retention <= 0 {
 		return Manager{}, "", fmt.Errorf("workspace retention must be positive")
 	}
@@ -691,11 +695,11 @@ func validatePathUnderRoot(root, path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("path is required")
 	}
-	absRoot, err := filepath.Abs(root)
+	absRoot, err := canonicalPath(root)
 	if err != nil {
 		return "", err
 	}
-	absPath, err := filepath.Abs(path)
+	absPath, err := canonicalPath(path)
 	if err != nil {
 		return "", err
 	}
@@ -709,6 +713,41 @@ func validatePathUnderRoot(root, path string) (string, error) {
 		return "", fmt.Errorf("path %q escapes workspace root %q", path, absRoot)
 	}
 	return absPath, nil
+}
+
+func canonicalPath(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	absPath = filepath.Clean(absPath)
+	evaluated, err := filepath.EvalSymlinks(absPath)
+	if err == nil {
+		return filepath.Clean(evaluated), nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	var missing []string
+	probe := absPath
+	for {
+		evaluated, err := filepath.EvalSymlinks(probe)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				evaluated = filepath.Join(evaluated, missing[i])
+			}
+			return filepath.Clean(evaluated), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return absPath, nil
+		}
+		missing = append(missing, filepath.Base(probe))
+		probe = parent
+	}
 }
 
 func validateGitRef(label, ref string) error {
