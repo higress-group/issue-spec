@@ -19,6 +19,8 @@ import (
 const (
 	AgentCodex  = "codex"
 	AgentClaude = "claude"
+
+	DefaultNotificationTokenEnv = "ISSUE_SPEC_NOTIFICATION_TOKEN"
 )
 
 type Duration struct {
@@ -26,23 +28,25 @@ type Duration struct {
 }
 
 type Config struct {
-	Hostname            string                 `json:"hostname"`
-	Repositories        []string               `json:"repositories"`
-	RunnerIdentity      string                 `json:"runner_identity"`
-	AllowedUsers        []string               `json:"allowed_users"`
-	GitHubBackend       auth.GitHubBackendMode `json:"github_backend"`
-	StatePath           string                 `json:"state_path"`
-	PollInterval        Duration               `json:"poll_interval"`
-	FallbackInterval    Duration               `json:"fallback_interval"`
-	MaxConcurrentJobs   int                    `json:"max_concurrent_jobs"`
-	AcpxPath            string                 `json:"acpx_path"`
-	Agent               AgentConfig            `json:"agent"`
-	WorkspaceRoot       string                 `json:"workspace_root"`
-	WorkspaceRetention  Duration               `json:"workspace_retention"`
-	BwrapPath           string                 `json:"bwrap_path,omitempty"`
-	UnsafeNoSandbox     bool                   `json:"unsafe_no_sandbox"`
-	GHConfigDir         string                 `json:"gh_config_dir,omitempty"`
-	CancellationEnabled bool                   `json:"cancellation_enabled"`
+	Hostname             string                 `json:"hostname"`
+	Repositories         []string               `json:"repositories"`
+	RunnerIdentity       string                 `json:"runner_identity"`
+	NotificationIdentity string                 `json:"notification_identity,omitempty"`
+	NotificationTokenEnv string                 `json:"notification_token_env,omitempty"`
+	AllowedUsers         []string               `json:"allowed_users"`
+	GitHubBackend        auth.GitHubBackendMode `json:"github_backend"`
+	StatePath            string                 `json:"state_path"`
+	PollInterval         Duration               `json:"poll_interval"`
+	FallbackInterval     Duration               `json:"fallback_interval"`
+	MaxConcurrentJobs    int                    `json:"max_concurrent_jobs"`
+	AcpxPath             string                 `json:"acpx_path"`
+	Agent                AgentConfig            `json:"agent"`
+	WorkspaceRoot        string                 `json:"workspace_root"`
+	WorkspaceRetention   Duration               `json:"workspace_retention"`
+	BwrapPath            string                 `json:"bwrap_path,omitempty"`
+	UnsafeNoSandbox      bool                   `json:"unsafe_no_sandbox"`
+	GHConfigDir          string                 `json:"gh_config_dir,omitempty"`
+	CancellationEnabled  bool                   `json:"cancellation_enabled"`
 }
 
 type AgentConfig struct {
@@ -151,6 +155,8 @@ func (c Config) Normalized() Config {
 		c.GitHubBackend = auth.GitHubBackendModeAuto
 	}
 	c.RunnerIdentity = strings.TrimSpace(c.RunnerIdentity)
+	c.NotificationIdentity = strings.TrimSpace(c.NotificationIdentity)
+	c.NotificationTokenEnv = strings.TrimSpace(c.NotificationTokenEnv)
 	c.StatePath = strings.TrimSpace(c.StatePath)
 	c.WorkspaceRoot = strings.TrimSpace(c.WorkspaceRoot)
 	c.AcpxPath = strings.TrimSpace(c.AcpxPath)
@@ -185,6 +191,9 @@ func (c Config) Validate() error {
 	}
 	if c.RunnerIdentity == "" {
 		return fmt.Errorf("--runner is required")
+	}
+	if c.NotificationIdentity != "" && c.NotificationTokenEnv == "" {
+		return fmt.Errorf("--notification-token-env is required when --notification-runner is set")
 	}
 	if c.StatePath == "" {
 		return fmt.Errorf("--state is required")

@@ -190,6 +190,25 @@ func TestConfigNormalizedTrimsSplitsAndDeduplicatesAllowedUsers(t *testing.T) {
 	}
 }
 
+func TestConfigValidateRequiresNotificationTokenEnvWithIdentity(t *testing.T) {
+	cfg := Config{
+		Repositories:         []string{"o/r"},
+		RunnerIdentity:       "bot",
+		NotificationIdentity: "notify-bot",
+		StatePath:            filepath.Join(t.TempDir(), "state.json"),
+		WorkspaceRoot:        t.TempDir(),
+		PollInterval:         NewDuration(time.Minute),
+		FallbackInterval:     NewDuration(time.Hour),
+		WorkspaceRetention:   NewDuration(24 * time.Hour),
+		MaxConcurrentJobs:    1,
+		Agent:                DefaultAgentConfig(),
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "--notification-token-env is required") {
+		t.Fatalf("Validate error = %v", err)
+	}
+}
+
 func setDefaultConfigPathEnv(t *testing.T, home, configDir, cacheDir string) {
 	t.Helper()
 	t.Setenv(auth.GitHubBackendEnv, "")

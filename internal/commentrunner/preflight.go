@@ -41,15 +41,21 @@ type PreflightReport struct {
 }
 
 type PreflightDependencies struct {
-	SelectBackend func(context.Context, string) (auth.GitHubBackendSelection, error)
-	OpenBackend   func(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error)
-	LookPath      func(string) (string, error)
-	RunCommand    func(context.Context, string, ...string) ([]byte, error)
+	SelectBackend           func(context.Context, string) (auth.GitHubBackendSelection, error)
+	OpenBackend             func(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error)
+	OpenNotificationBackend func(context.Context, Config) (PreflightNotificationBackend, error)
+	LookPath                func(string) (string, error)
+	RunCommand              func(context.Context, string, ...string) ([]byte, error)
 }
 
 type PreflightRunnerBackend interface {
 	BackendInfo() github.BackendInfo
 	GetRepositorySubscription(context.Context, string) (github.RepositorySubscriptionResult, error)
+}
+
+type PreflightNotificationBackend interface {
+	PreflightRunnerBackend
+	GetUser(context.Context) (github.User, []string, error)
 }
 
 func RunPreflight(ctx context.Context, cfg Config, deps PreflightDependencies) PreflightReport {
@@ -88,8 +94,33 @@ func RunPreflight(ctx context.Context, cfg Config, deps PreflightDependencies) P
 		report.add(PreflightCheck{Name: "gh-cli", Status: CheckSkipped, Detail: "selected backend does not require gh"})
 	}
 
+	watchBackend := runnerBackend
+	watchErr := backendErr
+	watchCheckPrefix := "repository-watch:"
+	if cfg.NotificationTokenEnv != "" {
+		watchCheckPrefix = "notification-watch:"
+		notificationBackend, notificationErr := deps.OpenNotificationBackend(ctx, cfg)
+		if notificationErr != nil {
+			report.add(PreflightCheck{Name: "notification-backend", Status: CheckError, Detail: notificationErr.Error(), Hint: "Set a readable bot token in " + cfg.NotificationTokenEnv + " or omit --notification-runner."})
+			watchBackend = nil
+			watchErr = notificationErr
+		} else if notificationBackend == nil {
+			report.add(PreflightCheck{Name: "notification-backend", Status: CheckError, Detail: "notification backend was not configured", Hint: "Set --notification-token-env or omit --notification-runner."})
+			watchBackend = nil
+			watchErr = fmt.Errorf("notification backend was not configured")
+		} else {
+			info := notificationBackend.BackendInfo()
+			report.add(PreflightCheck{Name: "notification-backend", Status: CheckOK, Detail: fmt.Sprintf("%s backend ready for notification polling on %s", info.Name, info.Host)})
+			report.add(notificationIdentityCheck(ctx, cfg, notificationBackend))
+			watchBackend = notificationBackend
+			watchErr = nil
+		}
+	} else {
+		report.add(PreflightCheck{Name: "notification-backend", Status: CheckSkipped, Detail: "using main runner backend for notification polling"})
+	}
+
 	for _, repo := range cfg.Repositories {
-		report.add(repositoryWatchCheck(ctx, repo, runnerBackend, backendErr))
+		report.add(repositoryWatchCheck(ctx, watchCheckPrefix+repo, repo, watchBackend, watchErr))
 	}
 
 	if cfg.GHConfigDir == "" {
@@ -120,6 +151,9 @@ func (d PreflightDependencies) withDefaults() PreflightDependencies {
 	if d.OpenBackend == nil {
 		d.OpenBackend = defaultPreflightRunnerBackend
 	}
+	if d.OpenNotificationBackend == nil {
+		d.OpenNotificationBackend = defaultPreflightNotificationBackend
+	}
 	if d.LookPath == nil {
 		d.LookPath = exec.LookPath
 	}
@@ -146,11 +180,49 @@ func defaultPreflightRunnerBackend(_ context.Context, selection auth.GitHubBacke
 	}
 }
 
-func repositoryWatchCheck(ctx context.Context, repo string, backend PreflightRunnerBackend, backendErr error) PreflightCheck {
-	check := PreflightCheck{Name: "repository-watch:" + repo}
+func defaultPreflightNotificationBackend(_ context.Context, cfg Config) (PreflightNotificationBackend, error) {
+	cfg = cfg.Normalized()
+	if cfg.NotificationTokenEnv == "" {
+		return nil, nil
+	}
+	token := strings.TrimSpace(os.Getenv(cfg.NotificationTokenEnv))
+	if token == "" {
+		return nil, fmt.Errorf("%s is empty", cfg.NotificationTokenEnv)
+	}
+	return github.NewClient(cfg.Hostname, token), nil
+}
+
+func notificationIdentityCheck(ctx context.Context, cfg Config, backend PreflightNotificationBackend) PreflightCheck {
+	check := PreflightCheck{Name: "notification-identity"}
+	user, _, err := backend.GetUser(ctx)
+	if err != nil {
+		check.Status = CheckError
+		check.Detail = "notification identity lookup failed: " + err.Error()
+		check.Hint = "Ensure the notification bot token can read its authenticated user."
+		return check
+	}
+	login := strings.TrimSpace(user.Login)
+	if login == "" {
+		check.Status = CheckError
+		check.Detail = "notification identity lookup returned an empty login"
+		return check
+	}
+	if cfg.NotificationIdentity != "" && !strings.EqualFold(login, cfg.NotificationIdentity) {
+		check.Status = CheckError
+		check.Detail = fmt.Sprintf("notification token authenticates as %q, want %q", login, cfg.NotificationIdentity)
+		check.Hint = "Use a token for the configured notification runner account."
+		return check
+	}
+	check.Status = CheckOK
+	check.Detail = "notification token authenticates as " + login
+	return check
+}
+
+func repositoryWatchCheck(ctx context.Context, name, repo string, backend PreflightRunnerBackend, backendErr error) PreflightCheck {
+	check := PreflightCheck{Name: name}
 	if backendErr != nil {
 		check.Status = CheckError
-		check.Detail = "cannot verify repository subscription because GitHub backend selection failed: " + backendErr.Error()
+		check.Detail = "cannot verify repository subscription because the GitHub backend is unavailable: " + backendErr.Error()
 		return check
 	}
 	if backend == nil {

@@ -241,6 +241,38 @@ func TestRunnerPollParsesAllowedUsers(t *testing.T) {
 	}
 }
 
+func TestRunnerPollParsesNotificationRunnerWithDefaultTokenEnv(t *testing.T) {
+	clearCommandAuthEnv(t)
+	cfg := captureRunnerPollConfig(t,
+		"--repo", "o/r",
+		"--runner", "maintainer",
+		"--notification-runner", "notify-bot",
+	)
+
+	if cfg.NotificationIdentity != "notify-bot" {
+		t.Fatalf("NotificationIdentity = %q, want notify-bot", cfg.NotificationIdentity)
+	}
+	if cfg.NotificationTokenEnv != commentrunner.DefaultNotificationTokenEnv {
+		t.Fatalf("NotificationTokenEnv = %q, want %q", cfg.NotificationTokenEnv, commentrunner.DefaultNotificationTokenEnv)
+	}
+}
+
+func TestRunnerPollParsesNotificationTokenEnvWithoutIdentity(t *testing.T) {
+	clearCommandAuthEnv(t)
+	cfg := captureRunnerPollConfig(t,
+		"--repo", "o/r",
+		"--runner", "maintainer",
+		"--notification-token-env", "CUSTOM_NOTIFY_TOKEN",
+	)
+
+	if cfg.NotificationIdentity != "" {
+		t.Fatalf("NotificationIdentity = %q, want empty", cfg.NotificationIdentity)
+	}
+	if cfg.NotificationTokenEnv != "CUSTOM_NOTIFY_TOKEN" {
+		t.Fatalf("NotificationTokenEnv = %q, want CUSTOM_NOTIFY_TOKEN", cfg.NotificationTokenEnv)
+	}
+}
+
 func TestRunnerPreflightParsesAllowedUsers(t *testing.T) {
 	clearCommandAuthEnv(t)
 	var out, errOut bytes.Buffer
@@ -297,6 +329,69 @@ func TestRunnerIntakeUsesAllowedUsersAuthorizationPolicy(t *testing.T) {
 	policy := captured.AuthorizationPolicy
 	if !captured.DryRun || policy.RunnerLogin != "bot" || strings.Join(policy.AllowedUsers, ",") != "alice,bob" || policy.AllowAuthenticatedUser {
 		t.Fatalf("intake options = %+v, want dry-run policy for bot with alice,bob only", captured)
+	}
+}
+
+func TestRunnerIntakeInjectsNotificationBackendWhenConfigured(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	mainBackend := &runnerPhaseBackend{fakeGitHubBackend: fakeGitHubBackend{info: github.BackendInfo{Name: "rest", Kind: "rest", Host: "github.com"}}}
+	notificationBackend := &runnerPhaseBackend{fakeGitHubBackend: fakeGitHubBackend{info: github.BackendInfo{Name: "rest", Kind: "rest", Host: "github.com"}}}
+	app.selectRunnerBackend = func(_ context.Context, host string, mode auth.GitHubBackendMode) (auth.GitHubBackendSelection, error) {
+		return auth.GitHubBackendSelection{
+			Mode:            mode,
+			Name:            auth.GitHubBackendNameREST,
+			Kind:            auth.GitHubBackendKindREST,
+			Host:            host,
+			SelectionSource: "test",
+			Token:           auth.Token{Value: "main-token", Host: host},
+		}, nil
+	}
+	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) {
+		return mainBackend, nil
+	}
+	app.newRunnerNotificationBackend = func(context.Context, commentrunner.Config) (runnerNotificationBackend, error) {
+		return notificationBackend, nil
+	}
+	cfg := commentrunner.Config{
+		Hostname:             "github.com",
+		Repositories:         []string{"o/r"},
+		RunnerIdentity:       "maintainer",
+		NotificationIdentity: "notify-bot",
+		NotificationTokenEnv: "BOT_TOKEN",
+		GitHubBackend:        auth.GitHubBackendModeREST,
+		StatePath:            filepath.Join(t.TempDir(), "state.json"),
+		PollInterval:         commentrunner.NewDuration(time.Minute),
+		FallbackInterval:     commentrunner.NewDuration(time.Hour),
+		MaxConcurrentJobs:    1,
+		AcpxPath:             "acpx",
+		Agent:                commentrunner.DefaultAgentConfig(),
+		WorkspaceRoot:        t.TempDir(),
+		WorkspaceRetention:   commentrunner.NewDuration(time.Hour),
+		CancellationEnabled:  true,
+	}
+
+	result, err := app.runRunnerIntake(context.Background(), cfg, intake.Options{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK {
+		t.Fatalf("intake result not OK: %+v", result)
+	}
+	if len(notificationBackend.notificationOpts) != 1 {
+		t.Fatalf("notification backend poll calls = %d, want 1", len(notificationBackend.notificationOpts))
+	}
+	if len(mainBackend.notificationOpts) != 0 {
+		t.Fatalf("main backend should not poll notifications: %+v", mainBackend.notificationOpts)
+	}
+}
+
+func TestDefaultRunnerNotificationBackendFailsClosedWhenTokenEmpty(t *testing.T) {
+	t.Setenv("BOT_TOKEN", " ")
+	backend, err := defaultRunnerNotificationBackend(context.Background(), commentrunner.Config{NotificationTokenEnv: "BOT_TOKEN"})
+	if err == nil || !strings.Contains(err.Error(), "BOT_TOKEN is empty") {
+		t.Fatalf("defaultRunnerNotificationBackend error = %v, backend=%T", err, backend)
 	}
 }
 
@@ -725,9 +820,11 @@ func TestRunnerBackendFlagOverridesEnvForEveryPhase(t *testing.T) {
 
 type runnerPhaseBackend struct {
 	fakeGitHubBackend
+	notificationOpts []github.NotificationListOptions
 }
 
-func (b *runnerPhaseBackend) PollNotifications(context.Context, github.NotificationListOptions) (github.NotificationListResult, error) {
+func (b *runnerPhaseBackend) PollNotifications(_ context.Context, opts github.NotificationListOptions) (github.NotificationListResult, error) {
+	b.notificationOpts = append(b.notificationOpts, opts)
 	return github.NotificationListResult{Metadata: github.ResponseMetadata{StatusCode: http.StatusNotModified, NotModified: true}}, nil
 }
 

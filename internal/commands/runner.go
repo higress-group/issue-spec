@@ -38,6 +38,11 @@ type runnerDryRunResult struct {
 	Error     string                        `json:"error,omitempty"`
 }
 
+type runnerNotificationBackend interface {
+	github.Backend
+	github.RunnerOperations
+}
+
 var runnerExecutable = os.Executable
 
 func (a *app) runRunner(ctx context.Context, args []string) int {
@@ -264,6 +269,8 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	host := fs.String("hostname", "", "GitHub hostname")
 	backend := fs.String("backend", "", "GitHub backend mode: auto, gh, or rest")
 	runner := fs.String("runner", "", "GitHub login for the polling runner identity")
+	notificationRunner := fs.String("notification-runner", "", "GitHub login for a notification-only polling identity")
+	notificationTokenEnv := fs.String("notification-token-env", "", "environment variable containing the notification-only runner token")
 	statePath := fs.String("state", "", "runner state path")
 	pollInterval := fs.Duration("poll-interval", 0, "notification poll interval")
 	fallbackInterval := fs.Duration("fallback-interval", 0, "repository comments fallback interval")
@@ -322,6 +329,15 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	}
 	if seen["runner"] {
 		cfg.RunnerIdentity = *runner
+	}
+	if seen["notification-runner"] {
+		cfg.NotificationIdentity = *notificationRunner
+	}
+	if seen["notification-token-env"] {
+		cfg.NotificationTokenEnv = *notificationTokenEnv
+	}
+	if cfg.NotificationIdentity != "" && cfg.NotificationTokenEnv == "" {
+		cfg.NotificationTokenEnv = commentrunner.DefaultNotificationTokenEnv
 	}
 	if seen["allowed-user"] {
 		cfg.AllowedUsers = allowedUsers.Values()
@@ -405,6 +421,13 @@ func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) 
 			}
 			return runnerBackend, nil
 		},
+		OpenNotificationBackend: func(ctx context.Context, cfg commentrunner.Config) (commentrunner.PreflightNotificationBackend, error) {
+			backend, err := a.notificationBackendForRunner(ctx, cfg)
+			if err != nil || backend == nil {
+				return backend, err
+			}
+			return backend, nil
+		},
 	})
 }
 
@@ -426,6 +449,15 @@ func (a *app) runRunnerIntake(ctx context.Context, cfg commentrunner.Config, opt
 	if !ok {
 		return intake.Result{}, fmt.Errorf("selected GitHub backend does not support runner intake")
 	}
+	if opts.NotificationBackend == nil {
+		notificationBackend, err := a.notificationBackendForRunner(ctx, cfg)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if notificationBackend != nil {
+			opts.NotificationBackend = notificationBackend
+		}
+	}
 	store, err := crstate.OpenFileStore(cfg.StatePath)
 	if err != nil {
 		return intake.Result{}, err
@@ -440,6 +472,25 @@ func runnerIntakeOptions(cfg commentrunner.Config, opts intake.Options) intake.O
 		AllowedUsers: cfg.AllowedUsers,
 	}
 	return opts
+}
+
+func (a *app) notificationBackendForRunner(ctx context.Context, cfg commentrunner.Config) (runnerNotificationBackend, error) {
+	if a.newRunnerNotificationBackend != nil {
+		return a.newRunnerNotificationBackend(ctx, cfg)
+	}
+	return defaultRunnerNotificationBackend(ctx, cfg)
+}
+
+func defaultRunnerNotificationBackend(_ context.Context, cfg commentrunner.Config) (runnerNotificationBackend, error) {
+	cfg = cfg.Normalized()
+	if cfg.NotificationTokenEnv == "" {
+		return nil, nil
+	}
+	token := strings.TrimSpace(os.Getenv(cfg.NotificationTokenEnv))
+	if token == "" {
+		return nil, fmt.Errorf("%s is empty; export a notification bot token or omit --notification-runner", cfg.NotificationTokenEnv)
+	}
+	return github.NewClient(cfg.Hostname, token), nil
 }
 
 func (a *app) runRunnerReconcile(ctx context.Context, cfg commentrunner.Config) (jobs.ReconcileResult, error) {
@@ -576,6 +627,13 @@ func (a *app) printRunnerPollStart(cfg commentrunner.Config, once bool) {
 	fmt.Fprintln(a.out, "runner poll starting")
 	fmt.Fprintf(a.out, "repositories: %s\n", strings.Join(cfg.Repositories, ", "))
 	fmt.Fprintf(a.out, "runner: %s\n", cfg.RunnerIdentity)
+	if cfg.NotificationTokenEnv != "" {
+		identity := cfg.NotificationIdentity
+		if identity == "" {
+			identity = "token from " + cfg.NotificationTokenEnv
+		}
+		fmt.Fprintf(a.out, "notification_runner: %s\n", identity)
+	}
 	fmt.Fprintf(a.out, "agent: %s", cfg.Agent.Kind)
 	if cfg.Agent.Model != "" {
 		fmt.Fprintf(a.out, " model=%s", cfg.Agent.Model)

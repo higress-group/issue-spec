@@ -40,6 +40,10 @@ type Backend interface {
 	commentrunner.PermissionBackend
 }
 
+type NotificationBackend interface {
+	PollNotifications(context.Context, github.NotificationListOptions) (github.NotificationListResult, error)
+}
+
 type Store interface {
 	Load(context.Context) (crstate.RunnerState, error)
 	Save(context.Context, crstate.RunnerState) error
@@ -56,6 +60,7 @@ func (realClock) Now() time.Time { return time.Now() }
 type Options struct {
 	DryRun              bool
 	AuthorizationPolicy commentrunner.AuthorizationPolicy
+	NotificationBackend NotificationBackend
 	Clock               Clock
 }
 
@@ -192,7 +197,11 @@ func RunOnce(ctx context.Context, cfg commentrunner.Config, backend Backend, sto
 	}
 	cache := &runCache{issueStates: map[string]issueStateCheck{}}
 
-	notifications, notificationMeta, err := pollNotifications(ctx, backend, st, cfg.Repositories)
+	notificationBackend := opts.NotificationBackend
+	if notificationBackend == nil {
+		notificationBackend = backend
+	}
+	notifications, notificationMeta, err := pollNotifications(ctx, notificationBackend, st, cfg.Repositories)
 	if err != nil {
 		if hasResponseMetadata(notificationMeta) {
 			applyNotificationMetadata(&st, cfg.Repositories, notificationMeta, now)
@@ -248,7 +257,7 @@ func zeroAuthorizationPolicy(policy commentrunner.AuthorizationPolicy) bool {
 	return policy.RunnerLogin == "" && len(policy.AllowedUsers) == 0 && !policy.AllowAuthenticatedUser
 }
 
-func pollNotifications(ctx context.Context, backend Backend, st crstate.RunnerState, repos []string) ([]github.Notification, github.ResponseMetadata, error) {
+func pollNotifications(ctx context.Context, backend NotificationBackend, st crstate.RunnerState, repos []string) ([]github.Notification, github.ResponseMetadata, error) {
 	cursor := notificationCursor(st, repos)
 	result, err := backend.PollNotifications(ctx, github.NotificationListOptions{
 		ConditionalRequest: github.ConditionalRequest{ETag: cursor.ETag, LastModified: cursor.LastModified},

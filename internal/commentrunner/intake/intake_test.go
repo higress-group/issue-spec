@@ -222,6 +222,58 @@ func TestRunOnceFallbackRecoversCommentMissingFromNotifications(t *testing.T) {
 	}
 }
 
+func TestRunOnceUsesDedicatedNotificationBackendOnlyForNotificationPoll(t *testing.T) {
+	comment := commandComment(103, 7, "alice", "/new from bot notification")
+	mainBackend := &fakeBackend{
+		user:        github.User{Login: "bot"},
+		permissions: map[string]string{"alice": "write"},
+		issueComments: map[int]github.IssueCommentsResult{
+			7: {Comments: []github.Comment{comment}, Metadata: meta(http.StatusOK, `"thread-v1"`, 0)},
+		},
+	}
+	notificationBackend := &fakeBackend{
+		notifications: github.NotificationListResult{
+			Notifications: []github.Notification{notification(7)},
+			Metadata:      meta(http.StatusOK, `"bot-notes-v1"`, 60),
+		},
+	}
+	st := crstate.NewState()
+	st.Repositories["o/r"] = crstate.RepositoryState{
+		Repo: "o/r",
+		FallbackCadence: crstate.FallbackCadence{
+			Enabled:         true,
+			IntervalSeconds: 300,
+			NextPollAt:      testNow.Add(time.Hour),
+		},
+	}
+	store := &fakeStore{state: st}
+	opts := testOptions("alice")
+	opts.NotificationBackend = notificationBackend
+
+	result, err := RunOnce(context.Background(), testConfig(), mainBackend, store, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || len(result.Jobs) != 1 {
+		t.Fatalf("result jobs = %+v diagnostics=%+v", result.Jobs, result.Diagnostics)
+	}
+	if len(notificationBackend.notificationOpts) != 1 {
+		t.Fatalf("notification backend poll calls = %d, want 1", len(notificationBackend.notificationOpts))
+	}
+	if len(mainBackend.notificationOpts) != 0 {
+		t.Fatalf("main backend should not poll notifications: %+v", mainBackend.notificationOpts)
+	}
+	if len(mainBackend.issueCommentOpts) != 1 || len(mainBackend.commentReactions) != 1 {
+		t.Fatalf("main backend did not own comment read/write: issue opts=%+v reactions=%+v", mainBackend.issueCommentOpts, mainBackend.commentReactions)
+	}
+	if len(notificationBackend.issueCommentOpts) != 0 || len(notificationBackend.commentReactions) != 0 {
+		t.Fatalf("notification backend performed non-notification work: issue opts=%+v reactions=%+v", notificationBackend.issueCommentOpts, notificationBackend.commentReactions)
+	}
+	if store.state.Repositories["o/r"].NotificationCursor.ETag != `"bot-notes-v1"` {
+		t.Fatalf("notification cursor not saved from bot backend: %+v", store.state.Repositories["o/r"].NotificationCursor)
+	}
+}
+
 func TestRunOnceSkipsClosedIssueNotificationThread(t *testing.T) {
 	st := crstate.NewState()
 	st.Repositories["o/r"] = crstate.RepositoryState{

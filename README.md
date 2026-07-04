@@ -120,13 +120,28 @@ issue-spec runner poll \
   --agent codex
 ```
 
-By default, the runner only accepts command comments from the same GitHub account that `gh` is logged in as. That keeps the default fail-closed: the account running the poller is the only account that can trigger `/new`, `/resume`, or `/cancel` unless additional users are explicitly configured.
+By default, the runner only accepts command comments from the same GitHub account that `gh` is logged in as. That keeps the default fail-closed: the main runner account is the only account that can trigger `/new`, `/resume`, or `/cancel` unless additional users are explicitly configured. The main runner account also owns status comments, reactions, issue-spec workflow writes, and any PR/issue operations performed by the coordinator.
 
 Make sure that GitHub account watches the repository with issue and PR notifications enabled. A preflight check can verify the local `gh` authentication, repository access, watch state, sandbox prerequisites, acpx, and selected agent:
 
 ```bash
 issue-spec runner preflight --repo owner/repo --runner "$(gh api user --jq .login)"
 ```
+
+For faster detection of comments written by the main runner account, use a dedicated notification-only GitHub account. GitHub notifications are user-specific and may not produce a new notification for comments authored by the same account that polls notifications. Without a notification-only account, self-authored command comments are still discovered by the lower-frequency repository comments fallback; this conservative default avoids aggressive all-comment polling and reduces the chance of hitting GitHub API limits.
+
+Create a bot or service account, watch the repository with issue and PR notifications enabled, and export a token that can read repository notifications:
+
+```bash
+export ISSUE_SPEC_NOTIFICATION_TOKEN=...
+issue-spec runner poll \
+  --repo owner/repo \
+  --runner "$(gh api user --jq .login)" \
+  --notification-runner issue-spec-notify-bot \
+  --agent codex
+```
+
+The notification token is used only for `notifications` polling and notification preflight checks. The main runner account still authorizes commands and performs GitHub writes. Use `--notification-token-env <name>` when the token is stored in a different environment variable.
 
 Supported command comments:
 
@@ -157,6 +172,8 @@ Useful runner options:
 - `--poll-interval` and `--fallback-interval` control notification polling and lower-frequency repository comment fallback.
 - `--max-concurrency <n>` can run independent sessions in parallel. Commands for the same public session are serialized by a workspace/session lock.
 - `--allowed-user <login>` allows a human maintainer to trigger `/new`, `/resume`, and `/cancel`; repeat it or comma-separate logins. If omitted, only the authenticated runner identity is accepted. Allowed users must still have write-equivalent repository permission.
+- `--notification-runner <login>` enables a notification-only polling identity. When set without `--notification-token-env`, the runner reads the token from `ISSUE_SPEC_NOTIFICATION_TOKEN`.
+- `--notification-token-env <name>` selects the environment variable that contains the notification-only token. It can be used with or without `--notification-runner`; when the runner login is provided, preflight verifies the token authenticates as that login.
 - `--agent codex|claude` selects the coordinator agent through acpx. `--model <name>` passes the configured model/profile to acpx.
 - `--gh-config-dir <path>` selects the host GitHub CLI config directory mirrored into the sandbox. By default the runner derives it from the host GitHub CLI environment.
 - `--allow-cancel=false` disables `/cancel` intake.

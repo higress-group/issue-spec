@@ -124,6 +124,183 @@ func TestPreflightFailsWhenRepositoryWatchCannotBeConfirmed(t *testing.T) {
 	}
 }
 
+func TestPreflightUsesNotificationBackendForRepositoryWatchWhenConfigured(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	cfg.GitHubBackend = auth.GitHubBackendModeREST
+	cfg.NotificationIdentity = "notify-bot"
+	cfg.NotificationTokenEnv = "BOT_TOKEN"
+	report := RunPreflight(context.Background(), cfg, PreflightDependencies{
+		SelectBackend: func(context.Context, string) (auth.GitHubBackendSelection, error) {
+			return auth.GitHubBackendSelection{
+				Mode:            auth.GitHubBackendModeREST,
+				Name:            auth.GitHubBackendNameREST,
+				Kind:            auth.GitHubBackendKindREST,
+				Host:            "github.com",
+				SelectionSource: "test",
+			}, nil
+		},
+		OpenBackend: func(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error) {
+			return fakePreflightBackend{subscription: github.RepositorySubscription{Subscribed: false}}, nil
+		},
+		OpenNotificationBackend: func(context.Context, Config) (PreflightNotificationBackend, error) {
+			return fakeNotificationPreflightBackend{
+				fakePreflightBackend: fakePreflightBackend{subscription: github.RepositorySubscription{Subscribed: true, Reason: "subscribed"}},
+				user:                 github.User{Login: "notify-bot"},
+			}, nil
+		},
+		LookPath: func(name string) (string, error) {
+			if name == "acpx" {
+				return "/test/bin/acpx", nil
+			}
+			return "", errors.New("missing")
+		},
+	})
+
+	if !report.OK {
+		t.Fatalf("preflight should accept watched notification backend: %+v", report)
+	}
+	if check := findCheck(t, report, "notification-backend"); check.Status != CheckOK {
+		t.Fatalf("unexpected notification backend check: %+v", check)
+	}
+	if check := findCheck(t, report, "notification-identity"); check.Status != CheckOK || !strings.Contains(check.Detail, "notify-bot") {
+		t.Fatalf("unexpected notification identity check: %+v", check)
+	}
+	if check := findCheck(t, report, "notification-watch:o/r"); check.Status != CheckOK {
+		t.Fatalf("unexpected notification watch check: %+v", check)
+	}
+	if hasCheck(report, "repository-watch:o/r") {
+		t.Fatalf("main repository watch should not be required when notification backend is configured: %+v", report.Checks)
+	}
+}
+
+func TestPreflightNamesNotificationWatchWhenNotificationBackendUnavailable(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	cfg.NotificationIdentity = "notify-bot"
+	cfg.NotificationTokenEnv = "BOT_TOKEN"
+	report := RunPreflight(context.Background(), cfg, PreflightDependencies{
+		SelectBackend: func(context.Context, string) (auth.GitHubBackendSelection, error) {
+			return auth.GitHubBackendSelection{
+				Mode:            auth.GitHubBackendModeREST,
+				Name:            auth.GitHubBackendNameREST,
+				Kind:            auth.GitHubBackendKindREST,
+				Host:            "github.com",
+				SelectionSource: "test",
+			}, nil
+		},
+		OpenBackend: watchedPreflightBackend,
+		OpenNotificationBackend: func(context.Context, Config) (PreflightNotificationBackend, error) {
+			return nil, errors.New("bot token missing")
+		},
+		LookPath: func(name string) (string, error) {
+			if name == "acpx" {
+				return "/test/bin/acpx", nil
+			}
+			return "", errors.New("missing")
+		},
+	})
+
+	if report.OK {
+		t.Fatalf("preflight unexpectedly OK without notification backend: %+v", report)
+	}
+	if check := findCheck(t, report, "notification-backend"); check.Status != CheckError || !strings.Contains(check.Detail, "bot token missing") {
+		t.Fatalf("unexpected notification backend check: %+v", check)
+	}
+	if check := findCheck(t, report, "notification-watch:o/r"); check.Status != CheckError || !strings.Contains(check.Detail, "bot token missing") {
+		t.Fatalf("unexpected notification watch check: %+v", check)
+	}
+	if hasCheck(report, "repository-watch:o/r") {
+		t.Fatalf("notification backend failure should still use notification watch prefix: %+v", report.Checks)
+	}
+}
+
+func TestPreflightSkipsNotificationBackendWhenNotConfigured(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	cfg.GitHubBackend = auth.GitHubBackendModeREST
+	report := RunPreflight(context.Background(), cfg, PreflightDependencies{
+		SelectBackend: func(context.Context, string) (auth.GitHubBackendSelection, error) {
+			return auth.GitHubBackendSelection{
+				Mode:            auth.GitHubBackendModeREST,
+				Name:            auth.GitHubBackendNameREST,
+				Kind:            auth.GitHubBackendKindREST,
+				Host:            "github.com",
+				SelectionSource: "test",
+			}, nil
+		},
+		OpenBackend: watchedPreflightBackend,
+		OpenNotificationBackend: func(context.Context, Config) (PreflightNotificationBackend, error) {
+			t.Fatal("notification backend should not be opened without notification token env")
+			return nil, nil
+		},
+		LookPath: func(name string) (string, error) {
+			if name == "acpx" {
+				return "/test/bin/acpx", nil
+			}
+			return "", errors.New("missing")
+		},
+	})
+
+	if !report.OK {
+		t.Fatalf("preflight should pass with main runner notification polling: %+v", report)
+	}
+	if check := findCheck(t, report, "notification-backend"); check.Status != CheckSkipped {
+		t.Fatalf("unexpected notification backend check: %+v", check)
+	}
+	if check := findCheck(t, report, "repository-watch:o/r"); check.Status != CheckOK {
+		t.Fatalf("unexpected repository watch check: %+v", check)
+	}
+}
+
+func TestDefaultPreflightNotificationBackendFailsClosedWhenTokenEmpty(t *testing.T) {
+	t.Setenv("BOT_TOKEN", " ")
+	backend, err := defaultPreflightNotificationBackend(context.Background(), Config{NotificationTokenEnv: "BOT_TOKEN"})
+	if err == nil || !strings.Contains(err.Error(), "BOT_TOKEN is empty") {
+		t.Fatalf("defaultPreflightNotificationBackend error = %v, backend=%T", err, backend)
+	}
+}
+
+func TestPreflightRejectsNotificationIdentityMismatch(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	cfg.GitHubBackend = auth.GitHubBackendModeREST
+	cfg.NotificationIdentity = "notify-bot"
+	cfg.NotificationTokenEnv = "BOT_TOKEN"
+	report := RunPreflight(context.Background(), cfg, PreflightDependencies{
+		SelectBackend: func(context.Context, string) (auth.GitHubBackendSelection, error) {
+			return auth.GitHubBackendSelection{
+				Mode:            auth.GitHubBackendModeREST,
+				Name:            auth.GitHubBackendNameREST,
+				Kind:            auth.GitHubBackendKindREST,
+				Host:            "github.com",
+				SelectionSource: "test",
+			}, nil
+		},
+		OpenBackend: watchedPreflightBackend,
+		OpenNotificationBackend: func(context.Context, Config) (PreflightNotificationBackend, error) {
+			return fakeNotificationPreflightBackend{
+				fakePreflightBackend: fakePreflightBackend{subscription: github.RepositorySubscription{Subscribed: true}},
+				user:                 github.User{Login: "other-bot"},
+			}, nil
+		},
+		LookPath: func(name string) (string, error) {
+			if name == "acpx" {
+				return "/test/bin/acpx", nil
+			}
+			return "", errors.New("missing")
+		},
+	})
+
+	if report.OK {
+		t.Fatalf("preflight unexpectedly OK with mismatched notification token: %+v", report)
+	}
+	check := findCheck(t, report, "notification-identity")
+	if check.Status != CheckError || !strings.Contains(check.Detail, "other-bot") || !strings.Contains(check.Detail, "notify-bot") {
+		t.Fatalf("unexpected notification identity check: %+v", check)
+	}
+}
+
 func TestPreflightFailsCodexAuthBeforeRunnerStarts(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -268,6 +445,15 @@ func findCheck(t *testing.T, report PreflightReport, name string) PreflightCheck
 	return PreflightCheck{}
 }
 
+func hasCheck(report PreflightReport, name string) bool {
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func watchedPreflightBackend(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error) {
 	return fakePreflightBackend{subscription: github.RepositorySubscription{Subscribed: true, Reason: "subscribed"}}, nil
 }
@@ -283,4 +469,13 @@ func (f fakePreflightBackend) BackendInfo() github.BackendInfo {
 
 func (f fakePreflightBackend) GetRepositorySubscription(context.Context, string) (github.RepositorySubscriptionResult, error) {
 	return github.RepositorySubscriptionResult{Subscription: f.subscription}, f.err
+}
+
+type fakeNotificationPreflightBackend struct {
+	fakePreflightBackend
+	user github.User
+}
+
+func (f fakeNotificationPreflightBackend) GetUser(context.Context) (github.User, []string, error) {
+	return f.user, nil, nil
 }

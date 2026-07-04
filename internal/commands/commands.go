@@ -25,14 +25,15 @@ type app struct {
 	out io.Writer
 	err io.Writer
 
-	selectGitHubBackend func(context.Context, string) (auth.GitHubBackendSelection, error)
-	selectRunnerBackend func(context.Context, string, auth.GitHubBackendMode) (auth.GitHubBackendSelection, error)
-	newGitHubBackend    func(context.Context, auth.GitHubBackendSelection) (github.Backend, error)
-	gitHubBackendToken  func(context.Context, auth.GitHubBackendSelection) (string, error)
-	runnerPreflight     func(context.Context, commentrunner.Config) commentrunner.PreflightReport
-	runnerIntake        func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error)
-	runnerReconcile     func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error)
-	runnerDispatch      func(context.Context, commentrunner.Config) (jobs.Result, error)
+	selectGitHubBackend          func(context.Context, string) (auth.GitHubBackendSelection, error)
+	selectRunnerBackend          func(context.Context, string, auth.GitHubBackendMode) (auth.GitHubBackendSelection, error)
+	newGitHubBackend             func(context.Context, auth.GitHubBackendSelection) (github.Backend, error)
+	gitHubBackendToken           func(context.Context, auth.GitHubBackendSelection) (string, error)
+	runnerPreflight              func(context.Context, commentrunner.Config) commentrunner.PreflightReport
+	runnerIntake                 func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error)
+	newRunnerNotificationBackend func(context.Context, commentrunner.Config) (runnerNotificationBackend, error)
+	runnerReconcile              func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error)
+	runnerDispatch               func(context.Context, commentrunner.Config) (jobs.Result, error)
 }
 
 type commandFunc func(context.Context, []string) int
