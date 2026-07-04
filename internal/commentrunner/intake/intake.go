@@ -273,6 +273,7 @@ func intakeIssueComments(ctx context.Context, backend Backend, cfg commentrunner
 	repoState := st.Repositories[repo]
 	cursorKey := strconv.Itoa(issueNumber)
 	cursor := repoState.NotificationThreadCursors[cursorKey]
+	pendingCursor := cursor
 	page := github.RunnerPageOptions{}
 	for {
 		commentsResult, err := backend.ListIssueCommentsPage(ctx, repo, issueNumber, github.CommentListOptions{
@@ -289,9 +290,11 @@ func intakeIssueComments(ctx context.Context, backend Backend, cfg commentrunner
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Source: source, Repo: repo, Issue: issueNumber, Message: err.Error()})
 			return
 		}
-		cursor = updateCursor(cursor, fmt.Sprintf("issue-comments:%s#%d", repo, issueNumber), commentsResult.Metadata, now)
-		repoState.NotificationThreadCursors[cursorKey] = cursor
-		st.Repositories[repo] = repoState
+		nextURL := commentsResult.Metadata.Pagination.NextURL
+		if commentsResult.Metadata.NotModified && nextURL == "" && page.CursorURL == "" && cursor.Cursor != "" {
+			nextURL = cursor.Cursor
+		}
+		pendingCursor = updateCursor(pendingCursor, fmt.Sprintf("issue-comments:%s#%d", repo, issueNumber), commentsResult.Metadata, now)
 		if !commentsResult.Metadata.NotModified {
 			for _, comment := range commentsResult.Comments {
 				if comment.IssueNumber == 0 {
@@ -300,10 +303,14 @@ func intakeIssueComments(ctx context.Context, backend Backend, cfg commentrunner
 				processComment(ctx, backend, cfg, policy, st, repo, comment, source, now, result)
 			}
 		}
-		if commentsResult.Metadata.Pagination.NextURL == "" {
+		if nextURL == "" {
+			repoState = st.Repositories[repo]
+			repoState.NotificationThreadCursors[cursorKey] = pendingCursor
+			st.Repositories[repo] = repoState
 			return
 		}
-		page = github.RunnerPageOptions{CursorURL: commentsResult.Metadata.Pagination.NextURL}
+		page = github.RunnerPageOptions{CursorURL: nextURL}
+		cursor = pendingCursor
 	}
 }
 
