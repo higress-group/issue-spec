@@ -145,6 +145,7 @@ Start a real poller:
 issue-spec runner poll \
   --repo owner/repo \
   --runner "$(gh api user --jq .login)" \
+  --allowed-user maintainer \
   --agent codex
 ```
 
@@ -154,6 +155,7 @@ Useful runner options:
 - `--workspace-root <path>` stores managed repository clones. By default, it uses the same runner scope with a `workspaces` directory beside `state.json`. Explicit paths are used as provided.
 - `--poll-interval` and `--fallback-interval` control notification polling and lower-frequency repository comment fallback.
 - `--max-concurrency <n>` can run independent sessions in parallel. Commands for the same public session are serialized by a workspace/session lock.
+- `--allowed-user <login>` allows a human maintainer to trigger `/new`, `/resume`, and `/cancel`; repeat it or comma-separate logins. If omitted, only the authenticated runner identity is accepted. Allowed users must still have write-equivalent repository permission.
 - `--agent codex|claude` selects the coordinator agent through acpx. `--model <name>` passes the configured model/profile to acpx.
 - `--gh-config-dir <path>` selects the host GitHub CLI config directory mirrored into the sandbox. By default the runner derives it from the host GitHub CLI environment.
 - `--allow-cancel=false` disables `/cancel` intake.

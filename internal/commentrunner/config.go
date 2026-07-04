@@ -29,6 +29,7 @@ type Config struct {
 	Hostname            string                 `json:"hostname"`
 	Repositories        []string               `json:"repositories"`
 	RunnerIdentity      string                 `json:"runner_identity"`
+	AllowedUsers        []string               `json:"allowed_users"`
 	GitHubBackend       auth.GitHubBackendMode `json:"github_backend"`
 	StatePath           string                 `json:"state_path"`
 	PollInterval        Duration               `json:"poll_interval"`
@@ -165,6 +166,7 @@ func (c Config) Normalized() Config {
 	c.Agent.Model = strings.TrimSpace(c.Agent.Model)
 	c.Agent.ClaudeAllowedTools = normalizeStringList(c.Agent.ClaudeAllowedTools)
 	c.Repositories = normalizeStringList(c.Repositories)
+	c.AllowedUsers = normalizeLoginList(c.AllowedUsers)
 	return c
 }
 
@@ -312,6 +314,23 @@ func normalizeStringList(values []string) []string {
 			}
 			out = append(out, item)
 			seen[item] = true
+		}
+	}
+	return out
+}
+
+func normalizeLoginList(values []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			item := strings.TrimSpace(part)
+			key := strings.ToLower(item)
+			if item == "" || seen[key] {
+				continue
+			}
+			out = append(out, item)
+			seen[key] = true
 		}
 	}
 	return out

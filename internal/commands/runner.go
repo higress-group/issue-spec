@@ -245,6 +245,7 @@ func (a *app) runRunnerPreflightCommand(ctx context.Context, args []string) int 
 func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentrunner.Config, runnerCommandOptions, bool) {
 	fs := newFlagSet("runner", a.err)
 	var repoValues stringListFlag
+	var allowedUsers stringListFlag
 	var claudeTools stringListFlag
 	host := fs.String("hostname", "", "GitHub hostname")
 	backend := fs.String("backend", "", "GitHub backend mode: auto, gh, or rest")
@@ -266,6 +267,7 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	claudeIncludeSettings := fs.Bool("claude-include-user-settings", true, "set ACPX_CLAUDE_INCLUDE_USER_SETTINGS for Claude Code")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	fs.Var(&repoValues, "repo", "repository owner/name; repeat or comma-separate for multiple repositories")
+	fs.Var(&allowedUsers, "allowed-user", "GitHub login allowed to trigger runner commands; repeat or comma-separate, and users still need write-equivalent repository permission")
 	fs.Var(&claudeTools, "claude-allowed-tools", "Claude allowed tools; repeat or comma-separate, usually Task,Bash")
 
 	opts := runnerCommandOptions{}
@@ -306,6 +308,9 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	}
 	if seen["runner"] {
 		cfg.RunnerIdentity = *runner
+	}
+	if seen["allowed-user"] {
+		cfg.AllowedUsers = allowedUsers.Values()
 	}
 	if seen["state"] {
 		cfg.StatePath = *statePath
@@ -390,6 +395,8 @@ func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) 
 }
 
 func (a *app) runRunnerIntake(ctx context.Context, cfg commentrunner.Config, opts intake.Options) (intake.Result, error) {
+	cfg = cfg.Normalized()
+	opts = runnerIntakeOptions(cfg, opts)
 	if a.runnerIntake != nil {
 		return a.runnerIntake(ctx, cfg, opts)
 	}
@@ -411,6 +418,14 @@ func (a *app) runRunnerIntake(ctx context.Context, cfg commentrunner.Config, opt
 	}
 	defer store.Close()
 	return intake.RunOnce(ctx, cfg, runnerBackend, store, opts)
+}
+
+func runnerIntakeOptions(cfg commentrunner.Config, opts intake.Options) intake.Options {
+	opts.AuthorizationPolicy = commentrunner.AuthorizationPolicy{
+		RunnerLogin:  cfg.RunnerIdentity,
+		AllowedUsers: cfg.AllowedUsers,
+	}
+	return opts
 }
 
 func (a *app) runRunnerReconcile(ctx context.Context, cfg commentrunner.Config) (jobs.ReconcileResult, error) {

@@ -178,6 +178,14 @@ func TestApplyDefaultRunnerScopePathsRespectsExplicitPaths(t *testing.T) {
 	}
 }
 
+func TestConfigNormalizedTrimsSplitsAndDeduplicatesAllowedUsers(t *testing.T) {
+	cfg := Config{AllowedUsers: []string{" alice ", "bob,charlie", "ALICE", "bob", "  "}}.Normalized()
+
+	if got := strings.Join(cfg.AllowedUsers, ","); got != "alice,bob,charlie" {
+		t.Fatalf("AllowedUsers = %q, want alice,bob,charlie", got)
+	}
+}
+
 func setDefaultConfigPathEnv(t *testing.T, home, configDir, cacheDir string) {
 	t.Helper()
 	t.Setenv(auth.GitHubBackendEnv, "")

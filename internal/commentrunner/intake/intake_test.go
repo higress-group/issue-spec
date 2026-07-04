@@ -412,6 +412,68 @@ func TestRunOnceRejectsUnauthorizedAndMalformedCommands(t *testing.T) {
 	}
 }
 
+func TestRunOnceDefaultAuthorizationOnlyAllowsRunnerIdentity(t *testing.T) {
+	backend := &fakeBackend{
+		user:        github.User{Login: "bot"},
+		permissions: map[string]string{"bot": "write", "alice": "write"},
+		notifications: github.NotificationListResult{
+			Metadata: meta(http.StatusNotModified, `"notes"`, 60),
+		},
+		repoComments: github.IssueCommentsResult{Comments: []github.Comment{
+			commandComment(210, 4, "bot", "/new self-authored command"),
+			commandComment(211, 4, "alice", "/new maintainer command"),
+		}},
+	}
+	store := &fakeStore{state: crstate.NewState()}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, Options{Clock: fixedClock{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Jobs) != 1 || result.Jobs[0].Commenter != "bot" {
+		t.Fatalf("default authorization jobs = %+v, want only bot", result.Jobs)
+	}
+	if !hasCommandReport(result.Commands, "alice", CommandStatusUnauthorized, string(commentrunner.AuthReasonCommenterNotAllowed)) {
+		t.Fatalf("alice should be rejected by default fail-closed policy: %+v", result.Commands)
+	}
+	if len(backend.collaboratorLookups) != 1 || backend.collaboratorLookups[0] != "o/r#bot" {
+		t.Fatalf("permission lookups = %+v, want only bot", backend.collaboratorLookups)
+	}
+}
+
+func TestRunOnceAllowedUsersRequireWhitelistAndWritePermission(t *testing.T) {
+	backend := &fakeBackend{
+		user:        github.User{Login: "bot"},
+		permissions: map[string]string{"alice": "write", "bob": "read", "mallory": "admin"},
+		notifications: github.NotificationListResult{
+			Metadata: meta(http.StatusNotModified, `"notes"`, 60),
+		},
+		repoComments: github.IssueCommentsResult{Comments: []github.Comment{
+			commandComment(220, 4, "alice", "/new allowed maintainer"),
+			commandComment(221, 4, "mallory", "/new not configured"),
+			commandComment(222, 4, "bob", "/new read-only configured user"),
+		}},
+	}
+	store := &fakeStore{state: crstate.NewState()}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice", "bob"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Jobs) != 1 || result.Jobs[0].Commenter != "alice" {
+		t.Fatalf("allowed users jobs = %+v, want only alice", result.Jobs)
+	}
+	if !hasCommandReport(result.Commands, "mallory", CommandStatusUnauthorized, string(commentrunner.AuthReasonCommenterNotAllowed)) {
+		t.Fatalf("mallory should be rejected before permission lookup: %+v", result.Commands)
+	}
+	if !hasCommandReport(result.Commands, "bob", CommandStatusUnauthorized, string(commentrunner.AuthReasonInsufficientPermission)) {
+		t.Fatalf("bob should be rejected for insufficient permission: %+v", result.Commands)
+	}
+	if got := strings.Join(backend.collaboratorLookups, ","); got != "o/r#alice,o/r#bob" {
+		t.Fatalf("permission lookups = %q, want alice and bob only", got)
+	}
+}
+
 func TestRunOnceCreatesResumeCandidateForKnownSession(t *testing.T) {
 	st := crstate.NewState()
 	st.PublicSessions[crstate.PublicSessionKey("o/r", "sess-1")] = crstate.PublicSession{
@@ -1154,6 +1216,15 @@ func meta(status int, etag string, pollInterval int) github.ResponseMetadata {
 func hasStatus(reports []CommandReport, status string) bool {
 	for _, report := range reports {
 		if report.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCommandReport(reports []CommandReport, commenter, status, reason string) bool {
+	for _, report := range reports {
+		if report.Commenter == commenter && report.Status == status && report.Reason == reason {
 			return true
 		}
 	}

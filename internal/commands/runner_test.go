@@ -220,6 +220,79 @@ func TestRunnerPollMultipleReposUsesStableSharedDefaultScope(t *testing.T) {
 	}
 }
 
+func TestRunnerPollParsesAllowedUsers(t *testing.T) {
+	clearCommandAuthEnv(t)
+	cfg := captureRunnerPollConfig(t,
+		"--repo", "o/r",
+		"--runner", "bot",
+		"--allowed-user", "alice",
+		"--allowed-user", "bob,charlie",
+	)
+
+	if got := strings.Join(cfg.AllowedUsers, ","); got != "alice,bob,charlie" {
+		t.Fatalf("AllowedUsers = %q, want alice,bob,charlie", got)
+	}
+}
+
+func TestRunnerPreflightParsesAllowedUsers(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	var captured commentrunner.Config
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		captured = cfg
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+
+	code := app.runRunner(context.Background(), []string{
+		"preflight",
+		"--repo", "o/r",
+		"--runner", "bot",
+		"--allowed-user", "alice,bob",
+		"--json",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if got := strings.Join(captured.AllowedUsers, ","); got != "alice,bob" {
+		t.Fatalf("AllowedUsers = %q, want alice,bob", got)
+	}
+}
+
+func TestRunnerIntakeUsesAllowedUsersAuthorizationPolicy(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	var captured intake.Options
+	app.runnerIntake = func(_ context.Context, _ commentrunner.Config, opts intake.Options) (intake.Result, error) {
+		captured = opts
+		return intake.Result{OK: true, DryRun: true}, nil
+	}
+	app.runnerDispatch = func(context.Context, commentrunner.Config) (jobs.Result, error) {
+		t.Fatal("dry-run must not dispatch jobs")
+		return jobs.Result{}, nil
+	}
+
+	code := app.runRunner(context.Background(), []string{
+		"poll",
+		"--repo", "o/r",
+		"--runner", "bot",
+		"--allowed-user", "alice,bob",
+		"--dry-run",
+		"--json",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	policy := captured.AuthorizationPolicy
+	if !captured.DryRun || policy.RunnerLogin != "bot" || strings.Join(policy.AllowedUsers, ",") != "alice,bob" || policy.AllowAuthenticatedUser {
+		t.Fatalf("intake options = %+v, want dry-run policy for bot with alice,bob only", captured)
+	}
+}
+
 func captureRunnerPollConfig(t *testing.T, args ...string) commentrunner.Config {
 	t.Helper()
 	var out, errOut bytes.Buffer
