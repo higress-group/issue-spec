@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1502,6 +1503,12 @@ func TestSandboxRunnerSkipsMissingHostCodexConfig(t *testing.T) {
 }
 
 func TestSandboxRunnerBwrapPreservesHostCWDAndBindsIssueSpecBinaryForChildAuth(t *testing.T) {
+	// The sandbox Prepare step resolves the acpx binary via exec.LookPath, so
+	// this test only runs where acpx is installed. Skip on clean CI runners
+	// that have no acpx on PATH to keep `go test ./...` hermetic.
+	if _, err := exec.LookPath("acpx"); err != nil {
+		t.Skipf("acpx not installed on PATH; skipping sandbox bind test: %v", err)
+	}
 	temp := t.TempDir()
 	hostGH := filepath.Join(temp, "host-gh")
 	workspacePath := filepath.Join(temp, "workspace")

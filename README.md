@@ -368,6 +368,22 @@ go test ./...
 go build ./cmd/issue-spec
 ```
 
+### Running unit tests locally
+
+Local unit tests require the Go toolchain version declared in [`go.mod`](go.mod)
+(currently `go 1.25`), which is the source of truth for the required Go version.
+
+From the repository root, run:
+
+```bash
+go test ./...
+```
+
+This is the same unit test command the CI check runs
+(see [`.github/workflows/unit-tests.yml`](.github/workflows/unit-tests.yml)),
+so a clean local run reproduces the checks that gate pull requests and pushes to
+`main`.
+
 ## Acknowledgements
 
 `issue-spec` is inspired by [OpenSpec](https://github.com/Fission-AI/OpenSpec) and is designed to preserve its spec-first, agent-friendly workflow habits while adapting active change state, human review, and multi-agent coordination to GitHub issues and pull requests.

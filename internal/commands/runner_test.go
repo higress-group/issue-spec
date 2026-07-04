@@ -1208,7 +1208,33 @@ func TestRunnerPollRejectsAsyncAndSyncDispatch(t *testing.T) {
 	}
 }
 
+// requireHostCodexAuth skips the caller when the host Codex auth file is
+// unavailable. The runner preflight includes a codex-auth check that reads
+// $CODEX_HOME/auth.json (or ~/.codex/auth.json), so tests that expect preflight
+// to succeed are only meaningful on a machine where that credential exists.
+// This keeps `go test ./...` hermetic on clean CI runners that have no Codex
+// login, matching internal/commentrunner.hostCodexConfigDir resolution.
+func requireHostCodexAuth(t *testing.T) {
+	t.Helper()
+	dir := strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	if dir == "" {
+		home := strings.TrimSpace(os.Getenv("HOME"))
+		if home == "" {
+			var err error
+			if home, err = os.UserHomeDir(); err != nil {
+				t.Skipf("codex auth unavailable: cannot resolve home directory: %v", err)
+			}
+		}
+		dir = filepath.Join(home, ".codex")
+	}
+	authPath := filepath.Join(dir, "auth.json")
+	if info, err := os.Stat(authPath); err != nil || info.IsDir() {
+		t.Skipf("codex auth (%s) not available; skipping runner preflight-dependent test", authPath)
+	}
+}
+
 func TestRunnerBackendFlagOverridesEnvForEveryPhase(t *testing.T) {
+	requireHostCodexAuth(t)
 	clearCommandAuthEnv(t)
 	t.Setenv(auth.GitHubBackendEnv, "gh")
 	var out, errOut bytes.Buffer
