@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
@@ -277,7 +278,7 @@ func addAgentChecks(report *PreflightReport, cfg Config) {
 	switch cfg.Agent.Kind {
 	case AgentCodex:
 		report.add(codexAccessCheck(cfg))
-		report.add(PreflightCheck{Name: "codex-auth", Status: CheckSkipped, Detail: "agent-specific auth probe is owned by the acpx adapter task"})
+		report.add(codexAuthCheck())
 		report.add(PreflightCheck{Name: "claude-user-settings", Status: CheckSkipped, Detail: "configured agent is codex"})
 		report.add(PreflightCheck{Name: "claude-auth", Status: CheckSkipped, Detail: "configured agent is codex"})
 		report.add(PreflightCheck{Name: "claude-allowed-tools", Status: CheckSkipped, Detail: "configured agent is codex"})
@@ -285,7 +286,7 @@ func addAgentChecks(report *PreflightReport, cfg Config) {
 		report.add(PreflightCheck{Name: "codex-agent-full-access", Status: CheckSkipped, Detail: "configured agent is claude"})
 		report.add(PreflightCheck{Name: "codex-auth", Status: CheckSkipped, Detail: "configured agent is claude"})
 		report.add(claudeUserSettingsCheck(cfg))
-		report.add(PreflightCheck{Name: "claude-auth", Status: CheckSkipped, Detail: "agent-specific auth probe is owned by the acpx adapter task"})
+		report.add(claudeAuthCheck())
 		report.add(claudeAllowedToolsCheck(cfg))
 	}
 }
@@ -304,11 +305,55 @@ func codexAccessCheck(cfg Config) PreflightCheck {
 	return PreflightCheck{Name: "codex-agent-full-access", Status: CheckWarning, Detail: "disabled; Codex child CLI/shell workflow work may fail"}
 }
 
+func codexAuthCheck() PreflightCheck {
+	dir := hostCodexConfigDir()
+	if strings.TrimSpace(dir) == "" {
+		return PreflightCheck{
+			Name:   "codex-auth",
+			Status: CheckError,
+			Detail: "Codex auth unavailable: cannot resolve host Codex config directory",
+			Hint:   "Run codex login with a normal HOME, or set CODEX_HOME to the Codex config directory before starting the runner.",
+		}
+	}
+	authPath := filepath.Join(dir, "auth.json")
+	if err := requireReadableRegularFile(authPath); err != nil {
+		return PreflightCheck{
+			Name:   "codex-auth",
+			Status: CheckError,
+			Detail: "Codex auth unavailable: " + err.Error(),
+			Hint:   "Run codex login, or set CODEX_HOME to the Codex config directory before starting the runner.",
+		}
+	}
+	return PreflightCheck{Name: "codex-auth", Status: CheckOK, Detail: "host Codex auth source: " + authPath}
+}
+
 func claudeUserSettingsCheck(cfg Config) PreflightCheck {
 	if cfg.Agent.ClaudeIncludeUserSettings {
 		return PreflightCheck{Name: "claude-user-settings", Status: CheckOK, Detail: "ACPX_CLAUDE_INCLUDE_USER_SETTINGS enabled by runner config"}
 	}
 	return PreflightCheck{Name: "claude-user-settings", Status: CheckWarning, Detail: "disabled; Claude auth/settings may not be visible to acpx"}
+}
+
+func claudeAuthCheck() PreflightCheck {
+	home := hostHomeDir()
+	if strings.TrimSpace(home) == "" {
+		return PreflightCheck{
+			Name:   "claude-auth",
+			Status: CheckError,
+			Detail: "Claude Code auth unavailable: cannot resolve host HOME",
+			Hint:   "Run claude login with a normal HOME before starting the runner.",
+		}
+	}
+	credentials := filepath.Join(home, ".claude", ".credentials.json")
+	if err := requireReadableRegularFile(credentials); err != nil {
+		return PreflightCheck{
+			Name:   "claude-auth",
+			Status: CheckError,
+			Detail: "Claude Code auth unavailable: " + err.Error(),
+			Hint:   "Run claude login with the same HOME that starts the runner. Claude Code uses host ~/.claude/.credentials.json, not CODEX_HOME.",
+		}
+	}
+	return PreflightCheck{Name: "claude-auth", Status: CheckOK, Detail: "host Claude Code auth source: " + credentials}
 }
 
 func claudeAllowedToolsCheck(cfg Config) PreflightCheck {
@@ -320,4 +365,50 @@ func claudeAllowedToolsCheck(cfg Config) PreflightCheck {
 		return PreflightCheck{Name: "claude-allowed-tools", Status: CheckOK, Detail: strings.Join(cfg.Agent.ClaudeAllowedTools, ", ")}
 	}
 	return PreflightCheck{Name: "claude-allowed-tools", Status: CheckWarning, Detail: strings.Join(cfg.Agent.ClaudeAllowedTools, ", "), Hint: "Include Task and Bash for issue-spec DAG workers and CLI-direct artifact writes."}
+}
+
+func hostCodexConfigDir() string {
+	if value := strings.TrimSpace(os.Getenv("CODEX_HOME")); value != "" {
+		return filepath.Clean(value)
+	}
+	if home := hostHomeDir(); home != "" {
+		return filepath.Join(home, ".codex")
+	}
+	return ""
+}
+
+func hostHomeDir() string {
+	if value := strings.TrimSpace(os.Getenv("HOME")); value != "" {
+		return filepath.Clean(value)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return ""
+	}
+	return filepath.Clean(home)
+}
+
+func requireReadableRegularFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("%s is missing", path)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s is a directory", path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("%s is not readable: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("%s close failed: %w", path, err)
+	}
+	return nil
 }

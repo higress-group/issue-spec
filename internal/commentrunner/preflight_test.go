@@ -3,6 +3,8 @@ package commentrunner
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +14,7 @@ import (
 )
 
 func TestPreflightReportsMissingBwrapAndAcpx(t *testing.T) {
-	cfg := testPreflightConfig()
+	cfg := testPreflightConfig(t)
 	report := RunPreflight(context.Background(), cfg, PreflightDependencies{
 		SelectBackend: func(context.Context, string) (auth.GitHubBackendSelection, error) {
 			return auth.GitHubBackendSelection{
@@ -50,7 +52,7 @@ func TestPreflightReportsMissingBwrapAndAcpx(t *testing.T) {
 }
 
 func TestPreflightUnsafeNoSandboxSkipsBwrapAndMarksBoundaryDisabled(t *testing.T) {
-	cfg := testPreflightConfig()
+	cfg := testPreflightConfig(t)
 	cfg.UnsafeNoSandbox = true
 	report := RunPreflight(context.Background(), cfg, PreflightDependencies{
 		SelectBackend: func(context.Context, string) (auth.GitHubBackendSelection, error) {
@@ -90,7 +92,7 @@ func TestPreflightUnsafeNoSandboxSkipsBwrapAndMarksBoundaryDisabled(t *testing.T
 }
 
 func TestPreflightFailsWhenRepositoryWatchCannotBeConfirmed(t *testing.T) {
-	cfg := testPreflightConfig()
+	cfg := testPreflightConfig(t)
 	cfg.UnsafeNoSandbox = true
 	report := RunPreflight(context.Background(), cfg, PreflightDependencies{
 		SelectBackend: func(context.Context, string) (auth.GitHubBackendSelection, error) {
@@ -122,7 +124,97 @@ func TestPreflightFailsWhenRepositoryWatchCannotBeConfirmed(t *testing.T) {
 	}
 }
 
-func testPreflightConfig() Config {
+func TestPreflightFailsCodexAuthBeforeRunnerStarts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, "missing-codex"))
+	cfg := testPreflightConfigWithoutAuth()
+	cfg.UnsafeNoSandbox = true
+
+	report := RunPreflight(context.Background(), cfg, passingPreflightDependencies(t))
+	if report.OK {
+		t.Fatalf("preflight unexpectedly OK without codex auth: %+v", report)
+	}
+	codex := findCheck(t, report, "codex-auth")
+	if codex.Status != CheckError || !strings.Contains(codex.Detail, "Codex auth unavailable") || !strings.Contains(codex.Hint, "CODEX_HOME") {
+		t.Fatalf("unexpected codex auth check: %+v", codex)
+	}
+	claude := findCheck(t, report, "claude-auth")
+	if claude.Status != CheckSkipped || !strings.Contains(claude.Detail, "configured agent is codex") {
+		t.Fatalf("claude auth should be skipped for codex agent: %+v", claude)
+	}
+}
+
+func TestPreflightDistinguishesClaudeAuthFromCodexAuth(t *testing.T) {
+	home := t.TempDir()
+	codexHome := filepath.Join(home, "codex")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "auth.json"), []byte(`{"token":"codex"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", codexHome)
+	cfg := testPreflightConfigWithoutAuth()
+	cfg.Agent.Kind = AgentClaude
+	cfg.UnsafeNoSandbox = true
+
+	report := RunPreflight(context.Background(), cfg, passingPreflightDependencies(t))
+	if report.OK {
+		t.Fatalf("preflight unexpectedly OK with only codex auth for claude agent: %+v", report)
+	}
+	codex := findCheck(t, report, "codex-auth")
+	if codex.Status != CheckSkipped || !strings.Contains(codex.Detail, "configured agent is claude") {
+		t.Fatalf("codex auth should be skipped for claude agent: %+v", codex)
+	}
+	claude := findCheck(t, report, "claude-auth")
+	if claude.Status != CheckError || !strings.Contains(claude.Detail, "Claude Code auth unavailable") || !strings.Contains(claude.Hint, "claude login") {
+		t.Fatalf("unexpected claude auth check: %+v", claude)
+	}
+}
+
+func TestPreflightAcceptsClaudeCredentialsForClaudeAgent(t *testing.T) {
+	home := t.TempDir()
+	claudeHome := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeHome, ".credentials.json"), []byte(`{"token":"claude"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, "missing-codex"))
+	cfg := testPreflightConfigWithoutAuth()
+	cfg.Agent.Kind = AgentClaude
+	cfg.UnsafeNoSandbox = true
+
+	report := RunPreflight(context.Background(), cfg, passingPreflightDependencies(t))
+	if !report.OK {
+		t.Fatalf("preflight should accept claude credentials for claude agent: %+v", report)
+	}
+	claude := findCheck(t, report, "claude-auth")
+	if claude.Status != CheckOK || !strings.Contains(claude.Detail, ".credentials.json") {
+		t.Fatalf("unexpected claude auth check: %+v", claude)
+	}
+}
+
+func testPreflightConfig(t *testing.T) Config {
+	t.Helper()
+	home := t.TempDir()
+	codexHome := filepath.Join(home, "codex")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "auth.json"), []byte(`{"token":"codex"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", codexHome)
+	return testPreflightConfigWithoutAuth()
+}
+
+func testPreflightConfigWithoutAuth() Config {
 	return Config{
 		Hostname:            "github.com",
 		Repositories:        []string{"o/r"},
@@ -137,6 +229,31 @@ func testPreflightConfig() Config {
 		WorkspaceRoot:       "workspaces",
 		WorkspaceRetention:  NewDuration(time.Hour),
 		CancellationEnabled: true,
+	}
+}
+
+func passingPreflightDependencies(t *testing.T) PreflightDependencies {
+	t.Helper()
+	return PreflightDependencies{
+		SelectBackend: func(context.Context, string) (auth.GitHubBackendSelection, error) {
+			return auth.GitHubBackendSelection{
+				Mode:            auth.GitHubBackendModeGH,
+				Name:            auth.GitHubBackendNameGH,
+				Kind:            auth.GitHubBackendKindCLI,
+				Host:            "github.com",
+				SelectionSource: "test",
+			}, nil
+		},
+		OpenBackend: watchedPreflightBackend,
+		LookPath: func(name string) (string, error) {
+			switch name {
+			case "gh", "acpx":
+				return "/test/bin/" + name, nil
+			case "bwrap":
+				t.Fatal("bwrap lookup should be skipped in unsafe mode")
+			}
+			return "", errors.New("missing")
+		},
 	}
 }
 

@@ -871,6 +871,53 @@ func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
 	}
 }
 
+func TestSandboxRunnerMaterializesLimitedHostClaudeConfig(t *testing.T) {
+	temp := t.TempDir()
+	hostGH := filepath.Join(temp, "host-gh")
+	hostHome := filepath.Join(temp, "host-home")
+	hostClaude := filepath.Join(hostHome, ".claude")
+	workspacePath := filepath.Join(temp, "workspace")
+	runtimeRoot := filepath.Join(temp, ".sessions", "runtime")
+	runtimeHome := filepath.Join(runtimeRoot, "home")
+	for _, dir := range []string{hostGH, hostClaude, workspacePath} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeFileWithMode(t, filepath.Join(hostClaude, ".credentials.json"), []byte(`{"token":"claude"}`), 0o600)
+	writeFileWithMode(t, filepath.Join(hostClaude, "settings.json"), []byte(`{"permissions":{}}`), 0o640)
+	writeFileWithMode(t, filepath.Join(hostClaude, "settings.local.json"), []byte(`{"local":true}`), 0o600)
+	writeFileWithMode(t, filepath.Join(hostClaude, "history.jsonl"), []byte(`ignored`), 0o600)
+	writeFileWithMode(t, filepath.Join(hostHome, ".claude.json"), []byte(`{"projects":{}}`), 0o600)
+
+	_, err := (SandboxRunner{Config: sandbox.Config{
+		UnsafeNoSandbox: true,
+		HostGHConfigDir: hostGH,
+		HostEnv:         []string{"HOME=" + hostHome, "CODEX_HOME=" + filepath.Join(temp, "missing-codex")},
+	}}).Prepare(context.Background(), SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           "acpx",
+		RuntimeHome:          runtimeHome,
+		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
+		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
+		RuntimeCodexHome:     filepath.Join(runtimeRoot, "codex"),
+	})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	assertFileContentAndMode(t, filepath.Join(runtimeHome, ".claude", ".credentials.json"), `{"token":"claude"}`, 0o600)
+	assertFileContentAndMode(t, filepath.Join(runtimeHome, ".claude", "settings.json"), `{"permissions":{}}`, 0o640)
+	assertFileContentAndMode(t, filepath.Join(runtimeHome, ".claude", "settings.local.json"), `{"local":true}`, 0o600)
+	assertFileContentAndMode(t, filepath.Join(runtimeHome, ".claude.json"), `{"projects":{}}`, 0o600)
+	if _, err := os.Stat(filepath.Join(runtimeHome, ".claude", "history.jsonl")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("non-allowlisted Claude file was copied: %v", err)
+	}
+}
+
 func TestSandboxRunnerSkipsMissingHostCodexConfig(t *testing.T) {
 	temp := t.TempDir()
 	hostGH := filepath.Join(temp, "host-gh")

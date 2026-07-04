@@ -1014,6 +1014,9 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, error) {
 	if err := mirrorHostCodexConfig(&cfg); err != nil {
 		return sandbox.Config{}, err
 	}
+	if err := mirrorHostClaudeConfig(&cfg); err != nil {
+		return sandbox.Config{}, err
+	}
 	return cfg, nil
 }
 
@@ -1230,10 +1233,24 @@ func hostCodexConfigDir(cfg sandbox.Config) string {
 	if value := envValue(hostEnv, "CODEX_HOME"); value != "" {
 		return value
 	}
-	if value := envValue(hostEnv, "HOME"); value != "" {
+	if value := hostHomeDir(hostEnv); value != "" {
 		return filepath.Join(value, ".codex")
 	}
 	return ""
+}
+
+func hostHomeDir(hostEnv []string) string {
+	if hostEnv != nil {
+		return envValue(hostEnv, "HOME")
+	}
+	if value := envValue(os.Environ(), "HOME"); value != "" {
+		return value
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(home)
 }
 
 func copyLimitedCodexConfig(source, dest string) error {
@@ -1267,6 +1284,70 @@ func copyLimitedCodexConfig(source, dest string) error {
 				return err
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		mode := info.Mode().Perm()
+		if mode == 0 {
+			mode = 0o600
+		}
+		if err := os.WriteFile(targetPath, data, mode); err != nil {
+			return err
+		}
+		if err := os.Chmod(targetPath, mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var (
+	claudeRuntimeDirFiles  = []string{".credentials.json", "settings.json", "settings.local.json"}
+	claudeRuntimeHomeFiles = []string{".claude.json"}
+)
+
+func mirrorHostClaudeConfig(cfg *sandbox.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("sandbox config is required")
+	}
+	sourceHome := hostHomeDir(cfg.HostEnv)
+	if sourceHome == "" || strings.TrimSpace(cfg.TempHome) == "" {
+		return nil
+	}
+	sourceHome = filepath.Clean(sourceHome)
+	tempHome := filepath.Clean(cfg.TempHome)
+	if sameCleanPath(sourceHome, tempHome) {
+		return nil
+	}
+	if err := copyLimitedFiles(filepath.Join(sourceHome, ".claude"), filepath.Join(tempHome, ".claude"), claudeRuntimeDirFiles); err != nil {
+		return fmt.Errorf("materialize host Claude Code config from %s to %s: %w", filepath.Join(sourceHome, ".claude"), filepath.Join(tempHome, ".claude"), err)
+	}
+	if err := copyLimitedFiles(sourceHome, tempHome, claudeRuntimeHomeFiles); err != nil {
+		return fmt.Errorf("materialize host Claude Code home config from %s to %s: %w", sourceHome, tempHome, err)
+	}
+	return nil
+}
+
+func copyLimitedFiles(source, dest string, names []string) error {
+	for _, name := range names {
+		sourcePath := filepath.Join(source, name)
+		targetPath := filepath.Join(dest, name)
+		info, err := os.Lstat(sourcePath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				_ = os.Remove(targetPath)
+				continue
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || info.IsDir() || !info.Mode().IsRegular() {
+			_ = os.Remove(targetPath)
+			continue
+		}
+		data, err := os.ReadFile(sourcePath)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
 			return err
 		}
 		mode := info.Mode().Perm()
