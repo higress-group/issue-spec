@@ -59,6 +59,18 @@ type Options struct {
 	Clock               Clock
 }
 
+type runCache struct {
+	issueStates        map[string]issueStateCheck
+	runnerLogin        string
+	runnerLoginChecked bool
+	runnerLoginErr     error
+}
+
+type issueStateCheck struct {
+	open bool
+	err  error
+}
+
 type Result struct {
 	OK            bool              `json:"ok"`
 	DryRun        bool              `json:"dry_run"`
@@ -178,6 +190,7 @@ func RunOnce(ctx context.Context, cfg commentrunner.Config, backend Backend, sto
 		repoSet[repo] = true
 		ensureRepoState(&st, cfg, repo)
 	}
+	cache := &runCache{issueStates: map[string]issueStateCheck{}}
 
 	notifications, notificationMeta, err := pollNotifications(ctx, backend, st, cfg.Repositories)
 	if err != nil {
@@ -188,7 +201,7 @@ func RunOnce(ctx context.Context, cfg commentrunner.Config, backend Backend, sto
 		result.Diagnostics = append(result.Diagnostics, Diagnostic{Source: SourceNotification, Message: err.Error()})
 	} else {
 		applyNotificationMetadata(&st, cfg.Repositories, notificationMeta, now)
-		intakeNotifications(ctx, backend, cfg, policy, &st, notifications, repoSet, now, &result)
+		intakeNotifications(ctx, backend, cfg, policy, &st, cache, notifications, repoSet, now, &result)
 	}
 
 	for _, repo := range cfg.Repositories {
@@ -201,7 +214,7 @@ func RunOnce(ctx context.Context, cfg commentrunner.Config, backend Backend, sto
 		repoState := st.Repositories[repo]
 		cycle.FallbackDue = fallbackDue(repoState, now)
 		if cycle.FallbackDue {
-			intakeFallback(ctx, backend, cfg, policy, &st, repo, now, &result)
+			intakeFallback(ctx, backend, cfg, policy, &st, cache, repo, now, &result)
 			repoState = st.Repositories[repo]
 		}
 		cycle.FallbackNextAt = repoState.FallbackCadence.NextPollAt
@@ -250,7 +263,7 @@ func pollNotifications(ctx context.Context, backend Backend, st crstate.RunnerSt
 	return result.Notifications, result.Metadata, nil
 }
 
-func intakeNotifications(ctx context.Context, backend Backend, cfg commentrunner.Config, policy commentrunner.AuthorizationPolicy, st *crstate.RunnerState, notifications []github.Notification, repoSet map[string]bool, now time.Time, result *Result) {
+func intakeNotifications(ctx context.Context, backend Backend, cfg commentrunner.Config, policy commentrunner.AuthorizationPolicy, st *crstate.RunnerState, cache *runCache, notifications []github.Notification, repoSet map[string]bool, now time.Time, result *Result) {
 	seenThreads := map[string]bool{}
 	for _, notification := range notifications {
 		repo := strings.TrimSpace(notification.Repository.FullName)
@@ -267,11 +280,14 @@ func intakeNotifications(ctx context.Context, backend Backend, cfg commentrunner
 			continue
 		}
 		seenThreads[key] = true
-		intakeIssueComments(ctx, backend, cfg, policy, st, repo, issueNumber, SourceNotification, now, result)
+		if !cache.issueOpen(ctx, backend, repo, issueNumber, SourceNotification, result) {
+			continue
+		}
+		intakeIssueComments(ctx, backend, cfg, policy, st, cache, repo, issueNumber, SourceNotification, now, result)
 	}
 }
 
-func intakeIssueComments(ctx context.Context, backend Backend, cfg commentrunner.Config, policy commentrunner.AuthorizationPolicy, st *crstate.RunnerState, repo string, issueNumber int, source string, now time.Time, result *Result) {
+func intakeIssueComments(ctx context.Context, backend Backend, cfg commentrunner.Config, policy commentrunner.AuthorizationPolicy, st *crstate.RunnerState, cache *runCache, repo string, issueNumber int, source string, now time.Time, result *Result) {
 	repoState := st.Repositories[repo]
 	cursorKey := strconv.Itoa(issueNumber)
 	cursor := repoState.NotificationThreadCursors[cursorKey]
@@ -308,7 +324,7 @@ func intakeIssueComments(ctx context.Context, backend Backend, cfg commentrunner
 				if comment.IssueNumber == 0 {
 					comment.IssueNumber = issueNumber
 				}
-				processComment(ctx, backend, cfg, policy, st, repo, comment, source, now, result)
+				processComment(ctx, backend, cfg, policy, st, cache, repo, comment, source, now, result)
 			}
 		}
 		if nextURL == "" {
@@ -322,7 +338,7 @@ func intakeIssueComments(ctx context.Context, backend Backend, cfg commentrunner
 	}
 }
 
-func intakeFallback(ctx context.Context, backend Backend, cfg commentrunner.Config, policy commentrunner.AuthorizationPolicy, st *crstate.RunnerState, repo string, now time.Time, result *Result) {
+func intakeFallback(ctx context.Context, backend Backend, cfg commentrunner.Config, policy commentrunner.AuthorizationPolicy, st *crstate.RunnerState, cache *runCache, repo string, now time.Time, result *Result) {
 	repoState := st.Repositories[repo]
 	cursor := repoState.RepositoryCommentCursor
 	page := github.RunnerPageOptions{}
@@ -354,7 +370,18 @@ func intakeFallback(ctx context.Context, backend Backend, cfg commentrunner.Conf
 					result.Diagnostics = append(result.Diagnostics, Diagnostic{Source: SourceRepositoryFallback, Repo: repo, Message: fmt.Sprintf("comment %d did not include an issue number", comment.ID)})
 					continue
 				}
-				processComment(ctx, backend, cfg, policy, st, repo, comment, SourceRepositoryFallback, now, result)
+				if issue := cache.issueState(ctx, backend, repo, issueNumber, SourceRepositoryFallback, result); !issue.open {
+					if issue.err == nil {
+						if comment.ID > cursor.LastSeenID {
+							cursor.LastSeenID = comment.ID
+						}
+						if comment.UpdatedAt.After(cursor.LastSeenAt) {
+							cursor.LastSeenAt = comment.UpdatedAt.UTC()
+						}
+					}
+					continue
+				}
+				processComment(ctx, backend, cfg, policy, st, cache, repo, comment, SourceRepositoryFallback, now, result)
 				if comment.ID > cursor.LastSeenID {
 					cursor.LastSeenID = comment.ID
 				}
@@ -379,7 +406,7 @@ func intakeFallback(ctx context.Context, backend Backend, cfg commentrunner.Conf
 	st.Repositories[repo] = repoState
 }
 
-func processComment(ctx context.Context, backend Backend, cfg commentrunner.Config, policy commentrunner.AuthorizationPolicy, st *crstate.RunnerState, repo string, comment github.Comment, source string, now time.Time, result *Result) {
+func processComment(ctx context.Context, backend Backend, cfg commentrunner.Config, policy commentrunner.AuthorizationPolicy, st *crstate.RunnerState, cache *runCache, repo string, comment github.Comment, source string, now time.Time, result *Result) {
 	commenter := ""
 	if comment.User != nil {
 		commenter = comment.User.Login
@@ -444,6 +471,25 @@ func processComment(ctx context.Context, backend Backend, cfg commentrunner.Conf
 		writeRejectedCommand(ctx, backend, cfg, st, recorded, report, now, result)
 		result.Commands = append(result.Commands, report)
 	case commentrunner.ParseStatusAccepted:
+		if runnerAcked, err := commentHasRunnerEyesAck(ctx, backend, cfg, policy, cache, repo, comment); err != nil {
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{
+				Source:  source,
+				Repo:    repo,
+				Issue:   comment.IssueNumber,
+				Message: "remote command ack check: " + boundedOneLine(err.Error(), 512),
+			})
+		} else if runnerAcked {
+			recorded.ProducedCommandCandidate = true
+			recorded.CommandCandidateID = parse.Candidate.ID
+			recorded.CommandName = string(parse.Candidate.Verb)
+			recorded.CommandIdempotencyKey = parse.Candidate.IdempotencyKey
+			st.SeenComments[crstate.SeenCommentKey(recorded.Repo, recorded.CommentID)] = recorded
+			report := candidateReport(source, parse.Candidate, CommandStatusDuplicate)
+			report.Reason = "remote_runner_ack"
+			report.Message = "comment already has an eyes reaction from the runner identity"
+			result.Commands = append(result.Commands, report)
+			return
+		}
 		processCandidate(ctx, backend, cfg, policy, st, recorded, parse.Candidate, source, now, result)
 	}
 }
@@ -644,6 +690,95 @@ func activeCancelTarget(st *crstate.RunnerState, repo, publicID string) (crstate
 		}
 	}
 	return crstate.Job{}, false
+}
+
+func (c *runCache) issueOpen(ctx context.Context, backend Backend, repo string, issueNumber int, source string, result *Result) bool {
+	return c.issueState(ctx, backend, repo, issueNumber, source, result).open
+}
+
+func (c *runCache) issueState(ctx context.Context, backend Backend, repo string, issueNumber int, source string, result *Result) issueStateCheck {
+	if c == nil {
+		c = &runCache{issueStates: map[string]issueStateCheck{}}
+	}
+	if c.issueStates == nil {
+		c.issueStates = map[string]issueStateCheck{}
+	}
+	key := repo + "#" + strconv.Itoa(issueNumber)
+	if check, ok := c.issueStates[key]; ok {
+		return check
+	}
+	issue, err := backend.GetIssueContext(ctx, repo, issueNumber, github.ConditionalRequest{})
+	check := issueStateCheck{open: err == nil && strings.EqualFold(strings.TrimSpace(issue.Issue.State), "open"), err: err}
+	c.issueStates[key] = check
+	if err != nil && result != nil {
+		result.OK = false
+		result.Diagnostics = append(result.Diagnostics, Diagnostic{
+			Source:  source,
+			Repo:    repo,
+			Issue:   issueNumber,
+			Message: "issue context: " + boundedOneLine(err.Error(), 512),
+		})
+	}
+	return check
+}
+
+func commentHasRunnerEyesAck(ctx context.Context, backend Backend, cfg commentrunner.Config, policy commentrunner.AuthorizationPolicy, cache *runCache, repo string, comment github.Comment) (bool, error) {
+	if comment.Reactions.TotalCount <= 0 && comment.Reactions.Eyes <= 0 {
+		return false, nil
+	}
+	runnerLogin, err := cache.runnerIdentity(ctx, backend, cfg, policy)
+	if err != nil {
+		return false, err
+	}
+	page := github.RunnerPageOptions{}
+	for {
+		result, err := backend.ListCommentReactionsPage(ctx, repo, comment.ID, page)
+		if err != nil {
+			return false, err
+		}
+		for _, reaction := range result.Reactions {
+			if reaction.User == nil {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(reaction.Content), queuedJobReactionContent) && strings.EqualFold(strings.TrimSpace(reaction.User.Login), runnerLogin) {
+				return true, nil
+			}
+		}
+		if result.Metadata.Pagination.NextURL == "" {
+			return false, nil
+		}
+		page = github.RunnerPageOptions{CursorURL: result.Metadata.Pagination.NextURL}
+	}
+}
+
+func (c *runCache) runnerIdentity(ctx context.Context, backend Backend, cfg commentrunner.Config, policy commentrunner.AuthorizationPolicy) (string, error) {
+	if c != nil && c.runnerLoginChecked {
+		return c.runnerLogin, c.runnerLoginErr
+	}
+	user, _, err := backend.GetUser(ctx)
+	if err == nil && strings.TrimSpace(user.Login) == "" {
+		err = fmt.Errorf("runner identity lookup returned an empty login")
+	}
+	if err == nil {
+		expected := strings.TrimSpace(policy.RunnerLogin)
+		if expected == "" {
+			expected = strings.TrimSpace(cfg.RunnerIdentity)
+		}
+		if expected != "" && !strings.EqualFold(expected, strings.TrimSpace(user.Login)) {
+			err = fmt.Errorf("authenticated runner identity %q does not match configured runner %q", user.Login, expected)
+		}
+	}
+	if c != nil {
+		c.runnerLoginChecked = true
+		c.runnerLoginErr = err
+		if err == nil {
+			c.runnerLogin = strings.TrimSpace(user.Login)
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(user.Login), nil
 }
 
 func writeRejectedCommand(ctx context.Context, backend Backend, cfg commentrunner.Config, st *crstate.RunnerState, seen crstate.SeenComment, report CommandReport, now time.Time, result *Result) {

@@ -88,6 +88,10 @@ func (b *artifactBackend) ListRepositoryIssueCommentsPage(context.Context, strin
 	return github.IssueCommentsResult{}, nil
 }
 
+func (b *artifactBackend) ListCommentReactionsPage(context.Context, string, int64, github.RunnerPageOptions) (github.CommentReactionsResult, error) {
+	return github.CommentReactionsResult{}, nil
+}
+
 func (b *artifactBackend) GetCollaboratorPermission(context.Context, string, string) (github.CollaboratorPermissionResult, error) {
 	return github.CollaboratorPermissionResult{}, nil
 }

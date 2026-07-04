@@ -277,6 +277,10 @@ func (f *fakeRunnerOps) ListRepositoryIssueCommentsPage(context.Context, string,
 	return github.IssueCommentsResult{}, nil
 }
 
+func (f *fakeRunnerOps) ListCommentReactionsPage(context.Context, string, int64, github.RunnerPageOptions) (github.CommentReactionsResult, error) {
+	return github.CommentReactionsResult{}, nil
+}
+
 func (f *fakeRunnerOps) GetCollaboratorPermission(context.Context, string, string) (github.CollaboratorPermissionResult, error) {
 	return github.CollaboratorPermissionResult{}, nil
 }

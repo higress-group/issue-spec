@@ -248,6 +248,12 @@ func TestRunnerCommentCreateUpdateReturnMetadata(t *testing.T) {
 			w.Header().Set("X-RateLimit-Remaining", "41")
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"id":1,"content":"eyes"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/issues/comments/30/reactions":
+			if got := r.URL.Query().Get("per_page"); got != "100" {
+				t.Fatalf("reaction per_page = %q", got)
+			}
+			w.Header().Set("X-RateLimit-Remaining", "40")
+			json.NewEncoder(w).Encode([]Reaction{{ID: 1, User: &User{Login: "bot"}, Content: "eyes"}})
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
 		}
@@ -286,6 +292,17 @@ func TestRunnerCommentCreateUpdateReturnMetadata(t *testing.T) {
 	}
 	if reaction.Metadata.StatusCode != http.StatusCreated || reaction.Metadata.RateLimit.Remaining != 41 {
 		t.Fatalf("reaction metadata = %+v", reaction.Metadata)
+	}
+
+	reactions, err := client.ListCommentReactionsPage(context.Background(), "o/r", 30, RunnerPageOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reactions.Reactions) != 1 || reactions.Reactions[0].User.Login != "bot" || reactions.Reactions[0].Content != "eyes" {
+		t.Fatalf("listed reactions = %+v", reactions.Reactions)
+	}
+	if reactions.Metadata.RateLimit.Remaining != 40 {
+		t.Fatalf("listed reactions metadata = %+v", reactions.Metadata)
 	}
 }
 

@@ -26,6 +26,7 @@ type RunnerOperations interface {
 	GetIssueContext(context.Context, string, int, ConditionalRequest) (IssueContextResult, error)
 	ListIssueCommentsPage(context.Context, string, int, CommentListOptions) (IssueCommentsResult, error)
 	ListRepositoryIssueCommentsPage(context.Context, string, CommentListOptions) (IssueCommentsResult, error)
+	ListCommentReactionsPage(context.Context, string, int64, RunnerPageOptions) (CommentReactionsResult, error)
 	GetCollaboratorPermission(context.Context, string, string) (CollaboratorPermissionResult, error)
 	CreateRunnerComment(context.Context, string, int, string) (RunnerCommentResult, error)
 	UpdateRunnerComment(context.Context, string, int64, string) (RunnerCommentResult, error)
@@ -103,6 +104,11 @@ type IssueContextResult struct {
 type IssueCommentsResult struct {
 	Comments []Comment
 	Metadata ResponseMetadata
+}
+
+type CommentReactionsResult struct {
+	Reactions []Reaction
+	Metadata  ResponseMetadata
 }
 
 type RepositorySubscriptionResult struct {
@@ -242,6 +248,22 @@ func (c *Client) ListRepositoryIssueCommentsPage(ctx context.Context, repo strin
 	}
 	annotateCommentIssueNumbers(comments, 0)
 	return IssueCommentsResult{Comments: comments, Metadata: meta}, nil
+}
+
+func (c *Client) ListCommentReactionsPage(ctx context.Context, repo string, commentID int64, page RunnerPageOptions) (CommentReactionsResult, error) {
+	path := page.CursorURL
+	query := url.Values{}
+	if path == "" {
+		path = fmt.Sprintf("/repos/%s/issues/comments/%d/reactions", repo, commentID)
+		addPageQuery(query, page, defaultRunnerCommentsPerPage)
+	}
+
+	var reactions []Reaction
+	meta, err := c.doRunnerJSON(ctx, http.MethodGet, path, query, nil, ConditionalRequest{}, false, &reactions)
+	if err != nil {
+		return CommentReactionsResult{Metadata: meta}, err
+	}
+	return CommentReactionsResult{Reactions: reactions, Metadata: meta}, nil
 }
 
 func (c *Client) GetCollaboratorPermission(ctx context.Context, repo, login string) (CollaboratorPermissionResult, error) {

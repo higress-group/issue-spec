@@ -193,6 +193,24 @@ func (b *GHBackend) ListIssueCommentsPage(ctx context.Context, repo string, issu
 	return IssueCommentsResult{Comments: comments, Metadata: metadata}, err
 }
 
+func (b *GHBackend) ListCommentReactionsPage(ctx context.Context, repo string, commentID int64, page RunnerPageOptions) (CommentReactionsResult, error) {
+	endpoint := page.CursorURL
+	query := url.Values{}
+	if endpoint == "" {
+		endpoint = fmt.Sprintf("/repos/%s/issues/comments/%d/reactions", repo, commentID)
+		query.Set("per_page", strconv.Itoa(perPage(page.PerPage, defaultRunnerCommentsPerPage)))
+	}
+	var reactions []Reaction
+	metadata, err := b.runRunnerJSONPages(ctx, ExternalCLIAPIRequest{
+		Operation: "ListCommentReactionsPage",
+		Method:    http.MethodGet,
+		Endpoint:  endpoint,
+		Query:     query,
+		Paginate:  true,
+	}, "", &reactions)
+	return CommentReactionsResult{Reactions: reactions, Metadata: metadata}, err
+}
+
 func (b *GHBackend) GetIssueContext(ctx context.Context, repo string, issueNumber int, conditional ConditionalRequest) (IssueContextResult, error) {
 	var issue Issue
 	metadata, err := b.runRunnerJSON(ctx, ExternalCLIAPIRequest{

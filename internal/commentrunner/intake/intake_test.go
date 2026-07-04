@@ -47,14 +47,19 @@ type fakeReaction struct {
 type fakeBackend struct {
 	user                   github.User
 	permissions            map[string]string
+	issueStates            map[string]string
 	notifications          github.NotificationListResult
 	notificationErr        error
 	issueComments          map[int]github.IssueCommentsResult
 	repoComments           github.IssueCommentsResult
 	listIssueCommentsPage  func(int, github.CommentListOptions) (github.IssueCommentsResult, error)
+	listedReactions        map[int64]github.CommentReactionsResult
+	listReactionsPage      func(int64, github.RunnerPageOptions) (github.CommentReactionsResult, error)
 	notificationOpts       []github.NotificationListOptions
 	issueCommentOpts       []github.CommentListOptions
 	repoCommentOpts        []github.CommentListOptions
+	issueContextLookups    []string
+	reactionListLookups    []int64
 	collaboratorLookups    []string
 	permissionLookupErrFor string
 	createdRunnerComments  []github.Comment
@@ -108,8 +113,21 @@ func (b *fakeBackend) GetRepositorySubscription(context.Context, string) (github
 	return github.RepositorySubscriptionResult{}, nil
 }
 
-func (b *fakeBackend) GetIssueContext(context.Context, string, int, github.ConditionalRequest) (github.IssueContextResult, error) {
-	return github.IssueContextResult{}, nil
+func (b *fakeBackend) GetIssueContext(_ context.Context, repo string, issue int, _ github.ConditionalRequest) (github.IssueContextResult, error) {
+	b.issueContextLookups = append(b.issueContextLookups, repo+"#"+strconv.Itoa(issue))
+	state := b.issueStates[repo+"#"+strconv.Itoa(issue)]
+	if state == "" {
+		state = "open"
+	}
+	return github.IssueContextResult{Issue: github.Issue{Number: issue, State: state}}, nil
+}
+
+func (b *fakeBackend) ListCommentReactionsPage(_ context.Context, _ string, commentID int64, page github.RunnerPageOptions) (github.CommentReactionsResult, error) {
+	b.reactionListLookups = append(b.reactionListLookups, commentID)
+	if b.listReactionsPage != nil {
+		return b.listReactionsPage(commentID, page)
+	}
+	return b.listedReactions[commentID], nil
 }
 
 func (b *fakeBackend) CreateRunnerComment(_ context.Context, repo string, issue int, body string) (github.RunnerCommentResult, error) {
@@ -201,6 +219,161 @@ func TestRunOnceFallbackRecoversCommentMissingFromNotifications(t *testing.T) {
 	}
 	if len(backend.issueCommentOpts) != 0 {
 		t.Fatalf("notification comments fetched despite no notification: %+v", backend.issueCommentOpts)
+	}
+}
+
+func TestRunOnceSkipsClosedIssueNotificationThread(t *testing.T) {
+	st := crstate.NewState()
+	st.Repositories["o/r"] = crstate.RepositoryState{
+		Repo: "o/r",
+		FallbackCadence: crstate.FallbackCadence{
+			Enabled:         true,
+			IntervalSeconds: 300,
+			NextPollAt:      testNow.Add(time.Hour),
+		},
+	}
+	backend := &fakeBackend{
+		user:        github.User{Login: "bot"},
+		permissions: map[string]string{"alice": "write"},
+		issueStates: map[string]string{"o/r#7": "closed"},
+		notifications: github.NotificationListResult{
+			Notifications: []github.Notification{notification(7)},
+			Metadata:      meta(http.StatusOK, `"notes-v1"`, 60),
+		},
+		issueComments: map[int]github.IssueCommentsResult{
+			7: {Comments: []github.Comment{commandComment(103, 7, "alice", "/new should not run")}},
+		},
+	}
+	store := &fakeStore{state: st}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || len(result.Jobs) != 0 || len(result.Commands) != 0 {
+		t.Fatalf("closed notification thread should not produce commands: ok=%v jobs=%+v commands=%+v diagnostics=%+v", result.OK, result.Jobs, result.Commands, result.Diagnostics)
+	}
+	if len(backend.issueCommentOpts) != 0 {
+		t.Fatalf("closed notification thread fetched comments: %+v", backend.issueCommentOpts)
+	}
+	if len(backend.collaboratorLookups) != 0 || len(backend.commentReactions) != 0 {
+		t.Fatalf("closed notification thread performed command side effects: lookups=%+v reactions=%+v", backend.collaboratorLookups, backend.commentReactions)
+	}
+}
+
+func TestRunOnceSkipsClosedIssueRepositoryFallbackComment(t *testing.T) {
+	backend := &fakeBackend{
+		user:          github.User{Login: "bot"},
+		permissions:   map[string]string{"alice": "write"},
+		issueStates:   map[string]string{"o/r#7": "closed"},
+		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes"`, 60)},
+		repoComments:  github.IssueCommentsResult{Comments: []github.Comment{commandComment(104, 7, "alice", "/new should not run")}},
+	}
+	store := &fakeStore{state: crstate.NewState()}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || len(result.Jobs) != 0 || len(result.Commands) != 0 {
+		t.Fatalf("closed fallback comment should not produce commands: ok=%v jobs=%+v commands=%+v diagnostics=%+v", result.OK, result.Jobs, result.Commands, result.Diagnostics)
+	}
+	if len(backend.collaboratorLookups) != 0 || len(backend.commentReactions) != 0 {
+		t.Fatalf("closed fallback comment performed command side effects: lookups=%+v reactions=%+v", backend.collaboratorLookups, backend.commentReactions)
+	}
+	if len(store.state.SeenComments) != 0 {
+		t.Fatalf("closed fallback comment should not be recorded as seen: %+v", store.state.SeenComments)
+	}
+	if got := store.state.Repositories["o/r"].RepositoryCommentCursor.LastSeenID; got != 104 {
+		t.Fatalf("closed fallback cursor LastSeenID = %d, want 104", got)
+	}
+}
+
+func TestRunOnceSkipsCommandAlreadyAckedByRunnerEyes(t *testing.T) {
+	comment := commandComment(105, 7, "alice", "/new already handled")
+	comment.Reactions = github.Reactions{TotalCount: 1, Eyes: 1}
+	backend := &fakeBackend{
+		user:          github.User{Login: "bot"},
+		permissions:   map[string]string{"alice": "write"},
+		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes"`, 60)},
+		repoComments:  github.IssueCommentsResult{Comments: []github.Comment{comment}},
+		listedReactions: map[int64]github.CommentReactionsResult{
+			105: {Reactions: []github.Reaction{{User: &github.User{Login: "bot"}, Content: "eyes"}}},
+		},
+	}
+	store := &fakeStore{state: crstate.NewState()}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Jobs) != 0 || len(store.state.Jobs) != 0 {
+		t.Fatalf("remote-acked command should not queue: result=%+v state=%+v", result.Jobs, store.state.Jobs)
+	}
+	if len(backend.reactionListLookups) != 1 || backend.reactionListLookups[0] != 105 {
+		t.Fatalf("reaction lookup = %+v, want comment 105", backend.reactionListLookups)
+	}
+	if len(backend.collaboratorLookups) != 0 || len(backend.commentReactions) != 0 {
+		t.Fatalf("remote-acked command performed queue side effects: lookups=%+v reactions=%+v", backend.collaboratorLookups, backend.commentReactions)
+	}
+	if !hasReason(result.Commands, "remote_runner_ack") {
+		t.Fatalf("remote ack duplicate was not reported: %+v", result.Commands)
+	}
+}
+
+func TestRunOnceOtherUserEyesDoesNotBlockQueue(t *testing.T) {
+	comment := commandComment(106, 7, "alice", "/new handle despite other eyes")
+	comment.Reactions = github.Reactions{TotalCount: 1, Eyes: 1}
+	backend := &fakeBackend{
+		user:          github.User{Login: "bot"},
+		permissions:   map[string]string{"alice": "write"},
+		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes"`, 60)},
+		repoComments:  github.IssueCommentsResult{Comments: []github.Comment{comment}},
+		listedReactions: map[int64]github.CommentReactionsResult{
+			106: {Reactions: []github.Reaction{{User: &github.User{Login: "octocat"}, Content: "eyes"}}},
+		},
+	}
+	store := &fakeStore{state: crstate.NewState()}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Jobs) != 1 || len(store.state.Jobs) != 1 {
+		t.Fatalf("other user's eyes should not block queue: result=%+v state=%+v", result.Jobs, store.state.Jobs)
+	}
+	if len(backend.reactionListLookups) != 1 || backend.reactionListLookups[0] != 106 {
+		t.Fatalf("reaction lookup = %+v, want comment 106", backend.reactionListLookups)
+	}
+	if len(backend.commentReactions) != 1 || backend.commentReactions[0].commentID != 106 {
+		t.Fatalf("queued job reaction = %+v, want eyes on comment 106", backend.commentReactions)
+	}
+}
+
+func TestRunOnceNoReactionsUsesOriginalQueuePath(t *testing.T) {
+	backend := &fakeBackend{
+		user:          github.User{Login: "bot"},
+		permissions:   map[string]string{"alice": "write"},
+		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes"`, 60)},
+		repoComments:  github.IssueCommentsResult{Comments: []github.Comment{commandComment(107, 7, "alice", "/new normal path")}},
+		listedReactions: map[int64]github.CommentReactionsResult{
+			107: {Reactions: []github.Reaction{{User: &github.User{Login: "bot"}, Content: "eyes"}}},
+		},
+	}
+	store := &fakeStore{state: crstate.NewState()}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Jobs) != 1 || len(store.state.Jobs) != 1 {
+		t.Fatalf("comment without reaction summary should queue normally: result=%+v state=%+v", result.Jobs, store.state.Jobs)
+	}
+	if len(backend.reactionListLookups) != 0 {
+		t.Fatalf("reaction API should not be queried without reaction summary: %+v", backend.reactionListLookups)
+	}
+	if len(backend.commentReactions) != 1 || backend.commentReactions[0].commentID != 107 {
+		t.Fatalf("queued job reaction = %+v, want eyes on comment 107", backend.commentReactions)
 	}
 }
 
@@ -981,6 +1154,15 @@ func meta(status int, etag string, pollInterval int) github.ResponseMetadata {
 func hasStatus(reports []CommandReport, status string) bool {
 	for _, report := range reports {
 		if report.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func hasReason(reports []CommandReport, reason string) bool {
+	for _, report := range reports {
+		if report.Reason == reason {
 			return true
 		}
 	}

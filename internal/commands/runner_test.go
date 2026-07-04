@@ -528,6 +528,10 @@ func (b *runnerPhaseBackend) ListRepositoryIssueCommentsPage(context.Context, st
 	return github.IssueCommentsResult{Metadata: github.ResponseMetadata{StatusCode: http.StatusOK}}, nil
 }
 
+func (b *runnerPhaseBackend) ListCommentReactionsPage(context.Context, string, int64, github.RunnerPageOptions) (github.CommentReactionsResult, error) {
+	return github.CommentReactionsResult{Metadata: github.ResponseMetadata{StatusCode: http.StatusOK}}, nil
+}
+
 func (b *runnerPhaseBackend) GetCollaboratorPermission(context.Context, string, string) (github.CollaboratorPermissionResult, error) {
 	return github.CollaboratorPermissionResult{Permission: github.CollaboratorPermission{Permission: "write"}, CanWrite: true}, nil
 }

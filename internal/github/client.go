@@ -64,8 +64,21 @@ type Comment struct {
 	IssueNumber int       `json:"-"`
 	Body        string    `json:"body"`
 	User        *User     `json:"user,omitempty"`
+	Reactions   Reactions `json:"reactions,omitempty"`
 	CreatedAt   time.Time `json:"created_at,omitempty"`
 	UpdatedAt   time.Time `json:"updated_at,omitempty"`
+}
+
+type Reactions struct {
+	TotalCount int `json:"total_count"`
+	Eyes       int `json:"eyes"`
+}
+
+type Reaction struct {
+	ID        int64     `json:"id"`
+	User      *User     `json:"user,omitempty"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
 }
 
 type LabelResult struct {

@@ -116,9 +116,12 @@ type RunnerBackend struct {
 	RepositoryComments       github.IssueCommentsResult
 	IssueContext             github.IssueContextResult
 	Subscription             github.RepositorySubscriptionResult
+	CommentReactionPages     map[int64]github.CommentReactionsResult
 	NotificationOptions      []github.NotificationListOptions
 	IssueCommentOptions      []github.CommentListOptions
 	RepositoryCommentOptions []github.CommentListOptions
+	CommentReactionOptions   []github.RunnerPageOptions
+	CommentReactionLookups   []int64
 	CollaboratorLookups      []string
 	CreatedRunnerComments    []github.Comment
 	UpdatedRunnerComments    []github.Comment
@@ -186,8 +189,19 @@ func (b *RunnerBackend) GetRepositorySubscription(context.Context, string) (gith
 	return b.Subscription, nil
 }
 
-func (b *RunnerBackend) GetIssueContext(context.Context, string, int, github.ConditionalRequest) (github.IssueContextResult, error) {
-	return b.IssueContext, nil
+func (b *RunnerBackend) GetIssueContext(_ context.Context, _ string, issueNumber int, _ github.ConditionalRequest) (github.IssueContextResult, error) {
+	result := b.IssueContext
+	if result.Issue.State == "" {
+		result.Issue.Number = issueNumber
+		result.Issue.State = "open"
+	}
+	return result, nil
+}
+
+func (b *RunnerBackend) ListCommentReactionsPage(_ context.Context, _ string, commentID int64, page github.RunnerPageOptions) (github.CommentReactionsResult, error) {
+	b.CommentReactionLookups = append(b.CommentReactionLookups, commentID)
+	b.CommentReactionOptions = append(b.CommentReactionOptions, page)
+	return b.CommentReactionPages[commentID], nil
 }
 
 func (b *RunnerBackend) CreateRunnerComment(_ context.Context, repo string, issue int, body string) (github.RunnerCommentResult, error) {

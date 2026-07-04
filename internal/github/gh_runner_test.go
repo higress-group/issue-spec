@@ -97,6 +97,7 @@ func TestGHRunnerCommentListingAndWritePrimitives(t *testing.T) {
 		{Stdout: includedHTTP(http.StatusCreated, nil, `{"id":301,"issue_url":"https://api.github.com/repos/o/r/issues/7","body":"created"}`)},
 		{Stdout: includedHTTP(http.StatusOK, nil, `{"id":301,"issue_url":"https://api.github.com/repos/o/r/issues/7","body":"updated"}`)},
 		{Stdout: includedHTTP(http.StatusCreated, map[string]string{"X-RateLimit-Remaining": "40"}, `{"id":401,"content":"eyes"}`)},
+		{Stdout: includedHTTP(http.StatusOK, nil, `[{"id":401,"content":"eyes","user":{"login":"bot"}}]`)},
 	}}
 	backend := newTestGHBackend(t, "github.com", runner)
 
@@ -162,6 +163,18 @@ func TestGHRunnerCommentListingAndWritePrimitives(t *testing.T) {
 		t.Fatalf("reaction args = %#v, want %#v", runner.commands[4].Args, wantArgs)
 	}
 	assertJSONBody(t, runner.commands[4].Stdin, map[string]any{"content": "eyes"})
+
+	reactions, err := backend.ListCommentReactionsPage(context.Background(), "o/r", 301, RunnerPageOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reactions.Reactions) != 1 || reactions.Reactions[0].User.Login != "bot" || reactions.Reactions[0].Content != "eyes" {
+		t.Fatalf("listed reactions = %+v", reactions.Reactions)
+	}
+	wantArgs = []string{"api", "--method", http.MethodGet, "--header", githubAPIVersion, "--paginate", "--include", "/repos/o/r/issues/comments/301/reactions?per_page=100"}
+	if !reflect.DeepEqual(runner.commands[5].Args, wantArgs) {
+		t.Fatalf("reaction list args = %#v, want %#v", runner.commands[5].Args, wantArgs)
+	}
 }
 
 func TestGHRunnerIssueContextPermissionAndPreflight(t *testing.T) {
