@@ -289,6 +289,95 @@ func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing
 	}
 }
 
+func TestRunNextResumeUsesStoredAcpxCWDForRuntimeCompatibility(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 11, 45, 0, 0, time.UTC)
+	realRoot := t.TempDir()
+	linkParent := t.TempDir()
+	linkRoot := filepath.Join(linkParent, "workspaces")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	legacyPath := filepath.Join(linkRoot, "ws-existing")
+	if err := os.MkdirAll(legacyPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canonicalPath, err := filepath.EvalSymlinks(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-existing", Path: canonicalPath, Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-existing"}
+	seedState(t, store, func(st *state.RunnerState) error {
+		if err := st.UpsertPublicSession(state.PublicSession{
+			Repo:            "o/r",
+			PublicSessionID: "ps-existing",
+			IssueNumber:     30,
+			AcpxRecordID:    "rec-existing",
+			CreatorLogin:    "alice",
+			Status:          state.StatusCompleted,
+			Workspace:       resumeWorkspace,
+			Acpx:            state.AcpxMetadata{StableRecordID: "rec-existing", Raw: map[string]string{"cwd": legacyPath}},
+			CreatedAt:       now.Add(-time.Hour),
+			LastUsedAt:      now.Add(-time.Minute),
+		}); err != nil {
+			return err
+		}
+		_, _, err := st.CreateCommandJob(state.Job{
+			ID:                    "job-resume-legacy-cwd",
+			Repo:                  "o/r",
+			IssueNumber:           30,
+			PublicSessionID:       "ps-existing",
+			CoordinatorKind:       "codex",
+			Model:                 "gpt-5.5[xhigh]",
+			SessionCreatorLogin:   "alice",
+			TriggeringUserLogin:   "bob",
+			TriggerCommentID:      213,
+			CommandID:             "cmd-resume-legacy-cwd",
+			CommandName:           "resume",
+			CommandPrompt:         "continue with legacy cwd",
+			CommandIdempotencyKey: "cmd-key-resume-legacy-cwd",
+			StatusWritebackKey:    "status-resume-legacy-cwd",
+			Status:                state.StatusQueued,
+			CreatedAt:             now,
+			FirstObservedComment: state.SeenComment{
+				Repo:                  "o/r",
+				IssueNumber:           30,
+				CommentID:             213,
+				HTMLURL:               "https://github.com/o/r/issues/30#issuecomment-213",
+				AuthorLogin:           "bob",
+				FirstObservedBodyHash: "sha256:resume-legacy-cwd",
+			},
+		})
+		return err
+	})
+	workspaces := &fakeWorkspaces{binding: workspace.Binding{Workspace: resumeWorkspace, AcpxWorkingDirectory: canonicalPath, SandboxWorkspacePath: canonicalPath}}
+	sandbox := &fakeSandbox{}
+	writebacks := &fakeWriteback{}
+	coordinator := &fakeCoordinator{resumeResult: dispatchResult("ps-existing", "rec-existing", "turn-resume", completedSummary())}
+	dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
+	dispatcher.Sandbox = sandbox
+	if result, err := dispatcher.RunNext(context.Background()); err != nil || result.Status != state.StatusCompleted {
+		t.Fatalf("resume RunNext result=%+v err=%v", result, err)
+	}
+	if len(sandbox.requests) != 1 {
+		t.Fatalf("sandbox request count = %d, want 1", len(sandbox.requests))
+	}
+	req := sandbox.requests[0]
+	if req.WorkspacePath != legacyPath {
+		t.Fatalf("sandbox workspace path = %q, want stored cwd %q", req.WorkspacePath, legacyPath)
+	}
+	if req.AcpxWorkingDirectory != legacyPath {
+		t.Fatalf("acpx working directory = %q, want stored cwd %q", req.AcpxWorkingDirectory, legacyPath)
+	}
+	wantRoot, err := stableSessionRuntimeRoot(legacyPath, "o/r", "ps-existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.RuntimeHome != filepath.Join(wantRoot, "home") {
+		t.Fatalf("runtime HOME = %q, want legacy cwd root %q", req.RuntimeHome, filepath.Join(wantRoot, "home"))
+	}
+}
+
 func TestStableSessionRuntimePathsSeparatePublicSessions(t *testing.T) {
 	workspaceRoot := t.TempDir()
 	workspacePath := filepath.Join(workspaceRoot, "workspace")

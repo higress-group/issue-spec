@@ -254,7 +254,7 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 	}
 	defer releaseLock()
 
-	env, bundle, prompt, err := d.prepareExecution(ctx, job, command, publicID, repo, binding)
+	env, bundle, prompt, err := d.prepareExecution(ctx, job, command, publicID, repo, binding, session)
 	if err != nil {
 		return d.fail(ctx, job.ID, "execution-inputs", err)
 	}
@@ -356,8 +356,12 @@ func (d *Dispatcher) prepareWorkspace(ctx context.Context, job state.Job, comman
 	return binding, session, err
 }
 
-func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string, repo RepositoryInfo, binding workspace.Binding) (ExecutionEnvironment, runnercontext.Bundle, string, error) {
+func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string, repo RepositoryInfo, binding workspace.Binding, session state.PublicSession) (ExecutionEnvironment, runnercontext.Bundle, string, error) {
 	artifacts, err := d.artifacts(ctx, job)
+	if err != nil {
+		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
+	}
+	execBinding, err := resumeExecutionBinding(command, binding, session)
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
@@ -382,10 +386,10 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 			Repo:             job.Repo,
 			Issue:            job.IssueNumber,
 			TriggerCommentID: job.TriggerCommentID,
-			WorkspacePath:    binding.Workspace.Path,
-			CloneURL:         firstNonEmpty(binding.Workspace.CloneURL, repo.CloneURL),
-			Branch:           binding.Workspace.Branch,
-			Ref:              binding.Workspace.Ref,
+			WorkspacePath:    execBinding.Workspace.Path,
+			CloneURL:         firstNonEmpty(execBinding.Workspace.CloneURL, repo.CloneURL),
+			Branch:           execBinding.Workspace.Branch,
+			Ref:              execBinding.Workspace.Ref,
 			AgentKind:        job.CoordinatorKind,
 			Model:            job.Model,
 			IssueSpecBinary:  firstNonEmpty(d.IssueSpecBinary, "issue-spec"),
@@ -404,13 +408,13 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
-	runtimePaths, err := stableSessionRuntimePaths(firstNonEmpty(binding.Workspace.Path, binding.SandboxWorkspacePath, binding.AcpxWorkingDirectory), job.Repo, publicID)
+	runtimePaths, err := stableSessionRuntimePaths(firstNonEmpty(execBinding.AcpxWorkingDirectory, execBinding.Workspace.Path, execBinding.SandboxWorkspacePath), job.Repo, publicID)
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
 	env, err := d.Sandbox.Prepare(ctx, SandboxRequest{
-		WorkspacePath:        binding.SandboxWorkspacePath,
-		AcpxWorkingDirectory: binding.AcpxWorkingDirectory,
+		WorkspacePath:        execBinding.SandboxWorkspacePath,
+		AcpxWorkingDirectory: execBinding.AcpxWorkingDirectory,
 		AcpxBinary:           "acpx",
 		IssueSpecBinary:      d.IssueSpecBinary,
 		ExtraEnv:             d.CoordinatorExtraEnv,
@@ -423,6 +427,35 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 		return env, runnercontext.Bundle{}, "", err
 	}
 	return env, bundle, prompt, nil
+}
+
+func resumeExecutionBinding(command runnercontext.CommandVerb, binding workspace.Binding, session state.PublicSession) (workspace.Binding, error) {
+	if command != runnercontext.CommandResume {
+		return binding, nil
+	}
+	cwd := strings.TrimSpace(session.Acpx.Raw["cwd"])
+	if cwd == "" {
+		return binding, nil
+	}
+	same, err := sameDirectory(cwd, binding.Workspace.Path)
+	if err != nil || !same {
+		return binding, nil
+	}
+	binding.AcpxWorkingDirectory = cwd
+	binding.SandboxWorkspacePath = cwd
+	return binding, nil
+}
+
+func sameDirectory(left, right string) (bool, error) {
+	leftInfo, err := os.Stat(left)
+	if err != nil {
+		return false, err
+	}
+	rightInfo, err := os.Stat(right)
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(leftInfo, rightInfo), nil
 }
 
 func (d *Dispatcher) dispatchAcpx(ctx context.Context, coordinator Coordinator, command runnercontext.CommandVerb, publicID string, session state.PublicSession, prompt, token string) (acpx.DispatchResult, error) {
