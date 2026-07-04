@@ -36,8 +36,6 @@ type activeWorkspaceLock struct {
 	path  string
 	token string
 	jobID string
-	done  chan struct{}
-	once  sync.Once
 	mu    sync.Mutex
 }
 
@@ -272,7 +270,6 @@ type LockRequest struct {
 	PublicSessionID string
 	JobID           string
 	WorkspaceID     string
-	StaleAfter      time.Duration
 }
 
 type lockRecord struct {
@@ -283,7 +280,6 @@ type lockRecord struct {
 	Token           string    `json:"token"`
 	ProcessID       int       `json:"pid,omitempty"`
 	AcquiredAt      time.Time `json:"acquired_at"`
-	HeartbeatAt     time.Time `json:"heartbeat_at"`
 }
 
 func (m Manager) AcquireLock(ctx context.Context, req LockRequest) (state.SessionLock, error) {
@@ -345,9 +341,8 @@ func (m Manager) AcquireLock(ctx context.Context, req LockRequest) (state.Sessio
 		Token:           token,
 		ProcessID:       os.Getpid(),
 		AcquiredAt:      now,
-		HeartbeatAt:     now,
 	}
-	active := &activeWorkspaceLock{file: file, path: lockPath, token: token, jobID: record.JobID, done: make(chan struct{})}
+	active := &activeWorkspaceLock{file: file, path: lockPath, token: token, jobID: record.JobID}
 	registered := false
 	if owner := registerWorkspaceLock(lockPath, active); owner != "" {
 		_ = file.Close()
@@ -365,14 +360,10 @@ func (m Manager) AcquireLock(ctx context.Context, req LockRequest) (state.Sessio
 		registered = false
 		return state.SessionLock{}, err
 	}
-	if interval := lockHeartbeatInterval(req.StaleAfter); interval > 0 {
-		startWorkspaceLockHeartbeat(ctx, nm, active, interval)
-	}
 	registered = true
 	return state.SessionLock{
 		OwnerJobID:         record.JobID,
 		AcquiredAt:         record.AcquiredAt,
-		HeartbeatAt:        record.HeartbeatAt,
 		WorkspaceLockToken: record.Token,
 		WorkspaceLockPath:  lockPath,
 		StaleRecoveredAt:   recovered,
@@ -407,7 +398,6 @@ func (m Manager) ReleaseLock(lock state.SessionLock) error {
 	record, err := readLock(path)
 	if errors.Is(err, os.ErrNotExist) {
 		if active, ok := takeWorkspaceLock(path, lock); ok {
-			active.stop()
 			active.mu.Lock()
 			closeErr := active.file.Close()
 			active.mu.Unlock()
@@ -422,7 +412,6 @@ func (m Manager) ReleaseLock(lock state.SessionLock) error {
 		return fmt.Errorf("workspace lock token or owner mismatch")
 	}
 	if active, ok := takeWorkspaceLock(path, lock); ok {
-		active.stop()
 		active.mu.Lock()
 		removeErr := removeOpenLockPath(active.file, path)
 		closeErr := active.file.Close()
@@ -812,69 +801,6 @@ func takeWorkspaceLock(path string, lock state.SessionLock) (*activeWorkspaceLoc
 	}
 	delete(activeWorkspaceLocks.byPath, path)
 	return active, true
-}
-
-func (l *activeWorkspaceLock) stop() {
-	if l == nil {
-		return
-	}
-	l.once.Do(func() {
-		close(l.done)
-	})
-}
-
-func lockHeartbeatInterval(staleAfter time.Duration) time.Duration {
-	if staleAfter <= 0 {
-		return 0
-	}
-	interval := staleAfter / 3
-	if interval <= 0 {
-		interval = staleAfter
-	}
-	if interval < time.Millisecond {
-		interval = time.Millisecond
-	}
-	if interval > time.Minute {
-		interval = time.Minute
-	}
-	return interval
-}
-
-func startWorkspaceLockHeartbeat(ctx context.Context, manager Manager, active *activeWorkspaceLock, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	go func() {
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-active.done:
-				return
-			case <-ticker.C:
-				if !refreshWorkspaceLock(manager, active) {
-					return
-				}
-			}
-		}
-	}()
-}
-
-func refreshWorkspaceLock(manager Manager, active *activeWorkspaceLock) bool {
-	active.mu.Lock()
-	defer active.mu.Unlock()
-	same, err := sameOpenFilePath(active.file, active.path)
-	if err != nil || !same {
-		return false
-	}
-	record, err := readLock(active.path)
-	if err != nil {
-		return false
-	}
-	if record.Token != active.token || record.JobID != active.jobID {
-		return false
-	}
-	record.HeartbeatAt = manager.Now().UTC()
-	return writeLockRecord(active.file, record) == nil
 }
 
 func writeLockRecord(file *os.File, record lockRecord) error {

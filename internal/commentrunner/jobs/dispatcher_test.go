@@ -96,6 +96,62 @@ func TestRunNextNewCreatesSessionMappingAndCompletionWriteback(t *testing.T) {
 	}
 }
 
+func TestRunNextRecordsResidualWorkspaceLockRecoveryDiagnostic(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 10, 30, 0, 0, time.UTC)
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-recovered-lock",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		CoordinatorKind:       "codex",
+		Model:                 "gpt-5.5[xhigh]",
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "alice",
+		TriggerCommentID:      151,
+		CommandID:             "cmd-recovered-lock",
+		CommandName:           "new",
+		CommandPrompt:         "recover lock diagnostic",
+		CommandIdempotencyKey: "cmd-key-recovered-lock",
+		StatusWritebackKey:    "status-recovered-lock",
+		Status:                state.StatusQueued,
+		CreatedAt:             now,
+		FirstObservedComment: state.SeenComment{
+			Repo:                          "o/r",
+			IssueNumber:                   30,
+			CommentID:                     151,
+			HTMLURL:                       "https://github.com/o/r/issues/30#issuecomment-151",
+			AuthorLogin:                   "alice",
+			FirstObservedUpdatedAt:        now,
+			FirstObservedBodyHash:         "sha256:recovered-lock",
+			StatusWritebackIdempotencyKey: "status-recovered-lock",
+		},
+	})
+	workspaces := &fakeWorkspaces{
+		binding: testBinding("ws-recovered-lock"),
+		lock: state.SessionLock{
+			OwnerJobID:         "job-recovered-lock",
+			WorkspaceLockToken: "token-recovered-lock",
+			WorkspaceLockPath:  "/tmp/lock-recovered",
+			StaleRecoveredAt:   now.Add(-time.Minute),
+		},
+	}
+	coordinator := &fakeCoordinator{newResult: dispatchResult("ps-recovered-lock", "rec-recovered-lock", "turn-recovered-lock", completedSummary())}
+	dispatcher := testDispatcher(store, workspaces, coordinator, &fakeWriteback{}, now)
+	dispatcher.PublicSessionID = func() (string, error) { return "ps-recovered-lock", nil }
+
+	result, err := dispatcher.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("RunNext returned error: %v", err)
+	}
+	if result.Status != state.StatusCompleted {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	job := loadState(t, store).Jobs["job-recovered-lock"]
+	if !containsString(job.Diagnostics, workspaceLockResidualDiagnostic) {
+		t.Fatalf("workspace lock recovery diagnostic missing: %+v", job.Diagnostics)
+	}
+}
+
 func TestRunNextResumeReusesSessionMappingAndWorkspace(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 11, 0, 0, 0, time.UTC)
@@ -1631,6 +1687,7 @@ type fakeWorkspaces struct {
 	mu                  sync.Mutex
 	binding             workspace.Binding
 	bindings            map[string]workspace.Binding
+	lock                state.SessionLock
 	err                 error
 	cleanupRequests     []workspace.CleanupRequest
 	cleanupResults      []workspace.CleanupResult
@@ -1670,7 +1727,17 @@ func (f *fakeWorkspaces) AcquireLock(_ context.Context, req workspace.LockReques
 	if f.lockedJobIDs[req.JobID] {
 		return state.SessionLock{}, workspace.ErrLocked
 	}
-	return state.SessionLock{OwnerJobID: req.JobID, WorkspaceLockToken: "token", WorkspaceLockPath: "/tmp/lock"}, nil
+	lock := f.lock
+	if lock.OwnerJobID == "" {
+		lock.OwnerJobID = req.JobID
+	}
+	if lock.WorkspaceLockToken == "" {
+		lock.WorkspaceLockToken = "token"
+	}
+	if lock.WorkspaceLockPath == "" {
+		lock.WorkspaceLockPath = "/tmp/lock"
+	}
+	return lock, nil
 }
 
 func (f *fakeWorkspaces) ReleaseLock(state.SessionLock) error {
@@ -1851,4 +1918,13 @@ func first(values []string) string {
 		return ""
 	}
 	return values[0]
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

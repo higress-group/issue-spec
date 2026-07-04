@@ -26,9 +26,9 @@ import (
 	"github.com/higress-group/issue-spec/internal/workspace"
 )
 
-const defaultSessionLockStaleAfter = 0
-
 var ErrNoReadyJob = errors.New("no ready queued job")
+
+const workspaceLockResidualDiagnostic = "workspace lock recovered from residual lock file"
 
 type Store interface {
 	Load(context.Context) (state.RunnerState, error)
@@ -109,7 +109,6 @@ type Dispatcher struct {
 	Clock               Clock
 	PublicSessionID     IDGenerator
 	TurnCorrelationID   IDGenerator
-	LockStaleAfter      time.Duration
 	IssueSpecBinary     string
 	CoordinatorExtraEnv map[string]string
 }
@@ -456,13 +455,15 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 		PublicSessionID: publicID,
 		JobID:           job.ID,
 		WorkspaceID:     binding.Workspace.ID,
-		StaleAfter:      d.lockStaleAfter(),
 	})
 	if err != nil {
 		if errors.Is(err, workspace.ErrLocked) {
 			return Result{Executed: false, JobID: job.ID, Status: job.Status, Reason: "session_locked"}, nil
 		}
 		return d.fail(ctx, job.ID, "workspace-lock", err)
+	}
+	if !lock.StaleRecoveredAt.IsZero() {
+		_ = d.appendDiagnostic(ctx, job.ID, workspaceLockResidualDiagnostic)
 	}
 	lockReleased := false
 	releaseLock := func() {
@@ -1146,13 +1147,6 @@ func (d *Dispatcher) now() time.Time {
 		return d.Clock.Now().UTC()
 	}
 	return time.Now().UTC()
-}
-
-func (d *Dispatcher) lockStaleAfter() time.Duration {
-	if d.LockStaleAfter != 0 {
-		return d.LockStaleAfter
-	}
-	return defaultSessionLockStaleAfter
 }
 
 type StaticRepositoryResolver struct {

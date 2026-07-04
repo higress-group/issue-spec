@@ -172,6 +172,57 @@ func TestLoadFileStripsLegacySeenCommentsOnSave(t *testing.T) {
 	}
 }
 
+func TestLoadFileStripsLegacyHeartbeatFieldsOnSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runner-state.json")
+	legacy := `{
+  "schema_version": 1,
+  "public_sessions": {
+    "o/r#ps-legacy": {
+      "repo": "o/r",
+      "public_session_id": "ps-legacy",
+      "acpx_record_id": "rec-legacy",
+      "status": "running",
+      "queue": {
+        "pending_job_ids": ["job-legacy"],
+        "accepted_sequence": 7,
+        "heartbeat_at": "2026-07-03T10:00:00Z"
+      },
+      "lock": {
+        "owner_job_id": "job-legacy",
+        "acquired_at": "2026-07-03T10:00:00Z",
+        "heartbeat_at": "2026-07-03T10:01:00Z",
+        "workspace_lock_token": "token-legacy",
+        "workspace_lock_path": "/tmp/lock-legacy",
+        "stale_recovered_at": "2026-07-03T10:02:00Z"
+      }
+    }
+  },
+  "jobs": {}
+}
+`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, ok := state.GetPublicSession("o/r", "ps-legacy")
+	if !ok || session.Queue.AcceptedSequence != 7 || session.Lock.OwnerJobID != "job-legacy" || session.Lock.StaleRecoveredAt.IsZero() {
+		t.Fatalf("legacy session did not load: %+v ok=%v", session, ok)
+	}
+	if err := SaveFile(path, state); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "heartbeat_at") {
+		t.Fatalf("legacy heartbeat_at was retained after save:\n%s", string(data))
+	}
+}
+
 func TestMissingAndCorruptFileBehavior(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.json")
 	state, err := LoadFile(path)

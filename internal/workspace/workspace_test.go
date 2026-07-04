@@ -165,11 +165,11 @@ func TestWorkspaceLocksAreExclusive(t *testing.T) {
 		TokenFunc: fixedTokens(t, "token-1"),
 	}
 
-	first, err := manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-1", WorkspaceID: "ws-1", StaleAfter: time.Hour})
+	first, err := manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-1", WorkspaceID: "ws-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-2", WorkspaceID: "ws-1", StaleAfter: time.Hour})
+	_, err = manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-2", WorkspaceID: "ws-1"})
 	if !errors.Is(err, ErrLocked) {
 		t.Fatalf("expected held lock, got %v", err)
 	}
@@ -196,7 +196,6 @@ func TestWorkspaceLockRecoversUnlockedStaleFile(t *testing.T) {
 		Token:           "token-stale",
 		ProcessID:       12345,
 		AcquiredAt:      now.Add(-2 * time.Hour),
-		HeartbeatAt:     now.Add(-2 * time.Hour),
 	}
 	writeTestLockRecord(t, lockPath, stale)
 	manager := Manager{
@@ -206,7 +205,7 @@ func TestWorkspaceLockRecoversUnlockedStaleFile(t *testing.T) {
 		TokenFunc: fixedTokens(t, "token-recovered"),
 	}
 
-	recovered, err := manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-recovered", WorkspaceID: "ws-1", StaleAfter: time.Hour})
+	recovered, err := manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-recovered", WorkspaceID: "ws-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,12 +236,12 @@ func TestWorkspaceStaleRecoveryDoesNotDeleteCurrentLock(t *testing.T) {
 		Now:       func() time.Time { return now },
 		TokenFunc: fixedTokens(t, "token-current"),
 	}
-	current, err := manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-current", WorkspaceID: "ws-1", StaleAfter: time.Hour})
+	current, err := manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-current", WorkspaceID: "ws-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(2 * time.Hour)
-	_, err = manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-next", WorkspaceID: "ws-1", StaleAfter: time.Hour})
+	_, err = manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-next", WorkspaceID: "ws-1"})
 	if !errors.Is(err, ErrLocked) {
 		t.Fatalf("expected current lock to remain held, got %v", err)
 	}
@@ -257,41 +256,6 @@ func TestWorkspaceStaleRecoveryDoesNotDeleteCurrentLock(t *testing.T) {
 		t.Fatalf("current lock was modified or removed: %+v", record)
 	}
 	if err := manager.ReleaseLock(current); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestWorkspaceLockHeartbeatRefreshesMetadata(t *testing.T) {
-	root := t.TempDir()
-	now := time.Unix(3300, 0).UTC()
-	manager := Manager{
-		Root:      root,
-		Retention: time.Hour,
-		Now:       func() time.Time { return now },
-		TokenFunc: fixedTokens(t, "token-1"),
-	}
-	lock, err := manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-1", WorkspaceID: "ws-1", StaleAfter: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	activeWorkspaceLocks.Lock()
-	active := activeWorkspaceLocks.byPath[lock.WorkspaceLockPath]
-	activeWorkspaceLocks.Unlock()
-	if active == nil {
-		t.Fatal("active lock was not registered")
-	}
-	now = now.Add(5 * time.Minute)
-	if !refreshWorkspaceLock(manager, active) {
-		t.Fatal("heartbeat refresh failed")
-	}
-	record, err := readLock(lock.WorkspaceLockPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !record.HeartbeatAt.Equal(now) {
-		t.Fatalf("heartbeat not refreshed: got %s want %s", record.HeartbeatAt, now)
-	}
-	if err := manager.ReleaseLock(lock); err != nil {
 		t.Fatal(err)
 	}
 }

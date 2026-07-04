@@ -187,15 +187,13 @@ type WorkspaceMetadata struct {
 }
 
 type SessionQueue struct {
-	PendingJobIDs    []string  `json:"pending_job_ids,omitempty"`
-	AcceptedSequence int64     `json:"accepted_sequence,omitempty"`
-	HeartbeatAt      time.Time `json:"heartbeat_at,omitempty"`
+	PendingJobIDs    []string `json:"pending_job_ids,omitempty"`
+	AcceptedSequence int64    `json:"accepted_sequence,omitempty"`
 }
 
 type SessionLock struct {
 	OwnerJobID         string    `json:"owner_job_id,omitempty"`
 	AcquiredAt         time.Time `json:"acquired_at,omitempty"`
-	HeartbeatAt        time.Time `json:"heartbeat_at,omitempty"`
 	WorkspaceLockToken string    `json:"workspace_lock_token,omitempty"`
 	WorkspaceLockPath  string    `json:"workspace_lock_path,omitempty"`
 	StaleRecoveredAt   time.Time `json:"stale_recovered_at,omitempty"`
