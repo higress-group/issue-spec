@@ -5,6 +5,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -134,6 +135,30 @@ func TestLinuxPrepareBuildsBwrapCommand(t *testing.T) {
 	}
 }
 
+func TestLinuxPrepareDefaultBindsResolverConfig(t *testing.T) {
+	runner := capableBwrapRunner(t)
+	cfg := Config{
+		BwrapPath:         "/usr/bin/bwrap",
+		WorkspacePath:     "/tmp/workspace",
+		TempHome:          "/tmp/home",
+		TempGHConfigDir:   "/tmp/gh",
+		TempXDGConfigHome: "/tmp/xdg",
+		HostEnv:           []string{"PATH=/usr/bin"},
+	}
+	prepared, err := Prepare(context.Background(), cfg, Command{Binary: "gh", Args: []string{"auth", "status"}, Dir: "/tmp/workspace"}, Dependencies{Runner: runner})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	for _, path := range []string{"/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"} {
+		if _, err := os.Stat(path); err != nil {
+			assertArgSequenceMissing(t, prepared.Command.Args, "--ro-bind", path, path)
+			continue
+		}
+		assertArgSequence(t, prepared.Command.Args, "--ro-bind", path, path)
+		assertMount(t, prepared.Metadata.Mounts, Mount{Source: path, Destination: path, Mode: "ro"})
+	}
+}
+
 func TestLinuxPrepareBindsWorkspaceAtOriginalPathForHostCWD(t *testing.T) {
 	runner := capableBwrapRunner(t)
 	workspacePath := "/tmp/issue-spec-runner/workspace"
@@ -231,6 +256,16 @@ func assertArgSequenceMissing(t *testing.T, args []string, want ...string) {
 			t.Fatalf("args unexpectedly contained sequence %v in %v", want, args)
 		}
 	}
+}
+
+func assertMount(t *testing.T, mounts []Mount, want Mount) {
+	t.Helper()
+	for _, mount := range mounts {
+		if mount == want {
+			return
+		}
+	}
+	t.Fatalf("mounts missing %+v in %+v", want, mounts)
 }
 
 func capableBwrapRunner(t *testing.T) Runner {

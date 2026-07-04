@@ -601,6 +601,48 @@ func TestRunNextAuthProbeSuccessUsesConfiguredIssueSpecBinaryAndAllowsAcpxDispat
 	assertWritebackStatuses(t, writebacks, state.StatusRunning, state.StatusCompleted)
 }
 
+func TestRunNextPassesConfiguredAcpxBinaryToSandbox(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 4, 10, 5, 0, 0, time.UTC)
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-acpx-path",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "alice",
+		TriggerCommentID:      328,
+		CommandID:             "cmd-acpx-path",
+		CommandName:           "new",
+		CommandPrompt:         "do work",
+		CommandIdempotencyKey: "cmd-key-acpx-path",
+		StatusWritebackKey:    "status-acpx-path",
+		Status:                state.StatusQueued,
+		CreatedAt:             now,
+	})
+	workspaces := &fakeWorkspaces{binding: testBinding("ws-acpx-path")}
+	writebacks := &fakeWriteback{}
+	coordinator := &fakeCoordinator{newResult: dispatchResult("ps-acpx-path", "rec-acpx-path", "turn-acpx-path", completedSummary())}
+	dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
+	sandboxRunner := &fakeSandbox{}
+	dispatcher.Sandbox = sandboxRunner
+	dispatcher.AcpxBinary = "/opt/acpx/bin/acpx"
+	dispatcher.PublicSessionID = func() (string, error) { return "ps-acpx-path", nil }
+
+	result, err := dispatcher.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("RunNext returned error: %v", err)
+	}
+	if result.Status != state.StatusCompleted {
+		t.Fatalf("RunNext status = %s, want completed", result.Status)
+	}
+	if len(sandboxRunner.requests) != 1 {
+		t.Fatalf("sandbox requests = %d, want 1", len(sandboxRunner.requests))
+	}
+	if got := sandboxRunner.requests[0].AcpxBinary; got != "/opt/acpx/bin/acpx" {
+		t.Fatalf("AcpxBinary = %q, want configured path", got)
+	}
+}
+
 func TestRunNextSummaryFailurePersistsSessionMapping(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 12, 15, 0, 0, time.UTC)
@@ -1348,6 +1390,67 @@ func TestSandboxRunnerBwrapPreservesHostCWDAndBindsIssueSpecBinaryForChildAuth(t
 			t.Fatalf("token material leaked into bwrap args: %v", cmd.Args)
 		}
 	}
+}
+
+func TestSandboxRunnerBwrapBindsResolvedNVMStyleAcpxInstall(t *testing.T) {
+	temp := t.TempDir()
+	hostGH := filepath.Join(temp, "host-gh")
+	workspacePath := filepath.Join(temp, "workspace")
+	runtimeRoot := filepath.Join(temp, ".sessions", "runtime")
+	nodePrefix := filepath.Join(temp, "nvm", "versions", "node", "v24.18.0")
+	acpxBinDir := filepath.Join(nodePrefix, "bin")
+	acpxPackageDir := filepath.Join(nodePrefix, "lib", "node_modules", "acpx")
+	acpxDistDir := filepath.Join(acpxPackageDir, "dist")
+	acpxPath := filepath.Join(acpxBinDir, "acpx")
+	for _, dir := range []string{hostGH, workspacePath, acpxBinDir, acpxDistDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeFileWithMode(t, filepath.Join(acpxBinDir, "node"), []byte("#!/bin/sh\n"), 0o700)
+	writeFileWithMode(t, filepath.Join(acpxDistDir, "cli.js"), []byte("#!/usr/bin/env node\n"), 0o700)
+	if err := os.Symlink("../lib/node_modules/acpx/dist/cli.js", acpxPath); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &recordingBwrapRunner{}
+	env, err := (SandboxRunner{Config: sandbox.Config{
+		BwrapPath:           "/usr/bin/bwrap",
+		HostGHConfigDir:     hostGH,
+		HostEnv:             []string{"PATH=/usr/bin"},
+		SystemReadOnlyBinds: []string{"/usr"},
+	}, Deps: sandbox.Dependencies{
+		LookPath: func(name string) (string, error) {
+			if name == acpxPath {
+				return acpxPath, nil
+			}
+			return "", os.ErrNotExist
+		},
+		Runner: runner,
+	}}).Prepare(context.Background(), SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           acpxPath,
+		RuntimeHome:          filepath.Join(runtimeRoot, "home"),
+		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
+		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
+		RuntimeCodexHome:     filepath.Join(runtimeRoot, "codex"),
+	})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	if _, err := env.Runner.Run(context.Background(), acpx.Command{Binary: acpxPath, Args: []string{"--help"}, Dir: workspacePath}); err != nil {
+		t.Fatalf("sandboxed acpx command returned error: %v", err)
+	}
+	cmd := runner.finalCommand
+	assertCommandArgSequence(t, cmd.Args, "--ro-bind", acpxBinDir, acpxBinDir)
+	assertCommandArgSequence(t, cmd.Args, "--ro-bind", acpxPackageDir, acpxPackageDir)
+	assertCommandArgSequence(t, cmd.Args, "--setenv", "PATH", acpxBinDir+":/usr/bin")
+	assertCommandArgSequence(t, cmd.Args, "--", acpxPath, "--help")
+	assertCommandArgSequenceMissing(t, cmd.Args, "--ro-bind", acpxPath, acpxPath)
 }
 
 func TestSandboxRunnerFailsFastWhenHostGHAuthMissing(t *testing.T) {

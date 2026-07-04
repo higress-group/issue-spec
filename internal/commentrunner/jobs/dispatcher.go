@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -109,6 +110,7 @@ type Dispatcher struct {
 	Clock               Clock
 	PublicSessionID     IDGenerator
 	TurnCorrelationID   IDGenerator
+	AcpxBinary          string
 	IssueSpecBinary     string
 	CoordinatorExtraEnv map[string]string
 }
@@ -638,7 +640,7 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 	env, err := d.Sandbox.Prepare(ctx, SandboxRequest{
 		WorkspacePath:        execBinding.SandboxWorkspacePath,
 		AcpxWorkingDirectory: execBinding.AcpxWorkingDirectory,
-		AcpxBinary:           "acpx",
+		AcpxBinary:           firstNonEmpty(d.AcpxBinary, acpx.DefaultBinary),
 		IssueSpecBinary:      d.IssueSpecBinary,
 		ExtraEnv:             d.CoordinatorExtraEnv,
 		RuntimeHome:          runtimePaths.home,
@@ -1196,11 +1198,15 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, error) {
 	cfg.TempGHConfigDir = firstNonEmpty(req.RuntimeGHConfigDir, cfg.TempGHConfigDir)
 	cfg.TempXDGConfigHome = firstNonEmpty(req.RuntimeXDGConfigHome, cfg.TempXDGConfigHome)
 	cfg.TempCodexHome = firstNonEmpty(req.RuntimeCodexHome, cfg.TempCodexHome)
-	readOnlyBinds, err := requestReadOnlyBinds(req)
-	if err != nil {
-		return sandbox.Config{}, err
+	var pathPrefixes []string
+	if !cfg.UnsafeNoSandbox {
+		readOnlyBinds, prefixes, err := requestReadOnlyBinds(req, sandboxLookPath(p.Deps))
+		if err != nil {
+			return sandbox.Config{}, err
+		}
+		cfg.ReadOnlyBinds = appendUniqueCleanAbsPaths(cfg.ReadOnlyBinds, readOnlyBinds...)
+		pathPrefixes = prefixes
 	}
-	cfg.ReadOnlyBinds = appendUniqueCleanAbsPaths(cfg.ReadOnlyBinds, readOnlyBinds...)
 	if len(req.ExtraEnv) > 0 {
 		if cfg.ExtraEnv == nil {
 			cfg.ExtraEnv = map[string]string{}
@@ -1208,6 +1214,9 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, error) {
 		for key, value := range req.ExtraEnv {
 			cfg.ExtraEnv[key] = value
 		}
+	}
+	if !cfg.UnsafeNoSandbox {
+		addSandboxPATHPrefixes(&cfg, pathPrefixes...)
 	}
 	if cfg.TempHome == "" || cfg.TempGHConfigDir == "" || cfg.TempXDGConfigHome == "" || cfg.TempCodexHome == "" {
 		root, err := os.MkdirTemp("", "issue-spec-runner-*")
@@ -1236,24 +1245,170 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, error) {
 	return cfg, nil
 }
 
-func requestReadOnlyBinds(req SandboxRequest) ([]string, error) {
+func requestReadOnlyBinds(req SandboxRequest, lookPath func(string) (string, error)) ([]string, []string, error) {
 	var out []string
-	for _, path := range []string{req.AcpxBinary, req.IssueSpecBinary} {
-		path = strings.TrimSpace(path)
-		if path == "" || !filepath.IsAbs(path) {
-			continue
-		}
-		clean := filepath.Clean(path)
-		info, err := os.Stat(clean)
-		if err != nil {
-			return nil, fmt.Errorf("sandbox executable bind unavailable for %s: %w", clean, err)
-		}
-		if info.IsDir() {
-			return nil, fmt.Errorf("sandbox executable bind path is a directory: %s", clean)
-		}
-		out = append(out, clean)
+	var pathPrefixes []string
+	acpxBinds, acpxPathPrefixes, err := acpxExecutableReadOnlyBinds(req.AcpxBinary, lookPath)
+	if err != nil {
+		return nil, nil, err
 	}
-	return out, nil
+	out = append(out, acpxBinds...)
+	pathPrefixes = append(pathPrefixes, acpxPathPrefixes...)
+	issueSpecBinds, err := executableFileReadOnlyBind(req.IssueSpecBinary, lookPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	out = append(out, issueSpecBinds...)
+	return appendUniqueCleanAbsPaths(nil, out...), appendUniqueCleanAbsPaths(nil, pathPrefixes...), nil
+}
+
+func sandboxLookPath(deps sandbox.Dependencies) func(string) (string, error) {
+	if deps.LookPath != nil {
+		return deps.LookPath
+	}
+	return exec.LookPath
+}
+
+func acpxExecutableReadOnlyBinds(binary string, lookPath func(string) (string, error)) ([]string, []string, error) {
+	path, err := resolveExecutablePath(binary, lookPath)
+	if err != nil || path == "" {
+		return nil, nil, err
+	}
+	if roots, binDir := nodeGlobalPackageReadOnlyBinds(path, "acpx"); len(roots) > 0 {
+		return roots, []string{binDir}, nil
+	}
+	return []string{path}, nil, nil
+}
+
+func executableFileReadOnlyBind(binary string, lookPath func(string) (string, error)) ([]string, error) {
+	path, err := resolveExecutablePath(binary, lookPath)
+	if err != nil || path == "" {
+		return nil, err
+	}
+	return []string{path}, nil
+}
+
+func resolveExecutablePath(binary string, lookPath func(string) (string, error)) (string, error) {
+	binary = strings.TrimSpace(binary)
+	if binary == "" {
+		return "", nil
+	}
+	path := binary
+	if !filepath.IsAbs(path) {
+		if lookPath == nil {
+			lookPath = exec.LookPath
+		}
+		resolved, err := lookPath(path)
+		if err != nil {
+			return "", fmt.Errorf("sandbox executable bind lookup failed for %q: %w", binary, err)
+		}
+		path = resolved
+	}
+	clean := filepath.Clean(path)
+	info, err := os.Stat(clean)
+	if err != nil {
+		return "", fmt.Errorf("sandbox executable bind unavailable for %s: %w", clean, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("sandbox executable bind path is a directory: %s", clean)
+	}
+	return clean, nil
+}
+
+func nodeGlobalPackageReadOnlyBinds(path, packageName string) ([]string, string) {
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, ""
+	}
+	packageName = strings.TrimSpace(packageName)
+	if packageName == "" {
+		packageName = filepath.Base(path)
+	}
+	pkgRoot, ok := nodeGlobalPackageRoot(realPath, packageName)
+	if !ok {
+		return nil, ""
+	}
+	prefix := filepath.Dir(filepath.Dir(filepath.Dir(pkgRoot)))
+	binDir := filepath.Join(prefix, "bin")
+	if !pathExists(filepath.Join(binDir, "node")) {
+		return nil, ""
+	}
+	if !pathExists(pkgRoot) {
+		return nil, ""
+	}
+	return appendUniqueCleanAbsPaths(nil, binDir, pkgRoot), filepath.Clean(binDir)
+}
+
+func nodeGlobalPackageRoot(realPath, packageName string) (string, bool) {
+	realPath = filepath.Clean(strings.TrimSpace(realPath))
+	parts := strings.Split(realPath, string(os.PathSeparator))
+	for i := 0; i+3 < len(parts); i++ {
+		if parts[i] == "lib" && parts[i+1] == "node_modules" && parts[i+2] == packageName {
+			rootParts := append([]string(nil), parts[:i+3]...)
+			root := strings.Join(rootParts, string(os.PathSeparator))
+			if filepath.IsAbs(realPath) && !strings.HasPrefix(root, string(os.PathSeparator)) {
+				root = string(os.PathSeparator) + root
+			}
+			return filepath.Clean(root), true
+		}
+	}
+	return "", false
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func addSandboxPATHPrefixes(cfg *sandbox.Config, dirs ...string) {
+	dirs = appendUniqueCleanAbsPaths(nil, dirs...)
+	if len(dirs) == 0 {
+		return
+	}
+	if cfg.ExtraEnv == nil {
+		cfg.ExtraEnv = map[string]string{}
+	}
+	current := cfg.ExtraEnv["PATH"]
+	if current == "" {
+		current = envEntryValue(cfg.HostEnv, "PATH")
+	}
+	if current == "" {
+		current = os.Getenv("PATH")
+	}
+	if current == "" {
+		current = "/usr/bin:/bin"
+	}
+	cfg.ExtraEnv["PATH"] = prependPathEntries(current, dirs...)
+}
+
+func prependPathEntries(current string, prefixes ...string) string {
+	seen := map[string]bool{}
+	var parts []string
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		parts = append(parts, value)
+	}
+	for _, prefix := range prefixes {
+		add(filepath.Clean(prefix))
+	}
+	for _, part := range strings.Split(current, string(os.PathListSeparator)) {
+		add(part)
+	}
+	return strings.Join(parts, string(os.PathListSeparator))
+}
+
+func envEntryValue(entries []string, name string) string {
+	for _, entry := range entries {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && key == name {
+			return value
+		}
+	}
+	return ""
 }
 
 type sessionRuntimePaths struct {
