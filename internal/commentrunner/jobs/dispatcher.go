@@ -1670,6 +1670,7 @@ func copyLimitedCodexConfig(source, dest string) error {
 		if err != nil {
 			return err
 		}
+		data = sanitizeCodexRuntimeFile(name, data)
 		if targetInfo, err := os.Lstat(targetPath); err == nil {
 			if targetInfo.IsDir() {
 				return fmt.Errorf("target %s is a directory", targetPath)
@@ -1692,6 +1693,51 @@ func copyLimitedCodexConfig(source, dest string) error {
 		}
 	}
 	return nil
+}
+
+func sanitizeCodexRuntimeFile(name string, data []byte) []byte {
+	if name != "config.toml" {
+		return data
+	}
+	return dropTopLevelCodexDefaultServiceTier(data)
+}
+
+func dropTopLevelCodexDefaultServiceTier(data []byte) []byte {
+	lines := strings.SplitAfter(string(data), "\n")
+	var b strings.Builder
+	b.Grow(len(data))
+	topLevel := true
+	changed := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if topLevel && isCodexDefaultServiceTierLine(trimmed) {
+			changed = true
+			continue
+		}
+		b.WriteString(line)
+		if topLevel && strings.HasPrefix(trimmed, "[") {
+			topLevel = false
+		}
+	}
+	if !changed {
+		return data
+	}
+	return []byte(b.String())
+}
+
+func isCodexDefaultServiceTierLine(trimmed string) bool {
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return false
+	}
+	key, value, ok := strings.Cut(trimmed, "=")
+	if !ok || strings.TrimSpace(key) != "service_tier" {
+		return false
+	}
+	value = strings.TrimSpace(value)
+	if beforeComment, _, ok := strings.Cut(value, "#"); ok {
+		value = strings.TrimSpace(beforeComment)
+	}
+	return value == `"default"` || value == `'default'`
 }
 
 var (

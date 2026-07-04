@@ -1216,7 +1216,7 @@ func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFileWithMode(t, filepath.Join(hostCodex, "auth.json"), []byte(`{"token":"codex"}`), 0o600)
-	writeFileWithMode(t, filepath.Join(hostCodex, "config.toml"), []byte("model = \"gpt-5\"\n"), 0o640)
+	writeFileWithMode(t, filepath.Join(hostCodex, "config.toml"), []byte("model = \"gpt-5\"\nservice_tier = \"default\"\n"), 0o640)
 	writeFileWithMode(t, filepath.Join(hostCodex, "version.json"), []byte(`{"version":"1"}`), 0o644)
 	writeFileWithMode(t, filepath.Join(hostCodex, "installation_id"), []byte("install-1\n"), 0o600)
 	writeFileWithMode(t, filepath.Join(hostCodex, "settings.json"), []byte(`{"ignored":true}`), 0o600)
@@ -1248,6 +1248,52 @@ func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dest, "settings.json")); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("non-allowlisted Codex file was copied to %s: %v", dest, err)
 		}
+	}
+}
+
+func TestSanitizeCodexRuntimeFileDropsOnlyTopLevelDefaultServiceTier(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "drops top level default",
+			in:   "model = \"gpt-5.5\"\nservice_tier = \"default\"\nmodel_reasoning_effort = \"xhigh\"\n",
+			want: "model = \"gpt-5.5\"\nmodel_reasoning_effort = \"xhigh\"\n",
+		},
+		{
+			name: "drops commented default",
+			in:   "model = \"gpt-5.5\"\nservice_tier = \"default\" # Codex writes this when fast is disabled\n",
+			want: "model = \"gpt-5.5\"\n",
+		},
+		{
+			name: "keeps fast and flex",
+			in:   "service_tier = \"fast\"\n[profiles.flex]\nservice_tier = \"flex\"\n",
+			want: "service_tier = \"fast\"\n[profiles.flex]\nservice_tier = \"flex\"\n",
+		},
+		{
+			name: "keeps table scoped default",
+			in:   "[profiles.default]\nservice_tier = \"default\"\n",
+			want: "[profiles.default]\nservice_tier = \"default\"\n",
+		},
+		{
+			name: "leaves non config files unchanged",
+			in:   "service_tier = \"default\"\n",
+			want: "service_tier = \"default\"\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fileName := "config.toml"
+			if tt.name == "leaves non config files unchanged" {
+				fileName = "auth.json"
+			}
+			got := string(sanitizeCodexRuntimeFile(fileName, []byte(tt.in)))
+			if got != tt.want {
+				t.Fatalf("sanitized config = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
