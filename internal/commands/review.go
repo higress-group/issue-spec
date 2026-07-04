@@ -45,8 +45,8 @@ func (a *app) runReviewFinding(ctx context.Context, args []string) int {
 	bodyText := fs.String("body", "", "finding body text")
 	agent := fs.String("agent", "Review Agent", "logical agent identity")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {
@@ -106,8 +106,8 @@ func (a *app) runReviewReply(ctx context.Context, args []string) int {
 	bodyText := fs.String("body", "", "reply body text")
 	agent := fs.String("agent", "Worker Agent", "logical agent identity")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {
@@ -160,8 +160,8 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 	agent := fs.String("agent", "Coordinator", "logical agent identity")
 	scope := fs.String("scope", "pr-review", "review scope")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {

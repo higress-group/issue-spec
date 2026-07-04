@@ -37,8 +37,8 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	status := fs.String("status", "draft", "typed comment status")
 	scope := fs.String("scope", "N/A", "typed comment scope")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {
@@ -84,8 +84,8 @@ func (a *app) runCommentList(ctx context.Context, args []string) int {
 	issueFlag := fs.String("issue", "", "issue number or URL")
 	commentType := fs.String("type", "", "filter by typed comment type")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {

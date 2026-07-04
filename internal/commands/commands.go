@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
@@ -137,7 +138,56 @@ Usage:
 func newFlagSet(name string, errOut io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(errOut)
+	fs.Usage = func() {
+		printFlagSetUsage(fs.Output(), name, fs)
+	}
 	return fs
+}
+
+func (a *app) parseFlagSet(fs *flag.FlagSet, args []string) (bool, int) {
+	if argsContainHelp(args) {
+		fs.SetOutput(a.out)
+		fs.Usage()
+		return false, 0
+	}
+	if err := fs.Parse(args); err != nil {
+		return false, 2
+	}
+	return true, 0
+}
+
+func printFlagSetUsage(out io.Writer, name string, fs *flag.FlagSet) {
+	fmt.Fprintf(out, "Usage:\n  issue-spec %s [options]\n\nOptions:\n", name)
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fs.VisitAll(func(f *flag.Flag) {
+		valueName, usage := flag.UnquoteUsage(f)
+		name := "--" + f.Name
+		if valueName != "" {
+			name += " " + valueName
+		}
+		fmt.Fprintf(tw, "  %s\t%s (default: %s)\n", name, usage, flagDefaultValue(f))
+	})
+	_ = tw.Flush()
+}
+
+func flagDefaultValue(f *flag.Flag) string {
+	if f == nil || f.DefValue == "" {
+		return `""`
+	}
+	return f.DefValue
+}
+
+func argsContainHelp(args []string) bool {
+	for _, arg := range args {
+		if isHelpArg(arg) {
+			return true
+		}
+	}
+	return false
+}
+
+func isHelpArg(arg string) bool {
+	return arg == "-h" || arg == "--help"
 }
 
 func (a *app) clientFor(ctx context.Context, host string) (github.Backend, auth.Token, error) {

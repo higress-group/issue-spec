@@ -30,8 +30,8 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 	designFlag := fs.String("design", "", "design issue number or URL")
 	implementFlag := fs.String("implement", "", "implement issue number or URL")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {
@@ -87,8 +87,8 @@ func (a *app) runVerifyLinks(ctx context.Context, args []string) int {
 	designFlag := fs.String("design", "", "design issue number or URL")
 	implementFlag := fs.String("implement", "", "implement issue number or URL")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {

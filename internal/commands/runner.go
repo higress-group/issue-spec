@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ type runnerCommandOptions struct {
 	DryRun        bool
 	JSON          bool
 	AsyncDispatch bool
+	Help          bool
 }
 
 type runnerDryRunResult struct {
@@ -49,8 +51,12 @@ var runnerExecutable = os.Executable
 
 func (a *app) runRunner(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec runner poll|preflight ...\n")
+		a.printRunnerUsage(a.err)
 		return 2
+	}
+	if isHelpArg(args[0]) {
+		a.printRunnerUsage(a.out)
+		return 0
 	}
 	switch args[0] {
 	case "poll":
@@ -63,8 +69,23 @@ func (a *app) runRunner(ctx context.Context, args []string) int {
 	}
 }
 
+func (a *app) printRunnerUsage(out io.Writer) {
+	fmt.Fprintln(out, `Usage:
+  issue-spec runner poll [options]
+  issue-spec runner preflight [options]
+
+Subcommands:
+  poll       continuously poll comments and dispatch authorized runner jobs
+  preflight  validate runner auth, repository access, sandbox, acpx, and agent prerequisites
+
+Use "issue-spec runner <subcommand> -h" to show all options and defaults.`)
+}
+
 func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 	cfg, opts, ok := a.parseRunnerOptions(args, true)
+	if opts.Help {
+		return 0
+	}
 	if !ok {
 		return 2
 	}
@@ -419,6 +440,9 @@ func waitForNextRunnerPoll(ctx context.Context, result *intake.Result) bool {
 
 func (a *app) runRunnerPreflightCommand(ctx context.Context, args []string) int {
 	cfg, opts, ok := a.parseRunnerOptions(args, false)
+	if opts.Help {
+		return 0
+	}
 	if !ok {
 		return 2
 	}
@@ -437,30 +461,50 @@ func (a *app) runRunnerPreflightCommand(ctx context.Context, args []string) int 
 }
 
 func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentrunner.Config, runnerCommandOptions, bool) {
-	fs := newFlagSet("runner", a.err)
+	name := "runner preflight"
+	if includePollFlags {
+		name = "runner poll"
+	}
+	defaults, defaultsErr := commentrunner.DefaultConfigFromEnv()
+	if defaultsErr != nil {
+		defaults = commentrunner.Config{
+			Hostname:            "github.com",
+			GitHubBackend:       auth.GitHubBackendModeAuto,
+			PollInterval:        commentrunner.NewDuration(time.Minute),
+			FallbackInterval:    commentrunner.NewDuration(5 * time.Minute),
+			MaxConcurrentJobs:   8,
+			AcpxPath:            "acpx",
+			Agent:               commentrunner.DefaultAgentConfig(),
+			WorkspaceRetention:  commentrunner.NewDuration(7 * 24 * time.Hour),
+			CancellationEnabled: true,
+		}
+	}
+	defaults = defaults.Normalized()
+
+	fs := newFlagSet(name, a.err)
 	var repoValues stringListFlag
 	var allowedUsers stringListFlag
 	var claudeTools stringListFlag
-	host := fs.String("hostname", "", "GitHub hostname")
-	backend := fs.String("backend", "", "GitHub backend mode: auto, gh, or rest")
+	host := fs.String("hostname", defaults.Hostname, "GitHub hostname")
+	backend := fs.String("backend", string(defaults.GitHubBackend), "GitHub backend mode: auto, gh, or rest")
 	runner := fs.String("runner", "", "GitHub login for the polling runner identity")
 	notificationRunner := fs.String("notification-runner", "", "GitHub login for a notification-only polling identity")
-	notificationTokenEnv := fs.String("notification-token-env", "", "environment variable containing the notification-only runner token")
-	statePath := fs.String("state", "", "runner state path")
-	pollInterval := fs.Duration("poll-interval", 0, "notification poll interval")
-	fallbackInterval := fs.Duration("fallback-interval", 0, "repository comments fallback interval")
-	maxConcurrency := fs.Int("max-concurrency", 0, "maximum concurrent runner jobs")
-	acpxPath := fs.String("acpx-path", "", "acpx binary path")
-	agent := fs.String("agent", "", "coordinator code agent: codex or claude")
-	model := fs.String("model", "", "coordinator model/profile name")
-	workspaceRoot := fs.String("workspace-root", "", "managed workspace root")
-	workspaceRetention := fs.Duration("workspace-retention", 0, "managed workspace retention duration for expired inactive workspaces; default 168h")
-	bwrapPath := fs.String("bwrap-path", "", "bubblewrap binary path")
-	unsafeNoSandbox := fs.Bool("unsafe-no-sandbox", false, "explicitly disable the default bubblewrap filesystem boundary")
+	notificationTokenEnv := fs.String("notification-token-env", "", "environment variable containing the notification-only runner token; defaults to ISSUE_SPEC_NOTIFICATION_TOKEN when --notification-runner is set")
+	statePath := fs.String("state", "", "runner state path; default is a repository/runner-scoped path under ~/.issue-spec")
+	pollInterval := fs.Duration("poll-interval", defaults.PollInterval.Duration, "notification poll interval")
+	fallbackInterval := fs.Duration("fallback-interval", defaults.FallbackInterval.Duration, "repository comments fallback interval")
+	maxConcurrency := fs.Int("max-concurrency", defaults.MaxConcurrentJobs, "maximum concurrent runner jobs")
+	acpxPath := fs.String("acpx-path", defaults.AcpxPath, "acpx binary path")
+	agent := fs.String("agent", defaults.Agent.Kind, "coordinator code agent: codex or claude")
+	model := fs.String("model", defaults.Agent.Model, "coordinator model/profile name")
+	workspaceRoot := fs.String("workspace-root", "", "managed workspace root; default is beside the repository/runner-scoped state path")
+	workspaceRetention := fs.Duration("workspace-retention", defaults.WorkspaceRetention.Duration, "managed workspace retention duration for expired inactive workspaces")
+	bwrapPath := fs.String("bwrap-path", defaults.BwrapPath, "bubblewrap binary path")
+	unsafeNoSandbox := fs.Bool("unsafe-no-sandbox", defaults.UnsafeNoSandbox, "explicitly disable the default bubblewrap filesystem boundary")
 	ghConfigDir := fs.String("gh-config-dir", "", "host gh config directory to mirror for sandboxed issue-spec CLI auth")
-	allowCancel := fs.Bool("allow-cancel", true, "allow authorized cancellation commands")
-	codexFullAccess := fs.Bool("codex-agent-full-access", true, "require Codex agent-full-access policy for workflow CLI/shell work")
-	claudeIncludeSettings := fs.Bool("claude-include-user-settings", true, "set ACPX_CLAUDE_INCLUDE_USER_SETTINGS for Claude Code")
+	allowCancel := fs.Bool("allow-cancel", defaults.CancellationEnabled, "allow authorized cancellation commands")
+	codexFullAccess := fs.Bool("codex-agent-full-access", defaults.Agent.CodexAgentFullAccess, "require Codex agent-full-access policy for workflow CLI/shell work")
+	claudeIncludeSettings := fs.Bool("claude-include-user-settings", defaults.Agent.ClaudeIncludeUserSettings, "set ACPX_CLAUDE_INCLUDE_USER_SETTINGS for Claude Code")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	fs.Var(&repoValues, "repo", "repository owner/name; repeat or comma-separate for multiple repositories")
 	fs.Var(&allowedUsers, "allowed-user", "GitHub login allowed to trigger runner commands; repeat or comma-separate, and users still need write-equivalent repository permission")
@@ -474,8 +518,14 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	if includePollFlags {
 		once = fs.Bool("once", false, "run one poll cycle")
 		dryRun = fs.Bool("dry-run", false, "print planned polling and preflight actions without GitHub writes or acpx dispatch")
-		asyncDispatch = fs.Bool("async-dispatch", false, "dispatch runner jobs in a background goroutine so polling cadence is not blocked by acpx; enabled by default for continuous polling")
+		asyncDispatch = fs.Bool("async-dispatch", true, "dispatch runner jobs in a background goroutine so polling cadence is not blocked by acpx; enabled by default for continuous polling")
 		syncDispatch = fs.Bool("sync-dispatch", false, "dispatch runner jobs synchronously in the foreground; continuous polling waits for acpx")
+	}
+	if argsContainHelp(args) {
+		fs.SetOutput(a.out)
+		fs.Usage()
+		opts.Help = true
+		return commentrunner.Config{}, opts, false
 	}
 	if err := fs.Parse(args); err != nil {
 		return commentrunner.Config{}, opts, false

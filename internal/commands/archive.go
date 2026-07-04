@@ -44,8 +44,8 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 	draft := fs.Bool("draft", false, "create PR as draft")
 	commitMessage := fs.String("commit-message", "", "commit message for --create-pr")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {

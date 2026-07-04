@@ -36,8 +36,8 @@ func (a *app) runAuthStatus(ctx context.Context, args []string) int {
 	fs := newFlagSet("auth status", a.err)
 	host := fs.String("hostname", "github.com", "GitHub hostname")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	client, token, err := a.clientFor(ctx, *host)
 	if err != nil {
@@ -76,8 +76,8 @@ func (a *app) runAuthLogin(ctx context.Context, args []string) int {
 	withToken := fs.Bool("with-token", false, "read token from stdin")
 	insecure := fs.Bool("insecure-storage", false, "store token in issue-spec plaintext config when keyring is unavailable or undesired")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	if !*withToken {
 		return a.runAuthLoginAdvice(ctx, *host, *jsonOut)
@@ -222,8 +222,8 @@ func (a *app) runAuthLogout(ctx context.Context, args []string) int {
 	fs := newFlagSet("auth logout", a.err)
 	host := fs.String("hostname", "github.com", "GitHub hostname")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	hostName := auth.NormalizeHost(*host)
 	err := auth.DeleteToken(ctx, hostName)
@@ -249,8 +249,8 @@ func (a *app) runAuthToken(ctx context.Context, args []string) int {
 	plain := fs.Bool("plain", false, "print token in plain text")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	includeToken := fs.Bool("include-token", false, "include token in JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	selection, err := a.selectBackend(ctx, *host)
 	if err != nil {

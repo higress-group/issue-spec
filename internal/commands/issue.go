@@ -42,8 +42,8 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 	design := fs.String("design", "", "design issue number or URL")
 	bodyFile := fs.String("body-file", "", "markdown issue body file, or - for stdin")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	if *change == "" {
 		a.errorf("--change is required\n")
@@ -182,8 +182,8 @@ func (a *app) runIssueUpdate(ctx context.Context, args []string) int {
 	summaryFlag := fs.String("summary", "", "human-readable update summary comment")
 	summaryFile := fs.String("summary-file", "", "human-readable update summary file, or - for stdin")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {

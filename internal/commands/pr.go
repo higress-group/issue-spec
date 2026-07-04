@@ -37,8 +37,8 @@ func (a *app) runPRLinkProcess(ctx context.Context, args []string) int {
 	prFlag := fs.Int("pr", 0, "pull request number")
 	processID := fs.String("process", "", "PROCESS id")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {
@@ -109,8 +109,8 @@ func (a *app) runPRRationale(ctx context.Context, args []string) int {
 	specURL := fs.String("spec-url", "", "SPEC comment URL")
 	agent := fs.String("agent", "Worker Agent", "logical agent identity")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {

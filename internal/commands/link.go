@@ -17,8 +17,8 @@ func (a *app) runLink(ctx context.Context, args []string) int {
 	toID := fs.String("to", "", "target typed comment id")
 	toIssueFlag := fs.String("to-issue", "", "target issue number or URL")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {

@@ -32,6 +32,92 @@ func TestRootUsageDocumentsRunnerCommand(t *testing.T) {
 	}
 }
 
+func TestRunnerHelpDocumentsSubcommands(t *testing.T) {
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+
+	code := app.runRunner(context.Background(), []string{"-h"})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"Usage:",
+		"issue-spec runner poll [options]",
+		"issue-spec runner preflight [options]",
+		"Use \"issue-spec runner <subcommand> -h\"",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("runner help missing %q:\n%s", want, text)
+		}
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("runner help wrote stderr: %q", errOut.String())
+	}
+}
+
+func TestRunnerPollHelpShowsOptionsAndDefaults(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+
+	code := app.runRunner(context.Background(), []string{"poll", "-h"})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"Usage:",
+		"issue-spec runner poll [options]",
+		"--max-concurrency int",
+		"maximum concurrent runner jobs (default: 8)",
+		"--poll-interval duration",
+		"notification poll interval (default: 1m0s)",
+		"--async-dispatch",
+		"(default: true)",
+		"--dry-run",
+		"(default: false)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("runner poll help missing %q:\n%s", want, text)
+		}
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("runner poll help wrote stderr: %q", errOut.String())
+	}
+}
+
+func TestRunnerPreflightHelpShowsSharedOptionsOnly(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+
+	code := app.runRunner(context.Background(), []string{"preflight", "-h"})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"issue-spec runner preflight [options]",
+		"--max-concurrency int",
+		"maximum concurrent runner jobs (default: 8)",
+		"--workspace-retention duration",
+		"(default: 168h0m0s)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("runner preflight help missing %q:\n%s", want, text)
+		}
+	}
+	for _, notWant := range []string{"--dry-run", "--once", "--async-dispatch", "--sync-dispatch"} {
+		if strings.Contains(text, notWant) {
+			t.Fatalf("runner preflight help unexpectedly included %q:\n%s", notWant, text)
+		}
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("runner preflight help wrote stderr: %q", errOut.String())
+	}
+}
+
 func TestIssueSpecBinaryForRunnerUsesCurrentExecutable(t *testing.T) {
 	old := runnerExecutable
 	t.Cleanup(func() { runnerExecutable = old })

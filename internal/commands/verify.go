@@ -47,8 +47,8 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 	prFlag := fs.Int("pr", 0, "pull request number for rationale-comment verification")
 	durableSpec := fs.String("durable-spec", "", "durable spec file to verify")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {

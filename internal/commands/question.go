@@ -41,8 +41,8 @@ func (a *app) runQuestionCreate(ctx context.Context, args []string) int {
 	scope := fs.String("scope", "N/A", "question scope")
 	related := fs.String("related", "", "comma-separated related comment URLs")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {
@@ -126,8 +126,8 @@ func (a *app) runQuestionResolve(ctx context.Context, args []string) int {
 	status := fs.String("status", "confirmed", "resolved status")
 	acceptedAssumption := fs.Bool("accepted-assumption", false, "record that the default assumption was accepted")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {
