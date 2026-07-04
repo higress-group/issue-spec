@@ -62,25 +62,12 @@ Install the CLI:
 go install github.com/higress-group/issue-spec/cmd/issue-spec@latest
 ```
 
-Authenticate with GitHub. In an interactive terminal, the usual path is to use an existing GitHub CLI login:
+Authenticate with GitHub CLI on the current machine. `issue-spec` reuses that `gh` session for GitHub operations:
 
 ```bash
 gh auth login
+gh auth status
 issue-spec auth status --json
-```
-
-You can also ask issue-spec for the recommended login path:
-
-```bash
-issue-spec auth login
-```
-
-If `gh` is installed and authenticated, issue-spec tells you to reuse that session directly. If `gh` is installed but not authenticated, it points you to `gh auth login` or `gh auth login --hostname <host>` for GitHub Enterprise. If `gh` is not installed, issue-spec explains that the fallback path is REST token login and recommends installing GitHub CLI from https://cli.github.com/ for the full local workflow.
-
-If you need issue-spec to store a REST token directly, use:
-
-```bash
-issue-spec auth login --with-token
 ```
 
 Initialize a repository:
@@ -99,59 +86,25 @@ Then use the generated skills or slash-command style workflows from your agent:
 /issue-spec:archive
 ```
 
-By default, `issue-spec` uses explicit REST tokens when they are present, and otherwise reuses an authenticated `gh` CLI session when available.
+## GitHub Authentication
 
-## GitHub Authentication And Backend Selection
-
-`issue-spec` has two GitHub backends:
-
-- `rest`: direct GitHub REST calls using `ISSUE_SPEC_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, keyring storage, or the issue-spec config credential file.
-- `gh`: GitHub API calls proxied through `gh api`, using the account already authenticated by GitHub CLI.
-
-Backend selection is controlled by `ISSUE_SPEC_GITHUB_BACKEND=auto|rest|gh`. The default is `auto`.
-
-Local terminal state with GitHub CLI already authenticated:
+`issue-spec` expects GitHub CLI to be installed and authenticated on the current machine. It uses the same account and host that `gh auth status` reports:
 
 ```bash
 gh auth status
 issue-spec auth status --json
 ```
 
-When no explicit issue-spec/GitHub token is configured and `gh auth status --active` succeeds for the target host, `auto` selects the `gh` backend. JSON output includes additive backend diagnostics such as `mode`, `name`, `kind`, `host`, `selection_source`, and `token_source` where applicable.
-
-CI and deterministic automation should keep using REST tokens:
+For GitHub Enterprise, log in with GitHub CLI first, then pass the same host to issue-spec commands:
 
 ```bash
-export ISSUE_SPEC_TOKEN=...
-export ISSUE_SPEC_GITHUB_BACKEND=rest
-issue-spec auth status --json
+gh auth login --hostname ghe.example.com
+issue-spec auth status --hostname ghe.example.com --json
 ```
 
-To force the GitHub CLI backend for a local check:
+`issue-spec auth status`, `init`, and normal workflow commands do not print token values. `issue-spec auth token --plain` prints the current `gh` token only when explicitly requested.
 
-```bash
-ISSUE_SPEC_GITHUB_BACKEND=gh issue-spec auth status --json
-```
-
-Enterprise hosts are passed to `gh` with `--hostname`. `ISSUE_SPEC_API_URL` is a REST-backend setting; forced `gh` mode fails when a custom API URL is configured because `gh api` must be able to address the host itself.
-
-`issue-spec auth token --plain` prints a token only when explicitly requested. In `gh` mode it delegates to `gh auth token`; `auth status` and `init` do not print token values.
-
-`issue-spec auth login` without `--with-token` is a login advisor. It does not store a token by itself. It detects the local GitHub CLI state and prints the recommended path: reuse authenticated `gh`, run `gh auth login`, or use REST token fallback with `issue-spec auth login --with-token`.
-
-For older `issue-spec` versions, or when deliberately forcing REST while sourcing the token from `gh`, use the compatibility wrapper:
-
-```bash
-ISSUE_SPEC_TOKEN="$(gh auth token)" ISSUE_SPEC_GITHUB_BACKEND=rest issue-spec status --repo owner/repo --proposal 1
-```
-
-Compatibility rollout checks:
-
-- `auto` keeps REST as the selected backend whenever an env, keyring, or issue-spec config token is present.
-- `auth status --json`, `auth token --json`, and `init --json` keep their existing fields and add backend diagnostics without printing token values.
-- The `gh` backend uses non-interactive `gh auth status --active`, `gh auth token`, and `gh api` calls; Enterprise hosts are mapped with `--hostname`.
-- `archive durable-spec --create-pr` still uses local `git` for fetch, worktree, commit, and push. The selected GitHub backend is used only for GitHub API reads and PR creation.
-- Live GitHub or real-`gh` smoke tests are optional for local rollout. When they are not run, record the reason with the verification evidence and rely on fake-runner/unit coverage.
+`archive durable-spec --create-pr` still uses local `git` for fetch, worktree, commit, and push. GitHub API reads and PR creation use the same authenticated `gh` account.
 
 ## Runner: Comment-Triggered Workflows
 
@@ -197,7 +150,6 @@ issue-spec runner poll \
 
 Useful runner options:
 
-- `--backend auto|gh|rest` selects the GitHub backend. The default `auto` follows the same auth selection as other issue-spec commands.
 - `--state <path>` stores durable runner state. The default is `~/.issue-spec/runner-state.json`.
 - `--workspace-root <path>` stores managed repository clones. The default is `~/.issue-spec/workspaces`.
 - `--poll-interval` and `--fallback-interval` control notification polling and lower-frequency repository comment fallback.
@@ -340,7 +292,6 @@ If `--tools` is omitted, init detects existing `.agents` or `.claude` directorie
 ```bash
 issue-spec auth status
 issue-spec auth login
-issue-spec auth login --with-token
 issue-spec auth logout
 issue-spec auth token --plain
 
