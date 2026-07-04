@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -619,6 +620,7 @@ func TestRunnerPollTextOutputPrintsStartupAndPreflightOnce(t *testing.T) {
 		"--runner", "issue-spec-bot",
 		"--state", "/tmp/state.json",
 		"--workspace-root", "/tmp/workspaces",
+		"--sync-dispatch",
 	})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0, stdout=%q stderr=%q", code, out.String(), errOut.String())
@@ -628,6 +630,7 @@ func TestRunnerPollTextOutputPrintsStartupAndPreflightOnce(t *testing.T) {
 		"runner poll starting",
 		"state: /tmp/state.json",
 		"workspace_root: /tmp/workspaces",
+		"dispatch: sync",
 		"preflight: running",
 	} {
 		if !strings.Contains(text, want) {
@@ -816,6 +819,7 @@ func TestRunnerPollWithoutOnceBacksOffAfterIntakeNotOK(t *testing.T) {
 		"--runner", "issue-spec-bot",
 		"--state", "/tmp/state.json",
 		"--workspace-root", "/tmp/workspaces",
+		"--sync-dispatch",
 		"--json",
 	})
 	if code != 0 {
@@ -865,6 +869,7 @@ func TestRunnerPollWithoutOnceLoopsUntilContextCancellation(t *testing.T) {
 		"--runner", "issue-spec-bot",
 		"--state", "/tmp/state.json",
 		"--workspace-root", "/tmp/workspaces",
+		"--sync-dispatch",
 		"--json",
 	})
 	if code != 0 {
@@ -872,6 +877,121 @@ func TestRunnerPollWithoutOnceLoopsUntilContextCancellation(t *testing.T) {
 	}
 	if reconcileCalls != 2 || intakeCalls != 2 || dispatchCalls != 2 {
 		t.Fatalf("loop calls reconcile=%d intake=%d dispatch=%d", reconcileCalls, intakeCalls, dispatchCalls)
+	}
+}
+
+func TestRunnerPollDefaultsToAsyncDispatchAndDoesNotBlockNextIntake(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	var reconcileCalls int32
+	app.runnerReconcile = func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error) {
+		atomic.AddInt32(&reconcileCalls, 1)
+		return jobs.ReconcileResult{Reconciled: 1}, nil
+	}
+	dispatchStarted := make(chan struct{}, 1)
+	releaseDispatch := make(chan struct{})
+	var intakeCalls int32
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	app.runnerIntake = func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error) {
+		call := atomic.AddInt32(&intakeCalls, 1)
+		switch call {
+		case 1:
+			return intake.Result{OK: true, Next: intake.NextStep{PollAfter: 25 * time.Millisecond}}, nil
+		case 2:
+			select {
+			case <-dispatchStarted:
+			case <-ctx.Done():
+				t.Fatalf("dispatch did not start before second intake: %v", ctx.Err())
+			}
+			close(releaseDispatch)
+			cancel()
+			return intake.Result{OK: true}, nil
+		default:
+			t.Fatalf("unexpected intake call %d", call)
+			return intake.Result{}, nil
+		}
+	}
+	var dispatchCalls int32
+	app.runnerDispatch = func(ctx context.Context, cfg commentrunner.Config) (jobs.Result, error) {
+		atomic.AddInt32(&dispatchCalls, 1)
+		select {
+		case dispatchStarted <- struct{}{}:
+		default:
+		}
+		select {
+		case <-releaseDispatch:
+			return jobs.Result{Executed: true, JobID: "job-1", Status: state.StatusCompleted}, nil
+		case <-ctx.Done():
+			return jobs.Result{}, ctx.Err()
+		}
+	}
+
+	code := app.runRunner(ctx, []string{
+		"poll",
+		"--repo", "o/r",
+		"--runner", "issue-spec-bot",
+		"--state", filepath.Join(t.TempDir(), "state.json"),
+		"--workspace-root", t.TempDir(),
+		"--json",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if got := atomic.LoadInt32(&intakeCalls); got < 2 {
+		t.Fatalf("intake calls = %d, want at least 2; stdout=%q stderr=%q", got, out.String(), errOut.String())
+	}
+	if got := atomic.LoadInt32(&dispatchCalls); got == 0 {
+		t.Fatalf("dispatch was not triggered")
+	}
+	if got := atomic.LoadInt32(&reconcileCalls); got != 1 {
+		t.Fatalf("async reconcile calls = %d, want startup-only reconcile", got)
+	}
+}
+
+func TestRunnerPollRejectsAsyncDispatchWithOnce(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	code := app.runRunner(context.Background(), []string{
+		"poll",
+		"--repo", "o/r",
+		"--runner", "issue-spec-bot",
+		"--state", filepath.Join(t.TempDir(), "state.json"),
+		"--workspace-root", t.TempDir(),
+		"--async-dispatch",
+		"--once",
+	})
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "--async-dispatch cannot be combined with --once") {
+		t.Fatalf("stderr missing async/once error: %q", errOut.String())
+	}
+}
+
+func TestRunnerPollRejectsAsyncAndSyncDispatch(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	code := app.runRunner(context.Background(), []string{
+		"poll",
+		"--repo", "o/r",
+		"--runner", "issue-spec-bot",
+		"--state", filepath.Join(t.TempDir(), "state.json"),
+		"--workspace-root", t.TempDir(),
+		"--async-dispatch",
+		"--sync-dispatch",
+	})
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "--async-dispatch cannot be combined with --sync-dispatch") {
+		t.Fatalf("stderr missing async/sync error: %q", errOut.String())
 	}
 }
 
