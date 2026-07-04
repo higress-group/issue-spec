@@ -30,7 +30,6 @@ type RunnerState struct {
 	CreatedAt        time.Time                    `json:"created_at,omitempty"`
 	UpdatedAt        time.Time                    `json:"updated_at,omitempty"`
 	Repositories     map[string]RepositoryState   `json:"repositories,omitempty"`
-	SeenComments     map[string]SeenComment       `json:"seen_comments,omitempty"`
 	Jobs             map[string]Job               `json:"jobs,omitempty"`
 	PublicSessions   map[string]PublicSession     `json:"public_sessions,omitempty"`
 	Workspaces       map[string]WorkspaceMetadata `json:"workspaces,omitempty"`
@@ -318,9 +317,6 @@ func (s *RunnerState) Normalize() {
 	if s.Repositories == nil {
 		s.Repositories = map[string]RepositoryState{}
 	}
-	if s.SeenComments == nil {
-		s.SeenComments = map[string]SeenComment{}
-	}
 	if s.Jobs == nil {
 		s.Jobs = map[string]Job{}
 	}
@@ -390,25 +386,8 @@ func (s *RunnerState) Normalize() {
 	}
 }
 
-func SeenCommentKey(repo string, commentID int64) string {
-	return strings.TrimSpace(repo) + "#" + fmt.Sprint(commentID)
-}
-
 func PublicSessionKey(repo, publicSessionID string) string {
 	return strings.TrimSpace(repo) + "#" + strings.TrimSpace(publicSessionID)
-}
-
-func (s *RunnerState) RecordSeenComment(comment SeenComment) (SeenComment, bool, error) {
-	s.Normalize()
-	if strings.TrimSpace(comment.Repo) == "" || comment.CommentID == 0 {
-		return SeenComment{}, false, fmt.Errorf("seen comment requires repo and comment id")
-	}
-	key := SeenCommentKey(comment.Repo, comment.CommentID)
-	if existing, ok := s.SeenComments[key]; ok {
-		return existing, false, nil
-	}
-	s.SeenComments[key] = comment
-	return comment, true, nil
 }
 
 func (s *RunnerState) CreateCommandJob(job Job) (Job, bool, error) {

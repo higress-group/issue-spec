@@ -208,17 +208,12 @@ func commandIdempotencyKey(comment TriggerComment, verb CommandVerb, sessionID, 
 	if !comment.UpdatedAt.IsZero() {
 		updatedAt = comment.UpdatedAt.UTC().Format(time.RFC3339Nano)
 	}
-	observedAt := ""
-	if !comment.ObservedAt.IsZero() {
-		observedAt = comment.ObservedAt.UTC().Format(time.RFC3339Nano)
-	}
 	parts := []string{
 		"runner-command-v1",
 		strings.TrimSpace(comment.Repo),
 		fmt.Sprintf("%d", comment.Issue),
 		fmt.Sprintf("%d", comment.CommentID),
 		updatedAt,
-		observedAt,
 		strings.TrimSpace(comment.Commenter),
 		string(verb),
 		sessionID,

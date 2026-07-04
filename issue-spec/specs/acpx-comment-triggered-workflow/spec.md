@@ -42,8 +42,8 @@ The runner MUST parse and authorize comment commands before acpx dispatch, and i
 
 #### Scenario: accepted command grammar
 
-- **WHEN** a first-observed comment body begins with `/new <prompt>`, `/resume <public-session-id> <prompt>`, or `/cancel <public-session-id>`
-- **THEN** the runner SHALL normalize it into exactly one command candidate with repository, issue, trigger comment id, commenter, command verb, prompt or target public session id, first-observed body hash, and idempotency key.
+- **WHEN** a comment body begins with `/new <prompt>`, `/resume <public-session-id> <prompt>`, or `/cancel <public-session-id>`
+- **THEN** the runner SHALL normalize it into exactly one command candidate with repository, issue, trigger comment id, commenter, command verb, prompt or target public session id, body hash, GitHub comment updated timestamp, and idempotency key.
 
 #### Scenario: rejected command grammar
 
@@ -55,10 +55,20 @@ The runner MUST parse and authorize comment commands before acpx dispatch, and i
 - **WHEN** a valid command is observed
 - **THEN** the runner SHALL authorize the current commenter through the selected GitHub backend and allow only configured users with write-equivalent repository permission: `write`, `maintain`, or `admin`.
 
-#### Scenario: first-observed idempotency
+#### Scenario: command idempotency and remote ack
 
-- **WHEN** a command comment is delivered more than once or edited after the runner first observes it
-- **THEN** the runner SHALL use the stored first-observed state and idempotency key, SHALL NOT enqueue a duplicate job, and SHALL NOT update an existing job prompt or cancellation target from the later edit.
+- **WHEN** an accepted command comment is delivered more than once with the same repository, issue, comment id, GitHub updated timestamp, commenter, command verb, public session id when present, and body hash
+- **THEN** the runner SHALL derive the same command idempotency key and SHALL NOT enqueue duplicate job or cancellation work.
+
+#### Scenario: edited comments without durable seen state
+
+- **WHEN** an ignored comment or rejected command is later edited into a valid command
+- **THEN** the runner MAY accept and enqueue the edited command using the edited comment's command idempotency key.
+
+#### Scenario: runner eyes acknowledgement
+
+- **WHEN** an accepted command comment already has an `eyes` reaction from the configured runner identity
+- **THEN** the runner SHALL treat the command as remotely acknowledged, report a duplicate with reason `remote_runner_ack`, and SHALL NOT enqueue job or cancellation work.
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/24#issuecomment-4865331592
@@ -129,8 +139,13 @@ The runner MUST persist enough durable state outside GitHub comments to avoid du
 
 #### Scenario: state model
 
-- **WHEN** jobs, public sessions, seen comments, workspaces, locks, cancellations, status writebacks, backend cursors, sandbox metadata, acpx metadata, coordinator summaries, or CLI-direct artifact writes are created or changed
+- **WHEN** jobs, public sessions, workspaces, locks, cancellations, status writebacks, backend cursors, sandbox metadata, acpx metadata, coordinator summaries, CLI-direct artifact writes, or idempotency indexes are created or changed
 - **THEN** the runner SHALL persist their durable state with idempotency keys and non-sensitive provenance.
+
+#### Scenario: no durable all-comments seen index
+
+- **WHEN** comments are observed during notification or fallback intake
+- **THEN** the runner SHALL NOT require a durable all-comments seen index; stable command idempotency and the runner identity's remote `eyes` acknowledgement are the intended duplicate controls.
 
 #### Scenario: write-ahead dispatch
 

@@ -136,16 +136,33 @@ func TestParseCommandCommentRejectsInvalidMetadataForCommand(t *testing.T) {
 	}
 }
 
-func TestCommandIdempotencyChangesWithFirstObservedState(t *testing.T) {
-	base := TriggerComment{Repo: "o/r", Issue: 1, CommentID: 2, Body: "/new first", Commenter: "alice"}
+func TestCommandIdempotencyIsStableAcrossObservationTime(t *testing.T) {
+	updatedAt := time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC)
+	base := TriggerComment{Repo: "o/r", Issue: 1, CommentID: 2, Body: "/new first", Commenter: "alice", UpdatedAt: updatedAt, ObservedAt: updatedAt.Add(time.Minute)}
+	first := ParseCommandComment(base)
+	redelivered := base
+	redelivered.ObservedAt = updatedAt.Add(2 * time.Minute)
+	second := ParseCommandComment(redelivered)
+	if first.Status != ParseStatusAccepted || second.Status != ParseStatusAccepted {
+		t.Fatalf("unexpected parse statuses: first=%+v second=%+v", first, second)
+	}
+	if first.Candidate.IdempotencyKey != second.Candidate.IdempotencyKey {
+		t.Fatalf("idempotency key changed with observation time: %q vs %q", first.Candidate.IdempotencyKey, second.Candidate.IdempotencyKey)
+	}
+}
+
+func TestCommandIdempotencyChangesWithUpdatedCommandBody(t *testing.T) {
+	updatedAt := time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC)
+	base := TriggerComment{Repo: "o/r", Issue: 1, CommentID: 2, Body: "/new first", Commenter: "alice", UpdatedAt: updatedAt, ObservedAt: updatedAt.Add(time.Minute)}
 	first := ParseCommandComment(base)
 	edited := base
 	edited.Body = "/new edited"
+	edited.UpdatedAt = updatedAt.Add(time.Minute)
 	second := ParseCommandComment(edited)
 	if first.Status != ParseStatusAccepted || second.Status != ParseStatusAccepted {
 		t.Fatalf("unexpected parse statuses: first=%+v second=%+v", first, second)
 	}
 	if first.Candidate.IdempotencyKey == second.Candidate.IdempotencyKey {
-		t.Fatalf("idempotency key did not change with first observed body state")
+		t.Fatalf("idempotency key did not change with updated command body")
 	}
 }

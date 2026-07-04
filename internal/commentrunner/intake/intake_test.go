@@ -281,9 +281,6 @@ func TestRunOnceSkipsClosedIssueRepositoryFallbackComment(t *testing.T) {
 	if len(backend.collaboratorLookups) != 0 || len(backend.commentReactions) != 0 {
 		t.Fatalf("closed fallback comment performed command side effects: lookups=%+v reactions=%+v", backend.collaboratorLookups, backend.commentReactions)
 	}
-	if len(store.state.SeenComments) != 0 {
-		t.Fatalf("closed fallback comment should not be recorded as seen: %+v", store.state.SeenComments)
-	}
 	if got := store.state.Repositories["o/r"].RepositoryCommentCursor.LastSeenID; got != 104 {
 		t.Fatalf("closed fallback cursor LastSeenID = %d, want 104", got)
 	}
@@ -572,6 +569,126 @@ func TestRunOnceDryRunReportsWithoutSavingState(t *testing.T) {
 	}
 	if store.saves != 0 || len(store.state.Jobs) != 0 {
 		t.Fatalf("dry-run saved state: saves=%d jobs=%d", store.saves, len(store.state.Jobs))
+	}
+}
+
+func TestRunOnceDoesNotStoreIgnoredCommentAsSeen(t *testing.T) {
+	backend := &fakeBackend{
+		user:          github.User{Login: "bot"},
+		permissions:   map[string]string{"alice": "write"},
+		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes"`, 60)},
+		repoComments:  github.IssueCommentsResult{Comments: []github.Comment{commandComment(403, 5, "alice", "ordinary discussion")}},
+	}
+	store := &fakeStore{state: crstate.NewState()}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || len(result.Jobs) != 0 || !hasStatus(result.Commands, CommandStatusIgnored) {
+		t.Fatalf("ignored comment result = jobs=%+v commands=%+v diagnostics=%+v", result.Jobs, result.Commands, result.Diagnostics)
+	}
+	if len(store.state.Jobs) != 0 || len(store.state.Cancellations) != 0 {
+		t.Fatalf("ignored comment created durable command state: jobs=%+v cancellations=%+v", store.state.Jobs, store.state.Cancellations)
+	}
+}
+
+func TestRunOnceDuplicateCommandUsesStableIdempotencyKey(t *testing.T) {
+	comment := commandComment(404, 5, "alice", "/new duplicate")
+	backend := &fakeBackend{
+		user:          github.User{Login: "bot"},
+		permissions:   map[string]string{"alice": "write"},
+		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes"`, 60)},
+		repoComments:  github.IssueCommentsResult{Comments: []github.Comment{comment}},
+	}
+	store := &fakeStore{state: crstate.NewState()}
+
+	first, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Jobs) != 1 || !first.Jobs[0].Created {
+		t.Fatalf("first run did not queue job: %+v", first.Jobs)
+	}
+
+	repoState := store.state.Repositories["o/r"]
+	repoState.FallbackCadence.NextPollAt = testNow.Add(-time.Minute)
+	store.state.Repositories["o/r"] = repoState
+	backend.repoComments = github.IssueCommentsResult{Comments: []github.Comment{comment}}
+	second, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Jobs) != 0 || len(store.state.Jobs) != 1 || !hasReason(second.Commands, "idempotency_key_exists") {
+		t.Fatalf("second run did not use command idempotency duplicate: jobs=%+v stored=%+v commands=%+v", second.Jobs, store.state.Jobs, second.Commands)
+	}
+}
+
+func TestRunOnceIgnoredCommentEditedIntoCommandQueues(t *testing.T) {
+	ignored := commandComment(405, 5, "alice", "ordinary discussion")
+	accepted := ignored
+	accepted.Body = "/new now a command"
+	accepted.UpdatedAt = accepted.UpdatedAt.Add(time.Minute)
+	backend := &fakeBackend{
+		user:          github.User{Login: "bot"},
+		permissions:   map[string]string{"alice": "write"},
+		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes"`, 60)},
+		repoComments:  github.IssueCommentsResult{Comments: []github.Comment{ignored}},
+	}
+	store := &fakeStore{state: crstate.NewState()}
+
+	first, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Jobs) != 0 || !hasStatus(first.Commands, CommandStatusIgnored) {
+		t.Fatalf("first run should ignore comment: jobs=%+v commands=%+v", first.Jobs, first.Commands)
+	}
+	repoState := store.state.Repositories["o/r"]
+	repoState.FallbackCadence.NextPollAt = testNow.Add(-time.Minute)
+	store.state.Repositories["o/r"] = repoState
+	backend.repoComments = github.IssueCommentsResult{Comments: []github.Comment{accepted}}
+
+	second, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Jobs) != 1 || !second.Jobs[0].Created {
+		t.Fatalf("edited ignored comment did not queue: jobs=%+v commands=%+v", second.Jobs, second.Commands)
+	}
+}
+
+func TestRunOnceMalformedCommandEditedIntoValidCommandQueues(t *testing.T) {
+	malformed := commandComment(406, 5, "alice", "/new")
+	accepted := malformed
+	accepted.Body = "/new now valid"
+	accepted.UpdatedAt = accepted.UpdatedAt.Add(time.Minute)
+	backend := &fakeBackend{
+		user:          github.User{Login: "bot"},
+		permissions:   map[string]string{"alice": "write"},
+		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes"`, 60)},
+		repoComments:  github.IssueCommentsResult{Comments: []github.Comment{malformed}},
+	}
+	store := &fakeStore{state: crstate.NewState()}
+
+	first, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Jobs) != 0 || !hasStatus(first.Commands, CommandStatusRejected) {
+		t.Fatalf("first run should reject malformed command: jobs=%+v commands=%+v", first.Jobs, first.Commands)
+	}
+	repoState := store.state.Repositories["o/r"]
+	repoState.FallbackCadence.NextPollAt = testNow.Add(-time.Minute)
+	store.state.Repositories["o/r"] = repoState
+	backend.repoComments = github.IssueCommentsResult{Comments: []github.Comment{accepted}}
+
+	second, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Jobs) != 1 || !second.Jobs[0].Created {
+		t.Fatalf("edited malformed command did not queue: jobs=%+v commands=%+v", second.Jobs, second.Commands)
 	}
 }
 

@@ -421,44 +421,7 @@ func processComment(ctx context.Context, backend Backend, cfg commentrunner.Conf
 		UpdatedAt:  comment.UpdatedAt,
 		ObservedAt: now,
 	}
-	seen := crstate.SeenComment{
-		Host:                   cfg.Hostname,
-		Repo:                   repo,
-		IssueNumber:            comment.IssueNumber,
-		CommentID:              comment.ID,
-		HTMLURL:                comment.HTMLURL,
-		APIURL:                 comment.URL,
-		AuthorLogin:            commenter,
-		FirstObservedAt:        now,
-		FirstObservedUpdatedAt: comment.UpdatedAt,
-		FirstObservedBodyHash:  commentrunner.BodyHash(comment.Body),
-	}
-	recorded, created, err := st.RecordSeenComment(seen)
-	if err != nil {
-		result.OK = false
-		result.Diagnostics = append(result.Diagnostics, Diagnostic{Source: source, Repo: repo, Issue: comment.IssueNumber, Message: err.Error()})
-		return
-	}
-	if !created {
-		result.Commands = append(result.Commands, CommandReport{
-			Source:            source,
-			Repo:              recorded.Repo,
-			Issue:             recorded.IssueNumber,
-			CommentID:         recorded.CommentID,
-			CommentURL:        recorded.HTMLURL,
-			Commenter:         recorded.AuthorLogin,
-			Status:            CommandStatusDuplicate,
-			CommandID:         recorded.CommandCandidateID,
-			JobID:             st.Idempotency.CommandJobs[recorded.CommandIdempotencyKey],
-			CancellationID:    st.Idempotency.CancelRequests[recorded.CancelIdempotencyKey],
-			Reason:            "already_observed",
-			Message:           "comment was already observed; edits and duplicate deliveries are ignored",
-			FirstObservedAt:   recorded.FirstObservedAt,
-			FirstObservedHash: recorded.FirstObservedBodyHash,
-		})
-		return
-	}
-
+	seen := seenCommentFromTrigger(cfg, trigger, comment.URL)
 	parse := commentrunner.ParseCommandComment(trigger)
 	switch parse.Status {
 	case commentrunner.ParseStatusIgnored:
@@ -468,7 +431,7 @@ func processComment(ctx context.Context, backend Backend, cfg commentrunner.Conf
 		report.ParseRejection = parse.Rejection
 		report.Reason = string(parse.Rejection.Reason)
 		report.Message = parse.Rejection.Message
-		writeRejectedCommand(ctx, backend, cfg, st, recorded, report, now, result)
+		writeRejectedCommand(ctx, backend, cfg, st, seen, report, now, result)
 		result.Commands = append(result.Commands, report)
 	case commentrunner.ParseStatusAccepted:
 		if runnerAcked, err := commentHasRunnerEyesAck(ctx, backend, cfg, policy, cache, repo, comment); err != nil {
@@ -479,18 +442,28 @@ func processComment(ctx context.Context, backend Backend, cfg commentrunner.Conf
 				Message: "remote command ack check: " + boundedOneLine(err.Error(), 512),
 			})
 		} else if runnerAcked {
-			recorded.ProducedCommandCandidate = true
-			recorded.CommandCandidateID = parse.Candidate.ID
-			recorded.CommandName = string(parse.Candidate.Verb)
-			recorded.CommandIdempotencyKey = parse.Candidate.IdempotencyKey
-			st.SeenComments[crstate.SeenCommentKey(recorded.Repo, recorded.CommentID)] = recorded
 			report := candidateReport(source, parse.Candidate, CommandStatusDuplicate)
 			report.Reason = "remote_runner_ack"
 			report.Message = "comment already has an eyes reaction from the runner identity"
 			result.Commands = append(result.Commands, report)
 			return
 		}
-		processCandidate(ctx, backend, cfg, policy, st, recorded, parse.Candidate, source, now, result)
+		processCandidate(ctx, backend, cfg, policy, st, seen, parse.Candidate, source, now, result)
+	}
+}
+
+func seenCommentFromTrigger(cfg commentrunner.Config, trigger commentrunner.TriggerComment, apiURL string) crstate.SeenComment {
+	return crstate.SeenComment{
+		Host:                   cfg.Hostname,
+		Repo:                   trigger.Repo,
+		IssueNumber:            trigger.Issue,
+		CommentID:              trigger.CommentID,
+		HTMLURL:                trigger.CommentURL,
+		APIURL:                 apiURL,
+		AuthorLogin:            trigger.Commenter,
+		FirstObservedAt:        trigger.ObservedAt,
+		FirstObservedUpdatedAt: trigger.UpdatedAt,
+		FirstObservedBodyHash:  commentrunner.BodyHash(trigger.Body),
 	}
 }
 
@@ -551,6 +524,10 @@ func processCandidate(ctx context.Context, backend Backend, cfg commentrunner.Co
 }
 
 func queueJob(ctx context.Context, backend Backend, cfg commentrunner.Config, st *crstate.RunnerState, seen crstate.SeenComment, candidate commentrunner.CommandCandidate, source string, authz commentrunner.AuthorizationResult, now time.Time, result *Result) {
+	seen.ProducedCommandCandidate = true
+	seen.CommandCandidateID = candidate.ID
+	seen.CommandName = string(candidate.Verb)
+	seen.CommandIdempotencyKey = candidate.IdempotencyKey
 	job := crstate.Job{
 		ID:                    stableID("job", candidate.IdempotencyKey),
 		Repo:                  candidate.Repo,
@@ -582,11 +559,6 @@ func queueJob(ctx context.Context, backend Backend, cfg commentrunner.Config, st
 		result.Commands = append(result.Commands, report)
 		return
 	}
-	seen.ProducedCommandCandidate = true
-	seen.CommandCandidateID = candidate.ID
-	seen.CommandName = string(candidate.Verb)
-	seen.CommandIdempotencyKey = candidate.IdempotencyKey
-	st.SeenComments[crstate.SeenCommentKey(seen.Repo, seen.CommentID)] = seen
 
 	report.JobID = createdJob.ID
 	report.Created = created
@@ -596,6 +568,9 @@ func queueJob(ctx context.Context, backend Backend, cfg commentrunner.Config, st
 		report.Message = "command job already exists for this idempotency key"
 	}
 	result.Commands = append(result.Commands, report)
+	if !created {
+		return
+	}
 	result.Jobs = append(result.Jobs, JobCandidate{
 		JobID:           createdJob.ID,
 		CommandID:       candidate.ID,
@@ -628,6 +603,10 @@ func addQueuedJobReaction(ctx context.Context, backend Backend, candidate commen
 }
 
 func queueCancellation(st *crstate.RunnerState, seen crstate.SeenComment, candidate commentrunner.CommandCandidate, source string, authz commentrunner.AuthorizationResult, targetJobID string, now time.Time, result *Result) {
+	seen.ProducedCommandCandidate = true
+	seen.CommandCandidateID = candidate.ID
+	seen.CommandName = string(candidate.Verb)
+	seen.CancelIdempotencyKey = candidate.IdempotencyKey
 	cancel := crstate.Cancellation{
 		ID:                    stableID("cancel", candidate.IdempotencyKey),
 		IdempotencyKey:        candidate.IdempotencyKey,
@@ -652,11 +631,6 @@ func queueCancellation(st *crstate.RunnerState, seen crstate.SeenComment, candid
 		result.Commands = append(result.Commands, report)
 		return
 	}
-	seen.ProducedCommandCandidate = true
-	seen.CommandCandidateID = candidate.ID
-	seen.CommandName = string(candidate.Verb)
-	seen.CancelIdempotencyKey = candidate.IdempotencyKey
-	st.SeenComments[crstate.SeenCommentKey(seen.Repo, seen.CommentID)] = seen
 
 	report := candidateReport(source, candidate, CommandStatusCancelQueued)
 	report.Authorization = authz
@@ -668,6 +642,9 @@ func queueCancellation(st *crstate.RunnerState, seen crstate.SeenComment, candid
 		report.Message = "cancellation already exists for this idempotency key"
 	}
 	result.Commands = append(result.Commands, report)
+	if !created {
+		return
+	}
 	result.Cancellations = append(result.Cancellations, CancelCandidate{
 		CancellationID:  cancel.ID,
 		Repo:            candidate.Repo,
@@ -795,7 +772,6 @@ func writeRejectedCommand(ctx context.Context, backend Backend, cfg commentrunne
 		seen.CommandCandidateID = report.CommandID
 		seen.CommandName = string(report.Verb)
 	}
-	st.SeenComments[crstate.SeenCommentKey(seen.Repo, seen.CommentID)] = seen
 
 	job := rejectedWritebackJob(cfg, seen, report, key, now)
 	service := &writeback.Service{

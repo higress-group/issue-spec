@@ -57,8 +57,8 @@ func TestRunOnceDeduplicatesCancelAcrossNotificationAndFallback(t *testing.T) {
 	if len(snapshot.Cancellations) != 1 {
 		t.Fatalf("stored cancellations = %d, want 1: %+v", len(snapshot.Cancellations), snapshot.Cancellations)
 	}
-	seen := snapshot.SeenComments[crstate.SeenCommentKey("o/r", 701)]
-	if seen.CancelIdempotencyKey == "" || snapshot.Idempotency.CancelRequests[seen.CancelIdempotencyKey] == "" {
-		t.Fatalf("cancel idempotency not linked to first observed comment: seen=%+v indexes=%+v", seen, snapshot.Idempotency.CancelRequests)
+	cancel := firstCancellation(snapshot.Cancellations)
+	if cancel.IdempotencyKey == "" || snapshot.Idempotency.CancelRequests[cancel.IdempotencyKey] != cancel.ID {
+		t.Fatalf("cancel idempotency not indexed: cancel=%+v indexes=%+v", cancel, snapshot.Idempotency.CancelRequests)
 	}
 }

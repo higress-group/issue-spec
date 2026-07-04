@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,11 +30,6 @@ func TestFileStoreCreateUpdateListReload(t *testing.T) {
 			FirstObservedBodyHash:    "sha256:command",
 			ProducedCommandCandidate: true,
 			CommandIdempotencyKey:    "cmd:o/r:101",
-		}
-		if _, created, err := st.RecordSeenComment(seen); err != nil {
-			return err
-		} else if !created {
-			t.Fatal("first seen comment should be created")
 		}
 		job, created, err := st.CreateCommandJob(Job{
 			ID:                    "job-1",
@@ -118,6 +114,13 @@ func TestFileStoreCreateUpdateListReload(t *testing.T) {
 	if writeback, ok := loaded.FindStatusWriteback("status:o/r:101"); !ok || writeback.CommentID != 501 {
 		t.Fatalf("missing status writeback: %+v ok=%v", writeback, ok)
 	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "seen_comments") {
+		t.Fatalf("main state JSON retained seen_comments:\n%s", string(data))
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -131,8 +134,41 @@ func TestFileStoreCreateUpdateListReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := reloaded.SeenComments[SeenCommentKey("o/r", 101)]; !ok {
-		t.Fatal("seen comment did not reload")
+	if job, ok := reloaded.FindCommandJob("cmd:o/r:101"); !ok || job.FirstObservedComment.CommentID != 101 {
+		t.Fatalf("job provenance did not reload: job=%+v ok=%v", job, ok)
+	}
+}
+
+func TestLoadFileStripsLegacySeenCommentsOnSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runner-state.json")
+	legacy := `{
+  "schema_version": 1,
+  "seen_comments": {
+    "o/r#123": {
+      "repo": "o/r",
+      "comment_id": 123,
+      "first_observed_body_hash": "sha256:legacy"
+    }
+  },
+  "jobs": {}
+}
+`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveFile(path, state); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "seen_comments") {
+		t.Fatalf("legacy seen_comments was retained after save:\n%s", string(data))
 	}
 }
 
@@ -197,15 +233,6 @@ func TestFileStoreRecoversStaleLockFile(t *testing.T) {
 
 func TestIdempotencyLookupSurvivesDuplicateAndTerminalStates(t *testing.T) {
 	state := NewState()
-	seen := SeenComment{Repo: "o/r", CommentID: 1, FirstObservedBodyHash: "sha256:a", CommandIdempotencyKey: "cmd:1"}
-	if _, created, err := state.RecordSeenComment(seen); err != nil || !created {
-		t.Fatalf("first seen comment created=%v err=%v", created, err)
-	}
-	seen.FirstObservedBodyHash = "sha256:edited"
-	if existing, created, err := state.RecordSeenComment(seen); err != nil || created || existing.FirstObservedBodyHash != "sha256:a" {
-		t.Fatalf("duplicate seen comment was not idempotent: existing=%+v created=%v err=%v", existing, created, err)
-	}
-
 	job, created, err := state.CreateCommandJob(Job{ID: "job-1", Repo: "o/r", CommandIdempotencyKey: "cmd:1", Status: StatusRunning})
 	if err != nil || !created {
 		t.Fatalf("job create failed: job=%+v created=%v err=%v", job, created, err)
@@ -293,7 +320,7 @@ func TestSchemaFriendlyZeroValues(t *testing.T) {
 	if state.SchemaVersion != SchemaVersion {
 		t.Fatalf("schema version = %d", state.SchemaVersion)
 	}
-	if state.Repositories == nil || state.SeenComments == nil || state.Jobs == nil || state.Idempotency.CommandJobs == nil {
+	if state.Repositories == nil || state.Jobs == nil || state.Idempotency.CommandJobs == nil {
 		t.Fatalf("normalize did not initialize maps: %+v", state)
 	}
 	if err := state.UpsertJob(Job{ID: "job-zero"}); err != nil {
