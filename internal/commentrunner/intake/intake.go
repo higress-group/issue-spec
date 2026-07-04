@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,6 +49,7 @@ type NotificationBackend interface {
 type Store interface {
 	Load(context.Context) (crstate.RunnerState, error)
 	Save(context.Context, crstate.RunnerState) error
+	Update(context.Context, func(*crstate.RunnerState) error) error
 }
 
 type Clock interface {
@@ -221,7 +223,10 @@ func RunOnce(ctx context.Context, cfg commentrunner.Config, backend Backend, sto
 	if policy.RunnerLogin == "" {
 		policy.RunnerLogin = cfg.RunnerIdentity
 	}
-
+	notificationBackend := opts.NotificationBackend
+	if notificationBackend == nil {
+		notificationBackend = backend
+	}
 	loaded, err := store.Load(ctx)
 	if err != nil {
 		return Result{}, err
@@ -231,32 +236,41 @@ func RunOnce(ctx context.Context, cfg commentrunner.Config, backend Backend, sto
 		return Result{}, err
 	}
 	st.Normalize()
-
 	result := Result{OK: true, DryRun: opts.DryRun, StartedAt: now}
+	result, err = runOnceWithState(ctx, cfg, backend, opts, policy, notificationBackend, clock, now, &st, result)
+	if err != nil || opts.DryRun {
+		return result, err
+	}
+	if err := store.Update(ctx, func(current *crstate.RunnerState) error {
+		mergeIntakeState(current, loaded, st)
+		return nil
+	}); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func runOnceWithState(ctx context.Context, cfg commentrunner.Config, backend Backend, opts Options, policy commentrunner.AuthorizationPolicy, notificationBackend NotificationBackend, clock Clock, now time.Time, st *crstate.RunnerState, result Result) (Result, error) {
 	repoSet := map[string]bool{}
 	for _, repo := range cfg.Repositories {
 		repoSet[repo] = true
-		ensureRepoState(&st, cfg, repo)
+		ensureRepoState(st, cfg, repo)
 	}
 	cache := &runCache{issueStates: map[string]issueStateCheck{}}
 
-	notificationBackend := opts.NotificationBackend
-	if notificationBackend == nil {
-		notificationBackend = backend
-	}
-	notificationCursorBefore := notificationCursor(st, cfg.Repositories)
-	notifications, notificationMeta, err := pollNotifications(ctx, notificationBackend, st, cfg.Repositories)
+	notificationCursorBefore := notificationCursor(*st, cfg.Repositories)
+	notifications, notificationMeta, err := pollNotifications(ctx, notificationBackend, *st, cfg.Repositories)
 	if err != nil {
 		if hasResponseMetadata(notificationMeta) {
-			applyNotificationMetadata(&st, cfg.Repositories, notificationMeta, now)
+			applyNotificationMetadata(st, cfg.Repositories, notificationMeta, now)
 		}
 		result.OK = false
 		result.Diagnostics = append(result.Diagnostics, Diagnostic{Source: SourceNotification, Message: err.Error()})
 	} else {
-		applyNotificationMetadata(&st, cfg.Repositories, notificationMeta, now)
-		intakeNotifications(ctx, backend, cfg, policy, &st, cache, notifications, repoSet, now, &result)
+		applyNotificationMetadata(st, cfg.Repositories, notificationMeta, now)
+		intakeNotifications(ctx, backend, cfg, policy, st, cache, notifications, repoSet, now, &result)
 	}
-	result.Notification = notificationPollReport(cfg, notificationCursorBefore, notificationCursor(st, cfg.Repositories), notificationMeta, notifications, repoSet, err)
+	result.Notification = notificationPollReport(cfg, notificationCursorBefore, notificationCursor(*st, cfg.Repositories), notificationMeta, notifications, repoSet, err)
 
 	for _, repo := range cfg.Repositories {
 		cycle := RepositoryCycle{Repo: repo}
@@ -265,7 +279,7 @@ func RunOnce(ctx context.Context, cfg commentrunner.Config, backend Backend, sto
 		cycle.FallbackDue = fallbackDue(repoState, now)
 		if cycle.FallbackDue {
 			cycle.FallbackExecuted = true
-			intakeFallback(ctx, backend, cfg, policy, &st, cache, repo, now, &result)
+			intakeFallback(ctx, backend, cfg, policy, st, cache, repo, now, &result)
 			repoState = st.Repositories[repo]
 		}
 		cycle.FallbackNextAt = repoState.FallbackCadence.NextPollAt
@@ -274,13 +288,8 @@ func RunOnce(ctx context.Context, cfg commentrunner.Config, backend Backend, sto
 		result.Repositories = append(result.Repositories, cycle)
 	}
 
-	result.Next = computeNextStep(cfg, st, now)
+	result.Next = computeNextStep(cfg, *st, now)
 	result.FinishedAt = clock.Now().UTC()
-	if !opts.DryRun {
-		if err := store.Save(ctx, st); err != nil {
-			return result, err
-		}
-	}
 	return result, nil
 }
 
@@ -295,6 +304,49 @@ func cloneState(st crstate.RunnerState) (crstate.RunnerState, error) {
 	}
 	out.Normalize()
 	return out, nil
+}
+
+func mergeIntakeState(current *crstate.RunnerState, before, after crstate.RunnerState) {
+	if current == nil {
+		return
+	}
+	current.Normalize()
+	before.Normalize()
+	after.Normalize()
+	mergeChangedMap(&current.Repositories, before.Repositories, after.Repositories)
+	mergeChangedMap(&current.Jobs, before.Jobs, after.Jobs)
+	mergeChangedMap(&current.PublicSessions, before.PublicSessions, after.PublicSessions)
+	mergeChangedMap(&current.Workspaces, before.Workspaces, after.Workspaces)
+	mergeChangedMap(&current.Cancellations, before.Cancellations, after.Cancellations)
+	mergeChangedMap(&current.StatusWritebacks, before.StatusWritebacks, after.StatusWritebacks)
+	mergeChangedMap(&current.Idempotency.CommandJobs, before.Idempotency.CommandJobs, after.Idempotency.CommandJobs)
+	mergeChangedMap(&current.Idempotency.CancelRequests, before.Idempotency.CancelRequests, after.Idempotency.CancelRequests)
+	mergeChangedMap(&current.Idempotency.StatusWritebacks, before.Idempotency.StatusWritebacks, after.Idempotency.StatusWritebacks)
+	current.Normalize()
+}
+
+func mergeChangedMap[V any](current *map[string]V, before, after map[string]V) {
+	if len(after) == 0 {
+		return
+	}
+	if *current == nil {
+		*current = map[string]V{}
+	}
+	for key, afterValue := range after {
+		beforeValue, existedBefore := before[key]
+		if existedBefore && reflect.DeepEqual(beforeValue, afterValue) {
+			continue
+		}
+		currentValue, existsNow := (*current)[key]
+		switch {
+		case !existedBefore:
+			if !existsNow {
+				(*current)[key] = afterValue
+			}
+		case existsNow && reflect.DeepEqual(currentValue, beforeValue):
+			(*current)[key] = afterValue
+		}
+	}
 }
 
 func zeroAuthorizationPolicy(policy commentrunner.AuthorizationPolicy) bool {

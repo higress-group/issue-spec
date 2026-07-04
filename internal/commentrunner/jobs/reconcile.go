@@ -88,6 +88,17 @@ func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 	return result, nil
 }
 
+func (d *Dispatcher) CleanupWorkspaces(ctx context.Context) (ReconcileResult, error) {
+	if d == nil {
+		return ReconcileResult{}, fmt.Errorf("job dispatcher is required")
+	}
+	if d.Store == nil {
+		return ReconcileResult{}, fmt.Errorf("job dispatcher state store is required")
+	}
+	cleanup, diagnostics := d.cleanupExpiredWorkspaces(ctx)
+	return ReconcileResult{WorkspaceCleanup: cleanup, Diagnostics: diagnostics}, nil
+}
+
 func (d *Dispatcher) validateReconcile() error {
 	if d == nil {
 		return fmt.Errorf("job dispatcher is required")

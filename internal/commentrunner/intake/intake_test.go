@@ -22,11 +22,20 @@ type fixedClock struct{}
 func (fixedClock) Now() time.Time { return testNow }
 
 type fakeStore struct {
-	state crstate.RunnerState
-	saves int
+	state     crstate.RunnerState
+	loadState *crstate.RunnerState
+	loads     int
+	saves     int
+	updates   int
 }
 
 func (s *fakeStore) Load(context.Context) (crstate.RunnerState, error) {
+	s.loads++
+	if s.loadState != nil {
+		loaded := *s.loadState
+		loaded.Normalize()
+		return loaded, nil
+	}
 	s.state.Normalize()
 	return s.state, nil
 }
@@ -35,6 +44,16 @@ func (s *fakeStore) Save(_ context.Context, st crstate.RunnerState) error {
 	st.Normalize()
 	s.state = st
 	s.saves++
+	return nil
+}
+
+func (s *fakeStore) Update(_ context.Context, mutate func(*crstate.RunnerState) error) error {
+	s.state.Normalize()
+	if err := mutate(&s.state); err != nil {
+		return err
+	}
+	s.state.Normalize()
+	s.updates++
 	return nil
 }
 
@@ -545,6 +564,61 @@ func TestRunOnceDefaultAuthorizationOnlyAllowsRunnerIdentity(t *testing.T) {
 	}
 	if len(backend.collaboratorLookups) != 1 || backend.collaboratorLookups[0] != "o/r#bot" {
 		t.Fatalf("permission lookups = %+v, want only bot", backend.collaboratorLookups)
+	}
+}
+
+func TestRunOnceMergesStateWithoutClobberingConcurrentDispatch(t *testing.T) {
+	current := crstate.NewState()
+	if err := current.UpsertJob(crstate.Job{
+		ID:                  "job-existing",
+		Repo:                "o/r",
+		IssueNumber:         4,
+		PublicSessionID:     "ps-live",
+		TriggeringUserLogin: "alice",
+		TriggerCommentID:    199,
+		CommandName:         "new",
+		Status:              crstate.StatusRunning,
+		CreatedAt:           testNow.Add(-time.Hour),
+		UpdatedAt:           testNow.Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stale := crstate.NewState()
+	if err := stale.UpsertJob(crstate.Job{
+		ID:                  "job-existing",
+		Repo:                "o/r",
+		IssueNumber:         4,
+		PublicSessionID:     "ps-live",
+		TriggeringUserLogin: "alice",
+		TriggerCommentID:    199,
+		CommandName:         "new",
+		Status:              crstate.StatusQueued,
+		CreatedAt:           testNow.Add(-time.Hour),
+		UpdatedAt:           testNow.Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeBackend{
+		user:          github.User{Login: "bot"},
+		permissions:   map[string]string{"alice": "write"},
+		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes"`, 60)},
+		repoComments:  github.IssueCommentsResult{Comments: []github.Comment{commandComment(212, 4, "alice", "/new next command")}},
+	}
+	store := &fakeStore{state: current, loadState: &stale}
+
+	result, err := RunOnce(context.Background(), testConfig(), backend, store, testOptions("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.loads != 1 || store.saves != 0 || store.updates != 1 {
+		t.Fatalf("real intake should merge through one update, got loads=%d saves=%d updates=%d", store.loads, store.saves, store.updates)
+	}
+	existing, ok := store.state.Jobs["job-existing"]
+	if !ok || existing.Status != crstate.StatusRunning {
+		t.Fatalf("existing job status was not preserved: %+v", existing)
+	}
+	if len(result.Jobs) != 1 || len(store.state.Jobs) != 2 {
+		t.Fatalf("new command was not queued atomically: result=%+v state_jobs=%d", result.Jobs, len(store.state.Jobs))
 	}
 }
 

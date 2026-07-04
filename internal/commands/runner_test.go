@@ -949,7 +949,131 @@ func TestRunnerPollDefaultsToAsyncDispatchAndDoesNotBlockNextIntake(t *testing.T
 		t.Fatalf("dispatch was not triggered")
 	}
 	if got := atomic.LoadInt32(&reconcileCalls); got != 1 {
-		t.Fatalf("async reconcile calls = %d, want startup-only reconcile", got)
+		t.Fatalf("async reconcile calls = %d, want only startup reconcile while dispatch is busy", got)
+	}
+}
+
+func TestRunnerPollAsyncRunsPeriodicReconcileWhenDispatchIdle(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	var reconcileCalls int32
+	app.runnerReconcile = func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error) {
+		atomic.AddInt32(&reconcileCalls, 1)
+		return jobs.ReconcileResult{Reconciled: 1}, nil
+	}
+	var intakeCalls int32
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	app.runnerIntake = func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error) {
+		call := atomic.AddInt32(&intakeCalls, 1)
+		if call == 2 {
+			cancel()
+		}
+		return intake.Result{OK: true, Next: intake.NextStep{PollAfter: 25 * time.Millisecond}}, nil
+	}
+	app.runnerDispatch = func(context.Context, commentrunner.Config) (jobs.Result, error) {
+		return jobs.Result{Reason: "no ready queued job"}, nil
+	}
+
+	code := app.runRunner(ctx, []string{
+		"poll",
+		"--repo", "o/r",
+		"--runner", "issue-spec-bot",
+		"--state", filepath.Join(t.TempDir(), "state.json"),
+		"--workspace-root", t.TempDir(),
+		"--json",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if got := atomic.LoadInt32(&intakeCalls); got < 2 {
+		t.Fatalf("intake calls = %d, want at least 2", got)
+	}
+	if got := atomic.LoadInt32(&reconcileCalls); got < 2 {
+		t.Fatalf("async reconcile calls = %d, want startup and periodic reconcile when dispatch is idle", got)
+	}
+}
+
+func TestRunnerPollAsyncDispatchCleansWorkspacesAfterStartup(t *testing.T) {
+	clearCommandAuthEnv(t)
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	workspaceRoot := t.TempDir()
+	expiredPath := filepath.Join(workspaceRoot, "expired")
+	if err := os.MkdirAll(expiredPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	st := state.NewState()
+	now := time.Now().UTC()
+	if err := st.UpsertWorkspace(state.WorkspaceMetadata{
+		ID:           "ws-expired",
+		Path:         expiredPath,
+		Repo:         "o/r",
+		CreatedAt:    now.Add(-3 * time.Hour),
+		LastUsedAt:   now.Add(-3 * time.Hour),
+		CleanupAfter: now.Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SaveFile(statePath, st); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	var reconcileCalls int32
+	app.runnerReconcile = func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error) {
+		atomic.AddInt32(&reconcileCalls, 1)
+		return jobs.ReconcileResult{}, nil
+	}
+	var intakeCalls int32
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	app.runnerIntake = func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error) {
+		call := atomic.AddInt32(&intakeCalls, 1)
+		if call >= 2 {
+			cancel()
+		}
+		return intake.Result{OK: true, Next: intake.NextStep{PollAfter: 50 * time.Millisecond}}, nil
+	}
+	app.runnerDispatch = func(ctx context.Context, cfg commentrunner.Config) (jobs.Result, error) {
+		<-ctx.Done()
+		return jobs.Result{}, ctx.Err()
+	}
+
+	code := app.runRunner(ctx, []string{
+		"poll",
+		"--repo", "o/r",
+		"--runner", "issue-spec-bot",
+		"--state", statePath,
+		"--workspace-root", workspaceRoot,
+		"--workspace-retention", "1h",
+		"--json",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if got := atomic.LoadInt32(&reconcileCalls); got != 1 {
+		t.Fatalf("async startup reconcile calls = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&intakeCalls); got < 2 {
+		t.Fatalf("intake calls = %d, want at least 2", got)
+	}
+	if _, err := os.Stat(expiredPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expired workspace still exists or unexpected stat error: %v", err)
+	}
+	loaded, err := state.LoadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loaded.GetWorkspace("ws-expired"); ok {
+		t.Fatalf("removed workspace still indexed: %+v", loaded.Workspaces["ws-expired"])
 	}
 }
 

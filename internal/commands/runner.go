@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
@@ -182,7 +183,16 @@ func (a *app) runRunnerPollCycleWithStore(ctx context.Context, cfg commentrunner
 	var dispatchResult *jobs.Result
 	runErr := ""
 	if async != nil {
-		reconcileResult = asyncStartupReconcile
+		if asyncStartupReconcile != nil {
+			reconcileResult = asyncStartupReconcile
+		} else {
+			reconcile, err := a.runRunnerAsyncReconcileWithStore(ctx, cfg, store, async.Busy())
+			if err != nil {
+				runErr = err.Error()
+			} else {
+				reconcileResult = &reconcile
+			}
+		}
 	} else {
 		reconcile, err := a.runRunnerReconcileWithStore(ctx, cfg, store)
 		if err != nil {
@@ -305,6 +315,8 @@ type runnerAsyncDispatcher struct {
 	cancel  context.CancelFunc
 	trigger chan struct{}
 	done    chan struct{}
+	mu      sync.Mutex
+	busy    bool
 }
 
 func newRunnerAsyncDispatcher(ctx context.Context, app *app, cfg commentrunner.Config, store crstate.StateStore) *runnerAsyncDispatcher {
@@ -342,6 +354,15 @@ func (d *runnerAsyncDispatcher) Stop() {
 	<-d.done
 }
 
+func (d *runnerAsyncDispatcher) Busy() bool {
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.busy
+}
+
 func (d *runnerAsyncDispatcher) loop() {
 	defer close(d.done)
 	for {
@@ -349,9 +370,17 @@ func (d *runnerAsyncDispatcher) loop() {
 		case <-d.ctx.Done():
 			return
 		case <-d.trigger:
+			d.setBusy(true)
 			_, _ = d.app.runRunnerDispatchWithStore(d.ctx, d.cfg, d.store)
+			d.setBusy(false)
 		}
 	}
+}
+
+func (d *runnerAsyncDispatcher) setBusy(busy bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.busy = busy
 }
 
 func (a *app) printRunnerPollResult(result runnerDryRunResult, jsonOut bool) int {
@@ -715,6 +744,42 @@ func (a *app) runRunnerReconcileWithStore(ctx context.Context, cfg commentrunner
 	return dispatcher.Reconcile(ctx)
 }
 
+func (a *app) runRunnerWorkspaceCleanupWithStore(ctx context.Context, cfg commentrunner.Config, store crstate.StateStore) (jobs.ReconcileResult, error) {
+	if store == nil {
+		opened, err := crstate.OpenFileStore(cfg.StatePath)
+		if err != nil {
+			return jobs.ReconcileResult{}, err
+		}
+		defer opened.Close()
+		store = opened
+	}
+	dispatcher := jobs.Dispatcher{
+		Store: store,
+		Workspaces: workspace.Manager{
+			Root:      cfg.WorkspaceRoot,
+			Retention: cfg.WorkspaceRetention.Duration,
+		},
+	}
+	return dispatcher.CleanupWorkspaces(ctx)
+}
+
+func (a *app) runRunnerAsyncReconcileWithStore(ctx context.Context, cfg commentrunner.Config, store crstate.StateStore, dispatchBusy bool) (jobs.ReconcileResult, error) {
+	if dispatchBusy {
+		return a.runRunnerWorkspaceCleanupWithStore(ctx, cfg, store)
+	}
+	if a.runnerReconcile == nil {
+		return a.runRunnerReconcileWithStore(ctx, cfg, store)
+	}
+	cleanup, err := a.runRunnerWorkspaceCleanupWithStore(ctx, cfg, store)
+	if err != nil {
+		return cleanup, err
+	}
+	reconcile, err := a.runRunnerReconcileWithStore(ctx, cfg, store)
+	reconcile.WorkspaceCleanup = append(reconcile.WorkspaceCleanup, cleanup.WorkspaceCleanup...)
+	reconcile.Diagnostics = append(reconcile.Diagnostics, cleanup.Diagnostics...)
+	return reconcile, err
+}
+
 func (a *app) runRunnerDispatch(ctx context.Context, cfg commentrunner.Config) (jobs.Result, error) {
 	return a.runRunnerDispatchWithStore(ctx, cfg, nil)
 }
@@ -806,7 +871,7 @@ func actualRunnerPollActions(cfg commentrunner.Config, opts runnerCommandOptions
 	}
 	reconcileAction := "reconcile in-flight jobs and clean up expired non-active workspaces before polling"
 	if opts.AsyncDispatch {
-		reconcileAction = "on startup: reconcile in-flight jobs and clean up expired non-active workspaces; later foreground cycles only intake and trigger async dispatch"
+		reconcileAction = "reconcile in-flight jobs when async dispatch is idle; while dispatch is busy, only clean up expired workspaces before polling"
 	}
 	return []string{
 		"load trusted runner config",
