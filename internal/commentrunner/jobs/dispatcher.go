@@ -1920,18 +1920,7 @@ func contextProvenance(bundle runnercontext.Bundle, commandID string) state.Cont
 }
 
 func acpxMetadata(meta acpx.Metadata, at time.Time) state.AcpxMetadata {
-	refreshed := meta.RefreshedAt
-	if refreshed.IsZero() {
-		refreshed = at
-	}
-	return state.AcpxMetadata{
-		StableRecordID:    meta.StableRecordID,
-		TrueSessionID:     meta.TrueSessionID,
-		ProviderSessionID: meta.ProviderSessionID,
-		LastTurnID:        meta.LastTurnID,
-		RefreshedAt:       refreshed,
-		Raw:               meta.Raw,
-	}
+	return BoundedAcpxMetadata(meta, at)
 }
 
 func sandboxMetadata(meta sandbox.Metadata, err error) state.SandboxMetadata {

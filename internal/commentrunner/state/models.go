@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -8,7 +9,7 @@ import (
 	"time"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 type LifecycleStatus string
 
@@ -641,4 +642,139 @@ func sortJobs(jobs []Job) {
 		}
 		return jobs[i].CreatedAt.Before(jobs[j].CreatedAt)
 	})
+}
+
+// EstimatedSize returns an estimate of the byte size of the runner state when marshaled to JSON.
+func (s *RunnerState) EstimatedSize() int64 {
+	data, err := json.Marshal(s)
+	if err != nil {
+		return 0
+	}
+	return int64(len(data))
+}
+
+// EstimatedSize returns an estimate of the byte size of the job when marshaled to JSON.
+func (j *Job) EstimatedSize() int64 {
+	// Base struct overhead
+	size := 100
+
+	// String fields
+	size += len(j.ID)
+	size += len(j.PublicSessionID)
+	size += len(j.AcpxRecordID)
+	size += len(j.CoordinatorKind)
+	size += len(j.Model)
+	size += len(j.SessionCreatorLogin)
+	size += len(j.TriggeringUserLogin)
+	size += len(j.CommandID)
+	size += len(j.CommandName)
+	size += len(j.CommandPrompt)
+	size += len(j.CommandIdempotencyKey)
+	size += len(j.StatusWritebackKey)
+	size += len(j.StatusCommentURL)
+
+	// ACPX metadata is the big one
+	for k, v := range j.Acpx.Raw {
+		size += len(k) + len(v) + 10 // key + value + JSON overhead
+	}
+	size += len(j.Acpx.StableRecordID)
+	size += len(j.Acpx.TrueSessionID)
+	size += len(j.Acpx.ProviderSessionID)
+	size += len(j.Acpx.LastTurnID)
+
+	// Diagnostics
+	for _, d := range j.Diagnostics {
+		size += len(d)
+	}
+
+	// Context bundle
+	if j.ContextBundle.Hash != "" {
+		size += len(j.ContextBundle.Hash)
+	}
+	for _, ref := range j.ContextBundle.SelectedArtifacts {
+		size += len(ref.ID)
+		size += len(ref.Kind)
+	}
+
+	return int64(size)
+}
+
+// EstimatedSize returns an estimate of the byte size of the public session when marshaled to JSON.
+func (ps *PublicSession) EstimatedSize() int64 {
+	// Base struct overhead
+	size := 100
+
+	// String fields
+	size += len(ps.PublicSessionID)
+	size += len(ps.AcpxRecordID)
+	size += len(ps.CreatorLogin)
+
+	// ACPX metadata
+	for k, v := range ps.Acpx.Raw {
+		size += len(k) + len(v) + 10
+	}
+	size += len(ps.Acpx.StableRecordID)
+	size += len(ps.Acpx.TrueSessionID)
+	size += len(ps.Acpx.ProviderSessionID)
+	size += len(ps.Acpx.LastTurnID)
+
+	return int64(size)
+}
+
+// Migrate upgrades the runner state schema to the current version.
+func (s *RunnerState) Migrate() error {
+	switch s.SchemaVersion {
+	case 0, 1:
+		// Migrate from v1 (unbounded) to v2 (bounded)
+		return s.migrateV1ToV2()
+	case 2:
+		// Current version - no migration needed
+		return nil
+	default:
+		// Unknown version - assume current
+		return nil
+	}
+}
+
+// migrateV1ToV2 applies bounded metadata to all existing records.
+func (s *RunnerState) migrateV1ToV2() error {
+	// Apply bounded metadata to all jobs
+	for id, job := range s.Jobs {
+		job.Acpx = s.boundedAcpxMetadata(job.Acpx)
+		s.Jobs[id] = job
+	}
+
+	// Apply bounded metadata to all public sessions
+	for key, session := range s.PublicSessions {
+		session.Acpx = s.boundedAcpxMetadata(session.Acpx)
+		s.PublicSessions[key] = session
+	}
+
+	s.SchemaVersion = 2
+	return nil
+}
+
+// boundedAcpxMetadata creates a bounded version of ACPX metadata for migration.
+func (s *RunnerState) boundedAcpxMetadata(meta AcpxMetadata) AcpxMetadata {
+	// Keep only stable fields, drop large raw content
+	// Preserve essential fields like cwd for compatibility
+	boundedRaw := make(map[string]string)
+	for k, v := range meta.Raw {
+		// Keep only control-plane keys
+		if k == "cwd" || k == "stable_record_id" || k == "true_session_id" ||
+		   k == "provider_session_id" || k == "last_turn_id" ||
+		   k == "agent" || k == "model" || k == "mode" ||
+		   k == "session_name" || k == "history_length" {
+			boundedRaw[k] = v
+		}
+	}
+
+	return AcpxMetadata{
+		StableRecordID:    meta.StableRecordID,
+		TrueSessionID:     meta.TrueSessionID,
+		ProviderSessionID: meta.ProviderSessionID,
+		LastTurnID:        meta.LastTurnID,
+		RefreshedAt:       meta.RefreshedAt,
+		Raw:               boundedRaw,
+	}
 }
