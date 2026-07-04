@@ -177,6 +177,24 @@ func TestLockContention(t *testing.T) {
 	}
 }
 
+func TestFileStoreRecoversStaleLockFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	lockPath := path + ".lock"
+	if err := os.WriteFile(lockPath, []byte("pid=1\ncreated_at=2000-01-01T00:00:00Z\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenFileStore(path)
+	if err != nil {
+		t.Fatalf("stale lock file blocked open: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected lock file to be removed on close, got %v", err)
+	}
+}
+
 func TestIdempotencyLookupSurvivesDuplicateAndTerminalStates(t *testing.T) {
 	state := NewState()
 	seen := SeenComment{Repo: "o/r", CommentID: 1, FirstObservedBodyHash: "sha256:a", CommandIdempotencyKey: "cmd:1"}

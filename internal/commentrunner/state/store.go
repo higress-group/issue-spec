@@ -141,13 +141,18 @@ func (s *FileStore) Close() error {
 		return nil
 	}
 	s.closed = true
-	var closeErr error
+	var closeErr, removeErr error
 	if s.lockFile != nil {
+		same, err := sameOpenFilePath(s.lockFile, s.lockPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			removeErr = err
+		} else if same {
+			removeErr = os.Remove(s.lockPath)
+			if errors.Is(removeErr, os.ErrNotExist) {
+				removeErr = nil
+			}
+		}
 		closeErr = s.lockFile.Close()
-	}
-	removeErr := os.Remove(s.lockPath)
-	if errors.Is(removeErr, os.ErrNotExist) {
-		removeErr = nil
 	}
 	if closeErr != nil {
 		return closeErr
@@ -208,21 +213,54 @@ func (s *FileStore) ensureOpen() error {
 }
 
 func acquireLock(lockPath, statePath string) (*os.File, error) {
-	lockFile, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
-	if err == nil {
-		fmt.Fprintf(lockFile, "pid=%d\ncreated_at=%s\nstate_path=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano), statePath)
-		if syncErr := lockFile.Sync(); syncErr != nil {
-			lockFile.Close()
-			os.Remove(lockPath)
-			return nil, syncErr
-		}
-		return lockFile, nil
+	lockFile, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
 	}
-	if errors.Is(err, os.ErrExist) {
+	if err := tryLockFile(lockFile); err != nil {
 		holder, _ := os.ReadFile(lockPath)
-		return nil, &LockError{Path: lockPath, Holder: string(bytes.TrimSpace(holder))}
+		_ = lockFile.Close()
+		if lockUnavailable(err) {
+			return nil, &LockError{Path: lockPath, Holder: string(bytes.TrimSpace(holder))}
+		}
+		return nil, err
 	}
-	return nil, err
+	if err := writeStateLock(lockFile, statePath); err != nil {
+		_ = lockFile.Close()
+		return nil, err
+	}
+	return lockFile, nil
+}
+
+func writeStateLock(lockFile *os.File, statePath string) error {
+	if err := lockFile.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := lockFile.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(lockFile, "pid=%d\ncreated_at=%s\nstate_path=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano), statePath); err != nil {
+		return err
+	}
+	return lockFile.Sync()
+}
+
+func sameOpenFilePath(file *os.File, path string) (bool, error) {
+	if file == nil {
+		return false, nil
+	}
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	pathInfo, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(fileInfo, pathInfo), nil
 }
 
 func writeAtomic(path string, data []byte) error {

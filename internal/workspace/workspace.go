@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -24,6 +25,21 @@ const (
 )
 
 var ErrLocked = errors.New("workspace lock held")
+
+var activeWorkspaceLocks = struct {
+	sync.Mutex
+	byPath map[string]*activeWorkspaceLock
+}{byPath: map[string]*activeWorkspaceLock{}}
+
+type activeWorkspaceLock struct {
+	file  *os.File
+	path  string
+	token string
+	jobID string
+	done  chan struct{}
+	once  sync.Once
+	mu    sync.Mutex
+}
 
 type Command struct {
 	Binary string
@@ -265,6 +281,7 @@ type lockRecord struct {
 	JobID           string    `json:"job_id"`
 	WorkspaceID     string    `json:"workspace_id,omitempty"`
 	Token           string    `json:"token"`
+	ProcessID       int       `json:"pid,omitempty"`
 	AcquiredAt      time.Time `json:"acquired_at"`
 	HeartbeatAt     time.Time `json:"heartbeat_at"`
 }
@@ -287,80 +304,79 @@ func (m Manager) AcquireLock(ctx context.Context, req LockRequest) (state.Sessio
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		return state.SessionLock{}, err
 	}
-	var recovered time.Time
-	for attempt := 0; attempt < 2; attempt++ {
-		now := nm.Now().UTC()
-		file, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			token, err := nm.TokenFunc()
-			if err != nil {
-				_ = file.Close()
-				_ = os.Remove(lockPath)
-				return state.SessionLock{}, err
-			}
-			record := lockRecord{
-				Repo:            strings.TrimSpace(req.Repo),
-				PublicSessionID: strings.TrimSpace(req.PublicSessionID),
-				JobID:           strings.TrimSpace(req.JobID),
-				WorkspaceID:     strings.TrimSpace(req.WorkspaceID),
-				Token:           token,
-				AcquiredAt:      now,
-				HeartbeatAt:     now,
-			}
-			data, err := json.MarshalIndent(record, "", "  ")
-			if err != nil {
-				_ = file.Close()
-				_ = os.Remove(lockPath)
-				return state.SessionLock{}, err
-			}
-			data = append(data, '\n')
-			if _, err := file.Write(data); err != nil {
-				_ = file.Close()
-				_ = os.Remove(lockPath)
-				return state.SessionLock{}, err
-			}
-			if err := file.Sync(); err != nil {
-				_ = file.Close()
-				_ = os.Remove(lockPath)
-				return state.SessionLock{}, err
-			}
-			if err := file.Close(); err != nil {
-				_ = os.Remove(lockPath)
-				return state.SessionLock{}, err
-			}
-			return state.SessionLock{
-				OwnerJobID:         record.JobID,
-				AcquiredAt:         record.AcquiredAt,
-				HeartbeatAt:        record.HeartbeatAt,
-				WorkspaceLockToken: record.Token,
-				WorkspaceLockPath:  lockPath,
-				StaleRecoveredAt:   recovered,
-			}, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return state.SessionLock{}, err
-		}
-		existing, readErr := readLock(lockPath)
-		if errors.Is(readErr, os.ErrNotExist) {
-			continue
-		}
-		if readErr != nil {
-			return state.SessionLock{}, readErr
-		}
-		staleAt := existing.HeartbeatAt
-		if staleAt.IsZero() {
-			staleAt = existing.AcquiredAt
-		}
-		if attempt == 0 && req.StaleAfter > 0 && !staleAt.IsZero() && now.Sub(staleAt) > req.StaleAfter {
-			if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return state.SessionLock{}, err
-			}
-			recovered = now
-			continue
-		}
-		return state.SessionLock{}, &LockError{Path: lockPath, OwnerJobID: existing.JobID}
+	if owner := activeWorkspaceLockOwner(lockPath); owner != "" {
+		return state.SessionLock{}, &LockError{Path: lockPath, OwnerJobID: owner}
 	}
-	return state.SessionLock{}, &LockError{Path: lockPath}
+	file, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return state.SessionLock{}, err
+	}
+	if err := tryLockFile(file); err != nil {
+		owner := ""
+		if existing, readErr := readLock(lockPath); readErr == nil {
+			owner = existing.JobID
+		}
+		_ = file.Close()
+		if lockUnavailable(err) {
+			return state.SessionLock{}, &LockError{Path: lockPath, OwnerJobID: owner}
+		}
+		return state.SessionLock{}, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return state.SessionLock{}, err
+	}
+	var recovered time.Time
+	now := nm.Now().UTC()
+	if info.Size() > 0 {
+		recovered = now
+	}
+	token, err := nm.TokenFunc()
+	if err != nil {
+		_ = file.Close()
+		return state.SessionLock{}, err
+	}
+	record := lockRecord{
+		Repo:            strings.TrimSpace(req.Repo),
+		PublicSessionID: strings.TrimSpace(req.PublicSessionID),
+		JobID:           strings.TrimSpace(req.JobID),
+		WorkspaceID:     strings.TrimSpace(req.WorkspaceID),
+		Token:           token,
+		ProcessID:       os.Getpid(),
+		AcquiredAt:      now,
+		HeartbeatAt:     now,
+	}
+	active := &activeWorkspaceLock{file: file, path: lockPath, token: token, jobID: record.JobID, done: make(chan struct{})}
+	registered := false
+	if owner := registerWorkspaceLock(lockPath, active); owner != "" {
+		_ = file.Close()
+		return state.SessionLock{}, &LockError{Path: lockPath, OwnerJobID: owner}
+	}
+	registered = true
+	defer func() {
+		if registered {
+			return
+		}
+		unregisterWorkspaceLock(lockPath, active)
+		_ = file.Close()
+	}()
+	if err := writeLockRecord(file, record); err != nil {
+		registered = false
+		return state.SessionLock{}, err
+	}
+	if interval := lockHeartbeatInterval(req.StaleAfter); interval > 0 {
+		startWorkspaceLockHeartbeat(ctx, nm, active, interval)
+	}
+	registered = true
+	return state.SessionLock{
+		OwnerJobID:         record.JobID,
+		AcquiredAt:         record.AcquiredAt,
+		HeartbeatAt:        record.HeartbeatAt,
+		WorkspaceLockToken: record.Token,
+		WorkspaceLockPath:  lockPath,
+		StaleRecoveredAt:   recovered,
+	}, nil
 }
 
 type LockError struct {
@@ -390,6 +406,13 @@ func (m Manager) ReleaseLock(lock state.SessionLock) error {
 	}
 	record, err := readLock(path)
 	if errors.Is(err, os.ErrNotExist) {
+		if active, ok := takeWorkspaceLock(path, lock); ok {
+			active.stop()
+			active.mu.Lock()
+			closeErr := active.file.Close()
+			active.mu.Unlock()
+			return closeErr
+		}
 		return nil
 	}
 	if err != nil {
@@ -398,7 +421,40 @@ func (m Manager) ReleaseLock(lock state.SessionLock) error {
 	if record.Token != lock.WorkspaceLockToken || record.JobID != lock.OwnerJobID {
 		return fmt.Errorf("workspace lock token or owner mismatch")
 	}
-	return os.Remove(path)
+	if active, ok := takeWorkspaceLock(path, lock); ok {
+		active.stop()
+		active.mu.Lock()
+		removeErr := removeOpenLockPath(active.file, path)
+		closeErr := active.file.Close()
+		active.mu.Unlock()
+		if closeErr != nil {
+			return closeErr
+		}
+		return removeErr
+	}
+	if activeWorkspaceLockOwner(path) != "" {
+		return fmt.Errorf("workspace lock token or owner mismatch")
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := tryLockFile(file); err != nil {
+		_ = file.Close()
+		if lockUnavailable(err) {
+			return ErrLocked
+		}
+		return err
+	}
+	removeErr := removeOpenLockPath(file, path)
+	closeErr := file.Close()
+	if closeErr != nil {
+		return closeErr
+	}
+	return removeErr
 }
 
 type CleanupRequest struct {
@@ -672,6 +728,158 @@ func validateGitRef(label, ref string) error {
 		}
 	}
 	return nil
+}
+
+func activeWorkspaceLockOwner(path string) string {
+	activeWorkspaceLocks.Lock()
+	defer activeWorkspaceLocks.Unlock()
+	active := activeWorkspaceLocks.byPath[path]
+	if active == nil {
+		return ""
+	}
+	return active.jobID
+}
+
+func registerWorkspaceLock(path string, active *activeWorkspaceLock) string {
+	activeWorkspaceLocks.Lock()
+	defer activeWorkspaceLocks.Unlock()
+	if existing := activeWorkspaceLocks.byPath[path]; existing != nil {
+		return existing.jobID
+	}
+	activeWorkspaceLocks.byPath[path] = active
+	return ""
+}
+
+func unregisterWorkspaceLock(path string, active *activeWorkspaceLock) {
+	activeWorkspaceLocks.Lock()
+	defer activeWorkspaceLocks.Unlock()
+	if activeWorkspaceLocks.byPath[path] == active {
+		delete(activeWorkspaceLocks.byPath, path)
+	}
+}
+
+func takeWorkspaceLock(path string, lock state.SessionLock) (*activeWorkspaceLock, bool) {
+	activeWorkspaceLocks.Lock()
+	defer activeWorkspaceLocks.Unlock()
+	active := activeWorkspaceLocks.byPath[path]
+	if active == nil || active.token != lock.WorkspaceLockToken || active.jobID != lock.OwnerJobID {
+		return nil, false
+	}
+	delete(activeWorkspaceLocks.byPath, path)
+	return active, true
+}
+
+func (l *activeWorkspaceLock) stop() {
+	if l == nil {
+		return
+	}
+	l.once.Do(func() {
+		close(l.done)
+	})
+}
+
+func lockHeartbeatInterval(staleAfter time.Duration) time.Duration {
+	if staleAfter <= 0 {
+		return 0
+	}
+	interval := staleAfter / 3
+	if interval <= 0 {
+		interval = staleAfter
+	}
+	if interval < time.Millisecond {
+		interval = time.Millisecond
+	}
+	if interval > time.Minute {
+		interval = time.Minute
+	}
+	return interval
+}
+
+func startWorkspaceLockHeartbeat(ctx context.Context, manager Manager, active *activeWorkspaceLock, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-active.done:
+				return
+			case <-ticker.C:
+				if !refreshWorkspaceLock(manager, active) {
+					return
+				}
+			}
+		}
+	}()
+}
+
+func refreshWorkspaceLock(manager Manager, active *activeWorkspaceLock) bool {
+	active.mu.Lock()
+	defer active.mu.Unlock()
+	same, err := sameOpenFilePath(active.file, active.path)
+	if err != nil || !same {
+		return false
+	}
+	record, err := readLock(active.path)
+	if err != nil {
+		return false
+	}
+	if record.Token != active.token || record.JobID != active.jobID {
+		return false
+	}
+	record.HeartbeatAt = manager.Now().UTC()
+	return writeLockRecord(active.file, record) == nil
+}
+
+func writeLockRecord(file *os.File, record lockRecord) error {
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := file.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
+func removeOpenLockPath(file *os.File, path string) error {
+	same, err := sameOpenFilePath(file, path)
+	if err != nil {
+		return err
+	}
+	if !same {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func sameOpenFilePath(file *os.File, path string) (bool, error) {
+	if file == nil {
+		return false, nil
+	}
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	pathInfo, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(fileInfo, pathInfo), nil
 }
 
 func readLock(path string) (lockRecord, error) {

@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -113,19 +114,14 @@ func TestResolveResumeValidatesStoredWorkspaceAndRefreshesRetention(t *testing.T
 	}
 }
 
-func TestWorkspaceLocksAreExclusiveAndRecoverStale(t *testing.T) {
+func TestWorkspaceLocksAreExclusive(t *testing.T) {
 	root := t.TempDir()
 	now := time.Unix(3000, 0).UTC()
-	tokens := []string{"token-1", "token-2"}
 	manager := Manager{
 		Root:      root,
 		Retention: time.Hour,
 		Now:       func() time.Time { return now },
-		TokenFunc: func() (string, error) {
-			token := tokens[0]
-			tokens = tokens[1:]
-			return token, nil
-		},
+		TokenFunc: fixedTokens(t, "token-1"),
 	}
 
 	first, err := manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-1", WorkspaceID: "ws-1", StaleAfter: time.Hour})
@@ -136,18 +132,125 @@ func TestWorkspaceLocksAreExclusiveAndRecoverStale(t *testing.T) {
 	if !errors.Is(err, ErrLocked) {
 		t.Fatalf("expected held lock, got %v", err)
 	}
-	now = now.Add(2 * time.Hour)
-	recovered, err := manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-3", WorkspaceID: "ws-1", StaleAfter: time.Hour})
+	if err := manager.ReleaseLock(first); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceLockRecoversUnlockedStaleFile(t *testing.T) {
+	root := t.TempDir()
+	now := time.Unix(3100, 0).UTC()
+	lockPath, err := lockPath(root, "o/r", "ps-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered.StaleRecoveredAt.IsZero() || recovered.WorkspaceLockToken != "token-2" {
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := lockRecord{
+		Repo:            "o/r",
+		PublicSessionID: "ps-1",
+		JobID:           "job-stale",
+		WorkspaceID:     "ws-1",
+		Token:           "token-stale",
+		ProcessID:       12345,
+		AcquiredAt:      now.Add(-2 * time.Hour),
+		HeartbeatAt:     now.Add(-2 * time.Hour),
+	}
+	writeTestLockRecord(t, lockPath, stale)
+	manager := Manager{
+		Root:      root,
+		Retention: time.Hour,
+		Now:       func() time.Time { return now },
+		TokenFunc: fixedTokens(t, "token-recovered"),
+	}
+
+	recovered, err := manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-recovered", WorkspaceID: "ws-1", StaleAfter: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.StaleRecoveredAt.IsZero() || recovered.WorkspaceLockToken != "token-recovered" {
 		t.Fatalf("expected stale recovery metadata: %+v", recovered)
 	}
-	if err := manager.ReleaseLock(first); err == nil {
+	record, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.JobID != "job-recovered" || record.Token != "token-recovered" || record.ProcessID != os.Getpid() {
+		t.Fatalf("stale lock was not replaced by current owner: %+v", record)
+	}
+	if err := manager.ReleaseLock(state.SessionLock{OwnerJobID: "job-stale", WorkspaceLockToken: "token-stale", WorkspaceLockPath: lockPath}); err == nil {
 		t.Fatal("expected stale first token release to fail")
 	}
 	if err := manager.ReleaseLock(recovered); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceStaleRecoveryDoesNotDeleteCurrentLock(t *testing.T) {
+	root := t.TempDir()
+	now := time.Unix(3200, 0).UTC()
+	manager := Manager{
+		Root:      root,
+		Retention: time.Hour,
+		Now:       func() time.Time { return now },
+		TokenFunc: fixedTokens(t, "token-current"),
+	}
+	current, err := manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-current", WorkspaceID: "ws-1", StaleAfter: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Hour)
+	_, err = manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-next", WorkspaceID: "ws-1", StaleAfter: time.Hour})
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("expected current lock to remain held, got %v", err)
+	}
+	if err := manager.ReleaseLock(state.SessionLock{OwnerJobID: "job-stale", WorkspaceLockToken: "token-stale", WorkspaceLockPath: current.WorkspaceLockPath}); err == nil {
+		t.Fatal("expected stale token release to fail")
+	}
+	record, err := readLock(current.WorkspaceLockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.JobID != "job-current" || record.Token != "token-current" {
+		t.Fatalf("current lock was modified or removed: %+v", record)
+	}
+	if err := manager.ReleaseLock(current); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceLockHeartbeatRefreshesMetadata(t *testing.T) {
+	root := t.TempDir()
+	now := time.Unix(3300, 0).UTC()
+	manager := Manager{
+		Root:      root,
+		Retention: time.Hour,
+		Now:       func() time.Time { return now },
+		TokenFunc: fixedTokens(t, "token-1"),
+	}
+	lock, err := manager.AcquireLock(context.Background(), LockRequest{Repo: "o/r", PublicSessionID: "ps-1", JobID: "job-1", WorkspaceID: "ws-1", StaleAfter: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeWorkspaceLocks.Lock()
+	active := activeWorkspaceLocks.byPath[lock.WorkspaceLockPath]
+	activeWorkspaceLocks.Unlock()
+	if active == nil {
+		t.Fatal("active lock was not registered")
+	}
+	now = now.Add(5 * time.Minute)
+	if !refreshWorkspaceLock(manager, active) {
+		t.Fatal("heartbeat refresh failed")
+	}
+	record, err := readLock(lock.WorkspaceLockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.HeartbeatAt.Equal(now) {
+		t.Fatalf("heartbeat not refreshed: got %s want %s", record.HeartbeatAt, now)
+	}
+	if err := manager.ReleaseLock(lock); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -242,6 +345,30 @@ func mkdirWorkspace(t *testing.T, root, id string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func fixedTokens(t *testing.T, tokens ...string) func() (string, error) {
+	t.Helper()
+	return func() (string, error) {
+		if len(tokens) == 0 {
+			t.Fatal("unexpected token request")
+		}
+		token := tokens[0]
+		tokens = tokens[1:]
+		return token, nil
+	}
+}
+
+func writeTestLockRecord(t *testing.T, path string, record lockRecord) {
+	t.Helper()
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func first(value, fallback string) string {
