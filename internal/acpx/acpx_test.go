@@ -65,7 +65,7 @@ func TestNewSessionCodexDispatchesWithStableRecordAndSummary(t *testing.T) {
 }
 
 func TestNewSessionRecoversSummaryFromFlattenedAgentMessageText(t *testing.T) {
-	userExample := "prompt example\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```"
+	userExample := "prompt example\nissue-spec-turn-correlation: turn-token-1\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```"
 	agentOutput := "done\n```issue_spec_coordinator_summary{\n" + strings.TrimPrefix(validSummaryJSON, "{") + "\n```"
 	sessionShow := `{
 		"acpxRecordId":"rec-1",
@@ -367,6 +367,99 @@ func TestResumeAcceptsCorrelationTokenEvidenceInHistory(t *testing.T) {
 	}
 	if result.Metadata.StableRecordID != "rec-1" {
 		t.Fatalf("unexpected result metadata: %+v", result.Metadata)
+	}
+}
+
+func TestResumeDoesNotRecoverStaleSummaryWhenCurrentTurnHasNoFence(t *testing.T) {
+	oldOutput := "old turn done\n```issue_spec_coordinator_summary\n" + summaryJSONWithProcessID("PROCESS-OLD-001") + "\n```"
+	before := `{
+		"acpxRecordId":"rec-1",
+		"lastTurnId":"turn-1",
+		"messages":[
+			{"User":{"content":[{"Text":"seed prompt"}]}},
+			{"Agent":{"content":[{"Text":` + strconv.Quote(oldOutput) + `}]}}
+		]
+	}`
+	after := `{
+		"acpxRecordId":"rec-1",
+		"lastTurnId":"turn-2",
+		"messages":[
+			{"User":{"content":[{"Text":"seed prompt"}]}},
+			{"Agent":{"content":[{"Text":` + strconv.Quote(oldOutput) + `}]}},
+			{"User":{"content":[{"Text":"current prompt\nissue-spec-turn-correlation: turn-token-current"}]}},
+			{"Agent":{"content":[{"Text":"interrupted before emitting a coordinator summary"}]}}
+		]
+	}`
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: before},
+		{stdout: "assistant output without coordinator summary"},
+		{stdout: after},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	result, err := adapter.Resume(context.Background(), ResumeRequest{
+		PublicSessionID:      "pub-1",
+		StableRecordID:       "rec-1",
+		Prompt:               "continue",
+		MinHistoryEntries:    1,
+		TurnCorrelationToken: "turn-token-current",
+	})
+	var partial *PartialDispatchError
+	if !errors.As(err, &partial) || !errors.Is(err, ErrSummaryNotFound) {
+		t.Fatalf("Resume error = %v, want PartialDispatchError wrapping ErrSummaryNotFound", err)
+	}
+	if result.Output.SummaryFound || partial.Result.Output.SummaryFound {
+		t.Fatalf("stale summary should not be recovered: result=%+v partial=%+v", result.Output, partial.Result.Output)
+	}
+	if partial.Result.Metadata.LastTurnID != "turn-2" {
+		t.Fatalf("partial metadata was not refreshed: %+v", partial.Result.Metadata)
+	}
+}
+
+func TestResumeRecoversCurrentFlattenedMessageWithNumericOrdering(t *testing.T) {
+	oldOutput := "old turn done\n```issue_spec_coordinator_summary\n" + summaryJSONWithProcessID("PROCESS-OLD-002") + "\n```"
+	currentOutput := "current turn done\n```issue_spec_coordinator_summary\n" + summaryJSONWithProcessID("PROCESS-CURRENT-010") + "\n```"
+	before := `{
+		"acpxRecordId":"rec-1",
+		"lastTurnId":"turn-9",
+		"historyLength":9,
+		"messages.1.User.content.0.Text":"seed prompt",
+		"messages.2.Agent.content.0.Text":` + strconv.Quote(oldOutput) + `
+	}`
+	after := `{
+		"acpxRecordId":"rec-1",
+		"lastTurnId":"turn-10",
+		"historyLength":11,
+		"messages.1.User.content.0.Text":"seed prompt",
+		"messages.2.Agent.content.0.Text":` + strconv.Quote(oldOutput) + `,
+		"messages.9.User.content.0.Text":"current prompt\nissue-spec-turn-correlation: turn-token-10",
+		"messages.10.Agent.content.0.Text":` + strconv.Quote(currentOutput) + `
+	}`
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: before},
+		{stdout: "assistant output without coordinator summary"},
+		{stdout: after},
+	}}
+	adapter := newTestAdapter(t, Config{CWD: "/workspace"}, runner)
+
+	result, err := adapter.Resume(context.Background(), ResumeRequest{
+		PublicSessionID:      "pub-1",
+		StableRecordID:       "rec-1",
+		Prompt:               "continue",
+		MinHistoryEntries:    1,
+		TurnCorrelationToken: "turn-token-10",
+	})
+	if err != nil {
+		t.Fatalf("Resume returned error: %v", err)
+	}
+	if !result.Output.SummaryFound {
+		t.Fatalf("summary was not recovered: %+v", result.Output)
+	}
+	if got := result.Output.Summary.Artifacts[0].ID; got != "PROCESS-CURRENT-010" {
+		t.Fatalf("recovered artifact id = %q, want current flattened message summary", got)
+	}
+	if !strings.Contains(result.Output.ReplyText, "current turn done") {
+		t.Fatalf("recovered reply came from wrong message: %q", result.Output.ReplyText)
 	}
 }
 
@@ -715,6 +808,10 @@ func withQueueBackoffs(t *testing.T, backoffs []time.Duration) {
 
 const validSummaryJSON = `{"status":"completed","artifacts":[{"kind":"typed_comment","id":"PROCESS-NC-010","url":"https://github.com/higress-group/issue-spec/issues/30#issuecomment-1","action":"updated"}],"commands":[{"name":"issue-spec comment upsert","exit_code":0,"artifact_id":"PROCESS-NC-010","stdout_summary":"updated","stderr_summary":""}],"children":[{"id":"child-1","native_id":"native-1","role":"worker","process_id":"PROCESS-NC-010","status":"done","evidence":"tests passed"}],"processes":[{"process_id":"PROCESS-NC-010","task_id":"TASK-015","status":"done","evidence":"adapter tests passed"}],"diagnostics":[]}`
 
+func summaryJSONWithProcessID(processID string) string {
+	return strings.ReplaceAll(validSummaryJSON, "PROCESS-NC-010", processID)
+}
+
 const e2eSummaryJSON = `{
   "status": "completed",
   "artifacts": [
@@ -736,7 +833,7 @@ func e2eSessionShowWithAgentContentText(agentText string) string {
 		content = append(content, `{"Text":"working chunk `+strconv.Itoa(i)+`"}`)
 	}
 	content = append(content, `{"Text":`+strconv.Quote(agentText)+`}`)
-	userExample := "Prompt example, not terminal output.\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```"
+	userExample := "Prompt example, not terminal output.\nissue-spec-turn-correlation: turn-token-1\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```"
 	return `{
   "acpxRecordId": "rec-1",
   "acpxSessionId": "acpx-2",

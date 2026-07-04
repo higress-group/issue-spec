@@ -308,7 +308,7 @@ func (a *Adapter) NewSession(ctx context.Context, req NewSessionRequest) (Dispat
 		Output:          dispatch.output,
 	}
 	if dispatchErr != nil {
-		if output, ok := recoverPromptOutputFromSnapshot(snapshot, dispatch.output, a.cfg.SummaryBounds); ok {
+		if output, ok := recoverPromptOutputFromSnapshot(snapshot, dispatch.output, req.TurnCorrelationToken, meta.LastTurnID, a.cfg.SummaryBounds); ok {
 			result.Output = output
 			return result, nil
 		}
@@ -372,7 +372,7 @@ func (a *Adapter) Resume(ctx context.Context, req ResumeRequest) (DispatchResult
 		Output:          dispatch.output,
 	}
 	if dispatchErr != nil {
-		if output, ok := recoverPromptOutputFromSnapshot(afterSnapshot, dispatch.output, a.cfg.SummaryBounds); ok {
+		if output, ok := recoverPromptOutputFromSnapshot(afterSnapshot, dispatch.output, req.TurnCorrelationToken, before.LastTurnID, a.cfg.SummaryBounds); ok {
 			result.Output = output
 			return result, nil
 		}
@@ -839,38 +839,22 @@ func metadataHasMode(meta Metadata, mode string) bool {
 }
 
 func reconcileSnapshot(snapshot sessionSnapshot, req TurnReconcileRequest, bounds contextbundle.SummaryBounds) TurnReconcileResult {
-	token := strings.TrimSpace(req.TurnCorrelationToken)
-	lastTurn := strings.TrimSpace(req.LastTurnID)
-	tokenEvidence := token != "" && snapshotContains(snapshot, token)
-	turnEvidence := lastTurn != "" && strings.TrimSpace(snapshot.Metadata.LastTurnID) != "" && snapshot.Metadata.LastTurnID != lastTurn
-
-	var candidates []string
-	for _, entry := range snapshot.History {
-		switch {
-		case token != "" && stringsContain(entry.Text, token):
-			candidates = append(candidates, outputCandidates(entry.Raw, entry.Text)...)
-		case !tokenEvidence && turnEvidence && entry.ID != "" && entry.ID == snapshot.Metadata.LastTurnID:
-			candidates = append(candidates, outputCandidates(entry.Raw, entry.Text)...)
-		}
-	}
-	if tokenEvidence || turnEvidence {
-		candidates = append(candidates, outputCandidates(snapshot.Values, snapshot.Text)...)
-	}
-	output, found, parseErr := firstTerminalOutput(candidates, bounds)
+	selection := selectTurnOutputCandidates(snapshot, req.TurnCorrelationToken, req.LastTurnID)
+	output, found, parseErr := firstTerminalOutput(selection.Candidates, bounds)
 	if found {
 		return TurnReconcileResult{
 			Status:      statusFromTurnOutput(output),
 			Metadata:    snapshot.Metadata,
 			Output:      output,
-			Diagnostics: reconciliationEvidence(tokenEvidence, turnEvidence, "terminal coordinator summary recovered"),
+			Diagnostics: reconciliationEvidence(selection.TokenEvidence, selection.TurnEvidence, "terminal coordinator summary recovered"),
 		}
 	}
 
-	diagnostic := reconciliationEvidence(tokenEvidence, turnEvidence, "terminal coordinator summary was not recoverable")
+	diagnostic := reconciliationEvidence(selection.TokenEvidence, selection.TurnEvidence, "terminal coordinator summary was not recoverable")
 	if parseErr != nil {
 		diagnostic += ": " + parseErr.Error()
 	}
-	if !tokenEvidence && !turnEvidence {
+	if !selection.TokenEvidence && !selection.TurnEvidence {
 		diagnostic = "turn correlation token was not found in acpx history and last turn id did not advance"
 	}
 	return TurnReconcileResult{
@@ -918,10 +902,46 @@ func firstTerminalOutput(candidates []string, bounds contextbundle.SummaryBounds
 	return TurnOutput{}, false, parseErr
 }
 
-func recoverPromptOutputFromSnapshot(snapshot sessionSnapshot, original TurnOutput, bounds contextbundle.SummaryBounds) (TurnOutput, bool) {
-	candidates := agentMessageTextCandidates(snapshot.Values)
-	for i := len(candidates) - 1; i >= 0; i-- {
-		candidate := strings.TrimSpace(candidates[i])
+type turnOutputCandidateSelection struct {
+	Candidates    []string
+	TokenEvidence bool
+	TurnEvidence  bool
+}
+
+func selectTurnOutputCandidates(snapshot sessionSnapshot, token, lastTurn string) turnOutputCandidateSelection {
+	token = strings.TrimSpace(token)
+	lastTurn = strings.TrimSpace(lastTurn)
+	selection := turnOutputCandidateSelection{
+		TokenEvidence: token != "" && snapshotContains(snapshot, token),
+		TurnEvidence:  lastTurn != "" && strings.TrimSpace(snapshot.Metadata.LastTurnID) != "" && snapshot.Metadata.LastTurnID != lastTurn,
+	}
+	if !selection.TokenEvidence && !selection.TurnEvidence {
+		return selection
+	}
+
+	for i := len(snapshot.History) - 1; i >= 0; i-- {
+		entry := snapshot.History[i]
+		switch {
+		case token != "" && stringsContain(entry.Text, token):
+			selection.Candidates = append(selection.Candidates, outputCandidates(entry.Raw, entry.Text)...)
+		case !selection.TokenEvidence && selection.TurnEvidence && entry.ID != "" && entry.ID == snapshot.Metadata.LastTurnID:
+			selection.Candidates = append(selection.Candidates, outputCandidates(entry.Raw, entry.Text)...)
+		}
+	}
+	if selection.TokenEvidence {
+		selection.Candidates = append(selection.Candidates, tokenAnchoredAgentMessageTextCandidates(snapshot.Values, token)...)
+	}
+	selection.Candidates = append(selection.Candidates, directOutputCandidates(snapshot.Values)...)
+	return selection
+}
+
+func recoverPromptOutputFromSnapshot(snapshot sessionSnapshot, original TurnOutput, token, lastTurn string, bounds contextbundle.SummaryBounds) (TurnOutput, bool) {
+	selection := selectTurnOutputCandidates(snapshot, token, lastTurn)
+	if !selection.TokenEvidence && !selection.TurnEvidence {
+		return TurnOutput{}, false
+	}
+	for _, candidate := range uniqueStrings(selection.Candidates) {
+		candidate = strings.TrimSpace(candidate)
 		if candidate == "" {
 			continue
 		}
@@ -972,49 +992,145 @@ func parseLatestCoordinatorSummaryFromText(text, stderr string, bounds contextbu
 	return TurnOutput{}, parseErr
 }
 
-func agentMessageTextCandidates(values map[string]any) []string {
-	candidates := flatAgentMessageTextCandidates(values)
-	messages, ok := values["messages"].([]any)
-	if !ok {
-		return candidates
-	}
-	for _, message := range messages {
-		messageMap, ok := message.(map[string]any)
-		if !ok {
+func flatAgentMessageTextCandidates(values map[string]any) []string {
+	var candidates []string
+	for _, entry := range flatMessageTextEntries(values) {
+		if entry.Role != "agent" || !strings.Contains(entry.Text, CoordinatorSummaryFence) {
 			continue
 		}
-		agentValue, ok := valueForKeyFold(messageMap, "Agent")
-		if !ok {
-			continue
-		}
-		for _, text := range contentTextEntries(agentValue) {
-			if strings.Contains(text, CoordinatorSummaryFence) {
-				candidates = append(candidates, text)
-			}
-		}
+		candidates = append(candidates, entry.Text)
 	}
 	return candidates
 }
 
-func flatAgentMessageTextCandidates(values map[string]any) []string {
+type messageTextEntry struct {
+	Index int
+	Role  string
+	Text  string
+	Key   string
+}
+
+func tokenAnchoredAgentMessageTextCandidates(values map[string]any, token string) []string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil
+	}
+	var candidates []string
+	candidates = append(candidates, tokenAnchoredStructuredAgentMessageTextCandidates(values, token)...)
+	candidates = append(candidates, tokenAnchoredFlatAgentMessageTextCandidates(values, token)...)
+	return candidates
+}
+
+func tokenAnchoredStructuredAgentMessageTextCandidates(values map[string]any, token string) []string {
+	messages, ok := values["messages"].([]any)
+	if !ok {
+		return nil
+	}
+	entries := structuredMessageTextEntries(messages)
+	anchor := latestTokenMessageIndex(entries, token)
+	if anchor < 0 {
+		return nil
+	}
+	var candidates []string
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if entry.Index <= anchor || entry.Role != "agent" {
+			continue
+		}
+		candidates = append(candidates, entry.Text)
+	}
+	return candidates
+}
+
+func tokenAnchoredFlatAgentMessageTextCandidates(values map[string]any, token string) []string {
+	entries := flatMessageTextEntries(values)
+	anchor := latestTokenMessageIndex(entries, token)
+	if anchor < 0 {
+		return nil
+	}
+	var candidates []string
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if entry.Index <= anchor || entry.Role != "agent" {
+			continue
+		}
+		candidates = append(candidates, entry.Text)
+	}
+	return candidates
+}
+
+func latestTokenMessageIndex(entries []messageTextEntry, token string) int {
+	anchor := -1
+	for _, entry := range entries {
+		if strings.Contains(entry.Text, token) && entry.Index > anchor {
+			anchor = entry.Index
+		}
+	}
+	return anchor
+}
+
+func structuredMessageTextEntries(messages []any) []messageTextEntry {
+	var entries []messageTextEntry
+	for i, message := range messages {
+		messageMap, ok := message.(map[string]any)
+		if !ok {
+			continue
+		}
+		if userValue, ok := valueForKeyFold(messageMap, "User"); ok {
+			for _, text := range contentTextEntries(userValue) {
+				entries = append(entries, messageTextEntry{Index: i, Role: "user", Text: text})
+			}
+		}
+		if agentValue, ok := valueForKeyFold(messageMap, "Agent"); ok {
+			for _, text := range contentTextEntries(agentValue) {
+				entries = append(entries, messageTextEntry{Index: i, Role: "agent", Text: text})
+			}
+		}
+	}
+	return entries
+}
+
+func flatMessageTextEntries(values map[string]any) []messageTextEntry {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
-	var candidates []string
+	sortMessageAwareKeys(keys)
+	var entries []messageTextEntry
 	for _, key := range keys {
-		lower := strings.ToLower(key)
-		if !strings.HasPrefix(lower, "messages.") || !strings.Contains(lower, ".agent.") || !strings.HasSuffix(lower, ".text") {
-			continue
-		}
 		text, ok := values[key].(string)
-		if !ok || !strings.Contains(text, CoordinatorSummaryFence) {
+		if !ok || strings.TrimSpace(text) == "" {
 			continue
 		}
-		candidates = append(candidates, text)
+		entry, ok := parseFlatMessageTextKey(key)
+		if !ok {
+			continue
+		}
+		entry.Text = text
+		entry.Key = key
+		entries = append(entries, entry)
 	}
-	return candidates
+	return entries
+}
+
+func parseFlatMessageTextKey(key string) (messageTextEntry, bool) {
+	parts := strings.Split(key, ".")
+	if len(parts) < 4 || !strings.EqualFold(parts[0], "messages") || !strings.EqualFold(parts[len(parts)-1], "text") {
+		return messageTextEntry{}, false
+	}
+	index, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return messageTextEntry{}, false
+	}
+	for _, part := range parts[2 : len(parts)-1] {
+		switch strings.ToLower(part) {
+		case "user":
+			return messageTextEntry{Index: index, Role: "user"}, true
+		case "agent":
+			return messageTextEntry{Index: index, Role: "agent"}, true
+		}
+	}
+	return messageTextEntry{}, false
 }
 
 func contentTextEntries(value any) []string {
@@ -1051,6 +1167,25 @@ func outputCandidates(value any, fallback []string) []string {
 		out = append(out, strings.Join(fallback, "\n"))
 	}
 	return out
+}
+
+func directOutputCandidates(value any) []string {
+	var out []string
+	collectDirectOutputCandidates(value, &out)
+	return out
+}
+
+func collectDirectOutputCandidates(value any, out *[]string) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range outputCandidateKeys(typed) {
+			collectText(typed[key], out)
+		}
+	case []any:
+		for _, item := range typed {
+			collectDirectOutputCandidates(item, out)
+		}
+	}
 }
 
 func collectOutputCandidates(value any, out *[]string) {
@@ -1166,11 +1301,58 @@ func collectText(value any, out *[]string) {
 		for key := range typed {
 			keys = append(keys, key)
 		}
-		sort.Strings(keys)
+		sortMessageAwareKeys(keys)
 		for _, key := range keys {
 			collectText(typed[key], out)
 		}
 	}
+}
+
+func sortMessageAwareKeys(keys []string) {
+	sort.SliceStable(keys, func(i, j int) bool {
+		return compareDottedKeys(keys[i], keys[j]) < 0
+	})
+}
+
+func compareDottedKeys(left, right string) int {
+	leftParts := strings.Split(left, ".")
+	rightParts := strings.Split(right, ".")
+	for i := 0; i < len(leftParts) && i < len(rightParts); i++ {
+		if leftParts[i] == rightParts[i] {
+			continue
+		}
+		leftInt, leftOK := dottedKeyInt(leftParts[i])
+		rightInt, rightOK := dottedKeyInt(rightParts[i])
+		if leftOK && rightOK {
+			if leftInt < rightInt {
+				return -1
+			}
+			return 1
+		}
+		if leftParts[i] < rightParts[i] {
+			return -1
+		}
+		return 1
+	}
+	switch {
+	case len(leftParts) < len(rightParts):
+		return -1
+	case len(leftParts) > len(rightParts):
+		return 1
+	default:
+		return 0
+	}
+}
+
+func dottedKeyInt(value string) (int, bool) {
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
 }
 
 func uniqueStrings(values []string) []string {
