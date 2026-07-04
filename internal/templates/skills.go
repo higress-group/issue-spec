@@ -86,6 +86,7 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 
 ## Rules
 
+- Use issue-spec comment generate to render canonical typed comment bodies (SPEC, TASK, PROCESS, REVIEW, VERIFY) from structured JSON instead of hand-writing Markdown; comment upsert --type SPEC validates and rejects noncanonical SPEC bodies by default, with --allow-noncanonical as a write-time migration bypass only.
 - Create SPEC comments before design; each SPEC must be testable and include WHEN/THEN scenarios.
 - Do not leave active proposal/design/implement issue bodies as TBD placeholders.
 - Resolve blocking QUESTION comments before design/tasks, or explicitly record accepted assumptions.
@@ -131,13 +132,17 @@ Use when the user asks for /issue-spec:propose, issue-spec propose, creating a c
 
        issue-spec issue update --repo {{repo}} --issue <proposal-issue> --body-file <proposal.md> --summary "<what changed>"
 
-3. Add SPEC comments with issue-spec comment upsert --type SPEC. SPEC comments must use MUST/SHALL and WHEN/THEN scenarios.
+3. Generate canonical SPEC bodies instead of hand-writing Markdown:
+
+       issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "<scope>" --input-file spec.json | issue-spec comment upsert --repo {{repo}} --issue <proposal-issue> --type SPEC --id SPEC-001 --body-file -
+
+   The SPEC input JSON has requirement.title, requirement.text (use MUST/SHALL), and a scenarios array of title/when/then. comment upsert --type SPEC validates canonical discipline (## Requirement:, normative MUST/SHALL, at least one ### Scenario: with **WHEN**/**THEN** bullets) by default and rejects malformed bodies. Use --allow-noncanonical only as a write-time migration bypass; it does not create durable approval and status/verify/archive keep reporting the noncanonical state.
 4. Add QUESTION comments for unresolved behavior with issue-spec question create and resolve blocking questions before design.
 5. Create the design issue after SPEC/QUESTION convergence:
 
        issue-spec issue create design --repo {{repo}} --change <change-name> --proposal <proposal-issue-or-url> --body-file <design.md>
 
-6. Add TASK comments with issue-spec comment upsert --type TASK and link every TASK to covered SPEC comments with issue-spec link.
+6. Generate TASK bodies with issue-spec comment generate --type TASK --id TASK-001 --input-file task.json, upsert them with issue-spec comment upsert --type TASK, and link every TASK to covered SPEC comments with issue-spec link. Use the same comment generate command family for PROCESS, REVIEW, and VERIFY comments instead of inventing raw Markdown shapes.
 7. Create the implement issue once tasks are ready:
 
        issue-spec issue create implement --repo {{repo}} --change <change-name> --proposal <proposal-issue-or-url> --design <design-issue-or-url> --body-file <implement.md>
@@ -158,7 +163,7 @@ Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing 
 
 1. Read proposal/design/implement issue context and list typed comments with issue-spec comment list --json.
 2. Confirm issue-spec auth status --json includes the expected GitHub backend. Local gh-authenticated sessions can use the native gh backend; keep ISSUE_SPEC_TOKEN="$(gh auth token)" only as an older-version or forced-rest compatibility path.
-3. Create or update PROCESS comments with owner agent, scope, dependencies, write ownership, and status.
+3. Create or update PROCESS comments with owner agent, scope, dependencies, write ownership, and status. Render PROCESS bodies with issue-spec comment generate --type PROCESS --input-file process.json instead of hand-writing Markdown.
    Keep Agent as the logical role. Pass assigned subagent/session ids with --agent-session; Codex CODEX_THREAD_ID remains the artifact writer session source of truth when present.
 4. Split non-trivial work into independent worker PROCESS nodes when file/module ownership does not overlap; execute independent workers in parallel when available.
 5. Add dedicated review PROCESS nodes for non-trivial changes. Review PROCESS nodes should own review scopes such as CLI/API behavior, workflow docs, tests, compatibility, or security-sensitive surfaces.
@@ -192,7 +197,7 @@ Use when the user asks for /issue-spec:review, issue-spec review, or a PR review
 
 ## Steps
 
-1. Run issue-spec review sync --repo {{repo}} --pr <number> --implement <issue> --id REVIEW-<n> --json to capture current rationale comments, findings, checks, and artifact writer session diagnostics.
+1. Run issue-spec review sync --repo {{repo}} --pr <number> --implement <issue> --id REVIEW-<n> --json to capture current rationale comments, findings, checks, and artifact writer session diagnostics. review sync owns the established "## Review Sync Summary" REVIEW body shape; do not hand-edit it. For separate manual review evidence, generate a REVIEW body with issue-spec comment generate --type REVIEW --input-file review.json.
 2. For non-trivial PRs, spawn or assign dedicated review agents as review PROCESS owners. Multiple review agents can run in parallel when their review scopes are independent.
 3. Give each review agent a concrete scope and expected output: actionable findings only, severity, file/line, linked SPEC, owner PROCESS, and suggested fix.
 4. Create actionable PR line findings with issue-spec review finding. Use P0/P1 for blockers and P2 for non-blocking follow-up. Pass the review agent's assigned id with --agent-session.
@@ -220,7 +225,7 @@ Use when the user asks for /issue-spec:verify, issue-spec verify, or final readi
 
 ## Steps
 
-1. Run focused project tests and record evidence in VERIFY comments.
+1. Run focused project tests and record evidence in VERIFY comments. Generate VERIFY bodies with issue-spec comment generate --type VERIFY --input-file verify.json instead of hand-writing Markdown, and reference the covered SPEC IDs so final verify can confirm coverage.
 2. Run issue-spec verify-links --repo {{repo}} --proposal <issue> --design <issue> --implement <issue> --json.
 3. Render a durable spec draft:
 

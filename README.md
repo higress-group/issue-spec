@@ -336,7 +336,9 @@ issue-spec issue create design --repo owner/repo --change my-change --proposal 1
 issue-spec issue create implement --repo owner/repo --change my-change --proposal 1 --design 2 --body-file implement.md
 issue-spec issue update --repo owner/repo --issue 1 --body-file proposal.md --summary "Clarified goals after review."
 
+issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
+issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
 issue-spec comment list --repo owner/repo --issue 1 --json
 
 issue-spec question create --repo owner/repo --issue 1 --id QUESTION-001 --blocking --question "What must be decided?"
@@ -363,6 +365,51 @@ issue-spec runner preflight --repo owner/repo --runner login
 issue-spec runner poll --repo owner/repo --runner login --once --dry-run
 issue-spec runner poll --repo owner/repo --runner login --agent codex
 ```
+
+## Canonical Typed Comments
+
+Typed comments carry requirements, tasks, process ownership, review, and verification evidence across coordinator handoffs. Instead of hand-writing raw Markdown, use `issue-spec comment generate` to render canonical bodies from structured JSON, then pipe the output straight into `comment upsert`:
+
+```bash
+issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json \
+  | issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file -
+```
+
+`comment generate` writes a complete typed-comment Markdown body (marker + visible header + canonical content) to stdout and never touches the network. The same command family renders `TASK`, `PROCESS`, `REVIEW`, and `VERIFY` bodies with type-specific JSON shapes.
+
+### SPEC generator input JSON
+
+```json
+{
+  "requirement": {
+    "title": "canonical SPEC comments",
+    "text": "The CLI MUST render canonical SPEC Markdown from structured fields."
+  },
+  "scenarios": [
+    {
+      "title": "structured fields render a canonical SPEC body",
+      "when": "a caller provides requirement and scenario fields",
+      "then": "the CLI renders a body accepted by comment upsert"
+    }
+  ]
+}
+```
+
+The rendered body contains a `## Requirement:` heading, normative MUST/SHALL language, and one or more `### Scenario:` sections with `**WHEN**`/`**THEN**` bullets. Unknown JSON fields are rejected so schema drift fails fast.
+
+### SPEC validation by default
+
+`comment upsert --type SPEC` validates canonical SPEC discipline by default before creating or updating the remote comment. Malformed bodies (for example an ad hoc `# SPEC-001` heading or missing WHEN/THEN bullets) are rejected with diagnostics that name every missing canonical element. One shared validator in `internal/model` is reused by `comment upsert`, `comment list`, `status`, `verify`, and `archive`, operating on the logical body after marker/header stripping so raw generated bodies and already-wrapped bodies behave identically.
+
+### Migration escape hatch
+
+`--allow-noncanonical` is a **write-time migration bypass only**. It lets you write a malformed SPEC body for staged migration, but it does **not** create durable approval:
+
+- The write is marked `noncanonical` in command output.
+- `comment list`, `status`, `verify`, and archive readiness recompute canonical validity from the remote body and keep reporting or blocking on the malformed active comment.
+- `verify` and durable-spec archive fail before archive creation while an active SPEC comment remains malformed.
+
+The correct long-term fix is to regenerate the comment into canonical shape with `comment generate`, or supersede it if it is no longer active.
 
 ## Development
 

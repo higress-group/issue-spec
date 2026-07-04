@@ -325,16 +325,30 @@ func fetchDurableSpecSources(ctx context.Context, client github.Operations, repo
 		return github.Issue{}, nil, fmt.Errorf("read proposal comments: %w", err)
 	}
 	var specs []templates.SpecSource
+	var malformed []string
 	for _, artifact := range artifacts {
 		tc := artifact.Comment
 		if tc.Type != "SPEC" || tc.Status == "superseded" {
 			continue
+		}
+		// Recompute canonical validity from the remote body and block archive
+		// before rendering when an active SPEC source is malformed.
+		for _, d := range model.ValidateArtifact(artifact) {
+			url := d.URL
+			if url == "" {
+				url = "N/A"
+			}
+			malformed = append(malformed, fmt.Sprintf("%s (%s): %s", d.ID, url, d.Message))
 		}
 		specs = append(specs, templates.SpecSource{ID: tc.ID, URL: artifact.URL, Body: tc.Body})
 	}
 	sort.Slice(specs, func(i, j int) bool { return specs[i].ID < specs[j].ID })
 	if len(specs) == 0 {
 		return github.Issue{}, nil, fmt.Errorf("proposal issue #%d has no active SPEC comments", proposalIssue)
+	}
+	if len(malformed) > 0 {
+		sort.Strings(malformed)
+		return github.Issue{}, nil, fmt.Errorf("proposal issue #%d has malformed active SPEC comments; regenerate or supersede them before archive:\n- %s", proposalIssue, strings.Join(malformed, "\n- "))
 	}
 	return issue, specs, nil
 }

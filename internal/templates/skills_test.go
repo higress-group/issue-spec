@@ -136,6 +136,37 @@ func TestIssueSpecSkillTemplatesDocumentDurableArchiveGuidance(t *testing.T) {
 	}
 }
 
+func TestIssueSpecSkillsDirectAgentsToGenerators(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+
+	propose := skillContent(t, skills, "issue-spec-propose")
+	for _, want := range []string{
+		"issue-spec comment generate --type SPEC",
+		"--allow-noncanonical",
+		"issue-spec comment generate --type TASK",
+	} {
+		if !strings.Contains(propose, want) {
+			t.Fatalf("propose skill missing generator guidance %q:\n%s", want, propose)
+		}
+	}
+
+	workflow := skillContent(t, skills, "issue-spec-workflow")
+	if !strings.Contains(workflow, "issue-spec comment generate") {
+		t.Fatalf("workflow skill missing generator guidance:\n%s", workflow)
+	}
+
+	// The generic REVIEW guidance must preserve review sync ownership.
+	review := skillContent(t, skills, "issue-spec-review")
+	if !strings.Contains(review, "Review Sync Summary") || !strings.Contains(review, "issue-spec comment generate --type REVIEW") {
+		t.Fatalf("review skill missing generate/review-sync guidance:\n%s", review)
+	}
+
+	verify := skillContent(t, skills, "issue-spec-verify")
+	if !strings.Contains(verify, "issue-spec comment generate --type VERIFY") {
+		t.Fatalf("verify skill missing VERIFY generator guidance:\n%s", verify)
+	}
+}
+
 func skillContent(t *testing.T, skills []RenderedSkill, name string) string {
 	t.Helper()
 	for _, skill := range skills {

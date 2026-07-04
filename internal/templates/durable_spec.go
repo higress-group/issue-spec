@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/higress-group/issue-spec/internal/model"
 )
 
 type SpecSource struct {
@@ -99,19 +101,12 @@ func stripTypedHeader(body string) string {
 	return body
 }
 
+// validateSpecDiscipline reuses the single shared canonical SPEC validator in
+// the model layer so durable archive rendering enforces the same rules as
+// comment upsert, list, status, and verify.
 func validateSpecDiscipline(id, body string) error {
-	body = strings.TrimSpace(body)
-	if !strings.Contains(body, "## Requirement:") {
-		return fmt.Errorf("%s is missing Requirement heading", id)
-	}
-	if !strings.Contains(body, " MUST ") && !strings.Contains(body, " SHALL ") {
-		return fmt.Errorf("%s must use MUST or SHALL", id)
-	}
-	if !strings.Contains(body, "Scenario:") {
-		return fmt.Errorf("%s is missing Scenario", id)
-	}
-	if !strings.Contains(body, "**WHEN**") || !strings.Contains(body, "**THEN**") {
-		return fmt.Errorf("%s scenarios must include WHEN and THEN", id)
+	if errs := model.SpecBodyErrors(body); len(errs) > 0 {
+		return fmt.Errorf("%s %s", id, strings.Join(errs, "; "))
 	}
 	return nil
 }

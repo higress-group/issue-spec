@@ -6,11 +6,12 @@ import (
 )
 
 type Artifact struct {
-	Issue     int          `json:"issue"`
-	CommentID int64        `json:"comment_id"`
-	URL       string       `json:"url"`
-	APIURL    string       `json:"api_url,omitempty"`
-	Comment   TypedComment `json:"comment"`
+	Issue     int                   `json:"issue"`
+	CommentID int64                 `json:"comment_id"`
+	URL       string                `json:"url"`
+	APIURL    string                `json:"api_url,omitempty"`
+	Comment   TypedComment          `json:"comment"`
+	Canonical []CanonicalDiagnostic `json:"canonical,omitempty"`
 }
 
 type VerifyReport struct {

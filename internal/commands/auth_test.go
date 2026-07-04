@@ -655,6 +655,8 @@ type fakeGitHubBackend struct {
 	listIssueComments func(context.Context, string, int) ([]github.Comment, error)
 	getPullRequest    func(context.Context, string, int) (github.PullRequest, error)
 	updatePullRequest func(context.Context, string, int, github.UpdatePullRequestOptions) (github.PullRequest, error)
+	createComment     func(context.Context, string, int, string) (github.Comment, error)
+	updateComment     func(context.Context, string, int64, string) (github.Comment, error)
 }
 
 func (f fakeGitHubBackend) BackendInfo() github.BackendInfo {
@@ -693,11 +695,17 @@ func (f fakeGitHubBackend) ListIssueComments(ctx context.Context, repo string, i
 	return nil, errors.New("unused")
 }
 
-func (fakeGitHubBackend) CreateComment(context.Context, string, int, string) (github.Comment, error) {
+func (f fakeGitHubBackend) CreateComment(ctx context.Context, repo string, issueNumber int, body string) (github.Comment, error) {
+	if f.createComment != nil {
+		return f.createComment(ctx, repo, issueNumber, body)
+	}
 	return github.Comment{}, errors.New("unused")
 }
 
-func (fakeGitHubBackend) UpdateComment(context.Context, string, int64, string) (github.Comment, error) {
+func (f fakeGitHubBackend) UpdateComment(ctx context.Context, repo string, commentID int64, body string) (github.Comment, error) {
+	if f.updateComment != nil {
+		return f.updateComment(ctx, repo, commentID, body)
+	}
 	return github.Comment{}, errors.New("unused")
 }
 

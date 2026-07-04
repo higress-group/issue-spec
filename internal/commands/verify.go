@@ -13,19 +13,20 @@ import (
 )
 
 type finalVerifyReport struct {
-	OK                    bool                 `json:"ok"`
-	Traceability          model.VerifyReport   `json:"traceability"`
-	Errors                []string             `json:"errors"`
-	Warnings              []string             `json:"warnings,omitempty"`
-	Diagnostics           []metadataDiagnostic `json:"diagnostics,omitempty"`
-	SpecCoverage          map[string]bool      `json:"spec_coverage"`
-	RationaleCoverage     map[string]bool      `json:"rationale_coverage,omitempty"`
-	ReviewFindingBlockers []reviewFinding      `json:"review_finding_blockers,omitempty"`
-	FailedChecks          []reviewCheck        `json:"failed_checks,omitempty"`
-	PendingChecks         []reviewCheck        `json:"pending_checks,omitempty"`
-	PR                    int                  `json:"pr,omitempty"`
-	DurableSpecPath       string               `json:"durable_spec_path,omitempty"`
-	DurableSpecCheck      map[string]bool      `json:"durable_spec_check,omitempty"`
+	OK                    bool                        `json:"ok"`
+	Traceability          model.VerifyReport          `json:"traceability"`
+	Errors                []string                    `json:"errors"`
+	Warnings              []string                    `json:"warnings,omitempty"`
+	Diagnostics           []metadataDiagnostic        `json:"diagnostics,omitempty"`
+	SpecCoverage          map[string]bool             `json:"spec_coverage"`
+	RationaleCoverage     map[string]bool             `json:"rationale_coverage,omitempty"`
+	Noncanonical          []model.CanonicalDiagnostic `json:"noncanonical,omitempty"`
+	ReviewFindingBlockers []reviewFinding             `json:"review_finding_blockers,omitempty"`
+	FailedChecks          []reviewCheck               `json:"failed_checks,omitempty"`
+	PendingChecks         []reviewCheck               `json:"pending_checks,omitempty"`
+	PR                    int                         `json:"pr,omitempty"`
+	DurableSpecPath       string                      `json:"durable_spec_path,omitempty"`
+	DurableSpecCheck      map[string]bool             `json:"durable_spec_check,omitempty"`
 }
 
 type finalVerifyOptions struct {
@@ -195,6 +196,27 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 			if tc.Status == "done" {
 				doneVerifyBodies = append(doneVerifyBodies, tc.Body)
 			}
+		}
+	}
+	// Recompute canonical validity from remote bodies so a write-time
+	// --allow-noncanonical bypass cannot durably pass final verify. This blocks
+	// archive readiness before durable spec creation when any active required
+	// typed comment is malformed.
+	for _, artifact := range artifacts {
+		if artifact.Comment.Status == "superseded" {
+			continue
+		}
+		diags := model.ValidateArtifact(artifact)
+		if len(diags) == 0 {
+			continue
+		}
+		report.Noncanonical = append(report.Noncanonical, diags...)
+		for _, d := range diags {
+			url := d.URL
+			if url == "" {
+				url = "N/A"
+			}
+			report.Errors = append(report.Errors, fmt.Sprintf("%s %s (%s) is noncanonical: %s", d.Type, d.ID, url, d.Message))
 		}
 	}
 	if len(activeSpecs) == 0 {

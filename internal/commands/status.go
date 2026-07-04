@@ -11,16 +11,17 @@ import (
 )
 
 type statusSummary struct {
-	OK                bool                      `json:"ok"`
-	Repo              string                    `json:"repo"`
-	Issues            map[string]int            `json:"issues"`
-	Counts            map[string]map[string]int `json:"counts"`
-	BlockingQuestions int                       `json:"blocking_questions"`
-	OpenReviews       int                       `json:"open_reviews"`
-	Verify            map[string]string         `json:"verify"`
-	Traceability      model.VerifyReport        `json:"traceability"`
-	Diagnostics       []metadataDiagnostic      `json:"diagnostics,omitempty"`
-	NextGates         []string                  `json:"next_gates"`
+	OK                bool                        `json:"ok"`
+	Repo              string                      `json:"repo"`
+	Issues            map[string]int              `json:"issues"`
+	Counts            map[string]map[string]int   `json:"counts"`
+	BlockingQuestions int                         `json:"blocking_questions"`
+	OpenReviews       int                         `json:"open_reviews"`
+	Verify            map[string]string           `json:"verify"`
+	Traceability      model.VerifyReport          `json:"traceability"`
+	Diagnostics       []metadataDiagnostic        `json:"diagnostics,omitempty"`
+	Malformed         []model.CanonicalDiagnostic `json:"malformed,omitempty"`
+	NextGates         []string                    `json:"next_gates"`
 }
 
 func (a *app) runStatus(ctx context.Context, args []string) int {
@@ -146,10 +147,14 @@ func summarizeStatus(repo string, proposal, design, implement int, artifacts []m
 	verify := map[string]string{}
 	blockingQuestions := 0
 	openReviews := 0
+	var malformed []model.CanonicalDiagnostic
 	for _, artifact := range artifacts {
 		tc := artifact.Comment
 		if tc.Type == "" {
 			continue
+		}
+		if tc.Status != "superseded" {
+			malformed = append(malformed, model.ValidateArtifact(artifact)...)
 		}
 		if counts[tc.Type] == nil {
 			counts[tc.Type] = map[string]int{}
@@ -190,6 +195,9 @@ func summarizeStatus(repo string, proposal, design, implement int, artifacts []m
 	if !report.OK {
 		gates = append(gates, "traceability errors must be fixed")
 	}
+	if len(malformed) > 0 {
+		gates = append(gates, "malformed typed comments must be regenerated, migrated, or superseded")
+	}
 	sort.Strings(gates)
 	return statusSummary{
 		OK:                len(gates) == 0,
@@ -201,6 +209,7 @@ func summarizeStatus(repo string, proposal, design, implement int, artifacts []m
 		Verify:            verify,
 		Traceability:      report,
 		Diagnostics:       diagnostics,
+		Malformed:         malformed,
 		NextGates:         gates,
 	}
 }
@@ -242,6 +251,16 @@ func printStatus(out interface{ Write([]byte) (int, error) }, summary statusSumm
 		fmt.Fprintln(out, "metadata diagnostics:")
 		for _, diagnostic := range summary.Diagnostics {
 			fmt.Fprintf(out, "- %s %s: %s\n", diagnostic.Level, diagnostic.Code, diagnostic.Message)
+		}
+	}
+	if len(summary.Malformed) > 0 {
+		fmt.Fprintf(out, "malformed typed comments: %d\n", len(summary.Malformed))
+		for _, d := range summary.Malformed {
+			url := d.URL
+			if url == "" {
+				url = "N/A"
+			}
+			fmt.Fprintf(out, "- %s %s (%s): %s\n", d.Type, d.ID, url, d.Message)
 		}
 	}
 	if len(summary.NextGates) > 0 {
