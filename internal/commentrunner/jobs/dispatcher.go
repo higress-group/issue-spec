@@ -1011,8 +1011,8 @@ type sessionRuntimePaths struct {
 	codexHome     string
 }
 
-func stableSessionRuntimePaths(workspaceRoot, repo, publicID string) (sessionRuntimePaths, error) {
-	root, err := stableSessionRuntimeRoot(workspaceRoot, repo, publicID)
+func stableSessionRuntimePaths(workspacePath, repo, publicID string) (sessionRuntimePaths, error) {
+	root, err := stableSessionRuntimeRoot(workspacePath, repo, publicID)
 	if err != nil {
 		return sessionRuntimePaths{}, err
 	}
@@ -1024,12 +1024,12 @@ func stableSessionRuntimePaths(workspaceRoot, repo, publicID string) (sessionRun
 	}, nil
 }
 
-func stableSessionRuntimeRoot(workspaceRoot, repo, publicID string) (string, error) {
-	workspaceRoot = strings.TrimSpace(workspaceRoot)
+func stableSessionRuntimeRoot(workspacePath, repo, publicID string) (string, error) {
+	workspacePath = strings.TrimSpace(workspacePath)
 	repo = strings.TrimSpace(repo)
 	publicID = strings.TrimSpace(publicID)
-	if workspaceRoot == "" {
-		return "", fmt.Errorf("workspace root is required for session runtime paths")
+	if workspacePath == "" {
+		return "", fmt.Errorf("workspace path is required for session runtime paths")
 	}
 	if repo == "" {
 		return "", fmt.Errorf("repo is required for session runtime paths")
@@ -1037,13 +1037,17 @@ func stableSessionRuntimeRoot(workspaceRoot, repo, publicID string) (string, err
 	if publicID == "" {
 		return "", fmt.Errorf("public session id is required for session runtime paths")
 	}
-	absRoot, err := filepath.Abs(workspaceRoot)
+	absWorkspace, err := filepath.Abs(workspacePath)
 	if err != nil {
-		return "", fmt.Errorf("resolve workspace root for session runtime paths: %w", err)
+		return "", fmt.Errorf("resolve workspace path for session runtime paths: %w", err)
 	}
-	cleanRoot := filepath.Clean(absRoot)
-	sum := sha256.Sum256([]byte(repo + "\x00" + publicID + "\x00" + cleanRoot))
-	return filepath.Join(cleanRoot, ".sessions", hex.EncodeToString(sum[:16])), nil
+	cleanWorkspace := filepath.Clean(absWorkspace)
+	runtimeBase := filepath.Dir(cleanWorkspace)
+	if runtimeBase == cleanWorkspace {
+		return "", fmt.Errorf("workspace path %q cannot be filesystem root for session runtime paths", cleanWorkspace)
+	}
+	sum := sha256.Sum256([]byte(repo + "\x00" + publicID + "\x00" + cleanWorkspace))
+	return filepath.Join(runtimeBase, ".sessions", hex.EncodeToString(sum[:16])), nil
 }
 
 func mirrorHostGHAuth(cfg *sandbox.Config) error {

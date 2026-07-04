@@ -182,10 +182,11 @@ func TestRunNextResumeReusesSessionMappingAndWorkspace(t *testing.T) {
 	}
 }
 
-func TestRunNextNewAndResumeUseSameStableRuntimeHome(t *testing.T) {
+func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 11, 30, 0, 0, time.UTC)
-	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	workspaceRoot := t.TempDir()
+	workspacePath := filepath.Join(workspaceRoot, "workspace")
 	binding := workspace.Binding{
 		Workspace:            state.WorkspaceMetadata{ID: "ws-stable", Path: workspacePath, Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-stable"},
 		AcpxWorkingDirectory: workspacePath,
@@ -264,8 +265,17 @@ func TestRunNextNewAndResumeUseSameStableRuntimeHome(t *testing.T) {
 		t.Fatalf("sandbox request count = %d, want 2", len(sandbox.requests))
 	}
 	newReq, resumeReq := sandbox.requests[0], sandbox.requests[1]
-	if newReq.RuntimeHome == "" || newReq.RuntimeHome != resumeReq.RuntimeHome {
-		t.Fatalf("runtime HOME not stable: new=%q resume=%q", newReq.RuntimeHome, resumeReq.RuntimeHome)
+	for name, pair := range map[string][2]string{
+		"HOME":            {newReq.RuntimeHome, resumeReq.RuntimeHome},
+		"GH_CONFIG_DIR":   {newReq.RuntimeGHConfigDir, resumeReq.RuntimeGHConfigDir},
+		"XDG_CONFIG_HOME": {newReq.RuntimeXDGConfigHome, resumeReq.RuntimeXDGConfigHome},
+		"CODEX_HOME":      {newReq.RuntimeCodexHome, resumeReq.RuntimeCodexHome},
+	} {
+		if pair[0] == "" || pair[0] != pair[1] {
+			t.Fatalf("runtime %s not stable: new=%q resume=%q", name, pair[0], pair[1])
+		}
+		assertPathOutsideRoot(t, workspacePath, pair[0])
+		assertPathInsideRoot(t, filepath.Join(workspaceRoot, ".sessions"), pair[0])
 	}
 	if filepath.Join(newReq.RuntimeHome, ".acpx", "sessions", "index.json") != filepath.Join(resumeReq.RuntimeHome, ".acpx", "sessions", "index.json") {
 		t.Fatalf("acpx session index path changed: new=%q resume=%q", newReq.RuntimeHome, resumeReq.RuntimeHome)
@@ -277,13 +287,11 @@ func TestRunNextNewAndResumeUseSameStableRuntimeHome(t *testing.T) {
 	if newReq.RuntimeHome != filepath.Join(wantRoot, "home") || newReq.RuntimeGHConfigDir != filepath.Join(wantRoot, "gh") || newReq.RuntimeXDGConfigHome != filepath.Join(wantRoot, "xdg") || newReq.RuntimeCodexHome != filepath.Join(wantRoot, "codex") {
 		t.Fatalf("runtime paths not under stable root %s: %+v", wantRoot, newReq)
 	}
-	if !strings.HasPrefix(newReq.RuntimeHome, filepath.Join(workspacePath, ".sessions")+string(os.PathSeparator)) {
-		t.Fatalf("runtime HOME %q is not under workspace .sessions", newReq.RuntimeHome)
-	}
 }
 
 func TestStableSessionRuntimePathsSeparatePublicSessions(t *testing.T) {
-	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	workspaceRoot := t.TempDir()
+	workspacePath := filepath.Join(workspaceRoot, "workspace")
 	left, err := stableSessionRuntimePaths(workspacePath, "o/r", "ps-left")
 	if err != nil {
 		t.Fatal(err)
@@ -297,6 +305,10 @@ func TestStableSessionRuntimePathsSeparatePublicSessions(t *testing.T) {
 	}
 	if left.ghConfigDir == right.ghConfigDir || left.codexHome == right.codexHome {
 		t.Fatalf("different public sessions share runtime config dirs: left=%+v right=%+v", left, right)
+	}
+	for _, path := range []string{left.home, left.ghConfigDir, left.xdgConfigHome, left.codexHome, right.home, right.ghConfigDir, right.xdgConfigHome, right.codexHome} {
+		assertPathOutsideRoot(t, workspacePath, path)
+		assertPathInsideRoot(t, filepath.Join(workspaceRoot, ".sessions"), path)
 	}
 }
 
@@ -626,7 +638,7 @@ func TestSandboxRunnerUsesRequestRuntimePaths(t *testing.T) {
 	temp := t.TempDir()
 	hostGH := filepath.Join(temp, "host-gh")
 	workspacePath := filepath.Join(temp, "workspace")
-	runtimeRoot := filepath.Join(workspacePath, ".sessions", "runtime")
+	runtimeRoot := filepath.Join(temp, ".sessions", "runtime")
 	if err := os.MkdirAll(hostGH, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -677,8 +689,9 @@ func TestSandboxRunnerUsesRequestRuntimePaths(t *testing.T) {
 func TestSandboxRunnerRefreshesExistingRuntimeGHConfig(t *testing.T) {
 	temp := t.TempDir()
 	hostGH := filepath.Join(temp, "host-gh")
-	runtimeGH := filepath.Join(temp, "workspace", ".sessions", "runtime", "gh")
 	workspacePath := filepath.Join(temp, "workspace")
+	runtimeRoot := filepath.Join(temp, ".sessions", "runtime")
+	runtimeGH := filepath.Join(runtimeRoot, "gh")
 	if err := os.MkdirAll(hostGH, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -700,10 +713,10 @@ func TestSandboxRunnerRefreshesExistingRuntimeGHConfig(t *testing.T) {
 		WorkspacePath:        workspacePath,
 		AcpxWorkingDirectory: workspacePath,
 		AcpxBinary:           "acpx",
-		RuntimeHome:          filepath.Join(temp, "workspace", ".sessions", "runtime", "home"),
+		RuntimeHome:          filepath.Join(runtimeRoot, "home"),
 		RuntimeGHConfigDir:   runtimeGH,
-		RuntimeXDGConfigHome: filepath.Join(temp, "workspace", ".sessions", "runtime", "xdg"),
-		RuntimeCodexHome:     filepath.Join(temp, "workspace", ".sessions", "runtime", "codex"),
+		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
+		RuntimeCodexHome:     filepath.Join(runtimeRoot, "codex"),
 	})
 	if err != nil {
 		t.Fatalf("Prepare returned error: %v", err)
@@ -722,8 +735,9 @@ func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
 	hostGH := filepath.Join(temp, "host-gh")
 	hostCodex := filepath.Join(temp, "host-codex")
 	workspacePath := filepath.Join(temp, "workspace")
-	runtimeHome := filepath.Join(workspacePath, ".sessions", "runtime", "home")
-	runtimeCodex := filepath.Join(workspacePath, ".sessions", "runtime", "codex")
+	runtimeRoot := filepath.Join(temp, ".sessions", "runtime")
+	runtimeHome := filepath.Join(runtimeRoot, "home")
+	runtimeCodex := filepath.Join(runtimeRoot, "codex")
 	for _, dir := range []string{hostGH, hostCodex, workspacePath} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
@@ -747,8 +761,8 @@ func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
 		AcpxWorkingDirectory: workspacePath,
 		AcpxBinary:           "acpx",
 		RuntimeHome:          runtimeHome,
-		RuntimeGHConfigDir:   filepath.Join(workspacePath, ".sessions", "runtime", "gh"),
-		RuntimeXDGConfigHome: filepath.Join(workspacePath, ".sessions", "runtime", "xdg"),
+		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
+		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
 		RuntimeCodexHome:     runtimeCodex,
 	})
 	if err != nil {
@@ -780,6 +794,7 @@ func TestSandboxRunnerSkipsMissingHostCodexConfig(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: test\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	runtimeRoot := filepath.Join(temp, ".sessions", "runtime")
 
 	_, err := (SandboxRunner{Config: sandbox.Config{
 		UnsafeNoSandbox: true,
@@ -789,10 +804,10 @@ func TestSandboxRunnerSkipsMissingHostCodexConfig(t *testing.T) {
 		WorkspacePath:        workspacePath,
 		AcpxWorkingDirectory: workspacePath,
 		AcpxBinary:           "acpx",
-		RuntimeHome:          filepath.Join(workspacePath, ".sessions", "runtime", "home"),
-		RuntimeGHConfigDir:   filepath.Join(workspacePath, ".sessions", "runtime", "gh"),
-		RuntimeXDGConfigHome: filepath.Join(workspacePath, ".sessions", "runtime", "xdg"),
-		RuntimeCodexHome:     filepath.Join(workspacePath, ".sessions", "runtime", "codex"),
+		RuntimeHome:          filepath.Join(runtimeRoot, "home"),
+		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
+		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
+		RuntimeCodexHome:     filepath.Join(runtimeRoot, "codex"),
 	})
 	if err != nil {
 		t.Fatalf("Prepare returned error for missing Codex config: %v", err)
@@ -803,6 +818,7 @@ func TestSandboxRunnerBwrapPreservesHostCWDAndBindsIssueSpecBinaryForChildAuth(t
 	temp := t.TempDir()
 	hostGH := filepath.Join(temp, "host-gh")
 	workspacePath := filepath.Join(temp, "workspace")
+	runtimeRoot := filepath.Join(temp, ".sessions", "runtime")
 	issueSpecPath := filepath.Join(temp, "issue-spec-runner-e2e-001", "bin", "issue-spec")
 	for _, dir := range []string{hostGH, workspacePath, filepath.Dir(issueSpecPath)} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -825,10 +841,10 @@ func TestSandboxRunnerBwrapPreservesHostCWDAndBindsIssueSpecBinaryForChildAuth(t
 		AcpxWorkingDirectory: workspacePath,
 		AcpxBinary:           "acpx",
 		IssueSpecBinary:      issueSpecPath,
-		RuntimeHome:          filepath.Join(workspacePath, ".sessions", "runtime", "home"),
-		RuntimeGHConfigDir:   filepath.Join(workspacePath, ".sessions", "runtime", "gh"),
-		RuntimeXDGConfigHome: filepath.Join(workspacePath, ".sessions", "runtime", "xdg"),
-		RuntimeCodexHome:     filepath.Join(workspacePath, ".sessions", "runtime", "codex"),
+		RuntimeHome:          filepath.Join(runtimeRoot, "home"),
+		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
+		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
+		RuntimeCodexHome:     filepath.Join(runtimeRoot, "codex"),
 	})
 	if err != nil {
 		t.Fatalf("Prepare returned error: %v", err)
@@ -1021,6 +1037,37 @@ func assertCommandArgSequenceMissing(t *testing.T, args []string, want ...string
 	if commandArgsContainSequence(args, want...) {
 		t.Fatalf("args unexpectedly contained sequence %v in %v", want, args)
 	}
+}
+
+func assertPathInsideRoot(t *testing.T, root, path string) {
+	t.Helper()
+	if !testPathInsideRoot(t, root, path) {
+		t.Fatalf("path %q is not inside root %q", path, root)
+	}
+}
+
+func assertPathOutsideRoot(t *testing.T, root, path string) {
+	t.Helper()
+	if testPathInsideRoot(t, root, path) {
+		t.Fatalf("path %q is inside root %q", path, root)
+	}
+}
+
+func testPathInsideRoot(t *testing.T, root, path string) bool {
+	t.Helper()
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(filepath.Clean(absRoot), filepath.Clean(absPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
 }
 
 func commandArgsContainSequence(args []string, want ...string) bool {
