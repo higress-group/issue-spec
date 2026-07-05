@@ -8,6 +8,7 @@ This durable spec is organized by stable capability surfaces rather than by the 
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/20
+- https://github.com/higress-group/issue-spec/issues/99
 
 ## Requirements
 
@@ -133,9 +134,138 @@ Coordinators SHOULD assign each worker or review subagent an explicit subagent/s
 - **THEN** those instructions SHALL explain that Codex runtime identity may override the supplied id as artifact writer provenance
 - **THEN** those instructions SHALL preserve default non-strict behavior when neither Codex identity nor explicit session id is available
 
+Generated skills, slash commands, and workflow templates MUST also teach the agent-owned review boundaries: review agents author findings directly, owning workers fix and reply on finding threads directly, review agents re-check and resolve their own findings, the coordinator orchestrates only, and final rationale is a post-review-convergence step owned by workers. These instructions MUST NOT tell the coordinator to author findings, fix replies, resolutions, or rationale on another agent's behalf, and MUST NOT place rationale as a pre-review step.
+
+#### Scenario: generated review and fix instructions are agent-owned
+
+- **WHEN** issue-spec workflow skills or slash commands are generated or refreshed
+- **THEN** the review instructions SHALL tell review agents to author findings directly with their own logical agent identity
+- **THEN** the fix instructions SHALL tell owning workers to fix the affected code and reply on the original finding thread directly
+- **THEN** the resolution instructions SHALL tell review agents to re-check worker replies and resolve their own findings
+- **THEN** the coordinator instructions SHALL limit coordinator responsibility to scheduling, gates, state synchronization, blocker routing, and final rationale dispatch
+- **THEN** the generated instructions SHALL NOT instruct the coordinator to author findings, fix replies, resolutions, or rationale on another agent's behalf
+
+#### Scenario: generated rationale instructions are post-convergence and worker-owned
+
+- **WHEN** issue-spec workflow skills or slash commands are generated or refreshed
+- **THEN** the apply/implement instructions SHALL place final PR rationale after review convergence, owned by the worker responsible for the final code block
+- **THEN** the instructions SHALL NOT direct rationale to be authored before review as coordinator-owned work
+
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703570
 - https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795594
+- https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052209
+- https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052362
+- https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052418
+- https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052466
+
+### Requirement: review findings and worker fix replies carry distinct logical owners
+
+Review findings and worker fix replies are authored by distinct logical roles, and each role SHALL write its own artifact with its own logical agent identity. A review PROCESS owner or review agent SHALL create each PR line finding directly for the review scope it owns using `issue-spec review finding`. The worker or process owner responsible for the affected code SHALL own the fix commit and SHALL reply to the original finding thread with `issue-spec review reply`. The coordinator MUST NOT be recorded as the logical author of a finding observed by a review agent, and MUST NOT write the substantive fix reply on behalf of a worker.
+
+#### Scenario: review agent records a scoped finding
+
+- **WHEN** a review agent detects a problem while reviewing an implementation PR within its assigned review PROCESS scope
+- **THEN** the review agent SHALL create the PR line finding with `issue-spec review finding` using its own `--agent` and `--agent-session`
+- **THEN** the finding artifact SHALL preserve the review agent owner, review agent session, finding id, severity, PROCESS id, SPEC id, and SPEC URL
+- **THEN** the coordinator SHALL NOT create the finding using coordinator ownership metadata on behalf of the review agent
+
+#### Scenario: blocking finding is routed to the owning worker
+
+- **WHEN** a P0 or P1 finding is associated with code or process scope owned by a worker PROCESS
+- **THEN** the coordinator SHALL dispatch that worker or an explicitly assigned fix worker rather than write the fix reply itself
+- **THEN** the worker SHALL make the required code or process change and reply to the original finding thread with `issue-spec review reply` using its own `--agent` and `--agent-session`
+- **THEN** the reply artifact SHALL preserve the worker owner, worker session, finding id, PROCESS id, fix evidence, and reply status
+
+#### Scenario: worker ownership is not known
+
+- **WHEN** a finding cannot be mapped to a worker or process owner
+- **THEN** the coordinator SHALL keep the finding unresolved and record the ownership gap as a blocker for scheduling
+- **THEN** status and verify SHALL NOT treat the finding as ready for resolution until an owner is assigned
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052209
+- https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052257
+
+### Requirement: review agents own re-check and resolution
+
+The review agent that owns a finding SHALL own the re-check after a worker reply and SHALL own the resolved reply or GitHub conversation resolution. A worker reply alone MUST NOT mark a review finding resolved. The resolution owner SHALL be recoverable from synced output and SHALL be distinct from the worker fix-reply owner.
+
+#### Scenario: worker reply satisfies the finding
+
+- **WHEN** the owning worker replies that a finding has been fixed
+- **THEN** the original review agent SHALL re-check the current PR diff and relevant evidence
+- **THEN** if the fix satisfies the finding, the review agent SHALL record a resolved reply or resolve the corresponding GitHub review conversation using its own agent identity
+- **THEN** the resolved state SHALL preserve the review agent owner, review agent session, finding id, and resolution evidence
+- **THEN** review sync, status, and verify output SHALL distinguish the review-agent resolution owner from the worker fix-reply owner
+
+#### Scenario: worker reply does not satisfy the finding
+
+- **WHEN** the review agent re-checks a worker reply and the issue remains present or incomplete
+- **THEN** the review agent SHALL leave the finding unresolved and reply with the remaining problem and required next evidence
+- **THEN** status and verify SHALL continue to treat the finding as blocking when its severity is P0 or P1
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052317
+
+### Requirement: coordinator owns orchestration and gates only
+
+The coordinator SHALL own scheduling, status synchronization, unresolved blocker routing, and readiness gates. The coordinator SHALL NOT be the logical owner of review findings, worker fix replies, review resolutions, or final code rationale unless the coordinator is explicitly assigned as the worker or review PROCESS owner for that artifact. Existing verify blocking on open P0/P1 findings SHALL be preserved.
+
+#### Scenario: unresolved blocking finding exists
+
+- **WHEN** review sync, status, or verify observes an unresolved P0 or P1 finding without review-agent resolved evidence
+- **THEN** the coordinator SHALL keep the workflow blocked for readiness and dispatch the owning worker or review agent required for the next action
+- **THEN** status and verify SHALL report the unresolved blocker and its logical owner metadata
+
+#### Scenario: all blocking findings are resolved
+
+- **WHEN** every P0 and P1 finding has worker fix-reply evidence and review-agent resolved evidence
+- **THEN** the coordinator SHALL allow the workflow to advance past review convergence
+- **THEN** the coordinator SHALL dispatch final rationale work to the workers that own the relevant code or process blocks
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052362
+
+### Requirement: final PR rationale is post-review-convergence and worker-owned
+
+Final PR rationale comments SHALL be generated only after review and fix convergence, and each rationale SHALL be written by the worker or process owner responsible for the final code block using `issue-spec pr rationale` with its own logical agent identity. The coordinator MUST NOT write final rationale comments on behalf of workers.
+
+#### Scenario: review and fix convergence is complete
+
+- **WHEN** all review findings for the implementation PR are resolved or non-blocking by verified review-agent state
+- **THEN** the coordinator SHALL dispatch each relevant worker to write final PR rationale comments for owned key code blocks
+- **THEN** each worker SHALL use `issue-spec pr rationale` (or the successor rationale mechanism) with worker owner, worker session, PROCESS id, SPEC id, SPEC URL, file path, and line metadata
+
+#### Scenario: implementation may still change during review
+
+- **WHEN** unresolved review findings remain or worker fixes are still pending
+- **THEN** final PR rationale SHALL NOT be required as pre-review readiness evidence
+- **THEN** any rationale-like explanation created before convergence SHALL NOT satisfy the final rationale gate
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052418
+
+### Requirement: sync, status, and verify expose the logical owner for each review artifact
+
+`issue-spec review finding`, `issue-spec review reply`, and `issue-spec pr rationale` already accept and persist logical agent owner and agent session metadata; this behavior SHALL be preserved and remain idempotent on re-run. In addition, `issue-spec review sync`, `issue-spec status`, and `issue-spec verify` SHALL expose the logical agent owner for each finding, fix reply, resolution, and rationale, not only the writer session provenance.
+
+#### Scenario: ownership metadata is preserved on write
+
+- **WHEN** `issue-spec review finding`, `issue-spec review reply`, or `issue-spec pr rationale` creates or updates an artifact with logical `--agent` owner and `--agent-session` metadata
+- **THEN** the logical owner and session metadata SHALL be stored with the artifact
+- **THEN** re-running the same command SHALL remain idempotent without dropping or overwriting the recorded logical owner
+
+#### Scenario: ownership is recoverable from synced output
+
+- **WHEN** `issue-spec review sync`, `issue-spec comment list`, `issue-spec status`, or `issue-spec verify` reports on findings, fix replies, resolutions, and rationale
+- **THEN** the output SHALL expose the logical agent owner for each of them, not only the writer session provenance
+- **THEN** a human or coordinator SHALL be able to recover which review agent owns each finding, which worker owns each fix reply, which review agent resolved it, and which worker owns each rationale
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052257
+- https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052317
+- https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052466
 
 ### Requirement: runner public session id is the public resume handle
 
