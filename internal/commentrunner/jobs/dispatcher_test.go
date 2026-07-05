@@ -375,7 +375,7 @@ func TestRunNextResumeUsesStoredAcpxCWDForRuntimeCompatibility(t *testing.T) {
 			CreatorLogin:    "alice",
 			Status:          state.StatusCompleted,
 			Workspace:       resumeWorkspace,
-			Acpx:            state.AcpxMetadata{StableRecordID: "rec-existing", Raw: map[string]string{"cwd": legacyPath}},
+			Acpx:            state.AcpxMetadata{StableRecordID: "rec-existing", CWD: legacyPath},
 			CreatedAt:       now.Add(-time.Hour),
 			LastUsedAt:      now.Add(-time.Minute),
 		}); err != nil {

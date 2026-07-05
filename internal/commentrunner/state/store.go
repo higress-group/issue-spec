@@ -191,8 +191,11 @@ func SaveFile(path string, state RunnerState) error {
 	if path == "" {
 		return fmt.Errorf("state path is required")
 	}
-	state.Normalize()
 	now := time.Now().UTC()
+	state.Normalize()
+	// Keep state.json bounded automatically: tombstone terminal records and
+	// prune aged/over-cap ones on every save (Compact re-normalizes internally).
+	state.Compact(now, DefaultRetentionPolicy())
 	if state.CreatedAt.IsZero() {
 		state.CreatedAt = now
 	}

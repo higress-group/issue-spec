@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -275,12 +276,32 @@ type SandboxMetadata struct {
 }
 
 type AcpxMetadata struct {
-	StableRecordID    string            `json:"stable_record_id,omitempty"`
-	TrueSessionID     string            `json:"true_session_id,omitempty"`
-	ProviderSessionID string            `json:"provider_session_id,omitempty"`
-	LastTurnID        string            `json:"last_turn_id,omitempty"`
-	RefreshedAt       time.Time         `json:"refreshed_at,omitempty"`
-	Raw               map[string]string `json:"raw,omitempty"`
+	StableRecordID    string    `json:"stable_record_id,omitempty"`
+	TrueSessionID     string    `json:"true_session_id,omitempty"`
+	ProviderSessionID string    `json:"provider_session_id,omitempty"`
+	LastTurnID        string    `json:"last_turn_id,omitempty"`
+	CWD               string    `json:"cwd,omitempty"`
+	RefreshedAt       time.Time `json:"refreshed_at,omitempty"`
+}
+
+// UnmarshalJSON decodes AcpxMetadata while dropping the legacy unbounded "raw"
+// map that previously stored a full flattened ACPX session dump (the dominant
+// source of state.json bloat). The only field ever read back from "raw" was
+// "cwd"; it is lifted into the typed CWD field when a top-level cwd is absent so
+// legacy resume continuity survives migration. "raw" is never re-serialized.
+func (m *AcpxMetadata) UnmarshalJSON(data []byte) error {
+	type alias AcpxMetadata
+	aux := struct {
+		*alias
+		Raw map[string]string `json:"raw,omitempty"`
+	}{alias: (*alias)(m)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if m.CWD == "" {
+		m.CWD = strings.TrimSpace(aux.Raw["cwd"])
+	}
+	return nil
 }
 
 type CLIDirectProvenance struct {
@@ -382,6 +403,9 @@ func (s *RunnerState) Normalize() {
 		s.Idempotency.StatusWritebacks[writeback.IdempotencyKey] = writeback.IdempotencyKey
 		s.StatusWritebacks[writeback.IdempotencyKey] = writeback
 	}
+	// Backstop: drop idempotency index entries whose target record no longer
+	// exists so a re-delivered command never resolves to a missing record.
+	s.dropDanglingIndexes()
 }
 
 func PublicSessionKey(repo, publicSessionID string) string {

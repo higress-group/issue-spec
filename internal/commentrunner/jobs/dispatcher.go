@@ -667,7 +667,7 @@ func resumeExecutionBinding(command runnercontext.CommandVerb, binding workspace
 	if command != runnercontext.CommandResume {
 		return binding, nil
 	}
-	cwd := strings.TrimSpace(session.Acpx.Raw["cwd"])
+	cwd := strings.TrimSpace(session.Acpx.CWD)
 	if cwd == "" {
 		return binding, nil
 	}
@@ -2108,8 +2108,8 @@ func acpxMetadata(meta acpx.Metadata, at time.Time) state.AcpxMetadata {
 		TrueSessionID:     meta.TrueSessionID,
 		ProviderSessionID: meta.ProviderSessionID,
 		LastTurnID:        meta.LastTurnID,
+		CWD:               meta.CWD,
 		RefreshedAt:       refreshed,
-		Raw:               meta.Raw,
 	}
 }
 

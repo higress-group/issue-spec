@@ -172,6 +172,75 @@ func TestLoadFileStripsLegacySeenCommentsOnSave(t *testing.T) {
 	}
 }
 
+func TestLoadFileStripsLegacyAcpxRawOnSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runner-state.json")
+	legacy := `{
+  "schema_version": 1,
+  "jobs": {
+    "job-legacy": {
+      "id": "job-legacy",
+      "repo": "o/r",
+      "status": "completed",
+      "acpx": {
+        "stable_record_id": "rec-legacy",
+        "raw": {
+          "cwd": "/work/o-r-ps-legacy",
+          "messages.0.content": "a very long tool output that used to bloat state.json",
+          "messages.1.content": "another huge blob of conversation history"
+        }
+      }
+    }
+  },
+  "public_sessions": {
+    "o/r#ps-legacy": {
+      "repo": "o/r",
+      "public_session_id": "ps-legacy",
+      "acpx_record_id": "rec-legacy",
+      "status": "completed",
+      "acpx": {
+        "stable_record_id": "rec-legacy",
+        "raw": {
+          "cwd": "/work/o-r-ps-legacy",
+          "messages.0.content": "duplicated huge blob copied into the public session"
+        }
+      }
+    }
+  }
+}
+`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Legacy raw.cwd must be lifted into the typed CWD field so resume continuity survives.
+	session, ok := state.GetPublicSession("o/r", "ps-legacy")
+	if !ok || session.Acpx.CWD != "/work/o-r-ps-legacy" {
+		t.Fatalf("legacy raw.cwd not migrated to typed CWD: session=%+v ok=%v", session.Acpx, ok)
+	}
+	if job := state.Jobs["job-legacy"]; job.Acpx.CWD != "/work/o-r-ps-legacy" {
+		t.Fatalf("legacy job raw.cwd not migrated to typed CWD: %+v", job.Acpx)
+	}
+	if err := SaveFile(path, state); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"raw"`) {
+		t.Fatalf("legacy acpx.raw was retained after save:\n%s", string(data))
+	}
+	if strings.Contains(string(data), "huge blob") || strings.Contains(string(data), "messages.") {
+		t.Fatalf("legacy acpx history text was retained after save:\n%s", string(data))
+	}
+	if !strings.Contains(string(data), `"cwd": "/work/o-r-ps-legacy"`) {
+		t.Fatalf("typed cwd not persisted after save:\n%s", string(data))
+	}
+}
+
 func TestLoadFileStripsLegacyHeartbeatFieldsOnSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runner-state.json")
 	legacy := `{
