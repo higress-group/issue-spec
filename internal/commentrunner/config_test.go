@@ -31,6 +31,9 @@ func TestDefaultConfigFromEnvUsesUnifiedIssueSpecHomeDir(t *testing.T) {
 	if cfg.MaxConcurrentJobs != 3 {
 		t.Fatalf("MaxConcurrentJobs = %d, want 3", cfg.MaxConcurrentJobs)
 	}
+	if cfg.FallbackInitialLookback.Duration != DefaultFallbackInitialLookback {
+		t.Fatalf("FallbackInitialLookback = %s, want %s", cfg.FallbackInitialLookback.Duration, DefaultFallbackInitialLookback)
+	}
 }
 
 func TestDefaultConfigFromEnvFallsBackToXDGDirsWhenHomeEmpty(t *testing.T) {
@@ -208,6 +211,43 @@ func TestConfigValidateRequiresNotificationTokenEnvWithIdentity(t *testing.T) {
 	}
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "--notification-token-env is required") {
+		t.Fatalf("Validate error = %v", err)
+	}
+}
+
+func TestConfigValidateAllowsZeroFallbackInitialLookback(t *testing.T) {
+	cfg := Config{
+		Repositories:            []string{"o/r"},
+		RunnerIdentity:          "bot",
+		StatePath:               filepath.Join(t.TempDir(), "state.json"),
+		WorkspaceRoot:           t.TempDir(),
+		PollInterval:            NewDuration(time.Minute),
+		FallbackInterval:        NewDuration(time.Hour),
+		FallbackInitialLookback: NewDuration(0),
+		WorkspaceRetention:      NewDuration(24 * time.Hour),
+		MaxConcurrentJobs:       1,
+		Agent:                   DefaultAgentConfig(),
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestConfigValidateRejectsNegativeFallbackInitialLookback(t *testing.T) {
+	cfg := Config{
+		Repositories:            []string{"o/r"},
+		RunnerIdentity:          "bot",
+		StatePath:               filepath.Join(t.TempDir(), "state.json"),
+		WorkspaceRoot:           t.TempDir(),
+		PollInterval:            NewDuration(time.Minute),
+		FallbackInterval:        NewDuration(time.Hour),
+		FallbackInitialLookback: NewDuration(-time.Minute),
+		WorkspaceRetention:      NewDuration(24 * time.Hour),
+		MaxConcurrentJobs:       1,
+		Agent:                   DefaultAgentConfig(),
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "--fallback-initial-lookback must be zero or positive") {
 		t.Fatalf("Validate error = %v", err)
 	}
 }

@@ -468,15 +468,16 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	defaults, defaultsErr := commentrunner.DefaultConfigFromEnv()
 	if defaultsErr != nil {
 		defaults = commentrunner.Config{
-			Hostname:            "github.com",
-			GitHubBackend:       auth.GitHubBackendModeAuto,
-			PollInterval:        commentrunner.NewDuration(time.Minute),
-			FallbackInterval:    commentrunner.NewDuration(5 * time.Minute),
-			MaxConcurrentJobs:   3,
-			AcpxPath:            "acpx",
-			Agent:               commentrunner.DefaultAgentConfig(),
-			WorkspaceRetention:  commentrunner.NewDuration(7 * 24 * time.Hour),
-			CancellationEnabled: true,
+			Hostname:                "github.com",
+			GitHubBackend:           auth.GitHubBackendModeAuto,
+			PollInterval:            commentrunner.NewDuration(time.Minute),
+			FallbackInterval:        commentrunner.NewDuration(5 * time.Minute),
+			FallbackInitialLookback: commentrunner.NewDuration(commentrunner.DefaultFallbackInitialLookback),
+			MaxConcurrentJobs:       3,
+			AcpxPath:                "acpx",
+			Agent:                   commentrunner.DefaultAgentConfig(),
+			WorkspaceRetention:      commentrunner.NewDuration(7 * 24 * time.Hour),
+			CancellationEnabled:     true,
 		}
 	}
 	defaults = defaults.Normalized()
@@ -493,6 +494,7 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	statePath := fs.String("state", "", "runner state path; default is a repository/runner-scoped path under ~/.issue-spec")
 	pollInterval := fs.Duration("poll-interval", defaults.PollInterval.Duration, "notification poll interval")
 	fallbackInterval := fs.Duration("fallback-interval", defaults.FallbackInterval.Duration, "repository comments fallback interval")
+	fallbackInitialLookback := fs.Duration("fallback-initial-lookback", defaults.FallbackInitialLookback.Duration, "initial repository comments fallback lookback; 0 scans all historical comments")
 	maxConcurrency := fs.Int("max-concurrency", defaults.MaxConcurrentJobs, "maximum concurrent runner jobs")
 	acpxPath := fs.String("acpx-path", defaults.AcpxPath, "acpx binary path")
 	agent := fs.String("agent", defaults.Agent.Kind, "coordinator code agent: codex or claude")
@@ -601,6 +603,9 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	}
 	if seen["fallback-interval"] {
 		cfg.FallbackInterval = commentrunner.NewDuration(*fallbackInterval)
+	}
+	if seen["fallback-initial-lookback"] {
+		cfg.FallbackInitialLookback = commentrunner.NewDuration(*fallbackInitialLookback)
 	}
 	if seen["max-concurrency"] {
 		cfg.MaxConcurrentJobs = *maxConcurrency
@@ -978,7 +983,7 @@ func (a *app) printRunnerPollStart(cfg commentrunner.Config, opts runnerCommandO
 	fmt.Fprintln(a.out)
 	fmt.Fprintf(a.out, "state: %s\n", cfg.StatePath)
 	fmt.Fprintf(a.out, "workspace_root: %s\n", cfg.WorkspaceRoot)
-	fmt.Fprintf(a.out, "poll_interval: %s fallback_interval: %s mode: %s dispatch: %s\n", cfg.PollInterval.Duration, cfg.FallbackInterval.Duration, mode, dispatchMode)
+	fmt.Fprintf(a.out, "poll_interval: %s fallback_interval: %s fallback_initial_lookback: %s mode: %s dispatch: %s\n", cfg.PollInterval.Duration, cfg.FallbackInterval.Duration, cfg.FallbackInitialLookback.Duration, mode, dispatchMode)
 	fmt.Fprintln(a.out, "preflight: running")
 }
 

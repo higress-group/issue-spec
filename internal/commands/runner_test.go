@@ -73,6 +73,8 @@ func TestRunnerPollHelpShowsOptionsAndDefaults(t *testing.T) {
 		"maximum concurrent runner jobs (default: 3)",
 		"--poll-interval duration",
 		"notification poll interval (default: 1m0s)",
+		"--fallback-initial-lookback duration",
+		"initial repository comments fallback lookback; 0 scans all historical comments (default: 720h0m0s)",
 		"--async-dispatch",
 		"(default: true)",
 		"--dry-run",
@@ -328,6 +330,19 @@ func TestRunnerPollParsesAllowedUsers(t *testing.T) {
 
 	if got := strings.Join(cfg.AllowedUsers, ","); got != "alice,bob,charlie" {
 		t.Fatalf("AllowedUsers = %q, want alice,bob,charlie", got)
+	}
+}
+
+func TestRunnerPollParsesFallbackInitialLookback(t *testing.T) {
+	clearCommandAuthEnv(t)
+	cfg := captureRunnerPollConfig(t,
+		"--repo", "o/r",
+		"--runner", "bot",
+		"--fallback-initial-lookback", "168h",
+	)
+
+	if cfg.FallbackInitialLookback.Duration != 7*24*time.Hour {
+		t.Fatalf("FallbackInitialLookback = %s, want 168h", cfg.FallbackInitialLookback.Duration)
 	}
 }
 
