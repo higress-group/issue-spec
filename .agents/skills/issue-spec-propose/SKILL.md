@@ -19,6 +19,8 @@ Use when the user asks for /issue-spec:propose, issue-spec propose, creating a c
 
        issue-spec issue create proposal --repo higress-group/issue-spec --change <change-name> --body-file <proposal.md>
 
+   Generated titles use the standardized `Proposal: <subject>`, `Design: <subject>`, and `Implement: <subject>` family. When --body-file is used, the subject comes from the first Markdown H1 when possible while the change name stays in issue-spec metadata. Use --title only for an explicit user-requested custom title; do not apply style-only issue update rewrites after creation. Historical issues with `issue-spec proposal: <change>`, `issue-spec design: <change>`, or `issue-spec implement: <change>` titles remain valid workflow artifacts.
+
 2. If the proposal body needs revision after discussion, update it in place:
 
        issue-spec issue update --repo higress-group/issue-spec --issue <proposal-issue> --body-file <proposal.md> --summary "<what changed>"

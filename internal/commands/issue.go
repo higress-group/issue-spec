@@ -14,7 +14,7 @@ import (
 
 func (a *app) runIssue(ctx context.Context, args []string) int {
 	if len(args) < 1 {
-		a.errorf("usage: issue-spec issue create proposal|design|implement --repo owner/repo --change name [--body-file file.md]\n")
+		a.errorf("usage: issue-spec issue create proposal|design|implement --repo owner/repo --change name [--body-file file.md] [--title title]\n")
 		a.errorf("       issue-spec issue update --repo owner/repo --issue N [--title title] [--body-file file.md] [--summary \"what changed\"]\n")
 		return 2
 	}
@@ -41,6 +41,7 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 	proposal := fs.String("proposal", "", "proposal issue number or URL")
 	design := fs.String("design", "", "design issue number or URL")
 	bodyFile := fs.String("body-file", "", "markdown issue body file, or - for stdin")
+	titleFlag := fs.String("title", "", "custom issue title")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -158,6 +159,7 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 			return 2
 		}
 	}
+	title = templates.IssueTitle(kind, *change, body, *titleFlag)
 
 	issue, err := client.CreateIssue(ctx, repo, title, body, labels)
 	if err != nil {

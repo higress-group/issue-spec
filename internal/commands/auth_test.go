@@ -480,7 +480,7 @@ func TestIssueCreateUsesSelectedGHBackend(t *testing.T) {
 			info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
 			createIssue: func(_ context.Context, repo, title, body string, labels []string) (github.Issue, error) {
 				created = true
-				if repo != "o/r" || !strings.Contains(title, "gh-proxy") || !strings.Contains(body, "Proposal: gh-proxy") {
+				if repo != "o/r" || title != "Proposal: gh-proxy" || !strings.Contains(body, "Proposal: gh-proxy") {
 					t.Fatalf("unexpected issue create args repo=%q title=%q body=%q", repo, title, body)
 				}
 				if len(labels) != 1 || labels[0] != "issue-spec/proposal" {

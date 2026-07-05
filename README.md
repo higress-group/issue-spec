@@ -231,6 +231,8 @@ OpenSpec active changes are usually repository files under `openspec/changes/<ch
 
 Issue bodies are the current editable proposal/design/implementation artifacts, not placeholder shells. Use `--body-file` when creating them and `issue-spec issue update --body-file --summary` when discussion changes the body, so humans can review the latest content and the audit trail in the same GitHub issue.
 
+Generated issue titles use the human-readable `Proposal: <subject>`, `Design: <subject>`, and `Implement: <subject>` family. With `--body-file`, the subject is derived from the first Markdown H1 when possible, while the change name remains preserved in the issue marker and metadata. Use `issue create --title` only for an explicit user-requested custom title. Older issues titled `issue-spec proposal: <change>`, `issue-spec design: <change>`, or `issue-spec implement: <change>` remain valid workflow artifacts and do not need retitling.
+
 This keeps the repository focused on current code and durable specs. Draft change history remains reviewable in GitHub, with comment threads, edits, links, and human approval points.
 
 Human-in-the-loop decisions are first-class:
@@ -331,9 +333,9 @@ issue-spec auth token --plain
 issue-spec init --repo owner/repo --create-labels
 issue-spec init --repo owner/repo --tools codex,claude --delivery both
 
-issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md
-issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md
-issue-spec issue create implement --repo owner/repo --change my-change --proposal 1 --design 2 --body-file implement.md
+issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md [--title "Custom proposal title"]
+issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md [--title "Custom design title"]
+issue-spec issue create implement --repo owner/repo --change my-change --proposal 1 --design 2 --body-file implement.md [--title "Custom implementation title"]
 issue-spec issue update --repo owner/repo --issue 1 --body-file proposal.md --summary "Clarified goals after review."
 
 issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json

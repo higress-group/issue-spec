@@ -13,7 +13,7 @@ Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing 
 
 1. Read proposal/design/implement issue context and list typed comments with issue-spec comment list --json.
 2. Confirm issue-spec auth status --json includes the expected GitHub backend. Local gh-authenticated sessions can use the native gh backend; keep ISSUE_SPEC_TOKEN="$(gh auth token)" only as an older-version or forced-rest compatibility path.
-3. Create or update PROCESS comments with owner agent, scope, dependencies, write ownership, and status.
+3. Create or update PROCESS comments with owner agent, scope, dependencies, write ownership, and status. Render PROCESS bodies with issue-spec comment generate --type PROCESS --input-file process.json instead of hand-writing Markdown.
    Keep Agent as the logical role. Pass assigned subagent/session ids with --agent-session; Codex CODEX_THREAD_ID remains the artifact writer session source of truth when present.
 4. Split non-trivial work into independent worker PROCESS nodes when file/module ownership does not overlap; execute independent workers in parallel when available.
 5. Add dedicated review PROCESS nodes for non-trivial changes. Review PROCESS nodes should own review scopes such as CLI/API behavior, workflow docs, tests, compatibility, or security-sensitive surfaces.

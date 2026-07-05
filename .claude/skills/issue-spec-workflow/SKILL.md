@@ -31,6 +31,7 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 
 ## Rules
 
+- Use issue-spec comment generate to render canonical typed comment bodies (SPEC, TASK, PROCESS, REVIEW, VERIFY) from structured JSON instead of hand-writing Markdown; comment upsert --type SPEC validates and rejects noncanonical SPEC bodies by default, with --allow-noncanonical as a write-time migration bypass only.
 - Create SPEC comments before design; each SPEC must be testable and include WHEN/THEN scenarios.
 - Do not leave active proposal/design/implement issue bodies as TBD placeholders.
 - Resolve blocking QUESTION comments before design/tasks, or explicitly record accepted assumptions.
