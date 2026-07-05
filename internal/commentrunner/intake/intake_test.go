@@ -253,6 +253,63 @@ func TestRunOnceFallbackRecoversCommentMissingFromNotifications(t *testing.T) {
 	}
 }
 
+func TestRunOnceFallbackUsesInitialLookbackWhenCursorHasNoSeenTime(t *testing.T) {
+	backend := &fakeBackend{
+		user:          github.User{Login: "bot"},
+		permissions:   map[string]string{"bot": "admin"},
+		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes-v1"`, 90)},
+		repoComments:  github.IssueCommentsResult{Metadata: meta(http.StatusOK, `"repo-v1"`, 0)},
+	}
+	store := &fakeStore{state: crstate.NewState()}
+	cfg := testConfig()
+	cfg.FallbackInitialLookback = commentrunner.NewDuration(30 * 24 * time.Hour)
+
+	_, err := RunOnce(context.Background(), cfg, backend, store, testOptions("bot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.repoCommentOpts) != 1 {
+		t.Fatalf("repository comments calls = %d, want 1", len(backend.repoCommentOpts))
+	}
+	got := backend.repoCommentOpts[0].Since
+	want := testNow.Add(-30 * 24 * time.Hour)
+	if got == nil || !got.Equal(want) {
+		t.Fatalf("repository comments since = %v, want %s", got, want)
+	}
+}
+
+func TestRunOnceFallbackUsesCursorSeenTimeBeforeInitialLookback(t *testing.T) {
+	lastSeen := testNow.Add(-2 * time.Hour)
+	backend := &fakeBackend{
+		user:          github.User{Login: "bot"},
+		permissions:   map[string]string{"bot": "admin"},
+		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes-v1"`, 90)},
+		repoComments:  github.IssueCommentsResult{Metadata: meta(http.StatusOK, `"repo-v1"`, 0)},
+	}
+	st := crstate.NewState()
+	st.Repositories["o/r"] = crstate.RepositoryState{
+		Repo: "o/r",
+		RepositoryCommentCursor: crstate.CursorState{
+			LastSeenAt: lastSeen,
+		},
+	}
+	store := &fakeStore{state: st}
+	cfg := testConfig()
+	cfg.FallbackInitialLookback = commentrunner.NewDuration(30 * 24 * time.Hour)
+
+	_, err := RunOnce(context.Background(), cfg, backend, store, testOptions("bot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.repoCommentOpts) != 1 {
+		t.Fatalf("repository comments calls = %d, want 1", len(backend.repoCommentOpts))
+	}
+	got := backend.repoCommentOpts[0].Since
+	if got == nil || !got.Equal(lastSeen) {
+		t.Fatalf("repository comments since = %v, want cursor LastSeenAt %s", got, lastSeen)
+	}
+}
+
 func TestRunOnceUsesDedicatedNotificationBackendOnlyForNotificationPoll(t *testing.T) {
 	comment := commandComment(103, 7, "alice", "/new from bot notification")
 	mainBackend := &fakeBackend{
@@ -1457,19 +1514,20 @@ func TestComputeNextStepUsesBackoffMetadataFromAllCursors(t *testing.T) {
 
 func testConfig() commentrunner.Config {
 	return commentrunner.Config{
-		Hostname:            "github.com",
-		Repositories:        []string{"o/r"},
-		RunnerIdentity:      "bot",
-		GitHubBackend:       auth.GitHubBackendModeGH,
-		StatePath:           "/tmp/runner-state.json",
-		PollInterval:        commentrunner.NewDuration(time.Minute),
-		FallbackInterval:    commentrunner.NewDuration(5 * time.Minute),
-		MaxConcurrentJobs:   1,
-		AcpxPath:            "acpx",
-		Agent:               commentrunner.DefaultAgentConfig(),
-		WorkspaceRoot:       "/tmp/workspaces",
-		WorkspaceRetention:  commentrunner.NewDuration(time.Hour),
-		CancellationEnabled: true,
+		Hostname:                "github.com",
+		Repositories:            []string{"o/r"},
+		RunnerIdentity:          "bot",
+		GitHubBackend:           auth.GitHubBackendModeGH,
+		StatePath:               "/tmp/runner-state.json",
+		PollInterval:            commentrunner.NewDuration(time.Minute),
+		FallbackInterval:        commentrunner.NewDuration(5 * time.Minute),
+		FallbackInitialLookback: commentrunner.NewDuration(commentrunner.DefaultFallbackInitialLookback),
+		MaxConcurrentJobs:       1,
+		AcpxPath:                "acpx",
+		Agent:                   commentrunner.DefaultAgentConfig(),
+		WorkspaceRoot:           "/tmp/workspaces",
+		WorkspaceRetention:      commentrunner.NewDuration(time.Hour),
+		CancellationEnabled:     true,
 	}.Normalized()
 }
 

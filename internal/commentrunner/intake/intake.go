@@ -451,7 +451,7 @@ func intakeFallback(ctx context.Context, backend Backend, cfg commentrunner.Conf
 		commentsResult, err := backend.ListRepositoryIssueCommentsPage(ctx, repo, github.CommentListOptions{
 			ConditionalRequest: conditionalRequestFromCursor(cursor),
 			Page:               page,
-			Since:              sinceFromCursor(cursor),
+			Since:              fallbackSinceFromCursor(cursor, cfg.FallbackInitialLookback.Duration, now),
 		})
 		if err != nil {
 			if hasResponseMetadata(commentsResult.Metadata) {
@@ -1273,6 +1273,17 @@ func sinceFromCursor(cursor crstate.CursorState) *time.Time {
 		return nil
 	}
 	since := cursor.LastSeenAt.UTC()
+	return &since
+}
+
+func fallbackSinceFromCursor(cursor crstate.CursorState, initialLookback time.Duration, now time.Time) *time.Time {
+	if since := sinceFromCursor(cursor); since != nil {
+		return since
+	}
+	if initialLookback <= 0 {
+		return nil
+	}
+	since := now.Add(-initialLookback).UTC()
 	return &since
 }
 

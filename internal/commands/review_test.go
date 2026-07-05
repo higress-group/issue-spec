@@ -85,7 +85,7 @@ func TestBuildReviewSyncReportResolvedFindingReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reply, err := model.RenderFindingReplyBody("Worker", "FINDING-001", "PROCESS-001", "resolved", "Fixed in the latest patch.")
+	reply, err := model.RenderFindingReplyBody("Review", "FINDING-001", "PROCESS-001", "resolved", "Re-checked; the fix satisfies the finding.")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,6 +101,88 @@ func TestBuildReviewSyncReportResolvedFindingReply(t *testing.T) {
 	}
 }
 
+func TestBuildReviewSyncReportWorkerReplyAloneDoesNotResolve(t *testing.T) {
+	finding, err := model.RenderFindingBody("Review Agent", "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Fix this before merge.", "open", "b.go", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A worker's own terminal reply must not clear a blocking finding; only the
+	// owning review agent's re-check resolves it (SPEC-003).
+	workerReply, err := model.RenderFindingReplyBody("Worker Agent", "FINDING-001", "PROCESS-001", "fixed", "Applied the fix.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := buildReviewSyncReport(github.PullRequest{Number: 4, HTMLURL: "https://github.com/o/r/pull/4"}, []github.PullRequestReviewComment{
+		{ID: 2, Body: finding, Path: "b.go", Line: 20, HTMLURL: "https://github.com/o/r/pull/4#discussion_r2"},
+		{ID: 3, InReplyToID: 2, Body: workerReply, HTMLURL: "https://github.com/o/r/pull/4#discussion_r3"},
+	}, nil, github.CombinedStatus{}, nil)
+	if report.OK {
+		t.Fatalf("worker reply alone must keep the finding blocking: %+v", report)
+	}
+	if len(report.ResolvedFindings) != 0 || len(report.BlockingFindings) != 1 {
+		t.Fatalf("unexpected finding classification: %+v", report)
+	}
+	if len(report.FindingReplies) != 1 || report.FindingReplies[0].Agent != "Worker Agent" {
+		t.Fatalf("expected the worker fix reply to be exposed: %+v", report.FindingReplies)
+	}
+}
+
+func TestBuildReviewSyncReportExposesRationaleOwner(t *testing.T) {
+	rationale, err := model.RenderRationaleBodyWithSession("Worker Agent Gamma", "worker-session-9", "agent-session-parameter", "PROCESS-001", "SPEC-002", "https://github.com/o/r/issues/1#issuecomment-1", "This block implements owner exposure.", "a.go", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := buildReviewSyncReport(github.PullRequest{Number: 4, HTMLURL: "https://github.com/o/r/pull/4"}, []github.PullRequestReviewComment{
+		{ID: 2, Body: rationale, Path: "a.go", Line: 5, HTMLURL: "https://github.com/o/r/pull/4#discussion_r2"},
+	}, nil, github.CombinedStatus{}, nil)
+	if report.RationaleComments != 1 || len(report.Rationales) != 1 {
+		t.Fatalf("expected one exposed rationale: %+v", report.Rationales)
+	}
+	if report.Rationales[0].Agent != "Worker Agent Gamma" || report.Rationales[0].Process != "PROCESS-001" {
+		t.Fatalf("rationale owner not recoverable: %+v", report.Rationales[0])
+	}
+}
+
+func TestBuildReviewSyncReportExposesLogicalOwners(t *testing.T) {
+	finding, err := model.RenderFindingBody("Review Agent Alpha", "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Fix this before merge.", "open", "b.go", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerReply, err := model.RenderFindingReplyBody("Worker Agent Beta", "FINDING-001", "PROCESS-001", "fixed", "Applied the fix in the latest patch.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewResolution, err := model.RenderFindingReplyBody("Review Agent Alpha", "FINDING-001", "PROCESS-001", "resolved", "Re-checked the diff; the fix satisfies the finding.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := buildReviewSyncReport(github.PullRequest{Number: 4, HTMLURL: "https://github.com/o/r/pull/4"}, []github.PullRequestReviewComment{
+		{ID: 2, Body: finding, Path: "b.go", Line: 20, HTMLURL: "https://github.com/o/r/pull/4#discussion_r2"},
+		{ID: 3, InReplyToID: 2, Body: workerReply, HTMLURL: "https://github.com/o/r/pull/4#discussion_r3"},
+		{ID: 4, InReplyToID: 2, Body: reviewResolution, HTMLURL: "https://github.com/o/r/pull/4#discussion_r4"},
+	}, nil, github.CombinedStatus{}, nil)
+
+	if len(report.ResolvedFindings) != 1 {
+		t.Fatalf("expected one resolved finding, got %+v", report.ResolvedFindings)
+	}
+	resolved := report.ResolvedFindings[0]
+	if resolved.Agent != "Review Agent Alpha" {
+		t.Fatalf("expected finding owner Review Agent Alpha, got %q", resolved.Agent)
+	}
+	if resolved.ResolvedByAgent != "Review Agent Alpha" {
+		t.Fatalf("expected resolution owner Review Agent Alpha, got %q", resolved.ResolvedByAgent)
+	}
+	if len(report.FindingReplies) != 2 {
+		t.Fatalf("expected two finding replies, got %+v", report.FindingReplies)
+	}
+	if report.FindingReplies[0].Agent != "Worker Agent Beta" {
+		t.Fatalf("expected fix-reply owner Worker Agent Beta, got %q", report.FindingReplies[0].Agent)
+	}
+	if report.FindingReplies[1].Agent != "Review Agent Alpha" {
+		t.Fatalf("expected resolution-reply owner Review Agent Alpha, got %q", report.FindingReplies[1].Agent)
+	}
+}
+
 func TestBuildReviewSyncReportDoesNotResolveDuplicateFindingIDAcrossThreads(t *testing.T) {
 	firstFinding, err := model.RenderFindingBody("Review", "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Fix this first issue.", "open", "a.go", 10)
 	if err != nil {
@@ -110,7 +192,7 @@ func TestBuildReviewSyncReportDoesNotResolveDuplicateFindingIDAcrossThreads(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	reply, err := model.RenderFindingReplyBody("Worker", "FINDING-001", "PROCESS-001", "resolved", "Fixed only the first thread.")
+	reply, err := model.RenderFindingReplyBody("Review", "FINDING-001", "PROCESS-001", "resolved", "Re-checked only the first thread.")
 	if err != nil {
 		t.Fatal(err)
 	}

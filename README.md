@@ -163,7 +163,7 @@ Coordinator-human discussion is explicit. The sandboxed coordinator can use the 
 
 Ordinary follow-up comments remain visible on GitHub but are ignored by runner intake. Terminal runner status comments include a `/resume` template with the public session id.
 
-Use a dry run to check configuration and intake without creating GitHub comments, changing runner state, creating workspaces, or dispatching acpx. Dry-run still reads GitHub notifications and comments, so the first run on a busy repository can take noticeably longer than later real poll cycles that persist cursors:
+Use a dry run to check configuration and intake without creating GitHub comments, changing runner state, creating workspaces, or dispatching acpx. Dry-run still reads GitHub notifications and comments, so the first run on a busy repository can take noticeably longer than later real poll cycles that persist cursors. Initial repository comment fallback is limited to the last 30 days by default:
 
 ```bash
 issue-spec runner poll \
@@ -180,6 +180,7 @@ Useful runner options:
 - `--workspace-root <path>` stores managed repository clones. By default, it uses the same runner scope with a `workspaces` directory beside `state.json`. Explicit paths are used as provided.
 - `--workspace-retention <duration>` controls when real poll cycles remove expired, non-active managed workspaces. The default is 7 days. Queued, dispatched, running, locked, and interrupted workspaces remain protected.
 - `--poll-interval` and `--fallback-interval` control notification polling and lower-frequency repository comment fallback.
+- `--fallback-initial-lookback <duration>` limits the first repository comments fallback when no cursor has been stored yet. The default is `720h` (30 days); set it to `0` to scan all historical comments.
 - `--max-concurrency <n>` can run independent sessions in parallel. The default is 3; increase it for higher throughput when the runner host has enough CPU, memory, and agent quota. Commands for the same public session are serialized by a workspace/session lock.
 - Continuous `runner poll` dispatches ready jobs in a background goroutine by default, so notification/fallback polling stays responsive while acpx jobs run. It still reconciles in-flight work when dispatch is idle, and keeps expired workspace cleanup running while dispatch is busy. `--once` stays synchronous for diagnostics, and `--sync-dispatch` forces continuous polling back to foreground dispatch when direct dispatch errors need to be inspected. `--async-dispatch` is accepted as an explicit default and cannot be combined with `--once` or `--sync-dispatch`.
 - `--allowed-user <login>` allows a human maintainer to trigger `/new`, `/resume`, and `/cancel`; repeat it or comma-separate logins. If omitted, only the authenticated runner identity is accepted. Allowed users must still have write-equivalent repository permission.

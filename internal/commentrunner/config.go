@@ -20,7 +20,8 @@ const (
 	AgentCodex  = "codex"
 	AgentClaude = "claude"
 
-	DefaultNotificationTokenEnv = "ISSUE_SPEC_NOTIFICATION_TOKEN"
+	DefaultNotificationTokenEnv    = "ISSUE_SPEC_NOTIFICATION_TOKEN"
+	DefaultFallbackInitialLookback = 30 * 24 * time.Hour
 )
 
 type Duration struct {
@@ -28,31 +29,32 @@ type Duration struct {
 }
 
 type Config struct {
-	Hostname             string                 `json:"hostname"`
-	Repositories         []string               `json:"repositories"`
-	RunnerIdentity       string                 `json:"runner_identity"`
-	NotificationIdentity string                 `json:"notification_identity,omitempty"`
-	NotificationTokenEnv string                 `json:"notification_token_env,omitempty"`
-	AllowedUsers         []string               `json:"allowed_users"`
-	GitHubBackend        auth.GitHubBackendMode `json:"github_backend"`
-	StatePath            string                 `json:"state_path"`
-	PollInterval         Duration               `json:"poll_interval"`
-	FallbackInterval     Duration               `json:"fallback_interval"`
-	MaxConcurrentJobs    int                    `json:"max_concurrent_jobs"`
-	AcpxPath             string                 `json:"acpx_path"`
-	Agent                AgentConfig            `json:"agent"`
-	WorkspaceRoot        string                 `json:"workspace_root"`
-	WorkspaceRetention   Duration               `json:"workspace_retention"`
-	BwrapPath            string                 `json:"bwrap_path,omitempty"`
-	UnsafeNoSandbox      bool                   `json:"unsafe_no_sandbox"`
-	GHConfigDir          string                 `json:"gh_config_dir,omitempty"`
-	CancellationEnabled  bool                   `json:"cancellation_enabled"`
+	Hostname                string                 `json:"hostname"`
+	Repositories            []string               `json:"repositories"`
+	RunnerIdentity          string                 `json:"runner_identity"`
+	NotificationIdentity    string                 `json:"notification_identity,omitempty"`
+	NotificationTokenEnv    string                 `json:"notification_token_env,omitempty"`
+	AllowedUsers            []string               `json:"allowed_users"`
+	GitHubBackend           auth.GitHubBackendMode `json:"github_backend"`
+	StatePath               string                 `json:"state_path"`
+	PollInterval            Duration               `json:"poll_interval"`
+	FallbackInterval        Duration               `json:"fallback_interval"`
+	FallbackInitialLookback Duration               `json:"fallback_initial_lookback"`
+	MaxConcurrentJobs       int                    `json:"max_concurrent_jobs"`
+	AcpxPath                string                 `json:"acpx_path"`
+	Agent                   AgentConfig            `json:"agent"`
+	WorkspaceRoot           string                 `json:"workspace_root"`
+	WorkspaceRetention      Duration               `json:"workspace_retention"`
+	BwrapPath               string                 `json:"bwrap_path,omitempty"`
+	UnsafeNoSandbox         bool                   `json:"unsafe_no_sandbox"`
+	GHConfigDir             string                 `json:"gh_config_dir,omitempty"`
+	CancellationEnabled     bool                   `json:"cancellation_enabled"`
 	// Logging configuration
-	LogDir              string                 `json:"log_dir,omitempty"`
-	LogMaxSizeMB        int                    `json:"log_max_size_mb,omitempty"`
-	LogMaxFiles         int                    `json:"log_max_files,omitempty"`
-	LogRetentionDays    int                    `json:"log_retention_days,omitempty"`
-	LogRawCaptureKB     int                    `json:"log_raw_capture_kb,omitempty"`
+	LogDir           string `json:"log_dir,omitempty"`
+	LogMaxSizeMB     int    `json:"log_max_size_mb,omitempty"`
+	LogMaxFiles      int    `json:"log_max_files,omitempty"`
+	LogRetentionDays int    `json:"log_retention_days,omitempty"`
+	LogRawCaptureKB  int    `json:"log_raw_capture_kb,omitempty"`
 }
 
 type AgentConfig struct {
@@ -100,22 +102,23 @@ func DefaultConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	return Config{
-		Hostname:            "github.com",
-		GitHubBackend:       mode,
-		StatePath:           defaultStatePath(),
-		PollInterval:        NewDuration(time.Minute),
-		FallbackInterval:    NewDuration(5 * time.Minute),
-		MaxConcurrentJobs:   3,
-		AcpxPath:            "acpx",
-		Agent:               DefaultAgentConfig(),
-		WorkspaceRoot:       defaultWorkspaceRoot(),
-		WorkspaceRetention:  NewDuration(7 * 24 * time.Hour),
-		CancellationEnabled: true,
+		Hostname:                "github.com",
+		GitHubBackend:           mode,
+		StatePath:               defaultStatePath(),
+		PollInterval:            NewDuration(time.Minute),
+		FallbackInterval:        NewDuration(5 * time.Minute),
+		FallbackInitialLookback: NewDuration(DefaultFallbackInitialLookback),
+		MaxConcurrentJobs:       3,
+		AcpxPath:                "acpx",
+		Agent:                   DefaultAgentConfig(),
+		WorkspaceRoot:           defaultWorkspaceRoot(),
+		WorkspaceRetention:      NewDuration(7 * 24 * time.Hour),
+		CancellationEnabled:     true,
 		// Logging configuration defaults
-		LogMaxSizeMB:		10,
-		LogMaxFiles:		5,
-		LogRetentionDays:	30,
-		LogRawCaptureKB:	100,
+		LogMaxSizeMB:     10,
+		LogMaxFiles:      5,
+		LogRetentionDays: 30,
+		LogRawCaptureKB:  100,
 	}, nil
 }
 
@@ -219,6 +222,9 @@ func (c Config) Validate() error {
 	}
 	if c.FallbackInterval.Duration <= 0 {
 		return fmt.Errorf("--fallback-interval must be positive")
+	}
+	if c.FallbackInitialLookback.Duration < 0 {
+		return fmt.Errorf("--fallback-initial-lookback must be zero or positive")
 	}
 	if c.WorkspaceRetention.Duration <= 0 {
 		return fmt.Errorf("--workspace-retention must be positive")

@@ -18,13 +18,13 @@ Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing 
 4. Default to serial PROCESS chains under one parent TASK, each completed node recording ### Handoff evidence for its successor. Split into parallel worker PROCESS nodes only when file/module write ownership is provably disjoint; parallelism is a gated optimization, not the default.
 5. Add dedicated review PROCESS nodes for non-trivial changes. Review PROCESS nodes should own review scopes such as CLI/API behavior, workflow docs, tests, compatibility, or security-sensitive surfaces.
 6. Link each PROCESS to its TASK comments with issue-spec link.
-7. Implement the code changes for one PROCESS scope at a time, or integrate completed worker outputs by dependency order.
+7. Implement the code changes for one PROCESS scope at a time, or integrate completed worker outputs by dependency order. The worker that owns a code scope owns its own commits; the coordinator does not author code artifacts on a worker's behalf unless it is the assigned worker.
 8. Link every worker and review PROCESS to the PR with issue-spec pr link-process.
 9. Add proposal/design/implement closing links to the implementation PR body:
 
        issue-spec pr link-issues --repo higress-group/issue-spec --pr <implementation-pr> --proposal <proposal-issue> --design <design-issue> --implement <implement-issue> --json
 
-10. Add PR rationale comments on key changed lines with issue-spec pr rationale, each linked to a SPEC comment.
+10. Add final PR rationale only after review/fix convergence, not as pre-review readiness evidence. Once all P0/P1 findings are resolved, the coordinator dispatches each owning worker to add rationale on the key code blocks that worker owns with issue-spec pr rationale (worker --agent and --agent-session), each linked to a SPEC comment.
 11. Mark PROCESS comments done only after implementation/review work and focused verification evidence exist.
 
 ## Coordinator DAG Execution
@@ -35,3 +35,4 @@ Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing 
 4. Spawn or assign parallel worker agents only when their write ownership is provably disjoint, and give each worker an assigned id to pass via --agent-session.
 5. Spawn or assign review agents for non-trivial PRs; run them in parallel only when their review scopes are disjoint. Route findings to the owner PROCESS or a dedicated repair PROCESS under the same serial/parallel gating.
 6. Integrate completed outputs by dependency order and update PROCESS evidence (including ### Handoff for serial predecessors) before marking done.
+7. The coordinator owns scheduling, gate evaluation, status synchronization, unresolved-blocker routing, and final rationale dispatch only. It does not author review findings, worker fix replies, review resolutions, or rationale on another agent's behalf unless explicitly assigned as that worker or review owner.

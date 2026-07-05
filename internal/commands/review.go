@@ -409,6 +409,8 @@ type reviewSyncReport struct {
 	ActionableFindings []reviewFinding      `json:"actionable_findings"`
 	BlockingFindings   []reviewFinding      `json:"blocking_findings"`
 	ResolvedFindings   []reviewFinding      `json:"resolved_findings"`
+	FindingReplies     []reviewReply        `json:"finding_replies,omitempty"`
+	Rationales         []reviewRationale    `json:"rationales,omitempty"`
 	IssueComments      int                  `json:"issue_comments"`
 	Diagnostics        []metadataDiagnostic `json:"diagnostics,omitempty"`
 	FailedChecks       []reviewCheck        `json:"failed_checks"`
@@ -426,9 +428,32 @@ type reviewFinding struct {
 	Status             string `json:"status"`
 	Process            string `json:"process,omitempty"`
 	Spec               string `json:"spec,omitempty"`
+	Agent              string `json:"agent,omitempty"`
 	AgentSessionID     string `json:"agent_session_id,omitempty"`
 	AgentSessionSource string `json:"agent_session_source,omitempty"`
+	ResolvedByAgent    string `json:"resolved_by_agent,omitempty"`
 	Summary            string `json:"summary"`
+}
+
+type reviewReply struct {
+	Finding            string `json:"finding,omitempty"`
+	CommentID          int64  `json:"comment_id"`
+	URL                string `json:"url"`
+	Process            string `json:"process,omitempty"`
+	Status             string `json:"status"`
+	Agent              string `json:"agent,omitempty"`
+	AgentSessionID     string `json:"agent_session_id,omitempty"`
+	AgentSessionSource string `json:"agent_session_source,omitempty"`
+}
+
+type reviewRationale struct {
+	Process            string `json:"process,omitempty"`
+	Spec               string `json:"spec,omitempty"`
+	CommentID          int64  `json:"comment_id"`
+	URL                string `json:"url"`
+	Agent              string `json:"agent,omitempty"`
+	AgentSessionID     string `json:"agent_session_id,omitempty"`
+	AgentSessionSource string `json:"agent_session_source,omitempty"`
 }
 
 type reviewCheck struct {
@@ -440,23 +465,62 @@ type reviewCheck struct {
 
 func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRequestReviewComment, issueComments []github.Comment, status github.CombinedStatus, checkRuns []github.CheckRun) reviewSyncReport {
 	report := reviewSyncReport{PR: pr.Number, PRURL: pr.HTMLURL, IssueComments: len(issueComments)}
+	findingOwnerByID := map[int64]string{}
+	for _, comment := range reviewComments {
+		if comment.InReplyToID != 0 {
+			continue
+		}
+		if finding, ok, err := model.FindFindingMarker(comment.Body); err == nil && ok {
+			findingOwnerByID[comment.ID] = finding.Agent
+		}
+	}
 	resolvedByParent := map[int64]bool{}
+	resolutionAgentByParent := map[int64]string{}
 	for _, comment := range reviewComments {
 		reply, ok, err := model.FindFindingReplyMarker(comment.Body)
 		if err != nil || !ok || !model.IsTerminalFindingStatus(reply.Status) {
 			continue
 		}
-		if comment.InReplyToID != 0 {
-			resolvedByParent[comment.InReplyToID] = true
+		if comment.InReplyToID == 0 {
+			continue
 		}
+		// SPEC-003: a worker reply alone MUST NOT resolve a finding. Only a
+		// terminal reply authored by the finding's owning review agent resolves
+		// it, so a worker "fixed" reply keeps the finding blocking until the
+		// review agent re-checks and replies under its own identity.
+		owner, ok := findingOwnerByID[comment.InReplyToID]
+		if !ok || owner == "" || reply.Agent != owner {
+			continue
+		}
+		resolvedByParent[comment.InReplyToID] = true
+		resolutionAgentByParent[comment.InReplyToID] = reply.Agent
 	}
 	for _, comment := range reviewComments {
 		if rationale, ok, err := model.FindRationaleMarker(comment.Body); err == nil && ok {
 			report.RationaleComments++
+			report.Rationales = append(report.Rationales, reviewRationale{
+				Process:            rationale.Process,
+				Spec:               rationale.Spec,
+				CommentID:          comment.ID,
+				URL:                comment.HTMLURL,
+				Agent:              rationale.Agent,
+				AgentSessionID:     rationale.AgentSessionID,
+				AgentSessionSource: rationale.AgentSessionSource,
+			})
 			report.Diagnostics = append(report.Diagnostics, artifactSessionDiagnostics("RATIONALE/"+rationale.Process, comment.HTMLURL, rationale.AgentSessionID, rationale.AgentSessionSource)...)
 			continue
 		}
 		if reply, ok, err := model.FindFindingReplyMarker(comment.Body); err == nil && ok {
+			report.FindingReplies = append(report.FindingReplies, reviewReply{
+				Finding:            reply.Finding,
+				CommentID:          comment.ID,
+				URL:                comment.HTMLURL,
+				Process:            reply.Process,
+				Status:             reply.Status,
+				Agent:              reply.Agent,
+				AgentSessionID:     reply.AgentSessionID,
+				AgentSessionSource: reply.AgentSessionSource,
+			})
 			report.Diagnostics = append(report.Diagnostics, artifactSessionDiagnostics("FINDING_REPLY/"+reply.Finding, comment.HTMLURL, reply.AgentSessionID, reply.AgentSessionSource)...)
 			continue
 		}
@@ -475,6 +539,7 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 				Status:             finding.Status,
 				Process:            finding.Process,
 				Spec:               finding.Spec,
+				Agent:              finding.Agent,
 				AgentSessionID:     finding.AgentSessionID,
 				AgentSessionSource: finding.AgentSessionSource,
 				Summary:            firstFindingSummary(comment.Body),
@@ -482,6 +547,11 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 			report.Diagnostics = append(report.Diagnostics, artifactSessionDiagnostics("FINDING/"+finding.ID, comment.HTMLURL, finding.AgentSessionID, finding.AgentSessionSource)...)
 			if model.IsTerminalFindingStatus(item.Status) || resolvedByParent[comment.ID] {
 				item.Status = "resolved"
+				if resolver := resolutionAgentByParent[comment.ID]; resolver != "" {
+					item.ResolvedByAgent = resolver
+				} else {
+					item.ResolvedByAgent = finding.Agent
+				}
 				report.ResolvedFindings = append(report.ResolvedFindings, item)
 				continue
 			}
@@ -565,7 +635,7 @@ func renderReviewSyncComment(id, agent string, session writerSession, scope, prU
 		b.WriteString("- None.\n")
 	} else {
 		for _, finding := range report.ActionableFindings {
-			fmt.Fprintf(&b, "- %s %s status=%s %s:%d %s %s\n", finding.Severity, finding.ID, finding.Status, finding.Path, finding.Line, finding.URL, finding.Summary)
+			fmt.Fprintf(&b, "- %s %s status=%s owner=%s %s:%d %s %s\n", finding.Severity, finding.ID, finding.Status, ownerOrUnknown(finding.Agent), finding.Path, finding.Line, finding.URL, finding.Summary)
 		}
 	}
 	b.WriteString("\n## Blocking Findings\n\n")
@@ -573,7 +643,7 @@ func renderReviewSyncComment(id, agent string, session writerSession, scope, prU
 		b.WriteString("- None.\n")
 	} else {
 		for _, finding := range report.BlockingFindings {
-			fmt.Fprintf(&b, "- %s %s status=%s %s:%d %s %s\n", finding.Severity, finding.ID, finding.Status, finding.Path, finding.Line, finding.URL, finding.Summary)
+			fmt.Fprintf(&b, "- %s %s status=%s owner=%s %s:%d %s %s\n", finding.Severity, finding.ID, finding.Status, ownerOrUnknown(finding.Agent), finding.Path, finding.Line, finding.URL, finding.Summary)
 		}
 	}
 	b.WriteString("\n## Resolved Findings\n\n")
@@ -581,7 +651,23 @@ func renderReviewSyncComment(id, agent string, session writerSession, scope, prU
 		b.WriteString("- None.\n")
 	} else {
 		for _, finding := range report.ResolvedFindings {
-			fmt.Fprintf(&b, "- %s %s status=%s %s:%d %s %s\n", finding.Severity, finding.ID, finding.Status, finding.Path, finding.Line, finding.URL, finding.Summary)
+			fmt.Fprintf(&b, "- %s %s status=%s owner=%s resolved_by=%s %s:%d %s %s\n", finding.Severity, finding.ID, finding.Status, ownerOrUnknown(finding.Agent), ownerOrUnknown(finding.ResolvedByAgent), finding.Path, finding.Line, finding.URL, finding.Summary)
+		}
+	}
+	b.WriteString("\n## Finding Replies\n\n")
+	if len(report.FindingReplies) == 0 {
+		b.WriteString("- None.\n")
+	} else {
+		for _, reply := range report.FindingReplies {
+			fmt.Fprintf(&b, "- %s status=%s owner=%s %s\n", reply.Finding, reply.Status, ownerOrUnknown(reply.Agent), reply.URL)
+		}
+	}
+	b.WriteString("\n## Rationale\n\n")
+	if len(report.Rationales) == 0 {
+		b.WriteString("- None.\n")
+	} else {
+		for _, rationale := range report.Rationales {
+			fmt.Fprintf(&b, "- %s %s owner=%s %s\n", rationale.Process, rationale.Spec, ownerOrUnknown(rationale.Agent), rationale.URL)
 		}
 	}
 	b.WriteString("\n## Checks\n\n")
@@ -595,6 +681,13 @@ func renderReviewSyncComment(id, agent string, session writerSession, scope, prU
 		b.WriteString("Review sync blocked.\n")
 	}
 	return b.String(), nil
+}
+
+func ownerOrUnknown(agent string) string {
+	if strings.TrimSpace(agent) == "" {
+		return "unknown"
+	}
+	return agent
 }
 
 func writeReviewChecks(b *strings.Builder, label string, checks []reviewCheck) {
