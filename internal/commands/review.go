@@ -409,6 +409,7 @@ type reviewSyncReport struct {
 	ActionableFindings []reviewFinding      `json:"actionable_findings"`
 	BlockingFindings   []reviewFinding      `json:"blocking_findings"`
 	ResolvedFindings   []reviewFinding      `json:"resolved_findings"`
+	FindingReplies     []reviewReply        `json:"finding_replies,omitempty"`
 	IssueComments      int                  `json:"issue_comments"`
 	Diagnostics        []metadataDiagnostic `json:"diagnostics,omitempty"`
 	FailedChecks       []reviewCheck        `json:"failed_checks"`
@@ -426,9 +427,22 @@ type reviewFinding struct {
 	Status             string `json:"status"`
 	Process            string `json:"process,omitempty"`
 	Spec               string `json:"spec,omitempty"`
+	Agent              string `json:"agent,omitempty"`
 	AgentSessionID     string `json:"agent_session_id,omitempty"`
 	AgentSessionSource string `json:"agent_session_source,omitempty"`
+	ResolvedByAgent    string `json:"resolved_by_agent,omitempty"`
 	Summary            string `json:"summary"`
+}
+
+type reviewReply struct {
+	Finding            string `json:"finding,omitempty"`
+	CommentID          int64  `json:"comment_id"`
+	URL                string `json:"url"`
+	Process            string `json:"process,omitempty"`
+	Status             string `json:"status"`
+	Agent              string `json:"agent,omitempty"`
+	AgentSessionID     string `json:"agent_session_id,omitempty"`
+	AgentSessionSource string `json:"agent_session_source,omitempty"`
 }
 
 type reviewCheck struct {
@@ -441,6 +455,7 @@ type reviewCheck struct {
 func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRequestReviewComment, issueComments []github.Comment, status github.CombinedStatus, checkRuns []github.CheckRun) reviewSyncReport {
 	report := reviewSyncReport{PR: pr.Number, PRURL: pr.HTMLURL, IssueComments: len(issueComments)}
 	resolvedByParent := map[int64]bool{}
+	resolutionAgentByParent := map[int64]string{}
 	for _, comment := range reviewComments {
 		reply, ok, err := model.FindFindingReplyMarker(comment.Body)
 		if err != nil || !ok || !model.IsTerminalFindingStatus(reply.Status) {
@@ -448,6 +463,7 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 		}
 		if comment.InReplyToID != 0 {
 			resolvedByParent[comment.InReplyToID] = true
+			resolutionAgentByParent[comment.InReplyToID] = reply.Agent
 		}
 	}
 	for _, comment := range reviewComments {
@@ -457,6 +473,16 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 			continue
 		}
 		if reply, ok, err := model.FindFindingReplyMarker(comment.Body); err == nil && ok {
+			report.FindingReplies = append(report.FindingReplies, reviewReply{
+				Finding:            reply.Finding,
+				CommentID:          comment.ID,
+				URL:                comment.HTMLURL,
+				Process:            reply.Process,
+				Status:             reply.Status,
+				Agent:              reply.Agent,
+				AgentSessionID:     reply.AgentSessionID,
+				AgentSessionSource: reply.AgentSessionSource,
+			})
 			report.Diagnostics = append(report.Diagnostics, artifactSessionDiagnostics("FINDING_REPLY/"+reply.Finding, comment.HTMLURL, reply.AgentSessionID, reply.AgentSessionSource)...)
 			continue
 		}
@@ -475,6 +501,7 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 				Status:             finding.Status,
 				Process:            finding.Process,
 				Spec:               finding.Spec,
+				Agent:              finding.Agent,
 				AgentSessionID:     finding.AgentSessionID,
 				AgentSessionSource: finding.AgentSessionSource,
 				Summary:            firstFindingSummary(comment.Body),
@@ -482,6 +509,7 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 			report.Diagnostics = append(report.Diagnostics, artifactSessionDiagnostics("FINDING/"+finding.ID, comment.HTMLURL, finding.AgentSessionID, finding.AgentSessionSource)...)
 			if model.IsTerminalFindingStatus(item.Status) || resolvedByParent[comment.ID] {
 				item.Status = "resolved"
+				item.ResolvedByAgent = resolutionAgentByParent[comment.ID]
 				report.ResolvedFindings = append(report.ResolvedFindings, item)
 				continue
 			}

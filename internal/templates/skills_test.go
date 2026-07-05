@@ -167,6 +167,37 @@ func TestIssueSpecSkillsDirectAgentsToGenerators(t *testing.T) {
 	}
 }
 
+func TestIssueSpecSkillTemplatesEnforceAgentOwnedReviewWorkflow(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+
+	review := skillContent(t, skills, "issue-spec-review")
+	if strings.Contains(review, "the coordinator converts actionable line findings") {
+		t.Fatalf("review skill still tells the coordinator to author findings:\n%s", review)
+	}
+	for _, want := range []string{
+		"Each review agent authors its own",
+		"The coordinator does not create findings on a review agent's behalf",
+		"The worker that owns the affected code fixes it and replies",
+		"The review agent that opened the finding then re-checks",
+		"a worker reply alone does not resolve a finding",
+	} {
+		if !strings.Contains(review, want) {
+			t.Fatalf("review skill missing ownership guidance %q:\n%s", want, review)
+		}
+	}
+
+	apply := skillContent(t, skills, "issue-spec-apply")
+	for _, want := range []string{
+		"Add final PR rationale only after review/fix convergence",
+		"the coordinator dispatches each owning worker to add rationale",
+		"does not author review findings, worker fix replies, review resolutions, or rationale on another agent's behalf",
+	} {
+		if !strings.Contains(apply, want) {
+			t.Fatalf("apply skill missing ownership guidance %q:\n%s", want, apply)
+		}
+	}
+}
+
 func skillContent(t *testing.T, skills []RenderedSkill, name string) string {
 	t.Helper()
 	for _, skill := range skills {

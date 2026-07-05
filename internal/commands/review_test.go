@@ -101,6 +101,46 @@ func TestBuildReviewSyncReportResolvedFindingReply(t *testing.T) {
 	}
 }
 
+func TestBuildReviewSyncReportExposesLogicalOwners(t *testing.T) {
+	finding, err := model.RenderFindingBody("Review Agent Alpha", "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Fix this before merge.", "open", "b.go", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerReply, err := model.RenderFindingReplyBody("Worker Agent Beta", "FINDING-001", "PROCESS-001", "fixed", "Applied the fix in the latest patch.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewResolution, err := model.RenderFindingReplyBody("Review Agent Alpha", "FINDING-001", "PROCESS-001", "resolved", "Re-checked the diff; the fix satisfies the finding.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := buildReviewSyncReport(github.PullRequest{Number: 4, HTMLURL: "https://github.com/o/r/pull/4"}, []github.PullRequestReviewComment{
+		{ID: 2, Body: finding, Path: "b.go", Line: 20, HTMLURL: "https://github.com/o/r/pull/4#discussion_r2"},
+		{ID: 3, InReplyToID: 2, Body: workerReply, HTMLURL: "https://github.com/o/r/pull/4#discussion_r3"},
+		{ID: 4, InReplyToID: 2, Body: reviewResolution, HTMLURL: "https://github.com/o/r/pull/4#discussion_r4"},
+	}, nil, github.CombinedStatus{}, nil)
+
+	if len(report.ResolvedFindings) != 1 {
+		t.Fatalf("expected one resolved finding, got %+v", report.ResolvedFindings)
+	}
+	resolved := report.ResolvedFindings[0]
+	if resolved.Agent != "Review Agent Alpha" {
+		t.Fatalf("expected finding owner Review Agent Alpha, got %q", resolved.Agent)
+	}
+	if resolved.ResolvedByAgent != "Review Agent Alpha" {
+		t.Fatalf("expected resolution owner Review Agent Alpha, got %q", resolved.ResolvedByAgent)
+	}
+	if len(report.FindingReplies) != 2 {
+		t.Fatalf("expected two finding replies, got %+v", report.FindingReplies)
+	}
+	if report.FindingReplies[0].Agent != "Worker Agent Beta" {
+		t.Fatalf("expected fix-reply owner Worker Agent Beta, got %q", report.FindingReplies[0].Agent)
+	}
+	if report.FindingReplies[1].Agent != "Review Agent Alpha" {
+		t.Fatalf("expected resolution-reply owner Review Agent Alpha, got %q", report.FindingReplies[1].Agent)
+	}
+}
+
 func TestBuildReviewSyncReportDoesNotResolveDuplicateFindingIDAcrossThreads(t *testing.T) {
 	firstFinding, err := model.RenderFindingBody("Review", "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Fix this first issue.", "open", "a.go", 10)
 	if err != nil {
