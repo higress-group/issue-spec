@@ -1,10 +1,10 @@
-# agent-session-source-of-truth
+# workflow-identity-and-sessions
 
 ## Purpose
 
-Define the long-lived behavior contract for agent identity, artifact writer provenance, and runner resume metadata in issue-spec workflows.
+Define the long-lived behavior contract for workflow identity, artifact writer provenance, session metadata, and runner resume handles in issue-spec workflows.
 
-This durable spec is organized by stable capability surfaces rather than by the original proposal's individual SPEC comments. Future changes that extend identity resolution, artifact provenance, generated workflow guidance, or runner resume metadata should update the relevant module below instead of appending a one-to-one copy of new proposal requirements.
+This durable spec is organized by stable capability surfaces rather than by the original proposal's individual SPEC comments. Future changes that extend workflow identity, agent provenance, generated workflow guidance, session diagnostics, or runner resume metadata should update the relevant module below instead of appending a one-to-one copy of new proposal requirements.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/20
