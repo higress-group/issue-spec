@@ -15,6 +15,11 @@ import (
 
 var processIDRe = regexp.MustCompile(`PROCESS-[0-9]{3,}`)
 
+// testEvidenceRe matches whole-word test mentions (test/tests/testing/tested) so
+// that a done VERIFY summarizing test evidence is not satisfied by incidental
+// substrings like "latest" or "greatest".
+var testEvidenceRe = regexp.MustCompile(`(?i)\btest(s|ing|ed)?\b`)
+
 type finalVerifyReport struct {
 	OK                    bool                        `json:"ok"`
 	Traceability          model.VerifyReport          `json:"traceability"`
@@ -235,7 +240,7 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	// dependency; parent-TASK presence itself is already enforced by canonical
 	// PROCESS validation above.
 	report.Errors = append(report.Errors, serialHandoffErrors(activeProcesses)...)
-	if len(doneVerifyBodies) > 0 && !strings.Contains(strings.ToLower(verifyText), "test") {
+	if len(doneVerifyBodies) > 0 && !testEvidenceRe.MatchString(verifyText) {
 		report.Errors = append(report.Errors, "no done VERIFY comment references test evidence (SPEC-006)")
 	}
 	for _, spec := range activeSpecs {

@@ -321,6 +321,22 @@ func TestBuildFinalVerifyReportRequiresVerifyTestEvidence(t *testing.T) {
 	}
 }
 
+func TestBuildFinalVerifyReportTestEvidenceIgnoresSubstringMatch(t *testing.T) {
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	// "latest" contains the substring "test" but is not test evidence.
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", "## Verification Summary: final\n\nRan the latest greatest review.\n\n### Covered SPECs\n\n- SPEC-001")
+	report, err := buildFinalVerifyReport([]model.Artifact{spec, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OK {
+		t.Fatal("VERIFY whose only \"test\" is a substring of another word must fail final verify")
+	}
+	if !strings.Contains(strings.Join(report.Errors, "\n"), "test evidence") {
+		t.Fatalf("expected test-evidence error: %v", report.Errors)
+	}
+}
+
 func linkArtifacts(t *testing.T, from, to *model.Artifact) {
 	t.Helper()
 	fromBody, changed, err := model.AddRelatedCommentLink(from.Comment.Body, to.URL)

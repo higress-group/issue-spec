@@ -123,7 +123,7 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	agentSession := addAgentSessionFlag(fs)
 	status := fs.String("status", "draft", "typed comment status")
 	scope := fs.String("scope", "N/A", "typed comment scope")
-	allowNoncanonical := fs.Bool("allow-noncanonical", false, "write-time migration bypass for noncanonical SPEC bodies; does not create durable approval")
+	allowNoncanonical := fs.Bool("allow-noncanonical", false, "write-time migration bypass for noncanonical SPEC/TASK/PROCESS bodies; does not create durable approval")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -148,8 +148,8 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 		return 2
 	}
 
-	// Recompute canonical validity from the prepared body. SPEC is the only
-	// strict blocking type today; other types return no diagnostics.
+	// Recompute canonical validity from the prepared body. SPEC, TASK, and
+	// PROCESS are strict blocking types; other types return no diagnostics.
 	diags := model.ValidateCanonicalBody(*commentType, *id, "", body)
 	noncanonical := false
 	if len(diags) > 0 {
