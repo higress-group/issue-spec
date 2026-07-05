@@ -651,7 +651,10 @@ type fakeGitHubBackend struct {
 	scopes            []string
 	createIssue       func(context.Context, string, string, string, []string) (github.Issue, error)
 	getIssue          func(context.Context, string, int) (github.Issue, error)
+	updateIssue       func(context.Context, string, int, github.UpdateIssueOptions) (github.Issue, error)
 	listIssueComments func(context.Context, string, int) ([]github.Comment, error)
+	getPullRequest    func(context.Context, string, int) (github.PullRequest, error)
+	updatePullRequest func(context.Context, string, int, github.UpdatePullRequestOptions) (github.PullRequest, error)
 }
 
 func (f fakeGitHubBackend) BackendInfo() github.BackendInfo {
@@ -676,7 +679,10 @@ func (f fakeGitHubBackend) GetIssue(ctx context.Context, repo string, issueNumbe
 	return github.Issue{}, errors.New("unused")
 }
 
-func (fakeGitHubBackend) UpdateIssue(context.Context, string, int, github.UpdateIssueOptions) (github.Issue, error) {
+func (f fakeGitHubBackend) UpdateIssue(ctx context.Context, repo string, issueNumber int, opts github.UpdateIssueOptions) (github.Issue, error) {
+	if f.updateIssue != nil {
+		return f.updateIssue(ctx, repo, issueNumber, opts)
+	}
 	return github.Issue{}, errors.New("unused")
 }
 
@@ -699,7 +705,17 @@ func (fakeGitHubBackend) CreateLabel(context.Context, string, string, string, st
 	return github.LabelResult{}, errors.New("unused")
 }
 
-func (fakeGitHubBackend) GetPullRequest(context.Context, string, int) (github.PullRequest, error) {
+func (f fakeGitHubBackend) GetPullRequest(ctx context.Context, repo string, prNumber int) (github.PullRequest, error) {
+	if f.getPullRequest != nil {
+		return f.getPullRequest(ctx, repo, prNumber)
+	}
+	return github.PullRequest{}, errors.New("unused")
+}
+
+func (f fakeGitHubBackend) UpdatePullRequest(ctx context.Context, repo string, prNumber int, opts github.UpdatePullRequestOptions) (github.PullRequest, error) {
+	if f.updatePullRequest != nil {
+		return f.updatePullRequest(ctx, repo, prNumber, opts)
+	}
 	return github.PullRequest{}, errors.New("unused")
 }
 

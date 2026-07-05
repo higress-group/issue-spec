@@ -274,6 +274,10 @@ func (unsupportedGHOperations) GetPullRequest(context.Context, string, int) (Pul
 	return PullRequest{}, unsupportedGHOperation("GetPullRequest")
 }
 
+func (unsupportedGHOperations) UpdatePullRequest(context.Context, string, int, UpdatePullRequestOptions) (PullRequest, error) {
+	return PullRequest{}, unsupportedGHOperation("UpdatePullRequest")
+}
+
 func (unsupportedGHOperations) CreatePullRequest(context.Context, string, CreatePullRequestOptions) (PullRequest, error) {
 	return PullRequest{}, unsupportedGHOperation("CreatePullRequest")
 }

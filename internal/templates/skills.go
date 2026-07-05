@@ -91,6 +91,7 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 - Resolve blocking QUESTION comments before design/tasks, or explicitly record accepted assumptions.
 - Link SPEC <-> TASK and TASK <-> PROCESS with issue-spec link.
 - Link every PROCESS to the implementation PR with issue-spec pr link-process.
+- Before implementation PR merge, add GitHub closing links to the implementation PR body with issue-spec pr link-issues so GitHub closes the proposal/design/implement issues when the PR merges.
 - Treat Agent as the logical role or workflow-assigned label. Treat Agent Session ID and Agent Session Source as artifact writer provenance, not runner resume metadata.
 - When dispatching subagents, assign each subagent an explicit subagent/session id and tell it to pass that value with --agent-session to issue-spec writer commands. In Codex, CODEX_THREAD_ID may override that value as the resolved artifact writer session id; outside Codex, --agent-session is the explicit fallback and missing session metadata is non-strict by default.
 - In runner mode, runner.public_session_id is the public /resume handle. Coordinator-authored proposal, design, implement, handoff, and update issue bodies or comments should include runner.public_session_id and /resume <public-session-id> <answer or next instruction> when available. Do not present Agent Session ID, CODEX_THREAD_ID, acpx record ids, or provider session ids as /resume handles.
@@ -99,7 +100,7 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 - Before human review, add PR rationale comments with issue-spec pr rationale for every active PROCESS.
 - Use issue-spec review finding for PR line findings and issue-spec review reply to close the original thread.
 - Run issue-spec review sync and issue-spec verify before declaring ready.
-- After the implementation PR merges, create the separate durable spec PR with issue-spec archive durable-spec --create-pr. Use an abstract long-lived --capability directory, inspect existing related durable specs, and regroup the generated draft by stable capability modules before merge.
+- After the implementation PR merges, create the separate durable spec PR with issue-spec archive durable-spec --create-pr --close-issues, passing the proposal, design, implement, and implementation PR numbers so archive also idempotently closes any still-open active issues. Use an abstract long-lived --capability directory, inspect existing related durable specs, and regroup the generated draft by stable capability modules before merge.
 
 ## Coordinator DAG Execution
 
@@ -164,8 +165,12 @@ Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing 
 6. Link each PROCESS to its TASK comments with issue-spec link.
 7. Implement the code changes for one PROCESS scope at a time, or integrate completed worker outputs by dependency order.
 8. Link every worker and review PROCESS to the PR with issue-spec pr link-process.
-9. Add PR rationale comments on key changed lines with issue-spec pr rationale, each linked to a SPEC comment.
-10. Mark PROCESS comments done only after implementation/review work and focused verification evidence exist.
+9. Add proposal/design/implement closing links to the implementation PR body:
+
+       issue-spec pr link-issues --repo {{repo}} --pr <implementation-pr> --proposal <proposal-issue> --design <design-issue> --implement <implement-issue> --json
+
+10. Add PR rationale comments on key changed lines with issue-spec pr rationale, each linked to a SPEC comment.
+11. Mark PROCESS comments done only after implementation/review work and focused verification evidence exist.
 
 ## Coordinator DAG Execution
 
@@ -239,16 +244,16 @@ Use when the user asks for /issue-spec:archive, issue-spec archive, or creating 
 
 ## Steps
 
-1. Confirm the implementation PR is merged.
+1. Confirm the implementation PR is merged and had issue-spec closing links before merge.
 2. Choose the --capability value as a stable long-lived capability or domain directory, not the original change/proposal name. Prefer names that can host related future durable specs, for example workflow-identity-and-sessions instead of agent-session-source-of-truth.
 3. Inspect existing durable specs before creating or finalizing the archive PR. Read ` + "`issue-spec/specs/<capability>/spec.md`" + ` when it exists, and scan related ` + "`issue-spec/specs/*/spec.md`" + ` files when the new behavior may belong with an existing capability. Decide whether to update, merge, or reorganize existing durable requirements instead of adding a duplicate or narrowly named spec.
-4. Create the durable spec PR:
+4. Create the durable spec PR and idempotently close any still-open PR-associated active issues:
 
-       issue-spec archive durable-spec --repo {{repo}} --proposal <issue> --capability <capability> --create-pr --branch issue-spec/durable-spec-<capability> --json
+       issue-spec archive durable-spec --repo {{repo}} --proposal <proposal-issue> --design <design-issue> --implement <implement-issue> --pr <implementation-pr> --capability <capability> --create-pr --branch issue-spec/durable-spec-<capability> --close-issues --json
 
 5. Review and edit the generated durable spec draft before handoff or merge. Reconcile it with any existing related durable specs, regroup related source SPEC content into durable capability modules instead of preserving one-to-one source SPEC sections, and keep Source SPEC links for traceability.
 6. Keep only long-lived behavior. Do not copy process records, review findings, or verification logs into durable specs.
-7. After durable spec PR merge, keep proposal/design/implement issues as audit history unless the project policy says to close them.
+7. Keep the closed proposal/design/implement issues as audit history.
 `,
 		},
 	}

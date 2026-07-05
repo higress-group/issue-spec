@@ -22,8 +22,12 @@ Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing 
 5. Link each PROCESS to its TASK comments with issue-spec link.
 6. Implement the code changes for one PROCESS scope at a time, or integrate completed worker outputs by dependency order.
 7. Link every worker and review PROCESS to the PR with issue-spec pr link-process.
-8. Add PR rationale comments on key changed lines with issue-spec pr rationale, each linked to a SPEC comment.
-9. Mark PROCESS comments done only after implementation/review work and focused verification evidence exist.
+8. Add proposal/design/implement closing links to the implementation PR body:
+
+       issue-spec pr link-issues --repo higress-group/issue-spec --pr <implementation-pr> --proposal <proposal-issue> --design <design-issue> --implement <implement-issue> --json
+
+9. Add PR rationale comments on key changed lines with issue-spec pr rationale, each linked to a SPEC comment.
+10. Mark PROCESS comments done only after implementation/review work and focused verification evidence exist.
 
 ## Coordinator DAG Execution
 

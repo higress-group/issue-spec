@@ -11,6 +11,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
+	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/templates"
 )
 
@@ -33,10 +34,14 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 	repoFlag := fs.String("repo", "", "repository owner/name")
 	host := fs.String("hostname", "github.com", "GitHub hostname")
 	proposalFlag := fs.String("proposal", "", "proposal issue number or URL")
+	designFlag := fs.String("design", "", "design issue number or URL for --close-issues")
+	implementFlag := fs.String("implement", "", "implement issue number or URL for --close-issues")
+	implementationPR := fs.Int("pr", 0, "merged implementation pull request number for --close-issues")
 	capability := fs.String("capability", "", "durable spec capability name")
 	output := fs.String("output", "", "output spec path")
 	purpose := fs.String("purpose", "", "durable spec purpose text")
 	createPR := fs.Bool("create-pr", false, "create a separate durable-spec PR from a temporary git worktree")
+	closeIssues := fs.Bool("close-issues", false, "close proposal/design/implement issues after a merged implementation PR is archived")
 	branch := fs.String("branch", "", "branch name for --create-pr")
 	base := fs.String("base", "main", "base branch for --create-pr")
 	title := fs.String("title", "", "pull request title for --create-pr")
@@ -60,9 +65,19 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 		a.errorf("%v\n", err)
 		return 2
 	}
+	closeSet, err := parseArchiveCloseIssueSet(*closeIssues, proposalIssue, *designFlag, *implementFlag, *implementationPR)
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
 	client, _, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("auth required for archive durable-spec on %s: %v\n", auth.NormalizeHost(*host), err)
+		return 1
+	}
+	closePlan, err := validateArchiveCloseIssuePlan(ctx, client, repo, closeSet)
+	if err != nil {
+		a.errorf("%v\n", err)
 		return 1
 	}
 	issue, specs, err := fetchDurableSpecSources(ctx, client, repo, proposalIssue)
@@ -90,10 +105,15 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 			a.errorf("create durable spec PR: %v\n", err)
 			return 1
 		}
+		if err := applyArchiveCloseIssuePlan(ctx, client, repo, closePlan, prResult); err != nil {
+			a.errorf("%v\n", err)
+			return 1
+		}
 		if *jsonOut {
 			return a.outputJSON(prResult)
 		}
 		fmt.Fprintf(a.out, "created durable spec PR: %s\n", prResult["pr_url"])
+		printArchiveClosedIssues(a.out, closePlan)
 		return 0
 	}
 	existing, err := os.ReadFile(outputPath)
@@ -121,10 +141,15 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 		return 1
 	}
 	result := map[string]any{"ok": true, "capability": *capability, "output": outputPath, "proposal": issue.HTMLURL, "spec_count": len(specs)}
+	if err := applyArchiveCloseIssuePlan(ctx, client, repo, closePlan, result); err != nil {
+		a.errorf("%v\n", err)
+		return 1
+	}
 	if *jsonOut {
 		return a.outputJSON(result)
 	}
 	fmt.Fprintf(a.out, "wrote durable spec draft for %s to %s\n", *capability, outputPath)
+	printArchiveClosedIssues(a.out, closePlan)
 	return 0
 }
 
@@ -138,6 +163,156 @@ type durableSpecPROptions struct {
 	BodyFile      string
 	Draft         bool
 	CommitMessage string
+}
+
+type archiveCloseIssueSet struct {
+	Enabled   bool
+	Proposal  int
+	Design    int
+	Implement int
+	PR        int
+}
+
+type archiveCloseIssuePlan struct {
+	Enabled bool
+	PR      github.PullRequest
+	Issues  []archiveCloseIssueRef
+}
+
+type archiveCloseIssueRef struct {
+	Kind   string
+	Number int
+}
+
+type closedArchiveIssue struct {
+	Kind   string `json:"kind"`
+	Number int    `json:"number"`
+	URL    string `json:"url,omitempty"`
+	State  string `json:"state,omitempty"`
+}
+
+func parseArchiveCloseIssueSet(enabled bool, proposalIssue int, designFlag, implementFlag string, prNumber int) (archiveCloseIssueSet, error) {
+	hasCloseFlagInput := strings.TrimSpace(designFlag) != "" || strings.TrimSpace(implementFlag) != "" || prNumber != 0
+	if !enabled {
+		if hasCloseFlagInput {
+			return archiveCloseIssueSet{}, fmt.Errorf("--design, --implement, and --pr require --close-issues")
+		}
+		return archiveCloseIssueSet{}, nil
+	}
+	designIssue, err := parseIssueFlag(designFlag, "design")
+	if err != nil {
+		return archiveCloseIssueSet{}, err
+	}
+	implementIssue, err := parseIssueFlag(implementFlag, "implement")
+	if err != nil {
+		return archiveCloseIssueSet{}, err
+	}
+	if prNumber <= 0 {
+		return archiveCloseIssueSet{}, fmt.Errorf("--pr must be a positive pull request number")
+	}
+	return archiveCloseIssueSet{
+		Enabled:   true,
+		Proposal:  proposalIssue,
+		Design:    designIssue,
+		Implement: implementIssue,
+		PR:        prNumber,
+	}, nil
+}
+
+func validateArchiveCloseIssuePlan(ctx context.Context, client github.Operations, repo string, closeSet archiveCloseIssueSet) (archiveCloseIssuePlan, error) {
+	if !closeSet.Enabled {
+		return archiveCloseIssuePlan{}, nil
+	}
+	pr, err := client.GetPullRequest(ctx, repo, closeSet.PR)
+	if err != nil {
+		return archiveCloseIssuePlan{}, fmt.Errorf("read implementation PR #%d: %w", closeSet.PR, err)
+	}
+	if !pr.Merged {
+		return archiveCloseIssuePlan{}, fmt.Errorf("implementation PR #%d must be merged before closing issue-spec issues", closeSet.PR)
+	}
+	if strings.TrimSpace(pr.HTMLURL) == "" {
+		return archiveCloseIssuePlan{}, fmt.Errorf("implementation PR #%d is missing html_url", closeSet.PR)
+	}
+	refs := archiveCloseIssueRefs(closeSet)
+	if err := model.VerifyIssueClosureBlock(pr.Body, refs); err != nil {
+		return archiveCloseIssuePlan{}, fmt.Errorf("implementation PR #%d issue closing links: %w", closeSet.PR, err)
+	}
+	artifacts, err := collectArtifacts(ctx, client, repo, closeSet.Implement)
+	if err != nil {
+		return archiveCloseIssuePlan{}, fmt.Errorf("read implement issue #%d comments: %w", closeSet.Implement, err)
+	}
+	if !processArtifactsLinkPullRequest(artifacts, pr.HTMLURL) {
+		return archiveCloseIssuePlan{}, fmt.Errorf("implement issue #%d has no active PROCESS linked to implementation PR %s", closeSet.Implement, pr.HTMLURL)
+	}
+	return archiveCloseIssuePlan{
+		Enabled: true,
+		PR:      pr,
+		Issues:  archiveCloseIssuePlanRefs(refs),
+	}, nil
+}
+
+func archiveCloseIssueRefs(closeSet archiveCloseIssueSet) []model.IssueClosureRef {
+	return []model.IssueClosureRef{
+		{Kind: "proposal", Number: closeSet.Proposal},
+		{Kind: "design", Number: closeSet.Design},
+		{Kind: "implement", Number: closeSet.Implement},
+	}
+}
+
+func archiveCloseIssuePlanRefs(refs []model.IssueClosureRef) []archiveCloseIssueRef {
+	issueRefs := make([]archiveCloseIssueRef, 0, len(refs))
+	for _, ref := range refs {
+		issueRefs = append(issueRefs, archiveCloseIssueRef{Kind: ref.Kind, Number: ref.Number})
+	}
+	return issueRefs
+}
+
+func processArtifactsLinkPullRequest(artifacts []model.Artifact, prURL string) bool {
+	for _, artifact := range artifacts {
+		tc := artifact.Comment
+		if tc.Type != "PROCESS" || tc.Status == "superseded" {
+			continue
+		}
+		if linkValuesContain(tc.Links["PR"], prURL) {
+			return true
+		}
+	}
+	return false
+}
+
+func applyArchiveCloseIssuePlan(ctx context.Context, client github.Operations, repo string, plan archiveCloseIssuePlan, result map[string]any) error {
+	if !plan.Enabled {
+		return nil
+	}
+	state := "closed"
+	closed := make([]closedArchiveIssue, 0, len(plan.Issues))
+	for _, issueRef := range plan.Issues {
+		issue, err := client.UpdateIssue(ctx, repo, issueRef.Number, github.UpdateIssueOptions{State: &state})
+		if err != nil {
+			return fmt.Errorf("close %s issue #%d: %w", issueRef.Kind, issueRef.Number, err)
+		}
+		closed = append(closed, closedArchiveIssue{
+			Kind:   issueRef.Kind,
+			Number: issueRef.Number,
+			URL:    issue.HTMLURL,
+			State:  issue.State,
+		})
+	}
+	result["closed_issues"] = closed
+	result["implementation_pr"] = plan.PR.Number
+	result["implementation_pr_url"] = plan.PR.HTMLURL
+	return nil
+}
+
+func printArchiveClosedIssues(out interface{ Write([]byte) (int, error) }, plan archiveCloseIssuePlan) {
+	if !plan.Enabled || len(plan.Issues) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(plan.Issues))
+	for _, issueRef := range plan.Issues {
+		parts = append(parts, fmt.Sprintf("%s #%d", issueRef.Kind, issueRef.Number))
+	}
+	fmt.Fprintf(out, "closed issue-spec issues after merged PR %s: %s\n", plan.PR.HTMLURL, strings.Join(parts, ", "))
 }
 
 func fetchDurableSpecSources(ctx context.Context, client github.Operations, repo string, proposalIssue int) (github.Issue, []templates.SpecSource, error) {

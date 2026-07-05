@@ -66,15 +66,16 @@ func TestGHBackendIssueOperationsCommandConstructionAndDecoding(t *testing.T) {
 		},
 		{
 			name:   "update issue",
-			stdout: `{"number":9,"html_url":"https://github.com/o/r/issues/9","title":"new","body":"body","state":"open"}`,
+			stdout: `{"number":9,"html_url":"https://github.com/o/r/issues/9","title":"new","body":"body","state":"closed"}`,
 			call: func(b *GHBackend) (any, error) {
 				title := "new"
-				return b.UpdateIssue(context.Background(), "o/r", 9, UpdateIssueOptions{Title: &title})
+				state := "closed"
+				return b.UpdateIssue(context.Background(), "o/r", 9, UpdateIssueOptions{Title: &title, State: &state})
 			},
 			wantArgs: []string{"api", "--method", http.MethodPatch, "--header", githubAPIVersion, "--input", "-", "/repos/o/r/issues/9"},
-			wantBody: map[string]any{"title": "new"},
+			wantBody: map[string]any{"state": "closed", "title": "new"},
 			assertion: func(t *testing.T, got any) {
-				if got.(Issue).Title != "new" {
+				if got.(Issue).Title != "new" || got.(Issue).State != "closed" {
 					t.Fatalf("issue = %+v", got)
 				}
 			},

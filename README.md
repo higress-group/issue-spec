@@ -299,7 +299,7 @@ SPEC <-> TASK <-> PROCESS <-> PR rationale
                    +-> VERIFY evidence
 ```
 
-After the implementation PR merges, `archive durable-spec --create-pr` opens a separate PR that writes the long-lived behavior contract into the repository.
+Before the implementation PR merges, `pr link-issues` writes GitHub closing links into the implementation PR body so GitHub closes the PR-associated proposal, design, and implement issues at merge time. After merge, `archive durable-spec --create-pr --close-issues` opens a separate PR that writes the long-lived behavior contract into the repository and idempotently closes any still-open active issues.
 
 Use `--capability` as a stable capability directory rather than the original change name. Before finalizing the archive PR, inspect existing related durable specs and treat the generated durable spec as a draft to merge, revise, or regroup by durable functional modules while preserving Source SPEC links for traceability.
 
@@ -348,6 +348,7 @@ issue-spec verify-links --repo owner/repo --proposal 1 --design 2 --implement 3
 
 issue-spec pr rationale --repo owner/repo --pr 4 --path internal/foo.go --line 42 --process PROCESS-001 --spec SPEC-001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "Why this line changes."
 issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-001 --pr 4
+issue-spec pr link-issues --repo owner/repo --pr 4 --proposal 1 --design 2 --implement 3
 
 issue-spec review sync --repo owner/repo --pr 4 --implement 3 --id REVIEW-001
 issue-spec review finding --repo owner/repo --pr 4 --path internal/foo.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-001 --spec SPEC-001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "What must be fixed."
@@ -356,7 +357,7 @@ issue-spec review reply --repo owner/repo --pr 4 --comment-id 123456 --finding F
 issue-spec verify --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --durable-spec issue-spec/specs/issue-spec-cli/spec.md
 
 issue-spec archive durable-spec --repo owner/repo --proposal 1 --capability issue-spec-cli
-issue-spec archive durable-spec --repo owner/repo --proposal 1 --capability issue-spec-cli --create-pr --branch issue-spec/durable-spec-issue-spec-cli
+issue-spec archive durable-spec --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --capability issue-spec-cli --create-pr --branch issue-spec/durable-spec-issue-spec-cli --close-issues
 
 issue-spec runner preflight --repo owner/repo --runner login
 issue-spec runner poll --repo owner/repo --runner login --once --dry-run

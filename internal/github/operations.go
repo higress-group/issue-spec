@@ -13,6 +13,7 @@ type Operations interface {
 	UpdateComment(context.Context, string, int64, string) (Comment, error)
 	CreateLabel(context.Context, string, string, string, string) (LabelResult, error)
 	GetPullRequest(context.Context, string, int) (PullRequest, error)
+	UpdatePullRequest(context.Context, string, int, UpdatePullRequestOptions) (PullRequest, error)
 	CreatePullRequest(context.Context, string, CreatePullRequestOptions) (PullRequest, error)
 	ListPullRequestFiles(context.Context, string, int) ([]PullRequestFile, error)
 	ListPullRequestReviewComments(context.Context, string, int) ([]PullRequestReviewComment, error)

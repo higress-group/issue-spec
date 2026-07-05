@@ -53,6 +53,9 @@ func (b *GHBackend) UpdateIssue(ctx context.Context, repo string, issueNumber in
 	if opts.Body != nil {
 		payload["body"] = *opts.Body
 	}
+	if opts.State != nil {
+		payload["state"] = *opts.State
+	}
 	var issue Issue
 	err := b.runJSON(ctx, ExternalCLIAPIRequest{
 		Operation: "UpdateIssue",

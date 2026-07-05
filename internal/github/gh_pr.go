@@ -26,6 +26,16 @@ func (b *GHBackend) CreatePullRequest(ctx context.Context, repo string, opts Cre
 	return pr, err
 }
 
+func (b *GHBackend) UpdatePullRequest(ctx context.Context, repo string, prNumber int, opts UpdatePullRequestOptions) (PullRequest, error) {
+	payload := map[string]any{}
+	if opts.Body != nil {
+		payload["body"] = *opts.Body
+	}
+	var pr PullRequest
+	err := b.runAPIJSON(ctx, "UpdatePullRequest", http.MethodPatch, fmt.Sprintf("/repos/%s/pulls/%d", repo, prNumber), nil, payload, &pr)
+	return pr, err
+}
+
 func (b *GHBackend) ListPullRequestFiles(ctx context.Context, repo string, prNumber int) ([]PullRequestFile, error) {
 	var files []PullRequestFile
 	err := b.runAPIJSONPages(ctx, "ListPullRequestFiles", http.MethodGet, fmt.Sprintf("/repos/%s/pulls/%d/files", repo, prNumber), paginationQuery(), nil, "", &files)

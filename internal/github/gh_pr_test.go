@@ -12,8 +12,9 @@ import (
 
 func TestGHBackendPullRequestOperations(t *testing.T) {
 	runner := &sequenceCLIRunner{results: []ExternalCLIResult{
-		{Stdout: []byte(`{"number":7,"html_url":"https://github.com/owner/repo/pull/7","state":"open","head":{"sha":"abc123","ref":"feature"},"base":{"ref":"main"}}`)},
+		{Stdout: []byte(`{"number":7,"html_url":"https://github.com/owner/repo/pull/7","state":"closed","merged":true,"body":"details","head":{"sha":"abc123","ref":"feature"},"base":{"ref":"main"}}`)},
 		{Stdout: []byte(`{"number":8,"html_url":"https://github.com/owner/repo/pull/8","state":"open","head":{"sha":"def456","ref":"feature-2"},"base":{"ref":"main"}}`)},
+		{Stdout: []byte(`{"number":7,"html_url":"https://github.com/owner/repo/pull/7","state":"open","body":"updated body","head":{"sha":"abc123","ref":"feature"},"base":{"ref":"main"}}`)},
 	}}
 	backend := newTestGHBackend(t, "ghe.example.com", runner)
 
@@ -21,7 +22,7 @@ func TestGHBackendPullRequestOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pr.Number != 7 || pr.Head.SHA != "abc123" || pr.Base.Ref != "main" {
+	if pr.Number != 7 || pr.Head.SHA != "abc123" || pr.Base.Ref != "main" || !pr.Merged || pr.Body != "details" {
 		t.Fatalf("pull request = %+v", pr)
 	}
 	wantArgs := []string{"api", "--method", http.MethodGet, "--header", githubAPIVersion, "--hostname", "ghe.example.com", "/repos/owner/repo/pulls/7"}
@@ -52,6 +53,26 @@ func TestGHBackendPullRequestOperations(t *testing.T) {
 	}
 	if body["title"] != "Add feature" || body["head"] != "feature-2" || body["base"] != "main" || body["body"] != "details" || body["draft"] != true {
 		t.Fatalf("create PR body = %#v", body)
+	}
+
+	updatedBody := "updated body"
+	updated, err := backend.UpdatePullRequest(context.Background(), "owner/repo", 7, UpdatePullRequestOptions{Body: &updatedBody})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Number != 7 || updated.Body != updatedBody {
+		t.Fatalf("updated PR = %+v", updated)
+	}
+	wantArgs = []string{"api", "--method", http.MethodPatch, "--header", githubAPIVersion, "--hostname", "ghe.example.com", "--input", "-", "/repos/owner/repo/pulls/7"}
+	if !reflect.DeepEqual(runner.commands[2].Args, wantArgs) {
+		t.Fatalf("update PR args = %#v, want %#v", runner.commands[2].Args, wantArgs)
+	}
+	body = map[string]any{}
+	if err := json.Unmarshal(runner.commands[2].Stdin, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["body"] != updatedBody {
+		t.Fatalf("update PR body = %#v", body)
 	}
 }
 

@@ -91,6 +91,8 @@ type PullRequest struct {
 	Number  int    `json:"number"`
 	HTMLURL string `json:"html_url"`
 	State   string `json:"state"`
+	Merged  bool   `json:"merged"`
+	Body    string `json:"body"`
 	Head    struct {
 		SHA string `json:"sha"`
 		Ref string `json:"ref"`
@@ -108,9 +110,14 @@ type CreatePullRequestOptions struct {
 	Draft bool
 }
 
+type UpdatePullRequestOptions struct {
+	Body *string
+}
+
 type UpdateIssueOptions struct {
 	Title *string
 	Body  *string
+	State *string
 }
 
 type PullRequestFile struct {
@@ -208,6 +215,16 @@ func (c *Client) GetIssue(ctx context.Context, repo string, issueNumber int) (Is
 	return issue, err
 }
 
+func (c *Client) UpdatePullRequest(ctx context.Context, repo string, prNumber int, opts UpdatePullRequestOptions) (PullRequest, error) {
+	payload := map[string]any{}
+	if opts.Body != nil {
+		payload["body"] = *opts.Body
+	}
+	var pr PullRequest
+	err := c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/pulls/%d", repo, prNumber), payload, &pr)
+	return pr, err
+}
+
 func (c *Client) UpdateIssue(ctx context.Context, repo string, issueNumber int, opts UpdateIssueOptions) (Issue, error) {
 	payload := map[string]any{}
 	if opts.Title != nil {
@@ -215,6 +232,9 @@ func (c *Client) UpdateIssue(ctx context.Context, repo string, issueNumber int, 
 	}
 	if opts.Body != nil {
 		payload["body"] = *opts.Body
+	}
+	if opts.State != nil {
+		payload["state"] = *opts.State
 	}
 	var issue Issue
 	err := c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", repo, issueNumber), payload, &issue)

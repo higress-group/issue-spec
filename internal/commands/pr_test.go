@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/higress-group/issue-spec/internal/github"
@@ -106,13 +107,76 @@ func TestCreateRationaleWithGHBackendUsesPatchLines(t *testing.T) {
 	}
 }
 
+func TestLinkPullRequestIssuesWritesClosingKeywords(t *testing.T) {
+	ctx := context.Background()
+	client := &fakePRClient{pr: github.PullRequest{
+		Number:  7,
+		HTMLURL: "https://github.com/o/r/pull/7",
+		Body:    "## Summary\n\nImplementation details.\n",
+	}}
+	result, err := linkPullRequestIssues(ctx, client, "o/r", 7, []model.IssueClosureRef{
+		{Kind: "proposal", Number: 1},
+		{Kind: "design", Number: 2},
+		{Kind: "implement", Number: 3},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || !result.Changed || result.Proposal != 1 || result.Design != 2 || result.Implement != 3 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(client.updatedBodies) != 1 {
+		t.Fatalf("updated bodies = %d, want 1", len(client.updatedBodies))
+	}
+	body := client.updatedBodies[0]
+	for _, want := range []string{"<!-- issue-spec:pr-close-issues version=1 -->", "Closes #1", "Closes #2", "Closes #3", "<!-- /issue-spec:pr-close-issues -->"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("PR body missing %q:\n%s", want, body)
+		}
+	}
+
+	client.pr.Body = body
+	result, err = linkPullRequestIssues(ctx, client, "o/r", 7, []model.IssueClosureRef{
+		{Kind: "proposal", Number: 1},
+		{Kind: "design", Number: 2},
+		{Kind: "implement", Number: 3},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed || len(client.updatedBodies) != 1 {
+		t.Fatalf("expected idempotent result=%+v updates=%d", result, len(client.updatedBodies))
+	}
+}
+
+func TestLinkPullRequestIssuesRejectsMergedPR(t *testing.T) {
+	client := &fakePRClient{pr: github.PullRequest{Number: 7, HTMLURL: "https://github.com/o/r/pull/7", Merged: true}}
+	_, err := linkPullRequestIssues(context.Background(), client, "o/r", 7, []model.IssueClosureRef{{Kind: "proposal", Number: 1}})
+	if err == nil || !strings.Contains(err.Error(), "already merged") {
+		t.Fatalf("error = %v, want already merged", err)
+	}
+	if len(client.updatedBodies) != 0 {
+		t.Fatalf("merged PR should not be updated: %d", len(client.updatedBodies))
+	}
+}
+
 type fakePRClient struct {
-	pr       github.PullRequest
-	files    []github.PullRequestFile
-	comments []github.PullRequestReviewComment
+	pr            github.PullRequest
+	files         []github.PullRequestFile
+	comments      []github.PullRequestReviewComment
+	updatedBodies []string
 }
 
 func (f *fakePRClient) GetPullRequest(context.Context, string, int) (github.PullRequest, error) {
+	return f.pr, nil
+}
+
+func (f *fakePRClient) UpdatePullRequest(_ context.Context, _ string, _ int, opts github.UpdatePullRequestOptions) (github.PullRequest, error) {
+	if opts.Body == nil {
+		panic("missing PR body update")
+	}
+	f.updatedBodies = append(f.updatedBodies, *opts.Body)
+	f.pr.Body = *opts.Body
 	return f.pr, nil
 }
 

@@ -15,7 +15,7 @@ import (
 
 func (a *app) runPR(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec pr rationale ...\n")
+		a.errorf("usage: issue-spec pr rationale|link-process|link-issues ...\n")
 		return 2
 	}
 	switch args[0] {
@@ -23,10 +23,116 @@ func (a *app) runPR(ctx context.Context, args []string) int {
 		return a.runPRRationale(ctx, args[1:])
 	case "link-process":
 		return a.runPRLinkProcess(ctx, args[1:])
+	case "link-issues":
+		return a.runPRLinkIssues(ctx, args[1:])
 	default:
 		a.errorf("unknown pr command %q\n", args[0])
 		return 2
 	}
+}
+
+func (a *app) runPRLinkIssues(ctx context.Context, args []string) int {
+	fs := newFlagSet("pr link-issues", a.err)
+	repoFlag := fs.String("repo", "", "repository owner/name")
+	host := fs.String("hostname", "github.com", "GitHub hostname")
+	prFlag := fs.Int("pr", 0, "implementation pull request number")
+	proposalFlag := fs.String("proposal", "", "proposal issue number or URL")
+	designFlag := fs.String("design", "", "design issue number or URL")
+	implementFlag := fs.String("implement", "", "implement issue number or URL")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	repo, ok := a.validateRepo(*repoFlag)
+	if !ok {
+		return 2
+	}
+	if *prFlag <= 0 {
+		a.errorf("--pr must be a positive pull request number\n")
+		return 2
+	}
+	proposalIssue, err := parseIssueFlag(*proposalFlag, "proposal")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	designIssue, err := parseIssueFlag(*designFlag, "design")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	implementIssue, err := parseIssueFlag(*implementFlag, "implement")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	client, _, err := a.clientFor(ctx, *host)
+	if err != nil {
+		a.errorf("auth required for pr link-issues on %s: %v\n", auth.NormalizeHost(*host), err)
+		return 1
+	}
+	result, err := linkPullRequestIssues(ctx, client, repo, *prFlag, []model.IssueClosureRef{
+		{Kind: "proposal", Number: proposalIssue},
+		{Kind: "design", Number: designIssue},
+		{Kind: "implement", Number: implementIssue},
+	})
+	if err != nil {
+		a.errorf("link PR issues: %v\n", err)
+		return 1
+	}
+	if *jsonOut {
+		return a.outputJSON(result)
+	}
+	if result.Changed {
+		fmt.Fprintf(a.out, "linked PR %s to close issue-spec issues: proposal #%d, design #%d, implement #%d\n", result.PRURL, proposalIssue, designIssue, implementIssue)
+	} else {
+		fmt.Fprintf(a.out, "PR %s already has issue-spec closing links\n", result.PRURL)
+	}
+	return 0
+}
+
+type linkPullRequestIssuesResult struct {
+	OK        bool   `json:"ok"`
+	Changed   bool   `json:"changed"`
+	PR        int    `json:"pr"`
+	PRURL     string `json:"pr_url"`
+	Proposal  int    `json:"proposal"`
+	Design    int    `json:"design"`
+	Implement int    `json:"implement"`
+}
+
+func linkPullRequestIssues(ctx context.Context, client interface {
+	GetPullRequest(context.Context, string, int) (github.PullRequest, error)
+	UpdatePullRequest(context.Context, string, int, github.UpdatePullRequestOptions) (github.PullRequest, error)
+}, repo string, prNumber int, refs []model.IssueClosureRef) (linkPullRequestIssuesResult, error) {
+	pr, err := client.GetPullRequest(ctx, repo, prNumber)
+	if err != nil {
+		return linkPullRequestIssuesResult{}, err
+	}
+	if pr.Merged {
+		return linkPullRequestIssuesResult{}, fmt.Errorf("PR #%d is already merged; closing keywords must be added before merge", prNumber)
+	}
+	updatedBody, changed, err := model.AddIssueClosureBlock(pr.Body, refs)
+	if err != nil {
+		return linkPullRequestIssuesResult{}, err
+	}
+	if changed {
+		if _, err := client.UpdatePullRequest(ctx, repo, prNumber, github.UpdatePullRequestOptions{Body: &updatedBody}); err != nil {
+			return linkPullRequestIssuesResult{}, err
+		}
+	}
+	result := linkPullRequestIssuesResult{OK: true, Changed: changed, PR: pr.Number, PRURL: pr.HTMLURL}
+	for _, ref := range refs {
+		switch ref.Kind {
+		case "proposal":
+			result.Proposal = ref.Number
+		case "design":
+			result.Design = ref.Number
+		case "implement":
+			result.Implement = ref.Number
+		}
+	}
+	return result, nil
 }
 
 func (a *app) runPRLinkProcess(ctx context.Context, args []string) int {
