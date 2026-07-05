@@ -63,6 +63,8 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return a.runPR(ctx, args[1:])
 	case "archive":
 		return a.runArchive(ctx, args[1:])
+	case "workflow":
+		return a.runWorkflow(ctx, args[1:])
 	case "link":
 		return a.runLink(ctx, args[1:])
 	case "status":
@@ -129,6 +131,8 @@ Usage:
   issue-spec review reply --repo owner/repo --pr N --comment-id COMMENT_ID --finding FINDING-001 --process PROCESS-001 --status resolved --body "fixed"
   issue-spec review sync --repo owner/repo --pr N --implement N --id REVIEW-001
   issue-spec archive durable-spec --repo owner/repo --proposal N --design N --implement N --pr N --capability my-capability --close-issues
+  issue-spec workflow validate --repo owner/repo [--json]
+  issue-spec workflow which --repo owner/repo [--schema name] [--json]
   issue-spec link --repo owner/repo --from SPEC-001 --from-issue N --to TASK-001 --to-issue M
   issue-spec status --repo owner/repo --proposal N [--design N] [--implement N]
   issue-spec verify --repo owner/repo --proposal N --design N --implement N [--durable-spec path]

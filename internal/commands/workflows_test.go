@@ -109,6 +109,27 @@ func TestWriteWorkflowArtifactsCommandsOnly(t *testing.T) {
 	}
 }
 
+func TestWriteWorkflowArtifactsToolsNoneSkipsWorkflowResolve(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "issue-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "issue-spec", "config.yaml"), []byte("schema: [invalid\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := writeWorkflowArtifacts(root, "owner/repo", "none", "both")
+	if err != nil {
+		t.Fatalf("--tools none should not resolve workflow config: %v", err)
+	}
+	if result.Delivery != "both" || len(result.Tools) != 0 || result.WorkflowSource != "" {
+		t.Fatalf("unexpected generation result for tools none: %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".agents")); !os.IsNotExist(err) {
+		t.Fatalf("tools none should not create workflow artifacts, err=%v", err)
+	}
+}
+
 func TestResolveWorkflowToolsDetectsExistingToolDirs(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".agents"), 0o755); err != nil {

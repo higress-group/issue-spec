@@ -30,3 +30,12 @@ Use when the user asks for /issue-spec:review, issue-spec review, or a PR review
 3. Each review agent authors its own findings with issue-spec review finding under its own agent identity; the coordinator schedules review agents and routes blockers but does not author findings on their behalf.
 4. P0/P1 findings block final verify until the owning worker fixes them and replies on the thread, and the review agent that opened the finding re-checks and records the resolution or resolves the GitHub conversation.
 5. If a review agent finds no issues, record that result in REVIEW or VERIFY evidence before marking the review PROCESS done.
+
+## Project Workflow
+
+- Workflow Source: `builtin`
+- Workflow Schema: `issue-spec`
+- Workflow Diagnostics:
+
+Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in GitHub issue-native storage; durable specs are repository files created during archive.
+

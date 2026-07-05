@@ -10,6 +10,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/templates"
+	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
 func (a *app) runIssue(ctx context.Context, args []string) int {
@@ -53,6 +54,16 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {
 		return 2
+	}
+	workflowPlan, workflowErr := workflow.Resolve(".")
+	if workflowErr != nil {
+		a.errorf("workflow validation failed: %v\n", workflowErr)
+		for _, diagnostic := range workflowPlan.Diagnostics {
+			if diagnostic.Severity == "error" {
+				a.errorf("- %s: %s\n", diagnostic.Code, diagnostic.Message)
+			}
+		}
+		return 1
 	}
 	client, _, err := a.clientFor(ctx, *host)
 	if err != nil {
@@ -157,6 +168,15 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 		if err != nil {
 			a.errorf("prepare issue body: %v\n", err)
 			return 2
+		}
+	} else {
+		rendered, used, err := renderIssueBodyFromWorkflow(workflowPlan, *repoFlag, kind, *change, *proposal, *design, body)
+		if err != nil {
+			a.errorf("render workflow issue template: %v\n", err)
+			return 1
+		}
+		if used {
+			body = rendered
 		}
 	}
 	title = templates.IssueTitle(kind, *change, body, *titleFlag)

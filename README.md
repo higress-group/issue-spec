@@ -323,6 +323,27 @@ issue-spec init --repo owner/repo --tools codex,claude --delivery both
 
 If `--tools` is omitted, init detects existing `.agents` or `.claude` directories and refreshes those workflows. Use `--tools none` to initialize only `.issue-spec/config.json` and optional labels.
 
+## Project Workflow Configuration
+
+Projects can customize issue-spec workflow instructions and templates without moving active change state back into repository change directories.
+
+Discovery order:
+
+1. `issue-spec/config.yaml` with project schemas under `issue-spec/schemas/<schema>/schema.yaml`.
+2. Legacy `openspec/config.yaml` with schemas under `openspec/schemas/<schema>/schema.yaml`, only when no preferred issue-spec config exists.
+3. Built-in issue-spec workflow.
+
+Schema templates are resolved from the selected schema's `templates/` directory. Template paths must be relative, must not escape the schema template directory, and must exist before issue-spec uses them. Active proposal/design/implement content, SPEC/TASK/PROCESS/QUESTION/REVIEW/VERIFY typed comments, PR rationale, and review findings remain in GitHub issue-native storage. Legacy OpenSpec outputs such as `proposal.md`, `specs/**/*.md`, `tasks.md`, `review.md`, and `verify.md` are treated as storage mapping hints, not active files to write.
+
+Validate or inspect the selected workflow before writing artifacts:
+
+```bash
+issue-spec workflow validate --repo owner/repo --json
+issue-spec workflow which --repo owner/repo --json
+```
+
+New durable specs default to `issue-spec/specs/<capability>/spec.md`. If `openspec/specs/<capability>/spec.md` already exists, archive can update that legacy durable spec and reports the compatibility path selection.
+
 ## CLI Reference
 
 ```bash
@@ -350,6 +371,9 @@ issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-001 --reso
 issue-spec link --repo owner/repo --from SPEC-001 --from-issue 1 --to TASK-001 --to-issue 2
 issue-spec status --repo owner/repo --proposal 1 --design 2 --implement 3
 issue-spec verify-links --repo owner/repo --proposal 1 --design 2 --implement 3
+
+issue-spec workflow validate --repo owner/repo --json
+issue-spec workflow which --repo owner/repo --schema custom-workflow --json
 
 issue-spec pr rationale --repo owner/repo --pr 4 --path internal/foo.go --line 42 --process PROCESS-001 --spec SPEC-001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "Why this line changes."
 issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-001 --pr 4

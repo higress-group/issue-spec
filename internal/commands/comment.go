@@ -9,6 +9,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/templates"
+	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
 func (a *app) runComment(ctx context.Context, args []string) int {
@@ -56,6 +57,22 @@ func (a *app) runCommentGenerate(_ context.Context, args []string) int {
 	if err != nil {
 		a.errorf("generate typed comment: %v\n", err)
 		return 2
+	}
+	workflowPlan, workflowErr := workflow.Resolve(".")
+	if workflowErr != nil {
+		a.errorf("workflow validation failed: %v\n", workflowErr)
+		for _, diagnostic := range workflowPlan.Diagnostics {
+			if diagnostic.Severity == "error" {
+				a.errorf("- %s: %s\n", diagnostic.Code, diagnostic.Message)
+			}
+		}
+		return 1
+	}
+	if rendered, used, err := renderTypedBodyFromWorkflow(workflowPlan, *commentType, *id, *agent, *status, *scope, raw, body); err != nil {
+		a.errorf("render workflow typed comment template: %v\n", err)
+		return 2
+	} else if used {
+		body = rendered
 	}
 	if !strings.HasSuffix(body, "\n") {
 		body += "\n"

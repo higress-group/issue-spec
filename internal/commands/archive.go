@@ -13,6 +13,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/templates"
+	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
 func (a *app) runArchive(ctx context.Context, args []string) int {
@@ -86,9 +87,8 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 		return 1
 	}
 	outputPath := strings.TrimSpace(*output)
-	if outputPath == "" {
-		outputPath = filepath.Join("issue-spec", "specs", *capability, "spec.md")
-	}
+	outputSelection := workflow.SelectArchivePath(".", *capability, outputPath)
+	outputPath = outputSelection.Path
 	if *createPR {
 		prResult, err := a.createDurableSpecPR(ctx, client, repo, issue.HTMLURL, specs, durableSpecPROptions{
 			Capability:    *capability,
@@ -110,9 +110,14 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 			return 1
 		}
 		if *jsonOut {
+			prResult["output_source"] = outputSelection.Source
+			prResult["legacy_output"] = outputSelection.Legacy
 			return a.outputJSON(prResult)
 		}
 		fmt.Fprintf(a.out, "created durable spec PR: %s\n", prResult["pr_url"])
+		if outputSelection.Legacy {
+			fmt.Fprintf(a.out, "legacy durable spec path selected: %s\n", outputPath)
+		}
 		printArchiveClosedIssues(a.out, closePlan)
 		return 0
 	}
@@ -140,7 +145,7 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 		a.errorf("write durable spec %s: %v\n", outputPath, err)
 		return 1
 	}
-	result := map[string]any{"ok": true, "capability": *capability, "output": outputPath, "proposal": issue.HTMLURL, "spec_count": len(specs)}
+	result := map[string]any{"ok": true, "capability": *capability, "output": outputPath, "output_source": outputSelection.Source, "legacy_output": outputSelection.Legacy, "proposal": issue.HTMLURL, "spec_count": len(specs)}
 	if err := applyArchiveCloseIssuePlan(ctx, client, repo, closePlan, result); err != nil {
 		a.errorf("%v\n", err)
 		return 1
@@ -149,6 +154,9 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 		return a.outputJSON(result)
 	}
 	fmt.Fprintf(a.out, "wrote durable spec draft for %s to %s\n", *capability, outputPath)
+	if outputSelection.Legacy {
+		fmt.Fprintf(a.out, "legacy durable spec path selected: %s\n", outputPath)
+	}
 	printArchiveClosedIssues(a.out, closePlan)
 	return 0
 }
