@@ -78,6 +78,7 @@ type Config struct {
 	NoWait                    bool
 	ClaudeIncludeUserSettings bool
 	ClaudeAllowedTools        []string
+	ClaudeEffort              string
 	HostEnv                   []string
 	ExtraEnv                  []string
 	SummaryBounds             contextbundle.SummaryBounds
@@ -283,6 +284,9 @@ func (a *Adapter) NewSession(ctx context.Context, req NewSessionRequest) (Dispat
 	if err := a.applyMode(ctx, sessionName); err != nil {
 		return DispatchResult{}, err
 	}
+	if err := a.applyClaudeEffort(ctx, sessionName); err != nil {
+		return DispatchResult{}, err
+	}
 
 	dispatch, dispatchErr := a.dispatchPrompt(ctx, sessionName, req.Prompt, req.NoWait, req.TurnCorrelationToken)
 	if dispatchErr != nil {
@@ -349,6 +353,9 @@ func (a *Adapter) Resume(ctx context.Context, req ResumeRequest) (DispatchResult
 		if err := a.applyMode(ctx, sessionName); err != nil {
 			return DispatchResult{}, err
 		}
+	}
+	if err := a.applyClaudeEffort(ctx, sessionName); err != nil {
+		return DispatchResult{}, err
 	}
 	dispatch, dispatchErr := a.dispatchPrompt(ctx, sessionName, req.Prompt, req.NoWait, req.TurnCorrelationToken)
 	if dispatchErr != nil {
@@ -510,6 +517,15 @@ func (a *Adapter) BuildSetModeCommand(sessionName string) Command {
 	return Command{Binary: a.cfg.Binary, Args: args, Dir: a.cfg.CWD, Env: a.commandEnv()}
 }
 
+func (a *Adapter) BuildSetConfigCommand(sessionName, key, value string) Command {
+	args := a.globalArgs("json")
+	args = append(args, a.cfg.Agent, "set", key, value)
+	if strings.TrimSpace(sessionName) != "" {
+		args = append(args, "-s", strings.TrimSpace(sessionName))
+	}
+	return Command{Binary: a.cfg.Binary, Args: args, Dir: a.cfg.CWD, Env: a.commandEnv()}
+}
+
 func (a *Adapter) BuildCancelCommand(sessionName string) Command {
 	args := a.globalArgs("json")
 	args = append(args, a.cfg.Agent, "cancel")
@@ -592,6 +608,14 @@ func (a *Adapter) applyMode(ctx context.Context, sessionName string) error {
 		return nil
 	}
 	_, err := a.runWithRetryableQueue(ctx, "set-mode", a.BuildSetModeCommand(sessionName))
+	return err
+}
+
+func (a *Adapter) applyClaudeEffort(ctx context.Context, sessionName string) error {
+	if a.cfg.Agent != AgentClaude || strings.TrimSpace(a.cfg.ClaudeEffort) == "" {
+		return nil
+	}
+	_, err := a.runWithRetryableQueue(ctx, "set-effort", a.BuildSetConfigCommand(sessionName, "effort", a.cfg.ClaudeEffort))
 	return err
 }
 
@@ -1391,6 +1415,10 @@ func normalizeConfig(cfg Config) Config {
 	cfg.NonInteractivePermissions = strings.TrimSpace(cfg.NonInteractivePermissions)
 	cfg.CWD = strings.TrimSpace(cfg.CWD)
 	cfg.ClaudeAllowedTools = normalizeList(cfg.ClaudeAllowedTools)
+	cfg.ClaudeEffort = normalizeClaudeEffort(cfg.ClaudeEffort)
+	if cfg.Agent == AgentClaude && cfg.ClaudeEffort == "" {
+		cfg.ClaudeEffort = normalizeClaudeEffort(configEnvValue(cfg, "CLAUDE_CODE_EFFORT_LEVEL"))
+	}
 	return cfg
 }
 
@@ -1452,6 +1480,41 @@ func normalizeList(values []string) []string {
 		}
 	}
 	return out
+}
+
+func normalizeClaudeEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low", "medium", "high", "xhigh", "max":
+		return strings.ToLower(strings.TrimSpace(value))
+	case "ultracode":
+		return "max"
+	default:
+		return ""
+	}
+}
+
+func configEnvValue(cfg Config, name string) string {
+	if value, ok := envAssignmentValue(cfg.ExtraEnv, name); ok {
+		return value
+	}
+	hostEnv := cfg.HostEnv
+	if hostEnv == nil {
+		hostEnv = os.Environ()
+	}
+	if value, ok := envAssignmentValue(hostEnv, name); ok {
+		return value
+	}
+	return ""
+}
+
+func envAssignmentValue(entries []string, name string) (string, bool) {
+	prefix := name + "="
+	for _, entry := range entries {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix), true
+		}
+	}
+	return "", false
 }
 
 func commandDiagnostics(result CommandResult, err error) string {

@@ -33,7 +33,19 @@ var (
 	ErrSandboxPreflightFailed = errors.New("sandbox preflight failed")
 )
 
-var defaultEnvAllowlist = []string{"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO", "CURL_CA_BUNDLE"}
+var defaultEnvAllowlist = []string{
+	"PATH",
+	"LANG",
+	"LC_ALL",
+	"LC_CTYPE",
+	"TERM",
+	"TZ",
+	"SSL_CERT_FILE",
+	"SSL_CERT_DIR",
+	"GIT_SSL_CAINFO",
+	"CURL_CA_BUNDLE",
+	"CLAUDE_CODE_EFFORT_LEVEL",
+}
 var proxyEnvNames = []string{"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY"}
 
 type Config struct {

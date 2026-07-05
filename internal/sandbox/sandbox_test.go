@@ -119,6 +119,36 @@ func TestPrepareMergesTrustedCommandEnvWithoutReintroducingHostSecrets(t *testin
 	}
 }
 
+func TestPreparePreservesClaudeEffortEnvByDefault(t *testing.T) {
+	cfg := Config{
+		UnsafeNoSandbox:   true,
+		WorkspacePath:     testAbsPath("workspace"),
+		TempHome:          testAbsPath("home"),
+		TempGHConfigDir:   testAbsPath("gh"),
+		TempXDGConfigHome: testAbsPath("xdg"),
+		HostEnv: []string{
+			"PATH=/usr/bin",
+			"CLAUDE_CODE_EFFORT_LEVEL=max",
+			"CLAUDE_CODE_AUTH_TOKEN=secret",
+		},
+	}
+
+	prepared, err := Prepare(context.Background(), cfg, Command{Binary: "acpx"}, Dependencies{})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	env := envMap(prepared.Command.Env)
+	if got := env["CLAUDE_CODE_EFFORT_LEVEL"]; got != "max" {
+		t.Fatalf("CLAUDE_CODE_EFFORT_LEVEL = %q, want max in env %v", got, prepared.Command.Env)
+	}
+	if _, ok := env["CLAUDE_CODE_AUTH_TOKEN"]; ok {
+		t.Fatalf("token-like Claude env should be scrubbed: %v", prepared.Command.Env)
+	}
+	if !contains(prepared.Metadata.Env.TokenUnset, "CLAUDE_CODE_AUTH_TOKEN") {
+		t.Fatalf("token skip not recorded: %+v", prepared.Metadata.Env)
+	}
+}
+
 func TestPrepareUnsafeLeavesAbsoluteBinaryPathUnchanged(t *testing.T) {
 	workspacePath := testAbsPath("workspace")
 	binaryPath := testAbsPath("tmp/issue-spec-runner-e2e-001/bin/issue-spec")

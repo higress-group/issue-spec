@@ -101,6 +101,41 @@ func TestNewSessionRecoversSummaryFromFlattenedAgentMessageText(t *testing.T) {
 	}
 }
 
+func TestNewClaudeSessionAppliesEffortFromEnvironment(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","acpxSessionId":"acpx-1","agentSessionId":"claude-1","history":[{"id":"seed"}]}`},
+		{stdout: `{}`},
+		{stdout: "done\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```\n"},
+		{stdout: `{"acpxRecordId":"rec-1","acpxSessionId":"acpx-2","agentSessionId":"claude-1","lastTurnId":"turn-2","history":[{"id":"seed"},{"id":"turn-2"}]}`},
+	}}
+	adapter := newTestAdapter(t, Config{
+		CWD:                       "/workspace",
+		Agent:                     AgentClaude,
+		ClaudeIncludeUserSettings: true,
+		HostEnv:                   []string{"PATH=/usr/bin", "CLAUDE_CODE_EFFORT_LEVEL=max"},
+	}, runner)
+
+	result, err := adapter.NewSession(context.Background(), NewSessionRequest{
+		PublicSessionID:      "pub-claude",
+		Prompt:               "create test artifact",
+		TurnCorrelationToken: "turn-token-1",
+	})
+	if err != nil {
+		t.Fatalf("NewSession returned error: %v", err)
+	}
+	if !result.Output.SummaryFound {
+		t.Fatalf("summary not parsed: %+v", result.Output)
+	}
+	if len(runner.commands) != 4 {
+		t.Fatalf("recorded %d commands, want create, set effort, prompt, refresh", len(runner.commands))
+	}
+	assertArgs(t, runner.commands[1].Args, []string{"--cwd", "/workspace", "--format", "json", "--json-strict", "--approve-reads", "claude", "set", "effort", "max", "-s", "pub-claude"})
+	env := envMap(runner.commands[1].Env)
+	if env["ACPX_CLAUDE_INCLUDE_USER_SETTINGS"] != "1" || env["CLAUDE_CODE_EFFORT_LEVEL"] != "max" {
+		t.Fatalf("set effort env missing expected Claude values: %v", runner.commands[1].Env)
+	}
+}
+
 func TestNewSessionRetriesPromptQueueNotAcceptingError(t *testing.T) {
 	withQueueBackoffs(t, []time.Duration{0})
 	runner := &fakeRunner{responses: []fakeResponse{
@@ -159,6 +194,41 @@ func TestResumeRetriesPromptQueueNotAcceptingUntilAccepted(t *testing.T) {
 	for i := 1; i <= 4; i++ {
 		assertArgs(t, runner.commands[i].Args, []string{"--cwd", "/workspace", "--format", "quiet", "--approve-reads", "codex", "--file", "-", "-s", "pub-1"})
 	}
+}
+
+func TestResumeClaudeSessionAppliesEffortFromEnvironment(t *testing.T) {
+	runner := &fakeRunner{responses: []fakeResponse{
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-1","messages":[{"User":{"content":[{"Text":"seed prompt"}]}}]}`},
+		{stdout: `{}`},
+		{stdout: "done\n```issue_spec_coordinator_summary\n" + validSummaryJSON + "\n```\n"},
+		{stdout: `{"acpxRecordId":"rec-1","lastTurnId":"turn-2","messages":[{"User":{"content":[{"Text":"seed prompt"}]}},{"Agent":{"content":[{"Text":"done"}]}}]}`},
+	}}
+	adapter := newTestAdapter(t, Config{
+		CWD:                       "/workspace",
+		Agent:                     AgentClaude,
+		ClaudeIncludeUserSettings: true,
+		HostEnv:                   []string{"PATH=/usr/bin", "CLAUDE_CODE_EFFORT_LEVEL=max"},
+	}, runner)
+
+	result, err := adapter.Resume(context.Background(), ResumeRequest{
+		PublicSessionID:   "pub-claude",
+		StableRecordID:    "rec-1",
+		Prompt:            "continue",
+		MinHistoryEntries: 1,
+	})
+	if err != nil {
+		t.Fatalf("Resume returned error: %v", err)
+	}
+	if !result.Output.SummaryFound {
+		t.Fatalf("summary not parsed: %+v", result.Output)
+	}
+	if len(runner.commands) != 4 {
+		t.Fatalf("recorded %d commands, want pre-refresh, set effort, prompt, post-refresh", len(runner.commands))
+	}
+	assertArgs(t, runner.commands[0].Args, []string{"--cwd", "/workspace", "--format", "json", "--json-strict", "--approve-reads", "claude", "sessions", "show", "pub-claude"})
+	assertArgs(t, runner.commands[1].Args, []string{"--cwd", "/workspace", "--format", "json", "--json-strict", "--approve-reads", "claude", "set", "effort", "max", "-s", "pub-claude"})
+	assertArgs(t, runner.commands[2].Args, []string{"--cwd", "/workspace", "--format", "quiet", "--approve-reads", "claude", "--file", "-", "-s", "pub-claude"})
+	assertArgs(t, runner.commands[3].Args, []string{"--cwd", "/workspace", "--format", "json", "--json-strict", "--approve-reads", "claude", "sessions", "show", "pub-claude"})
 }
 
 func TestRetryableQueueBackoffBudgetCoversQueueOwnerStartupWindow(t *testing.T) {

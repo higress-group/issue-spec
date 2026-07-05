@@ -103,7 +103,7 @@ func TestLinuxPrepareBuildsBwrapCommand(t *testing.T) {
 		TempGHConfigDir:     "/tmp/gh",
 		TempXDGConfigHome:   "/tmp/xdg",
 		TempCodexHome:       "/tmp/codex",
-		HostEnv:             []string{"PATH=/usr/bin", "HTTPS_PROXY=http://proxy", "GH_TOKEN=secret"},
+		HostEnv:             []string{"PATH=/usr/bin", "HTTPS_PROXY=http://proxy", "GH_TOKEN=secret", "CLAUDE_CODE_EFFORT_LEVEL=max"},
 		SystemReadOnlyBinds: []string{"/usr"},
 	}
 	prepared, err := Prepare(context.Background(), cfg, Command{Binary: "acpx", Args: []string{"run"}, Stdin: []byte("prompt")}, Dependencies{Runner: runner})
@@ -125,6 +125,7 @@ func TestLinuxPrepareBuildsBwrapCommand(t *testing.T) {
 	assertArgSequence(t, cmd.Args, "--setenv", "HOME", "/tmp/issue-spec-home")
 	assertArgSequence(t, cmd.Args, "--setenv", "GH_CONFIG_DIR", "/tmp/issue-spec-gh")
 	assertArgSequence(t, cmd.Args, "--setenv", "CODEX_HOME", "/tmp/issue-spec-codex")
+	assertArgSequence(t, cmd.Args, "--setenv", "CLAUDE_CODE_EFFORT_LEVEL", "max")
 	assertArgSequence(t, cmd.Args, "--setenv", "HTTPS_PROXY", "http://proxy")
 	assertArgSequence(t, cmd.Args, "--", "acpx", "run")
 	if argsContain(cmd.Args, "--unshare-net") {
