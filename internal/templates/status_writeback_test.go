@@ -127,6 +127,29 @@ func TestRenderRunnerStatusCommentIncludesResumeGuidanceForTerminalSession(t *te
 	}
 }
 
+func TestRenderRunnerStatusCommentShowsResultWithoutCoordinatorSummary(t *testing.T) {
+	body, err := RenderRunnerStatusComment(RunnerStatusComment{
+		Status:          "completed",
+		PublicSessionID: "s_123",
+		Diagnostics:     []string{"coordinator summary was missing or malformed"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"| Status | `completed` |",
+		"## Result",
+		"Completed the requested command.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("terminal body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "coordinator summary was missing or malformed") {
+		t.Fatalf("diagnostic should not be rendered in public body:\n%s", body)
+	}
+}
+
 func TestRenderRunnerStatusCommentSkipsResumeGuidanceWithoutPublicSession(t *testing.T) {
 	body, err := RenderRunnerStatusComment(RunnerStatusComment{Status: "completed"})
 	if err != nil {

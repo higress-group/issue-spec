@@ -11,6 +11,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/templates"
 )
 
 func TestEnsureIssueBodyMarkerForCreateBodyFile(t *testing.T) {
@@ -119,6 +120,9 @@ func TestIssueCreateBodyFileDerivesStandardizedTitle(t *testing.T) {
 			if !strings.Contains(body, "Concrete proposal body.") {
 				t.Fatalf("body missing content:\n%s", body)
 			}
+			if strings.Contains(body, templates.IssueSpecProjectURL) {
+				t.Fatalf("body-file path should not inject issue-spec footer:\n%s", body)
+			}
 			if len(labels) != 1 || labels[0] != "issue-spec/proposal" {
 				t.Fatalf("labels = %#v", labels)
 			}
@@ -139,6 +143,25 @@ func TestIssueCreateBodyFileDerivesStandardizedTitle(t *testing.T) {
 	}
 	if !got.OK || got.Title != "Proposal: standardize issue-spec issue titles" {
 		t.Fatalf("unexpected output: %+v", got)
+	}
+}
+
+func TestIssueCreateDefaultBodyIncludesIssueSpecFooter(t *testing.T) {
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.createIssue = func(_ context.Context, _ string, _ string, body string, _ []string) (github.Issue, error) {
+			if !strings.Contains(body, templates.IssueBodyManagedByQuote) {
+				t.Fatalf("default body missing issue-spec footer:\n%s", body)
+			}
+			return github.Issue{Number: 22, HTMLURL: "https://github.com/o/r/issues/22"}, nil
+		}
+	})
+
+	code := app.runIssueCreate(context.Background(), "proposal", []string{"--repo", "o/r", "--change", "issue-spec-footer", "--json"})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr=%q", code, errOut.String())
 	}
 }
 

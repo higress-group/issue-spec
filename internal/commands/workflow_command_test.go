@@ -12,6 +12,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/templates"
 )
 
 func TestWorkflowValidateReportsProjectSchema(t *testing.T) {
@@ -74,6 +75,45 @@ artifacts:
 	}
 	if !strings.HasPrefix(createdBody, "<!-- issue-spec:issue=proposal change=custom-workflow version=1 -->") {
 		t.Fatalf("project template body missing issue marker:\n%s", createdBody)
+	}
+	if strings.Contains(createdBody, templates.IssueSpecProjectURL) {
+		t.Fatalf("project workflow template should control its own footer:\n%s", createdBody)
+	}
+}
+
+func TestIssueCreateProjectWorkflowDefaultBodyIsFooterFree(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	writeWorkflowTestFile(t, filepath.Join(root, "issue-spec", "config.yaml"), "schema: custom\n")
+	writeWorkflowTestFile(t, filepath.Join(root, "issue-spec", "schemas", "custom", "schema.yaml"), `
+artifacts:
+  proposal:
+    type: proposal
+    template: proposal.md
+`)
+	writeWorkflowTestFile(t, filepath.Join(root, "issue-spec", "schemas", "custom", "templates", "proposal.md"), "{{.DefaultBody}}\n\n## Project Footer\n\nProject controlled.\n")
+
+	var createdBody string
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
+		return fakeGitHubBackend{
+			info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
+			createIssue: func(_ context.Context, _ string, title, body string, _ []string) (github.Issue, error) {
+				createdBody = body
+				return github.Issue{Number: 13, HTMLURL: "https://github.com/o/r/issues/13", Title: title}, nil
+			},
+		}, nil
+	}
+	code := app.runIssueCreate(context.Background(), "proposal", []string{"--repo", "o/r", "--change", "custom-default-body", "--json"})
+	if code != 0 {
+		t.Fatalf("issue create failed code=%d", code)
+	}
+	if !strings.Contains(createdBody, "Project controlled.") || !strings.Contains(createdBody, "# Proposal: custom-default-body") {
+		t.Fatalf("project template default body was not used:\n%s", createdBody)
+	}
+	if strings.Contains(createdBody, templates.IssueSpecProjectURL) {
+		t.Fatalf("project template DefaultBody should not inherit issue-spec footer:\n%s", createdBody)
 	}
 }
 

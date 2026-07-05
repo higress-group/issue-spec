@@ -527,6 +527,9 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 		releaseLock()
 		var partial *acpx.PartialDispatchError
 		if errors.As(err, &partial) && hasStableDispatchMetadata(partial.Result) {
+			if isRecoverableOutputSummaryError(err) {
+				return d.completeWithCoordinatorSummaryWarning(ctx, job.ID, command, publicID, session, binding.Workspace, partial.Result, err)
+			}
 			return d.failWithDispatchMetadata(ctx, job.ID, command, publicID, session, binding.Workspace, partial.Result, "coordinator-summary", err)
 		}
 		return d.fail(ctx, job.ID, "acpx", err)
@@ -534,6 +537,9 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 	if err := validateDispatchSummary(dispatch); err != nil {
 		releaseLock()
 		if hasStableDispatchMetadata(dispatch) {
+			if isRecoverableDispatchSummaryValidationError(err) {
+				return d.completeWithCoordinatorSummaryWarning(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, err)
+			}
 			return d.failWithDispatchMetadata(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, "coordinator-summary", err)
 		}
 		return d.fail(ctx, job.ID, "coordinator-summary", err)
@@ -987,11 +993,11 @@ func (d *Dispatcher) persistStatusCommentInIntent(ctx context.Context, jobID str
 	})
 }
 
-func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, terminal state.LifecycleStatus) error {
+func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, terminal state.LifecycleStatus, diagnostics ...string) error {
 	now := d.now()
 	return d.Store.Update(ctx, func(st *state.RunnerState) error {
 		st.Normalize()
-		job, err := st.UpdateJobStatus(jobID, terminal, now)
+		job, err := st.UpdateJobStatus(jobID, terminal, now, diagnostics...)
 		if err != nil {
 			return err
 		}
@@ -999,8 +1005,10 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 		job.PublicSessionID = publicID
 		job.AcpxRecordID = meta.StableRecordID
 		job.Acpx = meta
-		job.CoordinatorSummary = summaryJSON(dispatch.Output.Summary)
-		job.CLIDirect = cliDirect(dispatch.Output.Summary)
+		if dispatch.Output.SummaryFound {
+			job.CoordinatorSummary = summaryJSON(dispatch.Output.Summary)
+			job.CLIDirect = cliDirect(dispatch.Output.Summary)
+		}
 		job.Workspace = workspaceMeta
 		job.Workspace.LastUsedAt = now
 		job.Workspace.CleanupAfter = workspaceMeta.CleanupAfter
@@ -1043,6 +1051,28 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 		}
 		return st.UpsertPublicSession(session)
 	})
+}
+
+func (d *Dispatcher) completeWithCoordinatorSummaryWarning(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, cause error) (Result, error) {
+	diagnostic := coordinatorSummaryWarning(cause)
+	dispatch = withoutCoordinatorSummary(dispatch)
+	if err := d.complete(ctx, jobID, command, publicID, session, workspaceMeta, dispatch, state.StatusCompleted, diagnostic); err != nil {
+		return Result{Executed: true, JobID: jobID, Status: state.StatusFailed}, err
+	}
+	finalJob, err := d.loadJob(ctx, jobID)
+	if err != nil {
+		return Result{Executed: true, JobID: jobID, Status: state.StatusCompleted}, err
+	}
+	if _, err := d.Writeback.Write(ctx, writeback.Request{
+		Job:                  finalJob,
+		Status:               state.StatusCompleted,
+		Phase:                string(state.StatusCompleted),
+		CoordinatorReplyBody: dispatch.Output.ReplyText,
+		Diagnostics:          []string{diagnostic},
+	}); err != nil {
+		return Result{Executed: true, JobID: jobID, Status: state.StatusCompleted, Error: safeError(err)}, err
+	}
+	return Result{Executed: true, JobID: jobID, Status: state.StatusCompleted}, nil
 }
 
 func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, phase string, cause error) (Result, error) {
@@ -2058,12 +2088,38 @@ func (NoopArtifactProvider) ArtifactsForJob(context.Context, state.Job) ([]model
 
 func validateDispatchSummary(dispatch acpx.DispatchResult) error {
 	if dispatch.Queued || dispatch.NoWait {
-		return fmt.Errorf("acpx no-wait dispatch did not produce a terminal coordinator summary")
+		return errNoWaitDispatchSummary
 	}
 	if strings.TrimSpace(dispatch.Output.Summary.Status) == "" {
 		return acpx.ErrSummaryNotFound
 	}
 	return runnercontext.ValidateCoordinatorSummary(dispatch.Output.Summary, runnercontext.SummaryBounds{})
+}
+
+var errNoWaitDispatchSummary = errors.New("acpx no-wait dispatch did not produce a terminal coordinator summary")
+
+func isRecoverableOutputSummaryError(err error) bool {
+	var summaryErr *acpx.OutputSummaryError
+	return errors.As(err, &summaryErr)
+}
+
+func isRecoverableDispatchSummaryValidationError(err error) bool {
+	return err != nil && !errors.Is(err, errNoWaitDispatchSummary)
+}
+
+func withoutCoordinatorSummary(dispatch acpx.DispatchResult) acpx.DispatchResult {
+	dispatch.Output.SummaryFound = false
+	dispatch.Output.SummaryJSON = ""
+	dispatch.Output.Summary = runnercontext.CoordinatorSummary{}
+	return dispatch
+}
+
+func coordinatorSummaryWarning(cause error) string {
+	msg := "coordinator-summary: coordinator summary was missing or malformed; completed lifecycle without structured coordinator provenance"
+	if cause != nil {
+		msg += ": " + safeError(cause)
+	}
+	return safeString(msg, 1024)
 }
 
 func hasStableDispatchMetadata(dispatch acpx.DispatchResult) bool {

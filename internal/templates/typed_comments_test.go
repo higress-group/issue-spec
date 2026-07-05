@@ -43,6 +43,9 @@ func TestSpecCommentRendersCanonicalBodyAcceptedByValidator(t *testing.T) {
 	if tc := model.ParseTypedComment(body); len(tc.Errors) != 0 {
 		t.Fatalf("generated SPEC body has parse errors: %v", tc.Errors)
 	}
+	if strings.Contains(body, IssueSpecProjectURL) {
+		t.Fatalf("typed comment should not include issue-spec promotion footer:\n%s", body)
+	}
 }
 
 func TestSpecCommentRejectsNonNormativeRequirement(t *testing.T) {
@@ -123,6 +126,11 @@ func TestNonSpecTemplatesProduceParseableTypedBodies(t *testing.T) {
 	}
 	if diags := model.ValidateCanonicalBody("PROCESS", "PROCESS-001", "", proc); len(diags) != 0 {
 		t.Fatalf("generated PROCESS body not canonical: %+v", diags)
+	}
+	for _, body := range []string{task, proc} {
+		if strings.Contains(body, IssueSpecProjectURL) {
+			t.Fatalf("typed comment should not include issue-spec promotion footer:\n%s", body)
+		}
 	}
 }
 

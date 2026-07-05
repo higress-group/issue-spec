@@ -177,6 +177,8 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 		}
 		if used {
 			body = rendered
+		} else {
+			body = templates.AppendIssueSpecIssueFooter(body)
 		}
 	}
 	title = templates.IssueTitle(kind, *change, body, *titleFlag)

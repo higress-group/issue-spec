@@ -1,6 +1,9 @@
 package templates
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestIssueTemplatesUseStandardizedTitles(t *testing.T) {
 	tests := []struct {
@@ -39,6 +42,53 @@ func TestIssueTemplatesUseStandardizedTitles(t *testing.T) {
 				t.Fatalf("title = %q, want %q", tt.got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIssueTemplatesDoNotIncludeIssueSpecFooter(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "proposal",
+			body: func() string {
+				_, body, _ := ProposalIssue("issue-title-style")
+				return body
+			}(),
+		},
+		{
+			name: "design",
+			body: func() string {
+				_, body, _ := DesignIssue("issue-title-style", "21")
+				return body
+			}(),
+		},
+		{
+			name: "implement",
+			body: func() string {
+				_, body, _ := ImplementIssue("issue-title-style", "103")
+				return body
+			}(),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if strings.Contains(tt.body, IssueSpecProjectURL) {
+				t.Fatalf("default template body should stay footer-free:\n%s", tt.body)
+			}
+		})
+	}
+}
+
+func TestAppendIssueSpecIssueFooter(t *testing.T) {
+	body := AppendIssueSpecIssueFooter("# Proposal\n")
+	if !strings.Contains(body, IssueBodyManagedByQuote) {
+		t.Fatalf("body missing issue-spec footer:\n%s", body)
+	}
+	again := AppendIssueSpecIssueFooter(body)
+	if strings.Count(again, IssueSpecProjectURL) != 1 {
+		t.Fatalf("footer should not be duplicated:\n%s", again)
 	}
 }
 

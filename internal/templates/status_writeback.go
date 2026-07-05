@@ -159,6 +159,11 @@ func normalizeRunnerStatusComment(comment RunnerStatusComment) RunnerStatusComme
 
 func writeResultSummary(b *strings.Builder, comment RunnerStatusComment) {
 	if comment.CoordinatorSummary == nil && len(comment.CLIDirect) == 0 {
+		if !crstate.LifecycleStatus(strings.TrimSpace(comment.Status)).Terminal() {
+			return
+		}
+		b.WriteString("\n## Result\n\n")
+		fmt.Fprintf(b, "- %s\n", publicStatusSummary(comment.Status))
 		return
 	}
 	if comment.CoordinatorSummary == nil && !crstate.LifecycleStatus(strings.TrimSpace(comment.Status)).Terminal() {

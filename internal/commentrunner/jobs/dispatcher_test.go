@@ -706,64 +706,171 @@ func TestRunNextPassesConfiguredAcpxBinaryToSandbox(t *testing.T) {
 	}
 }
 
-func TestRunNextSummaryFailurePersistsSessionMapping(t *testing.T) {
-	store := newMemoryStore()
-	now := time.Date(2026, 7, 3, 12, 15, 0, 0, time.UTC)
-	seedQueuedJob(t, store, state.Job{
-		ID:                    "job-summary-fail",
-		Repo:                  "o/r",
-		IssueNumber:           30,
-		SessionCreatorLogin:   "alice",
-		TriggeringUserLogin:   "alice",
-		TriggerCommentID:      333,
-		CommandID:             "cmd-summary-fail",
-		CommandName:           "new",
-		CommandPrompt:         "do work",
-		CommandIdempotencyKey: "cmd-key-summary-fail",
-		StatusWritebackKey:    "status-summary-fail",
-		Status:                state.StatusQueued,
-		CreatedAt:             now,
-	})
-	workspaces := &fakeWorkspaces{binding: testBinding("ws-summary-fail")}
-	writebacks := &fakeWriteback{}
-	partial := dispatchResult("ps-summary-fail", "rec-summary-fail", "turn-summary-fail", runnercontext.CoordinatorSummary{})
-	partial.Output = acpx.TurnOutput{RawStdout: "assistant output without coordinator summary"}
-	coordinator := &fakeCoordinator{
-		newErr: &acpx.PartialDispatchError{
-			Result: partial,
-			Err:    &acpx.OutputSummaryError{Err: acpx.ErrSummaryNotFound},
+func TestRunNextSummaryFailureCompletesWithDiagnostic(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		err            error
+		wantDiagnostic string
+	}{
+		{name: "missing", err: acpx.ErrSummaryNotFound, wantDiagnostic: "coordinator summary not found"},
+		{name: "malformed", err: errors.New("invalid character ']' looking for beginning of value"), wantDiagnostic: "invalid character"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemoryStore()
+			now := time.Date(2026, 7, 3, 12, 15, 0, 0, time.UTC)
+			jobID := "job-summary-" + tc.name
+			publicID := "ps-summary-" + tc.name
+			recordID := "rec-summary-" + tc.name
+			workspaceID := "ws-summary-" + tc.name
+			seedQueuedJob(t, store, state.Job{
+				ID:                    jobID,
+				Repo:                  "o/r",
+				IssueNumber:           30,
+				SessionCreatorLogin:   "alice",
+				TriggeringUserLogin:   "alice",
+				TriggerCommentID:      333,
+				CommandID:             "cmd-summary-" + tc.name,
+				CommandName:           "new",
+				CommandPrompt:         "do work",
+				CommandIdempotencyKey: "cmd-key-summary-" + tc.name,
+				StatusWritebackKey:    "status-summary-" + tc.name,
+				Status:                state.StatusQueued,
+				CreatedAt:             now,
+			})
+			workspaces := &fakeWorkspaces{binding: testBinding(workspaceID)}
+			writebacks := &fakeWriteback{}
+			partial := dispatchResult(publicID, recordID, "turn-summary-"+tc.name, runnercontext.CoordinatorSummary{})
+			partial.Output = acpx.TurnOutput{RawStdout: "assistant output without a valid coordinator summary"}
+			coordinator := &fakeCoordinator{
+				newErr: &acpx.PartialDispatchError{
+					Result: partial,
+					Err:    &acpx.OutputSummaryError{Err: tc.err},
+				},
+			}
+			dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
+			dispatcher.PublicSessionID = func() (string, error) { return publicID, nil }
+			dispatcher.TurnCorrelationID = func() (string, error) { return "turn-token-summary-" + tc.name, nil }
+
+			result, err := dispatcher.RunNext(context.Background())
+			if err != nil {
+				t.Fatalf("RunNext returned error: %v", err)
+			}
+			if result.Status != state.StatusCompleted || result.JobID != jobID {
+				t.Fatalf("unexpected result: %+v", result)
+			}
+			assertWritebackStatuses(t, writebacks, state.StatusRunning, state.StatusCompleted)
+
+			st := loadState(t, store)
+			job := st.Jobs[jobID]
+			if job.Status != state.StatusCompleted || job.PublicSessionID != publicID || job.AcpxRecordID != recordID {
+				t.Fatalf("completed job did not retain dispatch metadata: %+v", job)
+			}
+			if len(job.Diagnostics) != 1 || !strings.Contains(job.Diagnostics[0], "coordinator summary was missing or malformed") || !strings.Contains(job.Diagnostics[0], tc.wantDiagnostic) {
+				t.Fatalf("summary warning diagnostic missing: %+v", job.Diagnostics)
+			}
+			if job.CoordinatorSummary != "" || len(job.CLIDirect) != 0 {
+				t.Fatalf("invalid summary should not be persisted as provenance: summary=%q cli=%+v", job.CoordinatorSummary, job.CLIDirect)
+			}
+			session, ok := st.GetPublicSession("o/r", publicID)
+			if !ok || session.Status != state.StatusCompleted || session.AcpxRecordID != recordID || session.Workspace.ID != workspaceID || session.LastJobID != jobID || session.Lock.OwnerJobID != "" {
+				t.Fatalf("public session mapping missing after summary failure: %+v ok=%v", session, ok)
+			}
+			lastWriteback := writebacks.requests[len(writebacks.requests)-1]
+			if lastWriteback.Err != nil || len(lastWriteback.Diagnostics) != 1 || !strings.Contains(lastWriteback.Diagnostics[0], "coordinator summary was missing or malformed") || lastWriteback.CoordinatorSummary != nil {
+				t.Fatalf("summary warning writeback incorrect: %+v", lastWriteback)
+			}
+			if _, ok := st.GetWorkspace(workspaceID); !ok {
+				t.Fatalf("workspace metadata was not indexed: %+v", st.Workspaces)
+			}
+			if !workspaces.released {
+				t.Fatal("workspace lock was not released")
+			}
+		})
+	}
+}
+
+func TestRunNextSummaryFailureDoesNotMaskDispatchFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		coordinator    func(publicID string) *fakeCoordinator
+		wantDiagnostic string
+	}{
+		{
+			name: "non-summary-error",
+			coordinator: func(publicID string) *fakeCoordinator {
+				return &fakeCoordinator{newErr: errors.New("acpx transport failed")}
+			},
+			wantDiagnostic: "acpx transport failed",
 		},
-	}
-	dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
-	dispatcher.PublicSessionID = func() (string, error) { return "ps-summary-fail", nil }
-	dispatcher.TurnCorrelationID = func() (string, error) { return "turn-token-summary-fail", nil }
+		{
+			name: "no-stable-metadata",
+			coordinator: func(publicID string) *fakeCoordinator {
+				partial := dispatchResult(publicID, "", "turn-no-stable-metadata", runnercontext.CoordinatorSummary{})
+				partial.Output = acpx.TurnOutput{RawStdout: "assistant output without coordinator summary"}
+				return &fakeCoordinator{
+					newErr: &acpx.PartialDispatchError{
+						Result: partial,
+						Err:    &acpx.OutputSummaryError{Err: acpx.ErrSummaryNotFound},
+					},
+				}
+			},
+			wantDiagnostic: "coordinator summary not found",
+		},
+		{
+			name: "no-wait",
+			coordinator: func(publicID string) *fakeCoordinator {
+				dispatch := dispatchResult(publicID, "rec-no-wait", "turn-no-wait", runnercontext.CoordinatorSummary{})
+				dispatch.NoWait = true
+				dispatch.Queued = true
+				dispatch.Output.SummaryFound = false
+				return &fakeCoordinator{newResult: dispatch}
+			},
+			wantDiagnostic: "no-wait dispatch",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemoryStore()
+			now := time.Date(2026, 7, 3, 12, 17, 0, 0, time.UTC)
+			jobID := "job-dispatch-boundary-" + tc.name
+			publicID := "ps-dispatch-boundary-" + tc.name
+			seedQueuedJob(t, store, state.Job{
+				ID:                    jobID,
+				Repo:                  "o/r",
+				IssueNumber:           30,
+				SessionCreatorLogin:   "alice",
+				TriggeringUserLogin:   "alice",
+				TriggerCommentID:      334,
+				CommandID:             "cmd-dispatch-boundary-" + tc.name,
+				CommandName:           "new",
+				CommandPrompt:         "do work",
+				CommandIdempotencyKey: "cmd-key-dispatch-boundary-" + tc.name,
+				StatusWritebackKey:    "status-dispatch-boundary-" + tc.name,
+				Status:                state.StatusQueued,
+				CreatedAt:             now,
+			})
+			workspaces := &fakeWorkspaces{binding: testBinding("ws-dispatch-boundary-" + tc.name)}
+			writebacks := &fakeWriteback{}
+			dispatcher := testDispatcher(store, workspaces, tc.coordinator(publicID), writebacks, now)
+			dispatcher.PublicSessionID = func() (string, error) { return publicID, nil }
+			dispatcher.TurnCorrelationID = func() (string, error) { return "turn-token-dispatch-boundary-" + tc.name, nil }
 
-	result, err := dispatcher.RunNext(context.Background())
-	if !errors.Is(err, acpx.ErrSummaryNotFound) {
-		t.Fatalf("RunNext error = %v, want ErrSummaryNotFound", err)
-	}
-	if result.Status != state.StatusFailed || result.JobID != "job-summary-fail" {
-		t.Fatalf("unexpected result: %+v", result)
-	}
-	assertWritebackStatuses(t, writebacks, state.StatusRunning, state.StatusFailed)
+			result, err := dispatcher.RunNext(context.Background())
+			if err == nil {
+				t.Fatal("RunNext succeeded, want dispatch failure")
+			}
+			if result.Status != state.StatusFailed || result.JobID != jobID || !strings.Contains(result.Error, tc.wantDiagnostic) {
+				t.Fatalf("unexpected result: %+v err=%v", result, err)
+			}
+			assertWritebackStatuses(t, writebacks, state.StatusRunning, state.StatusFailed)
 
-	st := loadState(t, store)
-	job := st.Jobs["job-summary-fail"]
-	if job.Status != state.StatusFailed || job.PublicSessionID != "ps-summary-fail" || job.AcpxRecordID != "rec-summary-fail" {
-		t.Fatalf("failed job did not retain dispatch metadata: %+v", job)
-	}
-	if job.CoordinatorSummary != "" || len(job.CLIDirect) != 0 {
-		t.Fatalf("invalid summary should not be persisted as provenance: summary=%q cli=%+v", job.CoordinatorSummary, job.CLIDirect)
-	}
-	session, ok := st.GetPublicSession("o/r", "ps-summary-fail")
-	if !ok || session.Status != state.StatusFailed || session.AcpxRecordID != "rec-summary-fail" || session.Workspace.ID != "ws-summary-fail" || session.LastJobID != "job-summary-fail" || session.Lock.OwnerJobID != "" {
-		t.Fatalf("public session mapping missing after summary failure: %+v ok=%v", session, ok)
-	}
-	if _, ok := st.GetWorkspace("ws-summary-fail"); !ok {
-		t.Fatalf("workspace metadata was not indexed: %+v", st.Workspaces)
-	}
-	if !workspaces.released {
-		t.Fatal("workspace lock was not released")
+			job := loadState(t, store).Jobs[jobID]
+			if job.Status != state.StatusFailed || len(job.Diagnostics) != 1 || !strings.Contains(job.Diagnostics[0], tc.wantDiagnostic) {
+				t.Fatalf("dispatch boundary failure not persisted: %+v", job)
+			}
+			if job.CoordinatorSummary != "" || len(job.CLIDirect) != 0 {
+				t.Fatalf("failed boundary should not persist coordinator provenance: summary=%q cli=%+v", job.CoordinatorSummary, job.CLIDirect)
+			}
+		})
 	}
 }
 

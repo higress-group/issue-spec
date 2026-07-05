@@ -6,6 +6,12 @@ import (
 	"strings"
 )
 
+const (
+	IssueSpecProjectURL      = "https://github.com/higress-group/issue-spec"
+	AgentReplyPoweredByQuote = "> This agent reply is powered by [issue-spec](" + IssueSpecProjectURL + "), an issue-native workflow for specs, tasks, reviews, and resumable agent sessions."
+	IssueBodyManagedByQuote  = "> This issue is managed by [issue-spec](" + IssueSpecProjectURL + "), an issue-native workflow for specs, tasks, reviews, and resumable agent sessions."
+)
+
 func ProposalIssue(change string) (string, string, []string) {
 	body := fmt.Sprintf(`<!-- issue-spec:issue=proposal change=%s version=1 -->
 # Proposal: %s
@@ -54,7 +60,7 @@ TBD
 ## Impact
 
 TBD
-`, change, change, change)
+	`, change, change, change)
 	title := IssueTitle("proposal", change, body, "")
 	return title, body, []string{"issue-spec/proposal"}
 }
@@ -152,6 +158,14 @@ TBD
 `, change, change, valueOr(designRef, "N/A"))
 	title := IssueTitle("implement", change, body, "")
 	return title, body, []string{"issue-spec/implement"}
+}
+
+func AppendIssueSpecIssueFooter(body string) string {
+	body = strings.TrimRight(body, "\n")
+	if strings.Contains(body, IssueSpecProjectURL) {
+		return body + "\n"
+	}
+	return body + "\n\n" + IssueBodyManagedByQuote + "\n"
 }
 
 func IssueTitle(kind, change, body, explicitTitle string) string {
