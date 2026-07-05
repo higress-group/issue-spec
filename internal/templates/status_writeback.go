@@ -75,24 +75,13 @@ func RenderRunnerStatusComment(comment RunnerStatusComment) (string, error) {
 	b.WriteString("| Field | Value |\n| --- | --- |\n")
 	tableRow(&b, "Status", codeOrNA(comment.Status))
 	tableRow(&b, "Phase", codeOrNA(comment.Phase))
-	tableRow(&b, "Runner job", codeOrNA(comment.RunnerJobID))
-	tableRow(&b, "Public session", codeOrNA(comment.PublicSessionID))
-	tableRow(&b, "Trigger comment", codeOrNA(formatInt(comment.TriggerCommentID)))
-	tableRow(&b, "Triggering user", codeOrNA(comment.TriggeringUserLogin))
-	tableRow(&b, "Session creator", codeOrNA(comment.SessionCreatorLogin))
-	tableRow(&b, "Current turn user", codeOrNA(comment.CurrentUserLogin))
-	if strings.TrimSpace(comment.CancelingUserLogin) != "" {
-		tableRow(&b, "Canceling user", codeOrNA(comment.CancelingUserLogin))
-	}
-	tableRow(&b, "Agent", codeOrNA(joinNonEmpty(" / ", comment.AgentKind, comment.Model)))
-	tableRow(&b, "Sandbox", codeOrNA(joinNonEmpty(" / ", comment.SandboxProvider, comment.FSBoundary)))
-	if comment.UnsafeNoSandbox {
-		tableRow(&b, "Sandbox warning", "unsafe no-sandbox mode requested; filesystem boundary disabled")
+	if strings.TrimSpace(comment.PublicSessionID) != "" {
+		tableRow(&b, "Public session", codeOrNA(comment.PublicSessionID))
 	}
 
+	writeResultSummary(&b, comment)
+	writeRejectedReason(&b, comment)
 	writeResumeGuidance(&b, comment)
-	writeCoordinatorSummary(&b, comment)
-	writeDiagnostics(&b, comment)
 	return b.String(), nil
 }
 
@@ -120,7 +109,14 @@ func renderRunnerStatusMarker(marker RunnerStatusMarker) (string, error) {
 	if marker.SchemaVersion == 0 {
 		marker.SchemaVersion = RunnerStatusMarkerSchemaVersion
 	}
-	data, err := json.Marshal(marker)
+	publicMarker := struct {
+		SchemaVersion      int    `json:"schema_version"`
+		StatusWritebackKey string `json:"status_writeback_key,omitempty"`
+	}{
+		SchemaVersion:      marker.SchemaVersion,
+		StatusWritebackKey: marker.StatusWritebackKey,
+	}
+	data, err := json.Marshal(publicMarker)
 	if err != nil {
 		return "", err
 	}
@@ -161,54 +157,166 @@ func normalizeRunnerStatusComment(comment RunnerStatusComment) RunnerStatusComme
 	return comment
 }
 
-func writeCoordinatorSummary(b *strings.Builder, comment RunnerStatusComment) {
+func writeResultSummary(b *strings.Builder, comment RunnerStatusComment) {
 	if comment.CoordinatorSummary == nil && len(comment.CLIDirect) == 0 {
 		return
 	}
-	b.WriteString("\n## Coordinator Summary\n\n")
+	if comment.CoordinatorSummary == nil && !crstate.LifecycleStatus(strings.TrimSpace(comment.Status)).Terminal() {
+		return
+	}
+	b.WriteString("\n## Result\n\n")
 	if comment.CoordinatorSummary != nil {
-		fmt.Fprintf(b, "- Coordinator status: %s\n", codeOrNA(comment.CoordinatorSummary.Status))
-		for i, artifact := range limited(comment.CoordinatorSummary.Artifacts, comment.MaxItems) {
-			line := joinNonEmpty(" ", artifact.Kind, artifact.ID, artifact.Action, artifact.URL)
-			fmt.Fprintf(b, "- Coordinator-reported CLI artifact %d: %s\n", i+1, inlineText(line, comment.MaxTextBytes))
+		fmt.Fprintf(b, "- %s\n", publicStatusSummary(comment.CoordinatorSummary.Status))
+		seen := map[string]bool{}
+		for _, artifact := range limited(comment.CoordinatorSummary.Artifacts, comment.MaxItems) {
+			writePublicArtifactLine(b, publicWorkflowArtifactLine(artifact), comment.MaxTextBytes, seen)
 		}
-		for i, command := range limited(comment.CoordinatorSummary.Commands, comment.MaxItems) {
-			line := fmt.Sprintf("%s exit=%d", command.Name, command.ExitCode)
-			if command.ArtifactID != "" || command.ArtifactURL != "" {
-				line += " artifact=" + joinNonEmpty(" ", command.ArtifactID, command.ArtifactURL)
-			}
-			fmt.Fprintf(b, "- Coordinator CLI command %d: %s\n", i+1, inlineText(line, comment.MaxTextBytes))
+		for _, command := range limited(comment.CoordinatorSummary.Commands, comment.MaxItems) {
+			writePublicArtifactLine(b, publicCoordinatorCommandArtifactLine(command), comment.MaxTextBytes, seen)
 		}
-		for i, child := range limited(comment.CoordinatorSummary.Children, comment.MaxItems) {
-			line := joinNonEmpty(" ", child.ID, child.Role, child.ProcessID, child.TaskID, child.Status, child.Evidence)
-			fmt.Fprintf(b, "- Child provenance %d: %s\n", i+1, inlineText(line, comment.MaxTextBytes))
-		}
-		for i, process := range limited(comment.CoordinatorSummary.Processes, comment.MaxItems) {
-			line := joinNonEmpty(" ", process.ProcessID, process.TaskID, process.Status, process.Evidence)
-			fmt.Fprintf(b, "- PROCESS evidence %d: %s\n", i+1, inlineText(line, comment.MaxTextBytes))
-		}
-		for i, diagnostic := range limited(comment.CoordinatorSummary.Diagnostics, comment.MaxItems) {
-			line := joinNonEmpty(": ", diagnostic.Severity, diagnostic.Message)
-			fmt.Fprintf(b, "- Coordinator diagnostic %d: %s\n", i+1, inlineText(line, comment.MaxTextBytes))
+		return
+	}
+
+	fmt.Fprintf(b, "- %s\n", publicStatusSummary(comment.Status))
+	seen := map[string]bool{}
+	for _, command := range limited(comment.CLIDirect, comment.MaxItems) {
+		writePublicArtifactLine(b, publicCLIArtifactLine(command), comment.MaxTextBytes, seen)
+	}
+}
+
+func publicStatusSummary(status string) string {
+	switch strings.TrimSpace(status) {
+	case "completed":
+		return "Completed the requested command."
+	case "partial":
+		return "Partially completed the requested command."
+	case "failed":
+		return "The requested command did not complete successfully."
+	case "cancelled":
+		return "Cancelled the requested command."
+	case "interrupted":
+		return "The requested command was interrupted."
+	case "rejected":
+		return "Rejected the requested command."
+	default:
+		return "Processed the requested command."
+	}
+}
+
+type publicArtifactLine struct {
+	Line string
+	Keys []string
+}
+
+func publicWorkflowArtifactLine(artifact runnercontext.WorkflowArtifact) publicArtifactLine {
+	line := joinNonEmpty(" ", artifact.Action, artifact.Kind, artifact.ID)
+	if line == "" {
+		line = "workflow artifact"
+	}
+	keys := publicArtifactKeys(artifact.URL, artifact.ID)
+	if artifact.Issue != 0 {
+		keys = append(keys, fmt.Sprintf("issue:%d", artifact.Issue))
+	}
+	if artifact.CommentID != 0 {
+		keys = append(keys, fmt.Sprintf("comment:%d", artifact.CommentID))
+	}
+	if strings.TrimSpace(artifact.URL) != "" {
+		return publicArtifactLine{Line: line + ": " + strings.TrimSpace(artifact.URL), Keys: keys}
+	}
+	var refs []string
+	if artifact.Issue != 0 {
+		refs = append(refs, "#"+formatInt(int64(artifact.Issue)))
+	}
+	if artifact.CommentID != 0 {
+		refs = append(refs, "comment "+formatInt(artifact.CommentID))
+	}
+	if len(refs) > 0 {
+		return publicArtifactLine{Line: joinNonEmpty(" ", line, strings.Join(refs, " ")), Keys: keys}
+	}
+	return publicArtifactLine{Line: line, Keys: keys}
+}
+
+func publicCoordinatorCommandArtifactLine(command runnercontext.CLICommandSummary) publicArtifactLine {
+	if strings.TrimSpace(command.ArtifactID) == "" && strings.TrimSpace(command.ArtifactURL) == "" {
+		return publicArtifactLine{}
+	}
+	line := joinNonEmpty(" ", "workflow artifact", command.ArtifactID)
+	keys := publicArtifactKeys(command.ArtifactURL, command.ArtifactID)
+	if strings.TrimSpace(command.ArtifactURL) != "" {
+		return publicArtifactLine{Line: line + ": " + strings.TrimSpace(command.ArtifactURL), Keys: keys}
+	}
+	return publicArtifactLine{Line: line, Keys: keys}
+}
+
+func publicCLIArtifactLine(command RunnerCLICommand) publicArtifactLine {
+	if strings.TrimSpace(command.ArtifactID) == "" && strings.TrimSpace(command.ArtifactURL) == "" {
+		return publicArtifactLine{}
+	}
+	line := joinNonEmpty(" ", "workflow artifact", command.ArtifactID)
+	keys := publicArtifactKeys(command.ArtifactURL, command.ArtifactID)
+	if strings.TrimSpace(command.ArtifactURL) != "" {
+		return publicArtifactLine{Line: line + ": " + strings.TrimSpace(command.ArtifactURL), Keys: keys}
+	}
+	return publicArtifactLine{Line: line, Keys: keys}
+}
+
+func publicArtifactKeys(url, id string) []string {
+	var keys []string
+	if value := cleanOneLine(url); value != "" {
+		keys = append(keys, "url:"+value)
+	}
+	if value := cleanOneLine(id); value != "" {
+		keys = append(keys, "id:"+value)
+	}
+	return keys
+}
+
+func writePublicArtifactLine(b *strings.Builder, item publicArtifactLine, maxTextBytes int, seen map[string]bool) {
+	line := inlineText(item.Line, maxTextBytes)
+	if line == "N/A" || seen[line] {
+		return
+	}
+	keys := append([]string{}, item.Keys...)
+	if len(keys) == 0 {
+		keys = append(keys, "line:"+line)
+	}
+	for _, key := range keys {
+		if seen[key] {
+			return
 		}
 	}
-	for i, command := range limited(comment.CLIDirect, comment.MaxItems) {
-		line := fmt.Sprintf("%s exit=%d", command.Name, command.ExitCode)
-		if command.ArtifactID != "" || command.ArtifactURL != "" {
-			line += " artifact=" + joinNonEmpty(" ", command.ArtifactID, command.ArtifactURL)
-		}
-		if command.StdoutSummary != "" {
-			line += " stdout=" + command.StdoutSummary
-		}
-		if command.StderrSummary != "" {
-			line += " stderr=" + command.StderrSummary
-		}
-		if command.Diagnostics != "" {
-			line += " diagnostics=" + command.Diagnostics
-		}
-		fmt.Fprintf(b, "- Stored coordinator CLI provenance %d: %s\n", i+1, inlineText(line, comment.MaxTextBytes))
+	seen[line] = true
+	for _, key := range keys {
+		seen[key] = true
 	}
-	b.WriteString("\nThe runner records this as bounded provenance. Workflow artifacts are written by the sandboxed coordinator through existing issue-spec CLI commands.\n")
+	fmt.Fprintf(b, "- %s\n", line)
+}
+
+func writeRejectedReason(b *strings.Builder, comment RunnerStatusComment) {
+	if strings.TrimSpace(comment.Status) != "rejected" {
+		return
+	}
+	diagnostics := append([]string{}, comment.Diagnostics...)
+	if strings.TrimSpace(comment.Error) != "" {
+		diagnostics = append(diagnostics, "error: "+comment.Error)
+	}
+	seen := map[string]bool{}
+	var lines []string
+	for _, diagnostic := range limited(diagnostics, comment.MaxItems) {
+		line := inlineText(diagnostic, comment.MaxTextBytes)
+		if line == "N/A" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return
+	}
+	b.WriteString("\n## Reason\n\n")
+	for _, line := range lines {
+		fmt.Fprintf(b, "- %s\n", line)
+	}
 }
 
 func writeResumeGuidance(b *strings.Builder, comment RunnerStatusComment) {
@@ -222,20 +330,6 @@ func writeResumeGuidance(b *strings.Builder, comment RunnerStatusComment) {
 	fmt.Fprintf(b, "/resume %s <answer or next instruction>\n", cleanOneLine(sessionID))
 	b.WriteString("```\n\n")
 	b.WriteString("Ordinary follow-up comments are recorded on GitHub, but the runner only sends `/resume` command comments to the coordinator.\n")
-}
-
-func writeDiagnostics(b *strings.Builder, comment RunnerStatusComment) {
-	diagnostics := append([]string{}, comment.Diagnostics...)
-	if strings.TrimSpace(comment.Error) != "" {
-		diagnostics = append(diagnostics, "error: "+comment.Error)
-	}
-	if len(diagnostics) == 0 {
-		return
-	}
-	b.WriteString("\n## Diagnostics\n\n")
-	for _, diagnostic := range limited(diagnostics, comment.MaxItems) {
-		fmt.Fprintf(b, "- %s\n", inlineText(diagnostic, comment.MaxTextBytes))
-	}
 }
 
 func tableRow(b *strings.Builder, key, value string) {

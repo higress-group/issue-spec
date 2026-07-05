@@ -108,6 +108,7 @@ func (a *app) runPRRationale(ctx context.Context, args []string) int {
 	specID := fs.String("spec", "", "SPEC id")
 	specURL := fs.String("spec-url", "", "SPEC comment URL")
 	agent := fs.String("agent", "Worker Agent", "logical agent identity")
+	agentSession := addAgentSessionFlag(fs)
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -141,7 +142,8 @@ func (a *app) runPRRationale(ctx context.Context, args []string) int {
 		a.errorf("auth required for pr rationale on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
 	}
-	result, err := createRationale(ctx, client, repo, *prFlag, *pathFlag, *lineFlag, *processID, *specID, *specURL, *agent, body)
+	session := resolveWriterSession(*agentSession)
+	result, err := createRationale(ctx, client, repo, *prFlag, *pathFlag, *lineFlag, *processID, *specID, *specURL, *agent, session, body)
 	if err != nil {
 		a.errorf("create rationale: %v\n", err)
 		return 1
@@ -174,7 +176,7 @@ func createRationale(ctx context.Context, client interface {
 	ListPullRequestFiles(context.Context, string, int) ([]github.PullRequestFile, error)
 	ListPullRequestReviewComments(context.Context, string, int) ([]github.PullRequestReviewComment, error)
 	CreatePullRequestReviewComment(context.Context, string, int, string, string, string, int, string) (github.PullRequestReviewComment, error)
-}, repo string, prNumber int, path string, line int, processID, specID, specURL, agent, rationale string) (rationaleResult, error) {
+}, repo string, prNumber int, path string, line int, processID, specID, specURL, agent string, session writerSession, rationale string) (rationaleResult, error) {
 	path = strings.TrimSpace(path)
 	processID = strings.TrimSpace(processID)
 	specID = strings.TrimSpace(specID)
@@ -202,7 +204,7 @@ func createRationale(ctx context.Context, client interface {
 	if err != nil {
 		return rationaleResult{}, err
 	}
-	body, err := model.RenderRationaleBody(agent, processID, specID, specURL, rationale, path, line)
+	body, err := model.RenderRationaleBodyWithSession(agent, session.ID, session.Source, processID, specID, specURL, rationale, path, line)
 	if err != nil {
 		return rationaleResult{}, err
 	}

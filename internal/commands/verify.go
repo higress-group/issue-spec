@@ -13,18 +13,19 @@ import (
 )
 
 type finalVerifyReport struct {
-	OK                    bool               `json:"ok"`
-	Traceability          model.VerifyReport `json:"traceability"`
-	Errors                []string           `json:"errors"`
-	Warnings              []string           `json:"warnings,omitempty"`
-	SpecCoverage          map[string]bool    `json:"spec_coverage"`
-	RationaleCoverage     map[string]bool    `json:"rationale_coverage,omitempty"`
-	ReviewFindingBlockers []reviewFinding    `json:"review_finding_blockers,omitempty"`
-	FailedChecks          []reviewCheck      `json:"failed_checks,omitempty"`
-	PendingChecks         []reviewCheck      `json:"pending_checks,omitempty"`
-	PR                    int                `json:"pr,omitempty"`
-	DurableSpecPath       string             `json:"durable_spec_path,omitempty"`
-	DurableSpecCheck      map[string]bool    `json:"durable_spec_check,omitempty"`
+	OK                    bool                 `json:"ok"`
+	Traceability          model.VerifyReport   `json:"traceability"`
+	Errors                []string             `json:"errors"`
+	Warnings              []string             `json:"warnings,omitempty"`
+	Diagnostics           []metadataDiagnostic `json:"diagnostics,omitempty"`
+	SpecCoverage          map[string]bool      `json:"spec_coverage"`
+	RationaleCoverage     map[string]bool      `json:"rationale_coverage,omitempty"`
+	ReviewFindingBlockers []reviewFinding      `json:"review_finding_blockers,omitempty"`
+	FailedChecks          []reviewCheck        `json:"failed_checks,omitempty"`
+	PendingChecks         []reviewCheck        `json:"pending_checks,omitempty"`
+	PR                    int                  `json:"pr,omitempty"`
+	DurableSpecPath       string               `json:"durable_spec_path,omitempty"`
+	DurableSpecCheck      map[string]bool      `json:"durable_spec_check,omitempty"`
 }
 
 type finalVerifyOptions struct {
@@ -148,6 +149,7 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		PR:                opts.PR,
 	}
 	report.Errors = append(report.Errors, report.Traceability.Errors...)
+	report.Diagnostics = append(report.Diagnostics, typedSessionDiagnostics(artifacts)...)
 	var activeSpecs []model.Artifact
 	activeSpecIDs := map[string]bool{}
 	var activeProcesses []model.Artifact
@@ -219,6 +221,7 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 			}
 		}
 		reviewReport := buildReviewSyncReport(github.PullRequest{Number: opts.PR, HTMLURL: opts.PRURL}, opts.RationaleComments, nil, opts.PRStatus, opts.PRCheckRuns)
+		report.Diagnostics = append(report.Diagnostics, reviewReport.Diagnostics...)
 		report.ReviewFindingBlockers = reviewReport.BlockingFindings
 		for _, finding := range report.ReviewFindingBlockers {
 			report.Errors = append(report.Errors, fmt.Sprintf("open %s review finding %s on %s:%d", finding.Severity, finding.ID, finding.Path, finding.Line))
@@ -332,5 +335,11 @@ func printFinalVerify(out interface{ Write([]byte) (int, error) }, report finalV
 	}
 	for _, err := range report.Errors {
 		fmt.Fprintf(out, "- %s\n", err)
+	}
+	if len(report.Diagnostics) > 0 {
+		fmt.Fprintln(out, "metadata diagnostics:")
+		for _, diagnostic := range report.Diagnostics {
+			fmt.Fprintf(out, "- %s %s: %s\n", diagnostic.Level, diagnostic.Code, diagnostic.Message)
+		}
 	}
 }

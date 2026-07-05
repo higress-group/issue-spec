@@ -38,6 +38,36 @@ func TestBuildReviewSyncReportClassifiesRationaleFindingsAndChecks(t *testing.T)
 	}
 }
 
+func TestBuildReviewSyncReportIncludesSessionMetadataDiagnostics(t *testing.T) {
+	finding, err := model.RenderFindingBody("Review", "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Fix this.", "open", "b.go", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := buildReviewSyncReport(github.PullRequest{Number: 4, HTMLURL: "https://github.com/o/r/pull/4"}, []github.PullRequestReviewComment{
+		{ID: 2, Body: finding, Path: "b.go", Line: 20, HTMLURL: "https://github.com/o/r/pull/4#discussion_r2"},
+	}, nil, github.CombinedStatus{}, nil)
+	if len(report.Diagnostics) != 1 {
+		t.Fatalf("diagnostics = %+v", report.Diagnostics)
+	}
+	if report.Diagnostics[0].Code != "missing_session_metadata" || report.Diagnostics[0].Artifact != "FINDING/FINDING-001" {
+		t.Fatalf("unexpected diagnostic: %+v", report.Diagnostics[0])
+	}
+}
+
+func TestFirstFindingSummarySkipsSessionMetadata(t *testing.T) {
+	body := `<!-- issue-spec:finding id=FINDING-001 severity=P1 process=PROCESS-001 spec=SPEC-001 status=open path=a.go line=1 version=1 -->
+Agent: Review Agent
+Agent Session ID: codex-session-123
+Agent Session Source: CODEX_THREAD_ID
+Type: FINDING
+ID: FINDING-001
+
+Fix the real bug.`
+	if got := firstFindingSummary(body); got != "Fix the real bug." {
+		t.Fatalf("summary = %q", got)
+	}
+}
+
 func TestBuildReviewSyncReportP2FindingDoesNotBlock(t *testing.T) {
 	report := buildReviewSyncReport(github.PullRequest{Number: 4, HTMLURL: "https://github.com/o/r/pull/4"}, []github.PullRequestReviewComment{
 		{ID: 2, Body: "P2: polish this before follow-up", Path: "b.go", Line: 20, HTMLURL: "https://github.com/o/r/pull/4#discussion_r2"},
@@ -103,7 +133,7 @@ func TestBuildReviewSyncReportDoesNotResolveDuplicateFindingIDAcrossThreads(t *t
 }
 
 func TestRenderReviewSyncComment(t *testing.T) {
-	body, err := renderReviewSyncComment("REVIEW-001", "Coordinator", "pr-review", "https://github.com/o/r/pull/4", reviewSyncReport{
+	body, err := renderReviewSyncComment("REVIEW-001", "Coordinator", writerSession{}, "pr-review", "https://github.com/o/r/pull/4", reviewSyncReport{
 		OK:                true,
 		PR:                4,
 		PRURL:             "https://github.com/o/r/pull/4",
@@ -133,14 +163,14 @@ func TestCreateReviewFindingIsIdempotent(t *testing.T) {
 		pr: github.PullRequest{Number: 7},
 	}
 	client.pr.Head.SHA = "abc123"
-	result, err := createReviewFinding(ctx, client, "o/r", 7, "internal/foo.go", 2, "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Review Agent", "Fix this.")
+	result, err := createReviewFinding(ctx, client, "o/r", 7, "internal/foo.go", 2, "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Review Agent", writerSession{}, "Fix this.")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.Created || result.CommentID == 0 || result.Severity != "P1" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	result, err = createReviewFinding(ctx, client, "o/r", 7, "internal/foo.go", 2, "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Review Agent", "Fix this.")
+	result, err = createReviewFinding(ctx, client, "o/r", 7, "internal/foo.go", 2, "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Review Agent", writerSession{}, "Fix this.")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +189,7 @@ func TestCreateReviewFindingWithGHBackendUsesPatchLines(t *testing.T) {
 	}}
 	client := newCommandTestGHBackend(t, runner)
 
-	result, err := createReviewFinding(ctx, client, "o/r", 7, "internal/foo.go", 2, "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Review Agent", "Fix this.")
+	result, err := createReviewFinding(ctx, client, "o/r", 7, "internal/foo.go", 2, "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Review Agent", writerSession{}, "Fix this.")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,14 +212,14 @@ func TestReplyReviewFindingIsIdempotent(t *testing.T) {
 			Line:    2,
 		}},
 	}
-	result, err := replyReviewFinding(ctx, client, "o/r", 7, 10, "FINDING-001", "PROCESS-001", "resolved", "Worker Agent", "Fixed.")
+	result, err := replyReviewFinding(ctx, client, "o/r", 7, 10, "FINDING-001", "PROCESS-001", "resolved", "Worker Agent", writerSession{}, "Fixed.")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.Created || result.CommentID == 0 || result.ParentCommentID != 10 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	result, err = replyReviewFinding(ctx, client, "o/r", 7, 10, "FINDING-001", "PROCESS-001", "resolved", "Worker Agent", "Fixed.")
+	result, err = replyReviewFinding(ctx, client, "o/r", 7, 10, "FINDING-001", "PROCESS-001", "resolved", "Worker Agent", writerSession{}, "Fixed.")
 	if err != nil {
 		t.Fatal(err)
 	}

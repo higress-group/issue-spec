@@ -25,6 +25,21 @@ func TestBuildFinalVerifyReportRequiresDoneTasksAndCoverage(t *testing.T) {
 	}
 }
 
+func TestBuildFinalVerifyReportReportsSessionDiagnosticsWithoutErrors(t *testing.T) {
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", "## Requirement / Scenario Coverage\n\nSPEC-001 covered.")
+	report, err := buildFinalVerifyReport([]model.Artifact{spec, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.OK {
+		t.Fatalf("metadata diagnostics should not fail verify: %+v", report.Errors)
+	}
+	if len(report.Diagnostics) != 2 {
+		t.Fatalf("diagnostics = %+v", report.Diagnostics)
+	}
+}
+
 func TestBuildFinalVerifyReportChecksDurableSpec(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"

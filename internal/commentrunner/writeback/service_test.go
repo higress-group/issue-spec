@@ -30,8 +30,13 @@ func TestWritebackCreatesThenUpdatesTrackedComment(t *testing.T) {
 	if !created.Created || created.Comment.ID != 501 || ops.creates != 1 {
 		t.Fatalf("create result=%+v creates=%d", created, ops.creates)
 	}
-	if !strings.Contains(created.Body, "| Runner job | `job-1` |") || !strings.Contains(created.Body, "| Public session | `s_123` |") {
-		t.Fatalf("created body missing public fields:\n%s", created.Body)
+	if !strings.Contains(created.Body, "| Status | `queued` |") ||
+		!strings.Contains(created.Body, "| Phase | `queued` |") ||
+		!strings.Contains(created.Body, "| Public session | `s_123` |") {
+		t.Fatalf("created body missing concise status fields:\n%s", created.Body)
+	}
+	if strings.Contains(created.Body, "| Runner job |") || strings.Contains(created.Body, "| Trigger comment |") {
+		t.Fatalf("created body leaked runner metadata:\n%s", created.Body)
 	}
 
 	updated, err := service.Write(ctx, Request{Job: job, Status: state.StatusRunning, Phase: "running"})
@@ -131,6 +136,7 @@ func TestWritebackParsesCoordinatorReplyBody(t *testing.T) {
 	service := &Service{GitHub: ops, Store: store, Clock: func() time.Time { return time.Unix(400, 0).UTC() }}
 	reply := "done\n```issue_spec_coordinator_summary\n" + `{
   "status": "completed",
+  "artifacts": [{"kind": "typed_comment", "id": "PROCESS-001", "url": "https://github.com/o/r/issues/30#issuecomment-1", "action": "updated"}],
   "commands": [{"name": "issue-spec comment upsert", "exit_code": 0, "artifact_id": "PROCESS-001"}],
   "children": [{"id": "child-1", "role": "worker", "process_id": "PROCESS-001", "status": "done"}]
 }` + "\n```"
@@ -139,8 +145,19 @@ func TestWritebackParsesCoordinatorReplyBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Body, "Coordinator CLI command") || !strings.Contains(result.Body, "Child provenance") {
-		t.Fatalf("coordinator summary not rendered:\n%s", result.Body)
+	for _, want := range []string{
+		"## Result",
+		"Completed the requested command.",
+		"updated typed_comment PROCESS-001: https://github.com/o/r/issues/30#issuecomment-1",
+	} {
+		if !strings.Contains(result.Body, want) {
+			t.Fatalf("coordinator result missing %q:\n%s", want, result.Body)
+		}
+	}
+	for _, forbidden := range []string{"Coordinator CLI command", "Child provenance", "issue-spec comment upsert", "child-1"} {
+		if strings.Contains(result.Body, forbidden) {
+			t.Fatalf("coordinator details leaked %q:\n%s", forbidden, result.Body)
+		}
 	}
 }
 

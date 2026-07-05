@@ -47,6 +47,12 @@ type Config struct {
 	UnsafeNoSandbox      bool                   `json:"unsafe_no_sandbox"`
 	GHConfigDir          string                 `json:"gh_config_dir,omitempty"`
 	CancellationEnabled  bool                   `json:"cancellation_enabled"`
+	// Logging configuration
+	LogDir              string                 `json:"log_dir,omitempty"`
+	LogMaxSizeMB        int                    `json:"log_max_size_mb,omitempty"`
+	LogMaxFiles         int                    `json:"log_max_files,omitempty"`
+	LogRetentionDays    int                    `json:"log_retention_days,omitempty"`
+	LogRawCaptureKB     int                    `json:"log_raw_capture_kb,omitempty"`
 }
 
 type AgentConfig struct {
@@ -105,6 +111,11 @@ func DefaultConfigFromEnv() (Config, error) {
 		WorkspaceRoot:       defaultWorkspaceRoot(),
 		WorkspaceRetention:  NewDuration(7 * 24 * time.Hour),
 		CancellationEnabled: true,
+		// Logging configuration defaults
+		LogMaxSizeMB:		10,
+		LogMaxFiles:		5,
+		LogRetentionDays:	30,
+		LogRawCaptureKB:	100,
 	}, nil
 }
 

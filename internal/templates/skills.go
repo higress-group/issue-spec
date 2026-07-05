@@ -91,6 +91,9 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 - Resolve blocking QUESTION comments before design/tasks, or explicitly record accepted assumptions.
 - Link SPEC <-> TASK and TASK <-> PROCESS with issue-spec link.
 - Link every PROCESS to the implementation PR with issue-spec pr link-process.
+- Treat Agent as the logical role or workflow-assigned label. Treat Agent Session ID and Agent Session Source as artifact writer provenance, not runner resume metadata.
+- When dispatching subagents, assign each subagent an explicit subagent/session id and tell it to pass that value with --agent-session to issue-spec writer commands. In Codex, CODEX_THREAD_ID may override that value as the resolved artifact writer session id; outside Codex, --agent-session is the explicit fallback and missing session metadata is non-strict by default.
+- In runner mode, runner.public_session_id is the public /resume handle. Coordinator-authored proposal, design, implement, handoff, and update issue bodies or comments should include runner.public_session_id and /resume <public-session-id> <answer or next instruction> when available. Do not present Agent Session ID, CODEX_THREAD_ID, acpx record ids, or provider session ids as /resume handles.
 - For non-trivial changes, include review PROCESS nodes in the DAG; review agents are scheduled like worker agents and can run in parallel when their review scopes are independent.
 - Small changes may stay coordinator-only, but record the serial execution decision in the implement or VERIFY evidence.
 - Before human review, add PR rationale comments with issue-spec pr rationale for every active PROCESS.
@@ -102,7 +105,7 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 
 1. Treat PROCESS comments as DAG nodes with explicit owner, dependencies, write or review scope, PR link, and evidence.
 2. Select ready PROCESS nodes whose dependencies are done and whose scopes do not overlap.
-3. Dispatch independent worker PROCESS nodes in parallel when their file/module ownership is disjoint.
+3. Dispatch independent worker PROCESS nodes in parallel when their file/module ownership is disjoint; include each worker's assigned subagent/session id and require it to pass that id with --agent-session on supported issue-spec writer commands.
 4. Dispatch independent review PROCESS nodes in parallel for non-trivial PRs after PR rationale exists.
 5. Integrate completed worker outputs by dependency order; route P0/P1 review findings back to the owner PROCESS.
 6. Mark PROCESS nodes done only after their implementation or review evidence is recorded and blocking findings are resolved.
@@ -155,6 +158,7 @@ Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing 
 1. Read proposal/design/implement issue context and list typed comments with issue-spec comment list --json.
 2. Confirm issue-spec auth status --json includes the expected GitHub backend. Local gh-authenticated sessions can use the native gh backend; keep ISSUE_SPEC_TOKEN="$(gh auth token)" only as an older-version or forced-rest compatibility path.
 3. Create or update PROCESS comments with owner agent, scope, dependencies, write ownership, and status.
+   Keep Agent as the logical role. Pass assigned subagent/session ids with --agent-session; Codex CODEX_THREAD_ID remains the artifact writer session source of truth when present.
 4. Split non-trivial work into independent worker PROCESS nodes when file/module ownership does not overlap; execute independent workers in parallel when available.
 5. Add dedicated review PROCESS nodes for non-trivial changes. Review PROCESS nodes should own review scopes such as CLI/API behavior, workflow docs, tests, compatibility, or security-sensitive surfaces.
 6. Link each PROCESS to its TASK comments with issue-spec link.
@@ -167,7 +171,7 @@ Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing 
 
 1. Build the ready set from PROCESS nodes whose dependencies are done.
 2. Keep immediate blocking work local when the next step depends on it.
-3. Spawn or assign independent worker agents only when their write ownership is disjoint.
+3. Spawn or assign independent worker agents only when their write ownership is disjoint, and give each worker an assigned id to pass via --agent-session.
 4. Spawn or assign independent review agents only when their review scopes are disjoint.
 5. Integrate completed outputs by dependency order and update PROCESS evidence before marking done.
 `,
@@ -183,10 +187,10 @@ Use when the user asks for /issue-spec:review, issue-spec review, or a PR review
 
 ## Steps
 
-1. Run issue-spec review sync --repo {{repo}} --pr <number> --implement <issue> --id REVIEW-<n> --json to capture current rationale comments, findings, and checks.
+1. Run issue-spec review sync --repo {{repo}} --pr <number> --implement <issue> --id REVIEW-<n> --json to capture current rationale comments, findings, checks, and artifact writer session diagnostics.
 2. For non-trivial PRs, spawn or assign dedicated review agents as review PROCESS owners. Multiple review agents can run in parallel when their review scopes are independent.
 3. Give each review agent a concrete scope and expected output: actionable findings only, severity, file/line, linked SPEC, owner PROCESS, and suggested fix.
-4. Create actionable PR line findings with issue-spec review finding. Use P0/P1 for blockers and P2 for non-blocking follow-up.
+4. Create actionable PR line findings with issue-spec review finding. Use P0/P1 for blockers and P2 for non-blocking follow-up. Pass the review agent's assigned id with --agent-session.
 5. Assign every finding to a PROCESS owner. If no findings are found, record that result in REVIEW or VERIFY evidence.
 6. After the worker fixes a finding, reply to the original thread with issue-spec review reply --status resolved.
 7. Re-run review sync. P0/P1 findings must be resolved before final verify/archive.

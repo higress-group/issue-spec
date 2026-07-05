@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -521,7 +522,7 @@ func TestRunNextFailsBeforeAcpxWhenChildAuthProbeFails(t *testing.T) {
 		CreatedAt:             now,
 	})
 	probe := &fakeAuthProbeRunner{result: acpx.CommandResult{
-		Stdout: []byte(`{"ok":false,"host":"github.com","error":"gh backend token invalid","backend":{"name":"gh","selection_source":"auto:gh"}}`),
+		Stdout: []byte(`{"ok":false,"host":"github.com","error":"gh backend oauth_token: should-not-leak invalid","backend":{"name":"gh","selection_source":"auto:gh"}}`),
 	}}
 	workspaces := &fakeWorkspaces{binding: testBinding("ws-auth-fail")}
 	writebacks := &fakeWriteback{}
@@ -541,6 +542,9 @@ func TestRunNextFailsBeforeAcpxWhenChildAuthProbeFails(t *testing.T) {
 	if result.Status != state.StatusFailed || !strings.Contains(result.Error, "pre-acpx child auth probe failed") || !strings.Contains(result.Error, "backend=gh") {
 		t.Fatalf("unexpected result: %+v err=%v", result, err)
 	}
+	if strings.Contains(result.Error, "should-not-leak") {
+		t.Fatalf("auth diagnostic leaked token material: %s", result.Error)
+	}
 	if len(coordinator.newPrompts) != 0 || len(coordinator.resumePrompts) != 0 {
 		t.Fatalf("acpx ran despite auth preflight failure: new=%d resume=%d", len(coordinator.newPrompts), len(coordinator.resumePrompts))
 	}
@@ -552,9 +556,64 @@ func TestRunNextFailsBeforeAcpxWhenChildAuthProbeFails(t *testing.T) {
 	if job.Status != state.StatusFailed || len(job.Diagnostics) != 1 || !strings.Contains(job.Diagnostics[0], "child-auth:") {
 		t.Fatalf("auth failure was not persisted as controlled child-auth failure: %+v", job)
 	}
-	if len(probe.commands) != 1 || probe.commands[0].Binary != "issue-spec" || strings.Join(probe.commands[0].Args, " ") != "auth status --json" {
+	if len(probe.commands) != 2 || probe.commands[0].Binary != "issue-spec" || strings.Join(probe.commands[0].Args, " ") != "auth status --json" {
 		t.Fatalf("unexpected auth probe command: %+v", probe.commands)
 	}
+}
+
+func TestRunNextRetriesTransientChildAuthProbeAndPersistsSuccessDiagnostic(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 12, 7, 0, 0, time.UTC)
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-auth-retry",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "alice",
+		TriggerCommentID:      318,
+		CommandID:             "cmd-auth-retry",
+		CommandName:           "new",
+		CommandPrompt:         "do work",
+		CommandIdempotencyKey: "cmd-key-auth-retry",
+		StatusWritebackKey:    "status-auth-retry",
+		Status:                state.StatusQueued,
+		CreatedAt:             now,
+	})
+	probe := &fakeAuthProbeRunner{results: []acpx.CommandResult{
+		{Stdout: []byte(`{"ok":false,"host":"github.com","error":"gh backend token is invalid","backend":{"name":"gh","selection_source":"auto:gh"}}`)},
+		{Stdout: []byte(`{"ok":true,"auth":{"host":"github.com","source":"gh","user":"bot"},"backend":{"name":"gh","selection_source":"auto:gh","token_source":"hosts.yml"}}`)},
+	}}
+	workspaces := &fakeWorkspaces{binding: testBinding("ws-auth-retry")}
+	writebacks := &fakeWriteback{}
+	coordinator := &fakeCoordinator{newResult: dispatchResult("ps-auth-retry", "rec-auth-retry", "turn-auth-retry", completedSummary())}
+	dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
+	dispatcher.Sandbox = &fakeSandbox{env: ExecutionEnvironment{
+		WorkingDirectory: "/workspace",
+		Sandbox:          state.SandboxMetadata{SandboxProvider: "none", FSBoundary: "disabled", Diagnostics: "gh_auth_mirror: host_config_dir=\"/host/gh\" runtime_gh_config_dir=\"/runtime/gh\""},
+		Runner:           probe,
+	}}
+	dispatcher.PublicSessionID = func() (string, error) { return "ps-auth-retry", nil }
+
+	result, err := dispatcher.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("RunNext returned error: %v", err)
+	}
+	if result.Status != state.StatusCompleted || len(probe.commands) != 2 || len(coordinator.newPrompts) != 1 {
+		t.Fatalf("auth retry did not complete dispatch: result=%+v probes=%d prompts=%d", result, len(probe.commands), len(coordinator.newPrompts))
+	}
+	job := loadState(t, store).Jobs["job-auth-retry"]
+	for _, want := range []string{
+		"gh_auth_mirror:",
+		"runtime_gh_config_dir=\"/runtime/gh\"",
+		"child_auth_probe: ok=true attempt=2 retries=1",
+		"backend=gh",
+		"backend_token_source=hosts.yml",
+	} {
+		if !strings.Contains(job.Sandbox.Diagnostics, want) {
+			t.Fatalf("sandbox diagnostics %q missing %q", job.Sandbox.Diagnostics, want)
+		}
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusRunning, state.StatusCompleted)
 }
 
 func TestRunNextAuthProbeSuccessUsesConfiguredIssueSpecBinaryAndAllowsAcpxDispatch(t *testing.T) {
@@ -597,6 +656,10 @@ func TestRunNextAuthProbeSuccessUsesConfiguredIssueSpecBinaryAndAllowsAcpxDispat
 	}
 	if len(probe.commands) != 1 || probe.commands[0].Binary != "/tmp/issue-spec-runner-e2e-001/bin/issue-spec" || strings.Join(probe.commands[0].Args, " ") != "auth status --json" {
 		t.Fatalf("unexpected auth probe command: %+v", probe.commands)
+	}
+	job := loadState(t, store).Jobs["job-auth-ok"]
+	if !strings.Contains(job.Sandbox.Diagnostics, "child_auth_probe: ok=true attempt=1") || !strings.Contains(job.Sandbox.Diagnostics, "backend=gh") {
+		t.Fatalf("auth probe success diagnostic missing from sandbox metadata: %+v", job.Sandbox)
 	}
 	assertWritebackStatuses(t, writebacks, state.StatusRunning, state.StatusCompleted)
 }
@@ -1101,6 +1164,20 @@ func TestSandboxRunnerMirrorsHostGHAuthIntoSandboxConfigDir(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(sandboxGH, "hosts.yml")); err != nil {
 		t.Fatalf("host gh auth was not mirrored into %s: %v", sandboxGH, err)
 	}
+	for _, want := range []string{
+		"gh_auth_mirror:",
+		"host_config_dir=\"" + hostGH + "\"",
+		"runtime_gh_config_dir=\"" + sandboxGH + "\"",
+		"sandbox_gh_config_dir=\"" + sandboxGH + "\"",
+		"action=\"copied\"",
+	} {
+		if !strings.Contains(env.Sandbox.Diagnostics, want) {
+			t.Fatalf("sandbox diagnostics %q missing %q", env.Sandbox.Diagnostics, want)
+		}
+	}
+	if strings.Contains(env.Sandbox.Diagnostics, "oauth_token") {
+		t.Fatalf("sandbox diagnostics leaked host auth content: %q", env.Sandbox.Diagnostics)
+	}
 }
 
 func TestSandboxRunnerUsesRequestRuntimePaths(t *testing.T) {
@@ -1199,6 +1276,55 @@ func TestSandboxRunnerRefreshesExistingRuntimeGHConfig(t *testing.T) {
 	}
 }
 
+func TestSandboxedRunnerRefreshesRuntimeGHConfigBeforeEveryRun(t *testing.T) {
+	temp := t.TempDir()
+	hostGH := filepath.Join(temp, "host-gh")
+	workspacePath := filepath.Join(temp, "workspace")
+	runtimeGH := filepath.Join(temp, "runtime-gh")
+	for _, dir := range []string{hostGH, workspacePath, runtimeGH} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: host-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := sandbox.Config{
+		UnsafeNoSandbox:   true,
+		WorkspacePath:     workspacePath,
+		TempHome:          filepath.Join(temp, "home"),
+		TempGHConfigDir:   runtimeGH,
+		TempXDGConfigHome: filepath.Join(temp, "xdg"),
+		HostGHConfigDir:   hostGH,
+		HostEnv:           []string{"PATH=/usr/bin"},
+		EnvAllowlist:      []string{"PATH"},
+	}
+	for _, dir := range []string{cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := &recordingSandboxRunner{}
+	sandboxRunner := sandboxedRunner{cfg: cfg, deps: sandbox.Dependencies{Runner: runner}}
+	if _, err := sandboxRunner.Run(context.Background(), acpx.Command{Binary: "acpx", Args: []string{"one"}}); err != nil {
+		t.Fatalf("first Run returned error: %v", err)
+	}
+	assertFileContentAndMode(t, filepath.Join(runtimeGH, "hosts.yml"), "github.com:\n  oauth_token: host-1\n", 0o600)
+	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: host-2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeGH, "hosts.yml"), []byte("github.com:\n  oauth_token: stale-runtime\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sandboxRunner.Run(context.Background(), acpx.Command{Binary: "acpx", Args: []string{"two"}}); err != nil {
+		t.Fatalf("second Run returned error: %v", err)
+	}
+	assertFileContentAndMode(t, filepath.Join(runtimeGH, "hosts.yml"), "github.com:\n  oauth_token: host-2\n", 0o600)
+	if strings.Join(runner.command.Args, " ") != "two" {
+		t.Fatalf("second command was not executed after refresh: %+v", runner.command)
+	}
+}
+
 func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
 	temp := t.TempDir()
 	hostGH := filepath.Join(temp, "host-gh")
@@ -1216,7 +1342,7 @@ func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFileWithMode(t, filepath.Join(hostCodex, "auth.json"), []byte(`{"token":"codex"}`), 0o600)
-	writeFileWithMode(t, filepath.Join(hostCodex, "config.toml"), []byte("model = \"gpt-5\"\n"), 0o640)
+	writeFileWithMode(t, filepath.Join(hostCodex, "config.toml"), []byte("model = \"gpt-5\"\nservice_tier = \"default\"\n"), 0o640)
 	writeFileWithMode(t, filepath.Join(hostCodex, "version.json"), []byte(`{"version":"1"}`), 0o644)
 	writeFileWithMode(t, filepath.Join(hostCodex, "installation_id"), []byte("install-1\n"), 0o600)
 	writeFileWithMode(t, filepath.Join(hostCodex, "settings.json"), []byte(`{"ignored":true}`), 0o600)
@@ -1248,6 +1374,52 @@ func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dest, "settings.json")); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("non-allowlisted Codex file was copied to %s: %v", dest, err)
 		}
+	}
+}
+
+func TestSanitizeCodexRuntimeFileDropsOnlyTopLevelDefaultServiceTier(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "drops top level default",
+			in:   "model = \"gpt-5.5\"\nservice_tier = \"default\"\nmodel_reasoning_effort = \"xhigh\"\n",
+			want: "model = \"gpt-5.5\"\nmodel_reasoning_effort = \"xhigh\"\n",
+		},
+		{
+			name: "drops commented default",
+			in:   "model = \"gpt-5.5\"\nservice_tier = \"default\" # Codex writes this when fast is disabled\n",
+			want: "model = \"gpt-5.5\"\n",
+		},
+		{
+			name: "keeps fast and flex",
+			in:   "service_tier = \"fast\"\n[profiles.flex]\nservice_tier = \"flex\"\n",
+			want: "service_tier = \"fast\"\n[profiles.flex]\nservice_tier = \"flex\"\n",
+		},
+		{
+			name: "keeps table scoped default",
+			in:   "[profiles.default]\nservice_tier = \"default\"\n",
+			want: "[profiles.default]\nservice_tier = \"default\"\n",
+		},
+		{
+			name: "leaves non config files unchanged",
+			in:   "service_tier = \"default\"\n",
+			want: "service_tier = \"default\"\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fileName := "config.toml"
+			if tt.name == "leaves non config files unchanged" {
+				fileName = "auth.json"
+			}
+			got := string(sanitizeCodexRuntimeFile(fileName, []byte(tt.in)))
+			if got != tt.want {
+				t.Fatalf("sanitized config = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -1331,6 +1503,12 @@ func TestSandboxRunnerSkipsMissingHostCodexConfig(t *testing.T) {
 }
 
 func TestSandboxRunnerBwrapPreservesHostCWDAndBindsIssueSpecBinaryForChildAuth(t *testing.T) {
+	// The sandbox Prepare step resolves the acpx binary via exec.LookPath, so
+	// this test only runs where acpx is installed. Skip on clean CI runners
+	// that have no acpx on PATH to keep `go test ./...` hermetic.
+	if _, err := exec.LookPath("acpx"); err != nil {
+		t.Skipf("acpx not installed on PATH; skipping sandbox bind test: %v", err)
+	}
 	temp := t.TempDir()
 	hostGH := filepath.Join(temp, "host-gh")
 	workspacePath := filepath.Join(temp, "workspace")
@@ -1373,7 +1551,7 @@ func TestSandboxRunnerBwrapPreservesHostCWDAndBindsIssueSpecBinaryForChildAuth(t
 	}
 
 	dispatcher := Dispatcher{IssueSpecBinary: issueSpecPath}
-	if err := dispatcher.preflightChildAuth(context.Background(), env); err != nil {
+	if _, err := dispatcher.preflightChildAuth(context.Background(), env); err != nil {
 		t.Fatalf("child auth preflight returned error: %v", err)
 	}
 	cmd := runner.finalCommand
@@ -1558,12 +1736,20 @@ func TestSandboxRunnerFailsFastWhenHostGHAuthMissing(t *testing.T) {
 
 func TestSandboxedRunnerPreservesAdapterCommandEnv(t *testing.T) {
 	temp := t.TempDir()
+	hostGH := filepath.Join(temp, "host-gh")
+	if err := os.MkdirAll(hostGH, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: host\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := sandbox.Config{
 		UnsafeNoSandbox:   true,
 		WorkspacePath:     temp,
 		TempHome:          filepath.Join(temp, "home"),
 		TempGHConfigDir:   filepath.Join(temp, "gh"),
 		TempXDGConfigHome: filepath.Join(temp, "xdg"),
+		HostGHConfigDir:   hostGH,
 		HostEnv:           []string{"PATH=/usr/bin", "UNLISTED_HOST=value", "GH_TOKEN=host-secret", "GITHUB_TOKEN=github-secret", "ISSUE_SPEC_TOKEN=issue-secret"},
 		EnvAllowlist:      []string{"PATH"},
 	}
@@ -2094,6 +2280,8 @@ func (r *recordingBwrapRunner) Run(_ context.Context, command sandbox.Command) (
 
 type fakeAuthProbeRunner struct {
 	commands []acpx.Command
+	results  []acpx.CommandResult
+	errs     []error
 	result   acpx.CommandResult
 	err      error
 }
@@ -2101,10 +2289,19 @@ type fakeAuthProbeRunner struct {
 func (r *fakeAuthProbeRunner) Run(_ context.Context, command acpx.Command) (acpx.CommandResult, error) {
 	r.commands = append(r.commands, command)
 	result := r.result
-	if result.Stdout == nil && result.Stderr == nil && result.ExitCode == 0 && r.err == nil {
+	if len(r.results) > 0 {
+		result = r.results[0]
+		r.results = r.results[1:]
+	}
+	err := r.err
+	if len(r.errs) > 0 {
+		err = r.errs[0]
+		r.errs = r.errs[1:]
+	}
+	if result.Stdout == nil && result.Stderr == nil && result.ExitCode == 0 && err == nil {
 		result.Stdout = []byte(`{"ok":true,"auth":{"host":"github.com","source":"gh","user":"bot"},"backend":{"name":"gh","selection_source":"auto:gh"}}`)
 	}
-	return result, r.err
+	return result, err
 }
 
 func envEntriesMap(entries []string) map[string]string {

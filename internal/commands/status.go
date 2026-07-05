@@ -19,6 +19,7 @@ type statusSummary struct {
 	OpenReviews       int                       `json:"open_reviews"`
 	Verify            map[string]string         `json:"verify"`
 	Traceability      model.VerifyReport        `json:"traceability"`
+	Diagnostics       []metadataDiagnostic      `json:"diagnostics,omitempty"`
 	NextGates         []string                  `json:"next_gates"`
 }
 
@@ -169,6 +170,7 @@ func summarizeStatus(repo string, proposal, design, implement int, artifacts []m
 		}
 	}
 	report := model.VerifyTraceability(artifacts)
+	diagnostics := typedSessionDiagnostics(artifacts)
 	var gates []string
 	if typeTotal(counts, "SPEC") == 0 {
 		gates = append(gates, "proposal requires at least one SPEC before design")
@@ -198,6 +200,7 @@ func summarizeStatus(repo string, proposal, design, implement int, artifacts []m
 		OpenReviews:       openReviews,
 		Verify:            verify,
 		Traceability:      report,
+		Diagnostics:       diagnostics,
 		NextGates:         gates,
 	}
 }
@@ -234,6 +237,12 @@ func printStatus(out interface{ Write([]byte) (int, error) }, summary statusSumm
 		fmt.Fprintln(out, "traceability: OK")
 	} else {
 		fmt.Fprintf(out, "traceability: %d error(s)\n", len(summary.Traceability.Errors))
+	}
+	if len(summary.Diagnostics) > 0 {
+		fmt.Fprintln(out, "metadata diagnostics:")
+		for _, diagnostic := range summary.Diagnostics {
+			fmt.Fprintf(out, "- %s %s: %s\n", diagnostic.Level, diagnostic.Code, diagnostic.Message)
+		}
 	}
 	if len(summary.NextGates) > 0 {
 		fmt.Fprintln(out, "blocking gates:")

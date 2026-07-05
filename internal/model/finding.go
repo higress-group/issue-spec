@@ -13,21 +13,27 @@ var (
 )
 
 type FindingMarker struct {
-	ID       string `json:"id"`
-	Severity string `json:"severity"`
-	Process  string `json:"process"`
-	Spec     string `json:"spec"`
-	Status   string `json:"status"`
-	Path     string `json:"path"`
-	Line     int    `json:"line"`
-	Version  int    `json:"version"`
+	ID                 string `json:"id"`
+	Severity           string `json:"severity"`
+	Process            string `json:"process"`
+	Spec               string `json:"spec"`
+	Status             string `json:"status"`
+	Path               string `json:"path"`
+	Line               int    `json:"line"`
+	Agent              string `json:"agent,omitempty"`
+	AgentSessionID     string `json:"agent_session_id,omitempty"`
+	AgentSessionSource string `json:"agent_session_source,omitempty"`
+	Version            int    `json:"version"`
 }
 
 type FindingReplyMarker struct {
-	Finding string `json:"finding"`
-	Process string `json:"process"`
-	Status  string `json:"status"`
-	Version int    `json:"version"`
+	Finding            string `json:"finding"`
+	Process            string `json:"process"`
+	Status             string `json:"status"`
+	Agent              string `json:"agent,omitempty"`
+	AgentSessionID     string `json:"agent_session_id,omitempty"`
+	AgentSessionSource string `json:"agent_session_source,omitempty"`
+	Version            int    `json:"version"`
 }
 
 func RenderFindingMarker(id, severity, process, spec, status, path string, line int) string {
@@ -57,21 +63,29 @@ func FindFindingMarker(body string) (FindingMarker, bool, error) {
 		if err != nil {
 			return FindingMarker{}, true, err
 		}
+		metadata := visibleMetadata(body)
 		return FindingMarker{
-			ID:       attrs["id"],
-			Severity: NormalizeFindingSeverity(attrs["severity"]),
-			Process:  attrs["process"],
-			Spec:     attrs["spec"],
-			Status:   NormalizeFindingStatus(attrs["status"]),
-			Path:     attrs["path"],
-			Line:     line,
-			Version:  version,
+			ID:                 attrs["id"],
+			Severity:           NormalizeFindingSeverity(attrs["severity"]),
+			Process:            attrs["process"],
+			Spec:               attrs["spec"],
+			Status:             NormalizeFindingStatus(attrs["status"]),
+			Path:               attrs["path"],
+			Line:               line,
+			Agent:              metadata["Agent"],
+			AgentSessionID:     metadata["Agent Session ID"],
+			AgentSessionSource: metadata["Agent Session Source"],
+			Version:            version,
 		}, true, nil
 	}
 	return FindingMarker{}, false, nil
 }
 
 func RenderFindingBody(agent, id, severity, processID, specID, specURL, body, status, path string, line int) (string, error) {
+	return RenderFindingBodyWithSession(agent, "", "", id, severity, processID, specID, specURL, body, status, path, line)
+}
+
+func RenderFindingBodyWithSession(agent, sessionID, sessionSource, id, severity, processID, specID, specURL, body, status, path string, line int) (string, error) {
 	if strings.TrimSpace(agent) == "" {
 		agent = "Review Agent"
 	}
@@ -93,9 +107,16 @@ func RenderFindingBody(agent, id, severity, processID, specID, specURL, body, st
 	}
 	severity = NormalizeFindingSeverity(severity)
 	status = NormalizeFindingStatus(status)
+	var sessionLines strings.Builder
+	if strings.TrimSpace(sessionID) != "" {
+		fmt.Fprintf(&sessionLines, "Agent Session ID: %s\n", strings.TrimSpace(sessionID))
+	}
+	if strings.TrimSpace(sessionSource) != "" {
+		fmt.Fprintf(&sessionLines, "Agent Session Source: %s\n", strings.TrimSpace(sessionSource))
+	}
 	return fmt.Sprintf(`%s
 Agent: %s
-Type: FINDING
+%sType: FINDING
 ID: %s
 Severity: %s
 Status: %s
@@ -104,7 +125,7 @@ Spec: %s
 Spec Comment: %s
 
 %s
-`, RenderFindingMarker(id, severity, processID, specID, status, path, line), agent, id, severity, status, processID, specID, specURL, strings.TrimSpace(body)), nil
+`, RenderFindingMarker(id, severity, processID, specID, status, path, line), agent, sessionLines.String(), id, severity, status, processID, specID, specURL, strings.TrimSpace(body)), nil
 }
 
 func RenderFindingReplyMarker(finding, process, status string) string {
@@ -126,17 +147,25 @@ func FindFindingReplyMarker(body string) (FindingReplyMarker, bool, error) {
 		if err != nil {
 			return FindingReplyMarker{}, true, err
 		}
+		metadata := visibleMetadata(body)
 		return FindingReplyMarker{
-			Finding: attrs["finding"],
-			Process: attrs["process"],
-			Status:  NormalizeFindingStatus(attrs["status"]),
-			Version: version,
+			Finding:            attrs["finding"],
+			Process:            attrs["process"],
+			Status:             NormalizeFindingStatus(attrs["status"]),
+			Agent:              metadata["Agent"],
+			AgentSessionID:     metadata["Agent Session ID"],
+			AgentSessionSource: metadata["Agent Session Source"],
+			Version:            version,
 		}, true, nil
 	}
 	return FindingReplyMarker{}, false, nil
 }
 
 func RenderFindingReplyBody(agent, findingID, processID, status, body string) (string, error) {
+	return RenderFindingReplyBodyWithSession(agent, "", "", findingID, processID, status, body)
+}
+
+func RenderFindingReplyBodyWithSession(agent, sessionID, sessionSource, findingID, processID, status, body string) (string, error) {
 	if strings.TrimSpace(agent) == "" {
 		agent = "Worker Agent"
 	}
@@ -151,15 +180,22 @@ func RenderFindingReplyBody(agent, findingID, processID, status, body string) (s
 		return "", fmt.Errorf("reply body is required")
 	}
 	status = NormalizeFindingStatus(status)
+	var sessionLines strings.Builder
+	if strings.TrimSpace(sessionID) != "" {
+		fmt.Fprintf(&sessionLines, "Agent Session ID: %s\n", strings.TrimSpace(sessionID))
+	}
+	if strings.TrimSpace(sessionSource) != "" {
+		fmt.Fprintf(&sessionLines, "Agent Session Source: %s\n", strings.TrimSpace(sessionSource))
+	}
 	return fmt.Sprintf(`%s
 Agent: %s
-Type: FINDING_REPLY
+%sType: FINDING_REPLY
 Finding: %s
 Status: %s
 Process: %s
 
 %s
-`, RenderFindingReplyMarker(findingID, processID, status), agent, findingID, status, processID, strings.TrimSpace(body)), nil
+`, RenderFindingReplyMarker(findingID, processID, status), agent, sessionLines.String(), findingID, status, processID, strings.TrimSpace(body)), nil
 }
 
 func SameFinding(existing FindingMarker, id, path string, line int) bool {

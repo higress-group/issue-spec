@@ -76,6 +76,35 @@ func TestIssueSpecSkillTemplatesDocumentGitHubBackendGuidance(t *testing.T) {
 	}
 }
 
+func TestIssueSpecSkillTemplatesDocumentSessionSourceSeparation(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+	workflow := skillContent(t, skills, "issue-spec-workflow")
+	for _, want := range []string{
+		"Agent as the logical role",
+		"Agent Session ID and Agent Session Source as artifact writer provenance",
+		"--agent-session",
+		"CODEX_THREAD_ID may override",
+		"runner.public_session_id is the public /resume handle",
+		"/resume <public-session-id> <answer or next instruction>",
+		"Do not present Agent Session ID, CODEX_THREAD_ID, acpx record ids, or provider session ids as /resume handles",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("workflow skill missing %q:\n%s", want, workflow)
+		}
+	}
+
+	apply := skillContent(t, skills, "issue-spec-apply")
+	for _, want := range []string{
+		"Keep Agent as the logical role",
+		"--agent-session",
+		"Codex CODEX_THREAD_ID remains the artifact writer session source of truth",
+	} {
+		if !strings.Contains(apply, want) {
+			t.Fatalf("apply skill missing %q:\n%s", want, apply)
+		}
+	}
+}
+
 func skillContent(t *testing.T, skills []RenderedSkill, name string) string {
 	t.Helper()
 	for _, skill := range skills {
