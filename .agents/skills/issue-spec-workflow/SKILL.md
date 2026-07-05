@@ -21,6 +21,14 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 4. When an issue body changes, update it in place with issue-spec issue update --body-file and include --summary for the human-readable audit trail.
 5. Store requirements, tasks, process ownership, review, and verify evidence as typed comments.
 
+## Project Workflow Config
+
+- Run issue-spec workflow validate --repo higress-group/issue-spec --json before relying on project templates or legacy OpenSpec workflow definitions.
+- issue-spec/config.yaml is the preferred project workflow config. If it is absent, openspec/config.yaml can be reused as a legacy workflow definition source.
+- Project schemas live under issue-spec/schemas/<schema>/schema.yaml with templates in templates/*.md. Legacy OpenSpec schemas are read from openspec/schemas/<schema>/schema.yaml only in compatibility mode.
+- Active workflow artifacts remain issue-native even when a legacy OpenSpec schema declares file-oriented outputs such as proposal.md, specs/**/*.md, tasks.md, review.md, or verify.md.
+- Template rendering cannot weaken typed comment wrapping or canonical SPEC validation.
+
 ## GitHub Backend
 
 - Local agents may rely on native GitHub CLI support: when no ISSUE_SPEC_TOKEN, GH_TOKEN, GITHUB_TOKEN, keyring token, or issue-spec config token is present and gh auth status --active succeeds for the target host, issue-spec auto-selects the gh backend.
@@ -60,3 +68,12 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 6. Dispatch review PROCESS nodes for non-trivial PRs after PR rationale exists; run review nodes in parallel only when their review scopes are independent. Route P0/P1 findings to the owner PROCESS or a dedicated repair PROCESS that follows the same serial/parallel gating.
 7. Integrate completed outputs by dependency order.
 8. Mark PROCESS nodes done only after implementation or review evidence and, for serial predecessors, ### Handoff evidence are recorded and blocking findings are resolved.
+
+## Project Workflow
+
+- Workflow Source: `builtin`
+- Workflow Schema: `issue-spec`
+- Workflow Diagnostics:
+
+Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in GitHub issue-native storage; durable specs are repository files created during archive.
+

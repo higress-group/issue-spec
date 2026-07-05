@@ -36,3 +36,11 @@ Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing 
 5. Spawn or assign review agents for non-trivial PRs; run them in parallel only when their review scopes are disjoint. Route findings to the owner PROCESS or a dedicated repair PROCESS under the same serial/parallel gating.
 6. Integrate completed outputs by dependency order and update PROCESS evidence (including ### Handoff for serial predecessors) before marking done.
 7. The coordinator owns scheduling, gate evaluation, status synchronization, unresolved-blocker routing, and final rationale dispatch only. It does not author review findings, worker fix replies, review resolutions, or rationale on another agent's behalf unless explicitly assigned as that worker or review owner.
+
+## Project Workflow
+
+- Workflow Source: `builtin`
+- Workflow Schema: `issue-spec`
+- Workflow Diagnostics:
+
+Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in GitHub issue-native storage; durable specs are repository files created during archive.

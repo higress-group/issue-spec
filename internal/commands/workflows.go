@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/templates"
+	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
 const (
@@ -32,6 +33,8 @@ type workflowGenerationResult struct {
 	SkillFiles      []string `json:"skillFiles,omitempty"`
 	CommandFiles    []string `json:"commandFiles,omitempty"`
 	CommandsSkipped []string `json:"commandsSkipped,omitempty"`
+	WorkflowSource  string   `json:"workflowSource,omitempty"`
+	WorkflowSchema  string   `json:"workflowSchema,omitempty"`
 }
 
 var workflowTools = []workflowTool{
@@ -40,16 +43,34 @@ var workflowTools = []workflowTool{
 }
 
 func writeWorkflowArtifacts(root, repo, toolsArg, delivery string) (workflowGenerationResult, error) {
-	delivery, err := normalizeWorkflowDelivery(delivery)
+	delivery, tools, err := resolveWorkflowGenerationOptions(root, toolsArg, delivery)
 	if err != nil {
 		return workflowGenerationResult{}, err
 	}
-	tools, err := resolveWorkflowTools(root, toolsArg)
-	if err != nil {
-		return workflowGenerationResult{}, err
-	}
-
 	result := workflowGenerationResult{Delivery: delivery}
+	for _, tool := range tools {
+		result.Tools = append(result.Tools, tool.ID)
+	}
+	if len(tools) == 0 {
+		return result, nil
+	}
+	plan, err := workflow.Resolve(root)
+	if err != nil {
+		return workflowGenerationResult{}, err
+	}
+	return writeWorkflowArtifactsResolved(root, repo, delivery, tools, plan)
+}
+
+func writeWorkflowArtifactsWithPlan(root, repo, toolsArg, delivery string, plan workflow.Plan) (workflowGenerationResult, error) {
+	delivery, tools, err := resolveWorkflowGenerationOptions(root, toolsArg, delivery)
+	if err != nil {
+		return workflowGenerationResult{}, err
+	}
+	return writeWorkflowArtifactsResolved(root, repo, delivery, tools, plan)
+}
+
+func writeWorkflowArtifactsResolved(root, repo, delivery string, tools []workflowTool, plan workflow.Plan) (workflowGenerationResult, error) {
+	result := workflowGenerationResult{Delivery: delivery, WorkflowSource: string(plan.Source.Kind), WorkflowSchema: plan.Source.SchemaName}
 	for _, tool := range tools {
 		result.Tools = append(result.Tools, tool.ID)
 	}
@@ -60,7 +81,7 @@ func writeWorkflowArtifacts(root, repo, toolsArg, delivery string) (workflowGene
 	if delivery != workflowDeliveryCommands {
 		for _, tool := range tools {
 			skillsDir := filepath.Join(root, tool.SkillsDir, "skills")
-			for _, skill := range templates.IssueSpecSkills(repo) {
+			for _, skill := range workflowSkills(repo, plan) {
 				path := filepath.Join(skillsDir, skill.Name, "SKILL.md")
 				if err := writeTextFile(path, skill.Content); err != nil {
 					return result, err
@@ -71,7 +92,7 @@ func writeWorkflowArtifacts(root, repo, toolsArg, delivery string) (workflowGene
 	}
 
 	if delivery != workflowDeliverySkills {
-		commands := templates.IssueSpecCommandContents(repo)
+		commands := workflowCommandContents(repo, plan)
 		for _, tool := range tools {
 			adapter := commandAdapterForTool(tool.ID)
 			if adapter == nil {
@@ -95,6 +116,39 @@ func writeWorkflowArtifacts(root, repo, toolsArg, delivery string) (workflowGene
 	}
 
 	return result, nil
+}
+
+func resolveWorkflowGenerationOptions(root, toolsArg, delivery string) (string, []workflowTool, error) {
+	delivery, err := normalizeWorkflowDelivery(delivery)
+	if err != nil {
+		return "", nil, err
+	}
+	tools, err := resolveWorkflowTools(root, toolsArg)
+	if err != nil {
+		return "", nil, err
+	}
+	return delivery, tools, nil
+}
+
+func workflowSkills(repo string, plan workflow.Plan) []templates.RenderedSkill {
+	skills := templates.IssueSpecSkills(repo)
+	notice := workflowNotice(plan)
+	for i := range skills {
+		if skills[i].Name == "issue-spec-github" {
+			continue
+		}
+		skills[i].Content = strings.TrimRight(skills[i].Content, "\n") + "\n\n" + notice + "\n"
+	}
+	return skills
+}
+
+func workflowCommandContents(repo string, plan workflow.Plan) []templates.CommandContent {
+	commands := templates.IssueSpecCommandContents(repo)
+	notice := workflowNotice(plan)
+	for i := range commands {
+		commands[i].Body = strings.TrimRight(commands[i].Body, "\n") + "\n\n" + notice + "\n"
+	}
+	return commands
 }
 
 func normalizeWorkflowDelivery(value string) (string, error) {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
 type statusSummary struct {
@@ -21,6 +22,7 @@ type statusSummary struct {
 	Traceability      model.VerifyReport          `json:"traceability"`
 	Diagnostics       []metadataDiagnostic        `json:"diagnostics,omitempty"`
 	Malformed         []model.CanonicalDiagnostic `json:"malformed,omitempty"`
+	Workflow          *workflow.Plan              `json:"workflow,omitempty"`
 	NextGates         []string                    `json:"next_gates"`
 }
 
@@ -64,7 +66,8 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 		a.errorf("collect artifacts: %v\n", err)
 		return 1
 	}
-	summary := summarizeStatus(*repoFlag, proposalIssue, designIssue, implementIssue, artifacts)
+	workflowPlan, workflowErr := workflow.Resolve(".")
+	summary := summarizeStatus(*repoFlag, proposalIssue, designIssue, implementIssue, artifacts, workflowPlan, workflowErr)
 	if *jsonOut {
 		if code := a.outputJSON(summary); code != 0 {
 			return code
@@ -142,7 +145,19 @@ func (a *app) runVerifyLinks(ctx context.Context, args []string) int {
 	return 1
 }
 
-func summarizeStatus(repo string, proposal, design, implement int, artifacts []model.Artifact) statusSummary {
+func summarizeStatus(repo string, proposal, design, implement int, artifacts []model.Artifact, workflowState ...any) statusSummary {
+	var workflowPlan workflow.Plan
+	var workflowErr error
+	if len(workflowState) > 0 {
+		if plan, ok := workflowState[0].(workflow.Plan); ok {
+			workflowPlan = plan
+		}
+	}
+	if len(workflowState) > 1 {
+		if err, ok := workflowState[1].(error); ok {
+			workflowErr = err
+		}
+	}
 	counts := map[string]map[string]int{}
 	verify := map[string]string{}
 	blockingQuestions := 0
@@ -198,7 +213,14 @@ func summarizeStatus(repo string, proposal, design, implement int, artifacts []m
 	if len(malformed) > 0 {
 		gates = append(gates, "malformed typed comments must be regenerated, migrated, or superseded")
 	}
+	if workflowErr != nil || workflowPlan.HasErrors() {
+		gates = append(gates, "workflow config/schema diagnostics must be fixed")
+	}
 	sort.Strings(gates)
+	var workflowSummary *workflow.Plan
+	if workflowPlan.Source.SchemaName != "" || len(workflowPlan.Diagnostics) > 0 {
+		workflowSummary = &workflowPlan
+	}
 	return statusSummary{
 		OK:                len(gates) == 0,
 		Repo:              repo,
@@ -210,6 +232,7 @@ func summarizeStatus(repo string, proposal, design, implement int, artifacts []m
 		Traceability:      report,
 		Diagnostics:       diagnostics,
 		Malformed:         malformed,
+		Workflow:          workflowSummary,
 		NextGates:         gates,
 	}
 }
@@ -261,6 +284,15 @@ func printStatus(out interface{ Write([]byte) (int, error) }, summary statusSumm
 				url = "N/A"
 			}
 			fmt.Fprintf(out, "- %s %s (%s): %s\n", d.Type, d.ID, url, d.Message)
+		}
+	}
+	if summary.Workflow != nil {
+		fmt.Fprintf(out, "workflow: %s schema=%s\n", summary.Workflow.Source.Kind, summary.Workflow.Source.SchemaName)
+		for _, diagnostic := range summary.Workflow.Diagnostics {
+			if diagnostic.Severity == "info" {
+				continue
+			}
+			fmt.Fprintf(out, "- workflow %s %s: %s\n", diagnostic.Severity, diagnostic.Code, diagnostic.Message)
 		}
 	}
 	if len(summary.NextGates) > 0 {

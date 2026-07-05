@@ -144,6 +144,10 @@ func TestIssueSpecSkillsDirectAgentsToGenerators(t *testing.T) {
 		"issue-spec comment generate --type SPEC",
 		"--allow-noncanonical",
 		"issue-spec comment generate --type TASK",
+		"standardized `Proposal: <subject>`, `Design: <subject>`, and `Implement: <subject>` family",
+		"Use --title only for an explicit user-requested custom title",
+		"do not apply style-only issue update rewrites after creation",
+		"Historical issues with `issue-spec proposal: <change>`",
 	} {
 		if !strings.Contains(propose, want) {
 			t.Fatalf("propose skill missing generator guidance %q:\n%s", want, propose)

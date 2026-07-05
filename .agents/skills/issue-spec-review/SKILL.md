@@ -31,3 +31,12 @@ Use when the user asks for /issue-spec:review, issue-spec review, or a PR review
 4. Route findings to the owner PROCESS or a dedicated repair PROCESS. Repair PROCESS nodes are DAG nodes too: they follow the same serial/parallel gating as implementation nodes and record ### Handoff evidence when part of a serial chain.
 5. P0/P1 findings block final verify until the owning worker fixes them and replies on the thread, and the review agent that opened the finding re-checks and records the resolution or resolves the GitHub conversation.
 6. If a review agent finds no issues, record that result in REVIEW or VERIFY evidence before marking the review PROCESS done.
+
+## Project Workflow
+
+- Workflow Source: `builtin`
+- Workflow Schema: `issue-spec`
+- Workflow Diagnostics:
+
+Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in GitHub issue-native storage; durable specs are repository files created during archive.
+

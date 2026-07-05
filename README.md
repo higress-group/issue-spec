@@ -232,6 +232,8 @@ OpenSpec active changes are usually repository files under `openspec/changes/<ch
 
 Issue bodies are the current editable proposal/design/implementation artifacts, not placeholder shells. Use `--body-file` when creating them and `issue-spec issue update --body-file --summary` when discussion changes the body, so humans can review the latest content and the audit trail in the same GitHub issue.
 
+Generated issue titles use the human-readable `Proposal: <subject>`, `Design: <subject>`, and `Implement: <subject>` family. With `--body-file`, the subject is derived from the first Markdown H1 when possible, while the change name remains preserved in the issue marker and metadata. Use `issue create --title` only for an explicit user-requested custom title. Older issues titled `issue-spec proposal: <change>`, `issue-spec design: <change>`, or `issue-spec implement: <change>` remain valid workflow artifacts and do not need retitling.
+
 This keeps the repository focused on current code and durable specs. Draft change history remains reviewable in GitHub, with comment threads, edits, links, and human approval points.
 
 Human-in-the-loop decisions are first-class:
@@ -321,6 +323,27 @@ issue-spec init --repo owner/repo --tools codex,claude --delivery both
 
 If `--tools` is omitted, init detects existing `.agents` or `.claude` directories and refreshes those workflows. Use `--tools none` to initialize only `.issue-spec/config.json` and optional labels.
 
+## Project Workflow Configuration
+
+Projects can customize issue-spec workflow instructions and templates without moving active change state back into repository change directories.
+
+Discovery order:
+
+1. `issue-spec/config.yaml` with project schemas under `issue-spec/schemas/<schema>/schema.yaml`.
+2. Legacy `openspec/config.yaml` with schemas under `openspec/schemas/<schema>/schema.yaml`, only when no preferred issue-spec config exists.
+3. Built-in issue-spec workflow.
+
+Schema templates are resolved from the selected schema's `templates/` directory. Template paths must be relative, must not escape the schema template directory, and must exist before issue-spec uses them. Active proposal/design/implement content, SPEC/TASK/PROCESS/QUESTION/REVIEW/VERIFY typed comments, PR rationale, and review findings remain in GitHub issue-native storage. Legacy OpenSpec outputs such as `proposal.md`, `specs/**/*.md`, `tasks.md`, `review.md`, and `verify.md` are treated as storage mapping hints, not active files to write.
+
+Validate or inspect the selected workflow before writing artifacts:
+
+```bash
+issue-spec workflow validate --repo owner/repo --json
+issue-spec workflow which --repo owner/repo --json
+```
+
+New durable specs default to `issue-spec/specs/<capability>/spec.md`. If `openspec/specs/<capability>/spec.md` already exists, archive can update that legacy durable spec and reports the compatibility path selection.
+
 ## CLI Reference
 
 ```bash
@@ -332,9 +355,9 @@ issue-spec auth token --plain
 issue-spec init --repo owner/repo --create-labels
 issue-spec init --repo owner/repo --tools codex,claude --delivery both
 
-issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md
-issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md
-issue-spec issue create implement --repo owner/repo --change my-change --proposal 1 --design 2 --body-file implement.md
+issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md [--title "Custom proposal title"]
+issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md [--title "Custom design title"]
+issue-spec issue create implement --repo owner/repo --change my-change --proposal 1 --design 2 --body-file implement.md [--title "Custom implementation title"]
 issue-spec issue update --repo owner/repo --issue 1 --body-file proposal.md --summary "Clarified goals after review."
 
 issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
@@ -348,6 +371,9 @@ issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-001 --reso
 issue-spec link --repo owner/repo --from SPEC-001 --from-issue 1 --to TASK-001 --to-issue 2
 issue-spec status --repo owner/repo --proposal 1 --design 2 --implement 3
 issue-spec verify-links --repo owner/repo --proposal 1 --design 2 --implement 3
+
+issue-spec workflow validate --repo owner/repo --json
+issue-spec workflow which --repo owner/repo --schema custom-workflow --json
 
 issue-spec pr rationale --repo owner/repo --pr 4 --path internal/foo.go --line 42 --process PROCESS-001 --spec SPEC-001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "Why this line changes."
 issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-001 --pr 4
