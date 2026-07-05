@@ -186,7 +186,7 @@ func TestBuildFinalVerifyReportBlocksOpenP0P1Findings(t *testing.T) {
 	if len(report.ReviewFindingBlockers) != 1 {
 		t.Fatalf("expected one review finding blocker: %+v", report.ReviewFindingBlockers)
 	}
-	reply, err := model.RenderFindingReplyBody("Worker", "FINDING-001", "PROCESS-001", "resolved", "Fixed.")
+	reply, err := model.RenderFindingReplyBody("Review", "FINDING-001", "PROCESS-001", "resolved", "Re-checked; fix satisfies the finding.")
 	if err != nil {
 		t.Fatal(err)
 	}
