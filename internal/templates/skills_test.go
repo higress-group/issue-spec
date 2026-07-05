@@ -105,6 +105,37 @@ func TestIssueSpecSkillTemplatesDocumentSessionSourceSeparation(t *testing.T) {
 	}
 }
 
+func TestIssueSpecSkillTemplatesDocumentDurableArchiveGuidance(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+	workflow := skillContent(t, skills, "issue-spec-workflow")
+	archive := skillContent(t, skills, "issue-spec-archive")
+	for _, want := range []string{
+		"abstract long-lived --capability directory",
+		"inspect existing related durable specs",
+		"regroup the generated draft by stable capability modules",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("workflow skill missing %q:\n%s", want, workflow)
+		}
+	}
+	for _, want := range []string{
+		"stable long-lived capability or domain directory",
+		"not the original change/proposal name",
+		"workflow-identity-and-sessions instead of agent-session-source-of-truth",
+		"Inspect existing durable specs before creating or finalizing the archive PR",
+		"issue-spec/specs/<capability>/spec.md",
+		"issue-spec/specs/*/spec.md",
+		"update, merge, or reorganize existing durable requirements",
+		"Reconcile it with any existing related durable specs",
+		"regroup related source SPEC content into durable capability modules",
+		"Source SPEC links for traceability",
+	} {
+		if !strings.Contains(archive, want) {
+			t.Fatalf("archive skill missing %q:\n%s", want, archive)
+		}
+	}
+}
+
 func skillContent(t *testing.T, skills []RenderedSkill, name string) string {
 	t.Helper()
 	for _, skill := range skills {

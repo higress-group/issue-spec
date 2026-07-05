@@ -33,7 +33,7 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 - Before human review, add PR rationale comments with issue-spec pr rationale for every active PROCESS.
 - Use issue-spec review finding for PR line findings and issue-spec review reply to close the original thread.
 - Run issue-spec review sync and issue-spec verify before declaring ready.
-- After the implementation PR merges, create the separate durable spec PR with issue-spec archive durable-spec --create-pr.
+- After the implementation PR merges, create the separate durable spec PR with issue-spec archive durable-spec --create-pr. Use an abstract long-lived --capability directory, inspect existing related durable specs, and regroup the generated draft by stable capability modules before merge.
 
 ## Coordinator DAG Execution
 

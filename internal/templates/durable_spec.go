@@ -33,7 +33,7 @@ func DurableSpec(opts DurableSpecOptions) (string, error) {
 	}
 	purpose := strings.TrimSpace(opts.Purpose)
 	if purpose == "" {
-		purpose = "记录 issue-native workflow CLI 的长期行为契约。"
+		purpose = "Define the long-lived behavior contract for this capability."
 	}
 	proposals := collectProposalIssueURLs(opts.ExistingSpecBody, opts.ProposalIssueURL)
 	var requirements []string

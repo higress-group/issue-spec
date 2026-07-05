@@ -301,6 +301,8 @@ SPEC <-> TASK <-> PROCESS <-> PR rationale
 
 After the implementation PR merges, `archive durable-spec --create-pr` opens a separate PR that writes the long-lived behavior contract into the repository.
 
+Use `--capability` as a stable capability directory rather than the original change name. Before finalizing the archive PR, inspect existing related durable specs and treat the generated durable spec as a draft to merge, revise, or regroup by durable functional modules while preserving Source SPEC links for traceability.
+
 ## Agent Skills And Slash Commands
 
 `issue-spec init` can generate OpenSpec-style agent workflow artifacts for a project:

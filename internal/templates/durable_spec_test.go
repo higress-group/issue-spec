@@ -42,6 +42,7 @@ The CLI MUST manage questions.
 	for _, want := range []string{
 		"# issue-spec-cli",
 		"## Purpose",
+		"Define the long-lived behavior contract for this capability.",
 		"Proposal Issues:\n- https://github.com/o/r/issues/1",
 		"## Requirements",
 		"### Requirement: Question lifecycle",
@@ -54,6 +55,15 @@ The CLI MUST manage questions.
 	}
 	if strings.Contains(out, "ADDED Requirements") {
 		t.Fatalf("durable spec kept delta-only heading:\n%s", out)
+	}
+	for _, notWant := range []string{
+		"issue-spec capability",
+		"Organize requirements",
+		"one-to-one proposal SPEC comments",
+	} {
+		if strings.Contains(out, notWant) {
+			t.Fatalf("durable spec included archive-editing guidance %q:\n%s", notWant, out)
+		}
 	}
 }
 
