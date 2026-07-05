@@ -2,240 +2,165 @@
 
 ## Purpose
 
-记录 issue-native workflow CLI 的长期行为契约。
+Define the long-lived behavior contract for agent identity, artifact writer provenance, and runner resume metadata in issue-spec workflows.
+
+This durable spec is organized by stable capability surfaces rather than by the original proposal's individual SPEC comments. Future changes that extend identity resolution, artifact provenance, generated workflow guidance, or runner resume metadata should update the relevant module below instead of appending a one-to-one copy of new proposal requirements.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/20
 
 ## Requirements
 
-### Requirement: Codex source-of-truth precedence
+### Requirement: artifact identity model separates logical role from writer provenance
 
-The CLI MUST detect when it is executing under Codex and MUST use the unique Codex session source, currently `CODEX_THREAD_ID`, as the resolved session id before considering any caller-supplied agent/session id parameter.
+Issue-spec artifacts that record agent metadata MUST preserve the logical workflow role separately from artifact writer session provenance.
 
-The CLI MUST preserve the caller-supplied logical role or logical agent label separately from the resolved session id when both are available.
+`Agent` is the logical role or workflow-assigned label. `Agent Session ID` and `Agent Session Source` are artifact writer provenance fields. Implementations MUST NOT overload `Agent` with runtime session ids.
 
-#### Scenario: Codex session id overrides supplied id
+Typed issue comments, typed comment JSON, PR rationale comments, review findings, finding replies, review sync artifacts, and verification artifacts MUST use a consistent metadata model for logical agent, artifact writer session id, and artifact writer session source.
 
-- **WHEN** `CODEX_THREAD_ID=codex-session-123` is present and a caller supplies `--agent-id worker-a` or an equivalent agent/session parameter
-- **THEN** the CLI MUST record `codex-session-123` as the resolved session id
-- **THEN** the CLI MUST record the session source as `CODEX_THREAD_ID`
-- **THEN** the CLI MUST NOT record `worker-a` as the resolved session id
+#### Scenario: visible artifact metadata is distinct
 
-#### Scenario: Codex session id is used for coordinator commands
+- **WHEN** a writer renders an artifact with logical agent role `Review Agent`, artifact writer session id `codex-session-123`, and source `CODEX_THREAD_ID`
+- **THEN** the rendered metadata SHALL contain `Agent: Review Agent`
+- **THEN** the rendered metadata SHALL contain `Agent Session ID: codex-session-123`
+- **THEN** the rendered metadata SHALL contain `Agent Session Source: CODEX_THREAD_ID`
+- **THEN** the rendered metadata SHALL NOT place `codex-session-123` in the `Agent` field
 
-- **WHEN** a coordinator runs an issue-spec command inside Codex with `CODEX_THREAD_ID=coordinator-session-456`
-- **THEN** the CLI MUST use `coordinator-session-456` as the resolved session id for the artifact it writes
-- **THEN** the artifact MUST remain auditable without relying on an invented coordinator/session label
+#### Scenario: machine-readable artifact metadata is compatible
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703553
+- **WHEN** a typed issue comment or PR artifact contains `Agent Session ID` and `Agent Session Source`
+- **THEN** parsers and JSON output SHALL expose those values as additive optional fields
+- **THEN** the existing logical `agent` field SHALL remain the logical role
+- **THEN** existing artifacts without session provenance SHALL remain parseable and valid by default
 
-### Requirement: explicit fallback parameter outside Codex
+#### Scenario: partial or future metadata is preserved
 
-The CLI SHALL use an explicit caller-provided agent/session id as the resolved session id when Codex identity sources are unavailable.
+- **WHEN** an artifact contains only one of `Agent Session ID` or `Agent Session Source`
+- **THEN** parsers SHALL preserve the present value for diagnostics
+- **THEN** tooling SHALL NOT silently invent the missing value
+- **WHEN** an artifact contains unknown future header fields
+- **THEN** those fields SHALL NOT prevent parsing of core type, id, status, scope, links, and known session provenance fields
 
-The CLI MUST make the selected source visible as an explicit parameter source rather than reporting it as a Codex environment source.
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703592
+- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795652
+- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795602
 
-#### Scenario: non-Codex worker supplies a session id
+### Requirement: writer commands resolve artifact session provenance once and stamp artifacts consistently
 
-- **WHEN** no Codex session source such as `CODEX_THREAD_ID` is present and a caller supplies `--agent-id worker-session-789` or an equivalent agent/session parameter
-- **THEN** the CLI SHALL record `worker-session-789` as the resolved session id
-- **THEN** the CLI MUST record the session source as an explicit caller-provided parameter
+CLI commands that write issue-spec artifacts with agent metadata MUST resolve artifact writer session provenance once per command invocation and apply that resolved provenance consistently to newly rendered and pre-rendered artifact bodies.
 
-#### Scenario: non-Codex command lacks a supplied id
+Writer commands SHOULD accept an explicit session parameter such as `--agent-session` for non-Codex and coordinator-dispatched workflows. The resolver MUST prefer Codex runtime identity, currently `CODEX_THREAD_ID`, when that environment source is present and non-empty. When no Codex source is available, the resolver SHALL use the explicit session parameter as the artifact writer session id when supplied.
 
-- **WHEN** no Codex session source is present and the caller does not supply an agent/session id
-- **THEN** commands that write agent metadata MUST either record an explicit unknown or missing session state or fail only when strict metadata validation is enabled
-- **THEN** the behavior MUST be documented in CLI help and generated workflow instructions
+#### Scenario: Codex identity has precedence
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703562
+- **WHEN** `CODEX_THREAD_ID=codex-session-123` is present
+- **WHEN** a writer command receives `--agent-session supplied-session-456`
+- **THEN** the artifact SHALL record `codex-session-123` as the artifact writer session id
+- **THEN** the artifact SHALL record `CODEX_THREAD_ID` as the artifact writer session source
+- **THEN** the artifact SHALL NOT record `supplied-session-456` as the resolved artifact writer session id
 
-### Requirement: coordinator dispatch responsibility in generated workflows
+#### Scenario: explicit non-Codex fallback is visible
 
-Generated workflow skills and prompts MUST state that the main or coordinator agent is responsible for assigning each subagent its subagent id when dispatching work.
+- **WHEN** no Codex session source is present
+- **WHEN** a writer command receives `--agent-session supplied-session-456`
+- **THEN** the artifact SHALL record `supplied-session-456` as the artifact writer session id
+- **THEN** the artifact SHALL record the source as an explicit caller-provided parameter source
 
-Generated workflow skills and prompts MUST state that each subagent SHALL pass the assigned subagent id to issue-spec CLI commands that support agent/session metadata.
+#### Scenario: pre-rendered bodies cannot bypass writer-owned provenance
 
-#### Scenario: coordinator dispatches a worker
+- **WHEN** a writer command receives a body that already contains an issue-spec typed header
+- **THEN** the command SHALL stamp or reconcile the resolved artifact writer session id and source after body normalization
+- **THEN** conflicting pre-rendered session provenance SHALL be replaced by the resolved writer-owned provenance
+
+#### Scenario: missing session input remains non-strict by default
+
+- **WHEN** no Codex source is present
+- **WHEN** the caller does not supply an explicit artifact writer session id
+- **THEN** writer commands MAY omit session provenance or record an explicit missing state
+- **THEN** default non-Codex workflows SHALL NOT fail solely because `CODEX_THREAD_ID` is absent
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703553
+- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703562
+- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795623
+
+### Requirement: diagnostics report session provenance problems without breaking legacy workflows by default
+
+Artifact-reading commands SHOULD expose detectable missing, partial, invalid, or internally inconsistent artifact writer session provenance in both human-readable and JSON output.
+
+Diagnostics MUST be warning-oriented by default for legacy and non-Codex workflows. Strict failure behavior, if supported, SHALL be explicitly enabled. Diagnostics MUST NOT compare historical artifact session ids to the current process `CODEX_THREAD_ID`; artifacts from older sessions are valid.
+
+#### Scenario: issue artifact diagnostics
+
+- **WHEN** `status`, `verify`, or an equivalent artifact-reading command reads a typed issue artifact that has logical `Agent` metadata but lacks `Agent Session ID` or `Agent Session Source`
+- **THEN** the command SHOULD report a diagnostic for missing or partial artifact writer provenance
+- **THEN** JSON output SHALL include a machine-readable diagnostic entry when JSON output is requested
+
+#### Scenario: PR artifact diagnostics
+
+- **WHEN** `review sync`, `verify --pr`, or an equivalent PR-aware command reads PR rationale, review finding, or finding reply artifacts
+- **THEN** the command SHOULD parse and report logical agent, artifact writer session id, and artifact writer session source where available
+- **THEN** missing or partial PR artifact provenance SHOULD be reported without making legacy PR comments invalid by default
+
+#### Scenario: substantive review summaries ignore metadata
+
+- **WHEN** review finding summaries are extracted from PR review comments
+- **THEN** metadata lines such as `Agent`, `Agent Session ID`, and `Agent Session Source` SHALL NOT be selected as the substantive finding summary
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703552
+- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795688
+
+### Requirement: generated workflow guidance teaches dispatch ids and artifact writer provenance
+
+Generated skills, prompts, and workflow templates MUST teach coordinators and subagents how logical roles, assigned subagent ids, and artifact writer session provenance differ.
+
+Coordinators SHOULD assign each worker or review subagent an explicit subagent/session id when dispatching work. Subagents SHOULD pass that assigned id through supported issue-spec writer command parameters. Codex runtime identity may still override the supplied id as the resolved artifact writer session provenance.
+
+#### Scenario: coordinator dispatch instructions
 
 - **WHEN** generated issue-spec workflow instructions dispatch a worker or review subagent
-- **THEN** the coordinator MUST include the assigned subagent id in the task assignment
-- **THEN** the assignment MUST state that the subagent passes that id to the CLI
+- **THEN** the coordinator instruction SHALL include an assigned subagent/session id
+- **THEN** the instruction SHALL say that the subagent passes that id to supported writer commands
+- **THEN** the instruction SHALL distinguish the assigned id from the visible `Agent` logical role
 
-#### Scenario: subagent records an artifact
-
-- **WHEN** a subagent receives an assigned subagent id and runs an issue-spec command that writes a typed artifact
-- **THEN** the subagent SHALL pass the assigned id through the supported CLI parameter
-- **THEN** the CLI identity resolution rules MUST still decide whether Codex environment identity or the supplied id is the resolved session id
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703570
-
-### Requirement: metadata consistency across typed artifacts
-
-Typed issue, typed comment, PR rationale, review, and verification artifacts MUST preserve logical agent role, resolved session id, and session source in a consistent machine-readable form.
-
-The artifact format MUST allow humans and tools to distinguish the logical role assigned by the workflow from the runtime session id selected by CLI identity resolution.
-
-#### Scenario: typed comment stores role and session metadata
-
-- **WHEN** the CLI creates or updates a typed comment with logical role `review-worker` and resolved session id `codex-session-abc`
-- **THEN** the comment MUST preserve `review-worker` as logical agent role metadata
-- **THEN** the comment MUST preserve `codex-session-abc` as resolved session id metadata
-- **THEN** the comment MUST preserve `CODEX_THREAD_ID` or the explicit parameter source as session source metadata
-
-#### Scenario: PR artifact preserves the same metadata model
-
-- **WHEN** the CLI writes PR rationale or review finding metadata
-- **THEN** the PR artifact MUST preserve the same logical role, resolved session id, and source fields used by issue and comment artifacts
-- **THEN** parsers and status output MUST report those fields consistently across artifact types
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703592
-
-### Requirement: verification and diagnostics for session metadata
-
-Status, verify, auth, or diagnostic commands SHALL expose missing or mismatched session metadata when available artifact data makes the condition detectable.
-
-Diagnostics MUST NOT block non-Codex workflows solely because Codex-specific environment sources are absent unless strict metadata validation is explicitly configured.
-
-#### Scenario: verify reports missing metadata
-
-- **WHEN** `issue-spec verify` or an equivalent status command reads a typed artifact that lacks resolved session id or session source metadata
-- **THEN** the command SHALL report the missing metadata in human-readable output
-- **THEN** JSON output SHALL include a machine-readable diagnostic for the missing metadata
-
-#### Scenario: non-Codex workflow remains valid by default
-
-- **WHEN** no Codex session source is present and artifacts use explicit caller-provided session ids
-- **THEN** diagnostics MUST NOT report the absence of `CODEX_THREAD_ID` as an error by itself
-- **THEN** diagnostics SHALL only fail the workflow when configured strict validation requires that failure
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703552
-
-### Requirement: typed comment model and rendering preserve role and session separately
-
-The typed comment model MUST represent logical agent role separately from resolved agent session id and agent session source.
-
-`BodyOptions` MUST provide independent fields for logical agent role, agent session id, and agent session source. `RenderHeader` MUST render `Agent`, `Agent Session ID`, and `Agent Session Source` as separate visible header fields when session metadata is available.
-
-#### Scenario: renderer outputs separate fields
-
-- **WHEN** a writer renders a SPEC comment with logical agent role `Proposal Coordinator`, agent session id `019f1d93-e396-7153-b1fe-f1e54202134e`, and source `CODEX_THREAD_ID`
-- **THEN** the header MUST contain `Agent: Proposal Coordinator`
-- **THEN** the header MUST contain `Agent Session ID: 019f1d93-e396-7153-b1fe-f1e54202134e`
-- **THEN** the header MUST contain `Agent Session Source: CODEX_THREAD_ID`
-
-#### Scenario: renderer does not overload Agent
-
-- **WHEN** the resolved session id differs from the logical agent role
-- **THEN** `RenderHeader` MUST NOT place the session id in the `Agent` field
-- **THEN** the session id MUST be emitted only as session metadata
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795652
-
-### Requirement: parser and status JSON expose session metadata compatibly
-
-`ParseTypedComment` MUST parse `Agent Session ID` and `Agent Session Source` when those fields are present.
-
-Comment list, status, or related JSON output SHALL expose parsed session id and session source fields without breaking existing typed artifacts that lack those fields.
-
-#### Scenario: parser reads new fields
-
-- **WHEN** a typed comment body contains `Agent Session ID: session-123` and `Agent Session Source: CODEX_THREAD_ID`
-- **THEN** `ParseTypedComment` MUST return `session-123` as the parsed agent session id
-- **THEN** `ParseTypedComment` MUST return `CODEX_THREAD_ID` as the parsed agent session source
-
-#### Scenario: old artifacts remain parseable
-
-- **WHEN** a typed comment contains the existing marker, `Agent`, `Type`, `ID`, `Status`, `Scope`, and `Links` fields but no session metadata
-- **THEN** `comment list --json` MUST still parse the artifact successfully
-- **THEN** JSON output SHALL represent the missing session fields as empty, null, or omitted according to the chosen compatibility contract
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795602
-
-### Requirement: CLI writer commands accept explicit session parameter and resolve Codex precedence
-
-CLI commands that write issue-spec artifacts MUST accept an explicit session parameter, such as `--agent-session`, for non-Codex and coordinator-dispatched workflows.
-
-The session resolver MUST prefer `CODEX_THREAD_ID` when running under Codex and MUST fall back to the explicit session parameter when no Codex session source is available.
-
-#### Scenario: Codex source wins over explicit parameter
-
-- **WHEN** `CODEX_THREAD_ID=codex-session-123` is present and a writer command receives `--agent-session supplied-session-456`
-- **THEN** the artifact MUST record `codex-session-123` as the agent session id
-- **THEN** the artifact MUST record `CODEX_THREAD_ID` as the agent session source
-- **THEN** the artifact MUST NOT record `supplied-session-456` as the resolved session id
-
-#### Scenario: non-Codex parameter fallback
-
-- **WHEN** no Codex session source is present and a writer command receives `--agent-session supplied-session-456`
-- **THEN** the artifact SHALL record `supplied-session-456` as the agent session id
-- **THEN** the artifact SHALL record the session source as the explicit CLI parameter
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795623
-
-### Requirement: generated workflow templates teach role versus session separation
-
-Generated skills, prompts, and workflow templates MUST state that `Agent` is a logical role or workflow-assigned label and that session id/source are independent runtime metadata.
-
-Generated coordinator instructions MUST require the coordinator to provide each subagent with its assigned subagent id, and generated subagent instructions MUST require the subagent to pass that id through the supported CLI parameter.
-
-#### Scenario: generated coordinator dispatch instructions
-
-- **WHEN** `issue-spec init` generates coordinator workflow instructions
-- **THEN** those instructions MUST tell the coordinator to include a subagent id in each subagent assignment
-- **THEN** those instructions MUST distinguish the subagent id from the logical `Agent` role shown in typed comment headers
-
-#### Scenario: generated subagent writer instructions
+#### Scenario: subagent writer instructions
 
 - **WHEN** generated worker or review-agent instructions tell a subagent to write issue-spec artifacts
-- **THEN** those instructions MUST tell the subagent to pass its assigned session or subagent id to the CLI
-- **THEN** those instructions SHALL explain that Codex runtime identity may override the supplied id as the resolved session id
+- **THEN** those instructions SHALL tell the subagent to pass its assigned session or subagent id through the supported CLI parameter
+- **THEN** those instructions SHALL explain that Codex runtime identity may override the supplied id as artifact writer provenance
+- **THEN** those instructions SHALL preserve default non-strict behavior when neither Codex identity nor explicit session id is available
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795594
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703570
+- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795594
 
-### Requirement: diagnostics report missing or mismatched session metadata without default breakage
+### Requirement: runner public session id is the public resume handle
 
-Status, verify, auth, or diagnostic commands SHOULD report missing or mismatched agent session metadata when the available artifact data makes the condition detectable.
+In runner mode, `public_session_id` is the public, repository-scoped handle humans use with `/resume` to continue a coordinator session. Artifact writer provenance fields, Codex thread ids, raw acpx record ids, and provider session ids are not public runner resume handles.
 
-Diagnostics MUST NOT fail valid non-Codex workflows by default solely because Codex-specific environment variables are absent. Strict failure behavior SHALL require explicit configuration.
+Coordinator-authored proposal, design, implement, handoff, and update issue bodies or comments SHOULD disclose the available runner `public_session_id` and provide concrete `/resume <public-session-id> <answer or next instruction>` guidance when runner metadata is available.
 
-#### Scenario: missing session metadata is reported
-
-- **WHEN** a diagnostic command reads a typed artifact that has logical `Agent` metadata but lacks agent session id or source
-- **THEN** the command SHOULD report a warning or diagnostic entry for the missing session metadata
-- **THEN** JSON output SHALL include a machine-readable diagnostic when JSON output is requested
-
-#### Scenario: strict validation controls failures
-
-- **WHEN** strict session metadata validation is disabled and a non-Codex artifact uses explicit session metadata or lacks Codex-specific metadata
-- **THEN** diagnostics MUST NOT fail solely because `CODEX_THREAD_ID` is absent
-- **THEN** diagnostics SHALL fail only when strict validation is enabled and the configured rule is violated
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795688
-
-### Requirement: runner public session disclosure in coordinator-authored issue bodies
-
-When runner metadata is available, coordinator-authored proposal, design, implement, handoff, and update issue bodies SHALL disclose the runner `public_session_id` that humans can use to resume the coordinator.
-
-Coordinator-authored bodies SHALL distinguish `public_session_id` from artifact writer session metadata. `Agent Session ID`, `CODEX_THREAD_ID`, raw acpx record ids, and provider session ids MUST NOT be presented as `/resume` handles.
-
-#### Scenario: coordinator updates an issue body during a runner session
+#### Scenario: coordinator-authored issue body includes resume metadata
 
 - **WHEN** an issue-spec runner dispatches a coordinator with `runner.public_session_id=s-abc123`
 - **WHEN** that coordinator creates or updates a proposal, design, implement, handoff, or update issue body
 - **THEN** the body SHALL include `s-abc123` as the public runner session id
-- **THEN** the body SHALL include a concrete `/resume s-abc123 <answer or next instruction>` template or equivalent resume guidance
+- **THEN** the body SHALL include `/resume s-abc123 <answer or next instruction>` or equivalent resume guidance
 
-#### Scenario: artifact writer metadata is present too
+#### Scenario: artifact writer provenance is not a resume handle
 
-- **WHEN** the same coordinator-authored body or related typed artifact also contains `Agent Session ID` or `Agent Session Source`
-- **THEN** that metadata SHALL be treated as artifact writer provenance
-- **THEN** the body MUST NOT tell humans to use that artifact writer session id as the runner `/resume` id
+- **WHEN** a coordinator-authored body or related typed artifact also contains `Agent Session ID`, `Agent Session Source`, `CODEX_THREAD_ID`, raw acpx record id, or provider session id metadata
+- **THEN** that metadata SHALL be treated as provenance or internal transport metadata
+- **THEN** the body MUST NOT instruct humans to use those identifiers as the runner `/resume` id
 
-#### Scenario: non-runner workflow
+#### Scenario: non-runner workflow omits public session metadata
 
 - **WHEN** no runner public session id is available
-- **THEN** the coordinator-authored body MAY omit runner resume metadata
-- **THEN** omission of `public_session_id` MUST NOT fail non-runner workflows by default
+- **THEN** coordinator-authored bodies MAY omit runner resume metadata
+- **THEN** omission of `public_session_id` SHALL NOT fail non-runner workflows by default
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/20#issuecomment-4883004527
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4883004527
