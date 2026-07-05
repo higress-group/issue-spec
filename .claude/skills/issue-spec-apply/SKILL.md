@@ -17,9 +17,9 @@ Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing 
 
 1. Read proposal/design/implement issue context and list typed comments with issue-spec comment list --json.
 2. Confirm issue-spec auth status --json includes the expected GitHub backend. Local gh-authenticated sessions can use the native gh backend; keep ISSUE_SPEC_TOKEN="$(gh auth token)" only as an older-version or forced-rest compatibility path.
-3. Create or update PROCESS comments with owner agent, scope, dependencies, write ownership, and status.
+3. Plan the PROCESS DAG before dispatch: read each active TASK's ### Execution Planning metadata and derive PROCESS nodes from it. Render PROCESS bodies with issue-spec comment generate --type PROCESS --input-file process.json (fields include parent_task, owner, dependencies, write_ownership, handoff) instead of hand-writing Markdown; comment upsert --type PROCESS rejects a PROCESS without a ### Parent TASK.
    Keep Agent as the logical role. Pass assigned subagent/session ids with --agent-session; Codex CODEX_THREAD_ID remains the artifact writer session source of truth when present.
-4. Split non-trivial work into independent worker PROCESS nodes when file/module ownership does not overlap; execute independent workers in parallel when available.
+4. Default to serial PROCESS chains under one parent TASK, each completed node recording ### Handoff evidence for its successor. Split into parallel worker PROCESS nodes only when file/module write ownership is provably disjoint; parallelism is a gated optimization, not the default.
 5. Add dedicated review PROCESS nodes for non-trivial changes. Review PROCESS nodes should own review scopes such as CLI/API behavior, workflow docs, tests, compatibility, or security-sensitive surfaces.
 6. Link each PROCESS to its TASK comments with issue-spec link.
 7. Implement the code changes for one PROCESS scope at a time, or integrate completed worker outputs by dependency order.
@@ -33,8 +33,9 @@ Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing 
 
 ## Coordinator DAG Execution
 
-1. Build the ready set from PROCESS nodes whose dependencies are done.
-2. Keep immediate blocking work local when the next step depends on it.
-3. Spawn or assign independent worker agents only when their write ownership is disjoint, and give each worker an assigned id to pass via --agent-session.
-4. Spawn or assign independent review agents only when their review scopes are disjoint.
-5. Integrate completed outputs by dependency order and update PROCESS evidence before marking done.
+1. Derive the DAG from TASK ### Execution Planning metadata; default to serial PROCESS chains under one parent TASK.
+2. Build the ready set from PROCESS nodes whose dependencies are done.
+3. Keep immediate blocking work local when the next step depends on it, and record ### Handoff evidence on each completed serial node before starting its successor.
+4. Spawn or assign parallel worker agents only when their write ownership is provably disjoint, and give each worker an assigned id to pass via --agent-session.
+5. Spawn or assign review agents for non-trivial PRs; run them in parallel only when their review scopes are disjoint. Route findings to the owner PROCESS or a dedicated repair PROCESS under the same serial/parallel gating.
+6. Integrate completed outputs by dependency order and update PROCESS evidence (including ### Handoff for serial predecessors) before marking done.

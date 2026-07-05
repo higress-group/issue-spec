@@ -15,7 +15,7 @@ Use when the user asks for /issue-spec:review, issue-spec review, or a PR review
 
 ## Steps
 
-1. Run issue-spec review sync --repo higress-group/issue-spec --pr <number> --implement <issue> --id REVIEW-<n> --json to capture current rationale comments, findings, checks, and artifact writer session diagnostics.
+1. Run issue-spec review sync --repo higress-group/issue-spec --pr <number> --implement <issue> --id REVIEW-<n> --json to capture current rationale comments, findings, checks, and artifact writer session diagnostics. review sync owns the established "## Review Sync Summary" REVIEW body shape; do not hand-edit it. For separate manual review evidence, generate a REVIEW body with issue-spec comment generate --type REVIEW --input-file review.json.
 2. For non-trivial PRs, spawn or assign dedicated review agents as review PROCESS owners. Multiple review agents can run in parallel when their review scopes are independent.
 3. Give each review agent a concrete scope and expected output: actionable findings only, severity, file/line, linked SPEC, owner PROCESS, and suggested fix.
 4. Create actionable PR line findings with issue-spec review finding. Use P0/P1 for blockers and P2 for non-blocking follow-up. Pass the review agent's assigned id with --agent-session.
@@ -26,7 +26,8 @@ Use when the user asks for /issue-spec:review, issue-spec review, or a PR review
 ## Review DAG Policy
 
 1. Every non-trivial PR should have at least one dedicated review PROCESS node before final verify.
-2. Use multiple review agents in parallel when scopes are independent, for example CLI/API behavior, workflow docs, tests, compatibility, or security-sensitive surfaces.
+2. Review parallelism is gated, not default: run multiple review agents in parallel only when their review scopes are independent, for example CLI/API behavior, workflow docs, tests, compatibility, or security-sensitive surfaces.
 3. A review agent reports findings only; the coordinator converts actionable line findings into issue-spec review finding comments.
-4. P0/P1 findings block final verify until the owner PROCESS fixes them and issue-spec review reply records the resolution on the original thread.
-5. If a review agent finds no issues, record that result in REVIEW or VERIFY evidence before marking the review PROCESS done.
+4. Route findings to the owner PROCESS or a dedicated repair PROCESS. Repair PROCESS nodes are DAG nodes too: they follow the same serial/parallel gating as implementation nodes and record ### Handoff evidence when part of a serial chain.
+5. P0/P1 findings block final verify until the owning PROCESS fixes them and issue-spec review reply records the resolution on the original thread.
+6. If a review agent finds no issues, record that result in REVIEW or VERIFY evidence before marking the review PROCESS done.

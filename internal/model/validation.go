@@ -109,6 +109,38 @@ func specCanonicalElements(logical string) []specElement {
 	return missing
 }
 
+// taskCanonicalElements returns the canonical TASK elements missing from an
+// already-logical TASK body. TASK discipline requires the `## Task:` heading and
+// the `### Execution Planning` PROCESS-planning section so the coordinator can
+// decide serial-vs-parallel decomposition from the TASK alone.
+func taskCanonicalElements(logical string) []specElement {
+	logical = strings.TrimSpace(logical)
+	var missing []specElement
+	if !strings.Contains(logical, "## Task:") {
+		missing = append(missing, specElement{"task-heading", "missing `## Task:` heading"})
+	}
+	if !strings.Contains(logical, "### Execution Planning") {
+		missing = append(missing, specElement{"execution-planning", "missing `### Execution Planning` section (owned areas, coupling class, recommended execution mode)"})
+	}
+	return missing
+}
+
+// processCanonicalElements returns the canonical PROCESS elements missing from an
+// already-logical PROCESS body. Every PROCESS node must record its `### Parent
+// TASK`; serial-chain `### Handoff` evidence is enforced at verify where the DAG
+// is visible.
+func processCanonicalElements(logical string) []specElement {
+	logical = strings.TrimSpace(logical)
+	var missing []specElement
+	if !strings.Contains(logical, "## Process:") {
+		missing = append(missing, specElement{"process-heading", "missing `## Process:` heading"})
+	}
+	if !strings.Contains(logical, "### Parent TASK") {
+		missing = append(missing, specElement{"parent-task", "missing `### Parent TASK` section"})
+	}
+	return missing
+}
+
 // SpecBodyErrors reports canonical SPEC discipline problems for an already
 // logical SPEC body as human-readable messages. It is shared by the durable
 // spec renderer so archive and upsert enforce identical rules.
@@ -126,15 +158,22 @@ func SpecBodyErrors(logical string) []string {
 
 // ValidateCanonicalBody validates a full (possibly wrapped) typed comment body
 // for canonical discipline. It extracts the logical body first so raw generated
-// bodies and already-wrapped bodies behave consistently. Only SPEC has strict
-// blocking rules today; other types return no diagnostics.
+// bodies and already-wrapped bodies behave consistently. SPEC, TASK, and PROCESS
+// have strict blocking rules; REVIEW, VERIFY, and QUESTION return no diagnostics.
 func ValidateCanonicalBody(commentType, id, url, body string) []CanonicalDiagnostic {
 	commentType = strings.ToUpper(strings.TrimSpace(commentType))
-	if commentType != "SPEC" {
+	logical := LogicalBody(body)
+	var elements []specElement
+	switch commentType {
+	case "SPEC":
+		elements = specCanonicalElements(logical)
+	case "TASK":
+		elements = taskCanonicalElements(logical)
+	case "PROCESS":
+		elements = processCanonicalElements(logical)
+	default:
 		return nil
 	}
-	logical := LogicalBody(body)
-	elements := specCanonicalElements(logical)
 	if len(elements) == 0 {
 		return nil
 	}

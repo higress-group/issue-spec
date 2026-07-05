@@ -91,6 +91,8 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 - Do not leave active proposal/design/implement issue bodies as TBD placeholders.
 - Resolve blocking QUESTION comments before design/tasks, or explicitly record accepted assumptions.
 - Link SPEC <-> TASK and TASK <-> PROCESS with issue-spec link.
+- Each design TASK must carry an ### Execution Planning section (rendered by comment generate --type TASK): owned modules/write areas, shared touchpoints, dependency/interface assumptions, coupling class, recommended execution mode, and complexity/split guidance. comment upsert --type TASK rejects a TASK that omits it.
+- Every PROCESS must record its ### Parent TASK; comment upsert --type PROCESS rejects a PROCESS without one. Serial PROCESS chains under one parent TASK are the default decomposition; each completed serial node records ### Handoff evidence for its successor. Parallelism is a gated optimization enabled only when write ownership is disjoint, not the default.
 - Link every PROCESS to the implementation PR with issue-spec pr link-process.
 - Before implementation PR merge, add GitHub closing links to the implementation PR body with issue-spec pr link-issues so GitHub closes the proposal/design/implement issues when the PR merges.
 - Treat Agent as the logical role or workflow-assigned label. Treat Agent Session ID and Agent Session Source as artifact writer provenance, not runner resume metadata.
@@ -105,12 +107,14 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 
 ## Coordinator DAG Execution
 
-1. Treat PROCESS comments as DAG nodes with explicit owner, dependencies, write or review scope, PR link, and evidence.
-2. Select ready PROCESS nodes whose dependencies are done and whose scopes do not overlap.
-3. Dispatch independent worker PROCESS nodes in parallel when their file/module ownership is disjoint; include each worker's assigned subagent/session id and require it to pass that id with --agent-session on supported issue-spec writer commands.
-4. Dispatch independent review PROCESS nodes in parallel for non-trivial PRs after PR rationale exists.
-5. Integrate completed worker outputs by dependency order; route P0/P1 review findings back to the owner PROCESS.
-6. Mark PROCESS nodes done only after their implementation or review evidence is recorded and blocking findings are resolved.
+1. Plan the PROCESS DAG before dispatch: read every active TASK's ### Execution Planning metadata (coupling class, recommended execution mode, owned areas) and derive PROCESS nodes from it.
+2. Default to serial PROCESS chains under one parent TASK. Treat parallelism as a gated optimization: split into parallel PROCESS nodes only when their file/module write ownership is provably disjoint.
+3. Treat PROCESS comments as DAG nodes with explicit owner, parent TASK, dependencies, write or review scope, PR link, and evidence.
+4. Select ready PROCESS nodes whose dependencies are done. Dispatch parallel worker nodes only when write ownership is disjoint; include each worker's assigned subagent/session id and require it to pass that id with --agent-session on supported issue-spec writer commands.
+5. Each completed serial PROCESS records ### Handoff evidence (the contract/state its successor consumes) before the next node starts; record a reason when a handoff is unnecessary.
+6. Dispatch review PROCESS nodes for non-trivial PRs after PR rationale exists; run review nodes in parallel only when their review scopes are independent. Route P0/P1 findings to the owner PROCESS or a dedicated repair PROCESS that follows the same serial/parallel gating.
+7. Integrate completed outputs by dependency order.
+8. Mark PROCESS nodes done only after implementation or review evidence and, for serial predecessors, ### Handoff evidence are recorded and blocking findings are resolved.
 `,
 		},
 		{
@@ -142,7 +146,7 @@ Use when the user asks for /issue-spec:propose, issue-spec propose, creating a c
 
        issue-spec issue create design --repo {{repo}} --change <change-name> --proposal <proposal-issue-or-url> --body-file <design.md>
 
-6. Generate TASK bodies with issue-spec comment generate --type TASK --id TASK-001 --input-file task.json, upsert them with issue-spec comment upsert --type TASK, and link every TASK to covered SPEC comments with issue-spec link. Use the same comment generate command family for PROCESS, REVIEW, and VERIFY comments instead of inventing raw Markdown shapes.
+6. Generate TASK bodies with issue-spec comment generate --type TASK --id TASK-001 --input-file task.json, upsert them with issue-spec comment upsert --type TASK, and link every TASK to covered SPEC comments with issue-spec link. The TASK input JSON has title, summary, checklist, covers, and an execution_planning object (owned_areas, shared_touchpoints, dependencies, coupling, execution_mode, complexity) that renders the required ### Execution Planning section; comment upsert --type TASK rejects a TASK without it. Use the same comment generate command family for PROCESS, REVIEW, and VERIFY comments instead of inventing raw Markdown shapes; PROCESS input takes parent_task and handoff fields.
 7. Create the implement issue once tasks are ready:
 
        issue-spec issue create implement --repo {{repo}} --change <change-name> --proposal <proposal-issue-or-url> --design <design-issue-or-url> --body-file <implement.md>
@@ -163,9 +167,9 @@ Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing 
 
 1. Read proposal/design/implement issue context and list typed comments with issue-spec comment list --json.
 2. Confirm issue-spec auth status --json includes the expected GitHub backend. Local gh-authenticated sessions can use the native gh backend; keep ISSUE_SPEC_TOKEN="$(gh auth token)" only as an older-version or forced-rest compatibility path.
-3. Create or update PROCESS comments with owner agent, scope, dependencies, write ownership, and status. Render PROCESS bodies with issue-spec comment generate --type PROCESS --input-file process.json instead of hand-writing Markdown.
+3. Plan the PROCESS DAG before dispatch: read each active TASK's ### Execution Planning metadata and derive PROCESS nodes from it. Render PROCESS bodies with issue-spec comment generate --type PROCESS --input-file process.json (fields include parent_task, owner, dependencies, write_ownership, handoff) instead of hand-writing Markdown; comment upsert --type PROCESS rejects a PROCESS without a ### Parent TASK.
    Keep Agent as the logical role. Pass assigned subagent/session ids with --agent-session; Codex CODEX_THREAD_ID remains the artifact writer session source of truth when present.
-4. Split non-trivial work into independent worker PROCESS nodes when file/module ownership does not overlap; execute independent workers in parallel when available.
+4. Default to serial PROCESS chains under one parent TASK, each completed node recording ### Handoff evidence for its successor. Split into parallel worker PROCESS nodes only when file/module write ownership is provably disjoint; parallelism is a gated optimization, not the default.
 5. Add dedicated review PROCESS nodes for non-trivial changes. Review PROCESS nodes should own review scopes such as CLI/API behavior, workflow docs, tests, compatibility, or security-sensitive surfaces.
 6. Link each PROCESS to its TASK comments with issue-spec link.
 7. Implement the code changes for one PROCESS scope at a time, or integrate completed worker outputs by dependency order.
@@ -179,11 +183,12 @@ Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing 
 
 ## Coordinator DAG Execution
 
-1. Build the ready set from PROCESS nodes whose dependencies are done.
-2. Keep immediate blocking work local when the next step depends on it.
-3. Spawn or assign independent worker agents only when their write ownership is disjoint, and give each worker an assigned id to pass via --agent-session.
-4. Spawn or assign independent review agents only when their review scopes are disjoint.
-5. Integrate completed outputs by dependency order and update PROCESS evidence before marking done.
+1. Derive the DAG from TASK ### Execution Planning metadata; default to serial PROCESS chains under one parent TASK.
+2. Build the ready set from PROCESS nodes whose dependencies are done.
+3. Keep immediate blocking work local when the next step depends on it, and record ### Handoff evidence on each completed serial node before starting its successor.
+4. Spawn or assign parallel worker agents only when their write ownership is provably disjoint, and give each worker an assigned id to pass via --agent-session.
+5. Spawn or assign review agents for non-trivial PRs; run them in parallel only when their review scopes are disjoint. Route findings to the owner PROCESS or a dedicated repair PROCESS under the same serial/parallel gating.
+6. Integrate completed outputs by dependency order and update PROCESS evidence (including ### Handoff for serial predecessors) before marking done.
 `,
 		},
 		{
@@ -208,10 +213,11 @@ Use when the user asks for /issue-spec:review, issue-spec review, or a PR review
 ## Review DAG Policy
 
 1. Every non-trivial PR should have at least one dedicated review PROCESS node before final verify.
-2. Use multiple review agents in parallel when scopes are independent, for example CLI/API behavior, workflow docs, tests, compatibility, or security-sensitive surfaces.
+2. Review parallelism is gated, not default: run multiple review agents in parallel only when their review scopes are independent, for example CLI/API behavior, workflow docs, tests, compatibility, or security-sensitive surfaces.
 3. A review agent reports findings only; the coordinator converts actionable line findings into issue-spec review finding comments.
-4. P0/P1 findings block final verify until the owner PROCESS fixes them and issue-spec review reply records the resolution on the original thread.
-5. If a review agent finds no issues, record that result in REVIEW or VERIFY evidence before marking the review PROCESS done.
+4. Route findings to the owner PROCESS or a dedicated repair PROCESS. Repair PROCESS nodes are DAG nodes too: they follow the same serial/parallel gating as implementation nodes and record ### Handoff evidence when part of a serial chain.
+5. P0/P1 findings block final verify until the owning PROCESS fixes them and issue-spec review reply records the resolution on the original thread.
+6. If a review agent finds no issues, record that result in REVIEW or VERIFY evidence before marking the review PROCESS done.
 `,
 		},
 		{

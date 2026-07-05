@@ -26,7 +26,8 @@ Use when the user asks for /issue-spec:review, issue-spec review, or a PR review
 ## Review DAG Policy
 
 1. Every non-trivial PR should have at least one dedicated review PROCESS node before final verify.
-2. Use multiple review agents in parallel when scopes are independent, for example CLI/API behavior, workflow docs, tests, compatibility, or security-sensitive surfaces.
+2. Review parallelism is gated, not default: run multiple review agents in parallel only when their review scopes are independent, for example CLI/API behavior, workflow docs, tests, compatibility, or security-sensitive surfaces.
 3. A review agent reports findings only; the coordinator converts actionable line findings into issue-spec review finding comments.
-4. P0/P1 findings block final verify until the owner PROCESS fixes them and issue-spec review reply records the resolution on the original thread.
-5. If a review agent finds no issues, record that result in REVIEW or VERIFY evidence before marking the review PROCESS done.
+4. Route findings to the owner PROCESS or a dedicated repair PROCESS. Repair PROCESS nodes are DAG nodes too: they follow the same serial/parallel gating as implementation nodes and record ### Handoff evidence when part of a serial chain.
+5. P0/P1 findings block final verify until the owning PROCESS fixes them and issue-spec review reply records the resolution on the original thread.
+6. If a review agent finds no issues, record that result in REVIEW or VERIFY evidence before marking the review PROCESS done.

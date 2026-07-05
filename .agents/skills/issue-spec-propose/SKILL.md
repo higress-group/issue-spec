@@ -33,7 +33,7 @@ Use when the user asks for /issue-spec:propose, issue-spec propose, creating a c
 
        issue-spec issue create design --repo higress-group/issue-spec --change <change-name> --proposal <proposal-issue-or-url> --body-file <design.md>
 
-6. Generate TASK bodies with issue-spec comment generate --type TASK --id TASK-001 --input-file task.json, upsert them with issue-spec comment upsert --type TASK, and link every TASK to covered SPEC comments with issue-spec link. Use the same comment generate command family for PROCESS, REVIEW, and VERIFY comments instead of inventing raw Markdown shapes.
+6. Generate TASK bodies with issue-spec comment generate --type TASK --id TASK-001 --input-file task.json, upsert them with issue-spec comment upsert --type TASK, and link every TASK to covered SPEC comments with issue-spec link. The TASK input JSON has title, summary, checklist, covers, and an execution_planning object (owned_areas, shared_touchpoints, dependencies, coupling, execution_mode, complexity) that renders the required ### Execution Planning section; comment upsert --type TASK rejects a TASK without it. Use the same comment generate command family for PROCESS, REVIEW, and VERIFY comments instead of inventing raw Markdown shapes; PROCESS input takes parent_task and handoff fields.
 7. Create the implement issue once tasks are ready:
 
        issue-spec issue create implement --repo higress-group/issue-spec --change <change-name> --proposal <proposal-issue-or-url> --design <design-issue-or-url> --body-file <implement.md>

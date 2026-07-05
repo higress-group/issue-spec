@@ -36,6 +36,8 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 - Do not leave active proposal/design/implement issue bodies as TBD placeholders.
 - Resolve blocking QUESTION comments before design/tasks, or explicitly record accepted assumptions.
 - Link SPEC <-> TASK and TASK <-> PROCESS with issue-spec link.
+- Each design TASK must carry an ### Execution Planning section (rendered by comment generate --type TASK): owned modules/write areas, shared touchpoints, dependency/interface assumptions, coupling class, recommended execution mode, and complexity/split guidance. comment upsert --type TASK rejects a TASK that omits it.
+- Every PROCESS must record its ### Parent TASK; comment upsert --type PROCESS rejects a PROCESS without one. Serial PROCESS chains under one parent TASK are the default decomposition; each completed serial node records ### Handoff evidence for its successor. Parallelism is a gated optimization enabled only when write ownership is disjoint, not the default.
 - Link every PROCESS to the implementation PR with issue-spec pr link-process.
 - Before implementation PR merge, add GitHub closing links to the implementation PR body with issue-spec pr link-issues so GitHub closes the proposal/design/implement issues when the PR merges.
 - Treat Agent as the logical role or workflow-assigned label. Treat Agent Session ID and Agent Session Source as artifact writer provenance, not runner resume metadata.
@@ -50,9 +52,11 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 
 ## Coordinator DAG Execution
 
-1. Treat PROCESS comments as DAG nodes with explicit owner, dependencies, write or review scope, PR link, and evidence.
-2. Select ready PROCESS nodes whose dependencies are done and whose scopes do not overlap.
-3. Dispatch independent worker PROCESS nodes in parallel when their file/module ownership is disjoint; include each worker's assigned subagent/session id and require it to pass that id with --agent-session on supported issue-spec writer commands.
-4. Dispatch independent review PROCESS nodes in parallel for non-trivial PRs after PR rationale exists.
-5. Integrate completed worker outputs by dependency order; route P0/P1 review findings back to the owner PROCESS.
-6. Mark PROCESS nodes done only after their implementation or review evidence is recorded and blocking findings are resolved.
+1. Plan the PROCESS DAG before dispatch: read every active TASK's ### Execution Planning metadata (coupling class, recommended execution mode, owned areas) and derive PROCESS nodes from it.
+2. Default to serial PROCESS chains under one parent TASK. Treat parallelism as a gated optimization: split into parallel PROCESS nodes only when their file/module write ownership is provably disjoint.
+3. Treat PROCESS comments as DAG nodes with explicit owner, parent TASK, dependencies, write or review scope, PR link, and evidence.
+4. Select ready PROCESS nodes whose dependencies are done. Dispatch parallel worker nodes only when write ownership is disjoint; include each worker's assigned subagent/session id and require it to pass that id with --agent-session on supported issue-spec writer commands.
+5. Each completed serial PROCESS records ### Handoff evidence (the contract/state its successor consumes) before the next node starts; record a reason when a handoff is unnecessary.
+6. Dispatch review PROCESS nodes for non-trivial PRs after PR rationale exists; run review nodes in parallel only when their review scopes are independent. Route P0/P1 findings to the owner PROCESS or a dedicated repair PROCESS that follows the same serial/parallel gating.
+7. Integrate completed outputs by dependency order.
+8. Mark PROCESS nodes done only after implementation or review evidence and, for serial predecessors, ### Handoff evidence are recorded and blocking findings are resolved.

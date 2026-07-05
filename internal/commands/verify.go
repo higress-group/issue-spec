@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
+
+var processIDRe = regexp.MustCompile(`PROCESS-[0-9]{3,}`)
 
 type finalVerifyReport struct {
 	OK                    bool                        `json:"ok"`
@@ -226,6 +229,15 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		report.Errors = append(report.Errors, "at least one done VERIFY comment is required")
 	}
 	verifyText := strings.Join(doneVerifyBodies, "\n")
+	// SPEC-006: serial-chain PROCESS predecessors must record ### Handoff
+	// evidence, and a done VERIFY must summarize test evidence. A PROCESS is a
+	// serial-chain predecessor when another active PROCESS declares it as a
+	// dependency; parent-TASK presence itself is already enforced by canonical
+	// PROCESS validation above.
+	report.Errors = append(report.Errors, serialHandoffErrors(activeProcesses)...)
+	if len(doneVerifyBodies) > 0 && !strings.Contains(strings.ToLower(verifyText), "test") {
+		report.Errors = append(report.Errors, "no done VERIFY comment references test evidence (SPEC-006)")
+	}
 	for _, spec := range activeSpecs {
 		if strings.Contains(verifyText, spec.Comment.ID) {
 			report.SpecCoverage[spec.Comment.ID] = true
@@ -277,6 +289,75 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	sort.Strings(report.Warnings)
 	report.OK = len(report.Errors) == 0
 	return report, nil
+}
+
+// serialHandoffErrors reports done PROCESS predecessors in a serial chain that
+// carry no ### Handoff evidence. A predecessor is any PROCESS that another active
+// PROCESS declares as a dependency.
+func serialHandoffErrors(processes []model.Artifact) []string {
+	ids := map[string]bool{}
+	for _, p := range processes {
+		if p.Comment.ID != "" {
+			ids[p.Comment.ID] = true
+		}
+	}
+	dependedUpon := map[string]bool{}
+	for _, p := range processes {
+		for _, dep := range processDependencyIDs(p.Comment.Body) {
+			if dep != p.Comment.ID && ids[dep] {
+				dependedUpon[dep] = true
+			}
+		}
+	}
+	var errs []string
+	for _, p := range processes {
+		if p.Comment.Status != "done" || !dependedUpon[p.Comment.ID] {
+			continue
+		}
+		if isEmptyOrNA(sectionContent(p.Comment.Body, "### Handoff")) {
+			errs = append(errs, fmt.Sprintf("%s is a serial-chain predecessor but records no ### Handoff evidence (SPEC-006)", p.Comment.ID))
+		}
+	}
+	return errs
+}
+
+// processDependencyIDs extracts referenced PROCESS ids from a PROCESS body's
+// ### Dependencies section.
+func processDependencyIDs(body string) []string {
+	deps := sectionContent(body, "### Dependencies")
+	if deps == "" {
+		return nil
+	}
+	return processIDRe.FindAllString(deps, -1)
+}
+
+// sectionContent returns the trimmed text of the named `###`/`##` section, up to
+// the next heading of the same or higher level.
+func sectionContent(body, heading string) string {
+	lines := strings.Split(model.LogicalBody(body), "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == heading {
+			start = i + 1
+			break
+		}
+	}
+	if start == -1 {
+		return ""
+	}
+	var out []string
+	for _, line := range lines[start:] {
+		if strings.HasPrefix(strings.TrimSpace(line), "## ") || strings.HasPrefix(strings.TrimSpace(line), "### ") {
+			break
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func isEmptyOrNA(text string) bool {
+	text = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), "-"))
+	return text == "" || strings.EqualFold(text, "N/A")
 }
 
 func linkValuesContain(values []string, want string) bool {

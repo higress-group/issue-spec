@@ -139,12 +139,27 @@ func SpecComment(opts SpecCommentOptions) (string, error) {
 	return model.EnsureTypedBody("SPEC", opts.Common.ID, logical, opts.Common.bodyOptions())
 }
 
+// TaskExecutionPlanning is the structured PROCESS-planning metadata carried by a
+// generated TASK body. It lets the coordinator decide serial-vs-parallel PROCESS
+// decomposition from the TASK alone, so the `### Execution Planning` section is
+// always rendered (with TBD/N/A defaults) and is required for canonical TASK
+// discipline.
+type TaskExecutionPlanning struct {
+	OwnedAreas        []string `json:"owned_areas"`
+	SharedTouchpoints []string `json:"shared_touchpoints"`
+	Dependencies      []string `json:"dependencies"`
+	Coupling          string   `json:"coupling"`
+	ExecutionMode     string   `json:"execution_mode"`
+	Complexity        string   `json:"complexity"`
+}
+
 // TaskInput is the structured input for generated TASK bodies.
 type TaskInput struct {
-	Title     string   `json:"title"`
-	Summary   string   `json:"summary"`
-	Checklist []string `json:"checklist"`
-	Covers    []string `json:"covers"`
+	Title             string                `json:"title"`
+	Summary           string                `json:"summary"`
+	Checklist         []string              `json:"checklist"`
+	Covers            []string              `json:"covers"`
+	ExecutionPlanning TaskExecutionPlanning `json:"execution_planning"`
 }
 
 type TaskCommentOptions struct {
@@ -164,19 +179,57 @@ func TaskComment(opts TaskCommentOptions) (string, error) {
 	}
 	b.WriteString("\n### Implementation Checklist\n\n")
 	writeChecklist(&b, opts.Input.Checklist)
+	writeExecutionPlanning(&b, opts.Input.ExecutionPlanning)
 	b.WriteString("\n### Covers\n\n")
 	writeBulletRefs(&b, opts.Input.Covers)
 	return model.EnsureTypedBody("TASK", opts.Common.ID, b.String(), opts.Common.bodyOptions())
 }
 
-// ProcessInput is the structured input for generated PROCESS bodies.
+// writeExecutionPlanning renders the canonical `### Execution Planning` section.
+// Labeled lines are always emitted so a coordinator can read coupling and
+// execution mode even when a caller supplies only some fields.
+func writeExecutionPlanning(b *strings.Builder, p TaskExecutionPlanning) {
+	b.WriteString("\n### Execution Planning\n\n")
+	b.WriteString("- Owned modules / write areas:\n")
+	writeNestedBullets(b, p.OwnedAreas)
+	b.WriteString("- Shared touchpoints:\n")
+	writeNestedBullets(b, p.SharedTouchpoints)
+	b.WriteString("- Dependency / interface assumptions:\n")
+	writeNestedBullets(b, p.Dependencies)
+	fmt.Fprintf(b, "- Coupling class: %s\n", valueOr(strings.TrimSpace(p.Coupling), "TBD"))
+	fmt.Fprintf(b, "- Recommended execution mode: %s\n", valueOr(strings.TrimSpace(p.ExecutionMode), "TBD"))
+	fmt.Fprintf(b, "- Complexity / split guidance: %s\n", valueOr(strings.TrimSpace(p.Complexity), "TBD"))
+}
+
+func writeNestedBullets(b *strings.Builder, items []string) {
+	wrote := false
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		fmt.Fprintf(b, "  - %s\n", item)
+		wrote = true
+	}
+	if !wrote {
+		b.WriteString("  - N/A\n")
+	}
+}
+
+// ProcessInput is the structured input for generated PROCESS bodies. ParentTask
+// is required for canonical PROCESS discipline (every PROCESS node belongs to
+// exactly one parent TASK). Handoff carries the completion evidence a serial
+// PROCESS node passes to the next node in its chain; it renders as N/A for
+// parallel or not-yet-started nodes and is enforced for serial chains at verify.
 type ProcessInput struct {
 	Title          string   `json:"title"`
 	Owner          string   `json:"owner"`
+	ParentTask     string   `json:"parent_task"`
 	Scope          string   `json:"scope"`
 	Dependencies   []string `json:"dependencies"`
 	WriteOwnership []string `json:"write_ownership"`
 	Covers         []string `json:"covers"`
+	Handoff        string   `json:"handoff"`
 	StatusNote     string   `json:"status_note"`
 }
 
@@ -193,6 +246,7 @@ func ProcessComment(opts ProcessCommentOptions) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Process: %s\n", title)
 	fmt.Fprintf(&b, "\n### Owner\n\n- %s\n", valueOr(strings.TrimSpace(opts.Input.Owner), "Worker Agent"))
+	fmt.Fprintf(&b, "\n### Parent TASK\n\n- %s\n", valueOr(strings.TrimSpace(opts.Input.ParentTask), "TBD"))
 	if scope := strings.TrimSpace(opts.Input.Scope); scope != "" {
 		fmt.Fprintf(&b, "\n### Scope\n\n%s\n", scope)
 	}
@@ -202,6 +256,7 @@ func ProcessComment(opts ProcessCommentOptions) (string, error) {
 	writeBulletRefs(&b, opts.Input.Dependencies)
 	b.WriteString("\n### Covers\n\n")
 	writeBulletRefs(&b, opts.Input.Covers)
+	fmt.Fprintf(&b, "\n### Handoff\n\n%s\n", valueOr(strings.TrimSpace(opts.Input.Handoff), "N/A"))
 	if note := strings.TrimSpace(opts.Input.StatusNote); note != "" {
 		fmt.Fprintf(&b, "\n### Status\n\n%s\n", note)
 	}

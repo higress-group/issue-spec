@@ -11,7 +11,7 @@ Use when the user asks for /issue-spec:verify, issue-spec verify, or final readi
 
 ## Steps
 
-1. Run focused project tests and record evidence in VERIFY comments.
+1. Run focused project tests and record evidence in VERIFY comments. Generate VERIFY bodies with issue-spec comment generate --type VERIFY --input-file verify.json instead of hand-writing Markdown, and reference the covered SPEC IDs so final verify can confirm coverage.
 2. Run issue-spec verify-links --repo higress-group/issue-spec --proposal <issue> --design <issue> --implement <issue> --json.
 3. Render a durable spec draft:
 

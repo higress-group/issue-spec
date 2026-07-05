@@ -92,11 +92,28 @@ func TestValidateCanonicalBodyReportsEachMissingElement(t *testing.T) {
 	}
 }
 
-func TestValidateCanonicalBodyNonSpecTypesReturnNil(t *testing.T) {
-	for _, typ := range []string{"TASK", "PROCESS", "REVIEW", "VERIFY", "QUESTION"} {
+func TestValidateCanonicalBodyUncheckedTypesReturnNil(t *testing.T) {
+	for _, typ := range []string{"REVIEW", "VERIFY", "QUESTION"} {
 		if diags := ValidateCanonicalBody(typ, typ+"-001", "", "anything at all"); diags != nil {
 			t.Fatalf("%s should not have canonical diagnostics: %+v", typ, diags)
 		}
+	}
+}
+
+func TestValidateCanonicalBodyTaskProcessDiscipline(t *testing.T) {
+	if diags := ValidateCanonicalBody("TASK", "TASK-001", "", "anything at all"); len(diags) == 0 {
+		t.Fatal("noncanonical TASK body should be rejected")
+	}
+	if diags := ValidateCanonicalBody("PROCESS", "PROCESS-001", "", "anything at all"); len(diags) == 0 {
+		t.Fatal("noncanonical PROCESS body should be rejected")
+	}
+	goodTask := "## Task: t\n\n### Implementation Checklist\n\n- [ ] a\n\n### Execution Planning\n\n- Coupling class: low\n\n### Covers\n\n- SPEC-001"
+	if diags := ValidateCanonicalBody("TASK", "TASK-001", "", goodTask); len(diags) != 0 {
+		t.Fatalf("canonical TASK body should pass: %+v", diags)
+	}
+	goodProcess := "## Process: p\n\n### Owner\n\n- Worker\n\n### Parent TASK\n\n- TASK-001\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\nN/A"
+	if diags := ValidateCanonicalBody("PROCESS", "PROCESS-001", "", goodProcess); len(diags) != 0 {
+		t.Fatalf("canonical PROCESS body should pass: %+v", diags)
 	}
 }
 

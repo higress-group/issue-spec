@@ -71,14 +71,19 @@ func TestSpecCommentRequiresScenario(t *testing.T) {
 func TestNonSpecTemplatesProduceParseableTypedBodies(t *testing.T) {
 	task, err := TaskComment(TaskCommentOptions{
 		Common: CommonOptions{ID: "TASK-001", Status: "ready"},
-		Input:  TaskInput{Title: "do work", Summary: "s", Checklist: []string{"a", "b"}, Covers: []string{"SPEC-001"}},
+		Input: TaskInput{Title: "do work", Summary: "s", Checklist: []string{"a", "b"}, Covers: []string{"SPEC-001"}, ExecutionPlanning: TaskExecutionPlanning{
+			OwnedAreas:    []string{"internal/x"},
+			Coupling:      "low",
+			ExecutionMode: "parallel-safe",
+			Complexity:    "small",
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	proc, err := ProcessComment(ProcessCommentOptions{
 		Common: CommonOptions{ID: "PROCESS-001", Status: "ready"},
-		Input:  ProcessInput{Title: "impl", Owner: "Worker", Scope: "x", Dependencies: []string{"PROCESS-000"}, WriteOwnership: []string{"internal/x"}, Covers: []string{"TASK-001"}},
+		Input:  ProcessInput{Title: "impl", Owner: "Worker", ParentTask: "TASK-001", Scope: "x", Dependencies: []string{"PROCESS-000"}, WriteOwnership: []string{"internal/x"}, Covers: []string{"TASK-001"}, Handoff: "state.json contract fixed"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -101,6 +106,48 @@ func TestNonSpecTemplatesProduceParseableTypedBodies(t *testing.T) {
 	}
 	if !strings.Contains(proc, "### Write Ownership") {
 		t.Fatalf("process missing write ownership:\n%s", proc)
+	}
+	for _, want := range []string{"### Execution Planning", "- Coupling class: low", "- Recommended execution mode: parallel-safe"} {
+		if !strings.Contains(task, want) {
+			t.Fatalf("task missing %q:\n%s", want, task)
+		}
+	}
+	for _, want := range []string{"### Parent TASK", "- TASK-001", "### Handoff", "state.json contract fixed"} {
+		if !strings.Contains(proc, want) {
+			t.Fatalf("process missing %q:\n%s", want, proc)
+		}
+	}
+	// Generated TASK/PROCESS bodies must pass canonical validation without edits.
+	if diags := model.ValidateCanonicalBody("TASK", "TASK-001", "", task); len(diags) != 0 {
+		t.Fatalf("generated TASK body not canonical: %+v", diags)
+	}
+	if diags := model.ValidateCanonicalBody("PROCESS", "PROCESS-001", "", proc); len(diags) != 0 {
+		t.Fatalf("generated PROCESS body not canonical: %+v", diags)
+	}
+}
+
+func TestTaskAndProcessGeneratorsFillCanonicalDefaults(t *testing.T) {
+	// Even with no execution-planning or parent-task input, generated bodies must
+	// be canonical (headings present with TBD/N/A defaults).
+	task, err := TaskComment(TaskCommentOptions{Common: CommonOptions{ID: "TASK-002"}, Input: TaskInput{Title: "t", Covers: []string{"SPEC-001"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diags := model.ValidateCanonicalBody("TASK", "TASK-002", "", task); len(diags) != 0 {
+		t.Fatalf("default TASK body not canonical: %+v", diags)
+	}
+	if !strings.Contains(task, "- Coupling class: TBD") {
+		t.Fatalf("default TASK missing coupling default:\n%s", task)
+	}
+	proc, err := ProcessComment(ProcessCommentOptions{Common: CommonOptions{ID: "PROCESS-002"}, Input: ProcessInput{Title: "p", Covers: []string{"TASK-002"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diags := model.ValidateCanonicalBody("PROCESS", "PROCESS-002", "", proc); len(diags) != 0 {
+		t.Fatalf("default PROCESS body not canonical: %+v", diags)
+	}
+	if !strings.Contains(proc, "### Handoff\n\nN/A") {
+		t.Fatalf("default PROCESS missing handoff default:\n%s", proc)
 	}
 }
 

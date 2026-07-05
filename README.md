@@ -397,9 +397,52 @@ issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope
 
 The rendered body contains a `## Requirement:` heading, normative MUST/SHALL language, and one or more `### Scenario:` sections with `**WHEN**`/`**THEN**` bullets. Unknown JSON fields are rejected so schema drift fails fast.
 
-### SPEC validation by default
+### TASK and PROCESS generator input JSON
 
-`comment upsert --type SPEC` validates canonical SPEC discipline by default before creating or updating the remote comment. Malformed bodies (for example an ad hoc `# SPEC-001` heading or missing WHEN/THEN bullets) are rejected with diagnostics that name every missing canonical element. One shared validator in `internal/model` is reused by `comment upsert`, `comment list`, `status`, `verify`, and `archive`, operating on the logical body after marker/header stripping so raw generated bodies and already-wrapped bodies behave identically.
+TASK bodies carry the PROCESS-planning metadata a coordinator needs to decompose work. The `execution_planning` object renders the required `### Execution Planning` section:
+
+```json
+{
+  "title": "canonical typed-comment authoring",
+  "summary": "Extend the generators so TASK/PROCESS bodies carry planning metadata.",
+  "checklist": ["Add execution_planning fields", "Enforce canonical validation"],
+  "covers": ["SPEC-001", "SPEC-006"],
+  "execution_planning": {
+    "owned_areas": ["internal/templates"],
+    "shared_touchpoints": ["internal/model"],
+    "dependencies": ["SPEC generator schema"],
+    "coupling": "low",
+    "execution_mode": "coordinator-owned",
+    "complexity": "small"
+  }
+}
+```
+
+PROCESS bodies record their parent TASK and, for serial chains, the handoff evidence passed to the next node:
+
+```json
+{
+  "title": "extend generators",
+  "owner": "Worker Agent A",
+  "parent_task": "TASK-001",
+  "dependencies": ["N/A"],
+  "write_ownership": ["internal/templates"],
+  "covers": ["TASK-001"],
+  "handoff": "state.json contract fixed; successor may parse it"
+}
+```
+
+Omitted planning fields render canonical defaults (`TBD` / `N/A`) so trivial changes stay low-friction while the sections remain present for coordinators to read.
+
+### Canonical validation by default
+
+`comment upsert` validates canonical discipline by default before creating or updating the remote comment:
+
+- **SPEC** — rejects bodies missing a `## Requirement:` heading, normative MUST/SHALL language, or `### Scenario:` `**WHEN**`/`**THEN**` bullets.
+- **TASK** — rejects bodies missing a `## Task:` heading or the `### Execution Planning` section.
+- **PROCESS** — rejects bodies missing a `## Process:` heading or a `### Parent TASK` section.
+
+Serial-chain `### Handoff` evidence is not required at write time (only chains need it, which is not knowable per-comment at upsert) — it is enforced at `verify` instead. One shared validator in `internal/model` is reused by `comment upsert`, `comment list`, `status`, `verify`, and `archive`, operating on the logical body after marker/header stripping so raw generated bodies and already-wrapped bodies behave identically.
 
 ### Migration escape hatch
 

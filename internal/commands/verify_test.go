@@ -3,16 +3,23 @@ package commands
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
+const (
+	canonicalTaskContent    = "## Task: work\n\n### Implementation Checklist\n\n- [x] 1. work\n\n### Execution Planning\n\n- Owned modules / write areas:\n  - internal/x\n- Coupling class: low\n- Recommended execution mode: coordinator-owned\n\n### Covers\n\n- SPEC-001"
+	canonicalProcessContent = "## Process: impl\n\n### Owner\n\n- Worker\n\n### Parent TASK\n\n- TASK-001\n\n### Write Ownership\n\n- internal/x\n\n### Dependencies\n\n- N/A\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\nN/A"
+	canonicalVerifyContent  = "## Verification Summary: final\n\nTests, review, and traceability confirmed.\n\n### Evidence\n\n- go test ./...\n\n### Covered SPECs\n\n- SPEC-001"
+)
+
 func TestBuildFinalVerifyReportRequiresDoneTasksAndCoverage(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
-	task := typedArtifact(t, 2, "TASK", "TASK-001", "ready", "## Task\n\n- [ ] 1. work")
-	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", "## Requirement / Scenario Coverage\n\nSPEC-001 covered.")
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "ready", canonicalTaskContent)
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
 	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -27,7 +34,7 @@ func TestBuildFinalVerifyReportRequiresDoneTasksAndCoverage(t *testing.T) {
 
 func TestBuildFinalVerifyReportReportsSessionDiagnosticsWithoutErrors(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
-	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", "## Requirement / Scenario Coverage\n\nSPEC-001 covered.")
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
 	report, err := buildFinalVerifyReport([]model.Artifact{spec, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -43,12 +50,12 @@ func TestBuildFinalVerifyReportReportsSessionDiagnosticsWithoutErrors(t *testing
 func TestBuildFinalVerifyReportChecksDurableSpec(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
-	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", "## Task\n\n- [x] 1. work")
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
 	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
-	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process\n\ndone")
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	review := typedArtifact(t, 3, "REVIEW", "REVIEW-001", "done", "## Review\n\nnone")
-	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", "## Requirement / Scenario Coverage\n\nSPEC-001 covered.")
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
 	linkArtifacts(t, &spec, &task)
 	linkArtifacts(t, &task, &process)
 	specPath := filepath.Join(t.TempDir(), "spec.md")
@@ -83,12 +90,12 @@ Source SPEC comment: https://github.com/o/r/issues/1#issuecomment-1
 func TestBuildFinalVerifyReportChecksRationaleCoverageWhenPRProvided(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
-	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", "## Task\n\n- [x] 1. work")
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
 	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
-	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process\n\ndone")
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	review := typedArtifact(t, 3, "REVIEW", "REVIEW-001", "done", "## Review\n\nnone")
-	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", "## Requirement / Scenario Coverage\n\nSPEC-001 covered.")
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
 	linkArtifacts(t, &spec, &task)
 	linkArtifacts(t, &task, &process)
 	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
@@ -144,12 +151,12 @@ func TestBuildFinalVerifyReportChecksRationaleCoverageWhenPRProvided(t *testing.
 func TestBuildFinalVerifyReportBlocksOpenP0P1Findings(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
-	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", "## Task\n\n- [x] 1. work")
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
 	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
-	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process\n\ndone")
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	review := typedArtifact(t, 3, "REVIEW", "REVIEW-001", "done", "## Review\n\nnone")
-	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", "## Requirement / Scenario Coverage\n\nSPEC-001 covered.")
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
 	linkArtifacts(t, &spec, &task)
 	linkArtifacts(t, &task, &process)
 	processBody, changed, err := model.AddPRLink(process.Comment.Body, "https://github.com/o/r/pull/7")
@@ -211,12 +218,12 @@ func TestBuildFinalVerifyReportBlocksOpenP0P1Findings(t *testing.T) {
 func TestBuildFinalVerifyReportBlocksFailedAndPendingChecks(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
-	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", "## Task\n\n- [x] 1. work")
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
 	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
-	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process\n\ndone")
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	review := typedArtifact(t, 3, "REVIEW", "REVIEW-001", "done", "## Review\n\nnone")
-	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", "## Requirement / Scenario Coverage\n\nSPEC-001 covered.")
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
 	linkArtifacts(t, &spec, &task)
 	linkArtifacts(t, &task, &process)
 	processBody, changed, err := model.AddPRLink(process.Comment.Body, "https://github.com/o/r/pull/7")
@@ -251,6 +258,66 @@ func TestBuildFinalVerifyReportBlocksFailedAndPendingChecks(t *testing.T) {
 	}
 	if len(report.FailedChecks) != 1 || len(report.PendingChecks) != 1 {
 		t.Fatalf("unexpected check blockers: failed=%+v pending=%+v", report.FailedChecks, report.PendingChecks)
+	}
+}
+
+func TestBuildFinalVerifyReportRequiresSerialHandoff(t *testing.T) {
+	// PROCESS-002 depends on PROCESS-001, so PROCESS-001 is a serial-chain
+	// predecessor that must record ### Handoff evidence when done.
+	buildReport := func(handoff string) finalVerifyReport {
+		t.Helper()
+		spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+		spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
+		task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+		task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
+		p1 := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process: p1\n\n### Owner\n\n- Worker\n\n### Parent TASK\n\n- TASK-001\n\n### Dependencies\n\n- N/A\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\n"+handoff)
+		p1.URL = "https://github.com/o/r/issues/3#issuecomment-31"
+		p2 := typedArtifact(t, 3, "PROCESS", "PROCESS-002", "done", "## Process: p2\n\n### Owner\n\n- Worker\n\n### Parent TASK\n\n- TASK-001\n\n### Dependencies\n\n- PROCESS-001\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\nN/A")
+		p2.URL = "https://github.com/o/r/issues/3#issuecomment-32"
+		verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+		linkArtifacts(t, &spec, &task)
+		linkArtifacts(t, &task, &p1)
+		linkArtifacts(t, &task, &p2)
+		report, err := buildFinalVerifyReport([]model.Artifact{spec, task, p1, p2, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return report
+	}
+
+	failReport := buildReport("N/A")
+	if failReport.OK {
+		t.Fatal("serial-chain predecessor without handoff must fail final verify")
+	}
+	foundHandoff := false
+	for _, e := range failReport.Errors {
+		if strings.Contains(e, "PROCESS-001") && strings.Contains(e, "Handoff") {
+			foundHandoff = true
+		}
+	}
+	if !foundHandoff {
+		t.Fatalf("expected serial handoff error for PROCESS-001: %v", failReport.Errors)
+	}
+
+	passReport := buildReport("state.json contract fixed; successor may parse it")
+	if !passReport.OK {
+		t.Fatalf("recorded handoff evidence should pass final verify: %v", passReport.Errors)
+	}
+}
+
+func TestBuildFinalVerifyReportRequiresVerifyTestEvidence(t *testing.T) {
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	// VERIFY references SPEC-001 coverage but no test evidence.
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", "## Verification Summary: final\n\n### Covered SPECs\n\n- SPEC-001")
+	report, err := buildFinalVerifyReport([]model.Artifact{spec, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OK {
+		t.Fatal("VERIFY without test evidence must fail final verify")
+	}
+	if !strings.Contains(strings.Join(report.Errors, "\n"), "test evidence") {
+		t.Fatalf("expected test-evidence error: %v", report.Errors)
 	}
 }
 
