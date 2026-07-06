@@ -183,6 +183,12 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	if !ok {
 		return 2
 	}
+	// Validate the --covers-issue flag combination before any auth/network so a
+	// wrong --type fails fast instead of surfacing an auth error first.
+	if strings.TrimSpace(*coversIssue) != "" && !strings.EqualFold(*commentType, "TASK") {
+		a.errorf("--covers-issue only applies to --type TASK, got %q\n", strings.ToUpper(*commentType))
+		return 2
+	}
 	session := resolveWriterSession(*agentSession)
 	body, err := model.EnsureTypedBody(*commentType, *id, rawBody, model.BodyOptions{Agent: *agent, AgentSessionID: session.ID, AgentSessionSource: session.Source, Status: *status, Scope: *scope})
 	if err != nil {
@@ -219,10 +225,6 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	var coveredSpecs []model.Artifact
 	var coveredSpecBodies []string
 	if strings.TrimSpace(*coversIssue) != "" {
-		if !strings.EqualFold(*commentType, "TASK") {
-			a.errorf("--covers-issue only applies to --type TASK, got %q\n", strings.ToUpper(*commentType))
-			return 2
-		}
 		coversIssueNumber, err := parseIssueFlag(*coversIssue, "covers-issue")
 		if err != nil {
 			a.errorf("%v\n", err)
