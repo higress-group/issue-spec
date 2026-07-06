@@ -358,15 +358,16 @@ issue-spec init --repo owner/repo --tools codex,claude --language zh
 
 Common codes (`zh`, `zh-tw`, `en`, `ja`, `ko`) are expanded to a descriptive label; any other value is stored as-is. The generated rule instructs agents to write natural-language content in the chosen language while keeping canonical structural tokens in English (`## Requirement:`, `### Scenario:`, `**WHEN**`/`**THEN**`, MUST/SHALL, and typed comment headers), so canonical validation still passes.
 
-You can also hand-author the same thing:
+You can also hand-author it. Include the `language_instructions` guardrail that `--language` writes for you — without it, agents may translate the canonical structural tokens and fail validation:
 
 ```yaml
 # issue-spec/config.yaml
 rules:
   language: "Simplified Chinese (简体中文)"
+  language_instructions: "Write all natural-language content in Simplified Chinese (简体中文). Keep canonical structural tokens in English so validation passes: the `## Requirement:` and `### Scenario:` headings, the `**WHEN**`/`**THEN**` scenario bullets, the MUST/SHALL normative keywords, and typed comment headers."
 ```
 
-Re-run `issue-spec init` after editing the config so the generated skills and commands pick up the rule.
+Re-run `issue-spec init` after editing the config so the generated skills and commands pick up the rule. Note that when `--language` merges an existing `issue-spec/config.yaml`, it rewrites the file through a YAML round-trip, so hand-added comments are dropped and keys are re-sorted.
 
 ## CLI Reference
 

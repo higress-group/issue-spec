@@ -108,6 +108,9 @@ func TestInitLanguageMergesExistingConfig(t *testing.T) {
 	if cfg.Rules["language"] != "English" {
 		t.Fatalf("rules.language = %q", cfg.Rules["language"])
 	}
+	if !strings.Contains(cfg.Rules["language_instructions"], "## Requirement:") {
+		t.Fatalf("merge dropped canonical-token guidance: %q", cfg.Rules["language_instructions"])
+	}
 }
 
 func TestInitWithoutLanguageDoesNotWriteWorkflowConfig(t *testing.T) {
