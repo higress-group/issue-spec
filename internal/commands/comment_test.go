@@ -425,6 +425,45 @@ func TestCommentUpsertCoversIssueRejectsNonTaskType(t *testing.T) {
 	}
 }
 
+func TestCommentUpsertReportsDroppedLinksWhenBodyLacksLinksBlock(t *testing.T) {
+	// SPEC-003 end-to-end: the drop-warning wiring is reachable. A --allow-noncanonical
+	// TASK body that carries a header but no Links block cannot absorb the existing
+	// comment's Related Comments link on update, so the link is dropped and reported.
+	peer := "https://github.com/o/r/issues/9#issuecomment-101"
+	existing, changed, err := model.AddRelatedCommentLink(generateTaskBody(t, "TASK-001", taskCoversInput(``)), peer)
+	if err != nil || !changed {
+		t.Fatalf("seed existing link: changed=%v err=%v", changed, err)
+	}
+	// Header present (so EnsureTypedBody keeps it as-is) but no Links block.
+	linkless := "Type: TASK\nID: TASK-001\nStatus: draft\nScope: N/A\n\n## Summary\n\nnoncanonical task without a Links block\n"
+	bodyPath := writeTempInput(t, linkless)
+
+	var out bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &bytes.Buffer{})
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+			return []github.Comment{{ID: 7, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-7", Body: existing}}, nil
+		}
+		f.updateComment = func(_ context.Context, _ string, _ int64, _ string) (github.Comment, error) {
+			return github.Comment{ID: 7, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-7"}, nil
+		}
+	})
+	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "TASK", "--id", "TASK-001", "--body-file", bodyPath, "--allow-noncanonical", "--json"})
+	if code != 0 {
+		t.Fatalf("allow-noncanonical upsert failed exit=%d out=%q", code, out.String())
+	}
+	var got struct {
+		Dropped []string `json:"dropped_related_comments"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Dropped) != 1 || got.Dropped[0] != peer {
+		t.Fatalf("expected the unabsorbable link reported as dropped, got %v", got.Dropped)
+	}
+}
+
 func TestDroppedRelatedLinks(t *testing.T) {
 	// The link-drop warning (SPEC-003) can only fire on a link-reducing write; once
 	// Decision 1's merge is in place the real path never reduces, so the detector is
