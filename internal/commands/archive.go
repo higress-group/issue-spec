@@ -38,7 +38,7 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 	designFlag := fs.String("design", "", "design issue number or URL for --close-issues")
 	implementFlag := fs.String("implement", "", "implement issue number or URL for --close-issues")
 	implementationPR := fs.Int("pr", 0, "merged implementation pull request number for --close-issues")
-	capability := fs.String("capability", "", "durable spec capability name")
+	capability := fs.String("capability", "", "umbrella capability name; re-archiving accumulates new requirements into the existing spec by requirement title")
 	output := fs.String("output", "", "output spec path")
 	purpose := fs.String("purpose", "", "durable spec purpose text")
 	createPR := fs.Bool("create-pr", false, "create a separate durable-spec PR from a temporary git worktree")

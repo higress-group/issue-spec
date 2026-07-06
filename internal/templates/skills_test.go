@@ -130,6 +130,8 @@ func TestIssueSpecSkillTemplatesDocumentDurableArchiveGuidance(t *testing.T) {
 		"abstract long-lived --capability directory",
 		"inspect existing related durable specs",
 		"regroup the generated draft by stable capability modules",
+		"umbrella capability that accumulates related current and future changes",
+		"accumulates new requirements into an existing capability spec by requirement title (newest wins)",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("workflow skill missing %q:\n%s", want, workflow)
@@ -146,6 +148,8 @@ func TestIssueSpecSkillTemplatesDocumentDurableArchiveGuidance(t *testing.T) {
 		"Reconcile it with any existing related durable specs",
 		"regroup related source SPEC content into durable capability modules",
 		"Source SPEC links for traceability",
+		"umbrella capability",
+		"accumulates the new proposal's requirements into the existing spec by requirement title (newest wins)",
 	} {
 		if !strings.Contains(archive, want) {
 			t.Fatalf("archive skill missing %q:\n%s", want, archive)

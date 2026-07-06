@@ -111,7 +111,7 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 - Before human review, add PR rationale comments with issue-spec pr rationale for every active PROCESS.
 - Use issue-spec review finding for PR line findings and issue-spec review reply to close the original thread.
 - Run issue-spec review sync and issue-spec verify before declaring ready.
-- After the implementation PR merges, create the separate durable spec PR with issue-spec archive durable-spec --create-pr --close-issues, passing the proposal, design, implement, and implementation PR numbers so archive also idempotently closes any still-open active issues. Use an abstract long-lived --capability directory, inspect existing related durable specs, and regroup the generated draft by stable capability modules before merge.
+- After the implementation PR merges, create the separate durable spec PR with issue-spec archive durable-spec --create-pr --close-issues, passing the proposal, design, implement, and implementation PR numbers so archive also idempotently closes any still-open active issues. Use an abstract long-lived --capability directory as an umbrella capability that accumulates related current and future changes, inspect existing related durable specs, and regroup the generated draft by stable capability modules before merge. Archive now accumulates new requirements into an existing capability spec by requirement title (newest wins), so re-archiving into an umbrella capability preserves prior requirements instead of overwriting them.
 
 ## Coordinator DAG Execution
 
@@ -271,13 +271,13 @@ Use when the user asks for /issue-spec:archive, issue-spec archive, or creating 
 ## Steps
 
 1. Confirm the implementation PR is merged and had issue-spec closing links before merge.
-2. Choose the --capability value as a stable long-lived capability or domain directory, not the original change/proposal name. Prefer names that can host related future durable specs, for example workflow-identity-and-sessions instead of agent-session-source-of-truth.
+2. Choose the --capability value as a stable long-lived capability or domain directory, not the original change/proposal name. Treat it as an umbrella capability: a single spec that accumulates related current and future changes. Prefer names that can host related future durable specs, for example workflow-identity-and-sessions instead of agent-session-source-of-truth.
 3. Inspect existing durable specs before creating or finalizing the archive PR. Read ` + "`issue-spec/specs/<capability>/spec.md`" + ` when it exists, and scan related ` + "`issue-spec/specs/*/spec.md`" + ` files when the new behavior may belong with an existing capability. If ` + "`openspec/specs/<capability>/spec.md`" + ` already exists, issue-spec may select that legacy path for update and report the compatibility choice. Decide whether to update, merge, or reorganize existing durable requirements instead of adding a duplicate or narrowly named spec.
 4. Create the durable spec PR and idempotently close any still-open PR-associated active issues:
 
        issue-spec archive durable-spec --repo {{repo}} --proposal <proposal-issue> --design <design-issue> --implement <implement-issue> --pr <implementation-pr> --capability <capability> --create-pr --branch issue-spec/durable-spec-<capability> --close-issues --json
 
-5. Review and edit the generated durable spec draft before handoff or merge. Reconcile it with any existing related durable specs, regroup related source SPEC content into durable capability modules instead of preserving one-to-one source SPEC sections, and keep Source SPEC links for traceability.
+5. Review and edit the generated durable spec draft before handoff or merge. When re-archiving into an existing umbrella capability, archive now accumulates the new proposal's requirements into the existing spec by requirement title (newest wins) rather than overwriting prior requirements, so verify the merged result. Reconcile it with any existing related durable specs, regroup related source SPEC content into durable capability modules instead of preserving one-to-one source SPEC sections, and keep Source SPEC links for traceability.
 6. Keep only long-lived behavior. Do not copy process records, review findings, or verification logs into durable specs.
 7. Keep the closed proposal/design/implement issues as audit history.
 `,

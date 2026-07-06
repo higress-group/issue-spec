@@ -38,13 +38,26 @@ func DurableSpec(opts DurableSpecOptions) (string, error) {
 		purpose = "Define the long-lived behavior contract for this capability."
 	}
 	proposals := collectProposalIssueURLs(opts.ExistingSpecBody, opts.ProposalIssueURL)
-	var requirements []string
+
+	// Umbrella accumulation: preserve requirements already archived into this
+	// capability, then merge in the current proposal's SPECs. A new requirement
+	// that shares a title with an existing one replaces it in place (newest
+	// wins); genuinely new requirements append after the preserved ones.
+	order, byTitle := parseExistingRequirements(opts.ExistingSpecBody)
 	for _, spec := range opts.SpecificationList {
 		content, err := durableRequirementContent(spec)
 		if err != nil {
 			return "", err
 		}
-		requirements = append(requirements, content)
+		title := requirementTitle(content)
+		if _, exists := byTitle[title]; !exists {
+			order = append(order, title)
+		}
+		byTitle[title] = content
+	}
+	requirements := make([]string, 0, len(order))
+	for _, title := range order {
+		requirements = append(requirements, byTitle[title])
 	}
 
 	var b strings.Builder
@@ -60,6 +73,65 @@ func DurableSpec(opts DurableSpecOptions) (string, error) {
 	b.WriteString(strings.Join(requirements, "\n\n"))
 	b.WriteString("\n")
 	return b.String(), nil
+}
+
+var requirementHeadingRe = regexp.MustCompile(`(?m)^###\s+Requirement:`)
+
+// parseExistingRequirements extracts the requirement blocks already present in a
+// durable spec body. It returns the block titles in document order plus a map
+// from title to the full block text (including the "### Requirement:" heading
+// and any "Source SPEC comment:" trailer). Blocks are keyed by requirement
+// title so a re-archive can replace a prior requirement in place.
+func parseExistingRequirements(body string) ([]string, map[string]string) {
+	order := []string{}
+	byTitle := map[string]string{}
+	section := requirementsSection(body)
+	if section == "" {
+		return order, byTitle
+	}
+	locs := requirementHeadingRe.FindAllStringIndex(section, -1)
+	for i, loc := range locs {
+		end := len(section)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		block := strings.TrimSpace(section[loc[0]:end])
+		if block == "" {
+			continue
+		}
+		title := requirementTitle(block)
+		if _, exists := byTitle[title]; !exists {
+			order = append(order, title)
+		}
+		byTitle[title] = block
+	}
+	return order, byTitle
+}
+
+// requirementsSection returns the text under the "## Requirements" heading up to
+// the next level-2 heading (or end of body).
+func requirementsSection(body string) string {
+	idx := strings.Index(body, "## Requirements")
+	if idx < 0 {
+		return ""
+	}
+	rest := body[idx+len("## Requirements"):]
+	if next := strings.Index(rest, "\n## "); next >= 0 {
+		rest = rest[:next]
+	}
+	return strings.TrimSpace(rest)
+}
+
+// requirementTitle extracts the text following "### Requirement:" from a block,
+// used as the dedup key when merging existing and new requirements.
+func requirementTitle(block string) string {
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "### Requirement:") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "### Requirement:"))
+		}
+	}
+	return strings.TrimSpace(block)
 }
 
 func durableRequirementContent(spec SpecSource) (string, error) {

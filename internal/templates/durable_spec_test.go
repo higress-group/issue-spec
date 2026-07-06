@@ -67,6 +67,127 @@ The CLI MUST manage questions.
 	}
 }
 
+func specBody(id, requirement string) string {
+	return `<!-- issue-spec:type=SPEC id=` + id + ` version=1 -->
+Agent: Coordinator
+Type: SPEC
+ID: ` + id + `
+Status: confirmed
+Scope: cli
+
+## Requirement: ` + requirement + `
+
+The CLI MUST ` + strings.ToLower(requirement) + `.
+
+### Scenario: ` + requirement + ` happens
+
+- **WHEN** the trigger for ` + requirement + ` occurs
+- **THEN** the CLI ` + strings.ToLower(requirement) + `.
+`
+}
+
+func TestDurableSpecAccumulatesExistingRequirements(t *testing.T) {
+	first, err := DurableSpec(DurableSpecOptions{
+		Capability:       "cross-agent-handoff",
+		ProposalIssueURL: "https://github.com/o/r/issues/1",
+		SpecificationList: []SpecSource{{
+			ID:   "SPEC-001",
+			URL:  "https://github.com/o/r/issues/1#issuecomment-1",
+			Body: specBody("SPEC-001", "Read side handoff"),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := DurableSpec(DurableSpecOptions{
+		Capability:       "cross-agent-handoff",
+		ProposalIssueURL: "https://github.com/o/r/issues/2",
+		ExistingSpecBody: first,
+		SpecificationList: []SpecSource{{
+			ID:   "SPEC-002",
+			URL:  "https://github.com/o/r/issues/2#issuecomment-2",
+			Body: specBody("SPEC-002", "Write side handoff"),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"### Requirement: Read side handoff",
+		"### Requirement: Write side handoff",
+		"Source SPEC comment: https://github.com/o/r/issues/1#issuecomment-1",
+		"Source SPEC comment: https://github.com/o/r/issues/2#issuecomment-2",
+		"- https://github.com/o/r/issues/1",
+		"- https://github.com/o/r/issues/2",
+	} {
+		if !strings.Contains(second, want) {
+			t.Fatalf("re-archive dropped %q:\n%s", want, second)
+		}
+	}
+	// Preserved requirement must come before the newly appended one.
+	if strings.Index(second, "Read side handoff") > strings.Index(second, "Write side handoff") {
+		t.Fatalf("expected preserved requirement before new one:\n%s", second)
+	}
+}
+
+func TestDurableSpecReplacesRequirementByTitleNewestWins(t *testing.T) {
+	first, err := DurableSpec(DurableSpecOptions{
+		Capability:       "cross-agent-handoff",
+		ProposalIssueURL: "https://github.com/o/r/issues/1",
+		SpecificationList: []SpecSource{{
+			ID:   "SPEC-001",
+			URL:  "https://github.com/o/r/issues/1#issuecomment-1",
+			Body: specBody("SPEC-001", "Session resume"),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated := `<!-- issue-spec:type=SPEC id=SPEC-009 version=1 -->
+Agent: Coordinator
+Type: SPEC
+ID: SPEC-009
+Status: confirmed
+Scope: cli
+
+## Requirement: Session resume
+
+The CLI MUST resume sessions with a revised contract.
+
+### Scenario: Resume after crash
+
+- **WHEN** an agent resumes after a crash
+- **THEN** the CLI restores the prior session state.
+`
+	second, err := DurableSpec(DurableSpecOptions{
+		Capability:       "cross-agent-handoff",
+		ProposalIssueURL: "https://github.com/o/r/issues/2",
+		ExistingSpecBody: first,
+		SpecificationList: []SpecSource{{
+			ID:   "SPEC-009",
+			URL:  "https://github.com/o/r/issues/2#issuecomment-9",
+			Body: updated,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(second, "### Requirement: Session resume") != 1 {
+		t.Fatalf("expected single merged requirement, got:\n%s", second)
+	}
+	if !strings.Contains(second, "revised contract") {
+		t.Fatalf("newest requirement text missing:\n%s", second)
+	}
+	if strings.Contains(second, "issuecomment-1") {
+		t.Fatalf("stale source link survived replacement:\n%s", second)
+	}
+	if !strings.Contains(second, "issuecomment-9") {
+		t.Fatalf("new source link missing:\n%s", second)
+	}
+}
+
 func TestDurableSpecRejectsUntestableSpec(t *testing.T) {
 	_, err := DurableSpec(DurableSpecOptions{
 		Capability:       "issue-spec-cli",
