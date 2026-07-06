@@ -130,6 +130,28 @@ func TestWriteWorkflowArtifactsToolsNoneSkipsWorkflowResolve(t *testing.T) {
 	}
 }
 
+func TestWriteWorkflowArtifactsEmbedsLanguageRule(t *testing.T) {
+	root := t.TempDir()
+	if _, err := writeWorkflowLanguageConfig(root, "zh"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := writeWorkflowArtifacts(root, "owner/repo", "claude", "skills"); err != nil {
+		t.Fatal(err)
+	}
+
+	skill := readTestFile(t, filepath.Join(root, ".claude", "skills", "issue-spec-propose", "SKILL.md"))
+	for _, want := range []string{
+		"Workflow Rules:",
+		"Simplified Chinese (简体中文)",
+		"## Requirement:",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Fatalf("generated skill missing %q:\n%s", want, skill)
+		}
+	}
+}
+
 func TestResolveWorkflowToolsDetectsExistingToolDirs(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".agents"), 0o755); err != nil {

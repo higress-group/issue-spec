@@ -25,6 +25,7 @@ func TestLeafCommandHelpShowsOptionsAndDefaults(t *testing.T) {
 		"workflow artifact delivery: both, skills, or commands (default: both)",
 		"--create-labels",
 		"create issue-spec labels (default: false)",
+		"--language string",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("init help missing %q:\n%s", want, text)

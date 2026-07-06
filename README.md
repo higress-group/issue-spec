@@ -1,5 +1,7 @@
 # issue-spec
 
+**English | [简体中文](README.zh-CN.md)**
+
 `issue-spec` is a GitHub issue-backed, OpenSpec-style workflow CLI for agentic software development.
 
 It keeps the OpenSpec habit of proposal -> specs -> design -> tasks -> review -> verify -> archive, but moves active change state out of the code repository and into GitHub issues, typed comments, and PR review threads.
@@ -344,6 +346,28 @@ issue-spec workflow which --repo owner/repo --json
 
 New durable specs default to `issue-spec/specs/<capability>/spec.md`. If `openspec/specs/<capability>/spec.md` already exists, archive can update that legacy durable spec and reports the compatibility path selection.
 
+### Preferred natural language
+
+Agents author generated artifacts in English by default. To make issue bodies, typed comments, design notes, and rationale come out in another language, add a `rules.language` entry to `issue-spec/config.yaml`. The value is embedded into every generated skill, slash command, and prompt as a workflow rule, so the coordinator follows it.
+
+The fastest way is the `--language` flag on init, which scaffolds or merges that entry for you:
+
+```bash
+issue-spec init --repo owner/repo --tools codex,claude --language zh
+```
+
+Common codes (`zh`, `zh-tw`, `en`, `ja`, `ko`) are expanded to a descriptive label; any other value is stored as-is. The generated rule instructs agents to write natural-language content in the chosen language while keeping canonical structural tokens in English (`## Requirement:`, `### Scenario:`, `**WHEN**`/`**THEN**`, MUST/SHALL, and typed comment headers), so canonical validation still passes.
+
+You can also hand-author the same thing:
+
+```yaml
+# issue-spec/config.yaml
+rules:
+  language: "Simplified Chinese (简体中文)"
+```
+
+Re-run `issue-spec init` after editing the config so the generated skills and commands pick up the rule.
+
 ## CLI Reference
 
 ```bash
@@ -354,6 +378,7 @@ issue-spec auth token --plain
 
 issue-spec init --repo owner/repo --create-labels
 issue-spec init --repo owner/repo --tools codex,claude --delivery both
+issue-spec init --repo owner/repo --tools codex,claude --language zh
 
 issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md [--title "Custom proposal title"]
 issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md [--title "Custom design title"]

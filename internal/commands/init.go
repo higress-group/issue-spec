@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
+	"gopkg.in/yaml.v3"
 )
 
 func (a *app) runInit(ctx context.Context, args []string) int {
@@ -19,6 +21,7 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 	createLabels := fs.Bool("create-labels", false, "create issue-spec labels")
 	tools := fs.String("tools", "", "generate workflow artifacts for AI tools: all, none, or comma-separated codex,claude")
 	delivery := fs.String("delivery", "both", "workflow artifact delivery: both, skills, or commands")
+	language := fs.String("language", "", "preferred natural language for generated workflow artifacts (e.g. zh, en, ja); writes rules.language to issue-spec/config.yaml")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -64,6 +67,15 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 		}
 	}
 
+	var languageConfigPath string
+	if strings.TrimSpace(*language) != "" {
+		languageConfigPath, err = writeWorkflowLanguageConfig(".", *language)
+		if err != nil {
+			a.errorf("write workflow language config: %v\n", err)
+			return 1
+		}
+	}
+
 	workflows, err := writeWorkflowArtifacts(".", *repoFlag, *tools, *delivery)
 	if err != nil {
 		a.errorf("generate workflow artifacts: %v\n", err)
@@ -71,12 +83,19 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 	}
 
 	result := map[string]any{"ok": true, "repo": *repoFlag, "hostname": token.Host, "auth": token, "backend": token.Backend, "config": configPath, "labels": labels, "workflows": workflows}
+	if languageConfigPath != "" {
+		result["language"] = languageDisplay(*language)
+		result["language_config"] = languageConfigPath
+	}
 	if *jsonOut {
 		return a.outputJSON(result)
 	}
 	fmt.Fprintf(a.out, "initialized issue-spec for %s on %s\nconfig: %s\nauthenticated as: %s (%s)\n", *repoFlag, token.Host, configPath, token.User, token.Source)
 	if token.Backend != nil {
 		fmt.Fprintf(a.out, "github backend: %s (%s)\n", token.Backend.Name, token.Backend.SelectionSource)
+	}
+	if languageConfigPath != "" {
+		fmt.Fprintf(a.out, "workflow language: %s (%s)\n", languageDisplay(*language), languageConfigPath)
 	}
 	for _, label := range labels {
 		if label.Created {
@@ -99,6 +118,65 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 		fmt.Fprintln(a.out, "restart your IDE for slash commands to take effect")
 	}
 	return 0
+}
+
+// writeWorkflowLanguageConfig creates or updates issue-spec/config.yaml so that
+// generated workflow artifacts instruct agents to author natural-language content
+// in the requested language while keeping canonical structural tokens in English.
+func writeWorkflowLanguageConfig(root, language string) (string, error) {
+	display := languageDisplay(language)
+	path := filepath.Join(root, "issue-spec", "config.yaml")
+
+	cfg := map[string]any{}
+	if data, err := os.ReadFile(path); err == nil {
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			return "", fmt.Errorf("parse existing %s: %w", filepath.ToSlash(path), err)
+		}
+		if cfg == nil {
+			cfg = map[string]any{}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	rules, _ := cfg["rules"].(map[string]any)
+	if rules == nil {
+		rules = map[string]any{}
+	}
+	rules["language"] = display
+	rules["language_instructions"] = fmt.Sprintf("Write all natural-language content (issue titles, descriptions, rationale, design notes, and QUESTION/REVIEW/VERIFY/scenario prose) in %s. Keep canonical structural tokens in English so validation passes: the `## Requirement:` and `### Scenario:` headings, the `**WHEN**`/`**THEN**` scenario bullets, the MUST/SHALL normative keywords, and typed comment headers.", display)
+	cfg["rules"] = rules
+
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return "", err
+	}
+	return filepath.ToSlash(path), nil
+}
+
+// languageDisplay maps common language codes to a descriptive label while
+// passing through any other value unchanged.
+func languageDisplay(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "zh", "zh-cn", "zh_cn", "chinese", "中文", "简体中文":
+		return "Simplified Chinese (简体中文)"
+	case "zh-tw", "zh_tw", "traditional chinese", "繁體中文":
+		return "Traditional Chinese (繁體中文)"
+	case "en", "english":
+		return "English"
+	case "ja", "jp", "japanese", "日本語":
+		return "Japanese (日本語)"
+	case "ko", "korean", "한국어":
+		return "Korean (한국어)"
+	default:
+		return strings.TrimSpace(value)
+	}
 }
 
 type labelSpec struct {
