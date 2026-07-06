@@ -222,7 +222,7 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 		a.errorf("render review sync comment: %v\n", err)
 		return 1
 	}
-	action, comment, err := upsertTypedComment(ctx, client, repo, implementIssue, "REVIEW", *id, body)
+	action, comment, _, err := upsertTypedComment(ctx, client, repo, implementIssue, "REVIEW", *id, body)
 	if err != nil {
 		a.errorf("upsert REVIEW %s: %v\n", *id, err)
 		return 1

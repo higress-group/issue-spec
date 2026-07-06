@@ -393,20 +393,52 @@ func findArtifactByID(ctx context.Context, client github.Operations, repo string
 	return model.Artifact{}, "", fmt.Errorf("typed comment %s not found on issue %d", id, issueNumber)
 }
 
-func upsertTypedComment(ctx context.Context, client github.Operations, repo string, issueNumber int, commentType, id, body string) (string, github.Comment, error) {
+// upsertTypedComment creates or updates a typed comment. On update it preserves
+// every Related Comments link already on the existing comment by merging them into
+// the regenerated body (idempotent via AddRelatedCommentLink), so a content-only
+// regenerate never silently drops traceability links. The returned slice lists any
+// links that were on the existing comment but are still absent from the written
+// body; callers surface it as a link-drop warning.
+func upsertTypedComment(ctx context.Context, client github.Operations, repo string, issueNumber int, commentType, id, body string) (string, github.Comment, []string, error) {
 	comments, err := client.ListIssueComments(ctx, repo, issueNumber)
 	if err != nil {
-		return "", github.Comment{}, err
+		return "", github.Comment{}, nil, err
 	}
 	for _, comment := range comments {
 		tc := model.ParseTypedComment(comment.Body)
 		if tc.Type == strings.ToUpper(commentType) && tc.ID == id {
-			updated, err := client.UpdateComment(ctx, repo, comment.ID, body)
-			return "updated", updated, err
+			existing := model.RelatedCommentURLs(tc)
+			merged := body
+			for _, url := range existing {
+				next, _, addErr := model.AddRelatedCommentLink(merged, url)
+				if addErr != nil {
+					continue
+				}
+				merged = next
+			}
+			dropped := droppedRelatedLinks(existing, model.RelatedCommentURLs(model.ParseTypedComment(merged)))
+			updated, err := client.UpdateComment(ctx, repo, comment.ID, merged)
+			return "updated", updated, dropped, err
 		}
 	}
 	created, err := client.CreateComment(ctx, repo, issueNumber, body)
-	return "created", created, err
+	return "created", created, nil, err
+}
+
+// droppedRelatedLinks returns the Related Comments URLs in before that are absent
+// from after, compared by normalized URL.
+func droppedRelatedLinks(before, after []string) []string {
+	have := map[string]bool{}
+	for _, url := range after {
+		have[model.NormalizeURL(url)] = true
+	}
+	var dropped []string
+	for _, url := range before {
+		if !have[model.NormalizeURL(url)] {
+			dropped = append(dropped, url)
+		}
+	}
+	return dropped
 }
 
 func hasBlockedQuestion(artifacts []model.Artifact) bool {
