@@ -118,3 +118,82 @@ func TestRunStatusReportsAuthoringDiagnosticsWithoutBlocking(t *testing.T) {
 		t.Fatalf("expected authoring_incomplete diagnostics for placeholder proposal: %s", out.String())
 	}
 }
+
+func TestRunVerifyReportsAuthoringDiagnosticsWithoutBlocking(t *testing.T) {
+	const (
+		specURL    = "https://github.com/o/r/issues/1#issuecomment-1"
+		taskURL    = "https://github.com/o/r/issues/2#issuecomment-2"
+		processURL = "https://github.com/o/r/issues/3#issuecomment-3"
+		verifyURL  = "https://github.com/o/r/issues/3#issuecomment-4"
+	)
+	spec := typedCommentWithLinks(t, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y", 1, specURL, taskURL)
+	task := typedCommentWithLinks(t, "TASK", "TASK-001", "done", canonicalTaskContent, 2, taskURL, specURL, processURL)
+	process := typedCommentWithLinks(t, "PROCESS", "PROCESS-001", "done", canonicalProcessContent, 3, processURL, taskURL)
+	verify := typedCommentWithLinks(t, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent, 4, verifyURL)
+	_, proposalBody, _ := templates.ProposalIssue("demo-change")
+
+	var out bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &bytes.Buffer{})
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.getIssue = func(_ context.Context, _ string, issue int) (github.Issue, error) {
+			return github.Issue{Number: issue, HTMLURL: "https://github.com/o/r/issues/1", Body: proposalBody}, nil
+		}
+		f.listIssueComments = func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			switch issue {
+			case 1:
+				return []github.Comment{spec}, nil
+			case 2:
+				return []github.Comment{task}, nil
+			case 3:
+				return []github.Comment{process, verify}, nil
+			}
+			return nil, nil
+		}
+	})
+	code := app.runVerify(context.Background(), []string{"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--json"})
+	if code != 0 {
+		t.Fatalf("verify exit=%d out=%q", code, out.String())
+	}
+	var report struct {
+		OK          bool     `json:"ok"`
+		Errors      []string `json:"errors"`
+		Diagnostics []struct {
+			Level string `json:"level"`
+			Code  string `json:"code"`
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode verify json: %v\n%s", err, out.String())
+	}
+	if !report.OK {
+		t.Fatalf("authoring diagnostics must not block verify: errors=%v\n%s", report.Errors, out.String())
+	}
+	authoring := 0
+	for _, d := range report.Diagnostics {
+		if d.Code == "authoring_incomplete" {
+			if d.Level != "info" {
+				t.Fatalf("authoring diagnostic must be advisory info, got %q", d.Level)
+			}
+			authoring++
+		}
+	}
+	if authoring == 0 {
+		t.Fatalf("expected authoring_incomplete diagnostics for placeholder proposal: %s", out.String())
+	}
+}
+
+func typedCommentWithLinks(t *testing.T, typ, id, status, content string, commentID int64, htmlURL string, related ...string) github.Comment {
+	t.Helper()
+	body, err := model.EnsureTypedBody(typ, id, content, model.BodyOptions{Status: status})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range related {
+		body, _, err = model.AddRelatedCommentLink(body, u)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return github.Comment{ID: commentID, HTMLURL: htmlURL, Body: body}
+}
