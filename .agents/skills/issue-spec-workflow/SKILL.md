@@ -41,7 +41,7 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 
 - Use issue-spec comment generate to render canonical typed comment bodies (SPEC, TASK, PROCESS, REVIEW, VERIFY) from structured JSON instead of hand-writing Markdown; comment upsert --type SPEC validates and rejects noncanonical SPEC bodies by default, with --allow-noncanonical as a write-time migration bypass only.
 - Create SPEC comments before design; each SPEC must be testable and include WHEN/THEN scenarios.
-- Do not leave active proposal/design/implement issue bodies as TBD placeholders.
+- Self-contained authoring: write proposal, design, SPEC, and TASK artifacts for a reader with no shared session context. Externalize environment-independent background, assumptions, decisions, and rejected alternatives, and replace the template placeholder prompts (the issue-spec:fill sentinel) with real content instead of leaving TBD. This actor-to-actor resume of understanding is distinct from the ### Handoff PROCESS serial-chain evidence section and from the /resume session handle.
 - Resolve blocking QUESTION comments before design/tasks, or explicitly record accepted assumptions.
 - Link SPEC <-> TASK and TASK <-> PROCESS with issue-spec link.
 - Each design TASK must carry an ### Execution Planning section (rendered by comment generate --type TASK): owned modules/write areas, shared touchpoints, dependency/interface assumptions, coupling class, recommended execution mode, and complexity/split guidance. comment upsert --type TASK rejects a TASK that omits it.
@@ -56,7 +56,7 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 - Before human review, add PR rationale comments with issue-spec pr rationale for every active PROCESS.
 - Use issue-spec review finding for PR line findings and issue-spec review reply to close the original thread.
 - Run issue-spec review sync and issue-spec verify before declaring ready.
-- After the implementation PR merges, create the separate durable spec PR with issue-spec archive durable-spec --create-pr --close-issues, passing the proposal, design, implement, and implementation PR numbers so archive also idempotently closes any still-open active issues. Use an abstract long-lived --capability directory, inspect existing related durable specs, and regroup the generated draft by stable capability modules before merge.
+- After the implementation PR merges, create the separate durable spec PR with issue-spec archive durable-spec --create-pr --close-issues, passing the proposal, design, implement, and implementation PR numbers so archive also idempotently closes any still-open active issues. Use an abstract long-lived --capability directory as an umbrella capability that accumulates related current and future changes, inspect existing related durable specs, and regroup the generated draft by stable capability modules before merge. Archive now accumulates new requirements into an existing capability spec by requirement title (newest wins), so re-archiving into an umbrella capability preserves prior requirements instead of overwriting them.
 
 ## Coordinator DAG Execution
 
