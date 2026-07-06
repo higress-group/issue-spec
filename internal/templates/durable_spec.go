@@ -43,21 +43,21 @@ func DurableSpec(opts DurableSpecOptions) (string, error) {
 	// capability, then merge in the current proposal's SPECs. A new requirement
 	// that shares a title with an existing one replaces it in place (newest
 	// wins); genuinely new requirements append after the preserved ones.
-	order, byTitle := parseExistingRequirements(opts.ExistingSpecBody)
+	order, byKey := parseExistingRequirements(opts.ExistingSpecBody)
 	for _, spec := range opts.SpecificationList {
 		content, err := durableRequirementContent(spec)
 		if err != nil {
 			return "", err
 		}
-		title := requirementTitle(content)
-		if _, exists := byTitle[title]; !exists {
-			order = append(order, title)
+		key := requirementKey(content, len(order))
+		if _, exists := byKey[key]; !exists {
+			order = append(order, key)
 		}
-		byTitle[title] = content
+		byKey[key] = content
 	}
 	requirements := make([]string, 0, len(order))
-	for _, title := range order {
-		requirements = append(requirements, byTitle[title])
+	for _, key := range order {
+		requirements = append(requirements, byKey[key])
 	}
 
 	var b strings.Builder
@@ -77,17 +77,23 @@ func DurableSpec(opts DurableSpecOptions) (string, error) {
 
 var requirementHeadingRe = regexp.MustCompile(`(?m)^###\s+Requirement:`)
 
+var (
+	requirementsHeadingRe = regexp.MustCompile(`(?m)^## Requirements[ \t]*$`)
+	requirementTitleRe    = regexp.MustCompile(`(?m)^###\s+Requirement:\s*(.*?)\s*$`)
+)
+
 // parseExistingRequirements extracts the requirement blocks already present in a
-// durable spec body. It returns the block titles in document order plus a map
-// from title to the full block text (including the "### Requirement:" heading
-// and any "Source SPEC comment:" trailer). Blocks are keyed by requirement
-// title so a re-archive can replace a prior requirement in place.
+// durable spec body. It returns the block keys in document order plus a map from
+// key to the full block text (including the "### Requirement:" heading and any
+// "Source SPEC comment:" trailer). Blocks are keyed by requirement title so a
+// re-archive can replace a prior requirement in place; empty-title blocks get a
+// unique key so two malformed requirements never collapse into one.
 func parseExistingRequirements(body string) ([]string, map[string]string) {
 	order := []string{}
-	byTitle := map[string]string{}
+	byKey := map[string]string{}
 	section := requirementsSection(body)
 	if section == "" {
-		return order, byTitle
+		return order, byKey
 	}
 	locs := requirementHeadingRe.FindAllStringIndex(section, -1)
 	for i, loc := range locs {
@@ -99,39 +105,48 @@ func parseExistingRequirements(body string) ([]string, map[string]string) {
 		if block == "" {
 			continue
 		}
-		title := requirementTitle(block)
-		if _, exists := byTitle[title]; !exists {
-			order = append(order, title)
+		key := requirementKey(block, len(order))
+		if _, exists := byKey[key]; !exists {
+			order = append(order, key)
 		}
-		byTitle[title] = block
+		byKey[key] = block
 	}
-	return order, byTitle
+	return order, byKey
 }
 
-// requirementsSection returns the text under the "## Requirements" heading up to
-// the next level-2 heading (or end of body).
+// requirementsSection returns everything under the "## Requirements" heading to
+// the end of the body. The heading is matched as a whole line (not a substring),
+// and the section deliberately runs to end-of-file rather than stopping at the
+// next "## " so that a level-2-looking line inside a requirement body cannot
+// truncate the section and silently drop later requirements. Requirement blocks
+// are delimited by "### Requirement:" headings, so any stray "## " text stays
+// inside the block it belongs to.
 func requirementsSection(body string) string {
-	idx := strings.Index(body, "## Requirements")
-	if idx < 0 {
+	loc := requirementsHeadingRe.FindStringIndex(body)
+	if loc == nil {
 		return ""
 	}
-	rest := body[idx+len("## Requirements"):]
-	if next := strings.Index(rest, "\n## "); next >= 0 {
-		rest = rest[:next]
+	return strings.TrimSpace(body[loc[1]:])
+}
+
+// requirementKey returns the dedup key for a requirement block: its title when
+// present, or a unique sentinel derived from uniqueSeed when the title is empty.
+// Empty-title requirements are malformed but pass canonical validation, so they
+// must be preserved individually instead of colliding on the empty string.
+func requirementKey(block string, uniqueSeed int) string {
+	if title := requirementTitle(block); title != "" {
+		return title
 	}
-	return strings.TrimSpace(rest)
+	return fmt.Sprintf("\x00empty-%d", uniqueSeed)
 }
 
 // requirementTitle extracts the text following "### Requirement:" from a block,
 // used as the dedup key when merging existing and new requirements.
 func requirementTitle(block string) string {
-	for _, line := range strings.Split(block, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "### Requirement:") {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, "### Requirement:"))
-		}
+	if m := requirementTitleRe.FindStringSubmatch(block); m != nil {
+		return strings.TrimSpace(m[1])
 	}
-	return strings.TrimSpace(block)
+	return ""
 }
 
 func durableRequirementContent(spec SpecSource) (string, error) {
@@ -186,7 +201,7 @@ func validateSpecDiscipline(id, body string) error {
 func collectProposalIssueURLs(existingBody, current string) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, match := range proposalIssueLineRe.FindAllString(existingBody, -1) {
+	for _, match := range proposalIssueLineRe.FindAllString(proposalIssuesBlock(existingBody), -1) {
 		url := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(match), "-"))
 		if url != "" && !seen[url] {
 			seen[url] = true
@@ -200,4 +215,20 @@ func collectProposalIssueURLs(existingBody, current string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// proposalIssuesBlock returns just the "Proposal Issues:" bullet list, bounded
+// by the next "## " heading. Scoping the scan here prevents issue-URL bullets
+// that legitimately appear inside requirement bodies from being harvested as
+// proposal issues on re-archive.
+func proposalIssuesBlock(body string) string {
+	idx := strings.Index(body, "Proposal Issues:")
+	if idx < 0 {
+		return ""
+	}
+	rest := body[idx:]
+	if next := strings.Index(rest, "\n## "); next >= 0 {
+		rest = rest[:next]
+	}
+	return rest
 }
