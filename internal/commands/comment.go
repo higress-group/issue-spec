@@ -218,14 +218,23 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	// TASK afterwards. A resolution failure is non-fatal so the upsert still lands.
 	var coveredSpecs []model.Artifact
 	var coveredSpecBodies []string
-	if strings.EqualFold(*commentType, "TASK") && strings.TrimSpace(*coversIssue) != "" {
+	if strings.TrimSpace(*coversIssue) != "" {
+		if !strings.EqualFold(*commentType, "TASK") {
+			a.errorf("--covers-issue only applies to --type TASK, got %q\n", strings.ToUpper(*commentType))
+			return 2
+		}
 		coversIssueNumber, err := parseIssueFlag(*coversIssue, "covers-issue")
 		if err != nil {
 			a.errorf("%v\n", err)
 			return 2
 		}
+		coversComments, err := client.ListIssueComments(ctx, repo, coversIssueNumber)
+		if err != nil {
+			a.errorf("list covers issue #%d: %v\n", coversIssueNumber, err)
+			return 1
+		}
 		for _, specID := range parseCoversSectionIDs(body) {
-			artifact, specBody, err := findArtifactByID(ctx, client, repo, coversIssueNumber, specID)
+			artifact, specBody, err := findArtifactByIDIn(coversComments, coversIssueNumber, specID)
 			if err != nil {
 				a.errorf("warning: covers %s not resolved on issue #%d: %v; skipping durable link\n", specID, coversIssueNumber, err)
 				continue

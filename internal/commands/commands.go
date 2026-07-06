@@ -378,6 +378,12 @@ func findArtifactByID(ctx context.Context, client github.Operations, repo string
 	if err != nil {
 		return model.Artifact{}, "", err
 	}
+	return findArtifactByIDIn(comments, issueNumber, id)
+}
+
+// findArtifactByIDIn resolves an ID against an already-fetched comment snapshot,
+// so callers resolving several IDs on one issue list its comments once.
+func findArtifactByIDIn(comments []github.Comment, issueNumber int, id string) (model.Artifact, string, error) {
 	for _, comment := range comments {
 		tc := model.ParseTypedComment(comment.Body)
 		if tc.ID == id {

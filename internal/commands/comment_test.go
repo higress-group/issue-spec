@@ -409,6 +409,22 @@ func TestCommentUpsertCoversIssueUnknownIDWarnsButSucceeds(t *testing.T) {
 	}
 }
 
+func TestCommentUpsertCoversIssueRejectsNonTaskType(t *testing.T) {
+	// FINDING-002: --covers-issue only means something for a TASK; a wrong --type
+	// must fail loudly instead of writing a link-less comment that looks successful.
+	bodyPath := writeTempInput(t, generateCanonicalSpecBody(t))
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	// No backend override: it must reject before any client call.
+	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "SPEC", "--id", "SPEC-001", "--body-file", bodyPath, "--covers-issue", "100"})
+	if code != 2 {
+		t.Fatalf("expected exit 2 for --covers-issue on non-TASK, got %d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "--covers-issue only applies to --type TASK") {
+		t.Fatalf("rejection should explain the constraint:\n%s", errOut.String())
+	}
+}
+
 func TestDroppedRelatedLinks(t *testing.T) {
 	// The link-drop warning (SPEC-003) can only fire on a link-reducing write; once
 	// Decision 1's merge is in place the real path never reduces, so the detector is
