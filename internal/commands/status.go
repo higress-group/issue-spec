@@ -68,6 +68,14 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 	}
 	workflowPlan, workflowErr := workflow.Resolve(".")
 	summary := summarizeStatus(*repoFlag, proposalIssue, designIssue, implementIssue, artifacts, workflowPlan, workflowErr)
+	if proposalIssueData, perr := client.GetIssue(ctx, repo, proposalIssue); perr == nil {
+		summary.Diagnostics = append(summary.Diagnostics, authoringCompletenessDiagnostics("proposal", proposalIssueData.HTMLURL, proposalIssueData.Body)...)
+	}
+	if designIssue > 0 {
+		if designIssueData, derr := client.GetIssue(ctx, repo, designIssue); derr == nil {
+			summary.Diagnostics = append(summary.Diagnostics, authoringCompletenessDiagnostics("design", designIssueData.HTMLURL, designIssueData.Body)...)
+		}
+	}
 	if *jsonOut {
 		if code := a.outputJSON(summary); code != 0 {
 			return code

@@ -22,6 +22,8 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 		"Do not rediscover the trigger comment",
 		"Do not create or request a runner-managed writeback action envelope",
 		"invoking existing issue-spec CLI commands",
+		"Self-contained authoring: write proposal, design, SPEC, and TASK artifacts for a reader with no shared session context",
+		"distinct from the `### Handoff` PROCESS serial-chain evidence section and from the `/resume` session handle",
 		"GitHub Discussion",
 		"default to a normal issue timeline comment",
 		"This agent reply is powered by [issue-spec](https://github.com/higress-group/issue-spec)",

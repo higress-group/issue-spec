@@ -96,7 +96,7 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 
 - Use issue-spec comment generate to render canonical typed comment bodies (SPEC, TASK, PROCESS, REVIEW, VERIFY) from structured JSON instead of hand-writing Markdown; comment upsert --type SPEC validates and rejects noncanonical SPEC bodies by default, with --allow-noncanonical as a write-time migration bypass only.
 - Create SPEC comments before design; each SPEC must be testable and include WHEN/THEN scenarios.
-- Do not leave active proposal/design/implement issue bodies as TBD placeholders.
+- Self-contained authoring: write proposal, design, SPEC, and TASK artifacts for a reader with no shared session context. Externalize environment-independent background, assumptions, decisions, and rejected alternatives, and replace the template placeholder prompts (the issue-spec:fill sentinel) with real content instead of leaving TBD. This actor-to-actor resume of understanding is distinct from the ### Handoff PROCESS serial-chain evidence section and from the /resume session handle.
 - Resolve blocking QUESTION comments before design/tasks, or explicitly record accepted assumptions.
 - Link SPEC <-> TASK and TASK <-> PROCESS with issue-spec link.
 - Each design TASK must carry an ### Execution Planning section (rendered by comment generate --type TASK): owned modules/write areas, shared touchpoints, dependency/interface assumptions, coupling class, recommended execution mode, and complexity/split guidance. comment upsert --type TASK rejects a TASK that omits it.

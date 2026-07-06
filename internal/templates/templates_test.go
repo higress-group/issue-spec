@@ -5,6 +5,45 @@ import (
 	"testing"
 )
 
+func TestProposalTemplateUsesSentinelNotBareTBD(t *testing.T) {
+	_, body, _ := ProposalIssue("demo-change")
+	for _, section := range []string{"## Background", "## Goals", "## Scope", "## Related Specs Analysis", "## Existing Assumptions Impact"} {
+		content := sectionOf(t, body, section)
+		if !strings.Contains(content, PlaceholderSentinel) {
+			t.Errorf("proposal section %q missing placeholder sentinel; got %q", section, content)
+		}
+	}
+	if strings.Contains(body, "\nTBD\n") || strings.Contains(body, "- TBD") {
+		t.Errorf("proposal body still contains a bare TBD placeholder:\n%s", body)
+	}
+}
+
+func TestDesignTemplateUsesSentinelNotBareTBD(t *testing.T) {
+	_, body, _ := DesignIssue("demo-change", "21")
+	for _, section := range []string{"## Current Implementation Locations", "## Impact Scope", "## Candidate Plans", "## Decisions"} {
+		content := sectionOf(t, body, section)
+		if !strings.Contains(content, PlaceholderSentinel) {
+			t.Errorf("design section %q missing placeholder sentinel; got %q", section, content)
+		}
+	}
+	if strings.Contains(body, "\nTBD\n") || strings.Contains(body, "- TBD") {
+		t.Errorf("design body still contains a bare TBD placeholder:\n%s", body)
+	}
+}
+
+func sectionOf(t *testing.T, body, heading string) string {
+	t.Helper()
+	idx := strings.Index(body, heading+"\n")
+	if idx < 0 {
+		t.Fatalf("heading %q not found in body", heading)
+	}
+	rest := body[idx+len(heading)+1:]
+	if next := strings.Index(rest, "\n## "); next >= 0 {
+		return rest[:next]
+	}
+	return rest
+}
+
 func TestIssueTemplatesUseStandardizedTitles(t *testing.T) {
 	tests := []struct {
 		name string

@@ -26,6 +26,23 @@ func TestIssueSpecSkillAndCommandTemplates(t *testing.T) {
 	}
 }
 
+func TestIssueSpecSkillsStateSelfContainedAuthoringInvariant(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+	workflow := skillContent(t, skills, "issue-spec-workflow")
+	for _, want := range []string{
+		"Self-contained authoring: write proposal, design, SPEC, and TASK artifacts for a reader with no shared session context",
+		"issue-spec:fill sentinel",
+		"distinct from the ### Handoff PROCESS serial-chain evidence section and from the /resume session handle",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("workflow skill missing %q:\n%s", want, workflow)
+		}
+	}
+	if strings.Contains(workflow, "Do not leave active proposal/design/implement issue bodies as TBD placeholders.") {
+		t.Fatalf("workflow skill still contains the stale TBD-placeholder line")
+	}
+}
+
 func TestIssueSpecSkillsIncludeGitHubCLISupportSkill(t *testing.T) {
 	skills := IssueSpecSkills("owner/repo")
 	if hasSkill(skills, "github") {

@@ -134,6 +134,12 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 		a.errorf("verify: %v\n", err)
 		return 1
 	}
+	report.Diagnostics = append(report.Diagnostics, authoringCompletenessDiagnostics("proposal", proposalIssueData.HTMLURL, proposalIssueData.Body)...)
+	if designIssue > 0 {
+		if designIssueData, derr := client.GetIssue(ctx, repo, designIssue); derr == nil {
+			report.Diagnostics = append(report.Diagnostics, authoringCompletenessDiagnostics("design", designIssueData.HTMLURL, designIssueData.Body)...)
+		}
+	}
 	if *jsonOut {
 		if code := a.outputJSON(report); code != 0 {
 			return code
