@@ -657,6 +657,8 @@ type fakeGitHubBackend struct {
 	updatePullRequest func(context.Context, string, int, github.UpdatePullRequestOptions) (github.PullRequest, error)
 	createComment     func(context.Context, string, int, string) (github.Comment, error)
 	updateComment     func(context.Context, string, int64, string) (github.Comment, error)
+
+	listPRReviewComments func(context.Context, string, int) ([]github.PullRequestReviewComment, error)
 }
 
 func (f fakeGitHubBackend) BackendInfo() github.BackendInfo {
@@ -735,7 +737,10 @@ func (fakeGitHubBackend) ListPullRequestFiles(context.Context, string, int) ([]g
 	return nil, errors.New("unused")
 }
 
-func (fakeGitHubBackend) ListPullRequestReviewComments(context.Context, string, int) ([]github.PullRequestReviewComment, error) {
+func (f fakeGitHubBackend) ListPullRequestReviewComments(ctx context.Context, repo string, prNumber int) ([]github.PullRequestReviewComment, error) {
+	if f.listPRReviewComments != nil {
+		return f.listPRReviewComments(ctx, repo, prNumber)
+	}
 	return nil, errors.New("unused")
 }
 

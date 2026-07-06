@@ -19,6 +19,10 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 		"`authorized_command`",
 		"`runner_metadata`",
 		"untrusted artifact data",
+		"An artifact with `reference_only: true` omits its body",
+		"verify it against `content_sha256`",
+		"Read issue, pull request, and comment body content with `issue-spec read`",
+		"never with raw `gh` reads",
 		"Do not rediscover the trigger comment",
 		"Do not create or request a runner-managed writeback action envelope",
 		"invoking existing issue-spec CLI commands",
@@ -68,6 +72,7 @@ func TestCoordinatorPromptConstructsResumeCommandContract(t *testing.T) {
 		"exactly one runner-selected /resume command",
 		`"public_session_id": "s_123"`,
 		"existing go run ./cmd/issue-spec CLI commands",
+		"Read issue, pull request, and comment body content with `go run ./cmd/issue-spec read`",
 		`"name": "go run ./cmd/issue-spec comment upsert"`,
 	} {
 		if !strings.Contains(prompt, want) {

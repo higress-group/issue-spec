@@ -73,6 +73,8 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return a.runVerify(ctx, args[1:])
 	case "verify-links":
 		return a.runVerifyLinks(ctx, args[1:])
+	case "read":
+		return a.runRead(ctx, args[1:])
 	case "runner":
 		return a.runRunner(ctx, args[1:])
 	default:
@@ -137,6 +139,8 @@ Usage:
   issue-spec status --repo owner/repo --proposal N [--design N] [--implement N]
   issue-spec verify --repo owner/repo --proposal N --design N --implement N [--durable-spec path]
   issue-spec verify-links --repo owner/repo --proposal N --design N --implement N
+  issue-spec read issue --repo owner/repo --issue N [--comments] [--typed-only]
+  issue-spec read pr --repo owner/repo --pr N [--comments] [--typed-only]
   issue-spec runner poll --repo owner/repo --runner login --once --dry-run
   issue-spec runner preflight --repo owner/repo --runner login`)
 }

@@ -51,6 +51,11 @@ type BuildOptions struct {
 	Artifacts       []model.Artifact
 	Bounds          Bounds
 	RedactionValues []string
+	// ReferenceOnlyArtifacts omits artifact body content from the bundle,
+	// keeping only trusted metadata and provenance so the agent fetches bodies
+	// on demand. Used on resume turns to stop re-inlining the same bodies every
+	// turn. When false (default) artifact bodies are inlined as before.
+	ReferenceOnlyArtifacts bool
 }
 
 type Bundle struct {
@@ -126,6 +131,7 @@ type BundleArtifact struct {
 	ContentLimitBytes int    `json:"content_limit_bytes"`
 	Truncated         bool   `json:"truncated,omitempty"`
 	Redacted          bool   `json:"redacted,omitempty"`
+	ReferenceOnly     bool   `json:"reference_only,omitempty"`
 }
 
 type TruncationRecord struct {
@@ -150,7 +156,7 @@ func BuildBundle(opts BuildOptions) (Bundle, error) {
 	runner, runnerRedactions := normalizeRunner(opts.Runner, command, opts.RedactionValues)
 	redactions = append(redactions, runnerRedactions...)
 
-	artifacts, artifactTruncations, artifactRedactions, err := normalizeArtifacts(opts.Artifacts, bounds, opts.RedactionValues)
+	artifacts, artifactTruncations, artifactRedactions, err := normalizeArtifacts(opts.Artifacts, bounds, opts.RedactionValues, opts.ReferenceOnlyArtifacts)
 	if err != nil {
 		return Bundle{}, err
 	}
@@ -282,7 +288,7 @@ func normalizeRunner(runner RunnerMetadata, command CommandCandidate, redactionV
 	return runner, redactions
 }
 
-func normalizeArtifacts(input []model.Artifact, bounds Bounds, redactionValues []string) ([]BundleArtifact, []TruncationRecord, []RedactionRecord, error) {
+func normalizeArtifacts(input []model.Artifact, bounds Bounds, redactionValues []string, referenceOnly bool) ([]BundleArtifact, []TruncationRecord, []RedactionRecord, error) {
 	artifacts := append([]model.Artifact{}, input...)
 	sort.SliceStable(artifacts, func(i, j int) bool {
 		return artifactLess(artifacts[i], artifacts[j])
@@ -303,6 +309,30 @@ func normalizeArtifacts(input []model.Artifact, bounds Bounds, redactionValues [
 		target := fmt.Sprintf("artifact.%s", tc.ID)
 		originalBytes := len([]byte(content))
 		contentHash := sha256String(content)
+		if referenceOnly {
+			// Keep trusted metadata and provenance (hash/byte count) but omit the
+			// body so resume turns do not re-inline the same content each turn.
+			out = append(out, BundleArtifact{
+				SourceLabel:       SourceIssueSpecArtifact,
+				Trust:             TrustUntrustedData,
+				Issue:             artifact.Issue,
+				CommentID:         artifact.CommentID,
+				URL:               artifact.URL,
+				APIURL:            artifact.APIURL,
+				Type:              tc.Type,
+				ID:                tc.ID,
+				Status:            tc.Status,
+				Scope:             tc.Scope,
+				Content:           "",
+				ContentSHA256:     contentHash,
+				IncludedSHA256:    sha256String(""),
+				ContentBytes:      originalBytes,
+				IncludedBytes:     0,
+				ContentLimitBytes: bounds.MaxArtifactBytes,
+				ReferenceOnly:     true,
+			})
+			continue
+		}
 		redactedContent, redactionCount := redactString(content, redactionValues)
 		included, truncated := truncateBytes(redactedContent, bounds.MaxArtifactBytes)
 		item := BundleArtifact{

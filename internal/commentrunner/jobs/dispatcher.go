@@ -639,7 +639,8 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 				"Public sessions are shared by authorized users in the repository; do not assume user-level secrecy inside one session.",
 			},
 		},
-		Artifacts: artifacts,
+		Artifacts:              artifacts,
+		ReferenceOnlyArtifacts: command == runnercontext.CommandResume,
 	})
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err

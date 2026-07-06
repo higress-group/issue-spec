@@ -113,6 +113,52 @@ func TestBuildBundleTruncatesAndRedactsBoundedContent(t *testing.T) {
 	}
 }
 
+func TestBuildBundleReferenceOnlyOmitsBodiesButKeepsProvenance(t *testing.T) {
+	content := "## Scope\n\nTASK body that should not be re-inlined on resume"
+	task := typedArtifact(t, 25, 301, "TASK", "TASK-012", "ready", "resume-minimization", content)
+
+	inlined, err := BuildBundle(BuildOptions{
+		Command:   newCommand(),
+		Runner:    newRunner(),
+		Artifacts: []model.Artifact{task},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inlined.Artifacts[0].Content == "" || inlined.Artifacts[0].ReferenceOnly {
+		t.Fatalf("expected inlined body on /new turn: %+v", inlined.Artifacts[0])
+	}
+
+	refOnly, err := BuildBundle(BuildOptions{
+		Command:                newCommand(),
+		Runner:                 newRunner(),
+		Artifacts:              []model.Artifact{task},
+		ReferenceOnlyArtifacts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := refOnly.Artifacts[0]
+	if !got.ReferenceOnly {
+		t.Fatalf("expected reference_only flag: %+v", got)
+	}
+	if got.Content != "" || got.IncludedBytes != 0 {
+		t.Fatalf("reference-only artifact must omit body: %+v", got)
+	}
+	if got.ContentSHA256 != inlined.Artifacts[0].ContentSHA256 {
+		t.Fatalf("reference-only artifact must keep original content hash: %q != %q", got.ContentSHA256, inlined.Artifacts[0].ContentSHA256)
+	}
+	if got.ContentBytes != inlined.Artifacts[0].ContentBytes {
+		t.Fatalf("reference-only artifact must keep original byte count: %d != %d", got.ContentBytes, inlined.Artifacts[0].ContentBytes)
+	}
+	if got.Trust != TrustUntrustedData || got.SourceLabel != SourceIssueSpecArtifact {
+		t.Fatalf("reference-only artifact must keep trust metadata: %+v", got)
+	}
+	if got.ID != "TASK-012" || got.Type != "TASK" || got.URL == "" {
+		t.Fatalf("reference-only artifact must keep pointer metadata: %+v", got)
+	}
+}
+
 func newCommand() CommandCandidate {
 	return CommandCandidate{
 		Authorized:        true,
