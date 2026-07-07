@@ -2,9 +2,10 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for how the implement phase plans and executes the PROCESS DAG: capturing execution-planning metadata on TASK comments, defaulting to serial PROCESS chains with bounded handoff, gating parallel dispatch on proven decoupling, treating review and repair as first-class PROCESS nodes, and auditing execution-planning evidence at final verify.
+Define the long-lived behavior contract for how the implement phase plans and executes the PROCESS DAG: capturing execution-planning metadata on TASK comments, delegating every non-trivial coding node to a worker sub-agent by default for context isolation, defaulting to serial PROCESS chains with bounded handoff (serial chains still delegate across separate workers), gating parallel dispatch on proven decoupling as a concern separate from the context-isolation default, treating review and repair as first-class PROCESS nodes, and auditing execution-planning evidence at final verify.
 
 Proposal Issues:
+- https://github.com/higress-group/issue-spec/issues/144
 - https://github.com/higress-group/issue-spec/issues/32
 
 ## Requirements
@@ -170,3 +171,77 @@ The workflow SHOULD fail final verification when done PROCESS nodes lack rationa
 - **THEN** at least one done VERIFY comment SHALL summarize tests, review state, traceability, and SPEC coverage
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/32#issuecomment-4877853419
+
+### Requirement: Delegate coding PROCESS nodes to worker sub-agents by default
+
+The implement/apply coordinator MUST dispatch each non-trivial coding PROCESS node to a worker sub-agent by default for context isolation. This default MUST be independent of whether the node is eligible for parallel execution; serial nodes MUST also be delegated. The coordinator MAY inline only trivial work such as a single-file, low-coupling edit or pure orchestration.
+
+#### Scenario: Non-trivial serial node is delegated
+
+- **WHEN** the coordinator executes a non-trivial coding PROCESS node that must run serially
+- **THEN** it SHALL dispatch the node to a worker sub-agent rather than implementing the code in its own context
+
+#### Scenario: Trivial edit may be inlined
+
+- **WHEN** a PROCESS node is a trivial single-file, low-coupling edit or pure orchestration
+- **THEN** the coordinator MAY implement it inline without spawning a worker
+
+#### Scenario: Delegation is not conditioned on parallelism
+
+- **WHEN** a node is not eligible for parallel dispatch because of shared write ownership
+- **THEN** the coordinator SHALL still delegate it to a worker for context isolation and run it serially
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904042881
+
+### Requirement: Serial PROCESS chains run across separate workers via bounded handoff
+
+Serial PROCESS nodes under a parent TASK MUST execute in separate worker sub-agents connected by a bounded ### Handoff summary. A successor node MUST start from the parent TASK context plus its predecessor's handoff, and MUST NOT require the predecessor's full transcript or run inside the coordinator's accumulated context.
+
+#### Scenario: Predecessor produces handoff for successor
+
+- **WHEN** PROCESS-B depends on PROCESS-A under the same parent TASK
+- **THEN** PROCESS-A SHALL complete in its own worker and record a bounded ### Handoff, and PROCESS-B SHALL start in a separate worker seeded with that handoff
+
+#### Scenario: Coordinator context is not the serial carrier
+
+- **WHEN** a serial chain of coding nodes is executed
+- **THEN** the chain SHALL be carried by per-node worker contexts and handoff artifacts, not by accumulating each node's implementation inside the coordinator context
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043156
+
+### Requirement: Coordinator prompt carries a phase-aware delegation contract with rationale
+
+The generated coordinator prompt MUST express the DAG-execution and delegation contract at fidelity matching the apply workflow guidance. On an implement turn it MUST direct the coordinator to plan the PROCESS DAG and then dispatch coding nodes to workers, and MUST state that the coordinator SHALL NOT implement non-trivial code inline. The prompt MUST include an explicit context-budget rationale for delegation and MUST present the parallelism gate as a concern separate from the context-isolation default.
+
+#### Scenario: Implement-turn prompt mandates plan-then-dispatch
+
+- **WHEN** the coordinator prompt is rendered for an implement-phase command
+- **THEN** it SHALL contain a directive to build the PROCESS DAG and dispatch non-trivial coding nodes to worker sub-agents instead of coding inline
+
+#### Scenario: Prompt states the context-budget reason
+
+- **WHEN** the coordinator prompt is rendered
+- **THEN** it SHALL explain that delegation exists to keep the coordinator context bounded and avoid mid-task compaction
+
+#### Scenario: Delegation and parallelism are stated separately
+
+- **WHEN** the coordinator prompt describes worker dispatch
+- **THEN** it SHALL present context-isolation delegation as the default and parallel execution as a separately gated optimization
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043410
+
+### Requirement: Coordinator retains only orchestration state during delegated implementation
+
+During delegated implementation the coordinator MUST retain only orchestration, gate-evaluation, integration, and handoff state. It MUST consume bounded worker outputs and issue-spec read results rather than inlining full issue or pull request bodies or full diffs into its own context.
+
+#### Scenario: Coordinator integrates via bounded outputs
+
+- **WHEN** workers complete coding PROCESS nodes
+- **THEN** the coordinator SHALL integrate their results using bounded summaries, handoff evidence, and issue-spec read rather than re-reading full bodies or diffs inline
+
+#### Scenario: Coordinator does not accumulate implementation detail
+
+- **WHEN** the coordinator advances the DAG across multiple nodes
+- **THEN** its retained context SHALL be limited to scheduling, gate status, integration ownership, and handoff references
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043650
