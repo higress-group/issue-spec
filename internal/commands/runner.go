@@ -234,9 +234,15 @@ func (a *app) runRunnerPollCycleWithStore(ctx context.Context, cfg commentrunner
 				// Drain queued cancellations synchronously in the poll-cycle
 				// goroutine so an out-of-band /cancel is honored even when the
 				// async dispatcher is blocked inside a long acpx dispatch.
-				drain, _ := a.runRunnerCancellationDrainWithStore(ctx, cfg, store)
+				drain, drainErr := a.runRunnerCancellationDrainWithStore(ctx, cfg, store)
+				if drainErr != nil && drain.Error == "" {
+					// The cancellation drain is best-effort: record the failure
+					// on the drain result so it surfaces in the poll output, but
+					// never abort the cycle or skip the async dispatch trigger.
+					drain.Error = drainErr.Error()
+				}
 				dispatch := async.Trigger()
-				if drain.Executed {
+				if drain.Executed || drain.Error != "" {
 					dispatchResult = &drain
 				} else {
 					dispatchResult = &dispatch
@@ -1060,6 +1066,9 @@ func (a *app) printRunnerPoll(result runnerDryRunResult) {
 			fmt.Fprintf(a.out, "dispatch: executed=%v jobs=%d first_job=%s status=%s reason=%s\n", result.Dispatch.Executed, result.Dispatch.ExecutedCount, result.Dispatch.JobID, result.Dispatch.Status, result.Dispatch.Reason)
 		} else {
 			fmt.Fprintf(a.out, "dispatch: executed=%v job=%s status=%s reason=%s\n", result.Dispatch.Executed, result.Dispatch.JobID, result.Dispatch.Status, result.Dispatch.Reason)
+		}
+		if result.Dispatch.Error != "" {
+			fmt.Fprintf(a.out, "dispatch error: %s\n", result.Dispatch.Error)
 		}
 	}
 	if result.Error != "" {

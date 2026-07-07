@@ -496,8 +496,18 @@ func TestRunNextCancellationUnknownAndTerminalAreSafe(t *testing.T) {
 		if result.Status != state.StatusCancelled || result.Reason != "target_already_terminal" {
 			t.Fatalf("unexpected terminal cancel result: %+v", result)
 		}
-		if len(writebacks.requests) != 0 {
-			t.Fatalf("terminal cancellation should not rewrite completed status: %+v", writebacks.requests)
+		if len(writebacks.requests) != 1 {
+			t.Fatalf("terminal cancellation should surface a terminal status comment: %+v", writebacks.requests)
+		}
+		req := writebacks.requests[0]
+		if req.Status != state.StatusCancelled || req.Phase != "cancelled" {
+			t.Fatalf("terminal cancellation writeback not cancelled: %+v", req)
+		}
+		if req.Job.ID != "cancel-terminal" || req.Job.StatusWritebackKey != "cancel:cancel-terminal" {
+			t.Fatalf("terminal cancellation should use synthetic cancellation job, not the terminal target: %+v", req.Job)
+		}
+		if req.CancelingUserLogin != "bob" {
+			t.Fatalf("canceling user not surfaced in terminal writeback: %+v", req)
 		}
 		if got := loadState(t, store).Cancellations["cancel-terminal"].Status; got != state.StatusCancelled {
 			t.Fatalf("terminal cancellation status = %s", got)

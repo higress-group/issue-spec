@@ -107,7 +107,7 @@ func (d *Dispatcher) cancel(ctx context.Context, cancel state.Cancellation) (Res
 		return d.cancelRejected(ctx, cancel, "unknown_session", "cancellation target public session or active job was not found")
 	}
 	if terminal {
-		return Result{Executed: true, JobID: job.ID, CancellationID: cancel.ID, Status: state.StatusCancelled, Reason: "target_already_terminal"}, nil
+		return d.cancelAlreadyTerminal(ctx, cancel, job), nil
 	}
 	if job.Status == state.StatusQueued {
 		if err := d.cancelQueuedJob(ctx, cancel, job); err != nil {
@@ -331,9 +331,29 @@ func (d *Dispatcher) cancelRejected(ctx context.Context, cancel state.Cancellati
 	return Result{Executed: true, CancellationID: cancel.ID, Status: state.StatusRejected, Reason: reason}, nil
 }
 
+// cancelAlreadyTerminal records the terminal status comment for an accepted
+// cancellation whose target job was already terminal. Like cancelRejected it
+// posts a best-effort status comment through the synthetic cancellation job so
+// every accepted cancellation reaches a visible terminal status (SPEC-004),
+// without touching the target job's own completed/failed status comment.
+func (d *Dispatcher) cancelAlreadyTerminal(ctx context.Context, cancel state.Cancellation, job state.Job) Result {
+	if d.Writeback != nil {
+		if statusJob, ok := cancellationStatusJob(cancel); ok {
+			_, _ = d.Writeback.Write(ctx, writeback.Request{
+				Job:                statusJob,
+				Status:             state.StatusCancelled,
+				Phase:              "cancelled",
+				Diagnostics:        splitDiagnostic("target job was already terminal"),
+				CancelingUserLogin: cancel.CancelingUserLogin,
+			})
+		}
+	}
+	return Result{Executed: true, JobID: job.ID, CancellationID: cancel.ID, Status: state.StatusCancelled, Reason: "target_already_terminal"}
+}
+
 // cancellationStatusJob synthesizes the minimal job needed to render a status
-// comment for a cancellation that has no resolvable target job. The synthetic job
-// is never persisted (writeback skips jobs absent from state).
+// comment for a cancellation that has no resolvable target job. No phantom job
+// record is created; the synthetic writeback record is pruned by retention.
 func cancellationStatusJob(cancel state.Cancellation) (state.Job, bool) {
 	if strings.TrimSpace(cancel.Repo) == "" || cancel.IssueNumber <= 0 || strings.TrimSpace(cancel.ID) == "" {
 		return state.Job{}, false
