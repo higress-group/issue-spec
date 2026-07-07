@@ -15,7 +15,7 @@ import (
 
 func (a *app) runPR(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec pr rationale|link-process|link-issues ...\n")
+		a.errorf("usage: issue-spec pr rationale|link-process|link-issues|verify-closure ...\n")
 		return 2
 	}
 	switch args[0] {
@@ -25,6 +25,8 @@ func (a *app) runPR(ctx context.Context, args []string) int {
 		return a.runPRLinkProcess(ctx, args[1:])
 	case "link-issues":
 		return a.runPRLinkIssues(ctx, args[1:])
+	case "verify-closure":
+		return a.runPRVerifyClosure(ctx, args[1:])
 	default:
 		a.errorf("unknown pr command %q\n", args[0])
 		return 2
@@ -122,6 +124,100 @@ func linkPullRequestIssues(ctx context.Context, client interface {
 		}
 	}
 	result := linkPullRequestIssuesResult{OK: true, Changed: changed, PR: pr.Number, PRURL: pr.HTMLURL}
+	for _, ref := range refs {
+		switch ref.Kind {
+		case "proposal":
+			result.Proposal = ref.Number
+		case "design":
+			result.Design = ref.Number
+		case "implement":
+			result.Implement = ref.Number
+		}
+	}
+	return result, nil
+}
+
+func (a *app) runPRVerifyClosure(ctx context.Context, args []string) int {
+	fs := newFlagSet("pr verify-closure", a.err)
+	repoFlag := fs.String("repo", "", "repository owner/name")
+	host := fs.String("hostname", "github.com", "GitHub hostname")
+	prFlag := fs.Int("pr", 0, "implementation pull request number")
+	proposalFlag := fs.String("proposal", "", "proposal issue number or URL")
+	designFlag := fs.String("design", "", "design issue number or URL")
+	implementFlag := fs.String("implement", "", "implement issue number or URL")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	repo, ok := a.validateRepo(*repoFlag)
+	if !ok {
+		return 2
+	}
+	if *prFlag <= 0 {
+		a.errorf("--pr must be a positive pull request number\n")
+		return 2
+	}
+	proposalIssue, err := parseIssueFlag(*proposalFlag, "proposal")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	designIssue, err := parseIssueFlag(*designFlag, "design")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	implementIssue, err := parseIssueFlag(*implementFlag, "implement")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	client, _, err := a.clientFor(ctx, *host)
+	if err != nil {
+		a.errorf("auth required for pr verify-closure on %s: %v\n", auth.NormalizeHost(*host), err)
+		return 1
+	}
+	result, err := verifyPullRequestClosure(ctx, client, repo, *prFlag, []model.IssueClosureRef{
+		{Kind: "proposal", Number: proposalIssue},
+		{Kind: "design", Number: designIssue},
+		{Kind: "implement", Number: implementIssue},
+	})
+	if err != nil {
+		if *jsonOut {
+			a.outputJSON(verifyPullRequestClosureResult{OK: false, PR: *prFlag, Proposal: proposalIssue, Design: designIssue, Implement: implementIssue, Error: err.Error()})
+		} else {
+			a.errorf("verify PR closure links: %v\n", err)
+		}
+		return 1
+	}
+	if *jsonOut {
+		return a.outputJSON(result)
+	}
+	fmt.Fprintf(a.out, "PR %s has complete issue-spec closing links: proposal #%d, design #%d, implement #%d\n", result.PRURL, proposalIssue, designIssue, implementIssue)
+	return 0
+}
+
+type verifyPullRequestClosureResult struct {
+	OK        bool   `json:"ok"`
+	PR        int    `json:"pr"`
+	PRURL     string `json:"pr_url"`
+	Proposal  int    `json:"proposal"`
+	Design    int    `json:"design"`
+	Implement int    `json:"implement"`
+	Error     string `json:"error,omitempty"`
+}
+
+func verifyPullRequestClosure(ctx context.Context, client interface {
+	GetPullRequest(context.Context, string, int) (github.PullRequest, error)
+}, repo string, prNumber int, refs []model.IssueClosureRef) (verifyPullRequestClosureResult, error) {
+	pr, err := client.GetPullRequest(ctx, repo, prNumber)
+	if err != nil {
+		return verifyPullRequestClosureResult{}, err
+	}
+	if err := model.VerifyIssueClosureBlock(pr.Body, refs); err != nil {
+		return verifyPullRequestClosureResult{}, err
+	}
+	result := verifyPullRequestClosureResult{OK: true, PR: pr.Number, PRURL: pr.HTMLURL}
 	for _, ref := range refs {
 		switch ref.Kind {
 		case "proposal":

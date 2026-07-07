@@ -160,6 +160,87 @@ func TestLinkPullRequestIssuesRejectsMergedPR(t *testing.T) {
 	}
 }
 
+func mustClosureBody(t *testing.T, refs ...model.IssueClosureRef) string {
+	t.Helper()
+	body, _, err := model.AddIssueClosureBlock("## Summary\n\nImplementation details.\n", refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func TestVerifyPullRequestClosureComplete(t *testing.T) {
+	refs := []model.IssueClosureRef{
+		{Kind: "proposal", Number: 1},
+		{Kind: "design", Number: 2},
+		{Kind: "implement", Number: 3},
+	}
+	client := &fakePRClient{pr: github.PullRequest{
+		Number:  7,
+		HTMLURL: "https://github.com/o/r/pull/7",
+		Body:    mustClosureBody(t, refs...),
+	}}
+	result, err := verifyPullRequestClosure(context.Background(), client, "o/r", 7, refs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.OK || result.Proposal != 1 || result.Design != 2 || result.Implement != 3 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestVerifyPullRequestClosureMissingBlock(t *testing.T) {
+	client := &fakePRClient{pr: github.PullRequest{
+		Number:  7,
+		HTMLURL: "https://github.com/o/r/pull/7",
+		Body:    "## Summary\n\nNo closing block here.\n",
+	}}
+	_, err := verifyPullRequestClosure(context.Background(), client, "o/r", 7, []model.IssueClosureRef{
+		{Kind: "proposal", Number: 1},
+		{Kind: "design", Number: 2},
+		{Kind: "implement", Number: 3},
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing issue-spec PR closing block") {
+		t.Fatalf("error = %v, want missing block", err)
+	}
+}
+
+func TestVerifyPullRequestClosureSubsetFails(t *testing.T) {
+	client := &fakePRClient{pr: github.PullRequest{
+		Number:  7,
+		HTMLURL: "https://github.com/o/r/pull/7",
+		Body:    mustClosureBody(t, model.IssueClosureRef{Kind: "implement", Number: 3}),
+	}}
+	_, err := verifyPullRequestClosure(context.Background(), client, "o/r", 7, []model.IssueClosureRef{
+		{Kind: "proposal", Number: 1},
+		{Kind: "design", Number: 2},
+		{Kind: "implement", Number: 3},
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing proposal issue closing link Closes #1") {
+		t.Fatalf("error = %v, want missing proposal link", err)
+	}
+}
+
+func TestVerifyPullRequestClosureTamperedFails(t *testing.T) {
+	client := &fakePRClient{pr: github.PullRequest{
+		Number:  7,
+		HTMLURL: "https://github.com/o/r/pull/7",
+		Body: mustClosureBody(t,
+			model.IssueClosureRef{Kind: "proposal", Number: 1},
+			model.IssueClosureRef{Kind: "design", Number: 2},
+			model.IssueClosureRef{Kind: "implement", Number: 99},
+		),
+	}}
+	_, err := verifyPullRequestClosure(context.Background(), client, "o/r", 7, []model.IssueClosureRef{
+		{Kind: "proposal", Number: 1},
+		{Kind: "design", Number: 2},
+		{Kind: "implement", Number: 3},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unexpected issue closing link Closes #99") {
+		t.Fatalf("error = %v, want unexpected link", err)
+	}
+}
+
 type fakePRClient struct {
 	pr            github.PullRequest
 	files         []github.PullRequestFile
