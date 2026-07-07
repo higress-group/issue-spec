@@ -69,6 +69,20 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 7. Integrate completed outputs by dependency order.
 8. Mark PROCESS nodes done only after implementation or review evidence and, for serial predecessors, ### Handoff evidence are recorded and blocking findings are resolved.
 
+## Cross-Skill Boundary
+
+The issue-spec workflow is composed of cooperating skills. Each owns a slice
+of the link matrix; a single skill never covers the full graph.
+
+Link matrix (each direction has a designated owner; rows marked ✓ are gated by `verify-links`):
+- ✓ SPEC ↔ TASK        (issue-spec-propose, step 7)
+- ✓ TASK ↔ PROCESS     (issue-spec-apply, step 6)
+-   PROCESS ↔ SPEC     (issue-spec-apply, step 10, via pr rationale and review finding)
+-   PROCESS ↔ PR       (issue-spec-apply, step 8, via pr link-process)
+
+`verify-links` covers SPEC↔TASK and TASK↔PROCESS only; the other two directions
+are created by their owner steps but not auto-checked.
+
 ## Project Workflow
 
 - Workflow Source: `builtin`

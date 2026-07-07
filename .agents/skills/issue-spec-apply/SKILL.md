@@ -13,6 +13,12 @@ metadata:
 
 Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing PROCESS/TASK scopes from an issue-spec change.
 
+## Prerequisite
+
+This skill assumes `issue-spec-propose` has been completed: proposal, design,
+implement issues exist with SPEC, TASK typed comments and SPEC↔TASK bidirectional
+links. Run `issue-spec verify-links` after propose as a smoke check.
+
 ## Steps
 
 1. Read proposal/design/implement issue context and list typed comments with issue-spec comment list --json.

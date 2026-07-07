@@ -123,6 +123,20 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 6. Dispatch review PROCESS nodes for non-trivial PRs after PR rationale exists; run review nodes in parallel only when their review scopes are independent. Route P0/P1 findings to the owner PROCESS or a dedicated repair PROCESS that follows the same serial/parallel gating.
 7. Integrate completed outputs by dependency order.
 8. Mark PROCESS nodes done only after implementation or review evidence and, for serial predecessors, ### Handoff evidence are recorded and blocking findings are resolved.
+
+## Cross-Skill Boundary
+
+The issue-spec workflow is composed of cooperating skills. Each owns a slice
+of the link matrix; a single skill never covers the full graph.
+
+Link matrix (each direction has a designated owner; rows marked ✓ are gated by ` + "`verify-links`" + `):
+- ✓ SPEC ↔ TASK        (issue-spec-propose, step 7)
+- ✓ TASK ↔ PROCESS     (issue-spec-apply, step 6)
+-   PROCESS ↔ SPEC     (issue-spec-apply, step 10, via pr rationale and review finding)
+-   PROCESS ↔ PR       (issue-spec-apply, step 8, via pr link-process)
+
+` + "`verify-links`" + ` covers SPEC↔TASK and TASK↔PROCESS only; the other two directions
+are created by their owner steps but not auto-checked.
 `,
 		},
 		{
@@ -166,6 +180,20 @@ Use when the user asks for /issue-spec:propose, issue-spec propose, creating a c
        issue-spec issue create implement --repo {{repo}} --change <change-name> --proposal <proposal-issue-or-url> --design <design-issue-or-url> --body-file <implement.md>
 
 9. Run issue-spec verify-links and fix missing backlinks before implementation.
+   This run covers SPEC↔TASK only; after PROCESS comments are created in
+   issue-spec-apply (step 6), re-run verify-links to also catch PROCESS↔TASK gaps.
+
+## Cross-Skill Boundary
+
+Process creation, PROCESS↔TASK links, and PROCESS↔PR links live in
+` + "`issue-spec-apply`" + `, not here. When you finish propose (TASKs complete),
+hand off to apply before re-running ` + "`verify-links`" + ` for full coverage.
+
+Link matrix (each direction has a designated owner; rows marked ✓ are gated by ` + "`verify-links`" + `):
+- ✓ SPEC ↔ TASK        (this skill, step 7)
+- ✓ TASK ↔ PROCESS     (issue-spec-apply, step 6)
+-   PROCESS ↔ SPEC     (issue-spec-apply, step 10, via pr rationale and review finding)
+-   PROCESS ↔ PR       (issue-spec-apply, step 8, via pr link-process)
 `,
 		},
 		{
@@ -176,6 +204,12 @@ Use when the user asks for /issue-spec:propose, issue-spec propose, creating a c
 			Body: `# Issue Spec Apply
 
 Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing PROCESS/TASK scopes from an issue-spec change.
+
+## Prerequisite
+
+This skill assumes ` + "`issue-spec-propose`" + ` has been completed: proposal, design,
+implement issues exist with SPEC, TASK typed comments and SPEC↔TASK bidirectional
+links. Run ` + "`issue-spec verify-links`" + ` after propose as a smoke check.
 
 ## Steps
 
