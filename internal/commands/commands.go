@@ -35,6 +35,7 @@ type app struct {
 	newRunnerNotificationBackend func(context.Context, commentrunner.Config) (runnerNotificationBackend, error)
 	runnerReconcile              func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error)
 	runnerDispatch               func(context.Context, commentrunner.Config) (jobs.Result, error)
+	runnerCancellationDrain      func(context.Context, commentrunner.Config) (jobs.Result, error)
 }
 
 type commandFunc func(context.Context, []string) int

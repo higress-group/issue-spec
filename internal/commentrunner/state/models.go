@@ -204,6 +204,7 @@ type Cancellation struct {
 	ID                    string          `json:"id"`
 	IdempotencyKey        string          `json:"idempotency_key"`
 	Repo                  string          `json:"repo,omitempty"`
+	IssueNumber           int             `json:"issue_number,omitempty"`
 	TriggerCommentID      int64           `json:"trigger_comment_id,omitempty"`
 	CancelingUserLogin    string          `json:"canceling_user_login,omitempty"`
 	TargetPublicSessionID string          `json:"target_public_session_id,omitempty"`

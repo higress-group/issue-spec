@@ -408,6 +408,51 @@ func TestRunNextCancellationUnsupportedLeavesJobRunningAndReports(t *testing.T) 
 	}
 }
 
+// TestRunNextCancellationFailedSurfacesStatusComment is the TASK-003 coverage for
+// a non-unsupported cancel failure: when acpx returns a non-confirmed (but not
+// unsupported) result, the job stays running and a cancel-failed status comment is
+// posted so the canceling user still gets visible terminal feedback.
+func TestRunNextCancellationFailedSurfacesStatusComment(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 16, 30, 0, 0, time.UTC)
+	workspaceMeta := testBinding("ws-cancel-failed").Workspace
+	seedActiveJob(t, store, state.StatusRunning, workspaceMeta, state.SessionLock{OwnerJobID: "job-reconcile"})
+	seedCancellation(t, store, "cancel-1", "cancel-key-1", now)
+
+	writebacks := &fakeWriteback{store: store}
+	workspaces := &fakeWorkspaces{binding: testBinding("unused")}
+	coordinator := &fakeCancelCoordinator{
+		cancelResult: acpx.CancelResult{Confirmed: false, Diagnostics: "acpx declined to cancel"},
+	}
+	dispatcher := testDispatcher(store, workspaces, &fakeCoordinator{}, writebacks, now)
+	dispatcher.Acpx = staticAcpxFactory{coordinator: coordinator}
+
+	result, err := dispatcher.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("RunNext returned error: %v", err)
+	}
+	if result.Status != state.StatusFailed || result.CancellationID != "cancel-1" {
+		t.Fatalf("unexpected failed cancel result: %+v", result)
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusRunning)
+	if writebacks.requests[0].Phase != "cancel-failed" {
+		t.Fatalf("cancel failure not surfaced in writeback: %+v", writebacks.requests[0])
+	}
+	if writebacks.requests[0].CancelingUserLogin != "bob" {
+		t.Fatalf("canceling user not passed to failed writeback: %+v", writebacks.requests[0])
+	}
+	if workspaces.released {
+		t.Fatal("lock should stay held when cancellation fails")
+	}
+	st := loadState(t, store)
+	if st.Jobs["job-reconcile"].Status != state.StatusRunning {
+		t.Fatalf("job should remain running: %+v", st.Jobs["job-reconcile"])
+	}
+	if st.Cancellations["cancel-1"].Status != state.StatusFailed {
+		t.Fatalf("cancellation should be failed: %+v", st.Cancellations["cancel-1"])
+	}
+}
+
 func TestRunNextCancellationUnknownAndTerminalAreSafe(t *testing.T) {
 	now := time.Date(2026, 7, 3, 17, 0, 0, 0, time.UTC)
 	t.Run("unknown session", func(t *testing.T) {
@@ -423,8 +468,14 @@ func TestRunNextCancellationUnknownAndTerminalAreSafe(t *testing.T) {
 		if result.Status != state.StatusRejected || result.Reason != "unknown_session" {
 			t.Fatalf("unexpected unknown cancel result: %+v", result)
 		}
-		if len(writebacks.requests) != 0 {
-			t.Fatalf("unknown cancellation should not write back without a target job: %+v", writebacks.requests)
+		if len(writebacks.requests) != 1 {
+			t.Fatalf("unknown cancellation should surface a rejected status comment: %+v", writebacks.requests)
+		}
+		if writebacks.requests[0].Status != state.StatusRejected || writebacks.requests[0].Phase != "cancel-rejected" {
+			t.Fatalf("unknown cancellation writeback not rejected: %+v", writebacks.requests[0])
+		}
+		if writebacks.requests[0].CancelingUserLogin != "bob" {
+			t.Fatalf("canceling user not surfaced in rejected writeback: %+v", writebacks.requests[0])
 		}
 		if got := loadState(t, store).Cancellations["cancel-unknown"].Status; got != state.StatusRejected {
 			t.Fatalf("unknown cancellation status = %s", got)
@@ -515,6 +566,7 @@ func seedCancellation(t *testing.T, store *memoryStore, id, key string, now time
 			ID:                    id,
 			IdempotencyKey:        key,
 			Repo:                  "o/r",
+			IssueNumber:           30,
 			TriggerCommentID:      505,
 			CancelingUserLogin:    "bob",
 			TargetPublicSessionID: "ps-reconcile",

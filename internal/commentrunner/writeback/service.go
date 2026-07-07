@@ -265,13 +265,16 @@ func (s *Service) persistFailure(ctx context.Context, job state.Job, key string,
 }
 
 func upsertJobWriteback(st *state.RunnerState, job state.Job, key string, commentID int64, url string) error {
-	existing, ok := st.Jobs[job.ID]
-	if ok {
-		job = existing
-	}
 	if job.ID == "" {
 		return nil
 	}
+	existing, ok := st.Jobs[job.ID]
+	if !ok {
+		// Synthetic writebacks (e.g. rejected cancellations with no target job)
+		// must not create phantom job records; only persist onto real jobs.
+		return nil
+	}
+	job = existing
 	job.StatusWritebackKey = key
 	if commentID != 0 {
 		job.StatusCommentID = commentID

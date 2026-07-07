@@ -16,6 +16,61 @@ type TurnCanceller interface {
 	Cancel(context.Context, acpx.SessionRef) (acpx.CancelResult, error)
 }
 
+// defaultCancellationDrainBudget bounds how many queued cancellations a single
+// poll cycle will process out-of-band before yielding back to the caller.
+const defaultCancellationDrainBudget = 32
+
+// DrainCancellations processes ONLY queued cancellations, one at a time, until
+// none remain or the per-cycle budget is exhausted. It never falls through to
+// job dispatch, so a blocked in-flight dispatch cannot starve cancellations.
+func (d *Dispatcher) DrainCancellations(ctx context.Context, budget int) (Result, error) {
+	if err := d.validate(); err != nil {
+		return Result{}, err
+	}
+	if budget <= 0 {
+		budget = defaultCancellationDrainBudget
+	}
+	aggregate := Result{}
+	for processed := 0; processed < budget; processed++ {
+		if err := ctx.Err(); err != nil {
+			return aggregate, err
+		}
+		cancel, ok, err := d.nextQueuedCancellation(ctx)
+		if err != nil {
+			if aggregate.Error == "" {
+				aggregate.Error = safeError(err)
+			}
+			return aggregate, err
+		}
+		if !ok {
+			break
+		}
+		result, cancelErr := d.cancel(ctx, cancel)
+		child := result
+		child.Results = nil
+		aggregate.Results = append(aggregate.Results, child)
+		if result.Executed {
+			aggregate.Executed = true
+			aggregate.ExecutedCount++
+		}
+		if aggregate.CancellationID == "" && result.CancellationID != "" {
+			aggregate.CancellationID = result.CancellationID
+			aggregate.JobID = result.JobID
+			aggregate.Status = result.Status
+		}
+		if cancelErr != nil {
+			if aggregate.Error == "" {
+				aggregate.Error = safeError(cancelErr)
+			}
+			return aggregate, cancelErr
+		}
+	}
+	if !aggregate.Executed && aggregate.Reason == "" {
+		aggregate.Reason = "no queued cancellations"
+	}
+	return aggregate, nil
+}
+
 func (d *Dispatcher) nextQueuedCancellation(ctx context.Context) (state.Cancellation, bool, error) {
 	st, err := d.Store.Load(ctx)
 	if err != nil {
@@ -49,7 +104,7 @@ func (d *Dispatcher) cancel(ctx context.Context, cancel state.Cancellation) (Res
 		return Result{Executed: true, CancellationID: cancel.ID, Status: state.StatusFailed, Error: safeError(err)}, err
 	}
 	if !found {
-		return Result{Executed: true, CancellationID: cancel.ID, Status: state.StatusRejected, Reason: "unknown_session"}, nil
+		return d.cancelRejected(ctx, cancel, "unknown_session", "cancellation target public session or active job was not found")
 	}
 	if terminal {
 		return Result{Executed: true, JobID: job.ID, CancellationID: cancel.ID, Status: state.StatusCancelled, Reason: "target_already_terminal"}, nil
@@ -69,7 +124,7 @@ func (d *Dispatcher) cancel(ctx context.Context, cancel state.Cancellation) (Res
 	if !ok {
 		return d.cancelFailed(ctx, cancel, job, acpx.ErrUnsupportedCancel.Error(), nil)
 	}
-	ref, diagnostic, ok := sessionRefForJob(job)
+	ref, diagnostic, ok := cancelSessionRefForJob(job)
 	if !ok {
 		return d.cancelFailed(ctx, cancel, job, diagnostic, nil)
 	}
@@ -242,6 +297,56 @@ func (d *Dispatcher) cancelConfirmed(ctx context.Context, cancel state.Cancellat
 		CancelingUserLogin: cancel.CancelingUserLogin,
 	})
 	return err
+}
+
+// cancelSessionRefForJob resolves the acpx session reference used to cancel an
+// active turn. Unlike sessionRefForJob (used by reconciliation, which must have a
+// stable acpx record id), cancellation only needs the public session id because
+// the acpx cancel subprocess targets the session by name. This lets an in-flight
+// /new job whose record id is not yet persisted still be cancelled.
+func cancelSessionRefForJob(job state.Job) (acpx.SessionRef, string, bool) {
+	publicID := strings.TrimSpace(firstNonEmpty(job.PublicSessionID, job.DispatchIntent.PublicSessionID))
+	if publicID == "" {
+		return acpx.SessionRef{}, "job is missing public session id", false
+	}
+	recordID := strings.TrimSpace(firstNonEmpty(job.AcpxRecordID, job.DispatchIntent.AcpxRecordID, job.Acpx.StableRecordID))
+	return acpx.SessionRef{PublicSessionID: publicID, StableRecordID: recordID}, "", true
+}
+
+// cancelRejected records a rejected cancellation and posts a best-effort terminal
+// status comment so an accepted /cancel that cannot find its target still surfaces
+// visible feedback rather than silently disappearing.
+func (d *Dispatcher) cancelRejected(ctx context.Context, cancel state.Cancellation, reason, diagnostic string) (Result, error) {
+	if d.Writeback != nil {
+		if job, ok := cancellationStatusJob(cancel); ok {
+			_, _ = d.Writeback.Write(ctx, writeback.Request{
+				Job:                job,
+				Status:             state.StatusRejected,
+				Phase:              "cancel-rejected",
+				Diagnostics:        splitDiagnostic(diagnostic),
+				CancelingUserLogin: cancel.CancelingUserLogin,
+			})
+		}
+	}
+	return Result{Executed: true, CancellationID: cancel.ID, Status: state.StatusRejected, Reason: reason}, nil
+}
+
+// cancellationStatusJob synthesizes the minimal job needed to render a status
+// comment for a cancellation that has no resolvable target job. The synthetic job
+// is never persisted (writeback skips jobs absent from state).
+func cancellationStatusJob(cancel state.Cancellation) (state.Job, bool) {
+	if strings.TrimSpace(cancel.Repo) == "" || cancel.IssueNumber <= 0 || strings.TrimSpace(cancel.ID) == "" {
+		return state.Job{}, false
+	}
+	return state.Job{
+		ID:                  cancel.ID,
+		Repo:                cancel.Repo,
+		IssueNumber:         cancel.IssueNumber,
+		PublicSessionID:     cancel.TargetPublicSessionID,
+		TriggerCommentID:    cancel.TriggerCommentID,
+		TriggeringUserLogin: cancel.CancelingUserLogin,
+		StatusWritebackKey:  "cancel:" + cancel.ID,
+	}, true
 }
 
 func (d *Dispatcher) cancelFailed(ctx context.Context, cancel state.Cancellation, job state.Job, diagnostic string, cause error) (Result, error) {
