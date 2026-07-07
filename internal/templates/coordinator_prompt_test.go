@@ -62,7 +62,7 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 		"disjoint write ownership",
 		"the coordinator retains only orchestration, gate-evaluation, integration, and handoff state, and consumes bounded worker outputs and `issue-spec read` results, not full issue/PR bodies or full diffs",
 		"Review is a first-class PROCESS node, not an inline coordinator step",
-		"add at least one dedicated review PROCESS node to the DAG and complete it before finalizing the PR",
+		"add at least one dedicated review PROCESS node to the DAG and complete it before final verify",
 		"issue_spec_coordinator_summary",
 		"opening fence must be exactly ```issue_spec_coordinator_summary on its own line",
 		"Start the JSON object on the next line",
