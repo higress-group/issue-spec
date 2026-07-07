@@ -12,6 +12,30 @@ import (
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
+// parseCoversSectionIDs extracts the reference IDs listed as bullets under the
+// `### Covers` section of a generated TASK body. The section ends at the next
+// `###` heading or end of body; `N/A` and blank bullets are ignored.
+func parseCoversSectionIDs(body string) []string {
+	var ids []string
+	inSection := false
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "### ") {
+			inSection = strings.EqualFold(trimmed, "### Covers")
+			continue
+		}
+		if !inSection || !strings.HasPrefix(trimmed, "- ") {
+			continue
+		}
+		ref := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+		if ref == "" || strings.EqualFold(ref, "N/A") {
+			continue
+		}
+		ids = append(ids, ref)
+	}
+	return ids
+}
+
 func (a *app) runComment(ctx context.Context, args []string) int {
 	if len(args) == 0 {
 		a.errorf("usage: issue-spec comment generate|upsert|list ...\n")
@@ -141,6 +165,7 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	status := fs.String("status", "draft", "typed comment status")
 	scope := fs.String("scope", "N/A", "typed comment scope")
 	allowNoncanonical := fs.Bool("allow-noncanonical", false, "write-time migration bypass for noncanonical SPEC/TASK/PROCESS bodies; does not create durable approval")
+	coversIssue := fs.String("covers-issue", "", "for a TASK, the issue holding the SPEC comments named in ### Covers; resolves them to durable Related Comments links (forward + backlink)")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -156,6 +181,12 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	}
 	rawBody, ok := a.readBodyFile(*bodyFile)
 	if !ok {
+		return 2
+	}
+	// Validate the --covers-issue flag combination before any auth/network so a
+	// wrong --type fails fast instead of surfacing an auth error first.
+	if strings.TrimSpace(*coversIssue) != "" && !strings.EqualFold(*commentType, "TASK") {
+		a.errorf("--covers-issue only applies to --type TASK, got %q\n", strings.ToUpper(*commentType))
 		return 2
 	}
 	session := resolveWriterSession(*agentSession)
@@ -186,20 +217,73 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 		a.errorf("auth required for comment upsert on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
 	}
-	action, comment, err := upsertTypedComment(ctx, client, repo, issueNumber, *commentType, *id, body)
+
+	// Durable covers (SPEC-002): for a TASK with --covers-issue, resolve the SPEC
+	// IDs listed in ### Covers to peer comment URLs, splice them into this TASK's
+	// Related Comments (forward link) before writing, and backlink each SPEC to the
+	// TASK afterwards. A resolution failure is non-fatal so the upsert still lands.
+	var coveredSpecs []model.Artifact
+	var coveredSpecBodies []string
+	if strings.TrimSpace(*coversIssue) != "" {
+		coversIssueNumber, err := parseIssueFlag(*coversIssue, "covers-issue")
+		if err != nil {
+			a.errorf("%v\n", err)
+			return 2
+		}
+		coversComments, err := client.ListIssueComments(ctx, repo, coversIssueNumber)
+		if err != nil {
+			a.errorf("list covers issue #%d: %v\n", coversIssueNumber, err)
+			return 1
+		}
+		for _, specID := range parseCoversSectionIDs(body) {
+			artifact, specBody, err := findArtifactByIDIn(coversComments, coversIssueNumber, specID)
+			if err != nil {
+				a.errorf("warning: covers %s not resolved on issue #%d: %v; skipping durable link\n", specID, coversIssueNumber, err)
+				continue
+			}
+			merged, _, err := model.AddRelatedCommentLink(body, artifact.URL)
+			if err != nil {
+				a.errorf("warning: link covers %s: %v; skipping durable link\n", specID, err)
+				continue
+			}
+			body = merged
+			coveredSpecs = append(coveredSpecs, artifact)
+			coveredSpecBodies = append(coveredSpecBodies, specBody)
+		}
+	}
+
+	action, comment, dropped, err := upsertTypedComment(ctx, client, repo, issueNumber, *commentType, *id, body)
 	if err != nil {
 		a.errorf("upsert comment: %v\n", err)
 		return 1
+	}
+	for i, spec := range coveredSpecs {
+		newSpecBody, changed, err := model.AddRelatedCommentLink(coveredSpecBodies[i], comment.HTMLURL)
+		if err != nil {
+			a.errorf("warning: backlink %s -> %s: %v\n", spec.Comment.ID, *id, err)
+			continue
+		}
+		if changed {
+			if _, err := client.UpdateComment(ctx, repo, spec.CommentID, newSpecBody); err != nil {
+				a.errorf("warning: patch backlink on %s: %v\n", spec.Comment.ID, err)
+			}
+		}
 	}
 	result := map[string]any{"ok": true, "action": action, "issue": issueNumber, "comment_id": comment.ID, "url": comment.HTMLURL, "api_url": comment.URL, "type": strings.ToUpper(*commentType), "id": *id}
 	if noncanonical {
 		result["noncanonical"] = true
 		result["canonical_diagnostics"] = diags
 	}
+	if len(dropped) > 0 {
+		result["dropped_related_comments"] = dropped
+	}
 	if *jsonOut {
 		return a.outputJSON(result)
 	}
 	fmt.Fprintf(a.out, "%s %s %s on issue #%d: %s\n", action, strings.ToUpper(*commentType), *id, issueNumber, comment.HTMLURL)
+	if len(dropped) > 0 {
+		fmt.Fprintf(a.out, "warning: %s %s on issue #%d dropped %d Related Comments link(s): %s\n", strings.ToUpper(*commentType), *id, issueNumber, len(dropped), strings.Join(dropped, ", "))
+	}
 	if noncanonical {
 		fmt.Fprintf(a.out, "warning: wrote noncanonical %s %s with --allow-noncanonical; status, verify, and archive will keep reporting the noncanonical state until it is regenerated or superseded.\n", strings.ToUpper(*commentType), *id)
 	}

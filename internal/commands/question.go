@@ -106,7 +106,7 @@ func (a *app) runQuestionCreate(ctx context.Context, args []string) int {
 		a.errorf("render question body: %v\n", err)
 		return 2
 	}
-	action, comment, err := upsertTypedComment(ctx, client, repo, issueNumber, "QUESTION", *id, body)
+	action, comment, _, err := upsertTypedComment(ctx, client, repo, issueNumber, "QUESTION", *id, body)
 	if err != nil {
 		a.errorf("upsert QUESTION %s: %v\n", *id, err)
 		return 1

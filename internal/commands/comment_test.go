@@ -198,6 +198,291 @@ func TestCommentListReportsCanonicalDiagnosticsForMalformedExistingSpec(t *testi
 	}
 }
 
+func generateCanonicalSpecBody(t *testing.T) string {
+	t.Helper()
+	inPath := writeTempInput(t, specInputJSON)
+	var genOut, errOut bytes.Buffer
+	gen := newApp(strings.NewReader(""), &genOut, &errOut)
+	if code := gen.runCommentGenerate(context.Background(), []string{"--type", "SPEC", "--id", "SPEC-001", "--status", "confirmed", "--input-file", inPath}); code != 0 {
+		t.Fatalf("generate failed: %s", errOut.String())
+	}
+	return genOut.String()
+}
+
+func TestCommentUpsertUpdatePreservesRelatedLinks(t *testing.T) {
+	// Reproduces the proposal #124 bug: a content-only regenerate must not drop the
+	// Related Comments link a prior `issue-spec link` spliced onto the comment.
+	peer := "https://github.com/o/r/issues/9#issuecomment-101"
+	fresh := generateCanonicalSpecBody(t)
+	existing, changed, err := model.AddRelatedCommentLink(fresh, peer)
+	if err != nil || !changed {
+		t.Fatalf("seed existing link: changed=%v err=%v", changed, err)
+	}
+	bodyPath := writeTempInput(t, fresh) // regenerated body carries Related Comments: N/A
+
+	var updated string
+	var out bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &bytes.Buffer{})
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+			return []github.Comment{{ID: 7, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-7", Body: existing}}, nil
+		}
+		f.updateComment = func(_ context.Context, _ string, _ int64, body string) (github.Comment, error) {
+			updated = body
+			return github.Comment{ID: 7, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-7"}, nil
+		}
+	})
+	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "SPEC", "--id", "SPEC-001", "--body-file", bodyPath, "--json"})
+	if code != 0 {
+		t.Fatalf("upsert update failed exit=%d out=%q", code, out.String())
+	}
+	if !strings.Contains(updated, peer) {
+		t.Fatalf("update must preserve prior Related Comments link %q:\n%s", peer, updated)
+	}
+	if urls := model.RelatedCommentURLs(model.ParseTypedComment(updated)); len(urls) != 1 {
+		t.Fatalf("expected exactly one preserved link, got %v", urls)
+	}
+	if strings.Contains(out.String(), "dropped") {
+		t.Fatalf("preserving update must not warn about dropped links: %s", out.String())
+	}
+}
+
+func TestCommentUpsertUpdateRetainsMultipleLinksWithoutDuplicates(t *testing.T) {
+	peer1 := "https://github.com/o/r/issues/9#issuecomment-101"
+	peer2 := "https://github.com/o/r/issues/9#issuecomment-102"
+	fresh := generateCanonicalSpecBody(t)
+	existing := fresh
+	for _, p := range []string{peer1, peer2} {
+		next, changed, err := model.AddRelatedCommentLink(existing, p)
+		if err != nil || !changed {
+			t.Fatalf("seed link %s: changed=%v err=%v", p, changed, err)
+		}
+		existing = next
+	}
+	// Regenerated body already carries peer1; peer2 exists only on the old comment.
+	freshWithOne, _, err := model.AddRelatedCommentLink(fresh, peer1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyPath := writeTempInput(t, freshWithOne)
+
+	var updated string
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+			return []github.Comment{{ID: 8, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-8", Body: existing}}, nil
+		}
+		f.updateComment = func(_ context.Context, _ string, _ int64, body string) (github.Comment, error) {
+			updated = body
+			return github.Comment{ID: 8}, nil
+		}
+	})
+	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "SPEC", "--id", "SPEC-001", "--body-file", bodyPath, "--json"})
+	if code != 0 {
+		t.Fatalf("upsert update failed exit=%d", code)
+	}
+	urls := model.RelatedCommentURLs(model.ParseTypedComment(updated))
+	if len(urls) != 2 {
+		t.Fatalf("expected both links retained without duplicates, got %v", urls)
+	}
+	if strings.Count(updated, peer1) != 1 || strings.Count(updated, peer2) != 1 {
+		t.Fatalf("links must appear exactly once each:\n%s", updated)
+	}
+}
+
+func generateTaskBody(t *testing.T, id, inputJSON string) string {
+	t.Helper()
+	inPath := writeTempInput(t, inputJSON)
+	var genOut, errOut bytes.Buffer
+	gen := newApp(strings.NewReader(""), &genOut, &errOut)
+	if code := gen.runCommentGenerate(context.Background(), []string{"--type", "TASK", "--id", id, "--input-file", inPath}); code != 0 {
+		t.Fatalf("generate TASK failed: %s", errOut.String())
+	}
+	return genOut.String()
+}
+
+func taskCoversInput(covers string) string {
+	return `{
+  "title": "Do the thing",
+  "summary": "A task under covers resolution.",
+  "checklist": ["step one"],
+  "covers": [` + covers + `],
+  "execution_planning": {
+    "owned_areas": ["internal/x"],
+    "shared_touchpoints": ["internal/y"],
+    "dependencies": ["none"],
+    "coupling": "low",
+    "execution_mode": "parallel",
+    "complexity": "low"
+  }
+}`
+}
+
+func TestParseCoversSectionIDs(t *testing.T) {
+	body := generateTaskBody(t, "TASK-001", taskCoversInput(`"SPEC-001", "SPEC-002"`))
+	ids := parseCoversSectionIDs(body)
+	if len(ids) != 2 || ids[0] != "SPEC-001" || ids[1] != "SPEC-002" {
+		t.Fatalf("parseCoversSectionIDs = %v, want [SPEC-001 SPEC-002]", ids)
+	}
+	empty := generateTaskBody(t, "TASK-001", taskCoversInput(``))
+	if ids := parseCoversSectionIDs(empty); len(ids) != 0 {
+		t.Fatalf("N/A covers should yield no IDs, got %v", ids)
+	}
+}
+
+func TestCommentUpsertCoversIssueCreatesDurableBidirectionalLinks(t *testing.T) {
+	// SPEC-002: a single generate | upsert --covers-issue links the TASK to its
+	// covered SPEC in both directions, with no separate `issue-spec link` call.
+	taskBody := generateTaskBody(t, "TASK-001", taskCoversInput(`"SPEC-001"`))
+	bodyPath := writeTempInput(t, taskBody)
+	specBody := generateCanonicalSpecBody(t)
+	specURL := "https://github.com/o/r/issues/100#issuecomment-501"
+	taskURL := "https://github.com/o/r/issues/5#issuecomment-9"
+
+	var createdTask, specUpdated string
+	var out bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &bytes.Buffer{})
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.listIssueComments = func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			if issue == 100 {
+				return []github.Comment{{ID: 501, HTMLURL: specURL, Body: specBody}}, nil
+			}
+			return nil, nil
+		}
+		f.createComment = func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
+			createdTask = body
+			return github.Comment{ID: 9, HTMLURL: taskURL}, nil
+		}
+		f.updateComment = func(_ context.Context, _ string, id int64, body string) (github.Comment, error) {
+			if id == 501 {
+				specUpdated = body
+			}
+			return github.Comment{ID: id}, nil
+		}
+	})
+	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "TASK", "--id", "TASK-001", "--body-file", bodyPath, "--covers-issue", "100", "--json"})
+	if code != 0 {
+		t.Fatalf("covers upsert failed exit=%d out=%q", code, out.String())
+	}
+	if !strings.Contains(createdTask, specURL) {
+		t.Fatalf("forward link (SPEC URL on TASK) missing:\n%s", createdTask)
+	}
+	if !strings.Contains(specUpdated, taskURL) {
+		t.Fatalf("backlink (TASK URL on SPEC) missing:\n%s", specUpdated)
+	}
+	arts := []model.Artifact{
+		{Issue: 5, CommentID: 9, URL: taskURL, Comment: model.ParseTypedComment(createdTask)},
+		{Issue: 100, CommentID: 501, URL: specURL, Comment: model.ParseTypedComment(specUpdated)},
+	}
+	if rep := model.VerifyTraceability(arts); !rep.OK {
+		t.Fatalf("traceability must be OK after covers linking: %v", rep.Errors)
+	}
+}
+
+func TestCommentUpsertCoversIssueUnknownIDWarnsButSucceeds(t *testing.T) {
+	taskBody := generateTaskBody(t, "TASK-001", taskCoversInput(`"SPEC-999"`))
+	bodyPath := writeTempInput(t, taskBody)
+
+	var createdTask string
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.listIssueComments = func(_ context.Context, _ string, _ int) ([]github.Comment, error) { return nil, nil }
+		f.createComment = func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
+			createdTask = body
+			return github.Comment{ID: 9, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-9"}, nil
+		}
+	})
+	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "TASK", "--id", "TASK-001", "--body-file", bodyPath, "--covers-issue", "100", "--json"})
+	if code != 0 {
+		t.Fatalf("upsert with unresolved covers must still succeed, exit=%d err=%q", code, errOut.String())
+	}
+	if createdTask == "" {
+		t.Fatal("TASK should still be written when a covers ID cannot be resolved")
+	}
+	if !strings.Contains(errOut.String(), "SPEC-999") {
+		t.Fatalf("expected a non-fatal warning naming the unresolved covers ID:\n%s", errOut.String())
+	}
+}
+
+func TestCommentUpsertCoversIssueRejectsNonTaskType(t *testing.T) {
+	// FINDING-002: --covers-issue only means something for a TASK; a wrong --type
+	// must fail loudly instead of writing a link-less comment that looks successful.
+	bodyPath := writeTempInput(t, generateCanonicalSpecBody(t))
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	// No backend override: it must reject before any client call.
+	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "SPEC", "--id", "SPEC-001", "--body-file", bodyPath, "--covers-issue", "100"})
+	if code != 2 {
+		t.Fatalf("expected exit 2 for --covers-issue on non-TASK, got %d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "--covers-issue only applies to --type TASK") {
+		t.Fatalf("rejection should explain the constraint:\n%s", errOut.String())
+	}
+}
+
+func TestCommentUpsertReportsDroppedLinksWhenBodyLacksLinksBlock(t *testing.T) {
+	// SPEC-003 end-to-end: the drop-warning wiring is reachable. A --allow-noncanonical
+	// TASK body that carries a header but no Links block cannot absorb the existing
+	// comment's Related Comments link on update, so the link is dropped and reported.
+	peer := "https://github.com/o/r/issues/9#issuecomment-101"
+	existing, changed, err := model.AddRelatedCommentLink(generateTaskBody(t, "TASK-001", taskCoversInput(``)), peer)
+	if err != nil || !changed {
+		t.Fatalf("seed existing link: changed=%v err=%v", changed, err)
+	}
+	// Header present (so EnsureTypedBody keeps it as-is) but no Links block.
+	linkless := "Type: TASK\nID: TASK-001\nStatus: draft\nScope: N/A\n\n## Summary\n\nnoncanonical task without a Links block\n"
+	bodyPath := writeTempInput(t, linkless)
+
+	var out bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &bytes.Buffer{})
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+			return []github.Comment{{ID: 7, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-7", Body: existing}}, nil
+		}
+		f.updateComment = func(_ context.Context, _ string, _ int64, _ string) (github.Comment, error) {
+			return github.Comment{ID: 7, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-7"}, nil
+		}
+	})
+	code := app.runCommentUpsert(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "TASK", "--id", "TASK-001", "--body-file", bodyPath, "--allow-noncanonical", "--json"})
+	if code != 0 {
+		t.Fatalf("allow-noncanonical upsert failed exit=%d out=%q", code, out.String())
+	}
+	var got struct {
+		Dropped []string `json:"dropped_related_comments"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Dropped) != 1 || got.Dropped[0] != peer {
+		t.Fatalf("expected the unabsorbable link reported as dropped, got %v", got.Dropped)
+	}
+}
+
+func TestDroppedRelatedLinks(t *testing.T) {
+	// The link-drop warning (SPEC-003) can only fire on a link-reducing write; once
+	// Decision 1's merge is in place the real path never reduces, so the detector is
+	// exercised directly on synthetic before/after sets.
+	before := []string{"https://x/#issuecomment-1", "https://x/#issuecomment-2"}
+	after := []string{"https://x/#issuecomment-1"}
+	dropped := droppedRelatedLinks(before, after)
+	if len(dropped) != 1 || dropped[0] != "https://x/#issuecomment-2" {
+		t.Fatalf("expected the reduced link reported as dropped, got %v", dropped)
+	}
+	if got := droppedRelatedLinks(before, before); len(got) != 0 {
+		t.Fatalf("no drop expected when the set is preserved, got %v", got)
+	}
+	// Superset (a link added) is not a drop.
+	if got := droppedRelatedLinks(after, before); len(got) != 0 {
+		t.Fatalf("adding links must not report a drop, got %v", got)
+	}
+}
+
 func TestCommentListKeepsLegacyTypedLookingCommentsInspectable(t *testing.T) {
 	// A legacy typed-looking comment (no marker, but Type/ID/Status header) must
 	// still be inspectable during migration.
