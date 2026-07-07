@@ -231,8 +231,22 @@ func (a *app) runRunnerPollCycleWithStore(ctx context.Context, cfg commentrunner
 			if !result.OK {
 				runErr = "intake reported failure"
 			} else if async != nil {
+				// Drain queued cancellations synchronously in the poll-cycle
+				// goroutine so an out-of-band /cancel is honored even when the
+				// async dispatcher is blocked inside a long acpx dispatch.
+				drain, drainErr := a.runRunnerCancellationDrainWithStore(ctx, cfg, store)
+				if drainErr != nil && drain.Error == "" {
+					// The cancellation drain is best-effort: record the failure
+					// on the drain result so it surfaces in the poll output, but
+					// never abort the cycle or skip the async dispatch trigger.
+					drain.Error = drainErr.Error()
+				}
 				dispatch := async.Trigger()
-				dispatchResult = &dispatch
+				if drain.Executed || drain.Error != "" {
+					dispatchResult = &drain
+				} else {
+					dispatchResult = &dispatch
+				}
 			} else {
 				dispatch, err := a.runRunnerDispatchWithStore(ctx, cfg, store)
 				if err != nil {
@@ -868,27 +882,59 @@ func (a *app) runRunnerDispatchWithStore(ctx context.Context, cfg commentrunner.
 	if a.runnerDispatch != nil {
 		return a.runnerDispatch(ctx, cfg)
 	}
-	selection, err := a.selectBackendForRunner(ctx, cfg)
+	dispatcher, cleanup, err := a.buildRunnerDispatcher(ctx, cfg, store)
 	if err != nil {
 		return jobs.Result{}, err
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if cfg.MaxConcurrentJobs > 1 {
+		return dispatcher.RunReady(ctx, cfg.MaxConcurrentJobs)
+	}
+	return dispatcher.RunNext(ctx)
+}
+
+// runRunnerCancellationDrainWithStore processes queued cancellations out-of-band
+// in the poll-cycle goroutine so a /cancel can interrupt an active job even while
+// the async dispatcher is blocked inside a long-running acpx dispatch.
+func (a *app) runRunnerCancellationDrainWithStore(ctx context.Context, cfg commentrunner.Config, store crstate.StateStore) (jobs.Result, error) {
+	if a.runnerCancellationDrain != nil {
+		return a.runnerCancellationDrain(ctx, cfg)
+	}
+	dispatcher, cleanup, err := a.buildRunnerDispatcher(ctx, cfg, store)
+	if err != nil {
+		return jobs.Result{}, err
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	return dispatcher.DrainCancellations(ctx, 0)
+}
+
+func (a *app) buildRunnerDispatcher(ctx context.Context, cfg commentrunner.Config, store crstate.StateStore) (*jobs.Dispatcher, func(), error) {
+	selection, err := a.selectBackendForRunner(ctx, cfg)
+	if err != nil {
+		return nil, nil, err
 	}
 	backend, err := a.backendForSelection(ctx, selection)
 	if err != nil {
-		return jobs.Result{}, err
+		return nil, nil, err
 	}
 	runnerBackend, ok := backend.(github.RunnerOperations)
 	if !ok {
-		return jobs.Result{}, fmt.Errorf("selected GitHub backend does not support runner status writeback")
+		return nil, nil, fmt.Errorf("selected GitHub backend does not support runner status writeback")
 	}
+	var cleanup func()
 	if store == nil {
 		opened, err := crstate.OpenFileStore(cfg.StatePath)
 		if err != nil {
-			return jobs.Result{}, err
+			return nil, nil, err
 		}
-		defer opened.Close()
+		cleanup = func() { _ = opened.Close() }
 		store = opened
 	}
-	dispatcher := jobs.Dispatcher{
+	dispatcher := &jobs.Dispatcher{
 		Store:        store,
 		Repositories: jobs.StaticRepositoryResolver{Hostname: cfg.Hostname},
 		Workspaces: workspace.Manager{
@@ -906,10 +952,7 @@ func (a *app) runRunnerDispatchWithStore(ctx context.Context, cfg commentrunner.
 		AcpxBinary:      cfg.AcpxPath,
 		IssueSpecBinary: issueSpecBinaryForRunner(),
 	}
-	if cfg.MaxConcurrentJobs > 1 {
-		return dispatcher.RunReady(ctx, cfg.MaxConcurrentJobs)
-	}
-	return dispatcher.RunNext(ctx)
+	return dispatcher, cleanup, nil
 }
 
 func issueSpecBinaryForRunner() string {
@@ -1023,6 +1066,9 @@ func (a *app) printRunnerPoll(result runnerDryRunResult) {
 			fmt.Fprintf(a.out, "dispatch: executed=%v jobs=%d first_job=%s status=%s reason=%s\n", result.Dispatch.Executed, result.Dispatch.ExecutedCount, result.Dispatch.JobID, result.Dispatch.Status, result.Dispatch.Reason)
 		} else {
 			fmt.Fprintf(a.out, "dispatch: executed=%v job=%s status=%s reason=%s\n", result.Dispatch.Executed, result.Dispatch.JobID, result.Dispatch.Status, result.Dispatch.Reason)
+		}
+		if result.Dispatch.Error != "" {
+			fmt.Fprintf(a.out, "dispatch error: %s\n", result.Dispatch.Error)
 		}
 	}
 	if result.Error != "" {
