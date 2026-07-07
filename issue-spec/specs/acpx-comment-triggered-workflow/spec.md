@@ -5,6 +5,7 @@
 Document the long-lived behavior contract for running issue-spec workflows from GitHub issue comments through the issue-spec runner, acpx, and a sandboxed coordinator agent.
 
 Proposal Issues:
+- https://github.com/higress-group/issue-spec/issues/145
 - https://github.com/higress-group/issue-spec/issues/24
 
 ## Requirements
@@ -196,3 +197,67 @@ The runner MUST own job lifecycle status writeback while allowing the sandboxed 
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/24#issuecomment-4865331607
+
+### Requirement: Out-of-band cancellation of in-flight jobs
+
+The runner MUST process a queued cancellation whose target job is dispatched or running without waiting for that job's in-flight dispatch call to return. Cancellation processing MUST run independently of the single async job-dispatch goroutine so that a cancellation cannot be serialized behind the very job it targets.
+
+#### Scenario: Cancel while target dispatch is blocked
+
+- **WHEN** a job is running and its async dispatch goroutine is blocked inside the acpx coordinator call, and a valid /cancel for that job's public session is queued
+- **THEN** the runner MUST process the cancellation in the same poll cycle it is queued, without waiting for the blocked dispatch call to return
+
+#### Scenario: No queued cancellation present
+
+- **WHEN** a poll cycle runs and no cancellation is queued
+- **THEN** the runner MUST perform no cancellation work and MUST leave job dispatch cadence unaffected
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/145#issuecomment-4904525769
+
+### Requirement: Cancel in-flight jobs by session identity without a persisted record id
+
+A queued cancellation targeting a dispatched or running job that has a public session id MUST be attempted via the ACP cancel path even when that job has not yet persisted a stable acpx record id. In-flight /new jobs acquire their stable record id only at completion, yet their acpx session already exists and is cancelable by session identity, so a missing record id MUST NOT by itself cause the runner to reject cancellation of an active job.
+
+#### Scenario: Running /new job without a persisted record id
+
+- **WHEN** a /new job is running with a public session id but no persisted stable acpx record id, and a valid /cancel for that session is queued
+- **THEN** the runner MUST attempt ACP cancellation using the job's session identity rather than rejecting the cancellation for a missing record id
+
+#### Scenario: Queued job not yet dispatched
+
+- **WHEN** the target job is still queued and has not started acpx dispatch
+- **THEN** the runner MUST cancel it before dispatch without requiring a stable acpx record id
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/145#issuecomment-4904526022
+
+### Requirement: Cancelled state survives late dispatch completion
+
+Once a job has been transitioned to cancelled, a subsequently returning blocked dispatch call for that job MUST NOT overwrite the cancelled terminal state and MUST NOT emit a conflicting terminal status writeback for that job.
+
+#### Scenario: Blocked dispatch returns after out-of-band cancel
+
+- **WHEN** a job has been cancelled out-of-band and its previously blocked dispatch call later returns with a result or error
+- **THEN** the runner MUST NOT transition the job to completed or failed and MUST NOT post a conflicting terminal status update for that job
+
+#### Scenario: Cancellation confirmed for active job
+
+- **WHEN** an ACP cancellation for an active job is confirmed
+- **THEN** the runner MUST record the job as cancelled and release its workspace lock so the session can be reused
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/145#issuecomment-4904527246
+
+### Requirement: Visible acceptance feedback for cancellation commands
+
+When the runner accepts and queues a valid /cancel command, it MUST provide prompt visible feedback on the trigger comment on acceptance, and it MUST surface the terminal cancellation outcome to the user rather than leaving an accepted cancellation silent.
+
+#### Scenario: Accepted cancellation is acknowledged
+
+- **WHEN** a valid /cancel command is accepted and queued and has not yet reached a terminal outcome
+- **THEN** the runner MUST add a reaction to the trigger comment so the command is visibly acknowledged from GitHub
+
+#### Scenario: Terminal cancellation outcome is reported
+
+- **WHEN** a queued cancellation reaches a terminal outcome
+- **THEN** the runner MUST post or update a status comment describing whether the cancellation was confirmed, failed, unsupported, or rejected
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/145#issuecomment-4904527613

@@ -622,7 +622,7 @@ func processCandidate(ctx context.Context, backend Backend, cfg commentrunner.Co
 			result.Commands = append(result.Commands, report)
 			return
 		}
-		queueCancellation(st, seen, candidate, source, authz, cancelTargetJobID, now, result)
+		queueCancellation(ctx, backend, st, seen, candidate, source, authz, cancelTargetJobID, now, result)
 		return
 	}
 	queueJob(ctx, backend, cfg, st, seen, candidate, source, authz, now, result)
@@ -707,7 +707,7 @@ func addQueuedJobReaction(ctx context.Context, backend Backend, candidate commen
 	}
 }
 
-func queueCancellation(st *crstate.RunnerState, seen crstate.SeenComment, candidate commentrunner.CommandCandidate, source string, authz commentrunner.AuthorizationResult, targetJobID string, now time.Time, result *Result) {
+func queueCancellation(ctx context.Context, backend Backend, st *crstate.RunnerState, seen crstate.SeenComment, candidate commentrunner.CommandCandidate, source string, authz commentrunner.AuthorizationResult, targetJobID string, now time.Time, result *Result) {
 	seen.ProducedCommandCandidate = true
 	seen.CommandCandidateID = candidate.ID
 	seen.CommandName = string(candidate.Verb)
@@ -716,6 +716,7 @@ func queueCancellation(st *crstate.RunnerState, seen crstate.SeenComment, candid
 		ID:                    stableID("cancel", candidate.IdempotencyKey),
 		IdempotencyKey:        candidate.IdempotencyKey,
 		Repo:                  candidate.Repo,
+		IssueNumber:           candidate.Issue,
 		TriggerCommentID:      candidate.TriggerCommentID,
 		CancelingUserLogin:    candidate.Commenter,
 		TargetPublicSessionID: candidate.PublicSessionID,
@@ -758,6 +759,7 @@ func queueCancellation(st *crstate.RunnerState, seen crstate.SeenComment, candid
 		PublicSessionID: candidate.PublicSessionID,
 		Created:         created,
 	})
+	addQueuedJobReaction(ctx, backend, candidate, source, result)
 }
 
 func activeCancelTarget(st *crstate.RunnerState, repo, publicID string) (crstate.Job, bool) {

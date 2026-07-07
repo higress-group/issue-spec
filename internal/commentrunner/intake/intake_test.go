@@ -773,8 +773,10 @@ func TestRunOnceQueuesCancelForActiveJobWithoutPublicSessionMapping(t *testing.T
 	if len(backend.createdRunnerComments) != 0 {
 		t.Fatalf("authorized cancellation should not create rejected writeback: %+v", backend.createdRunnerComments)
 	}
-	if len(backend.commentReactions) != 0 {
-		t.Fatalf("authorized cancellation should not add queued job reaction: %+v", backend.commentReactions)
+	if len(backend.commentReactions) != 1 ||
+		backend.commentReactions[0].commentID != 302 ||
+		backend.commentReactions[0].content != "eyes" {
+		t.Fatalf("authorized cancellation should add acceptance reaction: %+v", backend.commentReactions)
 	}
 }
 
