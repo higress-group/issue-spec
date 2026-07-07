@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for this capability.
+Define the long-lived behavior contract for how the implement phase plans and executes the PROCESS DAG: capturing execution-planning metadata on TASK comments, delegating every non-trivial coding node to a worker sub-agent by default for context isolation, defaulting to serial PROCESS chains with bounded handoff (serial chains still delegate across separate workers), gating parallel dispatch on proven decoupling as a concern separate from the context-isolation default, treating review and repair as first-class PROCESS nodes, and auditing execution-planning evidence at final verify.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/144
