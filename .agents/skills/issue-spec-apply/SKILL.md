@@ -30,10 +30,11 @@ links. Run `issue-spec verify-links` after propose as a smoke check.
 6. Link each PROCESS to its TASK comments with issue-spec link.
 7. Implement the code changes for one PROCESS scope at a time, or integrate completed worker outputs by dependency order. The worker that owns a code scope owns its own commits; the coordinator does not author code artifacts on a worker's behalf unless it is the assigned worker.
 8. Link every worker and review PROCESS to the PR with issue-spec pr link-process.
-9. Add proposal/design/implement closing links to the implementation PR body:
+9. Add proposal/design/implement closing links to the implementation PR body, and make this the final write to that PR body:
 
        issue-spec pr link-issues --repo higress-group/issue-spec --pr <implementation-pr> --proposal <proposal-issue> --design <design-issue> --implement <implement-issue> --json
 
+   The managed closure block lives in the mutable PR body, so any later full-body edit silently erases it and GitHub then closes only the issues still named in the body (the observed symptom is the proposal and design issues staying open while only the implement issue closes). Run link-issues last, or if a later body edit is unavoidable preserve the managed closure block verbatim or re-run issue-spec pr link-issues afterward to restore it. Before merge, gate on the block with issue-spec pr verify-closure --repo higress-group/issue-spec --pr <implementation-pr> --proposal <proposal-issue> --design <design-issue> --implement <implement-issue> (exit 0 = block complete/valid; exit 1 = block missing/incomplete/tampered, so restore it before merging).
 10. Add final PR rationale only after review/fix convergence, not as pre-review readiness evidence. Once all P0/P1 findings are resolved, the coordinator dispatches each owning worker to add rationale on the key code blocks that worker owns with issue-spec pr rationale (worker --agent and --agent-session), each linked to a SPEC comment.
 11. Mark PROCESS comments done only after implementation/review work and focused verification evidence exist.
 
@@ -47,6 +48,7 @@ links. Run `issue-spec verify-links` after propose as a smoke check.
 6. Spawn or assign review agents for non-trivial PRs; run them in parallel only when their review scopes are disjoint. Route findings to the owner PROCESS or a dedicated repair PROCESS under the same serial/parallel gating.
 7. Integrate completed outputs by dependency order and update PROCESS evidence (including ### Handoff for serial predecessors) before marking done.
 8. The coordinator owns scheduling, gate evaluation, status synchronization, unresolved-blocker routing, and final rationale dispatch only, and stays lean by consuming bounded worker outputs and issue-spec read results rather than full issue/PR bodies or full diffs. It does not author review findings, worker fix replies, review resolutions, or rationale on another agent's behalf unless explicitly assigned as that worker or review owner.
+9. Gate merge on the closure block: keep issue-spec pr link-issues the final write to the implementation PR body, because a later full-body edit silently erases the managed closure block and GitHub then closes only the issues still named in the body (proposal and design stay open, only implement closes). Before merge run issue-spec pr verify-closure --repo higress-group/issue-spec --pr <implementation-pr> --proposal <proposal-issue> --design <design-issue> --implement <implement-issue>; on exit 1 re-run pr link-issues to restore the block.
 
 ## Project Workflow
 
