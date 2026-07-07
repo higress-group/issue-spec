@@ -1,10 +1,13 @@
 package commands
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
@@ -238,6 +241,103 @@ func TestVerifyPullRequestClosureTamperedFails(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "unexpected issue closing link Closes #99") {
 		t.Fatalf("error = %v, want unexpected link", err)
+	}
+}
+
+func newVerifyClosureTestApp(t *testing.T, out, errOut *bytes.Buffer, pr github.PullRequest) *app {
+	t.Helper()
+	app := newApp(strings.NewReader(""), out, errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
+		return fakeGitHubBackend{
+			info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
+			getPullRequest: func(_ context.Context, repo string, prNumber int) (github.PullRequest, error) {
+				if repo != "o/r" || prNumber != pr.Number {
+					t.Fatalf("unexpected PR lookup repo=%q pr=%d", repo, prNumber)
+				}
+				return pr, nil
+			},
+		}, nil
+	}
+	return app
+}
+
+func TestRunPRVerifyClosureExitCodes(t *testing.T) {
+	completeRefs := []model.IssueClosureRef{
+		{Kind: "proposal", Number: 1},
+		{Kind: "design", Number: 2},
+		{Kind: "implement", Number: 3},
+	}
+	const prURL = "https://github.com/o/r/pull/7"
+	completeArgs := []string{"--repo", "o/r", "--pr", "7", "--proposal", "1", "--design", "2", "--implement", "3"}
+	cases := []struct {
+		name string
+		body string
+		args []string
+		want int
+	}{
+		{
+			name: "complete block passes",
+			body: mustClosureBody(t, completeRefs...),
+			args: completeArgs,
+			want: 0,
+		},
+		{
+			name: "subset block fails",
+			body: mustClosureBody(t, model.IssueClosureRef{Kind: "implement", Number: 3}),
+			args: completeArgs,
+			want: 1,
+		},
+		{
+			name: "unexpected extra closes fails",
+			body: mustClosureBody(t,
+				model.IssueClosureRef{Kind: "proposal", Number: 1},
+				model.IssueClosureRef{Kind: "design", Number: 2},
+				model.IssueClosureRef{Kind: "implement", Number: 99},
+			),
+			args: completeArgs,
+			want: 1,
+		},
+		{
+			name: "missing proposal flag",
+			body: mustClosureBody(t, completeRefs...),
+			args: []string{"--repo", "o/r", "--pr", "7", "--design", "2", "--implement", "3"},
+			want: 2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			app := newVerifyClosureTestApp(t, &out, &errOut, github.PullRequest{Number: 7, HTMLURL: prURL, Body: tc.body})
+			code := app.runPRVerifyClosure(context.Background(), tc.args)
+			if code != tc.want {
+				t.Fatalf("exit code = %d, want %d\nstdout=%q stderr=%q", code, tc.want, out.String(), errOut.String())
+			}
+		})
+	}
+}
+
+func TestRunPRVerifyClosureJSONSuccess(t *testing.T) {
+	refs := []model.IssueClosureRef{
+		{Kind: "proposal", Number: 1},
+		{Kind: "design", Number: 2},
+		{Kind: "implement", Number: 3},
+	}
+	const prURL = "https://github.com/o/r/pull/7"
+	var out, errOut bytes.Buffer
+	app := newVerifyClosureTestApp(t, &out, &errOut, github.PullRequest{Number: 7, HTMLURL: prURL, Body: mustClosureBody(t, refs...)})
+	code := app.runPRVerifyClosure(context.Background(), []string{
+		"--repo", "o/r", "--pr", "7", "--proposal", "1", "--design", "2", "--implement", "3", "--json",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0\nstderr=%q", code, errOut.String())
+	}
+	var result verifyPullRequestClosureResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON output %q: %v", out.String(), err)
+	}
+	if !result.OK || result.PR != 7 || result.PRURL != prURL || result.Proposal != 1 || result.Design != 2 || result.Implement != 3 || result.Error != "" {
+		t.Fatalf("unexpected JSON result: %+v", result)
 	}
 }
 
