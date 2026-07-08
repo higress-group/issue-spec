@@ -157,34 +157,33 @@ func (a *app) runPRVerifyClosure(ctx context.Context, args []string) int {
 		a.errorf("--pr must be a positive pull request number\n")
 		return 2
 	}
-	proposalIssue, err := parseIssueFlag(*proposalFlag, "proposal")
-	if err != nil {
-		a.errorf("%v\n", err)
-		return 2
-	}
-	designIssue, err := parseIssueFlag(*designFlag, "design")
-	if err != nil {
-		a.errorf("%v\n", err)
-		return 2
-	}
-	implementIssue, err := parseIssueFlag(*implementFlag, "implement")
-	if err != nil {
-		a.errorf("%v\n", err)
-		return 2
+	// Subset-aware: verify exactly the refs the caller declares (>=1) instead of
+	// hard-coding all three. Can be unified with link-issues' issueClosureRefsFromFlags
+	// helper once PR #154 lands.
+	refs, code := a.verifyClosureRefsFromFlags(*proposalFlag, *designFlag, *implementFlag)
+	if code != 0 {
+		return code
 	}
 	client, _, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("auth required for pr verify-closure on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
 	}
-	result, err := verifyPullRequestClosure(ctx, client, repo, *prFlag, []model.IssueClosureRef{
-		{Kind: "proposal", Number: proposalIssue},
-		{Kind: "design", Number: designIssue},
-		{Kind: "implement", Number: implementIssue},
-	})
+	result, err := verifyPullRequestClosure(ctx, client, repo, *prFlag, refs)
 	if err != nil {
 		if *jsonOut {
-			a.outputJSON(verifyPullRequestClosureResult{OK: false, PR: *prFlag, Proposal: proposalIssue, Design: designIssue, Implement: implementIssue, Error: err.Error()})
+			errResult := verifyPullRequestClosureResult{OK: false, PR: *prFlag, Error: err.Error()}
+			for _, ref := range refs {
+				switch ref.Kind {
+				case "proposal":
+					errResult.Proposal = ref.Number
+				case "design":
+					errResult.Design = ref.Number
+				case "implement":
+					errResult.Implement = ref.Number
+				}
+			}
+			a.outputJSON(errResult)
 		} else {
 			a.errorf("verify PR closure links: %v\n", err)
 		}
@@ -193,8 +192,44 @@ func (a *app) runPRVerifyClosure(ctx context.Context, args []string) int {
 	if *jsonOut {
 		return a.outputJSON(result)
 	}
-	fmt.Fprintf(a.out, "PR %s has complete issue-spec closing links: proposal #%d, design #%d, implement #%d\n", result.PRURL, proposalIssue, designIssue, implementIssue)
+	parts := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		parts = append(parts, fmt.Sprintf("%s #%d", ref.Kind, ref.Number))
+	}
+	fmt.Fprintf(a.out, "PR %s has expected issue-spec closing links: %s\n", result.PRURL, strings.Join(parts, ", "))
 	return 0
+}
+
+// verifyClosureRefsFromFlags builds the declared closing-block refs in fixed order
+// (proposal, design, implement), skipping empty flags and requiring at least one.
+// On error it emits the message and returns a non-zero exit code (2).
+// NOTE: intentionally named differently from link-issues' issueClosureRefsFromFlags
+// (added by PR #154) to avoid a duplicate definition; unify once #154 lands.
+func (a *app) verifyClosureRefsFromFlags(proposalFlag, designFlag, implementFlag string) ([]model.IssueClosureRef, int) {
+	var refs []model.IssueClosureRef
+	for _, f := range []struct {
+		kind  string
+		value string
+	}{
+		{"proposal", proposalFlag},
+		{"design", designFlag},
+		{"implement", implementFlag},
+	} {
+		if strings.TrimSpace(f.value) == "" {
+			continue
+		}
+		number, err := parseIssueFlag(f.value, f.kind)
+		if err != nil {
+			a.errorf("%v\n", err)
+			return nil, 2
+		}
+		refs = append(refs, model.IssueClosureRef{Kind: f.kind, Number: number})
+	}
+	if len(refs) == 0 {
+		a.errorf("at least one of --proposal, --design, --implement is required\n")
+		return nil, 2
+	}
+	return refs, 0
 }
 
 type verifyPullRequestClosureResult struct {

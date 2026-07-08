@@ -299,9 +299,36 @@ func TestRunPRVerifyClosureExitCodes(t *testing.T) {
 			want: 1,
 		},
 		{
-			name: "missing proposal flag",
+			name: "declared implement-only subset matches",
+			body: mustClosureBody(t, model.IssueClosureRef{Kind: "implement", Number: 3}),
+			args: []string{"--repo", "o/r", "--pr", "7", "--implement", "3"},
+			want: 0,
+		},
+		{
+			name: "declared proposal+implement subset matches",
+			body: mustClosureBody(t,
+				model.IssueClosureRef{Kind: "proposal", Number: 1},
+				model.IssueClosureRef{Kind: "implement", Number: 3},
+			),
+			args: []string{"--repo", "o/r", "--pr", "7", "--proposal", "1", "--implement", "3"},
+			want: 0,
+		},
+		{
+			name: "declared subset but block has all three fails",
 			body: mustClosureBody(t, completeRefs...),
-			args: []string{"--repo", "o/r", "--pr", "7", "--design", "2", "--implement", "3"},
+			args: []string{"--repo", "o/r", "--pr", "7", "--implement", "3"},
+			want: 1,
+		},
+		{
+			name: "declared subset missing a declared ref fails",
+			body: mustClosureBody(t, model.IssueClosureRef{Kind: "implement", Number: 3}),
+			args: []string{"--repo", "o/r", "--pr", "7", "--proposal", "1", "--implement", "3"},
+			want: 1,
+		},
+		{
+			name: "zero flags provided",
+			body: mustClosureBody(t, completeRefs...),
+			args: []string{"--repo", "o/r", "--pr", "7"},
 			want: 2,
 		},
 	}
