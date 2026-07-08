@@ -341,6 +341,30 @@ func TestRunPRVerifyClosureJSONSuccess(t *testing.T) {
 	}
 }
 
+func TestRunPRVerifyClosureJSONFailure(t *testing.T) {
+	const prURL = "https://github.com/o/r/pull/7"
+	var out, errOut bytes.Buffer
+	// Tampered body: only a subset closure block while all refs are expected.
+	tamperedBody := mustClosureBody(t, model.IssueClosureRef{Kind: "implement", Number: 3})
+	app := newVerifyClosureTestApp(t, &out, &errOut, github.PullRequest{Number: 7, HTMLURL: prURL, Body: tamperedBody})
+	code := app.runPRVerifyClosure(context.Background(), []string{
+		"--repo", "o/r", "--pr", "7", "--proposal", "1", "--design", "2", "--implement", "3", "--json",
+	})
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1\nstdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var result verifyPullRequestClosureResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON output %q: %v", out.String(), err)
+	}
+	if result.OK {
+		t.Fatalf("OK = true, want false: %+v", result)
+	}
+	if result.Error == "" {
+		t.Fatalf("Error is empty, want non-empty: %+v", result)
+	}
+}
+
 type fakePRClient struct {
 	pr            github.PullRequest
 	files         []github.PullRequestFile
