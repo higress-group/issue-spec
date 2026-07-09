@@ -130,6 +130,7 @@ Usage:
   issue-spec pr rationale --repo owner/repo --pr N --path file.go --line 42 --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "why"
   issue-spec pr link-process --repo owner/repo --issue N --process PROCESS-001 --pr N
   issue-spec pr link-issues --repo owner/repo --pr N --proposal N --design N --implement N
+  issue-spec pr verify-closure --repo owner/repo --pr N --proposal N --design N --implement N [--json]
   issue-spec review finding --repo owner/repo --pr N --path file.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "what to fix"
   issue-spec review reply --repo owner/repo --pr N --comment-id COMMENT_ID --finding FINDING-001 --process PROCESS-001 --status resolved --body "fixed"
   issue-spec review sync --repo owner/repo --pr N --implement N --id REVIEW-001
