@@ -149,6 +149,96 @@ func TestLinkPullRequestIssuesWritesClosingKeywords(t *testing.T) {
 	}
 }
 
+func TestIssueClosureRefsFromFlags(t *testing.T) {
+	t.Run("all three provided keep order", func(t *testing.T) {
+		refs, err := issueClosureRefsFromFlags("144", "146", "147")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []model.IssueClosureRef{
+			{Kind: "proposal", Number: 144},
+			{Kind: "design", Number: 146},
+			{Kind: "implement", Number: 147},
+		}
+		if len(refs) != len(want) {
+			t.Fatalf("refs = %+v, want %+v", refs, want)
+		}
+		for i := range want {
+			if refs[i] != want[i] {
+				t.Fatalf("refs = %+v, want %+v", refs, want)
+			}
+		}
+	})
+
+	t.Run("subset without design keeps only provided", func(t *testing.T) {
+		refs, err := issueClosureRefsFromFlags("144", "", "147")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []model.IssueClosureRef{
+			{Kind: "proposal", Number: 144},
+			{Kind: "implement", Number: 147},
+		}
+		if len(refs) != len(want) {
+			t.Fatalf("refs = %+v, want %+v", refs, want)
+		}
+		for i := range want {
+			if refs[i] != want[i] {
+				t.Fatalf("refs = %+v, want %+v", refs, want)
+			}
+		}
+		for _, ref := range refs {
+			if ref.Kind == "design" {
+				t.Fatalf("design must be absent when its flag is empty: %+v", refs)
+			}
+		}
+	})
+
+	t.Run("none provided errors", func(t *testing.T) {
+		if _, err := issueClosureRefsFromFlags("", "", ""); err == nil {
+			t.Fatal("expected error when no issue flags are provided")
+		}
+	})
+
+	t.Run("invalid value errors", func(t *testing.T) {
+		if _, err := issueClosureRefsFromFlags("144", "not-a-number", "147"); err == nil {
+			t.Fatal("expected error for invalid design value")
+		}
+	})
+}
+
+func TestLinkPullRequestIssuesWritesSubsetClosingKeywords(t *testing.T) {
+	ctx := context.Background()
+	client := &fakePRClient{pr: github.PullRequest{
+		Number:  7,
+		HTMLURL: "https://github.com/o/r/pull/7",
+		Body:    "## Summary\n\nImplementation details.\n",
+	}}
+	refs, err := issueClosureRefsFromFlags("144", "", "147")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := linkPullRequestIssues(ctx, client, "o/r", 7, refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || !result.Changed || result.Proposal != 144 || result.Implement != 147 || result.Design != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(client.updatedBodies) != 1 {
+		t.Fatalf("updated bodies = %d, want 1", len(client.updatedBodies))
+	}
+	body := client.updatedBodies[0]
+	for _, want := range []string{"Closes #144", "Closes #147"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("PR body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "Closes #146") {
+		t.Fatalf("PR body should not close design issue when its flag is empty:\n%s", body)
+	}
+}
+
 func TestLinkPullRequestIssuesRejectsMergedPR(t *testing.T) {
 	client := &fakePRClient{pr: github.PullRequest{Number: 7, HTMLURL: "https://github.com/o/r/pull/7", Merged: true}}
 	_, err := linkPullRequestIssues(context.Background(), client, "o/r", 7, []model.IssueClosureRef{{Kind: "proposal", Number: 1}})
