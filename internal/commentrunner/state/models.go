@@ -694,7 +694,7 @@ func (s *RunnerState) UpsertPublicSession(session PublicSession) error {
 	if strings.TrimSpace(session.Repo) == "" || strings.TrimSpace(session.PublicSessionID) == "" {
 		return fmt.Errorf("public session requires repo and public session id")
 	}
-	if strings.TrimSpace(session.AcpxRecordID) == "" && !((session.Status == StatusDispatched || session.Status == StatusRunning || session.Status == StatusFailed || session.Status == StatusCancelled) && session.RepositoryBinding.Complete()) {
+	if strings.TrimSpace(session.AcpxRecordID) == "" && !((session.Status == StatusDispatched || session.Status == StatusRunning || session.Status == StatusFailed || session.Status == StatusCancelled || session.Status == StatusInterrupted) && session.RepositoryBinding.Complete()) {
 		return fmt.Errorf("public session requires acpx record id")
 	}
 	if session.Status == "" {

@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/workspace"
 )
 
@@ -291,18 +294,30 @@ func TestDrainCancellationsCancelsRunningJobWithoutRecordID(t *testing.T) {
 	assertWritebackStatuses(t, writebacks, state.StatusCancelled)
 }
 
-// TestReconcileRejectsJobMissingRecordID is the TASK-002 guard test: cancellation
-// relaxed the session-ref requirement, but reconciliation must still refuse to
-// reconcile a job that lacks a stable acpx record id (it interrupts instead).
+// TestReconcileRejectsJobMissingRecordID covers restart after an in-flight /new
+// persisted its public session but not ACPX metadata. Reconciliation must not
+// query or fabricate a record; it interrupts the job and existing session,
+// completes credential cleanup, and releases both durable and physical locks.
 func TestReconcileRejectsJobMissingRecordID(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 5, 13, 0, 0, 0, time.UTC)
+	root := t.TempDir()
 	workspaceMeta := testBinding("ws-reconcile-norec").Workspace
+	workspaceMeta.Path = filepath.Join(root, workspaceMeta.ID)
+	if err := os.MkdirAll(workspaceMeta.Path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := workspace.Manager{Root: root, Retention: time.Hour, Now: func() time.Time { return now }, TokenFunc: func() (string, error) { return "restart-lock-token", nil }}
+	lock, err := manager.AcquireLock(context.Background(), workspace.LockRequest{Repo: "o/r", PublicSessionID: "ps-reconcile-norec", JobID: "job-reconcile-norec", WorkspaceID: workspaceMeta.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.ReleaseLock(lock) })
 	seedState(t, store, func(st *state.RunnerState) error {
 		if err := st.UpsertWorkspace(workspaceMeta); err != nil {
 			return err
 		}
-		return st.UpsertJob(state.Job{
+		job := state.Job{
 			ID:                  "job-reconcile-norec",
 			Repo:                "o/r",
 			IssueNumber:         30,
@@ -317,24 +332,43 @@ func TestReconcileRejectsJobMissingRecordID(t *testing.T) {
 			CreatedAt:           now,
 			UpdatedAt:           now,
 			Workspace:           workspaceMeta,
-			DispatchIntent: state.DispatchIntent{
-				RunnerJobID:     "job-reconcile-norec",
-				PublicSessionID: "ps-reconcile-norec",
+			RepositoryBinding:   workspaceMeta.RepositoryBinding,
+			CredentialCleanup: state.CredentialCleanup{
+				Status: state.CredentialCleanupPending, RequestedAt: now.Add(-time.Minute),
 			},
+			DispatchIntent: state.DispatchIntent{
+				RunnerJobID:          "job-reconcile-norec",
+				PublicSessionID:      "ps-reconcile-norec",
+				RepositoryBinding:    workspaceMeta.RepositoryBinding,
+				WorkspaceLockOwner:   "job-reconcile-norec",
+				TurnCorrelationToken: "turn-reconcile-norec",
+			},
+		}
+		if err := st.UpsertJob(job); err != nil {
+			return err
+		}
+		return st.UpsertPublicSession(state.PublicSession{
+			Repo: "o/r", PublicSessionID: "ps-reconcile-norec", IssueNumber: 30, CreatorLogin: "alice",
+			Status: state.StatusRunning, Workspace: workspaceMeta, RepositoryBinding: workspaceMeta.RepositoryBinding,
+			Queue: state.SessionQueue{AcceptedSequence: 1, PendingJobIDs: []string{"job-reconcile-norec"}}, Lock: lock,
+			CreatedAt: now.Add(-time.Minute), LastUsedAt: now, LastJobID: "job-reconcile-norec",
 		})
 	})
 
 	writebacks := &fakeWriteback{store: store}
-	workspaces := &fakeWorkspaces{binding: testBinding("unused")}
 	coordinator := &fakeCancelCoordinator{}
-	dispatcher := testDispatcher(store, workspaces, &fakeCoordinator{}, writebacks, now)
+	dispatcher := testDispatcher(store, &fakeWorkspaces{binding: testBinding("unused")}, &fakeCoordinator{}, writebacks, now)
+	dispatcher.Workspaces = manager
 	dispatcher.Acpx = staticAcpxFactory{coordinator: coordinator}
+	credentialBroker := &revokeOnlyBroker{}
+	dispatcher.CredentialBroker = credentialBroker
+	dispatcher.CredentialScopes = map[string]models.RepoScope{"o/r": {OrgID: uuid.New(), RepoID: uuid.New()}}
 
 	result, err := dispatcher.Reconcile(context.Background())
 	if err != nil {
 		t.Fatalf("Reconcile returned error: %v", err)
 	}
-	if result.Interrupted != 1 {
+	if result.Interrupted != 1 || result.CredentialCleanupAttempts != 1 || result.CredentialCleanupComplete != 1 || result.CredentialCleanupPending != 0 {
 		t.Fatalf("unexpected reconcile result: %+v", result)
 	}
 	if coordinator.cancelCalls != 0 {
@@ -350,8 +384,33 @@ func TestReconcileRejectsJobMissingRecordID(t *testing.T) {
 	if !foundDiagnostic {
 		t.Fatalf("reconcile diagnostics missing record-id rejection: %+v", result.Diagnostics)
 	}
-	if got := loadState(t, store).Jobs["job-reconcile-norec"].Status; got != state.StatusInterrupted {
-		t.Fatalf("record-id-less job status = %s, want interrupted", got)
+	assertWritebackStatuses(t, writebacks, state.StatusInterrupted)
+	if len(writebacks.requests) != 1 || writebacks.requests[0].Phase != "restart-reconcile-interrupted" {
+		t.Fatalf("restart interruption writeback changed: %+v", writebacks.requests)
+	}
+	st := loadState(t, store)
+	job := st.Jobs["job-reconcile-norec"]
+	if job.Status != state.StatusInterrupted || job.AcpxRecordID != "" || !job.Workspace.Dirty || !job.Workspace.Uncertain || job.CredentialCleanup.Status != state.CredentialCleanupComplete {
+		t.Fatalf("record-id-less job was not interrupted and cleaned: %+v", job)
+	}
+	session, ok := st.GetPublicSession("o/r", "ps-reconcile-norec")
+	if !ok || session.Status != state.StatusInterrupted || session.AcpxRecordID != "" || session.Workspace.ID != workspaceMeta.ID ||
+		!session.Workspace.Dirty || !session.Workspace.Uncertain || !session.RepositoryBinding.Equal(workspaceMeta.RepositoryBinding) ||
+		len(session.Queue.PendingJobIDs) != 0 || session.Lock.OwnerJobID != "" {
+		t.Fatalf("record-id-less restart session retained active state: %+v ok=%v", session, ok)
+	}
+	if len(credentialBroker.jobs) != 1 || credentialBroker.jobs[0] != "job-reconcile-norec" {
+		t.Fatalf("restart credential cleanup calls = %v", credentialBroker.jobs)
+	}
+	if _, err := os.Stat(lock.WorkspaceLockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("physical restart workspace lock still present: %v", err)
+	}
+	reacquired, err := manager.AcquireLock(context.Background(), workspace.LockRequest{Repo: "o/r", PublicSessionID: "ps-reconcile-norec", JobID: "job-after-restart", WorkspaceID: workspaceMeta.ID})
+	if err != nil {
+		t.Fatalf("physical restart workspace lock was not reusable: %v", err)
+	}
+	if err := manager.ReleaseLock(reacquired); err != nil {
+		t.Fatal(err)
 	}
 }
 

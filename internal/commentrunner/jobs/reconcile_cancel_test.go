@@ -146,7 +146,8 @@ func TestReconcileAmbiguousMarksInterruptedAndDirty(t *testing.T) {
 		t.Fatalf("ambiguous job not marked interrupted/dirty: %+v", job)
 	}
 	session, ok := st.GetPublicSession("o/r", "ps-reconcile")
-	if !ok || session.Status != state.StatusInterrupted || !session.Workspace.Uncertain {
+	if !ok || session.Status != state.StatusInterrupted || session.AcpxRecordID != "rec-reconcile" || session.Workspace.ID != workspaceMeta.ID ||
+		!session.Workspace.Uncertain || !session.RepositoryBinding.Equal(workspaceMeta.RepositoryBinding) || len(session.Queue.PendingJobIDs) != 0 || session.Lock.OwnerJobID != "" {
 		t.Fatalf("session not marked interrupted/uncertain: %+v ok=%v", session, ok)
 	}
 }

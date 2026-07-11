@@ -73,6 +73,39 @@ func TestRuntimeJobLoopSurvivesBenignCancelledDispatchCompletion(t *testing.T) {
 	}
 }
 
+func TestRuntimeContinuesAfterInterruptedStartupReconciliation(t *testing.T) {
+	log := &runtimeLog{}
+	dispatcher := &interruptedReconcileRuntimeDispatcher{jobsStarted: make(chan struct{})}
+	runtime, err := NewRuntime(RuntimeConfig{
+		HTTP: &fakeRuntimeHTTP{log: log}, Reconciler: &fakeRuntimeReconciler{log: log}, Dispatcher: dispatcher,
+		MaxConcurrentJobs: 1, DispatchIdleDelay: time.Millisecond, CancelIdleDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	select {
+	case <-dispatcher.jobsStarted:
+		// Startup reconciliation terminalized the unrecoverable turn and the
+		// long-running job loop still started.
+	case err := <-done:
+		t.Fatalf("runner serve exited after interrupted startup reconciliation: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("runner job loop did not start after interrupted reconciliation")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("runner serve exited before shutdown: %v", err)
+	default:
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 type runtimeLog struct {
 	mu    sync.Mutex
 	items []string
@@ -164,6 +197,30 @@ func (f *benignCancellationRuntimeDispatcher) RunJobsReady(ctx context.Context, 
 }
 
 func (*benignCancellationRuntimeDispatcher) DrainCancellations(ctx context.Context, _ int) (jobs.Result, error) {
+	select {
+	case <-ctx.Done():
+		return jobs.Result{}, ctx.Err()
+	case <-time.After(time.Millisecond):
+		return jobs.Result{Reason: "no queued cancellations"}, nil
+	}
+}
+
+type interruptedReconcileRuntimeDispatcher struct {
+	jobsStarted chan struct{}
+	once        sync.Once
+}
+
+func (*interruptedReconcileRuntimeDispatcher) Reconcile(context.Context) (jobs.ReconcileResult, error) {
+	return jobs.ReconcileResult{Reconciled: 1, Interrupted: 1}, nil
+}
+
+func (f *interruptedReconcileRuntimeDispatcher) RunJobsReady(ctx context.Context, _ int) (jobs.Result, error) {
+	f.once.Do(func() { close(f.jobsStarted) })
+	<-ctx.Done()
+	return jobs.Result{}, ctx.Err()
+}
+
+func (*interruptedReconcileRuntimeDispatcher) DrainCancellations(ctx context.Context, _ int) (jobs.Result, error) {
 	select {
 	case <-ctx.Done():
 		return jobs.Result{}, ctx.Err()

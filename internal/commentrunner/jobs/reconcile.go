@@ -547,11 +547,11 @@ func upsertSessionForReconciledJob(st *state.RunnerState, job state.Job, status 
 	}
 	session, found := st.GetPublicSession(job.Repo, job.PublicSessionID)
 	if strings.TrimSpace(job.AcpxRecordID) == "" {
-		// A confirmed cancellation may win before /new has returned stable ACPX
-		// metadata. In that case only an already-persisted running session may be
-		// terminalized; never synthesize a session or a record id. Other
-		// reconciliation paths still require stable metadata.
-		if status != state.StatusCancelled || !found {
+		// Cancellation or restart interruption may win before /new has returned
+		// stable ACPX metadata. In either case only an already-persisted running
+		// session may be terminalized; never synthesize a session or a record id.
+		// Other reconciliation paths still require stable metadata.
+		if (status != state.StatusCancelled && status != state.StatusInterrupted) || !found {
 			return nil
 		}
 	}
