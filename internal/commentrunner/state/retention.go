@@ -25,6 +25,7 @@ type RetentionPolicy struct {
 	MaxTerminalCancellations int
 	MaxTerminalWritebacks    int
 	MaxTerminalSessions      int
+	MaxTerminalDeliveries    int
 }
 
 // DefaultRetentionPolicy is applied automatically on every save.
@@ -36,20 +37,23 @@ func DefaultRetentionPolicy() RetentionPolicy {
 		MaxTerminalCancellations: 200,
 		MaxTerminalWritebacks:    200,
 		MaxTerminalSessions:      200,
+		MaxTerminalDeliveries:    1000,
 	}
 }
 
 // CompactionReport summarizes what Compact changed. It is returned for the
 // explicit dry-run/observability path and ignored on the automatic save hook.
 type CompactionReport struct {
-	JobsTombstoned          int
-	JobsPruned              int
-	CancellationsTombstoned int
-	CancellationsPruned     int
-	WritebacksTombstoned    int
-	WritebacksPruned        int
-	SessionsPruned          int
-	DanglingIndexesDropped  int
+	JobsTombstoned             int
+	JobsPruned                 int
+	CancellationsTombstoned    int
+	CancellationsPruned        int
+	WritebacksTombstoned       int
+	WritebacksPruned           int
+	SessionsPruned             int
+	DeliveryPayloadsTombstoned int
+	DeliveriesPruned           int
+	DanglingIndexesDropped     int
 }
 
 // Compact tombstones terminal records (stripping heavy payloads while keeping
@@ -64,14 +68,35 @@ func (s *RunnerState) Compact(now time.Time, policy RetentionPolicy) CompactionR
 	report.JobsTombstoned = s.tombstoneTerminalJobs()
 	report.CancellationsTombstoned = s.tombstoneTerminalCancellations()
 	report.WritebacksTombstoned = s.tombstoneTerminalWritebacks()
+	report.DeliveryPayloadsTombstoned = s.tombstoneTerminalDeliveries()
 
 	report.JobsPruned = s.pruneTerminalJobs(now, policy)
 	report.CancellationsPruned = s.pruneTerminalCancellations(now, policy)
 	report.WritebacksPruned = s.pruneTerminalWritebacks(now, policy)
 	report.SessionsPruned = s.pruneTerminalSessions(now, policy)
+	report.DeliveriesPruned = s.pruneTerminalDeliveries(now, policy)
 
 	report.DanglingIndexesDropped = s.dropDanglingIndexes()
 	return report
+}
+
+func (s *RunnerState) tombstoneTerminalDeliveries() int {
+	count := 0
+	for id, delivery := range s.Deliveries {
+		if !delivery.Status.Terminal() || len(delivery.RawEnvelope) == 0 {
+			continue
+		}
+		delivery.RawEnvelope = nil
+		delivery.LeaseOwner = ""
+		delivery.LeaseToken = ""
+		delivery.LeaseUntil = time.Time{}
+		if len(delivery.LastError) > 256 {
+			delivery.LastError = delivery.LastError[:256]
+		}
+		s.Deliveries[id] = delivery
+		count++
+	}
+	return count
 }
 
 // --- tombstoning (in-place shrink of terminal records) ---
@@ -235,6 +260,36 @@ func (s *RunnerState) pruneTerminalSessions(now time.Time, policy RetentionPolic
 		}
 		delete(s.PublicSessions, e.key)
 		count++
+	}
+	return count
+}
+
+func (s *RunnerState) pruneTerminalDeliveries(now time.Time, policy RetentionPolicy) int {
+	type entry struct {
+		id string
+		at time.Time
+	}
+	var terminal []entry
+	for id, delivery := range s.Deliveries {
+		if !delivery.Status.Terminal() {
+			continue
+		}
+		at := delivery.CompletedAt
+		if at.IsZero() {
+			at = delivery.ReceivedAt
+		}
+		terminal = append(terminal, entry{id: id, at: at})
+	}
+	sortByTimeDesc(len(terminal), func(i int) time.Time { return terminal[i].at }, func(i, j int) {
+		terminal[i], terminal[j] = terminal[j], terminal[i]
+	})
+	cutoff := ttlCutoff(now, policy.TerminalTTL)
+	count := 0
+	for rank, item := range terminal {
+		if shouldPrune(rank, item.at, cutoff, policy.MaxTerminalDeliveries) {
+			delete(s.Deliveries, item.id)
+			count++
+		}
 	}
 	return count
 }

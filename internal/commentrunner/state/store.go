@@ -176,6 +176,10 @@ func LoadFile(path string) (RunnerState, error) {
 	if err := dec.Decode(&state); err != nil {
 		return RunnerState{}, &CorruptStateError{Path: path, Err: err}
 	}
+	if state.SchemaVersion > SchemaVersion {
+		return RunnerState{}, &CorruptStateError{Path: path,
+			Err: fmt.Errorf("unsupported runner state schema version %d", state.SchemaVersion)}
+	}
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {

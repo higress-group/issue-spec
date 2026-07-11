@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 type LifecycleStatus string
 
@@ -36,7 +36,61 @@ type RunnerState struct {
 	Workspaces       map[string]WorkspaceMetadata `json:"workspaces,omitempty"`
 	Cancellations    map[string]Cancellation      `json:"cancellations,omitempty"`
 	StatusWritebacks map[string]StatusWriteback   `json:"status_writebacks,omitempty"`
+	Deliveries       map[string]WebhookDelivery   `json:"webhook_deliveries,omitempty"`
 	Idempotency      IdempotencyIndex             `json:"idempotency,omitempty"`
+}
+
+type DeliveryStatus string
+
+const (
+	DeliveryPending    DeliveryStatus = "pending"
+	DeliveryProcessing DeliveryStatus = "processing"
+	DeliveryCompleted  DeliveryStatus = "completed"
+	DeliveryFailed     DeliveryStatus = "failed"
+)
+
+func (s DeliveryStatus) Valid() bool {
+	switch s {
+	case DeliveryPending, DeliveryProcessing, DeliveryCompleted, DeliveryFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s DeliveryStatus) Terminal() bool { return s == DeliveryCompleted || s == DeliveryFailed }
+
+// WebhookDelivery is the durable, immutable intake snapshot consumed by the
+// PROCESS-022 reconciler. RawEnvelope is []byte so state JSON base64-encodes it
+// and preserves the exact request bytes across save/reload cycles.
+type WebhookDelivery struct {
+	DeliveryID         string         `json:"delivery_id"`
+	EventID            string         `json:"event_id"`
+	SubscriptionID     string         `json:"subscription_id"`
+	BodySHA256         string         `json:"body_sha256"`
+	RawEnvelope        []byte         `json:"raw_envelope,omitempty"`
+	SchemaVersion      int            `json:"schema_version"`
+	EventKey           string         `json:"event_key"`
+	EventType          string         `json:"event_type"`
+	Action             string         `json:"action"`
+	OrganizationID     string         `json:"organization_id"`
+	RepositoryID       string         `json:"repository_id"`
+	IssueID            string         `json:"issue_id"`
+	IssueNumber        int64          `json:"issue_number"`
+	CommentID          string         `json:"comment_id,omitempty"`
+	CommentRevision    int64          `json:"comment_revision,omitempty"`
+	AuthorLogin        string         `json:"author_login,omitempty"`
+	EnvelopeBodySHA256 string         `json:"envelope_body_sha256"`
+	ReceivedAt         time.Time      `json:"received_at"`
+	Status             DeliveryStatus `json:"status"`
+	Attempt            int            `json:"attempt,omitempty"`
+	LeaseOwner         string         `json:"lease_owner,omitempty"`
+	LeaseToken         string         `json:"lease_token,omitempty"`
+	LeaseUntil         time.Time      `json:"lease_until,omitempty"`
+	CompletedAt        time.Time      `json:"completed_at,omitempty"`
+	LastError          string         `json:"last_error,omitempty"`
+	ConflictCount      int            `json:"conflict_count,omitempty"`
+	LastConflictAt     time.Time      `json:"last_conflict_at,omitempty"`
 }
 
 type IdempotencyIndex struct {
@@ -385,6 +439,9 @@ func (s *RunnerState) Normalize() {
 	if s.StatusWritebacks == nil {
 		s.StatusWritebacks = map[string]StatusWriteback{}
 	}
+	if s.Deliveries == nil {
+		s.Deliveries = map[string]WebhookDelivery{}
+	}
 	if s.Idempotency.CommandJobs == nil {
 		s.Idempotency.CommandJobs = map[string]string{}
 	}
@@ -436,6 +493,15 @@ func (s *RunnerState) Normalize() {
 		}
 		s.Idempotency.StatusWritebacks[writeback.IdempotencyKey] = writeback.IdempotencyKey
 		s.StatusWritebacks[writeback.IdempotencyKey] = writeback
+	}
+	for id, delivery := range s.Deliveries {
+		if delivery.DeliveryID == "" {
+			delivery.DeliveryID = id
+		}
+		if delivery.Status == "" {
+			delivery.Status = DeliveryPending
+		}
+		s.Deliveries[id] = delivery
 	}
 	// Backstop: drop idempotency index entries whose target record no longer
 	// exists so a re-delivered command never resolves to a missing record.

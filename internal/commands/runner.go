@@ -61,6 +61,8 @@ func (a *app) runRunner(ctx context.Context, args []string) int {
 	switch args[0] {
 	case "poll":
 		return a.runRunnerPoll(ctx, args[1:])
+	case "serve":
+		return a.runRunnerServe(ctx, args[1:])
 	case "preflight":
 		return a.runRunnerPreflightCommand(ctx, args[1:])
 	default:
@@ -72,10 +74,12 @@ func (a *app) runRunner(ctx context.Context, args []string) int {
 func (a *app) printRunnerUsage(out io.Writer) {
 	fmt.Fprintln(out, `Usage:
   issue-spec runner poll [options]
+  issue-spec runner serve [options]
   issue-spec runner preflight [options]
 
 Subcommands:
   poll       continuously poll comments and dispatch authorized runner jobs
+  serve      receive signed deliveries for a self-hosted profile
   preflight  validate runner auth, repository access, sandbox, acpx, and agent prerequisites
 
 Use "issue-spec runner <subcommand> -h" to show all options and defaults.`)
