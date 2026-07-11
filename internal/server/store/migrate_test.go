@@ -10,25 +10,24 @@ func TestEmbeddedMigrationsMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 1 {
-		t.Fatalf("len(EmbeddedMigrations()) = %d, want 1", len(migrations))
+	if len(migrations) != int(LatestSchemaVersion) {
+		t.Fatalf("len(EmbeddedMigrations()) = %d, want %d", len(migrations), LatestSchemaVersion)
 	}
-	migration := migrations[0]
-	if migration.Version != 1 {
-		t.Errorf("Version = %d, want 1", migration.Version)
+	for i, migration := range migrations {
+		wantVersion := int64(i + 1)
+		if migration.Version != wantVersion {
+			t.Errorf("migration[%d].Version = %d, want %d", i, migration.Version, wantVersion)
+		}
+		digest, err := hex.DecodeString(migration.Checksum)
+		if err != nil {
+			t.Fatalf("migration[%d] checksum is not hex: %v", i, err)
+		}
+		if len(digest) != 32 {
+			t.Errorf("migration[%d] checksum length = %d bytes, want 32", i, len(digest))
+		}
 	}
-	if migration.Version != LatestSchemaVersion {
-		t.Errorf("embedded version = %d, LatestSchemaVersion = %d", migration.Version, LatestSchemaVersion)
-	}
-	if migration.Name != "0001_initial.sql" {
-		t.Errorf("Name = %q, want 0001_initial.sql", migration.Name)
-	}
-	digest, err := hex.DecodeString(migration.Checksum)
-	if err != nil {
-		t.Fatalf("Checksum is not hex: %v", err)
-	}
-	if len(digest) != 32 {
-		t.Errorf("checksum length = %d bytes, want 32", len(digest))
+	if migrations[len(migrations)-1].Version != LatestSchemaVersion {
+		t.Errorf("latest embedded version = %d, LatestSchemaVersion = %d", migrations[len(migrations)-1].Version, LatestSchemaVersion)
 	}
 
 	// The exported slice is a metadata copy, so callers cannot mutate the
@@ -48,8 +47,8 @@ func TestLoadMigrationsIncludesCompleteInitialSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	if len(migrations) != 1 {
-		t.Fatalf("len(loadMigrations()) = %d, want 1", len(migrations))
+	if len(migrations) < 2 {
+		t.Fatalf("loadMigrations() returned %d migrations, want initial and auth migrations", len(migrations))
 	}
 	for _, table := range []string{
 		"users", "identities", "auth_providers", "oauth_login_transactions",
@@ -65,6 +64,12 @@ func TestLoadMigrationsIncludesCompleteInitialSchema(t *testing.T) {
 		needle := "CREATE TABLE " + table + " ("
 		if !containsSQL(migrations[0].sql, needle) {
 			t.Errorf("initial migration is missing %q", needle)
+		}
+	}
+	for _, table := range []string{"pat_repositories", "service_accounts", "recovery_credentials"} {
+		needle := "CREATE TABLE " + table + " ("
+		if !containsSQL(migrations[1].sql, needle) {
+			t.Errorf("auth migration is missing %q", needle)
 		}
 	}
 }

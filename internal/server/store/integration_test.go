@@ -69,7 +69,7 @@ func TestRunMigrationsConcurrentAndIdempotent(t *testing.T) {
 	if err := pool.QueryRow(t.Context(), `SELECT count(*), max(version), max(name) FROM schema_migrations`).Scan(&count, &version, &name); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 || version != 1 || name != "0001_initial.sql" {
+	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0002_auth_credentials.sql" {
 		t.Fatalf("migration metadata = count %d, version %d, name %q", count, version, name)
 	}
 }
