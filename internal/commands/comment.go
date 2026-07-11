@@ -155,7 +155,7 @@ func decodeGeneratorInput(raw string, target any) error {
 func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	fs := newFlagSet("comment upsert", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	issueFlag := fs.String("issue", "", "issue number or URL")
 	commentType := fs.String("type", "", "typed comment type")
 	id := fs.String("id", "", "typed comment id")
@@ -293,7 +293,7 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 func (a *app) runCommentList(ctx context.Context, args []string) int {
 	fs := newFlagSet("comment list", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	issueFlag := fs.String("issue", "", "issue number or URL")
 	commentType := fs.String("type", "", "filter by typed comment type")
 	jsonOut := fs.Bool("json", false, "write JSON output")

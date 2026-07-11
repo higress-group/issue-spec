@@ -29,7 +29,7 @@ type statusSummary struct {
 func (a *app) runStatus(ctx context.Context, args []string) int {
 	fs := newFlagSet("status", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	proposalFlag := fs.String("proposal", "", "proposal issue number or URL")
 	designFlag := fs.String("design", "", "design issue number or URL")
 	implementFlag := fs.String("implement", "", "implement issue number or URL")
@@ -95,7 +95,7 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 func (a *app) runVerifyLinks(ctx context.Context, args []string) int {
 	fs := newFlagSet("verify-links", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	proposalFlag := fs.String("proposal", "", "proposal issue number or URL")
 	designFlag := fs.String("design", "", "design issue number or URL")
 	implementFlag := fs.String("implement", "", "implement issue number or URL")

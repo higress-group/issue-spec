@@ -216,8 +216,9 @@ type GHBackendOptions struct {
 type GHBackend struct {
 	unsupportedGHOperations
 
-	Host string
-	cli  *GHCLI
+	Host     string
+	Platform PlatformConfig
+	cli      *GHCLI
 }
 
 func NewGHBackend(options GHBackendOptions) (*GHBackend, error) {
@@ -225,7 +226,8 @@ func NewGHBackend(options GHBackendOptions) (*GHBackend, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &GHBackend{Host: normalizeHost(options.Host), cli: cli}, nil
+	host := normalizeHost(options.Host)
+	return &GHBackend{Host: host, Platform: PlatformForHost(host), cli: cli}, nil
 }
 
 func (b *GHBackend) BackendInfo() BackendInfo {
@@ -264,6 +266,10 @@ func (unsupportedGHOperations) CreateComment(context.Context, string, int, strin
 
 func (unsupportedGHOperations) UpdateComment(context.Context, string, int64, string) (Comment, error) {
 	return Comment{}, unsupportedGHOperation("UpdateComment")
+}
+
+func (unsupportedGHOperations) DeleteComment(context.Context, string, int64) error {
+	return unsupportedGHOperation("DeleteComment")
 }
 
 func (unsupportedGHOperations) CreateLabel(context.Context, string, string, string, string) (LabelResult, error) {

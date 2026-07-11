@@ -17,7 +17,7 @@ import (
 func (a *app) runInit(ctx context.Context, args []string) int {
 	fs := newFlagSet("init", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	createLabels := fs.Bool("create-labels", false, "create issue-spec labels")
 	tools := fs.String("tools", "", "generate workflow artifacts for AI tools: all, none, or comma-separated codex,claude")
 	delivery := fs.String("delivery", "both", "workflow artifact delivery: both, skills, or commands")
@@ -49,6 +49,9 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 		return 1
 	}
 	config := map[string]string{"repo": *repoFlag, "hostname": auth.NormalizeHost(*host)}
+	if platform := github.PlatformForHost(auth.NormalizeHost(*host)); platform.Kind != github.PlatformGitHub {
+		config["platform"] = platform.Kind
+	}
 	data, _ := json.MarshalIndent(config, "", "  ")
 	if err := os.WriteFile(configPath, append(data, '\n'), 0o644); err != nil {
 		a.errorf("write %s: %v\n", configPath, err)

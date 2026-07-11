@@ -270,7 +270,13 @@ func defaultNewGitHubBackend(_ context.Context, selection auth.GitHubBackendSele
 
 func defaultGHBackendRedactor(selection auth.GitHubBackendSelection) github.ExternalCLIRedactor {
 	values := []string{selection.Token.Value}
-	for _, envName := range []string{"ISSUE_SPEC_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
+	for _, envName := range append(
+		[]string{"ISSUE_SPEC_TOKEN"},
+		append(
+			github.PlatformForHost("github.com").TokenEnvVars,
+			github.PlatformForHost("gitcode.com").TokenEnvVars...,
+		)...,
+	) {
 		values = append(values, os.Getenv(envName))
 	}
 	return github.NewExternalCLIRedactor(values...)
@@ -425,6 +431,14 @@ func upsertTypedComment(ctx context.Context, client github.Operations, repo stri
 			}
 			dropped := droppedRelatedLinks(existing, model.RelatedCommentURLs(model.ParseTypedComment(merged)))
 			updated, err := client.UpdateComment(ctx, repo, comment.ID, merged)
+			if err != nil && isCommentEditUnsupported(err) {
+				_ = client.DeleteComment(ctx, repo, comment.ID)
+				created, createErr := client.CreateComment(ctx, repo, issueNumber, merged)
+				if createErr != nil {
+					return "", github.Comment{}, dropped, createErr
+				}
+				return "recreated", created, dropped, nil
+			}
 			return "updated", updated, dropped, err
 		}
 	}
@@ -481,4 +495,9 @@ func parseIntFlag(value string, name string) (int, error) {
 
 func isNoToken(err error) bool {
 	return errors.Is(err, auth.ErrNoToken)
+}
+
+func isCommentEditUnsupported(err error) bool {
+	var apiErr *github.APIError
+	return errors.As(err, &apiErr) && (apiErr.StatusCode == 404 || apiErr.StatusCode == 405)
 }

@@ -34,7 +34,7 @@ func (a *app) runAuth(ctx context.Context, args []string) int {
 
 func (a *app) runAuthStatus(ctx context.Context, args []string) int {
 	fs := newFlagSet("auth status", a.err)
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -60,9 +60,12 @@ func (a *app) runAuthStatus(ctx context.Context, args []string) int {
 	if *jsonOut {
 		return a.outputJSON(map[string]any{"ok": true, "auth": token, "backend": token.Backend})
 	}
-	fmt.Fprintf(a.out, "github host: %s\nuser: %s\ntoken source: %s\n", token.Host, token.User, token.Source)
+	fmt.Fprintf(a.out, "host: %s\nuser: %s\ntoken source: %s\n", token.Host, token.User, token.Source)
 	if token.Backend != nil {
-		fmt.Fprintf(a.out, "github backend: %s (%s)\n", token.Backend.Name, token.Backend.SelectionSource)
+		fmt.Fprintf(a.out, "backend: %s (%s)\n", token.Backend.Name, token.Backend.SelectionSource)
+		if platform := github.PlatformForHost(token.Host); platform.Kind != "" {
+			fmt.Fprintf(a.out, "platform: %s\n", platform.Kind)
+		}
 	}
 	if len(token.Scopes) > 0 {
 		fmt.Fprintf(a.out, "scopes: %s\n", strings.Join(token.Scopes, ", "))
@@ -72,7 +75,7 @@ func (a *app) runAuthStatus(ctx context.Context, args []string) int {
 
 func (a *app) runAuthLogin(ctx context.Context, args []string) int {
 	fs := newFlagSet("auth login", a.err)
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	withToken := fs.Bool("with-token", false, "read token from stdin")
 	insecure := fs.Bool("insecure-storage", false, "store token in issue-spec plaintext config when keyring is unavailable or undesired")
 	jsonOut := fs.Bool("json", false, "write JSON output")
@@ -220,7 +223,7 @@ func isDefaultGitHubHost(host string) bool {
 
 func (a *app) runAuthLogout(ctx context.Context, args []string) int {
 	fs := newFlagSet("auth logout", a.err)
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -245,7 +248,7 @@ func (a *app) runAuthLogout(ctx context.Context, args []string) int {
 
 func (a *app) runAuthToken(ctx context.Context, args []string) int {
 	fs := newFlagSet("auth token", a.err)
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	plain := fs.Bool("plain", false, "print token in plain text")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	includeToken := fs.Bool("include-token", false, "include token in JSON output")

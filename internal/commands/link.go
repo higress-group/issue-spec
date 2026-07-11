@@ -11,7 +11,7 @@ import (
 func (a *app) runLink(ctx context.Context, args []string) int {
 	fs := newFlagSet("link", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	fromID := fs.String("from", "", "source typed comment id")
 	fromIssueFlag := fs.String("from-issue", "", "source issue number or URL")
 	toID := fs.String("to", "", "target typed comment id")

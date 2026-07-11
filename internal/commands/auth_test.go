@@ -711,6 +711,10 @@ func (f fakeGitHubBackend) UpdateComment(ctx context.Context, repo string, comme
 	return github.Comment{}, errors.New("unused")
 }
 
+func (fakeGitHubBackend) DeleteComment(context.Context, string, int64) error {
+	return errors.New("unused")
+}
+
 func (fakeGitHubBackend) CreateLabel(context.Context, string, string, string, string) (github.LabelResult, error) {
 	return github.LabelResult{}, errors.New("unused")
 }

@@ -29,7 +29,7 @@ func (a *app) runQuestion(ctx context.Context, args []string) int {
 func (a *app) runQuestionCreate(ctx context.Context, args []string) int {
 	fs := newFlagSet("question create", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	issueFlag := fs.String("issue", "", "issue number or URL")
 	id := fs.String("id", "", "QUESTION id")
 	question := fs.String("question", "", "question text")
@@ -122,7 +122,7 @@ func (a *app) runQuestionCreate(ctx context.Context, args []string) int {
 func (a *app) runQuestionResolve(ctx context.Context, args []string) int {
 	fs := newFlagSet("question resolve", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	issueFlag := fs.String("issue", "", "issue number or URL")
 	id := fs.String("id", "", "QUESTION id")
 	resolution := fs.String("resolution", "", "resolution text")

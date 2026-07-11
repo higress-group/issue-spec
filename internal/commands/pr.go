@@ -34,7 +34,7 @@ func (a *app) runPR(ctx context.Context, args []string) int {
 func (a *app) runPRLinkIssues(ctx context.Context, args []string) int {
 	fs := newFlagSet("pr link-issues", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	prFlag := fs.Int("pr", 0, "implementation pull request number")
 	proposalFlag := fs.String("proposal", "", "proposal issue number or URL")
 	designFlag := fs.String("design", "", "design issue number or URL")
@@ -138,7 +138,7 @@ func linkPullRequestIssues(ctx context.Context, client interface {
 func (a *app) runPRLinkProcess(ctx context.Context, args []string) int {
 	fs := newFlagSet("pr link-process", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	issueFlag := fs.String("issue", "", "issue number or URL containing PROCESS comment")
 	prFlag := fs.Int("pr", 0, "pull request number")
 	processID := fs.String("process", "", "PROCESS id")
@@ -204,7 +204,7 @@ func (a *app) runPRLinkProcess(ctx context.Context, args []string) int {
 func (a *app) runPRRationale(ctx context.Context, args []string) int {
 	fs := newFlagSet("pr rationale", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	prFlag := fs.Int("pr", 0, "pull request number")
 	pathFlag := fs.String("path", "", "changed file path")
 	lineFlag := fs.Int("line", 0, "RIGHT-side line number in the PR diff")

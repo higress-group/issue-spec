@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"time"
 )
+
+var ErrSubscriptionNotSupported = errors.New("repository subscription API is not supported on this platform")
 
 const (
 	defaultRunnerCommentsPerPage      = 100
@@ -173,6 +176,9 @@ type CollaboratorPermission struct {
 }
 
 func (c *Client) PollNotifications(ctx context.Context, opts NotificationListOptions) (NotificationListResult, error) {
+	if !c.Platform.Capabilities.Notifications {
+		return NotificationListResult{}, fmt.Errorf("notifications API is not supported on %s", c.Platform.Kind)
+	}
 	path := opts.Page.CursorURL
 	query := url.Values{}
 	if path == "" {
@@ -197,6 +203,9 @@ func (c *Client) PollNotifications(ctx context.Context, opts NotificationListOpt
 }
 
 func (c *Client) GetRepositorySubscription(ctx context.Context, repo string) (RepositorySubscriptionResult, error) {
+	if !c.Platform.Capabilities.Subscription {
+		return RepositorySubscriptionResult{}, ErrSubscriptionNotSupported
+	}
 	var subscription RepositorySubscription
 	meta, err := c.doRunnerJSON(ctx, http.MethodGet, "/repos/"+repo+"/subscription", nil, nil, ConditionalRequest{}, false, &subscription)
 	if err != nil {
@@ -251,6 +260,9 @@ func (c *Client) ListRepositoryIssueCommentsPage(ctx context.Context, repo strin
 }
 
 func (c *Client) ListCommentReactionsPage(ctx context.Context, repo string, commentID int64, page RunnerPageOptions) (CommentReactionsResult, error) {
+	if !c.Platform.Capabilities.Reactions {
+		return CommentReactionsResult{}, fmt.Errorf("comment reactions API is not supported on %s", c.Platform.Kind)
+	}
 	path := page.CursorURL
 	query := url.Values{}
 	if path == "" {
@@ -293,6 +305,18 @@ func (c *Client) CreateRunnerComment(ctx context.Context, repo string, issueNumb
 func (c *Client) UpdateRunnerComment(ctx context.Context, repo string, commentID int64, body string) (RunnerCommentResult, error) {
 	var comment Comment
 	meta, err := c.doRunnerJSON(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, commentID), nil, map[string]string{"body": body}, ConditionalRequest{}, false, &comment)
+	if err != nil && isCommentEditNotSupported(err) {
+		fetched, fetchErr := c.getRunnerComment(ctx, repo, commentID)
+		if fetchErr != nil {
+			return RunnerCommentResult{Metadata: meta}, err
+		}
+		issueNum, parseErr := ParseIssueNumber(fetched.IssueURL)
+		if parseErr != nil {
+			return RunnerCommentResult{Metadata: meta}, err
+		}
+		_ = c.DeleteComment(ctx, repo, commentID)
+		return c.CreateRunnerComment(ctx, repo, issueNum, body)
+	}
 	if err != nil {
 		return RunnerCommentResult{Metadata: meta}, err
 	}
@@ -302,9 +326,23 @@ func (c *Client) UpdateRunnerComment(ctx context.Context, repo string, commentID
 	return RunnerCommentResult{Comment: comment, Metadata: meta}, nil
 }
 
+func (c *Client) getRunnerComment(ctx context.Context, repo string, commentID int64) (Comment, error) {
+	var comment Comment
+	_, err := c.doRunnerJSON(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, commentID), nil, nil, ConditionalRequest{}, false, &comment)
+	return comment, err
+}
+
 func (c *Client) AddCommentReaction(ctx context.Context, repo string, commentID int64, content string) (RunnerReactionResult, error) {
+	if !c.Platform.Capabilities.Reactions {
+		return RunnerReactionResult{}, fmt.Errorf("comment reactions API is not supported on %s", c.Platform.Kind)
+	}
 	meta, err := c.doRunnerJSON(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/comments/%d/reactions", repo, commentID), nil, map[string]string{"content": content}, ConditionalRequest{}, false, nil)
 	return RunnerReactionResult{Metadata: meta}, err
+}
+
+func isCommentEditNotSupported(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && (apiErr.StatusCode == 404 || apiErr.StatusCode == 405)
 }
 
 func (c *Client) doRunnerJSON(ctx context.Context, method, path string, query url.Values, in any, conditional ConditionalRequest, allowNotModified bool, out any) (ResponseMetadata, error) {

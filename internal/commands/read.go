@@ -38,7 +38,7 @@ func (a *app) runRead(ctx context.Context, args []string) int {
 func (a *app) runReadIssue(ctx context.Context, args []string) int {
 	fs := newFlagSet("read issue", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	issueFlag := fs.String("issue", "", "issue number or URL")
 	comments := fs.Bool("comments", false, "include comments")
 	typedOnly := fs.Bool("typed-only", false, "restrict comments to issue-spec typed comments")
@@ -105,7 +105,7 @@ func (a *app) runReadIssue(ctx context.Context, args []string) int {
 func (a *app) runReadPR(ctx context.Context, args []string) int {
 	fs := newFlagSet("read pr", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	prFlag := fs.String("pr", "", "pull request number")
 	comments := fs.Bool("comments", false, "include review comments")
 	typedOnly := fs.Bool("typed-only", false, "restrict comments to issue-spec typed comments")

@@ -373,3 +373,44 @@ type roundTripDoer func(*http.Request) (*http.Response, error)
 func (d roundTripDoer) Do(req *http.Request) (*http.Response, error) {
 	return d(req)
 }
+
+func TestRunnerGitCodeNotificationsDisabledReturnError(t *testing.T) {
+	client := NewClientWithHTTPDoer("gitcode.com", "https://gitcode.com/api/v5", "token", roundTripDoer(func(r *http.Request) (*http.Response, error) {
+		t.Fatal("HTTP call should not be made when notifications capability is disabled")
+		return nil, nil
+	}))
+
+	_, err := client.PollNotifications(context.Background(), NotificationListOptions{})
+	if err == nil {
+		t.Fatal("expected error for disabled notifications on GitCode")
+	}
+}
+
+func TestRunnerGitCodeReactionsDisabledReturnError(t *testing.T) {
+	client := NewClientWithHTTPDoer("gitcode.com", "https://gitcode.com/api/v5", "token", roundTripDoer(func(r *http.Request) (*http.Response, error) {
+		t.Fatal("HTTP call should not be made when reactions capability is disabled")
+		return nil, nil
+	}))
+
+	_, err := client.ListCommentReactionsPage(context.Background(), "o/r", 1, RunnerPageOptions{})
+	if err == nil {
+		t.Fatal("expected error for disabled reactions on GitCode")
+	}
+
+	_, err = client.AddCommentReaction(context.Background(), "o/r", 1, "eyes")
+	if err == nil {
+		t.Fatal("expected error for disabled reactions add on GitCode")
+	}
+}
+
+func TestRunnerGitCodeSubscriptionDisabledReturnError(t *testing.T) {
+	client := NewClientWithHTTPDoer("gitcode.com", "https://gitcode.com/api/v5", "token", roundTripDoer(func(r *http.Request) (*http.Response, error) {
+		t.Fatal("HTTP call should not be made when subscription capability is disabled")
+		return nil, nil
+	}))
+
+	_, err := client.GetRepositorySubscription(context.Background(), "o/r")
+	if err == nil {
+		t.Fatal("expected error for disabled subscription on GitCode")
+	}
+}

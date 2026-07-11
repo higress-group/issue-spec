@@ -33,7 +33,7 @@ func (a *app) runArchive(ctx context.Context, args []string) int {
 func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 	fs := newFlagSet("archive durable-spec", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	proposalFlag := fs.String("proposal", "", "proposal issue number or URL")
 	designFlag := fs.String("design", "", "design issue number or URL for --close-issues")
 	implementFlag := fs.String("implement", "", "implement issue number or URL for --close-issues")

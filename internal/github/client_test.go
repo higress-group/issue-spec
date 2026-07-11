@@ -176,3 +176,72 @@ func TestParseIssueNumberFromURL(t *testing.T) {
 func serverURL(r *http.Request) string {
 	return "http://" + strings.TrimSuffix(r.Host, "/")
 }
+
+func TestClientGitCodeSendsPrivateTokenHeader(t *testing.T) {
+	var authHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader = r.Header.Get("PRIVATE-TOKEN")
+		if r.Header.Get("Authorization") != "" {
+			t.Fatal("GitCode should not send Authorization header")
+		}
+		if r.Header.Get("X-GitHub-Api-Version") != "" {
+			t.Fatal("GitCode should not send X-GitHub-Api-Version header")
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/repos/o/r/issues/1/comments" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+		json.NewEncoder(w).Encode(Comment{ID: 1, Body: "test"})
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL("gitcode.com", server.URL, "gitcode-token", server.Client())
+	_, err := client.CreateComment(context.Background(), "o/r", 1, "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authHeader != "gitcode-token" {
+		t.Fatalf("PRIVATE-TOKEN header = %q, want gitcode-token", authHeader)
+	}
+}
+
+func TestClientGitCodeCommentEditFallbackDeleteRecreate(t *testing.T) {
+	const (
+		commentID = int64(66)
+		delCalled = iota
+		createCalled
+	)
+	calls := make(chan int, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPatch && r.URL.Path == "/repos/o/r/issues/comments/66":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/repos/o/r/issues/comments/66":
+			calls <- delCalled
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/o/r/issues/1/comments":
+			calls <- createCalled
+			json.NewEncoder(w).Encode(Comment{ID: 99, Body: "recreated-body", HTMLURL: "https://gitcode.com/o/r/issues/1#note_99"})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL("gitcode.com", server.URL, "token", server.Client())
+	err := client.DeleteComment(context.Background(), "o/r", commentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := client.CreateComment(context.Background(), "o/r", 1, "recreated-body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ID != 99 {
+		t.Fatalf("created ID = %d", created.ID)
+	}
+
+	<-calls
+	<-calls
+}

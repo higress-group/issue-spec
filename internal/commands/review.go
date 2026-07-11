@@ -32,7 +32,7 @@ func (a *app) runReview(ctx context.Context, args []string) int {
 func (a *app) runReviewFinding(ctx context.Context, args []string) int {
 	fs := newFlagSet("review finding", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	prFlag := fs.Int("pr", 0, "pull request number")
 	pathFlag := fs.String("path", "", "changed file path")
 	lineFlag := fs.Int("line", 0, "RIGHT-side line number in the PR diff")
@@ -98,7 +98,7 @@ func (a *app) runReviewFinding(ctx context.Context, args []string) int {
 func (a *app) runReviewReply(ctx context.Context, args []string) int {
 	fs := newFlagSet("review reply", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	prFlag := fs.Int("pr", 0, "pull request number")
 	commentID := fs.Int64("comment-id", 0, "parent PR review comment id")
 	findingID := fs.String("finding", "", "FINDING id")
@@ -157,7 +157,7 @@ func (a *app) runReviewReply(ctx context.Context, args []string) int {
 func (a *app) runReviewSync(ctx context.Context, args []string) int {
 	fs := newFlagSet("review sync", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	prFlag := fs.Int("pr", 0, "pull request number")
 	implementFlag := fs.String("implement", "", "implement issue number or URL")
 	id := fs.String("id", "", "REVIEW id to upsert")

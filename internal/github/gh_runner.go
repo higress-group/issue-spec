@@ -115,6 +115,9 @@ func (b *GHBackend) GetRunnerUser(ctx context.Context) (User, ResponseMetadata, 
 }
 
 func (b *GHBackend) PollNotifications(ctx context.Context, opts NotificationListOptions) (NotificationListResult, error) {
+	if !b.Platform.Capabilities.Notifications {
+		return NotificationListResult{}, fmt.Errorf("notifications API is not supported on %s", b.Platform.Kind)
+	}
 	endpoint := opts.Page.CursorURL
 	query := url.Values{}
 	if endpoint == "" {
@@ -142,6 +145,9 @@ func (b *GHBackend) PollNotifications(ctx context.Context, opts NotificationList
 }
 
 func (b *GHBackend) GetRepositorySubscription(ctx context.Context, repo string) (RepositorySubscriptionResult, error) {
+	if !b.Platform.Capabilities.Subscription {
+		return RepositorySubscriptionResult{}, ErrSubscriptionNotSupported
+	}
 	var subscription RepositorySubscription
 	metadata, err := b.runRunnerJSON(ctx, ExternalCLIAPIRequest{
 		Operation: "GetRepositorySubscription",
@@ -194,6 +200,9 @@ func (b *GHBackend) ListIssueCommentsPage(ctx context.Context, repo string, issu
 }
 
 func (b *GHBackend) ListCommentReactionsPage(ctx context.Context, repo string, commentID int64, page RunnerPageOptions) (CommentReactionsResult, error) {
+	if !b.Platform.Capabilities.Reactions {
+		return CommentReactionsResult{}, fmt.Errorf("comment reactions API is not supported on %s", b.Platform.Kind)
+	}
 	endpoint := page.CursorURL
 	query := url.Values{}
 	if endpoint == "" {
@@ -261,6 +270,9 @@ func (b *GHBackend) UpdateRunnerComment(ctx context.Context, repo string, commen
 }
 
 func (b *GHBackend) AddCommentReaction(ctx context.Context, repo string, commentID int64, content string) (RunnerReactionResult, error) {
+	if !b.Platform.Capabilities.Reactions {
+		return RunnerReactionResult{}, fmt.Errorf("comment reactions API is not supported on %s", b.Platform.Kind)
+	}
 	metadata, err := b.runRunnerJSON(ctx, ExternalCLIAPIRequest{
 		Operation: "AddCommentReaction",
 		Method:    http.MethodPost,

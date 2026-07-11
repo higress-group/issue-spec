@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/higress-group/issue-spec/internal/github"
 	keyring "github.com/zalando/go-keyring"
 )
 
@@ -215,7 +216,9 @@ func customAPIURLActive() bool {
 
 func ResolveToken(_ context.Context, host string) (Token, error) {
 	host = NormalizeHost(host)
-	for _, envName := range []string{"ISSUE_SPEC_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
+	platform := github.PlatformForHost(host)
+
+	for _, envName := range append([]string{"ISSUE_SPEC_TOKEN"}, platform.TokenEnvVars...) {
 		if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
 			return Token{Value: value, Source: "env:" + envName, Host: host}, nil
 		}
@@ -285,7 +288,10 @@ func DeleteToken(_ context.Context, host string) error {
 }
 
 func EnvTokenActive() string {
-	for _, envName := range []string{"ISSUE_SPEC_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
+	for _, envName := range append([]string{"ISSUE_SPEC_TOKEN"}, append(
+		github.PlatformForHost("github.com").TokenEnvVars,
+		github.PlatformForHost("gitcode.com").TokenEnvVars...,
+	)...) {
 		if strings.TrimSpace(os.Getenv(envName)) != "" {
 			return envName
 		}

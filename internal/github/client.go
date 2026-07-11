@@ -19,6 +19,7 @@ type Client struct {
 	BaseURL    string
 	Token      string
 	HTTPClient HTTPDoer
+	Platform   PlatformConfig
 }
 
 type HTTPDoer interface {
@@ -183,7 +184,10 @@ func newClientWithHTTPDoer(host, baseURL, token string, httpClient HTTPDoer) *Cl
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Client{Host: normalizeHost(host), BaseURL: strings.TrimRight(baseURL, "/"), Token: token, HTTPClient: httpClient}
+	host = normalizeHost(host)
+	platform := PlatformForHost(host)
+	baseURL = strings.TrimRight(baseURL, "/")
+	return &Client{Host: host, BaseURL: baseURL, Token: token, HTTPClient: httpClient, Platform: platform}
 }
 
 func (c *Client) BackendInfo() BackendInfo {
@@ -267,6 +271,17 @@ func (c *Client) UpdateComment(ctx context.Context, repo string, commentID int64
 	var comment Comment
 	err := c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, commentID), map[string]string{"body": body}, &comment)
 	return comment, err
+}
+
+func (c *Client) DeleteComment(ctx context.Context, repo string, commentID int64) error {
+	err := c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, commentID), nil, nil)
+	if err != nil {
+		var apiErr *APIError
+		if errorAsAPI(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return nil
+		}
+	}
+	return err
 }
 
 func (c *Client) CreateLabel(ctx context.Context, repo, name, color, description string) (LabelResult, error) {
@@ -412,14 +427,16 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) (
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("Accept", c.Platform.AcceptHeader)
+	for key, value := range c.Platform.APIHeaders {
+		req.Header.Set(key, value)
+	}
 	req.Header.Set("User-Agent", "issue-spec")
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
+		req.Header.Set(c.Platform.AuthHeader, c.Platform.AuthHeaderPrefix+c.Token)
 	}
 
 	resp, err := c.HTTPClient.Do(req)
@@ -521,10 +538,7 @@ func baseURL(host string) string {
 	if override := strings.TrimSpace(os.Getenv("ISSUE_SPEC_API_URL")); override != "" {
 		return strings.TrimRight(override, "/")
 	}
-	if host == "github.com" {
-		return "https://api.github.com"
-	}
-	return "https://" + host + "/api/v3"
+	return PlatformForHost(host).BaseURLTemplate
 }
 
 func redactTokenValue(value, token string) string {

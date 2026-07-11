@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -239,6 +240,11 @@ func repositoryWatchCheck(ctx context.Context, name, repo string, backend Prefli
 	}
 	result, err := backend.GetRepositorySubscription(ctx, repo)
 	if err != nil {
+		if errors.Is(err, github.ErrSubscriptionNotSupported) {
+			check.Status = CheckWarning
+			check.Detail = "repository subscription check skipped (not supported on this platform); fallback polling via repository issue comments will be used"
+			return check
+		}
 		check.Status = CheckError
 		check.Detail = "subscription lookup failed: " + err.Error()
 		check.Hint = "Ensure the runner identity can read the repository subscription and has watched the repository."

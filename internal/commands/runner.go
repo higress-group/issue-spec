@@ -500,7 +500,7 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	var repoValues stringListFlag
 	var allowedUsers stringListFlag
 	var claudeTools stringListFlag
-	host := fs.String("hostname", defaults.Hostname, "GitHub hostname")
+	host := fs.String("hostname", defaults.Hostname, "platform hostname (e.g. github.com, gitcode.com)")
 	backend := fs.String("backend", string(defaults.GitHubBackend), "GitHub backend mode: auto, gh, or rest")
 	runner := fs.String("runner", "", "GitHub login for the polling runner identity")
 	notificationRunner := fs.String("notification-runner", "", "GitHub login for a notification-only polling identity")

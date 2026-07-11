@@ -228,4 +228,62 @@ func clearAuthEnv(t *testing.T) {
 	t.Setenv("ISSUE_SPEC_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("ISSUE_SPEC_GITCODE_TOKEN", "")
+	t.Setenv("GITCODE_TOKEN", "")
+}
+
+func TestResolveTokenForGitCodePrefersGitCodeTokenEnv(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("GITCODE_TOKEN", "gc-secret")
+
+	token, err := ResolveToken(context.Background(), "gitcode.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token.Value != "gc-secret" {
+		t.Fatalf("token = %q", token.Value)
+	}
+	if token.Source != "env:GITCODE_TOKEN" {
+		t.Fatalf("source = %q", token.Source)
+	}
+	if token.Host != "gitcode.com" {
+		t.Fatalf("host = %q", token.Host)
+	}
+}
+
+func TestResolveTokenForGitCodePrefersIssueSpecGitCodeToken(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("ISSUE_SPEC_GITCODE_TOKEN", "issue-gc")
+	t.Setenv("GITCODE_TOKEN", "gc-secret")
+
+	token, err := ResolveToken(context.Background(), "gitcode.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token.Value != "issue-gc" {
+		t.Fatalf("token = %q, want ISSUE_SPEC_GITCODE_TOKEN first", token.Value)
+	}
+	if token.Source != "env:ISSUE_SPEC_GITCODE_TOKEN" {
+		t.Fatalf("source = %q", token.Source)
+	}
+}
+
+func TestResolveTokenForGitCodeNoToken(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+
+	_, err := ResolveToken(context.Background(), "gitcode.com")
+	if !errors.Is(err, ErrNoToken) {
+		t.Fatalf("error = %v, want ErrNoToken", err)
+	}
+}
+
+func TestResolveTokenForGitHubNotAffectedByGitCodeToken(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("GITCODE_TOKEN", "gc-secret")
+
+	_, err := ResolveToken(context.Background(), "github.com")
+	if !errors.Is(err, ErrNoToken) {
+		t.Fatalf("error = %v, want ErrNoToken (GitCode token not used for GitHub)", err)
+	}
 }

@@ -37,7 +37,7 @@ func (a *app) runIssue(ctx context.Context, args []string) int {
 func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) int {
 	fs := newFlagSet("issue create "+kind, a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	change := fs.String("change", "", "change name")
 	proposal := fs.String("proposal", "", "proposal issue number or URL")
 	design := fs.String("design", "", "design issue number or URL")
@@ -199,7 +199,7 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 func (a *app) runIssueUpdate(ctx context.Context, args []string) int {
 	fs := newFlagSet("issue update", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
-	host := fs.String("hostname", "github.com", "GitHub hostname")
+	host := fs.String("hostname", "github.com", "platform hostname (e.g. github.com, gitcode.com)")
 	issueFlag := fs.String("issue", "", "issue number or URL")
 	titleFlag := fs.String("title", "", "replacement issue title")
 	bodyFile := fs.String("body-file", "", "replacement markdown issue body file, or - for stdin")
