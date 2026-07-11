@@ -151,7 +151,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	if err != nil {
 		return fail(err)
 	}
-	spaService, err := spa.New(database.Pool(), authorization)
+	spaService, err := spa.New(database, authorization)
 	if err != nil {
 		return fail(err)
 	}

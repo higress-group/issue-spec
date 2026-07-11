@@ -26,28 +26,29 @@ type Service interface {
 }
 
 type Dependencies struct {
-	Service      Service
-	Authenticate adminapi.Authenticate
+	Service              Service
+	Authenticate         adminapi.Authenticate
+	AuthenticateOptional adminapi.Authenticate
 }
 
 func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
-	if deps.Service == nil || deps.Authenticate == nil {
+	if deps.Service == nil || deps.Authenticate == nil || deps.AuthenticateOptional == nil {
 		return routeset.RouteSet{}, errors.New("native boards: service and authentication are required")
 	}
 	h := handlers{service: deps.Service}
-	protect := func(handler http.HandlerFunc) http.Handler {
-		protected := deps.Authenticate(handler)
+	protect := func(authenticate adminapi.Authenticate, handler http.HandlerFunc) http.Handler {
+		protected := authenticate(handler)
 		return adminapi.WithRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-store")
 			protected.ServeHTTP(w, r)
 		}))
 	}
 	set := routeset.RouteSet{Name: "native-change-boards", Routes: []routeset.Route{
-		{Name: "native.boards.organization.list", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/changes", Handler: protect(h.organizationList)},
-		{Name: "native.boards.organization.query", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/changes/query", Handler: protect(h.organizationQuery)},
-		{Name: "native.boards.repository.list", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/repos/{repo}/changes", Handler: protect(h.repositoryList)},
-		{Name: "native.boards.repository.query", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/repos/{repo}/changes/query", Handler: protect(h.repositoryQuery)},
-		{Name: "native.boards.repository.detail", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/repos/{repo}/changes/{change...}", Handler: protect(h.detail)},
+		{Name: "native.boards.organization.list", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/changes", Handler: protect(deps.Authenticate, h.organizationList)},
+		{Name: "native.boards.organization.query", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/changes/query", Handler: protect(deps.Authenticate, h.organizationQuery)},
+		{Name: "native.boards.repository.list", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/repos/{repo}/changes", Handler: protect(deps.AuthenticateOptional, h.repositoryList)},
+		{Name: "native.boards.repository.query", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/repos/{repo}/changes/query", Handler: protect(deps.Authenticate, h.repositoryQuery)},
+		{Name: "native.boards.repository.detail", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/repos/{repo}/changes/{change...}", Handler: protect(deps.AuthenticateOptional, h.detail)},
 	}}
 	return set, set.Validate()
 }
@@ -55,7 +56,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 type handlers struct{ service Service }
 
 func (h handlers) repositoryList(w http.ResponseWriter, r *http.Request) {
-	principal, scope, ok := repositoryScope(w, r)
+	subject, scope, ok := repositoryScope(w, r, false)
 	if !ok {
 		return
 	}
@@ -63,7 +64,7 @@ func (h handlers) repositoryList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	page, err := h.service.RepositoryBoard(r.Context(), authz.Authenticated(principal), scope, options)
+	page, err := h.service.RepositoryBoard(r.Context(), subject, scope, options)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -72,7 +73,7 @@ func (h handlers) repositoryList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h handlers) repositoryQuery(w http.ResponseWriter, r *http.Request) {
-	principal, scope, ok := repositoryScope(w, r)
+	subject, scope, ok := repositoryScope(w, r, true)
 	if !ok {
 		return
 	}
@@ -81,7 +82,7 @@ func (h handlers) repositoryQuery(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusBadRequest, "invalid_json", "Invalid request body")
 		return
 	}
-	page, err := h.service.RepositoryBoard(r.Context(), authz.Authenticated(principal), scope, options)
+	page, err := h.service.RepositoryBoard(r.Context(), subject, scope, options)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -125,7 +126,7 @@ func (h handlers) organizationQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h handlers) detail(w http.ResponseWriter, r *http.Request) {
-	principal, scope, ok := repositoryScope(w, r)
+	subject, scope, ok := repositoryScope(w, r, false)
 	if !ok {
 		return
 	}
@@ -133,7 +134,7 @@ func (h handlers) detail(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusUnprocessableEntity, "invalid_request", "Detail query parameters are not supported")
 		return
 	}
-	card, validator, modified, err := h.service.Change(r.Context(), authz.Authenticated(principal), scope, r.PathValue("change"))
+	card, validator, modified, err := h.service.Change(r.Context(), subject, scope, r.PathValue("change"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -144,18 +145,21 @@ func (h handlers) detail(w http.ResponseWriter, r *http.Request) {
 	adminapi.WriteJSON(w, http.StatusOK, card)
 }
 
-func repositoryScope(w http.ResponseWriter, r *http.Request) (serverauth.Principal, models.RepoScope, bool) {
-	principal, ok := principal(w, r)
-	if !ok {
-		return serverauth.Principal{}, models.RepoScope{}, false
+func repositoryScope(w http.ResponseWriter, r *http.Request, requireAuthentication bool) (authz.Subject, models.RepoScope, bool) {
+	subject := authz.Anonymous()
+	if presented, ok := serverauth.PrincipalFromContext(r.Context()); ok && presented.User.ID != uuid.Nil {
+		subject = authz.Authenticated(presented)
+	} else if requireAuthentication {
+		problem(w, http.StatusUnauthorized, "authentication_required", "Authentication required")
+		return authz.Subject{}, models.RepoScope{}, false
 	}
 	orgID, orgErr := uuid.Parse(r.PathValue("org"))
 	repoID, repoErr := uuid.Parse(r.PathValue("repo"))
 	if orgErr != nil || repoErr != nil {
 		problem(w, http.StatusUnprocessableEntity, "invalid_request", "Invalid repository")
-		return serverauth.Principal{}, models.RepoScope{}, false
+		return authz.Subject{}, models.RepoScope{}, false
 	}
-	return principal, models.RepoScope{OrgID: orgID, RepoID: repoID}, true
+	return subject, models.RepoScope{OrgID: orgID, RepoID: repoID}, true
 }
 
 func organizationScope(w http.ResponseWriter, r *http.Request) (serverauth.Principal, models.OrgScope, bool) {

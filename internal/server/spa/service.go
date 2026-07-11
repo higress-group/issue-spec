@@ -15,21 +15,23 @@ import (
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/models"
+	"github.com/higress-group/issue-spec/internal/server/store"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var ErrInvalidInput = errors.New("spa: invalid input")
 
 type Service struct {
-	pool  *pgxpool.Pool
-	authz *authz.Service
+	pool     *pgxpool.Pool
+	database *store.Store
+	authz    *authz.Service
 }
 
-func New(pool *pgxpool.Pool, authorization *authz.Service) (*Service, error) {
-	if pool == nil || authorization == nil {
+func New(database *store.Store, authorization *authz.Service) (*Service, error) {
+	if database == nil || database.Pool() == nil || authorization == nil {
 		return nil, errors.New("spa: database and authorization service are required")
 	}
-	return &Service{pool: pool, authz: authorization}, nil
+	return &Service{pool: database.Pool(), database: database, authz: authorization}, nil
 }
 
 type UserContext struct {
@@ -115,6 +117,64 @@ func (s *Service) Current(ctx context.Context, principal serverauth.Principal, c
 
 type RepositoriesContext struct {
 	Repositories []authz.RepositoryContextAccess `json:"repositories"`
+}
+
+// RepositoryContext is the stable owner/name projection consumed by canonical
+// repository web routes. Anonymous callers receive only read authority for a
+// public repository; authenticated callers receive the same allowed-actions
+// projection used by the signed-in repository chooser.
+type RepositoryContext struct {
+	Organization  OrganizationContext           `json:"organization"`
+	Repository    authz.RepositoryContextAccess `json:"repository"`
+	Authenticated bool                          `json:"authenticated"`
+}
+
+func (s *Service) Repository(ctx context.Context, subject authz.Subject, owner, name string) (RepositoryContext, error) {
+	resource, err := s.database.ResolveRepository(ctx, owner, name)
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidInput) {
+		return RepositoryContext{}, adminservice.ErrNotFound
+	}
+	if err != nil {
+		return RepositoryContext{}, err
+	}
+	decision, err := s.authz.EvaluateRepository(ctx, subject, authz.RepositoryRequest{
+		Scope: resource.Scope, Operation: authz.OperationRead,
+	})
+	if err != nil {
+		return RepositoryContext{}, err
+	}
+	if !decision.Allowed {
+		return RepositoryContext{}, adminservice.ErrNotFound
+	}
+	organizations, err := s.authz.ListAccessibleOrganizations(ctx, subject)
+	if err != nil {
+		return RepositoryContext{}, err
+	}
+	repositories, err := s.authz.ListRepositoryAccess(ctx, subject, models.OrgScope{OrgID: resource.Scope.OrgID})
+	if err != nil {
+		return RepositoryContext{}, err
+	}
+	var result RepositoryContext
+	for _, organization := range organizations {
+		if organization.Organization.ID == resource.Scope.OrgID {
+			result.Organization = OrganizationContext{ID: organization.Organization.ID,
+				Name: organization.Organization.Name, DisplayName: organization.Organization.DisplayName,
+				EffectivePermission: organization.EffectivePermission, ContainerOnly: organization.ContainerOnly,
+				AllowedActions: append([]authz.AccessAction(nil), organization.AllowedActions...)}
+			break
+		}
+	}
+	for _, repository := range repositories {
+		if repository.Repository.ID == resource.Scope.RepoID {
+			result.Repository = repository
+			break
+		}
+	}
+	if result.Organization.ID == uuid.Nil || result.Repository.Repository.ID == uuid.Nil {
+		return RepositoryContext{}, adminservice.ErrNotFound
+	}
+	result.Authenticated = subject.Principal != nil
+	return result, nil
 }
 
 func (s *Service) Repositories(ctx context.Context, principal serverauth.Principal, orgID uuid.UUID) (RepositoriesContext, error) {

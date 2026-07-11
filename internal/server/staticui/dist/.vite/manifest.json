@@ -1,18 +1,11 @@
 {
-  "_circle-dot-MrBf53Gs.js": {
-    "file": "assets/circle-dot-MrBf53Gs.js",
-    "name": "circle-dot",
-    "imports": [
-      "index.html"
-    ]
-  },
-  "_issue-editor-5Da_xmnP.js": {
-    "file": "assets/issue-editor-5Da_xmnP.js",
+  "_issue-editor-B6z4B1Gz.js": {
+    "file": "assets/issue-editor-B6z4B1Gz.js",
     "name": "issue-editor",
     "imports": [
-      "_types-CpfYH7Rf.js",
-      "_repository-context-Bs3EnPFx.js",
-      "_label-chips-RNLerW30.js"
+      "_session-D1RC79Ii.js",
+      "_repository-context-1pV_uRYC.js",
+      "_label-chips-DvhvesY3.js"
     ],
     "css": [
       "assets/issue-editor-CdnBa9Ix.css"
@@ -26,49 +19,48 @@
     "file": "assets/label-chips-DMPnSd3b.css",
     "src": "_label-chips-DMPnSd3b.css"
   },
-  "_label-chips-RNLerW30.js": {
-    "file": "assets/label-chips-RNLerW30.js",
+  "_label-chips-DvhvesY3.js": {
+    "file": "assets/label-chips-DvhvesY3.js",
     "name": "label-chips",
     "imports": [
-      "_types-CpfYH7Rf.js"
+      "_session-D1RC79Ii.js"
     ],
     "css": [
       "assets/label-chips-DMPnSd3b.css"
     ]
   },
-  "_lock-keyhole-D5eXXVeF.js": {
-    "file": "assets/lock-keyhole-D5eXXVeF.js",
+  "_lock-keyhole-DLPI7Yeh.js": {
+    "file": "assets/lock-keyhole-DLPI7Yeh.js",
     "name": "lock-keyhole",
     "imports": [
       "index.html"
     ]
   },
-  "_repository-context-Bs3EnPFx.js": {
-    "file": "assets/repository-context-Bs3EnPFx.js",
+  "_repository-context-1pV_uRYC.js": {
+    "file": "assets/repository-context-1pV_uRYC.js",
     "name": "repository-context",
     "imports": [
-      "_types-CpfYH7Rf.js",
-      "index.html"
+      "_session-D1RC79Ii.js"
     ]
   },
-  "_rotate-ccw-D1RJ6zZ-.js": {
-    "file": "assets/rotate-ccw-D1RJ6zZ-.js",
+  "_rotate-ccw-B7_3hFGa.js": {
+    "file": "assets/rotate-ccw-B7_3hFGa.js",
     "name": "rotate-ccw",
     "imports": [
       "index.html"
     ]
   },
-  "_types-CpfYH7Rf.js": {
-    "file": "assets/types-CpfYH7Rf.js",
-    "name": "types"
+  "_session-D1RC79Ii.js": {
+    "file": "assets/session-D1RC79Ii.js",
+    "name": "session"
   },
   "index.html": {
-    "file": "assets/index-CkBZYf8F.js",
+    "file": "assets/index-CWlnASif.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
     "imports": [
-      "_types-CpfYH7Rf.js"
+      "_session-D1RC79Ii.js"
     ],
     "dynamicImports": [
       "src/features/boards/board-page.tsx",
@@ -76,103 +68,90 @@
       "src/features/issues/workspace-page.tsx",
       "src/features/issues/list-page.tsx",
       "src/features/issues/create-page.tsx",
-      "src/features/issues/detail-page.tsx",
-      "src/features/issues/canonical-route.tsx"
+      "src/features/issues/detail-page.tsx"
     ],
     "css": [
-      "assets/index-DBFntiS0.css"
+      "assets/index-1PkdqHUq.css"
     ]
   },
   "src/features/boards/board-page.tsx": {
-    "file": "assets/board-page-C3J8rKoR.js",
+    "file": "assets/board-page-D8YAeEc4.js",
     "name": "board-page",
     "src": "src/features/boards/board-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_types-CpfYH7Rf.js",
-      "_circle-dot-MrBf53Gs.js",
-      "_rotate-ccw-D1RJ6zZ-.js",
-      "index.html"
+      "_session-D1RC79Ii.js",
+      "_rotate-ccw-B7_3hFGa.js",
+      "index.html",
+      "_repository-context-1pV_uRYC.js"
     ]
   },
   "src/features/boards/detail-page.tsx": {
-    "file": "assets/detail-page-R-9gSWGy.js",
+    "file": "assets/detail-page-DLe3H0DO.js",
     "name": "detail-page",
     "src": "src/features/boards/detail-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_types-CpfYH7Rf.js",
+      "_session-D1RC79Ii.js",
       "index.html",
+      "_repository-context-1pV_uRYC.js",
       "src/features/boards/board-page.tsx"
     ]
   },
-  "src/features/issues/canonical-route.tsx": {
-    "file": "assets/canonical-route-DshDIGP2.js",
-    "name": "canonical-route",
-    "src": "src/features/issues/canonical-route.tsx",
-    "isDynamicEntry": true,
-    "imports": [
-      "_types-CpfYH7Rf.js",
-      "index.html",
-      "_repository-context-Bs3EnPFx.js"
-    ]
-  },
   "src/features/issues/create-page.tsx": {
-    "file": "assets/create-page-Bi8IjSsN.js",
+    "file": "assets/create-page-CvJ6cSbN.js",
     "name": "create-page",
     "src": "src/features/issues/create-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_types-CpfYH7Rf.js",
+      "_session-D1RC79Ii.js",
       "index.html",
-      "_repository-context-Bs3EnPFx.js",
-      "_label-chips-RNLerW30.js",
-      "_issue-editor-5Da_xmnP.js"
+      "_repository-context-1pV_uRYC.js",
+      "_label-chips-DvhvesY3.js",
+      "_issue-editor-B6z4B1Gz.js"
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-B5U407e3.js",
+    "file": "assets/detail-page-oMY-_blt.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_types-CpfYH7Rf.js",
-      "_circle-dot-MrBf53Gs.js",
-      "_lock-keyhole-D5eXXVeF.js",
-      "_rotate-ccw-D1RJ6zZ-.js",
+      "_session-D1RC79Ii.js",
+      "_lock-keyhole-DLPI7Yeh.js",
+      "_rotate-ccw-B7_3hFGa.js",
       "index.html",
-      "_repository-context-Bs3EnPFx.js",
-      "_label-chips-RNLerW30.js",
-      "_issue-editor-5Da_xmnP.js",
+      "_repository-context-1pV_uRYC.js",
+      "_label-chips-DvhvesY3.js",
+      "_issue-editor-B6z4B1Gz.js",
       "src/features/issues/list-page.tsx"
     ],
     "css": [
-      "assets/detail-page-DvEKHnf9.css"
+      "assets/detail-page-BkVKKMmE.css"
     ]
   },
   "src/features/issues/list-page.tsx": {
-    "file": "assets/list-page-DdsNM2eH.js",
+    "file": "assets/list-page-BeixAK4_.js",
     "name": "list-page",
     "src": "src/features/issues/list-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_types-CpfYH7Rf.js",
-      "_circle-dot-MrBf53Gs.js",
+      "_session-D1RC79Ii.js",
       "index.html",
-      "_repository-context-Bs3EnPFx.js",
-      "_label-chips-RNLerW30.js"
+      "_repository-context-1pV_uRYC.js",
+      "_label-chips-DvhvesY3.js"
     ]
   },
   "src/features/issues/workspace-page.tsx": {
-    "file": "assets/workspace-page-BUC2NV8V.js",
+    "file": "assets/workspace-page-B7ur8Q5R.js",
     "name": "workspace-page",
     "src": "src/features/issues/workspace-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_types-CpfYH7Rf.js",
-      "_lock-keyhole-D5eXXVeF.js",
+      "_session-D1RC79Ii.js",
+      "_lock-keyhole-DLPI7Yeh.js",
       "index.html",
-      "_repository-context-Bs3EnPFx.js"
+      "_repository-context-1pV_uRYC.js"
     ]
   }
 }

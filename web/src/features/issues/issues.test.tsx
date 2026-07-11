@@ -9,9 +9,12 @@ import { LabelSelector } from "../../components/labels/label-chips";
 import { ReactionPicker } from "../../components/reactions/reaction-picker";
 import { renderApp } from "../../../tests/render";
 import { server } from "../../../tests/server";
+import { Route, Routes } from "react-router-dom";
 import { issueApi, IssueApiError } from "./api";
 import { CommentEditor, IssueEditor } from "./issue-editor";
+import { IssueDetail } from "./detail-page";
 import { IssueLoading, IssueStatus, MutationProblem } from "./repository-context";
+import type { ActiveRepository } from "./repository-context";
 import type { Label, Reactions } from "./types";
 
 const label: Label = { id: 1, name: "issue-spec/design", color: "62459a", description: "Design", default: false, url: "" };
@@ -86,6 +89,33 @@ describe("issue editing semantics", () => {
   });
 });
 
+describe("canonical issue read authority", () => {
+  it("renders anonymous public issue content without any mutation controls", async () => {
+    installIssueDetailHandlers();
+    const { container } = renderIssueDetail(activeRepository(false, ["read"]));
+    expect(await screen.findByRole("heading", { name: /Runner contract/ })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /^Edit$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Manage labels")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /reaction/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Read-only conversation" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
+    expect((await axe.run(container)).violations).toEqual([]);
+  });
+
+  it("shows authenticated mutations only when allowed_actions grants them", async () => {
+    installIssueDetailHandlers();
+    renderIssueDetail(activeRepository(true, ["read", "contribute", "triage"]));
+    expect(await screen.findByRole("heading", { name: /Runner contract/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: /^Edit$/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Close" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Comment" })).toBeVisible();
+    expect(screen.getByText("Manage labels")).toBeVisible();
+    expect(await screen.findByRole("button", { name: /Remove Thumbs up reaction/ })).toBeVisible();
+  });
+});
+
 describe("GitHub-compatible issue API", () => {
   it("sends filters and round-trips raw bodies without trimming", async () => {
     let query = "";
@@ -148,3 +178,24 @@ function commentFixture(overrides: Record<string, unknown> = {}) {
 
 function reactionFixture() { return { id: 7, user: userFixture(), content: "+1", created_at: "2026-07-10T11:30:00Z" }; }
 function userFixture() { return { login: "alice", id: 1, avatar_url: "", html_url: "", type: "User", site_admin: false }; }
+
+function installIssueDetailHandlers() {
+  server.use(
+    http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture())),
+    http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json([commentFixture()])),
+    http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
+    http.get("http://localhost/repos/acme/workflow/issues/comments/9/reactions", () => HttpResponse.json([reactionFixture()])),
+  );
+}
+
+function renderIssueDetail(active: ActiveRepository) {
+  return renderApp(<Routes><Route path="/:owner/:repo/issues/:number" element={<IssueDetail active={active} />} /></Routes>, "/acme/workflow/issues/41");
+}
+
+function activeRepository(authenticated: boolean, allowed_actions: string[]): ActiveRepository {
+  return {
+    authenticated,
+    organization: { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "acme", display_name: "Acme", effective_permission: "read", container_only: !authenticated, allowed_actions: [] },
+    repository: { repository: { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", organization_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "workflow", display_name: "Workflow", visibility: "public", contribution_policy: "authenticated" }, effective_permission: authenticated ? "triage" : "read", allowed_actions },
+  };
+}

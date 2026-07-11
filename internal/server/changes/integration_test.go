@@ -105,6 +105,27 @@ func TestRepositoryProjectionLifecycleProgressAndAnomalies(t *testing.T) {
 	}
 }
 
+func TestRepositoryBoardAnonymousVisibilityMatchesAuthorizationEvaluator(t *testing.T) {
+	env := newChangesEnvironment(t)
+	env.addArtifact(t, env.scope, "public-change", StageProposal, "1", "issue-spec/proposal", "N/A", "N/A")
+	if _, err := env.pool.Exec(t.Context(), `UPDATE repos SET visibility = 'public' WHERE organization_id = $1 AND id = $2`, env.scope.OrgID, env.scope.RepoID); err != nil {
+		t.Fatal(err)
+	}
+	page, err := env.service.RepositoryBoard(t.Context(), authz.Anonymous(), env.scope, ListOptions{})
+	if err != nil || len(page.Cards) != 1 || page.Cards[0].ChangeKey != "public-change" {
+		t.Fatalf("anonymous public board=%+v err=%v", page, err)
+	}
+	if _, err := env.pool.Exec(t.Context(), `UPDATE repos SET visibility = 'private' WHERE organization_id = $1 AND id = $2`, env.scope.OrgID, env.scope.RepoID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.service.RepositoryBoard(t.Context(), authz.Anonymous(), env.scope, ListOptions{}); !errors.Is(err, adminservice.ErrNotFound) {
+		t.Fatalf("anonymous private error=%v", err)
+	}
+	if page, err := env.service.RepositoryBoard(t.Context(), authz.Authenticated(env.principal), env.scope, ListOptions{}); err != nil || len(page.Cards) != 1 {
+		t.Fatalf("authenticated private board=%+v err=%v", page, err)
+	}
+}
+
 func TestChangeDetailIsNotLimitedToFirstHundredAndTenantKeysStayIndependent(t *testing.T) {
 	env := newChangesEnvironment(t)
 	for index := 0; index < 105; index++ {

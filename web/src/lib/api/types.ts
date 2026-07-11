@@ -65,6 +65,13 @@ export const repositoryContextSchema = z.object({
 export const repositoriesContextSchema = z.object({ repositories: z.array(repositoryContextSchema) });
 export type RepositoryContext = z.infer<typeof repositoryContextSchema>;
 
+export const repositoryRouteContextSchema = z.object({
+  organization: organizationContextSchema,
+  repository: repositoryContextSchema,
+  authenticated: z.boolean(),
+});
+export type RepositoryRouteContext = z.infer<typeof repositoryRouteContextSchema>;
+
 export const providersSchema = z.object({ providers: z.array(z.object({ name: z.string(), kind: z.string() })) });
 export type Provider = z.infer<typeof providersSchema>["providers"][number];
 

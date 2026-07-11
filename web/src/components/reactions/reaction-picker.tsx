@@ -10,10 +10,10 @@ const reactionChoices: { content: ReactionContent; emoji: string; label: string 
   { content: "rocket", emoji: "🚀", label: "Rocket" }, { content: "eyes", emoji: "👀", label: "Eyes" },
 ];
 
-export function ReactionPicker({ owner, repo, commentId, summary, currentLogin }: { owner: string; repo: string; commentId: number; summary: Reactions; currentLogin: string }) {
+export function ReactionPicker({ owner, repo, commentId, summary, currentLogin, readOnly = false }: { owner: string; repo: string; commentId: number; summary: Reactions; currentLogin: string; readOnly?: boolean }) {
   const queryClient = useQueryClient();
   const key = ["issues", owner, repo, "comment", commentId, "reactions"] as const;
-  const reactions = useQuery({ queryKey: key, queryFn: ({ signal }) => issueApi.listReactions(owner, repo, commentId, signal) });
+  const reactions = useQuery({ queryKey: key, queryFn: ({ signal }) => issueApi.listReactions(owner, repo, commentId, signal), enabled: !readOnly });
   const mutation = useMutation({
     mutationFn: async (content: ReactionContent) => {
       const mine = reactions.data?.find((reaction) => reaction.user.login === currentLogin && reaction.content === content);
@@ -25,6 +25,7 @@ export function ReactionPicker({ owner, repo, commentId, summary, currentLogin }
       await queryClient.invalidateQueries({ queryKey: ["issues", owner, repo] });
     },
   });
+  if (readOnly) return <div className="reaction-bar read-only" aria-label="Comment reactions">{reactionChoices.filter((choice) => summary[choice.content] > 0).map((choice) => <span key={choice.content} aria-label={`${choice.label} reactions, ${summary[choice.content]}`}><span aria-hidden="true">{choice.emoji}</span>{summary[choice.content]}</span>)}</div>;
   return <div className="reaction-bar" aria-label="Comment reactions">{reactionChoices.map((choice) => {
     const count = summary[choice.content];
     const mine = reactions.data?.some((reaction) => reaction.user.login === currentLogin && reaction.content === choice.content) ?? false;

@@ -1,85 +1,75 @@
+import axe from "axe-core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
 import { render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { createMemoryRouter, RouterProvider, useLocation } from "react-router-dom";
+import { createMemoryRouter, Link, RouterProvider, useLocation } from "react-router-dom";
+import { describe, expect, it } from "vitest";
 import { server } from "../../../tests/server";
-import { api } from "../../lib/api/resources";
 import contribution from "./contribution";
-import { CanonicalIssueRoutePage } from "./canonical-route";
+import { RepositoryGate, repositoryChangePath, repositoryIssuePath, type ActiveRepository } from "./repository-context";
 
 const orgId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const repoId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
-afterEach(() => vi.restoreAllMocks());
-
-describe("canonical issue WebURL route", () => {
-  it("is registered as an authenticated issue feature route", () => {
-    expect(contribution.routes?.some((route) => route.path === ":owner/:repo/issues/:issueNumber")).toBe(true);
+describe("canonical repository Web routes", () => {
+  it("registers stable issue list, create and detail routes without a UUID redirect adapter", () => {
+    const paths = contribution.routes?.map((route) => route.path);
+    expect(paths).toEqual(expect.arrayContaining([":owner/:repo/issues", ":owner/:repo/issues/new", ":owner/:repo/issues/:number"]));
+    expect(paths).not.toContain(":owner/:repo/issues/:issueNumber");
   });
 
-  it("resolves visible names case-insensitively and replaces into the UUID route with search and hash intact", async () => {
+  it("keeps the canonical URL and generates canonical issue/change links for an anonymous public repository", async () => {
     server.use(
-      http.get("http://localhost/api/v1/context", () => HttpResponse.json(contextFixture())),
-      http.get(`http://localhost/api/v1/context/orgs/${orgId}/repos`, () => HttpResponse.json(repositoriesFixture())),
+      http.get("http://localhost/api/v1/context", () => HttpResponse.json({ status: 401, title: "Authentication required", code: "authentication_required" }, { status: 401 })),
+      http.get("http://localhost/api/v1/context/repos/:owner/:repo", ({ params }) => {
+        expect(params).toMatchObject({ owner: "BROWSER-E2E", repo: "ISSUE-SPEC-E2E" });
+        return HttpResponse.json(repositoryRouteFixture(false));
+      }),
     );
-    const { router } = renderCanonical("/BROWSER-E2E/ISSUE-SPEC-E2E/issues/2?view=timeline#issuecomment-1987124517582305");
-    expect(await screen.findByTestId("resolved-location")).toHaveTextContent(`/issues/${orgId}/${repoId}/2?view=timeline#issuecomment-1987124517582305`);
-    expect(router.state.historyAction).toBe("REPLACE");
+    const { container, router } = renderCanonical("/BROWSER-E2E/ISSUE-SPEC-E2E/issues/2?view=timeline#issuecomment-9");
+    expect(await screen.findByTestId("resolved-location")).toHaveTextContent("/BROWSER-E2E/ISSUE-SPEC-E2E/issues/2?view=timeline#issuecomment-9");
+    expect(router.state.location.pathname).toBe("/BROWSER-E2E/ISSUE-SPEC-E2E/issues/2");
+    expect(screen.getByRole("link", { name: "Issue list" })).toHaveAttribute("href", "/browser-e2e/issue-spec-e2e/issues");
+    expect(screen.getByRole("link", { name: "Change board" })).toHaveAttribute("href", "/browser-e2e/issue-spec-e2e/changes");
+    expect((await axe.run(container)).violations).toEqual([]);
   });
 
-  it("shows a stable loading state while authenticated context is unresolved", () => {
-    vi.spyOn(api, "context").mockReturnValue(new Promise(() => undefined));
-    renderCanonical("/browser-e2e/issue-spec-e2e/issues/2");
-    expect(screen.getByRole("status")).toHaveTextContent("Resolving canonical issue URL");
-  });
-
-  it("conceals an unknown organization without requesting a repository collection", async () => {
-    let repositoriesRequested = false;
+  it("conceals private anonymous context with one 404 state", async () => {
     server.use(
-      http.get("http://localhost/api/v1/context", () => HttpResponse.json(contextFixture({ organizations: [] }))),
-      http.get("http://localhost/api/v1/context/orgs/:orgId/repos", () => { repositoriesRequested = true; return HttpResponse.json(repositoriesFixture()); }),
+      http.get("http://localhost/api/v1/context", () => HttpResponse.json({ status: 401, title: "Authentication required", code: "authentication_required" }, { status: 401 })),
+      http.get("http://localhost/api/v1/context/repos/:owner/:repo", () => HttpResponse.json({ status: 404, title: "Not found", code: "not_found" }, { status: 404 })),
     );
-    renderCanonical("/hidden/issue-spec-e2e/issues/2");
+    renderCanonical("/acme/private/issues/2");
     expect(await screen.findByRole("heading", { name: "That issue desk is not here" })).toBeVisible();
-    expect(repositoriesRequested).toBe(false);
+    expect(screen.queryByTestId("repository-content")).not.toBeInTheDocument();
   });
 
-  it("conceals a repository absent from the permission-filtered context response", async () => {
+  it("does not downgrade an invalid credential into anonymous public access", async () => {
     server.use(
-      http.get("http://localhost/api/v1/context", () => HttpResponse.json(contextFixture())),
-      http.get(`http://localhost/api/v1/context/orgs/${orgId}/repos`, () => HttpResponse.json({ repositories: [] })),
+      http.get("http://localhost/api/v1/context", () => HttpResponse.json({ status: 401, title: "Authentication required", code: "authentication_required" }, { status: 401 })),
+      http.get("http://localhost/api/v1/context/repos/:owner/:repo", () => HttpResponse.json({ status: 401, title: "Authentication required", code: "authentication_required" }, { status: 401 })),
     );
-    renderCanonical("/browser-e2e/hidden/issues/2#issuecomment-1");
-    expect(await screen.findByRole("heading", { name: "That issue desk is not here" })).toBeVisible();
-  });
-
-  it("rejects non-canonical or unsafe issue numbers", async () => {
-    server.use(http.get("http://localhost/api/v1/context", () => HttpResponse.json(contextFixture())));
-    renderCanonical("/browser-e2e/issue-spec-e2e/issues/9007199254740992");
-    expect(await screen.findByRole("heading", { name: "That issue desk is not here" })).toBeVisible();
+    renderCanonical("/acme/public/issues/2");
+    expect(await screen.findByRole("heading", { name: "Sign in to continue" })).toBeVisible();
+    expect(screen.queryByTestId("repository-content")).not.toBeInTheDocument();
   });
 });
 
 function renderCanonical(initialEntry: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createMemoryRouter([
-    { path: "/:owner/:repo/issues/:issueNumber", element: <CanonicalIssueRoutePage /> },
-    { path: "/issues/:orgId/:repoId/:issueNumber", element: <LocationProbe /> },
-    { path: "*", element: <div>Unexpected route</div> },
-  ], { initialEntries: [initialEntry] });
+  const router = createMemoryRouter([{ path: "/:owner/:repo/issues/:number", element: <RepositoryGate>{(active) => <RepositoryProbe active={active} />}</RepositoryGate> }], { initialEntries: [initialEntry] });
   return { router, ...render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>) };
 }
 
-function LocationProbe() {
+function RepositoryProbe({ active }: { active: ActiveRepository }) {
   const location = useLocation();
-  return <output data-testid="resolved-location">{location.pathname}{location.search}{location.hash}</output>;
+  return <main data-testid="repository-content"><output data-testid="resolved-location">{location.pathname}{location.search}{location.hash}</output><Link to={repositoryIssuePath(active)}>Issue list</Link><Link to={repositoryChangePath(active)}>Change board</Link></main>;
 }
 
-function contextFixture(overrides: Record<string, unknown> = {}) {
-  return { user: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", login: "alice", display_name: "Alice", site_admin: false }, credential: { kind: "session", scope_mode: "identity", repository_restricted: false }, allowed_actions: [], organizations: [{ id: orgId, name: "browser-e2e", display_name: "Browser E2E", effective_permission: "read", container_only: false, allowed_actions: ["organization.read"] }], ...overrides };
-}
-
-function repositoriesFixture() {
-  return { repositories: [{ repository: { id: repoId, organization_id: orgId, name: "issue-spec-e2e", display_name: "Issue Spec E2E", visibility: "private", contribution_policy: "members" }, effective_permission: "read", allowed_actions: ["read"] }] };
+function repositoryRouteFixture(authenticated: boolean) {
+  return {
+    organization: { id: orgId, name: "browser-e2e", display_name: "Browser E2E", effective_permission: "read", container_only: true, allowed_actions: [] },
+    repository: { repository: { id: repoId, organization_id: orgId, name: "issue-spec-e2e", display_name: "Issue Spec E2E", visibility: "public", contribution_policy: "authenticated" }, effective_permission: "read", allowed_actions: ["read"] },
+    authenticated,
+  };
 }

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, NavLink, Navigate, Outlet, useLocation } from "react-router-dom";
-import { AlertCircle, Boxes, ChevronRight, CircleUserRound, KeyRound, LayoutDashboard, Menu, Settings2, X } from "lucide-react";
+import { AlertCircle, Boxes, CircleUserRound, KeyRound, LayoutDashboard, LogIn, Menu, Settings2, X } from "lucide-react";
 import { ErrorNotice, Loading } from "./components";
 import { ProblemInspector } from "./problem-inspector";
 import { useInspector } from "./problem-inspector";
@@ -18,7 +18,8 @@ export function AuthenticatedShell() {
   const inspector = useInspector();
   if (contextQuery.isLoading || metaQuery.isLoading) return <Loading />;
   if (contextQuery.error && isApiProblem(contextQuery.error) && contextQuery.error.problem.status === 401) {
-    return <Navigate to="/login" replace state={{ returnTo: location.pathname }} />;
+    if (isCanonicalRepositoryReadPath(location.pathname)) return <PublicRepositoryShell />;
+    return <Navigate to="/login" replace state={{ returnTo: `${location.pathname}${location.search}${location.hash}` }} />;
   }
   if (contextQuery.error) {
     return <div className="public-narrow"><ErrorNotice error={contextQuery.error} /></div>;
@@ -43,8 +44,8 @@ export function AuthenticatedShell() {
       </div>
       <div className="nav-group"><span className="nav-label">Workspace</span>
         <NavLink className={navClass} to="/" end><LayoutDashboard size={18} /><span>Overview</span></NavLink>
+        {visibleFeatureNav.map((item) => <NavLink key={item.to} className={navClass} to={item.to}><item.icon size={18} aria-hidden="true" /><span>{item.label}</span></NavLink>)}
         {firstOrg ? <NavLink className={navClass} to={`/orgs/${firstOrg.id}/repos`}><Boxes size={18} /><span>Repositories</span></NavLink> : null}
-        {visibleFeatureNav.map((item) => <NavLink key={item.to} className={navClass} to={item.to}><ChevronRight size={18} /><span>{item.label}</span></NavLink>)}
       </div>
       <div className="nav-group"><span className="nav-label">Account</span>
         <NavLink className={navClass} to="/settings/account"><CircleUserRound size={18} /><span>Session</span></NavLink>
@@ -57,9 +58,24 @@ export function AuthenticatedShell() {
     <button id="inspector-toggle" className="inspector-toggle" type="button" onClick={inspector.openInspector} aria-expanded={inspector.open} aria-controls="request-inspector"><AlertCircle size={17} /><span>{inspector.state.problem ? "Request problem" : "Inspector"}</span></button>
     <nav className="bottom-nav" aria-label="Mobile navigation">
       <NavLink to="/" end><LayoutDashboard /><span>Home</span></NavLink>
+      {visibleFeatureNav.map((item) => <NavLink key={item.to} to={item.to}><item.icon aria-hidden="true" /><span>{item.label}</span></NavLink>)}
       {firstOrg ? <NavLink to={`/orgs/${firstOrg.id}/repos`}><Boxes /><span>Repos</span></NavLink> : <span />}
       <NavLink to="/settings/account"><CircleUserRound /><span>Account</span></NavLink>
     </nav>
+  </div>;
+}
+
+export function isCanonicalRepositoryReadPath(pathname: string) {
+  return /^\/[^/]+\/[^/]+\/(?:issues(?:\/[1-9]\d*)?|changes(?:\/[^/]+)?)\/?$/.test(pathname);
+}
+
+export function PublicRepositoryShell() {
+  const location = useLocation();
+  const returnTo = `${location.pathname}${location.search}${location.hash}`;
+  return <div className="repository-public-shell">
+    <a className="skip-link" href="#main-content">Skip to main content</a>
+    <header><Link className="brand public" to="/"><span className="brand-mark">is</span><span><strong>issue-spec</strong><small>public repository view</small></span></Link><Link className="button primary" to="/login" state={{ returnTo }}><LogIn size={16} />Sign in</Link></header>
+    <main id="main-content" tabIndex={-1}><Outlet /></main>
   </div>;
 }
 

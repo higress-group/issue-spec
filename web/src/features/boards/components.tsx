@@ -77,8 +77,8 @@ function formattedDate(value: string) {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
 }
 
-export function ChangeCard({ card, orgId }: { card: ChangeCardModel; orgId: string }) {
-  const detail = `/changes/${orgId}/repos/${card.repository.id}/${encodeURIComponent(card.change_key)}`;
+export function ChangeCard({ card, owner }: { card: ChangeCardModel; owner: string }) {
+  const detail = `/${encodeURIComponent(owner)}/${encodeURIComponent(card.repository.name)}/changes/${encodeURIComponent(card.change_key)}`;
   return <article className={`board-card card-${card.lifecycle}`}>
     <header className="board-card-header">
       <div><span className="board-repository">{card.repository.display_name || card.repository.name}</span><LifecycleBadge lifecycle={card.lifecycle} /></div>

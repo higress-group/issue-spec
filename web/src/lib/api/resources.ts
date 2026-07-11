@@ -8,6 +8,7 @@ import {
   patsSchema,
   providersSchema,
   repositoriesContextSchema,
+  repositoryRouteContextSchema,
   type AdminOrganization,
   type AdminRepository,
   type Collaborator,
@@ -33,6 +34,8 @@ export const api = {
   meta: (signal?: AbortSignal) => apiRequest("/api/v1/meta", { schema: metaSchema, signal }),
   context: (signal?: AbortSignal) => apiRequest("/api/v1/context", { schema: contextSchema, signal }),
   repositoriesContext: (orgId: string, signal?: AbortSignal) => apiRequest(`/api/v1/context/orgs/${orgId}/repos`, { schema: repositoriesContextSchema, signal }),
+  repositoryRouteContext: (owner: string, repository: string, signal?: AbortSignal) =>
+    apiRequest(`/api/v1/context/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`, { schema: repositoryRouteContextSchema, signal }),
   providers: (signal?: AbortSignal) => apiRequest("/api/v1/auth/providers", { schema: providersSchema, signal }),
   rotateSession: () => apiRequest<{ csrf_token: string }>("/api/v1/session/rotate", { method: "POST" }),
   logout: () => apiRequest<void>("/api/v1/session", { method: "DELETE" }),

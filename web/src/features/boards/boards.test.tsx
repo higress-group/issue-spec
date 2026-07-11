@@ -1,7 +1,7 @@
 import axe from "axe-core";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Route, Routes } from "react-router-dom";
+import { Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { renderApp } from "../../../tests/render";
 import { boardApi } from "./api";
@@ -15,13 +15,14 @@ const repoId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 describe("change board projection UI", () => {
   it("renders one accessible card with distinct valid, invalid, and missing artifact states", async () => {
     const card = cardFixture();
-    const { container } = renderApp(<ChangeCard card={card} orgId={orgId} />);
+    const { container } = renderApp(<ChangeCard card={card} owner="acme" />);
     expect(screen.getAllByRole("article")).toHaveLength(1);
     expect(screen.getByText("Blocked")).toBeVisible();
     expect(screen.getByLabelText(/Proposal artifact, issue 160, valid/)).toBeVisible();
     expect(screen.getByLabelText(/Design artifact, issue 161, invalid/)).toBeVisible();
     expect(screen.getByLabelText(/Implement artifact missing/)).toBeVisible();
     expect(screen.getByText("marker_label_mismatch")).toBeVisible();
+    expect(screen.getByRole("link", { name: card.title })).toHaveAttribute("href", "/acme/workflow/changes/self-hosted-board");
     expect((await axe.run(container)).violations).toEqual([]);
   });
 
@@ -53,12 +54,12 @@ describe("change board projection UI", () => {
     vi.spyOn(boardApi, "organizationBoard").mockResolvedValue(boardFixture());
     vi.spyOn(boardApi, "repositoryBoard").mockResolvedValue(boardFixture());
     const user = userEvent.setup();
-    renderApp(<Routes><Route path="/changes/:orgId" element={<BoardListPage />} /><Route path="/changes/:orgId/repos/:repoId" element={<BoardListPage />} /></Routes>, `/changes/${orgId}`);
+    renderApp(<Routes><Route path="/changes/:orgId" element={<BoardListPage />} /><Route path="/:owner/:repo/changes" element={<LocationProbe />} /></Routes>, `/changes/${orgId}`);
     expect(await screen.findByRole("heading", { name: "Acme Studio changes" })).toBeVisible();
     await user.selectOptions(screen.getByLabelText("Stage"), "design");
     expect(screen.getByDisplayValue("Design")).toBeVisible();
     await user.selectOptions(screen.getByLabelText("Board scope"), repoId);
-    expect(await screen.findByRole("heading", { name: "Workflow Control" })).toBeVisible();
+    expect(await screen.findByTestId("location")).toHaveTextContent("/acme/workflow/changes");
   });
 
   it("uses one concealed state for missing or unauthorized details", async () => {
@@ -68,6 +69,8 @@ describe("change board projection UI", () => {
     expect((await axe.run(container)).violations).toEqual([]);
   });
 });
+
+function LocationProbe() { return <output data-testid="location">{useLocation().pathname}</output>; }
 
 const contextFixture = {
   user: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", login: "alice", display_name: "Alice", email: "alice@example.test", site_admin: false },

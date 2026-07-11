@@ -26,7 +26,7 @@ func TestContextRouteRequiresCompleteDependencies(t *testing.T) {
 
 func TestContextAuthenticationFailureIsNativeProblem(t *testing.T) {
 	set, err := NewRouteSet(Dependencies{Service: fakeContextService{}, Takeover: fakeTakeover{}, Sessions: fakeCookies{},
-		Authenticate:   adminapi.NativeAuthenticate(serverauth.Middleware{}),
+		Authenticate: adminapi.NativeAuthenticate(serverauth.Middleware{}), AuthenticateOptional: adminapi.NativeAuthenticateOptional(serverauth.Middleware{}),
 		AllowedOrigins: map[string]struct{}{"https://issues.example.test": {}}})
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +55,52 @@ func TestCurrentContextUsesAuthenticatedPrincipal(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+func TestRepositoryContextAllowsAnonymousButRejectsInvalidCredential(t *testing.T) {
+	called := 0
+	service := fakeContextService{repository: func(_ context.Context, subject authz.Subject, owner, repository string) (spa.RepositoryContext, error) {
+		called++
+		if subject.Principal != nil || owner != "acme" || repository != "public" {
+			t.Fatalf("subject=%+v owner=%q repository=%q", subject, owner, repository)
+		}
+		return spa.RepositoryContext{Repository: authz.RepositoryContextAccess{Repository: authz.RepositorySummary{
+			ID: uuid.New(), OrganizationID: uuid.New(), Name: repository, Visibility: "public"}, AllowedActions: []authz.AccessAction{authz.AccessRead}}}, nil
+	}}
+	middleware := serverauth.Middleware{SessionCookieName: "issue_spec_session", Sessions: invalidContextSessions{}}
+	set, err := NewRouteSet(Dependencies{Service: service, Takeover: fakeTakeover{}, Sessions: fakeCookies{},
+		Authenticate: adminapi.NativeAuthenticate(middleware), AuthenticateOptional: adminapi.NativeAuthenticateOptional(middleware),
+		AllowedOrigins: map[string]struct{}{"https://issues.example.test": {}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := routeHandler(t, set, "native.context.repository")
+	anonymous := httptest.NewRequest(http.MethodGet, "/api/v1/context/repos/acme/public", nil)
+	anonymous.SetPathValue("owner", "acme")
+	anonymous.SetPathValue("repo", "public")
+	anonymousResponse := httptest.NewRecorder()
+	handler.ServeHTTP(anonymousResponse, anonymous)
+	if anonymousResponse.Code != http.StatusOK || called != 1 {
+		t.Fatalf("anonymous status=%d called=%d body=%s", anonymousResponse.Code, called, anonymousResponse.Body.String())
+	}
+
+	invalid := httptest.NewRequest(http.MethodGet, "/api/v1/context/repos/acme/public", nil)
+	invalid.SetPathValue("owner", "acme")
+	invalid.SetPathValue("repo", "public")
+	invalid.AddCookie(&http.Cookie{Name: "issue_spec_session", Value: "invalid"})
+	invalidResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidResponse, invalid)
+	if invalidResponse.Code != http.StatusUnauthorized || called != 1 || !strings.Contains(invalidResponse.Body.String(), `"code":"authentication_required"`) {
+		t.Fatalf("invalid status=%d called=%d body=%s", invalidResponse.Code, called, invalidResponse.Body.String())
+	}
+}
+
+type invalidContextSessions struct{}
+
+func (invalidContextSessions) Authenticate(context.Context, string) (serverauth.Principal, error) {
+	return serverauth.Principal{}, serverauth.ErrInvalidCredential
+}
+
+func (invalidContextSessions) ValidateCSRF(serverauth.Principal, string) error { return nil }
 
 func TestRecoveryExchangeRequiresExactOriginAndSetsCookies(t *testing.T) {
 	takeover := fakeTakeover{exchange: func(_ context.Context, token, requestID, _, _ string) (session.Created, error) {
@@ -165,7 +211,15 @@ func TestUserCandidatesSuccessAndInvalidLimit(t *testing.T) {
 type fakeContextService struct {
 	current      func(context.Context, serverauth.Principal, string) (spa.CurrentContext, error)
 	repositories func(context.Context, serverauth.Principal, uuid.UUID) (spa.RepositoriesContext, error)
+	repository   func(context.Context, authz.Subject, string, string) (spa.RepositoryContext, error)
 	candidates   func(context.Context, serverauth.Principal, uuid.UUID, spa.CandidatePurpose, spa.CandidateMatch, string, int) (spa.UserCandidates, error)
+}
+
+func (f fakeContextService) Repository(ctx context.Context, subject authz.Subject, owner, repository string) (spa.RepositoryContext, error) {
+	if f.repository != nil {
+		return f.repository(ctx, subject, owner, repository)
+	}
+	return spa.RepositoryContext{}, nil
 }
 
 func (f fakeContextService) Current(ctx context.Context, principal serverauth.Principal, csrf string) (spa.CurrentContext, error) {
@@ -219,7 +273,8 @@ func testRouteSet(t *testing.T, service ContextService, takeover SessionTakeover
 		})
 	}
 	set, err := NewRouteSet(Dependencies{Service: service, Takeover: takeover, Sessions: cookies,
-		Authenticate: authenticate, AllowedOrigins: map[string]struct{}{"https://issues.example.test": {}}})
+		Authenticate: authenticate, AuthenticateOptional: authenticate,
+		AllowedOrigins: map[string]struct{}{"https://issues.example.test": {}}})
 	if err != nil {
 		t.Fatal(err)
 	}

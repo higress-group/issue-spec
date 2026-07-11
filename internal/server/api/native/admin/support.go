@@ -20,13 +20,27 @@ type Authenticate func(http.Handler) http.Handler
 // RFC 7807 writers while leaving its default GitHub-compatible JSON behavior
 // available to compatibility routes.
 func NativeAuthenticate(middleware serverauth.Middleware) Authenticate {
+	middleware = configureNativeAuthentication(middleware)
+	return middleware.Authenticate
+}
+
+// NativeAuthenticateOptional uses the same RFC 7807 credential failures as
+// protected native routes while allowing requests with no credential to reach
+// an authorization-aware read handler. Presented but invalid credentials never
+// fall back to anonymous access.
+func NativeAuthenticateOptional(middleware serverauth.Middleware) Authenticate {
+	middleware = configureNativeAuthentication(middleware)
+	return middleware.AuthenticateOptional
+}
+
+func configureNativeAuthentication(middleware serverauth.Middleware) serverauth.Middleware {
 	middleware.Unauthorized = func(w http.ResponseWriter, _ *http.Request) {
 		WriteProblem(w, http.StatusUnauthorized, "authentication_required", "Authentication required")
 	}
 	middleware.Forbidden = func(w http.ResponseWriter, _ *http.Request) {
 		WriteProblem(w, http.StatusForbidden, "forbidden", "Forbidden")
 	}
-	return middleware.Authenticate
+	return middleware
 }
 
 type Guard struct {

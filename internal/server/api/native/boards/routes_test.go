@@ -68,7 +68,13 @@ func TestBoardRoutesStrictProblemsJSONAndQueryValidation(t *testing.T) {
 	orgID, repoID := uuid.NewString(), uuid.NewString()
 	base := "/api/v1/orgs/" + orgID + "/repos/" + repoID + "/changes"
 
-	assertBoardProblem(t, boardRequest(mux, http.MethodGet, base, "", false, nil), http.StatusUnauthorized, "authentication_required")
+	anonymous := boardRequest(mux, http.MethodGet, base, "", false, nil)
+	if anonymous.Code != http.StatusOK {
+		t.Fatalf("anonymous repository read=%d body=%s", anonymous.Code, anonymous.Body.String())
+	}
+	assertBoardProblem(t, boardRequest(mux, http.MethodGet, base, "", true, map[string]string{"Authorization": "invalid"}), http.StatusUnauthorized, "authentication_required")
+	assertBoardProblem(t, boardRequest(mux, http.MethodPost, base+"/query", `{}`, false, nil), http.StatusUnauthorized, "authentication_required")
+	assertBoardProblem(t, boardRequest(mux, http.MethodGet, "/api/v1/orgs/"+orgID+"/changes", "", false, nil), http.StatusUnauthorized, "authentication_required")
 	assertBoardProblem(t, boardRequest(mux, http.MethodGet, "/api/v1/orgs/bad/repos/"+repoID+"/changes", "", true, nil), http.StatusUnprocessableEntity, "invalid_request")
 	assertBoardProblem(t, boardRequest(mux, http.MethodGet, base+"?unknown=x", "", true, nil), http.StatusUnprocessableEntity, "invalid_request")
 	assertBoardProblem(t, boardRequest(mux, http.MethodGet, base+"?page=zero", "", true, nil), http.StatusUnprocessableEntity, "invalid_request")
@@ -140,7 +146,7 @@ func boardFixture() changes.BoardPage {
 
 func boardMux(t *testing.T, service Service) *http.ServeMux {
 	t.Helper()
-	set, err := NewRouteSet(Dependencies{Service: service, Authenticate: boardAuthenticate})
+	set, err := NewRouteSet(Dependencies{Service: service, Authenticate: boardAuthenticate, AuthenticateOptional: boardAuthenticateOptional})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,9 +157,23 @@ func boardMux(t *testing.T, service Service) *http.ServeMux {
 	return mux
 }
 
+func boardAuthenticateOptional(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		boardAuthenticate(next).ServeHTTP(w, r)
+	})
+}
+
 func boardAuthenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") == "" {
+			adminapi.WriteProblem(w, http.StatusUnauthorized, "authentication_required", "Authentication required")
+			return
+		}
+		if r.Header.Get("Authorization") == "invalid" {
 			adminapi.WriteProblem(w, http.StatusUnauthorized, "authentication_required", "Authentication required")
 			return
 		}

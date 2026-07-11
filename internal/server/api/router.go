@@ -101,6 +101,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		return nil, err
 	}
 	nativeAuthenticate := adminapi.NativeAuthenticate(deps.Authentication)
+	nativeAuthenticateOptional := adminapi.NativeAuthenticateOptional(deps.Authentication)
 	features := metaapi.Features{Bootstrap: true, PersonalAccessTokens: true, Organizations: true,
 		SourceBindings: true, Webhooks: true, ChangeBoards: true, Runner: true, RecoveryExchange: true}
 
@@ -147,7 +148,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			return reposapi.NewRouteSet(reposapi.Dependencies{Service: deps.Admin, Authorizer: deps.Authorization, Authenticate: nativeAuthenticate})
 		},
 		func() (routeset.RouteSet, error) {
-			return contextapi.NewRouteSet(contextapi.Dependencies{Service: deps.SPA, Takeover: deps.Takeover, Sessions: deps.Sessions, Authenticate: nativeAuthenticate, AllowedOrigins: deps.Authentication.AllowedOrigins})
+			return contextapi.NewRouteSet(contextapi.Dependencies{Service: deps.SPA, Takeover: deps.Takeover, Sessions: deps.Sessions, Authenticate: nativeAuthenticate, AuthenticateOptional: nativeAuthenticateOptional, AllowedOrigins: deps.Authentication.AllowedOrigins})
 		},
 		func() (routeset.RouteSet, error) {
 			return metaapi.NewRouteSet(metaapi.Dependencies{Features: features})
@@ -168,7 +169,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			return deliveriesapi.NewRouteSet(deliveriesapi.Dependencies{Service: deps.Deliveries, Authenticate: nativeAuthenticate})
 		},
 		func() (routeset.RouteSet, error) {
-			return boardsapi.NewRouteSet(boardsapi.Dependencies{Service: deps.Changes, Authenticate: nativeAuthenticate})
+			return boardsapi.NewRouteSet(boardsapi.Dependencies{Service: deps.Changes, Authenticate: nativeAuthenticate, AuthenticateOptional: nativeAuthenticateOptional})
 		},
 		func() (routeset.RouteSet, error) {
 			return delegationapi.NewRouteSet(delegationapi.Dependencies{Service: deps.Delegation, Authenticate: nativeAuthenticate, Audience: deps.DelegationAudience, Subject: deps.DelegationSubject})

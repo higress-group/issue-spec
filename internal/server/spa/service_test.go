@@ -2,12 +2,14 @@ package spa
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/store"
@@ -21,7 +23,7 @@ func TestCurrentContextAndTenantSafeCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := New(pool, authorization)
+	service, err := New(store.New(pool), authorization)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +108,67 @@ func TestCurrentContextAndTenantSafeCandidates(t *testing.T) {
 	if len(managed.Users) != 0 {
 		t.Fatalf("unassociated managed PAT candidates = %+v", managed.Users)
 	}
+}
+
+func TestRepositoryContextUsesSharedVisibilityAndMutationAuthority(t *testing.T) {
+	pool := spaPool(t)
+	authorization, err := authz.New(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(store.New(pool), authorization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orgID := insertSPAOrg(t, pool, "canonical")
+	publicID := insertSPARepo(t, pool, orgID, "public-repo")
+	privateID := insertSPARepo(t, pool, orgID, "private-repo")
+	internalID := insertSPARepo(t, pool, orgID, "internal-repo")
+	if _, err := pool.Exec(t.Context(), `UPDATE repos SET visibility = CASE id WHEN $1 THEN 'public' WHEN $2 THEN 'internal' ELSE visibility END
+		WHERE organization_id = $3`, publicID, internalID, orgID); err != nil {
+		t.Fatal(err)
+	}
+
+	public, err := service.Repository(t.Context(), authz.Anonymous(), "CANONICAL", "PUBLIC-REPO")
+	if err != nil || public.Authenticated || public.Repository.Repository.ID != publicID ||
+		len(public.Repository.AllowedActions) != 1 || public.Repository.AllowedActions[0] != authz.AccessRead {
+		t.Fatalf("anonymous public context=%+v err=%v", public, err)
+	}
+	for _, name := range []string{"private-repo", "internal-repo", "missing"} {
+		if _, err := service.Repository(t.Context(), authz.Anonymous(), "canonical", name); !errors.Is(err, adminservice.ErrNotFound) {
+			t.Fatalf("anonymous %s error=%v", name, err)
+		}
+	}
+
+	readerID := insertSPAUser(t, pool, "canonical-reader")
+	reader := serverauth.Principal{User: serverauth.User{ID: readerID, Login: "canonical-reader"}, Kind: serverauth.CredentialSession}
+	internal, err := service.Repository(t.Context(), authz.Authenticated(reader), "canonical", "internal-repo")
+	if err != nil || !internal.Authenticated || internal.Repository.Repository.ID != internalID ||
+		!containsAccess(internal.Repository.AllowedActions, authz.AccessRead) || containsAccess(internal.Repository.AllowedActions, authz.AccessContribute) {
+		t.Fatalf("authenticated internal context=%+v err=%v", internal, err)
+	}
+	if _, err := service.Repository(t.Context(), authz.Authenticated(reader), "canonical", "private-repo"); !errors.Is(err, adminservice.ErrNotFound) {
+		t.Fatalf("unprivileged private error=%v", err)
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO repo_collaborators
+		(id, organization_id, repository_id, user_id, role) VALUES ($1, $2, $3, $4, 'write')`,
+		uuid.New(), orgID, privateID, readerID); err != nil {
+		t.Fatal(err)
+	}
+	private, err := service.Repository(t.Context(), authz.Authenticated(reader), "canonical", "private-repo")
+	if err != nil || !containsAccess(private.Repository.AllowedActions, authz.AccessContribute) ||
+		!containsAccess(private.Repository.AllowedActions, authz.AccessTriage) || !containsAccess(private.Repository.AllowedActions, authz.AccessWrite) {
+		t.Fatalf("authenticated private context=%+v err=%v", private, err)
+	}
+}
+
+func containsAccess(values []authz.AccessAction, target authz.AccessAction) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func insertSPAUser(t *testing.T, pool *pgxpool.Pool, login string) uuid.UUID {

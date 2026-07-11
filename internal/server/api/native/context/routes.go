@@ -16,20 +16,23 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/auth/session"
+	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/spa"
 )
 
 type Dependencies struct {
-	Service        ContextService
-	Takeover       SessionTakeover
-	Sessions       SessionCookies
-	Authenticate   adminapi.Authenticate
-	AllowedOrigins map[string]struct{}
+	Service              ContextService
+	Takeover             SessionTakeover
+	Sessions             SessionCookies
+	Authenticate         adminapi.Authenticate
+	AuthenticateOptional adminapi.Authenticate
+	AllowedOrigins       map[string]struct{}
 }
 
 type ContextService interface {
 	Current(context.Context, serverauth.Principal, string) (spa.CurrentContext, error)
 	Repositories(context.Context, serverauth.Principal, uuid.UUID) (spa.RepositoriesContext, error)
+	Repository(context.Context, authz.Subject, string, string) (spa.RepositoryContext, error)
 	UserCandidates(context.Context, serverauth.Principal, uuid.UUID, spa.CandidatePurpose, spa.CandidateMatch, string, int) (spa.UserCandidates, error)
 }
 
@@ -43,20 +46,37 @@ type SessionCookies interface {
 }
 
 func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
-	if deps.Service == nil || deps.Takeover == nil || deps.Sessions == nil || deps.Authenticate == nil || len(deps.AllowedOrigins) == 0 {
+	if deps.Service == nil || deps.Takeover == nil || deps.Sessions == nil || deps.Authenticate == nil || deps.AuthenticateOptional == nil || len(deps.AllowedOrigins) == 0 {
 		return routeset.RouteSet{}, errors.New("native context: service, takeover, sessions, authentication and origins are required")
 	}
 	h := handlers{deps: deps}
 	protected := func(handler http.Handler) http.Handler {
 		return adminapi.WithRequestID(deps.Authenticate(handler))
 	}
+	optional := func(handler http.Handler) http.Handler {
+		return adminapi.WithRequestID(deps.AuthenticateOptional(handler))
+	}
 	set := routeset.RouteSet{Name: "native-context", Routes: []routeset.Route{
 		{Name: "native.context.get", Method: http.MethodGet, Pattern: "/api/v1/context", Handler: protected(http.HandlerFunc(h.current))},
 		{Name: "native.context.repositories", Method: http.MethodGet, Pattern: "/api/v1/context/orgs/{org}/repos", Handler: protected(http.HandlerFunc(h.repositories))},
+		{Name: "native.context.repository", Method: http.MethodGet, Pattern: "/api/v1/context/repos/{owner}/{repo}", Handler: optional(http.HandlerFunc(h.repository))},
 		{Name: "native.context.user_candidates", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/user-candidates", Handler: protected(http.HandlerFunc(h.userCandidates))},
 		{Name: "native.session.recovery", Method: http.MethodPost, Pattern: "/api/v1/session/recovery", Handler: adminapi.WithRequestID(http.HandlerFunc(h.recoverSession))},
 	}}
 	return set, set.Validate()
+}
+
+func (h handlers) repository(w http.ResponseWriter, r *http.Request) {
+	subject := authz.Anonymous()
+	if principal, ok := serverauth.PrincipalFromContext(r.Context()); ok && principal.User.ID != uuid.Nil {
+		subject = authz.Authenticated(principal)
+	}
+	result, err := h.deps.Service.Repository(r.Context(), subject, r.PathValue("owner"), r.PathValue("repo"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	adminapi.WriteJSON(w, http.StatusOK, result)
 }
 
 type handlers struct{ deps Dependencies }
