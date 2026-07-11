@@ -14,6 +14,7 @@ import (
 
 const (
 	serviceName            = "issue-spec"
+	ConfigDirEnv           = "ISSUE_SPEC_CONFIG_DIR"
 	GitHubBackendEnv       = "ISSUE_SPEC_GITHUB_BACKEND"
 	GitHubBackendAPIURLEnv = "ISSUE_SPEC_API_URL"
 	GitHubBackendNameREST  = "rest"
@@ -466,7 +467,7 @@ func NormalizeHost(host string) string {
 }
 
 func ConfigDir() (string, error) {
-	if dir := strings.TrimSpace(os.Getenv("ISSUE_SPEC_CONFIG_DIR")); dir != "" {
+	if dir := strings.TrimSpace(os.Getenv(ConfigDirEnv)); dir != "" {
 		return dir, nil
 	}
 	base, err := os.UserConfigDir()

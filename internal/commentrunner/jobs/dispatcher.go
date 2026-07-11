@@ -1582,6 +1582,13 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 	}
 	var ghAuthMirror ghAuthMirrorResult
 	if req.ChildProfile != nil {
+		// Darwin's os.UserConfigDir ignores XDG_CONFIG_HOME. In explicit
+		// no-sandbox mode, point the child CLI at the non-secret profile file
+		// we materialize below. The delegated token remains a separate brokered
+		// file capability and is never written into this directory.
+		if cfg.UnsafeNoSandbox {
+			cfg.ExtraEnv[clientauth.ConfigDirEnv] = filepath.Join(cfg.TempXDGConfigHome, "issue-spec")
+		}
 		if err := materializeChildProfile(cfg.TempXDGConfigHome, *req.ChildProfile); err != nil {
 			return sandbox.Config{}, "", ghAuthMirror, err
 		}

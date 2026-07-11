@@ -38,6 +38,9 @@ func TestSandboxRunnerSelfHostedProfileHasNoGHState(t *testing.T) {
 	if mirror.Action != "" || cfg.ExtraEnv[clientauth.ProfileEnv] != "runner" || cfg.ExtraEnv[clientauth.GitHubBackendEnv] != "rest" {
 		t.Fatalf("profile config = %+v mirror=%+v", cfg.ExtraEnv, mirror)
 	}
+	if got, want := cfg.ExtraEnv[clientauth.ConfigDirEnv], filepath.Join(runtimeXDG, "issue-spec"); got != want {
+		t.Fatalf("%s = %q, want %q", clientauth.ConfigDirEnv, got, want)
+	}
 	if _, err := os.Stat(filepath.Join(runtimeGH, "hosts.yml")); !os.IsNotExist(err) {
 		t.Fatalf("hosts.yml crossed self-hosted boundary: %v", err)
 	}

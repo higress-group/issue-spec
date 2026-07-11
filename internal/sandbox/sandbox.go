@@ -184,9 +184,6 @@ func Preflight(ctx context.Context, cfg Config, deps Dependencies) (Metadata, er
 	if err := validateFileCapabilities(cfg.FileCapabilities); err != nil {
 		return Metadata{}, err
 	}
-	if cfg.UnsafeNoSandbox && len(cfg.FileCapabilities) > 0 {
-		return Metadata{}, fmt.Errorf("%w: credential capabilities require a filesystem sandbox", ErrSandboxConfigInvalid)
-	}
 	envMeta := scrubEnvironment(cfg, envPaths{}, false).metadata
 	if cfg.UnsafeNoSandbox {
 		return unsafeMetadata(cfg, envMeta), nil
@@ -202,14 +199,12 @@ func Prepare(ctx context.Context, cfg Config, target Command, deps Dependencies)
 		return PreparedCommand{}, err
 	}
 	if cfg.UnsafeNoSandbox {
-		if len(cfg.FileCapabilities) > 0 {
-			return PreparedCommand{}, fmt.Errorf("%w: credential capabilities require a filesystem sandbox", ErrSandboxConfigInvalid)
-		}
 		env := scrubEnvironment(cfg, hostEnvPaths(cfg), true)
 		meta := unsafeMetadata(cfg, env.metadata)
 		if env.err != nil {
 			return PreparedCommand{Metadata: meta}, env.err
 		}
+		env.entries = unsafeCapabilityEntries(env.entries, cfg.FileCapabilities)
 		target.Env = mergeCommandEnv(env.entries, target.Env, cfg, &meta.Env)
 		if target.Dir == "" {
 			target.Dir = cfg.WorkspacePath
@@ -427,7 +422,27 @@ func envMapFromEntries(entries []string) map[string]string {
 	return out
 }
 
+// unsafeCapabilityEntries exposes broker-owned private files by their host
+// paths only after the operator has explicitly disabled the filesystem
+// sandbox. Bubblewrap mode continues to use fixed /run/issue-spec mount
+// destinations. Values are deliberately absent from persisted metadata.
+func unsafeCapabilityEntries(entries []string, capabilities []FileCapability) []string {
+	values := envMapFromEntries(entries)
+	for _, capability := range capabilities {
+		values[capability.EnvName] = capability.Source
+	}
+	out := make([]string, 0, len(values))
+	for _, name := range sortedKeys(values) {
+		out = append(out, name+"="+values[name])
+	}
+	return out
+}
+
 func unsafeMetadata(cfg Config, env EnvMetadata) Metadata {
+	diagnostics := []string{"unsafe no-sandbox mode explicitly selected; local filesystem access is not constrained to the workspace"}
+	if len(cfg.FileCapabilities) > 0 {
+		diagnostics = append(diagnostics, "brokered credential files are exposed by private host path because no filesystem sandbox is active")
+	}
 	return Metadata{
 		SandboxEnabled:    false,
 		UnsafeNoSandbox:   true,
@@ -436,7 +451,7 @@ func unsafeMetadata(cfg Config, env EnvMetadata) Metadata {
 		Platform:          runtime.GOOS,
 		PlatformSupported: true,
 		Env:               env,
-		Diagnostics:       []string{"unsafe no-sandbox mode explicitly selected; local filesystem access is not constrained to the workspace"},
+		Diagnostics:       diagnostics,
 	}
 }
 

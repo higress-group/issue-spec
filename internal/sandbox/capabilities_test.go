@@ -2,20 +2,40 @@ package sandbox
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestCredentialCapabilityFailsClosedWithoutSandbox(t *testing.T) {
+func TestCredentialCapabilityUsesPrivateBrokerSourceWhenUnsafeIsExplicit(t *testing.T) {
 	path := privateCapabilityFile(t, "token", 0o600)
-	cfg := Config{UnsafeNoSandbox: true, FileCapabilities: []FileCapability{{Source: path,
-		Destination: "/run/issue-spec/credentials/issue.token", EnvName: "ISSUE_SPEC_TOKEN_FILE"}}}
-	_, err := Prepare(context.Background(), cfg, Command{Binary: "true"}, Dependencies{})
-	if !errors.Is(err, ErrSandboxConfigInvalid) {
+	root := t.TempDir()
+	cfg := Config{UnsafeNoSandbox: true, WorkspacePath: filepath.Join(root, "workspace"),
+		TempHome: filepath.Join(root, "home"), TempGHConfigDir: filepath.Join(root, "gh"),
+		TempXDGConfigHome: filepath.Join(root, "xdg"), FileCapabilities: []FileCapability{{Source: path,
+			Destination: "/run/issue-spec/credentials/issue.token", EnvName: "ISSUE_SPEC_TOKEN_FILE"}}}
+	preflight, err := Preflight(context.Background(), cfg, Dependencies{})
+	if err != nil {
+		t.Fatalf("Preflight error = %v", err)
+	}
+	if preflight.SandboxProvider != ProviderNone || preflight.FSBoundary != FSBoundaryDisabled ||
+		!strings.Contains(strings.Join(preflight.Diagnostics, "\n"), "private host path") {
+		t.Fatalf("Preflight metadata = %+v", preflight)
+	}
+	prepared, err := Prepare(context.Background(), cfg, Command{Binary: "true"}, Dependencies{})
+	if err != nil {
 		t.Fatalf("Prepare error = %v", err)
+	}
+	env := envMap(prepared.Command.Env)
+	if env["ISSUE_SPEC_TOKEN_FILE"] != path {
+		t.Fatalf("ISSUE_SPEC_TOKEN_FILE = %q, want private broker source %q", env["ISSUE_SPEC_TOKEN_FILE"], path)
+	}
+	if strings.Contains(strings.Join(prepared.Command.Env, "\n"), "/run/issue-spec/credentials/issue.token") {
+		t.Fatalf("unsafe command retained unavailable sandbox destination: %v", prepared.Command.Env)
+	}
+	if prepared.Metadata.SandboxProvider != ProviderNone || prepared.Metadata.FSBoundary != FSBoundaryDisabled {
+		t.Fatalf("Prepare metadata = %+v", prepared.Metadata)
 	}
 }
 
