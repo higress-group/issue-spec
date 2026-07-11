@@ -69,7 +69,9 @@ func TestRunMigrationsConcurrentAndIdempotent(t *testing.T) {
 	if err := pool.QueryRow(t.Context(), `SELECT count(*), max(version), max(name) FROM schema_migrations`).Scan(&count, &version, &name); err != nil {
 		t.Fatal(err)
 	}
-	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0002_auth_credentials.sql" {
+	// Keep the forward-only migration-set assertion synchronized with the
+	// latest embedded file; PROCESS-003 adds the admin lifecycle schema.
+	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0003_admin_lifecycle.sql" {
 		t.Fatalf("migration metadata = count %d, version %d, name %q", count, version, name)
 	}
 }

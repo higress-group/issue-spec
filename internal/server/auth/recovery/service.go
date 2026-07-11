@@ -18,9 +18,9 @@ import (
 const MaxTTL = 30 * time.Minute
 
 type Created struct {
-	ID        uuid.UUID
-	Plaintext string
-	ExpiresAt time.Time
+	ID        uuid.UUID `json:"id"`
+	Plaintext string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type Service struct {
@@ -37,8 +37,23 @@ func New(pool *pgxpool.Pool, secrets *serverauth.Secrets) *Service {
 // access have already been established. issuedBy identifies the OS/operator
 // principal and reason is mandatory audit evidence.
 func (s *Service) Mint(ctx context.Context, userID uuid.UUID, issuedBy, reason, requestID string, ttl time.Duration) (Created, error) {
+	var created Created
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		var err error
+		created, err = s.MintInTx(ctx, tx, userID, issuedBy, reason, requestID, ttl)
+		return err
+	})
+	if err != nil {
+		return Created{}, fmt.Errorf("recovery: mint: %w", err)
+	}
+	return created, nil
+}
+
+// MintInTx lets bootstrap and offline recovery couple role validation, token
+// issuance and immutable audit in one caller-owned transaction.
+func (s *Service) MintInTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, issuedBy, reason, requestID string, ttl time.Duration) (Created, error) {
 	if userID == uuid.Nil || strings.TrimSpace(issuedBy) == "" || strings.TrimSpace(reason) == "" ||
-		strings.TrimSpace(requestID) == "" || ttl <= 0 || ttl > MaxTTL {
+		strings.TrimSpace(requestID) == "" || ttl <= 0 || ttl > MaxTTL || tx == nil {
 		return Created{}, serverauth.ErrInvalidCredential
 	}
 	plaintext, prefix, err := s.secrets.RandomToken("rcv")
@@ -47,30 +62,26 @@ func (s *Service) Mint(ctx context.Context, userID uuid.UUID, issuedBy, reason, 
 	}
 	now := s.now()
 	created := Created{ID: uuid.New(), Plaintext: plaintext, ExpiresAt: now.Add(ttl)}
-	err = pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		var status string
-		if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&status); err != nil {
-			return err
-		}
-		if status != "active" {
-			return serverauth.ErrDisabledAccount
-		}
-		auditID := uuid.New()
-		if _, err := tx.Exec(ctx, `INSERT INTO audit_events
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&status); err != nil {
+		return Created{}, err
+	}
+	if status != "active" {
+		return Created{}, serverauth.ErrDisabledAccount
+	}
+	auditID := uuid.New()
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_events
 			(id, actor_identity_key, action, resource_type, resource_id, request_id, metadata)
 			VALUES ($1, $2, 'recovery.mint', 'recovery_credential', $3, $4, jsonb_build_object('reason', $5::text))`,
-			auditID, "operator:"+issuedBy, created.ID, requestID, reason); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, `INSERT INTO recovery_credentials
+		auditID, "operator:"+issuedBy, created.ID, requestID, reason); err != nil {
+		return Created{}, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO recovery_credentials
 			(id, user_id, token_prefix, token_hash, scope, issued_by, reason, expires_at, audit_event_id, created_at)
 			VALUES ($1, $2, $3, $4, 'site-admin-recovery', $5, $6, $7, $8, $9)`,
-			created.ID, userID, prefix, s.secrets.Digest("recovery-token", plaintext), issuedBy,
-			reason, created.ExpiresAt, auditID, now)
-		return err
-	})
-	if err != nil {
-		return Created{}, fmt.Errorf("recovery: mint: %w", err)
+		created.ID, userID, prefix, s.secrets.Digest("recovery-token", plaintext), issuedBy,
+		reason, created.ExpiresAt, auditID, now); err != nil {
+		return Created{}, err
 	}
 	return created, nil
 }
