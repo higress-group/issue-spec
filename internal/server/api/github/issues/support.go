@@ -5,12 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	apierrors "github.com/higress-group/issue-spec/internal/server/api/github/errors"
-	"github.com/higress-group/issue-spec/internal/server/api/github/pagination"
 	"github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/models"
@@ -65,6 +63,8 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 	switch {
+	case errors.Is(err, store.ErrLabelAlreadyExists):
+		apierrors.WriteGitHub(w, apierrors.Validation(RequestID(r), []codec.Violation{{Resource: "Label", Field: "name", Code: "already_exists", Message: "already exists"}}))
 	case errors.Is(err, store.ErrLabelNotFound):
 		apierrors.WriteGitHub(w, apierrors.Validation(RequestID(r), []codec.Violation{{Resource: "Issue", Field: "labels", Code: "invalid", Message: "contains an unknown label"}}))
 	case errors.Is(err, store.ErrNotFound):
@@ -105,7 +105,14 @@ func PresentComment(presenter codec.Presenter, resource models.RepositoryResourc
 	return presenter.PresentComment(codec.CommentView{StableID: snapshot.Comment.ID.String(), Owner: resource.Owner,
 		Repository: resource.Name, IssueNumber: snapshot.IssueNumber, Body: snapshot.Comment.Body,
 		Author:    codec.UserView{StableID: stableAuthorID(snapshot.Comment.AuthorID), Login: snapshot.AuthorLogin},
-		CreatedAt: snapshot.Comment.CreatedAt, UpdatedAt: snapshot.Comment.UpdatedAt})
+		CreatedAt: snapshot.Comment.CreatedAt, UpdatedAt: snapshot.Comment.UpdatedAt,
+		Reactions: presentReactionSummary(snapshot.Reactions)})
+}
+
+func presentReactionSummary(summary models.ReactionSummary) codec.Reactions {
+	return codec.Reactions{TotalCount: summary.TotalCount, PlusOne: summary.PlusOne,
+		MinusOne: summary.MinusOne, Laugh: summary.Laugh, Hooray: summary.Hooray,
+		Confused: summary.Confused, Heart: summary.Heart, Rocket: summary.Rocket, Eyes: summary.Eyes}
 }
 
 func stableAuthorID(id *uuid.UUID) string {
@@ -113,9 +120,4 @@ func stableAuthorID(id *uuid.UUID) string {
 		return "ghost"
 	}
 	return id.String()
-}
-
-func StableRate() pagination.Rate {
-	return pagination.Rate{Limit: 5000, Remaining: 4999, Used: 1,
-		Reset: time.Now().UTC().Add(time.Hour), Resource: "core"}
 }

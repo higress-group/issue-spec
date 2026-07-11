@@ -224,9 +224,13 @@ func (s *Service) ListComments(ctx context.Context, owner, repository string, su
 	}
 	var page models.CommentPage
 	err = s.store.WithTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx *store.Tx) error {
+		repositoryStore := tx.ScopedRepo(resource.Scope)
 		var err error
-		page, err = tx.ScopedRepo(resource.Scope).ListComments(ctx, options)
-		return err
+		page, err = repositoryStore.ListComments(ctx, options)
+		if err != nil {
+			return err
+		}
+		return repositoryStore.PopulateCommentReactionSummaries(ctx, page.Items)
 	})
 	return resource, page, err
 }
@@ -238,9 +242,18 @@ func (s *Service) GetComment(ctx context.Context, owner, repository string, comp
 	}
 	var comment models.CommentSnapshot
 	err = s.store.WithTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx *store.Tx) error {
+		repositoryStore := tx.ScopedRepo(resource.Scope)
 		var err error
-		comment, err = tx.ScopedRepo(resource.Scope).CommentByCompatibilityID(ctx, compatibilityID)
-		return err
+		comment, err = repositoryStore.CommentByCompatibilityID(ctx, compatibilityID)
+		if err != nil {
+			return err
+		}
+		items := []models.CommentSnapshot{comment}
+		if err := repositoryStore.PopulateCommentReactionSummaries(ctx, items); err != nil {
+			return err
+		}
+		comment = items[0]
+		return nil
 	})
 	return resource, comment, err
 }
@@ -273,6 +286,10 @@ func (s *Service) CreateComment(ctx context.Context, owner, repository string, i
 			return err
 		}
 		if err := s.projector.ProjectComment(ctx, repositoryStore, snapshot); err != nil {
+			return err
+		}
+		snapshot.Reactions, err = repositoryStore.ReactionSummary(ctx, snapshot.Comment.ID)
+		if err != nil {
 			return err
 		}
 		return s.events.Emit(ctx, repositoryStore, MutationEvent{Key: mutationKey(snapshot.Comment.ID, snapshot.Comment.RepresentationVersion, "issue_comment.created"), Type: "issue_comment.created", Scope: resource.Scope,
@@ -319,6 +336,10 @@ func (s *Service) UpdateComment(ctx context.Context, owner, repository string, c
 			return err
 		}
 		if err := s.projector.ProjectComment(ctx, repositoryStore, snapshot); err != nil {
+			return err
+		}
+		snapshot.Reactions, err = repositoryStore.ReactionSummary(ctx, snapshot.Comment.ID)
+		if err != nil {
 			return err
 		}
 		return s.events.Emit(ctx, repositoryStore, MutationEvent{Key: mutationKey(snapshot.Comment.ID, snapshot.Comment.RepresentationVersion, "issue_comment.edited"), Type: "issue_comment.edited", Scope: resource.Scope,

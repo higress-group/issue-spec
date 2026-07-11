@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
+	"github.com/higress-group/issue-spec/internal/server/api/github/conditional"
 	apierrors "github.com/higress-group/issue-spec/internal/server/api/github/errors"
 	"github.com/higress-group/issue-spec/internal/server/api/github/pagination"
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
@@ -19,6 +20,7 @@ type Dependencies struct {
 	Service        *Service
 	Presenter      codec.Presenter
 	Authentication auth.Middleware
+	Conditional    conditional.Policy
 }
 
 func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
@@ -26,7 +28,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 		return routeset.RouteSet{}, errors.New("github issues: service is required")
 	}
 	authentication := ConfigureCompatibilityAuthentication(deps.Authentication)
-	h := handlers{service: deps.Service, presenter: deps.Presenter}
+	h := handlers{service: deps.Service, presenter: deps.Presenter, conditional: deps.Conditional}
 	set := routeset.RouteSet{Name: "github-issues", Routes: []routeset.Route{
 		{Name: "github.issues.list", Method: http.MethodGet, Pattern: "/repos/{owner}/{repo}/issues", Handler: WithRequestID(authentication.AuthenticateOptional(http.HandlerFunc(h.list)))},
 		{Name: "github.issues.create", Method: http.MethodPost, Pattern: "/repos/{owner}/{repo}/issues", Handler: WithRequestID(authentication.Authenticate(http.HandlerFunc(h.create)))},
@@ -37,8 +39,9 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 }
 
 type handlers struct {
-	service   *Service
-	presenter codec.Presenter
+	service     *Service
+	presenter   codec.Presenter
+	conditional conditional.Policy
 }
 
 func (h handlers) list(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +79,7 @@ func (h handlers) list(w http.ResponseWriter, r *http.Request) {
 	}
 	etag := pagination.StrongETag("issues", resource.Scope.OrgID, resource.Scope.RepoID,
 		page.CollectionVersion, r.URL.Query().Encode(), pageOptions.Page, pageOptions.PerPage)
-	if pagination.WriteNotModified(w, r, etag, page.LastModified, StableRate()) {
+	if pagination.WriteNotModified(w, r, etag, page.LastModified, h.conditional.Rate()) {
 		return
 	}
 	if link, err := pagination.BuildLinkHeader(h.presenter.Origins.API, r.URL.Path, r.URL.Query(),
@@ -107,7 +110,7 @@ func (h handlers) create(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, err)
 		return
 	}
-	setIssueConditional(w, item)
+	h.setIssueConditional(w, item)
 	WriteJSON(w, http.StatusCreated, PresentIssue(h.presenter, resource, item))
 }
 
@@ -122,7 +125,7 @@ func (h handlers) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	etag := issueETag(item)
-	if pagination.WriteNotModified(w, r, etag, item.Issue.UpdatedAt, StableRate()) {
+	if pagination.WriteNotModified(w, r, etag, item.Issue.UpdatedAt, h.conditional.Rate()) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, PresentIssue(h.presenter, resource, item))
@@ -164,7 +167,7 @@ func (h handlers) update(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, err)
 		return
 	}
-	setIssueConditional(w, item)
+	h.setIssueConditional(w, item)
 	WriteJSON(w, http.StatusOK, PresentIssue(h.presenter, resource, item))
 }
 
@@ -182,7 +185,7 @@ func issueETag(item models.IssueSnapshot) string {
 		item.Issue.CommentsCollectionVersion, item.Issue.LabelsCollectionVersion)
 }
 
-func setIssueConditional(w http.ResponseWriter, item models.IssueSnapshot) {
+func (h handlers) setIssueConditional(w http.ResponseWriter, item models.IssueSnapshot) {
 	pagination.SetConditionalHeaders(w.Header(), issueETag(item), item.Issue.UpdatedAt)
-	pagination.SetRateHeaders(w.Header(), StableRate())
+	pagination.SetRateHeaders(w.Header(), h.conditional.Rate())
 }

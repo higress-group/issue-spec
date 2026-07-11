@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
+	"github.com/higress-group/issue-spec/internal/server/api/github/conditional"
 	apierrors "github.com/higress-group/issue-spec/internal/server/api/github/errors"
 	"github.com/higress-group/issue-spec/internal/server/api/github/issues"
 	"github.com/higress-group/issue-spec/internal/server/api/github/pagination"
@@ -21,6 +22,7 @@ type Dependencies struct {
 	Service        *issues.Service
 	Presenter      codec.Presenter
 	Authentication auth.Middleware
+	Conditional    conditional.Policy
 }
 
 func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
@@ -28,7 +30,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 		return routeset.RouteSet{}, errors.New("github comments: service is required")
 	}
 	authentication := issues.ConfigureCompatibilityAuthentication(deps.Authentication)
-	h := handlers{service: deps.Service, presenter: deps.Presenter}
+	h := handlers{service: deps.Service, presenter: deps.Presenter, conditional: deps.Conditional}
 	set := routeset.RouteSet{Name: "github-comments", Routes: []routeset.Route{
 		{Name: "github.comments.get_routes", Method: http.MethodGet, Pattern: "/repos/{owner}/{repo}/issues/{rest...}", Handler: issues.WithRequestID(authentication.AuthenticateOptional(http.HandlerFunc(h.dispatchGet)))},
 		{Name: "github.comments.create", Method: http.MethodPost, Pattern: "/repos/{owner}/{repo}/issues/{rest...}", Handler: issues.WithRequestID(authentication.Authenticate(http.HandlerFunc(h.dispatchCreate)))},
@@ -38,8 +40,9 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 }
 
 type handlers struct {
-	service   *issues.Service
-	presenter codec.Presenter
+	service     *issues.Service
+	presenter   codec.Presenter
+	conditional conditional.Policy
 }
 
 func (h handlers) dispatchGet(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +111,7 @@ func (h handlers) list(w http.ResponseWriter, r *http.Request, issueNumber *int6
 	}
 	etag := pagination.StrongETag("comments", resource.Scope.OrgID, resource.Scope.RepoID,
 		page.CollectionVersion, issueNumber, r.URL.Query().Encode(), pageOptions.Page, pageOptions.PerPage)
-	if pagination.WriteNotModified(w, r, etag, page.LastModified, issues.StableRate()) {
+	if pagination.WriteNotModified(w, r, etag, page.LastModified, h.conditional.Rate()) {
 		return
 	}
 	if link, err := pagination.BuildLinkHeader(h.presenter.Origins.API, r.URL.Path, r.URL.Query(),
@@ -133,7 +136,7 @@ func (h handlers) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	etag := commentETag(item)
-	if pagination.WriteNotModified(w, r, etag, item.Comment.UpdatedAt, issues.StableRate()) {
+	if pagination.WriteNotModified(w, r, etag, item.Comment.UpdatedAt, h.conditional.Rate()) {
 		return
 	}
 	issues.WriteJSON(w, http.StatusOK, issues.PresentComment(h.presenter, resource, item))
@@ -163,7 +166,7 @@ func (h handlers) create(w http.ResponseWriter, r *http.Request) {
 		issues.WriteError(w, r, err)
 		return
 	}
-	setCommentConditional(w, item)
+	h.setCommentConditional(w, item)
 	issues.WriteJSON(w, http.StatusCreated, issues.PresentComment(h.presenter, resource, item))
 }
 
@@ -191,7 +194,7 @@ func (h handlers) update(w http.ResponseWriter, r *http.Request) {
 		issues.WriteError(w, r, err)
 		return
 	}
-	setCommentConditional(w, item)
+	h.setCommentConditional(w, item)
 	issues.WriteJSON(w, http.StatusOK, issues.PresentComment(h.presenter, resource, item))
 }
 
@@ -209,7 +212,7 @@ func commentETag(item models.CommentSnapshot) string {
 		item.Comment.ReactionsCollectionVersion)
 }
 
-func setCommentConditional(w http.ResponseWriter, item models.CommentSnapshot) {
+func (h handlers) setCommentConditional(w http.ResponseWriter, item models.CommentSnapshot) {
 	pagination.SetConditionalHeaders(w.Header(), commentETag(item), item.Comment.UpdatedAt)
-	pagination.SetRateHeaders(w.Header(), issues.StableRate())
+	pagination.SetRateHeaders(w.Header(), h.conditional.Rate())
 }

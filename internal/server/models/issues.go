@@ -93,6 +93,7 @@ type CommentSnapshot struct {
 	Comment     Comment
 	IssueNumber int64
 	AuthorLogin string
+	Reactions   ReactionSummary
 }
 
 type CommentPage struct {
@@ -136,12 +137,78 @@ type IssueLabel struct {
 }
 
 type CommentReaction struct {
+	ID              uuid.UUID
+	CompatibilityID int64
+	Scope           RepoScope
+	IssueID         uuid.UUID
+	CommentID       uuid.UUID
+	UserID          *uuid.UUID
+	AuthorLogin     string
+	IdentityKey     string
+	ReactionKey     string
+	CreatedAt       time.Time
+}
+
+type ReactionSummary struct {
+	TotalCount int
+	PlusOne    int
+	MinusOne   int
+	Laugh      int
+	Hooray     int
+	Confused   int
+	Heart      int
+	Rocket     int
+	Eyes       int
+}
+
+type ReactionPage struct {
+	CommentID         uuid.UUID
+	Items             []CommentReaction
+	Total             int
+	CollectionVersion int64
+	LastModified      time.Time
+}
+
+type ReactionMutation struct {
+	Reaction CommentReaction
+	Comment  CommentSnapshot
+	Created  bool
+}
+
+type LabelPage struct {
+	Items             []Label
+	Total             int
+	CollectionVersion int64
+	LastModified      time.Time
+}
+
+type NewLabel struct {
 	ID          uuid.UUID
-	Scope       RepoScope
-	IssueID     uuid.UUID
-	CommentID   uuid.UUID
-	UserID      *uuid.UUID
-	IdentityKey string
-	ReactionKey string
-	CreatedAt   time.Time
+	Name        string
+	Color       string
+	Description string
+}
+
+type LabelUpdate struct {
+	Name        string
+	Color       string
+	Description string
+}
+
+type RepositorySubscription struct {
+	UserID                uuid.UUID
+	Subscribed            bool
+	Ignored               bool
+	Reason                string
+	RepresentationVersion int64
+	CollectionVersion     int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+type ProtocolUser struct {
+	ID        uuid.UUID
+	Login     string
+	Status    string
+	UpdatedAt time.Time
 }
