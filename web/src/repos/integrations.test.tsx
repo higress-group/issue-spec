@@ -55,22 +55,30 @@ describe("repository integrations workspace", () => {
   it("pauses and rotates a route, inspects attempts, and replays the immutable delivery", async () => {
     let update: unknown;
     let replayed = false;
+    const succeeded = [
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-4000-8000-000000000002",
+      "00000000-0000-4000-8000-000000000003",
+      "00000000-0000-4000-8000-000000000004",
+    ].map((id, index) => deliveryFixture({ id, state: "succeeded", delivered_at: "2026-07-11T10:00:01Z", last_error: null, repository_sequence: index + 1 }));
     server.use(
       metaHandler(),
       http.get(webhookCollectionPath(), () => HttpResponse.json({ subscriptions: [webhookFixture()] })),
       http.patch(`${webhookCollectionPath()}/${webhookId}`, async ({ request }) => { update = await request.json(); return HttpResponse.json(webhookFixture({ active: false, representation_version: 4 })); }),
       http.post(`${webhookCollectionPath()}/${webhookId}/rotate-secret`, () => HttpResponse.json(webhookFixture({ secret: "rotated-secret", secret_version: 2 }), { status: 201 })),
-      http.get(deliveryCollectionPath(), () => HttpResponse.json({ deliveries: [deliveryFixture()] })),
+      http.get(deliveryCollectionPath(), () => HttpResponse.json({ deliveries: [...succeeded, deliveryFixture()] })),
       http.get(`${deliveryCollectionPath()}/${deliveryId}`, () => HttpResponse.json({ delivery: deliveryFixture(), attempts: [{ id: "12345678-1234-4234-8234-123456789abc", attempt_number: 1, response_status: 503, response_headers: { "Retry-After": ["2"] }, started_at: "2026-07-11T10:00:00Z", completed_at: "2026-07-11T10:00:01Z" }] })),
       http.post(`${deliveryCollectionPath()}/${deliveryId}/redeliver`, () => { replayed = true; return HttpResponse.json(deliveryFixture({ state: "pending" }), { status: 202 }); }),
     );
     renderIntegration("webhooks");
+    expect(await screen.findByLabelText("4 delivered")).toBeVisible();
+    expect(screen.getByLabelText("1 dead letter")).toBeVisible();
     await userEvent.setup().click(await screen.findByRole("button", { name: "Pause" }));
     await waitFor(() => expect(update).toMatchObject({ active: false, expected_version: 3 }));
     await userEvent.setup().click(screen.getByRole("button", { name: "Rotate secret" }));
     expect(await screen.findByRole("dialog", { name: "Webhook secret v2" })).toHaveTextContent("rotated-secret");
     await userEvent.setup().click(screen.getByRole("button", { name: "I saved it" }));
-    await userEvent.setup().click(screen.getByRole("button", { name: /issue_comment.created/ }));
+    await userEvent.setup().click(screen.getByRole("button", { name: /issue_comment.created.*dead/ }));
     expect((await screen.findAllByText("HTTP 503"))[0]).toBeVisible();
     await userEvent.setup().click(screen.getByRole("button", { name: "Redeliver event" }));
     await waitFor(() => expect(replayed).toBe(true));

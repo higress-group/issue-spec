@@ -44,9 +44,11 @@ describe("integration API schemas", () => {
   });
 
   it("parses delivery scope and attempt response headers exactly as Go emits them", () => {
-    const delivery = { id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", scope: { OrgID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", RepoID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }, event_id: "ffffffff-ffff-4fff-8fff-ffffffffffff", subscription_id: "22222222-2222-4222-8222-222222222222", state: "retry", next_attempt_at: "2026-07-11T10:05:00Z", representation_version: 2, created_at: "2026-07-11T10:00:00Z", updated_at: "2026-07-11T10:01:00Z", event_type: "issue_comment.created", repository_sequence: 14, secret_version: 1 };
+    const delivery = { id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", scope: { OrgID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", RepoID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }, event_id: "ffffffff-ffff-4fff-8fff-ffffffffffff", subscription_id: "22222222-2222-4222-8222-222222222222", state: "pending", next_attempt_at: "2026-07-11T10:05:00Z", representation_version: 2, created_at: "2026-07-11T10:00:00Z", updated_at: "2026-07-11T10:01:00Z", event_type: "issue_comment.created", repository_sequence: 14, secret_version: 1 };
     const parsed = webhookDeliveryDetailSchema.parse({ delivery, attempts: [{ id: "12345678-1234-4234-8234-123456789abc", attempt_number: 1, response_status: 503, response_headers: { "Retry-After": ["2"] }, started_at: "2026-07-11T10:00:00Z", completed_at: "2026-07-11T10:00:01Z" }] });
     expect(parsed.delivery.scope.RepoID).toBe("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
     expect(parsed.attempts[0].response_headers["Retry-After"]).toEqual(["2"]);
+    expect(() => webhookDeliveryDetailSchema.parse({ delivery: { ...delivery, state: "retry" }, attempts: [] })).toThrow();
+    expect(() => webhookDeliveryDetailSchema.parse({ delivery: { ...delivery, state: "delivered" }, attempts: [] })).toThrow();
   });
 });

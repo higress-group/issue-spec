@@ -200,12 +200,14 @@ export type WebhookSubscription = z.infer<typeof webhookSubscriptionSchema>;
 export type WebhookRetry = z.infer<typeof webhookRetrySchema>;
 export type WebhookSecret = z.infer<typeof webhookSecretSchema>;
 
+export const webhookDeliveryStateSchema = z.enum(["pending", "delivering", "succeeded", "failed", "dead"]);
+
 export const webhookDeliverySchema = z.object({
   id: z.string().uuid(),
   scope: z.object({ OrgID: z.string().uuid(), RepoID: z.string().uuid() }),
   event_id: z.string().uuid(),
   subscription_id: z.string().uuid(),
-  state: z.string().min(1),
+  state: webhookDeliveryStateSchema,
   next_attempt_at: timestampSchema,
   delivered_at: timestampSchema.nullable().optional(),
   last_error: z.string().nullable().optional(),
@@ -232,3 +234,4 @@ export const webhookDeliveryDetailSchema = z.object({
 });
 export type WebhookDelivery = z.infer<typeof webhookDeliverySchema>;
 export type WebhookDeliveryDetail = z.infer<typeof webhookDeliveryDetailSchema>;
+export type WebhookDeliveryState = z.infer<typeof webhookDeliveryStateSchema>;

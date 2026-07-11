@@ -69,9 +69,10 @@
 .delivery-row small, .delivery-row time { margin-top: .18rem; color: var(--muted); font-size: .63rem; }
 .delivery-row time { grid-column: 2 / -1; }
 .delivery-state { width: .65rem; height: .65rem; border-radius: 50%; background: #8b9490; }
-.delivery-state.delivered { background: var(--teal); }
+.delivery-state.succeeded { background: var(--teal); }
 .delivery-state.dead { background: var(--coral); }
-.delivery-state.pending, .delivery-state.retry { background: var(--purple); }
+.delivery-state.failed { background: var(--coral); }
+.delivery-state.pending, .delivery-state.delivering { background: var(--purple); }
 .delivery-detail { min-width: 0; padding: 1.1rem; background: #fffefa; }
 .delivery-detail > header { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
 .delivery-detail h3 { margin: .25rem 0 0; font-family: Georgia, serif; overflow-wrap: anywhere; }
