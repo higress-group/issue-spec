@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -71,9 +72,129 @@ func TestRunMigrationsConcurrentAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Keep the forward-only migration-set assertion synchronized with the
-	// latest embedded file; PROCESS-005 adds reaction compatibility data.
-	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0008_delegated_job_revocations.sql" {
+	// latest embedded file.
+	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0009_javascript_safe_compatibility_ids.sql" {
 		t.Fatalf("migration metadata = count %d, version %d, name %q", count, version, name)
+	}
+}
+
+func TestJavaScriptSafeCompatibilityIDMigrationUpgradesExistingRows(t *testing.T) {
+	pool := newIntegrationPool(t)
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `CREATE TABLE schema_migrations (
+		version bigint PRIMARY KEY, name text NOT NULL, checksum bytea NOT NULL,
+		applied_at timestamptz NOT NULL DEFAULT clock_timestamp())`); err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range migrations[:8] {
+		if _, err := pool.Exec(t.Context(), migration.sql); err != nil {
+			t.Fatalf("apply pre-v9 %s: %v", migration.Name, err)
+		}
+		if _, err := pool.Exec(t.Context(), `INSERT INTO schema_migrations (version, name, checksum)
+			VALUES ($1, $2, $3)`, migration.Version, migration.Name, migration.checksum); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	userID, orgID, repoID, issueID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	commentID := uuid.MustParse("60ea2b7a-854d-417d-9d83-a0262f4a13bb")
+	reactionID := uuid.MustParse("11111111-1111-4111-8111-111111111111")
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO users (id, login, display_name) VALUES ($1, 'safe-id-upgrade', 'safe-id-upgrade')`, []any{userID}},
+		{`INSERT INTO orgs (id, name, display_name) VALUES ($1, 'safe-id-upgrade', 'safe-id-upgrade')`, []any{orgID}},
+		{`INSERT INTO repos (id, organization_id, name, display_name) VALUES ($1, $2, 'repo', 'repo')`, []any{repoID, orgID}},
+		{`INSERT INTO issues (id, organization_id, repository_id, number, author_id, title)
+			VALUES ($1, $2, $3, 1, $4, 'upgrade')`, []any{issueID, orgID, repoID, userID}},
+		{`INSERT INTO comments (id, organization_id, repository_id, issue_id, author_id, body)
+			VALUES ($1, $2, $3, $4, $5, 'preserved comment')`, []any{commentID, orgID, repoID, issueID, userID}},
+		{`INSERT INTO comment_reactions
+			(id, organization_id, repository_id, issue_id, comment_id, user_id, identity_key, reaction_key)
+			VALUES ($1, $2, $3, $4, $5, $6, 'user:safe-id-upgrade', 'eyes')`, []any{reactionID, orgID, repoID, issueID, commentID, userID}},
+	}
+	for _, statement := range statements {
+		if _, err := pool.Exec(t.Context(), statement.query, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var legacyCommentID, legacyReactionID int64
+	if err := pool.QueryRow(t.Context(), `SELECT c.compatibility_id, cr.compatibility_id
+		FROM comments c JOIN comment_reactions cr ON cr.comment_id = c.id
+		WHERE c.id = $1`, commentID).Scan(&legacyCommentID, &legacyReactionID); err != nil {
+		t.Fatal(err)
+	}
+	if legacyCommentID != 2702158502842464763 || legacyReactionID != 4428835748379366932 {
+		t.Fatalf("legacy IDs = %d/%d", legacyCommentID, legacyReactionID)
+	}
+	if legacyCommentID <= codec.MaxSafeNumericID || legacyReactionID <= codec.MaxSafeNumericID {
+		t.Fatalf("test fixture does not exercise unsafe IDs: %d/%d", legacyCommentID, legacyReactionID)
+	}
+
+	if err := RunMigrations(t.Context(), pool); err != nil {
+		t.Fatalf("upgrade to v9: %v", err)
+	}
+	var upgradedCommentID, upgradedReactionID int64
+	var commentBody, reactionKey string
+	if err := pool.QueryRow(t.Context(), `SELECT c.compatibility_id, cr.compatibility_id, c.body, cr.reaction_key
+		FROM comments c JOIN comment_reactions cr ON cr.comment_id = c.id
+		WHERE c.id = $1`, commentID).
+		Scan(&upgradedCommentID, &upgradedReactionID, &commentBody, &reactionKey); err != nil {
+		t.Fatal(err)
+	}
+	if upgradedCommentID != codec.StableNumericID(commentID.String()) ||
+		upgradedReactionID != codec.StableNumericID(reactionID.String()) {
+		t.Fatalf("Go/SQL stable ID mismatch: comments=%d/%d reactions=%d/%d",
+			upgradedCommentID, codec.StableNumericID(commentID.String()),
+			upgradedReactionID, codec.StableNumericID(reactionID.String()))
+	}
+	if upgradedCommentID <= 0 || upgradedCommentID > codec.MaxSafeNumericID ||
+		upgradedReactionID <= 0 || upgradedReactionID > codec.MaxSafeNumericID {
+		t.Fatalf("upgraded IDs are not JavaScript-safe: %d/%d", upgradedCommentID, upgradedReactionID)
+	}
+	for _, stable := range []string{"", "issue-spec", commentID.String(), reactionID.String(), uuid.NewString()} {
+		var sqlID int64
+		if err := pool.QueryRow(t.Context(), `SELECT issue_spec_stable_numeric_id($1)`, stable).Scan(&sqlID); err != nil {
+			t.Fatal(err)
+		}
+		if goID := codec.StableNumericID(stable); sqlID != goID {
+			t.Fatalf("stable ID parity for %q: SQL=%d Go=%d", stable, sqlID, goID)
+		}
+	}
+	if commentBody != "preserved comment" || reactionKey != "eyes" {
+		t.Fatalf("upgrade changed source rows: body=%q reaction=%q", commentBody, reactionKey)
+	}
+
+	var generatedColumns, compatibilityConstraints, uniqueIndexes int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name IN ('comments', 'comment_reactions')
+		AND column_name = 'compatibility_id' AND is_generated = 'ALWAYS'
+		AND generation_expression LIKE '%issue_spec_stable_numeric_id%'`).Scan(&generatedColumns); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_constraint c
+		JOIN pg_class r ON r.oid = c.conrelid JOIN pg_namespace n ON n.oid = r.relnamespace
+		WHERE n.nspname = current_schema() AND c.conname IN (
+			'comments_compatibility_id_positive', 'comments_compatibility_id_unique',
+			'comment_reactions_compatibility_id_positive', 'comment_reactions_compatibility_id_unique')`).Scan(&compatibilityConstraints); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_indexes
+		WHERE schemaname = current_schema() AND indexname IN (
+			'comments_compatibility_id_unique', 'comment_reactions_compatibility_id_unique')`).Scan(&uniqueIndexes); err != nil {
+		t.Fatal(err)
+	}
+	if generatedColumns != 2 || compatibilityConstraints != 4 || uniqueIndexes != 2 {
+		t.Fatalf("v9 generated/constraints/indexes = %d/%d/%d, want 2/4/2",
+			generatedColumns, compatibilityConstraints, uniqueIndexes)
+	}
+	if err := RunMigrations(t.Context(), pool); err != nil {
+		t.Fatalf("repeated v9 migration: %v", err)
 	}
 }
 

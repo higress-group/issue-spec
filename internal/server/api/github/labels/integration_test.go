@@ -67,7 +67,12 @@ func TestProtocolFeatureHTTPAndVersionInvalidation(t *testing.T) {
 		t.Fatalf("owner label assignment = %d %s", response.Code, response.Body.String())
 	}
 
-	_, comment, err := e.issueService.CreateComment(t.Context(), "acme", "widgets", 1, authz.Authenticated(e.reader), "comment")
+	comment, err := store.New(e.pool).Repo(e.scope.OrgID, e.scope.RepoID).CreateComment(t.Context(), models.NewComment{
+		ID:          uuid.MustParse("60ea2b7a-854d-417d-9d83-a0262f4a13bb"),
+		IssueNumber: 1,
+		AuthorID:    &e.reader.User.ID,
+		Body:        "comment",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,13 +80,20 @@ func TestProtocolFeatureHTTPAndVersionInvalidation(t *testing.T) {
 	commentPath := fmt.Sprintf("/repos/acme/widgets/issues/comments/%d", commentID)
 	commentResponse := request(t, mux, http.MethodGet, commentPath, "", "reader", nil)
 	commentETag := commentResponse.Header().Get("ETag")
+	var browserComment map[string]any
+	decode(t, commentResponse, &browserComment)
+	browserCommentID, ok := browserComment["id"].(float64)
+	if !ok || browserCommentID != float64(commentID) || int64(browserCommentID) != commentID ||
+		commentID <= 0 || commentID > codec.MaxSafeNumericID {
+		t.Fatalf("browser comment ID lost precision: json=%v stable=%d", browserComment["id"], commentID)
+	}
 	listResponse := request(t, mux, http.MethodGet, "/repos/acme/widgets/issues/1/comments", "", "reader", nil)
 	listETag := listResponse.Header().Get("ETag")
 	issueResponse := request(t, mux, http.MethodGet, "/repos/acme/widgets/issues/1", "", "reader", nil)
 	issueETag := issueResponse.Header().Get("ETag")
 
 	before := readVersions(t, e.pool, e.scope, comment.Comment.ID, issue.Issue.ID)
-	reactionPath := commentPath + "/reactions"
+	reactionPath := fmt.Sprintf("/repos/acme/widgets/issues/comments/%.0f/reactions", browserCommentID)
 	response = request(t, mux, http.MethodPost, reactionPath, `{"content":"eyes"}`, "reader", nil)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create reaction = %d %s", response.Code, response.Body.String())
@@ -94,6 +106,17 @@ func TestProtocolFeatureHTTPAndVersionInvalidation(t *testing.T) {
 	var storedReactionID int64
 	if err := e.pool.QueryRow(t.Context(), `SELECT compatibility_id FROM comment_reactions WHERE comment_id = $1`, comment.Comment.ID).Scan(&storedReactionID); err != nil || storedReactionID != reaction.ID {
 		t.Fatalf("reaction compatibility id = %d response=%d err=%v", storedReactionID, reaction.ID, err)
+	}
+	response = request(t, mux, http.MethodGet, reactionPath, "", "reader", nil)
+	var browserReactions []map[string]any
+	decode(t, response, &browserReactions)
+	if response.Code != http.StatusOK || len(browserReactions) != 1 {
+		t.Fatalf("browser reaction list = %d %+v", response.Code, browserReactions)
+	}
+	browserReactionID, ok := browserReactions[0]["id"].(float64)
+	if !ok || browserReactionID != float64(reaction.ID) || int64(browserReactionID) != reaction.ID ||
+		reaction.ID <= 0 || reaction.ID > codec.MaxSafeNumericID {
+		t.Fatalf("browser reaction ID lost precision: json=%v stable=%d", browserReactions[0]["id"], reaction.ID)
 	}
 	afterCreate := readVersions(t, e.pool, e.scope, comment.Comment.ID, issue.Issue.ID)
 	before.assertDelta(t, afterCreate, 1)
@@ -122,7 +145,7 @@ func TestProtocolFeatureHTTPAndVersionInvalidation(t *testing.T) {
 		t.Fatalf("issue was not invalidated: %d", got.Code)
 	}
 
-	deletePath := fmt.Sprintf("%s/%d", reactionPath, reaction.ID)
+	deletePath := fmt.Sprintf("%s/%.0f", reactionPath, browserReactionID)
 	if got := request(t, mux, http.MethodDelete, deletePath, "", "other-reader", nil); got.Code != http.StatusForbidden {
 		t.Fatalf("other reader reaction delete = %d %s", got.Code, got.Body.String())
 	}

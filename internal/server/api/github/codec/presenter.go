@@ -127,11 +127,16 @@ func (p Presenter) PresentPermission(permission, role string, user UserView) Per
 	return Permission{Permission: permission, RoleName: role, User: p.PresentUser(user)}
 }
 
-// StableNumericID maps an immutable server identifier to the positive numeric
-// shape consumed by the existing GitHub client. Database UUIDs remain private.
+// MaxSafeNumericID is the largest integer JSON clients implemented with an
+// IEEE-754 double (including JavaScript) can represent exactly.
+const MaxSafeNumericID int64 = 1<<53 - 1
+
+// StableNumericID maps an immutable server identifier to the positive,
+// JavaScript-safe numeric shape consumed by GitHub-compatible clients.
+// Database UUIDs remain private.
 func StableNumericID(stable string) int64 {
 	digest := sha256.Sum256([]byte(stable))
-	value := binary.BigEndian.Uint64(digest[:8]) & (1<<63 - 1)
+	value := binary.BigEndian.Uint64(digest[:8]) & uint64(MaxSafeNumericID)
 	if value == 0 {
 		return 1
 	}

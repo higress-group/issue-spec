@@ -24,6 +24,33 @@ func presenter(t *testing.T) codec.Presenter {
 	return codec.Presenter{Origins: origins}
 }
 
+func TestStableNumericIDIsJavaScriptSafeAndDeterministic(t *testing.T) {
+	// This UUID produced 2702158502842464763 with the legacy 63-bit mask. A
+	// browser rounded that value while constructing the comment reaction URL.
+	const stable = "60ea2b7a-854d-417d-9d83-a0262f4a13bb"
+	const want int64 = 9005925674908155
+
+	got := codec.StableNumericID(stable)
+	if got != want {
+		t.Fatalf("StableNumericID(%q) = %d, want %d", stable, got, want)
+	}
+	if got <= 0 || got > codec.MaxSafeNumericID {
+		t.Fatalf("StableNumericID(%q) = %d, outside JavaScript safe range", stable, got)
+	}
+
+	payload, err := json.Marshal(map[string]int64{"id": got})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var browserValue map[string]float64
+	if err := json.Unmarshal(payload, &browserValue); err != nil {
+		t.Fatal(err)
+	}
+	if browserValue["id"] != float64(got) || int64(browserValue["id"]) != got {
+		t.Fatalf("JSON number lost precision: encoded=%s decoded=%.0f want=%d", payload, browserValue["id"], got)
+	}
+}
+
 func TestPresenterMatchesExistingGitHubClientFieldsAndPreservesRawBody(t *testing.T) {
 	p := presenter(t)
 	rawBody := "<!-- issue-spec:type=PROCESS id=PROCESS-006 version=1 -->\n中文  \\ slash\n"

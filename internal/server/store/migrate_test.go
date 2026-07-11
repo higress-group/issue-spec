@@ -90,6 +90,30 @@ func TestDelegatedJobRevocationMigrationMetadata(t *testing.T) {
 	}
 }
 
+func TestJavaScriptSafeCompatibilityIDMigrationMetadata(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compatibility := migrations[8]
+	if compatibility.Version != 9 || compatibility.Name != "0009_javascript_safe_compatibility_ids.sql" {
+		t.Fatalf("compatibility ID migration = %+v", compatibility.MigrationInfo)
+	}
+	for _, contract := range []string{
+		"CREATE OR REPLACE FUNCTION issue_spec_stable_numeric_id",
+		"((get_byte(bytes, 1)::bigint & 31) << 48)",
+		"DROP COLUMN compatibility_id",
+		"ADD COLUMN compatibility_id bigint GENERATED ALWAYS AS",
+		"compatibility_id > 0 AND compatibility_id <= 9007199254740991",
+		"comments_compatibility_id_unique UNIQUE (compatibility_id)",
+		"comment_reactions_compatibility_id_unique UNIQUE (compatibility_id)",
+	} {
+		if !containsSQL(compatibility.sql, contract) {
+			t.Errorf("JavaScript-safe compatibility migration is missing %q", contract)
+		}
+	}
+}
+
 func TestProtocolFeatureMigrationMetadata(t *testing.T) {
 	migrations, err := loadMigrations()
 	if err != nil {
