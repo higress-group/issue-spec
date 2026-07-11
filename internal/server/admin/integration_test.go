@@ -268,6 +268,10 @@ func TestTenantLifecycleSoftArchiveCASAndCrossOrgIsolation(t *testing.T) {
 		ownerMembership.RepresentationVersion); !errors.Is(err, adminservice.ErrLastOrganizationOwner) {
 		t.Fatalf("last owner archive error = %v", err)
 	}
+	emptyCollaborators, err := service.ListCollaborators(t.Context(), repoA.Scope, false)
+	if err != nil || emptyCollaborators == nil || len(emptyCollaborators) != 0 {
+		t.Fatalf("empty collaborators = %#v, %v; want non-nil empty slice", emptyCollaborators, err)
+	}
 
 	actor.RequestID = "collaborator-upsert"
 	collaborator, err := service.UpsertCollaborator(t.Context(), actor, repoA.Scope,

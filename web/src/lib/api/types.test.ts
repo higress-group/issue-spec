@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contextSchema, sourceBindingSchema, webhookDeliveryDetailSchema, webhookSecretSchema, webhookSubscriptionSchema } from "./types";
+import { collaboratorsSchema, contextSchema, sourceBindingSchema, webhookDeliveryDetailSchema, webhookSecretSchema, webhookSubscriptionSchema } from "./types";
 
 const baseContext = {
   user: {
@@ -57,5 +57,17 @@ describe("integration API schemas", () => {
     expect(parsed.attempts[0].response_headers["Retry-After"]).toEqual(["2"]);
     expect(() => webhookDeliveryDetailSchema.parse({ delivery: { ...delivery, state: "retry" }, attempts: [] })).toThrow();
     expect(() => webhookDeliveryDetailSchema.parse({ delivery: { ...delivery, state: "delivered" }, attempts: [] })).toThrow();
+  });
+});
+
+describe("collaboratorsSchema", () => {
+  it("normalizes the legacy null collection to an empty array", () => {
+    expect(collaboratorsSchema.parse({ collaborators: null })).toEqual({ collaborators: [] });
+    expect(collaboratorsSchema.parse({ collaborators: [] })).toEqual({ collaborators: [] });
+  });
+
+  it("rejects malformed collection objects instead of hiding them", () => {
+    expect(() => collaboratorsSchema.parse({ collaborators: {} })).toThrow();
+    expect(() => collaboratorsSchema.parse({})).toThrow();
   });
 });

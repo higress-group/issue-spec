@@ -1,21 +1,22 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
-import { Cable, Save, Users } from "lucide-react";
-import { Link, useParams } from "react-router-dom";
-import { ErrorNotice, Field, Loading, PageHeader, Panel, SelectInput, TextInput } from "../app/components";
+import { Save } from "lucide-react";
+import { useParams } from "react-router-dom";
+import { ErrorNotice, Field, Loading, Panel, SelectInput, TextInput } from "../app/components";
 import { useInspector } from "../app/problem-inspector";
 import { api } from "../lib/api/resources";
 import type { AdminRepository } from "../lib/api/types";
 import { queryKeys } from "../auth/session";
+import { RepositoryHeader, useRepositoryContext } from "./repository-header";
 
 type RepoSettings = Pick<AdminRepository, "display_name" | "description" | "visibility" | "default_branch" | "contribution_policy">;
 
 export function RepositorySettingsPage() {
-  const { orgId = "", repoId = "" } = useParams();
-  const repository = useQuery({ queryKey: queryKeys.repository(orgId, repoId), queryFn: ({ signal }) => api.repository(orgId, repoId, signal) });
+  const { repository } = useRepositoryContext();
   if (repository.isLoading) return <Loading label="Loading repository settings" />;
   if (repository.error) return <ErrorNotice error={repository.error} />;
-  return <div className="page"><PageHeader eyebrow="Repository / settings" title={repository.data?.display_name ?? "Repository"} description="Visibility and contribution are independent, versioned controls." actions={<div className="button-row"><Link className="button secondary" to={`/orgs/${orgId}/repos/${repoId}/collaborators`}><Users size={16} />Collaborators</Link><Link className="button secondary" to={`/orgs/${orgId}/repos/${repoId}/integrations/source`}><Cable size={16} />Integrations</Link></div>} />{repository.data ? <RepositoryForm repository={repository.data} /> : null}</div>;
+  if (!repository.data) return null;
+  return <div className="page"><RepositoryHeader repository={repository.data} section="settings" title={repository.data.display_name} description="Visibility and contribution are independent, versioned controls." /><RepositoryForm repository={repository.data} /></div>;
 }
 
 function RepositoryForm({ repository }: { repository: AdminRepository }) {

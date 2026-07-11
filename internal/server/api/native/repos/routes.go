@@ -148,7 +148,14 @@ func (h handlers) listCollaborators(w http.ResponseWriter, r *http.Request) {
 		adminapi.WriteServiceError(w, err)
 		return
 	}
-	adminapi.WriteJSON(w, http.StatusOK, map[string]any{"collaborators": items})
+	adminapi.WriteJSON(w, http.StatusOK, map[string]any{"collaborators": collaboratorCollection(items)})
+}
+
+func collaboratorCollection(items []models.AdminCollaborator) []models.AdminCollaborator {
+	if items == nil {
+		return []models.AdminCollaborator{}
+	}
+	return items
 }
 
 func (h handlers) upsertCollaborator(w http.ResponseWriter, r *http.Request) {

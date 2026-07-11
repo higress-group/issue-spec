@@ -2,6 +2,7 @@ import { z } from "zod";
 import { apiRequest, isApiProblem } from "./client";
 import {
   bootstrapSchema,
+  collaboratorsSchema,
   contextSchema,
   createdSecretSchema,
   metaSchema,
@@ -59,7 +60,7 @@ export const api = {
   repository: (orgId: string, repoId: string, signal?: AbortSignal) => apiRequest<AdminRepository>(`/api/v1/orgs/${orgId}/repos/${repoId}`, { signal }),
   createRepository: (orgId: string, body: unknown) => apiRequest<AdminRepository>(`/api/v1/orgs/${orgId}/repos`, { method: "POST", body }),
   updateRepository: (orgId: string, repoId: string, body: unknown) => apiRequest<AdminRepository>(`/api/v1/orgs/${orgId}/repos/${repoId}`, { method: "PATCH", body }),
-  collaborators: (orgId: string, repoId: string, signal?: AbortSignal) => apiRequest<{ collaborators: Collaborator[] }>(`/api/v1/orgs/${orgId}/repos/${repoId}/collaborators`, { signal }),
+  collaborators: (orgId: string, repoId: string, signal?: AbortSignal) => apiRequest(`/api/v1/orgs/${orgId}/repos/${repoId}/collaborators`, { schema: collaboratorsSchema, signal }),
   upsertCollaborator: (orgId: string, repoId: string, body: unknown) => apiRequest<Collaborator>(`/api/v1/orgs/${orgId}/repos/${repoId}/collaborators`, { method: "POST", body }),
   deleteCollaborator: (orgId: string, repoId: string, id: string, version: number) => apiRequest<void>(`/api/v1/orgs/${orgId}/repos/${repoId}/collaborators/${id}?version=${version}`, { method: "DELETE" }),
   serviceAccounts: (orgId: string, signal?: AbortSignal) => apiRequest<{ service_accounts: ServiceAccount[] }>(`/api/v1/orgs/${orgId}/service-accounts`, { signal }),

@@ -3,14 +3,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import {
   Activity, Cable, CheckCircle2, Clock3, ExternalLink, GitBranch, PauseCircle,
-  PlayCircle, Plus, RadioTower, RefreshCw, RotateCw, Send, ShieldCheck, Trash2,
+  PlayCircle, Plus, RefreshCw, RotateCw, Send, ShieldCheck, Trash2,
 } from "lucide-react";
-import { Link, useParams } from "react-router-dom";
-import { EmptyState, ErrorNotice, Field, Loading, PageHeader, Panel, SecretDialog, StatusBadge, TextInput } from "../app/components";
+import { EmptyState, ErrorNotice, Field, Loading, Panel, SecretDialog, StatusBadge, TextInput } from "../app/components";
 import { useInspector } from "../app/problem-inspector";
 import { queryKeys, useMeta } from "../auth/session";
 import { api } from "../lib/api/resources";
-import type { SourceBinding, WebhookDelivery, WebhookRetry, WebhookSecret, WebhookSubscription } from "../lib/api/types";
+import type { AdminRepository, SourceBinding, WebhookDelivery, WebhookRetry, WebhookSecret, WebhookSubscription } from "../lib/api/types";
+import { RepositoryHeader, useRepositoryContext } from "./repository-header";
 import "./integrations.css";
 
 type IntegrationKind = "source" | "webhooks";
@@ -26,19 +26,21 @@ const eventOptions = [
 ] as const;
 
 export function IntegrationsPage({ kind }: { kind: IntegrationKind }) {
-  const { orgId = "", repoId = "" } = useParams();
+  const { orgId, repoId, repository } = useRepositoryContext();
   const meta = useMeta();
   const capability = kind === "source" ? "source_bindings" : "webhooks";
-  if (meta.isLoading) return <Loading label="Opening integration workspace" />;
+  if (meta.isLoading || repository.isLoading) return <Loading label="Opening integration workspace" />;
   if (meta.error) return <ErrorNotice error={meta.error} />;
+  if (repository.error) return <ErrorNotice error={repository.error} />;
+  if (!repository.data) return null;
   if (!meta.data?.features[capability]) {
-    return <div className="page"><IntegrationHeader kind={kind} orgId={orgId} repoId={repoId} /><Panel><EmptyState title="Capability unavailable" description="This server did not mount the required native integration capability." action={<StatusBadge tone="coral">not mounted</StatusBadge>} /></Panel></div>;
+    return <div className="page"><IntegrationHeader kind={kind} repository={repository.data} /><Panel><EmptyState title="Capability unavailable" description="This server did not mount the required native integration capability." action={<StatusBadge tone="coral">not mounted</StatusBadge>} /></Panel></div>;
   }
-  return <div className="page integrations-page"><IntegrationHeader kind={kind} orgId={orgId} repoId={repoId} />{kind === "source" ? <SourceWorkspace orgId={orgId} repoId={repoId} /> : <WebhookWorkspace orgId={orgId} repoId={repoId} />}</div>;
+  return <div className="page integrations-page"><IntegrationHeader kind={kind} repository={repository.data} />{kind === "source" ? <SourceWorkspace orgId={orgId} repoId={repoId} /> : <WebhookWorkspace orgId={orgId} repoId={repoId} />}</div>;
 }
 
-function IntegrationHeader({ kind, orgId, repoId }: { kind: IntegrationKind; orgId: string; repoId: string }) {
-  return <PageHeader eyebrow="Repository / integrations" title={kind === "source" ? "Source connection" : "Delivery control room"} description={kind === "source" ? "Bind repository identity without storing source-host credentials." : "Route repository events to trusted runners, inspect every attempt, and replay failures."} actions={<nav className="integration-switcher" aria-label="Integration sections"><Link className={kind === "source" ? "active" : ""} to={`/orgs/${orgId}/repos/${repoId}/integrations/source`}><Cable size={16} />Source</Link><Link className={kind === "webhooks" ? "active" : ""} to={`/orgs/${orgId}/repos/${repoId}/integrations/webhooks`}><RadioTower size={16} />Webhooks</Link></nav>} />;
+function IntegrationHeader({ kind, repository }: { kind: IntegrationKind; repository: AdminRepository }) {
+  return <RepositoryHeader repository={repository} section={kind} title={kind === "source" ? "Source connection" : "Delivery control room"} description={kind === "source" ? "Bind repository identity without storing source-host credentials." : "Route repository events to trusted runners, inspect every attempt, and replay failures."} />;
 }
 
 function SourceWorkspace({ orgId, repoId }: { orgId: string; repoId: string }) {

@@ -117,9 +117,11 @@ describe("repository integrations workspace", () => {
 });
 
 function renderIntegration(kind: "source" | "webhooks") {
+  server.use(repositoryHandler());
   const route = `/orgs/${orgId}/repos/${repoId}/integrations/${kind === "source" ? "source" : "webhooks"}`;
   return renderApp(<Routes><Route path="/orgs/:orgId/repos/:repoId/integrations/source" element={<IntegrationsPage kind="source" />} /><Route path="/orgs/:orgId/repos/:repoId/integrations/webhooks" element={<IntegrationsPage kind="webhooks" />} /></Routes>, route);
 }
+function repositoryHandler() { return http.get(`http://localhost/api/v1/orgs/${orgId}/repos/${repoId}`, () => HttpResponse.json({ id: repoId, organization_id: orgId, name: "issue-spec", display_name: "Issue Spec", description: "Issue-native specifications", visibility: "private", default_branch: "main", contribution_policy: "members", representation_version: 1 })); }
 function metaHandler() { return http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ api_version: "v1", features: { bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: true, webhooks: true, change_boards: true, runner: true, recovery_exchange: true } })); }
 function sourcePath(suffix: string) { return `http://localhost/api/v1/orgs/${orgId}/repos/${repoId}/bindings${suffix}`; }
 function webhookCollectionPath() { return `http://localhost/api/v1/orgs/${orgId}/webhooks`; }

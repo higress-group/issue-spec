@@ -147,6 +147,16 @@ export type Collaborator = {
   representation_version: number;
 };
 
+export const collaboratorSchema = z.object({
+  id: z.string().uuid(),
+  user_id: z.string().uuid(),
+  role: z.string().min(1),
+  representation_version: z.number().int().positive(),
+});
+export const collaboratorsSchema = z.object({
+  collaborators: z.array(collaboratorSchema).nullable().transform((items) => items ?? []),
+});
+
 export type ServiceAccount = {
   id: string;
   user_id: string;

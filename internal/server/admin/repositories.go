@@ -297,7 +297,7 @@ func (s *Service) ListCollaborators(ctx context.Context, scope models.RepoScope,
 		return nil, err
 	}
 	defer rows.Close()
-	var result []models.AdminCollaborator
+	result := make([]models.AdminCollaborator, 0)
 	for rows.Next() {
 		collaborator, err := scanCollaborator(rows)
 		if err != nil {
