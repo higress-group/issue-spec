@@ -38,6 +38,19 @@ type runnerServeRuntimeInput struct {
 	GitCredentialConcurrency int
 	ReconcileWorkers         int
 	ReconcileLease           time.Duration
+	Dependencies             *runnerServeRuntimeDependencies
+}
+
+// runnerServeRuntimeDependencies is a hermetic composition seam used by the
+// command-level test. Production leaves it nil and always receives the concrete
+// workspace, sandbox, acpx, artifact and writeback implementations below.
+type runnerServeRuntimeDependencies struct {
+	Workspaces      jobs.WorkspaceManager
+	Sandbox         jobs.SandboxPreparer
+	Acpx            jobs.AcpxFactory
+	Artifacts       jobs.ArtifactProvider
+	Writeback       jobs.Writeback
+	IssueSpecBinary string
 }
 
 var runnerServeBuildRuntime = defaultBuildRunnerServeRuntime
@@ -87,15 +100,37 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	broker := &credentials.Broker{Profile: profile, Audience: profile.ServerInstanceID,
 		Subject: input.Runner.RunnerIdentity, ParentToken: input.ParentToken, HTTPClient: nativeHTTPClient,
 		Materializer: credentials.Materializer{Root: credentialRoot}, GitProvider: gitProvider, TTL: 5 * time.Minute}
+	workspaces := jobs.WorkspaceManager(workspace.Manager{Root: input.Runner.WorkspaceRoot, Retention: input.Runner.WorkspaceRetention.Duration})
+	sandboxer := jobs.SandboxPreparer(jobs.SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: input.Runner.UnsafeNoSandbox,
+		BwrapPath: input.Runner.BwrapPath, HostGHConfigDir: input.Runner.GHConfigDir}})
+	acpxFactory := jobs.AcpxFactory(jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(input.Runner)})
+	artifacts := jobs.ArtifactProvider(&jobs.IssueSpecArtifactProvider{GitHub: compatibility})
+	writebacks := jobs.Writeback(&writeback.Service{GitHub: compatibility, Store: input.Store})
+	issueSpecBinary := issueSpecBinaryForRunner()
+	if deps := input.Dependencies; deps != nil {
+		if deps.Workspaces != nil {
+			workspaces = deps.Workspaces
+		}
+		if deps.Sandbox != nil {
+			sandboxer = deps.Sandbox
+		}
+		if deps.Acpx != nil {
+			acpxFactory = deps.Acpx
+		}
+		if deps.Artifacts != nil {
+			artifacts = deps.Artifacts
+		}
+		if deps.Writeback != nil {
+			writebacks = deps.Writeback
+		}
+		if strings.TrimSpace(deps.IssueSpecBinary) != "" {
+			issueSpecBinary = strings.TrimSpace(deps.IssueSpecBinary)
+		}
+	}
 	dispatcher := &jobs.Dispatcher{Store: input.Store,
 		Repositories: repository.NativeResolver{Bindings: native, Scopes: scopes.ByRepository},
-		Workspaces:   workspace.Manager{Root: input.Runner.WorkspaceRoot, Retention: input.Runner.WorkspaceRetention.Duration},
-		Sandbox: jobs.SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: input.Runner.UnsafeNoSandbox,
-			BwrapPath: input.Runner.BwrapPath, HostGHConfigDir: input.Runner.GHConfigDir}},
-		Acpx:       jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(input.Runner)},
-		Artifacts:  &jobs.IssueSpecArtifactProvider{GitHub: compatibility},
-		Writeback:  &writeback.Service{GitHub: compatibility, Store: input.Store},
-		AcpxBinary: input.Runner.AcpxPath, IssueSpecBinary: issueSpecBinaryForRunner(), CredentialBroker: broker,
+		Workspaces:   workspaces, Sandbox: sandboxer, Acpx: acpxFactory, Artifacts: artifacts, Writeback: writebacks,
+		AcpxBinary: input.Runner.AcpxPath, IssueSpecBinary: issueSpecBinary, CredentialBroker: broker,
 		CredentialScopes: scopes.ByRepository}
 	return runnerserver.NewRuntime(runnerserver.RuntimeConfig{HTTP: input.HTTP, Reconciler: reconciler,
 		Dispatcher: dispatcher, MaxConcurrentJobs: input.Runner.MaxConcurrentJobs})
