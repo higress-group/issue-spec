@@ -1,0 +1,9 @@
+.reaction-bar { align-items: center; display: flex; flex-wrap: wrap; gap: .32rem; margin-top: .7rem; }
+.reaction-bar button { align-items: center; background: transparent; border: 1px solid transparent; border-radius: 999px; color: var(--muted); display: inline-flex; font-size: .78rem; gap: .25rem; min-height: 2rem; min-width: 2rem; justify-content: center; padding: .2rem .42rem; }
+.reaction-bar button:hover, .reaction-bar button:focus-visible { background: rgba(15,111,111,.08); border-color: var(--teal); color: var(--ink); }
+.reaction-bar button.mine { background: rgba(98,69,154,.11); border-color: var(--purple); color: var(--ink); }
+.reaction-error { color: #9a332c; font-size: .78rem; }
+@media (max-width: 620px) {
+  .reaction-bar { flex-wrap: nowrap; max-width: 100%; overflow-x: auto; padding-bottom: .2rem; scrollbar-width: thin; }
+  .reaction-bar button { flex: 0 0 auto; min-width: 1.8rem; padding-inline: .32rem; }
+}

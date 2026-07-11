@@ -1,0 +1,8 @@
+.label-chips { display: inline-flex; flex-wrap: wrap; gap: .38rem; }
+.label-chip { align-items: center; background: rgba(255,255,255,.62); border: 1px solid var(--line); border-radius: 999px; color: var(--ink); display: inline-flex; font-size: .74rem; font-weight: 750; gap: .38rem; padding: .19rem .55rem; }
+.label-chip > span, .label-selector label > span:first-of-type { border: 1px solid rgba(0,0,0,.18); border-radius: 50%; height: .62rem; width: .62rem; }
+.label-selector { border: 0; display: grid; gap: .38rem; margin: 0; padding: 0; }
+.label-selector legend { font-size: .76rem; font-weight: 800; letter-spacing: .08em; margin-bottom: .45rem; text-transform: uppercase; }
+.label-selector label { align-items: center; border-radius: .45rem; cursor: pointer; display: grid; gap: .48rem; grid-template-columns: auto auto 1fr; padding: .4rem .5rem; }
+.label-selector label:hover, .label-selector label:focus-within { background: rgba(15,111,111,.08); }
+.label-selector input { accent-color: var(--teal); }
