@@ -160,7 +160,7 @@ func (s *Service) Repository(ctx context.Context, subject authz.Subject, owner, 
 			result.Organization = OrganizationContext{ID: organization.Organization.ID,
 				Name: organization.Organization.Name, DisplayName: organization.Organization.DisplayName,
 				EffectivePermission: organization.EffectivePermission, ContainerOnly: organization.ContainerOnly,
-				AllowedActions: append([]authz.AccessAction(nil), organization.AllowedActions...)}
+				AllowedActions: append([]authz.AccessAction{}, organization.AllowedActions...)}
 			break
 		}
 	}

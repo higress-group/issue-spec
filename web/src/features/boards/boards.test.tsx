@@ -21,6 +21,8 @@ describe("change board projection UI", () => {
     expect(screen.getByLabelText(/Proposal artifact, issue 160, valid/)).toBeVisible();
     expect(screen.getByLabelText(/Design artifact, issue 161, invalid/)).toBeVisible();
     expect(screen.getByLabelText(/Implement artifact missing/)).toBeVisible();
+    expect(screen.getByLabelText(/Proposal artifact, issue 160, valid/)).toHaveAttribute("href", "/acme/workflow/issues/160");
+    expect(screen.getByLabelText(/Design artifact, issue 161, invalid/)).toHaveAttribute("href", "/acme/workflow/issues/161");
     expect(screen.getByText("marker_label_mismatch")).toBeVisible();
     expect(screen.getByRole("link", { name: card.title })).toHaveAttribute("href", "/acme/workflow/changes/self-hosted-board");
     expect((await axe.run(container)).violations).toEqual([]);

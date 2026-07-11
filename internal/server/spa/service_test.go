@@ -131,7 +131,7 @@ func TestRepositoryContextUsesSharedVisibilityAndMutationAuthority(t *testing.T)
 
 	public, err := service.Repository(t.Context(), authz.Anonymous(), "CANONICAL", "PUBLIC-REPO")
 	if err != nil || public.Authenticated || public.Repository.Repository.ID != publicID ||
-		len(public.Repository.AllowedActions) != 1 || public.Repository.AllowedActions[0] != authz.AccessRead {
+		public.Organization.AllowedActions == nil || len(public.Repository.AllowedActions) != 1 || public.Repository.AllowedActions[0] != authz.AccessRead {
 		t.Fatalf("anonymous public context=%+v err=%v", public, err)
 	}
 	for _, name := range []string{"private-repo", "internal-repo", "missing"} {

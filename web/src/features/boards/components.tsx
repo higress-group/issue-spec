@@ -19,7 +19,7 @@ export function LifecycleBadge({ lifecycle }: { lifecycle: ChangeLifecycle }) {
   return <span className={`board-lifecycle lifecycle-${lifecycle}`}>{lifecycleIcon(lifecycle)}{lifecycleLabels[lifecycle]}</span>;
 }
 
-function ArtifactNode({ stage, artifact, current }: { stage: ArtifactStage; artifact?: Artifact; current: boolean }) {
+function ArtifactNode({ stage, artifact, current, owner, repository }: { stage: ArtifactStage; artifact?: Artifact; current: boolean; owner: string; repository: string }) {
   const state = !artifact ? "missing" : artifact.valid ? "valid" : "invalid";
   const icon = state === "missing" ? <CircleDashed aria-hidden="true" /> : state === "invalid" ? <AlertTriangle aria-hidden="true" /> : artifact?.state === "closed" ? <CheckCircle2 aria-hidden="true" /> : <Circle aria-hidden="true" />;
   const content = <>
@@ -27,16 +27,17 @@ function ArtifactNode({ stage, artifact, current }: { stage: ArtifactStage; arti
     <span className="pipeline-node-copy"><strong>{stageLabels[stage]}</strong><small>{artifact ? `Issue #${artifact.number} · ${artifact.state}` : "Artifact missing"}</small></span>
     {artifact ? <ExternalLink className="pipeline-external" aria-hidden="true" /> : null}
   </>;
+  const issue = artifact ? `/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/issues/${artifact.number}` : "";
   return <div className={`pipeline-node ${state} ${current ? "current" : ""}`} data-stage={stage}>
-    {artifact ? <a href={artifact.url} aria-label={`${stageLabels[stage]} artifact, issue ${artifact.number}, ${artifact.valid ? "valid" : "invalid"}`}>{content}</a> : <div aria-label={`${stageLabels[stage]} artifact missing`}>{content}</div>}
+    {artifact ? <Link to={issue} aria-label={`${stageLabels[stage]} artifact, issue ${artifact.number}, ${artifact.valid ? "valid" : "invalid"}`}>{content}</Link> : <div aria-label={`${stageLabels[stage]} artifact missing`}>{content}</div>}
     {artifact && !artifact.valid ? <span className="pipeline-marker">marker v{artifact.marker_version}</span> : null}
   </div>;
 }
 
-export function StagePipeline({ card, expanded = false }: { card: ChangeCardModel; expanded?: boolean }) {
+export function StagePipeline({ card, owner, expanded = false }: { card: ChangeCardModel; owner: string; expanded?: boolean }) {
   return <div className={`change-pipeline ${expanded ? "expanded" : ""}`} aria-label={`Change pipeline, current stage ${stageLabels[card.current_stage]}`}>
     {stageOrder.map((stage, index) => <div className="pipeline-step" key={stage}>
-      <ArtifactNode stage={stage} artifact={card.artifacts[stage]} current={card.current_stage === stage} />
+      <ArtifactNode stage={stage} artifact={card.artifacts[stage]} current={card.current_stage === stage} owner={owner} repository={card.repository.name} />
       {index < stageOrder.length - 1 ? <ArrowRight className="pipeline-arrow" aria-hidden="true" /> : null}
     </div>)}
   </div>;
@@ -85,7 +86,7 @@ export function ChangeCard({ card, owner }: { card: ChangeCardModel; owner: stri
       <time dateTime={card.updated_at}>Updated {formattedDate(card.updated_at)}</time>
     </header>
     <div className="board-card-title"><div><Link to={detail}>{card.title}</Link><code>{card.change_key}</code></div><span className="current-stage">Current · {stageLabels[card.current_stage]}</span></div>
-    <StagePipeline card={card} />
+    <StagePipeline card={card} owner={owner} />
     <div className="board-progress-grid"><ProgressMeter label="Tasks" progress={card.tasks} /><ProgressMeter label="Processes" progress={card.processes} /></div>
     <AnomalyList codes={card.anomalies} compact />
     <footer><Link className="board-open-link" to={detail}>Open change detail <ArrowRight aria-hidden="true" /></Link></footer>
