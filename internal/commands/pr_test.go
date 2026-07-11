@@ -1,10 +1,13 @@
 package commands
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
@@ -149,6 +152,96 @@ func TestLinkPullRequestIssuesWritesClosingKeywords(t *testing.T) {
 	}
 }
 
+func TestIssueClosureRefsFromFlags(t *testing.T) {
+	t.Run("all three provided keep order", func(t *testing.T) {
+		refs, err := issueClosureRefsFromFlags("144", "146", "147")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []model.IssueClosureRef{
+			{Kind: "proposal", Number: 144},
+			{Kind: "design", Number: 146},
+			{Kind: "implement", Number: 147},
+		}
+		if len(refs) != len(want) {
+			t.Fatalf("refs = %+v, want %+v", refs, want)
+		}
+		for i := range want {
+			if refs[i] != want[i] {
+				t.Fatalf("refs = %+v, want %+v", refs, want)
+			}
+		}
+	})
+
+	t.Run("subset without design keeps only provided", func(t *testing.T) {
+		refs, err := issueClosureRefsFromFlags("144", "", "147")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []model.IssueClosureRef{
+			{Kind: "proposal", Number: 144},
+			{Kind: "implement", Number: 147},
+		}
+		if len(refs) != len(want) {
+			t.Fatalf("refs = %+v, want %+v", refs, want)
+		}
+		for i := range want {
+			if refs[i] != want[i] {
+				t.Fatalf("refs = %+v, want %+v", refs, want)
+			}
+		}
+		for _, ref := range refs {
+			if ref.Kind == "design" {
+				t.Fatalf("design must be absent when its flag is empty: %+v", refs)
+			}
+		}
+	})
+
+	t.Run("none provided errors", func(t *testing.T) {
+		if _, err := issueClosureRefsFromFlags("", "", ""); err == nil {
+			t.Fatal("expected error when no issue flags are provided")
+		}
+	})
+
+	t.Run("invalid value errors", func(t *testing.T) {
+		if _, err := issueClosureRefsFromFlags("144", "not-a-number", "147"); err == nil {
+			t.Fatal("expected error for invalid design value")
+		}
+	})
+}
+
+func TestLinkPullRequestIssuesWritesSubsetClosingKeywords(t *testing.T) {
+	ctx := context.Background()
+	client := &fakePRClient{pr: github.PullRequest{
+		Number:  7,
+		HTMLURL: "https://github.com/o/r/pull/7",
+		Body:    "## Summary\n\nImplementation details.\n",
+	}}
+	refs, err := issueClosureRefsFromFlags("144", "", "147")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := linkPullRequestIssues(ctx, client, "o/r", 7, refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || !result.Changed || result.Proposal != 144 || result.Implement != 147 || result.Design != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(client.updatedBodies) != 1 {
+		t.Fatalf("updated bodies = %d, want 1", len(client.updatedBodies))
+	}
+	body := client.updatedBodies[0]
+	for _, want := range []string{"Closes #144", "Closes #147"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("PR body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "Closes #146") {
+		t.Fatalf("PR body should not close design issue when its flag is empty:\n%s", body)
+	}
+}
+
 func TestLinkPullRequestIssuesRejectsMergedPR(t *testing.T) {
 	client := &fakePRClient{pr: github.PullRequest{Number: 7, HTMLURL: "https://github.com/o/r/pull/7", Merged: true}}
 	_, err := linkPullRequestIssues(context.Background(), client, "o/r", 7, []model.IssueClosureRef{{Kind: "proposal", Number: 1}})
@@ -157,6 +250,235 @@ func TestLinkPullRequestIssuesRejectsMergedPR(t *testing.T) {
 	}
 	if len(client.updatedBodies) != 0 {
 		t.Fatalf("merged PR should not be updated: %d", len(client.updatedBodies))
+	}
+}
+
+func mustClosureBody(t *testing.T, refs ...model.IssueClosureRef) string {
+	t.Helper()
+	body, _, err := model.AddIssueClosureBlock("## Summary\n\nImplementation details.\n", refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func TestVerifyPullRequestClosureComplete(t *testing.T) {
+	refs := []model.IssueClosureRef{
+		{Kind: "proposal", Number: 1},
+		{Kind: "design", Number: 2},
+		{Kind: "implement", Number: 3},
+	}
+	client := &fakePRClient{pr: github.PullRequest{
+		Number:  7,
+		HTMLURL: "https://github.com/o/r/pull/7",
+		Body:    mustClosureBody(t, refs...),
+	}}
+	result, err := verifyPullRequestClosure(context.Background(), client, "o/r", 7, refs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.OK || result.Proposal != 1 || result.Design != 2 || result.Implement != 3 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestVerifyPullRequestClosureMissingBlock(t *testing.T) {
+	client := &fakePRClient{pr: github.PullRequest{
+		Number:  7,
+		HTMLURL: "https://github.com/o/r/pull/7",
+		Body:    "## Summary\n\nNo closing block here.\n",
+	}}
+	_, err := verifyPullRequestClosure(context.Background(), client, "o/r", 7, []model.IssueClosureRef{
+		{Kind: "proposal", Number: 1},
+		{Kind: "design", Number: 2},
+		{Kind: "implement", Number: 3},
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing issue-spec PR closing block") {
+		t.Fatalf("error = %v, want missing block", err)
+	}
+}
+
+func TestVerifyPullRequestClosureSubsetFails(t *testing.T) {
+	client := &fakePRClient{pr: github.PullRequest{
+		Number:  7,
+		HTMLURL: "https://github.com/o/r/pull/7",
+		Body:    mustClosureBody(t, model.IssueClosureRef{Kind: "implement", Number: 3}),
+	}}
+	_, err := verifyPullRequestClosure(context.Background(), client, "o/r", 7, []model.IssueClosureRef{
+		{Kind: "proposal", Number: 1},
+		{Kind: "design", Number: 2},
+		{Kind: "implement", Number: 3},
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing proposal issue closing link Closes #1") {
+		t.Fatalf("error = %v, want missing proposal link", err)
+	}
+}
+
+func TestVerifyPullRequestClosureTamperedFails(t *testing.T) {
+	client := &fakePRClient{pr: github.PullRequest{
+		Number:  7,
+		HTMLURL: "https://github.com/o/r/pull/7",
+		Body: mustClosureBody(t,
+			model.IssueClosureRef{Kind: "proposal", Number: 1},
+			model.IssueClosureRef{Kind: "design", Number: 2},
+			model.IssueClosureRef{Kind: "implement", Number: 99},
+		),
+	}}
+	_, err := verifyPullRequestClosure(context.Background(), client, "o/r", 7, []model.IssueClosureRef{
+		{Kind: "proposal", Number: 1},
+		{Kind: "design", Number: 2},
+		{Kind: "implement", Number: 3},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unexpected issue closing link Closes #99") {
+		t.Fatalf("error = %v, want unexpected link", err)
+	}
+}
+
+func newVerifyClosureTestApp(t *testing.T, out, errOut *bytes.Buffer, pr github.PullRequest) *app {
+	t.Helper()
+	app := newApp(strings.NewReader(""), out, errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
+		return fakeGitHubBackend{
+			info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
+			getPullRequest: func(_ context.Context, repo string, prNumber int) (github.PullRequest, error) {
+				if repo != "o/r" || prNumber != pr.Number {
+					t.Fatalf("unexpected PR lookup repo=%q pr=%d", repo, prNumber)
+				}
+				return pr, nil
+			},
+		}, nil
+	}
+	return app
+}
+
+func TestRunPRVerifyClosureExitCodes(t *testing.T) {
+	completeRefs := []model.IssueClosureRef{
+		{Kind: "proposal", Number: 1},
+		{Kind: "design", Number: 2},
+		{Kind: "implement", Number: 3},
+	}
+	const prURL = "https://github.com/o/r/pull/7"
+	completeArgs := []string{"--repo", "o/r", "--pr", "7", "--proposal", "1", "--design", "2", "--implement", "3"}
+	cases := []struct {
+		name string
+		body string
+		args []string
+		want int
+	}{
+		{
+			name: "complete block passes",
+			body: mustClosureBody(t, completeRefs...),
+			args: completeArgs,
+			want: 0,
+		},
+		{
+			name: "subset block fails",
+			body: mustClosureBody(t, model.IssueClosureRef{Kind: "implement", Number: 3}),
+			args: completeArgs,
+			want: 1,
+		},
+		{
+			name: "unexpected extra closes fails",
+			body: mustClosureBody(t,
+				model.IssueClosureRef{Kind: "proposal", Number: 1},
+				model.IssueClosureRef{Kind: "design", Number: 2},
+				model.IssueClosureRef{Kind: "implement", Number: 99},
+			),
+			args: completeArgs,
+			want: 1,
+		},
+		{
+			name: "declared implement-only subset matches",
+			body: mustClosureBody(t, model.IssueClosureRef{Kind: "implement", Number: 3}),
+			args: []string{"--repo", "o/r", "--pr", "7", "--implement", "3"},
+			want: 0,
+		},
+		{
+			name: "declared proposal+implement subset matches",
+			body: mustClosureBody(t,
+				model.IssueClosureRef{Kind: "proposal", Number: 1},
+				model.IssueClosureRef{Kind: "implement", Number: 3},
+			),
+			args: []string{"--repo", "o/r", "--pr", "7", "--proposal", "1", "--implement", "3"},
+			want: 0,
+		},
+		{
+			name: "declared subset but block has all three fails",
+			body: mustClosureBody(t, completeRefs...),
+			args: []string{"--repo", "o/r", "--pr", "7", "--implement", "3"},
+			want: 1,
+		},
+		{
+			name: "declared subset missing a declared ref fails",
+			body: mustClosureBody(t, model.IssueClosureRef{Kind: "implement", Number: 3}),
+			args: []string{"--repo", "o/r", "--pr", "7", "--proposal", "1", "--implement", "3"},
+			want: 1,
+		},
+		{
+			name: "zero flags provided",
+			body: mustClosureBody(t, completeRefs...),
+			args: []string{"--repo", "o/r", "--pr", "7"},
+			want: 2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			app := newVerifyClosureTestApp(t, &out, &errOut, github.PullRequest{Number: 7, HTMLURL: prURL, Body: tc.body})
+			code := app.runPRVerifyClosure(context.Background(), tc.args)
+			if code != tc.want {
+				t.Fatalf("exit code = %d, want %d\nstdout=%q stderr=%q", code, tc.want, out.String(), errOut.String())
+			}
+		})
+	}
+}
+
+func TestRunPRVerifyClosureJSONSuccess(t *testing.T) {
+	refs := []model.IssueClosureRef{
+		{Kind: "proposal", Number: 1},
+		{Kind: "design", Number: 2},
+		{Kind: "implement", Number: 3},
+	}
+	const prURL = "https://github.com/o/r/pull/7"
+	var out, errOut bytes.Buffer
+	app := newVerifyClosureTestApp(t, &out, &errOut, github.PullRequest{Number: 7, HTMLURL: prURL, Body: mustClosureBody(t, refs...)})
+	code := app.runPRVerifyClosure(context.Background(), []string{
+		"--repo", "o/r", "--pr", "7", "--proposal", "1", "--design", "2", "--implement", "3", "--json",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0\nstderr=%q", code, errOut.String())
+	}
+	var result verifyPullRequestClosureResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON output %q: %v", out.String(), err)
+	}
+	if !result.OK || result.PR != 7 || result.PRURL != prURL || result.Proposal != 1 || result.Design != 2 || result.Implement != 3 || result.Error != "" {
+		t.Fatalf("unexpected JSON result: %+v", result)
+	}
+}
+
+func TestRunPRVerifyClosureJSONFailure(t *testing.T) {
+	const prURL = "https://github.com/o/r/pull/7"
+	var out, errOut bytes.Buffer
+	// Tampered body: only a subset closure block while all refs are expected.
+	tamperedBody := mustClosureBody(t, model.IssueClosureRef{Kind: "implement", Number: 3})
+	app := newVerifyClosureTestApp(t, &out, &errOut, github.PullRequest{Number: 7, HTMLURL: prURL, Body: tamperedBody})
+	code := app.runPRVerifyClosure(context.Background(), []string{
+		"--repo", "o/r", "--pr", "7", "--proposal", "1", "--design", "2", "--implement", "3", "--json",
+	})
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1\nstdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var result verifyPullRequestClosureResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON output %q: %v", out.String(), err)
+	}
+	if result.OK {
+		t.Fatalf("OK = true, want false: %+v", result)
+	}
+	if result.Error == "" {
+		t.Fatalf("Error is empty, want non-empty: %+v", result)
 	}
 }
 
