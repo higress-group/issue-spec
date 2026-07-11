@@ -74,6 +74,22 @@ func TestLoadMigrationsIncludesCompleteInitialSchema(t *testing.T) {
 	}
 }
 
+func TestDelegatedJobRevocationMigrationMetadata(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revocations := migrations[7]
+	if revocations.Version != 8 || revocations.Name != "0008_delegated_job_revocations.sql" {
+		t.Fatalf("delegated job revocation migration = %+v", revocations.MigrationInfo)
+	}
+	for _, contract := range []string{"CREATE TABLE delegated_job_revocations", "delegated_job_revocations_pk PRIMARY KEY", "delegated_job_revocations_repository_fk"} {
+		if !containsSQL(revocations.sql, contract) {
+			t.Errorf("delegated job revocation migration is missing %q", contract)
+		}
+	}
+}
+
 func TestProtocolFeatureMigrationMetadata(t *testing.T) {
 	migrations, err := loadMigrations()
 	if err != nil {

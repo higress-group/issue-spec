@@ -135,6 +135,11 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	}
 
 	orgID, repoID := insertOrgRepo(t, pool, "auth-lifecycle")
+	if _, err := pool.Exec(t.Context(), `INSERT INTO repo_collaborators
+		(id, organization_id, repository_id, user_id, role) VALUES ($1, $2, $3, $4, 'write')`,
+		uuid.New(), orgID, repoID, userA.ID); err != nil {
+		t.Fatal(err)
+	}
 	patCreated, err := pats.Create(t.Context(), userA.ID, pat.CreateInput{
 		Name: "runner", Scopes: []string{"runner:delegate", "issues:write", "read:user"},
 		Repositories: []models.RepoScope{{OrgID: orgID, RepoID: repoID}},
@@ -230,13 +235,147 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	if _, err := delegated.AuthenticateBearer(t.Context(), jobDelegated.Plaintext); !errors.Is(err, serverauth.ErrRevokedCredential) {
 		t.Fatalf("job-revoked delegated token error = %v", err)
 	}
+	mismatchOnly, err := delegated.Issue(t.Context(), delegation.IssueInput{Issuer: patPrincipal,
+		Repo: models.RepoScope{OrgID: orgID, RepoID: repoID}, JobID: "job-mismatch-only", Purpose: "issue-api",
+		Audience: "issue-spec-server", Subject: "runner-child", Scopes: []string{"issues:write"}, TTL: 5 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := delegated.Authenticate(t.Context(), mismatchOnly.Plaintext, delegation.Expected{JobID: "wrong-job"}); !errors.Is(err, serverauth.ErrInsufficientScope) {
+		t.Fatalf("mismatch-only auth error = %v", err)
+	}
+	var mismatchUsedAt *time.Time
+	if err := pool.QueryRow(t.Context(), `SELECT used_at FROM delegated_tokens WHERE id = $1`, mismatchOnly.ID).Scan(&mismatchUsedAt); err != nil || mismatchUsedAt != nil {
+		t.Fatalf("wrong expected binding marked token used: used_at=%v err=%v", mismatchUsedAt, err)
+	}
+	uniqueInput := delegation.IssueInput{Issuer: patPrincipal, Repo: models.RepoScope{OrgID: orgID, RepoID: repoID},
+		JobID: "job-unique", Purpose: "issue-api", Audience: "issue-spec-server", Subject: "runner-child",
+		Scopes: []string{"issues:write"}, TTL: 5 * time.Minute}
+	uniqueFirst, err := delegated.Issue(t.Context(), uniqueInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := delegated.Issue(t.Context(), uniqueInput); !errors.Is(err, serverauth.ErrConflict) {
+		t.Fatalf("duplicate active lease error = %v", err)
+	}
+	uniqueInput.Replace = true
+	if _, err := delegated.Issue(t.Context(), uniqueInput); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := delegated.AuthenticateBearer(t.Context(), uniqueFirst.Plaintext); !errors.Is(err, serverauth.ErrRevokedCredential) {
+		t.Fatalf("replaced delegated token error = %v", err)
+	}
+	concurrentInput := uniqueInput
+	concurrentInput.JobID = "job-concurrent"
+	concurrentInput.Replace = false
+	type issueResult struct{ err error }
+	results := make(chan issueResult, 8)
+	for range 8 {
+		go func() {
+			_, issueErr := delegated.Issue(context.Background(), concurrentInput)
+			results <- issueResult{err: issueErr}
+		}()
+	}
+	var concurrentSuccess, concurrentConflict int
+	for range 8 {
+		result := <-results
+		switch {
+		case result.err == nil:
+			concurrentSuccess++
+		case errors.Is(result.err, serverauth.ErrConflict):
+			concurrentConflict++
+		default:
+			t.Fatalf("concurrent issue error = %v", result.err)
+		}
+	}
+	if concurrentSuccess != 1 || concurrentConflict != 7 {
+		t.Fatalf("concurrent issue success=%d conflict=%d", concurrentSuccess, concurrentConflict)
+	}
 	var delegatedAuditCount int
-	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM audit_events WHERE action LIKE 'delegated_token.%'`).Scan(&delegatedAuditCount); err != nil || delegatedAuditCount != 5 {
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM audit_events WHERE action LIKE 'delegated_token.%'`).Scan(&delegatedAuditCount); err != nil || delegatedAuditCount != 9 {
 		t.Fatalf("delegated audit count = %d, %v", delegatedAuditCount, err)
 	}
 	var leakedAuditCount int
 	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM audit_events WHERE metadata::text LIKE $1`, "%"+delegatedCreated.Plaintext+"%").Scan(&leakedAuditCount); err != nil || leakedAuditCount != 0 {
 		t.Fatalf("delegated secret audit leak count = %d, %v", leakedAuditCount, err)
+	}
+
+	assertDelegatedLiveParent := func(name string, mutate func()) {
+		t.Helper()
+		created, issueErr := delegated.Issue(t.Context(), delegation.IssueInput{
+			Issuer: patPrincipal, Repo: models.RepoScope{OrgID: orgID, RepoID: repoID}, JobID: "job-live-" + name,
+			Purpose: "comment-writeback", Audience: "issue-spec-server", Subject: "runner-child",
+			Scopes: []string{"issues:write"}, TTL: 5 * time.Minute,
+		})
+		if issueErr != nil {
+			t.Fatal(issueErr)
+		}
+		mutate()
+		if _, authErr := delegated.AuthenticateBearer(t.Context(), created.Plaintext); authErr == nil {
+			t.Fatalf("delegated token remained valid after live parent %s change", name)
+		}
+	}
+	assertDelegatedLiveParent("scope", func() {
+		if _, err := pool.Exec(t.Context(), `DELETE FROM pat_scopes WHERE personal_access_token_id = $1 AND scope = 'issues:write'`, patPrincipal.CredentialID); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := pool.Exec(t.Context(), `INSERT INTO pat_scopes (id, personal_access_token_id, scope) VALUES ($1, $2, 'issues:write')`, uuid.New(), patPrincipal.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	assertDelegatedLiveParent("cap", func() {
+		if _, err := pool.Exec(t.Context(), `DELETE FROM pat_repositories WHERE personal_access_token_id = $1`, patPrincipal.CredentialID); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := pool.Exec(t.Context(), `INSERT INTO pat_repositories (personal_access_token_id, organization_id, repository_id) VALUES ($1, $2, $3)`, patPrincipal.CredentialID, orgID, repoID); err != nil {
+		t.Fatal(err)
+	}
+	otherRepoID := uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO repos (id, organization_id, name, display_name) VALUES ($1, $2, 'other-repo', 'other-repo')`, otherRepoID, orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO pat_repositories (personal_access_token_id, organization_id, repository_id) VALUES ($1, $2, $3)`, patPrincipal.CredentialID, orgID, otherRepoID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := delegated.Issue(t.Context(), delegation.IssueInput{Issuer: patPrincipal,
+		Repo: models.RepoScope{OrgID: orgID, RepoID: repoID}, JobID: "job-live-multiple-cap", Purpose: "issue-api",
+		Audience: "issue-spec-server", Subject: "runner-child", Scopes: []string{"issues:write"}, TTL: 5 * time.Minute}); !errors.Is(err, serverauth.ErrInsufficientScope) {
+		t.Fatalf("multiple live repository caps issue error = %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), `DELETE FROM pat_repositories WHERE personal_access_token_id = $1 AND repository_id = $2`, patPrincipal.CredentialID, otherRepoID); err != nil {
+		t.Fatal(err)
+	}
+	assertDelegatedLiveParent("permission", func() {
+		if _, err := pool.Exec(t.Context(), `DELETE FROM repo_collaborators WHERE organization_id = $1 AND repository_id = $2 AND user_id = $3`, orgID, repoID, userA.ID); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := pool.Exec(t.Context(), `INSERT INTO repo_collaborators
+		(id, organization_id, repository_id, user_id, role) VALUES ($1, $2, $3, $4, 'write')`,
+		uuid.New(), orgID, repoID, userA.ID); err != nil {
+		t.Fatal(err)
+	}
+	revocablePAT, err := pats.Create(t.Context(), userA.ID, pat.CreateInput{Name: "revocable-parent",
+		Scopes: []string{"runner:delegate", "issues:write"}, Repositories: []models.RepoScope{{OrgID: orgID, RepoID: repoID}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revocablePrincipal, err := pats.AuthenticateBearer(t.Context(), revocablePAT.Plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revocableChild, err := delegated.Issue(t.Context(), delegation.IssueInput{Issuer: revocablePrincipal,
+		Repo: models.RepoScope{OrgID: orgID, RepoID: repoID}, JobID: "job-live-revoke", Purpose: "comment-writeback",
+		Audience: "issue-spec-server", Subject: "runner-child", Scopes: []string{"issues:write"}, TTL: 5 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pats.Revoke(t.Context(), userA.ID, revocablePAT.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := delegated.AuthenticateBearer(t.Context(), revocableChild.Plaintext); !errors.Is(err, serverauth.ErrRevokedCredential) {
+		t.Fatalf("delegated token after parent revoke error = %v", err)
 	}
 
 	if err := identities.DisableUser(t.Context(), userB.ID, userA.ID, "req-disable"); err != nil {

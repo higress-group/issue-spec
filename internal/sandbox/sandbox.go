@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -67,6 +68,15 @@ type Config struct {
 	DisableProxyEnv     bool
 	SystemReadOnlyBinds []string
 	ReadOnlyBinds       []string
+	FileCapabilities    []FileCapability
+}
+
+// FileCapability is a broker-owned, read-only file exposed at a fixed path.
+// Source is never emitted in persisted sandbox metadata.
+type FileCapability struct {
+	Source      string
+	Destination string
+	EnvName     string
 }
 
 type Command struct {
@@ -171,6 +181,12 @@ type Mount struct {
 }
 
 func Preflight(ctx context.Context, cfg Config, deps Dependencies) (Metadata, error) {
+	if err := validateFileCapabilities(cfg.FileCapabilities); err != nil {
+		return Metadata{}, err
+	}
+	if cfg.UnsafeNoSandbox && len(cfg.FileCapabilities) > 0 {
+		return Metadata{}, fmt.Errorf("%w: credential capabilities require a filesystem sandbox", ErrSandboxConfigInvalid)
+	}
 	envMeta := scrubEnvironment(cfg, envPaths{}, false).metadata
 	if cfg.UnsafeNoSandbox {
 		return unsafeMetadata(cfg, envMeta), nil
@@ -182,7 +198,13 @@ func Prepare(ctx context.Context, cfg Config, target Command, deps Dependencies)
 	if strings.TrimSpace(target.Binary) == "" {
 		return PreparedCommand{}, fmt.Errorf("%w: target binary is required", ErrSandboxConfigInvalid)
 	}
+	if err := validateFileCapabilities(cfg.FileCapabilities); err != nil {
+		return PreparedCommand{}, err
+	}
 	if cfg.UnsafeNoSandbox {
+		if len(cfg.FileCapabilities) > 0 {
+			return PreparedCommand{}, fmt.Errorf("%w: credential capabilities require a filesystem sandbox", ErrSandboxConfigInvalid)
+		}
 		env := scrubEnvironment(cfg, hostEnvPaths(cfg), true)
 		meta := unsafeMetadata(cfg, env.metadata)
 		if env.err != nil {
@@ -303,6 +325,9 @@ func scrubEnvironment(cfg Config, paths envPaths, requireTempPaths bool) envBuil
 	if codexHome != "" {
 		values["CODEX_HOME"] = codexHome
 	}
+	for _, capability := range cfg.FileCapabilities {
+		values[capability.EnvName] = capability.Destination
+	}
 
 	meta.ProxyInherited = sortedUnique(meta.ProxyInherited)
 	meta.TokenUnset = sortedUnique(meta.TokenUnset)
@@ -313,6 +338,34 @@ func scrubEnvironment(cfg Config, paths envPaths, requireTempPaths bool) envBuil
 		entries = append(entries, name+"="+values[name])
 	}
 	return envBuildResult{entries: entries, metadata: meta}
+}
+
+func validateFileCapabilities(capabilities []FileCapability) error {
+	allowedEnv := map[string]bool{
+		"ISSUE_SPEC_TOKEN_FILE": true, "GIT_ASKPASS": true,
+		"ISSUE_SPEC_GIT_USERNAME_FILE": true, "ISSUE_SPEC_GIT_SECRET_FILE": true,
+	}
+	seenDestination := map[string]bool{}
+	seenEnv := map[string]bool{}
+	for _, capability := range capabilities {
+		source := filepath.Clean(strings.TrimSpace(capability.Source))
+		destination := filepath.Clean(strings.TrimSpace(capability.Destination))
+		if !filepath.IsAbs(source) || !filepath.IsAbs(destination) ||
+			(destination != "/run/issue-spec" && !strings.HasPrefix(destination, "/run/issue-spec/")) ||
+			!allowedEnv[capability.EnvName] || seenDestination[destination] || seenEnv[capability.EnvName] {
+			return fmt.Errorf("%w: invalid or duplicate credential file capability", ErrSandboxConfigInvalid)
+		}
+		info, err := os.Lstat(source)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+			return fmt.Errorf("%w: credential capability source must be a private regular file", ErrSandboxConfigInvalid)
+		}
+		if !singleLink(info) {
+			return fmt.Errorf("%w: credential capability source must not be hard-linked", ErrSandboxConfigInvalid)
+		}
+		seenDestination[destination] = true
+		seenEnv[capability.EnvName] = true
+	}
+	return nil
 }
 
 func mergeCommandEnv(baseEntries, commandEntries []string, cfg Config, meta *EnvMetadata) []string {

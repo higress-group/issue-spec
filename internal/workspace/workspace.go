@@ -43,6 +43,7 @@ type Command struct {
 	Binary string
 	Args   []string
 	Dir    string
+	Env    []string
 }
 
 type Result struct {
@@ -64,6 +65,9 @@ func (ExecRunner) Run(ctx context.Context, command Command) (Result, error) {
 	}
 	cmd := exec.CommandContext(ctx, binary, command.Args...)
 	cmd.Dir = command.Dir
+	if command.Env != nil {
+		cmd.Env = append([]string(nil), command.Env...)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -97,6 +101,18 @@ type NewRequest struct {
 	WorkspaceID       string
 	BranchName        string
 	RepositoryBinding state.RepositoryBindingSnapshot
+	Credentials       CredentialExecutionHook
+}
+
+// CredentialExecutionHook provides command-local git credentials without
+// changing the pinned repository snapshot or embedding secrets in argv/config.
+type CredentialExecutionHook interface {
+	BeforeGit(context.Context, string, string) (GitCredential, error)
+}
+
+type GitCredential struct {
+	Env     []string
+	Cleanup func() error
 }
 
 type ResumeRequest struct {
@@ -166,8 +182,32 @@ func (m Manager) PrepareNew(ctx context.Context, req NewRequest) (Binding, error
 			_ = os.RemoveAll(path)
 		}
 	}()
-	if _, err := nm.runGit(ctx, "git clone", "", "clone", "--", req.CloneURL, path); err != nil {
-		return Binding{}, err
+	var cloneCredential GitCredential
+	if req.Credentials != nil {
+		cloneCredential, err = req.Credentials.BeforeGit(ctx, "clone", req.CloneURL)
+		if err != nil {
+			return Binding{}, fmt.Errorf("git clone credentials: %w", err)
+		}
+	}
+	cleanupCredential := func() error {
+		if cloneCredential.Cleanup != nil {
+			err := cloneCredential.Cleanup()
+			cloneCredential.Cleanup = nil
+			return err
+		}
+		return nil
+	}
+	defer func() { _ = cleanupCredential() }()
+	_, cloneErr := nm.runGitWithEnv(ctx, "git clone", "", cloneCredential.Env, "clone", "--", req.CloneURL, path)
+	cleanupErr := cleanupCredential()
+	if cloneErr != nil {
+		if cleanupErr != nil {
+			return Binding{}, errors.Join(cloneErr, fmt.Errorf("git clone credential cleanup: %w", cleanupErr))
+		}
+		return Binding{}, cloneErr
+	}
+	if cleanupErr != nil {
+		return Binding{}, fmt.Errorf("git clone credential cleanup: %w", cleanupErr)
 	}
 	if _, err := nm.runGit(ctx, "git checkout base ref", path, "checkout", "--force", baseRef); err != nil {
 		return Binding{}, err
@@ -598,7 +638,11 @@ func retentionPolicy(retention time.Duration) string {
 }
 
 func (m Manager) runGit(ctx context.Context, operation, dir string, args ...string) (Result, error) {
-	result, err := m.Runner.Run(ctx, Command{Binary: m.GitBinary, Args: args, Dir: dir})
+	return m.runGitWithEnv(ctx, operation, dir, nil, args...)
+}
+
+func (m Manager) runGitWithEnv(ctx context.Context, operation, dir string, env []string, args ...string) (Result, error) {
+	result, err := m.Runner.Run(ctx, Command{Binary: m.GitBinary, Args: args, Dir: dir, Env: append([]string(nil), env...)})
 	if err != nil || result.ExitCode != 0 {
 		if err == nil {
 			err = fmt.Errorf("exit code %d", result.ExitCode)

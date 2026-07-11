@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,6 +63,27 @@ func TestSelfHostedProfileNeverReadsGitHubCredentials(t *testing.T) {
 	token, err = ResolveProfileToken(context.Background(), profile)
 	if err != nil || token.Value != "explicit-secret" || token.Source != "env:ISSUE_SPEC_TOKEN" {
 		t.Fatalf("explicit token = %+v err=%v", token, err)
+	}
+}
+
+func TestSelfHostedProfileReadsOnlyPrivateTokenFile(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	profile := hostedProfile("local", "instance-a", "https://issues.example.test")
+	path := filepath.Join(t.TempDir(), "issue.token")
+	if err := os.WriteFile(path, []byte("delegated-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(IssueSpecTokenFileEnv, path)
+	token, err := ResolveProfileToken(context.Background(), profile)
+	if err != nil || token.Value != "delegated-secret" || token.Source != "env:"+IssueSpecTokenFileEnv {
+		t.Fatalf("file token = %+v err=%v", token, err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if token, err := ResolveProfileToken(context.Background(), profile); err == nil || token.Value != "" {
+		t.Fatalf("world-readable token accepted: %+v err=%v", token, err)
 	}
 }
 

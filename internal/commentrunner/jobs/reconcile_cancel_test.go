@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/acpx"
+	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/workspace"
 )
 
@@ -38,6 +41,9 @@ func TestReconcileRunningCompletedPatchesStateWritebackAndReleasesLock(t *testin
 	}}
 	dispatcher := testDispatcher(store, workspaces, &fakeCoordinator{}, writebacks, now)
 	dispatcher.Acpx = staticAcpxFactory{coordinator: coordinator}
+	credentialBroker := &revokeOnlyBroker{}
+	dispatcher.CredentialBroker = credentialBroker
+	dispatcher.CredentialScopes = map[string]models.RepoScope{"o/r": {OrgID: uuid.New(), RepoID: uuid.New()}}
 
 	result, err := dispatcher.Reconcile(context.Background())
 	if err != nil {
@@ -59,10 +65,24 @@ func TestReconcileRunningCompletedPatchesStateWritebackAndReleasesLock(t *testin
 	if len(job.CLIDirect) != 1 {
 		t.Fatalf("coordinator provenance was not recovered: %+v", job.CLIDirect)
 	}
+	if len(credentialBroker.jobs) != 1 || credentialBroker.jobs[0] != "job-reconcile" {
+		t.Fatalf("reconciled terminal credential revokes = %v", credentialBroker.jobs)
+	}
 	session, ok := st.GetPublicSession("o/r", "ps-reconcile")
 	if !ok || session.Status != state.StatusCompleted || session.Lock.OwnerJobID != "" {
 		t.Fatalf("session was not completed and unlocked: %+v ok=%v", session, ok)
 	}
+}
+
+type revokeOnlyBroker struct{ jobs []string }
+
+func (*revokeOnlyBroker) Acquire(context.Context, credentials.AcquireRequest) (*credentials.Lease, error) {
+	return nil, errors.New("unexpected credential acquire")
+}
+
+func (b *revokeOnlyBroker) RevokeJob(_ context.Context, _ models.RepoScope, jobID string) error {
+	b.jobs = append(b.jobs, jobID)
+	return nil
 }
 
 func TestReconcileDispatchedRefreshFallbackReturnsRunningWithoutRedispatch(t *testing.T) {

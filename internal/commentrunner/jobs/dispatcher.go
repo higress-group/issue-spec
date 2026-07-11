@@ -18,13 +18,16 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/acpx"
+	clientauth "github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	runnercontext "github.com/higress-group/issue-spec/internal/commentrunner/context"
+	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
 	resolver "github.com/higress-group/issue-spec/internal/commentrunner/repository"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/sandbox"
+	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/templates"
 	"github.com/higress-group/issue-spec/internal/workspace"
 )
@@ -67,6 +70,8 @@ type SandboxRequest struct {
 	RuntimeGHConfigDir   string
 	RuntimeXDGConfigHome string
 	RuntimeCodexHome     string
+	FileCapabilities     []sandbox.FileCapability
+	ChildProfile         *clientauth.Profile
 }
 
 type ExecutionEnvironment struct {
@@ -99,6 +104,11 @@ type Clock interface {
 
 type IDGenerator func() (string, error)
 
+type CredentialBroker interface {
+	Acquire(context.Context, credentials.AcquireRequest) (*credentials.Lease, error)
+	RevokeJob(context.Context, models.RepoScope, string) error
+}
+
 type Dispatcher struct {
 	Store               Store
 	Repositories        RepositoryResolver
@@ -113,6 +123,8 @@ type Dispatcher struct {
 	AcpxBinary          string
 	IssueSpecBinary     string
 	CoordinatorExtraEnv map[string]string
+	CredentialBroker    CredentialBroker
+	CredentialScopes    map[string]models.RepoScope
 }
 
 type Result struct {
@@ -404,7 +416,21 @@ func (d *Dispatcher) validate() error {
 	if d.Writeback == nil {
 		return fmt.Errorf("job dispatcher writeback service is required")
 	}
+	if d.CredentialBroker != nil && len(d.CredentialScopes) == 0 {
+		return fmt.Errorf("job dispatcher credential scopes are required")
+	}
 	return nil
+}
+
+func (d *Dispatcher) revokeJobCredentials(ctx context.Context, job state.Job) error {
+	if d == nil || d.CredentialBroker == nil {
+		return nil
+	}
+	scope, ok := d.CredentialScopes[job.Repo]
+	if !ok || scope.Validate() != nil {
+		return fmt.Errorf("credential broker repository scope is unavailable")
+	}
+	return d.CredentialBroker.RevokeJob(ctx, scope, job.ID)
 }
 
 func (d *Dispatcher) nextQueuedJob(ctx context.Context, skipped map[string]bool) (state.Job, bool, error) {
@@ -421,7 +447,7 @@ func (d *Dispatcher) nextQueuedJob(ctx context.Context, skipped map[string]bool)
 	return state.Job{}, false, nil
 }
 
-func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) {
+func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, returnErr error) {
 	publicID := strings.TrimSpace(job.PublicSessionID)
 	command := runnercontext.CommandVerb(strings.TrimSpace(job.CommandName))
 	var err error
@@ -447,10 +473,35 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 	if err != nil {
 		return d.fail(ctx, job.ID, "repository-binding", err)
 	}
+	if err := d.pinJobRepositoryBinding(ctx, job.ID, repo.Binding); err != nil {
+		return d.fail(ctx, job.ID, "repository-binding", err)
+	}
+	var credentialLease *credentials.Lease
+	if d.CredentialBroker != nil {
+		scope, ok := d.CredentialScopes[job.Repo]
+		if !ok || scope.Validate() != nil {
+			return d.fail(ctx, job.ID, "credentials", fmt.Errorf("credential broker repository scope is unavailable"))
+		}
+		credentialLease, err = d.CredentialBroker.Acquire(ctx, credentials.AcquireRequest{Repo: scope, JobID: job.ID, Binding: repo.Binding})
+		if err != nil {
+			return d.fail(ctx, job.ID, "credentials", err)
+		}
+		defer func() {
+			if revokeErr := credentialLease.Revoke(context.Background()); revokeErr != nil {
+				returnErr = errors.Join(returnErr, fmt.Errorf("credential broker cleanup: %w", revokeErr))
+				result.Error = safeError(returnErr)
+			}
+		}()
+	}
 
-	binding, session, err := d.prepareWorkspace(ctx, job, command, publicID, repo, session)
+	binding, session, err := d.prepareWorkspace(ctx, job, command, publicID, repo, session, credentialLease)
 	if err != nil {
 		return d.fail(ctx, job.ID, "workspace", err)
+	}
+	if credentialLease != nil && command == runnercontext.CommandNew {
+		if err := credentialLease.PrepareChildGit(ctx); err != nil {
+			return d.fail(ctx, job.ID, "credentials", fmt.Errorf("rotate clone credential for child: %w", err))
+		}
 	}
 	lock, err := d.Workspaces.AcquireLock(ctx, workspace.LockRequest{
 		Repo:            job.Repo,
@@ -479,7 +530,7 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 	}
 	defer releaseLock()
 
-	env, bundle, prompt, err := d.prepareExecution(ctx, job, command, publicID, repo, binding, session)
+	env, bundle, prompt, err := d.prepareExecution(ctx, job, command, publicID, repo, binding, session, credentialLease)
 	if err != nil {
 		return d.fail(ctx, job.ID, "execution-inputs", err)
 	}
@@ -640,12 +691,12 @@ func (d *Dispatcher) persistPreparedRepositoryBinding(ctx context.Context, jobID
 	})
 }
 
-func (d *Dispatcher) prepareWorkspace(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string, repo RepositoryInfo, session state.PublicSession) (workspace.Binding, state.PublicSession, error) {
+func (d *Dispatcher) prepareWorkspace(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string, repo RepositoryInfo, session state.PublicSession, lease *credentials.Lease) (workspace.Binding, state.PublicSession, error) {
 	if command == runnercontext.CommandNew {
 		if err := d.pinJobRepositoryBinding(ctx, job.ID, repo.Binding); err != nil {
 			return workspace.Binding{}, state.PublicSession{}, err
 		}
-		binding, err := d.Workspaces.PrepareNew(ctx, workspace.NewRequest{
+		request := workspace.NewRequest{
 			Repo:              job.Repo,
 			CloneURL:          repo.CloneURL,
 			DefaultBranch:     repo.DefaultBranch,
@@ -653,7 +704,11 @@ func (d *Dispatcher) prepareWorkspace(ctx context.Context, job state.Job, comman
 			PublicSessionID:   publicID,
 			JobID:             job.ID,
 			RepositoryBinding: repo.Binding,
-		})
+		}
+		if lease != nil {
+			request.Credentials = lease.Git
+		}
+		binding, err := d.Workspaces.PrepareNew(ctx, request)
 		if err != nil {
 			return binding, state.PublicSession{}, err
 		}
@@ -682,7 +737,7 @@ func (d *Dispatcher) prepareWorkspace(ctx context.Context, job state.Job, comman
 	return binding, session, err
 }
 
-func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string, repo RepositoryInfo, binding workspace.Binding, session state.PublicSession) (ExecutionEnvironment, runnercontext.Bundle, string, error) {
+func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string, repo RepositoryInfo, binding workspace.Binding, session state.PublicSession, lease *credentials.Lease) (ExecutionEnvironment, runnercontext.Bundle, string, error) {
 	artifacts, err := d.artifacts(ctx, job)
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
@@ -739,7 +794,7 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
-	env, err := d.Sandbox.Prepare(ctx, SandboxRequest{
+	sandboxRequest := SandboxRequest{
 		WorkspacePath:        execBinding.SandboxWorkspacePath,
 		AcpxWorkingDirectory: execBinding.AcpxWorkingDirectory,
 		AcpxBinary:           firstNonEmpty(d.AcpxBinary, acpx.DefaultBinary),
@@ -749,7 +804,19 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 		RuntimeGHConfigDir:   runtimePaths.ghConfigDir,
 		RuntimeXDGConfigHome: runtimePaths.xdgConfigHome,
 		RuntimeCodexHome:     runtimePaths.codexHome,
-	})
+	}
+	if lease != nil {
+		sandboxRequest.FileCapabilities = lease.FileCapabilities()
+		profile := lease.Profile
+		sandboxRequest.ChildProfile = &profile
+		if sandboxRequest.ExtraEnv == nil {
+			sandboxRequest.ExtraEnv = map[string]string{}
+		}
+		for name, value := range lease.ChildEnv() {
+			sandboxRequest.ExtraEnv[name] = value
+		}
+	}
+	env, err := d.Sandbox.Prepare(ctx, sandboxRequest)
 	if err != nil {
 		return env, runnercontext.Bundle{}, "", err
 	}
@@ -1414,6 +1481,7 @@ func (p SandboxRunner) Prepare(ctx context.Context, req SandboxRequest) (Executi
 
 func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAuthMirrorResult, error) {
 	cfg := p.Config
+	cfg.FileCapabilities = append([]sandbox.FileCapability(nil), req.FileCapabilities...)
 	cfg.WorkspacePath = firstNonEmpty(req.WorkspacePath, cfg.WorkspacePath)
 	cfg.TempHome = firstNonEmpty(req.RuntimeHome, cfg.TempHome)
 	cfg.TempGHConfigDir = firstNonEmpty(req.RuntimeGHConfigDir, cfg.TempGHConfigDir)
@@ -1439,6 +1507,17 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 			cfg.ExtraEnv[key] = value
 		}
 	}
+	if req.ChildProfile != nil {
+		profile, err := req.ChildProfile.Normalized()
+		if err != nil || profile.Kind != clientauth.ProfileKindHosted {
+			return sandbox.Config{}, "", ghAuthMirrorResult{}, fmt.Errorf("runner child profile is invalid")
+		}
+		if cfg.ExtraEnv == nil {
+			cfg.ExtraEnv = map[string]string{}
+		}
+		cfg.ExtraEnv[clientauth.ProfileEnv] = profile.Name
+		cfg.ExtraEnv[clientauth.GitHubBackendEnv] = string(clientauth.GitHubBackendModeREST)
+	}
 	if !cfg.UnsafeNoSandbox {
 		addSandboxPATHPrefixes(&cfg, pathPrefixes...)
 	}
@@ -1457,9 +1536,25 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 			return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 		}
 	}
-	ghAuthMirror, err := mirrorHostGHAuth(&cfg)
-	if err != nil {
-		return sandbox.Config{}, "", ghAuthMirror, err
+	var ghAuthMirror ghAuthMirrorResult
+	if req.ChildProfile != nil {
+		if err := materializeChildProfile(cfg.TempXDGConfigHome, *req.ChildProfile); err != nil {
+			return sandbox.Config{}, "", ghAuthMirror, err
+		}
+		// A self-hosted child has no reason to observe hosts.yml or shared gh
+		// state, even if the operator process uses it for legacy GitHub mode.
+		if err := os.RemoveAll(cfg.TempGHConfigDir); err != nil {
+			return sandbox.Config{}, "", ghAuthMirror, err
+		}
+		if err := os.MkdirAll(cfg.TempGHConfigDir, 0o700); err != nil {
+			return sandbox.Config{}, "", ghAuthMirror, err
+		}
+	} else {
+		var err error
+		ghAuthMirror, err = mirrorHostGHAuth(&cfg)
+		if err != nil {
+			return sandbox.Config{}, "", ghAuthMirror, err
+		}
 	}
 	if err := mirrorHostCodexConfig(&cfg); err != nil {
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
@@ -1468,6 +1563,48 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
 	return cfg, resolvedAcpxBinary, ghAuthMirror, nil
+}
+
+func materializeChildProfile(xdgConfigHome string, profile clientauth.Profile) error {
+	profile, err := profile.Normalized()
+	if err != nil || profile.Kind != clientauth.ProfileKindHosted {
+		return fmt.Errorf("runner child profile is invalid")
+	}
+	dir := filepath.Join(filepath.Clean(xdgConfigHome), "issue-spec")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	payload := struct {
+		Version        int                           `json:"version"`
+		DefaultProfile string                        `json:"default_profile"`
+		Profiles       map[string]clientauth.Profile `json:"profiles"`
+	}{Version: 1, DefaultProfile: profile.Name, Profiles: map[string]clientauth.Profile{profile.Name: profile}}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(dir, ".profiles-*")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(append(data, '\n')); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryName, filepath.Join(dir, "profiles.json"))
 }
 
 func requestReadOnlyBinds(req SandboxRequest, acpxBinary string, lookPath func(string) (string, error)) ([]string, []string, string, error) {

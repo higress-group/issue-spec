@@ -23,6 +23,7 @@ const (
 	GitHubBackendModeAuto  = GitHubBackendMode("auto")
 	GitHubBackendModeREST  = GitHubBackendMode("rest")
 	GitHubBackendModeGH    = GitHubBackendMode("gh")
+	IssueSpecTokenFileEnv  = "ISSUE_SPEC_TOKEN_FILE"
 )
 
 var ErrNoToken = errors.New("no issue-spec token is available")
@@ -273,6 +274,13 @@ func ResolveProfileToken(_ context.Context, profile Profile) (Token, error) {
 		token, err := ResolveToken(context.Background(), profile.Hostname)
 		return withProfile(token, profile), err
 	}
+	if path := strings.TrimSpace(os.Getenv(IssueSpecTokenFileEnv)); path != "" {
+		value, err := readPrivateTokenFile(path)
+		if err != nil {
+			return withProfile(Token{Host: profile.Hostname}, profile), err
+		}
+		return withProfile(Token{Value: value, Source: "env:" + IssueSpecTokenFileEnv, Host: profile.Hostname}, profile), nil
+	}
 	if value := strings.TrimSpace(os.Getenv("ISSUE_SPEC_TOKEN")); value != "" {
 		return withProfile(Token{Value: value, Source: "env:ISSUE_SPEC_TOKEN", Host: profile.Hostname}, profile), nil
 	}
@@ -291,6 +299,28 @@ func ResolveProfileToken(_ context.Context, profile Profile) (Token, error) {
 		return withProfile(Token{Value: strings.TrimSpace(stored.Token), Source: "config", Host: profile.Hostname}, profile), nil
 	}
 	return withProfile(Token{Host: profile.Hostname}, profile), fmt.Errorf("%w for origin-bound profile %q; run issue-spec auth login --profile %s --with-token", ErrNoToken, profile.Name, profile.Name)
+}
+
+func readPrivateTokenFile(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("%s must name an absolute private file", IssueSpecTokenFileEnv)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: credential file unavailable", IssueSpecTokenFileEnv)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || !singleLink(info) || info.Size() > 1<<20 {
+		return "", fmt.Errorf("read %s: credential file is not a private regular file", IssueSpecTokenFileEnv)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: credential file unavailable", IssueSpecTokenFileEnv)
+	}
+	value := strings.TrimSpace(string(data))
+	if value == "" || strings.ContainsAny(value, "\r\n\x00") {
+		return "", fmt.Errorf("read %s: credential file is invalid", IssueSpecTokenFileEnv)
+	}
+	return value, nil
 }
 
 func StoreToken(_ context.Context, host, token string, insecureStorage bool) (string, error) {

@@ -640,6 +640,54 @@ func TestAuthLoginAndStatusUseNamedSelfHostedProfile(t *testing.T) {
 	}
 }
 
+func TestAuthStatusSelfHostedRunnerUsesTokenFileWithoutGH(t *testing.T) {
+	clearCommandAuthEnv(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/user" || r.Header.Get("Authorization") != "Bearer delegated-child" {
+			t.Fatalf("request = %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"login":"runner-child"}`))
+	}))
+	defer server.Close()
+	profile := auth.Profile{Name: "runner", Kind: auth.ProfileKindHosted, APIURL: server.URL,
+		NativeAPIURL: server.URL + "/api/v1", WebURL: server.URL, ServerInstanceID: "instance-runner"}
+	if err := auth.SaveProfile(profile, true); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(t.TempDir(), "issue.token")
+	if err := os.WriteFile(tokenPath, []byte("delegated-child\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(auth.IssueSpecTokenFileEnv, tokenPath)
+	t.Setenv(auth.ProfileEnv, "runner")
+	t.Setenv(auth.GitHubBackendEnv, "rest")
+	t.Setenv("GH_TOKEN", "must-not-cross")
+	t.Setenv("GITHUB_TOKEN", "must-not-cross-either")
+	oldGHAuthenticated := ghAuthenticated
+	t.Cleanup(func() { ghAuthenticated = oldGHAuthenticated })
+	ghAuthenticated = func(context.Context, string) error {
+		t.Fatal("gh authentication was probed for self-hosted runner profile")
+		return nil
+	}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	if code := app.runAuthStatus(context.Background(), []string{"--json"}); code != 0 {
+		t.Fatalf("status exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if strings.Contains(out.String()+errOut.String(), "delegated-child") || strings.Contains(out.String()+errOut.String(), "must-not-cross") {
+		t.Fatalf("credential leaked: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	var status struct {
+		Auth auth.Token `json:"auth"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Auth.Source != "env:"+auth.IssueSpecTokenFileEnv || status.Auth.Profile != "runner" || status.Auth.User != "runner-child" {
+		t.Fatalf("status auth = %+v", status.Auth)
+	}
+}
+
 func TestOrdinaryClientUsesSavedDefaultSelfHostedProfile(t *testing.T) {
 	clearCommandAuthEnv(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -694,6 +742,7 @@ func clearCommandAuthEnv(t *testing.T) {
 	t.Setenv(auth.GitHubBackendAPIURLEnv, "")
 	t.Setenv(auth.ProfileEnv, "")
 	t.Setenv("ISSUE_SPEC_TOKEN", "")
+	t.Setenv(auth.IssueSpecTokenFileEnv, "")
 	t.Setenv("GH_TOKEN", "")
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())

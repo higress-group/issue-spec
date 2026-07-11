@@ -260,6 +260,12 @@ func (d *Dispatcher) removeCleanedWorkspaces(ctx context.Context, removedIDs map
 
 func (d *Dispatcher) reconcileJob(ctx context.Context, job state.Job) (ReconcileJob, error) {
 	previous := job.Status
+	// Reconciliation means the owning runner process may have crashed. Revoke
+	// every job-bound credential before inspecting external coordinator state;
+	// a recovered running turn must acquire fresh credentials through a new job.
+	if err := d.revokeJobCredentials(ctx, job); err != nil {
+		return d.interrupt(ctx, job, previous, "restart credential revoke: "+safeError(err))
+	}
 	ref, diagnostic, ok := sessionRefForJob(job)
 	if !ok {
 		return d.interrupt(ctx, job, previous, diagnostic)

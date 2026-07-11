@@ -72,7 +72,7 @@ func TestRunMigrationsConcurrentAndIdempotent(t *testing.T) {
 	}
 	// Keep the forward-only migration-set assertion synchronized with the
 	// latest embedded file; PROCESS-005 adds reaction compatibility data.
-	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0007_bindings_evidence.sql" {
+	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0008_delegated_job_revocations.sql" {
 		t.Fatalf("migration metadata = count %d, version %d, name %q", count, version, name)
 	}
 }

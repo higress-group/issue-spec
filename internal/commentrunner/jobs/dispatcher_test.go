@@ -2210,6 +2210,7 @@ type fakeWorkspaces struct {
 	cleanupErr          error
 	lockedJobIDs        map[string]bool
 	prepareNewCalled    bool
+	lastNewRequest      workspace.NewRequest
 	resolveResumeCalled bool
 	released            bool
 }
@@ -2218,6 +2219,7 @@ func (f *fakeWorkspaces) PrepareNew(_ context.Context, req workspace.NewRequest)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.prepareNewCalled = true
+	f.lastNewRequest = req
 	if f.err != nil {
 		return workspace.Binding{}, f.err
 	}

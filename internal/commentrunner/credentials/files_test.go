@@ -1,0 +1,206 @@
+package credentials
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/server/auth/delegation"
+)
+
+func TestMaterializerPrivateAtomicRotationAndRevoke(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "credentials")
+	m := Materializer{Root: root}
+	lease, err := m.WriteIssueToken("job/../../escape", "dgt_first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(lease.HostPath, canonicalRoot+string(os.PathSeparator)) || lease.SandboxPath != IssueTokenSandboxPath {
+		t.Fatalf("lease = %+v", lease)
+	}
+	assertMode(t, root, 0o700)
+	assertMode(t, filepath.Dir(lease.HostPath), 0o700)
+	assertMode(t, lease.HostPath, 0o600)
+	info, _ := os.Stat(lease.HostPath)
+	if !singleLink(info) {
+		t.Fatal("credential is not single-linked")
+	}
+	if data, _ := os.ReadFile(lease.HostPath); string(data) != "dgt_first\n" {
+		t.Fatalf("token file = %q", data)
+	}
+	rotated, err := m.WriteIssueToken("job/../../escape", "dgt_second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.HostPath != lease.HostPath {
+		t.Fatalf("rotation path changed: %s != %s", rotated.HostPath, lease.HostPath)
+	}
+	if data, _ := os.ReadFile(rotated.HostPath); string(data) != "dgt_second\n" {
+		t.Fatalf("rotated token file = %q", data)
+	}
+	if err := m.Revoke("job/../../escape"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(lease.HostPath); !os.IsNotExist(err) {
+		t.Fatalf("credential remains after revoke: %v", err)
+	}
+}
+
+func TestMaterializerRejectsSymlinkRootAndHardlink(t *testing.T) {
+	base := t.TempDir()
+	realRoot := filepath.Join(base, "real")
+	if err := os.Mkdir(realRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realRoot, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Materializer{Root: link}).WriteIssueToken("job", "dgt"); err == nil {
+		t.Fatal("symlink root accepted")
+	}
+	file := filepath.Join(realRoot, "secret")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(file, filepath.Join(realRoot, "secret-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyRegularPrivateFile(file); err == nil {
+		t.Fatal("hard-linked credential accepted")
+	}
+}
+
+func TestMaterializerRejectsTokenControlCharacters(t *testing.T) {
+	m := Materializer{Root: t.TempDir()}
+	for _, token := range []string{"", "dgt_one\ndgt_two", "dgt_null\x00suffix", "dgt_tab\tvalue"} {
+		if _, err := m.WriteIssueToken("job", token); err == nil {
+			t.Fatalf("invalid token accepted: %q", token)
+		}
+	}
+}
+
+func TestGitLeasePinsHTTPSAndKeepsSecretOutOfEnv(t *testing.T) {
+	binding := testBinding()
+	revoked := 0
+	provider := staticGitProvider{lease: GitProviderLease{Credential: GitSecret{Username: "runner", Password: "super-secret"},
+		ExpiresAt: time.Now().Add(time.Minute), Revoke: func(context.Context) error { revoked++; return nil }}}
+	lease, err := NewGitLease(context.Background(), t.TempDir(), "job-1", binding, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := lease.BeforeGit(context.Background(), "clone", binding.CloneURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(credential.Env, "\n")
+	if strings.Contains(joined, "super-secret") || strings.Contains(joined, "https://runner") {
+		t.Fatalf("secret leaked into git env: %s", joined)
+	}
+	for _, required := range []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_VALUE_0=false"} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("missing hardened git environment %q: %s", required, joined)
+		}
+	}
+	if _, err := lease.BeforeGit(context.Background(), "fetch", binding.CloneURL); err == nil {
+		t.Fatal("non-clone credential request accepted")
+	}
+	if _, err := lease.BeforeGit(context.Background(), "clone", "https://code.example/acme/other.git"); err == nil {
+		t.Fatal("clone URL drift accepted")
+	}
+	if err := lease.Cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(lease.SecretPath); !os.IsNotExist(err) {
+		t.Fatalf("git secret remains: %v", err)
+	}
+	if revoked != 1 {
+		t.Fatalf("provider revoke calls = %d", revoked)
+	}
+}
+
+func TestGitLeaseRejectsSSHAndRepositoryPathDrift(t *testing.T) {
+	binding := testBinding()
+	provider := staticGitProvider{lease: GitProviderLease{Credential: GitSecret{Username: "u", Password: "p"},
+		ExpiresAt: time.Now().Add(time.Minute), Revoke: func(context.Context) error { return nil }}}
+	binding.CloneURL = "git@code.example:acme/widgets.git"
+	if _, err := NewGitLease(context.Background(), t.TempDir(), "job-1", binding, provider); err == nil {
+		t.Fatal("SSH binding accepted without controlled SSH lease")
+	}
+	binding = testBinding()
+	binding.CloneURL = "https://code.example/acme/other.git"
+	if _, err := NewGitLease(context.Background(), t.TempDir(), "job-1", binding, provider); err == nil {
+		t.Fatal("repository path drift accepted")
+	}
+}
+
+func TestGitLeaseRejectsLongLivedProviderLeaseWithBoundedCleanup(t *testing.T) {
+	binding := testBinding()
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	cancelRequest()
+	var cleanupHadDeadline, cleanupWasCancelled bool
+	provider := staticGitProvider{lease: GitProviderLease{Credential: GitSecret{Username: "u", Password: "p"},
+		ExpiresAt: time.Now().Add(delegation.MaxTTL + time.Minute), Revoke: func(ctx context.Context) error {
+			_, cleanupHadDeadline = ctx.Deadline()
+			cleanupWasCancelled = ctx.Err() != nil
+			return nil
+		}}}
+	if _, err := NewGitLease(requestCtx, t.TempDir(), "job-expiry", binding, provider); err == nil {
+		t.Fatal("long-lived provider lease accepted")
+	}
+	if !cleanupHadDeadline || cleanupWasCancelled {
+		t.Fatalf("cleanup context deadline=%t cancelled=%t", cleanupHadDeadline, cleanupWasCancelled)
+	}
+}
+
+func TestOperatorGitProviderMatchesExactAuthorityIncludingPort(t *testing.T) {
+	binding := testBinding()
+	binding.CloneURL = "https://code.example:8443/acme/widgets.git"
+	called := false
+	provider := OperatorGitProvider{ProviderKey: "github", Host: "code.example", ExternalRepositoryID: "acme/widgets",
+		AcquireLease: func(context.Context, GitRequest) (GitProviderLease, error) {
+			called = true
+			return GitProviderLease{}, nil
+		}, RevokeJobLease: func(context.Context, string) error { return nil }}
+	if _, err := provider.Acquire(context.Background(), GitRequest{JobID: "job-port", Purpose: "git", Binding: binding}); err == nil || called {
+		t.Fatalf("port drift accepted: err=%v called=%t", err, called)
+	}
+	provider.Host = "CODE.EXAMPLE:8443"
+	if _, err := provider.Acquire(context.Background(), GitRequest{JobID: "job-port", Purpose: "git", Binding: binding}); err != nil || !called {
+		t.Fatalf("exact authority rejected: err=%v called=%t", err, called)
+	}
+}
+
+type staticGitProvider struct{ lease GitProviderLease }
+
+func (s staticGitProvider) Acquire(context.Context, GitRequest) (GitProviderLease, error) {
+	return s.lease, nil
+}
+
+func (staticGitProvider) RevokeJob(context.Context, string) error { return nil }
+
+func testBinding() state.RepositoryBindingSnapshot {
+	return state.RepositoryBindingSnapshot{Source: "self-hosted", IssueRepositoryKey: "acme/widgets", BindingID: uuid.NewString(), Version: 1,
+		ProviderKey: "github", ExternalRepositoryID: "acme/widgets", CloneURL: "https://code.example/acme/widgets.git",
+		WebURL: "https://code.example/acme/widgets", DefaultBranch: "main"}
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %o, want %o", path, got, want)
+	}
+}

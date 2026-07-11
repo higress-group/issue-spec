@@ -224,6 +224,7 @@ func clearAuthEnv(t *testing.T) {
 	t.Setenv(GitHubBackendAPIURLEnv, "")
 	t.Setenv(ProfileEnv, "")
 	t.Setenv("ISSUE_SPEC_TOKEN", "")
+	t.Setenv(IssueSpecTokenFileEnv, "")
 	t.Setenv("GH_TOKEN", "")
 	t.Setenv("GITHUB_TOKEN", "")
 }

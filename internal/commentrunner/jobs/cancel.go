@@ -107,7 +107,7 @@ func (d *Dispatcher) cancel(ctx context.Context, cancel state.Cancellation) (Res
 		return d.cancelRejected(ctx, cancel, "unknown_session", "cancellation target public session or active job was not found")
 	}
 	if terminal {
-		return d.cancelAlreadyTerminal(ctx, cancel, job), nil
+		return d.cancelAlreadyTerminal(ctx, cancel, job)
 	}
 	if job.Status == state.StatusQueued {
 		if err := d.cancelQueuedJob(ctx, cancel, job); err != nil {
@@ -252,7 +252,7 @@ func (d *Dispatcher) cancelQueuedJob(ctx context.Context, cancel state.Cancellat
 		Phase:              "cancelled-before-dispatch",
 		CancelingUserLogin: cancel.CancelingUserLogin,
 	})
-	return err
+	return errors.Join(err, d.revokeJobCredentials(ctx, cancelled))
 }
 
 func (d *Dispatcher) cancelConfirmed(ctx context.Context, cancel state.Cancellation, job state.Job, diagnostics string) error {
@@ -296,7 +296,7 @@ func (d *Dispatcher) cancelConfirmed(ctx context.Context, cancel state.Cancellat
 		Diagnostics:        splitDiagnostic(diagnostics),
 		CancelingUserLogin: cancel.CancelingUserLogin,
 	})
-	return err
+	return errors.Join(err, d.revokeJobCredentials(ctx, cancelled))
 }
 
 // cancelSessionRefForJob resolves the acpx session reference used to cancel an
@@ -336,7 +336,7 @@ func (d *Dispatcher) cancelRejected(ctx context.Context, cancel state.Cancellati
 // posts a best-effort status comment through the synthetic cancellation job so
 // every accepted cancellation reaches a visible terminal status (SPEC-004),
 // without touching the target job's own completed/failed status comment.
-func (d *Dispatcher) cancelAlreadyTerminal(ctx context.Context, cancel state.Cancellation, job state.Job) Result {
+func (d *Dispatcher) cancelAlreadyTerminal(ctx context.Context, cancel state.Cancellation, job state.Job) (Result, error) {
 	if d.Writeback != nil {
 		if statusJob, ok := cancellationStatusJob(cancel); ok {
 			_, _ = d.Writeback.Write(ctx, writeback.Request{
@@ -348,7 +348,12 @@ func (d *Dispatcher) cancelAlreadyTerminal(ctx context.Context, cancel state.Can
 			})
 		}
 	}
-	return Result{Executed: true, JobID: job.ID, CancellationID: cancel.ID, Status: state.StatusCancelled, Reason: "target_already_terminal"}
+	result := Result{Executed: true, JobID: job.ID, CancellationID: cancel.ID, Status: state.StatusCancelled, Reason: "target_already_terminal"}
+	if err := d.revokeJobCredentials(ctx, job); err != nil {
+		result.Error = safeError(err)
+		return result, err
+	}
+	return result, nil
 }
 
 // cancellationStatusJob synthesizes the minimal job needed to render a status
