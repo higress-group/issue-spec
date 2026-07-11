@@ -220,6 +220,16 @@ p { line-height: 1.65; color: var(--muted); }
   .card-grid, .repo-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
+/* The public auth composition needs to collapse before the application shell.
+   At tablet/sidebar widths the provider card's 360px minimum otherwise leaves
+   the editorial headline in a column too narrow for its longest word. */
+@media (max-width: 900px) {
+  .auth-layout { grid-template-columns: 1fr; gap: 2.25rem; width: min(100%, 680px); }
+  .auth-story h1 { max-width: 640px; font-size: clamp(3rem, 9vw, 4.6rem); overflow-wrap: normal; }
+  .auth-story > p { max-width: 580px; }
+  .auth-card { width: 100%; }
+}
+
 @media (max-width: 720px) {
   .app-shell { display: block; padding: 4.25rem 0 4.5rem; }
   .mobile-header { position: fixed; inset: 0 0 auto; z-index: 50; display: flex; align-items: center; justify-content: space-between; height: 4.25rem; padding: .65rem 1rem; background: var(--nav); color: white; }
