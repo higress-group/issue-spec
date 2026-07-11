@@ -88,14 +88,15 @@ type Manager struct {
 }
 
 type NewRequest struct {
-	Repo            string
-	CloneURL        string
-	DefaultBranch   string
-	Ref             string
-	PublicSessionID string
-	JobID           string
-	WorkspaceID     string
-	BranchName      string
+	Repo              string
+	CloneURL          string
+	DefaultBranch     string
+	Ref               string
+	PublicSessionID   string
+	JobID             string
+	WorkspaceID       string
+	BranchName        string
+	RepositoryBinding state.RepositoryBindingSnapshot
 }
 
 type ResumeRequest struct {
@@ -185,17 +186,18 @@ func (m Manager) PrepareNew(ctx context.Context, req NewRequest) (Binding, error
 
 	now := nm.Now().UTC()
 	workspace := state.WorkspaceMetadata{
-		ID:              workspaceID,
-		Path:            path,
-		Repo:            strings.TrimSpace(req.Repo),
-		CloneURL:        strings.TrimSpace(req.CloneURL),
-		Branch:          actualBranch,
-		Ref:             baseRef,
-		CheckoutSHA:     head,
-		CreatedAt:       now,
-		LastUsedAt:      now,
-		RetentionPolicy: retentionPolicy(nm.Retention),
-		CleanupAfter:    now.Add(nm.Retention),
+		ID:                workspaceID,
+		Path:              path,
+		Repo:              strings.TrimSpace(req.Repo),
+		CloneURL:          strings.TrimSpace(req.CloneURL),
+		Branch:            actualBranch,
+		Ref:               baseRef,
+		CheckoutSHA:       head,
+		CreatedAt:         now,
+		LastUsedAt:        now,
+		RetentionPolicy:   retentionPolicy(nm.Retention),
+		CleanupAfter:      now.Add(nm.Retention),
+		RepositoryBinding: req.RepositoryBinding,
 	}
 	cleanup = false
 	return Binding{Workspace: workspace, AcpxWorkingDirectory: path, SandboxWorkspacePath: path}, nil
@@ -563,6 +565,9 @@ func (m Manager) normalized() (Manager, string, error) {
 }
 
 func validateNewRequest(req NewRequest) error {
+	if !req.RepositoryBinding.Complete() {
+		return fmt.Errorf("repository binding snapshot is required")
+	}
 	if strings.TrimSpace(req.Repo) == "" {
 		return fmt.Errorf("repo is required")
 	}

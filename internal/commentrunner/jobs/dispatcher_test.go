@@ -82,12 +82,20 @@ func TestRunNextNewCreatesSessionMappingAndCompletionWriteback(t *testing.T) {
 	if job.ContextBundle.Hash == "" || job.DispatchIntent.TurnCorrelationToken != "turn-token-new" || job.DispatchIntent.StatusCommentID != 9001 {
 		t.Fatalf("dispatch intent/context not persisted: %+v context=%+v", job.DispatchIntent, job.ContextBundle)
 	}
+	if !job.RepositoryBinding.Complete() || !job.DispatchIntent.RepositoryBinding.Equal(job.RepositoryBinding) ||
+		!job.Workspace.RepositoryBinding.Equal(job.RepositoryBinding) {
+		t.Fatalf("new job repository binding was not pinned consistently: job=%+v intent=%+v workspace=%+v",
+			job.RepositoryBinding, job.DispatchIntent.RepositoryBinding, job.Workspace.RepositoryBinding)
+	}
 	if len(job.CLIDirect) != 1 || job.CLIDirect[0].CommandName != "issue-spec comment upsert" {
 		t.Fatalf("CLI-direct provenance missing: %+v", job.CLIDirect)
 	}
 	session, ok := st.GetPublicSession("o/r", "ps-new")
 	if !ok || session.AcpxRecordID != "rec-new" || session.Workspace.ID != "ws-new" || session.LastJobID != "job-new" {
 		t.Fatalf("public session mapping missing: %+v ok=%v", session, ok)
+	}
+	if !session.RepositoryBinding.Equal(job.RepositoryBinding) {
+		t.Fatalf("public session repository binding=%+v, want %+v", session.RepositoryBinding, job.RepositoryBinding)
 	}
 	if _, ok := st.GetWorkspace("ws-new"); !ok {
 		t.Fatalf("workspace metadata was not indexed: %+v", st.Workspaces)
@@ -156,22 +164,23 @@ func TestRunNextRecordsResidualWorkspaceLockRecoveryDiagnostic(t *testing.T) {
 func TestRunNextResumeReusesSessionMappingAndWorkspace(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 11, 0, 0, 0, time.UTC)
-	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-existing", Path: "/tmp/ws-existing", Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-existing"}
+	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-existing", Path: "/tmp/ws-existing", Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-existing", RepositoryBinding: testRepositoryBinding()}
 	seedState(t, store, func(st *state.RunnerState) error {
 		if err := st.UpsertWorkspace(resumeWorkspace); err != nil {
 			return err
 		}
 		if err := st.UpsertPublicSession(state.PublicSession{
-			Repo:            "o/r",
-			PublicSessionID: "ps-existing",
-			IssueNumber:     30,
-			AcpxRecordID:    "rec-existing",
-			CreatorLogin:    "alice",
-			Status:          state.StatusCompleted,
-			Workspace:       resumeWorkspace,
-			Queue:           state.SessionQueue{AcceptedSequence: 3},
-			CreatedAt:       now.Add(-time.Hour),
-			LastUsedAt:      now.Add(-time.Minute),
+			Repo:              "o/r",
+			PublicSessionID:   "ps-existing",
+			IssueNumber:       30,
+			AcpxRecordID:      "rec-existing",
+			CreatorLogin:      "alice",
+			Status:            state.StatusCompleted,
+			Workspace:         resumeWorkspace,
+			RepositoryBinding: testRepositoryBinding(),
+			Queue:             state.SessionQueue{AcceptedSequence: 3},
+			CreatedAt:         now.Add(-time.Hour),
+			LastUsedAt:        now.Add(-time.Minute),
 		}); err != nil {
 			return err
 		}
@@ -365,19 +374,20 @@ func TestRunNextResumeUsesStoredAcpxCWDForRuntimeCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-existing", Path: canonicalPath, Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-existing"}
+	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-existing", Path: canonicalPath, Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-existing", RepositoryBinding: testRepositoryBinding()}
 	seedState(t, store, func(st *state.RunnerState) error {
 		if err := st.UpsertPublicSession(state.PublicSession{
-			Repo:            "o/r",
-			PublicSessionID: "ps-existing",
-			IssueNumber:     30,
-			AcpxRecordID:    "rec-existing",
-			CreatorLogin:    "alice",
-			Status:          state.StatusCompleted,
-			Workspace:       resumeWorkspace,
-			Acpx:            state.AcpxMetadata{StableRecordID: "rec-existing", CWD: legacyPath},
-			CreatedAt:       now.Add(-time.Hour),
-			LastUsedAt:      now.Add(-time.Minute),
+			Repo:              "o/r",
+			PublicSessionID:   "ps-existing",
+			IssueNumber:       30,
+			AcpxRecordID:      "rec-existing",
+			CreatorLogin:      "alice",
+			Status:            state.StatusCompleted,
+			Workspace:         resumeWorkspace,
+			RepositoryBinding: testRepositoryBinding(),
+			Acpx:              state.AcpxMetadata{StableRecordID: "rec-existing", CWD: legacyPath},
+			CreatedAt:         now.Add(-time.Hour),
+			LastUsedAt:        now.Add(-time.Minute),
 		}); err != nil {
 			return err
 		}
@@ -877,21 +887,22 @@ func TestRunNextSummaryFailureDoesNotMaskDispatchFailures(t *testing.T) {
 func TestRunNextSkipsLockedQueuedJobAndDispatchesLaterSession(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 12, 30, 0, 0, time.UTC)
-	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-locked", Path: "/tmp/ws-locked", Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-locked"}
+	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-locked", Path: "/tmp/ws-locked", Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-locked", RepositoryBinding: testRepositoryBinding()}
 	seedState(t, store, func(st *state.RunnerState) error {
 		if err := st.UpsertWorkspace(resumeWorkspace); err != nil {
 			return err
 		}
 		if err := st.UpsertPublicSession(state.PublicSession{
-			Repo:            "o/r",
-			PublicSessionID: "ps-locked",
-			IssueNumber:     30,
-			AcpxRecordID:    "rec-locked",
-			CreatorLogin:    "alice",
-			Status:          state.StatusRunning,
-			Workspace:       resumeWorkspace,
-			Lock:            state.SessionLock{OwnerJobID: "job-active"},
-			CreatedAt:       now.Add(-time.Hour),
+			Repo:              "o/r",
+			PublicSessionID:   "ps-locked",
+			IssueNumber:       30,
+			AcpxRecordID:      "rec-locked",
+			CreatorLogin:      "alice",
+			Status:            state.StatusRunning,
+			Workspace:         resumeWorkspace,
+			RepositoryBinding: testRepositoryBinding(),
+			Lock:              state.SessionLock{OwnerJobID: "job-active"},
+			CreatedAt:         now.Add(-time.Hour),
 		}); err != nil {
 			return err
 		}
@@ -1055,21 +1066,22 @@ func TestRunReadyWithCapStartsDifferentPublicSessionsTogether(t *testing.T) {
 func TestRunReadySameSessionPreservesFIFO(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 13, 0, 0, 0, time.UTC)
-	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-same-session", Path: "/tmp/ws-same-session", Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-same-session"}
+	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-same-session", Path: "/tmp/ws-same-session", Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-same-session", RepositoryBinding: testRepositoryBinding()}
 	seedState(t, store, func(st *state.RunnerState) error {
 		if err := st.UpsertWorkspace(resumeWorkspace); err != nil {
 			return err
 		}
 		if err := st.UpsertPublicSession(state.PublicSession{
-			Repo:            "o/r",
-			PublicSessionID: "ps-same",
-			IssueNumber:     30,
-			AcpxRecordID:    "rec-same",
-			CreatorLogin:    "alice",
-			Status:          state.StatusCompleted,
-			Workspace:       resumeWorkspace,
-			CreatedAt:       now.Add(-time.Hour),
-			LastUsedAt:      now.Add(-time.Minute),
+			Repo:              "o/r",
+			PublicSessionID:   "ps-same",
+			IssueNumber:       30,
+			AcpxRecordID:      "rec-same",
+			CreatorLogin:      "alice",
+			Status:            state.StatusCompleted,
+			Workspace:         resumeWorkspace,
+			RepositoryBinding: testRepositoryBinding(),
+			CreatedAt:         now.Add(-time.Hour),
+			LastUsedAt:        now.Add(-time.Minute),
 		}); err != nil {
 			return err
 		}
@@ -2086,7 +2098,7 @@ func stringSliceContains(values []string, want string) bool {
 func testBinding(id string) workspace.Binding {
 	path := "/tmp/" + id
 	return workspace.Binding{
-		Workspace:            state.WorkspaceMetadata{ID: id, Path: path, Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-" + id, Ref: "main"},
+		Workspace:            state.WorkspaceMetadata{ID: id, Path: path, Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-" + id, Ref: "main", RepositoryBinding: testRepositoryBinding()},
 		AcpxWorkingDirectory: path,
 		SandboxWorkspacePath: path,
 	}
@@ -2178,7 +2190,13 @@ func (s *memoryStore) Update(_ context.Context, mutate func(*state.RunnerState) 
 type fakeRepoResolver struct{}
 
 func (fakeRepoResolver) ResolveRepository(context.Context, string) (RepositoryInfo, error) {
-	return RepositoryInfo{Repo: "o/r", CloneURL: "https://github.com/o/r.git", DefaultBranch: "main"}, nil
+	return RepositoryInfo{Repo: "o/r", CloneURL: "https://github.com/o/r.git", DefaultBranch: "main", Ref: "main", Binding: testRepositoryBinding()}, nil
+}
+
+func testRepositoryBinding() state.RepositoryBindingSnapshot {
+	return state.RepositoryBindingSnapshot{Source: "operator", IssueRepositoryKey: "o/r", BindingID: "mapping-o-r",
+		Version: 1, ProviderKey: "github", ExternalRepositoryID: "o/r", CloneURL: "https://github.com/o/r.git",
+		WebURL: "https://github.com/o/r", DefaultBranch: "main"}
 }
 
 type fakeWorkspaces struct {
@@ -2204,9 +2222,13 @@ func (f *fakeWorkspaces) PrepareNew(_ context.Context, req workspace.NewRequest)
 		return workspace.Binding{}, f.err
 	}
 	if binding, ok := f.bindings[req.JobID]; ok {
+		binding.Workspace.RepositoryBinding = req.RepositoryBinding
 		return binding, nil
 	}
-	return f.binding, nil
+	binding := f.binding
+	binding.Workspace.RepositoryBinding = req.RepositoryBinding
+	f.binding = binding
+	return binding, nil
 }
 
 func (f *fakeWorkspaces) ResolveResume(context.Context, workspace.ResumeRequest) (workspace.Binding, error) {

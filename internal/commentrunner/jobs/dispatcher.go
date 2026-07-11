@@ -20,6 +20,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	runnercontext "github.com/higress-group/issue-spec/internal/commentrunner/context"
+	resolver "github.com/higress-group/issue-spec/internal/commentrunner/repository"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/model"
@@ -43,12 +44,7 @@ type RepositoryResolver interface {
 	ResolveRepository(context.Context, string) (RepositoryInfo, error)
 }
 
-type RepositoryInfo struct {
-	Repo          string
-	CloneURL      string
-	DefaultBranch string
-	Ref           string
-}
+type RepositoryInfo = resolver.Resolution
 
 type WorkspaceManager interface {
 	PrepareNew(context.Context, workspace.NewRequest) (workspace.Binding, error)
@@ -426,13 +422,9 @@ func (d *Dispatcher) nextQueuedJob(ctx context.Context, skipped map[string]bool)
 }
 
 func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) {
-	repo, err := d.Repositories.ResolveRepository(ctx, job.Repo)
-	if err != nil {
-		return d.fail(ctx, job.ID, "repository", err)
-	}
-
 	publicID := strings.TrimSpace(job.PublicSessionID)
 	command := runnercontext.CommandVerb(strings.TrimSpace(job.CommandName))
+	var err error
 	switch command {
 	case runnercontext.CommandNew:
 		if publicID == "" {
@@ -451,8 +443,12 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 	if strings.TrimSpace(job.CommandPrompt) == "" {
 		return d.fail(ctx, job.ID, "command", fmt.Errorf("job %s is missing first-observed command prompt", job.ID))
 	}
+	repo, session, err := d.resolveRepositoryForCommand(ctx, job, command, publicID)
+	if err != nil {
+		return d.fail(ctx, job.ID, "repository-binding", err)
+	}
 
-	binding, session, err := d.prepareWorkspace(ctx, job, command, publicID, repo)
+	binding, session, err := d.prepareWorkspace(ctx, job, command, publicID, repo, session)
 	if err != nil {
 		return d.fail(ctx, job.ID, "workspace", err)
 	}
@@ -572,27 +568,117 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 	return Result{Executed: true, JobID: job.ID, Status: terminal}, nil
 }
 
-func (d *Dispatcher) prepareWorkspace(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string, repo RepositoryInfo) (workspace.Binding, state.PublicSession, error) {
+func (d *Dispatcher) resolveRepositoryForCommand(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string) (RepositoryInfo, state.PublicSession, error) {
 	if command == runnercontext.CommandNew {
-		binding, err := d.Workspaces.PrepareNew(ctx, workspace.NewRequest{
-			Repo:            job.Repo,
-			CloneURL:        repo.CloneURL,
-			DefaultBranch:   repo.DefaultBranch,
-			Ref:             repo.Ref,
-			PublicSessionID: publicID,
-			JobID:           job.ID,
-		})
-		return binding, state.PublicSession{}, err
+		repo, err := d.Repositories.ResolveRepository(ctx, job.Repo)
+		if err != nil {
+			return RepositoryInfo{}, state.PublicSession{}, err
+		}
+		if !repo.Binding.Complete() {
+			return RepositoryInfo{}, state.PublicSession{}, resolver.NoBindingError()
+		}
+		return repo, state.PublicSession{}, nil
 	}
 	session, err := d.requireSession(ctx, job.Repo, publicID)
 	if err != nil {
+		return RepositoryInfo{}, state.PublicSession{}, err
+	}
+	if !session.RepositoryBinding.Complete() || !session.Workspace.RepositoryBinding.Complete() {
+		return RepositoryInfo{}, state.PublicSession{}, resolver.LegacyStateError()
+	}
+	if !session.RepositoryBinding.Equal(session.Workspace.RepositoryBinding) {
+		return RepositoryInfo{}, state.PublicSession{}, resolver.DriftError()
+	}
+	current, err := d.Repositories.ResolveRepository(ctx, job.Repo)
+	if err != nil {
+		return RepositoryInfo{}, state.PublicSession{}, resolver.DriftError()
+	}
+	if err := resolver.ValidatePinned(session.RepositoryBinding, current.Binding); err != nil {
+		return RepositoryInfo{}, state.PublicSession{}, err
+	}
+	return current, session, nil
+}
+
+func (d *Dispatcher) pinJobRepositoryBinding(ctx context.Context, jobID string, binding state.RepositoryBindingSnapshot) error {
+	if !binding.Complete() {
+		return resolver.NoBindingError()
+	}
+	return d.Store.Update(ctx, func(st *state.RunnerState) error {
+		job, ok := st.Jobs[jobID]
+		if !ok {
+			return fmt.Errorf("job %q not found", jobID)
+		}
+		if job.RepositoryBinding.Complete() && !job.RepositoryBinding.Equal(binding) {
+			return resolver.DriftError()
+		}
+		job.RepositoryBinding = binding
+		job.DispatchIntent.RepositoryBinding = binding
+		return st.UpsertJob(job)
+	})
+}
+
+func (d *Dispatcher) persistPreparedRepositoryBinding(ctx context.Context, jobID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, binding state.RepositoryBindingSnapshot) error {
+	return d.Store.Update(ctx, func(st *state.RunnerState) error {
+		job, ok := st.Jobs[jobID]
+		if !ok {
+			return fmt.Errorf("job %q not found", jobID)
+		}
+		if !job.RepositoryBinding.Equal(binding) || !workspaceMeta.RepositoryBinding.Equal(binding) ||
+			!session.RepositoryBinding.Equal(binding) {
+			return resolver.DriftError()
+		}
+		job.Workspace = workspaceMeta
+		job.RepositoryBinding = binding
+		job.DispatchIntent.RepositoryBinding = binding
+		if err := st.UpsertWorkspace(workspaceMeta); err != nil {
+			return err
+		}
+		if err := st.UpsertPublicSession(session); err != nil {
+			return err
+		}
+		return st.UpsertJob(job)
+	})
+}
+
+func (d *Dispatcher) prepareWorkspace(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string, repo RepositoryInfo, session state.PublicSession) (workspace.Binding, state.PublicSession, error) {
+	if command == runnercontext.CommandNew {
+		if err := d.pinJobRepositoryBinding(ctx, job.ID, repo.Binding); err != nil {
+			return workspace.Binding{}, state.PublicSession{}, err
+		}
+		binding, err := d.Workspaces.PrepareNew(ctx, workspace.NewRequest{
+			Repo:              job.Repo,
+			CloneURL:          repo.CloneURL,
+			DefaultBranch:     repo.DefaultBranch,
+			Ref:               repo.Ref,
+			PublicSessionID:   publicID,
+			JobID:             job.ID,
+			RepositoryBinding: repo.Binding,
+		})
+		if err != nil {
+			return binding, state.PublicSession{}, err
+		}
+		if !binding.Workspace.RepositoryBinding.Equal(repo.Binding) {
+			return workspace.Binding{}, state.PublicSession{}, resolver.DriftError()
+		}
+		session = state.PublicSession{Repo: job.Repo, PublicSessionID: publicID, IssueNumber: job.IssueNumber,
+			CreatorLogin: job.SessionCreatorLogin, Status: state.StatusDispatched, CreatedAt: firstTime(job.CreatedAt, d.now()),
+			Workspace: binding.Workspace, RepositoryBinding: repo.Binding}
+		if err := d.persistPreparedRepositoryBinding(ctx, job.ID, session, binding.Workspace, repo.Binding); err != nil {
+			return workspace.Binding{}, state.PublicSession{}, err
+		}
+		return binding, session, nil
+	}
+	if err := d.pinJobRepositoryBinding(ctx, job.ID, session.RepositoryBinding); err != nil {
 		return workspace.Binding{}, state.PublicSession{}, err
 	}
 	binding, err := d.Workspaces.ResolveResume(ctx, workspace.ResumeRequest{
 		Repo:      job.Repo,
-		CloneURL:  firstNonEmpty(repo.CloneURL, session.Workspace.CloneURL),
+		CloneURL:  session.RepositoryBinding.CloneURL,
 		Workspace: session.Workspace,
 	})
+	if err == nil && !binding.Workspace.RepositoryBinding.Equal(session.RepositoryBinding) {
+		return workspace.Binding{}, state.PublicSession{}, resolver.DriftError()
+	}
 	return binding, session, err
 }
 
@@ -944,6 +1030,7 @@ func (d *Dispatcher) markRunning(ctx context.Context, original state.Job, comman
 			ContextBundleHash:     bundle.BundleSHA256,
 			WorkspaceLockOwner:    lock.OwnerJobID,
 			PersistedAt:           now,
+			RepositoryBinding:     job.RepositoryBinding,
 		}
 		job.UpdatedAt = now
 		if err := st.UpsertWorkspace(binding.Workspace); err != nil {
@@ -964,11 +1051,12 @@ func (d *Dispatcher) markRunning(ctx context.Context, original state.Job, comman
 		running.Sandbox = sandboxMeta
 		running.ContextBundle = contextProvenance(bundle, running.CommandID)
 		running.DispatchIntent = job.DispatchIntent
-		if command == runnercontext.CommandResume {
+		if command == runnercontext.CommandResume || command == runnercontext.CommandNew {
 			session.Status = state.StatusRunning
 			session.LastUsedAt = now
 			session.LastJobID = running.ID
 			session.Workspace = binding.Workspace
+			session.RepositoryBinding = job.RepositoryBinding
 			session.Lock = lock
 			session.Queue.AcceptedSequence = running.DispatchIntent.TurnSequence
 			session.Queue.PendingJobIDs = appendUnique(session.Queue.PendingJobIDs, running.ID)
@@ -1022,18 +1110,20 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 		}
 		if command == runnercontext.CommandNew {
 			session = state.PublicSession{
-				Repo:            job.Repo,
-				PublicSessionID: publicID,
-				IssueNumber:     job.IssueNumber,
-				AcpxRecordID:    meta.StableRecordID,
-				CreatorLogin:    job.SessionCreatorLogin,
-				CreatedAt:       firstTime(job.CreatedAt, now),
+				Repo:              job.Repo,
+				PublicSessionID:   publicID,
+				IssueNumber:       job.IssueNumber,
+				AcpxRecordID:      meta.StableRecordID,
+				CreatorLogin:      job.SessionCreatorLogin,
+				CreatedAt:         firstTime(job.CreatedAt, now),
+				RepositoryBinding: job.RepositoryBinding,
 			}
 		}
 		session.Status = terminal
 		session.AcpxRecordID = meta.StableRecordID
 		session.Acpx = meta
 		session.Workspace = job.Workspace
+		session.RepositoryBinding = job.RepositoryBinding
 		session.LastUsedAt = now
 		session.LastJobID = job.ID
 		session.Lock = state.SessionLock{}
@@ -1109,18 +1199,20 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 		}
 		if command == runnercontext.CommandNew {
 			session = state.PublicSession{
-				Repo:            next.Repo,
-				PublicSessionID: publicID,
-				IssueNumber:     next.IssueNumber,
-				AcpxRecordID:    meta.StableRecordID,
-				CreatorLogin:    next.SessionCreatorLogin,
-				CreatedAt:       firstTime(next.CreatedAt, now),
+				Repo:              next.Repo,
+				PublicSessionID:   publicID,
+				IssueNumber:       next.IssueNumber,
+				AcpxRecordID:      meta.StableRecordID,
+				CreatorLogin:      next.SessionCreatorLogin,
+				CreatedAt:         firstTime(next.CreatedAt, now),
+				RepositoryBinding: next.RepositoryBinding,
 			}
 		}
 		session.Status = state.StatusFailed
 		session.AcpxRecordID = meta.StableRecordID
 		session.Acpx = meta
 		session.Workspace = next.Workspace
+		session.RepositoryBinding = next.RepositoryBinding
 		session.LastUsedAt = now
 		session.LastJobID = next.ID
 		session.Lock = state.SessionLock{}
@@ -1275,24 +1367,24 @@ func (d *Dispatcher) now() time.Time {
 }
 
 type StaticRepositoryResolver struct {
-	Hostname      string
-	DefaultBranch string
+	// Hostname is retained only for configuration compatibility. It is never
+	// used to derive a clone URL.
+	Hostname string
+	Mappings []resolver.OperatorMapping
+	Operator resolver.OperatorSource
+	Server   *resolver.ServerSource
 }
 
-func (r StaticRepositoryResolver) ResolveRepository(_ context.Context, repo string) (RepositoryInfo, error) {
-	repo = strings.TrimSpace(repo)
-	if repo == "" {
-		return RepositoryInfo{}, fmt.Errorf("repo is required")
+func (r StaticRepositoryResolver) ResolveRepository(ctx context.Context, repo string) (RepositoryInfo, error) {
+	operator := r.Operator
+	if operator == nil && len(r.Mappings) > 0 {
+		configured, err := resolver.NewStaticOperatorMappings(r.Mappings)
+		if err != nil {
+			return RepositoryInfo{}, err
+		}
+		operator = configured
 	}
-	host := strings.TrimSpace(r.Hostname)
-	if host == "" {
-		host = "github.com"
-	}
-	branch := strings.TrimSpace(r.DefaultBranch)
-	if branch == "" {
-		branch = "HEAD"
-	}
-	return RepositoryInfo{Repo: repo, CloneURL: "https://" + host + "/" + repo + ".git", DefaultBranch: branch}, nil
+	return (resolver.Resolver{Operator: operator, Server: r.Server}).ResolveRepository(ctx, repo)
 }
 
 type SandboxRunner struct {

@@ -34,6 +34,9 @@ func TestPrepareNewClonesChecksOutBranchAndReturnsMetadata(t *testing.T) {
 		DefaultBranch:   "main",
 		PublicSessionID: "ps-1",
 		JobID:           "job-1",
+		RepositoryBinding: state.RepositoryBindingSnapshot{Source: "operator", IssueRepositoryKey: "o/r",
+			BindingID: "mapping-1", Version: 3, ProviderKey: "github", ExternalRepositoryID: "o/r",
+			CloneURL: "https://github.com/o/r.git", WebURL: "https://github.com/o/r", DefaultBranch: "main"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +50,9 @@ func TestPrepareNewClonesChecksOutBranchAndReturnsMetadata(t *testing.T) {
 	}
 	if binding.Workspace.Branch != "issue-spec-ws-1" || binding.Workspace.Ref != "main" || binding.Workspace.CheckoutSHA != "abc123" {
 		t.Fatalf("unexpected git metadata: %+v", binding.Workspace)
+	}
+	if !binding.Workspace.RepositoryBinding.Complete() || binding.Workspace.RepositoryBinding.BindingID != "mapping-1" {
+		t.Fatalf("repository binding snapshot was not copied: %+v", binding.Workspace.RepositoryBinding)
 	}
 	if !binding.Workspace.CleanupAfter.Equal(now.Add(time.Hour)) || binding.Workspace.RetentionPolicy == "" {
 		t.Fatalf("missing retention metadata: %+v", binding.Workspace)
@@ -74,12 +80,35 @@ func TestPrepareNewRejectsUnsafeWorkspaceIDBeforeGit(t *testing.T) {
 		WorkspaceID:     "../escape",
 		PublicSessionID: "ps-1",
 		JobID:           "job-1",
+		RepositoryBinding: state.RepositoryBindingSnapshot{Source: "operator", IssueRepositoryKey: "o/r",
+			BindingID: "mapping-1", Version: 1, ProviderKey: "github", ExternalRepositoryID: "o/r",
+			CloneURL: "https://github.com/o/r.git", WebURL: "https://github.com/o/r", DefaultBranch: "main"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsafe workspace id") {
 		t.Fatalf("expected unsafe id error, got %v", err)
 	}
 	if len(runner.commands) != 0 {
 		t.Fatalf("git should not run for unsafe id: %#v", runner.commands)
+	}
+}
+
+func TestPrepareNewRejectsOptionLikeDefaultBranchBeforeGit(t *testing.T) {
+	runner := &fakeGitRunner{t: t}
+	manager := Manager{Root: t.TempDir(), Retention: time.Hour, Runner: runner,
+		IDFunc: func(NewRequest) (string, error) { return "ws-option", nil }}
+	_, err := manager.PrepareNew(context.Background(), NewRequest{
+		Repo: "o/r", CloneURL: "https://github.com/o/r.git", DefaultBranch: "--upload-pack=evil",
+		PublicSessionID: "ps-1", JobID: "job-1", RepositoryBinding: state.RepositoryBindingSnapshot{
+			Source: "operator", IssueRepositoryKey: "o/r", BindingID: "mapping-1", Version: 1,
+			ProviderKey: "github", ExternalRepositoryID: "o/r", CloneURL: "https://github.com/o/r.git",
+			WebURL: "https://github.com/o/r", DefaultBranch: "--upload-pack=evil",
+		},
+	})
+	if err == nil {
+		t.Fatal("PrepareNew accepted option-like default branch")
+	}
+	if got := runner.argStrings(); len(got) != 0 {
+		t.Fatalf("git ran before ref rejection: %+v", got)
 	}
 }
 
