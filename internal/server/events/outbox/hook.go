@@ -46,7 +46,10 @@ type IssueIdentity struct {
 }
 
 type CommentRevision struct {
-	StableID              uuid.UUID `json:"stable_id"`
+	StableID uuid.UUID `json:"stable_id"`
+	// NumericID is the compatibility value captured when this immutable
+	// schema-versioned envelope is emitted. StableID remains authoritative for
+	// replay across compatibility-ID migrations.
 	NumericID             int64     `json:"numeric_id"`
 	RepresentationVersion int64     `json:"representation_version"`
 	CreatedAt             time.Time `json:"created_at"`

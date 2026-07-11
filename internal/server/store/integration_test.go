@@ -73,7 +73,7 @@ func TestRunMigrationsConcurrentAndIdempotent(t *testing.T) {
 	}
 	// Keep the forward-only migration-set assertion synchronized with the
 	// latest embedded file.
-	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0009_javascript_safe_compatibility_ids.sql" {
+	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0010_rewrite_legacy_comment_links.sql" {
 		t.Fatalf("migration metadata = count %d, version %d, name %q", count, version, name)
 	}
 }
@@ -112,7 +112,7 @@ func TestJavaScriptSafeCompatibilityIDMigrationUpgradesExistingRows(t *testing.T
 		{`INSERT INTO issues (id, organization_id, repository_id, number, author_id, title)
 			VALUES ($1, $2, $3, 1, $4, 'upgrade')`, []any{issueID, orgID, repoID, userID}},
 		{`INSERT INTO comments (id, organization_id, repository_id, issue_id, author_id, body)
-			VALUES ($1, $2, $3, $4, $5, 'preserved comment')`, []any{commentID, orgID, repoID, issueID, userID}},
+			VALUES ($1, $2, $3, $4, $5, 'legacy link #issuecomment-2702158502842464763')`, []any{commentID, orgID, repoID, issueID, userID}},
 		{`INSERT INTO comment_reactions
 			(id, organization_id, repository_id, issue_id, comment_id, user_id, identity_key, reaction_key)
 			VALUES ($1, $2, $3, $4, $5, $6, 'user:safe-id-upgrade', 'eyes')`, []any{reactionID, orgID, repoID, issueID, commentID, userID}},
@@ -137,7 +137,7 @@ func TestJavaScriptSafeCompatibilityIDMigrationUpgradesExistingRows(t *testing.T
 	}
 
 	if err := RunMigrations(t.Context(), pool); err != nil {
-		t.Fatalf("upgrade to v9: %v", err)
+		t.Fatalf("upgrade from v8 to latest: %v", err)
 	}
 	var upgradedCommentID, upgradedReactionID int64
 	var commentBody, reactionKey string
@@ -166,7 +166,7 @@ func TestJavaScriptSafeCompatibilityIDMigrationUpgradesExistingRows(t *testing.T
 			t.Fatalf("stable ID parity for %q: SQL=%d Go=%d", stable, sqlID, goID)
 		}
 	}
-	if commentBody != "preserved comment" || reactionKey != "eyes" {
+	if commentBody != "legacy link #issuecomment-9005925674908155" || reactionKey != "eyes" {
 		t.Fatalf("upgrade changed source rows: body=%q reaction=%q", commentBody, reactionKey)
 	}
 
@@ -190,11 +190,11 @@ func TestJavaScriptSafeCompatibilityIDMigrationUpgradesExistingRows(t *testing.T
 		t.Fatal(err)
 	}
 	if generatedColumns != 2 || compatibilityConstraints != 4 || uniqueIndexes != 2 {
-		t.Fatalf("v9 generated/constraints/indexes = %d/%d/%d, want 2/4/2",
+		t.Fatalf("safe-ID generated/constraints/indexes = %d/%d/%d, want 2/4/2",
 			generatedColumns, compatibilityConstraints, uniqueIndexes)
 	}
 	if err := RunMigrations(t.Context(), pool); err != nil {
-		t.Fatalf("repeated v9 migration: %v", err)
+		t.Fatalf("repeated latest migration: %v", err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	"github.com/higress-group/issue-spec/internal/server/api/github/issues"
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
@@ -40,6 +41,10 @@ func TestBuildEnvelopePreservesRawRevisionAndStableIdentity(t *testing.T) {
 		envelope.Comment == nil || envelope.Comment.StableID != commentID ||
 		envelope.Comment.RepresentationVersion != 2 || envelope.Author.Login != "worker" {
 		t.Fatalf("envelope = %+v", envelope)
+	}
+	if envelope.Comment.NumericID != codec.StableNumericID(commentID.String()) ||
+		envelope.Comment.NumericID <= 0 || envelope.Comment.NumericID > codec.MaxSafeNumericID {
+		t.Fatalf("new envelope compatibility ID = %d", envelope.Comment.NumericID)
 	}
 	broken := hash
 	broken[0] ^= 0xff

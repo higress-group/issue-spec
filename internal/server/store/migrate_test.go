@@ -114,6 +114,42 @@ func TestJavaScriptSafeCompatibilityIDMigrationMetadata(t *testing.T) {
 	}
 }
 
+func TestLegacyCommentLinkMigrationMetadata(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := migrations[9]
+	if links.Version != 10 || links.Name != "0010_rewrite_legacy_comment_links.sql" {
+		t.Fatalf("legacy comment link migration = %+v", links.MigrationInfo)
+	}
+	for _, contract := range []string{
+		"issue_spec_v10_legacy_numeric_id",
+		"issue_spec_v10_comment_id_map",
+		"issue_spec_v10_rewrite_fragments",
+		"issue_spec_v10_rewrite_json_fragments",
+		"UPDATE issues AS issue",
+		"UPDATE comments AS comment",
+		"UPDATE issue_spec_artifacts AS artifact",
+		"UPDATE issue_spec_typed_comments AS typed_comment",
+		"issues_collection_version = repository.issues_collection_version + 1",
+		"comments_collection_version = repository.comments_collection_version + 1",
+		"artifacts_collection_version = repository.artifacts_collection_version + 1",
+		"Never rewrite them here",
+	} {
+		if !containsSQL(links.sql, contract) {
+			t.Errorf("legacy comment link migration is missing %q", contract)
+		}
+	}
+	for _, forbidden := range []string{
+		"UPDATE event_outbox", "UPDATE webhook_deliveries", "UPDATE webhook_delivery_attempts",
+	} {
+		if containsSQL(links.sql, forbidden) {
+			t.Errorf("legacy comment link migration must preserve immutable history: found %q", forbidden)
+		}
+	}
+}
+
 func TestProtocolFeatureMigrationMetadata(t *testing.T) {
 	migrations, err := loadMigrations()
 	if err != nil {
