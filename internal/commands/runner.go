@@ -93,6 +93,10 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 	if !ok {
 		return 2
 	}
+	if err := validateRunnerPollProfile(cfg); err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
 	if !opts.DryRun {
 		if !opts.JSON {
 			a.printRunnerPollStart(cfg, opts)
@@ -705,7 +709,11 @@ func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) 
 	if a.runnerPreflight != nil {
 		return a.runnerPreflight(ctx, cfg)
 	}
-	return commentrunner.RunPreflight(ctx, cfg, commentrunner.PreflightDependencies{
+	transport := commentrunner.PreflightTransportPoll
+	if profile, _, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname); err == nil && profile.Kind == auth.ProfileKindHosted {
+		transport = commentrunner.PreflightTransportServe
+	}
+	return commentrunner.RunPreflightForTransport(ctx, cfg, transport, commentrunner.PreflightDependencies{
 		SelectBackend: func(ctx context.Context, _ string) (auth.GitHubBackendSelection, error) {
 			return a.selectBackendForRunner(ctx, cfg)
 		},
@@ -728,6 +736,18 @@ func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) 
 			return backend, nil
 		},
 	})
+}
+
+func validateRunnerPollProfile(cfg commentrunner.Config) error {
+	cfg = cfg.Normalized()
+	profile, _, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
+	if err != nil {
+		return fmt.Errorf("runner poll profile: %w", err)
+	}
+	if profile.Kind == auth.ProfileKindHosted {
+		return fmt.Errorf("runner poll requires a GitHub profile; self-hosted profile %q uses runner serve", profile.Name)
+	}
+	return nil
 }
 
 func (a *app) runRunnerIntake(ctx context.Context, cfg commentrunner.Config, opts intake.Options) (intake.Result, error) {
