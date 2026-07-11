@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/codereview"
+	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
@@ -34,6 +36,8 @@ func (a *app) runReviewFinding(ctx context.Context, args []string) int {
 	repoFlag := fs.String("repo", "", "repository owner/name")
 	host := fs.String("hostname", "github.com", "GitHub hostname")
 	prFlag := fs.Int("pr", 0, "pull request number")
+	implementFlag := fs.String("implement", "", "implement issue containing the active self-hosted code reference")
+	revision := fs.String("revision", "", "expected external code head revision for self-hosted evidence")
 	pathFlag := fs.String("path", "", "changed file path")
 	lineFlag := fs.Int("line", 0, "RIGHT-side line number in the PR diff")
 	id := fs.String("id", "", "FINDING id")
@@ -53,10 +57,6 @@ func (a *app) runReviewFinding(ctx context.Context, args []string) int {
 	if !ok {
 		return 2
 	}
-	if *prFlag <= 0 {
-		a.errorf("--pr must be a positive pull request number\n")
-		return 2
-	}
 	if strings.TrimSpace(*pathFlag) == "" {
 		a.errorf("--path is required\n")
 		return 2
@@ -73,12 +73,60 @@ func (a *app) runReviewFinding(ctx context.Context, args []string) int {
 		}
 		body = strings.TrimSpace(content)
 	}
-	client, _, err := a.clientFor(ctx, *host)
+	client, token, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("auth required for review finding on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
 	}
+	profile, _, err := auth.ResolveProfile(a.profileName, *host)
+	if err != nil {
+		a.errorf("resolve review profile: %v\n", err)
+		return 1
+	}
 	session := resolveWriterSession(*agentSession)
+	if profile.Kind == auth.ProfileKindHosted {
+		if *prFlag > 0 {
+			a.errorf("--pr is not a self-hosted code authority; omit it and use --implement\n")
+			return 2
+		}
+		implementIssue, parseErr := parseIssueFlag(*implementFlag, "implement")
+		if parseErr != nil {
+			a.errorf("%v\n", parseErr)
+			return 2
+		}
+		target, provider, _, _, preflightErr := a.externalMutationTarget(ctx, *host, token.Value, repo, implementIssue,
+			"code_change", *revision, codereview.CapabilityChangeComment)
+		if preflightErr != nil {
+			a.errorf("review finding capability preflight: %v\n", preflightErr)
+			return 1
+		}
+		rendered, renderErr := model.RenderFindingBodyWithSession(*agent, session.ID, session.Source, *id, *severity,
+			*processID, *specID, *specURL, body, "open", *pathFlag, *lineFlag)
+		if renderErr != nil {
+			a.errorf("create review finding: %v\n", renderErr)
+			return 1
+		}
+		mutation, mutateErr := codereview.Mutate(ctx, provider, codereview.MutationRequest{Kind: codereview.MutationComment,
+			Reference: target.Reference, Body: rendered, HeadRevision: target.SubjectRevision,
+			Metadata: map[string]any{"kind": "finding", "finding": *id, "severity": model.NormalizeFindingSeverity(*severity),
+				"process": *processID, "spec": *specID, "path": *pathFlag, "line": *lineFlag}})
+		if mutateErr != nil {
+			a.errorf("create review finding: %v\n", mutateErr)
+			return 1
+		}
+		result := reviewFindingResult{OK: true, Created: true, URL: mutation.CanonicalURL, Path: *pathFlag,
+			Line: *lineFlag, Finding: *id, Severity: model.NormalizeFindingSeverity(*severity), Process: *processID,
+			Spec: *specID, ExternalID: mutation.ExternalID, ChangeID: mutation.Reference.ChangeID}
+		if *jsonOut {
+			return a.outputJSON(result)
+		}
+		fmt.Fprintf(a.out, "created external review finding: %s\n", result.URL)
+		return 0
+	}
+	if *prFlag <= 0 {
+		a.errorf("--pr must be a positive pull request number\n")
+		return 2
+	}
 	result, err := createReviewFinding(ctx, client, repo, *prFlag, *pathFlag, *lineFlag, *id, *severity, *processID, *specID, *specURL, *agent, session, body)
 	if err != nil {
 		a.errorf("create review finding: %v\n", err)
@@ -100,7 +148,10 @@ func (a *app) runReviewReply(ctx context.Context, args []string) int {
 	repoFlag := fs.String("repo", "", "repository owner/name")
 	host := fs.String("hostname", "github.com", "GitHub hostname")
 	prFlag := fs.Int("pr", 0, "pull request number")
+	implementFlag := fs.String("implement", "", "implement issue containing the active self-hosted code reference")
+	revision := fs.String("revision", "", "expected external code head revision for self-hosted evidence")
 	commentID := fs.Int64("comment-id", 0, "parent PR review comment id")
+	externalCommentID := fs.String("external-comment-id", "", "parent external review comment id")
 	findingID := fs.String("finding", "", "FINDING id")
 	processID := fs.String("process", "", "PROCESS id that fixed this finding")
 	status := fs.String("status", "resolved", "reply status: resolved, fixed, done, closed, or superseded")
@@ -116,14 +167,6 @@ func (a *app) runReviewReply(ctx context.Context, args []string) int {
 	if !ok {
 		return 2
 	}
-	if *prFlag <= 0 {
-		a.errorf("--pr must be a positive pull request number\n")
-		return 2
-	}
-	if *commentID <= 0 {
-		a.errorf("--comment-id must be a positive PR review comment id\n")
-		return 2
-	}
 	body := strings.TrimSpace(*bodyText)
 	if *bodyFile != "" {
 		content, ok := a.readBodyFile(*bodyFile)
@@ -132,12 +175,68 @@ func (a *app) runReviewReply(ctx context.Context, args []string) int {
 		}
 		body = strings.TrimSpace(content)
 	}
-	client, _, err := a.clientFor(ctx, *host)
+	client, token, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("auth required for review reply on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
 	}
 	session := resolveWriterSession(*agentSession)
+	profile, _, err := auth.ResolveProfile(a.profileName, *host)
+	if err != nil {
+		a.errorf("resolve review profile: %v\n", err)
+		return 1
+	}
+	if profile.Kind == auth.ProfileKindHosted {
+		if *prFlag > 0 || *commentID > 0 {
+			a.errorf("--pr and --comment-id are GitHub-only; use --implement and --external-comment-id\n")
+			return 2
+		}
+		if strings.TrimSpace(*externalCommentID) == "" {
+			a.errorf("--external-comment-id is required\n")
+			return 2
+		}
+		implementIssue, parseErr := parseIssueFlag(*implementFlag, "implement")
+		if parseErr != nil {
+			a.errorf("%v\n", parseErr)
+			return 2
+		}
+		target, provider, _, _, preflightErr := a.externalMutationTarget(ctx, *host, token.Value, repo, implementIssue,
+			"code_change", *revision, codereview.CapabilityChangeComment)
+		if preflightErr != nil {
+			a.errorf("review reply capability preflight: %v\n", preflightErr)
+			return 1
+		}
+		rendered, renderErr := model.RenderFindingReplyBodyWithSession(*agent, session.ID, session.Source,
+			*findingID, *processID, *status, body)
+		if renderErr != nil {
+			a.errorf("reply to review finding: %v\n", renderErr)
+			return 1
+		}
+		mutation, mutateErr := codereview.Mutate(ctx, provider, codereview.MutationRequest{Kind: codereview.MutationComment,
+			Reference: target.Reference, Body: rendered, HeadRevision: target.SubjectRevision,
+			Metadata: map[string]any{"kind": "finding_reply", "parent_external_id": *externalCommentID,
+				"finding": *findingID, "process": *processID, "status": model.NormalizeFindingStatus(*status)}})
+		if mutateErr != nil {
+			a.errorf("reply to review finding: %v\n", mutateErr)
+			return 1
+		}
+		result := reviewReplyResult{OK: true, Created: true, URL: mutation.CanonicalURL, Finding: *findingID,
+			Process: *processID, Status: model.NormalizeFindingStatus(*status), ExternalID: mutation.ExternalID,
+			ParentExternalID: *externalCommentID, ChangeID: mutation.Reference.ChangeID}
+		if *jsonOut {
+			return a.outputJSON(result)
+		}
+		fmt.Fprintf(a.out, "created external review finding reply: %s\n", result.URL)
+		return 0
+	}
+	if *prFlag <= 0 {
+		a.errorf("--pr must be a positive pull request number\n")
+		return 2
+	}
+	if *commentID <= 0 {
+		a.errorf("--comment-id must be a positive PR review comment id\n")
+		return 2
+	}
 	result, err := replyReviewFinding(ctx, client, repo, *prFlag, *commentID, *findingID, *processID, *status, *agent, session, body)
 	if err != nil {
 		a.errorf("reply to review finding: %v\n", err)
@@ -159,6 +258,7 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 	repoFlag := fs.String("repo", "", "repository owner/name")
 	host := fs.String("hostname", "github.com", "GitHub hostname")
 	prFlag := fs.Int("pr", 0, "pull request number")
+	revision := fs.String("revision", "", "expected external code head revision for self-hosted evidence")
 	implementFlag := fs.String("implement", "", "implement issue number or URL")
 	id := fs.String("id", "", "REVIEW id to upsert")
 	agent := fs.String("agent", "Coordinator", "logical agent identity")
@@ -172,10 +272,6 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 	if !ok {
 		return 2
 	}
-	if *prFlag <= 0 {
-		a.errorf("--pr must be a positive pull request number\n")
-		return 2
-	}
 	implementIssue, err := parseIssueFlag(*implementFlag, "implement")
 	if err != nil {
 		a.errorf("%v\n", err)
@@ -185,10 +281,45 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 		a.errorf("--id is required\n")
 		return 2
 	}
-	client, _, err := a.clientFor(ctx, *host)
+	client, token, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("auth required for review sync on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
+	}
+	externalGate, selfHosted, err := a.externalGate(ctx, *host, token.Value, repo, implementIssue,
+		"code_change", *revision, coreevidence.GateReview)
+	if err != nil {
+		a.errorf("review external evidence: %v\n", err)
+		return 1
+	}
+	if selfHosted {
+		if *prFlag > 0 {
+			a.errorf("--pr is not a self-hosted code authority; omit it and use the active code_change reference\n")
+			return 2
+		}
+		session := resolveWriterSession(*agentSession)
+		body, err := renderExternalReviewSyncComment(*id, *agent, session, *scope, externalGate)
+		if err != nil {
+			a.errorf("render external review sync comment: %v\n", err)
+			return 1
+		}
+		action, comment, _, err := upsertTypedComment(ctx, client, repo, implementIssue, "REVIEW", *id, body)
+		if err != nil {
+			a.errorf("upsert REVIEW %s: %v\n", *id, err)
+			return 1
+		}
+		result := map[string]any{"ok": true, "action": action, "comment_id": comment.ID, "url": comment.HTMLURL,
+			"external_evidence": externalGate.Consumption}
+		if *jsonOut {
+			return a.outputJSON(result)
+		}
+		fmt.Fprintf(a.out, "%s REVIEW %s from external evidence revision %s: %s\n", action, *id,
+			externalGate.Target.SubjectRevision, comment.HTMLURL)
+		return 0
+	}
+	if *prFlag <= 0 {
+		a.errorf("--pr must be a positive pull request number\n")
+		return 2
 	}
 	pr, err := client.GetPullRequest(ctx, repo, *prFlag)
 	if err != nil {
@@ -244,30 +375,47 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 	return 0
 }
 
+func renderExternalReviewSyncComment(id, agent string, session writerSession, scope string, gate externalGateResult) (string, error) {
+	logical := fmt.Sprintf("## Review Summary: external code evidence\n\nEvaluated trusted evidence for `%s` at exact revision `%s`.\n\n### Findings\n\n- No open P0/P1 findings in the consumed snapshot.\n\n### Verdict\n\nPassed provider-neutral review evidence gate.",
+		gate.Target.Reference.ChangeID, gate.Target.SubjectRevision)
+	body, err := model.EnsureTypedBody("REVIEW", id, logical, model.BodyOptions{Agent: agent,
+		AgentSessionID: session.ID, AgentSessionSource: session.Source, Status: "done", Scope: scope})
+	if err != nil {
+		return "", err
+	}
+	updated, _, err := stampConsumedEvidence(body, gate.Consumption)
+	return updated, err
+}
+
 type reviewFindingResult struct {
-	OK        bool   `json:"ok"`
-	Created   bool   `json:"created"`
-	CommentID int64  `json:"comment_id"`
-	URL       string `json:"url"`
-	PR        int    `json:"pr"`
-	Path      string `json:"path"`
-	Line      int    `json:"line"`
-	Finding   string `json:"finding"`
-	Severity  string `json:"severity"`
-	Process   string `json:"process"`
-	Spec      string `json:"spec"`
+	OK         bool   `json:"ok"`
+	Created    bool   `json:"created"`
+	CommentID  int64  `json:"comment_id"`
+	URL        string `json:"url"`
+	PR         int    `json:"pr"`
+	Path       string `json:"path"`
+	Line       int    `json:"line"`
+	Finding    string `json:"finding"`
+	Severity   string `json:"severity"`
+	Process    string `json:"process"`
+	Spec       string `json:"spec"`
+	ExternalID string `json:"external_id,omitempty"`
+	ChangeID   string `json:"change_id,omitempty"`
 }
 
 type reviewReplyResult struct {
-	OK              bool   `json:"ok"`
-	Created         bool   `json:"created"`
-	CommentID       int64  `json:"comment_id"`
-	ParentCommentID int64  `json:"parent_comment_id"`
-	URL             string `json:"url"`
-	PR              int    `json:"pr"`
-	Finding         string `json:"finding"`
-	Process         string `json:"process"`
-	Status          string `json:"status"`
+	OK               bool   `json:"ok"`
+	Created          bool   `json:"created"`
+	CommentID        int64  `json:"comment_id"`
+	ParentCommentID  int64  `json:"parent_comment_id"`
+	URL              string `json:"url"`
+	PR               int    `json:"pr"`
+	Finding          string `json:"finding"`
+	Process          string `json:"process"`
+	Status           string `json:"status"`
+	ExternalID       string `json:"external_id,omitempty"`
+	ParentExternalID string `json:"parent_external_id,omitempty"`
+	ChangeID         string `json:"change_id,omitempty"`
 }
 
 func createReviewFinding(ctx context.Context, client interface {

@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/codereview"
+	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/templates"
@@ -36,8 +38,10 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 	host := fs.String("hostname", "github.com", "GitHub hostname")
 	proposalFlag := fs.String("proposal", "", "proposal issue number or URL")
 	designFlag := fs.String("design", "", "design issue number or URL for --close-issues")
-	implementFlag := fs.String("implement", "", "implement issue number or URL for --close-issues")
+	implementFlag := fs.String("implement", "", "implement issue number or URL for --close-issues or self-hosted --create-pr")
 	implementationPR := fs.Int("pr", 0, "merged implementation pull request number for --close-issues")
+	implementationRevision := fs.String("revision", "", "expected implementation head revision for self-hosted evidence")
+	archiveRevision := fs.String("archive-revision", "", "expected durable-spec head revision for self-hosted evidence")
 	capability := fs.String("capability", "", "umbrella capability name; re-archiving accumulates new requirements into the existing spec by requirement title")
 	output := fs.String("output", "", "output spec path")
 	purpose := fs.String("purpose", "", "durable spec purpose text")
@@ -66,20 +70,73 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 		a.errorf("%v\n", err)
 		return 2
 	}
-	closeSet, err := parseArchiveCloseIssueSet(*closeIssues, proposalIssue, *designFlag, *implementFlag, *implementationPR)
+	profile, _, err := auth.ResolveProfile(a.profileName, *host)
+	if err != nil {
+		a.errorf("resolve archive profile: %v\n", err)
+		return 1
+	}
+	selfHosted := profile.Kind == auth.ProfileKindHosted
+	closeImplementFlag := *implementFlag
+	if selfHosted && *createPR && !*closeIssues {
+		// --implement selects the native code_change authority for creation; it is
+		// not a close-set input until --close-issues is requested.
+		closeImplementFlag = ""
+	}
+	closeSet, err := parseArchiveCloseIssueSetMode(*closeIssues, proposalIssue, *designFlag, closeImplementFlag, *implementationPR, !selfHosted)
 	if err != nil {
 		a.errorf("%v\n", err)
 		return 2
 	}
-	client, _, err := a.clientFor(ctx, *host)
+	client, token, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("auth required for archive durable-spec on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
 	}
-	closePlan, err := validateArchiveCloseIssuePlan(ctx, client, repo, closeSet)
-	if err != nil {
-		a.errorf("%v\n", err)
-		return 1
+	var closePlan archiveCloseIssuePlan
+	if selfHosted && closeSet.Enabled {
+		if *implementationPR > 0 {
+			a.errorf("--pr is not a self-hosted code authority; implementation and archive references are read from the implement issue\n")
+			return 2
+		}
+		if *createPR {
+			a.errorf("self-hosted --create-pr cannot close issues in the same invocation; merge the durable change and re-run with --close-issues\n")
+			return 2
+		}
+		implementationGate, _, gateErr := a.externalGate(ctx, *host, token.Value, repo, closeSet.Implement,
+			"code_change", *implementationRevision, coreevidence.GateMerge)
+		if gateErr != nil {
+			a.errorf("implementation merge evidence: %v\n", gateErr)
+			return 1
+		}
+		archiveGate, _, gateErr := a.externalGate(ctx, *host, token.Value, repo, closeSet.Implement,
+			"archive_change", *archiveRevision, coreevidence.GateArchive)
+		if gateErr != nil {
+			a.errorf("durable archive evidence: %v\n", gateErr)
+			return 1
+		}
+		if implementationGate.Target.Reference.ProviderKey != archiveGate.Target.Reference.ProviderKey ||
+			implementationGate.Target.Reference.ExternalRepository != archiveGate.Target.Reference.ExternalRepository {
+			a.errorf("implementation and archive references must use the same provider and external repository\n")
+			return 1
+		}
+		artifacts, collectErr := collectArtifacts(ctx, client, repo, closeSet.Implement)
+		if collectErr != nil {
+			a.errorf("read implement issue comments: %v\n", collectErr)
+			return 1
+		}
+		if !processArtifactsLinkPullRequest(artifacts, implementationGate.Target.CanonicalURL) {
+			a.errorf("implement issue #%d has no active PROCESS linked to implementation change %s\n",
+				closeSet.Implement, implementationGate.Target.CanonicalURL)
+			return 1
+		}
+		closePlan = archiveCloseIssuePlan{Enabled: true, Issues: archiveCloseIssuePlanRefs(archiveCloseIssueRefs(closeSet)),
+			ImplementationEvidence: &implementationGate.Consumption, ArchiveEvidence: &archiveGate.Consumption}
+	} else {
+		closePlan, err = validateArchiveCloseIssuePlan(ctx, client, repo, closeSet)
+		if err != nil {
+			a.errorf("%v\n", err)
+			return 1
+		}
 	}
 	issue, specs, err := fetchDurableSpecSources(ctx, client, repo, proposalIssue)
 	if err != nil {
@@ -90,16 +147,38 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 	outputSelection := workflow.SelectArchivePath(".", *capability, outputPath)
 	outputPath = outputSelection.Path
 	if *createPR {
+		var externalCreate func(context.Context, string, string, string, string) (codereview.MutationResult, error)
+		if selfHosted {
+			implementIssue, parseErr := parseIssueFlag(*implementFlag, "implement")
+			if parseErr != nil {
+				a.errorf("%v\n", parseErr)
+				return 2
+			}
+			target, provider, native, _, preflightErr := a.externalMutationTarget(ctx, *host, token.Value, repo,
+				implementIssue, "code_change", *implementationRevision, codereview.CapabilityChangeCreate)
+			if preflightErr != nil {
+				a.errorf("archive change capability preflight: %v\n", preflightErr)
+				return 1
+			}
+			externalCreate = func(callCtx context.Context, changeTitle, changeBody, headRevision, baseRevision string) (codereview.MutationResult, error) {
+				return createExternalArchiveChange(callCtx, provider, native, target, codereview.MutationRequest{Kind: codereview.MutationCreateChange,
+					Reference: codereview.Reference{ProviderKey: target.Reference.ProviderKey,
+						ExternalRepository: target.Reference.ExternalRepository}, Title: changeTitle, Body: changeBody,
+					BaseRevision: baseRevision, HeadRevision: headRevision,
+					Metadata: map[string]any{"kind": "durable_spec", "capability": *capability, "implement_issue": implementIssue}})
+			}
+		}
 		prResult, err := a.createDurableSpecPR(ctx, client, repo, issue.HTMLURL, specs, durableSpecPROptions{
-			Capability:    *capability,
-			OutputPath:    outputPath,
-			Purpose:       *purpose,
-			Branch:        *branch,
-			Base:          *base,
-			Title:         *title,
-			BodyFile:      *bodyFile,
-			Draft:         *draft,
-			CommitMessage: *commitMessage,
+			Capability:     *capability,
+			OutputPath:     outputPath,
+			Purpose:        *purpose,
+			Branch:         *branch,
+			Base:           *base,
+			Title:          *title,
+			BodyFile:       *bodyFile,
+			Draft:          *draft,
+			CommitMessage:  *commitMessage,
+			ExternalCreate: externalCreate,
 		})
 		if err != nil {
 			a.errorf("create durable spec PR: %v\n", err)
@@ -114,7 +193,11 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 			prResult["legacy_output"] = outputSelection.Legacy
 			return a.outputJSON(prResult)
 		}
-		fmt.Fprintf(a.out, "created durable spec PR: %s\n", prResult["pr_url"])
+		if selfHosted {
+			fmt.Fprintf(a.out, "created durable spec external change: %s\n", prResult["change_url"])
+		} else {
+			fmt.Fprintf(a.out, "created durable spec PR: %s\n", prResult["pr_url"])
+		}
 		if outputSelection.Legacy {
 			fmt.Fprintf(a.out, "legacy durable spec path selected: %s\n", outputPath)
 		}
@@ -162,15 +245,16 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 }
 
 type durableSpecPROptions struct {
-	Capability    string
-	OutputPath    string
-	Purpose       string
-	Branch        string
-	Base          string
-	Title         string
-	BodyFile      string
-	Draft         bool
-	CommitMessage string
+	Capability     string
+	OutputPath     string
+	Purpose        string
+	Branch         string
+	Base           string
+	Title          string
+	BodyFile       string
+	Draft          bool
+	CommitMessage  string
+	ExternalCreate func(context.Context, string, string, string, string) (codereview.MutationResult, error)
 }
 
 type archiveCloseIssueSet struct {
@@ -182,9 +266,11 @@ type archiveCloseIssueSet struct {
 }
 
 type archiveCloseIssuePlan struct {
-	Enabled bool
-	PR      github.PullRequest
-	Issues  []archiveCloseIssueRef
+	Enabled                bool
+	PR                     github.PullRequest
+	Issues                 []archiveCloseIssueRef
+	ImplementationEvidence *externalEvidenceConsumption
+	ArchiveEvidence        *externalEvidenceConsumption
 }
 
 type archiveCloseIssueRef struct {
@@ -200,6 +286,10 @@ type closedArchiveIssue struct {
 }
 
 func parseArchiveCloseIssueSet(enabled bool, proposalIssue int, designFlag, implementFlag string, prNumber int) (archiveCloseIssueSet, error) {
+	return parseArchiveCloseIssueSetMode(enabled, proposalIssue, designFlag, implementFlag, prNumber, true)
+}
+
+func parseArchiveCloseIssueSetMode(enabled bool, proposalIssue int, designFlag, implementFlag string, prNumber int, requirePR bool) (archiveCloseIssueSet, error) {
 	hasCloseFlagInput := strings.TrimSpace(designFlag) != "" || strings.TrimSpace(implementFlag) != "" || prNumber != 0
 	if !enabled {
 		if hasCloseFlagInput {
@@ -215,7 +305,7 @@ func parseArchiveCloseIssueSet(enabled bool, proposalIssue int, designFlag, impl
 	if err != nil {
 		return archiveCloseIssueSet{}, err
 	}
-	if prNumber <= 0 {
+	if requirePR && prNumber <= 0 {
 		return archiveCloseIssueSet{}, fmt.Errorf("--pr must be a positive pull request number")
 	}
 	return archiveCloseIssueSet{
@@ -307,8 +397,13 @@ func applyArchiveCloseIssuePlan(ctx context.Context, client github.Operations, r
 		})
 	}
 	result["closed_issues"] = closed
-	result["implementation_pr"] = plan.PR.Number
-	result["implementation_pr_url"] = plan.PR.HTMLURL
+	if plan.ImplementationEvidence != nil && plan.ArchiveEvidence != nil {
+		result["implementation_evidence"] = plan.ImplementationEvidence
+		result["archive_evidence"] = plan.ArchiveEvidence
+	} else {
+		result["implementation_pr"] = plan.PR.Number
+		result["implementation_pr_url"] = plan.PR.HTMLURL
+	}
 	return nil
 }
 
@@ -319,6 +414,11 @@ func printArchiveClosedIssues(out interface{ Write([]byte) (int, error) }, plan 
 	parts := make([]string, 0, len(plan.Issues))
 	for _, issueRef := range plan.Issues {
 		parts = append(parts, fmt.Sprintf("%s #%d", issueRef.Kind, issueRef.Number))
+	}
+	if plan.ImplementationEvidence != nil && plan.ArchiveEvidence != nil {
+		fmt.Fprintf(out, "closed issue-spec issues after implementation revision %s and archive revision %s: %s\n",
+			plan.ImplementationEvidence.SubjectRevision, plan.ArchiveEvidence.SubjectRevision, strings.Join(parts, ", "))
+		return
 	}
 	fmt.Fprintf(out, "closed issue-spec issues after merged PR %s: %s\n", plan.PR.HTMLURL, strings.Join(parts, ", "))
 }
@@ -427,8 +527,29 @@ func (a *app) createDurableSpecPR(ctx context.Context, client github.Operations,
 	if err := runGit(ctx, tmp, "commit", "-s", "-m", opts.CommitMessage); err != nil {
 		return nil, err
 	}
+	// Push first so an external provider always receives an immutable revision it
+	// can read. A later mutation failure deliberately leaves only the branch: no
+	// archive_change reference is written until the provider confirms creation.
 	if err := runGit(ctx, tmp, "push", "-u", "origin", opts.Branch, "--force-with-lease"); err != nil {
 		return nil, err
+	}
+	if opts.ExternalCreate != nil {
+		headRevision, err := gitOutput(ctx, tmp, "rev-parse", "HEAD")
+		if err != nil {
+			return nil, err
+		}
+		baseRevision, err := gitOutput(ctx, tmp, "rev-parse", "origin/"+opts.Base)
+		if err != nil {
+			return nil, err
+		}
+		created, err := opts.ExternalCreate(ctx, opts.Title, body, headRevision, baseRevision)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true, "changed": true, "branch": opts.Branch, "base": opts.Base,
+			"output": opts.OutputPath, "change_id": created.Reference.ChangeID, "change_url": created.CanonicalURL,
+			"provider_key": created.Reference.ProviderKey, "external_repository": created.Reference.ExternalRepository,
+			"head_revision": headRevision, "base_revision": baseRevision}, nil
 	}
 	pr, err := client.CreatePullRequest(ctx, repo, github.CreatePullRequestOptions{
 		Title: opts.Title,
@@ -443,6 +564,19 @@ func (a *app) createDurableSpecPR(ctx context.Context, client github.Operations,
 	return map[string]any{"ok": true, "changed": true, "branch": opts.Branch, "base": opts.Base, "output": opts.OutputPath, "pr": pr.Number, "pr_url": pr.HTMLURL}, nil
 }
 
+func createExternalArchiveChange(ctx context.Context, provider codereview.MutationProvider, native nativeEvidenceProvider,
+	target coreevidence.NativeTarget, request codereview.MutationRequest) (codereview.MutationResult, error) {
+	created, err := codereview.Mutate(ctx, provider, request)
+	if err != nil {
+		return codereview.MutationResult{}, err
+	}
+	if err := native.UpsertArchiveReference(ctx, target, created.Reference, created.CanonicalURL,
+		request.HeadRevision, request.BaseRevision); err != nil {
+		return codereview.MutationResult{}, err
+	}
+	return created, nil
+}
+
 func runGit(ctx context.Context, dir string, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
@@ -453,4 +587,16 @@ func runGit(ctx context.Context, dir string, args ...string) error {
 		return fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	}
+	return strings.TrimSpace(string(output)), nil
 }

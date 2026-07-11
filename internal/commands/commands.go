@@ -14,6 +14,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
 	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
@@ -37,6 +38,8 @@ type app struct {
 	runnerReconcile              func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error)
 	runnerDispatch               func(context.Context, commentrunner.Config) (jobs.Result, error)
 	runnerCancellationDrain      func(context.Context, commentrunner.Config) (jobs.Result, error)
+	newNativeEvidenceProvider    func(auth.Profile, string) (nativeEvidenceProvider, error)
+	resolveCodeMutationProvider  func(context.Context, string) (codereview.MutationProvider, error)
 }
 
 type commandFunc func(context.Context, []string) int
@@ -125,13 +128,17 @@ func extractGlobalProfile(args []string) (string, []string, error) {
 
 func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 	return &app{
-		in:                  in,
-		out:                 out,
-		err:                 errOut,
-		selectGitHubBackend: defaultSelectGitHubBackend,
-		selectRunnerBackend: defaultSelectRunnerBackend,
-		newGitHubBackend:    defaultNewGitHubBackend,
-		gitHubBackendToken:  defaultGitHubBackendToken,
+		in:                        in,
+		out:                       out,
+		err:                       errOut,
+		selectGitHubBackend:       defaultSelectGitHubBackend,
+		selectRunnerBackend:       defaultSelectRunnerBackend,
+		newGitHubBackend:          defaultNewGitHubBackend,
+		gitHubBackendToken:        defaultGitHubBackendToken,
+		newNativeEvidenceProvider: defaultNewNativeEvidenceProvider,
+		resolveCodeMutationProvider: func(context.Context, string) (codereview.MutationProvider, error) {
+			return nil, codereview.ErrProviderNotFound
+		},
 	}
 }
 

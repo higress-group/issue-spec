@@ -2,6 +2,8 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -9,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
@@ -21,20 +24,21 @@ var processIDRe = regexp.MustCompile(`PROCESS-[0-9]{3,}`)
 var testEvidenceRe = regexp.MustCompile(`(?i)\btest(s|ing|ed)?\b`)
 
 type finalVerifyReport struct {
-	OK                    bool                        `json:"ok"`
-	Traceability          model.VerifyReport          `json:"traceability"`
-	Errors                []string                    `json:"errors"`
-	Warnings              []string                    `json:"warnings,omitempty"`
-	Diagnostics           []metadataDiagnostic        `json:"diagnostics,omitempty"`
-	SpecCoverage          map[string]bool             `json:"spec_coverage"`
-	RationaleCoverage     map[string]bool             `json:"rationale_coverage,omitempty"`
-	Noncanonical          []model.CanonicalDiagnostic `json:"noncanonical,omitempty"`
-	ReviewFindingBlockers []reviewFinding             `json:"review_finding_blockers,omitempty"`
-	FailedChecks          []reviewCheck               `json:"failed_checks,omitempty"`
-	PendingChecks         []reviewCheck               `json:"pending_checks,omitempty"`
-	PR                    int                         `json:"pr,omitempty"`
-	DurableSpecPath       string                      `json:"durable_spec_path,omitempty"`
-	DurableSpecCheck      map[string]bool             `json:"durable_spec_check,omitempty"`
+	OK                    bool                         `json:"ok"`
+	Traceability          model.VerifyReport           `json:"traceability"`
+	Errors                []string                     `json:"errors"`
+	Warnings              []string                     `json:"warnings,omitempty"`
+	Diagnostics           []metadataDiagnostic         `json:"diagnostics,omitempty"`
+	SpecCoverage          map[string]bool              `json:"spec_coverage"`
+	RationaleCoverage     map[string]bool              `json:"rationale_coverage,omitempty"`
+	Noncanonical          []model.CanonicalDiagnostic  `json:"noncanonical,omitempty"`
+	ReviewFindingBlockers []reviewFinding              `json:"review_finding_blockers,omitempty"`
+	FailedChecks          []reviewCheck                `json:"failed_checks,omitempty"`
+	PendingChecks         []reviewCheck                `json:"pending_checks,omitempty"`
+	PR                    int                          `json:"pr,omitempty"`
+	DurableSpecPath       string                       `json:"durable_spec_path,omitempty"`
+	DurableSpecCheck      map[string]bool              `json:"durable_spec_check,omitempty"`
+	ExternalEvidence      *externalEvidenceConsumption `json:"external_evidence,omitempty"`
 }
 
 type finalVerifyOptions struct {
@@ -55,6 +59,7 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 	designFlag := fs.String("design", "", "design issue number or URL")
 	implementFlag := fs.String("implement", "", "implement issue number or URL")
 	prFlag := fs.Int("pr", 0, "pull request number for rationale-comment verification")
+	revision := fs.String("revision", "", "expected external code head revision for self-hosted evidence")
 	durableSpec := fs.String("durable-spec", "", "durable spec file to verify")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
@@ -79,7 +84,7 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 		a.errorf("%v\n", err)
 		return 2
 	}
-	client, _, err := a.clientFor(ctx, *host)
+	client, token, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("auth required for verify on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
@@ -98,7 +103,17 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 	var prStatus github.CombinedStatus
 	var prCheckRuns []github.CheckRun
 	var prURL string
-	if *prFlag > 0 {
+	externalGate, selfHosted, err := a.externalGate(ctx, *host, token.Value, repo, implementIssue,
+		"code_change", *revision, coreevidence.GateVerify)
+	if err != nil {
+		a.errorf("verify external evidence: %v\n", err)
+		return 1
+	}
+	if selfHosted && *prFlag > 0 {
+		a.errorf("--pr is not a self-hosted code authority; omit it and use the active code_change reference\n")
+		return 2
+	}
+	if !selfHosted && *prFlag > 0 {
 		pr, err := client.GetPullRequest(ctx, repo, *prFlag)
 		if err != nil {
 			a.errorf("read PR #%d: %v\n", *prFlag, err)
@@ -134,10 +149,34 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 		a.errorf("verify: %v\n", err)
 		return 1
 	}
+	var finalVerify *model.Artifact
+	if selfHosted {
+		candidate, revisionErr := exactRevisionBoundVerify(artifacts, externalGate.Target.SubjectRevision)
+		if revisionErr != nil {
+			report.Errors = append(report.Errors, revisionErr.Error())
+		} else {
+			finalVerify = candidate
+			report.ExternalEvidence = &externalGate.Consumption
+		}
+		report.OK = len(report.Errors) == 0
+	}
 	report.Diagnostics = append(report.Diagnostics, authoringCompletenessDiagnostics("proposal", proposalIssueData.HTMLURL, proposalIssueData.Body)...)
 	if designIssue > 0 {
 		if designIssueData, derr := client.GetIssue(ctx, repo, designIssue); derr == nil {
 			report.Diagnostics = append(report.Diagnostics, authoringCompletenessDiagnostics("design", designIssueData.HTMLURL, designIssueData.Body)...)
+		}
+	}
+	if selfHosted && report.OK && finalVerify != nil {
+		updated, changed, stampErr := stampConsumedEvidence(finalVerify.Comment.Body, externalGate.Consumption)
+		if stampErr != nil {
+			a.errorf("record consumed external evidence: %v\n", stampErr)
+			return 1
+		}
+		if changed {
+			if _, updateErr := client.UpdateComment(ctx, repo, finalVerify.CommentID, updated); updateErr != nil {
+				a.errorf("record consumed external evidence on %s: %v\n", finalVerify.Comment.ID, updateErr)
+				return 1
+			}
 		}
 	}
 	if *jsonOut {
@@ -154,6 +193,56 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+const (
+	consumedEvidenceStart = "<!-- issue-spec:consumed-evidence version=1 -->"
+	consumedEvidenceEnd   = "<!-- /issue-spec:consumed-evidence -->"
+)
+
+func exactRevisionBoundVerify(artifacts []model.Artifact, revision string) (*model.Artifact, error) {
+	var candidates []*model.Artifact
+	for index := range artifacts {
+		if artifacts[index].Comment.Type == "VERIFY" && artifacts[index].Comment.Status == "done" {
+			candidates = append(candidates, &artifacts[index])
+		}
+	}
+	if len(candidates) != 1 {
+		return nil, fmt.Errorf("self-hosted verify requires exactly one active done VERIFY (found %d)", len(candidates))
+	}
+	raw := strings.TrimSpace(sectionContent(candidates[0].Comment.Body, "### Revision"))
+	raw = strings.Trim(raw, "`")
+	if fields := strings.Fields(raw); len(fields) != 1 || fields[0] != revision {
+		return nil, fmt.Errorf("%s must contain `### Revision` with exact external head revision %s", candidates[0].Comment.ID, revision)
+	}
+	return candidates[0], nil
+}
+
+func stampConsumedEvidence(body string, consumption externalEvidenceConsumption) (string, bool, error) {
+	consumption.EvidenceIDs = append([]string(nil), consumption.EvidenceIDs...)
+	sort.Strings(consumption.EvidenceIDs)
+	if consumption.ProviderKey == "" || consumption.ExternalRepository == "" || consumption.ChangeID == "" ||
+		consumption.SubjectRevision == "" || len(consumption.EvidenceIDs) == 0 {
+		return "", false, errors.New("consumed evidence identity is incomplete")
+	}
+	raw, err := json.Marshal(consumption)
+	if err != nil {
+		return "", false, err
+	}
+	block := consumedEvidenceStart + "\n### Consumed External Evidence\n\n```json\n" + string(raw) + "\n```\n" + consumedEvidenceEnd
+	start := strings.Index(body, consumedEvidenceStart)
+	end := strings.Index(body, consumedEvidenceEnd)
+	if (start < 0) != (end < 0) || (start >= 0 && end < start) {
+		return "", false, errors.New("existing consumed evidence block is malformed")
+	}
+	updated := body
+	if start >= 0 {
+		end += len(consumedEvidenceEnd)
+		updated = body[:start] + block + body[end:]
+	} else {
+		updated = strings.TrimRight(body, "\n") + "\n\n" + block + "\n"
+	}
+	return updated, updated != body, nil
 }
 
 func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts finalVerifyOptions) (finalVerifyReport, error) {
