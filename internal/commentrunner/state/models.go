@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 type LifecycleStatus string
 
@@ -42,11 +42,21 @@ type RunnerState struct {
 
 type DeliveryStatus string
 
+type DeliveryOutcome string
+
 const (
 	DeliveryPending    DeliveryStatus = "pending"
 	DeliveryProcessing DeliveryStatus = "processing"
 	DeliveryCompleted  DeliveryStatus = "completed"
 	DeliveryFailed     DeliveryStatus = "failed"
+)
+
+const (
+	DeliveryOutcomeIgnored      DeliveryOutcome = "ignored"
+	DeliveryOutcomeRejected     DeliveryOutcome = "rejected"
+	DeliveryOutcomeJob          DeliveryOutcome = "job"
+	DeliveryOutcomeCancellation DeliveryOutcome = "cancellation"
+	DeliveryOutcomeSuperseded   DeliveryOutcome = "superseded"
 )
 
 func (s DeliveryStatus) Valid() bool {
@@ -60,37 +70,54 @@ func (s DeliveryStatus) Valid() bool {
 
 func (s DeliveryStatus) Terminal() bool { return s == DeliveryCompleted || s == DeliveryFailed }
 
+func (o DeliveryOutcome) Valid() bool {
+	switch o {
+	case DeliveryOutcomeIgnored, DeliveryOutcomeRejected, DeliveryOutcomeJob,
+		DeliveryOutcomeCancellation, DeliveryOutcomeSuperseded:
+		return true
+	default:
+		return false
+	}
+}
+
 // WebhookDelivery is the durable, immutable intake snapshot consumed by the
 // PROCESS-022 reconciler. RawEnvelope is []byte so state JSON base64-encodes it
 // and preserves the exact request bytes across save/reload cycles.
 type WebhookDelivery struct {
-	DeliveryID         string         `json:"delivery_id"`
-	EventID            string         `json:"event_id"`
-	SubscriptionID     string         `json:"subscription_id"`
-	BodySHA256         string         `json:"body_sha256"`
-	RawEnvelope        []byte         `json:"raw_envelope,omitempty"`
-	SchemaVersion      int            `json:"schema_version"`
-	EventKey           string         `json:"event_key"`
-	EventType          string         `json:"event_type"`
-	Action             string         `json:"action"`
-	OrganizationID     string         `json:"organization_id"`
-	RepositoryID       string         `json:"repository_id"`
-	IssueID            string         `json:"issue_id"`
-	IssueNumber        int64          `json:"issue_number"`
-	CommentID          string         `json:"comment_id,omitempty"`
-	CommentRevision    int64          `json:"comment_revision,omitempty"`
-	AuthorLogin        string         `json:"author_login,omitempty"`
-	EnvelopeBodySHA256 string         `json:"envelope_body_sha256"`
-	ReceivedAt         time.Time      `json:"received_at"`
-	Status             DeliveryStatus `json:"status"`
-	Attempt            int            `json:"attempt,omitempty"`
-	LeaseOwner         string         `json:"lease_owner,omitempty"`
-	LeaseToken         string         `json:"lease_token,omitempty"`
-	LeaseUntil         time.Time      `json:"lease_until,omitempty"`
-	CompletedAt        time.Time      `json:"completed_at,omitempty"`
-	LastError          string         `json:"last_error,omitempty"`
-	ConflictCount      int            `json:"conflict_count,omitempty"`
-	LastConflictAt     time.Time      `json:"last_conflict_at,omitempty"`
+	DeliveryID            string          `json:"delivery_id"`
+	EventID               string          `json:"event_id"`
+	SubscriptionID        string          `json:"subscription_id"`
+	BodySHA256            string          `json:"body_sha256"`
+	RawEnvelope           []byte          `json:"raw_envelope,omitempty"`
+	SchemaVersion         int             `json:"schema_version"`
+	EventKey              string          `json:"event_key"`
+	EventType             string          `json:"event_type"`
+	Action                string          `json:"action"`
+	OrganizationID        string          `json:"organization_id"`
+	RepositoryID          string          `json:"repository_id"`
+	IssueID               string          `json:"issue_id"`
+	IssueNumber           int64           `json:"issue_number"`
+	CommentID             string          `json:"comment_id,omitempty"`
+	CommentRevision       int64           `json:"comment_revision,omitempty"`
+	AuthorLogin           string          `json:"author_login,omitempty"`
+	EnvelopeBodySHA256    string          `json:"envelope_body_sha256"`
+	ReceivedAt            time.Time       `json:"received_at"`
+	Status                DeliveryStatus  `json:"status"`
+	Attempt               int             `json:"attempt,omitempty"`
+	LeaseOwner            string          `json:"lease_owner,omitempty"`
+	LeaseToken            string          `json:"lease_token,omitempty"`
+	LeaseUntil            time.Time       `json:"lease_until,omitempty"`
+	CompletedAt           time.Time       `json:"completed_at,omitempty"`
+	LastError             string          `json:"last_error,omitempty"`
+	Outcome               DeliveryOutcome `json:"outcome,omitempty"`
+	JobID                 string          `json:"job_id,omitempty"`
+	CancellationID        string          `json:"cancellation_id,omitempty"`
+	StatusWritebackKey    string          `json:"status_writeback_key,omitempty"`
+	AckPending            bool            `json:"ack_pending,omitempty"`
+	AckCompletedAt        time.Time       `json:"ack_completed_at,omitempty"`
+	AuthoritativeRevision int64           `json:"authoritative_revision,omitempty"`
+	ConflictCount         int             `json:"conflict_count,omitempty"`
+	LastConflictAt        time.Time       `json:"last_conflict_at,omitempty"`
 }
 
 type IdempotencyIndex struct {

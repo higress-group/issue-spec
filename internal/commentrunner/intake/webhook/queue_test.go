@@ -50,7 +50,7 @@ func TestQueuePersistsDeduplicatesConflictsAndRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.SchemaVersion != 3 || string(reloaded.Deliveries[first.DeliveryID].RawEnvelope) != string(first.RawEnvelope) {
+	if reloaded.SchemaVersion != 4 || string(reloaded.Deliveries[first.DeliveryID].RawEnvelope) != string(first.RawEnvelope) {
 		t.Fatalf("delivery did not survive restart: %+v", reloaded.Deliveries[first.DeliveryID])
 	}
 }
@@ -121,6 +121,12 @@ func TestQueueLeaseFencingRecoveryAndDualClaimants(t *testing.T) {
 		claims[0].LeaseToken, claims[0].LeaseUntil.Add(time.Second)); !errors.Is(err, ErrLeaseLost) {
 		t.Fatalf("stale same-owner token completion error=%v", err)
 	}
+	if _, err := queue.RecordDecision(t.Context(), reclaimed.DeliveryID, reclaimed.LeaseOwner,
+		reclaimed.LeaseToken, reclaimed.LeaseUntil.Add(-2*time.Second), DurableDecision{
+			Outcome: state.DeliveryOutcomeIgnored, AuthoritativeRevision: 1,
+		}, nil); err != nil {
+		t.Fatalf("record ignored decision: %v", err)
+	}
 	if err := queue.Complete(t.Context(), reclaimed.DeliveryID, reclaimed.LeaseOwner,
 		reclaimed.LeaseToken, reclaimed.LeaseUntil.Add(-time.Second)); err != nil {
 		t.Fatalf("current lease completion error=%v", err)
@@ -130,6 +136,161 @@ func TestQueueLeaseFencingRecoveryAndDualClaimants(t *testing.T) {
 	if !ok || delivery.Status != state.DeliveryCompleted || len(delivery.RawEnvelope) != 0 {
 		t.Fatalf("terminal delivery not compacted: %+v", delivery)
 	}
+}
+
+func TestQueueDurableDecisionPrecedesAcknowledgementAndCompletion(t *testing.T) {
+	store, _ := state.OpenFileStore(filepath.Join(t.TempDir(), "state.json"))
+	defer store.Close()
+	queue, _ := NewQueue(store, QueueConfig{MaxItemBytes: 1024, MaxTotalBytes: 4096})
+	now := time.Now().UTC()
+	delivery := testDelivery("delivery-decision", []byte("decision"), now)
+	if _, err := queue.Accept(t.Context(), delivery); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := queue.Claim(t.Context(), "worker", time.Minute, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Complete(t.Context(), claim.DeliveryID, claim.LeaseOwner, claim.LeaseToken, now); !errors.Is(err, ErrDecisionRequired) {
+		t.Fatalf("completion before decision error=%v", err)
+	}
+	decision := DurableDecision{Outcome: state.DeliveryOutcomeJob, JobID: "job-1", AckRequired: true, AuthoritativeRevision: 3}
+	recorded, err := queue.RecordDecision(t.Context(), claim.DeliveryID, claim.LeaseOwner, claim.LeaseToken, now, decision,
+		func(current *state.RunnerState) error {
+			_, _, err := current.CreateCommandJob(state.Job{ID: "job-1", Repo: "o/r", Status: state.StatusQueued,
+				CommandIdempotencyKey: "command-1"})
+			return err
+		})
+	if err != nil || recorded.JobID != "job-1" || !recorded.AckPending {
+		t.Fatalf("recorded=%+v err=%v", recorded, err)
+	}
+	if err := queue.Complete(t.Context(), claim.DeliveryID, claim.LeaseOwner, claim.LeaseToken, now); !errors.Is(err, ErrAcknowledgementPending) {
+		t.Fatalf("completion before ack error=%v", err)
+	}
+	if err := queue.MarkAcknowledged(t.Context(), claim.DeliveryID, claim.LeaseOwner, claim.LeaseToken, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.MarkAcknowledged(t.Context(), claim.DeliveryID, claim.LeaseOwner, claim.LeaseToken, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("idempotent ack: %v", err)
+	}
+	if err := queue.Complete(t.Context(), claim.DeliveryID, claim.LeaseOwner, claim.LeaseToken, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ := store.Load(t.Context())
+	got := loaded.Deliveries[claim.DeliveryID]
+	if got.Status != state.DeliveryCompleted || got.AckPending || got.AckCompletedAt.IsZero() || got.JobID != "job-1" || len(loaded.Jobs) != 1 {
+		t.Fatalf("durable decision not preserved: delivery=%+v jobs=%+v", got, loaded.Jobs)
+	}
+}
+
+func TestQueueDecisionAndJobAreAtomicWhenSaveFails(t *testing.T) {
+	base, _ := state.OpenFileStore(filepath.Join(t.TempDir(), "state.json"))
+	defer base.Close()
+	failing := &failUpdateStore{StateStore: base}
+	queue, _ := NewQueue(failing, QueueConfig{MaxItemBytes: 1024, MaxTotalBytes: 4096})
+	now := time.Now().UTC()
+	delivery := testDelivery("delivery-atomic", []byte("atomic"), now)
+	if _, err := queue.Accept(t.Context(), delivery); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := queue.Claim(t.Context(), "worker", time.Minute, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing.failNext = true
+	decision := DurableDecision{Outcome: state.DeliveryOutcomeJob, JobID: "job-atomic", AckRequired: true, AuthoritativeRevision: 1}
+	mutation := func(current *state.RunnerState) error {
+		_, _, err := current.CreateCommandJob(state.Job{ID: "job-atomic", Repo: "o/r", CommandIdempotencyKey: "command-atomic"})
+		return err
+	}
+	if _, err := queue.RecordDecision(t.Context(), claim.DeliveryID, claim.LeaseOwner, claim.LeaseToken, now, decision, mutation); err == nil {
+		t.Fatal("expected injected save failure")
+	}
+	loaded, _ := base.Load(t.Context())
+	if len(loaded.Jobs) != 0 || loaded.Deliveries[claim.DeliveryID].Outcome != "" {
+		t.Fatalf("failed atomic update leaked state: %+v", loaded)
+	}
+	if _, err := queue.RecordDecision(t.Context(), claim.DeliveryID, claim.LeaseOwner, claim.LeaseToken, now, decision, mutation); err != nil {
+		t.Fatalf("retry decision: %v", err)
+	}
+	// Replaying the same decision must not create a second job.
+	if _, err := queue.RecordDecision(t.Context(), claim.DeliveryID, claim.LeaseOwner, claim.LeaseToken, now, decision, mutation); err != nil {
+		t.Fatalf("duplicate decision: %v", err)
+	}
+	loaded, _ = base.Load(t.Context())
+	if len(loaded.Jobs) != 1 || loaded.Deliveries[claim.DeliveryID].JobID != "job-atomic" {
+		t.Fatalf("retry did not converge: %+v", loaded)
+	}
+}
+
+func TestQueueCompletionFailsClosedOnCorruptAcknowledgementState(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		decision DurableDecision
+		mutate   DecisionMutation
+		corrupt  func(*state.WebhookDelivery)
+	}{
+		{
+			name: "required ack timestamp missing",
+			decision: DurableDecision{Outcome: state.DeliveryOutcomeJob, JobID: "job-corrupt",
+				AckRequired: true, AuthoritativeRevision: 1},
+			mutate: func(current *state.RunnerState) error {
+				return current.UpsertJob(state.Job{ID: "job-corrupt", CommandIdempotencyKey: "cmd-corrupt"})
+			},
+			corrupt: func(delivery *state.WebhookDelivery) { delivery.AckPending = false },
+		},
+		{
+			name:     "ignored outcome has ack residue",
+			decision: DurableDecision{Outcome: state.DeliveryOutcomeIgnored, AuthoritativeRevision: 1},
+			corrupt:  func(delivery *state.WebhookDelivery) { delivery.AckCompletedAt = time.Now().UTC() },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, _ := state.OpenFileStore(filepath.Join(t.TempDir(), "state.json"))
+			defer store.Close()
+			queue, _ := NewQueue(store, QueueConfig{MaxItemBytes: 1024, MaxTotalBytes: 4096})
+			now := time.Now().UTC()
+			delivery := testDelivery("delivery-"+test.name, []byte(test.name), now)
+			_, _ = queue.Accept(t.Context(), delivery)
+			claim, _ := queue.Claim(t.Context(), "worker", time.Minute, now)
+			if _, err := queue.RecordDecision(t.Context(), claim.DeliveryID, claim.LeaseOwner, claim.LeaseToken,
+				now, test.decision, test.mutate); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Update(t.Context(), func(current *state.RunnerState) error {
+				item := current.Deliveries[claim.DeliveryID]
+				test.corrupt(&item)
+				current.Deliveries[claim.DeliveryID] = item
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := queue.Complete(t.Context(), claim.DeliveryID, claim.LeaseOwner, claim.LeaseToken,
+				now.Add(time.Second)); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("corrupt completion error=%v", err)
+			}
+		})
+	}
+}
+
+type failUpdateStore struct {
+	state.StateStore
+	failNext bool
+}
+
+func (s *failUpdateStore) Update(ctx context.Context, mutate func(*state.RunnerState) error) error {
+	if !s.failNext {
+		return s.StateStore.Update(ctx, mutate)
+	}
+	s.failNext = false
+	current, err := s.StateStore.Load(ctx)
+	if err != nil {
+		return err
+	}
+	if err := mutate(&current); err != nil {
+		return err
+	}
+	return errors.New("injected save failure")
 }
 
 func testDelivery(id string, body []byte, received time.Time) state.WebhookDelivery {

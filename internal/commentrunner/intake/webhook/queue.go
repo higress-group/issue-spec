@@ -18,11 +18,14 @@ import (
 )
 
 var (
-	ErrConflict  = errors.New("webhook delivery identity conflict")
-	ErrCapacity  = errors.New("webhook delivery queue capacity exceeded")
-	ErrNoPending = errors.New("no pending webhook delivery")
-	ErrLeaseLost = errors.New("webhook delivery lease lost")
-	ErrInvalid   = errors.New("invalid webhook delivery")
+	ErrConflict               = errors.New("webhook delivery identity conflict")
+	ErrCapacity               = errors.New("webhook delivery queue capacity exceeded")
+	ErrNoPending              = errors.New("no pending webhook delivery")
+	ErrLeaseLost              = errors.New("webhook delivery lease lost")
+	ErrInvalid                = errors.New("invalid webhook delivery")
+	ErrDecisionRequired       = errors.New("webhook delivery durable decision required")
+	ErrDecisionConflict       = errors.New("webhook delivery durable decision conflict")
+	ErrAcknowledgementPending = errors.New("webhook delivery acknowledgement pending")
 )
 
 type QueueConfig struct {
@@ -41,11 +44,31 @@ type Acceptance struct {
 	Duplicate bool
 }
 
+// DurableDecision links an immutable delivery to the durable control-plane
+// record created from its authoritative comment revision. AckRequired keeps
+// the delivery non-terminal until the corresponding remote acknowledgement is
+// observed or written successfully.
+type DurableDecision struct {
+	Outcome               state.DeliveryOutcome
+	JobID                 string
+	CancellationID        string
+	StatusWritebackKey    string
+	AckRequired           bool
+	AuthoritativeRevision int64
+}
+
+// DecisionMutation must be a pure local state mutation. It runs while the
+// StateStore update is locked and must never perform network or filesystem
+// side effects outside the store transaction.
+type DecisionMutation func(*state.RunnerState) error
+
 // DeliveryQueue is the PROCESS-022 handoff. Implementations must preserve
 // claim atomicity and lease fencing; callers must not parse RawEnvelope before
 // a successful claim.
 type DeliveryQueue interface {
 	Claim(context.Context, string, time.Duration, time.Time) (state.WebhookDelivery, error)
+	RecordDecision(context.Context, string, string, string, time.Time, DurableDecision, DecisionMutation) (state.WebhookDelivery, error)
+	MarkAcknowledged(context.Context, string, string, string, time.Time) error
 	Release(context.Context, string, string, string, time.Time) error
 	Complete(context.Context, string, string, string, time.Time) error
 	Fail(context.Context, string, string, string, time.Time, string) error
@@ -175,6 +198,108 @@ func (q *Queue) Release(ctx context.Context, deliveryID, owner, leaseToken strin
 	return q.finish(ctx, deliveryID, owner, leaseToken, now, state.DeliveryPending, "")
 }
 
+// RecordDecision performs the command/cancellation/rejection mutation and
+// delivery linkage in one lease-fenced StateStore.Update. Callers must perform
+// remote eyes/status acknowledgements only after this method succeeds.
+func (q *Queue) RecordDecision(ctx context.Context, deliveryID, owner, leaseToken string, now time.Time,
+	decision DurableDecision, mutate DecisionMutation) (state.WebhookDelivery, error) {
+	if err := validateDecision(decision); err != nil {
+		return state.WebhookDelivery{}, err
+	}
+	deliveryID, owner, leaseToken = strings.TrimSpace(deliveryID), strings.TrimSpace(owner), strings.TrimSpace(leaseToken)
+	if deliveryID == "" || owner == "" || leaseToken == "" || now.IsZero() {
+		return state.WebhookDelivery{}, ErrInvalid
+	}
+	var recorded state.WebhookDelivery
+	lost, conflict := false, false
+	err := q.store.Update(ctx, func(current *state.RunnerState) error {
+		current.Normalize()
+		delivery, ok := current.Deliveries[deliveryID]
+		if !claimActive(delivery, ok, owner, leaseToken, now) {
+			lost = true
+			return nil
+		}
+		if delivery.Outcome != "" {
+			if !decisionMatches(delivery, decision) {
+				conflict = true
+				return nil
+			}
+			if err := validateDecisionLink(current, delivery); err != nil {
+				return err
+			}
+			recorded = delivery
+			return nil
+		}
+		if mutate != nil {
+			if err := mutate(current); err != nil {
+				return err
+			}
+		}
+		delivery.Outcome = decision.Outcome
+		delivery.JobID = strings.TrimSpace(decision.JobID)
+		delivery.CancellationID = strings.TrimSpace(decision.CancellationID)
+		delivery.StatusWritebackKey = strings.TrimSpace(decision.StatusWritebackKey)
+		delivery.AckPending = decision.AckRequired
+		delivery.AckCompletedAt = time.Time{}
+		delivery.AuthoritativeRevision = decision.AuthoritativeRevision
+		if err := validateDecisionLink(current, delivery); err != nil {
+			return err
+		}
+		current.Deliveries[deliveryID] = delivery
+		recorded = delivery
+		return nil
+	})
+	if err != nil {
+		return state.WebhookDelivery{}, err
+	}
+	if lost {
+		return state.WebhookDelivery{}, ErrLeaseLost
+	}
+	if conflict {
+		return state.WebhookDelivery{}, ErrDecisionConflict
+	}
+	return recorded, nil
+}
+
+func (q *Queue) MarkAcknowledged(ctx context.Context, deliveryID, owner, leaseToken string, now time.Time) error {
+	deliveryID, owner, leaseToken = strings.TrimSpace(deliveryID), strings.TrimSpace(owner), strings.TrimSpace(leaseToken)
+	if deliveryID == "" || owner == "" || leaseToken == "" || now.IsZero() {
+		return ErrInvalid
+	}
+	lost, decisionMissing := false, false
+	err := q.store.Update(ctx, func(current *state.RunnerState) error {
+		delivery, ok := current.Deliveries[deliveryID]
+		if !claimActive(delivery, ok, owner, leaseToken, now) {
+			lost = true
+			return nil
+		}
+		if delivery.Outcome == "" {
+			decisionMissing = true
+			return nil
+		}
+		if !delivery.AckPending {
+			if delivery.AckCompletedAt.IsZero() {
+				return ErrInvalid
+			}
+			return nil
+		}
+		delivery.AckPending = false
+		delivery.AckCompletedAt = now
+		current.Deliveries[deliveryID] = delivery
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if lost {
+		return ErrLeaseLost
+	}
+	if decisionMissing {
+		return ErrDecisionRequired
+	}
+	return nil
+}
+
 func (q *Queue) Complete(ctx context.Context, deliveryID, owner, leaseToken string, now time.Time) error {
 	return q.finish(ctx, deliveryID, owner, leaseToken, now, state.DeliveryCompleted, "")
 }
@@ -189,13 +314,25 @@ func (q *Queue) finish(ctx context.Context, deliveryID, owner, leaseToken string
 	if deliveryID == "" || owner == "" || leaseToken == "" || now.IsZero() {
 		return ErrInvalid
 	}
-	lost := false
+	lost, decisionMissing, ackPending := false, false, false
 	err := q.store.Update(ctx, func(current *state.RunnerState) error {
 		delivery, ok := current.Deliveries[deliveryID]
-		if !ok || delivery.Status != state.DeliveryProcessing || delivery.LeaseOwner != owner ||
-			delivery.LeaseToken != leaseToken || !delivery.LeaseUntil.After(now) {
+		if !claimActive(delivery, ok, owner, leaseToken, now) {
 			lost = true
 			return nil
+		}
+		if next == state.DeliveryCompleted {
+			if delivery.Outcome == "" {
+				decisionMissing = true
+				return nil
+			}
+			if err := validateDecisionLink(current, delivery); err != nil {
+				return err
+			}
+			if delivery.AckPending || (ackRequiredOutcome(delivery.Outcome) && delivery.AckCompletedAt.IsZero()) {
+				ackPending = true
+				return nil
+			}
 		}
 		delivery.Status = next
 		delivery.LeaseOwner = ""
@@ -217,7 +354,89 @@ func (q *Queue) finish(ctx context.Context, deliveryID, owner, leaseToken string
 	if lost {
 		return ErrLeaseLost
 	}
+	if decisionMissing {
+		return ErrDecisionRequired
+	}
+	if ackPending {
+		return ErrAcknowledgementPending
+	}
 	return nil
+}
+
+func claimActive(delivery state.WebhookDelivery, ok bool, owner, leaseToken string, now time.Time) bool {
+	return ok && delivery.Status == state.DeliveryProcessing && delivery.LeaseOwner == owner &&
+		delivery.LeaseToken == leaseToken && delivery.LeaseUntil.After(now)
+}
+
+func validateDecision(decision DurableDecision) error {
+	decision.JobID = strings.TrimSpace(decision.JobID)
+	decision.CancellationID = strings.TrimSpace(decision.CancellationID)
+	decision.StatusWritebackKey = strings.TrimSpace(decision.StatusWritebackKey)
+	if !decision.Outcome.Valid() || decision.AuthoritativeRevision <= 0 {
+		return ErrInvalid
+	}
+	switch decision.Outcome {
+	case state.DeliveryOutcomeJob:
+		if decision.JobID == "" || decision.CancellationID != "" || decision.StatusWritebackKey != "" || !decision.AckRequired {
+			return ErrInvalid
+		}
+	case state.DeliveryOutcomeCancellation:
+		if decision.CancellationID == "" || decision.JobID != "" || decision.StatusWritebackKey != "" || !decision.AckRequired {
+			return ErrInvalid
+		}
+	case state.DeliveryOutcomeRejected:
+		if decision.StatusWritebackKey == "" || decision.JobID != "" || decision.CancellationID != "" || !decision.AckRequired {
+			return ErrInvalid
+		}
+	case state.DeliveryOutcomeIgnored, state.DeliveryOutcomeSuperseded:
+		if decision.JobID != "" || decision.CancellationID != "" || decision.StatusWritebackKey != "" || decision.AckRequired {
+			return ErrInvalid
+		}
+	}
+	return nil
+}
+
+func validateDecisionLink(current *state.RunnerState, delivery state.WebhookDelivery) error {
+	switch delivery.Outcome {
+	case state.DeliveryOutcomeJob:
+		if _, ok := current.Jobs[delivery.JobID]; !ok {
+			return fmt.Errorf("%w: linked job is missing", ErrInvalid)
+		}
+	case state.DeliveryOutcomeCancellation:
+		if _, ok := current.Cancellations[delivery.CancellationID]; !ok {
+			return fmt.Errorf("%w: linked cancellation is missing", ErrInvalid)
+		}
+	case state.DeliveryOutcomeRejected:
+		if _, ok := current.StatusWritebacks[delivery.StatusWritebackKey]; !ok {
+			return fmt.Errorf("%w: linked rejection writeback is missing", ErrInvalid)
+		}
+	case state.DeliveryOutcomeIgnored, state.DeliveryOutcomeSuperseded:
+		if delivery.AckPending || !delivery.AckCompletedAt.IsZero() {
+			return fmt.Errorf("%w: acknowledgement is forbidden for %s outcome", ErrInvalid, delivery.Outcome)
+		}
+	default:
+		return fmt.Errorf("%w: invalid delivery outcome", ErrInvalid)
+	}
+	if ackRequiredOutcome(delivery.Outcome) && delivery.AckPending != delivery.AckCompletedAt.IsZero() {
+		return fmt.Errorf("%w: acknowledgement state is inconsistent", ErrInvalid)
+	}
+	return nil
+}
+
+func ackRequiredOutcome(outcome state.DeliveryOutcome) bool {
+	switch outcome {
+	case state.DeliveryOutcomeJob, state.DeliveryOutcomeCancellation, state.DeliveryOutcomeRejected:
+		return true
+	default:
+		return false
+	}
+}
+
+func decisionMatches(delivery state.WebhookDelivery, decision DurableDecision) bool {
+	return delivery.Outcome == decision.Outcome && delivery.JobID == strings.TrimSpace(decision.JobID) &&
+		delivery.CancellationID == strings.TrimSpace(decision.CancellationID) &&
+		delivery.StatusWritebackKey == strings.TrimSpace(decision.StatusWritebackKey) &&
+		delivery.AuthoritativeRevision == decision.AuthoritativeRevision
 }
 
 func safeDiagnosticCode(value string) string {

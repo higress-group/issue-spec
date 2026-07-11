@@ -73,7 +73,7 @@ func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(data, []byte(`"schema_version": 3`)) || bytes.Contains(data, []byte(currentSecret)) ||
+	if !bytes.Contains(data, []byte(`"schema_version": 4`)) || bytes.Contains(data, []byte(currentSecret)) ||
 		bytes.Contains(data, []byte(previousSecret)) ||
 		bytes.Contains(data, []byte("RUNNER_CURRENT_SECRET")) {
 		t.Fatalf("state contains secret/config material: %s", data)

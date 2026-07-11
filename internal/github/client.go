@@ -45,10 +45,14 @@ func (e *APIError) Error() string {
 }
 
 type User struct {
-	Login string `json:"login"`
+	ID     int64  `json:"id,omitempty"`
+	NodeID string `json:"node_id,omitempty"`
+	Login  string `json:"login"`
 }
 
 type Issue struct {
+	ID      int64  `json:"id"`
+	NodeID  string `json:"node_id,omitempty"`
 	Number  int    `json:"number"`
 	HTMLURL string `json:"html_url"`
 	URL     string `json:"url"`
@@ -59,6 +63,7 @@ type Issue struct {
 
 type Comment struct {
 	ID          int64     `json:"id"`
+	NodeID      string    `json:"node_id,omitempty"`
 	HTMLURL     string    `json:"html_url"`
 	URL         string    `json:"url"`
 	IssueURL    string    `json:"issue_url,omitempty"`

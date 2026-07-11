@@ -135,6 +135,7 @@ func (h handlers) get(w http.ResponseWriter, r *http.Request) {
 		issues.WriteError(w, r, err)
 		return
 	}
+	w.Header().Set(githubRepresentationVersionHeader, strconv.FormatInt(item.Comment.RepresentationVersion, 10))
 	etag := commentETag(item)
 	if pagination.WriteNotModified(w, r, etag, item.Comment.UpdatedAt, h.conditional.Rate()) {
 		return
@@ -213,6 +214,9 @@ func commentETag(item models.CommentSnapshot) string {
 }
 
 func (h handlers) setCommentConditional(w http.ResponseWriter, item models.CommentSnapshot) {
+	w.Header().Set(githubRepresentationVersionHeader, strconv.FormatInt(item.Comment.RepresentationVersion, 10))
 	pagination.SetConditionalHeaders(w.Header(), commentETag(item), item.Comment.UpdatedAt)
 	pagination.SetRateHeaders(w.Header(), h.conditional.Rate())
 }
+
+const githubRepresentationVersionHeader = "X-Issue-Spec-Representation-Version"

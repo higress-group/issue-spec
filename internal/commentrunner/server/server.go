@@ -39,6 +39,12 @@ type Service struct {
 	certificate []tls.Certificate
 }
 
+func (s *Service) StopAccepting() {
+	if s != nil && s.handler != nil {
+		s.handler.StopAccepting()
+	}
+}
+
 func New(config Config, handler *webhook.Handler) (*Service, error) {
 	if handler == nil {
 		return nil, errors.New("runner webhook server: handler is required")
@@ -150,13 +156,13 @@ func (s *Service) Run(ctx context.Context) error {
 	}()
 	select {
 	case err := <-serveErr:
-		s.handler.StopAccepting()
+		s.StopAccepting()
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return fmt.Errorf("runner webhook server: serve: %w", err)
 	case <-ctx.Done():
-		s.handler.StopAccepting()
+		s.StopAccepting()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.config.ShutdownTimeout)
 		defer cancel()
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
