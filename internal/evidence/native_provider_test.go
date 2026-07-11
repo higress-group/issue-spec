@@ -37,13 +37,17 @@ func TestNativeProviderResolvesExactReferenceAndBuildsSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	foundCheck := false
+	foundCheck, foundLinkedReview := false, false
 	for _, record := range snapshot.Records {
 		if record.Kind == codereview.EvidenceCheck && record.Name == "unit" && record.Trusted {
 			foundCheck = true
 		}
+		if record.Kind == codereview.EvidenceReview && record.FindingID == "FINDING-101" &&
+			record.ProcessID == "PROCESS-202" && record.SpecID == "SPEC-010" {
+			foundLinkedReview = true
+		}
 	}
-	if len(snapshot.Records) != 2 || snapshot.Records[0].ID > snapshot.Records[1].ID || !foundCheck {
+	if len(snapshot.Records) != 2 || snapshot.Records[0].ID > snapshot.Records[1].ID || !foundCheck || !foundLinkedReview {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
 	result := Evaluate(snapshot, Policy{RequiredChecks: []string{"unit"}, Freshness: map[codereview.EvidenceKind]time.Duration{}},
@@ -55,15 +59,22 @@ func TestNativeProviderResolvesExactReferenceAndBuildsSnapshot(t *testing.T) {
 
 func TestNativeProviderRejectsUnsafeOrAmbiguousServerData(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		mutate func(*nativeFixture)
-		want   string
+		name     string
+		mutate   func(*nativeFixture)
+		want     string
+		snapshot bool
 	}{
 		{name: "no-store required", mutate: func(f *nativeFixture) { f.noStore = false }, want: "not marked no-store"},
 		{name: "ambiguous reference", mutate: func(f *nativeFixture) { f.duplicateReference = true }, want: "exactly one active code_change"},
 		{name: "strict metadata", mutate: func(f *nativeFixture) { f.referenceMetadata = `{"head_revision":"head-abc","approved":true}` }, want: "only head_revision"},
-		{name: "approved payload", mutate: func(f *nativeFixture) { f.approvedPayload = true }, want: "untrusted approval"},
-		{name: "wrong change", mutate: func(f *nativeFixture) { f.evidenceChangeID = "other-change" }, want: "change identity"},
+		{name: "approved payload", mutate: func(f *nativeFixture) { f.approvedPayload = true }, want: "untrusted approval", snapshot: true},
+		{name: "wrong change", mutate: func(f *nativeFixture) { f.evidenceChangeID = "other-change" }, want: "change identity", snapshot: true},
+		{name: "wrong evidence issue", mutate: func(f *nativeFixture) { f.evidenceIssueID = uuid.New() }, want: "evidence row identity", snapshot: true},
+		{name: "wrong evidence provider", mutate: func(f *nativeFixture) { f.evidenceProvider = "other.example" }, want: "evidence row identity", snapshot: true},
+		{name: "wrong evidence repository", mutate: func(f *nativeFixture) { f.evidenceRepository = "other/repo" }, want: "evidence row identity", snapshot: true},
+		{name: "missing finding linkage", mutate: func(f *nativeFixture) { f.findingID = "" }, want: "FINDING, PROCESS, and SPEC linkage", snapshot: true},
+		{name: "invalid process linkage", mutate: func(f *nativeFixture) { f.processID = "TASK-202" }, want: "FINDING, PROCESS, and SPEC linkage", snapshot: true},
+		{name: "missing spec linkage", mutate: func(f *nativeFixture) { f.specID = "" }, want: "FINDING, PROCESS, and SPEC linkage", snapshot: true},
 		{name: "malformed node id", mutate: func(f *nativeFixture) {
 			f.nodeID = base64.RawStdEncoding.EncodeToString([]byte("User:" + f.issueID.String()))
 		}, want: "issue node_id"},
@@ -76,7 +87,7 @@ func TestNativeProviderRejectsUnsafeOrAmbiguousServerData(t *testing.T) {
 				t.Fatal(err)
 			}
 			target, err := provider.ResolveTarget(t.Context(), "acme/widgets", 9, "code_change")
-			if err == nil && (test.name == "approved payload" || test.name == "wrong change") {
+			if err == nil && test.snapshot {
 				_, err = codereview.FetchSnapshot(t.Context(), target.Provider, codereview.SnapshotRequest{Reference: target.Reference, SubjectRevision: target.SubjectRevision})
 			}
 			if err == nil || !strings.Contains(err.Error(), test.want) {
@@ -143,6 +154,12 @@ type nativeFixture struct {
 	referenceMetadata  string
 	approvedPayload    bool
 	evidenceChangeID   string
+	evidenceIssueID    uuid.UUID
+	evidenceProvider   string
+	evidenceRepository string
+	findingID          string
+	processID          string
+	specID             string
 	upserted           bool
 	upsertCount        int
 	archiveReference   map[string]any
@@ -153,7 +170,8 @@ func newNativeFixture(t *testing.T) *nativeFixture {
 	t.Helper()
 	f := &nativeFixture{t: t, now: time.Date(2026, 7, 11, 5, 0, 0, 0, time.UTC), orgID: uuid.New(), repoID: uuid.New(),
 		issueID: uuid.New(), noStore: true, referenceMetadata: `{"head_revision":"head-abc","base_revision":"base-123"}`,
-		evidenceChangeID: "change-42"}
+		evidenceChangeID: "change-42", evidenceProvider: "code.example", evidenceRepository: "acme/widgets-code",
+		findingID: "FINDING-101", processID: "PROCESS-202", specID: "SPEC-010"}
 	f.nodeID = base64.RawStdEncoding.EncodeToString([]byte("Issue:" + f.issueID.String()))
 	f.server = httptest.NewServer(http.HandlerFunc(f.serveHTTP))
 	t.Cleanup(f.server.Close)
@@ -203,7 +221,8 @@ func (f *nativeFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		f.archiveReference = f.reference("archive-7", "archive_change", string(metadata))
 		writeNativeJSON(w, f.archiveReference)
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/evidence"):
-		payloadReview := map[string]any{"schema_version": "issue-spec.evidence/v1", "change_id": f.evidenceChangeID, "severity": "P2", "summary": "reviewed"}
+		payloadReview := map[string]any{"schema_version": "issue-spec.evidence/v1", "change_id": f.evidenceChangeID,
+			"severity": "P2", "finding_id": f.findingID, "process_id": f.processID, "spec_id": f.specID, "summary": "reviewed"}
 		if f.approvedPayload {
 			payloadReview["approved"] = true
 		}
@@ -228,8 +247,12 @@ func (f *nativeFixture) reference(change, relation, metadata string) map[string]
 func (f *nativeFixture) evidence(kind, state, externalID string, payload map[string]any) map[string]any {
 	raw, _ := json.Marshal(payload)
 	digest := sha256.Sum256(raw)
-	return map[string]any{"id": uuid.New(), "issue_id": f.issueID, "provider_key": "code.example",
-		"external_repository_id": "acme/widgets-code", "evidence_type": kind, "external_id": externalID,
+	issueID := f.evidenceIssueID
+	if issueID == uuid.Nil {
+		issueID = f.issueID
+	}
+	return map[string]any{"id": uuid.New(), "issue_id": issueID, "provider_key": f.evidenceProvider,
+		"external_repository_id": f.evidenceRepository, "evidence_type": kind, "external_id": externalID,
 		"ingest_key": kind + "-1", "normalized_state": state, "subject_revision": "head-abc", "observed_at": f.now.Add(-time.Minute),
 		"payload_hash": digest[:], "payload": payload, "provenance": map[string]any{}, "writer_user_id": uuid.New(),
 		"writer_identity_key": "bridge:test", "visibility": "repository", "created_at": f.now.Add(-time.Minute)}

@@ -108,6 +108,20 @@ func TestReferenceProblemsStrictJSONUUIDVisibilityAndConcealment(t *testing.T) {
 		mux.ServeHTTP(response, req)
 		assertReferenceProblem(t, response, test.want, test.code)
 	}
+
+	service.err = adminservice.ErrInvalidInput
+	const secret = "REFERENCE_QUERY_TOKEN"
+	queryToken := httptest.NewRequest(http.MethodPut, path, strings.NewReader(`{
+		"provider_key":"code.example","relation_kind":"code_change","external_repository_id":"acme/widgets",
+		"external_id":"42","canonical_url":"https://code.example/changes/42?access_token=`+secret+`",
+		"lifecycle_state":"active","visibility":"repository"}`))
+	queryToken.Header.Set("Authorization", "test")
+	queryTokenResponse := httptest.NewRecorder()
+	mux.ServeHTTP(queryTokenResponse, queryToken)
+	assertReferenceProblem(t, queryTokenResponse, http.StatusUnprocessableEntity, "invalid_request")
+	if strings.Contains(queryTokenResponse.Body.String(), secret) {
+		t.Fatalf("reference API reflected rejected credential: %s", queryTokenResponse.Body.String())
+	}
 }
 
 type fakeReferenceService struct {

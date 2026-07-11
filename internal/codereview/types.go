@@ -99,6 +99,9 @@ type EvidenceRecord struct {
 	MergeRevision   string          `json:"merge_revision,omitempty"`
 	Name            string          `json:"name,omitempty"`
 	Severity        string          `json:"severity,omitempty"`
+	FindingID       string          `json:"finding_id,omitempty"`
+	ProcessID       string          `json:"process_id,omitempty"`
+	SpecID          string          `json:"spec_id,omitempty"`
 	ObservedAt      time.Time       `json:"observed_at"`
 	ValidUntil      *time.Time      `json:"valid_until,omitempty"`
 	Trusted         bool            `json:"trusted"`
@@ -107,6 +110,40 @@ type EvidenceRecord struct {
 	CanonicalURL    string          `json:"canonical_url,omitempty"`
 	PayloadDigest   string          `json:"payload_digest"`
 	Payload         json.RawMessage `json:"payload,omitempty"`
+}
+
+var neutralArtifactIDPattern = regexp.MustCompile(`^[A-Z]+-[0-9]{3,}$`)
+
+// ValidateReviewLinkage keeps external line discussions provider-owned while
+// requiring their canonical workflow identity to survive normalization.  The
+// gate consumes only canonical FINDING/PROCESS/SPEC identifiers and known
+// severity/state values; arbitrary bridge text cannot stand in for linkage.
+func (r EvidenceRecord) ValidateReviewLinkage() error {
+	finding := strings.TrimSpace(r.FindingID)
+	process := strings.TrimSpace(r.ProcessID)
+	spec := strings.TrimSpace(r.SpecID)
+	if r.Kind != EvidenceReview {
+		if finding != "" || process != "" || spec != "" {
+			return fmt.Errorf("%w: non-review evidence contains review linkage", ErrInvalidProviderData)
+		}
+		return nil
+	}
+	if !neutralArtifactIDPattern.MatchString(finding) || !strings.HasPrefix(finding, "FINDING-") ||
+		!neutralArtifactIDPattern.MatchString(process) || !strings.HasPrefix(process, "PROCESS-") ||
+		!neutralArtifactIDPattern.MatchString(spec) || !strings.HasPrefix(spec, "SPEC-") {
+		return fmt.Errorf("%w: review evidence requires canonical FINDING, PROCESS, and SPEC linkage", ErrInvalidProviderData)
+	}
+	switch strings.ToUpper(strings.TrimSpace(r.Severity)) {
+	case "P0", "P1", "P2":
+	default:
+		return fmt.Errorf("%w: review evidence has invalid severity", ErrInvalidProviderData)
+	}
+	switch strings.ToLower(strings.TrimSpace(r.State)) {
+	case "open", "resolved", "dismissed", "closed", "superseded":
+	default:
+		return fmt.Errorf("%w: review evidence has invalid state", ErrInvalidProviderData)
+	}
+	return nil
 }
 
 type SnapshotRequest struct {

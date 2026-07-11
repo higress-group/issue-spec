@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	pathpkg "path"
 	"strings"
+	"unicode"
 
 	"github.com/google/uuid"
 	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
@@ -276,8 +278,9 @@ func (s *Service) DeleteReference(ctx context.Context, subject authz.Subject, ac
 func normalizeBindingInput(input CreateBindingVersionInput) CreateBindingVersionInput {
 	input.ProviderKey = strings.TrimSpace(input.ProviderKey)
 	input.ExternalRepositoryID = strings.TrimSpace(input.ExternalRepositoryID)
-	input.CloneURL = strings.TrimSpace(input.CloneURL)
-	input.WebURL = strings.TrimSpace(input.WebURL)
+	// Persisted URLs are validated byte-for-byte. Do not trim them into a
+	// different accepted value: surrounding whitespace/control data is an
+	// invalid credential-bearing coordinate, not harmless presentation input.
 	input.DefaultBranch = strings.TrimSpace(input.DefaultBranch)
 	return input
 }
@@ -293,19 +296,39 @@ func validateBindingInput(input CreateBindingVersionInput) error {
 }
 
 func validateCloneURL(raw string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "ssh") ||
-		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" ||
-		!strings.HasPrefix(parsed.Path, "/") {
-		return adminservice.ErrInvalidInput
-	}
-	return nil
+	return validatePersistedURL(raw, true)
 }
 
 func validateHTTPSURL(raw string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Opaque != "" {
+	return validatePersistedURL(raw, false)
+}
+
+func validatePersistedURL(raw string, allowSSH bool) error {
+	if raw == "" || raw != strings.TrimSpace(raw) || strings.Contains(raw, "\\") ||
+		strings.IndexFunc(raw, unicode.IsControl) >= 0 || strings.ContainsAny(raw, "?#") {
 		return adminservice.ErrInvalidInput
+	}
+	parsed, err := url.Parse(raw)
+	validScheme := parsed != nil && parsed.Scheme == "https"
+	if allowSSH && parsed != nil && parsed.Scheme == "ssh" {
+		validScheme = true
+	}
+	if err != nil || !validScheme || !parsed.IsAbs() || parsed.Host == "" || parsed.Hostname() == "" ||
+		parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" || parsed.ForceQuery ||
+		parsed.Fragment != "" || parsed.RawFragment != "" || (parsed.Path != "" && !strings.HasPrefix(parsed.Path, "/")) ||
+		parsed.Host != strings.ToLower(parsed.Host) || strings.HasSuffix(parsed.Hostname(), ".") ||
+		(parsed.Scheme == "https" && parsed.Port() == "443") || parsed.String() != raw ||
+		strings.IndexFunc(parsed.Path, unicode.IsControl) >= 0 {
+		return adminservice.ErrInvalidInput
+	}
+	if parsed.Path != "" {
+		cleanPath := pathpkg.Clean(parsed.Path)
+		if strings.HasSuffix(parsed.Path, "/") && parsed.Path != "/" {
+			cleanPath += "/"
+		}
+		if cleanPath != parsed.Path {
+			return adminservice.ErrInvalidInput
+		}
 	}
 	return nil
 }
@@ -315,7 +338,6 @@ func normalizeReferenceInput(input UpsertReferenceInput) UpsertReferenceInput {
 	input.RelationKind = strings.TrimSpace(input.RelationKind)
 	input.ExternalRepositoryID = strings.TrimSpace(input.ExternalRepositoryID)
 	input.ExternalID = strings.TrimSpace(input.ExternalID)
-	input.CanonicalURL = strings.TrimSpace(input.CanonicalURL)
 	input.LifecycleState = strings.TrimSpace(input.LifecycleState)
 	if input.LifecycleState == "" {
 		input.LifecycleState = "active"
@@ -354,7 +376,13 @@ func scanBinding(row rowScanner) (Binding, error) {
 	err := row.Scan(&item.ID, &item.Scope.OrgID, &item.Scope.RepoID, &item.ProviderKey,
 		&item.ExternalRepositoryID, &item.CloneURL, &item.WebURL, &item.DefaultBranch,
 		&item.Version, &item.Active, &item.CreatedAt, &item.UpdatedAt)
-	return item, mapError(err)
+	if err != nil {
+		return Binding{}, mapError(err)
+	}
+	if validateCloneURL(item.CloneURL) != nil || validateHTTPSURL(item.WebURL) != nil {
+		return Binding{}, errors.New("bindings: stored source binding contains an unsafe external URL")
+	}
+	return item, nil
 }
 
 func scanReference(row rowScanner) (Reference, error) {
@@ -363,7 +391,13 @@ func scanReference(row rowScanner) (Reference, error) {
 		&item.ProviderKey, &item.RelationKind, &item.ExternalRepositoryID, &item.ExternalID,
 		&item.CanonicalURL, &item.Title, &item.LifecycleState, &item.Visibility, &item.Metadata,
 		&item.RepresentationVersion, &item.CreatedAt, &item.UpdatedAt)
-	return item, err
+	if err != nil {
+		return Reference{}, err
+	}
+	if validateHTTPSURL(item.CanonicalURL) != nil {
+		return Reference{}, errors.New("bindings: stored external reference contains an unsafe canonical URL")
+	}
+	return item, nil
 }
 
 func referenceEqual(existing Reference, input UpsertReferenceInput) bool {

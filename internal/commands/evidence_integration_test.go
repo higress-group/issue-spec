@@ -103,6 +103,31 @@ func TestConsumedEvidenceStampAndRevisionBindingAreExactAndIdempotent(t *testing
 	}
 }
 
+func TestExternalReviewSyncPreservesCanonicalFindingLinkage(t *testing.T) {
+	now := time.Now().UTC()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	review := testEvidenceRecord("review-1", codereview.EvidenceReview, "resolved", "head-abc", now)
+	review.FindingID, review.ProcessID, review.SpecID = "FINDING-030", "PROCESS-020", "SPEC-010"
+	review.CanonicalURL = "https://code.example/reviews/30"
+	gate := externalGateResult{Target: coreevidence.NativeTarget{Reference: reference, SubjectRevision: "head-abc"},
+		Snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion, Reference: reference,
+			SubjectRevision: "head-abc", CapturedAt: now, Records: []codereview.EvidenceRecord{review}},
+		Evaluation: coreevidence.Result{Passed: true, EvidenceIDs: []string{"review-1"}},
+		Consumption: externalEvidenceConsumption{ProviderKey: reference.ProviderKey,
+			ExternalRepository: reference.ExternalRepository, ChangeID: reference.ChangeID,
+			SubjectRevision: "head-abc", EvidenceIDs: []string{"review-1"}}}
+	body, err := renderExternalReviewSyncComment("REVIEW-101", "Review Agent", writerSession{}, "external review", gate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{`"finding_id": "FINDING-030"`, `"process_id": "PROCESS-020"`,
+		`"spec_id": "SPEC-010"`, `"evidence_id": "review-1"`, "https://code.example/reviews/30"} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("canonical REVIEW missing %q:\n%s", required, body)
+		}
+	}
+}
+
 func TestExternalArchiveMutationFailureNeverWritesReference(t *testing.T) {
 	target := coreevidence.NativeTarget{Reference: codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "implementation-1"}}
 	native := &commandNativeEvidence{}
@@ -128,8 +153,12 @@ func TestExternalArchiveMutationFailureNeverWritesReference(t *testing.T) {
 }
 
 func testEvidenceRecord(id string, kind codereview.EvidenceKind, state, revision string, now time.Time) codereview.EvidenceRecord {
-	return codereview.EvidenceRecord{ID: id, Kind: kind, State: state, SubjectRevision: revision,
+	record := codereview.EvidenceRecord{ID: id, Kind: kind, State: state, SubjectRevision: revision,
 		ObservedAt: now.Add(-time.Minute), Trusted: true, WriterIdentity: "bridge:test", PayloadDigest: "sha256:test"}
+	if kind == codereview.EvidenceReview {
+		record.Severity, record.FindingID, record.ProcessID, record.SpecID = "P2", "FINDING-001", "PROCESS-001", "SPEC-001"
+	}
+	return record
 }
 
 type commandEvidenceProvider struct {

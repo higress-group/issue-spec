@@ -34,6 +34,12 @@ func TestVerifyEvidenceFailsClosedMatrix(t *testing.T) {
 		{name: "blocking review", edit: func(s *codereview.Snapshot, _ *Target) {
 			s.Records[0].State, s.Records[0].Severity = "open", "P1"
 		}, code: "blocking_review"},
+		{name: "missing review linkage", edit: func(s *codereview.Snapshot, _ *Target) {
+			s.Records[0].FindingID = ""
+		}, code: "malformed_review_linkage"},
+		{name: "invalid review state", edit: func(s *codereview.Snapshot, _ *Target) {
+			s.Records[0].State = "approved"
+		}, code: "malformed_review_linkage"},
 		{name: "wrong provider", edit: func(s *codereview.Snapshot, _ *Target) { s.Reference.ProviderKey = "other" }, code: "reference_mismatch"},
 		{name: "broken supersession", edit: func(s *codereview.Snapshot, _ *Target) { s.Records[1].SupersedesID = "missing" }, code: "invalid_supersession"},
 	}
@@ -78,7 +84,8 @@ func TestMergeAndArchiveRequireMergedEvidence(t *testing.T) {
 func validSnapshot(now time.Time) (codereview.Snapshot, Target) {
 	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets", ChangeID: "42"}
 	review := validRecord("review", codereview.EvidenceReview, "abc123", now)
-	review.State = "approved"
+	review.State, review.Severity = "resolved", "P2"
+	review.FindingID, review.ProcessID, review.SpecID = "FINDING-001", "PROCESS-001", "SPEC-001"
 	unit := validRecord("unit", codereview.EvidenceCheck, "abc123", now)
 	unit.Name, unit.State = "unit", "passed"
 	dco := validRecord("dco", codereview.EvidenceCheck, "abc123", now)

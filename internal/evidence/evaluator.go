@@ -162,6 +162,10 @@ func validateRecord(record codereview.EvidenceRecord, policy Policy, target Targ
 		failure.Code, failure.Message = "malformed_evidence", "evidence record is missing immutable identity, state, revision, time, or digest"
 		return &failure
 	}
+	if err := record.ValidateReviewLinkage(); err != nil {
+		failure.Code, failure.Message = "malformed_review_linkage", err.Error()
+		return &failure
+	}
 	if record.SubjectRevision != strings.TrimSpace(target.SubjectRevision) {
 		failure.Code, failure.Message = "record_revision_mismatch", "evidence record is tied to a different revision"
 		return &failure

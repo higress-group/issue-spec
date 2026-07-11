@@ -29,6 +29,30 @@ credential source is rejected. Provider keys do not grant authority: evidence
 ingestion still requires a designated repository writer, `evidence:write`, an
 exact repository cap, and live repository permission.
 
+For the CLI, command bridges are registered by pointing
+`ISSUE_SPEC_CODE_PROVIDERS_FILE` at a clean absolute private regular file
+(POSIX mode `0600` or stricter and one hard link, or an equivalent private
+Windows ACL; at most 1 MiB). The file is strict
+JSON; unknown/duplicate fields and unsupported versions fail closed:
+
+```json
+{
+  "version": 1,
+  "providers": {
+    "code.example": {
+      "path": "/opt/issue-spec/bin/code-example-bridge",
+      "args": ["serve-stdio"],
+      "environment": ["CODE_EXAMPLE_TOKEN_FILE=/run/secrets/code-example"],
+      "timeout": "30s",
+      "max_output_bytes": 1048576
+    }
+  }
+}
+```
+
+This process-owned file is never discovered from the repository, and workflow
+configuration cannot replace any registered executable or credential input.
+
 ## Process boundary
 
 An operator may register an in-process implementation of
@@ -103,12 +127,27 @@ records, untrusted writers, expired/stale observations, open P0/P1 findings,
 pending/failed required checks, and non-merged merge/archive evidence. The
 evidence identifiers and exact revision used are retained in the gate result.
 URLs remain navigation metadata; they are never proof by themselves.
+Persisted source-binding web URLs and external-reference canonical URLs are
+canonical HTTPS coordinates only: userinfo, query strings (including a bare
+`?`), fragments, control characters, default-port aliases, and dot-segment or
+otherwise non-canonical forms are rejected. Credentials belong in the
+operator bridge or delegated credential channel, never in a persisted URL.
+
+Every `review` record additionally carries canonical `finding_id`,
+`process_id`, and `spec_id` fields (for example `FINDING-030`, `PROCESS-020`,
+and `SPEC-010`). Core validates their type-specific shapes together with the
+neutral severity and state, and writes the consumed linkage into the canonical
+REVIEW artifact. The external platform continues to own the line-level body;
+the neutral record preserves the workflow identity and optional HTTPS
+`canonical_url` only.
 
 ### Mutation
 
 Mutation actions are `create_change` and `comment`. Requests and responses use
 the same neutral `provider_key`, `external_repository`, and `change_id`
-reference. Capability discovery runs first. A returned canonical URL and
+reference. A `comment` response must repeat the entire request reference;
+`create_change` alone may introduce a new `change_id`. Capability discovery
+runs first. A returned canonical URL and
 external ID are navigation/traceability values and must subsequently be backed
 by trusted evidence before verify or archive can pass.
 

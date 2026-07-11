@@ -127,6 +127,7 @@ func extractGlobalProfile(args []string) (string, []string, error) {
 }
 
 func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
+	operatorRegistry, operatorRegistryErr := codereview.LoadOperatorRegistryFromEnvironment()
 	return &app{
 		in:                        in,
 		out:                       out,
@@ -136,8 +137,11 @@ func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 		newGitHubBackend:          defaultNewGitHubBackend,
 		gitHubBackendToken:        defaultGitHubBackendToken,
 		newNativeEvidenceProvider: defaultNewNativeEvidenceProvider,
-		resolveCodeMutationProvider: func(context.Context, string) (codereview.MutationProvider, error) {
-			return nil, codereview.ErrProviderNotFound
+		resolveCodeMutationProvider: func(ctx context.Context, key string) (codereview.MutationProvider, error) {
+			if operatorRegistryErr != nil {
+				return nil, operatorRegistryErr
+			}
+			return operatorRegistry.ResolveMutationProvider(ctx, key)
 		},
 	}
 }

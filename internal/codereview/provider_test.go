@@ -41,7 +41,9 @@ func TestCommandProviderProtocol(t *testing.T) {
 	}
 	reference := Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets", ChangeID: "42"}
 	snapshot, err := provider.Snapshot(t.Context(), SnapshotRequest{Reference: reference, SubjectRevision: "abc123"})
-	if err != nil || snapshot.Reference != reference || snapshot.SubjectRevision != "abc123" {
+	if err != nil || snapshot.Reference != reference || snapshot.SubjectRevision != "abc123" || len(snapshot.Records) != 1 ||
+		snapshot.Records[0].FindingID != "FINDING-030" || snapshot.Records[0].ProcessID != "PROCESS-020" ||
+		snapshot.Records[0].SpecID != "SPEC-010" {
 		t.Fatalf("snapshot = %+v, %v", snapshot, err)
 	}
 	result, err := Mutate(t.Context(), provider, MutationRequest{Kind: MutationComment, Reference: reference, Body: "status"})
@@ -53,6 +55,22 @@ func TestCommandProviderProtocol(t *testing.T) {
 		Title:     "Change", HeadRevision: "abc123"})
 	if err != nil || created.Reference.ChangeID != "42" {
 		t.Fatalf("create mutation = %+v, %v", created, err)
+	}
+}
+
+func TestCommandProviderRejectsCommentMutationForDifferentChange(t *testing.T) {
+	provider := commandTestProvider(t, "wrong-comment-change", 1<<20, 10*time.Second)
+	reference := Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets", ChangeID: "42"}
+	if _, err := provider.Mutate(t.Context(), MutationRequest{Kind: MutationComment, Reference: reference, Body: "status"}); err == nil || !strings.Contains(err.Error(), "change identity mismatch") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestCommandProviderRejectsCredentialBearingMutationURL(t *testing.T) {
+	provider := commandTestProvider(t, "mutation-query-url", 1<<20, 10*time.Second)
+	reference := Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets", ChangeID: "42"}
+	if _, err := provider.Mutate(t.Context(), MutationRequest{Kind: MutationComment, Reference: reference, Body: "status"}); err == nil || !strings.Contains(err.Error(), "mutation response shape") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -121,20 +139,31 @@ func TestCommandProviderHelper(t *testing.T) {
 	switch request.Action {
 	case "capabilities":
 		response["capabilities"] = Capabilities{ProtocolVersion: ProtocolVersion,
-			Values: []Capability{CapabilityEvidenceSnapshot, CapabilityChangeComment}}
+			Values: []Capability{CapabilityEvidenceSnapshot, CapabilityChangeComment, CapabilityChangeCreate}}
 	case "snapshot":
 		var payload SnapshotRequest
 		_ = json.Unmarshal(request.Payload, &payload)
 		response["snapshot"] = Snapshot{ProtocolVersion: ProtocolVersion, Reference: payload.Reference,
-			SubjectRevision: payload.SubjectRevision, CapturedAt: time.Now().UTC(), Records: []EvidenceRecord{}}
+			SubjectRevision: payload.SubjectRevision, CapturedAt: time.Now().UTC(), Records: []EvidenceRecord{{
+				ID: "review-30", Kind: EvidenceReview, ExternalID: "thread-30", State: "resolved",
+				SubjectRevision: payload.SubjectRevision, Severity: "P2", FindingID: "FINDING-030",
+				ProcessID: "PROCESS-020", SpecID: "SPEC-010", ObservedAt: time.Now().UTC(), Trusted: true,
+				WriterIdentity: "bridge:test", PayloadDigest: "sha256:test",
+			}}}
 	case "mutate":
 		var payload MutationRequest
 		_ = json.Unmarshal(request.Payload, &payload)
 		if payload.Kind == MutationCreateChange {
 			payload.Reference.ChangeID = "42"
 		}
-		response["mutation"] = MutationResult{Reference: payload.Reference, ExternalID: "comment-1",
-			CanonicalURL: "https://code.example/acme/widgets/change/42#comment-1"}
+		if mode == "wrong-comment-change" && payload.Kind == MutationComment {
+			payload.Reference.ChangeID = "43"
+		}
+		canonicalURL := "https://code.example/acme/widgets/change/42"
+		if mode == "mutation-query-url" {
+			canonicalURL += "?access_token=secret"
+		}
+		response["mutation"] = MutationResult{Reference: payload.Reference, ExternalID: "comment-1", CanonicalURL: canonicalURL}
 	default:
 		os.Exit(3)
 	}

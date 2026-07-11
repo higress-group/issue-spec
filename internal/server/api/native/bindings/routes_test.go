@@ -94,6 +94,20 @@ func TestBindingHandlersProblemsAndStrictJSON(t *testing.T) {
 		mux.ServeHTTP(response, req)
 		assertBindingProblem(t, response, test.want, test.code, true)
 	}
+
+	service.err = adminservice.ErrInvalidInput
+	const secret = "BINDING_QUERY_TOKEN"
+	queryToken := httptest.NewRequest(http.MethodPost, validPath, strings.NewReader(`{
+		"provider_key":"code.example","external_repository_id":"acme/widgets",
+		"clone_url":"https://code.example/acme/widgets.git",
+		"web_url":"https://code.example/acme/widgets?access_token=`+secret+`","default_branch":"main"}`))
+	queryToken.Header.Set("Authorization", "test")
+	queryTokenResponse := httptest.NewRecorder()
+	mux.ServeHTTP(queryTokenResponse, queryToken)
+	assertBindingProblem(t, queryTokenResponse, http.StatusUnprocessableEntity, "invalid_request", true)
+	if strings.Contains(queryTokenResponse.Body.String(), secret) {
+		t.Fatalf("binding API reflected rejected credential: %s", queryTokenResponse.Body.String())
+	}
 }
 
 type fakeBindingsService struct {

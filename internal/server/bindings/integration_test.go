@@ -156,6 +156,74 @@ func TestReferencesIdentityVisibilityCollectionsAndTenantIsolation(t *testing.T)
 	}
 }
 
+func TestPersistedExternalURLsRejectCredentialsAndReaderFailsClosed(t *testing.T) {
+	writeEnv := newBindingsEnvironment(t)
+	unsafeURLs := []string{
+		"https://code.example/acme/widgets?access_token=BINDING_SECRET",
+		"https://code.example/acme/widgets?",
+		"https://code.example/acme/widgets#access_token=BINDING_SECRET",
+		"https://user:secret@code.example/acme/widgets",
+		"https://CODE.example/acme/widgets",
+		"https://code.example/acme/../widgets",
+		"https://code.example/acme/widgets\nnext",
+	}
+	for index, unsafeURL := range unsafeURLs {
+		_, err := writeEnv.service.CreateBindingVersion(t.Context(), authz.Authenticated(writeEnv.owner),
+			writeEnv.actor(fmt.Sprintf("unsafe-binding-%d", index)), writeEnv.scope, CreateBindingVersionInput{
+				ProviderKey: "code.example", ExternalRepositoryID: "acme/widgets",
+				CloneURL: "https://code.example/acme/widgets.git", WebURL: unsafeURL, DefaultBranch: "main"})
+		if !errors.Is(err, adminservice.ErrInvalidInput) {
+			t.Errorf("binding WebURL %q error = %v, want invalid input", unsafeURL, err)
+		}
+		_, err = writeEnv.service.UpsertReference(t.Context(), authz.Authenticated(writeEnv.owner),
+			writeEnv.actor(fmt.Sprintf("unsafe-reference-%d", index)), writeEnv.scope, UpsertReferenceInput{
+				IssueID: writeEnv.issueID, ProviderKey: "code.example", RelationKind: "code_change",
+				ExternalRepositoryID: "acme/widgets", ExternalID: fmt.Sprintf("change-%d", index),
+				CanonicalURL: unsafeURL, LifecycleState: "active", Visibility: VisibilityRepository})
+		if !errors.Is(err, adminservice.ErrInvalidInput) {
+			t.Errorf("reference CanonicalURL %q error = %v, want invalid input", unsafeURL, err)
+		}
+	}
+	var bindingsCount, referencesCount int
+	if err := writeEnv.pool.QueryRow(t.Context(), `SELECT
+		(SELECT count(*) FROM source_bindings WHERE organization_id=$1 AND repository_id=$2),
+		(SELECT count(*) FROM external_references WHERE organization_id=$1 AND repository_id=$2)`,
+		writeEnv.scope.OrgID, writeEnv.scope.RepoID).Scan(&bindingsCount, &referencesCount); err != nil {
+		t.Fatal(err)
+	}
+	if bindingsCount != 0 || referencesCount != 0 {
+		t.Fatalf("unsafe URL writes persisted bindings=%d references=%d", bindingsCount, referencesCount)
+	}
+
+	// Defense in depth for pre-fix/directly imported rows: a repository reader
+	// receives an error, never the persisted token-bearing URL.
+	readEnv := newBindingsEnvironment(t)
+	const bindingSecret = "LEGACY_BINDING_TOKEN"
+	if _, err := readEnv.pool.Exec(t.Context(), `INSERT INTO source_bindings
+		(id, organization_id, repository_id, provider_key, external_repository_id, clone_url, web_url,
+		 default_branch, version, active) VALUES ($1,$2,$3,'code.example','acme/widgets',
+		 'https://code.example/acme/widgets.git',$4,'main',1,true)`, uuid.New(), readEnv.scope.OrgID,
+		readEnv.scope.RepoID, "https://code.example/acme/widgets?access_token="+bindingSecret); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readEnv.service.ActiveBinding(t.Context(), authz.Authenticated(readEnv.reader), readEnv.scope); err == nil || strings.Contains(err.Error(), bindingSecret) {
+		t.Fatalf("reader unsafe binding error = %v", err)
+	}
+
+	const referenceSecret = "LEGACY_REFERENCE_TOKEN"
+	if _, err := readEnv.pool.Exec(t.Context(), `INSERT INTO external_references
+		(id, organization_id, repository_id, issue_id, provider_key, relation_kind,
+		 external_repository_id, external_id, canonical_url, lifecycle_state, visibility)
+		 VALUES ($1,$2,$3,$4,'code.example','code_change','acme/widgets','change-legacy',$5,'active','repository')`,
+		uuid.New(), readEnv.scope.OrgID, readEnv.scope.RepoID, readEnv.issueID,
+		"https://code.example/changes/legacy?access_token="+referenceSecret); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readEnv.service.ListReferences(t.Context(), authz.Authenticated(readEnv.reader), readEnv.scope, readEnv.issueID); err == nil || strings.Contains(err.Error(), referenceSecret) {
+		t.Fatalf("reader unsafe reference error = %v", err)
+	}
+}
+
 type bindingsEnvironment struct {
 	pool       *pgxpool.Pool
 	service    *Service

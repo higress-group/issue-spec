@@ -165,6 +165,13 @@ func (p *CommandProvider) Mutate(ctx context.Context, request MutationRequest) (
 		!safeCanonicalURL(response.Mutation.CanonicalURL) {
 		return MutationResult{}, fmt.Errorf("%w: mutation response shape", ErrInvalidProviderData)
 	}
+	// A comment is an operation on one already-authoritative change.  A bridge
+	// must not be able to acknowledge the request with a comment written to a
+	// different change.  create_change is the only mutation whose response is
+	// allowed to introduce a new change identifier.
+	if request.Kind == MutationComment && response.Mutation.Reference != request.Reference {
+		return MutationResult{}, fmt.Errorf("%w: mutation response change identity mismatch", ErrInvalidProviderData)
+	}
 	return *response.Mutation, nil
 }
 
@@ -318,8 +325,14 @@ func consumeValue(decoder *json.Decoder) error {
 }
 
 func safeCanonicalURL(raw string) bool {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil
+	if raw == "" || raw != strings.TrimSpace(raw) || strings.ContainsAny(raw, "?#\x00\r\n\t\\") {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.Hostname() != "" &&
+		parsed.User == nil && parsed.Opaque == "" && parsed.RawQuery == "" && !parsed.ForceQuery &&
+		parsed.Fragment == "" && parsed.RawFragment == "" && parsed.Host == strings.ToLower(parsed.Host) &&
+		parsed.Port() != "443" && parsed.String() == raw
 }
 
 type boundedBuffer struct {

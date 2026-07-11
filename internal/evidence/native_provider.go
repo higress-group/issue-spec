@@ -212,7 +212,7 @@ func (p *nativeSnapshotProvider) Snapshot(ctx context.Context, request coderevie
 	}
 	records := make([]codereview.EvidenceRecord, 0, len(envelope.Evidence))
 	for _, item := range envelope.Evidence {
-		record, err := item.record(request.Reference.ChangeID)
+		record, err := item.record(p.issueID, request.Reference)
 		if err != nil {
 			return codereview.Snapshot{}, err
 		}
@@ -528,6 +528,9 @@ type neutralPayloadV1 struct {
 	ChangeID      string          `json:"change_id"`
 	Name          string          `json:"name,omitempty"`
 	Severity      string          `json:"severity,omitempty"`
+	FindingID     string          `json:"finding_id,omitempty"`
+	ProcessID     string          `json:"process_id,omitempty"`
+	SpecID        string          `json:"spec_id,omitempty"`
 	CanonicalURL  string          `json:"canonical_url,omitempty"`
 	Summary       string          `json:"summary,omitempty"`
 	Path          string          `json:"path,omitempty"`
@@ -535,11 +538,15 @@ type neutralPayloadV1 struct {
 	Approved      json.RawMessage `json:"approved,omitempty"`
 }
 
-func (n nativeEvidence) record(changeID string) (codereview.EvidenceRecord, error) {
+func (n nativeEvidence) record(issueID uuid.UUID, reference codereview.Reference) (codereview.EvidenceRecord, error) {
 	kind := codereview.EvidenceKind(strings.TrimSpace(n.EvidenceType))
 	if !validEvidenceKind(kind) || n.ID == uuid.Nil || n.IssueID == uuid.Nil || n.ProviderKey == "" ||
 		n.ExternalRepositoryID == "" || n.SubjectRevision == "" || n.WriterUserID == uuid.Nil || n.WriterIdentityKey == "" {
 		return codereview.EvidenceRecord{}, fmt.Errorf("%w: malformed native evidence identity", ErrNativeEvidence)
+	}
+	if n.IssueID != issueID || n.ProviderKey != reference.ProviderKey ||
+		n.ExternalRepositoryID != reference.ExternalRepository {
+		return codereview.EvidenceRecord{}, fmt.Errorf("%w: evidence row identity does not match the requested issue, provider, and repository", ErrNativeEvidence)
 	}
 	payload := neutralPayloadV1{}
 	raw := n.Payload
@@ -552,7 +559,7 @@ func (n nativeEvidence) record(changeID string) (codereview.EvidenceRecord, erro
 		return codereview.EvidenceRecord{}, fmt.Errorf("%w: invalid neutral evidence payload: %v", ErrNativeEvidence, err)
 	}
 	if len(payload.Approved) != 0 || (payload.SchemaVersion != "" && payload.SchemaVersion != "issue-spec.evidence/v1") ||
-		strings.TrimSpace(payload.ChangeID) != changeID {
+		strings.TrimSpace(payload.ChangeID) != reference.ChangeID {
 		return codereview.EvidenceRecord{}, fmt.Errorf("%w: evidence payload change identity is missing or contains an untrusted approval", ErrNativeEvidence)
 	}
 	if kind == codereview.EvidenceCheck && strings.TrimSpace(payload.Name) == "" {
@@ -563,8 +570,12 @@ func (n nativeEvidence) record(changeID string) (codereview.EvidenceRecord, erro
 	}
 	record := codereview.EvidenceRecord{ID: n.ID.String(), Kind: kind, ExternalID: n.ExternalID,
 		State: n.NormalizedState, SubjectRevision: n.SubjectRevision, Name: payload.Name, Severity: payload.Severity,
+		FindingID: payload.FindingID, ProcessID: payload.ProcessID, SpecID: payload.SpecID,
 		ObservedAt: n.ObservedAt, ValidUntil: n.ValidUntil, Trusted: true, WriterIdentity: n.WriterIdentityKey,
 		CanonicalURL: payload.CanonicalURL, PayloadDigest: hex.EncodeToString(n.PayloadHash)}
+	if err := record.ValidateReviewLinkage(); err != nil {
+		return codereview.EvidenceRecord{}, fmt.Errorf("%w: %v", ErrNativeEvidence, err)
+	}
 	if n.BaseRevision != nil {
 		record.BaseRevision = *n.BaseRevision
 	}

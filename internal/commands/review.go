@@ -2,6 +2,8 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -376,8 +378,16 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 }
 
 func renderExternalReviewSyncComment(id, agent string, session writerSession, scope string, gate externalGateResult) (string, error) {
-	logical := fmt.Sprintf("## Review Summary: external code evidence\n\nEvaluated trusted evidence for `%s` at exact revision `%s`.\n\n### Findings\n\n- No open P0/P1 findings in the consumed snapshot.\n\n### Verdict\n\nPassed provider-neutral review evidence gate.",
-		gate.Target.Reference.ChangeID, gate.Target.SubjectRevision)
+	findings, err := canonicalExternalReviewFindings(gate)
+	if err != nil {
+		return "", err
+	}
+	rawFindings, err := json.MarshalIndent(findings, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	logical := fmt.Sprintf("## Review Summary: external code evidence\n\nEvaluated trusted evidence for `%s` at exact revision `%s`.\n\n### Canonical Findings\n\n```json\n%s\n```\n\nNo open P0/P1 findings remain in the consumed snapshot. External code review remains the owner of line-level discussion content.\n\n### Verdict\n\nPassed provider-neutral review evidence gate.",
+		gate.Target.Reference.ChangeID, gate.Target.SubjectRevision, rawFindings)
 	body, err := model.EnsureTypedBody("REVIEW", id, logical, model.BodyOptions{Agent: agent,
 		AgentSessionID: session.ID, AgentSessionSource: session.Source, Status: "done", Scope: scope})
 	if err != nil {
@@ -385,6 +395,48 @@ func renderExternalReviewSyncComment(id, agent string, session writerSession, sc
 	}
 	updated, _, err := stampConsumedEvidence(body, gate.Consumption)
 	return updated, err
+}
+
+type canonicalExternalReviewFinding struct {
+	EvidenceID   string `json:"evidence_id"`
+	FindingID    string `json:"finding_id"`
+	ProcessID    string `json:"process_id"`
+	SpecID       string `json:"spec_id"`
+	Severity     string `json:"severity"`
+	State        string `json:"state"`
+	CanonicalURL string `json:"canonical_url,omitempty"`
+}
+
+func canonicalExternalReviewFindings(gate externalGateResult) ([]canonicalExternalReviewFinding, error) {
+	consumed := make(map[string]struct{}, len(gate.Evaluation.EvidenceIDs))
+	for _, id := range gate.Evaluation.EvidenceIDs {
+		consumed[id] = struct{}{}
+	}
+	findings := make([]canonicalExternalReviewFinding, 0)
+	for _, record := range gate.Snapshot.Records {
+		if record.Kind != codereview.EvidenceReview {
+			continue
+		}
+		if _, ok := consumed[record.ID]; !ok {
+			continue
+		}
+		if err := record.ValidateReviewLinkage(); err != nil {
+			return nil, fmt.Errorf("canonical external review finding %q: %w", record.ID, err)
+		}
+		findings = append(findings, canonicalExternalReviewFinding{EvidenceID: record.ID,
+			FindingID: strings.TrimSpace(record.FindingID), ProcessID: strings.TrimSpace(record.ProcessID),
+			SpecID: strings.TrimSpace(record.SpecID), Severity: strings.ToUpper(strings.TrimSpace(record.Severity)),
+			State: strings.ToLower(strings.TrimSpace(record.State)), CanonicalURL: strings.TrimSpace(record.CanonicalURL)})
+	}
+	if len(findings) == 0 {
+		return nil, errors.New("passed external review gate contains no consumed canonical review finding")
+	}
+	sort.Slice(findings, func(i, j int) bool {
+		left := findings[i].FindingID + "\x00" + findings[i].ProcessID + "\x00" + findings[i].SpecID + "\x00" + findings[i].EvidenceID
+		right := findings[j].FindingID + "\x00" + findings[j].ProcessID + "\x00" + findings[j].SpecID + "\x00" + findings[j].EvidenceID
+		return left < right
+	})
+	return findings, nil
 }
 
 type reviewFindingResult struct {
