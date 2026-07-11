@@ -78,7 +78,9 @@ func TestRepositoryProjectionLifecycleProgressAndAnomalies(t *testing.T) {
 	if got := requireCard(t, page.Cards, "alpha").Lifecycle; got != LifecycleClosed {
 		t.Fatalf("placeholder PR incorrectly completed lifecycle: %s", got)
 	}
-	env.updateTyped(t, env.scope, "VERIFY-001", "done", []string{"https://code.example/acme/widgets/pull/42"})
+	// A completed projection accepts the semantic PR evidence field without
+	// imposing a GitHub-specific /pull/ URL shape on external code providers.
+	env.updateTyped(t, env.scope, "VERIFY-001", "done", []string{"https://code.example/acme/widgets/-/merge_requests/42"})
 	page, err = env.service.RepositoryBoard(t.Context(), authz.Authenticated(env.principal), env.scope, ListOptions{})
 	if err != nil {
 		t.Fatal(err)

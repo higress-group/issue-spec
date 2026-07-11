@@ -115,9 +115,12 @@ func hasAcceptedClosureLink(raw json.RawMessage) bool {
 		if value == "" || strings.EqualFold(value, "N/A") || strings.EqualFold(value, "TBD") {
 			continue
 		}
+		// The value already came from the typed comment's semantic `PR` field.
+		// Keep the core provider-neutral: GitHub uses /pull/, while GitLab,
+		// Aone, Gerrit, and other adapters use different change URL shapes.
 		parsed, err := url.Parse(value)
 		if err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil &&
-			parsed.RawQuery == "" && parsed.Fragment == "" && strings.Contains(parsed.Path, "/pull/") {
+			parsed.RawQuery == "" && parsed.Fragment == "" && parsed.Path != "" {
 			return true
 		}
 	}
