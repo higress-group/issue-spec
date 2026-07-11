@@ -1,0 +1,571 @@
+package delivery
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/server/authz"
+	"github.com/higress-group/issue-spec/internal/server/events/networkpolicy"
+	"github.com/higress-group/issue-spec/internal/server/models"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+var deliveryNamespace = uuid.MustParse("ca7f151e-5502-56bc-b430-b6f318b7d102")
+var errCredentialUnavailable = errors.New("delivery credential unavailable")
+
+type Service struct {
+	pool       *pgxpool.Pool
+	authorizer Authorizer
+	secrets    SecretProvider
+	sender     Sender
+	config     Config
+	semaphore  chan struct{}
+}
+
+func New(pool *pgxpool.Pool, authorizer Authorizer, secrets SecretProvider, sender Sender, config Config) (*Service, error) {
+	if pool == nil || authorizer == nil || secrets == nil || sender == nil {
+		return nil, errors.New("webhook delivery: database, authorizer, secrets and sender are required")
+	}
+	if config.LeaseDuration <= 0 {
+		config.LeaseDuration = 30 * time.Second
+	}
+	if config.MaxConcurrency <= 0 {
+		config.MaxConcurrency = 8
+	}
+	if config.Clock == nil {
+		config.Clock = func() time.Time { return time.Now().UTC() }
+	}
+	if config.PollInterval <= 0 {
+		config.PollInterval = 100 * time.Millisecond
+	}
+	return &Service{pool: pool, authorizer: authorizer, secrets: secrets, sender: sender,
+		config: config, semaphore: make(chan struct{}, config.MaxConcurrency)}, nil
+}
+
+func (s *Service) Run(ctx context.Context) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+	workerContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errorsCh := make(chan error, s.config.MaxConcurrency)
+	var workers sync.WaitGroup
+	for range s.config.MaxConcurrency {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				expanded, err := s.ExpandOne(workerContext)
+				if err != nil {
+					if workerContext.Err() != nil {
+						return
+					}
+					select {
+					case errorsCh <- err:
+						cancel()
+					default:
+					}
+					return
+				}
+				err = s.ProcessOne(workerContext)
+				if err != nil && !errors.Is(err, ErrNoWork) {
+					if workerContext.Err() != nil {
+						return
+					}
+					select {
+					case errorsCh <- err:
+						cancel()
+					default:
+					}
+					return
+				}
+				if !expanded && errors.Is(err, ErrNoWork) {
+					timer := time.NewTimer(s.config.PollInterval)
+					select {
+					case <-workerContext.Done():
+						timer.Stop()
+						return
+					case <-timer.C:
+					}
+				}
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		cancel()
+		<-done
+		return nil
+	case err := <-errorsCh:
+		cancel()
+		<-done
+		return err
+	case <-done:
+		select {
+		case err := <-errorsCh:
+			return err
+		default:
+			return nil
+		}
+	}
+}
+
+// ExpandOne expands the earliest unpublished event of one repository. The
+// NOT EXISTS guard plus SKIP LOCKED keeps expansion ordered per repository.
+func (s *Service) ExpandOne(ctx context.Context) (bool, error) {
+	now := s.config.Clock()
+	expanded := false
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		var eventID, orgID, repoID uuid.UUID
+		var eventType string
+		err := tx.QueryRow(ctx, `SELECT event.id, event.organization_id, event.repository_id, event.event_type
+			FROM event_outbox event WHERE event.published_at IS NULL AND event.available_at <= $1
+			AND NOT EXISTS (SELECT 1 FROM event_outbox prior
+				WHERE prior.organization_id = event.organization_id AND prior.repository_id = event.repository_id
+				AND prior.published_at IS NULL AND prior.repository_sequence < event.repository_sequence)
+			ORDER BY event.available_at, event.created_at, event.id
+			FOR UPDATE OF event SKIP LOCKED LIMIT 1`, now).Scan(&eventID, &orgID, &repoID, &eventType)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `SELECT subscription.id, secret.id
+			FROM webhook_subscriptions subscription
+			JOIN LATERAL (SELECT id FROM webhook_secret_versions
+				WHERE organization_id = subscription.organization_id
+				AND subscription_id = subscription.id AND active AND revoked_at IS NULL
+				ORDER BY version DESC LIMIT 1) secret ON true
+			WHERE subscription.organization_id = $1 AND subscription.active
+			AND $3 = ANY(subscription.event_types)
+			AND ((subscription.scope_type = 'organization' AND subscription.repository_id IS NULL)
+				OR (subscription.scope_type = 'repository' AND subscription.repository_id = $2))
+			ORDER BY subscription.created_at, subscription.id`, orgID, repoID, eventType)
+		if err != nil {
+			return err
+		}
+		type target struct{ subscriptionID, secretID uuid.UUID }
+		var targets []target
+		for rows.Next() {
+			var subscriptionID, secretID uuid.UUID
+			if err := rows.Scan(&subscriptionID, &secretID); err != nil {
+				rows.Close()
+				return err
+			}
+			targets = append(targets, target{subscriptionID: subscriptionID, secretID: secretID})
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for _, target := range targets {
+			deliveryID := stableDeliveryID(eventID, target.subscriptionID)
+			if _, err := tx.Exec(ctx, `INSERT INTO webhook_deliveries
+				(id, organization_id, repository_id, event_id, subscription_id,
+				 secret_version_id, state, next_attempt_at)
+				VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
+				ON CONFLICT (organization_id, repository_id, event_id, subscription_id) DO NOTHING`,
+				deliveryID, orgID, repoID, eventID, target.subscriptionID, target.secretID, now); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, `UPDATE event_outbox SET published_at = $2
+			WHERE id = $1 AND published_at IS NULL`, eventID, now); err != nil {
+			return err
+		}
+		expanded = true
+		return nil
+	})
+	return expanded, err
+}
+
+func stableDeliveryID(eventID, subscriptionID uuid.UUID) uuid.UUID {
+	return uuid.NewSHA1(deliveryNamespace, []byte(eventID.String()+":"+subscriptionID.String()))
+}
+
+// ClaimOne leases the earliest ready delivery while fencing stale workers with
+// representation_version. next_attempt_at doubles as the lease expiry while
+// state is delivering.
+func (s *Service) ClaimOne(ctx context.Context) (*claim, error) {
+	now := s.config.Clock()
+	var result claim
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx, `SELECT delivery.id, delivery.organization_id,
+			delivery.repository_id, delivery.event_id, delivery.subscription_id,
+			delivery.secret_version_id, delivery.state, delivery.next_attempt_at,
+			delivery.delivered_at, delivery.last_error, delivery.representation_version,
+			delivery.created_at, delivery.updated_at, event.event_type,
+			event.repository_sequence, secret.version, subscription.url, event.payload,
+			subscription.retry_max_attempts,
+			(extract(epoch from subscription.retry_initial_backoff) * 1000000000)::bigint,
+			(extract(epoch from subscription.retry_max_backoff) * 1000000000)::bigint
+			FROM webhook_deliveries delivery
+			JOIN event_outbox event ON event.organization_id = delivery.organization_id
+				AND event.repository_id = delivery.repository_id AND event.id = delivery.event_id
+			JOIN webhook_subscriptions subscription ON subscription.organization_id = delivery.organization_id
+				AND subscription.id = delivery.subscription_id
+			JOIN webhook_secret_versions secret ON secret.organization_id = delivery.organization_id
+				AND secret.subscription_id = delivery.subscription_id AND secret.id = delivery.secret_version_id
+			WHERE ((delivery.state = 'pending' AND delivery.next_attempt_at <= $1)
+				OR (delivery.state = 'delivering' AND delivery.next_attempt_at <= $1))
+			AND NOT EXISTS (SELECT 1 FROM webhook_deliveries prior_delivery
+				JOIN event_outbox prior_event ON prior_event.organization_id = prior_delivery.organization_id
+				AND prior_event.repository_id = prior_delivery.repository_id AND prior_event.id = prior_delivery.event_id
+				WHERE prior_delivery.organization_id = delivery.organization_id
+				AND prior_delivery.repository_id = delivery.repository_id
+				AND prior_delivery.subscription_id = delivery.subscription_id
+				AND prior_event.repository_sequence < event.repository_sequence
+				AND prior_delivery.state IN ('pending', 'delivering'))
+			ORDER BY event.organization_id, event.repository_id, event.repository_sequence,
+				delivery.subscription_id, delivery.id
+			FOR UPDATE OF delivery SKIP LOCKED LIMIT 1`, now)
+		var initial, maximum int64
+		if err := row.Scan(&result.ID, &result.Scope.OrgID, &result.Scope.RepoID,
+			&result.EventID, &result.SubscriptionID, &result.SecretVersionID, &result.State,
+			&result.NextAttemptAt, &result.DeliveredAt, &result.LastError,
+			&result.RepresentationVersion, &result.CreatedAt, &result.UpdatedAt,
+			&result.EventType, &result.RepositorySequence, &result.SecretVersion,
+			&result.URL, &result.Payload, &result.Retry.MaxAttempts, &initial, &maximum); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNoWork
+			}
+			return err
+		}
+		result.Retry.InitialBackoff, result.Retry.MaxBackoff = time.Duration(initial), time.Duration(maximum)
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(max(attempt_number), 0), count(*) FILTER (
+			WHERE started_at > COALESCE((SELECT max(created_at) FROM audit_events
+				WHERE resource_type = 'webhook_delivery' AND resource_id = $1
+				AND action = 'webhook.delivery.redelivered'), '-infinity'::timestamptz))
+			FROM webhook_delivery_attempts WHERE organization_id = $2 AND repository_id = $3
+			AND delivery_id = $1`, result.ID, result.Scope.OrgID, result.Scope.RepoID).
+			Scan(&result.GlobalAttempt, &result.CycleAttempt); err != nil {
+			return err
+		}
+		result.GlobalAttempt++
+		result.CycleAttempt++
+		leaseUntil := now.Add(s.config.LeaseDuration)
+		if err := tx.QueryRow(ctx, `UPDATE webhook_deliveries SET state = 'delivering',
+			next_attempt_at = $2, representation_version = representation_version + 1,
+			updated_at = $1 WHERE id = $3 RETURNING representation_version, updated_at`,
+			now, leaseUntil, result.ID).Scan(&result.LeaseVersion, &result.UpdatedAt); err != nil {
+			return err
+		}
+		result.State, result.NextAttemptAt, result.RepresentationVersion = "delivering", leaseUntil, result.LeaseVersion
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (s *Service) ProcessOne(ctx context.Context) error {
+	select {
+	case s.semaphore <- struct{}{}:
+		defer func() { <-s.semaphore }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	claimed, err := s.ClaimOne(ctx)
+	if err != nil {
+		return err
+	}
+	now := s.config.Clock()
+	secretID, secret, err := s.acceptedSecret(ctx, claimed, now)
+	var result networkpolicy.Result
+	if err == nil {
+		result, err = s.sender.Send(ctx, networkpolicy.Request{URL: claimed.URL, Secret: secret,
+			EventID: claimed.EventID.String(), DeliveryID: claimed.ID.String(), Timestamp: now,
+			Body: claimed.Payload})
+	}
+	err = redactSecretError(err, secret)
+	clear(secret)
+	return s.finalize(ctx, claimed, secretID, result, err, now, s.config.Clock())
+}
+
+func (s *Service) acceptedSecret(ctx context.Context, claimed *claim, at time.Time) (uuid.UUID, []byte, error) {
+	accepted, err := s.secrets.AcceptedSecrets(ctx, claimed.Scope.OrgID, claimed.SubscriptionID, at)
+	if err != nil {
+		return uuid.Nil, nil, err
+	}
+	defer func() {
+		for index := range accepted {
+			clear(accepted[index].Secret)
+		}
+	}()
+	for _, candidate := range accepted {
+		if candidate.Version == claimed.SecretVersion {
+			return claimed.SecretVersionID, append([]byte(nil), candidate.Secret...), nil
+		}
+	}
+	var currentID uuid.UUID
+	var currentVersion int64
+	err = s.pool.QueryRow(ctx, `SELECT id, version FROM webhook_secret_versions
+		WHERE organization_id = $1 AND subscription_id = $2 AND active AND revoked_at IS NULL
+		ORDER BY version DESC LIMIT 1`, claimed.Scope.OrgID, claimed.SubscriptionID).
+		Scan(&currentID, &currentVersion)
+	if err != nil {
+		return uuid.Nil, nil, errCredentialUnavailable
+	}
+	for _, candidate := range accepted {
+		if candidate.Version == currentVersion {
+			return currentID, append([]byte(nil), candidate.Secret...), nil
+		}
+	}
+	return uuid.Nil, nil, errCredentialUnavailable
+}
+
+func (s *Service) finalize(ctx context.Context, claimed *claim, secretID uuid.UUID,
+	result networkpolicy.Result, sendErr error, started, completed time.Time) error {
+	state := "failed"
+	var deliveredAt *time.Time
+	var lastError *string
+	nextAttempt := completed
+	if successful(result.StatusCode) && sendErr == nil {
+		state, deliveredAt = "succeeded", &completed
+	} else {
+		message := safeError(sendErr, result.StatusCode)
+		lastError = &message
+		if retryable(result.StatusCode, sendErr) && !errors.Is(sendErr, errCredentialUnavailable) {
+			if claimed.CycleAttempt >= claimed.Retry.MaxAttempts {
+				state = "dead"
+			} else {
+				state = "pending"
+				nextAttempt = nextRetry(completed, claimed.Retry, claimed.CycleAttempt, result.Header)
+			}
+		}
+	}
+	requestHeaders, _ := json.Marshal(map[string]string{"content-type": "application/json",
+		"x-issue-spec-event": claimed.EventID.String(), "x-issue-spec-delivery": claimed.ID.String()})
+	responseHeaders, _ := json.Marshal(safeResponseHeaders(result.Header))
+	return pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO webhook_delivery_attempts
+			(id, organization_id, repository_id, delivery_id, attempt_number,
+			 request_headers, response_status, response_headers, error, started_at, completed_at)
+			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb, $9, $10, $11)`,
+			uuid.New(), claimed.Scope.OrgID, claimed.Scope.RepoID, claimed.ID,
+			claimed.GlobalAttempt, string(requestHeaders), nullableStatus(result.StatusCode),
+			string(responseHeaders), lastError, started, completed); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `UPDATE webhook_deliveries SET state = $1, next_attempt_at = $2,
+			delivered_at = $3, last_error = $4, secret_version_id = COALESCE(NULLIF($5::uuid, $6::uuid), secret_version_id),
+			representation_version = representation_version + 1, updated_at = $7
+			WHERE organization_id = $8 AND repository_id = $9 AND id = $10
+			AND state = 'delivering' AND representation_version = $11`, state, nextAttempt,
+			deliveredAt, lastError, secretID, uuid.Nil, completed, claimed.Scope.OrgID,
+			claimed.Scope.RepoID, claimed.ID, claimed.LeaseVersion)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrLeaseLost
+		}
+		return nil
+	})
+}
+
+func redactSecretError(err error, secret []byte) error {
+	if err == nil {
+		return nil
+	}
+	message := err.Error()
+	if len(secret) > 0 {
+		message = strings.ReplaceAll(message, string(secret), "[REDACTED]")
+	}
+	if errors.Is(err, errCredentialUnavailable) {
+		return errCredentialUnavailable
+	}
+	return errors.New(message)
+}
+
+func nullableStatus(status int) any {
+	if status == 0 {
+		return nil
+	}
+	return status
+}
+
+func safeError(err error, status int) string {
+	if err == nil {
+		return fmt.Sprintf("http status %d", status)
+	}
+	message := err.Error()
+	if len(message) > 512 {
+		message = message[:512]
+	}
+	return message
+}
+
+func safeResponseHeaders(header http.Header) http.Header {
+	result := http.Header{}
+	for _, name := range []string{"Content-Type", "Retry-After"} {
+		if value := header.Get(name); value != "" {
+			if len(value) > 256 {
+				value = value[:256]
+			}
+			result.Set(name, value)
+		}
+	}
+	return result
+}
+
+func (s *Service) List(ctx context.Context, subject authz.Subject, scope models.RepoScope) ([]Delivery, error) {
+	if err := s.authorize(ctx, subject, scope); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+deliveryColumns+` FROM webhook_deliveries delivery
+		JOIN event_outbox event ON event.organization_id = delivery.organization_id
+		AND event.repository_id = delivery.repository_id AND event.id = delivery.event_id
+		JOIN webhook_secret_versions secret ON secret.organization_id = delivery.organization_id
+		AND secret.subscription_id = delivery.subscription_id AND secret.id = delivery.secret_version_id
+		WHERE delivery.organization_id = $1 AND delivery.repository_id = $2
+		ORDER BY event.repository_sequence DESC, delivery.id`, scope.OrgID, scope.RepoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]Delivery, 0)
+	for rows.Next() {
+		item, err := scanDelivery(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (s *Service) Get(ctx context.Context, subject authz.Subject, scope models.RepoScope, id uuid.UUID) (Detail, error) {
+	if err := s.authorize(ctx, subject, scope); err != nil {
+		return Detail{}, err
+	}
+	item, err := scanDelivery(s.pool.QueryRow(ctx, `SELECT `+deliveryColumns+` FROM webhook_deliveries delivery
+		JOIN event_outbox event ON event.organization_id = delivery.organization_id
+		AND event.repository_id = delivery.repository_id AND event.id = delivery.event_id
+		JOIN webhook_secret_versions secret ON secret.organization_id = delivery.organization_id
+		AND secret.subscription_id = delivery.subscription_id AND secret.id = delivery.secret_version_id
+		WHERE delivery.organization_id = $1 AND delivery.repository_id = $2 AND delivery.id = $3`,
+		scope.OrgID, scope.RepoID, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Detail{}, ErrNotFound
+	}
+	if err != nil {
+		return Detail{}, err
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id, attempt_number, response_status,
+		response_headers, error, started_at, completed_at FROM webhook_delivery_attempts
+		WHERE organization_id = $1 AND repository_id = $2 AND delivery_id = $3
+		ORDER BY attempt_number`, scope.OrgID, scope.RepoID, id)
+	if err != nil {
+		return Detail{}, err
+	}
+	defer rows.Close()
+	detail := Detail{Delivery: item, Attempts: make([]Attempt, 0)}
+	for rows.Next() {
+		var attempt Attempt
+		if err := rows.Scan(&attempt.ID, &attempt.AttemptNumber, &attempt.ResponseStatus,
+			&attempt.ResponseHeaders, &attempt.Error, &attempt.StartedAt, &attempt.CompletedAt); err != nil {
+			return Detail{}, err
+		}
+		detail.Attempts = append(detail.Attempts, attempt)
+	}
+	return detail, rows.Err()
+}
+
+func (s *Service) Redeliver(ctx context.Context, actor Actor, subject authz.Subject,
+	scope models.RepoScope, id uuid.UUID) (Delivery, error) {
+	if actor.UserID == uuid.Nil || strings.TrimSpace(actor.IdentityKey) == "" || strings.TrimSpace(actor.RequestID) == "" {
+		return Delivery{}, ErrInvalid
+	}
+	var result Delivery
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		decision, err := s.authorizer.EvaluateRepositoryTx(ctx, tx, subject,
+			authz.RepositoryRequest{Scope: scope, Operation: authz.OperationManageIntegrations})
+		if err != nil {
+			return err
+		}
+		if err := authorizationResult(decision); err != nil {
+			return err
+		}
+		now := s.config.Clock()
+		result, err = scanDelivery(tx.QueryRow(ctx, `UPDATE webhook_deliveries delivery
+			SET state = 'pending', next_attempt_at = $4, delivered_at = NULL, last_error = NULL,
+			representation_version = delivery.representation_version + 1, updated_at = $4
+			FROM event_outbox event, webhook_secret_versions secret
+			WHERE delivery.organization_id = $1 AND delivery.repository_id = $2 AND delivery.id = $3
+			AND delivery.state IN ('failed', 'dead')
+			AND event.organization_id = delivery.organization_id AND event.repository_id = delivery.repository_id
+			AND event.id = delivery.event_id AND secret.organization_id = delivery.organization_id
+			AND secret.subscription_id = delivery.subscription_id AND secret.id = delivery.secret_version_id
+			RETURNING `+deliveryColumns, scope.OrgID, scope.RepoID, id, now))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		metadata := `{"reason":"manual"}`
+		_, err = tx.Exec(ctx, `INSERT INTO audit_events
+			(id, organization_id, repository_id, actor_user_id, actor_identity_key,
+			 action, resource_type, resource_id, request_id, metadata, created_at)
+			VALUES ($1, $2, $3, $4, $5, 'webhook.delivery.redelivered',
+			 'webhook_delivery', $6, $7, $8::jsonb, $9)`, uuid.New(), scope.OrgID, scope.RepoID,
+			actor.UserID, actor.IdentityKey, id, actor.RequestID, metadata, now)
+		return err
+	})
+	return result, err
+}
+
+const deliveryColumns = `delivery.id, delivery.organization_id, delivery.repository_id,
+	delivery.event_id, delivery.subscription_id, delivery.state, delivery.next_attempt_at,
+	delivery.delivered_at, delivery.last_error, delivery.representation_version,
+	delivery.created_at, delivery.updated_at, event.event_type, event.repository_sequence, secret.version`
+
+type rowScanner interface{ Scan(...any) error }
+
+func scanDelivery(row rowScanner) (Delivery, error) {
+	var item Delivery
+	err := row.Scan(&item.ID, &item.Scope.OrgID, &item.Scope.RepoID, &item.EventID,
+		&item.SubscriptionID, &item.State, &item.NextAttemptAt, &item.DeliveredAt,
+		&item.LastError, &item.RepresentationVersion, &item.CreatedAt, &item.UpdatedAt,
+		&item.EventType, &item.RepositorySequence, &item.SecretVersion)
+	return item, err
+}
+
+func (s *Service) authorize(ctx context.Context, subject authz.Subject, scope models.RepoScope) error {
+	if err := scope.Validate(); err != nil {
+		return ErrInvalid
+	}
+	decision, err := s.authorizer.EvaluateRepository(ctx, subject,
+		authz.RepositoryRequest{Scope: scope, Operation: authz.OperationManageIntegrations})
+	if err != nil {
+		return err
+	}
+	return authorizationResult(decision)
+}
+
+func authorizationResult(decision authz.Decision) error {
+	if decision.Allowed {
+		return nil
+	}
+	if !decision.Exists || !decision.Visible {
+		return ErrNotFound
+	}
+	return ErrForbidden
+}

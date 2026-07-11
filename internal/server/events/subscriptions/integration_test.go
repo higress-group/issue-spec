@@ -4,15 +4,18 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
+	"github.com/higress-group/issue-spec/internal/server/events/networkpolicy"
 	"github.com/higress-group/issue-spec/internal/server/events/subscriptions"
 	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/server/store"
@@ -233,11 +236,135 @@ func TestScopedSubscriptionAuthorizationSecretRotationAndRedaction(t *testing.T)
 	}
 }
 
+func TestDestinationPreflightRejectsUnsafeCreateAndUpdateTargets(t *testing.T) {
+	env := newEnvironment(t)
+	var resolverCalls atomic.Int32
+	preflight := networkpolicy.Preflight{
+		Policy: networkpolicy.Policy{Production: true},
+		Resolver: preflightResolver{calls: &resolverCalls, addresses: map[string][]net.IPAddr{
+			"public.example":  {{IP: net.ParseIP("93.184.216.34")}},
+			"private.example": {{IP: net.ParseIP("10.0.0.2")}},
+			"mixed.example": {
+				{IP: net.ParseIP("93.184.216.34")},
+				{IP: net.ParseIP("10.0.0.2")},
+			},
+		}},
+	}
+	service, err := subscriptions.New(store.New(env.pool), env.authorizer, env.keys,
+		subscriptions.Config{Production: true, SecretOverlap: 10 * time.Minute, DestinationPreflight: preflight})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := subscriptions.ActorFromPrincipal(env.owner, "destination-preflight")
+	subject := authz.Authenticated(env.owner)
+	reader := env.addMember(t, "preflight-reader", "reader")
+	readerSubject := authz.Authenticated(reader)
+	if _, err := service.Create(t.Context(), subscriptions.ActorFromPrincipal(reader, "denied-create"), readerSubject,
+		subscriptions.CreateInput{OrganizationID: env.scope.OrgID, RepositoryID: &env.scope.RepoID,
+			URL: "https://public.example/hook", EventTypes: []string{"issue_comment.created"}}); !errors.Is(err, subscriptions.ErrForbidden) {
+		t.Fatalf("unauthorized create error = %v", err)
+	}
+	if resolverCalls.Load() != 0 {
+		t.Fatalf("unauthorized create performed %d DNS lookups", resolverCalls.Load())
+	}
+	for _, destination := range []string{
+		"https://127.0.0.1/hook",
+		"https://169.254.169.254/hook",
+		"https://100.100.100.200/hook",
+		"https://private.example/hook",
+		"https://mixed.example/hook",
+	} {
+		if _, err := service.Create(t.Context(), actor, subject, subscriptions.CreateInput{
+			OrganizationID: env.scope.OrgID, RepositoryID: &env.scope.RepoID,
+			URL: destination, EventTypes: []string{"issue_comment.created"},
+		}); !errors.Is(err, subscriptions.ErrInvalidInput) {
+			t.Fatalf("unsafe create destination %q error = %v", destination, err)
+		}
+	}
+	created, err := service.Create(t.Context(), actor, subject, subscriptions.CreateInput{
+		OrganizationID: env.scope.OrgID, RepositoryID: &env.scope.RepoID,
+		URL: "https://public.example/hook", EventTypes: []string{"issue_comment.created"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callsBeforeDeniedUpdate := resolverCalls.Load()
+	if _, err := service.Update(t.Context(), subscriptions.ActorFromPrincipal(reader, "denied-update"), readerSubject,
+		env.scope.OrgID, created.Subscription.ID, subscriptions.UpdateInput{
+			ExpectedVersion: created.Subscription.RepresentationVersion, URL: "https://public.example/updated",
+			Active: true, EventTypes: []string{"issue_comment.created"},
+		}); !errors.Is(err, subscriptions.ErrForbidden) {
+		t.Fatalf("unauthorized update error = %v", err)
+	}
+	if resolverCalls.Load() != callsBeforeDeniedUpdate {
+		t.Fatalf("unauthorized update performed DNS lookup: before=%d after=%d",
+			callsBeforeDeniedUpdate, resolverCalls.Load())
+	}
+	for _, destination := range []string{
+		"https://127.0.0.1/hook",
+		"https://private.example/hook",
+		"https://mixed.example/hook",
+	} {
+		if _, err := service.Update(t.Context(), actor, subject, env.scope.OrgID, created.Subscription.ID,
+			subscriptions.UpdateInput{ExpectedVersion: created.Subscription.RepresentationVersion,
+				URL: destination, Active: true, EventTypes: []string{"issue_comment.created"},
+			}); !errors.Is(err, subscriptions.ErrInvalidInput) {
+			t.Fatalf("unsafe update destination %q error = %v", destination, err)
+		}
+	}
+	unchanged, err := service.Get(t.Context(), subject, env.scope.OrgID, created.Subscription.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.URL != created.Subscription.URL || unchanged.RepresentationVersion != created.Subscription.RepresentationVersion {
+		t.Fatalf("rejected update mutated subscription: before=%+v after=%+v", created.Subscription, unchanged)
+	}
+}
+
+func TestDestinationPreflightReauthorizesInsideCreateTransaction(t *testing.T) {
+	env := newEnvironment(t)
+	resolver := &blockingPreflightResolver{entered: make(chan struct{}), release: make(chan struct{})}
+	service, err := subscriptions.New(store.New(env.pool), env.authorizer, env.keys,
+		subscriptions.Config{Production: true, SecretOverlap: 10 * time.Minute,
+			DestinationPreflight: networkpolicy.Preflight{Policy: networkpolicy.Policy{Production: true}, Resolver: resolver}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.Create(context.Background(), subscriptions.ActorFromPrincipal(env.owner, "revoked-during-preflight"),
+			authz.Authenticated(env.owner), subscriptions.CreateInput{OrganizationID: env.scope.OrgID,
+				RepositoryID: &env.scope.RepoID, URL: "https://public.example/hook",
+				EventTypes: []string{"issue_comment.created"}})
+		result <- err
+	}()
+	select {
+	case <-resolver.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("create did not reach destination preflight")
+	}
+	if _, err := env.pool.Exec(t.Context(), `DELETE FROM org_memberships
+		WHERE organization_id = $1 AND user_id = $2`, env.scope.OrgID, env.owner.User.ID); err != nil {
+		t.Fatal(err)
+	}
+	close(resolver.release)
+	if err := <-result; !errors.Is(err, subscriptions.ErrForbidden) && !errors.Is(err, subscriptions.ErrNotFound) {
+		t.Fatalf("create after permission revocation error = %v", err)
+	}
+	var count int
+	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM webhook_subscriptions
+		WHERE organization_id = $1`, env.scope.OrgID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("subscription count after revoked create = %d, %v", count, err)
+	}
+}
+
 type environment struct {
-	pool    *pgxpool.Pool
-	scope   models.RepoScope
-	owner   serverauth.Principal
-	service *subscriptions.Service
+	pool       *pgxpool.Pool
+	scope      models.RepoScope
+	owner      serverauth.Principal
+	authorizer *authz.Service
+	keys       *subscriptions.Keyring
+	service    *subscriptions.Service
 }
 
 func newEnvironment(t *testing.T) *environment {
@@ -272,7 +399,36 @@ func newEnvironment(t *testing.T) *environment {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &environment{pool: pool, scope: models.RepoScope{OrgID: orgID, RepoID: repoID}, owner: owner, service: service}
+	return &environment{pool: pool, scope: models.RepoScope{OrgID: orgID, RepoID: repoID}, owner: owner,
+		authorizer: authorizer, keys: keys, service: service}
+}
+
+type preflightResolver struct {
+	addresses map[string][]net.IPAddr
+	calls     *atomic.Int32
+}
+
+func (r preflightResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	if r.calls != nil {
+		r.calls.Add(1)
+	}
+	return r.addresses[host], nil
+}
+
+type blockingPreflightResolver struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingPreflightResolver) LookupIPAddr(ctx context.Context, _ string) ([]net.IPAddr, error) {
+	r.once.Do(func() { close(r.entered) })
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-r.release:
+		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+	}
 }
 
 func (e *environment) addMember(t *testing.T, login, role string) serverauth.Principal {

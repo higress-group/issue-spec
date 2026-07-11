@@ -26,8 +26,13 @@ type Authorizer interface {
 }
 
 type Config struct {
-	Production    bool
-	SecretOverlap time.Duration
+	Production           bool
+	SecretOverlap        time.Duration
+	DestinationPreflight DestinationPreflight
+}
+
+type DestinationPreflight interface {
+	Validate(context.Context, string) error
 }
 
 type Service struct {
@@ -57,6 +62,14 @@ func (s *Service) Create(ctx context.Context, actor Actor, subject authz.Subject
 	scopeType, err := validateCreate(input, s.config.Production)
 	if err != nil {
 		return SecretResult{}, err
+	}
+	if err := s.authorize(ctx, subject, input.OrganizationID, input.RepositoryID, true); err != nil {
+		return SecretResult{}, err
+	}
+	if s.config.DestinationPreflight != nil {
+		if err := s.config.DestinationPreflight.Validate(ctx, input.URL); err != nil {
+			return SecretResult{}, ErrInvalidInput
+		}
 	}
 	secret, err := s.keys.GenerateSecret()
 	if err != nil {
@@ -155,8 +168,20 @@ func (s *Service) Update(ctx context.Context, actor Actor, subject authz.Subject
 		validateEventTypes(input.EventTypes) != nil || validateRetry(input.Retry) != nil {
 		return Subscription{}, ErrInvalidInput
 	}
+	current, err := s.load(ctx, s.database.Pool(), orgID, id, false)
+	if err != nil {
+		return Subscription{}, err
+	}
+	if err := s.authorize(ctx, subject, current.OrganizationID, current.RepositoryID, true); err != nil {
+		return Subscription{}, err
+	}
+	if s.config.DestinationPreflight != nil {
+		if err := s.config.DestinationPreflight.Validate(ctx, input.URL); err != nil {
+			return Subscription{}, ErrInvalidInput
+		}
+	}
 	var updated Subscription
-	err := s.database.WithinTx(ctx, func(tx *store.Tx) error {
+	err = s.database.WithinTx(ctx, func(tx *store.Tx) error {
 		current, err := s.load(ctx, tx.PGX(), orgID, id, true)
 		if err != nil {
 			return err
