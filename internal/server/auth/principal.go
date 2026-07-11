@@ -153,22 +153,6 @@ func (m Middleware) authenticate(next http.Handler, optional bool) http.Handler 
 	})
 }
 
-func (m Middleware) writeUnauthorized(w http.ResponseWriter, r *http.Request) {
-	if m.Unauthorized != nil {
-		m.Unauthorized(w, r)
-		return
-	}
-	writeUnauthorized(w)
-}
-
-func (m Middleware) writeForbidden(w http.ResponseWriter, r *http.Request) {
-	if m.Forbidden != nil {
-		m.Forbidden(w, r)
-		return
-	}
-	writeForbidden(w)
-}
-
 func mutationMethod(method string) bool {
 	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
 }
