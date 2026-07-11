@@ -5,3 +5,4 @@
 !/issue-spec/specs/**
 *.test
 coverage.out
+/dist/

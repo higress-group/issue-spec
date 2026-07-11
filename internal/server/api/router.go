@@ -4,12 +4,9 @@
 package api
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -193,7 +190,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compose server routes: %w", err)
 	}
-	handler := securityHeaders(mux)
+	handler := securityHeaders(deps.APIOrigin, deps.WebOrigin, mux)
 	handler = credentialedCORS(deps.APIOrigin, deps.WebOrigin, handler)
 	handler = observeRequests(stats, deps.LogRequest, handler)
 	return handler, nil
@@ -249,16 +246,22 @@ func operationalRoutes(ready func(context.Context) error, stats *metrics) (route
 }
 
 func staticRoutes(handler http.Handler) (routeset.RouteSet, error) {
+	// net/http routes HEAD to a matching GET pattern when no more-specific HEAD
+	// route exists. A separate HEAD / catch-all would cross-conflict with every
+	// more-specific GET API route (method specificity vs path specificity).
 	set := routeset.RouteSet{Name: "static-ui", Routes: []routeset.Route{
-		{Name: "static.get", Method: http.MethodGet, Pattern: "/", Handler: handler},
-		{Name: "static.head", Method: http.MethodHead, Pattern: "/", Handler: handler},
+		{Name: "static.get_and_head", Method: http.MethodGet, Pattern: "/", Handler: handler},
 	}}
 	return set, set.Validate()
 }
 
-func securityHeaders(next http.Handler) http.Handler {
+func securityHeaders(apiOrigin, webOrigin string, next http.Handler) http.Handler {
+	connectSources := "'self'"
+	if strings.TrimRight(apiOrigin, "/") != strings.TrimRight(webOrigin, "/") {
+		connectSources += " " + strings.TrimRight(apiOrigin, "/")
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src "+connectSources)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -342,32 +345,8 @@ func (w *statusRecorder) WriteHeader(status int) {
 	w.ResponseWriter.WriteHeader(status)
 }
 
-func (w *statusRecorder) Flush() {
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
-}
-
-func (w *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	hijacker, ok := w.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, errors.New("response writer does not support hijacking")
-	}
-	return hijacker.Hijack()
-}
-
-func (w *statusRecorder) Push(target string, options *http.PushOptions) error {
-	if pusher, ok := w.ResponseWriter.(http.Pusher); ok {
-		return pusher.Push(target, options)
-	}
-	return http.ErrNotSupported
-}
-
-func (w *statusRecorder) ReadFrom(reader io.Reader) (int64, error) {
-	if from, ok := w.ResponseWriter.(io.ReaderFrom); ok {
-		return from.ReadFrom(reader)
-	}
-	return io.Copy(struct{ io.Writer }{w.ResponseWriter}, reader)
-}
-
+// Unwrap preserves optional ResponseWriter capabilities through
+// http.ResponseController without falsely advertising an interface that the
+// underlying writer does not implement. Current server handlers do not use
+// direct Flusher/Hijacker/Pusher/ReaderFrom assertions.
 func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }

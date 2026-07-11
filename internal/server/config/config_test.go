@@ -282,6 +282,9 @@ func resetEnv(t *testing.T) {
 		EnvironmentEnv, ListenAddrEnv, DatabaseURLEnv, APIPublicURLEnv, WebPublicURLEnv,
 		TrustedProxiesEnv, BootstrapSecretFileEnv, TokenPepperFileEnv, EncryptionKeyFileEnv,
 		MigrationsModeEnv, GracefulShutdownTimeoutEnv, HealthReadTimeoutEnv, HealthWriteTimeoutEnv,
+		AuthProvidersFileEnv, WebhookKeysFileEnv, StaticDirectoryEnv, WebhookAllowedPrivateEnv,
+		DeliveryConcurrencyEnv, DeliveryLeaseDurationEnv, DeliveryPollIntervalEnv,
+		DelegationAudienceEnv, DelegationSubjectEnv,
 	} {
 		t.Setenv(name, "")
 	}

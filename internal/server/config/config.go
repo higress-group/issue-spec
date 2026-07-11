@@ -29,6 +29,7 @@ const (
 	TokenPepperFileEnv         = "TOKEN_PEPPER_FILE"
 	EncryptionKeyFileEnv       = "ENCRYPTION_KEY_FILE"
 	AuthProvidersFileEnv       = "AUTH_PROVIDERS_FILE"
+	WebhookKeysFileEnv         = "WEBHOOK_ENCRYPTION_KEYS_FILE"
 	MigrationsModeEnv          = "MIGRATIONS_MODE"
 	GracefulShutdownTimeoutEnv = "GRACEFUL_SHUTDOWN_TIMEOUT"
 	HealthReadTimeoutEnv       = "HEALTH_READ_TIMEOUT"
@@ -111,6 +112,7 @@ type Config struct {
 	TokenPepper             SecretFile     `json:"token_pepper_file,omitempty"`
 	EncryptionKey           SecretFile     `json:"encryption_key_file,omitempty"`
 	AuthProviders           SecretFile     `json:"auth_providers_file,omitempty"`
+	WebhookKeys             SecretFile     `json:"webhook_encryption_keys_file,omitempty"`
 	MigrationsMode          MigrationsMode `json:"migrations_mode"`
 	GracefulShutdownTimeout time.Duration  `json:"graceful_shutdown_timeout"`
 	HealthReadTimeout       time.Duration  `json:"health_read_timeout"`
@@ -206,6 +208,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.AuthProviders, err = loadSecretFile(AuthProvidersFileEnv); err != nil {
+		return Config{}, err
+	}
+	if cfg.WebhookKeys, err = loadSecretFile(WebhookKeysFileEnv); err != nil {
 		return Config{}, err
 	}
 	if err := cfg.Validate(); err != nil {
@@ -443,12 +448,12 @@ func RedactError(err error) error {
 // Unlike the package helper it remains effective after a mounted secret file
 // is rotated or removed.
 func (c Config) RedactError(err error) error {
-	return redactError(err, c.DatabaseURL, string(c.BootstrapSecret.value), string(c.TokenPepper.value), string(c.EncryptionKey.value), string(c.AuthProviders.value))
+	return redactError(err, c.DatabaseURL, string(c.BootstrapSecret.value), string(c.TokenPepper.value), string(c.EncryptionKey.value), string(c.AuthProviders.value), string(c.WebhookKeys.value))
 }
 
 func secretValuesFromEnvironment() []string {
 	var values []string
-	for _, name := range []string{BootstrapSecretFileEnv, TokenPepperFileEnv, EncryptionKeyFileEnv, AuthProvidersFileEnv} {
+	for _, name := range []string{BootstrapSecretFileEnv, TokenPepperFileEnv, EncryptionKeyFileEnv, AuthProvidersFileEnv, WebhookKeysFileEnv} {
 		path := env(name)
 		if path == "" {
 			continue

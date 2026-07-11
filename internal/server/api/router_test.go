@@ -9,7 +9,7 @@ import (
 
 func TestSecurityHeadersAndCredentialedCORS(t *testing.T) {
 	base := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
-	handler := securityHeaders(credentialedCORS("https://api.example.test", "https://web.example.test", base))
+	handler := securityHeaders("https://api.example.test", "https://web.example.test", credentialedCORS("https://api.example.test", "https://web.example.test", base))
 
 	request := httptest.NewRequest(http.MethodGet, "https://api.example.test/api/v1/meta", nil)
 	request.Header.Set("Origin", "https://web.example.test")
@@ -19,7 +19,7 @@ func TestSecurityHeadersAndCredentialedCORS(t *testing.T) {
 		response.Header().Get("Access-Control-Allow-Credentials") != "true" || !strings.Contains(response.Header().Get("Vary"), "Origin") {
 		t.Fatalf("credentialed CORS = %d headers=%v", response.Code, response.Header())
 	}
-	if csp := response.Header().Get("Content-Security-Policy"); strings.Contains(csp, "unsafe-inline") || strings.Contains(csp, "unsafe-eval") || !strings.Contains(csp, "frame-ancestors 'none'") {
+	if csp := response.Header().Get("Content-Security-Policy"); strings.Contains(csp, "unsafe-inline") || strings.Contains(csp, "unsafe-eval") || !strings.Contains(csp, "frame-ancestors 'none'") || !strings.Contains(csp, "connect-src 'self' https://api.example.test") {
 		t.Fatalf("CSP = %q", csp)
 	}
 
@@ -53,5 +53,18 @@ func TestCORSRejectsOtherOriginsButAllowsSameOriginAndNoOrigin(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden || !strings.Contains(response.Header().Get("Vary"), "Origin") {
 		t.Fatalf("evil origin = %d headers=%v", response.Code, response.Header())
+	}
+}
+
+func TestRequestObserverPreservesResponseControllerCapabilities(t *testing.T) {
+	handler := observeRequests(&metrics{}, nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Errorf("Flush through observer: %v", err)
+		}
+	}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !response.Flushed {
+		t.Fatal("underlying flusher was not reached through Unwrap")
 	}
 }

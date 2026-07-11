@@ -16,5 +16,43 @@ services:
     volumes:
       - issue-spec-postgres-data:/var/lib/postgresql/data
 
+  server:
+    profiles: ["server"]
+    build:
+      context: ../..
+      target: runtime
+    environment:
+      ENVIRONMENT: development
+      LISTEN_ADDR: ":8080"
+      DATABASE_URL: postgres://issue_spec:issue_spec@postgres:5432/issue_spec?sslmode=disable
+      API_PUBLIC_URL: http://127.0.0.1:8080
+      WEB_PUBLIC_URL: http://127.0.0.1:8080
+      BOOTSTRAP_SECRET_FILE: /run/issue-spec-secrets/bootstrap
+      TOKEN_PEPPER_FILE: /run/issue-spec-secrets/token-pepper
+      ENCRYPTION_KEY_FILE: /run/issue-spec-secrets/encryption-key
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${ISSUE_SPEC_SERVER_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "/issue-spec-server", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    volumes:
+      - type: bind
+        source: ${ISSUE_SPEC_DEV_SECRETS_DIR:-./secrets}
+        target: /run/issue-spec-secrets
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
 volumes:
   issue-spec-postgres-data:

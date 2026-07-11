@@ -163,7 +163,11 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	if err != nil {
 		return fail(err)
 	}
-	keyring, err := subscriptions.NewKeyring("primary", map[string][]byte{"primary": cfg.EncryptionKey.Bytes()})
+	currentWebhookKey, webhookKeySet, err := webhookKeys(cfg.WebhookKeys.Bytes(), cfg.EncryptionKey.Bytes())
+	if err != nil {
+		return fail(err)
+	}
+	keyring, err := subscriptions.NewKeyring(currentWebhookKey, webhookKeySet)
 	if err != nil {
 		return fail(err)
 	}
