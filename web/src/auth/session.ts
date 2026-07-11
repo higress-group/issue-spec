@@ -14,6 +14,10 @@ export const queryKeys = {
   serviceAccounts: (orgId: string) => ["service-accounts", orgId] as const,
   repository: (orgId: string, repoId: string) => ["repository", orgId, repoId] as const,
   collaborators: (orgId: string, repoId: string) => ["collaborators", orgId, repoId] as const,
+  sourceBinding: (orgId: string, repoId: string) => ["source-binding", orgId, repoId] as const,
+  webhooks: (orgId: string, repoId: string) => ["webhooks", orgId, repoId] as const,
+  deliveries: (orgId: string, repoId: string) => ["webhook-deliveries", orgId, repoId] as const,
+  delivery: (orgId: string, repoId: string, deliveryId: string) => ["webhook-delivery", orgId, repoId, deliveryId] as const,
 };
 
 export function useMeta() {

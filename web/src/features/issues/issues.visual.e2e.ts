@@ -36,6 +36,14 @@ test.beforeEach(async ({ page }) => {
 test("issue detail is polished, accessible and preserves raw workflow text", async ({ page }, testInfo) => {
   await page.goto(`/issues/${organizationId}/${repositoryId}/41`);
   await expect(page.getByRole("heading", { level: 1 }).first()).toContainText("Runner contract");
+  if (testInfo.project.name === "issues-mobile-390") {
+    const backLink = page.locator(".detail-title .issue-back");
+    const title = page.locator(".detail-title h1");
+    const [backBox, titleBox] = await Promise.all([backLink.boundingBox(), title.boundingBox()]);
+    expect(backBox).not.toBeNull();
+    expect(titleBox).not.toBeNull();
+    expect((backBox?.y ?? 0) + (backBox?.height ?? 0)).toBeLessThanOrEqual((titleBox?.y ?? 0) + 1);
+  }
   await expect(page.getByTestId("rendered-markdown").first()).not.toContainText("issue-spec:type");
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);

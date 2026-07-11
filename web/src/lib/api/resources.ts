@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { apiRequest } from "./client";
+import { apiRequest, isApiProblem } from "./client";
 import {
   bootstrapSchema,
   contextSchema,
@@ -14,7 +14,20 @@ import {
   type Membership,
   type ServiceAccount,
   type UserCandidate,
+  sourceBindingSchema,
+  webhookDeliveriesSchema,
+  webhookDeliveryDetailSchema,
+  webhookDeliverySchema,
+  webhookSecretSchema,
+  webhookSubscriptionSchema,
+  webhookSubscriptionsSchema,
+  type SourceBinding,
+  type WebhookRetry,
 } from "./types";
+
+type SourceBindingInput = Pick<SourceBinding, "provider_key" | "external_repository_id" | "clone_url" | "web_url" | "default_branch">;
+type WebhookInput = { repository_id: string; url: string; event_types: string[]; retry: WebhookRetry };
+type WebhookUpdateInput = Omit<WebhookInput, "repository_id"> & { active: boolean; expected_version: number };
 
 export const api = {
   meta: (signal?: AbortSignal) => apiRequest("/api/v1/meta", { schema: metaSchema, signal }),
@@ -57,6 +70,36 @@ export const api = {
     const params = new URLSearchParams({ purpose, query, match });
     return apiRequest<{ users: UserCandidate[] }>(`/api/v1/orgs/${orgId}/user-candidates?${params}`, { signal });
   },
+  activeSourceBinding: async (orgId: string, repoId: string, signal?: AbortSignal) => {
+    try {
+      return await apiRequest(`/api/v1/orgs/${orgId}/repos/${repoId}/bindings/active`, { schema: sourceBindingSchema, signal });
+    } catch (error) {
+      if (isApiProblem(error, "not_found")) return null;
+      throw error;
+    }
+  },
+  createSourceBinding: (orgId: string, repoId: string, body: SourceBindingInput) =>
+    apiRequest(`/api/v1/orgs/${orgId}/repos/${repoId}/bindings`, { method: "POST", body, schema: sourceBindingSchema }),
+  deactivateSourceBinding: (orgId: string, repoId: string) =>
+    apiRequest<void>(`/api/v1/orgs/${orgId}/repos/${repoId}/bindings/active`, { method: "DELETE" }),
+  webhookSubscriptions: (orgId: string, repoId: string, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ repository_id: repoId });
+    return apiRequest(`/api/v1/orgs/${orgId}/webhooks?${params}`, { schema: webhookSubscriptionsSchema, signal });
+  },
+  createWebhookSubscription: (orgId: string, body: WebhookInput) =>
+    apiRequest(`/api/v1/orgs/${orgId}/webhooks`, { method: "POST", body, schema: webhookSecretSchema }),
+  updateWebhookSubscription: (orgId: string, webhookId: string, body: WebhookUpdateInput) =>
+    apiRequest(`/api/v1/orgs/${orgId}/webhooks/${webhookId}`, { method: "PATCH", body, schema: webhookSubscriptionSchema }),
+  rotateWebhookSecret: (orgId: string, webhookId: string) =>
+    apiRequest(`/api/v1/orgs/${orgId}/webhooks/${webhookId}/rotate-secret`, { method: "POST", schema: webhookSecretSchema }),
+  revokeWebhookSubscription: (orgId: string, webhookId: string) =>
+    apiRequest<void>(`/api/v1/orgs/${orgId}/webhooks/${webhookId}`, { method: "DELETE" }),
+  webhookDeliveries: (orgId: string, repoId: string, signal?: AbortSignal) =>
+    apiRequest(`/api/v1/orgs/${orgId}/repos/${repoId}/deliveries`, { schema: webhookDeliveriesSchema, signal }),
+  webhookDelivery: (orgId: string, repoId: string, deliveryId: string, signal?: AbortSignal) =>
+    apiRequest(`/api/v1/orgs/${orgId}/repos/${repoId}/deliveries/${deliveryId}`, { schema: webhookDeliveryDetailSchema, signal }),
+  redeliverWebhookDelivery: (orgId: string, repoId: string, deliveryId: string) =>
+    apiRequest(`/api/v1/orgs/${orgId}/repos/${repoId}/deliveries/${deliveryId}/redeliver`, { method: "POST", schema: webhookDeliverySchema }),
 };
 
 export const emptyString = z.string().trim().min(1, "Required");

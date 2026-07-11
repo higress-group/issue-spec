@@ -155,3 +155,80 @@ export type UserCandidate = {
   membership?: { id: string; role: string; state: string };
   service_account_id?: string;
 };
+
+const timestampSchema = z.string().datetime({ offset: true });
+
+export const sourceBindingSchema = z.object({
+  id: z.string().uuid(),
+  provider_key: z.string().min(1),
+  external_repository_id: z.string().min(1),
+  clone_url: z.string().url(),
+  web_url: z.string().url(),
+  default_branch: z.string().min(1),
+  version: z.number().int().positive(),
+  active: z.boolean(),
+  created_at: timestampSchema,
+  updated_at: timestampSchema,
+});
+export type SourceBinding = z.infer<typeof sourceBindingSchema>;
+
+export const webhookRetrySchema = z.object({
+  max_attempts: z.number().int().min(1).max(100),
+  initial_backoff: z.string().min(1),
+  max_backoff: z.string().min(1),
+});
+
+export const webhookSubscriptionSchema = z.object({
+  id: z.string().uuid(),
+  organization_id: z.string().uuid(),
+  repository_id: z.string().uuid().nullable().optional(),
+  scope_type: z.enum(["organization", "repository"]),
+  url: z.string().url(),
+  active: z.boolean(),
+  event_types: z.array(z.string().min(1)).min(1),
+  retry: webhookRetrySchema,
+  representation_version: z.number().int().positive(),
+  created_at: timestampSchema,
+  updated_at: timestampSchema,
+});
+export const webhookSubscriptionsSchema = z.object({ subscriptions: z.array(webhookSubscriptionSchema) });
+export const webhookSecretSchema = webhookSubscriptionSchema.extend({
+  secret: z.string().min(1),
+  secret_version: z.number().int().positive(),
+});
+export type WebhookSubscription = z.infer<typeof webhookSubscriptionSchema>;
+export type WebhookRetry = z.infer<typeof webhookRetrySchema>;
+export type WebhookSecret = z.infer<typeof webhookSecretSchema>;
+
+export const webhookDeliverySchema = z.object({
+  id: z.string().uuid(),
+  scope: z.object({ OrgID: z.string().uuid(), RepoID: z.string().uuid() }),
+  event_id: z.string().uuid(),
+  subscription_id: z.string().uuid(),
+  state: z.string().min(1),
+  next_attempt_at: timestampSchema,
+  delivered_at: timestampSchema.nullable().optional(),
+  last_error: z.string().nullable().optional(),
+  representation_version: z.number().int().positive(),
+  created_at: timestampSchema,
+  updated_at: timestampSchema,
+  event_type: z.string().min(1),
+  repository_sequence: z.number().int().nonnegative(),
+  secret_version: z.number().int().positive(),
+});
+export const webhookDeliveriesSchema = z.object({ deliveries: z.array(webhookDeliverySchema) });
+export const webhookDeliveryAttemptSchema = z.object({
+  id: z.string().uuid(),
+  attempt_number: z.number().int().positive(),
+  response_status: z.number().int().nullable().optional(),
+  response_headers: z.record(z.string(), z.array(z.string())).optional().default({}),
+  error: z.string().nullable().optional(),
+  started_at: timestampSchema,
+  completed_at: timestampSchema.nullable().optional(),
+});
+export const webhookDeliveryDetailSchema = z.object({
+  delivery: webhookDeliverySchema,
+  attempts: z.array(webhookDeliveryAttemptSchema),
+});
+export type WebhookDelivery = z.infer<typeof webhookDeliverySchema>;
+export type WebhookDeliveryDetail = z.infer<typeof webhookDeliveryDetailSchema>;
