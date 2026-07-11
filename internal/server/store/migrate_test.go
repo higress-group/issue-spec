@@ -74,6 +74,28 @@ func TestLoadMigrationsIncludesCompleteInitialSchema(t *testing.T) {
 	}
 }
 
+func TestProtocolFeatureMigrationMetadata(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations() error = %v", err)
+	}
+	latest := migrations[len(migrations)-1]
+	if latest.Version != 5 || latest.Name != "0005_protocol_features.sql" {
+		t.Fatalf("latest migration = %+v, want protocol feature migration", latest.MigrationInfo)
+	}
+	for _, contract := range []string{
+		"ADD COLUMN compatibility_id bigint GENERATED ALWAYS AS",
+		"comment_reactions_compatibility_id_unique UNIQUE (compatibility_id)",
+		"comment_reactions_key_valid CHECK",
+		"CREATE INDEX comment_reactions_repo_comment_list_idx\n    ON comment_reactions (\n        organization_id,\n        repository_id,\n        comment_id,\n        created_at,\n        id\n    )",
+		"CREATE INDEX issue_labels_repo_issue_created_idx",
+	} {
+		if !containsSQL(latest.sql, contract) {
+			t.Errorf("protocol feature migration is missing %q", contract)
+		}
+	}
+}
+
 func containsSQL(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {

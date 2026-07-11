@@ -70,8 +70,8 @@ func TestRunMigrationsConcurrentAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Keep the forward-only migration-set assertion synchronized with the
-	// latest embedded file; PROCESS-004 adds issue/comment compatibility data.
-	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0004_issue_comment_api.sql" {
+	// latest embedded file; PROCESS-005 adds reaction compatibility data.
+	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0005_protocol_features.sql" {
 		t.Fatalf("migration metadata = count %d, version %d, name %q", count, version, name)
 	}
 }
