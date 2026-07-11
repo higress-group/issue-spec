@@ -28,6 +28,7 @@ const (
 	maxExchangeResponseBytes = 1 << 20
 	credentialClockSkew      = 5 * time.Second
 	credentialCleanupTimeout = 5 * time.Second
+	credentialRequestTimeout = 15 * time.Second
 )
 
 type Broker struct {
@@ -84,29 +85,38 @@ func (b *Broker) Acquire(ctx context.Context, request AcquireRequest) (*Lease, e
 	}
 	created, err := b.exchange(ctx, request, ttl, scopes)
 	if err != nil {
-		return nil, err
+		return nil, b.compensateFailedAcquire(ctx, request, err)
 	}
 	lease := &Lease{JobID: request.JobID, Repo: request.Repo, Profile: profile, broker: b, binding: request.Binding}
 	lease.IssueToken, err = b.Materializer.WriteIssueToken(request.JobID, created.Plaintext)
 	if err != nil {
-		cleanupCtx, cancel := credentialCleanupContext(ctx)
-		defer cancel()
-		_ = b.GitProvider.RevokeJob(cleanupCtx, request.JobID)
-		_ = b.revokeRemote(cleanupCtx, request.Repo, request.JobID)
-		return nil, fmt.Errorf("credential broker: materialize issue credential: %w", err)
+		return nil, b.compensateFailedAcquire(ctx, request,
+			fmt.Errorf("credential broker: materialize issue credential: %w", err))
 	}
 	jobRoot := filepath.Dir(lease.IssueToken.HostPath)
 	lease.gitRoot = jobRoot
 	lease.Git, err = NewGitLease(ctx, jobRoot, request.JobID, request.Binding, b.GitProvider)
 	if err != nil {
-		_ = b.Materializer.Revoke(request.JobID)
-		cleanupCtx, cancel := credentialCleanupContext(ctx)
-		defer cancel()
-		_ = b.GitProvider.RevokeJob(cleanupCtx, request.JobID)
-		_ = b.revokeRemote(cleanupCtx, request.Repo, request.JobID)
-		return nil, fmt.Errorf("credential broker: acquire git credential: %w", err)
+		return nil, b.compensateFailedAcquire(ctx, request,
+			fmt.Errorf("credential broker: acquire git credential: %w", err))
 	}
 	return lease, nil
+}
+
+// compensateFailedAcquire treats every exchange error as an uncertain remote
+// result. The server may have committed a short-lived token before the client
+// rejected or lost the response, so a job-level tombstone is the only safe
+// rollback boundary.
+func (b *Broker) compensateFailedAcquire(ctx context.Context, request AcquireRequest, cause error) error {
+	// Revoke the issue token first; every external/local cleanup receives its
+	// own deadline so a stuck source provider cannot consume the server revoke
+	// budget.
+	cleanupErr := errors.Join(b.revokeRemoteBounded(ctx, request.Repo, request.JobID),
+		b.Materializer.Revoke(request.JobID), b.revokeGitJobBounded(ctx, request.JobID))
+	if cleanupErr == nil {
+		return cause
+	}
+	return errors.Join(cause, fmt.Errorf("credential broker: compensate failed acquisition: %w", cleanupErr))
 }
 
 // PrepareChildGit rotates the command-local clone lease before the sandboxed
@@ -159,15 +169,15 @@ func (l *Lease) Revoke(ctx context.Context) error {
 		return nil
 	}
 	l.revoked.Do(func() {
-		cleanupCtx, cancel := credentialCleanupContext(ctx)
-		defer cancel()
+		if l.broker != nil {
+			l.err = errors.Join(l.err, l.broker.revokeRemoteBounded(ctx, l.Repo, l.JobID))
+		}
 		if l.Git != nil {
 			l.err = errors.Join(l.err, l.Git.Cleanup())
 		}
 		if l.broker != nil {
 			l.err = errors.Join(l.err, l.broker.Materializer.Revoke(l.JobID))
-			l.err = errors.Join(l.err, l.broker.GitProvider.RevokeJob(cleanupCtx, l.JobID))
-			l.err = errors.Join(l.err, l.broker.revokeRemote(cleanupCtx, l.Repo, l.JobID))
+			l.err = errors.Join(l.err, l.broker.revokeGitJobBounded(ctx, l.JobID))
 		}
 	})
 	return l.err
@@ -177,9 +187,19 @@ func (b *Broker) RevokeJob(ctx context.Context, repo models.RepoScope, jobID str
 	if b == nil || b.GitProvider == nil || repo.Validate() != nil || !validJobID(jobID) || invalidToken(b.ParentToken) {
 		return errors.New("credential broker: invalid revoke request")
 	}
-	cleanupCtx, cancel := credentialCleanupContext(ctx)
+	return errors.Join(b.revokeRemoteBounded(ctx, repo, jobID), b.Materializer.Revoke(jobID), b.revokeGitJobBounded(ctx, jobID))
+}
+
+func (b *Broker) revokeRemoteBounded(parent context.Context, repo models.RepoScope, jobID string) error {
+	cleanupCtx, cancel := credentialCleanupContext(parent)
 	defer cancel()
-	return errors.Join(b.Materializer.Revoke(jobID), b.GitProvider.RevokeJob(cleanupCtx, jobID), b.revokeRemote(cleanupCtx, repo, jobID))
+	return b.revokeRemote(cleanupCtx, repo, jobID)
+}
+
+func (b *Broker) revokeGitJobBounded(parent context.Context, jobID string) error {
+	cleanupCtx, cancel := credentialCleanupContext(parent)
+	defer cancel()
+	return b.GitProvider.RevokeJob(cleanupCtx, jobID)
 }
 
 func (b *Broker) exchange(ctx context.Context, request AcquireRequest, ttl time.Duration, scopes []string) (delegation.Created, error) {
@@ -281,19 +301,25 @@ func (b *Broker) do(ctx context.Context, method, endpoint string, body []byte) (
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	client := b.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
-	} else {
-		copy := *client
-		client = &copy
-	}
+	client := b.boundedHTTPClient()
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, errors.New("credential broker: server request failed")
 	}
 	return response, nil
+}
+
+func (b *Broker) boundedHTTPClient() *http.Client {
+	client := &http.Client{}
+	if b != nil && b.HTTPClient != nil {
+		copy := *b.HTTPClient
+		client = &copy
+	}
+	if client.Timeout <= 0 || client.Timeout > credentialRequestTimeout {
+		client.Timeout = credentialRequestTimeout
+	}
+	return client
 }
 
 func validLeaseValue(value string) bool {

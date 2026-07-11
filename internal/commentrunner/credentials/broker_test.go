@@ -185,6 +185,58 @@ func TestBrokerRejectsNonCanonicalExchangeResponses(t *testing.T) {
 	}
 }
 
+func TestBrokerCompensatesUncertainExchangeAndBoundsCustomClient(t *testing.T) {
+	var remoteRevokes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			remoteRevokes.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		// Model a committed 201 whose response is rejected by strict decoding.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"unknown":true}`))
+	}))
+	defer server.Close()
+
+	providerRevokes := atomic.Int32{}
+	broker := testBroker(t, server.URL, func(context.Context) error { return nil })
+	broker.GitProvider = trackingGitProvider{delegate: broker.GitProvider, revokes: &providerRevokes}
+	broker.HTTPClient = &http.Client{Timeout: 0}
+	if got := broker.boundedHTTPClient().Timeout; got != credentialRequestTimeout {
+		t.Fatalf("zero custom client timeout = %s, want %s", got, credentialRequestTimeout)
+	}
+	broker.HTTPClient.Timeout = time.Hour
+	if got := broker.boundedHTTPClient().Timeout; got != credentialRequestTimeout {
+		t.Fatalf("overlong custom client timeout = %s, want %s", got, credentialRequestTimeout)
+	}
+	broker.HTTPClient.Timeout = time.Second
+	if got := broker.boundedHTTPClient().Timeout; got != time.Second {
+		t.Fatalf("short custom client timeout = %s", got)
+	}
+
+	_, err := broker.Acquire(context.Background(), AcquireRequest{Repo: models.RepoScope{OrgID: uuid.New(), RepoID: uuid.New()},
+		JobID: "job-uncertain", Binding: testBinding()})
+	if err == nil || remoteRevokes.Load() != 1 || providerRevokes.Load() != 1 {
+		t.Fatalf("Acquire err=%v remote_revoke=%d provider_revoke=%d", err, remoteRevokes.Load(), providerRevokes.Load())
+	}
+}
+
+type trackingGitProvider struct {
+	delegate GitProvider
+	revokes  *atomic.Int32
+}
+
+func (p trackingGitProvider) Acquire(ctx context.Context, request GitRequest) (GitProviderLease, error) {
+	return p.delegate.Acquire(ctx, request)
+}
+
+func (p trackingGitProvider) RevokeJob(ctx context.Context, jobID string) error {
+	p.revokes.Add(1)
+	return p.delegate.RevokeJob(ctx, jobID)
+}
+
 func testBroker(t *testing.T, origin string, revoke func(context.Context) error) *Broker {
 	t.Helper()
 	profile := clientauth.Profile{Name: "runner", Kind: clientauth.ProfileKindHosted, APIURL: origin + "/api/v3",
