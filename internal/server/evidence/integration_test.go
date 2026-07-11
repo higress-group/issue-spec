@@ -1,0 +1,411 @@
+package evidence
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
+	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
+	"github.com/higress-group/issue-spec/internal/server/authz"
+	"github.com/higress-group/issue-spec/internal/server/models"
+	"github.com/higress-group/issue-spec/internal/server/store"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func TestEvidencePolicyWriterTenantAndPublicationLifecycle(t *testing.T) {
+	env := newEvidenceEnvironment(t)
+	freshness := 15 * time.Minute
+	policy, err := env.service.SetEvidencePolicy(t.Context(), authz.Authenticated(env.owner), env.actor(env.owner, "policy"),
+		env.scope, SetPolicyInput{ExpectedVersion: 0, Requirements: []Requirement{
+			{EvidenceType: "review", Freshness: &freshness}, {EvidenceType: "check"},
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.RepresentationVersion != 1 || len(policy.Requirements) != 2 ||
+		policy.Requirements[1].Freshness == nil || *policy.Requirements[1].Freshness != freshness {
+		t.Fatalf("policy = %+v", policy)
+	}
+	if _, err := env.service.SetEvidencePolicy(t.Context(), authz.Authenticated(env.owner), env.actor(env.owner, "stale-policy"),
+		env.scope, SetPolicyInput{ExpectedVersion: 0, Requirements: policy.Requirements}); !errors.Is(err, adminservice.ErrVersionConflict) {
+		t.Fatalf("stale SetEvidencePolicy() error = %v", err)
+	}
+	if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner), env.actor(env.owner, "cross-writer"),
+		env.scope, env.otherUserID, true); !errors.Is(err, adminservice.ErrNotFound) {
+		t.Fatalf("cross-org SetDesignatedWriter() error = %v", err)
+	}
+	assignment, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner), env.actor(env.owner, "writer"),
+		env.scope, env.writer.User.ID, true)
+	if err != nil || !assignment.Active {
+		t.Fatalf("SetDesignatedWriter() = %+v, %v", assignment, err)
+	}
+	if designated, err := env.service.IsDesignatedWriter(t.Context(), env.scope, env.writer.User.ID); err != nil || !designated {
+		t.Fatalf("IsDesignatedWriter() = %t, %v", designated, err)
+	}
+
+	input := env.appendInput("check:1", "abc", VisibilityRepository)
+	beforeIssue, beforeRepo := env.evidenceVersions(t)
+	first, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(env.writer), env.actor(env.writer, "append-1"), env.scope, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterIssue, afterRepo := env.evidenceVersions(t)
+	if afterIssue != beforeIssue+1 || afterRepo != beforeRepo+1 {
+		t.Fatalf("append collections issue %d/%d repo %d/%d", beforeIssue, afterIssue, beforeRepo, afterRepo)
+	}
+	if !strings.Contains(string(first.Payload), "9007199254740993") {
+		t.Fatalf("large JSON integer changed: %s", first.Payload)
+	}
+	beforeIssue, beforeRepo = env.evidenceVersions(t)
+	retry := input
+	retry.Payload = []byte(`{"large":9007199254740993,"state":"passed"}`)
+	second, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(env.writer), env.actor(env.writer, "append-1"), env.scope, retry)
+	if err != nil || second.ID != first.ID {
+		t.Fatalf("idempotent AppendEvidence() = %+v, %v", second, err)
+	}
+	afterIssue, afterRepo = env.evidenceVersions(t)
+	if beforeIssue != afterIssue || beforeRepo != afterRepo {
+		t.Fatalf("idempotent append bumped collections issue %d/%d repo %d/%d", beforeIssue, afterIssue, beforeRepo, afterRepo)
+	}
+	mismatch := input
+	mismatch.Payload = []byte(`{"large":9007199254740994,"state":"passed"}`)
+	if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(env.writer), env.actor(env.writer, "append-1"), env.scope, mismatch); !errors.Is(err, ErrIdempotencyMismatch) {
+		t.Fatalf("mismatched AppendEvidence() error = %v", err)
+	}
+
+	hiddenInput := env.appendInput("review:hidden", "abc", VisibilityMaintainers)
+	hiddenInput.EvidenceType = "review"
+	hiddenInput.ExternalID = "review-1"
+	if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(env.writer), env.actor(env.writer, "hidden"), env.scope, hiddenInput); err != nil {
+		t.Fatal(err)
+	}
+	readerItems, err := env.service.ExactRevision(t.Context(), authz.Authenticated(env.reader), env.scope, ExactRevisionQuery{
+		IssueID: env.issueID, ProviderKey: "github", ExternalRepositoryID: "acme/widgets", SubjectRevision: "abc",
+	})
+	if err != nil || len(readerItems) != 1 || readerItems[0].Payload != nil || readerItems[0].Provenance != nil {
+		t.Fatalf("reader exact evidence = %+v, %v", readerItems, err)
+	}
+	ownerItems, err := env.service.ExactRevision(t.Context(), authz.Authenticated(env.owner), env.scope, ExactRevisionQuery{
+		IssueID: env.issueID, ProviderKey: "github", ExternalRepositoryID: "acme/widgets", SubjectRevision: "abc",
+	})
+	if err != nil || len(ownerItems) != 2 || ownerItems[0].Payload == nil || ownerItems[0].Provenance == nil {
+		t.Fatalf("owner exact evidence = %+v, %v", ownerItems, err)
+	}
+
+	superseding := env.appendInput("check:2", "def", VisibilityRepository)
+	superseding.SupersedesEvidenceID = &first.ID
+	next, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(env.writer), env.actor(env.writer, "append-2"), env.scope, superseding)
+	if err != nil || next.SupersedesEvidenceID == nil || *next.SupersedesEvidenceID != first.ID {
+		t.Fatalf("superseding AppendEvidence() = %+v, %v", next, err)
+	}
+	branch := env.appendInput("check:branch", "ghi", VisibilityRepository)
+	branch.SupersedesEvidenceID = &first.ID
+	if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(env.writer), env.actor(env.writer, "branch"), env.scope, branch); !errors.Is(err, adminservice.ErrConflict) {
+		t.Fatalf("branching supersedes error = %v", err)
+	}
+	_, err = env.pool.Exec(t.Context(), `UPDATE external_evidence SET normalized_state = 'failed' WHERE id = $1`, first.ID)
+	requireEvidencePGCode(t, err, "55000")
+}
+
+func TestEvidenceFourGateMatrixRejectedAuditAndCrossOrgConcealment(t *testing.T) {
+	env := newEvidenceEnvironment(t)
+	if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner), env.actor(env.owner, "writer"), env.scope, env.writer.User.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, principal := range []serverauth.Principal{env.undesignated, env.missingScope, env.readerEvidence, env.unrestricted} {
+		if principal.User.ID != env.undesignated.User.ID {
+			if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner), env.actor(env.owner, "designate-"+principal.User.ID.String()), env.scope, principal.User.ID, true); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	beforeIssue, beforeRepo := env.evidenceVersions(t)
+	principals := []serverauth.Principal{env.undesignated, env.missingScope, env.readerEvidence, env.unrestricted}
+	for i, principal := range principals {
+		input := env.appendInput(fmt.Sprintf("denied:%d", i), "denied", VisibilityRepository)
+		if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(principal), env.actor(principal, fmt.Sprintf("deny-%d", i)), env.scope, input); !errors.Is(err, adminservice.ErrForbidden) {
+			t.Errorf("gate %d error = %v, want forbidden", i, err)
+		}
+	}
+	wrongScope := models.RepoScope{OrgID: env.otherOrgID, RepoID: env.scope.RepoID}
+	if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(env.writer), env.actor(env.writer, "cross-org"), wrongScope,
+		env.appendInput("cross-org", "denied", VisibilityRepository)); !errors.Is(err, adminservice.ErrNotFound) {
+		t.Fatalf("cross-org AppendEvidence() error = %v, want not found", err)
+	}
+	afterIssue, afterRepo := env.evidenceVersions(t)
+	if beforeIssue != afterIssue || beforeRepo != afterRepo {
+		t.Fatalf("rejected writes changed collections issue %d/%d repo %d/%d", beforeIssue, afterIssue, beforeRepo, afterRepo)
+	}
+	var rejected int
+	var unsafe int
+	if err := env.pool.QueryRow(t.Context(), `SELECT count(*), count(*) FILTER (
+		WHERE metadata ? 'payload' OR metadata ? 'provenance' OR metadata ? 'token'
+	) FROM audit_events WHERE action = 'external_evidence.publish_rejected'
+	AND metadata ? 'target_organization_id' AND metadata ? 'target_repository_id'
+	AND metadata - 'reason' - 'operation' - 'target_organization_id' - 'target_repository_id' = '{}'::jsonb`).Scan(&rejected, &unsafe); err != nil {
+		t.Fatal(err)
+	}
+	if rejected != 5 || unsafe != 0 {
+		t.Fatalf("rejected audits=%d unsafe=%d, want 5/0", rejected, unsafe)
+	}
+	var evidenceRows int
+	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM external_evidence`).Scan(&evidenceRows); err != nil || evidenceRows != 0 {
+		t.Fatalf("rejected evidence rows=%d, %v", evidenceRows, err)
+	}
+}
+
+func TestConcurrentEvidenceRetryCreatesExactlyOneRow(t *testing.T) {
+	env := newEvidenceEnvironment(t)
+	if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner), env.actor(env.owner, "writer"), env.scope, env.writer.User.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	input := env.appendInput("concurrent", "abc", VisibilityRepository)
+	const workers = 12
+	ids := make(chan uuid.UUID, workers)
+	errs := make(chan error, workers)
+	var wait sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			item, err := env.service.AppendEvidence(context.Background(), authz.Authenticated(env.writer),
+				env.actor(env.writer, "concurrent"), env.scope, input)
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- item.ID
+		}()
+	}
+	wait.Wait()
+	close(ids)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	var first uuid.UUID
+	for id := range ids {
+		if first == uuid.Nil {
+			first = id
+		}
+		if id != first {
+			t.Fatalf("concurrent retry IDs differ: %s / %s", first, id)
+		}
+	}
+	var count int
+	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM external_evidence WHERE ingest_key = 'concurrent'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("concurrent evidence count=%d, %v", count, err)
+	}
+}
+
+type evidenceEnvironment struct {
+	pool           *pgxpool.Pool
+	service        *Service
+	scope          models.RepoScope
+	otherOrgID     uuid.UUID
+	otherUserID    uuid.UUID
+	issueID        uuid.UUID
+	owner          serverauth.Principal
+	reader         serverauth.Principal
+	writer         serverauth.Principal
+	undesignated   serverauth.Principal
+	missingScope   serverauth.Principal
+	readerEvidence serverauth.Principal
+	unrestricted   serverauth.Principal
+}
+
+func newEvidenceEnvironment(t *testing.T) evidenceEnvironment {
+	t.Helper()
+	pool := evidencePool(t)
+	authorization, err := authz.New(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(pool, authorization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orgID := evidenceOrg(t, pool, "evidence-org")
+	otherOrgID := evidenceOrg(t, pool, "other-org")
+	repoID := evidenceRepo(t, pool, orgID, "repo")
+	scope := models.RepoScope{OrgID: orgID, RepoID: repoID}
+	ownerID := evidenceUser(t, pool, "owner")
+	readerID := evidenceUser(t, pool, "reader")
+	writerID := evidenceUser(t, pool, "writer")
+	undesignatedID := evidenceUser(t, pool, "undesignated")
+	missingScopeID := evidenceUser(t, pool, "missing-scope")
+	readerEvidenceID := evidenceUser(t, pool, "reader-evidence")
+	unrestrictedID := evidenceUser(t, pool, "unrestricted")
+	otherUserID := evidenceUser(t, pool, "other-user")
+	for _, entry := range []struct {
+		id   uuid.UUID
+		role string
+	}{{ownerID, "owner"}, {readerID, "reader"}, {writerID, "maintainer"}, {undesignatedID, "maintainer"},
+		{missingScopeID, "maintainer"}, {readerEvidenceID, "reader"}, {unrestrictedID, "maintainer"}} {
+		evidenceMembership(t, pool, orgID, entry.id, entry.role)
+	}
+	evidenceMembership(t, pool, otherOrgID, otherUserID, "maintainer")
+	issueID := uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO issues
+		(id, organization_id, repository_id, number, title) VALUES ($1, $2, $3, 1, 'issue')`, issueID, orgID, repoID); err != nil {
+		t.Fatal(err)
+	}
+	return evidenceEnvironment{pool: pool, service: service, scope: scope, otherOrgID: otherOrgID,
+		otherUserID: otherUserID, issueID: issueID, owner: evidenceSession(t, pool, ownerID),
+		reader: evidenceSession(t, pool, readerID), writer: evidencePAT(t, pool, writerID, scope, []string{"evidence:write"}, true),
+		undesignated:   evidencePAT(t, pool, undesignatedID, scope, []string{"evidence:write"}, true),
+		missingScope:   evidencePAT(t, pool, missingScopeID, scope, []string{"issues:write"}, true),
+		readerEvidence: evidencePAT(t, pool, readerEvidenceID, scope, []string{"evidence:write"}, true),
+		unrestricted:   evidencePAT(t, pool, unrestrictedID, scope, []string{"evidence:write"}, false)}
+}
+
+func (e evidenceEnvironment) actor(principal serverauth.Principal, requestID string) adminservice.Actor {
+	return adminservice.ActorFromPrincipal(principal, requestID)
+}
+
+func (e evidenceEnvironment) appendInput(key, revision string, visibility Visibility) AppendInput {
+	return AppendInput{IssueID: e.issueID, ProviderKey: "github", ExternalRepositoryID: "acme/widgets",
+		EvidenceType: "check", ExternalID: "check-1", IngestKey: key, NormalizedState: "passed",
+		SubjectRevision: revision, ObservedAt: time.Date(2026, 7, 11, 4, 0, 0, 123000, time.UTC),
+		Payload:    []byte(`{"state":"passed","large":9007199254740993}`),
+		Provenance: []byte(`{"adapter":"test","delivery_id":"safe"}`), Visibility: visibility}
+}
+
+func (e evidenceEnvironment) evidenceVersions(t *testing.T) (int64, int64) {
+	t.Helper()
+	var issueVersion, repoVersion int64
+	if err := e.pool.QueryRow(t.Context(), `SELECT i.evidence_collection_version, r.evidence_collection_version
+		FROM issues i JOIN repos r ON r.organization_id = i.organization_id AND r.id = i.repository_id
+		WHERE i.organization_id = $1 AND i.repository_id = $2 AND i.id = $3`, e.scope.OrgID, e.scope.RepoID, e.issueID).
+		Scan(&issueVersion, &repoVersion); err != nil {
+		t.Fatal(err)
+	}
+	return issueVersion, repoVersion
+}
+
+func evidencePool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	databaseURL := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is required")
+	}
+	admin, err := pgxpool.New(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(admin.Close)
+	schema := "evidence_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err := admin.Exec(t.Context(), "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = admin.Exec(ctx, "DROP SCHEMA IF EXISTS "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
+	})
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.ConnConfig.RuntimeParams["search_path"] = schema
+	config.MaxConns = 32
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if err := store.RunMigrations(t.Context(), pool); err != nil {
+		t.Fatal(err)
+	}
+	return pool
+}
+
+func evidenceUser(t *testing.T, pool *pgxpool.Pool, login string) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO users (id, login, display_name) VALUES ($1, $2, $2)`, id, login+id.String()); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func evidenceOrg(t *testing.T, pool *pgxpool.Pool, name string) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO orgs (id, name, display_name, base_permission) VALUES ($1, $2, $2, 'none')`, id, name+id.String()); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func evidenceRepo(t *testing.T, pool *pgxpool.Pool, orgID uuid.UUID, name string) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO repos (id, organization_id, name, display_name, visibility)
+		VALUES ($1, $2, $3, $3, 'private')`, id, orgID, name); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func evidenceMembership(t *testing.T, pool *pgxpool.Pool, orgID, userID uuid.UUID, role string) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO org_memberships
+		(organization_id, user_id, role, state, activated_at) VALUES ($1, $2, $3, 'active', clock_timestamp())`, orgID, userID, role); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func evidenceSession(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID) serverauth.Principal {
+	t.Helper()
+	id := uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO sessions
+		(id, user_id, token_prefix, token_hash, csrf_hash, idle_expires_at, absolute_expires_at)
+		VALUES ($1, $2, $3, $4, $5, clock_timestamp() + interval '1 hour', clock_timestamp() + interval '2 hours')`,
+		id, userID, "s-"+id.String(), []byte("token-"+id.String()), []byte("csrf-"+id.String())); err != nil {
+		t.Fatal(err)
+	}
+	return serverauth.Principal{User: serverauth.User{ID: userID, Status: "active"}, Kind: serverauth.CredentialSession, CredentialID: id}
+}
+
+func evidencePAT(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID, scope models.RepoScope, scopes []string, restricted bool) serverauth.Principal {
+	t.Helper()
+	id := uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO personal_access_tokens
+		(id, user_id, name, token_prefix, token_hash) VALUES ($1, $2, 'test', $3, $4)`,
+		id, userID, "p-"+id.String(), []byte("pat-"+id.String())); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range scopes {
+		if _, err := pool.Exec(t.Context(), `INSERT INTO pat_scopes (personal_access_token_id, scope) VALUES ($1, $2)`, id, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var caps []serverauth.RepositoryCap
+	if restricted {
+		if _, err := pool.Exec(t.Context(), `INSERT INTO pat_repositories
+			(personal_access_token_id, organization_id, repository_id) VALUES ($1, $2, $3)`, id, scope.OrgID, scope.RepoID); err != nil {
+			t.Fatal(err)
+		}
+		caps = []serverauth.RepositoryCap{{OrgID: scope.OrgID, RepoID: scope.RepoID}}
+	}
+	return serverauth.Principal{User: serverauth.User{ID: userID, Status: "active"}, Kind: serverauth.CredentialPAT,
+		CredentialID: id, Scopes: append([]string(nil), scopes...), RepoRestricted: restricted, RepositoryCaps: caps}
+}
+
+func requireEvidencePGCode(t *testing.T, err error, code string) {
+	t.Helper()
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != code {
+		t.Fatalf("PostgreSQL error = %v, want code %s", err, code)
+	}
+}
