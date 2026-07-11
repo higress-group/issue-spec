@@ -59,10 +59,12 @@ func (p Profile) Validate() error {
 	default:
 		return fmt.Errorf("profile %q kind must be github or self-hosted", p.Name)
 	}
-	if _, err := canonicalEndpoint(p.APIURL); err != nil {
+	apiURL, err := canonicalEndpoint(p.APIURL)
+	if err != nil {
 		return fmt.Errorf("profile %q API URL: %w", p.Name, err)
 	}
-	if _, err := canonicalEndpoint(p.WebURL); err != nil {
+	webURL, err := canonicalEndpoint(p.WebURL)
+	if err != nil {
 		return fmt.Errorf("profile %q web URL: %w", p.Name, err)
 	}
 	if p.Kind == ProfileKindHosted {
@@ -72,8 +74,15 @@ func (p Profile) Validate() error {
 		if p.NativeAPIURL == "" {
 			return fmt.Errorf("profile %q native API URL is required", p.Name)
 		}
-		if _, err := canonicalEndpoint(p.NativeAPIURL); err != nil {
+		nativeAPIURL, err := canonicalEndpoint(p.NativeAPIURL)
+		if err != nil {
 			return fmt.Errorf("profile %q native API URL: %w", p.Name, err)
+		}
+		if !sameEndpointOrigin(apiURL, nativeAPIURL) {
+			return fmt.Errorf("profile %q native API URL must use the same origin as API URL", p.Name)
+		}
+		if !sameEndpointOrigin(apiURL, webURL) {
+			return fmt.Errorf("profile %q web URL must use the same origin as API URL", p.Name)
 		}
 	} else if NormalizeHost(p.Hostname) == "" {
 		return fmt.Errorf("profile %q GitHub hostname is required", p.Name)
@@ -330,6 +339,16 @@ func canonicalEndpoint(raw string) (string, error) {
 		return "", errors.New("path must be canonical")
 	}
 	return u.String(), nil
+}
+
+// sameEndpointOrigin compares canonical HTTP origins. canonicalEndpoint has
+// already folded host casing and default ports, so paths can differ without
+// weakening the credential boundary while scheme, host, and effective port
+// must remain identical.
+func sameEndpointOrigin(first, second string) bool {
+	firstURL, firstErr := url.Parse(first)
+	secondURL, secondErr := url.Parse(second)
+	return firstErr == nil && secondErr == nil && firstURL.Scheme == secondURL.Scheme && firstURL.Host == secondURL.Host
 }
 
 // SelectProfileBackendWithOptions resolves a named realm before backend and

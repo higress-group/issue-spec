@@ -122,6 +122,9 @@ func TestLegacyAPIURLIsEphemeralAndRequiresExplicitIssueSpecToken(t *testing.T) 
 	if !profile.Ephemeral || profile.Kind != ProfileKindHosted || source != "env:"+GitHubBackendAPIURLEnv {
 		t.Fatalf("legacy profile = %+v source=%q", profile, source)
 	}
+	if !sameEndpointOrigin(profile.APIURL, profile.NativeAPIURL) || !sameEndpointOrigin(profile.APIURL, profile.WebURL) {
+		t.Fatalf("legacy profile endpoints escaped API origin: %+v", profile)
+	}
 	if _, err := ResolveProfileToken(context.Background(), profile); !errors.Is(err, ErrNoToken) {
 		t.Fatalf("legacy token error = %v", err)
 	}
@@ -200,5 +203,105 @@ func TestProfileValidationRejectsCredentialAndURLInjection(t *testing.T) {
 		if _, err := profile.Normalized(); err == nil {
 			t.Fatalf("API URL %q accepted", apiURL)
 		}
+	}
+}
+
+func TestSelfHostedProfileRequiresTrustedSameOriginEndpoints(t *testing.T) {
+	tests := []struct {
+		name         string
+		nativeAPIURL string
+		webURL       string
+		want         string
+	}{
+		{
+			name:         "native host",
+			nativeAPIURL: "https://attacker.example.test/api/v1",
+			webURL:       "https://issues.example.test",
+			want:         "native API URL must use the same origin as API URL",
+		},
+		{
+			name:         "native scheme",
+			nativeAPIURL: "http://issues.example.test/api/v1",
+			webURL:       "https://issues.example.test",
+			want:         "native API URL must use the same origin as API URL",
+		},
+		{
+			name:         "native port",
+			nativeAPIURL: "https://issues.example.test:8443/api/v1",
+			webURL:       "https://issues.example.test",
+			want:         "native API URL must use the same origin as API URL",
+		},
+		{
+			name:         "web host",
+			nativeAPIURL: "https://issues.example.test/api/v1",
+			webURL:       "https://attacker.example.test",
+			want:         "web URL must use the same origin as API URL",
+		},
+		{
+			name:         "web scheme",
+			nativeAPIURL: "https://issues.example.test/api/v1",
+			webURL:       "http://issues.example.test",
+			want:         "web URL must use the same origin as API URL",
+		},
+		{
+			name:         "web port",
+			nativeAPIURL: "https://issues.example.test/api/v1",
+			webURL:       "https://issues.example.test:8443",
+			want:         "web URL must use the same origin as API URL",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := Profile{
+				Name: "local", Kind: ProfileKindHosted,
+				APIURL: "https://issues.example.test/api/v3", NativeAPIURL: tt.nativeAPIURL,
+				WebURL: tt.webURL, ServerInstanceID: "instance-a",
+			}
+			if _, err := profile.Normalized(); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Normalized error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestSelfHostedProfileSameOriginAllowsIndependentPathsAndDefaultPorts(t *testing.T) {
+	profile := Profile{
+		Name: "local", Kind: ProfileKindHosted,
+		APIURL:       "https://ISSUES.EXAMPLE.TEST:443/tenant/api/v3",
+		NativeAPIURL: "https://issues.example.test/tenant/api/v1",
+		WebURL:       "https://issues.example.test/tenant", ServerInstanceID: "instance-a",
+	}
+	normalized, err := profile.Normalized()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.APIURL != "https://issues.example.test/tenant/api/v3" ||
+		normalized.NativeAPIURL != "https://issues.example.test/tenant/api/v1" ||
+		normalized.WebURL != "https://issues.example.test/tenant" {
+		t.Fatalf("normalized endpoints = %+v", normalized)
+	}
+}
+
+func TestSaveProfileRejectsCrossOriginUpdateWithoutReplacingExisting(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	profile := Profile{
+		Name: "local", Kind: ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "instance-a",
+	}
+	if err := SaveProfile(profile, true); err != nil {
+		t.Fatal(err)
+	}
+	profile.NativeAPIURL = "https://attacker.example.test/api/v1"
+	if err := SaveProfile(profile, true); err == nil || !strings.Contains(err.Error(), "same origin") {
+		t.Fatalf("cross-origin update error = %v", err)
+	}
+	resolved, source, err := ResolveProfile("local", "github.com")
+	if err != nil || source != "config" {
+		t.Fatalf("ResolveProfile = %+v source=%q err=%v", resolved, source, err)
+	}
+	if resolved.NativeAPIURL != "https://issues.example.test/api/v1" {
+		t.Fatalf("rejected update replaced profile: %+v", resolved)
 	}
 }

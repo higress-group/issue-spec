@@ -640,6 +640,43 @@ func TestAuthLoginAndStatusUseNamedSelfHostedProfile(t *testing.T) {
 	}
 }
 
+func TestAuthLoginRejectsCrossOriginSelfHostedEndpointsBeforeRequest(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var apiRequests, nativeRequests int
+	apiServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		apiRequests++
+	}))
+	defer apiServer.Close()
+	nativeServer := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		nativeRequests++
+		if r.Header.Get("Authorization") != "" {
+			t.Fatalf("cross-origin request carried authorization: %q", r.Header.Get("Authorization"))
+		}
+	}))
+	defer nativeServer.Close()
+
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader("profile-secret\n"), &out, &errOut)
+	code := app.runAuthLogin(context.Background(), []string{
+		"--profile", "staging", "--kind", "self-hosted",
+		"--api-url", apiServer.URL + "/api/v3", "--native-api-url", nativeServer.URL + "/api/v1",
+		"--web-url", apiServer.URL, "--instance-id", "instance-staging",
+		"--with-token", "--insecure-storage",
+	})
+	if code != 1 || !strings.Contains(errOut.String(), "native API URL must use the same origin as API URL") {
+		t.Fatalf("login exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if apiRequests != 0 || nativeRequests != 0 {
+		t.Fatalf("cross-origin login sent requests: api=%d native=%d", apiRequests, nativeRequests)
+	}
+	if strings.Contains(out.String()+errOut.String(), "profile-secret") {
+		t.Fatalf("login leaked token: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	if _, _, err := auth.ResolveProfile("staging", "github.com"); err == nil {
+		t.Fatal("rejected cross-origin profile was persisted")
+	}
+}
+
 func TestAuthStatusSelfHostedRunnerUsesTokenFileWithoutGH(t *testing.T) {
 	clearCommandAuthEnv(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

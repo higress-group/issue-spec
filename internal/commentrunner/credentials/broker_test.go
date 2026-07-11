@@ -85,6 +85,30 @@ func TestBrokerDoesNotFollowCredentialedRedirect(t *testing.T) {
 	}
 }
 
+func TestBrokerRejectsCrossOriginNativeAPIWithoutSendingAuthorization(t *testing.T) {
+	var requests atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Header.Get("Authorization") != "" {
+			t.Fatalf("cross-origin request carried authorization: %q", r.Header.Get("Authorization"))
+		}
+	}))
+	defer target.Close()
+
+	broker := testBroker(t, target.URL, func(context.Context) error { return nil })
+	broker.Profile.APIURL = "https://trusted.example.test/api/v3"
+	broker.Profile.WebURL = "https://trusted.example.test"
+	_, err := broker.Acquire(context.Background(), AcquireRequest{
+		Repo: models.RepoScope{OrgID: uuid.New(), RepoID: uuid.New()}, JobID: "job-cross-origin", Binding: testBinding(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "valid self-hosted profile") {
+		t.Fatalf("Acquire error = %v", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("cross-origin native endpoint received %d requests", requests.Load())
+	}
+}
+
 func TestBrokerConcurrentJobsUseIsolatedFiles(t *testing.T) {
 	var sequence atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
