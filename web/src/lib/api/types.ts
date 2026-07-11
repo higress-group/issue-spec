@@ -83,7 +83,11 @@ export const patSchema = z.object({
   token_prefix: z.string().optional(),
   prefix: z.string().optional(),
   scopes: z.array(z.string()).default([]),
-  repository_ids: z.array(z.string().uuid()).optional(),
+  repositories: z.array(z.object({
+    organization_id: z.string().uuid(),
+    repository_id: z.string().uuid(),
+  })).default([]),
+  repository_restricted: z.boolean().default(false),
   expires_at: z.string().datetime({ offset: true }).nullable().optional(),
   revoked_at: z.string().datetime({ offset: true }).nullable().optional(),
   representation_version: z.number().optional(),
