@@ -360,7 +360,14 @@ func newEnvironment(t *testing.T, maxAttempts int, overlap time.Duration) *testE
 	if err != nil {
 		t.Fatal(err)
 	}
-	clock := &manualClock{value: time.Now().UTC().Add(time.Second)}
+	// Derive the manual delivery clock from PostgreSQL rather than the host.
+	// Containerized development databases can have a small wall-clock offset;
+	// overlap/lease assertions must advance one coherent authority.
+	var databaseNow time.Time
+	if err := pool.QueryRow(t.Context(), `SELECT clock_timestamp()`).Scan(&databaseNow); err != nil {
+		t.Fatal(err)
+	}
+	clock := &manualClock{value: databaseNow.UTC().Add(time.Second)}
 	sender := &fakeSender{}
 	service, err := delivery.New(pool, authorizer, subscriptionService, sender,
 		delivery.Config{LeaseDuration: 2 * time.Second, MaxConcurrency: 2, PollInterval: 5 * time.Millisecond, Clock: clock.Now})
