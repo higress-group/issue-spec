@@ -38,8 +38,8 @@ export const contextSchema = z.object({
     scope_mode: z.enum(["identity", "token"]),
     scopes: z.array(z.string()).optional(),
     repository_restricted: z.boolean(),
-    absolute_expires_at: z.string().datetime().optional(),
-    idle_expires_at: z.string().datetime().optional(),
+    absolute_expires_at: z.string().datetime({ offset: true }).optional(),
+    idle_expires_at: z.string().datetime({ offset: true }).optional(),
   }),
   session: z.object({ csrf_cookie_name: z.string(), csrf_header_name: z.string() }).optional(),
   allowed_actions: z.array(z.string()),
@@ -72,7 +72,7 @@ export const bootstrapSchema = z.object({
   available: z.boolean(),
   completed: z.boolean(),
   completed_by_user_id: z.string().uuid().optional(),
-  completed_at: z.string().datetime().optional(),
+  completed_at: z.string().datetime({ offset: true }).optional(),
   representation_version: z.number(),
 });
 export type BootstrapStatus = z.infer<typeof bootstrapSchema>;
@@ -84,8 +84,8 @@ export const patSchema = z.object({
   prefix: z.string().optional(),
   scopes: z.array(z.string()).default([]),
   repository_ids: z.array(z.string().uuid()).optional(),
-  expires_at: z.string().datetime().nullable().optional(),
-  revoked_at: z.string().datetime().nullable().optional(),
+  expires_at: z.string().datetime({ offset: true }).nullable().optional(),
+  revoked_at: z.string().datetime({ offset: true }).nullable().optional(),
   representation_version: z.number().optional(),
 });
 export const patsSchema = z.object({ tokens: z.array(patSchema) });
