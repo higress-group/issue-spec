@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
 )
@@ -438,10 +439,16 @@ func codexACPCheck(deps PreflightDependencies) PreflightCheck {
 			Hint:   acpxInstallHint,
 		}
 	}
+	detail := fmt.Sprintf("npx=%s npm=%s package=%s", npxPath, npmPath, codexACPPackage)
+	if override, ok, err := acpx.LoadAgentOverride(hostHomeDir(), acpx.AgentCodex); err != nil {
+		return PreflightCheck{Name: "codex-acp", Status: CheckError, Detail: "invalid host acpx Codex agent override: " + err.Error(), Hint: acpxInstallHint}
+	} else if ok {
+		detail = fmt.Sprintf("npx=%s npm=%s agent_override=%s source=%s", npxPath, npmPath, acpx.AgentOverrideDescription(override), override.Source)
+	}
 	return PreflightCheck{
 		Name:   "codex-acp",
 		Status: CheckOK,
-		Detail: fmt.Sprintf("npx=%s npm=%s package=%s", npxPath, npmPath, codexACPPackage),
+		Detail: detail,
 	}
 }
 

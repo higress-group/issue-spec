@@ -338,6 +338,7 @@ func (d *Dispatcher) coordinatorForStoredJob(ctx context.Context, job state.Job)
 		AcpxWorkingDirectory: job.Workspace.Path,
 		AcpxBinary:           firstNonEmpty(d.AcpxBinary, acpx.DefaultBinary),
 		ExtraEnv:             d.CoordinatorExtraEnv,
+		AcpxAgent:            job.CoordinatorKind,
 	})
 	if err != nil {
 		return nil, err

@@ -72,6 +72,7 @@ type SandboxRequest struct {
 	RuntimeCodexHome     string
 	FileCapabilities     []sandbox.FileCapability
 	ChildProfile         *clientauth.Profile
+	AcpxAgent            string
 }
 
 type ExecutionEnvironment struct {
@@ -848,6 +849,7 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 		RuntimeGHConfigDir:   runtimePaths.ghConfigDir,
 		RuntimeXDGConfigHome: runtimePaths.xdgConfigHome,
 		RuntimeCodexHome:     runtimePaths.codexHome,
+		AcpxAgent:            job.CoordinatorKind,
 	}
 	if lease != nil {
 		sandboxRequest.FileCapabilities = lease.FileCapabilities()
@@ -1610,10 +1612,35 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 	if err := mirrorHostCodexConfig(&cfg); err != nil {
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
+	if err := materializeHostAcpxAgentOverride(&cfg, req.AcpxAgent); err != nil {
+		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
+	}
 	if err := mirrorHostClaudeConfig(&cfg); err != nil {
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
 	return cfg, resolvedAcpxBinary, ghAuthMirror, nil
+}
+
+func materializeHostAcpxAgentOverride(cfg *sandbox.Config, agent string) error {
+	if cfg == nil || strings.TrimSpace(agent) == "" || strings.TrimSpace(cfg.TempHome) == "" {
+		return nil
+	}
+	home := hostHomeDir(cfg.HostEnv)
+	override, ok, err := acpx.LoadAgentOverride(home, agent)
+	if err != nil {
+		return fmt.Errorf("load host acpx %s agent override: %w", agent, err)
+	}
+	target := filepath.Join(cfg.TempHome, ".acpx", "config.json")
+	if !ok {
+		if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale runtime acpx agent override: %w", err)
+		}
+		return nil
+	}
+	if err := acpx.MaterializeAgentOverride(cfg.TempHome, override); err != nil {
+		return fmt.Errorf("materialize host acpx %s agent override: %w", agent, err)
+	}
+	return nil
 }
 
 func materializeChildProfile(xdgConfigHome string, profile clientauth.Profile) error {

@@ -125,6 +125,25 @@ func TestPreflightFailsCodexACPToolchainWhenNpxMissing(t *testing.T) {
 	}
 }
 
+func TestPreflightReportsSelectedCodexAdapterWithoutOtherAcpxConfig(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".acpx"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := `{"agents":{"codex":{"command":"npx","args":["-y","@agentclientprotocol/codex-acp@1.1.2"]},"claude":{"command":"must-not-cross"}},"authMethods":[{"token":"must-not-cross"}]}`
+	if err := os.WriteFile(filepath.Join(home, ".acpx", "config.json"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report := RunPreflight(context.Background(), cfg, passingPreflightDependencies(t))
+	check := findCheck(t, report, "codex-acp")
+	if check.Status != CheckOK || !strings.Contains(check.Detail, "agent_override=@agentclientprotocol/codex-acp@1.1.2") || strings.Contains(check.Detail, "must-not-cross") {
+		t.Fatalf("unexpected codex-acp check: %+v", check)
+	}
+}
+
 func TestPreflightFailsWhenRepositoryWatchCannotBeConfirmed(t *testing.T) {
 	cfg := testPreflightConfig(t)
 	cfg.UnsafeNoSandbox = true
