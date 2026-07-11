@@ -94,6 +94,15 @@ func TestRepositoryProjectionLifecycleProgressAndAnomalies(t *testing.T) {
 	if err != nil || filtered.Total != 1 || len(filtered.Cards) != 1 || filtered.Cards[0].ChangeKey != "alpha" {
 		t.Fatalf("filtered = %+v, %v", filtered, err)
 	}
+	emptyFiltered, err := env.service.RepositoryBoard(t.Context(), authz.Authenticated(env.principal), env.scope,
+		ListOptions{Stage: StageProposal, Page: 1, PerPage: 12})
+	if err != nil || emptyFiltered.Total != 0 || emptyFiltered.Cards == nil || len(emptyFiltered.Cards) != 0 {
+		t.Fatalf("empty filtered board = %+v, %v", emptyFiltered, err)
+	}
+	encoded, err := json.Marshal(emptyFiltered)
+	if err != nil || !strings.Contains(string(encoded), `"cards":[]`) {
+		t.Fatalf("empty filtered board JSON = %s, %v", encoded, err)
+	}
 }
 
 func TestChangeDetailIsNotLimitedToFirstHundredAndTenantKeysStayIndependent(t *testing.T) {

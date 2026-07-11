@@ -221,7 +221,10 @@ func (s *Service) loadBoard(ctx context.Context, subject authz.Subject, orgID uu
 	if end > total {
 		end = total
 	}
-	pageCards := append([]ChangeCard(nil), filtered[start:end]...)
+	// Keep the JSON collection contract stable for an empty filtered page. A
+	// nil slice serializes as null, which breaks strict clients that correctly
+	// model board cards as an array.
+	pageCards := append(make([]ChangeCard, 0, end-start), filtered[start:end]...)
 	lastModified := time.Time{}
 	for _, repository := range repositories {
 		if repository.updatedAt.After(lastModified) {
