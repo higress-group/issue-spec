@@ -9,7 +9,9 @@ import (
 	"sort"
 	"strings"
 	"text/template"
+	"time"
 
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"gopkg.in/yaml.v3"
 )
 
@@ -34,11 +36,26 @@ type Diagnostic struct {
 }
 
 type Config struct {
-	Schema     string         `json:"schema,omitempty" yaml:"schema"`
-	Context    map[string]any `json:"context,omitempty" yaml:"context"`
-	Rules      map[string]any `json:"rules,omitempty" yaml:"rules"`
-	References []string       `json:"references,omitempty" yaml:"references"`
-	Store      map[string]any `json:"store,omitempty" yaml:"store"`
+	Schema       string              `json:"schema,omitempty" yaml:"schema"`
+	Context      map[string]any      `json:"context,omitempty" yaml:"context"`
+	Rules        map[string]any      `json:"rules,omitempty" yaml:"rules"`
+	References   []string            `json:"references,omitempty" yaml:"references"`
+	Store        map[string]any      `json:"store,omitempty" yaml:"store"`
+	ExternalCode *ExternalCodeConfig `json:"external_code,omitempty" yaml:"external_code"`
+}
+
+// ExternalCodeConfig is repository-owned selection and gate policy only. An
+// executable, arguments, environment, or credential source can only be
+// registered in trusted operator configuration and is rejected here.
+type ExternalCodeConfig struct {
+	ProviderKey string               `json:"provider_key" yaml:"provider_key"`
+	Evidence    EvidencePolicyConfig `json:"evidence" yaml:"evidence"`
+}
+
+type EvidencePolicyConfig struct {
+	Required       []string          `json:"required,omitempty" yaml:"required"`
+	RequiredChecks []string          `json:"required_checks,omitempty" yaml:"required_checks"`
+	Freshness      map[string]string `json:"freshness,omitempty" yaml:"freshness"`
 }
 
 type Source struct {
@@ -257,7 +274,95 @@ func readConfig(path string) (Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, err
 	}
+	if err := validateExternalCodeConfig(data, cfg.ExternalCode); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+func validateExternalCodeConfig(data []byte, config *ExternalCodeConfig) error {
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return err
+	}
+	external := mappingValue(&document, "external_code")
+	if external == nil {
+		return nil
+	}
+	if external.Kind != yaml.MappingNode || config == nil {
+		return errors.New("external_code must be a mapping")
+	}
+	if unknown := unknownMappingKeys(external, map[string]bool{"provider_key": true, "evidence": true}); len(unknown) > 0 {
+		return fmt.Errorf("external_code contains operator-only or unsupported fields: %s", strings.Join(unknown, ", "))
+	}
+	evidence := mappingValue(external, "evidence")
+	if evidence != nil {
+		if evidence.Kind != yaml.MappingNode {
+			return errors.New("external_code.evidence must be a mapping")
+		}
+		if unknown := unknownMappingKeys(evidence, map[string]bool{"required": true, "required_checks": true, "freshness": true}); len(unknown) > 0 {
+			return fmt.Errorf("external_code.evidence contains unsupported fields: %s", strings.Join(unknown, ", "))
+		}
+	}
+	if err := codereview.ValidateProviderKey(config.ProviderKey); err != nil {
+		return fmt.Errorf("external_code.provider_key: %w", err)
+	}
+	allowed := map[string]bool{"change": true, "review": true, "check": true, "merge": true, "archive": true}
+	seen := map[string]bool{}
+	for _, value := range config.Evidence.Required {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if !allowed[value] || seen[value] {
+			return fmt.Errorf("external_code.evidence.required contains invalid or duplicate kind %q", value)
+		}
+		seen[value] = true
+	}
+	for kind, raw := range config.Evidence.Freshness {
+		if !allowed[strings.ToLower(strings.TrimSpace(kind))] {
+			return fmt.Errorf("external_code.evidence.freshness contains invalid kind %q", kind)
+		}
+		duration, err := time.ParseDuration(strings.TrimSpace(raw))
+		if err != nil || duration <= 0 || duration > 365*24*time.Hour {
+			return fmt.Errorf("external_code.evidence.freshness[%s] must be a positive duration no greater than one year", kind)
+		}
+	}
+	seenChecks := map[string]bool{}
+	for _, check := range config.Evidence.RequiredChecks {
+		check = strings.ToLower(strings.TrimSpace(check))
+		if check == "" || len(check) > 256 || seenChecks[check] {
+			return fmt.Errorf("external_code.evidence.required_checks contains an empty, duplicate, or overlong name")
+		}
+		seenChecks[check] = true
+	}
+	return nil
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
+		return mappingValue(node.Content[0], key)
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		if node.Content[index].Value == key {
+			return node.Content[index+1]
+		}
+	}
+	return nil
+}
+
+func unknownMappingKeys(node *yaml.Node, allowed map[string]bool) []string {
+	unknown := make([]string, 0)
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		if key := node.Content[index].Value; !allowed[key] {
+			unknown = append(unknown, key)
+		}
+	}
+	sort.Strings(unknown)
+	return unknown
 }
 
 func resolveSchema(root, userConfigDir string, source SourceKind, schemaName string) ([]Artifact, string, string, SourceKind, error) {
