@@ -63,7 +63,11 @@ func (s *Service) MintInTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, iss
 	now := s.now()
 	created := Created{ID: uuid.New(), Plaintext: plaintext, ExpiresAt: now.Add(ttl)}
 	var status string
-	if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&status); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT u.status FROM users u
+		JOIN site_role_assignments sr ON sr.user_id = u.id AND sr.role = 'site_admin'
+		WHERE u.id = $1 FOR UPDATE OF u, sr`, userID).Scan(&status); errors.Is(err, pgx.ErrNoRows) {
+		return Created{}, serverauth.ErrInvalidCredential
+	} else if err != nil {
 		return Created{}, err
 	}
 	if status != "active" {
@@ -87,39 +91,52 @@ func (s *Service) MintInTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, iss
 }
 
 func (s *Service) Consume(ctx context.Context, plaintext, requestID string) (serverauth.Principal, error) {
+	var principal serverauth.Principal
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		var err error
+		principal, err = s.ConsumeInTx(ctx, tx, plaintext, requestID)
+		return err
+	})
+	if err != nil {
+		return serverauth.Principal{}, err
+	}
+	return principal, nil
+}
+
+// ConsumeInTx verifies and consumes one recovery credential inside a
+// caller-owned transaction. It is used only by the browser-session takeover
+// exchange; recovery mint remains operator/bootstrap only.
+func (s *Service) ConsumeInTx(ctx context.Context, tx pgx.Tx, plaintext, requestID string) (serverauth.Principal, error) {
 	prefix, err := serverauth.TokenPrefix(plaintext, "rcv")
-	if err != nil || strings.TrimSpace(requestID) == "" {
+	if s == nil || tx == nil || err != nil || strings.TrimSpace(requestID) == "" {
 		return serverauth.Principal{}, serverauth.ErrInvalidCredential
 	}
 	now := s.now()
 	var principal serverauth.Principal
 	var digest []byte
-	err = pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `SELECT r.id, r.token_hash, r.expires_at,
+	err = tx.QueryRow(ctx, `SELECT r.id, r.token_hash, r.expires_at,
 			u.id, u.login, u.display_name, u.email, u.status
 			FROM recovery_credentials r JOIN users u ON u.id = r.user_id
 			WHERE r.token_prefix = $1 AND r.consumed_at IS NULL AND r.revoked_at IS NULL
 			AND r.expires_at > $2 AND u.status = 'active' FOR UPDATE OF r, u`, prefix, now).
-			Scan(&principal.CredentialID, &digest, &principal.ExpiresAt, &principal.User.ID,
-				&principal.User.Login, &principal.User.DisplayName, &principal.User.Email, &principal.User.Status)
-		if err != nil {
-			return err
-		}
-		if !serverauth.EqualDigest(digest, s.secrets.Digest("recovery-token", plaintext)) {
-			return serverauth.ErrInvalidCredential
-		}
-		if _, err := tx.Exec(ctx, `UPDATE recovery_credentials SET consumed_at = $2 WHERE id = $1`, principal.CredentialID, now); err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `INSERT INTO audit_events
-			(id, actor_user_id, actor_identity_key, action, resource_type, resource_id, request_id)
-			VALUES ($1, $2, $3, 'recovery.consume', 'recovery_credential', $4, $5)`,
-			uuid.New(), principal.User.ID, "recovery:"+principal.CredentialID.String(), principal.CredentialID, requestID)
-		return err
-	})
+		Scan(&principal.CredentialID, &digest, &principal.ExpiresAt, &principal.User.ID,
+			&principal.User.Login, &principal.User.DisplayName, &principal.User.Email, &principal.User.Status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return serverauth.Principal{}, serverauth.ErrInvalidCredential
 	}
+	if err != nil {
+		return serverauth.Principal{}, err
+	}
+	if !serverauth.EqualDigest(digest, s.secrets.Digest("recovery-token", plaintext)) {
+		return serverauth.Principal{}, serverauth.ErrInvalidCredential
+	}
+	if _, err := tx.Exec(ctx, `UPDATE recovery_credentials SET consumed_at = $2 WHERE id = $1`, principal.CredentialID, now); err != nil {
+		return serverauth.Principal{}, err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO audit_events
+			(id, actor_user_id, actor_identity_key, action, resource_type, resource_id, request_id)
+			VALUES ($1, $2, $3, 'recovery.consume', 'recovery_credential', $4, $5)`,
+		uuid.New(), principal.User.ID, "recovery:"+principal.CredentialID.String(), principal.CredentialID, requestID)
 	if err != nil {
 		return serverauth.Principal{}, err
 	}

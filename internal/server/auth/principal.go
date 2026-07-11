@@ -32,6 +32,7 @@ type Principal struct {
 	Purpose        string
 	Audience       string
 	CSRFHash       []byte
+	IdleExpiresAt  time.Time
 	ExpiresAt      time.Time
 }
 
@@ -172,14 +173,22 @@ func mutationMethod(method string) bool {
 	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
 }
 
-func writeUnauthorized(w http.ResponseWriter) {
+func (m Middleware) writeUnauthorized(w http.ResponseWriter, r *http.Request) {
+	if m.Unauthorized != nil {
+		m.Unauthorized(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte(`{"message":"Requires authentication"}`))
 }
 
-func writeForbidden(w http.ResponseWriter) {
+func (m Middleware) writeForbidden(w http.ResponseWriter, r *http.Request) {
+	if m.Forbidden != nil {
+		m.Forbidden(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusForbidden)

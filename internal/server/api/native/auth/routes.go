@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	adminapi "github.com/higress-group/issue-spec/internal/server/api/native/admin"
+	"github.com/higress-group/issue-spec/internal/server/api/routeset"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/auth/pat"
 	"github.com/higress-group/issue-spec/internal/server/auth/session"
@@ -28,33 +30,36 @@ type LoginAdapter interface {
 	Complete(context.Context, string, string) (serverauth.ExternalIdentity, string, error)
 }
 
-type Route struct {
-	Method  string
-	Pattern string
-	Handler http.Handler
+type IdentityAuthority interface {
+	IdentitySiteAdmin(context.Context, serverauth.Principal) (bool, error)
 }
 
-type RouteSet struct{ routes []Route }
+type IdentityAuthorityFunc func(context.Context, serverauth.Principal) (bool, error)
+
+func (f IdentityAuthorityFunc) IdentitySiteAdmin(ctx context.Context, principal serverauth.Principal) (bool, error) {
+	return f(ctx, principal)
+}
 
 type Dependencies struct {
 	Identity   *serverauth.IdentityService
 	Sessions   *session.Service
 	PATs       *pat.Service
+	Authority  IdentityAuthority
 	Middleware serverauth.Middleware
 	Adapters   map[string]LoginAdapter
 	WebOrigin  string
 }
 
-func NewRouteSet(deps Dependencies) (RouteSet, error) {
-	if deps.Identity == nil || deps.Sessions == nil || deps.PATs == nil || deps.Middleware.Sessions == nil || deps.Middleware.Bearer == nil {
-		return RouteSet{}, errors.New("native auth: incomplete dependencies")
+func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
+	if deps.Identity == nil || deps.Sessions == nil || deps.PATs == nil || deps.Authority == nil || deps.Middleware.Sessions == nil || deps.Middleware.Bearer == nil {
+		return routeset.RouteSet{}, errors.New("native auth: incomplete dependencies")
 	}
 	origin, err := url.Parse(deps.WebOrigin)
 	if err != nil || !origin.IsAbs() || origin.Host == "" || (origin.Scheme != "http" && origin.Scheme != "https") {
-		return RouteSet{}, errors.New("native auth: web origin must be an absolute HTTP(S) URL")
+		return routeset.RouteSet{}, errors.New("native auth: web origin must be an absolute HTTP(S) URL")
 	}
 	if origin.User != nil || (origin.Path != "" && origin.Path != "/") || origin.RawQuery != "" || origin.Fragment != "" {
-		return RouteSet{}, errors.New("native auth: web origin must not contain credentials, path, query, or fragment")
+		return routeset.RouteSet{}, errors.New("native auth: web origin must not contain credentials, path, query, or fragment")
 	}
 	canonicalOrigin := origin.Scheme + "://" + origin.Host
 	allowedOrigins := make(map[string]struct{}, len(deps.Middleware.AllowedOrigins)+1)
@@ -65,29 +70,23 @@ func NewRouteSet(deps Dependencies) (RouteSet, error) {
 	deps.Middleware.AllowedOrigins = allowedOrigins
 	deps.Middleware.SessionCookieName = deps.Sessions.CookieName()
 	h := &handlers{deps: deps, canonicalWebOrigin: canonicalOrigin}
-	protected := deps.Middleware.Authenticate
-	return RouteSet{routes: []Route{
-		{Method: http.MethodGet, Pattern: "/api/v1/auth/providers", Handler: http.HandlerFunc(h.providers)},
-		{Method: http.MethodGet, Pattern: "/api/v1/auth/{provider}/login", Handler: http.HandlerFunc(h.login)},
-		{Method: http.MethodGet, Pattern: "/api/v1/auth/{provider}/callback", Handler: http.HandlerFunc(h.callback)},
-		{Method: http.MethodPost, Pattern: "/api/v1/session/rotate", Handler: protected(http.HandlerFunc(h.rotateSession))},
-		{Method: http.MethodDelete, Pattern: "/api/v1/session", Handler: protected(http.HandlerFunc(h.logout))},
-		{Method: http.MethodGet, Pattern: "/api/v1/pats", Handler: protected(http.HandlerFunc(h.listPATs))},
-		{Method: http.MethodPost, Pattern: "/api/v1/pats", Handler: protected(http.HandlerFunc(h.createPAT))},
-		{Method: http.MethodPost, Pattern: "/api/v1/pats/{id}/rotate", Handler: protected(http.HandlerFunc(h.rotatePAT))},
-		{Method: http.MethodDelete, Pattern: "/api/v1/pats/{id}", Handler: protected(http.HandlerFunc(h.revokePAT))},
-		{Method: http.MethodGet, Pattern: "/user", Handler: protected(http.HandlerFunc(h.user))},
-	}}, nil
-}
-
-// Routes returns a copy so the composition owner can mount or decorate each
-// route without this package owning the total mux.
-func (r RouteSet) Routes() []Route { return append([]Route(nil), r.routes...) }
-
-func (r RouteSet) Register(mux *http.ServeMux) {
-	for _, route := range r.routes {
-		mux.Handle(route.Method+" "+route.Pattern, route.Handler)
-	}
+	nativeProtected := adminapi.NativeAuthenticate(deps.Middleware)
+	compatProtected := deps.Middleware.Authenticate
+	public := func(handler http.Handler) http.Handler { return adminapi.WithRequestID(handler) }
+	protected := func(handler http.Handler) http.Handler { return adminapi.WithRequestID(nativeProtected(handler)) }
+	set := routeset.RouteSet{Name: "native-auth", Routes: []routeset.Route{
+		{Name: "native.auth.providers", Method: http.MethodGet, Pattern: "/api/v1/auth/providers", Handler: public(http.HandlerFunc(h.providers))},
+		{Name: "native.auth.login", Method: http.MethodGet, Pattern: "/api/v1/auth/{provider}/login", Handler: public(http.HandlerFunc(h.login))},
+		{Name: "native.auth.callback", Method: http.MethodGet, Pattern: "/api/v1/auth/{provider}/callback", Handler: public(http.HandlerFunc(h.callback))},
+		{Name: "native.session.rotate", Method: http.MethodPost, Pattern: "/api/v1/session/rotate", Handler: protected(http.HandlerFunc(h.rotateSession))},
+		{Name: "native.session.logout", Method: http.MethodDelete, Pattern: "/api/v1/session", Handler: protected(http.HandlerFunc(h.logout))},
+		{Name: "native.pats.list", Method: http.MethodGet, Pattern: "/api/v1/pats", Handler: protected(http.HandlerFunc(h.listPATs))},
+		{Name: "native.pats.create", Method: http.MethodPost, Pattern: "/api/v1/pats", Handler: protected(http.HandlerFunc(h.createPAT))},
+		{Name: "native.pats.rotate", Method: http.MethodPost, Pattern: "/api/v1/pats/{id}/rotate", Handler: protected(http.HandlerFunc(h.rotatePAT))},
+		{Name: "native.pats.revoke", Method: http.MethodDelete, Pattern: "/api/v1/pats/{id}", Handler: protected(http.HandlerFunc(h.revokePAT))},
+		{Name: "compat.user.get", Method: http.MethodGet, Pattern: "/user", Handler: adminapi.WithRequestID(compatProtected(http.HandlerFunc(h.user)))},
+	}}
+	return set, set.Validate()
 }
 
 type handlers struct {
@@ -149,13 +148,11 @@ func (h *handlers) callback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "Authentication failed")
 		return
 	}
+	priorToken := ""
 	if existing, cookieErr := r.Cookie(h.deps.Sessions.CookieName()); cookieErr == nil {
-		if err := h.deps.Sessions.Revoke(r.Context(), existing.Value); err != nil && !errors.Is(err, serverauth.ErrInvalidCredential) {
-			writeError(w, http.StatusServiceUnavailable, "Authentication unavailable")
-			return
-		}
+		priorToken = existing.Value
 	}
-	created, err := h.deps.Sessions.Create(r.Context(), user.ID, r.UserAgent(), remoteIP(r.RemoteAddr))
+	created, err := h.deps.Sessions.Replace(r.Context(), priorToken, user.ID, r.UserAgent(), remoteIP(r.RemoteAddr))
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "Authentication unavailable")
 		return
@@ -213,12 +210,17 @@ func (h *handlers) logout(w http.ResponseWriter, r *http.Request) {
 
 func (h *handlers) user(w http.ResponseWriter, r *http.Request) {
 	principal, _ := serverauth.PrincipalFromContext(r.Context())
+	siteAdmin, err := h.deps.Authority.IdentitySiteAdmin(r.Context(), principal)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Request failed")
+		return
+	}
 	w.Header().Set("X-Accepted-OAuth-Scopes", "read:user")
 	w.Header().Set("X-OAuth-Scopes", strings.Join(principal.Scopes, ", "))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": principal.User.ID.String(), "node_id": "USER_" + principal.User.ID.String(),
 		"login": principal.User.Login, "name": principal.User.DisplayName, "email": principal.User.Email,
-		"type": "User", "site_admin": principal.HasScope("site:admin"),
+		"type": "User", "site_admin": siteAdmin,
 	})
 }
 
@@ -341,7 +343,26 @@ func writeAuthError(w http.ResponseWriter, err error) {
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"message": message})
+	code := "request_failed"
+	switch status {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		code = "invalid_request"
+	case http.StatusUnauthorized:
+		code = "authentication_failed"
+	case http.StatusForbidden:
+		code = "forbidden"
+	case http.StatusNotFound:
+		code = "not_found"
+	case http.StatusConflict:
+		code = "conflict"
+	case http.StatusBadGateway:
+		code = "provider_unavailable"
+	case http.StatusServiceUnavailable:
+		code = "authentication_unavailable"
+	case http.StatusInternalServerError:
+		code = "internal_error"
+	}
+	adminapi.WriteProblem(w, status, code, message)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

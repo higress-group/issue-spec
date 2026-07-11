@@ -16,6 +16,19 @@ import (
 
 type Authenticate func(http.Handler) http.Handler
 
+// NativeAuthenticate configures the shared credential middleware with stable
+// RFC 7807 writers while leaving its default GitHub-compatible JSON behavior
+// available to compatibility routes.
+func NativeAuthenticate(middleware serverauth.Middleware) Authenticate {
+	middleware.Unauthorized = func(w http.ResponseWriter, _ *http.Request) {
+		WriteProblem(w, http.StatusUnauthorized, "authentication_required", "Authentication required")
+	}
+	middleware.Forbidden = func(w http.ResponseWriter, _ *http.Request) {
+		WriteProblem(w, http.StatusForbidden, "forbidden", "Forbidden")
+	}
+	return middleware.Authenticate
+}
+
 type Guard struct {
 	authorizer   adminservice.Authorizer
 	authenticate Authenticate

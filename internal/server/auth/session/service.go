@@ -70,6 +70,45 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, userAgent, remot
 	return created, err
 }
 
+// CreateInTx lets a higher-level credential exchange atomically consume its
+// one-time credential and establish the browser session. The caller owns the
+// transaction and its commit/rollback decision.
+func (s *Service) CreateInTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, userAgent, remoteAddress string) (Created, error) {
+	if s == nil || tx == nil {
+		return Created{}, serverauth.ErrInvalidCredential
+	}
+	return s.create(ctx, tx, userID, userAgent, remoteAddress, time.Time{})
+}
+
+// Replace atomically revokes a valid presented browser session and creates the
+// post-login session. If creation fails, the prior session remains usable.
+// Malformed or unknown cookies are ignored to prevent fixation without turning
+// login into an availability oracle.
+func (s *Service) Replace(ctx context.Context, priorToken string, userID uuid.UUID, userAgent, remoteAddress string) (Created, error) {
+	var created Created
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if prefix, prefixErr := serverauth.TokenPrefix(priorToken, "sess"); prefixErr == nil {
+			var priorID uuid.UUID
+			var digest []byte
+			err := tx.QueryRow(ctx, `SELECT id, token_hash FROM sessions
+				WHERE token_prefix = $1 AND revoked_at IS NULL FOR UPDATE`, prefix).Scan(&priorID, &digest)
+			switch {
+			case errors.Is(err, pgx.ErrNoRows):
+			case err != nil:
+				return err
+			case serverauth.EqualDigest(digest, s.secrets.Digest("session-token", priorToken)):
+				if _, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL`, priorID, s.now()); err != nil {
+					return err
+				}
+			}
+		}
+		var err error
+		created, err = s.create(ctx, tx, userID, userAgent, remoteAddress, time.Time{})
+		return err
+	})
+	return created, err
+}
+
 type queryExecer interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 	QueryRow(context.Context, string, ...any) pgx.Row
@@ -97,7 +136,7 @@ func (s *Service) create(ctx context.Context, db queryExecer, userID uuid.UUID, 
 	}
 	created := Created{Token: token, CSRFToken: csrf, Principal: serverauth.Principal{
 		Kind: serverauth.CredentialSession, CredentialID: uuid.New(),
-		CSRFHash: s.secrets.Digest("session-csrf", csrf), ExpiresAt: absoluteExpiry,
+		CSRFHash: s.secrets.Digest("session-csrf", csrf), IdleExpiresAt: idleExpiry, ExpiresAt: absoluteExpiry,
 	}}
 	var userAgentValue, remoteAddressValue any
 	if strings.TrimSpace(userAgent) != "" {
@@ -170,7 +209,9 @@ func (s *Service) Authenticate(ctx context.Context, token string) (serverauth.Pr
 	if idleExpires.Sub(now) < s.config.IdleTTL/2 {
 		_, _ = s.pool.Exec(ctx, `UPDATE sessions SET last_seen_at = $2, idle_expires_at = $3
 			WHERE id = $1 AND revoked_at IS NULL`, principal.CredentialID, now, newIdle)
+		idleExpires = newIdle
 	}
+	principal.IdleExpiresAt = idleExpires
 	return principal, nil
 }
 

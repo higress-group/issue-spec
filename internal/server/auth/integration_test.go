@@ -13,12 +13,14 @@ import (
 
 	"github.com/google/uuid"
 	nativeauth "github.com/higress-group/issue-spec/internal/server/api/native/auth"
+	"github.com/higress-group/issue-spec/internal/server/api/routeset"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/auth/delegation"
 	"github.com/higress-group/issue-spec/internal/server/auth/pat"
 	"github.com/higress-group/issue-spec/internal/server/auth/recovery"
 	"github.com/higress-group/issue-spec/internal/server/auth/serviceaccount"
 	"github.com/higress-group/issue-spec/internal/server/auth/session"
+	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/server/store"
 	"github.com/jackc/pgx/v5"
@@ -299,7 +301,15 @@ func TestRecoveryIsHashedOneTimeAndWrongSecretDoesNotConsume(t *testing.T) {
 	pool := migratedPool(t)
 	secrets := testSecrets(t)
 	userID := insertUser(t, pool, "recovery-admin")
+	if _, err := pool.Exec(t.Context(), `INSERT INTO site_role_assignments (id, user_id, role)
+		VALUES ($1, $2, 'site_admin')`, uuid.New(), userID); err != nil {
+		t.Fatal(err)
+	}
 	service := recovery.New(pool, secrets)
+	nonAdminID := insertUser(t, pool, "recovery-non-admin")
+	if _, err := service.Mint(t.Context(), nonAdminID, "root@console", "must fail", "req-non-admin", 5*time.Minute); !errors.Is(err, serverauth.ErrInvalidCredential) {
+		t.Fatalf("non-admin recovery mint error = %v", err)
+	}
 	created, err := service.Mint(t.Context(), userID, "root@console", "identity provider outage", "req-recovery", 5*time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -410,13 +420,29 @@ func TestNativeUserAndPATRoutesEnforceCookieCSRFAndExposeScopes(t *testing.T) {
 	}
 	middleware := serverauth.Middleware{SessionCookieName: sessions.CookieName(), Sessions: sessions,
 		Bearer: serverauth.BearerChain{pats}, AllowedOrigins: map[string]struct{}{"https://issues.example.test": {}}}
-	routes, err := nativeauth.NewRouteSet(nativeauth.Dependencies{Identity: serverauth.NewIdentityService(pool), Sessions: sessions,
-		PATs: pats, Middleware: middleware, WebOrigin: "https://issues.example.test"})
+	authority, err := authz.New(pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mux := http.NewServeMux()
-	routes.Register(mux)
+	routes, err := nativeauth.NewRouteSet(nativeauth.Dependencies{Identity: serverauth.NewIdentityService(pool), Sessions: sessions,
+		PATs: pats, Authority: authority, Middleware: middleware, WebOrigin: "https://issues.example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux, err := routeset.NewMux(routeset.Policy{}, routes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthenticated := httptest.NewRequest(http.MethodGet, "/api/v1/pats", nil)
+	unauthenticatedResponse := httptest.NewRecorder()
+	mux.ServeHTTP(unauthenticatedResponse, unauthenticated)
+	if unauthenticatedResponse.Code != http.StatusUnauthorized ||
+		!strings.HasPrefix(unauthenticatedResponse.Header().Get("Content-Type"), "application/problem+json") ||
+		!strings.Contains(unauthenticatedResponse.Body.String(), `"code":"authentication_required"`) ||
+		unauthenticatedResponse.Header().Get("X-Request-ID") == "" {
+		t.Fatalf("native unauthenticated response = %d headers=%v body=%s", unauthenticatedResponse.Code,
+			unauthenticatedResponse.Header(), unauthenticatedResponse.Body.String())
+	}
 
 	userRequest := httptest.NewRequest(http.MethodGet, "/user", nil)
 	userRequest.Header.Set("Authorization", "Bearer "+bearer.Plaintext)
@@ -425,6 +451,17 @@ func TestNativeUserAndPATRoutesEnforceCookieCSRFAndExposeScopes(t *testing.T) {
 	if userResponse.Code != http.StatusOK || userResponse.Header().Get("X-OAuth-Scopes") != "read:user" ||
 		!strings.Contains(userResponse.Body.String(), `"login":"route-user"`) {
 		t.Fatalf("GET /user = %d headers=%v body=%s", userResponse.Code, userResponse.Header(), userResponse.Body.String())
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO site_role_assignments (id, user_id, role)
+		VALUES ($1, $2, 'site_admin')`, uuid.New(), userID); err != nil {
+		t.Fatal(err)
+	}
+	sessionUserRequest := httptest.NewRequest(http.MethodGet, "/user", nil)
+	sessionUserRequest.AddCookie(sessions.Cookie(createdSession.Token))
+	sessionUserResponse := httptest.NewRecorder()
+	mux.ServeHTTP(sessionUserResponse, sessionUserRequest)
+	if sessionUserResponse.Code != http.StatusOK || !strings.Contains(sessionUserResponse.Body.String(), `"site_admin":true`) {
+		t.Fatalf("session GET /user did not use identity authority: %d %s", sessionUserResponse.Code, sessionUserResponse.Body.String())
 	}
 
 	body := `{"name":"created-from-route","scopes":["read:user"]}`
@@ -460,6 +497,43 @@ func TestNativeUserAndPATRoutesEnforceCookieCSRFAndExposeScopes(t *testing.T) {
 	mux.ServeHTTP(listResponse, listRequest)
 	if listResponse.Code != http.StatusOK || strings.Contains(listResponse.Body.String(), `"token":"iss_pat_`) {
 		t.Fatalf("GET /api/v1/pats leaked plaintext: %d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+}
+
+func TestSessionReplaceRollsBackPriorRevocationWhenCreationFails(t *testing.T) {
+	pool := migratedPool(t)
+	secrets := testSecrets(t)
+	sessions, err := session.New(pool, secrets, session.Config{Secure: true, IdleTTL: time.Hour, AbsoluteTTL: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorUserID := insertUser(t, pool, "prior-session")
+	targetUserID := insertUser(t, pool, "replacement-session")
+	prior, err := sessions.Create(t.Context(), priorUserID, "replace-test", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `UPDATE users SET status = 'disabled' WHERE id = $1`, targetUserID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessions.Replace(t.Context(), prior.Token, targetUserID, "replace-test", "127.0.0.1"); !errors.Is(err, serverauth.ErrDisabledAccount) {
+		t.Fatalf("replace failure = %v", err)
+	}
+	if principal, err := sessions.Authenticate(t.Context(), prior.Token); err != nil || principal.User.ID != priorUserID {
+		t.Fatalf("prior session was revoked after replacement rollback: %+v, %v", principal, err)
+	}
+	if _, err := pool.Exec(t.Context(), `UPDATE users SET status = 'active' WHERE id = $1`, targetUserID); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := sessions.Replace(t.Context(), prior.Token, targetUserID, "replace-test", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessions.Authenticate(t.Context(), prior.Token); !errors.Is(err, serverauth.ErrInvalidCredential) && !errors.Is(err, serverauth.ErrRevokedCredential) {
+		t.Fatalf("prior session remained valid after replacement: %v", err)
+	}
+	if principal, err := sessions.Authenticate(t.Context(), replacement.Token); err != nil || principal.User.ID != targetUserID {
+		t.Fatalf("replacement session = %+v, %v", principal, err)
 	}
 }
 
