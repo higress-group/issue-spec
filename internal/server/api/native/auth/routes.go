@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	adminapi "github.com/higress-group/issue-spec/internal/server/api/native/admin"
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
@@ -218,7 +219,7 @@ func (h *handlers) user(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accepted-OAuth-Scopes", "read:user")
 	w.Header().Set("X-OAuth-Scopes", strings.Join(principal.Scopes, ", "))
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id": principal.User.ID.String(), "node_id": "USER_" + principal.User.ID.String(),
+		"id": codec.StableNumericID(principal.User.ID.String()), "node_id": codec.NodeID("User", principal.User.ID.String()),
 		"login": principal.User.Login, "name": principal.User.DisplayName, "email": principal.User.Email,
 		"type": "User", "site_admin": siteAdmin,
 	})
