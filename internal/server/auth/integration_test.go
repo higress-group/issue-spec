@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	nativeauth "github.com/higress-group/issue-spec/internal/server/api/native/auth"
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
@@ -590,6 +591,15 @@ func TestNativeUserAndPATRoutesEnforceCookieCSRFAndExposeScopes(t *testing.T) {
 	if userResponse.Code != http.StatusOK || userResponse.Header().Get("X-OAuth-Scopes") != "read:user" ||
 		!strings.Contains(userResponse.Body.String(), `"login":"route-user"`) {
 		t.Fatalf("GET /user = %d headers=%v body=%s", userResponse.Code, userResponse.Header(), userResponse.Body.String())
+	}
+	var compatibleUser struct {
+		ID     int64  `json:"id"`
+		NodeID string `json:"node_id"`
+	}
+	if err := json.Unmarshal(userResponse.Body.Bytes(), &compatibleUser); err != nil ||
+		compatibleUser.ID != codec.StableNumericID(userID.String()) ||
+		compatibleUser.NodeID != codec.NodeID("User", userID.String()) {
+		t.Fatalf("GET /user compatibility identity = %+v, err=%v", compatibleUser, err)
 	}
 	if _, err := pool.Exec(t.Context(), `INSERT INTO site_role_assignments (id, user_id, role)
 		VALUES ($1, $2, 'site_admin')`, uuid.New(), userID); err != nil {
