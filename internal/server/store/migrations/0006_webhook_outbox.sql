@@ -37,6 +37,31 @@ FROM (
 WHERE repository.organization_id = sequences.organization_id
   AND repository.id = sequences.repository_id;
 
+CREATE FUNCTION allocate_event_repository_sequence()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+    IF NEW.repository_sequence IS NULL THEN
+        UPDATE repos
+        SET next_event_sequence = next_event_sequence + 1
+        WHERE organization_id = NEW.organization_id
+          AND id = NEW.repository_id
+        RETURNING next_event_sequence - 1 INTO NEW.repository_sequence;
+
+        IF NEW.repository_sequence IS NULL THEN
+            RAISE EXCEPTION 'event repository does not exist'
+                USING ERRCODE = '23503';
+        END IF;
+    END IF;
+    RETURN NEW;
+END
+$function$;
+
+CREATE TRIGGER event_outbox_allocate_repository_sequence
+BEFORE INSERT ON event_outbox
+FOR EACH ROW EXECUTE FUNCTION allocate_event_repository_sequence();
+
 CREATE INDEX event_outbox_repo_pending_sequence_idx
     ON event_outbox (organization_id, repository_id, repository_sequence)
     WHERE published_at IS NULL;

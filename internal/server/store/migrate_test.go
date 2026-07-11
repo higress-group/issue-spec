@@ -110,6 +110,8 @@ func TestWebhookOutboxMigrationMetadata(t *testing.T) {
 		"ADD COLUMN schema_version integer NOT NULL DEFAULT 1",
 		"ADD COLUMN repository_sequence bigint",
 		"event_outbox_repository_sequence_unique UNIQUE",
+		"CREATE FUNCTION allocate_event_repository_sequence()",
+		"CREATE TRIGGER event_outbox_allocate_repository_sequence",
 		"ADD COLUMN retry_max_attempts integer NOT NULL DEFAULT 8",
 		"ADD COLUMN retry_initial_backoff interval NOT NULL",
 		"ADD COLUMN retry_max_backoff interval NOT NULL",

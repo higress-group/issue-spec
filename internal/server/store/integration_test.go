@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -476,6 +477,64 @@ func TestOutboxSemanticIdempotencyAndActiveArtifactUniqueness(t *testing.T) {
 		id, organization_id, repository_id, change_key, artifact_type, content
 	) VALUES ($1, $2, $3, $4, $5, $6)`, uuid.New(), orgID, repoID, "add-runner", "proposal", "replacement"); err != nil {
 		t.Fatalf("replacement active artifact should be allowed: %v", err)
+	}
+}
+
+func TestLegacyEnqueueEventAllocatesConcurrentMonotonicRepositorySequences(t *testing.T) {
+	pool := migratedIntegrationPool(t)
+	orgID := insertOrg(t, pool, "outbox-sequence-org")
+	repoID := insertRepo(t, pool, orgID, "repo")
+	repo := New(pool).Repo(orgID, repoID)
+
+	const count = 32
+	errorsCh := make(chan error, count)
+	for index := range count {
+		go func(index int) {
+			_, err := repo.EnqueueEvent(t.Context(), models.NewOutboxEvent{
+				AggregateType: "issue", AggregateID: uuid.New(), EventType: "issue.updated",
+				EventKey: "sequence-" + strconv.Itoa(index), Payload: []byte(`{"version":1}`),
+			})
+			errorsCh <- err
+		}(index)
+	}
+	for range count {
+		if err := <-errorsCh; err != nil {
+			t.Fatalf("legacy EnqueueEvent: %v", err)
+		}
+	}
+
+	rows, err := pool.Query(t.Context(), `SELECT repository_sequence FROM event_outbox
+		WHERE organization_id = $1 AND repository_id = $2 ORDER BY repository_sequence`, orgID, repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var previous int64
+	seen := 0
+	for rows.Next() {
+		var sequence int64
+		if err := rows.Scan(&sequence); err != nil {
+			t.Fatal(err)
+		}
+		if sequence <= previous {
+			t.Fatalf("repository sequences are not strictly increasing: %d then %d", previous, sequence)
+		}
+		previous = sequence
+		seen++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if seen != count {
+		t.Fatalf("event rows = %d, want %d", seen, count)
+	}
+	var next int64
+	if err := pool.QueryRow(t.Context(), `SELECT next_event_sequence FROM repos
+		WHERE organization_id = $1 AND id = $2`, orgID, repoID).Scan(&next); err != nil {
+		t.Fatal(err)
+	}
+	if next <= previous {
+		t.Fatalf("next event sequence = %d, last allocated = %d", next, previous)
 	}
 }
 
