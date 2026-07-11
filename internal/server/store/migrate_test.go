@@ -101,9 +101,9 @@ func TestWebhookOutboxMigrationMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	latest := migrations[len(migrations)-1]
-	if latest.Version != 6 || latest.Name != "0006_webhook_outbox.sql" {
-		t.Fatalf("latest migration = %+v, want webhook outbox migration", latest.MigrationInfo)
+	webhooks := migrations[5]
+	if webhooks.Version != 6 || webhooks.Name != "0006_webhook_outbox.sql" {
+		t.Fatalf("webhook migration = %+v, want webhook outbox migration", webhooks.MigrationInfo)
 	}
 	for _, contract := range []string{
 		"ADD COLUMN next_event_sequence bigint NOT NULL DEFAULT 1",
@@ -119,8 +119,35 @@ func TestWebhookOutboxMigrationMetadata(t *testing.T) {
 		"ADD COLUMN accept_until timestamptz",
 		"ADD COLUMN revoked_at timestamptz",
 	} {
-		if !containsSQL(latest.sql, contract) {
+		if !containsSQL(webhooks.sql, contract) {
 			t.Errorf("webhook outbox migration is missing %q", contract)
+		}
+	}
+}
+
+func TestBindingsEvidenceMigrationMetadata(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations() error = %v", err)
+	}
+	bindingsEvidence := migrations[6]
+	if bindingsEvidence.Version != 7 || bindingsEvidence.Name != "0007_bindings_evidence.sql" {
+		t.Fatalf("bindings/evidence migration = %+v", bindingsEvidence.MigrationInfo)
+	}
+	for _, contract := range []string{
+		"ADD COLUMN visibility text NOT NULL DEFAULT 'repository'",
+		"external_references_external_unique UNIQUE (",
+		"external_repository_id,\n        external_id",
+		"CREATE TABLE repository_evidence_policies (",
+		"CREATE TABLE repository_evidence_requirements (",
+		"CREATE TABLE repository_evidence_writers (",
+		"CREATE INDEX source_bindings_repo_active_version_idx",
+		"CREATE INDEX external_evidence_repo_revision_idx",
+		"CREATE INDEX repository_evidence_policy_version_idx",
+		"CREATE INDEX repository_evidence_writer_active_idx",
+	} {
+		if !containsSQL(bindingsEvidence.sql, contract) {
+			t.Errorf("bindings/evidence migration is missing %q", contract)
 		}
 	}
 }
