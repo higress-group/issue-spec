@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contextSchema, sourceBindingSchema, webhookDeliveryDetailSchema, webhookSecretSchema } from "./types";
+import { contextSchema, sourceBindingSchema, webhookDeliveryDetailSchema, webhookSecretSchema, webhookSubscriptionSchema } from "./types";
 
 const baseContext = {
   user: {
@@ -41,6 +41,13 @@ describe("integration API schemas", () => {
   it("accepts the native binding and show-once webhook contracts", () => {
     expect(sourceBindingSchema.parse({ id: "11111111-1111-4111-8111-111111111111", provider_key: "github", external_repository_id: "higress-group/issue-spec", clone_url: "https://github.com/higress-group/issue-spec.git", web_url: "https://github.com/higress-group/issue-spec", default_branch: "main", version: 1, active: true, created_at: "2026-07-11T10:00:00Z", updated_at: "2026-07-11T10:00:00Z" }).version).toBe(1);
     expect(webhookSecretSchema.parse({ id: "22222222-2222-4222-8222-222222222222", organization_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", repository_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", scope_type: "repository", url: "https://runner.example.test/hook", active: true, event_types: ["issue_comment.created"], retry: { max_attempts: 8, initial_backoff: "1s", max_backoff: "5m0s" }, representation_version: 1, created_at: "2026-07-11T10:00:00Z", updated_at: "2026-07-11T10:00:00Z", secret: "shown-once", secret_version: 1 }).secret).toBe("shown-once");
+  });
+
+  it("distinguishes a terminal webhook from a resumable pause", () => {
+    const revokedAt = "2026-07-11T11:00:00Z";
+    const parsed = webhookSubscriptionSchema.parse({ id: "22222222-2222-4222-8222-222222222222", organization_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", repository_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", scope_type: "repository", url: "https://runner.example.test/hook", active: false, revoked_at: revokedAt, event_types: ["issue_comment.created"], retry: { max_attempts: 8, initial_backoff: "1s", max_backoff: "5m0s" }, representation_version: 2, created_at: "2026-07-11T10:00:00Z", updated_at: revokedAt });
+    expect(parsed.revoked_at).toBe(revokedAt);
+    expect(parsed.active).toBe(false);
   });
 
   it("parses delivery scope and attempt response headers exactly as Go emits them", () => {

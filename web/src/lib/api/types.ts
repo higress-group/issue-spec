@@ -189,6 +189,7 @@ export const webhookSubscriptionSchema = z.object({
   scope_type: z.enum(["organization", "repository"]),
   url: z.string().url(),
   active: z.boolean(),
+  revoked_at: timestampSchema.nullable().optional(),
   event_types: z.array(z.string().min(1)).min(1),
   retry: webhookRetrySchema,
   representation_version: z.number().int().positive(),

@@ -306,15 +306,97 @@ func TestSecretRotationOverlapExpiryAndRevocation(t *testing.T) {
 
 	revokedEvent := env.enqueue(t, 43)
 	env.expandAll(t)
+	var deliveryVersionBefore int64
+	if err := env.pool.QueryRow(t.Context(), `SELECT representation_version FROM webhook_deliveries WHERE event_id = $1`,
+		revokedEvent).Scan(&deliveryVersionBefore); err != nil {
+		t.Fatal(err)
+	}
 	if err := env.subscriptions.Revoke(t.Context(), actor, subject, env.scope.OrgID, env.subscription.ID); err != nil {
 		t.Fatal(err)
 	}
 	beforeCalls := env.sender.CallCount()
+	if err := env.service.ProcessOne(t.Context()); !errors.Is(err, delivery.ErrNoWork) {
+		t.Fatalf("revoked delivery claim error = %v", err)
+	}
+	var state string
+	var deliveryVersionAfter int64
+	if err := env.pool.QueryRow(t.Context(), `SELECT state, representation_version FROM webhook_deliveries WHERE event_id = $1`,
+		revokedEvent).Scan(&state, &deliveryVersionAfter); err != nil {
+		t.Fatal(err)
+	}
+	if state != "pending" || deliveryVersionAfter != deliveryVersionBefore || env.sender.CallCount() != beforeCalls {
+		t.Fatalf("revoked delivery state=%s version=%d/%d calls=%d/%d", state,
+			deliveryVersionBefore, deliveryVersionAfter, beforeCalls, env.sender.CallCount())
+	}
+}
+
+func TestLegacyUnsafeDestinationNeverReachesSender(t *testing.T) {
+	env := newEnvironment(t, 2, 2*time.Minute)
+	const legacyURL = "https://runner.example.test/hook?access_token=legacy-must-not-leak"
+	if _, err := env.pool.Exec(t.Context(), `UPDATE webhook_subscriptions SET url = $2 WHERE id = $1`,
+		env.subscription.ID, legacyURL); err != nil {
+		t.Fatal(err)
+	}
+	eventID := env.enqueue(t, 44)
+	env.expandAll(t)
+	beforeCalls := env.sender.CallCount()
 	if err := env.service.ProcessOne(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if state := deliveryState(t, env.pool, revokedEvent); state != "failed" || env.sender.CallCount() != beforeCalls {
-		t.Fatalf("revoked delivery state=%s calls=%d/%d", state, beforeCalls, env.sender.CallCount())
+	if state := deliveryState(t, env.pool, eventID); state != "failed" || env.sender.CallCount() != beforeCalls {
+		t.Fatalf("unsafe legacy delivery state=%s calls=%d/%d", state, beforeCalls, env.sender.CallCount())
+	}
+	var recorded string
+	if err := env.pool.QueryRow(t.Context(), `SELECT COALESCE(error, '') FROM webhook_delivery_attempts attempt
+		JOIN webhook_deliveries delivery ON delivery.organization_id = attempt.organization_id
+		AND delivery.repository_id = attempt.repository_id AND delivery.id = attempt.delivery_id
+		WHERE delivery.event_id = $1`, eventID).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(recorded, "legacy-must-not-leak") || strings.Contains(recorded, "access_token") {
+		t.Fatalf("unsafe destination leaked into delivery attempt: %q", recorded)
+	}
+}
+
+func TestRevokedSubscriptionCannotRedeliverHistoricalFailure(t *testing.T) {
+	env := newEnvironment(t, 2, 2*time.Minute)
+	eventID := env.enqueue(t, 45)
+	env.expandAll(t)
+	env.sender.Set(sendOutcome{status: http.StatusBadRequest})
+	if err := env.service.ProcessOne(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	deliveryID := deliveryIDForEvent(t, env.pool, eventID)
+	var versionBefore, auditBefore int64
+	if err := env.pool.QueryRow(t.Context(), `SELECT representation_version FROM webhook_deliveries WHERE id = $1`,
+		deliveryID).Scan(&versionBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM audit_events WHERE resource_type = 'webhook_delivery'
+		AND resource_id = $1`, deliveryID).Scan(&auditBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.subscriptions.Revoke(t.Context(), subscriptions.ActorFromPrincipal(env.owner, "revoke-before-redelivery"),
+		authz.Authenticated(env.owner), env.scope.OrgID, env.subscription.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.service.Redeliver(t.Context(), delivery.ActorFromPrincipal(env.owner, "forbidden-redelivery"),
+		authz.Authenticated(env.owner), env.scope, deliveryID); !errors.Is(err, delivery.ErrNotFound) {
+		t.Fatalf("revoked redelivery error = %v", err)
+	}
+	var state string
+	var versionAfter, auditAfter int64
+	if err := env.pool.QueryRow(t.Context(), `SELECT state, representation_version FROM webhook_deliveries WHERE id = $1`,
+		deliveryID).Scan(&state, &versionAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM audit_events WHERE resource_type = 'webhook_delivery'
+		AND resource_id = $1`, deliveryID).Scan(&auditAfter); err != nil {
+		t.Fatal(err)
+	}
+	if state != "failed" || versionAfter != versionBefore || auditAfter != auditBefore {
+		t.Fatalf("historical delivery mutated state=%s version=%d/%d audit=%d/%d", state,
+			versionBefore, versionAfter, auditBefore, auditAfter)
 	}
 }
 

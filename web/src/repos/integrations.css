@@ -41,11 +41,14 @@
 .webhook-list { display: grid; gap: .8rem; }
 .webhook-card { padding: 1rem; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-strong); box-shadow: 0 5px 16px rgb(24 34 40 / 4%); }
 .webhook-card.paused { background: #f4f3ee; }
+.webhook-card.revoked { border-color: #d7b6b0; background: linear-gradient(145deg, #f8f2ef, #f3eee9); }
 .webhook-card > header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .7rem; }
 .webhook-card header strong, .webhook-card header span { display: block; }
 .webhook-card header > div > span { margin-top: .18rem; color: var(--muted); font-size: .7rem; }
 .pulse { width: .75rem; height: .75rem; border: 2px solid #919995; border-radius: 50%; }
 .pulse.active { border-color: var(--teal); background: var(--teal); box-shadow: 0 0 0 5px rgb(23 109 103 / 10%); }
+.pulse.revoked { border-color: var(--coral); background: var(--coral); box-shadow: 0 0 0 5px rgb(201 95 84 / 10%); }
+.revoked-note { display: flex; align-items: center; gap: .5rem; margin: .8rem 0 0; color: #7d443e; font-size: .74rem; font-weight: 700; }
 .event-strip { display: flex; flex-wrap: wrap; gap: .3rem; margin: .8rem 0; }
 .event-strip span { padding: .2rem .45rem; border-radius: 5px; background: var(--teal-soft); color: #285e59; font: .65rem/1.4 "SFMono-Regular", Consolas, monospace; }
 .retry-line { display: flex; gap: 1.2rem; margin: 0 0 .9rem; padding: .7rem 0; border-block: 1px solid var(--line); }

@@ -50,11 +50,12 @@ func (p Preflight) Validate(ctx context.Context, raw string) error {
 }
 
 func (p Policy) ValidateURL(raw string) (*url.URL, error) {
-	if strings.TrimSpace(raw) != raw || strings.Contains(raw, "#") {
+	if strings.TrimSpace(raw) != raw || strings.ContainsAny(raw, "?#\\") {
 		return nil, ErrInvalidDestination
 	}
 	parsed, err := url.ParseRequestURI(raw)
-	if err != nil || parsed.Hostname() == "" || parsed.User != nil || parsed.Fragment != "" {
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil || parsed.Fragment != "" ||
+		parsed.RawQuery != "" || parsed.ForceQuery || parsed.Opaque != "" {
 		return nil, ErrInvalidDestination
 	}
 	if parsed.Scheme != "https" && (p.Production || parsed.Scheme != "http") {

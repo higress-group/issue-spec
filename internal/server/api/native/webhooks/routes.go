@@ -26,6 +26,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 	h := handlers{service: deps.Service}
 	protect := func(next http.HandlerFunc) http.Handler {
 		return adminapi.WithRequestID(deps.Authenticate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
 			principal, ok := serverauth.PrincipalFromContext(r.Context())
 			if !ok || principal.User.ID == uuid.Nil {
 				adminapi.WriteProblem(w, http.StatusUnauthorized, "authentication_required", "Authentication required")
@@ -206,7 +207,7 @@ func parseRetry(request retryRequest) (subscriptions.RetryPolicy, error) {
 func subscriptionView(item subscriptions.Subscription) map[string]any {
 	return map[string]any{"id": item.ID, "organization_id": item.OrganizationID,
 		"repository_id": item.RepositoryID, "scope_type": item.ScopeType, "url": item.URL,
-		"active": item.Active, "event_types": item.EventTypes,
+		"active": item.Active, "revoked_at": item.RevokedAt, "event_types": item.EventTypes,
 		"retry": map[string]any{"max_attempts": item.Retry.MaxAttempts,
 			"initial_backoff": item.Retry.InitialBackoff.String(), "max_backoff": item.Retry.MaxBackoff.String()},
 		"representation_version": item.RepresentationVersion, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt}
@@ -257,6 +258,8 @@ func writeError(w http.ResponseWriter, err error) {
 		adminapi.WriteProblem(w, http.StatusForbidden, "forbidden", "Forbidden")
 	case errors.Is(err, subscriptions.ErrVersionConflict):
 		adminapi.WriteProblem(w, http.StatusConflict, "version_conflict", "Resource version conflict")
+	case errors.Is(err, subscriptions.ErrRevoked):
+		adminapi.WriteProblem(w, http.StatusConflict, "webhook_revoked", "Webhook subscription is revoked")
 	default:
 		adminapi.WriteProblem(w, http.StatusInternalServerError, "internal_error", "Request failed")
 	}

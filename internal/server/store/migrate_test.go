@@ -201,6 +201,28 @@ func TestWebhookOutboxMigrationMetadata(t *testing.T) {
 	}
 }
 
+func TestWebhookRevocationContractMigrationMetadata(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revocation := migrations[10]
+	if revocation.Version != 11 || revocation.Name != "0011_webhook_revocation_contract.sql" {
+		t.Fatalf("webhook revocation migration = %+v", revocation.MigrationInfo)
+	}
+	for _, contract := range []string{
+		"ADD COLUMN revoked_at timestamptz",
+		"webhook_subscriptions_revocation_consistent",
+		"prevent_webhook_subscription_unrevoke",
+		"revoked webhook subscriptions are immutable",
+		"webhook_subscriptions_prevent_unrevoke",
+	} {
+		if !containsSQL(revocation.sql, contract) {
+			t.Errorf("webhook revocation migration is missing %q", contract)
+		}
+	}
+}
+
 func TestBindingsEvidenceMigrationMetadata(t *testing.T) {
 	migrations, err := loadMigrations()
 	if err != nil {

@@ -83,6 +83,37 @@ describe("repository integrations workspace", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Redeliver event" }));
     await waitFor(() => expect(replayed).toBe(true));
   });
+
+  it("renders revoked routes as audit-only and never offers resurrection actions", async () => {
+    server.use(
+      metaHandler(),
+      http.get(webhookCollectionPath(), () => HttpResponse.json({ subscriptions: [webhookFixture({ active: false, revoked_at: "2026-07-11T11:00:00Z", representation_version: 4 })] })),
+      http.get(deliveryCollectionPath(), () => HttpResponse.json({ deliveries: [] })),
+    );
+    renderIntegration("webhooks");
+    expect(await screen.findByText("revoked")).toBeVisible();
+    expect(screen.getByText(/secret destroyed · delivery history retained/i)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Resume" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Configure" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rotate secret" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Revoke" })).not.toBeInTheDocument();
+  });
+
+  it("rejects receiver URLs with query credentials before a request is sent", async () => {
+    let requests = 0;
+    server.use(
+      metaHandler(),
+      http.get(webhookCollectionPath(), () => HttpResponse.json({ subscriptions: [] })),
+      http.get(deliveryCollectionPath(), () => HttpResponse.json({ deliveries: [] })),
+      http.post(webhookCollectionPath(), () => { requests += 1; return HttpResponse.json(webhookFixture({ secret: "unexpected", secret_version: 1 }), { status: 201 }); }),
+    );
+    renderIntegration("webhooks");
+    await userEvent.setup().click(await screen.findByRole("button", { name: "New webhook" }));
+    await userEvent.setup().type(screen.getByRole("textbox", { name: /^Receiver URL/ }), "https://runner.example.test/hook?access_token=secret");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Create route" }));
+    expect(await screen.findByText(/without credentials, query, or fragment/i)).toBeVisible();
+    expect(requests).toBe(0);
+  });
 });
 
 function renderIntegration(kind: "source" | "webhooks") {

@@ -35,7 +35,7 @@ func TestScopedSubscriptionAuthorizationSecretRotationAndRedaction(t *testing.T)
 		t.Fatalf("production HTTP URL error = %v", err)
 	}
 	organizationScoped, err := env.service.Create(t.Context(), actor, ownerSubject, subscriptions.CreateInput{
-		OrganizationID: env.scope.OrgID, URL: "  https://runner.example.test/org-hook  ",
+		OrganizationID: env.scope.OrgID, URL: "https://runner.example.test/org-hook",
 		EventTypes: []string{" issue_comment.created "},
 	})
 	if err != nil || organizationScoped.Subscription.ScopeType != subscriptions.ScopeOrganization ||
@@ -234,6 +234,48 @@ func TestScopedSubscriptionAuthorizationSecretRotationAndRedaction(t *testing.T)
 	if active != 0 || revoked != 3 {
 		t.Fatalf("secret rows active=%d revoked=%d", active, revoked)
 	}
+	revokedSubscription, err := env.service.Get(t.Context(), ownerSubject, env.scope.OrgID, created.Subscription.ID)
+	if err != nil || revokedSubscription.Active || revokedSubscription.RevokedAt == nil {
+		t.Fatalf("revoked subscription = %+v, %v", revokedSubscription, err)
+	}
+	revokedVersion, revokedAt := revokedSubscription.RepresentationVersion, *revokedSubscription.RevokedAt
+	var revokedCollectionVersion int64
+	if err := env.pool.QueryRow(t.Context(), `SELECT webhooks_collection_version FROM repos WHERE id = $1`,
+		env.scope.RepoID).Scan(&revokedCollectionVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.service.Revoke(t.Context(), actor, ownerSubject, env.scope.OrgID, created.Subscription.ID); err != nil {
+		t.Fatalf("idempotent revoke: %v", err)
+	}
+	afterRepeat, err := env.service.Get(t.Context(), ownerSubject, env.scope.OrgID, created.Subscription.ID)
+	if err != nil || afterRepeat.RepresentationVersion != revokedVersion || afterRepeat.RevokedAt == nil || !afterRepeat.RevokedAt.Equal(revokedAt) {
+		t.Fatalf("repeated revoke mutated terminal state: before=%+v after=%+v err=%v", revokedSubscription, afterRepeat, err)
+	}
+	var repeatedCollectionVersion, revokeAudits int64
+	if err := env.pool.QueryRow(t.Context(), `SELECT webhooks_collection_version FROM repos WHERE id = $1`,
+		env.scope.RepoID).Scan(&repeatedCollectionVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM audit_events WHERE resource_id = $1
+		AND action = 'webhook.subscription.revoked'`, created.Subscription.ID).Scan(&revokeAudits); err != nil {
+		t.Fatal(err)
+	}
+	if repeatedCollectionVersion != revokedCollectionVersion || revokeAudits != 1 {
+		t.Fatalf("repeated revoke collection=%d/%d audits=%d", revokedCollectionVersion, repeatedCollectionVersion, revokeAudits)
+	}
+	if _, err := env.service.Update(t.Context(), actor, ownerSubject, env.scope.OrgID, created.Subscription.ID,
+		subscriptions.UpdateInput{ExpectedVersion: revokedVersion, URL: "https://runner.example.test/resume",
+			Active: true, EventTypes: []string{"issue_comment.created"}}); !errors.Is(err, subscriptions.ErrRevoked) {
+		t.Fatalf("revoked update error = %v", err)
+	}
+	if _, err := env.service.RotateSecret(t.Context(), actor, ownerSubject, env.scope.OrgID,
+		created.Subscription.ID); !errors.Is(err, subscriptions.ErrRevoked) {
+		t.Fatalf("revoked rotate error = %v", err)
+	}
+	if _, err := env.pool.Exec(t.Context(), `UPDATE webhook_subscriptions SET active = true WHERE id = $1`,
+		created.Subscription.ID); err == nil {
+		t.Fatal("database trigger allowed revoked subscription to resume")
+	}
 }
 
 func TestDestinationPreflightRejectsUnsafeCreateAndUpdateTargets(t *testing.T) {
@@ -268,6 +310,13 @@ func TestDestinationPreflightRejectsUnsafeCreateAndUpdateTargets(t *testing.T) {
 		t.Fatalf("unauthorized create performed %d DNS lookups", resolverCalls.Load())
 	}
 	for _, destination := range []string{
+		" https://public.example/hook",
+		"https://public.example/hook ",
+		"https://runner:secret@public.example/hook",
+		"https://public.example/hook?access_token=secret",
+		"https://public.example/hook?",
+		"https://public.example/hook#secret",
+		"https://public.example\\@private.example/hook",
 		"https://127.0.0.1/hook",
 		"https://169.254.169.254/hook",
 		"https://100.100.100.200/hook",
@@ -301,6 +350,10 @@ func TestDestinationPreflightRejectsUnsafeCreateAndUpdateTargets(t *testing.T) {
 			callsBeforeDeniedUpdate, resolverCalls.Load())
 	}
 	for _, destination := range []string{
+		"https://public.example/hook?access_token=secret",
+		"https://public.example/hook?",
+		"https://public.example/hook#secret",
+		"https://runner:secret@public.example/hook",
 		"https://127.0.0.1/hook",
 		"https://private.example/hook",
 		"https://mixed.example/hook",
@@ -318,6 +371,44 @@ func TestDestinationPreflightRejectsUnsafeCreateAndUpdateTargets(t *testing.T) {
 	}
 	if unchanged.URL != created.Subscription.URL || unchanged.RepresentationVersion != created.Subscription.RepresentationVersion {
 		t.Fatalf("rejected update mutated subscription: before=%+v after=%+v", created.Subscription, unchanged)
+	}
+}
+
+func TestLegacyUnsafeDestinationFailsClosedWithoutReflectingOrBlockingRevocation(t *testing.T) {
+	env := newEnvironment(t)
+	actor := subscriptions.ActorFromPrincipal(env.owner, "legacy-unsafe")
+	subject := authz.Authenticated(env.owner)
+	created, err := env.service.Create(t.Context(), actor, subject, subscriptions.CreateInput{
+		OrganizationID: env.scope.OrgID, RepositoryID: &env.scope.RepoID,
+		URL: "https://runner.example.test/hook", EventTypes: []string{"issue_comment.created"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const legacyURL = "https://runner.example.test/hook?access_token=legacy-secret"
+	if _, err := env.pool.Exec(t.Context(), `UPDATE webhook_subscriptions SET url = $2 WHERE id = $1`,
+		created.Subscription.ID, legacyURL); err != nil {
+		t.Fatal(err)
+	}
+	reader := env.addMember(t, "legacy-reader", "reader")
+	listed, err := env.service.List(t.Context(), authz.Authenticated(reader), env.scope.OrgID, &env.scope.RepoID)
+	if !errors.Is(err, subscriptions.ErrUnsafeDestination) || listed != nil || strings.Contains(err.Error(), "access_token") {
+		t.Fatalf("legacy list result=%+v error=%v", listed, err)
+	}
+	if _, err := env.service.Get(t.Context(), subject, env.scope.OrgID, created.Subscription.ID); !errors.Is(err, subscriptions.ErrUnsafeDestination) || strings.Contains(err.Error(), "legacy-secret") {
+		t.Fatalf("legacy get error=%v", err)
+	}
+	if _, err := env.service.RotateSecret(t.Context(), actor, subject, env.scope.OrgID, created.Subscription.ID); !errors.Is(err, subscriptions.ErrUnsafeDestination) {
+		t.Fatalf("legacy rotate error=%v", err)
+	}
+	if err := env.service.Revoke(t.Context(), actor, subject, env.scope.OrgID, created.Subscription.ID); err != nil {
+		t.Fatalf("revoke legacy unsafe subscription: %v", err)
+	}
+	var active bool
+	var revokedAt *time.Time
+	if err := env.pool.QueryRow(t.Context(), `SELECT active, revoked_at FROM webhook_subscriptions WHERE id = $1`,
+		created.Subscription.ID).Scan(&active, &revokedAt); err != nil || active || revokedAt == nil {
+		t.Fatalf("legacy terminal state active=%v revoked_at=%v error=%v", active, revokedAt, err)
 	}
 }
 

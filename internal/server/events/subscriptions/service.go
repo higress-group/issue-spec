@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
+	"github.com/higress-group/issue-spec/internal/server/events/networkpolicy"
 	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/server/store"
 	"github.com/jackc/pgx/v5"
@@ -54,7 +54,6 @@ func New(database *store.Store, authorizer Authorizer, keys *Keyring, config Con
 
 func (s *Service) Create(ctx context.Context, actor Actor, subject authz.Subject, input CreateInput) (SecretResult, error) {
 	input.Retry = normalizeRetry(input.Retry)
-	input.URL = strings.TrimSpace(input.URL)
 	input.EventTypes = normalizeEventTypes(input.EventTypes)
 	if err := validateActor(actor); err != nil {
 		return SecretResult{}, err
@@ -144,6 +143,9 @@ func (s *Service) List(ctx context.Context, subject authz.Subject, orgID uuid.UU
 		if err != nil {
 			return nil, err
 		}
+		if err := s.validateStoredDestination(item); err != nil {
+			return nil, err
+		}
 		result = append(result, item)
 	}
 	return result, rows.Err()
@@ -157,12 +159,14 @@ func (s *Service) Get(ctx context.Context, subject authz.Subject, orgID, id uuid
 	if err := s.authorize(ctx, subject, item.OrganizationID, item.RepositoryID, false); err != nil {
 		return Subscription{}, err
 	}
+	if err := s.validateStoredDestination(item); err != nil {
+		return Subscription{}, err
+	}
 	return item, nil
 }
 
 func (s *Service) Update(ctx context.Context, actor Actor, subject authz.Subject, orgID, id uuid.UUID, input UpdateInput) (Subscription, error) {
 	input.Retry = normalizeRetry(input.Retry)
-	input.URL = strings.TrimSpace(input.URL)
 	input.EventTypes = normalizeEventTypes(input.EventTypes)
 	if validateActor(actor) != nil || input.ExpectedVersion < 1 || validateURL(input.URL, s.config.Production) != nil ||
 		validateEventTypes(input.EventTypes) != nil || validateRetry(input.Retry) != nil {
@@ -174,6 +178,9 @@ func (s *Service) Update(ctx context.Context, actor Actor, subject authz.Subject
 	}
 	if err := s.authorize(ctx, subject, current.OrganizationID, current.RepositoryID, true); err != nil {
 		return Subscription{}, err
+	}
+	if current.RevokedAt != nil {
+		return Subscription{}, ErrRevoked
 	}
 	if s.config.DestinationPreflight != nil {
 		if err := s.config.DestinationPreflight.Validate(ctx, input.URL); err != nil {
@@ -189,10 +196,13 @@ func (s *Service) Update(ctx context.Context, actor Actor, subject authz.Subject
 		if err := s.authorizeTx(ctx, tx.PGX(), subject, orgID, current.RepositoryID, true); err != nil {
 			return err
 		}
+		if current.RevokedAt != nil {
+			return ErrRevoked
+		}
 		row := tx.PGX().QueryRow(ctx, `UPDATE webhook_subscriptions SET url = $3, active = $4,
 			event_types = $5, retry_max_attempts = $6, retry_initial_backoff = $7::interval,
 			retry_max_backoff = $8::interval, representation_version = representation_version + 1,
-			updated_at = clock_timestamp() WHERE organization_id = $1 AND id = $2
+			updated_at = clock_timestamp() WHERE organization_id = $1 AND id = $2 AND revoked_at IS NULL
 			AND representation_version = $9 RETURNING `+subscriptionColumns,
 			orgID, id, input.URL, input.Active, input.EventTypes, input.Retry.MaxAttempts,
 			input.Retry.InitialBackoff.String(), input.Retry.MaxBackoff.String(), input.ExpectedVersion)
@@ -230,6 +240,12 @@ func (s *Service) RotateSecret(ctx context.Context, actor Actor, subject authz.S
 			return err
 		}
 		if err := s.authorizeTx(ctx, tx.PGX(), subject, orgID, item.RepositoryID, true); err != nil {
+			return err
+		}
+		if item.RevokedAt != nil {
+			return ErrRevoked
+		}
+		if err := s.validateStoredDestination(item); err != nil {
 			return err
 		}
 		if !item.Active {
@@ -298,13 +314,18 @@ func (s *Service) Revoke(ctx context.Context, actor Actor, subject authz.Subject
 		if err := s.authorizeTx(ctx, tx.PGX(), subject, orgID, item.RepositoryID, true); err != nil {
 			return err
 		}
+		if item.RevokedAt != nil {
+			return nil
+		}
 		var now time.Time
 		if err := tx.PGX().QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
 			return err
 		}
-		if _, err := tx.PGX().Exec(ctx, `UPDATE webhook_subscriptions SET active = false,
-			representation_version = representation_version + 1, updated_at = $3
-			WHERE organization_id = $1 AND id = $2`, orgID, id, now); err != nil {
+		item, err = scanSubscription(tx.PGX().QueryRow(ctx, `UPDATE webhook_subscriptions SET active = false,
+			revoked_at = $3, representation_version = representation_version + 1, updated_at = $3
+			WHERE organization_id = $1 AND id = $2 AND revoked_at IS NULL RETURNING `+subscriptionColumns,
+			orgID, id, now))
+		if err != nil {
 			return err
 		}
 		if _, err := tx.PGX().Exec(ctx, `UPDATE webhook_secret_versions SET active = false,
@@ -330,6 +351,7 @@ func (s *Service) AcceptedSecrets(ctx context.Context, orgID, id uuid.UUID, at t
 		FROM webhook_secret_versions secret JOIN webhook_subscriptions subscription
 		ON subscription.organization_id = secret.organization_id AND subscription.id = secret.subscription_id
 		WHERE secret.organization_id = $1 AND secret.subscription_id = $2 AND subscription.active
+		AND subscription.revoked_at IS NULL
 		AND secret.revoked_at IS NULL AND (secret.active OR secret.accept_until > $3)
 		ORDER BY secret.version DESC`, orgID, id, at.UTC())
 	if err != nil {
@@ -353,7 +375,7 @@ func (s *Service) AcceptedSecrets(ctx context.Context, orgID, id uuid.UUID, at t
 	return result, rows.Err()
 }
 
-const subscriptionColumns = `id, organization_id, repository_id, scope_type, url, active,
+const subscriptionColumns = `id, organization_id, repository_id, scope_type, url, active, revoked_at,
 	event_types, retry_max_attempts,
 	(extract(epoch from retry_initial_backoff) * 1000000000)::bigint,
 	(extract(epoch from retry_max_backoff) * 1000000000)::bigint,
@@ -365,7 +387,7 @@ func scanSubscription(row rowScanner) (Subscription, error) {
 	var item Subscription
 	var initial, maximum int64
 	err := row.Scan(&item.ID, &item.OrganizationID, &item.RepositoryID, &item.ScopeType,
-		&item.URL, &item.Active, &item.EventTypes, &item.Retry.MaxAttempts, &initial, &maximum,
+		&item.URL, &item.Active, &item.RevokedAt, &item.EventTypes, &item.Retry.MaxAttempts, &initial, &maximum,
 		&item.RepresentationVersion, &item.CreatedAt, &item.UpdatedAt)
 	item.Retry.InitialBackoff, item.Retry.MaxBackoff = time.Duration(initial), time.Duration(maximum)
 	return item, err
@@ -466,12 +488,15 @@ func validateCreate(input CreateInput, production bool) (ScopeType, error) {
 }
 
 func validateURL(raw string, production bool) error {
-	parsed, err := url.ParseRequestURI(strings.TrimSpace(raw))
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+	if _, err := (networkpolicy.Policy{Production: production}).ValidateURL(raw); err != nil {
 		return ErrInvalidInput
 	}
-	if parsed.Scheme != "https" && (production || parsed.Scheme != "http") {
-		return ErrInvalidInput
+	return nil
+}
+
+func (s *Service) validateStoredDestination(item Subscription) error {
+	if validateURL(item.URL, s.config.Production) != nil {
+		return ErrUnsafeDestination
 	}
 	return nil
 }

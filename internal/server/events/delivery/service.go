@@ -188,6 +188,7 @@ func (s *Service) ExpandOne(ctx context.Context) (bool, error) {
 				AND subscription_id = subscription.id AND active AND revoked_at IS NULL
 				ORDER BY version DESC LIMIT 1) secret ON true
 			WHERE subscription.organization_id = $1 AND subscription.active
+			AND subscription.revoked_at IS NULL
 			AND $3 = ANY(subscription.event_types)
 			AND ((subscription.scope_type = 'organization' AND subscription.repository_id IS NULL)
 				OR (subscription.scope_type = 'repository' AND subscription.repository_id = $2))
@@ -260,6 +261,7 @@ func (s *Service) ClaimOne(ctx context.Context) (*claim, error) {
 				AND secret.subscription_id = delivery.subscription_id AND secret.id = delivery.secret_version_id
 			WHERE ((delivery.state = 'pending' AND delivery.next_attempt_at <= $1)
 				OR (delivery.state = 'delivering' AND delivery.next_attempt_at <= $1))
+			AND subscription.active AND subscription.revoked_at IS NULL
 			AND NOT EXISTS (SELECT 1 FROM webhook_deliveries prior_delivery
 				JOIN event_outbox prior_event ON prior_event.organization_id = prior_delivery.organization_id
 				AND prior_event.repository_id = prior_delivery.repository_id AND prior_event.id = prior_delivery.event_id
@@ -323,7 +325,12 @@ func (s *Service) ProcessOne(ctx context.Context) error {
 		return err
 	}
 	now := s.config.Clock()
-	secretID, secret, err := s.acceptedSecret(ctx, claimed, now)
+	var secretID uuid.UUID
+	var secret []byte
+	_, err = (networkpolicy.Policy{}).ValidateURL(claimed.URL)
+	if err == nil {
+		secretID, secret, err = s.acceptedSecret(ctx, claimed, now)
+	}
 	var result networkpolicy.Result
 	if err == nil {
 		result, err = s.sender.Send(ctx, networkpolicy.Request{URL: claimed.URL, Secret: secret,
@@ -352,9 +359,13 @@ func (s *Service) acceptedSecret(ctx context.Context, claimed *claim, at time.Ti
 	}
 	var currentID uuid.UUID
 	var currentVersion int64
-	err = s.pool.QueryRow(ctx, `SELECT id, version FROM webhook_secret_versions
-		WHERE organization_id = $1 AND subscription_id = $2 AND active AND revoked_at IS NULL
-		ORDER BY version DESC LIMIT 1`, claimed.Scope.OrgID, claimed.SubscriptionID).
+	err = s.pool.QueryRow(ctx, `SELECT secret.id, secret.version FROM webhook_secret_versions secret
+		JOIN webhook_subscriptions subscription ON subscription.organization_id = secret.organization_id
+			AND subscription.id = secret.subscription_id
+		WHERE secret.organization_id = $1 AND secret.subscription_id = $2
+		AND subscription.active AND subscription.revoked_at IS NULL
+		AND secret.active AND secret.revoked_at IS NULL
+		ORDER BY secret.version DESC LIMIT 1`, claimed.Scope.OrgID, claimed.SubscriptionID).
 		Scan(&currentID, &currentVersion)
 	if err != nil {
 		return uuid.Nil, nil, errCredentialUnavailable
@@ -427,6 +438,12 @@ func redactSecretError(err error, secret []byte) error {
 	}
 	if errors.Is(err, errCredentialUnavailable) {
 		return errCredentialUnavailable
+	}
+	if errors.Is(err, networkpolicy.ErrInvalidDestination) {
+		return networkpolicy.ErrInvalidDestination
+	}
+	if errors.Is(err, networkpolicy.ErrAddressDenied) {
+		return networkpolicy.ErrAddressDenied
 	}
 	return errors.New(message)
 }
@@ -544,9 +561,12 @@ func (s *Service) Redeliver(ctx context.Context, actor Actor, subject authz.Subj
 		result, err = scanDelivery(tx.QueryRow(ctx, `UPDATE webhook_deliveries delivery
 			SET state = 'pending', next_attempt_at = $4, delivered_at = NULL, last_error = NULL,
 			representation_version = delivery.representation_version + 1, updated_at = $4
-			FROM event_outbox event, webhook_secret_versions secret
+			FROM event_outbox event, webhook_secret_versions secret, webhook_subscriptions subscription
 			WHERE delivery.organization_id = $1 AND delivery.repository_id = $2 AND delivery.id = $3
 			AND delivery.state IN ('failed', 'dead')
+			AND subscription.organization_id = delivery.organization_id
+			AND subscription.id = delivery.subscription_id
+			AND subscription.active AND subscription.revoked_at IS NULL
 			AND event.organization_id = delivery.organization_id AND event.repository_id = delivery.repository_id
 			AND event.id = delivery.event_id AND secret.organization_id = delivery.organization_id
 			AND secret.subscription_id = delivery.subscription_id AND secret.id = delivery.secret_version_id

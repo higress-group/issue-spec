@@ -1,16 +1,21 @@
 package delivery
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/server/events/networkpolicy"
 	"github.com/higress-group/issue-spec/internal/server/events/subscriptions"
 )
 
 func retryable(status int, err error) bool {
 	if err != nil {
+		if errors.Is(err, networkpolicy.ErrInvalidDestination) || errors.Is(err, networkpolicy.ErrAddressDenied) {
+			return false
+		}
 		return true
 	}
 	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500

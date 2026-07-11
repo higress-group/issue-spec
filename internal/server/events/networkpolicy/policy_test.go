@@ -41,7 +41,9 @@ func TestPolicyBlocksSpecialAddressesAndRequiresExplicitPrivateAllowance(t *test
 		}
 	}
 	for _, raw := range []string{"http://example.test/hook", "https://user:pass@example.test/hook",
-		"https://example.test/hook#fragment", "https://example.test:https/hook", "https://example.test:70000/hook"} {
+		"https://example.test/hook?access_token=secret", "https://example.test/hook?",
+		"https://example.test/hook#fragment", " https://example.test/hook", "https://example.test/hook ",
+		"https://example.test\\@private.test/hook", "https://example.test:https/hook", "https://example.test:70000/hook"} {
 		_, err := policy.ValidateURL(raw)
 		if !errors.Is(err, ErrInvalidDestination) {
 			t.Fatalf("production URL %q error = %v", raw, err)

@@ -8,10 +8,12 @@ import (
 )
 
 var (
-	ErrInvalidInput    = errors.New("webhook subscriptions: invalid input")
-	ErrNotFound        = errors.New("webhook subscriptions: not found")
-	ErrForbidden       = errors.New("webhook subscriptions: forbidden")
-	ErrVersionConflict = errors.New("webhook subscriptions: version conflict")
+	ErrInvalidInput      = errors.New("webhook subscriptions: invalid input")
+	ErrNotFound          = errors.New("webhook subscriptions: not found")
+	ErrForbidden         = errors.New("webhook subscriptions: forbidden")
+	ErrVersionConflict   = errors.New("webhook subscriptions: version conflict")
+	ErrRevoked           = errors.New("webhook subscriptions: revoked")
+	ErrUnsafeDestination = errors.New("webhook subscriptions: unsafe stored destination")
 )
 
 type ScopeType string
@@ -34,6 +36,7 @@ type Subscription struct {
 	ScopeType             ScopeType   `json:"scope_type"`
 	URL                   string      `json:"url"`
 	Active                bool        `json:"active"`
+	RevokedAt             *time.Time  `json:"revoked_at,omitempty"`
 	EventTypes            []string    `json:"event_types"`
 	Retry                 RetryPolicy `json:"retry"`
 	RepresentationVersion int64       `json:"representation_version"`
