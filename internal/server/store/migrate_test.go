@@ -79,9 +79,9 @@ func TestProtocolFeatureMigrationMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	latest := migrations[len(migrations)-1]
-	if latest.Version != 5 || latest.Name != "0005_protocol_features.sql" {
-		t.Fatalf("latest migration = %+v, want protocol feature migration", latest.MigrationInfo)
+	protocol := migrations[4]
+	if protocol.Version != 5 || protocol.Name != "0005_protocol_features.sql" {
+		t.Fatalf("protocol migration = %+v", protocol.MigrationInfo)
 	}
 	for _, contract := range []string{
 		"ADD COLUMN compatibility_id bigint GENERATED ALWAYS AS",
@@ -90,8 +90,35 @@ func TestProtocolFeatureMigrationMetadata(t *testing.T) {
 		"CREATE INDEX comment_reactions_repo_comment_list_idx\n    ON comment_reactions (\n        organization_id,\n        repository_id,\n        comment_id,\n        created_at,\n        id\n    )",
 		"CREATE INDEX issue_labels_repo_issue_created_idx",
 	} {
-		if !containsSQL(latest.sql, contract) {
+		if !containsSQL(protocol.sql, contract) {
 			t.Errorf("protocol feature migration is missing %q", contract)
+		}
+	}
+}
+
+func TestWebhookOutboxMigrationMetadata(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations() error = %v", err)
+	}
+	latest := migrations[len(migrations)-1]
+	if latest.Version != 6 || latest.Name != "0006_webhook_outbox.sql" {
+		t.Fatalf("latest migration = %+v, want webhook outbox migration", latest.MigrationInfo)
+	}
+	for _, contract := range []string{
+		"ADD COLUMN next_event_sequence bigint NOT NULL DEFAULT 1",
+		"ADD COLUMN schema_version integer NOT NULL DEFAULT 1",
+		"ADD COLUMN repository_sequence bigint",
+		"event_outbox_repository_sequence_unique UNIQUE",
+		"ADD COLUMN retry_max_attempts integer NOT NULL DEFAULT 8",
+		"ADD COLUMN retry_initial_backoff interval NOT NULL",
+		"ADD COLUMN retry_max_backoff interval NOT NULL",
+		"ADD COLUMN encryption_key_id text NOT NULL DEFAULT 'legacy'",
+		"ADD COLUMN accept_until timestamptz",
+		"ADD COLUMN revoked_at timestamptz",
+	} {
+		if !containsSQL(latest.sql, contract) {
+			t.Errorf("webhook outbox migration is missing %q", contract)
 		}
 	}
 }
