@@ -23,7 +23,7 @@ export function repositoryChangePath(active: ActiveRepository, change?: string) 
 export function RepositoryGate({ children }: { children: (active: ActiveRepository) => ReactNode }) {
   const { orgId = "", repoId = "", owner = "", repo = "" } = useParams();
   const canonical = Boolean(owner && repo);
-  const context = useCurrentContext();
+  const context = useCurrentContext(!canonical);
   const organization = context.data?.organizations.find((item) => item.id === orgId);
   const canonicalContext = useQuery({
     queryKey: ["context", "repository", owner.toLowerCase(), repo.toLowerCase()],

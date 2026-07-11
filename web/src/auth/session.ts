@@ -24,10 +24,11 @@ export function useMeta() {
   return useQuery({ queryKey: queryKeys.meta, queryFn: ({ signal }) => api.meta(signal), staleTime: 60_000 });
 }
 
-export function useCurrentContext() {
+export function useCurrentContext(enabled = true) {
   return useQuery({
     queryKey: queryKeys.context,
     queryFn: ({ signal }) => api.context(signal),
+    enabled,
     retry: (failureCount, error) => !isApiProblem(error) && failureCount < 1,
   });
 }

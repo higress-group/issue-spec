@@ -28,7 +28,7 @@ export function IssueDetail({ active }: { active: ActiveRepository }) {
   const repo = active.repository.repository.name;
   const canContribute = active.authenticated && active.repository.allowed_actions.includes("contribute");
   const canTriage = active.authenticated && active.repository.allowed_actions.includes("triage");
-  const current = useCurrentContext();
+  const current = useCurrentContext(active.authenticated);
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const issue = useQuery({ queryKey: ["issues", owner, repo, number], queryFn: ({ signal }) => issueApi.getIssue(owner, repo, number, signal), enabled: Number.isInteger(number) && number > 0 });
