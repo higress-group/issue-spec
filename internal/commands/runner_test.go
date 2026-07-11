@@ -551,6 +551,34 @@ func captureRunnerPollConfig(t *testing.T, args ...string) commentrunner.Config 
 	return captured
 }
 
+func TestRunnerProfileFlagFlowsIntoUnifiedSelectionConfig(t *testing.T) {
+	clearCommandAuthEnv(t)
+	profile := auth.Profile{
+		Name: "runner-staging", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/compat", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance",
+	}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg := captureRunnerPollConfig(t,
+		"--profile", "runner-staging", "--repo", "o/r", "--runner", "runner-bot",
+		"--state", filepath.Join(t.TempDir(), "state.json"), "--workspace-root", t.TempDir(),
+	)
+	if cfg.Profile != "runner-staging" {
+		t.Fatalf("profile = %q", cfg.Profile)
+	}
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	t.Setenv("ISSUE_SPEC_TOKEN", "runner-profile-token")
+	selection, err := app.selectBackendForRunner(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Profile.Name != "runner-staging" || selection.Token.Value != "runner-profile-token" || selection.Name != auth.GitHubBackendNameREST {
+		t.Fatalf("selection = %+v", selection)
+	}
+}
+
 func TestRunnerPollDryRunIntakeErrorReturnsFailure(t *testing.T) {
 	clearCommandAuthEnv(t)
 	var out, errOut bytes.Buffer

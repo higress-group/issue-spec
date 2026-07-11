@@ -29,6 +29,7 @@ type Duration struct {
 }
 
 type Config struct {
+	Profile                 string                 `json:"profile,omitempty"`
 	Hostname                string                 `json:"hostname"`
 	Repositories            []string               `json:"repositories"`
 	RunnerIdentity          string                 `json:"runner_identity"`
@@ -102,6 +103,7 @@ func DefaultConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	return Config{
+		Profile:                 auth.ProfileNameFromEnv(),
 		Hostname:                "github.com",
 		GitHubBackend:           mode,
 		StatePath:               defaultStatePath(),
@@ -163,6 +165,7 @@ func DefaultRunnerScopePaths(cfg Config) (string, string, error) {
 }
 
 func (c Config) Normalized() Config {
+	c.Profile = strings.TrimSpace(c.Profile)
 	c.Hostname = auth.NormalizeHost(c.Hostname)
 	if c.Hostname == "" {
 		c.Hostname = "github.com"
@@ -194,6 +197,11 @@ func (c Config) Normalized() Config {
 
 func (c Config) Validate() error {
 	c = c.Normalized()
+	if c.Profile != "" {
+		if _, _, err := auth.ResolveProfile(c.Profile, c.Hostname); err != nil {
+			return err
+		}
+	}
 	if _, err := auth.ParseGitHubBackendMode(string(c.GitHubBackend)); err != nil {
 		return err
 	}
@@ -242,6 +250,15 @@ func (c Config) Validate() error {
 
 func runnerScopeSegments(cfg Config) ([]string, error) {
 	host := safePathSegment(strings.ToLower(auth.NormalizeHost(cfg.Hostname)))
+	profile, profileSource, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
+	if err != nil {
+		return nil, err
+	}
+	var realmSegment string
+	if profileSource != "builtin" {
+		digest := sha256.Sum256([]byte(profile.RealmKey()))
+		realmSegment = safePathSegment(strings.ToLower(profile.Name)) + "-" + hex.EncodeToString(digest[:8])
+	}
 	runner := safePathSegment(strings.ToLower(strings.TrimSpace(cfg.RunnerIdentity)))
 	if strings.TrimSpace(cfg.RunnerIdentity) == "" {
 		return nil, fmt.Errorf("--runner is required")
@@ -256,9 +273,17 @@ func runnerScopeSegments(cfg Config) ([]string, error) {
 	}
 	if len(canonicalRepos) == 1 {
 		parts := strings.Split(canonicalRepos[0], "/")
-		return []string{host, safePathSegment(parts[0]), safePathSegment(parts[1]), runner}, nil
+		segments := []string{host}
+		if realmSegment != "" {
+			segments = append(segments, realmSegment)
+		}
+		return append(segments, safePathSegment(parts[0]), safePathSegment(parts[1]), runner), nil
 	}
-	return []string{host, "multi", multiRepoScopeSegment(canonicalRepos), runner}, nil
+	segments := []string{host}
+	if realmSegment != "" {
+		segments = append(segments, realmSegment)
+	}
+	return append(segments, "multi", multiRepoScopeSegment(canonicalRepos), runner), nil
 }
 
 func canonicalReposForScope(repos []string) ([]string, error) {

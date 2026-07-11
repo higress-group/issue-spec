@@ -495,12 +495,16 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 		}
 	}
 	defaults = defaults.Normalized()
+	if a.profileName != "" {
+		defaults.Profile = a.profileName
+	}
 
 	fs := newFlagSet(name, a.err)
 	var repoValues stringListFlag
 	var allowedUsers stringListFlag
 	var claudeTools stringListFlag
 	host := fs.String("hostname", defaults.Hostname, "GitHub hostname")
+	profile := fs.String("profile", defaults.Profile, "named issue backend profile")
 	backend := fs.String("backend", string(defaults.GitHubBackend), "GitHub backend mode: auto, gh, or rest")
 	runner := fs.String("runner", "", "GitHub login for the polling runner identity")
 	notificationRunner := fs.String("notification-runner", "", "GitHub login for a notification-only polling identity")
@@ -582,6 +586,9 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	}
 	if seen["hostname"] {
 		cfg.Hostname = *host
+	}
+	if seen["profile"] {
+		cfg.Profile = *profile
 	}
 	if seen["backend"] {
 		mode, err := auth.ParseGitHubBackendMode(*backend)
@@ -788,6 +795,13 @@ func defaultRunnerNotificationBackend(_ context.Context, cfg commentrunner.Confi
 	token := strings.TrimSpace(rawToken)
 	if token == "" {
 		return nil, fmt.Errorf("%s is empty; export a notification bot token or omit --notification-runner", cfg.NotificationTokenEnv)
+	}
+	profile, source, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
+	if err != nil {
+		return nil, err
+	}
+	if source != "builtin" || cfg.Profile != "" {
+		return github.NewClientWithOptions(github.ClientOptions{Host: profile.Hostname, BaseURL: profile.APIURL, Token: token, CAFile: profile.CAFile})
 	}
 	return github.NewClient(cfg.Hostname, token), nil
 }

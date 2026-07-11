@@ -119,6 +119,43 @@ func TestDefaultRunnerScopePathsIsolatesReposAndRunners(t *testing.T) {
 	}
 }
 
+func TestDefaultRunnerScopePathsSeparateCredentialRealms(t *testing.T) {
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	profiles := []auth.Profile{
+		{Name: "tenant-a", Kind: auth.ProfileKindHosted, APIURL: "https://issues.example.test/tenant-a", NativeAPIURL: "https://issues.example.test/tenant-a/api/v1", WebURL: "https://issues.example.test", ServerInstanceID: "instance-a"},
+		{Name: "tenant-b", Kind: auth.ProfileKindHosted, APIURL: "https://issues.example.test/tenant-b", NativeAPIURL: "https://issues.example.test/tenant-b/api/v1", WebURL: "https://issues.example.test", ServerInstanceID: "instance-b"},
+	}
+	for _, profile := range profiles {
+		if err := auth.SaveProfile(profile, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := Config{Hostname: "issues.example.test", Repositories: []string{"o/r"}, RunnerIdentity: "bot"}
+	base.Profile = "tenant-a"
+	stateA, workspaceA, err := DefaultRunnerScopePaths(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.Profile = "tenant-b"
+	stateB, workspaceB, err := DefaultRunnerScopePaths(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stateA == stateB || workspaceA == workspaceB {
+		t.Fatalf("credential realms share paths: %q/%q and %q/%q", stateA, workspaceA, stateB, workspaceB)
+	}
+	if !strings.Contains(stateA, "tenant-a-") || !strings.Contains(stateB, "tenant-b-") {
+		t.Fatalf("realm fingerprints missing: %q %q", stateA, stateB)
+	}
+	githubState, _, err := DefaultRunnerScopePaths(Config{Hostname: "github.com", Repositories: []string{"o/r"}, RunnerIdentity: "bot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(githubState, filepath.Join("github.com", "o", "r", "bot")) {
+		t.Fatalf("builtin GitHub path changed: %q", githubState)
+	}
+}
+
 func TestDefaultRunnerScopePathsUsesStableMultiRepoScope(t *testing.T) {
 	home := t.TempDir()
 	setDefaultConfigPathEnv(t, home, filepath.Join(t.TempDir(), "config"), filepath.Join(t.TempDir(), "cache"))
@@ -252,9 +289,38 @@ func TestConfigValidateRejectsNegativeFallbackInitialLookback(t *testing.T) {
 	}
 }
 
+func TestConfigValidateRejectsUnknownProfileAndNormalizesKnownProfile(t *testing.T) {
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	cfg := Config{
+		Profile: " missing ", Repositories: []string{"o/r"}, RunnerIdentity: "bot",
+		StatePath: filepath.Join(t.TempDir(), "state.json"), WorkspaceRoot: t.TempDir(),
+		PollInterval: NewDuration(time.Minute), FallbackInterval: NewDuration(time.Hour),
+		WorkspaceRetention: NewDuration(24 * time.Hour), MaxConcurrentJobs: 1, Agent: DefaultAgentConfig(),
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), `profile "missing" is not configured`) {
+		t.Fatalf("unknown profile error = %v", err)
+	}
+	profile := auth.Profile{
+		Name: "known", Kind: auth.ProfileKindHosted, APIURL: "https://issues.example.test",
+		NativeAPIURL: "https://issues.example.test/api/v1", WebURL: "https://issues.example.test", ServerInstanceID: "instance",
+	}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Profile = " known "
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("known profile rejected: %v", err)
+	}
+	if got := cfg.Normalized().Profile; got != "known" {
+		t.Fatalf("normalized profile = %q", got)
+	}
+}
+
 func setDefaultConfigPathEnv(t *testing.T, home, configDir, cacheDir string) {
 	t.Helper()
 	t.Setenv(auth.GitHubBackendEnv, "")
+	t.Setenv(auth.GitHubBackendAPIURLEnv, "")
+	t.Setenv(auth.ProfileEnv, "")
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	t.Setenv("XDG_CACHE_HOME", cacheDir)

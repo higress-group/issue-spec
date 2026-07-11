@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +18,8 @@ type Client struct {
 	BaseURL    string
 	Token      string
 	HTTPClient HTTPDoer
+	apiOrigin  string
+	configErr  error
 }
 
 type HTTPDoer interface {
@@ -168,11 +169,19 @@ type CheckRun struct {
 
 func NewClient(host, token string) *Client {
 	host = normalizeHost(host)
-	return newClientWithHTTPDoer(host, baseURL(host), token, nil)
+	client, err := NewClientWithOptions(ClientOptions{Host: host, BaseURL: baseURL(host), Token: token})
+	if err != nil {
+		return &Client{Host: host, BaseURL: baseURL(host), Token: token, HTTPClient: &http.Client{Timeout: 30 * time.Second}, configErr: err}
+	}
+	return client
 }
 
 func NewClientWithBaseURL(host, baseURL, token string, httpClient *http.Client) *Client {
-	return newClientWithHTTPDoer(host, baseURL, token, httpClient)
+	client, err := NewClientWithOptions(ClientOptions{Host: host, BaseURL: baseURL, Token: token, HTTPClient: httpClient})
+	if err != nil {
+		return &Client{Host: normalizeHost(host), BaseURL: strings.TrimRight(baseURL, "/"), Token: token, HTTPClient: httpClient, configErr: err}
+	}
+	return client
 }
 
 func NewClientWithHTTPDoer(host, baseURL, token string, httpClient HTTPDoer) *Client {
@@ -183,7 +192,8 @@ func newClientWithHTTPDoer(host, baseURL, token string, httpClient HTTPDoer) *Cl
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Client{Host: normalizeHost(host), BaseURL: strings.TrimRight(baseURL, "/"), Token: token, HTTPClient: httpClient}
+	base, origin, err := canonicalAPIBase(strings.TrimRight(baseURL, "/"))
+	return &Client{Host: normalizeHost(host), BaseURL: base, Token: token, HTTPClient: httpClient, apiOrigin: origin, configErr: err}
 }
 
 func (c *Client) BackendInfo() BackendInfo {
@@ -444,14 +454,10 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) (
 }
 
 func (c *Client) endpoint(path string) (string, error) {
-	base := strings.TrimRight(c.BaseURL, "/")
-	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
-		return path, nil
+	if c.configErr != nil {
+		return "", c.configErr
 	}
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	return base + path, nil
+	return resolveEndpoint(c.BaseURL, c.apiOrigin, path)
 }
 
 func ParseRepo(repo string) (string, error) {
@@ -518,9 +524,6 @@ func normalizeHost(host string) string {
 }
 
 func baseURL(host string) string {
-	if override := strings.TrimSpace(os.Getenv("ISSUE_SPEC_API_URL")); override != "" {
-		return strings.TrimRight(override, "/")
-	}
 	if host == "github.com" {
 		return "https://api.github.com"
 	}
