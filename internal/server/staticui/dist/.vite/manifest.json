@@ -1,18 +1,18 @@
 {
-  "_circle-dot-F8B3gHH2.js": {
-    "file": "assets/circle-dot-F8B3gHH2.js",
+  "_circle-dot-C_eVXMxA.js": {
+    "file": "assets/circle-dot-C_eVXMxA.js",
     "name": "circle-dot",
     "imports": [
       "index.html"
     ]
   },
-  "_issue-editor-BlGoSmeE.js": {
-    "file": "assets/issue-editor-BlGoSmeE.js",
+  "_issue-editor-CCcOTnEP.js": {
+    "file": "assets/issue-editor-CCcOTnEP.js",
     "name": "issue-editor",
     "imports": [
-      "_types-CIBPVwyb.js",
-      "_label-chips-D6kLbNH7.js",
-      "_repository-context-HsqsA8-J.js"
+      "_types-CGgQKXxg.js",
+      "_label-chips-BB6F1nhC.js",
+      "_repository-context-Bkerims4.js"
     ],
     "css": [
       "assets/issue-editor-CdnBa9Ix.css"
@@ -22,11 +22,11 @@
     "file": "assets/issue-editor-CdnBa9Ix.css",
     "src": "_issue-editor-CdnBa9Ix.css"
   },
-  "_label-chips-D6kLbNH7.js": {
-    "file": "assets/label-chips-D6kLbNH7.js",
+  "_label-chips-BB6F1nhC.js": {
+    "file": "assets/label-chips-BB6F1nhC.js",
     "name": "label-chips",
     "imports": [
-      "_types-CIBPVwyb.js"
+      "_types-CGgQKXxg.js"
     ],
     "css": [
       "assets/label-chips-DMPnSd3b.css"
@@ -36,39 +36,39 @@
     "file": "assets/label-chips-DMPnSd3b.css",
     "src": "_label-chips-DMPnSd3b.css"
   },
-  "_lock-keyhole-CZvFu-wr.js": {
-    "file": "assets/lock-keyhole-CZvFu-wr.js",
+  "_lock-keyhole-VmKDqyrg.js": {
+    "file": "assets/lock-keyhole-VmKDqyrg.js",
     "name": "lock-keyhole",
     "imports": [
       "index.html"
     ]
   },
-  "_repository-context-HsqsA8-J.js": {
-    "file": "assets/repository-context-HsqsA8-J.js",
+  "_repository-context-Bkerims4.js": {
+    "file": "assets/repository-context-Bkerims4.js",
     "name": "repository-context",
     "imports": [
-      "_types-CIBPVwyb.js",
+      "_types-CGgQKXxg.js",
       "index.html"
     ]
   },
-  "_rotate-ccw-jU1ixo1c.js": {
-    "file": "assets/rotate-ccw-jU1ixo1c.js",
+  "_rotate-ccw-hHsuYyue.js": {
+    "file": "assets/rotate-ccw-hHsuYyue.js",
     "name": "rotate-ccw",
     "imports": [
       "index.html"
     ]
   },
-  "_types-CIBPVwyb.js": {
-    "file": "assets/types-CIBPVwyb.js",
+  "_types-CGgQKXxg.js": {
+    "file": "assets/types-CGgQKXxg.js",
     "name": "types"
   },
   "index.html": {
-    "file": "assets/index-Be9mi4h6.js",
+    "file": "assets/index-CInpfESd.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
     "imports": [
-      "_types-CIBPVwyb.js"
+      "_types-CGgQKXxg.js"
     ],
     "dynamicImports": [
       "src/features/boards/board-page.tsx",
@@ -79,59 +79,59 @@
       "src/features/issues/detail-page.tsx"
     ],
     "css": [
-      "assets/index-NobRqCZE.css"
+      "assets/index-DqNW-yyw.css"
     ]
   },
   "src/features/boards/board-page.tsx": {
-    "file": "assets/board-page-yChtqGr-.js",
+    "file": "assets/board-page-3JNowReR.js",
     "name": "board-page",
     "src": "src/features/boards/board-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_types-CIBPVwyb.js",
-      "_circle-dot-F8B3gHH2.js",
-      "_rotate-ccw-jU1ixo1c.js",
+      "_types-CGgQKXxg.js",
+      "_circle-dot-C_eVXMxA.js",
+      "_rotate-ccw-hHsuYyue.js",
       "index.html"
     ]
   },
   "src/features/boards/detail-page.tsx": {
-    "file": "assets/detail-page-Rlol3NBz.js",
+    "file": "assets/detail-page-CavWtbe0.js",
     "name": "detail-page",
     "src": "src/features/boards/detail-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_types-CIBPVwyb.js",
+      "_types-CGgQKXxg.js",
       "index.html",
       "src/features/boards/board-page.tsx"
     ]
   },
   "src/features/issues/create-page.tsx": {
-    "file": "assets/create-page-D8mroY6c.js",
+    "file": "assets/create-page-B38k_qjI.js",
     "name": "create-page",
     "src": "src/features/issues/create-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_types-CIBPVwyb.js",
+      "_types-CGgQKXxg.js",
       "index.html",
-      "_label-chips-D6kLbNH7.js",
-      "_issue-editor-BlGoSmeE.js",
-      "_repository-context-HsqsA8-J.js"
+      "_label-chips-BB6F1nhC.js",
+      "_issue-editor-CCcOTnEP.js",
+      "_repository-context-Bkerims4.js"
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-D0z1kl5F.js",
+    "file": "assets/detail-page-CWKWLvwj.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_types-CIBPVwyb.js",
-      "_circle-dot-F8B3gHH2.js",
-      "_lock-keyhole-CZvFu-wr.js",
-      "_rotate-ccw-jU1ixo1c.js",
+      "_types-CGgQKXxg.js",
+      "_circle-dot-C_eVXMxA.js",
+      "_lock-keyhole-VmKDqyrg.js",
+      "_rotate-ccw-hHsuYyue.js",
       "index.html",
-      "_label-chips-D6kLbNH7.js",
-      "_issue-editor-BlGoSmeE.js",
-      "_repository-context-HsqsA8-J.js",
+      "_label-chips-BB6F1nhC.js",
+      "_issue-editor-CCcOTnEP.js",
+      "_repository-context-Bkerims4.js",
       "src/features/issues/list-page.tsx"
     ],
     "css": [
@@ -139,28 +139,28 @@
     ]
   },
   "src/features/issues/list-page.tsx": {
-    "file": "assets/list-page-CJ42yybV.js",
+    "file": "assets/list-page-DAej-_y6.js",
     "name": "list-page",
     "src": "src/features/issues/list-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_types-CIBPVwyb.js",
-      "_circle-dot-F8B3gHH2.js",
+      "_types-CGgQKXxg.js",
+      "_circle-dot-C_eVXMxA.js",
       "index.html",
-      "_label-chips-D6kLbNH7.js",
-      "_repository-context-HsqsA8-J.js"
+      "_label-chips-BB6F1nhC.js",
+      "_repository-context-Bkerims4.js"
     ]
   },
   "src/features/issues/workspace-page.tsx": {
-    "file": "assets/workspace-page-DhJaQbNU.js",
+    "file": "assets/workspace-page-ByOQ-NFC.js",
     "name": "workspace-page",
     "src": "src/features/issues/workspace-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_types-CIBPVwyb.js",
-      "_lock-keyhole-CZvFu-wr.js",
+      "_types-CGgQKXxg.js",
+      "_lock-keyhole-VmKDqyrg.js",
       "index.html",
-      "_repository-context-HsqsA8-J.js"
+      "_repository-context-Bkerims4.js"
     ]
   }
 }
