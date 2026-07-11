@@ -26,6 +26,9 @@ func TestEnsureIssueBodyMarkerForCreateBodyFile(t *testing.T) {
 	if !strings.Contains(body, "Real content.") {
 		t.Fatalf("body lost content:\n%s", body)
 	}
+	if strings.Contains(body, "- Proposal Issue:") || strings.Contains(body, "- Design Issue:") {
+		t.Fatalf("proposal body gained a predecessor link:\n%s", body)
+	}
 }
 
 func TestEnsureIssueBodyMarkerRejectsWrongIssueClass(t *testing.T) {
@@ -188,6 +191,9 @@ func TestIssueCreateTitleOverrideWins(t *testing.T) {
 			if !strings.Contains(body, "# Design: ignored generated title") {
 				t.Fatalf("body was not preserved:\n%s", body)
 			}
+			if strings.Count(body, "- Proposal Issue: 21") != 1 {
+				t.Fatalf("custom design body predecessor link = %q:\n%s", "- Proposal Issue: 21", body)
+			}
 			return github.Issue{Number: 103, HTMLURL: "https://github.com/o/r/issues/103", Title: title}, nil
 		}
 	})
@@ -195,6 +201,99 @@ func TestIssueCreateTitleOverrideWins(t *testing.T) {
 	code := app.runIssueCreate(context.Background(), "design", []string{"--repo", "o/r", "--change", "issue-title-style", "--proposal", "21", "--body-file", bodyPath, "--title", "Custom design title", "--json"})
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr=%q", code, errOut.String())
+	}
+}
+
+func TestIssueCreateCustomBodiesNormalizeAuthoritativePredecessorLinks(t *testing.T) {
+	t.Run("design", func(t *testing.T) {
+		bodyPath := filepath.Join(t.TempDir(), "design.md")
+		body := "# Design: custom body\n\n- proposal Issue: 999\n\nDetails.\n\n- Proposal Issue: https://issues.invalid/old\n"
+		if err := os.WriteFile(bodyPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.selectGitHubBackend = ghSelection
+		app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+			f.listIssueComments = func(_ context.Context, _ string, issueNumber int) ([]github.Comment, error) {
+				if issueNumber != 21 {
+					t.Fatalf("proposal issue = %d", issueNumber)
+				}
+				return []github.Comment{{ID: 1, Body: mustTypedBody(t, "SPEC", "SPEC-001", "confirmed", "gate",
+					"## Requirement: gate\n\nThe design MUST pass.\n\n### Scenario: pass\n\n- **WHEN** created\n- **THEN** pass\n")}}, nil
+			}
+			f.createIssue = func(_ context.Context, _ string, _ string, createdBody string, _ []string) (github.Issue, error) {
+				if strings.Count(createdBody, "- Proposal Issue: 21") != 1 || strings.Contains(createdBody, "999") ||
+					strings.Contains(createdBody, "issues.invalid") {
+					t.Fatalf("design predecessor was not normalized:\n%s", createdBody)
+				}
+				if !strings.HasPrefix(createdBody, "<!-- issue-spec:issue=design change=predecessor-links version=1 -->\n") ||
+					strings.Contains(createdBody, templates.IssueSpecProjectURL) {
+					t.Fatalf("design marker/footer behavior regressed:\n%s", createdBody)
+				}
+				return github.Issue{Number: 22, HTMLURL: "https://github.com/o/r/issues/22"}, nil
+			}
+		})
+		if code := app.runIssueCreate(t.Context(), "design", []string{"--repo", "o/r", "--change", "predecessor-links",
+			"--proposal", "21", "--body-file", bodyPath, "--json"}); code != 0 {
+			t.Fatalf("design create exit=%d stderr=%q", code, errOut.String())
+		}
+	})
+
+	t.Run("implement", func(t *testing.T) {
+		bodyPath := filepath.Join(t.TempDir(), "implement.md")
+		body := "# Implement: custom body\n\n- Design Issue: 77\n\nExecution plan.\n\n- design issue: https://issues.invalid/old\n"
+		if err := os.WriteFile(bodyPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		taskBody, err := model.EnsureTypedBody("TASK", "TASK-001", "## Task: gate\n\n### Implementation Checklist\n\n- [ ] pass\n\n### Execution Planning\n\n- Coupling class: low\n\n### Covers\n\n- SPEC-001\n",
+			model.BodyOptions{Status: "confirmed", Scope: "gate", Links: map[string][]string{
+				"Related Comments": {"https://github.com/o/r/issues/21#issuecomment-1"},
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.selectGitHubBackend = ghSelection
+		app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+			f.listIssueComments = func(_ context.Context, _ string, issueNumber int) ([]github.Comment, error) {
+				if issueNumber != 31 {
+					t.Fatalf("design issue = %d", issueNumber)
+				}
+				return []github.Comment{{ID: 2, Body: taskBody}}, nil
+			}
+			f.createIssue = func(_ context.Context, _ string, _ string, createdBody string, _ []string) (github.Issue, error) {
+				if strings.Count(createdBody, "- Design Issue: 31") != 1 || strings.Contains(createdBody, "77") ||
+					strings.Contains(createdBody, "issues.invalid") {
+					t.Fatalf("implement predecessor was not normalized:\n%s", createdBody)
+				}
+				if !strings.HasPrefix(createdBody, "<!-- issue-spec:issue=implement change=predecessor-links version=1 -->\n") ||
+					strings.Contains(createdBody, templates.IssueSpecProjectURL) {
+					t.Fatalf("implement marker/footer behavior regressed:\n%s", createdBody)
+				}
+				return github.Issue{Number: 32, HTMLURL: "https://github.com/o/r/issues/32"}, nil
+			}
+		})
+		if code := app.runIssueCreate(t.Context(), "implement", []string{"--repo", "o/r", "--change", "predecessor-links",
+			"--design", "31", "--body-file", bodyPath, "--json"}); code != 0 {
+			t.Fatalf("implement create exit=%d stderr=%q", code, errOut.String())
+		}
+	})
+}
+
+func TestIssuePredecessorLinkPreservesProposalAndDefaultTemplates(t *testing.T) {
+	proposal := "<!-- issue-spec:issue=proposal change=x version=1 -->\n# Proposal: x\n\nBody.\n"
+	if got, err := ensureIssuePredecessorLink("proposal", "", proposal); err != nil || got != proposal {
+		t.Fatalf("proposal changed got=%q err=%v", got, err)
+	}
+	_, design, _ := templates.DesignIssue("x", "21")
+	if got, err := ensureIssuePredecessorLink("design", "21", design); err != nil || got != design {
+		t.Fatalf("default design changed err=%v\n%s", err, got)
+	}
+	_, implement, _ := templates.ImplementIssue("x", "31")
+	if got, err := ensureIssuePredecessorLink("implement", "31", implement); err != nil || got != implement {
+		t.Fatalf("default implement changed err=%v\n%s", err, got)
 	}
 }
 

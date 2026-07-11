@@ -117,6 +117,52 @@ artifacts:
 	}
 }
 
+func TestIssueCreateProjectWorkflowTemplateReceivesAuthoritativePredecessorLink(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	writeWorkflowTestFile(t, filepath.Join(root, "issue-spec", "config.yaml"), "schema: custom\n")
+	writeWorkflowTestFile(t, filepath.Join(root, "issue-spec", "schemas", "custom", "schema.yaml"), `
+artifacts:
+  design:
+    type: design
+    template: design.md
+`)
+	writeWorkflowTestFile(t, filepath.Join(root, "issue-spec", "schemas", "custom", "templates", "design.md"),
+		"# Project Design {{.Change}}\n\nProject controlled body without a link.\n")
+
+	var createdBody string
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
+		return fakeGitHubBackend{
+			info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
+			listIssueComments: func(_ context.Context, _ string, issueNumber int) ([]github.Comment, error) {
+				if issueNumber != 21 {
+					t.Fatalf("proposal issue = %d", issueNumber)
+				}
+				spec := mustTypedBody(t, "SPEC", "SPEC-001", "confirmed", "workflow gate",
+					"## Requirement: workflow\n\nThe workflow MUST render.\n\n### Scenario: render\n\n- **WHEN** created\n- **THEN** render\n")
+				return []github.Comment{{ID: 1, Body: spec}}, nil
+			},
+			createIssue: func(_ context.Context, _ string, _ string, body string, _ []string) (github.Issue, error) {
+				createdBody = body
+				return github.Issue{Number: 22, HTMLURL: "https://github.com/o/r/issues/22"}, nil
+			},
+		}, nil
+	}
+	if code := app.runIssueCreate(t.Context(), "design", []string{"--repo", "o/r", "--change", "custom-workflow",
+		"--proposal", "21", "--json"}); code != 0 {
+		t.Fatalf("issue create failed code=%d", code)
+	}
+	if !strings.HasPrefix(createdBody, "<!-- issue-spec:issue=design change=custom-workflow version=1 -->") ||
+		strings.Count(createdBody, "- Proposal Issue: 21") != 1 || !strings.Contains(createdBody, "Project controlled body") {
+		t.Fatalf("project template predecessor normalization failed:\n%s", createdBody)
+	}
+	if strings.Contains(createdBody, templates.IssueSpecProjectURL) {
+		t.Fatalf("project workflow footer control regressed:\n%s", createdBody)
+	}
+}
+
 func TestCommentGenerateUsesProjectTypedTemplate(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)

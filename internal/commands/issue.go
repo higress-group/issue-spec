@@ -181,6 +181,17 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 			body = templates.AppendIssueSpecIssueFooter(body)
 		}
 	}
+	predecessor := ""
+	if kind == "design" {
+		predecessor = *proposal
+	} else if kind == "implement" {
+		predecessor = *design
+	}
+	body, err = ensureIssuePredecessorLink(kind, predecessor, body)
+	if err != nil {
+		a.errorf("prepare issue predecessor link: %v\n", err)
+		return 2
+	}
 	title = templates.IssueTitle(kind, *change, body, *titleFlag)
 
 	issue, err := client.CreateIssue(ctx, repo, title, body, labels)
@@ -304,6 +315,8 @@ func (a *app) runIssueUpdate(ctx context.Context, args []string) int {
 }
 
 var issueBodyMarkerLineRe = regexp.MustCompile(`^<!--\s*issue-spec:issue=([a-z]+)(?:\s+[^>]*)?-->$`)
+var proposalIssueLinkLineRe = regexp.MustCompile(`(?i)^\s*-\s*Proposal\s+Issue\s*:`)
+var designIssueLinkLineRe = regexp.MustCompile(`(?i)^\s*-\s*Design\s+Issue\s*:`)
 
 func ensureIssueBodyMarker(kind, change, body string) (string, error) {
 	body = strings.TrimLeft(body, "\n")
@@ -314,6 +327,84 @@ func ensureIssueBodyMarker(kind, change, body string) (string, error) {
 		return body, nil
 	}
 	return fmt.Sprintf("<!-- issue-spec:issue=%s change=%s version=1 -->\n%s", kind, change, body), nil
+}
+
+// ensureIssuePredecessorLink makes the command-line predecessor flag the one
+// authority for the raw issue body consumed by change projection. Custom body
+// and project workflow templates remain free-form, but cannot omit, duplicate,
+// or override the reserved predecessor bullet. Proposal bodies have no
+// predecessor and are returned byte-for-byte unchanged.
+func ensureIssuePredecessorLink(kind, predecessor, body string) (string, error) {
+	var label string
+	var linePattern *regexp.Regexp
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "proposal":
+		return body, nil
+	case "design":
+		label, linePattern = "Proposal Issue", proposalIssueLinkLineRe
+	case "implement":
+		label, linePattern = "Design Issue", designIssueLinkLineRe
+	default:
+		return "", fmt.Errorf("unknown issue class %q", kind)
+	}
+	predecessor = strings.TrimSpace(predecessor)
+	if predecessor == "" {
+		return "", fmt.Errorf("%s predecessor is required", strings.ToLower(label))
+	}
+	authoritative := "- " + label + ": " + predecessor
+	lines := strings.Split(body, "\n")
+	result := make([]string, 0, len(lines)+2)
+	replaced := false
+	for _, line := range lines {
+		if linePattern.MatchString(line) {
+			if !replaced {
+				result = append(result, authoritative)
+				replaced = true
+			}
+			continue
+		}
+		result = append(result, line)
+	}
+	if replaced {
+		return strings.Join(result, "\n"), nil
+	}
+
+	insertAt := predecessorLinkInsertIndex(result)
+	block := make([]string, 0, 3)
+	if insertAt > 0 && strings.TrimSpace(result[insertAt-1]) != "" {
+		block = append(block, "")
+	}
+	block = append(block, authoritative)
+	if insertAt < len(result) && strings.TrimSpace(result[insertAt]) != "" {
+		block = append(block, "")
+	}
+	withLink := make([]string, 0, len(result)+len(block))
+	withLink = append(withLink, result[:insertAt]...)
+	withLink = append(withLink, block...)
+	withLink = append(withLink, result[insertAt:]...)
+	return strings.Join(withLink, "\n"), nil
+}
+
+func predecessorLinkInsertIndex(lines []string) int {
+	anchor := -1
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "# ") {
+			anchor = index
+			break
+		}
+		if anchor < 0 && issueBodyMarkerLineRe.MatchString(trimmed) {
+			anchor = index
+		}
+	}
+	if anchor < 0 {
+		return 0
+	}
+	insertAt := anchor + 1
+	for insertAt < len(lines) && strings.TrimSpace(lines[insertAt]) == "" {
+		insertAt++
+	}
+	return insertAt
 }
 
 func preserveIssueBodyMarker(existing, replacement string) (string, error) {
