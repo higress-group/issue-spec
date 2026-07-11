@@ -138,6 +138,23 @@ func TestCompactKeepsNonTerminalRecords(t *testing.T) {
 	}
 }
 
+func TestCompactPreservesTerminalJobWithPendingCredentialCleanup(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	st := NewState()
+	job := terminalJob("cleanup-pending", "cmd:cleanup-pending", now.Add(-30*24*time.Hour))
+	job.CredentialCleanup = CredentialCleanup{Status: CredentialCleanupPending, RequestedAt: now.Add(-30 * 24 * time.Hour),
+		Attempt: 3, LastAttemptAt: now.Add(-time.Hour), NextAttemptAt: now.Add(time.Minute), LastError: "retry"}
+	if _, _, err := st.CreateCommandJob(job); err != nil {
+		t.Fatal(err)
+	}
+	report := st.Compact(now, RetentionPolicy{TerminalTTL: time.Hour, MaxTerminalJobs: 0})
+	kept, ok := st.Jobs[job.ID]
+	if !ok || !kept.CredentialCleanup.Pending() || kept.CommandPrompt == "" ||
+		report.JobsPruned != 0 || report.JobsTombstoned != 0 {
+		t.Fatalf("pending cleanup was compacted: report=%+v job=%+v ok=%v", report, kept, ok)
+	}
+}
+
 func TestCompactWritebackLifecycle(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	st := NewState()

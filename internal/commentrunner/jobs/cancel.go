@@ -252,7 +252,7 @@ func (d *Dispatcher) cancelQueuedJob(ctx context.Context, cancel state.Cancellat
 		Phase:              "cancelled-before-dispatch",
 		CancelingUserLogin: cancel.CancelingUserLogin,
 	})
-	return errors.Join(err, d.revokeJobCredentials(ctx, cancelled))
+	return errors.Join(err, d.cleanupTerminalCredentials(ctx, cancelled))
 }
 
 func (d *Dispatcher) cancelConfirmed(ctx context.Context, cancel state.Cancellation, job state.Job, diagnostics string) error {
@@ -296,7 +296,7 @@ func (d *Dispatcher) cancelConfirmed(ctx context.Context, cancel state.Cancellat
 		Diagnostics:        splitDiagnostic(diagnostics),
 		CancelingUserLogin: cancel.CancelingUserLogin,
 	})
-	return errors.Join(err, d.revokeJobCredentials(ctx, cancelled))
+	return errors.Join(err, d.cleanupTerminalCredentials(ctx, cancelled))
 }
 
 // cancelSessionRefForJob resolves the acpx session reference used to cancel an
@@ -349,7 +349,7 @@ func (d *Dispatcher) cancelAlreadyTerminal(ctx context.Context, cancel state.Can
 		}
 	}
 	result := Result{Executed: true, JobID: job.ID, CancellationID: cancel.ID, Status: state.StatusCancelled, Reason: "target_already_terminal"}
-	if err := d.revokeJobCredentials(ctx, job); err != nil {
+	if err := d.cleanupTerminalCredentials(ctx, job); err != nil {
 		result.Error = safeError(err)
 		return result, err
 	}

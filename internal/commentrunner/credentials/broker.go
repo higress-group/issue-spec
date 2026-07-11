@@ -323,11 +323,11 @@ func (b *Broker) boundedHTTPClient() *http.Client {
 }
 
 func validLeaseValue(value string) bool {
-	value = strings.TrimSpace(value)
-	if value == "" || len(value) > 128 {
+	trimmed := strings.TrimSpace(value)
+	if value != trimmed || trimmed == "" || len(trimmed) > 128 {
 		return false
 	}
-	for _, char := range value {
+	for _, char := range trimmed {
 		if char < 0x21 || char == 0x7f {
 			return false
 		}

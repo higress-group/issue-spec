@@ -110,4 +110,8 @@ func TestDispatcherCredentialOrderRotationSandboxAndTerminalRevoke(t *testing.T)
 	if strings.Contains(string(persisted), "iss_dgt") || strings.Contains(string(persisted), "git-secret") || strings.Contains(string(persisted), "parent-secret") {
 		t.Fatalf("credential leaked into runner state: %s", persisted)
 	}
+	cleanup := loadState(t, store).Jobs["job-credential"].CredentialCleanup
+	if cleanup.Status != state.CredentialCleanupComplete || cleanup.Attempt != 1 || cleanup.CompletedAt.IsZero() {
+		t.Fatalf("terminal credential cleanup was not durably confirmed: %+v", cleanup)
+	}
 }

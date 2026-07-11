@@ -23,8 +23,11 @@ func TestRuntimeStartsReconcileAndShutsDownInOwnershipOrder(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- runtime.Run(ctx) }()
 	deadline := time.Now().Add(time.Second)
-	for !log.has("dispatcher-reconcile") && time.Now().Before(deadline) {
+	for (!log.has("dispatcher-reconcile") || !log.has("dispatcher-cancellation-drain")) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
+	}
+	if !log.has("dispatcher-cancellation-drain") {
+		t.Fatalf("runtime did not start cancellation drain: %v", log.entries())
 	}
 	cancel()
 	if err := <-done; err != nil {
@@ -92,8 +95,12 @@ func (f *fakeRuntimeDispatcher) Reconcile(context.Context) (jobs.ReconcileResult
 	f.log.add("dispatcher-reconcile")
 	return jobs.ReconcileResult{}, nil
 }
-func (f *fakeRuntimeDispatcher) RunReady(ctx context.Context, _ int) (jobs.Result, error) {
+func (f *fakeRuntimeDispatcher) RunJobsReady(ctx context.Context, _ int) (jobs.Result, error) {
 	<-ctx.Done()
 	f.log.add("dispatcher-revoked")
 	return jobs.Result{}, ctx.Err()
+}
+func (f *fakeRuntimeDispatcher) DrainCancellations(context.Context, int) (jobs.Result, error) {
+	f.log.add("dispatcher-cancellation-drain")
+	return jobs.Result{Reason: "no queued cancellations"}, nil
 }
