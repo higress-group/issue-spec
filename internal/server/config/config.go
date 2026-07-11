@@ -259,10 +259,16 @@ func validatePublicURL(name, value string) error {
 	if parsed.User != nil {
 		return fmt.Errorf("%s must not contain userinfo", name)
 	}
-	if parsed.RawQuery != "" {
+	if parsed.Path != "" && parsed.Path != "/" {
+		return fmt.Errorf("%s must be a root origin without a path", name)
+	}
+	if parsed.RawPath != "" && parsed.RawPath != "/" {
+		return fmt.Errorf("%s must be a root origin without an encoded path", name)
+	}
+	if parsed.RawQuery != "" || parsed.ForceQuery {
 		return fmt.Errorf("%s must not contain a query", name)
 	}
-	if parsed.Fragment != "" {
+	if parsed.Fragment != "" || parsed.RawFragment != "" {
 		return fmt.Errorf("%s must not contain a fragment", name)
 	}
 	return nil

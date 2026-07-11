@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -91,6 +92,19 @@ type Middleware struct {
 // is never allowed to fall back to a browser cookie, which keeps bearer clients
 // independent from cookie CSRF state.
 func (m Middleware) Authenticate(next http.Handler) http.Handler {
+	return m.authenticate(next, false)
+}
+
+// AuthenticateOptional attaches a principal when the request presents a
+// credential, but allows credential-free requests to continue. Invalid
+// credentials still fail closed. This is intended for public read routes; the
+// authorization layer remains responsible for deciding whether the anonymous
+// request may see the selected resource.
+func (m Middleware) AuthenticateOptional(next http.Handler) http.Handler {
+	return m.authenticate(next, true)
+}
+
+func (m Middleware) authenticate(next http.Handler, optional bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var principal Principal
 		var err error
@@ -108,6 +122,10 @@ func (m Middleware) Authenticate(next http.Handler) http.Handler {
 				cookieName = "issue_spec_session"
 			}
 			cookie, cookieErr := r.Cookie(cookieName)
+			if errors.Is(cookieErr, http.ErrNoCookie) && optional {
+				next.ServeHTTP(w, r)
+				return
+			}
 			if cookieErr != nil || m.Sessions == nil {
 				writeUnauthorized(w)
 				return

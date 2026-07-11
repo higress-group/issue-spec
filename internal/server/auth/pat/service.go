@@ -18,7 +18,7 @@ import (
 
 var allowedScopes = map[string]struct{}{
 	"read:user": {}, "read:org": {}, "repo": {}, "issues:read": {}, "issues:write": {},
-	"admin:org": {}, "admin:repo": {}, "runner:delegate": {},
+	"admin:org": {}, "admin:repo": {}, "evidence:write": {}, "runner:delegate": {},
 }
 
 type Token struct {

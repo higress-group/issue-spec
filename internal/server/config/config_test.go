@@ -67,8 +67,10 @@ func TestPublicURLValidation(t *testing.T) {
 		value string
 		ok    bool
 	}{
-		{name: "https", value: "https://api.example.test/base", ok: true},
+		{name: "https", value: "https://api.example.test", ok: true},
+		{name: "trailing slash", value: "https://api.example.test/", ok: true},
 		{name: "http", value: "http://localhost:8080", ok: true},
+		{name: "path", value: "https://api.example.test/base"},
 		{name: "relative", value: "/api"},
 		{name: "wrong scheme", value: "ftp://example.test"},
 		{name: "userinfo", value: "https://user:pass@example.test"},

@@ -99,6 +99,56 @@ func TestMiddlewareCookieMutationsRequireOriginAndCSRFButBearerIsIndependent(t *
 	}
 }
 
+func TestMiddlewareOptionalAuthenticationAllowsAnonymousAndRejectsInvalidCredentials(t *testing.T) {
+	user := User{ID: uuid.New(), Login: "alice", Status: "active"}
+	middleware := Middleware{
+		SessionCookieName: "session",
+		Sessions:          fakeSessions{principal: Principal{User: user, Kind: CredentialSession}},
+		Bearer:            fakeBearer{principal: Principal{User: user, Kind: CredentialPAT}},
+	}
+	handler := middleware.AuthenticateOptional(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if principal, ok := PrincipalFromContext(r.Context()); ok {
+			w.Header().Set("Credential-Kind", string(principal.Kind))
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	tests := []struct {
+		name       string
+		configure  func(*http.Request)
+		wantStatus int
+		wantKind   CredentialKind
+	}{
+		{name: "anonymous", configure: func(*http.Request) {}, wantStatus: http.StatusNoContent},
+		{name: "valid bearer", configure: func(r *http.Request) {
+			r.Header.Set("Authorization", "Bearer valid-bearer")
+		}, wantStatus: http.StatusNoContent, wantKind: CredentialPAT},
+		{name: "invalid bearer", configure: func(r *http.Request) {
+			r.Header.Set("Authorization", "Bearer invalid")
+		}, wantStatus: http.StatusUnauthorized},
+		{name: "valid session", configure: func(r *http.Request) {
+			r.AddCookie(&http.Cookie{Name: "session", Value: "valid-session"})
+		}, wantStatus: http.StatusNoContent, wantKind: CredentialSession},
+		{name: "invalid session", configure: func(r *http.Request) {
+			r.AddCookie(&http.Cookie{Name: "session", Value: "invalid"})
+		}, wantStatus: http.StatusUnauthorized},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/public", nil)
+			test.configure(request)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d, body=%s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if got := response.Header().Get("Credential-Kind"); got != string(test.wantKind) {
+				t.Fatalf("credential kind = %q, want %q", got, test.wantKind)
+			}
+		})
+	}
+}
+
 func TestBearerChainDoesNotHideNonCredentialFailures(t *testing.T) {
 	databaseFailure := errors.New("database unavailable")
 	chain := BearerChain{bearerFunc(func(context.Context, string) (Principal, error) {
