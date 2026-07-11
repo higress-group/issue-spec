@@ -47,6 +47,23 @@ describe("personal access token repository boundaries", () => {
     expect(await screen.findByText("Runner delegation requires exactly one repository")).toBeVisible();
     expect(posts).toBe(0);
   });
+
+  it("separates revoked history from actionable active credentials", async () => {
+    server.use(http.get("http://localhost/api/v1/pats", () => HttpResponse.json({ tokens: [
+      { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", name: "active runner", token_prefix: "pat_live", scopes: ["runner:delegate"], repositories: [{ organization_id: orgId, repository_id: repoId }], repository_restricted: true, representation_version: 1 },
+      { id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", name: "retired runner", token_prefix: "pat_old", scopes: ["runner:delegate"], repositories: [{ organization_id: orgId, repository_id: repoId }], repository_restricted: true, revoked_at: "2026-07-11T11:00:00Z", representation_version: 2 },
+    ] })), ...handlers());
+    const { container } = renderApp(<TokensPage />, "/settings/tokens");
+
+    expect(await screen.findByText("1 usable credential")).toBeVisible();
+    expect(screen.getByText("1 retired credential retained for audit")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Rotate active runner" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Revoke active runner" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Rotate retired runner" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Revoke retired runner" })).not.toBeInTheDocument();
+    expect(screen.getByText("Revoked")).toBeVisible();
+    expect((await axe.run(container)).violations).toEqual([]);
+  });
 });
 
 function handlers() {
