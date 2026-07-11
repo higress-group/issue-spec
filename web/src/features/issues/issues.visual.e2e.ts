@@ -75,6 +75,16 @@ test("combined label filters produce an intentional empty state", async ({ page 
   await expect(page.getByRole("heading", { name: "No issues match this view" })).toBeVisible();
 });
 
+test("canonical public WebURL resolves to the visible UUID desk and preserves its comment fragment", async ({ page }, testInfo) => {
+  test.skip(!["issues-desktop-1440", "issues-mobile-390"].includes(testInfo.project.name));
+  await page.goto("/AcMe/WorkFlow/issues/41?view=timeline#issuecomment-9");
+  await expect(page).toHaveURL(`/issues/${organizationId}/${repositoryId}/41?view=timeline#issuecomment-9`);
+  await expect(page.getByRole("heading", { level: 1 }).first()).toContainText("Runner contract");
+  await expect(page.locator("#issuecomment-9")).toBeVisible();
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(1);
+});
+
 const labels = [{ id: 1, name: "issue-spec/design", color: "62459a", default: false, description: "Design", url: "" }, { id: 2, name: "runner", color: "0f6f6f", default: false, description: "Runner", url: "" }];
 const issue = { id: 41, number: 41, state: "open", state_reason: null, title: "Runner contract", body: rawBody, user, labels, locked: false, comments: 1, created_at: "2026-07-10T10:00:00Z", updated_at: "2026-07-10T10:00:00Z", closed_at: null, html_url: "https://code.example.test/acme/workflow/issues/41", reactions: reactionSummary };
 function commentFixture(id: number, body: string) { return { id, body, user, created_at: "2026-07-10T11:00:00Z", updated_at: "2026-07-10T11:00:00Z", html_url: `https://code.example.test/acme/workflow/issues/41#issuecomment-${id}`, reactions: id === 9 ? reactionSummary : { ...reactionSummary, total_count: 0, "+1": 0 } }; }

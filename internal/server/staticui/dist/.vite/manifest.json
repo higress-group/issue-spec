@@ -1,18 +1,18 @@
 {
-  "_circle-dot-R1xnp6Cu.js": {
-    "file": "assets/circle-dot-R1xnp6Cu.js",
+  "_circle-dot-Cox8FisN.js": {
+    "file": "assets/circle-dot-Cox8FisN.js",
     "name": "circle-dot",
     "imports": [
       "index.html"
     ]
   },
-  "_issue-editor-BCNYxtlS.js": {
-    "file": "assets/issue-editor-BCNYxtlS.js",
+  "_issue-editor-Cd7LoRfA.js": {
+    "file": "assets/issue-editor-Cd7LoRfA.js",
     "name": "issue-editor",
     "imports": [
       "_types-CPSzlohR.js",
-      "_label-chips-Dbb0S5cu.js",
-      "_repository-context-DMRnFuhh.js"
+      "_repository-context-C-Az0OBk.js",
+      "_label-chips-Dbb0S5cu.js"
     ],
     "css": [
       "assets/issue-editor-CdnBa9Ix.css"
@@ -36,23 +36,23 @@
       "assets/label-chips-DMPnSd3b.css"
     ]
   },
-  "_lock-keyhole-DlU9zk62.js": {
-    "file": "assets/lock-keyhole-DlU9zk62.js",
+  "_lock-keyhole-C7KLBBdI.js": {
+    "file": "assets/lock-keyhole-C7KLBBdI.js",
     "name": "lock-keyhole",
     "imports": [
       "index.html"
     ]
   },
-  "_repository-context-DMRnFuhh.js": {
-    "file": "assets/repository-context-DMRnFuhh.js",
+  "_repository-context-C-Az0OBk.js": {
+    "file": "assets/repository-context-C-Az0OBk.js",
     "name": "repository-context",
     "imports": [
       "_types-CPSzlohR.js",
       "index.html"
     ]
   },
-  "_rotate-ccw-GwgT6K7k.js": {
-    "file": "assets/rotate-ccw-GwgT6K7k.js",
+  "_rotate-ccw-DOqwN7EQ.js": {
+    "file": "assets/rotate-ccw-DOqwN7EQ.js",
     "name": "rotate-ccw",
     "imports": [
       "index.html"
@@ -63,7 +63,7 @@
     "name": "types"
   },
   "index.html": {
-    "file": "assets/index-VgfngDyf.js",
+    "file": "assets/index-CccK1M7D.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -76,26 +76,27 @@
       "src/features/issues/workspace-page.tsx",
       "src/features/issues/list-page.tsx",
       "src/features/issues/create-page.tsx",
-      "src/features/issues/detail-page.tsx"
+      "src/features/issues/detail-page.tsx",
+      "src/features/issues/canonical-route.tsx"
     ],
     "css": [
       "assets/index-B5OmlJ8-.css"
     ]
   },
   "src/features/boards/board-page.tsx": {
-    "file": "assets/board-page-Bh2NDUxZ.js",
+    "file": "assets/board-page-e3i9omWK.js",
     "name": "board-page",
     "src": "src/features/boards/board-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_types-CPSzlohR.js",
-      "_circle-dot-R1xnp6Cu.js",
-      "_rotate-ccw-GwgT6K7k.js",
+      "_circle-dot-Cox8FisN.js",
+      "_rotate-ccw-DOqwN7EQ.js",
       "index.html"
     ]
   },
   "src/features/boards/detail-page.tsx": {
-    "file": "assets/detail-page-ggrLV1J4.js",
+    "file": "assets/detail-page-Ca0SrrHP.js",
     "name": "detail-page",
     "src": "src/features/boards/detail-page.tsx",
     "isDynamicEntry": true,
@@ -105,33 +106,44 @@
       "src/features/boards/board-page.tsx"
     ]
   },
+  "src/features/issues/canonical-route.tsx": {
+    "file": "assets/canonical-route-H6E4SVzK.js",
+    "name": "canonical-route",
+    "src": "src/features/issues/canonical-route.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "_types-CPSzlohR.js",
+      "index.html",
+      "_repository-context-C-Az0OBk.js"
+    ]
+  },
   "src/features/issues/create-page.tsx": {
-    "file": "assets/create-page-Bh1iW3Rr.js",
+    "file": "assets/create-page-DU0Pb3hv.js",
     "name": "create-page",
     "src": "src/features/issues/create-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_types-CPSzlohR.js",
       "index.html",
+      "_repository-context-C-Az0OBk.js",
       "_label-chips-Dbb0S5cu.js",
-      "_issue-editor-BCNYxtlS.js",
-      "_repository-context-DMRnFuhh.js"
+      "_issue-editor-Cd7LoRfA.js"
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-8PMn-ibS.js",
+    "file": "assets/detail-page-CjHc-aeo.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_types-CPSzlohR.js",
-      "_circle-dot-R1xnp6Cu.js",
-      "_lock-keyhole-DlU9zk62.js",
-      "_rotate-ccw-GwgT6K7k.js",
+      "_circle-dot-Cox8FisN.js",
+      "_lock-keyhole-C7KLBBdI.js",
+      "_rotate-ccw-DOqwN7EQ.js",
       "index.html",
+      "_repository-context-C-Az0OBk.js",
       "_label-chips-Dbb0S5cu.js",
-      "_issue-editor-BCNYxtlS.js",
-      "_repository-context-DMRnFuhh.js",
+      "_issue-editor-Cd7LoRfA.js",
       "src/features/issues/list-page.tsx"
     ],
     "css": [
@@ -139,28 +151,28 @@
     ]
   },
   "src/features/issues/list-page.tsx": {
-    "file": "assets/list-page-C_bE2_eU.js",
+    "file": "assets/list-page-BQiFnZOd.js",
     "name": "list-page",
     "src": "src/features/issues/list-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_types-CPSzlohR.js",
-      "_circle-dot-R1xnp6Cu.js",
+      "_circle-dot-Cox8FisN.js",
       "index.html",
-      "_label-chips-Dbb0S5cu.js",
-      "_repository-context-DMRnFuhh.js"
+      "_repository-context-C-Az0OBk.js",
+      "_label-chips-Dbb0S5cu.js"
     ]
   },
   "src/features/issues/workspace-page.tsx": {
-    "file": "assets/workspace-page-n_gtcTyH.js",
+    "file": "assets/workspace-page-CnZCRKJ8.js",
     "name": "workspace-page",
     "src": "src/features/issues/workspace-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_types-CPSzlohR.js",
-      "_lock-keyhole-DlU9zk62.js",
+      "_lock-keyhole-C7KLBBdI.js",
       "index.html",
-      "_repository-context-DMRnFuhh.js"
+      "_repository-context-C-Az0OBk.js"
     ]
   }
 }
