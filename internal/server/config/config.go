@@ -1,0 +1,378 @@
+// Package config loads and validates issue-spec server configuration.
+package config
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/netip"
+	"net/url"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const (
+	EnvironmentEnv             = "ENVIRONMENT"
+	ListenAddrEnv              = "LISTEN_ADDR"
+	DatabaseURLEnv             = "DATABASE_URL"
+	APIPublicURLEnv            = "API_PUBLIC_URL"
+	WebPublicURLEnv            = "WEB_PUBLIC_URL"
+	TrustedProxiesEnv          = "TRUSTED_PROXIES"
+	BootstrapSecretFileEnv     = "BOOTSTRAP_SECRET_FILE"
+	TokenPepperFileEnv         = "TOKEN_PEPPER_FILE"
+	EncryptionKeyFileEnv       = "ENCRYPTION_KEY_FILE"
+	MigrationsModeEnv          = "MIGRATIONS_MODE"
+	GracefulShutdownTimeoutEnv = "GRACEFUL_SHUTDOWN_TIMEOUT"
+	HealthReadTimeoutEnv       = "HEALTH_READ_TIMEOUT"
+	HealthWriteTimeoutEnv      = "HEALTH_WRITE_TIMEOUT"
+
+	DefaultGracefulShutdownTimeout = 30 * time.Second
+	DefaultHealthReadTimeout       = 5 * time.Second
+	DefaultHealthWriteTimeout      = 5 * time.Second
+)
+
+type Environment string
+
+const (
+	EnvironmentDevelopment Environment = "development"
+	EnvironmentTest        Environment = "test"
+	EnvironmentProduction  Environment = "production"
+)
+
+type MigrationsMode string
+
+const (
+	MigrationsAuto     MigrationsMode = "auto"
+	MigrationsValidate MigrationsMode = "validate"
+	MigrationsOff      MigrationsMode = "off"
+)
+
+// SecretFile holds a secure file reference and its loaded value. Its value is
+// deliberately unexported and excluded from JSON and formatted output.
+type SecretFile struct {
+	path  string
+	value []byte
+}
+
+func (s SecretFile) Path() string { return s.path }
+
+// Bytes returns a copy so callers cannot mutate the configured value.
+func (s SecretFile) Bytes() []byte { return bytes.Clone(s.value) }
+
+func (s SecretFile) IsZero() bool { return s.path == "" }
+
+func (s SecretFile) String() string {
+	if s.path == "" {
+		return "<unset>"
+	}
+	return "<redacted>"
+}
+
+func (s SecretFile) MarshalJSON() ([]byte, error) {
+	if s.path == "" {
+		return []byte("null"), nil
+	}
+	return json.Marshal(struct {
+		File string `json:"file"`
+	}{File: s.path})
+}
+
+// Config is safe to serialize: database credentials and secret values are
+// intentionally omitted, while secret file references remain observable.
+type Config struct {
+	Environment             Environment    `json:"environment"`
+	ListenAddr              string         `json:"listen_addr"`
+	DatabaseURL             string         `json:"-"`
+	APIPublicURL            string         `json:"api_public_url,omitempty"`
+	WebPublicURL            string         `json:"web_public_url,omitempty"`
+	TrustedProxies          []netip.Prefix `json:"trusted_proxies,omitempty"`
+	BootstrapSecret         SecretFile     `json:"bootstrap_secret_file,omitempty"`
+	TokenPepper             SecretFile     `json:"token_pepper_file,omitempty"`
+	EncryptionKey           SecretFile     `json:"encryption_key_file,omitempty"`
+	MigrationsMode          MigrationsMode `json:"migrations_mode"`
+	GracefulShutdownTimeout time.Duration  `json:"graceful_shutdown_timeout"`
+	HealthReadTimeout       time.Duration  `json:"health_read_timeout"`
+	HealthWriteTimeout      time.Duration  `json:"health_write_timeout"`
+}
+
+func (c Config) String() string {
+	b, err := json.Marshal(c)
+	if err != nil {
+		return "<invalid redacted config>"
+	}
+	return string(b)
+}
+
+func (c Config) GoString() string { return c.String() }
+
+// Load reads configuration from the process environment, loads referenced
+// secret files, and returns only a fully validated Config.
+func Load() (Config, error) {
+	cfg := Config{
+		Environment:             EnvironmentDevelopment,
+		MigrationsMode:          MigrationsAuto,
+		GracefulShutdownTimeout: DefaultGracefulShutdownTimeout,
+		HealthReadTimeout:       DefaultHealthReadTimeout,
+		HealthWriteTimeout:      DefaultHealthWriteTimeout,
+	}
+
+	if value := env(EnvironmentEnv); value != "" {
+		cfg.Environment = Environment(strings.ToLower(value))
+	}
+	cfg.ListenAddr = env(ListenAddrEnv)
+	cfg.DatabaseURL = env(DatabaseURLEnv)
+	cfg.APIPublicURL = env(APIPublicURLEnv)
+	cfg.WebPublicURL = env(WebPublicURLEnv)
+	if value := env(MigrationsModeEnv); value != "" {
+		cfg.MigrationsMode = MigrationsMode(strings.ToLower(value))
+	}
+
+	var err error
+	if cfg.TrustedProxies, err = parseTrustedProxies(env(TrustedProxiesEnv)); err != nil {
+		return Config{}, err
+	}
+	if cfg.GracefulShutdownTimeout, err = parseDuration(GracefulShutdownTimeoutEnv, cfg.GracefulShutdownTimeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.HealthReadTimeout, err = parseDuration(HealthReadTimeoutEnv, cfg.HealthReadTimeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.HealthWriteTimeout, err = parseDuration(HealthWriteTimeoutEnv, cfg.HealthWriteTimeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.BootstrapSecret, err = loadSecretFile(BootstrapSecretFileEnv); err != nil {
+		return Config{}, err
+	}
+	if cfg.TokenPepper, err = loadSecretFile(TokenPepperFileEnv); err != nil {
+		return Config{}, err
+	}
+	if cfg.EncryptionKey, err = loadSecretFile(EncryptionKeyFileEnv); err != nil {
+		return Config{}, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func (c Config) Validate() error {
+	switch c.Environment {
+	case EnvironmentDevelopment, EnvironmentTest, EnvironmentProduction:
+	default:
+		return fmt.Errorf("%s must be development, test, or production", EnvironmentEnv)
+	}
+	if err := validateListenAddr(c.ListenAddr); err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.DatabaseURL) == "" {
+		return fmt.Errorf("%s is required", DatabaseURLEnv)
+	}
+	if err := validatePublicURL(APIPublicURLEnv, c.APIPublicURL); err != nil {
+		return err
+	}
+	if err := validatePublicURL(WebPublicURLEnv, c.WebPublicURL); err != nil {
+		return err
+	}
+	switch c.MigrationsMode {
+	case MigrationsAuto, MigrationsValidate, MigrationsOff:
+	default:
+		return fmt.Errorf("%s must be auto, validate, or off", MigrationsModeEnv)
+	}
+	if c.GracefulShutdownTimeout <= 0 {
+		return fmt.Errorf("%s must be positive", GracefulShutdownTimeoutEnv)
+	}
+	if c.HealthReadTimeout <= 0 {
+		return fmt.Errorf("%s must be positive", HealthReadTimeoutEnv)
+	}
+	if c.HealthWriteTimeout <= 0 {
+		return fmt.Errorf("%s must be positive", HealthWriteTimeoutEnv)
+	}
+	if c.Environment == EnvironmentProduction {
+		if c.APIPublicURL == "" {
+			return fmt.Errorf("%s is required in production", APIPublicURLEnv)
+		}
+		if c.WebPublicURL == "" {
+			return fmt.Errorf("%s is required in production", WebPublicURLEnv)
+		}
+		for _, publicURL := range []struct {
+			name  string
+			value string
+		}{
+			{APIPublicURLEnv, c.APIPublicURL},
+			{WebPublicURLEnv, c.WebPublicURL},
+		} {
+			parsed, _ := url.Parse(publicURL.value)
+			if parsed.Scheme != "https" {
+				return fmt.Errorf("%s must use https in production", publicURL.name)
+			}
+		}
+		for _, required := range []struct {
+			name   string
+			secret SecretFile
+		}{
+			{BootstrapSecretFileEnv, c.BootstrapSecret},
+			{TokenPepperFileEnv, c.TokenPepper},
+			{EncryptionKeyFileEnv, c.EncryptionKey},
+		} {
+			if required.secret.IsZero() {
+				return fmt.Errorf("%s is required in production", required.name)
+			}
+		}
+	}
+	return nil
+}
+
+func env(name string) string { return strings.TrimSpace(os.Getenv(name)) }
+
+func validateListenAddr(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s is required", ListenAddrEnv)
+	}
+	_, port, err := net.SplitHostPort(value)
+	if err != nil {
+		return fmt.Errorf("%s must be a host:port address", ListenAddrEnv)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("%s must contain a port between 1 and 65535", ListenAddrEnv)
+	}
+	return nil
+}
+
+func validatePublicURL(name, value string) error {
+	if value == "" {
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" || parsed.Opaque != "" {
+		return fmt.Errorf("%s must be an absolute http(s) URL", name)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("%s must use http or https", name)
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("%s must not contain userinfo", name)
+	}
+	if parsed.RawQuery != "" {
+		return fmt.Errorf("%s must not contain a query", name)
+	}
+	if parsed.Fragment != "" {
+		return fmt.Errorf("%s must not contain a fragment", name)
+	}
+	return nil
+}
+
+func parseTrustedProxies(value string) ([]netip.Prefix, error) {
+	if value == "" {
+		return nil, nil
+	}
+	parts := strings.Split(value, ",")
+	result := make([]netip.Prefix, 0, len(parts))
+	seen := make(map[netip.Prefix]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		prefix, err := netip.ParsePrefix(part)
+		if err != nil {
+			return nil, fmt.Errorf("%s contains an invalid CIDR", TrustedProxiesEnv)
+		}
+		prefix = prefix.Masked()
+		if _, ok := seen[prefix]; ok {
+			continue
+		}
+		seen[prefix] = struct{}{}
+		result = append(result, prefix)
+	}
+	return result, nil
+}
+
+func parseDuration(name string, fallback time.Duration) (time.Duration, error) {
+	value := env(name)
+	if value == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration", name)
+	}
+	return d, nil
+}
+
+func loadSecretFile(name string) (SecretFile, error) {
+	path := env(name)
+	if path == "" {
+		return SecretFile{}, nil
+	}
+	if !filepath.IsAbs(path) {
+		return SecretFile{}, fmt.Errorf("%s must reference an absolute path", name)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return SecretFile{}, fmt.Errorf("read %s: %w", name, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return SecretFile{}, fmt.Errorf("%s must not reference a symbolic link", name)
+	}
+	if !info.Mode().IsRegular() {
+		return SecretFile{}, fmt.Errorf("%s must reference a regular file", name)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return SecretFile{}, fmt.Errorf("%s file permissions must not grant group or other access", name)
+	}
+	value, err := os.ReadFile(path)
+	if err != nil {
+		return SecretFile{}, fmt.Errorf("read %s: %w", name, err)
+	}
+	value = bytes.TrimRight(value, "\r\n")
+	if len(value) == 0 {
+		return SecretFile{}, fmt.Errorf("%s must reference a non-empty file", name)
+	}
+	return SecretFile{path: path, value: value}, nil
+}
+
+// RedactError removes configured database and secret values from an error
+// before it is written to logs. It intentionally returns a new opaque error.
+func RedactError(err error) error {
+	values := append([]string{env(DatabaseURLEnv)}, secretValuesFromEnvironment()...)
+	return redactError(err, values...)
+}
+
+// RedactError removes the sensitive values already loaded into this Config.
+// Unlike the package helper it remains effective after a mounted secret file
+// is rotated or removed.
+func (c Config) RedactError(err error) error {
+	return redactError(err, c.DatabaseURL, string(c.BootstrapSecret.value), string(c.TokenPepper.value), string(c.EncryptionKey.value))
+}
+
+func secretValuesFromEnvironment() []string {
+	var values []string
+	for _, name := range []string{BootstrapSecretFileEnv, TokenPepperFileEnv, EncryptionKeyFileEnv} {
+		path := env(name)
+		if path == "" {
+			continue
+		}
+		if value, readErr := os.ReadFile(path); readErr == nil {
+			values = append(values, string(value), string(bytes.TrimRight(value, "\r\n")))
+		}
+	}
+	return values
+}
+
+func redactError(err error, values ...string) error {
+	if err == nil {
+		return nil
+	}
+	message := err.Error()
+	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	for _, value := range values {
+		if value != "" {
+			message = strings.ReplaceAll(message, value, "[REDACTED]")
+		}
+	}
+	return errors.New(message)
+}

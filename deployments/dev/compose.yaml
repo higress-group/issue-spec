@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: issue_spec
+      POSTGRES_USER: issue_spec
+      POSTGRES_PASSWORD: issue_spec
+    ports:
+      - "${ISSUE_SPEC_POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U issue_spec -d issue_spec"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    volumes:
+      - issue-spec-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  issue-spec-postgres-data:
