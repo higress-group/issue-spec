@@ -104,6 +104,8 @@ func TestOrganizationAuthorizationMatrix(t *testing.T) {
 	facts := authorityFacts{Exists: true, IdentityActive: true, OrganizationMember: true, BasePermission: models.BasePermissionRead}
 	owner := facts
 	owner.OrganizationRole = "owner"
+	maintainer := facts
+	maintainer.OrganizationRole = "maintainer"
 	siteAdmin := facts
 	siteAdmin.SiteAdmin = true
 	tests := []struct {
@@ -118,6 +120,11 @@ func TestOrganizationAuthorizationMatrix(t *testing.T) {
 		{"member session reads", principal(serverauth.CredentialSession), OperationReadOrganization, facts, true, ReasonAllowed},
 		{"member cannot admin", principal(serverauth.CredentialSession), OperationAdminOrganization, facts, false, ReasonInsufficientPermission},
 		{"owner session admins", principal(serverauth.CredentialSession), OperationAdminOrganization, owner, true, ReasonAllowed},
+		{"reader cannot manage integrations", principal(serverauth.CredentialSession), OperationManageIntegrations, facts, false, ReasonInsufficientPermission},
+		{"maintainer manages integrations", principal(serverauth.CredentialSession), OperationManageIntegrations, maintainer, true, ReasonAllowed},
+		{"owner manages integrations", principal(serverauth.CredentialSession), OperationManageIntegrations, owner, true, ReasonAllowed},
+		{"org read pat cannot manage integrations", principal(serverauth.CredentialPAT, "read:org"), OperationManageIntegrations, owner, false, ReasonCredentialScope},
+		{"org admin pat manages integrations", principal(serverauth.CredentialPAT, "admin:org"), OperationManageIntegrations, owner, true, ReasonAllowed},
 		{"owner pat read scope is capped", principal(serverauth.CredentialPAT, "read:org"), OperationAdminOrganization, owner, false, ReasonCredentialScope},
 		{"owner pat admin scope", principal(serverauth.CredentialPAT, "admin:org"), OperationAdminOrganization, owner, true, ReasonAllowed},
 		{"site admin pat is still token capped", principal(serverauth.CredentialPAT, "issues:read"), OperationAdminOrganization, siteAdmin, false, ReasonCredentialScope},

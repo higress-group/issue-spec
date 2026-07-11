@@ -150,6 +150,61 @@ func TestConcurrentAuthorityChangesRemainFailClosed(t *testing.T) {
 	}
 }
 
+func TestOrganizationIntegrationManagementAndTransactionalCredentialRevocation(t *testing.T) {
+	pool := migratedPool(t)
+	service, err := New(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := insertUser(t, pool, "integration-maintainer")
+	orgID := insertOrganization(t, pool, "integration-org", models.BasePermissionRead)
+	insertMembership(t, pool, orgID, userID, "maintainer")
+	sessionID := insertSession(t, pool, userID)
+	principal := serverauth.Principal{User: serverauth.User{ID: userID, Status: "active"},
+		Kind: serverauth.CredentialSession, CredentialID: sessionID}
+	decision, err := service.EvaluateOrganization(t.Context(), Authenticated(principal),
+		models.OrgScope{OrgID: orgID}, OperationManageIntegrations)
+	if err != nil || !decision.Allowed || decision.RequiredPermission != PermissionMaintain {
+		t.Fatalf("maintainer integration decision = %+v, %v", decision, err)
+	}
+
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err = service.EvaluateOrganizationTx(t.Context(), tx, Authenticated(principal),
+		models.OrgScope{OrgID: orgID}, OperationManageIntegrations)
+	if err != nil || !decision.Allowed {
+		t.Fatalf("transactional integration decision = %+v, %v", decision, err)
+	}
+	revoked := make(chan error, 1)
+	go func() {
+		_, err := pool.Exec(context.Background(), `UPDATE sessions SET revoked_at = clock_timestamp() WHERE id = $1`, sessionID)
+		revoked <- err
+	}()
+	select {
+	case err := <-revoked:
+		t.Fatalf("credential revocation bypassed transaction lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-revoked; err != nil {
+		t.Fatal(err)
+	}
+	tx, err = pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	decision, err = service.EvaluateOrganizationTx(t.Context(), tx, Authenticated(principal),
+		models.OrgScope{OrgID: orgID}, OperationManageIntegrations)
+	if err != nil || decision.Allowed || decision.Reason != ReasonCredentialScope {
+		t.Fatalf("revoked session decision = %+v, %v", decision, err)
+	}
+}
+
 func insertUser(t *testing.T, pool *pgxpool.Pool, login string) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
@@ -184,6 +239,18 @@ func insertMembership(t *testing.T, pool *pgxpool.Pool, orgID, userID uuid.UUID,
 		(organization_id, user_id, role, state, activated_at) VALUES ($1, $2, $3, 'active', clock_timestamp())`, orgID, userID, role); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func insertSession(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO sessions
+		(id, user_id, token_prefix, token_hash, csrf_hash, idle_expires_at, absolute_expires_at)
+		VALUES ($1, $2, $3, $4, $5, clock_timestamp() + interval '1 hour', clock_timestamp() + interval '2 hours')`,
+		id, userID, "session-"+id.String(), []byte("session-token-hash"), []byte("session-csrf-hash")); err != nil {
+		t.Fatal(err)
+	}
+	return id
 }
 
 func migratedPool(t *testing.T) *pgxpool.Pool {

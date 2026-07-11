@@ -149,6 +149,31 @@ func TestMiddlewareOptionalAuthenticationAllowsAnonymousAndRejectsInvalidCredent
 	}
 }
 
+func TestMiddlewareUsesInjectedCompatibilityErrorWritersWithoutCredentialFallback(t *testing.T) {
+	unauthorizedCalls := 0
+	middleware := Middleware{
+		SessionCookieName: "session",
+		Sessions:          fakeSessions{principal: Principal{User: User{ID: uuid.New()}}},
+		Bearer:            fakeBearer{},
+		Unauthorized: func(w http.ResponseWriter, _ *http.Request) {
+			unauthorizedCalls++
+			w.Header().Set("Content-Type", "application/vnd.test+json")
+			w.WriteHeader(http.StatusUnauthorized)
+		},
+	}
+	request := httptest.NewRequest(http.MethodGet, "/public", nil)
+	request.AddCookie(&http.Cookie{Name: "session", Value: "valid-session"})
+	request.Header.Set("Authorization", "Bearer invalid")
+	response := httptest.NewRecorder()
+	middleware.AuthenticateOptional(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("invalid bearer fell back to cookie")
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || unauthorizedCalls != 1 ||
+		response.Header().Get("Content-Type") != "application/vnd.test+json" {
+		t.Fatalf("response=%d calls=%d content-type=%q", response.Code, unauthorizedCalls, response.Header().Get("Content-Type"))
+	}
+}
+
 func TestBearerChainDoesNotHideNonCredentialFailures(t *testing.T) {
 	databaseFailure := errors.New("database unavailable")
 	chain := BearerChain{bearerFunc(func(context.Context, string) (Principal, error) {

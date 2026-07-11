@@ -86,6 +86,8 @@ type Middleware struct {
 	AllowedOrigins    map[string]struct{}
 	Sessions          SessionAuthenticator
 	Bearer            BearerAuthenticator
+	Unauthorized      func(http.ResponseWriter, *http.Request)
+	Forbidden         func(http.ResponseWriter, *http.Request)
 }
 
 // Authenticate selects exactly one credential realm. An Authorization header
@@ -112,7 +114,7 @@ func (m Middleware) authenticate(next http.Handler, optional bool) http.Handler 
 		if authorization != "" {
 			kind, token, ok := strings.Cut(authorization, " ")
 			if !ok || !strings.EqualFold(kind, "Bearer") || strings.TrimSpace(token) == "" || m.Bearer == nil {
-				writeUnauthorized(w)
+				m.writeUnauthorized(w, r)
 				return
 			}
 			principal, err = m.Bearer.AuthenticateBearer(r.Context(), strings.TrimSpace(token))
@@ -127,27 +129,43 @@ func (m Middleware) authenticate(next http.Handler, optional bool) http.Handler 
 				return
 			}
 			if cookieErr != nil || m.Sessions == nil {
-				writeUnauthorized(w)
+				m.writeUnauthorized(w, r)
 				return
 			}
 			principal, err = m.Sessions.Authenticate(r.Context(), cookie.Value)
 			if err == nil && mutationMethod(r.Method) {
 				if _, ok := m.AllowedOrigins[r.Header.Get("Origin")]; !ok {
-					writeForbidden(w)
+					m.writeForbidden(w, r)
 					return
 				}
 				if err = m.Sessions.ValidateCSRF(principal, r.Header.Get("X-CSRF-Token")); err != nil {
-					writeForbidden(w)
+					m.writeForbidden(w, r)
 					return
 				}
 			}
 		}
 		if err != nil {
-			writeUnauthorized(w)
+			m.writeUnauthorized(w, r)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), principal)))
 	})
+}
+
+func (m Middleware) writeUnauthorized(w http.ResponseWriter, r *http.Request) {
+	if m.Unauthorized != nil {
+		m.Unauthorized(w, r)
+		return
+	}
+	writeUnauthorized(w)
+}
+
+func (m Middleware) writeForbidden(w http.ResponseWriter, r *http.Request) {
+	if m.Forbidden != nil {
+		m.Forbidden(w, r)
+		return
+	}
+	writeForbidden(w)
 }
 
 func mutationMethod(method string) bool {

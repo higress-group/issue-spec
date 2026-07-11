@@ -70,9 +70,117 @@ func TestRunMigrationsConcurrentAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Keep the forward-only migration-set assertion synchronized with the
-	// latest embedded file; PROCESS-003 adds the admin lifecycle schema.
-	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0003_admin_lifecycle.sql" {
+	// latest embedded file; PROCESS-004 adds issue/comment compatibility data.
+	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0004_issue_comment_api.sql" {
 		t.Fatalf("migration metadata = count %d, version %d, name %q", count, version, name)
+	}
+}
+
+func TestSchemaScopedMigrationsKeepPgcryptoDurableAcrossSchemaDrop(t *testing.T) {
+	first := newIntegrationPool(t)
+	second := newIntegrationPool(t)
+	results := make(chan error, 2)
+	go func() { results <- RunMigrations(t.Context(), first) }()
+	go func() { results <- RunMigrations(t.Context(), second) }()
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatalf("parallel schema migration: %v", err)
+		}
+	}
+
+	var firstSchema string
+	if err := first.QueryRow(t.Context(), `SELECT current_schema()`).Scan(&firstSchema); err != nil {
+		t.Fatal(err)
+	}
+	first.Close()
+	admin, err := pgxpool.New(t.Context(), strings.TrimSpace(os.Getenv(testDatabaseEnv)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(admin.Close)
+	if _, err := admin.Exec(t.Context(), "DROP SCHEMA "+pgx.Identifier{firstSchema}.Sanitize()+" CASCADE"); err != nil {
+		t.Fatal(err)
+	}
+
+	orgID := insertOrg(t, second, "durable-extension-org")
+	repoID := insertRepo(t, second, orgID, "durable-extension-repo")
+	userID := uuid.New()
+	if _, err := second.Exec(t.Context(), `INSERT INTO users (id, login, display_name)
+		VALUES ($1, 'durable-extension-user', 'durable-extension-user')`, userID); err != nil {
+		t.Fatal(err)
+	}
+	issue, err := New(second).Repo(orgID, repoID).CreateIssue(t.Context(), models.NewIssue{
+		ID: uuid.New(), AuthorID: &userID, Title: "durable extension", Body: "raw",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commentID := uuid.New()
+	var compatibilityID int64
+	if err := second.QueryRow(t.Context(), `INSERT INTO comments
+		(id, organization_id, repository_id, issue_id, author_id, body)
+		VALUES ($1, $2, $3, $4, $5, '') RETURNING compatibility_id`,
+		commentID, orgID, repoID, issue.ID, userID).Scan(&compatibilityID); err != nil {
+		t.Fatalf("stable id after another schema drop: %v", err)
+	}
+	if compatibilityID <= 0 {
+		t.Fatalf("compatibility id = %d", compatibilityID)
+	}
+	var extensionSchema string
+	if err := second.QueryRow(t.Context(), `SELECT n.nspname FROM pg_extension e
+		JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'pgcrypto'`).Scan(&extensionSchema); err != nil {
+		t.Fatal(err)
+	}
+	if extensionSchema != "issue_spec_extensions" {
+		t.Fatalf("pgcrypto schema = %q", extensionSchema)
+	}
+	if err := RunMigrations(t.Context(), second); err != nil {
+		t.Fatalf("repeat migration with durable extension: %v", err)
+	}
+}
+
+func TestIncrementCollectionVersionsMapsEveryRepositoryCollection(t *testing.T) {
+	pool := migratedIntegrationPool(t)
+	orgID := insertOrg(t, pool, "collection-version-org")
+	repoID := insertRepo(t, pool, orgID, "repo")
+	collections := []RepoCollection{
+		RepoCollectionIssues, RepoCollectionComments, RepoCollectionLabels,
+		RepoCollectionArtifacts, RepoCollectionWebhooks, RepoCollectionReactions,
+		RepoCollectionBindings, RepoCollectionReferences, RepoCollectionEvidence,
+		RepoCollectionCollaborators, RepoCollectionSubscriptions,
+	}
+	versions, err := New(pool).Repo(orgID, repoID).IncrementCollectionVersions(t.Context(), collections...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, version := range versions {
+		if version != 2 {
+			t.Fatalf("collection %s version = %d", collections[index], version)
+		}
+	}
+	columns := []string{
+		"issues_collection_version", "comments_collection_version", "labels_collection_version",
+		"artifacts_collection_version", "webhooks_collection_version", "reactions_collection_version",
+		"bindings_collection_version", "references_collection_version", "evidence_collection_version",
+		"collaborators_collection_version", "subscriptions_collection_version",
+	}
+	destinations := make([]any, len(columns))
+	stored := make([]int64, len(columns))
+	for index := range stored {
+		destinations[index] = &stored[index]
+	}
+	if err := pool.QueryRow(t.Context(), `SELECT `+strings.Join(columns, ", ")+` FROM repos WHERE id = $1`, repoID).
+		Scan(destinations...); err != nil {
+		t.Fatal(err)
+	}
+	for index, version := range stored {
+		if version != 2 {
+			t.Fatalf("column %s version = %d", columns[index], version)
+		}
+	}
+	if _, err := New(pool).Repo(orgID, repoID).IncrementCollectionVersions(t.Context(),
+		RepoCollectionIssues, RepoCollectionIssues); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("duplicate collection error = %v", err)
 	}
 }
 

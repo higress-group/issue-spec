@@ -32,11 +32,43 @@ type Issue struct {
 	ClosedAt                    *time.Time
 }
 
+type RepositoryResource struct {
+	Scope                     RepoScope
+	Owner                     string
+	Name                      string
+	IssuesCollectionVersion   int64
+	CommentsCollectionVersion int64
+	UpdatedAt                 time.Time
+}
+
+type IssueSnapshot struct {
+	Issue        Issue
+	AuthorLogin  string
+	Labels       []Label
+	CommentCount int
+}
+
+type IssuePage struct {
+	Items             []IssueSnapshot
+	Total             int
+	CollectionVersion int64
+	LastModified      time.Time
+}
+
+type IssueListOptions struct {
+	State   *IssueState
+	Labels  []string
+	Since   *time.Time
+	Page    int
+	PerPage int
+}
+
 type NewIssue struct {
 	ID       uuid.UUID
 	AuthorID *uuid.UUID
 	Title    string
 	Body     string
+	Labels   []string
 }
 
 type IssueUpdate struct {
@@ -55,6 +87,33 @@ type Comment struct {
 	ReactionsCollectionVersion int64
 	CreatedAt                  time.Time
 	UpdatedAt                  time.Time
+}
+
+type CommentSnapshot struct {
+	Comment     Comment
+	IssueNumber int64
+	AuthorLogin string
+}
+
+type CommentPage struct {
+	Items             []CommentSnapshot
+	Total             int
+	CollectionVersion int64
+	LastModified      time.Time
+}
+
+type CommentListOptions struct {
+	IssueNumber *int64
+	Since       *time.Time
+	Page        int
+	PerPage     int
+}
+
+type NewComment struct {
+	ID          uuid.UUID
+	IssueNumber int64
+	AuthorID    *uuid.UUID
+	Body        string
 }
 
 type Label struct {

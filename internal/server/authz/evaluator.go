@@ -89,7 +89,7 @@ func evaluateOrganization(subject Subject, operation Operation, facts authorityF
 	if !facts.Exists {
 		return decision
 	}
-	if !supported || (operation != OperationReadOrganization && operation != OperationAdminOrganization) {
+	if !supported || (operation != OperationReadOrganization && operation != OperationManageIntegrations && operation != OperationAdminOrganization) {
 		decision.Reason = ReasonUnsupportedOperation
 		return decision
 	}
