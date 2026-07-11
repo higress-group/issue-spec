@@ -28,6 +28,8 @@ type Service struct {
 	sender     Sender
 	config     Config
 	semaphore  chan struct{}
+	quiesce    chan struct{}
+	quiesceOne sync.Once
 }
 
 func New(pool *pgxpool.Pool, authorizer Authorizer, secrets SecretProvider, sender Sender, config Config) (*Service, error) {
@@ -47,7 +49,30 @@ func New(pool *pgxpool.Pool, authorizer Authorizer, secrets SecretProvider, send
 		config.PollInterval = 100 * time.Millisecond
 	}
 	return &Service{pool: pool, authorizer: authorizer, secrets: secrets, sender: sender,
-		config: config, semaphore: make(chan struct{}, config.MaxConcurrency)}, nil
+		config: config, semaphore: make(chan struct{}, config.MaxConcurrency), quiesce: make(chan struct{})}, nil
+}
+
+// Quiesce stops workers before their next expansion or delivery claim. Work
+// that has already entered ProcessOne keeps using the Run context so the
+// composition owner can give it a bounded drain window before cancellation.
+// It is safe to call Quiesce more than once.
+func (s *Service) Quiesce() {
+	if s == nil {
+		return
+	}
+	s.quiesceOne.Do(func() { close(s.quiesce) })
+}
+
+// StopClaims is the lifecycle-oriented alias used by server composition.
+func (s *Service) StopClaims() { s.Quiesce() }
+
+func (s *Service) quiescing() bool {
+	select {
+	case <-s.quiesce:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) Run(ctx context.Context) error {
@@ -63,6 +88,9 @@ func (s *Service) Run(ctx context.Context) error {
 		go func() {
 			defer workers.Done()
 			for {
+				if s.quiescing() {
+					return
+				}
 				expanded, err := s.ExpandOne(workerContext)
 				if err != nil {
 					if workerContext.Err() != nil {
@@ -73,6 +101,9 @@ func (s *Service) Run(ctx context.Context) error {
 						cancel()
 					default:
 					}
+					return
+				}
+				if s.quiescing() {
 					return
 				}
 				err = s.ProcessOne(workerContext)
@@ -93,6 +124,9 @@ func (s *Service) Run(ctx context.Context) error {
 					case <-workerContext.Done():
 						timer.Stop()
 						return
+					case <-s.quiesce:
+						timer.Stop()
+						return
 					case <-timer.C:
 					}
 				}
@@ -107,6 +141,9 @@ func (s *Service) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		cancel()
+		<-done
+		return nil
+	case <-s.quiesce:
 		<-done
 		return nil
 	case err := <-errorsCh:
