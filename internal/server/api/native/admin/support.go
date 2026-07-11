@@ -41,6 +41,10 @@ func (g Guard) Protect(request func(*http.Request) (adminservice.AuthorizationRe
 			return
 		}
 		if err := g.authorizer.Authorize(r.Context(), principal, authorization); err != nil {
+			if errors.Is(err, adminservice.ErrNotFound) {
+				WriteProblem(w, http.StatusNotFound, "not_found", "Not found")
+				return
+			}
 			WriteProblem(w, http.StatusForbidden, "forbidden", "Forbidden")
 			return
 		}

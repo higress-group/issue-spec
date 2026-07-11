@@ -99,6 +99,33 @@ func TestNativeAdministrationRouteSetsDenyBeforeTenantHandlers(t *testing.T) {
 	}
 }
 
+func TestNativeAdministrationRouteSetsConcealInvisibleResources(t *testing.T) {
+	service := &adminservice.Service{}
+	principal := serverauth.Principal{User: serverauth.User{ID: uuid.New(), Login: "operator", Status: "active"}}
+	orgID := uuid.New()
+	authorizer := adminservice.AuthorizerFunc(func(context.Context, serverauth.Principal, adminservice.AuthorizationRequest) error {
+		return adminservice.ErrNotFound
+	})
+	set, err := orgapi.NewRouteSet(orgapi.Dependencies{
+		Service: service, Authorizer: authorizer, Authenticate: withPrincipal(principal),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux, err := routeset.NewMux(routeset.Policy{}, set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/orgs/"+orgID.String(), nil)
+	request.Header.Set("X-Request-ID", "tenant-invisible")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	assertProblem(t, response, "not_found", "tenant-invisible")
+}
+
 func TestNativeAdministrationRouteSetsRejectMissingPrincipal(t *testing.T) {
 	service := &adminservice.Service{}
 	passThrough := func(next http.Handler) http.Handler { return next }
