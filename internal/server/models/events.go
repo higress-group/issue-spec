@@ -8,21 +8,24 @@ import (
 )
 
 type OutboxEvent struct {
-	ID            uuid.UUID
-	Scope         RepoScope
-	AggregateType string
-	AggregateID   uuid.UUID
-	EventType     string
-	EventKey      string
-	PayloadHash   []byte
-	Payload       json.RawMessage
-	AvailableAt   time.Time
-	PublishedAt   *time.Time
-	CreatedAt     time.Time
+	ID                 uuid.UUID
+	Scope              RepoScope
+	SchemaVersion      int
+	RepositorySequence int64
+	AggregateType      string
+	AggregateID        uuid.UUID
+	EventType          string
+	EventKey           string
+	PayloadHash        []byte
+	Payload            json.RawMessage
+	AvailableAt        time.Time
+	PublishedAt        *time.Time
+	CreatedAt          time.Time
 }
 
 type NewOutboxEvent struct {
 	ID            uuid.UUID
+	SchemaVersion int
 	AggregateType string
 	AggregateID   uuid.UUID
 	EventType     string

@@ -134,8 +134,9 @@ func scanExternalEvidence(row rowScanner) (models.ExternalEvidence, error) {
 }
 
 const outboxEventColumns = `
-	id, organization_id, repository_id, aggregate_type, aggregate_id, event_type,
-	event_key, payload_hash, payload, available_at, published_at, created_at`
+	id, organization_id, repository_id, schema_version, repository_sequence,
+	aggregate_type, aggregate_id, event_type, event_key, payload_hash, payload,
+	available_at, published_at, created_at`
 
 // EnqueueEvent uses a caller-defined semantic event key so retries do not
 // create duplicate deliveries. The key may only be reused for the same event.
@@ -146,6 +147,12 @@ func (s RepoStore) EnqueueEvent(ctx context.Context, input models.NewOutboxEvent
 	if strings.TrimSpace(input.AggregateType) == "" || input.AggregateID == uuid.Nil ||
 		strings.TrimSpace(input.EventType) == "" || strings.TrimSpace(input.EventKey) == "" {
 		return models.OutboxEvent{}, fmt.Errorf("%w: aggregate, event type, and semantic event key are required", ErrInvalidInput)
+	}
+	if input.SchemaVersion == 0 {
+		input.SchemaVersion = 1
+	}
+	if input.SchemaVersion < 1 {
+		return models.OutboxEvent{}, fmt.Errorf("%w: positive outbox schema version is required", ErrInvalidInput)
 	}
 	canonical, err := canonicalJSON(input.Payload)
 	if err != nil {
@@ -169,13 +176,14 @@ func (s RepoStore) EnqueueEvent(ctx context.Context, input models.NewOutboxEvent
 
 	row := s.db.QueryRow(ctx, `
 		INSERT INTO event_outbox (
-			id, organization_id, repository_id, aggregate_type, aggregate_id,
-			event_type, event_key, payload_hash, payload, available_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+			id, organization_id, repository_id, schema_version, aggregate_type,
+			aggregate_id, event_type, event_key, payload_hash, payload, available_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
 		ON CONFLICT (organization_id, repository_id, event_key) DO NOTHING
 		RETURNING `+outboxEventColumns,
-		input.ID, s.scope.OrgID, s.scope.RepoID, input.AggregateType, input.AggregateID,
-		input.EventType, input.EventKey, digest, string(canonical), input.AvailableAt)
+		input.ID, s.scope.OrgID, s.scope.RepoID, input.SchemaVersion,
+		input.AggregateType, input.AggregateID, input.EventType, input.EventKey,
+		digest, string(canonical), input.AvailableAt)
 	event, err := scanOutboxEvent(row)
 	if err == nil {
 		return event, nil
@@ -192,7 +200,7 @@ func (s RepoStore) EnqueueEvent(ctx context.Context, input models.NewOutboxEvent
 	if err != nil {
 		return models.OutboxEvent{}, fmt.Errorf("read idempotent outbox event: %w", mapError(err))
 	}
-	if subtle.ConstantTimeCompare(event.PayloadHash, digest) != 1 {
+	if event.SchemaVersion != input.SchemaVersion || subtle.ConstantTimeCompare(event.PayloadHash, digest) != 1 {
 		return models.OutboxEvent{}, fmt.Errorf("%w: outbox event %q", ErrIdempotencyMismatch, input.EventKey)
 	}
 	return event, nil
@@ -204,6 +212,8 @@ func scanOutboxEvent(row rowScanner) (models.OutboxEvent, error) {
 		&event.ID,
 		&event.Scope.OrgID,
 		&event.Scope.RepoID,
+		&event.SchemaVersion,
+		&event.RepositorySequence,
 		&event.AggregateType,
 		&event.AggregateID,
 		&event.EventType,

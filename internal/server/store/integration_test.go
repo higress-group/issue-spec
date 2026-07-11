@@ -538,6 +538,93 @@ func TestLegacyEnqueueEventAllocatesConcurrentMonotonicRepositorySequences(t *te
 	}
 }
 
+func TestWebhookOutboxMigrationUpgradesExistingRows(t *testing.T) {
+	pool := newIntegrationPool(t)
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `CREATE TABLE schema_migrations (
+		version bigint PRIMARY KEY, name text NOT NULL, checksum bytea NOT NULL,
+		applied_at timestamptz NOT NULL DEFAULT clock_timestamp())`); err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range migrations[:5] {
+		if _, err := pool.Exec(t.Context(), migration.sql); err != nil {
+			t.Fatalf("apply pre-v6 %s: %v", migration.Name, err)
+		}
+		if _, err := pool.Exec(t.Context(), `INSERT INTO schema_migrations (version, name, checksum)
+			VALUES ($1, $2, $3)`, migration.Version, migration.Name, migration.checksum); err != nil {
+			t.Fatal(err)
+		}
+	}
+	userID, orgID, repoID, subscriptionID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO users (id, login, display_name) VALUES ($1, 'upgrade', 'upgrade')`, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO orgs (id, name, display_name) VALUES ($1, 'upgrade', 'upgrade')`, orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO repos (id, organization_id, name, display_name)
+		VALUES ($1, $2, 'repo', 'repo')`, repoID, orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO webhook_subscriptions
+		(id, organization_id, repository_id, scope_type, url, event_types, created_by_user_id)
+		VALUES ($1, $2, $3, 'repository', 'https://runner.example.test', ARRAY['issue.created'], $4)`,
+		subscriptionID, orgID, repoID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO webhook_secret_versions
+		(id, organization_id, repository_id, subscription_id, version, secret_ciphertext, created_by_user_id)
+		VALUES ($1, $2, $3, $4, 1, $5, $6)`, uuid.New(), orgID, repoID, subscriptionID,
+		[]byte("legacy-ciphertext"), userID); err != nil {
+		t.Fatal(err)
+	}
+	eventID := uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO event_outbox
+		(id, organization_id, repository_id, aggregate_type, aggregate_id, event_type,
+		 event_key, payload_hash, payload) VALUES ($1, $2, $3, 'issue', $4,
+		 'issue.created', 'legacy-event', $5, '{}'::jsonb)`, eventID, orgID, repoID,
+		uuid.New(), []byte("legacy-hash")); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunMigrations(t.Context(), pool); err != nil {
+		t.Fatal(err)
+	}
+	var schemaVersion int
+	var sequence, next int64
+	if err := pool.QueryRow(t.Context(), `SELECT schema_version, repository_sequence
+		FROM event_outbox WHERE id = $1`, eventID).Scan(&schemaVersion, &sequence); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(t.Context(), `SELECT next_event_sequence FROM repos WHERE id = $1`, repoID).Scan(&next); err != nil {
+		t.Fatal(err)
+	}
+	var maxAttempts int
+	var initial, maximum time.Duration
+	if err := pool.QueryRow(t.Context(), `SELECT retry_max_attempts,
+		(extract(epoch from retry_initial_backoff) * 1000000000)::bigint,
+		(extract(epoch from retry_max_backoff) * 1000000000)::bigint
+		FROM webhook_subscriptions WHERE id = $1`, subscriptionID).Scan(&maxAttempts, &initial, &maximum); err != nil {
+		t.Fatal(err)
+	}
+	var keyID string
+	var acceptUntil, revokedAt *time.Time
+	if err := pool.QueryRow(t.Context(), `SELECT encryption_key_id, accept_until, revoked_at
+		FROM webhook_secret_versions WHERE subscription_id = $1`, subscriptionID).Scan(&keyID, &acceptUntil, &revokedAt); err != nil {
+		t.Fatal(err)
+	}
+	if schemaVersion != 1 || sequence != 1 || next != 2 || maxAttempts != 8 ||
+		initial != time.Second || maximum != 5*time.Minute || keyID != "legacy" || acceptUntil != nil || revokedAt != nil {
+		t.Fatalf("upgrade event=%d/%d next=%d retry=%d/%s/%s secret=%q/%v/%v",
+			schemaVersion, sequence, next, maxAttempts, initial, maximum, keyID, acceptUntil, revokedAt)
+	}
+	if err := RunMigrations(t.Context(), pool); err != nil {
+		t.Fatalf("repeated v6 migration: %v", err)
+	}
+}
+
 func TestVersionCompareAndSwapPrimitives(t *testing.T) {
 	pool := migratedIntegrationPool(t)
 	orgID := insertOrg(t, pool, "cas-org")
