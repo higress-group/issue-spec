@@ -42,6 +42,34 @@ ALTER TABLE external_evidence
         btrim(external_repository_id) <> ''
     );
 
+CREATE FUNCTION fill_external_evidence_external_repository_id()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+    IF NEW.external_repository_id IS NULL OR btrim(NEW.external_repository_id) = '' THEN
+        SELECT binding.external_repository_id
+        INTO NEW.external_repository_id
+        FROM source_bindings AS binding
+        WHERE binding.organization_id = NEW.organization_id
+          AND binding.repository_id = NEW.repository_id
+          AND binding.provider_key = NEW.provider_key
+          AND binding.active
+        ORDER BY binding.version DESC
+        LIMIT 1;
+
+        IF NEW.external_repository_id IS NULL OR btrim(NEW.external_repository_id) = '' THEN
+            NEW.external_repository_id := 'legacy:' || NEW.repository_id::text;
+        END IF;
+    END IF;
+    RETURN NEW;
+END
+$function$;
+
+CREATE TRIGGER external_evidence_fill_external_repository_id
+BEFORE INSERT ON external_evidence
+FOR EACH ROW EXECUTE FUNCTION fill_external_evidence_external_repository_id();
+
 CREATE TABLE repository_evidence_policies (
     organization_id uuid NOT NULL,
     repository_id uuid NOT NULL,

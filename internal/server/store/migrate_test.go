@@ -138,6 +138,8 @@ func TestBindingsEvidenceMigrationMetadata(t *testing.T) {
 		"ADD COLUMN visibility text NOT NULL DEFAULT 'repository'",
 		"external_references_external_unique UNIQUE (",
 		"external_repository_id,\n        external_id",
+		"CREATE FUNCTION fill_external_evidence_external_repository_id()",
+		"CREATE TRIGGER external_evidence_fill_external_repository_id",
 		"CREATE TABLE repository_evidence_policies (",
 		"CREATE TABLE repository_evidence_requirements (",
 		"CREATE TABLE repository_evidence_writers (",
