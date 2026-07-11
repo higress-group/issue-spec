@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, NavLink, Navigate, Outlet, useLocation } from "react-router-dom";
 import { AlertCircle, Boxes, ChevronRight, CircleUserRound, KeyRound, LayoutDashboard, Menu, Settings2, X } from "lucide-react";
-import { Loading } from "./components";
+import { ErrorNotice, Loading } from "./components";
 import { ProblemInspector } from "./problem-inspector";
 import { useInspector } from "./problem-inspector";
 import { useCurrentContext, useMeta } from "../auth/session";
@@ -19,6 +19,9 @@ export function AuthenticatedShell() {
   if (contextQuery.isLoading || metaQuery.isLoading) return <Loading />;
   if (contextQuery.error && isApiProblem(contextQuery.error) && contextQuery.error.problem.status === 401) {
     return <Navigate to="/login" replace state={{ returnTo: location.pathname }} />;
+  }
+  if (contextQuery.error) {
+    return <div className="public-narrow"><ErrorNotice error={contextQuery.error} /></div>;
   }
   if (!contextQuery.data) return <Navigate to="/login" replace />;
   const context = contextQuery.data;

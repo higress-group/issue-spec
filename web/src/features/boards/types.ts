@@ -16,7 +16,7 @@ export const artifactSchema = z.object({
   state: z.string(),
   url: z.string(),
   marker_version: z.string(),
-  updated_at: z.string().datetime(),
+  updated_at: z.string().datetime({ offset: true }),
   valid: z.boolean(),
 });
 
@@ -42,7 +42,7 @@ export const changeCardSchema = z.object({
   tasks: progressSchema,
   processes: progressSchema,
   anomalies: z.array(z.string()).default([]),
-  updated_at: z.string().datetime(),
+  updated_at: z.string().datetime({ offset: true }),
 });
 
 export const boardPageSchema = z.object({
