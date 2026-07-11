@@ -292,8 +292,12 @@ func (s *Service) CreateComment(ctx context.Context, owner, repository string, i
 		if err != nil {
 			return err
 		}
+		issue, err := repositoryStore.IssueByNumber(ctx, issueNumber)
+		if err != nil {
+			return err
+		}
 		return s.events.Emit(ctx, repositoryStore, MutationEvent{Key: mutationKey(snapshot.Comment.ID, snapshot.Comment.RepresentationVersion, "issue_comment.created"), Type: "issue_comment.created", Scope: resource.Scope,
-			Issue:   models.Issue{ID: snapshot.Comment.IssueID, Scope: resource.Scope, Number: issueNumber},
+			Issue:   commentEventIssue(issue),
 			Comment: &snapshot, RawBody: body, BodyHash: sha256.Sum256([]byte(body)),
 			ActorUserID: actor, RepresentationVersion: snapshot.Comment.RepresentationVersion})
 	})
@@ -342,12 +346,30 @@ func (s *Service) UpdateComment(ctx context.Context, owner, repository string, c
 		if err != nil {
 			return err
 		}
+		issue, err := repositoryStore.IssueByNumber(ctx, snapshot.IssueNumber)
+		if err != nil {
+			return err
+		}
 		return s.events.Emit(ctx, repositoryStore, MutationEvent{Key: mutationKey(snapshot.Comment.ID, snapshot.Comment.RepresentationVersion, "issue_comment.edited"), Type: "issue_comment.edited", Scope: resource.Scope,
-			Issue:   models.Issue{ID: snapshot.Comment.IssueID, Scope: resource.Scope, Number: snapshot.IssueNumber},
+			Issue:   commentEventIssue(issue),
 			Comment: &snapshot, RawBody: body, BodyHash: sha256.Sum256([]byte(body)),
 			ActorUserID: actor, RepresentationVersion: snapshot.Comment.RepresentationVersion})
 	})
 	return resource, snapshot, err
+}
+
+// commentEventIssue keeps the issue identity and timestamps from the
+// transaction-authoritative row while deliberately omitting its representation
+// version. A comment mutation advances the issue's comment collection and
+// updated timestamp, not the issue representation itself.
+func commentEventIssue(issue models.Issue) models.Issue {
+	return models.Issue{
+		ID:        issue.ID,
+		Scope:     issue.Scope,
+		Number:    issue.Number,
+		CreatedAt: issue.CreatedAt,
+		UpdatedAt: issue.UpdatedAt,
+	}
 }
 
 func authenticatedActor(subject authz.Subject) (uuid.UUID, bool) {

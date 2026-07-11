@@ -42,6 +42,10 @@ func TestCommentMutationProjectionAndOutboxAreAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, issueAfterCreate, err := service.GetIssue(t.Context(), "acme", "widgets", issue.Issue.Number, subject)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var event outbox.Envelope
 	var eventID uuid.UUID
 	var schemaVersion int
@@ -58,15 +62,10 @@ func TestCommentMutationProjectionAndOutboxAreAtomic(t *testing.T) {
 		event.Comment.StableID != comment.Comment.ID || event.EventKey != "issue_comment.created:"+comment.Comment.ID.String()+":v1" {
 		t.Fatalf("event = %+v schema=%d sequence=%d", event, schemaVersion, sequence)
 	}
-	encoded, _ := json.Marshal(event)
-	var decoded map[string]any
-	_ = json.Unmarshal(encoded, &decoded)
-	issueEnvelope, _ := decoded["issue"].(map[string]any)
-	if _, exists := issueEnvelope["representation_version"]; exists {
-		t.Fatalf("comment envelope invented issue representation version: %s", encoded)
-	}
+	assertCommentIssueSnapshot(t, event, issueAfterCreate.Issue)
 	mutation := issueapi.MutationEvent{Type: "issue_comment.created", Scope: scope,
-		Issue:   models.Issue{ID: comment.Comment.IssueID, Scope: scope, Number: issue.Issue.Number},
+		Issue: models.Issue{ID: comment.Comment.IssueID, Scope: scope, Number: issue.Issue.Number,
+			CreatedAt: issueAfterCreate.Issue.CreatedAt, UpdatedAt: issueAfterCreate.Issue.UpdatedAt},
 		Comment: &comment, RawBody: raw, BodyHash: hash, ActorUserID: owner.User.ID,
 		RepresentationVersion: comment.Comment.RepresentationVersion}
 	beforeRetry := rowCount(t, pool, "event_outbox")
@@ -87,6 +86,39 @@ func TestCommentMutationProjectionAndOutboxAreAtomic(t *testing.T) {
 		WHERE comment_id = $1`, comment.Comment.ID).Scan(&projections); err != nil || projections != 1 {
 		t.Fatalf("projection count=%d err=%v", projections, err)
 	}
+	var compatibilityID int64
+	if err := pool.QueryRow(t.Context(), `SELECT compatibility_id FROM comments
+		WHERE organization_id = $1 AND repository_id = $2 AND id = $3`, scope.OrgID, scope.RepoID, comment.Comment.ID).
+		Scan(&compatibilityID); err != nil {
+		t.Fatal(err)
+	}
+	editedRaw := strings.Replace(raw, "## Raw  ", "## Edited  ", 1)
+	_, editedComment, err := service.UpdateComment(t.Context(), "acme", "widgets", compatibilityID, subject, editedRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, issueAfterEdit, err := service.GetIssue(t.Context(), "acme", "widgets", issue.Issue.Number, subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var editedEvent outbox.Envelope
+	if err := pool.QueryRow(t.Context(), `SELECT payload FROM event_outbox
+		WHERE organization_id = $1 AND repository_id = $2
+		AND event_type = 'issue_comment.edited'`, scope.OrgID, scope.RepoID).Scan(&editedEvent); err != nil {
+		t.Fatal(err)
+	}
+	editedHash := sha256.Sum256([]byte(editedRaw))
+	if editedEvent.RawBody != editedRaw || editedEvent.BodyHash != stringHex(editedHash[:]) ||
+		editedEvent.Comment == nil || editedEvent.Comment.StableID != editedComment.Comment.ID ||
+		editedEvent.Comment.RepresentationVersion != editedComment.Comment.RepresentationVersion ||
+		editedEvent.EventKey != "issue_comment.edited:"+editedComment.Comment.ID.String()+":v2" {
+		t.Fatalf("edited event = %+v", editedEvent)
+	}
+	assertCommentIssueSnapshot(t, editedEvent, issueAfterEdit.Issue)
+	if issueAfterEdit.Issue.UpdatedAt.Before(issueAfterCreate.Issue.UpdatedAt) {
+		t.Fatalf("edited issue timestamp regressed: created-event=%s edited-event=%s",
+			issueAfterCreate.Issue.UpdatedAt, issueAfterEdit.Issue.UpdatedAt)
+	}
 
 	failing, err := issueapi.NewService(store.New(pool), authorizer, artifacts.MarkerProjector{}, failAfterInsert{delegate: outbox.Hook{}})
 	if err != nil {
@@ -100,6 +132,21 @@ func TestCommentMutationProjectionAndOutboxAreAtomic(t *testing.T) {
 	if rowCount(t, pool, "comments") != beforeComments || rowCount(t, pool, "event_outbox") != beforeEvents ||
 		rowCount(t, pool, "issue_spec_typed_comments") != beforeProjections {
 		t.Fatal("comment, projection, or outbox escaped hook rollback")
+	}
+	beforeComments, beforeEvents, beforeProjections = rowCount(t, pool, "comments"), rowCount(t, pool, "event_outbox"), rowCount(t, pool, "issue_spec_typed_comments")
+	if _, _, err := failing.UpdateComment(t.Context(), "acme", "widgets", compatibilityID, subject,
+		strings.Replace(editedRaw, "PROCESS-007", "PROCESS-ROLLBACK", 2)); err == nil {
+		t.Fatal("failing update hook committed")
+	}
+	_, afterFailedUpdate, err := service.GetComment(t.Context(), "acme", "widgets", compatibilityID, subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterFailedUpdate.Comment.Body != editedComment.Comment.Body ||
+		afterFailedUpdate.Comment.RepresentationVersion != editedComment.Comment.RepresentationVersion ||
+		rowCount(t, pool, "comments") != beforeComments || rowCount(t, pool, "event_outbox") != beforeEvents ||
+		rowCount(t, pool, "issue_spec_typed_comments") != beforeProjections {
+		t.Fatal("edited comment, projection, or outbox escaped hook rollback")
 	}
 }
 
@@ -119,6 +166,27 @@ func stringHex(value []byte) string {
 		result[index*2], result[index*2+1] = alphabet[item>>4], alphabet[item&15]
 	}
 	return string(result)
+}
+
+func assertCommentIssueSnapshot(t *testing.T, event outbox.Envelope, issue models.Issue) {
+	t.Helper()
+	if event.Issue.StableID != issue.ID || event.Issue.Number != issue.Number ||
+		event.Issue.CreatedAt.IsZero() || event.Issue.UpdatedAt.IsZero() ||
+		!event.Issue.CreatedAt.Equal(issue.CreatedAt) || !event.Issue.UpdatedAt.Equal(issue.UpdatedAt) {
+		t.Fatalf("event issue = %+v authoritative issue = %+v", event.Issue, issue)
+	}
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	issueEnvelope, _ := decoded["issue"].(map[string]any)
+	if _, exists := issueEnvelope["representation_version"]; exists {
+		t.Fatalf("comment envelope invented issue representation version: %s", encoded)
+	}
 }
 
 func rowCount(t *testing.T, pool *pgxpool.Pool, table string) int {

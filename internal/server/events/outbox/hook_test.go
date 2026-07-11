@@ -23,12 +23,13 @@ func TestBuildEnvelopePreservesRawRevisionAndStableIdentity(t *testing.T) {
 	raw := "<!-- issue-spec:type=PROCESS id=PROCESS-007 version=1 -->\r\n命令  \n"
 	hash := sha256.Sum256([]byte(raw))
 	scope := models.RepoScope{OrgID: orgID, RepoID: repoID}
+	issue := models.Issue{ID: issueID, Scope: scope, Number: 17, CreatedAt: created, UpdatedAt: updated}
 	snapshot := models.CommentSnapshot{Comment: models.Comment{ID: commentID, Scope: scope,
 		IssueID: issueID, AuthorID: &actorID, Body: raw, RepresentationVersion: 2,
 		CreatedAt: created, UpdatedAt: updated}, IssueNumber: 17, AuthorLogin: "worker"}
 	envelope, aggregateID, err := BuildEnvelope(eventID, issues.MutationEvent{
 		Type: "issue_comment.edited", Scope: scope,
-		Issue: models.Issue{ID: issueID, Scope: scope, Number: 17}, Comment: &snapshot,
+		Issue: issue, Comment: &snapshot,
 		RawBody: raw, BodyHash: hash, ActorUserID: actorID, RepresentationVersion: 2,
 	})
 	if err != nil {
@@ -50,9 +51,17 @@ func TestBuildEnvelopePreservesRawRevisionAndStableIdentity(t *testing.T) {
 	broken[0] ^= 0xff
 	if _, _, err := BuildEnvelope(eventID, issues.MutationEvent{
 		Type: "issue_comment.edited", Scope: scope,
-		Issue: models.Issue{ID: issueID, Scope: scope, Number: 17}, Comment: &snapshot,
+		Issue: issue, Comment: &snapshot,
 		RawBody: raw, BodyHash: broken, ActorUserID: actorID, RepresentationVersion: 2,
 	}); err == nil {
 		t.Fatal("raw body/hash mismatch was accepted")
+	}
+	issue.CreatedAt = time.Time{}
+	if _, _, err := BuildEnvelope(eventID, issues.MutationEvent{
+		Type: "issue_comment.edited", Scope: scope,
+		Issue: issue, Comment: &snapshot,
+		RawBody: raw, BodyHash: hash, ActorUserID: actorID, RepresentationVersion: 2,
+	}); err == nil {
+		t.Fatal("incomplete issue timestamps were accepted")
 	}
 }

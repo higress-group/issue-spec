@@ -112,6 +112,9 @@ func BuildEnvelope(eventID uuid.UUID, mutation issues.MutationEvent) (Envelope, 
 	if eventID == uuid.Nil || mutation.Scope.Validate() != nil || mutation.ActorUserID == uuid.Nil {
 		return Envelope{}, uuid.Nil, fmt.Errorf("outbox: complete event, scope, actor and stable aggregate identity are required")
 	}
+	if mutation.Issue.Number <= 0 || mutation.Issue.CreatedAt.IsZero() || mutation.Issue.UpdatedAt.IsZero() {
+		return Envelope{}, uuid.Nil, fmt.Errorf("outbox: complete issue identity and timestamps are required")
+	}
 	if sha256.Sum256([]byte(mutation.RawBody)) != mutation.BodyHash {
 		return Envelope{}, uuid.Nil, fmt.Errorf("outbox: raw body hash mismatch")
 	}

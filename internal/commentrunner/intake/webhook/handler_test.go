@@ -267,7 +267,7 @@ func validEnvelope(t *testing.T, at time.Time, raw string) ([]byte, string) {
 		IssueID: issueID, AuthorID: &actorID, Body: raw, RepresentationVersion: 1, CreatedAt: at, UpdatedAt: at},
 		IssueNumber: 17, AuthorLogin: "runner-user"}
 	envelope, _, err := outbox.BuildEnvelope(eventID, issueapi.MutationEvent{Type: "issue_comment.created", Scope: scope,
-		Issue: models.Issue{ID: issueID, Scope: scope, Number: 17}, Comment: &snapshot,
+		Issue: models.Issue{ID: issueID, Scope: scope, Number: 17, CreatedAt: at.Add(-time.Hour), UpdatedAt: at}, Comment: &snapshot,
 		RawBody: raw, BodyHash: hash, ActorUserID: actorID, RepresentationVersion: 1})
 	if err != nil {
 		t.Fatal(err)
