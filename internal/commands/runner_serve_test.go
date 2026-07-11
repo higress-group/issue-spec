@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
-	runnerserver "github.com/higress-group/issue-spec/internal/commentrunner/server"
 )
 
 func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.T) {
@@ -27,16 +26,24 @@ func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.
 	statePath := filepath.Join(t.TempDir(), "runner-state.json")
 	currentSecret := strings.Repeat("c", 32)
 	previousSecret := strings.Repeat("p", 32)
+	parentToken := "origin-bound-parent-token"
 	t.Setenv("RUNNER_CURRENT_SECRET", currentSecret)
 	t.Setenv("RUNNER_PREVIOUS_SECRET", previousSecret)
+	t.Setenv("ISSUE_SPEC_TOKEN", parentToken)
 	previousExpiry := time.Now().UTC().Add(10 * time.Minute).Truncate(time.Second).Format(time.RFC3339)
-	originalRun := runnerServeRun
+	originalBuild, originalRun := runnerServeBuildRuntime, runnerServeRun
 	called := false
-	runnerServeRun = func(context.Context, *runnerserver.Service) error {
-		called = true
-		return nil
+	runnerServeBuildRuntime = func(_ context.Context, input runnerServeRuntimeInput) (runnerServeRuntime, error) {
+		if input.ParentToken != parentToken || input.Profile.Name != profile.Name || len(input.Runner.Repositories) != 1 {
+			t.Fatalf("runtime input=%+v", input)
+		}
+		return runnerServeRuntimeFunc(func(context.Context) error { return nil }), nil
 	}
-	t.Cleanup(func() { runnerServeRun = originalRun })
+	runnerServeRun = func(ctx context.Context, runtime runnerServeRuntime) error {
+		called = true
+		return runtime.Run(ctx)
+	}
+	t.Cleanup(func() { runnerServeBuildRuntime, runnerServeRun = originalBuild, originalRun })
 	var stdout, stderr bytes.Buffer
 	app := newApp(strings.NewReader(""), &stdout, &stderr)
 	app.profileName = profile.Name
@@ -54,7 +61,8 @@ func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.
 	}
 	code := app.runRunner(context.Background(), []string{"serve", "--repo", "o/r", "--runner", "runner-bot",
 		"--state", statePath, "--subscription-id", uuid.NewString(), "--secret-env", "RUNNER_CURRENT_SECRET",
-		"--previous-secret-env", "RUNNER_PREVIOUS_SECRET", "--previous-secrets-valid-until", previousExpiry})
+		"--previous-secret-env", "RUNNER_PREVIOUS_SECRET", "--previous-secrets-valid-until", previousExpiry,
+		"--git-credential-command", "/usr/bin/true"})
 	if code != 0 || !called {
 		t.Fatalf("serve code=%d called=%v stdout=%q stderr=%q", code, called, stdout.String(), stderr.String())
 	}
@@ -69,20 +77,28 @@ func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.
 	if _, exists := os.LookupEnv("RUNNER_PREVIOUS_SECRET"); exists {
 		t.Fatal("previous secret remained in process environment")
 	}
+	if _, exists := os.LookupEnv("ISSUE_SPEC_TOKEN"); exists {
+		t.Fatal("parent token remained in process environment")
+	}
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(data, []byte(`"schema_version": 4`)) || bytes.Contains(data, []byte(currentSecret)) ||
+	if !bytes.Contains(data, []byte(`"schema_version": 5`)) || bytes.Contains(data, []byte(currentSecret)) ||
 		bytes.Contains(data, []byte(previousSecret)) ||
 		bytes.Contains(data, []byte("RUNNER_CURRENT_SECRET")) {
 		t.Fatalf("state contains secret/config material: %s", data)
 	}
 }
 
+type runnerServeRuntimeFunc func(context.Context) error
+
+func (f runnerServeRuntimeFunc) Run(ctx context.Context) error { return f(ctx) }
+
 func TestRunnerServeRejectsGitHubProfilesAndPlaintextSecretArguments(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	app := newApp(strings.NewReader(""), &stdout, &stderr)
+	app.profileName = auth.DefaultProfileName
 	if code := app.runRunner(context.Background(), []string{"serve", "--repo", "o/r", "--runner", "bot",
 		"--subscription-id", uuid.NewString(), "--secret-env", "DOES_NOT_MATTER"}); code != 2 ||
 		!strings.Contains(stderr.String(), "GitHub profiles use runner poll") {
@@ -127,7 +143,8 @@ func TestRunnerServeHelpDocumentsSecurityAndCapacityControls(t *testing.T) {
 	}
 	for _, required := range []string{"--listen", "--tls-cert", "--tls-key", "--subscription-id",
 		"--secret-file", "--previous-secrets-valid-until", "--timestamp-window", "--max-body-bytes",
-		"--max-header-bytes", "--max-queue-deliveries", "--max-queue-bytes", "--shutdown-timeout"} {
+		"--max-header-bytes", "--max-queue-deliveries", "--max-queue-bytes", "--shutdown-timeout",
+		"--workspace-root", "--max-concurrent-jobs", "--reconcile-workers", "--git-credential-command"} {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("help missing %s:\n%s", required, stdout.String())
 		}

@@ -18,7 +18,8 @@ type ReconcileLoop interface{ Run(context.Context) error }
 
 type JobDispatcher interface {
 	Reconcile(context.Context) (jobs.ReconcileResult, error)
-	RunReady(context.Context, int) (jobs.Result, error)
+	RunJobsReady(context.Context, int) (jobs.Result, error)
+	DrainCancellations(context.Context, int) (jobs.Result, error)
 }
 
 type RuntimeConfig struct {
@@ -27,6 +28,7 @@ type RuntimeConfig struct {
 	Dispatcher        JobDispatcher
 	MaxConcurrentJobs int
 	DispatchIdleDelay time.Duration
+	CancelIdleDelay   time.Duration
 }
 
 type Runtime struct{ config RuntimeConfig }
@@ -43,6 +45,9 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	}
 	if config.DispatchIdleDelay <= 0 {
 		config.DispatchIdleDelay = 250 * time.Millisecond
+	}
+	if config.CancelIdleDelay <= 0 {
+		config.CancelIdleDelay = 100 * time.Millisecond
 	}
 	return &Runtime{config: config}, nil
 }
@@ -102,8 +107,35 @@ func (r *Runtime) runDispatcher(ctx context.Context) error {
 	if _, err := r.config.Dispatcher.Reconcile(ctx); err != nil {
 		return err
 	}
+	workerCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	jobsDone, cancellationsDone := make(chan error, 1), make(chan error, 1)
+	go func() { jobsDone <- r.runJobLoop(workerCtx) }()
+	go func() { cancellationsDone <- r.runCancellationLoop(workerCtx) }()
+	var first error
+	select {
+	case <-ctx.Done():
+	case first = <-jobsDone:
+		jobsDone = nil
+	case first = <-cancellationsDone:
+		cancellationsDone = nil
+	}
+	stop()
+	if jobsDone != nil {
+		first = errors.Join(first, componentError("job-dispatch", <-jobsDone))
+	}
+	if cancellationsDone != nil {
+		first = errors.Join(first, componentError("cancellation-drain", <-cancellationsDone))
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	return first
+}
+
+func (r *Runtime) runJobLoop(ctx context.Context) error {
 	for {
-		result, err := r.config.Dispatcher.RunReady(ctx, r.config.MaxConcurrentJobs)
+		result, err := r.config.Dispatcher.RunJobsReady(ctx, r.config.MaxConcurrentJobs)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -114,6 +146,30 @@ func (r *Runtime) runDispatcher(ctx context.Context) error {
 			continue
 		}
 		timer := time.NewTimer(r.config.DispatchIdleDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil
+		case <-timer.C:
+		}
+	}
+}
+
+func (r *Runtime) runCancellationLoop(ctx context.Context) error {
+	for {
+		result, err := r.config.Dispatcher.DrainCancellations(ctx, 32)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		if result.Executed {
+			continue
+		}
+		timer := time.NewTimer(r.config.CancelIdleDelay)
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {

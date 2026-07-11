@@ -50,7 +50,7 @@ func TestQueuePersistsDeduplicatesConflictsAndRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.SchemaVersion != 4 || string(reloaded.Deliveries[first.DeliveryID].RawEnvelope) != string(first.RawEnvelope) {
+	if reloaded.SchemaVersion != state.SchemaVersion || string(reloaded.Deliveries[first.DeliveryID].RawEnvelope) != string(first.RawEnvelope) {
 		t.Fatalf("delivery did not survive restart: %+v", reloaded.Deliveries[first.DeliveryID])
 	}
 }

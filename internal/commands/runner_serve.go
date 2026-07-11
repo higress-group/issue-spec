@@ -18,18 +18,22 @@ import (
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
 )
 
-var runnerServeRun = func(ctx context.Context, service *runnerserver.Service) error {
-	return service.Run(ctx)
-}
-
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	fs := newFlagSet("runner serve", a.err)
-	var repos, previousFiles, previousEnvs stringListFlag
+	var repos, allowedUsers, previousFiles, previousEnvs, gitCredentialArgs stringListFlag
 	listen := fs.String("listen", "127.0.0.1:9876", "dedicated webhook listen address")
 	runner := fs.String("runner", "", "self-hosted runner identity")
 	statePath := fs.String("state", "", "durable runner state path")
+	workspaceRoot := fs.String("workspace-root", "", "runner workspace root")
+	workspaceRetention := fs.Duration("workspace-retention", 7*24*time.Hour, "non-active workspace retention")
+	acpxPath := fs.String("acpx", "acpx", "acpx executable path")
+	agentKind := fs.String("agent", commentrunner.AgentCodex, "coordinator agent: codex or claude")
+	model := fs.String("model", "", "optional coordinator model")
+	unsafeNoSandbox := fs.Bool("unsafe-no-sandbox", false, "explicitly disable the filesystem sandbox")
+	bwrapPath := fs.String("bwrap", "", "bubblewrap executable path")
+	cancellationEnabled := fs.Bool("cancellation-enabled", true, "allow /cancel commands")
 	subscriptionID := fs.String("subscription-id", "", "operator-configured webhook subscription UUID")
 	secretFile := fs.String("secret-file", "", "0600 file containing the current webhook secret")
 	secretEnv := fs.String("secret-env", "", "environment variable containing the current webhook secret")
@@ -51,9 +55,18 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	tlsCert := fs.String("tls-cert", "", "TLS certificate PEM file")
 	tlsKey := fs.String("tls-key", "", "0600 TLS private key PEM file")
 	production := fs.Bool("production", false, "require TLS and an explicit non-loopback bind")
+	gitCredentialCommand := fs.String("git-credential-command", "", "absolute operator command implementing issue-spec-git-credential-v1")
+	gitCredentialTimeout := fs.Duration("git-credential-timeout", 30*time.Second, "operator git credential command timeout")
+	gitCredentialMaxOutput := fs.Int64("git-credential-max-output", 1<<20, "maximum operator git credential command output bytes")
+	gitCredentialConcurrency := fs.Int("git-credential-concurrency", 4, "maximum concurrent operator git credential command invocations")
+	reconcileWorkers := fs.Int("reconcile-workers", 2, "durable webhook reconciliation workers")
+	reconcileLease := fs.Duration("reconcile-lease", 2*time.Minute, "durable webhook processing lease")
+	maxConcurrentJobs := fs.Int("max-concurrent-jobs", 3, "maximum concurrently dispatched runner jobs")
 	fs.Var(&repos, "repo", "repository owner/name; repeat for every repository served by this subscription")
+	fs.Var(&allowedUsers, "allowed-user", "runner command author allowlist; repeat as needed")
 	fs.Var(&previousFiles, "previous-secret-file", "0600 previous secret file; repeat up to four times")
 	fs.Var(&previousEnvs, "previous-secret-env", "previous secret environment variable; repeat up to four times")
+	fs.Var(&gitCredentialArgs, "git-credential-arg", "trusted operator argument passed directly to the git credential command; repeat as needed")
 	if argsContainHelp(args) {
 		fs.SetOutput(a.out)
 		fs.Usage()
@@ -78,6 +91,10 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	}
 	if len(repos.Values()) == 0 || strings.TrimSpace(*runner) == "" {
 		a.errorf("runner serve requires at least one --repo and --runner\n")
+		return 2
+	}
+	if strings.TrimSpace(*gitCredentialCommand) == "" {
+		a.errorf("runner serve requires --git-credential-command for job-scoped clone credentials\n")
 		return 2
 	}
 	if (*secretFile == "") == (*secretEnv == "") {
@@ -112,6 +129,13 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		*idleTimeout > 10*time.Minute || *shutdownTimeout <= 0 || *shutdownTimeout > 5*time.Minute ||
 		*retryAfter <= 0 || *retryAfter > time.Hour {
 		a.errorf("runner serve limits and timeouts are outside their safe bounds\n")
+		return 2
+	}
+	if *gitCredentialTimeout <= 0 || *gitCredentialTimeout > 2*time.Minute || *gitCredentialMaxOutput < 1024 ||
+		*gitCredentialMaxOutput > 4<<20 || *gitCredentialConcurrency < 1 || *gitCredentialConcurrency > 32 ||
+		*reconcileWorkers < 1 || *reconcileWorkers > 32 || *reconcileLease < 10*time.Second ||
+		*reconcileLease > 10*time.Minute || *maxConcurrentJobs < 1 || *maxConcurrentJobs > 32 {
+		a.errorf("runner serve worker and credential provider limits are outside their safe bounds\n")
 		return 2
 	}
 	if *tlsKey != "" {
@@ -168,11 +192,26 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	if profile.Ephemeral {
 		scopeProfile = ""
 	}
-	runnerConfig := commentrunner.Config{Profile: scopeProfile, Hostname: profile.Hostname,
-		Repositories: repos.Values(), RunnerIdentity: *runner, StatePath: strings.TrimSpace(*statePath)}
-	runnerConfig, err = commentrunner.ApplyDefaultRunnerScopePaths(runnerConfig, seen["state"], false)
+	runnerConfig, err := commentrunner.DefaultConfigFromEnv()
+	if err != nil {
+		a.errorf("runner serve defaults: %v\n", err)
+		return 2
+	}
+	runnerConfig.Profile, runnerConfig.Hostname = scopeProfile, profile.Hostname
+	runnerConfig.Repositories, runnerConfig.RunnerIdentity = repos.Values(), *runner
+	runnerConfig.AllowedUsers, runnerConfig.StatePath, runnerConfig.WorkspaceRoot = allowedUsers.Values(), strings.TrimSpace(*statePath), strings.TrimSpace(*workspaceRoot)
+	runnerConfig.MaxConcurrentJobs, runnerConfig.AcpxPath = *maxConcurrentJobs, strings.TrimSpace(*acpxPath)
+	runnerConfig.Agent.Kind, runnerConfig.Agent.Model = strings.TrimSpace(*agentKind), strings.TrimSpace(*model)
+	runnerConfig.WorkspaceRetention = commentrunner.NewDuration(*workspaceRetention)
+	runnerConfig.UnsafeNoSandbox, runnerConfig.BwrapPath = *unsafeNoSandbox, strings.TrimSpace(*bwrapPath)
+	runnerConfig.CancellationEnabled = *cancellationEnabled
+	runnerConfig, err = commentrunner.ApplyDefaultRunnerScopePaths(runnerConfig, seen["state"], seen["workspace-root"])
 	if err != nil {
 		a.errorf("runner serve state scope: %v\n", err)
+		return 2
+	}
+	if err := runnerConfig.Validate(); err != nil {
+		a.errorf("runner serve runner configuration: %v\n", err)
 		return 2
 	}
 	store, err := crstate.OpenFileStore(runnerConfig.StatePath)
@@ -211,11 +250,28 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		a.errorf("runner serve configuration: %v\n", err)
 		return 2
 	}
+	parentToken, err := auth.ResolveProfileToken(ctx, profile)
+	if err != nil || strings.TrimSpace(parentToken.Value) == "" {
+		a.errorf("runner serve parent credential: origin-bound profile PAT is required\n")
+		return 2
+	}
+	if parentToken.Source == "env:ISSUE_SPEC_TOKEN" {
+		_ = os.Unsetenv("ISSUE_SPEC_TOKEN")
+	}
+	runtime, err := runnerServeBuildRuntime(ctx, runnerServeRuntimeInput{Profile: profile, ParentToken: parentToken.Value,
+		Runner: runnerConfig, Queue: queue, Store: store, HTTP: service, GitCredentialCommand: *gitCredentialCommand,
+		GitCredentialArgs: gitCredentialArgs.Values(), GitCredentialTimeout: *gitCredentialTimeout,
+		GitCredentialMaxOutput: *gitCredentialMaxOutput, GitCredentialConcurrency: *gitCredentialConcurrency,
+		ReconcileWorkers: *reconcileWorkers, ReconcileLease: *reconcileLease})
+	if err != nil {
+		a.errorf("runner serve runtime: %v\n", err)
+		return 2
+	}
 	serveContext, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	fmt.Fprintf(a.out, "runner serve: profile=%s subscription=%s listen=%s endpoint=%s state=%s\n",
 		profile.Name, credentials.SubscriptionID(), *listen, webhook.Endpoint, runnerConfig.StatePath)
-	if err := runnerServeRun(serveContext, service); err != nil && !errors.Is(err, context.Canceled) {
+	if err := runnerServeRun(serveContext, runtime); err != nil && !errors.Is(err, context.Canceled) {
 		a.errorf("runner serve: %v\n", err)
 		return 1
 	}

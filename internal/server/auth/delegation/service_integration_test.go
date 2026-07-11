@@ -129,6 +129,69 @@ func TestIssueAndRevokeJobLinearizeWithoutResurrectingLease(t *testing.T) {
 	}
 }
 
+func TestRevokeJobCleanupRetryIsIdempotentAndDurable(t *testing.T) {
+	pool := delegationTestPool(t)
+	secrets, err := serverauth.NewSecrets([]byte(strings.Repeat("p", 32)), []byte(strings.Repeat("e", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID, orgID, repoID := uuid.New(), uuid.New(), uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO users (id, login, display_name) VALUES ($1, 'cleanup-runner', 'Cleanup Runner')`, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO orgs (id, name, display_name) VALUES ($1, 'cleanup-org', 'Cleanup Org')`, orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO repos (id, organization_id, name, display_name) VALUES ($1, $2, 'cleanup-repo', 'Cleanup Repo')`, repoID, orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO repo_collaborators
+		(id, organization_id, repository_id, user_id, role) VALUES ($1, $2, $3, $4, 'write')`,
+		uuid.New(), orgID, repoID, userID); err != nil {
+		t.Fatal(err)
+	}
+	patService := pat.New(pool, secrets)
+	parent, err := patService.Create(t.Context(), userID, pat.CreateInput{Name: "cleanup-parent",
+		Scopes: []string{"runner:delegate", "issues:write"}, Repositories: []models.RepoScope{{OrgID: orgID, RepoID: repoID}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := patService.AuthenticateBearer(t.Context(), parent.Plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := models.RepoScope{OrgID: orgID, RepoID: repoID}
+	service := New(pool, secrets)
+	created, err := service.Issue(t.Context(), IssueInput{Issuer: principal, Repo: repo, JobID: "job-cleanup-retry",
+		Purpose: "issue-api", Audience: "instance-a", Subject: "runner-child", Scopes: []string{"issues:write"}, TTL: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RevokeJob(t.Context(), repo, "job-cleanup-retry"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RevokeJob(t.Context(), repo, "job-cleanup-retry"); err != nil {
+		t.Fatalf("idempotent cleanup retry: %v", err)
+	}
+	if _, err := service.Authenticate(t.Context(), created.Plaintext, Expected{Repo: repo, JobID: "job-cleanup-retry",
+		Purpose: "issue-api", Audience: "instance-a"}); !errors.Is(err, serverauth.ErrRevokedCredential) {
+		t.Fatalf("revoked delegated token authenticate error=%v", err)
+	}
+	var active, tombstones int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM delegated_tokens
+		WHERE organization_id = $1 AND repository_id = $2 AND job_id = $3
+		AND revoked_at IS NULL AND expires_at > clock_timestamp()`, orgID, repoID, "job-cleanup-retry").Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM delegated_job_revocations
+		WHERE organization_id = $1 AND repository_id = $2 AND job_id = $3`, orgID, repoID, "job-cleanup-retry").Scan(&tombstones); err != nil {
+		t.Fatal(err)
+	}
+	if active != 0 || tombstones != 1 {
+		t.Fatalf("active delegated tokens=%d tombstones=%d", active, tombstones)
+	}
+}
+
 func waitForAdvisoryWaiter(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

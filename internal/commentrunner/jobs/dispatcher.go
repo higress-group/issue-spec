@@ -142,6 +142,9 @@ func (d *Dispatcher) RunNext(ctx context.Context) (Result, error) {
 	if err := d.validate(); err != nil {
 		return Result{}, err
 	}
+	if result, attempted, err := d.retryNextCredentialCleanup(ctx); attempted || err != nil {
+		return result, err
+	}
 	cancel, ok, err := d.nextQueuedCancellation(ctx)
 	if err != nil {
 		return Result{}, err
@@ -156,6 +159,9 @@ func (d *Dispatcher) RunReady(ctx context.Context, maxConcurrentJobs int) (Resul
 	if err := d.validate(); err != nil {
 		return Result{}, err
 	}
+	if result, attempted, err := d.retryNextCredentialCleanup(ctx); attempted || err != nil {
+		return result, err
+	}
 	cancel, ok, err := d.nextQueuedCancellation(ctx)
 	if err != nil {
 		return Result{}, err
@@ -163,6 +169,23 @@ func (d *Dispatcher) RunReady(ctx context.Context, maxConcurrentJobs int) (Resul
 	if ok {
 		return d.cancel(ctx, cancel)
 	}
+	return d.runJobsReady(ctx, maxConcurrentJobs)
+}
+
+// RunJobsReady dispatches only jobs. Long-running runner serve pairs this with
+// a dedicated DrainCancellations loop so cancellation never races with a second
+// cancellation consumer and never waits behind a blocked coordinator turn.
+func (d *Dispatcher) RunJobsReady(ctx context.Context, maxConcurrentJobs int) (Result, error) {
+	if err := d.validate(); err != nil {
+		return Result{}, err
+	}
+	if result, attempted, err := d.retryNextCredentialCleanup(ctx); attempted || err != nil {
+		return result, err
+	}
+	return d.runJobsReady(ctx, maxConcurrentJobs)
+}
+
+func (d *Dispatcher) runJobsReady(ctx context.Context, maxConcurrentJobs int) (Result, error) {
 	if maxConcurrentJobs <= 1 {
 		return d.runNextJob(ctx)
 	}
@@ -482,14 +505,35 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 		if !ok || scope.Validate() != nil {
 			return d.fail(ctx, job.ID, "credentials", fmt.Errorf("credential broker repository scope is unavailable"))
 		}
+		if err := d.beginCredentialCleanup(ctx, job.ID); err != nil {
+			return d.fail(ctx, job.ID, "credentials", fmt.Errorf("persist credential cleanup intent: %w", err))
+		}
+		jobID := job.ID
+		job, err = d.loadJob(ctx, jobID)
+		if err != nil {
+			return Result{Executed: true, JobID: jobID, Status: state.StatusFailed}, err
+		}
 		credentialLease, err = d.CredentialBroker.Acquire(ctx, credentials.AcquireRequest{Repo: scope, JobID: job.ID, Binding: repo.Binding})
 		if err != nil {
-			return d.fail(ctx, job.ID, "credentials", err)
+			_, cleanupErr, stateErr := d.attemptCredentialCleanup(ctx, job)
+			return d.fail(ctx, job.ID, "credentials", errors.Join(err, cleanupErr, stateErr))
 		}
 		defer func() {
-			if revokeErr := credentialLease.Revoke(context.Background()); revokeErr != nil {
-				returnErr = errors.Join(returnErr, fmt.Errorf("credential broker cleanup: %w", revokeErr))
-				result.Error = safeError(returnErr)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), credentialCleanupCallTimeout)
+			defer cancel()
+			revokeErr := credentialLease.Revoke(cleanupCtx)
+			updated, stateErr := d.recordCredentialCleanupAttempt(cleanupCtx, job.ID, revokeErr)
+			if stateErr == nil && updated.CredentialCleanup.Status == state.CredentialCleanupComplete {
+				revokeErr = nil
+			}
+			if revokeErr != nil || stateErr != nil {
+				cleanupFailure := errors.Join(revokeErr, stateErr)
+				result.Error = safeError(errors.Join(returnErr, fmt.Errorf("credential broker cleanup: %w", cleanupFailure)))
+				// A successfully persisted pending intent is retried by the live
+				// dispatcher. Only failure to persist that intent is fatal here.
+				if stateErr != nil {
+					returnErr = errors.Join(returnErr, fmt.Errorf("persist credential broker cleanup: %w", stateErr))
+				}
 			}
 		}()
 	}

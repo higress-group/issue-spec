@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 type LifecycleStatus string
 
@@ -233,8 +233,46 @@ type Job struct {
 	Acpx                  AcpxMetadata              `json:"acpx,omitempty"`
 	CLIDirect             []CLIDirectProvenance     `json:"cli_direct,omitempty"`
 	Restart               RestartMetadata           `json:"restart,omitempty"`
+	CredentialCleanup     CredentialCleanup         `json:"lease_cleanup,omitempty"`
 	CoordinatorSummary    string                    `json:"coordinator_summary,omitempty"`
 	Diagnostics           []string                  `json:"diagnostics,omitempty"`
+}
+
+type CredentialCleanupStatus string
+
+const (
+	CredentialCleanupPending  CredentialCleanupStatus = "pending"
+	CredentialCleanupComplete CredentialCleanupStatus = "complete"
+)
+
+// CredentialCleanup is a secret-free durable intent. It is created before a
+// job-scoped credential exchange and remains pending until local files, the
+// source-provider job lease and the server delegation tombstone all confirm
+// revocation. Pending records survive terminal job retention and restarts.
+type CredentialCleanup struct {
+	Status        CredentialCleanupStatus `json:"status,omitempty"`
+	RequestedAt   time.Time               `json:"requested_at,omitempty"`
+	Attempt       int                     `json:"attempt,omitempty"`
+	LastAttemptAt time.Time               `json:"last_attempt_at,omitempty"`
+	NextAttemptAt time.Time               `json:"next_attempt_at,omitempty"`
+	CompletedAt   time.Time               `json:"completed_at,omitempty"`
+	LastError     string                  `json:"last_error,omitempty"`
+}
+
+func (c CredentialCleanup) Pending() bool { return c.Status == CredentialCleanupPending }
+
+func (c CredentialCleanup) Valid() bool {
+	switch c.Status {
+	case "":
+		return c.Attempt == 0 && c.RequestedAt.IsZero() && c.LastAttemptAt.IsZero() && c.NextAttemptAt.IsZero() &&
+			c.CompletedAt.IsZero() && c.LastError == ""
+	case CredentialCleanupPending:
+		return !c.RequestedAt.IsZero() && c.CompletedAt.IsZero() && c.Attempt >= 0
+	case CredentialCleanupComplete:
+		return !c.RequestedAt.IsZero() && !c.CompletedAt.IsZero() && c.NextAttemptAt.IsZero() && c.LastError == "" && c.Attempt > 0
+	default:
+		return false
+	}
 }
 
 type PublicSession struct {
@@ -567,6 +605,9 @@ func (s *RunnerState) UpsertJob(job Job) error {
 	}
 	if !job.Status.Valid() {
 		return fmt.Errorf("invalid job status %q", job.Status)
+	}
+	if !job.CredentialCleanup.Valid() {
+		return fmt.Errorf("invalid job credential cleanup state")
 	}
 	s.Jobs[job.ID] = job
 	if job.CommandIdempotencyKey != "" {

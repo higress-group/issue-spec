@@ -157,6 +157,20 @@ func TestDrainCancellationsDoesNotDispatchQueuedJobs(t *testing.T) {
 	}
 }
 
+func TestRunJobsReadyLeavesCancellationForDedicatedDrain(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 5, 11, 30, 0, 0, time.UTC)
+	seedCancellation(t, store, "cancel-dedicated", "cancel-key-dedicated", now)
+	dispatcher := testDispatcher(store, &fakeWorkspaces{}, &fakeCoordinator{}, &fakeWriteback{}, now)
+	result, err := dispatcher.RunJobsReady(t.Context(), 1)
+	if err != nil || result.Executed || result.Reason != ErrNoReadyJob.Error() {
+		t.Fatalf("job-only dispatch=%+v err=%v", result, err)
+	}
+	if got := loadState(t, store).Cancellations["cancel-dedicated"].Status; got != state.StatusQueued {
+		t.Fatalf("job-only dispatch consumed cancellation: %s", got)
+	}
+}
+
 // TestDrainCancellationsCancelsRunningJobWithoutRecordID is the TASK-002 unit
 // test: an in-flight /new job that has a public session id but no persisted acpx
 // record id must still be cancellable, since acpx cancel targets the session by

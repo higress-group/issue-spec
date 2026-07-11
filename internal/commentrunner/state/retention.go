@@ -104,7 +104,7 @@ func (s *RunnerState) tombstoneTerminalDeliveries() int {
 func (s *RunnerState) tombstoneTerminalJobs() int {
 	count := 0
 	for id, job := range s.Jobs {
-		if !job.Status.Terminal() || !job.hasHeavyFields() {
+		if !job.Status.Terminal() || job.CredentialCleanup.Pending() || !job.hasHeavyFields() {
 			continue
 		}
 		s.Jobs[id] = job.tombstone()
@@ -160,7 +160,7 @@ func (s *RunnerState) pruneTerminalJobs(now time.Time, policy RetentionPolicy) i
 	}
 	var terminal []entry
 	for id, job := range s.Jobs {
-		if !job.Status.Terminal() {
+		if !job.Status.Terminal() || job.CredentialCleanup.Pending() {
 			continue
 		}
 		terminal = append(terminal, entry{id: id, at: job.effectiveTime()})
@@ -444,6 +444,7 @@ func (j Job) tombstone() Job {
 		DispatchedAt:          j.DispatchedAt,
 		StartedAt:             j.StartedAt,
 		FinishedAt:            j.FinishedAt,
+		CredentialCleanup:     j.CredentialCleanup,
 	}
 }
 
