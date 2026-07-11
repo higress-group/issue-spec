@@ -36,6 +36,8 @@ var ErrNoReadyJob = errors.New("no ready queued job")
 
 const workspaceLockResidualDiagnostic = "workspace lock recovered from residual lock file"
 
+var errDispatchCancelled = errors.New("runner job was cancelled during dispatch")
+
 var authDiagnosticSecretPattern = regexp.MustCompile(`(?i)(["']?[a-z0-9_]*(?:token|secret)[a-z0-9_]*["']?\s*[:=]\s*["']?)([^"',\s}]+)`)
 
 type Store interface {
@@ -639,6 +641,9 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 	terminal := statusFromSummary(dispatch.Output.Summary)
 	if err := d.complete(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, terminal); err != nil {
 		releaseLock()
+		if errors.Is(err, errDispatchCancelled) {
+			return cancelledDuringDispatchResult(job.ID), nil
+		}
 		return Result{Executed: true, JobID: job.ID, Status: state.StatusFailed}, err
 	}
 	releaseLock()
@@ -1197,8 +1202,17 @@ func (d *Dispatcher) persistStatusCommentInIntent(ctx context.Context, jobID str
 
 func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, terminal state.LifecycleStatus, diagnostics ...string) error {
 	now := d.now()
-	return d.Store.Update(ctx, func(st *state.RunnerState) error {
+	cancelled := false
+	err := d.Store.Update(ctx, func(st *state.RunnerState) error {
 		st.Normalize()
+		current, ok := st.Jobs[jobID]
+		if !ok {
+			return fmt.Errorf("job %q not found", jobID)
+		}
+		if current.Status == state.StatusCancelled {
+			cancelled = true
+			return nil
+		}
 		job, err := st.UpdateJobStatus(jobID, terminal, now, diagnostics...)
 		if err != nil {
 			return err
@@ -1255,12 +1269,22 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 		}
 		return st.UpsertPublicSession(session)
 	})
+	if err != nil {
+		return err
+	}
+	if cancelled {
+		return errDispatchCancelled
+	}
+	return nil
 }
 
 func (d *Dispatcher) completeWithCoordinatorSummaryWarning(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, cause error) (Result, error) {
 	diagnostic := coordinatorSummaryWarning(cause)
 	dispatch = withoutCoordinatorSummary(dispatch)
 	if err := d.complete(ctx, jobID, command, publicID, session, workspaceMeta, dispatch, state.StatusCompleted, diagnostic); err != nil {
+		if errors.Is(err, errDispatchCancelled) {
+			return cancelledDuringDispatchResult(jobID), nil
+		}
 		return Result{Executed: true, JobID: jobID, Status: state.StatusFailed}, err
 	}
 	finalJob, err := d.loadJob(ctx, jobID)
@@ -1283,6 +1307,7 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 	now := d.now()
 	msg := safeError(cause)
 	var failed state.Job
+	cancelled := false
 	updateErr := d.Store.Update(ctx, func(st *state.RunnerState) error {
 		st.Normalize()
 		job, ok := st.Jobs[jobID]
@@ -1291,6 +1316,7 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 		}
 		if job.Status.Terminal() {
 			failed = job
+			cancelled = job.Status == state.StatusCancelled
 			return nil
 		}
 		next, err := st.UpdateJobStatus(jobID, state.StatusFailed, now, safeString(phase+": "+msg, 1024))
@@ -1351,6 +1377,9 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 	if updateErr != nil {
 		return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: safeError(updateErr)}, updateErr
 	}
+	if cancelled {
+		return cancelledDuringDispatchResult(jobID), nil
+	}
 	if failed.ID != "" && d.Writeback != nil {
 		_, _ = d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase, Err: cause})
 	}
@@ -1361,6 +1390,7 @@ func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error)
 	now := d.now()
 	msg := safeError(cause)
 	var failed state.Job
+	cancelled := false
 	updateErr := d.Store.Update(ctx, func(st *state.RunnerState) error {
 		st.Normalize()
 		job, ok := st.Jobs[jobID]
@@ -1369,6 +1399,7 @@ func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error)
 		}
 		if job.Status.Terminal() {
 			failed = job
+			cancelled = job.Status == state.StatusCancelled
 			return nil
 		}
 		next, err := st.UpdateJobStatus(jobID, state.StatusFailed, now, safeString(phase+": "+msg, 1024))
@@ -1391,10 +1422,17 @@ func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error)
 	if updateErr != nil {
 		return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: safeError(updateErr)}, updateErr
 	}
+	if cancelled {
+		return cancelledDuringDispatchResult(jobID), nil
+	}
 	if failed.ID != "" && d.Writeback != nil {
 		_, _ = d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase, Err: cause})
 	}
 	return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: msg}, cause
+}
+
+func cancelledDuringDispatchResult(jobID string) Result {
+	return Result{Executed: true, JobID: jobID, Status: state.StatusCancelled, Reason: "cancelled_during_dispatch"}
 }
 
 func (d *Dispatcher) appendDiagnostic(ctx context.Context, jobID, diagnostic string) error {

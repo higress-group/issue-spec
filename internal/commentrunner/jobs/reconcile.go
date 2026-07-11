@@ -542,10 +542,19 @@ func upsertWorkspaceIfPresent(st *state.RunnerState, workspace state.WorkspaceMe
 }
 
 func upsertSessionForReconciledJob(st *state.RunnerState, job state.Job, status state.LifecycleStatus, at time.Time, markUncertain bool) error {
-	if strings.TrimSpace(job.PublicSessionID) == "" || strings.TrimSpace(job.AcpxRecordID) == "" {
+	if strings.TrimSpace(job.PublicSessionID) == "" {
 		return nil
 	}
-	session, _ := st.GetPublicSession(job.Repo, job.PublicSessionID)
+	session, found := st.GetPublicSession(job.Repo, job.PublicSessionID)
+	if strings.TrimSpace(job.AcpxRecordID) == "" {
+		// A confirmed cancellation may win before /new has returned stable ACPX
+		// metadata. In that case only an already-persisted running session may be
+		// terminalized; never synthesize a session or a record id. Other
+		// reconciliation paths still require stable metadata.
+		if status != state.StatusCancelled || !found {
+			return nil
+		}
+	}
 	if session.Repo == "" {
 		session.Repo = job.Repo
 	}
@@ -561,12 +570,16 @@ func upsertSessionForReconciledJob(st *state.RunnerState, job state.Job, status 
 	if session.CreatedAt.IsZero() {
 		session.CreatedAt = firstTime(job.CreatedAt, at)
 	}
-	session.AcpxRecordID = job.AcpxRecordID
-	session.Acpx = job.Acpx
+	if strings.TrimSpace(job.AcpxRecordID) != "" {
+		session.AcpxRecordID = job.AcpxRecordID
+		session.Acpx = job.Acpx
+	}
 	session.Status = status
 	session.LastUsedAt = at
 	session.LastJobID = job.ID
-	session.Workspace = job.Workspace
+	if strings.TrimSpace(job.Workspace.ID) != "" {
+		session.Workspace = job.Workspace
+	}
 	if markUncertain {
 		markWorkspaceUncertain(&session.Workspace)
 	}

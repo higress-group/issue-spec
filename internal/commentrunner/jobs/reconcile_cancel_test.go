@@ -378,6 +378,11 @@ func TestRunNextCancellationConfirmedCancelsRunningJob(t *testing.T) {
 	if cancel.Status != state.StatusCancelled || !cancel.DirtyWorkspace || !cancel.WorkspaceUncertain || coordinator.cancelCalls != 1 {
 		t.Fatalf("cancellation not confirmed: %+v calls=%d", cancel, coordinator.cancelCalls)
 	}
+	session, ok := st.GetPublicSession("o/r", "ps-reconcile")
+	if !ok || session.Status != state.StatusCancelled || session.AcpxRecordID != "rec-reconcile" || session.Workspace.ID != workspaceMeta.ID ||
+		!session.RepositoryBinding.Equal(workspaceMeta.RepositoryBinding) || len(session.Queue.PendingJobIDs) != 0 || session.Lock.OwnerJobID != "" {
+		t.Fatalf("record-backed resume session was not preserved and terminalized: %+v ok=%v", session, ok)
+	}
 }
 
 func testWorkspacePath(t *testing.T, root, id string) string {
@@ -557,6 +562,7 @@ func seedActiveJob(t *testing.T, store *memoryStore, status state.LifecycleStatu
 			CreatedAt:           time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC),
 			UpdatedAt:           time.Date(2026, 7, 3, 12, 1, 0, 0, time.UTC),
 			Workspace:           workspaceMeta,
+			RepositoryBinding:   workspaceMeta.RepositoryBinding,
 			DispatchIntent: state.DispatchIntent{
 				RunnerJobID:          "job-reconcile",
 				PublicSessionID:      "ps-reconcile",
@@ -572,18 +578,19 @@ func seedActiveJob(t *testing.T, store *memoryStore, status state.LifecycleStatu
 			return err
 		}
 		session := state.PublicSession{
-			Repo:            "o/r",
-			PublicSessionID: "ps-reconcile",
-			IssueNumber:     30,
-			AcpxRecordID:    "rec-reconcile",
-			CreatorLogin:    "alice",
-			Status:          status,
-			Workspace:       workspaceMeta,
-			Queue:           state.SessionQueue{AcceptedSequence: 2, PendingJobIDs: []string{"job-reconcile"}},
-			Lock:            lock,
-			CreatedAt:       time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC),
-			LastUsedAt:      time.Date(2026, 7, 3, 12, 1, 0, 0, time.UTC),
-			LastJobID:       "job-reconcile",
+			Repo:              "o/r",
+			PublicSessionID:   "ps-reconcile",
+			IssueNumber:       30,
+			AcpxRecordID:      "rec-reconcile",
+			CreatorLogin:      "alice",
+			Status:            status,
+			Workspace:         workspaceMeta,
+			RepositoryBinding: workspaceMeta.RepositoryBinding,
+			Queue:             state.SessionQueue{AcceptedSequence: 2, PendingJobIDs: []string{"job-reconcile"}},
+			Lock:              lock,
+			CreatedAt:         time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC),
+			LastUsedAt:        time.Date(2026, 7, 3, 12, 1, 0, 0, time.UTC),
+			LastJobID:         "job-reconcile",
 		}
 		return st.UpsertPublicSession(session)
 	})
