@@ -215,6 +215,59 @@ func TestExpansionLeasesOrderingDualWorkersAndGracefulRun(t *testing.T) {
 	}
 }
 
+func TestRunSurvivesOutboxCreationAfterWorkerClockCapture(t *testing.T) {
+	env := newEnvironment(t, 3, time.Minute)
+	var capturedBeforeInsert time.Time
+	if err := env.pool.QueryRow(t.Context(), `SELECT clock_timestamp()`).Scan(&capturedBeforeInsert); err != nil {
+		t.Fatal(err)
+	}
+	// Freeze the worker clock before separate enqueue transactions. PostgreSQL
+	// will assign each row a later created_at, reproducing the live skew without
+	// relying on host clock differences or sleeps.
+	env.clock.Set(capturedBeforeInsert.UTC())
+	first := env.enqueue(t, 1)
+	second := env.enqueue(t, 2)
+
+	runContext, cancel := context.WithCancel(context.Background())
+	runResult := make(chan error, 1)
+	go func() { runResult <- env.service.Run(runContext) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for env.sender.CallCount() < 2 && time.Now().Before(deadline) {
+		select {
+		case err := <-runResult:
+			t.Fatalf("worker stopped during clock-skewed expansion: %v", err)
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	cancel()
+	if err := <-runResult; err != nil {
+		t.Fatalf("worker shutdown after clock-skewed expansion: %v", err)
+	}
+	if env.sender.CallCount() != 2 {
+		t.Fatalf("worker delivered %d events, want 2", env.sender.CallCount())
+	}
+	if sequences := env.sender.Sequences(t); len(sequences) != 2 || sequences[0] != 1 || sequences[1] != 2 {
+		t.Fatalf("delivery order = %v", sequences)
+	}
+	for _, eventID := range []uuid.UUID{first, second} {
+		var createdAt, publishedAt time.Time
+		if err := env.pool.QueryRow(t.Context(), `SELECT created_at, published_at
+			FROM event_outbox WHERE id = $1`, eventID).Scan(&createdAt, &publishedAt); err != nil {
+			t.Fatal(err)
+		}
+		if publishedAt.Before(createdAt) {
+			t.Fatalf("event %s published at %s before database creation %s", eventID, publishedAt, createdAt)
+		}
+	}
+	if expanded, err := env.service.ExpandOne(t.Context()); err != nil || expanded {
+		t.Fatalf("idempotent expansion after worker run = %v, %v", expanded, err)
+	}
+	if got := rowCount(t, env.pool, "webhook_deliveries"); got != 2 {
+		t.Fatalf("delivery rows = %d, want 2", got)
+	}
+}
+
 func TestRunDoesNotLoseWorkerErrorWhenWorkersFinish(t *testing.T) {
 	env := newEnvironment(t, 2, time.Minute)
 	if _, err := env.pool.Exec(t.Context(), `DROP TABLE event_outbox CASCADE`); err != nil {

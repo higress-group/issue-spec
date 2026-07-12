@@ -303,8 +303,13 @@ func (s *Service) ExpandOne(ctx context.Context) (bool, error) {
 				return err
 			}
 		}
-		if _, err := tx.Exec(ctx, `UPDATE event_outbox SET published_at = $2
-			WHERE id = $1 AND published_at IS NULL`, eventID, now); err != nil {
+		// created_at is owned by PostgreSQL. A worker clock captured before the
+		// event transaction commits can be slightly earlier, so publication must
+		// use the database clock and the authoritative row timestamp. Keep the
+		// injectable clock for availability, leases and retries only.
+		if _, err := tx.Exec(ctx, `UPDATE event_outbox
+			SET published_at = GREATEST(created_at, clock_timestamp())
+			WHERE id = $1 AND published_at IS NULL`, eventID); err != nil {
 			return err
 		}
 		expanded = true
