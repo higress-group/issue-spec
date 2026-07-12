@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for this capability.
+Define the long-lived safety and readiness contract for issue-native workflow execution: one explainable gate policy across forecast and authoritative verification, conflict-aware typed-artifact mutation and resumable reconciliation, fail-closed delegated-operation capability checks, and evidence requirements proportional to each PROCESS execution class.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/166
@@ -30,7 +30,7 @@ The CLI MUST evaluate locally knowable workflow readiness through one shared gat
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/166#issuecomment-4951036229
 
-### Requirement: Typed artifacts support atomic transitions and resumable reconciliation
+### Requirement: Typed artifacts support conflict-aware transitions and resumable reconciliation
 
 The CLI MUST provide optimistic, link-preserving typed-artifact transitions and an idempotent reconciliation mode that applies a declared set of creates, updates, links and state changes without requiring callers to rewrite complete comment bodies.
 
@@ -58,7 +58,7 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/166#issu
 
 ### Requirement: Delegated work starts only after scoped agent capability preflight
 
-The workflow runner MUST preflight authentication source, token safety, network reachability and required repository operations before dispatching delegated review or implementation work, and MUST provide agents only short-lived credentials scoped to the approved host, repository and operation set.
+The workflow runner MUST preflight authentication source, token safety, network reachability and required repository operations before dispatching delegated review or implementation work. In strict delegated mode it MUST provide agents only short-lived credentials scoped to the approved host, repository and operation set; explicitly enabled legacy credentials remain migration-only and MUST NOT satisfy the strict gate.
 
 #### Scenario: failed preflight consumes no worker execution
 
