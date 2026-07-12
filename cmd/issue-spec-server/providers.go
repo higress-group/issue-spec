@@ -25,21 +25,22 @@ type providerFile struct {
 }
 
 type providerConfig struct {
-	ID            uuid.UUID `json:"id"`
-	Name          string    `json:"name"`
-	Kind          string    `json:"kind"`
-	Issuer        string    `json:"issuer"`
-	ClientID      string    `json:"client_id"`
-	ClientSecret  string    `json:"client_secret"`
-	Scopes        []string  `json:"scopes,omitempty"`
-	AuthURL       string    `json:"auth_url,omitempty"`
-	TokenURL      string    `json:"token_url,omitempty"`
-	UserURL       string    `json:"user_url,omitempty"`
-	AvatarOrigins []string  `json:"avatar_origins,omitempty"`
+	ID            uuid.UUID                    `json:"id"`
+	Name          string                       `json:"name"`
+	Kind          string                       `json:"kind"`
+	Issuer        string                       `json:"issuer"`
+	ClientID      string                       `json:"client_id"`
+	ClientSecret  string                       `json:"client_secret"`
+	Scopes        []string                     `json:"scopes,omitempty"`
+	AuthURL       string                       `json:"auth_url,omitempty"`
+	TokenURL      string                       `json:"token_url,omitempty"`
+	UserURL       string                       `json:"user_url,omitempty"`
+	AvatarOrigins []string                     `json:"avatar_origins,omitempty"`
+	Admission     *githuboauth.AdmissionConfig `json:"admission,omitempty"`
 }
 
 func configureAdapters(ctx context.Context, pool *pgxpool.Pool, secrets *serverauth.Secrets,
-	origins publicurl.Origins, raw []byte) (map[string]nativeauth.LoginAdapter, error) {
+	origins publicurl.Origins, raw []byte, production bool) (map[string]nativeauth.LoginAdapter, error) {
 	result := map[string]nativeauth.LoginAdapter{}
 	if len(raw) == 0 {
 		return result, nil
@@ -58,6 +59,19 @@ func configureAdapters(ctx context.Context, pool *pgxpool.Pool, secrets *servera
 	}
 	for index := range file.Providers {
 		cfg := &file.Providers[index]
+		cfg.Name = strings.TrimSpace(cfg.Name)
+		cfg.Kind = strings.TrimSpace(cfg.Kind)
+		cfg.Issuer = strings.TrimRight(strings.TrimSpace(cfg.Issuer), "/")
+		if cfg.Kind == "github-oauth" {
+			admission, admissionErr := githuboauth.NormalizeAdmission(cfg.Admission, production, cfg.Issuer, strings.TrimSpace(cfg.UserURL))
+			if admissionErr != nil {
+				return nil, fmt.Errorf("authentication provider %q: %w", cfg.Name, admissionErr)
+			}
+			cfg.Admission = &admission
+			cfg.Scopes = githuboauth.AdmissionScopes(cfg.Scopes, admission.Mode)
+		} else if cfg.Admission != nil {
+			return nil, fmt.Errorf("authentication provider %q: admission is supported only for github-oauth", cfg.Name)
+		}
 		if len(cfg.AvatarOrigins) == 0 && strings.TrimSpace(cfg.Kind) == "github-oauth" {
 			if strings.TrimRight(strings.TrimSpace(cfg.Issuer), "/") == "https://github.com" {
 				cfg.AvatarOrigins = []string{"https://avatars.githubusercontent.com"}
@@ -76,9 +90,6 @@ func configureAdapters(ctx context.Context, pool *pgxpool.Pool, secrets *servera
 	transactions := serverauth.NewLoginTransactions(pool, secrets)
 	seenIDs := map[uuid.UUID]struct{}{}
 	for _, cfg := range file.Providers {
-		cfg.Name = strings.TrimSpace(cfg.Name)
-		cfg.Kind = strings.TrimSpace(cfg.Kind)
-		cfg.Issuer = strings.TrimRight(strings.TrimSpace(cfg.Issuer), "/")
 		if cfg.ID == uuid.Nil || !providerName(cfg.Name) || cfg.Issuer == "" ||
 			strings.TrimSpace(cfg.ClientID) == "" || strings.TrimSpace(cfg.ClientSecret) == "" {
 			return nil, errors.New("authentication providers: id, safe name, issuer, client id and secret are required")
@@ -102,9 +113,19 @@ func configureAdapters(ctx context.Context, pool *pgxpool.Pool, secrets *servera
 			if (endpoint.AuthURL == "") != (endpoint.TokenURL == "") {
 				return nil, errors.New("authentication providers: github auth_url and token_url must be configured together")
 			}
+			userURL := strings.TrimSpace(cfg.UserURL)
+			if userURL == "" {
+				userURL = githuboauth.DefaultUserURL
+			}
+			gate, gateErr := githuboauth.NewOrganizationAdmissionGate(githuboauth.OrganizationAdmissionGateConfig{
+				ProviderID: cfg.ID, Policy: *cfg.Admission, UserURL: userURL, Pool: pool, Secrets: secrets,
+			})
+			if gateErr != nil {
+				return nil, fmt.Errorf("authentication provider %q: %w", cfg.Name, gateErr)
+			}
 			adapter, err = githuboauth.New(githuboauth.Config{ProviderID: cfg.ID, Issuer: cfg.Issuer,
 				ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, RedirectURL: redirect,
-				Scopes: cfg.Scopes, Endpoint: endpoint, UserURL: strings.TrimSpace(cfg.UserURL)}, transactions)
+				Scopes: cfg.Scopes, Endpoint: endpoint, UserURL: userURL, AdmissionGate: gate}, transactions)
 		default:
 			return nil, fmt.Errorf("authentication providers: unsupported kind %q", cfg.Kind)
 		}
@@ -115,7 +136,11 @@ func configureAdapters(ctx context.Context, pool *pgxpool.Pool, secrets *servera
 	}
 	if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		for _, cfg := range file.Providers {
-			metadata, _ := json.Marshal(map[string]any{"scopes": cfg.Scopes, "avatar_origins": cfg.AvatarOrigins})
+			metadataValue := map[string]any{"scopes": cfg.Scopes, "avatar_origins": cfg.AvatarOrigins}
+			if cfg.Admission != nil {
+				metadataValue["admission"] = map[string]any{"mode": cfg.Admission.Mode, "organization_count": len(cfg.Admission.Organizations)}
+			}
+			metadata, _ := json.Marshal(metadataValue)
 			if _, err := tx.Exec(ctx, `INSERT INTO auth_providers (id, name, kind, issuer, enabled, config)
 				VALUES ($1, $2, $3, $4, true, $5)
 				ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, kind = EXCLUDED.kind,

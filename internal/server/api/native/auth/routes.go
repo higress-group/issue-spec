@@ -167,14 +167,20 @@ func (h *handlers) callback(w http.ResponseWriter, r *http.Request) {
 	ctx := serverauth.WithAdmissionRequestID(r.Context(), adminapi.RequestID(r))
 	var identity serverauth.ExternalIdentity
 	var returnTo string
+	var admission *serverauth.AdmissionEvidence
 	var err error
 	if richer, ok := adapter.(richerLoginAdapter); ok {
 		completion, completeErr := richer.CompleteLogin(ctx, r.URL.Query().Get("state"), r.URL.Query().Get("code"))
-		identity, returnTo, err = completion.Identity, completion.ReturnTo, completeErr
+		identity, returnTo, admission, err = completion.Identity, completion.ReturnTo, completion.Admission, completeErr
 	} else {
 		identity, returnTo, err = adapter.Complete(ctx, r.URL.Query().Get("state"), r.URL.Query().Get("code"))
 	}
 	if err != nil {
+		writeError(w, http.StatusUnauthorized, "Authentication failed")
+		return
+	}
+	if (adapter.Kind() == "github-oauth" && admission == nil) ||
+		(admission != nil && (!admission.Audited || admission.Policy == "" || admission.Decision != "allowed" || admission.RequestID != adminapi.RequestID(r))) {
 		writeError(w, http.StatusUnauthorized, "Authentication failed")
 		return
 	}

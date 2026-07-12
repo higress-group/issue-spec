@@ -111,7 +111,8 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 		return fail(err)
 	}
 	identity := serverauth.NewIdentityService(database.Pool())
-	adapters, err := configureAdapters(ctx, database.Pool(), secrets, origins, cfg.AuthProviders.Bytes())
+	adapters, err := configureAdapters(ctx, database.Pool(), secrets, origins, cfg.AuthProviders.Bytes(),
+		cfg.Environment == config.EnvironmentProduction)
 	if err != nil {
 		return fail(err)
 	}
