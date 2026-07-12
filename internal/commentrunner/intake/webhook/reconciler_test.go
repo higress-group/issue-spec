@@ -17,6 +17,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	issueapi "github.com/higress-group/issue-spec/internal/server/api/github/issues"
+	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/events/outbox"
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
@@ -231,7 +232,8 @@ func newReconcileFixture(t *testing.T, body string) *reconcileFixture {
 		IssueNumber: 12, AuthorLogin: "alice"}
 	digest := sha256.Sum256([]byte(body))
 	envelope, _, err := outbox.BuildEnvelope(eventID, issueapi.MutationEvent{Type: "issue_comment.created", Scope: scope,
-		Issue: issue, Comment: &comment, RawBody: body, BodyHash: digest, ActorUserID: userID, RepresentationVersion: 3})
+		Issue: issue, Comment: &comment, RawBody: body, BodyHash: digest, ActorUserID: userID,
+		ActorCredentialKind: serverauth.CredentialSession, RepresentationVersion: 3})
 	if err != nil {
 		t.Fatal(err)
 	}

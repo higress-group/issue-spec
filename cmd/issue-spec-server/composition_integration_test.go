@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,7 +51,12 @@ func TestComposeMountsAllRealRouteSets(t *testing.T) {
 	t.Setenv(config.TokenPepperFileEnv, testSecret(t, "pepper"))
 	t.Setenv(config.EncryptionKeyFileEnv, testSecret(t, "encryption"))
 	providerFile := filepath.Join(t.TempDir(), "providers.json")
-	if err := os.WriteFile(providerFile, []byte(`{"version":1,"providers":{"code.example":{"path":"/bin/true","description":{"display_name":"Example Code","remote_authorities":["code.example"],"code_change_label":"Merge request","capabilities":["change.create"],"recommended_evidence":["change"]}}}}`), 0o600); err != nil {
+	providerExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerConfig := fmt.Sprintf(`{"version":1,"providers":{"code.example":{"path":%q,"description":{"display_name":"Example Code","remote_authorities":["code.example"],"code_change_label":"Merge request","capabilities":["change.create"],"recommended_evidence":["change"]}}}}`, providerExecutable)
+	if err := os.WriteFile(providerFile, []byte(providerConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(codereview.OperatorProvidersFileEnv, providerFile)
@@ -94,8 +100,9 @@ func TestComposeMountsAllRealRouteSets(t *testing.T) {
 		} `json:"transport"`
 		TransportPosture string `json:"transport_posture"`
 		Providers        []struct {
-			ProviderKey string `json:"provider_key"`
-			DisplayName string `json:"display_name"`
+			ProviderKey     string `json:"provider_key"`
+			DisplayName     string `json:"display_name"`
+			CodeChangeLabel string `json:"code_change_label"`
 		} `json:"providers"`
 	}
 	if err := json.Unmarshal(metaResponse.Body.Bytes(), &meta); err != nil {
@@ -104,8 +111,13 @@ func TestComposeMountsAllRealRouteSets(t *testing.T) {
 	if meta.ServerInstanceID == "" || meta.APIURL != "http://127.0.0.1:8080" ||
 		meta.NativeAPIURL != "http://127.0.0.1:8080/api/v1" || meta.WebURL != "http://127.0.0.1:8080" ||
 		meta.Transport.Mode != "loopback-http" || meta.Transport.Secure || meta.TransportPosture != "trusted-internal-http" || len(meta.Providers) != 1 ||
-		meta.Providers[0].ProviderKey != "code.example" || meta.Providers[0].DisplayName != "Example Code" {
+		meta.Providers[0].ProviderKey != "code.example" || meta.Providers[0].DisplayName != "Example Code" ||
+		meta.Providers[0].CodeChangeLabel != "Merge request" {
 		t.Fatalf("meta composition = %+v", meta)
+	}
+	persistedInstanceID, err := app.database.ServerInstanceID(t.Context())
+	if err != nil || persistedInstanceID != meta.ServerInstanceID {
+		t.Fatalf("persisted instance identity = %q, metadata=%q err=%v", persistedInstanceID, meta.ServerInstanceID, err)
 	}
 }
 

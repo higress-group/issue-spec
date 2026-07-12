@@ -10,7 +10,7 @@ import (
 )
 
 func TestMetaDefaultsEveryFeatureFalse(t *testing.T) {
-	metadata, err := NewServerMetadata("http://127.0.0.1:18080", "http://127.0.0.1:18080", nil)
+	metadata, err := NewServerMetadata("issue-spec:test", "http://127.0.0.1:18080", "http://127.0.0.1:18080", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestMetaDefaultsEveryFeatureFalse(t *testing.T) {
 }
 
 func TestMetaReportsOnlyInjectedFeatures(t *testing.T) {
-	metadata, err := NewServerMetadata("https://api.example.test", "https://web.example.test", nil)
+	metadata, err := NewServerMetadata("issue-spec:test", "https://api.example.test", "https://web.example.test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,24 +60,34 @@ func TestMetaReportsOnlyInjectedFeatures(t *testing.T) {
 }
 
 func TestServerMetadataRejectsPublicHTTPAndKeepsIdentityStable(t *testing.T) {
-	if _, err := NewServerMetadata("http://api.example.test", "http://api.example.test", nil); err == nil {
+	if _, err := NewServerMetadata("issue-spec:test", "http://api.example.test", "http://api.example.test", nil); err == nil {
 		t.Fatal("public HTTP metadata accepted")
 	}
-	first, err := NewServerMetadata("https://api.example.test", "https://web.example.test", nil)
+	first, err := NewServerMetadata("issue-spec:database-a", "https://api.example.test", "https://web.example.test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := NewServerMetadata("https://api.example.test", "https://other.example.test", nil)
+	second, err := NewServerMetadata("issue-spec:database-a", "https://api.example.test", "https://other.example.test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.ServerInstanceID != second.ServerInstanceID || first.APIURL != "https://api.example.test" || first.NativeAPIURL != "https://api.example.test/api/v1" {
 		t.Fatalf("metadata = %+v second=%+v", first, second)
 	}
+	freshDatabase, err := NewServerMetadata("issue-spec:database-b", "https://api.example.test", "https://web.example.test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freshDatabase.ServerInstanceID == first.ServerInstanceID {
+		t.Fatalf("fresh database reused credential realm: first=%q fresh=%q", first.ServerInstanceID, freshDatabase.ServerInstanceID)
+	}
+	if _, err := NewServerMetadata("", "https://api.example.test", "https://web.example.test", nil); err == nil {
+		t.Fatal("empty database identity accepted")
+	}
 }
 
 func TestServerMetadataReportsExplicitTrustedInternalPosture(t *testing.T) {
-	metadata, err := NewServerMetadataWithPosture("http://10.0.0.8:8080", "http://issues.internal:8080", nil, publicurl.TransportTrustedInternalHTTP)
+	metadata, err := NewServerMetadataWithPosture("issue-spec:test", "http://10.0.0.8:8080", "http://issues.internal:8080", nil, publicurl.TransportTrustedInternalHTTP)
 	if err != nil {
 		t.Fatal(err)
 	}

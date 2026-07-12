@@ -63,7 +63,8 @@ func TestBoardRoutesSuccessConditionalAndScopes(t *testing.T) {
 	relationships := boardRequest(mux, http.MethodGet,
 		"/api/v1/context/repos/acme/widgets/issues/17/relationships", "", false, nil)
 	if relationships.Code != http.StatusOK || relationships.Header().Get("ETag") != `"relationships-v1"` ||
-		!strings.Contains(relationships.Body.String(), `"external_id":"42"`) || service.owner != "acme" ||
+		!strings.Contains(relationships.Body.String(), `"external_id":"42"`) ||
+		!strings.Contains(relationships.Body.String(), `"code_change_label":"Pull request"`) || service.owner != "acme" ||
 		service.repository != "widgets" || service.issueNumber != 17 {
 		t.Fatalf("relationships=%d headers=%v route=%s/%s#%d body=%s", relationships.Code,
 			relationships.Header(), service.owner, service.repository, service.issueNumber, relationships.Body.String())
@@ -150,7 +151,8 @@ func (f *fakeBoardService) IssueRelationships(_ context.Context, _ authz.Subject
 	}
 	title := "Keep source bindings honest"
 	return changes.IssueRelationships{Relationships: []models.CodeChangeRelationship{{ProviderKey: "github",
-		RelationKind: "code_change", ExternalRepositoryID: "higress-group/issue-spec", ExternalID: "42",
+		CodeChangeLabel: "Pull request",
+		RelationKind:    "code_change", ExternalRepositoryID: "higress-group/issue-spec", ExternalID: "42",
 		CanonicalURL: "https://github.com/higress-group/issue-spec/pull/42", Title: &title,
 		LifecycleState: "active", SourceBindingMatch: models.SourceBindingMatched}}, Validator: `"relationships-v1"`,
 		LastModified: time.Unix(1_700_000_000, 0).UTC()}, nil

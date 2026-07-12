@@ -3,8 +3,6 @@
 package meta
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -48,7 +46,7 @@ type Dependencies struct {
 	Metadata ServerMetadata
 }
 
-func NewServerMetadata(apiOrigin, webOrigin string, providers []codereview.ProviderDescription) (ServerMetadata, error) {
+func NewServerMetadata(instanceID, apiOrigin, webOrigin string, providers []codereview.ProviderDescription) (ServerMetadata, error) {
 	posture := publicurl.TransportHTTPS
 	if strings.HasPrefix(strings.TrimSpace(apiOrigin), "http://") {
 		parsed, err := url.Parse(strings.TrimSpace(apiOrigin))
@@ -57,19 +55,22 @@ func NewServerMetadata(apiOrigin, webOrigin string, providers []codereview.Provi
 		}
 		posture = publicurl.TransportTrustedInternalHTTP
 	}
-	return NewServerMetadataWithPosture(apiOrigin, webOrigin, providers, posture)
+	return NewServerMetadataWithPosture(instanceID, apiOrigin, webOrigin, providers, posture)
 }
 
-func NewServerMetadataWithPosture(apiOrigin, webOrigin string, providers []codereview.ProviderDescription, posture publicurl.TransportPosture) (ServerMetadata, error) {
+func NewServerMetadataWithPosture(instanceID, apiOrigin, webOrigin string, providers []codereview.ProviderDescription, posture publicurl.TransportPosture) (ServerMetadata, error) {
 	if !posture.Valid() {
 		return ServerMetadata{}, errors.New("meta transport posture is invalid")
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	if !strings.HasPrefix(instanceID, "issue-spec:") || len(instanceID) <= len("issue-spec:") {
+		return ServerMetadata{}, errors.New("meta server instance identity is invalid")
 	}
 	origins, err := publicurl.NewWithPosture(strings.TrimSuffix(apiOrigin, "/"), strings.TrimSuffix(webOrigin, "/"), nil, posture)
 	if err != nil {
 		return ServerMetadata{}, fmt.Errorf("meta public origins: %w", err)
 	}
 	api, web := origins.API.String(), origins.Web.String()
-	digest := sha256.Sum256([]byte(api))
 	mode := string(posture)
 	if posture == publicurl.TransportTrustedInternalHTTP {
 		if parsed, _ := url.Parse(api); parsed != nil && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1") {
@@ -77,7 +78,7 @@ func NewServerMetadataWithPosture(apiOrigin, webOrigin string, providers []coder
 		}
 	}
 	return ServerMetadata{
-		ServerInstanceID: "issue-spec:" + hex.EncodeToString(digest[:16]),
+		ServerInstanceID: instanceID,
 		APIURL:           api, NativeAPIURL: api + "/api/v1", WebURL: web,
 		Transport:        Transport{Mode: mode, Secure: posture.SecureCookies()},
 		TransportPosture: posture,

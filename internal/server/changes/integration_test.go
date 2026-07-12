@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/codereview"
 	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
@@ -128,6 +129,16 @@ func TestRepositoryBoardAnonymousVisibilityMatchesAuthorizationEvaluator(t *test
 
 func TestCodeChangeRelationshipsProjectionPermissionsBindingsAndValidators(t *testing.T) {
 	env := newChangesEnvironment(t)
+	authorization, err := authz.New(env.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.service, err = New(env.pool, authorization, codereview.ProviderDescription{
+		ProviderKey: "aone-bridge", CodeChangeLabel: "Merge request",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	proposal := env.addArtifact(t, env.scope, "relationship-change", StageProposal, "1", "issue-spec/proposal", "N/A", "N/A")
 	design := env.addArtifact(t, env.scope, "relationship-change", StageDesign, "1", "issue-spec/design", proposalURL(proposal), "N/A")
 	implement := env.addArtifact(t, env.scope, "relationship-change", StageImplement, "1", "issue-spec/implement", proposalURL(proposal), proposalURL(design))
@@ -138,7 +149,7 @@ func TestCodeChangeRelationshipsProjectionPermissionsBindingsAndValidators(t *te
 		"https://code.example/acme/widgets/changes/42", "repository", "active", `{"head_revision":"abc123"}`)
 	env.addReference(t, env.scope, implement.ID, "github", "code_change", "acme/widgets", "43",
 		"https://code.example/acme/widgets/changes/43", "maintainers", "active", `{"head_revision":"secret"}`)
-	env.addReference(t, env.scope, implement.ID, "gitlab", "code_change", "other/widgets", "44",
+	env.addReference(t, env.scope, implement.ID, "aone-bridge", "code_change", "other/widgets", "44",
 		"https://gitlab.example/other/widgets/merge_requests/44", "repository", "active", `{"head_revision":"def456"}`)
 	env.addReference(t, env.scope, implement.ID, "github", "code_change", "acme/widgets", "45",
 		"https://code.example/acme/widgets/changes/45", "repository", "inactive", `{}`)
@@ -159,7 +170,8 @@ func TestCodeChangeRelationshipsProjectionPermissionsBindingsAndValidators(t *te
 	}
 	matched := requireCodeChange(t, anonymous.Relationships, "42")
 	mismatched := requireCodeChange(t, anonymous.Relationships, "44")
-	if matched.SourceBindingMatch != models.SourceBindingMatched || mismatched.SourceBindingMatch != models.SourceBindingMismatched ||
+	if matched.SourceBindingMatch != models.SourceBindingMatched || matched.CodeChangeLabel != "Code change" ||
+		mismatched.SourceBindingMatch != models.SourceBindingMismatched || mismatched.CodeChangeLabel != "Merge request" ||
 		len(matched.Metadata) != 0 || len(mismatched.Metadata) != 0 {
 		t.Fatalf("anonymous relationship projection matched=%+v mismatched=%+v", matched, mismatched)
 	}

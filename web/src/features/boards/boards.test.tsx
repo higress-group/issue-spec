@@ -33,21 +33,21 @@ describe("change board projection UI", () => {
 
   it("renders provider-neutral relationship labels and refuses unsafe external targets", async () => {
     const unsafe = { ...relationshipFixture("custom", "99", "mismatched"), canonical_url: "https://code.example/safe/../admin" };
-    const { container } = renderApp(<CodeChangeList relationships={[relationshipFixture("github", "42"), relationshipFixture("aone", "73", "mismatched"), unsafe]} />);
+    const { container } = renderApp(<CodeChangeList relationships={[relationshipFixture("github", "42"), relationshipFixture("aone-bridge", "73", "mismatched"), unsafe]} />);
     expect(screen.getByText("Pull request")).toBeVisible();
     expect(screen.getByText("Merge request")).toBeVisible();
     expect(screen.getByText("Code change")).toBeVisible();
     expect(screen.getByRole("link", { name: /github change 42/i })).toHaveAttribute("rel", "noopener noreferrer");
-    expect(screen.getByRole("link", { name: /aone change 73/i })).toHaveAttribute("referrerpolicy", "no-referrer");
+    expect(screen.getByRole("link", { name: /aone-bridge change 73/i })).toHaveAttribute("referrerpolicy", "no-referrer");
     expect(screen.getByText("External link unavailable")).toBeVisible();
     expect(screen.getByText("custom change 99").closest("a")).toBeNull();
     expect((await axe.run(container)).violations).toEqual([]);
   });
 
   it("keeps provider copy and canonical URL validation deterministic", () => {
-    expect(codeChangeKind("github")).toBe("Pull request");
-    expect(codeChangeKind("AONE")).toBe("Merge request");
-    expect(codeChangeKind("gitlab")).toBe("Code change");
+    expect(codeChangeKind({ code_change_label: "Pull request" })).toBe("Pull request");
+    expect(codeChangeKind({ code_change_label: "Merge request" })).toBe("Merge request");
+    expect(codeChangeKind({ code_change_label: "Code change" })).toBe("Code change");
     expect(safeCodeChangeURL("https://code.example/acme/widgets/changes/42")).toBe("https://code.example/acme/widgets/changes/42");
     for (const unsafe of ["http://code.example/change/1", "https://user@code.example/change/1", "https://CODE.example/change/1", "https://code.example/change/../admin", "https://code.example/change/1?token=secret", " https://code.example/change/1"]) {
       expect(safeCodeChangeURL(unsafe)).toBeUndefined();
@@ -123,7 +123,7 @@ function cardFixture(): ChangeCardModel {
     },
     tasks: { total: 5, completed: 2, in_progress: 1, blocked: 1, pending: 1 },
     processes: { total: 3, completed: 1, in_progress: 1, blocked: 0, pending: 1 },
-    code_changes: [relationshipFixture("github", "42"), relationshipFixture("aone", "73", "mismatched")],
+    code_changes: [relationshipFixture("github", "42"), relationshipFixture("aone-bridge", "73", "mismatched")],
     anomalies: ["marker_label_mismatch", "code_change_binding_mismatch"],
     updated_at: "2026-07-10T12:00:00Z",
   };
@@ -132,8 +132,9 @@ function cardFixture(): ChangeCardModel {
 function relationshipFixture(provider = "github", externalId = "42", sourceBindingMatch: CodeChangeRelationship["source_binding_match"] = "matched"): CodeChangeRelationship {
   return {
     provider_key: provider,
+    code_change_label: provider === "github" ? "Pull request" : provider === "aone-bridge" ? "Merge request" : "Code change",
     relation_kind: "code_change",
-    external_repository_id: provider === "aone" ? "Ingress/issue-spec" : "higress-group/issue-spec",
+    external_repository_id: provider === "aone-bridge" ? "Ingress/issue-spec" : "higress-group/issue-spec",
     external_id: externalId,
     canonical_url: `https://code.example/${provider}/changes/${externalId}`,
     title: `${provider} change ${externalId}`,

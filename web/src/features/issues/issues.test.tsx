@@ -111,7 +111,7 @@ describe("canonical issue read authority", () => {
   });
 
   it("shows authenticated mutations only when allowed_actions grants them", async () => {
-    installIssueDetailHandlers([relationshipFixture("github", "42"), relationshipFixture("aone", "73", "mismatched", { head_revision: "abc123" })]);
+    installIssueDetailHandlers([relationshipFixture("github", "42"), relationshipFixture("aone-bridge", "73", "mismatched", { head_revision: "abc123" })]);
     renderIssueDetail(activeRepository(true, ["read", "contribute", "triage"]));
     expect(await screen.findByRole("heading", { name: /Runner contract/ })).toBeVisible();
     expect(screen.getByRole("button", { name: /^Edit$/ })).toBeVisible();
@@ -212,8 +212,9 @@ function installIssueDetailHandlers(relationships: CodeChangeRelationship[] = []
 function relationshipFixture(provider = "github", externalId = "42", sourceBindingMatch: CodeChangeRelationship["source_binding_match"] = "matched", metadata?: Record<string, unknown>): CodeChangeRelationship {
   return {
     provider_key: provider,
+    code_change_label: provider === "github" ? "Pull request" : provider === "aone-bridge" ? "Merge request" : "Code change",
     relation_kind: "code_change",
-    external_repository_id: provider === "aone" ? "Ingress/issue-spec" : "higress-group/issue-spec",
+    external_repository_id: provider === "aone-bridge" ? "Ingress/issue-spec" : "higress-group/issue-spec",
     external_id: externalId,
     canonical_url: `https://code.example/${provider}/changes/${externalId}`,
     title: provider === "github" ? "Runner projection" : "Provider merge",

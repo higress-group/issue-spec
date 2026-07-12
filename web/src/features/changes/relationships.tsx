@@ -8,20 +8,20 @@ const bindingCopy = {
   unbound: { label: "No active binding", description: "The repository has no active source binding to compare." },
 } as const;
 
-function ProviderIcon({ provider }: { provider: string }) {
-  const kind = codeChangeKind(provider);
+function ProviderIcon({ relationship }: { relationship: CodeChangeRelationship }) {
+  const kind = codeChangeKind(relationship);
   if (kind === "Pull request") return <GitPullRequest aria-hidden="true" />;
   if (kind === "Merge request") return <GitMerge aria-hidden="true" />;
   return <ExternalLink aria-hidden="true" />;
 }
 
 function RelationshipItem({ relationship }: { relationship: CodeChangeRelationship }) {
-  const kind = codeChangeKind(relationship.provider_key);
+  const kind = codeChangeKind(relationship);
   const title = relationship.title?.trim() || `${kind} ${relationship.external_id}`;
   const target = safeCodeChangeURL(relationship.canonical_url);
   const binding = bindingCopy[relationship.source_binding_match];
   return <li className={`code-change-item binding-${relationship.source_binding_match}`}>
-    <span className="code-change-icon"><ProviderIcon provider={relationship.provider_key} /></span>
+    <span className="code-change-icon"><ProviderIcon relationship={relationship} /></span>
     <span className="code-change-copy">
       <span className="code-change-kind">{kind}</span>
       {target ? <a href={target} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">{title}<ExternalLink aria-hidden="true" /></a> : <strong>{title}</strong>}
@@ -39,7 +39,7 @@ export function CodeChangeList({ relationships, empty = "No active code change i
 
 export function CodeChangeIndicator({ relationships }: { relationships: CodeChangeRelationship[] }) {
   if (!relationships.length) return null;
-  const kinds = [...new Set(relationships.map((relationship) => codeChangeKind(relationship.provider_key)))];
+  const kinds = [...new Set(relationships.map((relationship) => codeChangeKind(relationship)))];
   const hasMismatch = relationships.some((relationship) => relationship.source_binding_match === "mismatched");
   return <span className={`code-change-indicator ${hasMismatch ? "has-mismatch" : ""}`} aria-label={`${relationships.length} linked code ${relationships.length === 1 ? "change" : "changes"}${hasMismatch ? ", source binding mismatch" : ""}`}>
     <GitPullRequest aria-hidden="true" /><strong>{relationships.length}</strong><span>{kinds.length === 1 ? kinds[0] : "Code changes"}</span>{hasMismatch ? <ShieldAlert aria-hidden="true" /> : null}

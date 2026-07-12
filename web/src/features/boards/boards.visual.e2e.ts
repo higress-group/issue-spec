@@ -109,7 +109,7 @@ const repositories = { repositories: [{ repository: { id: repoId, organization_i
 
 const progress = (total: number, completed: number, inProgress: number, blocked: number, pending: number) => ({ total, completed, in_progress: inProgress, blocked, pending });
 const artifact = (id: string, number: number, title: string, state = "open", valid = true, marker = "1"): Artifact => ({ id, number, title, state, url: `/issues/${orgId}/${repoId}/${number}`, marker_version: marker, updated_at: "2026-07-11T02:00:00Z", valid });
-const relationship = (provider: string, externalId: string, title: string, sourceBindingMatch: CodeChangeRelationship["source_binding_match"] = "matched"): CodeChangeRelationship => ({ provider_key: provider, relation_kind: "code_change", external_repository_id: provider === "aone" ? "Ingress/workflow" : "higress-group/issue-spec", external_id: externalId, canonical_url: `https://code.example/${provider}/changes/${externalId}`, title, lifecycle_state: "active", source_binding_match: sourceBindingMatch });
+const relationship = (provider: string, externalId: string, title: string, sourceBindingMatch: CodeChangeRelationship["source_binding_match"] = "matched"): CodeChangeRelationship => ({ provider_key: provider, code_change_label: provider === "github" ? "Pull request" : "Merge request", relation_kind: "code_change", external_repository_id: provider === "aone" ? "Ingress/workflow" : "higress-group/issue-spec", external_id: externalId, canonical_url: `https://code.example/${provider}/changes/${externalId}`, title, lifecycle_state: "active", source_binding_match: sourceBindingMatch });
 
 const cards: ChangeCardModel[] = [
   {

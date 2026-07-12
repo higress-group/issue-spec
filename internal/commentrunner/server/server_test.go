@@ -23,6 +23,7 @@ import (
 	webhook "github.com/higress-group/issue-spec/internal/commentrunner/intake/webhook"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	issueapi "github.com/higress-group/issue-spec/internal/server/api/github/issues"
+	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/events/outbox"
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
@@ -250,7 +251,7 @@ func serverEnvelope(t *testing.T, at time.Time) ([]byte, string) {
 		IssueNumber: 1, AuthorLogin: "runner"}
 	envelope, _, err := outbox.BuildEnvelope(eventID, issueapi.MutationEvent{Type: "issue_comment.created", Scope: scope,
 		Issue: models.Issue{ID: issueID, Scope: scope, Number: 1, CreatedAt: at.Add(-time.Hour), UpdatedAt: at}, Comment: &snapshot, RawBody: raw,
-		BodyHash: hash, ActorUserID: actorID, RepresentationVersion: 1})
+		BodyHash: hash, ActorUserID: actorID, ActorCredentialKind: serverauth.CredentialSession, RepresentationVersion: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

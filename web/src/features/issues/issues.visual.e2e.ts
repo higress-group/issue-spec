@@ -92,8 +92,8 @@ test("canonical public WebURL keeps its owner/repository route and comment fragm
 
 const labels = [{ id: 1, name: "issue-spec/design", color: "62459a", default: false, description: "Design", url: "" }, { id: 2, name: "runner", color: "0f6f6f", default: false, description: "Runner", url: "" }];
 const relationships = [
-  { provider_key: "github", relation_kind: "code_change", external_repository_id: "acme/workflow", external_id: "42", canonical_url: "https://code.example/acme/workflow/pull/42", title: "Runner projection", lifecycle_state: "active", source_binding_match: "matched" },
-  { provider_key: "aone", relation_kind: "code_change", external_repository_id: "Ingress/workflow", external_id: "73", canonical_url: "https://code.example/Ingress/workflow/merge_requests/73", title: "Internal mirror", lifecycle_state: "active", source_binding_match: "mismatched" },
+  { provider_key: "github", code_change_label: "Pull request", relation_kind: "code_change", external_repository_id: "acme/workflow", external_id: "42", canonical_url: "https://code.example/acme/workflow/pull/42", title: "Runner projection", lifecycle_state: "active", source_binding_match: "matched" },
+  { provider_key: "aone-bridge", code_change_label: "Merge request", relation_kind: "code_change", external_repository_id: "Ingress/workflow", external_id: "73", canonical_url: "https://code.example/Ingress/workflow/merge_requests/73", title: "Internal mirror", lifecycle_state: "active", source_binding_match: "mismatched" },
 ];
 const issue = { id: 41, number: 41, state: "open", state_reason: null, title: "Runner contract", body: rawBody, user, labels, locked: false, comments: 1, created_at: "2026-07-10T10:00:00Z", updated_at: "2026-07-10T10:00:00Z", closed_at: null, html_url: "https://code.example.test/acme/workflow/issues/41", reactions: reactionSummary };
 function commentFixture(id: number, body: string) { return { id, body, user, created_at: "2026-07-10T11:00:00Z", updated_at: "2026-07-10T11:00:00Z", html_url: `https://code.example.test/acme/workflow/issues/41#issuecomment-${id}`, reactions: id === 9 ? reactionSummary : { ...reactionSummary, total_count: 0, "+1": 0 } }; }

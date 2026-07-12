@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/server/admin"
 	serverapi "github.com/higress-group/issue-spec/internal/server/api"
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
@@ -84,6 +85,10 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	if err := prepareMigrations(ctx, database, cfg.MigrationsMode); err != nil {
 		return fail(err)
 	}
+	serverInstanceID, err := database.ServerInstanceID(ctx)
+	if err != nil {
+		return fail(err)
+	}
 	origins, err := configuredOrigins(cfg)
 	if err != nil {
 		return fail(err)
@@ -125,6 +130,10 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	if err != nil {
 		return fail(err)
 	}
+	providerRegistry, err := codereview.LoadOperatorRegistryFromEnvironment()
+	if err != nil {
+		return fail(fmt.Errorf("configure code providers: %w", err))
+	}
 	allowedOrigins := map[string]struct{}{origins.Web.String(): {}}
 	authentication := serverauth.Middleware{SessionCookieName: sessions.CookieName(), AllowedOrigins: allowedOrigins,
 		Sessions: sessions, Bearer: serverauth.BearerChain{delegated, pats}}
@@ -157,7 +166,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	if err != nil {
 		return fail(err)
 	}
-	changeService, err := changes.New(database.Pool(), authorization)
+	changeService, err := changes.New(database.Pool(), authorization, providerRegistry.Descriptions()...)
 	if err != nil {
 		return fail(err)
 	}
@@ -206,6 +215,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 		Admin: adminService, Identity: identity, Sessions: sessions, PATs: pats, Delegation: delegated,
 		Takeover: takeoverService, Authorization: authorization, Authentication: authentication,
 		Adapters: adapters, Avatars: avatars, AuthDiagnostics: nativeauth.DiagnosticObserverFunc(logAuthenticationDiagnostic),
+		ServerInstanceID: serverInstanceID, ProviderDescriptions: providerRegistry.Descriptions(),
 		APIOrigin: origins.API.String(), WebOrigin: origins.Web.String(), TransportPosture: origins.Posture,
 		Issues: issueService, Labels: labelService, Reactions: reactionService, Permissions: permissionService,
 		Subscription: subscriptionCompat, Presenter: codec.Presenter{Origins: origins}, Conditional: conditional.Policy{},

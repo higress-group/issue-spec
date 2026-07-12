@@ -4,6 +4,7 @@ export const sourceBindingMatchSchema = z.enum(["matched", "mismatched", "unboun
 
 export const codeChangeRelationshipSchema = z.object({
   provider_key: z.string().trim().min(1),
+  code_change_label: z.string().trim().min(1).optional().default("Code change"),
   relation_kind: z.literal("code_change"),
   external_repository_id: z.string().trim().min(1),
   external_id: z.string().trim().min(1),
@@ -22,11 +23,8 @@ export type SourceBindingMatch = z.infer<typeof sourceBindingMatchSchema>;
 export type CodeChangeRelationship = z.infer<typeof codeChangeRelationshipSchema>;
 export type IssueRelationships = z.infer<typeof issueRelationshipsSchema>;
 
-export function codeChangeKind(providerKey: string) {
-  const provider = providerKey.trim().toLowerCase();
-  if (provider === "github") return "Pull request";
-  if (provider === "aone") return "Merge request";
-  return "Code change";
+export function codeChangeKind(relationship: Pick<CodeChangeRelationship, "code_change_label">) {
+  return relationship.code_change_label.trim();
 }
 
 export function safeCodeChangeURL(value: string): string | undefined {

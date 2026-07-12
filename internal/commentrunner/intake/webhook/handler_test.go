@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	issueapi "github.com/higress-group/issue-spec/internal/server/api/github/issues"
+	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/events/outbox"
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
@@ -268,7 +269,7 @@ func validEnvelope(t *testing.T, at time.Time, raw string) ([]byte, string) {
 		IssueNumber: 17, AuthorLogin: "runner-user"}
 	envelope, _, err := outbox.BuildEnvelope(eventID, issueapi.MutationEvent{Type: "issue_comment.created", Scope: scope,
 		Issue: models.Issue{ID: issueID, Scope: scope, Number: 17, CreatedAt: at.Add(-time.Hour), UpdatedAt: at}, Comment: &snapshot,
-		RawBody: raw, BodyHash: hash, ActorUserID: actorID, RepresentationVersion: 1})
+		RawBody: raw, BodyHash: hash, ActorUserID: actorID, ActorCredentialKind: serverauth.CredentialSession, RepresentationVersion: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

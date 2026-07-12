@@ -73,8 +73,25 @@ func TestRunMigrationsConcurrentAndIdempotent(t *testing.T) {
 	}
 	// Keep the forward-only migration-set assertion synchronized with the
 	// latest embedded file.
-	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0015_notification_actor_provenance.sql" {
+	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0016_server_instance_identity.sql" {
 		t.Fatalf("migration metadata = count %d, version %d, name %q", count, version, name)
+	}
+	identity := New(pool)
+	first, err := identity.ServerInstanceID(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stable, err := identity.ServerInstanceID(t.Context())
+	if err != nil || stable != first {
+		t.Fatalf("database identity changed: first=%q stable=%q err=%v", first, stable, err)
+	}
+	freshPool := newIntegrationPool(t)
+	if err := RunMigrations(t.Context(), freshPool); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := New(freshPool).ServerInstanceID(t.Context())
+	if err != nil || fresh == first {
+		t.Fatalf("fresh database identity = %q, first=%q err=%v", fresh, first, err)
 	}
 }
 

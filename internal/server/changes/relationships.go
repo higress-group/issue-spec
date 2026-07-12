@@ -88,6 +88,7 @@ func (s *Service) IssueRelationships(ctx context.Context, subject authz.Subject,
 	if err != nil {
 		return IssueRelationships{}, err
 	}
+	s.decorateCodeChangeRelationships(projected)
 	if err := tx.Commit(ctx); err != nil {
 		return IssueRelationships{}, fmt.Errorf("changes: commit relationship snapshot: %w", err)
 	}

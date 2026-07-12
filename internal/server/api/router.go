@@ -52,20 +52,22 @@ import (
 )
 
 type Dependencies struct {
-	Admin            *adminservice.Service
-	Identity         *serverauth.IdentityService
-	Sessions         *session.Service
-	PATs             *pat.Service
-	Delegation       *delegation.Service
-	Takeover         *takeover.Service
-	Authorization    adminservice.Authorizer
-	Authentication   serverauth.Middleware
-	Adapters         map[string]nativeauth.LoginAdapter
-	Avatars          *serverauth.AvatarService
-	AuthDiagnostics  nativeauth.DiagnosticObserver
-	APIOrigin        string
-	WebOrigin        string
-	TransportPosture publicurl.TransportPosture
+	Admin                *adminservice.Service
+	Identity             *serverauth.IdentityService
+	Sessions             *session.Service
+	PATs                 *pat.Service
+	Delegation           *delegation.Service
+	Takeover             *takeover.Service
+	Authorization        adminservice.Authorizer
+	Authentication       serverauth.Middleware
+	Adapters             map[string]nativeauth.LoginAdapter
+	Avatars              *serverauth.AvatarService
+	AuthDiagnostics      nativeauth.DiagnosticObserver
+	ServerInstanceID     string
+	ProviderDescriptions []codereview.ProviderDescription
+	APIOrigin            string
+	WebOrigin            string
+	TransportPosture     publicurl.TransportPosture
 
 	Issues       *githubissues.Service
 	Labels       *githublabels.Service
@@ -109,11 +111,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	nativeAuthenticateOptional := adminapi.NativeAuthenticateOptional(deps.Authentication)
 	features := metaapi.Features{Bootstrap: true, PersonalAccessTokens: true, Organizations: true,
 		SourceBindings: true, Webhooks: true, ChangeBoards: true, Runner: true, RecoveryExchange: true}
-	providerRegistry, err := codereview.LoadOperatorRegistryFromEnvironment()
-	if err != nil {
-		return nil, fmt.Errorf("compose server metadata: %w", err)
-	}
-	serverMetadata, err := metaapi.NewServerMetadataWithPosture(deps.APIOrigin, deps.WebOrigin, providerRegistry.Descriptions(), deps.TransportPosture)
+	serverMetadata, err := metaapi.NewServerMetadataWithPosture(deps.ServerInstanceID, deps.APIOrigin, deps.WebOrigin, deps.ProviderDescriptions, deps.TransportPosture)
 	if err != nil {
 		return nil, fmt.Errorf("compose server metadata: %w", err)
 	}
@@ -222,7 +220,7 @@ func validateDependencies(deps Dependencies) error {
 	if _, ok := deps.Authorization.(nativeauth.IdentityAuthority); !ok {
 		return errors.New("server router: authorization does not provide identity authority")
 	}
-	if strings.TrimSpace(deps.APIOrigin) == "" || strings.TrimSpace(deps.WebOrigin) == "" || !deps.TransportPosture.Valid() || strings.TrimSpace(deps.DelegationAudience) == "" || strings.TrimSpace(deps.DelegationSubject) == "" {
+	if strings.TrimSpace(deps.ServerInstanceID) == "" || strings.TrimSpace(deps.APIOrigin) == "" || strings.TrimSpace(deps.WebOrigin) == "" || !deps.TransportPosture.Valid() || strings.TrimSpace(deps.DelegationAudience) == "" || strings.TrimSpace(deps.DelegationSubject) == "" {
 		return errors.New("server router: public origins and delegation bindings are required")
 	}
 	return nil

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/codereview"
 	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/models"
@@ -28,15 +29,33 @@ type authorization interface {
 type Service struct {
 	pool              *pgxpool.Pool
 	authz             authorization
+	codeChangeLabels  map[string]string
 	beforeSnapshot    func()
 	afterArtifactLoad func()
 }
 
-func New(pool *pgxpool.Pool, authorization *authz.Service) (*Service, error) {
+func New(pool *pgxpool.Pool, authorization *authz.Service, descriptions ...codereview.ProviderDescription) (*Service, error) {
 	if pool == nil || authorization == nil {
 		return nil, errors.New("changes: database and authorization are required")
 	}
-	return &Service{pool: pool, authz: authorization}, nil
+	labels := make(map[string]string, len(descriptions))
+	for _, description := range descriptions {
+		labels[description.ProviderKey] = description.CodeChangeLabel
+	}
+	return &Service{pool: pool, authz: authorization, codeChangeLabels: labels}, nil
+}
+
+func (s *Service) decorateCodeChangeRelationships(items map[uuid.UUID][]models.CodeChangeRelationship) {
+	for issueID, relationships := range items {
+		for index := range relationships {
+			label := strings.TrimSpace(s.codeChangeLabels[relationships[index].ProviderKey])
+			if label == "" {
+				label = "Code change"
+			}
+			relationships[index].CodeChangeLabel = label
+		}
+		items[issueID] = relationships
+	}
 }
 
 func (s *Service) RepositoryBoard(ctx context.Context, subject authz.Subject, scope models.RepoScope, options ListOptions) (BoardPage, error) {
@@ -209,6 +228,7 @@ func (s *Service) loadBoard(ctx context.Context, subject authz.Subject, orgID uu
 	if err != nil {
 		return BoardPage{}, err
 	}
+	s.decorateCodeChangeRelationships(relationships)
 	if err := tx.Commit(ctx); err != nil {
 		return BoardPage{}, fmt.Errorf("changes: commit snapshot: %w", err)
 	}

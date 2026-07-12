@@ -18,6 +18,7 @@ const (
 // must never infer provider URLs or identities from issue body text.
 type CodeChangeRelationship struct {
 	ProviderKey          string             `json:"provider_key"`
+	CodeChangeLabel      string             `json:"code_change_label"`
 	RelationKind         string             `json:"relation_kind"`
 	ExternalRepositoryID string             `json:"external_repository_id"`
 	ExternalID           string             `json:"external_id"`
