@@ -65,8 +65,35 @@ func TestPrepareProcessWorkspaceEmptyExactTargetAllocatesNothing(t *testing.T) {
 	dispatcher.Workspaces = workspaces
 	binding := testBinding("session-integration")
 	got, _, class, err := dispatcher.prepareProcessWorkspace(context.Background(), job, fakeRepoResolverResolution(), binding, nil)
-	if err != nil || class != processworkspace.ExecutionOrchestration || allocator.allocateCalls != 0 || got.AcpxWorkingDirectory == "" || got.AcpxWorkingDirectory == binding.Workspace.Path {
+	if err != nil || class != "" || allocator.allocateCalls != 0 || got.AcpxWorkingDirectory != binding.AcpxWorkingDirectory || got.SandboxWorkspacePath != binding.SandboxWorkspacePath {
 		t.Fatalf("binding=%+v class=%s calls=%d err=%v", got, class, allocator.allocateCalls, err)
+	}
+}
+
+func TestPrepareProcessWorkspaceExactOrchestrationUsesNoCheckout(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Unix(101, 0).UTC()
+	job := state.Job{ID: "job-exact-orchestration", Repo: "o/r", ExactProcessID: "PROCESS-024", Status: state.StatusDispatched, CreatedAt: now, UpdatedAt: now}
+	seedState(t, store, func(st *state.RunnerState) error { return st.UpsertJob(job) })
+	association := processLifecycleAssociation("PROCESS-024", "ws-process-024", processworkspace.ExecutionOrchestration, processworkspace.ModeNone)
+	association.BaseSHA, association.Branch, association.WriteOwnership, association.LocalAssociationRef = "", "", nil, ""
+	association.ReservationIdentity = association.ExpectedReservationIdentity()
+	allocator := &processLifecycleAllocator{allocation: ProcessWorkspaceAllocation{Association: association, Generation: 10}}
+	workspaces := &processLifecycleWorkspaceProvider{fakeWorkspaces: &fakeWorkspaces{}, allocator: allocator}
+	dispatcher := testDispatcher(store, workspaces.fakeWorkspaces, &fakeCoordinator{}, &fakeWriteback{}, now)
+	dispatcher.Workspaces = workspaces
+	binding := testBinding("session-integration")
+	body, err := model.EnsureTypedBody("PROCESS", "PROCESS-024", "## Process\n\n### Parent TASK\n\n- TASK-004\n\n### Execution Class\n\n- orchestration", model.BodyOptions{Status: "in-progress"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, persisted, class, err := dispatcher.prepareProcessWorkspace(context.Background(), job, fakeRepoResolverResolution(), binding,
+		[]model.Artifact{{Issue: 177, CommentID: 24, Comment: model.ParseTypedComment(body)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if class != processworkspace.ExecutionOrchestration || allocator.allocateCalls != 1 || got.AcpxWorkingDirectory == "" || got.AcpxWorkingDirectory == binding.Workspace.Path || persisted.ProcessWorkspace == nil {
+		t.Fatalf("binding=%+v class=%s calls=%d assignment=%+v", got, class, allocator.allocateCalls, persisted.ProcessWorkspace)
 	}
 }
 

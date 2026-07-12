@@ -871,12 +871,11 @@ func (d *Dispatcher) prepareProcessWorkspace(ctx context.Context, job state.Job,
 		if job.ProcessWorkspace != nil {
 			return binding, job, "", errors.New("orchestration job without exact PROCESS carries a workspace assignment")
 		}
-		path, err := orchestrationWorkingDirectory(job)
-		if err != nil {
-			return binding, job, "", err
-		}
-		binding.AcpxWorkingDirectory, binding.SandboxWorkspacePath = path, path
-		return binding, job, processworkspace.ExecutionOrchestration, nil
+		// An empty selector is the ordinary repository-backed runner path, not
+		// an inferred orchestration PROCESS. Preserve the managed session binding
+		// so evidence, stable runtime paths, and stored resume cwd retain their
+		// pre-PROCESS compatibility semantics without allocating a PROCESS lease.
+		return binding, job, "", nil
 	}
 	selection, err := SelectTrustedProcessWorkspace(artifacts, exact)
 	if err != nil {
