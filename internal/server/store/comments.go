@@ -19,6 +19,17 @@ const qualifiedCommentColumns = `
 	c.id, c.organization_id, c.repository_id, c.issue_id, c.author_id, c.body,
 	c.representation_version, c.reactions_collection_version, c.created_at, c.updated_at`
 
+type CommentVersionConflictError struct {
+	Expected int64
+	Current  int64
+}
+
+func (e *CommentVersionConflictError) Error() string {
+	return fmt.Sprintf("store: comment representation version conflict expected=%d current=%d", e.Expected, e.Current)
+}
+
+func (e *CommentVersionConflictError) Unwrap() error { return ErrVersionConflict }
+
 func (s RepoStore) CreateComment(ctx context.Context, input models.NewComment) (models.CommentSnapshot, error) {
 	if err := s.validate(); err != nil || input.IssueNumber <= 0 {
 		return models.CommentSnapshot{}, ErrInvalidInput
@@ -126,7 +137,7 @@ func (s RepoStore) UpdateCommentCAS(ctx context.Context, compatibilityID, expect
 		if err != nil {
 			return models.CommentSnapshot{}, err
 		}
-		return models.CommentSnapshot{}, ErrVersionConflict
+		return models.CommentSnapshot{}, &CommentVersionConflictError{Expected: expected, Current: version}
 	}
 	if _, err := s.db.Exec(ctx, `UPDATE issues SET comments_collection_version = comments_collection_version + 1,
 		updated_at = clock_timestamp() WHERE organization_id = $1 AND repository_id = $2 AND id = $3`,

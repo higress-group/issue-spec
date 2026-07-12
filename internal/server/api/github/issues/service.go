@@ -307,6 +307,19 @@ func (s *Service) CreateComment(ctx context.Context, owner, repository string, i
 }
 
 func (s *Service) UpdateComment(ctx context.Context, owner, repository string, compatibilityID int64, subject authz.Subject, body string) (models.RepositoryResource, models.CommentSnapshot, error) {
+	return s.updateComment(ctx, owner, repository, compatibilityID, subject, body, nil)
+}
+
+// UpdateCommentConditional applies the caller-observed representation version
+// to the store CAS. A stale version fails before projection and event emission.
+func (s *Service) UpdateCommentConditional(ctx context.Context, owner, repository string, compatibilityID, expected int64, subject authz.Subject, body string) (models.RepositoryResource, models.CommentSnapshot, error) {
+	if expected <= 0 {
+		return models.RepositoryResource{}, models.CommentSnapshot{}, store.ErrInvalidInput
+	}
+	return s.updateComment(ctx, owner, repository, compatibilityID, subject, body, &expected)
+}
+
+func (s *Service) updateComment(ctx context.Context, owner, repository string, compatibilityID int64, subject authz.Subject, body string, expected *int64) (models.RepositoryResource, models.CommentSnapshot, error) {
 	actor, ok := authenticatedActor(subject)
 	if !ok {
 		return models.RepositoryResource{}, models.CommentSnapshot{}, &DecisionError{Decision: authz.Decision{Exists: true, Visible: true}}
@@ -337,7 +350,11 @@ func (s *Service) UpdateComment(ctx context.Context, owner, repository string, c
 		if !decision.Allowed {
 			return &DecisionError{Decision: decision}
 		}
-		snapshot, err = repositoryStore.UpdateCommentCAS(ctx, compatibilityID, current.Comment.RepresentationVersion, body)
+		expectedVersion := current.Comment.RepresentationVersion
+		if expected != nil {
+			expectedVersion = *expected
+		}
+		snapshot, err = repositoryStore.UpdateCommentCAS(ctx, compatibilityID, expectedVersion, body)
 		if err != nil {
 			return err
 		}
