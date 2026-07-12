@@ -26,7 +26,7 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("notification control room keeps credentials redacted and replay traceable", async ({ page }) => {
+test("notification control room keeps credentials redacted and replay traceable", async ({ page }, testInfo) => {
   await page.goto(`/orgs/${orgId}/repos/${repoId}/integrations/webhooks`);
   await expect(page.getByRole("heading", { name: "Delivery control room" })).toBeVisible();
   await expect(page.getByText("Encrypted destination credential")).toBeVisible();
@@ -40,4 +40,16 @@ test("notification control room keeps credentials redacted and replay traceable"
   await expect(page.getByRole("button", { name: "Replay immutable delivery" })).toBeEnabled();
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+  if (testInfo.project.name === "integrations-desktop") {
+    // Keep the documentation image compact after exercising the expanded
+    // configuration and suppression states above.
+    await page.getByRole("button", { name: "Configure" }).click();
+    await page.getByRole("button", { name: "Suppressions" }).click();
+    await page.evaluate(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await page.locator(".skip-link").evaluate((node) => node.remove());
+    await expect(page).toHaveScreenshot("webhook-integrations.png", { fullPage: true, animations: "disabled" });
+  }
 });
