@@ -3,7 +3,13 @@ package commands
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +17,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
+	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
+	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
@@ -79,6 +87,158 @@ func TestExternalVerifyGateUsesAuthoritativeNativeTarget(t *testing.T) {
 				t.Fatalf("error=%v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestExternalGatePreservesGitHubMode(t *testing.T) {
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	profile := auth.Profile{Name: auth.DefaultProfileName, Kind: auth.ProfileKindGitHub, Hostname: "github.com",
+		APIURL: "https://api.github.com", WebURL: "https://github.com"}
+	result, selfHosted, err := app.externalGateWithProfile(t.Context(), profile, "", "acme/widgets", 9,
+		"code_change", "", coreevidence.GateVerify, ".", "verify")
+	if err != nil || selfHosted || result.Consumption.ProviderKey != "" {
+		t.Fatalf("GitHub external gate result=%+v self_hosted=%t err=%v", result, selfHosted, err)
+	}
+}
+
+func TestExternalGateSynchronizesPersistsReloadsThenEvaluates(t *testing.T) {
+	clearCommandAuthEnv(t)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "issue-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "issue-spec", "config.yaml"), []byte(`external_code:
+  provider_key: code.example
+  evidence:
+    sync_before: [verify, runner]
+    required_checks: [unit]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	profile := auth.Profile{Name: "sync", Kind: auth.ProfileKindHosted, APIURL: "https://issues.example/api/v3",
+		NativeAPIURL: "https://issues.example/api/v1", WebURL: "https://issues.example", ServerInstanceID: "instance-sync"}
+	if err := auth.SaveProfile(profile, true); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	var calls []string
+	providerFacts := &commandEvidenceProvider{label: "operator", calls: &calls, snapshot: codereview.Snapshot{
+		ProtocolVersion: codereview.ProtocolVersion, Reference: reference, SubjectRevision: "head-abc", CapturedAt: now,
+		Facts: []codereview.ProviderFact{{ID: "check-fact", ExternalID: "unit", Kind: codereview.EvidenceCheck,
+			State: "passed", SubjectRevision: "head-abc", Name: "unit", ObservedAt: now.Add(-time.Minute),
+			PayloadDigest: strings.Repeat("a", 64)}}}}
+	ledger := codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion, Reference: reference,
+		SubjectRevision: "head-abc", CapturedAt: now, Records: []codereview.EvidenceRecord{
+			testEvidenceRecord("review-ledger", codereview.EvidenceReview, "resolved", "head-abc", now),
+			testEvidenceRecord("check-ledger", codereview.EvidenceCheck, "passed", "head-abc", now),
+		}}
+	ledger.Records[1].Name = "unit"
+	ledgerProvider := &commandEvidenceProvider{label: "ledger", calls: &calls, snapshot: ledger}
+	native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, SubjectRevision: "head-abc",
+		Provider: ledgerProvider, IssueID: uuid.New(), OrgID: uuid.New(), RepoID: uuid.New()}, calls: &calls}
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	app.profileName = profile.Name
+	app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
+	app.resolveCodeMutationProvider = func(context.Context, string) (codereview.MutationProvider, error) { return providerFacts, nil }
+	result, hosted, err := app.externalGate(t.Context(), "github.com", "realm-token", "acme/widgets", 9,
+		"code_change", "head-abc", coreevidence.GateVerify)
+	if err != nil || !hosted || !result.Evaluation.Passed || native.syncs != 1 || len(native.snapshot.Facts) != 1 {
+		t.Fatalf("externalGate() result=%+v hosted=%t syncs=%d snapshot=%+v err=%v", result, hosted, native.syncs, native.snapshot, err)
+	}
+	if strings.Join(calls, ",") != "operator,persist,ledger" ||
+		strings.Join(result.Consumption.EvidenceIDs, ",") != "check-ledger,review-ledger" {
+		t.Fatalf("calls=%v consumption=%+v", calls, result.Consumption)
+	}
+	credential := filepath.Join(root, "runner-token")
+	if err := os.WriteFile(credential, []byte("realm-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runnerIdentity, err := (&runnerEvidencePreGate{app: app, profile: profile}).BeforeDispatch(t.Context(), jobs.EvidencePreGateRequest{
+		Repo: "acme/widgets", IssueNumber: 9, WorkflowRoot: root, CredentialFile: credential,
+	})
+	if err != nil || runnerIdentity.Skipped || runnerIdentity.ProviderKey != result.Consumption.ProviderKey ||
+		runnerIdentity.ExternalRepository != result.Consumption.ExternalRepository || runnerIdentity.ChangeID != result.Consumption.ChangeID ||
+		runnerIdentity.SubjectRevision != result.Consumption.SubjectRevision ||
+		strings.Join(runnerIdentity.EvidenceIDs, ",") != strings.Join(result.Consumption.EvidenceIDs, ",") {
+		t.Fatalf("runner identity=%+v interactive=%+v err=%v", runnerIdentity, result.Consumption, err)
+	}
+	if strings.Join(calls, ",") != "operator,persist,ledger,operator,persist,ledger" {
+		t.Fatalf("interactive/runner orchestration calls=%v", calls)
+	}
+	calls = nil
+	native.syncErr = errors.New("writer authorization denied")
+	if _, _, err := app.externalGate(t.Context(), "github.com", "realm-token", "acme/widgets", 9,
+		"code_change", "head-abc", coreevidence.GateVerify); err == nil || !strings.Contains(err.Error(), "persist external provider facts") {
+		t.Fatalf("persistence failure = %v", err)
+	}
+	if strings.Join(calls, ",") != "operator,persist" {
+		t.Fatalf("ledger was evaluated after persistence failure: %v", calls)
+	}
+}
+
+func TestCommandNativeEvidenceClientUsesExactReferenceCAS(t *testing.T) {
+	orgID, repoID, issueID, referenceID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	now := time.Now().UTC()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	basePath := fmt.Sprintf("/api/v1/orgs/%s/repos/%s/issues/%s", orgID, repoID, issueID)
+	posted := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Request-ID", "sync-test")
+		if r.Header.Get("Authorization") != "Bearer realm-token" {
+			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == basePath+"/references":
+			_ = json.NewEncoder(w).Encode(map[string]any{"references": []any{map[string]any{
+				"id": referenceID, "issue_id": issueID, "provider_key": reference.ProviderKey, "relation_kind": "code_change",
+				"external_repository_id": reference.ExternalRepository, "external_id": reference.ChangeID,
+				"canonical_url": "https://code.example/changes/42", "lifecycle_state": "active", "visibility": "repository",
+				"metadata": map[string]string{"head_revision": "head-abc"}, "representation_version": 7,
+				"created_at": now, "updated_at": now,
+			}}})
+		case r.Method == http.MethodPost && r.URL.Path == basePath+"/evidence/snapshots":
+			var body struct {
+				ReferenceID              uuid.UUID           `json:"reference_id"`
+				ExpectedReferenceVersion int64               `json:"expected_reference_version"`
+				Snapshot                 codereview.Snapshot `json:"snapshot"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.ReferenceID != referenceID || body.ExpectedReferenceVersion != 7 || len(body.Snapshot.Facts) != 1 || body.Snapshot.Records != nil {
+				t.Errorf("snapshot body = %+v", body)
+			}
+			posted = true
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"reference_id": referenceID, "reference_version": 7,
+				"subject_revision": "head-abc", "evidence": []any{map[string]any{"id": uuid.New()}}, "created": 1, "replayed": 0})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": 404})
+		}
+	}))
+	defer server.Close()
+	profile := auth.Profile{Name: "sync-http", Kind: auth.ProfileKindHosted, APIURL: server.URL + "/api/v3",
+		NativeAPIURL: server.URL + "/api/v1", WebURL: server.URL, ServerInstanceID: "instance-sync"}
+	api, err := github.NewClientWithOptions(github.ClientOptions{Host: profile.Hostname, BaseURL: profile.NativeAPIURL, Token: "realm-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &commandNativeEvidenceClient{api: api}
+	snapshot := codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion, Reference: reference,
+		SubjectRevision: "head-abc", CapturedAt: now, Facts: []codereview.ProviderFact{{ID: "check-fact", ExternalID: "unit",
+			Kind: codereview.EvidenceCheck, State: "passed", SubjectRevision: "head-abc", Name: "unit", ObservedAt: now,
+			PayloadDigest: strings.Repeat("a", 64)}}}
+	target := coreevidence.NativeTarget{Reference: reference, SubjectRevision: "head-abc", OrgID: orgID, RepoID: repoID, IssueID: issueID}
+	if err := client.SynchronizeSnapshot(t.Context(), target, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !posted {
+		t.Fatal("snapshot was not persisted")
 	}
 }
 
@@ -166,6 +326,8 @@ type commandEvidenceProvider struct {
 	capabilities []codereview.Capability
 	mutation     codereview.MutationResult
 	mutateErr    error
+	label        string
+	calls        *[]string
 }
 
 func (p *commandEvidenceProvider) Capabilities(context.Context) (codereview.Capabilities, error) {
@@ -177,6 +339,9 @@ func (p *commandEvidenceProvider) Capabilities(context.Context) (codereview.Capa
 }
 
 func (p *commandEvidenceProvider) Snapshot(context.Context, codereview.SnapshotRequest) (codereview.Snapshot, error) {
+	if p.calls != nil {
+		*p.calls = append(*p.calls, p.label)
+	}
 	return p.snapshot, nil
 }
 
@@ -185,8 +350,12 @@ func (p *commandEvidenceProvider) Mutate(context.Context, codereview.MutationReq
 }
 
 type commandNativeEvidence struct {
-	target  coreevidence.NativeTarget
-	upserts int
+	target   coreevidence.NativeTarget
+	upserts  int
+	syncs    int
+	snapshot codereview.Snapshot
+	syncErr  error
+	calls    *[]string
 }
 
 func (n *commandNativeEvidence) ResolveTarget(context.Context, string, int, string) (coreevidence.NativeTarget, error) {
@@ -196,4 +365,13 @@ func (n *commandNativeEvidence) ResolveTarget(context.Context, string, int, stri
 func (n *commandNativeEvidence) UpsertArchiveReference(context.Context, coreevidence.NativeTarget, codereview.Reference, string, string, string) error {
 	n.upserts++
 	return nil
+}
+
+func (n *commandNativeEvidence) SynchronizeSnapshot(_ context.Context, _ coreevidence.NativeTarget, snapshot codereview.Snapshot) error {
+	n.syncs++
+	n.snapshot = snapshot
+	if n.calls != nil {
+		*n.calls = append(*n.calls, "persist")
+	}
+	return n.syncErr
 }

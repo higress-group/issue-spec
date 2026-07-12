@@ -99,7 +99,8 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	}
 	broker := &credentials.Broker{Profile: profile, Audience: profile.ServerInstanceID,
 		Subject: input.Runner.RunnerIdentity, ParentToken: input.ParentToken, HTTPClient: nativeHTTPClient,
-		Materializer: credentials.Materializer{Root: credentialRoot}, GitProvider: gitProvider, TTL: 5 * time.Minute}
+		Materializer: credentials.Materializer{Root: credentialRoot}, GitProvider: gitProvider, TTL: 5 * time.Minute,
+		Scopes: []string{"read:user", "issues:read", "issues:write", "evidence:write"}}
 	workspaces := jobs.WorkspaceManager(workspace.Manager{Root: input.Runner.WorkspaceRoot, Retention: input.Runner.WorkspaceRetention.Duration})
 	sandboxer := jobs.SandboxPreparer(jobs.SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: input.Runner.UnsafeNoSandbox,
 		BwrapPath: input.Runner.BwrapPath, HostGHConfigDir: input.Runner.GHConfigDir}})
@@ -131,7 +132,7 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 		Repositories: repository.NativeResolver{Bindings: native, Scopes: scopes.ByRepository},
 		Workspaces:   workspaces, Sandbox: sandboxer, Acpx: acpxFactory, Artifacts: artifacts, Writeback: writebacks,
 		AcpxBinary: input.Runner.AcpxPath, IssueSpecBinary: issueSpecBinary, CredentialBroker: broker,
-		CredentialScopes: scopes.ByRepository}
+		CredentialScopes: scopes.ByRepository, EvidencePreGate: newRunnerEvidencePreGate(profile)}
 	return runnerserver.NewRuntime(runnerserver.RuntimeConfig{HTTP: input.HTTP, Reconciler: reconciler,
 		Dispatcher: dispatcher, MaxConcurrentJobs: input.Runner.MaxConcurrentJobs})
 }

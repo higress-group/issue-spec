@@ -112,6 +112,26 @@ type CredentialBroker interface {
 	RevokeJob(context.Context, models.RepoScope, string) error
 }
 
+type EvidencePreGateRequest struct {
+	Repo           string
+	IssueNumber    int
+	WorkflowRoot   string
+	CredentialFile string
+}
+
+type EvidencePreGateResult struct {
+	Skipped            bool
+	ProviderKey        string
+	ExternalRepository string
+	ChangeID           string
+	SubjectRevision    string
+	EvidenceIDs        []string
+}
+
+type EvidencePreGate interface {
+	BeforeDispatch(context.Context, EvidencePreGateRequest) (EvidencePreGateResult, error)
+}
+
 type Dispatcher struct {
 	Store               Store
 	Repositories        RepositoryResolver
@@ -128,6 +148,7 @@ type Dispatcher struct {
 	CoordinatorExtraEnv map[string]string
 	CredentialBroker    CredentialBroker
 	CredentialScopes    map[string]models.RepoScope
+	EvidencePreGate     EvidencePreGate
 }
 
 type Result struct {
@@ -139,6 +160,25 @@ type Result struct {
 	Reason         string                `json:"reason,omitempty"`
 	Error          string                `json:"error,omitempty"`
 	Results        []Result              `json:"results,omitempty"`
+}
+
+func validateEvidencePreGateResult(result EvidencePreGateResult) error {
+	if result.Skipped {
+		return nil
+	}
+	if strings.TrimSpace(result.ProviderKey) == "" || strings.TrimSpace(result.ExternalRepository) == "" ||
+		strings.TrimSpace(result.ChangeID) == "" || strings.TrimSpace(result.SubjectRevision) == "" || len(result.EvidenceIDs) == 0 {
+		return errors.New("evidence pre-gate returned an incomplete authoritative identity")
+	}
+	seen := map[string]bool{}
+	for _, id := range result.EvidenceIDs {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return errors.New("evidence pre-gate returned invalid evidence identities")
+		}
+		seen[id] = true
+	}
+	return nil
 }
 
 func (d *Dispatcher) RunNext(ctx context.Context) (Result, error) {
@@ -576,6 +616,20 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 		}
 	}
 	defer releaseLock()
+	if d.EvidencePreGate != nil {
+		if credentialLease == nil || strings.TrimSpace(credentialLease.IssueToken.HostPath) == "" {
+			return d.fail(ctx, job.ID, "evidence-pre-gate", errors.New("delegated evidence credential is unavailable"))
+		}
+		identity, err := d.EvidencePreGate.BeforeDispatch(ctx, EvidencePreGateRequest{Repo: job.Repo,
+			IssueNumber: job.IssueNumber, WorkflowRoot: binding.Workspace.Path,
+			CredentialFile: credentialLease.IssueToken.HostPath})
+		if err != nil {
+			return d.fail(ctx, job.ID, "evidence-pre-gate", err)
+		}
+		if err := validateEvidencePreGateResult(identity); err != nil {
+			return d.fail(ctx, job.ID, "evidence-pre-gate", err)
+		}
+	}
 
 	env, bundle, prompt, err := d.prepareExecution(ctx, job, command, publicID, repo, binding, session, credentialLease)
 	if err != nil {

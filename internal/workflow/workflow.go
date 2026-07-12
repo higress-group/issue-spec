@@ -56,6 +56,17 @@ type EvidencePolicyConfig struct {
 	Required       []string          `json:"required,omitempty" yaml:"required"`
 	RequiredChecks []string          `json:"required_checks,omitempty" yaml:"required_checks"`
 	Freshness      map[string]string `json:"freshness,omitempty" yaml:"freshness"`
+	SyncBefore     []string          `json:"sync_before,omitempty" yaml:"sync_before"`
+}
+
+func (c EvidencePolicyConfig) SynchronizesBefore(stage string) bool {
+	want := strings.ToLower(strings.TrimSpace(stage))
+	for _, configured := range c.SyncBefore {
+		if strings.ToLower(strings.TrimSpace(configured)) == want {
+			return true
+		}
+	}
+	return false
 }
 
 type Source struct {
@@ -300,7 +311,7 @@ func validateExternalCodeConfig(data []byte, config *ExternalCodeConfig) error {
 		if evidence.Kind != yaml.MappingNode {
 			return errors.New("external_code.evidence must be a mapping")
 		}
-		if unknown := unknownMappingKeys(evidence, map[string]bool{"required": true, "required_checks": true, "freshness": true}); len(unknown) > 0 {
+		if unknown := unknownMappingKeys(evidence, map[string]bool{"required": true, "required_checks": true, "freshness": true, "sync_before": true}); len(unknown) > 0 {
 			return fmt.Errorf("external_code.evidence contains unsupported fields: %s", strings.Join(unknown, ", "))
 		}
 	}
@@ -332,6 +343,14 @@ func validateExternalCodeConfig(data []byte, config *ExternalCodeConfig) error {
 			return fmt.Errorf("external_code.evidence.required_checks contains an empty, duplicate, or overlong name")
 		}
 		seenChecks[check] = true
+	}
+	seenStages := map[string]bool{}
+	for _, configured := range config.Evidence.SyncBefore {
+		stage := strings.ToLower(strings.TrimSpace(configured))
+		if (stage != "verify" && stage != "runner") || seenStages[stage] {
+			return fmt.Errorf("external_code.evidence.sync_before contains invalid or duplicate stage %q", configured)
+		}
+		seenStages[stage] = true
 	}
 	return nil
 }

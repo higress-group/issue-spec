@@ -107,6 +107,7 @@ func TestExternalCodeConfigAllowsOnlyProviderSelectionAndEvidencePolicy(t *testi
 external_code:
   provider_key: code.example
   evidence:
+    sync_before: [verify, runner]
     required: [review, check, merge]
     required_checks: [unit, dco]
     freshness:
@@ -118,8 +119,23 @@ external_code:
 		t.Fatalf("Resolve returned error: %v diagnostics=%+v", err, plan.Diagnostics)
 	}
 	if plan.Config.ExternalCode == nil || plan.Config.ExternalCode.ProviderKey != "code.example" ||
-		len(plan.Config.ExternalCode.Evidence.RequiredChecks) != 2 {
+		len(plan.Config.ExternalCode.Evidence.RequiredChecks) != 2 ||
+		!plan.Config.ExternalCode.Evidence.SynchronizesBefore("verify") ||
+		!plan.Config.ExternalCode.Evidence.SynchronizesBefore("RUNNER") {
 		t.Fatalf("external code config = %+v", plan.Config.ExternalCode)
+	}
+}
+
+func TestExternalCodeConfigRejectsInvalidSyncTiming(t *testing.T) {
+	for _, timing := range []string{"merge", "verify, verify"} {
+		t.Run(timing, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), "external_code:\n  provider_key: code.example\n  evidence:\n    sync_before: ["+timing+"]\n")
+			plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+			if err == nil || !hasDiagnostic(plan.Diagnostics, "invalid_config") {
+				t.Fatalf("sync timing %q should fail: plan=%+v err=%v", timing, plan, err)
+			}
+		})
 	}
 }
 
