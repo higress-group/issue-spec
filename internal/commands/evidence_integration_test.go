@@ -151,6 +151,11 @@ func TestExternalGateSynchronizesPersistsReloadsThenEvaluates(t *testing.T) {
 		strings.Join(result.Consumption.EvidenceIDs, ",") != "check-ledger,review-ledger" {
 		t.Fatalf("calls=%v consumption=%+v", calls, result.Consumption)
 	}
+	if len(result.Consumption.Bindings) != 1 || result.Consumption.Bindings[0].EvidenceID != "review-ledger" ||
+		result.Consumption.Bindings[0].ProcessID != "PROCESS-001" || result.Consumption.Bindings[0].SpecID != "SPEC-001" ||
+		!result.Consumption.Bindings[0].Trusted || result.Consumption.Bindings[0].SubjectRevision != "head-abc" {
+		t.Fatalf("authoritative selected bindings=%+v", result.Consumption.Bindings)
+	}
 	credential := filepath.Join(root, "runner-token")
 	if err := os.WriteFile(credential, []byte("realm-token"), 0o600); err != nil {
 		t.Fatal(err)
@@ -175,6 +180,55 @@ func TestExternalGateSynchronizesPersistsReloadsThenEvaluates(t *testing.T) {
 	}
 	if strings.Join(calls, ",") != "operator,persist" {
 		t.Fatalf("ledger was evaluated after persistence failure: %v", calls)
+	}
+}
+
+func TestAuthoritativeExternalEvidenceBindingsFailClosed(t *testing.T) {
+	now := time.Now().UTC()
+	valid := testEvidenceRecord("review-1", codereview.EvidenceReview, "resolved", "head-abc", now)
+	consumption := externalEvidenceConsumption{SubjectRevision: "head-abc", EvidenceIDs: []string{"review-1"}}
+	tests := map[string]func(*codereview.Snapshot, *externalEvidenceConsumption){
+		"unknown selected id": func(_ *codereview.Snapshot, c *externalEvidenceConsumption) { c.EvidenceIDs = []string{"missing"} },
+		"untrusted selected":  func(s *codereview.Snapshot, _ *externalEvidenceConsumption) { s.Records[0].Trusted = false },
+		"wrong revision": func(s *codereview.Snapshot, _ *externalEvidenceConsumption) {
+			s.Records[0].SubjectRevision = "head-old"
+		},
+		"missing process": func(s *codereview.Snapshot, _ *externalEvidenceConsumption) { s.Records[0].ProcessID = "" },
+		"missing spec":    func(s *codereview.Snapshot, _ *externalEvidenceConsumption) { s.Records[0].SpecID = "" },
+		"provider facts only": func(s *codereview.Snapshot, _ *externalEvidenceConsumption) {
+			s.Records = nil
+			s.Facts = []codereview.ProviderFact{{ID: "review-1", Kind: codereview.EvidenceReview, SubjectRevision: "head-abc", ProcessID: "PROCESS-001", SpecID: "SPEC-001"}}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			snapshot := codereview.Snapshot{SubjectRevision: "head-abc", Records: []codereview.EvidenceRecord{valid}}
+			candidate := consumption
+			mutate(&snapshot, &candidate)
+			if bindings, err := authoritativeExternalEvidenceBindings(snapshot, candidate); err == nil || len(bindings) != 0 {
+				t.Fatalf("bindings=%+v err=%v", bindings, err)
+			}
+		})
+	}
+}
+
+func TestAuthoritativeExternalEvidenceBindingsIgnoreUnselectedAndSortDedup(t *testing.T) {
+	now := time.Now().UTC()
+	first := testEvidenceRecord("review-b", codereview.EvidenceReview, "resolved", "head-abc", now)
+	first.ProcessID, first.SpecID = "PROCESS-002", "SPEC-002"
+	second := testEvidenceRecord("review-a", codereview.EvidenceReview, "resolved", "head-abc", now)
+	second.ProcessID, second.SpecID = "PROCESS-001", "SPEC-001"
+	unselected := testEvidenceRecord("ignored", codereview.EvidenceReview, "resolved", "head-old", now)
+	unselected.Trusted = false
+	snapshot := codereview.Snapshot{Records: []codereview.EvidenceRecord{first, unselected, second}}
+	consumption := externalEvidenceConsumption{SubjectRevision: "head-abc", EvidenceIDs: []string{"review-b", "review-a", "review-a"}}
+	bindings, err := authoritativeExternalEvidenceBindings(snapshot, consumption)
+	if err != nil || len(bindings) != 2 || bindings[0].ProcessID != "PROCESS-001" || bindings[1].ProcessID != "PROCESS-002" {
+		t.Fatalf("bindings=%+v err=%v", bindings, err)
+	}
+	duplicated := append(bindings, bindings[0])
+	if normalized := normalizeExternalEvidenceBindings(duplicated); len(normalized) != 2 || normalized[0] != bindings[0] {
+		t.Fatalf("normalized=%+v", normalized)
 	}
 }
 
@@ -338,15 +392,36 @@ func TestConsumedEvidenceStampAndRevisionBindingAreExactAndIdempotent(t *testing
 	if _, err := exactRevisionBoundVerify([]model.Artifact{artifact}, "head-ab"); err == nil {
 		t.Fatal("prefix revision unexpectedly accepted")
 	}
+	if _, _, err := stampConsumedEvidence(body, externalEvidenceConsumption{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code",
+		ChangeID: "change-42", SubjectRevision: "head-abc", EvidenceIDs: []string{"review-1"}}); err == nil {
+		t.Fatal("revision-only consumption without structured binding was accepted")
+	}
 	consumption := externalEvidenceConsumption{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code",
-		ChangeID: "change-42", SubjectRevision: "head-abc", EvidenceIDs: []string{"z", "a"}}
+		ChangeID: "change-42", SubjectRevision: "head-abc", EvidenceIDs: []string{"z", "a"}, Bindings: []externalEvidenceBinding{
+			{ProcessID: "PROCESS-002", SpecID: "SPEC-002", EvidenceID: "z", Kind: codereview.EvidenceReview, SubjectRevision: "head-abc", Trusted: true, Source: "native-authoritative-ledger"},
+			{ProcessID: "PROCESS-001", SpecID: "SPEC-001", EvidenceID: "a", Kind: codereview.EvidenceReview, SubjectRevision: "head-abc", Trusted: true, Source: "native-authoritative-ledger"},
+		}}
 	first, changed, err := stampConsumedEvidence(body, consumption)
-	if err != nil || !changed || !strings.Contains(first, `"evidence_ids":["a","z"]`) {
+	if err != nil || !changed || !strings.Contains(first, `"evidence_ids":["a","z"]`) ||
+		!strings.Contains(first, `"process_id":"PROCESS-001"`) || strings.Index(first, "PROCESS-001") > strings.Index(first, "PROCESS-002") {
 		t.Fatalf("first stamp changed=%v err=%v body=%q", changed, err, first)
 	}
 	second, changed, err := stampConsumedEvidence(first, consumption)
 	if err != nil || changed || second != first || strings.Count(second, consumedEvidenceStart) != 1 {
 		t.Fatalf("second stamp changed=%v err=%v body=%q", changed, err, second)
+	}
+	malformed := map[string]string{
+		"duplicate complete block": first + "\n" + first,
+		"duplicate start":          first + "\n" + consumedEvidenceStart,
+		"duplicate end":            first + "\n" + consumedEvidenceEnd,
+		"interleaved":              body + "\n" + consumedEvidenceEnd + "\n" + consumedEvidenceStart,
+	}
+	for name, candidate := range malformed {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := stampConsumedEvidence(candidate, consumption); err == nil {
+				t.Fatal("malformed consumed evidence markers were accepted")
+			}
+		})
 	}
 }
 

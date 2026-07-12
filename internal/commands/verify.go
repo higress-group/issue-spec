@@ -228,8 +228,9 @@ func exactRevisionBoundVerify(artifacts []model.Artifact, revision string) (*mod
 func stampConsumedEvidence(body string, consumption externalEvidenceConsumption) (string, bool, error) {
 	consumption.EvidenceIDs = append([]string(nil), consumption.EvidenceIDs...)
 	sort.Strings(consumption.EvidenceIDs)
+	consumption.Bindings = normalizeExternalEvidenceBindings(append([]externalEvidenceBinding(nil), consumption.Bindings...))
 	if consumption.ProviderKey == "" || consumption.ExternalRepository == "" || consumption.ChangeID == "" ||
-		consumption.SubjectRevision == "" || len(consumption.EvidenceIDs) == 0 {
+		consumption.SubjectRevision == "" || len(consumption.EvidenceIDs) == 0 || len(consumption.Bindings) == 0 {
 		return "", false, errors.New("consumed evidence identity is incomplete")
 	}
 	raw, err := json.Marshal(consumption)
@@ -237,9 +238,12 @@ func stampConsumedEvidence(body string, consumption externalEvidenceConsumption)
 		return "", false, err
 	}
 	block := consumedEvidenceStart + "\n### Consumed External Evidence\n\n```json\n" + string(raw) + "\n```\n" + consumedEvidenceEnd
-	start := strings.Index(body, consumedEvidenceStart)
-	end := strings.Index(body, consumedEvidenceEnd)
-	if (start < 0) != (end < 0) || (start >= 0 && end < start) {
+	startCount, endCount := strings.Count(body, consumedEvidenceStart), strings.Count(body, consumedEvidenceEnd)
+	if startCount != endCount || startCount > 1 {
+		return "", false, errors.New("existing consumed evidence block is malformed")
+	}
+	start, end := strings.Index(body, consumedEvidenceStart), strings.Index(body, consumedEvidenceEnd)
+	if startCount == 1 && end < start+len(consumedEvidenceStart) {
 		return "", false, errors.New("existing consumed evidence block is malformed")
 	}
 	updated := body
