@@ -163,7 +163,7 @@ func (e *evaluator) evaluateArtifacts() {
 		e.add(CodeVerifyTestEvidenceMissing, "done VERIFY comments do not reference test evidence", ArtifactRef{}, "missing", "test evidence", "comment upsert", "--type", "VERIFY")
 	}
 	for _, spec := range activeSpecs {
-		if !strings.Contains(verifyText, spec.Comment.ID) {
+		if !ReferencesArtifactID(verifyText, spec.Comment.ID) {
 			e.add(CodeVerifySpecCoverageMissing, fmt.Sprintf("%s is not referenced by a done VERIFY", spec.Comment.ID), artifactRef(spec), "uncovered", "covered by done VERIFY", "comment upsert", "--type", "VERIFY")
 		}
 	}

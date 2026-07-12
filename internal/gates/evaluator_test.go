@@ -96,6 +96,19 @@ func TestEvaluateReadyFinalSnapshot(t *testing.T) {
 	}
 }
 
+func TestEvaluateSpecCoverageRequiresExactArtifactID(t *testing.T) {
+	spec := artifact(t, "SPEC", "SPEC-001", "confirmed", specLogical)
+	task := artifact(t, "TASK", "TASK-001", "done", taskLogical)
+	process := artifact(t, "PROCESS", "PROCESS-001", "done", processLogical("N/A", "implementation complete"))
+	verify := artifact(t, "VERIFY", "VERIFY-001", "done", "## Verification Summary\n\nSPEC-0010 covered by go test ./internal/gates.")
+	link(t, &spec, &task)
+	link(t, &task, &process)
+	report := evaluate(t, Snapshot{Target: TargetFinal, Mode: ModeAuthoritative, Artifacts: []model.Artifact{spec, task, process, verify}})
+	if report.Ready || !containsCode(report, CodeVerifySpecCoverageMissing) {
+		t.Fatalf("SPEC-0010 must not cover active SPEC-001: %+v", report)
+	}
+}
+
 func TestEvaluateCanonicalAndTraceabilityCanBeCollectedOrComputed(t *testing.T) {
 	bad := artifact(t, "SPEC", "SPEC-001", "confirmed", "hand-written")
 	computed := evaluate(t, Snapshot{Target: TargetProposal, Mode: ModeForecast, Artifacts: []model.Artifact{bad}})
