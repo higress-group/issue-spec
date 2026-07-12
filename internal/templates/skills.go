@@ -71,7 +71,7 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 ## Start
 
 1. Run issue-spec auth status --json and confirm the active auth source and GitHub backend.
-2. Run issue-spec status --repo {{repo}} --proposal <issue> --design <issue> --implement <issue> --json when issues already exist.
+2. Run issue-spec status --repo {{repo}} --proposal <issue> --design <issue> --implement <issue> --gate <proposal|design|implement|final|archive> --json when issues already exist. Treat status as a point-in-time forecast; final verify re-observes authoritative remote facts.
 3. For new work, create proposal, design, and implement issues with issue-spec issue create and pass --body-file with concrete markdown content.
 4. When an issue body changes, update it in place with issue-spec issue update --body-file and include --summary for the human-readable audit trail.
 5. Store requirements, tasks, process ownership, review, and verify evidence as typed comments.
@@ -101,6 +101,10 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 - Link SPEC <-> TASK and TASK <-> PROCESS with issue-spec link.
 - Each design TASK must carry an ### Execution Planning section (rendered by comment generate --type TASK): owned modules/write areas, shared touchpoints, dependency/interface assumptions, coupling class, recommended execution mode, and complexity/split guidance. comment upsert --type TASK rejects a TASK that omits it.
 - Every PROCESS must record its ### Parent TASK; comment upsert --type PROCESS rejects a PROCESS without one. Serial PROCESS chains under one parent TASK are the default decomposition; each completed serial node records ### Handoff evidence for its successor. Parallelism is a gated optimization enabled only when write ownership is disjoint, not the default.
+- Every PROCESS must declare execution_class when generated: change-bearing, review, verification, orchestration, or external. Legacy missing classes project conservatively to change-bearing; unknown classes block. All classes require TASK, PR, and active SPEC traceability. The class carrier is respectively matching path/line rationale, done REVIEW or resolved finding, done VERIFY or required passing check with test evidence, non-empty coordination handoff, or consumed exact-revision provider evidence.
+- Move an existing typed artifact with issue-spec comment transition --id <id> --to <status> instead of regenerating its body. Conditional backends use --expected-version; a backend without CAS fails closed unless --allow-nonatomic is explicit together with --expected-digest, and the result must report atomic: false. Use --handoff-file, --pr, and --related for the only declared mutations.
+- Apply multi-artifact desired state with issue-spec workflow reconcile --plan <plan.json> --checkpoint <checkpoint.json> --json. Plans are versioned and dependency ordered; keep the checkpoint and rerun the same plan after pending transport/rate-limit failures so remote re-observation can repair lost responses and partial backlinks.
+- Before allocating a delegated worker, run issue-spec doctor agent --repo {{repo}} --operation <operation> --json for every required provider-neutral operation (issue.read, artifact.write, pr.read, pr.review.write, checks.read, git.clone, git.push, or external.change.comment). Strict runner work requires an operator-owned short-lived issuer; legacy_long_lived mirrored gh credentials are compatibility-only and never satisfy strict operation policy.
 - Link every PROCESS to the implementation PR with issue-spec pr link-process.
 - Before implementation PR merge, add GitHub closing links to the implementation PR body with issue-spec pr link-issues so GitHub closes the proposal/design/implement issues when the PR merges. issue-spec pr link-issues MUST be the final write to the implementation PR body: the managed closure block lives in the mutable body, so any later full-body edit silently erases it and GitHub then closes only the issues still named in the body (the observed symptom is the proposal and design issues staying open while only the implement issue closes). Any later body edit MUST preserve the managed closure block verbatim, or re-run issue-spec pr link-issues afterward to restore it.
 - Gate merge on the closure block: before merging the implementation PR, run issue-spec pr verify-closure --repo owner/repo --pr N --proposal N --design N --implement N (exit 0 = block complete/valid; exit 1 = block missing/incomplete/tampered).
@@ -109,7 +113,7 @@ Use this skill for issue-native OpenSpec work. Active change artifacts live in G
 - In runner mode, runner.public_session_id is the public /resume handle. Coordinator-authored proposal, design, implement, handoff, and update issue bodies or comments should include runner.public_session_id and /resume <public-session-id> <answer or next instruction> when available. Do not present Agent Session ID, CODEX_THREAD_ID, acpx record ids, or provider session ids as /resume handles.
 - For non-trivial changes, include review PROCESS nodes in the DAG; review agents are scheduled like worker agents and can run in parallel when their review scopes are independent.
 - Small changes may stay coordinator-only, but record the serial execution decision in the implement or VERIFY evidence.
-- Before human review, add PR rationale comments with issue-spec pr rationale for every active PROCESS.
+- After review/fix convergence, add issue-spec pr rationale only for change-bearing PROCESS nodes; other classes satisfy their class-specific carrier and do not invent arbitrary code-line rationale.
 - Use issue-spec review finding for PR line findings and issue-spec review reply to close the original thread.
 - Run issue-spec review sync and issue-spec verify before declaring ready.
 - After the implementation PR merges, create the separate durable spec PR with issue-spec archive durable-spec --create-pr --close-issues, passing the proposal, design, implement, and implementation PR numbers so archive also idempotently closes any still-open active issues. Use an abstract long-lived --capability directory as an umbrella capability that accumulates related current and future changes, inspect existing related durable specs, and regroup the generated draft by stable capability modules before merge. Archive now accumulates new requirements into an existing capability spec by requirement title (newest wins), so re-archiving into an umbrella capability preserves prior requirements instead of overwriting them.
@@ -215,21 +219,22 @@ links. Run ` + "`issue-spec verify-links`" + ` after propose as a smoke check.
 
 ## Steps
 
-1. Read proposal/design/implement issue context and list typed comments with issue-spec comment list --json.
-2. Confirm issue-spec auth status --json includes the expected GitHub backend. Local gh-authenticated sessions can use the native gh backend; keep ISSUE_SPEC_TOKEN="$(gh auth token)" only as an older-version or forced-rest compatibility path.
-3. Plan the PROCESS DAG before dispatch, then dispatch each non-trivial coding node to a worker sub-agent; do not implement non-trivial code inline in the coordinator context. Delegation exists to keep the coordinator context bounded and avoid mid-task compaction; the coordinator plans and integrates while workers hold the bulk coding context. Context-isolation delegation is the default for every non-trivial node, serial or parallel. Escape hatch: trivial single-file or pure-orchestration work MAY be inlined. Read each active TASK's ### Execution Planning metadata and derive PROCESS nodes from it. Render PROCESS bodies with issue-spec comment generate --type PROCESS --input-file process.json (fields include parent_task, owner, dependencies, write_ownership, handoff) instead of hand-writing Markdown; comment upsert --type PROCESS rejects a PROCESS without a ### Parent TASK.
+1. Read proposal/design/implement issue context and list typed comments with issue-spec comment list --json. Run issue-spec status --repo {{repo}} --proposal <n> --design <n> --implement <n> --gate implement --json before dispatch and use --gate final as the pre-verify forecast.
+2. Confirm issue-spec auth status --json includes the expected GitHub backend. Local gh-authenticated sessions can use the native gh backend; keep ISSUE_SPEC_TOKEN="$(gh auth token)" only as an older-version or forced-rest compatibility path. Before workspace or worker allocation, run issue-spec doctor agent --repo {{repo}} --operation <required-operation> --json; strict delegated work requires an operator-owned short-lived issuer and never silently downgrades to legacy_long_lived host credentials.
+3. Plan the PROCESS DAG before dispatch, then dispatch each non-trivial coding node to a worker sub-agent; do not implement non-trivial code inline in the coordinator context. Delegation exists to keep the coordinator context bounded and avoid mid-task compaction; the coordinator plans and integrates while workers hold the bulk coding context. Context-isolation delegation is the default for every non-trivial node, serial or parallel. Escape hatch: trivial single-file or pure-orchestration work MAY be inlined. Read each active TASK's ### Execution Planning metadata and derive PROCESS nodes from it. Render PROCESS bodies with issue-spec comment generate --type PROCESS --input-file process.json (fields include parent_task, execution_class, owner, dependencies, write_ownership, handoff) instead of hand-writing Markdown; comment upsert --type PROCESS rejects a PROCESS without a ### Parent TASK. Select change-bearing, review, verification, orchestration, or external according to responsibility; a missing legacy class remains conservatively change-bearing.
    Keep Agent as the logical role. Pass assigned subagent/session ids with --agent-session; Codex CODEX_THREAD_ID remains the artifact writer session source of truth when present.
 4. Default to serial PROCESS chains under one parent TASK. Serial chains still delegate: run each node in its own worker connected by a bounded ### Handoff, and seed a successor worker with the parent TASK context plus the predecessor ### Handoff, never the coordinator's accumulated context. Parallelism is a separate, gated optimization, not the trigger for delegation: split into parallel worker PROCESS nodes only when file/module write ownership is provably disjoint.
 5. Add dedicated review PROCESS nodes for non-trivial changes. Review PROCESS nodes should own review scopes such as CLI/API behavior, workflow docs, tests, compatibility, or security-sensitive surfaces.
 6. Link each PROCESS to its TASK comments with issue-spec link.
 7. Implement the code changes for one PROCESS scope at a time, or integrate completed worker outputs by dependency order. The worker that owns a code scope owns its own commits; the coordinator does not author code artifacts on a worker's behalf unless it is the assigned worker.
 8. Link every worker and review PROCESS to the PR with issue-spec pr link-process.
+   Use issue-spec comment transition for status/handoff/PR/related-link changes. Pass an observed --expected-version on conditional backends; for non-CAS compatibility, explicitly pass both --allow-nonatomic and --expected-digest and verify the result says atomic: false. For a dependency-ordered batch, use issue-spec workflow reconcile --plan <plan.json> --checkpoint <checkpoint.json> --json and resume the same digest/checkpoint after pending failures.
 9. Add proposal/design/implement closing links to the implementation PR body, and make this the final write to that PR body:
 
        issue-spec pr link-issues --repo {{repo}} --pr <implementation-pr> --proposal <proposal-issue> --design <design-issue> --implement <implement-issue> --json
 
    The managed closure block lives in the mutable PR body, so any later full-body edit silently erases it and GitHub then closes only the issues still named in the body (the observed symptom is the proposal and design issues staying open while only the implement issue closes). Run link-issues last, or if a later body edit is unavoidable preserve the managed closure block verbatim or re-run issue-spec pr link-issues afterward to restore it. Before merge, gate on the block with issue-spec pr verify-closure --repo {{repo}} --pr <implementation-pr> --proposal <proposal-issue> --design <design-issue> --implement <implement-issue> (exit 0 = block complete/valid; exit 1 = block missing/incomplete/tampered, so restore it before merging).
-10. Add final PR rationale only after review/fix convergence, not as pre-review readiness evidence. Once all P0/P1 findings are resolved, the coordinator dispatches each owning worker to add rationale on the key code blocks that worker owns with issue-spec pr rationale (worker --agent and --agent-session), each linked to a SPEC comment.
+10. Add final PR rationale only after review/fix convergence and only for change-bearing PROCESS nodes. Once all P0/P1 findings are resolved, the coordinator dispatches each owning worker to add rationale on the key code blocks that worker owns with issue-spec pr rationale (worker --agent and --agent-session), each linked to a SPEC comment. review requires a linked done REVIEW or resolved finding; verification requires a linked done VERIFY or required passing check with test evidence; orchestration requires a non-empty coordination handoff; external requires consumed exact-revision provider evidence. Every class still requires TASK, PR, and active SPEC traceability.
 11. Mark PROCESS comments done only after implementation/review work and focused verification evidence exist.
 
 ## Coordinator DAG Execution
@@ -256,11 +261,11 @@ Use when the user asks for /issue-spec:review, issue-spec review, or a PR review
 
 ## Steps
 
-1. Run issue-spec review sync --repo {{repo}} --pr <number> --implement <issue> --id REVIEW-<n> --json to capture current rationale comments, findings, checks, and artifact writer session diagnostics. review sync owns the established "## Review Sync Summary" REVIEW body shape; do not hand-edit it. For separate manual review evidence, generate a REVIEW body with issue-spec comment generate --type REVIEW --input-file review.json.
-2. For non-trivial PRs, spawn or assign dedicated review agents as review PROCESS owners. Multiple review agents can run in parallel when their review scopes are independent.
+1. Run issue-spec review sync --repo {{repo}} --pr <number> --implement <issue> --id REVIEW-<n> --json to capture current rationale comments, findings, checks, per-PROCESS execution class and evidence diagnostics. review sync owns the established "## Review Sync Summary" REVIEW body shape; do not hand-edit it. For separate manual review evidence, generate a REVIEW body with issue-spec comment generate --type REVIEW --input-file review.json.
+2. For non-trivial PRs, spawn or assign dedicated review agents as review PROCESS owners. Multiple review agents can run in parallel when their review scopes are independent. A review PROCESS is complete only with a linked done REVIEW or resolved finding covering an active SPEC; it still needs TASK and PR links.
 3. Give each review agent a concrete scope and expected output: actionable findings only, severity, file/line, linked SPEC, owner PROCESS, and suggested fix.
 4. Each review agent authors its own actionable PR line findings directly with issue-spec review finding, using its own --agent identity and assigned --agent-session. Use P0/P1 for blockers and P2 for non-blocking follow-up. The coordinator does not create findings on a review agent's behalf.
-5. Assign every finding to a PROCESS owner. If no findings are found, record that result in REVIEW or VERIFY evidence.
+5. Assign every finding to a PROCESS owner. If no findings are found, record that result in the synced REVIEW, then link that REVIEW bidirectionally to both its review PROCESS and every covered active SPEC before completing the PROCESS. Use issue-spec link --repo {{repo}} --from REVIEW-<n> --from-issue <implement-issue> --to PROCESS-<n> --to-issue <implement-issue>, then issue-spec link --repo {{repo}} --from REVIEW-<n> --from-issue <implement-issue> --to SPEC-<n> --to-issue <proposal-issue> for each covered SPEC. Run these commands after the final review sync so sync cannot replace the evidence links.
 6. The worker that owns the affected code fixes it and replies on the original finding thread with issue-spec review reply using its own --agent and --agent-session. The review agent that opened the finding then re-checks the diff and owns the resolved reply or GitHub conversation resolution; a worker reply alone does not resolve a finding.
 7. Re-run review sync. P0/P1 findings must be resolved by review-agent evidence before final verify/archive.
 
@@ -271,7 +276,7 @@ Use when the user asks for /issue-spec:review, issue-spec review, or a PR review
 3. Each review agent authors its own findings with issue-spec review finding under its own agent identity; the coordinator schedules review agents and routes blockers but does not author findings on their behalf.
 4. Route findings to the owner PROCESS or a dedicated repair PROCESS. Repair PROCESS nodes are DAG nodes too: they follow the same serial/parallel gating as implementation nodes and record ### Handoff evidence when part of a serial chain.
 5. P0/P1 findings block final verify until the owning worker fixes them and replies on the thread, and the review agent that opened the finding re-checks and records the resolution or resolves the GitHub conversation.
-6. If a review agent finds no issues, record that result in REVIEW or VERIFY evidence before marking the review PROCESS done.
+6. If a review agent finds no issues, use the final synced REVIEW as the evidence carrier. Run the two issue-spec link flows above, then confirm with issue-spec comment list --repo {{repo}} --issue <implement-issue> --type REVIEW --json that Related Comments contains the review PROCESS URL and each covered active SPEC URL before marking the review PROCESS done. A no-finding statement without both link classes is incomplete review evidence.
 `,
 		},
 		{
@@ -285,17 +290,18 @@ Use when the user asks for /issue-spec:verify, issue-spec verify, or final readi
 
 ## Steps
 
-1. Run focused project tests and record evidence in VERIFY comments. Generate VERIFY bodies with issue-spec comment generate --type VERIFY --input-file verify.json instead of hand-writing Markdown, and reference the covered SPEC IDs so final verify can confirm coverage.
-2. Run issue-spec verify-links --repo {{repo}} --proposal <issue> --design <issue> --implement <issue> --json.
-3. Render a durable spec draft:
+1. Run issue-spec status --repo {{repo}} --proposal <issue> --design <issue> --implement <issue> --gate final --json and resolve every locally knowable blocker. This is a forecast, not a substitute for authoritative final verify.
+2. Run focused project tests and record evidence in VERIFY comments. Generate VERIFY bodies with issue-spec comment generate --type VERIFY --input-file verify.json instead of hand-writing Markdown, and reference the covered SPEC IDs so final verify can confirm coverage. A verification PROCESS needs a linked done VERIFY or required passing check with test evidence; inspect every per-PROCESS evidence report rather than requiring rationale from non-change-bearing classes.
+3. Run issue-spec verify-links --repo {{repo}} --proposal <issue> --design <issue> --implement <issue> --json.
+4. Render a durable spec draft:
 
        issue-spec archive durable-spec --repo {{repo}} --proposal <issue> --capability <capability> --output /tmp/<capability>-spec.md --json
 
-4. Run final verify:
+5. Run final verify:
 
        issue-spec verify --repo {{repo}} --proposal <issue> --design <issue> --implement <issue> --pr <pr> --durable-spec /tmp/<capability>-spec.md --json
 
-5. Final verify must fail if blocking questions, missing links, missing PROCESS rationale, open P0/P1 findings, failed or pending PR checks, or durable spec omissions exist.
+6. Final verify must fail if blocking questions, missing links, missing class-specific PROCESS evidence, open P0/P1 findings, failed or pending PR checks, or durable spec omissions exist. Only change-bearing PROCESS nodes require matching inline rationale; review, verification, orchestration, and external nodes use their proportional evidence carriers.
 `,
 		},
 		{

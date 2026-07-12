@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/capability"
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	nativeauth "github.com/higress-group/issue-spec/internal/server/api/native/auth"
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
@@ -200,7 +201,8 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	delegatedCreated, err := delegated.Issue(t.Context(), delegation.IssueInput{
 		Issuer: patPrincipal, Repo: models.RepoScope{OrgID: orgID, RepoID: repoID}, JobID: "job-1",
 		Purpose: "comment-writeback", Audience: "issue-spec-server", Subject: "runner-child",
-		Scopes: []string{"issues:write"}, TTL: 5 * time.Minute,
+		Scopes: []string{"issues:write"}, Operations: []capability.Operation{capability.OperationIssueRead,
+			capability.OperationArtifactWrite}, TTL: 5 * time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -209,7 +211,9 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 		Repo: models.RepoScope{OrgID: orgID, RepoID: repoID}, JobID: "job-1",
 		Purpose: "comment-writeback", Audience: "issue-spec-server",
 	})
-	if err != nil || !delegatedPrincipal.HasScope("issues:write") {
+	if err != nil || !delegatedPrincipal.HasScope("issues:write") ||
+		!delegatedPrincipal.HasOperation(string(capability.OperationArtifactWrite)) ||
+		delegatedPrincipal.HasOperation(string(capability.OperationIssueCommentWrite)) {
 		t.Fatalf("delegated auth = %+v, %v", delegatedPrincipal, err)
 	}
 	if _, err := delegated.Authenticate(t.Context(), delegatedCreated.Plaintext,

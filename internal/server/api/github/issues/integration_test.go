@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -239,6 +240,79 @@ func TestIssueCommentHTTPCompatibilityMarkerAndAuthorization(t *testing.T) {
 	if response.Code != http.StatusInternalServerError || countRows(t, environment.pool, "issues") != before {
 		t.Fatalf("hook rollback status=%d before=%d after=%d", response.Code, before, countRows(t, environment.pool, "issues"))
 	}
+}
+
+func TestIssueCommentConditionalMutationCASAndConflictIdentity(t *testing.T) {
+	environment := newEnvironment(t, models.VisibilityPrivate)
+	subject := authz.Authenticated(environment.owner)
+	_, issue, err := environment.service.CreateIssue(t.Context(), "acme", "widgets", subject,
+		models.NewIssue{Title: "conditional", Body: "raw"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, comment, err := environment.service.CreateComment(t.Context(), "acme", "widgets", issue.Issue.Number, subject, "before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commentID := codec.StableNumericID(comment.Comment.ID.String())
+	mux := environment.mux(t)
+	path := fmt.Sprintf("/repos/acme/widgets/issues/comments/%d", commentID)
+
+	observed := request(t, mux, http.MethodGet, path, "", "owner")
+	if observed.Code != http.StatusOK || observed.Header().Get("X-Issue-Spec-Conditional-Comment-Mutation") != "representation-version" {
+		t.Fatalf("observe status=%d headers=%v body=%s", observed.Code, observed.Header(), observed.Body.String())
+	}
+	version, err := strconv.ParseInt(observed.Header().Get("X-Issue-Spec-Representation-Version"), 10, 64)
+	if err != nil || version <= 0 {
+		t.Fatalf("observed version=%q err=%v", observed.Header().Get("X-Issue-Spec-Representation-Version"), err)
+	}
+
+	success := conditionalCommentRequest(t, mux, path, version, "after")
+	if success.Code != http.StatusOK || success.Header().Get("X-Issue-Spec-Representation-Version") != strconv.FormatInt(version+1, 10) {
+		t.Fatalf("success status=%d headers=%v body=%s", success.Code, success.Header(), success.Body.String())
+	}
+	beforeConflictOutbox := countRows(t, environment.pool, "event_outbox")
+	stale := conditionalCommentRequest(t, mux, path, version, "stale overwrite")
+	if stale.Code != http.StatusConflict ||
+		stale.Header().Get("X-Issue-Spec-Representation-Version") != strconv.FormatInt(version+1, 10) ||
+		stale.Header().Get("X-Issue-Spec-Expected-Representation-Version") != strconv.FormatInt(version, 10) ||
+		stale.Header().Get("X-Issue-Spec-Conditional-Comment-Mutation") != "representation-version" {
+		t.Fatalf("stale status=%d headers=%v body=%s", stale.Code, stale.Header(), stale.Body.String())
+	}
+	if countRows(t, environment.pool, "event_outbox") != beforeConflictOutbox {
+		t.Fatal("conflict emitted an outbox event")
+	}
+	var body string
+	var current int64
+	if err := environment.pool.QueryRow(t.Context(), `SELECT body, representation_version FROM comments
+		WHERE organization_id = $1 AND repository_id = $2 AND compatibility_id = $3`,
+		environment.scope.OrgID, environment.scope.RepoID, commentID).Scan(&body, &current); err != nil {
+		t.Fatal(err)
+	}
+	if body != "after" || current != version+1 {
+		t.Fatalf("conflict mutated comment body=%q version=%d", body, current)
+	}
+
+	invalid := httptest.NewRequest(http.MethodPatch, path, bytes.NewBufferString(`{"body":"invalid"}`))
+	invalid.Header.Set("Authorization", "Bearer owner")
+	invalid.Header.Set("Content-Type", "application/json")
+	invalid.Header.Set("X-Issue-Spec-Expected-Representation-Version", "not-a-version")
+	invalidResponse := httptest.NewRecorder()
+	mux.ServeHTTP(invalidResponse, invalid)
+	if invalidResponse.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid precondition status=%d body=%s", invalidResponse.Code, invalidResponse.Body.String())
+	}
+}
+
+func conditionalCommentRequest(t *testing.T, handler http.Handler, path string, expected int64, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPatch, path, bytes.NewBufferString(jsonBody(map[string]any{"body": body})))
+	request.Header.Set("Authorization", "Bearer owner")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Issue-Spec-Expected-Representation-Version", strconv.FormatInt(expected, 10))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
 }
 
 func TestConcurrentIssueCommentVersionsCASAndProjectionRollback(t *testing.T) {

@@ -222,15 +222,16 @@ func writeNestedBullets(b *strings.Builder, items []string) {
 // PROCESS node passes to the next node in its chain; it renders as N/A for
 // parallel or not-yet-started nodes and is enforced for serial chains at verify.
 type ProcessInput struct {
-	Title          string   `json:"title"`
-	Owner          string   `json:"owner"`
-	ParentTask     string   `json:"parent_task"`
-	Scope          string   `json:"scope"`
-	Dependencies   []string `json:"dependencies"`
-	WriteOwnership []string `json:"write_ownership"`
-	Covers         []string `json:"covers"`
-	Handoff        string   `json:"handoff"`
-	StatusNote     string   `json:"status_note"`
+	Title          string                      `json:"title"`
+	Owner          string                      `json:"owner"`
+	ParentTask     string                      `json:"parent_task"`
+	ExecutionClass model.ProcessExecutionClass `json:"execution_class"`
+	Scope          string                      `json:"scope"`
+	Dependencies   []string                    `json:"dependencies"`
+	WriteOwnership []string                    `json:"write_ownership"`
+	Covers         []string                    `json:"covers"`
+	Handoff        string                      `json:"handoff"`
+	StatusNote     string                      `json:"status_note"`
 }
 
 type ProcessCommentOptions struct {
@@ -243,10 +244,19 @@ func ProcessComment(opts ProcessCommentOptions) (string, error) {
 	if title == "" {
 		return "", fmt.Errorf("title is required")
 	}
+	executionClass := opts.Input.ExecutionClass
+	if executionClass == "" {
+		executionClass = model.ProcessExecutionChangeBearing
+	}
+	var err error
+	if executionClass, err = model.ParseProcessExecutionClassValue(string(executionClass)); err != nil {
+		return "", err
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Process: %s\n", title)
 	fmt.Fprintf(&b, "\n### Owner\n\n- %s\n", valueOr(strings.TrimSpace(opts.Input.Owner), "Worker Agent"))
 	fmt.Fprintf(&b, "\n### Parent TASK\n\n- %s\n", valueOr(strings.TrimSpace(opts.Input.ParentTask), "TBD"))
+	fmt.Fprintf(&b, "\n### Execution Class\n\n- %s\n", executionClass)
 	if scope := strings.TrimSpace(opts.Input.Scope); scope != "" {
 		fmt.Fprintf(&b, "\n### Scope\n\n%s\n", scope)
 	}

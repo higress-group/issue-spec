@@ -19,6 +19,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/acpx"
 	clientauth "github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/capability"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	runnercontext "github.com/higress-group/issue-spec/internal/commentrunner/context"
 	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
@@ -112,6 +113,10 @@ type CredentialBroker interface {
 	RevokeJob(context.Context, models.RepoScope, string) error
 }
 
+type CapabilityPreflight interface {
+	Probe(context.Context, credentials.PreflightRequest) capability.Report
+}
+
 type EvidencePreGateRequest struct {
 	Repo           string
 	IssueNumber    int
@@ -148,6 +153,9 @@ type Dispatcher struct {
 	CoordinatorExtraEnv map[string]string
 	CredentialBroker    CredentialBroker
 	CredentialScopes    map[string]models.RepoScope
+	CapabilityPreflight CapabilityPreflight
+	CapabilityHost      string
+	RequiredOperations  []capability.Operation
 	EvidencePreGate     EvidencePreGate
 }
 
@@ -539,6 +547,9 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 	if err != nil {
 		return d.fail(ctx, job.ID, "repository-binding", err)
 	}
+	if err := d.preflightRequiredOperations(ctx, job); err != nil {
+		return d.fail(ctx, job.ID, "capability-preflight", err)
+	}
 	if err := d.pinJobRepositoryBinding(ctx, job.ID, repo.Binding); err != nil {
 		return d.fail(ctx, job.ID, "repository-binding", err)
 	}
@@ -556,7 +567,8 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 		if err != nil {
 			return Result{Executed: true, JobID: jobID, Status: state.StatusFailed}, err
 		}
-		credentialLease, err = d.CredentialBroker.Acquire(ctx, credentials.AcquireRequest{Repo: scope, JobID: job.ID, Binding: repo.Binding})
+		credentialLease, err = d.CredentialBroker.Acquire(ctx, credentials.AcquireRequest{Repo: scope, JobID: job.ID, Binding: repo.Binding,
+			Operations: append([]capability.Operation(nil), d.RequiredOperations...)})
 		if err != nil {
 			_, cleanupErr, stateErr := d.attemptCredentialCleanup(ctx, job)
 			return d.fail(ctx, job.ID, "credentials", errors.Join(err, cleanupErr, stateErr))

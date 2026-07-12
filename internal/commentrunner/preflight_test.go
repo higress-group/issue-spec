@@ -642,6 +642,25 @@ func testPreflightConfig(t *testing.T) Config {
 	return testPreflightConfigWithoutAuth()
 }
 
+func TestPreflightLabelsLegacyGHAndFailsClosedWhenStrict(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	report := RunPreflightForTransport(t.Context(), cfg, PreflightTransportPoll, passingPreflightDependencies(t))
+	if !report.OK {
+		t.Fatalf("legacy compatibility report unexpectedly blocked: %+v", report)
+	}
+	legacy := findCheck(t, report, "agent-credential-mode")
+	if legacy.Status != CheckWarning || !strings.Contains(legacy.Detail, "legacy_long_lived") || !strings.Contains(legacy.Detail, "non-compliant") {
+		t.Fatalf("legacy check = %+v", legacy)
+	}
+	cfg.StrictAgentCapabilities = true
+	report = RunPreflightForTransport(t.Context(), cfg, PreflightTransportPoll, passingPreflightDependencies(t))
+	strict := findCheck(t, report, "agent-credential-mode")
+	if report.OK || strict.Status != CheckError || !strings.Contains(strict.Detail, "cannot satisfy strict") {
+		t.Fatalf("strict report = %+v", report)
+	}
+}
+
 func testPreflightConfigWithoutAuth() Config {
 	return Config{
 		Hostname:            "github.com",

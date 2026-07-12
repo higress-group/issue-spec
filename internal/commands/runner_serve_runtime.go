@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/capability"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
 	webhook "github.com/higress-group/issue-spec/internal/commentrunner/intake/webhook"
@@ -132,7 +133,10 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 		Repositories: repository.NativeResolver{Bindings: native, Scopes: scopes.ByRepository},
 		Workspaces:   workspaces, Sandbox: sandboxer, Acpx: acpxFactory, Artifacts: artifacts, Writeback: writebacks,
 		AcpxBinary: input.Runner.AcpxPath, IssueSpecBinary: issueSpecBinary, CredentialBroker: broker,
-		CredentialScopes: scopes.ByRepository, EvidencePreGate: newRunnerEvidencePreGate(profile)}
+		CredentialScopes: scopes.ByRepository, CapabilityPreflight: broker, CapabilityHost: profile.Hostname,
+		RequiredOperations: []capability.Operation{capability.OperationIssueRead, capability.OperationIssueCommentWrite,
+			capability.OperationArtifactWrite, capability.OperationGitClone, capability.OperationGitPush},
+		EvidencePreGate: newRunnerEvidencePreGate(profile)}
 	return runnerserver.NewRuntime(runnerserver.RuntimeConfig{HTTP: input.HTTP, Reconciler: reconciler,
 		Dispatcher: dispatcher, MaxConcurrentJobs: input.Runner.MaxConcurrentJobs})
 }

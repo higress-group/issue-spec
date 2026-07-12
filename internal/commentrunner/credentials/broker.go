@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	clientauth "github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/capability"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/sandbox"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
@@ -44,9 +45,28 @@ type Broker struct {
 }
 
 type AcquireRequest struct {
+	Repo       models.RepoScope
+	JobID      string
+	Binding    state.RepositoryBindingSnapshot
+	Operations []capability.Operation
+}
+
+// PreflightRequest is secret-free and may be persisted by the runner. Repo is
+// the authoritative self-hosted UUID scope; Request.Repository is its public
+// owner/name coordinate used in diagnostics.
+type PreflightRequest struct {
+	Request capability.Request
 	Repo    models.RepoScope
 	JobID   string
-	Binding state.RepositoryBindingSnapshot
+}
+
+// OperationIssuer is the operator-owned boundary consumed by strict runner
+// dispatch. Implementations must preflight without issuing a credential and
+// must return only redacted capability reports.
+type OperationIssuer interface {
+	Probe(context.Context, PreflightRequest) capability.Report
+	Acquire(context.Context, AcquireRequest) (*Lease, error)
+	RevokeJob(context.Context, models.RepoScope, string) error
 }
 
 type Lease struct {
@@ -83,6 +103,11 @@ func (b *Broker) Acquire(ctx context.Context, request AcquireRequest) (*Lease, e
 	if len(scopes) == 0 {
 		scopes = []string{"read:user", "issues:read", "issues:write"}
 	}
+	operations := effectiveBrokerOperations(request.Operations)
+	if !brokerScopesAllowOperations(scopes, operations) {
+		return nil, errors.New("credential broker: requested operations exceed configured scopes")
+	}
+	request.Operations = operations
 	created, err := b.exchange(ctx, request, ttl, scopes)
 	if err != nil {
 		return nil, b.compensateFailedAcquire(ctx, request, err)
@@ -95,12 +120,62 @@ func (b *Broker) Acquire(ctx context.Context, request AcquireRequest) (*Lease, e
 	}
 	jobRoot := filepath.Dir(lease.IssueToken.HostPath)
 	lease.gitRoot = jobRoot
-	lease.Git, err = NewGitLease(ctx, jobRoot, request.JobID, request.Binding, b.GitProvider)
+	lease.Git, err = NewGitLease(ctx, jobRoot, request.JobID, capability.OperationGitClone, request.Binding, b.GitProvider)
 	if err != nil {
 		return nil, b.compensateFailedAcquire(ctx, request,
 			fmt.Errorf("credential broker: acquire git credential: %w", err))
 	}
 	return lease, nil
+}
+
+func (b *Broker) Probe(_ context.Context, request PreflightRequest) capability.Report {
+	req := request.Request
+	profile, profileErr := b.Profile.Normalized()
+	ttl := b.TTL
+	if ttl == 0 {
+		ttl = 5 * time.Minute
+	}
+	if profileErr != nil || profile.Kind != clientauth.ProfileKindHosted || request.Repo.Validate() != nil ||
+		!validJobID(request.JobID) || strings.TrimSpace(req.Repository) == "" ||
+		!strings.EqualFold(strings.TrimSpace(req.Host), profile.Hostname) || ttl < delegation.MinTTL || ttl > delegation.MaxTTL {
+		return capability.FailureReport(req, "delegated", "operator-issuer", "unknown", capability.DecisionDenied,
+			capability.FailureInvalidRequest, "operator credential issuer request is invalid")
+	}
+	scopes := append([]string(nil), b.Scopes...)
+	if len(scopes) == 0 {
+		scopes = []string{"read:user", "issues:read", "issues:write"}
+	}
+	report := capability.Report{Host: req.Host, Repository: req.Repository, Backend: "operator-issuer",
+		Credential: capability.CredentialSummary{SourceClass: "delegated", ExpiryKnown: true},
+		Network:    capability.NetworkSummary{Status: "configured"}}
+	expiresAt := time.Now().UTC().Add(ttl)
+	report.Credential.ExpiresAt = &expiresAt
+	for _, operation := range effectiveBrokerOperations(req.Operations) {
+		result := capability.OperationResult{Operation: operation}
+		switch operation {
+		case capability.OperationIssueRead, capability.OperationIssueCommentWrite, capability.OperationArtifactWrite:
+			if brokerScopesAllowOperations(scopes, []capability.Operation{operation}) {
+				result.Decision = capability.DecisionAllowed
+			} else {
+				result.Decision, result.Code, result.Detail = capability.DecisionDenied,
+					capability.FailureInsufficientPermission, "operator issuer scope does not allow operation"
+			}
+		case capability.OperationGitClone, capability.OperationGitPush:
+			provider, supported := b.GitProvider.(GitPurposeProvider)
+			if supported && provider.SupportsPurpose(operation) {
+				result.Decision = capability.DecisionAllowed
+			} else {
+				result.Decision, result.Code, result.Detail = capability.DecisionDenied,
+					capability.FailureOperationNotProvable, "operator git credential issuer is unavailable"
+			}
+		default:
+			result.Decision, result.Code, result.Detail = capability.DecisionUnknown,
+				capability.FailureUnsupportedOperationSurface, "self-hosted runner issuer does not provide this operation"
+		}
+		report.Operations = append(report.Operations, result)
+	}
+	report.Finish()
+	return report
 }
 
 // compensateFailedAcquire treats every exchange error as an uncertain remote
@@ -130,7 +205,7 @@ func (l *Lease) PrepareChildGit(ctx context.Context) error {
 			return err
 		}
 	}
-	next, err := NewGitLease(ctx, l.gitRoot, l.JobID, l.binding, l.broker.GitProvider)
+	next, err := NewGitLease(ctx, l.gitRoot, l.JobID, capability.OperationGitPush, l.binding, l.broker.GitProvider)
 	if err != nil {
 		return err
 	}
@@ -204,7 +279,8 @@ func (b *Broker) revokeGitJobBounded(parent context.Context, jobID string) error
 
 func (b *Broker) exchange(ctx context.Context, request AcquireRequest, ttl time.Duration, scopes []string) (delegation.Created, error) {
 	body, err := json.Marshal(map[string]any{"job_id": request.JobID, "purpose": "issue-api", "audience": b.Audience,
-		"subject": b.Subject, "scopes": scopes, "ttl_seconds": int64(ttl / time.Second), "replace": true})
+		"subject": b.Subject, "scopes": scopes, "operations": issueCredentialOperations(request.Operations),
+		"ttl_seconds": int64(ttl / time.Second), "replace": true})
 	if err != nil {
 		return delegation.Created{}, err
 	}
@@ -245,6 +321,59 @@ func (b *Broker) exchange(ctx context.Context, request AcquireRequest, ttl time.
 	}
 	return created, nil
 }
+
+func issueCredentialOperations(operations []capability.Operation) []capability.Operation {
+	var result []capability.Operation
+	for _, operation := range effectiveBrokerOperations(operations) {
+		switch operation {
+		case capability.OperationIssueRead, capability.OperationIssueCommentWrite, capability.OperationArtifactWrite:
+			result = append(result, operation)
+		}
+	}
+	return result
+}
+
+func effectiveBrokerOperations(operations []capability.Operation) []capability.Operation {
+	if len(operations) == 0 {
+		return []capability.Operation{capability.OperationIssueRead, capability.OperationIssueCommentWrite,
+			capability.OperationArtifactWrite, capability.OperationGitClone, capability.OperationGitPush}
+	}
+	seen := map[capability.Operation]bool{}
+	result := make([]capability.Operation, 0, len(operations))
+	for _, operation := range operations {
+		if operation != "" && !seen[operation] {
+			seen[operation] = true
+			result = append(result, operation)
+		}
+	}
+	return result
+}
+
+func brokerScopesAllowOperations(scopes []string, operations []capability.Operation) bool {
+	granted := map[string]bool{}
+	for _, scope := range scopes {
+		granted[strings.TrimSpace(scope)] = true
+	}
+	for _, operation := range operations {
+		switch operation {
+		case capability.OperationIssueRead:
+			if !granted["issues:read"] && !granted["issues:write"] && !granted["repo"] {
+				return false
+			}
+		case capability.OperationIssueCommentWrite, capability.OperationArtifactWrite:
+			if !granted["issues:write"] && !granted["repo"] {
+				return false
+			}
+		case capability.OperationGitClone, capability.OperationGitPush:
+			// Git operations are enforced by the independent operator provider.
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+var _ OperationIssuer = (*Broker)(nil)
 
 func credentialCleanupContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if parent == nil {

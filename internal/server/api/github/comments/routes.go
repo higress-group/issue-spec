@@ -16,6 +16,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
 	"github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/models"
+	"github.com/higress-group/issue-spec/internal/server/store"
 )
 
 type Dependencies struct {
@@ -135,7 +136,7 @@ func (h handlers) get(w http.ResponseWriter, r *http.Request) {
 		issues.WriteError(w, r, err)
 		return
 	}
-	w.Header().Set(githubRepresentationVersionHeader, strconv.FormatInt(item.Comment.RepresentationVersion, 10))
+	h.setCommentConditional(w, item)
 	etag := commentETag(item)
 	if pagination.WriteNotModified(w, r, etag, item.Comment.UpdatedAt, h.conditional.Rate()) {
 		return
@@ -189,9 +190,27 @@ func (h handlers) update(w http.ResponseWriter, r *http.Request) {
 		apierrors.WriteGitHub(w, apierrors.Validation(issues.RequestID(r), violations))
 		return
 	}
-	resource, item, err := h.service.UpdateComment(r.Context(), r.PathValue("owner"), r.PathValue("repo"),
-		id, issues.Subject(r), *input.Body)
+	expected, valid := expectedRepresentationVersion(w, r)
+	if !valid {
+		return
+	}
+	var resource models.RepositoryResource
+	var item models.CommentSnapshot
+	var err error
+	if expected == nil {
+		resource, item, err = h.service.UpdateComment(r.Context(), r.PathValue("owner"), r.PathValue("repo"),
+			id, issues.Subject(r), *input.Body)
+	} else {
+		resource, item, err = h.service.UpdateCommentConditional(r.Context(), r.PathValue("owner"), r.PathValue("repo"),
+			id, *expected, issues.Subject(r), *input.Body)
+	}
 	if err != nil {
+		var conflict *store.CommentVersionConflictError
+		if errors.As(err, &conflict) {
+			w.Header().Set(githubRepresentationVersionHeader, strconv.FormatInt(conflict.Current, 10))
+			w.Header().Set(githubExpectedRepresentationVersionHeader, strconv.FormatInt(conflict.Expected, 10))
+			w.Header().Set(githubConditionalCommentMutationHeader, conditionalCommentMutationVersion)
+		}
 		issues.WriteError(w, r, err)
 		return
 	}
@@ -215,8 +234,29 @@ func commentETag(item models.CommentSnapshot) string {
 
 func (h handlers) setCommentConditional(w http.ResponseWriter, item models.CommentSnapshot) {
 	w.Header().Set(githubRepresentationVersionHeader, strconv.FormatInt(item.Comment.RepresentationVersion, 10))
+	w.Header().Set(githubConditionalCommentMutationHeader, conditionalCommentMutationVersion)
 	pagination.SetConditionalHeaders(w.Header(), commentETag(item), item.Comment.UpdatedAt)
 	pagination.SetRateHeaders(w.Header(), h.conditional.Rate())
 }
 
-const githubRepresentationVersionHeader = "X-Issue-Spec-Representation-Version"
+const (
+	githubRepresentationVersionHeader         = "X-Issue-Spec-Representation-Version"
+	githubExpectedRepresentationVersionHeader = "X-Issue-Spec-Expected-Representation-Version"
+	githubConditionalCommentMutationHeader    = "X-Issue-Spec-Conditional-Comment-Mutation"
+	conditionalCommentMutationVersion         = "representation-version"
+)
+
+func expectedRepresentationVersion(w http.ResponseWriter, r *http.Request) (*int64, bool) {
+	raw := strings.TrimSpace(r.Header.Get(githubExpectedRepresentationVersionHeader))
+	if raw == "" {
+		return nil, true
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		apierrors.WriteGitHub(w, apierrors.Validation(issues.RequestID(r), []codec.Violation{{
+			Resource: "IssueComment", Field: "representation_version", Code: "invalid", Message: "must be a positive integer",
+		}}))
+		return nil, false
+	}
+	return &value, true
+}

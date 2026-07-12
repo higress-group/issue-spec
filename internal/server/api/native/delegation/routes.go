@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/capability"
 	adminapi "github.com/higress-group/issue-spec/internal/server/api/native/admin"
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
@@ -52,13 +53,14 @@ type handlers struct {
 }
 
 type exchangeRequest struct {
-	JobID      string   `json:"job_id"`
-	Purpose    string   `json:"purpose"`
-	Audience   string   `json:"audience"`
-	Subject    string   `json:"subject"`
-	Scopes     []string `json:"scopes"`
-	TTLSeconds int64    `json:"ttl_seconds"`
-	Replace    bool     `json:"replace,omitempty"`
+	JobID      string                 `json:"job_id"`
+	Purpose    string                 `json:"purpose"`
+	Audience   string                 `json:"audience"`
+	Subject    string                 `json:"subject"`
+	Scopes     []string               `json:"scopes"`
+	Operations []capability.Operation `json:"operations,omitempty"`
+	TTLSeconds int64                  `json:"ttl_seconds"`
+	Replace    bool                   `json:"replace,omitempty"`
 }
 
 func (h handlers) exchange(w http.ResponseWriter, r *http.Request) {
@@ -73,13 +75,14 @@ func (h handlers) exchange(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(request.Purpose) != PurposeIssueAPI || strings.TrimSpace(request.Audience) != h.audience ||
 		strings.TrimSpace(request.Subject) != h.subject || !validJobID(request.JobID) ||
+		len(request.Operations) == 0 ||
 		request.TTLSeconds < int64(delegation.MinTTL/time.Second) || request.TTLSeconds > int64(delegation.MaxTTL/time.Second) {
 		adminapi.WriteProblem(w, http.StatusUnprocessableEntity, "invalid_request", "Invalid credential exchange")
 		return
 	}
 	created, err := h.service.Issue(r.Context(), delegation.IssueInput{
 		Issuer: principal, Repo: scope, JobID: strings.TrimSpace(request.JobID), Purpose: PurposeIssueAPI,
-		Audience: h.audience, Subject: h.subject, Scopes: request.Scopes,
+		Audience: h.audience, Subject: h.subject, Scopes: request.Scopes, Operations: request.Operations,
 		TTL: time.Duration(request.TTLSeconds) * time.Second, RequestID: adminapi.RequestID(r), Replace: request.Replace,
 	})
 	if err != nil {

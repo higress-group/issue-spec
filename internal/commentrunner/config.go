@@ -49,6 +49,7 @@ type Config struct {
 	BwrapPath               string                 `json:"bwrap_path,omitempty"`
 	UnsafeNoSandbox         bool                   `json:"unsafe_no_sandbox"`
 	GHConfigDir             string                 `json:"gh_config_dir,omitempty"`
+	StrictAgentCapabilities bool                   `json:"strict_agent_capabilities"`
 	CancellationEnabled     bool                   `json:"cancellation_enabled"`
 	// Logging configuration
 	LogDir           string `json:"log_dir,omitempty"`

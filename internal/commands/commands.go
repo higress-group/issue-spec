@@ -14,6 +14,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/capability"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
@@ -40,6 +41,7 @@ type app struct {
 	runnerCancellationDrain      func(context.Context, commentrunner.Config) (jobs.Result, error)
 	newNativeEvidenceProvider    func(auth.Profile, string) (nativeEvidenceProvider, error)
 	resolveCodeMutationProvider  func(context.Context, string) (codereview.MutationProvider, error)
+	doctorAgentProbe             func(context.Context, capability.Request) (capability.Report, error)
 }
 
 type commandFunc func(context.Context, []string) int
@@ -60,6 +62,8 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 	switch args[0] {
 	case "auth":
 		return a.runAuth(ctx, args[1:])
+	case "doctor":
+		return a.runDoctor(ctx, args[1:])
 	case "init":
 		return a.runInit(ctx, args[1:])
 	case "issue":
@@ -169,11 +173,13 @@ func (a *app) printUsage() {
 Usage:
   issue-spec [--profile name] <command> [options]
   issue-spec auth status|login|logout|token
+  issue-spec doctor agent --repo owner/repo --operation issue.read [--operation pr.read]
   issue-spec init --repo owner/repo [--create-labels] [--tools codex,claude|all|none] [--delivery both|skills|commands]
   issue-spec issue create proposal|design|implement --repo owner/repo --change name [--body-file file.md] [--title title]
   issue-spec issue update --repo owner/repo --issue N [--title title] [--body-file file.md] [--summary "what changed"]
   issue-spec comment generate --type SPEC --id SPEC-001 --input-file spec.json [--status confirmed] [--scope "..."]
   issue-spec comment upsert --repo owner/repo --issue N --type SPEC --id SPEC-001 --body-file file.md [--allow-noncanonical]
+  issue-spec comment transition --repo owner/repo --issue N --id TASK-001 --to done [--expected-version N|--expected-digest SHA256]
   issue-spec comment list --repo owner/repo --issue N [--type SPEC] [--json]
   issue-spec question create --repo owner/repo --issue N --id QUESTION-001 --question "..."
   issue-spec question resolve --repo owner/repo --issue N --id QUESTION-001 --resolution-file file.md

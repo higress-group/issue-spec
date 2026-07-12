@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/capability"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/server/auth/delegation"
 	"github.com/higress-group/issue-spec/internal/workspace"
@@ -33,6 +34,10 @@ type GitProvider interface {
 	RevokeJob(context.Context, string) error
 }
 
+type GitPurposeProvider interface {
+	SupportsPurpose(capability.Operation) bool
+}
+
 type GitRequest struct {
 	JobID   string
 	Purpose string
@@ -46,6 +51,7 @@ type GitProviderLease struct {
 }
 
 type GitLease struct {
+	Purpose      capability.Operation
 	CloneURL     string
 	AskPassPath  string
 	UsernamePath string
@@ -53,14 +59,17 @@ type GitLease struct {
 	cleanup      func(context.Context) error
 }
 
-func NewGitLease(ctx context.Context, root, jobID string, binding state.RepositoryBindingSnapshot, provider GitProvider) (*GitLease, error) {
+func NewGitLease(ctx context.Context, root, jobID string, purpose capability.Operation, binding state.RepositoryBindingSnapshot, provider GitProvider) (*GitLease, error) {
 	if provider == nil || !validJobID(jobID) || !binding.Complete() || strings.TrimSpace(root) == "" || !filepath.IsAbs(root) {
 		return nil, errors.New("credential broker: complete binding and git provider are required")
 	}
 	if err := validatePinnedHTTPS(binding); err != nil {
 		return nil, err
 	}
-	providerLease, err := provider.Acquire(ctx, GitRequest{JobID: jobID, Purpose: "git", Binding: binding})
+	if purpose != capability.OperationGitClone && purpose != capability.OperationGitPush {
+		return nil, errors.New("credential broker: git purpose must be git.clone or git.push")
+	}
+	providerLease, err := provider.Acquire(ctx, GitRequest{JobID: jobID, Purpose: string(purpose), Binding: binding})
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +127,7 @@ func NewGitLease(ctx context.Context, root, jobID string, binding state.Reposito
 			return nil, err
 		}
 	}
-	lease := &GitLease{CloneURL: binding.CloneURL, AskPassPath: askpassPath, UsernamePath: usernamePath, SecretPath: secretPath}
+	lease := &GitLease{Purpose: purpose, CloneURL: binding.CloneURL, AskPassPath: askpassPath, UsernamePath: usernamePath, SecretPath: secretPath}
 	lease.cleanup = func(cleanupCtx context.Context) error {
 		var cleanupErr error
 		if err := os.RemoveAll(dir); err != nil {
@@ -133,7 +142,7 @@ func NewGitLease(ctx context.Context, root, jobID string, binding state.Reposito
 }
 
 func (l *GitLease) BeforeGit(_ context.Context, operation, cloneURL string) (workspace.GitCredential, error) {
-	if l == nil || operation != "clone" || strings.TrimSpace(cloneURL) != strings.TrimSpace(l.CloneURL) {
+	if l == nil || l.Purpose != capability.OperationGitClone || operation != "clone" || strings.TrimSpace(cloneURL) != strings.TrimSpace(l.CloneURL) {
 		return workspace.GitCredential{}, errors.New("credential broker: git credential requested outside pinned clone")
 	}
 	env := safeGitEnvironment(os.Environ())
@@ -225,7 +234,7 @@ func (p OperatorGitProvider) Acquire(ctx context.Context, request GitRequest) (G
 	configuredAuthority, configuredErr := normalizedAuthority(p.Host)
 	if binding.ProviderKey != p.ProviderKey || bindingErr != nil || configuredErr != nil || bindingAuthority != configuredAuthority ||
 		binding.ExternalRepositoryID != p.ExternalRepositoryID || p.AcquireLease == nil || p.RevokeJobLease == nil ||
-		!validJobID(request.JobID) || request.Purpose != "git" {
+		!validJobID(request.JobID) || (request.Purpose != string(capability.OperationGitClone) && request.Purpose != string(capability.OperationGitPush)) {
 		return GitProviderLease{}, errors.New("credential broker: operator git credential does not match pinned binding")
 	}
 	return p.AcquireLease(ctx, request)
@@ -256,4 +265,9 @@ func (p OperatorGitProvider) RevokeJob(ctx context.Context, jobID string) error 
 		return errors.New("credential broker: operator git job revoke is unavailable")
 	}
 	return p.RevokeJobLease(ctx, jobID)
+}
+
+func (p OperatorGitProvider) SupportsPurpose(purpose capability.Operation) bool {
+	return (purpose == capability.OperationGitClone || purpose == capability.OperationGitPush) &&
+		p.AcquireLease != nil && p.RevokeJobLease != nil
 }

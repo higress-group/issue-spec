@@ -174,7 +174,7 @@ func ValidateCanonicalBody(commentType, id, url, body string) []CanonicalDiagnos
 	default:
 		return nil
 	}
-	if len(elements) == 0 {
+	if len(elements) == 0 && commentType != "PROCESS" {
 		return nil
 	}
 	diags := make([]CanonicalDiagnostic, 0, len(elements))
@@ -187,6 +187,13 @@ func ValidateCanonicalBody(commentType, id, url, body string) []CanonicalDiagnos
 			Element:  e.element,
 			Message:  e.message,
 		})
+	}
+	if commentType == "PROCESS" {
+		for _, diagnostic := range ParseProcessExecutionClass(id, url, body).Diagnostics {
+			if diagnostic.Severity == "error" {
+				diags = append(diags, diagnostic)
+			}
+		}
 	}
 	return diags
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/capability"
 )
 
 type CredentialKind string
@@ -24,6 +25,7 @@ type Principal struct {
 	Kind           CredentialKind
 	CredentialID   uuid.UUID
 	Scopes         []string
+	Operations     []string
 	RepositoryCaps []RepositoryCap
 	RepoRestricted bool
 	OrgID          uuid.UUID
@@ -44,6 +46,15 @@ type RepositoryCap struct {
 func (p Principal) HasScope(scope string) bool {
 	for _, granted := range p.Scopes {
 		if granted == scope {
+			return true
+		}
+	}
+	return false
+}
+
+func (p Principal) HasOperation(operation string) bool {
+	for _, granted := range p.Operations {
+		if granted == operation {
 			return true
 		}
 	}
@@ -149,8 +160,32 @@ func (m Middleware) authenticate(next http.Handler, optional bool) http.Handler 
 			m.writeUnauthorized(w, r)
 			return
 		}
+		if !delegatedRequestAllowed(principal, r.Method, r.URL.Path) {
+			m.writeForbidden(w, r)
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), principal)))
 	})
+}
+
+func delegatedRequestAllowed(principal Principal, method, path string) bool {
+	if principal.Kind != CredentialDelegated || len(principal.Operations) == 0 || !strings.HasPrefix(path, "/repos/") {
+		return true
+	}
+	if method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
+		return principal.HasOperation(string(capability.OperationIssueRead))
+	}
+	if strings.Contains(path, "/reactions") {
+		return principal.HasOperation(string(capability.OperationIssueCommentWrite))
+	}
+	if strings.Contains(path, "/issues/comments/") || strings.HasSuffix(path, "/comments") {
+		return principal.HasOperation(string(capability.OperationIssueCommentWrite)) ||
+			principal.HasOperation(string(capability.OperationArtifactWrite))
+	}
+	// Issue and label mutations are workflow-artifact mutations. Unknown
+	// compatibility mutations also fail closed rather than inheriting a broad
+	// issues:write scope.
+	return principal.HasOperation(string(capability.OperationArtifactWrite))
 }
 
 func mutationMethod(method string) bool {

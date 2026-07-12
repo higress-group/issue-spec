@@ -157,6 +157,18 @@ func RunPreflightForTransport(ctx context.Context, cfg Config, transport Preflig
 	} else {
 		report.add(PreflightCheck{Name: "sandbox-gh-config", Status: CheckOK, Detail: "host GH_CONFIG_DIR source: " + cfg.GHConfigDir})
 	}
+	if transport == PreflightTransportServe {
+		report.add(PreflightCheck{Name: "agent-credential-mode", Status: CheckOK,
+			Detail: "strict operator-owned issuer is enforced again before each workspace and worker allocation"})
+	} else if cfg.StrictAgentCapabilities {
+		report.add(PreflightCheck{Name: "agent-credential-mode", Status: CheckError,
+			Detail: "legacy_long_lived mirrored gh credentials cannot satisfy strict agent capability policy",
+			Hint:   "Configure an operator-owned short-lived issuer; strict mode never downgrades to host gh authentication."})
+	} else {
+		report.add(PreflightCheck{Name: "agent-credential-mode", Status: CheckWarning,
+			Detail: "legacy_long_lived mirrored gh credentials are compatibility-only and non-compliant with strict delegated operation policy",
+			Hint:   "Migrate to an operator-owned short-lived issuer before enabling strict agent capabilities."})
+	}
 
 	report.add(PreflightCheck{Name: "unsafe-no-sandbox", Status: unsafeSandboxStatus(cfg), Detail: unsafeSandboxDetail(cfg)})
 	if cfg.UnsafeNoSandbox {

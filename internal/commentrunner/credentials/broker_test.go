@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	clientauth "github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/capability"
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
 
@@ -244,6 +245,25 @@ func TestBrokerCompensatesUncertainExchangeAndBoundsCustomClient(t *testing.T) {
 		JobID: "job-uncertain", Binding: testBinding()})
 	if err == nil || remoteRevokes.Load() != 1 || providerRevokes.Load() != 1 {
 		t.Fatalf("Acquire err=%v remote_revoke=%d provider_revoke=%d", err, remoteRevokes.Load(), providerRevokes.Load())
+	}
+}
+
+func TestBrokerPreflightProvesOnlyConfiguredIssuerOperations(t *testing.T) {
+	broker := testBroker(t, "https://server.example", func(context.Context) error { return nil })
+	broker.Scopes = []string{"issues:read", "issues:write"}
+	repo := models.RepoScope{OrgID: uuid.New(), RepoID: uuid.New()}
+	report := broker.Probe(t.Context(), PreflightRequest{Request: capability.Request{Host: "server.example",
+		Repository: "o/r", Operations: []capability.Operation{capability.OperationIssueRead,
+			capability.OperationArtifactWrite, capability.OperationGitClone, capability.OperationGitPush}},
+		Repo: repo, JobID: "job-preflight"})
+	if !report.OK || !report.Credential.ExpiryKnown || report.Credential.ExpiresAt == nil || report.Backend != "operator-issuer" {
+		t.Fatalf("report = %+v", report)
+	}
+	report = broker.Probe(t.Context(), PreflightRequest{Request: capability.Request{Host: "server.example",
+		Repository: "o/r", Operations: []capability.Operation{capability.OperationPullRequestReviewWrite}},
+		Repo: repo, JobID: "job-preflight"})
+	if report.OK || report.Operations[0].Decision != capability.DecisionUnknown {
+		t.Fatalf("unsupported report = %+v", report)
 	}
 }
 

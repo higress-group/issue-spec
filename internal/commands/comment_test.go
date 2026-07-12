@@ -79,6 +79,24 @@ func TestCommentGenerateRejectsUnknownJSONFields(t *testing.T) {
 	}
 }
 
+func TestCommentGenerateProcessExecutionClass(t *testing.T) {
+	inPath := writeTempInput(t, `{"title":"review","parent_task":"TASK-005","execution_class":"review"}`)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	code := app.runCommentGenerate(context.Background(), []string{"--type", "PROCESS", "--id", "PROCESS-008", "--input-file", inPath})
+	if code != 0 || !strings.Contains(out.String(), "### Execution Class\n\n- review") {
+		t.Fatalf("generate exit=%d stderr=%q body=%q", code, errOut.String(), out.String())
+	}
+
+	badPath := writeTempInput(t, `{"title":"bad","parent_task":"TASK-005","execution_class":"deploy"}`)
+	out.Reset()
+	errOut.Reset()
+	code = app.runCommentGenerate(context.Background(), []string{"--type", "PROCESS", "--id", "PROCESS-008", "--input-file", badPath})
+	if code == 0 || !strings.Contains(errOut.String(), "unknown PROCESS execution class") {
+		t.Fatalf("unknown class should fail generation: exit=%d stderr=%q", code, errOut.String())
+	}
+}
+
 func TestCommentUpsertRejectsMalformedSpecByDefault(t *testing.T) {
 	bodyPath := writeTempInput(t, "# SPEC-001\n\nThis is a hand-written non-canonical spec.")
 	var out, errOut bytes.Buffer
@@ -435,7 +453,7 @@ func TestCommentUpsertReportsDroppedLinksWhenBodyLacksLinksBlock(t *testing.T) {
 		t.Fatalf("seed existing link: changed=%v err=%v", changed, err)
 	}
 	// Header present (so EnsureTypedBody keeps it as-is) but no Links block.
-	linkless := "Type: TASK\nID: TASK-001\nStatus: draft\nScope: N/A\n\n## Summary\n\nnoncanonical task without a Links block\n"
+	linkless := "Agent: Coordinator\nType: TASK\nID: TASK-001\nStatus: draft\nScope: N/A\n\n## Summary\n\nnoncanonical task without a Links block\n"
 	bodyPath := writeTempInput(t, linkless)
 
 	var out bytes.Buffer

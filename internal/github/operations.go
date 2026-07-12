@@ -1,6 +1,63 @@
 package github
 
-import "context"
+import (
+	"context"
+	"errors"
+	"fmt"
+)
+
+var (
+	// ErrConditionalCommentMutationUnsupported is returned before mutation when
+	// a backend cannot prove caller-version CAS support.
+	ErrConditionalCommentMutationUnsupported = errors.New("conditional comment mutation is unsupported")
+	ErrCommentMutationConflict               = errors.New("comment representation conflict")
+)
+
+const (
+	HeaderExpectedRepresentationVersion = "X-Issue-Spec-Expected-Representation-Version"
+	HeaderConditionalCommentMutation    = "X-Issue-Spec-Conditional-Comment-Mutation"
+	ConditionalCommentMutationVersion   = "representation-version"
+)
+
+type CommentMutationGuarantee string
+
+const (
+	CommentMutationStrictConditional CommentMutationGuarantee = "strict-conditional"
+	// CommentMutationNonAtomicSingleWriter is an explicit compatibility boundary
+	// for P004. It is never selected implicitly by this package.
+	CommentMutationNonAtomicSingleWriter CommentMutationGuarantee = "non-atomic-single-writer"
+)
+
+type CommentRepresentation struct {
+	Comment               Comment                  `json:"comment"`
+	RepresentationVersion int64                    `json:"representation_version"`
+	ETag                  string                   `json:"etag,omitempty"`
+	Guarantee             CommentMutationGuarantee `json:"guarantee"`
+}
+
+type ConditionalCommentBackend interface {
+	GetCommentRepresentation(context.Context, string, int64) (CommentRepresentation, error)
+	UpdateCommentConditional(context.Context, string, int64, int64, string) (CommentRepresentation, error)
+}
+
+type CommentMutationConflictError struct {
+	Expected int64
+	Current  int64
+}
+
+func (e *CommentMutationConflictError) Error() string {
+	return fmt.Sprintf("comment representation conflict: expected=%d current=%d", e.Expected, e.Current)
+}
+
+func (e *CommentMutationConflictError) Unwrap() error { return ErrCommentMutationConflict }
+
+func RequireConditionalCommentBackend(backend IssueBackend) (ConditionalCommentBackend, error) {
+	conditional, ok := backend.(ConditionalCommentBackend)
+	if !ok {
+		return nil, ErrConditionalCommentMutationUnsupported
+	}
+	return conditional, nil
+}
 
 // IssueBackend is the issue-native surface. Self-hosted profiles implement
 // this interface without pretending that their issue origin also hosts code.

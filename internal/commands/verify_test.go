@@ -34,15 +34,19 @@ func TestBuildFinalVerifyReportRequiresDoneTasksAndCoverage(t *testing.T) {
 
 func TestBuildFinalVerifyReportReportsSessionDiagnosticsWithoutErrors(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
 	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
-	report, err := buildFinalVerifyReport([]model.Artifact{spec, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{})
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &process)
+	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !report.OK {
 		t.Fatalf("metadata diagnostics should not fail verify: %+v", report.Errors)
 	}
-	if len(report.Diagnostics) != 2 {
+	if len(report.Diagnostics) != 4 {
 		t.Fatalf("diagnostics = %+v", report.Diagnostics)
 	}
 }
@@ -126,7 +130,7 @@ func TestBuildFinalVerifyReportChecksRationaleCoverageWhenPRProvided(t *testing.
 		PR:                7,
 		PRURL:             "https://github.com/o/r/pull/7",
 		RationaleRequired: true,
-		RationaleComments: []github.PullRequestReviewComment{{Body: body}},
+		RationaleComments: []github.PullRequestReviewComment{{Body: body, Path: "internal/foo.go", Line: 12}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -138,13 +142,39 @@ func TestBuildFinalVerifyReportChecksRationaleCoverageWhenPRProvided(t *testing.
 		PR:                7,
 		PRURL:             "https://github.com/o/r/pull/7",
 		RationaleRequired: true,
-		RationaleComments: []github.PullRequestReviewComment{{Body: body}},
+		RationaleComments: []github.PullRequestReviewComment{{Body: body, Path: "internal/foo.go", Line: 12}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !report.OK {
 		t.Fatalf("expected rationale coverage OK: %+v", report.Errors)
+	}
+}
+
+func TestBuildFinalVerifyReportUsesVerificationCarrierInsteadOfRationale(t *testing.T) {
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process: verify\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- verification\n\n### Handoff\n\nN/A")
+	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", "## Verification Summary: final\n\nTests passed for PROCESS-001.\n\n### Covered SPECs\n\n- SPEC-001")
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &process)
+	body, _, err := model.AddPRLink(process.Comment.Body, "https://github.com/o/r/pull/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.Comment = model.ParseTypedComment(body)
+	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
+		PR: 7, PRURL: "https://github.com/o/r/pull/7", RationaleRequired: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.OK || len(report.ProcessEvidence) != 1 || report.ProcessEvidence[0].ExecutionClass != model.ProcessExecutionVerification {
+		t.Fatalf("verification carrier should pass without arbitrary rationale: errors=%v evidence=%+v", report.Errors, report.ProcessEvidence)
 	}
 }
 
@@ -180,7 +210,7 @@ func TestBuildFinalVerifyReportBlocksOpenP0P1Findings(t *testing.T) {
 		PRURL:             "https://github.com/o/r/pull/7",
 		RationaleRequired: true,
 		RationaleComments: []github.PullRequestReviewComment{
-			{ID: 1, Body: rationale},
+			{ID: 1, Body: rationale, Path: "internal/foo.go", Line: 12},
 			{ID: 2, Body: finding, Path: "internal/foo.go", Line: 12},
 		},
 	})
@@ -202,7 +232,7 @@ func TestBuildFinalVerifyReportBlocksOpenP0P1Findings(t *testing.T) {
 		PRURL:             "https://github.com/o/r/pull/7",
 		RationaleRequired: true,
 		RationaleComments: []github.PullRequestReviewComment{
-			{ID: 1, Body: rationale},
+			{ID: 1, Body: rationale, Path: "internal/foo.go", Line: 12},
 			{ID: 2, Body: finding, Path: "internal/foo.go", Line: 12},
 			{ID: 3, InReplyToID: 2, Body: reply},
 		},
@@ -242,7 +272,7 @@ func TestBuildFinalVerifyReportBlocksFailedAndPendingChecks(t *testing.T) {
 		PR:                7,
 		PRURL:             "https://github.com/o/r/pull/7",
 		RationaleRequired: true,
-		RationaleComments: []github.PullRequestReviewComment{{ID: 1, Body: rationale}},
+		RationaleComments: []github.PullRequestReviewComment{{ID: 1, Body: rationale, Path: "internal/foo.go", Line: 12}},
 		PRStatus: github.CombinedStatus{Statuses: []github.Status{
 			{Context: "ci/test", State: "failure"},
 		}},

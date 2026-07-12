@@ -79,6 +79,28 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPath(t *testing.T) {
 		}
 	}
 
+	for _, relative := range []string{
+		filepath.Join(".agents", "skills", "issue-spec-review", "SKILL.md"),
+		filepath.Join(".claude", "skills", "issue-spec-review", "SKILL.md"),
+		filepath.Join(".claude", "commands", "issue-spec", "review.md"),
+	} {
+		path := filepath.Join(root, relative)
+		reviewGuidance := readTestFile(t, path)
+		for _, want := range []string{
+			"--from REVIEW-<n> --from-issue <implement-issue> --to PROCESS-<n>",
+			"--from REVIEW-<n> --from-issue <implement-issue> --to SPEC-<n>",
+			"Run these commands after the final review sync",
+		} {
+			if !strings.Contains(reviewGuidance, want) {
+				t.Fatalf("generated review guidance %s missing %q:\n%s", path, want, reviewGuidance)
+			}
+		}
+		checkedIn := strings.ReplaceAll(readTestFile(t, filepath.Join("..", "..", relative)), "higress-group/issue-spec", "owner/repo")
+		if reviewGuidance != checkedIn {
+			t.Fatalf("checked-in generated review guidance is stale: %s", relative)
+		}
+	}
+
 	codexCommand := readTestFile(t, filepath.Join(codexHome, "prompts", "issue-spec-propose.md"))
 	for _, want := range []string{
 		"argument-hint: command arguments",
