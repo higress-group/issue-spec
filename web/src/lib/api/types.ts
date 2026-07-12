@@ -11,7 +11,16 @@ export const featuresSchema = z.object({
   recovery_exchange: z.boolean(),
 });
 
-export const metaSchema = z.object({ api_version: z.literal("v1"), features: featuresSchema });
+export const metaSchema = z.object({
+  api_version: z.literal("v1"),
+  features: featuresSchema,
+  server_instance_id: z.string().optional().default(""),
+  api_url: z.string().url().optional(),
+  native_api_url: z.string().url().optional(),
+  web_url: z.string().url().optional(),
+  transport: z.object({ mode: z.string(), secure: z.boolean() }).optional(),
+  transport_posture: z.enum(["https", "trusted-internal-http"]).optional().default("https"),
+});
 export type Meta = z.infer<typeof metaSchema>;
 
 export const userSchema = z.object({
@@ -19,6 +28,7 @@ export const userSchema = z.object({
   login: z.string(),
   display_name: z.string(),
   email: z.string().nullable().optional(),
+  avatar_url: z.string().optional(),
   site_admin: z.boolean(),
 });
 
@@ -173,6 +183,7 @@ export type UserCandidate = {
   display_name: string;
   kind: "human" | "service_account";
   status: "active" | "disabled";
+  avatar_url?: string;
   membership?: { id: string; role: string; state: string };
   service_account_id?: string;
 };

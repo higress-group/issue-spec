@@ -211,6 +211,27 @@ p { line-height: 1.65; color: var(--muted); }
 .bootstrap-card { padding: clamp(1.25rem, 4vw, 2.5rem); box-shadow: var(--shadow); }
 .profile-line { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .8rem; }
 .avatar { display: grid; place-items: center; width: 2.8rem; height: 2.8rem; border-radius: 50%; background: var(--purple-soft); color: var(--purple); font-weight: 800; }
+.user-avatar { --avatar-size: 44px; position: relative; display: inline-grid; flex: 0 0 var(--avatar-size); width: var(--avatar-size); height: var(--avatar-size); place-items: center; overflow: hidden; border: 1px solid color-mix(in srgb, var(--purple) 22%, transparent); border-radius: 50%; background: linear-gradient(145deg, #f1e9fb, var(--purple-soft)); color: var(--purple); font-size: calc(var(--avatar-size) * .32); font-weight: 850; letter-spacing: .02em; line-height: 1; }
+.user-avatar img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.user-avatar.coral { border-color: #dfb0a7; background: linear-gradient(145deg, #fff2ee, var(--coral-soft)); color: #99443a; }
+.user-avatar.inverse { border-color: #587079; background: #24383f; color: #e6f1ef; }
+.nav-link .user-avatar { margin: -.2rem; }
+.transport-notice { display: flex; align-items: flex-start; gap: .65rem; margin: 1rem 0; padding: .8rem; border: 1px solid #d6b474; border-radius: 9px; background: #f8efd9; color: #6e4b18; }
+.transport-notice svg { flex: none; margin-top: .1rem; }
+.transport-notice strong, .transport-notice small { display: block; }
+.transport-notice small { margin-top: .18rem; color: #765d37; line-height: 1.4; }
+.transport-posture { display: grid; grid-template-columns: auto 1fr; gap: 1rem; margin-bottom: 1.4rem; padding: 1.2rem 1.35rem; border: 1px solid #a9cbc4; border-radius: 14px; background: linear-gradient(125deg, #edf8f5, #fffdfa); }
+.transport-posture.trusted-http { border-color: #d8b56f; background: linear-gradient(125deg, #fbf0d7, #fffdfa); }
+.transport-posture > svg { margin-top: .25rem; color: var(--teal); }
+.transport-posture.trusted-http > svg { color: #9a6714; }
+.transport-posture h2 { margin: .2rem 0 .35rem; }
+.transport-posture p { margin-bottom: .8rem; font-size: .85rem; }
+.transport-posture dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem 1rem; margin: 0; }
+.transport-posture dl div { min-width: 0; }
+.transport-posture dt { color: var(--muted); font-size: .68rem; font-weight: 750; text-transform: uppercase; }
+.transport-posture dd { margin: .15rem 0 0; overflow-wrap: anywhere; font-family: "SFMono-Regular", Consolas, monospace; font-size: .72rem; }
+.resource-row.user-resource-row { grid-template-columns: auto minmax(180px, 1.4fr) minmax(110px, auto) auto; }
+.resource-row.user-resource-row.membership-resource-row { grid-template-columns: auto minmax(180px, 1.4fr) minmax(110px, auto) minmax(130px, auto) auto; }
 .profile-line strong, .profile-line .mono { display: block; }
 .profile-line .mono { color: var(--muted); font-size: .75rem; }
 .detail-list { margin: 0; }
@@ -258,6 +279,10 @@ p { line-height: 1.65; color: var(--muted); }
   .sidebar .nav-context, .sidebar .nav-label { display: block; }
   .sidebar .nav-link span { position: static; width: auto; height: auto; padding: initial; margin: 0; overflow: visible; clip: auto; white-space: normal; }
   .sidebar .nav-link { justify-content: flex-start; }
+  .transport-posture dl { grid-template-columns: 1fr; }
+  .resource-row.user-resource-row { grid-template-columns: auto 1fr auto; }
+  .resource-row.user-resource-row.membership-resource-row { grid-template-columns: auto 1fr auto; }
+  .resource-row.user-resource-row > .input { grid-column: 2 / -1; }
   .main-content { padding: 1.2rem 1rem 3rem; }
   .bottom-nav { position: fixed; inset: auto 0 0; z-index: 55; display: grid; grid-template-columns: repeat(5, 1fr); height: 4.2rem; padding-bottom: env(safe-area-inset-bottom); border-top: 1px solid #324249; background: var(--nav); }
   .bottom-nav a { display: grid; place-items: center; align-content: center; gap: .1rem; color: #b8c5c8; font-size: .64rem; text-decoration: none; }

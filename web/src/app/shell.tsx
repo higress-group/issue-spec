@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { Link, NavLink, Navigate, Outlet, useLocation } from "react-router-dom";
-import { AlertCircle, Boxes, CircleUserRound, KeyRound, LayoutDashboard, LogIn, Menu, Settings2, X } from "lucide-react";
+import { AlertCircle, Boxes, KeyRound, LayoutDashboard, LogIn, Menu, Settings2, X } from "lucide-react";
 import { ErrorNotice, Loading } from "./components";
 import { ProblemInspector } from "./problem-inspector";
 import { useInspector } from "./problem-inspector";
 import { useCurrentContext, useMeta } from "../auth/session";
 import { isApiProblem } from "../lib/api/client";
 import { featureNavigation } from "./feature-contributions";
+import { Avatar } from "./avatar";
 
 const navClass = ({ isActive }: { isActive: boolean }) => isActive ? "nav-link active" : "nav-link";
 
@@ -48,7 +49,7 @@ export function AuthenticatedShell() {
         {firstOrg ? <NavLink className={navClass} to={`/orgs/${firstOrg.id}/repos`}><Boxes size={18} /><span>Repositories</span></NavLink> : null}
       </div>
       <div className="nav-group"><span className="nav-label">Account</span>
-        <NavLink className={navClass} to="/settings/account"><CircleUserRound size={18} /><span>Session</span></NavLink>
+        <NavLink className={navClass} to="/settings/account"><Avatar login={context.user.login} displayName={context.user.display_name} src={context.user.avatar_url} size={24} tone="inverse" /><span>Session</span></NavLink>
         <NavLink className={navClass} to="/settings/tokens"><KeyRound size={18} /><span>Access tokens</span></NavLink>
         {context.allowed_actions.includes("site.admin") || context.organizations.some((org) => org.allowed_actions.includes("organization.admin")) ? <NavLink className={navClass} to="/admin"><Settings2 size={18} /><span>Administration</span></NavLink> : null}
       </div>
@@ -60,7 +61,7 @@ export function AuthenticatedShell() {
       <NavLink to="/" end><LayoutDashboard /><span>Home</span></NavLink>
       {visibleFeatureNav.map((item) => <NavLink key={item.to} to={item.to}><item.icon aria-hidden="true" /><span>{item.label}</span></NavLink>)}
       {firstOrg ? <NavLink to={`/orgs/${firstOrg.id}/repos`}><Boxes /><span>Repos</span></NavLink> : <span />}
-      <NavLink to="/settings/account"><CircleUserRound /><span>Account</span></NavLink>
+      <NavLink to="/settings/account"><Avatar login={context.user.login} displayName={context.user.display_name} src={context.user.avatar_url} size={24} /><span>Account</span></NavLink>
     </nav>
   </div>;
 }

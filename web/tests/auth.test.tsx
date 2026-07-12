@@ -8,7 +8,7 @@ import { LoginPage } from "../src/auth/login-page";
 import { BootstrapPage } from "../src/auth/bootstrap-page";
 import { TokensPage } from "../src/auth/tokens-page";
 import { renderApp } from "./render";
-import { server } from "./server";
+import { fixtureMeta, server } from "./server";
 
 describe("authentication flows", () => {
   it("discovers providers and renders an accessible login desk", async () => {
@@ -17,6 +17,18 @@ describe("authentication flows", () => {
     expect(link).toHaveAttribute("href", expect.stringContaining("/api/v1/auth/company-oidc/login"));
     const result = await axe.run(container);
     expect(result.violations).toEqual([]);
+  });
+
+  it("recognizes github-oauth providers and reports trusted HTTP before redirect", async () => {
+    server.use(
+      http.get("http://localhost/api/v1/auth/providers", () => HttpResponse.json({ providers: [{ name: "github-company", kind: "github-oauth" }] })),
+      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, transport_posture: "trusted-internal-http" })),
+    );
+    const { container } = renderApp(<LoginPage />, "/login");
+    const link = await screen.findByRole("link", { name: /github-company/i });
+    expect(link.querySelector("svg")?.getAttribute("class")).toContain("lucide-git-pull-request");
+    expect(screen.getByRole("note")).toHaveTextContent("Trusted internal HTTP");
+    expect((await axe.run(container)).violations).toEqual([]);
   });
 
   it("claims bootstrap and exchanges recovery without browser persistence", async () => {
