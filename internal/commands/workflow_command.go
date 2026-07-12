@@ -17,7 +17,7 @@ type workflowCommandResult struct {
 
 func (a *app) runWorkflow(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec workflow validate|which ...\n")
+		a.errorf("usage: issue-spec workflow validate|which|reconcile ...\n")
 		return 2
 	}
 	switch args[0] {
@@ -25,6 +25,8 @@ func (a *app) runWorkflow(ctx context.Context, args []string) int {
 		return a.runWorkflowInspect(ctx, args[1:], false)
 	case "which":
 		return a.runWorkflowInspect(ctx, args[1:], true)
+	case "reconcile":
+		return a.runWorkflowReconcile(ctx, args[1:])
 	default:
 		a.errorf("unknown workflow command %q\n", args[0])
 		return 2
