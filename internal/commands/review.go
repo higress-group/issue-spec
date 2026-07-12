@@ -11,6 +11,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
+	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
@@ -349,6 +350,14 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 		return 1
 	}
 	report := buildReviewSyncReport(pr, reviewComments, issueComments, status, checkRuns)
+	if artifacts, collectErr := collectArtifacts(ctx, client, repo, implementIssue); collectErr == nil {
+		for _, input := range buildProcessEvidenceInputs(artifacts, pr.HTMLURL, reviewComments, report, nil) {
+			report.ProcessEvidence = append(report.ProcessEvidence, gates.EvaluateProcessEvidence(input, gates.TargetFinal, gates.ModeForecast))
+		}
+	} else {
+		a.errorf("collect PROCESS evidence for review sync: %v\n", collectErr)
+		return 1
+	}
 	session := resolveWriterSession(*agentSession)
 	body, err := renderReviewSyncComment(*id, *agent, session, *scope, pr.HTMLURL, report)
 	if err != nil {
@@ -602,20 +611,21 @@ func replyReviewFinding(ctx context.Context, client interface {
 }
 
 type reviewSyncReport struct {
-	OK                 bool                 `json:"ok"`
-	PR                 int                  `json:"pr"`
-	PRURL              string               `json:"pr_url"`
-	RationaleComments  int                  `json:"rationale_comments"`
-	ActionableFindings []reviewFinding      `json:"actionable_findings"`
-	BlockingFindings   []reviewFinding      `json:"blocking_findings"`
-	ResolvedFindings   []reviewFinding      `json:"resolved_findings"`
-	FindingReplies     []reviewReply        `json:"finding_replies,omitempty"`
-	Rationales         []reviewRationale    `json:"rationales,omitempty"`
-	IssueComments      int                  `json:"issue_comments"`
-	Diagnostics        []metadataDiagnostic `json:"diagnostics,omitempty"`
-	FailedChecks       []reviewCheck        `json:"failed_checks"`
-	PendingChecks      []reviewCheck        `json:"pending_checks"`
-	PassedChecks       []reviewCheck        `json:"passed_checks"`
+	OK                 bool                          `json:"ok"`
+	PR                 int                           `json:"pr"`
+	PRURL              string                        `json:"pr_url"`
+	RationaleComments  int                           `json:"rationale_comments"`
+	ActionableFindings []reviewFinding               `json:"actionable_findings"`
+	BlockingFindings   []reviewFinding               `json:"blocking_findings"`
+	ResolvedFindings   []reviewFinding               `json:"resolved_findings"`
+	FindingReplies     []reviewReply                 `json:"finding_replies,omitempty"`
+	Rationales         []reviewRationale             `json:"rationales,omitempty"`
+	IssueComments      int                           `json:"issue_comments"`
+	Diagnostics        []metadataDiagnostic          `json:"diagnostics,omitempty"`
+	FailedChecks       []reviewCheck                 `json:"failed_checks"`
+	PendingChecks      []reviewCheck                 `json:"pending_checks"`
+	PassedChecks       []reviewCheck                 `json:"passed_checks"`
+	ProcessEvidence    []gates.ProcessEvidenceReport `json:"process_evidence,omitempty"`
 }
 
 type reviewFinding struct {
@@ -874,6 +884,15 @@ func renderReviewSyncComment(id, agent string, session writerSession, scope, prU
 	writeReviewChecks(&b, "Failed", report.FailedChecks)
 	writeReviewChecks(&b, "Pending", report.PendingChecks)
 	writeReviewChecks(&b, "Passed", report.PassedChecks)
+	b.WriteString("\n## PROCESS Evidence Observation\n\n")
+	b.WriteString("This review-sync projection is observational and MUST NOT be treated as final readiness; final verify re-collects active SPEC and authoritative evidence.\n\n")
+	if len(report.ProcessEvidence) == 0 {
+		b.WriteString("- None.\n")
+	} else {
+		for _, process := range report.ProcessEvidence {
+			fmt.Fprintf(&b, "- %s\n", process.Summary())
+		}
+	}
 	b.WriteString("\n## Verdict\n\n")
 	if report.OK {
 		b.WriteString("Review sync passed.\n")

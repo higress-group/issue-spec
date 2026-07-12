@@ -17,22 +17,23 @@ import (
 )
 
 type finalVerifyReport struct {
-	OK                    bool                         `json:"ok"`
-	Traceability          model.VerifyReport           `json:"traceability"`
-	Errors                []string                     `json:"errors"`
-	Warnings              []string                     `json:"warnings,omitempty"`
-	Diagnostics           []metadataDiagnostic         `json:"diagnostics,omitempty"`
-	SpecCoverage          map[string]bool              `json:"spec_coverage"`
-	RationaleCoverage     map[string]bool              `json:"rationale_coverage,omitempty"`
-	Noncanonical          []model.CanonicalDiagnostic  `json:"noncanonical,omitempty"`
-	ReviewFindingBlockers []reviewFinding              `json:"review_finding_blockers,omitempty"`
-	FailedChecks          []reviewCheck                `json:"failed_checks,omitempty"`
-	PendingChecks         []reviewCheck                `json:"pending_checks,omitempty"`
-	PR                    int                          `json:"pr,omitempty"`
-	DurableSpecPath       string                       `json:"durable_spec_path,omitempty"`
-	DurableSpecCheck      map[string]bool              `json:"durable_spec_check,omitempty"`
-	ExternalEvidence      *externalEvidenceConsumption `json:"external_evidence,omitempty"`
-	Gate                  gates.Report                 `json:"gate"`
+	OK                    bool                          `json:"ok"`
+	Traceability          model.VerifyReport            `json:"traceability"`
+	Errors                []string                      `json:"errors"`
+	Warnings              []string                      `json:"warnings,omitempty"`
+	Diagnostics           []metadataDiagnostic          `json:"diagnostics,omitempty"`
+	SpecCoverage          map[string]bool               `json:"spec_coverage"`
+	RationaleCoverage     map[string]bool               `json:"rationale_coverage,omitempty"`
+	Noncanonical          []model.CanonicalDiagnostic   `json:"noncanonical,omitempty"`
+	ReviewFindingBlockers []reviewFinding               `json:"review_finding_blockers,omitempty"`
+	FailedChecks          []reviewCheck                 `json:"failed_checks,omitempty"`
+	PendingChecks         []reviewCheck                 `json:"pending_checks,omitempty"`
+	PR                    int                           `json:"pr,omitempty"`
+	DurableSpecPath       string                        `json:"durable_spec_path,omitempty"`
+	DurableSpecCheck      map[string]bool               `json:"durable_spec_check,omitempty"`
+	ExternalEvidence      *externalEvidenceConsumption  `json:"external_evidence,omitempty"`
+	Gate                  gates.Report                  `json:"gate"`
+	ProcessEvidence       []gates.ProcessEvidenceReport `json:"process_evidence,omitempty"`
 }
 
 type finalVerifyOptions struct {
@@ -43,6 +44,7 @@ type finalVerifyOptions struct {
 	RationaleComments []github.PullRequestReviewComment
 	PRStatus          github.CombinedStatus
 	PRCheckRuns       []github.CheckRun
+	ExternalEvidence  *externalEvidenceConsumption
 }
 
 func (a *app) runVerify(ctx context.Context, args []string) int {
@@ -130,6 +132,10 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 			return 1
 		}
 	}
+	var processExternalEvidence *externalEvidenceConsumption
+	if selfHosted {
+		processExternalEvidence = &externalGate.Consumption
+	}
 	report, err := buildFinalVerifyReport(artifacts, proposalIssueData.HTMLURL, finalVerifyOptions{
 		DurableSpecPath:   *durableSpec,
 		PR:                *prFlag,
@@ -138,6 +144,7 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 		RationaleComments: rationaleComments,
 		PRStatus:          prStatus,
 		PRCheckRuns:       prCheckRuns,
+		ExternalEvidence:  processExternalEvidence,
 	})
 	if err != nil {
 		a.errorf("verify: %v\n", err)
@@ -249,7 +256,6 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	}
 	report.Diagnostics = append(report.Diagnostics, typedSessionDiagnostics(artifacts)...)
 	var activeSpecs []model.Artifact
-	activeSpecIDs := map[string]bool{}
 	var activeProcesses []model.Artifact
 	var doneVerifyBodies []string
 	var canonical []model.CanonicalDiagnostic
@@ -259,7 +265,6 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		case "SPEC":
 			if tc.Status != "superseded" {
 				activeSpecs = append(activeSpecs, artifact)
-				activeSpecIDs[tc.ID] = true
 				report.SpecCoverage[tc.ID] = false
 			}
 		case "PROCESS":
@@ -316,33 +321,40 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 			Current: fmt.Sprintf("valid=%v", durableOK), Expected: "valid=true"}
 		target = gates.TargetArchive
 	}
+	var processEvidence []gates.ProcessEvidenceInput
+	if opts.RationaleRequired || opts.ExternalEvidence != nil {
+		processEvidence = buildProcessEvidenceInputs(artifacts, opts.PRURL, opts.RationaleComments, reviewReport, opts.ExternalEvidence)
+	}
 	gateReport, err := gates.Evaluate(gates.Snapshot{
 		Target: target, Mode: gates.ModeAuthoritative, Artifacts: artifacts,
-		Canonical:    gates.CanonicalFacts{Observed: true, Diagnostics: canonical},
-		Traceability: gates.TraceabilityFacts{Observed: true, Report: traceability},
-		Remote:       remote,
+		Canonical:       gates.CanonicalFacts{Observed: true, Diagnostics: canonical},
+		Traceability:    gates.TraceabilityFacts{Observed: true, Report: traceability},
+		Remote:          remote,
+		ProcessEvidence: processEvidence,
 	})
 	if err != nil {
 		return report, err
 	}
 	report.Gate = gateReport
+	report.ProcessEvidence = gateReport.Processes
 	for _, diagnostic := range gateReport.Diagnostics {
+		if diagnostic.Code == gates.CodeProcessExecutionClassLegacy {
+			report.Warnings = append(report.Warnings, diagnostic.Message)
+		}
 		if message, ok := legacyVerifyGateError(diagnostic); ok {
 			report.Errors = append(report.Errors, message)
 		}
 	}
 
 	if opts.RationaleRequired {
-		covered := rationaleCoverage(opts.RationaleComments, activeSpecIDs)
 		for _, process := range activeProcesses {
 			report.RationaleCoverage[process.Comment.ID] = false
-			if opts.PRURL != "" && !linkValuesContain(process.Comment.Links["PR"], opts.PRURL) {
-				report.Errors = append(report.Errors, fmt.Sprintf("%s must link PR %s", process.Comment.ID, opts.PRURL))
-			}
-			if covered[process.Comment.ID] {
-				report.RationaleCoverage[process.Comment.ID] = true
-			} else {
-				report.Errors = append(report.Errors, fmt.Sprintf("%s has no PR rationale comment linked to an active SPEC", process.Comment.ID))
+		}
+		for _, process := range report.ProcessEvidence {
+			for _, satisfied := range process.Satisfied {
+				if satisfied == "matching inline rationale" {
+					report.RationaleCoverage[process.ProcessID] = true
+				}
 			}
 		}
 		report.Diagnostics = append(report.Diagnostics, reviewReport.Diagnostics...)
@@ -410,6 +422,9 @@ func legacyVerifyGateError(diagnostic gates.Diagnostic) (string, bool) {
 		}
 		return fmt.Sprintf("%s %s (%s) is noncanonical: %s", diagnostic.Artifact.Type, id, url, diagnostic.Message), true
 	case gates.CodeTraceabilityInvalid:
+		return diagnostic.Message, true
+	case gates.CodeProcessExecutionClassInvalid, gates.CodeProcessTaskLinkMissing,
+		gates.CodeProcessSpecLinkMissing, gates.CodeProcessPRLinkMissing, gates.CodeProcessCarrierMissing:
 		return diagnostic.Message, true
 	default:
 		// Remote check/finding diagnostics have richer legacy projections below;
@@ -520,11 +535,17 @@ func printFinalVerify(out interface{ Write([]byte) (int, error) }, report finalV
 	for processID, covered := range report.RationaleCoverage {
 		fmt.Fprintf(out, "rationale %s: %v\n", processID, covered)
 	}
+	for _, process := range report.ProcessEvidence {
+		fmt.Fprintf(out, "process evidence: %s\n", process.Summary())
+	}
 	if report.DurableSpecPath != "" {
 		fmt.Fprintf(out, "durable spec: %s\n", report.DurableSpecPath)
 	}
 	for _, err := range report.Errors {
 		fmt.Fprintf(out, "- %s\n", err)
+	}
+	for _, warning := range report.Warnings {
+		fmt.Fprintf(out, "- warning: %s\n", warning)
 	}
 	if len(report.Diagnostics) > 0 {
 		fmt.Fprintln(out, "metadata diagnostics:")

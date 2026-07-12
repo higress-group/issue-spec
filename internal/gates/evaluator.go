@@ -60,6 +60,7 @@ func Evaluate(snapshot Snapshot) (Report, error) {
 	e.evaluateCanonical()
 	e.evaluateTraceability()
 	e.evaluateWorkflow()
+	e.evaluateProcessEvidence()
 	e.evaluateRemoteFacts()
 	e.sort()
 
@@ -73,13 +74,26 @@ func Evaluate(snapshot Snapshot) (Report, error) {
 	return Report{
 		Ready: ready, Target: snapshot.Target, Mode: snapshot.Mode,
 		PointInTime: snapshot.Mode == ModeForecast,
-		Diagnostics: e.diagnostics,
+		Diagnostics: e.diagnostics, Processes: e.processes,
 	}, nil
 }
 
 type evaluator struct {
 	snapshot    Snapshot
 	diagnostics []Diagnostic
+	processes   []ProcessEvidenceReport
+}
+
+func (e *evaluator) evaluateProcessEvidence() {
+	if !atLeast(e.snapshot.Target, TargetFinal) {
+		return
+	}
+	for _, input := range e.snapshot.ProcessEvidence {
+		report := EvaluateProcessEvidence(input, e.snapshot.Target, e.snapshot.Mode)
+		e.processes = append(e.processes, report)
+		e.diagnostics = append(e.diagnostics, report.Diagnostics...)
+	}
+	sort.Slice(e.processes, func(i, j int) bool { return e.processes[i].ProcessID < e.processes[j].ProcessID })
 }
 
 func (e *evaluator) add(code, message string, artifact ArtifactRef, current, expected, command string, args ...string) {

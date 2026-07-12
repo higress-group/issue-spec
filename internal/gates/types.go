@@ -145,20 +145,22 @@ type Snapshot struct {
 
 	Artifacts []model.Artifact `json:"artifacts"`
 
-	Canonical    CanonicalFacts    `json:"canonical"`
-	Traceability TraceabilityFacts `json:"traceability"`
-	Workflow     WorkflowFacts     `json:"workflow"`
-	Remote       RemoteFacts       `json:"remote"`
+	Canonical       CanonicalFacts         `json:"canonical"`
+	Traceability    TraceabilityFacts      `json:"traceability"`
+	Workflow        WorkflowFacts          `json:"workflow"`
+	Remote          RemoteFacts            `json:"remote"`
+	ProcessEvidence []ProcessEvidenceInput `json:"process_evidence,omitempty"`
 }
 
 // Report is the single readiness result consumed by status, preflight, and
 // final verify. Ready is false whenever any diagnostic is blocking.
 type Report struct {
-	Ready       bool         `json:"ready"`
-	Target      Target       `json:"target"`
-	Mode        Mode         `json:"mode"`
-	PointInTime bool         `json:"point_in_time"`
-	Diagnostics []Diagnostic `json:"diagnostics,omitempty"`
+	Ready       bool                    `json:"ready"`
+	Target      Target                  `json:"target"`
+	Mode        Mode                    `json:"mode"`
+	PointInTime bool                    `json:"point_in_time"`
+	Diagnostics []Diagnostic            `json:"diagnostics,omitempty"`
+	Processes   []ProcessEvidenceReport `json:"processes,omitempty"`
 }
 
 func (t Target) validate() error {
