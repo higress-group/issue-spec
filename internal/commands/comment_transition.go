@@ -88,7 +88,7 @@ func (a *app) runCommentTransition(ctx context.Context, args []string) int {
 		a.errorf("auth required for comment transition on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
 	}
-	artifact, listedBody, err := findArtifactByID(ctx, client, repo, issue, *id)
+	artifact, listedBody, err := findUniqueTransitionArtifactByID(ctx, client, repo, issue, *id)
 	if err != nil {
 		a.errorf("%v\n", err)
 		return 1
@@ -130,6 +130,33 @@ func (a *app) runCommentTransition(ctx context.Context, args []string) int {
 		return 2
 	}
 	return a.applyNonAtomicTransition(ctx, client, repo, issue, artifact, listedBody, request, *expectedDigest, *jsonOut)
+}
+
+func findUniqueTransitionArtifactByID(ctx context.Context, client github.Operations, repo string, issueNumber int, id string) (model.Artifact, string, error) {
+	comments, err := client.ListIssueComments(ctx, repo, issueNumber)
+	if err != nil {
+		return model.Artifact{}, "", err
+	}
+	var matches []github.Comment
+	for _, comment := range comments {
+		if model.ParseTypedComment(comment.Body).ID == id {
+			matches = append(matches, comment)
+		}
+	}
+	if len(matches) == 0 {
+		return model.Artifact{}, "", fmt.Errorf("typed comment %s not found on issue %d", id, issueNumber)
+	}
+	if len(matches) != 1 {
+		return model.Artifact{}, "", fmt.Errorf("typed comment %s is ambiguous on issue %d: found %d matching markers", id, issueNumber, len(matches))
+	}
+	comment := matches[0]
+	return model.Artifact{
+		Issue:     issueNumber,
+		CommentID: comment.ID,
+		URL:       comment.HTMLURL,
+		APIURL:    comment.URL,
+		Comment:   model.ParseTypedComment(comment.Body),
+	}, comment.Body, nil
 }
 
 func (a *app) applyStrictTransition(ctx context.Context, backend github.ConditionalCommentBackend, repo string, issue int, artifact model.Artifact, observed github.CommentRepresentation, request model.TransitionRequest, expectedVersion int64, expectedDigest string, jsonOut bool) int {

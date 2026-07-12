@@ -98,6 +98,50 @@ func TestCommentTransitionConflictAndStrictUnsupportedDoNotWrite(t *testing.T) {
 	}
 }
 
+func TestCommentTransitionRejectsDuplicateTypedIDsBeforeAnyWrite(t *testing.T) {
+	body := transitionCommandBody(t, "confirmed")
+	for _, strict := range []bool{false, true} {
+		name := "non-atomic"
+		if strict {
+			name = "strict"
+		}
+		t.Run(name, func(t *testing.T) {
+			writes, observations := 0, 0
+			base := transitionFake(body)
+			base.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+				return []github.Comment{
+					{ID: 7, HTMLURL: "https://example.test/c/7", Body: body},
+					{ID: 8, HTMLURL: "https://example.test/c/8", Body: body},
+				}, nil
+			}
+			base.updateComment = func(context.Context, string, int64, string) (github.Comment, error) {
+				writes++
+				return github.Comment{}, nil
+			}
+			var backend github.Backend = base
+			if strict {
+				backend = conditionalTransitionBackend{fakeGitHubBackend: base,
+					observe: func(context.Context, string, int64) (github.CommentRepresentation, error) {
+						observations++
+						return github.CommentRepresentation{}, nil
+					},
+					update: func(context.Context, string, int64, int64, string) (github.CommentRepresentation, error) {
+						writes++
+						return github.CommentRepresentation{}, nil
+					}}
+			}
+			app, out, errOut := transitionAppWithError(backend)
+			args := []string{"--repo", "o/r", "--issue", "5", "--id", "PROCESS-001", "--to", "done", "--allow-nonatomic"}
+			if code := app.runCommentTransition(t.Context(), args); code != 1 {
+				t.Fatalf("code=%d out=%s", code, out.String())
+			}
+			if !strings.Contains(errOut.String(), "ambiguous") || !strings.Contains(errOut.String(), "found 2 matching markers") || writes != 0 || observations != 0 {
+				t.Fatalf("out=%s err=%s writes=%d observations=%d", out.String(), errOut.String(), writes, observations)
+			}
+		})
+	}
+}
+
 func TestCommentTransitionExplicitNonAtomicReportsDigests(t *testing.T) {
 	body := transitionCommandBody(t, "confirmed")
 	updated := body
@@ -189,8 +233,13 @@ func transitionFake(body string) fakeGitHubBackend {
 }
 
 func transitionApp(backend github.Backend) (*app, *bytes.Buffer) {
-	out := &bytes.Buffer{}
-	a := newApp(strings.NewReader(""), out, &bytes.Buffer{})
+	a, out, _ := transitionAppWithError(backend)
+	return a, out
+}
+
+func transitionAppWithError(backend github.Backend) (*app, *bytes.Buffer, *bytes.Buffer) {
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	a := newApp(strings.NewReader(""), out, errOut)
 	a.selectGitHubBackend = func(context.Context, string) (auth.GitHubBackendSelection, error) {
 		return auth.GitHubBackendSelection{Host: "github.com"}, nil
 	}
@@ -200,5 +249,5 @@ func transitionApp(backend github.Backend) (*app, *bytes.Buffer) {
 		}
 		return backend, nil
 	}
-	return a, out
+	return a, out, errOut
 }
