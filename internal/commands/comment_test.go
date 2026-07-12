@@ -435,7 +435,7 @@ func TestCommentUpsertReportsDroppedLinksWhenBodyLacksLinksBlock(t *testing.T) {
 		t.Fatalf("seed existing link: changed=%v err=%v", changed, err)
 	}
 	// Header present (so EnsureTypedBody keeps it as-is) but no Links block.
-	linkless := "Type: TASK\nID: TASK-001\nStatus: draft\nScope: N/A\n\n## Summary\n\nnoncanonical task without a Links block\n"
+	linkless := "Agent: Coordinator\nType: TASK\nID: TASK-001\nStatus: draft\nScope: N/A\n\n## Summary\n\nnoncanonical task without a Links block\n"
 	bodyPath := writeTempInput(t, linkless)
 
 	var out bytes.Buffer

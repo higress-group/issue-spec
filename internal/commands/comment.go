@@ -38,7 +38,7 @@ func parseCoversSectionIDs(body string) []string {
 
 func (a *app) runComment(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec comment generate|upsert|list ...\n")
+		a.errorf("usage: issue-spec comment generate|upsert|transition|list ...\n")
 		return 2
 	}
 	switch args[0] {
@@ -46,6 +46,8 @@ func (a *app) runComment(ctx context.Context, args []string) int {
 		return a.runCommentGenerate(ctx, args[1:])
 	case "upsert":
 		return a.runCommentUpsert(ctx, args[1:])
+	case "transition":
+		return a.runCommentTransition(ctx, args[1:])
 	case "list":
 		return a.runCommentList(ctx, args[1:])
 	default:

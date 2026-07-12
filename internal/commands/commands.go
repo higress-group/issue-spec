@@ -179,6 +179,7 @@ Usage:
   issue-spec issue update --repo owner/repo --issue N [--title title] [--body-file file.md] [--summary "what changed"]
   issue-spec comment generate --type SPEC --id SPEC-001 --input-file spec.json [--status confirmed] [--scope "..."]
   issue-spec comment upsert --repo owner/repo --issue N --type SPEC --id SPEC-001 --body-file file.md [--allow-noncanonical]
+  issue-spec comment transition --repo owner/repo --issue N --id TASK-001 --to done [--expected-version N|--expected-digest SHA256]
   issue-spec comment list --repo owner/repo --issue N [--type SPEC] [--json]
   issue-spec question create --repo owner/repo --issue N --id QUESTION-001 --question "..."
   issue-spec question resolve --repo owner/repo --issue N --id QUESTION-001 --resolution-file file.md

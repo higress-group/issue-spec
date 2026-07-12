@@ -171,12 +171,12 @@ func (a *app) runQuestionResolve(ctx context.Context, args []string) int {
 		a.errorf("%s is %s, not QUESTION\n", *id, artifact.Comment.Type)
 		return 1
 	}
-	updatedBody, err := model.SetTypedCommentStatus(body, *status)
+	transition, err := model.ApplyTypedTransition(body, model.TransitionRequest{ExpectedType: "QUESTION", ExpectedID: *id, ToStatus: *status})
 	if err != nil {
 		a.errorf("update QUESTION status: %v\n", err)
 		return 1
 	}
-	updatedBody = model.AppendResolutionLog(updatedBody, resolutionText)
+	updatedBody := model.AppendResolutionLog(transition.Body, resolutionText)
 	comment, err := client.UpdateComment(ctx, repo, artifact.CommentID, updatedBody)
 	if err != nil {
 		a.errorf("patch QUESTION %s: %v\n", *id, err)
