@@ -1,12 +1,15 @@
 package state
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/processworkspace"
@@ -256,6 +259,7 @@ func activeProcessWorkspace(value ProcessWorkspaceLifecycle) bool {
 
 type ProcessWorkspaceAssociations struct {
 	SchemaVersion int                                    `json:"schema_version"`
+	Generation    uint64                                 `json:"generation,omitempty"`
 	ByWorkspace   map[string]ProcessWorkspaceAssociation `json:"by_workspace,omitempty"`
 }
 
@@ -436,4 +440,131 @@ func cloneProcessWorkspaceAssociation(in ProcessWorkspaceAssociation) ProcessWor
 	in.SharedTouchpoints = append([]string(nil), in.SharedTouchpoints...)
 	in.RuntimeResources = append([]processworkspace.RuntimeResource(nil), in.RuntimeResources...)
 	return in
+}
+
+// ProcessWorkspaceStoreAdapter is the PROCESS-012 bridge between the P007 CAS
+// contract and the existing atomic RunnerState store. It deliberately adds no
+// lock: FileStore.Update already owns the process-wide state lock.
+type ProcessWorkspaceStoreAdapter struct {
+	store StateStore
+}
+
+func NewProcessWorkspaceStoreAdapter(store StateStore) (*ProcessWorkspaceStoreAdapter, error) {
+	if store == nil {
+		return nil, errors.New("runner state store is required")
+	}
+	return &ProcessWorkspaceStoreAdapter{store: store}, nil
+}
+
+func (a *ProcessWorkspaceStoreAdapter) LoadProcessWorkspaces(ctx context.Context) (ProcessWorkspaceAssociations, error) {
+	state, err := a.store.Load(ctx)
+	if err != nil {
+		return ProcessWorkspaceAssociations{}, err
+	}
+	return cloneProcessWorkspaceAssociations(state.ProcessWorkspaces), nil
+}
+
+func (a *ProcessWorkspaceStoreAdapter) ReserveProcessWorkspace(ctx context.Context, association ProcessWorkspaceAssociation) (ProcessWorkspaceAssociation, error) {
+	return a.mutate(ctx, func(current *ProcessWorkspaceAssociations) (ProcessWorkspaceAssociation, error) {
+		return current.Reserve(association)
+	})
+}
+
+func (a *ProcessWorkspaceStoreAdapter) TransitionProcessWorkspace(ctx context.Context, workspaceID, reservationID string, from, to ProcessWorkspaceLifecycle) (ProcessWorkspaceAssociation, error) {
+	return a.mutate(ctx, func(current *ProcessWorkspaceAssociations) (ProcessWorkspaceAssociation, error) {
+		return current.Transition(workspaceID, reservationID, from, to)
+	})
+}
+
+func (a *ProcessWorkspaceStoreAdapter) MarkProcessWorkspaceFailure(ctx context.Context, workspaceID, reservationID, code string) (ProcessWorkspaceAssociation, error) {
+	return a.mutate(ctx, func(current *ProcessWorkspaceAssociations) (ProcessWorkspaceAssociation, error) {
+		return current.MarkFailure(workspaceID, reservationID, code)
+	})
+}
+
+func (a *ProcessWorkspaceStoreAdapter) BeginReleaseProcessWorkspace(ctx context.Context, workspaceID, reservationID string) (ProcessWorkspaceAssociation, error) {
+	return a.mutate(ctx, func(current *ProcessWorkspaceAssociations) (ProcessWorkspaceAssociation, error) {
+		association, ok := current.Get(workspaceID)
+		if !ok || association.ReservationID != reservationID {
+			return ProcessWorkspaceAssociation{}, errors.New("process workspace reservation CAS mismatch")
+		}
+		if association.Lifecycle == ProcessWorkspaceCleanupPending {
+			return association, nil
+		}
+		return current.Transition(workspaceID, reservationID, association.Lifecycle, ProcessWorkspaceCleanupPending)
+	})
+}
+
+func (a *ProcessWorkspaceStoreAdapter) ConfirmProcessWorkspaceReleased(ctx context.Context, workspaceID, reservationID string) (ProcessWorkspaceAssociation, error) {
+	return a.mutate(ctx, func(current *ProcessWorkspaceAssociations) (ProcessWorkspaceAssociation, error) {
+		return current.ConfirmReleased(workspaceID, reservationID)
+	})
+}
+
+func (a *ProcessWorkspaceStoreAdapter) DeleteProcessWorkspace(ctx context.Context, workspaceID, reservationID string) error {
+	_, err := a.mutate(ctx, func(current *ProcessWorkspaceAssociations) (ProcessWorkspaceAssociation, error) {
+		if err := current.Delete(workspaceID, reservationID); err != nil {
+			return ProcessWorkspaceAssociation{}, err
+		}
+		return ProcessWorkspaceAssociation{}, nil
+	})
+	return err
+}
+
+func (a *ProcessWorkspaceStoreAdapter) GetProcessWorkspace(ctx context.Context, workspaceID string) (ProcessWorkspaceAssociation, bool, error) {
+	current, err := a.LoadProcessWorkspaces(ctx)
+	if err != nil {
+		return ProcessWorkspaceAssociation{}, false, err
+	}
+	association, ok := current.Get(strings.TrimSpace(workspaceID))
+	return association, ok, nil
+}
+
+func (a *ProcessWorkspaceStoreAdapter) ListProcessWorkspaces(ctx context.Context) ([]ProcessWorkspaceAssociation, uint64, error) {
+	current, err := a.LoadProcessWorkspaces(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	ids := make([]string, 0, len(current.ByWorkspace))
+	for id := range current.ByWorkspace {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	result := make([]ProcessWorkspaceAssociation, 0, len(ids))
+	for _, id := range ids {
+		association, _ := current.Get(id)
+		result = append(result, association)
+	}
+	return result, current.Generation, nil
+}
+
+func (a *ProcessWorkspaceStoreAdapter) mutate(ctx context.Context, mutation func(*ProcessWorkspaceAssociations) (ProcessWorkspaceAssociation, error)) (ProcessWorkspaceAssociation, error) {
+	if a == nil || a.store == nil {
+		return ProcessWorkspaceAssociation{}, errors.New("runner state store is required")
+	}
+	var result ProcessWorkspaceAssociation
+	err := a.store.Update(ctx, func(state *RunnerState) error {
+		before := cloneProcessWorkspaceAssociations(state.ProcessWorkspaces)
+		var err error
+		result, err = mutation(&state.ProcessWorkspaces)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(before.ByWorkspace, state.ProcessWorkspaces.ByWorkspace) {
+			state.ProcessWorkspaces.Generation++
+		}
+		return state.ProcessWorkspaces.Validate()
+	})
+	if err != nil {
+		return ProcessWorkspaceAssociation{}, err
+	}
+	return cloneProcessWorkspaceAssociation(result), nil
+}
+
+func cloneProcessWorkspaceAssociations(in ProcessWorkspaceAssociations) ProcessWorkspaceAssociations {
+	out := ProcessWorkspaceAssociations{SchemaVersion: in.SchemaVersion, Generation: in.Generation, ByWorkspace: make(map[string]ProcessWorkspaceAssociation, len(in.ByWorkspace))}
+	for id, association := range in.ByWorkspace {
+		out.ByWorkspace[id] = cloneProcessWorkspaceAssociation(association)
+	}
+	return out
 }

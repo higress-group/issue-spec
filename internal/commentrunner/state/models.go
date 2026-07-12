@@ -11,7 +11,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/capability"
 )
 
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 type LifecycleStatus string
 
@@ -29,17 +29,18 @@ const (
 var ErrInvalidTransition = errors.New("invalid job lifecycle transition")
 
 type RunnerState struct {
-	SchemaVersion    int                          `json:"schema_version"`
-	CreatedAt        time.Time                    `json:"created_at,omitempty"`
-	UpdatedAt        time.Time                    `json:"updated_at,omitempty"`
-	Repositories     map[string]RepositoryState   `json:"repositories,omitempty"`
-	Jobs             map[string]Job               `json:"jobs,omitempty"`
-	PublicSessions   map[string]PublicSession     `json:"public_sessions,omitempty"`
-	Workspaces       map[string]WorkspaceMetadata `json:"workspaces,omitempty"`
-	Cancellations    map[string]Cancellation      `json:"cancellations,omitempty"`
-	StatusWritebacks map[string]StatusWriteback   `json:"status_writebacks,omitempty"`
-	Deliveries       map[string]WebhookDelivery   `json:"webhook_deliveries,omitempty"`
-	Idempotency      IdempotencyIndex             `json:"idempotency,omitempty"`
+	SchemaVersion     int                          `json:"schema_version"`
+	CreatedAt         time.Time                    `json:"created_at,omitempty"`
+	UpdatedAt         time.Time                    `json:"updated_at,omitempty"`
+	Repositories      map[string]RepositoryState   `json:"repositories,omitempty"`
+	Jobs              map[string]Job               `json:"jobs,omitempty"`
+	PublicSessions    map[string]PublicSession     `json:"public_sessions,omitempty"`
+	Workspaces        map[string]WorkspaceMetadata `json:"workspaces,omitempty"`
+	Cancellations     map[string]Cancellation      `json:"cancellations,omitempty"`
+	StatusWritebacks  map[string]StatusWriteback   `json:"status_writebacks,omitempty"`
+	Deliveries        map[string]WebhookDelivery   `json:"webhook_deliveries,omitempty"`
+	Idempotency       IdempotencyIndex             `json:"idempotency,omitempty"`
+	ProcessWorkspaces ProcessWorkspaceAssociations `json:"process_workspaces"`
 }
 
 type DeliveryStatus string
@@ -510,6 +511,11 @@ func (s *RunnerState) Normalize() {
 	if s.Deliveries == nil {
 		s.Deliveries = map[string]WebhookDelivery{}
 	}
+	if s.ProcessWorkspaces.SchemaVersion == 0 {
+		s.ProcessWorkspaces = NewProcessWorkspaceAssociations()
+	} else if s.ProcessWorkspaces.ByWorkspace == nil {
+		s.ProcessWorkspaces.ByWorkspace = map[string]ProcessWorkspaceAssociation{}
+	}
 	if s.Idempotency.CommandJobs == nil {
 		s.Idempotency.CommandJobs = map[string]string{}
 	}
@@ -574,6 +580,19 @@ func (s *RunnerState) Normalize() {
 	// Backstop: drop idempotency index entries whose target record no longer
 	// exists so a re-delivered command never resolves to a missing record.
 	s.dropDanglingIndexes()
+}
+
+// Validate is the persistence-boundary validation for the complete runner
+// state. Normalize may add migration defaults, but it must never repair an
+// invalid durable PROCESS workspace association.
+func (s RunnerState) Validate() error {
+	if s.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("unsupported runner state schema version %d", s.SchemaVersion)
+	}
+	if err := s.ProcessWorkspaces.Validate(); err != nil {
+		return fmt.Errorf("process workspaces: %w", err)
+	}
+	return nil
 }
 
 func PublicSessionKey(repo, publicSessionID string) string {

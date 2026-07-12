@@ -1,8 +1,11 @@
 package state
 
 import (
+	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/higress-group/issue-spec/internal/processworkspace"
@@ -157,6 +160,176 @@ func TestProcessWorkspaceAssociationLegacyAndFutureSchemas(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"schema_version":3,"by_workspace":{}}`), &collection); err == nil {
 		t.Fatal("future collection accepted")
 	}
+}
+
+func TestProcessWorkspaceStoreAdapterReopenRetainsAndReleasesResources(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "runner-state.json")
+	store, err := OpenFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, _ := NewProcessWorkspaceStoreAdapter(store)
+	first := testProcessWorkspaceAssociation("ws-active", "PROCESS-001")
+	first.RuntimeResources = []processworkspace.RuntimeResource{{Kind: "database", Name: "shared", Exclusive: true}}
+	finalizeAssociation(&first)
+	reserved, err := adapter.ReserveProcessWorkspace(ctx, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.MarkProcessWorkspaceFailure(ctx, reserved.WorkspaceID, reserved.ReservationID, "manager_prepare_failed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	adapter, _ = NewProcessWorkspaceStoreAdapter(reopened)
+	loaded, found, err := adapter.GetProcessWorkspace(ctx, first.WorkspaceID)
+	if err != nil || !found || !loaded.NeedsReconcile || loaded.Lifecycle != ProcessWorkspaceAllocating {
+		t.Fatalf("reopened active association=%+v found=%v err=%v", loaded, found, err)
+	}
+	second := testProcessWorkspaceAssociation("ws-blocked", "PROCESS-002")
+	second.RuntimeResources = append([]processworkspace.RuntimeResource(nil), first.RuntimeResources...)
+	finalizeAssociation(&second)
+	if _, err := adapter.ReserveProcessWorkspace(ctx, second); err == nil {
+		t.Fatal("restart lost active exclusive reservation")
+	}
+	if _, err := adapter.BeginReleaseProcessWorkspace(ctx, first.WorkspaceID, first.ReservationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ConfirmProcessWorkspaceReleased(ctx, first.WorkspaceID, first.ReservationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ReserveProcessWorkspace(ctx, second); err != nil {
+		t.Fatalf("confirmed release did not free resource: %v", err)
+	}
+}
+
+func TestProcessWorkspaceStoreAdapterConcurrentCASAndGeneration(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenFileStore(filepath.Join(t.TempDir(), "runner-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	adapter, _ := NewProcessWorkspaceStoreAdapter(store)
+	association := testProcessWorkspaceAssociation("ws-cas", "PROCESS-001")
+	reserved, err := adapter.ReserveProcessWorkspace(ctx, association)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, generation, err := adapter.ListProcessWorkspaces(ctx)
+	if err != nil || generation != 1 {
+		t.Fatalf("reserve generation=%d err=%v", generation, err)
+	}
+	retry := association
+	retry.ReservationID = "reservation:unused-retry-token"
+	if got, err := adapter.ReserveProcessWorkspace(ctx, retry); err != nil || got.ReservationID != reserved.ReservationID {
+		t.Fatalf("active retry=%+v err=%v", got, err)
+	}
+	_, generation, _ = adapter.ListProcessWorkspaces(ctx)
+	if generation != 1 {
+		t.Fatalf("idempotent retry advanced generation=%d", generation)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, to := range []ProcessWorkspaceLifecycle{ProcessWorkspacePrepared, ProcessWorkspaceCleanupPending} {
+		wg.Add(1)
+		go func(to ProcessWorkspaceLifecycle) {
+			defer wg.Done()
+			_, err := adapter.TransitionProcessWorkspace(ctx, association.WorkspaceID, reserved.ReservationID, ProcessWorkspaceAllocating, to)
+			errs <- err
+		}(to)
+	}
+	wg.Wait()
+	close(errs)
+	succeeded := 0
+	for err := range errs {
+		if err == nil {
+			succeeded++
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("concurrent CAS successes=%d", succeeded)
+	}
+	_, generation, _ = adapter.ListProcessWorkspaces(ctx)
+	if generation != 2 {
+		t.Fatalf("single CAS mutation generation=%d", generation)
+	}
+}
+
+func TestProcessWorkspaceStoreAdapterTerminalAttemptRejectsOldToken(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenFileStore(filepath.Join(t.TempDir(), "runner-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	adapter, _ := NewProcessWorkspaceStoreAdapter(store)
+	first := testProcessWorkspaceAssociation("ws-aba", "PROCESS-001")
+	if _, err := adapter.ReserveProcessWorkspace(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.BeginReleaseProcessWorkspace(ctx, first.WorkspaceID, first.ReservationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ConfirmProcessWorkspaceReleased(ctx, first.WorkspaceID, first.ReservationID); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Lifecycle = ProcessWorkspaceAllocating
+	second.ReservationID = "reservation:new-attempt"
+	if _, err := adapter.ReserveProcessWorkspace(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.DeleteProcessWorkspace(ctx, first.WorkspaceID, first.ReservationID); err == nil {
+		t.Fatal("old terminal token deleted new attempt")
+	}
+	current, found, err := adapter.GetProcessWorkspace(ctx, first.WorkspaceID)
+	if err != nil || !found || current.ReservationID != second.ReservationID {
+		t.Fatalf("new attempt changed: %+v found=%v err=%v", current, found, err)
+	}
+}
+
+func TestProcessWorkspaceStoreAdapterFailedMutationDoesNotPartiallyWrite(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "runner-state.json")
+	store, err := OpenFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	adapter, _ := NewProcessWorkspaceStoreAdapter(store)
+	association := testProcessWorkspaceAssociation("ws-atomic", "PROCESS-001")
+	if _, err := adapter.ReserveProcessWorkspace(ctx, association); err != nil {
+		t.Fatal(err)
+	}
+	before, err := adapter.LoadProcessWorkspaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.TransitionProcessWorkspace(ctx, association.WorkspaceID, "wrong-token", ProcessWorkspaceAllocating, ProcessWorkspacePrepared); err == nil {
+		t.Fatal("wrong-token mutation succeeded")
+	}
+	after, err := adapter.LoadProcessWorkspaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Generation != after.Generation || !equalAssociationMaps(before.ByWorkspace, after.ByWorkspace) {
+		t.Fatalf("failed mutation partially persisted: before=%+v after=%+v", before, after)
+	}
+}
+
+func equalAssociationMaps(left, right map[string]ProcessWorkspaceAssociation) bool {
+	leftJSON, _ := json.Marshal(left)
+	rightJSON, _ := json.Marshal(right)
+	return string(leftJSON) == string(rightJSON)
 }
 
 func testProcessWorkspaceAssociation(workspaceID, processID string) ProcessWorkspaceAssociation {
