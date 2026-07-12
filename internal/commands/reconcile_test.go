@@ -22,16 +22,19 @@ func TestWorkflowReconcileCLIResolvesBodyFileAndCreates(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "task.md"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := reconcile.Plan{Version: 1, Repo: "o/r", Operations: []reconcile.Operation{{ID: "create", Kind: "upsert", Target: reconcile.Target{Issue: 5, Type: "TASK", ID: "TASK-001"}, Desired: reconcile.Desired{BodyFile: "task.md"}}}}
+	plan := reconcile.Plan{Version: 1, Repo: "o/r", AllowNonAtomic: true, Operations: []reconcile.Operation{{ID: "create", Kind: "upsert", Target: reconcile.Target{Issue: 5, Type: "TASK", ID: "TASK-001"}, Desired: reconcile.Desired{BodyFile: "task.md"}}}}
 	data, _ := json.Marshal(plan)
 	planPath := filepath.Join(dir, "plan.json")
 	if err := os.WriteFile(planPath, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	created := 0
-	backend := fakeGitHubBackend{info: github.BackendInfo{Name: "fake"}, listIssueComments: func(context.Context, string, int) ([]github.Comment, error) { return nil, nil }, createComment: func(_ context.Context, _ string, _ int, value string) (github.Comment, error) {
+	var comments []github.Comment
+	backend := fakeGitHubBackend{info: github.BackendInfo{Name: "fake"}, listIssueComments: func(context.Context, string, int) ([]github.Comment, error) { return comments, nil }, createComment: func(_ context.Context, _ string, _ int, value string) (github.Comment, error) {
 		created++
-		return github.Comment{ID: 7, HTMLURL: "https://x/c/7", Body: value}, nil
+		comment := github.Comment{ID: 7, HTMLURL: "https://x/c/7", Body: value}
+		comments = append(comments, comment)
+		return comment, nil
 	}}
 	app, out := transitionApp(backend)
 	if code := app.runWorkflow(context.Background(), []string{"reconcile", "--plan", planPath, "--checkpoint", filepath.Join(dir, "checkpoint.json"), "--json"}); code != 0 {

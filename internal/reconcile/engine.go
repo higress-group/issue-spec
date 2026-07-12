@@ -27,7 +27,7 @@ type observed struct {
 
 func (e Engine) Run(ctx context.Context, plan Plan, checkpointPath string) (Result, error) {
 	ordered, digest, err := Validate(plan)
-	result := Result{PlanDigest: digest, Checkpoint: checkpointPath, Atomic: !plan.AllowNonAtomic}
+	result := Result{PlanDigest: digest, Checkpoint: checkpointPath, Atomic: true}
 	if err != nil {
 		return result, err
 	}
@@ -58,6 +58,9 @@ func (e Engine) Run(ctx context.Context, plan Plan, checkpointPath string) (Resu
 		}
 		states[op.ID] = r.Status
 		result.Operations = append(result.Operations, r)
+		if !r.Atomic {
+			result.Atomic = false
+		}
 		switch r.Status {
 		case "created":
 			result.Created++
@@ -162,11 +165,24 @@ func (e Engine) applyUpsert(ctx context.Context, plan Plan, op Operation) Operat
 		return unchangedResult(op, item, !plan.AllowNonAtomic)
 	}
 	if !found {
-		created, err := e.Backend.CreateComment(ctx, plan.Repo, op.Target.Issue, desired)
+		if !plan.AllowNonAtomic {
+			return conflictResult(op, "comment creation is non-atomic; plan allow_nonatomic is false")
+		}
+		_, err := e.Backend.CreateComment(ctx, plan.Repo, op.Target.Issue, desired)
 		if err != nil {
+			if _, _, observeErr := e.observe(ctx, plan.Repo, op.Target, true); observeErr != nil {
+				return failureResult(op, fmt.Errorf("create outcome uncertain: %v; re-observe: %w", err, observeErr), false)
+			}
 			return failureResult(op, err, false)
 		}
-		return OperationResult{ID: op.ID, Kind: op.Kind, Status: "created", Atomic: false, CommentID: created.ID, URL: created.HTMLURL}
+		observedCreated, createdFound, observeErr := e.observe(ctx, plan.Repo, op.Target, true)
+		if observeErr != nil {
+			return failureResult(op, fmt.Errorf("create succeeded but re-observe failed: %w", observeErr), false)
+		}
+		if !createdFound || observedCreated.Body != desired {
+			return conflictResult(op, "create succeeded but exact re-observation did not match the planned comment")
+		}
+		return OperationResult{ID: op.ID, Kind: op.Kind, Status: "created", Atomic: false, CommentID: observedCreated.Comment.ID, URL: observedCreated.Comment.HTMLURL}
 	}
 	return e.mutate(ctx, plan, op, item, desired)
 }
@@ -205,14 +221,20 @@ func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) Operatio
 	if err != nil {
 		return conflictResult(op, err.Error())
 	}
-	rightBody, rightChanged, err := model.AddRelatedCommentLink(right.Body, left.Comment.HTMLURL)
+	_, rightChanged, err := model.AddRelatedCommentLink(right.Body, left.Comment.HTMLURL)
 	if err != nil {
 		return conflictResult(op, err.Error())
 	}
+	mutations := 0
+	atomic := true
 	if leftChanged {
 		r := e.mutate(ctx, plan, op, left, leftBody)
 		if r.Status != "updated" && r.Status != "unchanged" {
 			return r
+		}
+		if r.Status == "updated" {
+			mutations++
+			atomic = atomic && r.Atomic
 		}
 	}
 	if rightChanged {
@@ -222,15 +244,33 @@ func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) Operatio
 		if err != nil {
 			return failureResult(op, err, !plan.AllowNonAtomic)
 		}
-		r := e.mutate(ctx, plan, op, right, rightBody)
-		if r.Status != "updated" && r.Status != "unchanged" {
-			return r
+		rightBody, stillChanged, linkErr := model.AddRelatedCommentLink(right.Body, left.Comment.HTMLURL)
+		if linkErr != nil {
+			return conflictResult(op, linkErr.Error())
+		}
+		if !stillChanged {
+			rightChanged = false
+		} else {
+			r := e.mutate(ctx, plan, op, right, rightBody)
+			if r.Status != "updated" && r.Status != "unchanged" {
+				if mutations > 0 {
+					r.Atomic = false
+				}
+				return r
+			}
+			if r.Status == "updated" {
+				mutations++
+				atomic = atomic && r.Atomic
+			}
 		}
 	}
 	if !leftChanged && !rightChanged {
 		return unchangedResult(op, left, !plan.AllowNonAtomic)
 	}
-	return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: !plan.AllowNonAtomic, CommentID: left.Comment.ID, URL: left.Comment.HTMLURL}
+	if mutations > 1 {
+		atomic = false
+	}
+	return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: atomic, CommentID: left.Comment.ID, URL: left.Comment.HTMLURL}
 }
 
 func (e Engine) mutate(ctx context.Context, plan Plan, op Operation, item observed, body string) OperationResult {

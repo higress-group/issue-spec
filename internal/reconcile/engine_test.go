@@ -19,12 +19,14 @@ type fakeBackend struct {
 	createLost   bool
 	failUpdateID int64
 	writes       int
+	listCalls    map[int]int
+	listHook     func(*fakeBackend, int, int)
 }
 
 type plainBackend struct{ github.IssueBackend }
 
 func newFake() *fakeBackend {
-	return &fakeBackend{comments: map[int][]github.Comment{}, versions: map[int64]int64{}, nextID: 10}
+	return &fakeBackend{comments: map[int][]github.Comment{}, versions: map[int64]int64{}, nextID: 10, listCalls: map[int]int{}}
 }
 func (f *fakeBackend) BackendInfo() github.BackendInfo { return github.BackendInfo{Name: "fake"} }
 func (f *fakeBackend) GetUser(context.Context) (github.User, []string, error) {
@@ -43,6 +45,10 @@ func (f *fakeBackend) CreateLabel(context.Context, string, string, string, strin
 	return github.LabelResult{}, errors.New("unused")
 }
 func (f *fakeBackend) ListIssueComments(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+	f.listCalls[issue]++
+	if f.listHook != nil {
+		f.listHook(f, issue, f.listCalls[issue])
+	}
 	return append([]github.Comment(nil), f.comments[issue]...), nil
 }
 func (f *fakeBackend) CreateComment(_ context.Context, _ string, issue int, body string) (github.Comment, error) {
@@ -100,13 +106,13 @@ func TestReconcileLostCreateResponseResumesUnchanged(t *testing.T) {
 	f := newFake()
 	f.createLost = true
 	body := typedBody(t, "TASK", "TASK-001", "confirmed")
-	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "create", Kind: "upsert", Target: Target{Issue: 1, Type: "TASK", ID: "TASK-001"}, Desired: Desired{Body: body}}}}
+	plan := Plan{Version: 1, Repo: "o/r", AllowNonAtomic: true, Operations: []Operation{{ID: "create", Kind: "upsert", Target: Target{Issue: 1, Type: "TASK", ID: "TASK-001"}, Desired: Desired{Body: body}}}}
 	cp := t.TempDir() + "/cp.json"
 	first, err := (Engine{Backend: f}).Run(context.Background(), plan, cp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Pending != 1 || len(f.comments[1]) != 1 {
+	if first.Pending != 1 || first.Atomic || len(f.comments[1]) != 1 {
 		t.Fatalf("first=%+v comments=%d", first, len(f.comments[1]))
 	}
 	second, err := (Engine{Backend: f}).Run(context.Background(), plan, cp)
@@ -129,7 +135,7 @@ func TestReconcilePartialBacklinkRateLimitResumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Pending != 1 || len(model.RelatedCommentURLs(model.ParseTypedComment(f.comments[1][0].Body))) != 1 {
+	if first.Pending != 1 || first.Atomic || first.Operations[0].Atomic || len(model.RelatedCommentURLs(model.ParseTypedComment(f.comments[1][0].Body))) != 1 {
 		t.Fatalf("first=%+v", first)
 	}
 	second, err := (Engine{Backend: f}).Run(context.Background(), plan, cp)
@@ -138,6 +144,69 @@ func TestReconcilePartialBacklinkRateLimitResumes(t *testing.T) {
 	}
 	if !second.OK || second.Updated != 1 || len(model.RelatedCommentURLs(model.ParseTypedComment(f.comments[2][0].Body))) != 1 {
 		t.Fatalf("second=%+v", second)
+	}
+}
+
+func TestReconcileStrictCreateRequiresNonAtomicAcknowledgement(t *testing.T) {
+	f := newFake()
+	body := typedBody(t, "TASK", "TASK-001", "confirmed")
+	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "create", Kind: "upsert", Target: Target{Issue: 1, Type: "TASK", ID: "TASK-001"}, Desired: Desired{Body: body}}}}
+
+	result, err := (Engine{Backend: f}).Run(context.Background(), plan, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Conflicted != 1 || f.writes != 0 {
+		t.Fatalf("result=%+v writes=%d", result, f.writes)
+	}
+
+	plan.AllowNonAtomic = true
+	result, err = (Engine{Backend: f}).Run(context.Background(), plan, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || result.Created != 1 || result.Atomic || result.Operations[0].Atomic || f.writes != 1 {
+		t.Fatalf("result=%+v writes=%d", result, f.writes)
+	}
+}
+
+func TestReconcileCreateReobservesDuplicateLogicalMarker(t *testing.T) {
+	f := newFake()
+	body := typedBody(t, "TASK", "TASK-001", "confirmed")
+	f.listHook = func(f *fakeBackend, issue, call int) {
+		if issue == 1 && call == 3 {
+			addComment(f, issue, 99, body)
+		}
+	}
+	plan := Plan{Version: 1, Repo: "o/r", AllowNonAtomic: true, Operations: []Operation{{ID: "create", Kind: "upsert", Target: Target{Issue: 1, Type: "TASK", ID: "TASK-001"}, Desired: Desired{Body: body}}}}
+
+	result, err := (Engine{Backend: f}).Run(context.Background(), plan, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Conflicted != 1 || f.writes != 1 || !strings.Contains(result.Operations[0].Message, "duplicate logical marker") {
+		t.Fatalf("result=%+v writes=%d", result, f.writes)
+	}
+}
+
+func TestReconcileLinkRecomputesFromReobservedPeerBody(t *testing.T) {
+	f := newFake()
+	addComment(f, 1, 1, typedBody(t, "SPEC", "SPEC-001", "confirmed"))
+	addComment(f, 2, 2, typedBody(t, "TASK", "TASK-001", "confirmed"))
+	f.listHook = func(f *fakeBackend, issue, call int) {
+		if issue == 2 && call == 3 {
+			f.comments[issue][0].Body += "\n\nConcurrent human note."
+			f.versions[2]++
+		}
+	}
+	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "link", Kind: "link", Target: Target{Issue: 1, Type: "SPEC", ID: "SPEC-001"}, Desired: Desired{Peer: &Target{Issue: 2, Type: "TASK", ID: "TASK-001"}}}}}
+
+	result, err := (Engine{Backend: f}).Run(context.Background(), plan, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || result.Updated != 1 || result.Atomic || !strings.Contains(f.comments[2][0].Body, "Concurrent human note.") || len(model.RelatedCommentURLs(model.ParseTypedComment(f.comments[2][0].Body))) != 1 {
+		t.Fatalf("result=%+v peer=%q", result, f.comments[2][0].Body)
 	}
 }
 
