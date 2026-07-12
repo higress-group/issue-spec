@@ -2,6 +2,7 @@ package spa
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -65,6 +66,21 @@ func TestCurrentContextAndTenantSafeCandidates(t *testing.T) {
 	if !current.User.SiteAdmin || current.Credential.ScopeMode != "identity" || current.Credential.Scopes != nil ||
 		current.Credential.IdleExpiresAt == nil || current.Session == nil || len(current.AllowedActions) != 1 {
 		t.Fatalf("current context = %+v", current)
+	}
+
+	outsider := serverauth.Principal{User: serverauth.User{ID: outsiderID, Login: "outsider", DisplayName: "outsider"},
+		Kind: serverauth.CredentialSession}
+	outsiderContext, err := service.Current(t.Context(), outsider, "issue_spec_csrf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawContext, err := json.Marshal(outsiderContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawContext), `"allowed_actions":null`) ||
+		!strings.Contains(string(rawContext), `"allowed_actions":[]`) {
+		t.Fatalf("empty allowed actions must encode as arrays: %s", rawContext)
 	}
 
 	associated, err := service.UserCandidates(t.Context(), principal, orgID, PurposeAdministration, MatchPrefix, "", 20)
