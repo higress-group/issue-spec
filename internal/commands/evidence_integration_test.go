@@ -178,6 +178,93 @@ func TestExternalGateSynchronizesPersistsReloadsThenEvaluates(t *testing.T) {
 	}
 }
 
+func TestResolveOperatorEvidenceProviderUsesProfileRegistry(t *testing.T) {
+	clearCommandAuthEnv(t)
+	t.Setenv(codereview.OperatorProvidersFileEnv, "")
+	profile := auth.Profile{OperatorRegistryFile: writeEvidenceOperatorRegistry(t, "profile.example")}
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+
+	provider, err := app.resolveOperatorEvidenceProvider(t.Context(), profile, "profile.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := provider.Capabilities(t.Context())
+	if err != nil || !capabilities.Has(codereview.CapabilityEvidenceSnapshot) {
+		t.Fatalf("capabilities=%+v err=%v", capabilities, err)
+	}
+}
+
+func TestResolveOperatorEvidenceProviderEnvironmentPrecedesProfileRegistry(t *testing.T) {
+	clearCommandAuthEnv(t)
+	envRegistry := writeEvidenceOperatorRegistry(t, "env.example")
+	t.Setenv(codereview.OperatorProvidersFileEnv, envRegistry)
+	profile := auth.Profile{OperatorRegistryFile: filepath.Join(t.TempDir(), "missing-profile-registry.json")}
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+
+	provider, err := app.resolveOperatorEvidenceProvider(t.Context(), profile, "env.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := provider.Capabilities(t.Context())
+	if err != nil || !capabilities.Has(codereview.CapabilityEvidenceSnapshot) {
+		t.Fatalf("capabilities=%+v err=%v", capabilities, err)
+	}
+}
+
+func TestResolveOperatorEvidenceProviderFailsClosedForInvalidProfileRegistry(t *testing.T) {
+	clearCommandAuthEnv(t)
+	t.Setenv(codereview.OperatorProvidersFileEnv, "")
+	seamCalled := false
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	app.resolveCodeMutationProvider = func(context.Context, string) (codereview.MutationProvider, error) {
+		seamCalled = true
+		return &commandEvidenceProvider{}, nil
+	}
+
+	profile := auth.Profile{OperatorRegistryFile: filepath.Join(t.TempDir(), "missing-profile-registry.json")}
+	if _, err := app.resolveOperatorEvidenceProvider(t.Context(), profile, "profile.example"); err == nil ||
+		!strings.Contains(err.Error(), "private regular file") {
+		t.Fatalf("missing profile registry error=%v", err)
+	}
+	if seamCalled {
+		t.Fatal("hermetic seam bypassed a selected profile registry failure")
+	}
+}
+
+func TestResolveOperatorEvidenceProviderRetainsHermeticSeamWithoutRegistry(t *testing.T) {
+	clearCommandAuthEnv(t)
+	t.Setenv(codereview.OperatorProvidersFileEnv, "")
+	want := &commandEvidenceProvider{}
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	app.resolveCodeMutationProvider = func(context.Context, string) (codereview.MutationProvider, error) { return want, nil }
+
+	got, err := app.resolveOperatorEvidenceProvider(t.Context(), auth.Profile{}, "test.example")
+	if err != nil || got != want {
+		t.Fatalf("provider=%T err=%v", got, err)
+	}
+}
+
+func writeEvidenceOperatorRegistry(t *testing.T, key string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "providers.json")
+	raw, err := json.Marshal(map[string]any{"version": 1, "providers": map[string]any{
+		key: map[string]any{
+			"path":             os.Args[0],
+			"args":             []string{"-test.run=^TestOperatorBridgeCLIHelper$"},
+			"environment":      []string{"ISSUE_SPEC_OPERATOR_BRIDGE_HELPER=1"},
+			"timeout":          "10s",
+			"max_output_bytes": 1 << 20,
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestCommandNativeEvidenceClientUsesExactReferenceCAS(t *testing.T) {
 	orgID, repoID, issueID, referenceID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	now := time.Now().UTC()

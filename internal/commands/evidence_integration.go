@@ -176,7 +176,7 @@ func (a *app) externalGateWithProfile(ctx context.Context, profile auth.Profile,
 	}
 	request := codereview.SnapshotRequest{Reference: target.Reference, SubjectRevision: target.SubjectRevision}
 	if plan.Config.ExternalCode != nil && plan.Config.ExternalCode.Evidence.SynchronizesBefore(syncStage) {
-		provider, err := a.resolveOperatorEvidenceProvider(ctx, target.Reference.ProviderKey)
+		provider, err := a.resolveOperatorEvidenceProvider(ctx, profile, target.Reference.ProviderKey)
 		if err != nil {
 			return externalGateResult{}, true, fmt.Errorf("resolve operator evidence provider: %w", err)
 		}
@@ -207,12 +207,13 @@ func (a *app) externalGateWithProfile(ctx context.Context, profile auth.Profile,
 	return result, true, nil
 }
 
-func (a *app) resolveOperatorEvidenceProvider(ctx context.Context, key string) (codereview.Provider, error) {
-	registry, registryErr := codereview.LoadOperatorRegistryFromEnvironment()
-	if registryErr == nil {
-		if provider, err := registry.Lookup(key); err == nil {
-			return provider, nil
-		}
+func (a *app) resolveOperatorEvidenceProvider(ctx context.Context, profile auth.Profile, key string) (codereview.Provider, error) {
+	registry, _, registryErr := codereview.LoadOperatorRegistry(profile.OperatorRegistryFile)
+	if registryErr != nil {
+		return nil, registryErr
+	}
+	if provider, err := registry.Lookup(key); err == nil {
+		return provider, nil
 	}
 	// Preserve the app-level seam for hermetic command tests and older callers,
 	// while production resolves the full Provider contract directly rather than
@@ -222,9 +223,7 @@ func (a *app) resolveOperatorEvidenceProvider(ctx context.Context, key string) (
 		if err == nil {
 			return provider, nil
 		}
-		if registryErr == nil {
-			registryErr = err
-		}
+		registryErr = err
 	}
 	if registryErr == nil {
 		registryErr = codereview.ErrProviderNotFound
