@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -29,7 +30,7 @@ func TestGHBackendIssueOperationsCommandConstructionAndDecoding(t *testing.T) {
 				}
 				return user, err
 			},
-			wantArgs: []string{"api", "--method", http.MethodGet, "--header", githubAPIVersion, "/user"},
+			wantArgs: []string{"api", "--method", http.MethodGet, "--header", githubAPIVersion, "--include", "/user"},
 			assertion: func(t *testing.T, got any) {
 				if got.(User).Login != "octocat" {
 					t.Fatalf("user = %+v", got)
@@ -146,6 +147,22 @@ func TestGHBackendIssueOperationsCommandConstructionAndDecoding(t *testing.T) {
 			}
 			tt.assertion(t, got)
 		})
+	}
+}
+
+func TestGHBackendGetUserReturnsOAuthScopesFromResponseMetadata(t *testing.T) {
+	runner := &recordingCLIRunner{result: ExternalCLIResult{Stdout: []byte("HTTP/2.0 200 OK\nX-OAuth-Scopes: gist, read:org, repo\n\n{\"login\":\"octocat\"}")}}
+	backend := newTestGHBackend(t, "github.com", runner)
+
+	user, scopes, err := backend.GetUser(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Login != "octocat" || !reflect.DeepEqual(scopes, []string{"gist", "read:org", "repo"}) {
+		t.Fatalf("user=%+v scopes=%#v", user, scopes)
+	}
+	if !slices.Contains(runner.command.Args, "--include") {
+		t.Fatalf("args=%#v, want response metadata request", runner.command.Args)
 	}
 }
 

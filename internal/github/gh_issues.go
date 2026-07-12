@@ -10,14 +10,15 @@ import (
 
 func (b *GHBackend) GetUser(ctx context.Context) (User, []string, error) {
 	var user User
-	if err := b.runJSON(ctx, ExternalCLIAPIRequest{
+	metadata, err := b.runRunnerJSON(ctx, ExternalCLIAPIRequest{
 		Operation: "GetUser",
 		Method:    http.MethodGet,
 		Endpoint:  "/user",
-	}, &user); err != nil {
+	}, &user)
+	if err != nil {
 		return User{}, nil, err
 	}
-	return user, nil, nil
+	return user, splitScopes(metadata.Headers.Get("X-OAuth-Scopes")), nil
 }
 
 func (b *GHBackend) CreateIssue(ctx context.Context, repo, title, body string, labels []string) (Issue, error) {

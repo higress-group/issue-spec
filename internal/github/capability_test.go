@@ -3,6 +3,8 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/higress-group/issue-spec/internal/capability"
@@ -53,6 +55,42 @@ func TestProbeAgentCapabilitiesDoesNotInferWriteFromRepositoryRole(t *testing.T)
 	if len(report.Operations) != 1 || report.Operations[0].Decision != capability.DecisionUnknown ||
 		report.Operations[0].Code != capability.FailureOperationNotProvable {
 		t.Fatalf("report = %+v", report)
+	}
+}
+
+func TestNativeGHCapabilityWriteProofMatrix(t *testing.T) {
+	tests := []struct {
+		name       string
+		permission string
+		scopes     string
+		want       capability.Decision
+		wantCode   capability.FailureCode
+	}{
+		{name: "classic repo scope and write role", permission: "write", scopes: "read:org, repo", want: capability.DecisionAllowed},
+		{name: "classic public repo scope and admin role", permission: "admin", scopes: "public_repo", want: capability.DecisionAllowed},
+		{name: "read role denies scoped credential", permission: "read", scopes: "repo", want: capability.DecisionDenied, wantCode: capability.FailureInsufficientPermission},
+		{name: "missing scope metadata remains unknown", permission: "admin", want: capability.DecisionUnknown, wantCode: capability.FailureOperationNotProvable},
+		{name: "unrelated scope remains unknown", permission: "write", scopes: "read:org", want: capability.DecisionUnknown, wantCode: capability.FailureOperationNotProvable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			userResponse := fmt.Sprintf("HTTP/2.0 200 OK\nX-OAuth-Scopes: %s\n\n{\"login\":\"alice\"}", tt.scopes)
+			permissionResponse := fmt.Sprintf("HTTP/2.0 200 OK\n\n{\"permission\":%q}", tt.permission)
+			runner := &sequenceCLIRunner{results: []ExternalCLIResult{{Stdout: []byte(userResponse)}, {Stdout: []byte(permissionResponse)}}}
+			backend := newTestGHBackend(t, "github.com", runner)
+			report := ProbeAgentCapabilities(t.Context(), backend, capability.Request{Host: "github.com", Repository: "o/r", Operations: []capability.Operation{capability.OperationArtifactWrite}}, AgentCapabilityProbeOptions{CredentialSource: "gh", CodeReviewSurface: true})
+			if len(report.Operations) != 1 || report.Operations[0].Decision != tt.want || report.Operations[0].Code != tt.wantCode {
+				t.Fatalf("report=%+v", report)
+			}
+			if len(runner.commands) != 2 {
+				t.Fatalf("commands=%d, want read-only identity and permission probes", len(runner.commands))
+			}
+			for _, command := range runner.commands {
+				if command.Method != http.MethodGet {
+					t.Fatalf("command=%+v, capability proof must not write", command)
+				}
+			}
+		})
 	}
 }
 
