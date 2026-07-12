@@ -345,7 +345,7 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		Target: target, Mode: gates.ModeAuthoritative, Artifacts: artifacts,
 		ExpectedRevision: gates.Fact{Required: true, Known: strings.TrimSpace(opts.ExpectedRevision) != "", Passed: true, Expected: strings.TrimSpace(opts.ExpectedRevision)},
 		ProcessEvidence:  gateReport.Processes,
-		CarrierRevisions: opts.CarrierRevisions,
+		CarrierRevisions: mergeCarrierRevisionFacts(gates.ProcessCarrierRevisionFacts(gateReport.Processes), opts.CarrierRevisions),
 	})
 	if err != nil {
 		return report, err
@@ -421,6 +421,17 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	sort.Strings(report.Warnings)
 	report.OK = len(report.Errors) == 0
 	return report, nil
+}
+
+func mergeCarrierRevisionFacts(collected, supplied map[string]gates.CarrierRevisionFact) map[string]gates.CarrierRevisionFact {
+	merged := make(map[string]gates.CarrierRevisionFact, len(collected)+len(supplied))
+	for processID, fact := range collected {
+		merged[processID] = fact
+	}
+	for processID, fact := range supplied {
+		merged[processID] = fact
+	}
+	return merged
 }
 
 func legacyVerifyGateError(diagnostic gates.Diagnostic) (string, bool) {

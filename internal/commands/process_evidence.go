@@ -12,7 +12,7 @@ import (
 var processTestEvidencePattern = regexp.MustCompile(`(?i)\btest(s|ing|ed)?\b`)
 
 func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, reviewComments []github.PullRequestReviewComment,
-	review reviewSyncReport, external *externalEvidenceConsumption) []gates.ProcessEvidenceInput {
+	review reviewSyncReport, _ *externalEvidenceConsumption) []gates.ProcessEvidenceInput {
 	activeSpecs := map[string]string{}
 	taskURLs := map[string]bool{}
 	var processes, reviews, verifications []model.Artifact
@@ -55,13 +55,15 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 			}
 			for specID := range activeSpecs {
 				if artifactReferencesSpec(artifact, specID, activeSpecs[specID]) {
-					input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: process.Comment.ID, SpecID: specID, URL: artifact.URL, Done: true})
+					input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: process.Comment.ID, SpecID: specID, URL: artifact.URL,
+						Done: true, Source: "typed-review"})
 				}
 			}
 		}
 		for _, finding := range review.ResolvedFindings {
 			if finding.Process == process.Comment.ID {
-				input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: finding.Process, SpecID: finding.Spec, URL: finding.URL, FindingResolved: true})
+				input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: finding.Process, SpecID: finding.Spec, URL: finding.URL,
+					FindingResolved: true, SubjectRevision: finding.SubjectRevision, Trusted: finding.SubjectRevision != "", Source: finding.RevisionSource})
 			}
 		}
 		for _, artifact := range verifications {
@@ -71,7 +73,7 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 			for specID := range activeSpecs {
 				if artifactReferencesSpec(artifact, specID, activeSpecs[specID]) {
 					input.Verifications = append(input.Verifications, gates.VerificationEvidence{ProcessID: process.Comment.ID,
-						SpecID: specID, URL: artifact.URL, Done: true, TestEvidence: processTestEvidencePattern.MatchString(artifact.Comment.Body)})
+						SpecID: specID, URL: artifact.URL, Done: true, TestEvidence: processTestEvidencePattern.MatchString(artifact.Comment.Body), Source: "typed-verify"})
 				}
 			}
 		}
@@ -87,19 +89,14 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 					}
 				}
 				if gates.ReferencesArtifactID(process.Comment.Body, specID) {
-					input.Checks = append(input.Checks, gates.CheckEvidence{ProcessID: process.Comment.ID, SpecID: specID, Name: check.Name, Required: true, Passed: true, TestEvidence: testEvidence})
+					input.Checks = append(input.Checks, gates.CheckEvidence{ProcessID: process.Comment.ID, SpecID: specID, Name: check.Name,
+						Required: true, Passed: true, TestEvidence: testEvidence, SubjectRevision: check.SubjectRevision, Trusted: check.Trusted, Source: check.Source})
 				}
 			}
 		}
-		if external != nil {
-			for specID := range activeSpecs {
-				if gates.ReferencesArtifactID(process.Comment.Body, specID) && strings.Contains(process.Comment.Body, external.SubjectRevision) {
-					input.External = append(input.External, gates.ExternalProcessEvidence{ProcessID: process.Comment.ID, SpecID: specID,
-						SubjectRevision: external.SubjectRevision, EvidenceRevision: external.SubjectRevision, Consumed: true,
-						EvidenceIDs: append([]string(nil), external.EvidenceIDs...)})
-				}
-			}
-		}
+		// External consumption has no structured PROCESS/SPEC binding yet. Never
+		// infer one from PROCESS body substrings; fail closed until the adapter
+		// ledger exposes an explicit mapping for each consumed evidence ID.
 		inputs = append(inputs, input)
 	}
 	return inputs

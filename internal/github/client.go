@@ -164,6 +164,7 @@ type CheckRunsResponse struct {
 type CheckRun struct {
 	ID          int64  `json:"id"`
 	Name        string `json:"name"`
+	HeadSHA     string `json:"head_sha"`
 	Status      string `json:"status"`
 	Conclusion  string `json:"conclusion"`
 	DetailsURL  string `json:"details_url"`

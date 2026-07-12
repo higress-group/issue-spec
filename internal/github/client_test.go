@@ -51,6 +51,24 @@ func TestClientCreatesAndListsComments(t *testing.T) {
 	}
 }
 
+func TestClientListCheckRunsParsesHeadSHA(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/o/r/commits/head/check-runs" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"total_count":1,"check_runs":[{"id":7,"name":"unit","head_sha":"checked-head","status":"completed","conclusion":"success"}]}`))
+	}))
+	defer server.Close()
+	client := NewClientWithBaseURL("github.com", server.URL, "token", server.Client())
+	runs, err := client.ListCheckRuns(context.Background(), "o/r", "head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].HeadSHA != "checked-head" {
+		t.Fatalf("runs = %+v", runs)
+	}
+}
+
 func TestClientUpdatesIssue(t *testing.T) {
 	title := "new title"
 	body := "new body"
