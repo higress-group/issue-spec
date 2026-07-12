@@ -35,12 +35,26 @@ Use when the user asks for /issue-spec:propose, issue-spec propose, creating a c
 
        issue-spec issue create design --repo higress-group/issue-spec --change <change-name> --proposal <proposal-issue-or-url> --body-file <design.md>
 
-7. Generate TASK bodies with issue-spec comment generate --type TASK --id TASK-001 --input-file task.json, upsert them with issue-spec comment upsert --type TASK, and link every TASK to covered SPEC comments with issue-spec link. The TASK input JSON has title, summary, checklist, covers, and an execution_planning object (owned_areas, shared_touchpoints, dependencies, coupling, execution_mode, complexity) that renders the required ### Execution Planning section; comment upsert --type TASK rejects a TASK without it. Use the same comment generate command family for PROCESS, REVIEW, and VERIFY comments instead of inventing raw Markdown shapes; PROCESS input takes parent_task and handoff fields.
+7. Generate TASK bodies with issue-spec comment generate --type TASK --id TASK-001 --input-file task.json and upsert them with issue-spec comment upsert --type TASK. To create the durable SPEC<->TASK links in one step, pass --covers-issue <proposal-issue> to comment upsert: it resolves the SPEC IDs listed in the TASK's ### Covers section to peer comment URLs, writes them onto the TASK's Related Comments, and backlinks each SPEC to the TASK. Order no longer matters and re-running comment upsert preserves existing Related Comments (it never silently drops links); issue-spec link remains available for ad-hoc or cross-issue links. The TASK input JSON has title, summary, checklist, covers (SPEC IDs), and an execution_planning object (owned_areas, shared_touchpoints, dependencies, coupling, execution_mode, complexity) that renders the required ### Execution Planning section; comment upsert --type TASK rejects a TASK without it. Use the same comment generate command family for PROCESS, REVIEW, and VERIFY comments instead of inventing raw Markdown shapes; PROCESS input takes parent_task and handoff fields.
 8. Create the implement issue once tasks are ready:
 
        issue-spec issue create implement --repo higress-group/issue-spec --change <change-name> --proposal <proposal-issue-or-url> --design <design-issue-or-url> --body-file <implement.md>
 
 9. Run issue-spec verify-links and fix missing backlinks before implementation.
+   This run covers SPEC↔TASK only; after PROCESS comments are created in
+   issue-spec-apply (step 6), re-run verify-links to also catch PROCESS↔TASK gaps.
+
+## Cross-Skill Boundary
+
+Process creation, PROCESS↔TASK links, and PROCESS↔PR links live in
+`issue-spec-apply`, not here. When you finish propose (TASKs complete),
+hand off to apply before re-running `verify-links` for full coverage.
+
+Link matrix (each direction has a designated owner; rows marked ✓ are gated by `verify-links`):
+- ✓ SPEC ↔ TASK        (this skill, step 7)
+- ✓ TASK ↔ PROCESS     (issue-spec-apply, step 6)
+-   PROCESS ↔ SPEC     (issue-spec-apply, step 10, via pr rationale and review finding)
+-   PROCESS ↔ PR       (issue-spec-apply, step 8, via pr link-process)
 
 ## Project Workflow
 

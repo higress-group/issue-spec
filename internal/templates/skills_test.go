@@ -26,6 +26,41 @@ func TestIssueSpecSkillAndCommandTemplates(t *testing.T) {
 	}
 }
 
+func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+	workflow := skillContent(t, skills, "issue-spec-workflow")
+	for _, want := range []string{
+		"--gate <proposal|design|implement|final|archive>",
+		"comment transition --id <id> --to <status>",
+		"--allow-nonatomic", "--expected-digest", "atomic: false",
+		"workflow reconcile --plan <plan.json> --checkpoint <checkpoint.json>",
+		"doctor agent --repo owner/repo --operation <operation>",
+		"operator-owned short-lived issuer", "legacy_long_lived",
+		"change-bearing, review, verification, orchestration, or external",
+		"matching path/line rationale", "done REVIEW or resolved finding",
+		"done VERIFY or required passing check with test evidence",
+		"non-empty coordination handoff", "consumed exact-revision provider evidence",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("workflow skill missing %q:\n%s", want, workflow)
+		}
+	}
+	apply := skillContent(t, skills, "issue-spec-apply")
+	for _, want := range []string{"--gate implement", "doctor agent", "execution_class", "only for change-bearing", "same digest/checkpoint"} {
+		if !strings.Contains(apply, want) {
+			t.Fatalf("apply skill missing %q:\n%s", want, apply)
+		}
+	}
+	review := skillContent(t, skills, "issue-spec-review")
+	if !strings.Contains(review, "per-PROCESS execution class") || !strings.Contains(review, "linked done REVIEW or resolved finding") {
+		t.Fatalf("review skill lacks class carrier guidance:\n%s", review)
+	}
+	verify := skillContent(t, skills, "issue-spec-verify")
+	if !strings.Contains(verify, "--gate final") || !strings.Contains(verify, "Only change-bearing PROCESS nodes require matching inline rationale") {
+		t.Fatalf("verify skill lacks proportional evidence guidance:\n%s", verify)
+	}
+}
+
 func TestIssueSpecSkillsStateSelfContainedAuthoringInvariant(t *testing.T) {
 	skills := IssueSpecSkills("owner/repo")
 	workflow := skillContent(t, skills, "issue-spec-workflow")

@@ -293,6 +293,12 @@ OpenSpec 本就把 review 与 verify 作为工作流阶段来鼓励。`issue-spe
 
 最终验证会在 archive 之前检查：未解决的阻塞性问题、可追溯性、P0/P1 发现、PR rationale 覆盖、PR 检查以及长期 spec 覆盖。
 
+### 安全工作流关卡与分级证据
+
+使用 `status --gate proposal|design|implement|final|archive --json` 预判下一关；使用带已观察 version 或 digest 的 `comment transition` 安全修改单个产物；使用 `workflow reconcile --plan ... --checkpoint ... --json` 执行可恢复、按依赖排序的批处理。在分配 delegated workspace 或 worker 之前，先运行 `doctor agent --operation ... --json`。PROCESS 现在显式声明五种 execution class，让 change-bearing、review、verification、orchestration 与 external 工作分别使用真实的证据载体，而不是一律伪造行级 rationale。
+
+命令、原子性边界、严格凭据策略、恢复行为与完整证据矩阵见 [Workflow safety, reconciliation, and PROCESS evidence](docs/workflow-safety.md)。
+
 ## 工作流模型
 
 每个实质性的变更使用三种 issue 类别。

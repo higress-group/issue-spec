@@ -294,6 +294,12 @@ This gives humans a better review experience: findings are attached to the exact
 
 Final verification checks unresolved blocking questions, traceability, P0/P1 findings, PR rationale coverage, PR checks, and durable spec coverage before archive.
 
+### Safe workflow gates and proportional evidence
+
+Use `status --gate proposal|design|implement|final|archive --json` to forecast the next boundary, `comment transition` with an observed version or digest for a single safe mutation, and `workflow reconcile --plan ... --checkpoint ... --json` for resumable dependency-ordered batches. Run `doctor agent --operation ... --json` before delegated workspace or worker allocation. PROCESS nodes now declare one of five execution classes so change-bearing, review, verification, orchestration, and external work use truthful evidence carriers instead of all requiring arbitrary line rationale.
+
+See [Workflow safety, reconciliation, and PROCESS evidence](docs/workflow-safety.md) for the commands, atomicity boundary, strict credential policy, resume behavior, and complete evidence matrix.
+
 ## Workflow Model
 
 Each substantial change uses three issue classes.
