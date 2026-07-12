@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -17,6 +18,80 @@ type CreateRepositoryInput struct {
 	Visibility         models.Visibility
 	DefaultBranch      string
 	ContributionPolicy models.ContributionPolicy
+}
+
+type EnsureRepositoryInput struct {
+	Name          string
+	DisplayName   string
+	Description   string
+	DefaultBranch string
+}
+
+type EnsureRepositoryResult struct {
+	Repository models.AdminRepository `json:"repository"`
+	Created    bool                   `json:"created"`
+}
+
+// EnsureRepository reuses the active name authority or creates exactly one
+// private, members-only repository. The narrow input prevents onboarding from
+// weakening those defaults or smuggling provider/runtime configuration.
+func (s *Service) EnsureRepository(ctx context.Context, actor Actor, orgID uuid.UUID, input EnsureRepositoryInput) (EnsureRepositoryResult, error) {
+	input.Name = strings.TrimSpace(input.Name)
+	input.DisplayName = strings.TrimSpace(input.DisplayName)
+	input.Description = strings.TrimSpace(input.Description)
+	input.DefaultBranch = strings.TrimSpace(input.DefaultBranch)
+	if input.DisplayName == "" {
+		input.DisplayName = input.Name
+	}
+	if input.DefaultBranch == "" {
+		input.DefaultBranch = "main"
+	}
+	if err := actor.validate(); err != nil || orgID == uuid.Nil || input.Name == "" || input.DisplayName == "" {
+		return EnsureRepositoryResult{}, ErrInvalidInput
+	}
+	now := s.now().Truncate(time.Microsecond)
+	createdID := uuid.New()
+	var result EnsureRepositoryResult
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := requireActiveOrganization(ctx, tx, orgID); err != nil {
+			return err
+		}
+		row := tx.QueryRow(ctx, `INSERT INTO repos
+			(id, organization_id, name, display_name, description, visibility, default_branch,
+			 contribution_policy, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, 'private', $6, 'members', $7, $7)
+			ON CONFLICT (organization_id, name_key) DO NOTHING
+			RETURNING id, organization_id, name, display_name, description, visibility, default_branch,
+			 contribution_policy, representation_version, collaborators_collection_version,
+			 archived_at, created_at, updated_at`, createdID, orgID, input.Name, input.DisplayName,
+			input.Description, input.DefaultBranch, now)
+		repository, scanErr := scanRepository(row)
+		if scanErr == nil {
+			result = EnsureRepositoryResult{Repository: repository, Created: true}
+			if _, err := tx.Exec(ctx, `UPDATE orgs SET repositories_collection_version = repositories_collection_version + 1,
+				updated_at = $2 WHERE id = $1`, orgID, now); err != nil {
+				return err
+			}
+			return audit(ctx, tx, actor, orgID, repository.ID, repository.ID,
+				"repository.ensure.create", "repository", map[string]any{"name": repository.Name,
+					"visibility": models.VisibilityPrivate, "contribution_policy": models.ContributionMembers})
+		}
+		if !errors.Is(scanErr, ErrNotFound) {
+			return scanErr
+		}
+		repository, readErr := scanRepository(tx.QueryRow(ctx, repositorySelect+`
+			WHERE organization_id = $1 AND name_key = lower($2) AND archived_at IS NULL`, orgID, input.Name))
+		if readErr != nil {
+			if errors.Is(readErr, ErrNotFound) {
+				return ErrConflict
+			}
+			return readErr
+		}
+		result = EnsureRepositoryResult{Repository: repository, Created: false}
+		return nil
+	})
+	result.Repository.Scope = models.RepoScope{OrgID: orgID, RepoID: result.Repository.ID}
+	return result, mapError(err)
 }
 
 type UpdateRepositoryInput struct {

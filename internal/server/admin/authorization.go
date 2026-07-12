@@ -14,6 +14,7 @@ const (
 	ActionOrganizationRead  Action = "organization.read"
 	ActionOrganizationAdmin Action = "organization.admin"
 	ActionRepositoryRead    Action = "repository.read"
+	ActionRepositoryCreate  Action = "repository.create"
 	ActionRepositoryAdmin   Action = "repository.admin"
 	ActionCredentialAdmin   Action = "credential.admin"
 )

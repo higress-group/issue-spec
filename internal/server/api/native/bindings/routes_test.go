@@ -23,7 +23,7 @@ func TestRouteSetValidationAndBindingHandlers(t *testing.T) {
 	}
 	service := &fakeBindingsService{}
 	set, err := NewRouteSet(Dependencies{Service: service, Authenticate: testAuthenticate})
-	if err != nil || len(set.Routes) != 3 {
+	if err != nil || len(set.Routes) != 4 {
 		t.Fatalf("NewRouteSet() = %+v, %v", set, err)
 	}
 	mux, err := routeset.NewMux(routeset.Policy{}, set)
@@ -43,6 +43,16 @@ func TestRouteSetValidationAndBindingHandlers(t *testing.T) {
 	if response.Code != http.StatusCreated || response.Header().Get("Cache-Control") != "no-store" ||
 		service.scope != (models.RepoScope{OrgID: orgID, RepoID: repoID}) || service.actor.RequestID != "binding-request" {
 		t.Fatalf("create response=%d headers=%v scope=%+v actor=%+v body=%s", response.Code, response.Header(), service.scope, service.actor, response.Body.String())
+	}
+	ensureReq := httptest.NewRequest(http.MethodPut, path+"/active", strings.NewReader(`{
+		"provider_key":"github","external_repository_id":"acme/widgets",
+		"clone_url":"https://code.example/acme/widgets.git","web_url":"https://code.example/acme/widgets",
+		"default_branch":"main"}`))
+	ensureReq.Header.Set("Authorization", "test")
+	ensureResponse := httptest.NewRecorder()
+	mux.ServeHTTP(ensureResponse, ensureReq)
+	if ensureResponse.Code != http.StatusCreated || !service.ensured {
+		t.Fatalf("ensure response=%d ensured=%t body=%s", ensureResponse.Code, service.ensured, ensureResponse.Body.String())
 	}
 
 	deleteReq := httptest.NewRequest(http.MethodDelete, path+"/active", nil)
@@ -115,6 +125,12 @@ type fakeBindingsService struct {
 	actor       adminservice.Actor
 	err         error
 	deactivated bool
+	ensured     bool
+}
+
+func (f *fakeBindingsService) EnsureBinding(_ context.Context, _ authz.Subject, actor adminservice.Actor, scope models.RepoScope, input bindings.CreateBindingVersionInput) (bindings.EnsureBindingResult, error) {
+	f.scope, f.actor, f.ensured = scope, actor, true
+	return bindings.EnsureBindingResult{Binding: bindings.Binding{ID: uuid.New(), Scope: scope, ProviderKey: input.ProviderKey, Active: true}, Created: true}, f.err
 }
 
 func (f *fakeBindingsService) ActiveBinding(context.Context, authz.Subject, models.RepoScope) (bindings.Binding, error) {

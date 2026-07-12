@@ -28,18 +28,26 @@ var profileNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 type ProfileKind string
 
+type OnboardingPolicy struct {
+	AllowRepositoryCreate bool `json:"allow_repository_create,omitempty"`
+	AllowSourceBinding    bool `json:"allow_source_binding,omitempty"`
+	AllowUnattended       bool `json:"allow_unattended,omitempty"`
+}
+
 // Profile is a credential and API-origin realm. Credentials are never stored
 // in this object or profiles.json.
 type Profile struct {
-	Name             string      `json:"name"`
-	Kind             ProfileKind `json:"kind"`
-	Hostname         string      `json:"hostname,omitempty"`
-	APIURL           string      `json:"api_url"`
-	NativeAPIURL     string      `json:"native_api_url,omitempty"`
-	WebURL           string      `json:"web_url"`
-	ServerInstanceID string      `json:"server_instance_id"`
-	CAFile           string      `json:"ca_file,omitempty"`
-	Ephemeral        bool        `json:"-"`
+	Name                 string           `json:"name"`
+	Kind                 ProfileKind      `json:"kind"`
+	Hostname             string           `json:"hostname,omitempty"`
+	APIURL               string           `json:"api_url"`
+	NativeAPIURL         string           `json:"native_api_url,omitempty"`
+	WebURL               string           `json:"web_url"`
+	ServerInstanceID     string           `json:"server_instance_id"`
+	OperatorRegistryFile string           `json:"operator_registry_file,omitempty"`
+	OnboardingPolicy     OnboardingPolicy `json:"onboarding_policy,omitempty"`
+	CAFile               string           `json:"ca_file,omitempty"`
+	Ephemeral            bool             `json:"-"`
 }
 
 type profileFile struct {
@@ -84,8 +92,13 @@ func (p Profile) Validate() error {
 		if !sameEndpointOrigin(apiURL, webURL) {
 			return fmt.Errorf("profile %q web URL must use the same origin as API URL", p.Name)
 		}
+		if p.OperatorRegistryFile != "" && (!filepath.IsAbs(p.OperatorRegistryFile) || filepath.Clean(p.OperatorRegistryFile) != p.OperatorRegistryFile) {
+			return fmt.Errorf("profile %q operator registry file must be a clean absolute path", p.Name)
+		}
 	} else if NormalizeHost(p.Hostname) == "" {
 		return fmt.Errorf("profile %q GitHub hostname is required", p.Name)
+	} else if p.OperatorRegistryFile != "" || p.OnboardingPolicy != (OnboardingPolicy{}) {
+		return fmt.Errorf("profile %q GitHub profiles cannot define self-hosted onboarding configuration", p.Name)
 	}
 	if p.CAFile != "" && !filepath.IsAbs(p.CAFile) {
 		return fmt.Errorf("profile %q CA file must be an absolute path", p.Name)
@@ -100,6 +113,7 @@ func (p Profile) Normalized() (Profile, error) {
 		p.Hostname = NormalizeHost(p.Hostname)
 	}
 	p.ServerInstanceID = strings.TrimSpace(p.ServerInstanceID)
+	p.OperatorRegistryFile = strings.TrimSpace(p.OperatorRegistryFile)
 	p.CAFile = strings.TrimSpace(p.CAFile)
 	var err error
 	if p.APIURL, err = canonicalEndpoint(p.APIURL); err != nil {
@@ -121,6 +135,36 @@ func (p Profile) Normalized() (Profile, error) {
 		return Profile{}, err
 	}
 	return p, nil
+}
+
+// ServerHandshake is the credential-free identity returned by /api/v1/meta.
+// A saved profile must never silently follow a different self-hosted server.
+type ServerHandshake struct {
+	ServerInstanceID string `json:"server_instance_id"`
+	APIURL           string `json:"api_url"`
+	NativeAPIURL     string `json:"native_api_url"`
+	WebURL           string `json:"web_url"`
+}
+
+func ValidateServerHandshake(profile Profile, handshake ServerHandshake) error {
+	profile, err := profile.Normalized()
+	if err != nil {
+		return err
+	}
+	if profile.Kind != ProfileKindHosted {
+		return fmt.Errorf("profile %q does not use the self-hosted handshake", profile.Name)
+	}
+	handshake.ServerInstanceID = strings.TrimSpace(handshake.ServerInstanceID)
+	apiURL, apiErr := canonicalEndpoint(handshake.APIURL)
+	nativeURL, nativeErr := canonicalEndpoint(handshake.NativeAPIURL)
+	webURL, webErr := canonicalEndpoint(handshake.WebURL)
+	if apiErr != nil || nativeErr != nil || webErr != nil {
+		return fmt.Errorf("profile %q server handshake contains invalid public endpoints", profile.Name)
+	}
+	if handshake.ServerInstanceID != profile.ServerInstanceID || apiURL != profile.APIURL || nativeURL != profile.NativeAPIURL || webURL != profile.WebURL {
+		return fmt.Errorf("profile %q server handshake does not match the saved immutable server realm", profile.Name)
+	}
+	return nil
 }
 
 func (p Profile) APIOrigin() string {

@@ -98,6 +98,70 @@ func (s *Service) CreateBindingVersion(ctx context.Context, subject authz.Subjec
 	return created, mapError(err)
 }
 
+// EnsureBinding reuses an identical active coordinate, creates one only when
+// absent, and refuses to replace incompatible authority implicitly.
+func (s *Service) EnsureBinding(ctx context.Context, subject authz.Subject, actor adminservice.Actor, scope models.RepoScope, input CreateBindingVersionInput) (EnsureBindingResult, error) {
+	input = normalizeBindingInput(input)
+	if err := validateActor(subject, actor); err != nil {
+		return EnsureBindingResult{}, err
+	}
+	if err := validateBindingInput(input); err != nil {
+		return EnsureBindingResult{}, err
+	}
+	var result EnsureBindingResult
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		decision, err := s.authz.EvaluateRepositoryTx(ctx, tx, subject, authz.RepositoryRequest{Scope: scope, Operation: authz.OperationManageIntegrations})
+		if err != nil {
+			return err
+		}
+		if err := decision.AuthorizationError(); err != nil {
+			return err
+		}
+		existing, scanErr := scanBinding(tx.QueryRow(ctx, `SELECT id, organization_id, repository_id, provider_key,
+			external_repository_id, clone_url, web_url, default_branch, version, active, created_at, updated_at
+			FROM source_bindings WHERE organization_id = $1 AND repository_id = $2 AND active FOR UPDATE`, scope.OrgID, scope.RepoID))
+		if scanErr == nil {
+			if !bindingCoordinatesEqual(existing, input) {
+				return adminservice.ErrConflict
+			}
+			result = EnsureBindingResult{Binding: existing, Created: false}
+			return nil
+		}
+		if !errors.Is(scanErr, adminservice.ErrNotFound) {
+			return scanErr
+		}
+		var priorVersion int64
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(max(version), 0) FROM source_bindings
+			WHERE organization_id = $1 AND repository_id = $2`, scope.OrgID, scope.RepoID).Scan(&priorVersion); err != nil {
+			return err
+		}
+		created, err := scanBinding(tx.QueryRow(ctx, `INSERT INTO source_bindings
+			(id, organization_id, repository_id, provider_key, external_repository_id,
+			 clone_url, web_url, default_branch, version, active, created_by_user_id, updated_by_user_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, $10, $10)
+			RETURNING id, organization_id, repository_id, provider_key, external_repository_id,
+			 clone_url, web_url, default_branch, version, active, created_at, updated_at`, uuid.New(), scope.OrgID,
+			scope.RepoID, input.ProviderKey, input.ExternalRepositoryID, input.CloneURL, input.WebURL,
+			input.DefaultBranch, priorVersion+1, actor.UserID))
+		if err != nil {
+			return err
+		}
+		result = EnsureBindingResult{Binding: created, Created: true}
+		if err := bumpCollection(ctx, tx, scope, "bindings_collection_version"); err != nil {
+			return err
+		}
+		return insertAudit(ctx, tx, actor, scope, created.ID, "source_binding.ensure.create", "source_binding", map[string]any{
+			"provider_key": input.ProviderKey, "external_repository_id": input.ExternalRepositoryID, "version": created.Version,
+		})
+	})
+	return result, mapError(err)
+}
+
+func bindingCoordinatesEqual(binding Binding, input CreateBindingVersionInput) bool {
+	return binding.ProviderKey == input.ProviderKey && binding.ExternalRepositoryID == input.ExternalRepositoryID &&
+		binding.CloneURL == input.CloneURL && binding.WebURL == input.WebURL && binding.DefaultBranch == input.DefaultBranch
+}
+
 // DeactivateBinding disables the current active version without rewriting its
 // source coordinates. Repeating the operation after deactivation is a 404 and
 // does not advance the collection validator.

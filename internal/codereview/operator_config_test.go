@@ -16,7 +16,14 @@ func TestLoadOperatorRegistryConstructsCommandMutationProvider(t *testing.T) {
       "args": ["-test.run=^TestCommandProviderHelper$"],
       "environment": ["ISSUE_SPEC_PROVIDER_HELPER=1", "ISSUE_SPEC_PROVIDER_MODE=normal"],
       "timeout": "10s",
-      "max_output_bytes": 1048576
+      "max_output_bytes": 1048576,
+      "description": {
+        "display_name": "Example Code",
+        "remote_authorities": ["CODE.EXAMPLE:443"],
+        "code_change_label": "Merge request",
+        "capabilities": ["change.create", "change.comment"],
+        "recommended_evidence": ["change", "review"]
+      }
     }
   }
 }`)
@@ -32,6 +39,23 @@ func TestLoadOperatorRegistryConstructsCommandMutationProvider(t *testing.T) {
 	capabilities, err := provider.Capabilities(t.Context())
 	if err != nil || !capabilities.Has(CapabilityChangeComment) || !capabilities.Has(CapabilityChangeCreate) {
 		t.Fatalf("capabilities = %+v err=%v", capabilities, err)
+	}
+	descriptions := registry.Descriptions()
+	if len(descriptions) != 1 || descriptions[0].ProviderKey != "code.example" || descriptions[0].RemoteAuthorities[0] != "code.example:443" {
+		t.Fatalf("descriptions = %+v", descriptions)
+	}
+}
+
+func TestLoadOperatorRegistryEnvironmentPrecedesProfileReference(t *testing.T) {
+	envPath := writeOperatorConfig(t, `{"version":1,"providers":{"env.example":{"path":`+quotedJSON(os.Args[0])+`}}}`)
+	profilePath := writeOperatorConfig(t, `{"version":1,"providers":{"profile.example":{"path":`+quotedJSON(os.Args[0])+`}}}`)
+	t.Setenv(OperatorProvidersFileEnv, envPath)
+	registry, source, err := LoadOperatorRegistry(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source != "env:"+OperatorProvidersFileEnv || len(registry.Keys()) != 1 || registry.Keys()[0] != "env.example" {
+		t.Fatalf("source=%q keys=%v", source, registry.Keys())
 	}
 }
 

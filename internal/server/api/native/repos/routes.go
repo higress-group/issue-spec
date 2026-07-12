@@ -47,6 +47,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 	set := routeset.RouteSet{Name: "native-repositories", Routes: []routeset.Route{
 		{Name: "native.repos.list", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/repos", Handler: guard.Protect(org(adminservice.ActionOrganizationRead), http.HandlerFunc(h.list))},
 		{Name: "native.repos.create", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/repos", Handler: guard.Protect(org(adminservice.ActionOrganizationAdmin), http.HandlerFunc(h.create))},
+		{Name: "native.repos.ensure", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/repos/ensure", Handler: guard.Protect(org(adminservice.ActionRepositoryCreate), http.HandlerFunc(h.ensure))},
 		{Name: "native.repos.get", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/repos/{repo}", Handler: guard.Protect(repo(adminservice.ActionRepositoryRead), http.HandlerFunc(h.get))},
 		{Name: "native.repos.update", Method: http.MethodPatch, Pattern: "/api/v1/orgs/{org}/repos/{repo}", Handler: guard.Protect(repo(adminservice.ActionRepositoryAdmin), http.HandlerFunc(h.update))},
 		{Name: "native.repos.archive", Method: http.MethodDelete, Pattern: "/api/v1/orgs/{org}/repos/{repo}", Handler: guard.Protect(repo(adminservice.ActionRepositoryAdmin), http.HandlerFunc(h.archive))},
@@ -55,6 +56,32 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 		{Name: "native.collaborators.archive", Method: http.MethodDelete, Pattern: "/api/v1/orgs/{org}/repos/{repo}/collaborators/{collaborator}", Handler: guard.Protect(repo(adminservice.ActionRepositoryAdmin), http.HandlerFunc(h.archiveCollaborator))},
 	}}
 	return set, set.Validate()
+}
+
+func (h handlers) ensure(w http.ResponseWriter, r *http.Request) {
+	orgID, _ := adminapi.ParsePathUUID(r, "org")
+	var request struct {
+		Name          string `json:"name"`
+		DisplayName   string `json:"display_name"`
+		Description   string `json:"description"`
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := adminapi.DecodeJSON(w, r, &request); err != nil {
+		adminapi.WriteProblem(w, http.StatusBadRequest, "invalid_json", "Invalid request body")
+		return
+	}
+	result, err := h.service.EnsureRepository(r.Context(), adminapi.Actor(r), orgID, adminservice.EnsureRepositoryInput{
+		Name: request.Name, DisplayName: request.DisplayName, Description: request.Description, DefaultBranch: request.DefaultBranch,
+	})
+	if err != nil {
+		adminapi.WriteServiceError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if result.Created {
+		status = http.StatusCreated
+	}
+	adminapi.WriteJSON(w, status, result)
 }
 
 type handlers struct{ service *adminservice.Service }

@@ -23,6 +23,62 @@ import (
 
 const testDatabaseEnv = "TEST_DATABASE_URL"
 
+func TestEnsureRepositoryConcurrentReuseDefaultsAndAudit(t *testing.T) {
+	pool := migratedPool(t)
+	service, adminUser := newService(t, pool)
+	actor := actor(adminUser.ID, "ensure-org")
+	org := createOrganization(t, service, actor, "ensure-org")
+	const attempts = 12
+	results := make(chan adminservice.EnsureRepositoryResult, attempts)
+	errs := make(chan error, attempts)
+	var wg sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			requestActor := actor
+			requestActor.RequestID = fmt.Sprintf("ensure-repo-%d", i)
+			result, err := service.EnsureRepository(context.Background(), requestActor, org.ID,
+				adminservice.EnsureRepositoryInput{Name: "widgets", DisplayName: "Widgets"})
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- result
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	var created int
+	var id uuid.UUID
+	for result := range results {
+		if result.Created {
+			created++
+		}
+		if id == uuid.Nil {
+			id = result.Repository.ID
+		}
+		if result.Repository.ID != id || result.Repository.Visibility != models.VisibilityPrivate ||
+			result.Repository.ContributionPolicy != models.ContributionMembers || result.Repository.DefaultBranch != "main" {
+			t.Fatalf("ensure result = %+v", result)
+		}
+	}
+	var rows, audits int
+	if err := pool.QueryRow(t.Context(), `SELECT
+		(SELECT count(*) FROM repos WHERE organization_id=$1 AND name_key='widgets'),
+		(SELECT count(*) FROM audit_events WHERE organization_id=$1 AND action='repository.ensure.create')`, org.ID).
+		Scan(&rows, &audits); err != nil {
+		t.Fatal(err)
+	}
+	if created != 1 || rows != 1 || audits != 1 {
+		t.Fatalf("created=%d rows=%d audits=%d", created, rows, audits)
+	}
+}
+
 func TestBootstrapConcurrentClaimCreatesExactlyOneAdministrator(t *testing.T) {
 	pool := migratedPool(t)
 	secrets := testSecrets(t)

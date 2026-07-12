@@ -39,6 +39,11 @@ type CreateBindingVersionInput struct {
 	DefaultBranch        string `json:"default_branch"`
 }
 
+type EnsureBindingResult struct {
+	Binding Binding `json:"binding"`
+	Created bool    `json:"created"`
+}
+
 type Reference struct {
 	ID                    uuid.UUID        `json:"id"`
 	Scope                 models.RepoScope `json:"-"`

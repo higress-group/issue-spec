@@ -20,6 +20,7 @@ import (
 type Service interface {
 	ActiveBinding(context.Context, authz.Subject, models.RepoScope) (bindings.Binding, error)
 	CreateBindingVersion(context.Context, authz.Subject, adminservice.Actor, models.RepoScope, bindings.CreateBindingVersionInput) (bindings.Binding, error)
+	EnsureBinding(context.Context, authz.Subject, adminservice.Actor, models.RepoScope, bindings.CreateBindingVersionInput) (bindings.EnsureBindingResult, error)
 	DeactivateBinding(context.Context, authz.Subject, adminservice.Actor, models.RepoScope) error
 }
 
@@ -38,10 +39,34 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 	}
 	set := routeset.RouteSet{Name: "native-bindings", Routes: []routeset.Route{
 		{Name: "native.bindings.active", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/repos/{repo}/bindings/active", Handler: protect(h.active)},
+		{Name: "native.bindings.ensure", Method: http.MethodPut, Pattern: "/api/v1/orgs/{org}/repos/{repo}/bindings/active", Handler: protect(h.ensure)},
 		{Name: "native.bindings.create_version", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/repos/{repo}/bindings", Handler: protect(h.create)},
 		{Name: "native.bindings.deactivate", Method: http.MethodDelete, Pattern: "/api/v1/orgs/{org}/repos/{repo}/bindings/active", Handler: protect(h.deactivate)},
 	}}
 	return set, set.Validate()
+}
+
+func (h handlers) ensure(w http.ResponseWriter, r *http.Request) {
+	principal, scope, ok := requestScope(w, r)
+	if !ok {
+		return
+	}
+	var input bindings.CreateBindingVersionInput
+	if err := adminapi.DecodeJSON(w, r, &input); err != nil {
+		adminapi.WriteProblem(w, http.StatusBadRequest, "invalid_json", "Invalid request body")
+		return
+	}
+	result, err := h.service.EnsureBinding(r.Context(), authz.Authenticated(principal),
+		adminservice.ActorFromPrincipal(principal, adminapi.RequestID(r)), scope, input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if result.Created {
+		status = http.StatusCreated
+	}
+	adminapi.WriteJSON(w, status, result)
 }
 
 func (h handlers) deactivate(w http.ResponseWriter, r *http.Request) {

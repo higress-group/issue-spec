@@ -202,6 +202,8 @@ func (s *Service) Authorize(ctx context.Context, principal serverauth.Principal,
 		decision, err = s.EvaluateOrganization(ctx, subject, models.OrgScope{OrgID: request.OrganizationID}, OperationReadOrganization)
 	case adminservice.ActionOrganizationAdmin, adminservice.ActionCredentialAdmin:
 		decision, err = s.EvaluateOrganization(ctx, subject, models.OrgScope{OrgID: request.OrganizationID}, OperationAdminOrganization)
+	case adminservice.ActionRepositoryCreate:
+		decision, err = s.evaluateRepositoryCreate(ctx, subject, models.OrgScope{OrgID: request.OrganizationID})
 	case adminservice.ActionRepositoryRead:
 		decision, err = s.EvaluateRepository(ctx, subject, RepositoryRequest{
 			Scope: models.RepoScope{OrgID: request.OrganizationID, RepoID: request.RepositoryID}, Operation: OperationRead,
@@ -217,6 +219,59 @@ func (s *Service) Authorize(ctx context.Context, principal serverauth.Principal,
 		return err
 	}
 	return decision.AuthorizationError()
+}
+
+func (s *Service) evaluateRepositoryCreate(ctx context.Context, subject Subject, scope models.OrgScope) (Decision, error) {
+	facts, err := s.loadOrganizationFacts(ctx, s.pool, subject, scope)
+	if err != nil {
+		return Decision{}, err
+	}
+	decision := Decision{Exists: facts.Exists, RequiredPermission: PermissionRead, Reason: ReasonNotFound}
+	if !facts.Exists {
+		return decision, nil
+	}
+	principal, ok := subjectPrincipal(subject)
+	if !ok || !facts.IdentityActive {
+		decision.Reason = ReasonInactiveIdentity
+		return decision, nil
+	}
+	permission := identityPermission(facts)
+	decision.Visible = permission >= PermissionRead
+	decision.EffectivePermission = permission
+	if !decision.Visible {
+		decision.Reason = ReasonInvisible
+		return decision, nil
+	}
+	switch principal.Kind {
+	case serverauth.CredentialSession:
+		decision.RequiredPermission = PermissionAdmin
+		decision.Allowed = permission >= PermissionAdmin
+	case serverauth.CredentialRecovery:
+		decision.RequiredPermission = PermissionAdmin
+		decision.Allowed = permission >= PermissionAdmin && principal.HasScope("site:admin")
+	case serverauth.CredentialPAT:
+		if principal.RepoRestricted {
+			decision.Visible = false
+			decision.Reason = ReasonRepositoryCap
+			return decision, nil
+		}
+		if principal.HasScope("repo") {
+			decision.Allowed = permission >= PermissionRead
+		} else if principal.HasScope("admin:org") {
+			decision.RequiredPermission = PermissionAdmin
+			decision.Allowed = permission >= PermissionAdmin
+		}
+	default:
+		decision.Visible = false
+		decision.Reason = ReasonRepositoryCap
+		return decision, nil
+	}
+	if decision.Allowed {
+		decision.Reason = ReasonAllowed
+	} else if decision.Reason == ReasonNotFound {
+		decision.Reason = ReasonCredentialScope
+	}
+	return decision, nil
 }
 
 func (s *Service) evaluateSiteAdmin(ctx context.Context, subject Subject) (Decision, error) {

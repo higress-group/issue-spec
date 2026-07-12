@@ -101,6 +101,30 @@ func TestServiceTenantIsolationFilteringAndLifecycle(t *testing.T) {
 	}
 }
 
+func TestRepositoryCreateUsesDedicatedPATGrant(t *testing.T) {
+	pool := migratedPool(t)
+	service, err := New(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := insertUser(t, pool, "repo-creator")
+	orgID := insertOrganization(t, pool, "repo-create-org", models.BasePermissionRead)
+	insertMembership(t, pool, orgID, userID, "reader")
+	request := adminservice.AuthorizationRequest{Action: adminservice.ActionRepositoryCreate, OrganizationID: orgID}
+	session := serverauth.Principal{User: serverauth.User{ID: userID}, Kind: serverauth.CredentialSession}
+	if err := service.Authorize(t.Context(), session, request); !errors.Is(err, adminservice.ErrForbidden) {
+		t.Fatalf("reader session create error = %v", err)
+	}
+	pat := serverauth.Principal{User: serverauth.User{ID: userID}, Kind: serverauth.CredentialPAT, Scopes: []string{"repo"}}
+	if err := service.Authorize(t.Context(), pat, request); err != nil {
+		t.Fatalf("repo PAT create error = %v", err)
+	}
+	pat.RepoRestricted = true
+	if err := service.Authorize(t.Context(), pat, request); !errors.Is(err, adminservice.ErrNotFound) {
+		t.Fatalf("restricted PAT create error = %v", err)
+	}
+}
+
 func TestConcurrentAuthorityChangesRemainFailClosed(t *testing.T) {
 	pool := migratedPool(t)
 	service, err := New(pool)

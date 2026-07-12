@@ -29,11 +29,12 @@ type operatorConfigFile struct {
 }
 
 type operatorCommandConfig struct {
-	Path        string   `json:"path"`
-	Args        []string `json:"args,omitempty"`
-	Environment []string `json:"environment,omitempty"`
-	Timeout     string   `json:"timeout,omitempty"`
-	MaxOutput   int64    `json:"max_output_bytes,omitempty"`
+	Path        string              `json:"path"`
+	Args        []string            `json:"args,omitempty"`
+	Environment []string            `json:"environment,omitempty"`
+	Timeout     string              `json:"timeout,omitempty"`
+	MaxOutput   int64               `json:"max_output_bytes,omitempty"`
+	Description ProviderDescription `json:"description,omitempty"`
 }
 
 // LoadOperatorRegistryFromEnvironment constructs the immutable provider
@@ -41,31 +42,44 @@ type operatorCommandConfig struct {
 // mutation provider is installed. A configured but malformed file is returned
 // as an error and must fail the selected self-hosted operation closed.
 func LoadOperatorRegistryFromEnvironment() (Registry, error) {
+	registry, _, err := LoadOperatorRegistry("")
+	return registry, err
+}
+
+// LoadOperatorRegistry resolves trusted process configuration before the
+// selected profile reference. Repository content is never consulted.
+func LoadOperatorRegistry(profileReference string) (Registry, string, error) {
 	path := strings.TrimSpace(os.Getenv(OperatorProvidersFileEnv))
+	source := "env:" + OperatorProvidersFileEnv
 	if path == "" {
-		return NewRegistry(nil)
+		path = strings.TrimSpace(profileReference)
+		source = "profile"
+	}
+	if path == "" {
+		registry, err := NewRegistry(nil)
+		return registry, "none", err
 	}
 	raw, err := readPrivateOperatorConfig(path)
 	if err != nil {
-		return Registry{}, err
+		return Registry{}, source, err
 	}
 	if err := rejectDuplicateKeys(raw); err != nil {
-		return Registry{}, fmt.Errorf("read %s: %w", OperatorProvidersFileEnv, err)
+		return Registry{}, source, fmt.Errorf("read %s: %w", OperatorProvidersFileEnv, err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var config operatorConfigFile
 	if err := decoder.Decode(&config); err != nil {
-		return Registry{}, fmt.Errorf("read %s: invalid operator provider configuration: %w", OperatorProvidersFileEnv, err)
+		return Registry{}, source, fmt.Errorf("read operator provider configuration: %w", err)
 	}
 	if err := requireJSONEOF(decoder); err != nil {
-		return Registry{}, fmt.Errorf("read %s: invalid operator provider configuration: %w", OperatorProvidersFileEnv, err)
+		return Registry{}, source, fmt.Errorf("read operator provider configuration: %w", err)
 	}
 	if config.Version != 1 {
-		return Registry{}, fmt.Errorf("read %s: unsupported operator provider configuration version %d", OperatorProvidersFileEnv, config.Version)
+		return Registry{}, source, fmt.Errorf("read operator provider configuration: unsupported version %d", config.Version)
 	}
 	if len(config.Providers) == 0 || len(config.Providers) > maximumOperatorProviders {
-		return Registry{}, fmt.Errorf("read %s: providers must contain between 1 and %d registrations", OperatorProvidersFileEnv, maximumOperatorProviders)
+		return Registry{}, source, fmt.Errorf("read operator provider configuration: providers must contain between 1 and %d registrations", maximumOperatorProviders)
 	}
 	keys := make([]string, 0, len(config.Providers))
 	for key := range config.Providers {
@@ -79,17 +93,18 @@ func LoadOperatorRegistryFromEnvironment() (Registry, error) {
 		if strings.TrimSpace(entry.Timeout) != "" {
 			timeout, err = time.ParseDuration(entry.Timeout)
 			if err != nil {
-				return Registry{}, fmt.Errorf("read %s: provider %q has invalid timeout", OperatorProvidersFileEnv, key)
+				return Registry{}, source, fmt.Errorf("read %s: provider %q has invalid timeout", OperatorProvidersFileEnv, key)
 			}
 		}
 		provider, err := NewCommandProvider(CommandConfig{Path: entry.Path, Args: entry.Args,
 			Environment: entry.Environment, Timeout: timeout, MaxOutput: entry.MaxOutput})
 		if err != nil {
-			return Registry{}, fmt.Errorf("read %s: provider %q: %w", OperatorProvidersFileEnv, key, err)
+			return Registry{}, source, fmt.Errorf("read %s: provider %q: %w", OperatorProvidersFileEnv, key, err)
 		}
-		registrations = append(registrations, Registration{Key: key, Provider: provider})
+		registrations = append(registrations, Registration{Key: key, Provider: provider, Description: entry.Description})
 	}
-	return NewRegistry(registrations)
+	registry, err := NewRegistry(registrations)
+	return registry, source, err
 }
 
 func readPrivateOperatorConfig(path string) ([]byte, error) {

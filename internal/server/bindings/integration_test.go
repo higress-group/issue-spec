@@ -20,6 +20,37 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+func TestEnsureBindingReusesIdenticalAndConflictsWithoutVersionBump(t *testing.T) {
+	env := newBindingsEnvironment(t)
+	input := CreateBindingVersionInput{ProviderKey: "code.example", ExternalRepositoryID: "acme/widgets",
+		CloneURL: "https://code.example/acme/widgets.git", WebURL: "https://code.example/acme/widgets", DefaultBranch: "main"}
+	first, err := env.service.EnsureBinding(t.Context(), authz.Authenticated(env.owner), env.actor("ensure-first"), env.scope, input)
+	if err != nil || !first.Created {
+		t.Fatalf("first ensure = %+v, %v", first, err)
+	}
+	second, err := env.service.EnsureBinding(t.Context(), authz.Authenticated(env.owner), env.actor("ensure-second"), env.scope, input)
+	if err != nil || second.Created || second.Binding.ID != first.Binding.ID {
+		t.Fatalf("second ensure = %+v, %v", second, err)
+	}
+	conflict := input
+	conflict.ExternalRepositoryID = "acme/other"
+	if _, err := env.service.EnsureBinding(t.Context(), authz.Authenticated(env.owner), env.actor("ensure-conflict"), env.scope, conflict); !errors.Is(err, adminservice.ErrConflict) {
+		t.Fatalf("incompatible ensure error = %v", err)
+	}
+	var rows, audits int
+	var collection int64
+	if err := env.pool.QueryRow(t.Context(), `SELECT
+		(SELECT count(*) FROM source_bindings WHERE organization_id=$1 AND repository_id=$2),
+		(SELECT count(*) FROM audit_events WHERE organization_id=$1 AND repository_id=$2 AND action='source_binding.ensure.create'),
+		(SELECT bindings_collection_version FROM repos WHERE organization_id=$1 AND id=$2)`, env.scope.OrgID, env.scope.RepoID).
+		Scan(&rows, &audits, &collection); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || audits != 1 || collection != 2 {
+		t.Fatalf("rows=%d audits=%d collection=%d", rows, audits, collection)
+	}
+}
+
 func TestBindingVersionsSerializeValidateAndDeactivate(t *testing.T) {
 	env := newBindingsEnvironment(t)
 	const versions = 8

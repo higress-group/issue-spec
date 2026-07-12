@@ -8,7 +8,11 @@ import (
 )
 
 func TestMetaDefaultsEveryFeatureFalse(t *testing.T) {
-	set, err := NewRouteSet(Dependencies{})
+	metadata, err := NewServerMetadata("http://127.0.0.1:18080", "http://127.0.0.1:18080", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := NewRouteSet(Dependencies{Metadata: metadata})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,19 +23,25 @@ func TestMetaDefaultsEveryFeatureFalse(t *testing.T) {
 		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
 	}
 	var payload struct {
-		APIVersion string   `json:"api_version"`
-		Features   Features `json:"features"`
+		APIVersion       string    `json:"api_version"`
+		Features         Features  `json:"features"`
+		ServerInstanceID string    `json:"server_instance_id"`
+		Transport        Transport `json:"transport"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.APIVersion != "v1" || payload.Features != (Features{}) {
+	if payload.APIVersion != "v1" || payload.Features != (Features{}) || payload.ServerInstanceID == "" || payload.Transport.Mode != "loopback-http" {
 		t.Fatalf("payload = %+v", payload)
 	}
 }
 
 func TestMetaReportsOnlyInjectedFeatures(t *testing.T) {
-	set, err := NewRouteSet(Dependencies{Features: Features{Organizations: true, RecoveryExchange: true}})
+	metadata, err := NewServerMetadata("https://api.example.test", "https://web.example.test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := NewRouteSet(Dependencies{Features: Features{Organizations: true, RecoveryExchange: true}, Metadata: metadata})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,5 +54,22 @@ func TestMetaReportsOnlyInjectedFeatures(t *testing.T) {
 	features := payload["features"].(map[string]any)
 	if features["organizations"] != true || features["recovery_exchange"] != true || features["webhooks"] != false {
 		t.Fatalf("features = %#v", features)
+	}
+}
+
+func TestServerMetadataRejectsPublicHTTPAndKeepsIdentityStable(t *testing.T) {
+	if _, err := NewServerMetadata("http://api.example.test", "http://api.example.test", nil); err == nil {
+		t.Fatal("public HTTP metadata accepted")
+	}
+	first, err := NewServerMetadata("https://api.example.test", "https://web.example.test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewServerMetadata("https://api.example.test", "https://other.example.test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ServerInstanceID != second.ServerInstanceID || first.APIURL != "https://api.example.test/api/v3" || first.NativeAPIURL != "https://api.example.test/api/v1" {
+		t.Fatalf("metadata = %+v second=%+v", first, second)
 	}
 }

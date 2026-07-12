@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,6 +25,109 @@ const (
 	CapabilityChangeCreate     Capability = "change.create"
 	CapabilityChangeComment    Capability = "change.comment"
 )
+
+// ProviderDescription is the transport-safe, operator-owned metadata clients
+// use during onboarding. It deliberately cannot describe an executable,
+// arguments, environment variables, credentials, or filesystem paths.
+type ProviderDescription struct {
+	ProviderKey         string         `json:"provider_key"`
+	DisplayName         string         `json:"display_name"`
+	RemoteAuthorities   []string       `json:"remote_authorities,omitempty"`
+	CodeChangeLabel     string         `json:"code_change_label"`
+	Capabilities        []Capability   `json:"capabilities,omitempty"`
+	RecommendedEvidence []EvidenceKind `json:"recommended_evidence,omitempty"`
+}
+
+func (d ProviderDescription) Normalized(key string) (ProviderDescription, error) {
+	key = strings.TrimSpace(key)
+	if !validKey(key) {
+		return ProviderDescription{}, fmt.Errorf("%w: invalid provider description key %q", ErrInvalidProviderData, key)
+	}
+	d.ProviderKey = strings.TrimSpace(d.ProviderKey)
+	if d.ProviderKey == "" {
+		d.ProviderKey = key
+	}
+	if d.ProviderKey != key {
+		return ProviderDescription{}, fmt.Errorf("%w: provider description key does not match registration", ErrInvalidProviderData)
+	}
+	d.DisplayName = strings.TrimSpace(d.DisplayName)
+	if d.DisplayName == "" {
+		d.DisplayName = key
+	}
+	d.CodeChangeLabel = strings.TrimSpace(d.CodeChangeLabel)
+	if d.CodeChangeLabel == "" {
+		d.CodeChangeLabel = "Code change"
+	}
+	if len(d.DisplayName) > 128 || len(d.CodeChangeLabel) > 128 {
+		return ProviderDescription{}, fmt.Errorf("%w: provider display metadata is too long", ErrInvalidProviderData)
+	}
+	seenAuthorities := map[string]bool{}
+	for i, authority := range d.RemoteAuthorities {
+		authority = strings.ToLower(strings.TrimSpace(authority))
+		if !validRemoteAuthority(authority) || seenAuthorities[authority] {
+			return ProviderDescription{}, fmt.Errorf("%w: invalid or duplicate remote authority %q", ErrInvalidProviderData, authority)
+		}
+		seenAuthorities[authority] = true
+		d.RemoteAuthorities[i] = authority
+	}
+	seenCapabilities := map[Capability]bool{}
+	for _, capability := range d.Capabilities {
+		if seenCapabilities[capability] {
+			return ProviderDescription{}, fmt.Errorf("%w: duplicate capability %q", ErrInvalidProviderData, capability)
+		}
+		seenCapabilities[capability] = true
+		switch capability {
+		case CapabilityEvidenceSnapshot, CapabilityChangeCreate, CapabilityChangeComment:
+		default:
+			return ProviderDescription{}, fmt.Errorf("%w: unsupported capability %q", ErrInvalidProviderData, capability)
+		}
+	}
+	seenEvidence := map[EvidenceKind]bool{}
+	for _, kind := range d.RecommendedEvidence {
+		if seenEvidence[kind] {
+			return ProviderDescription{}, fmt.Errorf("%w: duplicate recommended evidence %q", ErrInvalidProviderData, kind)
+		}
+		seenEvidence[kind] = true
+		switch kind {
+		case EvidenceChange, EvidenceReview, EvidenceCheck, EvidenceMerge, EvidenceArchive:
+		default:
+			return ProviderDescription{}, fmt.Errorf("%w: unsupported recommended evidence %q", ErrInvalidProviderData, kind)
+		}
+	}
+	sort.Strings(d.RemoteAuthorities)
+	sort.Slice(d.Capabilities, func(i, j int) bool { return d.Capabilities[i] < d.Capabilities[j] })
+	sort.Slice(d.RecommendedEvidence, func(i, j int) bool { return d.RecommendedEvidence[i] < d.RecommendedEvidence[j] })
+	return d, nil
+}
+
+func validRemoteAuthority(authority string) bool {
+	if authority == "" || len(authority) > 253 || strings.ContainsAny(authority, "/@?#\\\r\n\t ") {
+		return false
+	}
+	host := authority
+	if strings.HasPrefix(authority, "[") || strings.Count(authority, ":") == 1 {
+		if parsedHost, port, err := net.SplitHostPort(authority); err == nil {
+			portNumber, portErr := strconv.Atoi(port)
+			if portErr != nil || portNumber < 1 || portNumber > 65535 {
+				return false
+			}
+			host = parsedHost
+		}
+	}
+	host = strings.Trim(host, "[]")
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if strings.Contains(host, ":") {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || !regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`).MatchString(label) {
+			return false
+		}
+	}
+	return true
+}
 
 var (
 	ErrProviderNotFound    = errors.New("code provider is not registered by the operator")

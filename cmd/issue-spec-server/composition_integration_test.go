@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/server/config"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -47,6 +49,11 @@ func TestComposeMountsAllRealRouteSets(t *testing.T) {
 	t.Setenv(config.BootstrapSecretFileEnv, testSecret(t, "bootstrap"))
 	t.Setenv(config.TokenPepperFileEnv, testSecret(t, "pepper"))
 	t.Setenv(config.EncryptionKeyFileEnv, testSecret(t, "encryption"))
+	providerFile := filepath.Join(t.TempDir(), "providers.json")
+	if err := os.WriteFile(providerFile, []byte(`{"version":1,"providers":{"code.example":{"path":"/bin/true","description":{"display_name":"Example Code","remote_authorities":["code.example"],"code_change_label":"Merge request","capabilities":["change.create"],"recommended_evidence":["change"]}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(codereview.OperatorProvidersFileEnv, providerFile)
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -71,6 +78,31 @@ func TestComposeMountsAllRealRouteSets(t *testing.T) {
 		if response.Code != test.status {
 			t.Fatalf("%s %s = %d, want %d; body=%q", test.method, test.path, response.Code, test.status, response.Body.String())
 		}
+	}
+	metaResponse := httptest.NewRecorder()
+	app.handler.ServeHTTP(metaResponse, httptest.NewRequest(http.MethodGet, "/api/v1/meta", nil))
+	var meta struct {
+		ServerInstanceID string `json:"server_instance_id"`
+		APIURL           string `json:"api_url"`
+		NativeAPIURL     string `json:"native_api_url"`
+		WebURL           string `json:"web_url"`
+		Transport        struct {
+			Mode   string `json:"mode"`
+			Secure bool   `json:"secure"`
+		} `json:"transport"`
+		Providers []struct {
+			ProviderKey string `json:"provider_key"`
+			DisplayName string `json:"display_name"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(metaResponse.Body.Bytes(), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.ServerInstanceID == "" || meta.APIURL != "http://127.0.0.1:8080/api/v3" ||
+		meta.NativeAPIURL != "http://127.0.0.1:8080/api/v1" || meta.WebURL != "http://127.0.0.1:8080" ||
+		meta.Transport.Mode != "loopback-http" || meta.Transport.Secure || len(meta.Providers) != 1 ||
+		meta.Providers[0].ProviderKey != "code.example" || meta.Providers[0].DisplayName != "Example Code" {
+		t.Fatalf("meta composition = %+v", meta)
 	}
 }
 

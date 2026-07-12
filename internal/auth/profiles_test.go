@@ -10,6 +10,24 @@ import (
 	"testing"
 )
 
+func TestHostedProfileOnboardingAndHandshake(t *testing.T) {
+	profile := Profile{Name: "local", Kind: ProfileKindHosted, APIURL: "http://127.0.0.1:18080/api/v3",
+		NativeAPIURL: "http://127.0.0.1:18080/api/v1", WebURL: "http://127.0.0.1:18080",
+		ServerInstanceID: "issue-spec:test", OperatorRegistryFile: "/etc/issue-spec/providers.json",
+		OnboardingPolicy: OnboardingPolicy{AllowRepositoryCreate: true, AllowSourceBinding: true}}
+	if _, err := profile.Normalized(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateServerHandshake(profile, ServerHandshake{ServerInstanceID: "issue-spec:test", APIURL: profile.APIURL, NativeAPIURL: profile.NativeAPIURL, WebURL: profile.WebURL}); err != nil {
+		t.Fatal(err)
+	}
+	bad := profile
+	bad.ServerInstanceID = "different"
+	if err := ValidateServerHandshake(profile, ServerHandshake{ServerInstanceID: bad.ServerInstanceID, APIURL: profile.APIURL, NativeAPIURL: profile.NativeAPIURL, WebURL: profile.WebURL}); err == nil {
+		t.Fatal("mismatched immutable server identity accepted")
+	}
+}
+
 func hostedProfile(name, instance, api string) Profile {
 	return Profile{
 		Name: name, Kind: ProfileKindHosted, APIURL: api,

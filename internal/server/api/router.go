@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/codereview"
 	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	githubcomments "github.com/higress-group/issue-spec/internal/server/api/github/comments"
@@ -104,6 +105,14 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	nativeAuthenticateOptional := adminapi.NativeAuthenticateOptional(deps.Authentication)
 	features := metaapi.Features{Bootstrap: true, PersonalAccessTokens: true, Organizations: true,
 		SourceBindings: true, Webhooks: true, ChangeBoards: true, Runner: true, RecoveryExchange: true}
+	providerRegistry, err := codereview.LoadOperatorRegistryFromEnvironment()
+	if err != nil {
+		return nil, fmt.Errorf("compose server metadata: %w", err)
+	}
+	serverMetadata, err := metaapi.NewServerMetadata(deps.APIOrigin, deps.WebOrigin, providerRegistry.Descriptions())
+	if err != nil {
+		return nil, fmt.Errorf("compose server metadata: %w", err)
+	}
 
 	var sets []routeset.RouteSet
 	add := func(set routeset.RouteSet, err error) error {
@@ -151,7 +160,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			return contextapi.NewRouteSet(contextapi.Dependencies{Service: deps.SPA, Takeover: deps.Takeover, Sessions: deps.Sessions, Authenticate: nativeAuthenticate, AuthenticateOptional: nativeAuthenticateOptional, AllowedOrigins: deps.Authentication.AllowedOrigins})
 		},
 		func() (routeset.RouteSet, error) {
-			return metaapi.NewRouteSet(metaapi.Dependencies{Features: features})
+			return metaapi.NewRouteSet(metaapi.Dependencies{Features: features, Metadata: serverMetadata})
 		},
 		func() (routeset.RouteSet, error) {
 			return bindingsapi.NewRouteSet(bindingsapi.Dependencies{Service: deps.Bindings, Authenticate: nativeAuthenticate})
