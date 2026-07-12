@@ -7,8 +7,11 @@ build; production never reads a host static directory.
 ## Required configuration
 
 Set `ENVIRONMENT=production`, `LISTEN_ADDR`, `DATABASE_URL`,
-`API_PUBLIC_URL`, and `WEB_PUBLIC_URL`. Both public origins must be HTTPS root
-origins. Mount these regular, non-symlink files with mode `0600`:
+`API_PUBLIC_URL`, and `WEB_PUBLIC_URL`. The default `TRANSPORT_POSTURE=https`
+requires HTTPS root origins. Controlled employee networks may explicitly use
+`TRANSPORT_POSTURE=trusted-internal-http` with matching HTTP origins; follow
+the [trusted internal HTTP checklist](../authentication/v1/trusted-internal-http.md).
+Mount these regular, non-symlink files with mode `0600`:
 
 - `BOOTSTRAP_SECRET_FILE`: at least 32 bytes; consumed by the first bootstrap
   claim.
@@ -22,29 +25,12 @@ origins. Mount these regular, non-symlink files with mode `0600`:
   `keys` object whose values are base64-encoded keys of at least 32 bytes. If
   omitted, `ENCRYPTION_KEY_FILE` is used under key ID `primary`.
 
-Example provider file:
-
-```json
-{
-  "providers": [
-    {
-      "id": "cbfb6bf8-e6e9-4d08-ad63-0b7477fc2484",
-      "name": "company",
-      "kind": "oidc",
-      "issuer": "https://identity.example.com",
-      "client_id": "issue-spec",
-      "client_secret": "replace-through-secret-manager",
-      "scopes": ["groups"]
-    }
-  ]
-}
-```
-
-`github-oauth` accepts the same identity fields. `auth_url`, `token_url`, and
-`user_url` are optional and intended for an operator-controlled GitHub
-Enterprise endpoint or conformance fixture; the auth and token URLs must be
-set together. Provider IDs and names are unique, and callback URLs are always
-constructed from `API_PUBLIC_URL`, never request headers.
+External identity configuration, safe placeholder examples, GitHub/OIDC
+quickstarts, admission, and rotation are maintained in the versioned
+[self-hosted authentication guide](../authentication/README.md). Provider IDs
+and names are unique, client secrets belong only in the protected file, and
+callback URLs are always constructed from `API_PUBLIC_URL`, never request
+headers.
 
 Use `WEBHOOK_ALLOWED_PRIVATE_CIDRS` only for explicit operator-owned internal
 destinations. Loopback, link-local and cloud metadata addresses remain denied.

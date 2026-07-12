@@ -27,3 +27,26 @@ curl -fsS http://127.0.0.1:8080/readyz
 
 These files are local fixtures, not production secret management. Remove the
 directory when the fixture is no longer needed.
+
+## Production-shaped authentication fixture
+
+The authentication overlay runs the server with production parsing and an
+explicit trusted-internal HTTP posture. Copy a canonical example to the
+ignored secrets directory, then edit it without printing the client secret:
+
+```sh
+install -m 600 docs/self-hosting/authentication/v1/examples/github-unrestricted.json \
+  deployments/dev/secrets/auth-providers.json
+${EDITOR:?set EDITOR} deployments/dev/secrets/auth-providers.json
+docker compose -f deployments/dev/compose.yaml \
+  -f deployments/dev/compose.auth.yaml \
+  --profile server up -d --build --wait
+curl -fsS http://127.0.0.1:8080/api/v1/auth/providers
+```
+
+Replace every `__ISSUE_SPEC_...__` placeholder before starting. The overlay is
+an executable local-link fixture, not a source of production credentials. Its
+callback is `http://127.0.0.1:8080/api/v1/auth/github/callback`; configure that
+exact value in a development-only OAuth App. See the
+[versioned authentication guide](../../docs/self-hosting/authentication/README.md)
+for production origins, organization admission, and rotation.

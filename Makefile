@@ -3,7 +3,7 @@ NPM ?= npm
 DIST_DIR ?= dist
 IMAGE ?= issue-spec-server:dev
 
-.PHONY: generate-web verify-generated build-server test-server release-server docker-server backup-smoke
+.PHONY: generate-web verify-generated verify-docs build-server test-server release-server docker-server backup-smoke
 
 generate-web:
 	cd web && $(NPM) ci && $(NPM) run build
@@ -12,6 +12,9 @@ generate-web:
 
 verify-generated: generate-web
 	git diff --exit-code -- internal/server/staticui
+
+verify-docs:
+	$(GO) test ./cmd/issue-spec-server -run '^TestExternalAuthDocumentation'
 
 build-server:
 	mkdir -p $(DIST_DIR)
