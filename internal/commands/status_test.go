@@ -3,10 +3,13 @@ package commands
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/processworkspace"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
@@ -62,12 +65,13 @@ func TestStatusFinalReportsDogfoodBlockersAndForecastUnknowns(t *testing.T) {
 	linkArtifacts(t, &task, &process)
 	summary := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetFinal,
 		[]model.Artifact{spec, task, process}, workflow.Plan{}, nil)
-	if summary.OK || summary.Gate.Ready || !summary.Gate.PointInTime {
-		t.Fatalf("final forecast must be non-ready: %+v", summary.Gate)
+	if summary.OK || summary.Gate.Ready || summary.Gate.PointInTime || summary.Gate.Mode != gates.ModeAuthoritative {
+		t.Fatalf("final status must be authoritative and non-ready: %+v", summary.Gate)
 	}
 	want := []string{
 		gates.CodePRChecksUnknown,
 		gates.CodeProcessNotDone,
+		gates.CodeProcessWorkspaceMigrationWarning,
 		gates.CodeReviewFindingsUnknown,
 		gates.CodeTaskNotDone,
 		gates.CodeVerifyRequired,
@@ -114,11 +118,98 @@ func statusGateCodes(diagnostics []gates.Diagnostic) []string {
 func localStatusGateCodes(diagnostics []gates.Diagnostic) []string {
 	var local []gates.Diagnostic
 	for _, diagnostic := range diagnostics {
-		if diagnostic.Freshness == gates.FreshnessLocal {
+		if diagnostic.Freshness == gates.FreshnessLocal && diagnostic.Blocking {
 			local = append(local, diagnostic)
 		}
 	}
 	return statusGateCodes(local)
+}
+
+func TestStatusWorkspaceUsesExactTrustedCarrierRevision(t *testing.T) {
+	process := statusWorkspaceProcess(t, model.ProcessExecutionReview, strings.Repeat("a", 40))
+	collection := statusGateCollection{Remote: statusForecastRemoteFacts(gates.TargetFinal), ProcessEvidence: []gates.ProcessEvidenceInput{{
+		Process: process, ActiveSpecs: map[string]string{"SPEC-001": "https://example.test/spec"},
+		Reviews: []gates.ReviewEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Done: true,
+			SubjectRevision: strings.Repeat("a", 40), Trusted: true, Source: "github-review:1"}},
+	}}}
+	collection.Remote.Workspace.ExpectedRevision = gates.Fact{Required: true, Known: true, Passed: true, Expected: strings.Repeat("a", 40)}
+	summary := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetFinal, []model.Artifact{process}, workflow.Plan{}, nil, collection)
+	if statusHasCode(summary, gates.CodeProcessWorkspaceRevisionUnknown) || statusHasCode(summary, gates.CodeProcessWorkspaceRevisionStale) {
+		t.Fatalf("exact trusted status carrier was rejected: %+v", summary.Gate.Diagnostics)
+	}
+
+	collection.Remote.Workspace.ExpectedRevision.Expected = strings.Repeat("b", 40)
+	stale := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetFinal, []model.Artifact{process}, workflow.Plan{}, nil, collection)
+	if !statusHasCode(stale, gates.CodeProcessWorkspaceRevisionStale) {
+		t.Fatalf("stale status carrier was accepted: %+v", stale.Gate.Diagnostics)
+	}
+}
+
+func TestStatusWorkspaceExternalUsesAuthoritativeCarrier(t *testing.T) {
+	process := statusWorkspaceProcess(t, model.ProcessExecutionExternal, "")
+	revision := strings.Repeat("c", 40)
+	collection := statusGateCollection{Remote: statusForecastRemoteFacts(gates.TargetFinal), ProcessEvidence: []gates.ProcessEvidenceInput{{
+		Process: process, ActiveSpecs: map[string]string{"SPEC-001": "https://example.test/spec"},
+		External: []gates.ExternalProcessEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", SubjectRevision: revision,
+			EvidenceRevision: revision, Consumed: true, EvidenceIDs: []string{"review-1"}, Trusted: true, Source: "native-authoritative-ledger:review-1"}},
+	}}}
+	collection.Remote.Workspace.ExpectedRevision = gates.Fact{Required: true, Known: true, Passed: true, Expected: revision}
+	summary := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetFinal, []model.Artifact{process}, workflow.Plan{}, nil, collection)
+	if statusHasCode(summary, gates.CodeProcessWorkspaceRevisionUnknown) || statusHasCode(summary, gates.CodeProcessWorkspaceRevisionStale) ||
+		statusHasCode(summary, gates.CodeProcessWorkspaceProviderEvidenceMissing) {
+		t.Fatalf("authoritative external carrier was not retained: %+v", summary.Gate.Diagnostics)
+	}
+}
+
+func TestExactStatusPullRequestRejectsAmbiguousLinks(t *testing.T) {
+	process := statusWorkspaceProcess(t, model.ProcessExecutionReview, strings.Repeat("a", 40))
+	body, _, err := model.AddPRLink(process.Comment.Body, "https://github.com/o/r/pull/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.Comment = model.ParseTypedComment(body)
+	if number, _, ok := exactStatusPullRequest([]model.Artifact{process}, "o/r"); !ok || number != 7 {
+		t.Fatalf("exact PR link was not selected: number=%d ok=%v", number, ok)
+	}
+	body, _, err = model.AddPRLink(process.Comment.Body, "https://github.com/o/r/pull/8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.Comment = model.ParseTypedComment(body)
+	if _, _, ok := exactStatusPullRequest([]model.Artifact{process}, "o/r"); ok {
+		t.Fatal("ambiguous PR links were accepted")
+	}
+}
+
+func statusWorkspaceProcess(t *testing.T, class model.ProcessExecutionClass, revision string) model.Artifact {
+	t.Helper()
+	logical := "## Process: status workspace\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- " + string(class) +
+		"\n\n### Covers\n\n- SPEC-001\n\n### Handoff\n\ncomplete"
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", logical)
+	now := time.Unix(100, 0).UTC()
+	workspace := processworkspace.PortableLease{SchemaVersion: processworkspace.LeaseSchemaVersion, WorkspaceID: "ws-process-001", Repository: "o/r",
+		ProcessID: "PROCESS-001", ExecutionClass: processworkspace.ExecutionClass(class), State: processworkspace.StatePrepared, CreatedAt: now, UpdatedAt: now}
+	switch class {
+	case model.ProcessExecutionReview, model.ProcessExecutionVerification:
+		workspace.Mode, workspace.BaseSHA, workspace.DetachedRevision, workspace.RuntimeNamespace = processworkspace.ModeSnapshot, revision, revision, "ws-process-001"
+	case model.ProcessExecutionExternal, model.ProcessExecutionOrchestration:
+		workspace.Mode = processworkspace.ModeNone
+	}
+	transition, err := model.ApplyTypedTransition(process.Comment.Body, model.TransitionRequest{ExpectedType: "PROCESS", ExpectedID: "PROCESS-001", Workspace: &workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.Comment = model.ParseTypedComment(transition.Body)
+	return process
+}
+
+func statusHasCode(summary statusSummary, code string) bool {
+	for _, diagnostic := range summary.Gate.Diagnostics {
+		if diagnostic.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSummarizeStatusReportsSessionMetadataDiagnosticsWithoutBlocking(t *testing.T) {

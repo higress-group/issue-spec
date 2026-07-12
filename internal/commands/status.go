@@ -3,11 +3,15 @@ package commands
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
+	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
@@ -64,7 +68,7 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 		a.errorf("--gate: %v\n", err)
 		return 2
 	}
-	client, _, err := a.clientFor(ctx, *host)
+	client, token, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("auth required for status on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
@@ -75,7 +79,12 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 		return 1
 	}
 	workflowPlan, workflowErr := workflow.Resolve(".")
-	summary := summarizeStatusForGate(*repoFlag, proposalIssue, designIssue, implementIssue, target, artifacts, workflowPlan, workflowErr)
+	profile, _, profileErr := auth.ResolveProfile(a.profileName, *host)
+	collection := statusGateCollection{Remote: statusForecastRemoteFacts(target)}
+	if profileErr == nil {
+		collection = a.collectStatusGateFacts(ctx, client, profile, token.Value, repo, implementIssue, target, artifacts)
+	}
+	summary := summarizeStatusForGate(*repoFlag, proposalIssue, designIssue, implementIssue, target, artifacts, workflowPlan, workflowErr, collection)
 	if proposalIssueData, perr := client.GetIssue(ctx, repo, proposalIssue); perr == nil {
 		summary.Diagnostics = append(summary.Diagnostics, authoringCompletenessDiagnostics("proposal", proposalIssueData.HTMLURL, proposalIssueData.Body)...)
 	}
@@ -169,14 +178,16 @@ func summarizeStatus(repo string, proposal, design, implement int, artifacts []m
 func summarizeStatusForGate(repo string, proposal, design, implement int, target gates.Target, artifacts []model.Artifact, workflowState ...any) statusSummary {
 	var workflowPlan workflow.Plan
 	var workflowErr error
-	if len(workflowState) > 0 {
-		if plan, ok := workflowState[0].(workflow.Plan); ok {
+	collection := statusGateCollection{Remote: statusForecastRemoteFacts(target)}
+	for _, value := range workflowState {
+		if plan, ok := value.(workflow.Plan); ok {
 			workflowPlan = plan
 		}
-	}
-	if len(workflowState) > 1 {
-		if err, ok := workflowState[1].(error); ok {
+		if err, ok := value.(error); ok {
 			workflowErr = err
+		}
+		if collected, ok := value.(statusGateCollection); ok {
+			collection = collected
 		}
 	}
 	counts := map[string]map[string]int{}
@@ -221,18 +232,23 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 			workflowFacts.Errors = append(workflowFacts.Errors, diagnostic.Code+": "+diagnostic.Message)
 		}
 	}
+	mode := gates.ModeForecast
+	if target == gates.TargetFinal || target == gates.TargetArchive {
+		mode = gates.ModeAuthoritative
+	}
 	snapshot := gates.Snapshot{
-		Target:       target,
-		Mode:         gates.ModeForecast,
-		Artifacts:    artifacts,
-		Canonical:    gates.CanonicalFacts{Observed: true, Diagnostics: malformed},
-		Traceability: gates.TraceabilityFacts{Observed: true, Report: report},
-		Workflow:     workflowFacts,
-		Remote:       statusForecastRemoteFacts(target),
+		Target:          target,
+		Mode:            mode,
+		Artifacts:       artifacts,
+		Canonical:       gates.CanonicalFacts{Observed: true, Diagnostics: malformed},
+		Traceability:    gates.TraceabilityFacts{Observed: true, Report: report},
+		Workflow:        workflowFacts,
+		Remote:          collection.Remote,
+		ProcessEvidence: collection.ProcessEvidence,
 	}
 	gateReport, gateErr := gates.Evaluate(snapshot)
 	if gateErr != nil {
-		gateReport = gates.Report{Ready: false, Target: target, Mode: gates.ModeForecast, PointInTime: true,
+		gateReport = gates.Report{Ready: false, Target: target, Mode: mode, PointInTime: mode == gates.ModeForecast,
 			Diagnostics: []gates.Diagnostic{{Code: "gate.evaluation_failed", Gate: target, Severity: gates.SeverityError,
 				Blocking: true, Message: gateErr.Error(), Current: "invalid", Expected: "valid gate snapshot",
 				Remediation: gates.Remediation{CommandFamily: "status"}, Freshness: gates.FreshnessLocal}}}
@@ -291,10 +307,11 @@ func resolveStatusGate(raw string, design, implement int) (gates.Target, error) 
 }
 
 func statusForecastRemoteFacts(target gates.Target) gates.RemoteFacts {
-	var facts gates.RemoteFacts
+	facts := gates.RemoteFacts{Workspace: gates.WorkspaceFacts{Observed: true}}
 	if target == gates.TargetFinal || target == gates.TargetArchive {
 		facts.PRChecks = gates.Fact{Required: true, Expected: "all required checks passed"}
 		facts.ReviewFindings = gates.Fact{Required: true, Expected: "no blocking findings"}
+		facts.Workspace.ExpectedRevision = gates.Fact{Required: true, Expected: "exact PR or external subject revision"}
 	}
 	if target == gates.TargetArchive {
 		facts.DurableSpec = gates.Fact{Required: true, Expected: "durable spec valid"}
@@ -302,10 +319,113 @@ func statusForecastRemoteFacts(target gates.Target) gates.RemoteFacts {
 	return facts
 }
 
+type statusGateCollection struct {
+	Remote          gates.RemoteFacts
+	ProcessEvidence []gates.ProcessEvidenceInput
+}
+
+func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend, profile auth.Profile, token, repo string,
+	implementIssue int, target gates.Target, artifacts []model.Artifact) statusGateCollection {
+	collection := statusGateCollection{Remote: statusForecastRemoteFacts(target)}
+	if target != gates.TargetFinal && target != gates.TargetArchive {
+		return collection
+	}
+	if profile.Kind == auth.ProfileKindHosted {
+		collection.Remote.PRChecks = gates.Fact{}
+		collection.Remote.ReviewFindings = gates.Fact{}
+		gate, _, gateErr := a.externalGateWithProfile(ctx, profile, token, repo, implementIssue, "code_change", "",
+			coreevidence.GateVerify, ".", "status")
+		if revision := strings.TrimSpace(gate.Target.SubjectRevision); revision != "" {
+			collection.Remote.Workspace.ExpectedRevision = gates.Fact{Required: true, Known: true, Passed: true,
+				Expected: revision, Current: revision}
+		} else if a.newNativeEvidenceProvider != nil {
+			if native, nativeErr := a.newNativeEvidenceProvider(profile, token); nativeErr == nil {
+				if target, targetErr := native.ResolveTarget(ctx, repo, implementIssue, "code_change"); targetErr == nil && strings.TrimSpace(target.SubjectRevision) != "" {
+					collection.Remote.Workspace.ExpectedRevision = gates.Fact{Required: true, Known: true, Passed: true,
+						Expected: strings.TrimSpace(target.SubjectRevision), Current: strings.TrimSpace(target.SubjectRevision)}
+				}
+			}
+		}
+		collection.Remote.ProviderEvidence = gates.Fact{Required: true, Known: true, Passed: gateErr == nil,
+			Expected: "trusted exact-revision provider evidence"}
+		if gateErr != nil {
+			collection.Remote.ProviderEvidence.Current = "unavailable"
+			return collection
+		}
+		collection.ProcessEvidence = buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, &gate.Consumption)
+		return collection
+	}
+
+	prNumber, prURL, ok := exactStatusPullRequest(artifacts, repo)
+	if !ok {
+		return collection
+	}
+	pr, err := client.GetPullRequest(ctx, repo, prNumber)
+	if err != nil || strings.TrimSpace(pr.Head.SHA) == "" {
+		return collection
+	}
+	if strings.TrimSpace(pr.HTMLURL) != "" {
+		prURL = pr.HTMLURL
+	}
+	reviewComments, commentsErr := client.ListPullRequestReviewComments(ctx, repo, prNumber)
+	combined, statusErr := client.GetCombinedStatus(ctx, repo, pr.Head.SHA)
+	checks, checksErr := client.ListCheckRuns(ctx, repo, pr.Head.SHA)
+	collection.Remote.Workspace.ExpectedRevision = gates.Fact{Required: true, Known: true, Passed: true,
+		Expected: pr.Head.SHA, Current: pr.Head.SHA}
+	if commentsErr != nil || statusErr != nil || checksErr != nil {
+		return collection
+	}
+	review := buildReviewSyncReport(pr, reviewComments, nil, combined, checks)
+	collection.Remote.PRChecks = gates.Fact{Required: true, Known: true,
+		Passed:  len(review.FailedChecks) == 0 && len(review.PendingChecks) == 0,
+		Current: fmt.Sprintf("failed=%d pending=%d", len(review.FailedChecks), len(review.PendingChecks)), Expected: "failed=0 pending=0"}
+	collection.Remote.ReviewFindings = gates.Fact{Required: true, Known: true, Passed: len(review.BlockingFindings) == 0,
+		Current: fmt.Sprintf("blocking=%d", len(review.BlockingFindings)), Expected: "blocking=0"}
+	collection.ProcessEvidence = buildProcessEvidenceInputs(artifacts, prURL, reviewComments, review, nil)
+	return collection
+}
+
+func exactStatusPullRequest(artifacts []model.Artifact, repo string) (int, string, bool) {
+	seen := map[string]bool{}
+	var selected string
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type != "PROCESS" || artifact.Comment.Status == "superseded" {
+			continue
+		}
+		for _, raw := range artifact.Comment.Links["PR"] {
+			normalized := model.NormalizeURL(raw)
+			if normalized != "" {
+				seen[normalized] = true
+				selected = normalized
+			}
+		}
+	}
+	if len(seen) != 1 {
+		return 0, "", false
+	}
+	parsed, err := url.Parse(selected)
+	if err != nil {
+		return 0, "", false
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	repoParts := strings.Split(strings.Trim(repo, "/"), "/")
+	if len(parts) != 4 || len(repoParts) != 2 || parts[0] != repoParts[0] || parts[1] != repoParts[1] || parts[2] != "pull" {
+		return 0, "", false
+	}
+	number, err := strconv.Atoi(parts[3])
+	if err != nil || number <= 0 {
+		return 0, "", false
+	}
+	return number, selected, true
+}
+
 func legacyStatusGateMessages(diagnostics []gates.Diagnostic) []string {
 	seen := map[string]bool{}
 	var messages []string
 	for _, diagnostic := range diagnostics {
+		if !diagnostic.Blocking {
+			continue
+		}
 		message := diagnostic.Message
 		switch diagnostic.Code {
 		case gates.CodeArtifactNoncanonical:
@@ -390,8 +510,8 @@ func printStatus(out interface{ Write([]byte) (int, error) }, summary statusSumm
 			if identity == "" {
 				identity = "change"
 			}
-			fmt.Fprintf(out, "- %s %s freshness=%s current=%s expected=%s: %s\n",
-				diagnostic.Code, identity, diagnostic.Freshness, diagnostic.Current, diagnostic.Expected, diagnostic.Message)
+			fmt.Fprintf(out, "- %s %s severity=%s blocking=%v freshness=%s current=%s expected=%s: %s\n",
+				diagnostic.Code, identity, diagnostic.Severity, diagnostic.Blocking, diagnostic.Freshness, diagnostic.Current, diagnostic.Expected, diagnostic.Message)
 		}
 	}
 }

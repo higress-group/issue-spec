@@ -61,6 +61,9 @@ func Evaluate(snapshot Snapshot) (Report, error) {
 	e.evaluateTraceability()
 	e.evaluateWorkflow()
 	e.evaluateProcessEvidence()
+	if err := e.evaluateWorkspaceEvidence(); err != nil {
+		return Report{}, err
+	}
 	e.evaluateRemoteFacts()
 	e.sort()
 
@@ -94,6 +97,27 @@ func (e *evaluator) evaluateProcessEvidence() {
 		e.diagnostics = append(e.diagnostics, report.Diagnostics...)
 	}
 	sort.Slice(e.processes, func(i, j int) bool { return e.processes[i].ProcessID < e.processes[j].ProcessID })
+}
+
+func (e *evaluator) evaluateWorkspaceEvidence() error {
+	workspace := e.snapshot.Remote.Workspace
+	if !workspace.Observed {
+		return nil
+	}
+	carriers := ProcessCarrierRevisionFacts(e.processes)
+	for processID, fact := range workspace.CarrierRevisions {
+		carriers[processID] = fact
+	}
+	report, err := EvaluateWorkspaceEvidence(WorkspaceEvaluationInput{
+		Target: e.snapshot.Target, Mode: e.snapshot.Mode, Artifacts: e.snapshot.Artifacts,
+		ExpectedRevision: workspace.ExpectedRevision, IntegrationAncestry: workspace.IntegrationAncestry,
+		ProcessEvidence: e.processes, CarrierRevisions: carriers,
+	})
+	if err != nil {
+		return err
+	}
+	e.diagnostics = append(e.diagnostics, report.Diagnostics...)
+	return nil
 }
 
 func (e *evaluator) add(code, message string, artifact ArtifactRef, current, expected, command string, args ...string) {
@@ -290,8 +314,43 @@ func (e *evaluator) sort() {
 		if a.Current != b.Current {
 			return a.Current < b.Current
 		}
-		return a.Message < b.Message
+		if a.Message != b.Message {
+			return a.Message < b.Message
+		}
+		left, right := diagnosticSemanticKey(a), diagnosticSemanticKey(b)
+		if left != right {
+			return left < right
+		}
+		// Equivalent point-in-time facts collapse to the latest non-zero
+		// observation. This order is independent of collector input order.
+		if a.ObservedAt == nil {
+			return false
+		}
+		if b.ObservedAt == nil {
+			return true
+		}
+		return a.ObservedAt.After(*b.ObservedAt)
 	})
+	result := e.diagnostics[:0]
+	for _, diagnostic := range e.diagnostics {
+		if len(result) > 0 && diagnosticSemanticKey(result[len(result)-1]) == diagnosticSemanticKey(diagnostic) {
+			continue
+		}
+		result = append(result, diagnostic)
+	}
+	e.diagnostics = result
+}
+
+func diagnosticSemanticKey(diagnostic Diagnostic) string {
+	parts := []string{diagnostic.Code, string(diagnostic.Gate), string(diagnostic.Severity), fmt.Sprintf("%t", diagnostic.Blocking),
+		diagnostic.Message, diagnostic.Artifact.Type, diagnostic.Artifact.ID, diagnostic.Artifact.URL, diagnostic.Current, diagnostic.Expected,
+		diagnostic.Remediation.CommandFamily, string(diagnostic.Freshness), fmt.Sprintf("%d", len(diagnostic.Remediation.Arguments))}
+	parts = append(parts, diagnostic.Remediation.Arguments...)
+	var key strings.Builder
+	for _, part := range parts {
+		fmt.Fprintf(&key, "%d:%s", len(part), part)
+	}
+	return key.String()
 }
 
 func atLeast(actual, threshold Target) bool {
