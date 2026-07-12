@@ -30,18 +30,6 @@
     "file": "assets/label-chips-DMPnSd3b.css",
     "src": "_label-chips-DMPnSd3b.css"
   },
-  "_relationships-AeX3EiaR.js": {
-    "file": "assets/relationships-AeX3EiaR.js",
-    "name": "relationships",
-    "imports": [
-      "_session-Q8w3qjK8.js",
-      "index.html",
-      "_relationships-BdRaM0h6.js"
-    ],
-    "css": [
-      "assets/relationships-BcELNV6j.css"
-    ]
-  },
   "_relationships-BcELNV6j.css": {
     "file": "assets/relationships-BcELNV6j.css",
     "src": "_relationships-BcELNV6j.css"
@@ -51,6 +39,18 @@
     "name": "relationships",
     "imports": [
       "_session-Q8w3qjK8.js"
+    ]
+  },
+  "_relationships-Ci3_7ypc.js": {
+    "file": "assets/relationships-Ci3_7ypc.js",
+    "name": "relationships",
+    "imports": [
+      "_session-Q8w3qjK8.js",
+      "index.html",
+      "_relationships-BdRaM0h6.js"
+    ],
+    "css": [
+      "assets/relationships-BcELNV6j.css"
     ]
   },
   "_repository-context-eTbdqqDi.js": {
@@ -65,7 +65,7 @@
     "name": "session"
   },
   "index.html": {
-    "file": "assets/index-BPIkMUaD.js",
+    "file": "assets/index-DR1ekiuU.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -85,33 +85,33 @@
     ]
   },
   "src/features/boards/board-page.tsx": {
-    "file": "assets/board-page-C0olhtiJ.js",
+    "file": "assets/board-page-pWNd7yMn.js",
     "name": "board-page",
     "src": "src/features/boards/board-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_session-Q8w3qjK8.js",
-      "_relationships-AeX3EiaR.js",
+      "_relationships-Ci3_7ypc.js",
       "index.html",
       "_relationships-BdRaM0h6.js",
       "_repository-context-eTbdqqDi.js"
     ]
   },
   "src/features/boards/detail-page.tsx": {
-    "file": "assets/detail-page-CreXn3m4.js",
+    "file": "assets/detail-page-CdrswHv6.js",
     "name": "detail-page",
     "src": "src/features/boards/detail-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_session-Q8w3qjK8.js",
-      "_relationships-AeX3EiaR.js",
+      "_relationships-Ci3_7ypc.js",
       "index.html",
       "_repository-context-eTbdqqDi.js",
       "src/features/boards/board-page.tsx"
     ]
   },
   "src/features/issues/create-page.tsx": {
-    "file": "assets/create-page-CFmTfKiD.js",
+    "file": "assets/create-page-Dc8ASBub.js",
     "name": "create-page",
     "src": "src/features/issues/create-page.tsx",
     "isDynamicEntry": true,
@@ -124,13 +124,13 @@
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-JoBMKKzn.js",
+    "file": "assets/detail-page-BlJvHQdi.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_session-Q8w3qjK8.js",
-      "_relationships-AeX3EiaR.js",
+      "_relationships-Ci3_7ypc.js",
       "index.html",
       "_repository-context-eTbdqqDi.js",
       "_label-chips-BdEKPmIS.js",
@@ -142,7 +142,7 @@
     ]
   },
   "src/features/issues/list-page.tsx": {
-    "file": "assets/list-page-CdM3y2pZ.js",
+    "file": "assets/list-page-C9UQCYML.js",
     "name": "list-page",
     "src": "src/features/issues/list-page.tsx",
     "isDynamicEntry": true,
@@ -154,7 +154,7 @@
     ]
   },
   "src/features/issues/workspace-page.tsx": {
-    "file": "assets/workspace-page-Jr9VLdKM.js",
+    "file": "assets/workspace-page-BloZBgsq.js",
     "name": "workspace-page",
     "src": "src/features/issues/workspace-page.tsx",
     "isDynamicEntry": true,

@@ -55,6 +55,7 @@ describe("repository integrations workspace", () => {
   it("pauses and rotates a route, inspects attempts, and replays the immutable delivery", async () => {
     let update: unknown;
     let replayed = false;
+    let replayState = "dead";
     const succeeded = [
       "00000000-0000-4000-8000-000000000001",
       "00000000-0000-4000-8000-000000000002",
@@ -66,9 +67,9 @@ describe("repository integrations workspace", () => {
       http.get(webhookCollectionPath(), () => HttpResponse.json({ subscriptions: [webhookFixture()] })),
       http.patch(`${webhookCollectionPath()}/${webhookId}`, async ({ request }) => { update = await request.json(); return HttpResponse.json(webhookFixture({ active: false, representation_version: 4 })); }),
       http.post(`${webhookCollectionPath()}/${webhookId}/rotate-secret`, () => HttpResponse.json(webhookFixture({ secret: "rotated-secret", secret_version: 2 }), { status: 201 })),
-      http.get(deliveryCollectionPath(), () => HttpResponse.json({ deliveries: [...succeeded, deliveryFixture()] })),
-      http.get(`${deliveryCollectionPath()}/${deliveryId}`, () => HttpResponse.json({ delivery: deliveryFixture(), attempts: [{ id: "12345678-1234-4234-8234-123456789abc", attempt_number: 1, response_status: 503, response_headers: { "Retry-After": ["2"] }, started_at: "2026-07-11T10:00:00Z", completed_at: "2026-07-11T10:00:01Z" }] })),
-      http.post(`${deliveryCollectionPath()}/${deliveryId}/redeliver`, () => { replayed = true; return HttpResponse.json(deliveryFixture({ state: "pending" }), { status: 202 }); }),
+      http.get(deliveryCollectionPath(), () => HttpResponse.json({ deliveries: [...succeeded, deliveryFixture({ state: replayState, last_error: replayState === "succeeded" ? null : "HTTP 503" })] })),
+      http.get(`${deliveryCollectionPath()}/${deliveryId}`, () => HttpResponse.json({ delivery: deliveryFixture({ state: replayState, last_error: replayState === "succeeded" ? null : "HTTP 503" }), attempts: [{ id: "12345678-1234-4234-8234-123456789abc", attempt_number: 1, response_status: replayState === "succeeded" ? 204 : 503, response_headers: { "Retry-After": ["2"] }, started_at: "2026-07-11T10:00:00Z", completed_at: "2026-07-11T10:00:01Z" }] })),
+      http.post(`${deliveryCollectionPath()}/${deliveryId}/redeliver`, () => { replayed = true; replayState = "pending"; return HttpResponse.json(deliveryFixture({ state: "pending" }), { status: 202 }); }),
     );
     renderIntegration("webhooks");
     expect(await screen.findByLabelText("4 delivered")).toBeVisible();
@@ -82,6 +83,10 @@ describe("repository integrations workspace", () => {
     expect((await screen.findAllByText("HTTP 503"))[0]).toBeVisible();
     await userEvent.setup().click(screen.getByRole("button", { name: "Replay immutable delivery" }));
     await waitFor(() => expect(replayed).toBe(true));
+    replayState = "succeeded";
+    await userEvent.setup().click(screen.getByRole("button", { name: "Refresh deliveries" }));
+    await waitFor(() => expect(screen.getByLabelText("Delivery detail")).toHaveTextContent("succeeded"));
+    expect(screen.queryByRole("button", { name: "Replay immutable delivery" })).not.toBeInTheDocument();
   });
 
   it("renders revoked routes as audit-only and never offers resurrection actions", async () => {
