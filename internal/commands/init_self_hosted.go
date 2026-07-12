@@ -184,6 +184,7 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 	if err != nil {
 		return a.selfHostedInitError("resolve server organization", err)
 	}
+	serverRepoKey := organization.Name + "/" + options.ServerRepo
 	repositories, err := native.ListNativeContextRepositories(ctx, organization.ID)
 	if err != nil {
 		return a.selfHostedInitError("read server repositories", err)
@@ -240,7 +241,7 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 		plan.Mutations = append(plan.Mutations, "ensure issue-spec labels")
 	}
 	plan.Mutations = uniqueStrings(plan.Mutations)
-	if err := validateExistingSelfHostedConfig(filepath.Join(".issue-spec", "config.json"), repoKey, profile); err != nil {
+	if err := validateExistingSelfHostedConfig(filepath.Join(".issue-spec", "config.json"), serverRepoKey, profile); err != nil {
 		return a.selfHostedInitError("validate existing project config", err)
 	}
 	if providerPlan != nil {
@@ -319,7 +320,7 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 	var labels []github.LabelResult
 	if options.CreateLabels {
 		for _, label := range issueSpecLabels() {
-			result, labelErr := compatibility.CreateLabel(ctx, repoKey, label.name, label.color, label.description)
+			result, labelErr := compatibility.CreateLabel(ctx, serverRepoKey, label.name, label.color, label.description)
 			if labelErr != nil {
 				return a.selfHostedInitError("ensure label "+label.name, labelErr)
 			}
@@ -330,7 +331,7 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 		markJournalStage(&journal, "labels", "skipped", "disabled")
 	}
 	configPath := filepath.Join(".issue-spec", "config.json")
-	projectConfig := selfHostedProjectConfig{Version: selfHostedInitConfigVersion, Repo: repoKey,
+	projectConfig := selfHostedProjectConfig{Version: selfHostedInitConfigVersion, Repo: serverRepoKey,
 		Hostname: profile.Hostname, Profile: profile.Name, ServerInstanceID: profile.ServerInstanceID,
 		OrganizationID: organization.ID, RepositoryID: repositoryID}
 	if providerPlan != nil {
@@ -356,9 +357,9 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 	}
 	var workflows workflowGenerationResult
 	if providerPlan != nil {
-		workflows, err = writeWorkflowArtifactsWithProvider(".", repoKey, options.Tools, options.Delivery, *providerPlan)
+		workflows, err = writeWorkflowArtifactsWithProvider(".", serverRepoKey, options.Tools, options.Delivery, *providerPlan)
 	} else {
-		workflows, err = writeWorkflowArtifacts(".", repoKey, options.Tools, options.Delivery)
+		workflows, err = writeWorkflowArtifacts(".", serverRepoKey, options.Tools, options.Delivery)
 	}
 	if err != nil {
 		return a.selfHostedInitError("generate workflow artifacts", err)
@@ -368,7 +369,7 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 		return a.selfHostedInitError("complete init resume journal", err)
 	}
 
-	result := map[string]any{"ok": true, "mode": "self-hosted", "repo": repoKey, "profile": profile.Name,
+	result := map[string]any{"ok": true, "mode": "self-hosted", "repo": serverRepoKey, "profile": profile.Name,
 		"server_instance_id": profile.ServerInstanceID, "organization_id": organization.ID,
 		"repository_id": repositoryID, "auth": map[string]any{"source": token.Source, "user": user.Login, "scopes": scopes},
 		"plan": plan, "config": filepath.ToSlash(configPath), "journal": filepath.ToSlash(journalPath),
@@ -376,7 +377,7 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 	if options.JSON {
 		return a.outputJSON(result)
 	}
-	fmt.Fprintf(a.out, "initialized issue-spec for %s with self-hosted profile %s\n", repoKey, profile.Name)
+	fmt.Fprintf(a.out, "initialized issue-spec for %s with self-hosted profile %s\n", serverRepoKey, profile.Name)
 	fmt.Fprintf(a.out, "server repository: %s/%s (%s)\nconfig: %s\nresume journal: %s\n",
 		organization.Name, options.ServerRepo, repositoryID, filepath.ToSlash(configPath), filepath.ToSlash(journalPath))
 	if providerPlan != nil {
@@ -903,7 +904,7 @@ func parseCanonicalGitURL(raw string) (string, string, error) {
 	return canonicalRemoteIdentity(parsed.Host, strings.TrimPrefix(parsed.EscapedPath(), "/"))
 }
 
-func canonicalRemoteIdentity(authority, escapedPath string) (string, string, error) {
+func canonicalRemoteIdentity(authority, remotePath string) (string, string, error) {
 	authority = strings.ToLower(strings.TrimSpace(authority))
 	host := authority
 	if parsedHost, port, err := net.SplitHostPort(authority); err == nil {
@@ -916,11 +917,11 @@ func canonicalRemoteIdentity(authority, escapedPath string) (string, string, err
 	if strings.ContainsAny(host, "/@?#\\") || strings.TrimSpace(host) == "" {
 		return "", "", errors.New("remote authority is invalid")
 	}
-	decoded, err := url.PathUnescape(escapedPath)
-	if err != nil || strings.Contains(decoded, "\\") {
+	if remotePath == "" || strings.Contains(remotePath, "%") || strings.Contains(remotePath, "\\") ||
+		strings.HasPrefix(remotePath, "/") || strings.HasSuffix(remotePath, "/") {
 		return "", "", errors.New("repository path is invalid")
 	}
-	repository := strings.TrimSuffix(strings.Trim(decoded, "/"), ".git")
+	repository := strings.TrimSuffix(remotePath, ".git")
 	segments := strings.Split(repository, "/")
 	if len(segments) < 2 {
 		return "", "", errors.New("repository path must contain owner and name")

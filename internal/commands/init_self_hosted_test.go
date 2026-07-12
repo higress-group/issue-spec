@@ -35,14 +35,25 @@ func TestParseCanonicalGitRemoteConfigNormalizesIngressHTTPBin(t *testing.T) {
 }
 
 func TestParseCanonicalGitRemoteConfigRejectsCredentialAndAmbiguousAlias(t *testing.T) {
-	for _, raw := range []string{
-		"remote.origin.url https://token@git.example.test/acme/widgets.git\n",
-		"remote.origin.url http://git.example.test/acme/widgets.git\n",
-		"remote.origin.url https://git.example.test/acme/../widgets.git\n",
+	for _, test := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "https credential", raw: "https://token@git.example.test/acme/widgets.git"},
+		{name: "insecure scheme", raw: "http://git.example.test/acme/widgets.git"},
+		{name: "URL traversal", raw: "https://git.example.test/acme/../widgets.git"},
+		{name: "scp encoded ordinary byte", raw: "git@git.example.test:acme/widget%73.git"},
+		{name: "scp encoded slash", raw: "git@git.example.test:acme%2Fwidgets.git"},
+		{name: "scp encoded dot traversal", raw: "git@git.example.test:acme/%2e%2e/widgets.git"},
+		{name: "scp traversal", raw: "git@git.example.test:acme/../widgets.git"},
+		{name: "scp leading slash alias", raw: "git@git.example.test:/acme/widgets.git"},
+		{name: "scp trailing slash alias", raw: "git@git.example.test:acme/widgets.git/"},
 	} {
-		if _, err := parseCanonicalGitRemoteConfig(raw); err == nil {
-			t.Fatalf("expected remote to fail closed: %q", raw)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parseCanonicalGitRemoteConfig("remote.origin.url " + test.raw + "\n"); err == nil {
+				t.Fatalf("expected remote to fail closed: %q", test.raw)
+			}
+		})
 	}
 }
 
@@ -89,7 +100,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 	orgID := uuid.New()
 	repoID := uuid.New()
 	bindingID := uuid.New()
-	ensureCalls, bindingCalls := 0, 0
+	ensureCalls, bindingCalls, labelCalls := 0, 0, 0
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/meta" && r.Header.Get("Authorization") != "Bearer realm-token" {
@@ -133,6 +144,9 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/orgs/"+orgID.String()+"/repos/"+repoID.String()+"/bindings/active":
 			bindingCalls++
 			writeTestJSON(w, map[string]any{"created": true, "binding": testBinding(bindingID)})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/browser-e2e/httpbin/labels":
+			labelCalls++
+			writeTestJSON(w, map[string]any{"name": "created"})
 		default:
 			http.NotFound(w, r)
 		}
@@ -152,8 +166,9 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		t.Fatal(err)
 	}
 
-	args := []string{"--repo", "browser-e2e/httpbin", "--provider", "aone", "--source-web-url",
-		"https://code.alibaba-inc.com/Ingress/httpbin", "--tools", "none", "--json"}
+	args := []string{"--repo", "local-source/local-checkout", "--server-org", "browser-e2e", "--server-repo", "httpbin",
+		"--provider", "aone", "--source-web-url", "https://code.alibaba-inc.com/Ingress/httpbin",
+		"--create-labels", "--tools", "codex", "--delivery", "skills", "--json"}
 	{
 		var out, errOut bytes.Buffer
 		app := newApp(strings.NewReader(""), &out, &errOut)
@@ -165,6 +180,9 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		if ensureCalls != 0 || bindingCalls != 0 {
 			t.Fatalf("plan mutated remote state: repository=%d binding=%d", ensureCalls, bindingCalls)
 		}
+		if !strings.Contains(out.String(), `"key": "browser-e2e/httpbin"`) || strings.Contains(out.String(), "local-source/local-checkout") {
+			t.Fatalf("plan did not use the resolved server target: %s", out.String())
+		}
 		if _, err := os.Stat(filepath.Join(root, ".issue-spec")); !os.IsNotExist(err) {
 			t.Fatalf("plan created local state: %v", err)
 		}
@@ -174,9 +192,10 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		strict.OnboardingPolicy.AllowUnattended = false
 		var out, errOut bytes.Buffer
 		app := newApp(strings.NewReader(""), &out, &errOut)
-		code := app.runSelfHostedInit(t.Context(), strict, selfHostedInitOptions{Repo: "browser-e2e/httpbin",
+		code := app.runSelfHostedInit(t.Context(), strict, selfHostedInitOptions{Repo: "local-source/local-checkout",
+			ServerOrg: "browser-e2e", ServerRepo: "httpbin",
 			ProviderKey: "aone", SourceWebURL: "https://code.alibaba-inc.com/Ingress/httpbin",
-			Tools: "none", Delivery: "both", JSON: true})
+			CreateLabels: true, Tools: "codex", Delivery: "skills", JSON: true})
 		if code == 0 || !strings.Contains(errOut.String(), "requires --yes") {
 			t.Fatalf("non-interactive mutation policy exit=%d stderr=%s", code, errOut.String())
 		}
@@ -184,6 +203,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 			t.Fatalf("rejected non-interactive run mutated remote state: repository=%d binding=%d", ensureCalls, bindingCalls)
 		}
 	}
+	var finalOutput string
 	for run := 1; run <= 2; run++ {
 		var out, errOut bytes.Buffer
 		app := newApp(strings.NewReader(""), &out, &errOut)
@@ -191,12 +211,19 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		if code := app.runInit(t.Context(), args); code != 0 {
 			t.Fatalf("run %d exit=%d stderr=%s stdout=%s", run, code, errOut.String(), out.String())
 		}
+		finalOutput = out.String()
 	}
 	if ensureCalls != 1 || bindingCalls != 1 {
 		t.Fatalf("ensure calls repository=%d binding=%d, want one each", ensureCalls, bindingCalls)
 	}
+	if labelCalls != 2*len(issueSpecLabels()) {
+		t.Fatalf("label calls=%d, want %d on the exact server target", labelCalls, 2*len(issueSpecLabels()))
+	}
+	if !strings.Contains(finalOutput, `"repo": "browser-e2e/httpbin"`) || strings.Contains(finalOutput, "local-source/local-checkout") {
+		t.Fatalf("init output did not use the resolved server target: %s", finalOutput)
+	}
 	config := readTestFile(t, filepath.Join(root, ".issue-spec", "config.json"))
-	for _, want := range []string{`"version": 2`, `"profile": "e2e"`, `"key": "aone"`, `"external_repository": "Ingress/httpbin"`} {
+	for _, want := range []string{`"version": 2`, `"repo": "browser-e2e/httpbin"`, `"profile": "e2e"`, `"key": "aone"`, `"external_repository": "Ingress/httpbin"`} {
 		if !strings.Contains(config, want) {
 			t.Fatalf("project config missing %q:\n%s", want, config)
 		}
@@ -207,8 +234,13 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 			t.Fatalf("workflow config missing %q:\n%s", want, workflowConfig)
 		}
 	}
+	workflowSkill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-workflow", "SKILL.md"))
+	if !strings.Contains(workflowSkill, "browser-e2e/httpbin") || strings.Contains(workflowSkill, "local-source/local-checkout") {
+		t.Fatalf("generated workflow did not use the resolved server target:\n%s", workflowSkill)
+	}
 	journal := readTestFile(t, filepath.Join(root, ".issue-spec", "init-state.json"))
-	for _, want := range []string{`"repository_id": "` + repoID.String() + `"`, `"binding": {`, `"state": "complete"`} {
+	for _, want := range []string{`"organization_id": "` + orgID.String() + `"`, `"repository_name": "httpbin"`,
+		`"repository_id": "` + repoID.String() + `"`, `"binding": {`, `"state": "complete"`} {
 		if !strings.Contains(journal, want) {
 			t.Fatalf("journal missing %q:\n%s", want, journal)
 		}
