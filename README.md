@@ -108,6 +108,15 @@ issue-spec auth status --hostname ghe.example.com --json
 
 `archive durable-spec --create-pr` still uses local `git` for fetch, worktree, commit, and push. GitHub API reads and PR creation use the same authenticated `gh` account.
 
+## Self-hosted server authentication
+
+Operators running the optional web server should use the versioned
+[self-hosted authentication guide](docs/self-hosting/authentication/README.md).
+It covers GitHub OAuth, OIDC, organization admission, private-IP/internal-DNS
+deployments, avatar proxying, secret rotation, and safe troubleshooting. The
+[deployment guide](docs/self-hosting/operations/deployment.md) documents the
+remaining production configuration and hardening requirements.
+
 ## Runner: Comment-Triggered Workflows
 
 `issue-spec runner` can watch repository issue comments and launch a headless acpx coordinator agent when an authorized maintainer comments a command.

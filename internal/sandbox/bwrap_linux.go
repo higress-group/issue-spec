@@ -195,6 +195,12 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		args = append(args, "--ro-bind", bind, bind)
 		mounts = append(mounts, Mount{Source: bind, Destination: bind, Mode: "ro"})
 	}
+	for _, capability := range cfg.FileCapabilities {
+		destination := filepath.Clean(capability.Destination)
+		args, mounts = appendBindParentDirs(args, mounts, destination, seenDirs, coveredRoots)
+		args = append(args, "--ro-bind", filepath.Clean(capability.Source), destination)
+		mounts = append(mounts, Mount{Destination: destination, Mode: "ro-capability"})
+	}
 	args = append(args, "--chdir", chdir)
 	args = append(args, "--", target.Binary)
 	args = append(args, target.Args...)

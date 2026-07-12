@@ -17,8 +17,16 @@ type Store interface {
 	Update(context.Context, func(*state.RunnerState) error) error
 }
 
+// GitHubOperations is the status-comment surface shared by polling and
+// webhook runners. It intentionally excludes notification polling.
+type GitHubOperations interface {
+	ListIssueCommentsPage(context.Context, string, int, github.CommentListOptions) (github.IssueCommentsResult, error)
+	CreateRunnerComment(context.Context, string, int, string) (github.RunnerCommentResult, error)
+	UpdateRunnerComment(context.Context, string, int64, string) (github.RunnerCommentResult, error)
+}
+
 type Service struct {
-	GitHub github.RunnerOperations
+	GitHub GitHubOperations
 	Store  Store
 	Clock  func() time.Time
 }

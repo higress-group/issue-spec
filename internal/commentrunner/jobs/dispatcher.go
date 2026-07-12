@@ -18,12 +18,16 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/acpx"
+	clientauth "github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	runnercontext "github.com/higress-group/issue-spec/internal/commentrunner/context"
+	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
+	resolver "github.com/higress-group/issue-spec/internal/commentrunner/repository"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/sandbox"
+	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/templates"
 	"github.com/higress-group/issue-spec/internal/workspace"
 )
@@ -31,6 +35,8 @@ import (
 var ErrNoReadyJob = errors.New("no ready queued job")
 
 const workspaceLockResidualDiagnostic = "workspace lock recovered from residual lock file"
+
+var errDispatchCancelled = errors.New("runner job was cancelled during dispatch")
 
 var authDiagnosticSecretPattern = regexp.MustCompile(`(?i)(["']?[a-z0-9_]*(?:token|secret)[a-z0-9_]*["']?\s*[:=]\s*["']?)([^"',\s}]+)`)
 
@@ -43,12 +49,7 @@ type RepositoryResolver interface {
 	ResolveRepository(context.Context, string) (RepositoryInfo, error)
 }
 
-type RepositoryInfo struct {
-	Repo          string
-	CloneURL      string
-	DefaultBranch string
-	Ref           string
-}
+type RepositoryInfo = resolver.Resolution
 
 type WorkspaceManager interface {
 	PrepareNew(context.Context, workspace.NewRequest) (workspace.Binding, error)
@@ -71,6 +72,9 @@ type SandboxRequest struct {
 	RuntimeGHConfigDir   string
 	RuntimeXDGConfigHome string
 	RuntimeCodexHome     string
+	FileCapabilities     []sandbox.FileCapability
+	ChildProfile         *clientauth.Profile
+	AcpxAgent            string
 }
 
 type ExecutionEnvironment struct {
@@ -103,6 +107,31 @@ type Clock interface {
 
 type IDGenerator func() (string, error)
 
+type CredentialBroker interface {
+	Acquire(context.Context, credentials.AcquireRequest) (*credentials.Lease, error)
+	RevokeJob(context.Context, models.RepoScope, string) error
+}
+
+type EvidencePreGateRequest struct {
+	Repo           string
+	IssueNumber    int
+	WorkflowRoot   string
+	CredentialFile string
+}
+
+type EvidencePreGateResult struct {
+	Skipped            bool
+	ProviderKey        string
+	ExternalRepository string
+	ChangeID           string
+	SubjectRevision    string
+	EvidenceIDs        []string
+}
+
+type EvidencePreGate interface {
+	BeforeDispatch(context.Context, EvidencePreGateRequest) (EvidencePreGateResult, error)
+}
+
 type Dispatcher struct {
 	Store               Store
 	Repositories        RepositoryResolver
@@ -117,6 +146,9 @@ type Dispatcher struct {
 	AcpxBinary          string
 	IssueSpecBinary     string
 	CoordinatorExtraEnv map[string]string
+	CredentialBroker    CredentialBroker
+	CredentialScopes    map[string]models.RepoScope
+	EvidencePreGate     EvidencePreGate
 }
 
 type Result struct {
@@ -130,9 +162,31 @@ type Result struct {
 	Results        []Result              `json:"results,omitempty"`
 }
 
+func validateEvidencePreGateResult(result EvidencePreGateResult) error {
+	if result.Skipped {
+		return nil
+	}
+	if strings.TrimSpace(result.ProviderKey) == "" || strings.TrimSpace(result.ExternalRepository) == "" ||
+		strings.TrimSpace(result.ChangeID) == "" || strings.TrimSpace(result.SubjectRevision) == "" || len(result.EvidenceIDs) == 0 {
+		return errors.New("evidence pre-gate returned an incomplete authoritative identity")
+	}
+	seen := map[string]bool{}
+	for _, id := range result.EvidenceIDs {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return errors.New("evidence pre-gate returned invalid evidence identities")
+		}
+		seen[id] = true
+	}
+	return nil
+}
+
 func (d *Dispatcher) RunNext(ctx context.Context) (Result, error) {
 	if err := d.validate(); err != nil {
 		return Result{}, err
+	}
+	if result, attempted, err := d.retryNextCredentialCleanup(ctx); attempted || err != nil {
+		return result, err
 	}
 	cancel, ok, err := d.nextQueuedCancellation(ctx)
 	if err != nil {
@@ -148,6 +202,9 @@ func (d *Dispatcher) RunReady(ctx context.Context, maxConcurrentJobs int) (Resul
 	if err := d.validate(); err != nil {
 		return Result{}, err
 	}
+	if result, attempted, err := d.retryNextCredentialCleanup(ctx); attempted || err != nil {
+		return result, err
+	}
 	cancel, ok, err := d.nextQueuedCancellation(ctx)
 	if err != nil {
 		return Result{}, err
@@ -155,6 +212,23 @@ func (d *Dispatcher) RunReady(ctx context.Context, maxConcurrentJobs int) (Resul
 	if ok {
 		return d.cancel(ctx, cancel)
 	}
+	return d.runJobsReady(ctx, maxConcurrentJobs)
+}
+
+// RunJobsReady dispatches only jobs. Long-running runner serve pairs this with
+// a dedicated DrainCancellations loop so cancellation never races with a second
+// cancellation consumer and never waits behind a blocked coordinator turn.
+func (d *Dispatcher) RunJobsReady(ctx context.Context, maxConcurrentJobs int) (Result, error) {
+	if err := d.validate(); err != nil {
+		return Result{}, err
+	}
+	if result, attempted, err := d.retryNextCredentialCleanup(ctx); attempted || err != nil {
+		return result, err
+	}
+	return d.runJobsReady(ctx, maxConcurrentJobs)
+}
+
+func (d *Dispatcher) runJobsReady(ctx context.Context, maxConcurrentJobs int) (Result, error) {
 	if maxConcurrentJobs <= 1 {
 		return d.runNextJob(ctx)
 	}
@@ -408,7 +482,21 @@ func (d *Dispatcher) validate() error {
 	if d.Writeback == nil {
 		return fmt.Errorf("job dispatcher writeback service is required")
 	}
+	if d.CredentialBroker != nil && len(d.CredentialScopes) == 0 {
+		return fmt.Errorf("job dispatcher credential scopes are required")
+	}
 	return nil
+}
+
+func (d *Dispatcher) revokeJobCredentials(ctx context.Context, job state.Job) error {
+	if d == nil || d.CredentialBroker == nil {
+		return nil
+	}
+	scope, ok := d.CredentialScopes[job.Repo]
+	if !ok || scope.Validate() != nil {
+		return fmt.Errorf("credential broker repository scope is unavailable")
+	}
+	return d.CredentialBroker.RevokeJob(ctx, scope, job.ID)
 }
 
 func (d *Dispatcher) nextQueuedJob(ctx context.Context, skipped map[string]bool) (state.Job, bool, error) {
@@ -425,14 +513,10 @@ func (d *Dispatcher) nextQueuedJob(ctx context.Context, skipped map[string]bool)
 	return state.Job{}, false, nil
 }
 
-func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) {
-	repo, err := d.Repositories.ResolveRepository(ctx, job.Repo)
-	if err != nil {
-		return d.fail(ctx, job.ID, "repository", err)
-	}
-
+func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, returnErr error) {
 	publicID := strings.TrimSpace(job.PublicSessionID)
 	command := runnercontext.CommandVerb(strings.TrimSpace(job.CommandName))
+	var err error
 	switch command {
 	case runnercontext.CommandNew:
 		if publicID == "" {
@@ -451,10 +535,60 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 	if strings.TrimSpace(job.CommandPrompt) == "" {
 		return d.fail(ctx, job.ID, "command", fmt.Errorf("job %s is missing first-observed command prompt", job.ID))
 	}
+	repo, session, err := d.resolveRepositoryForCommand(ctx, job, command, publicID)
+	if err != nil {
+		return d.fail(ctx, job.ID, "repository-binding", err)
+	}
+	if err := d.pinJobRepositoryBinding(ctx, job.ID, repo.Binding); err != nil {
+		return d.fail(ctx, job.ID, "repository-binding", err)
+	}
+	var credentialLease *credentials.Lease
+	if d.CredentialBroker != nil {
+		scope, ok := d.CredentialScopes[job.Repo]
+		if !ok || scope.Validate() != nil {
+			return d.fail(ctx, job.ID, "credentials", fmt.Errorf("credential broker repository scope is unavailable"))
+		}
+		if err := d.beginCredentialCleanup(ctx, job.ID); err != nil {
+			return d.fail(ctx, job.ID, "credentials", fmt.Errorf("persist credential cleanup intent: %w", err))
+		}
+		jobID := job.ID
+		job, err = d.loadJob(ctx, jobID)
+		if err != nil {
+			return Result{Executed: true, JobID: jobID, Status: state.StatusFailed}, err
+		}
+		credentialLease, err = d.CredentialBroker.Acquire(ctx, credentials.AcquireRequest{Repo: scope, JobID: job.ID, Binding: repo.Binding})
+		if err != nil {
+			_, cleanupErr, stateErr := d.attemptCredentialCleanup(ctx, job)
+			return d.fail(ctx, job.ID, "credentials", errors.Join(err, cleanupErr, stateErr))
+		}
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), credentialCleanupCallTimeout)
+			defer cancel()
+			revokeErr := credentialLease.Revoke(cleanupCtx)
+			updated, stateErr := d.recordCredentialCleanupAttempt(cleanupCtx, job.ID, revokeErr)
+			if stateErr == nil && updated.CredentialCleanup.Status == state.CredentialCleanupComplete {
+				revokeErr = nil
+			}
+			if revokeErr != nil || stateErr != nil {
+				cleanupFailure := errors.Join(revokeErr, stateErr)
+				result.Error = safeError(errors.Join(returnErr, fmt.Errorf("credential broker cleanup: %w", cleanupFailure)))
+				// A successfully persisted pending intent is retried by the live
+				// dispatcher. Only failure to persist that intent is fatal here.
+				if stateErr != nil {
+					returnErr = errors.Join(returnErr, fmt.Errorf("persist credential broker cleanup: %w", stateErr))
+				}
+			}
+		}()
+	}
 
-	binding, session, err := d.prepareWorkspace(ctx, job, command, publicID, repo)
+	binding, session, err := d.prepareWorkspace(ctx, job, command, publicID, repo, session, credentialLease)
 	if err != nil {
 		return d.fail(ctx, job.ID, "workspace", err)
+	}
+	if credentialLease != nil && command == runnercontext.CommandNew {
+		if err := credentialLease.PrepareChildGit(ctx); err != nil {
+			return d.fail(ctx, job.ID, "credentials", fmt.Errorf("rotate clone credential for child: %w", err))
+		}
 	}
 	lock, err := d.Workspaces.AcquireLock(ctx, workspace.LockRequest{
 		Repo:            job.Repo,
@@ -482,8 +616,22 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 		}
 	}
 	defer releaseLock()
+	if d.EvidencePreGate != nil {
+		if credentialLease == nil || strings.TrimSpace(credentialLease.IssueToken.HostPath) == "" {
+			return d.fail(ctx, job.ID, "evidence-pre-gate", errors.New("delegated evidence credential is unavailable"))
+		}
+		identity, err := d.EvidencePreGate.BeforeDispatch(ctx, EvidencePreGateRequest{Repo: job.Repo,
+			IssueNumber: job.IssueNumber, WorkflowRoot: binding.Workspace.Path,
+			CredentialFile: credentialLease.IssueToken.HostPath})
+		if err != nil {
+			return d.fail(ctx, job.ID, "evidence-pre-gate", err)
+		}
+		if err := validateEvidencePreGateResult(identity); err != nil {
+			return d.fail(ctx, job.ID, "evidence-pre-gate", err)
+		}
+	}
 
-	env, bundle, prompt, err := d.prepareExecution(ctx, job, command, publicID, repo, binding, session)
+	env, bundle, prompt, err := d.prepareExecution(ctx, job, command, publicID, repo, binding, session, credentialLease)
 	if err != nil {
 		return d.fail(ctx, job.ID, "execution-inputs", err)
 	}
@@ -547,6 +695,9 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 	terminal := statusFromSummary(dispatch.Output.Summary)
 	if err := d.complete(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, terminal); err != nil {
 		releaseLock()
+		if errors.Is(err, errDispatchCancelled) {
+			return cancelledDuringDispatchResult(job.ID), nil
+		}
 		return Result{Executed: true, JobID: job.ID, Status: state.StatusFailed}, err
 	}
 	releaseLock()
@@ -572,31 +723,125 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (Result, error) 
 	return Result{Executed: true, JobID: job.ID, Status: terminal}, nil
 }
 
-func (d *Dispatcher) prepareWorkspace(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string, repo RepositoryInfo) (workspace.Binding, state.PublicSession, error) {
+func (d *Dispatcher) resolveRepositoryForCommand(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string) (RepositoryInfo, state.PublicSession, error) {
 	if command == runnercontext.CommandNew {
-		binding, err := d.Workspaces.PrepareNew(ctx, workspace.NewRequest{
-			Repo:            job.Repo,
-			CloneURL:        repo.CloneURL,
-			DefaultBranch:   repo.DefaultBranch,
-			Ref:             repo.Ref,
-			PublicSessionID: publicID,
-			JobID:           job.ID,
-		})
-		return binding, state.PublicSession{}, err
+		repo, err := d.Repositories.ResolveRepository(ctx, job.Repo)
+		if err != nil {
+			return RepositoryInfo{}, state.PublicSession{}, err
+		}
+		if !repo.Binding.Complete() {
+			return RepositoryInfo{}, state.PublicSession{}, resolver.NoBindingError()
+		}
+		return repo, state.PublicSession{}, nil
 	}
 	session, err := d.requireSession(ctx, job.Repo, publicID)
 	if err != nil {
+		return RepositoryInfo{}, state.PublicSession{}, err
+	}
+	if !session.RepositoryBinding.Complete() || !session.Workspace.RepositoryBinding.Complete() {
+		return RepositoryInfo{}, state.PublicSession{}, resolver.LegacyStateError()
+	}
+	if !session.RepositoryBinding.Equal(session.Workspace.RepositoryBinding) {
+		return RepositoryInfo{}, state.PublicSession{}, resolver.DriftError()
+	}
+	current, err := d.Repositories.ResolveRepository(ctx, job.Repo)
+	if err != nil {
+		return RepositoryInfo{}, state.PublicSession{}, resolver.DriftError()
+	}
+	if err := resolver.ValidatePinned(session.RepositoryBinding, current.Binding); err != nil {
+		return RepositoryInfo{}, state.PublicSession{}, err
+	}
+	return current, session, nil
+}
+
+func (d *Dispatcher) pinJobRepositoryBinding(ctx context.Context, jobID string, binding state.RepositoryBindingSnapshot) error {
+	if !binding.Complete() {
+		return resolver.NoBindingError()
+	}
+	return d.Store.Update(ctx, func(st *state.RunnerState) error {
+		job, ok := st.Jobs[jobID]
+		if !ok {
+			return fmt.Errorf("job %q not found", jobID)
+		}
+		if job.RepositoryBinding.Complete() && !job.RepositoryBinding.Equal(binding) {
+			return resolver.DriftError()
+		}
+		job.RepositoryBinding = binding
+		job.DispatchIntent.RepositoryBinding = binding
+		return st.UpsertJob(job)
+	})
+}
+
+func (d *Dispatcher) persistPreparedRepositoryBinding(ctx context.Context, jobID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, binding state.RepositoryBindingSnapshot) error {
+	return d.Store.Update(ctx, func(st *state.RunnerState) error {
+		job, ok := st.Jobs[jobID]
+		if !ok {
+			return fmt.Errorf("job %q not found", jobID)
+		}
+		if !job.RepositoryBinding.Equal(binding) || !workspaceMeta.RepositoryBinding.Equal(binding) ||
+			!session.RepositoryBinding.Equal(binding) {
+			return resolver.DriftError()
+		}
+		job.Workspace = workspaceMeta
+		job.RepositoryBinding = binding
+		job.DispatchIntent.RepositoryBinding = binding
+		if err := st.UpsertWorkspace(workspaceMeta); err != nil {
+			return err
+		}
+		if err := st.UpsertPublicSession(session); err != nil {
+			return err
+		}
+		return st.UpsertJob(job)
+	})
+}
+
+func (d *Dispatcher) prepareWorkspace(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string, repo RepositoryInfo, session state.PublicSession, lease *credentials.Lease) (workspace.Binding, state.PublicSession, error) {
+	if command == runnercontext.CommandNew {
+		if err := d.pinJobRepositoryBinding(ctx, job.ID, repo.Binding); err != nil {
+			return workspace.Binding{}, state.PublicSession{}, err
+		}
+		request := workspace.NewRequest{
+			Repo:              job.Repo,
+			CloneURL:          repo.CloneURL,
+			DefaultBranch:     repo.DefaultBranch,
+			Ref:               repo.Ref,
+			PublicSessionID:   publicID,
+			JobID:             job.ID,
+			RepositoryBinding: repo.Binding,
+		}
+		if lease != nil {
+			request.Credentials = lease.Git
+		}
+		binding, err := d.Workspaces.PrepareNew(ctx, request)
+		if err != nil {
+			return binding, state.PublicSession{}, err
+		}
+		if !binding.Workspace.RepositoryBinding.Equal(repo.Binding) {
+			return workspace.Binding{}, state.PublicSession{}, resolver.DriftError()
+		}
+		session = state.PublicSession{Repo: job.Repo, PublicSessionID: publicID, IssueNumber: job.IssueNumber,
+			CreatorLogin: job.SessionCreatorLogin, Status: state.StatusDispatched, CreatedAt: firstTime(job.CreatedAt, d.now()),
+			Workspace: binding.Workspace, RepositoryBinding: repo.Binding}
+		if err := d.persistPreparedRepositoryBinding(ctx, job.ID, session, binding.Workspace, repo.Binding); err != nil {
+			return workspace.Binding{}, state.PublicSession{}, err
+		}
+		return binding, session, nil
+	}
+	if err := d.pinJobRepositoryBinding(ctx, job.ID, session.RepositoryBinding); err != nil {
 		return workspace.Binding{}, state.PublicSession{}, err
 	}
 	binding, err := d.Workspaces.ResolveResume(ctx, workspace.ResumeRequest{
 		Repo:      job.Repo,
-		CloneURL:  firstNonEmpty(repo.CloneURL, session.Workspace.CloneURL),
+		CloneURL:  session.RepositoryBinding.CloneURL,
 		Workspace: session.Workspace,
 	})
+	if err == nil && !binding.Workspace.RepositoryBinding.Equal(session.RepositoryBinding) {
+		return workspace.Binding{}, state.PublicSession{}, resolver.DriftError()
+	}
 	return binding, session, err
 }
 
-func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string, repo RepositoryInfo, binding workspace.Binding, session state.PublicSession) (ExecutionEnvironment, runnercontext.Bundle, string, error) {
+func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string, repo RepositoryInfo, binding workspace.Binding, session state.PublicSession, lease *credentials.Lease) (ExecutionEnvironment, runnercontext.Bundle, string, error) {
 	artifacts, err := d.artifacts(ctx, job)
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
@@ -653,7 +898,7 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
-	env, err := d.Sandbox.Prepare(ctx, SandboxRequest{
+	sandboxRequest := SandboxRequest{
 		WorkspacePath:        execBinding.SandboxWorkspacePath,
 		AcpxWorkingDirectory: execBinding.AcpxWorkingDirectory,
 		AcpxBinary:           firstNonEmpty(d.AcpxBinary, acpx.DefaultBinary),
@@ -663,7 +908,20 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 		RuntimeGHConfigDir:   runtimePaths.ghConfigDir,
 		RuntimeXDGConfigHome: runtimePaths.xdgConfigHome,
 		RuntimeCodexHome:     runtimePaths.codexHome,
-	})
+		AcpxAgent:            job.CoordinatorKind,
+	}
+	if lease != nil {
+		sandboxRequest.FileCapabilities = lease.FileCapabilities()
+		profile := lease.Profile
+		sandboxRequest.ChildProfile = &profile
+		if sandboxRequest.ExtraEnv == nil {
+			sandboxRequest.ExtraEnv = map[string]string{}
+		}
+		for name, value := range lease.ChildEnv() {
+			sandboxRequest.ExtraEnv[name] = value
+		}
+	}
+	env, err := d.Sandbox.Prepare(ctx, sandboxRequest)
 	if err != nil {
 		return env, runnercontext.Bundle{}, "", err
 	}
@@ -944,6 +1202,7 @@ func (d *Dispatcher) markRunning(ctx context.Context, original state.Job, comman
 			ContextBundleHash:     bundle.BundleSHA256,
 			WorkspaceLockOwner:    lock.OwnerJobID,
 			PersistedAt:           now,
+			RepositoryBinding:     job.RepositoryBinding,
 		}
 		job.UpdatedAt = now
 		if err := st.UpsertWorkspace(binding.Workspace); err != nil {
@@ -964,11 +1223,12 @@ func (d *Dispatcher) markRunning(ctx context.Context, original state.Job, comman
 		running.Sandbox = sandboxMeta
 		running.ContextBundle = contextProvenance(bundle, running.CommandID)
 		running.DispatchIntent = job.DispatchIntent
-		if command == runnercontext.CommandResume {
+		if command == runnercontext.CommandResume || command == runnercontext.CommandNew {
 			session.Status = state.StatusRunning
 			session.LastUsedAt = now
 			session.LastJobID = running.ID
 			session.Workspace = binding.Workspace
+			session.RepositoryBinding = job.RepositoryBinding
 			session.Lock = lock
 			session.Queue.AcceptedSequence = running.DispatchIntent.TurnSequence
 			session.Queue.PendingJobIDs = appendUnique(session.Queue.PendingJobIDs, running.ID)
@@ -996,8 +1256,17 @@ func (d *Dispatcher) persistStatusCommentInIntent(ctx context.Context, jobID str
 
 func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, terminal state.LifecycleStatus, diagnostics ...string) error {
 	now := d.now()
-	return d.Store.Update(ctx, func(st *state.RunnerState) error {
+	cancelled := false
+	err := d.Store.Update(ctx, func(st *state.RunnerState) error {
 		st.Normalize()
+		current, ok := st.Jobs[jobID]
+		if !ok {
+			return fmt.Errorf("job %q not found", jobID)
+		}
+		if current.Status == state.StatusCancelled {
+			cancelled = true
+			return nil
+		}
 		job, err := st.UpdateJobStatus(jobID, terminal, now, diagnostics...)
 		if err != nil {
 			return err
@@ -1022,18 +1291,20 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 		}
 		if command == runnercontext.CommandNew {
 			session = state.PublicSession{
-				Repo:            job.Repo,
-				PublicSessionID: publicID,
-				IssueNumber:     job.IssueNumber,
-				AcpxRecordID:    meta.StableRecordID,
-				CreatorLogin:    job.SessionCreatorLogin,
-				CreatedAt:       firstTime(job.CreatedAt, now),
+				Repo:              job.Repo,
+				PublicSessionID:   publicID,
+				IssueNumber:       job.IssueNumber,
+				AcpxRecordID:      meta.StableRecordID,
+				CreatorLogin:      job.SessionCreatorLogin,
+				CreatedAt:         firstTime(job.CreatedAt, now),
+				RepositoryBinding: job.RepositoryBinding,
 			}
 		}
 		session.Status = terminal
 		session.AcpxRecordID = meta.StableRecordID
 		session.Acpx = meta
 		session.Workspace = job.Workspace
+		session.RepositoryBinding = job.RepositoryBinding
 		session.LastUsedAt = now
 		session.LastJobID = job.ID
 		session.Lock = state.SessionLock{}
@@ -1052,12 +1323,22 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 		}
 		return st.UpsertPublicSession(session)
 	})
+	if err != nil {
+		return err
+	}
+	if cancelled {
+		return errDispatchCancelled
+	}
+	return nil
 }
 
 func (d *Dispatcher) completeWithCoordinatorSummaryWarning(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, cause error) (Result, error) {
 	diagnostic := coordinatorSummaryWarning(cause)
 	dispatch = withoutCoordinatorSummary(dispatch)
 	if err := d.complete(ctx, jobID, command, publicID, session, workspaceMeta, dispatch, state.StatusCompleted, diagnostic); err != nil {
+		if errors.Is(err, errDispatchCancelled) {
+			return cancelledDuringDispatchResult(jobID), nil
+		}
 		return Result{Executed: true, JobID: jobID, Status: state.StatusFailed}, err
 	}
 	finalJob, err := d.loadJob(ctx, jobID)
@@ -1080,6 +1361,7 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 	now := d.now()
 	msg := safeError(cause)
 	var failed state.Job
+	cancelled := false
 	updateErr := d.Store.Update(ctx, func(st *state.RunnerState) error {
 		st.Normalize()
 		job, ok := st.Jobs[jobID]
@@ -1088,6 +1370,7 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 		}
 		if job.Status.Terminal() {
 			failed = job
+			cancelled = job.Status == state.StatusCancelled
 			return nil
 		}
 		next, err := st.UpdateJobStatus(jobID, state.StatusFailed, now, safeString(phase+": "+msg, 1024))
@@ -1109,18 +1392,20 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 		}
 		if command == runnercontext.CommandNew {
 			session = state.PublicSession{
-				Repo:            next.Repo,
-				PublicSessionID: publicID,
-				IssueNumber:     next.IssueNumber,
-				AcpxRecordID:    meta.StableRecordID,
-				CreatorLogin:    next.SessionCreatorLogin,
-				CreatedAt:       firstTime(next.CreatedAt, now),
+				Repo:              next.Repo,
+				PublicSessionID:   publicID,
+				IssueNumber:       next.IssueNumber,
+				AcpxRecordID:      meta.StableRecordID,
+				CreatorLogin:      next.SessionCreatorLogin,
+				CreatedAt:         firstTime(next.CreatedAt, now),
+				RepositoryBinding: next.RepositoryBinding,
 			}
 		}
 		session.Status = state.StatusFailed
 		session.AcpxRecordID = meta.StableRecordID
 		session.Acpx = meta
 		session.Workspace = next.Workspace
+		session.RepositoryBinding = next.RepositoryBinding
 		session.LastUsedAt = now
 		session.LastJobID = next.ID
 		session.Lock = state.SessionLock{}
@@ -1146,6 +1431,9 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 	if updateErr != nil {
 		return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: safeError(updateErr)}, updateErr
 	}
+	if cancelled {
+		return cancelledDuringDispatchResult(jobID), nil
+	}
 	if failed.ID != "" && d.Writeback != nil {
 		_, _ = d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase, Err: cause})
 	}
@@ -1156,6 +1444,7 @@ func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error)
 	now := d.now()
 	msg := safeError(cause)
 	var failed state.Job
+	cancelled := false
 	updateErr := d.Store.Update(ctx, func(st *state.RunnerState) error {
 		st.Normalize()
 		job, ok := st.Jobs[jobID]
@@ -1164,6 +1453,7 @@ func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error)
 		}
 		if job.Status.Terminal() {
 			failed = job
+			cancelled = job.Status == state.StatusCancelled
 			return nil
 		}
 		next, err := st.UpdateJobStatus(jobID, state.StatusFailed, now, safeString(phase+": "+msg, 1024))
@@ -1186,10 +1476,17 @@ func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error)
 	if updateErr != nil {
 		return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: safeError(updateErr)}, updateErr
 	}
+	if cancelled {
+		return cancelledDuringDispatchResult(jobID), nil
+	}
 	if failed.ID != "" && d.Writeback != nil {
 		_, _ = d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase, Err: cause})
 	}
 	return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: msg}, cause
+}
+
+func cancelledDuringDispatchResult(jobID string) Result {
+	return Result{Executed: true, JobID: jobID, Status: state.StatusCancelled, Reason: "cancelled_during_dispatch"}
 }
 
 func (d *Dispatcher) appendDiagnostic(ctx context.Context, jobID, diagnostic string) error {
@@ -1275,24 +1572,24 @@ func (d *Dispatcher) now() time.Time {
 }
 
 type StaticRepositoryResolver struct {
-	Hostname      string
-	DefaultBranch string
+	// Hostname is retained only for configuration compatibility. It is never
+	// used to derive a clone URL.
+	Hostname string
+	Mappings []resolver.OperatorMapping
+	Operator resolver.OperatorSource
+	Server   *resolver.ServerSource
 }
 
-func (r StaticRepositoryResolver) ResolveRepository(_ context.Context, repo string) (RepositoryInfo, error) {
-	repo = strings.TrimSpace(repo)
-	if repo == "" {
-		return RepositoryInfo{}, fmt.Errorf("repo is required")
+func (r StaticRepositoryResolver) ResolveRepository(ctx context.Context, repo string) (RepositoryInfo, error) {
+	operator := r.Operator
+	if operator == nil && len(r.Mappings) > 0 {
+		configured, err := resolver.NewStaticOperatorMappings(r.Mappings)
+		if err != nil {
+			return RepositoryInfo{}, err
+		}
+		operator = configured
 	}
-	host := strings.TrimSpace(r.Hostname)
-	if host == "" {
-		host = "github.com"
-	}
-	branch := strings.TrimSpace(r.DefaultBranch)
-	if branch == "" {
-		branch = "HEAD"
-	}
-	return RepositoryInfo{Repo: repo, CloneURL: "https://" + host + "/" + repo + ".git", DefaultBranch: branch}, nil
+	return (resolver.Resolver{Operator: operator, Server: r.Server}).ResolveRepository(ctx, repo)
 }
 
 type SandboxRunner struct {
@@ -1322,6 +1619,7 @@ func (p SandboxRunner) Prepare(ctx context.Context, req SandboxRequest) (Executi
 
 func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAuthMirrorResult, error) {
 	cfg := p.Config
+	cfg.FileCapabilities = append([]sandbox.FileCapability(nil), req.FileCapabilities...)
 	cfg.WorkspacePath = firstNonEmpty(req.WorkspacePath, cfg.WorkspacePath)
 	cfg.TempHome = firstNonEmpty(req.RuntimeHome, cfg.TempHome)
 	cfg.TempGHConfigDir = firstNonEmpty(req.RuntimeGHConfigDir, cfg.TempGHConfigDir)
@@ -1347,6 +1645,17 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 			cfg.ExtraEnv[key] = value
 		}
 	}
+	if req.ChildProfile != nil {
+		profile, err := req.ChildProfile.Normalized()
+		if err != nil || profile.Kind != clientauth.ProfileKindHosted {
+			return sandbox.Config{}, "", ghAuthMirrorResult{}, fmt.Errorf("runner child profile is invalid")
+		}
+		if cfg.ExtraEnv == nil {
+			cfg.ExtraEnv = map[string]string{}
+		}
+		cfg.ExtraEnv[clientauth.ProfileEnv] = profile.Name
+		cfg.ExtraEnv[clientauth.GitHubBackendEnv] = string(clientauth.GitHubBackendModeREST)
+	}
 	if !cfg.UnsafeNoSandbox {
 		addSandboxPATHPrefixes(&cfg, pathPrefixes...)
 	}
@@ -1365,17 +1674,107 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 			return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 		}
 	}
-	ghAuthMirror, err := mirrorHostGHAuth(&cfg)
-	if err != nil {
-		return sandbox.Config{}, "", ghAuthMirror, err
+	var ghAuthMirror ghAuthMirrorResult
+	if req.ChildProfile != nil {
+		// Darwin's os.UserConfigDir ignores XDG_CONFIG_HOME. In explicit
+		// no-sandbox mode, point the child CLI at the non-secret profile file
+		// we materialize below. The delegated token remains a separate brokered
+		// file capability and is never written into this directory.
+		if cfg.UnsafeNoSandbox {
+			cfg.ExtraEnv[clientauth.ConfigDirEnv] = filepath.Join(cfg.TempXDGConfigHome, "issue-spec")
+		}
+		if err := materializeChildProfile(cfg.TempXDGConfigHome, *req.ChildProfile); err != nil {
+			return sandbox.Config{}, "", ghAuthMirror, err
+		}
+		// A self-hosted child has no reason to observe hosts.yml or shared gh
+		// state, even if the operator process uses it for legacy GitHub mode.
+		if err := os.RemoveAll(cfg.TempGHConfigDir); err != nil {
+			return sandbox.Config{}, "", ghAuthMirror, err
+		}
+		if err := os.MkdirAll(cfg.TempGHConfigDir, 0o700); err != nil {
+			return sandbox.Config{}, "", ghAuthMirror, err
+		}
+	} else {
+		var err error
+		ghAuthMirror, err = mirrorHostGHAuth(&cfg)
+		if err != nil {
+			return sandbox.Config{}, "", ghAuthMirror, err
+		}
 	}
 	if err := mirrorHostCodexConfig(&cfg); err != nil {
+		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
+	}
+	if err := materializeHostAcpxAgentOverride(&cfg, req.AcpxAgent); err != nil {
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
 	if err := mirrorHostClaudeConfig(&cfg); err != nil {
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
 	return cfg, resolvedAcpxBinary, ghAuthMirror, nil
+}
+
+func materializeHostAcpxAgentOverride(cfg *sandbox.Config, agent string) error {
+	if cfg == nil || strings.TrimSpace(agent) == "" || strings.TrimSpace(cfg.TempHome) == "" {
+		return nil
+	}
+	home := hostHomeDir(cfg.HostEnv)
+	override, ok, err := acpx.LoadAgentOverride(home, agent)
+	if err != nil {
+		return fmt.Errorf("load host acpx %s agent override: %w", agent, err)
+	}
+	target := filepath.Join(cfg.TempHome, ".acpx", "config.json")
+	if !ok {
+		if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale runtime acpx agent override: %w", err)
+		}
+		return nil
+	}
+	if err := acpx.MaterializeAgentOverride(cfg.TempHome, override); err != nil {
+		return fmt.Errorf("materialize host acpx %s agent override: %w", agent, err)
+	}
+	return nil
+}
+
+func materializeChildProfile(xdgConfigHome string, profile clientauth.Profile) error {
+	profile, err := profile.Normalized()
+	if err != nil || profile.Kind != clientauth.ProfileKindHosted {
+		return fmt.Errorf("runner child profile is invalid")
+	}
+	dir := filepath.Join(filepath.Clean(xdgConfigHome), "issue-spec")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	payload := struct {
+		Version        int                           `json:"version"`
+		DefaultProfile string                        `json:"default_profile"`
+		Profiles       map[string]clientauth.Profile `json:"profiles"`
+	}{Version: 1, DefaultProfile: profile.Name, Profiles: map[string]clientauth.Profile{profile.Name: profile}}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(dir, ".profiles-*")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(append(data, '\n')); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryName, filepath.Join(dir, "profiles.json"))
 }
 
 func requestReadOnlyBinds(req SandboxRequest, acpxBinary string, lookPath func(string) (string, error)) ([]string, []string, string, error) {

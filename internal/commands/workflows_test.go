@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/higress-group/issue-spec/internal/codereview"
+	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
 func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPath(t *testing.T) {
@@ -171,6 +174,32 @@ func TestResolveWorkflowToolsRejectsInvalidTool(t *testing.T) {
 	_, err := resolveWorkflowTools(t.TempDir(), "codex,agents")
 	if err == nil {
 		t.Fatal("expected invalid tool to fail")
+	}
+}
+
+func TestWriteWorkflowArtifactsWithProviderFollowsCapabilityMatrix(t *testing.T) {
+	root := t.TempDir()
+	provider := workflow.ProviderPlan{ProviderKey: "aone", DisplayName: "Aone Code",
+		CodeChangeLabel: "Merge request", ChangeComment: true, EvidenceSnapshot: true,
+		Capabilities: []codereview.Capability{codereview.CapabilityChangeComment, codereview.CapabilityEvidenceSnapshot}}
+	result, err := writeWorkflowArtifactsWithProvider(root, "browser-e2e/httpbin", "codex", "skills", provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.SkillFiles) == 0 {
+		t.Fatal("provider workflow generated no skills")
+	}
+	generated := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-code-provider", "SKILL.md"))
+	for _, want := range []string{
+		"Provider-neutral Code Workflow",
+		"`change.create`: unavailable",
+		"`change.comment`: available",
+		"`evidence.snapshot`: available",
+		"Project/work-item tracker authority is independent",
+	} {
+		if !strings.Contains(generated, want) {
+			t.Fatalf("provider workflow missing %q:\n%s", want, generated)
+		}
 	}
 }
 

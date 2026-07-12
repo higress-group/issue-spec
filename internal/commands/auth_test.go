@@ -586,11 +586,200 @@ func TestDefaultGitHubBackendTokenForGHUsesProvider(t *testing.T) {
 	}
 }
 
+func TestAuthLoginAndStatusUseNamedSelfHostedProfile(t *testing.T) {
+	clearCommandAuthEnv(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/user" || r.Header.Get("Authorization") != "Bearer profile-secret" {
+			t.Fatalf("request = %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		w.Header().Set("X-OAuth-Scopes", "repo, workflow")
+		_, _ = w.Write([]byte(`{"login":"profile-user"}`))
+	}))
+	defer server.Close()
+
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader("profile-secret\n"), &out, &errOut)
+	code := app.runAuthLogin(context.Background(), []string{
+		"--profile", "staging", "--kind", "self-hosted",
+		"--api-url", server.URL, "--native-api-url", server.URL + "/api/v1",
+		"--web-url", server.URL, "--instance-id", "instance-staging",
+		"--with-token", "--insecure-storage", "--make-default", "--json",
+	})
+	if code != 0 {
+		t.Fatalf("login exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if strings.Contains(out.String()+errOut.String(), "profile-secret") {
+		t.Fatalf("login leaked token: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	profile, source, err := auth.ResolveProfile("", "github.com")
+	if err != nil || source != "config" || profile.Name != "staging" {
+		t.Fatalf("default profile = %+v source=%q err=%v", profile, source, err)
+	}
+	token, err := auth.ResolveProfileToken(context.Background(), profile)
+	if err != nil || token.Value != "profile-secret" || token.Source != "config" {
+		t.Fatalf("stored token = %+v err=%v", token, err)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	t.Setenv("GH_TOKEN", "must-not-cross-gh-token")
+	t.Setenv("GITHUB_TOKEN", "must-not-cross-github-token")
+	app = newApp(strings.NewReader(""), &out, &errOut)
+	code = app.runAuthStatus(context.Background(), []string{"--profile", "staging", "--json"})
+	if code != 0 {
+		t.Fatalf("status exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var status struct {
+		Auth auth.Token `json:"auth"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Auth.Profile != "staging" || status.Auth.ProfileKind != "self-hosted" || status.Auth.ServerInstanceID != "instance-staging" || status.Auth.User != "profile-user" {
+		t.Fatalf("status = %+v", status.Auth)
+	}
+}
+
+func TestAuthLoginRejectsCrossOriginSelfHostedEndpointsBeforeRequest(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var apiRequests, nativeRequests int
+	apiServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		apiRequests++
+	}))
+	defer apiServer.Close()
+	nativeServer := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		nativeRequests++
+		if r.Header.Get("Authorization") != "" {
+			t.Fatalf("cross-origin request carried authorization: %q", r.Header.Get("Authorization"))
+		}
+	}))
+	defer nativeServer.Close()
+
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader("profile-secret\n"), &out, &errOut)
+	code := app.runAuthLogin(context.Background(), []string{
+		"--profile", "staging", "--kind", "self-hosted",
+		"--api-url", apiServer.URL + "/api/v3", "--native-api-url", nativeServer.URL + "/api/v1",
+		"--web-url", apiServer.URL, "--instance-id", "instance-staging",
+		"--with-token", "--insecure-storage",
+	})
+	if code != 1 || !strings.Contains(errOut.String(), "native API URL must use the same origin as API URL") {
+		t.Fatalf("login exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if apiRequests != 0 || nativeRequests != 0 {
+		t.Fatalf("cross-origin login sent requests: api=%d native=%d", apiRequests, nativeRequests)
+	}
+	if strings.Contains(out.String()+errOut.String(), "profile-secret") {
+		t.Fatalf("login leaked token: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	if _, _, err := auth.ResolveProfile("staging", "github.com"); err == nil {
+		t.Fatal("rejected cross-origin profile was persisted")
+	}
+}
+
+func TestAuthStatusSelfHostedRunnerUsesTokenFileWithoutGH(t *testing.T) {
+	clearCommandAuthEnv(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/user" || r.Header.Get("Authorization") != "Bearer delegated-child" {
+			t.Fatalf("request = %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"login":"runner-child"}`))
+	}))
+	defer server.Close()
+	profile := auth.Profile{Name: "runner", Kind: auth.ProfileKindHosted, APIURL: server.URL,
+		NativeAPIURL: server.URL + "/api/v1", WebURL: server.URL, ServerInstanceID: "instance-runner"}
+	if err := auth.SaveProfile(profile, true); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(t.TempDir(), "issue.token")
+	if err := os.WriteFile(tokenPath, []byte("delegated-child\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(auth.IssueSpecTokenFileEnv, tokenPath)
+	t.Setenv(auth.ProfileEnv, "runner")
+	t.Setenv(auth.GitHubBackendEnv, "rest")
+	t.Setenv("GH_TOKEN", "must-not-cross")
+	t.Setenv("GITHUB_TOKEN", "must-not-cross-either")
+	oldGHAuthenticated := ghAuthenticated
+	t.Cleanup(func() { ghAuthenticated = oldGHAuthenticated })
+	ghAuthenticated = func(context.Context, string) error {
+		t.Fatal("gh authentication was probed for self-hosted runner profile")
+		return nil
+	}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	if code := app.runAuthStatus(context.Background(), []string{"--json"}); code != 0 {
+		t.Fatalf("status exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if strings.Contains(out.String()+errOut.String(), "delegated-child") || strings.Contains(out.String()+errOut.String(), "must-not-cross") {
+		t.Fatalf("credential leaked: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	var status struct {
+		Auth auth.Token `json:"auth"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Auth.Source != "env:"+auth.IssueSpecTokenFileEnv || status.Auth.Profile != "runner" || status.Auth.User != "runner-child" {
+		t.Fatalf("status auth = %+v", status.Auth)
+	}
+}
+
+func TestOrdinaryClientUsesSavedDefaultSelfHostedProfile(t *testing.T) {
+	clearCommandAuthEnv(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer default-secret" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"login":"default-user"}`))
+	}))
+	defer server.Close()
+	profile := auth.Profile{
+		Name: "staging", Kind: auth.ProfileKindHosted, APIURL: server.URL,
+		NativeAPIURL: server.URL + "/api/v1", WebURL: server.URL, ServerInstanceID: "instance-default",
+	}
+	if err := auth.SaveProfile(profile, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.StoreProfileToken(context.Background(), profile, "default-secret", true); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = func(context.Context, string) (auth.GitHubBackendSelection, error) {
+		t.Fatal("legacy GitHub selector used instead of saved default profile")
+		return auth.GitHubBackendSelection{}, nil
+	}
+	backend, token, err := app.clientFor(context.Background(), "github.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, _, err := backend.GetUser(context.Background())
+	if err != nil || user.Login != "default-user" || token.Profile != "staging" || token.APIOrigin != server.URL {
+		t.Fatalf("user=%+v token=%+v err=%v", user, token, err)
+	}
+}
+
+func TestGlobalProfileFlagIsAvailableToOrdinaryCommands(t *testing.T) {
+	profile, args, err := extractGlobalProfile([]string{"issue", "create", "proposal", "--repo", "o/r", "--profile", "staging", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile != "staging" || strings.Join(args, " ") != "issue create proposal --repo o/r --json" {
+		t.Fatalf("profile=%q args=%q", profile, args)
+	}
+	if _, _, err := extractGlobalProfile([]string{"status", "--profile", "a", "--profile", "b"}); err == nil {
+		t.Fatal("conflicting profile flags accepted")
+	}
+}
+
 func clearCommandAuthEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv(auth.GitHubBackendEnv, "")
 	t.Setenv(auth.GitHubBackendAPIURLEnv, "")
+	t.Setenv(auth.ProfileEnv, "")
 	t.Setenv("ISSUE_SPEC_TOKEN", "")
+	t.Setenv(auth.IssueSpecTokenFileEnv, "")
 	t.Setenv("GH_TOKEN", "")
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())

@@ -409,6 +409,25 @@ func TestLifecycleTransitionsAndReconciliationAPI(t *testing.T) {
 	}
 }
 
+func TestPreRecordTerminalSessionMayRemainWithoutFabricatedRecord(t *testing.T) {
+	state := NewState()
+	binding := RepositoryBindingSnapshot{Source: "operator", IssueRepositoryKey: "o/r", BindingID: "binding-1", Version: 1,
+		ProviderKey: "github", ExternalRepositoryID: "o/r", CloneURL: "https://github.com/o/r.git", WebURL: "https://github.com/o/r", DefaultBranch: "main"}
+	for _, status := range []LifecycleStatus{StatusCancelled, StatusInterrupted} {
+		session := PublicSession{Repo: "o/r", PublicSessionID: "ps-no-record-" + string(status), Status: status, RepositoryBinding: binding}
+		if err := state.UpsertPublicSession(session); err != nil {
+			t.Fatalf("%s pre-record session rejected: %v", status, err)
+		}
+		if got := state.PublicSessions[PublicSessionKey("o/r", session.PublicSessionID)]; got.AcpxRecordID != "" || got.Status != status {
+			t.Fatalf("%s session fabricated record metadata: %+v", status, got)
+		}
+	}
+	session := PublicSession{Repo: "o/r", PublicSessionID: "ps-no-record-completed", Status: StatusCompleted, RepositoryBinding: binding}
+	if err := state.UpsertPublicSession(session); err == nil {
+		t.Fatal("completed session without an ACPX record should remain invalid")
+	}
+}
+
 func TestWorkspaceMetadataHelpers(t *testing.T) {
 	state := NewState()
 	now := time.Unix(20, 0).UTC()

@@ -1,0 +1,14 @@
+{
+  "providers": [
+    {
+      "id": "__ISSUE_SPEC_PROVIDER_UUID__",
+      "name": "company",
+      "kind": "oidc",
+      "issuer": "https://identity.intra.example",
+      "client_id": "__ISSUE_SPEC_OIDC_CLIENT_ID__",
+      "client_secret": "__ISSUE_SPEC_OIDC_CLIENT_SECRET__",
+      "scopes": ["openid", "profile", "email"],
+      "avatar_origins": ["https://images.intra.example"]
+    }
+  ]
+}

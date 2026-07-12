@@ -61,6 +61,8 @@ func (a *app) runRunner(ctx context.Context, args []string) int {
 	switch args[0] {
 	case "poll":
 		return a.runRunnerPoll(ctx, args[1:])
+	case "serve":
+		return a.runRunnerServe(ctx, args[1:])
 	case "preflight":
 		return a.runRunnerPreflightCommand(ctx, args[1:])
 	default:
@@ -72,10 +74,12 @@ func (a *app) runRunner(ctx context.Context, args []string) int {
 func (a *app) printRunnerUsage(out io.Writer) {
 	fmt.Fprintln(out, `Usage:
   issue-spec runner poll [options]
+  issue-spec runner serve [options]
   issue-spec runner preflight [options]
 
 Subcommands:
   poll       continuously poll comments and dispatch authorized runner jobs
+  serve      receive signed deliveries for a self-hosted profile
   preflight  validate runner auth, repository access, sandbox, acpx, and agent prerequisites
 
 Use "issue-spec runner <subcommand> -h" to show all options and defaults.`)
@@ -87,6 +91,10 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 		return 0
 	}
 	if !ok {
+		return 2
+	}
+	if err := validateRunnerPollProfile(cfg); err != nil {
+		a.errorf("%v\n", err)
 		return 2
 	}
 	if !opts.DryRun {
@@ -495,12 +503,16 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 		}
 	}
 	defaults = defaults.Normalized()
+	if a.profileName != "" {
+		defaults.Profile = a.profileName
+	}
 
 	fs := newFlagSet(name, a.err)
 	var repoValues stringListFlag
 	var allowedUsers stringListFlag
 	var claudeTools stringListFlag
 	host := fs.String("hostname", defaults.Hostname, "GitHub hostname")
+	profile := fs.String("profile", defaults.Profile, "named issue backend profile")
 	backend := fs.String("backend", string(defaults.GitHubBackend), "GitHub backend mode: auto, gh, or rest")
 	runner := fs.String("runner", "", "GitHub login for the polling runner identity")
 	notificationRunner := fs.String("notification-runner", "", "GitHub login for a notification-only polling identity")
@@ -582,6 +594,9 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	}
 	if seen["hostname"] {
 		cfg.Hostname = *host
+	}
+	if seen["profile"] {
+		cfg.Profile = *profile
 	}
 	if seen["backend"] {
 		mode, err := auth.ParseGitHubBackendMode(*backend)
@@ -694,7 +709,11 @@ func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) 
 	if a.runnerPreflight != nil {
 		return a.runnerPreflight(ctx, cfg)
 	}
-	return commentrunner.RunPreflight(ctx, cfg, commentrunner.PreflightDependencies{
+	transport := commentrunner.PreflightTransportPoll
+	if profile, _, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname); err == nil && profile.Kind == auth.ProfileKindHosted {
+		transport = commentrunner.PreflightTransportServe
+	}
+	return commentrunner.RunPreflightForTransport(ctx, cfg, transport, commentrunner.PreflightDependencies{
 		SelectBackend: func(ctx context.Context, _ string) (auth.GitHubBackendSelection, error) {
 			return a.selectBackendForRunner(ctx, cfg)
 		},
@@ -717,6 +736,18 @@ func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) 
 			return backend, nil
 		},
 	})
+}
+
+func validateRunnerPollProfile(cfg commentrunner.Config) error {
+	cfg = cfg.Normalized()
+	profile, _, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
+	if err != nil {
+		return fmt.Errorf("runner poll profile: %w", err)
+	}
+	if profile.Kind == auth.ProfileKindHosted {
+		return fmt.Errorf("runner poll requires a GitHub profile; self-hosted profile %q uses runner serve", profile.Name)
+	}
+	return nil
 }
 
 func (a *app) runRunnerIntake(ctx context.Context, cfg commentrunner.Config, opts intake.Options) (intake.Result, error) {
@@ -788,6 +819,13 @@ func defaultRunnerNotificationBackend(_ context.Context, cfg commentrunner.Confi
 	token := strings.TrimSpace(rawToken)
 	if token == "" {
 		return nil, fmt.Errorf("%s is empty; export a notification bot token or omit --notification-runner", cfg.NotificationTokenEnv)
+	}
+	profile, source, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
+	if err != nil {
+		return nil, err
+	}
+	if source != "builtin" || cfg.Profile != "" {
+		return github.NewClientWithOptions(github.ClientOptions{Host: profile.Hostname, BaseURL: profile.APIURL, Token: token, CAFile: profile.CAFile})
 	}
 	return github.NewClient(cfg.Hostname, token), nil
 }

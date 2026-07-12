@@ -137,7 +137,7 @@ func TestSelectGitHubBackendAutoPrefersStoredTokenAndRedactsDiagnostics(t *testi
 	}
 }
 
-func TestCompatibilitySelectGitHubBackendAutoKeepsRESTTokenWhenCustomAPIURLIsSet(t *testing.T) {
+func TestLegacyCustomAPIURLRejectsGitHubEnvironmentTokens(t *testing.T) {
 	clearAuthEnv(t)
 	t.Setenv(GitHubBackendAPIURLEnv, "https://api.example.test/custom/")
 	t.Setenv("GH_TOKEN", "rest-token")
@@ -148,17 +148,14 @@ func TestCompatibilitySelectGitHubBackendAutoKeepsRESTTokenWhenCustomAPIURLIsSet
 			return nil
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrNoToken) {
+		t.Fatalf("error = %v, want ErrNoToken", err)
 	}
-	if selection.Name != GitHubBackendNameREST || selection.Kind != GitHubBackendKindREST {
-		t.Fatalf("backend = %q/%q, want rest/rest", selection.Name, selection.Kind)
+	if selection.Profile.Kind != ProfileKindHosted || selection.Profile.Name != "legacy-api-url" {
+		t.Fatalf("selection profile = %+v", selection.Profile)
 	}
-	if selection.SelectionSource != "auto:token" || selection.TokenSource != "env:GH_TOKEN" {
-		t.Fatalf("selection diagnostics = %+v", selection)
-	}
-	if selection.Token.Value != "rest-token" || selection.Host != "ghe.example.com" {
-		t.Fatalf("selection token/host = %+v", selection)
+	if selection.Token.Value != "" || selection.Token.Source != "" {
+		t.Fatalf("GitHub token crossed into custom profile: %+v", selection.Token)
 	}
 }
 
@@ -225,7 +222,9 @@ func clearAuthEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv(GitHubBackendEnv, "")
 	t.Setenv(GitHubBackendAPIURLEnv, "")
+	t.Setenv(ProfileEnv, "")
 	t.Setenv("ISSUE_SPEC_TOKEN", "")
+	t.Setenv(IssueSpecTokenFileEnv, "")
 	t.Setenv("GH_TOKEN", "")
 	t.Setenv("GITHUB_TOKEN", "")
 }

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 5
 
 type LifecycleStatus string
 
@@ -36,7 +36,88 @@ type RunnerState struct {
 	Workspaces       map[string]WorkspaceMetadata `json:"workspaces,omitempty"`
 	Cancellations    map[string]Cancellation      `json:"cancellations,omitempty"`
 	StatusWritebacks map[string]StatusWriteback   `json:"status_writebacks,omitempty"`
+	Deliveries       map[string]WebhookDelivery   `json:"webhook_deliveries,omitempty"`
 	Idempotency      IdempotencyIndex             `json:"idempotency,omitempty"`
+}
+
+type DeliveryStatus string
+
+type DeliveryOutcome string
+
+const (
+	DeliveryPending    DeliveryStatus = "pending"
+	DeliveryProcessing DeliveryStatus = "processing"
+	DeliveryCompleted  DeliveryStatus = "completed"
+	DeliveryFailed     DeliveryStatus = "failed"
+)
+
+const (
+	DeliveryOutcomeIgnored      DeliveryOutcome = "ignored"
+	DeliveryOutcomeRejected     DeliveryOutcome = "rejected"
+	DeliveryOutcomeJob          DeliveryOutcome = "job"
+	DeliveryOutcomeCancellation DeliveryOutcome = "cancellation"
+	DeliveryOutcomeSuperseded   DeliveryOutcome = "superseded"
+)
+
+func (s DeliveryStatus) Valid() bool {
+	switch s {
+	case DeliveryPending, DeliveryProcessing, DeliveryCompleted, DeliveryFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s DeliveryStatus) Terminal() bool { return s == DeliveryCompleted || s == DeliveryFailed }
+
+func (o DeliveryOutcome) Valid() bool {
+	switch o {
+	case DeliveryOutcomeIgnored, DeliveryOutcomeRejected, DeliveryOutcomeJob,
+		DeliveryOutcomeCancellation, DeliveryOutcomeSuperseded:
+		return true
+	default:
+		return false
+	}
+}
+
+// WebhookDelivery is the durable, immutable intake snapshot consumed by the
+// PROCESS-022 reconciler. RawEnvelope is []byte so state JSON base64-encodes it
+// and preserves the exact request bytes across save/reload cycles.
+type WebhookDelivery struct {
+	DeliveryID            string          `json:"delivery_id"`
+	EventID               string          `json:"event_id"`
+	SubscriptionID        string          `json:"subscription_id"`
+	BodySHA256            string          `json:"body_sha256"`
+	RawEnvelope           []byte          `json:"raw_envelope,omitempty"`
+	SchemaVersion         int             `json:"schema_version"`
+	EventKey              string          `json:"event_key"`
+	EventType             string          `json:"event_type"`
+	Action                string          `json:"action"`
+	OrganizationID        string          `json:"organization_id"`
+	RepositoryID          string          `json:"repository_id"`
+	IssueID               string          `json:"issue_id"`
+	IssueNumber           int64           `json:"issue_number"`
+	CommentID             string          `json:"comment_id,omitempty"`
+	CommentRevision       int64           `json:"comment_revision,omitempty"`
+	AuthorLogin           string          `json:"author_login,omitempty"`
+	EnvelopeBodySHA256    string          `json:"envelope_body_sha256"`
+	ReceivedAt            time.Time       `json:"received_at"`
+	Status                DeliveryStatus  `json:"status"`
+	Attempt               int             `json:"attempt,omitempty"`
+	LeaseOwner            string          `json:"lease_owner,omitempty"`
+	LeaseToken            string          `json:"lease_token,omitempty"`
+	LeaseUntil            time.Time       `json:"lease_until,omitempty"`
+	CompletedAt           time.Time       `json:"completed_at,omitempty"`
+	LastError             string          `json:"last_error,omitempty"`
+	Outcome               DeliveryOutcome `json:"outcome,omitempty"`
+	JobID                 string          `json:"job_id,omitempty"`
+	CancellationID        string          `json:"cancellation_id,omitempty"`
+	StatusWritebackKey    string          `json:"status_writeback_key,omitempty"`
+	AckPending            bool            `json:"ack_pending,omitempty"`
+	AckCompletedAt        time.Time       `json:"ack_completed_at,omitempty"`
+	AuthoritativeRevision int64           `json:"authoritative_revision,omitempty"`
+	ConflictCount         int             `json:"conflict_count,omitempty"`
+	LastConflictAt        time.Time       `json:"last_conflict_at,omitempty"`
 }
 
 type IdempotencyIndex struct {
@@ -119,72 +200,142 @@ type SeenComment struct {
 }
 
 type Job struct {
-	ID                    string                  `json:"id"`
-	Repo                  string                  `json:"repo,omitempty"`
-	IssueNumber           int                     `json:"issue_number,omitempty"`
-	PublicSessionID       string                  `json:"public_session_id,omitempty"`
-	AcpxRecordID          string                  `json:"acpx_record_id,omitempty"`
-	CoordinatorKind       string                  `json:"coordinator_kind,omitempty"`
-	Model                 string                  `json:"model,omitempty"`
-	SessionCreatorLogin   string                  `json:"session_creator_login,omitempty"`
-	TriggeringUserLogin   string                  `json:"triggering_user_login,omitempty"`
-	TriggerCommentID      int64                   `json:"trigger_comment_id,omitempty"`
-	StatusCommentID       int64                   `json:"status_comment_id,omitempty"`
-	StatusCommentURL      string                  `json:"status_comment_url,omitempty"`
-	CommandID             string                  `json:"command_id,omitempty"`
-	CommandName           string                  `json:"command_name,omitempty"`
-	CommandPrompt         string                  `json:"command_prompt,omitempty"`
-	CommandIdempotencyKey string                  `json:"command_idempotency_key,omitempty"`
-	StatusWritebackKey    string                  `json:"status_writeback_key,omitempty"`
-	Status                LifecycleStatus         `json:"status,omitempty"`
-	CreatedAt             time.Time               `json:"created_at,omitempty"`
-	UpdatedAt             time.Time               `json:"updated_at,omitempty"`
-	DispatchedAt          time.Time               `json:"dispatched_at,omitempty"`
-	StartedAt             time.Time               `json:"started_at,omitempty"`
-	FinishedAt            time.Time               `json:"finished_at,omitempty"`
-	FirstObservedComment  SeenComment             `json:"first_observed_comment,omitempty"`
-	SourceLabels          []string                `json:"source_labels,omitempty"`
-	ContextBundle         ContextBundleProvenance `json:"context_bundle,omitempty"`
-	DispatchIntent        DispatchIntent          `json:"dispatch_intent,omitempty"`
-	Workspace             WorkspaceMetadata       `json:"workspace,omitempty"`
-	Sandbox               SandboxMetadata         `json:"sandbox,omitempty"`
-	Acpx                  AcpxMetadata            `json:"acpx,omitempty"`
-	CLIDirect             []CLIDirectProvenance   `json:"cli_direct,omitempty"`
-	Restart               RestartMetadata         `json:"restart,omitempty"`
-	CoordinatorSummary    string                  `json:"coordinator_summary,omitempty"`
-	Diagnostics           []string                `json:"diagnostics,omitempty"`
+	ID                    string                    `json:"id"`
+	Repo                  string                    `json:"repo,omitempty"`
+	IssueNumber           int                       `json:"issue_number,omitempty"`
+	PublicSessionID       string                    `json:"public_session_id,omitempty"`
+	AcpxRecordID          string                    `json:"acpx_record_id,omitempty"`
+	CoordinatorKind       string                    `json:"coordinator_kind,omitempty"`
+	Model                 string                    `json:"model,omitempty"`
+	SessionCreatorLogin   string                    `json:"session_creator_login,omitempty"`
+	TriggeringUserLogin   string                    `json:"triggering_user_login,omitempty"`
+	TriggerCommentID      int64                     `json:"trigger_comment_id,omitempty"`
+	StatusCommentID       int64                     `json:"status_comment_id,omitempty"`
+	StatusCommentURL      string                    `json:"status_comment_url,omitempty"`
+	CommandID             string                    `json:"command_id,omitempty"`
+	CommandName           string                    `json:"command_name,omitempty"`
+	CommandPrompt         string                    `json:"command_prompt,omitempty"`
+	CommandIdempotencyKey string                    `json:"command_idempotency_key,omitempty"`
+	StatusWritebackKey    string                    `json:"status_writeback_key,omitempty"`
+	Status                LifecycleStatus           `json:"status,omitempty"`
+	CreatedAt             time.Time                 `json:"created_at,omitempty"`
+	UpdatedAt             time.Time                 `json:"updated_at,omitempty"`
+	DispatchedAt          time.Time                 `json:"dispatched_at,omitempty"`
+	StartedAt             time.Time                 `json:"started_at,omitempty"`
+	FinishedAt            time.Time                 `json:"finished_at,omitempty"`
+	FirstObservedComment  SeenComment               `json:"first_observed_comment,omitempty"`
+	SourceLabels          []string                  `json:"source_labels,omitempty"`
+	ContextBundle         ContextBundleProvenance   `json:"context_bundle,omitempty"`
+	DispatchIntent        DispatchIntent            `json:"dispatch_intent,omitempty"`
+	Workspace             WorkspaceMetadata         `json:"workspace,omitempty"`
+	RepositoryBinding     RepositoryBindingSnapshot `json:"repository_binding,omitempty"`
+	Sandbox               SandboxMetadata           `json:"sandbox,omitempty"`
+	Acpx                  AcpxMetadata              `json:"acpx,omitempty"`
+	CLIDirect             []CLIDirectProvenance     `json:"cli_direct,omitempty"`
+	Restart               RestartMetadata           `json:"restart,omitempty"`
+	CredentialCleanup     CredentialCleanup         `json:"lease_cleanup,omitempty"`
+	CoordinatorSummary    string                    `json:"coordinator_summary,omitempty"`
+	Diagnostics           []string                  `json:"diagnostics,omitempty"`
+}
+
+type CredentialCleanupStatus string
+
+const (
+	CredentialCleanupPending  CredentialCleanupStatus = "pending"
+	CredentialCleanupComplete CredentialCleanupStatus = "complete"
+)
+
+// CredentialCleanup is a secret-free durable intent. It is created before a
+// job-scoped credential exchange and remains pending until local files, the
+// source-provider job lease and the server delegation tombstone all confirm
+// revocation. Pending records survive terminal job retention and restarts.
+type CredentialCleanup struct {
+	Status        CredentialCleanupStatus `json:"status,omitempty"`
+	RequestedAt   time.Time               `json:"requested_at,omitempty"`
+	Attempt       int                     `json:"attempt,omitempty"`
+	LastAttemptAt time.Time               `json:"last_attempt_at,omitempty"`
+	NextAttemptAt time.Time               `json:"next_attempt_at,omitempty"`
+	CompletedAt   time.Time               `json:"completed_at,omitempty"`
+	LastError     string                  `json:"last_error,omitempty"`
+}
+
+func (c CredentialCleanup) Pending() bool { return c.Status == CredentialCleanupPending }
+
+func (c CredentialCleanup) Valid() bool {
+	switch c.Status {
+	case "":
+		return c.Attempt == 0 && c.RequestedAt.IsZero() && c.LastAttemptAt.IsZero() && c.NextAttemptAt.IsZero() &&
+			c.CompletedAt.IsZero() && c.LastError == ""
+	case CredentialCleanupPending:
+		return !c.RequestedAt.IsZero() && c.CompletedAt.IsZero() && c.Attempt >= 0
+	case CredentialCleanupComplete:
+		return !c.RequestedAt.IsZero() && !c.CompletedAt.IsZero() && c.NextAttemptAt.IsZero() && c.LastError == "" && c.Attempt > 0
+	default:
+		return false
+	}
 }
 
 type PublicSession struct {
-	Repo            string            `json:"repo"`
-	PublicSessionID string            `json:"public_session_id"`
-	IssueNumber     int               `json:"issue_number,omitempty"`
-	AcpxRecordID    string            `json:"acpx_record_id"`
-	CreatorLogin    string            `json:"creator_login,omitempty"`
-	Status          LifecycleStatus   `json:"status,omitempty"`
-	Acpx            AcpxMetadata      `json:"acpx,omitempty"`
-	Workspace       WorkspaceMetadata `json:"workspace,omitempty"`
-	Queue           SessionQueue      `json:"queue,omitempty"`
-	Lock            SessionLock       `json:"lock,omitempty"`
-	CreatedAt       time.Time         `json:"created_at,omitempty"`
-	LastUsedAt      time.Time         `json:"last_used_at,omitempty"`
-	LastJobID       string            `json:"last_job_id,omitempty"`
+	Repo              string                    `json:"repo"`
+	PublicSessionID   string                    `json:"public_session_id"`
+	IssueNumber       int                       `json:"issue_number,omitempty"`
+	AcpxRecordID      string                    `json:"acpx_record_id"`
+	CreatorLogin      string                    `json:"creator_login,omitempty"`
+	Status            LifecycleStatus           `json:"status,omitempty"`
+	Acpx              AcpxMetadata              `json:"acpx,omitempty"`
+	Workspace         WorkspaceMetadata         `json:"workspace,omitempty"`
+	RepositoryBinding RepositoryBindingSnapshot `json:"repository_binding,omitempty"`
+	Queue             SessionQueue              `json:"queue,omitempty"`
+	Lock              SessionLock               `json:"lock,omitempty"`
+	CreatedAt         time.Time                 `json:"created_at,omitempty"`
+	LastUsedAt        time.Time                 `json:"last_used_at,omitempty"`
+	LastJobID         string                    `json:"last_job_id,omitempty"`
 }
 
 type WorkspaceMetadata struct {
-	ID              string    `json:"id,omitempty"`
-	Path            string    `json:"path,omitempty"`
-	Repo            string    `json:"repo,omitempty"`
-	CloneURL        string    `json:"clone_url,omitempty"`
-	Branch          string    `json:"branch,omitempty"`
-	Ref             string    `json:"ref,omitempty"`
-	CheckoutSHA     string    `json:"checkout_sha,omitempty"`
-	CreatedAt       time.Time `json:"created_at,omitempty"`
-	LastUsedAt      time.Time `json:"last_used_at,omitempty"`
-	RetentionPolicy string    `json:"retention_policy,omitempty"`
-	CleanupAfter    time.Time `json:"cleanup_after,omitempty"`
-	Dirty           bool      `json:"dirty,omitempty"`
-	Uncertain       bool      `json:"uncertain,omitempty"`
+	ID                string                    `json:"id,omitempty"`
+	Path              string                    `json:"path,omitempty"`
+	Repo              string                    `json:"repo,omitempty"`
+	CloneURL          string                    `json:"clone_url,omitempty"`
+	Branch            string                    `json:"branch,omitempty"`
+	Ref               string                    `json:"ref,omitempty"`
+	CheckoutSHA       string                    `json:"checkout_sha,omitempty"`
+	CreatedAt         time.Time                 `json:"created_at,omitempty"`
+	LastUsedAt        time.Time                 `json:"last_used_at,omitempty"`
+	RetentionPolicy   string                    `json:"retention_policy,omitempty"`
+	CleanupAfter      time.Time                 `json:"cleanup_after,omitempty"`
+	Dirty             bool                      `json:"dirty,omitempty"`
+	Uncertain         bool                      `json:"uncertain,omitempty"`
+	RepositoryBinding RepositoryBindingSnapshot `json:"repository_binding,omitempty"`
+}
+
+// RepositoryBindingSnapshot is the credential-free, indivisible source
+// coordinate pinned before runner execution. It deliberately has no token,
+// secret, credential-helper or authorization fields.
+type RepositoryBindingSnapshot struct {
+	Source               string `json:"source,omitempty"`
+	IssueRepositoryKey   string `json:"issue_repository_key,omitempty"`
+	BindingID            string `json:"binding_id,omitempty"`
+	Version              int64  `json:"version,omitempty"`
+	ProviderKey          string `json:"provider_key,omitempty"`
+	ExternalRepositoryID string `json:"external_repository_id,omitempty"`
+	CloneURL             string `json:"clone_url,omitempty"`
+	WebURL               string `json:"web_url,omitempty"`
+	DefaultBranch        string `json:"default_branch,omitempty"`
+}
+
+func (b RepositoryBindingSnapshot) Complete() bool {
+	return strings.TrimSpace(b.Source) != "" && strings.TrimSpace(b.IssueRepositoryKey) != "" &&
+		strings.TrimSpace(b.BindingID) != "" && b.Version > 0 && strings.TrimSpace(b.ProviderKey) != "" &&
+		strings.TrimSpace(b.ExternalRepositoryID) != "" && strings.TrimSpace(b.CloneURL) != "" &&
+		strings.TrimSpace(b.WebURL) != "" && strings.TrimSpace(b.DefaultBranch) != ""
+}
+
+func (b RepositoryBindingSnapshot) Equal(other RepositoryBindingSnapshot) bool {
+	return b.Source == other.Source && b.IssueRepositoryKey == other.IssueRepositoryKey &&
+		b.BindingID == other.BindingID && b.Version == other.Version && b.ProviderKey == other.ProviderKey &&
+		b.ExternalRepositoryID == other.ExternalRepositoryID && b.CloneURL == other.CloneURL &&
+		b.WebURL == other.WebURL && b.DefaultBranch == other.DefaultBranch
 }
 
 type SessionQueue struct {
@@ -233,16 +384,17 @@ type StatusWriteback struct {
 }
 
 type DispatchIntent struct {
-	CommandIdempotencyKey string    `json:"command_idempotency_key,omitempty"`
-	RunnerJobID           string    `json:"runner_job_id,omitempty"`
-	PublicSessionID       string    `json:"public_session_id,omitempty"`
-	AcpxRecordID          string    `json:"acpx_record_id,omitempty"`
-	TurnSequence          int64     `json:"turn_sequence,omitempty"`
-	TurnCorrelationToken  string    `json:"turn_correlation_token,omitempty"`
-	ContextBundleHash     string    `json:"context_bundle_hash,omitempty"`
-	StatusCommentID       int64     `json:"status_comment_id,omitempty"`
-	WorkspaceLockOwner    string    `json:"workspace_lock_owner,omitempty"`
-	PersistedAt           time.Time `json:"persisted_at,omitempty"`
+	CommandIdempotencyKey string                    `json:"command_idempotency_key,omitempty"`
+	RunnerJobID           string                    `json:"runner_job_id,omitempty"`
+	PublicSessionID       string                    `json:"public_session_id,omitempty"`
+	AcpxRecordID          string                    `json:"acpx_record_id,omitempty"`
+	TurnSequence          int64                     `json:"turn_sequence,omitempty"`
+	TurnCorrelationToken  string                    `json:"turn_correlation_token,omitempty"`
+	ContextBundleHash     string                    `json:"context_bundle_hash,omitempty"`
+	StatusCommentID       int64                     `json:"status_comment_id,omitempty"`
+	WorkspaceLockOwner    string                    `json:"workspace_lock_owner,omitempty"`
+	PersistedAt           time.Time                 `json:"persisted_at,omitempty"`
+	RepositoryBinding     RepositoryBindingSnapshot `json:"repository_binding,omitempty"`
 }
 
 type ContextBundleProvenance struct {
@@ -331,7 +483,7 @@ func NewState() RunnerState {
 }
 
 func (s *RunnerState) Normalize() {
-	if s.SchemaVersion == 0 {
+	if s.SchemaVersion < SchemaVersion {
 		s.SchemaVersion = SchemaVersion
 	}
 	if s.Repositories == nil {
@@ -351,6 +503,9 @@ func (s *RunnerState) Normalize() {
 	}
 	if s.StatusWritebacks == nil {
 		s.StatusWritebacks = map[string]StatusWriteback{}
+	}
+	if s.Deliveries == nil {
+		s.Deliveries = map[string]WebhookDelivery{}
 	}
 	if s.Idempotency.CommandJobs == nil {
 		s.Idempotency.CommandJobs = map[string]string{}
@@ -404,6 +559,15 @@ func (s *RunnerState) Normalize() {
 		s.Idempotency.StatusWritebacks[writeback.IdempotencyKey] = writeback.IdempotencyKey
 		s.StatusWritebacks[writeback.IdempotencyKey] = writeback
 	}
+	for id, delivery := range s.Deliveries {
+		if delivery.DeliveryID == "" {
+			delivery.DeliveryID = id
+		}
+		if delivery.Status == "" {
+			delivery.Status = DeliveryPending
+		}
+		s.Deliveries[id] = delivery
+	}
 	// Backstop: drop idempotency index entries whose target record no longer
 	// exists so a re-delivered command never resolves to a missing record.
 	s.dropDanglingIndexes()
@@ -441,6 +605,9 @@ func (s *RunnerState) UpsertJob(job Job) error {
 	}
 	if !job.Status.Valid() {
 		return fmt.Errorf("invalid job status %q", job.Status)
+	}
+	if !job.CredentialCleanup.Valid() {
+		return fmt.Errorf("invalid job credential cleanup state")
 	}
 	s.Jobs[job.ID] = job
 	if job.CommandIdempotencyKey != "" {
@@ -527,7 +694,7 @@ func (s *RunnerState) UpsertPublicSession(session PublicSession) error {
 	if strings.TrimSpace(session.Repo) == "" || strings.TrimSpace(session.PublicSessionID) == "" {
 		return fmt.Errorf("public session requires repo and public session id")
 	}
-	if strings.TrimSpace(session.AcpxRecordID) == "" {
+	if strings.TrimSpace(session.AcpxRecordID) == "" && !((session.Status == StatusDispatched || session.Status == StatusRunning || session.Status == StatusFailed || session.Status == StatusCancelled || session.Status == StatusInterrupted) && session.RepositoryBinding.Complete()) {
 		return fmt.Errorf("public session requires acpx record id")
 	}
 	if session.Status == "" {

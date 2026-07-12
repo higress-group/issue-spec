@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,7 +17,14 @@ import (
 const (
 	defaultRunnerCommentsPerPage      = 100
 	defaultRunnerNotificationsPerPage = 50
+	HeaderRepresentationVersion       = "X-Issue-Spec-Representation-Version"
 )
+
+// CommentRevisionOperations is the exact authoritative comment surface used
+// by webhook reconciliation. It intentionally excludes notification polling.
+type CommentRevisionOperations interface {
+	GetIssueComment(context.Context, string, int64) (RunnerCommentResult, error)
+}
 
 // RunnerOperations is the polling-runner GitHub API surface. It is separate
 // from Operations because runner intake needs HTTP status/header metadata.
@@ -123,8 +131,9 @@ type CollaboratorPermissionResult struct {
 }
 
 type RunnerCommentResult struct {
-	Comment  Comment
-	Metadata ResponseMetadata
+	Comment               Comment
+	Metadata              ResponseMetadata
+	RepresentationVersion int64
 }
 
 type RunnerReactionResult struct {
@@ -230,6 +239,25 @@ func (c *Client) ListIssueCommentsPage(ctx context.Context, repo string, issueNu
 	}
 	annotateCommentIssueNumbers(comments, issueNumber)
 	return IssueCommentsResult{Comments: comments, Metadata: meta}, nil
+}
+
+func (c *Client) GetIssueComment(ctx context.Context, repo string, commentID int64) (RunnerCommentResult, error) {
+	if commentID <= 0 {
+		return RunnerCommentResult{}, errors.New("comment id must be positive")
+	}
+	var comment Comment
+	meta, err := c.doRunnerJSON(ctx, http.MethodGet,
+		fmt.Sprintf("/repos/%s/issues/comments/%d", repo, commentID), nil, nil, ConditionalRequest{}, false, &comment)
+	if err != nil {
+		return RunnerCommentResult{Metadata: meta}, err
+	}
+	comments := []Comment{comment}
+	annotateCommentIssueNumbers(comments, 0)
+	revision, ok := parseHeaderInt64(meta.Headers, HeaderRepresentationVersion)
+	if !ok || revision <= 0 {
+		return RunnerCommentResult{Comment: comments[0], Metadata: meta}, errors.New("comment response omitted a valid representation version")
+	}
+	return RunnerCommentResult{Comment: comments[0], Metadata: meta, RepresentationVersion: revision}, nil
 }
 
 func (c *Client) ListRepositoryIssueCommentsPage(ctx context.Context, repo string, opts CommentListOptions) (IssueCommentsResult, error) {
@@ -534,3 +562,4 @@ func parseLinkPage(linkURL string) int {
 }
 
 var _ RunnerOperations = (*Client)(nil)
+var _ CommentRevisionOperations = (*Client)(nil)

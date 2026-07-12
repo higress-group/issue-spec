@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,6 +98,57 @@ func TestResolveBuiltInFallbackWhenNoConfigExists(t *testing.T) {
 	}
 	if len(plan.Artifacts) == 0 {
 		t.Fatal("builtin plan should include artifacts")
+	}
+}
+
+func TestExternalCodeConfigAllowsOnlyProviderSelectionAndEvidencePolicy(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), `
+external_code:
+  provider_key: code.example
+  evidence:
+    sync_before: [verify, runner]
+    required: [review, check, merge]
+    required_checks: [unit, dco]
+    freshness:
+      review: 24h
+      check: 1h
+`)
+	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v diagnostics=%+v", err, plan.Diagnostics)
+	}
+	if plan.Config.ExternalCode == nil || plan.Config.ExternalCode.ProviderKey != "code.example" ||
+		len(plan.Config.ExternalCode.Evidence.RequiredChecks) != 2 ||
+		!plan.Config.ExternalCode.Evidence.SynchronizesBefore("verify") ||
+		!plan.Config.ExternalCode.Evidence.SynchronizesBefore("RUNNER") {
+		t.Fatalf("external code config = %+v", plan.Config.ExternalCode)
+	}
+}
+
+func TestExternalCodeConfigRejectsInvalidSyncTiming(t *testing.T) {
+	for _, timing := range []string{"merge", "verify, verify"} {
+		t.Run(timing, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), "external_code:\n  provider_key: code.example\n  evidence:\n    sync_before: ["+timing+"]\n")
+			plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+			if err == nil || !hasDiagnostic(plan.Diagnostics, "invalid_config") {
+				t.Fatalf("sync timing %q should fail: plan=%+v err=%v", timing, plan, err)
+			}
+		})
+	}
+}
+
+func TestExternalCodeConfigRejectsRepositoryExecutableAndCredentials(t *testing.T) {
+	for _, field := range []string{"executable: /tmp/provider", "args: [--token]", "credentials: TOKEN", "env: [TOKEN=secret]"} {
+		t.Run(field[:strings.Index(field, ":")], func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), "external_code:\n  provider_key: code.example\n  "+field+"\n")
+			plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+			if err == nil || !hasDiagnostic(plan.Diagnostics, "invalid_config") {
+				t.Fatalf("operator field %q should fail: plan=%+v err=%v", field, plan, err)
+			}
+		})
 	}
 }
 

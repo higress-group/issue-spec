@@ -108,6 +108,14 @@ issue-spec auth status --hostname ghe.example.com --json
 
 `archive durable-spec --create-pr` 仍然使用本地 `git` 来进行 fetch、worktree、commit 与 push。GitHub API 的读取和 PR 创建则使用同一个已认证的 `gh` 账号。
 
+## 自托管 Server 认证
+
+运行可选 Web Server 的运维人员应从版本化的
+[自托管认证指南](docs/self-hosting/authentication/README.md)开始。指南覆盖
+GitHub OAuth、OIDC、组织准入、私网 IP/内部 DNS 部署、头像代理、密钥轮换与
+安全排障；其余生产配置和加固要求见
+[部署指南](docs/self-hosting/operations/deployment.md)。
+
 ## Runner：评论触发的工作流
 
 `issue-spec runner` 可以监听仓库的 issue 评论，当一位被授权的维护者发出命令评论时，启动一个无头（headless）的 acpx 协调 agent。

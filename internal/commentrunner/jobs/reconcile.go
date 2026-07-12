@@ -29,16 +29,19 @@ type WorkspaceCleaner interface {
 }
 
 type ReconcileResult struct {
-	Reconciled       int                       `json:"reconciled"`
-	Queued           int                       `json:"queued"`
-	Running          int                       `json:"running"`
-	Completed        int                       `json:"completed"`
-	Failed           int                       `json:"failed"`
-	Cancelled        int                       `json:"cancelled"`
-	Interrupted      int                       `json:"interrupted"`
-	Jobs             []ReconcileJob            `json:"jobs,omitempty"`
-	WorkspaceCleanup []workspace.CleanupResult `json:"workspace_cleanup,omitempty"`
-	Diagnostics      []string                  `json:"diagnostics,omitempty"`
+	Reconciled                int                       `json:"reconciled"`
+	Queued                    int                       `json:"queued"`
+	Running                   int                       `json:"running"`
+	Completed                 int                       `json:"completed"`
+	Failed                    int                       `json:"failed"`
+	Cancelled                 int                       `json:"cancelled"`
+	Interrupted               int                       `json:"interrupted"`
+	CredentialCleanupAttempts int                       `json:"credential_cleanup_attempts,omitempty"`
+	CredentialCleanupComplete int                       `json:"credential_cleanup_complete,omitempty"`
+	CredentialCleanupPending  int                       `json:"credential_cleanup_pending,omitempty"`
+	Jobs                      []ReconcileJob            `json:"jobs,omitempty"`
+	WorkspaceCleanup          []workspace.CleanupResult `json:"workspace_cleanup,omitempty"`
+	Diagnostics               []string                  `json:"diagnostics,omitempty"`
 }
 
 type ReconcileJob struct {
@@ -60,6 +63,30 @@ func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 	}
 	var result ReconcileResult
 	for _, job := range st.ListJobs() {
+		if d.CredentialBroker != nil && job.CredentialCleanup.Status == "" && job.Status != state.StatusQueued {
+			if err := d.beginCredentialCleanup(ctx, job.ID); err != nil {
+				return result, err
+			}
+			job, err = d.loadJob(ctx, job.ID)
+			if err != nil {
+				return result, err
+			}
+		}
+		var cleanupErr error
+		if job.CredentialCleanup.Pending() {
+			var stateErr error
+			job, cleanupErr, stateErr = d.attemptCredentialCleanup(ctx, job)
+			result.CredentialCleanupAttempts++
+			if stateErr != nil {
+				return result, stateErr
+			}
+			if cleanupErr == nil {
+				result.CredentialCleanupComplete++
+			} else {
+				result.CredentialCleanupPending++
+				result.Diagnostics = append(result.Diagnostics, credentialCleanupDiagnostic(job, cleanupErr))
+			}
+		}
 		switch {
 		case job.Status == state.StatusQueued:
 			result.Queued++
@@ -71,6 +98,15 @@ func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 				Action:          "left_queued",
 			})
 		case job.Status.NeedsReconciliation():
+			if cleanupErr != nil {
+				item, interruptErr := d.interrupt(ctx, job, job.Status, credentialCleanupDiagnostic(job, cleanupErr))
+				if interruptErr != nil {
+					return result, interruptErr
+				}
+				result.Reconciled++
+				result.add(item)
+				continue
+			}
 			item, err := d.reconcileJob(ctx, job)
 			if err != nil {
 				return result, err
@@ -114,6 +150,9 @@ func (d *Dispatcher) validateReconcile() error {
 	}
 	if d.Writeback == nil {
 		return fmt.Errorf("job dispatcher writeback service is required")
+	}
+	if d.CredentialBroker != nil && len(d.CredentialScopes) == 0 {
+		return fmt.Errorf("job dispatcher credential scopes are required")
 	}
 	return nil
 }
@@ -299,6 +338,7 @@ func (d *Dispatcher) coordinatorForStoredJob(ctx context.Context, job state.Job)
 		AcpxWorkingDirectory: job.Workspace.Path,
 		AcpxBinary:           firstNonEmpty(d.AcpxBinary, acpx.DefaultBinary),
 		ExtraEnv:             d.CoordinatorExtraEnv,
+		AcpxAgent:            job.CoordinatorKind,
 	})
 	if err != nil {
 		return nil, err
@@ -502,10 +542,19 @@ func upsertWorkspaceIfPresent(st *state.RunnerState, workspace state.WorkspaceMe
 }
 
 func upsertSessionForReconciledJob(st *state.RunnerState, job state.Job, status state.LifecycleStatus, at time.Time, markUncertain bool) error {
-	if strings.TrimSpace(job.PublicSessionID) == "" || strings.TrimSpace(job.AcpxRecordID) == "" {
+	if strings.TrimSpace(job.PublicSessionID) == "" {
 		return nil
 	}
-	session, _ := st.GetPublicSession(job.Repo, job.PublicSessionID)
+	session, found := st.GetPublicSession(job.Repo, job.PublicSessionID)
+	if strings.TrimSpace(job.AcpxRecordID) == "" {
+		// Cancellation or restart interruption may win before /new has returned
+		// stable ACPX metadata. In either case only an already-persisted running
+		// session may be terminalized; never synthesize a session or a record id.
+		// Other reconciliation paths still require stable metadata.
+		if (status != state.StatusCancelled && status != state.StatusInterrupted) || !found {
+			return nil
+		}
+	}
 	if session.Repo == "" {
 		session.Repo = job.Repo
 	}
@@ -521,12 +570,16 @@ func upsertSessionForReconciledJob(st *state.RunnerState, job state.Job, status 
 	if session.CreatedAt.IsZero() {
 		session.CreatedAt = firstTime(job.CreatedAt, at)
 	}
-	session.AcpxRecordID = job.AcpxRecordID
-	session.Acpx = job.Acpx
+	if strings.TrimSpace(job.AcpxRecordID) != "" {
+		session.AcpxRecordID = job.AcpxRecordID
+		session.Acpx = job.Acpx
+	}
 	session.Status = status
 	session.LastUsedAt = at
 	session.LastJobID = job.ID
-	session.Workspace = job.Workspace
+	if strings.TrimSpace(job.Workspace.ID) != "" {
+		session.Workspace = job.Workspace
+	}
 	if markUncertain {
 		markWorkspaceUncertain(&session.Workspace)
 	}

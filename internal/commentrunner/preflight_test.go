@@ -125,6 +125,25 @@ func TestPreflightFailsCodexACPToolchainWhenNpxMissing(t *testing.T) {
 	}
 }
 
+func TestPreflightReportsSelectedCodexAdapterWithoutOtherAcpxConfig(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".acpx"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := `{"agents":{"codex":{"command":"npx","args":["-y","@agentclientprotocol/codex-acp@1.1.2"]},"claude":{"command":"must-not-cross"}},"authMethods":[{"token":"must-not-cross"}]}`
+	if err := os.WriteFile(filepath.Join(home, ".acpx", "config.json"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report := RunPreflight(context.Background(), cfg, passingPreflightDependencies(t))
+	check := findCheck(t, report, "codex-acp")
+	if check.Status != CheckOK || !strings.Contains(check.Detail, "agent_override=@agentclientprotocol/codex-acp@1.1.2") || strings.Contains(check.Detail, "must-not-cross") {
+		t.Fatalf("unexpected codex-acp check: %+v", check)
+	}
+}
+
 func TestPreflightFailsWhenRepositoryWatchCannotBeConfirmed(t *testing.T) {
 	cfg := testPreflightConfig(t)
 	cfg.UnsafeNoSandbox = true
@@ -156,6 +175,63 @@ func TestPreflightFailsWhenRepositoryWatchCannotBeConfirmed(t *testing.T) {
 	watch := findCheck(t, report, "repository-watch:o/r")
 	if watch.Status != CheckError || !strings.Contains(watch.Detail, "not subscribed") {
 		t.Fatalf("unexpected repository watch check: %+v", watch)
+	}
+}
+
+func TestPreflightServeTransportSkipsPollOnlyChecks(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	cfg.GitHubBackend = auth.GitHubBackendModeREST
+	cfg.NotificationIdentity = "notify-bot"
+	cfg.NotificationTokenEnv = "BOT_TOKEN"
+	watchCalls := 0
+	report := RunPreflightForTransport(context.Background(), cfg, PreflightTransportServe, PreflightDependencies{
+		SelectBackend: func(context.Context, string) (auth.GitHubBackendSelection, error) {
+			return auth.GitHubBackendSelection{
+				Mode:            auth.GitHubBackendModeREST,
+				Name:            auth.GitHubBackendNameREST,
+				Kind:            auth.GitHubBackendKindREST,
+				Host:            "issues.example.test",
+				SelectionSource: "self-hosted-test",
+			}, nil
+		},
+		OpenBackend: func(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error) {
+			return fakePreflightBackend{
+				subscription: github.RepositorySubscription{Subscribed: false},
+				watchCalls:   &watchCalls,
+			}, nil
+		},
+		OpenNotificationBackend: func(context.Context, Config) (PreflightNotificationBackend, error) {
+			t.Fatal("serve preflight must not open a notification backend")
+			return nil, nil
+		},
+		LookPath: func(name string) (string, error) {
+			switch name {
+			case "acpx", "npm", "npx":
+				return "/test/bin/" + name, nil
+			case "bwrap":
+				t.Fatal("bwrap lookup should be skipped in unsafe mode")
+			}
+			return "", errors.New("missing")
+		},
+	})
+
+	if !report.OK {
+		t.Fatalf("serve preflight should accept shared prerequisites without poll state: %+v", report)
+	}
+	if watchCalls != 0 {
+		t.Fatalf("repository subscription calls = %d, want 0", watchCalls)
+	}
+	if check := findCheck(t, report, "command-intake-transport"); check.Status != CheckOK || !strings.Contains(check.Detail, "runner serve") {
+		t.Fatalf("unexpected serve transport check: %+v", check)
+	}
+	if check := findCheck(t, report, "notification-backend"); check.Status != CheckSkipped || !strings.Contains(check.Detail, "not applicable") {
+		t.Fatalf("unexpected notification check: %+v", check)
+	}
+	for _, check := range report.Checks {
+		if strings.HasPrefix(check.Name, "repository-watch:") || strings.HasPrefix(check.Name, "notification-watch:") || check.Name == "notification-identity" {
+			t.Fatalf("serve preflight emitted poll-only check: %+v", check)
+		}
 	}
 }
 
@@ -636,6 +712,7 @@ func watchedPreflightBackend(context.Context, auth.GitHubBackendSelection) (Pref
 type fakePreflightBackend struct {
 	subscription github.RepositorySubscription
 	err          error
+	watchCalls   *int
 }
 
 func (f fakePreflightBackend) BackendInfo() github.BackendInfo {
@@ -643,6 +720,9 @@ func (f fakePreflightBackend) BackendInfo() github.BackendInfo {
 }
 
 func (f fakePreflightBackend) GetRepositorySubscription(context.Context, string) (github.RepositorySubscriptionResult, error) {
+	if f.watchCalls != nil {
+		*f.watchCalls = *f.watchCalls + 1
+	}
 	return github.RepositorySubscriptionResult{Subscription: f.subscription}, f.err
 }
 

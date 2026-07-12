@@ -14,6 +14,7 @@ import (
 
 const (
 	serviceName            = "issue-spec"
+	ConfigDirEnv           = "ISSUE_SPEC_CONFIG_DIR"
 	GitHubBackendEnv       = "ISSUE_SPEC_GITHUB_BACKEND"
 	GitHubBackendAPIURLEnv = "ISSUE_SPEC_API_URL"
 	GitHubBackendNameREST  = "rest"
@@ -23,6 +24,7 @@ const (
 	GitHubBackendModeAuto  = GitHubBackendMode("auto")
 	GitHubBackendModeREST  = GitHubBackendMode("rest")
 	GitHubBackendModeGH    = GitHubBackendMode("gh")
+	IssueSpecTokenFileEnv  = "ISSUE_SPEC_TOKEN_FILE"
 )
 
 var ErrNoToken = errors.New("no issue-spec token is available")
@@ -30,12 +32,16 @@ var ErrNoToken = errors.New("no issue-spec token is available")
 type GitHubBackendMode string
 
 type Token struct {
-	Value   string                    `json:"-"`
-	Source  string                    `json:"source"`
-	User    string                    `json:"user,omitempty"`
-	Scopes  []string                  `json:"scopes,omitempty"`
-	Host    string                    `json:"host"`
-	Backend *GitHubBackendDiagnostics `json:"backend,omitempty"`
+	Value            string                    `json:"-"`
+	Source           string                    `json:"source"`
+	User             string                    `json:"user,omitempty"`
+	Scopes           []string                  `json:"scopes,omitempty"`
+	Host             string                    `json:"host"`
+	Profile          string                    `json:"profile,omitempty"`
+	ProfileKind      string                    `json:"profile_kind,omitempty"`
+	ServerInstanceID string                    `json:"server_instance_id,omitempty"`
+	APIOrigin        string                    `json:"api_origin,omitempty"`
+	Backend          *GitHubBackendDiagnostics `json:"backend,omitempty"`
 }
 
 type StoredCredential struct {
@@ -43,13 +49,17 @@ type StoredCredential struct {
 }
 
 type GitHubBackendDiagnostics struct {
-	Mode            string               `json:"mode"`
-	Name            string               `json:"name,omitempty"`
-	Kind            string               `json:"kind,omitempty"`
-	Host            string               `json:"host"`
-	SelectionSource string               `json:"selection_source,omitempty"`
-	TokenSource     string               `json:"token_source,omitempty"`
-	Probes          []GitHubBackendProbe `json:"probes,omitempty"`
+	Mode             string               `json:"mode"`
+	Name             string               `json:"name,omitempty"`
+	Kind             string               `json:"kind,omitempty"`
+	Host             string               `json:"host"`
+	SelectionSource  string               `json:"selection_source,omitempty"`
+	TokenSource      string               `json:"token_source,omitempty"`
+	Probes           []GitHubBackendProbe `json:"probes,omitempty"`
+	Profile          string               `json:"profile,omitempty"`
+	ProfileKind      string               `json:"profile_kind,omitempty"`
+	ServerInstanceID string               `json:"server_instance_id,omitempty"`
+	APIOrigin        string               `json:"api_origin,omitempty"`
 }
 
 type GitHubBackendProbe struct {
@@ -67,6 +77,8 @@ type GitHubBackendSelection struct {
 	TokenSource     string
 	Probes          []GitHubBackendProbe
 	Token           Token
+	Profile         Profile
+	ProfileSource   string
 }
 
 type GitHubBackendSelectionOptions struct {
@@ -75,7 +87,8 @@ type GitHubBackendSelectionOptions struct {
 }
 
 type credentialFile struct {
-	Hosts map[string]StoredCredential `json:"hosts"`
+	Hosts  map[string]StoredCredential `json:"hosts"`
+	Realms map[string]StoredCredential `json:"realms,omitempty"`
 }
 
 func ParseGitHubBackendMode(value string) (GitHubBackendMode, error) {
@@ -100,6 +113,13 @@ func SelectGitHubBackend(ctx context.Context, host string) (GitHubBackendSelecti
 }
 
 func SelectGitHubBackendWithOptions(ctx context.Context, host string, opts GitHubBackendSelectionOptions) (GitHubBackendSelection, error) {
+	if customAPIURLActive() || ProfileNameFromEnv() != "" {
+		return SelectProfileBackendWithOptions(ctx, "", host, opts)
+	}
+	return selectGitHubBackendCore(ctx, host, opts, false)
+}
+
+func selectGitHubBackendCore(ctx context.Context, host string, opts GitHubBackendSelectionOptions, ignoreCustomAPI bool) (GitHubBackendSelection, error) {
 	host = NormalizeHost(host)
 	mode, err := gitHubBackendModeForSelection(opts)
 	selection := GitHubBackendSelection{Mode: mode, Host: host}
@@ -109,7 +129,7 @@ func SelectGitHubBackendWithOptions(ctx context.Context, host string, opts GitHu
 
 	if mode == GitHubBackendModeGH {
 		selection = selectGHBackend(mode, host, "override:gh")
-		if customAPIURLActive() {
+		if !ignoreCustomAPI && customAPIURLActive() {
 			return selection, fmt.Errorf("%s is only supported by the rest GitHub backend; unset it or use %s=rest", GitHubBackendAPIURLEnv, GitHubBackendEnv)
 		}
 		return selection, nil
@@ -135,7 +155,7 @@ func SelectGitHubBackendWithOptions(ctx context.Context, host string, opts GitHu
 	}
 
 	selection.Probes = append(selection.Probes, GitHubBackendProbe{Name: GitHubBackendNameREST, Status: "unavailable", Error: ErrNoToken.Error()})
-	if customAPIURLActive() {
+	if !ignoreCustomAPI && customAPIURLActive() {
 		return selection, fmt.Errorf("%w; %s requires a rest token because the gh backend cannot use custom API URLs", err, GitHubBackendAPIURLEnv)
 	}
 	if opts.GHAuthenticated == nil {
@@ -161,7 +181,7 @@ func gitHubBackendModeForSelection(opts GitHubBackendSelectionOptions) (GitHubBa
 }
 
 func (s GitHubBackendSelection) Diagnostics() GitHubBackendDiagnostics {
-	return GitHubBackendDiagnostics{
+	diagnostics := GitHubBackendDiagnostics{
 		Mode:            string(s.Mode),
 		Name:            s.Name,
 		Kind:            s.Kind,
@@ -170,6 +190,13 @@ func (s GitHubBackendSelection) Diagnostics() GitHubBackendDiagnostics {
 		TokenSource:     s.TokenSource,
 		Probes:          s.Probes,
 	}
+	if s.Profile.Name != "" {
+		diagnostics.Profile = s.Profile.Name
+		diagnostics.ProfileKind = string(s.Profile.Kind)
+		diagnostics.ServerInstanceID = s.Profile.ServerInstanceID
+		diagnostics.APIOrigin = s.Profile.APIOrigin()
+	}
+	return diagnostics
 }
 
 func (s GitHubBackendSelection) TokenWithDiagnostics() Token {
@@ -236,6 +263,67 @@ func ResolveToken(_ context.Context, host string) (Token, error) {
 	return Token{Host: host}, ErrNoToken
 }
 
+// ResolveProfileToken enforces the selected profile realm. A self-hosted
+// profile never reads GH_TOKEN, GITHUB_TOKEN, GitHub host credentials, or
+// credentials stored for another profile.
+func ResolveProfileToken(_ context.Context, profile Profile) (Token, error) {
+	profile, err := profile.Normalized()
+	if err != nil {
+		return Token{}, err
+	}
+	if IsBuiltinGitHubProfile(profile) {
+		token, err := ResolveToken(context.Background(), profile.Hostname)
+		return withProfile(token, profile), err
+	}
+	if path := strings.TrimSpace(os.Getenv(IssueSpecTokenFileEnv)); path != "" {
+		value, err := readPrivateTokenFile(path)
+		if err != nil {
+			return withProfile(Token{Host: profile.Hostname}, profile), err
+		}
+		return withProfile(Token{Value: value, Source: "env:" + IssueSpecTokenFileEnv, Host: profile.Hostname}, profile), nil
+	}
+	if value := strings.TrimSpace(os.Getenv("ISSUE_SPEC_TOKEN")); value != "" {
+		return withProfile(Token{Value: value, Source: "env:ISSUE_SPEC_TOKEN", Host: profile.Hostname}, profile), nil
+	}
+	if profile.Ephemeral {
+		return withProfile(Token{Host: profile.Hostname}, profile), fmt.Errorf("%w for origin-bound profile %q; set ISSUE_SPEC_TOKEN explicitly", ErrNoToken, profile.Name)
+	}
+	realm := profile.RealmKey()
+	if value, err := keyring.Get(serviceName, realm); err == nil && strings.TrimSpace(value) != "" {
+		return withProfile(Token{Value: strings.TrimSpace(value), Source: "keyring", Host: profile.Hostname}, profile), nil
+	}
+	creds, err := readCredentialFile()
+	if err != nil {
+		return Token{}, err
+	}
+	if stored, ok := creds.Realms[realm]; ok && strings.TrimSpace(stored.Token) != "" {
+		return withProfile(Token{Value: strings.TrimSpace(stored.Token), Source: "config", Host: profile.Hostname}, profile), nil
+	}
+	return withProfile(Token{Host: profile.Hostname}, profile), fmt.Errorf("%w for origin-bound profile %q; run issue-spec auth login --profile %s --with-token", ErrNoToken, profile.Name, profile.Name)
+}
+
+func readPrivateTokenFile(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("%s must name an absolute private file", IssueSpecTokenFileEnv)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: credential file unavailable", IssueSpecTokenFileEnv)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || !singleLink(info) || info.Size() > 1<<20 {
+		return "", fmt.Errorf("read %s: credential file is not a private regular file", IssueSpecTokenFileEnv)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: credential file unavailable", IssueSpecTokenFileEnv)
+	}
+	value := strings.TrimSpace(string(data))
+	if value == "" || strings.ContainsAny(value, "\r\n\x00") {
+		return "", fmt.Errorf("read %s: credential file is invalid", IssueSpecTokenFileEnv)
+	}
+	return value, nil
+}
+
 func StoreToken(_ context.Context, host, token string, insecureStorage bool) (string, error) {
 	host = NormalizeHost(host)
 	token = strings.TrimSpace(token)
@@ -264,6 +352,42 @@ func StoreToken(_ context.Context, host, token string, insecureStorage bool) (st
 	return "config", nil
 }
 
+func StoreProfileToken(_ context.Context, profile Profile, token string, insecureStorage bool) (string, error) {
+	profile, err := profile.Normalized()
+	if err != nil {
+		return "", err
+	}
+	if IsBuiltinGitHubProfile(profile) {
+		return StoreToken(context.Background(), profile.Hostname, token, insecureStorage)
+	}
+	if profile.Ephemeral {
+		return "", errors.New("ephemeral legacy API profile credentials cannot be persisted; use ISSUE_SPEC_TOKEN")
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", errors.New("token is empty")
+	}
+	realm := profile.RealmKey()
+	if !insecureStorage {
+		if err := keyring.Set(serviceName, realm, token); err != nil {
+			return "", fmt.Errorf("store token in OS keyring for profile %s: %w; rerun with --insecure-storage to use explicit plaintext fallback", profile.Name, err)
+		}
+		return "keyring", nil
+	}
+	creds, err := readCredentialFile()
+	if err != nil {
+		return "", err
+	}
+	if creds.Realms == nil {
+		creds.Realms = map[string]StoredCredential{}
+	}
+	creds.Realms[realm] = StoredCredential{Token: token}
+	if err := writeCredentialFile(creds); err != nil {
+		return "", err
+	}
+	return "config", nil
+}
+
 func DeleteToken(_ context.Context, host string) error {
 	host = NormalizeHost(host)
 	var errs []error
@@ -284,6 +408,34 @@ func DeleteToken(_ context.Context, host string) error {
 	return errors.Join(errs...)
 }
 
+func DeleteProfileToken(_ context.Context, profile Profile) error {
+	profile, err := profile.Normalized()
+	if err != nil {
+		return err
+	}
+	if IsBuiltinGitHubProfile(profile) {
+		return DeleteToken(context.Background(), profile.Hostname)
+	}
+	if profile.Ephemeral {
+		return nil
+	}
+	realm := profile.RealmKey()
+	var errs []error
+	if err := keyring.Delete(serviceName, realm); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+		errs = append(errs, err)
+	}
+	creds, err := readCredentialFile()
+	if err != nil {
+		errs = append(errs, err)
+	} else if _, ok := creds.Realms[realm]; ok {
+		delete(creds.Realms, realm)
+		if err := writeCredentialFile(creds); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func EnvTokenActive() string {
 	for _, envName := range []string{"ISSUE_SPEC_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
 		if strings.TrimSpace(os.Getenv(envName)) != "" {
@@ -291,6 +443,16 @@ func EnvTokenActive() string {
 		}
 	}
 	return ""
+}
+
+func EnvTokenActiveForProfile(profile Profile) string {
+	if !IsBuiltinGitHubProfile(profile) {
+		if strings.TrimSpace(os.Getenv("ISSUE_SPEC_TOKEN")) != "" {
+			return "ISSUE_SPEC_TOKEN"
+		}
+		return ""
+	}
+	return EnvTokenActive()
 }
 
 func NormalizeHost(host string) string {
@@ -305,7 +467,7 @@ func NormalizeHost(host string) string {
 }
 
 func ConfigDir() (string, error) {
-	if dir := strings.TrimSpace(os.Getenv("ISSUE_SPEC_CONFIG_DIR")); dir != "" {
+	if dir := strings.TrimSpace(os.Getenv(ConfigDirEnv)); dir != "" {
 		return dir, nil
 	}
 	base, err := os.UserConfigDir()
@@ -330,13 +492,13 @@ func readCredentialFile() (credentialFile, error) {
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return credentialFile{Hosts: map[string]StoredCredential{}}, nil
+		return credentialFile{Hosts: map[string]StoredCredential{}, Realms: map[string]StoredCredential{}}, nil
 	}
 	if err != nil {
 		return credentialFile{}, err
 	}
 	if len(strings.TrimSpace(string(data))) == 0 {
-		return credentialFile{Hosts: map[string]StoredCredential{}}, nil
+		return credentialFile{Hosts: map[string]StoredCredential{}, Realms: map[string]StoredCredential{}}, nil
 	}
 	var creds credentialFile
 	if err := json.Unmarshal(data, &creds); err != nil {
@@ -344,6 +506,9 @@ func readCredentialFile() (credentialFile, error) {
 	}
 	if creds.Hosts == nil {
 		creds.Hosts = map[string]StoredCredential{}
+	}
+	if creds.Realms == nil {
+		creds.Realms = map[string]StoredCredential{}
 	}
 	return creds, nil
 }

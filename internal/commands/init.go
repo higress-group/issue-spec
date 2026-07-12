@@ -18,6 +18,19 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 	fs := newFlagSet("init", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
 	host := fs.String("hostname", "github.com", "GitHub hostname")
+	serverOrg := fs.String("server-org", "", "self-hosted server organization name or id (defaults to --repo owner)")
+	serverRepo := fs.String("server-repo", "", "self-hosted server repository name (defaults to --repo name)")
+	providerKey := fs.String("provider", "", "registered external code provider key")
+	externalRepo := fs.String("external-repo", "", "stable external code repository identity")
+	sourceRemote := fs.String("source-remote", "", "git remote name used for source discovery")
+	sourceCloneURL := fs.String("source-clone-url", "", "credential-free canonical HTTPS clone URL")
+	sourceWebURL := fs.String("source-web-url", "", "credential-free canonical HTTPS code web URL")
+	defaultBranch := fs.String("default-branch", "", "server and source default branch (defaults to main)")
+	createIfMissing := fs.Bool("create-if-missing", false, "allow an absent self-hosted repository to be registered")
+	bindSource := fs.Bool("bind-source", false, "create or reuse a credential-free source binding")
+	skipSourceBinding := fs.Bool("skip-source-binding", false, "disable profile source-binding automation for this invocation")
+	yes := fs.Bool("yes", false, "approve the displayed self-hosted remote mutation plan")
+	planOnly := fs.Bool("plan", false, "show the self-hosted init plan without mutations or local writes")
 	createLabels := fs.Bool("create-labels", false, "create issue-spec labels")
 	tools := fs.String("tools", "", "generate workflow artifacts for AI tools: all, none, or comma-separated codex,claude")
 	delivery := fs.String("delivery", "both", "workflow artifact delivery: both, skills, or commands")
@@ -25,6 +38,24 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
+	}
+	profile, _, err := auth.ResolveProfile(a.profileName, *host)
+	if err != nil {
+		a.errorf("resolve init profile: %v\n", err)
+		return 1
+	}
+	hostedOptions := selfHostedInitOptions{Repo: *repoFlag, ServerOrg: *serverOrg, ServerRepo: *serverRepo,
+		ProviderKey: *providerKey, ExternalRepo: *externalRepo, SourceRemote: *sourceRemote,
+		SourceCloneURL: *sourceCloneURL, SourceWebURL: *sourceWebURL, DefaultBranch: *defaultBranch,
+		CreateIfMissing: *createIfMissing, BindSource: *bindSource, SkipSourceBinding: *skipSourceBinding,
+		Yes: *yes, PlanOnly: *planOnly, CreateLabels: *createLabels, Tools: *tools, Delivery: *delivery,
+		Language: *language, JSON: *jsonOut}
+	if profile.Kind == auth.ProfileKindHosted {
+		return a.runSelfHostedInit(ctx, profile, hostedOptions)
+	}
+	if hostedOptions.hasSelfHostedOnlyFlags() {
+		a.errorf("self-hosted init flags require a self-hosted --profile\n")
+		return 2
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {

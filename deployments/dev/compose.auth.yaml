@@ -1,0 +1,8 @@
+services:
+  server:
+    environment:
+      ENVIRONMENT: production
+      TRANSPORT_POSTURE: trusted-internal-http
+      API_PUBLIC_URL: ${ISSUE_SPEC_PUBLIC_URL:-http://127.0.0.1:8080}
+      WEB_PUBLIC_URL: ${ISSUE_SPEC_PUBLIC_URL:-http://127.0.0.1:8080}
+      AUTH_PROVIDERS_FILE: /run/issue-spec-secrets/auth-providers.json

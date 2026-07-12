@@ -1,0 +1,18 @@
+.markdown-view { color: var(--ink); line-height: 1.72; overflow-wrap: anywhere; }
+.markdown-view > :first-child { margin-top: 0; }
+.markdown-view > :last-child { margin-bottom: 0; }
+.markdown-view h1, .markdown-view h2, .markdown-view h3 { font-family: Georgia, "Times New Roman", serif; line-height: 1.18; margin: 1.4em 0 .55em; }
+.markdown-view h1 { font-size: 1.7rem; }
+.markdown-view h2 { border-bottom: 1px solid var(--line); font-size: 1.35rem; padding-bottom: .35rem; }
+.markdown-view h3 { font-size: 1.12rem; }
+.markdown-view a { color: #075f61; font-weight: 700; text-underline-offset: .18em; }
+.markdown-view blockquote { border-left: 4px solid var(--purple); color: var(--muted); margin-left: 0; padding: .15rem 1rem; }
+.markdown-view code { background: rgba(34, 38, 44, .07); border-radius: .3rem; font: .9em/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; padding: .12rem .3rem; }
+.markdown-view pre { background: #20242a; border-radius: .65rem; color: #f5f1e8; max-width: 100%; overflow: auto; padding: 1rem; }
+.markdown-view pre code { background: transparent; color: inherit; padding: 0; }
+.markdown-view table { border-collapse: collapse; display: block; max-width: 100%; overflow-x: auto; width: max-content; }
+.markdown-view th, .markdown-view td { border: 1px solid var(--line); min-width: 7rem; padding: .55rem .7rem; text-align: left; }
+.markdown-view th { background: rgba(15, 111, 111, .08); }
+.markdown-view img { height: auto; max-width: 100%; }
+.markdown-view input[type="checkbox"] { accent-color: var(--teal); margin-inline: .1rem .45rem; }
+@media (prefers-reduced-motion: reduce) { .markdown-view * { scroll-behavior: auto !important; } }

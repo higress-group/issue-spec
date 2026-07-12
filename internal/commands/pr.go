@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
@@ -368,6 +369,8 @@ func (a *app) runPRRationale(ctx context.Context, args []string) int {
 	repoFlag := fs.String("repo", "", "repository owner/name")
 	host := fs.String("hostname", "github.com", "GitHub hostname")
 	prFlag := fs.Int("pr", 0, "pull request number")
+	implementFlag := fs.String("implement", "", "implement issue containing the active self-hosted code reference")
+	revision := fs.String("revision", "", "expected external code head revision for self-hosted evidence")
 	pathFlag := fs.String("path", "", "changed file path")
 	lineFlag := fs.Int("line", 0, "RIGHT-side line number in the PR diff")
 	bodyFile := fs.String("body-file", "", "rationale body file, or - for stdin")
@@ -383,10 +386,6 @@ func (a *app) runPRRationale(ctx context.Context, args []string) int {
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {
-		return 2
-	}
-	if *prFlag <= 0 {
-		a.errorf("--pr must be a positive pull request number\n")
 		return 2
 	}
 	if strings.TrimSpace(*pathFlag) == "" {
@@ -405,12 +404,60 @@ func (a *app) runPRRationale(ctx context.Context, args []string) int {
 		}
 		body = strings.TrimSpace(content)
 	}
-	client, _, err := a.clientFor(ctx, *host)
+	client, token, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("auth required for pr rationale on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
 	}
 	session := resolveWriterSession(*agentSession)
+	profile, _, err := auth.ResolveProfile(a.profileName, *host)
+	if err != nil {
+		a.errorf("resolve rationale profile: %v\n", err)
+		return 1
+	}
+	if profile.Kind == auth.ProfileKindHosted {
+		if *prFlag > 0 {
+			a.errorf("--pr is not a self-hosted code authority; omit it and use --implement\n")
+			return 2
+		}
+		implementIssue, parseErr := parseIssueFlag(*implementFlag, "implement")
+		if parseErr != nil {
+			a.errorf("%v\n", parseErr)
+			return 2
+		}
+		target, provider, _, _, preflightErr := a.externalMutationTarget(ctx, *host, token.Value, repo, implementIssue,
+			"code_change", *revision, codereview.CapabilityChangeComment)
+		if preflightErr != nil {
+			a.errorf("rationale capability preflight: %v\n", preflightErr)
+			return 1
+		}
+		rendered, renderErr := model.RenderRationaleBodyWithSession(*agent, session.ID, session.Source,
+			*processID, *specID, *specURL, body, *pathFlag, *lineFlag)
+		if renderErr != nil {
+			a.errorf("create rationale: %v\n", renderErr)
+			return 1
+		}
+		mutation, mutateErr := codereview.Mutate(ctx, provider, codereview.MutationRequest{Kind: codereview.MutationComment,
+			Reference: target.Reference, Body: rendered, HeadRevision: target.SubjectRevision,
+			Metadata: map[string]any{"kind": "rationale", "process": *processID, "spec": *specID,
+				"path": *pathFlag, "line": *lineFlag}})
+		if mutateErr != nil {
+			a.errorf("create rationale: %v\n", mutateErr)
+			return 1
+		}
+		result := rationaleResult{OK: true, Created: true, URL: mutation.CanonicalURL, Path: *pathFlag,
+			Line: *lineFlag, Process: *processID, Spec: *specID, ExternalID: mutation.ExternalID,
+			ChangeID: mutation.Reference.ChangeID}
+		if *jsonOut {
+			return a.outputJSON(result)
+		}
+		fmt.Fprintf(a.out, "created external rationale comment: %s\n", result.URL)
+		return 0
+	}
+	if *prFlag <= 0 {
+		a.errorf("--pr must be a positive pull request number\n")
+		return 2
+	}
 	result, err := createRationale(ctx, client, repo, *prFlag, *pathFlag, *lineFlag, *processID, *specID, *specURL, *agent, session, body)
 	if err != nil {
 		a.errorf("create rationale: %v\n", err)
@@ -428,15 +475,17 @@ func (a *app) runPRRationale(ctx context.Context, args []string) int {
 }
 
 type rationaleResult struct {
-	OK        bool   `json:"ok"`
-	Created   bool   `json:"created"`
-	CommentID int64  `json:"comment_id"`
-	URL       string `json:"url"`
-	PR        int    `json:"pr"`
-	Path      string `json:"path"`
-	Line      int    `json:"line"`
-	Process   string `json:"process"`
-	Spec      string `json:"spec"`
+	OK         bool   `json:"ok"`
+	Created    bool   `json:"created"`
+	CommentID  int64  `json:"comment_id"`
+	URL        string `json:"url"`
+	PR         int    `json:"pr"`
+	Path       string `json:"path"`
+	Line       int    `json:"line"`
+	Process    string `json:"process"`
+	Spec       string `json:"spec"`
+	ExternalID string `json:"external_id,omitempty"`
+	ChangeID   string `json:"change_id,omitempty"`
 }
 
 func createRationale(ctx context.Context, client interface {

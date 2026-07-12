@@ -217,6 +217,47 @@ func TestRunnerIssueContextAndPerIssueCommentsUseConditionals(t *testing.T) {
 	}
 }
 
+func TestGetIssueCommentReturnsExactRevisionWithoutNotifications(t *testing.T) {
+	created := time.Date(2026, 7, 11, 1, 2, 3, 0, time.UTC)
+	updated := created.Add(time.Minute)
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/o/r/issues/comments/77" {
+			t.Fatalf("unexpected authoritative request %s %s", r.Method, r.URL.String())
+		}
+		if strings.Contains(r.URL.Path, "notifications") {
+			t.Fatal("single-comment operation called notifications")
+		}
+		w.Header().Set(HeaderRepresentationVersion, "9")
+		_ = json.NewEncoder(w).Encode(Comment{ID: 77, NodeID: "stable-node", IssueURL: serverURL(r) + "/repos/o/r/issues/12",
+			Body: "/new verify", User: &User{Login: "alice"}, CreatedAt: created, UpdatedAt: updated})
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL("issues.test", server.URL, "parent-token", server.Client())
+	result, err := client.GetIssueComment(t.Context(), "o/r", 77)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 || result.RepresentationVersion != 9 || result.Comment.ID != 77 ||
+		result.Comment.IssueNumber != 12 || result.Comment.NodeID != "stable-node" || result.Comment.User.Login != "alice" ||
+		!result.Comment.CreatedAt.Equal(created) || !result.Comment.UpdatedAt.Equal(updated) {
+		t.Fatalf("exact comment result=%+v requests=%d", result, requests)
+	}
+}
+
+func TestGetIssueCommentRejectsMissingRepresentationVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(Comment{ID: 77})
+	}))
+	defer server.Close()
+	client := NewClientWithBaseURL("issues.test", server.URL, "token", server.Client())
+	if _, err := client.GetIssueComment(t.Context(), "o/r", 77); err == nil || !strings.Contains(err.Error(), "representation version") {
+		t.Fatalf("missing revision error=%v", err)
+	}
+}
+
 func TestRunnerSubscriptionPermissionAndWriteMapping(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

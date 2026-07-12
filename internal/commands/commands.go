@@ -14,6 +14,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
 	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
@@ -22,9 +23,10 @@ import (
 )
 
 type app struct {
-	in  io.Reader
-	out io.Writer
-	err io.Writer
+	in          io.Reader
+	out         io.Writer
+	err         io.Writer
+	profileName string
 
 	selectGitHubBackend          func(context.Context, string) (auth.GitHubBackendSelection, error)
 	selectRunnerBackend          func(context.Context, string, auth.GitHubBackendMode) (auth.GitHubBackendSelection, error)
@@ -36,12 +38,20 @@ type app struct {
 	runnerReconcile              func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error)
 	runnerDispatch               func(context.Context, commentrunner.Config) (jobs.Result, error)
 	runnerCancellationDrain      func(context.Context, commentrunner.Config) (jobs.Result, error)
+	newNativeEvidenceProvider    func(auth.Profile, string) (nativeEvidenceProvider, error)
+	resolveCodeMutationProvider  func(context.Context, string) (codereview.MutationProvider, error)
 }
 
 type commandFunc func(context.Context, []string) int
 
 func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 	a := newApp(in, out, errOut)
+	profileName, args, err := extractGlobalProfile(args)
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	a.profileName = profileName
 	ctx := context.Background()
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
 		a.printUsage()
@@ -85,15 +95,54 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 	}
 }
 
+func extractGlobalProfile(args []string) (string, []string, error) {
+	clean := make([]string, 0, len(args))
+	var profile string
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		var value string
+		switch {
+		case argument == "--profile":
+			if index+1 >= len(args) {
+				return "", nil, errors.New("--profile requires a value")
+			}
+			index++
+			value = args[index]
+		case strings.HasPrefix(argument, "--profile="):
+			value = strings.TrimPrefix(argument, "--profile=")
+		default:
+			clean = append(clean, argument)
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return "", nil, errors.New("--profile requires a non-empty value")
+		}
+		if profile != "" && profile != value {
+			return "", nil, errors.New("--profile may be specified only once")
+		}
+		profile = value
+	}
+	return profile, clean, nil
+}
+
 func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
+	operatorRegistry, operatorRegistryErr := codereview.LoadOperatorRegistryFromEnvironment()
 	return &app{
-		in:                  in,
-		out:                 out,
-		err:                 errOut,
-		selectGitHubBackend: defaultSelectGitHubBackend,
-		selectRunnerBackend: defaultSelectRunnerBackend,
-		newGitHubBackend:    defaultNewGitHubBackend,
-		gitHubBackendToken:  defaultGitHubBackendToken,
+		in:                        in,
+		out:                       out,
+		err:                       errOut,
+		selectGitHubBackend:       defaultSelectGitHubBackend,
+		selectRunnerBackend:       defaultSelectRunnerBackend,
+		newGitHubBackend:          defaultNewGitHubBackend,
+		gitHubBackendToken:        defaultGitHubBackendToken,
+		newNativeEvidenceProvider: defaultNewNativeEvidenceProvider,
+		resolveCodeMutationProvider: func(ctx context.Context, key string) (codereview.MutationProvider, error) {
+			if operatorRegistryErr != nil {
+				return nil, operatorRegistryErr
+			}
+			return operatorRegistry.ResolveMutationProvider(ctx, key)
+		},
 	}
 }
 
@@ -118,6 +167,7 @@ func (a *app) printUsage() {
 	fmt.Fprintln(a.out, `issue-spec manages issue-native OpenSpec artifacts.
 
 Usage:
+  issue-spec [--profile name] <command> [options]
   issue-spec auth status|login|logout|token
   issue-spec init --repo owner/repo [--create-labels] [--tools codex,claude|all|none] [--delivery both|skills|commands]
   issue-spec issue create proposal|design|implement --repo owner/repo --change name [--body-file file.md] [--title title]
@@ -144,6 +194,7 @@ Usage:
   issue-spec read issue --repo owner/repo --issue N [--comments] [--typed-only]
   issue-spec read pr --repo owner/repo --pr N [--comments] [--typed-only]
   issue-spec runner poll --repo owner/repo --runner login --once --dry-run
+  issue-spec runner serve --profile self-hosted --repo owner/repo --runner login --subscription-id UUID --secret-file FILE --git-credential-command /absolute/provider
   issue-spec runner preflight --repo owner/repo --runner login`)
 }
 
@@ -221,7 +272,29 @@ func (a *app) clientFor(ctx context.Context, host string) (github.Backend, auth.
 	return backend, token, nil
 }
 
+func (a *app) clientForProfile(ctx context.Context, host, profile string) (github.Backend, auth.Token, error) {
+	previous := a.profileName
+	a.profileName = strings.TrimSpace(profile)
+	defer func() { a.profileName = previous }()
+	return a.clientFor(ctx, host)
+}
+
+func (a *app) selectBackendForProfile(ctx context.Context, host, profile string) (auth.GitHubBackendSelection, error) {
+	previous := a.profileName
+	a.profileName = strings.TrimSpace(profile)
+	defer func() { a.profileName = previous }()
+	return a.selectBackend(ctx, host)
+}
+
 func (a *app) selectBackend(ctx context.Context, host string) (auth.GitHubBackendSelection, error) {
+	profileName := strings.TrimSpace(a.profileName)
+	_, source, profileErr := auth.ResolveProfile(profileName, host)
+	if profileErr != nil {
+		return auth.GitHubBackendSelection{}, profileErr
+	}
+	if source != "builtin" || profileName != "" || auth.ProfileNameFromEnv() != "" || strings.TrimSpace(os.Getenv(auth.GitHubBackendAPIURLEnv)) != "" {
+		return auth.SelectProfileBackendWithOptions(ctx, profileName, host, auth.GitHubBackendSelectionOptions{GHAuthenticated: ghAuthenticated})
+	}
 	if a.selectGitHubBackend != nil {
 		return a.selectGitHubBackend(ctx, host)
 	}
@@ -230,6 +303,14 @@ func (a *app) selectBackend(ctx context.Context, host string) (auth.GitHubBacken
 
 func (a *app) selectBackendForRunner(ctx context.Context, cfg commentrunner.Config) (auth.GitHubBackendSelection, error) {
 	cfg = cfg.Normalized()
+	_, source, profileErr := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
+	if profileErr != nil {
+		return auth.GitHubBackendSelection{}, profileErr
+	}
+	if source != "builtin" || cfg.Profile != "" || strings.TrimSpace(os.Getenv(auth.GitHubBackendAPIURLEnv)) != "" {
+		mode := cfg.GitHubBackend
+		return auth.SelectProfileBackendWithOptions(ctx, cfg.Profile, cfg.Hostname, auth.GitHubBackendSelectionOptions{GHAuthenticated: ghAuthenticated, Mode: &mode})
+	}
 	if a.selectRunnerBackend != nil {
 		return a.selectRunnerBackend(ctx, cfg.Hostname, cfg.GitHubBackend)
 	}
@@ -255,6 +336,11 @@ func defaultNewGitHubBackend(_ context.Context, selection auth.GitHubBackendSele
 	case auth.GitHubBackendNameREST:
 		if strings.TrimSpace(selection.Token.Value) == "" {
 			return nil, fmt.Errorf("rest GitHub backend selected without a token")
+		}
+		if selection.Profile.Name != "" {
+			return github.NewClientWithOptions(github.ClientOptions{
+				Host: selection.Host, BaseURL: selection.Profile.APIURL, Token: selection.Token.Value, CAFile: selection.Profile.CAFile,
+			})
 		}
 		return github.NewClient(selection.Host, selection.Token.Value), nil
 	case auth.GitHubBackendNameGH:

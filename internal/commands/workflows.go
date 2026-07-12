@@ -69,7 +69,27 @@ func writeWorkflowArtifactsWithPlan(root, repo, toolsArg, delivery string, plan 
 	return writeWorkflowArtifactsResolved(root, repo, delivery, tools, plan)
 }
 
+func writeWorkflowArtifactsWithProvider(root, repo, toolsArg, delivery string, provider workflow.ProviderPlan) (workflowGenerationResult, error) {
+	delivery, tools, err := resolveWorkflowGenerationOptions(root, toolsArg, delivery)
+	if err != nil {
+		return workflowGenerationResult{}, err
+	}
+	if len(tools) == 0 {
+		result := workflowGenerationResult{Delivery: delivery}
+		return result, nil
+	}
+	plan, err := workflow.Resolve(root)
+	if err != nil {
+		return workflowGenerationResult{}, err
+	}
+	return writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery, tools, plan, &provider)
+}
+
 func writeWorkflowArtifactsResolved(root, repo, delivery string, tools []workflowTool, plan workflow.Plan) (workflowGenerationResult, error) {
+	return writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery, tools, plan, nil)
+}
+
+func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, tools []workflowTool, plan workflow.Plan, provider *workflow.ProviderPlan) (workflowGenerationResult, error) {
 	result := workflowGenerationResult{Delivery: delivery, WorkflowSource: string(plan.Source.Kind), WorkflowSchema: plan.Source.SchemaName}
 	for _, tool := range tools {
 		result.Tools = append(result.Tools, tool.ID)
@@ -81,7 +101,7 @@ func writeWorkflowArtifactsResolved(root, repo, delivery string, tools []workflo
 	if delivery != workflowDeliveryCommands {
 		for _, tool := range tools {
 			skillsDir := filepath.Join(root, tool.SkillsDir, "skills")
-			for _, skill := range workflowSkills(repo, plan) {
+			for _, skill := range workflowSkillsWithProvider(repo, plan, provider) {
 				path := filepath.Join(skillsDir, skill.Name, "SKILL.md")
 				if err := writeTextFile(path, skill.Content); err != nil {
 					return result, err
@@ -92,7 +112,7 @@ func writeWorkflowArtifactsResolved(root, repo, delivery string, tools []workflo
 	}
 
 	if delivery != workflowDeliverySkills {
-		commands := workflowCommandContents(repo, plan)
+		commands := workflowCommandContentsWithProvider(repo, plan, provider)
 		for _, tool := range tools {
 			adapter := commandAdapterForTool(tool.ID)
 			if adapter == nil {
@@ -131,6 +151,10 @@ func resolveWorkflowGenerationOptions(root, toolsArg, delivery string) (string, 
 }
 
 func workflowSkills(repo string, plan workflow.Plan) []templates.RenderedSkill {
+	return workflowSkillsWithProvider(repo, plan, nil)
+}
+
+func workflowSkillsWithProvider(repo string, plan workflow.Plan, provider *workflow.ProviderPlan) []templates.RenderedSkill {
 	skills := templates.IssueSpecSkills(repo)
 	notice := workflowNotice(plan)
 	for i := range skills {
@@ -139,14 +163,31 @@ func workflowSkills(repo string, plan workflow.Plan) []templates.RenderedSkill {
 		}
 		skills[i].Content = strings.TrimRight(skills[i].Content, "\n") + "\n\n" + notice + "\n"
 	}
+	if provider != nil {
+		providerNotice := templates.ProviderWorkflowNotice(*provider)
+		for i := range skills {
+			if skills[i].Name == "issue-spec-github" {
+				continue
+			}
+			skills[i].Content = strings.TrimRight(skills[i].Content, "\n") + "\n\n" + providerNotice + "\n"
+		}
+		skills = append(skills, templates.IssueSpecProviderSkill(repo, *provider))
+	}
 	return skills
 }
 
 func workflowCommandContents(repo string, plan workflow.Plan) []templates.CommandContent {
+	return workflowCommandContentsWithProvider(repo, plan, nil)
+}
+
+func workflowCommandContentsWithProvider(repo string, plan workflow.Plan, provider *workflow.ProviderPlan) []templates.CommandContent {
 	commands := templates.IssueSpecCommandContents(repo)
 	notice := workflowNotice(plan)
 	for i := range commands {
 		commands[i].Body = strings.TrimRight(commands[i].Body, "\n") + "\n\n" + notice + "\n"
+		if provider != nil {
+			commands[i].Body = strings.TrimRight(commands[i].Body, "\n") + "\n\n" + templates.ProviderWorkflowNotice(*provider) + "\n"
+		}
 	}
 	return commands
 }

@@ -551,6 +551,153 @@ func captureRunnerPollConfig(t *testing.T, args ...string) commentrunner.Config 
 	return captured
 }
 
+func TestRunnerPreflightProfileFlagFlowsIntoUnifiedSelectionConfig(t *testing.T) {
+	clearCommandAuthEnv(t)
+	profile := auth.Profile{
+		Name: "runner-staging", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/compat", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance",
+	}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	var cfg commentrunner.Config
+	app.runnerPreflight = func(_ context.Context, input commentrunner.Config) commentrunner.PreflightReport {
+		cfg = input
+		return commentrunner.PreflightReport{OK: true, Config: input}
+	}
+	code := app.runRunner(context.Background(), []string{
+		"preflight", "--profile", "runner-staging", "--repo", "o/r", "--runner", "runner-bot",
+		"--state", filepath.Join(t.TempDir(), "state.json"), "--workspace-root", t.TempDir(), "--json",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if cfg.Profile != "runner-staging" {
+		t.Fatalf("profile = %q", cfg.Profile)
+	}
+	t.Setenv("ISSUE_SPEC_TOKEN", "runner-profile-token")
+	selection, err := app.selectBackendForRunner(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Profile.Name != "runner-staging" || selection.Token.Value != "runner-profile-token" || selection.Name != auth.GitHubBackendNameREST {
+		t.Fatalf("selection = %+v", selection)
+	}
+}
+
+func TestRunnerPreflightSelfHostedSkipsNotificationAndWatchCalls(t *testing.T) {
+	clearCommandAuthEnv(t)
+	profile := auth.Profile{
+		Name: "runner-staging", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/compat", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance",
+	}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ISSUE_SPEC_TOKEN", "runner-profile-token")
+	codexHome := filepath.Join(t.TempDir(), "codex")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "auth.json"), []byte(`{"token":"test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
+	binDir := t.TempDir()
+	for _, name := range []string{"acpx", "npm", "npx"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", binDir)
+
+	backend := &runnerPhaseBackend{fakeGitHubBackend: fakeGitHubBackend{info: github.BackendInfo{Name: "rest", Kind: "rest", Host: "issues.example.test"}}}
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) {
+		return backend, nil
+	}
+	app.newRunnerNotificationBackend = func(context.Context, commentrunner.Config) (runnerNotificationBackend, error) {
+		t.Fatal("self-hosted preflight called notification backend")
+		return nil, nil
+	}
+	cfg := commentrunner.Config{
+		Profile: "runner-staging", Hostname: "github.com", Repositories: []string{"o/r"}, RunnerIdentity: "runner-bot",
+		NotificationIdentity: "notify-bot", NotificationTokenEnv: "BOT_TOKEN", GitHubBackend: auth.GitHubBackendModeREST,
+		StatePath: filepath.Join(t.TempDir(), "state.json"), PollInterval: commentrunner.NewDuration(time.Minute),
+		FallbackInterval: commentrunner.NewDuration(time.Hour), MaxConcurrentJobs: 1, AcpxPath: "acpx",
+		Agent: commentrunner.DefaultAgentConfig(), WorkspaceRoot: t.TempDir(), WorkspaceRetention: commentrunner.NewDuration(time.Hour),
+		UnsafeNoSandbox: true, CancellationEnabled: true,
+	}
+
+	report := app.runRunnerPreflight(context.Background(), cfg)
+	if !report.OK {
+		t.Fatalf("self-hosted preflight failed shared prerequisites: %+v", report)
+	}
+	if backend.repositorySubscriptionCalls != 0 {
+		t.Fatalf("repository subscription calls = %d, want 0", backend.repositorySubscriptionCalls)
+	}
+	if check := runnerPreflightCheck(t, report, "command-intake-transport"); check.Status != commentrunner.CheckOK || !strings.Contains(check.Detail, "runner serve") {
+		t.Fatalf("unexpected transport check: %+v", check)
+	}
+}
+
+func TestRunnerPollRejectsSelfHostedBeforePreflightOrIntake(t *testing.T) {
+	clearCommandAuthEnv(t)
+	profile := auth.Profile{
+		Name: "runner-staging", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/compat", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance",
+	}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "dry-run", args: []string{"--dry-run", "--json"}},
+		{name: "live", args: []string{"--once"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			app := newApp(strings.NewReader(""), &out, &errOut)
+			app.runnerPreflight = func(context.Context, commentrunner.Config) commentrunner.PreflightReport {
+				t.Fatal("self-hosted poll called preflight")
+				return commentrunner.PreflightReport{}
+			}
+			app.runnerIntake = func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error) {
+				t.Fatal("self-hosted poll called notification intake")
+				return intake.Result{}, nil
+			}
+			app.newRunnerNotificationBackend = func(context.Context, commentrunner.Config) (runnerNotificationBackend, error) {
+				t.Fatal("self-hosted poll opened notification backend")
+				return nil, nil
+			}
+			args := []string{
+				"poll", "--profile", "runner-staging", "--repo", "o/r", "--runner", "runner-bot",
+				"--state", filepath.Join(t.TempDir(), "state.json"), "--workspace-root", t.TempDir(),
+			}
+			args = append(args, tc.args...)
+			code := app.runRunner(context.Background(), args)
+			if code != 2 {
+				t.Fatalf("exit code = %d, want 2, stdout=%q stderr=%q", code, out.String(), errOut.String())
+			}
+			want := `runner poll requires a GitHub profile; self-hosted profile "runner-staging" uses runner serve`
+			if !strings.Contains(errOut.String(), want) {
+				t.Fatalf("stderr = %q, want stable rejection %q", errOut.String(), want)
+			}
+			if out.Len() != 0 {
+				t.Fatalf("stdout = %q, want empty before poll startup", out.String())
+			}
+		})
+	}
+}
+
 func TestRunnerPollDryRunIntakeErrorReturnsFailure(t *testing.T) {
 	clearCommandAuthEnv(t)
 	var out, errOut bytes.Buffer
@@ -1300,7 +1447,8 @@ func TestRunnerBackendFlagOverridesEnvForEveryPhase(t *testing.T) {
 
 type runnerPhaseBackend struct {
 	fakeGitHubBackend
-	notificationOpts []github.NotificationListOptions
+	notificationOpts            []github.NotificationListOptions
+	repositorySubscriptionCalls int
 }
 
 func (b *runnerPhaseBackend) PollNotifications(_ context.Context, opts github.NotificationListOptions) (github.NotificationListResult, error) {
@@ -1309,7 +1457,19 @@ func (b *runnerPhaseBackend) PollNotifications(_ context.Context, opts github.No
 }
 
 func (b *runnerPhaseBackend) GetRepositorySubscription(context.Context, string) (github.RepositorySubscriptionResult, error) {
+	b.repositorySubscriptionCalls++
 	return github.RepositorySubscriptionResult{Subscription: github.RepositorySubscription{Subscribed: true, Reason: "subscribed"}}, nil
+}
+
+func runnerPreflightCheck(t *testing.T, report commentrunner.PreflightReport, name string) commentrunner.PreflightCheck {
+	t.Helper()
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	t.Fatalf("missing preflight check %q in %+v", name, report.Checks)
+	return commentrunner.PreflightCheck{}
 }
 
 func (b *runnerPhaseBackend) GetIssueContext(context.Context, string, int, github.ConditionalRequest) (github.IssueContextResult, error) {

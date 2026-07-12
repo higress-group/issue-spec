@@ -1,0 +1,27 @@
+{
+  "providers": [
+    {
+      "id": "__ISSUE_SPEC_PROVIDER_UUID__",
+      "name": "github-enterprise",
+      "kind": "github-oauth",
+      "issuer": "https://github.intra.example",
+      "client_id": "__ISSUE_SPEC_GITHUB_CLIENT_ID__",
+      "client_secret": "__ISSUE_SPEC_GITHUB_CLIENT_SECRET__",
+      "scopes": ["read:user", "user:email", "read:org"],
+      "auth_url": "https://github.intra.example/login/oauth/authorize",
+      "token_url": "https://github.intra.example/login/oauth/access_token",
+      "user_url": "https://github.intra.example/api/v3/user",
+      "avatar_origins": ["https://github.intra.example"],
+      "admission": {
+        "mode": "organization-restricted",
+        "organizations": [
+          {
+            "login": "__ISSUE_SPEC_GITHUB_ORG_LOGIN__",
+            "id": "__ISSUE_SPEC_GITHUB_ORG_ID__"
+          }
+        ],
+        "membership_url": "https://github.intra.example/api/v3/user/memberships/orgs"
+      }
+    }
+  ]
+}

@@ -35,11 +35,12 @@ func (a *app) runAuth(ctx context.Context, args []string) int {
 func (a *app) runAuthStatus(ctx context.Context, args []string) int {
 	fs := newFlagSet("auth status", a.err)
 	host := fs.String("hostname", "github.com", "GitHub hostname")
+	profile := fs.String("profile", a.profileName, "named issue backend profile")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
-	client, token, err := a.clientFor(ctx, *host)
+	client, token, err := a.clientForProfile(ctx, *host, *profile)
 	if err != nil {
 		if *jsonOut {
 			return a.outputJSON(authErrorResult(token, err))
@@ -60,7 +61,10 @@ func (a *app) runAuthStatus(ctx context.Context, args []string) int {
 	if *jsonOut {
 		return a.outputJSON(map[string]any{"ok": true, "auth": token, "backend": token.Backend})
 	}
-	fmt.Fprintf(a.out, "github host: %s\nuser: %s\ntoken source: %s\n", token.Host, token.User, token.Source)
+	if token.Profile != "" {
+		fmt.Fprintf(a.out, "profile: %s (%s)\nserver instance: %s\nAPI origin: %s\n", token.Profile, token.ProfileKind, token.ServerInstanceID, token.APIOrigin)
+	}
+	fmt.Fprintf(a.out, "host: %s\nuser: %s\ntoken source: %s\n", token.Host, token.User, token.Source)
 	if token.Backend != nil {
 		fmt.Fprintf(a.out, "github backend: %s (%s)\n", token.Backend.Name, token.Backend.SelectionSource)
 	}
@@ -73,14 +77,34 @@ func (a *app) runAuthStatus(ctx context.Context, args []string) int {
 func (a *app) runAuthLogin(ctx context.Context, args []string) int {
 	fs := newFlagSet("auth login", a.err)
 	host := fs.String("hostname", "github.com", "GitHub hostname")
+	profileName := fs.String("profile", a.profileName, "named issue backend profile")
+	kind := fs.String("kind", "", "profile kind: github or self-hosted")
+	apiURL := fs.String("api-url", "", "GitHub-compatible API base URL")
+	nativeAPIURL := fs.String("native-api-url", "", "native API base URL")
+	webURL := fs.String("web-url", "", "browser web base URL")
+	instanceID := fs.String("instance-id", "", "stable server instance id")
+	caFile := fs.String("ca-file", "", "absolute custom CA PEM file")
+	makeDefault := fs.Bool("make-default", false, "make this the default profile")
 	withToken := fs.Bool("with-token", false, "read token from stdin")
 	insecure := fs.Bool("insecure-storage", false, "store token in issue-spec plaintext config when keyring is unavailable or undesired")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
+	profileFlags := authLoginProfileFlags{
+		Name: *profileName, Kind: *kind, APIURL: *apiURL, NativeAPIURL: *nativeAPIURL,
+		WebURL: *webURL, InstanceID: *instanceID, CAFile: *caFile, MakeDefault: *makeDefault,
+	}
+	profile, configured, err := resolveAuthLoginProfile(profileFlags, *host)
+	if err != nil {
+		a.errorf("resolve profile: %v\n", err)
+		return 1
+	}
 	if !*withToken {
-		return a.runAuthLoginAdvice(ctx, *host, *jsonOut)
+		if !auth.IsBuiltinGitHubProfile(profile) {
+			return a.runOriginBoundLoginAdvice(profile, *jsonOut)
+		}
+		return a.runAuthLoginAdvice(ctx, profile.Hostname, *jsonOut)
 	}
 	data, err := io.ReadAll(a.in)
 	if err != nil {
@@ -92,25 +116,111 @@ func (a *app) runAuthLogin(ctx context.Context, args []string) int {
 		a.errorf("stdin token is empty\n")
 		return 1
 	}
-	hostName := auth.NormalizeHost(*host)
-	user, scopes, err := github.NewClient(hostName, tokenValue).GetUser(ctx)
-	if err != nil {
-		a.errorf("validate token for %s: %v\n", hostName, err)
+	if profile.Ephemeral {
+		a.errorf("%s is an ephemeral compatibility profile; export ISSUE_SPEC_TOKEN instead of persisting a login\n", auth.GitHubBackendAPIURLEnv)
 		return 1
 	}
-	source, err := auth.StoreToken(ctx, hostName, tokenValue, *insecure)
+	var client *github.Client
+	if profile.Kind == auth.ProfileKindHosted || configured {
+		client, err = github.NewClientWithOptions(github.ClientOptions{Host: profile.Hostname, BaseURL: profile.APIURL, Token: tokenValue, CAFile: profile.CAFile})
+	} else {
+		client = github.NewClient(profile.Hostname, tokenValue)
+	}
+	if err != nil {
+		a.errorf("configure client for profile %s: %v\n", profile.Name, err)
+		return 1
+	}
+	user, scopes, err := client.GetUser(ctx)
+	if err != nil {
+		a.errorf("validate token for profile %s: %v\n", profile.Name, err)
+		return 1
+	}
+	if configured || profileFlags.MakeDefault {
+		if err := auth.SaveProfile(profile, profileFlags.MakeDefault); err != nil {
+			a.errorf("save profile %s: %v\n", profile.Name, err)
+			return 1
+		}
+	}
+	source, err := auth.StoreProfileToken(ctx, profile, tokenValue, *insecure)
 	if err != nil {
 		a.errorf("%v\n", err)
 		return 1
 	}
-	result := map[string]any{"ok": true, "host": hostName, "user": user.Login, "source": source, "scopes": scopes}
+	result := map[string]any{
+		"ok": true, "profile": profile.Name, "profile_kind": profile.Kind,
+		"server_instance_id": profile.ServerInstanceID, "api_origin": profile.APIOrigin(),
+		"host": profile.Hostname, "user": user.Login, "source": source, "scopes": scopes,
+	}
 	if *jsonOut {
 		return a.outputJSON(result)
 	}
 	if *insecure {
 		fmt.Fprintln(a.err, "warning: token stored in issue-spec plaintext config because --insecure-storage was set")
 	}
-	fmt.Fprintf(a.out, "logged in to %s as %s using %s storage\n", hostName, user.Login, source)
+	fmt.Fprintf(a.out, "logged in to profile %s (%s) as %s using %s storage\n", profile.Name, profile.APIOrigin(), user.Login, source)
+	return 0
+}
+
+type authLoginProfileFlags struct {
+	Name, Kind, APIURL, NativeAPIURL, WebURL, InstanceID, CAFile string
+	MakeDefault                                                  bool
+}
+
+func (f authLoginProfileFlags) configProvided() bool {
+	return strings.TrimSpace(f.Kind) != "" || strings.TrimSpace(f.APIURL) != "" || strings.TrimSpace(f.NativeAPIURL) != "" ||
+		strings.TrimSpace(f.WebURL) != "" || strings.TrimSpace(f.InstanceID) != "" || strings.TrimSpace(f.CAFile) != ""
+}
+
+func resolveAuthLoginProfile(flags authLoginProfileFlags, host string) (auth.Profile, bool, error) {
+	if !flags.configProvided() {
+		profile, _, err := auth.ResolveProfile(flags.Name, host)
+		return profile, false, err
+	}
+	name := strings.TrimSpace(flags.Name)
+	if name == "" {
+		return auth.Profile{}, false, errors.New("--profile is required when configuring profile fields")
+	}
+	kind := auth.ProfileKind(strings.ToLower(strings.TrimSpace(flags.Kind)))
+	if kind == "" {
+		kind = auth.ProfileKindHosted
+	}
+	if kind == auth.ProfileKindGitHub {
+		profile := auth.BuiltinGitHubProfile(host)
+		profile.Name = name
+		if flags.APIURL != "" {
+			profile.APIURL = flags.APIURL
+		}
+		if flags.WebURL != "" {
+			profile.WebURL = flags.WebURL
+		}
+		if flags.InstanceID != "" {
+			profile.ServerInstanceID = flags.InstanceID
+		}
+		profile.CAFile = flags.CAFile
+		profile, err := profile.Normalized()
+		return profile, true, err
+	}
+	profile := auth.Profile{
+		Name: name, Kind: kind, APIURL: flags.APIURL,
+		NativeAPIURL: flags.NativeAPIURL, WebURL: flags.WebURL,
+		ServerInstanceID: flags.InstanceID, CAFile: flags.CAFile,
+	}
+	profile, err := profile.Normalized()
+	return profile, true, err
+}
+
+func (a *app) runOriginBoundLoginAdvice(profile auth.Profile, jsonOut bool) int {
+	command := fmt.Sprintf("issue-spec auth login --profile %s --with-token", profile.Name)
+	result := map[string]any{
+		"ok": true, "profile": profile.Name, "profile_kind": profile.Kind,
+		"server_instance_id": profile.ServerInstanceID, "api_origin": profile.APIOrigin(),
+		"mode": "origin-bound-token", "message": "This profile requires an explicit origin-bound issue-spec token.",
+		"next_steps": []string{command},
+	}
+	if jsonOut {
+		return a.outputJSON(result)
+	}
+	fmt.Fprintf(a.out, "Profile %s requires an explicit origin-bound issue-spec token.\n  %s\n", profile.Name, command)
 	return 0
 }
 
@@ -221,22 +331,28 @@ func isDefaultGitHubHost(host string) bool {
 func (a *app) runAuthLogout(ctx context.Context, args []string) int {
 	fs := newFlagSet("auth logout", a.err)
 	host := fs.String("hostname", "github.com", "GitHub hostname")
+	profileName := fs.String("profile", a.profileName, "named issue backend profile")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
-	hostName := auth.NormalizeHost(*host)
-	err := auth.DeleteToken(ctx, hostName)
-	envActive := auth.EnvTokenActive()
+	profile, _, err := auth.ResolveProfile(*profileName, *host)
+	if err != nil {
+		a.errorf("resolve profile: %v\n", err)
+		return 1
+	}
+	hostName := profile.Hostname
+	err = auth.DeleteProfileToken(ctx, profile)
+	envActive := auth.EnvTokenActiveForProfile(profile)
 	if err != nil {
 		a.errorf("logout %s: %v\n", hostName, err)
 		return 1
 	}
-	result := map[string]any{"ok": true, "host": hostName, "env_token_active": envActive}
+	result := map[string]any{"ok": true, "profile": profile.Name, "profile_kind": profile.Kind, "server_instance_id": profile.ServerInstanceID, "api_origin": profile.APIOrigin(), "host": hostName, "env_token_active": envActive}
 	if *jsonOut {
 		return a.outputJSON(result)
 	}
-	fmt.Fprintf(a.out, "removed persisted issue-spec token for %s\n", hostName)
+	fmt.Fprintf(a.out, "removed persisted issue-spec token for profile %s (%s)\n", profile.Name, hostName)
 	if envActive != "" {
 		fmt.Fprintf(a.out, "environment token %s is still active and was not unset\n", envActive)
 	}
@@ -246,13 +362,14 @@ func (a *app) runAuthLogout(ctx context.Context, args []string) int {
 func (a *app) runAuthToken(ctx context.Context, args []string) int {
 	fs := newFlagSet("auth token", a.err)
 	host := fs.String("hostname", "github.com", "GitHub hostname")
+	profile := fs.String("profile", a.profileName, "named issue backend profile")
 	plain := fs.Bool("plain", false, "print token in plain text")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	includeToken := fs.Bool("include-token", false, "include token in JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
-	selection, err := a.selectBackend(ctx, *host)
+	selection, err := a.selectBackendForProfile(ctx, *host, *profile)
 	if err != nil {
 		token := selection.TokenWithDiagnostics()
 		if *jsonOut {
@@ -271,7 +388,11 @@ func (a *app) runAuthToken(ctx context.Context, args []string) int {
 		return 2
 	}
 	if *jsonOut {
-		out := map[string]any{"host": token.Host, "source": token.Source, "backend": token.Backend}
+		out := map[string]any{
+			"host": token.Host, "profile": token.Profile, "profile_kind": token.ProfileKind,
+			"server_instance_id": token.ServerInstanceID, "api_origin": token.APIOrigin,
+			"source": token.Source, "backend": token.Backend,
+		}
 		if *includeToken {
 			tokenValue, err := a.tokenForSelection(ctx, selection)
 			if err != nil {

@@ -49,13 +49,8 @@ func TestCompatibilityGHCommandsAreNonInteractiveAndEnterpriseHostMapped(t *test
 	}
 }
 
-func TestCompatibilityRESTCustomAPIURLAndEnterpriseDefault(t *testing.T) {
+func TestCompatibilityRESTClientBaseIsPurelyHostDerived(t *testing.T) {
 	t.Setenv("ISSUE_SPEC_API_URL", "https://api.example.test/custom/")
-	if got, want := NewClient("ghe.example.com", "token").BaseURL, "https://api.example.test/custom"; got != want {
-		t.Fatalf("custom API URL base = %q, want %q", got, want)
-	}
-
-	t.Setenv("ISSUE_SPEC_API_URL", "")
 	if got, want := NewClient("ghe.example.com", "token").BaseURL, "https://ghe.example.com/api/v3"; got != want {
 		t.Fatalf("enterprise REST base = %q, want %q", got, want)
 	}

@@ -305,7 +305,7 @@ func (r RepoResolver) ResolveRepository(context.Context, string) (jobs.Repositor
 		return jobs.RepositoryInfo{}, r.Err
 	}
 	if r.Info.Repo == "" {
-		return jobs.RepositoryInfo{Repo: "o/r", CloneURL: "https://github.com/o/r.git", DefaultBranch: "main"}, nil
+		return jobs.RepositoryInfo{Repo: "o/r", CloneURL: "https://github.com/o/r.git", DefaultBranch: "main", Ref: "main", Binding: RepositoryBinding()}, nil
 	}
 	return r.Info, nil
 }
@@ -326,7 +326,10 @@ func (w *Workspaces) PrepareNew(_ context.Context, req workspace.NewRequest) (wo
 	if w.Err != nil {
 		return workspace.Binding{}, w.Err
 	}
-	return w.Binding, nil
+	binding := w.Binding
+	binding.Workspace.RepositoryBinding = req.RepositoryBinding
+	w.Binding = binding
+	return binding, nil
 }
 
 func (w *Workspaces) ResolveResume(_ context.Context, req workspace.ResumeRequest) (workspace.Binding, error) {
@@ -353,10 +356,16 @@ func (w *Workspaces) ReleaseLock(lock crstate.SessionLock) error {
 func WorkspaceBinding(id string) workspace.Binding {
 	path := "/tmp/" + id
 	return workspace.Binding{
-		Workspace:            crstate.WorkspaceMetadata{ID: id, Path: path, Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-" + id, Ref: "main"},
+		Workspace:            crstate.WorkspaceMetadata{ID: id, Path: path, Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-" + id, Ref: "main", RepositoryBinding: RepositoryBinding()},
 		AcpxWorkingDirectory: path,
 		SandboxWorkspacePath: path,
 	}
+}
+
+func RepositoryBinding() crstate.RepositoryBindingSnapshot {
+	return crstate.RepositoryBindingSnapshot{Source: "operator", IssueRepositoryKey: "o/r", BindingID: "mapping-o-r",
+		Version: 1, ProviderKey: "github", ExternalRepositoryID: "o/r", CloneURL: "https://github.com/o/r.git",
+		WebURL: "https://github.com/o/r", DefaultBranch: "main"}
 }
 
 type Sandbox struct {

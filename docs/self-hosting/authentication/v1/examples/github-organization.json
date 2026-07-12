@@ -1,0 +1,22 @@
+{
+  "providers": [
+    {
+      "id": "__ISSUE_SPEC_PROVIDER_UUID__",
+      "name": "github",
+      "kind": "github-oauth",
+      "issuer": "https://github.com",
+      "client_id": "__ISSUE_SPEC_GITHUB_CLIENT_ID__",
+      "client_secret": "__ISSUE_SPEC_GITHUB_CLIENT_SECRET__",
+      "scopes": ["read:user", "user:email", "read:org"],
+      "admission": {
+        "mode": "organization-restricted",
+        "organizations": [
+          {
+            "login": "__ISSUE_SPEC_GITHUB_ORG_LOGIN__",
+            "id": "__ISSUE_SPEC_GITHUB_ORG_ID__"
+          }
+        ]
+      }
+    }
+  ]
+}

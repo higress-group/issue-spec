@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/acpx"
+	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/workspace"
 )
 
@@ -38,6 +41,9 @@ func TestReconcileRunningCompletedPatchesStateWritebackAndReleasesLock(t *testin
 	}}
 	dispatcher := testDispatcher(store, workspaces, &fakeCoordinator{}, writebacks, now)
 	dispatcher.Acpx = staticAcpxFactory{coordinator: coordinator}
+	credentialBroker := &revokeOnlyBroker{}
+	dispatcher.CredentialBroker = credentialBroker
+	dispatcher.CredentialScopes = map[string]models.RepoScope{"o/r": {OrgID: uuid.New(), RepoID: uuid.New()}}
 
 	result, err := dispatcher.Reconcile(context.Background())
 	if err != nil {
@@ -59,10 +65,24 @@ func TestReconcileRunningCompletedPatchesStateWritebackAndReleasesLock(t *testin
 	if len(job.CLIDirect) != 1 {
 		t.Fatalf("coordinator provenance was not recovered: %+v", job.CLIDirect)
 	}
+	if len(credentialBroker.jobs) != 1 || credentialBroker.jobs[0] != "job-reconcile" {
+		t.Fatalf("reconciled terminal credential revokes = %v", credentialBroker.jobs)
+	}
 	session, ok := st.GetPublicSession("o/r", "ps-reconcile")
 	if !ok || session.Status != state.StatusCompleted || session.Lock.OwnerJobID != "" {
 		t.Fatalf("session was not completed and unlocked: %+v ok=%v", session, ok)
 	}
+}
+
+type revokeOnlyBroker struct{ jobs []string }
+
+func (*revokeOnlyBroker) Acquire(context.Context, credentials.AcquireRequest) (*credentials.Lease, error) {
+	return nil, errors.New("unexpected credential acquire")
+}
+
+func (b *revokeOnlyBroker) RevokeJob(_ context.Context, _ models.RepoScope, jobID string) error {
+	b.jobs = append(b.jobs, jobID)
+	return nil
 }
 
 func TestReconcileDispatchedRefreshFallbackReturnsRunningWithoutRedispatch(t *testing.T) {
@@ -126,7 +146,8 @@ func TestReconcileAmbiguousMarksInterruptedAndDirty(t *testing.T) {
 		t.Fatalf("ambiguous job not marked interrupted/dirty: %+v", job)
 	}
 	session, ok := st.GetPublicSession("o/r", "ps-reconcile")
-	if !ok || session.Status != state.StatusInterrupted || !session.Workspace.Uncertain {
+	if !ok || session.Status != state.StatusInterrupted || session.AcpxRecordID != "rec-reconcile" || session.Workspace.ID != workspaceMeta.ID ||
+		!session.Workspace.Uncertain || !session.RepositoryBinding.Equal(workspaceMeta.RepositoryBinding) || len(session.Queue.PendingJobIDs) != 0 || session.Lock.OwnerJobID != "" {
 		t.Fatalf("session not marked interrupted/uncertain: %+v ok=%v", session, ok)
 	}
 }
@@ -358,6 +379,11 @@ func TestRunNextCancellationConfirmedCancelsRunningJob(t *testing.T) {
 	if cancel.Status != state.StatusCancelled || !cancel.DirtyWorkspace || !cancel.WorkspaceUncertain || coordinator.cancelCalls != 1 {
 		t.Fatalf("cancellation not confirmed: %+v calls=%d", cancel, coordinator.cancelCalls)
 	}
+	session, ok := st.GetPublicSession("o/r", "ps-reconcile")
+	if !ok || session.Status != state.StatusCancelled || session.AcpxRecordID != "rec-reconcile" || session.Workspace.ID != workspaceMeta.ID ||
+		!session.RepositoryBinding.Equal(workspaceMeta.RepositoryBinding) || len(session.Queue.PendingJobIDs) != 0 || session.Lock.OwnerJobID != "" {
+		t.Fatalf("record-backed resume session was not preserved and terminalized: %+v ok=%v", session, ok)
+	}
 }
 
 func testWorkspacePath(t *testing.T, root, id string) string {
@@ -537,6 +563,7 @@ func seedActiveJob(t *testing.T, store *memoryStore, status state.LifecycleStatu
 			CreatedAt:           time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC),
 			UpdatedAt:           time.Date(2026, 7, 3, 12, 1, 0, 0, time.UTC),
 			Workspace:           workspaceMeta,
+			RepositoryBinding:   workspaceMeta.RepositoryBinding,
 			DispatchIntent: state.DispatchIntent{
 				RunnerJobID:          "job-reconcile",
 				PublicSessionID:      "ps-reconcile",
@@ -552,18 +579,19 @@ func seedActiveJob(t *testing.T, store *memoryStore, status state.LifecycleStatu
 			return err
 		}
 		session := state.PublicSession{
-			Repo:            "o/r",
-			PublicSessionID: "ps-reconcile",
-			IssueNumber:     30,
-			AcpxRecordID:    "rec-reconcile",
-			CreatorLogin:    "alice",
-			Status:          status,
-			Workspace:       workspaceMeta,
-			Queue:           state.SessionQueue{AcceptedSequence: 2, PendingJobIDs: []string{"job-reconcile"}},
-			Lock:            lock,
-			CreatedAt:       time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC),
-			LastUsedAt:      time.Date(2026, 7, 3, 12, 1, 0, 0, time.UTC),
-			LastJobID:       "job-reconcile",
+			Repo:              "o/r",
+			PublicSessionID:   "ps-reconcile",
+			IssueNumber:       30,
+			AcpxRecordID:      "rec-reconcile",
+			CreatorLogin:      "alice",
+			Status:            status,
+			Workspace:         workspaceMeta,
+			RepositoryBinding: workspaceMeta.RepositoryBinding,
+			Queue:             state.SessionQueue{AcceptedSequence: 2, PendingJobIDs: []string{"job-reconcile"}},
+			Lock:              lock,
+			CreatedAt:         time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC),
+			LastUsedAt:        time.Date(2026, 7, 3, 12, 1, 0, 0, time.UTC),
+			LastJobID:         "job-reconcile",
 		}
 		return st.UpsertPublicSession(session)
 	})

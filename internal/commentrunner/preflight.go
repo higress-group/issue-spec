@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
 )
@@ -42,6 +43,13 @@ type PreflightReport struct {
 	Checks []PreflightCheck `json:"checks"`
 }
 
+type PreflightTransport string
+
+const (
+	PreflightTransportPoll  PreflightTransport = "poll"
+	PreflightTransportServe PreflightTransport = "serve"
+)
+
 type PreflightDependencies struct {
 	SelectBackend           func(context.Context, string) (auth.GitHubBackendSelection, error)
 	OpenBackend             func(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error)
@@ -61,11 +69,25 @@ type PreflightNotificationBackend interface {
 }
 
 func RunPreflight(ctx context.Context, cfg Config, deps PreflightDependencies) PreflightReport {
+	return RunPreflightForTransport(ctx, cfg, PreflightTransportPoll, deps)
+}
+
+// RunPreflightForTransport validates the prerequisites shared by both runner
+// transports and applies transport-specific checks only when they are
+// meaningful. Self-hosted serve intake is webhook based, so probing GitHub
+// notification identities or repository watches would reject a healthy
+// deployment for a polling prerequisite it neither uses nor exposes.
+func RunPreflightForTransport(ctx context.Context, cfg Config, transport PreflightTransport, deps PreflightDependencies) PreflightReport {
 	cfg = cfg.Normalized()
 	deps = deps.withDefaults()
 	report := PreflightReport{Config: cfg}
 	if err := cfg.Validate(); err != nil {
 		report.add(PreflightCheck{Name: "config", Status: CheckError, Detail: err.Error()})
+		report.finish()
+		return report
+	}
+	if transport != PreflightTransportPoll && transport != PreflightTransportServe {
+		report.add(PreflightCheck{Name: "transport", Status: CheckError, Detail: fmt.Sprintf("unsupported runner preflight transport %q", transport)})
 		report.finish()
 		return report
 	}
@@ -96,33 +118,38 @@ func RunPreflight(ctx context.Context, cfg Config, deps PreflightDependencies) P
 		report.add(PreflightCheck{Name: "gh-cli", Status: CheckSkipped, Detail: "selected backend does not require gh"})
 	}
 
-	watchBackend := runnerBackend
-	watchErr := backendErr
-	watchCheckPrefix := "repository-watch:"
-	if cfg.NotificationTokenEnv != "" {
-		watchCheckPrefix = "notification-watch:"
-		notificationBackend, notificationErr := deps.OpenNotificationBackend(ctx, cfg)
-		if notificationErr != nil {
-			report.add(PreflightCheck{Name: "notification-backend", Status: CheckError, Detail: notificationErr.Error(), Hint: "Set a readable bot token in " + cfg.NotificationTokenEnv + " or omit --notification-runner."})
-			watchBackend = nil
-			watchErr = notificationErr
-		} else if notificationBackend == nil {
-			report.add(PreflightCheck{Name: "notification-backend", Status: CheckError, Detail: "notification backend was not configured", Hint: "Set --notification-token-env or omit --notification-runner."})
-			watchBackend = nil
-			watchErr = fmt.Errorf("notification backend was not configured")
-		} else {
-			info := notificationBackend.BackendInfo()
-			report.add(PreflightCheck{Name: "notification-backend", Status: CheckOK, Detail: fmt.Sprintf("%s backend ready for notification polling on %s", info.Name, info.Host)})
-			report.add(notificationIdentityCheck(ctx, cfg, notificationBackend))
-			watchBackend = notificationBackend
-			watchErr = nil
-		}
+	if transport == PreflightTransportServe {
+		report.add(PreflightCheck{Name: "command-intake-transport", Status: CheckOK, Detail: "self-hosted webhook intake via runner serve"})
+		report.add(PreflightCheck{Name: "notification-backend", Status: CheckSkipped, Detail: "self-hosted profiles use runner serve; notification polling and repository watches are not applicable"})
 	} else {
-		report.add(PreflightCheck{Name: "notification-backend", Status: CheckSkipped, Detail: "using main runner backend for notification polling"})
-	}
+		watchBackend := runnerBackend
+		watchErr := backendErr
+		watchCheckPrefix := "repository-watch:"
+		if cfg.NotificationTokenEnv != "" {
+			watchCheckPrefix = "notification-watch:"
+			notificationBackend, notificationErr := deps.OpenNotificationBackend(ctx, cfg)
+			if notificationErr != nil {
+				report.add(PreflightCheck{Name: "notification-backend", Status: CheckError, Detail: notificationErr.Error(), Hint: "Set a readable bot token in " + cfg.NotificationTokenEnv + " or omit --notification-runner."})
+				watchBackend = nil
+				watchErr = notificationErr
+			} else if notificationBackend == nil {
+				report.add(PreflightCheck{Name: "notification-backend", Status: CheckError, Detail: "notification backend was not configured", Hint: "Set --notification-token-env or omit --notification-runner."})
+				watchBackend = nil
+				watchErr = fmt.Errorf("notification backend was not configured")
+			} else {
+				info := notificationBackend.BackendInfo()
+				report.add(PreflightCheck{Name: "notification-backend", Status: CheckOK, Detail: fmt.Sprintf("%s backend ready for notification polling on %s", info.Name, info.Host)})
+				report.add(notificationIdentityCheck(ctx, cfg, notificationBackend))
+				watchBackend = notificationBackend
+				watchErr = nil
+			}
+		} else {
+			report.add(PreflightCheck{Name: "notification-backend", Status: CheckSkipped, Detail: "using main runner backend for notification polling"})
+		}
 
-	for _, repo := range cfg.Repositories {
-		report.add(repositoryWatchCheck(ctx, watchCheckPrefix+repo, repo, watchBackend, watchErr))
+		for _, repo := range cfg.Repositories {
+			report.add(repositoryWatchCheck(ctx, watchCheckPrefix+repo, repo, watchBackend, watchErr))
+		}
 	}
 
 	if cfg.GHConfigDir == "" {
@@ -412,10 +439,16 @@ func codexACPCheck(deps PreflightDependencies) PreflightCheck {
 			Hint:   acpxInstallHint,
 		}
 	}
+	detail := fmt.Sprintf("npx=%s npm=%s package=%s", npxPath, npmPath, codexACPPackage)
+	if override, ok, err := acpx.LoadAgentOverride(hostHomeDir(), acpx.AgentCodex); err != nil {
+		return PreflightCheck{Name: "codex-acp", Status: CheckError, Detail: "invalid host acpx Codex agent override: " + err.Error(), Hint: acpxInstallHint}
+	} else if ok {
+		detail = fmt.Sprintf("npx=%s npm=%s agent_override=%s source=%s", npxPath, npmPath, acpx.AgentOverrideDescription(override), override.Source)
+	}
 	return PreflightCheck{
 		Name:   "codex-acp",
 		Status: CheckOK,
-		Detail: fmt.Sprintf("npx=%s npm=%s package=%s", npxPath, npmPath, codexACPPackage),
+		Detail: detail,
 	}
 }
 
