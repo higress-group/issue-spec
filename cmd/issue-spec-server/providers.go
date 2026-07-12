@@ -25,16 +25,17 @@ type providerFile struct {
 }
 
 type providerConfig struct {
-	ID           uuid.UUID `json:"id"`
-	Name         string    `json:"name"`
-	Kind         string    `json:"kind"`
-	Issuer       string    `json:"issuer"`
-	ClientID     string    `json:"client_id"`
-	ClientSecret string    `json:"client_secret"`
-	Scopes       []string  `json:"scopes,omitempty"`
-	AuthURL      string    `json:"auth_url,omitempty"`
-	TokenURL     string    `json:"token_url,omitempty"`
-	UserURL      string    `json:"user_url,omitempty"`
+	ID            uuid.UUID `json:"id"`
+	Name          string    `json:"name"`
+	Kind          string    `json:"kind"`
+	Issuer        string    `json:"issuer"`
+	ClientID      string    `json:"client_id"`
+	ClientSecret  string    `json:"client_secret"`
+	Scopes        []string  `json:"scopes,omitempty"`
+	AuthURL       string    `json:"auth_url,omitempty"`
+	TokenURL      string    `json:"token_url,omitempty"`
+	UserURL       string    `json:"user_url,omitempty"`
+	AvatarOrigins []string  `json:"avatar_origins,omitempty"`
 }
 
 func configureAdapters(ctx context.Context, pool *pgxpool.Pool, secrets *serverauth.Secrets,
@@ -54,6 +55,23 @@ func configureAdapters(ctx context.Context, pool *pgxpool.Pool, secrets *servera
 	}
 	if len(file.Providers) == 0 {
 		return nil, errors.New("authentication providers: at least one provider is required")
+	}
+	for index := range file.Providers {
+		cfg := &file.Providers[index]
+		if len(cfg.AvatarOrigins) == 0 && strings.TrimSpace(cfg.Kind) == "github-oauth" {
+			if strings.TrimRight(strings.TrimSpace(cfg.Issuer), "/") == "https://github.com" {
+				cfg.AvatarOrigins = []string{"https://avatars.githubusercontent.com"}
+			} else if issuer, err := url.Parse(strings.TrimRight(strings.TrimSpace(cfg.Issuer), "/")); err == nil && issuer.Scheme == "https" && issuer.Host != "" {
+				cfg.AvatarOrigins = []string{issuer.Scheme + "://" + issuer.Host}
+			}
+		}
+		for avatarIndex, rawOrigin := range cfg.AvatarOrigins {
+			origin, originErr := publicurl.ParseOrigin("avatar origin", strings.TrimSpace(rawOrigin))
+			if originErr != nil || !strings.HasPrefix(origin.String(), "https://") {
+				return nil, fmt.Errorf("authentication provider %q: avatar origins must be canonical HTTPS origins", cfg.Name)
+			}
+			cfg.AvatarOrigins[avatarIndex] = origin.String()
+		}
 	}
 	transactions := serverauth.NewLoginTransactions(pool, secrets)
 	seenIDs := map[uuid.UUID]struct{}{}
@@ -97,7 +115,7 @@ func configureAdapters(ctx context.Context, pool *pgxpool.Pool, secrets *servera
 	}
 	if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		for _, cfg := range file.Providers {
-			metadata, _ := json.Marshal(map[string]any{"scopes": cfg.Scopes})
+			metadata, _ := json.Marshal(map[string]any{"scopes": cfg.Scopes, "avatar_origins": cfg.AvatarOrigins})
 			if _, err := tx.Exec(ctx, `INSERT INTO auth_providers (id, name, kind, issuer, enabled, config)
 				VALUES ($1, $2, $3, $4, true, $5)
 				ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, kind = EXCLUDED.kind,
@@ -110,6 +128,38 @@ func configureAdapters(ctx context.Context, pool *pgxpool.Pool, secrets *servera
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("authentication providers: persist public metadata: %w", err)
+	}
+	return result, nil
+}
+
+func configuredAvatarOrigins(raw []byte) (map[uuid.UUID][]string, error) {
+	result := map[uuid.UUID][]string{}
+	if len(raw) == 0 {
+		return result, nil
+	}
+	var file providerFile
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&file); err != nil {
+		return nil, err
+	}
+	for _, cfg := range file.Providers {
+		origins := append([]string(nil), cfg.AvatarOrigins...)
+		if len(origins) == 0 && strings.TrimSpace(cfg.Kind) == "github-oauth" {
+			if strings.TrimRight(strings.TrimSpace(cfg.Issuer), "/") == "https://github.com" {
+				origins = []string{"https://avatars.githubusercontent.com"}
+			} else if issuer, err := url.Parse(strings.TrimRight(strings.TrimSpace(cfg.Issuer), "/")); err == nil && issuer.Scheme == "https" && issuer.Host != "" {
+				origins = []string{issuer.Scheme + "://" + issuer.Host}
+			}
+		}
+		for index, raw := range origins {
+			origin, err := publicurl.ParseOrigin("avatar origin", strings.TrimSpace(raw))
+			if err != nil || !strings.HasPrefix(origin.String(), "https://") {
+				return nil, errors.New("avatar origins must be canonical HTTPS origins")
+			}
+			origins[index] = origin.String()
+		}
+		result[cfg.ID] = origins
 	}
 	return result, nil
 }

@@ -25,8 +25,22 @@ type Origin struct {
 type Origins struct {
 	API            Origin
 	Web            Origin
+	Posture        TransportPosture
 	TrustedProxies ProxyPolicy
 }
+
+type TransportPosture string
+
+const (
+	TransportHTTPS               TransportPosture = "https"
+	TransportTrustedInternalHTTP TransportPosture = "trusted-internal-http"
+)
+
+func (p TransportPosture) Valid() bool {
+	return p == TransportHTTPS || p == TransportTrustedInternalHTTP
+}
+
+func (p TransportPosture) SecureCookies() bool { return p == TransportHTTPS }
 
 // ProxyPolicy determines whether transport metadata came from a configured
 // reverse proxy. It never changes API or web origins; those remain authoritative.
@@ -36,6 +50,23 @@ type ProxyPolicy struct {
 
 // New validates the configured origins and trusted proxy prefixes.
 func New(api, web string, trusted []netip.Prefix) (Origins, error) {
+	apiURL, err := url.Parse(api)
+	if err != nil {
+		return Origins{}, err
+	}
+	posture := TransportHTTPS
+	if strings.EqualFold(apiURL.Scheme, "http") {
+		posture = TransportTrustedInternalHTTP
+	}
+	return NewWithPosture(api, web, trusted, posture)
+}
+
+// NewWithPosture binds canonical origins to an explicit transport policy.
+// Production composition uses this constructor so HTTP is never inferred.
+func NewWithPosture(api, web string, trusted []netip.Prefix, posture TransportPosture) (Origins, error) {
+	if !posture.Valid() {
+		return Origins{}, errors.New("public transport posture is invalid")
+	}
 	apiOrigin, err := ParseOrigin("API public origin", api)
 	if err != nil {
 		return Origins{}, err
@@ -44,11 +75,21 @@ func New(api, web string, trusted []netip.Prefix) (Origins, error) {
 	if err != nil {
 		return Origins{}, err
 	}
+	apiScheme, webScheme := apiOrigin.value.Scheme, webOrigin.value.Scheme
+	if apiScheme != webScheme {
+		return Origins{}, errors.New("API and web public origins must use the same scheme")
+	}
+	if posture == TransportHTTPS && apiScheme != "https" {
+		return Origins{}, errors.New("https transport posture requires HTTPS public origins")
+	}
+	if posture == TransportTrustedInternalHTTP && apiScheme != "http" {
+		return Origins{}, errors.New("trusted-internal-http transport posture requires HTTP public origins")
+	}
 	policy, err := NewProxyPolicy(trusted)
 	if err != nil {
 		return Origins{}, err
 	}
-	return Origins{API: apiOrigin, Web: webOrigin, TrustedProxies: policy}, nil
+	return Origins{API: apiOrigin, Web: webOrigin, Posture: posture, TrustedProxies: policy}, nil
 }
 
 // ParseOrigin parses one required canonical origin.

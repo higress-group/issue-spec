@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -117,7 +118,7 @@ func TestOIDCDiscoveryPKCEValidationReplayAndFailureMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if identity.Issuer != server.URL || identity.Subject != "subject-123" || identity.Login != "alice" || returnTo != "/dashboard" {
+	if identity.Issuer != server.URL || identity.Subject != "subject-123" || identity.Login != "alice" || identity.AvatarURL != "https://images.example/alice.png" || returnTo != "/dashboard" {
 		t.Fatalf("OIDC result = %+v returnTo=%q", identity, returnTo)
 	}
 	if _, _, err := adapter.Complete(t.Context(), state, "code"); !errors.Is(err, serverauth.ErrInvalidState) {
@@ -154,6 +155,7 @@ func TestGitHubOAuthUsesStableNumericIdentityWithPKCEAndReplayProtection(t *test
 	var challenge string
 	login, email := "octocat", "old@example.test"
 	githubID := int64(987654321)
+	var gateRequest githuboauth.AdmissionRequest
 	handler := http.NewServeMux()
 	handler.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
@@ -170,7 +172,7 @@ func TestGitHubOAuthUsesStableNumericIdentityWithPKCEAndReplayProtection(t *test
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		writeTestJSON(w, map[string]any{"id": githubID, "login": login, "name": "Octo Cat", "email": email})
+		writeTestJSON(w, map[string]any{"id": githubID, "login": login, "name": "Octo Cat", "email": email, "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4"})
 	})
 	server = httptest.NewServer(handler)
 	t.Cleanup(server.Close)
@@ -180,6 +182,10 @@ func TestGitHubOAuthUsesStableNumericIdentityWithPKCEAndReplayProtection(t *test
 		RedirectURL: "https://issues.example.test/api/v1/auth/github/callback",
 		Endpoint:    oauth2.Endpoint{AuthURL: server.URL + "/authorize", TokenURL: server.URL + "/token"},
 		UserURL:     server.URL + "/user",
+		AdmissionGate: admissionGateFunc(func(_ context.Context, request githuboauth.AdmissionRequest) (serverauth.AdmissionEvidence, error) {
+			gateRequest = request
+			return serverauth.AdmissionEvidence{Policy: "github-organization", Decision: "allowed", Subject: request.Identity.Subject, RequestID: request.RequestID, Audited: true}, nil
+		}),
 	}, transactions)
 	if err != nil {
 		t.Fatal(err)
@@ -196,9 +202,14 @@ func TestGitHubOAuthUsesStableNumericIdentityWithPKCEAndReplayProtection(t *test
 			t.Fatalf("GitHub authorize query missing state/PKCE: %s", parsed.RawQuery)
 		}
 		challenge = query.Get("code_challenge")
-		identity, returnTo, err := adapter.Complete(t.Context(), query.Get("state"), "code")
+		ctx := serverauth.WithAdmissionRequestID(t.Context(), "login-request")
+		completion, err := adapter.CompleteLogin(ctx, query.Get("state"), "code")
 		if err != nil {
 			t.Fatal(err)
+		}
+		identity, returnTo := completion.Identity, completion.ReturnTo
+		if completion.Admission == nil || completion.Admission.RequestID != "login-request" || gateRequest.Client == nil || gateRequest.RequestID != "login-request" {
+			t.Fatalf("admission completion=%+v request=%+v", completion.Admission, gateRequest)
 		}
 		if _, _, err := adapter.Complete(t.Context(), query.Get("state"), "code"); !errors.Is(err, serverauth.ErrInvalidState) {
 			t.Fatalf("GitHub callback replay error = %v", err)
@@ -226,6 +237,12 @@ func TestGitHubOAuthUsesStableNumericIdentityWithPKCEAndReplayProtection(t *test
 	}
 }
 
+type admissionGateFunc func(context.Context, githuboauth.AdmissionRequest) (serverauth.AdmissionEvidence, error)
+
+func (f admissionGateFunc) Evaluate(ctx context.Context, request githuboauth.AdmissionRequest) (serverauth.AdmissionEvidence, error) {
+	return f(ctx, request)
+}
+
 func signIDToken(t *testing.T, key *rsa.PrivateKey, issuer, subject string, audience jwt.Audience, expiry time.Time, nonce string) string {
 	t.Helper()
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key},
@@ -237,7 +254,7 @@ func signIDToken(t *testing.T, key *rsa.PrivateKey, issuer, subject string, audi
 		Issuer: issuer, Subject: subject, Audience: audience,
 		IssuedAt: jwt.NewNumericDate(time.Now().Add(-time.Minute)), Expiry: jwt.NewNumericDate(expiry),
 	}).Claims(map[string]any{
-		"nonce": nonce, "preferred_username": "alice", "name": "Alice", "email": "alice@example.test",
+		"nonce": nonce, "preferred_username": "alice", "name": "Alice", "email": "alice@example.test", "picture": "https://images.example/alice.png?tracking=1",
 	}).Serialize()
 	if err != nil {
 		t.Fatal(err)

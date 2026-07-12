@@ -46,7 +46,7 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	sharedEmail := "shared@example.test"
 	userA, err := identities.ResolveOrProvision(t.Context(), providerA, serverauth.ExternalIdentity{
 		Issuer: providerA.Issuer, Subject: "subject-a", Login: "Alice", DisplayName: "Alice A",
-		Email: &sharedEmail, Claims: json.RawMessage(`{"sub":"subject-a"}`),
+		Email: &sharedEmail, AvatarURL: "https://avatars.example/alice-v1.png", Claims: json.RawMessage(`{"sub":"subject-a"}`),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -54,12 +54,12 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	changedEmail := "changed@example.test"
 	again, err := identities.ResolveOrProvision(t.Context(), providerA, serverauth.ExternalIdentity{
 		Issuer: providerA.Issuer, Subject: "subject-a", Login: "renamed", DisplayName: "Renamed",
-		Email: &changedEmail, Claims: json.RawMessage(`{"sub":"subject-a","name":"Renamed"}`),
+		Email: &changedEmail, AvatarURL: "https://avatars.example/alice-v2.png", Claims: json.RawMessage(`{"sub":"subject-a","name":"Renamed"}`),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.ID != userA.ID || again.Login != userA.Login {
+	if again.ID != userA.ID || again.Login != userA.Login || again.DisplayName != "Renamed" {
 		t.Fatalf("provider display change moved local identity: first=%+v again=%+v", userA, again)
 	}
 	userB, err := identities.ResolveOrProvision(t.Context(), providerB, serverauth.ExternalIdentity{
@@ -72,8 +72,16 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 		t.Fatal("same provider email auto-merged two users")
 	}
 	if err := identities.LinkIdentity(t.Context(), userA.ID, userA.ID, providerB,
-		serverauth.ExternalIdentity{Issuer: providerB.Issuer, Subject: "linked-subject"}, "req-link"); err != nil {
+		serverauth.ExternalIdentity{Issuer: providerB.Issuer, Subject: "linked-subject", AvatarURL: "https://other.example/linked.png"}, "req-link"); err != nil {
 		t.Fatal(err)
+	}
+	var sourceProvider uuid.UUID
+	var sourceAvatar string
+	if err := pool.QueryRow(t.Context(), `SELECT i.provider_id,i.avatar_url FROM users u JOIN identities i ON i.id=u.profile_identity_id WHERE u.id=$1`, userA.ID).Scan(&sourceProvider, &sourceAvatar); err != nil {
+		t.Fatal(err)
+	}
+	if sourceProvider != providerA.ID || sourceAvatar != "https://avatars.example/alice-v2.png" {
+		t.Fatalf("profile source provider=%s avatar=%q", sourceProvider, sourceAvatar)
 	}
 	if err := identities.LinkIdentity(t.Context(), userB.ID, userB.ID, providerB,
 		serverauth.ExternalIdentity{Issuer: providerB.Issuer, Subject: "linked-subject"}, "req-link-2"); !errors.Is(err, serverauth.ErrConflict) {

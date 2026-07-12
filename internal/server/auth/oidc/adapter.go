@@ -111,6 +111,7 @@ func (a *Adapter) Callback(ctx context.Context, state, code string) (CallbackRes
 		PreferredUsername string `json:"preferred_username"`
 		Name              string `json:"name"`
 		Email             string `json:"email"`
+		Picture           string `json:"picture"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		return CallbackResult{}, fmt.Errorf("oidc: decode claims: %w", err)
@@ -134,6 +135,7 @@ func (a *Adapter) Callback(ctx context.Context, state, code string) (CallbackRes
 		Login:       claims.PreferredUsername,
 		DisplayName: claims.Name,
 		Email:       email,
+		AvatarURL:   serverauth.NormalizeExternalAvatarURL(claims.Picture),
 		Claims:      rawClaims,
 	}, ReturnTo: tx.ReturnTo}, nil
 }
@@ -141,6 +143,11 @@ func (a *Adapter) Callback(ctx context.Context, state, code string) (CallbackRes
 func (a *Adapter) Complete(ctx context.Context, state, code string) (serverauth.ExternalIdentity, string, error) {
 	result, err := a.Callback(ctx, state, code)
 	return result.Identity, result.ReturnTo, err
+}
+
+func (a *Adapter) CompleteLogin(ctx context.Context, state, code string) (serverauth.LoginCompletion, error) {
+	identity, returnTo, err := a.Complete(ctx, state, code)
+	return serverauth.LoginCompletion{Identity: identity, ReturnTo: returnTo}, err
 }
 
 func (a *Adapter) transactionsNonceDigest(nonce string) []byte {

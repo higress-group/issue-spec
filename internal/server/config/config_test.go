@@ -213,6 +213,34 @@ func TestProductionRejectsPlainHTTPPublicURLs(t *testing.T) {
 	}
 }
 
+func TestProductionTrustedInternalHTTPRequiresExplicitCoherentPosture(t *testing.T) {
+	resetEnv(t)
+	for name, value := range baseEnv(EnvironmentEnv, string(EnvironmentProduction)) {
+		t.Setenv(name, value)
+	}
+	t.Setenv(APIPublicURLEnv, "http://10.0.0.8:8080")
+	t.Setenv(WebPublicURLEnv, "http://issues.internal:8080")
+	t.Setenv(BootstrapSecretFileEnv, writeSecret(t, "bootstrap", 0o600))
+	t.Setenv(TokenPepperFileEnv, writeSecret(t, "pepper", 0o600))
+	t.Setenv(EncryptionKeyFileEnv, writeSecret(t, "encryption", 0o600))
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "must use https in production") {
+		t.Fatalf("default HTTP error = %v", err)
+	}
+	t.Setenv(TransportPostureEnv, string(TransportTrustedInternalHTTP))
+	cfg, err := Load()
+	if err != nil || cfg.TransportPosture != TransportTrustedInternalHTTP {
+		t.Fatalf("trusted HTTP cfg=%+v err=%v", cfg, err)
+	}
+	t.Setenv(WebPublicURLEnv, "https://issues.internal")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "must use http in production") {
+		t.Fatalf("mixed scheme error = %v", err)
+	}
+	t.Setenv(TransportPostureEnv, "auto")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), TransportPostureEnv) {
+		t.Fatalf("malformed posture error = %v", err)
+	}
+}
+
 func TestRedactError(t *testing.T) {
 	resetEnv(t)
 	databaseURL := "postgres://user:password@db/issue_spec"
@@ -284,7 +312,7 @@ func resetEnv(t *testing.T) {
 		MigrationsModeEnv, GracefulShutdownTimeoutEnv, HealthReadTimeoutEnv, HealthWriteTimeoutEnv,
 		AuthProvidersFileEnv, WebhookKeysFileEnv, StaticDirectoryEnv, WebhookAllowedPrivateEnv,
 		DeliveryConcurrencyEnv, DeliveryLeaseDurationEnv, DeliveryPollIntervalEnv,
-		DelegationAudienceEnv, DelegationSubjectEnv,
+		DelegationAudienceEnv, DelegationSubjectEnv, TransportPostureEnv,
 	} {
 		t.Setenv(name, "")
 	}

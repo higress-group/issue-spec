@@ -99,7 +99,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	if err != nil {
 		return fail(err)
 	}
-	sessions, err := session.New(database.Pool(), secrets, session.Config{Secure: cfg.Environment == config.EnvironmentProduction})
+	sessions, err := session.New(database.Pool(), secrets, session.Config{Secure: origins.Posture.SecureCookies()})
 	if err != nil {
 		return fail(err)
 	}
@@ -112,6 +112,14 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	}
 	identity := serverauth.NewIdentityService(database.Pool())
 	adapters, err := configureAdapters(ctx, database.Pool(), secrets, origins, cfg.AuthProviders.Bytes())
+	if err != nil {
+		return fail(err)
+	}
+	avatarOrigins, err := configuredAvatarOrigins(cfg.AuthProviders.Bytes())
+	if err != nil {
+		return fail(fmt.Errorf("configure avatar origins: %w", err))
+	}
+	avatars, err := serverauth.NewAvatarService(database.Pool(), serverauth.AvatarConfig{ProviderOrigins: avatarOrigins})
 	if err != nil {
 		return fail(err)
 	}
@@ -151,7 +159,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	if err != nil {
 		return fail(err)
 	}
-	spaService, err := spa.New(database, authorization)
+	spaService, err := spa.New(database, authorization, origins)
 	if err != nil {
 		return fail(err)
 	}
@@ -195,7 +203,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	handler, err := serverapi.NewRouter(serverapi.Dependencies{
 		Admin: adminService, Identity: identity, Sessions: sessions, PATs: pats, Delegation: delegated,
 		Takeover: takeoverService, Authorization: authorization, Authentication: authentication,
-		Adapters: adapters, APIOrigin: origins.API.String(), WebOrigin: origins.Web.String(),
+		Adapters: adapters, Avatars: avatars, APIOrigin: origins.API.String(), WebOrigin: origins.Web.String(), TransportPosture: origins.Posture,
 		Issues: issueService, Labels: labelService, Reactions: reactionService, Permissions: permissionService,
 		Subscription: subscriptionCompat, Presenter: codec.Presenter{Origins: origins}, Conditional: conditional.Policy{},
 		SPA: spaService, Bindings: bindingService, Evidence: evidenceService, Changes: changeService,
@@ -241,7 +249,17 @@ func configuredOrigins(cfg config.Config) (publicurl.Origins, error) {
 			webURL = fallback
 		}
 	}
-	return publicurl.New(strings.TrimRight(apiURL, "/"), strings.TrimRight(webURL, "/"), cfg.TrustedProxies)
+	posture := publicurl.TransportHTTPS
+	if cfg.TransportPosture == config.TransportTrustedInternalHTTP {
+		posture = publicurl.TransportTrustedInternalHTTP
+	}
+	if cfg.Environment != config.EnvironmentProduction {
+		parsed, _ := url.Parse(apiURL)
+		if parsed.Scheme == "http" {
+			posture = publicurl.TransportTrustedInternalHTTP
+		}
+	}
+	return publicurl.NewWithPosture(strings.TrimRight(apiURL, "/"), strings.TrimRight(webURL, "/"), cfg.TrustedProxies, posture)
 }
 
 func localOrigin(listen string) (string, error) {
@@ -268,6 +286,13 @@ func run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	defer app.database.Close()
+	origins, err := configuredOrigins(cfg)
+	if err != nil {
+		return err
+	}
+	startup, _ := json.Marshal(map[string]any{"level": "info", "event": "server_starting",
+		"transport_posture": origins.Posture, "api_public_url": origins.API.String(), "web_public_url": origins.Web.String()})
+	fmt.Fprintln(os.Stderr, string(startup))
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	defer cancelWorker()
 	workerDone := make(chan error, 1)

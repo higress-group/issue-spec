@@ -14,6 +14,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/codereview"
 	adminapi "github.com/higress-group/issue-spec/internal/server/api/native/admin"
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
+	"github.com/higress-group/issue-spec/internal/server/publicurl"
 )
 
 type Features struct {
@@ -38,6 +39,7 @@ type ServerMetadata struct {
 	NativeAPIURL     string                           `json:"native_api_url"`
 	WebURL           string                           `json:"web_url"`
 	Transport        Transport                        `json:"transport"`
+	TransportPosture publicurl.TransportPosture       `json:"transport_posture"`
 	Providers        []codereview.ProviderDescription `json:"providers"`
 }
 
@@ -47,40 +49,40 @@ type Dependencies struct {
 }
 
 func NewServerMetadata(apiOrigin, webOrigin string, providers []codereview.ProviderDescription) (ServerMetadata, error) {
-	api, loopback, err := canonicalPublicOrigin(apiOrigin)
+	posture := publicurl.TransportHTTPS
+	if strings.HasPrefix(strings.TrimSpace(apiOrigin), "http://") {
+		parsed, err := url.Parse(strings.TrimSpace(apiOrigin))
+		if err != nil || (parsed.Hostname() != "localhost" && parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "::1") {
+			return ServerMetadata{}, errors.New("meta public HTTP requires an explicit trusted-internal-http posture")
+		}
+		posture = publicurl.TransportTrustedInternalHTTP
+	}
+	return NewServerMetadataWithPosture(apiOrigin, webOrigin, providers, posture)
+}
+
+func NewServerMetadataWithPosture(apiOrigin, webOrigin string, providers []codereview.ProviderDescription, posture publicurl.TransportPosture) (ServerMetadata, error) {
+	if !posture.Valid() {
+		return ServerMetadata{}, errors.New("meta transport posture is invalid")
+	}
+	origins, err := publicurl.NewWithPosture(strings.TrimSuffix(apiOrigin, "/"), strings.TrimSuffix(webOrigin, "/"), nil, posture)
 	if err != nil {
-		return ServerMetadata{}, fmt.Errorf("meta API origin: %w", err)
+		return ServerMetadata{}, fmt.Errorf("meta public origins: %w", err)
 	}
-	web, webLoopback, err := canonicalPublicOrigin(webOrigin)
-	if err != nil {
-		return ServerMetadata{}, fmt.Errorf("meta web origin: %w", err)
-	}
-	if loopback != webLoopback {
-		return ServerMetadata{}, errors.New("meta public origins must use a consistent transport mode")
-	}
+	api, web := origins.API.String(), origins.Web.String()
 	digest := sha256.Sum256([]byte(api))
+	mode := string(posture)
+	if posture == publicurl.TransportTrustedInternalHTTP {
+		if parsed, _ := url.Parse(api); parsed != nil && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1") {
+			mode = "loopback-http"
+		}
+	}
 	return ServerMetadata{
 		ServerInstanceID: "issue-spec:" + hex.EncodeToString(digest[:16]),
 		APIURL:           api + "/api/v3", NativeAPIURL: api + "/api/v1", WebURL: web,
-		Transport: Transport{Mode: map[bool]string{true: "loopback-http", false: "https"}[loopback], Secure: !loopback},
-		Providers: append([]codereview.ProviderDescription(nil), providers...),
+		Transport:        Transport{Mode: mode, Secure: posture.SecureCookies()},
+		TransportPosture: posture,
+		Providers:        append([]codereview.ProviderDescription(nil), providers...),
 	}, nil
-}
-
-func canonicalPublicOrigin(raw string) (string, bool, error) {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || !u.IsAbs() || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return "", false, errors.New("must be an absolute origin without path, credentials, query, or fragment")
-	}
-	u.Scheme = strings.ToLower(u.Scheme)
-	if u.Scheme == "https" {
-		return strings.TrimSuffix(u.String(), "/"), false, nil
-	}
-	host := strings.ToLower(u.Hostname())
-	if u.Scheme != "http" || (host != "localhost" && host != "127.0.0.1" && host != "::1") {
-		return "", false, errors.New("must use https, except loopback development origins may use http")
-	}
-	return strings.TrimSuffix(u.String(), "/"), true, nil
 }
 
 func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
@@ -104,5 +106,8 @@ func (h handlers) get(w http.ResponseWriter, _ *http.Request) {
 	adminapi.WriteJSON(w, http.StatusOK, map[string]any{"api_version": "v1", "features": h.features,
 		"server_instance_id": h.metadata.ServerInstanceID, "api_url": h.metadata.APIURL,
 		"native_api_url": h.metadata.NativeAPIURL, "web_url": h.metadata.WebURL,
-		"transport": h.metadata.Transport, "providers": h.metadata.Providers})
+		"transport": h.metadata.Transport, "transport_posture": h.metadata.TransportPosture,
+		"providers": h.metadata.Providers})
+	// transport_posture is the operator-selected policy; transport remains the
+	// wire-level mode for backward-compatible clients.
 }

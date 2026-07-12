@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/higress-group/issue-spec/internal/server/publicurl"
 )
 
 func TestMetaDefaultsEveryFeatureFalse(t *testing.T) {
@@ -71,5 +73,15 @@ func TestServerMetadataRejectsPublicHTTPAndKeepsIdentityStable(t *testing.T) {
 	}
 	if first.ServerInstanceID != second.ServerInstanceID || first.APIURL != "https://api.example.test/api/v3" || first.NativeAPIURL != "https://api.example.test/api/v1" {
 		t.Fatalf("metadata = %+v second=%+v", first, second)
+	}
+}
+
+func TestServerMetadataReportsExplicitTrustedInternalPosture(t *testing.T) {
+	metadata, err := NewServerMetadataWithPosture("http://10.0.0.8:8080", "http://issues.internal:8080", nil, publicurl.TransportTrustedInternalHTTP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.TransportPosture != publicurl.TransportTrustedInternalHTTP || metadata.Transport.Secure || metadata.Transport.Mode != "trusted-internal-http" {
+		t.Fatalf("metadata = %+v", metadata)
 	}
 }

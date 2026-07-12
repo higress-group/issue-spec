@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +32,10 @@ type LoginAdapter interface {
 	Complete(context.Context, string, string) (serverauth.ExternalIdentity, string, error)
 }
 
+type richerLoginAdapter interface {
+	CompleteLogin(context.Context, string, string) (serverauth.LoginCompletion, error)
+}
+
 type IdentityAuthority interface {
 	IdentitySiteAdmin(context.Context, serverauth.Principal) (bool, error)
 }
@@ -48,6 +53,7 @@ type Dependencies struct {
 	Authority  IdentityAuthority
 	Middleware serverauth.Middleware
 	Adapters   map[string]LoginAdapter
+	Avatars    *serverauth.AvatarService
 	WebOrigin  string
 }
 
@@ -79,6 +85,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 		{Name: "native.auth.providers", Method: http.MethodGet, Pattern: "/api/v1/auth/providers", Handler: public(http.HandlerFunc(h.providers))},
 		{Name: "native.auth.login", Method: http.MethodGet, Pattern: "/api/v1/auth/{provider}/login", Handler: public(http.HandlerFunc(h.login))},
 		{Name: "native.auth.callback", Method: http.MethodGet, Pattern: "/api/v1/auth/{provider}/callback", Handler: public(http.HandlerFunc(h.callback))},
+		{Name: "native.auth.avatar", Method: http.MethodGet, Pattern: "/api/v1/avatars/{login}", Handler: public(http.HandlerFunc(h.avatar))},
 		{Name: "native.session.rotate", Method: http.MethodPost, Pattern: "/api/v1/session/rotate", Handler: protected(http.HandlerFunc(h.rotateSession))},
 		{Name: "native.session.logout", Method: http.MethodDelete, Pattern: "/api/v1/session", Handler: protected(http.HandlerFunc(h.logout))},
 		{Name: "native.pats.list", Method: http.MethodGet, Pattern: "/api/v1/pats", Handler: protected(http.HandlerFunc(h.listPATs))},
@@ -88,6 +95,29 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 		{Name: "compat.user.get", Method: http.MethodGet, Pattern: "/user", Handler: adminapi.WithRequestID(compatProtected(http.HandlerFunc(h.user)))},
 	}}
 	return set, set.Validate()
+}
+
+func (h *handlers) avatar(w http.ResponseWriter, r *http.Request) {
+	if h.deps.Avatars == nil {
+		http.NotFound(w, r)
+		return
+	}
+	avatar, err := h.deps.Avatars.FetchForLogin(r.Context(), r.PathValue("login"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("ETag", avatar.ETag)
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Header.Get("If-None-Match") == avatar.ETag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", avatar.ContentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(avatar.Data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(avatar.Data)
 }
 
 type handlers struct {
@@ -134,7 +164,16 @@ func (h *handlers) callback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Not Found")
 		return
 	}
-	identity, returnTo, err := adapter.Complete(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("code"))
+	ctx := serverauth.WithAdmissionRequestID(r.Context(), adminapi.RequestID(r))
+	var identity serverauth.ExternalIdentity
+	var returnTo string
+	var err error
+	if richer, ok := adapter.(richerLoginAdapter); ok {
+		completion, completeErr := richer.CompleteLogin(ctx, r.URL.Query().Get("state"), r.URL.Query().Get("code"))
+		identity, returnTo, err = completion.Identity, completion.ReturnTo, completeErr
+	} else {
+		identity, returnTo, err = adapter.Complete(ctx, r.URL.Query().Get("state"), r.URL.Query().Get("code"))
+	}
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "Authentication failed")
 		return
@@ -221,7 +260,8 @@ func (h *handlers) user(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": codec.StableNumericID(principal.User.ID.String()), "node_id": codec.NodeID("User", principal.User.ID.String()),
 		"login": principal.User.Login, "name": principal.User.DisplayName, "email": principal.User.Email,
-		"type": "User", "site_admin": siteAdmin,
+		"avatar_url": h.canonicalWebOrigin + "/api/v1/avatars/" + url.PathEscape(principal.User.Login),
+		"type":       "User", "site_admin": siteAdmin,
 	})
 }
 

@@ -90,7 +90,8 @@ func TestComposeMountsAllRealRouteSets(t *testing.T) {
 			Mode   string `json:"mode"`
 			Secure bool   `json:"secure"`
 		} `json:"transport"`
-		Providers []struct {
+		TransportPosture string `json:"transport_posture"`
+		Providers        []struct {
 			ProviderKey string `json:"provider_key"`
 			DisplayName string `json:"display_name"`
 		} `json:"providers"`
@@ -100,7 +101,7 @@ func TestComposeMountsAllRealRouteSets(t *testing.T) {
 	}
 	if meta.ServerInstanceID == "" || meta.APIURL != "http://127.0.0.1:8080/api/v3" ||
 		meta.NativeAPIURL != "http://127.0.0.1:8080/api/v1" || meta.WebURL != "http://127.0.0.1:8080" ||
-		meta.Transport.Mode != "loopback-http" || meta.Transport.Secure || len(meta.Providers) != 1 ||
+		meta.Transport.Mode != "loopback-http" || meta.Transport.Secure || meta.TransportPosture != "trusted-internal-http" || len(meta.Providers) != 1 ||
 		meta.Providers[0].ProviderKey != "code.example" || meta.Providers[0].DisplayName != "Example Code" {
 		t.Fatalf("meta composition = %+v", meta)
 	}

@@ -88,6 +88,9 @@ func TestDTOsRoundTripThroughExistingGitHubRunnerClient(t *testing.T) {
 	p := presenter(t)
 	now := time.Date(2026, 7, 3, 1, 2, 3, 0, time.UTC)
 	user := p.PresentUser(codec.UserView{StableID: "u1", Login: "alice"})
+	if user.AvatarURL != "https://issues.test/api/v1/avatars/alice" {
+		t.Fatalf("avatar_url = %q", user.AvatarURL)
+	}
 	issue := p.PresentIssue(codec.IssueView{
 		StableID: "i1", Owner: "o", Repository: "r", Number: 7, State: "open", Title: "title", Body: "raw",
 		Author: codec.UserView{StableID: "u1", Login: "alice"}, CreatedAt: now, UpdatedAt: now,

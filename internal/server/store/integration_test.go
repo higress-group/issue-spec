@@ -73,7 +73,7 @@ func TestRunMigrationsConcurrentAndIdempotent(t *testing.T) {
 	}
 	// Keep the forward-only migration-set assertion synchronized with the
 	// latest embedded file.
-	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0012_notification_webhooks.sql" {
+	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0013_identity_profiles_avatars.sql" {
 		t.Fatalf("migration metadata = count %d, version %d, name %q", count, version, name)
 	}
 }

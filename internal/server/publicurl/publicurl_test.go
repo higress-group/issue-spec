@@ -103,3 +103,16 @@ func TestTrustedProxyPolicy(t *testing.T) {
 		t.Fatal("unconfigured proxy trusted")
 	}
 }
+
+func TestExplicitTransportPostureRejectsMixedOrConflictingSchemes(t *testing.T) {
+	httpOrigins, err := NewWithPosture("http://10.0.0.8", "http://issues.internal", nil, TransportTrustedInternalHTTP)
+	if err != nil || httpOrigins.Posture.SecureCookies() {
+		t.Fatalf("trusted HTTP origins=%+v err=%v", httpOrigins, err)
+	}
+	if _, err := NewWithPosture("http://10.0.0.8", "https://issues.internal", nil, TransportTrustedInternalHTTP); err == nil {
+		t.Fatal("mixed schemes accepted")
+	}
+	if _, err := NewWithPosture("http://10.0.0.8", "http://issues.internal", nil, TransportHTTPS); err == nil {
+		t.Fatal("HTTP accepted for HTTPS posture")
+	}
+}

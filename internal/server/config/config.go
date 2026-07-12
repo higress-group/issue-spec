@@ -41,6 +41,7 @@ const (
 	DeliveryPollIntervalEnv    = "DELIVERY_POLL_INTERVAL"
 	DelegationAudienceEnv      = "DELEGATION_AUDIENCE"
 	DelegationSubjectEnv       = "DELEGATION_SUBJECT"
+	TransportPostureEnv        = "TRANSPORT_POSTURE"
 
 	DefaultGracefulShutdownTimeout = 30 * time.Second
 	DefaultHealthReadTimeout       = 5 * time.Second
@@ -62,6 +63,13 @@ const (
 )
 
 type MigrationsMode string
+
+type TransportPosture string
+
+const (
+	TransportHTTPS               TransportPosture = "https"
+	TransportTrustedInternalHTTP TransportPosture = "trusted-internal-http"
+)
 
 const (
 	MigrationsAuto     MigrationsMode = "auto"
@@ -102,28 +110,29 @@ func (s SecretFile) MarshalJSON() ([]byte, error) {
 // Config is safe to serialize: database credentials and secret values are
 // intentionally omitted, while secret file references remain observable.
 type Config struct {
-	Environment             Environment    `json:"environment"`
-	ListenAddr              string         `json:"listen_addr"`
-	DatabaseURL             string         `json:"-"`
-	APIPublicURL            string         `json:"api_public_url,omitempty"`
-	WebPublicURL            string         `json:"web_public_url,omitempty"`
-	TrustedProxies          []netip.Prefix `json:"trusted_proxies,omitempty"`
-	BootstrapSecret         SecretFile     `json:"bootstrap_secret_file,omitempty"`
-	TokenPepper             SecretFile     `json:"token_pepper_file,omitempty"`
-	EncryptionKey           SecretFile     `json:"encryption_key_file,omitempty"`
-	AuthProviders           SecretFile     `json:"auth_providers_file,omitempty"`
-	WebhookKeys             SecretFile     `json:"webhook_encryption_keys_file,omitempty"`
-	MigrationsMode          MigrationsMode `json:"migrations_mode"`
-	GracefulShutdownTimeout time.Duration  `json:"graceful_shutdown_timeout"`
-	HealthReadTimeout       time.Duration  `json:"health_read_timeout"`
-	HealthWriteTimeout      time.Duration  `json:"health_write_timeout"`
-	StaticDirectory         string         `json:"static_directory,omitempty"`
-	WebhookAllowedPrivate   []netip.Prefix `json:"webhook_allowed_private_cidrs,omitempty"`
-	DeliveryConcurrency     int            `json:"delivery_concurrency"`
-	DeliveryLeaseDuration   time.Duration  `json:"delivery_lease_duration"`
-	DeliveryPollInterval    time.Duration  `json:"delivery_poll_interval"`
-	DelegationAudience      string         `json:"delegation_audience"`
-	DelegationSubject       string         `json:"delegation_subject"`
+	Environment             Environment      `json:"environment"`
+	TransportPosture        TransportPosture `json:"transport_posture"`
+	ListenAddr              string           `json:"listen_addr"`
+	DatabaseURL             string           `json:"-"`
+	APIPublicURL            string           `json:"api_public_url,omitempty"`
+	WebPublicURL            string           `json:"web_public_url,omitempty"`
+	TrustedProxies          []netip.Prefix   `json:"trusted_proxies,omitempty"`
+	BootstrapSecret         SecretFile       `json:"bootstrap_secret_file,omitempty"`
+	TokenPepper             SecretFile       `json:"token_pepper_file,omitempty"`
+	EncryptionKey           SecretFile       `json:"encryption_key_file,omitempty"`
+	AuthProviders           SecretFile       `json:"auth_providers_file,omitempty"`
+	WebhookKeys             SecretFile       `json:"webhook_encryption_keys_file,omitempty"`
+	MigrationsMode          MigrationsMode   `json:"migrations_mode"`
+	GracefulShutdownTimeout time.Duration    `json:"graceful_shutdown_timeout"`
+	HealthReadTimeout       time.Duration    `json:"health_read_timeout"`
+	HealthWriteTimeout      time.Duration    `json:"health_write_timeout"`
+	StaticDirectory         string           `json:"static_directory,omitempty"`
+	WebhookAllowedPrivate   []netip.Prefix   `json:"webhook_allowed_private_cidrs,omitempty"`
+	DeliveryConcurrency     int              `json:"delivery_concurrency"`
+	DeliveryLeaseDuration   time.Duration    `json:"delivery_lease_duration"`
+	DeliveryPollInterval    time.Duration    `json:"delivery_poll_interval"`
+	DelegationAudience      string           `json:"delegation_audience"`
+	DelegationSubject       string           `json:"delegation_subject"`
 }
 
 func (c Config) String() string {
@@ -141,6 +150,7 @@ func (c Config) GoString() string { return c.String() }
 func Load() (Config, error) {
 	cfg := Config{
 		Environment:             EnvironmentDevelopment,
+		TransportPosture:        TransportHTTPS,
 		MigrationsMode:          MigrationsAuto,
 		GracefulShutdownTimeout: DefaultGracefulShutdownTimeout,
 		HealthReadTimeout:       DefaultHealthReadTimeout,
@@ -154,6 +164,9 @@ func Load() (Config, error) {
 
 	if value := env(EnvironmentEnv); value != "" {
 		cfg.Environment = Environment(strings.ToLower(value))
+	}
+	if value := env(TransportPostureEnv); value != "" {
+		cfg.TransportPosture = TransportPosture(strings.ToLower(value))
 	}
 	cfg.ListenAddr = env(ListenAddrEnv)
 	cfg.DatabaseURL = env(DatabaseURLEnv)
@@ -225,6 +238,9 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("%s must be development, test, or production", EnvironmentEnv)
 	}
+	if c.TransportPosture != TransportHTTPS && c.TransportPosture != TransportTrustedInternalHTTP {
+		return fmt.Errorf("%s must be https or trusted-internal-http", TransportPostureEnv)
+	}
 	if err := validateListenAddr(c.ListenAddr); err != nil {
 		return err
 	}
@@ -236,6 +252,13 @@ func (c Config) Validate() error {
 	}
 	if err := validatePublicURL(WebPublicURLEnv, c.WebPublicURL); err != nil {
 		return err
+	}
+	if c.Environment != EnvironmentProduction && c.APIPublicURL != "" && c.WebPublicURL != "" {
+		apiURL, _ := url.Parse(c.APIPublicURL)
+		webURL, _ := url.Parse(c.WebPublicURL)
+		if apiURL.Scheme != webURL.Scheme {
+			return fmt.Errorf("%s and %s must use the same scheme", APIPublicURLEnv, WebPublicURLEnv)
+		}
 	}
 	switch c.MigrationsMode {
 	case MigrationsAuto, MigrationsValidate, MigrationsOff:
@@ -275,8 +298,12 @@ func (c Config) Validate() error {
 			{WebPublicURLEnv, c.WebPublicURL},
 		} {
 			parsed, _ := url.Parse(publicURL.value)
-			if parsed.Scheme != "https" {
-				return fmt.Errorf("%s must use https in production", publicURL.name)
+			requiredScheme := "https"
+			if c.TransportPosture == TransportTrustedInternalHTTP {
+				requiredScheme = "http"
+			}
+			if parsed.Scheme != requiredScheme {
+				return fmt.Errorf("%s must use %s in production for %s posture", publicURL.name, requiredScheme, c.TransportPosture)
 			}
 		}
 		for _, required := range []struct {
@@ -290,6 +317,13 @@ func (c Config) Validate() error {
 			if required.secret.IsZero() {
 				return fmt.Errorf("%s is required in production", required.name)
 			}
+		}
+	}
+	if c.APIPublicURL != "" && c.WebPublicURL != "" {
+		apiURL, _ := url.Parse(c.APIPublicURL)
+		webURL, _ := url.Parse(c.WebPublicURL)
+		if apiURL.Scheme != webURL.Scheme {
+			return fmt.Errorf("%s and %s must use the same scheme", APIPublicURLEnv, WebPublicURLEnv)
 		}
 	}
 	return nil

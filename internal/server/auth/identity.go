@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -42,7 +44,32 @@ type ExternalIdentity struct {
 	Login       string
 	DisplayName string
 	Email       *string
+	AvatarURL   string
 	Claims      json.RawMessage
+}
+
+func NormalizeExternalAvatarURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > 2048 || strings.ContainsAny(raw, "\\\r\n\t") {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || !parsed.IsAbs() || parsed.Host == "" || parsed.Hostname() == "" ||
+		parsed.User != nil || parsed.Opaque != "" || parsed.Fragment != "" {
+		return ""
+	}
+	parsed.Scheme = "https"
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	host := strings.ToLower(parsed.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port := parsed.Port(); port != "" && port != "443" {
+		host = net.JoinHostPort(strings.Trim(host, "[]"), port)
+	}
+	parsed.Host = host
+	return parsed.String()
 }
 
 type IdentityService struct {
@@ -84,21 +111,49 @@ func (s *IdentityService) ResolveOrProvision(ctx context.Context, provider Provi
 		ext.Claims = json.RawMessage(`{}`)
 	}
 	identityKey := provider.Kind + ":" + ext.Issuer + ":" + ext.Subject
+	ext.AvatarURL = NormalizeExternalAvatarURL(ext.AvatarURL)
+	var avatarURL *string
+	if ext.AvatarURL != "" {
+		avatarURL = &ext.AvatarURL
+	}
 	var user User
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `SELECT u.id, u.login, u.display_name, u.email, u.status
+		var identityID uuid.UUID
+		var profileIdentityID *uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT i.id, u.id, u.login, u.display_name, u.email, u.status, u.profile_identity_id
 			FROM identities i JOIN users u ON u.id = i.user_id
 			WHERE i.provider_id = $1 AND i.issuer = $2 AND i.subject = $3
 			FOR UPDATE OF i, u`, provider.ID, ext.Issuer, ext.Subject).
-			Scan(&user.ID, &user.Login, &user.DisplayName, &user.Email, &user.Status)
+			Scan(&identityID, &user.ID, &user.Login, &user.DisplayName, &user.Email, &user.Status, &profileIdentityID)
 		if err == nil {
 			if user.Status != "active" {
 				return ErrDisabledAccount
 			}
-			_, err = tx.Exec(ctx, `UPDATE identities SET claims = $2, updated_at = $3,
-				representation_version = representation_version + 1 WHERE provider_id = $1 AND issuer = $4 AND subject = $5`,
-				provider.ID, ext.Claims, s.now(), ext.Issuer, ext.Subject)
-			return err
+			_, err = tx.Exec(ctx, `UPDATE identities SET claims = $2, avatar_url = $3, updated_at = $4,
+				representation_version = representation_version + 1 WHERE provider_id = $1 AND issuer = $5 AND subject = $6`,
+				provider.ID, ext.Claims, avatarURL, s.now(), ext.Issuer, ext.Subject)
+			if err != nil {
+				return err
+			}
+			if profileIdentityID == nil {
+				if err := tx.QueryRow(ctx, `UPDATE users SET profile_identity_id = (
+					SELECT id FROM identities WHERE user_id = $1 ORDER BY created_at, id LIMIT 1)
+					WHERE id = $1 RETURNING profile_identity_id`, user.ID).Scan(&profileIdentityID); err != nil {
+					return err
+				}
+			}
+			if profileIdentityID != nil && *profileIdentityID == identityID {
+				displayName := strings.TrimSpace(ext.DisplayName)
+				if displayName == "" {
+					displayName = user.DisplayName
+				}
+				if err := tx.QueryRow(ctx, `UPDATE users SET display_name=$2, email=$3,
+					representation_version=representation_version+1, updated_at=$4 WHERE id=$1
+					RETURNING display_name,email`, user.ID, displayName, ext.Email, s.now()).Scan(&user.DisplayName, &user.Email); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -122,11 +177,15 @@ func (s *IdentityService) ResolveOrProvision(ctx context.Context, provider Provi
 		if err != nil {
 			return err
 		}
+		identityID = uuid.New()
 		_, err = tx.Exec(ctx, `INSERT INTO identities
-			(id, user_id, provider_id, issuer, subject, identity_key, claims)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`, uuid.New(), user.ID, provider.ID,
-			ext.Issuer, ext.Subject, identityKey, ext.Claims)
+			(id, user_id, provider_id, issuer, subject, identity_key, claims, avatar_url)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, identityID, user.ID, provider.ID,
+			ext.Issuer, ext.Subject, identityKey, ext.Claims, avatarURL)
 		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE users SET profile_identity_id=$2 WHERE id=$1`, user.ID, identityID); err != nil {
 			return err
 		}
 		user.Login, user.DisplayName, user.Email, user.Status = login, displayName, ext.Email, "active"
@@ -163,14 +222,22 @@ func (s *IdentityService) LinkIdentity(ctx context.Context, actorID, targetUserI
 			return ErrDisabledAccount
 		}
 		identityID := uuid.New()
+		avatar := NormalizeExternalAvatarURL(ext.AvatarURL)
+		var avatarURL *string
+		if avatar != "" {
+			avatarURL = &avatar
+		}
 		_, err := tx.Exec(ctx, `INSERT INTO identities
-			(id, user_id, provider_id, issuer, subject, identity_key, claims)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`, identityID, targetUserID, provider.ID,
-			ext.Issuer, ext.Subject, provider.Kind+":"+ext.Issuer+":"+ext.Subject, claims)
+			(id, user_id, provider_id, issuer, subject, identity_key, claims, avatar_url)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, identityID, targetUserID, provider.ID,
+			ext.Issuer, ext.Subject, provider.Kind+":"+ext.Issuer+":"+ext.Subject, claims, avatarURL)
 		if err != nil {
 			if isUniqueViolation(err) {
 				return ErrConflict
 			}
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE users SET profile_identity_id=$2 WHERE id=$1 AND profile_identity_id IS NULL`, targetUserID, identityID); err != nil {
 			return err
 		}
 		return insertAudit(ctx, tx, actorID, "user:"+actorID.String(), "identity.link", "identity", identityID, requestID, nil)

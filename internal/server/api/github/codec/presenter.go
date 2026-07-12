@@ -72,7 +72,16 @@ type ReactionView struct {
 }
 
 func (p Presenter) PresentUser(view UserView) User {
-	return User{Login: view.Login, ID: StableNumericID(view.StableID), NodeID: NodeID("User", view.StableID), Type: "User", SiteAdmin: view.Admin}
+	return User{Login: view.Login, ID: StableNumericID(view.StableID), NodeID: NodeID("User", view.StableID),
+		AvatarURL: p.AvatarURL(view.Login), Type: "User", SiteAdmin: view.Admin}
+}
+
+func (p Presenter) AvatarURL(login string) string {
+	login = strings.TrimSpace(login)
+	if login == "" || p.Origins.Web.String() == "" {
+		return ""
+	}
+	return p.Origins.Web.MustURL("/api/v1/avatars/" + segment(login))
 }
 
 func (p Presenter) PresentIssue(view IssueView) Issue {

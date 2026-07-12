@@ -20,26 +20,39 @@ import (
 )
 
 type Config struct {
-	ProviderID   uuid.UUID
-	Issuer       string
-	ClientID     string
-	ClientSecret string
-	RedirectURL  string
-	Scopes       []string
-	Endpoint     oauth2.Endpoint
-	UserURL      string
+	ProviderID    uuid.UUID
+	Issuer        string
+	ClientID      string
+	ClientSecret  string
+	RedirectURL   string
+	Scopes        []string
+	Endpoint      oauth2.Endpoint
+	UserURL       string
+	AdmissionGate AdmissionGate
+}
+
+type AdmissionRequest struct {
+	Client    *http.Client
+	Identity  serverauth.ExternalIdentity
+	RequestID string
+}
+
+type AdmissionGate interface {
+	Evaluate(context.Context, AdmissionRequest) (serverauth.AdmissionEvidence, error)
 }
 
 type Adapter struct {
-	config       Config
-	transactions *serverauth.LoginTransactions
-	oauth        oauth2.Config
-	userURL      string
+	config        Config
+	transactions  *serverauth.LoginTransactions
+	oauth         oauth2.Config
+	userURL       string
+	admissionGate AdmissionGate
 }
 
 type CallbackResult struct {
-	Identity serverauth.ExternalIdentity
-	ReturnTo string
+	Identity  serverauth.ExternalIdentity
+	ReturnTo  string
+	Admission *serverauth.AdmissionEvidence
 }
 
 func New(cfg Config, transactions *serverauth.LoginTransactions) (*Adapter, error) {
@@ -62,7 +75,7 @@ func New(cfg Config, transactions *serverauth.LoginTransactions) (*Adapter, erro
 	if len(cfg.Scopes) == 0 {
 		cfg.Scopes = []string{"read:user", "user:email"}
 	}
-	return &Adapter{config: cfg, transactions: transactions, userURL: cfg.UserURL, oauth: oauth2.Config{
+	return &Adapter{config: cfg, transactions: transactions, userURL: cfg.UserURL, admissionGate: cfg.AdmissionGate, oauth: oauth2.Config{
 		ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, RedirectURL: cfg.RedirectURL,
 		Endpoint: cfg.Endpoint, Scopes: append([]string(nil), cfg.Scopes...),
 	}}, nil
@@ -107,10 +120,11 @@ func (a *Adapter) Callback(ctx context.Context, state, code string) (CallbackRes
 		return CallbackResult{}, fmt.Errorf("githuboauth: user endpoint returned status %d", resp.StatusCode)
 	}
 	var user struct {
-		ID    int64  `json:"id"`
-		Login string `json:"login"`
-		Name  string `json:"name"`
-		Email string `json:"email"`
+		ID        int64  `json:"id"`
+		Login     string `json:"login"`
+		Name      string `json:"name"`
+		Email     string `json:"email"`
+		AvatarURL string `json:"avatar_url"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&user); err != nil {
 		return CallbackResult{}, fmt.Errorf("githuboauth: decode user: %w", err)
@@ -123,10 +137,26 @@ func (a *Adapter) Callback(ctx context.Context, state, code string) (CallbackRes
 	if user.Email != "" {
 		email = &user.Email
 	}
-	return CallbackResult{Identity: serverauth.ExternalIdentity{
+	identity := serverauth.ExternalIdentity{
 		Issuer: a.config.Issuer, Subject: strconv.FormatInt(user.ID, 10), Login: user.Login,
 		DisplayName: user.Name, Email: email, Claims: rawClaims,
-	}, ReturnTo: tx.ReturnTo}, nil
+		AvatarURL: serverauth.NormalizeExternalAvatarURL(user.AvatarURL),
+	}
+	var admission *serverauth.AdmissionEvidence
+	if a.admissionGate != nil {
+		evidence, err := a.admissionGate.Evaluate(ctx, AdmissionRequest{Client: a.oauth.Client(ctx, token), Identity: identity,
+			RequestID: serverauth.AdmissionRequestID(ctx)})
+		if err != nil {
+			return CallbackResult{}, err
+		}
+		admission = &evidence
+	}
+	return CallbackResult{Identity: identity, ReturnTo: tx.ReturnTo, Admission: admission}, nil
+}
+
+func (a *Adapter) CompleteLogin(ctx context.Context, state, code string) (serverauth.LoginCompletion, error) {
+	result, err := a.Callback(ctx, state, code)
+	return serverauth.LoginCompletion{Identity: result.Identity, ReturnTo: result.ReturnTo, Admission: result.Admission}, err
 }
 
 func (a *Adapter) Complete(ctx context.Context, state, code string) (serverauth.ExternalIdentity, string, error) {

@@ -47,21 +47,24 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/events/delivery"
 	"github.com/higress-group/issue-spec/internal/server/events/subscriptions"
 	"github.com/higress-group/issue-spec/internal/server/evidence"
+	"github.com/higress-group/issue-spec/internal/server/publicurl"
 	"github.com/higress-group/issue-spec/internal/server/spa"
 )
 
 type Dependencies struct {
-	Admin          *adminservice.Service
-	Identity       *serverauth.IdentityService
-	Sessions       *session.Service
-	PATs           *pat.Service
-	Delegation     *delegation.Service
-	Takeover       *takeover.Service
-	Authorization  adminservice.Authorizer
-	Authentication serverauth.Middleware
-	Adapters       map[string]nativeauth.LoginAdapter
-	APIOrigin      string
-	WebOrigin      string
+	Admin            *adminservice.Service
+	Identity         *serverauth.IdentityService
+	Sessions         *session.Service
+	PATs             *pat.Service
+	Delegation       *delegation.Service
+	Takeover         *takeover.Service
+	Authorization    adminservice.Authorizer
+	Authentication   serverauth.Middleware
+	Adapters         map[string]nativeauth.LoginAdapter
+	Avatars          *serverauth.AvatarService
+	APIOrigin        string
+	WebOrigin        string
+	TransportPosture publicurl.TransportPosture
 
 	Issues       *githubissues.Service
 	Labels       *githublabels.Service
@@ -109,7 +112,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compose server metadata: %w", err)
 	}
-	serverMetadata, err := metaapi.NewServerMetadata(deps.APIOrigin, deps.WebOrigin, providerRegistry.Descriptions())
+	serverMetadata, err := metaapi.NewServerMetadataWithPosture(deps.APIOrigin, deps.WebOrigin, providerRegistry.Descriptions(), deps.TransportPosture)
 	if err != nil {
 		return nil, fmt.Errorf("compose server metadata: %w", err)
 	}
@@ -145,7 +148,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			return bootstrapapi.NewRouteSet(bootstrapapi.Dependencies{Service: deps.Admin})
 		},
 		func() (routeset.RouteSet, error) {
-			return nativeauth.NewRouteSet(nativeauth.Dependencies{Identity: deps.Identity, Sessions: deps.Sessions, PATs: deps.PATs, Authority: deps.Authorization.(nativeauth.IdentityAuthority), Middleware: deps.Authentication, Adapters: deps.Adapters, WebOrigin: deps.WebOrigin})
+			return nativeauth.NewRouteSet(nativeauth.Dependencies{Identity: deps.Identity, Sessions: deps.Sessions, PATs: deps.PATs, Authority: deps.Authorization.(nativeauth.IdentityAuthority), Middleware: deps.Authentication, Adapters: deps.Adapters, Avatars: deps.Avatars, WebOrigin: deps.WebOrigin})
 		},
 		func() (routeset.RouteSet, error) {
 			return adminapi.NewRouteSet(adminapi.Dependencies{Service: deps.Admin, Authorizer: deps.Authorization, Authenticate: nativeAuthenticate})
@@ -218,7 +221,7 @@ func validateDependencies(deps Dependencies) error {
 	if _, ok := deps.Authorization.(nativeauth.IdentityAuthority); !ok {
 		return errors.New("server router: authorization does not provide identity authority")
 	}
-	if strings.TrimSpace(deps.APIOrigin) == "" || strings.TrimSpace(deps.WebOrigin) == "" || strings.TrimSpace(deps.DelegationAudience) == "" || strings.TrimSpace(deps.DelegationSubject) == "" {
+	if strings.TrimSpace(deps.APIOrigin) == "" || strings.TrimSpace(deps.WebOrigin) == "" || !deps.TransportPosture.Valid() || strings.TrimSpace(deps.DelegationAudience) == "" || strings.TrimSpace(deps.DelegationSubject) == "" {
 		return errors.New("server router: public origins and delegation bindings are required")
 	}
 	return nil

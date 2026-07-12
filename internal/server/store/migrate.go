@@ -20,7 +20,7 @@ import (
 
 const migrationAdvisoryLock int64 = 0x4953535545535043 // "ISSUESPC"
 
-const LatestSchemaVersion int64 = 12
+const LatestSchemaVersion int64 = 13
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS

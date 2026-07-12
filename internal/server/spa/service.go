@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/models"
+	"github.com/higress-group/issue-spec/internal/server/publicurl"
 	"github.com/higress-group/issue-spec/internal/server/store"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -25,13 +27,19 @@ type Service struct {
 	pool     *pgxpool.Pool
 	database *store.Store
 	authz    *authz.Service
+	origins  *publicurl.Origins
 }
 
-func New(database *store.Store, authorization *authz.Service) (*Service, error) {
+func New(database *store.Store, authorization *authz.Service, configuredOrigins ...publicurl.Origins) (*Service, error) {
 	if database == nil || database.Pool() == nil || authorization == nil {
 		return nil, errors.New("spa: database and authorization service are required")
 	}
-	return &Service{pool: database.Pool(), database: database, authz: authorization}, nil
+	service := &Service{pool: database.Pool(), database: database, authz: authorization}
+	if len(configuredOrigins) > 0 {
+		origins := configuredOrigins[0]
+		service.origins = &origins
+	}
+	return service, nil
 }
 
 type UserContext struct {
@@ -39,6 +47,7 @@ type UserContext struct {
 	Login       string    `json:"login"`
 	DisplayName string    `json:"display_name"`
 	Email       *string   `json:"email,omitempty"`
+	AvatarURL   string    `json:"avatar_url,omitempty"`
 	SiteAdmin   bool      `json:"site_admin"`
 }
 
@@ -85,7 +94,7 @@ func (s *Service) Current(ctx context.Context, principal serverauth.Principal, c
 	}
 	result := CurrentContext{
 		User: UserContext{ID: principal.User.ID, Login: principal.User.Login, DisplayName: principal.User.DisplayName,
-			Email: principal.User.Email, SiteAdmin: site.IdentitySiteAdmin},
+			Email: principal.User.Email, AvatarURL: s.avatarURL(principal.User.Login), SiteAdmin: site.IdentitySiteAdmin},
 		Credential: CredentialContext{Kind: principal.Kind, ScopeMode: "token", Scopes: append([]string(nil), principal.Scopes...),
 			RepositoryRestricted: principal.RepoRestricted},
 		AllowedActions: append([]authz.AccessAction(nil), site.AllowedActions...),
@@ -228,6 +237,7 @@ type UserCandidate struct {
 	ID               uuid.UUID          `json:"id"`
 	Login            string             `json:"login"`
 	DisplayName      string             `json:"display_name"`
+	AvatarURL        string             `json:"avatar_url,omitempty"`
 	Kind             string             `json:"kind"`
 	Status           models.UserStatus  `json:"status"`
 	Membership       *MembershipSummary `json:"membership,omitempty"`
@@ -313,6 +323,7 @@ func (s *Service) UserCandidates(ctx context.Context, principal serverauth.Princ
 			return UserCandidates{}, fmt.Errorf("spa: scan user candidate: %w", err)
 		}
 		candidate.Kind = "human"
+		candidate.AvatarURL = s.avatarURL(candidate.Login)
 		if candidate.ServiceAccountID != nil {
 			candidate.Kind = "service_account"
 		}
@@ -325,6 +336,13 @@ func (s *Service) UserCandidates(ctx context.Context, principal serverauth.Princ
 		return UserCandidates{}, fmt.Errorf("spa: iterate user candidates: %w", err)
 	}
 	return result, nil
+}
+
+func (s *Service) avatarURL(login string) string {
+	if s == nil || s.origins == nil || strings.TrimSpace(login) == "" {
+		return ""
+	}
+	return s.origins.Web.MustURL("/api/v1/avatars/" + url.PathEscape(login))
 }
 
 func (p CandidatePurpose) Valid() bool {
