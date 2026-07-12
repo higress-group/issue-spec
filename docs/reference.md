@@ -1,0 +1,187 @@
+# Workflow configuration and CLI reference
+
+**English | [简体中文](reference.zh-CN.md)**
+
+[Back to the project README](../README.md)
+
+## Project Workflow Configuration
+
+Projects can customize issue-spec workflow instructions and templates without moving active change state back into repository change directories.
+
+Discovery order:
+
+1. `issue-spec/config.yaml` with project schemas under `issue-spec/schemas/<schema>/schema.yaml`.
+2. Legacy `openspec/config.yaml` with schemas under `openspec/schemas/<schema>/schema.yaml`, only when no preferred issue-spec config exists.
+3. Built-in issue-spec workflow.
+
+Schema templates are resolved from the selected schema's `templates/` directory. Template paths must be relative, must not escape the schema template directory, and must exist before issue-spec uses them. Active proposal/design/implement content, SPEC/TASK/PROCESS/QUESTION/REVIEW/VERIFY typed comments, PR rationale, and review findings remain in GitHub issue-native storage. Legacy OpenSpec outputs such as `proposal.md`, `specs/**/*.md`, `tasks.md`, `review.md`, and `verify.md` are treated as storage mapping hints, not active files to write.
+
+Validate or inspect the selected workflow before writing artifacts:
+
+```bash
+issue-spec workflow validate --repo owner/repo --json
+issue-spec workflow which --repo owner/repo --json
+```
+
+New durable specs default to `issue-spec/specs/<capability>/spec.md`. If `openspec/specs/<capability>/spec.md` already exists, archive can update that legacy durable spec and reports the compatibility path selection.
+
+### Preferred natural language
+
+Agents author generated artifacts in English by default. To make issue bodies, typed comments, design notes, and rationale come out in another language, add a `rules.language` entry to `issue-spec/config.yaml`. The value is embedded into every generated skill, slash command, and prompt as a workflow rule, so the coordinator follows it.
+
+The fastest way is the `--language` flag on init, which scaffolds or merges that entry for you:
+
+```bash
+issue-spec init --repo owner/repo --tools codex,claude --language zh
+```
+
+Common codes (`zh`, `zh-tw`, `en`, `ja`, `ko`) are expanded to a descriptive label; any other value is stored as-is. The generated rule instructs agents to write natural-language content in the chosen language while keeping canonical structural tokens in English (`## Requirement:`, `### Scenario:`, `**WHEN**`/`**THEN**`, MUST/SHALL, and typed comment headers), so canonical validation still passes.
+
+You can also hand-author it. Include the `language_instructions` guardrail that `--language` writes for you — without it, agents may translate the canonical structural tokens and fail validation:
+
+```yaml
+# issue-spec/config.yaml
+rules:
+  language: "Simplified Chinese (简体中文)"
+  language_instructions: "Write all natural-language content in Simplified Chinese (简体中文). Keep canonical structural tokens in English so validation passes: the `## Requirement:` and `### Scenario:` headings, the `**WHEN**`/`**THEN**` scenario bullets, the MUST/SHALL normative keywords, and typed comment headers."
+```
+
+Re-run `issue-spec init` after editing the config so the generated skills and commands pick up the rule. Note that when `--language` merges an existing `issue-spec/config.yaml`, it rewrites the file through a YAML round-trip, so hand-added comments are dropped and keys are re-sorted.
+
+## CLI Reference
+
+```bash
+issue-spec auth status
+issue-spec auth login
+issue-spec auth logout
+issue-spec auth token --plain
+
+issue-spec init --repo owner/repo --create-labels
+issue-spec init --repo owner/repo --tools codex,claude --delivery both
+issue-spec init --repo owner/repo --tools codex,claude --language zh
+
+issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md [--title "Custom proposal title"]
+issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md [--title "Custom design title"]
+issue-spec issue create implement --repo owner/repo --change my-change --proposal 1 --design 2 --body-file implement.md [--title "Custom implementation title"]
+issue-spec issue update --repo owner/repo --issue 1 --body-file proposal.md --summary "Clarified goals after review."
+
+issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
+issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
+issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
+issue-spec comment list --repo owner/repo --issue 1 --json
+
+issue-spec question create --repo owner/repo --issue 1 --id QUESTION-001 --blocking --question "What must be decided?"
+issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-001 --resolution-file resolution.md
+
+issue-spec link --repo owner/repo --from SPEC-001 --from-issue 1 --to TASK-001 --to-issue 2
+issue-spec status --repo owner/repo --proposal 1 --design 2 --implement 3
+issue-spec verify-links --repo owner/repo --proposal 1 --design 2 --implement 3
+
+issue-spec workflow validate --repo owner/repo --json
+issue-spec workflow which --repo owner/repo --schema custom-workflow --json
+
+issue-spec pr rationale --repo owner/repo --pr 4 --path internal/foo.go --line 42 --process PROCESS-001 --spec SPEC-001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "Why this line changes."
+issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-001 --pr 4
+issue-spec pr link-issues --repo owner/repo --pr 4 --proposal 1 --design 2 --implement 3
+
+issue-spec review sync --repo owner/repo --pr 4 --implement 3 --id REVIEW-001
+issue-spec review finding --repo owner/repo --pr 4 --path internal/foo.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-001 --spec SPEC-001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "What must be fixed."
+issue-spec review reply --repo owner/repo --pr 4 --comment-id 123456 --finding FINDING-001 --process PROCESS-001 --status resolved --body "Fixed in the latest patch."
+
+issue-spec verify --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --durable-spec issue-spec/specs/issue-spec-cli/spec.md
+
+issue-spec archive durable-spec --repo owner/repo --proposal 1 --capability issue-spec-cli
+issue-spec archive durable-spec --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --capability issue-spec-cli --create-pr --branch issue-spec/durable-spec-issue-spec-cli --close-issues
+
+issue-spec runner preflight --repo owner/repo --runner login
+issue-spec runner poll --repo owner/repo --runner login --once --dry-run
+issue-spec runner poll --repo owner/repo --runner login --agent codex
+```
+
+## Canonical Typed Comments
+
+Typed comments carry requirements, tasks, process ownership, review, and verification evidence across coordinator handoffs. Instead of hand-writing raw Markdown, use `issue-spec comment generate` to render canonical bodies from structured JSON, then pipe the output straight into `comment upsert`:
+
+```bash
+issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json \
+  | issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file -
+```
+
+`comment generate` writes a complete typed-comment Markdown body (marker + visible header + canonical content) to stdout and never touches the network. The same command family renders `TASK`, `PROCESS`, `REVIEW`, and `VERIFY` bodies with type-specific JSON shapes.
+
+### SPEC generator input JSON
+
+```json
+{
+  "requirement": {
+    "title": "canonical SPEC comments",
+    "text": "The CLI MUST render canonical SPEC Markdown from structured fields."
+  },
+  "scenarios": [
+    {
+      "title": "structured fields render a canonical SPEC body",
+      "when": "a caller provides requirement and scenario fields",
+      "then": "the CLI renders a body accepted by comment upsert"
+    }
+  ]
+}
+```
+
+The rendered body contains a `## Requirement:` heading, normative MUST/SHALL language, and one or more `### Scenario:` sections with `**WHEN**`/`**THEN**` bullets. Unknown JSON fields are rejected so schema drift fails fast.
+
+### TASK and PROCESS generator input JSON
+
+TASK bodies carry the PROCESS-planning metadata a coordinator needs to decompose work. The `execution_planning` object renders the required `### Execution Planning` section:
+
+```json
+{
+  "title": "canonical typed-comment authoring",
+  "summary": "Extend the generators so TASK/PROCESS bodies carry planning metadata.",
+  "checklist": ["Add execution_planning fields", "Enforce canonical validation"],
+  "covers": ["SPEC-001", "SPEC-006"],
+  "execution_planning": {
+    "owned_areas": ["internal/templates"],
+    "shared_touchpoints": ["internal/model"],
+    "dependencies": ["SPEC generator schema"],
+    "coupling": "low",
+    "execution_mode": "coordinator-owned",
+    "complexity": "small"
+  }
+}
+```
+
+PROCESS bodies record their parent TASK and, for serial chains, the handoff evidence passed to the next node:
+
+```json
+{
+  "title": "extend generators",
+  "owner": "Worker Agent A",
+  "parent_task": "TASK-001",
+  "dependencies": ["N/A"],
+  "write_ownership": ["internal/templates"],
+  "covers": ["TASK-001"],
+  "handoff": "state.json contract fixed; successor may parse it"
+}
+```
+
+Omitted planning fields render canonical defaults (`TBD` / `N/A`) so trivial changes stay low-friction while the sections remain present for coordinators to read.
+
+### Canonical validation by default
+
+`comment upsert` validates canonical discipline by default before creating or updating the remote comment:
+
+- **SPEC** — rejects bodies missing a `## Requirement:` heading, normative MUST/SHALL language, or `### Scenario:` `**WHEN**`/`**THEN**` bullets.
+- **TASK** — rejects bodies missing a `## Task:` heading or the `### Execution Planning` section.
+- **PROCESS** — rejects bodies missing a `## Process:` heading or a `### Parent TASK` section.
+
+Serial-chain `### Handoff` evidence is not required at write time (only chains need it, which is not knowable per-comment at upsert) — it is enforced at `verify` instead. One shared validator in `internal/model` is reused by `comment upsert`, `comment list`, `status`, `verify`, and `archive`, operating on the logical body after marker/header stripping so raw generated bodies and already-wrapped bodies behave identically.
+
+### Migration escape hatch
+
+`--allow-noncanonical` is a **write-time migration bypass only**. It lets you write a malformed SPEC body for staged migration, but it does **not** create durable approval:
+
+- The write is marked `noncanonical` in command output.
+- `comment list`, `status`, `verify`, and archive readiness recompute canonical validity from the remote body and keep reporting or blocking on the malformed active comment.
+- `verify` and durable-spec archive fail before archive creation while an active SPEC comment remains malformed.
+
+The correct long-term fix is to regenerate the comment into canonical shape with `comment generate`, or supersede it if it is no longer active.

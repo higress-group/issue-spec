@@ -123,115 +123,16 @@ issue-spec auth status --hostname ghe.example.com --json
 
 ## Runner：评论触发的工作流
 
-`issue-spec runner` 可以监听仓库的 issue 评论，当一位被授权的维护者发出命令评论时，启动一个无头（headless）的 acpx 协调 agent。
-
-最小启动方式：
-
-```bash
-gh auth login
-issue-spec runner poll \
-  --repo owner/repo \
-  --runner "$(gh api user --jq .login)" \
-  --agent codex
-```
-
-默认情况下，runner 只接受来自「与 `gh` 登录账号相同」的命令评论。这让默认行为保持 fail-closed（默认拒绝）：除非显式配置额外用户，否则只有主 runner 账号能触发 `/new`、`/resume` 或 `/cancel`。主 runner 账号同时拥有状态评论、reaction、issue-spec 工作流写入，以及协调器执行的任何 PR/issue 操作。
-
-请确保该 GitHub 账号已 watch 该仓库，并开启了 issue 和 PR 通知。可以用 preflight 检查来验证本地 `gh` 认证、仓库访问权限、watch 状态、sandbox 前置条件、acpx 以及所选 agent：
+`issue-spec runner` 监听经过授权的 issue 命令评论，并通过 acpx 在受管仓库工作区中
+调度 Codex 或 Claude。
 
 ```bash
 issue-spec runner preflight --repo owner/repo --runner "$(gh api user --jq .login)"
+issue-spec runner poll --repo owner/repo --runner "$(gh api user --jq .login)" --agent codex
 ```
 
-Codex 支撑的 runner 分发使用 acpx 的 Codex provider，它会在启动 Codex 之前先拉起 `npx -y @agentclientprotocol/codex-acp@^0.0.44`。runner preflight 会检查 `acpx`、`npm` 和 `npx`；无法访问 npm registry 的主机应在启动 runner 前用 `npm cache add @agentclientprotocol/codex-acp@^0.0.44` 预先缓存该包。
-
-为了更快地检测由主 runner 账号所写的评论，建议使用一个专用的「仅通知」GitHub 账号。GitHub 通知是按用户区分的，对于由「同一个正在轮询通知的账号」所写的评论，可能不会产生新的通知。若没有专用通知账号，自己所写的命令评论仍会被较低频率的仓库评论回退机制发现；这种保守的默认策略避免了激进的全量评论轮询，也降低了触达 GitHub API 限制的概率。
-
-创建一个 bot 或服务账号，watch 该仓库并开启 issue 与 PR 通知，然后导出一个能读取仓库通知的 token：
-
-```bash
-export ISSUE_SPEC_NOTIFICATION_TOKEN=...
-issue-spec runner poll \
-  --repo owner/repo \
-  --runner "$(gh api user --jq .login)" \
-  --notification-runner issue-spec-notify-bot \
-  --agent codex
-```
-
-通知 token 仅用于 `notifications` 轮询和通知类 preflight 检查。命令授权与 GitHub 写入仍由主 runner 账号执行。当 token 存放在不同的环境变量中时，使用 `--notification-token-env <name>`。
-
-支持的命令评论：
-
-```text
-/new <prompt>
-/resume <public-session-id> <prompt>
-/cancel <public-session-id>
-```
-
-`/new` 会创建一个全新的公共 runner 会话，把目标仓库克隆进一个受管理的 workspace，从该 workspace 启动 acpx，并写一条包含公共会话 id 的简洁状态评论。`/resume` 复用该公共会话与 workspace。公共会话是「仓库范围」的，由被授权的仓库维护者共享；它们不是私有的用户会话。
-
-协调器与人的讨论是显式的。被沙箱隔离的协调器可以使用镜像进来的 GitHub 认证来提出澄清问题。阻塞性的工作流决策应记录为 `QUESTION` 类型化评论；轻量的澄清可以使用普通的 issue 时间线评论，例如 `gh issue comment <issue> --repo owner/repo --body-file <file>`。GitHub issue 评论是扁平的时间线评论，而非嵌套在某条 issue 评论下的回复；协调器应链接触发评论或状态评论，并带上公共会话 id。要继续同一个 acpx 会话，被授权的维护者必须新建一条命令评论：
-
-```text
-/resume <public-session-id> <answer or next instruction>
-```
-
-普通的后续评论在 GitHub 上依然可见，但会被 runner 的 intake 忽略。终态 runner 状态评论会包含一个带公共会话 id 的 `/resume` 模板。
-
-使用 dry run 来检查配置与 intake，而不会创建 GitHub 评论、改变 runner 状态、创建 workspace 或分发 acpx。dry-run 仍会读取 GitHub 通知与评论，因此在繁忙仓库上的第一次运行可能明显慢于之后会持久化游标（cursor）的真实轮询周期。默认情况下，初始仓库评论回退被限制在最近 30 天内：
-
-```bash
-issue-spec runner poll \
-  --repo owner/repo \
-  --runner "$(gh api user --jq .login)" \
-  --once \
-  --dry-run \
-  --json
-```
-
-常用的 runner 选项：
-
-- `--state <path>` 存储持久化的 runner 状态。默认情况下，单仓库 runner 使用 `~/.issue-spec/runners/<host>/<owner>/<repo>/<runner>/state.json`；多仓库 runner 使用一个稳定的共享作用域 `~/.issue-spec/runners/<host>/multi/.../<runner>/state.json`。重复的命令投递由稳定的命令幂等性与 runner 的 `eyes` reaction 确认来控制。
-- `--workspace-root <path>` 存储受管理的仓库克隆。默认使用与 `state.json` 相邻的 `workspaces` 目录，位于同一 runner 作用域下。显式路径按给定值使用。
-- `--workspace-retention <duration>` 控制真实轮询周期何时移除过期的、非活跃的受管理 workspace。默认 7 天。处于 queued、dispatched、running、locked 与 interrupted 状态的 workspace 会被保护。
-- `--poll-interval` 与 `--fallback-interval` 分别控制通知轮询与较低频率的仓库评论回退。
-- `--fallback-initial-lookback <duration>` 在尚未存储游标时限制首次仓库评论回退的范围。默认 `720h`（30 天）；设为 `0` 可扫描所有历史评论。
-- `--max-concurrency <n>` 可以并行运行相互独立的会话。默认 3；当 runner 主机具备足够的 CPU、内存与 agent 配额时，可调高以提升吞吐。同一公共会话的命令会被 workspace/session 锁串行化。
-- 持续运行的 `runner poll` 默认在后台 goroutine 中分发就绪任务，从而在 acpx 任务运行时保持通知/回退轮询的响应性。当分发空闲时它仍会对在途工作进行 reconcile，并在分发繁忙时保持过期 workspace 的清理运行。`--once` 保持同步以便诊断；当需要检查直接分发错误时，`--sync-dispatch` 会强制持续轮询回到前台分发。`--async-dispatch` 作为显式默认值被接受，且不能与 `--once` 或 `--sync-dispatch` 组合。
-- `--allowed-user <login>` 允许某位人类维护者触发 `/new`、`/resume` 与 `/cancel`；可重复该参数或用逗号分隔多个 login。若省略，则只接受已认证的 runner 身份。被允许的用户仍必须具备等同于 write 的仓库权限。
-- `--notification-runner <login>` 启用一个「仅通知」的轮询身份。当设置了它但未设置 `--notification-token-env` 时，runner 从 `ISSUE_SPEC_NOTIFICATION_TOKEN` 读取 token。
-- `--notification-token-env <name>` 选择包含「仅通知」token 的环境变量。它可以与 `--notification-runner` 一起使用，也可以单独使用；当提供了 runner login 时，preflight 会校验该 token 认证为该 login。
-- `--agent codex|claude` 通过 acpx 选择协调 agent。`--model <name>` 把所配置的 model/profile 传给 acpx。
-- `--gh-config-dir <path>` 选择要镜像进沙箱的宿主 GitHub CLI 配置目录。默认情况下 runner 会从宿主 GitHub CLI 环境推导。
-- `--allow-cancel=false` 关闭 `/cancel` intake。
-
-在 Linux 上，runner 分发默认使用 bubblewrap，把协调器的文件系统写入限制在受管理的 workspace 内，同时仍允许 GitHub、model 与包操作的网络访问。当 bubblewrap 不在 `PATH` 上时，请安装它或设置 `ISSUE_SPEC_BWRAP_PATH` / `--bwrap-path`。若 bubblewrap 不可用或不受支持，runner 会让 preflight 失败，而不是在没有隔离的情况下静默运行。
-
-只有作为显式的运维选择时才使用 `--unsafe-no-sandbox`：
-
-```bash
-issue-spec runner poll --repo owner/repo --runner maintainer --unsafe-no-sandbox
-```
-
-unsafe 模式会关闭文件系统边界，并在持久化状态中记录 `sandbox_provider=none` 与 `fs_boundary=disabled`。常规的 issue-spec CLI 命令仍是跨平台的；默认的沙箱化 runner 分发路径需要 Linux，除非显式选择 unsafe 模式。
-
-对于 Codex 支撑的运行，runner 默认要求 agent 具有 full access，以便协调器能在受管理的 workspace 内运行 issue-spec CLI 命令、shell 命令、测试以及原生子 agent：
-
-```bash
-issue-spec runner poll --repo owner/repo --runner maintainer --agent codex --model gpt-5.5[xhigh]
-```
-
-对于 Claude Code 支撑的运行，包含 issue-spec 工作流所需的工具：
-
-```bash
-issue-spec runner poll \
-  --repo owner/repo \
-  --runner maintainer \
-  --agent claude \
-  --claude-allowed-tools Task,Bash
-```
-
-由 acpx 拉起的协调器通过在沙箱内运行现有的 issue-spec CLI 命令，来创建或更新 proposal、design、类型化评论、review、verify 与 archive 产物。外层 runner 拥有授权、简洁的任务生命周期状态评论、workspace 隔离、重启 reconcile、取消状态，以及存储在持久化 runner 状态中的有界溯源信息。
+命令接入、权限校验、通知账号、沙箱、并发、工作区、恢复和全部运行参数见
+**[Runner 运维指南](docs/runner.zh-CN.md)**。
 
 ## 为什么选择 issue-spec
 
@@ -344,187 +245,14 @@ issue-spec init --repo owner/repo --tools codex,claude --delivery both
 
 若省略 `--tools`，init 会检测已存在的 `.agents` 或 `.claude` 目录并刷新这些工作流。使用 `--tools none` 只初始化 `.issue-spec/config.json` 与可选的标签（labels）。
 
-## 项目工作流配置
+## 配置与参考
 
-项目可以自定义 issue-spec 的工作流指令与模板，而无需把进行中的变更状态搬回仓库的变更目录。
+README 聚焦产品介绍和第一次跑通工作流；详细的编写规则与命令契约放在参考文档中：
 
-发现顺序：
-
-1. `issue-spec/config.yaml`，项目 schema 位于 `issue-spec/schemas/<schema>/schema.yaml`。
-2. 遗留的 `openspec/config.yaml`，schema 位于 `openspec/schemas/<schema>/schema.yaml`，仅当不存在更优先的 issue-spec config 时。
-3. 内置的 issue-spec 工作流。
-
-Schema 模板从所选 schema 的 `templates/` 目录解析。模板路径必须是相对路径，不得逃逸出 schema 模板目录，并且在 issue-spec 使用之前必须存在。进行中的 proposal/design/implement 内容、SPEC/TASK/PROCESS/QUESTION/REVIEW/VERIFY 类型化评论、PR rationale 与 review 发现都保留在 GitHub issue 原生存储中。遗留的 OpenSpec 输出（如 `proposal.md`、`specs/**/*.md`、`tasks.md`、`review.md` 与 `verify.md`）被视为存储映射提示，而不是要写入的活跃文件。
-
-在写入产物之前，验证或检查所选工作流：
-
-```bash
-issue-spec workflow validate --repo owner/repo --json
-issue-spec workflow which --repo owner/repo --json
-```
-
-新的长期 spec 默认写入 `issue-spec/specs/<capability>/spec.md`。若 `openspec/specs/<capability>/spec.md` 已存在，archive 可以更新那个遗留的长期 spec，并报告所选的兼容路径。
-
-### 偏好的自然语言
-
-默认情况下，agent 使用英文来撰写生成的产物。要让 issue 正文、类型化评论、design 说明与 rationale 以另一种语言输出，请在 `issue-spec/config.yaml` 中添加一个 `rules.language` 条目。该值会被嵌入到每一个生成的 skill、slash 命令与 prompt 中，作为一条工作流规则，从而让协调器遵循它。
-
-最快的方式是 init 上的 `--language` 标志，它会为你脚手架或合并该条目：
-
-```bash
-issue-spec init --repo owner/repo --tools codex,claude --language zh
-```
-
-常见的代码（`zh`、`zh-tw`、`en`、`ja`、`ko`）会被展开为一个描述性标签；其他任何值则原样存储。生成的规则会指示 agent 用所选语言撰写自然语言内容，同时把 canonical 结构标记保留为英文（`## Requirement:`、`### Scenario:`、`**WHEN**`/`**THEN**`、MUST/SHALL 以及类型化评论头），这样 canonical 校验仍然能通过。
-
-你也可以手写。请连同 `--language` 会替你写入的 `language_instructions` 护栏一起写——否则 agent 可能把 canonical 结构标记也翻译掉，导致校验失败：
-
-```yaml
-# issue-spec/config.yaml
-rules:
-  language: "Simplified Chinese (简体中文)"
-  language_instructions: "Write all natural-language content in Simplified Chinese (简体中文). Keep canonical structural tokens in English so validation passes: the `## Requirement:` and `### Scenario:` headings, the `**WHEN**`/`**THEN**` scenario bullets, the MUST/SHALL normative keywords, and typed comment headers."
-```
-
-编辑 config 后重新运行 `issue-spec init`，让生成的 skills 与命令拾取该规则。注意：当 `--language` 合并一个已存在的 `issue-spec/config.yaml` 时，会通过 YAML 往返重写该文件，因此手写的注释会被丢弃、key 会被重新排序。
-
-## CLI 参考
-
-```bash
-issue-spec auth status
-issue-spec auth login
-issue-spec auth logout
-issue-spec auth token --plain
-
-issue-spec init --repo owner/repo --create-labels
-issue-spec init --repo owner/repo --tools codex,claude --delivery both
-issue-spec init --repo owner/repo --tools codex,claude --language zh
-
-issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md [--title "Custom proposal title"]
-issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md [--title "Custom design title"]
-issue-spec issue create implement --repo owner/repo --change my-change --proposal 1 --design 2 --body-file implement.md [--title "Custom implementation title"]
-issue-spec issue update --repo owner/repo --issue 1 --body-file proposal.md --summary "Clarified goals after review."
-
-issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
-issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
-issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
-issue-spec comment list --repo owner/repo --issue 1 --json
-
-issue-spec question create --repo owner/repo --issue 1 --id QUESTION-001 --blocking --question "What must be decided?"
-issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-001 --resolution-file resolution.md
-
-issue-spec link --repo owner/repo --from SPEC-001 --from-issue 1 --to TASK-001 --to-issue 2
-issue-spec status --repo owner/repo --proposal 1 --design 2 --implement 3
-issue-spec verify-links --repo owner/repo --proposal 1 --design 2 --implement 3
-
-issue-spec workflow validate --repo owner/repo --json
-issue-spec workflow which --repo owner/repo --schema custom-workflow --json
-
-issue-spec pr rationale --repo owner/repo --pr 4 --path internal/foo.go --line 42 --process PROCESS-001 --spec SPEC-001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "Why this line changes."
-issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-001 --pr 4
-issue-spec pr link-issues --repo owner/repo --pr 4 --proposal 1 --design 2 --implement 3
-
-issue-spec review sync --repo owner/repo --pr 4 --implement 3 --id REVIEW-001
-issue-spec review finding --repo owner/repo --pr 4 --path internal/foo.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-001 --spec SPEC-001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "What must be fixed."
-issue-spec review reply --repo owner/repo --pr 4 --comment-id 123456 --finding FINDING-001 --process PROCESS-001 --status resolved --body "Fixed in the latest patch."
-
-issue-spec verify --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --durable-spec issue-spec/specs/issue-spec-cli/spec.md
-
-issue-spec archive durable-spec --repo owner/repo --proposal 1 --capability issue-spec-cli
-issue-spec archive durable-spec --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --capability issue-spec-cli --create-pr --branch issue-spec/durable-spec-issue-spec-cli --close-issues
-
-issue-spec runner preflight --repo owner/repo --runner login
-issue-spec runner poll --repo owner/repo --runner login --once --dry-run
-issue-spec runner poll --repo owner/repo --runner login --agent codex
-```
-
-## Canonical 类型化评论
-
-类型化评论在协调器交接之间承载需求、任务、process 所有权、review 与验证证据。与其手写原始 Markdown，不如使用 `issue-spec comment generate` 从结构化 JSON 渲染 canonical 正文，然后把输出直接管道给 `comment upsert`：
-
-```bash
-issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json \
-  | issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file -
-```
-
-`comment generate` 会把一个完整的类型化评论 Markdown 正文（marker + 可见头 + canonical 内容）写到 stdout，且从不触网。同一命令家族用类型专属的 JSON 形态渲染 `TASK`、`PROCESS`、`REVIEW` 与 `VERIFY` 正文。
-
-### SPEC 生成器输入 JSON
-
-```json
-{
-  "requirement": {
-    "title": "canonical SPEC comments",
-    "text": "The CLI MUST render canonical SPEC Markdown from structured fields."
-  },
-  "scenarios": [
-    {
-      "title": "structured fields render a canonical SPEC body",
-      "when": "a caller provides requirement and scenario fields",
-      "then": "the CLI renders a body accepted by comment upsert"
-    }
-  ]
-}
-```
-
-渲染出的正文包含一个 `## Requirement:` 标题、规范性的 MUST/SHALL 措辞，以及一个或多个带 `**WHEN**`/`**THEN**` 项的 `### Scenario:` 小节。未知的 JSON 字段会被拒绝，因此 schema 漂移会快速失败。
-
-### TASK 与 PROCESS 生成器输入 JSON
-
-TASK 正文承载协调器分解工作所需的 PROCESS 规划元数据。`execution_planning` 对象渲染必需的 `### Execution Planning` 小节：
-
-```json
-{
-  "title": "canonical typed-comment authoring",
-  "summary": "Extend the generators so TASK/PROCESS bodies carry planning metadata.",
-  "checklist": ["Add execution_planning fields", "Enforce canonical validation"],
-  "covers": ["SPEC-001", "SPEC-006"],
-  "execution_planning": {
-    "owned_areas": ["internal/templates"],
-    "shared_touchpoints": ["internal/model"],
-    "dependencies": ["SPEC generator schema"],
-    "coupling": "low",
-    "execution_mode": "coordinator-owned",
-    "complexity": "small"
-  }
-}
-```
-
-PROCESS 正文记录其父 TASK，并且对于串行链，还记录传给下一节点的交接（handoff）证据：
-
-```json
-{
-  "title": "extend generators",
-  "owner": "Worker Agent A",
-  "parent_task": "TASK-001",
-  "dependencies": ["N/A"],
-  "write_ownership": ["internal/templates"],
-  "covers": ["TASK-001"],
-  "handoff": "state.json contract fixed; successor may parse it"
-}
-```
-
-被省略的规划字段会渲染为 canonical 默认值（`TBD` / `N/A`），从而让平凡改动保持低摩擦，同时这些小节仍然存在以供协调器阅读。
-
-### 默认的 canonical 校验
-
-`comment upsert` 在创建或更新远端评论之前，默认校验 canonical 纪律：
-
-- **SPEC** —— 拒绝缺少 `## Requirement:` 标题、规范性 MUST/SHALL 措辞，或 `### Scenario:` 的 `**WHEN**`/`**THEN**` 项的正文。
-- **TASK** —— 拒绝缺少 `## Task:` 标题或 `### Execution Planning` 小节的正文。
-- **PROCESS** —— 拒绝缺少 `## Process:` 标题或 `### Parent TASK` 小节的正文。
-
-串行链的 `### Handoff` 证据在写入时并非必需（只有链才需要它，而这在 upsert 时无法逐评论得知）—— 它改为在 `verify` 时强制。`internal/model` 中的一个共享校验器被 `comment upsert`、`comment list`、`status`、`verify` 与 `archive` 复用，它在剥离 marker/header 后的逻辑正文上运行，因此原始生成正文与已包装正文的行为完全一致。
-
-### 迁移逃生舱
-
-`--allow-noncanonical` 是一个**仅限写入时的迁移旁路**。它让你为分阶段迁移写入一个格式不合规的 SPEC 正文，但它**不会**创建持久的批准：
-
-- 该写入在命令输出中被标记为 `noncanonical`。
-- `comment list`、`status`、`verify` 与 archive 就绪性会从远端正文重新计算 canonical 有效性，并持续对格式不合规的活跃评论进行报告或阻塞。
-- 只要仍存在格式不合规的活跃 SPEC 评论，`verify` 与 durable-spec archive 就会在 archive 创建之前失败。
-
-正确的长期修复是用 `comment generate` 把评论重新生成为 canonical 形态，或在它不再活跃时将其取代（supersede）。
+- **[项目工作流配置](docs/reference.zh-CN.md#项目工作流配置)**
+- **[首选自然语言](docs/reference.zh-CN.md#首选自然语言)**
+- **[完整 CLI 参考](docs/reference.zh-CN.md#cli-参考)**
+- **[Canonical 类型化评论与校验](docs/reference.zh-CN.md#canonical-类型化评论)**
 
 ## 开发
 
