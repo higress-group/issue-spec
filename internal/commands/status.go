@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
@@ -24,6 +25,7 @@ type statusSummary struct {
 	Malformed         []model.CanonicalDiagnostic `json:"malformed,omitempty"`
 	Workflow          *workflow.Plan              `json:"workflow,omitempty"`
 	NextGates         []string                    `json:"next_gates"`
+	Gate              gates.Report                `json:"gate"`
 }
 
 func (a *app) runStatus(ctx context.Context, args []string) int {
@@ -33,6 +35,7 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 	proposalFlag := fs.String("proposal", "", "proposal issue number or URL")
 	designFlag := fs.String("design", "", "design issue number or URL")
 	implementFlag := fs.String("implement", "", "implement issue number or URL")
+	gateFlag := fs.String("gate", "", "readiness gate: proposal, design, implement, final, or archive (default inferred from supplied issues)")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -56,6 +59,11 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 		a.errorf("--implement: %v\n", err)
 		return 2
 	}
+	target, err := resolveStatusGate(*gateFlag, designIssue, implementIssue)
+	if err != nil {
+		a.errorf("--gate: %v\n", err)
+		return 2
+	}
 	client, _, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("auth required for status on %s: %v\n", auth.NormalizeHost(*host), err)
@@ -67,7 +75,7 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 		return 1
 	}
 	workflowPlan, workflowErr := workflow.Resolve(".")
-	summary := summarizeStatus(*repoFlag, proposalIssue, designIssue, implementIssue, artifacts, workflowPlan, workflowErr)
+	summary := summarizeStatusForGate(*repoFlag, proposalIssue, designIssue, implementIssue, target, artifacts, workflowPlan, workflowErr)
 	if proposalIssueData, perr := client.GetIssue(ctx, repo, proposalIssue); perr == nil {
 		summary.Diagnostics = append(summary.Diagnostics, authoringCompletenessDiagnostics("proposal", proposalIssueData.HTMLURL, proposalIssueData.Body)...)
 	}
@@ -154,6 +162,11 @@ func (a *app) runVerifyLinks(ctx context.Context, args []string) int {
 }
 
 func summarizeStatus(repo string, proposal, design, implement int, artifacts []model.Artifact, workflowState ...any) statusSummary {
+	target, _ := resolveStatusGate("", design, implement)
+	return summarizeStatusForGate(repo, proposal, design, implement, target, artifacts, workflowState...)
+}
+
+func summarizeStatusForGate(repo string, proposal, design, implement int, target gates.Target, artifacts []model.Artifact, workflowState ...any) statusSummary {
 	var workflowPlan workflow.Plan
 	var workflowErr error
 	if len(workflowState) > 0 {
@@ -199,38 +212,38 @@ func summarizeStatus(repo string, proposal, design, implement int, artifacts []m
 	}
 	report := model.VerifyTraceability(artifacts)
 	diagnostics := typedSessionDiagnostics(artifacts)
-	var gates []string
-	if typeTotal(counts, "SPEC") == 0 {
-		gates = append(gates, "proposal requires at least one SPEC before design")
+	workflowFacts := gates.WorkflowFacts{Required: true, Known: true, Valid: workflowErr == nil && !workflowPlan.HasErrors()}
+	if workflowErr != nil {
+		workflowFacts.Errors = append(workflowFacts.Errors, workflowErr.Error())
 	}
-	if blockingQuestions > 0 {
-		gates = append(gates, "blocking QUESTION comments must be resolved or accepted as assumptions")
+	for _, diagnostic := range workflowPlan.Diagnostics {
+		if diagnostic.Severity == "error" {
+			workflowFacts.Errors = append(workflowFacts.Errors, diagnostic.Code+": "+diagnostic.Message)
+		}
 	}
-	if design != 0 && typeTotal(counts, "TASK") == 0 {
-		gates = append(gates, "design requires TASK comments before implement")
+	snapshot := gates.Snapshot{
+		Target:       target,
+		Mode:         gates.ModeForecast,
+		Artifacts:    artifacts,
+		Canonical:    gates.CanonicalFacts{Observed: true, Diagnostics: malformed},
+		Traceability: gates.TraceabilityFacts{Observed: true, Report: report},
+		Workflow:     workflowFacts,
+		Remote:       statusForecastRemoteFacts(target),
 	}
-	if implement != 0 && typeTotal(counts, "PROCESS") == 0 {
-		gates = append(gates, "implement requires PROCESS comments before worker start")
+	gateReport, gateErr := gates.Evaluate(snapshot)
+	if gateErr != nil {
+		gateReport = gates.Report{Ready: false, Target: target, Mode: gates.ModeForecast, PointInTime: true,
+			Diagnostics: []gates.Diagnostic{{Code: "gate.evaluation_failed", Gate: target, Severity: gates.SeverityError,
+				Blocking: true, Message: gateErr.Error(), Current: "invalid", Expected: "valid gate snapshot",
+				Remediation: gates.Remediation{CommandFamily: "status"}, Freshness: gates.FreshnessLocal}}}
 	}
-	if openReviews > 0 {
-		gates = append(gates, "open REVIEW comments block final verify/archive")
-	}
-	if !report.OK {
-		gates = append(gates, "traceability errors must be fixed")
-	}
-	if len(malformed) > 0 {
-		gates = append(gates, "malformed typed comments must be regenerated, migrated, or superseded")
-	}
-	if workflowErr != nil || workflowPlan.HasErrors() {
-		gates = append(gates, "workflow config/schema diagnostics must be fixed")
-	}
-	sort.Strings(gates)
+	nextGates := legacyStatusGateMessages(gateReport.Diagnostics)
 	var workflowSummary *workflow.Plan
 	if workflowPlan.Source.SchemaName != "" || len(workflowPlan.Diagnostics) > 0 {
 		workflowSummary = &workflowPlan
 	}
 	return statusSummary{
-		OK:                len(gates) == 0,
+		OK:                gateReport.Ready,
 		Repo:              repo,
 		Issues:            map[string]int{"proposal": proposal, "design": design, "implement": implement},
 		Counts:            counts,
@@ -241,16 +254,74 @@ func summarizeStatus(repo string, proposal, design, implement int, artifacts []m
 		Diagnostics:       diagnostics,
 		Malformed:         malformed,
 		Workflow:          workflowSummary,
-		NextGates:         gates,
+		NextGates:         nextGates,
+		Gate:              gateReport,
 	}
 }
 
-func typeTotal(counts map[string]map[string]int, typ string) int {
-	total := 0
-	for _, count := range counts[typ] {
-		total += count
+func resolveStatusGate(raw string, design, implement int) (gates.Target, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		switch {
+		case implement > 0:
+			return gates.TargetImplement, nil
+		case design > 0:
+			return gates.TargetDesign, nil
+		default:
+			return gates.TargetProposal, nil
+		}
 	}
-	return total
+	target := gates.Target(value)
+	switch target {
+	case gates.TargetProposal:
+		return target, nil
+	case gates.TargetDesign:
+		if design == 0 {
+			return "", fmt.Errorf("design gate requires --design")
+		}
+		return target, nil
+	case gates.TargetImplement, gates.TargetFinal, gates.TargetArchive:
+		if design == 0 || implement == 0 {
+			return "", fmt.Errorf("%s gate requires --design and --implement", target)
+		}
+		return target, nil
+	default:
+		return "", fmt.Errorf("unsupported value %q (want proposal, design, implement, final, or archive)", raw)
+	}
+}
+
+func statusForecastRemoteFacts(target gates.Target) gates.RemoteFacts {
+	var facts gates.RemoteFacts
+	if target == gates.TargetFinal || target == gates.TargetArchive {
+		facts.PRChecks = gates.Fact{Required: true, Expected: "all required checks passed"}
+		facts.ReviewFindings = gates.Fact{Required: true, Expected: "no blocking findings"}
+	}
+	if target == gates.TargetArchive {
+		facts.DurableSpec = gates.Fact{Required: true, Expected: "durable spec valid"}
+	}
+	return facts
+}
+
+func legacyStatusGateMessages(diagnostics []gates.Diagnostic) []string {
+	seen := map[string]bool{}
+	var messages []string
+	for _, diagnostic := range diagnostics {
+		message := diagnostic.Message
+		switch diagnostic.Code {
+		case gates.CodeArtifactNoncanonical:
+			message = "malformed typed comments must be regenerated, migrated, or superseded"
+		case gates.CodeTraceabilityInvalid:
+			message = "traceability errors must be fixed"
+		case gates.CodeWorkflowInvalid, gates.CodeWorkflowUnknown:
+			message = "workflow config/schema diagnostics must be fixed"
+		}
+		if !seen[message] {
+			seen[message] = true
+			messages = append(messages, message)
+		}
+	}
+	sort.Strings(messages)
+	return messages
 }
 
 func optionalIssue(value string) (int, error) {
@@ -270,6 +341,7 @@ func printStatus(out interface{ Write([]byte) (int, error) }, summary statusSumm
 		fmt.Fprintf(out, ", implement #%d", summary.Issues["implement"])
 	}
 	fmt.Fprintln(out)
+	fmt.Fprintf(out, "gate: %s mode=%s ready=%v point-in-time=%v\n", summary.Gate.Target, summary.Gate.Mode, summary.Gate.Ready, summary.Gate.PointInTime)
 	for _, typ := range sortedTypes(summary.Counts) {
 		fmt.Fprintf(out, "%s: %s\n", typ, formatStatusCounts(summary.Counts[typ]))
 	}
@@ -310,6 +382,17 @@ func printStatus(out interface{ Write([]byte) (int, error) }, summary statusSumm
 		}
 	} else {
 		fmt.Fprintln(out, "blocking gates: none")
+	}
+	if len(summary.Gate.Diagnostics) > 0 {
+		fmt.Fprintln(out, "gate diagnostics:")
+		for _, diagnostic := range summary.Gate.Diagnostics {
+			identity := diagnostic.Artifact.ID
+			if identity == "" {
+				identity = "change"
+			}
+			fmt.Fprintf(out, "- %s %s freshness=%s current=%s expected=%s: %s\n",
+				diagnostic.Code, identity, diagnostic.Freshness, diagnostic.Current, diagnostic.Expected, diagnostic.Message)
+		}
 	}
 }
 

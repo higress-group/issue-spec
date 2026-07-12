@@ -6,22 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
+	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
-
-var processIDRe = regexp.MustCompile(`PROCESS-[0-9]{3,}`)
-
-// testEvidenceRe matches whole-word test mentions (test/tests/testing/tested) so
-// that a done VERIFY summarizing test evidence is not satisfied by incidental
-// substrings like "latest" or "greatest".
-var testEvidenceRe = regexp.MustCompile(`(?i)\btest(s|ing|ed)?\b`)
 
 type finalVerifyReport struct {
 	OK                    bool                         `json:"ok"`
@@ -39,6 +32,7 @@ type finalVerifyReport struct {
 	DurableSpecPath       string                       `json:"durable_spec_path,omitempty"`
 	DurableSpecCheck      map[string]bool              `json:"durable_spec_check,omitempty"`
 	ExternalEvidence      *externalEvidenceConsumption `json:"external_evidence,omitempty"`
+	Gate                  gates.Report                 `json:"gate"`
 }
 
 type finalVerifyOptions struct {
@@ -246,18 +240,19 @@ func stampConsumedEvidence(body string, consumption externalEvidenceConsumption)
 }
 
 func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts finalVerifyOptions) (finalVerifyReport, error) {
+	traceability := model.VerifyTraceability(artifacts)
 	report := finalVerifyReport{
-		Traceability:      model.VerifyTraceability(artifacts),
+		Traceability:      traceability,
 		SpecCoverage:      map[string]bool{},
 		RationaleCoverage: map[string]bool{},
 		PR:                opts.PR,
 	}
-	report.Errors = append(report.Errors, report.Traceability.Errors...)
 	report.Diagnostics = append(report.Diagnostics, typedSessionDiagnostics(artifacts)...)
 	var activeSpecs []model.Artifact
 	activeSpecIDs := map[string]bool{}
 	var activeProcesses []model.Artifact
 	var doneVerifyBodies []string
+	var canonical []model.CanonicalDiagnostic
 	for _, artifact := range artifacts {
 		tc := artifact.Comment
 		switch tc.Type {
@@ -266,95 +261,90 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 				activeSpecs = append(activeSpecs, artifact)
 				activeSpecIDs[tc.ID] = true
 				report.SpecCoverage[tc.ID] = false
-				if tc.Status != "confirmed" && tc.Status != "done" {
-					report.Errors = append(report.Errors, fmt.Sprintf("%s must be confirmed or done before final verify", tc.ID))
-				}
-			}
-		case "QUESTION":
-			if tc.Status == "blocked" {
-				report.Errors = append(report.Errors, fmt.Sprintf("%s is still blocked", tc.ID))
-			}
-		case "TASK":
-			if tc.Status != "done" && tc.Status != "superseded" {
-				report.Errors = append(report.Errors, fmt.Sprintf("%s must be done before final verify", tc.ID))
 			}
 		case "PROCESS":
 			if tc.Status != "superseded" {
 				activeProcesses = append(activeProcesses, artifact)
-				if opts.RationaleRequired {
-					report.RationaleCoverage[tc.ID] = false
-					if opts.PRURL != "" && !linkValuesContain(tc.Links["PR"], opts.PRURL) {
-						report.Errors = append(report.Errors, fmt.Sprintf("%s must link PR %s", tc.ID, opts.PRURL))
-					}
-				}
-			}
-			if tc.Status != "done" && tc.Status != "superseded" {
-				report.Errors = append(report.Errors, fmt.Sprintf("%s must be done before final verify", tc.ID))
-			}
-		case "REVIEW":
-			if tc.Status != "done" && tc.Status != "superseded" {
-				report.Errors = append(report.Errors, fmt.Sprintf("%s must be done or superseded before final verify", tc.ID))
 			}
 		case "VERIFY":
 			if tc.Status == "done" {
 				doneVerifyBodies = append(doneVerifyBodies, tc.Body)
 			}
 		}
-	}
-	// Recompute canonical validity from remote bodies so a write-time
-	// --allow-noncanonical bypass cannot durably pass final verify. This blocks
-	// archive readiness before durable spec creation when any active required
-	// typed comment is malformed.
-	for _, artifact := range artifacts {
 		if artifact.Comment.Status == "superseded" {
 			continue
 		}
 		diags := model.ValidateArtifact(artifact)
-		if len(diags) == 0 {
-			continue
-		}
+		canonical = append(canonical, diags...)
 		report.Noncanonical = append(report.Noncanonical, diags...)
-		for _, d := range diags {
-			url := d.URL
-			if url == "" {
-				url = "N/A"
-			}
-			report.Errors = append(report.Errors, fmt.Sprintf("%s %s (%s) is noncanonical: %s", d.Type, d.ID, url, d.Message))
-		}
-	}
-	if len(activeSpecs) == 0 {
-		report.Errors = append(report.Errors, "at least one active SPEC is required")
-	}
-	if len(doneVerifyBodies) == 0 {
-		report.Errors = append(report.Errors, "at least one done VERIFY comment is required")
 	}
 	verifyText := strings.Join(doneVerifyBodies, "\n")
-	// SPEC-006: serial-chain PROCESS predecessors must record ### Handoff
-	// evidence, and a done VERIFY must summarize test evidence. A PROCESS is a
-	// serial-chain predecessor when another active PROCESS declares it as a
-	// dependency; parent-TASK presence itself is already enforced by canonical
-	// PROCESS validation above.
-	report.Errors = append(report.Errors, serialHandoffErrors(activeProcesses)...)
-	if len(doneVerifyBodies) > 0 && !testEvidenceRe.MatchString(verifyText) {
-		report.Errors = append(report.Errors, "no done VERIFY comment references test evidence (SPEC-006)")
-	}
 	for _, spec := range activeSpecs {
 		if strings.Contains(verifyText, spec.Comment.ID) {
 			report.SpecCoverage[spec.Comment.ID] = true
-		} else {
-			report.Errors = append(report.Errors, fmt.Sprintf("%s is not referenced by any done VERIFY comment", spec.Comment.ID))
 		}
 	}
+
+	var reviewReport reviewSyncReport
+	remote := gates.RemoteFacts{}
+	if opts.RationaleRequired {
+		reviewReport = buildReviewSyncReport(github.PullRequest{Number: opts.PR, HTMLURL: opts.PRURL}, opts.RationaleComments, nil, opts.PRStatus, opts.PRCheckRuns)
+		remote.PRChecks = gates.Fact{Required: true, Known: true,
+			Passed:   len(reviewReport.FailedChecks) == 0 && len(reviewReport.PendingChecks) == 0,
+			Current:  fmt.Sprintf("failed=%d pending=%d", len(reviewReport.FailedChecks), len(reviewReport.PendingChecks)),
+			Expected: "failed=0 pending=0"}
+		remote.ReviewFindings = gates.Fact{Required: true, Known: true,
+			Passed:  len(reviewReport.BlockingFindings) == 0,
+			Current: fmt.Sprintf("blocking=%d", len(reviewReport.BlockingFindings)), Expected: "blocking=0"}
+	}
+
+	target := gates.TargetFinal
+	if strings.TrimSpace(opts.DurableSpecPath) != "" {
+		check, err := verifyDurableSpecFile(opts.DurableSpecPath, proposalURL, activeSpecs)
+		if err != nil {
+			return report, err
+		}
+		report.DurableSpecPath = opts.DurableSpecPath
+		report.DurableSpecCheck = check
+		durableOK := true
+		for _, ok := range check {
+			if !ok {
+				durableOK = false
+			}
+		}
+		remote.DurableSpec = gates.Fact{Required: true, Known: true, Passed: durableOK,
+			Current: fmt.Sprintf("valid=%v", durableOK), Expected: "valid=true"}
+		target = gates.TargetArchive
+	}
+	gateReport, err := gates.Evaluate(gates.Snapshot{
+		Target: target, Mode: gates.ModeAuthoritative, Artifacts: artifacts,
+		Canonical:    gates.CanonicalFacts{Observed: true, Diagnostics: canonical},
+		Traceability: gates.TraceabilityFacts{Observed: true, Report: traceability},
+		Remote:       remote,
+	})
+	if err != nil {
+		return report, err
+	}
+	report.Gate = gateReport
+	for _, diagnostic := range gateReport.Diagnostics {
+		if message, ok := legacyVerifyGateError(diagnostic); ok {
+			report.Errors = append(report.Errors, message)
+		}
+	}
+
 	if opts.RationaleRequired {
 		covered := rationaleCoverage(opts.RationaleComments, activeSpecIDs)
 		for _, process := range activeProcesses {
+			report.RationaleCoverage[process.Comment.ID] = false
+			if opts.PRURL != "" && !linkValuesContain(process.Comment.Links["PR"], opts.PRURL) {
+				report.Errors = append(report.Errors, fmt.Sprintf("%s must link PR %s", process.Comment.ID, opts.PRURL))
+			}
 			if covered[process.Comment.ID] {
 				report.RationaleCoverage[process.Comment.ID] = true
 			} else {
 				report.Errors = append(report.Errors, fmt.Sprintf("%s has no PR rationale comment linked to an active SPEC", process.Comment.ID))
 			}
 		}
-		reviewReport := buildReviewSyncReport(github.PullRequest{Number: opts.PR, HTMLURL: opts.PRURL}, opts.RationaleComments, nil, opts.PRStatus, opts.PRCheckRuns)
 		report.Diagnostics = append(report.Diagnostics, reviewReport.Diagnostics...)
 		report.ReviewFindingBlockers = reviewReport.BlockingFindings
 		for _, finding := range report.ReviewFindingBlockers {
@@ -372,13 +362,8 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	if !opts.RationaleRequired {
 		report.RationaleCoverage = nil
 	}
-	if strings.TrimSpace(opts.DurableSpecPath) != "" {
-		check, err := verifyDurableSpecFile(opts.DurableSpecPath, proposalURL, activeSpecs)
-		if err != nil {
-			return report, err
-		}
-		report.DurableSpecPath = opts.DurableSpecPath
-		report.DurableSpecCheck = check
+	if report.DurableSpecCheck != nil {
+		check := report.DurableSpecCheck
 		for key, ok := range check {
 			if !ok {
 				report.Errors = append(report.Errors, fmt.Sprintf("durable spec missing %s", key))
@@ -391,44 +376,46 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	return report, nil
 }
 
-// serialHandoffErrors reports done PROCESS predecessors in a serial chain that
-// carry no ### Handoff evidence. A predecessor is any PROCESS that another active
-// PROCESS declares as a dependency.
-func serialHandoffErrors(processes []model.Artifact) []string {
-	ids := map[string]bool{}
-	for _, p := range processes {
-		if p.Comment.ID != "" {
-			ids[p.Comment.ID] = true
+func legacyVerifyGateError(diagnostic gates.Diagnostic) (string, bool) {
+	id := diagnostic.Artifact.ID
+	switch diagnostic.Code {
+	case gates.CodeSpecRequired:
+		return "at least one active SPEC is required", true
+	case gates.CodeTaskRequired:
+		return "at least one active TASK is required", true
+	case gates.CodeProcessRequired:
+		return "at least one active PROCESS is required", true
+	case gates.CodeSpecStatusInvalid:
+		return fmt.Sprintf("%s must be confirmed or done before final verify", id), true
+	case gates.CodeQuestionBlocked:
+		return fmt.Sprintf("%s is still blocked", id), true
+	case gates.CodeTaskNotDone:
+		return fmt.Sprintf("%s must be done before final verify", id), true
+	case gates.CodeProcessNotDone:
+		return fmt.Sprintf("%s must be done before final verify", id), true
+	case gates.CodeReviewOpen:
+		return fmt.Sprintf("%s must be done or superseded before final verify", id), true
+	case gates.CodeVerifyRequired:
+		return "at least one done VERIFY comment is required", true
+	case gates.CodeVerifyTestEvidenceMissing:
+		return "no done VERIFY comment references test evidence (SPEC-006)", true
+	case gates.CodeVerifySpecCoverageMissing:
+		return fmt.Sprintf("%s is not referenced by any done VERIFY comment", id), true
+	case gates.CodeProcessHandoffMissing:
+		return fmt.Sprintf("%s is a serial-chain predecessor but records no ### Handoff evidence (SPEC-006)", id), true
+	case gates.CodeArtifactNoncanonical:
+		url := diagnostic.Artifact.URL
+		if url == "" {
+			url = "N/A"
 		}
+		return fmt.Sprintf("%s %s (%s) is noncanonical: %s", diagnostic.Artifact.Type, id, url, diagnostic.Message), true
+	case gates.CodeTraceabilityInvalid:
+		return diagnostic.Message, true
+	default:
+		// Remote check/finding diagnostics have richer legacy projections below;
+		// PROCESS evidence policy is integrated by PROCESS-009.
+		return "", false
 	}
-	dependedUpon := map[string]bool{}
-	for _, p := range processes {
-		for _, dep := range processDependencyIDs(p.Comment.Body) {
-			if dep != p.Comment.ID && ids[dep] {
-				dependedUpon[dep] = true
-			}
-		}
-	}
-	var errs []string
-	for _, p := range processes {
-		if p.Comment.Status != "done" || !dependedUpon[p.Comment.ID] {
-			continue
-		}
-		if isEmptyOrNA(sectionContent(p.Comment.Body, "### Handoff")) {
-			errs = append(errs, fmt.Sprintf("%s is a serial-chain predecessor but records no ### Handoff evidence (SPEC-006)", p.Comment.ID))
-		}
-	}
-	return errs
-}
-
-// processDependencyIDs extracts referenced PROCESS ids from a PROCESS body's
-// ### Dependencies section.
-func processDependencyIDs(body string) []string {
-	deps := sectionContent(body, "### Dependencies")
-	if deps == "" {
-		return nil
-	}
-	return processIDRe.FindAllString(deps, -1)
 }
 
 // sectionContent returns the trimmed text of the named `###`/`##` section, up to

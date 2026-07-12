@@ -34,15 +34,19 @@ func TestBuildFinalVerifyReportRequiresDoneTasksAndCoverage(t *testing.T) {
 
 func TestBuildFinalVerifyReportReportsSessionDiagnosticsWithoutErrors(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
 	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
-	report, err := buildFinalVerifyReport([]model.Artifact{spec, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{})
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &process)
+	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !report.OK {
 		t.Fatalf("metadata diagnostics should not fail verify: %+v", report.Errors)
 	}
-	if len(report.Diagnostics) != 2 {
+	if len(report.Diagnostics) != 4 {
 		t.Fatalf("diagnostics = %+v", report.Diagnostics)
 	}
 }
