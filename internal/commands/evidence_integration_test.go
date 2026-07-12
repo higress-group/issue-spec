@@ -437,7 +437,10 @@ func TestExternalReviewSyncPreservesCanonicalFindingLinkage(t *testing.T) {
 		Evaluation: coreevidence.Result{Passed: true, EvidenceIDs: []string{"review-1"}},
 		Consumption: externalEvidenceConsumption{ProviderKey: reference.ProviderKey,
 			ExternalRepository: reference.ExternalRepository, ChangeID: reference.ChangeID,
-			SubjectRevision: "head-abc", EvidenceIDs: []string{"review-1"}}}
+			SubjectRevision: "head-abc", EvidenceIDs: []string{"review-1"}, Bindings: []externalEvidenceBinding{{
+				ProcessID: "PROCESS-020", SpecID: "SPEC-010", EvidenceID: "review-1", Kind: codereview.EvidenceReview,
+				SubjectRevision: "head-abc", Trusted: true, Source: "native-authoritative-ledger",
+			}}}}
 	body, err := renderExternalReviewSyncComment("REVIEW-101", "Review Agent", writerSession{}, "external review", gate)
 	if err != nil {
 		t.Fatal(err)
@@ -447,6 +450,10 @@ func TestExternalReviewSyncPreservesCanonicalFindingLinkage(t *testing.T) {
 		if !strings.Contains(body, required) {
 			t.Fatalf("canonical REVIEW missing %q:\n%s", required, body)
 		}
+	}
+	const authoritativeBinding = `"bindings":[{"process_id":"PROCESS-020","spec_id":"SPEC-010","evidence_id":"review-1","kind":"review","subject_revision":"head-abc","trusted":true,"source":"native-authoritative-ledger"}]`
+	if !strings.Contains(body, authoritativeBinding) {
+		t.Fatalf("canonical REVIEW missing authoritative consumed-evidence binding %q:\n%s", authoritativeBinding, body)
 	}
 }
 
