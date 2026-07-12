@@ -49,6 +49,16 @@ issue-spec runner poll \
 /cancel <public-session-id>
 ```
 
+若要把一次 resume 精确绑定到一个 PROCESS workspace，必须把 `--process` 放在 public session id 后面：
+
+```text
+/resume <public-session-id> --process PROCESS-008 <prompt>
+```
+
+runner 不会从 prompt 文本推断 PROCESS，`/new` 会拒绝 `--process`，且 job 的持久化精确 assignment 不可变。对应的 standalone 生命周期命令为 `issue-spec workflow workspace prepare`、`inspect`、`complete`、`integrate`、`reconcile` 与 `cleanup`；这些命令必须复用精确的仓库、issue、PROCESS、roots 与 owner token。
+
+acpx 启动前，change-bearing 使用其可写的 assigned worktree；review 与 verification 使用 detached snapshot，dirty 时 fail closed；orchestration 不创建 checkout；external 执行必须通过已配置 provider adapter 的 readiness gate。Linux bubblewrap 会把 review/verification snapshot 以只读方式绑定，但 unsafe 模式不提供 OS 级不可变性。重启会先 reconcile 同一 assignment。runner 的终态、取消与 reconcile cleanup 会持久化 intent、校验 integration/retention eligibility，并重试 pending cleanup。这个保护不覆盖手动调用的 standalone `workflow workspace cleanup`：该 owner-token 授权的破坏性命令可能删除未集成的 change-bearing 工作，只能在完成预期的集成或保留决策后使用。
+
 `/new` 会创建一个全新的公共 runner 会话，把目标仓库克隆进一个受管理的 workspace，从该 workspace 启动 acpx，并写一条包含公共会话 id 的简洁状态评论。`/resume` 复用该公共会话与 workspace。公共会话是「仓库范围」的，由被授权的仓库维护者共享；它们不是私有的用户会话。
 
 协调器与人的讨论是显式的。被沙箱隔离的协调器可以使用镜像进来的 GitHub 认证来提出澄清问题。阻塞性的工作流决策应记录为 `QUESTION` 类型化评论；轻量的澄清可以使用普通的 issue 时间线评论，例如 `gh issue comment <issue> --repo owner/repo --body-file <file>`。GitHub issue 评论是扁平的时间线评论，而非嵌套在某条 issue 评论下的回复；协调器应链接触发评论或状态评论，并带上公共会话 id。要继续同一个 acpx 会话，被授权的维护者必须新建一条命令评论：
@@ -88,7 +98,7 @@ issue-spec runner poll \
 
 在 Linux 上，runner 分发默认使用 bubblewrap，把协调器的文件系统写入限制在受管理的 workspace 内，同时仍允许 GitHub、model 与包操作的网络访问。当 bubblewrap 不在 `PATH` 上时，请安装它或设置 `ISSUE_SPEC_BWRAP_PATH` / `--bwrap-path`。若 bubblewrap 不可用或不受支持，runner 会让 preflight 失败，而不是在没有隔离的情况下静默运行。
 
-只有作为显式的运维选择时才使用 `--unsafe-no-sandbox`：
+只有作为显式的运维选择时才使用 `--unsafe-no-sandbox`；macOS 上没有 bubblewrap 时也必须显式指定，不存在从 sandbox 模式自动降级：
 
 ```bash
 issue-spec runner poll --repo owner/repo --runner maintainer --unsafe-no-sandbox

@@ -203,6 +203,8 @@ OpenSpec 本就把 review 与 verify 作为工作流阶段来鼓励。`issue-spe
 
 使用 `status --gate proposal|design|implement|final|archive --json` 预判下一关；使用带已观察 version 或 digest 的 `comment transition` 安全修改单个产物；使用 `workflow reconcile --plan ... --checkpoint ... --json` 执行可恢复、按依赖排序的批处理。在分配 delegated workspace 或 worker 之前，先运行 `doctor agent --operation ... --json`。PROCESS 现在显式声明五种 execution class，让 change-bearing、review、verification、orchestration 与 external 工作分别使用真实的证据载体，而不是一律伪造行级 rationale。
 
+Delegated workspace 由精确 PROCESS id 选择，并通过 `workflow workspace prepare|inspect|complete|integrate|reconcile|cleanup` 管理。runner 使用 `/resume <public-session-id> --process PROCESS-NNN <instruction>` 定向到单个 PROCESS；runner 重启与终态 cleanup 状态持久化并默认 fail closed。standalone cleanup 是 owner-token 授权的破坏性命令，不受 runner integration/retention guard 保护。详见[参考文档](docs/reference.zh-CN.md#process-workspace)与 [runner 指南](docs/runner.zh-CN.md)。
+
 命令、原子性边界、严格凭据策略、恢复行为与完整证据矩阵见 [Workflow safety, reconciliation, and PROCESS evidence](docs/workflow-safety.md)。
 
 ## 工作流模型

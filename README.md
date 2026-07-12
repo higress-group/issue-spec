@@ -206,6 +206,8 @@ Final verification checks unresolved blocking questions, traceability, P0/P1 fin
 
 Use `status --gate proposal|design|implement|final|archive --json` to forecast the next boundary, `comment transition` with an observed version or digest for a single safe mutation, and `workflow reconcile --plan ... --checkpoint ... --json` for resumable dependency-ordered batches. Run `doctor agent --operation ... --json` before delegated workspace or worker allocation. PROCESS nodes now declare one of five execution classes so change-bearing, review, verification, orchestration, and external work use truthful evidence carriers instead of all requiring arbitrary line rationale.
 
+Delegated workspaces are selected by an exact PROCESS id and managed with `workflow workspace prepare|inspect|complete|integrate|reconcile|cleanup`. Runner turns target one with `/resume <public-session-id> --process PROCESS-NNN <instruction>`; runner restart and terminal cleanup are durable and fail closed. Standalone cleanup is an owner-token-authorized destructive command with no runner integration/retention guard. See the [reference](docs/reference.md#process-workspaces) and [runner guide](docs/runner.md).
+
 See [Workflow safety, reconciliation, and PROCESS evidence](docs/workflow-safety.md) for the commands, atomicity boundary, strict credential policy, resume behavior, and complete evidence matrix.
 
 ## Workflow Model

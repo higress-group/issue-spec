@@ -100,3 +100,13 @@ A legacy PROCESS without the section remains readable but projects to
 multi-valued class blocks verification. `review sync` and final `verify` expose
 required, satisfied, and missing evidence per PROCESS; do not invent code-line
 rationale for non-change-bearing work.
+
+## Keep PROCESS workspaces exact and recoverable
+
+Use only the exact PROCESS id selected by the coordinator or runner, never a PROCESS inferred from prompt prose. The workspace lifecycle has six commands: `prepare`, `inspect`, `complete`, `integrate`, `reconcile`, and `cleanup`. Keep their repository, issue, PROCESS, roots, and owner token stable.
+
+`change-bearing` gets a writable owned branch. `review` and `verification` get detached snapshots; they fail closed when dirty, although only Linux runner bubblewrap adds an OS-enforced read-only bind. `orchestration` gets no checkout. Standalone CLI `external` bookkeeping currently uses mode `none`, whereas runner external execution also requires a configured provider adapter readiness gate.
+
+Runner restart must reconcile the durable exact assignment before execution. Missing, mismatched, dirty, or needs-reconcile state blocks work. Runner terminal, cancellation, and reconciliation cleanup persists intent, checks integration/retention eligibility, and retries pending cleanup.
+
+Standalone `workflow workspace cleanup` does not enforce that runner eligibility policy. It is an explicit owner-token-authorized destructive operation and can remove an unintegrated change-bearing worktree. Invoke it only after making the intended integration or retention decision; do not treat the runner guard as protection for a manual cleanup command.

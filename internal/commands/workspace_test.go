@@ -314,6 +314,32 @@ func TestWorkspaceReviewSnapshotCompleteAndUnsafeCleanup(t *testing.T) {
 		}
 	})
 
+	t.Run("verification snapshot rejects completion", func(t *testing.T) {
+		repo, base := workspaceGitRepository(t)
+		backend := newWorkspaceCASBackend(workspaceProcessBody(t, model.ProcessExecutionVerification))
+		root := filepath.Join(t.TempDir(), "managed")
+		args := append(workspaceBaseArgs(repo, root, "verify-owner"), "--base", base, "--json")
+		app, out, errOut := transitionAppWithError(backend)
+		if code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, args...)); code != 0 {
+			t.Fatalf("verification snapshot code=%d out=%s err=%s", code, out.String(), errOut.String())
+		}
+		prepared := decodeWorkspaceResult(t, out)
+		if prepared.Mode != processworkspace.ModeSnapshot || prepared.DetachedRevision != base || prepared.Head != base {
+			t.Fatalf("verification snapshot result=%+v", prepared)
+		}
+		writes := backend.writes
+		completeArgs := append([]string{"complete"}, workspaceBaseArgs(repo, root, "verify-owner")...)
+		completeArgs = append(completeArgs, "--result-commit", base, "--json")
+		app, out, _ = transitionAppWithError(backend)
+		if code := app.runWorkflowWorkspace(t.Context(), completeArgs); code != 1 {
+			t.Fatalf("snapshot complete code=%d out=%s", code, out.String())
+		}
+		result := decodeWorkspaceResult(t, out)
+		if result.State != processworkspace.StatePrepared || backend.writes != writes {
+			t.Fatalf("snapshot completion mutated state: result=%+v writes=%d->%d", result, writes, backend.writes)
+		}
+	})
+
 	t.Run("orchestration has no checkout", func(t *testing.T) {
 		repo, _ := workspaceGitRepository(t)
 		backend := newWorkspaceCASBackend(workspaceProcessBody(t, model.ProcessExecutionOrchestration))

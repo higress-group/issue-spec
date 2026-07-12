@@ -49,6 +49,16 @@ Supported command comments:
 /cancel <public-session-id>
 ```
 
+To bind a resume turn to one exact PROCESS workspace, put `--process` immediately after the public session id:
+
+```text
+/resume <public-session-id> --process PROCESS-008 <prompt>
+```
+
+The runner never infers the PROCESS from prompt text, `/new` rejects `--process`, and the durable exact assignment is immutable for the job. The corresponding standalone lifecycle commands are `issue-spec workflow workspace prepare`, `inspect`, `complete`, `integrate`, `reconcile`, and `cleanup`; keep the exact repository, issue, PROCESS, roots, and owner token stable across them.
+
+Before acpx starts, change-bearing work receives its writable assigned worktree; review and verification receive detached snapshots and fail closed if dirty; orchestration receives no checkout; external execution must pass its configured provider adapter readiness gate. Linux bubblewrap binds review/verification snapshots read-only, but unsafe mode provides no OS-enforced immutability. Restart reconciles the same assignment before continuing. Runner terminal, cancellation, and reconciliation cleanup makes intent durable, applies integration/retention eligibility, and retries pending cleanup. This protection does not cover a manually invoked standalone `workflow workspace cleanup`: that owner-token-authorized destructive command can remove unintegrated change-bearing work and must be used only after the intended integration or retention decision.
+
 `/new` creates a fresh public runner session, clones the target repository into a managed workspace, starts acpx from that workspace, and writes a concise status comment containing the public session id. `/resume` reuses that public session and workspace. Public sessions are repository-scoped and shared by authorized repository maintainers; they are not private user sessions.
 
 Coordinator-human discussion is explicit. The sandboxed coordinator can use the mirrored GitHub auth to ask clarification questions. Blocking workflow decisions should be recorded as `QUESTION` typed comments; lightweight clarification can use ordinary issue timeline comments, for example with `gh issue comment <issue> --repo owner/repo --body-file <file>`. GitHub issue comments are flat timeline comments, not nested replies under a specific issue comment; the coordinator should link the trigger comment or status comment and include the public session id. To continue the same acpx session, an authorized maintainer must create a new command comment:
@@ -88,7 +98,7 @@ Useful runner options:
 
 On Linux, runner dispatch uses bubblewrap by default to keep coordinator filesystem writes inside the managed workspace while still allowing network access for GitHub, model, and package operations. Install bubblewrap or set `ISSUE_SPEC_BWRAP_PATH` / `--bwrap-path` when it is not on `PATH`. If bubblewrap is unavailable or unsupported, the runner fails preflight instead of silently running without isolation.
 
-Use `--unsafe-no-sandbox` only as an explicit operator choice:
+Use `--unsafe-no-sandbox` only as an explicit operator choice, including on macOS where bubblewrap is unavailable. There is no automatic fallback from sandboxed mode:
 
 ```bash
 issue-spec runner poll --repo owner/repo --runner maintainer --unsafe-no-sandbox

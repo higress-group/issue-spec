@@ -166,6 +166,29 @@ PROCESS 正文记录其父 TASK，并且对于串行链，还记录传给下一�
 
 被省略的规划字段会渲染为 canonical 默认值（`TBD` / `N/A`），从而让平凡改动保持低摩擦，同时这些小节仍然存在以供协调器阅读。
 
+## PROCESS workspace
+
+精确的 PROCESS id 是唯一 workspace selector；prompt 文本不会被推断成 selector。六个生命周期命令必须复用同一组仓库、issue、PROCESS、integration root、workspace root 与 owner token：
+
+```bash
+issue-spec workflow workspace prepare   --repo owner/repo --issue 12 --process PROCESS-001 ...
+issue-spec workflow workspace inspect   --repo owner/repo --issue 12 --process PROCESS-001 ...
+issue-spec workflow workspace complete  --repo owner/repo --issue 12 --process PROCESS-001 --result-commit <sha> ...
+issue-spec workflow workspace integrate --repo owner/repo --issue 12 --process PROCESS-001 --expected-head <sha> ...
+issue-spec workflow workspace reconcile --repo owner/repo --issue 12 --process PROCESS-001 ...
+issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process PROCESS-001 ...
+```
+
+`change-bearing` 使用可写的独占分支；`review` 与 `verification` 使用 detached snapshot，dirty 状态会 fail closed，但 standalone CLI 不会把文件系统变成 OS 级不可写；`orchestration` 只记录生命周期账本，不创建 checkout。standalone CLI 当前把 `external` 映射为 mode `none`；runner 的 external 执行更严格，必须由已配置 provider adapter 在 acpx 启动前确认 ready。
+
+runner 重启时会基于持久化的精确 assignment 执行 reconcile，并拒绝缺失、不匹配、dirty 或 needs-reconcile 状态。runner 的终态、取消与 reconcile cleanup 会先持久化 intent，校验 integration/retention eligibility，并重试 pending cleanup。standalone `workflow workspace cleanup` 不同：持有 owner token 就能授权一次显式的破坏性操作，它不会执行 runner 的 integration/retention eligibility 校验，可能删除尚未集成的 change-bearing 工作。因此只能在明确完成预期的集成或保留决策后调用。runner 只能在 resume 时选择精确 PROCESS：
+
+```text
+/resume <public-session-id> --process PROCESS-001 <instruction>
+```
+
+`--process` 必须紧跟 public session id，`/new` 不接受该参数。
+
 ### 默认的 canonical 校验
 
 `comment upsert` 在创建或更新远端评论之前，默认校验 canonical 纪律：

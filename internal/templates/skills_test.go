@@ -40,13 +40,21 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 		"matching path/line rationale", "done REVIEW or resolved finding",
 		"done VERIFY or required passing check with test evidence",
 		"non-empty coordination handoff", "consumed exact-revision provider evidence",
+		"workflow workspace prepare, inspect, complete, integrate, reconcile, and cleanup",
+		"review and verification use detached snapshots and fail closed when dirty",
+		"standalone snapshot is not OS-immutable", "bubblewrap adds a read-only bind",
+		"standalone CLI currently records external as mode none",
+		"/resume <public-session-id> --process PROCESS-NNN <instruction>",
+		"Runner terminal, cancellation, and reconciliation paths", "apply integration/retention eligibility",
+		"standalone workflow workspace cleanup is an explicit owner-token-authorized destructive operation",
+		"can remove unintegrated change-bearing work",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("workflow skill missing %q:\n%s", want, workflow)
 		}
 	}
 	apply := skillContent(t, skills, "issue-spec-apply")
-	for _, want := range []string{"--gate implement", "doctor agent", "execution_class", "only for change-bearing", "same digest/checkpoint"} {
+	for _, want := range []string{"--gate implement", "doctor agent", "execution_class", "only for change-bearing", "same digest/checkpoint", "workspace prepare, inspect, complete, integrate, reconcile, and cleanup", "detached snapshots and fail closed when dirty", "Standalone snapshots are not OS-immutable", "runner external execution additionally gates", "Runner restart reconciles", "Standalone workflow workspace cleanup does not apply that eligibility", "can remove unintegrated change-bearing work", "never infer the selector from prompt text"} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply skill missing %q:\n%s", want, apply)
 		}

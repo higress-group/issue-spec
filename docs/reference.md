@@ -166,6 +166,29 @@ PROCESS bodies record their parent TASK and, for serial chains, the handoff evid
 
 Omitted planning fields render canonical defaults (`TBD` / `N/A`) so trivial changes stay low-friction while the sections remain present for coordinators to read.
 
+## PROCESS workspaces
+
+The exact PROCESS id is the workspace selector; prompt text is never a selector. Use the same repository, issue, PROCESS, integration root, workspace root, and owner token across the six lifecycle commands:
+
+```bash
+issue-spec workflow workspace prepare   --repo owner/repo --issue 12 --process PROCESS-001 ...
+issue-spec workflow workspace inspect   --repo owner/repo --issue 12 --process PROCESS-001 ...
+issue-spec workflow workspace complete  --repo owner/repo --issue 12 --process PROCESS-001 --result-commit <sha> ...
+issue-spec workflow workspace integrate --repo owner/repo --issue 12 --process PROCESS-001 --expected-head <sha> ...
+issue-spec workflow workspace reconcile --repo owner/repo --issue 12 --process PROCESS-001 ...
+issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process PROCESS-001 ...
+```
+
+`change-bearing` uses a writable owned branch. `review` and `verification` use detached snapshots: dirty state fails closed, but the standalone CLI does not make the filesystem OS-immutable. `orchestration` records lifecycle bookkeeping without a checkout. The standalone CLI currently maps `external` to mode `none`; runner external execution is stricter and requires the configured provider adapter to report ready before acpx starts.
+
+Runner restart reconciliation reopens the durable exact assignment and rejects missing, mismatched, dirty, or reconcile-required state. Runner terminal, cancellation, and reconciliation cleanup persists intent, applies integration/retention eligibility, and retries pending cleanup. Standalone `workflow workspace cleanup` is different: possession of the owner token authorizes an explicit destructive operation, with no runner integration/retention eligibility check. It can remove unintegrated change-bearing work, so invoke it only after the intended integration or retention decision. Runner comments can select an exact PROCESS only on resume:
+
+```text
+/resume <public-session-id> --process PROCESS-001 <instruction>
+```
+
+The flag must immediately follow the public session id. `/new` does not accept it.
+
 ### Canonical validation by default
 
 `comment upsert` validates canonical discipline by default before creating or updating the remote comment:
