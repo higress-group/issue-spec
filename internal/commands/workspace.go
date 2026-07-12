@@ -83,7 +83,7 @@ type workspaceCommandResult struct {
 
 func (a *app) runWorkflowWorkspace(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec workflow workspace prepare|inspect|complete|reconcile|cleanup ...\n")
+		a.errorf("usage: issue-spec workflow workspace prepare|inspect|complete|integrate|reconcile|cleanup ...\n")
 		return 2
 	}
 	switch args[0] {
@@ -98,8 +98,7 @@ func (a *app) runWorkflowWorkspace(ctx context.Context, args []string) int {
 	case "cleanup":
 		return a.runWorkspaceCleanup(ctx, args[1:])
 	case "integrate":
-		a.errorf("workflow workspace integrate is reserved for the PROCESS-005/PROCESS-006 integration adapter\n")
-		return 2
+		return a.runWorkspaceIntegrate(ctx, args[1:])
 	default:
 		a.errorf("unknown workflow workspace command %q\n", args[0])
 		return 2

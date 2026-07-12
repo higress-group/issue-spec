@@ -54,6 +54,38 @@ func (b *workspaceCASBackend) UpdateCommentConditional(_ context.Context, _ stri
 	return github.CommentRepresentation{Comment: github.Comment{ID: 77, HTMLURL: "https://example.test/process/77", Body: body}, RepresentationVersion: b.version}, nil
 }
 
+func TestWorkflowWorkspaceRouteUsageHelpUnknownAndIntegrateFlags(t *testing.T) {
+	app, _, errOut := transitionAppWithError(newWorkspaceCASBackend(workspaceProcessBody(t, model.ProcessExecutionChangeBearing)))
+	if code := app.runWorkflowWorkspace(t.Context(), nil); code != 2 || !strings.Contains(errOut.String(), "complete|integrate|reconcile") {
+		t.Fatalf("usage code=%d err=%q", code, errOut.String())
+	}
+	app, _, errOut = transitionAppWithError(newWorkspaceCASBackend(workspaceProcessBody(t, model.ProcessExecutionChangeBearing)))
+	if code := app.runWorkflowWorkspace(t.Context(), []string{"unknown"}); code != 2 || !strings.Contains(errOut.String(), "unknown workflow workspace command") {
+		t.Fatalf("unknown code=%d err=%q", code, errOut.String())
+	}
+	app, _, errOut = transitionAppWithError(newWorkspaceCASBackend(workspaceProcessBody(t, model.ProcessExecutionChangeBearing)))
+	if code := app.runWorkflowWorkspace(t.Context(), []string{"integrate", "--help"}); code != 0 || strings.Contains(errOut.String(), "reserved") {
+		t.Fatalf("integrate help code=%d err=%q", code, errOut.String())
+	}
+	app, _, errOut = transitionAppWithError(newWorkspaceCASBackend(workspaceProcessBody(t, model.ProcessExecutionChangeBearing)))
+	if code := app.runWorkflowWorkspace(t.Context(), []string{"integrate"}); code != 2 || !strings.Contains(errOut.String(), "repo must be owner/name") || strings.Contains(errOut.String(), "reserved") {
+		t.Fatalf("integrate required flags code=%d err=%q", code, errOut.String())
+	}
+}
+
+func TestWorkflowWorkspaceRouteInvokesIntegrationAdapter(t *testing.T) {
+	repo, root, backend, base := completedWorkspaceForIntegration(t, "route-owner", "internal/commands/route-integrated.txt")
+	app, out, errOut := transitionAppWithError(backend)
+	args := append([]string{"integrate"}, workspaceIntegrateArgs(repo, root, "route-owner", base)...)
+	if code := app.runWorkflowWorkspace(t.Context(), args); code != 0 {
+		t.Fatalf("integrate route code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	result := decodeWorkspaceResult(t, out)
+	if !result.OK || result.State != processworkspace.StateIntegrated || result.IntegrationSHA == "" || strings.Contains(errOut.String(), "reserved") {
+		t.Fatalf("integrate route result=%+v err=%q", result, errOut.String())
+	}
+}
+
 func TestWorkspacePrepareStrictCASIdempotentInspectAndLegacyMigration(t *testing.T) {
 	repo, base := workspaceGitRepository(t)
 	body := workspaceProcessBody(t, model.ProcessExecutionChangeBearing)
