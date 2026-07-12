@@ -151,14 +151,14 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/32#issue
 
 Final verification SHALL validate that execution planning artifacts are complete enough to audit the agent workflow.
 
-For non-trivial changes, VERIFY evidence SHALL cover TASK completion, PROCESS rationale, PROCESS handoff or review evidence, resolved findings, and SPEC coverage.
+For non-trivial changes, VERIFY evidence SHALL cover TASK completion, class-specific PROCESS evidence, resolved findings, and SPEC coverage. Change-bearing PROCESS nodes SHALL use matching inline PR rationale, while review, verification, orchestration, and external PROCESS nodes SHALL use their native REVIEW, VERIFY, check, handoff, or immutable external-revision carriers.
 
-The workflow SHOULD fail final verification when done PROCESS nodes lack rationale, TASK links, or required handoff/review evidence.
+The workflow SHOULD fail final verification when done PROCESS nodes lack their required class-specific carrier, TASK links, active SPEC coverage, or required handoff/review evidence.
 
 #### Scenario: traceable SPEC to PROCESS chain
 
 - **WHEN** a done PROCESS belongs to a parent TASK
-- **THEN** final verification SHALL be able to trace SPEC -> TASK -> PROCESS -> PR rationale or VERIFY evidence
+- **THEN** final verification SHALL be able to trace SPEC -> TASK -> PROCESS -> its required PR rationale, REVIEW, VERIFY, check, handoff, or immutable external evidence
 
 #### Scenario: serial chain proves handoff
 
@@ -170,7 +170,9 @@ The workflow SHOULD fail final verification when done PROCESS nodes lack rationa
 - **WHEN** a non-trivial change reaches final verify
 - **THEN** at least one done VERIFY comment SHALL summarize tests, review state, traceability, and SPEC coverage
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/32#issuecomment-4877853419
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/32#issuecomment-4877853419
+- https://github.com/higress-group/issue-spec/issues/166#issuecomment-4951036789
 
 ### Requirement: Delegate coding PROCESS nodes to worker sub-agents by default
 
