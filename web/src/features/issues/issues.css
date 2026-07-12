@@ -11,6 +11,7 @@
 .issue-kicker { color: var(--teal); font-size: .72rem; font-weight: 850; letter-spacing: .15em; text-transform: uppercase; }
 .issue-kicker.purple { color: var(--purple); }
 .issue-kicker.coral { color: var(--coral); }
+.issue-relationships .issue-kicker.coral { color: #96382f; }
 .repository-section { margin-top: 2.3rem; }
 .repository-section > header { align-items: end; display: flex; justify-content: space-between; margin-bottom: .9rem; }
 .repository-section h2 { font: 700 1.55rem/1.2 Georgia, serif; margin: .25rem 0 0; }
@@ -89,7 +90,7 @@
 .state-badge.closed { background: var(--purple); }
 .state-badge svg { height: .9rem; width: .9rem; }
 .header-actions { display: flex; gap: .5rem; }
-.detail-grid { display: grid; gap: 1.3rem; grid-template-columns: minmax(0, 1fr) 15rem; }
+.detail-grid { display: grid; gap: 1.3rem; grid-template-columns: minmax(0, 1fr) minmax(17rem, 20rem); }
 .timeline { min-width: 0; position: relative; }
 .timeline::before { background: var(--line); content: ""; left: 1.45rem; position: absolute; top: 1rem; bottom: 7rem; width: 1px; }
 .timeline-card, .new-comment { background: var(--surface); border: 1px solid var(--line); border-radius: .75rem; margin-bottom: 1rem; padding: 1rem; position: relative; }
@@ -109,6 +110,10 @@
 .issue-sidebar p { align-items: center; display: flex; font-size: .85rem; gap: .4rem; margin-bottom: .25rem; }
 .issue-sidebar p svg { height: 1rem; width: 1rem; }
 .issue-sidebar small { color: var(--muted); }
+.issue-relationships .code-change-item { align-items: start; grid-template-columns: auto minmax(0, 1fr); }
+.issue-relationships .binding-state { grid-column: 2; justify-self: start; white-space: normal; }
+.relationship-status { color: var(--muted); font-size: .78rem; line-height: 1.5; margin: .6rem 0 0; }
+.relationship-status.relationship-error { color: #832f28; }
 .sr-only { clip: rect(0,0,0,0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
 @media (max-width: 900px) { .hero-seal { display: none; } .repository-cards { grid-template-columns: 1fr; } .detail-grid { grid-template-columns: 1fr; } .issue-sidebar { border-bottom: 1px solid var(--line); display: grid; gap: 1rem; grid-template-columns: repeat(2, minmax(0,1fr)); order: -1; } }
 @media (max-width: 620px) { .issue-page { padding: 1rem .75rem 5.5rem; } .issue-hero { padding: 1.35rem; } .issue-hero h1 { font-size: 2.1rem; } .repo-masthead, .detail-header { align-items: stretch; flex-direction: column; } .detail-header .detail-title { display: grid; gap: .45rem; min-width: 0; } .detail-title .issue-back { display: inline-block; max-width: 100%; line-height: 1.35; overflow-wrap: anywhere; } .detail-header .detail-title h1 { margin: 0; } .header-actions { display: grid; grid-template-columns: 1fr 1fr; } .issue-filters { align-items: stretch; flex-direction: column; gap: .5rem; } .state-tabs { display: grid; grid-template-columns: repeat(3,1fr); } .label-filter summary { justify-content: center; width: 100%; } .label-filter fieldset { left: 0; right: 0; } .issue-list a { grid-template-columns: auto minmax(0,1fr); } .comment-count { display: none; } .timeline-body, .new-comment { margin-left: 0; } .timeline::before { display: none; } .issue-sidebar { grid-template-columns: 1fr; } .repository-card { grid-template-columns: auto 1fr auto; } .permission-note { display: none; } }

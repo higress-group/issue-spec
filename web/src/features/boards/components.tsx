@@ -2,6 +2,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { AlertTriangle, ArrowRight, Check, CheckCircle2, Circle, CircleDashed, CircleDot, Clock3, ExternalLink, ShieldAlert, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
 import { anomalyCopy, type Artifact, type BoardPageModel, type ChangeCardModel, type ChangeLifecycle, type ChangeStage, type Progress } from "./types";
+import { CodeChangeIndicator } from "../changes/relationships";
 
 type ArtifactStage = Exclude<ChangeStage, "unknown">;
 const stageOrder: ArtifactStage[] = ["proposal", "design", "implement"];
@@ -87,6 +88,7 @@ export function ChangeCard({ card, owner }: { card: ChangeCardModel; owner: stri
     </header>
     <div className="board-card-title"><div><Link to={detail}>{card.title}</Link><code>{card.change_key}</code></div><span className="current-stage">Current · {stageLabels[card.current_stage]}</span></div>
     <StagePipeline card={card} owner={owner} />
+    <CodeChangeIndicator relationships={card.code_changes} />
     <div className="board-progress-grid"><ProgressMeter label="Tasks" progress={card.tasks} /><ProgressMeter label="Processes" progress={card.processes} /></div>
     <AnomalyList codes={card.anomalies} compact />
     <footer><Link className="board-open-link" to={detail}>Open change detail <ArrowRight aria-hidden="true" /></Link></footer>

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { codeChangeRelationshipSchema } from "../../lib/api/relationships";
 
 export const changeStageSchema = z.enum(["unknown", "proposal", "design", "implement"]);
 export const changeLifecycleSchema = z.enum(["active", "blocked", "completed", "closed"]);
@@ -41,6 +42,7 @@ export const changeCardSchema = z.object({
   }),
   tasks: progressSchema,
   processes: progressSchema,
+  code_changes: z.array(codeChangeRelationshipSchema).default([]),
   anomalies: z.array(z.string()).default([]),
   updated_at: z.string().datetime({ offset: true }),
 });
@@ -87,6 +89,7 @@ export const anomalyCatalog: Record<string, { label: string; description: string
   implement_missing_predecessor: { label: "Predecessor missing", description: "Implementation exists without a valid design artifact." },
   orphan_typed_artifact: { label: "Detached workflow record", description: "A typed workflow record is not attached to a projected change." },
   malformed_issue_marker: { label: "Malformed issue marker", description: "An artifact marker could not be parsed into a change." },
+  code_change_binding_mismatch: { label: "Source binding mismatch", description: "A linked code change points at a different provider repository than the active source binding." },
 };
 
 export function anomalyCopy(code: string) {

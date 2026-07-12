@@ -1,5 +1,6 @@
 import { z, type ZodType } from "zod";
 import { cookieValue } from "../../lib/api/client";
+import { issueRelationshipsSchema } from "../../lib/api/relationships";
 import { commentSchema, issueSchema, labelSchema, reactionSchema, type ReactionContent } from "./types";
 
 type Method = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
@@ -70,6 +71,8 @@ export const issueApi = {
     return request(`${base(owner, repo)}/issues?${query}`, { schema: issueListSchema, signal });
   },
   getIssue: (owner: string, repo: string, number: number, signal?: AbortSignal) => request(`${base(owner, repo)}/issues/${number}`, { schema: issueSchema, signal }),
+  getRelationships: (owner: string, repo: string, number: number, signal?: AbortSignal) =>
+    request(`/api/v1/context/repos/${encodeURIComponent(owner.trim())}/${encodeURIComponent(repo.trim())}/issues/${number}/relationships`, { schema: issueRelationshipsSchema, signal }),
   createIssue: (owner: string, repo: string, body: { title: string; body: string; labels: string[] }) => request(`${base(owner, repo)}/issues`, { method: "POST", body, schema: issueSchema }),
   updateIssue: (owner: string, repo: string, number: number, body: { title?: string; body?: string; state?: "open" | "closed" }) => request(`${base(owner, repo)}/issues/${number}`, { method: "PATCH", body, schema: issueSchema }),
   listComments: (owner: string, repo: string, number: number, signal?: AbortSignal) => request(`${base(owner, repo)}/issues/${number}/comments?per_page=100`, { schema: commentListSchema, signal }),

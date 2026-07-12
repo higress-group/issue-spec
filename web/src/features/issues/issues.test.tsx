@@ -16,6 +16,7 @@ import { IssueDetail } from "./detail-page";
 import { IssueLoading, IssueStatus, MutationProblem } from "./repository-context";
 import type { ActiveRepository } from "./repository-context";
 import type { Label, Reactions } from "./types";
+import type { CodeChangeRelationship } from "../../lib/api/relationships";
 
 const label: Label = { id: 1, name: "issue-spec/design", color: "62459a", description: "Design", default: false, url: "" };
 const reactions: Reactions = { total_count: 1, "+1": 1, "-1": 0, laugh: 0, hooray: 0, confused: 0, heart: 0, rocket: 0, eyes: 0, url: "" };
@@ -91,7 +92,7 @@ describe("issue editing semantics", () => {
 
 describe("canonical issue read authority", () => {
   it("renders anonymous public issue content without any mutation controls", async () => {
-    installIssueDetailHandlers();
+    installIssueDetailHandlers([relationshipFixture("github", "42")]);
     const { container } = renderIssueDetail(activeRepository(false, ["read"]));
     expect(await screen.findByRole("heading", { name: /Runner contract/ })).toBeVisible();
     expect(screen.queryByRole("button", { name: /^Edit$/ })).not.toBeInTheDocument();
@@ -101,11 +102,16 @@ describe("canonical issue read authority", () => {
     expect(screen.queryByRole("button", { name: /reaction/i })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Read-only conversation" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
+    const relationship = await screen.findByRole("link", { name: /Runner projection/ });
+    expect(screen.getByText("Pull request")).toBeVisible();
+    expect(relationship).toHaveAttribute("target", "_blank");
+    expect(relationship).toHaveAttribute("referrerpolicy", "no-referrer");
+    expect(container).not.toHaveTextContent("head_revision");
     expect((await axe.run(container)).violations).toEqual([]);
   });
 
   it("shows authenticated mutations only when allowed_actions grants them", async () => {
-    installIssueDetailHandlers();
+    installIssueDetailHandlers([relationshipFixture("github", "42"), relationshipFixture("aone", "73", "mismatched", { head_revision: "abc123" })]);
     renderIssueDetail(activeRepository(true, ["read", "contribute", "triage"]));
     expect(await screen.findByRole("heading", { name: /Runner contract/ })).toBeVisible();
     expect(screen.getByRole("button", { name: /^Edit$/ })).toBeVisible();
@@ -113,6 +119,9 @@ describe("canonical issue read authority", () => {
     expect(screen.getByRole("textbox", { name: "Comment" })).toBeVisible();
     expect(screen.getByText("Manage labels")).toBeVisible();
     expect(await screen.findByRole("button", { name: /Remove Thumbs up reaction/ })).toBeVisible();
+    expect(await screen.findByText("Merge request")).toBeVisible();
+    expect(screen.getByText("Binding mismatch")).toBeVisible();
+    expect(screen.queryByText("abc123")).not.toBeInTheDocument();
   });
 });
 
@@ -132,6 +141,17 @@ describe("GitHub-compatible issue API", () => {
     const response = await issueApi.createIssue("acme", "workflow", { title: "Raw", body: raw, labels: [] });
     expect(created).toEqual({ title: "Raw", body: raw, labels: [] });
     expect(response.body).toBe(raw);
+  });
+
+  it("loads code-change relationships through the canonical optional-auth route", async () => {
+    let path = "";
+    server.use(http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", ({ request }) => {
+      path = new URL(request.url).pathname;
+      return HttpResponse.json({ relationships: [relationshipFixture("github", "42")] });
+    }));
+    const response = await issueApi.getRelationships(" acme ", " workflow ", 41);
+    expect(path).toBe("/api/v1/context/repos/acme/workflow/issues/41/relationships");
+    expect(response.relationships[0]).toMatchObject({ provider_key: "github", relation_kind: "code_change", source_binding_match: "matched" });
   });
 
   it("covers issue/comment CRUD, labels, reactions, and compatible errors", async () => {
@@ -179,13 +199,28 @@ function commentFixture(overrides: Record<string, unknown> = {}) {
 function reactionFixture() { return { id: 7, user: userFixture(), content: "+1", created_at: "2026-07-10T11:30:00Z" }; }
 function userFixture() { return { login: "alice", id: 1, avatar_url: "", html_url: "", type: "User", site_admin: false }; }
 
-function installIssueDetailHandlers() {
+function installIssueDetailHandlers(relationships: CodeChangeRelationship[] = []) {
   server.use(
     http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture())),
     http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json([commentFixture()])),
     http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
     http.get("http://localhost/repos/acme/workflow/issues/comments/9/reactions", () => HttpResponse.json([reactionFixture()])),
+    http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", () => HttpResponse.json({ relationships })),
   );
+}
+
+function relationshipFixture(provider = "github", externalId = "42", sourceBindingMatch: CodeChangeRelationship["source_binding_match"] = "matched", metadata?: Record<string, unknown>): CodeChangeRelationship {
+  return {
+    provider_key: provider,
+    relation_kind: "code_change",
+    external_repository_id: provider === "aone" ? "Ingress/issue-spec" : "higress-group/issue-spec",
+    external_id: externalId,
+    canonical_url: `https://code.example/${provider}/changes/${externalId}`,
+    title: provider === "github" ? "Runner projection" : "Provider merge",
+    lifecycle_state: "active",
+    source_binding_match: sourceBindingMatch,
+    ...(metadata ? { metadata } : {}),
+  };
 }
 
 function renderIssueDetail(active: ActiveRepository) {
