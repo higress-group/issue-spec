@@ -75,6 +75,35 @@ func TestProcessEvidenceLegacyAndUnknownClass(t *testing.T) {
 	}
 }
 
+func TestReferencesArtifactIDRejectsPrefixCollisions(t *testing.T) {
+	for _, tc := range []struct{ body, id string }{
+		{"verified PROCESS-0010", "PROCESS-001"},
+		{"covered SPEC-0010", "SPEC-001"},
+	} {
+		if ReferencesArtifactID(tc.body, tc.id) {
+			t.Fatalf("%q must not be an exact reference to %s", tc.body, tc.id)
+		}
+	}
+	for _, tc := range []struct{ body, id string }{
+		{"verified PROCESS-001.", "PROCESS-001"},
+		{"- SPEC-001", "SPEC-001"},
+	} {
+		if !ReferencesArtifactID(tc.body, tc.id) {
+			t.Fatalf("%q should reference %s", tc.body, tc.id)
+		}
+	}
+}
+
+func TestOrchestrationSpecCoverageRejectsPrefixCollision(t *testing.T) {
+	input := processEvidenceFixture(t, model.ProcessExecutionOrchestration)
+	input.Process.Comment.Body += "\n\n### Covers\n\n- SPEC-0010\n\n### Handoff\n\ncoordination complete\n"
+	input.Process.Comment = model.ParseTypedComment(input.Process.Comment.Body)
+	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !containsString(report.Missing, "active SPEC coverage") {
+		t.Fatalf("SPEC-0010 must not cover active SPEC-001: %+v", report)
+	}
+}
+
 func processEvidenceFixture(t *testing.T, class model.ProcessExecutionClass) ProcessEvidenceInput {
 	t.Helper()
 	if class == "" {

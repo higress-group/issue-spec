@@ -2,6 +2,7 @@ package gates
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -187,7 +188,7 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 	case model.ProcessExecutionOrchestration:
 		report.Required = append(report.Required, "non-empty coordination handoff")
 		for id := range input.ActiveSpecs {
-			if strings.Contains(process.Comment.Body, id) {
+			if ReferencesArtifactID(process.Comment.Body, id) {
 				specSatisfied = true
 				break
 			}
@@ -224,6 +225,18 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 	sort.Strings(report.Satisfied)
 	sort.Strings(report.Missing)
 	return report
+}
+
+// ReferencesArtifactID reports an exact, token-bounded typed artifact ID.
+// Prefix collisions such as PROCESS-001/PROCESS-0010 and SPEC-001/SPEC-0010
+// must never let evidence for one logical artifact satisfy another.
+func ReferencesArtifactID(body, id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	pattern := `(^|[^A-Za-z0-9_-])` + regexp.QuoteMeta(id) + `($|[^A-Za-z0-9_-])`
+	return regexp.MustCompile(pattern).MatchString(body)
 }
 
 func hasRelatedURL(process model.Artifact, urls map[string]bool) bool {

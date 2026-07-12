@@ -86,14 +86,14 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 						testEvidence = true
 					}
 				}
-				if strings.Contains(process.Comment.Body, specID) {
+				if gates.ReferencesArtifactID(process.Comment.Body, specID) {
 					input.Checks = append(input.Checks, gates.CheckEvidence{ProcessID: process.Comment.ID, SpecID: specID, Name: check.Name, Required: true, Passed: true, TestEvidence: testEvidence})
 				}
 			}
 		}
 		if external != nil {
 			for specID := range activeSpecs {
-				if strings.Contains(process.Comment.Body, specID) && strings.Contains(process.Comment.Body, external.SubjectRevision) {
+				if gates.ReferencesArtifactID(process.Comment.Body, specID) && strings.Contains(process.Comment.Body, external.SubjectRevision) {
 					input.External = append(input.External, gates.ExternalProcessEvidence{ProcessID: process.Comment.ID, SpecID: specID,
 						SubjectRevision: external.SubjectRevision, EvidenceRevision: external.SubjectRevision, Consumed: true,
 						EvidenceIDs: append([]string(nil), external.EvidenceIDs...)})
@@ -115,11 +115,11 @@ func rationaleSpecURL(body string) string {
 }
 
 func artifactReferencesProcess(artifact, process model.Artifact) bool {
-	return strings.Contains(artifact.Comment.Body, process.Comment.ID) || linksContainURL(artifact.Comment.Links["Related Comments"], process.URL)
+	return gates.ReferencesArtifactID(artifact.Comment.Body, process.Comment.ID) || linksContainURL(artifact.Comment.Links["Related Comments"], process.URL)
 }
 
 func artifactReferencesSpec(artifact model.Artifact, specID, specURL string) bool {
-	return strings.Contains(artifact.Comment.Body, specID) || linksContainURL(artifact.Comment.Links["Related Comments"], specURL)
+	return gates.ReferencesArtifactID(artifact.Comment.Body, specID) || linksContainURL(artifact.Comment.Links["Related Comments"], specURL)
 }
 
 func linksContainURL(values []string, want string) bool {
