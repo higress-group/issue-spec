@@ -119,7 +119,7 @@ func (s *Service) ListServiceAccounts(ctx context.Context, orgID uuid.UUID, incl
 		return nil, err
 	}
 	defer rows.Close()
-	var result []models.AdminServiceAccount
+	result := make([]models.AdminServiceAccount, 0)
 	for rows.Next() {
 		var account models.AdminServiceAccount
 		if err := rows.Scan(&account.ID, &account.UserID, &account.OrganizationID, &account.Name,
