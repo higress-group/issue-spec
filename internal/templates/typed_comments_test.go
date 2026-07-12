@@ -86,7 +86,7 @@ func TestNonSpecTemplatesProduceParseableTypedBodies(t *testing.T) {
 	}
 	proc, err := ProcessComment(ProcessCommentOptions{
 		Common: CommonOptions{ID: "PROCESS-001", Status: "ready"},
-		Input:  ProcessInput{Title: "impl", Owner: "Worker", ParentTask: "TASK-001", Scope: "x", Dependencies: []string{"PROCESS-000"}, WriteOwnership: []string{"internal/x"}, Covers: []string{"TASK-001"}, Handoff: "state.json contract fixed"},
+		Input:  ProcessInput{Title: "impl", Owner: "Worker", ParentTask: "TASK-001", ExecutionClass: model.ProcessExecutionReview, Scope: "x", Dependencies: []string{"PROCESS-000"}, WriteOwnership: []string{"internal/x"}, Covers: []string{"TASK-001"}, Handoff: "state.json contract fixed"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ func TestNonSpecTemplatesProduceParseableTypedBodies(t *testing.T) {
 			t.Fatalf("task missing %q:\n%s", want, task)
 		}
 	}
-	for _, want := range []string{"### Parent TASK", "- TASK-001", "### Handoff", "state.json contract fixed"} {
+	for _, want := range []string{"### Parent TASK", "- TASK-001", "### Execution Class", "- review", "### Handoff", "state.json contract fixed"} {
 		if !strings.Contains(proc, want) {
 			t.Fatalf("process missing %q:\n%s", want, proc)
 		}
@@ -156,6 +156,18 @@ func TestTaskAndProcessGeneratorsFillCanonicalDefaults(t *testing.T) {
 	}
 	if !strings.Contains(proc, "### Handoff\n\nN/A") {
 		t.Fatalf("default PROCESS missing handoff default:\n%s", proc)
+	}
+	if !strings.Contains(proc, "### Execution Class\n\n- change-bearing") {
+		t.Fatalf("default PROCESS must use conservative change-bearing class:\n%s", proc)
+	}
+}
+
+func TestProcessGeneratorRejectsUnknownExecutionClass(t *testing.T) {
+	_, err := ProcessComment(ProcessCommentOptions{Common: CommonOptions{ID: "PROCESS-003"}, Input: ProcessInput{
+		Title: "p", ExecutionClass: model.ProcessExecutionClass("deploy"),
+	}})
+	if err == nil || !strings.Contains(err.Error(), "unknown PROCESS execution class") {
+		t.Fatalf("expected unknown class error, got %v", err)
 	}
 }
 
