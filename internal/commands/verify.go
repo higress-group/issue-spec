@@ -40,11 +40,13 @@ type finalVerifyOptions struct {
 	DurableSpecPath   string
 	PR                int
 	PRURL             string
+	ExpectedRevision  string
 	RationaleRequired bool
 	RationaleComments []github.PullRequestReviewComment
 	PRStatus          github.CombinedStatus
 	PRCheckRuns       []github.CheckRun
 	ExternalEvidence  *externalEvidenceConsumption
+	CarrierRevisions  map[string]gates.CarrierRevisionFact
 }
 
 func (a *app) runVerify(ctx context.Context, args []string) int {
@@ -99,6 +101,7 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 	var prStatus github.CombinedStatus
 	var prCheckRuns []github.CheckRun
 	var prURL string
+	var expectedRevision string
 	externalGate, selfHosted, err := a.externalGate(ctx, *host, token.Value, repo, implementIssue,
 		"code_change", *revision, coreevidence.GateVerify)
 	if err != nil {
@@ -116,6 +119,7 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 			return 1
 		}
 		prURL = pr.HTMLURL
+		expectedRevision = pr.Head.SHA
 		rationaleComments, err = client.ListPullRequestReviewComments(ctx, repo, *prFlag)
 		if err != nil {
 			a.errorf("read PR #%d review comments: %v\n", *prFlag, err)
@@ -135,11 +139,13 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 	var processExternalEvidence *externalEvidenceConsumption
 	if selfHosted {
 		processExternalEvidence = &externalGate.Consumption
+		expectedRevision = externalGate.Target.SubjectRevision
 	}
 	report, err := buildFinalVerifyReport(artifacts, proposalIssueData.HTMLURL, finalVerifyOptions{
 		DurableSpecPath:   *durableSpec,
 		PR:                *prFlag,
 		PRURL:             prURL,
+		ExpectedRevision:  expectedRevision,
 		RationaleRequired: *prFlag > 0,
 		RationaleComments: rationaleComments,
 		PRStatus:          prStatus,
@@ -322,7 +328,7 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		target = gates.TargetArchive
 	}
 	var processEvidence []gates.ProcessEvidenceInput
-	if opts.RationaleRequired || opts.ExternalEvidence != nil {
+	if opts.RationaleRequired || opts.ExternalEvidence != nil || hasExplicitProcessWorkspace(artifacts) {
 		processEvidence = buildProcessEvidenceInputs(artifacts, opts.PRURL, opts.RationaleComments, reviewReport, opts.ExternalEvidence)
 	}
 	gateReport, err := gates.Evaluate(gates.Snapshot{
@@ -334,6 +340,35 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	})
 	if err != nil {
 		return report, err
+	}
+	workspaceReport, err := gates.EvaluateWorkspaceEvidence(gates.WorkspaceEvaluationInput{
+		Target: target, Mode: gates.ModeAuthoritative, Artifacts: artifacts,
+		ExpectedRevision: gates.Fact{Required: true, Known: strings.TrimSpace(opts.ExpectedRevision) != "", Passed: true, Expected: strings.TrimSpace(opts.ExpectedRevision)},
+		ProcessEvidence:  gateReport.Processes,
+		CarrierRevisions: opts.CarrierRevisions,
+	})
+	if err != nil {
+		return report, err
+	}
+	var workspaceGateDiagnostics []gates.Diagnostic
+	for _, diagnostic := range workspaceReport.Diagnostics {
+		if !diagnostic.Blocking && diagnostic.Severity == gates.SeverityWarning {
+			report.Warnings = append(report.Warnings, diagnostic.Message)
+			continue
+		}
+		workspaceGateDiagnostics = append(workspaceGateDiagnostics, diagnostic)
+	}
+	gateReport.Diagnostics = append(gateReport.Diagnostics, workspaceGateDiagnostics...)
+	sort.SliceStable(gateReport.Diagnostics, func(i, j int) bool {
+		if gateReport.Diagnostics[i].Code != gateReport.Diagnostics[j].Code {
+			return gateReport.Diagnostics[i].Code < gateReport.Diagnostics[j].Code
+		}
+		return gateReport.Diagnostics[i].Artifact.ID < gateReport.Diagnostics[j].Artifact.ID
+	})
+	for _, diagnostic := range workspaceGateDiagnostics {
+		if diagnostic.Blocking {
+			gateReport.Ready = false
+		}
 	}
 	report.Gate = gateReport
 	report.ProcessEvidence = gateReport.Processes
@@ -426,11 +461,26 @@ func legacyVerifyGateError(diagnostic gates.Diagnostic) (string, bool) {
 	case gates.CodeProcessExecutionClassInvalid, gates.CodeProcessTaskLinkMissing,
 		gates.CodeProcessSpecLinkMissing, gates.CodeProcessPRLinkMissing, gates.CodeProcessCarrierMissing:
 		return diagnostic.Message, true
+	case gates.CodeProcessWorkspaceRequired, gates.CodeProcessWorkspaceInvalid, gates.CodeProcessWorkspaceStateInvalid,
+		gates.CodeProcessWorkspaceModeInvalid, gates.CodeProcessWorkspaceRevisionUnknown, gates.CodeProcessWorkspaceRevisionStale,
+		gates.CodeProcessWorkspaceReviewEvidenceMissing, gates.CodeProcessWorkspaceVerifyEvidenceMissing,
+		gates.CodeProcessWorkspaceProviderEvidenceMissing:
+		return diagnostic.Message, true
 	default:
 		// Remote check/finding diagnostics have richer legacy projections below;
 		// PROCESS evidence policy is integrated by PROCESS-009.
 		return "", false
 	}
+}
+
+func hasExplicitProcessWorkspace(artifacts []model.Artifact) bool {
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type == "PROCESS" && artifact.Comment.Status != "superseded" &&
+			model.ParseProcessWorkspace(artifact.Comment.ID, artifact.URL, artifact.Comment.Body).Explicit {
+			return true
+		}
+	}
+	return false
 }
 
 // sectionContent returns the trimmed text of the named `###`/`##` section, up to
