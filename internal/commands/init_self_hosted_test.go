@@ -99,13 +99,13 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/meta":
 			writeTestJSON(w, map[string]any{"api_version": "v1", "server_instance_id": "issue-spec:e2e",
-				"api_url": server.URL + "/api/v3", "native_api_url": server.URL + "/api/v1", "web_url": server.URL,
+				"api_url": server.URL, "native_api_url": server.URL + "/api/v1", "web_url": server.URL,
 				"transport": map[string]any{"mode": "loopback-http", "secure": false},
 				"providers": []map[string]any{{"provider_key": "aone", "display_name": "Aone Code",
 					"remote_authorities": []string{"gitlab.alibaba-inc.com"}, "code_change_label": "Merge request",
 					"capabilities":         []string{"change.comment", "evidence.snapshot"},
 					"recommended_evidence": []string{"review", "check"}}}})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/user":
+		case r.Method == http.MethodGet && r.URL.Path == "/user":
 			w.Header().Set("X-OAuth-Scopes", "repo, admin:repo, evidence:write")
 			writeTestJSON(w, map[string]any{"login": "browser-admin"})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/context":
@@ -145,7 +145,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 	t.Setenv("ISSUE_SPEC_TOKEN", "realm-token")
 	t.Setenv("ISSUE_SPEC_CODE_PROVIDERS_FILE", "")
 	profile := auth.Profile{Name: "e2e", Kind: auth.ProfileKindHosted, Hostname: "127.0.0.1",
-		APIURL: server.URL + "/api/v3", NativeAPIURL: server.URL + "/api/v1", WebURL: server.URL,
+		APIURL: server.URL, NativeAPIURL: server.URL + "/api/v1", WebURL: server.URL,
 		ServerInstanceID: "issue-spec:e2e", OperatorRegistryFile: registryPath,
 		OnboardingPolicy: auth.OnboardingPolicy{AllowRepositoryCreate: true, AllowSourceBinding: true, AllowUnattended: true}}
 	if err := auth.SaveProfile(profile, true); err != nil {

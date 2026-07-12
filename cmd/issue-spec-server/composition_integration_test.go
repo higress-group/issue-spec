@@ -70,6 +70,8 @@ func TestComposeMountsAllRealRouteSets(t *testing.T) {
 		status int
 	}{
 		{http.MethodGet, "/api/v1/meta", http.StatusOK},
+		{http.MethodGet, "/user", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v3/user", http.StatusNotFound},
 		{http.MethodGet, "/api/v1/not-a-route", http.StatusNotFound},
 		{http.MethodHead, "/", http.StatusOK},
 	} {
@@ -99,7 +101,7 @@ func TestComposeMountsAllRealRouteSets(t *testing.T) {
 	if err := json.Unmarshal(metaResponse.Body.Bytes(), &meta); err != nil {
 		t.Fatal(err)
 	}
-	if meta.ServerInstanceID == "" || meta.APIURL != "http://127.0.0.1:8080/api/v3" ||
+	if meta.ServerInstanceID == "" || meta.APIURL != "http://127.0.0.1:8080" ||
 		meta.NativeAPIURL != "http://127.0.0.1:8080/api/v1" || meta.WebURL != "http://127.0.0.1:8080" ||
 		meta.Transport.Mode != "loopback-http" || meta.Transport.Secure || meta.TransportPosture != "trusted-internal-http" || len(meta.Providers) != 1 ||
 		meta.Providers[0].ProviderKey != "code.example" || meta.Providers[0].DisplayName != "Example Code" {

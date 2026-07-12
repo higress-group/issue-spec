@@ -21,7 +21,7 @@ func TestNativeOnboardingOperationsUseNativeProfilePaths(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/meta":
 			_ = json.NewEncoder(w).Encode(map[string]any{"api_version": "v1", "server_instance_id": "issue-spec:test",
-				"api_url": onboardingServerURL(r) + "/api/v3", "native_api_url": onboardingServerURL(r) + "/api/v1",
+				"api_url": onboardingServerURL(r), "native_api_url": onboardingServerURL(r) + "/api/v1",
 				"web_url": onboardingServerURL(r), "transport": map[string]any{"mode": "loopback-http", "secure": false},
 				"providers": []map[string]any{{"provider_key": "aone", "display_name": "Aone Code",
 					"code_change_label": "Merge request", "capabilities": []string{"evidence.snapshot"}}}})
@@ -46,7 +46,8 @@ func TestNativeOnboardingOperationsUseNativeProfilePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	metadata, err := client.GetNativeServerMetadata(t.Context())
-	if err != nil || metadata.ServerInstanceID != "issue-spec:test" || len(metadata.Providers) != 1 {
+	if err != nil || metadata.ServerInstanceID != "issue-spec:test" || metadata.APIURL != server.URL ||
+		metadata.NativeAPIURL != server.URL+"/api/v1" || len(metadata.Providers) != 1 {
 		t.Fatalf("metadata = %+v, %v", metadata, err)
 	}
 	repository, err := client.EnsureNativeRepository(t.Context(), orgID.String(), NativeEnsureRepositoryInput{

@@ -71,7 +71,7 @@ func TestServerMetadataRejectsPublicHTTPAndKeepsIdentityStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.ServerInstanceID != second.ServerInstanceID || first.APIURL != "https://api.example.test/api/v3" || first.NativeAPIURL != "https://api.example.test/api/v1" {
+	if first.ServerInstanceID != second.ServerInstanceID || first.APIURL != "https://api.example.test" || first.NativeAPIURL != "https://api.example.test/api/v1" {
 		t.Fatalf("metadata = %+v second=%+v", first, second)
 	}
 }
@@ -83,5 +83,8 @@ func TestServerMetadataReportsExplicitTrustedInternalPosture(t *testing.T) {
 	}
 	if metadata.TransportPosture != publicurl.TransportTrustedInternalHTTP || metadata.Transport.Secure || metadata.Transport.Mode != "trusted-internal-http" {
 		t.Fatalf("metadata = %+v", metadata)
+	}
+	if metadata.APIURL != "http://10.0.0.8:8080" || metadata.NativeAPIURL != "http://10.0.0.8:8080/api/v1" {
+		t.Fatalf("metadata endpoints = %+v", metadata)
 	}
 }

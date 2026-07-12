@@ -589,7 +589,7 @@ func TestDefaultGitHubBackendTokenForGHUsesProvider(t *testing.T) {
 func TestAuthLoginAndStatusUseNamedSelfHostedProfile(t *testing.T) {
 	clearCommandAuthEnv(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/tenant-a/user" || r.Header.Get("Authorization") != "Bearer profile-secret" {
+		if r.URL.Path != "/user" || r.Header.Get("Authorization") != "Bearer profile-secret" {
 			t.Fatalf("request = %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
 		}
 		w.Header().Set("X-OAuth-Scopes", "repo, workflow")
@@ -601,7 +601,7 @@ func TestAuthLoginAndStatusUseNamedSelfHostedProfile(t *testing.T) {
 	app := newApp(strings.NewReader("profile-secret\n"), &out, &errOut)
 	code := app.runAuthLogin(context.Background(), []string{
 		"--profile", "staging", "--kind", "self-hosted",
-		"--api-url", server.URL + "/tenant-a", "--native-api-url", server.URL + "/tenant-a/api/v1",
+		"--api-url", server.URL, "--native-api-url", server.URL + "/api/v1",
 		"--web-url", server.URL, "--instance-id", "instance-staging",
 		"--with-token", "--insecure-storage", "--make-default", "--json",
 	})

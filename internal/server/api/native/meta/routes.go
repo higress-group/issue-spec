@@ -78,7 +78,7 @@ func NewServerMetadataWithPosture(apiOrigin, webOrigin string, providers []coder
 	}
 	return ServerMetadata{
 		ServerInstanceID: "issue-spec:" + hex.EncodeToString(digest[:16]),
-		APIURL:           api + "/api/v3", NativeAPIURL: api + "/api/v1", WebURL: web,
+		APIURL:           api, NativeAPIURL: api + "/api/v1", WebURL: web,
 		Transport:        Transport{Mode: mode, Secure: posture.SecureCookies()},
 		TransportPosture: posture,
 		Providers:        append([]codereview.ProviderDescription(nil), providers...),

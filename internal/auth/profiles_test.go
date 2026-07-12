@@ -11,7 +11,7 @@ import (
 )
 
 func TestHostedProfileOnboardingAndHandshake(t *testing.T) {
-	profile := Profile{Name: "local", Kind: ProfileKindHosted, APIURL: "http://127.0.0.1:18080/api/v3",
+	profile := Profile{Name: "local", Kind: ProfileKindHosted, APIURL: "http://127.0.0.1:18080",
 		NativeAPIURL: "http://127.0.0.1:18080/api/v1", WebURL: "http://127.0.0.1:18080",
 		ServerInstanceID: "issue-spec:test", OperatorRegistryFile: "/etc/issue-spec/providers.json",
 		OnboardingPolicy: OnboardingPolicy{AllowRepositoryCreate: true, AllowSourceBinding: true}}
