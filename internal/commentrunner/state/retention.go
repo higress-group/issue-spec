@@ -16,8 +16,9 @@ import (
 //     ones beyond the cap are pruned even if still within the TTL window.
 //
 // Non-terminal records (queued/dispatched/running/interrupted) are always kept
-// in full — they are bounded by concurrency and are the only records restart
-// reconciliation needs.
+// in full. Terminal jobs with pending credential or PROCESS workspace cleanup
+// remain retained until cleanup is confirmed so restart reconciliation cannot
+// lose a durable cleanup intent.
 type RetentionPolicy struct {
 	TerminalTTL              time.Duration
 	SessionTTL               time.Duration
@@ -160,7 +161,7 @@ func (s *RunnerState) pruneTerminalJobs(now time.Time, policy RetentionPolicy) i
 	}
 	var terminal []entry
 	for id, job := range s.Jobs {
-		if !job.Status.Terminal() || job.CredentialCleanup.Pending() {
+		if !job.Status.Terminal() || job.CredentialCleanup.Pending() || job.processWorkspaceCleanupUnconfirmed() {
 			continue
 		}
 		terminal = append(terminal, entry{id: id, at: job.effectiveTime()})
@@ -423,8 +424,17 @@ func (j Job) hasHeavyFields() bool {
 		j.Sandbox.Enabled
 }
 
-// tombstone keeps only the fields duplicate suppression and operator inspection
-// read for a terminal job, dropping the large ACPX/workspace/context payloads.
+func (j Job) processWorkspaceCleanupUnconfirmed() bool {
+	if j.ProcessWorkspace == nil {
+		return false
+	}
+	return j.ProcessWorkspace.CleanupRequired ||
+		j.ProcessWorkspace.CleanupState != ProcessWorkspaceAssignmentCleanupConfirmed
+}
+
+// tombstone keeps only the fields duplicate suppression, operator inspection,
+// exact PROCESS audit, and restart cleanup read for a terminal job, dropping
+// the large ACPX/workspace/context payloads.
 func (j Job) tombstone() Job {
 	return Job{
 		ID:                    j.ID,
@@ -433,6 +443,7 @@ func (j Job) tombstone() Job {
 		PublicSessionID:       j.PublicSessionID,
 		CommandID:             j.CommandID,
 		CommandName:           j.CommandName,
+		ExactProcessID:        j.ExactProcessID,
 		CommandIdempotencyKey: j.CommandIdempotencyKey,
 		StatusWritebackKey:    j.StatusWritebackKey,
 		TriggerCommentID:      j.TriggerCommentID,
@@ -445,7 +456,16 @@ func (j Job) tombstone() Job {
 		StartedAt:             j.StartedAt,
 		FinishedAt:            j.FinishedAt,
 		CredentialCleanup:     j.CredentialCleanup,
+		ProcessWorkspace:      cloneProcessWorkspaceAssignment(j.ProcessWorkspace),
 	}
+}
+
+func cloneProcessWorkspaceAssignment(assignment *ProcessWorkspaceAssignment) *ProcessWorkspaceAssignment {
+	if assignment == nil {
+		return nil
+	}
+	cloned := *assignment
+	return &cloned
 }
 
 func (c Cancellation) hasHeavyFields() bool {
