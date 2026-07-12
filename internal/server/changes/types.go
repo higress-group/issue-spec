@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/server/models"
 )
 
 type Stage string
@@ -33,6 +34,7 @@ const (
 	AnomalyImplementMissingPredecessor = "implement_missing_predecessor"
 	AnomalyOrphanTypedArtifact         = "orphan_typed_artifact"
 	AnomalyMalformedIssueMarker        = "malformed_issue_marker"
+	AnomalyCodeChangeBindingMismatch   = "code_change_binding_mismatch"
 )
 
 type Repository struct {
@@ -67,16 +69,23 @@ type Progress struct {
 }
 
 type ChangeCard struct {
-	Repository   Repository    `json:"repository"`
-	ChangeKey    string        `json:"change_key"`
-	Title        string        `json:"title"`
-	CurrentStage Stage         `json:"current_stage"`
-	Lifecycle    Lifecycle     `json:"lifecycle"`
-	Artifacts    ArtifactSlots `json:"artifacts"`
-	Tasks        Progress      `json:"tasks"`
-	Processes    Progress      `json:"processes"`
-	Anomalies    []string      `json:"anomalies"`
-	UpdatedAt    time.Time     `json:"updated_at"`
+	Repository   Repository                      `json:"repository"`
+	ChangeKey    string                          `json:"change_key"`
+	Title        string                          `json:"title"`
+	CurrentStage Stage                           `json:"current_stage"`
+	Lifecycle    Lifecycle                       `json:"lifecycle"`
+	Artifacts    ArtifactSlots                   `json:"artifacts"`
+	Tasks        Progress                        `json:"tasks"`
+	Processes    Progress                        `json:"processes"`
+	CodeChanges  []models.CodeChangeRelationship `json:"code_changes"`
+	Anomalies    []string                        `json:"anomalies"`
+	UpdatedAt    time.Time                       `json:"updated_at"`
+}
+
+type IssueRelationships struct {
+	Relationships []models.CodeChangeRelationship `json:"relationships"`
+	Validator     string                          `json:"-"`
+	LastModified  time.Time                       `json:"-"`
 }
 
 type BoardCounts struct {

@@ -126,6 +126,119 @@ func TestRepositoryBoardAnonymousVisibilityMatchesAuthorizationEvaluator(t *test
 	}
 }
 
+func TestCodeChangeRelationshipsProjectionPermissionsBindingsAndValidators(t *testing.T) {
+	env := newChangesEnvironment(t)
+	proposal := env.addArtifact(t, env.scope, "relationship-change", StageProposal, "1", "issue-spec/proposal", "N/A", "N/A")
+	design := env.addArtifact(t, env.scope, "relationship-change", StageDesign, "1", "issue-spec/design", proposalURL(proposal), "N/A")
+	implement := env.addArtifact(t, env.scope, "relationship-change", StageImplement, "1", "issue-spec/implement", proposalURL(proposal), proposalURL(design))
+	emptyImplement := env.addArtifact(t, env.scope, "empty-relationships", StageImplement, "1", "issue-spec/implement", "N/A", proposalURL(design))
+	owner, repository := env.canonicalRepositoryNames(t, env.scope)
+	env.addSourceBinding(t, env.scope, "github", "acme/widgets")
+	env.addReference(t, env.scope, implement.ID, "github", "code_change", "acme/widgets", "42",
+		"https://code.example/acme/widgets/changes/42", "repository", "active", `{"head_revision":"abc123"}`)
+	env.addReference(t, env.scope, implement.ID, "github", "code_change", "acme/widgets", "43",
+		"https://code.example/acme/widgets/changes/43", "maintainers", "active", `{"head_revision":"secret"}`)
+	env.addReference(t, env.scope, implement.ID, "gitlab", "code_change", "other/widgets", "44",
+		"https://gitlab.example/other/widgets/merge_requests/44", "repository", "active", `{"head_revision":"def456"}`)
+	env.addReference(t, env.scope, implement.ID, "github", "code_change", "acme/widgets", "45",
+		"https://code.example/acme/widgets/changes/45", "repository", "inactive", `{}`)
+	env.addReference(t, env.scope, implement.ID, "github", "build", "acme/widgets", "46",
+		"https://code.example/acme/widgets/builds/46", "repository", "active", `{}`)
+	// A proposal relationship must not be promoted to the change card: the
+	// implementation issue is the authoritative code-change relationship slot.
+	env.addReference(t, env.scope, proposal.ID, "github", "code_change", "acme/widgets", "proposal-only",
+		"https://code.example/acme/widgets/changes/proposal-only", "repository", "active", `{}`)
+	if _, err := env.pool.Exec(t.Context(), `UPDATE repos SET visibility = 'public', updated_at = clock_timestamp()
+		WHERE organization_id = $1 AND id = $2`, env.scope.OrgID, env.scope.RepoID); err != nil {
+		t.Fatal(err)
+	}
+
+	anonymous, err := env.service.IssueRelationships(t.Context(), authz.Anonymous(), owner, repository, implement.Number)
+	if err != nil || len(anonymous.Relationships) != 2 || anonymous.Validator == "" || anonymous.LastModified.IsZero() {
+		t.Fatalf("anonymous relationships=%+v err=%v", anonymous, err)
+	}
+	matched := requireCodeChange(t, anonymous.Relationships, "42")
+	mismatched := requireCodeChange(t, anonymous.Relationships, "44")
+	if matched.SourceBindingMatch != models.SourceBindingMatched || mismatched.SourceBindingMatch != models.SourceBindingMismatched ||
+		len(matched.Metadata) != 0 || len(mismatched.Metadata) != 0 {
+		t.Fatalf("anonymous relationship projection matched=%+v mismatched=%+v", matched, mismatched)
+	}
+	encoded, err := json.Marshal(anonymous)
+	if err != nil || strings.Contains(string(encoded), "head_revision") || !strings.Contains(string(encoded), `"relationships":[`) {
+		t.Fatalf("anonymous relationship JSON=%s err=%v", encoded, err)
+	}
+
+	maintainer, err := env.service.IssueRelationships(t.Context(), authz.Authenticated(env.principal), owner, repository, implement.Number)
+	if err != nil || len(maintainer.Relationships) != 3 ||
+		!strings.Contains(string(requireCodeChange(t, maintainer.Relationships, "43").Metadata), "secret") {
+		t.Fatalf("maintainer relationships=%+v err=%v", maintainer, err)
+	}
+
+	page, err := env.service.RepositoryBoard(t.Context(), authz.Anonymous(), env.scope,
+		ListOptions{Anomaly: AnomalyCodeChangeBindingMismatch})
+	if err != nil || len(page.Cards) != 1 || len(page.Cards[0].CodeChanges) != 2 ||
+		!contains(page.Cards[0].Anomalies, AnomalyCodeChangeBindingMismatch) ||
+		diagnosticCount(page.Diagnostics, AnomalyCodeChangeBindingMismatch) != 1 ||
+		hasCodeChange(requireCard(t, page.Cards, "relationship-change").CodeChanges, "proposal-only") {
+		t.Fatalf("anonymous relationship board=%+v err=%v", page, err)
+	}
+	fullPage, err := env.service.RepositoryBoard(t.Context(), authz.Authenticated(env.principal), env.scope, ListOptions{})
+	if err != nil || len(requireCard(t, fullPage.Cards, "relationship-change").CodeChanges) != 3 {
+		t.Fatalf("maintainer relationship board=%+v err=%v", fullPage, err)
+	}
+	emptyCard := requireCard(t, fullPage.Cards, "empty-relationships")
+	if emptyCard.CodeChanges == nil || len(emptyCard.CodeChanges) != 0 || !strings.Contains(mustJSON(t, emptyCard), `"code_changes":[]`) ||
+		emptyImplement.ID != emptyCard.Artifacts.Implement.ID {
+		t.Fatalf("empty code-change contract=%+v", emptyCard)
+	}
+
+	firstValidator := anonymous.Validator
+	env.addReference(t, env.scope, implement.ID, "github", "code_change", "acme/widgets", "47",
+		"https://code.example/acme/widgets/changes/47", "repository", "active", `{}`)
+	next, err := env.service.IssueRelationships(t.Context(), authz.Anonymous(), owner, repository, implement.Number)
+	if err != nil || next.Validator == firstValidator || len(next.Relationships) != 3 {
+		t.Fatalf("next relationship snapshot=%+v first validator=%s err=%v", next, firstValidator, err)
+	}
+	nextPage, err := env.service.RepositoryBoard(t.Context(), authz.Authenticated(env.principal), env.scope, ListOptions{})
+	if err != nil || nextPage.Validator == fullPage.Validator ||
+		len(requireCard(t, nextPage.Cards, "relationship-change").CodeChanges) != 4 {
+		t.Fatalf("next board snapshot=%+v previous validator=%s err=%v", nextPage, fullPage.Validator, err)
+	}
+	if _, err := env.pool.Exec(t.Context(), `UPDATE source_bindings SET active = false, updated_at = clock_timestamp()
+		WHERE organization_id = $1 AND repository_id = $2 AND active`, env.scope.OrgID, env.scope.RepoID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.pool.Exec(t.Context(), `UPDATE repos SET bindings_collection_version = bindings_collection_version + 1,
+		updated_at = clock_timestamp() WHERE organization_id = $1 AND id = $2`, env.scope.OrgID, env.scope.RepoID); err != nil {
+		t.Fatal(err)
+	}
+	unbound, err := env.service.IssueRelationships(t.Context(), authz.Authenticated(env.principal), owner, repository, implement.Number)
+	if err != nil || unbound.Validator == next.Validator {
+		t.Fatalf("unbound relationship snapshot=%+v previous validator=%s err=%v", unbound, next.Validator, err)
+	}
+	for _, relationship := range unbound.Relationships {
+		if relationship.SourceBindingMatch != models.SourceBindingUnbound {
+			t.Fatalf("relationship remained bound after deactivation: %+v", relationship)
+		}
+	}
+	unboundPage, err := env.service.RepositoryBoard(t.Context(), authz.Authenticated(env.principal), env.scope, ListOptions{})
+	if err != nil {
+		t.Fatalf("unbound board error=%v", err)
+	}
+	unboundCard := requireCard(t, unboundPage.Cards, "relationship-change")
+	if unboundPage.Validator == nextPage.Validator || contains(unboundCard.Anomalies, AnomalyCodeChangeBindingMismatch) {
+		t.Fatalf("unbound board snapshot=%+v previous validator=%s", unboundPage, nextPage.Validator)
+	}
+
+	if _, err := env.pool.Exec(t.Context(), `UPDATE repos SET visibility = 'private', updated_at = clock_timestamp()
+		WHERE organization_id = $1 AND id = $2`, env.scope.OrgID, env.scope.RepoID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.service.IssueRelationships(t.Context(), authz.Anonymous(), owner, repository, implement.Number); !errors.Is(err, adminservice.ErrNotFound) {
+		t.Fatalf("anonymous private relationships error=%v", err)
+	}
+}
+
 func TestChangeDetailIsNotLimitedToFirstHundredAndTenantKeysStayIndependent(t *testing.T) {
 	env := newChangesEnvironment(t)
 	for index := 0; index < 105; index++ {
@@ -359,6 +472,54 @@ func (e *changesEnvironment) closeIssues(t *testing.T, scope models.RepoScope, i
 	}
 }
 
+func (e *changesEnvironment) canonicalRepositoryNames(t *testing.T, scope models.RepoScope) (string, string) {
+	t.Helper()
+	var owner, repository string
+	if err := e.pool.QueryRow(t.Context(), `SELECT o.name, r.name FROM orgs o JOIN repos r ON r.organization_id = o.id
+		WHERE o.id = $1 AND r.id = $2`, scope.OrgID, scope.RepoID).Scan(&owner, &repository); err != nil {
+		t.Fatal(err)
+	}
+	return owner, repository
+}
+
+func (e *changesEnvironment) addSourceBinding(t *testing.T, scope models.RepoScope, provider, externalRepositoryID string) {
+	t.Helper()
+	if _, err := e.pool.Exec(t.Context(), `INSERT INTO source_bindings
+		(id, organization_id, repository_id, provider_key, external_repository_id, clone_url, web_url,
+		 default_branch, version, created_by_user_id, updated_by_user_id)
+		VALUES ($1, $2, $3, $4, $5, 'https://code.example/acme/widgets.git',
+		 'https://code.example/acme/widgets', 'main', 1, $6, $6)`, uuid.New(), scope.OrgID, scope.RepoID,
+		provider, externalRepositoryID, e.principal.User.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.pool.Exec(t.Context(), `UPDATE repos SET bindings_collection_version = bindings_collection_version + 1,
+		updated_at = clock_timestamp() WHERE organization_id = $1 AND id = $2`, scope.OrgID, scope.RepoID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (e *changesEnvironment) addReference(t *testing.T, scope models.RepoScope, issueID uuid.UUID, provider,
+	relationKind, externalRepositoryID, externalID, canonicalURL, visibility, lifecycle, metadata string) {
+	t.Helper()
+	if _, err := e.pool.Exec(t.Context(), `INSERT INTO external_references
+		(id, organization_id, repository_id, issue_id, provider_key, relation_kind, external_repository_id,
+		 external_id, canonical_url, title, lifecycle_state, visibility, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $8, $10, $11, $12::jsonb)`, uuid.New(), scope.OrgID,
+		scope.RepoID, issueID, provider, relationKind, externalRepositoryID, externalID, canonicalURL, lifecycle,
+		visibility, metadata); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.pool.Exec(t.Context(), `UPDATE issues SET references_collection_version = references_collection_version + 1,
+		updated_at = clock_timestamp() WHERE organization_id = $1 AND repository_id = $2 AND id = $3`,
+		scope.OrgID, scope.RepoID, issueID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.pool.Exec(t.Context(), `UPDATE repos SET references_collection_version = references_collection_version + 1,
+		updated_at = clock_timestamp() WHERE organization_id = $1 AND id = $2`, scope.OrgID, scope.RepoID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (e *changesEnvironment) insertUser(t *testing.T, login string) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
@@ -455,6 +616,26 @@ func requireCard(t *testing.T, cards []ChangeCard, key string) ChangeCard {
 	}
 	t.Fatalf("card %q not found in %+v", key, cards)
 	return ChangeCard{}
+}
+
+func requireCodeChange(t *testing.T, relationships []models.CodeChangeRelationship, externalID string) models.CodeChangeRelationship {
+	t.Helper()
+	for _, relationship := range relationships {
+		if relationship.ExternalID == externalID {
+			return relationship
+		}
+	}
+	t.Fatalf("code-change relationship %q not found in %+v", externalID, relationships)
+	return models.CodeChangeRelationship{}
+}
+
+func hasCodeChange(relationships []models.CodeChangeRelationship, externalID string) bool {
+	for _, relationship := range relationships {
+		if relationship.ExternalID == externalID {
+			return true
+		}
+	}
+	return false
 }
 
 func diagnosticCount(values []DiagnosticCount, code string) int {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ type Service interface {
 	RepositoryBoard(context.Context, authz.Subject, models.RepoScope, changes.ListOptions) (changes.BoardPage, error)
 	OrganizationBoard(context.Context, authz.Subject, models.OrgScope, changes.ListOptions) (changes.BoardPage, error)
 	Change(context.Context, authz.Subject, models.RepoScope, string) (changes.ChangeCard, string, time.Time, error)
+	IssueRelationships(context.Context, authz.Subject, string, string, int64) (changes.IssueRelationships, error)
 }
 
 type Dependencies struct {
@@ -49,6 +51,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 		{Name: "native.boards.repository.list", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/repos/{repo}/changes", Handler: protect(deps.AuthenticateOptional, h.repositoryList)},
 		{Name: "native.boards.repository.query", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/repos/{repo}/changes/query", Handler: protect(deps.Authenticate, h.repositoryQuery)},
 		{Name: "native.boards.repository.detail", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/repos/{repo}/changes/{change...}", Handler: protect(deps.AuthenticateOptional, h.detail)},
+		{Name: "native.issues.relationships", Method: http.MethodGet, Pattern: "/api/v1/context/repos/{owner}/{repo}/issues/{number}/relationships", Handler: protect(deps.AuthenticateOptional, h.issueRelationships)},
 	}}
 	return set, set.Validate()
 }
@@ -143,6 +146,31 @@ func (h handlers) detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	adminapi.WriteJSON(w, http.StatusOK, card)
+}
+
+func (h handlers) issueRelationships(w http.ResponseWriter, r *http.Request) {
+	if len(r.URL.Query()) != 0 {
+		problem(w, http.StatusUnprocessableEntity, "invalid_request", "Relationship query parameters are not supported")
+		return
+	}
+	number, err := strconv.ParseInt(r.PathValue("number"), 10, 64)
+	if err != nil || number <= 0 {
+		problem(w, http.StatusUnprocessableEntity, "invalid_request", "Invalid issue number")
+		return
+	}
+	subject := authz.Anonymous()
+	if presented, ok := serverauth.PrincipalFromContext(r.Context()); ok && presented.User.ID != uuid.Nil {
+		subject = authz.Authenticated(presented)
+	}
+	projection, err := h.service.IssueRelationships(r.Context(), subject, r.PathValue("owner"), r.PathValue("repo"), number)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if notModified(w, r, projection.Validator, projection.LastModified) {
+		return
+	}
+	adminapi.WriteJSON(w, http.StatusOK, projection)
 }
 
 func repositoryScope(w http.ResponseWriter, r *http.Request, requireAuthentication bool) (authz.Subject, models.RepoScope, bool) {

@@ -60,6 +60,20 @@ func TestBoardRoutesSuccessConditionalAndScopes(t *testing.T) {
 	if organization.Code != http.StatusOK || service.orgScope.OrgID != orgID || service.options.Lifecycle != changes.LifecycleActive {
 		t.Fatalf("organization=%d scope=%+v options=%+v body=%s", organization.Code, service.orgScope, service.options, organization.Body.String())
 	}
+	relationships := boardRequest(mux, http.MethodGet,
+		"/api/v1/context/repos/acme/widgets/issues/17/relationships", "", false, nil)
+	if relationships.Code != http.StatusOK || relationships.Header().Get("ETag") != `"relationships-v1"` ||
+		!strings.Contains(relationships.Body.String(), `"external_id":"42"`) || service.owner != "acme" ||
+		service.repository != "widgets" || service.issueNumber != 17 {
+		t.Fatalf("relationships=%d headers=%v route=%s/%s#%d body=%s", relationships.Code,
+			relationships.Header(), service.owner, service.repository, service.issueNumber, relationships.Body.String())
+	}
+	relationshipConditional := boardRequest(mux, http.MethodGet,
+		"/api/v1/context/repos/acme/widgets/issues/17/relationships", "", false,
+		map[string]string{"If-None-Match": `W/"relationships-v1"`})
+	if relationshipConditional.Code != http.StatusNotModified || relationshipConditional.Body.Len() != 0 {
+		t.Fatalf("relationship conditional=%d body=%s", relationshipConditional.Code, relationshipConditional.Body.String())
+	}
 }
 
 func TestBoardRoutesStrictProblemsJSONAndQueryValidation(t *testing.T) {
@@ -81,6 +95,14 @@ func TestBoardRoutesStrictProblemsJSONAndQueryValidation(t *testing.T) {
 	assertBoardProblem(t, boardRequest(mux, http.MethodGet, base+"/alpha?stage=design", "", true, nil), http.StatusUnprocessableEntity, "invalid_request")
 	assertBoardProblem(t, boardRequest(mux, http.MethodPost, base+"/query", `{"unknown":true}`, true, nil), http.StatusBadRequest, "invalid_json")
 	assertBoardProblem(t, boardRequest(mux, http.MethodPost, base+"/query", `{`, true, nil), http.StatusBadRequest, "invalid_json")
+	relationshipBase := "/api/v1/context/repos/acme/widgets/issues/17/relationships"
+	assertBoardProblem(t, boardRequest(mux, http.MethodGet, relationshipBase, "", true,
+		map[string]string{"Authorization": "invalid"}), http.StatusUnauthorized, "authentication_required")
+	assertBoardProblem(t, boardRequest(mux, http.MethodGet,
+		"/api/v1/context/repos/acme/widgets/issues/zero/relationships", "", false, nil),
+		http.StatusUnprocessableEntity, "invalid_request")
+	assertBoardProblem(t, boardRequest(mux, http.MethodGet, relationshipBase+"?page=1", "", false, nil),
+		http.StatusUnprocessableEntity, "invalid_request")
 
 	for _, test := range []struct {
 		err    error
@@ -109,12 +131,29 @@ func TestBoardJSONQueryUsesStrictTypedOptions(t *testing.T) {
 }
 
 type fakeBoardService struct {
-	page      changes.BoardPage
-	err       error
-	repoScope models.RepoScope
-	orgScope  models.OrgScope
-	options   changes.ListOptions
-	changeKey string
+	page        changes.BoardPage
+	err         error
+	repoScope   models.RepoScope
+	orgScope    models.OrgScope
+	options     changes.ListOptions
+	changeKey   string
+	owner       string
+	repository  string
+	issueNumber int64
+}
+
+func (f *fakeBoardService) IssueRelationships(_ context.Context, _ authz.Subject, owner, repository string,
+	number int64) (changes.IssueRelationships, error) {
+	f.owner, f.repository, f.issueNumber = owner, repository, number
+	if f.err != nil {
+		return changes.IssueRelationships{}, f.err
+	}
+	title := "Keep source bindings honest"
+	return changes.IssueRelationships{Relationships: []models.CodeChangeRelationship{{ProviderKey: "github",
+		RelationKind: "code_change", ExternalRepositoryID: "higress-group/issue-spec", ExternalID: "42",
+		CanonicalURL: "https://github.com/higress-group/issue-spec/pull/42", Title: &title,
+		LifecycleState: "active", SourceBindingMatch: models.SourceBindingMatched}}, Validator: `"relationships-v1"`,
+		LastModified: time.Unix(1_700_000_000, 0).UTC()}, nil
 }
 
 func (f *fakeBoardService) RepositoryBoard(_ context.Context, _ authz.Subject, scope models.RepoScope, options changes.ListOptions) (changes.BoardPage, error) {
@@ -138,7 +177,7 @@ func (f *fakeBoardService) Change(_ context.Context, _ authz.Subject, _ models.R
 func boardFixture() changes.BoardPage {
 	card := changes.ChangeCard{Repository: changes.Repository{ID: uuid.New(), Name: "widgets", DisplayName: "Widgets"},
 		ChangeKey: "alpha", Title: "Alpha", CurrentStage: changes.StageImplement, Lifecycle: changes.LifecycleActive,
-		Anomalies: []string{}, UpdatedAt: time.Unix(1_700_000_000, 0).UTC()}
+		CodeChanges: []models.CodeChangeRelationship{}, Anomalies: []string{}, UpdatedAt: time.Unix(1_700_000_000, 0).UTC()}
 	return changes.BoardPage{Cards: []changes.ChangeCard{card}, Page: 1, PerPage: 20, Total: 1,
 		Counts: changes.BoardCounts{Total: 1, Active: 1, Implement: 1}, Diagnostics: []changes.DiagnosticCount{},
 		Validator: `"board-v1"`, LastModified: time.Unix(1_700_000_000, 0).UTC()}

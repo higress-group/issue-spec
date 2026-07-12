@@ -13,7 +13,8 @@ import (
 
 func loadRepositories(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, repoIDs []uuid.UUID) (map[uuid.UUID]repositorySnapshot, error) {
 	rows, err := tx.Query(ctx, `SELECT id, name, display_name, issues_collection_version,
-		comments_collection_version, labels_collection_version, artifacts_collection_version, updated_at
+		comments_collection_version, labels_collection_version, artifacts_collection_version,
+		bindings_collection_version, references_collection_version, updated_at
 		FROM repos WHERE organization_id = $1 AND id = ANY($2::uuid[]) AND archived_at IS NULL
 		ORDER BY id`, orgID, repoIDs)
 	if err != nil {
@@ -24,7 +25,8 @@ func loadRepositories(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, repoIDs [
 	for rows.Next() {
 		var item repositorySnapshot
 		if err := rows.Scan(&item.repository.ID, &item.repository.Name, &item.repository.DisplayName,
-			&item.issues, &item.comments, &item.labels, &item.artifacts, &item.updatedAt); err != nil {
+			&item.issues, &item.comments, &item.labels, &item.artifacts, &item.bindings,
+			&item.references, &item.updatedAt); err != nil {
 			return nil, fmt.Errorf("changes: scan repository: %w", err)
 		}
 		result[item.repository.ID] = item

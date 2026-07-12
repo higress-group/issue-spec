@@ -132,7 +132,7 @@ func knownAnomaly(value string) bool {
 	switch value {
 	case AnomalyDuplicateArtifactType, AnomalyMarkerLabelMismatch, AnomalyMissingRequiredLinks,
 		AnomalyUnsupportedMarkerVersion, AnomalyImplementMissingPredecessor,
-		AnomalyOrphanTypedArtifact, AnomalyMalformedIssueMarker:
+		AnomalyOrphanTypedArtifact, AnomalyMalformedIssueMarker, AnomalyCodeChangeBindingMismatch:
 		return true
 	default:
 		return false
@@ -145,6 +145,8 @@ type repositorySnapshot struct {
 	comments   int64
 	labels     int64
 	artifacts  int64
+	bindings   int64
+	references int64
 	updatedAt  time.Time
 }
 
@@ -158,6 +160,7 @@ func (s *Service) loadBoard(ctx context.Context, subject authz.Subject, orgID uu
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	authorizedIDs := make([]uuid.UUID, 0, len(repoIDs))
+	permissions := make(map[uuid.UUID]authz.Permission, len(repoIDs))
 	for _, repoID := range repoIDs {
 		decision, err := s.authz.EvaluateRepositoryTx(ctx, tx, subject, authz.RepositoryRequest{
 			Scope: models.RepoScope{OrgID: orgID, RepoID: repoID}, Operation: authz.OperationRead,
@@ -167,6 +170,7 @@ func (s *Service) loadBoard(ctx context.Context, subject authz.Subject, orgID uu
 		}
 		if decision.Allowed {
 			authorizedIDs = append(authorizedIDs, repoID)
+			permissions[repoID] = decision.EffectivePermission
 			continue
 		}
 		if strict {
@@ -197,10 +201,18 @@ func (s *Service) loadBoard(ctx context.Context, subject authz.Subject, orgID uu
 	if err != nil {
 		return BoardPage{}, err
 	}
+	issueIDs := make([]uuid.UUID, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		issueIDs = append(issueIDs, artifact.issueID)
+	}
+	relationships, relationshipModified, err := loadCodeChangeRelationships(ctx, tx, orgID, authorizedIDs, issueIDs, permissions)
+	if err != nil {
+		return BoardPage{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return BoardPage{}, fmt.Errorf("changes: commit snapshot: %w", err)
 	}
-	cards, diagnosticCounts := projectBoard(orgID, repositories, artifacts, typed, diagnostics)
+	cards, diagnosticCounts := projectBoard(orgID, repositories, artifacts, typed, relationships, diagnostics)
 	if changeKey != "" {
 		matching := cards[:0]
 		for _, card := range cards {
@@ -231,6 +243,9 @@ func (s *Service) loadBoard(ctx context.Context, subject authz.Subject, orgID uu
 			lastModified = repository.updatedAt
 		}
 	}
+	if relationshipModified.After(lastModified) {
+		lastModified = relationshipModified
+	}
 	return BoardPage{Cards: pageCards, Page: options.Page, PerPage: options.PerPage, Total: total,
 		Counts: summary, Diagnostics: diagnosticCounts, Validator: validator(orgID, repositories, options, changeKey), LastModified: lastModified}, nil
 }
@@ -251,7 +266,8 @@ func validator(orgID uuid.UUID, repositories map[uuid.UUID]repositorySnapshot, o
 	_, _ = hash.Write([]byte(orgID.String()))
 	for _, id := range ids {
 		repository := repositories[id]
-		_, _ = hash.Write([]byte(fmt.Sprintf("|%s:%d:%d:%d:%d", id, repository.issues, repository.comments, repository.labels, repository.artifacts)))
+		_, _ = hash.Write([]byte(fmt.Sprintf("|%s:%d:%d:%d:%d:%d:%d", id, repository.issues,
+			repository.comments, repository.labels, repository.artifacts, repository.bindings, repository.references)))
 	}
 	_, _ = hash.Write([]byte(optionsFingerprint(options)))
 	_, _ = hash.Write([]byte("|change=" + changeKey))
@@ -315,7 +331,9 @@ func countCards(cards []ChangeCard) BoardCounts {
 	return counts
 }
 
-func projectBoard(orgID uuid.UUID, repositories map[uuid.UUID]repositorySnapshot, artifacts []rawArtifact, typed []typedArtifact, diagnostics map[uuid.UUID][]string) ([]ChangeCard, []DiagnosticCount) {
+func projectBoard(orgID uuid.UUID, repositories map[uuid.UUID]repositorySnapshot, artifacts []rawArtifact,
+	typed []typedArtifact, relationships map[uuid.UUID][]models.CodeChangeRelationship,
+	diagnostics map[uuid.UUID][]string) ([]ChangeCard, []DiagnosticCount) {
 	type groupKey struct {
 		repositoryID uuid.UUID
 		changeKey    string
@@ -338,7 +356,8 @@ func projectBoard(orgID uuid.UUID, repositories map[uuid.UUID]repositorySnapshot
 	}
 	cards := make([]ChangeCard, 0, len(groups))
 	for key, items := range groups {
-		card := buildCard(orgID, repositories[key.repositoryID].repository, key.changeKey, items, typedByGroup[key])
+		card := buildCard(orgID, repositories[key.repositoryID].repository, key.changeKey, items,
+			typedByGroup[key], relationships)
 		cards = append(cards, card)
 	}
 	sort.Slice(cards, func(i, j int) bool {
@@ -373,7 +392,8 @@ func projectBoard(orgID uuid.UUID, repositories map[uuid.UUID]repositorySnapshot
 	return cards, result
 }
 
-func buildCard(orgID uuid.UUID, repository Repository, changeKey string, items []rawArtifact, typed []typedArtifact) ChangeCard {
+func buildCard(orgID uuid.UUID, repository Repository, changeKey string, items []rawArtifact,
+	typed []typedArtifact, relationships map[uuid.UUID][]models.CodeChangeRelationship) ChangeCard {
 	byStage := make(map[Stage][]rawArtifact)
 	anomalies := make([]string, 0)
 	updatedAt := time.Time{}
@@ -393,7 +413,7 @@ func buildCard(orgID uuid.UUID, repository Repository, changeKey string, items [
 		}
 	}
 	card := ChangeCard{Repository: repository, ChangeKey: changeKey, CurrentStage: StageUnknown,
-		Lifecycle: LifecycleActive, Anomalies: []string{}, UpdatedAt: updatedAt}
+		Lifecycle: LifecycleActive, CodeChanges: []models.CodeChangeRelationship{}, Anomalies: []string{}, UpdatedAt: updatedAt}
 	for _, stage := range []Stage{StageProposal, StageDesign, StageImplement} {
 		stageItems := byStage[stage]
 		if len(stageItems) == 0 {
@@ -411,6 +431,12 @@ func buildCard(orgID uuid.UUID, repository Repository, changeKey string, items [
 			card.Artifacts.Design = slot
 		case StageImplement:
 			card.Artifacts.Implement = slot
+			card.CodeChanges = append(card.CodeChanges, relationships[selected.issueID]...)
+			for _, relationship := range card.CodeChanges {
+				if relationship.SourceBindingMatch == models.SourceBindingMismatched {
+					anomalies = append(anomalies, AnomalyCodeChangeBindingMismatch)
+				}
+			}
 		}
 		if slot.Valid {
 			card.CurrentStage = stage
