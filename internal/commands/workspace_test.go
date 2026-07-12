@@ -73,6 +73,30 @@ func TestWorkflowWorkspaceRouteUsageHelpUnknownAndIntegrateFlags(t *testing.T) {
 	}
 }
 
+func TestTopLevelUsageListsWorkspaceIntegrate(t *testing.T) {
+	const command = "issue-spec workflow workspace prepare|inspect|complete|integrate|reconcile|cleanup"
+	for _, test := range []struct {
+		name string
+		args []string
+	}{
+		{name: "no arguments"},
+		{name: "top level help", args: []string{"--help"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			if code := Execute(test.args, strings.NewReader(""), &out, &errOut); code != 0 {
+				t.Fatalf("Execute(%v) code=%d stderr=%q", test.args, code, errOut.String())
+			}
+			if !strings.Contains(out.String(), command) {
+				t.Fatalf("Execute(%v) top-level usage missing %q:\n%s", test.args, command, out.String())
+			}
+			if errOut.Len() != 0 {
+				t.Fatalf("Execute(%v) wrote stderr: %q", test.args, errOut.String())
+			}
+		})
+	}
+}
+
 func TestWorkflowWorkspaceRouteInvokesIntegrationAdapter(t *testing.T) {
 	repo, root, backend, base := completedWorkspaceForIntegration(t, "route-owner", "internal/commands/route-integrated.txt")
 	app, out, errOut := transitionAppWithError(backend)
