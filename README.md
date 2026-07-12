@@ -16,6 +16,21 @@ Our philosophy:
 -> line-level review findings linked back to specs
 ```
 
+## Self-host issue-spec for your team
+
+Run an operator-controlled issue-spec workspace on your own infrastructure.
+The self-hosted server combines organization and repository authorization,
+Issue and Change views, service accounts, provider-neutral code evidence,
+runners, and notification webhooks with durable PostgreSQL state.
+
+[![Self-hosted issue-spec workspace](docs/self-hosting/assets/self-hosted-dashboard.png)](docs/self-hosting/README.md)
+
+It supports private-network deployment and GitHub OAuth or OIDC sign-in, while
+keeping source code, pull requests or merge requests, reviews, and CI on the
+code provider your team already uses.
+
+**[Explore the self-hosted server, architecture, access model, deployment, and operations →](docs/self-hosting/README.md)**
+
 ## See it in action
 
 ```text
@@ -107,16 +122,6 @@ issue-spec auth status --hostname ghe.example.com --json
 `issue-spec auth status`, `init`, and normal workflow commands do not print token values. `issue-spec auth token --plain` prints the current `gh` token only when explicitly requested.
 
 `archive durable-spec --create-pr` still uses local `git` for fetch, worktree, commit, and push. GitHub API reads and PR creation use the same authenticated `gh` account.
-
-## Self-hosted server
-
-The optional [self-hosted server](docs/self-hosting/README.md) provides a web
-workspace, organization and repository authorization, issue and change views,
-service accounts, provider-neutral code evidence, runners, and notification
-webhooks backed by PostgreSQL. Start with the illustrated overview, then use
-the versioned [authentication guide](docs/self-hosting/authentication/README.md)
-and [deployment guide](docs/self-hosting/operations/deployment.md) for
-production configuration and hardening.
 
 ## Runner: Comment-Triggered Workflows
 

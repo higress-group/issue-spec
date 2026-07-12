@@ -16,6 +16,19 @@
 -> 行级 review 发现（finding）会回链到对应的 spec
 ```
 
+## 为团队自托管 issue-spec
+
+在自己的基础设施中运行由团队掌控的 issue-spec 工作台。自托管 Server
+将组织与仓库权限、Issue 和 Change 页面、Service Account、Provider-neutral
+代码证据、Runner、通知 Webhook 与持久化 PostgreSQL 状态整合在一起。
+
+[![自托管 issue-spec 工作台](docs/self-hosting/assets/self-hosted-dashboard.png)](docs/self-hosting/README.zh-CN.md)
+
+它支持私网部署以及 GitHub OAuth 或 OIDC 登录，同时让源代码、PR/MR、
+Review 和 CI 继续留在团队已有的代码托管平台中。
+
+**[查看自托管 Server、架构、权限模型、部署与运维详情 →](docs/self-hosting/README.zh-CN.md)**
+
 ## 实际效果一览
 
 ```text
@@ -107,14 +120,6 @@ issue-spec auth status --hostname ghe.example.com --json
 `issue-spec auth status`、`init` 以及常规工作流命令都不会打印 token 值。只有在显式请求时，`issue-spec auth token --plain` 才会打印当前的 `gh` token。
 
 `archive durable-spec --create-pr` 仍然使用本地 `git` 来进行 fetch、worktree、commit 与 push。GitHub API 的读取和 PR 创建则使用同一个已认证的 `gh` 账号。
-
-## 自托管 Server
-
-可选的[自托管 Server](docs/self-hosting/README.zh-CN.md)提供由 PostgreSQL 支撑的
-Web 工作台、组织与仓库权限、Issue/Change 页面、Service Account、Provider-neutral
-代码证据、Runner 和通知 Webhook。建议先阅读图文总览，再根据版本化的
-[认证指南](docs/self-hosting/authentication/README.md)与
-[部署指南](docs/self-hosting/operations/deployment.md)完成生产配置和加固。
 
 ## Runner：评论触发的工作流
 
