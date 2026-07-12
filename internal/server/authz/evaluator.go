@@ -243,9 +243,16 @@ func tokenPermissionCap(principal serverauth.Principal, operation Operation) Per
 			if !principal.HasOperation(string(capability.OperationIssueRead)) {
 				return PermissionNone
 			}
-		case OperationContribute, OperationTriage, OperationWrite, OperationTriggerRunner:
+		case OperationContribute, OperationTriage:
 			if !principal.HasOperation(string(capability.OperationIssueCommentWrite)) &&
 				!principal.HasOperation(string(capability.OperationArtifactWrite)) {
+				return PermissionNone
+			}
+		case OperationWrite, OperationTriggerRunner:
+			// Native repository mutations and runner dispatch are artifact
+			// operations. A comment-only delegated credential must not inherit
+			// these broader writes merely because both use issues:write scope.
+			if !principal.HasOperation(string(capability.OperationArtifactWrite)) {
 				return PermissionNone
 			}
 		}
