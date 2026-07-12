@@ -51,6 +51,11 @@ var proxyEnvNames = []string{"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_P
 
 type Config struct {
 	UnsafeNoSandbox bool
+	// WorkspaceReadOnly makes the assigned checkout immutable inside the
+	// filesystem sandbox. In explicit unsafe-no-sandbox mode this boundary is
+	// disabled and Metadata reports that fact; callers must treat dirty evidence
+	// as invalid.
+	WorkspaceReadOnly bool
 
 	BwrapPath       string
 	MinBwrapVersion string

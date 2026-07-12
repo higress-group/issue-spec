@@ -149,8 +149,12 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	}
 
 	workspacePath := filepath.Clean(cfg.WorkspacePath)
+	workspaceMode := "rw"
+	if cfg.WorkspaceReadOnly {
+		workspaceMode = "ro"
+	}
 	mounts := []Mount{
-		{Source: workspacePath, Destination: "/workspace", Mode: "rw"},
+		{Source: workspacePath, Destination: "/workspace", Mode: workspaceMode},
 		{Destination: "/tmp", Mode: "tmpfs"},
 		{Source: cfg.TempHome, Destination: "/tmp/issue-spec-home", Mode: "rw"},
 		{Source: cfg.TempGHConfigDir, Destination: "/tmp/issue-spec-gh", Mode: "rw"},
@@ -159,7 +163,11 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		{Destination: "/dev", Mode: "dev"},
 	}
 
-	args = append(args, "--bind", workspacePath, "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg", "--proc", "/proc", "--dev", "/dev")
+	workspaceBind := "--bind"
+	if cfg.WorkspaceReadOnly {
+		workspaceBind = "--ro-bind"
+	}
+	args = append(args, workspaceBind, workspacePath, "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg", "--proc", "/proc", "--dev", "/dev")
 	if strings.TrimSpace(cfg.TempCodexHome) != "" {
 		mounts = append(mounts, Mount{Source: cfg.TempCodexHome, Destination: "/tmp/issue-spec-codex", Mode: "rw"})
 		args = append(args, "--dir", "/tmp/issue-spec-codex", "--bind", cfg.TempCodexHome, "/tmp/issue-spec-codex")
@@ -182,8 +190,8 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	}
 	if workspacePath != "/workspace" {
 		args, mounts = appendBindParentDirs(args, mounts, workspacePath, seenDirs, systemBinds)
-		args = append(args, "--bind", workspacePath, workspacePath)
-		mounts = append(mounts, Mount{Source: workspacePath, Destination: workspacePath, Mode: "rw"})
+		args = append(args, workspaceBind, workspacePath, workspacePath)
+		mounts = append(mounts, Mount{Source: workspacePath, Destination: workspacePath, Mode: workspaceMode})
 	}
 	coveredRoots := append([]string{}, systemBinds...)
 	coveredRoots = append(coveredRoots, workspacePath)
