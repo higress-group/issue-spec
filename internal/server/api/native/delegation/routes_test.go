@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/capability"
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/auth/delegation"
@@ -20,7 +21,7 @@ func TestExchangeReturnsPlaintextOnceWithNoStore(t *testing.T) {
 	orgID, repoID, tokenID := uuid.New(), uuid.New(), uuid.New()
 	service := &fakeService{created: delegation.Created{ID: tokenID, Plaintext: "dgt_secret", ExpiresAt: time.Now().Add(time.Minute)}}
 	mux := testMux(t, service)
-	body := `{"job_id":"job-1","purpose":"issue-api","audience":"runner.test","subject":"runner-child","scopes":["issues:write"],"ttl_seconds":120}`
+	body := `{"job_id":"job-1","purpose":"issue-api","audience":"runner.test","subject":"runner-child","scopes":["issues:write"],"operations":["artifact.write"],"ttl_seconds":120}`
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/orgs/"+orgID.String()+"/repos/"+repoID.String()+"/delegated-tokens/exchange", strings.NewReader(body))
 	request.Header.Set("X-Request-ID", "request-1")
 	response := httptest.NewRecorder()
@@ -33,7 +34,8 @@ func TestExchangeReturnsPlaintextOnceWithNoStore(t *testing.T) {
 		t.Fatalf("created = %+v, %v", got, err)
 	}
 	if service.issue.JobID != "job-1" || service.issue.Purpose != PurposeIssueAPI || service.issue.Audience != "runner.test" || service.issue.RequestID != "request-1" ||
-		service.issue.Repo.OrgID != orgID || service.issue.Repo.RepoID != repoID {
+		service.issue.Repo.OrgID != orgID || service.issue.Repo.RepoID != repoID || len(service.issue.Operations) != 1 ||
+		service.issue.Operations[0] != capability.OperationArtifactWrite {
 		t.Fatalf("issue input = %+v", service.issue)
 	}
 }
@@ -47,9 +49,10 @@ func TestExchangeRejectsUnknownFieldsAndWrongRealm(t *testing.T) {
 		body   string
 		status int
 	}{
-		"unknown":  {`{"job_id":"j","purpose":"issue-api","audience":"runner.test","subject":"runner-child","scopes":["issues:write"],"ttl_seconds":60,"token":"no"}`, http.StatusBadRequest},
-		"purpose":  {`{"job_id":"j","purpose":"git","audience":"runner.test","subject":"runner-child","scopes":["issues:write"],"ttl_seconds":60}`, http.StatusUnprocessableEntity},
-		"audience": {`{"job_id":"j","purpose":"issue-api","audience":"other","subject":"runner-child","scopes":["issues:write"],"ttl_seconds":60}`, http.StatusUnprocessableEntity},
+		"unknown":    {`{"job_id":"j","purpose":"issue-api","audience":"runner.test","subject":"runner-child","scopes":["issues:write"],"ttl_seconds":60,"token":"no"}`, http.StatusBadRequest},
+		"purpose":    {`{"job_id":"j","purpose":"git","audience":"runner.test","subject":"runner-child","scopes":["issues:write"],"ttl_seconds":60}`, http.StatusUnprocessableEntity},
+		"audience":   {`{"job_id":"j","purpose":"issue-api","audience":"other","subject":"runner-child","scopes":["issues:write"],"ttl_seconds":60}`, http.StatusUnprocessableEntity},
+		"operations": {`{"job_id":"j","purpose":"issue-api","audience":"runner.test","subject":"runner-child","scopes":["issues:write"],"ttl_seconds":60}`, http.StatusUnprocessableEntity},
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -65,7 +68,7 @@ func TestExchangeConcealsScopeAndRevokeJob(t *testing.T) {
 	orgID, repoID := uuid.New(), uuid.New()
 	service := &fakeService{issueErr: serverauth.ErrInsufficientScope}
 	mux := testMux(t, service)
-	body := `{"job_id":"j","purpose":"issue-api","audience":"runner.test","subject":"runner-child","scopes":["issues:write"],"ttl_seconds":60}`
+	body := `{"job_id":"j","purpose":"issue-api","audience":"runner.test","subject":"runner-child","scopes":["issues:write"],"operations":["artifact.write"],"ttl_seconds":60}`
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/orgs/"+orgID.String()+"/repos/"+repoID.String()+"/delegated-tokens/exchange", strings.NewReader(body)))
 	if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "scope") {

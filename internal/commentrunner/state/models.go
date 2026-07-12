@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/higress-group/issue-spec/internal/capability"
 )
 
 const SchemaVersion = 5
@@ -234,6 +236,7 @@ type Job struct {
 	CLIDirect             []CLIDirectProvenance     `json:"cli_direct,omitempty"`
 	Restart               RestartMetadata           `json:"restart,omitempty"`
 	CredentialCleanup     CredentialCleanup         `json:"lease_cleanup,omitempty"`
+	CapabilityPreflight   *capability.Report        `json:"capability_preflight,omitempty"`
 	CoordinatorSummary    string                    `json:"coordinator_summary,omitempty"`
 	Diagnostics           []string                  `json:"diagnostics,omitempty"`
 }

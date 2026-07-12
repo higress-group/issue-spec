@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/capability"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
@@ -29,6 +30,11 @@ func TestRepositoryAuthorizationMatrix(t *testing.T) {
 			Scopes: scopes, RepoRestricted: true, OrgID: allowedOrg, RepoID: allowedRepo,
 			RepositoryCaps: []serverauth.RepositoryCap{{OrgID: allowedOrg, RepoID: allowedRepo}},
 		})
+	}
+	restrictedOps := func(scopes, operations []string) Subject {
+		return Authenticated(serverauth.Principal{User: serverauth.User{ID: uuid.New(), Status: "active"},
+			Kind: serverauth.CredentialDelegated, Scopes: scopes, Operations: operations, RepoRestricted: true,
+			OrgID: orgID, RepoID: repoID, RepositoryCaps: []serverauth.RepositoryCap{{OrgID: orgID, RepoID: repoID}}})
 	}
 	public := authorityFacts{Exists: true, Visibility: models.VisibilityPublic, ContributionPolicy: models.ContributionAuthenticated}
 	internal := public
@@ -65,6 +71,8 @@ func TestRepositoryAuthorizationMatrix(t *testing.T) {
 		{"pat repository cap fails closed", patFor([]string{"repo"}, otherRepoID), RepositoryRequest{Scope: scope, Operation: OperationRead}, owner, false, false, ReasonRepositoryCap, PermissionNone, false},
 		{"pat read scope caps owner", patFor([]string{"issues:read"}, repoID), RepositoryRequest{Scope: scope, Operation: OperationWrite}, owner, false, true, ReasonCredentialScope, PermissionNone, false},
 		{"delegated exact cap writes", restricted(serverauth.CredentialDelegated, []string{"issues:write"}, orgID, repoID), RepositoryRequest{Scope: scope, Operation: OperationWrite}, owner, true, true, ReasonAllowed, PermissionWrite, false},
+		{"delegated operation claim allows write", restrictedOps([]string{"issues:write"}, []string{string(capability.OperationArtifactWrite)}), RepositoryRequest{Scope: scope, Operation: OperationWrite}, owner, true, true, ReasonAllowed, PermissionWrite, false},
+		{"delegated operation claim denies scope expansion", restrictedOps([]string{"issues:write"}, []string{string(capability.OperationIssueRead)}), RepositoryRequest{Scope: scope, Operation: OperationWrite}, owner, false, true, ReasonCredentialScope, PermissionNone, false},
 		{"delegated unrestricted shape denied", active(serverauth.CredentialDelegated, "issues:write"), RepositoryRequest{Scope: scope, Operation: OperationWrite}, owner, false, false, ReasonRepositoryCap, PermissionNone, false},
 		{"delegated wrong repo denied", restricted(serverauth.CredentialDelegated, []string{"issues:write"}, orgID, otherRepoID), RepositoryRequest{Scope: scope, Operation: OperationWrite}, owner, false, false, ReasonRepositoryCap, PermissionNone, false},
 		{"delegated wrong org denied", restricted(serverauth.CredentialDelegated, []string{"issues:write"}, uuid.New(), repoID), RepositoryRequest{Scope: scope, Operation: OperationWrite}, owner, false, false, ReasonRepositoryCap, PermissionNone, false},

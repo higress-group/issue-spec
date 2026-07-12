@@ -2,6 +2,7 @@ package authz
 
 import (
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/capability"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
@@ -233,6 +234,22 @@ func repositoryCredentialCap(principal serverauth.Principal, request RepositoryR
 }
 
 func tokenPermissionCap(principal serverauth.Principal, operation Operation) Permission {
+	// Legacy delegated tokens issued before operation claims remain scope-capped
+	// for their short remaining TTL. Every newly strict-issued token carries a
+	// non-empty operation list and is additionally constrained here.
+	if principal.Kind == serverauth.CredentialDelegated && len(principal.Operations) > 0 {
+		switch operation {
+		case OperationRead:
+			if !principal.HasOperation(string(capability.OperationIssueRead)) {
+				return PermissionNone
+			}
+		case OperationContribute, OperationTriage, OperationWrite, OperationTriggerRunner:
+			if !principal.HasOperation(string(capability.OperationIssueCommentWrite)) &&
+				!principal.HasOperation(string(capability.OperationArtifactWrite)) {
+				return PermissionNone
+			}
+		}
+	}
 	if principal.HasScope("repo") {
 		return PermissionAdmin
 	}

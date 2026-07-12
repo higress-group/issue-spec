@@ -20,6 +20,7 @@ import (
 
 func TestDispatcherCredentialOrderRotationSandboxAndTerminalRevoke(t *testing.T) {
 	var exchangeCalls, remoteRevokes, providerRevokes, providerJobRevokes atomic.Int32
+	var providerPurposes []string
 	var providerRevokeDeadline, providerJobRevokeDeadline atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer parent-secret" {
@@ -62,7 +63,8 @@ func TestDispatcherCredentialOrderRotationSandboxAndTerminalRevoke(t *testing.T)
 	dispatcher.CredentialBroker = &credentials.Broker{Profile: profile, Audience: "instance-a", Subject: "runner-child",
 		ParentToken: "parent-secret", Materializer: credentials.Materializer{Root: t.TempDir()}, TTL: time.Minute,
 		GitProvider: credentials.OperatorGitProvider{ProviderKey: "github", Host: "github.com", ExternalRepositoryID: "o/r",
-			AcquireLease: func(context.Context, credentials.GitRequest) (credentials.GitProviderLease, error) {
+			AcquireLease: func(_ context.Context, request credentials.GitRequest) (credentials.GitProviderLease, error) {
+				providerPurposes = append(providerPurposes, request.Purpose)
 				return credentials.GitProviderLease{Credential: credentials.GitSecret{Username: "runner", Password: "git-secret"},
 					ExpiresAt: time.Now().Add(time.Minute), Revoke: func(ctx context.Context) error {
 						providerRevokes.Add(1)
@@ -87,6 +89,9 @@ func TestDispatcherCredentialOrderRotationSandboxAndTerminalRevoke(t *testing.T)
 	}
 	if exchangeCalls.Load() != 1 || remoteRevokes.Load() != 1 || providerRevokes.Load() != 2 || providerJobRevokes.Load() != 1 {
 		t.Fatalf("exchange=%d remote_revoke=%d provider_revoke=%d provider_job_revoke=%d", exchangeCalls.Load(), remoteRevokes.Load(), providerRevokes.Load(), providerJobRevokes.Load())
+	}
+	if len(providerPurposes) != 2 || providerPurposes[0] != "git.clone" || providerPurposes[1] != "git.push" {
+		t.Fatalf("git credential purposes = %v", providerPurposes)
 	}
 	if !providerRevokeDeadline.Load() || !providerJobRevokeDeadline.Load() {
 		t.Fatalf("cleanup deadlines individual=%t job=%t", providerRevokeDeadline.Load(), providerJobRevokeDeadline.Load())

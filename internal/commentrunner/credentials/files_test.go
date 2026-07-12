@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/capability"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/server/auth/delegation"
 )
@@ -94,7 +95,7 @@ func TestGitLeasePinsHTTPSAndKeepsSecretOutOfEnv(t *testing.T) {
 	revoked := 0
 	provider := staticGitProvider{lease: GitProviderLease{Credential: GitSecret{Username: "runner", Password: "super-secret"},
 		ExpiresAt: time.Now().Add(time.Minute), Revoke: func(context.Context) error { revoked++; return nil }}}
-	lease, err := NewGitLease(context.Background(), t.TempDir(), "job-1", binding, provider)
+	lease, err := NewGitLease(context.Background(), t.TempDir(), "job-1", capability.OperationGitClone, binding, provider)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,12 +134,12 @@ func TestGitLeaseRejectsSSHAndRepositoryPathDrift(t *testing.T) {
 	provider := staticGitProvider{lease: GitProviderLease{Credential: GitSecret{Username: "u", Password: "p"},
 		ExpiresAt: time.Now().Add(time.Minute), Revoke: func(context.Context) error { return nil }}}
 	binding.CloneURL = "git@code.example:acme/widgets.git"
-	if _, err := NewGitLease(context.Background(), t.TempDir(), "job-1", binding, provider); err == nil {
+	if _, err := NewGitLease(context.Background(), t.TempDir(), "job-1", capability.OperationGitClone, binding, provider); err == nil {
 		t.Fatal("SSH binding accepted without controlled SSH lease")
 	}
 	binding = testBinding()
 	binding.CloneURL = "https://code.example/acme/other.git"
-	if _, err := NewGitLease(context.Background(), t.TempDir(), "job-1", binding, provider); err == nil {
+	if _, err := NewGitLease(context.Background(), t.TempDir(), "job-1", capability.OperationGitClone, binding, provider); err == nil {
 		t.Fatal("repository path drift accepted")
 	}
 }
@@ -154,7 +155,7 @@ func TestGitLeaseRejectsLongLivedProviderLeaseWithBoundedCleanup(t *testing.T) {
 			cleanupWasCancelled = ctx.Err() != nil
 			return nil
 		}}}
-	if _, err := NewGitLease(requestCtx, t.TempDir(), "job-expiry", binding, provider); err == nil {
+	if _, err := NewGitLease(requestCtx, t.TempDir(), "job-expiry", capability.OperationGitClone, binding, provider); err == nil {
 		t.Fatal("long-lived provider lease accepted")
 	}
 	if !cleanupHadDeadline || cleanupWasCancelled {
@@ -171,11 +172,11 @@ func TestOperatorGitProviderMatchesExactAuthorityIncludingPort(t *testing.T) {
 			called = true
 			return GitProviderLease{}, nil
 		}, RevokeJobLease: func(context.Context, string) error { return nil }}
-	if _, err := provider.Acquire(context.Background(), GitRequest{JobID: "job-port", Purpose: "git", Binding: binding}); err == nil || called {
+	if _, err := provider.Acquire(context.Background(), GitRequest{JobID: "job-port", Purpose: "git.clone", Binding: binding}); err == nil || called {
 		t.Fatalf("port drift accepted: err=%v called=%t", err, called)
 	}
 	provider.Host = "CODE.EXAMPLE:8443"
-	if _, err := provider.Acquire(context.Background(), GitRequest{JobID: "job-port", Purpose: "git", Binding: binding}); err != nil || !called {
+	if _, err := provider.Acquire(context.Background(), GitRequest{JobID: "job-port", Purpose: "git.clone", Binding: binding}); err != nil || !called {
 		t.Fatalf("exact authority rejected: err=%v called=%t", err, called)
 	}
 }
@@ -187,6 +188,10 @@ func (s staticGitProvider) Acquire(context.Context, GitRequest) (GitProviderLeas
 }
 
 func (staticGitProvider) RevokeJob(context.Context, string) error { return nil }
+
+func (staticGitProvider) SupportsPurpose(purpose capability.Operation) bool {
+	return purpose == capability.OperationGitClone || purpose == capability.OperationGitPush
+}
 
 func testBinding() state.RepositoryBindingSnapshot {
 	return state.RepositoryBindingSnapshot{Source: "self-hosted", IssueRepositoryKey: "acme/widgets", BindingID: uuid.NewString(), Version: 1,

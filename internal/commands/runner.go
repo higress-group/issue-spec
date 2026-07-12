@@ -530,6 +530,7 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	bwrapPath := fs.String("bwrap-path", defaults.BwrapPath, "bubblewrap binary path")
 	unsafeNoSandbox := fs.Bool("unsafe-no-sandbox", defaults.UnsafeNoSandbox, "explicitly disable the default bubblewrap filesystem boundary")
 	ghConfigDir := fs.String("gh-config-dir", "", "host gh config directory to mirror for sandboxed issue-spec CLI auth")
+	strictAgentCapabilities := fs.Bool("strict-agent-capabilities", defaults.StrictAgentCapabilities, "require operator-issued short-lived credentials proven for every delegated operation")
 	allowCancel := fs.Bool("allow-cancel", defaults.CancellationEnabled, "allow authorized cancellation commands")
 	codexFullAccess := fs.Bool("codex-agent-full-access", defaults.Agent.CodexAgentFullAccess, "require Codex agent-full-access policy for workflow CLI/shell work")
 	claudeFullAccess := fs.Bool("claude-agent-full-access", defaults.Agent.ClaudeAgentFullAccess, "require Claude agent-full-access policy for workflow CLI/shell work")
@@ -662,6 +663,9 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	}
 	if seen["gh-config-dir"] {
 		cfg.GHConfigDir = *ghConfigDir
+	}
+	if seen["strict-agent-capabilities"] {
+		cfg.StrictAgentCapabilities = *strictAgentCapabilities
 	}
 	if seen["allow-cancel"] {
 		cfg.CancellationEnabled = *allowCancel

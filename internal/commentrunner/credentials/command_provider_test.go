@@ -11,7 +11,7 @@ import (
 
 func TestCommandGitProviderAcquireAndRevokeProtocol(t *testing.T) {
 	provider := commandGitProviderForTest(t, "ok", 1<<20)
-	lease, err := provider.Acquire(t.Context(), GitRequest{JobID: "job-protocol", Purpose: "git", Binding: testBinding()})
+	lease, err := provider.Acquire(t.Context(), GitRequest{JobID: "job-protocol", Purpose: "git.clone", Binding: testBinding()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestCommandGitProviderBoundsAndDoesNotSurfaceAdapterSecrets(t *testing.T) {
 	} {
 		t.Run(test.mode, func(t *testing.T) {
 			provider := commandGitProviderForTest(t, test.mode, test.limit)
-			_, err := provider.Acquire(t.Context(), GitRequest{JobID: "job-bounds", Purpose: "git", Binding: testBinding()})
+			_, err := provider.Acquire(t.Context(), GitRequest{JobID: "job-bounds", Purpose: "git.clone", Binding: testBinding()})
 			if err == nil || strings.Contains(err.Error(), "adapter-super-secret") {
 				t.Fatalf("error=%v", err)
 			}
@@ -53,16 +53,16 @@ func TestCommandGitProviderRequiresExactResponseIdentityAndIsolatesEnvironment(t
 	t.Setenv("ISSUE_SPEC_TOKEN", "ambient-parent-secret")
 	t.Setenv("GH_TOKEN", "ambient-github-secret")
 	provider := commandGitProviderForTest(t, "ambient", 1<<20)
-	if _, err := provider.Acquire(t.Context(), GitRequest{JobID: "job-isolated", Purpose: "git", Binding: testBinding()}); err != nil {
+	if _, err := provider.Acquire(t.Context(), GitRequest{JobID: "job-isolated", Purpose: "git.clone", Binding: testBinding()}); err != nil {
 		t.Fatal(err)
 	}
 	provider = commandGitProviderForTest(t, "identity-mismatch", 1<<20)
-	_, err := provider.Acquire(t.Context(), GitRequest{JobID: "job-identity", Purpose: "git", Binding: testBinding()})
+	_, err := provider.Acquire(t.Context(), GitRequest{JobID: "job-identity", Purpose: "git.clone", Binding: testBinding()})
 	if err == nil || !strings.Contains(err.Error(), "identity mismatch") {
 		t.Fatalf("identity mismatch error=%v", err)
 	}
 	provider = commandGitProviderForTest(t, "provider-error", 1<<20)
-	_, err = provider.Acquire(t.Context(), GitRequest{JobID: "job-provider-error", Purpose: "git", Binding: testBinding()})
+	_, err = provider.Acquire(t.Context(), GitRequest{JobID: "job-provider-error", Purpose: "git.clone", Binding: testBinding()})
 	if err == nil || !strings.Contains(err.Error(), "temporarily_unavailable") {
 		t.Fatalf("provider error=%v", err)
 	}

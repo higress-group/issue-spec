@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/capability"
 	"github.com/higress-group/issue-spec/internal/server/auth/delegation"
 )
 
@@ -125,7 +126,9 @@ type gitCommandError struct {
 }
 
 func (p *CommandGitProvider) Acquire(ctx context.Context, request GitRequest) (GitProviderLease, error) {
-	if !validJobID(request.JobID) || request.Purpose != "git" || !request.Binding.Complete() {
+	if !validJobID(request.JobID) ||
+		(request.Purpose != string(capability.OperationGitClone) && request.Purpose != string(capability.OperationGitPush)) ||
+		!request.Binding.Complete() {
 		return GitProviderLease{}, errors.New("git credential command requires a complete job, purpose, and pinned binding")
 	}
 	identity := gitAcquireIdentity(request)
@@ -156,6 +159,10 @@ func (p *CommandGitProvider) RevokeJob(ctx context.Context, jobID string) error 
 	}
 	_, err := p.invoke(ctx, "revoke_job", gitCommandIdentity{JobID: jobID})
 	return err
+}
+
+func (p *CommandGitProvider) SupportsPurpose(purpose capability.Operation) bool {
+	return p != nil && (purpose == capability.OperationGitClone || purpose == capability.OperationGitPush)
 }
 
 func (p *CommandGitProvider) compensateAcquire(jobID string) error {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/capability"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/models"
@@ -24,16 +25,17 @@ const (
 )
 
 type IssueInput struct {
-	Issuer    serverauth.Principal
-	Repo      models.RepoScope
-	JobID     string
-	Purpose   string
-	Audience  string
-	Subject   string
-	Scopes    []string
-	TTL       time.Duration
-	RequestID string
-	Replace   bool
+	Issuer     serverauth.Principal
+	Repo       models.RepoScope
+	JobID      string
+	Purpose    string
+	Audience   string
+	Subject    string
+	Scopes     []string
+	Operations []capability.Operation
+	TTL        time.Duration
+	RequestID  string
+	Replace    bool
 }
 
 type Created struct {
@@ -94,7 +96,11 @@ func (s *Service) Issue(ctx context.Context, input IssueInput) (Created, error) 
 		return Created{}, serverauth.ErrInsufficientScope
 	}
 	sort.Strings(allowedScopes)
-	claims, _ := json.Marshal(map[string]any{"scopes": allowedScopes})
+	allowedOperations, err := validateDelegatedOperations(input.Operations, allowedScopes)
+	if err != nil {
+		return Created{}, err
+	}
+	claims, _ := json.Marshal(map[string]any{"scopes": allowedScopes, "operations": allowedOperations})
 	plaintext, _, err := s.secrets.RandomToken("dgt")
 	if err != nil {
 		return Created{}, err
@@ -252,7 +258,8 @@ func (s *Service) Authenticate(ctx context.Context, plaintext string, expected E
 			return serverauth.ErrInsufficientScope
 		}
 		var payload struct {
-			Scopes []string `json:"scopes"`
+			Scopes     []string `json:"scopes"`
+			Operations []string `json:"operations,omitempty"`
 		}
 		if err := json.Unmarshal(claims, &payload); err != nil || len(payload.Scopes) == 0 {
 			return serverauth.ErrInvalidCredential
@@ -262,7 +269,16 @@ func (s *Service) Authenticate(ctx context.Context, plaintext string, expected E
 				return serverauth.ErrInsufficientScope
 			}
 		}
+		claimedOperations := make([]capability.Operation, len(payload.Operations))
+		for index, operation := range payload.Operations {
+			claimedOperations[index] = capability.Operation(operation)
+		}
+		validatedOperations, operationErr := validateDelegatedOperations(claimedOperations, payload.Scopes)
+		if operationErr != nil || !equalStrings(validatedOperations, payload.Operations) {
+			return serverauth.ErrInsufficientScope
+		}
 		principal.Scopes = payload.Scopes
+		principal.Operations = payload.Operations
 		if (expected.Repo.OrgID != uuid.Nil && (expected.Repo.OrgID != principal.OrgID || expected.Repo.RepoID != principal.RepoID)) ||
 			(expected.JobID != "" && expected.JobID != principal.JobID) ||
 			(expected.Purpose != "" && expected.Purpose != principal.Purpose) ||
@@ -286,6 +302,49 @@ func (s *Service) Authenticate(ctx context.Context, plaintext string, expected E
 	principal.RepoRestricted = true
 	principal.RepositoryCaps = []serverauth.RepositoryCap{{OrgID: principal.OrgID, RepoID: principal.RepoID}}
 	return principal, nil
+}
+
+func validateDelegatedOperations(operations []capability.Operation, scopes []string) ([]string, error) {
+	granted := map[string]bool{}
+	for _, scope := range scopes {
+		granted[scope] = true
+	}
+	seen := map[string]bool{}
+	var result []string
+	for _, operation := range operations {
+		value := string(operation)
+		if value == "" || seen[value] {
+			continue
+		}
+		switch operation {
+		case capability.OperationIssueRead:
+			if !granted["issues:read"] && !granted["issues:write"] && !granted["repo"] {
+				return nil, serverauth.ErrInsufficientScope
+			}
+		case capability.OperationIssueCommentWrite, capability.OperationArtifactWrite:
+			if !granted["issues:write"] && !granted["repo"] {
+				return nil, serverauth.ErrInsufficientScope
+			}
+		default:
+			return nil, serverauth.ErrInsufficientScope
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func exactRepositoryCap(principal serverauth.Principal, repo models.RepoScope) bool {
