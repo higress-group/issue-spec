@@ -5,16 +5,73 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
 
 const allocationTestSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+func TestSelectTrustedProcessWorkspaceExactMissingAndAmbiguous(t *testing.T) {
+	body, err := model.EnsureTypedBody("PROCESS", "PROCESS-017", "## Process\n\n### Parent TASK\n\n- TASK-004\n\n### Execution Class\n\n- change-bearing", model.BodyOptions{Status: "in-progress"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := model.Artifact{Issue: 177, CommentID: 17, Comment: model.ParseTypedComment(body)}
+	selection, err := SelectTrustedProcessWorkspace([]model.Artifact{artifact}, "PROCESS-017")
+	if err != nil || selection == nil || selection.ExecutionClass != processworkspace.ExecutionChangeBearing {
+		t.Fatalf("selection=%+v err=%v", selection, err)
+	}
+	if selection, err := SelectTrustedProcessWorkspace([]model.Artifact{artifact}, ""); err != nil || selection != nil {
+		t.Fatalf("/new orchestration selection=%+v err=%v", selection, err)
+	}
+	if _, err := SelectTrustedProcessWorkspace([]model.Artifact{artifact}, "PROCESS-404"); err == nil {
+		t.Fatal("missing exact PROCESS mapping accepted")
+	}
+	if _, err := SelectTrustedProcessWorkspace([]model.Artifact{artifact, artifact}, "PROCESS-017"); err == nil {
+		t.Fatal("ambiguous exact PROCESS mapping accepted")
+	}
+}
+
+func TestMarkTerminalWorkspaceCleanupRequired(t *testing.T) {
+	job := state.Job{ID: "job-terminal", ProcessWorkspace: &state.ProcessWorkspaceAssignment{
+		ProcessID: "PROCESS-017", WorkspaceID: "ws-process-017", ReservationID: "reservation:exact",
+		AssociationGeneration: 1, ReservationIdentity: "identity:0123456789abcdef0123456789abcdef",
+	}}
+	MarkTerminalWorkspaceCleanupRequired(&job)
+	if !job.ProcessWorkspace.CleanupRequired || job.ProcessWorkspace.CleanupState != state.ProcessWorkspaceAssignmentCleanupRequired || job.ProcessWorkspace.LastError != "" {
+		t.Fatalf("terminal cleanup intent=%+v", job.ProcessWorkspace)
+	}
+}
+
+func TestExternalWorkspaceWithoutConfiguredAdapterFailsBeforeReservation(t *testing.T) {
+	for _, mode := range []processworkspace.WorkspaceMode{processworkspace.ModeNone, processworkspace.ModeWritable} {
+		store := newMemoryProcessWorkspaceStore()
+		allocator := testAllocator(store, &fakeProcessWorkspaceManager{})
+		allocator.NoCheckout = runtimeNoCheckout{}
+		request := orchestrationAllocationRequest("ws-external-"+string(mode), "PROCESS-EXT")
+		request.ExecutionClass = processworkspace.ExecutionExternal
+		request.ExternalMode = mode
+		if mode == processworkspace.ModeWritable {
+			request.BaseSHA, request.Branch, request.WriteOwnership = allocationTestSHA, "process/external", []string{"internal/**"}
+		}
+		if _, err := allocator.Allocate(context.Background(), request); !errors.Is(err, ErrExternalWorkspaceUnsupported) {
+			t.Fatalf("external %s allocation error=%v", mode, err)
+		}
+		if len(store.value.ByWorkspace) != 0 {
+			t.Fatalf("unsupported external %s adapter persisted reservation: %+v", mode, store.value.ByWorkspace)
+		}
+	}
+}
 
 func TestWorkspaceModeForExecutionClass(t *testing.T) {
 	tests := []struct {
@@ -253,6 +310,53 @@ func TestManagerAllocatorReleaseFreesExclusiveResource(t *testing.T) {
 	}
 }
 
+func TestManagerAllocatorCleanupFailureRetainsExclusiveReservationForRetry(t *testing.T) {
+	store := newMemoryProcessWorkspaceStore()
+	manager := &fakeProcessWorkspaceManager{cleanupErr: errors.New("cleanup unavailable")}
+	allocator := testAllocator(store, manager)
+	request := writableAllocationRequest("ws-cleanup", "PROCESS-001")
+	request.RuntimeResources = []processworkspace.RuntimeResource{{Kind: "port", Name: "http", Exclusive: true}}
+	allocation, err := allocator.Allocate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held, err := allocator.CleanupAndRelease(context.Background(), allocation.Association.WorkspaceID, allocation.Association.ReservationID); err == nil || held.Lifecycle != state.ProcessWorkspaceCleanupPending {
+		t.Fatalf("cleanup failure released reservation: held=%+v err=%v", held, err)
+	}
+	blocked := writableAllocationRequest("ws-blocked", "PROCESS-002")
+	blocked.RuntimeResources = append([]processworkspace.RuntimeResource(nil), request.RuntimeResources...)
+	if _, err := allocator.Allocate(context.Background(), blocked); err == nil {
+		t.Fatal("cleanup failure freed exclusive resource")
+	}
+	manager.cleanupErr = nil
+	released, err := allocator.CleanupAndRelease(context.Background(), allocation.Association.WorkspaceID, allocation.Association.ReservationID)
+	if err != nil || released.Lifecycle != state.ProcessWorkspaceReleased {
+		t.Fatalf("cleanup retry=%+v err=%v", released, err)
+	}
+	if _, err := allocator.Allocate(context.Background(), blocked); err != nil {
+		t.Fatalf("confirmed cleanup did not free resource: %v", err)
+	}
+}
+
+func TestManagerAllocatorNoCheckoutCleanupRequiresProviderConfirmation(t *testing.T) {
+	store := newMemoryProcessWorkspaceStore()
+	allocator := testAllocator(store, &fakeProcessWorkspaceManager{})
+	request := orchestrationAllocationRequest("ws-none-cleanup", "PROCESS-001")
+	allocation, err := allocator.Allocate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocator.NoCheckout = notReadyNoCheckout{}
+	held, err := allocator.CleanupAndRelease(context.Background(), allocation.Association.WorkspaceID, allocation.Association.ReservationID)
+	if err == nil || held.Lifecycle != state.ProcessWorkspaceCleanupPending {
+		t.Fatalf("unconfirmed adapter cleanup=%+v err=%v", held, err)
+	}
+	allocator.NoCheckout = readyNoCheckout{}
+	if _, err := allocator.CleanupAndRelease(context.Background(), allocation.Association.WorkspaceID, allocation.Association.ReservationID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestManagerAllocatorProviderIdentityNamespacesAndRejectsUnsafeValues(t *testing.T) {
 	provider := state.ProcessWorkspaceProviderIdentity{ProviderKey: "github", ServerInstance: "public", Host: "github.com"}
 	other := state.ProcessWorkspaceProviderIdentity{ProviderKey: "aone", ServerInstance: "corp", Host: "code.alibaba-inc.com"}
@@ -331,6 +435,70 @@ func TestManagerAllocatorExclusiveReservationIsSerialized(t *testing.T) {
 	}
 }
 
+func TestProcessWorkspaceRuntimeUsesRealFileStoreAndSessionIntegrationRoot(t *testing.T) {
+	ctx := context.Background()
+	repo := filepath.Join(t.TempDir(), "session-clone")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "init")
+	gitRun(t, repo, "config", "user.name", "Runner Test")
+	gitRun(t, repo, "config", "user.email", "runner@example.test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "add", "README.md")
+	gitRun(t, repo, "commit", "-m", "base")
+	base := strings.TrimSpace(gitRun(t, repo, "rev-parse", "HEAD"))
+	statePath := filepath.Join(t.TempDir(), "runner-state.json")
+	fileStore, err := state.OpenFileStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fileStore.Close()
+	adapter, err := state.NewProcessWorkspaceStoreAdapter(fileStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewProcessWorkspaceRuntime(&fakeWorkspaces{}, adapter, filepath.Join(t.TempDir(), "managed"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocator, err := runtime.ProcessWorkspaceAllocator(ctx, ProcessWorkspaceAllocatorRequest{IntegrationRoot: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocation, err := allocator.Allocate(ctx, ProcessWorkspaceAllocationRequest{
+		Repository: "o/r", ProviderKey: "github", ServerInstance: "public", ProviderHost: "github.com",
+		ProcessID: "PROCESS-017", WorkspaceID: "ws-process-017", ExecutionClass: processworkspace.ExecutionChangeBearing,
+		BaseSHA: base, Branch: "process/process-017", WriteOwnership: []string{"internal/**"},
+		Owner: processworkspace.LeaseOwner{CoordinatorID: "runner", Token: "owner-secret", AcquiredAt: time.Now().UTC()},
+	})
+	canonicalRepo, _ := filepath.EvalSymlinks(repo)
+	if err != nil || allocation.Inspection == nil || allocation.Inspection.Lease.IntegrationRoot != canonicalRepo ||
+		strings.HasPrefix(allocation.Inspection.Lease.WorktreePath, canonicalRepo+string(os.PathSeparator)) {
+		t.Fatalf("allocation=%+v err=%v", allocation, err)
+	}
+	if _, err := allocator.CleanupAndRelease(ctx, allocation.Association.WorkspaceID, allocation.Association.ReservationID); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := adapter.LoadProcessWorkspaces(ctx)
+	if err != nil || loaded.ByWorkspace[allocation.Association.WorkspaceID].Lifecycle != state.ProcessWorkspaceReleased {
+		t.Fatalf("durable release=%+v err=%v", loaded, err)
+	}
+}
+
+func gitRun(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, output)
+	}
+	return string(output)
+}
+
 type memoryProcessWorkspaceStore struct {
 	mu           sync.Mutex
 	value        state.ProcessWorkspaceAssociations
@@ -362,6 +530,18 @@ func (s *memoryProcessWorkspaceStore) MarkProcessWorkspaceFailure(_ context.Cont
 	defer s.mu.Unlock()
 	return s.value.MarkFailure(id, reservation, code)
 }
+func (s *memoryProcessWorkspaceStore) BeginReleaseProcessWorkspace(_ context.Context, id, reservation string) (state.ProcessWorkspaceAssociation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	association, ok := s.value.Get(id)
+	if !ok || association.ReservationID != reservation {
+		return state.ProcessWorkspaceAssociation{}, errors.New("process workspace reservation CAS mismatch")
+	}
+	if association.Lifecycle == state.ProcessWorkspaceCleanupPending {
+		return association, nil
+	}
+	return s.value.Transition(id, reservation, association.Lifecycle, state.ProcessWorkspaceCleanupPending)
+}
 func (s *memoryProcessWorkspaceStore) ConfirmProcessWorkspaceReleased(_ context.Context, id, reservation string) (state.ProcessWorkspaceAssociation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -378,6 +558,7 @@ type fakeProcessWorkspaceManager struct {
 	prepareCalls, inspectCalls int
 	prepared                   map[string]processworkspace.Inspection
 	prepareErr                 error
+	cleanupErr                 error
 	missing                    bool
 }
 
@@ -402,6 +583,20 @@ func (m *fakeProcessWorkspaceManager) Inspect(_ context.Context, id string) (pro
 	}
 	return m.prepared[id], nil
 }
+func (m *fakeProcessWorkspaceManager) Cleanup(_ context.Context, id, ownerToken string) (processworkspace.Inspection, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	inspection := m.prepared[id]
+	if ownerToken == "" || ownerToken != inspection.Lease.Owner.Token {
+		return inspection, errors.New("owner mismatch")
+	}
+	if m.cleanupErr != nil {
+		return inspection, m.cleanupErr
+	}
+	inspection.Lease.Portable.State = processworkspace.StateCleaned
+	m.prepared[id] = inspection
+	return inspection, nil
+}
 
 func testAllocator(store ProcessWorkspaceStateStore, manager ProcessWorkspaceManager) *ManagerAllocator {
 	allocator := &ManagerAllocator{State: store, Manager: manager, NoCheckout: readyNoCheckout{}, Now: func() time.Time { return time.Unix(100, 0).UTC() }}
@@ -421,10 +616,16 @@ type readyNoCheckout struct{}
 func (readyNoCheckout) Ready(context.Context, state.ProcessWorkspaceAssociation) (bool, error) {
 	return true, nil
 }
+func (readyNoCheckout) Cleanup(context.Context, state.ProcessWorkspaceAssociation) (bool, error) {
+	return true, nil
+}
 
 type notReadyNoCheckout struct{}
 
 func (notReadyNoCheckout) Ready(context.Context, state.ProcessWorkspaceAssociation) (bool, error) {
+	return false, nil
+}
+func (notReadyNoCheckout) Cleanup(context.Context, state.ProcessWorkspaceAssociation) (bool, error) {
 	return false, nil
 }
 func writableAllocationRequest(workspaceID, processID string) ProcessWorkspaceAllocationRequest {

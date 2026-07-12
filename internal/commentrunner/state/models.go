@@ -1,9 +1,12 @@
 package state
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -27,6 +30,8 @@ const (
 )
 
 var ErrInvalidTransition = errors.New("invalid job lifecycle transition")
+
+var processWorkspaceReservationIdentityPattern = regexp.MustCompile(`^identity:[0-9a-f]{32}$`)
 
 type RunnerState struct {
 	SchemaVersion     int                          `json:"schema_version"`
@@ -203,43 +208,133 @@ type SeenComment struct {
 }
 
 type Job struct {
-	ID                    string                    `json:"id"`
-	Repo                  string                    `json:"repo,omitempty"`
-	IssueNumber           int                       `json:"issue_number,omitempty"`
-	PublicSessionID       string                    `json:"public_session_id,omitempty"`
-	AcpxRecordID          string                    `json:"acpx_record_id,omitempty"`
-	CoordinatorKind       string                    `json:"coordinator_kind,omitempty"`
-	Model                 string                    `json:"model,omitempty"`
-	SessionCreatorLogin   string                    `json:"session_creator_login,omitempty"`
-	TriggeringUserLogin   string                    `json:"triggering_user_login,omitempty"`
-	TriggerCommentID      int64                     `json:"trigger_comment_id,omitempty"`
-	StatusCommentID       int64                     `json:"status_comment_id,omitempty"`
-	StatusCommentURL      string                    `json:"status_comment_url,omitempty"`
-	CommandID             string                    `json:"command_id,omitempty"`
-	CommandName           string                    `json:"command_name,omitempty"`
-	CommandPrompt         string                    `json:"command_prompt,omitempty"`
-	CommandIdempotencyKey string                    `json:"command_idempotency_key,omitempty"`
-	StatusWritebackKey    string                    `json:"status_writeback_key,omitempty"`
-	Status                LifecycleStatus           `json:"status,omitempty"`
-	CreatedAt             time.Time                 `json:"created_at,omitempty"`
-	UpdatedAt             time.Time                 `json:"updated_at,omitempty"`
-	DispatchedAt          time.Time                 `json:"dispatched_at,omitempty"`
-	StartedAt             time.Time                 `json:"started_at,omitempty"`
-	FinishedAt            time.Time                 `json:"finished_at,omitempty"`
-	FirstObservedComment  SeenComment               `json:"first_observed_comment,omitempty"`
-	SourceLabels          []string                  `json:"source_labels,omitempty"`
-	ContextBundle         ContextBundleProvenance   `json:"context_bundle,omitempty"`
-	DispatchIntent        DispatchIntent            `json:"dispatch_intent,omitempty"`
-	Workspace             WorkspaceMetadata         `json:"workspace,omitempty"`
-	RepositoryBinding     RepositoryBindingSnapshot `json:"repository_binding,omitempty"`
-	Sandbox               SandboxMetadata           `json:"sandbox,omitempty"`
-	Acpx                  AcpxMetadata              `json:"acpx,omitempty"`
-	CLIDirect             []CLIDirectProvenance     `json:"cli_direct,omitempty"`
-	Restart               RestartMetadata           `json:"restart,omitempty"`
-	CredentialCleanup     CredentialCleanup         `json:"lease_cleanup,omitempty"`
-	CapabilityPreflight   *capability.Report        `json:"capability_preflight,omitempty"`
-	CoordinatorSummary    string                    `json:"coordinator_summary,omitempty"`
-	Diagnostics           []string                  `json:"diagnostics,omitempty"`
+	ID                    string                      `json:"id"`
+	Repo                  string                      `json:"repo,omitempty"`
+	IssueNumber           int                         `json:"issue_number,omitempty"`
+	PublicSessionID       string                      `json:"public_session_id,omitempty"`
+	AcpxRecordID          string                      `json:"acpx_record_id,omitempty"`
+	CoordinatorKind       string                      `json:"coordinator_kind,omitempty"`
+	Model                 string                      `json:"model,omitempty"`
+	SessionCreatorLogin   string                      `json:"session_creator_login,omitempty"`
+	TriggeringUserLogin   string                      `json:"triggering_user_login,omitempty"`
+	TriggerCommentID      int64                       `json:"trigger_comment_id,omitempty"`
+	StatusCommentID       int64                       `json:"status_comment_id,omitempty"`
+	StatusCommentURL      string                      `json:"status_comment_url,omitempty"`
+	CommandID             string                      `json:"command_id,omitempty"`
+	CommandName           string                      `json:"command_name,omitempty"`
+	CommandPrompt         string                      `json:"command_prompt,omitempty"`
+	CommandIdempotencyKey string                      `json:"command_idempotency_key,omitempty"`
+	StatusWritebackKey    string                      `json:"status_writeback_key,omitempty"`
+	Status                LifecycleStatus             `json:"status,omitempty"`
+	CreatedAt             time.Time                   `json:"created_at,omitempty"`
+	UpdatedAt             time.Time                   `json:"updated_at,omitempty"`
+	DispatchedAt          time.Time                   `json:"dispatched_at,omitempty"`
+	StartedAt             time.Time                   `json:"started_at,omitempty"`
+	FinishedAt            time.Time                   `json:"finished_at,omitempty"`
+	FirstObservedComment  SeenComment                 `json:"first_observed_comment,omitempty"`
+	SourceLabels          []string                    `json:"source_labels,omitempty"`
+	ContextBundle         ContextBundleProvenance     `json:"context_bundle,omitempty"`
+	DispatchIntent        DispatchIntent              `json:"dispatch_intent,omitempty"`
+	Workspace             WorkspaceMetadata           `json:"workspace,omitempty"`
+	RepositoryBinding     RepositoryBindingSnapshot   `json:"repository_binding,omitempty"`
+	Sandbox               SandboxMetadata             `json:"sandbox,omitempty"`
+	Acpx                  AcpxMetadata                `json:"acpx,omitempty"`
+	CLIDirect             []CLIDirectProvenance       `json:"cli_direct,omitempty"`
+	Restart               RestartMetadata             `json:"restart,omitempty"`
+	CredentialCleanup     CredentialCleanup           `json:"lease_cleanup,omitempty"`
+	CapabilityPreflight   *capability.Report          `json:"capability_preflight,omitempty"`
+	ProcessWorkspace      *ProcessWorkspaceAssignment `json:"process_workspace_assignment,omitempty"`
+	CoordinatorSummary    string                      `json:"coordinator_summary,omitempty"`
+	Diagnostics           []string                    `json:"diagnostics,omitempty"`
+}
+
+// ProcessWorkspaceAssignment is the durable, portable link from a runner job
+// to the exact PROCESS workspace reservation it was assigned. Machine-local
+// paths, ownership tokens and credentials deliberately have no representation
+// here; those remain in the local workspace registry and runtime only.
+type ProcessWorkspaceAssignment struct {
+	ProcessID             string                       `json:"process_id"`
+	WorkspaceID           string                       `json:"workspace_id"`
+	ReservationID         string                       `json:"reservation_id"`
+	AssociationGeneration uint64                       `json:"association_generation"`
+	ReservationIdentity   string                       `json:"reservation_identity"`
+	CleanupRequired       bool                         `json:"cleanup_required,omitempty"`
+	CleanupState          ProcessWorkspaceCleanupState `json:"cleanup_state,omitempty"`
+	LastError             string                       `json:"last_error,omitempty"`
+}
+
+type ProcessWorkspaceCleanupState string
+
+const (
+	ProcessWorkspaceAssignmentCleanupRequired  ProcessWorkspaceCleanupState = "required"
+	ProcessWorkspaceAssignmentCleanupPending   ProcessWorkspaceCleanupState = "pending"
+	ProcessWorkspaceAssignmentCleanupConfirmed ProcessWorkspaceCleanupState = "confirmed"
+)
+
+func (a ProcessWorkspaceAssignment) IsZero() bool {
+	return a == (ProcessWorkspaceAssignment{})
+}
+
+func (a *ProcessWorkspaceAssignment) UnmarshalJSON(data []byte) error {
+	type alias ProcessWorkspaceAssignment
+	var decoded alias
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("decode process workspace assignment: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("decode process workspace assignment: unexpected trailing JSON")
+		}
+		return fmt.Errorf("decode process workspace assignment trailing JSON: %w", err)
+	}
+	value := ProcessWorkspaceAssignment(decoded)
+	if err := value.Validate(); err != nil {
+		return err
+	}
+	*a = value
+	return nil
+}
+
+func (a ProcessWorkspaceAssignment) Validate() error {
+	if !associationIDPattern.MatchString(a.ProcessID) {
+		return fmt.Errorf("process workspace assignment process id %q is invalid", a.ProcessID)
+	}
+	if !associationIDPattern.MatchString(a.WorkspaceID) {
+		return fmt.Errorf("process workspace assignment workspace id %q is invalid", a.WorkspaceID)
+	}
+	if !associationIDPattern.MatchString(a.ReservationID) {
+		return fmt.Errorf("process workspace assignment reservation id %q is invalid", a.ReservationID)
+	}
+	if a.AssociationGeneration == 0 {
+		return errors.New("process workspace assignment association generation is required")
+	}
+	if !processWorkspaceReservationIdentityPattern.MatchString(a.ReservationIdentity) {
+		return errors.New("process workspace assignment reservation identity is not a supported portable identity reference")
+	}
+	switch a.CleanupState {
+	case "":
+		if a.CleanupRequired || a.LastError != "" {
+			return errors.New("process workspace cleanup fields are inconsistent")
+		}
+	case ProcessWorkspaceAssignmentCleanupRequired:
+		if !a.CleanupRequired || a.LastError != "" {
+			return errors.New("required process workspace cleanup intent is invalid")
+		}
+	case ProcessWorkspaceAssignmentCleanupPending:
+		if !a.CleanupRequired || !canonicalRuntimeID.MatchString(a.LastError) {
+			return errors.New("pending process workspace cleanup intent is invalid")
+		}
+	case ProcessWorkspaceAssignmentCleanupConfirmed:
+		if a.CleanupRequired || a.LastError != "" {
+			return errors.New("confirmed process workspace cleanup intent is invalid")
+		}
+	default:
+		return fmt.Errorf("unsupported process workspace cleanup state %q", a.CleanupState)
+	}
+	return nil
 }
 
 type CredentialCleanupStatus string
@@ -592,6 +687,32 @@ func (s RunnerState) Validate() error {
 	if err := s.ProcessWorkspaces.Validate(); err != nil {
 		return fmt.Errorf("process workspaces: %w", err)
 	}
+	for key, job := range s.Jobs {
+		if job.ProcessWorkspace == nil {
+			continue
+		}
+		if err := job.ProcessWorkspace.Validate(); err != nil {
+			return fmt.Errorf("job %q process workspace assignment: %w", key, err)
+		}
+		assignment := job.ProcessWorkspace
+		association, ok := s.ProcessWorkspaces.ByWorkspace[assignment.WorkspaceID]
+		if assignment.AssociationGeneration > s.ProcessWorkspaces.Generation {
+			return fmt.Errorf("job %q process workspace assignment generation %d exceeds durable generation %d", key, assignment.AssociationGeneration, s.ProcessWorkspaces.Generation)
+		}
+		historical := job.Status.Terminal() && assignment.CleanupState == ProcessWorkspaceAssignmentCleanupConfirmed && !assignment.CleanupRequired
+		if historical {
+			// A released job is an immutable per-attempt tombstone. A later
+			// reservation may reuse the workspace id, but never the old CAS token.
+			if ok && activeProcessWorkspace(association.Lifecycle) && association.ReservationID == assignment.ReservationID {
+				return fmt.Errorf("job %q historical process workspace reservation token was reused by an active association", key)
+			}
+			continue
+		}
+		if !ok || association.ProcessID != assignment.ProcessID || association.ReservationID != assignment.ReservationID ||
+			association.ReservationIdentity != assignment.ReservationIdentity {
+			return fmt.Errorf("job %q process workspace assignment does not match its durable association", key)
+		}
+	}
 	return nil
 }
 
@@ -621,6 +742,11 @@ func (s *RunnerState) UpsertJob(job Job) error {
 	s.Normalize()
 	if strings.TrimSpace(job.ID) == "" {
 		return fmt.Errorf("job id is required")
+	}
+	if job.ProcessWorkspace != nil {
+		if err := job.ProcessWorkspace.Validate(); err != nil {
+			return fmt.Errorf("job process workspace assignment: %w", err)
+		}
 	}
 	if job.Status == "" {
 		job.Status = StatusQueued

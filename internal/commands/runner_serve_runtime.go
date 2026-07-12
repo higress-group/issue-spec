@@ -46,12 +46,13 @@ type runnerServeRuntimeInput struct {
 // command-level test. Production leaves it nil and always receives the concrete
 // workspace, sandbox, acpx, artifact and writeback implementations below.
 type runnerServeRuntimeDependencies struct {
-	Workspaces      jobs.WorkspaceManager
-	Sandbox         jobs.SandboxPreparer
-	Acpx            jobs.AcpxFactory
-	Artifacts       jobs.ArtifactProvider
-	Writeback       jobs.Writeback
-	IssueSpecBinary string
+	Workspaces               jobs.WorkspaceManager
+	Sandbox                  jobs.SandboxPreparer
+	Acpx                     jobs.AcpxFactory
+	Artifacts                jobs.ArtifactProvider
+	Writeback                jobs.Writeback
+	IssueSpecBinary          string
+	ProcessWorkspaceAdapters map[string]jobs.NoCheckoutLifecycle
 }
 
 var runnerServeBuildRuntime = defaultBuildRunnerServeRuntime
@@ -129,9 +130,21 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 			issueSpecBinary = strings.TrimSpace(deps.IssueSpecBinary)
 		}
 	}
+	processWorkspaceStore, err := crstate.NewProcessWorkspaceStoreAdapter(input.Store)
+	if err != nil {
+		return nil, err
+	}
+	var processWorkspaceAdapters map[string]jobs.NoCheckoutLifecycle
+	if input.Dependencies != nil {
+		processWorkspaceAdapters = input.Dependencies.ProcessWorkspaceAdapters
+	}
+	processWorkspaceRuntime, err := jobs.NewProcessWorkspaceRuntime(workspaces, processWorkspaceStore, input.Runner.WorkspaceRoot, processWorkspaceAdapters)
+	if err != nil {
+		return nil, err
+	}
 	dispatcher := &jobs.Dispatcher{Store: input.Store,
 		Repositories: repository.NativeResolver{Bindings: native, Scopes: scopes.ByRepository},
-		Workspaces:   workspaces, Sandbox: sandboxer, Acpx: acpxFactory, Artifacts: artifacts, Writeback: writebacks,
+		Workspaces:   processWorkspaceRuntime, Sandbox: sandboxer, Acpx: acpxFactory, Artifacts: artifacts, Writeback: writebacks,
 		AcpxBinary: input.Runner.AcpxPath, IssueSpecBinary: issueSpecBinary, CredentialBroker: broker,
 		CredentialScopes: scopes.ByRepository, CapabilityPreflight: broker, CapabilityHost: profile.Hostname,
 		RequiredOperations: []capability.Operation{capability.OperationIssueRead, capability.OperationIssueCommentWrite,

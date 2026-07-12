@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
 
@@ -21,6 +23,7 @@ var (
 	normalizedRuntimeID             = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 	ErrProcessWorkspaceLeaseMissing = errors.New("durable process workspace association has no local lease")
 	ErrProcessWorkspaceNotReady     = errors.New("process workspace is not ready for dispatch")
+	ErrExternalWorkspaceUnsupported = errors.New("external process workspace adapter is not configured")
 )
 
 // Allocator is the PROCESS-scoped seam that PROCESS-012 wires into Dispatcher
@@ -31,15 +34,22 @@ type Allocator interface {
 	Reconcile(context.Context, string) (ProcessWorkspaceAllocation, error)
 	BeginRelease(context.Context, string, string) (state.ProcessWorkspaceAssociation, error)
 	ReleaseAfterCleanup(context.Context, string, string) (state.ProcessWorkspaceAssociation, error)
+	CleanupAndRelease(context.Context, string, string) (state.ProcessWorkspaceAssociation, error)
 }
 
 type ProcessWorkspaceManager interface {
 	Prepare(context.Context, processworkspace.PrepareRequest) (processworkspace.Inspection, error)
 	Inspect(context.Context, string) (processworkspace.Inspection, error)
+	Cleanup(context.Context, string, string) (processworkspace.Inspection, error)
 }
 
-type NoCheckoutReadiness interface {
+type NoCheckoutLifecycle interface {
 	Ready(context.Context, state.ProcessWorkspaceAssociation) (bool, error)
+	Cleanup(context.Context, state.ProcessWorkspaceAssociation) (bool, error)
+}
+
+type noCheckoutPreflight interface {
+	ValidateAssociation(context.Context, state.ProcessWorkspaceAssociation) error
 }
 
 // ProcessWorkspaceStateStore is the CAS-capable adapter contract for
@@ -50,6 +60,7 @@ type ProcessWorkspaceStateStore interface {
 	ReserveProcessWorkspace(context.Context, state.ProcessWorkspaceAssociation) (state.ProcessWorkspaceAssociation, error)
 	TransitionProcessWorkspace(context.Context, string, string, state.ProcessWorkspaceLifecycle, state.ProcessWorkspaceLifecycle) (state.ProcessWorkspaceAssociation, error)
 	MarkProcessWorkspaceFailure(context.Context, string, string, string) (state.ProcessWorkspaceAssociation, error)
+	BeginReleaseProcessWorkspace(context.Context, string, string) (state.ProcessWorkspaceAssociation, error)
 	ConfirmProcessWorkspaceReleased(context.Context, string, string) (state.ProcessWorkspaceAssociation, error)
 	DeleteProcessWorkspace(context.Context, string, string) error
 }
@@ -75,11 +86,46 @@ type ProcessWorkspaceAllocationRequest struct {
 type ProcessWorkspaceAllocation struct {
 	Association state.ProcessWorkspaceAssociation
 	Inspection  *processworkspace.Inspection
+	Generation  uint64
+}
+
+// TrustedProcessSelection is derived only from canonical typed artifacts and
+// an exact structured command process id. An empty id is the /new coordinator
+// case and intentionally has no PROCESS checkout assignment.
+type TrustedProcessSelection struct {
+	Artifact       model.Artifact
+	ExecutionClass processworkspace.ExecutionClass
+	Workspace      *model.ProcessWorkspace
+}
+
+func SelectTrustedProcessWorkspace(artifacts []model.Artifact, exactProcessID string) (*TrustedProcessSelection, error) {
+	exactProcessID = strings.TrimSpace(exactProcessID)
+	if exactProcessID == "" {
+		return nil, nil
+	}
+	var matches []model.Artifact
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type == "PROCESS" && artifact.Comment.Status != "superseded" && artifact.Comment.ID == exactProcessID {
+			matches = append(matches, artifact)
+		}
+	}
+	if len(matches) != 1 {
+		return nil, fmt.Errorf("trusted PROCESS mapping for %s is ambiguous or missing: matches=%d", exactProcessID, len(matches))
+	}
+	class := model.ParseProcessExecutionClass(exactProcessID, matches[0].URL, matches[0].Comment.Body)
+	if class.Blocking() || class.Class == "" {
+		return nil, fmt.Errorf("trusted PROCESS %s has invalid execution class", exactProcessID)
+	}
+	workspace := model.ParseProcessWorkspace(exactProcessID, matches[0].URL, matches[0].Comment.Body)
+	if workspace.Blocking() {
+		return nil, fmt.Errorf("trusted PROCESS %s has invalid workspace metadata", exactProcessID)
+	}
+	return &TrustedProcessSelection{Artifact: matches[0], ExecutionClass: processworkspace.ExecutionClass(class.Class), Workspace: workspace.Workspace}, nil
 }
 
 type ManagerAllocator struct {
 	Manager          ProcessWorkspaceManager
-	NoCheckout       NoCheckoutReadiness
+	NoCheckout       NoCheckoutLifecycle
 	State            ProcessWorkspaceStateStore
 	Now              func() time.Time
 	ReservationToken func() (string, error)
@@ -135,6 +181,16 @@ func (a *ManagerAllocator) Allocate(ctx context.Context, request ProcessWorkspac
 	if err := association.Validate(); err != nil {
 		return ProcessWorkspaceAllocation{}, err
 	}
+	if mode == processworkspace.ModeNone || request.ExecutionClass == processworkspace.ExecutionExternal {
+		if a.NoCheckout == nil {
+			return ProcessWorkspaceAllocation{}, errors.New("no-checkout workspace adapter is required")
+		}
+		if preflight, ok := a.NoCheckout.(noCheckoutPreflight); ok {
+			if err := preflight.ValidateAssociation(ctx, association); err != nil {
+				return ProcessWorkspaceAllocation{}, err
+			}
+		}
+	}
 	if mode != processworkspace.ModeNone && a.Manager == nil {
 		return ProcessWorkspaceAllocation{}, errors.New("process workspace manager is required for checkout allocation")
 	}
@@ -180,12 +236,28 @@ func (a *ManagerAllocator) Allocate(ctx context.Context, request ProcessWorkspac
 		allocation.Inspection = &inspection
 		return allocation, errors.Join(prepareErr, markErr)
 	}
+	if association.ExecutionClass == processworkspace.ExecutionExternal {
+		ready, readyErr := a.NoCheckout.Ready(ctx, reserved)
+		if readyErr != nil || !ready {
+			held, markErr := a.State.MarkProcessWorkspaceFailure(ctx, reserved.WorkspaceID, reserved.ReservationID, "adapter_not_ready")
+			allocation.Association = held
+			allocation.Inspection = &inspection
+			return allocation, errors.Join(ErrProcessWorkspaceNotReady, readyErr, markErr)
+		}
+	}
 	prepared, transitionErr := a.State.TransitionProcessWorkspace(ctx, reserved.WorkspaceID, reserved.ReservationID, state.ProcessWorkspaceAllocating, state.ProcessWorkspacePrepared)
 	if transitionErr != nil {
 		_, _ = a.State.MarkProcessWorkspaceFailure(ctx, reserved.WorkspaceID, reserved.ReservationID, "publication_failed")
 	}
 	allocation.Association = prepared
 	allocation.Inspection = &inspection
+	if transitionErr == nil {
+		if current, loadErr := a.State.LoadProcessWorkspaces(ctx); loadErr == nil {
+			allocation.Generation = current.Generation
+		} else {
+			transitionErr = loadErr
+		}
+	}
 	return allocation, transitionErr
 }
 
@@ -201,7 +273,7 @@ func (a *ManagerAllocator) Inspect(ctx context.Context, workspaceID string) (Pro
 	if !ok {
 		return ProcessWorkspaceAllocation{}, fmt.Errorf("process workspace association %q not found", workspaceID)
 	}
-	allocation := ProcessWorkspaceAllocation{Association: association}
+	allocation := ProcessWorkspaceAllocation{Association: association, Generation: associations.Generation}
 	if association.Lifecycle == state.ProcessWorkspaceFailed {
 		return allocation, fmt.Errorf("%w: reservation is failed", ErrProcessWorkspaceLeaseMissing)
 	}
@@ -244,22 +316,172 @@ func (a *ManagerAllocator) Reconcile(ctx context.Context, workspaceID string) (P
 }
 
 func (a *ManagerAllocator) BeginRelease(ctx context.Context, workspaceID, reservationID string) (state.ProcessWorkspaceAssociation, error) {
-	associations, err := a.State.LoadProcessWorkspaces(ctx)
-	if err != nil {
-		return state.ProcessWorkspaceAssociation{}, err
-	}
-	association, ok := associations.Get(workspaceID)
-	if !ok || association.ReservationID != reservationID {
-		return state.ProcessWorkspaceAssociation{}, errors.New("process workspace reservation CAS mismatch")
-	}
-	if association.Lifecycle == state.ProcessWorkspaceCleanupPending {
-		return association, nil
-	}
-	return a.State.TransitionProcessWorkspace(ctx, workspaceID, reservationID, association.Lifecycle, state.ProcessWorkspaceCleanupPending)
+	return a.State.BeginReleaseProcessWorkspace(ctx, workspaceID, reservationID)
 }
 
 func (a *ManagerAllocator) ReleaseAfterCleanup(ctx context.Context, workspaceID, reservationID string) (state.ProcessWorkspaceAssociation, error) {
 	return a.State.ConfirmProcessWorkspaceReleased(ctx, workspaceID, reservationID)
+}
+
+// CleanupAndRelease preserves the exclusive reservation until the local
+// manager or provider adapter confirms cleanup. Retrying a cleanup-pending
+// association is intentional and uses the same reservation token throughout.
+func (a *ManagerAllocator) CleanupAndRelease(ctx context.Context, workspaceID, reservationID string) (state.ProcessWorkspaceAssociation, error) {
+	if a == nil || a.State == nil {
+		return state.ProcessWorkspaceAssociation{}, errors.New("process workspace state store is required")
+	}
+	associations, err := a.State.LoadProcessWorkspaces(ctx)
+	if err != nil {
+		return state.ProcessWorkspaceAssociation{}, err
+	}
+	association, ok := associations.Get(strings.TrimSpace(workspaceID))
+	if !ok || association.ReservationID != strings.TrimSpace(reservationID) {
+		return state.ProcessWorkspaceAssociation{}, errors.New("process workspace reservation CAS mismatch")
+	}
+	if association.Lifecycle == state.ProcessWorkspaceReleased {
+		return association, nil
+	}
+	pending, err := a.BeginRelease(ctx, association.WorkspaceID, association.ReservationID)
+	if err != nil {
+		return state.ProcessWorkspaceAssociation{}, err
+	}
+	if pending.Mode == processworkspace.ModeNone {
+		if a.NoCheckout == nil {
+			return pending, errors.New("no-checkout cleanup adapter is required")
+		}
+		confirmed, cleanupErr := a.NoCheckout.Cleanup(ctx, pending)
+		if cleanupErr != nil || !confirmed {
+			if cleanupErr == nil {
+				cleanupErr = errors.New("no-checkout cleanup was not confirmed")
+			}
+			return pending, cleanupErr
+		}
+	} else {
+		if a.Manager == nil {
+			return pending, errors.New("process workspace manager is required for checkout cleanup")
+		}
+		inspection, inspectErr := a.Manager.Inspect(ctx, pending.WorkspaceID)
+		if inspectErr != nil {
+			return pending, inspectErr
+		}
+		cleaned, cleanupErr := a.Manager.Cleanup(ctx, pending.WorkspaceID, inspection.Lease.Owner.Token)
+		if cleanupErr != nil {
+			return pending, cleanupErr
+		}
+		if cleaned.Lease.Portable.State != processworkspace.StateCleaned {
+			return pending, errors.New("process workspace cleanup was not confirmed")
+		}
+		if pending.ExecutionClass == processworkspace.ExecutionExternal {
+			if a.NoCheckout == nil {
+				return pending, errors.New("external cleanup adapter is required")
+			}
+			confirmed, cleanupErr := a.NoCheckout.Cleanup(ctx, pending)
+			if cleanupErr != nil || !confirmed {
+				if cleanupErr == nil {
+					cleanupErr = errors.New("external cleanup was not confirmed")
+				}
+				return pending, cleanupErr
+			}
+		}
+	}
+	return a.ReleaseAfterCleanup(ctx, pending.WorkspaceID, pending.ReservationID)
+}
+
+// ProcessWorkspaceAllocatorRequest carries only trusted runner configuration;
+// the assigned PROCESS identity is supplied separately by the dispatcher.
+type ProcessWorkspaceAllocatorRequest struct {
+	IntegrationRoot string
+}
+
+type ProcessWorkspaceAllocatorProvider interface {
+	ProcessWorkspaceAllocator(context.Context, ProcessWorkspaceAllocatorRequest) (Allocator, error)
+}
+
+// ProcessWorkspaceRuntime is injected through Dispatcher.Workspaces so P008
+// can request an allocator without rediscovering FileStore or runner config.
+// Composition alone does not activate dispatch: P008 must run the exact typed
+// selector, allocation and durable job assignment before any ACPX call.
+type ProcessWorkspaceRuntime struct {
+	WorkspaceManager
+	State            ProcessWorkspaceStateStore
+	ManagedRoot      string
+	ExternalAdapters map[string]NoCheckoutLifecycle
+}
+
+func NewProcessWorkspaceRuntime(workspaces WorkspaceManager, store ProcessWorkspaceStateStore, managedRoot string, external map[string]NoCheckoutLifecycle) (*ProcessWorkspaceRuntime, error) {
+	if workspaces == nil || store == nil {
+		return nil, errors.New("runner workspace manager and state adapter are required")
+	}
+	root, err := filepath.Abs(strings.TrimSpace(managedRoot))
+	if err != nil || strings.TrimSpace(managedRoot) == "" {
+		return nil, errors.New("managed process workspace root is required")
+	}
+	return &ProcessWorkspaceRuntime{WorkspaceManager: workspaces, State: store, ManagedRoot: root, ExternalAdapters: external}, nil
+}
+
+func (r *ProcessWorkspaceRuntime) ProcessWorkspaceAllocator(ctx context.Context, request ProcessWorkspaceAllocatorRequest) (Allocator, error) {
+	if r == nil || r.State == nil {
+		return nil, errors.New("process workspace runtime is required")
+	}
+	integrationRoot, err := filepath.Abs(strings.TrimSpace(request.IntegrationRoot))
+	if err != nil || strings.TrimSpace(request.IntegrationRoot) == "" {
+		return nil, errors.New("session integration root is required")
+	}
+	digest := sha256.Sum256([]byte(integrationRoot))
+	workspaceRoot := filepath.Join(r.ManagedRoot, ".process-workspaces", hex.EncodeToString(digest[:8]))
+	manager, err := processworkspace.OpenManager(ctx, integrationRoot, workspaceRoot, processworkspace.ManagerOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return &ManagerAllocator{Manager: manager, NoCheckout: runtimeNoCheckout{external: r.ExternalAdapters}, State: r.State}, nil
+}
+
+type runtimeNoCheckout struct {
+	external map[string]NoCheckoutLifecycle
+}
+
+func (r runtimeNoCheckout) Ready(ctx context.Context, association state.ProcessWorkspaceAssociation) (bool, error) {
+	if association.ExecutionClass == processworkspace.ExecutionOrchestration {
+		return true, nil
+	}
+	adapter := r.external[association.Provider.ProviderKey]
+	if adapter == nil {
+		return false, fmt.Errorf("%w: %s", ErrExternalWorkspaceUnsupported, association.Provider.ProviderKey)
+	}
+	return adapter.Ready(ctx, association)
+}
+
+func (r runtimeNoCheckout) Cleanup(ctx context.Context, association state.ProcessWorkspaceAssociation) (bool, error) {
+	if association.ExecutionClass == processworkspace.ExecutionOrchestration {
+		return true, nil
+	}
+	adapter := r.external[association.Provider.ProviderKey]
+	if adapter == nil {
+		return false, fmt.Errorf("%w: %s", ErrExternalWorkspaceUnsupported, association.Provider.ProviderKey)
+	}
+	return adapter.Cleanup(ctx, association)
+}
+
+func (r runtimeNoCheckout) ValidateAssociation(_ context.Context, association state.ProcessWorkspaceAssociation) error {
+	if association.ExecutionClass == processworkspace.ExecutionOrchestration {
+		return nil
+	}
+	if association.ExecutionClass != processworkspace.ExecutionExternal || r.external[association.Provider.ProviderKey] == nil {
+		return fmt.Errorf("%w: %s", ErrExternalWorkspaceUnsupported, association.Provider.ProviderKey)
+	}
+	return nil
+}
+
+// MarkTerminalWorkspaceCleanupRequired is the P008 handoff used in every
+// normal completed/failed terminal state transaction before post-terminal
+// cleanup is attempted. It records intent without changing the reservation.
+func MarkTerminalWorkspaceCleanupRequired(job *state.Job) {
+	if job == nil || job.ProcessWorkspace == nil || job.ProcessWorkspace.CleanupState == state.ProcessWorkspaceAssignmentCleanupConfirmed {
+		return
+	}
+	job.ProcessWorkspace.CleanupRequired = true
+	job.ProcessWorkspace.CleanupState = state.ProcessWorkspaceAssignmentCleanupRequired
+	job.ProcessWorkspace.LastError = ""
 }
 
 func (a *ManagerAllocator) markNotReady(ctx context.Context, allocation ProcessWorkspaceAllocation, code string, cause error) (ProcessWorkspaceAllocation, error) {

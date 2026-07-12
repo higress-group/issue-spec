@@ -97,6 +97,16 @@ func (d *Dispatcher) nextQueuedCancellation(ctx context.Context) (state.Cancella
 
 func (d *Dispatcher) cancel(ctx context.Context, cancel state.Cancellation) (Result, error) {
 	if cancel.Status.Terminal() {
+		if strings.TrimSpace(cancel.TargetJobID) != "" {
+			if job, err := d.loadJob(ctx, cancel.TargetJobID); err == nil {
+				_ = d.markJobWorkspaceCleanupRequired(ctx, job.ID)
+				if refreshed, refreshErr := d.loadJob(ctx, cancel.TargetJobID); refreshErr == nil {
+					job = refreshed
+				}
+				cleanupErr := d.cleanupAssignedProcessWorkspace(ctx, job)
+				_ = d.recordJobWorkspaceCleanupResult(ctx, job.ID, cleanupErr)
+			}
+		}
 		return Result{CancellationID: cancel.ID, Status: cancel.Status, Reason: "already_terminal"}, nil
 	}
 	job, found, terminal, err := d.markCancellationRunning(ctx, cancel)
@@ -265,6 +275,7 @@ func (d *Dispatcher) cancelConfirmed(ctx context.Context, cancel state.Cancellat
 			return err
 		}
 		fillJobSessionRefs(&next)
+		MarkTerminalWorkspaceCleanupRequired(&next)
 		markWorkspaceUncertain(&next.Workspace)
 		if err := upsertWorkspaceIfPresent(st, next.Workspace); err != nil {
 			return err
@@ -289,6 +300,11 @@ func (d *Dispatcher) cancelConfirmed(ctx context.Context, cancel state.Cancellat
 		return err
 	}
 	d.releaseLock(ctx, cancelled.ID, lock)
+	cleanupErr := d.cleanupAssignedProcessWorkspace(ctx, cancelled)
+	_ = d.recordJobWorkspaceCleanupResult(ctx, cancelled.ID, cleanupErr)
+	if cleanupErr != nil {
+		_ = d.appendDiagnostic(ctx, cancelled.ID, "process workspace cleanup pending: "+safeError(cleanupErr))
+	}
 	_, err := d.Writeback.Write(ctx, writeback.Request{
 		Job:                cancelled,
 		Status:             state.StatusCancelled,
@@ -337,6 +353,12 @@ func (d *Dispatcher) cancelRejected(ctx context.Context, cancel state.Cancellati
 // every accepted cancellation reaches a visible terminal status (SPEC-004),
 // without touching the target job's own completed/failed status comment.
 func (d *Dispatcher) cancelAlreadyTerminal(ctx context.Context, cancel state.Cancellation, job state.Job) (Result, error) {
+	_ = d.markJobWorkspaceCleanupRequired(ctx, job.ID)
+	cleanupErr := d.cleanupAssignedProcessWorkspace(ctx, job)
+	_ = d.recordJobWorkspaceCleanupResult(ctx, job.ID, cleanupErr)
+	if cleanupErr != nil {
+		_ = d.appendDiagnostic(ctx, job.ID, "process workspace cleanup pending: "+safeError(cleanupErr))
+	}
 	if d.Writeback != nil {
 		if statusJob, ok := cancellationStatusJob(cancel); ok {
 			_, _ = d.Writeback.Write(ctx, writeback.Request{
@@ -354,6 +376,62 @@ func (d *Dispatcher) cancelAlreadyTerminal(ctx context.Context, cancel state.Can
 		return result, err
 	}
 	return result, nil
+}
+
+func (d *Dispatcher) cleanupAssignedProcessWorkspace(ctx context.Context, job state.Job) error {
+	assignment := job.ProcessWorkspace
+	if assignment == nil {
+		return nil
+	}
+	if assignment.CleanupState == state.ProcessWorkspaceAssignmentCleanupConfirmed && !assignment.CleanupRequired {
+		return nil
+	}
+	if err := assignment.Validate(); err != nil {
+		return fmt.Errorf("invalid durable process workspace assignment: %w", err)
+	}
+	provider, ok := d.Workspaces.(ProcessWorkspaceAllocatorProvider)
+	if !ok {
+		return errors.New("process workspace allocator provider is unavailable")
+	}
+	allocator, err := provider.ProcessWorkspaceAllocator(ctx, ProcessWorkspaceAllocatorRequest{IntegrationRoot: job.Workspace.Path})
+	if err != nil {
+		return err
+	}
+	_, err = allocator.CleanupAndRelease(ctx, assignment.WorkspaceID, assignment.ReservationID)
+	return err
+}
+
+func (d *Dispatcher) markJobWorkspaceCleanupRequired(ctx context.Context, jobID string) error {
+	return d.Store.Update(ctx, func(st *state.RunnerState) error {
+		job, ok := st.Jobs[jobID]
+		if !ok {
+			return fmt.Errorf("job %q not found", jobID)
+		}
+		MarkTerminalWorkspaceCleanupRequired(&job)
+		return st.UpsertJob(job)
+	})
+}
+
+func (d *Dispatcher) recordJobWorkspaceCleanupResult(ctx context.Context, jobID string, cleanupErr error) error {
+	return d.Store.Update(ctx, func(st *state.RunnerState) error {
+		job, ok := st.Jobs[jobID]
+		if !ok {
+			return fmt.Errorf("job %q not found", jobID)
+		}
+		if job.ProcessWorkspace == nil {
+			return nil
+		}
+		if cleanupErr != nil {
+			job.ProcessWorkspace.CleanupRequired = true
+			job.ProcessWorkspace.CleanupState = state.ProcessWorkspaceAssignmentCleanupPending
+			job.ProcessWorkspace.LastError = "cleanup_failed"
+		} else {
+			job.ProcessWorkspace.CleanupRequired = false
+			job.ProcessWorkspace.CleanupState = state.ProcessWorkspaceAssignmentCleanupConfirmed
+			job.ProcessWorkspace.LastError = ""
+		}
+		return st.UpsertJob(job)
+	})
 }
 
 // cancellationStatusJob synthesizes the minimal job needed to render a status

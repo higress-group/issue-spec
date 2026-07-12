@@ -19,7 +19,24 @@ import (
 	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/github"
+	"github.com/higress-group/issue-spec/internal/workspace"
 )
+
+func TestRunnerProcessWorkspaceRuntimeWrapsRealFileStore(t *testing.T) {
+	root := t.TempDir()
+	store, err := state.OpenFileStore(filepath.Join(root, "runner-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	workspaces, err := runnerProcessWorkspaceRuntime(workspace.Manager{Root: filepath.Join(root, "sessions")}, store, filepath.Join(root, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := workspaces.(jobs.ProcessWorkspaceAllocatorProvider); !ok {
+		t.Fatalf("production workspace composition %T lacks process allocator provider", workspaces)
+	}
+}
 
 func TestRootUsageDocumentsRunnerCommand(t *testing.T) {
 	var out, errOut bytes.Buffer

@@ -348,12 +348,20 @@ func TestRunNextCancellationConfirmedCancelsRunningJob(t *testing.T) {
 	workspaceMeta := testBinding("ws-cancel-confirmed").Workspace
 	lock := state.SessionLock{OwnerJobID: "job-reconcile", WorkspaceLockToken: "token", WorkspaceLockPath: "/tmp/lock"}
 	seedActiveJob(t, store, state.StatusRunning, workspaceMeta, lock)
+	seedState(t, store, func(st *state.RunnerState) error {
+		job := st.Jobs["job-reconcile"]
+		job.ProcessWorkspace = &state.ProcessWorkspaceAssignment{ProcessID: "PROCESS-017", WorkspaceID: "ws-process-017",
+			ReservationID: "reservation:exact", ReservationIdentity: "identity:0123456789abcdef0123456789abcdef", AssociationGeneration: 7}
+		return st.UpsertJob(job)
+	})
 	seedCancellation(t, store, "cancel-1", "cancel-key-1", now)
 
 	writebacks := &fakeWriteback{store: store}
-	workspaces := &fakeWorkspaces{binding: testBinding("unused")}
+	cleanup := &recordingProcessAllocator{err: errors.New("cleanup unavailable")}
+	workspaces := &cancelWorkspaceProvider{fakeWorkspaces: &fakeWorkspaces{binding: testBinding("unused")}, allocator: cleanup}
 	coordinator := &fakeCancelCoordinator{cancelResult: acpx.CancelResult{Confirmed: true, Diagnostics: "cancelled by acpx"}}
-	dispatcher := testDispatcher(store, workspaces, &fakeCoordinator{}, writebacks, now)
+	dispatcher := testDispatcher(store, workspaces.fakeWorkspaces, &fakeCoordinator{}, writebacks, now)
+	dispatcher.Workspaces = workspaces
 	dispatcher.Acpx = staticAcpxFactory{coordinator: coordinator}
 
 	result, err := dispatcher.RunNext(context.Background())
@@ -370,6 +378,9 @@ func TestRunNextCancellationConfirmedCancelsRunningJob(t *testing.T) {
 	if !workspaces.released {
 		t.Fatal("workspace lock was not released")
 	}
+	if cleanup.workspaceID != "ws-process-017" || cleanup.reservationID != "reservation:exact" {
+		t.Fatalf("process cleanup did not use exact assignment: %+v", cleanup)
+	}
 	st := loadState(t, store)
 	job := st.Jobs["job-reconcile"]
 	cancel := st.Cancellations["cancel-1"]
@@ -379,11 +390,42 @@ func TestRunNextCancellationConfirmedCancelsRunningJob(t *testing.T) {
 	if cancel.Status != state.StatusCancelled || !cancel.DirtyWorkspace || !cancel.WorkspaceUncertain || coordinator.cancelCalls != 1 {
 		t.Fatalf("cancellation not confirmed: %+v calls=%d", cancel, coordinator.cancelCalls)
 	}
+	if job.ProcessWorkspace == nil || !job.ProcessWorkspace.CleanupRequired || job.ProcessWorkspace.CleanupState != state.ProcessWorkspaceAssignmentCleanupPending || job.ProcessWorkspace.LastError != "cleanup_failed" {
+		t.Fatalf("cleanup failure intent was not durable: %+v", job.ProcessWorkspace)
+	}
 	session, ok := st.GetPublicSession("o/r", "ps-reconcile")
 	if !ok || session.Status != state.StatusCancelled || session.AcpxRecordID != "rec-reconcile" || session.Workspace.ID != workspaceMeta.ID ||
 		!session.RepositoryBinding.Equal(workspaceMeta.RepositoryBinding) || len(session.Queue.PendingJobIDs) != 0 || session.Lock.OwnerJobID != "" {
 		t.Fatalf("record-backed resume session was not preserved and terminalized: %+v ok=%v", session, ok)
 	}
+	cleanup.err = nil
+	if retry, err := dispatcher.cancel(context.Background(), cancel); err != nil || retry.Status != state.StatusCancelled {
+		t.Fatalf("terminal cleanup retry=%+v err=%v", retry, err)
+	}
+	retried := loadState(t, store).Jobs["job-reconcile"].ProcessWorkspace
+	if retried == nil || retried.CleanupRequired || retried.CleanupState != state.ProcessWorkspaceAssignmentCleanupConfirmed || retried.LastError != "" {
+		t.Fatalf("cleanup retry was not confirmed durably: %+v", retried)
+	}
+}
+
+type cancelWorkspaceProvider struct {
+	*fakeWorkspaces
+	allocator Allocator
+}
+
+func (p *cancelWorkspaceProvider) ProcessWorkspaceAllocator(context.Context, ProcessWorkspaceAllocatorRequest) (Allocator, error) {
+	return p.allocator, nil
+}
+
+type recordingProcessAllocator struct {
+	Allocator
+	workspaceID, reservationID string
+	err                        error
+}
+
+func (a *recordingProcessAllocator) CleanupAndRelease(_ context.Context, workspaceID, reservationID string) (state.ProcessWorkspaceAssociation, error) {
+	a.workspaceID, a.reservationID = workspaceID, reservationID
+	return state.ProcessWorkspaceAssociation{WorkspaceID: workspaceID, ReservationID: reservationID}, a.err
 }
 
 func testWorkspacePath(t *testing.T, root, id string) string {
