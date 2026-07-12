@@ -240,6 +240,10 @@ func TestIssueSpecSkillTemplatesEnforceAgentOwnedReviewWorkflow(t *testing.T) {
 		"The worker that owns the affected code fixes it and replies",
 		"The review agent that opened the finding then re-checks",
 		"a worker reply alone does not resolve a finding",
+		"--from REVIEW-<n> --from-issue <implement-issue> --to PROCESS-<n>",
+		"--from REVIEW-<n> --from-issue <implement-issue> --to SPEC-<n>",
+		"Run these commands after the final review sync",
+		"Related Comments contains the review PROCESS URL and each covered active SPEC URL",
 	} {
 		if !strings.Contains(review, want) {
 			t.Fatalf("review skill missing ownership guidance %q:\n%s", want, review)
