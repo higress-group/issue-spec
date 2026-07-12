@@ -144,6 +144,9 @@ func (p *CommandProvider) Snapshot(ctx context.Context, request SnapshotRequest)
 		response.Snapshot.SubjectRevision != request.SubjectRevision || response.Snapshot.CapturedAt.IsZero() {
 		return Snapshot{}, fmt.Errorf("%w: snapshot identity mismatch", ErrInvalidProviderData)
 	}
+	if err := ValidateProviderSnapshot(*response.Snapshot); err != nil {
+		return Snapshot{}, err
+	}
 	return *response.Snapshot, nil
 }
 

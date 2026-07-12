@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/codereview"
 	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
@@ -205,6 +207,129 @@ func TestConcurrentEvidenceRetryCreatesExactlyOneRow(t *testing.T) {
 	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM external_evidence WHERE ingest_key = 'concurrent'`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("concurrent evidence count=%d, %v", count, err)
 	}
+}
+
+func TestProviderSnapshotBatchCASIdempotencyAtomicityAndSupersession(t *testing.T) {
+	env := newEvidenceEnvironment(t)
+	if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner),
+		env.actor(env.owner, "writer"), env.scope, env.writer.User.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	referenceID := uuid.New()
+	if _, err := env.pool.Exec(t.Context(), `INSERT INTO external_references
+		(id, organization_id, repository_id, issue_id, provider_key, relation_kind,
+		external_repository_id, external_id, canonical_url, metadata)
+		VALUES ($1, $2, $3, $4, 'code.example', 'code_change', 'acme/widgets-code', '42',
+		'https://code.example/changes/42', '{"head_revision":"abc","base_revision":"base"}'::jsonb)`,
+		referenceID, env.scope.OrgID, env.scope.RepoID, env.issueID); err != nil {
+		t.Fatal(err)
+	}
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "42"}
+	fact := providerFact("check-v1", "ci", "abc", strings.Repeat("a", 64))
+	input := SnapshotIngestInput{IssueID: env.issueID, ReferenceID: referenceID, ExpectedReferenceVersion: 1,
+		Snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion, Reference: reference,
+			SubjectRevision: "abc", Facts: []codereview.ProviderFact{fact},
+			CapturedAt: time.Date(2026, 7, 11, 4, 0, 1, 0, time.UTC)}}
+
+	beforeIssue, beforeRepo := env.evidenceVersions(t)
+	first, err := env.service.IngestProviderSnapshot(t.Context(), authz.Authenticated(env.writer),
+		env.actor(env.writer, "snapshot-first"), env.scope, input)
+	if err != nil || first.Created != 1 || first.Replayed != 0 || len(first.Evidence) != 1 {
+		t.Fatalf("first IngestProviderSnapshot() = %+v, %v", first, err)
+	}
+	afterIssue, afterRepo := env.evidenceVersions(t)
+	if afterIssue != beforeIssue+1 || afterRepo != beforeRepo+1 {
+		t.Fatalf("batch collection bump issue=%d/%d repo=%d/%d", beforeIssue, afterIssue, beforeRepo, afterRepo)
+	}
+	var ingestKey string
+	var provenance json.RawMessage
+	if err := env.pool.QueryRow(t.Context(), `SELECT ingest_key, provenance FROM external_evidence WHERE id = $1`,
+		first.Evidence[0].ID).Scan(&ingestKey, &provenance); err != nil {
+		t.Fatal(err)
+	}
+	var provenanceObject map[string]any
+	if err := json.Unmarshal(provenance, &provenanceObject); err != nil {
+		t.Fatalf("decode provenance: %v", err)
+	}
+	_, hasWriterIdentity := provenanceObject["writer_identity"]
+	_, hasTrusted := provenanceObject["trusted"]
+	_, hasApproved := provenanceObject["approved"]
+	if ingestKey != providerFactIngestKey(referenceID, reference, fact.ID) ||
+		provenanceObject["schema_version"] != "issue-spec.provider-fact-provenance/v1" ||
+		provenanceObject["provider_fact_id"] != "check-v1" || hasWriterIdentity || hasTrusted || hasApproved {
+		t.Fatalf("derived ingest/provenance key=%q provenance=%s", ingestKey, provenance)
+	}
+
+	beforeIssue, beforeRepo = env.evidenceVersions(t)
+	replay, err := env.service.IngestProviderSnapshot(t.Context(), authz.Authenticated(env.writer),
+		env.actor(env.writer, "snapshot-replay"), env.scope, input)
+	if err != nil || replay.Created != 0 || replay.Replayed != 1 || replay.Evidence[0].ID != first.Evidence[0].ID {
+		t.Fatalf("replay IngestProviderSnapshot() = %+v, %v", replay, err)
+	}
+	afterIssue, afterRepo = env.evidenceVersions(t)
+	if beforeIssue != afterIssue || beforeRepo != afterRepo {
+		t.Fatalf("replay bumped collections issue=%d/%d repo=%d/%d", beforeIssue, afterIssue, beforeRepo, afterRepo)
+	}
+
+	mismatch := input
+	mismatch.Snapshot.Facts = append([]codereview.ProviderFact(nil), input.Snapshot.Facts...)
+	mismatch.Snapshot.Facts[0].State = "failed"
+	if _, err := env.service.IngestProviderSnapshot(t.Context(), authz.Authenticated(env.writer),
+		env.actor(env.writer, "snapshot-mismatch"), env.scope, mismatch); !errors.Is(err, ErrIdempotencyMismatch) {
+		t.Fatalf("mismatched replay error = %v", err)
+	}
+
+	successor := providerFact("check-v2", "ci", "abc", strings.Repeat("b", 64))
+	successor.SupersedesID = fact.ID
+	nextInput := input
+	nextInput.Snapshot.Facts = []codereview.ProviderFact{successor}
+	next, err := env.service.IngestProviderSnapshot(t.Context(), authz.Authenticated(env.writer),
+		env.actor(env.writer, "snapshot-supersede"), env.scope, nextInput)
+	if err != nil || next.Created != 1 || next.Evidence[0].SupersedesEvidenceID == nil ||
+		*next.Evidence[0].SupersedesEvidenceID != first.Evidence[0].ID {
+		t.Fatalf("superseding snapshot = %+v, %v", next, err)
+	}
+	nextReplay, err := env.service.IngestProviderSnapshot(t.Context(), authz.Authenticated(env.writer),
+		env.actor(env.writer, "snapshot-supersede-replay"), env.scope, nextInput)
+	if err != nil || nextReplay.Created != 0 || nextReplay.Replayed != 1 ||
+		nextReplay.Evidence[0].ID != next.Evidence[0].ID {
+		t.Fatalf("superseding snapshot replay = %+v, %v", nextReplay, err)
+	}
+
+	atomicInput := input
+	atomicInput.Snapshot.Facts = []codereview.ProviderFact{
+		providerFact("atomic-a", "new-a", "abc", strings.Repeat("c", 64)),
+		providerFact("atomic-b", "new-b", "abc", strings.Repeat("d", 64)),
+	}
+	atomicInput.Snapshot.Facts[1].SupersedesID = "missing-predecessor"
+	if _, err := env.service.IngestProviderSnapshot(t.Context(), authz.Authenticated(env.writer),
+		env.actor(env.writer, "snapshot-atomic"), env.scope, atomicInput); !errors.Is(err, adminservice.ErrNotFound) {
+		t.Fatalf("atomic snapshot error = %v", err)
+	}
+	var atomicRows int
+	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM external_evidence WHERE external_id IN ('new-a','new-b')`).Scan(&atomicRows); err != nil || atomicRows != 0 {
+		t.Fatalf("partial atomic snapshot rows = %d, %v", atomicRows, err)
+	}
+
+	staleVersion := input
+	staleVersion.ExpectedReferenceVersion = 2
+	if _, err := env.service.IngestProviderSnapshot(t.Context(), authz.Authenticated(env.writer),
+		env.actor(env.writer, "snapshot-stale-version"), env.scope, staleVersion); !errors.Is(err, adminservice.ErrVersionConflict) {
+		t.Fatalf("stale reference version error = %v", err)
+	}
+	moved := input
+	moved.Snapshot.SubjectRevision = "def"
+	moved.Snapshot.Facts = []codereview.ProviderFact{providerFact("moved", "moved", "def", strings.Repeat("e", 64))}
+	if _, err := env.service.IngestProviderSnapshot(t.Context(), authz.Authenticated(env.writer),
+		env.actor(env.writer, "snapshot-moved"), env.scope, moved); !errors.Is(err, adminservice.ErrVersionConflict) {
+		t.Fatalf("moved reference revision error = %v", err)
+	}
+}
+
+func providerFact(id, externalID, revision, digest string) codereview.ProviderFact {
+	return codereview.ProviderFact{ID: id, ExternalID: externalID, Kind: codereview.EvidenceCheck,
+		State: "passed", SubjectRevision: revision, Name: "ci", ObservedAt: time.Date(2026, 7, 11, 4, 0, 0, 0, time.UTC),
+		PayloadDigest: digest}
 }
 
 type evidenceEnvironment struct {

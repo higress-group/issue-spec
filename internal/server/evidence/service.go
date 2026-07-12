@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/codereview"
 	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
@@ -278,6 +280,285 @@ func (s *Service) AppendEvidence(ctx context.Context, subject authz.Subject, act
 	return result, mapError(err)
 }
 
+// IngestProviderSnapshot atomically converts untrusted provider facts into
+// trusted, append-only evidence. The active code-change reference is locked for
+// the transaction so its identity, representation version and head revision
+// cannot move between validation and persistence.
+func (s *Service) IngestProviderSnapshot(ctx context.Context, subject authz.Subject, actor adminservice.Actor,
+	scope models.RepoScope, input SnapshotIngestInput) (SnapshotIngestResult, error) {
+	if input.Visibility == "" {
+		input.Visibility = VisibilityRepository
+	}
+	if input.IssueID == uuid.Nil || input.ReferenceID == uuid.Nil || input.ExpectedReferenceVersion <= 0 ||
+		(input.Visibility != VisibilityRepository && input.Visibility != VisibilityMaintainers) ||
+		validateActor(subject, actor) != nil || codereview.ValidateProviderSnapshot(input.Snapshot) != nil {
+		return SnapshotIngestResult{}, adminservice.ErrInvalidInput
+	}
+	ordered, err := orderProviderFacts(input.Snapshot.Facts)
+	if err != nil {
+		return SnapshotIngestResult{}, adminservice.ErrInvalidInput
+	}
+	for _, fact := range ordered {
+		if fact.ObservedAt.After(input.Snapshot.CapturedAt.Add(time.Minute)) {
+			return SnapshotIngestResult{}, adminservice.ErrInvalidInput
+		}
+	}
+	result := SnapshotIngestResult{ReferenceID: input.ReferenceID,
+		ReferenceVersion: input.ExpectedReferenceVersion, SubjectRevision: input.Snapshot.SubjectRevision,
+		Evidence: make([]Evidence, 0, len(ordered))}
+	var denial string
+	err = pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		principal := *subject.Principal
+		designated, err := designatedWriterForUpdate(ctx, tx, scope, principal.User.ID)
+		if err != nil {
+			return err
+		}
+		decision, err := s.authz.EvaluateRepositoryTx(ctx, tx, subject, authz.RepositoryRequest{
+			Scope: scope, Operation: authz.OperationPublishEvidence, DesignatedEvidenceWriter: designated,
+		})
+		if err != nil {
+			return err
+		}
+		if !decision.Allowed {
+			denial = string(decision.Reason)
+			return decision.AuthorizationError()
+		}
+		if !exactRepositoryCap(principal, scope) {
+			denial = "exact_repository_cap_required"
+			return adminservice.ErrForbidden
+		}
+		if err := ensureIssue(ctx, tx, scope, input.IssueID); err != nil {
+			return err
+		}
+		if err := lockExactActiveReference(ctx, tx, scope, input); err != nil {
+			denial = "active_reference_cas_failed"
+			return err
+		}
+
+		createdByFact := make(map[string]Evidence, len(ordered))
+		for _, fact := range ordered {
+			appendInput, err := providerFactAppendInput(input, fact)
+			if err != nil {
+				return err
+			}
+			if fact.SupersedesID != "" {
+				predecessor, ok := createdByFact[fact.SupersedesID]
+				if !ok {
+					predecessorKey := providerFactIngestKey(input.ReferenceID, input.Snapshot.Reference, fact.SupersedesID)
+					predecessor, err = scanEvidence(tx.QueryRow(ctx, `SELECT `+evidenceColumns+` FROM external_evidence
+						WHERE organization_id = $1 AND repository_id = $2 AND issue_id = $3 AND provider_key = $4
+						AND external_repository_id = $5 AND ingest_key = $6`, scope.OrgID, scope.RepoID,
+						input.IssueID, input.Snapshot.Reference.ProviderKey,
+						input.Snapshot.Reference.ExternalRepository, predecessorKey))
+					if err != nil {
+						return err
+					}
+				}
+				appendInput.SupersedesEvidenceID = &predecessor.ID
+				if err := validateSupersedes(ctx, tx, scope, appendInput); err != nil {
+					return err
+				}
+			}
+			item, created, err := appendEvidenceTx(ctx, tx, actor, scope, appendInput)
+			if err != nil {
+				return err
+			}
+			createdByFact[fact.ID] = item
+			result.Evidence = append(result.Evidence, item)
+			if created {
+				result.Created++
+			} else {
+				result.Replayed++
+			}
+		}
+		if result.Created > 0 {
+			if err := bumpEvidenceCollections(ctx, tx, scope, input.IssueID); err != nil {
+				return err
+			}
+		}
+		return insertAudit(ctx, tx, actor, scope, input.ReferenceID, "external_evidence.snapshot.ingest", "external_reference", map[string]any{
+			"provider_key":           input.Snapshot.Reference.ProviderKey,
+			"external_repository_id": input.Snapshot.Reference.ExternalRepository,
+			"change_id":              input.Snapshot.Reference.ChangeID,
+			"subject_revision":       input.Snapshot.SubjectRevision,
+			"reference_version":      input.ExpectedReferenceVersion,
+			"fact_count":             len(ordered), "created": result.Created, "replayed": result.Replayed,
+		})
+	})
+	if denial != "" {
+		if auditErr := s.auditRejected(ctx, actor, scope, denial); auditErr != nil {
+			return SnapshotIngestResult{}, fmt.Errorf("evidence: rejected snapshot audit: %w", auditErr)
+		}
+	}
+	return result, mapError(err)
+}
+
+func lockExactActiveReference(ctx context.Context, tx pgx.Tx, scope models.RepoScope, input SnapshotIngestInput) error {
+	var providerKey, externalRepository, changeID, relationKind, lifecycle string
+	var metadata json.RawMessage
+	var version int64
+	err := tx.QueryRow(ctx, `SELECT provider_key, external_repository_id, external_id, relation_kind,
+		lifecycle_state, metadata, representation_version FROM external_references
+		WHERE organization_id = $1 AND repository_id = $2 AND issue_id = $3 AND id = $4 FOR SHARE`,
+		scope.OrgID, scope.RepoID, input.IssueID, input.ReferenceID).
+		Scan(&providerKey, &externalRepository, &changeID, &relationKind, &lifecycle, &metadata, &version)
+	if err != nil {
+		return err
+	}
+	if version != input.ExpectedReferenceVersion || lifecycle != "active" || relationKind != "code_change" {
+		return adminservice.ErrVersionConflict
+	}
+	reference := input.Snapshot.Reference
+	if providerKey != reference.ProviderKey || externalRepository != reference.ExternalRepository || changeID != reference.ChangeID {
+		return adminservice.ErrConflict
+	}
+	var identity struct {
+		HeadRevision string `json:"head_revision"`
+	}
+	if err := json.Unmarshal(metadata, &identity); err != nil || strings.TrimSpace(identity.HeadRevision) == "" {
+		return adminservice.ErrConflict
+	}
+	if strings.TrimSpace(identity.HeadRevision) != input.Snapshot.SubjectRevision {
+		return adminservice.ErrVersionConflict
+	}
+	return nil
+}
+
+type neutralProviderFactPayload struct {
+	SchemaVersion string `json:"schema_version"`
+	ChangeID      string `json:"change_id"`
+	Name          string `json:"name,omitempty"`
+	Severity      string `json:"severity,omitempty"`
+	FindingID     string `json:"finding_id,omitempty"`
+	ProcessID     string `json:"process_id,omitempty"`
+	SpecID        string `json:"spec_id,omitempty"`
+	CanonicalURL  string `json:"canonical_url,omitempty"`
+	Summary       string `json:"summary,omitempty"`
+	Path          string `json:"path,omitempty"`
+	Line          *int   `json:"line,omitempty"`
+}
+
+type providerFactProvenance struct {
+	SchemaVersion         string    `json:"schema_version"`
+	ProtocolVersion       string    `json:"protocol_version"`
+	ReferenceID           uuid.UUID `json:"reference_id"`
+	ReferenceVersion      int64     `json:"reference_version"`
+	ProviderFactID        string    `json:"provider_fact_id"`
+	ProviderPayloadDigest string    `json:"provider_payload_digest"`
+}
+
+func providerFactAppendInput(batch SnapshotIngestInput, fact codereview.ProviderFact) (AppendInput, error) {
+	payload, err := json.Marshal(neutralProviderFactPayload{SchemaVersion: "issue-spec.evidence/v1",
+		ChangeID: batch.Snapshot.Reference.ChangeID, Name: fact.Name, Severity: fact.Severity,
+		FindingID: fact.FindingID, ProcessID: fact.ProcessID, SpecID: fact.SpecID,
+		CanonicalURL: fact.CanonicalURL, Summary: fact.Summary, Path: fact.Path, Line: fact.Line})
+	if err != nil {
+		return AppendInput{}, err
+	}
+	provenance, err := json.Marshal(providerFactProvenance{SchemaVersion: "issue-spec.provider-fact-provenance/v1",
+		ProtocolVersion: batch.Snapshot.ProtocolVersion, ReferenceID: batch.ReferenceID,
+		ReferenceVersion: batch.ExpectedReferenceVersion, ProviderFactID: fact.ID,
+		ProviderPayloadDigest: strings.ToLower(strings.TrimSpace(fact.PayloadDigest))})
+	if err != nil {
+		return AppendInput{}, err
+	}
+	input := AppendInput{IssueID: batch.IssueID, ProviderKey: batch.Snapshot.Reference.ProviderKey,
+		ExternalRepositoryID: batch.Snapshot.Reference.ExternalRepository, EvidenceType: string(fact.Kind),
+		ExternalID: fact.ExternalID, IngestKey: providerFactIngestKey(batch.ReferenceID, batch.Snapshot.Reference, fact.ID),
+		NormalizedState: fact.State, SubjectRevision: fact.SubjectRevision, ObservedAt: fact.ObservedAt.UTC().Truncate(time.Microsecond),
+		ValidUntil: fact.ValidUntil, Payload: payload, Provenance: provenance, Visibility: batch.Visibility}
+	if fact.BaseRevision != "" {
+		value := fact.BaseRevision
+		input.BaseRevision = &value
+	}
+	if fact.MergeRevision != "" {
+		value := fact.MergeRevision
+		input.MergeRevision = &value
+	}
+	return normalizeAppendInput(input), nil
+}
+
+func providerFactIngestKey(referenceID uuid.UUID, reference codereview.Reference, factID string) string {
+	material := strings.Join([]string{codereview.ProtocolVersion, referenceID.String(), reference.ProviderKey,
+		reference.ExternalRepository, reference.ChangeID, strings.TrimSpace(factID)}, "\x00")
+	digest := sha256.Sum256([]byte(material))
+	return "provider-fact:v1:" + hex.EncodeToString(digest[:])
+}
+
+func orderProviderFacts(facts []codereview.ProviderFact) ([]codereview.ProviderFact, error) {
+	byID := make(map[string]codereview.ProviderFact, len(facts))
+	for _, fact := range facts {
+		byID[fact.ID] = fact
+	}
+	state := make(map[string]uint8, len(facts))
+	ordered := make([]codereview.ProviderFact, 0, len(facts))
+	var visit func(string) error
+	visit = func(id string) error {
+		switch state[id] {
+		case 1:
+			return fmt.Errorf("%w: provider fact supersession cycle", codereview.ErrInvalidProviderData)
+		case 2:
+			return nil
+		}
+		state[id] = 1
+		fact := byID[id]
+		if _, inBatch := byID[fact.SupersedesID]; fact.SupersedesID != "" && inBatch {
+			if err := visit(fact.SupersedesID); err != nil {
+				return err
+			}
+		}
+		state[id] = 2
+		ordered = append(ordered, fact)
+		return nil
+	}
+	ids := make([]string, 0, len(byID))
+	for id := range byID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if err := visit(id); err != nil {
+			return nil, err
+		}
+	}
+	return ordered, nil
+}
+
+func appendEvidenceTx(ctx context.Context, tx pgx.Tx, actor adminservice.Actor, scope models.RepoScope,
+	input AppendInput) (Evidence, bool, error) {
+	digest := sha256.Sum256(input.Payload)
+	candidateID := uuid.New()
+	result, err := scanEvidence(tx.QueryRow(ctx, `INSERT INTO external_evidence
+		(id, organization_id, repository_id, issue_id, provider_key, external_repository_id,
+		 evidence_type, external_id, ingest_key, normalized_state, subject_revision, base_revision,
+		 merge_revision, observed_at, valid_until, payload_hash, payload, provenance, writer_user_id,
+		 writer_identity_key, supersedes_evidence_id, visibility)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+		 $16, $17::jsonb, $18::jsonb, $19, $20, $21, $22)
+		ON CONFLICT (organization_id, repository_id, provider_key, ingest_key) DO NOTHING
+		RETURNING `+evidenceColumns, candidateID, scope.OrgID, scope.RepoID, input.IssueID,
+		input.ProviderKey, input.ExternalRepositoryID, input.EvidenceType, input.ExternalID,
+		input.IngestKey, input.NormalizedState, input.SubjectRevision, input.BaseRevision,
+		input.MergeRevision, input.ObservedAt, input.ValidUntil, digest[:], string(input.Payload),
+		string(input.Provenance), actor.UserID, actor.IdentityKey, input.SupersedesEvidenceID, input.Visibility))
+	if err == nil {
+		return result, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Evidence{}, false, err
+	}
+	result, err = scanEvidence(tx.QueryRow(ctx, `SELECT `+evidenceColumns+` FROM external_evidence
+		WHERE organization_id = $1 AND repository_id = $2 AND provider_key = $3 AND ingest_key = $4`,
+		scope.OrgID, scope.RepoID, input.ProviderKey, input.IngestKey))
+	if err != nil {
+		return Evidence{}, false, err
+	}
+	if !evidenceMatches(result, input, actor.UserID, actor.IdentityKey, digest[:]) {
+		return Evidence{}, false, ErrIdempotencyMismatch
+	}
+	return result, false, nil
+}
+
 // ExactRevision only returns evidence whose provider, external repository and
 // subject revision all match exactly. Payload and provenance remain
 // maintainer-only even for repository-visible summaries.
@@ -508,13 +789,14 @@ func validateSupersedes(ctx context.Context, tx pgx.Tx, scope models.RepoScope, 
 	if err != nil {
 		return err
 	}
-	var alreadySuperseded bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM external_evidence
-		WHERE organization_id = $1 AND repository_id = $2 AND supersedes_evidence_id = $3)`,
-		scope.OrgID, scope.RepoID, id).Scan(&alreadySuperseded); err != nil {
+	var conflictingSuccessor bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM external_evidence
+		WHERE organization_id = $1 AND repository_id = $2 AND supersedes_evidence_id = $3
+		AND ingest_key <> $4)`, scope.OrgID, scope.RepoID, id, input.IngestKey).Scan(&conflictingSuccessor)
+	if err != nil {
 		return err
 	}
-	if alreadySuperseded {
+	if conflictingSuccessor {
 		return adminservice.ErrConflict
 	}
 	return nil

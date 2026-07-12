@@ -113,6 +113,73 @@ type EvidenceRecord struct {
 }
 
 var neutralArtifactIDPattern = regexp.MustCompile(`^[A-Z]+-[0-9]{3,}$`)
+var payloadDigestPattern = regexp.MustCompile(`^(?:sha256:)?[a-fA-F0-9]{64}$`)
+
+// ProviderFact is the untrusted, provider-neutral record returned by an
+// operator adapter. It deliberately has no trust, writer, provenance or
+// approval fields; those are evidence-authority properties derived only after
+// the self-hosted server accepts a snapshot.
+type ProviderFact struct {
+	ID              string       `json:"id"`
+	Kind            EvidenceKind `json:"kind"`
+	ExternalID      string       `json:"external_id,omitempty"`
+	State           string       `json:"state"`
+	SubjectRevision string       `json:"subject_revision"`
+	BaseRevision    string       `json:"base_revision,omitempty"`
+	MergeRevision   string       `json:"merge_revision,omitempty"`
+	Name            string       `json:"name,omitempty"`
+	Severity        string       `json:"severity,omitempty"`
+	FindingID       string       `json:"finding_id,omitempty"`
+	ProcessID       string       `json:"process_id,omitempty"`
+	SpecID          string       `json:"spec_id,omitempty"`
+	ObservedAt      time.Time    `json:"observed_at"`
+	ValidUntil      *time.Time   `json:"valid_until,omitempty"`
+	SupersedesID    string       `json:"supersedes_id,omitempty"`
+	CanonicalURL    string       `json:"canonical_url,omitempty"`
+	PayloadDigest   string       `json:"payload_digest"`
+	Summary         string       `json:"summary,omitempty"`
+	Path            string       `json:"path,omitempty"`
+	Line            *int         `json:"line,omitempty"`
+}
+
+func ValidateProviderFact(fact ProviderFact) error {
+	fact.ID = strings.TrimSpace(fact.ID)
+	fact.ExternalID = strings.TrimSpace(fact.ExternalID)
+	fact.State = strings.TrimSpace(fact.State)
+	fact.SubjectRevision = strings.TrimSpace(fact.SubjectRevision)
+	fact.SupersedesID = strings.TrimSpace(fact.SupersedesID)
+	if fact.ID == "" || len(fact.ID) > 256 || fact.ExternalID == "" || len(fact.ExternalID) > 256 ||
+		fact.State == "" || len(fact.State) > 64 || fact.SubjectRevision == "" || len(fact.SubjectRevision) > 512 ||
+		fact.ObservedAt.IsZero() || !payloadDigestPattern.MatchString(strings.TrimSpace(fact.PayloadDigest)) {
+		return fmt.Errorf("%w: provider fact identity, state, revision, observation or digest is invalid", ErrInvalidProviderData)
+	}
+	switch fact.Kind {
+	case EvidenceChange, EvidenceReview, EvidenceCheck, EvidenceMerge, EvidenceArchive:
+	default:
+		return fmt.Errorf("%w: unsupported evidence kind %q", ErrInvalidProviderData, fact.Kind)
+	}
+	if fact.ValidUntil != nil && fact.ValidUntil.Before(fact.ObservedAt) {
+		return fmt.Errorf("%w: provider fact validity ends before observation", ErrInvalidProviderData)
+	}
+	if fact.SupersedesID == fact.ID {
+		return fmt.Errorf("%w: provider fact cannot supersede itself", ErrInvalidProviderData)
+	}
+	if fact.CanonicalURL != "" && !safeCanonicalURL(fact.CanonicalURL) {
+		return fmt.Errorf("%w: provider fact canonical URL is unsafe", ErrInvalidProviderData)
+	}
+	if fact.Line != nil && *fact.Line <= 0 {
+		return fmt.Errorf("%w: provider fact line is invalid", ErrInvalidProviderData)
+	}
+	linkage := EvidenceRecord{Kind: fact.Kind, State: fact.State, Severity: fact.Severity,
+		FindingID: fact.FindingID, ProcessID: fact.ProcessID, SpecID: fact.SpecID}
+	if err := linkage.ValidateReviewLinkage(); err != nil {
+		return err
+	}
+	if fact.Kind == EvidenceCheck && strings.TrimSpace(fact.Name) == "" {
+		return fmt.Errorf("%w: check provider fact requires a name", ErrInvalidProviderData)
+	}
+	return nil
+}
 
 // ValidateReviewLinkage keeps external line discussions provider-owned while
 // requiring their canonical workflow identity to survive normalization.  The
@@ -152,11 +219,35 @@ type SnapshotRequest struct {
 }
 
 type Snapshot struct {
-	ProtocolVersion string           `json:"protocol_version"`
-	Reference       Reference        `json:"reference"`
-	SubjectRevision string           `json:"subject_revision"`
-	Records         []EvidenceRecord `json:"records"`
-	CapturedAt      time.Time        `json:"captured_at"`
+	ProtocolVersion string         `json:"protocol_version"`
+	Reference       Reference      `json:"reference"`
+	SubjectRevision string         `json:"subject_revision"`
+	Facts           []ProviderFact `json:"facts"`
+	// Records is populated only when core reads already-persisted trusted
+	// evidence. It is never part of the operator adapter wire protocol.
+	Records    []EvidenceRecord `json:"-"`
+	CapturedAt time.Time        `json:"captured_at"`
+}
+
+func ValidateProviderSnapshot(snapshot Snapshot) error {
+	if snapshot.ProtocolVersion != ProtocolVersion || snapshot.Reference.Validate() != nil ||
+		strings.TrimSpace(snapshot.SubjectRevision) == "" || snapshot.CapturedAt.IsZero() || snapshot.Records != nil {
+		return fmt.Errorf("%w: provider snapshot identity is invalid", ErrInvalidProviderData)
+	}
+	seen := make(map[string]bool, len(snapshot.Facts))
+	for _, fact := range snapshot.Facts {
+		if err := ValidateProviderFact(fact); err != nil {
+			return err
+		}
+		if fact.SubjectRevision != snapshot.SubjectRevision {
+			return fmt.Errorf("%w: provider fact revision does not match snapshot", ErrInvalidProviderData)
+		}
+		if seen[fact.ID] {
+			return fmt.Errorf("%w: duplicate provider fact id %q", ErrInvalidProviderData, fact.ID)
+		}
+		seen[fact.ID] = true
+	}
+	return nil
 }
 
 type MutationKind string

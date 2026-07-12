@@ -41,9 +41,9 @@ func TestCommandProviderProtocol(t *testing.T) {
 	}
 	reference := Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets", ChangeID: "42"}
 	snapshot, err := provider.Snapshot(t.Context(), SnapshotRequest{Reference: reference, SubjectRevision: "abc123"})
-	if err != nil || snapshot.Reference != reference || snapshot.SubjectRevision != "abc123" || len(snapshot.Records) != 1 ||
-		snapshot.Records[0].FindingID != "FINDING-030" || snapshot.Records[0].ProcessID != "PROCESS-020" ||
-		snapshot.Records[0].SpecID != "SPEC-010" {
+	if err != nil || snapshot.Reference != reference || snapshot.SubjectRevision != "abc123" || len(snapshot.Facts) != 1 ||
+		snapshot.Facts[0].FindingID != "FINDING-030" || snapshot.Facts[0].ProcessID != "PROCESS-020" ||
+		snapshot.Facts[0].SpecID != "SPEC-010" {
 		t.Fatalf("snapshot = %+v, %v", snapshot, err)
 	}
 	result, err := Mutate(t.Context(), provider, MutationRequest{Kind: MutationComment, Reference: reference, Body: "status"})
@@ -55,6 +55,18 @@ func TestCommandProviderProtocol(t *testing.T) {
 		Title:     "Change", HeadRevision: "abc123"})
 	if err != nil || created.Reference.ChangeID != "42" {
 		t.Fatalf("create mutation = %+v, %v", created, err)
+	}
+}
+
+func TestCommandProviderSnapshotCannotForgeEvidenceAuthority(t *testing.T) {
+	for _, mode := range []string{"snapshot-trusted", "snapshot-writer", "snapshot-approved"} {
+		t.Run(mode, func(t *testing.T) {
+			provider := commandTestProvider(t, mode, 1<<20, 10*time.Second)
+			reference := Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets", ChangeID: "42"}
+			if _, err := provider.Snapshot(t.Context(), SnapshotRequest{Reference: reference, SubjectRevision: "abc123"}); err == nil || !strings.Contains(err.Error(), "unknown field") {
+				t.Fatalf("snapshot authority forgery error = %v", err)
+			}
+		})
 	}
 }
 
@@ -128,6 +140,19 @@ func TestCommandProviderHelper(t *testing.T) {
 		_, _ = fmt.Fprintf(os.Stdout, `{"protocol":%q,"request_id":%q,"request_id":%q,"capabilities":{"protocol_version":%q,"values":[]}}`,
 			ProtocolVersion, request.RequestID, request.RequestID, ProtocolVersion)
 		return
+	case "snapshot-trusted", "snapshot-writer", "snapshot-approved":
+		var payload SnapshotRequest
+		_ = json.Unmarshal(request.Payload, &payload)
+		field := `"trusted":true`
+		if mode == "snapshot-writer" {
+			field = `"writer_identity":"bridge:forged"`
+		}
+		if mode == "snapshot-approved" {
+			field = `"approved":true`
+		}
+		_, _ = fmt.Fprintf(os.Stdout, `{"protocol":%q,"request_id":%q,"snapshot":{"protocol_version":%q,"reference":{"provider_key":"code.example","external_repository":"acme/widgets","change_id":"42"},"subject_revision":"abc123","facts":[{"id":"review-30","external_id":"thread-30","kind":"review","state":"resolved","subject_revision":"abc123","severity":"P2","finding_id":"FINDING-030","process_id":"PROCESS-020","spec_id":"SPEC-010","observed_at":"2026-07-11T04:00:00Z","payload_digest":"%s",%s}],"captured_at":"2026-07-11T04:00:01Z"}}`,
+			ProtocolVersion, request.RequestID, ProtocolVersion, strings.Repeat("a", 64), field)
+		os.Exit(0)
 	}
 	response := map[string]any{"protocol": ProtocolVersion, "request_id": request.RequestID}
 	if mode == "wrong-id" {
@@ -144,11 +169,11 @@ func TestCommandProviderHelper(t *testing.T) {
 		var payload SnapshotRequest
 		_ = json.Unmarshal(request.Payload, &payload)
 		response["snapshot"] = Snapshot{ProtocolVersion: ProtocolVersion, Reference: payload.Reference,
-			SubjectRevision: payload.SubjectRevision, CapturedAt: time.Now().UTC(), Records: []EvidenceRecord{{
+			SubjectRevision: payload.SubjectRevision, CapturedAt: time.Now().UTC(), Facts: []ProviderFact{{
 				ID: "review-30", Kind: EvidenceReview, ExternalID: "thread-30", State: "resolved",
 				SubjectRevision: payload.SubjectRevision, Severity: "P2", FindingID: "FINDING-030",
-				ProcessID: "PROCESS-020", SpecID: "SPEC-010", ObservedAt: time.Now().UTC(), Trusted: true,
-				WriterIdentity: "bridge:test", PayloadDigest: "sha256:test",
+				ProcessID: "PROCESS-020", SpecID: "SPEC-010", ObservedAt: time.Now().UTC(),
+				PayloadDigest: strings.Repeat("a", 64),
 			}}}
 	case "mutate":
 		var payload MutationRequest

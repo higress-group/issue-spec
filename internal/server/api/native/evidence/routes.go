@@ -22,6 +22,7 @@ type Service interface {
 	SetEvidencePolicy(context.Context, authz.Subject, adminservice.Actor, models.RepoScope, evidence.SetPolicyInput) (evidence.Policy, error)
 	SetDesignatedWriter(context.Context, authz.Subject, adminservice.Actor, models.RepoScope, uuid.UUID, bool) (evidence.WriterAssignment, error)
 	AppendEvidence(context.Context, authz.Subject, adminservice.Actor, models.RepoScope, evidence.AppendInput) (evidence.Evidence, error)
+	IngestProviderSnapshot(context.Context, authz.Subject, adminservice.Actor, models.RepoScope, evidence.SnapshotIngestInput) (evidence.SnapshotIngestResult, error)
 	ExactRevision(context.Context, authz.Subject, models.RepoScope, evidence.ExactRevisionQuery) ([]evidence.Evidence, error)
 }
 
@@ -42,6 +43,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 		{Name: "native.evidence.writer.set", Method: http.MethodPut, Pattern: "/api/v1/orgs/{org}/repos/{repo}/evidence/writers/{user}", Handler: protect(h.setWriter)},
 		{Name: "native.evidence.exact_revision", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/repos/{repo}/issues/{issue}/evidence", Handler: protect(h.exactRevision)},
 		{Name: "native.evidence.append", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/repos/{repo}/issues/{issue}/evidence", Handler: protect(h.appendEvidence)},
+		{Name: "native.evidence.snapshot.ingest", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/repos/{repo}/issues/{issue}/evidence/snapshots", Handler: protect(h.ingestSnapshot)},
 	}}
 	return set, set.Validate()
 }
@@ -154,6 +156,38 @@ func (h handlers) appendEvidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	adminapi.WriteJSON(w, http.StatusCreated, item)
+}
+
+func (h handlers) ingestSnapshot(w http.ResponseWriter, r *http.Request) {
+	principal, scope, ok := requestScope(w, r)
+	if !ok {
+		return
+	}
+	issueID, err := uuid.Parse(r.PathValue("issue"))
+	if err != nil {
+		adminapi.WriteProblem(w, http.StatusUnprocessableEntity, "invalid_request", "Invalid issue")
+		return
+	}
+	var input evidence.SnapshotIngestInput
+	if err := adminapi.DecodeJSON(w, r, &input); err != nil {
+		adminapi.WriteProblem(w, http.StatusBadRequest, "invalid_json", "Invalid request body")
+		return
+	}
+	if input.IssueID != uuid.Nil && input.IssueID != issueID {
+		adminapi.WriteProblem(w, http.StatusUnprocessableEntity, "invalid_request", "Issue mismatch")
+		return
+	}
+	input.IssueID = issueID
+	result, err := h.service.IngestProviderSnapshot(r.Context(), authz.Authenticated(principal), actor(r, principal), scope, input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusCreated
+	if result.Created == 0 {
+		status = http.StatusOK
+	}
+	adminapi.WriteJSON(w, status, result)
 }
 
 func requestScope(w http.ResponseWriter, r *http.Request) (serverauth.Principal, models.RepoScope, bool) {

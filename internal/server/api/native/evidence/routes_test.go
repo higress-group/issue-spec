@@ -24,7 +24,7 @@ func TestEvidenceRouteSetSuccessAndParameterForwarding(t *testing.T) {
 	}
 	service := &fakeEvidenceService{}
 	set, err := NewRouteSet(Dependencies{Service: service, Authenticate: evidenceAuthenticate})
-	if err != nil || len(set.Routes) != 5 {
+	if err != nil || len(set.Routes) != 6 {
 		t.Fatalf("NewRouteSet() = %+v, %v", set, err)
 	}
 	mux, _ := routeset.NewMux(routeset.Policy{}, set)
@@ -63,6 +63,24 @@ func TestEvidenceRouteSetSuccessAndParameterForwarding(t *testing.T) {
 		t.Fatalf("append response=%d input=%+v actor=%+v body=%s", appendResponse.Code, service.appendInput, service.actor, appendResponse.Body.String())
 	}
 
+	referenceID := uuid.New()
+	snapshotPath := appendPath + "/snapshots"
+	snapshot := httptest.NewRequest(http.MethodPost, snapshotPath, strings.NewReader(`{
+		"reference_id":"`+referenceID.String()+`","expected_reference_version":4,
+		"snapshot":{"protocol_version":"issue-spec.code-provider/v1","reference":{"provider_key":"github",
+		"external_repository":"acme/widgets","change_id":"42"},"subject_revision":"abc","facts":[{
+		"id":"check-v1","external_id":"ci","kind":"check","state":"passed","subject_revision":"abc",
+		"name":"ci","observed_at":"2026-07-11T04:00:00Z","payload_digest":"`+strings.Repeat("a", 64)+`"}],
+		"captured_at":"2026-07-11T04:00:01Z"}}`))
+	snapshot.Header.Set("Authorization", "test")
+	snapshotResponse := httptest.NewRecorder()
+	mux.ServeHTTP(snapshotResponse, snapshot)
+	if snapshotResponse.Code != http.StatusCreated || service.snapshotInput.IssueID != issueID ||
+		service.snapshotInput.ReferenceID != referenceID || service.snapshotInput.ExpectedReferenceVersion != 4 ||
+		len(service.snapshotInput.Snapshot.Facts) != 1 {
+		t.Fatalf("snapshot response=%d input=%+v body=%s", snapshotResponse.Code, service.snapshotInput, snapshotResponse.Body.String())
+	}
+
 	exact := httptest.NewRequest(http.MethodGet, appendPath+"?provider_key=github&external_repository_id=acme%2Fwidgets&subject_revision=abc&evidence_type=check", nil)
 	exact.Header.Set("Authorization", "test")
 	exactResponse := httptest.NewRecorder()
@@ -92,6 +110,21 @@ func TestEvidenceProblemsStrictInputsConcealmentAndNoPayloadEcho(t *testing.T) {
 
 	for _, body := range []string{`{"unknown":true}`, `{"provider_key":"` + strings.Repeat("x", 1<<20) + `"}`} {
 		req := httptest.NewRequest(http.MethodPost, issuePath, strings.NewReader(body))
+		req.Header.Set("Authorization", "test")
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, req)
+		assertEvidenceProblem(t, response, http.StatusBadRequest, "invalid_json")
+	}
+
+	for _, forged := range []string{`"trusted":true`, `"writer_identity":"operator"`, `"approved":true`} {
+		body := `{
+			"reference_id":"` + uuid.NewString() + `","expected_reference_version":1,
+			"snapshot":{"protocol_version":"issue-spec.code-provider/v1","reference":{"provider_key":"github",
+			"external_repository":"acme/widgets","change_id":"42"},"subject_revision":"abc","facts":[{
+			"id":"check-v1","external_id":"ci","kind":"check","state":"passed","subject_revision":"abc",
+			"name":"ci","observed_at":"2026-07-11T04:00:00Z","payload_digest":"` + strings.Repeat("a", 64) + `",` + forged + `}],
+			"captured_at":"2026-07-11T04:00:01Z"}}`
+		req := httptest.NewRequest(http.MethodPost, issuePath+"/snapshots", strings.NewReader(body))
 		req.Header.Set("Authorization", "test")
 		response := httptest.NewRecorder()
 		mux.ServeHTTP(response, req)
@@ -149,6 +182,7 @@ type fakeEvidenceService struct {
 	writerID           uuid.UUID
 	writerActive       bool
 	appendInput        evidence.AppendInput
+	snapshotInput      evidence.SnapshotIngestInput
 	query              evidence.ExactRevisionQuery
 	actor              adminservice.Actor
 	err                error
@@ -177,6 +211,13 @@ func (f *fakeEvidenceService) AppendEvidence(_ context.Context, _ authz.Subject,
 	return evidence.Evidence{ID: uuid.New(), IssueID: input.IssueID, ProviderKey: input.ProviderKey,
 		ExternalRepositoryID: input.ExternalRepositoryID, SubjectRevision: input.SubjectRevision, Visibility: input.Visibility,
 		ObservedAt: time.Now().UTC()}, f.err
+}
+
+func (f *fakeEvidenceService) IngestProviderSnapshot(_ context.Context, _ authz.Subject, actor adminservice.Actor, _ models.RepoScope, input evidence.SnapshotIngestInput) (evidence.SnapshotIngestResult, error) {
+	f.snapshotInput, f.actor = input, actor
+	return evidence.SnapshotIngestResult{ReferenceID: input.ReferenceID,
+		ReferenceVersion: input.ExpectedReferenceVersion, SubjectRevision: input.Snapshot.SubjectRevision,
+		Evidence: []evidence.Evidence{}, Created: len(input.Snapshot.Facts)}, f.err
 }
 
 func (f *fakeEvidenceService) ExactRevision(_ context.Context, _ authz.Subject, _ models.RepoScope, query evidence.ExactRevisionQuery) ([]evidence.Evidence, error) {

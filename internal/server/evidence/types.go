@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
 
@@ -91,6 +92,26 @@ type AppendInput struct {
 	Provenance           json.RawMessage `json:"provenance"`
 	SupersedesEvidenceID *uuid.UUID      `json:"supersedes_evidence_id,omitempty"`
 	Visibility           Visibility      `json:"visibility"`
+}
+
+// SnapshotIngestInput pins one operator snapshot to an exact active reference
+// representation. Facts carry no trust or writer fields; the service derives
+// those authority properties from the authenticated designated writer.
+type SnapshotIngestInput struct {
+	IssueID                  uuid.UUID           `json:"issue_id"`
+	ReferenceID              uuid.UUID           `json:"reference_id"`
+	ExpectedReferenceVersion int64               `json:"expected_reference_version"`
+	Snapshot                 codereview.Snapshot `json:"snapshot"`
+	Visibility               Visibility          `json:"visibility,omitempty"`
+}
+
+type SnapshotIngestResult struct {
+	ReferenceID      uuid.UUID  `json:"reference_id"`
+	ReferenceVersion int64      `json:"reference_version"`
+	SubjectRevision  string     `json:"subject_revision"`
+	Evidence         []Evidence `json:"evidence"`
+	Created          int        `json:"created"`
+	Replayed         int        `json:"replayed"`
 }
 
 type ExactRevisionQuery struct {
