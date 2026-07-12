@@ -42,6 +42,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 		{Name: "native.webhooks.update", Method: http.MethodPatch, Pattern: "/api/v1/orgs/{org}/webhooks/{webhook}", Handler: protect(h.update)},
 		{Name: "native.webhooks.revoke", Method: http.MethodDelete, Pattern: "/api/v1/orgs/{org}/webhooks/{webhook}", Handler: protect(h.revoke)},
 		{Name: "native.webhooks.rotate_secret", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/webhooks/{webhook}/rotate-secret", Handler: protect(h.rotate)},
+		{Name: "native.webhooks.suppressions", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/webhooks/{webhook}/suppressions", Handler: protect(h.suppressions)},
 	}}
 	return set, set.Validate()
 }
@@ -55,18 +56,25 @@ type retryRequest struct {
 }
 
 type createRequest struct {
-	RepositoryID *uuid.UUID   `json:"repository_id"`
-	URL          string       `json:"url"`
-	EventTypes   []string     `json:"event_types"`
-	Retry        retryRequest `json:"retry"`
+	RepositoryID   *uuid.UUID                   `json:"repository_id"`
+	URL            string                       `json:"url"`
+	EventTypes     []string                     `json:"event_types"`
+	DeliveryFormat subscriptions.DeliveryFormat `json:"delivery_format"`
+	SigningMode    subscriptions.SigningMode    `json:"signing_mode"`
+	ContentPolicy  subscriptions.ContentPolicy  `json:"content_policy"`
+	Retry          retryRequest                 `json:"retry"`
 }
 
 type updateRequest struct {
-	ExpectedVersion int64        `json:"expected_version"`
-	URL             string       `json:"url"`
-	Active          bool         `json:"active"`
-	EventTypes      []string     `json:"event_types"`
-	Retry           retryRequest `json:"retry"`
+	ExpectedVersion       int64                        `json:"expected_version"`
+	URL                   string                       `json:"url"`
+	Active                bool                         `json:"active"`
+	EventTypes            []string                     `json:"event_types"`
+	DeliveryFormat        subscriptions.DeliveryFormat `json:"delivery_format"`
+	SigningMode           subscriptions.SigningMode    `json:"signing_mode"`
+	ContentPolicy         subscriptions.ContentPolicy  `json:"content_policy"`
+	ClearDestinationQuery bool                         `json:"clear_destination_query"`
+	Retry                 retryRequest                 `json:"retry"`
 }
 
 func (h handlers) create(w http.ResponseWriter, r *http.Request) {
@@ -86,7 +94,8 @@ func (h handlers) create(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.service.Create(r.Context(), actor(r), subject(r), subscriptions.CreateInput{
 		OrganizationID: orgID, RepositoryID: request.RepositoryID, URL: request.URL,
-		EventTypes: request.EventTypes, Retry: retry,
+		EventTypes: request.EventTypes, DeliveryFormat: request.DeliveryFormat,
+		SigningMode: request.SigningMode, ContentPolicy: request.ContentPolicy, Retry: retry,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -134,6 +143,19 @@ func (h handlers) get(w http.ResponseWriter, r *http.Request) {
 	adminapi.WriteJSON(w, http.StatusOK, subscriptionView(item))
 }
 
+func (h handlers) suppressions(w http.ResponseWriter, r *http.Request) {
+	orgID, id, ok := pathIDs(w, r)
+	if !ok {
+		return
+	}
+	items, err := h.service.ListSuppressions(r.Context(), subject(r), orgID, id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	adminapi.WriteJSON(w, http.StatusOK, map[string]any{"suppressions": items})
+}
+
 func (h handlers) update(w http.ResponseWriter, r *http.Request) {
 	orgID, id, ok := pathIDs(w, r)
 	if !ok {
@@ -151,7 +173,9 @@ func (h handlers) update(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := h.service.Update(r.Context(), actor(r), subject(r), orgID, id, subscriptions.UpdateInput{
 		ExpectedVersion: request.ExpectedVersion, URL: request.URL, Active: request.Active,
-		EventTypes: request.EventTypes, Retry: retry,
+		EventTypes: request.EventTypes, DeliveryFormat: request.DeliveryFormat,
+		SigningMode: request.SigningMode, ContentPolicy: request.ContentPolicy,
+		ClearDestinationQuery: request.ClearDestinationQuery, Retry: retry,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -208,6 +232,8 @@ func subscriptionView(item subscriptions.Subscription) map[string]any {
 	return map[string]any{"id": item.ID, "organization_id": item.OrganizationID,
 		"repository_id": item.RepositoryID, "scope_type": item.ScopeType, "url": item.URL,
 		"active": item.Active, "revoked_at": item.RevokedAt, "event_types": item.EventTypes,
+		"delivery_format": item.DeliveryFormat, "signing_mode": item.SigningMode,
+		"content_policy": item.ContentPolicy, "has_destination_query": item.HasDestinationQuery,
 		"retry": map[string]any{"max_attempts": item.Retry.MaxAttempts,
 			"initial_backoff": item.Retry.InitialBackoff.String(), "max_backoff": item.Retry.MaxBackoff.String()},
 		"representation_version": item.RepresentationVersion, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt}

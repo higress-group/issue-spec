@@ -79,6 +79,19 @@ func TestNativeWebhookLifecycleRejectsURLSecretsAndExposesTerminalRevocation(t *
 	if unsafe.Code != http.StatusUnprocessableEntity || strings.Contains(unsafe.Body.String(), "must-not-reflect") {
 		t.Fatalf("unsafe create status=%d body=%s", unsafe.Code, unsafe.Body.String())
 	}
+	githubCreated := serveWebhook(t, mux, http.MethodPost, collection, map[string]any{
+		"repository_id": repoID, "url": "https://robot.example.test/hook?access_token=must-not-reflect",
+		"delivery_format": "github.v3", "signing_mode": "hmac-sha256",
+		"content_policy": map[string]any{"issue_actions": []string{"opened"},
+			"comment_actions": []string{"created"}, "issue_kinds": []string{"proposal"},
+			"comment_classes": []string{"human-untyped"}, "actor_classes": []string{"human"}},
+	})
+	if githubCreated.Code != http.StatusCreated || strings.Contains(githubCreated.Body.String(), "must-not-reflect") ||
+		strings.Contains(githubCreated.Body.String(), "access_token") ||
+		!strings.Contains(githubCreated.Body.String(), `"url":"https://robot.example.test/hook"`) ||
+		!strings.Contains(githubCreated.Body.String(), `"has_destination_query":true`) {
+		t.Fatalf("github create status=%d body=%s", githubCreated.Code, githubCreated.Body.String())
+	}
 
 	created := serveWebhook(t, mux, http.MethodPost, collection, map[string]any{
 		"repository_id": repoID, "url": "https://runner.example.test/hook",

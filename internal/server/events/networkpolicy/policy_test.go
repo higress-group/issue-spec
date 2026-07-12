@@ -156,6 +156,38 @@ func TestClientDisablesRedirectsBoundsResponsesAndVerifiesTLS(t *testing.T) {
 	}
 }
 
+func TestClientGitHubHeadersQueryAndBearerIsolation(t *testing.T) {
+	public := netip.MustParseAddr("93.184.216.34")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery != "access_token=opaque%2Bvalue&mode=sync" {
+			t.Errorf("raw query=%q", r.URL.RawQuery)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("authorization=%q", got)
+		}
+		if r.Header.Get("X-GitHub-Event") != "issues" || r.Header.Get("X-GitHub-Delivery") != "stable-delivery" ||
+			r.Header.Get("X-Hub-Signature-256") != "sha256=abc" || !strings.HasPrefix(r.Header.Get("User-Agent"), "GitHub-Hookshot/") {
+			t.Errorf("github headers=%v", r.Header)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	_, port, _ := net.SplitHostPort(server.Listener.Addr().String())
+	client, err := NewClient(Config{Policy: Policy{},
+		Resolver: staticResolver{addresses: map[string][]net.IPAddr{"robot.example": {{IP: net.IP(public.AsSlice())}}}},
+		Dialer:   forwardingDialer{target: server.Listener.Addr().String(), reported: public}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.Send(t.Context(), Request{URL: "http://robot.example:" + port + "/hook",
+		EventID: "event", DeliveryID: "stable-delivery", Timestamp: time.Now(), Body: []byte(`{"action":"opened"}`),
+		DeliveryFormat: "github.v3", EventName: "issues", Signature: "sha256=abc",
+		DestinationQuery: []byte("access_token=opaque%2Bvalue&mode=sync")})
+	if err != nil || result.StatusCode != http.StatusNoContent {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
 type staticResolver struct{ addresses map[string][]net.IPAddr }
 
 func (r staticResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {

@@ -18,7 +18,7 @@ func TestRouteSetIsExplicitAndFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(set.Routes) != 6 {
+	if len(set.Routes) != 7 {
 		t.Fatalf("routes = %d", len(set.Routes))
 	}
 	seen := map[string]bool{}
@@ -36,6 +36,7 @@ func TestRouteSetIsExplicitAndFailClosed(t *testing.T) {
 		"PATCH /api/v1/orgs/{org}/webhooks/{webhook}",
 		"DELETE /api/v1/orgs/{org}/webhooks/{webhook}",
 		"POST /api/v1/orgs/{org}/webhooks/{webhook}/rotate-secret",
+		"GET /api/v1/orgs/{org}/webhooks/{webhook}/suppressions",
 	} {
 		if !seen[key] {
 			t.Fatalf("missing route %s", key)

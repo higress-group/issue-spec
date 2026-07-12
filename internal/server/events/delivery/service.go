@@ -2,10 +2,14 @@ package delivery
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +17,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/events/networkpolicy"
+	"github.com/higress-group/issue-spec/internal/server/events/outbox"
+	"github.com/higress-group/issue-spec/internal/server/events/subscriptions"
 	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -47,6 +53,27 @@ func New(pool *pgxpool.Pool, authorizer Authorizer, secrets SecretProvider, send
 	}
 	if config.PollInterval <= 0 {
 		config.PollInterval = 100 * time.Millisecond
+	}
+	if strings.TrimSpace(config.APIOrigin) == "" {
+		config.APIOrigin = os.Getenv("API_PUBLIC_URL")
+	}
+	if strings.TrimSpace(config.WebOrigin) == "" {
+		config.WebOrigin = os.Getenv("WEB_PUBLIC_URL")
+	}
+	if strings.TrimSpace(config.APIOrigin) == "" {
+		listen := strings.TrimSpace(os.Getenv("LISTEN_ADDR"))
+		if listen == "" {
+			listen = "127.0.0.1:8080"
+		}
+		if strings.HasPrefix(listen, ":") {
+			listen = "127.0.0.1" + listen
+		}
+		listen = strings.Replace(listen, "0.0.0.0:", "127.0.0.1:", 1)
+		listen = strings.Replace(listen, "[::]:", "127.0.0.1:", 1)
+		config.APIOrigin = "http://" + listen
+	}
+	if strings.TrimSpace(config.WebOrigin) == "" {
+		config.WebOrigin = config.APIOrigin
 	}
 	return &Service{pool: pool, authorizer: authorizer, secrets: secrets, sender: sender,
 		config: config, semaphore: make(chan struct{}, config.MaxConcurrency), quiesce: make(chan struct{})}, nil
@@ -168,20 +195,27 @@ func (s *Service) ExpandOne(ctx context.Context) (bool, error) {
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		var eventID, orgID, repoID uuid.UUID
 		var eventType string
-		err := tx.QueryRow(ctx, `SELECT event.id, event.organization_id, event.repository_id, event.event_type
+		var eventPayload []byte
+		err := tx.QueryRow(ctx, `SELECT event.id, event.organization_id, event.repository_id, event.event_type,
+			event.payload
 			FROM event_outbox event WHERE event.published_at IS NULL AND event.available_at <= $1
 			AND NOT EXISTS (SELECT 1 FROM event_outbox prior
 				WHERE prior.organization_id = event.organization_id AND prior.repository_id = event.repository_id
 				AND prior.published_at IS NULL AND prior.repository_sequence < event.repository_sequence)
 			ORDER BY event.available_at, event.created_at, event.id
-			FOR UPDATE OF event SKIP LOCKED LIMIT 1`, now).Scan(&eventID, &orgID, &repoID, &eventType)
+			FOR UPDATE OF event SKIP LOCKED LIMIT 1`, now).Scan(&eventID, &orgID, &repoID, &eventType, &eventPayload)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `SELECT subscription.id, secret.id
+		rows, err := tx.Query(ctx, `SELECT subscription.id, secret.id,
+			subscription.delivery_format, subscription.signing_mode,
+			subscription.issue_actions, subscription.comment_actions, subscription.issue_kinds,
+			subscription.comment_classes, subscription.actor_classes, subscription.url,
+			COALESCE(subscription.destination_query_key_id, ''), subscription.destination_query_ciphertext,
+			subscription.destination_query_version
 			FROM webhook_subscriptions subscription
 			JOIN LATERAL (SELECT id FROM webhook_secret_versions
 				WHERE organization_id = subscription.organization_id
@@ -196,29 +230,76 @@ func (s *Service) ExpandOne(ctx context.Context) (bool, error) {
 		if err != nil {
 			return err
 		}
-		type target struct{ subscriptionID, secretID uuid.UUID }
+		type target struct {
+			subscriptionID, secretID uuid.UUID
+			format                   subscriptions.DeliveryFormat
+			signing                  subscriptions.SigningMode
+			policy                   notificationPolicy
+			url, queryKey            string
+			queryCipher              []byte
+			queryVersion             int64
+		}
 		var targets []target
 		for rows.Next() {
-			var subscriptionID, secretID uuid.UUID
-			if err := rows.Scan(&subscriptionID, &secretID); err != nil {
+			var item target
+			if err := rows.Scan(&item.subscriptionID, &item.secretID, &item.format, &item.signing,
+				&item.policy.IssueActions, &item.policy.CommentActions, &item.policy.IssueKinds,
+				&item.policy.CommentClasses, &item.policy.ActorClasses, &item.url, &item.queryKey,
+				&item.queryCipher, &item.queryVersion); err != nil {
 				rows.Close()
 				return err
 			}
-			targets = append(targets, target{subscriptionID: subscriptionID, secretID: secretID})
+			targets = append(targets, item)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
 			return err
 		}
 		rows.Close()
+		var envelope outbox.Envelope
+		if err := json.Unmarshal(eventPayload, &envelope); err != nil {
+			return fmt.Errorf("decode outbox envelope: %w", err)
+		}
 		for _, target := range targets {
 			deliveryID := stableDeliveryID(eventID, target.subscriptionID)
+			payload, eventName, action := eventPayload, "issue-spec", envelope.Action
+			if target.format == subscriptions.DeliveryFormatGitHubV3 {
+				action = notificationAction(envelope)
+				matched, reason := matchesNotification(envelope, target.policy)
+				if !matched {
+					facts := envelope.Notification
+					issueKind, commentClass, actorClass := "ordinary", "", "human"
+					if facts != nil {
+						issueKind, commentClass, actorClass = facts.IssueKind, facts.CommentClass, facts.ActorClass
+					}
+					if _, err := tx.Exec(ctx, `INSERT INTO webhook_suppressions
+						(id, organization_id, repository_id, event_id, subscription_id, event_type,
+						 action, issue_kind, comment_class, actor_class, reason)
+						VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11)
+						ON CONFLICT (organization_id, repository_id, event_id, subscription_id) DO NOTHING`,
+						uuid.New(), orgID, repoID, eventID, target.subscriptionID, eventType,
+						action, issueKind, commentClass, actorClass, reason); err != nil {
+						return err
+					}
+					continue
+				}
+				payload, eventName, err = renderGitHub(envelope, s.config.APIOrigin, s.config.WebOrigin)
+				if err != nil {
+					return fmt.Errorf("render github webhook: %w", err)
+				}
+			}
+			payloadHash := sha256.Sum256(payload)
 			if _, err := tx.Exec(ctx, `INSERT INTO webhook_deliveries
 				(id, organization_id, repository_id, event_id, subscription_id,
-				 secret_version_id, state, next_attempt_at)
-				VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
+				 secret_version_id, state, next_attempt_at, delivery_format, event_name, action,
+				 signing_mode, rendered_payload, rendered_payload_hash, destination_url,
+				 destination_query_key_id, destination_query_ciphertext, destination_query_version)
+				VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10, $11,
+				 $12, $13, $14, NULLIF($15,''), $16, $17)
 				ON CONFLICT (organization_id, repository_id, event_id, subscription_id) DO NOTHING`,
-				deliveryID, orgID, repoID, eventID, target.subscriptionID, target.secretID, now); err != nil {
+				deliveryID, orgID, repoID, eventID, target.subscriptionID, target.secretID, now,
+				target.format, eventName, action, target.signing, payload, payloadHash[:], target.url,
+				target.queryKey, target.queryCipher, target.queryVersion); err != nil {
 				return err
 			}
 		}
@@ -247,8 +328,12 @@ func (s *Service) ClaimOne(ctx context.Context) (*claim, error) {
 			delivery.repository_id, delivery.event_id, delivery.subscription_id,
 			delivery.secret_version_id, delivery.state, delivery.next_attempt_at,
 			delivery.delivered_at, delivery.last_error, delivery.representation_version,
-			delivery.created_at, delivery.updated_at, event.event_type,
-			event.repository_sequence, secret.version, subscription.url, event.payload,
+			 delivery.created_at, delivery.updated_at, event.event_type,
+			 event.repository_sequence, secret.version, delivery.delivery_format,
+			 delivery.event_name, delivery.action, delivery.signing_mode,
+			 delivery.destination_url, delivery.rendered_payload,
+			 COALESCE(delivery.destination_query_key_id, ''), delivery.destination_query_ciphertext,
+			 delivery.destination_query_version,
 			subscription.retry_max_attempts,
 			(extract(epoch from subscription.retry_initial_backoff) * 1000000000)::bigint,
 			(extract(epoch from subscription.retry_max_backoff) * 1000000000)::bigint
@@ -279,7 +364,10 @@ func (s *Service) ClaimOne(ctx context.Context) (*claim, error) {
 			&result.NextAttemptAt, &result.DeliveredAt, &result.LastError,
 			&result.RepresentationVersion, &result.CreatedAt, &result.UpdatedAt,
 			&result.EventType, &result.RepositorySequence, &result.SecretVersion,
-			&result.URL, &result.Payload, &result.Retry.MaxAttempts, &initial, &maximum); err != nil {
+			&result.DeliveryFormat, &result.EventName, &result.Action, &result.SigningMode,
+			&result.URL, &result.Payload, &result.DestinationQueryKeyID,
+			&result.DestinationQueryCiphertext, &result.DestinationQueryVersion,
+			&result.Retry.MaxAttempts, &initial, &maximum); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNoWork
 			}
@@ -327,18 +415,52 @@ func (s *Service) ProcessOne(ctx context.Context) error {
 	now := s.config.Clock()
 	var secretID uuid.UUID
 	var secret []byte
+	var destinationQuery []byte
 	_, err = (networkpolicy.Policy{}).ValidateURL(claimed.URL)
-	if err == nil {
+	if err == nil && claimed.DestinationQueryVersion > 0 {
+		provider, ok := s.secrets.(interface {
+			DecryptDestinationQuery(context.Context, uuid.UUID, string, int64, []byte) ([]byte, error)
+		})
+		if !ok {
+			err = errCredentialUnavailable
+		} else {
+			destinationQuery, err = provider.DecryptDestinationQuery(ctx, claimed.SubscriptionID,
+				claimed.DestinationQueryKeyID, claimed.DestinationQueryVersion, claimed.DestinationQueryCiphertext)
+		}
+	}
+	if err == nil && claimed.SigningMode == subscriptions.SigningModeBearer {
 		secretID, secret, err = s.acceptedSecret(ctx, claimed, now)
+	} else if err == nil && claimed.SigningMode == subscriptions.SigningModeHMACSHA256 {
+		provider, ok := s.secrets.(interface {
+			SecretVersion(context.Context, uuid.UUID, uuid.UUID, int64) ([]byte, error)
+		})
+		if !ok {
+			err = errCredentialUnavailable
+		} else {
+			secret, err = provider.SecretVersion(ctx, claimed.Scope.OrgID, claimed.SubscriptionID, claimed.SecretVersion)
+			secretID = claimed.SecretVersionID
+		}
 	}
 	var result networkpolicy.Result
 	if err == nil {
-		result, err = s.sender.Send(ctx, networkpolicy.Request{URL: claimed.URL, Secret: secret,
+		signature := ""
+		if claimed.SigningMode == subscriptions.SigningModeHMACSHA256 {
+			mac := hmac.New(sha256.New, secret)
+			_, _ = mac.Write(claimed.Payload)
+			signature = "sha256=" + hex.EncodeToString(mac.Sum(nil))
+		}
+		requestSecret := secret
+		if claimed.DeliveryFormat == subscriptions.DeliveryFormatGitHubV3 {
+			requestSecret = nil
+		}
+		result, err = s.sender.Send(ctx, networkpolicy.Request{URL: claimed.URL, Secret: requestSecret,
 			EventID: claimed.EventID.String(), DeliveryID: claimed.ID.String(), Timestamp: now,
-			Body: claimed.Payload})
+			Body: claimed.Payload, DeliveryFormat: string(claimed.DeliveryFormat), EventName: claimed.EventName,
+			Action: claimed.Action, Signature: signature, DestinationQuery: destinationQuery})
 	}
-	err = redactSecretError(err, secret)
+	err = redactSensitiveError(err, secret, destinationQuery)
 	clear(secret)
+	clear(destinationQuery)
 	return s.finalize(ctx, claimed, secretID, result, err, now, s.config.Clock())
 }
 
@@ -398,8 +520,7 @@ func (s *Service) finalize(ctx context.Context, claimed *claim, secretID uuid.UU
 			}
 		}
 	}
-	requestHeaders, _ := json.Marshal(map[string]string{"content-type": "application/json",
-		"x-issue-spec-event": claimed.EventID.String(), "x-issue-spec-delivery": claimed.ID.String()})
+	requestHeaders, _ := json.Marshal(requestHeaderLedger(claimed))
 	responseHeaders, _ := json.Marshal(safeResponseHeaders(result.Header))
 	return pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO webhook_delivery_attempts
@@ -428,13 +549,37 @@ func (s *Service) finalize(ctx context.Context, claimed *claim, secretID uuid.UU
 	})
 }
 
+func requestHeaderLedger(claimed *claim) map[string]string {
+	result := map[string]string{"content-type": "application/json"}
+	if claimed.DeliveryFormat == subscriptions.DeliveryFormatGitHubV3 {
+		result["user-agent"] = "GitHub-Hookshot/issue-spec"
+		result["x-github-event"] = claimed.EventName
+		result["x-github-delivery"] = claimed.ID.String()
+		if claimed.SigningMode == subscriptions.SigningModeHMACSHA256 {
+			result["x-hub-signature-256"] = "[REDACTED]"
+		}
+		return result
+	}
+	result["user-agent"] = "issue-spec-webhook/1"
+	result["x-issue-spec-event"] = claimed.EventID.String()
+	result["x-issue-spec-delivery"] = claimed.ID.String()
+	return result
+}
+
 func redactSecretError(err error, secret []byte) error {
+	return redactSensitiveError(err, secret, nil)
+}
+
+func redactSensitiveError(err error, secret, destinationQuery []byte) error {
 	if err == nil {
 		return nil
 	}
 	message := err.Error()
 	if len(secret) > 0 {
 		message = strings.ReplaceAll(message, string(secret), "[REDACTED]")
+	}
+	if len(destinationQuery) > 0 {
+		message = strings.ReplaceAll(message, string(destinationQuery), "[REDACTED]")
 	}
 	if errors.Is(err, errCredentialUnavailable) {
 		return errCredentialUnavailable
@@ -592,7 +737,8 @@ func (s *Service) Redeliver(ctx context.Context, actor Actor, subject authz.Subj
 const deliveryColumns = `delivery.id, delivery.organization_id, delivery.repository_id,
 	delivery.event_id, delivery.subscription_id, delivery.state, delivery.next_attempt_at,
 	delivery.delivered_at, delivery.last_error, delivery.representation_version,
-	delivery.created_at, delivery.updated_at, event.event_type, event.repository_sequence, secret.version`
+	delivery.created_at, delivery.updated_at, event.event_type, event.repository_sequence, secret.version,
+	delivery.delivery_format, delivery.event_name, delivery.action`
 
 type rowScanner interface{ Scan(...any) error }
 
@@ -601,7 +747,8 @@ func scanDelivery(row rowScanner) (Delivery, error) {
 	err := row.Scan(&item.ID, &item.Scope.OrgID, &item.Scope.RepoID, &item.EventID,
 		&item.SubscriptionID, &item.State, &item.NextAttemptAt, &item.DeliveredAt,
 		&item.LastError, &item.RepresentationVersion, &item.CreatedAt, &item.UpdatedAt,
-		&item.EventType, &item.RepositorySequence, &item.SecretVersion)
+		&item.EventType, &item.RepositorySequence, &item.SecretVersion,
+		&item.DeliveryFormat, &item.EventName, &item.Action)
 	return item, err
 }
 

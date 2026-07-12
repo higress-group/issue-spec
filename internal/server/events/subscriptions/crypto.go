@@ -59,31 +59,42 @@ func (k *Keyring) GenerateSecret() (string, error) {
 }
 
 func (k *Keyring) Encrypt(subscriptionID uuid.UUID, version int64, plaintext []byte) (string, []byte, error) {
+	return k.EncryptPurpose(subscriptionID, version, "signing-secret", plaintext)
+}
+
+func (k *Keyring) EncryptPurpose(subscriptionID uuid.UUID, version int64, purpose string, plaintext []byte) (string, []byte, error) {
 	aead, ok := k.keys[k.current]
-	if !ok || subscriptionID == uuid.Nil || version < 1 || len(plaintext) == 0 {
+	if !ok || subscriptionID == uuid.Nil || version < 1 || strings.TrimSpace(purpose) == "" || len(plaintext) == 0 {
 		return "", nil, ErrInvalidInput
 	}
 	nonce := make([]byte, aead.NonceSize())
 	if _, err := io.ReadFull(k.random, nonce); err != nil {
 		return "", nil, err
 	}
-	ciphertext := append(nonce, aead.Seal(nil, nonce, plaintext, []byte(secretPurpose(subscriptionID, version)))...)
+	ciphertext := append(nonce, aead.Seal(nil, nonce, plaintext, []byte(secretPurpose(subscriptionID, version, purpose)))...)
 	return k.current, ciphertext, nil
 }
 
 func (k *Keyring) Decrypt(keyID string, subscriptionID uuid.UUID, version int64, ciphertext []byte) ([]byte, error) {
+	return k.DecryptPurpose(keyID, subscriptionID, version, "signing-secret", ciphertext)
+}
+
+func (k *Keyring) DecryptPurpose(keyID string, subscriptionID uuid.UUID, version int64, purpose string, ciphertext []byte) ([]byte, error) {
 	aead, ok := k.keys[keyID]
-	if !ok || len(ciphertext) < aead.NonceSize() {
+	if !ok || strings.TrimSpace(purpose) == "" || len(ciphertext) < aead.NonceSize() {
 		return nil, ErrNotFound
 	}
 	nonce, payload := ciphertext[:aead.NonceSize()], ciphertext[aead.NonceSize():]
-	plaintext, err := aead.Open(nil, nonce, payload, []byte(secretPurpose(subscriptionID, version)))
+	plaintext, err := aead.Open(nil, nonce, payload, []byte(secretPurpose(subscriptionID, version, purpose)))
 	if err != nil {
 		return nil, ErrNotFound
 	}
 	return plaintext, nil
 }
 
-func secretPurpose(subscriptionID uuid.UUID, version int64) string {
-	return fmt.Sprintf("webhook-subscription:%s:v%d", subscriptionID, version)
+func secretPurpose(subscriptionID uuid.UUID, version int64, purpose string) string {
+	if purpose == "signing-secret" {
+		return fmt.Sprintf("webhook-subscription:%s:v%d", subscriptionID, version)
+	}
+	return fmt.Sprintf("webhook-subscription:%s:%s:v%d", subscriptionID, purpose, version)
 }

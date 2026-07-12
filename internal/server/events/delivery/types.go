@@ -41,23 +41,28 @@ type Config struct {
 	MaxConcurrency int
 	PollInterval   time.Duration
 	Clock          func() time.Time
+	APIOrigin      string
+	WebOrigin      string
 }
 
 type Delivery struct {
-	ID                    uuid.UUID        `json:"id"`
-	Scope                 models.RepoScope `json:"scope"`
-	EventID               uuid.UUID        `json:"event_id"`
-	SubscriptionID        uuid.UUID        `json:"subscription_id"`
-	State                 string           `json:"state"`
-	NextAttemptAt         time.Time        `json:"next_attempt_at"`
-	DeliveredAt           *time.Time       `json:"delivered_at,omitempty"`
-	LastError             *string          `json:"last_error,omitempty"`
-	RepresentationVersion int64            `json:"representation_version"`
-	CreatedAt             time.Time        `json:"created_at"`
-	UpdatedAt             time.Time        `json:"updated_at"`
-	EventType             string           `json:"event_type"`
-	RepositorySequence    int64            `json:"repository_sequence"`
-	SecretVersion         int64            `json:"secret_version"`
+	ID                    uuid.UUID                    `json:"id"`
+	Scope                 models.RepoScope             `json:"scope"`
+	EventID               uuid.UUID                    `json:"event_id"`
+	SubscriptionID        uuid.UUID                    `json:"subscription_id"`
+	State                 string                       `json:"state"`
+	NextAttemptAt         time.Time                    `json:"next_attempt_at"`
+	DeliveredAt           *time.Time                   `json:"delivered_at,omitempty"`
+	LastError             *string                      `json:"last_error,omitempty"`
+	RepresentationVersion int64                        `json:"representation_version"`
+	CreatedAt             time.Time                    `json:"created_at"`
+	UpdatedAt             time.Time                    `json:"updated_at"`
+	EventType             string                       `json:"event_type"`
+	RepositorySequence    int64                        `json:"repository_sequence"`
+	SecretVersion         int64                        `json:"secret_version"`
+	DeliveryFormat        subscriptions.DeliveryFormat `json:"delivery_format"`
+	EventName             string                       `json:"event_name"`
+	Action                string                       `json:"action"`
 }
 
 type Attempt struct {
@@ -88,11 +93,15 @@ func ActorFromPrincipal(principal serverauth.Principal, requestID string) Actor 
 
 type claim struct {
 	Delivery
-	SecretVersionID uuid.UUID
-	URL             string
-	Payload         []byte
-	Retry           subscriptions.RetryPolicy
-	GlobalAttempt   int64
-	CycleAttempt    int
-	LeaseVersion    int64
+	SecretVersionID            uuid.UUID
+	URL                        string
+	Payload                    []byte
+	SigningMode                subscriptions.SigningMode
+	DestinationQueryKeyID      string
+	DestinationQueryCiphertext []byte
+	DestinationQueryVersion    int64
+	Retry                      subscriptions.RetryPolicy
+	GlobalAttempt              int64
+	CycleAttempt               int
+	LeaseVersion               int64
 }

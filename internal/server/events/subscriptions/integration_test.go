@@ -99,8 +99,8 @@ func TestScopedSubscriptionAuthorizationSecretRotationAndRedaction(t *testing.T)
 			EventTypes: []string{"issue_comment.created"}}); !errors.Is(err, subscriptions.ErrForbidden) {
 		t.Fatalf("reader create error = %v", err)
 	}
-	if listed, err := env.service.List(t.Context(), authz.Authenticated(reader), env.scope.OrgID, &env.scope.RepoID); err != nil || len(listed) != 1 {
-		t.Fatalf("reader list = %+v, %v", listed, err)
+	if listed, err := env.service.List(t.Context(), authz.Authenticated(reader), env.scope.OrgID, &env.scope.RepoID); !errors.Is(err, subscriptions.ErrForbidden) || listed != nil {
+		t.Fatalf("reader list = %+v, %v, want integration-management denial", listed, err)
 	}
 
 	current := created.Subscription
@@ -392,7 +392,7 @@ func TestLegacyUnsafeDestinationFailsClosedWithoutReflectingOrBlockingRevocation
 	}
 	reader := env.addMember(t, "legacy-reader", "reader")
 	listed, err := env.service.List(t.Context(), authz.Authenticated(reader), env.scope.OrgID, &env.scope.RepoID)
-	if !errors.Is(err, subscriptions.ErrUnsafeDestination) || listed != nil || strings.Contains(err.Error(), "access_token") {
+	if !errors.Is(err, subscriptions.ErrForbidden) || listed != nil || strings.Contains(err.Error(), "access_token") {
 		t.Fatalf("legacy list result=%+v error=%v", listed, err)
 	}
 	if _, err := env.service.Get(t.Context(), subject, env.scope.OrgID, created.Subscription.ID); !errors.Is(err, subscriptions.ErrUnsafeDestination) || strings.Contains(err.Error(), "legacy-secret") {

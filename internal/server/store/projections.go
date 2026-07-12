@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -36,6 +37,64 @@ type ProjectionAnomalyInput struct {
 	SourceID   uuid.UUID
 	Key        string
 	Details    json.RawMessage
+}
+
+// NotificationSnapshot is the transaction-authoritative classification and
+// presentation input captured after projection and before outbox insertion.
+type NotificationSnapshot struct {
+	OrganizationName        string
+	OrganizationDisplayName string
+	RepositoryName          string
+	RepositoryDisplayName   string
+	RepositoryVisibility    string
+	Issue                   models.IssueSnapshot
+	IssueKind               string
+	CommentTyped            bool
+	ActorLogin              string
+}
+
+func (s RepoStore) NotificationSnapshot(ctx context.Context, issueNumber int64,
+	commentID *uuid.UUID, actorID uuid.UUID) (NotificationSnapshot, error) {
+	if err := s.validate(); err != nil || issueNumber < 1 || actorID == uuid.Nil {
+		return NotificationSnapshot{}, ErrInvalidInput
+	}
+	issue, err := s.IssueSnapshotByNumber(ctx, issueNumber)
+	if err != nil {
+		return NotificationSnapshot{}, err
+	}
+	result := NotificationSnapshot{Issue: issue, IssueKind: "ordinary"}
+	if err := s.db.QueryRow(ctx, `SELECT organization.name, organization.display_name,
+		repository.name, repository.display_name, repository.visibility, actor.login
+		FROM repos repository JOIN orgs organization ON organization.id = repository.organization_id
+		JOIN users actor ON actor.id = $3
+		WHERE repository.organization_id = $1 AND repository.id = $2`,
+		s.scope.OrgID, s.scope.RepoID, actorID).Scan(&result.OrganizationName,
+		&result.OrganizationDisplayName, &result.RepositoryName,
+		&result.RepositoryDisplayName, &result.RepositoryVisibility, &result.ActorLogin); err != nil {
+		return NotificationSnapshot{}, mapError(err)
+	}
+	var kind string
+	err = s.db.QueryRow(ctx, `SELECT artifact_type FROM issue_spec_artifacts
+		WHERE organization_id = $1 AND repository_id = $2 AND issue_id = $3 AND active
+		ORDER BY updated_at DESC, id DESC LIMIT 1`, s.scope.OrgID, s.scope.RepoID, issue.Issue.ID).Scan(&kind)
+	if err == nil && (kind == "proposal" || kind == "design" || kind == "implement") {
+		result.IssueKind = kind
+	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return NotificationSnapshot{}, err
+	}
+	if commentID != nil {
+		var typed bool
+		if err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM issue_spec_typed_comments typed
+			JOIN comments comment ON comment.organization_id = typed.organization_id
+			AND comment.repository_id = typed.repository_id AND comment.id = typed.comment_id
+			WHERE typed.organization_id = $1 AND typed.repository_id = $2
+			AND typed.comment_id = $3 AND typed.created_by_user_id = comment.author_id)`,
+			s.scope.OrgID, s.scope.RepoID, *commentID).Scan(&typed); err != nil {
+			return NotificationSnapshot{}, err
+		}
+		result.CommentTyped = typed
+	}
+	return result, nil
 }
 
 func (s RepoStore) ApplyIssueProjection(ctx context.Context, input IssueProjectionInput) error {

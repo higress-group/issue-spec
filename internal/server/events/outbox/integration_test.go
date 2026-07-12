@@ -37,6 +37,19 @@ func TestCommentMutationProjectionAndOutboxAreAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, proposal, err := service.CreateIssue(t.Context(), "acme", "widgets", subject,
+		models.NewIssue{Title: "proposal", Body: "<!-- issue-spec:issue=proposal change=notify version=1 -->\nbody"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proposalEvent outbox.Envelope
+	if err := pool.QueryRow(t.Context(), `SELECT payload FROM event_outbox WHERE aggregate_id = $1
+		AND event_type = 'issue.created'`, proposal.Issue.ID).Scan(&proposalEvent); err != nil {
+		t.Fatal(err)
+	}
+	if proposalEvent.Notification == nil || proposalEvent.Notification.IssueKind != "proposal" {
+		t.Fatalf("proposal classification = %+v", proposalEvent.Notification)
+	}
 	raw := "<!-- issue-spec:type=PROCESS id=PROCESS-007 version=1 -->\r\nAgent: Worker\nType: PROCESS\nID: PROCESS-007\nStatus: done\nScope: raw\nLinks:\n\n## Raw  \n"
 	_, comment, err := service.CreateComment(t.Context(), "acme", "widgets", issue.Issue.Number, subject, raw)
 	if err != nil {
@@ -61,6 +74,12 @@ func TestCommentMutationProjectionAndOutboxAreAtomic(t *testing.T) {
 		event.BodyHash != stringHex(hash[:]) || event.Comment == nil ||
 		event.Comment.StableID != comment.Comment.ID || event.EventKey != "issue_comment.created:"+comment.Comment.ID.String()+":v1" {
 		t.Fatalf("event = %+v schema=%d sequence=%d", event, schemaVersion, sequence)
+	}
+	if event.Notification == nil || event.Notification.CommentClass != "typed" ||
+		event.Notification.IssueKind != "ordinary" || event.Notification.ActorClass != "human" ||
+		event.Notification.Sender.Login != "owner" || event.Notification.Comment == nil ||
+		event.Notification.Comment.Body != raw {
+		t.Fatalf("notification classification = %+v", event.Notification)
 	}
 	assertCommentIssueSnapshot(t, event, issueAfterCreate.Issue)
 	mutation := issueapi.MutationEvent{Type: "issue_comment.created", Scope: scope,
@@ -113,6 +132,10 @@ func TestCommentMutationProjectionAndOutboxAreAtomic(t *testing.T) {
 		editedEvent.Comment.RepresentationVersion != editedComment.Comment.RepresentationVersion ||
 		editedEvent.EventKey != "issue_comment.edited:"+editedComment.Comment.ID.String()+":v2" {
 		t.Fatalf("edited event = %+v", editedEvent)
+	}
+	if editedEvent.Notification == nil || editedEvent.Notification.CommentClass != "typed" ||
+		editedEvent.Notification.Comment == nil || editedEvent.Notification.Comment.Body != editedRaw {
+		t.Fatalf("edited notification classification = %+v", editedEvent.Notification)
 	}
 	assertCommentIssueSnapshot(t, editedEvent, issueAfterEdit.Issue)
 	if issueAfterEdit.Issue.UpdatedAt.Before(issueAfterCreate.Issue.UpdatedAt) {

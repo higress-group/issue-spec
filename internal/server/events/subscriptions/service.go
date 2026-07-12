@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -54,7 +55,15 @@ func New(database *store.Store, authorizer Authorizer, keys *Keyring, config Con
 
 func (s *Service) Create(ctx context.Context, actor Actor, subject authz.Subject, input CreateInput) (SecretResult, error) {
 	input.Retry = normalizeRetry(input.Retry)
-	input.EventTypes = normalizeEventTypes(input.EventTypes)
+	input = normalizeCreate(input)
+	baseURL, destinationQuery, err := splitDestination(input.URL)
+	if err != nil {
+		return SecretResult{}, ErrInvalidInput
+	}
+	if destinationQuery != "" && input.DeliveryFormat != DeliveryFormatGitHubV3 {
+		return SecretResult{}, ErrInvalidInput
+	}
+	input.URL = baseURL
 	if err := validateActor(actor); err != nil {
 		return SecretResult{}, err
 	}
@@ -79,6 +88,16 @@ func (s *Service) Create(ctx context.Context, actor Actor, subject authz.Subject
 	if err != nil {
 		return SecretResult{}, err
 	}
+	var queryKeyID string
+	var queryCiphertext []byte
+	var queryVersion int64
+	if destinationQuery != "" {
+		queryVersion = 1
+		queryKeyID, queryCiphertext, err = s.keys.EncryptPurpose(id, queryVersion, "destination-query", []byte(destinationQuery))
+		if err != nil {
+			return SecretResult{}, err
+		}
+	}
 	var created Subscription
 	err = s.database.WithinTx(ctx, func(tx *store.Tx) error {
 		if err := s.authorizeTx(ctx, tx.PGX(), subject, input.OrganizationID, input.RepositoryID, true); err != nil {
@@ -86,11 +105,19 @@ func (s *Service) Create(ctx context.Context, actor Actor, subject authz.Subject
 		}
 		row := tx.PGX().QueryRow(ctx, `INSERT INTO webhook_subscriptions
 			(id, organization_id, repository_id, scope_type, url, active, event_types,
-			 retry_max_attempts, retry_initial_backoff, retry_max_backoff, created_by_user_id)
-			VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8::interval, $9::interval, $10)
+			 retry_max_attempts, retry_initial_backoff, retry_max_backoff, created_by_user_id,
+			 delivery_format, signing_mode, issue_actions, comment_actions, issue_kinds,
+			 comment_classes, actor_classes, destination_query_key_id,
+			 destination_query_ciphertext, destination_query_version)
+			VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8::interval, $9::interval, $10,
+			 $11, $12, $13, $14, $15, $16, $17, NULLIF($18, ''), $19, $20)
 			RETURNING `+subscriptionColumns,
 			id, input.OrganizationID, input.RepositoryID, scopeType, input.URL, input.EventTypes,
-			input.Retry.MaxAttempts, input.Retry.InitialBackoff.String(), input.Retry.MaxBackoff.String(), actor.UserID)
+			input.Retry.MaxAttempts, input.Retry.InitialBackoff.String(), input.Retry.MaxBackoff.String(), actor.UserID,
+			input.DeliveryFormat, input.SigningMode, input.ContentPolicy.IssueActions,
+			input.ContentPolicy.CommentActions, input.ContentPolicy.IssueKinds,
+			input.ContentPolicy.CommentClasses, input.ContentPolicy.ActorClasses,
+			queryKeyID, nullableBytes(queryCiphertext), queryVersion)
 		created, err = scanSubscription(row)
 		if err != nil {
 			return fmt.Errorf("create webhook subscription: %w", err)
@@ -120,7 +147,7 @@ func (s *Service) List(ctx context.Context, subject authz.Subject, orgID uuid.UU
 	if orgID == uuid.Nil {
 		return nil, ErrInvalidInput
 	}
-	if err := s.authorize(ctx, subject, orgID, repoID, false); err != nil {
+	if err := s.authorize(ctx, subject, orgID, repoID, true); err != nil {
 		return nil, err
 	}
 	query := `SELECT ` + subscriptionColumns + ` FROM webhook_subscriptions WHERE organization_id = $1`
@@ -156,7 +183,7 @@ func (s *Service) Get(ctx context.Context, subject authz.Subject, orgID, id uuid
 	if err != nil {
 		return Subscription{}, err
 	}
-	if err := s.authorize(ctx, subject, item.OrganizationID, item.RepositoryID, false); err != nil {
+	if err := s.authorize(ctx, subject, item.OrganizationID, item.RepositoryID, true); err != nil {
 		return Subscription{}, err
 	}
 	if err := s.validateStoredDestination(item); err != nil {
@@ -165,11 +192,46 @@ func (s *Service) Get(ctx context.Context, subject authz.Subject, orgID, id uuid
 	return item, nil
 }
 
+func (s *Service) ListSuppressions(ctx context.Context, subject authz.Subject, orgID, id uuid.UUID) ([]Suppression, error) {
+	item, err := s.load(ctx, s.database.Pool(), orgID, id, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorize(ctx, subject, item.OrganizationID, item.RepositoryID, true); err != nil {
+		return nil, err
+	}
+	rows, err := s.database.Pool().Query(ctx, `SELECT id, organization_id, repository_id, event_id,
+		subscription_id, event_type, action, issue_kind, comment_class, actor_class, reason, created_at
+		FROM webhook_suppressions WHERE organization_id = $1 AND subscription_id = $2
+		ORDER BY created_at DESC, id DESC`, orgID, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]Suppression, 0)
+	for rows.Next() {
+		var suppression Suppression
+		if err := rows.Scan(&suppression.ID, &suppression.OrganizationID, &suppression.RepositoryID,
+			&suppression.EventID, &suppression.SubscriptionID, &suppression.EventType,
+			&suppression.Action, &suppression.IssueKind, &suppression.CommentClass,
+			&suppression.ActorClass, &suppression.Reason, &suppression.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, suppression)
+	}
+	return result, rows.Err()
+}
+
 func (s *Service) Update(ctx context.Context, actor Actor, subject authz.Subject, orgID, id uuid.UUID, input UpdateInput) (Subscription, error) {
 	input.Retry = normalizeRetry(input.Retry)
-	input.EventTypes = normalizeEventTypes(input.EventTypes)
+	input = normalizeUpdate(input)
+	baseURL, destinationQuery, splitErr := splitDestination(input.URL)
+	if splitErr != nil {
+		return Subscription{}, ErrInvalidInput
+	}
+	input.URL = baseURL
 	if validateActor(actor) != nil || input.ExpectedVersion < 1 || validateURL(input.URL, s.config.Production) != nil ||
-		validateEventTypes(input.EventTypes) != nil || validateRetry(input.Retry) != nil {
+		validatePolicy(input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes) != nil || validateRetry(input.Retry) != nil {
 		return Subscription{}, ErrInvalidInput
 	}
 	current, err := s.load(ctx, s.database.Pool(), orgID, id, false)
@@ -181,6 +243,10 @@ func (s *Service) Update(ctx context.Context, actor Actor, subject authz.Subject
 	}
 	if current.RevokedAt != nil {
 		return Subscription{}, ErrRevoked
+	}
+	if input.DeliveryFormat != DeliveryFormatGitHubV3 &&
+		(destinationQuery != "" || (current.HasDestinationQuery && !input.ClearDestinationQuery)) {
+		return Subscription{}, ErrInvalidInput
 	}
 	if s.config.DestinationPreflight != nil {
 		if err := s.config.DestinationPreflight.Validate(ctx, input.URL); err != nil {
@@ -199,13 +265,36 @@ func (s *Service) Update(ctx context.Context, actor Actor, subject authz.Subject
 		if current.RevokedAt != nil {
 			return ErrRevoked
 		}
+		queryKeyID, queryCiphertext, queryVersion := current.DestinationQueryKeyID,
+			current.DestinationQuery, current.DestinationQueryVersion
+		if input.ClearDestinationQuery {
+			queryKeyID, queryCiphertext, queryVersion = "", nil, 0
+		} else if destinationQuery != "" {
+			queryVersion++
+			if queryVersion < 1 {
+				queryVersion = 1
+			}
+			queryKeyID, queryCiphertext, err = s.keys.EncryptPurpose(id, queryVersion, "destination-query", []byte(destinationQuery))
+			if err != nil {
+				return err
+			}
+		}
 		row := tx.PGX().QueryRow(ctx, `UPDATE webhook_subscriptions SET url = $3, active = $4,
 			event_types = $5, retry_max_attempts = $6, retry_initial_backoff = $7::interval,
 			retry_max_backoff = $8::interval, representation_version = representation_version + 1,
-			updated_at = clock_timestamp() WHERE organization_id = $1 AND id = $2 AND revoked_at IS NULL
+			updated_at = clock_timestamp(), delivery_format = $10, signing_mode = $11,
+			issue_actions = $12, comment_actions = $13, issue_kinds = $14,
+			comment_classes = $15, actor_classes = $16,
+			destination_query_key_id = NULLIF($17, ''), destination_query_ciphertext = $18,
+			destination_query_version = $19
+			WHERE organization_id = $1 AND id = $2 AND revoked_at IS NULL
 			AND representation_version = $9 RETURNING `+subscriptionColumns,
 			orgID, id, input.URL, input.Active, input.EventTypes, input.Retry.MaxAttempts,
-			input.Retry.InitialBackoff.String(), input.Retry.MaxBackoff.String(), input.ExpectedVersion)
+			input.Retry.InitialBackoff.String(), input.Retry.MaxBackoff.String(), input.ExpectedVersion,
+			input.DeliveryFormat, input.SigningMode, input.ContentPolicy.IssueActions,
+			input.ContentPolicy.CommentActions, input.ContentPolicy.IssueKinds,
+			input.ContentPolicy.CommentClasses, input.ContentPolicy.ActorClasses,
+			queryKeyID, nullableBytes(queryCiphertext), queryVersion)
 		updated, err = scanSubscription(row)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrVersionConflict
@@ -375,8 +464,36 @@ func (s *Service) AcceptedSecrets(ctx context.Context, orgID, id uuid.UUID, at t
 	return result, rows.Err()
 }
 
+func (s *Service) DecryptDestinationQuery(_ context.Context, subscriptionID uuid.UUID,
+	keyID string, version int64, ciphertext []byte) ([]byte, error) {
+	if subscriptionID == uuid.Nil || strings.TrimSpace(keyID) == "" || version < 1 || len(ciphertext) == 0 {
+		return nil, ErrInvalidInput
+	}
+	return s.keys.DecryptPurpose(keyID, subscriptionID, version, "destination-query", ciphertext)
+}
+
+func (s *Service) SecretVersion(ctx context.Context, orgID, subscriptionID uuid.UUID, version int64) ([]byte, error) {
+	if orgID == uuid.Nil || subscriptionID == uuid.Nil || version < 1 {
+		return nil, ErrInvalidInput
+	}
+	var keyID string
+	var ciphertext []byte
+	err := s.database.Pool().QueryRow(ctx, `SELECT encryption_key_id, secret_ciphertext
+		FROM webhook_secret_versions WHERE organization_id = $1 AND subscription_id = $2 AND version = $3`,
+		orgID, subscriptionID, version).Scan(&keyID, &ciphertext)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.keys.Decrypt(keyID, subscriptionID, version, ciphertext)
+}
+
 const subscriptionColumns = `id, organization_id, repository_id, scope_type, url, active, revoked_at,
-	event_types, retry_max_attempts,
+	event_types, delivery_format, signing_mode, issue_actions, comment_actions, issue_kinds,
+	comment_classes, actor_classes, COALESCE(destination_query_key_id, ''), destination_query_ciphertext,
+	destination_query_version, retry_max_attempts,
 	(extract(epoch from retry_initial_backoff) * 1000000000)::bigint,
 	(extract(epoch from retry_max_backoff) * 1000000000)::bigint,
 	representation_version, created_at, updated_at`
@@ -387,8 +504,13 @@ func scanSubscription(row rowScanner) (Subscription, error) {
 	var item Subscription
 	var initial, maximum int64
 	err := row.Scan(&item.ID, &item.OrganizationID, &item.RepositoryID, &item.ScopeType,
-		&item.URL, &item.Active, &item.RevokedAt, &item.EventTypes, &item.Retry.MaxAttempts, &initial, &maximum,
+		&item.URL, &item.Active, &item.RevokedAt, &item.EventTypes, &item.DeliveryFormat,
+		&item.SigningMode, &item.ContentPolicy.IssueActions, &item.ContentPolicy.CommentActions,
+		&item.ContentPolicy.IssueKinds, &item.ContentPolicy.CommentClasses, &item.ContentPolicy.ActorClasses,
+		&item.DestinationQueryKeyID, &item.DestinationQuery, &item.DestinationQueryVersion,
+		&item.Retry.MaxAttempts, &initial, &maximum,
 		&item.RepresentationVersion, &item.CreatedAt, &item.UpdatedAt)
+	item.HasDestinationQuery = len(item.DestinationQuery) > 0
 	item.Retry.InitialBackoff, item.Retry.MaxBackoff = time.Duration(initial), time.Duration(maximum)
 	return item, err
 }
@@ -475,7 +597,7 @@ func audit(ctx context.Context, tx pgx.Tx, actor Actor, item Subscription, actio
 
 func validateCreate(input CreateInput, production bool) (ScopeType, error) {
 	if input.OrganizationID == uuid.Nil || validateURL(input.URL, production) != nil ||
-		validateEventTypes(input.EventTypes) != nil || validateRetry(input.Retry) != nil {
+		validatePolicy(input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes) != nil || validateRetry(input.Retry) != nil {
 		return "", ErrInvalidInput
 	}
 	if input.RepositoryID == nil {
@@ -518,6 +640,144 @@ func validateEventTypes(values []string) error {
 	}
 	sort.Strings(values)
 	return nil
+}
+
+func normalizeCreate(input CreateInput) CreateInput {
+	input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes =
+		normalizePolicy(input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes)
+	return input
+}
+
+func normalizeUpdate(input UpdateInput) UpdateInput {
+	input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes =
+		normalizePolicy(input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes)
+	return input
+}
+
+func normalizePolicy(format DeliveryFormat, signing SigningMode, policy ContentPolicy, eventTypes []string) (DeliveryFormat, SigningMode, ContentPolicy, []string) {
+	if format == "" {
+		format = DeliveryFormatIssueSpecV1
+	}
+	if format == DeliveryFormatIssueSpecV1 {
+		if signing == "" {
+			signing = SigningModeBearer
+		}
+	} else if signing == "" {
+		signing = SigningModeNone
+	}
+	policy.IssueActions = normalizeSet(policy.IssueActions, []string{"opened", "edited", "closed", "reopened"})
+	policy.CommentActions = normalizeSet(policy.CommentActions, []string{"created", "edited"})
+	policy.IssueKinds = normalizeSet(policy.IssueKinds, []string{"ordinary", "proposal", "design", "implement"})
+	policy.CommentClasses = normalizeSet(policy.CommentClasses, []string{"human-untyped", "typed"})
+	policy.ActorClasses = normalizeSet(policy.ActorClasses, []string{"human"})
+	if format == DeliveryFormatGitHubV3 {
+		eventTypes = eventTypesForPolicy(policy)
+	} else {
+		eventTypes = normalizeEventTypes(eventTypes)
+	}
+	return format, signing, policy, eventTypes
+}
+
+func normalizeSet(values, defaults []string) []string {
+	if values == nil {
+		values = defaults
+	}
+	result := make([]string, len(values))
+	for index, value := range values {
+		result[index] = strings.TrimSpace(value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func eventTypesForPolicy(policy ContentPolicy) []string {
+	result := make([]string, 0, len(policy.IssueActions)+len(policy.CommentActions))
+	for _, action := range policy.IssueActions {
+		switch action {
+		case "opened":
+			result = append(result, "issue.created")
+		case "edited", "closed", "reopened":
+			result = append(result, "issue."+action)
+		}
+	}
+	for _, action := range policy.CommentActions {
+		result = append(result, "issue_comment."+action)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func validatePolicy(format DeliveryFormat, signing SigningMode, policy ContentPolicy, eventTypes []string) error {
+	if format == DeliveryFormatIssueSpecV1 {
+		if signing != SigningModeBearer {
+			return ErrInvalidInput
+		}
+		return validateEventTypes(eventTypes)
+	}
+	if format != DeliveryFormatGitHubV3 || (signing != SigningModeNone && signing != SigningModeHMACSHA256) {
+		return ErrInvalidInput
+	}
+	if len(policy.IssueActions) == 0 && len(policy.CommentActions) == 0 {
+		return ErrInvalidInput
+	}
+	for values, allowed := range map[*[]string]map[string]struct{}{
+		&policy.IssueActions:   setOf("opened", "edited", "closed", "reopened"),
+		&policy.CommentActions: setOf("created", "edited"),
+		&policy.IssueKinds:     setOf("ordinary", "proposal", "design", "implement"),
+		&policy.CommentClasses: setOf("human-untyped", "typed"),
+		&policy.ActorClasses:   setOf("human"),
+	} {
+		if validateValues(*values, allowed) != nil {
+			return ErrInvalidInput
+		}
+	}
+	if len(policy.IssueKinds) == 0 || len(policy.ActorClasses) == 0 ||
+		(len(policy.CommentActions) > 0 && len(policy.CommentClasses) == 0) {
+		return ErrInvalidInput
+	}
+	return validateEventTypes(eventTypes)
+}
+
+func setOf(values ...string) map[string]struct{} {
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		result[value] = struct{}{}
+	}
+	return result
+}
+
+func validateValues(values []string, allowed map[string]struct{}) error {
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		if _, ok := allowed[value]; !ok {
+			return ErrInvalidInput
+		}
+		if _, ok := seen[value]; ok {
+			return ErrInvalidInput
+		}
+		seen[value] = struct{}{}
+	}
+	return nil
+}
+
+func splitDestination(raw string) (string, string, error) {
+	if raw != strings.TrimSpace(raw) {
+		return "", "", ErrInvalidInput
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Fragment != "" || parsed.ForceQuery {
+		return "", "", ErrInvalidInput
+	}
+	query := parsed.RawQuery
+	parsed.RawQuery, parsed.ForceQuery = "", false
+	return parsed.String(), query, nil
+}
+
+func nullableBytes(value []byte) any {
+	if len(value) == 0 {
+		return nil
+	}
+	return value
 }
 
 func normalizeEventTypes(values []string) []string {

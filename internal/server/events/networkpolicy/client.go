@@ -35,12 +35,17 @@ type Client struct {
 }
 
 type Request struct {
-	URL        string
-	Secret     []byte
-	EventID    string
-	DeliveryID string
-	Timestamp  time.Time
-	Body       []byte
+	URL              string
+	Secret           []byte
+	EventID          string
+	DeliveryID       string
+	Timestamp        time.Time
+	Body             []byte
+	DeliveryFormat   string
+	EventName        string
+	Action           string
+	Signature        string
+	DestinationQuery []byte
 }
 
 type Result struct {
@@ -89,32 +94,51 @@ func NewClient(config Config) (*Client, error) {
 }
 
 func (c *Client) Send(ctx context.Context, input Request) (Result, error) {
-	if c == nil || c.client == nil || len(input.Secret) == 0 || input.EventID == "" ||
+	format := input.DeliveryFormat
+	if format == "" {
+		format = "issue-spec.v1"
+	}
+	if c == nil || c.client == nil || input.EventID == "" ||
 		input.DeliveryID == "" || input.Timestamp.IsZero() {
+		return Result{}, ErrInvalidDestination
+	}
+	if (format == "issue-spec.v1" && len(input.Secret) == 0) ||
+		(format == "github.v3" && input.EventName == "") ||
+		(format != "issue-spec.v1" && format != "github.v3") {
 		return Result{}, ErrInvalidDestination
 	}
 	parsed, err := c.policy.ValidateURL(input.URL)
 	if err != nil {
 		return Result{}, err
 	}
+	parsed.RawQuery = string(input.DestinationQuery)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, parsed.String(), bytes.NewReader(input.Body))
 	if err != nil {
 		return Result{}, ErrInvalidDestination
 	}
-	request.Header.Set("Authorization", "Bearer "+string(input.Secret))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("User-Agent", "issue-spec-webhook/1")
-	request.Header.Set("X-Issue-Spec-Event", input.EventID)
-	request.Header.Set("X-Issue-Spec-Delivery", input.DeliveryID)
-	request.Header.Set("X-Issue-Spec-Timestamp", strconv.FormatInt(input.Timestamp.Unix(), 10))
+	if format == "github.v3" {
+		request.Header.Set("User-Agent", "GitHub-Hookshot/issue-spec")
+		request.Header.Set("X-GitHub-Event", input.EventName)
+		request.Header.Set("X-GitHub-Delivery", input.DeliveryID)
+		if input.Signature != "" {
+			request.Header.Set("X-Hub-Signature-256", input.Signature)
+		}
+	} else {
+		request.Header.Set("Authorization", "Bearer "+string(input.Secret))
+		request.Header.Set("User-Agent", "issue-spec-webhook/1")
+		request.Header.Set("X-Issue-Spec-Event", input.EventID)
+		request.Header.Set("X-Issue-Spec-Delivery", input.DeliveryID)
+		request.Header.Set("X-Issue-Spec-Timestamp", strconv.FormatInt(input.Timestamp.Unix(), 10))
+	}
 	response, err := c.client.Do(request)
 	if err != nil {
-		return Result{}, redactError(err, input.Secret)
+		return Result{}, redactError(err, input.Secret, input.DestinationQuery)
 	}
 	defer response.Body.Close()
 	read, err := io.Copy(io.Discard, io.LimitReader(response.Body, c.maxResponseBody+1))
 	if err != nil {
-		return Result{}, redactError(err, input.Secret)
+		return Result{}, redactError(err, input.Secret, input.DestinationQuery)
 	}
 	if read > c.maxResponseBody {
 		return Result{}, errors.New("webhook response body exceeds configured limit")
@@ -168,10 +192,12 @@ func remoteIP(address net.Addr) (netip.Addr, bool) {
 	}
 }
 
-func redactError(err error, secret []byte) error {
+func redactError(err error, sensitive ...[]byte) error {
 	message := err.Error()
-	if len(secret) > 0 {
-		message = strings.ReplaceAll(message, string(secret), "[REDACTED]")
+	for _, secret := range sensitive {
+		if len(secret) > 0 {
+			message = strings.ReplaceAll(message, string(secret), "[REDACTED]")
+		}
 	}
 	if len(message) > 512 {
 		message = message[:512]

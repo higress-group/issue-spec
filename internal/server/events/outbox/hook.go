@@ -21,20 +21,21 @@ import (
 const SchemaVersion = 1
 
 type Envelope struct {
-	SchemaVersion  int              `json:"schema_version"`
-	EventID        uuid.UUID        `json:"event_id"`
-	EventKey       string           `json:"event_key"`
-	EventType      string           `json:"event_type"`
-	Action         string           `json:"action"`
-	OccurredAt     time.Time        `json:"occurred_at"`
-	OrganizationID uuid.UUID        `json:"organization_id"`
-	RepositoryID   uuid.UUID        `json:"repository_id"`
-	Issue          IssueIdentity    `json:"issue"`
-	Comment        *CommentRevision `json:"comment,omitempty"`
-	RawBody        string           `json:"raw_body"`
-	BodyHash       string           `json:"body_hash"`
-	ActorUserID    uuid.UUID        `json:"actor_user_id"`
-	Author         AuthorIdentity   `json:"author"`
+	SchemaVersion  int                `json:"schema_version"`
+	EventID        uuid.UUID          `json:"event_id"`
+	EventKey       string             `json:"event_key"`
+	EventType      string             `json:"event_type"`
+	Action         string             `json:"action"`
+	OccurredAt     time.Time          `json:"occurred_at"`
+	OrganizationID uuid.UUID          `json:"organization_id"`
+	RepositoryID   uuid.UUID          `json:"repository_id"`
+	Issue          IssueIdentity      `json:"issue"`
+	Comment        *CommentRevision   `json:"comment,omitempty"`
+	RawBody        string             `json:"raw_body"`
+	BodyHash       string             `json:"body_hash"`
+	ActorUserID    uuid.UUID          `json:"actor_user_id"`
+	Author         AuthorIdentity     `json:"author"`
+	Notification   *NotificationFacts `json:"notification,omitempty"`
 }
 
 type IssueIdentity struct {
@@ -61,6 +62,58 @@ type AuthorIdentity struct {
 	Login  string     `json:"login"`
 }
 
+type NotificationFacts struct {
+	IssueKind    string                   `json:"issue_kind"`
+	CommentClass string                   `json:"comment_class,omitempty"`
+	ActorClass   string                   `json:"actor_class"`
+	Organization NotificationOrganization `json:"organization"`
+	Repository   NotificationRepository   `json:"repository"`
+	Sender       NotificationUser         `json:"sender"`
+	Issue        NotificationIssue        `json:"issue"`
+	Comment      *NotificationComment     `json:"comment,omitempty"`
+}
+
+type NotificationOrganization struct {
+	ID          uuid.UUID `json:"id"`
+	Login       string    `json:"login"`
+	DisplayName string    `json:"display_name"`
+}
+type NotificationRepository struct {
+	ID       uuid.UUID `json:"id"`
+	Name     string    `json:"name"`
+	FullName string    `json:"full_name"`
+	Private  bool      `json:"private"`
+}
+type NotificationUser struct {
+	ID    uuid.UUID `json:"id"`
+	Login string    `json:"login"`
+}
+type NotificationLabel struct {
+	Name        string `json:"name"`
+	Color       string `json:"color"`
+	Description string `json:"description,omitempty"`
+}
+type NotificationIssue struct {
+	ID        uuid.UUID           `json:"id"`
+	Number    int64               `json:"number"`
+	Title     string              `json:"title"`
+	Body      string              `json:"body"`
+	State     string              `json:"state"`
+	Author    NotificationUser    `json:"author"`
+	Labels    []NotificationLabel `json:"labels"`
+	CreatedAt time.Time           `json:"created_at"`
+	UpdatedAt time.Time           `json:"updated_at"`
+	ClosedAt  *time.Time          `json:"closed_at,omitempty"`
+}
+type NotificationComment struct {
+	ID        uuid.UUID        `json:"id"`
+	NumericID int64            `json:"numeric_id"`
+	Body      string           `json:"body"`
+	Author    NotificationUser `json:"author"`
+	CreatedAt time.Time        `json:"created_at"`
+	UpdatedAt time.Time        `json:"updated_at"`
+}
+
 type Hook struct{}
 
 var eventNamespace = uuid.MustParse("7e4bb90d-80f7-5bb5-9a99-ce4a487b9d32")
@@ -80,6 +133,15 @@ func (Hook) Emit(ctx context.Context, repository store.RepoStore, mutation issue
 	if err != nil {
 		return err
 	}
+	var commentID *uuid.UUID
+	if mutation.Comment != nil {
+		commentID = &mutation.Comment.Comment.ID
+	}
+	snapshot, err := repository.NotificationSnapshot(ctx, mutation.Issue.Number, commentID, mutation.ActorUserID)
+	if err != nil {
+		return fmt.Errorf("outbox: notification snapshot: %w", err)
+	}
+	envelope.Notification = notificationFacts(snapshot, mutation)
 	payload, err := json.Marshal(envelope)
 	if err != nil {
 		return fmt.Errorf("outbox: marshal envelope: %w", err)
@@ -89,6 +151,38 @@ func (Hook) Emit(ctx context.Context, repository store.RepoStore, mutation issue
 		AggregateID: aggregateID, EventType: mutation.Type, EventKey: envelope.EventKey, Payload: payload,
 		AvailableAt: envelope.OccurredAt})
 	return err
+}
+
+func notificationFacts(snapshot store.NotificationSnapshot, mutation issues.MutationEvent) *NotificationFacts {
+	issue := snapshot.Issue.Issue
+	labels := make([]NotificationLabel, 0, len(snapshot.Issue.Labels))
+	for _, label := range snapshot.Issue.Labels {
+		labels = append(labels, NotificationLabel{Name: label.Name, Color: label.Color, Description: label.Description})
+	}
+	result := &NotificationFacts{IssueKind: snapshot.IssueKind, ActorClass: "human",
+		Organization: NotificationOrganization{ID: mutation.Scope.OrgID, Login: snapshot.OrganizationName, DisplayName: snapshot.OrganizationDisplayName},
+		Repository:   NotificationRepository{ID: mutation.Scope.RepoID, Name: snapshot.RepositoryName, FullName: snapshot.OrganizationName + "/" + snapshot.RepositoryName, Private: snapshot.RepositoryVisibility == "private"},
+		Sender:       NotificationUser{ID: mutation.ActorUserID, Login: snapshot.ActorLogin},
+		Issue: NotificationIssue{ID: issue.ID, Number: issue.Number, Title: issue.Title, Body: issue.Body,
+			State: string(issue.State), Author: NotificationUser{Login: snapshot.Issue.AuthorLogin}, Labels: labels,
+			CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt, ClosedAt: issue.ClosedAt}}
+	if issue.AuthorID != nil {
+		result.Issue.Author.ID = *issue.AuthorID
+	}
+	if mutation.Comment != nil {
+		comment := mutation.Comment.Comment
+		result.CommentClass = "human-untyped"
+		if snapshot.CommentTyped {
+			result.CommentClass = "typed"
+		}
+		result.Comment = &NotificationComment{ID: comment.ID, NumericID: codec.StableNumericID(comment.ID.String()),
+			Body: comment.Body, Author: NotificationUser{Login: mutation.Comment.AuthorLogin},
+			CreatedAt: comment.CreatedAt, UpdatedAt: comment.UpdatedAt}
+		if comment.AuthorID != nil {
+			result.Comment.Author.ID = *comment.AuthorID
+		}
+	}
+	return result
 }
 
 func BuildEnvelope(eventID uuid.UUID, mutation issues.MutationEvent) (Envelope, uuid.UUID, error) {

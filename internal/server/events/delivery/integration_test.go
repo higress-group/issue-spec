@@ -2,6 +2,8 @@ package delivery_test
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,12 +19,123 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/events/delivery"
 	"github.com/higress-group/issue-spec/internal/server/events/networkpolicy"
+	"github.com/higress-group/issue-spec/internal/server/events/outbox"
 	"github.com/higress-group/issue-spec/internal/server/events/subscriptions"
 	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/server/store"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestGitHubNotificationPolicyHMACDestinationQueryAndSuppression(t *testing.T) {
+	t.Setenv("API_PUBLIC_URL", "https://api.issue.test")
+	t.Setenv("WEB_PUBLIC_URL", "https://issues.test")
+	env := newEnvironment(t, 3, time.Minute)
+	policy := subscriptions.ContentPolicy{IssueActions: []string{"opened"}, IssueKinds: []string{"proposal"},
+		CommentActions: []string{}, CommentClasses: []string{}, ActorClasses: []string{"human"}}
+	created, err := env.subscriptions.Create(t.Context(), subscriptions.ActorFromPrincipal(env.owner, "github-create"),
+		authz.Authenticated(env.owner), subscriptions.CreateInput{OrganizationID: env.scope.OrgID,
+			RepositoryID: &env.scope.RepoID, URL: "https://robot.example.test/hook?access_token=top-secret&mode=sync",
+			DeliveryFormat: subscriptions.DeliveryFormatGitHubV3, SigningMode: subscriptions.SigningModeHMACSHA256,
+			ContentPolicy: policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Subscription.URL != "https://robot.example.test/hook" || !created.Subscription.HasDestinationQuery {
+		t.Fatalf("redacted subscription = %+v", created.Subscription)
+	}
+	policy.IssueKinds = []string{"implement"}
+	if _, err := env.subscriptions.Create(t.Context(), subscriptions.ActorFromPrincipal(env.owner, "filtered-create"),
+		authz.Authenticated(env.owner), subscriptions.CreateInput{OrganizationID: env.scope.OrgID,
+			RepositoryID: &env.scope.RepoID, URL: "https://filtered.example.test/hook",
+			DeliveryFormat: subscriptions.DeliveryFormatGitHubV3, SigningMode: subscriptions.SigningModeNone,
+			ContentPolicy: policy}); err != nil {
+		t.Fatal(err)
+	}
+
+	eventID, issueID := uuid.New(), uuid.New()
+	now := env.clock.Now()
+	envelope := outbox.Envelope{SchemaVersion: 1, EventID: eventID, EventKey: "issue-created-1",
+		EventType: "issue.created", Action: "created", OccurredAt: now,
+		OrganizationID: env.scope.OrgID, RepositoryID: env.scope.RepoID,
+		Issue:       outbox.IssueIdentity{StableID: issueID, Number: 7, RepresentationVersion: 1, CreatedAt: now, UpdatedAt: now},
+		ActorUserID: env.owner.User.ID,
+		Notification: &outbox.NotificationFacts{IssueKind: "proposal", ActorClass: "human",
+			Organization: outbox.NotificationOrganization{ID: env.scope.OrgID, Login: "acme", DisplayName: "Acme"},
+			Repository:   outbox.NotificationRepository{ID: env.scope.RepoID, Name: "widgets", FullName: "acme/widgets"},
+			Sender:       outbox.NotificationUser{ID: env.owner.User.ID, Login: "owner"},
+			Issue: outbox.NotificationIssue{ID: issueID, Number: 7, Title: "Proposal", Body: "body", State: "open",
+				Author: outbox.NotificationUser{ID: env.owner.User.ID, Login: "owner"}, CreatedAt: now, UpdatedAt: now}}}
+	payload, _ := json.Marshal(envelope)
+	if _, err := store.New(env.pool).ScopedRepo(env.scope).EnqueueEvent(t.Context(), models.NewOutboxEvent{
+		ID: eventID, SchemaVersion: 1, AggregateType: "issue", AggregateID: issueID,
+		EventType: "issue.created", EventKey: envelope.EventKey, Payload: payload, AvailableAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	env.expandAll(t)
+	if got := rowCount(t, env.pool, "webhook_suppressions"); got != 1 {
+		t.Fatalf("suppressions=%d", got)
+	}
+	env.sender.Set(sendOutcome{err: errors.New("transport echoed access_token=top-secret&mode=sync")},
+		sendOutcome{status: http.StatusNoContent})
+	if err := env.service.ProcessOne(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	_, next := deliveryStateAndNext(t, env.pool, eventID)
+	if _, err := env.subscriptions.Update(t.Context(), subscriptions.ActorFromPrincipal(env.owner, "github-update"),
+		authz.Authenticated(env.owner), env.scope.OrgID, created.Subscription.ID, subscriptions.UpdateInput{
+			ExpectedVersion: created.Subscription.RepresentationVersion, URL: "https://new.example.test/hook?access_token=replaced",
+			Active: true, DeliveryFormat: subscriptions.DeliveryFormatGitHubV3,
+			SigningMode: subscriptions.SigningModeHMACSHA256, ContentPolicy: subscriptions.ContentPolicy{
+				IssueActions: []string{"opened"}, CommentActions: []string{}, IssueKinds: []string{"proposal"},
+				CommentClasses: []string{}, ActorClasses: []string{"human"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.subscriptions.RotateSecret(t.Context(), subscriptions.ActorFromPrincipal(env.owner, "github-rotate"),
+		authz.Authenticated(env.owner), env.scope.OrgID, created.Subscription.ID); err != nil {
+		t.Fatal(err)
+	}
+	env.clock.Set(next)
+	if err := env.service.ProcessOne(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	env.sender.mu.Lock()
+	call := env.sender.calls[len(env.sender.calls)-1]
+	firstCall := env.sender.calls[len(env.sender.calls)-2]
+	env.sender.mu.Unlock()
+	if call.DeliveryFormat != "github.v3" || call.EventName != "issues" || len(call.Secret) != 0 ||
+		string(call.DestinationQuery) != "access_token=top-secret&mode=sync" {
+		t.Fatalf("github request = %+v", call)
+	}
+	mac := hmac.New(sha256.New, []byte(created.Secret))
+	_, _ = mac.Write(call.Body)
+	wantSignature := fmt.Sprintf("sha256=%x", mac.Sum(nil))
+	if call.Signature != wantSignature || !strings.Contains(string(call.Body), `"action":"opened"`) ||
+		!strings.Contains(string(call.Body), `https://issues.test/acme/widgets/issues/7`) {
+		t.Fatalf("signature/body mismatch signature=%q body=%s", call.Signature, call.Body)
+	}
+	if call.URL != firstCall.URL || call.DeliveryID != firstCall.DeliveryID || call.Signature != firstCall.Signature ||
+		string(call.Body) != string(firstCall.Body) || string(call.DestinationQuery) != string(firstCall.DestinationQuery) {
+		t.Fatalf("retry did not preserve immutable request first=%+v retry=%+v", firstCall, call)
+	}
+	var storedURL, storedCipher string
+	if err := env.pool.QueryRow(t.Context(), `SELECT url, encode(destination_query_ciphertext, 'hex')
+		FROM webhook_subscriptions WHERE id = $1`, created.Subscription.ID).Scan(&storedURL, &storedCipher); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(storedURL+storedCipher, "top-secret") {
+		t.Fatalf("destination query leaked: %s %s", storedURL, storedCipher)
+	}
+	var recordedError string
+	if err := env.pool.QueryRow(t.Context(), `SELECT COALESCE(error, '') FROM webhook_delivery_attempts attempt
+		JOIN webhook_deliveries delivery ON delivery.id = attempt.delivery_id
+		WHERE delivery.event_id = $1 ORDER BY attempt.attempt_number LIMIT 1`, eventID).Scan(&recordedError); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(recordedError, "top-secret") || !strings.Contains(recordedError, "[REDACTED]") {
+		t.Fatalf("destination query error was not redacted: %q", recordedError)
+	}
+}
 
 func TestExpansionLeasesOrderingDualWorkersAndGracefulRun(t *testing.T) {
 	env := newEnvironment(t, 3, 10*time.Minute)
@@ -530,6 +643,7 @@ func (s *fakeSender) Send(_ context.Context, request networkpolicy.Request) (net
 	copyRequest := request
 	copyRequest.Secret = append([]byte(nil), request.Secret...)
 	copyRequest.Body = append([]byte(nil), request.Body...)
+	copyRequest.DestinationQuery = append([]byte(nil), request.DestinationQuery...)
 	s.calls = append(s.calls, copyRequest)
 	outcome := sendOutcome{status: http.StatusOK}
 	if len(s.outcomes) > 0 {
