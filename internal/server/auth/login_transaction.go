@@ -26,6 +26,17 @@ type LoginTransaction struct {
 	ReturnTo      string
 	ExpiresAt     time.Time
 	NonceHash     []byte
+	BrowserNonce  string
+}
+
+// LoginStart carries the authorization redirect and an independent
+// high-entropy browser nonce for a short-lived HttpOnly callback cookie. The
+// database indexes only a digest of state plus this nonce, so a callback URL
+// alone is unusable in a different browser.
+type LoginStart struct {
+	AuthorizationURL string
+	BrowserNonce     string
+	ExpiresAt        time.Time
 }
 
 type LoginTransactions struct {
@@ -43,6 +54,10 @@ func (s *LoginTransactions) Begin(ctx context.Context, providerID uuid.UUID, red
 		return LoginTransaction{}, ErrInvalidCredential
 	}
 	state, _, err := s.secrets.RandomToken("state")
+	if err != nil {
+		return LoginTransaction{}, err
+	}
+	browserNonce, _, err := s.secrets.RandomToken("login-browser")
 	if err != nil {
 		return LoginTransaction{}, err
 	}
@@ -69,6 +84,7 @@ func (s *LoginTransactions) Begin(ctx context.Context, providerID uuid.UUID, red
 		ReturnTo:      returnTo,
 		ExpiresAt:     now.Add(loginTransactionTTL),
 		NonceHash:     s.secrets.Digest("oauth-nonce", nonce),
+		BrowserNonce:  browserNonce,
 	}
 	var returnValue any
 	if returnTo != "" {
@@ -77,7 +93,7 @@ func (s *LoginTransactions) Begin(ctx context.Context, providerID uuid.UUID, red
 	_, err = s.pool.Exec(ctx, `INSERT INTO oauth_login_transactions
 		(id, provider_id, state_hash, nonce_hash, pkce_verifier_ciphertext, redirect_uri, return_to, expires_at, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, tx.ID, providerID,
-		s.secrets.Digest("oauth-state", state), tx.NonceHash, ciphertext, redirectURI, returnValue, tx.ExpiresAt, now)
+		s.browserStateDigest(state, browserNonce), tx.NonceHash, ciphertext, redirectURI, returnValue, tx.ExpiresAt, now)
 	if err != nil {
 		return LoginTransaction{}, fmt.Errorf("auth: persist login transaction: %w", err)
 	}
@@ -87,8 +103,8 @@ func (s *LoginTransactions) Begin(ctx context.Context, providerID uuid.UUID, red
 // Consume atomically changes the transaction from pending to consumed. The
 // provider predicate prevents OAuth/OIDC adapter mix-up and the update prevents
 // callback replay.
-func (s *LoginTransactions) Consume(ctx context.Context, providerID uuid.UUID, state string) (LoginTransaction, error) {
-	if providerID == uuid.Nil || state == "" {
+func (s *LoginTransactions) Consume(ctx context.Context, providerID uuid.UUID, state, browserNonce string) (LoginTransaction, error) {
+	if providerID == uuid.Nil || state == "" || browserNonce == "" {
 		return LoginTransaction{}, ErrInvalidState
 	}
 	now := s.now()
@@ -99,7 +115,7 @@ func (s *LoginTransactions) Consume(ctx context.Context, providerID uuid.UUID, s
 		SET consumed_at = $3
 		WHERE provider_id = $1 AND state_hash = $2 AND consumed_at IS NULL AND expires_at > $3
 		RETURNING id, nonce_hash, pkce_verifier_ciphertext, redirect_uri, return_to, expires_at`,
-		providerID, s.secrets.Digest("oauth-state", state), now).
+		providerID, s.browserStateDigest(state, browserNonce), now).
 		Scan(&tx.ID, &tx.NonceHash, &encrypted, &tx.RedirectURI, &returnTo, &tx.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return LoginTransaction{}, ErrInvalidState
@@ -112,11 +128,16 @@ func (s *LoginTransactions) Consume(ctx context.Context, providerID uuid.UUID, s
 		return LoginTransaction{}, err
 	}
 	tx.State = state
+	tx.BrowserNonce = browserNonce
 	tx.PKCEVerifier = string(verifier)
 	if returnTo != nil {
 		tx.ReturnTo = *returnTo
 	}
 	return tx, nil
+}
+
+func (s *LoginTransactions) browserStateDigest(state, browserNonce string) []byte {
+	return s.secrets.Digest("oauth-browser-state", state+"\x00"+browserNonce)
 }
 
 // NonceDigest lets provider adapters validate nonce without exposing the

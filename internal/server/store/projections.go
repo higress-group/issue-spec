@@ -51,6 +51,7 @@ type NotificationSnapshot struct {
 	IssueKind               string
 	CommentTyped            bool
 	ActorLogin              string
+	ActorServiceAccount     bool
 }
 
 func (s RepoStore) NotificationSnapshot(ctx context.Context, issueNumber int64,
@@ -64,13 +65,17 @@ func (s RepoStore) NotificationSnapshot(ctx context.Context, issueNumber int64,
 	}
 	result := NotificationSnapshot{Issue: issue, IssueKind: "ordinary"}
 	if err := s.db.QueryRow(ctx, `SELECT organization.name, organization.display_name,
-		repository.name, repository.display_name, repository.visibility, actor.login
+		repository.name, repository.display_name, repository.visibility, actor.login,
+		EXISTS (SELECT 1 FROM service_accounts account
+			WHERE account.organization_id = repository.organization_id
+			AND account.user_id = actor.id AND account.disabled_at IS NULL)
 		FROM repos repository JOIN orgs organization ON organization.id = repository.organization_id
 		JOIN users actor ON actor.id = $3
 		WHERE repository.organization_id = $1 AND repository.id = $2`,
 		s.scope.OrgID, s.scope.RepoID, actorID).Scan(&result.OrganizationName,
 		&result.OrganizationDisplayName, &result.RepositoryName,
-		&result.RepositoryDisplayName, &result.RepositoryVisibility, &result.ActorLogin); err != nil {
+		&result.RepositoryDisplayName, &result.RepositoryVisibility, &result.ActorLogin,
+		&result.ActorServiceAccount); err != nil {
 		return NotificationSnapshot{}, mapError(err)
 	}
 	var kind string

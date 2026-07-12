@@ -216,7 +216,7 @@ export const webhookIssueActionSchema = z.enum(["opened", "edited", "closed", "r
 export const webhookCommentActionSchema = z.enum(["created", "edited"]);
 export const webhookIssueKindSchema = z.enum(["ordinary", "proposal", "design", "implement"]);
 export const webhookCommentClassSchema = z.enum(["human-untyped", "typed"]);
-export const webhookActorClassSchema = z.enum(["human"]);
+export const webhookActorClassSchema = z.enum(["human", "automation"]);
 export const webhookContentPolicySchema = z.object({
   issue_actions: z.array(webhookIssueActionSchema),
   comment_actions: z.array(webhookCommentActionSchema),

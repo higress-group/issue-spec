@@ -374,6 +374,70 @@ func TestDestinationPreflightRejectsUnsafeCreateAndUpdateTargets(t *testing.T) {
 	}
 }
 
+func TestDestinationQueryIsBoundToExactDestinationOnUpdate(t *testing.T) {
+	env := newEnvironment(t)
+	actor := subscriptions.ActorFromPrincipal(env.owner, "destination-query-rebind")
+	subject := authz.Authenticated(env.owner)
+	policy := subscriptions.ContentPolicy{IssueActions: []string{"opened"}, IssueKinds: []string{"ordinary"}, ActorClasses: []string{"human", "automation"}}
+	created, err := env.service.Create(t.Context(), actor, subject, subscriptions.CreateInput{
+		OrganizationID: env.scope.OrgID, RepositoryID: &env.scope.RepoID,
+		URL:            "https://robot.example.test/hook?access_token=old-secret&mode=sync",
+		DeliveryFormat: subscriptions.DeliveryFormatGitHubV3, SigningMode: subscriptions.SigningModeNone,
+		ContentPolicy: policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.Subscription.HasDestinationQuery || strings.Contains(created.Subscription.URL, "old-secret") {
+		t.Fatalf("created destination was not redacted: %+v", created.Subscription)
+	}
+
+	preserved, err := env.service.Update(t.Context(), actor, subject, env.scope.OrgID, created.Subscription.ID,
+		subscriptions.UpdateInput{ExpectedVersion: created.Subscription.RepresentationVersion,
+			URL: created.Subscription.URL, DeliveryFormat: subscriptions.DeliveryFormatGitHubV3,
+			SigningMode: subscriptions.SigningModeNone, ContentPolicy: policy, Active: true})
+	if err != nil || !preserved.HasDestinationQuery {
+		t.Fatalf("same-destination query preservation = %+v, %v", preserved, err)
+	}
+
+	cleared, err := env.service.Update(t.Context(), actor, subject, env.scope.OrgID, created.Subscription.ID,
+		subscriptions.UpdateInput{ExpectedVersion: preserved.RepresentationVersion,
+			URL: "https://robot.example.test/other-path", DeliveryFormat: subscriptions.DeliveryFormatGitHubV3,
+			SigningMode: subscriptions.SigningModeNone, ContentPolicy: policy, Active: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.HasDestinationQuery || cleared.DestinationQueryVersion != 0 || len(cleared.DestinationQuery) != 0 {
+		t.Fatalf("path change retained encrypted destination query: %+v", cleared)
+	}
+	var storedQuery []byte
+	var auditText string
+	if err := env.pool.QueryRow(t.Context(), `SELECT COALESCE(destination_query_ciphertext, ''::bytea)
+		FROM webhook_subscriptions WHERE id=$1`, created.Subscription.ID).Scan(&storedQuery); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.pool.QueryRow(t.Context(), `SELECT string_agg(metadata::text, ' ' ORDER BY created_at)
+		FROM audit_events WHERE resource_id=$1`, created.Subscription.ID).Scan(&auditText); err != nil {
+		t.Fatal(err)
+	}
+	if len(storedQuery) != 0 || strings.Contains(auditText, "old-secret") || strings.Contains(auditText, "access_token") {
+		t.Fatalf("cleared destination leaked credential: ciphertext=%d audit=%q", len(storedQuery), auditText)
+	}
+
+	replaced, err := env.service.Update(t.Context(), actor, subject, env.scope.OrgID, created.Subscription.ID,
+		subscriptions.UpdateInput{ExpectedVersion: cleared.RepresentationVersion,
+			URL: "https://other.example.test/hook?access_token=new-secret", DeliveryFormat: subscriptions.DeliveryFormatGitHubV3,
+			SigningMode: subscriptions.SigningModeNone, ContentPolicy: policy, Active: true})
+	if err != nil || !replaced.HasDestinationQuery {
+		t.Fatalf("explicit cross-host replacement = %+v, %v", replaced, err)
+	}
+	plaintext, err := env.service.DecryptDestinationQuery(t.Context(), replaced.ID,
+		replaced.DestinationQueryKeyID, replaced.DestinationQueryVersion, replaced.DestinationQuery)
+	if err != nil || string(plaintext) != "access_token=new-secret" {
+		t.Fatalf("replacement query = %q, %v", plaintext, err)
+	}
+}
+
 func TestLegacyUnsafeDestinationFailsClosedWithoutReflectingOrBlockingRevocation(t *testing.T) {
 	env := newEnvironment(t)
 	actor := subscriptions.ActorFromPrincipal(env.owner, "legacy-unsafe")

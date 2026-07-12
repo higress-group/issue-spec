@@ -63,7 +63,12 @@ func configureAdapters(ctx context.Context, pool *pgxpool.Pool, secrets *servera
 		cfg.Kind = strings.TrimSpace(cfg.Kind)
 		cfg.Issuer = strings.TrimRight(strings.TrimSpace(cfg.Issuer), "/")
 		if cfg.Kind == "github-oauth" {
-			admission, admissionErr := githuboauth.NormalizeAdmission(cfg.Admission, production, cfg.Issuer, strings.TrimSpace(cfg.UserURL))
+			userURL, userErr := githuboauth.NormalizeUserURL(cfg.Issuer, cfg.UserURL, production)
+			if userErr != nil {
+				return nil, fmt.Errorf("authentication provider %q: %w", cfg.Name, userErr)
+			}
+			cfg.UserURL = userURL
+			admission, admissionErr := githuboauth.NormalizeAdmission(cfg.Admission, production, cfg.Issuer, userURL)
 			if admissionErr != nil {
 				return nil, fmt.Errorf("authentication provider %q: %w", cfg.Name, admissionErr)
 			}
@@ -113,10 +118,7 @@ func configureAdapters(ctx context.Context, pool *pgxpool.Pool, secrets *servera
 			if (endpoint.AuthURL == "") != (endpoint.TokenURL == "") {
 				return nil, errors.New("authentication providers: github auth_url and token_url must be configured together")
 			}
-			userURL := strings.TrimSpace(cfg.UserURL)
-			if userURL == "" {
-				userURL = githuboauth.DefaultUserURL
-			}
+			userURL := cfg.UserURL
 			gate, gateErr := githuboauth.NewOrganizationAdmissionGate(githuboauth.OrganizationAdmissionGateConfig{
 				ProviderID: cfg.ID, Policy: *cfg.Admission, UserURL: userURL, Pool: pool, Secrets: secrets,
 			})
@@ -125,7 +127,7 @@ func configureAdapters(ctx context.Context, pool *pgxpool.Pool, secrets *servera
 			}
 			adapter, err = githuboauth.New(githuboauth.Config{ProviderID: cfg.ID, Issuer: cfg.Issuer,
 				ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, RedirectURL: redirect,
-				Scopes: cfg.Scopes, Endpoint: endpoint, UserURL: userURL, AdmissionGate: gate}, transactions)
+				Scopes: cfg.Scopes, Endpoint: endpoint, UserURL: userURL, AdmissionGate: gate, Production: production}, transactions)
 		default:
 			return nil, fmt.Errorf("authentication providers: unsupported kind %q", cfg.Kind)
 		}

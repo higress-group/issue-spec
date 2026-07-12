@@ -20,6 +20,7 @@ import (
 	adminapi "github.com/higress-group/issue-spec/internal/server/api/native/admin"
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
+	"github.com/higress-group/issue-spec/internal/server/auth/githuboauth"
 	"github.com/higress-group/issue-spec/internal/server/auth/pat"
 	"github.com/higress-group/issue-spec/internal/server/auth/session"
 	"github.com/higress-group/issue-spec/internal/server/models"
@@ -28,13 +29,31 @@ import (
 type LoginAdapter interface {
 	ProviderID() uuid.UUID
 	Kind() string
-	Begin(context.Context, string) (string, error)
-	Complete(context.Context, string, string) (serverauth.ExternalIdentity, string, error)
+	Begin(context.Context, string) (serverauth.LoginStart, error)
+	Complete(context.Context, string, string, string) (serverauth.ExternalIdentity, string, error)
 }
 
 type richerLoginAdapter interface {
-	CompleteLogin(context.Context, string, string) (serverauth.LoginCompletion, error)
+	CompleteLogin(context.Context, string, string, string) (serverauth.LoginCompletion, error)
 }
+
+type AuthenticationDiagnostic struct {
+	RequestID  string `json:"request_id"`
+	Provider   string `json:"provider"`
+	ReasonCode string `json:"reason_code"`
+}
+
+type DiagnosticObserver interface {
+	ObserveAuthenticationDiagnostic(context.Context, AuthenticationDiagnostic)
+}
+
+type DiagnosticObserverFunc func(context.Context, AuthenticationDiagnostic)
+
+func (f DiagnosticObserverFunc) ObserveAuthenticationDiagnostic(ctx context.Context, diagnostic AuthenticationDiagnostic) {
+	f(ctx, diagnostic)
+}
+
+const loginTransactionCookieName = "issue_spec_login"
 
 type IdentityAuthority interface {
 	IdentitySiteAdmin(context.Context, serverauth.Principal) (bool, error)
@@ -47,14 +66,15 @@ func (f IdentityAuthorityFunc) IdentitySiteAdmin(ctx context.Context, principal 
 }
 
 type Dependencies struct {
-	Identity   *serverauth.IdentityService
-	Sessions   *session.Service
-	PATs       *pat.Service
-	Authority  IdentityAuthority
-	Middleware serverauth.Middleware
-	Adapters   map[string]LoginAdapter
-	Avatars    *serverauth.AvatarService
-	WebOrigin  string
+	Identity    *serverauth.IdentityService
+	Sessions    *session.Service
+	PATs        *pat.Service
+	Authority   IdentityAuthority
+	Middleware  serverauth.Middleware
+	Adapters    map[string]LoginAdapter
+	Avatars     *serverauth.AvatarService
+	Diagnostics DiagnosticObserver
+	WebOrigin   string
 }
 
 func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
@@ -149,13 +169,18 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Invalid return path")
 		return
 	}
-	location, err := adapter.Begin(r.Context(), returnTo)
+	start, err := adapter.Begin(r.Context(), returnTo)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "Authentication provider unavailable")
 		return
 	}
+	if strings.TrimSpace(start.AuthorizationURL) == "" || strings.TrimSpace(start.BrowserNonce) == "" || start.ExpiresAt.IsZero() {
+		writeError(w, http.StatusBadGateway, "Authentication provider unavailable")
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, r, location, http.StatusFound)
+	http.SetCookie(w, h.loginTransactionCookie(r.PathValue("provider"), start.BrowserNonce, start.ExpiresAt))
+	http.Redirect(w, r, start.AuthorizationURL, http.StatusFound)
 }
 
 func (h *handlers) callback(w http.ResponseWriter, r *http.Request) {
@@ -164,18 +189,26 @@ func (h *handlers) callback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Not Found")
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
+	binding, cookieErr := r.Cookie(loginTransactionCookieName)
+	http.SetCookie(w, h.clearLoginTransactionCookie(r.PathValue("provider")))
+	if cookieErr != nil || strings.TrimSpace(binding.Value) == "" {
+		writeError(w, http.StatusUnauthorized, "Authentication failed")
+		return
+	}
 	ctx := serverauth.WithAdmissionRequestID(r.Context(), adminapi.RequestID(r))
 	var identity serverauth.ExternalIdentity
 	var returnTo string
 	var admission *serverauth.AdmissionEvidence
 	var err error
 	if richer, ok := adapter.(richerLoginAdapter); ok {
-		completion, completeErr := richer.CompleteLogin(ctx, r.URL.Query().Get("state"), r.URL.Query().Get("code"))
+		completion, completeErr := richer.CompleteLogin(ctx, r.URL.Query().Get("state"), r.URL.Query().Get("code"), binding.Value)
 		identity, returnTo, admission, err = completion.Identity, completion.ReturnTo, completion.Admission, completeErr
 	} else {
-		identity, returnTo, err = adapter.Complete(ctx, r.URL.Query().Get("state"), r.URL.Query().Get("code"))
+		identity, returnTo, err = adapter.Complete(ctx, r.URL.Query().Get("state"), r.URL.Query().Get("code"), binding.Value)
 	}
 	if err != nil {
+		h.observeAdmissionFailure(r, err)
 		writeError(w, http.StatusUnauthorized, "Authentication failed")
 		return
 	}
@@ -211,6 +244,35 @@ func (h *handlers) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": user, "csrf_token": created.CSRFToken})
+}
+
+func (h *handlers) observeAdmissionFailure(r *http.Request, err error) {
+	class, ok := githuboauth.AdmissionFailure(err)
+	if !ok || h.deps.Diagnostics == nil {
+		return
+	}
+	h.deps.Diagnostics.ObserveAuthenticationDiagnostic(r.Context(), AuthenticationDiagnostic{
+		RequestID: adminapi.RequestID(r), Provider: r.PathValue("provider"), ReasonCode: string(class),
+	})
+}
+
+func (h *handlers) loginTransactionCookie(provider, value string, expires time.Time) *http.Cookie {
+	base := h.deps.Sessions.Cookie("")
+	maxAge := int(time.Until(expires).Seconds())
+	if maxAge < 1 {
+		maxAge = 1
+	}
+	return &http.Cookie{Name: loginTransactionCookieName, Value: value,
+		Path: "/api/v1/auth/" + url.PathEscape(provider) + "/callback", Domain: base.Domain,
+		Secure: base.Secure, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+		MaxAge: maxAge, Expires: expires}
+}
+
+func (h *handlers) clearLoginTransactionCookie(provider string) *http.Cookie {
+	cookie := h.loginTransactionCookie(provider, "", time.Now().Add(time.Second))
+	cookie.MaxAge = -1
+	cookie.Expires = time.Unix(1, 0)
+	return cookie
 }
 
 func (h *handlers) rotateSession(w http.ResponseWriter, r *http.Request) {

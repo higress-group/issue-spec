@@ -23,6 +23,7 @@ import (
 	githubpermissions "github.com/higress-group/issue-spec/internal/server/api/github/permissions"
 	githubreactions "github.com/higress-group/issue-spec/internal/server/api/github/reactions"
 	githubsubscription "github.com/higress-group/issue-spec/internal/server/api/github/subscription"
+	nativeauth "github.com/higress-group/issue-spec/internal/server/api/native/auth"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/auth/delegation"
 	"github.com/higress-group/issue-spec/internal/server/auth/pat"
@@ -204,7 +205,8 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	handler, err := serverapi.NewRouter(serverapi.Dependencies{
 		Admin: adminService, Identity: identity, Sessions: sessions, PATs: pats, Delegation: delegated,
 		Takeover: takeoverService, Authorization: authorization, Authentication: authentication,
-		Adapters: adapters, Avatars: avatars, APIOrigin: origins.API.String(), WebOrigin: origins.Web.String(), TransportPosture: origins.Posture,
+		Adapters: adapters, Avatars: avatars, AuthDiagnostics: nativeauth.DiagnosticObserverFunc(logAuthenticationDiagnostic),
+		APIOrigin: origins.API.String(), WebOrigin: origins.Web.String(), TransportPosture: origins.Posture,
 		Issues: issueService, Labels: labelService, Reactions: reactionService, Permissions: permissionService,
 		Subscription: subscriptionCompat, Presenter: codec.Presenter{Origins: origins}, Conditional: conditional.Policy{},
 		SPA: spaService, Bindings: bindingService, Evidence: evidenceService, Changes: changeService,
@@ -277,6 +279,13 @@ func localOrigin(listen string) (string, error) {
 func logRequest(entry serverapi.RequestLog) {
 	payload := map[string]any{"level": "info", "event": "http_request", "request_id": entry.RequestID,
 		"method": entry.Method, "status": entry.Status, "duration_ms": entry.Duration.Milliseconds()}
+	encoded, _ := json.Marshal(payload)
+	fmt.Fprintln(os.Stderr, string(encoded))
+}
+
+func logAuthenticationDiagnostic(_ context.Context, diagnostic nativeauth.AuthenticationDiagnostic) {
+	payload := map[string]any{"level": "warn", "event": "authentication_diagnostic",
+		"request_id": diagnostic.RequestID, "provider": diagnostic.Provider, "reason_code": diagnostic.ReasonCode}
 	encoded, _ := json.Marshal(payload)
 	fmt.Fprintln(os.Stderr, string(encoded))
 }

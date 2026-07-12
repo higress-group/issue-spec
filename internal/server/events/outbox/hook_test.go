@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	"github.com/higress-group/issue-spec/internal/server/api/github/issues"
+	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
 
@@ -30,7 +31,7 @@ func TestBuildEnvelopePreservesRawRevisionAndStableIdentity(t *testing.T) {
 	envelope, aggregateID, err := BuildEnvelope(eventID, issues.MutationEvent{
 		Type: "issue_comment.edited", Scope: scope,
 		Issue: issue, Comment: &snapshot,
-		RawBody: raw, BodyHash: hash, ActorUserID: actorID, RepresentationVersion: 2,
+		RawBody: raw, BodyHash: hash, ActorUserID: actorID, ActorCredentialKind: serverauth.CredentialSession, RepresentationVersion: 2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +53,7 @@ func TestBuildEnvelopePreservesRawRevisionAndStableIdentity(t *testing.T) {
 	if _, _, err := BuildEnvelope(eventID, issues.MutationEvent{
 		Type: "issue_comment.edited", Scope: scope,
 		Issue: issue, Comment: &snapshot,
-		RawBody: raw, BodyHash: broken, ActorUserID: actorID, RepresentationVersion: 2,
+		RawBody: raw, BodyHash: broken, ActorUserID: actorID, ActorCredentialKind: serverauth.CredentialSession, RepresentationVersion: 2,
 	}); err == nil {
 		t.Fatal("raw body/hash mismatch was accepted")
 	}
@@ -60,8 +61,33 @@ func TestBuildEnvelopePreservesRawRevisionAndStableIdentity(t *testing.T) {
 	if _, _, err := BuildEnvelope(eventID, issues.MutationEvent{
 		Type: "issue_comment.edited", Scope: scope,
 		Issue: issue, Comment: &snapshot,
-		RawBody: raw, BodyHash: hash, ActorUserID: actorID, RepresentationVersion: 2,
+		RawBody: raw, BodyHash: hash, ActorUserID: actorID, ActorCredentialKind: serverauth.CredentialSession, RepresentationVersion: 2,
 	}); err == nil {
 		t.Fatal("incomplete issue timestamps were accepted")
+	}
+}
+
+func TestActorProvenanceClassificationFailsClosed(t *testing.T) {
+	tests := []struct {
+		name           string
+		kind           serverauth.CredentialKind
+		serviceAccount bool
+		want           string
+		wantError      bool
+	}{
+		{name: "human browser session", kind: serverauth.CredentialSession, want: "human"},
+		{name: "human PAT automation", kind: serverauth.CredentialPAT, want: "automation"},
+		{name: "delegated runner", kind: serverauth.CredentialDelegated, want: "automation"},
+		{name: "recovery automation", kind: serverauth.CredentialRecovery, want: "automation"},
+		{name: "service account session cannot appear human", kind: serverauth.CredentialSession, serviceAccount: true, want: "automation"},
+		{name: "unknown provenance", wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := classifyActor(test.kind, test.serviceAccount)
+			if (err != nil) != test.wantError || got != test.want {
+				t.Fatalf("classifyActor(%q, %v) = %q, %v", test.kind, test.serviceAccount, got, err)
+			}
+		})
 	}
 }

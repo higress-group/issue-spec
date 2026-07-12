@@ -73,7 +73,7 @@ func TestRunMigrationsConcurrentAndIdempotent(t *testing.T) {
 	}
 	// Keep the forward-only migration-set assertion synchronized with the
 	// latest embedded file.
-	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0014_github_admission.sql" {
+	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0015_notification_actor_provenance.sql" {
 		t.Fatalf("migration metadata = count %d, version %d, name %q", count, version, name)
 	}
 }

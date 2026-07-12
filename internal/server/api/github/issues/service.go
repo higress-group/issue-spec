@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/server/projection/artifacts"
@@ -31,6 +32,7 @@ type MutationEvent struct {
 	RawBody               string
 	BodyHash              [32]byte
 	ActorUserID           uuid.UUID
+	ActorCredentialKind   serverauth.CredentialKind
 	RepresentationVersion int64
 }
 
@@ -106,7 +108,7 @@ func (s *Service) CreateIssue(ctx context.Context, owner, repository string, sub
 	if !ok {
 		return models.RepositoryResource{}, models.IssueSnapshot{}, &DecisionError{Decision: authz.Decision{Exists: true, Visible: true}}
 	}
-	input.AuthorID = &actor
+	input.AuthorID = &actor.User.ID
 	var resource models.RepositoryResource
 	var snapshot models.IssueSnapshot
 	err := s.store.WithinTx(ctx, func(tx *store.Tx) error {
@@ -148,7 +150,7 @@ func (s *Service) CreateIssue(ctx context.Context, owner, repository string, sub
 		}
 		if err := s.events.Emit(ctx, repositoryStore, MutationEvent{Key: mutationKey(issue.ID, issue.RepresentationVersion, "issue.created"), Type: "issue.created", Scope: resource.Scope,
 			Issue: issue, RawBody: issue.Body, BodyHash: sha256.Sum256([]byte(issue.Body)),
-			ActorUserID: actor, RepresentationVersion: issue.RepresentationVersion}); err != nil {
+			ActorUserID: actor.User.ID, ActorCredentialKind: actor.Kind, RepresentationVersion: issue.RepresentationVersion}); err != nil {
 			return err
 		}
 		snapshot, err = repositoryStore.IssueSnapshotByNumber(ctx, issue.Number)
@@ -208,7 +210,7 @@ func (s *Service) UpdateIssue(ctx context.Context, owner, repository string, num
 		}
 		if err := s.events.Emit(ctx, repositoryStore, MutationEvent{Key: mutationKey(updated.ID, updated.RepresentationVersion, action), Type: action, Scope: resource.Scope,
 			Issue: updated, RawBody: updated.Body, BodyHash: sha256.Sum256([]byte(updated.Body)),
-			ActorUserID: actor, RepresentationVersion: updated.RepresentationVersion}); err != nil {
+			ActorUserID: actor.User.ID, ActorCredentialKind: actor.Kind, RepresentationVersion: updated.RepresentationVersion}); err != nil {
 			return err
 		}
 		snapshot, err = repositoryStore.IssueSnapshotByNumber(ctx, number)
@@ -281,7 +283,7 @@ func (s *Service) CreateComment(ctx context.Context, owner, repository string, i
 			return &DecisionError{Decision: decision}
 		}
 		repositoryStore := tx.ScopedRepo(resource.Scope)
-		snapshot, err = repositoryStore.CreateComment(ctx, models.NewComment{ID: uuid.New(), IssueNumber: issueNumber, AuthorID: &actor, Body: body})
+		snapshot, err = repositoryStore.CreateComment(ctx, models.NewComment{ID: uuid.New(), IssueNumber: issueNumber, AuthorID: &actor.User.ID, Body: body})
 		if err != nil {
 			return err
 		}
@@ -299,7 +301,7 @@ func (s *Service) CreateComment(ctx context.Context, owner, repository string, i
 		return s.events.Emit(ctx, repositoryStore, MutationEvent{Key: mutationKey(snapshot.Comment.ID, snapshot.Comment.RepresentationVersion, "issue_comment.created"), Type: "issue_comment.created", Scope: resource.Scope,
 			Issue:   commentEventIssue(issue),
 			Comment: &snapshot, RawBody: body, BodyHash: sha256.Sum256([]byte(body)),
-			ActorUserID: actor, RepresentationVersion: snapshot.Comment.RepresentationVersion})
+			ActorUserID: actor.User.ID, ActorCredentialKind: actor.Kind, RepresentationVersion: snapshot.Comment.RepresentationVersion})
 	})
 	return resource, snapshot, err
 }
@@ -323,7 +325,7 @@ func (s *Service) UpdateComment(ctx context.Context, owner, repository string, c
 			return err
 		}
 		operation := authz.OperationTriage
-		if current.Comment.AuthorID != nil && *current.Comment.AuthorID == actor {
+		if current.Comment.AuthorID != nil && *current.Comment.AuthorID == actor.User.ID {
 			operation = authz.OperationContribute
 		}
 		decision, err := s.authorizer.EvaluateRepositoryTx(ctx, tx.PGX(), subject, authz.RepositoryRequest{
@@ -353,7 +355,7 @@ func (s *Service) UpdateComment(ctx context.Context, owner, repository string, c
 		return s.events.Emit(ctx, repositoryStore, MutationEvent{Key: mutationKey(snapshot.Comment.ID, snapshot.Comment.RepresentationVersion, "issue_comment.edited"), Type: "issue_comment.edited", Scope: resource.Scope,
 			Issue:   commentEventIssue(issue),
 			Comment: &snapshot, RawBody: body, BodyHash: sha256.Sum256([]byte(body)),
-			ActorUserID: actor, RepresentationVersion: snapshot.Comment.RepresentationVersion})
+			ActorUserID: actor.User.ID, ActorCredentialKind: actor.Kind, RepresentationVersion: snapshot.Comment.RepresentationVersion})
 	})
 	return resource, snapshot, err
 }
@@ -372,11 +374,11 @@ func commentEventIssue(issue models.Issue) models.Issue {
 	}
 }
 
-func authenticatedActor(subject authz.Subject) (uuid.UUID, bool) {
+func authenticatedActor(subject authz.Subject) (serverauth.Principal, bool) {
 	if subject.Principal == nil || subject.Principal.User.ID == uuid.Nil {
-		return uuid.Nil, false
+		return serverauth.Principal{}, false
 	}
-	return subject.Principal.User.ID, true
+	return *subject.Principal, true
 }
 
 func mutationKey(id uuid.UUID, version int64, action string) string {

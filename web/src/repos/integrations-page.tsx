@@ -36,7 +36,7 @@ const issueActionOptions = [["opened", "Opened"], ["edited", "Edited"], ["closed
 const commentActionOptions = [["created", "Created"], ["edited", "Edited"]] as const;
 const issueKindOptions = [["ordinary", "Ordinary"], ["proposal", "Proposal"], ["design", "Design"], ["implement", "Implement"]] as const;
 const commentClassOptions = [["human-untyped", "Human comment"], ["typed", "Typed workflow"]] as const;
-const actorClassOptions = [["human", "Authenticated human"]] as const;
+const actorClassOptions = [["human", "Authenticated human"], ["automation", "PAT, delegated or service automation"]] as const;
 
 export function IntegrationsPage({ kind }: { kind: IntegrationKind }) {
   const { orgId, repoId, repository } = useRepositoryContext();
@@ -168,7 +168,7 @@ function WebhookEditor({ orgId, repoId, subscription, onSaved }: { orgId: string
       const content_policy = contentPolicyFromDraft(draft);
       const event_types = draft.delivery_format === "issue-spec.v1" ? draft.event_types : [];
       return subscription
-        ? api.updateWebhookSubscription(orgId, subscription.id, { url: draft.url, event_types, delivery_format: draft.delivery_format, signing_mode: signingMode(draft), content_policy, retry, active: subscription.active, expected_version: subscription.representation_version, clear_destination_query: draft.clear_destination_query })
+        ? api.updateWebhookSubscription(orgId, subscription.id, { url: draft.url, event_types, delivery_format: draft.delivery_format, signing_mode: signingMode(draft), content_policy, retry, active: subscription.active, expected_version: subscription.representation_version, clear_destination_query: shouldClearDestinationQuery(subscription, draft) })
         : api.createWebhookSubscription(orgId, { repository_id: repoId, url: draft.url, event_types, delivery_format: draft.delivery_format, signing_mode: signingMode(draft), content_policy, retry });
     },
     onSuccess: (result) => { inspector.note(subscription ? "Webhook configuration saved." : "Webhook created. Save the secret before closing the dialog."); onSaved(result); },
@@ -216,6 +216,19 @@ const defaultPolicy: WebhookContentPolicy = { issue_actions: ["opened", "edited"
 const emptyWebhookDraft: WebhookDraft = { delivery_format: "issue-spec.v1", url: "", event_types: ["issue_comment.created", "issue_comment.edited"], signing_mode: "hmac-sha256", ...defaultPolicy, clear_destination_query: false, max_attempts: 8, initial_backoff: "1s", max_backoff: "5m" };
 function bindingDraft(binding: SourceBinding): SourceBindingDraft { return { provider_key: binding.provider_key, external_repository_id: binding.external_repository_id, clone_url: binding.clone_url, web_url: binding.web_url, default_branch: binding.default_branch }; }
 function webhookDraft(item: WebhookSubscription): WebhookDraft { return { delivery_format: item.delivery_format, url: item.url, event_types: item.event_types, signing_mode: item.signing_mode === "bearer" ? "hmac-sha256" : item.signing_mode, ...item.content_policy, clear_destination_query: false, max_attempts: item.retry.max_attempts, initial_backoff: item.retry.initial_backoff, max_backoff: item.retry.max_backoff }; }
+export function shouldClearDestinationQuery(item: Pick<WebhookSubscription, "url" | "has_destination_query">, draft: { url: string; clear_destination_query: boolean }) {
+  if (draft.clear_destination_query || !item.has_destination_query) return draft.clear_destination_query;
+  try {
+    const replacement = new URL(draft.url);
+    if (replacement.search) return false;
+    const current = new URL(item.url);
+    current.search = "";
+    replacement.search = "";
+    return current.toString() !== replacement.toString();
+  } catch {
+    return false;
+  }
+}
 function retryFromDraft(draft: WebhookDraft): WebhookRetry { return { max_attempts: draft.max_attempts, initial_backoff: draft.initial_backoff, max_backoff: draft.max_backoff }; }
 function webhookUpdate(item: WebhookSubscription, active: boolean) { return { url: item.url, event_types: item.event_types, delivery_format: item.delivery_format, signing_mode: item.signing_mode, content_policy: item.content_policy, retry: item.retry, active, expected_version: item.representation_version }; }
 function contentPolicyFromDraft(draft: WebhookDraft): WebhookContentPolicy { return { issue_actions: draft.issue_actions, comment_actions: draft.comment_actions, issue_kinds: draft.issue_kinds, comment_classes: draft.comment_classes, actor_classes: draft.actor_classes }; }

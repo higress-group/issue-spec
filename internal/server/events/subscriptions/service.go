@@ -245,7 +245,10 @@ func (s *Service) Update(ctx context.Context, actor Actor, subject authz.Subject
 		return Subscription{}, ErrRevoked
 	}
 	if input.DeliveryFormat != DeliveryFormatGitHubV3 &&
-		(destinationQuery != "" || (current.HasDestinationQuery && !input.ClearDestinationQuery)) {
+		(destinationQuery != "" || preservesDestinationQuery(current, input, destinationQuery)) {
+		return Subscription{}, ErrInvalidInput
+	}
+	if input.ClearDestinationQuery && destinationQuery != "" {
 		return Subscription{}, ErrInvalidInput
 	}
 	if s.config.DestinationPreflight != nil {
@@ -267,7 +270,14 @@ func (s *Service) Update(ctx context.Context, actor Actor, subject authz.Subject
 		}
 		queryKeyID, queryCiphertext, queryVersion := current.DestinationQueryKeyID,
 			current.DestinationQuery, current.DestinationQueryVersion
-		if input.ClearDestinationQuery {
+		if input.DeliveryFormat != DeliveryFormatGitHubV3 &&
+			(destinationQuery != "" || preservesDestinationQuery(current, input, destinationQuery)) {
+			return ErrInvalidInput
+		}
+		// The encrypted query is bound to the exact stored destination. A
+		// redacted edit cannot silently carry it to another host or path. An
+		// operator may either provide a replacement query or accept clearing it.
+		if input.ClearDestinationQuery || (current.URL != input.URL && destinationQuery == "") {
 			queryKeyID, queryCiphertext, queryVersion = "", nil, 0
 		} else if destinationQuery != "" {
 			queryVersion++
@@ -725,7 +735,7 @@ func validatePolicy(format DeliveryFormat, signing SigningMode, policy ContentPo
 		&policy.CommentActions: setOf("created", "edited"),
 		&policy.IssueKinds:     setOf("ordinary", "proposal", "design", "implement"),
 		&policy.CommentClasses: setOf("human-untyped", "typed"),
-		&policy.ActorClasses:   setOf("human"),
+		&policy.ActorClasses:   setOf("human", "automation"),
 	} {
 		if validateValues(*values, allowed) != nil {
 			return ErrInvalidInput
@@ -771,6 +781,10 @@ func splitDestination(raw string) (string, string, error) {
 	query := parsed.RawQuery
 	parsed.RawQuery, parsed.ForceQuery = "", false
 	return parsed.String(), query, nil
+}
+
+func preservesDestinationQuery(current Subscription, input UpdateInput, replacement string) bool {
+	return current.HasDestinationQuery && !input.ClearDestinationQuery && replacement == "" && current.URL == input.URL
 }
 
 func nullableBytes(value []byte) any {

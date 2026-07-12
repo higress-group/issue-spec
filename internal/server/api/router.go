@@ -62,6 +62,7 @@ type Dependencies struct {
 	Authentication   serverauth.Middleware
 	Adapters         map[string]nativeauth.LoginAdapter
 	Avatars          *serverauth.AvatarService
+	AuthDiagnostics  nativeauth.DiagnosticObserver
 	APIOrigin        string
 	WebOrigin        string
 	TransportPosture publicurl.TransportPosture
@@ -148,7 +149,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			return bootstrapapi.NewRouteSet(bootstrapapi.Dependencies{Service: deps.Admin})
 		},
 		func() (routeset.RouteSet, error) {
-			return nativeauth.NewRouteSet(nativeauth.Dependencies{Identity: deps.Identity, Sessions: deps.Sessions, PATs: deps.PATs, Authority: deps.Authorization.(nativeauth.IdentityAuthority), Middleware: deps.Authentication, Adapters: deps.Adapters, Avatars: deps.Avatars, WebOrigin: deps.WebOrigin})
+			return nativeauth.NewRouteSet(nativeauth.Dependencies{Identity: deps.Identity, Sessions: deps.Sessions, PATs: deps.PATs, Authority: deps.Authorization.(nativeauth.IdentityAuthority), Middleware: deps.Authentication, Adapters: deps.Adapters, Avatars: deps.Avatars, Diagnostics: deps.AuthDiagnostics, WebOrigin: deps.WebOrigin})
 		},
 		func() (routeset.RouteSet, error) {
 			return adminapi.NewRouteSet(adminapi.Dependencies{Service: deps.Admin, Authorizer: deps.Authorization, Authenticate: nativeAuthenticate})

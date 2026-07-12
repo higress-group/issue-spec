@@ -71,24 +71,24 @@ func New(ctx context.Context, cfg Config, transactions *serverauth.LoginTransact
 func (a *Adapter) ProviderID() uuid.UUID { return a.config.ProviderID }
 func (a *Adapter) Kind() string          { return "oidc" }
 
-func (a *Adapter) Begin(ctx context.Context, returnTo string) (string, error) {
+func (a *Adapter) Begin(ctx context.Context, returnTo string) (serverauth.LoginStart, error) {
 	tx, err := a.transactions.Begin(ctx, a.config.ProviderID, a.config.RedirectURL, returnTo)
 	if err != nil {
-		return "", err
+		return serverauth.LoginStart{}, err
 	}
-	return a.oauth.AuthCodeURL(tx.State,
+	return serverauth.LoginStart{AuthorizationURL: a.oauth.AuthCodeURL(tx.State,
 		coreoidc.Nonce(tx.Nonce),
 		oauth2.SetAuthURLParam("code_challenge", tx.PKCEChallenge),
 		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
 		oauth2.AccessTypeOffline,
-	), nil
+	), BrowserNonce: tx.BrowserNonce, ExpiresAt: tx.ExpiresAt}, nil
 }
 
-func (a *Adapter) Callback(ctx context.Context, state, code string) (CallbackResult, error) {
+func (a *Adapter) Callback(ctx context.Context, state, code, browserNonce string) (CallbackResult, error) {
 	if strings.TrimSpace(code) == "" {
 		return CallbackResult{}, serverauth.ErrInvalidCredential
 	}
-	tx, err := a.transactions.Consume(ctx, a.config.ProviderID, state)
+	tx, err := a.transactions.Consume(ctx, a.config.ProviderID, state, browserNonce)
 	if err != nil {
 		return CallbackResult{}, err
 	}
@@ -140,13 +140,13 @@ func (a *Adapter) Callback(ctx context.Context, state, code string) (CallbackRes
 	}, ReturnTo: tx.ReturnTo}, nil
 }
 
-func (a *Adapter) Complete(ctx context.Context, state, code string) (serverauth.ExternalIdentity, string, error) {
-	result, err := a.Callback(ctx, state, code)
+func (a *Adapter) Complete(ctx context.Context, state, code, browserNonce string) (serverauth.ExternalIdentity, string, error) {
+	result, err := a.Callback(ctx, state, code, browserNonce)
 	return result.Identity, result.ReturnTo, err
 }
 
-func (a *Adapter) CompleteLogin(ctx context.Context, state, code string) (serverauth.LoginCompletion, error) {
-	identity, returnTo, err := a.Complete(ctx, state, code)
+func (a *Adapter) CompleteLogin(ctx context.Context, state, code, browserNonce string) (serverauth.LoginCompletion, error) {
+	identity, returnTo, err := a.Complete(ctx, state, code, browserNonce)
 	return serverauth.LoginCompletion{Identity: identity, ReturnTo: returnTo}, err
 }
 

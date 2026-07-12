@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	"github.com/higress-group/issue-spec/internal/server/api/github/issues"
+	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/server/store"
 )
@@ -21,21 +22,22 @@ import (
 const SchemaVersion = 1
 
 type Envelope struct {
-	SchemaVersion  int                `json:"schema_version"`
-	EventID        uuid.UUID          `json:"event_id"`
-	EventKey       string             `json:"event_key"`
-	EventType      string             `json:"event_type"`
-	Action         string             `json:"action"`
-	OccurredAt     time.Time          `json:"occurred_at"`
-	OrganizationID uuid.UUID          `json:"organization_id"`
-	RepositoryID   uuid.UUID          `json:"repository_id"`
-	Issue          IssueIdentity      `json:"issue"`
-	Comment        *CommentRevision   `json:"comment,omitempty"`
-	RawBody        string             `json:"raw_body"`
-	BodyHash       string             `json:"body_hash"`
-	ActorUserID    uuid.UUID          `json:"actor_user_id"`
-	Author         AuthorIdentity     `json:"author"`
-	Notification   *NotificationFacts `json:"notification,omitempty"`
+	SchemaVersion       int                       `json:"schema_version"`
+	EventID             uuid.UUID                 `json:"event_id"`
+	EventKey            string                    `json:"event_key"`
+	EventType           string                    `json:"event_type"`
+	Action              string                    `json:"action"`
+	OccurredAt          time.Time                 `json:"occurred_at"`
+	OrganizationID      uuid.UUID                 `json:"organization_id"`
+	RepositoryID        uuid.UUID                 `json:"repository_id"`
+	Issue               IssueIdentity             `json:"issue"`
+	Comment             *CommentRevision          `json:"comment,omitempty"`
+	RawBody             string                    `json:"raw_body"`
+	BodyHash            string                    `json:"body_hash"`
+	ActorUserID         uuid.UUID                 `json:"actor_user_id"`
+	ActorCredentialKind serverauth.CredentialKind `json:"actor_credential_kind"`
+	Author              AuthorIdentity            `json:"author"`
+	Notification        *NotificationFacts        `json:"notification,omitempty"`
 }
 
 type IssueIdentity struct {
@@ -63,14 +65,16 @@ type AuthorIdentity struct {
 }
 
 type NotificationFacts struct {
-	IssueKind    string                   `json:"issue_kind"`
-	CommentClass string                   `json:"comment_class,omitempty"`
-	ActorClass   string                   `json:"actor_class"`
-	Organization NotificationOrganization `json:"organization"`
-	Repository   NotificationRepository   `json:"repository"`
-	Sender       NotificationUser         `json:"sender"`
-	Issue        NotificationIssue        `json:"issue"`
-	Comment      *NotificationComment     `json:"comment,omitempty"`
+	IssueKind           string                    `json:"issue_kind"`
+	CommentClass        string                    `json:"comment_class,omitempty"`
+	ActorClass          string                    `json:"actor_class"`
+	ActorCredentialKind serverauth.CredentialKind `json:"actor_credential_kind"`
+	ActorServiceAccount bool                      `json:"actor_service_account"`
+	Organization        NotificationOrganization  `json:"organization"`
+	Repository          NotificationRepository    `json:"repository"`
+	Sender              NotificationUser          `json:"sender"`
+	Issue               NotificationIssue         `json:"issue"`
+	Comment             *NotificationComment      `json:"comment,omitempty"`
 }
 
 type NotificationOrganization struct {
@@ -141,7 +145,10 @@ func (Hook) Emit(ctx context.Context, repository store.RepoStore, mutation issue
 	if err != nil {
 		return fmt.Errorf("outbox: notification snapshot: %w", err)
 	}
-	envelope.Notification = notificationFacts(snapshot, mutation)
+	envelope.Notification, err = notificationFacts(snapshot, mutation)
+	if err != nil {
+		return err
+	}
 	payload, err := json.Marshal(envelope)
 	if err != nil {
 		return fmt.Errorf("outbox: marshal envelope: %w", err)
@@ -153,13 +160,18 @@ func (Hook) Emit(ctx context.Context, repository store.RepoStore, mutation issue
 	return err
 }
 
-func notificationFacts(snapshot store.NotificationSnapshot, mutation issues.MutationEvent) *NotificationFacts {
+func notificationFacts(snapshot store.NotificationSnapshot, mutation issues.MutationEvent) (*NotificationFacts, error) {
+	actorClass, err := classifyActor(mutation.ActorCredentialKind, snapshot.ActorServiceAccount)
+	if err != nil {
+		return nil, err
+	}
 	issue := snapshot.Issue.Issue
 	labels := make([]NotificationLabel, 0, len(snapshot.Issue.Labels))
 	for _, label := range snapshot.Issue.Labels {
 		labels = append(labels, NotificationLabel{Name: label.Name, Color: label.Color, Description: label.Description})
 	}
-	result := &NotificationFacts{IssueKind: snapshot.IssueKind, ActorClass: "human",
+	result := &NotificationFacts{IssueKind: snapshot.IssueKind, ActorClass: actorClass,
+		ActorCredentialKind: mutation.ActorCredentialKind, ActorServiceAccount: snapshot.ActorServiceAccount,
 		Organization: NotificationOrganization{ID: mutation.Scope.OrgID, Login: snapshot.OrganizationName, DisplayName: snapshot.OrganizationDisplayName},
 		Repository:   NotificationRepository{ID: mutation.Scope.RepoID, Name: snapshot.RepositoryName, FullName: snapshot.OrganizationName + "/" + snapshot.RepositoryName, Private: snapshot.RepositoryVisibility == "private"},
 		Sender:       NotificationUser{ID: mutation.ActorUserID, Login: snapshot.ActorLogin},
@@ -182,7 +194,7 @@ func notificationFacts(snapshot store.NotificationSnapshot, mutation issues.Muta
 			result.Comment.Author.ID = *comment.AuthorID
 		}
 	}
-	return result
+	return result, nil
 }
 
 func BuildEnvelope(eventID uuid.UUID, mutation issues.MutationEvent) (Envelope, uuid.UUID, error) {
@@ -203,7 +215,7 @@ func BuildEnvelope(eventID uuid.UUID, mutation issues.MutationEvent) (Envelope, 
 			RepresentationVersion: revision.RepresentationVersion,
 			CreatedAt:             revision.CreatedAt, UpdatedAt: revision.UpdatedAt}
 	}
-	if eventID == uuid.Nil || mutation.Scope.Validate() != nil || mutation.ActorUserID == uuid.Nil {
+	if eventID == uuid.Nil || mutation.Scope.Validate() != nil || mutation.ActorUserID == uuid.Nil || !validActorCredentialKind(mutation.ActorCredentialKind) {
 		return Envelope{}, uuid.Nil, fmt.Errorf("outbox: complete event, scope, actor and stable aggregate identity are required")
 	}
 	if mutation.Issue.Number <= 0 || mutation.Issue.CreatedAt.IsZero() || mutation.Issue.UpdatedAt.IsZero() {
@@ -222,8 +234,27 @@ func BuildEnvelope(eventID uuid.UUID, mutation issues.MutationEvent) (Envelope, 
 			RepresentationVersion: mutation.Issue.RepresentationVersion,
 			CreatedAt:             mutation.Issue.CreatedAt, UpdatedAt: mutation.Issue.UpdatedAt},
 		Comment: comment, RawBody: mutation.RawBody, BodyHash: hex.EncodeToString(mutation.BodyHash[:]),
-		ActorUserID: mutation.ActorUserID, Author: author}
+		ActorUserID: mutation.ActorUserID, ActorCredentialKind: mutation.ActorCredentialKind, Author: author}
 	return envelope, aggregateID, nil
+}
+
+func validActorCredentialKind(kind serverauth.CredentialKind) bool {
+	switch kind {
+	case serverauth.CredentialSession, serverauth.CredentialPAT, serverauth.CredentialDelegated, serverauth.CredentialRecovery:
+		return true
+	default:
+		return false
+	}
+}
+
+func classifyActor(kind serverauth.CredentialKind, serviceAccount bool) (string, error) {
+	if !validActorCredentialKind(kind) {
+		return "", fmt.Errorf("outbox: actor credential provenance is required")
+	}
+	if serviceAccount || kind != serverauth.CredentialSession {
+		return "automation", nil
+	}
+	return "human", nil
 }
 
 func mutationIdentity(mutation issues.MutationEvent) (uuid.UUID, string, error) {

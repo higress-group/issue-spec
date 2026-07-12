@@ -6,7 +6,7 @@ import { Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import { renderApp } from "../../tests/render";
 import { server } from "../../tests/server";
-import { IntegrationsPage } from "./integrations-page";
+import { IntegrationsPage, shouldClearDestinationQuery } from "./integrations-page";
 
 const orgId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const repoId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -149,6 +149,22 @@ describe("repository integrations workspace", () => {
     expect(screen.queryByText(/access_token/i)).not.toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole("button", { name: "Suppressions" }));
     expect(await screen.findByText(/comment class filtered/i)).toBeVisible();
+  });
+
+  it("clears a redacted destination query when the receiver host or path changes", () => {
+	const stored = { url: "https://robot.example.test/hook", has_destination_query: true };
+	expect(shouldClearDestinationQuery(stored, {
+	  url: "https://other.example.test/other-path", clear_destination_query: false,
+	})).toBe(true);
+	expect(shouldClearDestinationQuery(stored, {
+	  url: "https://robot.example.test/other-path", clear_destination_query: false,
+	})).toBe(true);
+	expect(shouldClearDestinationQuery(stored, {
+	  url: "https://other.example.test/other-path?access_token=replacement", clear_destination_query: false,
+	})).toBe(false);
+	expect(shouldClearDestinationQuery(stored, {
+	  url: stored.url, clear_destination_query: false,
+	})).toBe(false);
   });
 
   it("does not fetch or reveal integration configuration without integrations.manage", async () => {

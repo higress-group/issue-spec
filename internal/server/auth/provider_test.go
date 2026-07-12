@@ -38,6 +38,7 @@ func TestOIDCDiscoveryPKCEValidationReplayAndFailureMatrix(t *testing.T) {
 	const clientID = "issue-spec-client"
 	var server *httptest.Server
 	var nonce, challenge, mode string
+	var tokenCalls int
 	handler := http.NewServeMux()
 	handler.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(w, map[string]any{
@@ -52,6 +53,7 @@ func TestOIDCDiscoveryPKCEValidationReplayAndFailureMatrix(t *testing.T) {
 		writeTestJSON(w, jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &privateKey.PublicKey, KeyID: "primary", Algorithm: string(jose.RS256), Use: "sig"}}})
 	})
 	handler.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		tokenCalls++
 		if err := r.ParseForm(); err != nil {
 			t.Errorf("ParseForm: %v", err)
 			w.WriteHeader(http.StatusBadRequest)
@@ -96,11 +98,11 @@ func TestOIDCDiscoveryPKCEValidationReplayAndFailureMatrix(t *testing.T) {
 
 	begin := func(t *testing.T) (string, string) {
 		t.Helper()
-		location, err := adapter.Begin(t.Context(), "/dashboard")
+		start, err := adapter.Begin(t.Context(), "/dashboard")
 		if err != nil {
 			t.Fatal(err)
 		}
-		parsed, err := url.Parse(location)
+		parsed, err := url.Parse(start.AuthorizationURL)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -108,20 +110,29 @@ func TestOIDCDiscoveryPKCEValidationReplayAndFailureMatrix(t *testing.T) {
 		if query.Get("code_challenge_method") != "S256" || query.Get("state") == "" || query.Get("nonce") == "" {
 			t.Fatalf("authorization query missing state/nonce/PKCE: %s", parsed.RawQuery)
 		}
+		if start.BrowserNonce == "" || start.BrowserNonce == query.Get("state") {
+			t.Fatalf("browser nonce is missing or aliases OAuth state")
+		}
 		nonce, challenge = query.Get("nonce"), query.Get("code_challenge")
-		return query.Get("state"), query.Get("nonce")
+		return query.Get("state"), start.BrowserNonce
 	}
 
 	mode = "valid"
-	state, _ := begin(t)
-	identity, returnTo, err := adapter.Complete(t.Context(), state, "code")
+	state, browserNonce := begin(t)
+	if _, _, err := adapter.Complete(t.Context(), state, "code", "wrong-browser"); !errors.Is(err, serverauth.ErrInvalidState) {
+		t.Fatalf("wrong-browser callback error = %v", err)
+	}
+	if tokenCalls != 0 {
+		t.Fatalf("wrong-browser callback exchanged code %d times", tokenCalls)
+	}
+	identity, returnTo, err := adapter.Complete(t.Context(), state, "code", browserNonce)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if identity.Issuer != server.URL || identity.Subject != "subject-123" || identity.Login != "alice" || identity.AvatarURL != "https://images.example/alice.png" || returnTo != "/dashboard" {
 		t.Fatalf("OIDC result = %+v returnTo=%q", identity, returnTo)
 	}
-	if _, _, err := adapter.Complete(t.Context(), state, "code"); !errors.Is(err, serverauth.ErrInvalidState) {
+	if _, _, err := adapter.Complete(t.Context(), state, "code", browserNonce); !errors.Is(err, serverauth.ErrInvalidState) {
 		t.Fatalf("callback replay error = %v", err)
 	}
 
@@ -130,18 +141,18 @@ func TestOIDCDiscoveryPKCEValidationReplayAndFailureMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := transactions.Consume(t.Context(), otherProvider.ID, transaction.State); !errors.Is(err, serverauth.ErrInvalidState) {
+	if _, err := transactions.Consume(t.Context(), otherProvider.ID, transaction.State, transaction.BrowserNonce); !errors.Is(err, serverauth.ErrInvalidState) {
 		t.Fatalf("provider mix-up error = %v", err)
 	}
-	if _, err := transactions.Consume(t.Context(), provider.ID, transaction.State); err != nil {
+	if _, err := transactions.Consume(t.Context(), provider.ID, transaction.State, transaction.BrowserNonce); err != nil {
 		t.Fatalf("wrong-provider attempt consumed valid transaction: %v", err)
 	}
 
 	for _, failureMode := range []string{"wrong-issuer", "wrong-audience", "expired", "wrong-nonce", "bad-signature"} {
 		t.Run(failureMode, func(t *testing.T) {
 			mode = failureMode
-			state, _ := begin(t)
-			if _, _, err := adapter.Complete(t.Context(), state, "code"); err == nil {
+			state, browserNonce := begin(t)
+			if _, _, err := adapter.Complete(t.Context(), state, "code", browserNonce); err == nil {
 				t.Fatalf("OIDC callback unexpectedly accepted %s token", failureMode)
 			}
 		})
@@ -153,11 +164,13 @@ func TestGitHubOAuthUsesStableNumericIdentityWithPKCEAndReplayProtection(t *test
 	transactions := serverauth.NewLoginTransactions(pool, testSecrets(t))
 	var server *httptest.Server
 	var challenge string
+	var tokenCalls int
 	login, email := "octocat", "old@example.test"
 	githubID := int64(987654321)
 	var gateRequest githuboauth.AdmissionRequest
 	handler := http.NewServeMux()
 	handler.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		tokenCalls++
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)
 		}
@@ -192,18 +205,28 @@ func TestGitHubOAuthUsesStableNumericIdentityWithPKCEAndReplayProtection(t *test
 	}
 	complete := func(t *testing.T) (serverauth.ExternalIdentity, string) {
 		t.Helper()
-		location, err := adapter.Begin(t.Context(), "/settings")
+		start, err := adapter.Begin(t.Context(), "/settings")
 		if err != nil {
 			t.Fatal(err)
 		}
-		parsed, _ := url.Parse(location)
+		parsed, _ := url.Parse(start.AuthorizationURL)
 		query := parsed.Query()
 		if query.Get("code_challenge_method") != "S256" || query.Get("state") == "" {
 			t.Fatalf("GitHub authorize query missing state/PKCE: %s", parsed.RawQuery)
 		}
+		if start.BrowserNonce == "" || start.BrowserNonce == query.Get("state") {
+			t.Fatalf("GitHub browser nonce is missing or aliases OAuth state")
+		}
 		challenge = query.Get("code_challenge")
 		ctx := serverauth.WithAdmissionRequestID(t.Context(), "login-request")
-		completion, err := adapter.CompleteLogin(ctx, query.Get("state"), "code")
+		beforeTokenCalls := tokenCalls
+		if _, err := adapter.CompleteLogin(ctx, query.Get("state"), "code", "wrong-browser"); !errors.Is(err, serverauth.ErrInvalidState) {
+			t.Fatalf("wrong-browser GitHub callback error = %v", err)
+		}
+		if tokenCalls != beforeTokenCalls {
+			t.Fatalf("wrong-browser GitHub callback exchanged code")
+		}
+		completion, err := adapter.CompleteLogin(ctx, query.Get("state"), "code", start.BrowserNonce)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -211,7 +234,7 @@ func TestGitHubOAuthUsesStableNumericIdentityWithPKCEAndReplayProtection(t *test
 		if completion.Admission == nil || completion.Admission.RequestID != "login-request" || gateRequest.Client == nil || gateRequest.RequestID != "login-request" {
 			t.Fatalf("admission completion=%+v request=%+v", completion.Admission, gateRequest)
 		}
-		if _, _, err := adapter.Complete(t.Context(), query.Get("state"), "code"); !errors.Is(err, serverauth.ErrInvalidState) {
+		if _, _, err := adapter.Complete(t.Context(), query.Get("state"), "code", start.BrowserNonce); !errors.Is(err, serverauth.ErrInvalidState) {
 			t.Fatalf("GitHub callback replay error = %v", err)
 		}
 		return identity, returnTo
@@ -226,13 +249,13 @@ func TestGitHubOAuthUsesStableNumericIdentityWithPKCEAndReplayProtection(t *test
 		t.Fatalf("GitHub stable numeric identity/drift = first %+v second %+v", first, second)
 	}
 	githubID = 0
-	location, err := adapter.Begin(t.Context(), "")
+	start, err := adapter.Begin(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, _ := url.Parse(location)
+	parsed, _ := url.Parse(start.AuthorizationURL)
 	challenge = parsed.Query().Get("code_challenge")
-	if _, _, err := adapter.Complete(t.Context(), parsed.Query().Get("state"), "code"); err == nil {
+	if _, _, err := adapter.Complete(t.Context(), parsed.Query().Get("state"), "code", start.BrowserNonce); err == nil {
 		t.Fatal("GitHub OAuth accepted a user response without a stable positive numeric id")
 	}
 }

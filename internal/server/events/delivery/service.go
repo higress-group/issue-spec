@@ -268,7 +268,7 @@ func (s *Service) ExpandOne(ctx context.Context) (bool, error) {
 				matched, reason := matchesNotification(envelope, target.policy)
 				if !matched {
 					facts := envelope.Notification
-					issueKind, commentClass, actorClass := "ordinary", "", "human"
+					issueKind, commentClass, actorClass := "ordinary", "", "unknown"
 					if facts != nil {
 						issueKind, commentClass, actorClass = facts.IssueKind, facts.CommentClass, facts.ActorClass
 					}
