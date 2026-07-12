@@ -48,7 +48,7 @@ describe("repository integrations workspace", () => {
     await userEvent.setup().click(await screen.findByRole("button", { name: "New webhook" }));
     await userEvent.setup().type(screen.getByRole("textbox", { name: /^Receiver URL/ }), "http://127.0.0.1:19090/api/v1/runner/webhooks");
     await userEvent.setup().click(screen.getByRole("button", { name: "Create route" }));
-    await waitFor(() => expect(created).toMatchObject({ repository_id: repoId, url: "http://127.0.0.1:19090/api/v1/runner/webhooks", event_types: ["issue_comment.created", "issue_comment.edited"], retry: { max_attempts: 8, initial_backoff: "1s", max_backoff: "5m" } }));
+    await waitFor(() => expect(created).toMatchObject({ repository_id: repoId, url: "http://127.0.0.1:19090/api/v1/runner/webhooks", delivery_format: "issue-spec.v1", signing_mode: "bearer", event_types: ["issue_comment.created", "issue_comment.edited"], retry: { max_attempts: 8, initial_backoff: "1s", max_backoff: "5m" } }));
     expect(await screen.findByRole("dialog", { name: "Webhook secret v1" })).toHaveTextContent("show-once-secret");
   });
 
@@ -78,9 +78,9 @@ describe("repository integrations workspace", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Rotate secret" }));
     expect(await screen.findByRole("dialog", { name: "Webhook secret v2" })).toHaveTextContent("rotated-secret");
     await userEvent.setup().click(screen.getByRole("button", { name: "I saved it" }));
-    await userEvent.setup().click(screen.getByRole("button", { name: /issue_comment.created.*dead/ }));
+    await userEvent.setup().click(screen.getByRole("button", { name: /issue-spec.*created.*dead/ }));
     expect((await screen.findAllByText("HTTP 503"))[0]).toBeVisible();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Redeliver event" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Replay immutable delivery" }));
     await waitFor(() => expect(replayed).toBe(true));
   });
 
@@ -114,18 +114,64 @@ describe("repository integrations workspace", () => {
     expect(await screen.findByText(/without credentials, query, or fragment/i)).toBeVisible();
     expect(requests).toBe(0);
   });
+
+  it("creates a filtered GitHub notification without rehydrating its query credential", async () => {
+    let created: Record<string, unknown> | undefined;
+    server.use(
+      metaHandler(),
+      http.get(webhookCollectionPath(), () => HttpResponse.json({ subscriptions: [] })),
+      http.get(deliveryCollectionPath(), () => HttpResponse.json({ deliveries: [] })),
+      http.post(webhookCollectionPath(), async ({ request }) => { created = await request.json() as Record<string, unknown>; return HttpResponse.json(webhookFixture({ url: "https://robot.example.test/hook", delivery_format: "github.v3", signing_mode: "hmac-sha256", has_destination_query: true, secret: "github-hmac-secret", secret_version: 1 }), { status: 201 }); }),
+    );
+    const { container } = renderIntegration("webhooks");
+    await userEvent.setup().click(await screen.findByRole("button", { name: "New webhook" }));
+    await userEvent.setup().click(screen.getByRole("radio", { name: /GitHub-compatible notification/i }));
+    await userEvent.setup().type(screen.getByRole("textbox", { name: /^Receiver URL/ }), "https://robot.example.test/hook?access_token=browser-secret");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Create route" }));
+    await waitFor(() => expect(created).toMatchObject({ delivery_format: "github.v3", signing_mode: "hmac-sha256", url: "https://robot.example.test/hook?access_token=browser-secret", content_policy: { issue_actions: ["opened", "edited", "closed", "reopened"], comment_classes: ["human-untyped"], actor_classes: ["human"] } }));
+    expect(await screen.findByRole("dialog", { name: "Webhook secret v1" })).toHaveTextContent("github-hmac-secret");
+    expect((await axe.run(container)).violations).toEqual([]);
+  });
+
+  it("shows encrypted-query and suppression state without returning credential material", async () => {
+    const notification = webhookFixture({ url: "https://robot.example.test/hook", delivery_format: "github.v3", signing_mode: "hmac-sha256", has_destination_query: true });
+    server.use(
+      metaHandler(),
+      http.get(webhookCollectionPath(), () => HttpResponse.json({ subscriptions: [notification] })),
+      http.get(deliveryCollectionPath(), () => HttpResponse.json({ deliveries: [] })),
+      http.get(`${webhookCollectionPath()}/${webhookId}/suppressions`, () => HttpResponse.json({ suppressions: [{ id: "99999999-9999-4999-8999-999999999999", organization_id: orgId, repository_id: repoId, event_id: eventId, subscription_id: webhookId, event_type: "issue_comment.created", action: "created", issue_kind: "proposal", comment_class: "typed", actor_class: "human", reason: "comment_class_filtered", created_at: "2026-07-11T10:00:00Z" }] })),
+    );
+    renderIntegration("webhooks");
+    expect(await screen.findByText("Encrypted destination credential")).toBeVisible();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Configure" }));
+    expect(screen.getByRole("textbox", { name: /^Receiver URL/ })).toHaveValue("https://robot.example.test/hook");
+    expect(screen.getByText(/encrypted query is intentionally absent/i)).toBeVisible();
+    expect(screen.queryByText(/access_token/i)).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Suppressions" }));
+    expect(await screen.findByText(/comment class filtered/i)).toBeVisible();
+  });
+
+  it("does not fetch or reveal integration configuration without integrations.manage", async () => {
+    let webhookReads = 0;
+    server.use(metaHandler(), http.get(webhookCollectionPath(), () => { webhookReads += 1; return HttpResponse.json({ subscriptions: [] }); }));
+    renderIntegration("webhooks", ["read"]);
+    expect(await screen.findByText("Integration management required")).toBeVisible();
+    expect(webhookReads).toBe(0);
+  });
 });
 
-function renderIntegration(kind: "source" | "webhooks") {
-  server.use(repositoryHandler());
+function renderIntegration(kind: "source" | "webhooks", allowedActions?: string[]) {
+  server.use(repositoryHandler(), repositoryAccessHandler(allowedActions));
   const route = `/orgs/${orgId}/repos/${repoId}/integrations/${kind === "source" ? "source" : "webhooks"}`;
   return renderApp(<Routes><Route path="/orgs/:orgId/repos/:repoId/integrations/source" element={<IntegrationsPage kind="source" />} /><Route path="/orgs/:orgId/repos/:repoId/integrations/webhooks" element={<IntegrationsPage kind="webhooks" />} /></Routes>, route);
 }
 function repositoryHandler() { return http.get(`http://localhost/api/v1/orgs/${orgId}/repos/${repoId}`, () => HttpResponse.json({ id: repoId, organization_id: orgId, name: "issue-spec", display_name: "Issue Spec", description: "Issue-native specifications", visibility: "private", default_branch: "main", contribution_policy: "members", representation_version: 1 })); }
+function repositoryAccessHandler(allowed_actions = ["read", "integrations.manage"]) { return http.get(`http://localhost/api/v1/context/orgs/${orgId}/repos`, () => HttpResponse.json({ repositories: [{ repository: { id: repoId, organization_id: orgId, name: "issue-spec", display_name: "Issue Spec", visibility: "private", contribution_policy: "members" }, effective_permission: allowed_actions.includes("integrations.manage") ? "maintain" : "read", allowed_actions }] })); }
 function metaHandler() { return http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ api_version: "v1", features: { bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: true, webhooks: true, change_boards: true, runner: true, recovery_exchange: true } })); }
 function sourcePath(suffix: string) { return `http://localhost/api/v1/orgs/${orgId}/repos/${repoId}/bindings${suffix}`; }
 function webhookCollectionPath() { return `http://localhost/api/v1/orgs/${orgId}/webhooks`; }
 function deliveryCollectionPath() { return `http://localhost/api/v1/orgs/${orgId}/repos/${repoId}/deliveries`; }
 function bindingFixture(overrides: Record<string, unknown> = {}) { return { id: "11111111-1111-4111-8111-111111111111", provider_key: "github", external_repository_id: "higress-group/issue-spec", clone_url: "https://github.com/higress-group/issue-spec.git", web_url: "https://github.com/higress-group/issue-spec", default_branch: "main", version: 1, active: true, created_at: "2026-07-11T09:00:00Z", updated_at: "2026-07-11T09:00:00Z", ...overrides }; }
-function webhookFixture(overrides: Record<string, unknown> = {}) { return { id: webhookId, organization_id: orgId, repository_id: repoId, scope_type: "repository", url: "http://127.0.0.1:19090/api/v1/runner/webhooks", active: true, event_types: ["issue_comment.created", "issue_comment.edited"], retry: { max_attempts: 8, initial_backoff: "1s", max_backoff: "5m0s" }, representation_version: 3, created_at: "2026-07-11T09:00:00Z", updated_at: "2026-07-11T09:30:00Z", ...overrides }; }
-function deliveryFixture(overrides: Record<string, unknown> = {}) { return { id: deliveryId, scope: { OrgID: orgId, RepoID: repoId }, event_id: eventId, subscription_id: webhookId, state: "dead", next_attempt_at: "2026-07-11T10:05:00Z", last_error: "HTTP 503", representation_version: 2, created_at: "2026-07-11T10:00:00Z", updated_at: "2026-07-11T10:01:00Z", event_type: "issue_comment.created", repository_sequence: 14, secret_version: 1, ...overrides }; }
+const contentPolicy = { issue_actions: ["opened", "edited", "closed", "reopened"], comment_actions: ["created", "edited"], issue_kinds: ["ordinary", "proposal", "design", "implement"], comment_classes: ["human-untyped"], actor_classes: ["human"] };
+function webhookFixture(overrides: Record<string, unknown> = {}) { return { id: webhookId, organization_id: orgId, repository_id: repoId, scope_type: "repository", url: "http://127.0.0.1:19090/api/v1/runner/webhooks", active: true, event_types: ["issue_comment.created", "issue_comment.edited"], delivery_format: "issue-spec.v1", signing_mode: "bearer", content_policy: contentPolicy, has_destination_query: false, retry: { max_attempts: 8, initial_backoff: "1s", max_backoff: "5m0s" }, representation_version: 3, created_at: "2026-07-11T09:00:00Z", updated_at: "2026-07-11T09:30:00Z", ...overrides }; }
+function deliveryFixture(overrides: Record<string, unknown> = {}) { return { id: deliveryId, scope: { OrgID: orgId, RepoID: repoId }, event_id: eventId, subscription_id: webhookId, state: "dead", next_attempt_at: "2026-07-11T10:05:00Z", last_error: "HTTP 503", representation_version: 2, created_at: "2026-07-11T10:00:00Z", updated_at: "2026-07-11T10:01:00Z", event_type: "issue_comment.created", delivery_format: "issue-spec.v1", event_name: "issue-spec", action: "created", repository_sequence: 14, secret_version: 1, ...overrides }; }

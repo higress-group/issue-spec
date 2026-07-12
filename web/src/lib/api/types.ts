@@ -199,6 +199,21 @@ export const webhookRetrySchema = z.object({
   max_backoff: z.string().min(1),
 });
 
+export const webhookDeliveryFormatSchema = z.enum(["issue-spec.v1", "github.v3"]);
+export const webhookSigningModeSchema = z.enum(["bearer", "none", "hmac-sha256"]);
+export const webhookIssueActionSchema = z.enum(["opened", "edited", "closed", "reopened"]);
+export const webhookCommentActionSchema = z.enum(["created", "edited"]);
+export const webhookIssueKindSchema = z.enum(["ordinary", "proposal", "design", "implement"]);
+export const webhookCommentClassSchema = z.enum(["human-untyped", "typed"]);
+export const webhookActorClassSchema = z.enum(["human"]);
+export const webhookContentPolicySchema = z.object({
+  issue_actions: z.array(webhookIssueActionSchema),
+  comment_actions: z.array(webhookCommentActionSchema),
+  issue_kinds: z.array(webhookIssueKindSchema).min(1),
+  comment_classes: z.array(webhookCommentClassSchema),
+  actor_classes: z.array(webhookActorClassSchema).min(1),
+});
+
 export const webhookSubscriptionSchema = z.object({
   id: z.string().uuid(),
   organization_id: z.string().uuid(),
@@ -208,6 +223,10 @@ export const webhookSubscriptionSchema = z.object({
   active: z.boolean(),
   revoked_at: timestampSchema.nullable().optional(),
   event_types: z.array(z.string().min(1)).min(1),
+  delivery_format: webhookDeliveryFormatSchema,
+  signing_mode: webhookSigningModeSchema,
+  content_policy: webhookContentPolicySchema,
+  has_destination_query: z.boolean(),
   retry: webhookRetrySchema,
   representation_version: z.number().int().positive(),
   created_at: timestampSchema,
@@ -221,6 +240,9 @@ export const webhookSecretSchema = webhookSubscriptionSchema.extend({
 export type WebhookSubscription = z.infer<typeof webhookSubscriptionSchema>;
 export type WebhookRetry = z.infer<typeof webhookRetrySchema>;
 export type WebhookSecret = z.infer<typeof webhookSecretSchema>;
+export type WebhookDeliveryFormat = z.infer<typeof webhookDeliveryFormatSchema>;
+export type WebhookSigningMode = z.infer<typeof webhookSigningModeSchema>;
+export type WebhookContentPolicy = z.infer<typeof webhookContentPolicySchema>;
 
 export const webhookDeliveryStateSchema = z.enum(["pending", "delivering", "succeeded", "failed", "dead"]);
 
@@ -239,6 +261,9 @@ export const webhookDeliverySchema = z.object({
   event_type: z.string().min(1),
   repository_sequence: z.number().int().nonnegative(),
   secret_version: z.number().int().positive(),
+  delivery_format: webhookDeliveryFormatSchema,
+  event_name: z.string().min(1),
+  action: z.string(),
 });
 export const webhookDeliveriesSchema = z.object({ deliveries: z.array(webhookDeliverySchema) });
 export const webhookDeliveryAttemptSchema = z.object({
@@ -257,3 +282,20 @@ export const webhookDeliveryDetailSchema = z.object({
 export type WebhookDelivery = z.infer<typeof webhookDeliverySchema>;
 export type WebhookDeliveryDetail = z.infer<typeof webhookDeliveryDetailSchema>;
 export type WebhookDeliveryState = z.infer<typeof webhookDeliveryStateSchema>;
+
+export const webhookSuppressionSchema = z.object({
+  id: z.string().uuid(),
+  organization_id: z.string().uuid(),
+  repository_id: z.string().uuid(),
+  event_id: z.string().uuid(),
+  subscription_id: z.string().uuid(),
+  event_type: z.string().min(1),
+  action: z.string().min(1),
+  issue_kind: webhookIssueKindSchema,
+  comment_class: webhookCommentClassSchema.nullable().optional(),
+  actor_class: webhookActorClassSchema,
+  reason: z.string().min(1),
+  created_at: timestampSchema,
+});
+export const webhookSuppressionsSchema = z.object({ suppressions: z.array(webhookSuppressionSchema) });
+export type WebhookSuppression = z.infer<typeof webhookSuppressionSchema>;

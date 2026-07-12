@@ -23,13 +23,17 @@ import {
   webhookSecretSchema,
   webhookSubscriptionSchema,
   webhookSubscriptionsSchema,
+  webhookSuppressionsSchema,
   type SourceBinding,
+  type WebhookContentPolicy,
+  type WebhookDeliveryFormat,
   type WebhookRetry,
+  type WebhookSigningMode,
 } from "./types";
 
 type SourceBindingInput = Pick<SourceBinding, "provider_key" | "external_repository_id" | "clone_url" | "web_url" | "default_branch">;
-type WebhookInput = { repository_id: string; url: string; event_types: string[]; retry: WebhookRetry };
-type WebhookUpdateInput = Omit<WebhookInput, "repository_id"> & { active: boolean; expected_version: number };
+type WebhookInput = { repository_id: string; url: string; event_types: string[]; delivery_format: WebhookDeliveryFormat; signing_mode: WebhookSigningMode; content_policy: WebhookContentPolicy; retry: WebhookRetry };
+type WebhookUpdateInput = Omit<WebhookInput, "repository_id"> & { active: boolean; expected_version: number; clear_destination_query?: boolean };
 
 export const api = {
   meta: (signal?: AbortSignal) => apiRequest("/api/v1/meta", { schema: metaSchema, signal }),
@@ -98,6 +102,8 @@ export const api = {
     apiRequest(`/api/v1/orgs/${orgId}/webhooks/${webhookId}/rotate-secret`, { method: "POST", schema: webhookSecretSchema }),
   revokeWebhookSubscription: (orgId: string, webhookId: string) =>
     apiRequest<void>(`/api/v1/orgs/${orgId}/webhooks/${webhookId}`, { method: "DELETE" }),
+  webhookSuppressions: (orgId: string, webhookId: string, signal?: AbortSignal) =>
+    apiRequest(`/api/v1/orgs/${orgId}/webhooks/${webhookId}/suppressions`, { schema: webhookSuppressionsSchema, signal }),
   webhookDeliveries: (orgId: string, repoId: string, signal?: AbortSignal) =>
     apiRequest(`/api/v1/orgs/${orgId}/repos/${repoId}/deliveries`, { schema: webhookDeliveriesSchema, signal }),
   webhookDelivery: (orgId: string, repoId: string, deliveryId: string, signal?: AbortSignal) =>
