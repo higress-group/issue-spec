@@ -181,8 +181,53 @@ func (a *app) applyNonAtomicTransition(ctx context.Context, client github.Operat
 		a.errorf("patch %s: %v\n", request.ExpectedID, err)
 		return 1
 	}
-	result.Action, result.URL = "updated", updated.HTMLURL
+	observed, err := observeCommentByID(ctx, client, repo, issue, artifact.CommentID)
+	if err != nil {
+		return a.nonAtomicPostWriteFailure("comment_post_write_observation_failed", transition.Body, "", fmt.Sprintf("re-observe %s after patch: %v", request.ExpectedID, err), jsonOut)
+	}
+	if observed.Body != transition.Body {
+		return a.nonAtomicPostWriteFailure("comment_post_write_mismatch", transition.Body, observed.Body, fmt.Sprintf("non-atomic patch %s was overwritten or did not persist", request.ExpectedID), jsonOut)
+	}
+	result.Action, result.URL, result.AfterDigest = "updated", observed.HTMLURL, bodyDigest(observed.Body)
+	if result.URL == "" {
+		result.URL = updated.HTMLURL
+	}
 	return a.outputTransition(result, jsonOut)
+}
+
+func observeCommentByID(ctx context.Context, client github.Operations, repo string, issue int, commentID int64) (github.Comment, error) {
+	comments, err := client.ListIssueComments(ctx, repo, issue)
+	if err != nil {
+		return github.Comment{}, err
+	}
+	var matches []github.Comment
+	for _, comment := range comments {
+		if comment.ID == commentID {
+			matches = append(matches, comment)
+		}
+	}
+	if len(matches) != 1 {
+		return github.Comment{}, fmt.Errorf("expected exactly one comment id %d, found %d", commentID, len(matches))
+	}
+	return matches[0], nil
+}
+
+func (a *app) nonAtomicPostWriteFailure(code, plannedBody, observedBody, message string, jsonOut bool) int {
+	plannedDigest := bodyDigest(plannedBody)
+	if jsonOut {
+		payload := map[string]any{"ok": false, "code": code, "message": message, "planned_digest": plannedDigest}
+		if observedBody != "" {
+			payload["current_digest"] = bodyDigest(observedBody)
+		}
+		_ = a.outputJSON(payload)
+		return 1
+	}
+	if observedBody == "" {
+		a.errorf("%s; planned_digest=%s\n", message, plannedDigest)
+	} else {
+		a.errorf("%s; planned_digest=%s current_digest=%s\n", message, plannedDigest, bodyDigest(observedBody))
+	}
+	return 1
 }
 
 func transitionResult(issue int, artifact model.Artifact, transition model.TransitionResult, guarantee github.CommentMutationGuarantee, atomic bool, expected, current int64, before string) commentTransitionResult {

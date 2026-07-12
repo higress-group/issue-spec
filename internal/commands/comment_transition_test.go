@@ -100,8 +100,11 @@ func TestCommentTransitionConflictAndStrictUnsupportedDoNotWrite(t *testing.T) {
 
 func TestCommentTransitionExplicitNonAtomicReportsDigests(t *testing.T) {
 	body := transitionCommandBody(t, "confirmed")
-	var updated string
+	updated := body
 	plain := transitionFake(body)
+	plain.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+		return []github.Comment{{ID: 7, HTMLURL: "https://example.test/c/7", Body: updated}}, nil
+	}
 	plain.updateComment = func(_ context.Context, _ string, _ int64, value string) (github.Comment, error) {
 		updated = value
 		return github.Comment{ID: 7, HTMLURL: "https://example.test/c/7", Body: value}, nil
@@ -120,13 +123,43 @@ func TestCommentTransitionExplicitNonAtomicReportsDigests(t *testing.T) {
 	}
 }
 
+func TestCommentTransitionNonAtomicRejectsPostWriteMismatch(t *testing.T) {
+	body := transitionCommandBody(t, "confirmed")
+	current := body
+	writes := 0
+	plain := transitionFake(body)
+	plain.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+		return []github.Comment{{ID: 7, HTMLURL: "https://example.test/c/7", Body: current}}, nil
+	}
+	plain.updateComment = func(_ context.Context, _ string, _ int64, value string) (github.Comment, error) {
+		writes++
+		current = value + "\n\nConcurrent overwrite."
+		return github.Comment{ID: 7, HTMLURL: "https://example.test/c/7", Body: value}, nil
+	}
+	app, out := transitionApp(plain)
+	args := []string{"--repo", "o/r", "--issue", "5", "--id", "PROCESS-001", "--to", "done", "--expected-digest", bodyDigest(body), "--allow-nonatomic", "--json"}
+	if code := app.runCommentTransition(context.Background(), args); code != 1 {
+		t.Fatalf("code=%d out=%s", code, out.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["code"] != "comment_post_write_mismatch" || got["planned_digest"] == "" || got["current_digest"] == "" || got["planned_digest"] == got["current_digest"] || writes != 1 {
+		t.Fatalf("got=%v writes=%d", got, writes)
+	}
+}
+
 func TestQuestionResolveKeepsCompatibilityOutputThroughTransitionPrimitive(t *testing.T) {
 	body, err := templates.QuestionComment(templates.QuestionOptions{ID: "QUESTION-001", Agent: "Coordinator", Status: "blocked", Scope: "test", Blocking: true, Question: "Which?", Assumption: "A"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var updated string
+	updated := body
 	backend := transitionFake(body)
+	backend.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+		return []github.Comment{{ID: 7, HTMLURL: "https://example.test/c/7", Body: updated}}, nil
+	}
 	backend.updateComment = func(_ context.Context, _ string, _ int64, value string) (github.Comment, error) {
 		updated = value
 		return github.Comment{ID: 7, HTMLURL: "https://example.test/c/7"}, nil
