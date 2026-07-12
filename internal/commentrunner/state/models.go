@@ -32,6 +32,7 @@ const (
 var ErrInvalidTransition = errors.New("invalid job lifecycle transition")
 
 var processWorkspaceReservationIdentityPattern = regexp.MustCompile(`^identity:[0-9a-f]{32}$`)
+var exactProcessTargetPattern = regexp.MustCompile(`^PROCESS-[0-9]{3,}$`)
 
 type RunnerState struct {
 	SchemaVersion     int                          `json:"schema_version"`
@@ -223,6 +224,7 @@ type Job struct {
 	CommandID             string                      `json:"command_id,omitempty"`
 	CommandName           string                      `json:"command_name,omitempty"`
 	CommandPrompt         string                      `json:"command_prompt,omitempty"`
+	ExactProcessID        string                      `json:"exact_process_id,omitempty"`
 	CommandIdempotencyKey string                      `json:"command_idempotency_key,omitempty"`
 	StatusWritebackKey    string                      `json:"status_writeback_key,omitempty"`
 	Status                LifecycleStatus             `json:"status,omitempty"`
@@ -246,6 +248,36 @@ type Job struct {
 	ProcessWorkspace      *ProcessWorkspaceAssignment `json:"process_workspace_assignment,omitempty"`
 	CoordinatorSummary    string                      `json:"coordinator_summary,omitempty"`
 	Diagnostics           []string                    `json:"diagnostics,omitempty"`
+}
+
+func (j *Job) UnmarshalJSON(data []byte) error {
+	type alias Job
+	var decoded alias
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("decode job: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("decode job: unexpected trailing JSON")
+	}
+	value := Job(decoded)
+	if err := validateExactProcessTarget(value.ExactProcessID); err != nil {
+		return err
+	}
+	*j = value
+	return nil
+}
+
+func validateExactProcessTarget(id string) error {
+	if id == "" {
+		return nil
+	}
+	if id != strings.TrimSpace(id) || !exactProcessTargetPattern.MatchString(id) {
+		return fmt.Errorf("job exact process id %q is invalid", id)
+	}
+	return nil
 }
 
 // ProcessWorkspaceAssignment is the durable, portable link from a runner job
@@ -688,6 +720,9 @@ func (s RunnerState) Validate() error {
 		return fmt.Errorf("process workspaces: %w", err)
 	}
 	for key, job := range s.Jobs {
+		if err := validateExactProcessTarget(job.ExactProcessID); err != nil {
+			return fmt.Errorf("job %q: %w", key, err)
+		}
 		if job.ProcessWorkspace == nil {
 			continue
 		}
@@ -742,6 +777,12 @@ func (s *RunnerState) UpsertJob(job Job) error {
 	s.Normalize()
 	if strings.TrimSpace(job.ID) == "" {
 		return fmt.Errorf("job id is required")
+	}
+	if err := validateExactProcessTarget(job.ExactProcessID); err != nil {
+		return err
+	}
+	if existing, ok := s.Jobs[job.ID]; ok && existing.ExactProcessID != job.ExactProcessID {
+		return errors.New("job exact process id is immutable")
 	}
 	if job.ProcessWorkspace != nil {
 		if err := job.ProcessWorkspace.Validate(); err != nil {

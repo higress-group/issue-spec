@@ -15,6 +15,7 @@ func TestParseCommandCommentAcceptsNormalizedCommands(t *testing.T) {
 		wantVerb      CommandVerb
 		wantPrompt    string
 		wantSessionID string
+		wantProcessID string
 	}{
 		{
 			name:       "new free form prompt",
@@ -29,10 +30,67 @@ func TestParseCommandCommentAcceptsNormalizedCommands(t *testing.T) {
 			wantPrompt: "fix the issue and keep scope narrow",
 		},
 		{
+			name:       "new whole quoted process text stays prompt",
+			body:       `/new "document --process PROCESS-999 as literal text"`,
+			wantVerb:   VerbNew,
+			wantPrompt: "document --process PROCESS-999 as literal text",
+		},
+		{
+			name:       "new process substring without token boundary stays prompt",
+			body:       `/new document foo--processbar as literal text`,
+			wantVerb:   VerbNew,
+			wantPrompt: "document foo--processbar as literal text",
+		},
+		{
 			name:          "resume quoted prompt",
-			body:          `/resume sess-ABC_123 "continue the previous turn"`,
+			body:          `/resume sess-ABC_123 --process PROCESS-008 "continue --process PROCESS-999 as text"`,
+			wantVerb:      VerbResume,
+			wantPrompt:    "continue --process PROCESS-999 as text",
+			wantSessionID: "sess-ABC_123",
+			wantProcessID: "PROCESS-008",
+		},
+		{
+			name:          "resume single quoted process text stays prompt",
+			body:          `/resume sess-ABC_123 --process PROCESS-008 'continue --process PROCESS-999 as text'`,
+			wantVerb:      VerbResume,
+			wantPrompt:    "continue --process PROCESS-999 as text",
+			wantSessionID: "sess-ABC_123",
+			wantProcessID: "PROCESS-008",
+		},
+		{
+			name:          "resume escaped quote keeps process text quoted",
+			body:          `/resume sess-ABC_123 --process PROCESS-008 "say \"--process PROCESS-999\" as text"`,
+			wantVerb:      VerbResume,
+			wantPrompt:    `say "--process PROCESS-999" as text`,
+			wantSessionID: "sess-ABC_123",
+			wantProcessID: "PROCESS-008",
+		},
+		{
+			name:          "ordinary unmatched quote remains prompt",
+			body:          `/resume sess-ABC_123 explain "ordinary text`,
+			wantVerb:      VerbResume,
+			wantPrompt:    `explain "ordinary text`,
+			wantSessionID: "sess-ABC_123",
+		},
+		{
+			name:          "resume orchestration without process",
+			body:          `/resume sess-ABC_123 continue the previous turn`,
 			wantVerb:      VerbResume,
 			wantPrompt:    "continue the previous turn",
+			wantSessionID: "sess-ABC_123",
+		},
+		{
+			name:          "resume escaped process prefix stays prompt",
+			body:          `/resume sess-ABC_123 \--process PROCESS-999 as literal text`,
+			wantVerb:      VerbResume,
+			wantPrompt:    `\--process PROCESS-999 as literal text`,
+			wantSessionID: "sess-ABC_123",
+		},
+		{
+			name:          "resume quoted process prefix stays prompt",
+			body:          `/resume sess-ABC_123 "--process" PROCESS-999 as literal text`,
+			wantVerb:      VerbResume,
+			wantPrompt:    `"--process" PROCESS-999 as literal text`,
 			wantSessionID: "sess-ABC_123",
 		},
 		{
@@ -59,7 +117,7 @@ func TestParseCommandCommentAcceptsNormalizedCommands(t *testing.T) {
 				t.Fatalf("status = %s rejection=%+v, want accepted", result.Status, result.Rejection)
 			}
 			got := result.Candidate
-			if got.Verb != tt.wantVerb || got.Prompt != tt.wantPrompt || got.PublicSessionID != tt.wantSessionID {
+			if got.Verb != tt.wantVerb || got.Prompt != tt.wantPrompt || got.PublicSessionID != tt.wantSessionID || got.ExactProcessID != tt.wantProcessID {
 				t.Fatalf("candidate = %+v", got)
 			}
 			if got.Repo != "o/r" || got.Issue != 9 || got.TriggerCommentID != 101 || got.Commenter != "alice" {
@@ -96,6 +154,19 @@ func TestParseCommandCommentRejectsMalformedCommands(t *testing.T) {
 		{name: "resume malformed session slash", body: "/resume bad/id continue", wantReason: ReasonMalformedSessionID},
 		{name: "resume malformed session flag", body: "/resume -danger continue", wantReason: ReasonMalformedSessionID},
 		{name: "resume missing prompt", body: "/resume sess-123", wantReason: ReasonMissingPrompt},
+		{name: "resume missing process id", body: "/resume sess-123 --process", wantReason: ReasonMissingProcessID},
+		{name: "resume malformed process id", body: "/resume sess-123 --process PROCESS-8 work", wantReason: ReasonMalformedProcessID},
+		{name: "resume duplicate process flag", body: "/resume sess-123 --process PROCESS-008 --process PROCESS-009 work", wantReason: ReasonDuplicateProcessFlag},
+		{name: "resume duplicate after closed quote with trailing quote", body: `/resume sess-123 --process PROCESS-008 "safe" --process PROCESS-999 "`, wantReason: ReasonDuplicateProcessFlag},
+		{name: "resume misplaced process flag", body: "/resume sess-123 work --process PROCESS-008", wantReason: ReasonUnexpectedProcessFlag},
+		{name: "resume misplaced after closed single quote", body: `/resume sess-123 'safe' --process PROCESS-999`, wantReason: ReasonUnexpectedProcessFlag},
+		{name: "resume malformed flag-like token", body: "/resume sess-123 work --process=PROCESS-008", wantReason: ReasonMalformedProcessID},
+		{name: "resume unquoted prefix with escaped suffix", body: `/resume sess-123 work --process\\`, wantReason: ReasonMalformedProcessID},
+		{name: "resume unclosed quote around process text", body: `/resume sess-123 "safe --process PROCESS-999`, wantReason: ReasonMalformedCommandSyntax},
+		{name: "resume excess quote around process text", body: `/resume sess-123 "safe"--process PROCESS-999`, wantReason: ReasonMalformedCommandSyntax},
+		{name: "resume invalid escape around process text", body: `/resume sess-123 "safe \q --process PROCESS-999"`, wantReason: ReasonMalformedCommandSyntax},
+		{name: "new process rejected", body: "/new --process PROCESS-008 work", wantReason: ReasonUnexpectedProcessFlag},
+		{name: "new unquoted prefix with escaped suffix", body: `/new work --process\\`, wantReason: ReasonUnexpectedProcessFlag},
 		{name: "bare cancel rejected", body: "/cancel", wantReason: ReasonBareCancelAmbiguous},
 		{name: "cancel extra prompt rejected", body: "/cancel sess-123 please stop", wantReason: ReasonUnexpectedCancelText},
 	}
@@ -113,6 +184,16 @@ func TestParseCommandCommentRejectsMalformedCommands(t *testing.T) {
 				t.Fatalf("result = %+v, want rejection %s", result, tt.wantReason)
 			}
 		})
+	}
+}
+
+func TestCommandIdempotencyExplicitlyIncludesExactProcess(t *testing.T) {
+	comment := TriggerComment{Repo: "o/r", Issue: 1, CommentID: 2, Commenter: "alice"}
+	bodyHash := BodyHash("same normalized body")
+	first := commandIdempotencyKey(comment, VerbResume, "sess-1", "PROCESS-008", bodyHash)
+	second := commandIdempotencyKey(comment, VerbResume, "sess-1", "PROCESS-009", bodyHash)
+	if first == second {
+		t.Fatal("exact PROCESS id did not affect idempotency")
 	}
 }
 

@@ -30,13 +30,18 @@ const (
 type RejectionReason string
 
 const (
-	ReasonUnknownCommand       RejectionReason = "unknown_command"
-	ReasonMissingPrompt        RejectionReason = "missing_prompt"
-	ReasonMissingSessionID     RejectionReason = "missing_session_id"
-	ReasonMalformedSessionID   RejectionReason = "malformed_session_id"
-	ReasonBareCancelAmbiguous  RejectionReason = "bare_cancel_ambiguous"
-	ReasonUnexpectedCancelText RejectionReason = "unexpected_cancel_text"
-	ReasonInvalidMetadata      RejectionReason = "invalid_metadata"
+	ReasonUnknownCommand         RejectionReason = "unknown_command"
+	ReasonMissingPrompt          RejectionReason = "missing_prompt"
+	ReasonMissingSessionID       RejectionReason = "missing_session_id"
+	ReasonMalformedSessionID     RejectionReason = "malformed_session_id"
+	ReasonBareCancelAmbiguous    RejectionReason = "bare_cancel_ambiguous"
+	ReasonUnexpectedCancelText   RejectionReason = "unexpected_cancel_text"
+	ReasonMissingProcessID       RejectionReason = "missing_process_id"
+	ReasonMalformedProcessID     RejectionReason = "malformed_process_id"
+	ReasonDuplicateProcessFlag   RejectionReason = "duplicate_process_flag"
+	ReasonUnexpectedProcessFlag  RejectionReason = "unexpected_process_flag"
+	ReasonMalformedCommandSyntax RejectionReason = "malformed_command_syntax"
+	ReasonInvalidMetadata        RejectionReason = "invalid_metadata"
 )
 
 type TriggerComment struct {
@@ -64,6 +69,7 @@ type CommandCandidate struct {
 	Verb                   CommandVerb `json:"verb"`
 	Prompt                 string      `json:"prompt,omitempty"`
 	PublicSessionID        string      `json:"public_session_id,omitempty"`
+	ExactProcessID         string      `json:"exact_process_id,omitempty"`
 }
 
 type CommandRejection struct {
@@ -77,7 +83,10 @@ type ParseResult struct {
 	Rejection CommandRejection `json:"rejection,omitempty"`
 }
 
-var publicSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$`)
+var (
+	publicSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$`)
+	exactProcessIDPattern  = regexp.MustCompile(`^PROCESS-[0-9]{3,}$`)
+)
 
 func ParseCommandComment(comment TriggerComment) ParseResult {
 	body := strings.TrimLeftFunc(comment.Body, unicode.IsSpace)
@@ -88,11 +97,18 @@ func ParseCommandComment(comment TriggerComment) ParseResult {
 	token, rest := splitToken(body)
 	switch token {
 	case "/new":
+		flags := scanProcessFlagTokens(rest)
+		if flags.hasFlagLike() {
+			return rejected(ReasonUnexpectedProcessFlag, "/new does not accept --process")
+		}
+		if flags.MalformedSyntax {
+			return rejected(ReasonMalformedCommandSyntax, "malformed quoting or escaping around --process text")
+		}
 		prompt := normalizePromptTail(rest)
 		if prompt == "" {
 			return rejected(ReasonMissingPrompt, "/new requires prompt text")
 		}
-		return accepted(comment, VerbNew, "", prompt)
+		return accepted(comment, VerbNew, "", "", prompt)
 	case "/resume":
 		sessionID, promptTail := splitToken(strings.TrimLeftFunc(rest, unicode.IsSpace))
 		if sessionID == "" {
@@ -101,11 +117,43 @@ func ParseCommandComment(comment TriggerComment) ParseResult {
 		if err := ValidatePublicSessionID(sessionID); err != nil {
 			return rejected(ReasonMalformedSessionID, err.Error())
 		}
+		exactProcessID := ""
+		first, afterFirst := splitToken(strings.TrimLeftFunc(promptTail, unicode.IsSpace))
+		if first == "--process" {
+			exactProcessID, promptTail = splitToken(strings.TrimLeftFunc(afterFirst, unicode.IsSpace))
+			if exactProcessID == "" {
+				return rejected(ReasonMissingProcessID, "--process requires an exact PROCESS id")
+			}
+			if err := ValidateExactProcessID(exactProcessID); err != nil {
+				return rejected(ReasonMalformedProcessID, err.Error())
+			}
+			flags := scanProcessFlagTokens(promptTail)
+			if flags.Exact > 0 {
+				return rejected(ReasonDuplicateProcessFlag, "--process may appear only once before the prompt")
+			}
+			if flags.Malformed > 0 {
+				return rejected(ReasonMalformedProcessID, "malformed --process flag")
+			}
+			if flags.MalformedSyntax {
+				return rejected(ReasonMalformedCommandSyntax, "malformed quoting or escaping around --process text")
+			}
+		} else {
+			flags := scanProcessFlagTokens(promptTail)
+			if flags.Malformed > 0 {
+				return rejected(ReasonMalformedProcessID, "malformed --process flag")
+			}
+			if flags.Exact > 0 {
+				return rejected(ReasonUnexpectedProcessFlag, "--process must immediately follow the public session id")
+			}
+			if flags.MalformedSyntax {
+				return rejected(ReasonMalformedCommandSyntax, "malformed quoting or escaping around --process text")
+			}
+		}
 		prompt := normalizePromptTail(promptTail)
 		if prompt == "" {
 			return rejected(ReasonMissingPrompt, "/resume requires prompt text")
 		}
-		return accepted(comment, VerbResume, sessionID, prompt)
+		return accepted(comment, VerbResume, sessionID, exactProcessID, prompt)
 	case "/cancel":
 		sessionID, extra := splitToken(strings.TrimLeftFunc(rest, unicode.IsSpace))
 		if sessionID == "" {
@@ -117,10 +165,17 @@ func ParseCommandComment(comment TriggerComment) ParseResult {
 		if strings.TrimSpace(extra) != "" {
 			return rejected(ReasonUnexpectedCancelText, "/cancel accepts only a public session id")
 		}
-		return accepted(comment, VerbCancel, sessionID, "")
+		return accepted(comment, VerbCancel, sessionID, "", "")
 	default:
 		return rejected(ReasonUnknownCommand, fmt.Sprintf("unsupported runner command %q", strings.TrimPrefix(token, "/")))
 	}
+}
+
+func ValidateExactProcessID(id string) error {
+	if id != strings.TrimSpace(id) || !exactProcessIDPattern.MatchString(id) {
+		return fmt.Errorf("malformed exact PROCESS id %q", id)
+	}
+	return nil
 }
 
 func ValidatePublicSessionID(id string) error {
@@ -140,13 +195,13 @@ func BodyHash(body string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-func accepted(comment TriggerComment, verb CommandVerb, sessionID, prompt string) ParseResult {
+func accepted(comment TriggerComment, verb CommandVerb, sessionID, exactProcessID, prompt string) ParseResult {
 	if strings.TrimSpace(comment.Repo) == "" || comment.Issue <= 0 || comment.CommentID <= 0 || strings.TrimSpace(comment.Commenter) == "" {
 		return rejected(ReasonInvalidMetadata, "command candidate is missing repo, issue, comment id, or commenter")
 	}
 
 	bodyHash := BodyHash(comment.Body)
-	idempotencyKey := commandIdempotencyKey(comment, verb, sessionID, bodyHash)
+	idempotencyKey := commandIdempotencyKey(comment, verb, sessionID, exactProcessID, bodyHash)
 	return ParseResult{
 		Status: ParseStatusAccepted,
 		Candidate: CommandCandidate{
@@ -163,8 +218,121 @@ func accepted(comment TriggerComment, verb CommandVerb, sessionID, prompt string
 			Verb:                   verb,
 			Prompt:                 prompt,
 			PublicSessionID:        sessionID,
+			ExactProcessID:         exactProcessID,
 		},
 	}
+}
+
+type processFlagScan struct {
+	Exact           int
+	Malformed       int
+	MalformedSyntax bool
+}
+
+func (s processFlagScan) hasFlagLike() bool {
+	return s.Exact > 0 || s.Malformed > 0
+}
+
+// scanProcessFlagTokens performs one quote- and escape-aware pass over a prompt
+// tail. Only a token whose --process prefix is wholly unquoted and unescaped is
+// classified as a flag. Quoted prompt text remains opaque, while malformed
+// quoting or escaping around flag-like text fails closed instead of concealing
+// a flag. Ordinary prompts without --process text keep normalizePromptTail's
+// existing permissive quote semantics.
+func scanProcessFlagTokens(value string) processFlagScan {
+	var result processFlagScan
+	var token strings.Builder
+	var quotedRaw strings.Builder
+	var quote rune
+	prefixProtected := false
+	tokenRunes := 0
+	escaped := false
+	justClosedQuote := false
+	sawFlagText := strings.Contains(value, "--process")
+
+	flush := func() {
+		candidate := token.String()
+		if !prefixProtected && strings.HasPrefix(candidate, "--process") {
+			if candidate == "--process" {
+				result.Exact++
+			} else {
+				result.Malformed++
+			}
+		}
+		token.Reset()
+		prefixProtected = false
+		tokenRunes = 0
+		justClosedQuote = false
+	}
+	writeToken := func(r rune, protected bool) {
+		if tokenRunes < len("--process") && protected {
+			prefixProtected = true
+		}
+		tokenRunes++
+		token.WriteRune(r)
+	}
+
+	for _, r := range value {
+		if quote != 0 {
+			quotedRaw.WriteRune(r)
+			if escaped {
+				writeToken(r, true)
+				escaped = false
+				continue
+			}
+			if r == '\\' {
+				escaped = true
+				continue
+			}
+			if r == quote {
+				if quote == '"' {
+					if _, err := strconv.Unquote(quotedRaw.String()); err != nil {
+						result.MalformedSyntax = true
+					}
+				}
+				quote = 0
+				justClosedQuote = true
+				continue
+			}
+			writeToken(r, true)
+			continue
+		}
+
+		if escaped {
+			writeToken(r, true)
+			escaped = false
+			justClosedQuote = false
+			continue
+		}
+		if unicode.IsSpace(r) {
+			flush()
+			continue
+		}
+		if justClosedQuote {
+			result.MalformedSyntax = true
+		}
+		switch r {
+		case '\\':
+			escaped = true
+		case '"', '\'':
+			if token.Len() > 0 {
+				result.MalformedSyntax = true
+			}
+			quote = r
+			quotedRaw.Reset()
+			quotedRaw.WriteRune(r)
+		default:
+			writeToken(r, false)
+		}
+	}
+	if escaped || quote != 0 {
+		result.MalformedSyntax = true
+	}
+	flush()
+	if !sawFlagText {
+		result.MalformedSyntax = false
+	}
+	return result
 }
 
 func rejected(reason RejectionReason, message string) ParseResult {
@@ -203,7 +371,7 @@ func normalizePromptTail(value string) string {
 	return prompt
 }
 
-func commandIdempotencyKey(comment TriggerComment, verb CommandVerb, sessionID, bodyHash string) string {
+func commandIdempotencyKey(comment TriggerComment, verb CommandVerb, sessionID, exactProcessID, bodyHash string) string {
 	updatedAt := ""
 	if !comment.UpdatedAt.IsZero() {
 		updatedAt = comment.UpdatedAt.UTC().Format(time.RFC3339Nano)
@@ -217,6 +385,7 @@ func commandIdempotencyKey(comment TriggerComment, verb CommandVerb, sessionID, 
 		strings.TrimSpace(comment.Commenter),
 		string(verb),
 		sessionID,
+		exactProcessID,
 		bodyHash,
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))

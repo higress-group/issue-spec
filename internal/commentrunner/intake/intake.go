@@ -646,6 +646,7 @@ func queueJob(ctx context.Context, backend Backend, cfg commentrunner.Config, st
 		CommandID:             candidate.ID,
 		CommandName:           string(candidate.Verb),
 		CommandPrompt:         candidate.Prompt,
+		ExactProcessID:        candidate.ExactProcessID,
 		CommandIdempotencyKey: candidate.IdempotencyKey,
 		Status:                crstate.StatusQueued,
 		CreatedAt:             now,

@@ -124,7 +124,7 @@ func decideAcceptedEvent(ctx context.Context, backend commentrunner.PermissionBa
 		PublicSessionID: candidate.PublicSessionID, CoordinatorKind: cfg.Agent.Kind, Model: cfg.Agent.Model,
 		SessionCreatorLogin: sessionCreator(candidate), TriggeringUserLogin: candidate.Commenter,
 		TriggerCommentID: candidate.TriggerCommentID, CommandID: candidate.ID, CommandName: string(candidate.Verb),
-		CommandPrompt: candidate.Prompt, CommandIdempotencyKey: candidate.IdempotencyKey, Status: crstate.StatusQueued,
+		CommandPrompt: candidate.Prompt, ExactProcessID: candidate.ExactProcessID, CommandIdempotencyKey: candidate.IdempotencyKey, Status: crstate.StatusQueued,
 		CreatedAt: now, UpdatedAt: now, FirstObservedComment: seen, SourceLabels: []string{SourceWebhook}}
 	report := candidateReport(SourceWebhook, candidate, CommandStatusJobQueued)
 	report.Authorization, report.JobID = authorization, job.ID

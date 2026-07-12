@@ -650,6 +650,43 @@ func TestFileStoreUpdateFailureHasNoPartialWrite(t *testing.T) {
 	}
 }
 
+func TestJobExactProcessIDIsStrictPersistentAndImmutable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	state := NewState()
+	job := Job{ID: "job-process", Repo: "o/r", CommandIdempotencyKey: "cmd:process", Status: StatusQueued, ExactProcessID: "PROCESS-008"}
+	if err := state.UpsertJob(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveFile(path, state); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := LoadFile(path)
+	if err != nil || reopened.Jobs[job.ID].ExactProcessID != "PROCESS-008" {
+		t.Fatalf("reopened=%+v err=%v", reopened.Jobs[job.ID], err)
+	}
+	mutated := reopened.Jobs[job.ID]
+	mutated.ExactProcessID = "PROCESS-009"
+	if err := reopened.UpsertJob(mutated); err == nil {
+		t.Fatal("exact PROCESS target mutation was accepted")
+	}
+	malformed := job
+	malformed.ID, malformed.ExactProcessID = "job-bad", "PROCESS-8"
+	if err := state.UpsertJob(malformed); err == nil {
+		t.Fatal("malformed exact PROCESS target was accepted")
+	}
+}
+
+func TestJobUnknownJSONFieldFailsClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	raw := `{"schema_version":6,"jobs":{"job-1":{"id":"job-1","exact_process_id":"PROCESS-008","future_process_target":"PROCESS-009"}},"process_workspaces":{"schema_version":2,"by_workspace":{}}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFile(path); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("unknown job JSON error=%v", err)
+	}
+}
+
 func mustRawStateJSON(t *testing.T, state RunnerState) []byte {
 	t.Helper()
 	data, err := json.Marshal(state)

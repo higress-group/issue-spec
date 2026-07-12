@@ -13,13 +13,15 @@ import (
 
 func TestEventDecisionAppliesJobLocallyAndIsIdempotent(t *testing.T) {
 	now := time.Now().UTC()
-	comment := eventComment(71, 12, "alice", "/new verify event path", now)
+	comment := eventComment(71, 12, "alice", "/resume sess-1 --process PROCESS-008 verify event path", now)
+	snapshot := state.NewState()
+	snapshot.PublicSessions[state.PublicSessionKey("owner/repo", "sess-1")] = state.PublicSession{Repo: "owner/repo", PublicSessionID: "sess-1", CreatorLogin: "alice", Status: state.StatusRunning}
 	decision, err := DecideAuthoritativeComment(t.Context(), allowedEventBackend(), eventConfig(),
-		commentrunner.AuthorizationPolicy{RunnerLogin: "runner", AllowedUsers: []string{"alice"}}, state.NewState(), comment, now)
+		commentrunner.AuthorizationPolicy{RunnerLogin: "runner", AllowedUsers: []string{"alice"}}, snapshot, comment, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Outcome != state.DeliveryOutcomeJob || decision.Job.TriggerCommentID != 71 || decision.Job.Repo != "owner/repo" {
+	if decision.Outcome != state.DeliveryOutcomeJob || decision.Job.TriggerCommentID != 71 || decision.Job.Repo != "owner/repo" || decision.Job.ExactProcessID != "PROCESS-008" {
 		t.Fatalf("decision=%+v", decision)
 	}
 	current := state.NewState()
