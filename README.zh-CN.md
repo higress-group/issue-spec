@@ -108,13 +108,13 @@ issue-spec auth status --hostname ghe.example.com --json
 
 `archive durable-spec --create-pr` 仍然使用本地 `git` 来进行 fetch、worktree、commit 与 push。GitHub API 的读取和 PR 创建则使用同一个已认证的 `gh` 账号。
 
-## 自托管 Server 认证
+## 自托管 Server
 
-运行可选 Web Server 的运维人员应从版本化的
-[自托管认证指南](docs/self-hosting/authentication/README.md)开始。指南覆盖
-GitHub OAuth、OIDC、组织准入、私网 IP/内部 DNS 部署、头像代理、密钥轮换与
-安全排障；其余生产配置和加固要求见
-[部署指南](docs/self-hosting/operations/deployment.md)。
+可选的[自托管 Server](docs/self-hosting/README.zh-CN.md)提供由 PostgreSQL 支撑的
+Web 工作台、组织与仓库权限、Issue/Change 页面、Service Account、Provider-neutral
+代码证据、Runner 和通知 Webhook。建议先阅读图文总览，再根据版本化的
+[认证指南](docs/self-hosting/authentication/README.md)与
+[部署指南](docs/self-hosting/operations/deployment.md)完成生产配置和加固。
 
 ## Runner：评论触发的工作流
 

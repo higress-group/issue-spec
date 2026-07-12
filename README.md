@@ -108,14 +108,15 @@ issue-spec auth status --hostname ghe.example.com --json
 
 `archive durable-spec --create-pr` still uses local `git` for fetch, worktree, commit, and push. GitHub API reads and PR creation use the same authenticated `gh` account.
 
-## Self-hosted server authentication
+## Self-hosted server
 
-Operators running the optional web server should use the versioned
-[self-hosted authentication guide](docs/self-hosting/authentication/README.md).
-It covers GitHub OAuth, OIDC, organization admission, private-IP/internal-DNS
-deployments, avatar proxying, secret rotation, and safe troubleshooting. The
-[deployment guide](docs/self-hosting/operations/deployment.md) documents the
-remaining production configuration and hardening requirements.
+The optional [self-hosted server](docs/self-hosting/README.md) provides a web
+workspace, organization and repository authorization, issue and change views,
+service accounts, provider-neutral code evidence, runners, and notification
+webhooks backed by PostgreSQL. Start with the illustrated overview, then use
+the versioned [authentication guide](docs/self-hosting/authentication/README.md)
+and [deployment guide](docs/self-hosting/operations/deployment.md) for
+production configuration and hardening.
 
 ## Runner: Comment-Triggered Workflows
 
