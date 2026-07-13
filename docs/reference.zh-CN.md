@@ -168,7 +168,7 @@ PROCESS 正文记录其父 TASK，并且对于串行链，还记录传给下一�
 
 ## PROCESS workspace
 
-精确的 PROCESS id 是唯一 workspace selector；prompt 文本不会被推断成 selector。六个生命周期命令必须复用同一组仓库、issue、PROCESS、integration root、workspace root 与 owner token：
+coordinator 从 typed DAG 选择的精确 PROCESS id 是唯一 workspace selector；prompt 文本和 runner 命令语法都不是 selector。六个生命周期命令必须复用同一组仓库、issue、PROCESS、integration root、workspace root 与 owner token：
 
 ```bash
 issue-spec workflow workspace prepare   --repo owner/repo --issue 12 --process PROCESS-001 ...
@@ -179,15 +179,15 @@ issue-spec workflow workspace reconcile --repo owner/repo --issue 12 --process P
 issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process PROCESS-001 ...
 ```
 
-`change-bearing` 使用可写的独占分支；`review` 与 `verification` 使用 detached snapshot，dirty 状态会 fail closed，但 standalone CLI 不会把文件系统变成 OS 级不可写；`orchestration` 只记录生命周期账本，不创建 checkout。standalone CLI 当前把 `external` 映射为 mode `none`；runner 的 external 执行更严格，必须由已配置 provider adapter 在 acpx 启动前确认 ready。
+`change-bearing` 使用可写的独占分支；`review` 与 `verification` 使用 detached immutable workflow snapshot，dirty 状态会 fail closed，但 CLI 不会为每个 child 创建 OS 强制的独立 sandbox；`orchestration` 只记录生命周期账本，不创建 checkout。`external` 使用 mode `none`；完成该 PROCESS 并通过 final gate 需要已消费的 provider-neutral exact-revision evidence。
 
-runner 重启时会基于持久化的精确 assignment 执行 reconcile，并拒绝缺失、不匹配、dirty 或 needs-reconcile 状态。runner 的终态、取消与 reconcile cleanup 会先持久化 intent，校验 integration/retention eligibility，并重试 pending cleanup。standalone `workflow workspace cleanup` 不同：持有 owner token 就能授权一次显式的破坏性操作，它不会执行 runner 的 integration/retention eligibility 校验，可能删除尚未集成的 change-bearing 工作。因此只能在明确完成预期的集成或保留决策后调用。runner 只能在 resume 时选择精确 PROCESS：
+runner 命令不携带 PROCESS selector。runner 只启动一个 ACPX coordinator，并让它的 cwd 与主 sandbox workspace 始终保持在 public session clone。coordinator 从 typed DAG 选择 ready PROCESS，再调用 workspace CLI。runner 模式通过 `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` 和 `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT` 提供可信的 session-local 默认值；standalone coordinator 则显式传入 roots。
 
-```text
-/resume <public-session-id> --process PROCESS-001 <instruction>
-```
+`prepare` 完成后，coordinator 使用当前 agent runtime 的原生 child/subagent 机制分发工作，并传入精确 worktree 路径作为 cwd，同时传入 branch、write ownership、PROCESS id、parent TASK 与前序 handoff。该 child 不是另一个 ACPX session；它共享 coordinator 的 runner 外层 sandbox，自行生成 result commit、执行 focused tests，并返回有界的 handoff evidence。coordinator 校验结果后，从未改变的 session clone 执行 `complete` 与 `integrate`，再同步状态并 cleanup。
 
-`--process` 必须紧跟 public session id，`/new` 不接受该参数。
+runner resume 或 restart 后，top-level runner 只恢复 ACPX/session job。PROCESS 生命周期由 coordinator 所有：它从未改变的 session clone 对精确 lease 执行 `inspect` 或 `reconcile`，再执行 `complete` 与 `integrate`，并且只在显式完成 integration 或 retention 决策后调用 owner-token cleanup。top-level runner 的 session-clone retention 会调用 `git worktree list`；若存在 linked worktree 或检查失败则 fail closed 并保留 clone。它不拥有、持久化或重试 child PROCESS cleanup。
+
+`workflow workspace cleanup` 始终是显式的 owner-token 授权破坏性操作。它可能删除尚未集成的 change-bearing 工作，也不会替调用者判断或强制执行 integration/retention eligibility，因此只能在调用者完成该决策后使用。
 
 ### 默认的 canonical 校验
 

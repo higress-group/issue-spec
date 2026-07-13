@@ -51,6 +51,24 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 		"`issue_comment` artifact",
 		"prefer native Codex sub-agents or Claude Task agents",
 		"## Delegation",
+		"Runner actor boundary: the runner launches exactly one ACPX coordinator",
+		"Keep this coordinator's cwd and primary sandbox workspace at `runner_metadata.workspace_path`",
+		"Never launch a nested ACPX worker and never rebind this coordinator to a PROCESS worktree",
+		"top-level runner recovers only the ACPX/session job",
+		"This coordinator owns the PROCESS workspace lifecycle",
+		"inspect or reconcile the exact PROCESS lease before complete and integrate",
+		"Runner session-clone retention consults `git worktree list`",
+		"retains the clone when a linked worktree exists or inspection fails",
+		"does not own, persist, or retry child PROCESS cleanup",
+		"Runner command intake never accepts a PROCESS selector",
+		"ISSUE_SPEC_PROCESS_INTEGRATION_ROOT", "ISSUE_SPEC_PROCESS_WORKSPACE_ROOT",
+		"runtime's native child/subagent facility, not ACPX",
+		"exact worktree path as cwd, branch, write ownership, PROCESS id",
+		"Native children are not ACPX sessions",
+		"does not claim a separate per-child OS sandbox",
+		"Review and verification still use detached immutable workflow snapshots",
+		"workflow workspace complete` and `integrate` from the unchanged coordinator checkout",
+		"does not decide or enforce integration/retention eligibility for you",
 		"delegation exists to keep the coordinator context bounded and avoid mid-task compaction",
 		"plan the PROCESS DAG first, then dispatch each non-trivial coding node to a worker sub-agent",
 		"do not implement non-trivial code inline in the coordinator context",
@@ -86,6 +104,15 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{
+		"/resume <public-session-id> --process",
+		"binds review/verification snapshots read-only",
+		"provider adapter readiness", "eligible cleanup", "retrying pending cleanup",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("prompt contains stale PROCESS execution guidance %q:\n%s", forbidden, prompt)
 		}
 	}
 }

@@ -168,7 +168,7 @@ Omitted planning fields render canonical defaults (`TBD` / `N/A`) so trivial cha
 
 ## PROCESS workspaces
 
-The exact PROCESS id is the workspace selector; prompt text is never a selector. Use the same repository, issue, PROCESS, integration root, workspace root, and owner token across the six lifecycle commands:
+The exact PROCESS id selected by the coordinator from the typed DAG is the workspace selector; prompt text and runner command grammar are never selectors. Use the same repository, issue, PROCESS, integration root, workspace root, and owner token across the six lifecycle commands:
 
 ```bash
 issue-spec workflow workspace prepare   --repo owner/repo --issue 12 --process PROCESS-001 ...
@@ -179,15 +179,15 @@ issue-spec workflow workspace reconcile --repo owner/repo --issue 12 --process P
 issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process PROCESS-001 ...
 ```
 
-`change-bearing` uses a writable owned branch. `review` and `verification` use detached snapshots: dirty state fails closed, but the standalone CLI does not make the filesystem OS-immutable. `orchestration` records lifecycle bookkeeping without a checkout. The standalone CLI currently maps `external` to mode `none`; runner external execution is stricter and requires the configured provider adapter to report ready before acpx starts.
+`change-bearing` uses a writable owned branch. `review` and `verification` use detached immutable workflow snapshots: dirty state fails closed, but the CLI does not create an OS-enforced per-child sandbox. `orchestration` records lifecycle bookkeeping without a checkout. `external` uses mode `none`; completion and the final gate require consumed provider-neutral exact-revision evidence.
 
-Runner restart reconciliation reopens the durable exact assignment and rejects missing, mismatched, dirty, or reconcile-required state. Runner terminal, cancellation, and reconciliation cleanup persists intent, applies integration/retention eligibility, and retries pending cleanup. Standalone `workflow workspace cleanup` is different: possession of the owner token authorizes an explicit destructive operation, with no runner integration/retention eligibility check. It can remove unintegrated change-bearing work, so invoke it only after the intended integration or retention decision. Runner comments can select an exact PROCESS only on resume:
+Runner commands never carry a PROCESS selector. The runner launches exactly one ACPX coordinator and keeps its cwd and primary sandbox workspace at the public session clone. The coordinator selects a ready PROCESS from the typed DAG and invokes the workspace CLI. Runner mode supplies trusted session-local defaults through `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` and `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT`; a standalone coordinator passes explicit roots.
 
-```text
-/resume <public-session-id> --process PROCESS-001 <instruction>
-```
+After `prepare`, the coordinator delegates through the current agent runtime's native child/subagent facility, passing the exact worktree path as cwd plus the branch, write ownership, PROCESS id, parent TASK, and predecessor handoff. The child is not another ACPX session. It shares the coordinator's outer runner sandbox, authors a result commit, runs focused tests, and returns bounded handoff evidence. The coordinator validates that result and runs `complete` and `integrate` from its unchanged session clone before synchronizing status and cleanup.
 
-The flag must immediately follow the public session id. `/new` does not accept it.
+After runner resume or restart, the top-level runner recovers only the ACPX/session job. From the unchanged session clone, the coordinator owns the PROCESS lifecycle: it uses `inspect` or `reconcile` on the exact lease before `complete` and `integrate`, then invokes owner-token cleanup only after an explicit integration or retention decision. Top-level runner session-clone retention calls `git worktree list` and fails closed by retaining the clone when a linked worktree exists or inspection fails. It does not own, persist, or retry child PROCESS cleanup.
+
+`workflow workspace cleanup` is always an explicit owner-token-authorized destructive operation. It can remove unintegrated change-bearing work and does not decide or enforce integration/retention eligibility for its caller, so invoke it only after making that decision.
 
 ### Canonical validation by default
 

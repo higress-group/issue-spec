@@ -49,15 +49,13 @@ issue-spec runner poll \
 /cancel <public-session-id>
 ```
 
-若要把一次 resume 精确绑定到一个 PROCESS workspace，必须把 `--process` 放在 public session id 后面：
+runner 命令语法有意不提供 PROCESS selector。`/new` 与 `/resume` 只定位 public coordinator session。runner 为该 session 只启动一个 ACPX coordinator，并在 new、resume、cancel 与 restart reconcile 的整个生命周期中，让它的 cwd 与主 sandbox workspace 始终保持在受管 session clone。runner 不会启动嵌套 ACPX worker，也不会把 coordinator 重绑定到 PROCESS worktree。
 
-```text
-/resume <public-session-id> --process PROCESS-008 <prompt>
-```
+coordinator 从 typed DAG 选择精确的 ready PROCESS，并以稳定的仓库、issue、PROCESS、roots 与 owner token，通过 `issue-spec workflow workspace prepare`、`inspect`、`complete`、`integrate`、`reconcile` 与 `cleanup` 拥有其完整生命周期。runner 模式通过 `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` 和 `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT` 提供可信的 session-local 默认值；standalone coordinator 显式传入 `--integration-root` 与 `--workspace-root`。`change-bearing` 使用可写的独占分支；`review` 与 `verification` 使用 detached immutable workflow snapshot，dirty 时 fail closed；`orchestration` 不创建 checkout；`external` 使用 mode `none`，完成该 PROCESS 并通过 final gate 需要已消费的 provider-neutral exact-revision evidence。
 
-runner 不会从 prompt 文本推断 PROCESS，`/new` 会拒绝 `--process`，且 job 的持久化精确 assignment 不可变。对应的 standalone 生命周期命令为 `issue-spec workflow workspace prepare`、`inspect`、`complete`、`integrate`、`reconcile` 与 `cleanup`；这些命令必须复用精确的仓库、issue、PROCESS、roots 与 owner token。
+`prepare` 完成后，coordinator 使用当前 agent runtime 的原生 child/subagent 机制，把精确 worktree 路径作为 cwd，并一并传入 branch、write ownership、PROCESS id、parent TASK 与前序 handoff。child 不是另一个 ACPX session。它共享 coordinator 的 runner 外层 sandbox，因此 issue-spec 不承诺独立的 per-child OS sandbox 或 read-only bind；unsafe 模式不提供文件系统隔离。child 自行生成 result commit、执行 focused tests，并返回有界 handoff evidence。coordinator 校验这些结果后，从未改变的 session clone 执行 `complete` 与 `integrate`，再同步 PROCESS 状态、链接与 handoff。只有在显式完成 integration 或 retention 决策后，它才调用 owner-token cleanup。
 
-acpx 启动前，change-bearing 使用其可写的 assigned worktree；review 与 verification 使用 detached snapshot，dirty 时 fail closed；orchestration 不创建 checkout；external 执行必须通过已配置 provider adapter 的 readiness gate。Linux bubblewrap 会把 review/verification snapshot 以只读方式绑定，但 unsafe 模式不提供 OS 级不可变性。重启会先 reconcile 同一 assignment。runner 的终态、取消与 reconcile cleanup 会持久化 intent、校验 integration/retention eligibility，并重试 pending cleanup。这个保护不覆盖手动调用的 standalone `workflow workspace cleanup`：该 owner-token 授权的破坏性命令可能删除未集成的 change-bearing 工作，只能在完成预期的集成或保留决策后使用。
+resume 或 restart 后，top-level runner 只恢复 ACPX/session job。coordinator 从未改变的 session clone 对精确 PROCESS lease 执行 inspect 或 reconcile，再执行 `complete` 与 `integrate`；缺失、不匹配、dirty 或 needs-reconcile 状态都会阻塞。runner 不拥有、持久化或重试 child PROCESS cleanup。`workflow workspace cleanup` 始终是 owner-token 授权的破坏性命令：它可能删除未集成的 change-bearing 工作，也不会替调用者判断或强制执行 integration/retention eligibility。
 
 `/new` 会创建一个全新的公共 runner 会话，把目标仓库克隆进一个受管理的 workspace，从该 workspace 启动 acpx，并写一条包含公共会话 id 的简洁状态评论。`/resume` 复用该公共会话与 workspace。公共会话是「仓库范围」的，由被授权的仓库维护者共享；它们不是私有的用户会话。
 
@@ -84,7 +82,7 @@ issue-spec runner poll \
 
 - `--state <path>` 存储持久化的 runner 状态。默认情况下，单仓库 runner 使用 `~/.issue-spec/runners/<host>/<owner>/<repo>/<runner>/state.json`；多仓库 runner 使用一个稳定的共享作用域 `~/.issue-spec/runners/<host>/multi/.../<runner>/state.json`。重复的命令投递由稳定的命令幂等性与 runner 的 `eyes` reaction 确认来控制。
 - `--workspace-root <path>` 存储受管理的仓库克隆。默认使用与 `state.json` 相邻的 `workspaces` 目录，位于同一 runner 作用域下。显式路径按给定值使用。
-- `--workspace-retention <duration>` 控制真实轮询周期何时移除过期的、非活跃的受管理 workspace。默认 7 天。处于 queued、dispatched、running、locked 与 interrupted 状态的 workspace 会被保护。
+- `--workspace-retention <duration>` 控制真实轮询周期何时移除过期、非活跃的受管 session clone。默认 7 天。处于 queued、dispatched、running、locked 与 interrupted 状态的 session job 会被保护。删除 clone 前 retention 会调用 `git worktree list`；若存在 linked worktree 或检查失败则 fail closed 并保留 clone。它不会清理 child PROCESS workspace。
 - `--poll-interval` 与 `--fallback-interval` 分别控制通知轮询与较低频率的仓库评论回退。
 - `--fallback-initial-lookback <duration>` 在尚未存储游标时限制首次仓库评论回退的范围。默认 `720h`（30 天）；设为 `0` 可扫描所有历史评论。
 - `--max-concurrency <n>` 可以并行运行相互独立的会话。默认 3；当 runner 主机具备足够的 CPU、内存与 agent 配额时，可调高以提升吞吐。同一公共会话的命令会被 workspace/session 锁串行化。
@@ -96,7 +94,7 @@ issue-spec runner poll \
 - `--gh-config-dir <path>` 选择要镜像进沙箱的宿主 GitHub CLI 配置目录。默认情况下 runner 会从宿主 GitHub CLI 环境推导。
 - `--allow-cancel=false` 关闭 `/cancel` intake。
 
-在 Linux 上，runner 分发默认使用 bubblewrap，把协调器的文件系统写入限制在受管理的 workspace 内，同时仍允许 GitHub、model 与包操作的网络访问。当 bubblewrap 不在 `PATH` 上时，请安装它或设置 `ISSUE_SPEC_BWRAP_PATH` / `--bwrap-path`。若 bubblewrap 不可用或不受支持，runner 会让 preflight 失败，而不是在没有隔离的情况下静默运行。
+在 Linux 上，runner 分发默认使用 bubblewrap，把 coordinator 的文件系统写入限制在受管 session clone 与该 session 的 PROCESS workspace pool 内，同时仍允许 GitHub、model 与包操作的网络访问。原生 child 共享这一外层边界；bubblewrap 不会为每个 child 创建独立 sandbox。当 bubblewrap 不在 `PATH` 上时，请安装它或设置 `ISSUE_SPEC_BWRAP_PATH` / `--bwrap-path`。若 bubblewrap 不可用或不受支持，runner 会让 preflight 失败，而不是在没有隔离的情况下静默运行。
 
 只有作为显式的运维选择时才使用 `--unsafe-no-sandbox`；macOS 上没有 bubblewrap 时也必须显式指定，不存在从 sandbox 模式自动降级：
 
@@ -122,4 +120,4 @@ issue-spec runner poll \
   --claude-allowed-tools Task,Bash
 ```
 
-由 acpx 拉起的协调器通过在沙箱内运行现有的 issue-spec CLI 命令，来创建或更新 proposal、design、类型化评论、review、verify 与 archive 产物。外层 runner 拥有授权、简洁的任务生命周期状态评论、workspace 隔离、重启 reconcile、取消状态，以及存储在持久化 runner 状态中的有界溯源信息。
+runner 只拉起一个 ACPX coordinator；它通过在 session sandbox 内运行现有 issue-spec CLI 命令，创建或更新 proposal、design、类型化评论、review、verify 与 archive 产物。PROCESS 实现由 coordinator 准备 workspace，再交给 runtime-native child，而不是启动嵌套 ACPX session。外层 runner 拥有授权、简洁的 session-job 生命周期状态评论、session 级 workspace 隔离、ACPX/session restart recovery、取消状态，以及存储在持久化 runner 状态中的有界溯源信息；它不拥有 child PROCESS 生命周期或 cleanup。
