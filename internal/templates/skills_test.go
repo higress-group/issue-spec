@@ -51,7 +51,7 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 		"children share the coordinator's outer sandbox", "unsafe-no-sandbox has no filesystem isolation",
 		"result commit", "runs complete and integrate",
 		"top-level runner recovers only the ACPX/session job", "inspects or reconciles the exact PROCESS lease",
-		"session-clone retention cleanup consults git worktree list", "retaining the clone when a linked worktree exists or inspection fails",
+		"session-clone retention cleanup consults git worktree list", "retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails",
 		"does not own, persist, or retry child PROCESS cleanup",
 		"workflow workspace cleanup is always an explicit owner-token-authorized destructive operation",
 		"does not decide or enforce integration/retention eligibility for its caller",
@@ -76,7 +76,7 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 		}
 	}
 	apply := skillContent(t, skills, "issue-spec-apply")
-	for _, want := range []string{"--gate implement", "doctor agent", "execution_class", "only for change-bearing", "same digest/checkpoint", "workspace prepare, inspect, complete, integrate, reconcile, and cleanup", "single ACPX coordinator stays in the public session clone", "runner command intake never accepts a PROCESS selector", "coordinator owns every PROCESS workspace lifecycle operation", "runtime's native child/subagent facility, not ACPX", "exact worktree path as cwd", "one result commit, focused tests, and a bounded handoff", "there is no nested ACPX session or separate per-child OS sandbox", "workspace complete and integrate from its unchanged checkout", "detached immutable workflow snapshots and fail closed when dirty", "external uses mode none and requires consumed provider-neutral exact-revision evidence", "top-level runner recovers only the ACPX/session job", "coordinator inspects or reconciles the exact PROCESS lease", "session-clone retention cleanup consults git worktree list", "does not own, persist, or retry child PROCESS cleanup", "workflow workspace cleanup is destructive and does not decide or enforce integration/retention eligibility"} {
+	for _, want := range []string{"--gate implement", "doctor agent", "execution_class", "only for change-bearing", "same digest/checkpoint", "workspace prepare, inspect, complete, integrate, reconcile, and cleanup", "single ACPX coordinator stays in the public session clone", "runner command intake never accepts a PROCESS selector", "coordinator owns every PROCESS workspace lifecycle operation", "runtime's native child/subagent facility, not ACPX", "exact worktree path as cwd", "one result commit, focused tests, and a bounded handoff", "there is no nested ACPX session or separate per-child OS sandbox", "workspace complete and integrate from its unchanged checkout", "detached immutable workflow snapshots and fail closed when dirty", "external uses mode none and requires consumed provider-neutral exact-revision evidence", "top-level runner recovers only the ACPX/session job", "coordinator inspects or reconciles the exact PROCESS lease", "session-clone retention cleanup consults git worktree list", "fails closed by retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails", "does not own, persist, or retry child PROCESS cleanup", "workflow workspace cleanup is destructive and does not decide or enforce integration/retention eligibility"} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply skill missing %q:\n%s", want, apply)
 		}
@@ -87,6 +87,11 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 	for _, forbidden := range []string{"provider adapter", "adapter readiness", "readiness gate", "performs eligible cleanup", "retrying pending cleanup", "runner external execution additionally", "A restart reconciles durable workspace lifecycle state", "record cleanup intent durably", "apply integration/retention eligibility"} {
 		if strings.Contains(apply, forbidden) {
 			t.Fatalf("apply skill contains stale runner-owned PROCESS lifecycle guidance %q:\n%s", forbidden, apply)
+		}
+	}
+	for _, incomplete := range []string{"retaining the clone when a linked worktree exists or inspection fails", "retains the clone when a linked worktree exists or inspection fails"} {
+		if strings.Contains(workflow, incomplete) || strings.Contains(apply, incomplete) {
+			t.Fatalf("generated skill contains incomplete session-clone retention guidance %q", incomplete)
 		}
 	}
 	review := skillContent(t, skills, "issue-spec-review")

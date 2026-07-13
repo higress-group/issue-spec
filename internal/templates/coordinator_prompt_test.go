@@ -58,7 +58,7 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 		"This coordinator owns the PROCESS workspace lifecycle",
 		"inspect or reconcile the exact PROCESS lease before complete and integrate",
 		"Runner session-clone retention consults `git worktree list`",
-		"retains the clone when a linked worktree exists or inspection fails",
+		"fails closed by retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails",
 		"does not own, persist, or retry child PROCESS cleanup",
 		"Runner command intake never accepts a PROCESS selector",
 		"ISSUE_SPEC_PROCESS_INTEGRATION_ROOT", "ISSUE_SPEC_PROCESS_WORKSPACE_ROOT",
@@ -110,6 +110,7 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 		"/resume <public-session-id> --process",
 		"binds review/verification snapshots read-only",
 		"provider adapter readiness", "eligible cleanup", "retrying pending cleanup",
+		"retains the clone when a linked worktree exists or inspection fails",
 	} {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("prompt contains stale PROCESS execution guidance %q:\n%s", forbidden, prompt)

@@ -185,7 +185,7 @@ runner 命令不携带 PROCESS selector。runner 只启动一个 ACPX coordinato
 
 `prepare` 完成后，coordinator 使用当前 agent runtime 的原生 child/subagent 机制分发工作，并传入精确 worktree 路径作为 cwd，同时传入 branch、write ownership、PROCESS id、parent TASK 与前序 handoff。该 child 不是另一个 ACPX session；它共享 coordinator 的 runner 外层 sandbox，自行生成 result commit、执行 focused tests，并返回有界的 handoff evidence。coordinator 校验结果后，从未改变的 session clone 执行 `complete` 与 `integrate`，再同步状态并 cleanup。
 
-runner resume 或 restart 后，top-level runner 只恢复 ACPX/session job。PROCESS 生命周期由 coordinator 所有：它从未改变的 session clone 对精确 lease 执行 `inspect` 或 `reconcile`，再执行 `complete` 与 `integrate`，并且只在显式完成 integration 或 retention 决策后调用 owner-token cleanup。top-level runner 的 session-clone retention 会调用 `git worktree list`；若存在 linked worktree 或检查失败则 fail closed 并保留 clone。它不拥有、持久化或重试 child PROCESS cleanup。
+runner resume 或 restart 后，top-level runner 只恢复 ACPX/session job。PROCESS 生命周期由 coordinator 所有：它从未改变的 session clone 对精确 lease 执行 `inspect` 或 `reconcile`，再执行 `complete` 与 `integrate`，并且只在显式完成 integration 或 retention 决策后调用 owner-token cleanup。top-level runner 的 session-clone retention 会调用 `git worktree list`；当 runner metadata 为 dirty 或 uncertain、存在 linked worktree，或 git worktree inspection 失败时都会 fail closed 并保留 clone。它不拥有、持久化或重试 child PROCESS cleanup。
 
 `workflow workspace cleanup` 始终是显式的 owner-token 授权破坏性操作。它可能删除尚未集成的 change-bearing 工作，也不会替调用者判断或强制执行 integration/retention eligibility，因此只能在调用者完成该决策后使用。
 
