@@ -175,8 +175,12 @@ func runnerOperatorProcessWorkspaceAdapters(ctx context.Context, profile auth.Pr
 	}
 	adapters := make(map[string]jobs.NoCheckoutLifecycle)
 	for _, description := range registry.Descriptions() {
-		if !providerDescriptionHasCapability(description, codereview.CapabilityWorkspaceReady) ||
-			!providerDescriptionHasCapability(description, codereview.CapabilityWorkspaceCleanup) {
+		declaresReady := providerDescriptionHasCapability(description, codereview.CapabilityWorkspaceReady)
+		declaresCleanup := providerDescriptionHasCapability(description, codereview.CapabilityWorkspaceCleanup)
+		if !declaresReady && !declaresCleanup {
+			continue
+		}
+		if !declaresReady || !declaresCleanup {
 			return nil, fmt.Errorf("runner workspace adapter %q: %w: operator description must declare workspace.ready and workspace.cleanup",
 				description.ProviderKey, codereview.ErrCapabilityMissing)
 		}

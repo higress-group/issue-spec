@@ -72,7 +72,8 @@ func TestDefaultRunnerServeRuntimeResolvesNativeScopesAndNeverPollsNotifications
 		t.Fatal(err)
 	}
 	profile := auth.Profile{Name: "self-hosted-test", Kind: auth.ProfileKindHosted, Hostname: "issues.test",
-		APIURL: api.URL + "/api/v3", NativeAPIURL: api.URL + "/api/v1", WebURL: api.URL, ServerInstanceID: "instance-test"}
+		APIURL: api.URL + "/api/v3", NativeAPIURL: api.URL + "/api/v1", WebURL: api.URL, ServerInstanceID: "instance-test",
+		OperatorRegistryFile: writeRunnerWorkspaceRegistry(t, []codereview.Capability{codereview.CapabilityEvidenceSnapshot, codereview.CapabilityChangeComment})}
 	runner := commentrunner.Config{Profile: profile.Name, Hostname: profile.Hostname, Repositories: []string{"owner/repo"},
 		RunnerIdentity: "runner", StatePath: filepath.Join(temp, "state.json"), WorkspaceRoot: filepath.Join(temp, "workspaces"),
 		WorkspaceRetention: commentrunner.NewDuration(time.Hour), MaxConcurrentJobs: 1, AcpxPath: "acpx",
@@ -144,7 +145,6 @@ func TestRunnerOperatorProcessWorkspaceAdaptersRequireBothDeclaredLifecycleCapab
 		name         string
 		capabilities []codereview.Capability
 	}{
-		{name: "missing"},
 		{name: "ready only", capabilities: []codereview.Capability{codereview.CapabilityWorkspaceReady}},
 		{name: "cleanup only", capabilities: []codereview.Capability{codereview.CapabilityWorkspaceCleanup}},
 	} {
@@ -158,21 +158,56 @@ func TestRunnerOperatorProcessWorkspaceAdaptersRequireBothDeclaredLifecycleCapab
 	}
 }
 
+func TestRunnerOperatorProcessWorkspaceAdaptersSkipNonWorkspaceProviders(t *testing.T) {
+	full := []codereview.Capability{codereview.CapabilityWorkspaceReady, codereview.CapabilityWorkspaceCleanup}
+	unrelated := []codereview.Capability{codereview.CapabilityEvidenceSnapshot, codereview.CapabilityChangeComment}
+	t.Run("only evidence and change provider", func(t *testing.T) {
+		profile := auth.Profile{OperatorRegistryFile: writeRunnerWorkspaceRegistryProviders(t, map[string][]codereview.Capability{
+			"evidence.example": unrelated,
+		})}
+		adapters, err := runnerOperatorProcessWorkspaceAdapters(t.Context(), profile)
+		if err != nil || len(adapters) != 0 {
+			t.Fatalf("adapters=%v err=%v", adapters, err)
+		}
+	})
+	t.Run("unrelated and full workspace providers", func(t *testing.T) {
+		profile := auth.Profile{OperatorRegistryFile: writeRunnerWorkspaceRegistryProviders(t, map[string][]codereview.Capability{
+			"evidence.example": unrelated,
+			"code.example":     full,
+		})}
+		adapters, err := runnerOperatorProcessWorkspaceAdapters(t.Context(), profile)
+		identity := state.ProcessWorkspaceProviderIdentity{ProviderKey: "code.example", ServerInstance: "server", Host: "code.example"}
+		key, keyErr := jobs.ProcessWorkspaceAdapterKey(identity)
+		if err != nil || keyErr != nil || len(adapters) != 1 || adapters[key] == nil {
+			t.Fatalf("adapters=%v err=%v key_err=%v", adapters, err, keyErr)
+		}
+	})
+}
+
 func writeRunnerWorkspaceRegistry(t *testing.T, capabilities []codereview.Capability) string {
+	t.Helper()
+	return writeRunnerWorkspaceRegistryProviders(t, map[string][]codereview.Capability{"code.example": capabilities})
+}
+
+func writeRunnerWorkspaceRegistryProviders(t *testing.T, providers map[string][]codereview.Capability) string {
 	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	declared := make([]string, len(capabilities))
-	for i, capability := range capabilities {
-		declared[i] = string(capability)
+	configured := make(map[string]any, len(providers))
+	for key, capabilities := range providers {
+		declared := make([]string, len(capabilities))
+		for i, capability := range capabilities {
+			declared[i] = string(capability)
+		}
+		configured[key] = map[string]any{
+			"path": executable, "args": []string{"-test.run=^TestRunnerWorkspaceLifecycleProviderHelper$"},
+			"environment": []string{"ISSUE_SPEC_RUNNER_WORKSPACE_HELPER=1"},
+			"description": map[string]any{"remote_authorities": []string{key + ":8443"}, "capabilities": declared},
+		}
 	}
-	config := map[string]any{"version": 1, "providers": map[string]any{"code.example": map[string]any{
-		"path": executable, "args": []string{"-test.run=^TestRunnerWorkspaceLifecycleProviderHelper$"},
-		"environment": []string{"ISSUE_SPEC_RUNNER_WORKSPACE_HELPER=1"},
-		"description": map[string]any{"remote_authorities": []string{"code.example:8443"}, "capabilities": declared},
-	}}}
+	config := map[string]any{"version": 1, "providers": configured}
 	raw, err := json.Marshal(config)
 	if err != nil {
 		t.Fatal(err)
