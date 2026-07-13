@@ -44,6 +44,11 @@ describe("language configuration", () => {
     expect(i18n.t("changes.detail.artifactChain")).toBe("产物链");
     expect(i18n.t("changes.detail.diagnostics")).toBe("结构诊断");
     expect(i18n.t("changes.lifecycle.blocked")).toBe("受阻");
+    expect(i18n.t("personalTokens.title")).toBe("个人访问令牌");
+    expect(i18n.t("personalTokens.repositoryAccess")).toBe("仓库范围");
+    expect(i18n.t("markdown.completedTask")).toBe("已完成任务");
+    expect(i18n.t("integrations.option.issue_comment")).toBe("议题评论");
+    expect(i18n.t("bootstrap.closedTitle")).toBe("首次引导已关闭");
     await i18n.changeLanguage("en");
     expect(i18n.t("integrations.activeRoutes", { count: 1 })).toBe("1 active route");
     expect(i18n.t("integrations.activeRoutes", { count: 2 })).toBe("2 active routes");

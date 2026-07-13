@@ -4,20 +4,20 @@ package staticui
 
 func init() {
 	manifest = map[string]Asset{
-		".vite/manifest.json":                   {ContentType: "application/json", SHA256: "248f2ef9b8ec2ed851f734156207dcbc60b20d0caca78365c36e8a0661044282", Immutable: false},
+		".vite/manifest.json":                   {ContentType: "application/json", SHA256: "75820b54e4f02ab5a7a4a7a2c8239f30734902d981cc2aa0028bd7289d905574", Immutable: false},
 		"assets/arrow-right-K7O9CZar.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "42fa9525e15fed51f474f0ada631dcf14710d172bff0489ad1d3c30f46486ae3", Immutable: true},
 		"assets/avatar-CLU2kgvf.js":             {ContentType: "text/javascript; charset=utf-8", SHA256: "83101feb133f5e7db0aba6339336617551746b2e51994977b51a6f01fcc2b537", Immutable: true},
 		"assets/board-page-BUFBv0b2.js":         {ContentType: "text/javascript; charset=utf-8", SHA256: "1a72d3355b5ec5066fce19b3cbf144a5deb054456e42937c4b121a685949adc3", Immutable: true},
 		"assets/circle-dot-8dgdk_aO.js":         {ContentType: "text/javascript; charset=utf-8", SHA256: "f2be2f6e55db27b4696dc39da127dcb25494d3e7cda609ad556003cc9d33fd98", Immutable: true},
-		"assets/create-page-DAnaZQOi.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "15cd2793339c196cd879891141b032a6ff8e0d34c5aceb0fb4085a31f26bfc29", Immutable: true},
+		"assets/create-page-acFp-1Yw.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "0fd72a440898162b7768f652df9e167a89a73953a7f9eb1900429ac790be92f0", Immutable: true},
 		"assets/createLucideIcon-B-xpaTHI.js":   {ContentType: "text/javascript; charset=utf-8", SHA256: "91668ca5e61bce25fb78ee02b586e71ec784f088f324477b82c4e552ae957d82", Immutable: true},
 		"assets/detail-page-BkVKKMmE.css":       {ContentType: "text/css; charset=utf-8", SHA256: "7c28931d34a683f50e7a4bd5f4d1e014eebe8931f81d8eec54a6e38b429d5b11", Immutable: true},
+		"assets/detail-page-Cxlplx5A.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "6ac4eda28486378451b1a94552e0beed7f20621eb3fdaf12f4d49b2a8e0b3f11", Immutable: true},
 		"assets/detail-page-DxS1jzM_.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "652f7d6ab0aa2e45315da3fbdc5978b72483e4341f0da67e685ef898e6f466f9", Immutable: true},
-		"assets/detail-page-XGfGaT1I.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "78f17a843c8a8103e422a8bed91eaf18c1397901ce382ab7fc050eacba19963b", Immutable: true},
 		"assets/git-branch-B-SB0R-W.js":         {ContentType: "text/javascript; charset=utf-8", SHA256: "07ac606fe18ce29020a5ee77cda25f53c75042ea848f2d6251adcaf95d459e43", Immutable: true},
 		"assets/index-B4L5_is1.css":             {ContentType: "text/css; charset=utf-8", SHA256: "b407c3863b457bc9bbae3448da2a5f9767de99d14bed684951eb0f6249c7e351", Immutable: true},
-		"assets/index-BaHLWNfU.js":              {ContentType: "text/javascript; charset=utf-8", SHA256: "ec4b7c1d6feed40d5ce82b581fb6805e43f03db6c22a1ad0f52e6b84254d58b0", Immutable: true},
-		"assets/issue-editor-C-wB-KO5.js":       {ContentType: "text/javascript; charset=utf-8", SHA256: "6743c55c8603f757b188bd7f873a42860b3e47d952a39b6523cb69163a6c0872", Immutable: true},
+		"assets/index-uEi8SbLw.js":              {ContentType: "text/javascript; charset=utf-8", SHA256: "8a32e3391b957a3f9ef5ef69921f7681ca7e8b6cd4c52eb59c3aa95514a292ac", Immutable: true},
+		"assets/issue-editor-BuGLklVg.js":       {ContentType: "text/javascript; charset=utf-8", SHA256: "e661f8e235272d61afccebb7cd6c3f310beac7aa95d113291b0ce2b824a613b4", Immutable: true},
 		"assets/issue-editor-CdnBa9Ix.css":      {ContentType: "text/css; charset=utf-8", SHA256: "0c14176e9384da786c8e23a779b7e6a4afbe360da2012bcff3f60656f3fbbdb4", Immutable: true},
 		"assets/label-chips-BnlHwOat.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "70174e83c635558de3963b08a40bc53c0fa82a48fb7a8a95c8b11f7a39914cf2", Immutable: true},
 		"assets/label-chips-DMPnSd3b.css":       {ContentType: "text/css; charset=utf-8", SHA256: "99c2191e3068801db61c6c13195f963b0318404cdcf26c258d56713cafde351e", Immutable: true},
@@ -34,6 +34,6 @@ func init() {
 		"assets/triangle-alert-CacbGTOU.js":     {ContentType: "text/javascript; charset=utf-8", SHA256: "6b8c45cb950b4557df1e5303130242af96e6a6d3a6bf8bb9ad4b86ce8108cc28", Immutable: true},
 		"assets/useMutation-Cr8tITbQ.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "64f9c32052cee2a5d19d0d06088ebd2ec04636d1e3e0cbc1f8a9ac1092ba6916", Immutable: true},
 		"assets/workspace-page-Cq1Ba3Rv.js":     {ContentType: "text/javascript; charset=utf-8", SHA256: "4663467b251f1ab98275ebf46484fbcb93e3d8a53e9b82c6f7fa84c7efaadc69", Immutable: true},
-		"index.html":                            {ContentType: "text/html; charset=utf-8", SHA256: "fe48200d48074843993aeddc3eceacd96c302da3cd4bbcb5a899a0f18e08e3b7", Immutable: false},
+		"index.html":                            {ContentType: "text/html; charset=utf-8", SHA256: "51889e83158629bf101fcd4e7088b94e13181a7752668657d7aa49bbc3eb33c9", Immutable: false},
 	}
 }

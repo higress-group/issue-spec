@@ -1,5 +1,6 @@
 export const workflowResources = {
   en: {
+    markdown: { completedTask: "Completed task", incompleteTask: "Incomplete task", codeBlock: "Code block", highlightedCode: "Highlighted code" },
     issues: {
       openingDesk: "Opening issue desk…",
       workspace: {
@@ -271,6 +272,7 @@ export const workflowResources = {
     },
   },
   "zh-CN": {
+    markdown: { completedTask: "已完成任务", incompleteTask: "未完成任务", codeBlock: "代码块", highlightedCode: "高亮代码" },
     issues: {
       openingDesk: "正在打开议题工作台…",
       workspace: {

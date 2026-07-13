@@ -36,8 +36,8 @@
       "_createLucideIcon-B-xpaTHI.js"
     ]
   },
-  "_issue-editor-C-wB-KO5.js": {
-    "file": "assets/issue-editor-C-wB-KO5.js",
+  "_issue-editor-BuGLklVg.js": {
+    "file": "assets/issue-editor-BuGLklVg.js",
     "name": "issue-editor",
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
@@ -147,7 +147,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-BaHLWNfU.js",
+    "file": "assets/index-uEi8SbLw.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -210,7 +210,7 @@
     ]
   },
   "src/features/issues/create-page.tsx": {
-    "file": "assets/create-page-DAnaZQOi.js",
+    "file": "assets/create-page-acFp-1Yw.js",
     "name": "create-page",
     "src": "src/features/issues/create-page.tsx",
     "isDynamicEntry": true,
@@ -220,11 +220,11 @@
       "_useMutation-Cr8tITbQ.js",
       "_repository-context-Bb-5tsNJ.js",
       "_label-chips-BnlHwOat.js",
-      "_issue-editor-C-wB-KO5.js"
+      "_issue-editor-BuGLklVg.js"
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-XGfGaT1I.js",
+    "file": "assets/detail-page-Cxlplx5A.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
@@ -239,7 +239,7 @@
       "_avatar-CLU2kgvf.js",
       "_repository-context-Bb-5tsNJ.js",
       "_label-chips-BnlHwOat.js",
-      "_issue-editor-C-wB-KO5.js",
+      "_issue-editor-BuGLklVg.js",
       "src/features/issues/list-page.tsx"
     ],
     "css": [

@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import { stripIssueSpecMarkersForRender } from "./issue-markers";
 import "highlight.js/styles/github.css";
 import "./markdown.css";
+import { useTranslation } from "react-i18next";
 
 const schema = {
   ...defaultSchema,
@@ -23,6 +24,7 @@ const schema = {
 };
 
 export function MarkdownView({ source, className = "" }: { source: string; className?: string }) {
+  const { t } = useTranslation();
   return <div className={`markdown-view ${className}`.trim()} data-testid="rendered-markdown">
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -38,16 +40,16 @@ export function MarkdownView({ source, className = "" }: { source: string; class
         },
         input: ({ node, ...props }) => {
           void node;
-          return <input {...props} aria-label={props.checked ? "Completed task" : "Incomplete task"} />;
+          return <input {...props} aria-label={t(props.checked ? "markdown.completedTask" : "markdown.incompleteTask")} />;
         },
         pre: ({ node, ...props }) => {
           void node;
-          return <pre {...props} tabIndex={0} aria-label="Code block" />;
+          return <pre {...props} tabIndex={0} aria-label={t("markdown.codeBlock")} />;
         },
         code: ({ node, className, ...props }) => {
           void node;
           const block = className?.includes("language-") || className?.includes("hljs");
-          return <code {...props} className={className} tabIndex={block ? 0 : undefined} aria-label={block ? "Highlighted code" : undefined} />;
+          return <code {...props} className={className} tabIndex={block ? 0 : undefined} aria-label={block ? t("markdown.highlightedCode") : undefined} />;
         },
       }}
     >{stripIssueSpecMarkersForRender(source)}</ReactMarkdown>

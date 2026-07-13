@@ -46,6 +46,15 @@ export const resources = {
         noProvider: "No interactive provider is configured. Ask an operator to enable OIDC or GitHub OAuth.",
         bootstrap: "Setting up the first administrator?",
       },
+      bootstrap: {
+        checking: "Checking bootstrap state", closedTitle: "Bootstrap is closed", closedDescription: "The one-time administrator claim has already completed or this server was not started with a bootstrap secret.",
+        continueSignIn: "Continue to sign in", eyebrow: "One-time operation", title: "Claim the first administrator",
+        description: "This uses the operator-provided bootstrap secret once, then exchanges the short-lived recovery credential for a normal browser session.",
+        warning: "Use this page only from a trusted workstation. Secrets are never stored in browser storage.", secret: "Bootstrap secret", secretRequired: "Bootstrap secret is required",
+        localLogin: "Local login", localLoginHint: "Immutable identifier used in issue authorship.", loginRequired: "Login is required", displayName: "Display name", displayNameRequired: "Display name is required",
+        emailOptional: "Email (optional)", claiming: "Claiming…", claim: "Claim and take over", retryDescription: "The claim succeeded but session takeover did not finish. Retry while this one-time credential remains in memory.", retry: "Retry takeover",
+        openingWorkspace: "Opening your workspace",
+      },
       dashboard: {
         eyebrow: "Control room",
         title: "Good work starts with orientation",
@@ -136,6 +145,15 @@ export const resources = {
         discovering: "正在探寻可用的身份提供方",
         noProvider: "尚未配置交互式身份提供方，请联系管理员启用 OIDC 或 GitHub OAuth。",
         bootstrap: "正在配置首位管理员？",
+      },
+      bootstrap: {
+        checking: "正在检查首次引导状态", closedTitle: "首次引导已关闭", closedDescription: "首次管理员认领已经完成，或服务器启动时未配置引导密钥。",
+        continueSignIn: "继续登录", eyebrow: "一次性操作", title: "认领首位管理员",
+        description: "此操作只使用一次管理员提供的引导密钥，然后将短期恢复凭据交换为正常的浏览器会话。",
+        warning: "请仅在受信的工作设备上使用此页面。浏览器存储不会保存任何密钥。", secret: "引导密钥", secretRequired: "请填写引导密钥",
+        localLogin: "本地登录名", localLoginHint: "用于议题署名且不可更改的身份标识。", loginRequired: "请填写登录名", displayName: "显示名称", displayNameRequired: "请填写显示名称",
+        emailOptional: "邮箱（可选）", claiming: "正在认领…", claim: "认领并接管", retryDescription: "管理员认领已成功，但会话接管尚未完成。请在一次性凭据仍保留于内存时重试。", retry: "重试接管",
+        openingWorkspace: "正在打开工作区",
       },
       dashboard: {
         eyebrow: "工作总览",
