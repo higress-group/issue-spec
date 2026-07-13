@@ -2,7 +2,9 @@ package github
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"sort"
@@ -232,6 +234,48 @@ func (b *GHBackend) BackendInfo() BackendInfo {
 	return BackendInfo{Name: ghCLIName, Kind: ghCLIKind, Host: b.Host}
 }
 
+// ListPullRequestCommits exposes exact PR ancestry through the production gh
+// backend. gh --paginate emits one JSON array per response page, so decode the
+// complete page stream before validating every provider-owned commit SHA.
+func (b *GHBackend) ListPullRequestCommits(ctx context.Context, repo string, prNumber int) ([]PullRequestCommit, error) {
+	var commits []PullRequestCommit
+	result, err := b.cli.RunAPI(ctx, b.Host, ExternalCLIAPIRequest{
+		Operation: "ListPullRequestCommits",
+		Method:    http.MethodGet,
+		Endpoint:  fmt.Sprintf("/repos/%s/pulls/%d/commits", repo, prNumber),
+		Query:     url.Values{"per_page": {"100"}},
+		Paginate:  true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := DecodeCLIJSONPageStream(result.Stdout, &commits); err != nil {
+		return nil, err
+	}
+	unique := make([]PullRequestCommit, 0, len(commits))
+	seen := make(map[string]struct{}, len(commits))
+	for index, commit := range commits {
+		if !fullGitSHA(commit.SHA) {
+			return nil, fmt.Errorf("pull request commit %d returned invalid full SHA", index+1)
+		}
+		key := strings.ToLower(commit.SHA)
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, commit)
+	}
+	return unique, nil
+}
+
+func fullGitSHA(value string) bool {
+	if len(value) != 40 || value != strings.TrimSpace(value) {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 20
+}
+
 type unsupportedGHOperations struct{}
 
 func unsupportedGHOperation(operation string) error {
@@ -307,3 +351,4 @@ func (unsupportedGHOperations) ListCheckRuns(context.Context, string, string) ([
 }
 
 var _ Backend = (*GHBackend)(nil)
+var _ PullRequestCommitBackend = (*GHBackend)(nil)
