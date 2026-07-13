@@ -5,6 +5,7 @@ type FeatureIcon = ComponentType<{ size?: number; "aria-hidden"?: boolean | "tru
 
 export type FeatureNavItem = {
   label: string;
+  labelKey?: string;
   to: string;
   capability?: string;
   requiredAction?: string;

@@ -14,6 +14,7 @@ import { RepositoriesPage } from "../repos/repositories-page";
 import { RepositorySettingsPage } from "../repos/repository-settings-page";
 import { CollaboratorsPage } from "../repos/collaborators-page";
 import { IntegrationsPage } from "../repos/integrations-page";
+import { useTranslation } from "react-i18next";
 
 export const router = createBrowserRouter([
   {
@@ -49,10 +50,12 @@ export const router = createBrowserRouter([
 ]);
 
 function RouteErrorPage() {
+  const { t } = useTranslation();
   const error = useRouteError();
-  return <div className="public-narrow"><div className="empty-state"><span className="eyebrow coral-text">Route error</span><h1>That desk could not open</h1><p>{error instanceof Error ? error.message : "The requested route failed."}</p><Link className="button primary" to="/">Return to overview</Link></div></div>;
+  return <div className="public-narrow"><div className="empty-state"><span className="eyebrow coral-text">{t("route.errorEyebrow")}</span><h1>{t("route.errorTitle")}</h1><p>{error instanceof Error ? error.message : t("route.errorFallback")}</p><Link className="button primary" to="/">{t("route.returnOverview")}</Link></div></div>;
 }
 
 function NotFoundPage() {
-  return <div className="page"><div className="empty-state"><span className="eyebrow">404 / not found</span><h1>No workflow lives here</h1><p>The path may be stale, or the resource is concealed by your current authority.</p><Link className="button primary" to="/">Return to overview</Link></div></div>;
+  const { t } = useTranslation();
+  return <div className="page"><div className="empty-state"><span className="eyebrow">{t("route.notFoundEyebrow")}</span><h1>{t("route.notFoundTitle")}</h1><p>{t("route.notFoundDescription")}</p><Link className="button primary" to="/">{t("route.returnOverview")}</Link></div></div>;
 }

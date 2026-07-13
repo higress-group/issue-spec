@@ -13,7 +13,7 @@ function LazyBoardRoute({ children }: { children: ReactNode }) {
 }
 
 const contribution: FeatureContribution = {
-  navigation: [{ label: "Changes", to: "/changes", capability: "change_boards", icon: Workflow, order: 20 }],
+  navigation: [{ label: "Changes", labelKey: "navigation.changes", to: "/changes", capability: "change_boards", icon: Workflow, order: 20 }],
   routes: [
     { path: "changes", element: <LazyBoardRoute><BoardWorkspacePage /></LazyBoardRoute> },
     { path: "changes/:orgId", element: <LazyBoardRoute><BoardListPage /></LazyBoardRoute> },

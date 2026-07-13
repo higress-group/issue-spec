@@ -7,16 +7,18 @@ import { useInspector } from "../app/problem-inspector";
 import { api } from "../lib/api/resources";
 import type { BasePermission } from "../lib/api/types";
 import { queryKeys, useCurrentContext, useMeta } from "../auth/session";
+import { useTranslation } from "react-i18next";
 
 type OrgForm = { name: string; display_name: string; description: string; base_permission: BasePermission };
 
 export function DashboardPage() {
+  const { t } = useTranslation();
   const context = useCurrentContext();
-  return <div className="page"><PageHeader eyebrow="Control room" title="Good work starts with orientation" description="Choose a tenant, inspect your authority, and continue the workflow from one calm desk." />
+  return <div className="page"><PageHeader eyebrow={t("dashboard.eyebrow")} title={t("dashboard.title")} description={t("dashboard.description")} />
     {context.error ? <ErrorNotice error={context.error} /> : null}
-    <section className="metric-strip"><div><span>Organizations</span><strong>{context.data?.organizations.length ?? 0}</strong></div><div><span>Credential realm</span><strong>{context.data?.credential.kind ?? "—"}</strong></div><div><span>Site authority</span><strong>{context.data?.allowed_actions.includes("site.admin") ? "Administrator" : "Scoped"}</strong></div></section>
-    <Panel title="Your organizations" description="Only directly readable organizations or containers with visible repositories appear here.">
-      {context.data?.organizations.length === 0 ? <EmptyState title="No visible workspace yet" description="Ask an organization owner to add your account, or claim bootstrap if this is a new server." /> : <div className="card-grid">{context.data?.organizations.map((org, index) => <Link className="org-card" to={`/orgs/${org.id}/repos`} key={org.id}><span className={`stage-number stage-${index % 3}`}>0{index + 1}</span><div><span className="eyebrow">{org.container_only ? "Repository container" : "Organization"}</span><h2>{org.display_name}</h2><p className="mono">{org.name}</p></div><div className="card-foot"><StatusBadge tone={org.effective_permission === "admin" ? "purple" : "teal"}>{org.effective_permission}</StatusBadge><ArrowRight size={18} /></div></Link>)}</div>}
+    <section className="metric-strip"><div><span>{t("dashboard.organizations")}</span><strong>{context.data?.organizations.length ?? 0}</strong></div><div><span>{t("dashboard.credentialRealm")}</span><strong>{context.data?.credential.kind ?? "—"}</strong></div><div><span>{t("dashboard.siteAuthority")}</span><strong>{context.data?.allowed_actions.includes("site.admin") ? t("dashboard.administrator") : t("dashboard.scoped")}</strong></div></section>
+    <Panel title={t("dashboard.yourOrganizations")} description={t("dashboard.organizationsHelp")}>
+      {context.data?.organizations.length === 0 ? <EmptyState title={t("dashboard.noWorkspace")} description={t("dashboard.noWorkspaceHelp")} /> : <div className="card-grid">{context.data?.organizations.map((org, index) => <Link className="org-card" to={`/orgs/${org.id}/repos`} key={org.id}><span className={`stage-number stage-${index % 3}`}>0{index + 1}</span><div><span className="eyebrow">{org.container_only ? t("dashboard.repositoryContainer") : t("dashboard.organization")}</span><h2>{org.display_name}</h2><p className="mono">{org.name}</p></div><div className="card-foot"><StatusBadge tone={org.effective_permission === "admin" ? "purple" : "teal"}>{org.effective_permission}</StatusBadge><ArrowRight size={18} /></div></Link>)}</div>}
     </Panel>
   </div>;
 }
