@@ -17,7 +17,7 @@ Git 凭据、OIDC，以及 Jira 类工作项同步。所有示例均使用虚构
 | 源码、PR/MR、Review、CI、Merge | 企业代码平台 | `issue-spec.code-provider/v1` Bridge |
 | Clone 与 Push 凭据 | 企业 Git 服务 | `issue-spec-git-credential-v1` 或可信宿主 SSH |
 | 员工登录 | 企业身份平台 | OIDC |
-| 需求/工作项可见性与状态 | Jira 类平台 | Agent/Workflow 适配器或 API/Webhook 投影 Sidecar |
+| 关联需求/工作项可见性与状态 | issue-spec Server | Jira 类平台：通过 Agent/Workflow 适配器或 API/Webhook 投影 Sidecar 对接 |
 
 ```text
 浏览器 ------ OIDC ------> issue-spec Server <------ Runner Webhook

@@ -9,7 +9,7 @@ Choose one authority for each surface before writing a wrapper.
 | Repository coordinates | issue-spec Source Binding | Self-hosted repository API and `issue-spec init` | No credential permitted |
 | Runner clone and push | Company Git service | `issue-spec-git-credential-v1` or opt-in host SSH | Job lease or dedicated runner OS account |
 | Browser identity | Company identity provider | OIDC | Protected auth provider file |
-| External work-item visibility and status | Jira-like platform | Agent/Workflow CLI/API adapter or projection sidecar | Local wrapper or sidecar secret store |
+| Linked work-item visibility and status | issue-spec Server | Jira-like platform via Agent/Workflow CLI/API adapter or projection sidecar | Local wrapper or sidecar secret store |
 
 ## Code platform
 

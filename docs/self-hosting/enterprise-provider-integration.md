@@ -19,7 +19,7 @@ Do not implement one privileged “company provider” that owns everything.
 | Source, PR/MR, review, CI, merge | Company code platform | `issue-spec.code-provider/v1` bridge |
 | Clone and push credentials | Company Git service | `issue-spec-git-credential-v1` or trusted host SSH |
 | Employee login | Company identity provider | OIDC |
-| Planning/work-item visibility and status | Jira-like tracker | Agent/Workflow adapter or API/webhook projection sidecar |
+| Linked work-item visibility and status | issue-spec Server | Jira-like tracker via Agent/Workflow adapter or API/webhook projection sidecar |
 
 ```text
 browser ------ OIDC ------> issue-spec Server <------ runner webhook
