@@ -13,9 +13,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func newInitTestApp(out, errOut *bytes.Buffer) *app {
+func newInitTestApp(t *testing.T, out, errOut *bytes.Buffer) *app {
+	t.Helper()
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
 	app := newApp(strings.NewReader(""), out, errOut)
-	app.profileName = auth.DefaultProfileName
 	app.selectGitHubBackend = func(context.Context, string) (auth.GitHubBackendSelection, error) {
 		return auth.GitHubBackendSelection{
 			Mode:            auth.GitHubBackendModeAuto,
@@ -39,7 +40,7 @@ func newInitTestApp(out, errOut *bytes.Buffer) *app {
 func TestInitLanguageWritesWorkflowConfig(t *testing.T) {
 	t.Chdir(t.TempDir())
 	var out, errOut bytes.Buffer
-	app := newInitTestApp(&out, &errOut)
+	app := newInitTestApp(t, &out, &errOut)
 
 	code := app.runInit(context.Background(), []string{"--repo", "o/r", "--tools", "none", "--language", "zh"})
 	if code != 0 {
@@ -88,7 +89,7 @@ func TestInitLanguageMergesExistingConfig(t *testing.T) {
 	}
 
 	var out, errOut bytes.Buffer
-	app := newInitTestApp(&out, &errOut)
+	app := newInitTestApp(t, &out, &errOut)
 	code := app.runInit(context.Background(), []string{"--repo", "o/r", "--tools", "none", "--language", "en"})
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr=%q", code, errOut.String())
@@ -126,7 +127,7 @@ func TestInitLanguageMergesExistingConfig(t *testing.T) {
 func TestInitWithoutLanguageDoesNotWriteWorkflowConfig(t *testing.T) {
 	t.Chdir(t.TempDir())
 	var out, errOut bytes.Buffer
-	app := newInitTestApp(&out, &errOut)
+	app := newInitTestApp(t, &out, &errOut)
 
 	code := app.runInit(context.Background(), []string{"--repo", "o/r", "--tools", "none"})
 	if code != 0 {
