@@ -80,15 +80,12 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	var gitProvider credentials.GitProvider
 	var hostSSHDir, hostSSHAgentSocket string
 	if input.Runner.AllowHostSSH {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil || strings.TrimSpace(home) == "" {
-			return nil, fmt.Errorf("runner serve host SSH: resolve runner home directory")
+		hostSSHConfig, configErr := credentials.CurrentUserHostSSHGitProviderConfig(os.Getenv("SSH_AUTH_SOCK"))
+		if configErr != nil {
+			return nil, fmt.Errorf("runner serve host SSH: %w", configErr)
 		}
-		hostSSHDir = filepath.Join(home, ".ssh")
-		hostSSHAgentSocket = strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK"))
-		gitProvider, err = credentials.NewHostSSHGitProvider(credentials.HostSSHGitProviderConfig{
-			SSHDir: hostSSHDir, AgentSocket: hostSSHAgentSocket,
-		})
+		hostSSHDir, hostSSHAgentSocket = hostSSHConfig.SSHDir, hostSSHConfig.AgentSocket
+		gitProvider, err = credentials.NewHostSSHGitProvider(hostSSHConfig)
 	} else {
 		gitProvider, err = credentials.NewCommandGitProvider(credentials.CommandGitProviderConfig{Path: input.GitCredentialCommand,
 			Args: input.GitCredentialArgs, Timeout: input.GitCredentialTimeout, MaxOutput: input.GitCredentialMaxOutput,
