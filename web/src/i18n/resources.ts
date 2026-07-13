@@ -1,3 +1,6 @@
+import { administrationResources } from "./administration-resources";
+import { workflowResources } from "./workflow-resources";
+
 export const resources = {
   en: {
     translation: {
@@ -86,6 +89,8 @@ export const resources = {
         notFoundTitle: "No workflow lives here",
         notFoundDescription: "The path may be stale, or the resource is concealed by your current authority.",
       },
+      ...administrationResources.en,
+      ...workflowResources.en,
     },
   },
   "zh-CN": {
@@ -107,11 +112,11 @@ export const resources = {
         overview: "总览",
         issues: "议题",
         changes: "变更",
-        repositories: "代码仓库",
+        repositories: "仓库",
         account: "账户",
         session: "会话",
         tokens: "访问令牌",
-        administration: "系统治理",
+        administration: "管理后台",
         inspector: "请求检视",
         requestProblem: "请求有误",
         home: "首页",
@@ -175,6 +180,8 @@ export const resources = {
         notFoundTitle: "此处无可循之事",
         notFoundDescription: "路径或已失效，也可能因当前权限而不可见。",
       },
+      ...administrationResources["zh-CN"],
+      ...workflowResources["zh-CN"],
     },
   },
 } as const;

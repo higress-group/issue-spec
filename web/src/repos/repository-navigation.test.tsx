@@ -8,6 +8,7 @@ import { server } from "../../tests/server";
 import type { AdminRepository } from "../lib/api/types";
 import { CollaboratorsPage } from "./collaborators-page";
 import { RepositoryHeader, type RepositorySection } from "./repository-header";
+import i18n from "../i18n/i18n";
 
 const orgId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const repoId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -58,5 +59,17 @@ describe("collaborator collection compatibility", () => {
     expect(await screen.findByRole("heading", { name: "No explicit collaborators" })).toBeVisible();
     expect(screen.getByRole("navigation", { name: "Repository breadcrumb" })).toBeVisible();
     expect((await axe.run(container)).violations).toEqual([]);
+  });
+});
+
+describe("repository navigation localization", () => {
+  it("uses the revised Chinese repository terminology", async () => {
+    await i18n.changeLanguage("zh-CN");
+    renderApp(<RepositoryHeader repository={repository} section="collaborators" title={i18n.t("collaborators.title")} description={i18n.t("collaborators.description")} />, routes[1].route);
+    const breadcrumbs = screen.getByRole("navigation", { name: "仓库路径" });
+    expect(within(breadcrumbs).getByRole("link", { name: "仓库" })).toBeVisible();
+    const sections = screen.getByRole("navigation", { name: "仓库功能" });
+    expect(within(sections).getByRole("link", { name: "协作者" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "仓库协作者" })).toBeVisible();
   });
 });

@@ -1,26 +1,64 @@
 {
-  "_issue-editor-CdnBa9Ix.css": {
-    "file": "assets/issue-editor-CdnBa9Ix.css",
-    "src": "_issue-editor-CdnBa9Ix.css"
+  "_arrow-right-K7O9CZar.js": {
+    "file": "assets/arrow-right-K7O9CZar.js",
+    "name": "arrow-right",
+    "imports": [
+      "_createLucideIcon-B-xpaTHI.js"
+    ]
   },
-  "_issue-editor-DZRIgGMM.js": {
-    "file": "assets/issue-editor-DZRIgGMM.js",
+  "_avatar-CLU2kgvf.js": {
+    "file": "assets/avatar-CLU2kgvf.js",
+    "name": "avatar",
+    "imports": [
+      "_rolldown-runtime-QTnfLwEv.js",
+      "_session-CvDFWMif.js"
+    ]
+  },
+  "_circle-dot-8dgdk_aO.js": {
+    "file": "assets/circle-dot-8dgdk_aO.js",
+    "name": "circle-dot",
+    "imports": [
+      "_createLucideIcon-B-xpaTHI.js"
+    ]
+  },
+  "_createLucideIcon-B-xpaTHI.js": {
+    "file": "assets/createLucideIcon-B-xpaTHI.js",
+    "name": "createLucideIcon",
+    "imports": [
+      "_rolldown-runtime-QTnfLwEv.js",
+      "_session-CvDFWMif.js"
+    ]
+  },
+  "_git-branch-B-SB0R-W.js": {
+    "file": "assets/git-branch-B-SB0R-W.js",
+    "name": "git-branch",
+    "imports": [
+      "_createLucideIcon-B-xpaTHI.js"
+    ]
+  },
+  "_issue-editor-C-wB-KO5.js": {
+    "file": "assets/issue-editor-C-wB-KO5.js",
     "name": "issue-editor",
     "imports": [
-      "_session-Q8w3qjK8.js",
-      "_repository-context-eTbdqqDi.js",
-      "_label-chips-BdEKPmIS.js"
+      "_rolldown-runtime-QTnfLwEv.js",
+      "_session-CvDFWMif.js",
+      "_repository-context-Bb-5tsNJ.js",
+      "_label-chips-BnlHwOat.js"
     ],
     "css": [
       "assets/issue-editor-CdnBa9Ix.css"
     ]
   },
-  "_label-chips-BdEKPmIS.js": {
-    "file": "assets/label-chips-BdEKPmIS.js",
+  "_issue-editor-CdnBa9Ix.css": {
+    "file": "assets/issue-editor-CdnBa9Ix.css",
+    "src": "_issue-editor-CdnBa9Ix.css"
+  },
+  "_label-chips-BnlHwOat.js": {
+    "file": "assets/label-chips-BnlHwOat.js",
     "name": "label-chips",
     "imports": [
-      "_session-Q8w3qjK8.js",
-      "_relationships-BdRaM0h6.js"
+      "_session-CvDFWMif.js",
+      "_relationships-BmOUcY4J.js"
     ],
     "css": [
       "assets/label-chips-DMPnSd3b.css"
@@ -30,47 +68,102 @@
     "file": "assets/label-chips-DMPnSd3b.css",
     "src": "_label-chips-DMPnSd3b.css"
   },
+  "_lock-keyhole-B8lm2YwA.js": {
+    "file": "assets/lock-keyhole-B8lm2YwA.js",
+    "name": "lock-keyhole",
+    "imports": [
+      "_createLucideIcon-B-xpaTHI.js"
+    ]
+  },
   "_relationships-BcELNV6j.css": {
     "file": "assets/relationships-BcELNV6j.css",
     "src": "_relationships-BcELNV6j.css"
   },
-  "_relationships-BdRaM0h6.js": {
-    "file": "assets/relationships-BdRaM0h6.js",
+  "_relationships-BmOUcY4J.js": {
+    "file": "assets/relationships-BmOUcY4J.js",
     "name": "relationships",
     "imports": [
-      "_session-Q8w3qjK8.js"
+      "_session-CvDFWMif.js"
     ]
   },
-  "_relationships-Ci3_7ypc.js": {
-    "file": "assets/relationships-Ci3_7ypc.js",
+  "_relationships-Cs5o958f.js": {
+    "file": "assets/relationships-Cs5o958f.js",
     "name": "relationships",
     "imports": [
-      "_session-Q8w3qjK8.js",
-      "index.html",
-      "_relationships-BdRaM0h6.js"
+      "_session-CvDFWMif.js",
+      "_createLucideIcon-B-xpaTHI.js",
+      "_shield-alert-DeBl5nFC.js",
+      "_relationships-BmOUcY4J.js"
     ],
     "css": [
       "assets/relationships-BcELNV6j.css"
     ]
   },
-  "_repository-context-eTbdqqDi.js": {
-    "file": "assets/repository-context-eTbdqqDi.js",
+  "_repository-context-Bb-5tsNJ.js": {
+    "file": "assets/repository-context-Bb-5tsNJ.js",
     "name": "repository-context",
     "imports": [
-      "_session-Q8w3qjK8.js"
+      "_session-CvDFWMif.js"
     ]
   },
-  "_session-Q8w3qjK8.js": {
-    "file": "assets/session-Q8w3qjK8.js",
-    "name": "session"
+  "_rolldown-runtime-QTnfLwEv.js": {
+    "file": "assets/rolldown-runtime-QTnfLwEv.js",
+    "name": "rolldown-runtime"
+  },
+  "_search-ChFtDFPj.js": {
+    "file": "assets/search-ChFtDFPj.js",
+    "name": "search",
+    "imports": [
+      "_createLucideIcon-B-xpaTHI.js"
+    ]
+  },
+  "_session-CvDFWMif.js": {
+    "file": "assets/session-CvDFWMif.js",
+    "name": "session",
+    "imports": [
+      "_rolldown-runtime-QTnfLwEv.js"
+    ]
+  },
+  "_shield-alert-DeBl5nFC.js": {
+    "file": "assets/shield-alert-DeBl5nFC.js",
+    "name": "shield-alert",
+    "imports": [
+      "_createLucideIcon-B-xpaTHI.js"
+    ]
+  },
+  "_triangle-alert-CacbGTOU.js": {
+    "file": "assets/triangle-alert-CacbGTOU.js",
+    "name": "triangle-alert",
+    "imports": [
+      "_createLucideIcon-B-xpaTHI.js"
+    ]
+  },
+  "_useMutation-Cr8tITbQ.js": {
+    "file": "assets/useMutation-Cr8tITbQ.js",
+    "name": "useMutation",
+    "imports": [
+      "_rolldown-runtime-QTnfLwEv.js",
+      "_session-CvDFWMif.js"
+    ]
   },
   "index.html": {
-    "file": "assets/index-DR1ekiuU.js",
+    "file": "assets/index-BaHLWNfU.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
     "imports": [
-      "_session-Q8w3qjK8.js"
+      "_rolldown-runtime-QTnfLwEv.js",
+      "_session-CvDFWMif.js",
+      "_useMutation-Cr8tITbQ.js",
+      "_createLucideIcon-B-xpaTHI.js",
+      "_arrow-right-K7O9CZar.js",
+      "_triangle-alert-CacbGTOU.js",
+      "_circle-dot-8dgdk_aO.js",
+      "_shield-alert-DeBl5nFC.js",
+      "_git-branch-B-SB0R-W.js",
+      "_lock-keyhole-B8lm2YwA.js",
+      "_search-ChFtDFPj.js",
+      "_avatar-CLU2kgvf.js"
     ],
     "dynamicImports": [
       "src/features/boards/board-page.tsx",
@@ -81,60 +174,72 @@
       "src/features/issues/detail-page.tsx"
     ],
     "css": [
-      "assets/index-CQVaU1cZ.css"
+      "assets/index-B4L5_is1.css"
     ]
   },
   "src/features/boards/board-page.tsx": {
-    "file": "assets/board-page-pWNd7yMn.js",
+    "file": "assets/board-page-BUFBv0b2.js",
     "name": "board-page",
     "src": "src/features/boards/board-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_session-Q8w3qjK8.js",
-      "_relationships-Ci3_7ypc.js",
-      "index.html",
-      "_relationships-BdRaM0h6.js",
-      "_repository-context-eTbdqqDi.js"
+      "_session-CvDFWMif.js",
+      "_createLucideIcon-B-xpaTHI.js",
+      "_arrow-right-K7O9CZar.js",
+      "_triangle-alert-CacbGTOU.js",
+      "_circle-dot-8dgdk_aO.js",
+      "_shield-alert-DeBl5nFC.js",
+      "_relationships-Cs5o958f.js",
+      "_relationships-BmOUcY4J.js",
+      "_repository-context-Bb-5tsNJ.js"
     ]
   },
   "src/features/boards/detail-page.tsx": {
-    "file": "assets/detail-page-CdrswHv6.js",
+    "file": "assets/detail-page-DxS1jzM_.js",
     "name": "detail-page",
     "src": "src/features/boards/detail-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_session-Q8w3qjK8.js",
-      "_relationships-Ci3_7ypc.js",
-      "index.html",
-      "_repository-context-eTbdqqDi.js",
+      "_session-CvDFWMif.js",
+      "_createLucideIcon-B-xpaTHI.js",
+      "_shield-alert-DeBl5nFC.js",
+      "_git-branch-B-SB0R-W.js",
+      "_relationships-Cs5o958f.js",
+      "_repository-context-Bb-5tsNJ.js",
       "src/features/boards/board-page.tsx"
     ]
   },
   "src/features/issues/create-page.tsx": {
-    "file": "assets/create-page-Dc8ASBub.js",
+    "file": "assets/create-page-DAnaZQOi.js",
     "name": "create-page",
     "src": "src/features/issues/create-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_session-Q8w3qjK8.js",
-      "index.html",
-      "_repository-context-eTbdqqDi.js",
-      "_label-chips-BdEKPmIS.js",
-      "_issue-editor-DZRIgGMM.js"
+      "_rolldown-runtime-QTnfLwEv.js",
+      "_session-CvDFWMif.js",
+      "_useMutation-Cr8tITbQ.js",
+      "_repository-context-Bb-5tsNJ.js",
+      "_label-chips-BnlHwOat.js",
+      "_issue-editor-C-wB-KO5.js"
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-BlJvHQdi.js",
+    "file": "assets/detail-page-XGfGaT1I.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_session-Q8w3qjK8.js",
-      "_relationships-Ci3_7ypc.js",
-      "index.html",
-      "_repository-context-eTbdqqDi.js",
-      "_label-chips-BdEKPmIS.js",
-      "_issue-editor-DZRIgGMM.js",
+      "_rolldown-runtime-QTnfLwEv.js",
+      "_session-CvDFWMif.js",
+      "_useMutation-Cr8tITbQ.js",
+      "_createLucideIcon-B-xpaTHI.js",
+      "_circle-dot-8dgdk_aO.js",
+      "_relationships-Cs5o958f.js",
+      "_lock-keyhole-B8lm2YwA.js",
+      "_avatar-CLU2kgvf.js",
+      "_repository-context-Bb-5tsNJ.js",
+      "_label-chips-BnlHwOat.js",
+      "_issue-editor-C-wB-KO5.js",
       "src/features/issues/list-page.tsx"
     ],
     "css": [
@@ -142,26 +247,30 @@
     ]
   },
   "src/features/issues/list-page.tsx": {
-    "file": "assets/list-page-C9UQCYML.js",
+    "file": "assets/list-page-BMln5TD6.js",
     "name": "list-page",
     "src": "src/features/issues/list-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_session-Q8w3qjK8.js",
-      "index.html",
-      "_repository-context-eTbdqqDi.js",
-      "_label-chips-BdEKPmIS.js"
+      "_session-CvDFWMif.js",
+      "_createLucideIcon-B-xpaTHI.js",
+      "_circle-dot-8dgdk_aO.js",
+      "_search-ChFtDFPj.js",
+      "_repository-context-Bb-5tsNJ.js",
+      "_label-chips-BnlHwOat.js"
     ]
   },
   "src/features/issues/workspace-page.tsx": {
-    "file": "assets/workspace-page-BloZBgsq.js",
+    "file": "assets/workspace-page-Cq1Ba3Rv.js",
     "name": "workspace-page",
     "src": "src/features/issues/workspace-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_session-Q8w3qjK8.js",
-      "index.html",
-      "_repository-context-eTbdqqDi.js"
+      "_session-CvDFWMif.js",
+      "_createLucideIcon-B-xpaTHI.js",
+      "_arrow-right-K7O9CZar.js",
+      "_lock-keyhole-B8lm2YwA.js",
+      "_repository-context-Bb-5tsNJ.js"
     ]
   }
 }
