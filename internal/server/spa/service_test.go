@@ -2,6 +2,7 @@ package spa
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -65,6 +66,24 @@ func TestCurrentContextAndTenantSafeCandidates(t *testing.T) {
 	if !current.User.SiteAdmin || current.Credential.ScopeMode != "identity" || current.Credential.Scopes != nil ||
 		current.Credential.IdleExpiresAt == nil || current.Session == nil || len(current.AllowedActions) != 1 {
 		t.Fatalf("current context = %+v", current)
+	}
+	limitedPrincipal := serverauth.Principal{User: serverauth.User{ID: collaboratorID, Login: "collaborator", DisplayName: "collaborator"},
+		Kind: serverauth.CredentialSession}
+	limited, err := service.Current(t.Context(), limitedPrincipal, "issue_spec_csrf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limited.AllowedActions == nil || len(limited.AllowedActions) != 0 || len(limited.Organizations) != 1 ||
+		!limited.Organizations[0].ContainerOnly || limited.Organizations[0].AllowedActions == nil ||
+		len(limited.Organizations[0].AllowedActions) != 0 {
+		t.Fatalf("limited current context = %+v", limited)
+	}
+	encoded, err := json.Marshal(limited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(encoded), `"allowed_actions":[]`) != 2 {
+		t.Fatalf("limited current context JSON = %s", encoded)
 	}
 
 	associated, err := service.UserCandidates(t.Context(), principal, orgID, PurposeAdministration, MatchPrefix, "", 20)

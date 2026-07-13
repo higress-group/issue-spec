@@ -97,7 +97,7 @@ func (s *Service) Current(ctx context.Context, principal serverauth.Principal, c
 			Email: principal.User.Email, AvatarURL: s.avatarURL(principal.User.Login), SiteAdmin: site.IdentitySiteAdmin},
 		Credential: CredentialContext{Kind: principal.Kind, ScopeMode: "token", Scopes: append([]string(nil), principal.Scopes...),
 			RepositoryRestricted: principal.RepoRestricted},
-		AllowedActions: append([]authz.AccessAction(nil), site.AllowedActions...),
+		AllowedActions: append([]authz.AccessAction{}, site.AllowedActions...),
 		Organizations:  make([]OrganizationContext, 0, len(organizations)),
 	}
 	if !principal.ExpiresAt.IsZero() {
@@ -118,7 +118,7 @@ func (s *Service) Current(ctx context.Context, principal serverauth.Principal, c
 			ID: organization.Organization.ID, Name: organization.Organization.Name,
 			DisplayName:         organization.Organization.DisplayName,
 			EffectivePermission: organization.EffectivePermission, ContainerOnly: organization.ContainerOnly,
-			AllowedActions: append([]authz.AccessAction(nil), organization.AllowedActions...),
+			AllowedActions: append([]authz.AccessAction{}, organization.AllowedActions...),
 		})
 	}
 	return result, nil
