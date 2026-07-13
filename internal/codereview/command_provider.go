@@ -99,13 +99,12 @@ type protocolRequest struct {
 }
 
 type protocolResponse struct {
-	Protocol           string                    `json:"protocol"`
-	RequestID          string                    `json:"request_id"`
-	Capabilities       *Capabilities             `json:"capabilities,omitempty"`
-	Snapshot           *Snapshot                 `json:"snapshot,omitempty"`
-	Mutation           *MutationResult           `json:"mutation,omitempty"`
-	WorkspaceLifecycle *WorkspaceLifecycleResult `json:"workspace_lifecycle,omitempty"`
-	Error              *protocolError            `json:"error,omitempty"`
+	Protocol     string          `json:"protocol"`
+	RequestID    string          `json:"request_id"`
+	Capabilities *Capabilities   `json:"capabilities,omitempty"`
+	Snapshot     *Snapshot       `json:"snapshot,omitempty"`
+	Mutation     *MutationResult `json:"mutation,omitempty"`
+	Error        *protocolError  `json:"error,omitempty"`
 }
 
 type protocolError struct {
@@ -118,7 +117,7 @@ func (p *CommandProvider) Capabilities(ctx context.Context) (Capabilities, error
 	if err != nil {
 		return Capabilities{}, err
 	}
-	if response.Capabilities == nil || response.Snapshot != nil || response.Mutation != nil || response.WorkspaceLifecycle != nil {
+	if response.Capabilities == nil || response.Snapshot != nil || response.Mutation != nil {
 		return Capabilities{}, fmt.Errorf("%w: capabilities response shape", ErrInvalidProviderData)
 	}
 	if err := response.Capabilities.Validate(); err != nil {
@@ -138,7 +137,7 @@ func (p *CommandProvider) Snapshot(ctx context.Context, request SnapshotRequest)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if response.Snapshot == nil || response.Capabilities != nil || response.Mutation != nil || response.WorkspaceLifecycle != nil {
+	if response.Snapshot == nil || response.Capabilities != nil || response.Mutation != nil {
 		return Snapshot{}, fmt.Errorf("%w: snapshot response shape", ErrInvalidProviderData)
 	}
 	if response.Snapshot.ProtocolVersion != ProtocolVersion || response.Snapshot.Reference != request.Reference ||
@@ -162,7 +161,7 @@ func (p *CommandProvider) Mutate(ctx context.Context, request MutationRequest) (
 	if err != nil {
 		return MutationResult{}, err
 	}
-	if response.Mutation == nil || response.Capabilities != nil || response.Snapshot != nil || response.WorkspaceLifecycle != nil ||
+	if response.Mutation == nil || response.Capabilities != nil || response.Snapshot != nil ||
 		response.Mutation.Reference.ProviderKey != request.Reference.ProviderKey ||
 		response.Mutation.Reference.ExternalRepository != request.Reference.ExternalRepository ||
 		response.Mutation.Reference.Validate() != nil || strings.TrimSpace(response.Mutation.ExternalID) == "" ||
@@ -177,23 +176,6 @@ func (p *CommandProvider) Mutate(ctx context.Context, request MutationRequest) (
 		return MutationResult{}, fmt.Errorf("%w: mutation response change identity mismatch", ErrInvalidProviderData)
 	}
 	return *response.Mutation, nil
-}
-
-func (p *CommandProvider) WorkspaceLifecycle(ctx context.Context, request WorkspaceLifecycleRequest) (WorkspaceLifecycleResult, error) {
-	if err := validateWorkspaceLifecycleRequest(request); err != nil {
-		return WorkspaceLifecycleResult{}, err
-	}
-	response, err := p.invoke(ctx, "workspace_lifecycle", request)
-	if err != nil {
-		return WorkspaceLifecycleResult{}, err
-	}
-	if response.WorkspaceLifecycle == nil || response.Capabilities != nil || response.Snapshot != nil || response.Mutation != nil {
-		return WorkspaceLifecycleResult{}, fmt.Errorf("%w: workspace lifecycle response shape", ErrInvalidProviderData)
-	}
-	if err := validateWorkspaceLifecycleResult(request, *response.WorkspaceLifecycle); err != nil {
-		return WorkspaceLifecycleResult{}, err
-	}
-	return *response.WorkspaceLifecycle, nil
 }
 
 func validateMutationRequest(request MutationRequest) error {

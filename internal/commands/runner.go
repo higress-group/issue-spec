@@ -862,12 +862,9 @@ func (a *app) runRunnerReconcileWithStore(ctx context.Context, cfg commentrunner
 		defer opened.Close()
 		store = opened
 	}
-	workspaces, err := runnerProcessWorkspaceRuntime(workspace.Manager{
+	workspaces := workspace.Manager{
 		Root:      cfg.WorkspaceRoot,
 		Retention: cfg.WorkspaceRetention.Duration,
-	}, store, cfg.WorkspaceRoot)
-	if err != nil {
-		return jobs.ReconcileResult{}, err
 	}
 	dispatcher := jobs.Dispatcher{
 		Store:      store,
@@ -980,15 +977,9 @@ func (a *app) buildRunnerDispatcher(ctx context.Context, cfg commentrunner.Confi
 		cleanup = func() { _ = opened.Close() }
 		store = opened
 	}
-	workspaces, err := runnerProcessWorkspaceRuntime(workspace.Manager{
+	workspaces := workspace.Manager{
 		Root:      cfg.WorkspaceRoot,
 		Retention: cfg.WorkspaceRetention.Duration,
-	}, store, cfg.WorkspaceRoot)
-	if err != nil {
-		if cleanup != nil {
-			cleanup()
-		}
-		return nil, nil, err
 	}
 	dispatcher := &jobs.Dispatcher{
 		Store:        store,
@@ -1006,14 +997,6 @@ func (a *app) buildRunnerDispatcher(ctx context.Context, cfg commentrunner.Confi
 		IssueSpecBinary: issueSpecBinaryForRunner(),
 	}
 	return dispatcher, cleanup, nil
-}
-
-func runnerProcessWorkspaceRuntime(workspaces jobs.WorkspaceManager, store crstate.StateStore, managedRoot string) (jobs.WorkspaceManager, error) {
-	adapter, err := crstate.NewProcessWorkspaceStoreAdapter(store)
-	if err != nil {
-		return nil, err
-	}
-	return jobs.NewProcessWorkspaceRuntime(workspaces, adapter, managedRoot, nil)
 }
 
 func issueSpecBinaryForRunner() string {

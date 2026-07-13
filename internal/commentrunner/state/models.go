@@ -31,18 +31,47 @@ const (
 var ErrInvalidTransition = errors.New("invalid job lifecycle transition")
 
 type RunnerState struct {
-	SchemaVersion     int                          `json:"schema_version"`
-	CreatedAt         time.Time                    `json:"created_at,omitempty"`
-	UpdatedAt         time.Time                    `json:"updated_at,omitempty"`
-	Repositories      map[string]RepositoryState   `json:"repositories,omitempty"`
-	Jobs              map[string]Job               `json:"jobs,omitempty"`
-	PublicSessions    map[string]PublicSession     `json:"public_sessions,omitempty"`
-	Workspaces        map[string]WorkspaceMetadata `json:"workspaces,omitempty"`
-	Cancellations     map[string]Cancellation      `json:"cancellations,omitempty"`
-	StatusWritebacks  map[string]StatusWriteback   `json:"status_writebacks,omitempty"`
-	Deliveries        map[string]WebhookDelivery   `json:"webhook_deliveries,omitempty"`
-	Idempotency       IdempotencyIndex             `json:"idempotency,omitempty"`
-	ProcessWorkspaces ProcessWorkspaceAssociations `json:"process_workspaces"`
+	SchemaVersion    int                          `json:"schema_version"`
+	CreatedAt        time.Time                    `json:"created_at,omitempty"`
+	UpdatedAt        time.Time                    `json:"updated_at,omitempty"`
+	Repositories     map[string]RepositoryState   `json:"repositories,omitempty"`
+	Jobs             map[string]Job               `json:"jobs,omitempty"`
+	PublicSessions   map[string]PublicSession     `json:"public_sessions,omitempty"`
+	Workspaces       map[string]WorkspaceMetadata `json:"workspaces,omitempty"`
+	Cancellations    map[string]Cancellation      `json:"cancellations,omitempty"`
+	StatusWritebacks map[string]StatusWriteback   `json:"status_writebacks,omitempty"`
+	Deliveries       map[string]WebhookDelivery   `json:"webhook_deliveries,omitempty"`
+	Idempotency      IdempotencyIndex             `json:"idempotency,omitempty"`
+}
+
+// UnmarshalJSON keeps schema v6 as the persistence boundary while removing the
+// short-lived runner-owned PROCESS association store. The two explicitly known
+// legacy top-level fields are accepted and dropped; every other unknown field
+// remains a fail-closed error. A subsequent save emits only the current shape.
+func (s *RunnerState) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("decode runner state: %w", err)
+	}
+	delete(fields, "seen_comments")
+	delete(fields, "process_workspaces")
+	clean, err := json.Marshal(fields)
+	if err != nil {
+		return fmt.Errorf("decode runner state: %w", err)
+	}
+	type alias RunnerState
+	var decoded alias
+	decoder := json.NewDecoder(bytes.NewReader(clean))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("decode runner state: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("decode runner state: unexpected trailing JSON")
+	}
+	*s = RunnerState(decoded)
+	return nil
 }
 
 type DeliveryStatus string
@@ -380,12 +409,54 @@ type SessionQueue struct {
 	AcceptedSequence int64    `json:"accepted_sequence,omitempty"`
 }
 
+func (q *SessionQueue) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("decode session queue: %w", err)
+	}
+	delete(fields, "heartbeat_at")
+	clean, err := json.Marshal(fields)
+	if err != nil {
+		return fmt.Errorf("decode session queue: %w", err)
+	}
+	type alias SessionQueue
+	var decoded alias
+	decoder := json.NewDecoder(bytes.NewReader(clean))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("decode session queue: %w", err)
+	}
+	*q = SessionQueue(decoded)
+	return nil
+}
+
 type SessionLock struct {
 	OwnerJobID         string    `json:"owner_job_id,omitempty"`
 	AcquiredAt         time.Time `json:"acquired_at,omitempty"`
 	WorkspaceLockToken string    `json:"workspace_lock_token,omitempty"`
 	WorkspaceLockPath  string    `json:"workspace_lock_path,omitempty"`
 	StaleRecoveredAt   time.Time `json:"stale_recovered_at,omitempty"`
+}
+
+func (l *SessionLock) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("decode session lock: %w", err)
+	}
+	delete(fields, "heartbeat_at")
+	clean, err := json.Marshal(fields)
+	if err != nil {
+		return fmt.Errorf("decode session lock: %w", err)
+	}
+	type alias SessionLock
+	var decoded alias
+	decoder := json.NewDecoder(bytes.NewReader(clean))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("decode session lock: %w", err)
+	}
+	*l = SessionLock(decoded)
+	return nil
 }
 
 type Cancellation struct {
@@ -544,11 +615,6 @@ func (s *RunnerState) Normalize() {
 	if s.Deliveries == nil {
 		s.Deliveries = map[string]WebhookDelivery{}
 	}
-	if s.ProcessWorkspaces.SchemaVersion == 0 {
-		s.ProcessWorkspaces = NewProcessWorkspaceAssociations()
-	} else if s.ProcessWorkspaces.ByWorkspace == nil {
-		s.ProcessWorkspaces.ByWorkspace = map[string]ProcessWorkspaceAssociation{}
-	}
 	if s.Idempotency.CommandJobs == nil {
 		s.Idempotency.CommandJobs = map[string]string{}
 	}
@@ -637,9 +703,6 @@ func (s *RunnerState) Normalize() {
 func (s RunnerState) Validate() error {
 	if s.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("unsupported runner state schema version %d", s.SchemaVersion)
-	}
-	if err := s.ProcessWorkspaces.Validate(); err != nil {
-		return fmt.Errorf("process workspaces: %w", err)
 	}
 	return nil
 }

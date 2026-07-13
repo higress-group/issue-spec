@@ -2,15 +2,12 @@ package state
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
 
 func TestFileStoreCreateUpdateListReload(t *testing.T) {
@@ -363,14 +360,14 @@ func TestRunnerStateV6DropsLegacyProcessAssignmentAndRestoresCoordinatorCWD(t *t
 		t.Fatal(err)
 	}
 	serialized := string(data)
-	for _, removed := range []string{"exact_process_id", "process_workspace_assignment", "/runner/process/PROCESS-008"} {
+	for _, removed := range []string{"exact_process_id", "process_workspace_assignment", "process_workspaces", "/runner/process/PROCESS-008"} {
 		if strings.Contains(serialized, removed) {
 			t.Fatalf("legacy runner PROCESS field %q survived resave:\n%s", removed, serialized)
 		}
 	}
 }
 
-func TestRunnerStateV5MigrationInitializesProcessWorkspaces(t *testing.T) {
+func TestRunnerStateV5MigrationPreservesJobs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	legacy := `{"schema_version":5,"jobs":{"job-legacy":{"id":"job-legacy","status":"queued"}},"repositories":{}}`
 	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
@@ -380,41 +377,23 @@ func TestRunnerStateV5MigrationInitializesProcessWorkspaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.SchemaVersion != SchemaVersion || loaded.ProcessWorkspaces.SchemaVersion != ProcessWorkspaceAssociationSchemaVersion || loaded.ProcessWorkspaces.ByWorkspace == nil || loaded.Jobs["job-legacy"].ID != "job-legacy" {
+	if loaded.SchemaVersion != SchemaVersion || loaded.Jobs["job-legacy"].ID != "job-legacy" {
 		t.Fatalf("v5 migration lost state: %+v", loaded)
 	}
 	if err := SaveFile(path, loaded); err != nil {
 		t.Fatal(err)
 	}
 	reloaded, err := LoadFile(path)
-	if err != nil || reloaded.ProcessWorkspaces.ByWorkspace == nil || reloaded.Jobs["job-legacy"].ID != "job-legacy" {
+	if err != nil || reloaded.Jobs["job-legacy"].ID != "job-legacy" {
 		t.Fatalf("reopen after migration=%+v err=%v", reloaded, err)
 	}
 }
 
-func TestRunnerStateFutureAndCorruptProcessWorkspacesFailClosed(t *testing.T) {
+func TestRunnerStateFutureSchemaAndUnknownTopLevelFieldsFailClosed(t *testing.T) {
 	tests := map[string][]byte{
-		"future runner":    []byte(`{"schema_version":7}`),
-		"future workspace": []byte(`{"schema_version":6,"process_workspaces":{"schema_version":3,"by_workspace":{}}}`),
+		"future runner":   []byte(`{"schema_version":7}`),
+		"unknown current": []byte(`{"schema_version":6,"future_process_store":{}}`),
 	}
-	duplicate := NewState()
-	first := testProcessWorkspaceAssociation("ws-corrupt-a", "PROCESS-001")
-	first.RuntimeResources = []processworkspace.RuntimeResource{{Kind: "port", Name: "shared", Exclusive: true}}
-	finalizeAssociation(&first)
-	second := testProcessWorkspaceAssociation("ws-corrupt-b", "PROCESS-002")
-	second.RuntimeResources = append([]processworkspace.RuntimeResource(nil), first.RuntimeResources...)
-	finalizeAssociation(&second)
-	duplicate.ProcessWorkspaces.ByWorkspace[first.WorkspaceID] = first
-	duplicate.ProcessWorkspaces.ByWorkspace[second.WorkspaceID] = second
-	tests["duplicate exclusive"] = mustRawStateJSON(t, duplicate)
-
-	caseVariant := NewState()
-	upper := testProcessWorkspaceAssociation("ws-corrupt-case", "PROCESS-001")
-	upper.RuntimeResources = []processworkspace.RuntimeResource{{Kind: "Port", Name: "http"}}
-	finalizeAssociation(&upper)
-	caseVariant.ProcessWorkspaces.ByWorkspace[upper.WorkspaceID] = upper
-	tests["case variant"] = mustRawStateJSON(t, caseVariant)
-
 	for name, data := range tests {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "state.json")
@@ -457,20 +436,6 @@ func TestFileStoreUpdateFailureHasNoPartialWrite(t *testing.T) {
 	if string(before) != string(after) {
 		t.Fatal("failed update changed durable bytes")
 	}
-
-	invalid := NewState()
-	association := testProcessWorkspaceAssociation("ws-invalid-save", "PROCESS-001")
-	association.RuntimeResources = []processworkspace.RuntimeResource{{Kind: "Port", Name: "http"}}
-	finalizeAssociation(&association)
-	invalid.ProcessWorkspaces.ByWorkspace[association.WorkspaceID] = association
-	if err := store.Save(context.Background(), invalid); err == nil {
-		t.Fatal("Save accepted invalid association")
-	}
-	finalBytes, _ := os.ReadFile(path)
-	if string(before) != string(finalBytes) {
-		t.Fatal("invalid Save changed durable bytes")
-	}
-
 }
 
 func TestJobUnknownJSONFieldFailsClosed(t *testing.T) {
@@ -482,15 +447,6 @@ func TestJobUnknownJSONFieldFailsClosed(t *testing.T) {
 	if _, err := LoadFile(path); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("unknown job JSON error=%v", err)
 	}
-}
-
-func mustRawStateJSON(t *testing.T, state RunnerState) []byte {
-	t.Helper()
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
 }
 
 func TestLockContention(t *testing.T) {
