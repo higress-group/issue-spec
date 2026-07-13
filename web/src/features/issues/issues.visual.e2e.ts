@@ -1,16 +1,22 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { documentationSnapshot, documentationText, installDocumentationLanguage } from "../../../tests/e2e/documentation-language";
 
 const organizationId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const repositoryId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-const rawBody = `## Runner contract\n\nKeep agent sessions traceable without losing the original workflow source.\n\n<!-- issue-spec:type=PROCESS id=PROCESS-010 version=1 -->\n\n- [x] Compatible issue route\n- [ ] Browser validation\n\n| Surface | State |\n| --- | --- |\n| CLI | ready |\n| Web | review |\n\n\`\`\`sh\nissue-spec runner serve --repo acme/workflow\n\`\`\``;
+const issueTitle = documentationText("Runner contract", "运行器契约");
+const rawBody = documentationText(
+  `## Runner contract\n\nKeep agent sessions traceable without losing the original workflow source.\n\n<!-- issue-spec:type=PROCESS id=PROCESS-010 version=1 -->\n\n- [x] Compatible issue route\n- [ ] Browser validation\n\n| Surface | State |\n| --- | --- |\n| CLI | ready |\n| Web | review |\n\n\`\`\`sh\nissue-spec runner serve --repo acme/workflow\n\`\`\``,
+  `## 运行器契约\n\n保留智能体会话的完整追溯关系，同时不丢失原始工作流来源。\n\n<!-- issue-spec:type=PROCESS id=PROCESS-010 version=1 -->\n\n- [x] 兼容议题路由\n- [ ] 浏览器验证\n\n| 界面 | 状态 |\n| --- | --- |\n| CLI | 就绪 |\n| Web | 评审中 |\n\n\`\`\`sh\nissue-spec runner serve --repo acme/workflow\n\`\`\``,
+);
 const user = { login: "alice", id: 1, avatar_url: "", html_url: "", type: "User", site_admin: false };
 const reactionSummary = { total_count: 1, "+1": 1, "-1": 0, laugh: 0, hooray: 0, confused: 0, heart: 0, rocket: 0, eyes: 0, url: "" };
 
 let comments = [commentFixture(9, "The runner should preserve **raw Markdown** and agent metadata.")];
 
 test.beforeEach(async ({ page }) => {
-  comments = [commentFixture(9, "The runner should preserve **raw Markdown** and agent metadata.")];
+  await installDocumentationLanguage(page);
+  comments = [commentFixture(9, documentationText("The runner should preserve **raw Markdown** and agent metadata.", "运行器应保留**原始 Markdown**和智能体元数据。"))];
   await page.route("**/*", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -37,7 +43,7 @@ test.beforeEach(async ({ page }) => {
 
 test("issue detail is polished, accessible and preserves raw workflow text", async ({ page }, testInfo) => {
   await page.goto(`/issues/${organizationId}/${repositoryId}/41`);
-  await expect(page.getByRole("heading", { level: 1 }).first()).toContainText("Runner contract");
+  await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(issueTitle);
   if (testInfo.project.name === "issues-mobile-390") {
     const backLink = page.locator(".detail-title .issue-back");
     const title = page.locator(".detail-title h1");
@@ -47,44 +53,45 @@ test("issue detail is polished, accessible and preserves raw workflow text", asy
     expect((backBox?.y ?? 0) + (backBox?.height ?? 0)).toBeLessThanOrEqual((titleBox?.y ?? 0) + 1);
   }
   await expect(page.getByTestId("rendered-markdown").first()).not.toContainText("issue-spec:type");
-  await expect(page.getByText("Pull request")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Runner projection" })).toHaveAttribute("href", "https://code.example/acme/workflow/pull/42");
-  await expect(page.getByText("Binding mismatch")).toBeVisible();
+  await expect(page.getByText(documentationText("Pull request", "拉取请求"))).toBeVisible();
+  await expect(page.getByRole("link", { name: documentationText("Runner projection", "运行器投影") })).toHaveAttribute("href", "https://code.example/acme/workflow/pull/42");
+  await expect(page.getByText(documentationText("Binding mismatch", "绑定不一致"))).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
   const accessibility = await new AxeBuilder({ page }).analyze();
   expect(accessibility.violations).toEqual([]);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await expect(page).toHaveScreenshot("issue-detail.png", { fullPage: true, animations: "disabled" });
+  await expect(page).toHaveScreenshot(documentationSnapshot("issue-detail"), { fullPage: true, animations: "disabled" });
   if (testInfo.project.name === "issues-desktop-1440") {
-    await page.getByRole("button", { name: "Edit" }).first().click();
-    await expect(page.getByRole("textbox", { name: "Description" })).toHaveValue(rawBody);
-    await page.getByRole("button", { name: "Cancel", exact: true }).click();
-    const comment = page.getByRole("textbox", { name: "Comment" });
-    await comment.fill("A fresh browser decision");
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await page.getByRole("button", { name: documentationText("Edit", "编辑") }).first().click();
+    await expect(page.getByRole("textbox", { name: documentationText("Description", "描述") })).toHaveValue(rawBody);
+    await page.getByRole("button", { name: documentationText("Cancel", "取消"), exact: true }).click();
+    const comment = page.getByRole("textbox", { name: documentationText("Comment", "评论") });
+    const newComment = documentationText("A fresh browser decision", "一条新的浏览器端决定");
+    await comment.fill(newComment);
+    await page.getByRole("button", { name: documentationText("Comment", "评论"), exact: true }).click();
     await expect(comment).toHaveValue("");
-    await expect(page.getByText("A fresh browser decision")).toBeVisible();
+    await expect(page.getByText(newComment)).toBeVisible();
   }
 });
 
 test("combined label filters produce an intentional empty state", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "issues-desktop-1440");
   await page.goto(`/issues/${organizationId}/${repositoryId}`);
-  await page.locator("summary").filter({ hasText: "Labels" }).click();
+  await page.locator("summary").filter({ hasText: documentationText("Labels", "标签") }).click();
   await page.getByRole("checkbox", { name: "issue-spec/design" }).click();
   await expect(page).toHaveURL(/labels=issue-spec%2Fdesign/);
-  await page.locator("summary").filter({ hasText: "Labels" }).click();
+  await page.locator("summary").filter({ hasText: documentationText("Labels", "标签") }).click();
   await page.getByRole("checkbox", { name: "runner" }).click();
   await expect(page).toHaveURL(/labels=issue-spec%2Fdesign%2Crunner/);
-  await expect(page.getByRole("heading", { name: "No issues match this view" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: documentationText("No issues match this view", "没有符合当前条件的议题") })).toBeVisible();
 });
 
 test("canonical public WebURL keeps its owner/repository route and comment fragment", async ({ page }, testInfo) => {
   test.skip(!["issues-desktop-1440", "issues-mobile-390"].includes(testInfo.project.name));
   await page.goto("/AcMe/WorkFlow/issues/41?view=timeline#issuecomment-9");
   await expect(page).toHaveURL("/AcMe/WorkFlow/issues/41?view=timeline#issuecomment-9");
-  await expect(page.getByRole("heading", { level: 1 }).first()).toContainText("Runner contract");
+  await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(issueTitle);
   await expect(page.locator("#issuecomment-9")).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
@@ -92,8 +99,8 @@ test("canonical public WebURL keeps its owner/repository route and comment fragm
 
 const labels = [{ id: 1, name: "issue-spec/design", color: "62459a", default: false, description: "Design", url: "" }, { id: 2, name: "runner", color: "0f6f6f", default: false, description: "Runner", url: "" }];
 const relationships = [
-  { provider_key: "github", code_change_label: "Pull request", relation_kind: "code_change", external_repository_id: "acme/workflow", external_id: "42", canonical_url: "https://code.example/acme/workflow/pull/42", title: "Runner projection", lifecycle_state: "active", source_binding_match: "matched" },
-  { provider_key: "aone-bridge", code_change_label: "Merge request", relation_kind: "code_change", external_repository_id: "Ingress/workflow", external_id: "73", canonical_url: "https://code.example/Ingress/workflow/merge_requests/73", title: "Internal mirror", lifecycle_state: "active", source_binding_match: "mismatched" },
+  { provider_key: "github", code_change_label: "Pull request", relation_kind: "code_change", external_repository_id: "acme/workflow", external_id: "42", canonical_url: "https://code.example/acme/workflow/pull/42", title: documentationText("Runner projection", "运行器投影"), lifecycle_state: "active", source_binding_match: "matched" },
+  { provider_key: "aone-bridge", code_change_label: "Merge request", relation_kind: "code_change", external_repository_id: "Ingress/workflow", external_id: "73", canonical_url: "https://code.example/Ingress/workflow/merge_requests/73", title: documentationText("Internal mirror", "内部镜像"), lifecycle_state: "active", source_binding_match: "mismatched" },
 ];
-const issue = { id: 41, number: 41, state: "open", state_reason: null, title: "Runner contract", body: rawBody, user, labels, locked: false, comments: 1, created_at: "2026-07-10T10:00:00Z", updated_at: "2026-07-10T10:00:00Z", closed_at: null, html_url: "https://code.example.test/acme/workflow/issues/41", reactions: reactionSummary };
+const issue = { id: 41, number: 41, state: "open", state_reason: null, title: issueTitle, body: rawBody, user, labels, locked: false, comments: 1, created_at: "2026-07-10T10:00:00Z", updated_at: "2026-07-10T10:00:00Z", closed_at: null, html_url: "https://code.example.test/acme/workflow/issues/41", reactions: reactionSummary };
 function commentFixture(id: number, body: string) { return { id, body, user, created_at: "2026-07-10T11:00:00Z", updated_at: "2026-07-10T11:00:00Z", html_url: `https://code.example.test/acme/workflow/issues/41#issuecomment-${id}`, reactions: id === 9 ? reactionSummary : { ...reactionSummary, total_count: 0, "+1": 0 } }; }

@@ -215,8 +215,9 @@ the visual regression suite.
 make docs-self-hosted-screenshots
 ```
 
-The command builds the web application, updates the desktop golden snapshots,
-and copies the selected images into `docs/self-hosting/assets`. Review visual
+The command builds the web application, updates the English and Simplified
+Chinese desktop golden snapshots, and copies both documentation variants into
+`docs/self-hosting/assets`. Review visual
 diffs before committing regenerated images. Never replace these fixtures with
 screenshots from an internal deployment, real issue content, access tokens, or
 employee identities.

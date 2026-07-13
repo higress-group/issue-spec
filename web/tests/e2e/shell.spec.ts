@@ -1,8 +1,10 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { fixtureContext, fixtureMeta } from "../server";
+import { documentationSnapshot, documentationText, installDocumentationLanguage } from "./documentation-language";
 
 test.beforeEach(async ({ page }) => {
+  await installDocumentationLanguage(page);
   await page.route("**/api/v1/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/api/v1/meta") return route.fulfill({ json: fixtureMeta });
@@ -16,40 +18,40 @@ test.beforeEach(async ({ page }) => {
 
 test("responsive shell remains accessible and visually stable", async ({ page }, testInfo) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Good work starts with orientation" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: documentationText("Good work starts with orientation", "知止而后有定，定而后能静。") })).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
   const accessibility = await new AxeBuilder({ page }).analyze();
   expect(accessibility.violations).toEqual([]);
   await page.keyboard.press("Tab");
-  await expect(page.getByRole("link", { name: "Skip to main content" })).toBeFocused();
+  await expect(page.getByRole("link", { name: documentationText("Skip to main content", "跳至主要内容") })).toBeFocused();
   if (testInfo.project.name === "desktop-1440") {
-    await expect(page.getByRole("complementary", { name: "Request inspector" })).toBeVisible();
+    await expect(page.getByRole("complementary", { name: documentationText("Request inspector", "请求检视") })).toBeVisible();
   } else {
-    const toggle = page.getByRole("button", { name: "Inspector", exact: true });
+    const toggle = page.getByRole("button", { name: documentationText("Inspector", "请求检视"), exact: true });
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
-    await page.getByRole("button", { name: "Close inspector" }).click();
+    await page.getByRole("button", { name: documentationText("Close inspector", "关闭请求检视") }).click();
     await expect(toggle).toBeFocused();
   }
   if (testInfo.project.name === "mobile-390") {
-    const menu = page.getByRole("button", { name: "Toggle navigation" });
+    const menu = page.getByRole("button", { name: documentationText("Toggle navigation", "展开或收起导航") });
     await menu.click();
     await expect(menu).toHaveAttribute("aria-expanded", "true");
-    await page.getByRole("link", { name: "Repositories" }).click();
+    await page.getByRole("link", { name: documentationText("Repositories", "仓库") }).click();
     await expect(menu).toHaveAttribute("aria-expanded", "false");
   }
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await expect(page).toHaveScreenshot("dashboard.png", { fullPage: true, animations: "disabled" });
+  await expect(page).toHaveScreenshot(documentationSnapshot("dashboard"), { fullPage: true, animations: "disabled" });
 });
 
 test("200 percent equivalent reflow has no horizontal clipping", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-1440");
   await page.setViewportSize({ width: 720, height: 900 });
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Good work starts with orientation" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: documentationText("Good work starts with orientation", "知止而后有定，定而后能静。") })).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
-  await expect(page).toHaveScreenshot("dashboard-200-percent.png", { fullPage: true, animations: "disabled" });
+  await expect(page).toHaveScreenshot(documentationSnapshot("dashboard-200-percent"), { fullPage: true, animations: "disabled" });
 });
