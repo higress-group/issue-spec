@@ -2,7 +2,9 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/capability"
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
 	webhook "github.com/higress-group/issue-spec/internal/commentrunner/intake/webhook"
@@ -137,6 +140,11 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	var processWorkspaceAdapters map[string]jobs.NoCheckoutLifecycle
 	if input.Dependencies != nil {
 		processWorkspaceAdapters = input.Dependencies.ProcessWorkspaceAdapters
+	} else {
+		processWorkspaceAdapters, err = runnerOperatorProcessWorkspaceAdapters(ctx, profile)
+		if err != nil {
+			return nil, err
+		}
 	}
 	processWorkspaceRuntime, err := jobs.NewProcessWorkspaceRuntime(workspaces, processWorkspaceStore, input.Runner.WorkspaceRoot, processWorkspaceAdapters)
 	if err != nil {
@@ -152,4 +160,92 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 		EvidencePreGate: newRunnerEvidencePreGate(profile)}
 	return runnerserver.NewRuntime(runnerserver.RuntimeConfig{HTTP: input.HTTP, Reconciler: reconciler,
 		Dispatcher: dispatcher, MaxConcurrentJobs: input.Runner.MaxConcurrentJobs})
+}
+
+type operatorProcessWorkspaceLifecycle struct {
+	provider        codereview.WorkspaceLifecycleProvider
+	identity        crstate.ProcessWorkspaceProviderIdentity
+	remoteAuthority string
+}
+
+func runnerOperatorProcessWorkspaceAdapters(ctx context.Context, profile auth.Profile) (map[string]jobs.NoCheckoutLifecycle, error) {
+	registry, source, err := codereview.LoadOperatorRegistry(profile.OperatorRegistryFile)
+	if err != nil {
+		return nil, fmt.Errorf("load runner operator workspace adapters from %s: %w", source, err)
+	}
+	adapters := make(map[string]jobs.NoCheckoutLifecycle)
+	for _, description := range registry.Descriptions() {
+		if !providerDescriptionHasCapability(description, codereview.CapabilityWorkspaceReady) ||
+			!providerDescriptionHasCapability(description, codereview.CapabilityWorkspaceCleanup) {
+			return nil, fmt.Errorf("runner workspace adapter %q: %w: operator description must declare workspace.ready and workspace.cleanup",
+				description.ProviderKey, codereview.ErrCapabilityMissing)
+		}
+		provider, err := registry.ResolveWorkspaceLifecycleProvider(ctx, description.ProviderKey)
+		if err != nil {
+			return nil, fmt.Errorf("resolve runner workspace adapter %q: %w", description.ProviderKey, err)
+		}
+		serverInstance := repository.SourceServer
+		if description.ProviderKey == "github" {
+			serverInstance = "public"
+		}
+		for _, authority := range description.RemoteAuthorities {
+			host := authority
+			if splitHost, _, splitErr := net.SplitHostPort(authority); splitErr == nil {
+				host = splitHost
+			}
+			host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+			identity := crstate.ProcessWorkspaceProviderIdentity{ProviderKey: description.ProviderKey,
+				ServerInstance: serverInstance, Host: host}
+			key, err := jobs.ProcessWorkspaceAdapterKey(identity)
+			if err != nil {
+				return nil, fmt.Errorf("runner workspace adapter %q remote authority %q: %w", description.ProviderKey, authority, err)
+			}
+			if _, exists := adapters[key]; exists {
+				return nil, fmt.Errorf("duplicate runner workspace adapter identity %s/%s/%s", identity.ProviderKey, identity.ServerInstance, identity.Host)
+			}
+			adapters[key] = operatorProcessWorkspaceLifecycle{provider: provider, identity: identity, remoteAuthority: authority}
+		}
+	}
+	return adapters, nil
+}
+
+func providerDescriptionHasCapability(description codereview.ProviderDescription, required codereview.Capability) bool {
+	for _, capability := range description.Capabilities {
+		if capability == required {
+			return true
+		}
+	}
+	return false
+}
+
+func (a operatorProcessWorkspaceLifecycle) ValidateAssociation(ctx context.Context, association crstate.ProcessWorkspaceAssociation) error {
+	if association.Provider != a.identity {
+		return errors.New("operator workspace adapter provider identity mismatch")
+	}
+	_, err := codereview.RequireCapabilities(ctx, a.provider, codereview.CapabilityWorkspaceReady, codereview.CapabilityWorkspaceCleanup)
+	return err
+}
+
+func (a operatorProcessWorkspaceLifecycle) Ready(ctx context.Context, association crstate.ProcessWorkspaceAssociation) (bool, error) {
+	if err := a.ValidateAssociation(ctx, association); err != nil {
+		return false, err
+	}
+	result, err := codereview.RunWorkspaceLifecycle(ctx, a.provider, operatorWorkspaceLifecycleRequest(codereview.WorkspaceReady, a.remoteAuthority, association))
+	return err == nil && result.Confirmed, err
+}
+
+func (a operatorProcessWorkspaceLifecycle) Cleanup(ctx context.Context, association crstate.ProcessWorkspaceAssociation) (bool, error) {
+	if err := a.ValidateAssociation(ctx, association); err != nil {
+		return false, err
+	}
+	result, err := codereview.RunWorkspaceLifecycle(ctx, a.provider, operatorWorkspaceLifecycleRequest(codereview.WorkspaceCleanup, a.remoteAuthority, association))
+	return err == nil && result.Confirmed, err
+}
+
+func operatorWorkspaceLifecycleRequest(kind codereview.WorkspaceLifecycleKind, remoteAuthority string, association crstate.ProcessWorkspaceAssociation) codereview.WorkspaceLifecycleRequest {
+	return codereview.WorkspaceLifecycleRequest{Kind: kind, ProviderKey: association.Provider.ProviderKey,
+		ServerInstance: association.Provider.ServerInstance, ProviderHost: association.Provider.Host, RemoteAuthority: remoteAuthority,
+		Repository: association.Repository, ProcessID: association.ProcessID, WorkspaceID: association.WorkspaceID,
+		ReservationID: association.ReservationID, ReservationIdentity: association.ReservationIdentity,
+		RuntimeNamespace: association.RuntimeNamespace}
 }

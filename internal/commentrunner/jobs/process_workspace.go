@@ -440,13 +440,36 @@ type runtimeNoCheckout struct {
 	external map[string]NoCheckoutLifecycle
 }
 
+// ProcessWorkspaceAdapterKey binds an adapter to the complete durable provider
+// identity. Provider keys alone are not an authority boundary: the same key may
+// be installed for independent server instances or remote hosts.
+func ProcessWorkspaceAdapterKey(provider state.ProcessWorkspaceProviderIdentity) (string, error) {
+	if err := provider.Validate(); err != nil {
+		return "", err
+	}
+	return provider.ProviderKey + "\x00" + provider.ServerInstance + "\x00" + provider.Host, nil
+}
+
+func (r runtimeNoCheckout) adapter(association state.ProcessWorkspaceAssociation) (NoCheckoutLifecycle, error) {
+	key, err := ProcessWorkspaceAdapterKey(association.Provider)
+	if err != nil {
+		return nil, err
+	}
+	adapter := r.external[key]
+	if adapter == nil {
+		return nil, fmt.Errorf("%w: %s/%s/%s", ErrExternalWorkspaceUnsupported, association.Provider.ProviderKey,
+			association.Provider.ServerInstance, association.Provider.Host)
+	}
+	return adapter, nil
+}
+
 func (r runtimeNoCheckout) Ready(ctx context.Context, association state.ProcessWorkspaceAssociation) (bool, error) {
 	if association.ExecutionClass == processworkspace.ExecutionOrchestration {
 		return true, nil
 	}
-	adapter := r.external[association.Provider.ProviderKey]
-	if adapter == nil {
-		return false, fmt.Errorf("%w: %s", ErrExternalWorkspaceUnsupported, association.Provider.ProviderKey)
+	adapter, err := r.adapter(association)
+	if err != nil {
+		return false, err
 	}
 	return adapter.Ready(ctx, association)
 }
@@ -455,19 +478,26 @@ func (r runtimeNoCheckout) Cleanup(ctx context.Context, association state.Proces
 	if association.ExecutionClass == processworkspace.ExecutionOrchestration {
 		return true, nil
 	}
-	adapter := r.external[association.Provider.ProviderKey]
-	if adapter == nil {
-		return false, fmt.Errorf("%w: %s", ErrExternalWorkspaceUnsupported, association.Provider.ProviderKey)
+	adapter, err := r.adapter(association)
+	if err != nil {
+		return false, err
 	}
 	return adapter.Cleanup(ctx, association)
 }
 
-func (r runtimeNoCheckout) ValidateAssociation(_ context.Context, association state.ProcessWorkspaceAssociation) error {
+func (r runtimeNoCheckout) ValidateAssociation(ctx context.Context, association state.ProcessWorkspaceAssociation) error {
 	if association.ExecutionClass == processworkspace.ExecutionOrchestration {
 		return nil
 	}
-	if association.ExecutionClass != processworkspace.ExecutionExternal || r.external[association.Provider.ProviderKey] == nil {
+	if association.ExecutionClass != processworkspace.ExecutionExternal {
 		return fmt.Errorf("%w: %s", ErrExternalWorkspaceUnsupported, association.Provider.ProviderKey)
+	}
+	adapter, err := r.adapter(association)
+	if err != nil {
+		return err
+	}
+	if preflight, ok := adapter.(noCheckoutPreflight); ok {
+		return preflight.ValidateAssociation(ctx, association)
 	}
 	return nil
 }

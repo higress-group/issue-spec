@@ -134,7 +134,8 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 	workspaces := &compositionWorkspace{root: filepath.Join(root, "workspaces")}
 	sandboxer := &compositionSandbox{}
 	profile := auth.Profile{Name: "runner-composition", Kind: auth.ProfileKindHosted, Hostname: "127.0.0.1",
-		APIURL: api.URL + "/api/v3", NativeAPIURL: api.URL + "/api/v1", WebURL: api.URL, ServerInstanceID: "instance-e2e"}
+		APIURL: api.URL + "/api/v3", NativeAPIURL: api.URL + "/api/v1", WebURL: api.URL, ServerInstanceID: "instance-e2e",
+		OperatorRegistryFile: filepath.Join(root, "deliberately-missing-test-override-registry.json")}
 	runner := commentrunner.Config{Profile: profile.Name, Hostname: profile.Hostname, Repositories: []string{"owner/repo"},
 		RunnerIdentity: "runner", AllowedUsers: []string{"alice"}, StatePath: filepath.Join(root, "state.json"),
 		WorkspaceRoot: workspaces.root, WorkspaceRetention: commentrunner.NewDuration(time.Hour), MaxConcurrentJobs: 1,

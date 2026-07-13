@@ -488,6 +488,33 @@ func TestProcessWorkspaceRuntimeUsesRealFileStoreAndSessionIntegrationRoot(t *te
 	}
 }
 
+func TestRuntimeNoCheckoutKeysAdaptersByCompleteProviderIdentity(t *testing.T) {
+	leftIdentity := state.ProcessWorkspaceProviderIdentity{ProviderKey: "code.example", ServerInstance: "server-a", Host: "code.example"}
+	rightIdentity := state.ProcessWorkspaceProviderIdentity{ProviderKey: "code.example", ServerInstance: "server-b", Host: "code.example"}
+	leftKey, err := ProcessWorkspaceAdapterKey(leftIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightKey, err := ProcessWorkspaceAdapterKey(rightIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leftKey == rightKey {
+		t.Fatal("distinct provider instances produced a colliding adapter key")
+	}
+	left, right := &recordingNoCheckout{name: "left"}, &recordingNoCheckout{name: "right"}
+	runtime := runtimeNoCheckout{external: map[string]NoCheckoutLifecycle{leftKey: left, rightKey: right}}
+	association := state.ProcessWorkspaceAssociation{ExecutionClass: processworkspace.ExecutionExternal, Provider: rightIdentity}
+	ready, err := runtime.Ready(t.Context(), association)
+	if err != nil || !ready || left.readyCalls != 0 || right.readyCalls != 1 {
+		t.Fatalf("ready=%t err=%v left=%d right=%d", ready, err, left.readyCalls, right.readyCalls)
+	}
+	association.Provider.Host = "other.example"
+	if _, err := runtime.Ready(t.Context(), association); !errors.Is(err, ErrExternalWorkspaceUnsupported) {
+		t.Fatalf("missing exact identity error=%v", err)
+	}
+}
+
 func gitRun(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -627,6 +654,21 @@ func (notReadyNoCheckout) Ready(context.Context, state.ProcessWorkspaceAssociati
 }
 func (notReadyNoCheckout) Cleanup(context.Context, state.ProcessWorkspaceAssociation) (bool, error) {
 	return false, nil
+}
+
+type recordingNoCheckout struct {
+	name         string
+	readyCalls   int
+	cleanupCalls int
+}
+
+func (r *recordingNoCheckout) Ready(context.Context, state.ProcessWorkspaceAssociation) (bool, error) {
+	r.readyCalls++
+	return true, nil
+}
+func (r *recordingNoCheckout) Cleanup(context.Context, state.ProcessWorkspaceAssociation) (bool, error) {
+	r.cleanupCalls++
+	return true, nil
 }
 func writableAllocationRequest(workspaceID, processID string) ProcessWorkspaceAllocationRequest {
 	return ProcessWorkspaceAllocationRequest{Repository: "o/r", ProviderKey: "github", ServerInstance: "public", ProviderHost: "github.com", WorkspaceID: workspaceID, ProcessID: processID, ExecutionClass: processworkspace.ExecutionChangeBearing, BaseSHA: allocationTestSHA, Branch: "process/" + processID, WriteOwnership: []string{"internal/**"}, Owner: processworkspace.LeaseOwner{CoordinatorID: "runner", Token: "local-secret", AcquiredAt: time.Unix(100, 0)}}

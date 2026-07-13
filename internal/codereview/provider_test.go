@@ -58,6 +58,64 @@ func TestCommandProviderProtocol(t *testing.T) {
 	}
 }
 
+func TestCommandProviderWorkspaceLifecycleRequiresCapabilityAndExactConfirmation(t *testing.T) {
+	request := WorkspaceLifecycleRequest{Kind: WorkspaceReady, ProviderKey: "code.example", ServerInstance: "server",
+		ProviderHost: "code.example", RemoteAuthority: "code.example:8443", Repository: "acme/widgets",
+		ProcessID: "PROCESS-028", WorkspaceID: "workspace-028", ReservationID: "reservation:workspace-028",
+		ReservationIdentity: "identity:workspace-028", RuntimeNamespace: "process-workspace-028"}
+	provider := commandTestProvider(t, "normal", 1<<20, 10*time.Second)
+	result, err := RunWorkspaceLifecycle(t.Context(), provider, request)
+	if err != nil || !result.Confirmed || result.WorkspaceID != request.WorkspaceID {
+		t.Fatalf("workspace ready result=%+v err=%v", result, err)
+	}
+	request.Kind = WorkspaceCleanup
+	if result, err = RunWorkspaceLifecycle(t.Context(), provider, request); err != nil || !result.Confirmed || result.Kind != WorkspaceCleanup {
+		t.Fatalf("workspace cleanup result=%+v err=%v", result, err)
+	}
+	for _, mode := range []string{"workspace-missing-capability", "workspace-wrong-identity", "workspace-unconfirmed"} {
+		t.Run(mode, func(t *testing.T) {
+			candidate := commandTestProvider(t, mode, 1<<20, 10*time.Second)
+			if _, err := RunWorkspaceLifecycle(t.Context(), candidate, request); err == nil {
+				t.Fatal("invalid workspace lifecycle response was accepted")
+			}
+		})
+	}
+}
+
+func TestWorkspaceLifecycleResultRejectsEveryTargetIdentityMismatch(t *testing.T) {
+	request := WorkspaceLifecycleRequest{Kind: WorkspaceReady, ProviderKey: "code.example", ServerInstance: "server",
+		ProviderHost: "code.example", RemoteAuthority: "code.example:8443", Repository: "acme/widgets",
+		ProcessID: "PROCESS-028", WorkspaceID: "workspace-028", ReservationID: "reservation:workspace-028",
+		ReservationIdentity: "identity:workspace-028", RuntimeNamespace: "process-workspace-028"}
+	valid := WorkspaceLifecycleResult{Kind: request.Kind, ProviderKey: request.ProviderKey, ServerInstance: request.ServerInstance,
+		ProviderHost: request.ProviderHost, RemoteAuthority: request.RemoteAuthority, Repository: request.Repository,
+		ProcessID: request.ProcessID, WorkspaceID: request.WorkspaceID, ReservationID: request.ReservationID,
+		ReservationIdentity: request.ReservationIdentity, RuntimeNamespace: request.RuntimeNamespace, Confirmed: true}
+	tests := map[string]func(*WorkspaceLifecycleResult){
+		"kind":                 func(r *WorkspaceLifecycleResult) { r.Kind = WorkspaceCleanup },
+		"provider key":         func(r *WorkspaceLifecycleResult) { r.ProviderKey = "other.example" },
+		"server instance":      func(r *WorkspaceLifecycleResult) { r.ServerInstance = "other-server" },
+		"provider host":        func(r *WorkspaceLifecycleResult) { r.ProviderHost = "other.example" },
+		"authority port":       func(r *WorkspaceLifecycleResult) { r.RemoteAuthority = request.ProviderHost },
+		"repository":           func(r *WorkspaceLifecycleResult) { r.Repository = "acme/other" },
+		"process id":           func(r *WorkspaceLifecycleResult) { r.ProcessID = "PROCESS-029" },
+		"workspace id":         func(r *WorkspaceLifecycleResult) { r.WorkspaceID = "workspace-029" },
+		"reservation id":       func(r *WorkspaceLifecycleResult) { r.ReservationID = "reservation:workspace-029" },
+		"reservation identity": func(r *WorkspaceLifecycleResult) { r.ReservationIdentity = "identity:workspace-029" },
+		"runtime namespace":    func(r *WorkspaceLifecycleResult) { r.RuntimeNamespace = "process-workspace-029" },
+		"unconfirmed":          func(r *WorkspaceLifecycleResult) { r.Confirmed = false },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			mutate(&candidate)
+			if err := validateWorkspaceLifecycleResult(request, candidate); err == nil {
+				t.Fatal("mismatched workspace lifecycle target was accepted")
+			}
+		})
+	}
+}
+
 func TestCommandProviderSnapshotCannotForgeEvidenceAuthority(t *testing.T) {
 	for _, mode := range []string{"snapshot-trusted", "snapshot-writer", "snapshot-approved"} {
 		t.Run(mode, func(t *testing.T) {
@@ -163,8 +221,13 @@ func TestCommandProviderHelper(t *testing.T) {
 	}
 	switch request.Action {
 	case "capabilities":
+		values := []Capability{CapabilityEvidenceSnapshot, CapabilityChangeComment, CapabilityChangeCreate,
+			CapabilityWorkspaceReady, CapabilityWorkspaceCleanup}
+		if mode == "workspace-missing-capability" {
+			values = []Capability{CapabilityEvidenceSnapshot}
+		}
 		response["capabilities"] = Capabilities{ProtocolVersion: ProtocolVersion,
-			Values: []Capability{CapabilityEvidenceSnapshot, CapabilityChangeComment, CapabilityChangeCreate}}
+			Values: values}
 	case "snapshot":
 		var payload SnapshotRequest
 		_ = json.Unmarshal(request.Payload, &payload)
@@ -189,6 +252,21 @@ func TestCommandProviderHelper(t *testing.T) {
 			canonicalURL += "?access_token=secret"
 		}
 		response["mutation"] = MutationResult{Reference: payload.Reference, ExternalID: "comment-1", CanonicalURL: canonicalURL}
+	case "workspace_lifecycle":
+		var payload WorkspaceLifecycleRequest
+		_ = json.Unmarshal(request.Payload, &payload)
+		result := WorkspaceLifecycleResult{Kind: payload.Kind, ProviderKey: payload.ProviderKey,
+			ServerInstance: payload.ServerInstance, ProviderHost: payload.ProviderHost, RemoteAuthority: payload.RemoteAuthority,
+			Repository: payload.Repository, ProcessID: payload.ProcessID, WorkspaceID: payload.WorkspaceID,
+			ReservationID: payload.ReservationID, ReservationIdentity: payload.ReservationIdentity,
+			RuntimeNamespace: payload.RuntimeNamespace, Confirmed: true}
+		if mode == "workspace-wrong-identity" {
+			result.WorkspaceID = "other-workspace"
+		}
+		if mode == "workspace-unconfirmed" {
+			result.Confirmed = false
+		}
+		response["workspace_lifecycle"] = result
 	default:
 		os.Exit(3)
 	}

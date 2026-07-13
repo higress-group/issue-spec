@@ -150,3 +150,15 @@ func (r Registry) ResolveMutationProvider(_ context.Context, key string) (Mutati
 	}
 	return mutation, nil
 }
+
+func (r Registry) ResolveWorkspaceLifecycleProvider(_ context.Context, key string) (WorkspaceLifecycleProvider, error) {
+	provider, err := r.Lookup(key)
+	if err != nil {
+		return nil, err
+	}
+	lifecycle, ok := provider.(WorkspaceLifecycleProvider)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s does not implement workspace lifecycle", ErrCapabilityMissing, strings.TrimSpace(key))
+	}
+	return lifecycle, nil
+}

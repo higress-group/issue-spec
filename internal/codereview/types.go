@@ -24,6 +24,8 @@ const (
 	CapabilityEvidenceSnapshot Capability = "evidence.snapshot"
 	CapabilityChangeCreate     Capability = "change.create"
 	CapabilityChangeComment    Capability = "change.comment"
+	CapabilityWorkspaceReady   Capability = "workspace.ready"
+	CapabilityWorkspaceCleanup Capability = "workspace.cleanup"
 )
 
 // ProviderDescription is the transport-safe, operator-owned metadata clients
@@ -77,7 +79,8 @@ func (d ProviderDescription) Normalized(key string) (ProviderDescription, error)
 		}
 		seenCapabilities[capability] = true
 		switch capability {
-		case CapabilityEvidenceSnapshot, CapabilityChangeCreate, CapabilityChangeComment:
+		case CapabilityEvidenceSnapshot, CapabilityChangeCreate, CapabilityChangeComment,
+			CapabilityWorkspaceReady, CapabilityWorkspaceCleanup:
 		default:
 			return ProviderDescription{}, fmt.Errorf("%w: unsupported capability %q", ErrInvalidProviderData, capability)
 		}
@@ -156,7 +159,8 @@ func (c Capabilities) Validate() error {
 	seen := make(map[Capability]struct{}, len(c.Values))
 	for _, value := range c.Values {
 		switch value {
-		case CapabilityEvidenceSnapshot, CapabilityChangeCreate, CapabilityChangeComment:
+		case CapabilityEvidenceSnapshot, CapabilityChangeCreate, CapabilityChangeComment,
+			CapabilityWorkspaceReady, CapabilityWorkspaceCleanup:
 		default:
 			return fmt.Errorf("%w: unsupported capability %q", ErrInvalidProviderData, value)
 		}
@@ -378,6 +382,48 @@ type MutationResult struct {
 	ExternalID   string    `json:"external_id"`
 }
 
+type WorkspaceLifecycleKind string
+
+const (
+	WorkspaceReady   WorkspaceLifecycleKind = "ready"
+	WorkspaceCleanup WorkspaceLifecycleKind = "cleanup"
+)
+
+// WorkspaceLifecycleRequest is the credential-free, provider-neutral identity
+// an operator adapter must act on. ReservationIdentity is stable across local
+// cleanup retries; the local reservation token is deliberately not exposed.
+type WorkspaceLifecycleRequest struct {
+	Kind                WorkspaceLifecycleKind `json:"kind"`
+	ProviderKey         string                 `json:"provider_key"`
+	ServerInstance      string                 `json:"server_instance"`
+	ProviderHost        string                 `json:"provider_host"`
+	RemoteAuthority     string                 `json:"remote_authority"`
+	Repository          string                 `json:"repository"`
+	ProcessID           string                 `json:"process_id"`
+	WorkspaceID         string                 `json:"workspace_id"`
+	ReservationID       string                 `json:"reservation_id"`
+	ReservationIdentity string                 `json:"reservation_identity"`
+	RuntimeNamespace    string                 `json:"runtime_namespace"`
+}
+
+// WorkspaceLifecycleResult must echo the exact durable target. Confirmed is
+// the only state assertion accepted by core; a response for another target is
+// rejected even if it reports success.
+type WorkspaceLifecycleResult struct {
+	Kind                WorkspaceLifecycleKind `json:"kind"`
+	ProviderKey         string                 `json:"provider_key"`
+	ServerInstance      string                 `json:"server_instance"`
+	ProviderHost        string                 `json:"provider_host"`
+	RemoteAuthority     string                 `json:"remote_authority"`
+	Repository          string                 `json:"repository"`
+	ProcessID           string                 `json:"process_id"`
+	WorkspaceID         string                 `json:"workspace_id"`
+	ReservationID       string                 `json:"reservation_id"`
+	ReservationIdentity string                 `json:"reservation_identity"`
+	RuntimeNamespace    string                 `json:"runtime_namespace"`
+	Confirmed           bool                   `json:"confirmed"`
+}
+
 type Provider interface {
 	Capabilities(context.Context) (Capabilities, error)
 	Snapshot(context.Context, SnapshotRequest) (Snapshot, error)
@@ -395,6 +441,66 @@ func FetchSnapshot(ctx context.Context, provider Provider, request SnapshotReque
 type MutationProvider interface {
 	Provider
 	Mutate(context.Context, MutationRequest) (MutationResult, error)
+}
+
+type WorkspaceLifecycleProvider interface {
+	Provider
+	WorkspaceLifecycle(context.Context, WorkspaceLifecycleRequest) (WorkspaceLifecycleResult, error)
+}
+
+func RunWorkspaceLifecycle(ctx context.Context, provider WorkspaceLifecycleProvider, request WorkspaceLifecycleRequest) (WorkspaceLifecycleResult, error) {
+	if err := validateWorkspaceLifecycleRequest(request); err != nil {
+		return WorkspaceLifecycleResult{}, err
+	}
+	capability := CapabilityWorkspaceReady
+	if request.Kind == WorkspaceCleanup {
+		capability = CapabilityWorkspaceCleanup
+	}
+	if _, err := RequireCapabilities(ctx, provider, capability); err != nil {
+		return WorkspaceLifecycleResult{}, err
+	}
+	result, err := provider.WorkspaceLifecycle(ctx, request)
+	if err != nil {
+		return WorkspaceLifecycleResult{}, err
+	}
+	if err := validateWorkspaceLifecycleResult(request, result); err != nil {
+		return WorkspaceLifecycleResult{}, err
+	}
+	return result, nil
+}
+
+func validateWorkspaceLifecycleResult(request WorkspaceLifecycleRequest, result WorkspaceLifecycleResult) error {
+	if result.Kind != request.Kind || result.ProviderKey != request.ProviderKey ||
+		result.ServerInstance != request.ServerInstance || result.ProviderHost != request.ProviderHost ||
+		result.RemoteAuthority != request.RemoteAuthority || result.Repository != request.Repository ||
+		result.ProcessID != request.ProcessID || result.WorkspaceID != request.WorkspaceID ||
+		result.ReservationID != request.ReservationID || result.ReservationIdentity != request.ReservationIdentity ||
+		result.RuntimeNamespace != request.RuntimeNamespace || !result.Confirmed {
+		return fmt.Errorf("%w: workspace lifecycle response identity mismatch", ErrInvalidProviderData)
+	}
+	return nil
+}
+
+func validateWorkspaceLifecycleRequest(request WorkspaceLifecycleRequest) error {
+	if request.Kind != WorkspaceReady && request.Kind != WorkspaceCleanup {
+		return fmt.Errorf("%w: unsupported workspace lifecycle kind %q", ErrInvalidProviderData, request.Kind)
+	}
+	if ValidateProviderKey(request.ProviderKey) != nil || !validRemoteAuthority(request.ProviderHost) ||
+		strings.Contains(request.ProviderHost, ":") || request.ProviderHost != strings.ToLower(strings.TrimSpace(request.ProviderHost)) ||
+		!validRemoteAuthority(request.RemoteAuthority) ||
+		request.RemoteAuthority != strings.ToLower(strings.TrimSpace(request.RemoteAuthority)) {
+		return fmt.Errorf("%w: invalid workspace provider identity", ErrInvalidProviderData)
+	}
+	for name, value := range map[string]string{
+		"server instance": request.ServerInstance, "repository": request.Repository, "process id": request.ProcessID,
+		"workspace id": request.WorkspaceID, "reservation id": request.ReservationID,
+		"reservation identity": request.ReservationIdentity, "runtime namespace": request.RuntimeNamespace,
+	} {
+		if value == "" || value != strings.TrimSpace(value) || len(value) > 512 || strings.ContainsAny(value, "\x00\r\n") {
+			return fmt.Errorf("%w: invalid workspace %s", ErrInvalidProviderData, name)
+		}
+	}
+	return nil
 }
 
 func RequireCapabilities(ctx context.Context, provider Provider, required ...Capability) (Capabilities, error) {
