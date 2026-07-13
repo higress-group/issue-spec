@@ -103,6 +103,9 @@ func TestIntegrateSuccessRetryAndSafeCleanupPreserveUserWorktree(t *testing.T) {
 	if err != nil || integrated.AlreadyIntegrated || integrated.Lease.Portable.State != StateIntegrated || integrated.IntegrationSHA == "" {
 		t.Fatalf("Integrate=%+v err=%v", integrated, err)
 	}
+	if integrated.Lease.Portable.ResultCommit != resultCommit {
+		t.Fatalf("integrate lost worker result: %+v", integrated.Lease.Portable)
+	}
 	retry, err := fixture.manager.Integrate(context.Background(), IntegrateRequest{WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, ExpectedHead: fixture.base})
 	if err != nil || !retry.AlreadyIntegrated || retry.IntegrationSHA != integrated.IntegrationSHA {
 		t.Fatalf("retry=%+v err=%v", retry, err)
@@ -111,8 +114,14 @@ func TestIntegrateSuccessRetryAndSafeCleanupPreserveUserWorktree(t *testing.T) {
 		t.Fatalf("retry duplicated integration commit: %s", got)
 	}
 	cleaned, err := fixture.manager.Cleanup(context.Background(), fixture.lease.Portable.WorkspaceID, fixture.lease.Owner.Token)
-	if err != nil || cleaned.Lease.Portable.State != StateCleaned {
+	if err != nil || cleaned.Lease.Portable.State != StateCleaned ||
+		cleaned.Lease.Portable.ResultCommit != resultCommit || cleaned.Lease.Portable.IntegrationSHA != integrated.IntegrationSHA {
 		t.Fatalf("cleanup=%+v err=%v", cleaned, err)
+	}
+	stored, found, err := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
+	if err != nil || !found || stored.Portable.State != StateCleaned ||
+		stored.Portable.ResultCommit != resultCommit || stored.Portable.IntegrationSHA != integrated.IntegrationSHA {
+		t.Fatalf("stored cleanup evidence=%+v found=%v err=%v", stored.Portable, found, err)
 	}
 	if _, err := os.Stat(userPath); err != nil {
 		t.Fatalf("user worktree was touched: %v", err)
