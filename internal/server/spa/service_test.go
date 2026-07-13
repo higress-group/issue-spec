@@ -86,6 +86,21 @@ func TestCurrentContextAndTenantSafeCandidates(t *testing.T) {
 		t.Fatalf("limited current context JSON = %s", encoded)
 	}
 
+	outsider := serverauth.Principal{User: serverauth.User{ID: outsiderID, Login: "outsider", DisplayName: "outsider"},
+		Kind: serverauth.CredentialSession}
+	outsiderContext, err := service.Current(t.Context(), outsider, "issue_spec_csrf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawContext, err := json.Marshal(outsiderContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawContext), `"allowed_actions":null`) ||
+		!strings.Contains(string(rawContext), `"allowed_actions":[]`) {
+		t.Fatalf("empty allowed actions must encode as arrays: %s", rawContext)
+	}
+
 	associated, err := service.UserCandidates(t.Context(), principal, orgID, PurposeAdministration, MatchPrefix, "", 20)
 	if err != nil {
 		t.Fatal(err)
