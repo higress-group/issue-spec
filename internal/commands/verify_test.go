@@ -85,6 +85,9 @@ func TestFinalVerifyUsesAuthoritativePullRequestAncestry(t *testing.T) {
 }
 
 func TestRunVerifyRejectsUnstablePullRequestIdentity(t *testing.T) {
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
+	t.Setenv(auth.ProfileEnv, "")
+	t.Setenv(auth.GitHubBackendAPIURLEnv, "")
 	initialHead := strings.Repeat("a", 40)
 	advancedHead := strings.Repeat("b", 40)
 	valid := pullRequestAtHead(7, initialHead)
@@ -111,7 +114,6 @@ func TestRunVerifyRejectsUnstablePullRequestIdentity(t *testing.T) {
 			}
 			var out, errOut bytes.Buffer
 			app := newApp(strings.NewReader(""), &out, &errOut)
-			app.profileName = "github"
 			app.selectGitHubBackend = ghSelection
 			app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
 			code := app.runVerify(t.Context(), []string{"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--pr", "7", "--json"})
