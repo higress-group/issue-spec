@@ -17,20 +17,20 @@ Git 凭据、OIDC，以及 Jira 类工作项同步。所有示例均使用虚构
 | 源码、PR/MR、Review、CI、Merge | 企业代码平台 | `issue-spec.code-provider/v1` Bridge |
 | Clone 与 Push 凭据 | 企业 Git 服务 | `issue-spec-git-credential-v1` 或可信宿主 SSH |
 | 员工登录 | 企业身份平台 | OIDC |
-| 需求/工作项可见性 | Jira 类平台 | API/Webhook 投影 Sidecar |
+| 需求/工作项可见性与状态 | Jira 类平台 | Agent/Workflow 适配器或 API/Webhook 投影 Sidecar |
 
 ```text
 浏览器 ------ OIDC ------> issue-spec Server <------ Runner Webhook
                                ^                         |
                                | Native API              | 固定 Source Binding
-工作项投影 Sidecar ------------+                         v
+工作项适配器或投影 Sidecar -----+                         v
                                                  Git Credential Bridge
 issue-spec Server / CLI -- Code Provider Bridge --> 企业代码平台
 ```
 
-当前稳定的运维侧 Command 协议覆盖的是**代码平台 Provider**，还没有一个可通过
-命令插件替换 IssueBackend 的通用 Jira Provider ABI。设计工作项集成前请先阅读
-[对接 Jira 类工作项平台](#6-对接-jira-类工作项平台)。
+当前稳定的运维侧 Command 协议覆盖的是**代码平台 Provider**。工作项适配器是独立的
+CLI/API 集成，不是 `issue-spec.code-provider/v1`，也不能放入代码平台 Provider
+Registry。设计工作项集成前请先阅读[对接 Jira 类工作项平台](#6-对接-jira-类工作项平台)。
 
 ## 2. 盘点企业平台能力
 
@@ -185,23 +185,41 @@ Provider 注册。
 
 ## 6. 对接 Jira 类工作项平台
 
-当前版本不会从运维 Registry 加载任意 IssueBackend 可执行程序。不要虚构
-`ISSUE_SPEC_ISSUE_PROVIDERS_FILE`，也不要宣称只靠配置即可启用 Jira Wrapper。
+issue-spec Server 仍是 Issue Body、类型化评论、权限、Change 状态和 Runner 命令的
+事实源。工作项平台只作为同一变更的关联视图，而不是第二套 Issue 事实源。
 
-推荐模式：
+工作项适配器不是 `issue-spec.code-provider/v1`；其可执行程序、配置和凭据都不能放入
+代码平台 Provider Registry，而应保存在获批的本地 Wrapper、Workflow Runner 或 Sidecar
+密钥存储中。
 
-1. issue-spec Server 负责 Issue Body、类型化评论、权限、Change 状态和 Runner 命令。
-2. 使用独立 Service Account 运行工作项投影 Sidecar。
-3. 创建或关联一个外部工作项，并保存唯一映射：
-   `server_instance_id + repository_id + issue_id -> tracker_project + item_id`。
-4. 消费签名后的 issue-spec Webhook，或带 Checkpoint 轮询 Native API。
-5. 只投影稳定状态摘要与双向 HTTPS 链接，不把类型化评论复制为自由文本评论。
-6. 使用 Delivery ID、Inbox/Outbox Ledger、条件更新和 Origin Marker 防止重复与回环。
-7. 定期 Reconcile，因为任一平台都可能丢失 Webhook。
+### 首选：由 Agent/Workflow 驱动的 CLI/API 适配器
 
-如果外部工作项平台必须作为 Issue 事实源，需要把 Go `IssueBackend` Adapter 作为核心
-产品代码实现和维护。这个接口目前不是稳定的进程外插件协议；在提供可移植的 Issue
-Provider Wrapper 前，需要先完成上游协议设计。
+当 Agent 或 Workflow 可以在对应的 issue-spec 阶段附近执行同步时，使用对企业工作项
+CLI 或 API 的轻量 Wrapper。
+
+1. 写入前动态发现项目、工作项类型、可写字段、状态和有效流转，避免硬编码会变化的
+   平台枚举值。
+2. Proposal 创建后，基于稳定关联 Key 查找或创建一个外部工作项，并持久化唯一映射；
+   同时保存双方规范 HTTPS 链接。
+3. Design 和 Implement 均复用该关联，不要为每个阶段新建工作项。
+4. 只有对应 issue-spec 阶段已成功，才推进工作项状态；使用平台幂等 Key 或本地操作
+   Ledger。
+5. 同步失败时，保留已成功的 issue-spec 阶段并记录可重试操作；不能因为工作项更新
+   失败而回滚 issue-spec。
+6. 定期 Reconcile 映射和预期状态，以修复失败重试、延迟事件及人工改动造成的偏差。
+
+Wrapper 可以提供 `discover`、`find-or-create`、`link`、`transition` 和 `reconcile` 等
+本地操作。这些名称只是工作流约定，并不是 issue-spec Provider ABI。
+
+### 集中式：Webhook/API 投影 Sidecar
+
+当一个服务需要同步多个仓库，或需要事件驱动的状态投影时，使用 Sidecar。
+
+1. 消费签名后的 issue-spec Webhook，或通过 Checkpoint 轮询 Native API。
+2. 使用以 Delivery 和关联 ID 为 Key 的 Inbox/Outbox Ledger。
+3. 使用条件更新、幂等写入和 Origin Marker，避免重复写入及事件回环。
+4. 只投影稳定摘要和双方链接；类型化产物保留在 issue-spec，不复制到自由文本评论。
+5. 定期 Reconcile，因为任一平台都可能丢失事件或被人工修改。
 
 ## 7. 配置身份与 Runner Git 权限
 
@@ -227,7 +245,9 @@ Runner Clone/Push 优先使用实现
 - 重试不会创建重复 Change 或 Comment；
 - 401、403、404、429、Timeout、Cancellation 与 5xx 被映射为安全稳定的错误；
 - 响应大小限制、Secret Redaction、凭据轮转和回滚已经演练；
-- 工作项投影只有一个事实源，不会产生同步回环。
+- 工作项同步始终以 issue-spec 为事实源，拥有稳定关联且不会产生同步回环；
+- 重复的创建、关联和状态流转请求保持幂等，工作项更新失败可重试且不会回滚
+  issue-spec。
 
 企业具体配置和详细证据只保存在获批的内部系统。公开文档、Issue 与 PR 只使用通用
 示例和脱敏后的通过/失败摘要。

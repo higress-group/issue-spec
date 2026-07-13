@@ -21,18 +21,22 @@ code-host evidence, identity, and Git credentials as separate boundaries.
 ## Workflow
 
 1. Read [integration-surfaces.md](references/integration-surfaces.md). Produce
-   an authority table for issues, code changes, identity, and Git credentials.
+   an authority table for issues, code changes, identity, Git credentials, and
+   work-item synchronization.
 2. Decide whether the request needs:
    - an OIDC login provider;
    - a Source Binding;
    - a `code-provider-v1` bridge for code evidence or MR/PR mutations;
    - a `git-credential-v1` command or trusted host SSH for Runner clone/push;
-   - an external work-item projection for a Jira-like platform.
-3. Do not invent a Jira provider configuration. The current stable command
-   bridge covers code providers, not arbitrary issue backends. When a Jira-like
-   system must remain visible, keep issue-spec Server authoritative and design
-   an API/webhook sidecar that links or summarizes work items. If the external
-   system must be the issue authority, record that core work is required.
+   - a work-tracker adapter for a Jira-like platform.
+3. Keep issue-spec Server authoritative for issues, typed artifacts, Change
+   status, and Runner commands. Read
+   [work-tracker-adapter.md](references/work-tracker-adapter.md) before
+   implementing a Jira-like integration. Prefer an Agent/Workflow-driven
+   CLI/API wrapper; use a webhook/API projection sidecar when centralized
+   synchronization is required. A work-tracker adapter is not
+   `issue-spec.code-provider/v1` and must never be placed in the code-provider
+   registry.
 4. Scaffold a code bridge when needed:
 
    ```bash
@@ -71,7 +75,13 @@ code-host evidence, identity, and Git credentials as separate boundaries.
 9. Exercise each advertised capability against a non-production repository at
    an exact revision. Verify timeouts, output bounds, secret redaction,
    idempotency, stale evidence, reference mismatch, and upstream failure.
-10. Report the architecture decision, generated files, operator configuration,
+10. For a work-tracker adapter, discover projects, item types, writable fields,
+    and transitions before writing. Create or reuse its work item only after
+    the proposal exists; keep one stable association through design and
+    implementation; advance tracker status only after the matching issue-spec
+    stage succeeds. Make retries idempotent, reconcile drift, and never roll
+    back successful issue-spec work because tracker synchronization failed.
+11. Report the architecture decision, generated files, operator configuration,
     validation evidence, remaining limitations, and rollback steps. Sanitize
     any result before writing to a public issue or PR.
 
@@ -86,7 +96,9 @@ code-host evidence, identity, and Git credentials as separate boundaries.
   the bridge does not advertise review evidence.
 - Mutations are idempotent and cannot target another repository or change.
 - Source Binding contains coordinates only, never credentials.
-- Jira-like synchronization has one declared authority and no comment loops.
+- issue-spec remains authoritative for Jira-like synchronization; the adapter
+  uses stable associations, idempotent retries, reconciliation, and no comment
+  loops.
 
 ## Product references
 
@@ -94,3 +106,4 @@ code-host evidence, identity, and Git credentials as separate boundaries.
 - Code bridge wire contract: `docs/self-hosting/bridges/code-provider-v1.md`
 - Runner credential contract: `docs/self-hosting/bridges/git-credential-v1.md`
 - Authentication: `docs/self-hosting/authentication/README.md`
+- Work-tracker adapter: [work-tracker-adapter.md](references/work-tracker-adapter.md)

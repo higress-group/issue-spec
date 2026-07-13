@@ -19,21 +19,22 @@ Do not implement one privileged “company provider” that owns everything.
 | Source, PR/MR, review, CI, merge | Company code platform | `issue-spec.code-provider/v1` bridge |
 | Clone and push credentials | Company Git service | `issue-spec-git-credential-v1` or trusted host SSH |
 | Employee login | Company identity provider | OIDC |
-| Planning/work-item visibility | Jira-like tracker | API/webhook projection sidecar |
+| Planning/work-item visibility and status | Jira-like tracker | Agent/Workflow adapter or API/webhook projection sidecar |
 
 ```text
 browser ------ OIDC ------> issue-spec Server <------ runner webhook
                                   ^                         |
                                   | native API              | pinned Source Binding
-work-item projection sidecar -----+                         v
+work-tracker adapter or sidecar --+                         v
                                                     Git credential bridge
 issue-spec Server / CLI ---- code-provider bridge ----> company code platform
 ```
 
-The stable operator command protocol currently covers **code providers**. It
-does not provide a generic command-plugin ABI for replacing the issue backend
-with Jira or another tracker. See [Work trackers](#6-connect-a-jira-like-work-tracker)
-before designing that integration.
+The stable operator command protocol covers **code providers**. A work-tracker
+adapter is a separate CLI/API integration: it is not
+`issue-spec.code-provider/v1` and must not be placed in the code-provider
+registry. See [Work trackers](#6-connect-a-jira-like-work-tracker) before
+designing that integration.
 
 ## 2. Inventory the company platform
 
@@ -204,29 +205,53 @@ evidence policy, but cannot replace the operator registration.
 
 ## 6. Connect a Jira-like work tracker
 
-Current issue-spec releases do not load arbitrary IssueBackend executables from
-an operator registry. Do not invent an `ISSUE_SPEC_ISSUE_PROVIDERS_FILE` or
-claim that a Jira wrapper can be enabled through configuration alone.
+Keep issue-spec Server authoritative for issue bodies, typed comments,
+permissions, Change status, and Runner commands. The tracker is a linked view
+of the same change, not a second issue authority.
 
-The recommended model is:
+A work-tracker adapter is not `issue-spec.code-provider/v1`; never place its
+executable, configuration, or credentials in the code-provider registry. Keep
+credentials in the approved local wrapper, workflow runner, or sidecar secret
+store.
 
-1. Keep issue-spec Server authoritative for issue bodies, typed comments,
-   permissions, Change status, and Runner commands.
-2. Run a separate projection sidecar with a dedicated service account.
-3. Create or associate one external work item and persist a unique mapping:
-   `server_instance_id + repository_id + issue_id -> tracker_project + item_id`.
-4. Consume signed issue-spec webhooks or poll the native API with a checkpoint.
-5. Project only stable summaries and reciprocal HTTPS links. Do not copy typed
-   comment bodies into free-form tracker comments.
-6. Use delivery IDs, an inbox/outbox ledger, conditional updates, and an origin
-   marker to prevent duplicate writes and webhook loops.
-7. Reconcile periodically because either platform can lose webhook deliveries.
+### Preferred: Agent/Workflow-driven CLI/API adapter
 
-If the external tracker must remain the authoritative issue store, implement an
-in-process Go adapter for the `IssueBackend` interface and maintain it as core
-product code. That interface is not a stable out-of-process plugin contract;
-upstream design work is required before offering a portable issue-provider
-wrapper.
+Use a small wrapper around the company's work-item CLI or API when an Agent or
+workflow can synchronize near the matching issue-spec stage.
+
+1. Discover projects, work-item types, writable fields, statuses, and valid
+   transitions before writing. Do not hard-code mutable platform labels.
+2. After a proposal exists, find or create one external work item from a stable
+   association key and persist a unique mapping. Store reciprocal canonical
+   HTTPS links.
+3. Reuse that association through design and implementation; do not create a
+   separate work item for every stage.
+4. Advance tracker status only after the corresponding issue-spec stage has
+   succeeded. Use the platform's idempotency key or a local operation ledger.
+5. When synchronization fails, retain the successful issue-spec stage and save
+   a retryable operation. Do not roll back issue-spec merely because the
+   tracker update failed.
+6. Reconcile mappings and expected status periodically to recover from failed
+   retries, delayed events, and manual tracker edits.
+
+The wrapper can provide local operations such as `discover`, `find-or-create`,
+`link`, `transition`, and `reconcile`. These names describe its workflow
+contract; they are not an issue-spec provider ABI.
+
+### Centralized: webhook/API projection sidecar
+
+Use a sidecar when one service must synchronize multiple repositories or when
+event-driven projection is required.
+
+1. Consume signed issue-spec webhooks, or poll the native API with a
+   checkpoint.
+2. Maintain an inbox/outbox ledger keyed by delivery and association IDs.
+3. Apply conditional, idempotent tracker updates with an origin marker to
+   prevent event loops.
+4. Project stable summaries and reciprocal links only. Keep typed artifacts in
+   issue-spec instead of copying them into free-form tracker comments.
+5. Reconcile on a schedule because either platform can lose events or be
+   updated manually.
 
 ## 7. Configure identity and Runner Git access
 
@@ -257,7 +282,10 @@ Validate in a non-production repository:
   safe stable errors;
 - stdout/stderr bounds, secret redaction, credential rotation, and rollback are
   exercised;
-- work-item projection has a single authority and no synchronization loop.
+- work-tracker synchronization keeps issue-spec authoritative, has a stable
+  association, and cannot create a synchronization loop;
+- repeated create, link, and transition requests are idempotent, while a failed
+  tracker update remains retryable without rolling back issue-spec.
 
 Keep detailed company configuration and evidence in approved internal systems.
 Public documentation, issues, and PRs should contain only provider-neutral

@@ -9,7 +9,7 @@ Choose one authority for each surface before writing a wrapper.
 | Repository coordinates | issue-spec Source Binding | Self-hosted repository API and `issue-spec init` | No credential permitted |
 | Runner clone and push | Company Git service | `issue-spec-git-credential-v1` or opt-in host SSH | Job lease or dedicated runner OS account |
 | Browser identity | Company identity provider | OIDC | Protected auth provider file |
-| External work-item visibility | Jira-like platform | API/webhook projection sidecar | Sidecar secret store |
+| External work-item visibility and status | Jira-like platform | Agent/Workflow CLI/API adapter or projection sidecar | Local wrapper or sidecar secret store |
 
 ## Code platform
 
@@ -30,24 +30,15 @@ independently. A provider may be useful with only one capability.
 
 ## Jira-like work tracker
 
-The current public command bridge is not a generic IssueBackend plugin ABI.
-There is no `ISSUE_SPEC_ISSUE_PROVIDERS_FILE` or Jira wrapper configuration.
+Keep issue-spec Server authoritative for the issue workflow. Use either a
+preferred Agent/Workflow CLI/API adapter or a centralized webhook/API
+projection sidecar. Both designs use a stable association, idempotent writes,
+and reconciliation; neither mirrors arbitrary comments bidirectionally.
 
-Prefer one of these designs:
-
-1. **issue-spec authoritative, work item linked**: create or associate one
-   external work item, store reciprocal HTTPS links, and project high-level
-   state such as proposed, implementing, reviewing, verified, or archived.
-2. **issue-spec authoritative, event summary**: consume issue-spec webhooks and
-   post idempotent status summaries to the external platform. Keep typed
-   comments only in issue-spec.
-3. **external tracker authoritative**: implement and maintain an in-process Go
-   IssueBackend adapter as product code. Treat this as core development, not
-   operator configuration, until a stable issue-provider protocol exists.
-
-For the first two designs, use a dedicated service account, a mapping table
-with unique constraints, signed webhook verification, an outbox/inbox ledger,
-and loop-prevention markers. Never mirror arbitrary comments bidirectionally.
+A work-tracker adapter is separate from `issue-spec.code-provider/v1`. Do not
+put it in the code-provider registry. Read
+[work-tracker-adapter.md](work-tracker-adapter.md) for the implementation
+sequence and failure handling.
 
 ## Identity
 
