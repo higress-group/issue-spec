@@ -21,7 +21,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 )
 
-func TestDefaultRunnerServeRuntimeResolvesNativeScopesAndNeverPollsNotifications(t *testing.T) {
+func TestDefaultRunnerServeRuntimeIgnoresUnrelatedOperatorRegistryAndNeverPollsNotifications(t *testing.T) {
 	orgID, repoID := uuid.New(), uuid.New()
 	var mu sync.Mutex
 	requests := []string{}
@@ -67,7 +67,8 @@ func TestDefaultRunnerServeRuntimeResolvesNativeScopesAndNeverPollsNotifications
 		t.Fatal(err)
 	}
 	profile := auth.Profile{Name: "self-hosted-test", Kind: auth.ProfileKindHosted, Hostname: "issues.test",
-		APIURL: api.URL + "/api/v3", NativeAPIURL: api.URL + "/api/v1", WebURL: api.URL, ServerInstanceID: "instance-test"}
+		APIURL: api.URL + "/api/v3", NativeAPIURL: api.URL + "/api/v1", WebURL: api.URL, ServerInstanceID: "instance-test",
+		OperatorRegistryFile: filepath.Join(temp, "deliberately-missing-unrelated-operator-registry.json")}
 	runner := commentrunner.Config{Profile: profile.Name, Hostname: profile.Hostname, Repositories: []string{"owner/repo"},
 		RunnerIdentity: "runner", StatePath: filepath.Join(temp, "state.json"), WorkspaceRoot: filepath.Join(temp, "workspaces"),
 		WorkspaceRetention: commentrunner.NewDuration(time.Hour), MaxConcurrentJobs: 1, AcpxPath: "acpx",

@@ -862,12 +862,13 @@ func (a *app) runRunnerReconcileWithStore(ctx context.Context, cfg commentrunner
 		defer opened.Close()
 		store = opened
 	}
+	workspaces := workspace.Manager{
+		Root:      cfg.WorkspaceRoot,
+		Retention: cfg.WorkspaceRetention.Duration,
+	}
 	dispatcher := jobs.Dispatcher{
-		Store: store,
-		Workspaces: workspace.Manager{
-			Root:      cfg.WorkspaceRoot,
-			Retention: cfg.WorkspaceRetention.Duration,
-		},
+		Store:      store,
+		Workspaces: workspaces,
 		Sandbox: jobs.SandboxRunner{Config: sandbox.Config{
 			UnsafeNoSandbox: cfg.UnsafeNoSandbox,
 			BwrapPath:       cfg.BwrapPath,
@@ -976,13 +977,14 @@ func (a *app) buildRunnerDispatcher(ctx context.Context, cfg commentrunner.Confi
 		cleanup = func() { _ = opened.Close() }
 		store = opened
 	}
+	workspaces := workspace.Manager{
+		Root:      cfg.WorkspaceRoot,
+		Retention: cfg.WorkspaceRetention.Duration,
+	}
 	dispatcher := &jobs.Dispatcher{
 		Store:        store,
 		Repositories: jobs.StaticRepositoryResolver{Hostname: cfg.Hostname},
-		Workspaces: workspace.Manager{
-			Root:      cfg.WorkspaceRoot,
-			Retention: cfg.WorkspaceRetention.Duration,
-		},
+		Workspaces:   workspaces,
 		Sandbox: jobs.SandboxRunner{Config: sandbox.Config{
 			UnsafeNoSandbox: cfg.UnsafeNoSandbox,
 			BwrapPath:       cfg.BwrapPath,

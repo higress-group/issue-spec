@@ -193,6 +193,7 @@ Usage:
   issue-spec archive durable-spec --repo owner/repo --proposal N --design N --implement N --pr N --capability my-capability --close-issues
   issue-spec workflow validate --repo owner/repo [--json]
   issue-spec workflow which --repo owner/repo [--schema name] [--json]
+  issue-spec workflow workspace prepare|inspect|complete|integrate|reconcile|cleanup --repo owner/repo --issue N --process PROCESS-001
   issue-spec link --repo owner/repo --from SPEC-001 --from-issue N --to TASK-001 --to-issue M
   issue-spec status --repo owner/repo --proposal N [--design N] [--implement N]
   issue-spec verify --repo owner/repo --proposal N --design N --implement N [--durable-spec path]

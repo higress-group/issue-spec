@@ -16,8 +16,8 @@ import (
 //     ones beyond the cap are pruned even if still within the TTL window.
 //
 // Non-terminal records (queued/dispatched/running/interrupted) are always kept
-// in full — they are bounded by concurrency and are the only records restart
-// reconciliation needs.
+// in full. Terminal jobs with pending credential cleanup remain retained until
+// cleanup is confirmed so restart reconciliation cannot lose a durable intent.
 type RetentionPolicy struct {
 	TerminalTTL              time.Duration
 	SessionTTL               time.Duration
@@ -423,8 +423,9 @@ func (j Job) hasHeavyFields() bool {
 		j.Sandbox.Enabled
 }
 
-// tombstone keeps only the fields duplicate suppression and operator inspection
-// read for a terminal job, dropping the large ACPX/workspace/context payloads.
+// tombstone keeps only the fields duplicate suppression and operator
+// inspection need for a terminal job, dropping the large ACPX/workspace/context
+// payloads.
 func (j Job) tombstone() Job {
 	return Job{
 		ID:                    j.ID,

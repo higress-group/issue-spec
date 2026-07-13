@@ -33,7 +33,7 @@ func TestProcessEvidenceFiveClassMatrix(t *testing.T) {
 		}},
 		{model.ProcessExecutionOrchestration, func(*ProcessEvidenceInput) {}},
 		{model.ProcessExecutionExternal, func(in *ProcessEvidenceInput) {
-			in.External = []ExternalProcessEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", SubjectRevision: "abc", EvidenceRevision: "abc", Consumed: true, EvidenceIDs: []string{"check-1"}}}
+			in.External = []ExternalProcessEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", SubjectRevision: "abc", EvidenceRevision: "abc", Consumed: true, EvidenceIDs: []string{"check-1"}, Trusted: true, Source: "provider:check-1"}}
 		}},
 	}
 	for _, tc := range cases {
@@ -45,6 +45,38 @@ func TestProcessEvidenceFiveClassMatrix(t *testing.T) {
 				t.Fatalf("unexpected missing evidence: %+v", report)
 			}
 		})
+	}
+}
+
+func TestProcessEvidenceCarrierRevisionTrustAndMixing(t *testing.T) {
+	input := processEvidenceFixture(t, model.ProcessExecutionVerification)
+	input.Checks = []CheckEvidence{
+		{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Name: "unit", Required: true, Passed: true, TestEvidence: true,
+			SubjectRevision: "head-new", Trusted: true, Source: "github-check-run:1"},
+	}
+	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !report.CarrierRevision.Known || !report.CarrierRevision.Trusted || report.CarrierRevision.Revision != "head-new" {
+		t.Fatalf("exact check-run head was not retained: %+v", report.CarrierRevision)
+	}
+
+	input.Checks = append(input.Checks, CheckEvidence{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Name: "integration",
+		Required: true, Passed: true, TestEvidence: true, SubjectRevision: "head-old", Trusted: true, Source: "github-check-run:2"})
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !report.CarrierRevision.Known || report.CarrierRevision.Trusted {
+		t.Fatalf("mixed required carrier revisions must fail closed: %+v", report.CarrierRevision)
+	}
+}
+
+func TestProcessEvidenceLegacyTypedCarrierHasUnknownRevision(t *testing.T) {
+	input := processEvidenceFixture(t, model.ProcessExecutionReview)
+	input.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Done: true, Source: "typed-review"}}
+	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !containsString(report.Satisfied, "review evidence") || report.CarrierRevision.Known || report.CarrierRevision.Trusted {
+		t.Fatalf("legacy typed evidence must remain semantically visible but revision-unknown: %+v", report)
+	}
+	facts := ProcessCarrierRevisionFacts([]ProcessEvidenceReport{report})
+	if fact, ok := facts["PROCESS-001"]; !ok || fact.Known || fact.Trusted {
+		t.Fatalf("unexpected helper projection: %+v", facts)
 	}
 }
 

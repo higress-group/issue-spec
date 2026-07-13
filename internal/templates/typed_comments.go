@@ -229,6 +229,7 @@ type ProcessInput struct {
 	Scope          string                      `json:"scope"`
 	Dependencies   []string                    `json:"dependencies"`
 	WriteOwnership []string                    `json:"write_ownership"`
+	Workspace      *model.ProcessWorkspace     `json:"workspace,omitempty"`
 	Covers         []string                    `json:"covers"`
 	Handoff        string                      `json:"handoff"`
 	StatusNote     string                      `json:"status_note"`
@@ -257,6 +258,19 @@ func ProcessComment(opts ProcessCommentOptions) (string, error) {
 	fmt.Fprintf(&b, "\n### Owner\n\n- %s\n", valueOr(strings.TrimSpace(opts.Input.Owner), "Worker Agent"))
 	fmt.Fprintf(&b, "\n### Parent TASK\n\n- %s\n", valueOr(strings.TrimSpace(opts.Input.ParentTask), "TBD"))
 	fmt.Fprintf(&b, "\n### Execution Class\n\n- %s\n", executionClass)
+	if opts.Input.Workspace != nil {
+		if string(opts.Input.Workspace.ExecutionClass) != string(executionClass) {
+			return "", fmt.Errorf("workspace execution class %q does not match PROCESS execution class %q", opts.Input.Workspace.ExecutionClass, executionClass)
+		}
+		if strings.TrimSpace(opts.Input.Workspace.ProcessID) != strings.TrimSpace(opts.Common.ID) {
+			return "", fmt.Errorf("workspace process id %q does not match PROCESS id %q", opts.Input.Workspace.ProcessID, opts.Common.ID)
+		}
+		workspace, err := model.RenderProcessWorkspaceSection(*opts.Input.Workspace)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&b, "\n%s\n", workspace)
+	}
 	if scope := strings.TrimSpace(opts.Input.Scope); scope != "" {
 		fmt.Fprintf(&b, "\n### Scope\n\n%s\n", scope)
 	}

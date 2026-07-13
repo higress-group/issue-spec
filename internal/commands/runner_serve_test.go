@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
+	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
 )
 
 func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.T) {
@@ -84,7 +86,7 @@ func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(data, []byte(`"schema_version": 5`)) || bytes.Contains(data, []byte(currentSecret)) ||
+	if !bytes.Contains(data, []byte(fmt.Sprintf(`"schema_version": %d`, crstate.SchemaVersion))) || bytes.Contains(data, []byte(currentSecret)) ||
 		bytes.Contains(data, []byte(previousSecret)) ||
 		bytes.Contains(data, []byte("RUNNER_CURRENT_SECRET")) {
 		t.Fatalf("state contains secret/config material: %s", data)

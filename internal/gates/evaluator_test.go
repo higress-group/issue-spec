@@ -201,6 +201,67 @@ func TestEvaluateArchiveRequiresDurableSpec(t *testing.T) {
 	}
 }
 
+func TestEvaluateRegistersWorkspaceGateAfterProcessEvidence(t *testing.T) {
+	process := workspaceGateProcess(t, model.ProcessExecutionReview, true, workspaceGateRevision)
+	input := ProcessEvidenceInput{Process: process, ActiveSpecs: map[string]string{"SPEC-001": "https://example.test/spec"},
+		Reviews: []ReviewEvidence{{ProcessID: process.Comment.ID, SpecID: "SPEC-001", Done: true,
+			SubjectRevision: workspaceGateRevision, Trusted: true, Source: "github-review:1"}}}
+	snapshot := Snapshot{Target: TargetFinal, Mode: ModeAuthoritative, Artifacts: []model.Artifact{process}, ProcessEvidence: []ProcessEvidenceInput{input}}
+	snapshot.Remote.Workspace = WorkspaceFacts{Observed: true,
+		ExpectedRevision: Fact{Required: true, Known: true, Passed: true, Expected: workspaceGateRevision}}
+	report := evaluate(t, snapshot)
+	if containsCode(report, CodeProcessWorkspaceRevisionUnknown) || containsCode(report, CodeProcessWorkspaceRevisionStale) {
+		t.Fatalf("shared workspace gate did not consume collected carrier revision: %+v", report.Diagnostics)
+	}
+	if len(report.Processes) != 1 || !report.Processes[0].CarrierRevision.Trusted {
+		t.Fatalf("process evidence was not evaluated before workspace evidence: %+v", report.Processes)
+	}
+}
+
+func TestEvaluateWorkspaceGateFailsClosedForMixedCarrierAndDeduplicates(t *testing.T) {
+	process := workspaceGateProcess(t, model.ProcessExecutionReview, true, workspaceGateRevision)
+	input := ProcessEvidenceInput{Process: process, ActiveSpecs: map[string]string{"SPEC-001": "https://example.test/spec"},
+		Reviews: []ReviewEvidence{
+			{ProcessID: process.Comment.ID, SpecID: "SPEC-001", Done: true, SubjectRevision: workspaceGateRevision, Trusted: true, Source: "review:new"},
+			{ProcessID: process.Comment.ID, SpecID: "SPEC-001", Done: true, SubjectRevision: strings.Repeat("b", 40), Trusted: true, Source: "review:old"},
+		}}
+	snapshot := Snapshot{Target: TargetFinal, Mode: ModeAuthoritative, Artifacts: []model.Artifact{process}, ProcessEvidence: []ProcessEvidenceInput{input}}
+	snapshot.Remote.Workspace = WorkspaceFacts{Observed: true,
+		ExpectedRevision: Fact{Required: true, Known: true, Passed: true, Expected: workspaceGateRevision}}
+	report := evaluate(t, snapshot)
+	if !containsCode(report, CodeProcessWorkspaceRevisionStale) || report.Ready {
+		t.Fatalf("mixed carrier revisions did not fail closed: %+v", report)
+	}
+	counts := map[string]int{}
+	for _, diagnostic := range report.Diagnostics {
+		counts[diagnostic.Code+"\x00"+diagnostic.Artifact.ID+"\x00"+diagnostic.Message]++
+	}
+	for key, count := range counts {
+		if count != 1 {
+			t.Fatalf("duplicate diagnostic %q count=%d", key, count)
+		}
+	}
+}
+
+func TestEvaluateWorkspaceForecastAndMalformedImplementPolicy(t *testing.T) {
+	legacy := artifact(t, "PROCESS", "PROCESS-001", "done", processLogical("N/A", "done"))
+	forecast := Snapshot{Target: TargetImplement, Mode: ModeForecast, Artifacts: []model.Artifact{legacy}}
+	forecast.Remote.Workspace.Observed = true
+	report := evaluate(t, forecast)
+	diagnostic := findDiagnostic(t, report, CodeProcessWorkspaceMigrationWarning)
+	if diagnostic.Blocking || diagnostic.Severity != SeverityWarning {
+		t.Fatalf("legacy migration warning unexpectedly blocks implement forecast: %+v", diagnostic)
+	}
+
+	malformed := workspaceGateProcess(t, model.ProcessExecutionChangeBearing, true, workspaceGateRevision)
+	malformed.Comment.Body = strings.Replace(malformed.Comment.Body, `"mode": "writable"`, `"mode": "invalid"`, 1)
+	forecast.Artifacts = []model.Artifact{malformed}
+	report = evaluate(t, forecast)
+	if !containsCode(report, CodeProcessWorkspaceInvalid) || report.Ready {
+		t.Fatalf("malformed local Workspace must block implement: %+v", report)
+	}
+}
+
 func TestEvaluateDiagnosticsAreDeterministicAndSupersededArtifactsAreIgnored(t *testing.T) {
 	a := artifact(t, "QUESTION", "QUESTION-002", "blocked", "## Question\n\nTwo")
 	b := artifact(t, "QUESTION", "QUESTION-001", "blocked", "## Question\n\nOne")
@@ -219,6 +280,40 @@ func TestEvaluateDiagnosticsAreDeterministicAndSupersededArtifactsAreIgnored(t *
 	ids := []string{first.Diagnostics[0].Artifact.ID, first.Diagnostics[1].Artifact.ID}
 	if !reflect.DeepEqual(ids, []string{"QUESTION-001", "QUESTION-002"}) {
 		t.Fatalf("artifact order = %v", ids)
+	}
+}
+
+func TestEvaluateDiagnosticDedupKeepsLatestObservationIndependentOfInputOrder(t *testing.T) {
+	spec, task, process, verify := readyChain(t)
+	older := time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC)
+	newer := older.Add(time.Hour)
+	duplicate := func(observed *time.Time) ProcessEvidenceFact {
+		return ProcessEvidenceFact{ProcessID: process.Comment.ID, ProcessURL: process.URL,
+			PRLink: Fact{Required: true, Known: true, Passed: false, Current: "missing", Expected: "linked", ObservedAt: observed}}
+	}
+	different := duplicate(&older)
+	different.PRLink.Current = "wrong-pr"
+	snapshot := Snapshot{Target: TargetFinal, Mode: ModeAuthoritative, Artifacts: []model.Artifact{spec, task, process, verify}}
+	snapshot.Remote.Processes = []ProcessEvidenceFact{duplicate(&older), different, duplicate(&newer)}
+	forward := evaluate(t, snapshot)
+	snapshot.Remote.Processes = []ProcessEvidenceFact{duplicate(&newer), different, duplicate(&older)}
+	reverse := evaluate(t, snapshot)
+	if !reflect.DeepEqual(forward.Diagnostics, reverse.Diagnostics) {
+		t.Fatalf("diagnostic normalization depends on input order:\n%+v\n%+v", forward.Diagnostics, reverse.Diagnostics)
+	}
+	var matching []Diagnostic
+	for _, diagnostic := range forward.Diagnostics {
+		if diagnostic.Code == CodeProcessPRLinkMissing {
+			matching = append(matching, diagnostic)
+		}
+	}
+	if len(matching) != 2 {
+		t.Fatalf("semantic differences were incorrectly deduplicated: %+v", matching)
+	}
+	for _, diagnostic := range matching {
+		if diagnostic.Current == "missing" && (diagnostic.ObservedAt == nil || !diagnostic.ObservedAt.Equal(newer)) {
+			t.Fatalf("latest equivalent observation was not retained: %+v", diagnostic)
+		}
 	}
 }
 

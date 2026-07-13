@@ -1,9 +1,11 @@
 package commands
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
+	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
@@ -37,6 +39,7 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 			}
 		}
 	}
+	externalValid := external != nil && validateExternalEvidenceConsumption(*external, processes, activeSpecs) == nil
 	inputs := make([]gates.ProcessEvidenceInput, 0, len(processes))
 	for _, process := range processes {
 		input := gates.ProcessEvidenceInput{Process: process, RequiredPRURL: prURL, ActiveSpecs: activeSpecs, TaskURLs: taskURLs}
@@ -55,13 +58,15 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 			}
 			for specID := range activeSpecs {
 				if artifactReferencesSpec(artifact, specID, activeSpecs[specID]) {
-					input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: process.Comment.ID, SpecID: specID, URL: artifact.URL, Done: true})
+					input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: process.Comment.ID, SpecID: specID, URL: artifact.URL,
+						Done: true, Source: "typed-review"})
 				}
 			}
 		}
 		for _, finding := range review.ResolvedFindings {
 			if finding.Process == process.Comment.ID {
-				input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: finding.Process, SpecID: finding.Spec, URL: finding.URL, FindingResolved: true})
+				input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: finding.Process, SpecID: finding.Spec, URL: finding.URL,
+					FindingResolved: true, SubjectRevision: finding.SubjectRevision, Trusted: finding.SubjectRevision != "", Source: finding.RevisionSource})
 			}
 		}
 		for _, artifact := range verifications {
@@ -71,7 +76,7 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 			for specID := range activeSpecs {
 				if artifactReferencesSpec(artifact, specID, activeSpecs[specID]) {
 					input.Verifications = append(input.Verifications, gates.VerificationEvidence{ProcessID: process.Comment.ID,
-						SpecID: specID, URL: artifact.URL, Done: true, TestEvidence: processTestEvidencePattern.MatchString(artifact.Comment.Body)})
+						SpecID: specID, URL: artifact.URL, Done: true, TestEvidence: processTestEvidencePattern.MatchString(artifact.Comment.Body), Source: "typed-verify"})
 				}
 			}
 		}
@@ -87,22 +92,95 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 					}
 				}
 				if gates.ReferencesArtifactID(process.Comment.Body, specID) {
-					input.Checks = append(input.Checks, gates.CheckEvidence{ProcessID: process.Comment.ID, SpecID: specID, Name: check.Name, Required: true, Passed: true, TestEvidence: testEvidence})
+					input.Checks = append(input.Checks, gates.CheckEvidence{ProcessID: process.Comment.ID, SpecID: specID, Name: check.Name,
+						Required: true, Passed: true, TestEvidence: testEvidence, SubjectRevision: check.SubjectRevision, Trusted: check.Trusted, Source: check.Source})
 				}
 			}
 		}
-		if external != nil {
-			for specID := range activeSpecs {
-				if gates.ReferencesArtifactID(process.Comment.Body, specID) && strings.Contains(process.Comment.Body, external.SubjectRevision) {
-					input.External = append(input.External, gates.ExternalProcessEvidence{ProcessID: process.Comment.ID, SpecID: specID,
-						SubjectRevision: external.SubjectRevision, EvidenceRevision: external.SubjectRevision, Consumed: true,
-						EvidenceIDs: append([]string(nil), external.EvidenceIDs...)})
-				}
-			}
+		if externalValid {
+			input.External = externalProcessEvidenceFor(process.Comment.ID, activeSpecs, *external)
 		}
 		inputs = append(inputs, input)
 	}
 	return inputs
+}
+
+func validateExternalEvidenceConsumption(consumption externalEvidenceConsumption, processes []model.Artifact, activeSpecs map[string]string) error {
+	revision := strings.TrimSpace(consumption.SubjectRevision)
+	if revision == "" || consumption.SubjectRevision != revision || len(consumption.Bindings) == 0 {
+		return fmt.Errorf("external evidence consumption has no revision-bound bindings")
+	}
+	selected := make(map[string]bool, len(consumption.EvidenceIDs))
+	for _, raw := range consumption.EvidenceIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" || id != raw || selected[id] {
+			return fmt.Errorf("external evidence selection contains an invalid or duplicate id %q", raw)
+		}
+		selected[id] = true
+	}
+	processByID := make(map[string]model.Artifact, len(processes))
+	for _, process := range processes {
+		id := process.Comment.ID
+		if !externalProcessIDPattern.MatchString(id) || processByID[id].Comment.ID != "" {
+			return fmt.Errorf("active PROCESS identity %q is invalid or ambiguous", id)
+		}
+		processByID[id] = process
+	}
+	bound := make(map[string]bool, len(consumption.Bindings))
+	for _, binding := range consumption.Bindings {
+		if !externalProcessIDPattern.MatchString(binding.ProcessID) || !externalSpecIDPattern.MatchString(binding.SpecID) ||
+			strings.TrimSpace(binding.EvidenceID) == "" || binding.EvidenceID != strings.TrimSpace(binding.EvidenceID) ||
+			!selected[binding.EvidenceID] || bound[binding.EvidenceID] || !binding.Trusted ||
+			binding.Source != "native-authoritative-ledger" || binding.SubjectRevision != revision ||
+			(binding.Kind != codereview.EvidenceReview && binding.Kind != codereview.EvidenceCheck) {
+			return fmt.Errorf("external evidence binding %q is invalid, conflicting, or stale", binding.EvidenceID)
+		}
+		process, processOK := processByID[binding.ProcessID]
+		specURL, specOK := activeSpecs[binding.SpecID]
+		if !processOK || !specOK || !artifactReferencesSpec(process, binding.SpecID, specURL) {
+			return fmt.Errorf("external evidence binding %q does not map to an active PROCESS/SPEC edge", binding.EvidenceID)
+		}
+		bound[binding.EvidenceID] = true
+	}
+	return nil
+}
+
+func externalProcessEvidenceFor(processID string, activeSpecs map[string]string, consumption externalEvidenceConsumption) []gates.ExternalProcessEvidence {
+	selected := make(map[string]bool, len(consumption.EvidenceIDs))
+	for _, id := range consumption.EvidenceIDs {
+		selected[strings.TrimSpace(id)] = true
+	}
+	var result []gates.ExternalProcessEvidence
+	invalid := false
+	seen := map[string]bool{}
+	for _, binding := range consumption.Bindings {
+		if strings.TrimSpace(binding.ProcessID) != processID {
+			continue
+		}
+		_, activeSpec := activeSpecs[strings.TrimSpace(binding.SpecID)]
+		validKind := binding.Kind == codereview.EvidenceReview || binding.Kind == codereview.EvidenceCheck
+		valid := externalProcessIDPattern.MatchString(binding.ProcessID) && externalSpecIDPattern.MatchString(binding.SpecID) &&
+			activeSpec && strings.TrimSpace(binding.EvidenceID) != "" && selected[strings.TrimSpace(binding.EvidenceID)] &&
+			binding.Trusted && strings.TrimSpace(binding.SubjectRevision) != "" &&
+			strings.TrimSpace(binding.SubjectRevision) == strings.TrimSpace(consumption.SubjectRevision) && validKind &&
+			binding.Source == "native-authoritative-ledger"
+		if !valid {
+			invalid = true
+			continue
+		}
+		key := binding.SpecID + "\x00" + binding.EvidenceID + "\x00" + string(binding.Kind)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, gates.ExternalProcessEvidence{ProcessID: processID, SpecID: binding.SpecID,
+			SubjectRevision: consumption.SubjectRevision, EvidenceRevision: binding.SubjectRevision, Consumed: true,
+			EvidenceIDs: []string{binding.EvidenceID}, Trusted: true, Source: binding.Source + ":" + binding.EvidenceID})
+	}
+	if invalid {
+		return nil
+	}
+	return result
 }
 
 func rationaleSpecURL(body string) string {

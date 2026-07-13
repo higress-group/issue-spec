@@ -53,6 +53,14 @@ Supported command comments:
 /cancel <public-session-id>
 ```
 
+Runner command grammar deliberately has no PROCESS selector. `/new` and `/resume` address the public coordinator session only. The runner launches exactly one ACPX coordinator for that session and keeps its cwd and primary sandbox workspace at the managed session clone across new, resume, cancellation, and restart reconciliation. It never starts a nested ACPX worker or rebinds the coordinator to a PROCESS worktree.
+
+The coordinator selects the exact ready PROCESS from the typed DAG and owns its lifecycle through `issue-spec workflow workspace prepare`, `inspect`, `complete`, `integrate`, `reconcile`, and `cleanup`, with a stable repository, issue, PROCESS, roots, and owner token. Runner mode provides trusted session-local defaults through `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` and `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT`; a standalone coordinator passes explicit `--integration-root` and `--workspace-root`. `change-bearing` receives a writable owned branch; `review` and `verification` receive detached immutable workflow snapshots and fail closed if dirty; `orchestration` receives no checkout; `external` uses mode `none` and requires consumed provider-neutral exact-revision evidence for completion and the final gate.
+
+After `prepare`, the coordinator uses the current agent runtime's native child/subagent facility. It gives the child the exact worktree path as cwd plus the branch, write ownership, PROCESS id, parent TASK, and predecessor handoff. The child is not another ACPX session. It shares the coordinator's outer runner sandbox, so issue-spec does not claim a separate per-child OS sandbox or read-only bind; unsafe mode provides no filesystem isolation. The child authors its result commit, runs focused tests, and returns bounded handoff evidence. The coordinator validates those results, then runs `complete` and `integrate` from its unchanged session clone before synchronizing PROCESS status, links, and handoff. It invokes owner-token cleanup only after an explicit integration or retention decision.
+
+After resume or restart, the top-level runner recovers only the ACPX/session job. From the unchanged session clone, the coordinator inspects or reconciles the exact PROCESS lease before `complete` and `integrate`; missing, mismatched, dirty, or needs-reconcile state blocks it. The runner does not own, persist, or retry child PROCESS cleanup. `workflow workspace cleanup` is always an owner-token-authorized destructive command: it can remove unintegrated change-bearing work and does not decide or enforce integration/retention eligibility for its caller.
+
 `/new` creates a fresh public runner session, clones the target repository into a managed workspace, starts acpx from that workspace, and writes a concise status comment containing the public session id. `/resume` reuses that public session and workspace. Public sessions are repository-scoped and shared by authorized repository maintainers; they are not private user sessions.
 
 Coordinator-human discussion is explicit. The sandboxed coordinator can use the mirrored GitHub auth to ask clarification questions. Blocking workflow decisions should be recorded as `QUESTION` typed comments; lightweight clarification can use ordinary issue timeline comments, for example with `gh issue comment <issue> --repo owner/repo --body-file <file>`. GitHub issue comments are flat timeline comments, not nested replies under a specific issue comment; the coordinator should link the trigger comment or status comment and include the public session id. To continue the same acpx session, an authorized maintainer must create a new command comment:
@@ -78,7 +86,7 @@ Useful runner options:
 
 - `--state <path>` stores durable runner state. By default, single-repository runners use `~/.issue-spec/runners/<host>/<owner>/<repo>/<runner>/state.json`; multi-repository runners use a stable shared scope under `~/.issue-spec/runners/<host>/multi/.../<runner>/state.json`. Duplicate command deliveries are controlled by stable command idempotency and the runner's `eyes` reaction ack.
 - `--workspace-root <path>` stores managed repository clones. By default, it uses the same runner scope with a `workspaces` directory beside `state.json`. Explicit paths are used as provided.
-- `--workspace-retention <duration>` controls when real poll cycles remove expired, non-active managed workspaces. The default is 7 days. Queued, dispatched, running, locked, and interrupted workspaces remain protected.
+- `--workspace-retention <duration>` controls when real poll cycles remove expired, non-active managed session clones. The default is 7 days. Queued, dispatched, running, locked, and interrupted session jobs remain protected. Before deleting a clone, retention calls `git worktree list` and fails closed by retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails. This does not clean child PROCESS workspaces.
 - `--poll-interval` and `--fallback-interval` control notification polling and lower-frequency repository comment fallback.
 - `--fallback-initial-lookback <duration>` limits the first repository comments fallback when no cursor has been stored yet. The default is `720h` (30 days); set it to `0` to scan all historical comments.
 - `--max-concurrency <n>` can run independent sessions in parallel. The default is 3; increase it for higher throughput when the runner host has enough CPU, memory, and agent quota. Commands for the same public session are serialized by a workspace/session lock.
@@ -90,9 +98,9 @@ Useful runner options:
 - `--gh-config-dir <path>` selects the host GitHub CLI config directory mirrored into the sandbox. By default the runner derives it from the host GitHub CLI environment.
 - `--allow-cancel=false` disables `/cancel` intake.
 
-On Linux, runner dispatch uses bubblewrap by default to keep coordinator filesystem writes inside the managed workspace while still allowing network access for GitHub, model, and package operations. Install bubblewrap or set `ISSUE_SPEC_BWRAP_PATH` / `--bwrap-path` when it is not on `PATH`. If bubblewrap is unavailable or unsupported, the runner fails preflight instead of silently running without isolation.
+On Linux, runner dispatch uses bubblewrap by default to keep coordinator filesystem writes inside the managed session clone and that session's PROCESS workspace pool while still allowing network access for GitHub, model, and package operations. Native children share that outer boundary; bubblewrap does not create a separate sandbox per child. Install bubblewrap or set `ISSUE_SPEC_BWRAP_PATH` / `--bwrap-path` when it is not on `PATH`. If bubblewrap is unavailable or unsupported, the runner fails preflight instead of silently running without isolation.
 
-Use `--unsafe-no-sandbox` only as an explicit operator choice:
+Use `--unsafe-no-sandbox` only as an explicit operator choice, including on macOS where bubblewrap is unavailable. There is no automatic fallback from sandboxed mode:
 
 ```bash
 issue-spec runner poll --repo owner/repo --runner maintainer --unsafe-no-sandbox
@@ -116,4 +124,4 @@ issue-spec runner poll \
   --claude-allowed-tools Task,Bash
 ```
 
-The acpx-launched coordinator creates or updates proposal, design, typed-comment, review, verify, and archive artifacts by running existing issue-spec CLI commands inside the sandbox. The outer runner owns authorization, concise job lifecycle status comments, workspace isolation, restart reconciliation, cancellation state, and bounded provenance stored in durable runner state.
+The runner launches exactly one ACPX coordinator, which creates or updates proposal, design, typed-comment, review, verify, and archive artifacts by running existing issue-spec CLI commands inside the session sandbox. For PROCESS implementation the coordinator prepares the workspace and delegates to runtime-native children rather than starting nested ACPX sessions. The outer runner owns authorization, concise session-job lifecycle status comments, session-level workspace isolation, ACPX/session restart recovery, cancellation state, and bounded provenance stored in durable runner state; it does not own child PROCESS lifecycle or cleanup.

@@ -17,10 +17,12 @@ type workflowCommandResult struct {
 
 func (a *app) runWorkflow(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec workflow validate|which|reconcile ...\n")
+		a.errorf("usage: issue-spec workflow validate|which|reconcile|workspace ...\n")
 		return 2
 	}
 	switch args[0] {
+	case "workspace":
+		return a.runWorkflowWorkspace(ctx, args[1:])
 	case "validate":
 		return a.runWorkflowInspect(ctx, args[1:], false)
 	case "which":

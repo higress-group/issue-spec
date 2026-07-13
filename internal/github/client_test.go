@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -48,6 +49,57 @@ func TestClientCreatesAndListsComments(t *testing.T) {
 	}
 	if len(comments) != 1 || comments[0].ID != 10 {
 		t.Fatalf("unexpected comments: %+v", comments)
+	}
+}
+
+func TestClientListCheckRunsParsesHeadSHA(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/o/r/commits/head/check-runs" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"total_count":1,"check_runs":[{"id":7,"name":"unit","head_sha":"checked-head","status":"completed","conclusion":"success"}]}`))
+	}))
+	defer server.Close()
+	client := NewClientWithBaseURL("github.com", server.URL, "token", server.Client())
+	runs, err := client.ListCheckRuns(context.Background(), "o/r", "head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].HeadSHA != "checked-head" {
+		t.Fatalf("runs = %+v", runs)
+	}
+}
+
+func TestClientListPullRequestCommitsPaginates(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/repos/o/r/pulls/7/commits" || r.URL.Query().Get("per_page") != "100" {
+			t.Fatalf("unexpected request %s", r.URL.String())
+		}
+		page := r.URL.Query().Get("page")
+		switch page {
+		case "1":
+			commits := make([]PullRequestCommit, 100)
+			for i := range commits {
+				commits[i].SHA = fmt.Sprintf("commit-%03d", i)
+			}
+			_ = json.NewEncoder(w).Encode(commits)
+		case "2":
+			_ = json.NewEncoder(w).Encode([]PullRequestCommit{{SHA: "commit-100"}})
+		default:
+			t.Fatalf("unexpected page %q", page)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL("github.com", server.URL, "token", server.Client())
+	commits, err := client.ListPullRequestCommits(context.Background(), "o/r", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 || len(commits) != 101 || commits[100].SHA != "commit-100" {
+		t.Fatalf("requests=%d commits=%+v", requests, commits)
 	}
 }
 

@@ -333,17 +333,37 @@ func (d *Dispatcher) coordinatorForStoredJob(ctx context.Context, job state.Job)
 	if strings.TrimSpace(job.Workspace.Path) == "" {
 		return nil, fmt.Errorf("job %s is missing workspace path", job.ID)
 	}
+	workspacePath := job.Workspace.Path
+	publicID := firstNonEmpty(job.PublicSessionID, job.DispatchIntent.PublicSessionID)
+	processRoot, err := prepareSessionProcessWorkspaceRoot(workspacePath, job.Repo, publicID)
+	if err != nil {
+		return nil, err
+	}
+	runtimePaths, err := stableSessionRuntimePaths(workspacePath, job.Repo, publicID)
+	if err != nil {
+		return nil, err
+	}
+	extraEnv := cloneStringMap(d.CoordinatorExtraEnv)
+	extraEnv[workspace.ProcessIntegrationRootEnv] = workspacePath
+	extraEnv[workspace.ProcessWorkspaceRootEnv] = processRoot
 	env, err := d.Sandbox.Prepare(ctx, SandboxRequest{
-		WorkspacePath:        job.Workspace.Path,
-		AcpxWorkingDirectory: job.Workspace.Path,
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
 		AcpxBinary:           firstNonEmpty(d.AcpxBinary, acpx.DefaultBinary),
-		ExtraEnv:             d.CoordinatorExtraEnv,
+		IssueSpecBinary:      d.IssueSpecBinary,
+		ExtraEnv:             extraEnv,
 		AcpxAgent:            job.CoordinatorKind,
+		ProcessWorkspaceRoot: processRoot,
+		RuntimeHome:          runtimePaths.home,
+		RuntimeGHConfigDir:   runtimePaths.ghConfigDir,
+		RuntimeXDGConfigHome: runtimePaths.xdgConfigHome,
+		RuntimeCodexHome:     runtimePaths.codexHome,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return d.Acpx.NewCoordinator(env)
+	coordinator, err := d.Acpx.NewCoordinator(env)
+	return coordinator, err
 }
 
 func (d *Dispatcher) applyReconcile(ctx context.Context, job state.Job, previous state.LifecycleStatus, reconciled acpx.TurnReconcileResult) (ReconcileJob, error) {
@@ -407,15 +427,20 @@ func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previ
 	lock := d.storedLock(ctx, job)
 	if err := d.Store.Update(ctx, func(st *state.RunnerState) error {
 		st.Normalize()
-		next, err := st.UpdateJobStatus(job.ID, terminal, now, splitDiagnostic(diagnostic)...)
+		_, ok := st.Jobs[job.ID]
+		if !ok {
+			return fmt.Errorf("job %q not found", job.ID)
+		}
+		effectiveTerminal, effectiveDiagnostic := terminal, diagnostic
+		next, err := st.UpdateJobStatus(job.ID, effectiveTerminal, now, splitDiagnostic(effectiveDiagnostic)...)
 		if err != nil {
 			return err
 		}
 		fillJobSessionRefs(&next)
 		next.Restart = state.RestartMetadata{
 			ReconciledAt:    now,
-			RecoveredStatus: terminal,
-			Diagnostics:     safeString(diagnostic, 1024),
+			RecoveredStatus: effectiveTerminal,
+			Diagnostics:     safeString(effectiveDiagnostic, 1024),
 		}
 		mergeAcpxMetadata(&next, reconciled.Metadata, now)
 		if reconciled.Output.SummaryFound {
@@ -426,10 +451,11 @@ func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previ
 		if err := upsertWorkspaceIfPresent(st, next.Workspace); err != nil {
 			return err
 		}
-		if err := upsertSessionForReconciledJob(st, next, terminal, now, false); err != nil {
+		if err := upsertSessionForReconciledJob(st, next, effectiveTerminal, now, false); err != nil {
 			return err
 		}
 		final = next
+		terminal, diagnostic = effectiveTerminal, effectiveDiagnostic
 		return st.UpsertJob(next)
 	}); err != nil {
 		return ReconcileJob{}, err

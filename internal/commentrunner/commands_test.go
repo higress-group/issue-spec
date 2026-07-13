@@ -29,10 +29,70 @@ func TestParseCommandCommentAcceptsNormalizedCommands(t *testing.T) {
 			wantPrompt: "fix the issue and keep scope narrow",
 		},
 		{
-			name:          "resume quoted prompt",
-			body:          `/resume sess-ABC_123 "continue the previous turn"`,
+			name:       "new whole quoted process text stays prompt",
+			body:       `/new "document --process PROCESS-999 as literal text"`,
+			wantVerb:   VerbNew,
+			wantPrompt: "document --process PROCESS-999 as literal text",
+		},
+		{
+			name:       "new process substring without token boundary stays prompt",
+			body:       `/new document foo--processbar as literal text`,
+			wantVerb:   VerbNew,
+			wantPrompt: "document foo--processbar as literal text",
+		},
+		{
+			name:       "new legacy process selector is ordinary prompt",
+			body:       `/new --process PROCESS-008 implement the task`,
+			wantVerb:   VerbNew,
+			wantPrompt: "--process PROCESS-008 implement the task",
+		},
+		{
+			name:          "legacy process selector is ordinary prompt",
+			body:          `/resume sess-ABC_123 --process PROCESS-008 "continue --process PROCESS-999 as text"`,
+			wantVerb:      VerbResume,
+			wantPrompt:    `--process PROCESS-008 "continue --process PROCESS-999 as text"`,
+			wantSessionID: "sess-ABC_123",
+		},
+		{
+			name:          "legacy selector and single quoted text stay prompt",
+			body:          `/resume sess-ABC_123 --process PROCESS-008 'continue --process PROCESS-999 as text'`,
+			wantVerb:      VerbResume,
+			wantPrompt:    `--process PROCESS-008 'continue --process PROCESS-999 as text'`,
+			wantSessionID: "sess-ABC_123",
+		},
+		{
+			name:          "legacy selector and escaped quote stay prompt",
+			body:          `/resume sess-ABC_123 --process PROCESS-008 "say \"--process PROCESS-999\" as text"`,
+			wantVerb:      VerbResume,
+			wantPrompt:    `--process PROCESS-008 "say \"--process PROCESS-999\" as text"`,
+			wantSessionID: "sess-ABC_123",
+		},
+		{
+			name:          "ordinary unmatched quote remains prompt",
+			body:          `/resume sess-ABC_123 explain "ordinary text`,
+			wantVerb:      VerbResume,
+			wantPrompt:    `explain "ordinary text`,
+			wantSessionID: "sess-ABC_123",
+		},
+		{
+			name:          "resume orchestration without process",
+			body:          `/resume sess-ABC_123 continue the previous turn`,
 			wantVerb:      VerbResume,
 			wantPrompt:    "continue the previous turn",
+			wantSessionID: "sess-ABC_123",
+		},
+		{
+			name:          "resume escaped process prefix stays prompt",
+			body:          `/resume sess-ABC_123 \--process PROCESS-999 as literal text`,
+			wantVerb:      VerbResume,
+			wantPrompt:    `\--process PROCESS-999 as literal text`,
+			wantSessionID: "sess-ABC_123",
+		},
+		{
+			name:          "resume quoted process prefix stays prompt",
+			body:          `/resume sess-ABC_123 "--process" PROCESS-999 as literal text`,
+			wantVerb:      VerbResume,
+			wantPrompt:    `"--process" PROCESS-999 as literal text`,
 			wantSessionID: "sess-ABC_123",
 		},
 		{
@@ -113,6 +173,15 @@ func TestParseCommandCommentRejectsMalformedCommands(t *testing.T) {
 				t.Fatalf("result = %+v, want rejection %s", result, tt.wantReason)
 			}
 		})
+	}
+}
+
+func TestCommandIdempotencyIncludesLiteralProcessPromptText(t *testing.T) {
+	comment := TriggerComment{Repo: "o/r", Issue: 1, CommentID: 2, Commenter: "alice"}
+	first := commandIdempotencyKey(comment, VerbResume, "sess-1", BodyHash("--process PROCESS-008 work"))
+	second := commandIdempotencyKey(comment, VerbResume, "sess-1", BodyHash("--process PROCESS-009 work"))
+	if first == second {
+		t.Fatal("literal PROCESS prompt text did not affect idempotency")
 	}
 }
 

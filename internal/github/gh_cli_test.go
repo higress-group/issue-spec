@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -223,6 +224,115 @@ func TestGHBackendInfo(t *testing.T) {
 	info := backend.BackendInfo()
 	if info.Name != "gh" || info.Kind != "external-cli" || info.Host != "ghe.example.com" {
 		t.Fatalf("backend info = %+v", info)
+	}
+}
+
+func TestGHBackendListPullRequestCommitsPaginatesAndReturnsFullSHAs(t *testing.T) {
+	firstPage := make([]PullRequestCommit, 100)
+	for index := range firstPage {
+		firstPage[index].SHA = fmt.Sprintf("%040x", index+1)
+	}
+	secondPage := []PullRequestCommit{{SHA: fmt.Sprintf("%040x", 101)}}
+	firstJSON, err := json.Marshal(firstPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJSON, err := json.Marshal(secondPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceCLIRunner{results: []ExternalCLIResult{{Stdout: append(append(firstJSON, '\n'), secondJSON...)}}}
+	backend := newTestGHBackend(t, "ghe.example.com", runner)
+
+	commits, err := backend.ListPullRequestCommits(context.Background(), "owner/repo", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commits) != 101 || commits[0].SHA != fmt.Sprintf("%040x", 1) || commits[100].SHA != fmt.Sprintf("%040x", 101) {
+		t.Fatalf("commits = %d first=%q last=%q", len(commits), commits[0].SHA, commits[len(commits)-1].SHA)
+	}
+	wantArgs := []string{"api", "--method", http.MethodGet, "--header", githubAPIVersion, "--hostname", "ghe.example.com", "--paginate", "/repos/owner/repo/pulls/7/commits?per_page=100"}
+	if !reflect.DeepEqual(runner.commands[0].Args, wantArgs) {
+		t.Fatalf("commit list args = %#v, want %#v", runner.commands[0].Args, wantArgs)
+	}
+	if _, ok := any(backend).(PullRequestCommitBackend); !ok {
+		t.Fatal("production GHBackend does not expose PullRequestCommitBackend")
+	}
+}
+
+func TestGHBackendListPullRequestCommitsDeduplicatesInProviderOrder(t *testing.T) {
+	sha1 := fmt.Sprintf("%040x", 1)
+	sha2 := fmt.Sprintf("%040x", 2)
+	sha3 := fmt.Sprintf("%040x", 3)
+	for _, test := range []struct {
+		name   string
+		stdout string
+		want   []PullRequestCommit
+	}{
+		{
+			name:   "within page",
+			stdout: fmt.Sprintf(`[{"sha":%q},{"sha":%q},{"sha":%q}]`, sha1, sha2, sha1),
+			want:   []PullRequestCommit{{SHA: sha1}, {SHA: sha2}},
+		},
+		{
+			name:   "page boundary",
+			stdout: fmt.Sprintf("[{\"sha\":%q},{\"sha\":%q}]\n[{\"sha\":%q},{\"sha\":%q}]", sha1, sha2, sha2, sha3),
+			want:   []PullRequestCommit{{SHA: sha1}, {SHA: sha2}, {SHA: sha3}},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &sequenceCLIRunner{results: []ExternalCLIResult{{Stdout: []byte(test.stdout)}}}
+			backend := newTestGHBackend(t, "github.com", runner)
+
+			commits, err := backend.ListPullRequestCommits(context.Background(), "owner/repo", 7)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(commits, test.want) {
+				t.Fatalf("commits = %+v, want provider-order unique %+v", commits, test.want)
+			}
+		})
+	}
+}
+
+func TestGHBackendListPullRequestCommitsRejectsInvalidProviderData(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		stdout string
+	}{
+		{name: "empty SHA", stdout: `[{"sha":""}]`},
+		{name: "short SHA", stdout: `[{"sha":"abc123"}]`},
+		{name: "non hex SHA", stdout: `[{"sha":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}]`},
+		{name: "whitespace SHA", stdout: `[{"sha":" 0000000000000000000000000000000000000001"}]`},
+		{name: "malformed JSON", stdout: `[{"sha":`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &sequenceCLIRunner{results: []ExternalCLIResult{{Stdout: []byte(test.stdout)}}}
+			backend := newTestGHBackend(t, "github.com", runner)
+			commits, err := backend.ListPullRequestCommits(context.Background(), "owner/repo", 7)
+			if err == nil {
+				t.Fatalf("commits = %+v, want fail-closed error", commits)
+			}
+			if commits != nil {
+				t.Fatalf("commits = %+v, want nil on provider data error", commits)
+			}
+		})
+	}
+}
+
+func TestGHBackendListPullRequestCommitsPropagatesCommandError(t *testing.T) {
+	runner := &sequenceCLIRunner{
+		results: []ExternalCLIResult{{Stderr: []byte("request failed"), ExitCode: 1}},
+		errs:    []error{errors.New("exit status 1")},
+	}
+	backend := newTestGHBackend(t, "github.com", runner)
+
+	commits, err := backend.ListPullRequestCommits(context.Background(), "owner/repo", 7)
+	if err == nil || !strings.Contains(err.Error(), "ListPullRequestCommits") || !strings.Contains(err.Error(), "request failed") {
+		t.Fatalf("commits = %+v error = %v, want command context", commits, err)
+	}
+	if commits != nil {
+		t.Fatalf("commits = %+v, want nil on command error", commits)
 	}
 }
 

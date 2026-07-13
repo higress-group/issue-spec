@@ -23,6 +23,24 @@ import (
 	"github.com/higress-group/issue-spec/internal/workspace"
 )
 
+var testBindingRoot string
+
+func TestMain(m *testing.M) {
+	root, err := os.MkdirTemp("", "issue-spec-jobs-bindings-*")
+	if err != nil {
+		panic(err)
+	}
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		_ = os.RemoveAll(root)
+		panic(err)
+	}
+	testBindingRoot = filepath.Clean(canonical)
+	code := m.Run()
+	_ = os.RemoveAll(testBindingRoot)
+	os.Exit(code)
+}
+
 func TestRunNextNewCreatesSessionMappingAndCompletionWriteback(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC)
@@ -165,7 +183,7 @@ func TestRunNextRecordsResidualWorkspaceLockRecoveryDiagnostic(t *testing.T) {
 func TestRunNextResumeReusesSessionMappingAndWorkspace(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 11, 0, 0, 0, time.UTC)
-	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-existing", Path: "/tmp/ws-existing", Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-existing", RepositoryBinding: testRepositoryBinding()}
+	resumeWorkspace := testBinding("ws-existing").Workspace
 	seedState(t, store, func(st *state.RunnerState) error {
 		if err := st.UpsertWorkspace(resumeWorkspace); err != nil {
 			return err
@@ -284,6 +302,9 @@ func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing
 	now := time.Date(2026, 7, 3, 11, 30, 0, 0, time.UTC)
 	workspaceRoot := t.TempDir()
 	workspacePath := filepath.Join(workspaceRoot, "workspace")
+	if err := os.Mkdir(workspacePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	binding := workspace.Binding{
 		Workspace:            state.WorkspaceMetadata{ID: "ws-stable", Path: workspacePath, Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-stable"},
 		AcpxWorkingDirectory: workspacePath,
@@ -325,6 +346,10 @@ func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing
 	dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
 	dispatcher.Sandbox = sandbox
 	dispatcher.PublicSessionID = func() (string, error) { return "ps-stable", nil }
+	dispatcher.CoordinatorExtraEnv = map[string]string{
+		workspace.ProcessIntegrationRootEnv: "/operator/must-not-win",
+		workspace.ProcessWorkspaceRootEnv:   "/operator/must-not-win",
+	}
 
 	if result, err := dispatcher.RunNext(context.Background()); err != nil || result.Status != state.StatusCompleted {
 		t.Fatalf("new RunNext result=%+v err=%v", result, err)
@@ -361,7 +386,22 @@ func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing
 	if len(sandbox.requests) != 2 {
 		t.Fatalf("sandbox request count = %d, want 2", len(sandbox.requests))
 	}
+	if len(coordinator.newPrompts) != 1 || len(coordinator.resumePrompts) != 1 {
+		t.Fatalf("runner must dispatch exactly one ACPX coordinator turn per job, not child ACPX sessions: new=%d resume=%d", len(coordinator.newPrompts), len(coordinator.resumePrompts))
+	}
 	newReq, resumeReq := sandbox.requests[0], sandbox.requests[1]
+	for phase, req := range map[string]SandboxRequest{"new": newReq, "resume": resumeReq} {
+		if req.WorkspacePath != workspacePath || req.AcpxWorkingDirectory != workspacePath {
+			t.Fatalf("%s coordinator escaped session clone: workspace=%q cwd=%q want=%q", phase, req.WorkspacePath, req.AcpxWorkingDirectory, workspacePath)
+		}
+		if req.ProcessWorkspaceRoot == "" || req.ExtraEnv[workspace.ProcessIntegrationRootEnv] != workspacePath || req.ExtraEnv[workspace.ProcessWorkspaceRootEnv] != req.ProcessWorkspaceRoot {
+			t.Fatalf("%s runner-owned PROCESS paths not injected: %+v", phase, req)
+		}
+		assertPathOutsideRoot(t, workspacePath, req.ProcessWorkspaceRoot)
+	}
+	if newReq.ProcessWorkspaceRoot != resumeReq.ProcessWorkspaceRoot {
+		t.Fatalf("PROCESS workspace pool changed across resume: new=%q resume=%q", newReq.ProcessWorkspaceRoot, resumeReq.ProcessWorkspaceRoot)
+	}
 	for name, pair := range map[string][2]string{
 		"HOME":            {newReq.RuntimeHome, resumeReq.RuntimeHome},
 		"GH_CONFIG_DIR":   {newReq.RuntimeGHConfigDir, resumeReq.RuntimeGHConfigDir},
@@ -386,7 +426,7 @@ func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing
 	}
 }
 
-func TestRunNextResumeUsesStoredAcpxCWDForRuntimeCompatibility(t *testing.T) {
+func TestRunNextResumeKeepsCoordinatorInSessionClone(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 11, 45, 0, 0, time.UTC)
 	realRoot := t.TempDir()
@@ -461,18 +501,18 @@ func TestRunNextResumeUsesStoredAcpxCWDForRuntimeCompatibility(t *testing.T) {
 		t.Fatalf("sandbox request count = %d, want 1", len(sandbox.requests))
 	}
 	req := sandbox.requests[0]
-	if req.WorkspacePath != legacyPath {
-		t.Fatalf("sandbox workspace path = %q, want stored cwd %q", req.WorkspacePath, legacyPath)
+	if req.WorkspacePath != canonicalPath {
+		t.Fatalf("sandbox workspace path = %q, want session clone %q", req.WorkspacePath, canonicalPath)
 	}
-	if req.AcpxWorkingDirectory != legacyPath {
-		t.Fatalf("acpx working directory = %q, want stored cwd %q", req.AcpxWorkingDirectory, legacyPath)
+	if req.AcpxWorkingDirectory != canonicalPath {
+		t.Fatalf("acpx working directory = %q, want session clone %q", req.AcpxWorkingDirectory, canonicalPath)
 	}
-	wantRoot, err := stableSessionRuntimeRoot(legacyPath, "o/r", "ps-existing")
+	wantRoot, err := stableSessionRuntimeRoot(canonicalPath, "o/r", "ps-existing")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if req.RuntimeHome != filepath.Join(wantRoot, "home") {
-		t.Fatalf("runtime HOME = %q, want legacy cwd root %q", req.RuntimeHome, filepath.Join(wantRoot, "home"))
+		t.Fatalf("runtime HOME = %q, want session clone root %q", req.RuntimeHome, filepath.Join(wantRoot, "home"))
 	}
 }
 
@@ -496,6 +536,129 @@ func TestStableSessionRuntimePathsSeparatePublicSessions(t *testing.T) {
 	for _, path := range []string{left.home, left.ghConfigDir, left.xdgConfigHome, left.codexHome, right.home, right.ghConfigDir, right.xdgConfigHome, right.codexHome} {
 		assertPathOutsideRoot(t, workspacePath, path)
 		assertPathInsideRoot(t, filepath.Join(workspaceRoot, ".sessions"), path)
+	}
+}
+
+func TestPrepareSessionProcessWorkspaceRootIsStablePrivateAndSessionScoped(t *testing.T) {
+	runnerRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := filepath.Join(runnerRoot, "session-clone")
+	if err := os.Mkdir(clone, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	left, err := prepareSessionProcessWorkspaceRoot(clone, "o/r", "ps-left")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := prepareSessionProcessWorkspaceRoot(clone, "o/r", "ps-left")
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := prepareSessionProcessWorkspaceRoot(clone, "o/r", "ps-right")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left != again || left == right {
+		t.Fatalf("pool isolation/stability failed: left=%q again=%q right=%q", left, again, right)
+	}
+	if filepath.Dir(filepath.Dir(left)) != runnerRoot || filepath.Base(filepath.Dir(left)) != processWorkspacePoolDir {
+		t.Fatalf("pool %q is not under the controlled sibling root %q", left, runnerRoot)
+	}
+	info, err := os.Stat(left)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("pool is not a private directory: info=%v err=%v", info, err)
+	}
+}
+
+func TestPrepareSessionProcessWorkspaceRootRejectsSymlinkPoolBase(t *testing.T) {
+	runnerRoot := t.TempDir()
+	clone := filepath.Join(runnerRoot, "session-clone")
+	if err := os.Mkdir(clone, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(runnerRoot, processWorkspacePoolDir)); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if _, err := prepareSessionProcessWorkspaceRoot(clone, "o/r", "ps-1"); err == nil {
+		t.Fatal("expected symlink pool base to be rejected")
+	}
+}
+
+func TestCoordinatorForStoredJobKeepsSessionCloneAndRunnerOwnedProcessAuthority(t *testing.T) {
+	runnerRoot := t.TempDir()
+	clone := filepath.Join(runnerRoot, "session-clone")
+	if err := os.Mkdir(clone, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	dispatcher := Dispatcher{
+		Sandbox:         sandbox,
+		Acpx:            fakeAcpxFactory{coordinator: &fakeCoordinator{}},
+		IssueSpecBinary: "/opt/issue-spec/bin/issue-spec",
+		CoordinatorExtraEnv: map[string]string{
+			workspace.ProcessIntegrationRootEnv: "/operator/must-not-win",
+			workspace.ProcessWorkspaceRootEnv:   "/operator/must-not-win",
+		},
+	}
+	_, err := dispatcher.coordinatorForStoredJob(context.Background(), state.Job{
+		ID: "job-reconcile", Repo: "o/r", PublicSessionID: "ps-reconcile", CoordinatorKind: "codex",
+		Workspace: state.WorkspaceMetadata{Path: clone},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sandbox.requests) != 1 {
+		t.Fatalf("sandbox request count = %d, want 1", len(sandbox.requests))
+	}
+	req := sandbox.requests[0]
+	if req.WorkspacePath != clone || req.AcpxWorkingDirectory != clone || req.IssueSpecBinary != dispatcher.IssueSpecBinary || req.ProcessWorkspaceRoot == "" {
+		t.Fatalf("restart coordinator escaped session clone or lost CLI capability: %+v", req)
+	}
+	if req.ExtraEnv[workspace.ProcessIntegrationRootEnv] != clone || req.ExtraEnv[workspace.ProcessWorkspaceRootEnv] != req.ProcessWorkspaceRoot {
+		t.Fatalf("restart coordinator missing runner-owned PROCESS authority: %+v", req.ExtraEnv)
+	}
+}
+
+func TestSandboxRunnerRejectsPreconfiguredWritableBindsAndUsesOnlyCurrentPool(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := filepath.Join(root, "session")
+	current := filepath.Join(root, "current-pool")
+	sibling := filepath.Join(root, "sibling-pool")
+	home := filepath.Join(root, "home")
+	gh := filepath.Join(root, "gh")
+	xdg := filepath.Join(root, "xdg")
+	codex := filepath.Join(root, "codex")
+	hostGH := filepath.Join(root, "host-gh")
+	for _, dir := range []string{clone, current, sibling, home, gh, xdg, codex, hostGH} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := SandboxRequest{
+		WorkspacePath: clone, AcpxWorkingDirectory: clone, ProcessWorkspaceRoot: current,
+		RuntimeHome: home, RuntimeGHConfigDir: gh, RuntimeXDGConfigHome: xdg, RuntimeCodexHome: codex,
+	}
+	_, _, _, err = (SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: true, WritableBinds: []string{sibling}}}).config(request)
+	if !errors.Is(err, sandbox.ErrSandboxConfigInvalid) {
+		t.Fatalf("preconfigured sibling RW bind error = %v, want invalid config", err)
+	}
+	cfg, _, _, err := (SandboxRunner{Config: sandbox.Config{
+		UnsafeNoSandbox: true, HostEnv: []string{}, HostGHConfigDir: hostGH,
+	}}).config(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.WritableBinds) != 1 || cfg.WritableBinds[0] != current {
+		t.Fatalf("writable binds = %v, want current pool only %q", cfg.WritableBinds, current)
 	}
 }
 
@@ -1095,7 +1258,7 @@ func TestRunReadyWithCapStartsDifferentPublicSessionsTogether(t *testing.T) {
 func TestRunReadySameSessionPreservesFIFO(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 13, 0, 0, 0, time.UTC)
-	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-same-session", Path: "/tmp/ws-same-session", Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-same-session", RepositoryBinding: testRepositoryBinding()}
+	resumeWorkspace := testBinding("ws-same-session").Workspace
 	seedState(t, store, func(st *state.RunnerState) error {
 		if err := st.UpsertWorkspace(resumeWorkspace); err != nil {
 			return err
@@ -2125,7 +2288,15 @@ func stringSliceContains(values []string, want string) bool {
 }
 
 func testBinding(id string) workspace.Binding {
-	path := "/tmp/" + id
+	path := filepath.Join(testBindingRoot, id)
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		panic(err)
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		panic(err)
+	}
+	path = filepath.Clean(canonical)
 	return workspace.Binding{
 		Workspace:            state.WorkspaceMetadata{ID: id, Path: path, Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-" + id, Ref: "main", RepositoryBinding: testRepositoryBinding()},
 		AcpxWorkingDirectory: path,

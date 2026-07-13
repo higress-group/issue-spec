@@ -38,7 +38,6 @@ var ErrNoReadyJob = errors.New("no ready queued job")
 const workspaceLockResidualDiagnostic = "workspace lock recovered from residual lock file"
 
 var errDispatchCancelled = errors.New("runner job was cancelled during dispatch")
-
 var authDiagnosticSecretPattern = regexp.MustCompile(`(?i)(["']?[a-z0-9_]*(?:token|secret)[a-z0-9_]*["']?\s*[:=]\s*["']?)([^"',\s}]+)`)
 
 type Store interface {
@@ -76,6 +75,8 @@ type SandboxRequest struct {
 	FileCapabilities     []sandbox.FileCapability
 	ChildProfile         *clientauth.Profile
 	AcpxAgent            string
+	WorkspaceReadOnly    bool
+	ProcessWorkspaceRoot string
 }
 
 type ExecutionEnvironment struct {
@@ -633,7 +634,7 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 			return d.fail(ctx, job.ID, "evidence-pre-gate", errors.New("delegated evidence credential is unavailable"))
 		}
 		identity, err := d.EvidencePreGate.BeforeDispatch(ctx, EvidencePreGateRequest{Repo: job.Repo,
-			IssueNumber: job.IssueNumber, WorkflowRoot: binding.Workspace.Path,
+			IssueNumber: job.IssueNumber, WorkflowRoot: firstNonEmpty(binding.AcpxWorkingDirectory, binding.Workspace.Path),
 			CredentialFile: credentialLease.IssueToken.HostPath})
 		if err != nil {
 			return d.fail(ctx, job.ID, "evidence-pre-gate", err)
@@ -863,7 +864,8 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
-	execBinding, err := resumeExecutionBinding(command, binding, session)
+	execBinding := binding
+	execBinding, err = resumeExecutionBinding(command, binding, session)
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
@@ -888,7 +890,7 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 			Repo:             job.Repo,
 			Issue:            job.IssueNumber,
 			TriggerCommentID: job.TriggerCommentID,
-			WorkspacePath:    execBinding.Workspace.Path,
+			WorkspacePath:    firstNonEmpty(execBinding.AcpxWorkingDirectory, execBinding.Workspace.Path),
 			CloneURL:         firstNonEmpty(execBinding.Workspace.CloneURL, repo.CloneURL),
 			Branch:           execBinding.Workspace.Branch,
 			Ref:              execBinding.Workspace.Ref,
@@ -911,21 +913,28 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
-	runtimePaths, err := stableSessionRuntimePaths(firstNonEmpty(execBinding.AcpxWorkingDirectory, execBinding.Workspace.Path, execBinding.SandboxWorkspacePath), job.Repo, publicID)
+	integrationRoot := firstNonEmpty(execBinding.AcpxWorkingDirectory, execBinding.Workspace.Path, execBinding.SandboxWorkspacePath)
+	runtimePaths, err := stableSessionRuntimePaths(integrationRoot, job.Repo, publicID)
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
+	processRoot, err := prepareSessionProcessWorkspaceRoot(integrationRoot, job.Repo, publicID)
+	if err != nil {
+		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
+	}
+	extraEnv := cloneStringMap(d.CoordinatorExtraEnv)
 	sandboxRequest := SandboxRequest{
 		WorkspacePath:        execBinding.SandboxWorkspacePath,
 		AcpxWorkingDirectory: execBinding.AcpxWorkingDirectory,
 		AcpxBinary:           firstNonEmpty(d.AcpxBinary, acpx.DefaultBinary),
 		IssueSpecBinary:      d.IssueSpecBinary,
-		ExtraEnv:             d.CoordinatorExtraEnv,
+		ExtraEnv:             extraEnv,
 		RuntimeHome:          runtimePaths.home,
 		RuntimeGHConfigDir:   runtimePaths.ghConfigDir,
 		RuntimeXDGConfigHome: runtimePaths.xdgConfigHome,
 		RuntimeCodexHome:     runtimePaths.codexHome,
 		AcpxAgent:            job.CoordinatorKind,
+		ProcessWorkspaceRoot: processRoot,
 	}
 	if lease != nil {
 		sandboxRequest.FileCapabilities = lease.FileCapabilities()
@@ -938,6 +947,10 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 			sandboxRequest.ExtraEnv[name] = value
 		}
 	}
+	// Runner-owned filesystem authority always wins over operator-provided or
+	// delegated environment entries.
+	sandboxRequest.ExtraEnv[workspace.ProcessIntegrationRootEnv] = integrationRoot
+	sandboxRequest.ExtraEnv[workspace.ProcessWorkspaceRootEnv] = processRoot
 	env, err := d.Sandbox.Prepare(ctx, sandboxRequest)
 	if err != nil {
 		return env, runnercontext.Bundle{}, "", err
@@ -1488,7 +1501,7 @@ func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error)
 			}
 		}
 		failed = next
-		return nil
+		return st.UpsertJob(next)
 	})
 	if updateErr != nil {
 		return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: safeError(updateErr)}, updateErr
@@ -1636,8 +1649,15 @@ func (p SandboxRunner) Prepare(ctx context.Context, req SandboxRequest) (Executi
 
 func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAuthMirrorResult, error) {
 	cfg := p.Config
+	if len(cfg.WritableBinds) != 0 {
+		return sandbox.Config{}, "", ghAuthMirrorResult{}, fmt.Errorf("%w: runner base writable binds are forbidden; only the current session PROCESS workspace pool may be exposed", sandbox.ErrSandboxConfigInvalid)
+	}
 	cfg.FileCapabilities = append([]sandbox.FileCapability(nil), req.FileCapabilities...)
 	cfg.WorkspacePath = firstNonEmpty(req.WorkspacePath, cfg.WorkspacePath)
+	cfg.WorkspaceReadOnly = req.WorkspaceReadOnly
+	if strings.TrimSpace(req.ProcessWorkspaceRoot) != "" {
+		cfg.WritableBinds = []string{filepath.Clean(req.ProcessWorkspaceRoot)}
+	}
 	cfg.TempHome = firstNonEmpty(req.RuntimeHome, cfg.TempHome)
 	cfg.TempGHConfigDir = firstNonEmpty(req.RuntimeGHConfigDir, cfg.TempGHConfigDir)
 	cfg.TempXDGConfigHome = firstNonEmpty(req.RuntimeXDGConfigHome, cfg.TempXDGConfigHome)
@@ -2029,6 +2049,103 @@ func stableSessionRuntimeRoot(workspacePath, repo, publicID string) (string, err
 	}
 	sum := sha256.Sum256([]byte(repo + "\x00" + publicID + "\x00" + cleanWorkspace))
 	return filepath.Join(runtimeBase, ".sessions", hex.EncodeToString(sum[:16])), nil
+}
+
+const processWorkspacePoolDir = ".process-workspaces"
+
+// prepareSessionProcessWorkspaceRoot creates the one writable PROCESS pool a
+// coordinator may see. The pool is a sibling of the session clone, partitioned
+// by repository and public session identity; the runner root and sibling pools
+// are never returned as capabilities.
+func prepareSessionProcessWorkspaceRoot(workspacePath, repo, publicID string) (string, error) {
+	workspacePath = strings.TrimSpace(workspacePath)
+	repo = strings.TrimSpace(repo)
+	publicID = strings.TrimSpace(publicID)
+	if workspacePath == "" || repo == "" || publicID == "" {
+		return "", fmt.Errorf("session clone, repo, and public session id are required for PROCESS workspace pool")
+	}
+	absWorkspace, err := filepath.Abs(workspacePath)
+	if err != nil {
+		return "", fmt.Errorf("resolve session clone: %w", err)
+	}
+	absWorkspace = filepath.Clean(absWorkspace)
+	canonicalWorkspace, err := filepath.EvalSymlinks(absWorkspace)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize session clone: %w", err)
+	}
+	canonicalWorkspace = filepath.Clean(canonicalWorkspace)
+	if canonicalWorkspace == string(os.PathSeparator) {
+		return "", fmt.Errorf("session clone cannot be filesystem root")
+	}
+	info, err := os.Stat(canonicalWorkspace)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("session clone must be an existing directory: %s", canonicalWorkspace)
+	}
+	parent := filepath.Dir(canonicalWorkspace)
+	if parent == string(os.PathSeparator) || parent == canonicalWorkspace {
+		return "", fmt.Errorf("session clone must be below a controlled runner root")
+	}
+	base, err := preparePrivateCanonicalDir(filepath.Join(parent, processWorkspacePoolDir))
+	if err != nil {
+		return "", fmt.Errorf("prepare PROCESS workspace pool base: %w", err)
+	}
+	sum := sha256.Sum256([]byte(repo + "\x00" + publicID + "\x00" + canonicalWorkspace))
+	pool, err := preparePrivateCanonicalDir(filepath.Join(base, hex.EncodeToString(sum[:16])))
+	if err != nil {
+		return "", fmt.Errorf("prepare PROCESS workspace pool: %w", err)
+	}
+	if pathsOverlapForSessionPool(canonicalWorkspace, pool) {
+		return "", fmt.Errorf("PROCESS workspace pool %s overlaps session clone %s", pool, canonicalWorkspace)
+	}
+	return pool, nil
+}
+
+func preparePrivateCanonicalDir(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("path must be absolute: %s", path)
+	}
+	path = filepath.Clean(path)
+	if path == string(os.PathSeparator) {
+		return "", fmt.Errorf("filesystem root is not a valid pool")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		if err := os.Mkdir(path, 0o700); err != nil && !os.IsExist(err) {
+			return "", err
+		}
+		info, err = os.Lstat(path)
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", fmt.Errorf("path must be a non-symlink directory: %s", path)
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		return "", err
+	}
+	info, err = os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		return "", fmt.Errorf("private permissions unavailable for PROCESS workspace pool directory: %s", path)
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil || filepath.Clean(canonical) != path {
+		return "", fmt.Errorf("path must be canonical and contain no symlink traversal: %s", path)
+	}
+	return path, nil
+}
+
+func pathsOverlapForSessionPool(left, right string) bool {
+	left, right = filepath.Clean(left), filepath.Clean(right)
+	return left == right || strings.HasPrefix(left, right+string(os.PathSeparator)) || strings.HasPrefix(right, left+string(os.PathSeparator))
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	clone := make(map[string]string, len(values)+2)
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
 }
 
 func (r ghAuthMirrorResult) diagnostic() string {

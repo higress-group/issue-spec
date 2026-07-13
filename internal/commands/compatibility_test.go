@@ -288,6 +288,8 @@ func TestCompatibilityCLIAndSandboxCrossCompileWithoutCgo(t *testing.T) {
 		{name: "sandbox-linux", pkg: "./internal/sandbox", goos: "linux"},
 		{name: "sandbox-darwin", pkg: "./internal/sandbox", goos: "darwin"},
 		{name: "sandbox-windows", pkg: "./internal/sandbox", goos: "windows"},
+		{name: "process-workspace-linux", pkg: "./internal/processworkspace", goos: "linux"},
+		{name: "process-workspace-windows", pkg: "./internal/processworkspace", goos: "windows"},
 	}
 	for _, target := range targets {
 		t.Run(target.name, func(t *testing.T) {
@@ -315,6 +317,24 @@ func TestCompatibilityCLIAndSandboxCrossCompileWithoutCgo(t *testing.T) {
 	}
 	if !strings.Contains(string(linuxImpl), "//go:build linux") || !strings.Contains(string(unsupportedImpl), "//go:build !linux") {
 		t.Fatal("sandbox bwrap implementations must keep explicit Linux and non-Linux build tags")
+	}
+
+	unixLock, err := os.ReadFile(filepath.Join(root, "internal", "processworkspace", "store_lock_unix.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowsLock, err := os.ReadFile(filepath.Join(root, "internal", "processworkspace", "store_lock_windows.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsupportedLock, err := os.ReadFile(filepath.Join(root, "internal", "processworkspace", "store_lock_unsupported.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(unixLock), "//go:build") || !strings.Contains(string(windowsLock), "//go:build windows") ||
+		!strings.Contains(string(windowsLock), "windows.LockFileEx") || !strings.Contains(string(windowsLock), "windows.UnlockFileEx") ||
+		!strings.Contains(string(unsupportedLock), "errRegistryLockUnsupported") {
+		t.Fatal("process workspace registry locking must keep real platform locks and fail closed when unsupported")
 	}
 }
 

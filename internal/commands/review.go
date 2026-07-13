@@ -642,6 +642,8 @@ type reviewFinding struct {
 	AgentSessionID     string `json:"agent_session_id,omitempty"`
 	AgentSessionSource string `json:"agent_session_source,omitempty"`
 	ResolvedByAgent    string `json:"resolved_by_agent,omitempty"`
+	SubjectRevision    string `json:"subject_revision,omitempty"`
+	RevisionSource     string `json:"revision_source,omitempty"`
 	Summary            string `json:"summary"`
 }
 
@@ -667,10 +669,13 @@ type reviewRationale struct {
 }
 
 type reviewCheck struct {
-	Name       string `json:"name"`
-	State      string `json:"state"`
-	Conclusion string `json:"conclusion,omitempty"`
-	URL        string `json:"url,omitempty"`
+	Name            string `json:"name"`
+	State           string `json:"state"`
+	Conclusion      string `json:"conclusion,omitempty"`
+	URL             string `json:"url,omitempty"`
+	SubjectRevision string `json:"subject_revision,omitempty"`
+	Trusted         bool   `json:"trusted"`
+	Source          string `json:"source,omitempty"`
 }
 
 func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRequestReviewComment, issueComments []github.Comment, status github.CombinedStatus, checkRuns []github.CheckRun) reviewSyncReport {
@@ -686,6 +691,8 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 	}
 	resolvedByParent := map[int64]bool{}
 	resolutionAgentByParent := map[int64]string{}
+	resolutionRevisionByParent := map[int64]string{}
+	resolutionSourceByParent := map[int64]string{}
 	for _, comment := range reviewComments {
 		reply, ok, err := model.FindFindingReplyMarker(comment.Body)
 		if err != nil || !ok || !model.IsTerminalFindingStatus(reply.Status) {
@@ -704,6 +711,8 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 		}
 		resolvedByParent[comment.InReplyToID] = true
 		resolutionAgentByParent[comment.InReplyToID] = reply.Agent
+		resolutionRevisionByParent[comment.InReplyToID] = strings.TrimSpace(comment.CommitID)
+		resolutionSourceByParent[comment.InReplyToID] = fmt.Sprintf("github-pr-review-comment:%d", comment.ID)
 	}
 	for _, comment := range reviewComments {
 		if rationale, ok, err := model.FindRationaleMarker(comment.Body); err == nil && ok {
@@ -759,8 +768,12 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 				item.Status = "resolved"
 				if resolver := resolutionAgentByParent[comment.ID]; resolver != "" {
 					item.ResolvedByAgent = resolver
+					item.SubjectRevision = resolutionRevisionByParent[comment.ID]
+					item.RevisionSource = resolutionSourceByParent[comment.ID]
 				} else {
 					item.ResolvedByAgent = finding.Agent
+					item.SubjectRevision = strings.TrimSpace(comment.CommitID)
+					item.RevisionSource = fmt.Sprintf("github-pr-review-comment:%d", comment.ID)
 				}
 				report.ResolvedFindings = append(report.ResolvedFindings, item)
 				continue
@@ -787,7 +800,10 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 		}
 	}
 	for _, s := range status.Statuses {
-		check := reviewCheck{Name: s.Context, State: s.State, URL: s.TargetURL}
+		// Commit statuses are returned for a requested SHA, but the status object
+		// itself carries no revision. PR head context is an expectation, not a
+		// provider-owned carrier fact, so status contexts remain untrusted.
+		check := reviewCheck{Name: s.Context, State: s.State, URL: s.TargetURL, Source: "github-status-context"}
 		if s.State == "success" {
 			report.PassedChecks = append(report.PassedChecks, check)
 		} else if s.State == "pending" {
@@ -797,7 +813,9 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 		}
 	}
 	for _, run := range checkRuns {
-		check := reviewCheck{Name: run.Name, State: run.Status, Conclusion: run.Conclusion, URL: firstNonEmpty(run.DetailsURL, run.HTMLURL)}
+		check := reviewCheck{Name: run.Name, State: run.Status, Conclusion: run.Conclusion,
+			URL: firstNonEmpty(run.DetailsURL, run.HTMLURL), SubjectRevision: strings.TrimSpace(run.HeadSHA),
+			Trusted: strings.TrimSpace(run.HeadSHA) != "", Source: fmt.Sprintf("github-check-run:%d", run.ID)}
 		if run.Status != "completed" {
 			report.PendingChecks = append(report.PendingChecks, check)
 			continue

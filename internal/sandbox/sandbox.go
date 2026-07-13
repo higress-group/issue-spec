@@ -51,9 +51,26 @@ var defaultEnvAllowlist = []string{
 	"CLAUDE_CODE_EFFORT_LEVEL",
 }
 var proxyEnvNames = []string{"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY"}
+var defaultSystemReadOnlyBindPaths = []string{
+	"/usr",
+	"/bin",
+	"/lib",
+	"/lib64",
+	"/etc/ssl/certs",
+	"/etc/pki",
+	"/etc/alternatives",
+	"/etc/resolv.conf",
+	"/etc/hosts",
+	"/etc/nsswitch.conf",
+}
 
 type Config struct {
 	UnsafeNoSandbox bool
+	// WorkspaceReadOnly makes the assigned checkout immutable inside the
+	// filesystem sandbox. In explicit unsafe-no-sandbox mode this boundary is
+	// disabled and Metadata reports that fact; callers must treat dirty evidence
+	// as invalid.
+	WorkspaceReadOnly bool
 
 	BwrapPath       string
 	MinBwrapVersion string
@@ -76,7 +93,11 @@ type Config struct {
 	DisableProxyEnv     bool
 	SystemReadOnlyBinds []string
 	ReadOnlyBinds       []string
-	FileCapabilities    []FileCapability
+	// WritableBinds are narrowly-scoped, existing host directories exposed at
+	// the same absolute path. They are validated strictly and must not overlap
+	// the coordinator checkout or another declared mount.
+	WritableBinds    []string
+	FileCapabilities []FileCapability
 }
 
 // FileCapability is a broker-owned, read-only file exposed at a fixed path.
@@ -192,6 +213,9 @@ func Preflight(ctx context.Context, cfg Config, deps Dependencies) (Metadata, er
 	if err := validateFileCapabilities(cfg.FileCapabilities); err != nil {
 		return Metadata{}, err
 	}
+	if _, err := validatedWritableBinds(cfg); err != nil {
+		return Metadata{}, err
+	}
 	if err := validateHostSSHConfig(cfg); err != nil {
 		return Metadata{}, err
 	}
@@ -207,6 +231,9 @@ func Prepare(ctx context.Context, cfg Config, target Command, deps Dependencies)
 		return PreparedCommand{}, fmt.Errorf("%w: target binary is required", ErrSandboxConfigInvalid)
 	}
 	if err := validateFileCapabilities(cfg.FileCapabilities); err != nil {
+		return PreparedCommand{}, err
+	}
+	if _, err := validatedWritableBinds(cfg); err != nil {
 		return PreparedCommand{}, err
 	}
 	if err := validateHostSSHConfig(cfg); err != nil {
@@ -382,6 +409,84 @@ func validateFileCapabilities(capabilities []FileCapability) error {
 		seenEnv[capability.EnvName] = true
 	}
 	return nil
+}
+
+func validatedWritableBinds(cfg Config) ([]string, error) {
+	workspace := filepath.Clean(strings.TrimSpace(cfg.WorkspacePath))
+	if len(cfg.WritableBinds) > 0 && workspace != "." {
+		if !filepath.IsAbs(workspace) {
+			return nil, fmt.Errorf("%w: workspace path must be absolute when writable binds are declared: %s", ErrSandboxConfigInvalid, workspace)
+		}
+		canonicalWorkspace, err := filepath.EvalSymlinks(workspace)
+		if err != nil {
+			return nil, fmt.Errorf("%w: workspace path must be canonicalizable when writable binds are declared: %s", ErrSandboxConfigInvalid, workspace)
+		}
+		workspace = filepath.Clean(canonicalWorkspace)
+	}
+	reserved := []string{workspace, cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome, cfg.HostSSHDir, cfg.HostSSHAgentSocket}
+	reserved = append(reserved, cfg.ReadOnlyBinds...)
+	systemBinds := cfg.SystemReadOnlyBinds
+	if len(systemBinds) == 0 {
+		systemBinds = defaultSystemReadOnlyBindPaths
+	}
+	reserved = append(reserved, systemBinds...)
+	for i, path := range reserved {
+		path = filepath.Clean(strings.TrimSpace(path))
+		if path == "." || !filepath.IsAbs(path) {
+			reserved[i] = path
+			continue
+		}
+		if canonical, err := filepath.EvalSymlinks(path); err == nil {
+			reserved[i] = filepath.Clean(canonical)
+		} else {
+			reserved[i] = path
+		}
+	}
+	var out []string
+	for _, raw := range cfg.WritableBinds {
+		raw = strings.TrimSpace(raw)
+		if raw == "" || !filepath.IsAbs(raw) {
+			return nil, fmt.Errorf("%w: writable bind must be an absolute path: %q", ErrSandboxConfigInvalid, raw)
+		}
+		clean := filepath.Clean(raw)
+		if clean == string(os.PathSeparator) {
+			return nil, fmt.Errorf("%w: filesystem root cannot be a writable bind", ErrSandboxConfigInvalid)
+		}
+		info, err := os.Lstat(clean)
+		if err != nil {
+			return nil, fmt.Errorf("%w: writable bind %s must exist: %v", ErrSandboxConfigInvalid, clean, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, fmt.Errorf("%w: writable bind %s must be a canonical directory", ErrSandboxConfigInvalid, clean)
+		}
+		canonical, err := filepath.EvalSymlinks(clean)
+		if err != nil || filepath.Clean(canonical) != clean {
+			return nil, fmt.Errorf("%w: writable bind %s must be canonical", ErrSandboxConfigInvalid, clean)
+		}
+		for _, existing := range append(append([]string{}, reserved...), out...) {
+			existing = filepath.Clean(strings.TrimSpace(existing))
+			if existing == "." || !filepath.IsAbs(existing) {
+				continue
+			}
+			if pathsOverlap(clean, existing) {
+				return nil, fmt.Errorf("%w: writable bind %s overlaps declared path %s", ErrSandboxConfigInvalid, clean, existing)
+			}
+		}
+		out = append(out, clean)
+	}
+	return out, nil
+}
+
+func pathsOverlap(left, right string) bool {
+	left, right = filepath.Clean(left), filepath.Clean(right)
+	return left == right || pathDescendsFrom(left, right) || pathDescendsFrom(right, left)
+}
+
+func pathDescendsFrom(root, candidate string) bool {
+	if root == string(os.PathSeparator) {
+		return candidate != root
+	}
+	return strings.HasPrefix(candidate, root+string(os.PathSeparator))
 }
 
 func validateHostSSHConfig(cfg Config) error {

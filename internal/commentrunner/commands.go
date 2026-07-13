@@ -77,7 +77,9 @@ type ParseResult struct {
 	Rejection CommandRejection `json:"rejection,omitempty"`
 }
 
-var publicSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$`)
+var (
+	publicSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$`)
+)
 
 func ParseCommandComment(comment TriggerComment) ParseResult {
 	body := strings.TrimLeftFunc(comment.Body, unicode.IsSpace)

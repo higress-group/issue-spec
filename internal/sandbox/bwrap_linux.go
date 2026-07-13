@@ -152,8 +152,12 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	}
 
 	workspacePath := filepath.Clean(cfg.WorkspacePath)
+	workspaceMode := "rw"
+	if cfg.WorkspaceReadOnly {
+		workspaceMode = "ro"
+	}
 	mounts := []Mount{
-		{Source: workspacePath, Destination: "/workspace", Mode: "rw"},
+		{Source: workspacePath, Destination: "/workspace", Mode: workspaceMode},
 		{Destination: "/tmp", Mode: "tmpfs"},
 		{Source: cfg.TempHome, Destination: "/tmp/issue-spec-home", Mode: "rw"},
 		{Source: cfg.TempGHConfigDir, Destination: "/tmp/issue-spec-gh", Mode: "rw"},
@@ -162,7 +166,11 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		{Destination: "/dev", Mode: "dev"},
 	}
 
-	args = append(args, "--bind", workspacePath, "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg", "--proc", "/proc", "--dev", "/dev")
+	workspaceBind := "--bind"
+	if cfg.WorkspaceReadOnly {
+		workspaceBind = "--ro-bind"
+	}
+	args = append(args, workspaceBind, workspacePath, "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg", "--proc", "/proc", "--dev", "/dev")
 	if sshDir := strings.TrimSpace(cfg.HostSSHDir); sshDir != "" {
 		sshDir = filepath.Clean(sshDir)
 		args = append(args, "--ro-bind", sshDir, HostSSHDirSandboxPath)
@@ -196,8 +204,8 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	}
 	if workspacePath != "/workspace" {
 		args, mounts = appendBindParentDirs(args, mounts, workspacePath, seenDirs, systemBinds)
-		args = append(args, "--bind", workspacePath, workspacePath)
-		mounts = append(mounts, Mount{Source: workspacePath, Destination: workspacePath, Mode: "rw"})
+		args = append(args, workspaceBind, workspacePath, workspacePath)
+		mounts = append(mounts, Mount{Source: workspacePath, Destination: workspacePath, Mode: workspaceMode})
 	}
 	// OpenSSH resolves ~/.ssh from the process user's passwd entry rather than
 	// the HOME environment. Keep the fixed temporary-HOME mount for tools that
@@ -214,6 +222,16 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	}
 	coveredRoots := append([]string{}, systemBinds...)
 	coveredRoots = append(coveredRoots, workspacePath)
+	writableBinds, err := validatedWritableBinds(cfg)
+	if err != nil {
+		return Command{}, nil, err
+	}
+	for _, bind := range writableBinds {
+		args, mounts = appendBindParentDirs(args, mounts, bind, seenDirs, coveredRoots)
+		args = append(args, "--bind", bind, bind)
+		mounts = append(mounts, Mount{Source: bind, Destination: bind, Mode: "rw"})
+		coveredRoots = append(coveredRoots, bind)
+	}
 	for _, bind := range readOnlyBinds(cfg) {
 		if coveredByMount(bind, coveredRoots) {
 			continue
@@ -319,18 +337,7 @@ func systemReadOnlyBinds(cfg Config) []string {
 		}
 		return sortedUnique(binds)
 	}
-	binds := []string{
-		"/usr",
-		"/bin",
-		"/lib",
-		"/lib64",
-		"/etc/ssl/certs",
-		"/etc/pki",
-		"/etc/alternatives",
-		"/etc/resolv.conf",
-		"/etc/hosts",
-		"/etc/nsswitch.conf",
-	}
+	binds := append([]string(nil), defaultSystemReadOnlyBindPaths...)
 	if strings.TrimSpace(cfg.HostSSHDir) != "" {
 		// Stock OpenSSH resolves the current account with getpwuid before it
 		// reads ~/.ssh. files-NSS needs passwd available inside bubblewrap.

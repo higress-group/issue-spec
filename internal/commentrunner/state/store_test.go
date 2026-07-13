@@ -315,6 +315,140 @@ func TestMissingAndCorruptFileBehavior(t *testing.T) {
 	}
 }
 
+func TestRunnerStateV6DropsLegacyProcessAssignmentAndRestoresCoordinatorCWD(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	legacy := `{
+  "schema_version": 6,
+  "jobs": {
+    "job-legacy": {
+      "id": "job-legacy",
+      "status": "running",
+      "exact_process_id": "PROCESS-008",
+      "workspace": {"id":"session","path":"/runner/sessions/session","repo":"o/r"},
+      "acpx": {"stable_record_id":"record-1","cwd":"/runner/process/PROCESS-008"},
+      "process_workspace_assignment": {
+        "process_id":"PROCESS-008","workspace_id":"process-008","reservation_id":"reservation:old",
+        "association_generation":1,"reservation_identity":"identity:0123456789abcdef0123456789abcdef"
+      }
+    }
+  },
+  "public_sessions": {
+    "o/r#session": {
+      "repo":"o/r","public_session_id":"session","status":"running",
+      "workspace":{"id":"session","path":"/runner/sessions/session","repo":"o/r"},
+      "acpx":{"stable_record_id":"record-1","cwd":"/runner/process/PROCESS-008"}
+    }
+  },
+  "process_workspaces": {"schema_version":2,"by_workspace":{}}
+}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SchemaVersion != SchemaVersion || loaded.Jobs["job-legacy"].Acpx.CWD != "/runner/sessions/session" ||
+		loaded.PublicSessions["o/r#session"].Acpx.CWD != "/runner/sessions/session" {
+		t.Fatalf("legacy coordinator cwd was not restored to the session clone: %+v", loaded)
+	}
+	if err := SaveFile(path, loaded); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized := string(data)
+	for _, removed := range []string{"exact_process_id", "process_workspace_assignment", "process_workspaces", "/runner/process/PROCESS-008"} {
+		if strings.Contains(serialized, removed) {
+			t.Fatalf("legacy runner PROCESS field %q survived resave:\n%s", removed, serialized)
+		}
+	}
+}
+
+func TestRunnerStateV5MigrationPreservesJobs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	legacy := `{"schema_version":5,"jobs":{"job-legacy":{"id":"job-legacy","status":"queued"}},"repositories":{}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SchemaVersion != SchemaVersion || loaded.Jobs["job-legacy"].ID != "job-legacy" {
+		t.Fatalf("v5 migration lost state: %+v", loaded)
+	}
+	if err := SaveFile(path, loaded); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := LoadFile(path)
+	if err != nil || reloaded.Jobs["job-legacy"].ID != "job-legacy" {
+		t.Fatalf("reopen after migration=%+v err=%v", reloaded, err)
+	}
+}
+
+func TestRunnerStateFutureSchemaAndUnknownTopLevelFieldsFailClosed(t *testing.T) {
+	tests := map[string][]byte{
+		"future runner":   []byte(`{"schema_version":7}`),
+		"unknown current": []byte(`{"schema_version":6,"future_process_store":{}}`),
+	}
+	for name, data := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.json")
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadFile(path); !errors.Is(err, ErrCorrupt) {
+				t.Fatalf("corrupt state err=%v", err)
+			}
+		})
+	}
+}
+
+func TestFileStoreUpdateFailureHasNoPartialWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store, err := OpenFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Save(context.Background(), NewState()); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentinel := errors.New("mutation rejected")
+	err = store.Update(context.Background(), func(state *RunnerState) error {
+		state.Jobs["partial"] = Job{ID: "partial", Status: StatusQueued}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("update err=%v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("failed update changed durable bytes")
+	}
+}
+
+func TestJobUnknownJSONFieldFailsClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	raw := `{"schema_version":6,"jobs":{"job-1":{"id":"job-1","exact_process_id":"PROCESS-008","future_process_target":"PROCESS-009"}},"process_workspaces":{"schema_version":2,"by_workspace":{}}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFile(path); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("unknown job JSON error=%v", err)
+	}
+}
+
 func TestLockContention(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	first, err := OpenFileStore(path)
