@@ -44,14 +44,14 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 		"coordinator owns every PROCESS workspace lifecycle operation",
 		"review and verification use detached immutable workflow snapshots and fail closed when dirty",
 		"external uses mode none", "consumed provider-neutral exact-revision evidence",
-		"exactly one ACPX coordinator", "keeps its cwd and primary sandbox workspace at the public session clone",
+		"single runner-managed coordinator session", "supplied session checkout", "otherwise operate standalone",
 		"ISSUE_SPEC_PROCESS_INTEGRATION_ROOT", "ISSUE_SPEC_PROCESS_WORKSPACE_ROOT",
-		"runtime's native child/subagent facility", "exact worktree path, branch, write ownership, PROCESS id",
-		"native child is not an ACPX session", "does not launch nested ACPX or claim a separate per-child OS sandbox",
-		"children share the coordinator's outer sandbox", "unsafe-no-sandbox has no filesystem isolation",
+		"current runtime native child/subagent facility", "exact worktree path, branch, write ownership, PROCESS id",
+		"runtime-native child is not a coordinator session", "does not launch a nested coordinator session or claim a separate per-child OS sandbox",
+		"children share the runner-managed coordinator session's outer sandbox", "unsafe-no-sandbox has no filesystem isolation",
 		"result commit", "runs complete and integrate",
-		"top-level runner recovers only the ACPX/session job", "inspects or reconciles the exact PROCESS lease",
-		"session-clone retention cleanup consults git worktree list", "retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails",
+		"runtime recovers only the runner-managed coordinator session", "inspects or reconciles the exact PROCESS lease",
+		"Runner-managed session retention cleanup consults git worktree list", "retaining the session checkout when runtime metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails",
 		"does not own, persist, or retry child PROCESS cleanup",
 		"workflow workspace cleanup is always an explicit owner-token-authorized destructive operation",
 		"does not decide or enforce integration/retention eligibility for its caller",
@@ -76,7 +76,7 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 		}
 	}
 	apply := skillContent(t, skills, "issue-spec-apply")
-	for _, want := range []string{"--gate implement", "doctor agent", "execution_class", "only for change-bearing", "same digest/checkpoint", "workspace prepare, inspect, complete, integrate, reconcile, and cleanup", "single ACPX coordinator stays in the public session clone", "runner command intake never accepts a PROCESS selector", "coordinator owns every PROCESS workspace lifecycle operation", "runtime's native child/subagent facility, not ACPX", "exact worktree path as cwd", "one result commit, focused tests, and a bounded handoff", "there is no nested ACPX session or separate per-child OS sandbox", "workspace complete and integrate from its unchanged checkout", "detached immutable workflow snapshots and fail closed when dirty", "external uses mode none and requires consumed provider-neutral exact-revision evidence", "top-level runner recovers only the ACPX/session job", "coordinator inspects or reconciles the exact PROCESS lease", "session-clone retention cleanup consults git worktree list", "fails closed by retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails", "does not own, persist, or retry child PROCESS cleanup", "workflow workspace cleanup is destructive and does not decide or enforce integration/retention eligibility"} {
+	for _, want := range []string{"--gate implement", "doctor agent", "execution_class", "only for change-bearing", "same digest/checkpoint", "workspace prepare, inspect, complete, integrate, reconcile, and cleanup", "single runner-managed coordinator session", "otherwise operate standalone", "coordinator owns every PROCESS workspace lifecycle operation", "current runtime native child/subagent facility", "exact worktree path as cwd", "one result commit, focused tests, and a bounded handoff", "there is no nested coordinator session or separate per-child OS sandbox", "workspace complete and integrate from its unchanged checkout", "detached immutable workflow snapshots and fail closed when dirty", "external uses mode none and requires consumed provider-neutral exact-revision evidence", "runtime recovers only the runner-managed coordinator session", "coordinator inspects or reconciles the exact PROCESS lease", "Runner-managed session retention cleanup consults git worktree list", "fails closed by retaining the session checkout when runtime metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails", "does not own, persist, or retry child PROCESS cleanup", "workflow workspace cleanup is destructive and does not decide or enforce integration/retention eligibility"} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply skill missing %q:\n%s", want, apply)
 		}
@@ -179,9 +179,9 @@ func TestIssueSpecSkillTemplatesDocumentSessionSourceSeparation(t *testing.T) {
 		"Agent Session ID and Agent Session Source as artifact writer provenance",
 		"--agent-session",
 		"CODEX_THREAD_ID may override",
-		"runner.public_session_id is the public /resume handle",
+		"When runner context supplies runner.public_session_id, it is the public /resume handle",
 		"/resume <public-session-id> <answer or next instruction>",
-		"Do not present Agent Session ID, CODEX_THREAD_ID, acpx record ids, or provider session ids as /resume handles",
+		"Do not present Agent Session ID, CODEX_THREAD_ID, coordinator record ids, or provider session ids as /resume handles",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("workflow skill missing %q:\n%s", want, workflow)
