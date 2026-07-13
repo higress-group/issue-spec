@@ -29,6 +29,8 @@ Review 和 CI 继续留在团队已有的代码托管平台中。
 
 **[查看自托管 Server、架构、权限模型、部署与运维详情 →](docs/self-hosting/README.zh-CN.md)**
 
+**[安全对接企业代码平台与工作项平台 →](docs/self-hosting/enterprise-provider-integration.zh-CN.md)**
+
 ### 从透明 Change Spec 到可交接的 Agent 执行
 
 Change Spec 的 Proposal、Design、TASK、PROCESS、Review 和验证证据原本就公开保存在

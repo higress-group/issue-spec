@@ -7,6 +7,10 @@ revision-bound code evidence or performs an explicitly requested external
 mutation. Core evaluates every gate itself; a bridge cannot return an
 `approved` boolean.
 
+For platform assessment, wrapper scaffolding, operator registration, Source
+Binding, and work-tracker boundaries, see
+[Integrate company code and work platforms](../enterprise-provider-integration.md).
+
 ## Trust and registration
 
 The operator registers a provider key and its implementation when starting the
