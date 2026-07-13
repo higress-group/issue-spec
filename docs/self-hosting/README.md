@@ -195,6 +195,8 @@ comment text. Failed deliveries are retried, become dead letters after the
 configured attempt limit, and can be replayed without changing event identity.
 For multi-replica behavior and recovery, read
 [HA webhook delivery operations](operations/ha-webhooks.md).
+For the complete PAT, source binding, webhook, systemd, and comment-command
+setup, see [Self-hosted runner: trigger agents from issue comments](runner.md).
 
 ## Operations index
 
@@ -202,6 +204,7 @@ For multi-replica behavior and recovery, read
 - [Deployment and hardening](operations/deployment.md)
 - [Backup, restore, upgrade, and recovery](operations/backup-restore.md)
 - [HA webhook delivery](operations/ha-webhooks.md)
+- [Comment-triggered agents with runner serve](runner.md)
 - [Code-provider bridge contract](bridges/code-provider-v1.md)
 - [Git credential bridge contract](bridges/git-credential-v1.md)
 

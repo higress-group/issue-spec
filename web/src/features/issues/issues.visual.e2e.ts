@@ -10,6 +10,34 @@ const rawBody = documentationText(
   `## 运行器契约\n\n保留智能体会话的完整追溯关系，同时不丢失原始工作流来源。\n\n<!-- issue-spec:type=PROCESS id=PROCESS-010 version=1 -->\n\n- [x] 兼容议题路由\n- [ ] 浏览器验证\n\n| 界面 | 状态 |\n| --- | --- |\n| CLI | 就绪 |\n| Web | 评审中 |\n\n\`\`\`sh\nissue-spec runner serve --repo acme/workflow\n\`\`\``,
 );
 const user = { login: "alice", id: 1, avatar_url: "", html_url: "", type: "User", site_admin: false };
+const runnerUser = { login: "issue-spec-runner", id: 2, avatar_url: "", html_url: "", type: "Bot", site_admin: false };
+const runnerCommand = documentationText(
+  "/new Update the implementation and open a pull request with tests.",
+  "/new 更新实现并提交一个包含测试的拉取请求。",
+);
+const runnerStatus = `<!-- issue-spec-runner:status {"schema_version":1,"status_writeback_key":"status:fixture"} -->
+### issue-spec runner status
+
+| Field | Value |
+| --- | --- |
+| Status | \`completed\` |
+| Phase | \`completed\` |
+| Public session | \`s_demo_42\` |
+
+## Result
+
+- Completed the requested command.
+- Updated PROCESS-042 with implementation evidence.
+
+## Continue Session
+
+To continue this session, create a new command comment:
+
+\`\`\`text
+/resume s_demo_42 <answer or next instruction>
+\`\`\`
+
+Ordinary follow-up comments remain visible but are ignored by runner intake.`;
 const reactionSummary = { total_count: 1, "+1": 1, "-1": 0, laugh: 0, hooray: 0, confused: 0, heart: 0, rocket: 0, eyes: 0, url: "" };
 
 let comments = [commentFixture(9, "The runner should preserve **raw Markdown** and agent metadata.")];
@@ -28,12 +56,12 @@ test.beforeEach(async ({ page }) => {
     if (url.pathname === "/repos/acme/workflow/issues/41/comments" && request.method() === "GET") return route.fulfill({ json: comments });
     if (url.pathname === "/repos/acme/workflow/issues/41/comments" && request.method() === "POST") {
       const payload = request.postDataJSON() as { body: string };
-      const created = commentFixture(10, payload.body);
+      const created = commentFixture(Math.max(...comments.map((comment) => comment.id)) + 1, payload.body);
       comments = [...comments, created];
       return route.fulfill({ status: 201, json: created });
     }
     if (url.pathname === "/repos/acme/workflow/issues/comments/9/reactions") return route.fulfill({ json: [{ id: 7, user: user, content: "+1", created_at: "2026-07-10T12:00:00Z" }] });
-    if (url.pathname === "/repos/acme/workflow/issues/comments/10/reactions") return route.fulfill({ json: [] });
+    if (/^\/repos\/acme\/workflow\/issues\/comments\/\d+\/reactions$/.test(url.pathname)) return route.fulfill({ json: [] });
     if (url.pathname === "/api/v1/context/repos/acme/workflow/issues/41/relationships") return route.fulfill({ json: { relationships } });
     if (url.pathname === "/repos/acme/workflow/issues/41") return route.fulfill({ json: issue });
     if (url.pathname === "/repos/acme/workflow/issues") return route.fulfill({ json: url.searchParams.get("labels") ? [] : [issue] });
@@ -63,6 +91,17 @@ test("issue detail is polished, accessible and preserves raw workflow text", asy
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await expect(page).toHaveScreenshot(documentationSnapshot("issue-detail"), { fullPage: true, animations: "disabled" });
   if (testInfo.project.name === "issues-desktop-1440") {
+    comments = [
+      ...comments,
+      commentFixture(10, runnerCommand),
+      commentFixture(11, runnerStatus, runnerUser),
+    ];
+    await page.reload();
+    await expect(page.getByText(runnerCommand)).toBeVisible();
+    await expect(page.getByText("/resume s_demo_42 <answer or next instruction>")).toBeVisible();
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await expect(page).toHaveScreenshot(documentationSnapshot("runner-command"), { fullPage: true, animations: "disabled" });
+
     await page.getByRole("button", { name: documentationText("Edit", "编辑") }).first().click();
     await expect(page.getByRole("textbox", { name: documentationText("Description", "描述") })).toHaveValue(rawBody);
     await page.getByRole("button", { name: documentationText("Cancel", "取消"), exact: true }).click();
@@ -103,4 +142,4 @@ const relationships = [
   { provider_key: "aone-bridge", code_change_label: "Merge request", relation_kind: "code_change", external_repository_id: "Ingress/workflow", external_id: "73", canonical_url: "https://code.example/Ingress/workflow/merge_requests/73", title: documentationText("Internal mirror", "内部镜像"), lifecycle_state: "active", source_binding_match: "mismatched" },
 ];
 const issue = { id: 41, number: 41, state: "open", state_reason: null, title: issueTitle, body: rawBody, user, labels, locked: false, comments: 1, created_at: "2026-07-10T10:00:00Z", updated_at: "2026-07-10T10:00:00Z", closed_at: null, html_url: "https://code.example.test/acme/workflow/issues/41", reactions: reactionSummary };
-function commentFixture(id: number, body: string) { return { id, body, user, created_at: "2026-07-10T11:00:00Z", updated_at: "2026-07-10T11:00:00Z", html_url: `https://code.example.test/acme/workflow/issues/41#issuecomment-${id}`, reactions: id === 9 ? reactionSummary : { ...reactionSummary, total_count: 0, "+1": 0 } }; }
+function commentFixture(id: number, body: string, author = user) { return { id, body, user: author, created_at: "2026-07-10T11:00:00Z", updated_at: "2026-07-10T11:00:00Z", html_url: `https://code.example.test/acme/workflow/issues/41#issuecomment-${id}`, reactions: id === 9 ? reactionSummary : { ...reactionSummary, total_count: 0, "+1": 0 } }; }

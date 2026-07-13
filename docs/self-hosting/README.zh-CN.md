@@ -174,6 +174,8 @@ Service Account 与 PAT 的操作会被标记为 Automation，Webhook 策略和�
 无需解析不可信评论文本，就可以排除类型化评论或 Automation Actor。失败投递会
 自动重试，超过次数后进入 Dead Letter，并能在保持事件身份不变的情况下重放。
 多副本投递与恢复语义见 [HA Webhook 运维](operations/ha-webhooks.md)。
+从 PAT、Source Binding、Webhook 到 systemd 启动和评论命令的完整步骤见
+[自托管 Runner：通过 Issue 评论触发 Agent](runner.zh-CN.md)。
 
 ## 运维文档索引
 
@@ -181,6 +183,7 @@ Service Account 与 PAT 的操作会被标记为 Automation，Webhook 策略和�
 - [部署与加固](operations/deployment.md)
 - [备份、恢复、升级与应急处理](operations/backup-restore.md)
 - [HA Webhook 投递](operations/ha-webhooks.md)
+- [通过 Issue 评论触发 Agent：Runner 接入指南](runner.zh-CN.md)
 - [Code Provider Bridge 协议](bridges/code-provider-v1.md)
 - [Git Credential Bridge 协议](bridges/git-credential-v1.md)
 

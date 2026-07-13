@@ -25,11 +25,17 @@ cp "src/features/issues/issues.visual.e2e.ts-snapshots/issue-detail-issues-deskt
 cp "src/features/boards/boards.visual.e2e.ts-snapshots/change-board-boards-desktop-1440-$platform.png" "$assets/self-hosted-change-board.png"
 cp "src/features/boards/boards.visual.e2e.ts-snapshots/change-detail-boards-desktop-1440-$platform.png" "$assets/self-hosted-change-detail.png"
 cp "src/repos/integrations.e2e.ts-snapshots/webhook-integrations-integrations-desktop-$platform.png" "$assets/self-hosted-webhook-integrations.png"
+cp "src/repos/integrations.e2e.ts-snapshots/runner-intake-config-integrations-desktop-$platform.png" "$assets/self-hosted-runner-intake.png"
+cp "src/repos/integrations.e2e.ts-snapshots/runner-intake-credentials-integrations-desktop-$platform.png" "$assets/self-hosted-runner-credentials.png"
+cp "src/features/issues/issues.visual.e2e.ts-snapshots/runner-command-issues-desktop-1440-$platform.png" "$assets/self-hosted-runner-command.png"
 
 cp "tests/e2e/shell.spec.ts-snapshots/dashboard-zh-CN-desktop-1440-$platform.png" "$assets/self-hosted-dashboard.zh-CN.png"
 cp "src/features/issues/issues.visual.e2e.ts-snapshots/issue-detail-zh-CN-issues-desktop-1440-$platform.png" "$assets/self-hosted-issue-detail.zh-CN.png"
 cp "src/features/boards/boards.visual.e2e.ts-snapshots/change-board-zh-CN-boards-desktop-1440-$platform.png" "$assets/self-hosted-change-board.zh-CN.png"
 cp "src/features/boards/boards.visual.e2e.ts-snapshots/change-detail-zh-CN-boards-desktop-1440-$platform.png" "$assets/self-hosted-change-detail.zh-CN.png"
 cp "src/repos/integrations.e2e.ts-snapshots/webhook-integrations-zh-CN-integrations-desktop-$platform.png" "$assets/self-hosted-webhook-integrations.zh-CN.png"
+cp "src/repos/integrations.e2e.ts-snapshots/runner-intake-config-zh-CN-integrations-desktop-$platform.png" "$assets/self-hosted-runner-intake.zh-CN.png"
+cp "src/repos/integrations.e2e.ts-snapshots/runner-intake-credentials-zh-CN-integrations-desktop-$platform.png" "$assets/self-hosted-runner-credentials.zh-CN.png"
+cp "src/features/issues/issues.visual.e2e.ts-snapshots/runner-command-zh-CN-issues-desktop-1440-$platform.png" "$assets/self-hosted-runner-command.zh-CN.png"
 
 echo "Updated self-hosted documentation screenshots in $assets"
