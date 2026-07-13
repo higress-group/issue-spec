@@ -28,6 +28,7 @@ type Authorizer interface {
 
 type Config struct {
 	Production           bool
+	DestinationPolicy    networkpolicy.Policy
 	SecretOverlap        time.Duration
 	DestinationPreflight DestinationPreflight
 }
@@ -46,6 +47,13 @@ type Service struct {
 func New(database *store.Store, authorizer Authorizer, keys *Keyring, config Config) (*Service, error) {
 	if database == nil || authorizer == nil || keys == nil || config.SecretOverlap < 0 {
 		return nil, errors.New("webhook subscriptions: store, authorizer, keyring and valid config are required")
+	}
+	policy := config.DestinationPolicy
+	if !policy.Production && config.Production {
+		policy.Production = true
+	}
+	if policy.Production && policy.AllowHTTPPrivate && config.DestinationPreflight == nil {
+		return nil, errors.New("webhook subscriptions: private HTTP requires destination preflight")
 	}
 	if config.SecretOverlap == 0 {
 		config.SecretOverlap = 5 * time.Minute
@@ -67,7 +75,7 @@ func (s *Service) Create(ctx context.Context, actor Actor, subject authz.Subject
 	if err := validateActor(actor); err != nil {
 		return SecretResult{}, err
 	}
-	scopeType, err := validateCreate(input, s.config.Production)
+	scopeType, err := validateCreate(input, s.destinationPolicy())
 	if err != nil {
 		return SecretResult{}, err
 	}
@@ -230,7 +238,7 @@ func (s *Service) Update(ctx context.Context, actor Actor, subject authz.Subject
 		return Subscription{}, ErrInvalidInput
 	}
 	input.URL = baseURL
-	if validateActor(actor) != nil || input.ExpectedVersion < 1 || validateURL(input.URL, s.config.Production) != nil ||
+	if validateActor(actor) != nil || input.ExpectedVersion < 1 || validateURL(input.URL, s.destinationPolicy()) != nil ||
 		validatePolicy(input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes) != nil || validateRetry(input.Retry) != nil {
 		return Subscription{}, ErrInvalidInput
 	}
@@ -605,8 +613,8 @@ func audit(ctx context.Context, tx pgx.Tx, actor Actor, item Subscription, actio
 	return err
 }
 
-func validateCreate(input CreateInput, production bool) (ScopeType, error) {
-	if input.OrganizationID == uuid.Nil || validateURL(input.URL, production) != nil ||
+func validateCreate(input CreateInput, policy networkpolicy.Policy) (ScopeType, error) {
+	if input.OrganizationID == uuid.Nil || validateURL(input.URL, policy) != nil ||
 		validatePolicy(input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes) != nil || validateRetry(input.Retry) != nil {
 		return "", ErrInvalidInput
 	}
@@ -619,18 +627,26 @@ func validateCreate(input CreateInput, production bool) (ScopeType, error) {
 	return ScopeRepository, nil
 }
 
-func validateURL(raw string, production bool) error {
-	if _, err := (networkpolicy.Policy{Production: production}).ValidateURL(raw); err != nil {
+func validateURL(raw string, policy networkpolicy.Policy) error {
+	if _, err := policy.ValidateURL(raw); err != nil {
 		return ErrInvalidInput
 	}
 	return nil
 }
 
 func (s *Service) validateStoredDestination(item Subscription) error {
-	if validateURL(item.URL, s.config.Production) != nil {
+	if validateURL(item.URL, s.destinationPolicy()) != nil {
 		return ErrUnsafeDestination
 	}
 	return nil
+}
+
+func (s *Service) destinationPolicy() networkpolicy.Policy {
+	policy := s.config.DestinationPolicy
+	if !policy.Production && s.config.Production {
+		policy.Production = true
+	}
+	return policy
 }
 
 func validateEventTypes(values []string) error {

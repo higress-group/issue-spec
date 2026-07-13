@@ -29,9 +29,10 @@ type Config struct {
 }
 
 type Client struct {
-	client          *http.Client
-	policy          Policy
-	maxResponseBody int64
+	client            *http.Client
+	privateHTTPClient *http.Client
+	policy            Policy
+	maxResponseBody   int64
 }
 
 type Request struct {
@@ -79,17 +80,20 @@ func NewClient(config Config) (*Client, error) {
 	if tlsConfig.MinVersion < tls.VersionTLS12 {
 		tlsConfig.MinVersion = tls.VersionTLS12
 	}
-	transport := &http.Transport{
-		Proxy: nil, ForceAttemptHTTP2: true, DisableCompression: true,
-		TLSClientConfig:       tlsConfig,
-		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
-		ResponseHeaderTimeout: config.ResponseHeaderTimeout,
-		IdleConnTimeout:       30 * time.Second, MaxIdleConns: 32, MaxIdleConnsPerHost: 4,
-		MaxResponseHeaderBytes: config.MaxResponseHeaderBytes,
+	newClient := func(privateHTTPOnly bool) *http.Client {
+		transport := &http.Transport{
+			Proxy: nil, ForceAttemptHTTP2: true, DisableCompression: true,
+			TLSClientConfig:       tlsConfig,
+			TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
+			ResponseHeaderTimeout: config.ResponseHeaderTimeout,
+			IdleConnTimeout:       30 * time.Second, MaxIdleConns: 32, MaxIdleConnsPerHost: 4,
+			MaxResponseHeaderBytes: config.MaxResponseHeaderBytes,
+		}
+		transport.DialContext = secureDialContext(config.Resolver, config.Dialer, config.Policy, privateHTTPOnly)
+		return &http.Client{Transport: transport, Timeout: config.RequestTimeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	}
-	transport.DialContext = secureDialContext(config.Resolver, config.Dialer, config.Policy)
-	return &Client{client: &http.Client{Transport: transport, Timeout: config.RequestTimeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+	return &Client{client: newClient(false), privateHTTPClient: newClient(true),
 		policy: config.Policy, maxResponseBody: config.MaxResponseBodyBytes}, nil
 }
 
@@ -131,7 +135,11 @@ func (c *Client) Send(ctx context.Context, input Request) (Result, error) {
 		request.Header.Set("X-Issue-Spec-Delivery", input.DeliveryID)
 		request.Header.Set("X-Issue-Spec-Timestamp", strconv.FormatInt(input.Timestamp.Unix(), 10))
 	}
-	response, err := c.client.Do(request)
+	client := c.client
+	if parsed.Scheme == "http" && c.policy.Production {
+		client = c.privateHTTPClient
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return Result{}, redactError(err, input.Secret, input.DestinationQuery)
 	}
@@ -146,7 +154,7 @@ func (c *Client) Send(ctx context.Context, input Request) (Result, error) {
 	return Result{StatusCode: response.StatusCode, Header: response.Header.Clone(), BodyBytes: read}, nil
 }
 
-func secureDialContext(resolver Resolver, dialer Dialer, policy Policy) func(context.Context, string, string) (net.Conn, error) {
+func secureDialContext(resolver Resolver, dialer Dialer, policy Policy, privateHTTPOnly bool) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil {
@@ -158,13 +166,17 @@ func secureDialContext(resolver Resolver, dialer Dialer, policy Policy) func(con
 		}
 		var lastErr error
 		for _, approved := range addresses {
+			if privateHTTPOnly && !policy.allowsPrivateAddress(approved) {
+				continue
+			}
 			connection, err := dialer.DialContext(ctx, network, net.JoinHostPort(approved.String(), port))
 			if err != nil {
 				lastErr = err
 				continue
 			}
 			remote, ok := remoteIP(connection.RemoteAddr())
-			if !ok || remote.Unmap() != approved.Unmap() || policy.CheckAddress(remote) != nil {
+			if !ok || remote.Unmap() != approved.Unmap() || policy.CheckAddress(remote) != nil ||
+				(privateHTTPOnly && !policy.allowsPrivateAddress(remote)) {
 				_ = connection.Close()
 				return nil, ErrAddressDenied
 			}

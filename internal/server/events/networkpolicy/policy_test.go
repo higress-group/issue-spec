@@ -60,9 +60,36 @@ func TestResolutionAndConnectTimeAddressChecksPreventRebinding(t *testing.T) {
 	if _, err := resolveAllowed(t.Context(), resolver, policy, "mixed.example"); !errors.Is(err, ErrAddressDenied) {
 		t.Fatalf("mixed DNS answer error = %v", err)
 	}
-	dial := secureDialContext(resolver, fakeDialer{remote: netip.MustParseAddr("10.0.0.9")}, policy)
+	dial := secureDialContext(resolver, fakeDialer{remote: netip.MustParseAddr("10.0.0.9")}, policy, false)
 	if _, err := dial(t.Context(), "tcp", "public.example:443"); !errors.Is(err, ErrAddressDenied) {
 		t.Fatalf("connect-time rebinding error = %v", err)
+	}
+}
+
+func TestProductionHTTPRequiresAnExplicitPrivateDestination(t *testing.T) {
+	policy := Policy{Production: true, AllowHTTPPrivate: true,
+		AllowedPrivate: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")}}
+	if _, err := policy.ValidateURL("http://runner.intra.test/hook"); err != nil {
+		t.Fatalf("allowlisted HTTP URL rejected: %v", err)
+	}
+
+	privatePreflight := Preflight{Policy: policy, Resolver: staticResolver{addresses: map[string][]net.IPAddr{
+		"runner.intra.test": {{IP: net.ParseIP("10.20.1.2")}},
+	}}}
+	if err := privatePreflight.Validate(t.Context(), "http://runner.intra.test/hook"); err != nil {
+		t.Fatalf("allowlisted private HTTP preflight rejected: %v", err)
+	}
+
+	publicPreflight := Preflight{Policy: policy, Resolver: staticResolver{addresses: map[string][]net.IPAddr{
+		"public.example": {{IP: net.ParseIP("93.184.216.34")}},
+	}}}
+	if err := publicPreflight.Validate(t.Context(), "http://public.example/hook"); !errors.Is(err, ErrAddressDenied) {
+		t.Fatalf("public HTTP preflight error = %v, want address denied", err)
+	}
+
+	dial := secureDialContext(privatePreflight.Resolver, fakeDialer{remote: netip.MustParseAddr("93.184.216.34")}, policy, true)
+	if _, err := dial(t.Context(), "tcp", "runner.intra.test:8080"); !errors.Is(err, ErrAddressDenied) {
+		t.Fatalf("HTTP connect-time rebinding error = %v, want address denied", err)
 	}
 }
 

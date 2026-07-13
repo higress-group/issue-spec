@@ -421,7 +421,7 @@ func (s *Service) ProcessOne(ctx context.Context) error {
 	var secretID uuid.UUID
 	var secret []byte
 	var destinationQuery []byte
-	_, err = (networkpolicy.Policy{}).ValidateURL(claimed.URL)
+	_, err = s.config.DestinationPolicy.ValidateURL(claimed.URL)
 	if err == nil && claimed.DestinationQueryVersion > 0 {
 		provider, ok := s.secrets.(interface {
 			DecryptDestinationQuery(context.Context, uuid.UUID, string, int64, []byte) ([]byte, error)

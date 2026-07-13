@@ -37,12 +37,13 @@ type Sender interface {
 }
 
 type Config struct {
-	LeaseDuration  time.Duration
-	MaxConcurrency int
-	PollInterval   time.Duration
-	Clock          func() time.Time
-	APIOrigin      string
-	WebOrigin      string
+	LeaseDuration     time.Duration
+	MaxConcurrency    int
+	PollInterval      time.Duration
+	Clock             func() time.Time
+	APIOrigin         string
+	WebOrigin         string
+	DestinationPolicy networkpolicy.Policy
 }
 
 type Delivery struct {

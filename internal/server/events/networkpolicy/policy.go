@@ -27,8 +27,9 @@ type Dialer interface {
 }
 
 type Policy struct {
-	Production     bool
-	AllowedPrivate []netip.Prefix
+	Production       bool
+	AllowedPrivate   []netip.Prefix
+	AllowHTTPPrivate bool
 }
 
 type Preflight struct {
@@ -45,8 +46,18 @@ func (p Preflight) Validate(ctx context.Context, raw string) error {
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
-	_, err = resolveAllowed(ctx, resolver, p.Policy, parsed.Hostname())
-	return err
+	addresses, err := resolveAllowed(ctx, resolver, p.Policy, parsed.Hostname())
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme == "http" && p.Policy.Production {
+		for _, address := range addresses {
+			if !p.Policy.allowsPrivateAddress(address) {
+				return ErrAddressDenied
+			}
+		}
+	}
+	return nil
 }
 
 func (p Policy) ValidateURL(raw string) (*url.URL, error) {
@@ -58,7 +69,7 @@ func (p Policy) ValidateURL(raw string) (*url.URL, error) {
 		parsed.RawQuery != "" || parsed.ForceQuery || parsed.Opaque != "" {
 		return nil, ErrInvalidDestination
 	}
-	if parsed.Scheme != "https" && (p.Production || parsed.Scheme != "http") {
+	if parsed.Scheme != "https" && (parsed.Scheme != "http" || (p.Production && !p.AllowHTTPPrivate)) {
 		return nil, ErrInvalidDestination
 	}
 	if parsed.Port() != "" {
@@ -70,6 +81,19 @@ func (p Policy) ValidateURL(raw string) (*url.URL, error) {
 	return parsed, nil
 }
 
+func (p Policy) allowsPrivateAddress(address netip.Addr) bool {
+	address = address.Unmap()
+	if !address.IsPrivate() {
+		return false
+	}
+	for _, allowed := range p.AllowedPrivate {
+		if allowed.Contains(address) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p Policy) CheckAddress(address netip.Addr) error {
 	address = address.Unmap()
 	if !address.IsValid() || isMetadata(address) || address.IsLoopback() ||
@@ -78,10 +102,8 @@ func (p Policy) CheckAddress(address netip.Addr) error {
 		return ErrAddressDenied
 	}
 	if address.IsPrivate() {
-		for _, allowed := range p.AllowedPrivate {
-			if allowed.Contains(address) {
-				return nil
-			}
+		if p.allowsPrivateAddress(address) {
+			return nil
 		}
 		return ErrAddressDenied
 	}

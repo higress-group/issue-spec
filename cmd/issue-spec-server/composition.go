@@ -176,7 +176,8 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	}
 
 	policy := networkpolicy.Policy{Production: cfg.Environment == config.EnvironmentProduction,
-		AllowedPrivate: append([]netip.Prefix(nil), cfg.WebhookAllowedPrivate...)}
+		AllowedPrivate:   append([]netip.Prefix(nil), cfg.WebhookAllowedPrivate...),
+		AllowHTTPPrivate: len(cfg.WebhookAllowedPrivate) > 0}
 	resolver := net.DefaultResolver
 	deliveryClient, err := networkpolicy.NewClient(networkpolicy.Config{Policy: policy, Resolver: resolver})
 	if err != nil {
@@ -192,6 +193,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	}
 	subscriptionService, err := subscriptions.New(database, authorization, keyring, subscriptions.Config{
 		Production:           cfg.Environment == config.EnvironmentProduction,
+		DestinationPolicy:    policy,
 		DestinationPreflight: networkpolicy.Preflight{Policy: policy, Resolver: resolver},
 	})
 	if err != nil {
@@ -199,6 +201,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	}
 	deliveryService, err := delivery.New(database.Pool(), authorization, subscriptionService, deliveryClient, delivery.Config{
 		LeaseDuration: cfg.DeliveryLeaseDuration, MaxConcurrency: cfg.DeliveryConcurrency, PollInterval: cfg.DeliveryPollInterval,
+		DestinationPolicy: policy,
 	})
 	if err != nil {
 		return fail(err)
