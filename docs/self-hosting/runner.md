@@ -73,6 +73,24 @@ Add human maintainers with repeatable `--allowed-user` flags; each author must
 also have write-equivalent repository permission. This keeps the runner
 automation identity, command author, and Linux process user separate.
 
+### Simpler option: use your own account
+
+For a local trial, personal environment, or short-lived integration, the
+runner may use your own issue-spec account:
+
+1. confirm that your account has `write` or higher permission on the repository;
+2. select **Runner preset** on **Access tokens** and choose exactly that repository;
+3. save the one-time personal PAT;
+4. pass your exact login to `--runner` when starting the process.
+
+The personal PAT uses the same five scopes and exact one-repository cap. By
+default, only the account named by `--runner` can issue commands; add
+`--allowed-user` only when other maintainers should be accepted. This option is
+quicker to configure, but runner writes, credential rotation, and account
+disablement remain coupled to a person. Prefer a service account for shared or
+long-running production automation. Never substitute a browser session cookie
+or login session for the PAT.
+
 Read the public origins and instance ID from `/api/v1/meta`, then create the
 origin-bound profile as the runner system user:
 
@@ -92,10 +110,10 @@ unset ISSUE_SPEC_TOKEN
 issue-spec --profile team auth status --json
 ```
 
-The Managed PAT is the parent credential. Each job receives a short-lived,
-repository-scoped issue token delegated by the server. A parent credential is
-restricted to exactly one repository; use a separate Managed PAT, profile, and
-`runner serve` process for each additional repository.
+The Managed PAT or personal PAT selected above is the parent credential. Each
+job receives a short-lived, repository-scoped issue token delegated by the
+server. A parent credential is restricted to exactly one repository; use a
+separate PAT, profile, and `runner serve` process for each additional repository.
 
 ## 4. Create the Runner intake webhook
 
@@ -232,7 +250,7 @@ revocation, runner status comment, and typed workflow writeback in that order.
 | Webhook returns `401` | Subscription ID, current secret, and server/runner clocks |
 | Webhook cannot connect | Receiver URL, DNS, firewall, reverse proxy, and TLS |
 | Comment is ignored | Command position, allowlist, and write-equivalent permission |
-| `runner:delegate` fails | Exact repository restriction, scopes, and service-account login matching `--runner` |
+| `runner:delegate` fails | Exact repository restriction, scopes, and PAT subject login matching `--runner` |
 | Clone fails | Active source binding, HTTPS URL, and exact binding echoed by the credential command |
 | Sandbox preflight fails | Install `bubblewrap` or configure `--bwrap` on Linux |
 | Codex does not start | Ensure `acpx`, `npm`, `npx`, and model credentials are available to the systemd user |

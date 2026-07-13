@@ -79,6 +79,20 @@ issue-spec PAT，也不应返回代码平台的长期个人 Token。
 可重复的 `--allowed-user` 加入允许列表；Server 还会独立校验评论作者具有仓库 Write
 等效权限。这样 Runner 自动化身份、评论发起人和 Linux 进程用户互不混用。
 
+### 简化方式：使用自己的账号
+
+本地试用、个人环境或短期联调也可以直接使用自己的 issue-spec 账号：
+
+1. 确认自己的账号对目标仓库具有 `write` 或更高权限；
+2. 在 **访问令牌** 页面选择 **运行器预设**，并且只选择目标仓库；
+3. 保存只显示一次的个人 PAT；
+4. 启动时把自己的准确 Login 传给 `--runner`。
+
+个人 PAT 使用相同的五个 Scope，并且同样必须精确绑定一个仓库。默认只有
+`--runner` 对应的自己可以发出命令；需要允许其他维护者时再增加 `--allowed-user`。
+这种方式配置更少，但 Runner 写入、凭据轮换和账号停用都与个人身份绑定，不适合作为
+团队长期运行或多人共用的生产自动化。不要用浏览器 Session Cookie 或登录会话替代 PAT。
+
 从 Server 的 `/api/v1/meta` 读取公开地址和 Instance ID，然后在 Runner 系统用户下
 创建与 Origin 绑定的 Profile：
 
@@ -98,9 +112,9 @@ unset ISSUE_SPEC_TOKEN
 issue-spec --profile team auth status --json
 ```
 
-Managed PAT 是 Runner 的父凭据。每个任务实际使用的是 Server 委托的短期、仓库范围
-Issue Token。父凭据必须精确绑定一个仓库；需要服务多个仓库时，应为每个仓库创建
-独立的 Managed PAT、Profile 和 `runner serve` 进程。
+上述 Managed PAT 或个人 PAT 是 Runner 的父凭据。每个任务实际使用的是 Server
+委托的短期、仓库范围 Issue Token。父凭据必须精确绑定一个仓库；需要服务多个仓库时，
+应为每个仓库创建独立的 PAT、Profile 和 `runner serve` 进程。
 
 ## 4. 创建 Runner Intake Webhook
 
@@ -276,7 +290,7 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 | Webhook 为 `401` | Subscription ID、当前 Secret、Runner 与 Server 时钟 |
 | Webhook 无法连接 | Receiver URL、DNS、防火墙、反向代理和 TLS |
 | 评论被忽略 | 命令是否位于开头、作者是否在允许列表、是否具有 Write 权限 |
-| `runner:delegate` 失败 | Managed PAT 是否只限制到该仓库、Scope 是否完整、`--runner` 是否为 Service Account Login |
+| `runner:delegate` 失败 | PAT 是否只限制到该仓库、Scope 是否完整、`--runner` 是否为 PAT 所属账号的 Login |
 | 找不到源码或 Clone 失败 | Source Binding 是否 Active，Clone URL 是否为 HTTPS，Git Credential Command 返回的 Binding 是否完全匹配 |
 | Preflight 报沙箱失败 | Linux 上安装 `bubblewrap` 或显式配置 `--bwrap` |
 | Codex 无法启动 | `acpx`、`npm`、`npx` 和模型凭据是否对 systemd 用户可用 |
