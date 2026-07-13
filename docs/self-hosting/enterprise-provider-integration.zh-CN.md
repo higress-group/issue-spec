@@ -142,6 +142,11 @@ export ISSUE_SPEC_CODE_PROVIDERS_FILE=/etc/issue-spec/code-providers.json
 self-hosted Profile 也可以保存绝对路径 `operator_registry_file`；环境变量优先。不要在
 仓库的 `issue-spec/config.yaml` 中保存可执行路径、环境变量或凭据来源。
 
+对同一 self-hosted realm 重新执行 origin-bound `auth login` 时，应保留这一运维侧设置。
+任何 Profile 重新配置后，仍须先运行 `auth status` 和一次 Provider 相关的 Plan，再依赖
+该 Registry。不同 realm 必须独立配置；未经明确的运维审查，不得跨 realm 复制 Provider
+Registry。
+
 重启 Server 后，确认 `/api/v1/meta` 只公开安全的 Provider 描述，不得出现 Bridge
 路径、环境变量、Token File 或凭据。
 
@@ -179,6 +184,11 @@ issue-spec --profile team init \
 确认解析后的 Provider、Remote Authority、Server Repo、External Repo、Clone URL、
 Web URL 与默认分支。确认无误后去掉 `--plan`；只有经过批准的非交互变更才增加
 `--yes`。
+
+Clone URL 与 Web URL 的 authority 必须精确匹配所选 Provider 在握手中声明的 authority。
+代码平台返回的展示或跳转 URL 只是元数据，不能直接当作 Source Binding 坐标；应从选定的
+规范 Git remote 或运维维护的 canonical-host 映射推导 Binding URL。即使浏览器可以访问，
+也不能静默替换为别名。
 
 仓库内生成的工作流配置可以选择 `code.example` 及其证据策略，但不能替换运维侧
 Provider 注册。

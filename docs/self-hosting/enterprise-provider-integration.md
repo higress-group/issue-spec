@@ -159,6 +159,12 @@ The self-hosted profile can instead carry an absolute
 store executable paths, environment, or credential sources in repository
 `issue-spec/config.yaml`.
 
+An origin-bound `auth login` for the same self-hosted realm retains this
+operator-owned setting. After any profile reconfiguration, still run `auth
+status` and a provider-backed plan before relying on the registry. A different
+realm must be configured independently; never copy a provider registry across
+realms without an explicit operator review.
+
 Restart the server and confirm `/api/v1/meta` advertises only the public-safe
 provider description. It must not expose the executable, environment, token
 file, or credential.
@@ -199,6 +205,12 @@ issue-spec --profile team init \
 Review the resolved provider, remote authority, server repository, external
 repository, clone URL, web URL, and default branch. Then repeat without
 `--plan`, adding `--yes` only for an approved non-interactive mutation.
+
+The clone and web URL authorities must exactly match an authority advertised by
+the selected provider. Treat a code platform's display or redirect URL as
+metadata, not as a Source Binding coordinate: derive the binding URLs from the
+selected canonical Git remote or an operator-maintained canonical-host mapping.
+Do not silently substitute an alias just because it resolves in a browser.
 
 Generated repository workflow configuration may select `code.example` and its
 evidence policy, but cannot replace the operator registration.

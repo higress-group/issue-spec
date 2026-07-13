@@ -297,6 +297,40 @@ func TestAuthTokenJSONIncludeTokenForGHUsesExplicitTokenProvider(t *testing.T) {
 	}
 }
 
+func TestResolveAuthLoginProfilePreservesTrustedSelfHostedOperatorSettings(t *testing.T) {
+	clearCommandAuthEnv(t)
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
+	existing := auth.Profile{
+		Name: "team", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "issue-spec:team",
+		OperatorRegistryFile: "/opt/issue-spec/providers.json",
+		OnboardingPolicy:     auth.OnboardingPolicy{AllowRepositoryCreate: true, AllowSourceBinding: true},
+	}
+	if err := auth.SaveProfile(existing, false); err != nil {
+		t.Fatal(err)
+	}
+
+	flags := authLoginProfileFlags{Name: "team", Kind: "self-hosted", APIURL: existing.APIURL,
+		NativeAPIURL: existing.NativeAPIURL, WebURL: existing.WebURL, InstanceID: existing.ServerInstanceID}
+	resolved, configured, err := resolveAuthLoginProfile(flags, "issues.example.test")
+	if err != nil || !configured {
+		t.Fatalf("resolveAuthLoginProfile error = %v configured=%v", err, configured)
+	}
+	if resolved.OperatorRegistryFile != existing.OperatorRegistryFile || resolved.OnboardingPolicy != existing.OnboardingPolicy {
+		t.Fatalf("trusted realm lost operator settings: %+v", resolved)
+	}
+
+	flags.InstanceID = "issue-spec:other"
+	resolved, configured, err = resolveAuthLoginProfile(flags, "issues.example.test")
+	if err != nil || !configured {
+		t.Fatalf("resolveAuthLoginProfile changed realm error = %v configured=%v", err, configured)
+	}
+	if resolved.OperatorRegistryFile != "" || resolved.OnboardingPolicy != (auth.OnboardingPolicy{}) {
+		t.Fatalf("changed realm inherited operator settings: %+v", resolved)
+	}
+}
+
 func TestAuthLoginWithoutTokenRecommendsAuthenticatedGH(t *testing.T) {
 	stubGHDiscovery(t, true, nil)
 	var out, errOut bytes.Buffer
