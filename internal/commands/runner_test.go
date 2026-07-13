@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -1256,6 +1257,11 @@ func TestRunnerPollAsyncDispatchCleansWorkspacesAfterStartup(t *testing.T) {
 	expiredPath := filepath.Join(workspaceRoot, "expired")
 	if err := os.MkdirAll(expiredPath, 0o700); err != nil {
 		t.Fatal(err)
+	}
+	command := exec.Command("git", "init", "-b", "main")
+	command.Dir = expiredPath
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("initialize expired Git workspace: %v: %s", err, output)
 	}
 	st := state.NewState()
 	now := time.Now().UTC()

@@ -357,6 +357,9 @@ func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing
 	if len(sandbox.requests) != 2 {
 		t.Fatalf("sandbox request count = %d, want 2", len(sandbox.requests))
 	}
+	if len(coordinator.newPrompts) != 1 || len(coordinator.resumePrompts) != 1 {
+		t.Fatalf("runner must dispatch exactly one ACPX coordinator turn per job, not child ACPX sessions: new=%d resume=%d", len(coordinator.newPrompts), len(coordinator.resumePrompts))
+	}
 	newReq, resumeReq := sandbox.requests[0], sandbox.requests[1]
 	for phase, req := range map[string]SandboxRequest{"new": newReq, "resume": resumeReq} {
 		if req.WorkspacePath != workspacePath || req.AcpxWorkingDirectory != workspacePath {

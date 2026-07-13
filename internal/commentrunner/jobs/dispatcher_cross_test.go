@@ -2,6 +2,7 @@ package jobs_test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/higress-group/issue-spec/internal/acpx"
@@ -46,6 +47,13 @@ func TestRunNextPersistsUnsafeSandboxMarkersAndKeepsCallerContext(t *testing.T) 
 	}
 
 	binding := testkit.WorkspaceBinding("ws-unsafe")
+	workspacePath, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding.Workspace.Path = workspacePath
+	binding.AcpxWorkingDirectory = workspacePath
+	binding.SandboxWorkspacePath = workspacePath
 	coordinator := &testkit.Coordinator{NewResult: testkit.DispatchResult("ps-unsafe", "rec-unsafe", "turn-unsafe")}
 	writebacks := &testkit.Writeback{Store: store}
 	dispatcher := jobs.Dispatcher{

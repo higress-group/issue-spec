@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -400,6 +401,11 @@ func testWorkspacePath(t *testing.T, root, id string) string {
 	path := filepath.Join(root, id)
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		t.Fatal(err)
+	}
+	command := exec.Command("git", "init", "-b", "main")
+	command.Dir = path
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("initialize test Git workspace %s: %v: %s", id, err, output)
 	}
 	return path
 }
