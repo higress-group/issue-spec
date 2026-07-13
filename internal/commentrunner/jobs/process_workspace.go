@@ -502,18 +502,6 @@ func (r runtimeNoCheckout) ValidateAssociation(ctx context.Context, association 
 	return nil
 }
 
-// MarkTerminalWorkspaceCleanupRequired is the P008 handoff used in every
-// normal completed/failed terminal state transaction before post-terminal
-// cleanup is attempted. It records intent without changing the reservation.
-func MarkTerminalWorkspaceCleanupRequired(job *state.Job) {
-	if job == nil || job.ProcessWorkspace == nil || job.ProcessWorkspace.CleanupState == state.ProcessWorkspaceAssignmentCleanupConfirmed {
-		return
-	}
-	job.ProcessWorkspace.CleanupRequired = true
-	job.ProcessWorkspace.CleanupState = state.ProcessWorkspaceAssignmentCleanupRequired
-	job.ProcessWorkspace.LastError = ""
-}
-
 func (a *ManagerAllocator) markNotReady(ctx context.Context, allocation ProcessWorkspaceAllocation, code string, cause error) (ProcessWorkspaceAllocation, error) {
 	held, markErr := a.State.MarkProcessWorkspaceFailure(ctx, allocation.Association.WorkspaceID, allocation.Association.ReservationID, code)
 	allocation.Association = held

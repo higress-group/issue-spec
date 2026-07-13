@@ -735,8 +735,8 @@ func TestRunOnceCreatesResumeCandidateForKnownSession(t *testing.T) {
 		t.Fatalf("resume candidate not queued: %+v", result.Jobs)
 	}
 	for _, job := range store.state.Jobs {
-		if job.ExactProcessID != "PROCESS-008" {
-			t.Fatalf("poll job exact process id=%q", job.ExactProcessID)
+		if job.CommandPrompt != "--process PROCESS-008 continue work" {
+			t.Fatalf("poll job prompt=%q", job.CommandPrompt)
 		}
 	}
 }

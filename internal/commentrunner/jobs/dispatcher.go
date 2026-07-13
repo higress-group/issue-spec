@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,7 +27,6 @@ import (
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/model"
-	"github.com/higress-group/issue-spec/internal/processworkspace"
 	"github.com/higress-group/issue-spec/internal/sandbox"
 	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/templates"
@@ -40,10 +38,7 @@ var ErrNoReadyJob = errors.New("no ready queued job")
 const workspaceLockResidualDiagnostic = "workspace lock recovered from residual lock file"
 
 var errDispatchCancelled = errors.New("runner job was cancelled during dispatch")
-var errSnapshotProcessWorkspaceAssignmentChanged = errors.New("snapshot PROCESS workspace assignment changed after validation")
-
 var authDiagnosticSecretPattern = regexp.MustCompile(`(?i)(["']?[a-z0-9_]*(?:token|secret)[a-z0-9_]*["']?\s*[:=]\s*["']?)([^"',\s}]+)`)
-var processWorkspaceIDSanitizer = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 type Store interface {
 	Load(context.Context) (state.RunnerState, error)
@@ -633,14 +628,6 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 		}
 	}
 	defer releaseLock()
-	artifacts, err := d.artifacts(ctx, job)
-	if err != nil {
-		return d.fail(ctx, job.ID, "process-workspace", err)
-	}
-	binding, job, processClass, err := d.prepareProcessWorkspace(ctx, job, repo, binding, artifacts)
-	if err != nil {
-		return d.fail(ctx, job.ID, "process-workspace", err)
-	}
 	if d.EvidencePreGate != nil {
 		if credentialLease == nil || strings.TrimSpace(credentialLease.IssueToken.HostPath) == "" {
 			return d.fail(ctx, job.ID, "evidence-pre-gate", errors.New("delegated evidence credential is unavailable"))
@@ -656,7 +643,7 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 		}
 	}
 
-	env, bundle, prompt, err := d.prepareExecutionWithProcess(ctx, job, command, publicID, repo, binding, session, credentialLease, artifacts, processClass)
+	env, bundle, prompt, err := d.prepareExecution(ctx, job, command, publicID, repo, binding, session, credentialLease)
 	if err != nil {
 		return d.fail(ctx, job.ID, "execution-inputs", err)
 	}
@@ -701,7 +688,7 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 		var partial *acpx.PartialDispatchError
 		if errors.As(err, &partial) && hasStableDispatchMetadata(partial.Result) {
 			if isRecoverableOutputSummaryError(err) {
-				return d.completeWithCoordinatorSummaryWarning(ctx, job.ID, command, publicID, session, binding.Workspace, partial.Result, processClass, err)
+				return d.completeWithCoordinatorSummaryWarning(ctx, job.ID, command, publicID, session, binding.Workspace, partial.Result, err)
 			}
 			return d.failWithDispatchMetadata(ctx, job.ID, command, publicID, session, binding.Workspace, partial.Result, "coordinator-summary", err)
 		}
@@ -711,14 +698,14 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 		releaseLock()
 		if hasStableDispatchMetadata(dispatch) {
 			if isRecoverableDispatchSummaryValidationError(err) {
-				return d.completeWithCoordinatorSummaryWarning(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, processClass, err)
+				return d.completeWithCoordinatorSummaryWarning(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, err)
 			}
 			return d.failWithDispatchMetadata(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, "coordinator-summary", err)
 		}
 		return d.fail(ctx, job.ID, "coordinator-summary", err)
 	}
 	terminal := statusFromSummary(dispatch.Output.Summary)
-	if err := d.complete(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, processClass, terminal); err != nil {
+	if err := d.complete(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, terminal); err != nil {
 		releaseLock()
 		if errors.Is(err, errDispatchCancelled) {
 			return cancelledDuringDispatchResult(job.ID), nil
@@ -866,281 +853,15 @@ func (d *Dispatcher) prepareWorkspace(ctx context.Context, job state.Job, comman
 	return binding, session, err
 }
 
-func (d *Dispatcher) prepareProcessWorkspace(ctx context.Context, job state.Job, repo RepositoryInfo, binding workspace.Binding, artifacts []model.Artifact) (workspace.Binding, state.Job, processworkspace.ExecutionClass, error) {
-	exact := strings.TrimSpace(job.ExactProcessID)
-	if exact == "" {
-		if job.ProcessWorkspace != nil {
-			return binding, job, "", errors.New("orchestration job without exact PROCESS carries a workspace assignment")
-		}
-		// An empty selector is the ordinary repository-backed runner path, not
-		// an inferred orchestration PROCESS. Preserve the managed session binding
-		// so evidence, stable runtime paths, and stored resume cwd retain their
-		// pre-PROCESS compatibility semantics without allocating a PROCESS lease.
-		return binding, job, "", nil
-	}
-	selection, err := SelectTrustedProcessWorkspace(artifacts, exact)
-	if err != nil {
-		return binding, job, "", err
-	}
-	provider, ok := d.Workspaces.(ProcessWorkspaceAllocatorProvider)
-	if !ok {
-		return binding, job, "", errors.New("process workspace allocator provider is unavailable")
-	}
-	allocator, err := provider.ProcessWorkspaceAllocator(ctx, ProcessWorkspaceAllocatorRequest{IntegrationRoot: binding.Workspace.Path})
-	if err != nil {
-		return binding, job, "", err
-	}
-	var allocation ProcessWorkspaceAllocation
-	if job.ProcessWorkspace != nil {
-		if job.ProcessWorkspace.ProcessID != exact {
-			return binding, job, "", errors.New("durable process workspace assignment targets a different PROCESS")
-		}
-		allocation, err = allocator.Reconcile(ctx, job.ProcessWorkspace.WorkspaceID)
-		if err == nil {
-			err = validateAssignedProcessWorkspace(*job.ProcessWorkspace, allocation)
-		}
-	} else {
-		request, requestErr := processWorkspaceRequest(job, repo, binding, *selection, d.now())
-		if requestErr != nil {
-			return binding, job, "", requestErr
-		}
-		allocation, err = allocator.Allocate(ctx, request)
-	}
-	if err != nil {
-		return binding, job, "", err
-	}
-	if err := validateProcessWorkspaceReady(allocation); err != nil {
-		return binding, job, "", err
-	}
-	assignment := state.ProcessWorkspaceAssignment{ProcessID: allocation.Association.ProcessID, WorkspaceID: allocation.Association.WorkspaceID,
-		ReservationID: allocation.Association.ReservationID, AssociationGeneration: allocation.Generation, ReservationIdentity: allocation.Association.ReservationIdentity}
-	if job.ProcessWorkspace == nil {
-		if err := d.Store.Update(ctx, func(st *state.RunnerState) error {
-			current, ok := st.Jobs[job.ID]
-			if !ok {
-				return fmt.Errorf("job %q not found", job.ID)
-			}
-			if current.ProcessWorkspace != nil {
-				return errors.New("process workspace assignment changed concurrently")
-			}
-			current.ProcessWorkspace = &assignment
-			return st.UpsertJob(current)
-		}); err != nil {
-			return binding, job, "", err
-		}
-		job, err = d.loadJob(ctx, job.ID)
-		if err != nil {
-			return binding, job, "", err
-		}
-	}
-	if allocation.Inspection != nil {
-		path := strings.TrimSpace(allocation.Inspection.Lease.WorktreePath)
-		if path == "" {
-			return binding, job, "", errors.New("prepared process workspace lacks assigned local path")
-		}
-		binding.AcpxWorkingDirectory = path
-		binding.SandboxWorkspacePath = path
-	} else if allocation.Association.Mode == processworkspace.ModeNone {
-		path, pathErr := orchestrationWorkingDirectory(job)
-		if pathErr != nil {
-			return binding, job, "", pathErr
-		}
-		binding.AcpxWorkingDirectory, binding.SandboxWorkspacePath = path, path
-	}
-	return binding, job, allocation.Association.ExecutionClass, nil
-}
-
-func orchestrationWorkingDirectory(job state.Job) (string, error) {
-	digest := sha256.Sum256([]byte(job.Repo + "\x00" + job.ID))
-	path := filepath.Join(os.TempDir(), "issue-spec-orchestration", hex.EncodeToString(digest[:8]))
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
-func processWorkspaceRequest(job state.Job, repo RepositoryInfo, binding workspace.Binding, selection TrustedProcessSelection, now time.Time) (ProcessWorkspaceAllocationRequest, error) {
-	class := selection.ExecutionClass
-	workspaceID := "runner-" + canonicalProcessWorkspaceID(job.ID)
-	host := processWorkspaceProviderHost(repo.Binding)
-	if host == "" {
-		return ProcessWorkspaceAllocationRequest{}, errors.New("repository binding lacks a canonical provider host")
-	}
-	ownerToken, err := randomProcessWorkspaceOwnerToken()
-	if err != nil {
-		return ProcessWorkspaceAllocationRequest{}, err
-	}
-	request := ProcessWorkspaceAllocationRequest{Repository: job.Repo, ProviderKey: strings.ToLower(strings.TrimSpace(repo.Binding.ProviderKey)),
-		ServerInstance: processWorkspaceServerInstance(repo.Binding), ProviderHost: host,
-		ProcessID: selection.Artifact.Comment.ID, WorkspaceID: workspaceID, ExecutionClass: class,
-		BaseSHA: strings.TrimSpace(binding.Workspace.CheckoutSHA), Owner: processworkspace.LeaseOwner{CoordinatorID: "runner", AgentSession: job.ID, Token: ownerToken, AcquiredAt: now}}
-	if selection.Workspace != nil {
-		portable := selection.Workspace
-		request.WorkspaceID = portable.WorkspaceID
-		request.BaseSHA = portable.BaseSHA
-		if request.BaseSHA == "" {
-			request.BaseSHA = portable.DetachedRevision
-		}
-		request.Branch = portable.Branch
-		request.WriteOwnership = append([]string(nil), portable.WriteOwnership...)
-		request.SharedTouchpoints = append([]string(nil), portable.SharedTouchpoints...)
-		request.IntegrationOwner = portable.IntegrationOwner
-		request.RuntimeResources = append([]processworkspace.RuntimeResource(nil), portable.RuntimeResources...)
-		request.ExternalMode = portable.Mode
-	}
-	if class == processworkspace.ExecutionChangeBearing && len(request.WriteOwnership) == 0 {
-		return ProcessWorkspaceAllocationRequest{}, errors.New("change-bearing PROCESS lacks managed write ownership metadata")
-	}
-	if class == processworkspace.ExecutionChangeBearing && request.Branch == "" {
-		request.Branch = "issue-spec/" + strings.ToLower(selection.Artifact.Comment.ID) + "-" + canonicalProcessWorkspaceID(job.ID)
-	}
-	if (class == processworkspace.ExecutionChangeBearing || class == processworkspace.ExecutionReview || class == processworkspace.ExecutionVerification) && request.BaseSHA == "" {
-		return ProcessWorkspaceAllocationRequest{}, errors.New("PROCESS workspace requires an exact base revision")
-	}
-	return request, nil
-}
-
-func validateAssignedProcessWorkspace(assignment state.ProcessWorkspaceAssignment, allocation ProcessWorkspaceAllocation) error {
-	a := allocation.Association
-	if a.ProcessID != assignment.ProcessID || a.WorkspaceID != assignment.WorkspaceID || a.ReservationID != assignment.ReservationID || a.ReservationIdentity != assignment.ReservationIdentity {
-		return errors.New("reconciled process workspace does not match durable job assignment")
-	}
-	return nil
-}
-
-func validateProcessWorkspaceReady(allocation ProcessWorkspaceAllocation) error {
-	if allocation.Association.Lifecycle != state.ProcessWorkspacePrepared || allocation.Association.NeedsReconcile {
-		return ErrProcessWorkspaceNotReady
-	}
-	if allocation.Association.Mode != processworkspace.ModeNone && allocation.Inspection == nil {
-		return ErrProcessWorkspaceNotReady
-	}
-	if inspection := allocation.Inspection; inspection != nil {
-		if !inspection.Registered || !inspection.Present || inspection.Dirty || len(inspection.Problems) != 0 || inspection.Lease.Portable.State != processworkspace.StatePrepared {
-			return ErrProcessWorkspaceNotReady
-		}
-	}
-	return nil
-}
-
-func snapshotExecutionClass(class processworkspace.ExecutionClass) bool {
-	return class == processworkspace.ExecutionReview || class == processworkspace.ExecutionVerification
-}
-
-type snapshotProcessWorkspaceIdentity struct {
-	ExactProcessID string
-	Assignment     state.ProcessWorkspaceAssignment
-}
-
-func (i snapshotProcessWorkspaceIdentity) matches(job state.Job) bool {
-	return job.ExactProcessID == i.ExactProcessID && job.ProcessWorkspace != nil && *job.ProcessWorkspace == i.Assignment
-}
-
-func (d *Dispatcher) captureSnapshotProcessWorkspacePostcondition(ctx context.Context, job state.Job, expectedClass processworkspace.ExecutionClass) (snapshotProcessWorkspaceIdentity, error) {
-	if !snapshotExecutionClass(expectedClass) {
-		return snapshotProcessWorkspaceIdentity{}, nil
-	}
-	exact := strings.TrimSpace(job.ExactProcessID)
-	if exact == "" || job.ProcessWorkspace == nil || job.ProcessWorkspace.ProcessID != exact {
-		return snapshotProcessWorkspaceIdentity{}, errors.New("snapshot completion requires the exact durable PROCESS workspace assignment")
-	}
-	provider, ok := d.Workspaces.(ProcessWorkspaceAllocatorProvider)
-	if !ok {
-		return snapshotProcessWorkspaceIdentity{}, errors.New("snapshot completion requires a process workspace allocator provider")
-	}
-	allocator, err := provider.ProcessWorkspaceAllocator(ctx, ProcessWorkspaceAllocatorRequest{IntegrationRoot: job.Workspace.Path})
-	if err != nil {
-		return snapshotProcessWorkspaceIdentity{}, fmt.Errorf("snapshot completion allocator: %w", err)
-	}
-	allocation, err := allocator.Reconcile(ctx, job.ProcessWorkspace.WorkspaceID)
-	if err != nil {
-		return snapshotProcessWorkspaceIdentity{}, fmt.Errorf("snapshot completion reconcile: %w", err)
-	}
-	if err := validateAssignedProcessWorkspace(*job.ProcessWorkspace, allocation); err != nil {
-		return snapshotProcessWorkspaceIdentity{}, fmt.Errorf("snapshot completion assignment: %w", err)
-	}
-	if allocation.Association.ExecutionClass != expectedClass || allocation.Association.Mode != processworkspace.ModeSnapshot {
-		return snapshotProcessWorkspaceIdentity{}, errors.New("snapshot completion execution class or mode changed")
-	}
-	if err := validateProcessWorkspaceReady(allocation); err != nil {
-		return snapshotProcessWorkspaceIdentity{}, fmt.Errorf("snapshot completion inspection: %w", err)
-	}
-	inspection := allocation.Inspection
-	if inspection == nil || !associationMatchesInspection(allocation.Association, *inspection) {
-		return snapshotProcessWorkspaceIdentity{}, errors.New("snapshot completion inspection does not match the durable association")
-	}
-	expectedRevision := strings.TrimSpace(allocation.Association.BaseSHA)
-	if expectedRevision == "" || !strings.EqualFold(strings.TrimSpace(inspection.Lease.Portable.DetachedRevision), expectedRevision) ||
-		!strings.EqualFold(strings.TrimSpace(inspection.Head), expectedRevision) {
-		return snapshotProcessWorkspaceIdentity{}, errors.New("snapshot completion HEAD drifted from the detached revision")
-	}
-	return snapshotProcessWorkspaceIdentity{ExactProcessID: job.ExactProcessID, Assignment: *job.ProcessWorkspace}, nil
-}
-
-func (d *Dispatcher) validateSnapshotProcessWorkspacePostcondition(ctx context.Context, job state.Job, expectedClass processworkspace.ExecutionClass) error {
-	_, err := d.captureSnapshotProcessWorkspacePostcondition(ctx, job, expectedClass)
-	return err
-}
-
-func canonicalProcessWorkspaceID(value string) string {
-	value = processWorkspaceIDSanitizer.ReplaceAllString(strings.TrimSpace(value), "-")
-	value = strings.Trim(value, "-._")
-	if value == "" {
-		return "job"
-	}
-	return value
-}
-
-func randomProcessWorkspaceOwnerToken() (string, error) {
-	var value [16]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return "", fmt.Errorf("generate process workspace owner token: %w", err)
-	}
-	return "owner-" + hex.EncodeToString(value[:]), nil
-}
-
-func processWorkspaceServerInstance(binding state.RepositoryBindingSnapshot) string {
-	if strings.EqualFold(binding.ProviderKey, "github") {
-		return "public"
-	}
-	value := strings.ToLower(canonicalProcessWorkspaceID(binding.Source))
-	if value == "" || value == "job" {
-		return "default"
-	}
-	return value
-}
-
-func processWorkspaceProviderHost(binding state.RepositoryBindingSnapshot) string {
-	for _, raw := range []string{binding.CloneURL, binding.WebURL} {
-		if parsed, err := url.Parse(raw); err == nil && parsed.Hostname() != "" {
-			return strings.ToLower(parsed.Hostname())
-		}
-		if at := strings.LastIndex(raw, "@"); at >= 0 {
-			raw = raw[at+1:]
-		}
-		if host, _, ok := strings.Cut(raw, ":"); ok && !strings.Contains(host, "/") {
-			return strings.ToLower(host)
-		}
-	}
-	return ""
-}
-
 func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string, repo RepositoryInfo, binding workspace.Binding, session state.PublicSession, lease *credentials.Lease) (ExecutionEnvironment, runnercontext.Bundle, string, error) {
 	artifacts, err := d.artifacts(ctx, job)
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
-	return d.prepareExecutionWithProcess(ctx, job, command, publicID, repo, binding, session, lease, artifacts, "")
-}
-
-func (d *Dispatcher) prepareExecutionWithProcess(ctx context.Context, job state.Job, command runnercontext.CommandVerb, publicID string, repo RepositoryInfo, binding workspace.Binding, session state.PublicSession, lease *credentials.Lease, artifacts []model.Artifact, processClass processworkspace.ExecutionClass) (ExecutionEnvironment, runnercontext.Bundle, string, error) {
 	execBinding := binding
-	if processClass == "" {
-		var err error
-		execBinding, err = resumeExecutionBinding(command, binding, session)
-		if err != nil {
-			return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
-		}
+	execBinding, err = resumeExecutionBinding(command, binding, session)
+	if err != nil {
+		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
 	bundle, err := runnercontext.BuildBundle(runnercontext.BuildOptions{
 		Command: runnercontext.CommandCandidate{
@@ -1201,7 +922,6 @@ func (d *Dispatcher) prepareExecutionWithProcess(ctx context.Context, job state.
 		RuntimeXDGConfigHome: runtimePaths.xdgConfigHome,
 		RuntimeCodexHome:     runtimePaths.codexHome,
 		AcpxAgent:            job.CoordinatorKind,
-		WorkspaceReadOnly:    processClass == processworkspace.ExecutionReview || processClass == processworkspace.ExecutionVerification,
 	}
 	if lease != nil {
 		sandboxRequest.FileCapabilities = lease.FileCapabilities()
@@ -1547,25 +1267,7 @@ func (d *Dispatcher) persistStatusCommentInIntent(ctx context.Context, jobID str
 	})
 }
 
-func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, processClass processworkspace.ExecutionClass, terminal state.LifecycleStatus, diagnostics ...string) error {
-	var validatedSnapshot *snapshotProcessWorkspaceIdentity
-	if terminal == state.StatusCompleted && snapshotExecutionClass(processClass) {
-		current, err := d.loadJob(ctx, jobID)
-		if err != nil {
-			return err
-		}
-		if current.Status != state.StatusCancelled {
-			identity, err := d.captureSnapshotProcessWorkspacePostcondition(ctx, current, processClass)
-			if err != nil {
-				result, failErr := d.fail(ctx, jobID, "process-workspace-postcondition", err)
-				if result.Status == state.StatusCancelled {
-					return errDispatchCancelled
-				}
-				return failErr
-			}
-			validatedSnapshot = &identity
-		}
-	}
+func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, terminal state.LifecycleStatus, diagnostics ...string) error {
 	now := d.now()
 	cancelled := false
 	err := d.Store.Update(ctx, func(st *state.RunnerState) error {
@@ -1577,9 +1279,6 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 		if current.Status == state.StatusCancelled {
 			cancelled = true
 			return nil
-		}
-		if validatedSnapshot != nil && !validatedSnapshot.matches(current) {
-			return errSnapshotProcessWorkspaceAssignmentChanged
 		}
 		job, err := st.UpdateJobStatus(jobID, terminal, now, diagnostics...)
 		if err != nil {
@@ -1597,7 +1296,6 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 		job.Workspace.LastUsedAt = now
 		job.Workspace.CleanupAfter = workspaceMeta.CleanupAfter
 		job.DispatchIntent.AcpxRecordID = meta.StableRecordID
-		MarkTerminalWorkspaceCleanupRequired(&job)
 		if err := st.UpsertWorkspace(job.Workspace); err != nil {
 			return err
 		}
@@ -1639,32 +1337,18 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 		return st.UpsertPublicSession(session)
 	})
 	if err != nil {
-		if errors.Is(err, errSnapshotProcessWorkspaceAssignmentChanged) {
-			result, failErr := d.fail(ctx, jobID, "process-workspace-postcondition", err)
-			if result.Status == state.StatusCancelled {
-				return errDispatchCancelled
-			}
-			return failErr
-		}
 		return err
 	}
 	if cancelled {
 		return errDispatchCancelled
 	}
-	terminalJob, loadErr := d.loadJob(ctx, jobID)
-	if loadErr != nil {
-		return loadErr
-	}
-	if _, cleanupStateErr := d.cleanupTerminalProcessWorkspace(ctx, terminalJob); cleanupStateErr != nil {
-		return cleanupStateErr
-	}
 	return nil
 }
 
-func (d *Dispatcher) completeWithCoordinatorSummaryWarning(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, processClass processworkspace.ExecutionClass, cause error) (Result, error) {
+func (d *Dispatcher) completeWithCoordinatorSummaryWarning(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, cause error) (Result, error) {
 	diagnostic := coordinatorSummaryWarning(cause)
 	dispatch = withoutCoordinatorSummary(dispatch)
-	if err := d.complete(ctx, jobID, command, publicID, session, workspaceMeta, dispatch, processClass, state.StatusCompleted, diagnostic); err != nil {
+	if err := d.complete(ctx, jobID, command, publicID, session, workspaceMeta, dispatch, state.StatusCompleted, diagnostic); err != nil {
 		if errors.Is(err, errDispatchCancelled) {
 			return cancelledDuringDispatchResult(jobID), nil
 		}
@@ -1713,7 +1397,6 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 		next.Workspace = workspaceMeta
 		next.Workspace.LastUsedAt = now
 		next.DispatchIntent.AcpxRecordID = meta.StableRecordID
-		MarkTerminalWorkspaceCleanupRequired(&next)
 		if err := st.UpsertWorkspace(next.Workspace); err != nil {
 			return err
 		}
@@ -1764,11 +1447,6 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 	if cancelled {
 		return cancelledDuringDispatchResult(jobID), nil
 	}
-	if failed.ID != "" {
-		if _, cleanupStateErr := d.cleanupTerminalProcessWorkspace(ctx, failed); cleanupStateErr != nil {
-			return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: safeError(cleanupStateErr)}, cleanupStateErr
-		}
-	}
 	if failed.ID != "" && d.Writeback != nil {
 		_, _ = d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase, Err: cause})
 	}
@@ -1795,7 +1473,6 @@ func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error)
 		if err != nil {
 			return err
 		}
-		MarkTerminalWorkspaceCleanupRequired(&next)
 		if next.PublicSessionID != "" {
 			if session, ok := st.GetPublicSession(next.Repo, next.PublicSessionID); ok {
 				session.Status = state.StatusFailed
@@ -1814,11 +1491,6 @@ func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error)
 	}
 	if cancelled {
 		return cancelledDuringDispatchResult(jobID), nil
-	}
-	if failed.ID != "" {
-		if _, cleanupStateErr := d.cleanupTerminalProcessWorkspace(ctx, failed); cleanupStateErr != nil {
-			return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: safeError(cleanupStateErr)}, cleanupStateErr
-		}
 	}
 	if failed.ID != "" && d.Writeback != nil {
 		_, _ = d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase, Err: cause})

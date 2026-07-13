@@ -333,6 +333,11 @@ func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing
 		t.Fatalf("sandbox request count = %d, want 2", len(sandbox.requests))
 	}
 	newReq, resumeReq := sandbox.requests[0], sandbox.requests[1]
+	for phase, req := range map[string]SandboxRequest{"new": newReq, "resume": resumeReq} {
+		if req.WorkspacePath != workspacePath || req.AcpxWorkingDirectory != workspacePath {
+			t.Fatalf("%s coordinator escaped session clone: workspace=%q cwd=%q want=%q", phase, req.WorkspacePath, req.AcpxWorkingDirectory, workspacePath)
+		}
+	}
 	for name, pair := range map[string][2]string{
 		"HOME":            {newReq.RuntimeHome, resumeReq.RuntimeHome},
 		"GH_CONFIG_DIR":   {newReq.RuntimeGHConfigDir, resumeReq.RuntimeGHConfigDir},
@@ -357,7 +362,7 @@ func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing
 	}
 }
 
-func TestRunNextResumeUsesStoredAcpxCWDForRuntimeCompatibility(t *testing.T) {
+func TestRunNextResumeKeepsCoordinatorInSessionClone(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 11, 45, 0, 0, time.UTC)
 	realRoot := t.TempDir()
@@ -432,18 +437,18 @@ func TestRunNextResumeUsesStoredAcpxCWDForRuntimeCompatibility(t *testing.T) {
 		t.Fatalf("sandbox request count = %d, want 1", len(sandbox.requests))
 	}
 	req := sandbox.requests[0]
-	if req.WorkspacePath != legacyPath {
-		t.Fatalf("sandbox workspace path = %q, want stored cwd %q", req.WorkspacePath, legacyPath)
+	if req.WorkspacePath != canonicalPath {
+		t.Fatalf("sandbox workspace path = %q, want session clone %q", req.WorkspacePath, canonicalPath)
 	}
-	if req.AcpxWorkingDirectory != legacyPath {
-		t.Fatalf("acpx working directory = %q, want stored cwd %q", req.AcpxWorkingDirectory, legacyPath)
+	if req.AcpxWorkingDirectory != canonicalPath {
+		t.Fatalf("acpx working directory = %q, want session clone %q", req.AcpxWorkingDirectory, canonicalPath)
 	}
-	wantRoot, err := stableSessionRuntimeRoot(legacyPath, "o/r", "ps-existing")
+	wantRoot, err := stableSessionRuntimeRoot(canonicalPath, "o/r", "ps-existing")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if req.RuntimeHome != filepath.Join(wantRoot, "home") {
-		t.Fatalf("runtime HOME = %q, want legacy cwd root %q", req.RuntimeHome, filepath.Join(wantRoot, "home"))
+		t.Fatalf("runtime HOME = %q, want session clone root %q", req.RuntimeHome, filepath.Join(wantRoot, "home"))
 	}
 }
 

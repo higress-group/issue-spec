@@ -21,7 +21,7 @@ func TestEventDecisionAppliesJobLocallyAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Outcome != state.DeliveryOutcomeJob || decision.Job.TriggerCommentID != 71 || decision.Job.Repo != "owner/repo" || decision.Job.ExactProcessID != "PROCESS-008" {
+	if decision.Outcome != state.DeliveryOutcomeJob || decision.Job.TriggerCommentID != 71 || decision.Job.Repo != "owner/repo" || decision.Job.CommandPrompt != "--process PROCESS-008 verify event path" {
 		t.Fatalf("decision=%+v", decision)
 	}
 	current := state.NewState()

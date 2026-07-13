@@ -1,7 +1,6 @@
 package state
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -15,7 +14,6 @@ func terminalJob(id, idemKey string, finishedAt time.Time) Job {
 		AcpxRecordID:          "rec-1",
 		CommandName:           "new",
 		CommandPrompt:         "a long prompt that should not survive tombstoning",
-		ExactProcessID:        "PROCESS-020",
 		CommandIdempotencyKey: idemKey,
 		StatusWritebackKey:    "wb-" + id,
 		StatusCommentID:       501,
@@ -48,7 +46,7 @@ func TestCompactTombstonesTerminalJobButKeepsIdempotency(t *testing.T) {
 		t.Fatalf("tombstone kept heavy fields: %+v", job)
 	}
 	// ...but idempotency-relevant fields retained.
-	if job.CommandIdempotencyKey != "cmd:o/r:101" || job.Status != StatusCompleted || job.StatusCommentID != 501 || job.ExactProcessID != "PROCESS-020" {
+	if job.CommandIdempotencyKey != "cmd:o/r:101" || job.Status != StatusCompleted || job.StatusCommentID != 501 {
 		t.Fatalf("tombstone dropped idempotency fields: %+v", job)
 	}
 
@@ -154,232 +152,6 @@ func TestCompactPreservesTerminalJobWithPendingCredentialCleanup(t *testing.T) {
 	if !ok || !kept.CredentialCleanup.Pending() || kept.CommandPrompt == "" ||
 		report.JobsPruned != 0 || report.JobsTombstoned != 0 {
 		t.Fatalf("pending cleanup was compacted: report=%+v job=%+v ok=%v", report, kept, ok)
-	}
-}
-
-func TestCompactTerminalJobsPreserveExactProcessAndPendingWorkspaceCleanup(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0).UTC()
-	for _, status := range []LifecycleStatus{StatusCompleted, StatusFailed, StatusCancelled} {
-		t.Run(string(status), func(t *testing.T) {
-			st := NewState()
-			association := testProcessWorkspaceAssociation("ws-retention-"+string(status), "PROCESS-020")
-			if _, err := st.ProcessWorkspaces.Reserve(association); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := st.ProcessWorkspaces.Transition(association.WorkspaceID, association.ReservationID,
-				ProcessWorkspaceAllocating, ProcessWorkspaceCleanupPending); err != nil {
-				t.Fatal(err)
-			}
-			st.ProcessWorkspaces.Generation = 1
-			assignment := ProcessWorkspaceAssignment{
-				ProcessID: association.ProcessID, WorkspaceID: association.WorkspaceID, ReservationID: association.ReservationID,
-				AssociationGeneration: 1, ReservationIdentity: association.ReservationIdentity, CleanupRequired: true,
-				CleanupState: ProcessWorkspaceAssignmentCleanupPending, LastError: "cleanup_failed",
-			}
-			job := terminalJob("job-"+string(status), "cmd:"+string(status), now.Add(-30*24*time.Hour))
-			job.Status = status
-			job.ProcessWorkspace = &assignment
-			if _, _, err := st.CreateCommandJob(job); err != nil {
-				t.Fatal(err)
-			}
-
-			report := st.Compact(now, RetentionPolicy{TerminalTTL: time.Hour, MaxTerminalJobs: 1})
-			kept, ok := st.Jobs[job.ID]
-			if !ok || report.JobsTombstoned != 1 || report.JobsPruned != 0 {
-				t.Fatalf("active cleanup terminal job compacted incorrectly: report=%+v job=%+v ok=%v", report, kept, ok)
-			}
-			if kept.ExactProcessID != "PROCESS-020" || kept.ProcessWorkspace == nil || *kept.ProcessWorkspace != assignment {
-				t.Fatalf("terminal tombstone lost process target or cleanup assignment: %+v", kept)
-			}
-			if kept.CommandPrompt != "" || kept.Workspace.Path != "" || kept.Acpx.CWD != "" {
-				t.Fatalf("terminal tombstone retained machine-local payload: %+v", kept)
-			}
-			if err := st.Validate(); err != nil {
-				t.Fatalf("compacted state invalid: %v", err)
-			}
-
-			path := filepath.Join(t.TempDir(), "state.json")
-			if err := SaveFile(path, st); err != nil {
-				t.Fatal(err)
-			}
-			reopened, err := LoadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := reopened.Jobs[job.ID]
-			if got.ExactProcessID != job.ExactProcessID || got.ProcessWorkspace == nil || *got.ProcessWorkspace != assignment {
-				t.Fatalf("save/reopen changed cleanup tombstone: %+v", got)
-			}
-		})
-	}
-}
-
-func TestCompactPreservesRequiredWorkspaceCleanupUntilConfirmed(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0).UTC()
-	st := NewState()
-	association := testProcessWorkspaceAssociation("ws-retention-required", "PROCESS-020")
-	if _, err := st.ProcessWorkspaces.Reserve(association); err != nil {
-		t.Fatal(err)
-	}
-	st.ProcessWorkspaces.Generation = 1
-	assignment := ProcessWorkspaceAssignment{ProcessID: association.ProcessID, WorkspaceID: association.WorkspaceID,
-		ReservationID: association.ReservationID, AssociationGeneration: 1, ReservationIdentity: association.ReservationIdentity,
-		CleanupRequired: true, CleanupState: ProcessWorkspaceAssignmentCleanupRequired}
-	job := terminalJob("job-required", "cmd:required", now.Add(-30*24*time.Hour))
-	job.ProcessWorkspace = &assignment
-	if _, _, err := st.CreateCommandJob(job); err != nil {
-		t.Fatal(err)
-	}
-	if report := st.Compact(now, RetentionPolicy{TerminalTTL: time.Hour}); report.JobsPruned != 0 {
-		t.Fatalf("required cleanup crossed retention deletion boundary: %+v", report)
-	}
-	if got := st.Jobs[job.ID].ProcessWorkspace; got == nil || got.CleanupState != ProcessWorkspaceAssignmentCleanupRequired {
-		t.Fatalf("required cleanup intent was lost: %+v", got)
-	}
-}
-
-func TestProcessWorkspaceCleanupRetentionFailsClosedUntilConfirmed(t *testing.T) {
-	confirmed := ProcessWorkspaceAssignment{CleanupState: ProcessWorkspaceAssignmentCleanupConfirmed}
-	tests := []struct {
-		name       string
-		assignment *ProcessWorkspaceAssignment
-		wantKeep   bool
-	}{
-		{name: "no assignment", wantKeep: false},
-		{name: "unmarked", assignment: &ProcessWorkspaceAssignment{}, wantKeep: true},
-		{name: "required", assignment: &ProcessWorkspaceAssignment{CleanupRequired: true, CleanupState: ProcessWorkspaceAssignmentCleanupRequired}, wantKeep: true},
-		{name: "pending", assignment: &ProcessWorkspaceAssignment{CleanupRequired: true, CleanupState: ProcessWorkspaceAssignmentCleanupPending}, wantKeep: true},
-		{name: "unknown", assignment: &ProcessWorkspaceAssignment{CleanupState: ProcessWorkspaceCleanupState("future")}, wantKeep: true},
-		{name: "inconsistent confirmed", assignment: &ProcessWorkspaceAssignment{CleanupRequired: true, CleanupState: ProcessWorkspaceAssignmentCleanupConfirmed}, wantKeep: true},
-		{name: "confirmed", assignment: &confirmed, wantKeep: false},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			job := Job{ProcessWorkspace: test.assignment}
-			if got := job.processWorkspaceCleanupUnconfirmed(); got != test.wantKeep {
-				t.Fatalf("processWorkspaceCleanupUnconfirmed()=%v want %v", got, test.wantKeep)
-			}
-		})
-	}
-}
-
-func TestCompactUnmarkedWorkspaceAssignmentRetainedUntilConfirmed(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0).UTC()
-	st := NewState()
-	association := testProcessWorkspaceAssociation("ws-retention-unmarked", "PROCESS-020")
-	if _, err := st.ProcessWorkspaces.Reserve(association); err != nil {
-		t.Fatal(err)
-	}
-	st.ProcessWorkspaces.Generation = 1
-	assignment := ProcessWorkspaceAssignment{ProcessID: association.ProcessID, WorkspaceID: association.WorkspaceID,
-		ReservationID: association.ReservationID, AssociationGeneration: 1, ReservationIdentity: association.ReservationIdentity}
-	job := terminalJob("job-unmarked", "cmd:unmarked", now.Add(-30*24*time.Hour))
-	job.ProcessWorkspace = &assignment
-	if _, _, err := st.CreateCommandJob(job); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Validate(); err != nil {
-		t.Fatalf("valid unmarked assignment rejected: %v", err)
-	}
-	policy := RetentionPolicy{TerminalTTL: time.Hour, MaxTerminalJobs: 1}
-	if report := st.Compact(now, policy); report.JobsPruned != 0 {
-		t.Fatalf("unmarked assignment crossed TTL/cap deletion boundary: %+v", report)
-	}
-	if _, ok := st.Jobs[job.ID]; !ok {
-		t.Fatal("unmarked assignment job was deleted")
-	}
-	if got := st.Idempotency.CommandJobs[job.CommandIdempotencyKey]; got != job.ID {
-		t.Fatalf("unmarked assignment lost idempotency index: %q", got)
-	}
-
-	if _, err := st.ProcessWorkspaces.Transition(association.WorkspaceID, association.ReservationID,
-		ProcessWorkspaceAllocating, ProcessWorkspaceCleanupPending); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.ProcessWorkspaces.ConfirmReleased(association.WorkspaceID, association.ReservationID); err != nil {
-		t.Fatal(err)
-	}
-	confirmedJob := st.Jobs[job.ID]
-	confirmed := *confirmedJob.ProcessWorkspace
-	confirmed.CleanupState = ProcessWorkspaceAssignmentCleanupConfirmed
-	confirmedJob.ProcessWorkspace = &confirmed
-	if err := st.UpsertJob(confirmedJob); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Validate(); err != nil {
-		t.Fatalf("confirmed historical assignment rejected: %v", err)
-	}
-	if report := st.Compact(now, policy); report.JobsPruned != 1 {
-		t.Fatalf("confirmed assignment did not cross deletion boundary: %+v", report)
-	}
-	if _, ok := st.Jobs[job.ID]; ok {
-		t.Fatal("confirmed assignment job remained past retention boundary")
-	}
-	if _, ok := st.Idempotency.CommandJobs[job.CommandIdempotencyKey]; ok {
-		t.Fatal("confirmed assignment deletion left idempotency index")
-	}
-}
-
-func TestCompactConfirmedWorkspaceTombstoneAllowsABAAndRetentionDeletion(t *testing.T) {
-	now := time.Now().UTC().Truncate(time.Second)
-	st := NewState()
-	old := testProcessWorkspaceAssociation("ws-retention-aba", "PROCESS-OLD")
-	if _, err := st.ProcessWorkspaces.Reserve(old); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.ProcessWorkspaces.Transition(old.WorkspaceID, old.ReservationID,
-		ProcessWorkspaceAllocating, ProcessWorkspaceCleanupPending); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.ProcessWorkspaces.ConfirmReleased(old.WorkspaceID, old.ReservationID); err != nil {
-		t.Fatal(err)
-	}
-	st.ProcessWorkspaces.Generation = 1
-	assignment := ProcessWorkspaceAssignment{ProcessID: old.ProcessID, WorkspaceID: old.WorkspaceID,
-		ReservationID: old.ReservationID, AssociationGeneration: 1, ReservationIdentity: old.ReservationIdentity,
-		CleanupState: ProcessWorkspaceAssignmentCleanupConfirmed}
-	job := terminalJob("job-confirmed", "cmd:confirmed", now.Add(-time.Hour))
-	job.ProcessWorkspace = &assignment
-	if _, _, err := st.CreateCommandJob(job); err != nil {
-		t.Fatal(err)
-	}
-	if report := st.Compact(now, DefaultRetentionPolicy()); report.JobsTombstoned != 1 || report.JobsPruned != 0 {
-		t.Fatalf("confirmed assignment did not tombstone inside retention: %+v", report)
-	}
-
-	newAttempt := testProcessWorkspaceAssociation(old.WorkspaceID, "PROCESS-NEW")
-	newAttempt.Branch = "process/new"
-	finalizeAssociation(&newAttempt)
-	newAttempt.ReservationID = "reservation:new-retention-attempt"
-	if _, err := st.ProcessWorkspaces.Reserve(newAttempt); err != nil {
-		t.Fatal(err)
-	}
-	st.ProcessWorkspaces.Generation++
-	if err := st.Validate(); err != nil {
-		t.Fatalf("historical tombstone rejected after workspace reuse: %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "state.json")
-	if err := SaveFile(path, st); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := LoadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := reopened.Jobs[job.ID]; got.ExactProcessID != "PROCESS-020" || got.ProcessWorkspace == nil || *got.ProcessWorkspace != assignment {
-		t.Fatalf("historical tombstone changed across reopen: %+v", got)
-	}
-	if current := reopened.ProcessWorkspaces.ByWorkspace[old.WorkspaceID]; current.ReservationID != newAttempt.ReservationID {
-		t.Fatalf("new reservation changed across reopen: %+v", current)
-	}
-	if report := reopened.Compact(now.Add(8*24*time.Hour), DefaultRetentionPolicy()); report.JobsPruned != 1 {
-		t.Fatalf("confirmed tombstone did not cross retention deletion boundary: %+v", report)
-	}
-	if _, ok := reopened.Jobs[job.ID]; ok {
-		t.Fatal("confirmed tombstone remained after retention deletion boundary")
-	}
-	if _, ok := reopened.Idempotency.CommandJobs[job.CommandIdempotencyKey]; ok {
-		t.Fatal("confirmed tombstone deletion left a dangling idempotency index")
 	}
 }
 

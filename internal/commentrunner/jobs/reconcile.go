@@ -11,7 +11,6 @@ import (
 	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
-	"github.com/higress-group/issue-spec/internal/processworkspace"
 	"github.com/higress-group/issue-spec/internal/workspace"
 )
 
@@ -64,15 +63,6 @@ func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 	}
 	var result ReconcileResult
 	for _, job := range st.ListJobs() {
-		if job.Status.Terminal() && job.ProcessWorkspace != nil && (job.ProcessWorkspace.CleanupRequired || job.ProcessWorkspace.CleanupState != state.ProcessWorkspaceAssignmentCleanupConfirmed) {
-			if _, cleanupStateErr := d.cleanupTerminalProcessWorkspace(ctx, job); cleanupStateErr != nil {
-				return result, cleanupStateErr
-			}
-			job, err = d.loadJob(ctx, job.ID)
-			if err != nil {
-				return result, err
-			}
-		}
 		if d.CredentialBroker != nil && job.CredentialCleanup.Status == "" && job.Status != state.StatusQueued {
 			if err := d.beginCredentialCleanup(ctx, job.ID); err != nil {
 				return result, err
@@ -313,7 +303,7 @@ func (d *Dispatcher) reconcileJob(ctx context.Context, job state.Job) (Reconcile
 	if !ok {
 		return d.interrupt(ctx, job, previous, diagnostic)
 	}
-	coordinator, processClass, err := d.coordinatorForStoredJobWithClass(ctx, job)
+	coordinator, err := d.coordinatorForStoredJob(ctx, job)
 	if err != nil {
 		return d.interrupt(ctx, job, previous, "restart reconciliation setup: "+safeError(err))
 	}
@@ -327,7 +317,7 @@ func (d *Dispatcher) reconcileJob(ctx context.Context, job state.Job) (Reconcile
 		if err != nil {
 			return d.interrupt(ctx, job, previous, "restart reconciliation query: "+safeError(err))
 		}
-		return d.applyReconcile(ctx, job, previous, reconciled, processClass)
+		return d.applyReconcile(ctx, job, previous, reconciled)
 	}
 	if refresher, ok := coordinator.(MetadataRefresher); ok {
 		meta, err := refresher.Refresh(ctx, ref)
@@ -340,70 +330,25 @@ func (d *Dispatcher) reconcileJob(ctx context.Context, job state.Job) (Reconcile
 }
 
 func (d *Dispatcher) coordinatorForStoredJob(ctx context.Context, job state.Job) (Coordinator, error) {
-	coordinator, _, err := d.coordinatorForStoredJobWithClass(ctx, job)
-	return coordinator, err
-}
-
-func (d *Dispatcher) coordinatorForStoredJobWithClass(ctx context.Context, job state.Job) (Coordinator, processworkspace.ExecutionClass, error) {
 	if strings.TrimSpace(job.Workspace.Path) == "" {
-		return nil, "", fmt.Errorf("job %s is missing workspace path", job.ID)
+		return nil, fmt.Errorf("job %s is missing workspace path", job.ID)
 	}
-	workspacePath, processClass, err := d.reconcileProcessWorkspace(ctx, job)
-	if err != nil {
-		return nil, "", err
-	}
+	workspacePath := job.Workspace.Path
 	env, err := d.Sandbox.Prepare(ctx, SandboxRequest{
 		WorkspacePath:        workspacePath,
 		AcpxWorkingDirectory: workspacePath,
 		AcpxBinary:           firstNonEmpty(d.AcpxBinary, acpx.DefaultBinary),
 		ExtraEnv:             d.CoordinatorExtraEnv,
 		AcpxAgent:            job.CoordinatorKind,
-		WorkspaceReadOnly:    processClass == processworkspace.ExecutionReview || processClass == processworkspace.ExecutionVerification,
 	})
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	coordinator, err := d.Acpx.NewCoordinator(env)
-	return coordinator, processClass, err
+	return coordinator, err
 }
 
-func (d *Dispatcher) reconcileProcessWorkspace(ctx context.Context, job state.Job) (string, processworkspace.ExecutionClass, error) {
-	if strings.TrimSpace(job.ExactProcessID) == "" {
-		// Historical in-flight jobs may predate ExactProcessID while carrying a
-		// P017 assignment. Do not infer a selector from it during restart; use a
-		// no-checkout orchestration cwd and never allocate a new workspace.
-		path, err := orchestrationWorkingDirectory(job)
-		return path, processworkspace.ExecutionOrchestration, err
-	}
-	if job.ProcessWorkspace == nil || job.ProcessWorkspace.ProcessID != strings.TrimSpace(job.ExactProcessID) {
-		return "", "", errors.New("restart requires the exact durable PROCESS workspace assignment")
-	}
-	provider, ok := d.Workspaces.(ProcessWorkspaceAllocatorProvider)
-	if !ok {
-		return "", "", errors.New("process workspace allocator provider is unavailable")
-	}
-	allocator, err := provider.ProcessWorkspaceAllocator(ctx, ProcessWorkspaceAllocatorRequest{IntegrationRoot: job.Workspace.Path})
-	if err != nil {
-		return "", "", err
-	}
-	allocation, err := allocator.Reconcile(ctx, job.ProcessWorkspace.WorkspaceID)
-	if err != nil {
-		return "", "", err
-	}
-	if err := validateAssignedProcessWorkspace(*job.ProcessWorkspace, allocation); err != nil {
-		return "", "", err
-	}
-	if err := validateProcessWorkspaceReady(allocation); err != nil {
-		return "", "", err
-	}
-	if allocation.Association.Mode == processworkspace.ModeNone {
-		path, err := orchestrationWorkingDirectory(job)
-		return path, allocation.Association.ExecutionClass, err
-	}
-	return allocation.Inspection.Lease.WorktreePath, allocation.Association.ExecutionClass, nil
-}
-
-func (d *Dispatcher) applyReconcile(ctx context.Context, job state.Job, previous state.LifecycleStatus, reconciled acpx.TurnReconcileResult, processClass processworkspace.ExecutionClass) (ReconcileJob, error) {
+func (d *Dispatcher) applyReconcile(ctx context.Context, job state.Job, previous state.LifecycleStatus, reconciled acpx.TurnReconcileResult) (ReconcileJob, error) {
 	diagnostic := strings.TrimSpace(reconciled.Diagnostics)
 	status := state.LifecycleStatus(reconciled.Status)
 	if reconciled.Ambiguous || status == state.StatusInterrupted {
@@ -416,7 +361,7 @@ func (d *Dispatcher) applyReconcile(ctx context.Context, job state.Job, previous
 	case state.StatusRunning, state.StatusDispatched:
 		return d.recoveredRunning(ctx, job, previous, reconciled.Metadata, diagnostic)
 	case state.StatusCompleted, state.StatusFailed, state.StatusCancelled:
-		return d.recoveredTerminal(ctx, job, previous, status, reconciled, processClass, diagnostic)
+		return d.recoveredTerminal(ctx, job, previous, status, reconciled, diagnostic)
 	default:
 		if diagnostic == "" {
 			diagnostic = fmt.Sprintf("invalid reconciled status %q", reconciled.Status)
@@ -458,46 +403,17 @@ func (d *Dispatcher) recoveredRunning(ctx context.Context, job state.Job, previo
 	return ReconcileJob{JobID: job.ID, PublicSessionID: running.PublicSessionID, PreviousStatus: previous, Status: state.StatusRunning, Action: "running", Diagnostic: diagnostic}, nil
 }
 
-func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previous, terminal state.LifecycleStatus, reconciled acpx.TurnReconcileResult, processClass processworkspace.ExecutionClass, diagnostic string) (ReconcileJob, error) {
-	var validatedSnapshot *snapshotProcessWorkspaceIdentity
-	if terminal == state.StatusCompleted && snapshotExecutionClass(processClass) {
-		current, err := d.loadJob(ctx, job.ID)
-		if err != nil {
-			return ReconcileJob{}, err
-		}
-		job = current
-		identity, err := d.captureSnapshotProcessWorkspacePostcondition(ctx, job, processClass)
-		if err != nil {
-			terminal = state.StatusFailed
-			postcondition := "process-workspace-postcondition: " + safeError(err)
-			if strings.TrimSpace(diagnostic) == "" {
-				diagnostic = postcondition
-			} else {
-				diagnostic += "; " + postcondition
-			}
-		} else {
-			validatedSnapshot = &identity
-		}
-	}
+func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previous, terminal state.LifecycleStatus, reconciled acpx.TurnReconcileResult, diagnostic string) (ReconcileJob, error) {
 	now := d.now()
 	var final state.Job
 	lock := d.storedLock(ctx, job)
 	if err := d.Store.Update(ctx, func(st *state.RunnerState) error {
 		st.Normalize()
-		current, ok := st.Jobs[job.ID]
+		_, ok := st.Jobs[job.ID]
 		if !ok {
 			return fmt.Errorf("job %q not found", job.ID)
 		}
 		effectiveTerminal, effectiveDiagnostic := terminal, diagnostic
-		if effectiveTerminal == state.StatusCompleted && validatedSnapshot != nil && !validatedSnapshot.matches(current) {
-			effectiveTerminal = state.StatusFailed
-			postcondition := "process-workspace-postcondition: " + errSnapshotProcessWorkspaceAssignmentChanged.Error()
-			if strings.TrimSpace(effectiveDiagnostic) == "" {
-				effectiveDiagnostic = postcondition
-			} else {
-				effectiveDiagnostic += "; " + postcondition
-			}
-		}
 		next, err := st.UpdateJobStatus(job.ID, effectiveTerminal, now, splitDiagnostic(effectiveDiagnostic)...)
 		if err != nil {
 			return err
@@ -513,7 +429,6 @@ func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previ
 			next.CoordinatorSummary = summaryJSON(reconciled.Output.Summary)
 			next.CLIDirect = cliDirect(reconciled.Output.Summary)
 		}
-		MarkTerminalWorkspaceCleanupRequired(&next)
 		next.Workspace.LastUsedAt = now
 		if err := upsertWorkspaceIfPresent(st, next.Workspace); err != nil {
 			return err
@@ -528,11 +443,6 @@ func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previ
 		return ReconcileJob{}, err
 	}
 	d.releaseLock(ctx, final.ID, lock)
-	refreshed, cleanupStateErr := d.cleanupTerminalProcessWorkspace(ctx, final)
-	if cleanupStateErr != nil {
-		return ReconcileJob{}, cleanupStateErr
-	}
-	final = refreshed
 	req := writeback.Request{
 		Job:                  final,
 		Status:               terminal,

@@ -42,17 +42,6 @@ func TestSelectTrustedProcessWorkspaceExactMissingAndAmbiguous(t *testing.T) {
 	}
 }
 
-func TestMarkTerminalWorkspaceCleanupRequired(t *testing.T) {
-	job := state.Job{ID: "job-terminal", ProcessWorkspace: &state.ProcessWorkspaceAssignment{
-		ProcessID: "PROCESS-017", WorkspaceID: "ws-process-017", ReservationID: "reservation:exact",
-		AssociationGeneration: 1, ReservationIdentity: "identity:0123456789abcdef0123456789abcdef",
-	}}
-	MarkTerminalWorkspaceCleanupRequired(&job)
-	if !job.ProcessWorkspace.CleanupRequired || job.ProcessWorkspace.CleanupState != state.ProcessWorkspaceAssignmentCleanupRequired || job.ProcessWorkspace.LastError != "" {
-		t.Fatalf("terminal cleanup intent=%+v", job.ProcessWorkspace)
-	}
-}
-
 func TestExternalWorkspaceWithoutConfiguredAdapterFailsBeforeReservation(t *testing.T) {
 	for _, mode := range []processworkspace.WorkspaceMode{processworkspace.ModeNone, processworkspace.ModeWritable} {
 		store := newMemoryProcessWorkspaceStore()

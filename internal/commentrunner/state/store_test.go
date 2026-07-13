@@ -318,6 +318,58 @@ func TestMissingAndCorruptFileBehavior(t *testing.T) {
 	}
 }
 
+func TestRunnerStateV6DropsLegacyProcessAssignmentAndRestoresCoordinatorCWD(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	legacy := `{
+  "schema_version": 6,
+  "jobs": {
+    "job-legacy": {
+      "id": "job-legacy",
+      "status": "running",
+      "exact_process_id": "PROCESS-008",
+      "workspace": {"id":"session","path":"/runner/sessions/session","repo":"o/r"},
+      "acpx": {"stable_record_id":"record-1","cwd":"/runner/process/PROCESS-008"},
+      "process_workspace_assignment": {
+        "process_id":"PROCESS-008","workspace_id":"process-008","reservation_id":"reservation:old",
+        "association_generation":1,"reservation_identity":"identity:0123456789abcdef0123456789abcdef"
+      }
+    }
+  },
+  "public_sessions": {
+    "o/r#session": {
+      "repo":"o/r","public_session_id":"session","status":"running",
+      "workspace":{"id":"session","path":"/runner/sessions/session","repo":"o/r"},
+      "acpx":{"stable_record_id":"record-1","cwd":"/runner/process/PROCESS-008"}
+    }
+  },
+  "process_workspaces": {"schema_version":2,"by_workspace":{}}
+}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SchemaVersion != SchemaVersion || loaded.Jobs["job-legacy"].Acpx.CWD != "/runner/sessions/session" ||
+		loaded.PublicSessions["o/r#session"].Acpx.CWD != "/runner/sessions/session" {
+		t.Fatalf("legacy coordinator cwd was not restored to the session clone: %+v", loaded)
+	}
+	if err := SaveFile(path, loaded); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized := string(data)
+	for _, removed := range []string{"exact_process_id", "process_workspace_assignment", "/runner/process/PROCESS-008"} {
+		if strings.Contains(serialized, removed) {
+			t.Fatalf("legacy runner PROCESS field %q survived resave:\n%s", removed, serialized)
+		}
+	}
+}
+
 func TestRunnerStateV5MigrationInitializesProcessWorkspaces(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	legacy := `{"schema_version":5,"jobs":{"job-legacy":{"id":"job-legacy","status":"queued"}},"repositories":{}}`
@@ -331,242 +383,12 @@ func TestRunnerStateV5MigrationInitializesProcessWorkspaces(t *testing.T) {
 	if loaded.SchemaVersion != SchemaVersion || loaded.ProcessWorkspaces.SchemaVersion != ProcessWorkspaceAssociationSchemaVersion || loaded.ProcessWorkspaces.ByWorkspace == nil || loaded.Jobs["job-legacy"].ID != "job-legacy" {
 		t.Fatalf("v5 migration lost state: %+v", loaded)
 	}
-	if loaded.Jobs["job-legacy"].ProcessWorkspace != nil {
-		t.Fatalf("v5 job unexpectedly gained a process workspace assignment: %+v", loaded.Jobs["job-legacy"].ProcessWorkspace)
-	}
 	if err := SaveFile(path, loaded); err != nil {
 		t.Fatal(err)
 	}
 	reloaded, err := LoadFile(path)
-	if err != nil || reloaded.ProcessWorkspaces.ByWorkspace == nil || reloaded.Jobs["job-legacy"].ProcessWorkspace != nil {
+	if err != nil || reloaded.ProcessWorkspaces.ByWorkspace == nil || reloaded.Jobs["job-legacy"].ID != "job-legacy" {
 		t.Fatalf("reopen after migration=%+v err=%v", reloaded, err)
-	}
-}
-
-func TestProcessWorkspaceAssignmentSurvivesRestartAndResave(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
-	state := NewState()
-	association := testProcessWorkspaceAssociation("ws-process-017", "PROCESS-017")
-	if _, err := state.ProcessWorkspaces.Reserve(association); err != nil {
-		t.Fatal(err)
-	}
-	state.ProcessWorkspaces.Generation = 7
-	want := ProcessWorkspaceAssignment{
-		ProcessID:             association.ProcessID,
-		WorkspaceID:           association.WorkspaceID,
-		ReservationID:         association.ReservationID,
-		AssociationGeneration: 7,
-		ReservationIdentity:   association.ReservationIdentity,
-	}
-	if err := state.UpsertJob(Job{ID: "job-017", ProcessWorkspace: &want}); err != nil {
-		t.Fatal(err)
-	}
-	if err := SaveFile(path, state); err != nil {
-		t.Fatal(err)
-	}
-
-	loaded, err := LoadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := loaded.Jobs["job-017"].ProcessWorkspace; got == nil || *got != want {
-		t.Fatalf("assignment after first load = %+v, want %+v", got, want)
-	}
-	if err := SaveFile(path, loaded); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := LoadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := reopened.Jobs["job-017"].ProcessWorkspace; got == nil || *got != want {
-		t.Fatalf("assignment after resave/reopen = %+v, want %+v", got, want)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	serialized := string(data)
-	for _, forbidden := range []string{"/private/tmp/process-017", "owner-token-secret", "credential-secret", `"path"`, `"owner_token"`, `"credential"`} {
-		if strings.Contains(serialized, forbidden) {
-			t.Fatalf("portable assignment JSON contains forbidden local or secret material %q:\n%s", forbidden, serialized)
-		}
-	}
-	var document map[string]json.RawMessage
-	if err := json.Unmarshal(data, &document); err != nil {
-		t.Fatal(err)
-	}
-	var jobs map[string]struct {
-		Assignment map[string]json.RawMessage `json:"process_workspace_assignment"`
-	}
-	if err := json.Unmarshal(document["jobs"], &jobs); err != nil {
-		t.Fatal(err)
-	}
-	allowed := map[string]bool{
-		"process_id": true, "workspace_id": true, "reservation_id": true,
-		"association_generation": true, "reservation_identity": true,
-	}
-	for key := range jobs["job-017"].Assignment {
-		if !allowed[key] {
-			t.Fatalf("portable assignment serialized unexpected field %q", key)
-		}
-	}
-	if len(jobs["job-017"].Assignment) != len(allowed) {
-		t.Fatalf("portable assignment keys = %v, want exactly %v", jobs["job-017"].Assignment, allowed)
-	}
-}
-
-func TestReleasedJobAssignmentSurvivesWorkspaceIDReuseWithoutABA(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
-	state := NewState()
-	old := testProcessWorkspaceAssociation("ws-reused", "PROCESS-OLD")
-	if _, err := state.ProcessWorkspaces.Reserve(old); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := state.ProcessWorkspaces.Transition(old.WorkspaceID, old.ReservationID, ProcessWorkspaceAllocating, ProcessWorkspaceCleanupPending); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := state.ProcessWorkspaces.ConfirmReleased(old.WorkspaceID, old.ReservationID); err != nil {
-		t.Fatal(err)
-	}
-	state.ProcessWorkspaces.Generation = 3
-	assignment := ProcessWorkspaceAssignment{ProcessID: old.ProcessID, WorkspaceID: old.WorkspaceID, ReservationID: old.ReservationID,
-		AssociationGeneration: 1, ReservationIdentity: old.ReservationIdentity, CleanupState: ProcessWorkspaceAssignmentCleanupConfirmed}
-	if err := state.UpsertJob(Job{ID: "job-old", Status: StatusCompleted, ProcessWorkspace: &assignment}); err != nil {
-		t.Fatal(err)
-	}
-	newAttempt := testProcessWorkspaceAssociation(old.WorkspaceID, "PROCESS-NEW")
-	newAttempt.Branch = "process/new"
-	finalizeAssociation(&newAttempt)
-	newAttempt.ReservationID = "reservation:new-attempt"
-	if _, err := state.ProcessWorkspaces.Reserve(newAttempt); err != nil {
-		t.Fatal(err)
-	}
-	state.ProcessWorkspaces.Generation++
-	if err := SaveFile(path, state); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := LoadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := reopened.Jobs["job-old"].ProcessWorkspace; got == nil || got.ReservationID != old.ReservationID || got.CleanupState != ProcessWorkspaceAssignmentCleanupConfirmed {
-		t.Fatalf("historical assignment changed: %+v", got)
-	}
-	if current := reopened.ProcessWorkspaces.ByWorkspace[old.WorkspaceID]; current.ReservationID != newAttempt.ReservationID {
-		t.Fatalf("new attempt changed: %+v", current)
-	}
-	if _, err := reopened.ProcessWorkspaces.ConfirmReleased(old.WorkspaceID, old.ReservationID); err == nil {
-		t.Fatal("historical job token affected the new reservation")
-	}
-}
-
-func TestCleanupPendingAssignmentSurvivesReopenForRetry(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
-	state := NewState()
-	association := testProcessWorkspaceAssociation("ws-cleanup-retry", "PROCESS-017")
-	if _, err := state.ProcessWorkspaces.Reserve(association); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := state.ProcessWorkspaces.Transition(association.WorkspaceID, association.ReservationID, ProcessWorkspaceAllocating, ProcessWorkspaceCleanupPending); err != nil {
-		t.Fatal(err)
-	}
-	state.ProcessWorkspaces.Generation = 2
-	assignment := ProcessWorkspaceAssignment{ProcessID: association.ProcessID, WorkspaceID: association.WorkspaceID,
-		ReservationID: association.ReservationID, AssociationGeneration: 1, ReservationIdentity: association.ReservationIdentity,
-		CleanupRequired: true, CleanupState: ProcessWorkspaceAssignmentCleanupPending, LastError: "cleanup_failed"}
-	if err := state.UpsertJob(Job{ID: "job-cleanup-retry", Status: StatusCancelled, ProcessWorkspace: &assignment}); err != nil {
-		t.Fatal(err)
-	}
-	if err := SaveFile(path, state); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := LoadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := reopened.Jobs["job-cleanup-retry"].ProcessWorkspace
-	if got == nil || !got.CleanupRequired || got.CleanupState != ProcessWorkspaceAssignmentCleanupPending || got.LastError != "cleanup_failed" {
-		t.Fatalf("cleanup retry intent changed after reopen: %+v", got)
-	}
-}
-
-func TestProcessWorkspaceAssignmentValidationFailsClosed(t *testing.T) {
-	valid := ProcessWorkspaceAssignment{
-		ProcessID:             "PROCESS-017",
-		WorkspaceID:           "ws-process-017",
-		ReservationID:         "reservation:job-017",
-		AssociationGeneration: 1,
-		ReservationIdentity:   "identity:0123456789abcdef0123456789abcdef",
-	}
-	tests := map[string]func(*ProcessWorkspaceAssignment){
-		"missing process":     func(a *ProcessWorkspaceAssignment) { a.ProcessID = "" },
-		"path workspace":      func(a *ProcessWorkspaceAssignment) { a.WorkspaceID = "/private/tmp/ws" },
-		"missing reservation": func(a *ProcessWorkspaceAssignment) { a.ReservationID = "" },
-		"missing generation":  func(a *ProcessWorkspaceAssignment) { a.AssociationGeneration = 0 },
-		"invalid identity":    func(a *ProcessWorkspaceAssignment) { a.ReservationIdentity = "identity:not-hex" },
-		"future identity format": func(a *ProcessWorkspaceAssignment) {
-			a.ReservationIdentity = "identity:v2:0123456789abcdef0123456789abcdef"
-		},
-	}
-	for name, mutate := range tests {
-		t.Run(name, func(t *testing.T) {
-			assignment := valid
-			mutate(&assignment)
-			state := NewState()
-			state.Jobs["job-invalid"] = Job{ID: "job-invalid", ProcessWorkspace: &assignment}
-			if err := SaveFile(filepath.Join(t.TempDir(), "state.json"), state); err == nil {
-				t.Fatal("expected invalid assignment to be rejected")
-			}
-		})
-	}
-
-	rawCases := map[string]string{
-		"future identity": `{
-  "schema_version": 6,
-  "jobs": {
-    "job-future": {
-      "id": "job-future",
-      "process_workspace_assignment": {
-        "process_id": "PROCESS-017",
-        "workspace_id": "ws-process-017",
-        "reservation_id": "reservation:job-017",
-        "association_generation": 1,
-        "reservation_identity": "identity:v2:0123456789abcdef0123456789abcdef"
-      }
-    }
-  },
-  "process_workspaces": {"schema_version": 2, "by_workspace": {}}
-	}`,
-		"forbidden secret field": `{
-  "schema_version": 6,
-  "jobs": {
-    "job-secret": {
-      "id": "job-secret",
-      "process_workspace_assignment": {
-        "process_id": "PROCESS-017",
-        "workspace_id": "ws-process-017",
-        "reservation_id": "reservation:job-017",
-        "association_generation": 1,
-        "reservation_identity": "identity:0123456789abcdef0123456789abcdef",
-        "owner_token": "owner-token-secret"
-      }
-    }
-  },
-  "process_workspaces": {"schema_version": 2, "by_workspace": {}}
-}`,
-	}
-	for name, raw := range rawCases {
-		t.Run("load "+name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "state.json")
-			if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := LoadFile(path); !errors.Is(err, ErrCorrupt) {
-				t.Fatalf("invalid assignment load error = %v, want corrupt state", err)
-			}
-		})
 	}
 }
 
@@ -648,32 +470,7 @@ func TestFileStoreUpdateFailureHasNoPartialWrite(t *testing.T) {
 	if string(before) != string(finalBytes) {
 		t.Fatal("invalid Save changed durable bytes")
 	}
-}
 
-func TestJobExactProcessIDIsStrictPersistentAndImmutable(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
-	state := NewState()
-	job := Job{ID: "job-process", Repo: "o/r", CommandIdempotencyKey: "cmd:process", Status: StatusQueued, ExactProcessID: "PROCESS-008"}
-	if err := state.UpsertJob(job); err != nil {
-		t.Fatal(err)
-	}
-	if err := SaveFile(path, state); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := LoadFile(path)
-	if err != nil || reopened.Jobs[job.ID].ExactProcessID != "PROCESS-008" {
-		t.Fatalf("reopened=%+v err=%v", reopened.Jobs[job.ID], err)
-	}
-	mutated := reopened.Jobs[job.ID]
-	mutated.ExactProcessID = "PROCESS-009"
-	if err := reopened.UpsertJob(mutated); err == nil {
-		t.Fatal("exact PROCESS target mutation was accepted")
-	}
-	malformed := job
-	malformed.ID, malformed.ExactProcessID = "job-bad", "PROCESS-8"
-	if err := state.UpsertJob(malformed); err == nil {
-		t.Fatal("malformed exact PROCESS target was accepted")
-	}
 }
 
 func TestJobUnknownJSONFieldFailsClosed(t *testing.T) {
