@@ -35,7 +35,7 @@ test("notification control room keeps credentials redacted and replay traceable"
   await expect(page.getByText(/encrypted query is intentionally absent/i)).toBeVisible();
   await page.getByRole("button", { name: "Suppressions" }).click();
   await expect(page.getByText(/comment class filtered/i)).toBeVisible();
-  await page.getByRole("button", { name: /issue_comment created dead/i }).click();
+  await page.getByRole("button", { name: /Issue comment created dead/i }).click();
   await expect(page.getByText("v1 · frozen for replay")).toBeVisible();
   await expect(page.getByRole("button", { name: "Replay immutable delivery" })).toBeEnabled();
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
