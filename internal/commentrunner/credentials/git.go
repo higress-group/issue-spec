@@ -46,17 +46,26 @@ type GitRequest struct {
 
 type GitProviderLease struct {
 	Credential GitSecret
-	ExpiresAt  time.Time
-	Revoke     func(context.Context) error
+	// CloneURL overrides the binding's credential-free HTTPS URL for the
+	// command-local git transport. It is only accepted for a canonical host SSH
+	// lease; the persisted repository binding remains unchanged.
+	CloneURL  string
+	Env       []string
+	HostSSH   bool
+	ExpiresAt time.Time
+	Revoke    func(context.Context) error
 }
 
 type GitLease struct {
-	Purpose      capability.Operation
-	CloneURL     string
-	AskPassPath  string
-	UsernamePath string
-	SecretPath   string
-	cleanup      func(context.Context) error
+	Purpose        capability.Operation
+	PinnedCloneURL string
+	CloneURL       string
+	HostSSH        bool
+	Env            []string
+	AskPassPath    string
+	UsernamePath   string
+	SecretPath     string
+	cleanup        func(context.Context) error
 }
 
 func NewGitLease(ctx context.Context, root, jobID string, purpose capability.Operation, binding state.RepositoryBindingSnapshot, provider GitProvider) (*GitLease, error) {
@@ -79,6 +88,9 @@ func NewGitLease(ctx context.Context, root, jobID string, purpose capability.Ope
 			defer cancel()
 			_ = providerLease.Revoke(cleanupCtx)
 		}
+	}
+	if providerLease.HostSSH {
+		return newHostSSHGitLease(ctx, purpose, binding, providerLease)
 	}
 	secret := providerLease.Credential
 	now := time.Now().UTC()
@@ -127,7 +139,8 @@ func NewGitLease(ctx context.Context, root, jobID string, purpose capability.Ope
 			return nil, err
 		}
 	}
-	lease := &GitLease{Purpose: purpose, CloneURL: binding.CloneURL, AskPassPath: askpassPath, UsernamePath: usernamePath, SecretPath: secretPath}
+	lease := &GitLease{Purpose: purpose, PinnedCloneURL: binding.CloneURL, CloneURL: binding.CloneURL,
+		AskPassPath: askpassPath, UsernamePath: usernamePath, SecretPath: secretPath}
 	lease.cleanup = func(cleanupCtx context.Context) error {
 		var cleanupErr error
 		if err := os.RemoveAll(dir); err != nil {
@@ -142,8 +155,11 @@ func NewGitLease(ctx context.Context, root, jobID string, purpose capability.Ope
 }
 
 func (l *GitLease) BeforeGit(_ context.Context, operation, cloneURL string) (workspace.GitCredential, error) {
-	if l == nil || l.Purpose != capability.OperationGitClone || operation != "clone" || strings.TrimSpace(cloneURL) != strings.TrimSpace(l.CloneURL) {
+	if l == nil || l.Purpose != capability.OperationGitClone || operation != "clone" || strings.TrimSpace(cloneURL) != strings.TrimSpace(l.PinnedCloneURL) {
 		return workspace.GitCredential{}, errors.New("credential broker: git credential requested outside pinned clone")
+	}
+	if l.HostSSH {
+		return workspace.GitCredential{CloneURL: l.CloneURL, Env: append([]string(nil), l.Env...), Cleanup: l.Cleanup}, nil
 	}
 	env := safeGitEnvironment(os.Environ())
 	env = append(env,
@@ -159,7 +175,51 @@ func (l *GitLease) BeforeGit(_ context.Context, operation, cloneURL string) (wor
 		"GIT_CONFIG_KEY_0=http.followRedirects",
 		"GIT_CONFIG_VALUE_0=false",
 	)
-	return workspace.GitCredential{Env: env, Cleanup: l.Cleanup}, nil
+	return workspace.GitCredential{CloneURL: l.CloneURL, Env: env, Cleanup: l.Cleanup}, nil
+}
+
+func newHostSSHGitLease(ctx context.Context, purpose capability.Operation, binding state.RepositoryBindingSnapshot, providerLease GitProviderLease) (*GitLease, error) {
+	revoke := func() {
+		if providerLease.Revoke != nil {
+			cleanupCtx, cancel := credentialCleanupContext(ctx)
+			defer cancel()
+			_ = providerLease.Revoke(cleanupCtx)
+		}
+	}
+	cloneURL, err := canonicalHostSSHCloneURL(binding)
+	if err != nil || strings.TrimSpace(providerLease.CloneURL) != cloneURL ||
+		providerLease.Credential != (GitSecret{}) || !providerLease.ExpiresAt.IsZero() || providerLease.Revoke == nil {
+		revoke()
+		return nil, errors.New("credential broker: host SSH provider returned an invalid lease")
+	}
+	env, err := validateHostSSHGitEnvironment(providerLease.Env)
+	if err != nil {
+		revoke()
+		return nil, err
+	}
+	lease := &GitLease{Purpose: purpose, PinnedCloneURL: binding.CloneURL, CloneURL: cloneURL, HostSSH: true, Env: env}
+	lease.cleanup = func(cleanupCtx context.Context) error { return providerLease.Revoke(cleanupCtx) }
+	return lease, nil
+}
+
+func validateHostSSHGitEnvironment(entries []string) ([]string, error) {
+	values := map[string]string{}
+	for _, entry := range entries {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok || (name != "HOME" && name != "SSH_AUTH_SOCK") || strings.TrimSpace(value) == "" || !filepath.IsAbs(value) {
+			return nil, errors.New("credential broker: host SSH environment is invalid")
+		}
+		values[name] = filepath.Clean(value)
+	}
+	if values["HOME"] == "" {
+		return nil, errors.New("credential broker: host SSH HOME is required")
+	}
+	result := safeGitEnvironment(os.Environ())
+	result = append(result, "HOME="+values["HOME"], "GIT_TERMINAL_PROMPT=0")
+	if socket := values["SSH_AUTH_SOCK"]; socket != "" {
+		result = append(result, "SSH_AUTH_SOCK="+socket)
+	}
+	return result, nil
 }
 
 func safeGitEnvironment(host []string) []string {
@@ -271,3 +331,116 @@ func (p OperatorGitProvider) SupportsPurpose(purpose capability.Operation) bool 
 	return (purpose == capability.OperationGitClone || purpose == capability.OperationGitPush) &&
 		p.AcquireLease != nil && p.RevokeJobLease != nil
 }
+
+// HostSSHGitProvider is an explicit operator opt-in that reuses the runner
+// process user's SSH identity. The authoritative binding remains a
+// credential-free HTTPS URL; only command-local clone/push transport is
+// rewritten to the canonical git@host:external/repository.git form.
+//
+// This provider deliberately does not claim short-lived or job-scoped
+// credentials. Isolation is provided by the runner's sandbox mounts.
+type HostSSHGitProvider struct {
+	SSHDir         string
+	SSHAgentSocket string
+}
+
+type HostSSHGitProviderConfig struct {
+	SSHDir      string
+	AgentSocket string
+}
+
+func NewHostSSHGitProvider(config HostSSHGitProviderConfig) (*HostSSHGitProvider, error) {
+	provider := &HostSSHGitProvider{SSHDir: strings.TrimSpace(config.SSHDir), SSHAgentSocket: strings.TrimSpace(config.AgentSocket)}
+	if err := provider.validate(); err != nil {
+		return nil, err
+	}
+	return provider, nil
+}
+
+func (p HostSSHGitProvider) Acquire(_ context.Context, request GitRequest) (GitProviderLease, error) {
+	if err := p.validate(); err != nil || !validJobID(request.JobID) ||
+		(request.Purpose != string(capability.OperationGitClone) && request.Purpose != string(capability.OperationGitPush)) {
+		return GitProviderLease{}, errors.New("credential broker: host SSH provider request is invalid")
+	}
+	cloneURL, err := canonicalHostSSHCloneURL(request.Binding)
+	if err != nil {
+		return GitProviderLease{}, err
+	}
+	env := []string{"HOME=" + filepath.Dir(filepath.Clean(p.SSHDir))}
+	if socket := strings.TrimSpace(p.SSHAgentSocket); socket != "" {
+		env = append(env, "SSH_AUTH_SOCK="+filepath.Clean(socket))
+	}
+	return GitProviderLease{CloneURL: cloneURL, Env: env, HostSSH: true,
+		Revoke: func(context.Context) error { return nil }}, nil
+}
+
+func (p HostSSHGitProvider) RevokeJob(_ context.Context, jobID string) error {
+	if !validJobID(jobID) {
+		return errors.New("credential broker: host SSH job id is invalid")
+	}
+	return nil
+}
+
+func (p HostSSHGitProvider) SupportsPurpose(purpose capability.Operation) bool {
+	return purpose == capability.OperationGitClone || purpose == capability.OperationGitPush
+}
+
+func (p HostSSHGitProvider) validate() error {
+	if err := validateHostSSHDirectory(p.SSHDir); err != nil {
+		return fmt.Errorf("credential broker: %w", err)
+	}
+	if socket := strings.TrimSpace(p.SSHAgentSocket); socket != "" {
+		if err := validateHostSSHSocket(socket); err != nil {
+			return fmt.Errorf("credential broker: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateHostSSHDirectory(raw string) error {
+	value := strings.TrimSpace(raw)
+	if value == "" || !filepath.IsAbs(value) || filepath.Base(filepath.Clean(value)) != ".ssh" {
+		return errors.New("host SSH directory must be an absolute .ssh path")
+	}
+	info, err := os.Lstat(value)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return errors.New("host SSH directory must be a non-symlink directory")
+	}
+	return nil
+}
+
+func validateHostSSHSocket(raw string) error {
+	value := strings.TrimSpace(raw)
+	if value == "" || !filepath.IsAbs(value) {
+		return errors.New("host SSH agent socket must be absolute")
+	}
+	info, err := os.Lstat(value)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 {
+		return errors.New("host SSH agent socket must be a non-symlink Unix socket")
+	}
+	return nil
+}
+
+func canonicalHostSSHCloneURL(binding state.RepositoryBindingSnapshot) (string, error) {
+	if err := validatePinnedHTTPS(binding); err != nil {
+		return "", err
+	}
+	parsed, _ := url.Parse(strings.TrimSpace(binding.CloneURL))
+	if parsed.Port() != "" || strings.Contains(parsed.Hostname(), ":") {
+		return "", errors.New("credential broker: host SSH transport does not support ports or IPv6 authorities")
+	}
+	repository := strings.Trim(strings.TrimSpace(binding.ExternalRepositoryID), "/")
+	if repository == "" || repository != strings.TrimSuffix(repository, ".git") || path.Clean(repository) != repository ||
+		strings.ContainsAny(repository, "\\:@?#\r\n\t") {
+		return "", errors.New("credential broker: external repository id is invalid for host SSH")
+	}
+	for _, segment := range strings.Split(repository, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", errors.New("credential broker: external repository id is invalid for host SSH")
+		}
+	}
+	return "git@" + strings.ToLower(parsed.Hostname()) + ":" + repository + ".git", nil
+}
+
+var _ GitProvider = (*HostSSHGitProvider)(nil)
+var _ GitPurposeProvider = (*HostSSHGitProvider)(nil)

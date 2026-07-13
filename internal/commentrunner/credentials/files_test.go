@@ -2,6 +2,7 @@ package credentials
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -141,6 +142,85 @@ func TestGitLeaseRejectsSSHAndRepositoryPathDrift(t *testing.T) {
 	binding.CloneURL = "https://code.example/acme/other.git"
 	if _, err := NewGitLease(context.Background(), t.TempDir(), "job-1", capability.OperationGitClone, binding, provider); err == nil {
 		t.Fatal("repository path drift accepted")
+	}
+}
+
+func TestHostSSHGitProviderDerivesTransportWithoutChangingBinding(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(t.TempDir(), "agent.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Skipf("Unix sockets unavailable: %v", err)
+	}
+	defer listener.Close()
+	provider, err := NewHostSSHGitProvider(HostSSHGitProviderConfig{SSHDir: sshDir, AgentSocket: socketPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := testBinding()
+	original := binding.CloneURL
+	lease, err := NewGitLease(context.Background(), t.TempDir(), "job-ssh", capability.OperationGitClone, binding, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := lease.BeforeGit(context.Background(), "clone", original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential.CloneURL != "git@code.example:acme/widgets.git" || binding.CloneURL != original {
+		t.Fatalf("credential=%+v binding=%+v", credential, binding)
+	}
+	joined := strings.Join(credential.Env, "\n")
+	for _, want := range []string{"HOME=" + home, "SSH_AUTH_SOCK=" + socketPath, "GIT_TERMINAL_PROMPT=0"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("host SSH git environment missing %q: %s", want, joined)
+		}
+	}
+	if lease.AskPassPath != "" || lease.SecretPath != "" {
+		t.Fatalf("host SSH lease materialized HTTPS secret files: %+v", lease)
+	}
+	if err := lease.Cleanup(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHostSSHGitProviderRejectsInvalidHostPathsAndBinding(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewHostSSHGitProvider(HostSSHGitProviderConfig{SSHDir: "relative/.ssh"}); err == nil {
+		t.Fatal("relative host SSH directory accepted")
+	}
+	link := filepath.Join(t.TempDir(), ".ssh")
+	if err := os.Symlink(sshDir, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewHostSSHGitProvider(HostSSHGitProviderConfig{SSHDir: link}); err == nil {
+		t.Fatal("symlink host SSH directory accepted")
+	}
+	provider, err := NewHostSSHGitProvider(HostSSHGitProviderConfig{SSHDir: sshDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := testBinding()
+	binding.CloneURL = "https://code.example:8443/acme/widgets.git"
+	if _, err := provider.Acquire(context.Background(), GitRequest{JobID: "job-ssh", Purpose: "git.clone", Binding: binding}); err == nil {
+		t.Fatal("host SSH binding with non-canonical port accepted")
+	}
+}
+
+func TestHostSSHLeaseExposesOnlyIssueTokenFileCapability(t *testing.T) {
+	lease := &Lease{IssueToken: FileLease{HostPath: "/private/issue.token", SandboxPath: IssueTokenSandboxPath},
+		Git: &GitLease{HostSSH: true}}
+	capabilities := lease.FileCapabilities()
+	if len(capabilities) != 1 || capabilities[0].EnvName != "ISSUE_SPEC_TOKEN_FILE" {
+		t.Fatalf("host SSH file capabilities = %+v", capabilities)
 	}
 }
 

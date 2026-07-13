@@ -5,7 +5,9 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -158,6 +160,41 @@ func TestLinuxPrepareDefaultBindsResolverConfig(t *testing.T) {
 		assertArgSequence(t, prepared.Command.Args, "--ro-bind", path, path)
 		assertMount(t, prepared.Metadata.Mounts, Mount{Source: path, Destination: path, Mode: "ro"})
 	}
+}
+
+func TestLinuxPrepareMountsOptInHostSSHAtFixedPaths(t *testing.T) {
+	root := t.TempDir()
+	paths := map[string]string{}
+	for _, name := range []string{"workspace", "home", "gh", "xdg", "codex", "host-home"} {
+		paths[name] = filepath.Join(root, name)
+		if err := os.Mkdir(paths[name], 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sshDir := filepath.Join(paths["host-home"], ".ssh")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(root, "agent.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Skipf("Unix sockets unavailable: %v", err)
+	}
+	defer listener.Close()
+	cfg := Config{BwrapPath: "/usr/bin/bwrap", WorkspacePath: paths["workspace"], TempHome: paths["home"],
+		TempGHConfigDir: paths["gh"], TempXDGConfigHome: paths["xdg"], TempCodexHome: paths["codex"],
+		HostSSHDir: sshDir, HostSSHAgentSocket: socket, HostEnv: []string{"PATH=/usr/bin", "SSH_AUTH_SOCK=/untrusted.sock"}}
+	prepared, err := Prepare(context.Background(), cfg, Command{Binary: "acpx", Dir: paths["workspace"]}, Dependencies{Runner: capableBwrapRunner(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertArgSequence(t, prepared.Command.Args, "--ro-bind", sshDir, HostSSHDirSandboxPath)
+	assertArgSequence(t, prepared.Command.Args, "--ro-bind", sshDir, sshDir)
+	assertArgSequence(t, prepared.Command.Args, "--bind", socket, HostSSHAgentSandboxPath)
+	assertArgSequence(t, prepared.Command.Args, "--setenv", "SSH_AUTH_SOCK", HostSSHAgentSandboxPath)
+	assertMount(t, prepared.Metadata.Mounts, Mount{Source: sshDir, Destination: HostSSHDirSandboxPath, Mode: "ro"})
+	assertMount(t, prepared.Metadata.Mounts, Mount{Source: sshDir, Destination: sshDir, Mode: "ro"})
+	assertMount(t, prepared.Metadata.Mounts, Mount{Source: socket, Destination: HostSSHAgentSandboxPath, Mode: "socket"})
 }
 
 func TestLinuxPrepareBindsWorkspaceAtOriginalPathForHostCWD(t *testing.T) {

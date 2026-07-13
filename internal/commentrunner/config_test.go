@@ -270,6 +270,26 @@ func TestConfigValidateAllowsZeroFallbackInitialLookback(t *testing.T) {
 	}
 }
 
+func TestConfigValidateRejectsHostSSHWithoutSandbox(t *testing.T) {
+	cfg := Config{
+		Repositories:       []string{"o/r"},
+		RunnerIdentity:     "bot",
+		StatePath:          filepath.Join(t.TempDir(), "state.json"),
+		WorkspaceRoot:      t.TempDir(),
+		PollInterval:       NewDuration(time.Minute),
+		FallbackInterval:   NewDuration(time.Hour),
+		WorkspaceRetention: NewDuration(24 * time.Hour),
+		MaxConcurrentJobs:  1,
+		Agent:              DefaultAgentConfig(),
+		AllowHostSSH:       true,
+		UnsafeNoSandbox:    true,
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "--allow-host-ssh requires the filesystem sandbox") {
+		t.Fatalf("Validate error = %v", err)
+	}
+}
+
 func TestConfigValidateRejectsNegativeFallbackInitialLookback(t *testing.T) {
 	cfg := Config{
 		Repositories:            []string{"o/r"},

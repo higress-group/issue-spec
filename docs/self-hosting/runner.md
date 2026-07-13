@@ -35,18 +35,20 @@ binary, `acpx`, the selected agent runtime, `bubblewrap`, and—when using the
 Codex provider—`npm` and `npx`. The host needs network access to the issue-spec
 server, code host, model service, and required package registries.
 
-The operator must also provide an executable implementing
-[`issue-spec-git-credential-v1`](bridges/git-credential-v1.md). Do not use
-`--unsafe-no-sandbox` unless the operator explicitly accepts that the agent can
-access the runner host filesystem.
+The operator must also provide either an executable implementing
+[`issue-spec-git-credential-v1`](bridges/git-credential-v1.md), or a dedicated
+runner SSH identity for the internal compatibility mode described below. Do not
+use `--unsafe-no-sandbox` unless the operator explicitly accepts that the agent
+can access the runner host filesystem.
 
 ## 2. Create the source binding
 
 Create and activate a binding on the repository's **Source connection** page.
 It supplies the provider, external repository identity, HTTPS clone URL, and
-default branch without storing a clone credential. The Git credential command
-must mint a short-lived credential for this exact binding, separate from the
-issue-spec PAT.
+default branch without storing a clone credential. The default Git credential
+command must mint a short-lived credential for this exact binding, separate
+from the issue-spec PAT. Host SSH mode retains the HTTPS binding as authority
+and derives only the actual transport as `git@<host>:<external_repository>.git`.
 
 ## 3. Create an independent service account and runner PAT
 
@@ -136,7 +138,9 @@ Store the secret in a file readable only by the runner user. Never put it in a
 command-line argument, repository, or systemd unit. Production mode requires a
 `0600` secret file and rejects environment-based webhook secrets.
 
-## 5. Connect code-host credentials
+## 5. Connect the code host
+
+### Recommended: job-scoped credentials
 
 `--git-credential-command` names an absolute operator-owned executable. The
 runner invokes it without a shell and does not expose the profile PAT, webhook
@@ -147,6 +151,28 @@ idempotent `revoke_lease` and `revoke_job` actions.
 See [`Runner Git credential command v1`](bridges/git-credential-v1.md) for the
 complete contract. A typical path is
 `/usr/local/libexec/issue-spec-git-credential`.
+
+### Internal compatibility mode: mount host SSH
+
+When an internal code host uses SSH and the runner host and jobs share one
+trusted security boundary, `--allow-host-ssh` read-only mounts the runner OS
+account's `~/.ssh` into the sandbox and forwards `SSH_AUTH_SOCK` when present:
+
+```bash
+issue-spec --profile team runner serve \
+  ... \
+  --allow-host-ssh
+```
+
+First verify non-interactive SSH access as the same OS account and pin the code
+host key in that account's `known_hosts`. `--allow-host-ssh` is mutually
+exclusive with `--git-credential-command` and cannot be combined with
+`--unsafe-no-sandbox`.
+
+This mode has no per-job expiry or revocation. Every agent job receives all
+repository authority available to that dedicated runner SSH identity. Use a
+dedicated OS account and SSH identity, retain one `runner serve` process per
+repository, and do not mount a developer's everyday SSH identity.
 
 ## 6. Run preflight and start in the foreground
 
@@ -169,6 +195,10 @@ issue-spec --profile team runner serve \
   --workspace-root /var/lib/issue-spec-runner/workspaces \
   --agent codex
 ```
+
+For the internal SSH mode, replace the example's
+`--git-credential-command /usr/local/libexec/issue-spec-git-credential` with
+`--allow-host-ssh`.
 
 Repeat `--allowed-user` as needed. One parent credential cannot delegate across
 repositories. The default maximum is three concurrent jobs.
@@ -243,7 +273,8 @@ and a copyable `/resume` template.
 
 For the first test, use a read-only task and verify the webhook delivery,
 runner authorization log, workspace creation, Git credential acquisition and
-revocation, runner status comment, and typed workflow writeback in that order.
+revocation (or the expected SSH remote in host SSH mode), runner status comment,
+and typed workflow writeback in that order.
 
 | Symptom | Check first |
 | --- | --- |
@@ -251,7 +282,7 @@ revocation, runner status comment, and typed workflow writeback in that order.
 | Webhook cannot connect | Receiver URL, DNS, firewall, reverse proxy, and TLS |
 | Comment is ignored | Command position, allowlist, and write-equivalent permission |
 | `runner:delegate` fails | Exact repository restriction, scopes, and PAT subject login matching `--runner` |
-| Clone fails | Active source binding, HTTPS URL, and exact binding echoed by the credential command |
+| Clone fails | Active source binding; for credentials, the HTTPS URL and exact binding echo; for host SSH, the runner user's key, agent, `known_hosts`, and repository access |
 | Sandbox preflight fails | Install `bubblewrap` or configure `--bwrap` on Linux |
 | Codex does not start | Ensure `acpx`, `npm`, `npx`, and model credentials are available to the systemd user |
 
@@ -264,6 +295,7 @@ new value.
 
 - the webhook secret authenticates delivery only; it grants no issue or source authority;
 - the profile PAT delegates short-lived, repository-scoped job tokens;
-- source bindings contain no credentials; Git credentials are short-lived and binding-specific;
+- source bindings contain no credentials; prefer short-lived, binding-specific Git credentials;
+- `--allow-host-ssh` exposes the dedicated runner user's SSH authority to the sandboxed agent and is only for an explicitly trusted internal boundary;
 - the runner handles only explicit `--repo` values, and authors must pass both allowlist and repository authorization;
 - runner state, workspaces, and credential leases should feed centralized logs and audit.

@@ -144,9 +144,78 @@ func TestRunnerServeHelpDocumentsSecurityAndCapacityControls(t *testing.T) {
 	for _, required := range []string{"--listen", "--tls-cert", "--tls-key", "--subscription-id",
 		"--secret-file", "--previous-secrets-valid-until", "--timestamp-window", "--max-body-bytes",
 		"--max-header-bytes", "--max-queue-deliveries", "--max-queue-bytes", "--shutdown-timeout",
-		"--workspace-root", "--max-concurrent-jobs", "--reconcile-workers", "--git-credential-command"} {
+		"--workspace-root", "--max-concurrent-jobs", "--reconcile-workers", "--git-credential-command",
+		"--allow-host-ssh"} {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("help missing %s:\n%s", required, stdout.String())
 		}
+	}
+}
+
+func TestRunnerServeRejectsUnsafeHostSSHFlagCombinations(t *testing.T) {
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	profile := auth.Profile{Name: "runner-host-ssh", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance"}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "both credential modes", args: []string{"--allow-host-ssh", "--git-credential-command", "/usr/bin/true"}, want: "exactly one of --git-credential-command or --allow-host-ssh"},
+		{name: "sandbox disabled", args: []string{"--allow-host-ssh", "--unsafe-no-sandbox"}, want: "requires the filesystem sandbox"},
+		{name: "credential args without command", args: []string{"--allow-host-ssh", "--git-credential-arg", "value"}, want: "--git-credential-arg requires --git-credential-command"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			app := newApp(strings.NewReader(""), &stdout, &stderr)
+			app.profileName = profile.Name
+			args := []string{"serve", "--repo", "o/r", "--runner", "bot"}
+			args = append(args, tc.args...)
+			if code := app.runRunner(context.Background(), args); code != 2 || !strings.Contains(stderr.String(), tc.want) {
+				t.Fatalf("code=%d stderr=%q want=%q", code, stderr.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestRunnerServeAcceptsExplicitHostSSHMode(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", configDir)
+	profile := auth.Profile{Name: "runner-host-ssh", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance"}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RUNNER_HOST_SSH_SECRET", strings.Repeat("s", 32))
+	t.Setenv("ISSUE_SPEC_TOKEN", "origin-bound-parent-token")
+
+	originalBuild, originalRun := runnerServeBuildRuntime, runnerServeRun
+	called := false
+	runnerServeBuildRuntime = func(_ context.Context, input runnerServeRuntimeInput) (runnerServeRuntime, error) {
+		if !input.Runner.AllowHostSSH || input.GitCredentialCommand != "" {
+			t.Fatalf("runtime input=%+v", input)
+		}
+		return runnerServeRuntimeFunc(func(context.Context) error { return nil }), nil
+	}
+	runnerServeRun = func(ctx context.Context, runtime runnerServeRuntime) error {
+		called = true
+		return runtime.Run(ctx)
+	}
+	t.Cleanup(func() { runnerServeBuildRuntime, runnerServeRun = originalBuild, originalRun })
+
+	var stdout, stderr bytes.Buffer
+	app := newApp(strings.NewReader(""), &stdout, &stderr)
+	app.profileName = profile.Name
+	code := app.runRunner(context.Background(), []string{"serve", "--repo", "o/r", "--runner", "runner-bot",
+		"--state", filepath.Join(t.TempDir(), "state.json"), "--subscription-id", uuid.NewString(),
+		"--secret-env", "RUNNER_HOST_SSH_SECRET", "--allow-host-ssh"})
+	if code != 0 || !called {
+		t.Fatalf("serve code=%d called=%v stdout=%q stderr=%q", code, called, stdout.String(), stderr.String())
 	}
 }

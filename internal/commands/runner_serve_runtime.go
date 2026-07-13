@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -76,9 +77,23 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	if err != nil {
 		return nil, err
 	}
-	gitProvider, err := credentials.NewCommandGitProvider(credentials.CommandGitProviderConfig{Path: input.GitCredentialCommand,
-		Args: input.GitCredentialArgs, Timeout: input.GitCredentialTimeout, MaxOutput: input.GitCredentialMaxOutput,
-		MaxConcurrent: input.GitCredentialConcurrency})
+	var gitProvider credentials.GitProvider
+	var hostSSHDir, hostSSHAgentSocket string
+	if input.Runner.AllowHostSSH {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil || strings.TrimSpace(home) == "" {
+			return nil, fmt.Errorf("runner serve host SSH: resolve runner home directory")
+		}
+		hostSSHDir = filepath.Join(home, ".ssh")
+		hostSSHAgentSocket = strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK"))
+		gitProvider, err = credentials.NewHostSSHGitProvider(credentials.HostSSHGitProviderConfig{
+			SSHDir: hostSSHDir, AgentSocket: hostSSHAgentSocket,
+		})
+	} else {
+		gitProvider, err = credentials.NewCommandGitProvider(credentials.CommandGitProviderConfig{Path: input.GitCredentialCommand,
+			Args: input.GitCredentialArgs, Timeout: input.GitCredentialTimeout, MaxOutput: input.GitCredentialMaxOutput,
+			MaxConcurrent: input.GitCredentialConcurrency})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +119,8 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 		Scopes: []string{"read:user", "issues:read", "issues:write", "evidence:write"}}
 	workspaces := jobs.WorkspaceManager(workspace.Manager{Root: input.Runner.WorkspaceRoot, Retention: input.Runner.WorkspaceRetention.Duration})
 	sandboxer := jobs.SandboxPreparer(jobs.SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: input.Runner.UnsafeNoSandbox,
-		BwrapPath: input.Runner.BwrapPath, HostGHConfigDir: input.Runner.GHConfigDir}})
+		BwrapPath: input.Runner.BwrapPath, HostGHConfigDir: input.Runner.GHConfigDir,
+		HostSSHDir: hostSSHDir, HostSSHAgentSocket: hostSSHAgentSocket}})
 	acpxFactory := jobs.AcpxFactory(jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(input.Runner)})
 	artifacts := jobs.ArtifactProvider(&jobs.IssueSpecArtifactProvider{GitHub: compatibility})
 	writebacks := jobs.Writeback(&writeback.Service{GitHub: compatibility, Store: input.Store})
