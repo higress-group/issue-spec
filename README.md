@@ -31,6 +31,31 @@ code provider your team already uses.
 
 **[Explore the self-hosted server, architecture, access model, deployment, and operations →](docs/self-hosting/README.md)**
 
+### From transparent change specs to handoff-ready agent execution
+
+Proposal, design, TASK, PROCESS, review, and verification evidence already live
+transparently in the issue timeline. Runner takes the next step: an authorized
+maintainer triggers an agent with an ordinary issue comment, while status,
+public session, results, and continuation instructions stay in that same
+timeline.
+
+```text
+Alice:  /new Implement the current design, test it, and open a PR
+Runner: started · public session s_demo_42
+        ...status, PROCESS, and code evidence continue in the issue...
+Bob:    /resume s_demo_42 Apply the review decision to error handling
+```
+
+A public session belongs to authorized repository maintainers, not to one
+person's private conversation. Another maintainer can read the complete issue
+context and use `/resume` to take over the same agent session and workspace.
+The handoff requires no copied local chat and remains connected to the change
+spec, review, and verification trail.
+
+[![Trigger an agent from an issue comment and continue it as another maintainer](docs/self-hosting/assets/self-hosted-runner-command.png)](docs/self-hosting/runner.md)
+
+**[Explore self-hosted Runner setup, comment triggers, multi-maintainer handoff, and operations →](docs/self-hosting/runner.md)**
+
 ## See it in action
 
 ```text
@@ -126,16 +151,20 @@ issue-spec auth status --hostname ghe.example.com --json
 ## Runner: Comment-Triggered Workflows
 
 `issue-spec runner` watches authorized issue command comments and dispatches
-Codex or Claude through acpx in managed repository workspaces.
+Codex or Claude through acpx in managed repository workspaces. `/new` creates a
+public session, and any authorized maintainer with repository write permission
+can continue it with `/resume <public-session-id> ...`, enabling agent handoff
+across people.
 
 ```bash
 issue-spec runner preflight --repo owner/repo --runner "$(gh api user --jq .login)"
 issue-spec runner poll --repo owner/repo --runner "$(gh api user --jq .login)" --agent codex
 ```
 
-See the **[runner operations guide](docs/runner.md)** for command intake,
+See the **[GitHub runner operations guide](docs/runner.md)** for command intake,
 authorization, notification identities, sandboxing, concurrency, workspaces,
-recovery, and all runner options.
+recovery, and all runner options. A self-hosted server uses webhook-driven
+`runner serve`; see the **[self-hosted Runner guide](docs/self-hosting/runner.md)**.
 
 ## Why issue-spec
 
