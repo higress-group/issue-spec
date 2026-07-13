@@ -194,6 +194,119 @@ func TestIntegrateRejectsStaleHeadWithoutMutatingLease(t *testing.T) {
 	}
 }
 
+func TestIntegratePreMutationDriftPreservesExternalHeadAndWorkerResult(t *testing.T) {
+	fixture := completedFixture(t, "internal/pre-race.go", "package internal\n")
+	var externalHead string
+	ctx := withIntegrationRaceHook(context.Background(), func(phase string) error {
+		if phase != integrationHookBeforeMutation {
+			return nil
+		}
+		runGit(t, fixture.repo, "commit", "--allow-empty", "-m", "external pre-mutation advance")
+		externalHead = gitOutput(t, fixture.repo, "rev-parse", "HEAD")
+		return nil
+	})
+	result, err := fixture.manager.Integrate(ctx, IntegrateRequest{WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, ExpectedHead: fixture.base})
+	if !errors.Is(err, ErrStaleIntegration) || result.Lease.Portable.State != StateConflicted {
+		t.Fatalf("pre-mutation drift result=%+v err=%v", result, err)
+	}
+	if got := gitOutput(t, fixture.repo, "rev-parse", "HEAD"); got != externalHead {
+		t.Fatalf("external HEAD changed: got %s want %s", got, externalHead)
+	}
+	if status := gitOutput(t, fixture.repo, "status", "--porcelain=v1"); status != "" {
+		t.Fatalf("pre-mutation drift left dirty checkout: %q", status)
+	}
+	stored, _, _ := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
+	if stored.Portable.State != StateConflicted || stored.Portable.ResultCommit == "" || stored.Portable.IntegrationSHA != "" || integrationAttemptRefs(t, fixture) != "" {
+		t.Fatalf("pre-mutation recovery lost retry evidence: %+v markers=%q", stored, integrationAttemptRefs(t, fixture))
+	}
+}
+
+func TestIntegratePostMutationDriftPreservesExactExternalCommitAndUserWork(t *testing.T) {
+	fixture := completedFixture(t, "internal/post-race.go", "package internal\n")
+	externalWorktree := filepath.Join(t.TempDir(), "external-worktree")
+	runGit(t, fixture.repo, "worktree", "add", "-b", "external-p026", externalWorktree, fixture.base)
+	if err := os.WriteFile(filepath.Join(externalWorktree, "external-user.txt"), []byte("preserve me\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, externalWorktree, "add", "external-user.txt")
+	runGit(t, externalWorktree, "commit", "-m", "external user work")
+	externalHead := gitOutput(t, externalWorktree, "rev-parse", "HEAD")
+	runGit(t, fixture.repo, "worktree", "remove", externalWorktree)
+	runGit(t, fixture.repo, "branch", "-D", "external-p026")
+	var coordinatorHead string
+	ctx := withIntegrationRaceHook(context.Background(), func(phase string) error {
+		if phase != integrationHookAfterMutation {
+			return nil
+		}
+		coordinatorHead = gitOutput(t, fixture.repo, "rev-parse", "HEAD")
+		runGit(t, fixture.repo, "reset", "--hard", externalHead)
+		return nil
+	})
+	result, err := fixture.manager.Integrate(ctx, IntegrateRequest{WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, ExpectedHead: fixture.base})
+	if !errors.Is(err, ErrStaleIntegration) || result.Lease.Portable.State != StateConflicted {
+		t.Fatalf("post-mutation drift result=%+v err=%v", result, err)
+	}
+	if got := gitOutput(t, fixture.repo, "rev-parse", "HEAD"); got != externalHead || coordinatorHead == "" || coordinatorHead == externalHead {
+		t.Fatalf("post-mutation HEAD got=%s external=%s coordinator=%s", got, externalHead, coordinatorHead)
+	}
+	if content, readErr := os.ReadFile(filepath.Join(fixture.repo, "external-user.txt")); readErr != nil || string(content) != "preserve me\n" {
+		t.Fatalf("external user work was not preserved: content=%q err=%v", content, readErr)
+	}
+	if status := gitOutput(t, fixture.repo, "status", "--porcelain=v1"); status != "" {
+		t.Fatalf("post-mutation drift left dirty checkout: %q", status)
+	}
+	containsCoordinator, predicateErr := fixture.manager.gitPredicate(context.Background(), fixture.repo, "merge-base", "--is-ancestor", coordinatorHead, externalHead)
+	if predicateErr != nil || containsCoordinator {
+		t.Fatalf("external HEAD retained coordinator commit: contains=%v err=%v", containsCoordinator, predicateErr)
+	}
+	stored, _, _ := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
+	if stored.Portable.State != StateConflicted || stored.Portable.ResultCommit == "" || stored.Portable.IntegrationSHA != "" || integrationAttemptRefs(t, fixture) != "" {
+		t.Fatalf("post-mutation recovery lost retry evidence: %+v markers=%q", stored, integrationAttemptRefs(t, fixture))
+	}
+}
+
+func TestIntegrateConcurrentDriftDuringCherryPickRemovesOnlyCoordinatorCommit(t *testing.T) {
+	fixture := completedFixture(t, "internal/concurrent-race.go", "package internal\n")
+	blocker := &blockingCherryPickRunner{GitRunner: ExecGitRunner{}, entered: make(chan struct{}), release: make(chan struct{})}
+	fixture.manager.Runner = blocker
+	type outcome struct {
+		result IntegrationResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := fixture.manager.Integrate(context.Background(), IntegrateRequest{WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, ExpectedHead: fixture.base})
+		done <- outcome{result: result, err: err}
+	}()
+	select {
+	case <-blocker.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for cherry-pick boundary")
+	}
+	runGit(t, fixture.repo, "commit", "--allow-empty", "-m", "external concurrent advance")
+	externalHead := gitOutput(t, fixture.repo, "rev-parse", "HEAD")
+	close(blocker.release)
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for integration recovery")
+	}
+	if !errors.Is(got.err, ErrStaleIntegration) || got.result.Lease.Portable.State != StateConflicted {
+		t.Fatalf("concurrent drift result=%+v err=%v", got.result, got.err)
+	}
+	if head := gitOutput(t, fixture.repo, "rev-parse", "HEAD"); head != externalHead {
+		t.Fatalf("coordinator rollback changed external HEAD: got %s want %s", head, externalHead)
+	}
+	if status := gitOutput(t, fixture.repo, "status", "--porcelain=v1"); status != "" {
+		t.Fatalf("coordinator rollback left dirty checkout: %q", status)
+	}
+	stored, _, _ := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
+	if stored.Portable.State != StateConflicted || stored.Portable.ResultCommit == "" || stored.Portable.IntegrationSHA != "" {
+		t.Fatalf("concurrent drift lost worker result: %+v", stored)
+	}
+}
+
 func TestIntegrateOntoAdvancedNonConflictingExpectedHead(t *testing.T) {
 	fixture := completedFixture(t, "internal/x.go", "package internal\n")
 	if err := os.WriteFile(filepath.Join(fixture.repo, "coordinator.txt"), []byte("dependency\n"), 0o600); err != nil {
@@ -316,6 +429,52 @@ func TestIntegrateRetryRecognizesAppliedCommitAfterPublicationCrash(t *testing.T
 	}
 	if attempts := integrationAttemptRefs(t, fixture); attempts != "" {
 		t.Fatalf("recovery left attempt marker %q", attempts)
+	}
+}
+
+func TestIntegrateResumePublicationDriftPreservesExternalHeadAndWorkerResult(t *testing.T) {
+	fixture := completedFixture(t, "internal/resume-race.go", "package internal\n")
+	crash := errors.New("injected crash after cherry-pick")
+	fixture.manager.Runner = &failAfterAppliedCommitRunner{GitRunner: ExecGitRunner{}, failure: crash}
+	request := IntegrateRequest{WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, ExpectedHead: fixture.base}
+	if _, err := fixture.manager.Integrate(context.Background(), request); !errors.Is(err, crash) {
+		t.Fatalf("injected publication crash not observed: %v", err)
+	}
+	coordinatorHead := gitOutput(t, fixture.repo, "rev-parse", "HEAD")
+	externalWorktree := filepath.Join(t.TempDir(), "resume-external-worktree")
+	runGit(t, fixture.repo, "worktree", "add", "-b", "external-resume-p026", externalWorktree, coordinatorHead)
+	if err := os.WriteFile(filepath.Join(externalWorktree, "external-resume.txt"), []byte("preserve resume work\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, externalWorktree, "add", "external-resume.txt")
+	runGit(t, externalWorktree, "commit", "-m", "external resume publication advance")
+	externalHead := gitOutput(t, externalWorktree, "rev-parse", "HEAD")
+	runGit(t, fixture.repo, "worktree", "remove", externalWorktree)
+	runGit(t, fixture.repo, "branch", "-D", "external-resume-p026")
+
+	fixture.manager.Runner = ExecGitRunner{}
+	ctx := withIntegrationRaceHook(context.Background(), func(phase string) error {
+		if phase == integrationHookBeforeResumePublication {
+			runGit(t, fixture.repo, "reset", "--hard", externalHead)
+		}
+		return nil
+	})
+	result, err := fixture.manager.Integrate(ctx, request)
+	if !errors.Is(err, ErrStaleIntegration) || result.Lease.Portable.State != StateConflicted {
+		t.Fatalf("resume publication drift result=%+v err=%v", result, err)
+	}
+	if got := gitOutput(t, fixture.repo, "rev-parse", "HEAD"); got != externalHead {
+		t.Fatalf("resume recovery changed external HEAD: got %s want %s", got, externalHead)
+	}
+	if content, readErr := os.ReadFile(filepath.Join(fixture.repo, "external-resume.txt")); readErr != nil || string(content) != "preserve resume work\n" {
+		t.Fatalf("external resume work was not preserved: content=%q err=%v", content, readErr)
+	}
+	if status := gitOutput(t, fixture.repo, "status", "--porcelain=v1"); status != "" {
+		t.Fatalf("resume recovery left dirty checkout: %q", status)
+	}
+	stored, _, _ := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
+	if stored.Portable.State != StateConflicted || stored.Portable.ResultCommit == "" || stored.Portable.IntegrationSHA != "" || integrationAttemptRefs(t, fixture) != "" {
+		t.Fatalf("resume recovery lost retry evidence: %+v markers=%q", stored, integrationAttemptRefs(t, fixture))
 	}
 }
 
@@ -453,20 +612,23 @@ type blockingCherryPickRunner struct {
 
 type failAfterAppliedCommitRunner struct {
 	GitRunner
-	mu        sync.Mutex
-	headReads int
-	failure   error
+	mu                sync.Mutex
+	appliedCommitSeen bool
+	failure           error
 }
 
 func (r *failAfterAppliedCommitRunner) Run(ctx context.Context, command GitCommand) (GitResult, error) {
 	result, err := r.GitRunner.Run(ctx, command)
-	if err != nil || len(command.Args) != 2 || command.Args[0] != "rev-parse" || command.Args[1] != "HEAD" {
+	if err != nil {
 		return result, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.headReads++
-	if r.headReads == 2 {
+	if len(command.Args) > 0 && command.Args[0] == "cherry-pick" && (len(command.Args) < 2 || command.Args[1] != "--abort") {
+		r.appliedCommitSeen = true
+		return result, nil
+	}
+	if r.appliedCommitSeen && len(command.Args) == 2 && command.Args[0] == "rev-parse" && command.Args[1] == "HEAD" {
 		return result, r.failure
 	}
 	return result, nil

@@ -34,6 +34,28 @@ type IntegrationResult struct {
 	AlreadyIntegrated bool       `json:"already_integrated"`
 }
 
+type integrationRaceHookKey struct{}
+
+type integrationRaceHook func(string) error
+
+const (
+	integrationHookBeforeMutation          = "before-mutation"
+	integrationHookAfterMutation           = "after-mutation"
+	integrationHookBeforeResumePublication = "before-resume-publication"
+)
+
+func withIntegrationRaceHook(ctx context.Context, hook integrationRaceHook) context.Context {
+	return context.WithValue(ctx, integrationRaceHookKey{}, hook)
+}
+
+func runIntegrationRaceHook(ctx context.Context, phase string) error {
+	hook, _ := ctx.Value(integrationRaceHookKey{}).(integrationRaceHook)
+	if hook == nil {
+		return nil
+	}
+	return hook(phase)
+}
+
 // Complete validates a clean one-commit worker result and records
 // worker-complete evidence. It never reads changes from a dirty directory.
 func (m *Manager) Complete(ctx context.Context, request CompleteRequest) (result Inspection, resultErr error) {
@@ -188,9 +210,20 @@ func (m *Manager) resumeIntegration(ctx context.Context, lease LocalLease, expec
 			return IntegrationResult{Lease: lease}, err
 		}
 	}
+	if err := runIntegrationRaceHook(ctx, integrationHookBeforeResumePublication); err != nil {
+		return IntegrationResult{Lease: lease}, err
+	}
+	if observed, verifyErr := m.exactCleanIntegrationHead(ctx, head); verifyErr != nil {
+		return m.integrationDrift(ctx, lease, markerRef, head, observed,
+			fmt.Errorf("%w: recovered integration HEAD changed before lease publication: %v", ErrStaleIntegration, verifyErr))
+	}
 	updated, err := m.markIntegrated(ctx, lease, head)
 	if err != nil {
 		return IntegrationResult{Lease: updated}, err
+	}
+	if observed, verifyErr := m.exactCleanIntegrationHead(ctx, head); verifyErr != nil {
+		return m.integrationDrift(ctx, updated, markerRef, head, observed,
+			fmt.Errorf("%w: recovered integration HEAD changed during lease publication: %v", ErrStaleIntegration, verifyErr))
 	}
 	cleanupErr := m.deleteIntegrationAttempt(ctx, markerRef, head)
 	return IntegrationResult{Lease: updated, IntegrationSHA: head, AlreadyIntegrated: true}, cleanupErr
@@ -200,6 +233,17 @@ func (m *Manager) cherryPickIntegrating(ctx context.Context, lease LocalLease, e
 	markerRef := integrationAttemptRef(lease, expected)
 	if err := m.ensureIntegrationAttempt(ctx, markerRef, expected); err != nil {
 		return IntegrationResult{Lease: lease}, err
+	}
+	if err := runIntegrationRaceHook(ctx, integrationHookBeforeMutation); err != nil {
+		return IntegrationResult{Lease: lease}, err
+	}
+	// External Git clients do not share the manager's coordinator lock. Repeat
+	// the clean expected-HEAD check immediately before mutation, after the
+	// durable attempt marker exists, so a validation-to-cherry-pick drift never
+	// becomes the parent of an accepted integration commit.
+	if err := m.validateIntegration(ctx, expected, true); err != nil {
+		observed, _ := m.gitOutput(ctx, "read pre-mutation drift HEAD", m.IntegrationRoot, "rev-parse", "HEAD")
+		return m.integrationDrift(ctx, lease, markerRef, expected, observed, fmt.Errorf("%w: integration changed before cherry-pick: %v", ErrStaleIntegration, err))
 	}
 	if _, err := m.git(ctx, "cherry-pick bounded worker commit", m.IntegrationRoot, "cherry-pick", lease.Portable.ResultCommit); err != nil {
 		abortErr := m.abortCherryPick(ctx, expected)
@@ -216,23 +260,112 @@ func (m *Manager) cherryPickIntegrating(ctx context.Context, lease LocalLease, e
 		})
 		return IntegrationResult{Lease: updated}, errors.Join(fmt.Errorf("%w: %v", ErrIntegrationConflict, err), abortErr, markerErr, updateErr)
 	}
+	createdHead, err := m.gitOutput(ctx, "read coordinator cherry-pick HEAD", m.IntegrationRoot, "rev-parse", "HEAD")
+	if err != nil {
+		return IntegrationResult{Lease: lease}, err
+	}
+	createdParent, err := m.gitOutput(ctx, "read coordinator cherry-pick parent", m.IntegrationRoot, "rev-parse", createdHead+"^")
+	if err != nil {
+		return IntegrationResult{Lease: lease}, err
+	}
+	match, err := m.isAppliedWorkerCommit(ctx, createdParent, lease.Portable.ResultCommit, createdHead)
+	if err != nil || !match {
+		return IntegrationResult{Lease: lease}, errors.Join(fmt.Errorf("%w: cherry-pick result does not match the bounded worker commit", ErrWorkspaceConflict), err)
+	}
+	if !strings.EqualFold(createdParent, expected) {
+		rollbackErr := m.rollbackCoordinatorCommit(ctx, createdHead, createdParent)
+		observed, _ := m.gitOutput(ctx, "read drift HEAD after coordinator rollback", m.IntegrationRoot, "rev-parse", "HEAD")
+		recoveryMarker := markerRef
+		if rollbackErr != nil {
+			// Keep the durable marker when coordinator-created Git state could not
+			// be removed; reconciliation still needs that exact attempt evidence.
+			recoveryMarker = ""
+		}
+		result, driftErr := m.integrationDrift(ctx, lease, recoveryMarker, expected, observed,
+			fmt.Errorf("%w: cherry-pick parent changed from expected %s to %s", ErrStaleIntegration, expected, createdParent))
+		return result, errors.Join(driftErr, rollbackErr)
+	}
+	if err := runIntegrationRaceHook(ctx, integrationHookAfterMutation); err != nil {
+		return IntegrationResult{Lease: lease}, err
+	}
 	head, err := m.gitOutput(ctx, "read integrated HEAD", m.IntegrationRoot, "rev-parse", "HEAD")
 	if err != nil {
 		return IntegrationResult{Lease: lease}, err
 	}
-	match, err := m.isAppliedWorkerCommit(ctx, expected, lease.Portable.ResultCommit, head)
-	if err != nil || !match {
-		return IntegrationResult{Lease: lease}, errors.Join(fmt.Errorf("%w: cherry-pick result does not match the bounded worker commit", ErrWorkspaceConflict), err)
+	if !strings.EqualFold(head, createdHead) {
+		return m.integrationDrift(ctx, lease, markerRef, expected, head,
+			fmt.Errorf("%w: integration HEAD changed after coordinator cherry-pick", ErrStaleIntegration))
 	}
 	if err := m.advanceIntegrationAttempt(ctx, markerRef, expected, head); err != nil {
 		return IntegrationResult{Lease: lease}, err
+	}
+	if observed, verifyErr := m.exactCleanIntegrationHead(ctx, head); verifyErr != nil {
+		return m.integrationDrift(ctx, lease, markerRef, head, observed,
+			fmt.Errorf("%w: integration HEAD changed before lease publication: %v", ErrStaleIntegration, verifyErr))
 	}
 	updated, err := m.markIntegrated(ctx, lease, head)
 	if err != nil {
 		return IntegrationResult{Lease: updated}, err
 	}
+	if observed, verifyErr := m.exactCleanIntegrationHead(ctx, head); verifyErr != nil {
+		return m.integrationDrift(ctx, updated, markerRef, head, observed,
+			fmt.Errorf("%w: integration HEAD changed during lease publication: %v", ErrStaleIntegration, verifyErr))
+	}
 	cleanupErr := m.deleteIntegrationAttempt(ctx, markerRef, head)
 	return IntegrationResult{Lease: updated, IntegrationSHA: head}, cleanupErr
+}
+
+func (m *Manager) exactCleanIntegrationHead(ctx context.Context, expected string) (string, error) {
+	if err := m.validateIntegrationCommonAndClean(ctx); err != nil {
+		return "", err
+	}
+	observed, err := m.gitOutput(ctx, "revalidate exact integration HEAD", m.IntegrationRoot, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if !strings.EqualFold(observed, expected) {
+		return observed, fmt.Errorf("expected %s, observed %s", expected, observed)
+	}
+	return observed, nil
+}
+
+func (m *Manager) rollbackCoordinatorCommit(ctx context.Context, createdHead, parent string) error {
+	if err := m.validateIntegrationCommonAndClean(ctx); err != nil {
+		return err
+	}
+	current, err := m.gitOutput(ctx, "verify coordinator rollback HEAD", m.IntegrationRoot, "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(current, createdHead) {
+		return fmt.Errorf("%w: external HEAD moved before coordinator rollback", ErrStaleIntegration)
+	}
+	if _, err := m.git(ctx, "remove coordinator-created integration commit", m.IntegrationRoot, "update-ref", "HEAD", parent, createdHead); err != nil {
+		return err
+	}
+	// update-ref preserves the exact external commit identity. Reset without an
+	// explicit target only refreshes index/worktree to whichever HEAD currently
+	// wins; it never rewrites an external commit.
+	_, err = m.git(ctx, "refresh integration checkout after coordinator rollback", m.IntegrationRoot, "reset", "--hard")
+	return err
+}
+
+func (m *Manager) integrationDrift(ctx context.Context, lease LocalLease, markerRef, markerValue, observed string, cause error) (IntegrationResult, error) {
+	var markerErr error
+	if strings.TrimSpace(markerRef) != "" {
+		markerErr = m.deleteIntegrationAttempt(ctx, markerRef, markerValue)
+	}
+	updated, updateErr := m.Store.Update(ctx, lease.Portable.WorkspaceID, func(current *LocalLease) error {
+		if (current.Portable.State != StateIntegrating && current.Portable.State != StateIntegrated) || current.Portable.ResultCommit != lease.Portable.ResultCommit {
+			return fmt.Errorf("%w: lease changed while recording integration drift", ErrWorkspaceConflict)
+		}
+		current.Portable.State = StateConflicted
+		current.Portable.IntegrationSHA = ""
+		current.Integration.ObservedHead = strings.TrimSpace(observed)
+		current.Integration.LastError = cause.Error()
+		return nil
+	})
+	return IntegrationResult{Lease: updated}, errors.Join(cause, markerErr, updateErr)
 }
 
 func (m *Manager) abortCherryPick(ctx context.Context, expected string) error {
