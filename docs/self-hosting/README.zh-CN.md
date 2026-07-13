@@ -9,7 +9,7 @@ provider-neutral 代码证据、Webhook、Runner，以及由 PostgreSQL 持久�
 当团队需要私网部署、本地身份与权限、内部代码平台接入，或不依赖个人 GitHub
 账号的自动化身份时，可以使用 self-hosted 模式。
 
-![自托管工作台总览](assets/self-hosted-dashboard.png)
+![自托管工作台总览](assets/self-hosted-dashboard.zh-CN.png)
 
 ## Server 负责什么
 
@@ -45,19 +45,19 @@ Proposal、Design 和 Implement Issue 的正文保存当前产物；SPEC、QUEST
 PROCESS、REVIEW 和 VERIFY 以类型化评论出现在同一时间线。普通人的评论仍可用于
 讨论与通知。
 
-![包含类型化工作流评论的 Issue 详情](assets/self-hosted-issue-detail.png)
+![包含类型化工作流评论的 Issue 详情](assets/self-hosted-issue-detail.zh-CN.png)
 
 ### Change Board 展示工作流状态，而不只是 Issue 数量
 
 Change Board 把 Proposal、Design 和 Implement Issue 聚合成一个 Change，并展示
 生命周期、TASK/PROCESS 进度、诊断信息和关联代码变更。
 
-![Change Board](assets/self-hosted-change-board.png)
+![Change Board](assets/self-hosted-change-board.zh-CN.png)
 
 详情页把追溯关系和 provider-neutral 代码关联放在一起。GitHub PR 与内部 MR 可以
 属于同一个 Change，同时保留各自的 Provider 身份。
 
-![Change 详情与代码证据](assets/self-hosted-change-detail.png)
+![Change 详情与代码证据](assets/self-hosted-change-detail.zh-CN.png)
 
 ### 集成具有明确策略和完整审计
 
@@ -65,7 +65,7 @@ Change Board 把 Proposal、Design 和 Implement Issue 聚合成一个 Change，
 Issue 动作、Change 类型、普通/类型化评论，以及真人/自动化 Actor。URL 查询参数中
 的凭据会被加密，创建后不会再次返回浏览器。
 
-![Webhook 投递控制台](assets/self-hosted-webhook-integrations.png)
+![Webhook 投递控制台](assets/self-hosted-webhook-integrations.zh-CN.png)
 
 ## 权限模型
 
@@ -174,6 +174,8 @@ Service Account 与 PAT 的操作会被标记为 Automation，Webhook 策略和�
 无需解析不可信评论文本，就可以排除类型化评论或 Automation Actor。失败投递会
 自动重试，超过次数后进入 Dead Letter，并能在保持事件身份不变的情况下重放。
 多副本投递与恢复语义见 [HA Webhook 运维](operations/ha-webhooks.md)。
+从 PAT、Source Binding、Webhook 到 systemd 启动和评论命令的完整步骤见
+[自托管 Runner：通过 Issue 评论触发 Agent](runner.zh-CN.md)。
 
 ## 运维文档索引
 
@@ -181,6 +183,7 @@ Service Account 与 PAT 的操作会被标记为 Automation，Webhook 策略和�
 - [部署与加固](operations/deployment.md)
 - [备份、恢复、升级与应急处理](operations/backup-restore.md)
 - [HA Webhook 投递](operations/ha-webhooks.md)
+- [通过 Issue 评论触发 Agent：Runner 接入指南](runner.zh-CN.md)
 - [Code Provider Bridge 协议](bridges/code-provider-v1.md)
 - [Git Credential Bridge 协议](bridges/git-credential-v1.md)
 
@@ -193,6 +196,6 @@ Fixture 生成。
 make docs-self-hosted-screenshots
 ```
 
-命令会构建 Web 应用、更新 Desktop Golden Snapshot，并把文档选择的图片同步到
-`docs/self-hosting/assets`。提交更新图片前必须检查视觉 Diff。不要用包含内部 Issue、
+命令会构建 Web 应用、更新中英文 Desktop Golden Snapshot，并把两种语言的文档图片
+同步到 `docs/self-hosting/assets`。提交更新图片前必须检查视觉 Diff。不要用包含内部 Issue、
 真实账号、Access Token 或内网环境信息的截图替换这些 Fixture。

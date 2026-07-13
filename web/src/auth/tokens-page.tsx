@@ -13,7 +13,7 @@ import type { TFunction } from "i18next";
 type TokenForm = { name: string; scopes: string; repository: string };
 type RepositoryOption = { organizationId: string; repositoryId: string; label: string };
 
-const runnerScopes = "read:user, issues:read, issues:write, runner:delegate";
+const runnerScopes = "read:user, issues:read, issues:write, runner:delegate, evidence:write";
 
 export function TokensPage() {
   const { t, i18n } = useTranslation();

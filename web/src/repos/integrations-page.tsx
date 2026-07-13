@@ -110,7 +110,7 @@ function WebhookWorkspace({ orgId, repoId }: { orgId: string; repoId: string }) 
   const [editing, setEditing] = useState<string>();
   const [confirmRevoke, setConfirmRevoke] = useState<string>();
   const [showSuppressions, setShowSuppressions] = useState<string>();
-  const [secret, setSecret] = useState<{ value: string; title: string }>();
+  const [secret, setSecret] = useState<{ value: string; title: string; subscriptionId: string }>();
   const subscriptions = useQuery({ queryKey: queryKeys.webhooks(orgId, repoId), queryFn: ({ signal }) => api.webhookSubscriptions(orgId, repoId, signal) });
   const refresh = () => client.invalidateQueries({ queryKey: queryKeys.webhooks(orgId, repoId) });
   const pause = useMutation({
@@ -120,7 +120,7 @@ function WebhookWorkspace({ orgId, repoId }: { orgId: string; repoId: string }) 
   });
   const rotate = useMutation({
     mutationFn: (id: string) => api.rotateWebhookSecret(orgId, id),
-    onSuccess: (result) => { setSecret({ value: result.secret, title: t("integrations.secretTitle", { version: result.secret_version }) }); inspector.note(t("integrations.secretRotated")); void refresh(); },
+    onSuccess: (result) => { setSecret({ value: result.secret, title: t("integrations.secretTitle", { version: result.secret_version }), subscriptionId: result.id }); inspector.note(t("integrations.secretRotated")); void refresh(); },
     onError: inspector.report,
   });
   const revoke = useMutation({
@@ -131,7 +131,7 @@ function WebhookWorkspace({ orgId, repoId }: { orgId: string; repoId: string }) 
   const items = subscriptions.data?.subscriptions ?? [];
   return <>
     <section className="integration-hero webhook-hero" aria-label={t("integrations.overview")}><div className="integration-hero-mark"><Activity aria-hidden="true" /></div><div><span className="eyebrow">{t("integrations.transport")}</span><h2>{t("integrations.activeRoutes", { count: items.filter((item) => item.active).length })}</h2><p>{t("integrations.transportHelp")}</p></div><button className="button primary" type="button" onClick={() => setCreating((value) => !value)}><Plus size={16} />{creating ? t("integrations.closeForm") : t("integrations.newWebhook")}</button></section>
-    {creating ? <WebhookEditor orgId={orgId} repoId={repoId} onSaved={(created) => { setCreating(false); if ("secret" in created && created.signing_mode !== "none") setSecret({ value: created.secret, title: t("integrations.secretTitle", { version: created.secret_version }) }); void refresh(); }} /> : null}
+    {creating ? <WebhookEditor orgId={orgId} repoId={repoId} onSaved={(created) => { setCreating(false); if ("secret" in created && created.signing_mode !== "none") setSecret({ value: created.secret, title: t("integrations.secretTitle", { version: created.secret_version }), subscriptionId: created.id }); void refresh(); }} /> : null}
     <Panel title={t("integrations.routes")} description={t("integrations.routesHelp")}>
       {subscriptions.isLoading ? <Loading label={t("integrations.loadingRoutes")} /> : null}
       {subscriptions.error ? <ErrorNotice error={subscriptions.error} /> : null}
@@ -153,7 +153,7 @@ function WebhookWorkspace({ orgId, repoId }: { orgId: string; repoId: string }) 
       })}</div>
     </Panel>
     <DeliveryConsole orgId={orgId} repoId={repoId} />
-    {secret ? <SecretDialog secret={secret.value} title={secret.title} onClose={() => setSecret(undefined)} /> : null}
+    {secret ? <SecretDialog secret={secret.value} title={secret.title} details={[{ label: t("integrations.subscriptionId"), value: secret.subscriptionId }]} onClose={() => setSecret(undefined)} /> : null}
   </>;
 }
 

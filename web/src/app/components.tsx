@@ -45,7 +45,7 @@ export function StatusBadge({ tone = "neutral", children }: { tone?: "neutral" |
   return <span className={`status-badge ${tone}`}>{children}</span>;
 }
 
-export function SecretDialog({ secret, title, onClose }: { secret: string; title: string; onClose: () => void }) {
+export function SecretDialog({ secret, title, details = [], onClose }: { secret: string; title: string; details?: Array<{ label: string; value: string }>; onClose: () => void }) {
   const { t } = useTranslation();
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -61,6 +61,7 @@ export function SecretDialog({ secret, title, onClose }: { secret: string; title
       <span className="eyebrow coral-text">{t("ui.shownOnce")}</span>
       <h2 id="secret-title">{title}</h2>
       <p>{t("ui.secretHelp")}</p>
+      {details.length ? <dl className="secret-details">{details.map((detail) => <div key={detail.label}><dt>{detail.label}</dt><dd><code>{detail.value}</code></dd></div>)}</dl> : null}
       <code className="secret-value">{secret}</code>
       <div className="dialog-actions"><button className="button primary" type="button" onClick={copy}><Clipboard size={16} /> {t("ui.copyCredential")}</button><button className="button secondary" type="button" onClick={onClose}><Check size={16} /> {t("ui.savedCredential")}</button></div>
     </section>

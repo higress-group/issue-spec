@@ -6,6 +6,9 @@
 
 `issue-spec runner` 可以监听仓库的 issue 评论，当一位被授权的维护者发出命令评论时，启动一个无头（headless）的 acpx 协调 agent。
 
+本页介绍 GitHub 后端的 `runner poll`。如果 Issue 后端是自托管 Server，请使用
+`runner serve`，并参见[自托管 Runner 接入指南](self-hosting/runner.zh-CN.md)。
+
 最小启动方式：
 
 ```bash

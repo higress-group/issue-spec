@@ -22,12 +22,33 @@
 将组织与仓库权限、Issue 和 Change 页面、Service Account、Provider-neutral
 代码证据、Runner、通知 Webhook 与持久化 PostgreSQL 状态整合在一起。
 
-[![自托管 issue-spec 工作台](docs/self-hosting/assets/self-hosted-dashboard.png)](docs/self-hosting/README.zh-CN.md)
+[![自托管 issue-spec 工作台](docs/self-hosting/assets/self-hosted-dashboard.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
 
 它支持私网部署以及 GitHub OAuth 或 OIDC 登录，同时让源代码、PR/MR、
 Review 和 CI 继续留在团队已有的代码托管平台中。
 
 **[查看自托管 Server、架构、权限模型、部署与运维详情 →](docs/self-hosting/README.zh-CN.md)**
+
+### 从透明 Change Spec 到可交接的 Agent 执行
+
+Change Spec 的 Proposal、Design、TASK、PROCESS、Review 和验证证据原本就公开保存在
+Issue 时间线中。Runner 在此基础上再向前一步：被授权的维护者通过普通 Issue 评论
+触发 Agent，执行状态、Public Session、结果和继续方式仍写回同一条时间线。
+
+```text
+Alice: /new 按当前 Design 完成实现、测试并创建 PR
+Runner: started · public session s_demo_42
+        ...状态、PROCESS 与代码证据持续写回 Issue...
+Bob:   /resume s_demo_42 根据 Review 结论修改错误处理
+```
+
+Public Session 属于仓库中被授权的维护者，而不是某个人的私有对话。另一位维护者可以
+从 Issue 中看到完整上下文，并用 `/resume` 接手同一个 Agent Session 和 Workspace；
+handoff 不需要复制本地聊天记录，也不会脱离 Change Spec、Review 和验证轨迹。
+
+[![Issue 评论触发 Agent 并由其他维护者继续](docs/self-hosting/assets/self-hosted-runner-command.zh-CN.png)](docs/self-hosting/runner.zh-CN.md)
+
+**[查看自托管 Runner、评论触发、多人 handoff 与部署指南 →](docs/self-hosting/runner.zh-CN.md)**
 
 ## 实际效果一览
 
@@ -124,7 +145,8 @@ issue-spec auth status --hostname ghe.example.com --json
 ## Runner：评论触发的工作流
 
 `issue-spec runner` 监听经过授权的 issue 命令评论，并通过 acpx 在受管仓库工作区中
-调度 Codex 或 Claude。
+调度 Codex 或 Claude。`/new` 创建公共 Session，任意被授权且具有仓库写权限的维护者
+都可以使用 `/resume <public-session-id> ...` 继续同一 Session，实现跨人的 Agent handoff。
 
 ```bash
 issue-spec runner preflight --repo owner/repo --runner "$(gh api user --jq .login)"
@@ -132,7 +154,8 @@ issue-spec runner poll --repo owner/repo --runner "$(gh api user --jq .login)" -
 ```
 
 命令接入、权限校验、通知账号、沙箱、并发、工作区、恢复和全部运行参数见
-**[Runner 运维指南](docs/runner.zh-CN.md)**。
+**[GitHub Runner 运维指南](docs/runner.zh-CN.md)**。自托管 Server 使用 Webhook 驱动的
+`runner serve`，参见 **[自托管 Runner 接入指南](docs/self-hosting/runner.zh-CN.md)**。
 
 ## 为什么选择 issue-spec
 
