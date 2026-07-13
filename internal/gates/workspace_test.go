@@ -40,6 +40,39 @@ func TestWorkspaceEvidenceExecutionClassMatrix(t *testing.T) {
 	}
 }
 
+func TestWorkspaceEvidenceAcceptsCleanedChangeBearingLeaseWithIntegrationEvidence(t *testing.T) {
+	process := workspaceGateProcess(t, model.ProcessExecutionChangeBearing, true, workspaceGateRevision)
+	workspace := model.ParseProcessWorkspace(process.Comment.ID, process.URL, process.Comment.Body)
+	if workspace.Blocking() || workspace.Workspace == nil {
+		t.Fatalf("workspace=%+v", workspace)
+	}
+	portable := processworkspace.PortableLease(*workspace.Workspace)
+	portable.State = processworkspace.StateCleanupPending
+	portable.UpdatedAt = portable.UpdatedAt.Add(time.Second)
+	transition, err := model.ApplyTypedTransition(process.Comment.Body, model.TransitionRequest{
+		ExpectedType: "PROCESS", ExpectedID: process.Comment.ID, Workspace: &portable,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	portable.State = processworkspace.StateCleaned
+	portable.UpdatedAt = portable.UpdatedAt.Add(time.Second)
+	transition, err = model.ApplyTypedTransition(transition.Body, model.TransitionRequest{
+		ExpectedType: "PROCESS", ExpectedID: process.Comment.ID, Workspace: &portable,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.Comment = model.ParseTypedComment(transition.Body)
+	report, err := EvaluateWorkspaceEvidence(WorkspaceEvaluationInput{
+		Target: TargetFinal, Mode: ModeAuthoritative, Artifacts: []model.Artifact{process},
+		ExpectedRevision: Fact{Known: true, Expected: workspaceGateRevision},
+	})
+	if err != nil || hasBlockingWorkspaceDiagnostic(report.Diagnostics) {
+		t.Fatalf("diagnostics=%+v err=%v", report.Diagnostics, err)
+	}
+}
+
 func TestWorkspaceCarrierRevisionMustBeTrustedAndExact(t *testing.T) {
 	process := workspaceGateProcess(t, model.ProcessExecutionReview, true, workspaceGateRevision)
 	evidence := []ProcessEvidenceReport{{ProcessID: process.Comment.ID, Satisfied: []string{"review evidence"}}}

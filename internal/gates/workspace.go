@@ -110,9 +110,14 @@ func EvaluateWorkspaceEvidence(input WorkspaceEvaluationInput) (WorkspaceEvaluat
 				diagnostics = append(diagnostics, workspaceDiagnostic(process, input.Target, CodeProcessWorkspaceModeInvalid, SeverityError, true,
 					"change-bearing PROCESS requires writable Workspace mode", string(portable.Mode), string(processworkspace.ModeWritable), "workflow workspace prepare"))
 			}
-			if portable.State != processworkspace.StateIntegrated || portable.ResultCommit == "" || portable.IntegrationSHA == "" {
+			// Cleanup deliberately removes the local worktree but retains the
+			// immutable worker-result and integration evidence. A successfully
+			// cleaned lease therefore remains valid final-gate evidence; requiring
+			// the transient integrated state would make the required cleanup step
+			// invalidate an otherwise completed PROCESS.
+			if (portable.State != processworkspace.StateIntegrated && portable.State != processworkspace.StateCleaned) || portable.ResultCommit == "" || portable.IntegrationSHA == "" {
 				diagnostics = append(diagnostics, workspaceDiagnostic(process, input.Target, CodeProcessWorkspaceStateInvalid, SeverityError, true,
-					"change-bearing PROCESS must publish worker result and integrated lifecycle evidence", string(portable.State), string(processworkspace.StateIntegrated), "workflow workspace integrate"))
+					"change-bearing PROCESS must publish worker result and integrated lifecycle evidence", string(portable.State), "integrated|cleaned", "workflow workspace integrate"))
 			} else {
 				diagnostics = append(diagnostics, evaluateWorkspaceRevision(process, input, portable.IntegrationSHA, true)...)
 			}
