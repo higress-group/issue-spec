@@ -46,9 +46,14 @@ code-host evidence, identity, and Git credentials as separate boundaries.
      --output "$HOME/.config/issue-spec/providers/code.example"
    ```
 
-5. Read [wrapper-mapping.md](references/wrapper-mapping.md), then replace every
-   `not_implemented` branch with platform API calls. Advertise only completed
-   actions. Preserve exact provider, repository, change, and revision identity.
+5. Treat the generated bridge as inert. The requested capabilities and
+   evidence are targets recorded in `implementation-plan.json`; the generated
+   runtime and registry advertise none. Read
+   [wrapper-mapping.md](references/wrapper-mapping.md), replace each required
+   `not_implemented` branch with platform API calls, and add contract tests.
+   Only then copy completed capabilities into both `provider_bridge.py` and
+   `providers.json`. Preserve exact provider, repository, change, and revision
+   identity.
 6. Store the generated `providers.json` as a private operator file. Point both
    the server and relevant CLI process at it with
    `ISSUE_SPEC_CODE_PROVIDERS_FILE`, or use the self-hosted profile's trusted

@@ -80,11 +80,17 @@ The command creates:
 
 - `provider_bridge.py`: strict protocol envelope and safe error handling;
 - `providers.json`: private operator registration and public-safe provider
-  description.
+  description;
+- `implementation-plan.json`: the requested target capabilities and activation
+  checklist.
 
 The scaffold deliberately returns `not_implemented` for snapshots and
-mutations. Replace those branches before deployment and advertise only the
-capabilities that are complete.
+mutations. Its runtime and `providers.json` therefore start with no active
+capabilities. The `--capability` and `--recommended-evidence` options record
+implementation targets in `implementation-plan.json`; they do not advertise
+support. Replace the relevant branches, add contract tests, then copy only
+completed values into both `provider_bridge.py` and `providers.json` before
+deployment.
 
 ### Map provider objects to neutral facts
 

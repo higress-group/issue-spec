@@ -74,10 +74,14 @@ python3 .agents/skills/configure-enterprise-provider/scripts/scaffold_provider.p
 命令会生成：
 
 - `provider_bridge.py`：严格协议 Envelope 与安全错误处理；
-- `providers.json`：私有运维注册信息和可公开的 Provider 描述。
+- `providers.json`：私有运维注册信息和可公开的 Provider 描述；
+- `implementation-plan.json`：目标 Capability 和启用检查清单。
 
-脚手架会故意对 Snapshot 和 Mutation 返回 `not_implemented`。部署前必须替换这些
-分支，并且只声明真正完成的 Capability。
+脚手架会故意对 Snapshot 和 Mutation 返回 `not_implemented`，因此运行时和
+`providers.json` 默认都不启用任何 Capability。`--capability` 和
+`--recommended-evidence` 只会把实施目标写入 `implementation-plan.json`，不会提前
+宣称能力。部署前必须替换对应分支、补齐协议测试，再把已经完成的值同时写入
+`provider_bridge.py` 与 `providers.json`。
 
 ### 把平台对象映射为中性证据
 
