@@ -15,6 +15,7 @@ import (
 
 func newInitTestApp(out, errOut *bytes.Buffer) *app {
 	app := newApp(strings.NewReader(""), out, errOut)
+	app.profileName = auth.DefaultProfileName
 	app.selectGitHubBackend = func(context.Context, string) (auth.GitHubBackendSelection, error) {
 		return auth.GitHubBackendSelection{
 			Mode:            auth.GitHubBackendModeAuto,
@@ -64,6 +65,15 @@ func TestInitLanguageWritesWorkflowConfig(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "workflow language: Simplified Chinese") {
 		t.Fatalf("stdout missing language line: %q", out.String())
+	}
+	projectConfig, err := os.ReadFile(filepath.Join(".issue-spec", "config.json"))
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	for _, want := range []string{`"version": 1`, `"repo": "o/r"`, `"hostname": "github.com"`, `"profile": "github"`} {
+		if !strings.Contains(string(projectConfig), want) {
+			t.Fatalf("project config missing %q:\n%s", want, projectConfig)
+		}
 	}
 }
 

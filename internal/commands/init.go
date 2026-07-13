@@ -79,7 +79,7 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 		a.errorf("create .issue-spec: %v\n", err)
 		return 1
 	}
-	config := map[string]string{"repo": *repoFlag, "hostname": auth.NormalizeHost(*host)}
+	config := map[string]any{"version": 1, "repo": *repoFlag, "hostname": auth.NormalizeHost(*host), "profile": auth.DefaultProfileName}
 	data, _ := json.MarshalIndent(config, "", "  ")
 	if err := os.WriteFile(configPath, append(data, '\n'), 0o644); err != nil {
 		a.errorf("write %s: %v\n", configPath, err)
