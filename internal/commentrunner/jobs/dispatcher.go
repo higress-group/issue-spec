@@ -40,6 +40,7 @@ var ErrNoReadyJob = errors.New("no ready queued job")
 const workspaceLockResidualDiagnostic = "workspace lock recovered from residual lock file"
 
 var errDispatchCancelled = errors.New("runner job was cancelled during dispatch")
+var errSnapshotProcessWorkspaceAssignmentChanged = errors.New("snapshot PROCESS workspace assignment changed after validation")
 
 var authDiagnosticSecretPattern = regexp.MustCompile(`(?i)(["']?[a-z0-9_]*(?:token|secret)[a-z0-9_]*["']?\s*[:=]\s*["']?)([^"',\s}]+)`)
 var processWorkspaceIDSanitizer = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
@@ -700,7 +701,7 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 		var partial *acpx.PartialDispatchError
 		if errors.As(err, &partial) && hasStableDispatchMetadata(partial.Result) {
 			if isRecoverableOutputSummaryError(err) {
-				return d.completeWithCoordinatorSummaryWarning(ctx, job.ID, command, publicID, session, binding.Workspace, partial.Result, err)
+				return d.completeWithCoordinatorSummaryWarning(ctx, job.ID, command, publicID, session, binding.Workspace, partial.Result, processClass, err)
 			}
 			return d.failWithDispatchMetadata(ctx, job.ID, command, publicID, session, binding.Workspace, partial.Result, "coordinator-summary", err)
 		}
@@ -710,14 +711,14 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 		releaseLock()
 		if hasStableDispatchMetadata(dispatch) {
 			if isRecoverableDispatchSummaryValidationError(err) {
-				return d.completeWithCoordinatorSummaryWarning(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, err)
+				return d.completeWithCoordinatorSummaryWarning(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, processClass, err)
 			}
 			return d.failWithDispatchMetadata(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, "coordinator-summary", err)
 		}
 		return d.fail(ctx, job.ID, "coordinator-summary", err)
 	}
 	terminal := statusFromSummary(dispatch.Output.Summary)
-	if err := d.complete(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, terminal); err != nil {
+	if err := d.complete(ctx, job.ID, command, publicID, session, binding.Workspace, dispatch, processClass, terminal); err != nil {
 		releaseLock()
 		if errors.Is(err, errDispatchCancelled) {
 			return cancelledDuringDispatchResult(job.ID), nil
@@ -1020,6 +1021,65 @@ func validateProcessWorkspaceReady(allocation ProcessWorkspaceAllocation) error 
 		}
 	}
 	return nil
+}
+
+func snapshotExecutionClass(class processworkspace.ExecutionClass) bool {
+	return class == processworkspace.ExecutionReview || class == processworkspace.ExecutionVerification
+}
+
+type snapshotProcessWorkspaceIdentity struct {
+	ExactProcessID string
+	Assignment     state.ProcessWorkspaceAssignment
+}
+
+func (i snapshotProcessWorkspaceIdentity) matches(job state.Job) bool {
+	return job.ExactProcessID == i.ExactProcessID && job.ProcessWorkspace != nil && *job.ProcessWorkspace == i.Assignment
+}
+
+func (d *Dispatcher) captureSnapshotProcessWorkspacePostcondition(ctx context.Context, job state.Job, expectedClass processworkspace.ExecutionClass) (snapshotProcessWorkspaceIdentity, error) {
+	if !snapshotExecutionClass(expectedClass) {
+		return snapshotProcessWorkspaceIdentity{}, nil
+	}
+	exact := strings.TrimSpace(job.ExactProcessID)
+	if exact == "" || job.ProcessWorkspace == nil || job.ProcessWorkspace.ProcessID != exact {
+		return snapshotProcessWorkspaceIdentity{}, errors.New("snapshot completion requires the exact durable PROCESS workspace assignment")
+	}
+	provider, ok := d.Workspaces.(ProcessWorkspaceAllocatorProvider)
+	if !ok {
+		return snapshotProcessWorkspaceIdentity{}, errors.New("snapshot completion requires a process workspace allocator provider")
+	}
+	allocator, err := provider.ProcessWorkspaceAllocator(ctx, ProcessWorkspaceAllocatorRequest{IntegrationRoot: job.Workspace.Path})
+	if err != nil {
+		return snapshotProcessWorkspaceIdentity{}, fmt.Errorf("snapshot completion allocator: %w", err)
+	}
+	allocation, err := allocator.Reconcile(ctx, job.ProcessWorkspace.WorkspaceID)
+	if err != nil {
+		return snapshotProcessWorkspaceIdentity{}, fmt.Errorf("snapshot completion reconcile: %w", err)
+	}
+	if err := validateAssignedProcessWorkspace(*job.ProcessWorkspace, allocation); err != nil {
+		return snapshotProcessWorkspaceIdentity{}, fmt.Errorf("snapshot completion assignment: %w", err)
+	}
+	if allocation.Association.ExecutionClass != expectedClass || allocation.Association.Mode != processworkspace.ModeSnapshot {
+		return snapshotProcessWorkspaceIdentity{}, errors.New("snapshot completion execution class or mode changed")
+	}
+	if err := validateProcessWorkspaceReady(allocation); err != nil {
+		return snapshotProcessWorkspaceIdentity{}, fmt.Errorf("snapshot completion inspection: %w", err)
+	}
+	inspection := allocation.Inspection
+	if inspection == nil || !associationMatchesInspection(allocation.Association, *inspection) {
+		return snapshotProcessWorkspaceIdentity{}, errors.New("snapshot completion inspection does not match the durable association")
+	}
+	expectedRevision := strings.TrimSpace(allocation.Association.BaseSHA)
+	if expectedRevision == "" || !strings.EqualFold(strings.TrimSpace(inspection.Lease.Portable.DetachedRevision), expectedRevision) ||
+		!strings.EqualFold(strings.TrimSpace(inspection.Head), expectedRevision) {
+		return snapshotProcessWorkspaceIdentity{}, errors.New("snapshot completion HEAD drifted from the detached revision")
+	}
+	return snapshotProcessWorkspaceIdentity{ExactProcessID: job.ExactProcessID, Assignment: *job.ProcessWorkspace}, nil
+}
+
+func (d *Dispatcher) validateSnapshotProcessWorkspacePostcondition(ctx context.Context, job state.Job, expectedClass processworkspace.ExecutionClass) error {
+	_, err := d.captureSnapshotProcessWorkspacePostcondition(ctx, job, expectedClass)
+	return err
 }
 
 func canonicalProcessWorkspaceID(value string) string {
@@ -1487,7 +1547,25 @@ func (d *Dispatcher) persistStatusCommentInIntent(ctx context.Context, jobID str
 	})
 }
 
-func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, terminal state.LifecycleStatus, diagnostics ...string) error {
+func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, processClass processworkspace.ExecutionClass, terminal state.LifecycleStatus, diagnostics ...string) error {
+	var validatedSnapshot *snapshotProcessWorkspaceIdentity
+	if terminal == state.StatusCompleted && snapshotExecutionClass(processClass) {
+		current, err := d.loadJob(ctx, jobID)
+		if err != nil {
+			return err
+		}
+		if current.Status != state.StatusCancelled {
+			identity, err := d.captureSnapshotProcessWorkspacePostcondition(ctx, current, processClass)
+			if err != nil {
+				result, failErr := d.fail(ctx, jobID, "process-workspace-postcondition", err)
+				if result.Status == state.StatusCancelled {
+					return errDispatchCancelled
+				}
+				return failErr
+			}
+			validatedSnapshot = &identity
+		}
+	}
 	now := d.now()
 	cancelled := false
 	err := d.Store.Update(ctx, func(st *state.RunnerState) error {
@@ -1499,6 +1577,9 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 		if current.Status == state.StatusCancelled {
 			cancelled = true
 			return nil
+		}
+		if validatedSnapshot != nil && !validatedSnapshot.matches(current) {
+			return errSnapshotProcessWorkspaceAssignmentChanged
 		}
 		job, err := st.UpdateJobStatus(jobID, terminal, now, diagnostics...)
 		if err != nil {
@@ -1558,6 +1639,13 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 		return st.UpsertPublicSession(session)
 	})
 	if err != nil {
+		if errors.Is(err, errSnapshotProcessWorkspaceAssignmentChanged) {
+			result, failErr := d.fail(ctx, jobID, "process-workspace-postcondition", err)
+			if result.Status == state.StatusCancelled {
+				return errDispatchCancelled
+			}
+			return failErr
+		}
 		return err
 	}
 	if cancelled {
@@ -1573,10 +1661,10 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 	return nil
 }
 
-func (d *Dispatcher) completeWithCoordinatorSummaryWarning(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, cause error) (Result, error) {
+func (d *Dispatcher) completeWithCoordinatorSummaryWarning(ctx context.Context, jobID string, command runnercontext.CommandVerb, publicID string, session state.PublicSession, workspaceMeta state.WorkspaceMetadata, dispatch acpx.DispatchResult, processClass processworkspace.ExecutionClass, cause error) (Result, error) {
 	diagnostic := coordinatorSummaryWarning(cause)
 	dispatch = withoutCoordinatorSummary(dispatch)
-	if err := d.complete(ctx, jobID, command, publicID, session, workspaceMeta, dispatch, state.StatusCompleted, diagnostic); err != nil {
+	if err := d.complete(ctx, jobID, command, publicID, session, workspaceMeta, dispatch, processClass, state.StatusCompleted, diagnostic); err != nil {
 		if errors.Is(err, errDispatchCancelled) {
 			return cancelledDuringDispatchResult(jobID), nil
 		}

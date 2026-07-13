@@ -2,12 +2,15 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/acpx"
+	runnercontext "github.com/higress-group/issue-spec/internal/commentrunner/context"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
@@ -160,6 +163,239 @@ func TestPrepareProcessWorkspaceRealFileStoreAndGitWorktree(t *testing.T) {
 	}
 }
 
+func TestSnapshotProcessWorkspacePostconditionRejectsEveryMutation(t *testing.T) {
+	tests := map[string]func(*ProcessWorkspaceAllocation){
+		"dirty":                func(a *ProcessWorkspaceAllocation) { a.Inspection.Dirty = true },
+		"head drift":           func(a *ProcessWorkspaceAllocation) { a.Inspection.Head = strings.Repeat("b", 40) },
+		"registration missing": func(a *ProcessWorkspaceAllocation) { a.Inspection.Registered = false },
+		"worktree missing":     func(a *ProcessWorkspaceAllocation) { a.Inspection.Present = false },
+		"inspection problems": func(a *ProcessWorkspaceAllocation) {
+			a.Inspection.Problems = []string{"detached snapshot changed"}
+		},
+		"needs reconcile": func(a *ProcessWorkspaceAllocation) { a.Association.NeedsReconcile = true },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			now := time.Date(2026, 7, 13, 16, 0, 0, 0, time.UTC)
+			job, allocation := snapshotPostconditionFixture(processworkspace.ExecutionReview, now)
+			mutate(&allocation)
+			store := newMemoryStore()
+			seedState(t, store, func(st *state.RunnerState) error { return st.UpsertJob(job) })
+			allocator := &processLifecycleAllocator{allocation: allocation}
+			workspaces := &processLifecycleWorkspaceProvider{fakeWorkspaces: &fakeWorkspaces{}, allocator: allocator}
+			dispatcher := testDispatcher(store, workspaces.fakeWorkspaces, &fakeCoordinator{}, &fakeWriteback{}, now)
+			dispatcher.Workspaces = workspaces
+			if err := dispatcher.validateSnapshotProcessWorkspacePostcondition(context.Background(), job, processworkspace.ExecutionReview); err == nil {
+				t.Fatal("mutated snapshot passed completion postcondition")
+			}
+		})
+	}
+}
+
+func TestSnapshotProcessWorkspacePostconditionAcceptsCleanExactSnapshot(t *testing.T) {
+	now := time.Date(2026, 7, 13, 16, 15, 0, 0, time.UTC)
+	job, allocation := snapshotPostconditionFixture(processworkspace.ExecutionVerification, now)
+	store := newMemoryStore()
+	seedState(t, store, func(st *state.RunnerState) error { return st.UpsertJob(job) })
+	allocator := &processLifecycleAllocator{allocation: allocation}
+	workspaces := &processLifecycleWorkspaceProvider{fakeWorkspaces: &fakeWorkspaces{}, allocator: allocator}
+	dispatcher := testDispatcher(store, workspaces.fakeWorkspaces, &fakeCoordinator{}, &fakeWriteback{}, now)
+	dispatcher.Workspaces = workspaces
+	if err := dispatcher.validateSnapshotProcessWorkspacePostcondition(context.Background(), job, processworkspace.ExecutionVerification); err != nil {
+		t.Fatalf("clean exact verification snapshot was rejected: %v", err)
+	}
+}
+
+func TestSnapshotProcessWorkspacePostconditionSkipsNonSnapshotClasses(t *testing.T) {
+	dispatcher := &Dispatcher{}
+	for _, class := range []processworkspace.ExecutionClass{
+		processworkspace.ExecutionChangeBearing,
+		processworkspace.ExecutionOrchestration,
+		processworkspace.ExecutionExternal,
+	} {
+		if err := dispatcher.validateSnapshotProcessWorkspacePostcondition(context.Background(), state.Job{}, class); err != nil {
+			t.Fatalf("class %s was incorrectly revalidated: %v", class, err)
+		}
+	}
+}
+
+func TestUnsafeSnapshotMutationFailsNormalCompletionAndPreservesCleanupEvidence(t *testing.T) {
+	now := time.Date(2026, 7, 13, 16, 30, 0, 0, time.UTC)
+	job, allocation := snapshotPostconditionFixture(processworkspace.ExecutionReview, now)
+	allocation.Inspection.Dirty = true
+	store := newMemoryStore()
+	seedState(t, store, func(st *state.RunnerState) error { return st.UpsertJob(job) })
+	allocator := &processLifecycleAllocator{allocation: allocation, cleanupErr: errors.New("cleanup temporarily unavailable")}
+	workspaces := &processLifecycleWorkspaceProvider{fakeWorkspaces: &fakeWorkspaces{}, allocator: allocator}
+	writebacks := &fakeWriteback{}
+	dispatcher := testDispatcher(store, workspaces.fakeWorkspaces, &fakeCoordinator{}, writebacks, now)
+	dispatcher.Workspaces = workspaces
+
+	err := dispatcher.complete(context.Background(), job.ID, runnercontext.CommandResume, "", state.PublicSession{}, job.Workspace,
+		acpx.DispatchResult{}, processworkspace.ExecutionReview, state.StatusCompleted)
+	if err == nil {
+		t.Fatal("unsafe dirty review snapshot completed")
+	}
+	failed := loadState(t, store).Jobs[job.ID]
+	if failed.Status != state.StatusFailed || !failed.Sandbox.UnsafeNoSandbox || failed.ProcessWorkspace == nil ||
+		!failed.ProcessWorkspace.CleanupRequired || failed.ProcessWorkspace.CleanupState != state.ProcessWorkspaceAssignmentCleanupPending ||
+		failed.ProcessWorkspace.LastError != "cleanup_failed" ||
+		allocator.cleanupCalls != 1 || !containsStringContaining(failed.Diagnostics, "process-workspace-postcondition") {
+		t.Fatalf("failed snapshot evidence job=%+v cleanupCalls=%d", failed, allocator.cleanupCalls)
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusFailed)
+	allocator.cleanupErr = nil
+	if _, err := dispatcher.cleanupTerminalProcessWorkspace(context.Background(), failed); err != nil {
+		t.Fatal(err)
+	}
+	retried := loadState(t, store).Jobs[job.ID].ProcessWorkspace
+	if retried == nil || retried.CleanupRequired || retried.CleanupState != state.ProcessWorkspaceAssignmentCleanupConfirmed || retried.LastError != "" || allocator.cleanupCalls != 2 {
+		t.Fatalf("cleanup retry evidence=%+v calls=%d", retried, allocator.cleanupCalls)
+	}
+}
+
+func TestUnsafeSnapshotHeadDriftFailsRecoveredCompletion(t *testing.T) {
+	now := time.Date(2026, 7, 13, 17, 0, 0, 0, time.UTC)
+	job, allocation := snapshotPostconditionFixture(processworkspace.ExecutionVerification, now)
+	allocation.Inspection.Head = strings.Repeat("c", 40)
+	store := newMemoryStore()
+	seedState(t, store, func(st *state.RunnerState) error { return st.UpsertJob(job) })
+	allocator := &processLifecycleAllocator{allocation: allocation}
+	workspaces := &processLifecycleWorkspaceProvider{fakeWorkspaces: &fakeWorkspaces{}, allocator: allocator}
+	writebacks := &fakeWriteback{}
+	dispatcher := testDispatcher(store, workspaces.fakeWorkspaces, &fakeCoordinator{}, writebacks, now)
+	dispatcher.Workspaces = workspaces
+
+	result, err := dispatcher.recoveredTerminal(context.Background(), job, state.StatusRunning, state.StatusCompleted, acpx.TurnReconcileResult{
+		Status: acpx.ReconcileStatusCompleted,
+		Output: acpx.TurnOutput{Summary: completedSummary(), SummaryFound: true},
+	}, processworkspace.ExecutionVerification, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := loadState(t, store).Jobs[job.ID]
+	if result.Status != state.StatusFailed || result.Action != string(state.StatusFailed) || failed.Status != state.StatusFailed ||
+		failed.Restart.RecoveredStatus != state.StatusFailed || !failed.Sandbox.UnsafeNoSandbox ||
+		failed.ProcessWorkspace == nil || failed.ProcessWorkspace.CleanupRequired ||
+		failed.ProcessWorkspace.CleanupState != state.ProcessWorkspaceAssignmentCleanupConfirmed || allocator.cleanupCalls != 1 ||
+		!containsStringContaining(failed.Diagnostics, "process-workspace-postcondition") {
+		t.Fatalf("recovered snapshot result=%+v job=%+v cleanupCalls=%d", result, failed, allocator.cleanupCalls)
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusFailed)
+}
+
+func TestUnsafeSnapshotAssignmentDriftFailsNormalCompletionAndCleansCurrentReservation(t *testing.T) {
+	now := time.Date(2026, 7, 13, 17, 30, 0, 0, time.UTC)
+	job, allocation := snapshotPostconditionFixture(processworkspace.ExecutionReview, now)
+	replacement := driftedSnapshotAssignment(*job.ProcessWorkspace)
+	baseStore := newMemoryStore()
+	seedState(t, baseStore, func(st *state.RunnerState) error { return st.UpsertJob(job) })
+	driftStore := &assignmentDriftStore{memoryStore: baseStore, jobID: job.ID, replacement: replacement}
+	allocator := &processLifecycleAllocator{allocation: allocation}
+	workspaces := &processLifecycleWorkspaceProvider{fakeWorkspaces: &fakeWorkspaces{}, allocator: allocator}
+	writebacks := &fakeWriteback{}
+	dispatcher := testDispatcher(baseStore, workspaces.fakeWorkspaces, &fakeCoordinator{}, writebacks, now)
+	dispatcher.Store = driftStore
+	dispatcher.Workspaces = workspaces
+
+	err := dispatcher.complete(context.Background(), job.ID, runnercontext.CommandResume, "", state.PublicSession{}, job.Workspace,
+		acpx.DispatchResult{}, processworkspace.ExecutionReview, state.StatusCompleted)
+	if !errors.Is(err, errSnapshotProcessWorkspaceAssignmentChanged) {
+		t.Fatalf("normal assignment drift error=%v", err)
+	}
+	failed := loadState(t, baseStore).Jobs[job.ID]
+	if failed.Status != state.StatusFailed || !sameProcessWorkspaceAssignmentIdentity(failed.ProcessWorkspace, replacement) ||
+		allocator.cleanupWorkspaceID != replacement.WorkspaceID || allocator.cleanupReservationID != replacement.ReservationID ||
+		!containsStringContaining(failed.Diagnostics, "assignment changed after validation") {
+		t.Fatalf("normal drift job=%+v cleanup=%s/%s", failed, allocator.cleanupWorkspaceID, allocator.cleanupReservationID)
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusFailed)
+}
+
+func TestUnsafeSnapshotAssignmentDriftFailsRecoveredCompletionAndCleansCurrentReservation(t *testing.T) {
+	now := time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC)
+	job, allocation := snapshotPostconditionFixture(processworkspace.ExecutionVerification, now)
+	replacement := driftedSnapshotAssignment(*job.ProcessWorkspace)
+	baseStore := newMemoryStore()
+	seedState(t, baseStore, func(st *state.RunnerState) error { return st.UpsertJob(job) })
+	driftStore := &assignmentDriftStore{memoryStore: baseStore, jobID: job.ID, replacement: replacement}
+	allocator := &processLifecycleAllocator{allocation: allocation}
+	workspaces := &processLifecycleWorkspaceProvider{fakeWorkspaces: &fakeWorkspaces{}, allocator: allocator}
+	writebacks := &fakeWriteback{}
+	dispatcher := testDispatcher(baseStore, workspaces.fakeWorkspaces, &fakeCoordinator{}, writebacks, now)
+	dispatcher.Store = driftStore
+	dispatcher.Workspaces = workspaces
+
+	result, err := dispatcher.recoveredTerminal(context.Background(), job, state.StatusRunning, state.StatusCompleted, acpx.TurnReconcileResult{
+		Status: acpx.ReconcileStatusCompleted,
+		Output: acpx.TurnOutput{Summary: completedSummary(), SummaryFound: true},
+	}, processworkspace.ExecutionVerification, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := loadState(t, baseStore).Jobs[job.ID]
+	if result.Status != state.StatusFailed || failed.Status != state.StatusFailed || failed.Restart.RecoveredStatus != state.StatusFailed ||
+		!sameProcessWorkspaceAssignmentIdentity(failed.ProcessWorkspace, replacement) ||
+		allocator.cleanupWorkspaceID != replacement.WorkspaceID || allocator.cleanupReservationID != replacement.ReservationID ||
+		!containsStringContaining(failed.Diagnostics, "assignment changed after validation") {
+		t.Fatalf("recovered drift result=%+v job=%+v cleanup=%s/%s", result, failed, allocator.cleanupWorkspaceID, allocator.cleanupReservationID)
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusFailed)
+}
+
+func snapshotPostconditionFixture(class processworkspace.ExecutionClass, now time.Time) (state.Job, ProcessWorkspaceAllocation) {
+	association := processLifecycleAssociation("PROCESS-027", "ws-process-027", class, processworkspace.ModeSnapshot)
+	association.BaseSHA = allocationTestSHA
+	association.Branch = ""
+	association.ReservationIdentity = association.ExpectedReservationIdentity()
+	lease := processLifecycleLease(association)
+	lease.Branch = ""
+	lease.DetachedRevision = allocationTestSHA
+	inspection := &processworkspace.Inspection{Registered: true, Present: true, Head: allocationTestSHA,
+		Lease: processworkspace.LocalLease{Portable: lease, WorktreePath: filepath.Join(os.TempDir(), "snapshot-process-027")}}
+	assignment := state.ProcessWorkspaceAssignment{ProcessID: association.ProcessID, WorkspaceID: association.WorkspaceID,
+		ReservationID: association.ReservationID, AssociationGeneration: 11, ReservationIdentity: association.ReservationIdentity}
+	job := state.Job{ID: "job-process-027", Repo: "o/r", IssueNumber: 177, ExactProcessID: association.ProcessID,
+		Status: state.StatusRunning, CreatedAt: now, UpdatedAt: now, Workspace: testBinding("session-process-027").Workspace,
+		Sandbox: state.SandboxMetadata{UnsafeNoSandbox: true, SandboxProvider: "none", FSBoundary: "disabled"}, ProcessWorkspace: &assignment}
+	return job, ProcessWorkspaceAllocation{Association: association, Generation: 11, Inspection: inspection}
+}
+
+func driftedSnapshotAssignment(original state.ProcessWorkspaceAssignment) state.ProcessWorkspaceAssignment {
+	original.WorkspaceID = "ws-process-027-drift"
+	original.ReservationID = "reservation:p027-drift"
+	original.ReservationIdentity = "identity:" + strings.Repeat("d", 32)
+	original.AssociationGeneration++
+	return original
+}
+
+func sameProcessWorkspaceAssignmentIdentity(actual *state.ProcessWorkspaceAssignment, expected state.ProcessWorkspaceAssignment) bool {
+	return actual != nil && actual.ProcessID == expected.ProcessID && actual.WorkspaceID == expected.WorkspaceID &&
+		actual.ReservationID == expected.ReservationID && actual.AssociationGeneration == expected.AssociationGeneration &&
+		actual.ReservationIdentity == expected.ReservationIdentity
+}
+
+type assignmentDriftStore struct {
+	*memoryStore
+	jobID       string
+	replacement state.ProcessWorkspaceAssignment
+	drifted     bool
+}
+
+func (s *assignmentDriftStore) Update(ctx context.Context, mutate func(*state.RunnerState) error) error {
+	if !s.drifted {
+		if err := s.memoryStore.Update(ctx, func(st *state.RunnerState) error {
+			job := st.Jobs[s.jobID]
+			job.ProcessWorkspace = &s.replacement
+			return st.UpsertJob(job)
+		}); err != nil {
+			return err
+		}
+		s.drifted = true
+	}
+	return s.memoryStore.Update(ctx, mutate)
+}
+
 func workspaceBindingForRealRepo(meta state.WorkspaceMetadata) workspace.Binding {
 	return workspace.Binding{Workspace: meta, AcpxWorkingDirectory: meta.Path, SandboxWorkspacePath: meta.Path}
 }
@@ -175,8 +411,12 @@ func (p *processLifecycleWorkspaceProvider) ProcessWorkspaceAllocator(context.Co
 
 type processLifecycleAllocator struct {
 	Allocator
-	allocation    ProcessWorkspaceAllocation
-	allocateCalls int
+	allocation           ProcessWorkspaceAllocation
+	allocateCalls        int
+	cleanupCalls         int
+	cleanupErr           error
+	cleanupWorkspaceID   string
+	cleanupReservationID string
 }
 
 func (a *processLifecycleAllocator) Allocate(context.Context, ProcessWorkspaceAllocationRequest) (ProcessWorkspaceAllocation, error) {
@@ -186,6 +426,19 @@ func (a *processLifecycleAllocator) Allocate(context.Context, ProcessWorkspaceAl
 
 func (a *processLifecycleAllocator) Reconcile(context.Context, string) (ProcessWorkspaceAllocation, error) {
 	return a.allocation, nil
+}
+
+func (a *processLifecycleAllocator) AllowProcessWorkspaceCleanup(context.Context, state.ProcessWorkspaceAssignment, time.Time) (bool, error) {
+	return true, nil
+}
+
+func (a *processLifecycleAllocator) CleanupAndRelease(_ context.Context, workspaceID, reservationID string) (state.ProcessWorkspaceAssociation, error) {
+	a.cleanupCalls++
+	a.cleanupWorkspaceID = workspaceID
+	a.cleanupReservationID = reservationID
+	released := a.allocation.Association
+	released.Lifecycle = state.ProcessWorkspaceReleased
+	return released, a.cleanupErr
 }
 
 func processLifecycleAssociation(processID, workspaceID string, class processworkspace.ExecutionClass, mode processworkspace.WorkspaceMode) state.ProcessWorkspaceAssociation {
