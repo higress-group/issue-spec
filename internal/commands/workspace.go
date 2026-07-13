@@ -14,6 +14,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
+	runnerworkspace "github.com/higress-group/issue-spec/internal/workspace"
 )
 
 type workspaceCommandFlags struct {
@@ -106,10 +107,15 @@ func (a *app) runWorkflowWorkspace(ctx context.Context, args []string) int {
 }
 
 func addWorkspaceCommandFlags(fs *flag.FlagSet) workspaceCommandFlags {
+	integrationRoot := strings.TrimSpace(os.Getenv(runnerworkspace.ProcessIntegrationRootEnv))
+	if integrationRoot == "" {
+		integrationRoot = "."
+	}
+	workspaceRoot := strings.TrimSpace(os.Getenv(runnerworkspace.ProcessWorkspaceRootEnv))
 	return workspaceCommandFlags{
 		repoFlag: fs.String("repo", "", "repository owner/name"), host: fs.String("hostname", "github.com", "issue hostname"),
 		issueFlag: fs.String("issue", "", "implement issue number or URL"), processID: fs.String("process", "", "PROCESS id"),
-		integration: fs.String("integration-root", ".", "coordinator Git integration root"), workspaceRoot: fs.String("workspace-root", "", "managed linked-worktree root"),
+		integration: fs.String("integration-root", integrationRoot, "coordinator Git integration root (default: $"+runnerworkspace.ProcessIntegrationRootEnv+")"), workspaceRoot: fs.String("workspace-root", workspaceRoot, "managed linked-worktree root (default: $"+runnerworkspace.ProcessWorkspaceRootEnv+")"),
 		workspaceID: fs.String("workspace-id", "", "stable portable workspace id"), ownerToken: fs.String("owner-token", "", "machine-local lease owner token"),
 		expectedVersion: fs.Int64("expected-version", 0, "caller-observed PROCESS representation version"),
 		expectedDigest:  fs.String("expected-digest", "", "caller-observed PROCESS body SHA-256 digest"),

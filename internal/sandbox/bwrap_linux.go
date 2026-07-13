@@ -195,6 +195,16 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	}
 	coveredRoots := append([]string{}, systemBinds...)
 	coveredRoots = append(coveredRoots, workspacePath)
+	writableBinds, err := validatedWritableBinds(cfg)
+	if err != nil {
+		return Command{}, nil, err
+	}
+	for _, bind := range writableBinds {
+		args, mounts = appendBindParentDirs(args, mounts, bind, seenDirs, coveredRoots)
+		args = append(args, "--bind", bind, bind)
+		mounts = append(mounts, Mount{Source: bind, Destination: bind, Mode: "rw"})
+		coveredRoots = append(coveredRoots, bind)
+	}
 	for _, bind := range readOnlyBinds(cfg) {
 		if coveredByMount(bind, coveredRoots) {
 			continue
@@ -296,18 +306,7 @@ func systemReadOnlyBinds(cfg Config) []string {
 	if len(cfg.SystemReadOnlyBinds) > 0 {
 		return cleanBinds(cfg.SystemReadOnlyBinds, false)
 	}
-	return cleanBinds([]string{
-		"/usr",
-		"/bin",
-		"/lib",
-		"/lib64",
-		"/etc/ssl/certs",
-		"/etc/pki",
-		"/etc/alternatives",
-		"/etc/resolv.conf",
-		"/etc/hosts",
-		"/etc/nsswitch.conf",
-	}, true)
+	return cleanBinds(defaultSystemReadOnlyBindPaths, true)
 }
 
 func cleanBinds(paths []string, existingOnly bool) []string {

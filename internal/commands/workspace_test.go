@@ -17,7 +17,30 @@ import (
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 	"github.com/higress-group/issue-spec/internal/templates"
+	runnerworkspace "github.com/higress-group/issue-spec/internal/workspace"
 )
+
+func TestWorkspaceCommandRootsDefaultFromRunnerEnvAndExplicitFlagsOverride(t *testing.T) {
+	t.Setenv(runnerworkspace.ProcessIntegrationRootEnv, "/runner/session-clone")
+	t.Setenv(runnerworkspace.ProcessWorkspaceRootEnv, "/runner/process-pool")
+	fs := newFlagSet("workflow workspace test", &bytes.Buffer{})
+	flags := addWorkspaceCommandFlags(fs)
+	if got, want := *flags.integration, "/runner/session-clone"; got != want {
+		t.Fatalf("integration env default = %q, want %q", got, want)
+	}
+	if got, want := *flags.workspaceRoot, "/runner/process-pool"; got != want {
+		t.Fatalf("workspace env default = %q, want %q", got, want)
+	}
+	if err := fs.Parse([]string{"--integration-root", "/standalone/integration", "--workspace-root", "/standalone/pool"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := *flags.integration, "/standalone/integration"; got != want {
+		t.Fatalf("explicit integration root = %q, want %q", got, want)
+	}
+	if got, want := *flags.workspaceRoot, "/standalone/pool"; got != want {
+		t.Fatalf("explicit workspace root = %q, want %q", got, want)
+	}
+}
 
 type workspaceCASBackend struct {
 	fakeGitHubBackend

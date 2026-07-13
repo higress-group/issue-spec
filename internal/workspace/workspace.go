@@ -559,6 +559,17 @@ func (m Manager) Cleanup(ctx context.Context, req CleanupRequest) ([]CleanupResu
 			results = append(results, result)
 			continue
 		}
+		linked, inspectErr := nm.registeredLinkedWorktrees(ctx, path)
+		if inspectErr != nil {
+			result.Action, result.Reason = "kept", "worktree_inspection_failed"
+			results = append(results, result)
+			continue
+		}
+		if linked {
+			result.Action, result.Reason = "kept", "linked_worktrees"
+			results = append(results, result)
+			continue
+		}
 		if err := os.RemoveAll(path); err != nil {
 			result.Action, result.Reason = "failed", err.Error()
 			results = append(results, result)
@@ -568,6 +579,38 @@ func (m Manager) Cleanup(ctx context.Context, req CleanupRequest) ([]CleanupResu
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+func (m Manager) registeredLinkedWorktrees(ctx context.Context, integrationPath string) (bool, error) {
+	result, err := m.runGit(ctx, "git worktree list", integrationPath, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	integrationPath, err = canonicalPath(integrationPath)
+	if err != nil {
+		return false, err
+	}
+	foundIntegration := false
+	linked := false
+	for _, line := range strings.Split(string(result.Stdout), "\n") {
+		if !strings.HasPrefix(line, "worktree ") {
+			continue
+		}
+		candidate := strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+		candidate, err = canonicalPath(candidate)
+		if err != nil {
+			return false, err
+		}
+		if candidate == integrationPath {
+			foundIntegration = true
+			continue
+		}
+		linked = true
+	}
+	if !foundIntegration {
+		return false, errors.New("git worktree list did not include the integration checkout")
+	}
+	return linked, nil
 }
 
 func (m Manager) normalized() (Manager, string, error) {

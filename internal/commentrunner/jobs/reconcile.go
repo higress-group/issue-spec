@@ -334,12 +334,30 @@ func (d *Dispatcher) coordinatorForStoredJob(ctx context.Context, job state.Job)
 		return nil, fmt.Errorf("job %s is missing workspace path", job.ID)
 	}
 	workspacePath := job.Workspace.Path
+	publicID := firstNonEmpty(job.PublicSessionID, job.DispatchIntent.PublicSessionID)
+	processRoot, err := prepareSessionProcessWorkspaceRoot(workspacePath, job.Repo, publicID)
+	if err != nil {
+		return nil, err
+	}
+	runtimePaths, err := stableSessionRuntimePaths(workspacePath, job.Repo, publicID)
+	if err != nil {
+		return nil, err
+	}
+	extraEnv := cloneStringMap(d.CoordinatorExtraEnv)
+	extraEnv[workspace.ProcessIntegrationRootEnv] = workspacePath
+	extraEnv[workspace.ProcessWorkspaceRootEnv] = processRoot
 	env, err := d.Sandbox.Prepare(ctx, SandboxRequest{
 		WorkspacePath:        workspacePath,
 		AcpxWorkingDirectory: workspacePath,
 		AcpxBinary:           firstNonEmpty(d.AcpxBinary, acpx.DefaultBinary),
-		ExtraEnv:             d.CoordinatorExtraEnv,
+		IssueSpecBinary:      d.IssueSpecBinary,
+		ExtraEnv:             extraEnv,
 		AcpxAgent:            job.CoordinatorKind,
+		ProcessWorkspaceRoot: processRoot,
+		RuntimeHome:          runtimePaths.home,
+		RuntimeGHConfigDir:   runtimePaths.ghConfigDir,
+		RuntimeXDGConfigHome: runtimePaths.xdgConfigHome,
+		RuntimeCodexHome:     runtimePaths.codexHome,
 	})
 	if err != nil {
 		return nil, err

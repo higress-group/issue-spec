@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -297,7 +298,7 @@ func TestCleanupHonorsActiveDirtyAndRetentionDecisions(t *testing.T) {
 	staleDeadlinePath := mkdirWorkspace(t, root, "stale-deadline")
 	dirtyPath := mkdirWorkspace(t, root, "dirty")
 	expiredPath := mkdirWorkspace(t, root, "expired")
-	manager := Manager{Root: root, Retention: time.Hour, Now: func() time.Time { return now }}
+	manager := Manager{Root: root, Retention: time.Hour, Now: func() time.Time { return now }, Runner: &fakeGitRunner{t: t}}
 
 	workspaces := []state.WorkspaceMetadata{
 		{ID: "active", Path: activePath, Repo: "o/r", LastUsedAt: now.Add(-3 * time.Hour)},
@@ -335,13 +336,65 @@ func TestCleanupHonorsActiveDirtyAndRetentionDecisions(t *testing.T) {
 	}
 }
 
+func TestCleanupKeepsSessionCloneUntilLinkedWorktreesAreGone(t *testing.T) {
+	root := t.TempDir()
+	now := time.Unix(5000, 0).UTC()
+	expired := mkdirWorkspace(t, root, "expired")
+	linked := filepath.Join(root, "linked-process")
+	runner := &fakeGitRunner{t: t, worktrees: []string{expired, linked}}
+	manager := Manager{Root: root, Retention: time.Hour, Now: func() time.Time { return now }, Runner: runner}
+	results, err := manager.Cleanup(context.Background(), CleanupRequest{Workspaces: []state.WorkspaceMetadata{{ID: "expired", Path: expired, LastUsedAt: now.Add(-2 * time.Hour)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Action != "kept" || results[0].Reason != "linked_worktrees" {
+		t.Fatalf("cleanup with linked worktree = %+v", results)
+	}
+	if _, err := os.Stat(expired); err != nil {
+		t.Fatalf("session clone was removed with linked worktree: %v", err)
+	}
+}
+
+func TestCleanupFailsClosedWhenWorktreeInspectionFailsOrOmitsSessionClone(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		runner func(*testing.T, string) Runner
+	}{
+		{name: "command failure", runner: func(t *testing.T, _ string) Runner {
+			return &fakeGitRunner{t: t, worktreeErr: errors.New("inspection failed")}
+		}},
+		{name: "session clone omitted", runner: func(t *testing.T, root string) Runner {
+			return &fakeGitRunner{t: t, worktrees: []string{filepath.Join(root, "other")}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			now := time.Unix(6000, 0).UTC()
+			expired := mkdirWorkspace(t, root, "expired")
+			manager := Manager{Root: root, Retention: time.Hour, Now: func() time.Time { return now }, Runner: tc.runner(t, root)}
+			results, err := manager.Cleanup(context.Background(), CleanupRequest{Workspaces: []state.WorkspaceMetadata{{ID: "expired", Path: expired, LastUsedAt: now.Add(-2 * time.Hour)}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(results) != 1 || results[0].Action != "kept" || results[0].Reason != "worktree_inspection_failed" {
+				t.Fatalf("fail-closed cleanup = %+v", results)
+			}
+			if _, err := os.Stat(expired); err != nil {
+				t.Fatalf("session clone was removed after inspection failure: %v", err)
+			}
+		})
+	}
+}
+
 type fakeGitRunner struct {
-	t        *testing.T
-	commands []Command
-	topLevel string
-	remote   string
-	branch   string
-	head     string
+	t           *testing.T
+	commands    []Command
+	topLevel    string
+	remote      string
+	branch      string
+	head        string
+	worktrees   []string
+	worktreeErr error
 }
 
 func (r *fakeGitRunner) Run(_ context.Context, command Command) (Result, error) {
@@ -365,6 +418,19 @@ func (r *fakeGitRunner) Run(_ context.Context, command Command) (Result, error) 
 		if reflect.DeepEqual(command.Args, []string{"remote", "get-url", "origin"}) {
 			return Result{Stdout: []byte(first(r.remote, "https://github.com/o/r.git") + "\n")}, nil
 		}
+	case "worktree":
+		if r.worktreeErr != nil {
+			return Result{ExitCode: 1, Stderr: []byte(r.worktreeErr.Error())}, r.worktreeErr
+		}
+		paths := r.worktrees
+		if len(paths) == 0 {
+			paths = []string{command.Dir}
+		}
+		var output strings.Builder
+		for _, path := range paths {
+			fmt.Fprintf(&output, "worktree %s\nHEAD abc\nbranch refs/heads/main\n\n", path)
+		}
+		return Result{Stdout: []byte(output.String())}, nil
 	}
 	r.t.Fatalf("unexpected git command: %#v", command)
 	return Result{ExitCode: 1}, nil
