@@ -126,6 +126,38 @@ func TestWorkspaceEvidenceExternalCannotUseLocalWorkspaceAsProviderEvidence(t *t
 	}
 }
 
+func TestExternalWorkspaceGateRequiresNoCheckoutDespiteExactProviderEvidence(t *testing.T) {
+	process := workspaceGateProcess(t, model.ProcessExecutionExternal, true, workspaceGateRevision)
+	evidence := ProcessEvidenceReport{ProcessID: process.Comment.ID, Satisfied: []string{"exact-revision external evidence"}}
+	input := WorkspaceEvaluationInput{Target: TargetFinal, Mode: ModeAuthoritative,
+		ExpectedRevision: Fact{Known: true, Expected: workspaceGateRevision},
+		CarrierRevisions: map[string]CarrierRevisionFact{process.Comment.ID: {Known: true, Revision: workspaceGateRevision, Trusted: true, Source: "provider"}}}
+	now := time.Unix(100, 0).UTC()
+	base := processworkspace.PortableLease{SchemaVersion: processworkspace.LeaseSchemaVersion, WorkspaceID: "ws-process-001", Repository: "o/r",
+		ProcessID: "PROCESS-001", ExecutionClass: processworkspace.ExecutionExternal, Mode: processworkspace.ModeNone,
+		State: processworkspace.StatePrepared, CreatedAt: now, UpdatedAt: now}
+	for _, test := range []struct {
+		mode     processworkspace.WorkspaceMode
+		blocking bool
+	}{
+		{mode: processworkspace.ModeNone},
+		{mode: processworkspace.ModeWritable, blocking: true},
+		{mode: processworkspace.ModeSnapshot, blocking: true},
+	} {
+		t.Run(string(test.mode), func(t *testing.T) {
+			portable := base
+			portable.Mode = test.mode
+			diagnostics := evaluateExternalWorkspace(process, input, portable, evidence)
+			if got := workspaceHasBlockingCode(diagnostics, CodeProcessWorkspaceModeInvalid); got != test.blocking {
+				t.Fatalf("external %s mode diagnostics=%+v blocking=%v want=%v", test.mode, diagnostics, got, test.blocking)
+			}
+			if workspaceHasCode(diagnostics, CodeProcessWorkspaceProviderEvidenceMissing) || workspaceHasCode(diagnostics, CodeProcessWorkspaceRevisionUnknown) || workspaceHasCode(diagnostics, CodeProcessWorkspaceRevisionStale) {
+				t.Fatalf("satisfied exact provider evidence was lost for external %s: %+v", test.mode, diagnostics)
+			}
+		})
+	}
+}
+
 func workspaceGateProcess(t *testing.T, class model.ProcessExecutionClass, includeWorkspace bool, revision string) model.Artifact {
 	t.Helper()
 	body, err := model.EnsureTypedBody("PROCESS", "PROCESS-001", "## Process: workspace\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- "+string(class)+"\n\n### Covers\n\n- SPEC-001\n\n### Handoff\n\ncomplete", model.BodyOptions{Status: "done"})

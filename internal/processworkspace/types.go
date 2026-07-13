@@ -399,8 +399,8 @@ func validateClassMode(class ExecutionClass, mode WorkspaceMode) error {
 			return errors.New("orchestration execution requires no-checkout workspace mode")
 		}
 	case ExecutionExternal:
-		if mode != ModeNone && mode != ModeWritable && mode != ModeSnapshot {
-			return fmt.Errorf("unsupported external workspace mode %q", mode)
+		if mode != ModeNone {
+			return errors.New("external execution requires no-checkout workspace mode")
 		}
 	default:
 		return fmt.Errorf("unsupported execution class %q", class)

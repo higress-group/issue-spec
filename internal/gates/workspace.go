@@ -126,14 +126,7 @@ func EvaluateWorkspaceEvidence(input WorkspaceEvaluationInput) (WorkspaceEvaluat
 					"orchestration PROCESS must not claim a writable or snapshot checkout", string(portable.Mode), string(processworkspace.ModeNone), "workflow workspace prepare"))
 			}
 		case model.ProcessExecutionExternal:
-			base := evidence[process.Comment.ID]
-			if hasSatisfied(base, "exact-revision external evidence") {
-				diagnostics = append(diagnostics, evaluateCarrierRevision(process, input, "")...)
-			} else if !hasCarrierMissingDiagnostic(base) {
-				diagnostics = append(diagnostics, workspaceDiagnostic(process, input.Target, CodeProcessWorkspaceProviderEvidenceMissing, SeverityError, true,
-					"external PROCESS requires consumed exact-revision provider evidence; local Workspace metadata cannot substitute for it",
-					"missing", "exact-revision provider evidence", "evidence explain"))
-			}
+			diagnostics = append(diagnostics, evaluateExternalWorkspace(process, input, portable, evidence[process.Comment.ID])...)
 		}
 	}
 	sort.SliceStable(diagnostics, func(i, j int) bool {
@@ -143,6 +136,22 @@ func EvaluateWorkspaceEvidence(input WorkspaceEvaluationInput) (WorkspaceEvaluat
 		return diagnostics[i].Artifact.ID < diagnostics[j].Artifact.ID
 	})
 	return WorkspaceEvaluationReport{Diagnostics: diagnostics}, nil
+}
+
+func evaluateExternalWorkspace(process model.Artifact, input WorkspaceEvaluationInput, portable processworkspace.PortableLease, evidence ProcessEvidenceReport) []Diagnostic {
+	var diagnostics []Diagnostic
+	if portable.Mode != processworkspace.ModeNone {
+		diagnostics = append(diagnostics, workspaceDiagnostic(process, input.Target, CodeProcessWorkspaceModeInvalid, SeverityError, true,
+			"external PROCESS must use no-checkout Workspace mode", string(portable.Mode), string(processworkspace.ModeNone), "workflow workspace prepare"))
+	}
+	if hasSatisfied(evidence, "exact-revision external evidence") {
+		diagnostics = append(diagnostics, evaluateCarrierRevision(process, input, "")...)
+	} else if !hasCarrierMissingDiagnostic(evidence) {
+		diagnostics = append(diagnostics, workspaceDiagnostic(process, input.Target, CodeProcessWorkspaceProviderEvidenceMissing, SeverityError, true,
+			"external PROCESS requires consumed exact-revision provider evidence; local Workspace metadata cannot substitute for it",
+			"missing", "exact-revision provider evidence", "evidence explain"))
+	}
+	return diagnostics
 }
 
 func evaluateSnapshotWorkspace(process model.Artifact, input WorkspaceEvaluationInput, portable processworkspace.PortableLease, evidence ProcessEvidenceReport, satisfied, missingCode string) []Diagnostic {

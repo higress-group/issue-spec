@@ -73,6 +73,30 @@ func TestProcessWorkspaceCanonicalRoundTripByExecutionClass(t *testing.T) {
 	}
 }
 
+func TestExternalProcessWorkspaceRejectsCheckoutModesInRenderingAndParsing(t *testing.T) {
+	external := testProcessWorkspace("PROCESS-EXT", ProcessExecutionExternal)
+	valid, err := RenderProcessWorkspaceSection(external)
+	if err != nil {
+		t.Fatalf("render external no-checkout workspace: %v", err)
+	}
+	for _, mode := range []processworkspace.WorkspaceMode{processworkspace.ModeWritable, processworkspace.ModeSnapshot} {
+		t.Run(string(mode), func(t *testing.T) {
+			invalid := external
+			invalid.Mode = mode
+			if _, err := RenderProcessWorkspaceSection(invalid); err == nil || !strings.Contains(err.Error(), "external execution requires no-checkout workspace mode") {
+				t.Fatalf("render external %s mode error=%v", mode, err)
+			}
+			section := strings.Replace(valid, `"mode": "none"`, `"mode": "`+string(mode)+`"`, 1)
+			body := "## Process: external\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- external\n\n" + section + "\n\n### Handoff\n\nN/A"
+			parsed := ParseProcessWorkspace("PROCESS-EXT", "", body)
+			if !parsed.Blocking() || parsed.Workspace != nil || len(parsed.Diagnostics) != 1 ||
+				parsed.Diagnostics[0].Element != "workspace-invalid" || !strings.Contains(parsed.Diagnostics[0].Message, "external execution requires no-checkout workspace mode") {
+				t.Fatalf("parse accepted external %s mode: %+v", mode, parsed)
+			}
+		})
+	}
+}
+
 func TestProcessWorkspaceLegacyMissingSectionRemainsCompatible(t *testing.T) {
 	body := "## Process: old\n\n### Parent TASK\n\n- TASK-001\n\n### Handoff\n\nN/A"
 	result := ParseProcessWorkspace("PROCESS-OLD", "", body)

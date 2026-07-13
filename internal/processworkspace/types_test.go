@@ -96,6 +96,43 @@ func TestPortableLeaseModesAndStateEvidenceFailClosed(t *testing.T) {
 	}
 }
 
+func TestExternalExecutionRequiresNoCheckoutWorkspaceMode(t *testing.T) {
+	now := time.Unix(2300, 0).UTC()
+	base := PortableLease{SchemaVersion: LeaseSchemaVersion, WorkspaceID: "external-1", Repository: "o/r", ProcessID: "PROCESS-EXT",
+		ExecutionClass: ExecutionExternal, Mode: ModeNone, State: StatePreparing, CreatedAt: now, UpdatedAt: now}
+	tests := []struct {
+		name    string
+		mode    WorkspaceMode
+		mutate  func(*PortableLease)
+		wantErr string
+	}{
+		{name: "none", mode: ModeNone},
+		{name: "writable", mode: ModeWritable, wantErr: "external execution requires no-checkout workspace mode", mutate: func(lease *PortableLease) {
+			lease.BaseSHA, lease.Branch = baseSHA, "external-write"
+			lease.WriteOwnership, lease.RuntimeNamespace = []string{"internal/**"}, "external-write"
+		}},
+		{name: "snapshot", mode: ModeSnapshot, wantErr: "external execution requires no-checkout workspace mode", mutate: func(lease *PortableLease) {
+			lease.BaseSHA, lease.DetachedRevision, lease.RuntimeNamespace = baseSHA, baseSHA, "external-snapshot"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			lease := base
+			lease.Mode = test.mode
+			if test.mutate != nil {
+				test.mutate(&lease)
+			}
+			err := lease.Validate()
+			if test.wantErr == "" && err != nil {
+				t.Fatalf("external no-checkout lease rejected: %v", err)
+			}
+			if test.wantErr != "" && (err == nil || err.Error() != test.wantErr) {
+				t.Fatalf("external %s mode error=%v want=%q", test.mode, err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestLocalLeaseRequiresPathForObservedOrWorkerEvidence(t *testing.T) {
 	now := time.Unix(2400, 0).UTC()
 	for _, mutate := range []func(*LocalLease){
