@@ -1,13 +1,19 @@
 package commands
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
 
 const (
@@ -30,6 +36,124 @@ func TestBuildFinalVerifyReportRequiresDoneTasksAndCoverage(t *testing.T) {
 	if !report.SpecCoverage["SPEC-001"] {
 		t.Fatalf("expected SPEC-001 coverage: %+v", report.SpecCoverage)
 	}
+}
+
+func TestFinalVerifyUsesAuthoritativePullRequestAncestry(t *testing.T) {
+	ancestor := strings.Repeat("a", 40)
+	head := strings.Repeat("b", 40)
+	unrelated := strings.Repeat("c", 40)
+
+	ancestorArtifacts := finalVerifyChangeBearingArtifacts(t, ancestor)
+	ancestorReport, err := buildFinalVerifyReport(ancestorArtifacts, "https://github.com/o/r/issues/1", finalVerifyOptions{
+		PR: 7, PRURL: "https://github.com/o/r/pull/7", ExpectedRevision: head,
+		PRCommits: []github.PullRequestCommit{{SHA: strings.Repeat("0", 40)}, {SHA: ancestor}, {SHA: head}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalReportHasGateCode(ancestorReport, gates.CodeProcessWorkspaceRevisionStale) {
+		t.Fatalf("authoritative multi-commit PR ancestor was rejected: %+v", ancestorReport.Gate.Diagnostics)
+	}
+
+	headReport, err := buildFinalVerifyReport(finalVerifyChangeBearingArtifacts(t, head), "https://github.com/o/r/issues/1", finalVerifyOptions{
+		PR: 7, PRURL: "https://github.com/o/r/pull/7", ExpectedRevision: head,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalReportHasGateCode(headReport, gates.CodeProcessWorkspaceRevisionStale) {
+		t.Fatalf("exact PR head was rejected: %+v", headReport.Gate.Diagnostics)
+	}
+
+	for name, commits := range map[string][]github.PullRequestCommit{
+		"unrelated":                       {{SHA: unrelated}},
+		"integration present head absent": {{SHA: ancestor}},
+		"collection failed":               nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			report, buildErr := buildFinalVerifyReport(ancestorArtifacts, "https://github.com/o/r/issues/1", finalVerifyOptions{
+				PR: 7, PRURL: "https://github.com/o/r/pull/7", ExpectedRevision: head, PRCommits: commits,
+			})
+			if buildErr != nil {
+				t.Fatal(buildErr)
+			}
+			if !finalReportHasGateCode(report, gates.CodeProcessWorkspaceRevisionStale) {
+				t.Fatalf("non-authoritative ancestry was accepted: %+v", report.Gate.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestRunVerifyRejectsUnstablePullRequestIdentity(t *testing.T) {
+	initialHead := strings.Repeat("a", 40)
+	advancedHead := strings.Repeat("b", 40)
+	valid := pullRequestAtHead(7, initialHead)
+	advanced := pullRequestAtHead(7, advancedHead)
+	missingNumber := valid
+	missingNumber.Number = 0
+	wrongRepo := valid
+	wrongRepo.HTMLURL = "https://github.com/o/other/pull/7"
+	for name, pulls := range map[string][]github.PullRequest{
+		"head advanced":  {valid, advanced},
+		"missing number": {missingNumber, valid},
+		"wrong repo URL": {wrongRepo, wrongRepo},
+	} {
+		t.Run(name, func(t *testing.T) {
+			backend := &sequencedPullRequestCommitBackend{
+				fakeGitHubBackend: fakeGitHubBackend{
+					info: github.BackendInfo{Name: "rest", Kind: "rest", Host: "github.com"},
+					getIssue: func(_ context.Context, _ string, issue int) (github.Issue, error) {
+						return github.Issue{Number: issue, HTMLURL: "https://github.com/o/r/issues/1"}, nil
+					},
+					listIssueComments: func(context.Context, string, int) ([]github.Comment, error) { return nil, nil },
+				},
+				pulls: pulls, commits: []github.PullRequestCommit{{SHA: initialHead}},
+			}
+			var out, errOut bytes.Buffer
+			app := newApp(strings.NewReader(""), &out, &errOut)
+			app.profileName = "github"
+			app.selectGitHubBackend = ghSelection
+			app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
+			code := app.runVerify(t.Context(), []string{"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--pr", "7", "--json"})
+			if code != 1 || !strings.Contains(errOut.String(), "pull request changed while collecting gate facts") {
+				t.Fatalf("verify code=%d out=%q err=%q", code, out.String(), errOut.String())
+			}
+		})
+	}
+}
+
+func finalVerifyChangeBearingArtifacts(t *testing.T, integrationSHA string) []model.Artifact {
+	t.Helper()
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process: impl\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- change-bearing\n\n### Covers\n\n- SPEC-001\n\n### Handoff\n\ncomplete")
+	verify := typedArtifact(t, 4, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent+"\n\nTest evidence covers PROCESS-001.")
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &process)
+	body, _, err := model.AddPRLink(process.Comment.Body, "https://github.com/o/r/pull/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(100, 0).UTC()
+	workspace := processworkspace.PortableLease{SchemaVersion: processworkspace.LeaseSchemaVersion, WorkspaceID: "ws-process-001", Repository: "o/r",
+		ProcessID: "PROCESS-001", ExecutionClass: processworkspace.ExecutionChangeBearing, Mode: processworkspace.ModeWritable,
+		BaseSHA: strings.Repeat("0", 40), Branch: "codex/process-001", ResultCommit: strings.Repeat("1", 40), IntegrationSHA: integrationSHA,
+		WriteOwnership: []string{"internal/x"}, RuntimeNamespace: "ws-process-001", State: processworkspace.StateIntegrated, CreatedAt: now, UpdatedAt: now}
+	transition, err := model.ApplyTypedTransition(body, model.TransitionRequest{ExpectedType: "PROCESS", ExpectedID: "PROCESS-001", Workspace: &workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.Comment = model.ParseTypedComment(transition.Body)
+	return []model.Artifact{spec, task, process, verify}
+}
+
+func finalReportHasGateCode(report finalVerifyReport, code string) bool {
+	for _, diagnostic := range report.Gate.Diagnostics {
+		if diagnostic.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildFinalVerifyReportReportsSessionDiagnosticsWithoutErrors(t *testing.T) {

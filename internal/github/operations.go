@@ -87,6 +87,13 @@ type GitHubCodeBackend interface {
 	ListCheckRuns(context.Context, string, string) ([]CheckRun, error)
 }
 
+// PullRequestCommitBackend is an optional GitHub code-host capability. Keeping
+// it separate from GitHubCodeBackend lets issue-only and external-code
+// backends remain honest about the surfaces they implement.
+type PullRequestCommitBackend interface {
+	ListPullRequestCommits(context.Context, string, int) ([]PullRequestCommit, error)
+}
+
 // Operations preserves the existing GitHub adapter contract while exposing
 // the two independent boundaries to new profile-aware command code.
 type Operations interface {

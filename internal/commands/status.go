@@ -360,29 +360,143 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 	if !ok {
 		return collection
 	}
-	pr, err := client.GetPullRequest(ctx, repo, prNumber)
-	if err != nil || strings.TrimSpace(pr.Head.SHA) == "" {
+	facts, err := collectPullRequestGateFacts(ctx, client, repo, prNumber)
+	if err != nil {
 		return collection
 	}
+	pr := facts.PullRequest
 	if strings.TrimSpace(pr.HTMLURL) != "" {
 		prURL = pr.HTMLURL
 	}
-	reviewComments, commentsErr := client.ListPullRequestReviewComments(ctx, repo, prNumber)
-	combined, statusErr := client.GetCombinedStatus(ctx, repo, pr.Head.SHA)
-	checks, checksErr := client.ListCheckRuns(ctx, repo, pr.Head.SHA)
 	collection.Remote.Workspace.ExpectedRevision = gates.Fact{Required: true, Known: true, Passed: true,
 		Expected: pr.Head.SHA, Current: pr.Head.SHA}
-	if commentsErr != nil || statusErr != nil || checksErr != nil {
-		return collection
-	}
-	review := buildReviewSyncReport(pr, reviewComments, nil, combined, checks)
+	collection.Remote.Workspace.IntegrationAncestry = pullRequestIntegrationAncestry(artifacts, facts.Commits, pr.Head.SHA)
+	review := buildReviewSyncReport(pr, facts.ReviewComments, nil, facts.Status, facts.CheckRuns)
 	collection.Remote.PRChecks = gates.Fact{Required: true, Known: true,
 		Passed:  len(review.FailedChecks) == 0 && len(review.PendingChecks) == 0,
 		Current: fmt.Sprintf("failed=%d pending=%d", len(review.FailedChecks), len(review.PendingChecks)), Expected: "failed=0 pending=0"}
 	collection.Remote.ReviewFindings = gates.Fact{Required: true, Known: true, Passed: len(review.BlockingFindings) == 0,
 		Current: fmt.Sprintf("blocking=%d", len(review.BlockingFindings)), Expected: "blocking=0"}
-	collection.ProcessEvidence = buildProcessEvidenceInputs(artifacts, prURL, reviewComments, review, nil)
+	collection.ProcessEvidence = buildProcessEvidenceInputs(artifacts, prURL, facts.ReviewComments, review, nil)
 	return collection
+}
+
+type pullRequestGateFacts struct {
+	PullRequest    github.PullRequest
+	ReviewComments []github.PullRequestReviewComment
+	Status         github.CombinedStatus
+	CheckRuns      []github.CheckRun
+	Commits        []github.PullRequestCommit
+}
+
+func collectPullRequestGateFacts(ctx context.Context, client github.Backend, repo string, prNumber int) (pullRequestGateFacts, error) {
+	initial, err := client.GetPullRequest(ctx, repo, prNumber)
+	if err != nil || strings.TrimSpace(initial.Head.SHA) == "" {
+		if err == nil {
+			err = fmt.Errorf("pull request head is missing")
+		}
+		return pullRequestGateFacts{}, err
+	}
+	comments, err := client.ListPullRequestReviewComments(ctx, repo, prNumber)
+	if err != nil {
+		return pullRequestGateFacts{}, err
+	}
+	status, err := client.GetCombinedStatus(ctx, repo, initial.Head.SHA)
+	if err != nil {
+		return pullRequestGateFacts{}, err
+	}
+	checks, err := client.ListCheckRuns(ctx, repo, initial.Head.SHA)
+	if err != nil {
+		return pullRequestGateFacts{}, err
+	}
+	commits, err := listPullRequestCommits(ctx, client, repo, prNumber)
+	if err != nil {
+		return pullRequestGateFacts{}, err
+	}
+	refreshed, err := client.GetPullRequest(ctx, repo, prNumber)
+	if err != nil {
+		return pullRequestGateFacts{}, err
+	}
+	if !samePullRequestRevision(initial, refreshed, repo, prNumber) {
+		return pullRequestGateFacts{}, fmt.Errorf("pull request changed while collecting gate facts")
+	}
+	return pullRequestGateFacts{PullRequest: refreshed, ReviewComments: comments, Status: status, CheckRuns: checks, Commits: commits}, nil
+}
+
+func samePullRequestRevision(initial, refreshed github.PullRequest, repo string, requestedNumber int) bool {
+	initialHead, refreshedHead := strings.TrimSpace(initial.Head.SHA), strings.TrimSpace(refreshed.Head.SHA)
+	if initialHead == "" || refreshedHead == "" || initialHead != refreshedHead {
+		return false
+	}
+	if initial.Number != requestedNumber || refreshed.Number != requestedNumber {
+		return false
+	}
+	initialURL, refreshedURL := model.NormalizeURL(initial.HTMLURL), model.NormalizeURL(refreshed.HTMLURL)
+	return initialURL != "" && initialURL == refreshedURL && pullRequestURLMatches(initialURL, repo, requestedNumber)
+}
+
+func pullRequestURLMatches(raw, repo string, requestedNumber int) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	repoParts := strings.Split(strings.Trim(repo, "/"), "/")
+	pathParts := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	if len(repoParts) != 2 || len(pathParts) != 4 || pathParts[2] != "pull" || pathParts[3] != strconv.Itoa(requestedNumber) {
+		return false
+	}
+	owner, ownerErr := url.PathUnescape(pathParts[0])
+	name, nameErr := url.PathUnescape(pathParts[1])
+	return ownerErr == nil && nameErr == nil && strings.EqualFold(owner, repoParts[0]) && strings.EqualFold(name, repoParts[1])
+}
+
+func listPullRequestCommits(ctx context.Context, client github.Backend, repo string, prNumber int) ([]github.PullRequestCommit, error) {
+	collector, ok := client.(github.PullRequestCommitBackend)
+	if !ok {
+		return nil, fmt.Errorf("GitHub backend does not expose authoritative pull request commits")
+	}
+	return collector.ListPullRequestCommits(ctx, repo, prNumber)
+}
+
+func pullRequestIntegrationAncestry(artifacts []model.Artifact, commits []github.PullRequestCommit, head string) map[string]gates.Fact {
+	head = strings.TrimSpace(head)
+	if head == "" {
+		return nil
+	}
+	commitSet := make(map[string]struct{}, len(commits))
+	for _, commit := range commits {
+		sha := strings.TrimSpace(commit.SHA)
+		if sha != "" {
+			commitSet[sha] = struct{}{}
+		}
+	}
+	if _, ok := commitSet[head]; !ok {
+		return nil
+	}
+	ancestry := map[string]gates.Fact{}
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type != "PROCESS" || artifact.Comment.Status == "superseded" {
+			continue
+		}
+		class := model.ParseProcessExecutionClass(artifact.Comment.ID, artifact.URL, artifact.Comment.Body)
+		if class.Blocking() || class.Class != model.ProcessExecutionChangeBearing {
+			continue
+		}
+		workspace := model.ParseProcessWorkspace(artifact.Comment.ID, artifact.URL, artifact.Comment.Body)
+		if workspace.Blocking() || workspace.Workspace == nil {
+			continue
+		}
+		integrationSHA := strings.TrimSpace(workspace.Workspace.IntegrationSHA)
+		if _, ok := commitSet[integrationSHA]; !ok {
+			continue
+		}
+		ancestry[artifact.Comment.ID] = gates.Fact{Required: true, Known: true, Passed: true,
+			Current: integrationSHA, Expected: head}
+	}
+	if len(ancestry) == 0 {
+		return nil
+	}
+	return ancestry
 }
 
 func exactStatusPullRequest(artifacts []model.Artifact, repo string) (int, string, bool) {

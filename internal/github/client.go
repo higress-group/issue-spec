@@ -131,6 +131,10 @@ type PullRequestFile struct {
 	Patch    string `json:"patch"`
 }
 
+type PullRequestCommit struct {
+	SHA string `json:"sha"`
+}
+
 type PullRequestReviewComment struct {
 	ID          int64  `json:"id"`
 	HTMLURL     string `json:"html_url"`
@@ -338,6 +342,22 @@ func (c *Client) ListPullRequestFiles(ctx context.Context, repo string, prNumber
 		}
 		all = append(all, files...)
 		if len(files) < 100 {
+			break
+		}
+	}
+	return all, nil
+}
+
+func (c *Client) ListPullRequestCommits(ctx context.Context, repo string, prNumber int) ([]PullRequestCommit, error) {
+	var all []PullRequestCommit
+	for page := 1; ; page++ {
+		var commits []PullRequestCommit
+		path := fmt.Sprintf("/repos/%s/pulls/%d/commits?per_page=100&page=%d", repo, prNumber, page)
+		if err := c.doJSON(ctx, http.MethodGet, path, nil, &commits); err != nil {
+			return nil, err
+		}
+		all = append(all, commits...)
+		if len(commits) < 100 {
 			break
 		}
 	}

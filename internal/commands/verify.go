@@ -45,6 +45,7 @@ type finalVerifyOptions struct {
 	RationaleComments []github.PullRequestReviewComment
 	PRStatus          github.CombinedStatus
 	PRCheckRuns       []github.CheckRun
+	PRCommits         []github.PullRequestCommit
 	ExternalEvidence  *externalEvidenceConsumption
 	CarrierRevisions  map[string]gates.CarrierRevisionFact
 }
@@ -100,6 +101,7 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 	var rationaleComments []github.PullRequestReviewComment
 	var prStatus github.CombinedStatus
 	var prCheckRuns []github.CheckRun
+	var prCommits []github.PullRequestCommit
 	var prURL string
 	var expectedRevision string
 	externalGate, selfHosted, err := a.externalGate(ctx, *host, token.Value, repo, implementIssue,
@@ -113,28 +115,18 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 		return 2
 	}
 	if !selfHosted && *prFlag > 0 {
-		pr, err := client.GetPullRequest(ctx, repo, *prFlag)
+		facts, err := collectPullRequestGateFacts(ctx, client, repo, *prFlag)
 		if err != nil {
-			a.errorf("read PR #%d: %v\n", *prFlag, err)
+			a.errorf("read stable PR #%d gate facts: %v\n", *prFlag, err)
 			return 1
 		}
+		pr := facts.PullRequest
 		prURL = pr.HTMLURL
 		expectedRevision = pr.Head.SHA
-		rationaleComments, err = client.ListPullRequestReviewComments(ctx, repo, *prFlag)
-		if err != nil {
-			a.errorf("read PR #%d review comments: %v\n", *prFlag, err)
-			return 1
-		}
-		prStatus, err = client.GetCombinedStatus(ctx, repo, pr.Head.SHA)
-		if err != nil {
-			a.errorf("read PR #%d status contexts: %v\n", *prFlag, err)
-			return 1
-		}
-		prCheckRuns, err = client.ListCheckRuns(ctx, repo, pr.Head.SHA)
-		if err != nil {
-			a.errorf("read PR #%d check runs: %v\n", *prFlag, err)
-			return 1
-		}
+		rationaleComments = facts.ReviewComments
+		prStatus = facts.Status
+		prCheckRuns = facts.CheckRuns
+		prCommits = facts.Commits
 	}
 	var processExternalEvidence *externalEvidenceConsumption
 	if selfHosted {
@@ -150,6 +142,7 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 		RationaleComments: rationaleComments,
 		PRStatus:          prStatus,
 		PRCheckRuns:       prCheckRuns,
+		PRCommits:         prCommits,
 		ExternalEvidence:  processExternalEvidence,
 	})
 	if err != nil {
@@ -347,9 +340,10 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	}
 	workspaceReport, err := gates.EvaluateWorkspaceEvidence(gates.WorkspaceEvaluationInput{
 		Target: target, Mode: gates.ModeAuthoritative, Artifacts: artifacts,
-		ExpectedRevision: gates.Fact{Required: true, Known: strings.TrimSpace(opts.ExpectedRevision) != "", Passed: true, Expected: strings.TrimSpace(opts.ExpectedRevision)},
-		ProcessEvidence:  gateReport.Processes,
-		CarrierRevisions: mergeCarrierRevisionFacts(gates.ProcessCarrierRevisionFacts(gateReport.Processes), opts.CarrierRevisions),
+		ExpectedRevision:    gates.Fact{Required: true, Known: strings.TrimSpace(opts.ExpectedRevision) != "", Passed: true, Expected: strings.TrimSpace(opts.ExpectedRevision)},
+		IntegrationAncestry: pullRequestIntegrationAncestry(artifacts, opts.PRCommits, opts.ExpectedRevision),
+		ProcessEvidence:     gateReport.Processes,
+		CarrierRevisions:    mergeCarrierRevisionFacts(gates.ProcessCarrierRevisionFacts(gateReport.Processes), opts.CarrierRevisions),
 	})
 	if err != nil {
 		return report, err
