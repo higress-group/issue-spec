@@ -164,6 +164,7 @@ p { line-height: 1.65; color: var(--muted); }
 .token-revoked-state { display: grid; justify-items: end; gap: .4rem; min-width: 9rem; }
 .token-revoked-state time { color: var(--muted); font-size: .72rem; white-space: nowrap; }
 .scope-list { display: flex; flex-wrap: wrap; gap: .3rem; }
+.token-scope-preview { margin-top: .55rem; }
 .scope-list > span:not(.status-badge) { padding: .18rem .4rem; border-radius: 5px; background: #edf0eb; color: #5c6662; font-size: .65rem; }
 .status-badge { display: inline-flex; width: fit-content; align-items: center; padding: .2rem .48rem; border: 1px solid #c9cbc5; border-radius: 999px; background: #f0f0eb; color: #4f575b; font-size: .64rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
 .status-badge.teal { border-color: #a5ccc7; background: var(--teal-soft); color: #145d58; }

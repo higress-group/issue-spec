@@ -48,8 +48,11 @@ export const administrationResources = {
     },
     managedTokens: {
       eyebrow: "Organization / credentials", title: "Managed access tokens", description: "Administrators can mint scoped tokens only for active organization members or enabled service accounts.",
-      chooseSubject: "Choose a credential subject", exactLogin: "Exact local login", resolve: "Resolve", create: "Create scoped token",
-      credentials: "Managed credentials", rotate: "Rotate {{name}}", revoke: "Revoke {{name}}", saveTitle: "Save this managed token",
+      chooseSubject: "Choose a credential subject", subjectHelp: "Use the exact generated login of an enabled service account for unattended automation.", exactLogin: "Exact local login", resolve: "Resolve",
+      createTitle: "Create a scoped token", createDescription: "Scopes and repository access cap the authority of the selected identity.", tokenName: "Token name", nameRequired: "Name is required", scopes: "Scopes", scopesHint: "Comma-separated stable scope names.",
+      repositoryAccess: "Repository access", repositoryHint: "Runner delegation must be restricted to exactly one repository.", delegationRequired: "Runner delegation requires exactly one repository", allRepositories: "All repositories", runnerPreset: "Runner preset", create: "Create scoped token",
+      runnerBoundaryTitle: "Runner identity boundary", runnerBoundaryDescription: "Use an independent service account with write access to the selected repository. Human maintainers remain separate allowed command authors.",
+      credentials: "Managed credentials", rotate: "Rotate {{name}}", revoke: "Revoke {{name}}", saveTitle: "Save this managed token", restrictedTo: "Restricted to {{repositories}}", restrictedRepositories_one: "Restricted to {{count}} repository", restrictedRepositories_other: "Restricted to {{count}} repositories",
     },
     personalTokens: {
       eyebrow: "Account / credentials", title: "Personal access tokens", description: "Issue API credentials are scoped, expiring, revocable, and never recoverable after creation.",
@@ -170,8 +173,11 @@ export const administrationResources = {
     },
     managedTokens: {
       eyebrow: "组织 / 凭据", title: "托管访问令牌", description: "管理员只能为当前组织的有效成员或已启用的服务账号签发限定范围的令牌。",
-      chooseSubject: "选择凭据主体", exactLogin: "准确的本地登录名", resolve: "确认用户", create: "创建限定范围的令牌",
-      credentials: "托管凭据", rotate: "轮换 {{name}}", revoke: "撤销 {{name}}", saveTitle: "请保存此托管令牌",
+      chooseSubject: "选择凭据主体", subjectHelp: "无人值守自动化应填写已启用服务账号自动生成的准确登录名。", exactLogin: "准确的本地登录名", resolve: "确认用户",
+      createTitle: "创建限定范围的令牌", createDescription: "权限范围和仓库范围共同限制所选身份的权限。", tokenName: "令牌名称", nameRequired: "请填写令牌名称", scopes: "权限范围", scopesHint: "请使用逗号分隔稳定的权限范围名称。",
+      repositoryAccess: "仓库范围", repositoryHint: "运行器委派必须且只能绑定一个仓库。", delegationRequired: "运行器委派必须且只能绑定一个仓库", allRepositories: "全部仓库", runnerPreset: "运行器预设", create: "创建限定范围的令牌",
+      runnerBoundaryTitle: "运行器身份边界", runnerBoundaryDescription: "请使用对目标仓库拥有写入权限的独立服务账号；真人维护者仍作为单独的命令触发者。",
+      credentials: "托管凭据", rotate: "轮换 {{name}}", revoke: "撤销 {{name}}", saveTitle: "请保存此托管令牌", restrictedTo: "仅限 {{repositories}}", restrictedRepositories: "仅限 {{count}} 个仓库",
     },
     personalTokens: {
       eyebrow: "账户 / 凭据", title: "个人访问令牌", description: "用于议题 API 的凭据具有明确权限范围和有效期，可随时撤销，且创建后无法再次查看。",

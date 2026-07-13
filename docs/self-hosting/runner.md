@@ -48,18 +48,30 @@ default branch without storing a clone credential. The Git credential command
 must mint a short-lived credential for this exact binding, separate from the
 issue-spec PAT.
 
-## 3. Create the runner PAT and profile
+## 3. Create an independent service account and runner PAT
 
-On **Access tokens**, select **Runner preset**, restrict the token to the exact
-repository, and confirm these scopes:
+A production runner should not use an administrator or maintainer's personal
+identity. Create one issue-spec service account for each independent runner
+security boundary:
+
+1. create an account such as `Runner Bot` under **Administration > Service accounts**
+   and save its generated exact login, such as `svc-runner-bot-a1b2c3d4`;
+2. resolve that login under the repository's **Collaborators** page and grant
+   the minimum `write` role;
+3. resolve the service account under **Administration > Managed access tokens**;
+4. select **Runner preset** and exactly one repository;
+5. confirm these scopes and create the Managed PAT:
 
 ```text
 read:user, issues:read, issues:write, runner:delegate, evidence:write
 ```
 
-Save the one-time PAT. `--runner` must be the login that owns this PAT. Add
-other maintainers with repeatable `--allowed-user` flags; each author must also
-have write-equivalent repository permission.
+![Issue a Runner Managed PAT to an independent service account](assets/self-hosted-runner-service-account.png)
+
+Save the one-time token. `--runner` must be the exact service-account login.
+Add human maintainers with repeatable `--allowed-user` flags; each author must
+also have write-equivalent repository permission. This keeps the runner
+automation identity, command author, and Linux process user separate.
 
 Read the public origins and instance ID from `/api/v1/meta`, then create the
 origin-bound profile as the runner system user:
@@ -80,8 +92,10 @@ unset ISSUE_SPEC_TOKEN
 issue-spec --profile team auth status --json
 ```
 
-The profile PAT is the parent credential. Each job receives a short-lived,
-repository-scoped issue token delegated by the server.
+The Managed PAT is the parent credential. Each job receives a short-lived,
+repository-scoped issue token delegated by the server. A parent credential is
+restricted to exactly one repository; use a separate Managed PAT, profile, and
+`runner serve` process for each additional repository.
 
 ## 4. Create the Runner intake webhook
 
@@ -121,13 +135,13 @@ complete contract. A typical path is
 ```bash
 issue-spec --profile team runner preflight \
   --repo acme/workflow \
-  --runner alice \
+  --runner svc-runner-bot-a1b2c3d4 \
   --agent codex \
   --json
 
 issue-spec --profile team runner serve \
   --repo acme/workflow \
-  --runner alice \
+  --runner svc-runner-bot-a1b2c3d4 \
   --allowed-user maintainer \
   --listen 127.0.0.1:9876 \
   --subscription-id 11111111-2222-4333-8444-555555555555 \
@@ -138,8 +152,8 @@ issue-spec --profile team runner serve \
   --agent codex
 ```
 
-Repeat `--repo` for every repository served by the subscription and repeat
-`--allowed-user` as needed. The default maximum is three concurrent jobs.
+Repeat `--allowed-user` as needed. One parent credential cannot delegate across
+repositories. The default maximum is three concurrent jobs.
 
 If TLS terminates at a reverse proxy, listen on loopback and expose only
 `/api/v1/runner/webhooks`. For direct TLS, bind an exact non-loopback IP—not a
@@ -164,7 +178,7 @@ Group=issue-spec-runner
 Environment=HOME=/var/lib/issue-spec-runner
 ExecStart=/usr/local/bin/issue-spec --profile team runner serve \
   --repo acme/workflow \
-  --runner alice \
+  --runner svc-runner-bot-a1b2c3d4 \
   --allowed-user maintainer \
   --listen 127.0.0.1:9876 \
   --subscription-id 11111111-2222-4333-8444-555555555555 \
@@ -218,7 +232,7 @@ revocation, runner status comment, and typed workflow writeback in that order.
 | Webhook returns `401` | Subscription ID, current secret, and server/runner clocks |
 | Webhook cannot connect | Receiver URL, DNS, firewall, reverse proxy, and TLS |
 | Comment is ignored | Command position, allowlist, and write-equivalent permission |
-| `runner:delegate` fails | Repository restriction, scopes, and PAT owner matching `--runner` |
+| `runner:delegate` fails | Exact repository restriction, scopes, and service-account login matching `--runner` |
 | Clone fails | Active source binding, HTTPS URL, and exact binding echoed by the credential command |
 | Sandbox preflight fails | Install `bubblewrap` or configure `--bwrap` on Linux |
 | Codex does not start | Ensure `acpx`, `npm`, `npx`, and model credentials are available to the systemd user |

@@ -59,18 +59,25 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 Git Credential Command 必须根据绑定签发只对该仓库有效的短期凭据。它不是
 issue-spec PAT，也不应返回代码平台的长期个人 Token。
 
-## 3. 创建 Runner PAT 和 self-hosted Profile
+## 3. 创建独立 Service Account 和 Runner PAT
 
-在 Web 应用的 **Access tokens / 访问令牌** 页面：
+生产 Runner 不应使用管理员或维护者的个人身份。为每个独立的 Runner 安全边界创建
+一个 issue-spec Service Account：
 
-1. 选择 **Runner preset / 运行器预设**；
-2. 只选择 Runner 要服务的那个仓库；
-3. 确认 Scope 包含 `read:user`、`issues:read`、`issues:write`、
+1. 在 **管理后台 > 服务账号** 创建账号，例如 `Runner Bot`，保存自动生成的准确
+   Login，例如 `svc-runner-bot-a1b2c3d4`；
+2. 在目标仓库的 **协作者** 页面解析该 Login，并授予最低的 `write` 角色；
+3. 在 **管理后台 > 托管访问令牌** 中解析该 Service Account；
+4. 选择 **运行器预设**，并且只选择 Runner 要服务的那个仓库；
+5. 确认 Scope 包含 `read:user`、`issues:read`、`issues:write`、
    `runner:delegate` 和 `evidence:write`；
-4. 保存只显示一次的 PAT。
+6. 创建并保存只显示一次的 Managed PAT。
 
-`--runner` 必须填写该 PAT 所属用户的 Login。其他维护者若要触发任务，使用可重复的
-`--allowed-user` 加入允许列表；Server 还会校验评论作者具有仓库 Write 等效权限。
+![为独立服务账号签发 Runner Managed PAT](assets/self-hosted-runner-service-account.zh-CN.png)
+
+`--runner` 必须填写 Service Account 的准确 Login。其他真人维护者若要触发任务，使用
+可重复的 `--allowed-user` 加入允许列表；Server 还会独立校验评论作者具有仓库 Write
+等效权限。这样 Runner 自动化身份、评论发起人和 Linux 进程用户互不混用。
 
 从 Server 的 `/api/v1/meta` 读取公开地址和 Instance ID，然后在 Runner 系统用户下
 创建与 Origin 绑定的 Profile：
@@ -91,8 +98,9 @@ unset ISSUE_SPEC_TOKEN
 issue-spec --profile team auth status --json
 ```
 
-Profile PAT 是 Runner 的父凭据。每个任务实际使用的是 Server 委托的短期、仓库范围
-Issue Token。
+Managed PAT 是 Runner 的父凭据。每个任务实际使用的是 Server 委托的短期、仓库范围
+Issue Token。父凭据必须精确绑定一个仓库；需要服务多个仓库时，应为每个仓库创建
+独立的 Managed PAT、Profile 和 `runner serve` 进程。
 
 ## 4. 创建 Runner Intake Webhook
 
@@ -148,7 +156,7 @@ Shell 启动它，也不会把 Profile PAT、Webhook Secret 或宿主环境传�
 ```bash
 issue-spec --profile team runner preflight \
   --repo acme/workflow \
-  --runner alice \
+  --runner svc-runner-bot-a1b2c3d4 \
   --agent codex \
   --json
 ```
@@ -158,7 +166,7 @@ issue-spec --profile team runner preflight \
 ```bash
 issue-spec --profile team runner serve \
   --repo acme/workflow \
-  --runner alice \
+  --runner svc-runner-bot-a1b2c3d4 \
   --allowed-user maintainer \
   --listen 127.0.0.1:9876 \
   --subscription-id 11111111-2222-4333-8444-555555555555 \
@@ -169,8 +177,8 @@ issue-spec --profile team runner serve \
   --agent codex
 ```
 
-一个 Subscription 可以服务多个仓库；每个仓库重复一个 `--repo`。`--allowed-user`
-同样可以重复。默认最多并行运行 3 个任务，可用 `--max-concurrent-jobs` 调整。
+`--allowed-user` 可以重复。默认最多并行运行 3 个任务，可用
+`--max-concurrent-jobs` 调整。同一个父凭据不能跨仓库委托任务。
 
 ### 网络和 TLS
 
@@ -205,7 +213,7 @@ Group=issue-spec-runner
 Environment=HOME=/var/lib/issue-spec-runner
 ExecStart=/usr/local/bin/issue-spec --profile team runner serve \
   --repo acme/workflow \
-  --runner alice \
+  --runner svc-runner-bot-a1b2c3d4 \
   --allowed-user maintainer \
   --listen 127.0.0.1:9876 \
   --subscription-id 11111111-2222-4333-8444-555555555555 \
@@ -268,7 +276,7 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 | Webhook 为 `401` | Subscription ID、当前 Secret、Runner 与 Server 时钟 |
 | Webhook 无法连接 | Receiver URL、DNS、防火墙、反向代理和 TLS |
 | 评论被忽略 | 命令是否位于开头、作者是否在允许列表、是否具有 Write 权限 |
-| `runner:delegate` 失败 | PAT 是否限制到该仓库，Scope 是否完整，`--runner` 是否为 Token 所属 Login |
+| `runner:delegate` 失败 | Managed PAT 是否只限制到该仓库、Scope 是否完整、`--runner` 是否为 Service Account Login |
 | 找不到源码或 Clone 失败 | Source Binding 是否 Active，Clone URL 是否为 HTTPS，Git Credential Command 返回的 Binding 是否完全匹配 |
 | Preflight 报沙箱失败 | Linux 上安装 `bubblewrap` 或显式配置 `--bwrap` |
 | Codex 无法启动 | `acpx`、`npm`、`npx` 和模型凭据是否对 systemd 用户可用 |
