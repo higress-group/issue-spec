@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/user"
 	"path"
 	"path/filepath"
 	"strings"
@@ -215,7 +216,12 @@ func validateHostSSHGitEnvironment(entries []string) ([]string, error) {
 		return nil, errors.New("credential broker: host SSH HOME is required")
 	}
 	result := safeGitEnvironment(os.Environ())
-	result = append(result, "HOME="+values["HOME"], "GIT_TERMINAL_PROMPT=0")
+	result = append(result,
+		"HOME="+values["HOME"],
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+	)
 	if socket := values["SSH_AUTH_SOCK"]; socket != "" {
 		result = append(result, "SSH_AUTH_SOCK="+socket)
 	}
@@ -347,6 +353,21 @@ type HostSSHGitProvider struct {
 type HostSSHGitProviderConfig struct {
 	SSHDir      string
 	AgentSocket string
+}
+
+// CurrentUserHostSSHGitProviderConfig resolves the home directory from the
+// operating-system account database, matching OpenSSH's getpwuid-based lookup.
+// It intentionally ignores HOME, which service managers may override.
+func CurrentUserHostSSHGitProviderConfig(agentSocket string) (HostSSHGitProviderConfig, error) {
+	account, err := user.Current()
+	if err != nil {
+		return HostSSHGitProviderConfig{}, fmt.Errorf("credential broker: resolve current OS user: %w", err)
+	}
+	home := filepath.Clean(strings.TrimSpace(account.HomeDir))
+	if !filepath.IsAbs(home) || home == "/" {
+		return HostSSHGitProviderConfig{}, errors.New("credential broker: current OS user home must be an absolute non-root path")
+	}
+	return HostSSHGitProviderConfig{SSHDir: filepath.Join(home, ".ssh"), AgentSocket: strings.TrimSpace(agentSocket)}, nil
 }
 
 func NewHostSSHGitProvider(config HostSSHGitProviderConfig) (*HostSSHGitProvider, error) {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"net"
 	"os"
+	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -221,6 +223,68 @@ func TestHostSSHLeaseExposesOnlyIssueTokenFileCapability(t *testing.T) {
 	capabilities := lease.FileCapabilities()
 	if len(capabilities) != 1 || capabilities[0].EnvName != "ISSUE_SPEC_TOKEN_FILE" {
 		t.Fatalf("host SSH file capabilities = %+v", capabilities)
+	}
+}
+
+func TestCurrentUserHostSSHConfigIgnoresHOMEOverride(t *testing.T) {
+	account, err := user.Current()
+	if err != nil {
+		t.Skipf("current OS account unavailable: %v", err)
+	}
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "service-home"))
+	config, err := CurrentUserHostSSHGitProviderConfig("/run/host-agent.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(filepath.Clean(account.HomeDir), ".ssh")
+	if config.SSHDir != want || config.AgentSocket != "/run/host-agent.sock" {
+		t.Fatalf("config = %+v, want SSHDir=%q from passwd account", config, want)
+	}
+}
+
+func TestHostSSHCloneDisablesHostGlobalGitURLRewrite(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitConfig := "[url \"https://attacker.invalid/redirect/\"]\n\tinsteadOf = git@code.example:\n"
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(gitConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider, err := NewHostSSHGitProvider(HostSSHGitProviderConfig{SSHDir: sshDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := testBinding()
+	lease, err := NewGitLease(context.Background(), t.TempDir(), "job-host-config", capability.OperationGitClone, binding, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := lease.BeforeGit(context.Background(), "clone", binding.CloneURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolveURL := func(env []string) string {
+		t.Helper()
+		command := exec.Command("git", "ls-remote", "--get-url", credential.CloneURL)
+		command.Env = env
+		output, commandErr := command.Output()
+		if commandErr != nil {
+			t.Fatalf("git ls-remote --get-url: %v", commandErr)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	controlEnv := safeGitEnvironment(os.Environ())
+	controlEnv = append(controlEnv, "HOME="+home, "GIT_CONFIG_NOSYSTEM=1")
+	if got := resolveURL(controlEnv); got != "https://attacker.invalid/redirect/acme/widgets.git" {
+		t.Fatalf("hostile control config was not active: %q", got)
+	}
+	if got := resolveURL(credential.Env); got != credential.CloneURL {
+		t.Fatalf("host global config redirected canonical clone URL: %q", got)
+	}
+	if err := lease.Cleanup(); err != nil {
+		t.Fatal(err)
 	}
 }
 

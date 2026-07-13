@@ -120,10 +120,15 @@ type GitCredential struct {
 }
 
 type ResumeRequest struct {
-	Repo      string
-	CloneURL  string
-	Workspace state.WorkspaceMetadata
+	Repo string
+	// CloneURL is the authoritative repository-binding identity. ExpectedCloneURL
+	// is the actual transport selected for the current runner invocation.
+	CloneURL         string
+	ExpectedCloneURL string
+	Workspace        state.WorkspaceMetadata
 }
+
+var ErrWorkspaceTransportMismatch = errors.New("workspace git transport mismatch")
 
 type Binding struct {
 	Workspace            state.WorkspaceMetadata `json:"workspace"`
@@ -301,6 +306,11 @@ func (m Manager) ResolveResume(ctx context.Context, req ResumeRequest) (Binding,
 		if gotClone != wantClone {
 			return Binding{}, fmt.Errorf("workspace clone URL mismatch: stored %q found %q", wantClone, gotClone)
 		}
+	}
+	expectedClone := strings.TrimSpace(req.ExpectedCloneURL)
+	if expectedClone != "" && wantClone != "" && expectedClone != wantClone {
+		return Binding{}, fmt.Errorf("%w: stored transport %q differs from current transport %q; start a new session",
+			ErrWorkspaceTransportMismatch, wantClone, expectedClone)
 	}
 	if workspace.Branch != "" && workspace.Branch != "HEAD" {
 		branch, err := nm.gitOutput(ctx, "git rev-parse branch", path, "rev-parse", "--abbrev-ref", "HEAD")

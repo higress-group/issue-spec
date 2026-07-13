@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +61,37 @@ func TestPrepareNewPersistsCredentialCloneURLAndResumeAcceptsPinnedBindingURL(t 
 	if _, err := manager.ResolveResume(context.Background(), ResumeRequest{Repo: request.Repo,
 		CloneURL: request.RepositoryBinding.CloneURL, Workspace: prepared.Workspace}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestResolveResumeRejectsGitTransportModeSwitchInBothDirections(t *testing.T) {
+	const (
+		httpsURL = "https://code.example/acme/widgets.git"
+		sshURL   = "git@code.example:acme/widgets.git"
+	)
+	for _, test := range []struct {
+		name, stored, current string
+	}{
+		{name: "HTTPS to host SSH", stored: httpsURL, current: sshURL},
+		{name: "host SSH to HTTPS", stored: sshURL, current: httpsURL},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			workspacePath := filepath.Join(root, "workspace-mode-switch")
+			if err := os.Mkdir(workspacePath, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			runner := &credentialRunner{remoteURL: test.stored}
+			manager := Manager{Root: root, Retention: time.Hour, Runner: runner}
+			request := credentialRequest(nil)
+			metadata := state.WorkspaceMetadata{ID: "workspace-mode-switch", Path: workspacePath, Repo: request.Repo,
+				CloneURL: test.stored, Branch: "issue-spec-test", RepositoryBinding: request.RepositoryBinding}
+			_, err := manager.ResolveResume(context.Background(), ResumeRequest{Repo: request.Repo,
+				CloneURL: httpsURL, ExpectedCloneURL: test.current, Workspace: metadata})
+			if !errors.Is(err, ErrWorkspaceTransportMismatch) || !strings.Contains(err.Error(), "start a new session") {
+				t.Fatalf("ResolveResume error = %v", err)
+			}
+		})
 	}
 }
 

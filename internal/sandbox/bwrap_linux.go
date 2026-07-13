@@ -313,9 +313,13 @@ func readOnlyBinds(cfg Config) []string {
 
 func systemReadOnlyBinds(cfg Config) []string {
 	if len(cfg.SystemReadOnlyBinds) > 0 {
-		return cleanBinds(cfg.SystemReadOnlyBinds, false)
+		binds := cleanBinds(cfg.SystemReadOnlyBinds, false)
+		if strings.TrimSpace(cfg.HostSSHDir) != "" {
+			binds = append(binds, cleanBinds([]string{"/etc/passwd"}, true)...)
+		}
+		return sortedUnique(binds)
 	}
-	return cleanBinds([]string{
+	binds := []string{
 		"/usr",
 		"/bin",
 		"/lib",
@@ -326,7 +330,13 @@ func systemReadOnlyBinds(cfg Config) []string {
 		"/etc/resolv.conf",
 		"/etc/hosts",
 		"/etc/nsswitch.conf",
-	}, true)
+	}
+	if strings.TrimSpace(cfg.HostSSHDir) != "" {
+		// Stock OpenSSH resolves the current account with getpwuid before it
+		// reads ~/.ssh. files-NSS needs passwd available inside bubblewrap.
+		binds = append(binds, "/etc/passwd")
+	}
+	return cleanBinds(binds, true)
 }
 
 func cleanBinds(paths []string, existingOnly bool) []string {
