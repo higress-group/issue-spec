@@ -15,6 +15,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/acpx"
 	runnercontext "github.com/higress-group/issue-spec/internal/commentrunner/context"
+	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/github"
@@ -265,6 +266,34 @@ func TestRunNextResumeReusesSessionMappingAndWorkspace(t *testing.T) {
 	session, ok := st.GetPublicSession("o/r", "ps-existing")
 	if !ok || session.LastJobID != "job-resume" || session.Lock.OwnerJobID != "" || len(session.Queue.PendingJobIDs) != 0 {
 		t.Fatalf("resume session not updated/released: %+v ok=%v", session, ok)
+	}
+}
+
+func TestPrepareWorkspaceResumeCarriesCurrentCredentialTransport(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 11, 15, 0, 0, time.UTC)
+	job := state.Job{ID: "job-resume-transport", Repo: "o/r", IssueNumber: 30, Status: state.StatusQueued, CreatedAt: now,
+		CommandID: "cmd-resume-transport", CommandName: "resume", CommandPrompt: "resume with current transport",
+		CommandIdempotencyKey: "cmd-key-resume-transport", StatusWritebackKey: "status-resume-transport",
+		TriggeringUserLogin: "alice", SessionCreatorLogin: "alice", CoordinatorKind: "codex",
+		FirstObservedComment: state.SeenComment{Repo: "o/r", IssueNumber: 30, CommentID: 303,
+			HTMLURL: "https://github.com/o/r/issues/30#issuecomment-303", AuthorLogin: "alice",
+			FirstObservedBodyHash: "sha256:resume-transport"}}
+	seedQueuedJob(t, store, job)
+	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-transport", Path: "/tmp/ws-transport", Repo: "o/r",
+		CloneURL: "https://github.com/o/r.git", RepositoryBinding: testRepositoryBinding()}
+	session := state.PublicSession{Repo: "o/r", PublicSessionID: "ps-transport", Workspace: resumeWorkspace,
+		RepositoryBinding: testRepositoryBinding()}
+	workspaces := &fakeWorkspaces{binding: workspace.Binding{Workspace: resumeWorkspace}}
+	dispatcher := testDispatcher(store, workspaces, &fakeCoordinator{}, &fakeWriteback{}, now)
+	lease := &credentials.Lease{Git: &credentials.GitLease{CloneURL: "git@github.com:o/r.git"}}
+
+	if _, _, err := dispatcher.prepareWorkspace(t.Context(), job, runnercontext.CommandResume, session.PublicSessionID,
+		RepositoryInfo{}, session, lease); err != nil {
+		t.Fatal(err)
+	}
+	if got := workspaces.lastResumeRequest.ExpectedCloneURL; got != lease.Git.CloneURL {
+		t.Fatalf("ExpectedCloneURL = %q, want %q", got, lease.Git.CloneURL)
 	}
 }
 
@@ -2383,6 +2412,7 @@ type fakeWorkspaces struct {
 	prepareNewCalled    bool
 	lastNewRequest      workspace.NewRequest
 	resolveResumeCalled bool
+	lastResumeRequest   workspace.ResumeRequest
 	released            bool
 }
 
@@ -2404,10 +2434,11 @@ func (f *fakeWorkspaces) PrepareNew(_ context.Context, req workspace.NewRequest)
 	return binding, nil
 }
 
-func (f *fakeWorkspaces) ResolveResume(context.Context, workspace.ResumeRequest) (workspace.Binding, error) {
+func (f *fakeWorkspaces) ResolveResume(_ context.Context, req workspace.ResumeRequest) (workspace.Binding, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resolveResumeCalled = true
+	f.lastResumeRequest = req
 	if f.err != nil {
 		return workspace.Binding{}, f.err
 	}

@@ -843,10 +843,15 @@ func (d *Dispatcher) prepareWorkspace(ctx context.Context, job state.Job, comman
 	if err := d.pinJobRepositoryBinding(ctx, job.ID, session.RepositoryBinding); err != nil {
 		return workspace.Binding{}, state.PublicSession{}, err
 	}
+	expectedCloneURL := ""
+	if lease != nil && lease.Git != nil {
+		expectedCloneURL = lease.Git.CloneURL
+	}
 	binding, err := d.Workspaces.ResolveResume(ctx, workspace.ResumeRequest{
-		Repo:      job.Repo,
-		CloneURL:  session.RepositoryBinding.CloneURL,
-		Workspace: session.Workspace,
+		Repo:             job.Repo,
+		CloneURL:         session.RepositoryBinding.CloneURL,
+		ExpectedCloneURL: expectedCloneURL,
+		Workspace:        session.Workspace,
 	})
 	if err == nil && !binding.Workspace.RepositoryBinding.Equal(session.RepositoryBinding) {
 		return workspace.Binding{}, state.PublicSession{}, resolver.DriftError()

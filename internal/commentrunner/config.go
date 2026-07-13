@@ -48,6 +48,7 @@ type Config struct {
 	WorkspaceRetention      Duration               `json:"workspace_retention"`
 	BwrapPath               string                 `json:"bwrap_path,omitempty"`
 	UnsafeNoSandbox         bool                   `json:"unsafe_no_sandbox"`
+	AllowHostSSH            bool                   `json:"allow_host_ssh,omitempty"`
 	GHConfigDir             string                 `json:"gh_config_dir,omitempty"`
 	StrictAgentCapabilities bool                   `json:"strict_agent_capabilities"`
 	CancellationEnabled     bool                   `json:"cancellation_enabled"`
@@ -240,6 +241,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxConcurrentJobs <= 0 {
 		return fmt.Errorf("--max-concurrency must be positive")
+	}
+	if c.AllowHostSSH && c.UnsafeNoSandbox {
+		return fmt.Errorf("--allow-host-ssh requires the filesystem sandbox and cannot be combined with --unsafe-no-sandbox")
 	}
 	switch c.Agent.Kind {
 	case AgentCodex, AgentClaude:

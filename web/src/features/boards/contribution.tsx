@@ -1,5 +1,6 @@
 import { lazy, Suspense, type ReactNode } from "react";
 import { Workflow } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { FeatureContribution } from "../../app/feature-contributions";
 import "./boards.css";
 
@@ -9,7 +10,8 @@ const BoardDetailPage = lazy(() => import("./detail-page").then((module) => ({ d
 const RepositoryBoardPage = lazy(() => import("./board-page").then((module) => ({ default: module.RepositoryBoardPage })));
 
 function LazyBoardRoute({ children }: { children: ReactNode }) {
-  return <Suspense fallback={<div className="board-state state-loading" role="status"><span className="board-loader" aria-hidden="true" /><div>Opening change control…</div></div>}>{children}</Suspense>;
+  const { t } = useTranslation();
+  return <Suspense fallback={<div className="board-state state-loading" role="status"><span className="board-loader" aria-hidden="true" /><div>{t("changes.openingControl")}</div></div>}>{children}</Suspense>;
 }
 
 const contribution: FeatureContribution = {

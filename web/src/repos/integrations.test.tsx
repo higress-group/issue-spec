@@ -50,6 +50,7 @@ describe("repository integrations workspace", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Create route" }));
     await waitFor(() => expect(created).toMatchObject({ repository_id: repoId, url: "http://127.0.0.1:19090/api/v1/runner/webhooks", delivery_format: "issue-spec.v1", signing_mode: "bearer", event_types: ["issue_comment.created", "issue_comment.edited"], retry: { max_attempts: 8, initial_backoff: "1s", max_backoff: "5m" } }));
     expect(await screen.findByRole("dialog", { name: "Webhook secret v1" })).toHaveTextContent("show-once-secret");
+    expect(screen.getByRole("dialog", { name: "Webhook secret v1" })).toHaveTextContent(webhookId);
   });
 
   it("pauses and rotates a route, inspects attempts, and replays the immutable delivery", async () => {

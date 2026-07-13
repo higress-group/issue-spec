@@ -1,5 +1,6 @@
 import { lazy, Suspense, type ReactNode } from "react";
 import { CircleDot } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { FeatureContribution } from "../../app/feature-contributions";
 import "./issues.css";
 
@@ -9,7 +10,8 @@ const IssueCreatePage = lazy(() => import("./create-page").then((module) => ({ d
 const IssueDetailPage = lazy(() => import("./detail-page").then((module) => ({ default: module.IssueDetailPage })));
 
 function LazyIssueRoute({ children }: { children: ReactNode }) {
-  return <Suspense fallback={<div className="issue-status" role="status"><span className="issue-loader" aria-hidden="true" /><p>Opening issue desk…</p></div>}>{children}</Suspense>;
+  const { t } = useTranslation();
+  return <Suspense fallback={<div className="issue-status" role="status"><span className="issue-loader" aria-hidden="true" /><p>{t("issues.openingDesk")}</p></div>}>{children}</Suspense>;
 }
 
 const contribution: FeatureContribution = {

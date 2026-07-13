@@ -6,6 +6,10 @@
 
 `issue-spec runner` can watch repository issue comments and launch a headless acpx coordinator agent when an authorized maintainer comments a command.
 
+This page covers `runner poll` for a GitHub issue backend. For a self-hosted
+issue backend, use `runner serve` and follow the
+[self-hosted runner guide](self-hosting/runner.md).
+
 Minimal start:
 
 ```bash

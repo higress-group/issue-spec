@@ -111,15 +111,24 @@ type CredentialExecutionHook interface {
 }
 
 type GitCredential struct {
-	Env     []string
-	Cleanup func() error
+	// CloneURL optionally replaces the request URL for the actual git command
+	// and persisted workspace remote. The request and repository binding remain
+	// the pinned identity checked by the credential hook.
+	CloneURL string
+	Env      []string
+	Cleanup  func() error
 }
 
 type ResumeRequest struct {
-	Repo      string
-	CloneURL  string
-	Workspace state.WorkspaceMetadata
+	Repo string
+	// CloneURL is the authoritative repository-binding identity. ExpectedCloneURL
+	// is the actual transport selected for the current runner invocation.
+	CloneURL         string
+	ExpectedCloneURL string
+	Workspace        state.WorkspaceMetadata
 }
+
+var ErrWorkspaceTransportMismatch = errors.New("workspace git transport mismatch")
 
 type Binding struct {
 	Workspace            state.WorkspaceMetadata `json:"workspace"`
@@ -198,7 +207,11 @@ func (m Manager) PrepareNew(ctx context.Context, req NewRequest) (Binding, error
 		return nil
 	}
 	defer func() { _ = cleanupCredential() }()
-	_, cloneErr := nm.runGitWithEnv(ctx, "git clone", "", cloneCredential.Env, "clone", "--", req.CloneURL, path)
+	actualCloneURL := strings.TrimSpace(cloneCredential.CloneURL)
+	if actualCloneURL == "" {
+		actualCloneURL = strings.TrimSpace(req.CloneURL)
+	}
+	_, cloneErr := nm.runGitWithEnv(ctx, "git clone", "", cloneCredential.Env, "clone", "--", actualCloneURL, path)
 	cleanupErr := cleanupCredential()
 	if cloneErr != nil {
 		if cleanupErr != nil {
@@ -229,7 +242,7 @@ func (m Manager) PrepareNew(ctx context.Context, req NewRequest) (Binding, error
 		ID:                workspaceID,
 		Path:              path,
 		Repo:              strings.TrimSpace(req.Repo),
-		CloneURL:          strings.TrimSpace(req.CloneURL),
+		CloneURL:          actualCloneURL,
 		Branch:            actualBranch,
 		Ref:               baseRef,
 		CheckoutSHA:       head,
@@ -277,9 +290,13 @@ func (m Manager) ResolveResume(ctx context.Context, req ResumeRequest) (Binding,
 	if filepath.Clean(topPath) != filepath.Clean(path) {
 		return Binding{}, fmt.Errorf("workspace git toplevel %q does not match stored path %q", topPath, path)
 	}
-	wantClone := strings.TrimSpace(req.CloneURL)
+	wantClone := strings.TrimSpace(workspace.CloneURL)
+	requestedClone := strings.TrimSpace(req.CloneURL)
 	if wantClone == "" {
-		wantClone = strings.TrimSpace(workspace.CloneURL)
+		wantClone = requestedClone
+	}
+	if requestedClone != "" && requestedClone != wantClone && requestedClone != strings.TrimSpace(workspace.RepositoryBinding.CloneURL) {
+		return Binding{}, fmt.Errorf("workspace clone URL mismatch: stored %q requested %q", wantClone, requestedClone)
 	}
 	if wantClone != "" {
 		gotClone, err := nm.gitOutput(ctx, "git remote origin", path, "remote", "get-url", "origin")
@@ -289,6 +306,11 @@ func (m Manager) ResolveResume(ctx context.Context, req ResumeRequest) (Binding,
 		if gotClone != wantClone {
 			return Binding{}, fmt.Errorf("workspace clone URL mismatch: stored %q found %q", wantClone, gotClone)
 		}
+	}
+	expectedClone := strings.TrimSpace(req.ExpectedCloneURL)
+	if expectedClone != "" && wantClone != "" && expectedClone != wantClone {
+		return Binding{}, fmt.Errorf("%w: stored transport %q differs from current transport %q; start a new session",
+			ErrWorkspaceTransportMismatch, wantClone, expectedClone)
 	}
 	if workspace.Branch != "" && workspace.Branch != "HEAD" {
 		branch, err := nm.gitOutput(ctx, "git rev-parse branch", path, "rev-parse", "--abbrev-ref", "HEAD")

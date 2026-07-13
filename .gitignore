@@ -3,6 +3,8 @@
 /issue-spec/*
 !/issue-spec/specs/
 !/issue-spec/specs/**
+# Project-local deployment skill contains machine-specific server operations.
+/.agents/skills/deploy-issue-spec-dev/
 *.test
 coverage.out
 /dist/

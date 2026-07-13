@@ -1,6 +1,7 @@
 import { useEffect, useRef, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
 import { AlertCircle, Check, Clipboard, LoaderCircle, X } from "lucide-react";
 import { isApiProblem } from "../lib/api/client";
+import { useTranslation } from "react-i18next";
 
 export function PageHeader({ eyebrow, title, description, actions }: { eyebrow?: string; title: string; description?: string; actions?: ReactNode }) {
   return <header className="page-header">
@@ -26,7 +27,8 @@ export function SelectInput(props: SelectHTMLAttributes<HTMLSelectElement>) {
 }
 
 export function Loading({ label = "Loading workspace" }: { label?: string }) {
-  return <div className="state-card" role="status"><LoaderCircle className="spin" size={20} /><p>{label}</p></div>;
+  const { t } = useTranslation();
+  return <div className="state-card" role="status"><LoaderCircle className="spin" size={20} /><p>{label === "Loading workspace" ? t("ui.loadingWorkspace") : label}</p></div>;
 }
 
 export function EmptyState({ title, description, action }: { title: string; description: string; action?: ReactNode }) {
@@ -34,7 +36,8 @@ export function EmptyState({ title, description, action }: { title: string; desc
 }
 
 export function ErrorNotice({ error }: { error: unknown }) {
-  const message = isApiProblem(error) ? error.problem.detail || error.problem.title : error instanceof Error ? error.message : "Unexpected error";
+  const { t } = useTranslation();
+  const message = isApiProblem(error) ? error.problem.detail || error.problem.title : error instanceof Error ? error.message : t("ui.unexpectedError");
   return <div className="notice danger" role="alert"><AlertCircle size={18} /><p>{message}</p></div>;
 }
 
@@ -42,7 +45,8 @@ export function StatusBadge({ tone = "neutral", children }: { tone?: "neutral" |
   return <span className={`status-badge ${tone}`}>{children}</span>;
 }
 
-export function SecretDialog({ secret, title, onClose }: { secret: string; title: string; onClose: () => void }) {
+export function SecretDialog({ secret, title, details = [], onClose }: { secret: string; title: string; details?: Array<{ label: string; value: string }>; onClose: () => void }) {
+  const { t } = useTranslation();
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     closeRef.current?.focus();
@@ -53,12 +57,13 @@ export function SecretDialog({ secret, title, onClose }: { secret: string; title
   const copy = () => void navigator.clipboard.writeText(secret);
   return <div className="dialog-backdrop" role="presentation">
     <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="secret-title">
-      <button ref={closeRef} className="icon-button dialog-close" type="button" onClick={onClose} aria-label="Close secret dialog"><X size={18} /></button>
-      <span className="eyebrow coral-text">Shown once</span>
+      <button ref={closeRef} className="icon-button dialog-close" type="button" onClick={onClose} aria-label={t("ui.closeSecret")}><X size={18} /></button>
+      <span className="eyebrow coral-text">{t("ui.shownOnce")}</span>
       <h2 id="secret-title">{title}</h2>
-      <p>Copy this credential now. It is held only in this dialog and disappears when you close it.</p>
+      <p>{t("ui.secretHelp")}</p>
+      {details.length ? <dl className="secret-details">{details.map((detail) => <div key={detail.label}><dt>{detail.label}</dt><dd><code>{detail.value}</code></dd></div>)}</dl> : null}
       <code className="secret-value">{secret}</code>
-      <div className="dialog-actions"><button className="button primary" type="button" onClick={copy}><Clipboard size={16} /> Copy credential</button><button className="button secondary" type="button" onClick={onClose}><Check size={16} /> I saved it</button></div>
+      <div className="dialog-actions"><button className="button primary" type="button" onClick={copy}><Clipboard size={16} /> {t("ui.copyCredential")}</button><button className="button secondary" type="button" onClick={onClose}><Check size={16} /> {t("ui.savedCredential")}</button></div>
     </section>
   </div>;
 }

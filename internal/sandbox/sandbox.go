@@ -23,6 +23,9 @@ const (
 
 	BwrapPathEnv = "ISSUE_SPEC_BWRAP_PATH"
 
+	HostSSHDirSandboxPath   = "/tmp/issue-spec-home/.ssh"
+	HostSSHAgentSandboxPath = "/run/issue-spec/ssh-agent.sock"
+
 	defaultMinBwrapVersion = "0.5.0"
 )
 
@@ -78,6 +81,11 @@ type Config struct {
 	TempXDGConfigHome string
 	TempCodexHome     string
 	HostGHConfigDir   string
+	// HostSSHDir and HostSSHAgentSocket are explicit opt-ins. In bubblewrap
+	// mode the directory is mounted read-only at HOME/.ssh and the optional
+	// Unix socket is mounted at a fixed path.
+	HostSSHDir         string
+	HostSSHAgentSocket string
 
 	HostEnv             []string
 	EnvAllowlist        []string
@@ -208,6 +216,9 @@ func Preflight(ctx context.Context, cfg Config, deps Dependencies) (Metadata, er
 	if _, err := validatedWritableBinds(cfg); err != nil {
 		return Metadata{}, err
 	}
+	if err := validateHostSSHConfig(cfg); err != nil {
+		return Metadata{}, err
+	}
 	envMeta := scrubEnvironment(cfg, envPaths{}, false).metadata
 	if cfg.UnsafeNoSandbox {
 		return unsafeMetadata(cfg, envMeta), nil
@@ -223,6 +234,9 @@ func Prepare(ctx context.Context, cfg Config, target Command, deps Dependencies)
 		return PreparedCommand{}, err
 	}
 	if _, err := validatedWritableBinds(cfg); err != nil {
+		return PreparedCommand{}, err
+	}
+	if err := validateHostSSHConfig(cfg); err != nil {
 		return PreparedCommand{}, err
 	}
 	if cfg.UnsafeNoSandbox {
@@ -350,6 +364,13 @@ func scrubEnvironment(cfg Config, paths envPaths, requireTempPaths bool) envBuil
 	for _, capability := range cfg.FileCapabilities {
 		values[capability.EnvName] = capability.Destination
 	}
+	if strings.TrimSpace(cfg.HostSSHAgentSocket) != "" {
+		if cfg.UnsafeNoSandbox {
+			values["SSH_AUTH_SOCK"] = filepath.Clean(cfg.HostSSHAgentSocket)
+		} else {
+			values["SSH_AUTH_SOCK"] = HostSSHAgentSandboxPath
+		}
+	}
 
 	meta.ProxyInherited = sortedUnique(meta.ProxyInherited)
 	meta.TokenUnset = sortedUnique(meta.TokenUnset)
@@ -402,7 +423,7 @@ func validatedWritableBinds(cfg Config) ([]string, error) {
 		}
 		workspace = filepath.Clean(canonicalWorkspace)
 	}
-	reserved := []string{workspace, cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome}
+	reserved := []string{workspace, cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome, cfg.HostSSHDir, cfg.HostSSHAgentSocket}
 	reserved = append(reserved, cfg.ReadOnlyBinds...)
 	systemBinds := cfg.SystemReadOnlyBinds
 	if len(systemBinds) == 0 {
@@ -468,6 +489,54 @@ func pathDescendsFrom(root, candidate string) bool {
 	return strings.HasPrefix(candidate, root+string(os.PathSeparator))
 }
 
+func validateHostSSHConfig(cfg Config) error {
+	directory := strings.TrimSpace(cfg.HostSSHDir)
+	socket := strings.TrimSpace(cfg.HostSSHAgentSocket)
+	if directory == "" && socket == "" {
+		return nil
+	}
+	if cfg.UnsafeNoSandbox {
+		return fmt.Errorf("%w: host SSH passthrough requires the bubblewrap sandbox", ErrSandboxConfigInvalid)
+	}
+	if directory == "" || !filepath.IsAbs(directory) || filepath.Base(filepath.Clean(directory)) != ".ssh" {
+		return fmt.Errorf("%w: host SSH directory must be an absolute .ssh path", ErrSandboxConfigInvalid)
+	}
+	directory = filepath.Clean(directory)
+	home := filepath.Dir(directory)
+	if home == "/" || directory == HostSSHDirSandboxPath {
+		return fmt.Errorf("%w: host SSH home path is unsafe for sandbox mounting", ErrSandboxConfigInvalid)
+	}
+	for _, reserved := range []string{cfg.WorkspacePath, cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome} {
+		reserved = filepath.Clean(strings.TrimSpace(reserved))
+		if reserved == "." || !filepath.IsAbs(reserved) {
+			continue
+		}
+		if directory == reserved || pathUnder(reserved, directory) || pathUnder(directory, reserved) {
+			return fmt.Errorf("%w: host SSH directory overlaps a runner-managed path", ErrSandboxConfigInvalid)
+		}
+	}
+	info, err := os.Lstat(directory)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("%w: host SSH directory must be a non-symlink directory", ErrSandboxConfigInvalid)
+	}
+	if socket == "" {
+		return nil
+	}
+	if !filepath.IsAbs(socket) {
+		return fmt.Errorf("%w: host SSH agent socket must be absolute", ErrSandboxConfigInvalid)
+	}
+	info, err = os.Lstat(socket)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("%w: host SSH agent socket must be a non-symlink Unix socket", ErrSandboxConfigInvalid)
+	}
+	return nil
+}
+
+func pathUnder(root, candidate string) bool {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(candidate))
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+}
+
 func mergeCommandEnv(baseEntries, commandEntries []string, cfg Config, meta *EnvMetadata) []string {
 	values := envMapFromEntries(baseEntries)
 	hostValues := cfg.HostEnv
@@ -480,6 +549,7 @@ func mergeCommandEnv(baseEntries, commandEntries []string, cfg Config, meta *Env
 		"GH_CONFIG_DIR":   true,
 		"XDG_CONFIG_HOME": true,
 		"CODEX_HOME":      true,
+		"SSH_AUTH_SOCK":   true,
 	}
 	for _, entry := range commandEntries {
 		name, value, ok := strings.Cut(entry, "=")
