@@ -22,10 +22,12 @@
   "dependencies": {
     "@tanstack/react-query": "5.101.2",
     "highlight.js": "11.11.1",
+    "i18next": "26.3.6",
     "lucide-react": "1.24.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "react-hook-form": "7.81.0",
+    "react-i18next": "17.0.9",
     "react-markdown": "10.1.0",
     "react-router-dom": "7.18.1",
     "rehype-highlight": "7.0.2",

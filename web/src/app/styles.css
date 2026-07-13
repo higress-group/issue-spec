@@ -313,3 +313,14 @@ p { line-height: 1.65; color: var(--muted); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }
+/* Language selection stays visually quiet so it can live in both public and
+   authenticated shells without competing with the current task. */
+.language-switcher { display: inline-flex; align-items: center; gap: .4rem; color: var(--muted); }
+.language-switcher select { appearance: none; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; padding: .25rem .1rem; }
+.language-switcher.inverse { color: rgba(255, 255, 255, .72); }
+.language-switcher.inverse select { color: inherit; }
+.language-switcher.inverse option { color: #172321; }
+.nav-group.nav-language { margin-top: auto; margin-bottom: 0; }
+.public-shell > header { display: flex; align-items: center; gap: 1rem; }
+.repository-public-shell > header { gap: 1rem; }
+.public-shell > header .language-switcher { margin-left: auto; }

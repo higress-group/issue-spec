@@ -13,7 +13,7 @@ function LazyIssueRoute({ children }: { children: ReactNode }) {
 }
 
 const contribution: FeatureContribution = {
-  navigation: [{ label: "Issues", to: "/issues", icon: CircleDot, order: 10 }],
+  navigation: [{ label: "Issues", labelKey: "navigation.issues", to: "/issues", icon: CircleDot, order: 10 }],
   routes: [
     { path: "issues", element: <LazyIssueRoute><IssueWorkspacePage /></LazyIssueRoute> },
     { path: "issues/:orgId/:repoId", element: <LazyIssueRoute><IssueListPage /></LazyIssueRoute> },
