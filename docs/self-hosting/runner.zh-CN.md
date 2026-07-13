@@ -19,7 +19,7 @@ issue-spec Server 事务 Outbox
 runner serve /api/v1/runner/webhooks
         |
         +--> 校验评论作者与仓库权限
-        +--> 获取 Source Binding 和任务级 Git 凭据
+        +--> 获取 Source Binding 和任务级 Git 凭据，或使用宿主 SSH
         +--> 委托短期 Issue Token
         v
       acpx --> Codex 或 Claude
@@ -37,7 +37,7 @@ runner serve /api/v1/runner/webhooks
 - `bubblewrap`，用于默认的文件系统沙箱；
 - 到 issue-spec Server、代码平台、模型服务和所需软件源的网络；
 - 一个实现 [`issue-spec-git-credential-v1`](bridges/git-credential-v1.md) 的运维侧
-  Git Credential Command。
+  Git Credential Command；可信内网也可改用 Runner 用户的宿主 SSH。
 
 先验证本机依赖：
 
@@ -56,8 +56,9 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 在仓库的 **Source connection / 源码连接** 页面创建并启用绑定。绑定只保存仓库身份
 和 URL，不保存 Clone Credential。
 
-Git Credential Command 必须根据绑定签发只对该仓库有效的短期凭据。它不是
-issue-spec PAT，也不应返回代码平台的长期个人 Token。
+默认模式下，Git Credential Command 必须根据绑定签发只对该仓库有效的短期凭据。
+宿主 SSH 模式仍以该 HTTPS Binding 为权威身份，只把实际 Git 传输地址派生为
+`git@<host>:<external_repository>.git`。两种模式都不会把代码凭据保存到 Binding。
 
 ## 3. 创建独立 Service Account 和 Runner PAT
 
@@ -146,7 +147,9 @@ unset RUNNER_WEBHOOK_SECRET
 
 生产模式只接受权限为 `0600` 的 Secret File，不接受环境变量中的 Webhook 密钥。
 
-## 5. 接入代码平台凭据
+## 5. 接入代码平台
+
+### 推荐：任务级短期凭据
 
 `--git-credential-command` 指向一个绝对路径的运维侧可执行文件。Runner 不通过
 Shell 启动它，也不会把 Profile PAT、Webhook Secret 或宿主环境传进去。Command
@@ -162,6 +165,26 @@ Shell 启动它，也不会把 Profile PAT、Webhook Secret 或宿主环境传�
 
 该程序应向代码平台的机器人凭据服务或 Token Broker 请求短期凭据；issue-spec
 本身不内置任何代码平台长期凭据。
+
+### 内部简化方式：挂载宿主 SSH
+
+如果内部代码平台使用 SSH，且 Runner 主机和任务都属于同一可信安全边界，可以让
+沙箱只读挂载 Runner 系统用户的 `~/.ssh`，并透传可选的 `SSH_AUTH_SOCK`：
+
+```bash
+issue-spec --profile team runner serve \
+  ... \
+  --allow-host-ssh
+```
+
+启动前先用运行 Runner 的同一个系统用户验证 SSH 可非交互访问目标仓库，并把代码平台
+Host Key 固定写入其 `~/.ssh/known_hosts`。`--allow-host-ssh` 与
+`--git-credential-command` 二选一，且不能和 `--unsafe-no-sandbox` 一起使用。
+
+这是面向可信内网的兼容模式，不具备任务级凭据的过期和撤销能力。Agent 会继承该
+Runner 系统用户 SSH Key 或 Agent 能访问的全部仓库权限，因此应使用专用系统账号和
+专用 SSH 身份，并继续保持“一仓库一个 `runner serve` 进程”的隔离方式。不要挂载
+个人日常账号的整个 SSH 身份。
 
 ## 6. Preflight 与前台启动
 
@@ -190,6 +213,10 @@ issue-spec --profile team runner serve \
   --workspace-root /var/lib/issue-spec-runner/workspaces \
   --agent codex
 ```
+
+内部 SSH 模式只需把上例中的
+`--git-credential-command /usr/local/libexec/issue-spec-git-credential` 替换为
+`--allow-host-ssh`。
 
 `--allowed-user` 可以重复。默认最多并行运行 3 个任务，可用
 `--max-concurrent-jobs` 调整。同一个父凭据不能跨仓库委托任务。
@@ -281,7 +308,8 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 
 1. Webhook Delivery 从 Pending 变为 Succeeded；
 2. Runner 日志显示事件已入队并通过作者授权；
-3. 任务 Workspace 已创建，Git 凭据 Lease 能获取并撤销；
+3. 任务 Workspace 已创建，Git 凭据 Lease 能获取并撤销；使用宿主 SSH 时确认实际
+   Remote 为预期的 `git@host:path.git`；
 4. Issue 出现 Runner 状态评论；
 5. Agent 能写类型化评论，并按任务要求提交代码或创建 PR/MR。
 
@@ -291,7 +319,7 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 | Webhook 无法连接 | Receiver URL、DNS、防火墙、反向代理和 TLS |
 | 评论被忽略 | 命令是否位于开头、作者是否在允许列表、是否具有 Write 权限 |
 | `runner:delegate` 失败 | PAT 是否只限制到该仓库、Scope 是否完整、`--runner` 是否为 PAT 所属账号的 Login |
-| 找不到源码或 Clone 失败 | Source Binding 是否 Active，Clone URL 是否为 HTTPS，Git Credential Command 返回的 Binding 是否完全匹配 |
+| 找不到源码或 Clone 失败 | Source Binding 是否 Active；短期凭据模式检查 HTTPS URL 与 Command 回显，宿主 SSH 模式检查 Runner 用户的 Key、Agent、`known_hosts` 和仓库权限 |
 | Preflight 报沙箱失败 | Linux 上安装 `bubblewrap` 或显式配置 `--bwrap` |
 | Codex 无法启动 | `acpx`、`npm`、`npx` 和模型凭据是否对 systemd 用户可用 |
 
@@ -303,6 +331,8 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 
 - Webhook Secret 只验证 Server 到 Runner 的投递，不授予 Issue 或代码权限；
 - Profile PAT 只用于向 Server 委托短期、仓库范围的任务 Token；
-- Source Binding 不含凭据；Git 凭据必须按 Job 和 Binding 短期签发；
+- Source Binding 始终不含凭据；优先按 Job 和 Binding 短期签发 Git 凭据；
+- `--allow-host-ssh` 会把专用 Runner 用户的 SSH 权限暴露给沙箱内 Agent，只适用于明确
+  接受这一边界的可信内网；
 - Agent 只能处理明确配置的 `--repo`，评论作者还必须同时通过允许列表和仓库权限校验；
 - Runner 状态、Workspace 和 Credential Lease 都应进入集中日志与审计。

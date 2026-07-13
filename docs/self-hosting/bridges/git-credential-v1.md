@@ -71,3 +71,7 @@ pinned binding and should not return a broad host credential. Runner-side
 timeouts, output limits and concurrency bounds are configurable, but cannot be
 disabled. Credentials are materialized only into per-job private files and are
 not accepted from issue content, webhook bodies or ambient host credentials.
+
+For choosing between a credential command, host SSH, and a code-provider
+bridge, see
+[Integrate company code and work platforms](../enterprise-provider-integration.md).

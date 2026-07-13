@@ -217,12 +217,16 @@ func (l *Lease) FileCapabilities() []sandbox.FileCapability {
 	if l == nil || l.Git == nil {
 		return nil
 	}
-	return []sandbox.FileCapability{
+	capabilities := []sandbox.FileCapability{
 		{Source: l.IssueToken.HostPath, Destination: l.IssueToken.SandboxPath, EnvName: clientauth.IssueSpecTokenFileEnv},
-		{Source: l.Git.AskPassPath, Destination: GitAskPassSandboxPath, EnvName: "GIT_ASKPASS"},
-		{Source: l.Git.UsernamePath, Destination: GitUsernameSandboxPath, EnvName: "ISSUE_SPEC_GIT_USERNAME_FILE"},
-		{Source: l.Git.SecretPath, Destination: GitSecretSandboxPath, EnvName: "ISSUE_SPEC_GIT_SECRET_FILE"},
 	}
+	if !l.Git.HostSSH {
+		capabilities = append(capabilities,
+			sandbox.FileCapability{Source: l.Git.AskPassPath, Destination: GitAskPassSandboxPath, EnvName: "GIT_ASKPASS"},
+			sandbox.FileCapability{Source: l.Git.UsernamePath, Destination: GitUsernameSandboxPath, EnvName: "ISSUE_SPEC_GIT_USERNAME_FILE"},
+			sandbox.FileCapability{Source: l.Git.SecretPath, Destination: GitSecretSandboxPath, EnvName: "ISSUE_SPEC_GIT_SECRET_FILE"})
+	}
+	return capabilities
 }
 
 func (l *Lease) ChildEnv() map[string]string {

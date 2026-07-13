@@ -200,7 +200,7 @@ Usage:
   issue-spec read issue --repo owner/repo --issue N [--comments] [--typed-only]
   issue-spec read pr --repo owner/repo --pr N [--comments] [--typed-only]
   issue-spec runner poll --repo owner/repo --runner login --once --dry-run
-  issue-spec runner serve --profile self-hosted --repo owner/repo --runner login --subscription-id UUID --secret-file FILE --git-credential-command /absolute/provider
+  issue-spec runner serve --profile self-hosted --repo owner/repo --runner login --subscription-id UUID --secret-file FILE (--git-credential-command /absolute/provider|--allow-host-ssh)
   issue-spec runner preflight --repo owner/repo --runner login`)
 }
 

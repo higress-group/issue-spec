@@ -147,6 +147,10 @@ issue-spec --profile team init \
 平台时，使用 `--bind-source`、`--provider` 和外部仓库坐标。Source Binding 只包含
 规范化仓库身份和 URL，不保存个人 Clone Credential。
 
+完整的 Provider-neutral 集成方案、运维 Registry 示例、Bridge 脚手架、代码证据
+映射和 Jira 类工作项投影模式见
+[对接企业代码平台与工作项平台](enterprise-provider-integration.zh-CN.md)。
+
 ## 自动化身份
 
 Service Account 是组织范围内的非人类身份，适用于 CI、Runner、Evidence 同步和
@@ -184,6 +188,7 @@ Service Account 与 PAT 的操作会被标记为 Automation，Webhook 策略和�
 - [备份、恢复、升级与应急处理](operations/backup-restore.md)
 - [HA Webhook 投递](operations/ha-webhooks.md)
 - [通过 Issue 评论触发 Agent：Runner 接入指南](runner.zh-CN.md)
+- [企业代码平台与工作项平台集成](enterprise-provider-integration.zh-CN.md)
 - [Code Provider Bridge 协议](bridges/code-provider-v1.md)
 - [Git Credential Bridge 协议](bridges/git-credential-v1.md)
 

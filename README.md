@@ -31,6 +31,8 @@ code provider your team already uses.
 
 **[Explore the self-hosted server, architecture, access model, deployment, and operations →](docs/self-hosting/README.md)**
 
+**[Connect private code hosts and work trackers safely →](docs/self-hosting/enterprise-provider-integration.md)**
+
 ### From transparent change specs to handoff-ready agent execution
 
 Proposal, design, TASK, PROCESS, review, and verification evidence already live

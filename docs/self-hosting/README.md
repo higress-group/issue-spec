@@ -164,6 +164,10 @@ Use `--bind-source`, `--provider`, and the external repository coordinates when
 the source lives on a separate code host. Source bindings contain canonical
 repository identity and URLs, never a personal clone credential.
 
+For a provider-neutral integration plan, operator registry example, bridge
+scaffold, code-evidence mapping, and Jira-like work-item projection pattern,
+read [Integrate company code and work platforms](enterprise-provider-integration.md).
+
 ## Automation identities
 
 A service account is an organization-bound non-human identity for CI, runners,
@@ -205,6 +209,7 @@ setup, see [Self-hosted runner: trigger agents from issue comments](runner.md).
 - [Backup, restore, upgrade, and recovery](operations/backup-restore.md)
 - [HA webhook delivery](operations/ha-webhooks.md)
 - [Comment-triggered agents with runner serve](runner.md)
+- [Enterprise code and work-platform integration](enterprise-provider-integration.md)
 - [Code-provider bridge contract](bridges/code-provider-v1.md)
 - [Git credential bridge contract](bridges/git-credential-v1.md)
 

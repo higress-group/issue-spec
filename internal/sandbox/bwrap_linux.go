@@ -117,6 +117,9 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	if strings.TrimSpace(bwrapPath) == "" {
 		return Command{}, nil, fmt.Errorf("%w: bwrap path is required", ErrSandboxConfigInvalid)
 	}
+	if err := validateHostSSHConfig(cfg); err != nil {
+		return Command{}, nil, err
+	}
 	for _, item := range []struct {
 		name  string
 		value string
@@ -160,6 +163,11 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	}
 
 	args = append(args, "--bind", workspacePath, "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg", "--proc", "/proc", "--dev", "/dev")
+	if sshDir := strings.TrimSpace(cfg.HostSSHDir); sshDir != "" {
+		sshDir = filepath.Clean(sshDir)
+		args = append(args, "--ro-bind", sshDir, HostSSHDirSandboxPath)
+		mounts = append(mounts, Mount{Source: sshDir, Destination: HostSSHDirSandboxPath, Mode: "ro"})
+	}
 	if strings.TrimSpace(cfg.TempCodexHome) != "" {
 		mounts = append(mounts, Mount{Source: cfg.TempCodexHome, Destination: "/tmp/issue-spec-codex", Mode: "rw"})
 		args = append(args, "--dir", "/tmp/issue-spec-codex", "--bind", cfg.TempCodexHome, "/tmp/issue-spec-codex")
@@ -180,10 +188,29 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		"/proc":                 true,
 		"/dev":                  true,
 	}
+	if socket := strings.TrimSpace(cfg.HostSSHAgentSocket); socket != "" {
+		socket = filepath.Clean(socket)
+		args, mounts = appendBindParentDirs(args, mounts, HostSSHAgentSandboxPath, seenDirs, nil)
+		args = append(args, "--bind", socket, HostSSHAgentSandboxPath)
+		mounts = append(mounts, Mount{Source: socket, Destination: HostSSHAgentSandboxPath, Mode: "socket"})
+	}
 	if workspacePath != "/workspace" {
 		args, mounts = appendBindParentDirs(args, mounts, workspacePath, seenDirs, systemBinds)
 		args = append(args, "--bind", workspacePath, workspacePath)
 		mounts = append(mounts, Mount{Source: workspacePath, Destination: workspacePath, Mode: "rw"})
+	}
+	// OpenSSH resolves ~/.ssh from the process user's passwd entry rather than
+	// the HOME environment. Keep the fixed temporary-HOME mount for tools that
+	// honor HOME, and additionally expose the exact same directory read-only at
+	// its original absolute path so stock OpenSSH can find config, known_hosts,
+	// and default identity files.
+	if sshDir := strings.TrimSpace(cfg.HostSSHDir); sshDir != "" {
+		sshDir = filepath.Clean(sshDir)
+		coveredRoots := append([]string{}, systemBinds...)
+		coveredRoots = append(coveredRoots, workspacePath)
+		args, mounts = appendBindParentDirs(args, mounts, sshDir, seenDirs, coveredRoots)
+		args = append(args, "--ro-bind", sshDir, sshDir)
+		mounts = append(mounts, Mount{Source: sshDir, Destination: sshDir, Mode: "ro"})
 	}
 	coveredRoots := append([]string{}, systemBinds...)
 	coveredRoots = append(coveredRoots, workspacePath)
@@ -286,9 +313,13 @@ func readOnlyBinds(cfg Config) []string {
 
 func systemReadOnlyBinds(cfg Config) []string {
 	if len(cfg.SystemReadOnlyBinds) > 0 {
-		return cleanBinds(cfg.SystemReadOnlyBinds, false)
+		binds := cleanBinds(cfg.SystemReadOnlyBinds, false)
+		if strings.TrimSpace(cfg.HostSSHDir) != "" {
+			binds = append(binds, cleanBinds([]string{"/etc/passwd"}, true)...)
+		}
+		return sortedUnique(binds)
 	}
-	return cleanBinds([]string{
+	binds := []string{
 		"/usr",
 		"/bin",
 		"/lib",
@@ -299,7 +330,13 @@ func systemReadOnlyBinds(cfg Config) []string {
 		"/etc/resolv.conf",
 		"/etc/hosts",
 		"/etc/nsswitch.conf",
-	}, true)
+	}
+	if strings.TrimSpace(cfg.HostSSHDir) != "" {
+		// Stock OpenSSH resolves the current account with getpwuid before it
+		// reads ~/.ssh. files-NSS needs passwd available inside bubblewrap.
+		binds = append(binds, "/etc/passwd")
+	}
+	return cleanBinds(binds, true)
 }
 
 func cleanBinds(paths []string, existingOnly bool) []string {

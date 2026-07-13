@@ -56,6 +56,7 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	tlsKey := fs.String("tls-key", "", "0600 TLS private key PEM file")
 	production := fs.Bool("production", false, "require TLS and an explicit non-loopback bind")
 	gitCredentialCommand := fs.String("git-credential-command", "", "absolute operator command implementing issue-spec-git-credential-v1")
+	allowHostSSH := fs.Bool("allow-host-ssh", false, "reuse the runner account ~/.ssh inside the sandbox for trusted internal repositories")
 	gitCredentialTimeout := fs.Duration("git-credential-timeout", 30*time.Second, "operator git credential command timeout")
 	gitCredentialMaxOutput := fs.Int64("git-credential-max-output", 1<<20, "maximum operator git credential command output bytes")
 	gitCredentialConcurrency := fs.Int("git-credential-concurrency", 4, "maximum concurrent operator git credential command invocations")
@@ -93,8 +94,20 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		a.errorf("runner serve requires at least one --repo and --runner\n")
 		return 2
 	}
-	if strings.TrimSpace(*gitCredentialCommand) == "" {
+	if *allowHostSSH && strings.TrimSpace(*gitCredentialCommand) != "" {
+		a.errorf("runner serve requires exactly one of --git-credential-command or --allow-host-ssh\n")
+		return 2
+	}
+	if !*allowHostSSH && strings.TrimSpace(*gitCredentialCommand) == "" {
 		a.errorf("runner serve requires --git-credential-command for job-scoped clone credentials\n")
+		return 2
+	}
+	if *allowHostSSH && len(gitCredentialArgs.Values()) > 0 {
+		a.errorf("runner serve --git-credential-arg requires --git-credential-command\n")
+		return 2
+	}
+	if *allowHostSSH && *unsafeNoSandbox {
+		a.errorf("runner serve --allow-host-ssh requires the filesystem sandbox and cannot be combined with --unsafe-no-sandbox\n")
 		return 2
 	}
 	if (*secretFile == "") == (*secretEnv == "") {
@@ -204,6 +217,7 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	runnerConfig.Agent.Kind, runnerConfig.Agent.Model = strings.TrimSpace(*agentKind), strings.TrimSpace(*model)
 	runnerConfig.WorkspaceRetention = commentrunner.NewDuration(*workspaceRetention)
 	runnerConfig.UnsafeNoSandbox, runnerConfig.BwrapPath = *unsafeNoSandbox, strings.TrimSpace(*bwrapPath)
+	runnerConfig.AllowHostSSH = *allowHostSSH
 	runnerConfig.CancellationEnabled = *cancellationEnabled
 	runnerConfig, err = commentrunner.ApplyDefaultRunnerScopePaths(runnerConfig, seen["state"], seen["workspace-root"])
 	if err != nil {
