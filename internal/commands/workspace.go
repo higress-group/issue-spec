@@ -259,6 +259,13 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 	if class.Blocking() {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "execution_class_invalid", errors.New(model.CanonicalDiagnosticStrings(class.Diagnostics)[0]), *flags.jsonOut)
 	}
+	management := model.ParseProcessWorkspaceManagement(processID, target.artifact.URL, target.body)
+	if management.Blocking() {
+		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "workspace_management_invalid", errors.New(model.CanonicalDiagnosticStrings(management.Diagnostics)[0]), *flags.jsonOut)
+	}
+	if management.Explicit && management.Management == model.ProcessWorkspaceIndependent {
+		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "workspace_management_independent", errors.New("independent PROCESS cannot enter the managed workspace lifecycle"), *flags.jsonOut)
+	}
 	mode := modeForExecutionClass(class.Class)
 	remoteWorkspace := model.ParseProcessWorkspace(processID, target.artifact.URL, target.body)
 	if remoteWorkspace.Blocking() {

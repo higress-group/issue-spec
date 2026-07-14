@@ -222,17 +222,18 @@ func writeNestedBullets(b *strings.Builder, items []string) {
 // PROCESS node passes to the next node in its chain; it renders as N/A for
 // parallel or not-yet-started nodes and is enforced for serial chains at verify.
 type ProcessInput struct {
-	Title          string                      `json:"title"`
-	Owner          string                      `json:"owner"`
-	ParentTask     string                      `json:"parent_task"`
-	ExecutionClass model.ProcessExecutionClass `json:"execution_class"`
-	Scope          string                      `json:"scope"`
-	Dependencies   []string                    `json:"dependencies"`
-	WriteOwnership []string                    `json:"write_ownership"`
-	Workspace      *model.ProcessWorkspace     `json:"workspace,omitempty"`
-	Covers         []string                    `json:"covers"`
-	Handoff        string                      `json:"handoff"`
-	StatusNote     string                      `json:"status_note"`
+	Title               string                           `json:"title"`
+	Owner               string                           `json:"owner"`
+	ParentTask          string                           `json:"parent_task"`
+	ExecutionClass      model.ProcessExecutionClass      `json:"execution_class"`
+	WorkspaceManagement model.ProcessWorkspaceManagement `json:"workspace_management"`
+	Scope               string                           `json:"scope"`
+	Dependencies        []string                         `json:"dependencies"`
+	WriteOwnership      []string                         `json:"write_ownership"`
+	Workspace           *model.ProcessWorkspace          `json:"workspace,omitempty"`
+	Covers              []string                         `json:"covers"`
+	Handoff             string                           `json:"handoff"`
+	StatusNote          string                           `json:"status_note"`
 }
 
 type ProcessCommentOptions struct {
@@ -253,11 +254,19 @@ func ProcessComment(opts ProcessCommentOptions) (string, error) {
 	if executionClass, err = model.ParseProcessExecutionClassValue(string(executionClass)); err != nil {
 		return "", err
 	}
+	workspaceManagement := opts.Input.WorkspaceManagement
+	if workspaceManagement == "" {
+		workspaceManagement = model.ProcessWorkspaceManaged
+	}
+	if workspaceManagement, err = model.ParseProcessWorkspaceManagementValue(string(workspaceManagement)); err != nil {
+		return "", err
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Process: %s\n", title)
 	fmt.Fprintf(&b, "\n### Owner\n\n- %s\n", valueOr(strings.TrimSpace(opts.Input.Owner), "Worker Agent"))
 	fmt.Fprintf(&b, "\n### Parent TASK\n\n- %s\n", valueOr(strings.TrimSpace(opts.Input.ParentTask), "TBD"))
 	fmt.Fprintf(&b, "\n### Execution Class\n\n- %s\n", executionClass)
+	fmt.Fprintf(&b, "\n### Workspace Management\n\n- %s\n", workspaceManagement)
 	if opts.Input.Workspace != nil {
 		if string(opts.Input.Workspace.ExecutionClass) != string(executionClass) {
 			return "", fmt.Errorf("workspace execution class %q does not match PROCESS execution class %q", opts.Input.Workspace.ExecutionClass, executionClass)

@@ -162,6 +162,9 @@ func TestTaskAndProcessGeneratorsFillCanonicalDefaults(t *testing.T) {
 	if !strings.Contains(proc, "### Execution Class\n\n- change-bearing") {
 		t.Fatalf("default PROCESS must use conservative change-bearing class:\n%s", proc)
 	}
+	if !strings.Contains(proc, "### Workspace Management\n\n- managed") {
+		t.Fatalf("default PROCESS must use managed workspace handling:\n%s", proc)
+	}
 }
 
 func TestProcessGeneratorRejectsUnknownExecutionClass(t *testing.T) {
@@ -170,6 +173,24 @@ func TestProcessGeneratorRejectsUnknownExecutionClass(t *testing.T) {
 	}})
 	if err == nil || !strings.Contains(err.Error(), "unknown PROCESS execution class") {
 		t.Fatalf("expected unknown class error, got %v", err)
+	}
+}
+
+func TestProcessGeneratorRejectsUnknownWorkspaceManagement(t *testing.T) {
+	_, err := ProcessComment(ProcessCommentOptions{Common: CommonOptions{ID: "PROCESS-003"}, Input: ProcessInput{
+		Title: "p", WorkspaceManagement: model.ProcessWorkspaceManagement("unmanaged"),
+	}})
+	if err == nil || !strings.Contains(err.Error(), "unknown PROCESS workspace management") {
+		t.Fatalf("expected unknown workspace management error, got %v", err)
+	}
+}
+
+func TestProcessGeneratorRendersIndependentWorkspaceManagement(t *testing.T) {
+	body, err := ProcessComment(ProcessCommentOptions{Common: CommonOptions{ID: "PROCESS-003"}, Input: ProcessInput{
+		Title: "p", WorkspaceManagement: model.ProcessWorkspaceIndependent,
+	}})
+	if err != nil || !strings.Contains(body, "### Workspace Management\n\n- independent") {
+		t.Fatalf("independent workspace management body=%q err=%v", body, err)
 	}
 }
 

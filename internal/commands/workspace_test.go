@@ -194,6 +194,22 @@ func TestWorkspacePrepareStrictCASConflictDoesNotReserve(t *testing.T) {
 	}
 }
 
+func TestWorkspacePrepareRejectsIndependentProcess(t *testing.T) {
+	repo, base := workspaceGitRepository(t)
+	body := workspaceProcessBody(t, model.ProcessExecutionChangeBearing)
+	body = strings.Replace(body, "### Workspace Management\n\n- managed", "### Workspace Management\n\n- independent", 1)
+	backend := newWorkspaceCASBackend(body)
+	root := filepath.Join(t.TempDir(), "managed")
+	args := append(workspaceBaseArgs(repo, root, "owner-secret"), "--base", base, "--json")
+	app, out, errOut := transitionAppWithError(backend)
+	if code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, args...)); code != 1 {
+		t.Fatalf("prepare code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	if backend.writes != 0 || !strings.Contains(out.String(), "workspace_management_independent") {
+		t.Fatalf("independent PROCESS was prepared: writes=%d out=%s", backend.writes, out.String())
+	}
+}
+
 func TestWorkspacePrepareRejectsInvalidManagedOwnershipBeforeReservation(t *testing.T) {
 	repo, base := workspaceGitRepository(t)
 	backend := newWorkspaceCASBackend(workspaceProcessBody(t, model.ProcessExecutionChangeBearing))

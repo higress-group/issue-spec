@@ -73,6 +73,10 @@ func EvaluateWorkspaceEvidence(input WorkspaceEvaluationInput) (WorkspaceEvaluat
 		if class.Blocking() {
 			continue
 		}
+		management := model.ParseProcessWorkspaceManagement(process.Comment.ID, process.URL, process.Comment.Body)
+		if management.Blocking() {
+			continue
+		}
 		workspace := model.ParseProcessWorkspace(process.Comment.ID, process.URL, process.Comment.Body)
 		if workspace.Blocking() {
 			blocking := atLeast(input.Target, TargetImplement)
@@ -81,6 +85,9 @@ func EvaluateWorkspaceEvidence(input WorkspaceEvaluationInput) (WorkspaceEvaluat
 			continue
 		}
 		if workspace.Workspace == nil {
+			if management.Explicit && management.Management == model.ProcessWorkspaceIndependent && class.Class == model.ProcessExecutionChangeBearing {
+				continue
+			}
 			blocking := atLeast(input.Target, TargetFinal) && class.Explicit && class.Class == model.ProcessExecutionChangeBearing
 			code, message := CodeProcessWorkspaceMigrationWarning, "PROCESS has no portable Workspace metadata; migrate it before managed execution"
 			if blocking {

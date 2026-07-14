@@ -194,6 +194,11 @@ func ValidateCanonicalBody(commentType, id, url, body string) []CanonicalDiagnos
 				diags = append(diags, diagnostic)
 			}
 		}
+		for _, diagnostic := range ParseProcessWorkspaceManagement(id, url, body).Diagnostics {
+			if diagnostic.Severity == "error" {
+				diags = append(diags, diagnostic)
+			}
+		}
 	}
 	return diags
 }
