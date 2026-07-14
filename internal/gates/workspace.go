@@ -85,7 +85,10 @@ func EvaluateWorkspaceEvidence(input WorkspaceEvaluationInput) (WorkspaceEvaluat
 			continue
 		}
 		if workspace.Workspace == nil {
-			if management.Explicit && management.Management == model.ProcessWorkspaceIndependent && class.Class == model.ProcessExecutionChangeBearing {
+			// Independent means this PROCESS is outside the managed workspace
+			// lifecycle regardless of execution class. Class-specific review,
+			// verification, and traceability evidence is evaluated separately.
+			if management.Explicit && management.Management == model.ProcessWorkspaceIndependent {
 				continue
 			}
 			blocking := atLeast(input.Target, TargetFinal) && class.Explicit && class.Class == model.ProcessExecutionChangeBearing

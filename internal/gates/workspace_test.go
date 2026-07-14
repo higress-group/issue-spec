@@ -139,6 +139,16 @@ func TestWorkspaceEvidenceIndependentChangeBearingDoesNotRequireLease(t *testing
 	}
 }
 
+func TestWorkspaceEvidenceIndependentReviewDoesNotEmitLeaseMigrationWarning(t *testing.T) {
+	independent := workspaceGateProcess(t, model.ProcessExecutionReview, false, "")
+	independent.Comment.Body = strings.Replace(independent.Comment.Body, "### Covers", "### Workspace Management\n\n- independent\n\n### Covers", 1)
+	independent.Comment = model.ParseTypedComment(independent.Comment.Body)
+	report, err := EvaluateWorkspaceEvidence(WorkspaceEvaluationInput{Target: TargetFinal, Mode: ModeAuthoritative, Artifacts: []model.Artifact{independent}})
+	if err != nil || hasBlockingWorkspaceDiagnostic(report.Diagnostics) || workspaceHasCode(report.Diagnostics, CodeProcessWorkspaceMigrationWarning) {
+		t.Fatalf("independent review diagnostics=%+v err=%v", report.Diagnostics, err)
+	}
+}
+
 func TestWorkspaceEvidenceMalformedLocalFieldsAndStaleRevisionBlock(t *testing.T) {
 	malformed := workspaceGateProcess(t, model.ProcessExecutionChangeBearing, false, "")
 	section := "### Workspace\n\n```json\n{\"schema_version\":1,\"worktree_path\":\"/tmp/leak\"}\n```\n\n"
