@@ -279,7 +279,11 @@ type envPaths struct {
 }
 
 func hostEnvPaths(cfg Config) envPaths {
-	return envPaths{home: cfg.TempHome, ghConfigDir: cfg.TempGHConfigDir, xdgConfigHome: cfg.TempXDGConfigHome, codexHome: cfg.TempCodexHome}
+	home := cfg.TempHome
+	if cfg.UnsafeNoSandbox && strings.TrimSpace(cfg.HostSSHDir) != "" {
+		home = filepath.Dir(filepath.Clean(cfg.HostSSHDir))
+	}
+	return envPaths{home: home, ghConfigDir: cfg.TempGHConfigDir, xdgConfigHome: cfg.TempXDGConfigHome, codexHome: cfg.TempCodexHome}
 }
 
 func sandboxEnvPaths() envPaths {
@@ -495,15 +499,12 @@ func validateHostSSHConfig(cfg Config) error {
 	if directory == "" && socket == "" {
 		return nil
 	}
-	if cfg.UnsafeNoSandbox {
-		return fmt.Errorf("%w: host SSH passthrough requires the bubblewrap sandbox", ErrSandboxConfigInvalid)
-	}
 	if directory == "" || !filepath.IsAbs(directory) || filepath.Base(filepath.Clean(directory)) != ".ssh" {
 		return fmt.Errorf("%w: host SSH directory must be an absolute .ssh path", ErrSandboxConfigInvalid)
 	}
 	directory = filepath.Clean(directory)
 	home := filepath.Dir(directory)
-	if home == "/" || directory == HostSSHDirSandboxPath {
+	if home == "/" || (!cfg.UnsafeNoSandbox && directory == HostSSHDirSandboxPath) {
 		return fmt.Errorf("%w: host SSH home path is unsafe for sandbox mounting", ErrSandboxConfigInvalid)
 	}
 	for _, reserved := range []string{cfg.WorkspacePath, cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome} {

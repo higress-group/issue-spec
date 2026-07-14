@@ -197,9 +197,20 @@ func TestPreflightUnsafeDoesNotRequireBwrap(t *testing.T) {
 	}
 }
 
-func TestHostSSHPassthroughIsOptInAndRequiresSandboxAndValidatedPaths(t *testing.T) {
-	if _, err := Preflight(context.Background(), Config{UnsafeNoSandbox: true, HostSSHDir: testAbsPath("home/.ssh")}, Dependencies{}); err == nil {
-		t.Fatal("host SSH passthrough accepted without sandbox")
+func TestHostSSHPassthroughIsOptInAndValidatesPaths(t *testing.T) {
+	root := t.TempDir()
+	sshDir := filepath.Join(root, "home", ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := Prepare(context.Background(), Config{UnsafeNoSandbox: true, HostSSHDir: sshDir,
+		TempHome: filepath.Join(root, "temporary-home"), TempGHConfigDir: filepath.Join(root, "gh"),
+		TempXDGConfigHome: filepath.Join(root, "xdg")}, Command{Binary: "true"}, Dependencies{})
+	if err != nil {
+		t.Fatalf("unsafe host SSH prepare: %v", err)
+	}
+	if want := "HOME=" + filepath.Dir(sshDir); !strings.Contains(strings.Join(prepared.Command.Env, "\n"), want) {
+		t.Fatalf("unsafe host SSH environment = %v, want %q", prepared.Command.Env, want)
 	}
 	if _, err := Preflight(context.Background(), Config{HostSSHDir: "relative/.ssh"}, Dependencies{}); err == nil {
 		t.Fatal("relative host SSH directory accepted")

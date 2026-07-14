@@ -1666,6 +1666,7 @@ func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
 		WorkspacePath:        workspacePath,
 		AcpxWorkingDirectory: workspacePath,
 		AcpxBinary:           "acpx",
+		AcpxAgent:            acpx.AgentCodex,
 		RuntimeHome:          runtimeHome,
 		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
 		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
@@ -1677,6 +1678,9 @@ func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
 	if env.Sandbox.TempPaths["CODEX_HOME"] != runtimeCodex {
 		t.Fatalf("runtime CODEX_HOME = %q, want %q", env.Sandbox.TempPaths["CODEX_HOME"], runtimeCodex)
 	}
+	if env.Sandbox.AgentRuntime != "builtin" {
+		t.Fatalf("agent runtime = %q, want builtin", env.Sandbox.AgentRuntime)
+	}
 	for _, dest := range []string{runtimeCodex, filepath.Join(runtimeHome, ".codex")} {
 		assertFileContentAndMode(t, filepath.Join(dest, "auth.json"), `{"token":"codex"}`, 0o600)
 		assertFileContentAndMode(t, filepath.Join(dest, "config.toml"), "model = \"gpt-5\"\n", 0o640)
@@ -1685,6 +1689,20 @@ func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dest, "settings.json")); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("non-allowlisted Codex file was copied to %s: %v", dest, err)
 		}
+	}
+}
+
+func TestConfiguredAgentRuntimeRecordsAdapterNotConfigPath(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".acpx"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".acpx", "config.json"), []byte(`{"agents":{"codex":{"command":"npx","args":["-y","@agentclientprotocol/codex-acp@1.1.2"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := configuredAgentRuntime([]string{"HOME=" + home}, acpx.AgentCodex)
+	if got != "@agentclientprotocol/codex-acp@1.1.2" || strings.Contains(got, home) {
+		t.Fatalf("configured agent runtime = %q", got)
 	}
 }
 

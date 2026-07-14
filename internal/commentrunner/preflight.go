@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/auth"
@@ -58,6 +59,13 @@ type PreflightDependencies struct {
 	RunCommand              func(context.Context, string, ...string) ([]byte, error)
 }
 
+// PreflightOptions controls opt-in checks that contact an external runtime.
+// They are deliberately separate from the default preflight: operators should
+// be able to inspect configuration without creating an ACP session.
+type PreflightOptions struct {
+	VerifyAgentRuntime bool
+}
+
 type PreflightRunnerBackend interface {
 	BackendInfo() github.BackendInfo
 	GetRepositorySubscription(context.Context, string) (github.RepositorySubscriptionResult, error)
@@ -69,7 +77,7 @@ type PreflightNotificationBackend interface {
 }
 
 func RunPreflight(ctx context.Context, cfg Config, deps PreflightDependencies) PreflightReport {
-	return RunPreflightForTransport(ctx, cfg, PreflightTransportPoll, deps)
+	return RunPreflightForTransportWithOptions(ctx, cfg, PreflightTransportPoll, deps, PreflightOptions{})
 }
 
 // RunPreflightForTransport validates the prerequisites shared by both runner
@@ -78,6 +86,13 @@ func RunPreflight(ctx context.Context, cfg Config, deps PreflightDependencies) P
 // notification identities or repository watches would reject a healthy
 // deployment for a polling prerequisite it neither uses nor exposes.
 func RunPreflightForTransport(ctx context.Context, cfg Config, transport PreflightTransport, deps PreflightDependencies) PreflightReport {
+	return RunPreflightForTransportWithOptions(ctx, cfg, transport, deps, PreflightOptions{})
+}
+
+// RunPreflightForTransportWithOptions validates runner prerequisites and can
+// optionally create a minimal ACP session to verify the selected agent
+// runtime. The runtime probe never grants tools to the agent.
+func RunPreflightForTransportWithOptions(ctx context.Context, cfg Config, transport PreflightTransport, deps PreflightDependencies, options PreflightOptions) PreflightReport {
 	cfg = cfg.Normalized()
 	deps = deps.withDefaults()
 	report := PreflightReport{Config: cfg}
@@ -179,6 +194,9 @@ func RunPreflightForTransport(ctx context.Context, cfg Config, transport Preflig
 
 	report.add(binaryCheck(deps, "acpx", cfg.AcpxPath, acpxInstallHint))
 	addAgentChecks(&report, cfg, deps)
+	if options.VerifyAgentRuntime {
+		report.add(agentRuntimeProbeCheck(ctx, cfg, deps))
+	}
 	report.finish()
 	return report
 }
@@ -455,13 +473,39 @@ func codexACPCheck(deps PreflightDependencies) PreflightCheck {
 	if override, ok, err := acpx.LoadAgentOverride(hostHomeDir(), acpx.AgentCodex); err != nil {
 		return PreflightCheck{Name: "codex-acp", Status: CheckError, Detail: "invalid host acpx Codex agent override: " + err.Error(), Hint: acpxInstallHint}
 	} else if ok {
-		detail = fmt.Sprintf("npx=%s npm=%s agent_override=%s source=%s", npxPath, npmPath, acpx.AgentOverrideDescription(override), override.Source)
+		detail = fmt.Sprintf("npx=%s npm=%s agent_override=%s", npxPath, npmPath, acpx.AgentOverrideDescription(override))
 	}
 	return PreflightCheck{
 		Name:   "codex-acp",
 		Status: CheckOK,
 		Detail: detail,
 	}
+}
+
+func agentRuntimeProbeCheck(ctx context.Context, cfg Config, deps PreflightDependencies) PreflightCheck {
+	if cfg.Agent.Kind != AgentCodex {
+		return PreflightCheck{Name: "agent-runtime-probe", Status: CheckSkipped, Detail: "live runtime probe is currently available for codex only"}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 75*time.Second)
+	defer cancel()
+	args := []string{"--verbose", "--timeout", "60", "--deny-all", "--format", "json"}
+	if model := strings.TrimSpace(cfg.Agent.Model); model != "" {
+		args = append(args, "--model", model)
+	}
+	args = append(args, "codex", "exec", "Reply with exactly OK and do not use tools.")
+	if _, err := deps.RunCommand(probeCtx, cfg.AcpxPath, args...); err != nil {
+		return PreflightCheck{
+			Name:   "agent-runtime-probe",
+			Status: CheckError,
+			Detail: "Codex ACP runtime probe failed",
+			Hint:   "Confirm the ACP adapter and requested --model as the runner service user. Inspect the bounded runner diagnostic logs for the adapter error; do not copy raw runtime output into issue comments.",
+		}
+	}
+	detail := "Codex ACP runtime probe succeeded with tools denied"
+	if model := strings.TrimSpace(cfg.Agent.Model); model != "" {
+		detail += " model=" + model
+	}
+	return PreflightCheck{Name: "agent-runtime-probe", Status: CheckOK, Detail: detail}
 }
 
 func codexAuthCheck() PreflightCheck {

@@ -28,7 +28,54 @@ Make sure that GitHub account watches the repository with issue and PR notificat
 issue-spec runner preflight --repo owner/repo --runner "$(gh api user --jq .login)"
 ```
 
-Codex-backed runner dispatch uses acpx's Codex provider, which spawns `npx -y @agentclientprotocol/codex-acp@^0.0.44` before starting Codex. The runner preflight checks `acpx`, `npm`, and `npx`; hosts without npm registry access should pre-cache the package with `npm cache add @agentclientprotocol/codex-acp@^0.0.44` before starting the runner.
+Codex-backed runner dispatch uses acpx's Codex provider, which starts an ACP
+adapter before starting Codex. The adapter, rather than the `codex` binary on
+`PATH`, determines the Codex runtime and its advertised model IDs. Treat the
+built-in `@agentclientprotocol/codex-acp@^0.0.44` command as a compatibility
+fallback, not as an operator version policy: an npm cache can retain an older
+adapter and its bundled Codex even after the host `codex` CLI has been updated.
+
+Pin a tested adapter for the Runner service user with an ACPX agent override.
+For example, the newer adapter release validated in
+[openclaw/acpx#434](https://github.com/openclaw/acpx/issues/434#issuecomment-4946457075)
+is `1.1.2`:
+
+```json
+{
+  "agents": {
+    "codex": {
+      "command": "npx",
+      "args": ["-y", "@agentclientprotocol/codex-acp@1.1.2"]
+    }
+  }
+}
+```
+
+Save this as `~/.acpx/config.json` for the Runner service user and keep the
+version under operator configuration management. The runner copies only the
+selected Codex override into each job's isolated ACPX home, so this pin applies
+inside bubblewrap without copying unrelated ACPX configuration. Hosts without
+npm registry access should pre-cache the exact pinned package, for example
+`npm cache add @agentclientprotocol/codex-acp@1.1.2`.
+
+Validate the adapter as that service user before starting the Runner:
+
+```bash
+acpx config show
+acpx --verbose --timeout 60 --deny-all --format json \
+  codex exec 'Reply with exactly OK and do not use tools.'
+```
+
+`runner preflight --verify-agent-runtime` runs the same tools-denied ACP
+session after the ordinary configuration checks. Use it for a deployment
+candidate; the default preflight remains offline with respect to the model
+runtime.
+
+If `--model` is configured for the runner, it is passed to ACPX and takes
+precedence over the model in the copied Codex configuration. Use the exact
+model ID advertised by the adapter (including any reasoning-effort suffix),
+and run the same smoke test with that `--model` value. Do not infer model
+support from `codex --version` alone.
 
 For faster detection of comments written by the main runner account, use a dedicated notification-only GitHub account. GitHub notifications are user-specific and may not produce a new notification for comments authored by the same account that polls notifications. Without a notification-only account, self-authored command comments are still discovered by the lower-frequency repository comments fallback; this conservative default avoids aggressive all-comment polling and reduces the chance of hitting GitHub API limits.
 

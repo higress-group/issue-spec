@@ -27,7 +27,46 @@ issue-spec runner poll \
 issue-spec runner preflight --repo owner/repo --runner "$(gh api user --jq .login)"
 ```
 
-Codex 支撑的 runner 分发使用 acpx 的 Codex provider，它会在启动 Codex 之前先拉起 `npx -y @agentclientprotocol/codex-acp@^0.0.44`。runner preflight 会检查 `acpx`、`npm` 和 `npx`；无法访问 npm registry 的主机应在启动 runner 前用 `npm cache add @agentclientprotocol/codex-acp@^0.0.44` 预先缓存该包。
+Codex 支撑的 runner 分发通过 acpx 的 Codex provider 先启动 ACP adapter，再启动
+Codex。实际决定 Codex runtime 及其所广告模型 ID 的是 adapter，而不是 `PATH` 中的
+`codex` 二进制。内置的 `@agentclientprotocol/codex-acp@^0.0.44` 应视为兼容性
+fallback，而不是运维侧的版本策略：即使主机上的 `codex` CLI 已更新，npm cache 仍可能
+保留旧 adapter 及其携带的 Codex。
+
+应为 Runner 的服务用户通过 ACPX agent override 固定已验证的 adapter。例如
+[openclaw/acpx#434](https://github.com/openclaw/acpx/issues/434#issuecomment-4946457075)
+已验证的较新 adapter 版本是 `1.1.2`：
+
+```json
+{
+  "agents": {
+    "codex": {
+      "command": "npx",
+      "args": ["-y", "@agentclientprotocol/codex-acp@1.1.2"]
+    }
+  }
+}
+```
+
+将该内容保存为 Runner 服务用户的 `~/.acpx/config.json`，并将版本纳入运维配置管理。
+runner 只会把选中的 Codex override 复制到每个任务隔离的 ACPX home，因此该固定版本会在
+bubblewrap 内生效，而不会携带其他无关的 ACPX 配置。无法访问 npm registry 的主机应预先
+缓存精确的固定版本，例如 `npm cache add @agentclientprotocol/codex-acp@1.1.2`。
+
+在启动 Runner 前，以该服务用户验证 adapter：
+
+```bash
+acpx config show
+acpx --verbose --timeout 60 --deny-all --format json \
+  codex exec 'Reply with exactly OK and do not use tools.'
+```
+
+`runner preflight --verify-agent-runtime` 会在普通配置检查完成后执行同一个
+「禁止工具」的 ACP session，可作为部署候选版本的验证；默认 preflight 不会连接模型 runtime。
+
+若为 runner 配置了 `--model`，该值会传给 ACPX，并优先于复制进来的 Codex 配置中的模型。
+必须使用 adapter 实际广告的精确模型 ID（包括可能的 reasoning-effort 后缀），并用同一个
+`--model` 值执行上述 smoke test。不能只根据 `codex --version` 推断模型是否可用。
 
 为了更快地检测由主 runner 账号所写的评论，建议使用一个专用的「仅通知」GitHub 账号。GitHub 通知是按用户区分的，对于由「同一个正在轮询通知的账号」所写的评论，可能不会产生新的通知。若没有专用通知账号，自己所写的命令评论仍会被较低频率的仓库评论回退机制发现；这种保守的默认策略避免了激进的全量评论轮询，也降低了触达 GitHub API 限制的概率。
 

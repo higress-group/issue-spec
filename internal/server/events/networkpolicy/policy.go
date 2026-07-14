@@ -27,7 +27,12 @@ type Dialer interface {
 }
 
 type Policy struct {
-	Production     bool
+	Production bool
+	// AllowHTTP permits HTTP webhook receivers in an explicitly trusted internal
+	// deployment. It does not relax address validation: private destinations
+	// still require an AllowedPrivate CIDR and loopback, link-local, multicast,
+	// and metadata addresses remain denied.
+	AllowHTTP      bool
 	AllowedPrivate []netip.Prefix
 }
 
@@ -58,7 +63,10 @@ func (p Policy) ValidateURL(raw string) (*url.URL, error) {
 		parsed.RawQuery != "" || parsed.ForceQuery || parsed.Opaque != "" {
 		return nil, ErrInvalidDestination
 	}
-	if parsed.Scheme != "https" && (p.Production || parsed.Scheme != "http") {
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return nil, ErrInvalidDestination
+	}
+	if parsed.Scheme == "http" && p.Production && !p.AllowHTTP {
 		return nil, ErrInvalidDestination
 	}
 	if parsed.Port() != "" {

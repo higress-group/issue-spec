@@ -33,9 +33,11 @@ callback URLs are always constructed from `API_PUBLIC_URL`, never request
 headers.
 
 Use `WEBHOOK_ALLOWED_PRIVATE_CIDRS` only for explicit operator-owned internal
-destinations. Loopback, link-local and cloud metadata addresses remain denied.
-The same DNS resolver and policy are used for subscription preflight and the
-actual delivery connection.
+destinations. When `TRANSPORT_POSTURE=trusted-internal-http`, HTTP webhook
+receivers are also permitted; TLS remains required for every other production
+posture. Loopback, link-local and cloud metadata addresses remain denied. The
+same DNS resolver and policy are used for subscription preflight and the actual
+delivery connection.
 
 The container runs as uid 65532, needs only a writable `/tmp`, and supports a
 read-only root filesystem. Drop all Linux capabilities and set

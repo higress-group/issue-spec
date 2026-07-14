@@ -106,10 +106,6 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		a.errorf("runner serve --git-credential-arg requires --git-credential-command\n")
 		return 2
 	}
-	if *allowHostSSH && *unsafeNoSandbox {
-		a.errorf("runner serve --allow-host-ssh requires the filesystem sandbox and cannot be combined with --unsafe-no-sandbox\n")
-		return 2
-	}
 	if (*secretFile == "") == (*secretEnv == "") {
 		a.errorf("runner serve requires exactly one of --secret-file or --secret-env\n")
 		return 2

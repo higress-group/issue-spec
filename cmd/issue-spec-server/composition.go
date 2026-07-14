@@ -176,6 +176,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	}
 
 	policy := networkpolicy.Policy{Production: cfg.Environment == config.EnvironmentProduction,
+		AllowHTTP:      cfg.TransportPosture == config.TransportTrustedInternalHTTP,
 		AllowedPrivate: append([]netip.Prefix(nil), cfg.WebhookAllowedPrivate...)}
 	resolver := net.DefaultResolver
 	deliveryClient, err := networkpolicy.NewClient(networkpolicy.Config{Policy: policy, Resolver: resolver})
@@ -192,6 +193,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	}
 	subscriptionService, err := subscriptions.New(database, authorization, keyring, subscriptions.Config{
 		Production:           cfg.Environment == config.EnvironmentProduction,
+		AllowHTTP:            cfg.TransportPosture == config.TransportTrustedInternalHTTP,
 		DestinationPreflight: networkpolicy.Preflight{Policy: policy, Resolver: resolver},
 	})
 	if err != nil {

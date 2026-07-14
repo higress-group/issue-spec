@@ -144,6 +144,51 @@ func TestPreflightReportsSelectedCodexAdapterWithoutOtherAcpxConfig(t *testing.T
 	}
 }
 
+func TestPreflightRuntimeProbeUsesConfiguredModelWithToolsDenied(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	cfg.Agent.Model = "gpt-5.5[medium]"
+	deps := passingPreflightDependencies(t)
+	deps.RunCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name != "acpx" {
+			t.Fatalf("runtime probe binary = %q, want acpx", name)
+		}
+		want := []string{"--verbose", "--timeout", "60", "--deny-all", "--format", "json", "--model", "gpt-5.5[medium]", "codex", "exec", "Reply with exactly OK and do not use tools."}
+		if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+			t.Fatalf("runtime probe args = %#v, want %#v", args, want)
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("runtime probe should have a deadline")
+		}
+		return []byte(`{"ok":true}`), nil
+	}
+	report := RunPreflightForTransportWithOptions(context.Background(), cfg, PreflightTransportPoll, deps, PreflightOptions{VerifyAgentRuntime: true})
+	if !report.OK {
+		t.Fatalf("preflight unexpectedly failed: %+v", report)
+	}
+	check := findCheck(t, report, "agent-runtime-probe")
+	if check.Status != CheckOK || !strings.Contains(check.Detail, "model=gpt-5.5[medium]") {
+		t.Fatalf("unexpected runtime probe check: %+v", check)
+	}
+}
+
+func TestPreflightRuntimeProbeDoesNotExposeAdapterOutput(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	deps := passingPreflightDependencies(t)
+	deps.RunCommand = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("token=must-not-leak"), errors.New("adapter failed")
+	}
+	report := RunPreflightForTransportWithOptions(context.Background(), cfg, PreflightTransportPoll, deps, PreflightOptions{VerifyAgentRuntime: true})
+	if report.OK {
+		t.Fatalf("preflight unexpectedly passed: %+v", report)
+	}
+	check := findCheck(t, report, "agent-runtime-probe")
+	if check.Status != CheckError || strings.Contains(check.Detail, "must-not-leak") || strings.Contains(check.Hint, "must-not-leak") {
+		t.Fatalf("runtime probe leaked output: %+v", check)
+	}
+}
+
 func TestPreflightFailsWhenRepositoryWatchCannotBeConfirmed(t *testing.T) {
 	cfg := testPreflightConfig(t)
 	cfg.UnsafeNoSandbox = true

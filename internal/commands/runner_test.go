@@ -106,6 +106,8 @@ func TestRunnerPreflightHelpShowsSharedOptionsOnly(t *testing.T) {
 		"maximum concurrent runner jobs (default: 3)",
 		"--workspace-retention duration",
 		"(default: 168h0m0s)",
+		"--verify-agent-runtime",
+		"create a tools-denied Codex ACP session",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("runner preflight help missing %q:\n%s", want, text)

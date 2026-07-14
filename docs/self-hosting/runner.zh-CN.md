@@ -50,6 +50,42 @@ bwrap --version
 不要把 `--unsafe-no-sandbox` 作为常规配置。只有明确接受 Agent 能访问 Runner
 宿主文件系统的风险时，才使用该选项。
 
+### 固定并验证 Codex ACP adapter
+
+ACPX 内置的 Codex provider 不会直接执行主机上的 `codex` 二进制，而是启动
+`@agentclientprotocol/codex-acp`；后者提供独立的 Codex runtime 与模型目录。因此，更新
+主机 `codex` 并不会更新 Runner 任务使用的 adapter，npm cache 也可能保留旧 adapter 包。
+
+在 Runner 服务用户的 `~/.acpx/config.json` 中固定已经验证过的 adapter：
+
+```json
+{
+  "agents": {
+    "codex": {
+      "command": "npx",
+      "args": ["-y", "@agentclientprotocol/codex-acp@1.1.2"]
+    }
+  }
+}
+```
+
+`1.1.2` 是 [openclaw/acpx#434](https://github.com/openclaw/acpx/issues/434#issuecomment-4946457075)
+独立验证过的示例；请固定运维侧已验证的版本。runner 会选择性地把该 `agents.codex`
+命令复制到任务隔离的 home，因此 bubblewrap 内也会使用同一个 adapter。主机若不能在运行时
+访问 npm，请预先执行 `npm cache add @agentclientprotocol/codex-acp@1.1.2` 缓存精确版本。
+
+在启动 `runner serve` 前，以服务用户执行 smoke test：
+
+```bash
+acpx config show
+acpx --verbose --timeout 60 --deny-all --format json \
+  codex exec 'Reply with exactly OK and do not use tools.'
+```
+
+Runner 的 `--model` 是对 ACPX 的显式请求，会覆盖复制进来的 Codex 配置中的模型。它必须
+精确匹配该 adapter 广告的模型 ID，包括可能的 reasoning-effort 后缀。部署前应用计划使用的
+`--model` 再执行一次测试；仅 `codex --version` 成功不足以证明可用。
+
 ## 2. 为仓库配置 Source Binding
 
 Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone URL 和默认分支。
@@ -179,7 +215,16 @@ issue-spec --profile team runner serve \
 
 启动前先用运行 Runner 的同一个系统用户验证 SSH 可非交互访问目标仓库，并把代码平台
 Host Key 固定写入其 `~/.ssh/known_hosts`。`--allow-host-ssh` 与
-`--git-credential-command` 二选一，且不能和 `--unsafe-no-sandbox` 一起使用。
+`--git-credential-command` 二选一。
+
+### macOS 本地开发例外
+
+Bubblewrap 只支持 Linux。在受信开发机的 macOS 上，可以显式组合
+`--unsafe-no-sandbox --allow-host-ssh`，使 Runner 直接复用当前系统用户的 SSH
+Home，以便私有 SSH Source Binding 完成 clone 和 push。该组合仅用于短期本地验证：
+它关闭文件系统隔离，并把该用户的 SSH 权限暴露给 Agent。必须使用权限最小化的专用
+SSH 身份，不能用于共享或生产 Runner。Linux 生产环境仍应使用前述只读 SSH 挂载，或
+任务级短期凭据 Command。
 
 这是面向可信内网的兼容模式，不具备任务级凭据的过期和撤销能力。Agent 会继承该
 Runner 系统用户 SSH Key 或 Agent 能访问的全部仓库权限，因此应使用专用系统账号和
@@ -187,6 +232,9 @@ Runner 系统用户 SSH Key 或 Agent 能访问的全部仓库权限，因此应
 个人日常账号的整个 SSH 身份。
 
 ## 6. Preflight 与前台启动
+
+部署候选版本应在本段命令中加上 `--verify-agent-runtime`。它会以服务用户创建一次禁止工具的
+ACP session，验证实际 adapter 与显式设置的 `--model`；它不替代独立的 bubblewrap preflight。
 
 先用 self-hosted Profile 检查仓库权限、Agent、acpx 和沙箱：
 
@@ -252,6 +300,7 @@ Type=simple
 User=issue-spec-runner
 Group=issue-spec-runner
 Environment=HOME=/var/lib/issue-spec-runner
+EnvironmentFile=/etc/issue-spec-runner/proxy.env
 ExecStart=/usr/local/bin/issue-spec --profile team runner serve \
   --repo acme/workflow \
   --runner svc-runner-bot-a1b2c3d4 \
@@ -282,6 +331,19 @@ sudo systemctl status issue-spec-runner
 sudo journalctl -u issue-spec-runner -f
 ```
 
+如果 Runner 访问模型服务或软件源需要出站 HTTP Proxy，将其放入上面引用的、由 root 管理且
+权限为 `0600` 的环境文件：
+
+```ini
+HTTP_PROXY=http://proxy.example.test:8080
+HTTPS_PROXY=http://proxy.example.test:8080
+NO_PROXY=127.0.0.1,localhost,issues.example.test,code.example.test
+```
+
+沙箱会继承 Runner 进程中的大小写标准 Proxy 环境变量。能直连的 Receiver、Issue Server 与
+代码平台应放进 `NO_PROXY`；不要把 Proxy 凭据写进 systemd Unit 或公开的排障评论。修改环境
+文件后重启服务，并以同一用户执行 `runner preflight --verify-agent-runtime`。
+
 ## 8. 通过评论触发 Agent
 
 命令必须从评论第一行开头开始：
@@ -304,14 +366,19 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 
 ## 9. 验证与排障
 
-首次联调建议执行一个只读任务，并依次确认：
+在启用团队工作流前，先在非生产仓库按以下阶梯验收：
 
-1. Webhook Delivery 从 Pending 变为 Succeeded；
-2. Runner 日志显示事件已入队并通过作者授权；
-3. 任务 Workspace 已创建，Git 凭据 Lease 能获取并撤销；使用宿主 SSH 时确认实际
-   Remote 为预期的 `git@host:path.git`；
-4. Issue 出现 Runner 状态评论；
-5. Agent 能写类型化评论，并按任务要求提交代码或创建 PR/MR。
+1. 以服务用户运行 `runner preflight --verify-agent-runtime`，保留有界的结果以及选中的
+   `agent_runtime` metadata；
+2. 发表评论 `/new` 执行只读任务，确认签名 Webhook 投递、作者授权、Workspace 创建和
+   Runner 状态评论；
+3. 用配置的任务凭据完成 clone 和无修改的 Git 读取；适用时确认凭据已撤销。宿主 SSH 模式
+   则确认实际 Remote 正确；
+4. 下达一个只修改文档的最小任务，确认它能提交并推送隔离分支；
+5. 当 code-provider bridge 广告 `change.create` 时，确认 Agent 通过该 provider 创建 PR/MR，
+   并把变更 URL 回写到 Issue。未提供该能力时，把推送证据作为终点，在沙箱外创建变更；不要
+   为此向 bubblewrap 挂载任意宿主 CLI；
+6. 让另一位被授权维护者执行 `/resume`，然后撤销测试凭据并删除测试 Workspace。
 
 | 现象 | 优先检查 |
 | --- | --- |
@@ -321,7 +388,7 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 | `runner:delegate` 失败 | PAT 是否只限制到该仓库、Scope 是否完整、`--runner` 是否为 PAT 所属账号的 Login |
 | 找不到源码或 Clone 失败 | Source Binding 是否 Active；短期凭据模式检查 HTTPS URL 与 Command 回显，宿主 SSH 模式检查 Runner 用户的 Key、Agent、`known_hosts` 和仓库权限 |
 | Preflight 报沙箱失败 | Linux 上安装 `bubblewrap` 或显式配置 `--bwrap` |
-| Codex 无法启动 | `acpx`、`npm`、`npx` 和模型凭据是否对 systemd 用户可用 |
+| Codex 无法启动 | 运行 `runner preflight --verify-agent-runtime`，确认 adapter 固定版本、精确模型 ID 和 Proxy 环境对 systemd 用户可用 |
 
 轮换 Webhook Secret 时，先在 Web UI 轮换，再把旧 Secret 作为
 `--previous-secret-file` 提供，并用 `--previous-secrets-valid-until` 设置最长 24 小时的

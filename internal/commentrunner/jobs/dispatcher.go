@@ -1641,7 +1641,7 @@ func (p SandboxRunner) Prepare(ctx context.Context, req SandboxRequest) (Executi
 	env := ExecutionEnvironment{
 		WorkingDirectory: firstNonEmpty(req.AcpxWorkingDirectory, req.WorkspacePath),
 		AcpxBinary:       acpxBinary,
-		Sandbox:          sandboxMetadata(metadata, err),
+		Sandbox:          sandboxMetadata(metadata, err, configuredAgentRuntime(p.Config.HostEnv, req.AcpxAgent)),
 		Runner:           sandboxedRunner{cfg: cfg, deps: p.Deps, acpxBinary: firstNonEmpty(req.AcpxBinary, "acpx"), resolvedAcpxBinary: resolvedAcpxBinary},
 	}
 	return env, err
@@ -1770,6 +1770,20 @@ func materializeHostAcpxAgentOverride(cfg *sandbox.Config, agent string) error {
 		return fmt.Errorf("materialize host acpx %s agent override: %w", agent, err)
 	}
 	return nil
+}
+
+// configuredAgentRuntime records only the selected adapter identity. It never
+// records the host config location, command arguments, or credentials.
+func configuredAgentRuntime(hostEnv []string, agent string) string {
+	agent = strings.TrimSpace(agent)
+	if agent == "" {
+		return ""
+	}
+	override, ok, err := acpx.LoadAgentOverride(hostHomeDir(hostEnv), agent)
+	if err != nil || !ok {
+		return "builtin"
+	}
+	return acpx.AgentOverrideDescription(override)
 }
 
 func materializeChildProfile(xdgConfigHome string, profile clientauth.Profile) error {
@@ -2703,7 +2717,7 @@ func acpxMetadata(meta acpx.Metadata, at time.Time) state.AcpxMetadata {
 	}
 }
 
-func sandboxMetadata(meta sandbox.Metadata, err error) state.SandboxMetadata {
+func sandboxMetadata(meta sandbox.Metadata, err error, agentRuntime string) state.SandboxMetadata {
 	diagnostics := append([]string{}, meta.Diagnostics...)
 	if err != nil {
 		diagnostics = append(diagnostics, safeError(err))
@@ -2718,6 +2732,7 @@ func sandboxMetadata(meta sandbox.Metadata, err error) state.SandboxMetadata {
 		EnvDecisions:     envDecisions(meta.Env),
 		TempPaths:        tempPaths(meta.Env),
 		MountPlanSummary: mountSummary(meta.Mounts),
+		AgentRuntime:     agentRuntime,
 		Diagnostics:      strings.Join(diagnostics, "; "),
 		CheckedAt:        time.Now().UTC(),
 	}
