@@ -60,18 +60,53 @@ func TestPolicyAllowsHTTPForTrustedInternalProduction(t *testing.T) {
 	}
 }
 
+func TestTrustedInternalHTTPRequiresExplicitPrivateDestination(t *testing.T) {
+	resolver := staticResolver{addresses: map[string][]net.IPAddr{
+		"runner.intra.example": {{IP: net.ParseIP("10.20.1.2")}},
+		"public.example":       {{IP: net.ParseIP("93.184.216.34")}},
+	}}
+	policy := Policy{Production: true, AllowHTTP: true, AllowedPrivate: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")}}
+	preflight := Preflight{Policy: policy, Resolver: resolver}
+	if err := preflight.Validate(t.Context(), "http://runner.intra.example/hook"); err != nil {
+		t.Fatalf("allowlisted internal HTTP destination rejected: %v", err)
+	}
+	if err := preflight.Validate(t.Context(), "http://public.example/hook"); !errors.Is(err, ErrAddressDenied) {
+		t.Fatalf("public HTTP destination error = %v, want ErrAddressDenied", err)
+	}
+	if err := preflight.Validate(t.Context(), "https://public.example/hook"); err != nil {
+		t.Fatalf("public HTTPS destination rejected: %v", err)
+	}
+}
+
 func TestResolutionAndConnectTimeAddressChecksPreventRebinding(t *testing.T) {
 	resolver := staticResolver{addresses: map[string][]net.IPAddr{
 		"mixed.example":  {{IP: net.ParseIP("93.184.216.34")}, {IP: net.ParseIP("10.0.0.2")}},
 		"public.example": {{IP: net.ParseIP("93.184.216.34")}},
 	}}
 	policy := Policy{Production: true}
-	if _, err := resolveAllowed(t.Context(), resolver, policy, "mixed.example"); !errors.Is(err, ErrAddressDenied) {
+	if _, err := resolveAllowed(t.Context(), resolver, policy, "https", "mixed.example"); !errors.Is(err, ErrAddressDenied) {
 		t.Fatalf("mixed DNS answer error = %v", err)
 	}
-	dial := secureDialContext(resolver, fakeDialer{remote: netip.MustParseAddr("10.0.0.9")}, policy)
+	dial := secureDialContext(resolver, fakeDialer{remote: netip.MustParseAddr("10.0.0.9")}, policy, "https")
 	if _, err := dial(t.Context(), "tcp", "public.example:443"); !errors.Is(err, ErrAddressDenied) {
 		t.Fatalf("connect-time rebinding error = %v", err)
+	}
+}
+
+func TestClientRejectsPublicHTTPInTrustedInternalProduction(t *testing.T) {
+	public := netip.MustParseAddr("93.184.216.34")
+	client, err := NewClient(Config{
+		Policy:   Policy{Production: true, AllowHTTP: true},
+		Resolver: staticResolver{addresses: map[string][]net.IPAddr{"public.example": {{IP: net.IP(public.AsSlice())}}}},
+		Dialer:   fakeDialer{remote: public},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Send(t.Context(), Request{URL: "http://public.example/hook", Secret: []byte("secret"),
+		EventID: "event", DeliveryID: "delivery", Timestamp: time.Now(), Body: []byte(`{}`)})
+	if !errors.Is(err, ErrAddressDenied) && (err == nil || !strings.Contains(err.Error(), ErrAddressDenied.Error())) {
+		t.Fatalf("public HTTP delivery error = %v, want ErrAddressDenied", err)
 	}
 }
 

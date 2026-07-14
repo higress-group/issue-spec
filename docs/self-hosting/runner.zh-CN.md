@@ -240,8 +240,9 @@ Runner 系统用户 SSH Key 或 Agent 能访问的全部仓库权限，因此应
 
 ## 6. Preflight 与前台启动
 
-部署候选版本应在本段命令中加上 `--verify-agent-runtime`。它会以服务用户创建一次禁止工具的
-ACP session，验证实际 adapter 与显式设置的 `--model`；它不替代独立的 bubblewrap preflight。
+部署候选版本应在本段命令中加上 `--verify-agent-runtime`。它会创建临时空工作区，并通过
+Runner 实际配置的沙箱、隔离运行目录、adapter override、Proxy 环境和显式 `--model`，执行
+一次禁止工具的 ACP session。
 
 ### 把运行方维护的代码平台技能提供给 Agent
 
@@ -249,9 +250,10 @@ ACP session，验证实际 adapter 与显式设置的 `--model`；它不替代�
 评审并提交。Runner clone 默认分支时会自然获得同一份 workflow，不要再通过 Runner 配置
 重复注入仓库 workflow。
 
-`--operator-skill-dir` 只用于运行方维护、受信任的本地代码平台 Skill。它可以说明已批准的
-分支、推送和 PR/MR 创建步骤，同时避免把 Provider 专属命令、主机名或凭据写进目标仓库和
-公开文档。Runner 只会把这个显式本地输入复制到会话隔离的 `CODEX_HOME`。
+仅在使用 `--agent codex` 时，才可通过 `--operator-skill-dir` 提供运行方维护、受信任的本地
+代码平台 Skill。它可以说明已批准的分支、推送和 PR/MR 创建步骤，同时避免把 Provider 专属
+命令、主机名或凭据写进目标仓库和公开文档。Runner 只会把这个显式本地输入复制到会话隔离的
+`CODEX_HOME`；其他 Agent 会拒绝该参数。
 
 ```bash
 cd /srv/issue-spec-workflows/acme-workflow
@@ -265,6 +267,7 @@ issue-spec --profile team runner serve \
 
 每个参数既可指向包含 `SKILL.md` 的一个技能目录，也可指向其第一层子目录均为技能的目录。
 符号链接和重名 Skill 会被拒绝，Runner 会为每次会话重新复制这些技能。
+仓库自带的 `.acpxrc.json` 也会被拒绝，防止它从仓库工作目录覆盖运行方选定的 ACPX adapter。
 
 先用 self-hosted Profile 检查仓库权限、Agent、acpx 和沙箱：
 
@@ -273,6 +276,7 @@ issue-spec --profile team runner preflight \
   --repo acme/workflow \
   --runner svc-runner-bot-a1b2c3d4 \
   --agent codex \
+  --verify-agent-runtime \
   --json
 ```
 
@@ -331,7 +335,7 @@ Type=simple
 User=issue-spec-runner
 Group=issue-spec-runner
 Environment=HOME=/var/lib/issue-spec-runner
-EnvironmentFile=/etc/issue-spec-runner/proxy.env
+EnvironmentFile=-/etc/issue-spec-runner/proxy.env
 ExecStart=/usr/local/bin/issue-spec --profile team runner serve \
   --repo acme/workflow \
   --runner svc-runner-bot-a1b2c3d4 \

@@ -34,10 +34,11 @@ headers.
 
 Use `WEBHOOK_ALLOWED_PRIVATE_CIDRS` only for explicit operator-owned internal
 destinations. When `TRANSPORT_POSTURE=trusted-internal-http`, HTTP webhook
-receivers are also permitted; TLS remains required for every other production
-posture. Loopback, link-local and cloud metadata addresses remain denied. The
-same DNS resolver and policy are used for subscription preflight and the actual
-delivery connection.
+receivers are permitted only when every resolved address is private and covered
+by an explicit allowed CIDR; public destinations continue to require HTTPS. TLS
+remains required for every other production posture. Loopback, link-local and
+cloud metadata addresses remain denied. The same DNS resolver and policy are
+used for subscription preflight and the actual delivery connection.
 
 The container runs as uid 65532, needs only a writable `/tmp`, and supports a
 read-only root filesystem. Drop all Linux capabilities and set

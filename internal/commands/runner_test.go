@@ -147,6 +147,36 @@ func TestIssueSpecBinaryForRunnerFallsBackToCommandName(t *testing.T) {
 	}
 }
 
+func TestRunSandboxedAgentRuntimeCommandUsesIsolatedRuntimePaths(t *testing.T) {
+	hostHome := t.TempDir()
+	t.Setenv("HOME", hostHome)
+	t.Setenv("CODEX_HOME", filepath.Join(hostHome, "missing-codex"))
+	ghConfig := filepath.Join(hostHome, "gh")
+	if err := os.MkdirAll(ghConfig, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ghConfig, "hosts.yml"), []byte("github.com:\n  oauth_token: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probe := filepath.Join(t.TempDir(), "probe.sh")
+	if err := os.WriteFile(probe, []byte("#!/bin/sh\nprintf '%s|%s|%s' \"$HOME\" \"$CODEX_HOME\" \"$PWD\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := commentrunner.Config{UnsafeNoSandbox: true, GHConfigDir: ghConfig, Agent: commentrunner.DefaultAgentConfig()}
+	output, err := runSandboxedAgentRuntimeCommand(t.Context(), cfg, probe, "--ignored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(string(output), "|")
+	if len(parts) != 3 {
+		t.Fatalf("probe output = %q", output)
+	}
+	if parts[0] == hostHome || !strings.Contains(parts[0], "issue-spec-runner-preflight-") ||
+		!strings.Contains(parts[1], "issue-spec-runner-preflight-") || !strings.HasSuffix(parts[2], string(filepath.Separator)+"workspace") {
+		t.Fatalf("probe runtime paths = %#v, host home = %q", parts, hostHome)
+	}
+}
+
 func TestRunnerPollDryRunJSONUsesTrustedConfigAndPreflight(t *testing.T) {
 	clearCommandAuthEnv(t)
 	var out, errOut bytes.Buffer

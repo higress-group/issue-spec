@@ -50,7 +50,7 @@ func (p Preflight) Validate(ctx context.Context, raw string) error {
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
-	_, err = resolveAllowed(ctx, resolver, p.Policy, parsed.Hostname())
+	_, err = resolveAllowed(ctx, resolver, p.Policy, parsed.Scheme, parsed.Hostname())
 	return err
 }
 
@@ -99,6 +99,25 @@ func (p Policy) CheckAddress(address netip.Addr) error {
 	return nil
 }
 
+func (p Policy) checkAddressForScheme(scheme string, address netip.Addr) error {
+	address = address.Unmap()
+	if err := p.CheckAddress(address); err != nil {
+		return err
+	}
+	if scheme == "http" && p.Production {
+		if !address.IsPrivate() {
+			return ErrAddressDenied
+		}
+		for _, allowed := range p.AllowedPrivate {
+			if allowed.Contains(address) {
+				return nil
+			}
+		}
+		return ErrAddressDenied
+	}
+	return nil
+}
+
 func isMetadata(address netip.Addr) bool {
 	_, denied := metadataAddresses[address]
 	return denied
@@ -110,9 +129,9 @@ var metadataAddresses = map[netip.Addr]struct{}{
 	netip.MustParseAddr("fd00:ec2::254"):   {},
 }
 
-func resolveAllowed(ctx context.Context, resolver Resolver, policy Policy, host string) ([]netip.Addr, error) {
+func resolveAllowed(ctx context.Context, resolver Resolver, policy Policy, scheme, host string) ([]netip.Addr, error) {
 	if literal, err := netip.ParseAddr(host); err == nil {
-		if err := policy.CheckAddress(literal); err != nil {
+		if err := policy.checkAddressForScheme(scheme, literal); err != nil {
 			return nil, err
 		}
 		return []netip.Addr{literal.Unmap()}, nil
@@ -131,7 +150,7 @@ func resolveAllowed(ctx context.Context, resolver Resolver, policy Policy, host 
 			return nil, ErrAddressDenied
 		}
 		address = address.Unmap()
-		if err := policy.CheckAddress(address); err != nil {
+		if err := policy.checkAddressForScheme(scheme, address); err != nil {
 			return nil, err
 		}
 		result = append(result, address)

@@ -252,6 +252,9 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid --agent %q; valid values: codex, claude", c.Agent.Kind)
 	}
+	if len(c.OperatorSkillDirs) > 0 && c.Agent.Kind != AgentCodex {
+		return fmt.Errorf("--operator-skill-dir is supported only with --agent codex")
+	}
 	return nil
 }
 

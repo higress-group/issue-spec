@@ -58,6 +58,10 @@ inside bubblewrap without copying unrelated ACPX configuration. Hosts without
 npm registry access should pre-cache the exact pinned package, for example
 `npm cache add @agentclientprotocol/codex-acp@1.1.2`.
 
+Runner workspaces reject repository-owned `.acpxrc.json` files because ACPX
+gives project configuration priority over the operator-owned global override.
+Keep adapter commands and pins in the Runner service account configuration.
+
 Validate the adapter as that service user before starting the Runner:
 
 ```bash
@@ -66,10 +70,11 @@ acpx --verbose --timeout 60 --deny-all --format json \
   codex exec 'Reply with exactly OK and do not use tools.'
 ```
 
-`runner preflight --verify-agent-runtime` runs the same tools-denied ACP
-session after the ordinary configuration checks. Use it for a deployment
-candidate; the default preflight remains offline with respect to the model
-runtime.
+`runner preflight --verify-agent-runtime` creates a temporary empty workspace
+and runs the same tools-denied ACP session through the configured Runner
+sandbox, isolated HOME, CODEX_HOME, ACPX override, and proxy environment. Use it
+for a deployment candidate; the default preflight remains offline with respect
+to the model runtime.
 
 If `--model` is configured for the runner, it is passed to ACPX and takes
 precedence over the model in the copied Codex configuration. Use the exact

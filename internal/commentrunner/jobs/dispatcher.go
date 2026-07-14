@@ -1657,6 +1657,9 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 	}
 	cfg.FileCapabilities = append([]sandbox.FileCapability(nil), req.FileCapabilities...)
 	cfg.WorkspacePath = firstNonEmpty(req.WorkspacePath, cfg.WorkspacePath)
+	if err := rejectRepositoryAcpxConfig(firstNonEmpty(req.AcpxWorkingDirectory, cfg.WorkspacePath)); err != nil {
+		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
+	}
 	cfg.WorkspaceReadOnly = req.WorkspaceReadOnly
 	if strings.TrimSpace(req.ProcessWorkspaceRoot) != "" {
 		cfg.WritableBinds = []string{filepath.Clean(req.ProcessWorkspaceRoot)}
@@ -1754,6 +1757,20 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
 	return cfg, resolvedAcpxBinary, ghAuthMirror, nil
+}
+
+func rejectRepositoryAcpxConfig(workspacePath string) error {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return nil
+	}
+	path := filepath.Join(filepath.Clean(workspacePath), ".acpxrc.json")
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("repository-owned .acpxrc.json is not allowed in Runner workspaces; configure the ACPX agent in the runner account instead")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect repository ACPX config: %w", err)
+	}
+	return nil
 }
 
 func materializeHostAcpxAgentOverride(cfg *sandbox.Config, agent string) error {

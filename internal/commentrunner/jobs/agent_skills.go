@@ -26,9 +26,13 @@ func materializeTrustedAgentSkills(codexHome string, sourceDirs []string) error 
 	if err != nil {
 		return err
 	}
-	targetRoot := filepath.Join(filepath.Clean(codexHome), "skills")
-	if err := os.MkdirAll(targetRoot, 0o700); err != nil {
-		return err
+	codexHome = filepath.Clean(codexHome)
+	if err := ensureRuntimeSkillDirectory(codexHome); err != nil {
+		return fmt.Errorf("validate runtime CODEX_HOME: %w", err)
+	}
+	targetRoot := filepath.Join(codexHome, "skills")
+	if err := ensureRuntimeSkillDirectory(targetRoot); err != nil {
+		return fmt.Errorf("validate runtime skill root: %w", err)
 	}
 	for _, skill := range skills {
 		target := filepath.Join(targetRoot, skill.name)
@@ -71,7 +75,10 @@ func collectTrustedAgentSkills(sourceDirs []string) ([]trustedAgentSkill, error)
 			if err != nil {
 				return nil, err
 			}
-			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !hasTrustedSkillEntrypoint(candidate) {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return nil, fmt.Errorf("trusted skill catalog contains symlink %s", candidate)
+			}
+			if !info.IsDir() || !hasTrustedSkillEntrypoint(candidate) {
 				continue
 			}
 			if err := addTrustedAgentSkill(byName, entry.Name(), candidate); err != nil {
@@ -111,6 +118,28 @@ func addTrustedAgentSkill(byName map[string]string, name, source string) error {
 }
 
 func replaceTrustedSkill(source, target string) error {
+	targetRoot := filepath.Dir(target)
+	if err := ensureRuntimeSkillDirectory(targetRoot); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(target); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("runtime skill destination %s is not a directory", target)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	staging, err := os.MkdirTemp(targetRoot, ".skill-stage-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(staging)
+	if err := copyTrustedSkill(source, staging); err != nil {
+		return err
+	}
+	if err := ensureRuntimeSkillDirectory(targetRoot); err != nil {
+		return err
+	}
 	if info, err := os.Lstat(target); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return fmt.Errorf("runtime skill destination %s is not a directory", target)
@@ -121,6 +150,13 @@ func replaceTrustedSkill(source, target string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	if err := os.Rename(staging, target); err != nil {
+		return err
+	}
+	return nil
+}
+
+func copyTrustedSkill(source, target string) error {
 	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -153,6 +189,27 @@ func replaceTrustedSkill(source, target string) error {
 		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 			return err
 		}
-		return os.WriteFile(destination, data, 0o600)
+		mode := os.FileMode(0o600)
+		if info.Mode().Perm()&0o111 != 0 {
+			mode = 0o700
+		}
+		return os.WriteFile(destination, data, mode)
 	})
+}
+
+func ensureRuntimeSkillDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			return err
+		}
+		info, err = os.Lstat(path)
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("%s must be a non-symlink directory", path)
+	}
+	return nil
 }

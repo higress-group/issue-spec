@@ -62,10 +62,17 @@ func (c *WorkflowContext) UnmarshalYAML(value *yaml.Node) error {
 		*c = WorkflowContext(decoded)
 		return nil
 	case yaml.ScalarNode:
+		if value.Tag == "!!null" {
+			*c = nil
+			return nil
+		}
+		if value.Tag != "!!str" {
+			return fmt.Errorf("context must be a mapping, string, or null")
+		}
 		*c = WorkflowContext{"text": value.Value}
 		return nil
 	default:
-		return fmt.Errorf("context must be a mapping or string")
+		return fmt.Errorf("context must be a mapping, string, or null")
 	}
 }
 

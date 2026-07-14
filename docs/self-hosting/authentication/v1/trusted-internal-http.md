@@ -23,9 +23,10 @@ uses the API origin verbatim, for example
 `http://issues.intra.example:18080/api/v1/auth/github/callback`.
 
 This posture also permits `http://` webhook receivers for internal Runner
-deployments. Private receiver addresses still require an explicit matching
-`WEBHOOK_ALLOWED_PRIVATE_CIDRS` entry; it never permits loopback, link-local,
-multicast, or cloud-metadata destinations.
+deployments only when every resolved receiver address is private and has an
+explicit matching `WEBHOOK_ALLOWED_PRIVATE_CIDRS` entry. Public receiver
+addresses continue to require HTTPS; loopback, link-local, multicast, and
+cloud-metadata destinations are always denied.
 
 ## Network checklist
 

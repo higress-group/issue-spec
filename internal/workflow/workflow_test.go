@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestResolvePrefersIssueSpecConfigOverLegacyOpenSpec(t *testing.T) {
@@ -110,6 +112,22 @@ func TestResolveAcceptsLegacyScalarContext(t *testing.T) {
 	}
 	if plan.Config.Context["text"] != "Project: existing repository\n" {
 		t.Fatalf("context=%#v", plan.Config.Context)
+	}
+}
+
+func TestWorkflowContextRejectsNonStringScalarsAndAcceptsNull(t *testing.T) {
+	for _, raw := range []string{"context: 42\n", "context: true\n"} {
+		var cfg Config
+		if err := yaml.Unmarshal([]byte(raw), &cfg); err == nil || !strings.Contains(err.Error(), "mapping, string, or null") {
+			t.Fatalf("yaml %q error = %v", raw, err)
+		}
+	}
+	var cfg Config
+	if err := yaml.Unmarshal([]byte("context: null\n"), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Context != nil {
+		t.Fatalf("null context = %#v, want nil", cfg.Context)
 	}
 }
 

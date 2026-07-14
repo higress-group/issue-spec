@@ -53,6 +53,9 @@ runner 只会把选中的 Codex override 复制到每个任务隔离的 ACPX hom
 bubblewrap 内生效，而不会携带其他无关的 ACPX 配置。无法访问 npm registry 的主机应预先
 缓存精确的固定版本，例如 `npm cache add @agentclientprotocol/codex-acp@1.1.2`。
 
+Runner 会拒绝仓库自带的 `.acpxrc.json`，因为 ACPX 的项目配置优先级高于运行方维护的全局
+override。Adapter 命令和固定版本应只配置在 Runner 服务账号下。
+
 在启动 Runner 前，以该服务用户验证 adapter：
 
 ```bash
@@ -61,8 +64,9 @@ acpx --verbose --timeout 60 --deny-all --format json \
   codex exec 'Reply with exactly OK and do not use tools.'
 ```
 
-`runner preflight --verify-agent-runtime` 会在普通配置检查完成后执行同一个
-「禁止工具」的 ACP session，可作为部署候选版本的验证；默认 preflight 不会连接模型 runtime。
+`runner preflight --verify-agent-runtime` 会创建临时空工作区，并通过 Runner 实际配置的沙箱、
+隔离 HOME、CODEX_HOME、ACPX override 和 Proxy 环境执行同一个「禁止工具」的 ACP session。
+它适合验证部署候选版本；默认 preflight 不会连接模型 runtime。
 
 若为 runner 配置了 `--model`，该值会传给 ACPX，并优先于复制进来的 Codex 配置中的模型。
 必须使用 adapter 实际广告的精确模型 ID（包括可能的 reasoning-effort 后缀），并用同一个

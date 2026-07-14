@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
@@ -545,7 +547,7 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	var verifyAgentRuntime *bool
 	if !includePollFlags {
-		verifyAgentRuntime = fs.Bool("verify-agent-runtime", false, "create a tools-denied Codex ACP session to verify the configured runtime and --model")
+		verifyAgentRuntime = fs.Bool("verify-agent-runtime", false, "create a tools-denied Codex ACP session in the configured Runner sandbox to verify the runtime and --model")
 	}
 	fs.Var(&repoValues, "repo", "repository owner/name; repeat or comma-separate for multiple repositories")
 	fs.Var(&allowedUsers, "allowed-user", "GitHub login allowed to trigger runner commands; repeat or comma-separate, and users still need write-equivalent repository permission")
@@ -751,7 +753,48 @@ func (a *app) runRunnerPreflightWithOptions(ctx context.Context, cfg commentrunn
 			}
 			return backend, nil
 		},
+		RunAgentCommand: func(probeCtx context.Context, binary string, args ...string) ([]byte, error) {
+			return runSandboxedAgentRuntimeCommand(probeCtx, cfg, binary, args...)
+		},
 	}, options)
+}
+
+func runSandboxedAgentRuntimeCommand(ctx context.Context, cfg commentrunner.Config, binary string, args ...string) ([]byte, error) {
+	root, err := os.MkdirTemp("", "issue-spec-runner-preflight-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(root)
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.Mkdir(workspacePath, 0o700); err != nil {
+		return nil, err
+	}
+	runtimeRoot := filepath.Join(root, "runtime")
+	var childProfile *auth.Profile
+	if profile, _, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname); err == nil && profile.Kind == auth.ProfileKindHosted {
+		childProfile = &profile
+	}
+	env, err := (jobs.SandboxRunner{Config: sandbox.Config{
+		UnsafeNoSandbox: cfg.UnsafeNoSandbox,
+		BwrapPath:       cfg.BwrapPath,
+		HostGHConfigDir: cfg.GHConfigDir,
+		HostEnv:         os.Environ(),
+	}}).Prepare(ctx, jobs.SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           binary,
+		AcpxAgent:            cfg.Agent.Kind,
+		RuntimeHome:          filepath.Join(runtimeRoot, "home"),
+		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
+		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
+		RuntimeCodexHome:     filepath.Join(runtimeRoot, "codex"),
+		ChildProfile:         childProfile,
+	})
+	if err != nil {
+		return nil, err
+	}
+	result, err := env.Runner.Run(ctx, acpx.Command{Binary: env.AcpxBinary, Args: args, Dir: env.WorkingDirectory})
+	return result.Stdout, err
 }
 
 func validateRunnerPollProfile(cfg commentrunner.Config) error {

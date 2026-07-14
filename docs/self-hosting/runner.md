@@ -237,9 +237,9 @@ repository, and do not mount a developer's everyday SSH identity.
 ## 6. Run preflight and start in the foreground
 
 For a deployment candidate, add `--verify-agent-runtime` to this preflight.
-It creates one tools-denied ACP session as the service user, checks the
-effective adapter and any explicit `--model`, and complements rather than
-replaces the separate bubblewrap preflight check.
+It creates a temporary empty workspace and runs one tools-denied ACP session
+through the configured Runner sandbox, isolated runtime homes, adapter override,
+proxy environment, and any explicit `--model`.
 
 ### Make operator-owned code-host skills available to the agent
 
@@ -248,11 +248,12 @@ Run `issue-spec init` in the repository and commit its generated
 the same workflow by cloning the default branch; do not duplicate repository
 workflow skills through Runner configuration.
 
-Use `--operator-skill-dir` only for an operator-owned, trusted local skill for
-the selected code host. It can describe the approved branch, push, and PR/MR
-procedure without putting provider-specific commands, hostnames, or credentials
-in the target repository or public documentation. The Runner copies only this
-explicit local input into the session's isolated `CODEX_HOME`.
+With `--agent codex`, use `--operator-skill-dir` only for an operator-owned,
+trusted local skill for the selected code host. It can describe the approved
+branch, push, and PR/MR procedure without putting provider-specific commands,
+hostnames, or credentials in the target repository or public documentation.
+The Runner copies only this explicit local input into the session's isolated
+`CODEX_HOME`; other agents reject this option.
 
 ```bash
 cd /srv/issue-spec-workflows/acme-workflow
@@ -267,12 +268,15 @@ issue-spec --profile team runner serve \
 Each argument may name one skill directory containing `SKILL.md`, or a
 directory whose immediate children are skills. Symlinks and duplicate skill
 names are rejected; the Runner refreshes these copies for every session.
+Repository-owned `.acpxrc.json` is also rejected because it would otherwise
+override the operator-selected ACPX adapter from the repository working directory.
 
 ```bash
 issue-spec --profile team runner preflight \
   --repo acme/workflow \
   --runner svc-runner-bot-a1b2c3d4 \
   --agent codex \
+  --verify-agent-runtime \
   --json
 
 issue-spec --profile team runner serve \
@@ -317,7 +321,7 @@ Type=simple
 User=issue-spec-runner
 Group=issue-spec-runner
 Environment=HOME=/var/lib/issue-spec-runner
-EnvironmentFile=/etc/issue-spec-runner/proxy.env
+EnvironmentFile=-/etc/issue-spec-runner/proxy.env
 ExecStart=/usr/local/bin/issue-spec --profile team runner serve \
   --repo acme/workflow \
   --runner svc-runner-bot-a1b2c3d4 \
