@@ -41,6 +41,48 @@ runner SSH identity for the internal compatibility mode described below. Do not
 use `--unsafe-no-sandbox` unless the operator explicitly accepts that the agent
 can access the runner host filesystem.
 
+### Pin and test the Codex ACP adapter
+
+ACPX's built-in Codex provider does not directly execute the host `codex`
+binary. It starts `@agentclientprotocol/codex-acp`, which supplies a separate
+Codex runtime and model catalogue. Consequently, upgrading `codex` on the host
+does not update the adapter used by Runner jobs, and an npm cache can preserve
+an older adapter package.
+
+Pin a tested adapter in the Runner service user's `~/.acpx/config.json`:
+
+```json
+{
+  "agents": {
+    "codex": {
+      "command": "npx",
+      "args": ["-y", "@agentclientprotocol/codex-acp@1.1.2"]
+    }
+  }
+}
+```
+
+`1.1.2` is an example independently validated in
+[openclaw/acpx#434](https://github.com/openclaw/acpx/issues/434#issuecomment-4946457075);
+pin the version that your operators have validated. The runner selectively
+copies this `agents.codex` command into the job's isolated home, so the same
+adapter is used inside bubblewrap. If the host cannot reach npm at runtime,
+pre-cache the exact package with `npm cache add @agentclientprotocol/codex-acp@1.1.2`.
+
+Run this smoke test as the service user before `runner serve`:
+
+```bash
+acpx config show
+acpx --verbose --timeout 60 --deny-all --format json \
+  codex exec 'Reply with exactly OK and do not use tools.'
+```
+
+The Runner's `--model` value is an explicit ACPX request and overrides the
+model from the copied Codex config. It must exactly match a model ID advertised
+by that adapter, including any reasoning-effort suffix. Test the planned value
+with `--model` before deployment; a successful host `codex --version` is not
+sufficient evidence.
+
 ## 2. Create the source binding
 
 Create and activate a binding on the repository's **Source connection** page.
@@ -176,6 +218,11 @@ repository, and do not mount a developer's everyday SSH identity.
 
 ## 6. Run preflight and start in the foreground
 
+For a deployment candidate, add `--verify-agent-runtime` to this preflight.
+It creates one tools-denied ACP session as the service user, checks the
+effective adapter and any explicit `--model`, and complements rather than
+replaces the separate bubblewrap preflight check.
+
 ```bash
 issue-spec --profile team runner preflight \
   --repo acme/workflow \
@@ -224,6 +271,7 @@ Type=simple
 User=issue-spec-runner
 Group=issue-spec-runner
 Environment=HOME=/var/lib/issue-spec-runner
+EnvironmentFile=/etc/issue-spec-runner/proxy.env
 ExecStart=/usr/local/bin/issue-spec --profile team runner serve \
   --repo acme/workflow \
   --runner svc-runner-bot-a1b2c3d4 \
@@ -252,6 +300,21 @@ sudo systemctl status issue-spec-runner
 sudo journalctl -u issue-spec-runner -f
 ```
 
+If the runner needs an outbound HTTP proxy for the model service or package
+registry, keep it in the root-owned `0600` environment file referenced above:
+
+```ini
+HTTP_PROXY=http://proxy.example.test:8080
+HTTPS_PROXY=http://proxy.example.test:8080
+NO_PROXY=127.0.0.1,localhost,issues.example.test,code.example.test
+```
+
+The sandbox inherits the standard upper- and lower-case proxy variables from
+the runner process. Keep directly reachable receiver, issue-server, and
+code-host endpoints in `NO_PROXY`; do not put proxy credentials in the unit or
+a public diagnostic comment. Restart the service after changing the file and
+rerun `runner preflight --verify-agent-runtime` as the same user.
+
 ## 8. Trigger the agent from a comment
 
 The command must start at the beginning of the comment:
@@ -271,10 +334,25 @@ and a copyable `/resume` template.
 
 ## 9. Verify and troubleshoot
 
-For the first test, use a read-only task and verify the webhook delivery,
-runner authorization log, workspace creation, Git credential acquisition and
-revocation (or the expected SSH remote in host SSH mode), runner status comment,
-and typed workflow writeback in that order.
+Use this acceptance ladder on a non-production repository before enabling a
+team workflow:
+
+1. run `runner preflight --verify-agent-runtime` as the service user and retain
+   the bounded result, including the selected `agent_runtime` metadata;
+2. post a read-only `/new` comment and verify signed webhook delivery,
+   authorization, workspace creation, and the Runner status comment;
+3. verify a clone and a no-op Git read using the configured job credential (or
+   the expected SSH remote in host SSH mode), then verify credential revocation
+   where applicable;
+4. post a small documentation-only task that makes one commit and pushes its
+   isolated branch;
+5. when a code-provider bridge advertises `change.create`, verify that the
+   agent creates the PR/MR through that provider and writes the resulting change
+   URL back to the issue. Without that capability, treat push evidence as the
+   endpoint and create the change outside the sandbox; do not mount arbitrary
+   host CLIs into bubblewrap;
+6. verify `/resume` by a different authorized maintainer, then revoke the test
+   credential and remove the test workspace.
 
 | Symptom | Check first |
 | --- | --- |
@@ -284,7 +362,7 @@ and typed workflow writeback in that order.
 | `runner:delegate` fails | Exact repository restriction, scopes, and PAT subject login matching `--runner` |
 | Clone fails | Active source binding; for credentials, the HTTPS URL and exact binding echo; for host SSH, the runner user's key, agent, `known_hosts`, and repository access |
 | Sandbox preflight fails | Install `bubblewrap` or configure `--bwrap` on Linux |
-| Codex does not start | Ensure `acpx`, `npm`, `npx`, and model credentials are available to the systemd user |
+| Codex does not start | Run `runner preflight --verify-agent-runtime`; confirm the adapter pin, exact model ID, and proxy environment are available to the systemd user |
 
 When rotating a webhook secret, provide the old value with
 `--previous-secret-file` and set a `--previous-secrets-valid-until` overlap no

@@ -22,11 +22,12 @@ import (
 )
 
 type runnerCommandOptions struct {
-	Once          bool
-	DryRun        bool
-	JSON          bool
-	AsyncDispatch bool
-	Help          bool
+	Once               bool
+	DryRun             bool
+	JSON               bool
+	AsyncDispatch      bool
+	VerifyAgentRuntime bool
+	Help               bool
 }
 
 type runnerDryRunResult struct {
@@ -468,7 +469,7 @@ func (a *app) runRunnerPreflightCommand(ctx context.Context, args []string) int 
 	if !ok {
 		return 2
 	}
-	report := a.runRunnerPreflight(ctx, cfg)
+	report := a.runRunnerPreflightWithOptions(ctx, cfg, commentrunner.PreflightOptions{VerifyAgentRuntime: opts.VerifyAgentRuntime})
 	if opts.JSON {
 		if code := a.outputJSON(report); code != 0 {
 			return code
@@ -542,6 +543,10 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	logRetention := fs.Int("log-retention", defaults.LogRetentionDays, "log retention duration in days (default: 30 days)")
 	logRawCapture := fs.Int("log-raw-capture", defaults.LogRawCaptureKB, "maximum raw stdout/stderr capture size in KB (default: 100KB)")
 	jsonOut := fs.Bool("json", false, "write JSON output")
+	var verifyAgentRuntime *bool
+	if !includePollFlags {
+		verifyAgentRuntime = fs.Bool("verify-agent-runtime", false, "create a tools-denied Codex ACP session to verify the configured runtime and --model")
+	}
 	fs.Var(&repoValues, "repo", "repository owner/name; repeat or comma-separate for multiple repositories")
 	fs.Var(&allowedUsers, "allowed-user", "GitHub login allowed to trigger runner commands; repeat or comma-separate, and users still need write-equivalent repository permission")
 	fs.Var(&claudeTools, "claude-allowed-tools", "Claude allowed tools; repeat or comma-separate, usually Task,Bash")
@@ -587,6 +592,9 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 		}
 	}
 	opts.JSON = *jsonOut
+	if verifyAgentRuntime != nil {
+		opts.VerifyAgentRuntime = *verifyAgentRuntime
+	}
 
 	cfg, err := commentrunner.DefaultConfigFromEnv()
 	if err != nil {
@@ -710,6 +718,10 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 }
 
 func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+	return a.runRunnerPreflightWithOptions(ctx, cfg, commentrunner.PreflightOptions{})
+}
+
+func (a *app) runRunnerPreflightWithOptions(ctx context.Context, cfg commentrunner.Config, options commentrunner.PreflightOptions) commentrunner.PreflightReport {
 	if a.runnerPreflight != nil {
 		return a.runnerPreflight(ctx, cfg)
 	}
@@ -717,7 +729,7 @@ func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) 
 	if profile, _, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname); err == nil && profile.Kind == auth.ProfileKindHosted {
 		transport = commentrunner.PreflightTransportServe
 	}
-	return commentrunner.RunPreflightForTransport(ctx, cfg, transport, commentrunner.PreflightDependencies{
+	return commentrunner.RunPreflightForTransportWithOptions(ctx, cfg, transport, commentrunner.PreflightDependencies{
 		SelectBackend: func(ctx context.Context, _ string) (auth.GitHubBackendSelection, error) {
 			return a.selectBackendForRunner(ctx, cfg)
 		},
@@ -739,7 +751,7 @@ func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) 
 			}
 			return backend, nil
 		},
-	})
+	}, options)
 }
 
 func validateRunnerPollProfile(cfg commentrunner.Config) error {

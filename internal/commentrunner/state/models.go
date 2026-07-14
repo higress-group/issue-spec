@@ -532,6 +532,7 @@ type SandboxMetadata struct {
 	EnvDecisions     []string          `json:"env_decisions,omitempty"`
 	TempPaths        map[string]string `json:"temp_paths,omitempty"`
 	MountPlanSummary string            `json:"mount_plan_summary,omitempty"`
+	AgentRuntime     string            `json:"agent_runtime,omitempty"`
 	Diagnostics      string            `json:"diagnostics,omitempty"`
 	CheckedAt        time.Time         `json:"checked_at,omitempty"`
 }
