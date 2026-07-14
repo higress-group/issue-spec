@@ -147,7 +147,7 @@ func TestRunnerServeHelpDocumentsSecurityAndCapacityControls(t *testing.T) {
 		"--secret-file", "--previous-secrets-valid-until", "--timestamp-window", "--max-body-bytes",
 		"--max-header-bytes", "--max-queue-deliveries", "--max-queue-bytes", "--shutdown-timeout",
 		"--workspace-root", "--max-concurrent-jobs", "--reconcile-workers", "--git-credential-command",
-		"--allow-host-ssh", "--operator-skill-dir", "--delegation-audience", "--delegation-subject", "--delegation-ttl"} {
+		"--allow-host-ssh", "--git-author-name", "--git-author-email", "--operator-skill-dir", "--delegation-audience", "--delegation-subject", "--delegation-ttl"} {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("help missing %s:\n%s", required, stdout.String())
 		}
@@ -170,6 +170,8 @@ func TestRunnerServeRejectsInvalidHostSSHFlagCombinations(t *testing.T) {
 	}{
 		{name: "both credential modes", args: []string{"--allow-host-ssh", "--git-credential-command", "/usr/bin/true"}, want: "exactly one of --git-credential-command or --allow-host-ssh"},
 		{name: "credential args without command", args: []string{"--allow-host-ssh", "--git-credential-arg", "value"}, want: "--git-credential-arg requires --git-credential-command"},
+		{name: "author name without email", args: []string{"--allow-host-ssh", "--git-author-name", "Runner"}, want: "git author name and email must be configured together"},
+		{name: "author email without name", args: []string{"--allow-host-ssh", "--git-author-email", "runner@example.test"}, want: "git author name and email must be configured together"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -197,7 +199,8 @@ func TestRunnerServeAcceptsExplicitUnsafeHostSSHMode(t *testing.T) {
 	t.Setenv("ISSUE_SPEC_TOKEN", "origin-bound-parent-token")
 	originalBuild, originalRun := runnerServeBuildRuntime, runnerServeRun
 	runnerServeBuildRuntime = func(_ context.Context, input runnerServeRuntimeInput) (runnerServeRuntime, error) {
-		if !input.Runner.AllowHostSSH || !input.Runner.UnsafeNoSandbox {
+		if !input.Runner.AllowHostSSH || !input.Runner.UnsafeNoSandbox || input.Runner.GitAuthorName != "Issue Spec Runner" ||
+			input.Runner.GitAuthorEmail != "runner@example.test" {
 			t.Fatalf("runner input=%+v", input.Runner)
 		}
 		return runnerServeRuntimeFunc(func(context.Context) error { return nil }), nil
@@ -209,7 +212,8 @@ func TestRunnerServeAcceptsExplicitUnsafeHostSSHMode(t *testing.T) {
 	app.profileName = profile.Name
 	if code := app.runRunner(context.Background(), []string{"serve", "--repo", "o/r", "--runner", "runner-bot",
 		"--state", filepath.Join(t.TempDir(), "state.json"), "--subscription-id", uuid.NewString(),
-		"--secret-env", "RUNNER_UNSAFE_HOST_SSH_SECRET", "--allow-host-ssh", "--unsafe-no-sandbox"}); code != 0 {
+		"--secret-env", "RUNNER_UNSAFE_HOST_SSH_SECRET", "--allow-host-ssh", "--unsafe-no-sandbox",
+		"--git-author-name", "Issue Spec Runner", "--git-author-email", "runner@example.test"}); code != 0 {
 		t.Fatalf("serve code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }

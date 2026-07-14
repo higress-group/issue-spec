@@ -289,6 +289,32 @@ func TestConfigValidateAllowsExplicitUnsafeHostSSH(t *testing.T) {
 	}
 }
 
+func TestConfigValidateRequiresCompleteSafeGitAuthor(t *testing.T) {
+	base := Config{
+		Repositories: []string{"o/r"}, RunnerIdentity: "bot", StatePath: filepath.Join(t.TempDir(), "state.json"),
+		WorkspaceRoot: t.TempDir(), PollInterval: NewDuration(time.Minute), FallbackInterval: NewDuration(time.Hour),
+		WorkspaceRetention: NewDuration(24 * time.Hour), MaxConcurrentJobs: 1, Agent: DefaultAgentConfig(),
+	}
+	valid := base
+	valid.GitAuthorName, valid.GitAuthorEmail = " Issue Spec Runner ", " runner@example.test "
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("complete Git author rejected: %v", err)
+	}
+	for _, tc := range []Config{
+		func() Config { cfg := base; cfg.GitAuthorName = "Runner"; return cfg }(),
+		func() Config { cfg := base; cfg.GitAuthorEmail = "runner@example.test"; return cfg }(),
+		func() Config {
+			cfg := base
+			cfg.GitAuthorName, cfg.GitAuthorEmail = "Runner\nInjected", "runner@example.test"
+			return cfg
+		}(),
+	} {
+		if err := tc.Validate(); err == nil || !strings.Contains(err.Error(), "--git-author-name and --git-author-email") {
+			t.Fatalf("invalid Git author Validate error = %v", err)
+		}
+	}
+}
+
 func TestConfigValidateRejectsOperatorSkillsForClaude(t *testing.T) {
 	cfg := Config{
 		Repositories:       []string{"o/r"},

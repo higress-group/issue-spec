@@ -66,7 +66,16 @@ acpx --verbose --timeout 60 --deny-all --format json \
 
 `runner preflight --verify-agent-runtime` 会创建临时空工作区，并通过 Runner 实际配置的沙箱、
 隔离 HOME、CODEX_HOME、ACPX override 和 Proxy 环境执行同一个「禁止工具」的 ACP session。
-它适合验证部署候选版本；默认 preflight 不会连接模型 runtime。
+它适合验证部署候选版本；默认 preflight 不会连接模型 runtime。自托管 Runner 若使用宿主 SSH，
+preflight 也必须传入 `--allow-host-ssh`，这样 macOS unsafe 模式会复用与 `runner serve`
+相同的宿主 HOME，Linux 模式也会校验同一 SSH 目录与 Agent Socket。
+
+当 Runner 任务需要创建提交时，必须成对配置 `--git-author-name` 和
+`--git-author-email`。Runner 只在每个受管 clone 内写入 repo-local `user.name` 与
+`user.email`，并在保留工作区恢复时同步当前配置。Runner 会在 repo-local config 中记录
+自己的托管状态：移除参数后恢复原有的 repo-local 值；若配置后已被其他参与者改写，则保留
+被改写的字段，并只恢复仍与 Runner 托管身份一致的字段。宿主的全局或系统 Git 配置仍不会
+暴露给 Agent。
 
 若为 runner 配置了 `--model`，该值会传给 ACPX，并优先于复制进来的 Codex 配置中的模型。
 必须使用 adapter 实际广告的精确模型 ID（包括可能的 reasoning-effort 后缀），并用同一个

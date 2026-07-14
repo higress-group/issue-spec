@@ -18,10 +18,13 @@ import (
 	"unicode"
 
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/gitidentity"
 )
 
 const (
-	retentionPolicyPrefix = "delete_after_last_used="
+	retentionPolicyPrefix       = "delete_after_last_used="
+	runnerGitAuthorStateKey     = "issue-spec.runnerAuthorState"
+	runnerGitAuthorStateVersion = 1
 )
 
 var ErrLocked = errors.New("workspace lock held")
@@ -82,13 +85,15 @@ func (ExecRunner) Run(ctx context.Context, command Command) (Result, error) {
 }
 
 type Manager struct {
-	Root      string
-	Retention time.Duration
-	GitBinary string
-	Runner    Runner
-	Now       func() time.Time
-	IDFunc    func(NewRequest) (string, error)
-	TokenFunc func() (string, error)
+	Root           string
+	Retention      time.Duration
+	GitBinary      string
+	GitAuthorName  string
+	GitAuthorEmail string
+	Runner         Runner
+	Now            func() time.Time
+	IDFunc         func(NewRequest) (string, error)
+	TokenFunc      func() (string, error)
 }
 
 type NewRequest struct {
@@ -222,6 +227,11 @@ func (m Manager) PrepareNew(ctx context.Context, req NewRequest) (Binding, error
 	if cleanupErr != nil {
 		return Binding{}, fmt.Errorf("git clone credential cleanup: %w", cleanupErr)
 	}
+	if nm.GitAuthorName != "" {
+		if err := nm.configureGitAuthor(ctx, path); err != nil {
+			return Binding{}, err
+		}
+	}
 	if _, err := nm.runGit(ctx, "git checkout base ref", path, "checkout", "--force", baseRef); err != nil {
 		return Binding{}, err
 	}
@@ -320,6 +330,9 @@ func (m Manager) ResolveResume(ctx context.Context, req ResumeRequest) (Binding,
 		if branch != workspace.Branch {
 			return Binding{}, fmt.Errorf("workspace branch mismatch: stored %q found %q", workspace.Branch, branch)
 		}
+	}
+	if err := nm.configureGitAuthor(ctx, path); err != nil {
+		return Binding{}, err
 	}
 	now := nm.Now().UTC()
 	workspace.Path = path
@@ -654,6 +667,11 @@ func (m Manager) normalized() (Manager, string, error) {
 	if m.GitBinary == "" {
 		m.GitBinary = "git"
 	}
+	identity, err := gitidentity.Normalize(m.GitAuthorName, m.GitAuthorEmail)
+	if err != nil {
+		return Manager{}, "", err
+	}
+	m.GitAuthorName, m.GitAuthorEmail = identity.Name, identity.Email
 	if m.Runner == nil {
 		m.Runner = ExecRunner{}
 	}
@@ -667,6 +685,190 @@ func (m Manager) normalized() (Manager, string, error) {
 		m.TokenFunc = randomHex
 	}
 	return m, filepath.Clean(absRoot), nil
+}
+
+func (m Manager) configureGitAuthor(ctx context.Context, dir string) error {
+	// A newly cloned repository cannot carry repository-local Runner metadata,
+	// so callers without a configured identity can avoid needless git config
+	// probes. ResolveResume always calls this method because a previous Runner
+	// process may have left managed state that the current process must clear.
+	if m.GitAuthorName == "" {
+		return m.clearManagedGitAuthor(ctx, dir)
+	}
+
+	currentName, err := m.gitLocalConfigValue(ctx, dir, "user.name")
+	if err != nil {
+		return err
+	}
+	currentEmail, err := m.gitLocalConfigValue(ctx, dir, "user.email")
+	if err != nil {
+		return err
+	}
+	rawState, err := m.gitLocalConfigValue(ctx, dir, runnerGitAuthorStateKey)
+	if err != nil {
+		return err
+	}
+
+	previousName, previousEmail := currentName, currentEmail
+	if state, ok := parseManagedGitAuthorState(rawState); ok {
+		if currentName.Present && currentName.Value == state.ManagedName {
+			previousName = state.PreviousName
+		}
+		if currentEmail.Present && currentEmail.Value == state.ManagedEmail {
+			previousEmail = state.PreviousEmail
+		}
+	}
+
+	nextState := managedGitAuthorState{
+		Version:       runnerGitAuthorStateVersion,
+		ManagedName:   m.GitAuthorName,
+		ManagedEmail:  m.GitAuthorEmail,
+		PreviousName:  previousName,
+		PreviousEmail: previousEmail,
+	}
+	encodedState, err := json.Marshal(nextState)
+	if err != nil {
+		return fmt.Errorf("encode managed git author state: %w", err)
+	}
+	if err := m.setGitLocalConfigValue(ctx, dir, runnerGitAuthorStateKey, string(encodedState)); err != nil {
+		return err
+	}
+	if err := m.applyGitAuthorConfig(ctx, dir,
+		gitConfigValue{Value: m.GitAuthorName, Present: true},
+		gitConfigValue{Value: m.GitAuthorEmail, Present: true}); err != nil {
+		var rollbackErr error
+		if rawState.Present {
+			rollbackErr = m.setGitLocalConfigValue(ctx, dir, runnerGitAuthorStateKey, rawState.Value)
+		} else {
+			rollbackErr = m.unsetGitLocalConfigValue(ctx, dir, runnerGitAuthorStateKey)
+		}
+		return errors.Join(err, rollbackErr)
+	}
+	return nil
+}
+
+type gitConfigValue struct {
+	Value   string `json:"value,omitempty"`
+	Present bool   `json:"present"`
+}
+
+type managedGitAuthorState struct {
+	Version       int            `json:"version"`
+	ManagedName   string         `json:"managed_name"`
+	ManagedEmail  string         `json:"managed_email"`
+	PreviousName  gitConfigValue `json:"previous_name"`
+	PreviousEmail gitConfigValue `json:"previous_email"`
+}
+
+func parseManagedGitAuthorState(raw gitConfigValue) (managedGitAuthorState, bool) {
+	if !raw.Present || len(raw.Value) > 8192 {
+		return managedGitAuthorState{}, false
+	}
+	var state managedGitAuthorState
+	if err := json.Unmarshal([]byte(raw.Value), &state); err != nil ||
+		state.Version != runnerGitAuthorStateVersion ||
+		strings.TrimSpace(state.ManagedName) == "" || strings.TrimSpace(state.ManagedEmail) == "" {
+		return managedGitAuthorState{}, false
+	}
+	return state, true
+}
+
+func (m Manager) clearManagedGitAuthor(ctx context.Context, dir string) error {
+	rawState, err := m.gitLocalConfigValue(ctx, dir, runnerGitAuthorStateKey)
+	if err != nil || !rawState.Present {
+		return err
+	}
+	state, managed := parseManagedGitAuthorState(rawState)
+	if !managed {
+		return m.unsetGitLocalConfigValue(ctx, dir, runnerGitAuthorStateKey)
+	}
+	currentName, err := m.gitLocalConfigValue(ctx, dir, "user.name")
+	if err != nil {
+		return err
+	}
+	currentEmail, err := m.gitLocalConfigValue(ctx, dir, "user.email")
+	if err != nil {
+		return err
+	}
+	restoredName, restoredEmail := currentName, currentEmail
+	restoreManagedValue := false
+	if currentName.Present && currentName.Value == state.ManagedName {
+		restoredName = state.PreviousName
+		restoreManagedValue = true
+	}
+	if currentEmail.Present && currentEmail.Value == state.ManagedEmail {
+		restoredEmail = state.PreviousEmail
+		restoreManagedValue = true
+	}
+	if restoreManagedValue {
+		if err := m.applyGitAuthorConfig(ctx, dir, restoredName, restoredEmail); err != nil {
+			return err
+		}
+	}
+	// Any current value that diverged is owned by an operator or repository
+	// workflow. Preserve it verbatim and restore only fields still matching the
+	// Runner-managed identity before relinquishing our marker.
+	return m.unsetGitLocalConfigValue(ctx, dir, runnerGitAuthorStateKey)
+}
+
+func (m Manager) applyGitAuthorConfig(ctx context.Context, dir string, name, email gitConfigValue) error {
+	oldName, err := m.gitLocalConfigValue(ctx, dir, "user.name")
+	if err != nil {
+		return err
+	}
+	oldEmail, err := m.gitLocalConfigValue(ctx, dir, "user.email")
+	if err != nil {
+		return err
+	}
+	if err := m.restoreGitLocalConfigValue(ctx, dir, "user.name", name); err != nil {
+		return err
+	}
+	if err := m.restoreGitLocalConfigValue(ctx, dir, "user.email", email); err != nil {
+		rollbackErr := m.restoreGitLocalConfigValue(ctx, dir, "user.name", oldName)
+		rollbackErr = errors.Join(rollbackErr, m.restoreGitLocalConfigValue(ctx, dir, "user.email", oldEmail))
+		return errors.Join(err, rollbackErr)
+	}
+	return nil
+}
+
+func (m Manager) restoreGitLocalConfigValue(ctx context.Context, dir, key string, value gitConfigValue) error {
+	if value.Present {
+		return m.setGitLocalConfigValue(ctx, dir, key, value.Value)
+	}
+	return m.unsetGitLocalConfigValue(ctx, dir, key)
+}
+
+func (m Manager) gitLocalConfigValue(ctx context.Context, dir, key string) (gitConfigValue, error) {
+	result, err := m.Runner.Run(ctx, Command{Binary: m.GitBinary, Args: []string{"config", "--local", "--get", key}, Dir: dir})
+	if result.ExitCode == 1 && len(bytes.TrimSpace(result.Stderr)) == 0 {
+		return gitConfigValue{}, nil
+	}
+	if err != nil || result.ExitCode != 0 {
+		if err == nil {
+			err = fmt.Errorf("exit code %d", result.ExitCode)
+		}
+		return gitConfigValue{}, &DiagnosticError{Operation: "git read local config " + key, Diagnostics: diagnostics(result, err), Err: err}
+	}
+	return gitConfigValue{Value: strings.TrimSuffix(string(result.Stdout), "\n"), Present: true}, nil
+}
+
+func (m Manager) setGitLocalConfigValue(ctx context.Context, dir, key, value string) error {
+	_, err := m.runGit(ctx, "git configure local "+key, dir, "config", "--local", key, value)
+	return err
+}
+
+func (m Manager) unsetGitLocalConfigValue(ctx context.Context, dir, key string) error {
+	result, err := m.Runner.Run(ctx, Command{Binary: m.GitBinary, Args: []string{"config", "--local", "--unset-all", key}, Dir: dir})
+	if result.ExitCode == 5 && len(bytes.TrimSpace(result.Stderr)) == 0 {
+		return nil
+	}
+	if err != nil || result.ExitCode != 0 {
+		if err == nil {
+			err = fmt.Errorf("exit code %d", result.ExitCode)
+		}
+		return &DiagnosticError{Operation: "git clear local config " + key, Diagnostics: diagnostics(result, err), Err: err}
+	}
+	return nil
 }
 
 func validateNewRequest(req NewRequest) error {

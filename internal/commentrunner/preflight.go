@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,6 +25,33 @@ const (
 
 	BwrapPathEnv = "ISSUE_SPEC_BWRAP_PATH"
 )
+
+const (
+	AgentRuntimeFailureTimeout = "timeout"
+	AgentRuntimeFailureAdapter = "adapter"
+	AgentRuntimeFailureModel   = "model"
+	AgentRuntimeFailureRuntime = "runtime"
+)
+
+// AgentRuntimeProbeError carries only a bounded failure category into the
+// preflight report. Raw adapter output remains in local diagnostics and is
+// never copied into reports or issue comments.
+type AgentRuntimeProbeError struct {
+	Kind string
+	Err  error
+}
+
+func NewAgentRuntimeProbeError(kind string, err error) error {
+	switch kind {
+	case AgentRuntimeFailureTimeout, AgentRuntimeFailureAdapter, AgentRuntimeFailureModel:
+	default:
+		kind = AgentRuntimeFailureRuntime
+	}
+	return &AgentRuntimeProbeError{Kind: kind, Err: err}
+}
+
+func (e *AgentRuntimeProbeError) Error() string { return "agent runtime probe " + e.Kind }
+func (e *AgentRuntimeProbeError) Unwrap() error { return e.Err }
 
 const (
 	bwrapInstallHint = "Install or upgrade bubblewrap, or explicitly rerun with --unsafe-no-sandbox to disable the filesystem boundary."
@@ -58,6 +86,7 @@ type PreflightDependencies struct {
 	LookPath                func(string) (string, error)
 	RunCommand              func(context.Context, string, ...string) ([]byte, error)
 	RunAgentCommand         func(context.Context, string, ...string) ([]byte, error)
+	AgentRuntimeHome        func() (string, error)
 }
 
 // PreflightOptions controls opt-in checks that contact an external runtime.
@@ -104,6 +133,16 @@ func RunPreflightForTransportWithOptions(ctx context.Context, cfg Config, transp
 	}
 	if transport != PreflightTransportPoll && transport != PreflightTransportServe {
 		report.add(PreflightCheck{Name: "transport", Status: CheckError, Detail: fmt.Sprintf("unsupported runner preflight transport %q", transport)})
+		report.finish()
+		return report
+	}
+	if cfg.AllowHostSSH && transport != PreflightTransportServe {
+		report.add(PreflightCheck{
+			Name:   "host-ssh-transport",
+			Status: CheckError,
+			Detail: "--allow-host-ssh is available only for self-hosted runner serve preflight",
+			Hint:   "Remove --allow-host-ssh for GitHub notification polling, or select the matching self-hosted profile used by runner serve.",
+		})
 		report.finish()
 		return report
 	}
@@ -225,6 +264,9 @@ func (d PreflightDependencies) withDefaults() PreflightDependencies {
 	}
 	if d.RunAgentCommand == nil {
 		d.RunAgentCommand = d.RunCommand
+	}
+	if d.AgentRuntimeHome == nil {
+		d.AgentRuntimeHome = func() (string, error) { return hostHomeDir(), nil }
 	}
 	return d
 }
@@ -474,8 +516,12 @@ func codexACPCheck(deps PreflightDependencies) PreflightCheck {
 		}
 	}
 	detail := fmt.Sprintf("npx=%s npm=%s package=%s", npxPath, npmPath, codexACPPackage)
-	if override, ok, err := acpx.LoadAgentOverride(hostHomeDir(), acpx.AgentCodex); err != nil {
-		return PreflightCheck{Name: "codex-acp", Status: CheckError, Detail: "invalid host acpx Codex agent override: " + err.Error(), Hint: acpxInstallHint}
+	home, err := deps.AgentRuntimeHome()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return PreflightCheck{Name: "codex-acp", Status: CheckError, Detail: "cannot resolve the Runner host HOME used for ACPX", Hint: acpxInstallHint}
+	}
+	if override, ok, err := acpx.LoadAgentOverride(home, acpx.AgentCodex); err != nil {
+		return PreflightCheck{Name: "codex-acp", Status: CheckError, Detail: "invalid host acpx Codex agent override", Hint: acpxInstallHint}
 	} else if ok {
 		detail = fmt.Sprintf("npx=%s npm=%s agent_override=%s", npxPath, npmPath, acpx.AgentOverrideDescription(override))
 	}
@@ -498,12 +544,29 @@ func agentRuntimeProbeCheck(ctx context.Context, cfg Config, deps PreflightDepen
 	}
 	args = append(args, "codex", "exec", "Reply with exactly OK and do not use tools.")
 	if _, err := deps.RunAgentCommand(probeCtx, cfg.AcpxPath, args...); err != nil {
-		return PreflightCheck{
-			Name:   "agent-runtime-probe",
-			Status: CheckError,
-			Detail: "Codex ACP runtime probe failed",
-			Hint:   "Confirm the ACP adapter and requested --model as the runner service user. Inspect the bounded runner diagnostic logs for the adapter error; do not copy raw runtime output into issue comments.",
+		kind := AgentRuntimeFailureRuntime
+		var classified *AgentRuntimeProbeError
+		if errors.As(err, &classified) {
+			kind = classified.Kind
+		} else if errors.Is(err, context.DeadlineExceeded) || errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+			kind = AgentRuntimeFailureTimeout
 		}
+		check := PreflightCheck{Name: "agent-runtime-probe", Status: CheckError}
+		switch kind {
+		case AgentRuntimeFailureTimeout:
+			check.Detail = "Codex ACP runtime probe timed out"
+			check.Hint = "Confirm the selected ACP adapter is already available to the runner account and can start without a cold package download."
+		case AgentRuntimeFailureAdapter:
+			check.Detail = "Codex ACP adapter failed to start or initialize"
+			check.Hint = "Confirm the operator-selected ACPX agent override and adapter package are available to the runner account."
+		case AgentRuntimeFailureModel:
+			check.Detail = "Codex ACP runtime rejected the requested model"
+			check.Hint = "Confirm the exact --model identifier is supported by the selected adapter and authenticated Codex account."
+		default:
+			check.Detail = "Codex ACP runtime probe failed"
+			check.Hint = "Inspect the bounded runner diagnostic logs as the runner service user; do not copy raw runtime output into issue comments."
+		}
+		return check
 	}
 	detail := "Codex ACP runtime probe succeeded with tools denied"
 	if model := strings.TrimSpace(cfg.Agent.Model); model != "" {

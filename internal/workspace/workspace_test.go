@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -69,6 +70,158 @@ func TestPrepareNewClonesChecksOutBranchAndReturnsMetadata(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("git commands = %#v, want %#v", got, want)
 	}
+}
+
+func TestPrepareNewConfiguresRepoLocalGitAuthor(t *testing.T) {
+	root := t.TempDir()
+	runner := &fakeGitRunner{t: t, branch: "issue-spec-ws-author", head: "abc123"}
+	manager := Manager{Root: root, Retention: time.Hour, Runner: runner,
+		GitAuthorName: "Issue Spec Runner", GitAuthorEmail: "runner@example.test",
+		IDFunc: func(NewRequest) (string, error) { return "ws-author", nil }}
+
+	_, err := manager.PrepareNew(t.Context(), NewRequest{Repo: "o/r", CloneURL: "https://github.com/o/r.git",
+		DefaultBranch: "main", PublicSessionID: "ps-author", JobID: "job-author", RepositoryBinding: testRepositoryBinding()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPath, err := canonicalPath(filepath.Join(root, "ws-author"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantNonConfig := []string{
+		"clone -- https://github.com/o/r.git " + wantPath,
+		"checkout --force main",
+		"checkout -B issue-spec-ws-author",
+		"rev-parse HEAD",
+		"rev-parse --abbrev-ref HEAD",
+	}
+	var gotNonConfig []string
+	for _, command := range runner.commands {
+		if command.Args[0] != "config" {
+			gotNonConfig = append(gotNonConfig, strings.Join(command.Args, " "))
+		}
+	}
+	if !reflect.DeepEqual(gotNonConfig, wantNonConfig) {
+		t.Fatalf("non-config git commands = %#v, want %#v", gotNonConfig, wantNonConfig)
+	}
+	if runner.gitConfig["user.name"] != "Issue Spec Runner" || runner.gitConfig["user.email"] != "runner@example.test" {
+		t.Fatalf("repo-local git identity = %#v", runner.gitConfig)
+	}
+	if state, ok := parseManagedGitAuthorState(gitConfigValue{Value: runner.gitConfig[runnerGitAuthorStateKey], Present: true}); !ok ||
+		state.ManagedName != "Issue Spec Runner" || state.ManagedEmail != "runner@example.test" {
+		t.Fatalf("managed git author state = %#v, ok=%v", state, ok)
+	}
+}
+
+func TestRepoLocalGitAuthorCommitsWithoutGlobalOrSystemConfig(t *testing.T) {
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	seed := t.TempDir()
+	runGitCommand(t, "", nil, "init", "--bare", "--initial-branch=main", origin)
+	runGitCommand(t, seed, nil, "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("seed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(t, seed, nil, "add", "README.md")
+	runGitCommand(t, seed, nil, "-c", "user.name=Seed", "-c", "user.email=seed@example.test", "commit", "-m", "seed")
+	runGitCommand(t, seed, nil, "remote", "add", "origin", origin)
+	runGitCommand(t, seed, nil, "push", "origin", "main")
+
+	manager := Manager{Root: t.TempDir(), Retention: time.Hour,
+		GitAuthorName: "Issue Spec Runner", GitAuthorEmail: "runner@example.test",
+		IDFunc: func(NewRequest) (string, error) { return "ws-real-author", nil }}
+	binding, err := manager.PrepareNew(t.Context(), NewRequest{Repo: "o/r", CloneURL: origin, DefaultBranch: "main",
+		PublicSessionID: "ps-real-author", JobID: "job-real-author", RepositoryBinding: testRepositoryBindingForClone(origin)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binding.Workspace.Path, "README.md"), []byte("seed\nrunner\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	isolatedGitEnv := []string{"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "HOME=" + t.TempDir()}
+	runGitCommand(t, binding.Workspace.Path, isolatedGitEnv, "add", "README.md")
+	runGitCommand(t, binding.Workspace.Path, isolatedGitEnv, "commit", "-m", "runner commit")
+	author := runGitCommand(t, binding.Workspace.Path, isolatedGitEnv, "show", "-s", "--format=%an <%ae>", "HEAD")
+	if strings.TrimSpace(author) != "Issue Spec Runner <runner@example.test>" {
+		t.Fatalf("commit author = %q", author)
+	}
+}
+
+func TestResolveResumeReconcilesAndSafelyClearsManagedGitAuthor(t *testing.T) {
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	seed := t.TempDir()
+	runGitCommand(t, "", nil, "init", "--bare", "--initial-branch=main", origin)
+	runGitCommand(t, seed, nil, "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("seed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(t, seed, nil, "add", "README.md")
+	runGitCommand(t, seed, nil, "-c", "user.name=Seed", "-c", "user.email=seed@example.test", "commit", "-m", "seed")
+	runGitCommand(t, seed, nil, "remote", "add", "origin", origin)
+	runGitCommand(t, seed, nil, "push", "origin", "main")
+
+	root := t.TempDir()
+	manager := Manager{Root: root, Retention: time.Hour,
+		GitAuthorName: "Runner One", GitAuthorEmail: "runner-one@example.test",
+		IDFunc: func(NewRequest) (string, error) { return "ws-resume-author", nil }}
+	binding, err := manager.PrepareNew(t.Context(), NewRequest{Repo: "o/r", CloneURL: origin, DefaultBranch: "main",
+		PublicSessionID: "ps-resume-author", JobID: "job-resume-author", RepositoryBinding: testRepositoryBindingForClone(origin)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := binding.Workspace.Path
+	assertLocalGitConfig(t, path, "user.name", "Runner One", true)
+	assertLocalGitConfig(t, path, "user.email", "runner-one@example.test", true)
+	assertLocalGitConfig(t, path, runnerGitAuthorStateKey, "", true)
+
+	// A restarted Runner with a changed identity rotates the same workspace and
+	// retains the original pre-Runner values in its managed state.
+	rotated := Manager{Root: root, Retention: time.Hour, GitAuthorName: "Runner Two", GitAuthorEmail: "runner-two@example.test"}
+	binding, err = rotated.ResolveResume(t.Context(), ResumeRequest{Repo: "o/r", CloneURL: origin, Workspace: binding.Workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLocalGitConfig(t, path, "user.name", "Runner Two", true)
+	assertLocalGitConfig(t, path, "user.email", "runner-two@example.test", true)
+
+	// Removing the flags clears only the identity created by Runner.
+	withoutIdentity := Manager{Root: root, Retention: time.Hour}
+	binding, err = withoutIdentity.ResolveResume(t.Context(), ResumeRequest{Repo: "o/r", CloneURL: origin, Workspace: binding.Workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLocalGitConfig(t, path, "user.name", "", false)
+	assertLocalGitConfig(t, path, "user.email", "", false)
+	assertLocalGitConfig(t, path, runnerGitAuthorStateKey, "", false)
+
+	// Repository-local values that predate Runner are restored after a later
+	// configured run instead of being deleted.
+	runGitCommand(t, path, nil, "config", "--local", "user.name", "Repository Author")
+	runGitCommand(t, path, nil, "config", "--local", "user.email", "repository@example.test")
+	binding, err = rotated.ResolveResume(t.Context(), ResumeRequest{Repo: "o/r", CloneURL: origin, Workspace: binding.Workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err = withoutIdentity.ResolveResume(t.Context(), ResumeRequest{Repo: "o/r", CloneURL: origin, Workspace: binding.Workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLocalGitConfig(t, path, "user.name", "Repository Author", true)
+	assertLocalGitConfig(t, path, "user.email", "repository@example.test", true)
+
+	// If another actor changes the values while Runner metadata exists, the
+	// next restart relinquishes management without overwriting that newer state.
+	binding, err = rotated.ResolveResume(t.Context(), ResumeRequest{Repo: "o/r", CloneURL: origin, Workspace: binding.Workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(t, path, nil, "config", "--local", "user.email", "agent@example.test")
+	_, err = withoutIdentity.ResolveResume(t.Context(), ResumeRequest{Repo: "o/r", CloneURL: origin, Workspace: binding.Workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLocalGitConfig(t, path, "user.name", "Repository Author", true)
+	assertLocalGitConfig(t, path, "user.email", "agent@example.test", true)
+	assertLocalGitConfig(t, path, runnerGitAuthorStateKey, "", false)
 }
 
 func TestPrepareNewRejectsUnsafeWorkspaceIDBeforeGit(t *testing.T) {
@@ -395,6 +548,68 @@ type fakeGitRunner struct {
 	head        string
 	worktrees   []string
 	worktreeErr error
+	gitConfig   map[string]string
+}
+
+func testRepositoryBinding() state.RepositoryBindingSnapshot {
+	return testRepositoryBindingForClone("https://github.com/o/r.git")
+}
+
+func testRepositoryBindingForClone(cloneURL string) state.RepositoryBindingSnapshot {
+	return state.RepositoryBindingSnapshot{Source: "operator", IssueRepositoryKey: "o/r", BindingID: "mapping-test",
+		Version: 1, ProviderKey: "git", ExternalRepositoryID: "o/r", CloneURL: cloneURL,
+		WebURL: "https://code.example.test/o/r", DefaultBranch: "main"}
+}
+
+func runGitCommand(t *testing.T, dir string, extraEnv []string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = dir
+	if len(extraEnv) > 0 {
+		replaced := map[string]bool{}
+		for _, entry := range extraEnv {
+			name, _, ok := strings.Cut(entry, "=")
+			if ok {
+				replaced[name] = true
+			}
+		}
+		for _, entry := range os.Environ() {
+			name, _, ok := strings.Cut(entry, "=")
+			if ok && !replaced[name] {
+				cmd.Env = append(cmd.Env, entry)
+			}
+		}
+		cmd.Env = append(cmd.Env, extraEnv...)
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
+
+func assertLocalGitConfig(t *testing.T, dir, key, want string, wantPresent bool) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", "config", "--local", "--get", key)
+	cmd.Dir = dir
+	output, err := cmd.Output()
+	if !wantPresent {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			t.Fatalf("git config %s presence: err=%v output=%q, want absent", key, err, output)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("git config %s: %v", key, err)
+	}
+	got := strings.TrimSuffix(string(output), "\n")
+	if want != "" && got != want {
+		t.Fatalf("git config %s = %q, want %q", key, got, want)
+	}
+	if want == "" && strings.TrimSpace(got) == "" {
+		t.Fatalf("git config %s is unexpectedly empty", key)
+	}
 }
 
 func (r *fakeGitRunner) Run(_ context.Context, command Command) (Result, error) {
@@ -404,6 +619,28 @@ func (r *fakeGitRunner) Run(_ context.Context, command Command) (Result, error) 
 		return Result{}, os.MkdirAll(command.Args[len(command.Args)-1], 0o700)
 	case "checkout":
 		return Result{}, nil
+	case "config":
+		if r.gitConfig == nil {
+			r.gitConfig = map[string]string{}
+		}
+		if len(command.Args) == 4 && command.Args[1] == "--local" && command.Args[2] == "--get" {
+			value, ok := r.gitConfig[command.Args[3]]
+			if !ok {
+				return Result{ExitCode: 1}, errors.New("exit status 1")
+			}
+			return Result{Stdout: []byte(value + "\n")}, nil
+		}
+		if len(command.Args) == 4 && command.Args[1] == "--local" && command.Args[2] == "--unset-all" {
+			if _, ok := r.gitConfig[command.Args[3]]; !ok {
+				return Result{ExitCode: 5}, errors.New("exit status 5")
+			}
+			delete(r.gitConfig, command.Args[3])
+			return Result{}, nil
+		}
+		if len(command.Args) == 4 && command.Args[1] == "--local" {
+			r.gitConfig[command.Args[2]] = command.Args[3]
+			return Result{}, nil
+		}
 	case "rev-parse":
 		if reflect.DeepEqual(command.Args, []string{"rev-parse", "HEAD"}) {
 			return Result{Stdout: []byte(first(r.head, "abc") + "\n")}, nil
