@@ -129,3 +129,115 @@ func processExecutionClassList() string {
 	}
 	return strings.Join(values, ", ")
 }
+
+// ProcessWorkspaceManagement declares whether a PROCESS uses the portable
+// workspace lifecycle or is independently allocated. Independent mode is
+// deliberately explicit so missing legacy metadata keeps the safer managed
+// behavior at final verification.
+type ProcessWorkspaceManagement string
+
+const (
+	ProcessWorkspaceManaged     ProcessWorkspaceManagement = "managed"
+	ProcessWorkspaceIndependent ProcessWorkspaceManagement = "independent"
+)
+
+var processWorkspaceManagementModes = []ProcessWorkspaceManagement{
+	ProcessWorkspaceManaged,
+	ProcessWorkspaceIndependent,
+}
+
+func (m ProcessWorkspaceManagement) Valid() bool {
+	for _, candidate := range processWorkspaceManagementModes {
+		if m == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func ParseProcessWorkspaceManagementValue(value string) (ProcessWorkspaceManagement, error) {
+	mode := ProcessWorkspaceManagement(strings.ToLower(strings.TrimSpace(value)))
+	if !mode.Valid() {
+		return "", fmt.Errorf("unknown PROCESS workspace management %q (want %s)", value, processWorkspaceManagementList())
+	}
+	return mode, nil
+}
+
+type ProcessWorkspaceManagementResult struct {
+	Management  ProcessWorkspaceManagement `json:"management"`
+	Explicit    bool                       `json:"explicit"`
+	Diagnostics []CanonicalDiagnostic      `json:"diagnostics,omitempty"`
+}
+
+func (r ProcessWorkspaceManagementResult) Blocking() bool {
+	for _, diagnostic := range r.Diagnostics {
+		if diagnostic.Severity == "error" {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseProcessWorkspaceManagement reads the logical ### Workspace Management
+// section. Missing declarations remain compatible with historical PROCESS
+// comments and intentionally project to managed behavior at the gate.
+func ParseProcessWorkspaceManagement(id, url, body string) ProcessWorkspaceManagementResult {
+	values, headings := processWorkspaceManagementSectionValues(LogicalBody(body))
+	result := ProcessWorkspaceManagementResult{Explicit: headings > 0}
+	diagnostic := func(severity, element, message string) CanonicalDiagnostic {
+		return CanonicalDiagnostic{Severity: severity, Type: "PROCESS", ID: id, URL: url, Element: element, Message: message}
+	}
+	if headings == 0 {
+		result.Management = ProcessWorkspaceManaged
+		return result
+	}
+	if headings != 1 {
+		result.Diagnostics = []CanonicalDiagnostic{diagnostic("error", "workspace-management-duplicate",
+			"PROCESS has multiple `### Workspace Management` sections")}
+		return result
+	}
+	if len(values) != 1 {
+		result.Diagnostics = []CanonicalDiagnostic{diagnostic("error", "workspace-management-invalid",
+			"`### Workspace Management` must contain exactly one mode value")}
+		return result
+	}
+	management, err := ParseProcessWorkspaceManagementValue(values[0])
+	if err != nil {
+		result.Diagnostics = []CanonicalDiagnostic{diagnostic("error", "workspace-management-unknown", err.Error())}
+		return result
+	}
+	result.Management = management
+	return result
+}
+
+func processWorkspaceManagementSectionValues(logical string) ([]string, int) {
+	lines := strings.Split(logical, "\n")
+	var values []string
+	headings := 0
+	inSection := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "### Workspace Management" {
+			headings++
+			inSection = true
+			continue
+		}
+		if strings.HasPrefix(trimmed, "### ") {
+			inSection = false
+			continue
+		}
+		if !inSection || trimmed == "" {
+			continue
+		}
+		values = append(values, strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")))
+	}
+	return values, headings
+}
+
+func processWorkspaceManagementList() string {
+	values := make([]string, 0, len(processWorkspaceManagementModes))
+	for _, mode := range processWorkspaceManagementModes {
+		values = append(values, string(mode))
+	}
+	return strings.Join(values, ", ")
+}
