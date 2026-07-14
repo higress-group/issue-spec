@@ -14,8 +14,37 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	"github.com/higress-group/issue-spec/internal/github"
+	"github.com/higress-group/issue-spec/internal/workflow"
 )
+
+func TestGeneratedExternalCodeWorkflowDoesNotPreGateFirstRunnerDispatch(t *testing.T) {
+	root := t.TempDir()
+	provider := workflow.ProviderPlan{ProviderKey: "code.example", EvidenceSnapshot: true}
+	if err := writeExternalCodeWorkflowConfig(root, provider); err != nil {
+		t.Fatal(err)
+	}
+
+	config := readTestFile(t, filepath.Join(root, "issue-spec", "config.yaml"))
+	if !strings.Contains(config, "- verify") || strings.Contains(config, "- runner") {
+		t.Fatalf("generated evidence synchronization policy =\n%s", config)
+	}
+
+	// A first /new dispatch has no code-change reference yet. The generated
+	// policy must therefore skip the runner pre-gate before it reads evidence
+	// credentials or attempts to resolve an external change.
+	result, err := (&runnerEvidencePreGate{}).BeforeDispatch(t.Context(), jobs.EvidencePreGateRequest{
+		WorkflowRoot:   root,
+		CredentialFile: filepath.Join(root, "missing-first-dispatch-credential"),
+	})
+	if err != nil {
+		t.Fatalf("first runner dispatch evidence pre-gate: %v", err)
+	}
+	if !result.Skipped {
+		t.Fatalf("first runner dispatch evidence pre-gate = %+v, want skipped", result)
+	}
+}
 
 func TestParseCanonicalGitRemoteConfigNormalizesIngressHTTPBin(t *testing.T) {
 	remotes, err := parseCanonicalGitRemoteConfig("remote.origin.url git@gitlab.alibaba-inc.com:Ingress/httpbin.git\n")
@@ -229,10 +258,13 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		}
 	}
 	workflowConfig := readTestFile(t, filepath.Join(root, "issue-spec", "config.yaml"))
-	for _, want := range []string{"provider_key: aone", "sync_before:", "- verify", "- runner"} {
+	for _, want := range []string{"sync_before:", "- verify"} {
 		if !strings.Contains(workflowConfig, want) {
 			t.Fatalf("workflow config missing %q:\n%s", want, workflowConfig)
 		}
+	}
+	if strings.Contains(workflowConfig, "- runner") {
+		t.Fatalf("workflow config must leave runner synchronization opt-in:\n%s", workflowConfig)
 	}
 	workflowSkill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-workflow", "SKILL.md"))
 	if !strings.Contains(workflowSkill, "browser-e2e/httpbin") || strings.Contains(workflowSkill, "local-source/local-checkout") {

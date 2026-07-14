@@ -58,6 +58,11 @@ The issue-spec CLI MUST allow an origin-bound profile to reference operator-owne
 - **WHEN** a provider advertises only a subset of the neutral contract
 - **THEN** generated skills require a pre-existing external change when `change.create` is absent, enable external finding and reply flows only when `change.comment` is present, configure pre-gate synchronization only when `evidence.snapshot` is present, and fail closed rather than describing unsupported operations as available
 
+#### Scenario: Generated evidence synchronization does not block the first runner dispatch
+
+- **WHEN** init generates workflow policy for a provider that supports `evidence.snapshot`
+- **THEN** it configures synchronization before `verify` by default so an initial Runner `/new` dispatch can create its external change before evidence is required, while `runner` remains a valid explicit synchronization timing for projects whose every dispatch already has an active external change
+
 #### Scenario: Project tracker integration remains independently selectable
 
 - **WHEN** a source provider also has a project or work-item system such as Aone

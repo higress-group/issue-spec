@@ -620,7 +620,7 @@ func writeExternalCodeWorkflowConfig(root string, provider workflow.ProviderPlan
 		evidence["required"] = required
 	}
 	if provider.EvidenceSnapshot {
-		evidence["sync_before"] = []string{"verify", "runner"}
+		evidence["sync_before"] = []string{"verify"}
 	}
 	external := map[string]any{"provider_key": provider.ProviderKey}
 	if len(evidence) > 0 {
