@@ -611,19 +611,46 @@ func writeExternalCodeWorkflowConfig(root string, provider workflow.ProviderPlan
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	external := map[string]any{}
+	if existing, ok := config["external_code"]; ok {
+		var mappingOK bool
+		external, mappingOK = existing.(map[string]any)
+		if !mappingOK {
+			return fmt.Errorf("existing %s external_code must be a mapping", filepath.ToSlash(path))
+		}
+	}
+	if existing, ok := external["provider_key"]; ok {
+		providerKey, stringOK := existing.(string)
+		if !stringOK {
+			return fmt.Errorf("existing %s external_code.provider_key must be a string", filepath.ToSlash(path))
+		}
+		if providerKey = strings.TrimSpace(providerKey); providerKey != "" && providerKey != provider.ProviderKey {
+			return fmt.Errorf("existing %s selects external code provider %q, not %q", filepath.ToSlash(path), providerKey, provider.ProviderKey)
+		}
+	}
+	external["provider_key"] = provider.ProviderKey
+
+	evidence := map[string]any{}
+	evidenceConfigured := false
+	if existing, ok := external["evidence"]; ok {
+		evidenceConfigured = true
+		var mappingOK bool
+		evidence, mappingOK = existing.(map[string]any)
+		if !mappingOK {
+			return fmt.Errorf("existing %s external_code.evidence must be a mapping", filepath.ToSlash(path))
+		}
+	}
 	required := make([]string, 0, len(provider.RecommendedEvidence))
 	for _, kind := range provider.RecommendedEvidence {
 		required = append(required, string(kind))
 	}
-	evidence := map[string]any{}
-	if len(required) > 0 {
+	if _, ok := evidence["required"]; !ok && len(required) > 0 {
 		evidence["required"] = required
 	}
-	if provider.EvidenceSnapshot {
+	if _, ok := evidence["sync_before"]; !ok && provider.EvidenceSnapshot {
 		evidence["sync_before"] = []string{"verify"}
 	}
-	external := map[string]any{"provider_key": provider.ProviderKey}
-	if len(evidence) > 0 {
+	if evidenceConfigured || len(evidence) > 0 {
 		external["evidence"] = evidence
 	}
 	config["external_code"] = external
