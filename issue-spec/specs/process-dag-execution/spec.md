@@ -2,10 +2,11 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for how the implement phase plans and executes the PROCESS DAG: capturing execution-planning metadata on TASK comments, delegating every non-trivial coding node to a worker sub-agent by default for context isolation, defaulting to serial PROCESS chains with bounded handoff (serial chains still delegate across separate workers), gating parallel dispatch on proven decoupling as a concern separate from the context-isolation default, treating review and repair as first-class PROCESS nodes, and auditing execution-planning evidence at final verify.
+Define the long-lived behavior contract for how the implement phase plans and executes the PROCESS DAG: capturing execution-planning metadata on TASK comments, delegating every non-trivial coding node to a worker sub-agent by default for context isolation, defaulting to serial PROCESS chains with bounded handoff (serial chains still delegate across separate workers), gating parallel dispatch on proven decoupling as a concern separate from the context-isolation default, treating review and repair as first-class PROCESS nodes, and auditing execution-planning evidence at final verify. It also defines whether a PROCESS uses the coordinator-managed workspace lifecycle or an independently managed workspace.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/144
+- https://github.com/higress-group/issue-spec/issues/196
 - https://github.com/higress-group/issue-spec/issues/32
 
 ## Requirements
@@ -247,3 +248,40 @@ During delegated implementation the coordinator MUST retain only orchestration, 
 - **THEN** its retained context SHALL be limited to scheduling, gate status, integration ownership, and handoff references
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043650
+
+### Requirement: Explicit workspace-management declaration
+
+Every newly generated PROCESS comment MUST render exactly one `### Workspace Management` section with either `managed` or `independent`. The generator MUST default to `managed`. The parser MUST reject empty, duplicate, multi-value, or unknown declarations while treating a missing declaration as legacy-compatible.
+
+#### Scenario: Generated process defaults to managed
+
+- **WHEN** a PROCESS is generated without a workspace-management input
+- **THEN** its logical body contains exactly `- managed` under `### Workspace Management`
+
+#### Scenario: Invalid declaration is rejected
+
+- **WHEN** a PROCESS contains an unknown or duplicate workspace-management declaration
+- **THEN** canonical validation reports an error
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/196#issuecomment-4964217002
+
+### Requirement: Independent workspace final-gate behavior
+
+A done change-bearing PROCESS explicitly declared `independent` MUST NOT require portable Workspace metadata at the final gate. A `managed` or legacy undeclared change-bearing PROCESS MUST retain the existing portable Workspace requirement. `workflow workspace prepare` MUST reject an explicitly independent PROCESS so runner and managed child execution cannot claim it. Independent mode MUST NOT weaken existing PROCESS PR, rationale, review, verification, or traceability checks.
+
+#### Scenario: Independent process is not blocked for absent lease
+
+- **WHEN** a final-gate snapshot contains a done explicit independent change-bearing PROCESS without a Workspace section
+- **THEN** workspace evaluation emits no missing-Workspace blocker for that PROCESS
+
+#### Scenario: Managed process remains protected
+
+- **WHEN** a final-gate snapshot contains a done managed change-bearing PROCESS without a Workspace section
+- **THEN** workspace evaluation reports the existing required-Workspace blocker
+
+#### Scenario: Managed allocation rejects independent work
+
+- **WHEN** workflow workspace prepare targets an explicit independent PROCESS
+- **THEN** the command rejects the request before creating a workspace lease
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/196#issuecomment-4964218213
