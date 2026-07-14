@@ -40,6 +40,9 @@ type runnerServeRuntimeInput struct {
 	GitCredentialConcurrency int
 	ReconcileWorkers         int
 	ReconcileLease           time.Duration
+	DelegationAudience       string
+	DelegationSubject        string
+	DelegationTTL            time.Duration
 	Dependencies             *runnerServeRuntimeDependencies
 }
 
@@ -110,10 +113,24 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	if !ok {
 		return nil, fmt.Errorf("runner serve native profile requires an HTTP client")
 	}
-	broker := &credentials.Broker{Profile: profile, Audience: profile.ServerInstanceID,
-		Subject: input.Runner.RunnerIdentity, ParentToken: input.ParentToken, HTTPClient: nativeHTTPClient,
-		Materializer: credentials.Materializer{Root: credentialRoot}, GitProvider: gitProvider, TTL: 5 * time.Minute,
-		Scopes: []string{"read:user", "issues:read", "issues:write", "evidence:write"}}
+	audience, subject := strings.TrimSpace(input.DelegationAudience), strings.TrimSpace(input.DelegationSubject)
+	if audience == "" {
+		audience = defaultDelegationAudience
+	}
+	if subject == "" {
+		subject = defaultDelegationSubject
+	}
+	delegationTTL := input.DelegationTTL
+	if delegationTTL == 0 {
+		delegationTTL = 5 * time.Minute
+	}
+	if delegationTTL < 30*time.Second || delegationTTL > 15*time.Minute {
+		return nil, fmt.Errorf("runner serve delegation TTL must be between 30s and 15m")
+	}
+	broker := &credentials.Broker{Profile: profile, Audience: audience,
+		Subject: subject, ParentToken: input.ParentToken, HTTPClient: nativeHTTPClient,
+		Materializer: credentials.Materializer{Root: credentialRoot}, GitProvider: gitProvider, TTL: delegationTTL,
+		Scopes: []string{"read:user", "issues:read", "issues:write"}}
 	workspaces := jobs.WorkspaceManager(workspace.Manager{Root: input.Runner.WorkspaceRoot, Retention: input.Runner.WorkspaceRetention.Duration})
 	sandboxer := jobs.SandboxPreparer(jobs.SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: input.Runner.UnsafeNoSandbox,
 		BwrapPath: input.Runner.BwrapPath, HostGHConfigDir: input.Runner.GHConfigDir,
@@ -147,6 +164,7 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 		Workspaces:   workspaces, Sandbox: sandboxer, Acpx: acpxFactory, Artifacts: artifacts, Writeback: writebacks,
 		AcpxBinary: input.Runner.AcpxPath, IssueSpecBinary: issueSpecBinary, CredentialBroker: broker,
 		CredentialScopes: scopes.ByRepository, CapabilityPreflight: broker, CapabilityHost: profile.Hostname,
+		OperatorSkillDirs: input.Runner.OperatorSkillDirs,
 		RequiredOperations: []capability.Operation{capability.OperationIssueRead, capability.OperationIssueCommentWrite,
 			capability.OperationArtifactWrite, capability.OperationGitClone, capability.OperationGitPush},
 		EvidencePreGate: newRunnerEvidencePreGate(profile)}

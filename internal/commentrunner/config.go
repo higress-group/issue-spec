@@ -49,9 +49,13 @@ type Config struct {
 	BwrapPath               string                 `json:"bwrap_path,omitempty"`
 	UnsafeNoSandbox         bool                   `json:"unsafe_no_sandbox"`
 	AllowHostSSH            bool                   `json:"allow_host_ssh,omitempty"`
-	GHConfigDir             string                 `json:"gh_config_dir,omitempty"`
-	StrictAgentCapabilities bool                   `json:"strict_agent_capabilities"`
-	CancellationEnabled     bool                   `json:"cancellation_enabled"`
+	// OperatorSkillDirs are operator-trusted local skill roots copied into each
+	// session's isolated CODEX_HOME. Repository workflow skills belong in the
+	// repository and arrive through the normal clone path.
+	OperatorSkillDirs       []string `json:"operator_skill_dirs,omitempty"`
+	GHConfigDir             string   `json:"gh_config_dir,omitempty"`
+	StrictAgentCapabilities bool     `json:"strict_agent_capabilities"`
+	CancellationEnabled     bool     `json:"cancellation_enabled"`
 	// Logging configuration
 	LogDir           string `json:"log_dir,omitempty"`
 	LogMaxSizeMB     int    `json:"log_max_size_mb,omitempty"`
@@ -186,6 +190,7 @@ func (c Config) Normalized() Config {
 	}
 	c.BwrapPath = strings.TrimSpace(c.BwrapPath)
 	c.GHConfigDir = strings.TrimSpace(c.GHConfigDir)
+	c.OperatorSkillDirs = normalizeStringList(c.OperatorSkillDirs)
 	c.Agent.Kind = strings.ToLower(strings.TrimSpace(c.Agent.Kind))
 	if c.Agent.Kind == "" {
 		c.Agent.Kind = AgentCodex
@@ -246,6 +251,9 @@ func (c Config) Validate() error {
 	case AgentCodex, AgentClaude:
 	default:
 		return fmt.Errorf("invalid --agent %q; valid values: codex, claude", c.Agent.Kind)
+	}
+	if len(c.OperatorSkillDirs) > 0 && c.Agent.Kind != AgentCodex {
+		return fmt.Errorf("--operator-skill-dir is supported only with --agent codex")
 	}
 	return nil
 }

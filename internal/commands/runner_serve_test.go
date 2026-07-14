@@ -147,7 +147,7 @@ func TestRunnerServeHelpDocumentsSecurityAndCapacityControls(t *testing.T) {
 		"--secret-file", "--previous-secrets-valid-until", "--timestamp-window", "--max-body-bytes",
 		"--max-header-bytes", "--max-queue-deliveries", "--max-queue-bytes", "--shutdown-timeout",
 		"--workspace-root", "--max-concurrent-jobs", "--reconcile-workers", "--git-credential-command",
-		"--allow-host-ssh"} {
+		"--allow-host-ssh", "--operator-skill-dir", "--delegation-audience", "--delegation-subject", "--delegation-ttl"} {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("help missing %s:\n%s", required, stdout.String())
 		}
@@ -181,6 +181,36 @@ func TestRunnerServeRejectsInvalidHostSSHFlagCombinations(t *testing.T) {
 				t.Fatalf("code=%d stderr=%q want=%q", code, stderr.String(), tc.want)
 			}
 		})
+	}
+}
+
+func TestRunnerServeAcceptsExplicitUnsafeHostSSHMode(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", configDir)
+	profile := auth.Profile{Name: "runner-unsafe-host-ssh", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance"}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RUNNER_UNSAFE_HOST_SSH_SECRET", strings.Repeat("s", 32))
+	t.Setenv("ISSUE_SPEC_TOKEN", "origin-bound-parent-token")
+	originalBuild, originalRun := runnerServeBuildRuntime, runnerServeRun
+	runnerServeBuildRuntime = func(_ context.Context, input runnerServeRuntimeInput) (runnerServeRuntime, error) {
+		if !input.Runner.AllowHostSSH || !input.Runner.UnsafeNoSandbox {
+			t.Fatalf("runner input=%+v", input.Runner)
+		}
+		return runnerServeRuntimeFunc(func(context.Context) error { return nil }), nil
+	}
+	runnerServeRun = func(ctx context.Context, runtime runnerServeRuntime) error { return runtime.Run(ctx) }
+	t.Cleanup(func() { runnerServeBuildRuntime, runnerServeRun = originalBuild, originalRun })
+	var stdout, stderr bytes.Buffer
+	app := newApp(strings.NewReader(""), &stdout, &stderr)
+	app.profileName = profile.Name
+	if code := app.runRunner(context.Background(), []string{"serve", "--repo", "o/r", "--runner", "runner-bot",
+		"--state", filepath.Join(t.TempDir(), "state.json"), "--subscription-id", uuid.NewString(),
+		"--secret-env", "RUNNER_UNSAFE_HOST_SSH_SECRET", "--allow-host-ssh", "--unsafe-no-sandbox"}); code != 0 {
+		t.Fatalf("serve code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 

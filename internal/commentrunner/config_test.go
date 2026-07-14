@@ -289,6 +289,26 @@ func TestConfigValidateAllowsExplicitUnsafeHostSSH(t *testing.T) {
 	}
 }
 
+func TestConfigValidateRejectsOperatorSkillsForClaude(t *testing.T) {
+	cfg := Config{
+		Repositories:       []string{"o/r"},
+		RunnerIdentity:     "bot",
+		StatePath:          filepath.Join(t.TempDir(), "state.json"),
+		WorkspaceRoot:      t.TempDir(),
+		PollInterval:       NewDuration(time.Minute),
+		FallbackInterval:   NewDuration(time.Hour),
+		WorkspaceRetention: NewDuration(24 * time.Hour),
+		MaxConcurrentJobs:  1,
+		Agent:              DefaultAgentConfig(),
+		OperatorSkillDirs:  []string{"/operator/skill"},
+	}
+	cfg.Agent.Kind = AgentClaude
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "supported only with --agent codex") {
+		t.Fatalf("Validate error = %v", err)
+	}
+}
+
 func TestConfigValidateRejectsNegativeFallbackInitialLookback(t *testing.T) {
 	cfg := Config{
 		Repositories:            []string{"o/r"},

@@ -72,6 +72,7 @@ type SandboxRequest struct {
 	RuntimeGHConfigDir   string
 	RuntimeXDGConfigHome string
 	RuntimeCodexHome     string
+	OperatorSkillDirs    []string
 	FileCapabilities     []sandbox.FileCapability
 	ChildProfile         *clientauth.Profile
 	AcpxAgent            string
@@ -152,6 +153,7 @@ type Dispatcher struct {
 	AcpxBinary          string
 	IssueSpecBinary     string
 	CoordinatorExtraEnv map[string]string
+	OperatorSkillDirs   []string
 	CredentialBroker    CredentialBroker
 	CredentialScopes    map[string]models.RepoScope
 	CapabilityPreflight CapabilityPreflight
@@ -933,6 +935,7 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 		RuntimeGHConfigDir:   runtimePaths.ghConfigDir,
 		RuntimeXDGConfigHome: runtimePaths.xdgConfigHome,
 		RuntimeCodexHome:     runtimePaths.codexHome,
+		OperatorSkillDirs:    append([]string(nil), d.OperatorSkillDirs...),
 		AcpxAgent:            job.CoordinatorKind,
 		ProcessWorkspaceRoot: processRoot,
 	}
@@ -1654,6 +1657,9 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 	}
 	cfg.FileCapabilities = append([]sandbox.FileCapability(nil), req.FileCapabilities...)
 	cfg.WorkspacePath = firstNonEmpty(req.WorkspacePath, cfg.WorkspacePath)
+	if err := rejectRepositoryAcpxConfig(firstNonEmpty(req.AcpxWorkingDirectory, cfg.WorkspacePath)); err != nil {
+		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
+	}
 	cfg.WorkspaceReadOnly = req.WorkspaceReadOnly
 	if strings.TrimSpace(req.ProcessWorkspaceRoot) != "" {
 		cfg.WritableBinds = []string{filepath.Clean(req.ProcessWorkspaceRoot)}
@@ -1741,6 +1747,9 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 	if err := mirrorHostCodexConfig(&cfg); err != nil {
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
+	if err := materializeTrustedAgentSkills(cfg.TempCodexHome, req.OperatorSkillDirs); err != nil {
+		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
+	}
 	if err := materializeHostAcpxAgentOverride(&cfg, req.AcpxAgent); err != nil {
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
@@ -1748,6 +1757,20 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
 	return cfg, resolvedAcpxBinary, ghAuthMirror, nil
+}
+
+func rejectRepositoryAcpxConfig(workspacePath string) error {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return nil
+	}
+	path := filepath.Join(filepath.Clean(workspacePath), ".acpxrc.json")
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("repository-owned .acpxrc.json is not allowed in Runner workspaces; configure the ACPX agent in the runner account instead")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect repository ACPX config: %w", err)
+	}
+	return nil
 }
 
 func materializeHostAcpxAgentOverride(cfg *sandbox.Config, agent string) error {

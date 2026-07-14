@@ -57,6 +57,7 @@ type PreflightDependencies struct {
 	OpenNotificationBackend func(context.Context, Config) (PreflightNotificationBackend, error)
 	LookPath                func(string) (string, error)
 	RunCommand              func(context.Context, string, ...string) ([]byte, error)
+	RunAgentCommand         func(context.Context, string, ...string) ([]byte, error)
 }
 
 // PreflightOptions controls opt-in checks that contact an external runtime.
@@ -221,6 +222,9 @@ func (d PreflightDependencies) withDefaults() PreflightDependencies {
 			cmd := exec.CommandContext(ctx, name, args...)
 			return cmd.CombinedOutput()
 		}
+	}
+	if d.RunAgentCommand == nil {
+		d.RunAgentCommand = d.RunCommand
 	}
 	return d
 }
@@ -493,7 +497,7 @@ func agentRuntimeProbeCheck(ctx context.Context, cfg Config, deps PreflightDepen
 		args = append(args, "--model", model)
 	}
 	args = append(args, "codex", "exec", "Reply with exactly OK and do not use tools.")
-	if _, err := deps.RunCommand(probeCtx, cfg.AcpxPath, args...); err != nil {
+	if _, err := deps.RunAgentCommand(probeCtx, cfg.AcpxPath, args...); err != nil {
 		return PreflightCheck{
 			Name:   "agent-runtime-probe",
 			Status: CheckError,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -20,9 +21,14 @@ import (
 
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+const (
+	defaultDelegationAudience = "issue-spec-api"
+	defaultDelegationSubject  = "issue-spec-runner"
+)
+
 func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	fs := newFlagSet("runner serve", a.err)
-	var repos, allowedUsers, previousFiles, previousEnvs, gitCredentialArgs stringListFlag
+	var repos, allowedUsers, previousFiles, previousEnvs, gitCredentialArgs, operatorSkillDirs stringListFlag
 	listen := fs.String("listen", "127.0.0.1:9876", "dedicated webhook listen address")
 	runner := fs.String("runner", "", "self-hosted runner identity")
 	statePath := fs.String("state", "", "durable runner state path")
@@ -52,11 +58,15 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	idleTimeout := fs.Duration("idle-timeout", time.Minute, "HTTP idle connection timeout")
 	shutdownTimeout := fs.Duration("shutdown-timeout", 30*time.Second, "graceful shutdown deadline")
 	retryAfter := fs.Duration("retry-after", 5*time.Second, "backpressure Retry-After duration")
+	delegationAudience := fs.String("delegation-audience", defaultDelegationAudience, "server-configured delegated credential audience")
+	delegationSubject := fs.String("delegation-subject", defaultDelegationSubject, "server-configured delegated credential subject")
+	delegationTTL := fs.Duration("delegation-ttl", 5*time.Minute, "delegated credential lifetime; 30s to 15m")
 	tlsCert := fs.String("tls-cert", "", "TLS certificate PEM file")
 	tlsKey := fs.String("tls-key", "", "0600 TLS private key PEM file")
 	production := fs.Bool("production", false, "require TLS and an explicit non-loopback bind")
 	gitCredentialCommand := fs.String("git-credential-command", "", "absolute operator command implementing issue-spec-git-credential-v1")
 	allowHostSSH := fs.Bool("allow-host-ssh", false, "reuse the runner account ~/.ssh inside the sandbox for trusted internal repositories")
+	fs.Var(&operatorSkillDirs, "operator-skill-dir", "operator-owned local skill directory, or a directory containing skill directories; repeat as needed")
 	gitCredentialTimeout := fs.Duration("git-credential-timeout", 30*time.Second, "operator git credential command timeout")
 	gitCredentialMaxOutput := fs.Int64("git-credential-max-output", 1<<20, "maximum operator git credential command output bytes")
 	gitCredentialConcurrency := fs.Int("git-credential-concurrency", 4, "maximum concurrent operator git credential command invocations")
@@ -140,6 +150,14 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		a.errorf("runner serve limits and timeouts are outside their safe bounds\n")
 		return 2
 	}
+	if !validRunnerDelegationBinding(*delegationAudience) || !validRunnerDelegationBinding(*delegationSubject) {
+		a.errorf("runner serve delegation audience and subject must be printable values of at most 128 bytes\n")
+		return 2
+	}
+	if *delegationTTL < 30*time.Second || *delegationTTL > 15*time.Minute {
+		a.errorf("runner serve delegation TTL must be between 30s and 15m\n")
+		return 2
+	}
 	if *gitCredentialTimeout <= 0 || *gitCredentialTimeout > 2*time.Minute || *gitCredentialMaxOutput < 1024 ||
 		*gitCredentialMaxOutput > 4<<20 || *gitCredentialConcurrency < 1 || *gitCredentialConcurrency > 32 ||
 		*reconcileWorkers < 1 || *reconcileWorkers > 32 || *reconcileLease < 10*time.Second ||
@@ -214,6 +232,11 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	runnerConfig.WorkspaceRetention = commentrunner.NewDuration(*workspaceRetention)
 	runnerConfig.UnsafeNoSandbox, runnerConfig.BwrapPath = *unsafeNoSandbox, strings.TrimSpace(*bwrapPath)
 	runnerConfig.AllowHostSSH = *allowHostSSH
+	runnerConfig.OperatorSkillDirs, err = resolveRunnerOperatorSkillDirs(operatorSkillDirs.Values())
+	if err != nil {
+		a.errorf("runner serve operator skills: %v\n", err)
+		return 2
+	}
 	runnerConfig.CancellationEnabled = *cancellationEnabled
 	runnerConfig, err = commentrunner.ApplyDefaultRunnerScopePaths(runnerConfig, seen["state"], seen["workspace-root"])
 	if err != nil {
@@ -272,7 +295,9 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		Runner: runnerConfig, Queue: queue, Store: store, HTTP: service, GitCredentialCommand: *gitCredentialCommand,
 		GitCredentialArgs: gitCredentialArgs.Values(), GitCredentialTimeout: *gitCredentialTimeout,
 		GitCredentialMaxOutput: *gitCredentialMaxOutput, GitCredentialConcurrency: *gitCredentialConcurrency,
-		ReconcileWorkers: *reconcileWorkers, ReconcileLease: *reconcileLease})
+		ReconcileWorkers: *reconcileWorkers, ReconcileLease: *reconcileLease,
+		DelegationAudience: strings.TrimSpace(*delegationAudience), DelegationSubject: strings.TrimSpace(*delegationSubject),
+		DelegationTTL: *delegationTTL})
 	if err != nil {
 		a.errorf("runner serve runtime: %v\n", err)
 		return 2
@@ -286,6 +311,47 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func validRunnerDelegationBinding(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if char < 0x21 || char == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func resolveRunnerOperatorSkillDirs(values []string) ([]string, error) {
+	seen := map[string]bool{}
+	resolved := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil, fmt.Errorf("--operator-skill-dir must not be empty")
+		}
+		path, err := filepath.Abs(value)
+		if err != nil {
+			return nil, fmt.Errorf("resolve %q: %w", value, err)
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect %s: %w", path, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, fmt.Errorf("%s must be a non-symlink directory", path)
+		}
+		path = filepath.Clean(path)
+		if !seen[path] {
+			seen[path] = true
+			resolved = append(resolved, path)
+		}
+	}
+	return resolved, nil
 }
 
 func parsePreviousExpiry(now time.Time, raw string, count int) (time.Time, error) {

@@ -1706,6 +1706,30 @@ func TestConfiguredAgentRuntimeRecordsAdapterNotConfigPath(t *testing.T) {
 	}
 }
 
+func TestSandboxRunnerRejectsRepositoryAcpxConfig(t *testing.T) {
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspacePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspacePath, ".acpxrc.json"), []byte(`{"agents":{"codex":{"command":"untrusted"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err := (SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: true}}).config(SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           "acpx",
+		AcpxAgent:            acpx.AgentCodex,
+		RuntimeHome:          filepath.Join(root, "runtime", "home"),
+		RuntimeGHConfigDir:   filepath.Join(root, "runtime", "gh"),
+		RuntimeXDGConfigHome: filepath.Join(root, "runtime", "xdg"),
+		RuntimeCodexHome:     filepath.Join(root, "runtime", "codex"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "repository-owned .acpxrc.json is not allowed") {
+		t.Fatalf("repository ACPX config error = %v", err)
+	}
+}
+
 func TestSanitizeCodexRuntimeFileDropsOnlyTopLevelDefaultServiceTier(t *testing.T) {
 	tests := []struct {
 		name string

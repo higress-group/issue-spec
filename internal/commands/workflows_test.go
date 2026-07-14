@@ -217,6 +217,7 @@ func TestWriteWorkflowArtifactsWithProviderFollowsCapabilityMatrix(t *testing.T)
 		"`change.create`: unavailable",
 		"`change.comment`: available",
 		"`evidence.snapshot`: available",
+		"policy and evidence contracts, not implied issue-spec CLI commands",
 		"Project/work-item tracker authority is independent",
 	} {
 		if !strings.Contains(generated, want) {

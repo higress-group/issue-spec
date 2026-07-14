@@ -106,8 +106,8 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 2. 在目标仓库的 **协作者** 页面解析该 Login，并授予最低的 `write` 角色；
 3. 在 **管理后台 > 托管访问令牌** 中解析该 Service Account；
 4. 选择 **运行器预设**，并且只选择 Runner 要服务的那个仓库；
-5. 确认 Scope 包含 `read:user`、`issues:read`、`issues:write`、
-   `runner:delegate` 和 `evidence:write`；
+5. 确认 Scope 包含 `read:user`、`issues:read`、`issues:write` 和
+   `runner:delegate`；
 6. 创建并保存只显示一次的 Managed PAT。
 
 ![为独立服务账号签发 Runner Managed PAT](assets/self-hosted-runner-service-account.zh-CN.png)
@@ -125,7 +125,7 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 3. 保存只显示一次的个人 PAT；
 4. 启动时把自己的准确 Login 传给 `--runner`。
 
-个人 PAT 使用相同的五个 Scope，并且同样必须精确绑定一个仓库。默认只有
+个人 PAT 使用相同的四个 Scope，并且同样必须精确绑定一个仓库。默认只有
 `--runner` 对应的自己可以发出命令；需要允许其他维护者时再增加 `--allowed-user`。
 这种方式配置更少，但 Runner 写入、凭据轮换和账号停用都与个人身份绑定，不适合作为
 团队长期运行或多人共用的生产自动化。不要用浏览器 Session Cookie 或登录会话替代 PAT。
@@ -152,6 +152,13 @@ issue-spec --profile team auth status --json
 上述 Managed PAT 或个人 PAT 是 Runner 的父凭据。每个任务实际使用的是 Server
 委托的短期、仓库范围 Issue Token。父凭据必须精确绑定一个仓库；需要服务多个仓库时，
 应为每个仓库创建独立的 PAT、Profile 和 `runner serve` 进程。
+
+`--delegation-audience` 与 `--delegation-subject` 默认分别为 Server 的
+默认值 `issue-spec-api`、`issue-spec-runner`。如果运维修改了
+`DELEGATION_AUDIENCE` 或 `DELEGATION_SUBJECT`，Runner 参数也必须保持一致。
+委托 Token 默认有效期为 5 分钟。新签发 Token 在 Runner 上被判为过期时，应先校准
+Server 与 Runner 的时钟；仅在修复时钟同步的短暂过渡期内，才可以显式把
+`--delegation-ttl` 调高，且上限为 `15m`。
 
 ## 4. 创建 Runner Intake Webhook
 
@@ -233,8 +240,34 @@ Runner 系统用户 SSH Key 或 Agent 能访问的全部仓库权限，因此应
 
 ## 6. Preflight 与前台启动
 
-部署候选版本应在本段命令中加上 `--verify-agent-runtime`。它会以服务用户创建一次禁止工具的
-ACP session，验证实际 adapter 与显式设置的 `--model`；它不替代独立的 bubblewrap preflight。
+部署候选版本应在本段命令中加上 `--verify-agent-runtime`。它会创建临时空工作区，并通过
+Runner 实际配置的沙箱、隔离运行目录、adapter override、Proxy 环境和显式 `--model`，执行
+一次禁止工具的 ACP session。
+
+### 把运行方维护的代码平台技能提供给 Agent
+
+在仓库中执行 `issue-spec init` 后，应把生成的 `.agents/skills` 与仓库 workflow 一起
+评审并提交。Runner clone 默认分支时会自然获得同一份 workflow，不要再通过 Runner 配置
+重复注入仓库 workflow。
+
+仅在使用 `--agent codex` 时，才可通过 `--operator-skill-dir` 提供运行方维护、受信任的本地
+代码平台 Skill。它可以说明已批准的分支、推送和 PR/MR 创建步骤，同时避免把 Provider 专属
+命令、主机名或凭据写进目标仓库和公开文档。Runner 只会把这个显式本地输入复制到会话隔离的
+`CODEX_HOME`；其他 Agent 会拒绝该参数。
+
+```bash
+cd /srv/issue-spec-workflows/acme-workflow
+issue-spec --profile team init --repo acme/workflow --tools codex --delivery skills
+# 评审并把 .agents/skills 与该仓库一起提交后，再启用 Runner。
+
+issue-spec --profile team runner serve \
+  ... \
+  --operator-skill-dir /etc/issue-spec-runner/skills/code-host
+```
+
+每个参数既可指向包含 `SKILL.md` 的一个技能目录，也可指向其第一层子目录均为技能的目录。
+符号链接和重名 Skill 会被拒绝，Runner 会为每次会话重新复制这些技能。
+仓库自带的 `.acpxrc.json` 也会被拒绝，防止它从仓库工作目录覆盖运行方选定的 ACPX adapter。
 
 先用 self-hosted Profile 检查仓库权限、Agent、acpx 和沙箱：
 
@@ -243,6 +276,7 @@ issue-spec --profile team runner preflight \
   --repo acme/workflow \
   --runner svc-runner-bot-a1b2c3d4 \
   --agent codex \
+  --verify-agent-runtime \
   --json
 ```
 
@@ -259,6 +293,7 @@ issue-spec --profile team runner serve \
   --git-credential-command /usr/local/libexec/issue-spec-git-credential \
   --state /var/lib/issue-spec-runner/state.json \
   --workspace-root /var/lib/issue-spec-runner/workspaces \
+  --operator-skill-dir /etc/issue-spec-runner/skills/code-host \
   --agent codex
 ```
 
@@ -300,7 +335,7 @@ Type=simple
 User=issue-spec-runner
 Group=issue-spec-runner
 Environment=HOME=/var/lib/issue-spec-runner
-EnvironmentFile=/etc/issue-spec-runner/proxy.env
+EnvironmentFile=-/etc/issue-spec-runner/proxy.env
 ExecStart=/usr/local/bin/issue-spec --profile team runner serve \
   --repo acme/workflow \
   --runner svc-runner-bot-a1b2c3d4 \
@@ -311,6 +346,7 @@ ExecStart=/usr/local/bin/issue-spec --profile team runner serve \
   --git-credential-command /usr/local/libexec/issue-spec-git-credential \
   --state /var/lib/issue-spec-runner/state.json \
   --workspace-root /var/lib/issue-spec-runner/workspaces \
+  --operator-skill-dir /etc/issue-spec-runner/skills/code-host \
   --agent codex
 Restart=on-failure
 RestartSec=5s
@@ -385,7 +421,8 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 | Webhook 为 `401` | Subscription ID、当前 Secret、Runner 与 Server 时钟 |
 | Webhook 无法连接 | Receiver URL、DNS、防火墙、反向代理和 TLS |
 | 评论被忽略 | 命令是否位于开头、作者是否在允许列表、是否具有 Write 权限 |
-| `runner:delegate` 失败 | PAT 是否只限制到该仓库、Scope 是否完整、`--runner` 是否为 PAT 所属账号的 Login |
+| `runner:delegate` 失败 | PAT 是否只限制到该仓库，以及是否包含 `read:user`、`issues:read`、`issues:write`、`runner:delegate` |
+| 新签发的委托 Token 被判为过期 | 校准 Server 与 Runner 时钟；只在修复校时的短期过渡中使用有上限的 `--delegation-ttl` |
 | 找不到源码或 Clone 失败 | Source Binding 是否 Active；短期凭据模式检查 HTTPS URL 与 Command 回显，宿主 SSH 模式检查 Runner 用户的 Key、Agent、`known_hosts` 和仓库权限 |
 | Preflight 报沙箱失败 | Linux 上安装 `bubblewrap` 或显式配置 `--bwrap` |
 | Codex 无法启动 | 运行 `runner preflight --verify-agent-runtime`，确认 adapter 固定版本、精确模型 ID 和 Proxy 环境对 systemd 用户可用 |

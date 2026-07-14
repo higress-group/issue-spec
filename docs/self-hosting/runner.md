@@ -107,7 +107,7 @@ security boundary:
 5. confirm these scopes and create the Managed PAT:
 
 ```text
-read:user, issues:read, issues:write, runner:delegate, evidence:write
+read:user, issues:read, issues:write, runner:delegate
 ```
 
 ![Issue a Runner Managed PAT to an independent service account](assets/self-hosted-runner-service-account.png)
@@ -127,7 +127,7 @@ runner may use your own issue-spec account:
 3. save the one-time personal PAT;
 4. pass your exact login to `--runner` when starting the process.
 
-The personal PAT uses the same five scopes and exact one-repository cap. By
+The personal PAT uses the same four scopes and exact one-repository cap. By
 default, only the account named by `--runner` can issue commands; add
 `--allowed-user` only when other maintainers should be accepted. This option is
 quicker to configure, but runner writes, credential rotation, and account
@@ -158,6 +158,14 @@ The Managed PAT or personal PAT selected above is the parent credential. Each
 job receives a short-lived, repository-scoped issue token delegated by the
 server. A parent credential is restricted to exactly one repository; use a
 separate PAT, profile, and `runner serve` process for each additional repository.
+
+The defaults for `--delegation-audience` and `--delegation-subject` are the
+server defaults, `issue-spec-api` and `issue-spec-runner`. Keep them aligned
+with `DELEGATION_AUDIENCE` and `DELEGATION_SUBJECT` when an operator changes
+those server settings. Delegated tokens last five minutes by default. Correct
+the clocks on both hosts if a Runner rejects a newly issued token as expired;
+`--delegation-ttl` can be explicitly raised up to `15m` only as a short-lived
+recovery measure while clock synchronization is being repaired.
 
 ## 4. Create the Runner intake webhook
 
@@ -229,15 +237,46 @@ repository, and do not mount a developer's everyday SSH identity.
 ## 6. Run preflight and start in the foreground
 
 For a deployment candidate, add `--verify-agent-runtime` to this preflight.
-It creates one tools-denied ACP session as the service user, checks the
-effective adapter and any explicit `--model`, and complements rather than
-replaces the separate bubblewrap preflight check.
+It creates a temporary empty workspace and runs one tools-denied ACP session
+through the configured Runner sandbox, isolated runtime homes, adapter override,
+proxy environment, and any explicit `--model`.
+
+### Make operator-owned code-host skills available to the agent
+
+Run `issue-spec init` in the repository and commit its generated
+`.agents/skills` directory with the repository workflow. The Runner then gets
+the same workflow by cloning the default branch; do not duplicate repository
+workflow skills through Runner configuration.
+
+With `--agent codex`, use `--operator-skill-dir` only for an operator-owned,
+trusted local skill for the selected code host. It can describe the approved
+branch, push, and PR/MR procedure without putting provider-specific commands,
+hostnames, or credentials in the target repository or public documentation.
+The Runner copies only this explicit local input into the session's isolated
+`CODEX_HOME`; other agents reject this option.
+
+```bash
+cd /srv/issue-spec-workflows/acme-workflow
+issue-spec --profile team init --repo acme/workflow --tools codex --delivery skills
+# Review and commit .agents/skills with this repository before enabling Runner.
+
+issue-spec --profile team runner serve \
+  ... \
+  --operator-skill-dir /etc/issue-spec-runner/skills/code-host
+```
+
+Each argument may name one skill directory containing `SKILL.md`, or a
+directory whose immediate children are skills. Symlinks and duplicate skill
+names are rejected; the Runner refreshes these copies for every session.
+Repository-owned `.acpxrc.json` is also rejected because it would otherwise
+override the operator-selected ACPX adapter from the repository working directory.
 
 ```bash
 issue-spec --profile team runner preflight \
   --repo acme/workflow \
   --runner svc-runner-bot-a1b2c3d4 \
   --agent codex \
+  --verify-agent-runtime \
   --json
 
 issue-spec --profile team runner serve \
@@ -250,6 +289,7 @@ issue-spec --profile team runner serve \
   --git-credential-command /usr/local/libexec/issue-spec-git-credential \
   --state /var/lib/issue-spec-runner/state.json \
   --workspace-root /var/lib/issue-spec-runner/workspaces \
+  --operator-skill-dir /etc/issue-spec-runner/skills/code-host \
   --agent codex
 ```
 
@@ -281,7 +321,7 @@ Type=simple
 User=issue-spec-runner
 Group=issue-spec-runner
 Environment=HOME=/var/lib/issue-spec-runner
-EnvironmentFile=/etc/issue-spec-runner/proxy.env
+EnvironmentFile=-/etc/issue-spec-runner/proxy.env
 ExecStart=/usr/local/bin/issue-spec --profile team runner serve \
   --repo acme/workflow \
   --runner svc-runner-bot-a1b2c3d4 \
@@ -292,6 +332,7 @@ ExecStart=/usr/local/bin/issue-spec --profile team runner serve \
   --git-credential-command /usr/local/libexec/issue-spec-git-credential \
   --state /var/lib/issue-spec-runner/state.json \
   --workspace-root /var/lib/issue-spec-runner/workspaces \
+  --operator-skill-dir /etc/issue-spec-runner/skills/code-host \
   --agent codex
 Restart=on-failure
 RestartSec=5s
@@ -369,7 +410,8 @@ team workflow:
 | Webhook returns `401` | Subscription ID, current secret, and server/runner clocks |
 | Webhook cannot connect | Receiver URL, DNS, firewall, reverse proxy, and TLS |
 | Comment is ignored | Command position, allowlist, and write-equivalent permission |
-| `runner:delegate` fails | Exact repository restriction, scopes, and PAT subject login matching `--runner` |
+| `runner:delegate` fails | Exact repository restriction and scopes (`read:user`, `issues:read`, `issues:write`, `runner:delegate`) |
+| Newly issued delegated token is rejected as expired | Synchronize Server and Runner clocks; only temporarily use a bounded `--delegation-ttl` while repairing clock sync |
 | Clone fails | Active source binding; for credentials, the HTTPS URL and exact binding echo; for host SSH, the runner user's key, agent, `known_hosts`, and repository access |
 | Sandbox preflight fails | Install `bubblewrap` or configure `--bwrap` on Linux |
 | Codex does not start | Run `runner preflight --verify-agent-runtime`; confirm the adapter pin, exact model ID, and proxy environment are available to the systemd user |
