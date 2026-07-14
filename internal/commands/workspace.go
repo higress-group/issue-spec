@@ -259,12 +259,8 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 	if class.Blocking() {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "execution_class_invalid", errors.New(model.CanonicalDiagnosticStrings(class.Diagnostics)[0]), *flags.jsonOut)
 	}
-	management := model.ParseProcessWorkspaceManagement(processID, target.artifact.URL, target.body)
-	if management.Blocking() {
-		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "workspace_management_invalid", errors.New(model.CanonicalDiagnosticStrings(management.Diagnostics)[0]), *flags.jsonOut)
-	}
-	if management.Explicit && management.Management == model.ProcessWorkspaceIndependent {
-		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "workspace_management_independent", errors.New("independent PROCESS cannot enter the managed workspace lifecycle"), *flags.jsonOut)
+	if code, managementErr := managedWorkspaceLifecycleProblem(target, processID); managementErr != nil {
+		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, code, managementErr, *flags.jsonOut)
 	}
 	mode := modeForExecutionClass(class.Class)
 	remoteWorkspace := model.ParseProcessWorkspace(processID, target.artifact.URL, target.body)
@@ -534,6 +530,9 @@ func (a *app) runWorkspaceLocalRemoteMutation(ctx context.Context, flags workspa
 	if err := validateWorkspaceWriteBoundary(target, flags); err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "remote_precondition_failed", err, *flags.jsonOut)
 	}
+	if code, managementErr := managedWorkspaceLifecycleProblem(target, processID); managementErr != nil {
+		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, code, managementErr, *flags.jsonOut)
+	}
 	manager, err := processworkspace.OpenManager(ctx, *flags.integration, *flags.workspaceRoot, processworkspace.ManagerOptions{})
 	if err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "manager_open_failed", err, *flags.jsonOut)
@@ -550,6 +549,21 @@ func (a *app) runWorkspaceLocalRemoteMutation(ctx context.Context, flags workspa
 		return a.workspaceError(result, "remote_workspace_update_failed", err, *flags.jsonOut)
 	}
 	return a.outputWorkspace(workspaceResult(ctx, manager, inspection, repo, issue, processID, action, remoteResult), *flags.jsonOut)
+}
+
+// managedWorkspaceLifecycleProblem rejects operations which allocate or mutate
+// a managed workspace lease. Cleanup intentionally does not call this helper:
+// an owner must be able to remove a historical managed lease after a PROCESS is
+// changed to independent.
+func managedWorkspaceLifecycleProblem(target workspaceRemoteTarget, processID string) (string, error) {
+	management := model.ParseProcessWorkspaceManagement(processID, target.artifact.URL, target.body)
+	if management.Blocking() {
+		return "workspace_management_invalid", errors.New(model.CanonicalDiagnosticStrings(management.Diagnostics)[0])
+	}
+	if management.Explicit && management.Management == model.ProcessWorkspaceIndependent {
+		return "workspace_management_independent", errors.New("independent PROCESS cannot enter the managed workspace lifecycle")
+	}
+	return "", nil
 }
 
 func (a *app) runWorkspaceReconcile(ctx context.Context, args []string) int {

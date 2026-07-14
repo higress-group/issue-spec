@@ -35,6 +35,9 @@ func (a *app) runWorkspaceIntegrate(ctx context.Context, args []string) int {
 	if err := validateWorkspaceWriteBoundary(target, flags); err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "remote_precondition_failed", err, *flags.jsonOut)
 	}
+	if code, managementErr := managedWorkspaceLifecycleProblem(target, processID); managementErr != nil {
+		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, code, managementErr, *flags.jsonOut)
+	}
 	remoteWorkspace := model.ParseProcessWorkspace(processID, target.artifact.URL, target.body)
 	if !remoteWorkspace.Explicit || remoteWorkspace.Blocking() || remoteWorkspace.Workspace == nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "reservation_identity_mismatch",

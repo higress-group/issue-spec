@@ -120,6 +120,38 @@ func TestWorkspaceIntegrateRejectsWrongWorkspaceOverrideBeforeMutation(t *testin
 	}
 }
 
+func TestWorkspaceManagedLifecycleRejectsProcessChangedToIndependent(t *testing.T) {
+	t.Run("reconcile", func(t *testing.T) {
+		repo, root, backend, _ := completedWorkspaceForIntegration(t, "independent-reconcile", "internal/commands/independent-reconcile.txt")
+		backend.body = strings.Replace(backend.body, "### Workspace Management\n\n- managed", "### Workspace Management\n\n- independent", 1)
+		writes := backend.writes
+		app, out, _ := transitionAppWithError(backend)
+		args := append([]string{"reconcile"}, workspaceBaseArgs(repo, root, "independent-reconcile")...)
+		args = append(args, "--json")
+		if code := app.runWorkflowWorkspace(t.Context(), args); code != 1 {
+			t.Fatalf("reconcile code=%d out=%s", code, out.String())
+		}
+		result := decodeWorkspaceResult(t, out)
+		if result.Code != "workspace_management_independent" || backend.writes != writes {
+			t.Fatalf("reconcile result=%+v writes=%d->%d", result, writes, backend.writes)
+		}
+	})
+
+	t.Run("integrate", func(t *testing.T) {
+		repo, root, backend, base := completedWorkspaceForIntegration(t, "independent-integrate", "internal/commands/independent-integrate.txt")
+		backend.body = strings.Replace(backend.body, "### Workspace Management\n\n- managed", "### Workspace Management\n\n- independent", 1)
+		writes := backend.writes
+		app, out, _ := transitionAppWithError(backend)
+		if code := app.runWorkspaceIntegrate(t.Context(), workspaceIntegrateArgs(repo, root, "independent-integrate", base)); code != 1 {
+			t.Fatalf("integrate code=%d out=%s", code, out.String())
+		}
+		result := decodeWorkspaceResult(t, out)
+		if result.Code != "workspace_management_independent" || backend.writes != writes || workspaceGitOutput(t, repo, "rev-parse", "HEAD") != base {
+			t.Fatalf("integrate result=%+v writes=%d->%d", result, writes, backend.writes)
+		}
+	})
+}
+
 func TestWorkspaceIntegrateRejectsRemoteLocalIdentityMismatchBeforeMutation(t *testing.T) {
 	repo, root, backend, base := completedWorkspaceForIntegration(t, "identity-owner", "internal/commands/identity.txt")
 	parsed := model.ParseProcessWorkspace("PROCESS-004", "", backend.body)
