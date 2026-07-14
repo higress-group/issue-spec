@@ -28,6 +28,7 @@ type Authorizer interface {
 
 type Config struct {
 	Production           bool
+	AllowHTTP            bool
 	SecretOverlap        time.Duration
 	DestinationPreflight DestinationPreflight
 }
@@ -67,7 +68,7 @@ func (s *Service) Create(ctx context.Context, actor Actor, subject authz.Subject
 	if err := validateActor(actor); err != nil {
 		return SecretResult{}, err
 	}
-	scopeType, err := validateCreate(input, s.config.Production)
+	scopeType, err := validateCreate(input, s.config.Production, s.config.AllowHTTP)
 	if err != nil {
 		return SecretResult{}, err
 	}
@@ -230,7 +231,7 @@ func (s *Service) Update(ctx context.Context, actor Actor, subject authz.Subject
 		return Subscription{}, ErrInvalidInput
 	}
 	input.URL = baseURL
-	if validateActor(actor) != nil || input.ExpectedVersion < 1 || validateURL(input.URL, s.config.Production) != nil ||
+	if validateActor(actor) != nil || input.ExpectedVersion < 1 || validateURL(input.URL, s.config.Production, s.config.AllowHTTP) != nil ||
 		validatePolicy(input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes) != nil || validateRetry(input.Retry) != nil {
 		return Subscription{}, ErrInvalidInput
 	}
@@ -605,8 +606,8 @@ func audit(ctx context.Context, tx pgx.Tx, actor Actor, item Subscription, actio
 	return err
 }
 
-func validateCreate(input CreateInput, production bool) (ScopeType, error) {
-	if input.OrganizationID == uuid.Nil || validateURL(input.URL, production) != nil ||
+func validateCreate(input CreateInput, production, allowHTTP bool) (ScopeType, error) {
+	if input.OrganizationID == uuid.Nil || validateURL(input.URL, production, allowHTTP) != nil ||
 		validatePolicy(input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes) != nil || validateRetry(input.Retry) != nil {
 		return "", ErrInvalidInput
 	}
@@ -619,15 +620,15 @@ func validateCreate(input CreateInput, production bool) (ScopeType, error) {
 	return ScopeRepository, nil
 }
 
-func validateURL(raw string, production bool) error {
-	if _, err := (networkpolicy.Policy{Production: production}).ValidateURL(raw); err != nil {
+func validateURL(raw string, production, allowHTTP bool) error {
+	if _, err := (networkpolicy.Policy{Production: production, AllowHTTP: allowHTTP}).ValidateURL(raw); err != nil {
 		return ErrInvalidInput
 	}
 	return nil
 }
 
 func (s *Service) validateStoredDestination(item Subscription) error {
-	if validateURL(item.URL, s.config.Production) != nil {
+	if validateURL(item.URL, s.config.Production, s.config.AllowHTTP) != nil {
 		return ErrUnsafeDestination
 	}
 	return nil

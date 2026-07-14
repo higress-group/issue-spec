@@ -193,6 +193,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	}
 	subscriptionService, err := subscriptions.New(database, authorization, keyring, subscriptions.Config{
 		Production:           cfg.Environment == config.EnvironmentProduction,
+		AllowHTTP:            cfg.TransportPosture == config.TransportTrustedInternalHTTP,
 		DestinationPreflight: networkpolicy.Preflight{Policy: policy, Resolver: resolver},
 	})
 	if err != nil {
