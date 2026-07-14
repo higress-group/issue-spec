@@ -31,13 +31,17 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 	skipSourceBinding := fs.Bool("skip-source-binding", false, "disable profile source-binding automation for this invocation")
 	yes := fs.Bool("yes", false, "approve the displayed self-hosted remote mutation plan")
 	planOnly := fs.Bool("plan", false, "show the self-hosted init plan without mutations or local writes")
-	createLabels := fs.Bool("create-labels", false, "create issue-spec labels")
+	createLabels := fs.Bool("create-labels", true, "ensure issue-spec labels")
+	skipLabels := fs.Bool("skip-labels", false, "skip ensuring issue-spec labels")
 	tools := fs.String("tools", "", "generate workflow artifacts for AI tools: all, none, or comma-separated codex,claude")
 	delivery := fs.String("delivery", "both", "workflow artifact delivery: both, skills, or commands")
 	language := fs.String("language", "", "preferred natural language for generated workflow artifacts (e.g. zh, en, ja); writes rules.language to issue-spec/config.yaml")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
+	}
+	if *skipLabels {
+		*createLabels = false
 	}
 	profile, _, err := auth.ResolveProfile(a.profileName, *host)
 	if err != nil {

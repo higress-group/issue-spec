@@ -18,25 +18,22 @@ import (
 )
 
 func TestCompatibilityInitJSONPreservesLegacyFieldsAndAddsBackend(t *testing.T) {
-	t.Chdir(t.TempDir())
+	chdirGitHubProfileProject(t)
+	var labelNames []string
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
-	app.selectGitHubBackend = func(context.Context, string) (auth.GitHubBackendSelection, error) {
-		return auth.GitHubBackendSelection{
-			Mode:            auth.GitHubBackendModeAuto,
-			Name:            auth.GitHubBackendNameREST,
-			Kind:            auth.GitHubBackendKindREST,
-			Host:            "github.com",
-			SelectionSource: "auto:token",
-			TokenSource:     "env:ISSUE_SPEC_TOKEN",
-			Token:           auth.Token{Value: "secret-token", Source: "env:ISSUE_SPEC_TOKEN", Host: "github.com"},
-		}, nil
-	}
 	app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
 		return fakeGitHubBackend{
 			info:   github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
 			user:   github.User{Login: "octocat"},
 			scopes: []string{"repo"},
+			createLabel: func(_ context.Context, repo, name, _, _ string) (github.LabelResult, error) {
+				if repo != "o/r" {
+					t.Fatalf("label repo = %q", repo)
+				}
+				labelNames = append(labelNames, name)
+				return github.LabelResult{Name: name, Created: true}, nil
+			},
 		}, nil
 	}
 
@@ -74,9 +71,66 @@ func TestCompatibilityInitJSONPreservesLegacyFieldsAndAddsBackend(t *testing.T) 
 	if got.Auth.Source != "env:ISSUE_SPEC_TOKEN" || got.Auth.User != "octocat" || got.Auth.Host != "github.com" || len(got.Auth.Scopes) != 1 || got.Auth.Scopes[0] != "repo" {
 		t.Fatalf("legacy auth fields changed: %+v", got.Auth)
 	}
-	if got.Backend.Name != "rest" || got.Backend.Kind != "rest" || got.Backend.SelectionSource != "auto:token" || got.Backend.TokenSource != "env:ISSUE_SPEC_TOKEN" {
+	if got.Backend.Name != "rest" || got.Backend.Kind != "rest" || got.Backend.SelectionSource != "profile:project" || got.Backend.TokenSource != "env:ISSUE_SPEC_TOKEN" {
 		t.Fatalf("backend diagnostics not additive REST metadata: %+v", got.Backend)
 	}
+	if len(labelNames) != len(issueSpecLabels()) {
+		t.Fatalf("default label calls = %v, want %d", labelNames, len(issueSpecLabels()))
+	}
+}
+
+func TestCompatibilityInitCanDisableDefaultLabels(t *testing.T) {
+	for _, flag := range []string{"--skip-labels", "--create-labels=false"} {
+		t.Run(flag, func(t *testing.T) {
+			chdirGitHubProfileProject(t)
+			var out, errOut bytes.Buffer
+			app := newApp(strings.NewReader(""), &out, &errOut)
+			app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) {
+				return fakeGitHubBackend{user: github.User{Login: "octocat"}}, nil
+			}
+
+			if code := app.runInit(context.Background(), []string{"--repo", "o/r", "--tools", "none", flag}); code != 0 {
+				t.Fatalf("exit code = %d, stderr=%q", code, errOut.String())
+			}
+		})
+	}
+}
+
+func chdirGitHubProfileProject(t *testing.T) {
+	t.Helper()
+	t.Setenv(auth.ProfileEnv, "")
+	t.Setenv(auth.GitHubBackendAPIURLEnv, "")
+	t.Setenv(auth.GitHubBackendEnv, "")
+	t.Setenv("ISSUE_SPEC_TOKEN", "secret-token")
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	if err := auth.SaveProfile(auth.Profile{
+		Name: "team", Kind: auth.ProfileKindHosted, Hostname: "issues.example.test",
+		APIURL: "https://issues.example.test/api/github", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "team-instance",
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(root, ".issue-spec")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := []byte("{\n  \"version\": 1,\n  \"repo\": \"o/r\",\n  \"profile\": \"github\",\n  \"hostname\": \"github.com\"\n}\n")
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), config, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile, source, err := auth.ResolveProfileAt("", "github.com", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source != "project" || profile.Name != auth.DefaultProfileName {
+		t.Fatalf("project profile = %q from %q, want %q from project", profile.Name, source, auth.DefaultProfileName)
+	}
+	t.Chdir(root)
 }
 
 func TestCompatibilityCommentListPreservesTypedCommentLinksWithGHBackend(t *testing.T) {

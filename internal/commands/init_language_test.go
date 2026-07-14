@@ -32,6 +32,9 @@ func newInitTestApp(t *testing.T, out, errOut *bytes.Buffer) *app {
 		return fakeGitHubBackend{
 			info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
 			user: github.User{Login: "octocat"},
+			createLabel: func(_ context.Context, _ string, name, _, _ string) (github.LabelResult, error) {
+				return github.LabelResult{Name: name, Skipped: true}, nil
+			},
 		}, nil
 	}
 	return app

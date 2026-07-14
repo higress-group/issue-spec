@@ -111,8 +111,10 @@ issue-spec auth status --json
 初始化一个仓库：
 
 ```bash
-issue-spec init --repo owner/repo --create-labels --tools codex,claude --delivery both
+issue-spec init --repo owner/repo --tools codex,claude --delivery both
 ```
+
+初始化默认会确保 issue-spec 工作流标签存在。只有在仓库标签由其他系统单独管理时，才使用 `--skip-labels` 跳过。
 
 然后就可以在你的 agent 里使用生成的 skills 或 slash 命令风格的工作流：
 
