@@ -51,6 +51,15 @@ func TestPolicyBlocksSpecialAddressesAndRequiresExplicitPrivateAllowance(t *test
 	}
 }
 
+func TestPolicyAllowsHTTPForTrustedInternalProduction(t *testing.T) {
+	if _, err := (Policy{Production: true, AllowHTTP: true}).ValidateURL("http://runner.intra.example/api/v1/runner/webhooks"); err != nil {
+		t.Fatalf("trusted internal HTTP receiver rejected: %v", err)
+	}
+	if _, err := (Policy{Production: true}).ValidateURL("http://runner.intra.example/api/v1/runner/webhooks"); !errors.Is(err, ErrInvalidDestination) {
+		t.Fatalf("default production policy error = %v, want ErrInvalidDestination", err)
+	}
+}
+
 func TestResolutionAndConnectTimeAddressChecksPreventRebinding(t *testing.T) {
 	resolver := staticResolver{addresses: map[string][]net.IPAddr{
 		"mixed.example":  {{IP: net.ParseIP("93.184.216.34")}, {IP: net.ParseIP("10.0.0.2")}},
