@@ -231,6 +231,12 @@ issue-spec --profile team runner serve \
   --git-author-email runner@example.test
 ```
 
+Retained workspaces reconcile this repo-local identity on resume. Runner keeps
+a repo-local ownership marker so removing the flags restores the preceding
+repo-local identity; if another actor has changed either value, Runner preserves
+each newer value, restores only fields still matching its managed identity, and
+then relinquishes its marker.
+
 The values are strictly validated and written as repo-local `user.name` and
 `user.email` immediately after each managed clone. The Runner continues to set
 `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1` in Agent jobs, so this

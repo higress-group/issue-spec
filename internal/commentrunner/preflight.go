@@ -86,6 +86,7 @@ type PreflightDependencies struct {
 	LookPath                func(string) (string, error)
 	RunCommand              func(context.Context, string, ...string) ([]byte, error)
 	RunAgentCommand         func(context.Context, string, ...string) ([]byte, error)
+	AgentRuntimeHome        func() (string, error)
 }
 
 // PreflightOptions controls opt-in checks that contact an external runtime.
@@ -132,6 +133,16 @@ func RunPreflightForTransportWithOptions(ctx context.Context, cfg Config, transp
 	}
 	if transport != PreflightTransportPoll && transport != PreflightTransportServe {
 		report.add(PreflightCheck{Name: "transport", Status: CheckError, Detail: fmt.Sprintf("unsupported runner preflight transport %q", transport)})
+		report.finish()
+		return report
+	}
+	if cfg.AllowHostSSH && transport != PreflightTransportServe {
+		report.add(PreflightCheck{
+			Name:   "host-ssh-transport",
+			Status: CheckError,
+			Detail: "--allow-host-ssh is available only for self-hosted runner serve preflight",
+			Hint:   "Remove --allow-host-ssh for GitHub notification polling, or select the matching self-hosted profile used by runner serve.",
+		})
 		report.finish()
 		return report
 	}
@@ -253,6 +264,9 @@ func (d PreflightDependencies) withDefaults() PreflightDependencies {
 	}
 	if d.RunAgentCommand == nil {
 		d.RunAgentCommand = d.RunCommand
+	}
+	if d.AgentRuntimeHome == nil {
+		d.AgentRuntimeHome = func() (string, error) { return hostHomeDir(), nil }
 	}
 	return d
 }
@@ -502,8 +516,12 @@ func codexACPCheck(deps PreflightDependencies) PreflightCheck {
 		}
 	}
 	detail := fmt.Sprintf("npx=%s npm=%s package=%s", npxPath, npmPath, codexACPPackage)
-	if override, ok, err := acpx.LoadAgentOverride(hostHomeDir(), acpx.AgentCodex); err != nil {
-		return PreflightCheck{Name: "codex-acp", Status: CheckError, Detail: "invalid host acpx Codex agent override: " + err.Error(), Hint: acpxInstallHint}
+	home, err := deps.AgentRuntimeHome()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return PreflightCheck{Name: "codex-acp", Status: CheckError, Detail: "cannot resolve the Runner host HOME used for ACPX", Hint: acpxInstallHint}
+	}
+	if override, ok, err := acpx.LoadAgentOverride(home, acpx.AgentCodex); err != nil {
+		return PreflightCheck{Name: "codex-acp", Status: CheckError, Detail: "invalid host acpx Codex agent override", Hint: acpxInstallHint}
 	} else if ok {
 		detail = fmt.Sprintf("npx=%s npm=%s agent_override=%s", npxPath, npmPath, acpx.AgentOverrideDescription(override))
 	}

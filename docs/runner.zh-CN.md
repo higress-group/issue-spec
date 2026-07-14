@@ -72,7 +72,10 @@ preflight 也必须传入 `--allow-host-ssh`，这样 macOS unsafe 模式会复�
 
 当 Runner 任务需要创建提交时，必须成对配置 `--git-author-name` 和
 `--git-author-email`。Runner 只在每个受管 clone 内写入 repo-local `user.name` 与
-`user.email`；宿主的全局或系统 Git 配置仍不会暴露给 Agent。
+`user.email`，并在保留工作区恢复时同步当前配置。Runner 会在 repo-local config 中记录
+自己的托管状态：移除参数后恢复原有的 repo-local 值；若配置后已被其他参与者改写，则保留
+被改写的字段，并只恢复仍与 Runner 托管身份一致的字段。宿主的全局或系统 Git 配置仍不会
+暴露给 Agent。
 
 若为 runner 配置了 `--model`，该值会传给 ACPX，并优先于复制进来的 Codex 配置中的模型。
 必须使用 adapter 实际广告的精确模型 ID（包括可能的 reasoning-effort 后缀），并用同一个

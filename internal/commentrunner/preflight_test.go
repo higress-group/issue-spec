@@ -144,6 +144,81 @@ func TestPreflightReportsSelectedCodexAdapterWithoutOtherAcpxConfig(t *testing.T
 	}
 }
 
+func TestPreflightCodexACPUsesResolvedAgentRuntimeHome(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	runtimeHome := t.TempDir()
+	environmentHome := t.TempDir()
+	t.Setenv("HOME", environmentHome)
+	if err := os.MkdirAll(filepath.Join(runtimeHome, ".acpx"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := `{"agents":{"codex":{"command":"npx","args":["-y","@agentclientprotocol/codex-acp@7.8.9"]}}}`
+	if err := os.WriteFile(filepath.Join(runtimeHome, ".acpx", "config.json"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deps := passingPreflightDependencies(t)
+	deps.AgentRuntimeHome = func() (string, error) { return runtimeHome, nil }
+	report := RunPreflight(t.Context(), cfg, deps)
+	check := findCheck(t, report, "codex-acp")
+	if check.Status != CheckOK || !strings.Contains(check.Detail, "agent_override=@agentclientprotocol/codex-acp@7.8.9") ||
+		strings.Contains(check.Detail, environmentHome) || strings.Contains(check.Detail, runtimeHome) {
+		t.Fatalf("codex-acp did not use the resolved runtime HOME safely: %+v", check)
+	}
+}
+
+func TestPreflightCodexACPDoesNotExposeInvalidOverrideDiagnostics(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	runtimeHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(runtimeHome, ".acpx"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeHome, ".acpx", "config.json"), []byte(`{token=must-not-leak`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deps := passingPreflightDependencies(t)
+	deps.AgentRuntimeHome = func() (string, error) { return runtimeHome, nil }
+	report := RunPreflight(t.Context(), cfg, deps)
+	check := findCheck(t, report, "codex-acp")
+	if check.Status != CheckError || !strings.Contains(check.Detail, "invalid host acpx") ||
+		strings.Contains(check.Detail, "must-not-leak") || strings.Contains(check.Hint, "must-not-leak") {
+		t.Fatalf("invalid override diagnostics were not bounded: %+v", check)
+	}
+}
+
+func TestPreflightRejectsHostSSHForPollBeforeAgentChecks(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	cfg.AllowHostSSH = true
+	deps := PreflightDependencies{
+		SelectBackend: func(context.Context, string) (auth.GitHubBackendSelection, error) {
+			t.Fatal("backend selection must not run for invalid host SSH transport")
+			return auth.GitHubBackendSelection{}, nil
+		},
+		LookPath: func(string) (string, error) {
+			t.Fatal("ACP toolchain checks must not run for invalid host SSH transport")
+			return "", nil
+		},
+		RunAgentCommand: func(context.Context, string, ...string) ([]byte, error) {
+			t.Fatal("ACP runtime probe must not run for invalid host SSH transport")
+			return nil, nil
+		},
+		AgentRuntimeHome: func() (string, error) {
+			t.Fatal("ACPX HOME resolution must not run for invalid host SSH transport")
+			return "", nil
+		},
+	}
+	report := RunPreflightForTransportWithOptions(t.Context(), cfg, PreflightTransportPoll, deps, PreflightOptions{VerifyAgentRuntime: true})
+	if report.OK {
+		t.Fatalf("poll preflight unexpectedly accepted host SSH: %+v", report)
+	}
+	check := findCheck(t, report, "host-ssh-transport")
+	if check.Status != CheckError || !strings.Contains(check.Detail, "runner serve") || hasCheck(report, "agent-runtime-probe") {
+		t.Fatalf("unexpected host SSH transport result: report=%+v check=%+v", report, check)
+	}
+}
+
 func TestPreflightRuntimeProbeUsesConfiguredModelWithToolsDenied(t *testing.T) {
 	cfg := testPreflightConfig(t)
 	cfg.UnsafeNoSandbox = true

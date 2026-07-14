@@ -81,8 +81,12 @@ serve`.
 
 When Runner tasks create commits, configure `--git-author-name` and
 `--git-author-email` together. The Runner writes only repo-local `user.name`
-and `user.email` in each managed clone. It deliberately does not expose the
-host's global or system Git configuration to the Agent.
+and `user.email` in each managed clone and reconciles them when a retained
+workspace resumes. Runner records its managed state in repo-local config: when
+the flags are removed it restores the previous repo-local values, but it never
+overwrites fields changed by another actor after Runner configuration. It
+deliberately does not expose the host's global or system Git configuration to
+the Agent.
 
 If `--model` is configured for the runner, it is passed to ACPX and takes
 precedence over the model in the copied Codex configuration. Use the exact

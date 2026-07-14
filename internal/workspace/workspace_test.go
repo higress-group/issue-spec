@@ -88,17 +88,28 @@ func TestPrepareNewConfiguresRepoLocalGitAuthor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{
+	wantNonConfig := []string{
 		"clone -- https://github.com/o/r.git " + wantPath,
-		"config --local user.name Issue Spec Runner",
-		"config --local user.email runner@example.test",
 		"checkout --force main",
 		"checkout -B issue-spec-ws-author",
 		"rev-parse HEAD",
 		"rev-parse --abbrev-ref HEAD",
 	}
-	if got := runner.argStrings(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("git commands = %#v, want %#v", got, want)
+	var gotNonConfig []string
+	for _, command := range runner.commands {
+		if command.Args[0] != "config" {
+			gotNonConfig = append(gotNonConfig, strings.Join(command.Args, " "))
+		}
+	}
+	if !reflect.DeepEqual(gotNonConfig, wantNonConfig) {
+		t.Fatalf("non-config git commands = %#v, want %#v", gotNonConfig, wantNonConfig)
+	}
+	if runner.gitConfig["user.name"] != "Issue Spec Runner" || runner.gitConfig["user.email"] != "runner@example.test" {
+		t.Fatalf("repo-local git identity = %#v", runner.gitConfig)
+	}
+	if state, ok := parseManagedGitAuthorState(gitConfigValue{Value: runner.gitConfig[runnerGitAuthorStateKey], Present: true}); !ok ||
+		state.ManagedName != "Issue Spec Runner" || state.ManagedEmail != "runner@example.test" {
+		t.Fatalf("managed git author state = %#v, ok=%v", state, ok)
 	}
 }
 
@@ -133,6 +144,84 @@ func TestRepoLocalGitAuthorCommitsWithoutGlobalOrSystemConfig(t *testing.T) {
 	if strings.TrimSpace(author) != "Issue Spec Runner <runner@example.test>" {
 		t.Fatalf("commit author = %q", author)
 	}
+}
+
+func TestResolveResumeReconcilesAndSafelyClearsManagedGitAuthor(t *testing.T) {
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	seed := t.TempDir()
+	runGitCommand(t, "", nil, "init", "--bare", "--initial-branch=main", origin)
+	runGitCommand(t, seed, nil, "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("seed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(t, seed, nil, "add", "README.md")
+	runGitCommand(t, seed, nil, "-c", "user.name=Seed", "-c", "user.email=seed@example.test", "commit", "-m", "seed")
+	runGitCommand(t, seed, nil, "remote", "add", "origin", origin)
+	runGitCommand(t, seed, nil, "push", "origin", "main")
+
+	root := t.TempDir()
+	manager := Manager{Root: root, Retention: time.Hour,
+		GitAuthorName: "Runner One", GitAuthorEmail: "runner-one@example.test",
+		IDFunc: func(NewRequest) (string, error) { return "ws-resume-author", nil }}
+	binding, err := manager.PrepareNew(t.Context(), NewRequest{Repo: "o/r", CloneURL: origin, DefaultBranch: "main",
+		PublicSessionID: "ps-resume-author", JobID: "job-resume-author", RepositoryBinding: testRepositoryBindingForClone(origin)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := binding.Workspace.Path
+	assertLocalGitConfig(t, path, "user.name", "Runner One", true)
+	assertLocalGitConfig(t, path, "user.email", "runner-one@example.test", true)
+	assertLocalGitConfig(t, path, runnerGitAuthorStateKey, "", true)
+
+	// A restarted Runner with a changed identity rotates the same workspace and
+	// retains the original pre-Runner values in its managed state.
+	rotated := Manager{Root: root, Retention: time.Hour, GitAuthorName: "Runner Two", GitAuthorEmail: "runner-two@example.test"}
+	binding, err = rotated.ResolveResume(t.Context(), ResumeRequest{Repo: "o/r", CloneURL: origin, Workspace: binding.Workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLocalGitConfig(t, path, "user.name", "Runner Two", true)
+	assertLocalGitConfig(t, path, "user.email", "runner-two@example.test", true)
+
+	// Removing the flags clears only the identity created by Runner.
+	withoutIdentity := Manager{Root: root, Retention: time.Hour}
+	binding, err = withoutIdentity.ResolveResume(t.Context(), ResumeRequest{Repo: "o/r", CloneURL: origin, Workspace: binding.Workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLocalGitConfig(t, path, "user.name", "", false)
+	assertLocalGitConfig(t, path, "user.email", "", false)
+	assertLocalGitConfig(t, path, runnerGitAuthorStateKey, "", false)
+
+	// Repository-local values that predate Runner are restored after a later
+	// configured run instead of being deleted.
+	runGitCommand(t, path, nil, "config", "--local", "user.name", "Repository Author")
+	runGitCommand(t, path, nil, "config", "--local", "user.email", "repository@example.test")
+	binding, err = rotated.ResolveResume(t.Context(), ResumeRequest{Repo: "o/r", CloneURL: origin, Workspace: binding.Workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err = withoutIdentity.ResolveResume(t.Context(), ResumeRequest{Repo: "o/r", CloneURL: origin, Workspace: binding.Workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLocalGitConfig(t, path, "user.name", "Repository Author", true)
+	assertLocalGitConfig(t, path, "user.email", "repository@example.test", true)
+
+	// If another actor changes the values while Runner metadata exists, the
+	// next restart relinquishes management without overwriting that newer state.
+	binding, err = rotated.ResolveResume(t.Context(), ResumeRequest{Repo: "o/r", CloneURL: origin, Workspace: binding.Workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(t, path, nil, "config", "--local", "user.email", "agent@example.test")
+	_, err = withoutIdentity.ResolveResume(t.Context(), ResumeRequest{Repo: "o/r", CloneURL: origin, Workspace: binding.Workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLocalGitConfig(t, path, "user.name", "Repository Author", true)
+	assertLocalGitConfig(t, path, "user.email", "agent@example.test", true)
+	assertLocalGitConfig(t, path, runnerGitAuthorStateKey, "", false)
 }
 
 func TestPrepareNewRejectsUnsafeWorkspaceIDBeforeGit(t *testing.T) {
@@ -459,6 +548,7 @@ type fakeGitRunner struct {
 	head        string
 	worktrees   []string
 	worktreeErr error
+	gitConfig   map[string]string
 }
 
 func testRepositoryBinding() state.RepositoryBindingSnapshot {
@@ -498,6 +588,30 @@ func runGitCommand(t *testing.T, dir string, extraEnv []string, args ...string) 
 	return string(output)
 }
 
+func assertLocalGitConfig(t *testing.T, dir, key, want string, wantPresent bool) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", "config", "--local", "--get", key)
+	cmd.Dir = dir
+	output, err := cmd.Output()
+	if !wantPresent {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			t.Fatalf("git config %s presence: err=%v output=%q, want absent", key, err, output)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("git config %s: %v", key, err)
+	}
+	got := strings.TrimSuffix(string(output), "\n")
+	if want != "" && got != want {
+		t.Fatalf("git config %s = %q, want %q", key, got, want)
+	}
+	if want == "" && strings.TrimSpace(got) == "" {
+		t.Fatalf("git config %s is unexpectedly empty", key)
+	}
+}
+
 func (r *fakeGitRunner) Run(_ context.Context, command Command) (Result, error) {
 	r.commands = append(r.commands, command)
 	switch command.Args[0] {
@@ -506,7 +620,27 @@ func (r *fakeGitRunner) Run(_ context.Context, command Command) (Result, error) 
 	case "checkout":
 		return Result{}, nil
 	case "config":
-		return Result{}, nil
+		if r.gitConfig == nil {
+			r.gitConfig = map[string]string{}
+		}
+		if len(command.Args) == 4 && command.Args[1] == "--local" && command.Args[2] == "--get" {
+			value, ok := r.gitConfig[command.Args[3]]
+			if !ok {
+				return Result{ExitCode: 1}, errors.New("exit status 1")
+			}
+			return Result{Stdout: []byte(value + "\n")}, nil
+		}
+		if len(command.Args) == 4 && command.Args[1] == "--local" && command.Args[2] == "--unset-all" {
+			if _, ok := r.gitConfig[command.Args[3]]; !ok {
+				return Result{ExitCode: 5}, errors.New("exit status 5")
+			}
+			delete(r.gitConfig, command.Args[3])
+			return Result{}, nil
+		}
+		if len(command.Args) == 4 && command.Args[1] == "--local" {
+			r.gitConfig[command.Args[2]] = command.Args[3]
+			return Result{}, nil
+		}
 	case "rev-parse":
 		if reflect.DeepEqual(command.Args, []string{"rev-parse", "HEAD"}) {
 			return Result{Stdout: []byte(first(r.head, "abc") + "\n")}, nil

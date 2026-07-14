@@ -22,6 +22,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/github"
+	"github.com/higress-group/issue-spec/internal/sandbox"
 )
 
 func TestRootUsageDocumentsRunnerCommand(t *testing.T) {
@@ -222,6 +223,42 @@ func TestRunSandboxedAgentRuntimeCommandMatchesUnsafeHostSSHRuntime(t *testing.T
 	}
 }
 
+func TestRunnerRuntimeHostHomePrefersExplicitHostSSHAccount(t *testing.T) {
+	sshHome := t.TempDir()
+	environmentHome := t.TempDir()
+	home, err := runnerRuntimeHostHome(sandbox.Config{
+		HostSSHDir: filepath.Join(sshHome, ".ssh"),
+		HostEnv:    []string{"HOME=" + environmentHome},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home != sshHome {
+		t.Fatalf("runtime host HOME = %q, want host SSH account %q", home, sshHome)
+	}
+}
+
+func TestRunSandboxedAgentRuntimeCommandClassifiesPrepareAdapterError(t *testing.T) {
+	hostHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(hostHome, ".acpx"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostHome, ".acpx", "config.json"), []byte(`{must-not-leak`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runSandboxedAgentRuntimeCommandWithConfig(t.Context(),
+		commentrunner.Config{UnsafeNoSandbox: true, Agent: commentrunner.DefaultAgentConfig()},
+		sandbox.Config{UnsafeNoSandbox: true, HostEnv: []string{"HOME=" + hostHome}},
+		"/bin/true")
+	var classified *commentrunner.AgentRuntimeProbeError
+	if !errors.As(err, &classified) || classified.Kind != commentrunner.AgentRuntimeFailureAdapter {
+		t.Fatalf("prepare error = %v (%T), want bounded adapter category", err, err)
+	}
+	if strings.Contains(err.Error(), "must-not-leak") || err.Error() != "agent runtime probe adapter" {
+		t.Fatalf("prepare error exposed raw adapter diagnostics: %q", err.Error())
+	}
+}
+
 func TestRunnerPreflightParsesServeParityAndGitAuthorFlags(t *testing.T) {
 	clearCommandAuthEnv(t)
 	var out, errOut bytes.Buffer
@@ -238,6 +275,38 @@ func TestRunnerPreflightParsesServeParityAndGitAuthorFlags(t *testing.T) {
 	}
 }
 
+func TestRunnerPreflightRejectsHostSSHForGitHubBeforeRuntimeResolution(t *testing.T) {
+	clearCommandAuthEnv(t)
+	oldCurrent := currentRunnerHostSSHConfig
+	currentRunnerHostSSHConfig = func(string) (credentials.HostSSHGitProviderConfig, error) {
+		t.Fatal("GitHub poll preflight must reject host SSH before resolving host credentials")
+		return credentials.HostSSHGitProviderConfig{}, nil
+	}
+	t.Cleanup(func() { currentRunnerHostSSHConfig = oldCurrent })
+
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	cfg := commentrunner.Config{
+		Profile: auth.DefaultProfileName, Hostname: "github.com", Repositories: []string{"o/r"}, RunnerIdentity: "runner-bot",
+		StatePath: filepath.Join(t.TempDir(), "state.json"), PollInterval: commentrunner.NewDuration(time.Minute),
+		FallbackInterval: commentrunner.NewDuration(time.Hour), MaxConcurrentJobs: 1, AcpxPath: "acpx",
+		Agent: commentrunner.DefaultAgentConfig(), WorkspaceRoot: t.TempDir(), WorkspaceRetention: commentrunner.NewDuration(time.Hour),
+		UnsafeNoSandbox: true, AllowHostSSH: true,
+	}
+	report := app.runRunnerPreflightWithOptions(t.Context(), cfg, commentrunner.PreflightOptions{VerifyAgentRuntime: true})
+	if report.OK {
+		t.Fatalf("GitHub poll preflight unexpectedly accepted host SSH: %+v", report)
+	}
+	check := runnerPreflightCheck(t, report, "host-ssh-transport")
+	if check.Status != commentrunner.CheckError || !strings.Contains(check.Detail, "runner serve") {
+		t.Fatalf("unexpected host SSH transport report: %+v", report)
+	}
+	for _, check := range report.Checks {
+		if check.Name == "agent-runtime-probe" {
+			t.Fatalf("runtime probe ran before host SSH transport rejection: %+v", report)
+		}
+	}
+}
+
 func TestClassifyAgentRuntimeProbeFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -248,6 +317,7 @@ func TestClassifyAgentRuntimeProbeFailure(t *testing.T) {
 		{name: "timeout", result: acpx.CommandResult{Stderr: []byte("adapter timed out")}, err: errors.New("exit 1"), want: commentrunner.AgentRuntimeFailureTimeout},
 		{name: "model", result: acpx.CommandResult{Stdout: []byte(`{"error":"model unknown"}`)}, err: errors.New("exit 1"), want: commentrunner.AgentRuntimeFailureModel},
 		{name: "adapter", result: acpx.CommandResult{Stderr: []byte("npx could not initialize ACP")}, err: errors.New("exit 1"), want: commentrunner.AgentRuntimeFailureAdapter},
+		{name: "adapter error without output", err: errors.New("materialize host acpx codex agent override: token=must-not-leak"), want: commentrunner.AgentRuntimeFailureAdapter},
 		{name: "runtime", result: acpx.CommandResult{Stderr: []byte("request failed")}, err: errors.New("exit 1"), want: commentrunner.AgentRuntimeFailureRuntime},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

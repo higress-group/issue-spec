@@ -236,6 +236,10 @@ issue-spec --profile team runner serve \
   --git-author-email runner@example.test
 ```
 
+保留工作区恢复时会同步这组 repo-local 身份。Runner 通过 repo-local 标记记录托管关系：
+移除参数时恢复此前的 repo-local 身份；若字段已被其他参与者改写，则保留被改写的值，只
+恢复仍与 Runner 托管身份一致的字段，最后移除自己的托管标记。
+
 Runner 会严格校验这两个值，并在每个受管 clone 完成后立即写入 repo-local
 `user.name` 与 `user.email`。Agent 任务仍保留 `GIT_CONFIG_GLOBAL=/dev/null` 和
 `GIT_CONFIG_NOSYSTEM=1`，不会继承宿主的 URL Rewrite、Credential Helper、签名设置或其他

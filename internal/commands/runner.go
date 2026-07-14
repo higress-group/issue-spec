@@ -745,6 +745,15 @@ func (a *app) runRunnerPreflightWithOptions(ctx context.Context, cfg commentrunn
 	if profile, _, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname); err == nil && profile.Kind == auth.ProfileKindHosted {
 		transport = commentrunner.PreflightTransportServe
 	}
+	var runtimeOnce sync.Once
+	var runtimeSandbox sandbox.Config
+	var runtimeSandboxErr error
+	resolveRuntimeSandbox := func() (sandbox.Config, error) {
+		runtimeOnce.Do(func() {
+			runtimeSandbox, _, runtimeSandboxErr = runnerSandboxRuntimeConfig(cfg)
+		})
+		return runtimeSandbox, runtimeSandboxErr
+	}
 	return commentrunner.RunPreflightForTransportWithOptions(ctx, cfg, transport, commentrunner.PreflightDependencies{
 		SelectBackend: func(ctx context.Context, _ string) (auth.GitHubBackendSelection, error) {
 			return a.selectBackendForRunner(ctx, cfg)
@@ -768,12 +777,31 @@ func (a *app) runRunnerPreflightWithOptions(ctx context.Context, cfg commentrunn
 			return backend, nil
 		},
 		RunAgentCommand: func(probeCtx context.Context, binary string, args ...string) ([]byte, error) {
-			return runSandboxedAgentRuntimeCommand(probeCtx, cfg, binary, args...)
+			sandboxConfig, err := resolveRuntimeSandbox()
+			if err != nil {
+				return nil, commentrunner.NewAgentRuntimeProbeError(commentrunner.AgentRuntimeFailureRuntime, fmt.Errorf("runner preflight host SSH: %w", err))
+			}
+			return runSandboxedAgentRuntimeCommandWithConfig(probeCtx, cfg, sandboxConfig, binary, args...)
+		},
+		AgentRuntimeHome: func() (string, error) {
+			sandboxConfig, err := resolveRuntimeSandbox()
+			if err != nil {
+				return "", err
+			}
+			return runnerRuntimeHostHome(sandboxConfig)
 		},
 	}, options)
 }
 
 func runSandboxedAgentRuntimeCommand(ctx context.Context, cfg commentrunner.Config, binary string, args ...string) ([]byte, error) {
+	sandboxConfig, _, err := runnerSandboxRuntimeConfig(cfg)
+	if err != nil {
+		return nil, commentrunner.NewAgentRuntimeProbeError(commentrunner.AgentRuntimeFailureRuntime, fmt.Errorf("runner preflight host SSH: %w", err))
+	}
+	return runSandboxedAgentRuntimeCommandWithConfig(ctx, cfg, sandboxConfig, binary, args...)
+}
+
+func runSandboxedAgentRuntimeCommandWithConfig(ctx context.Context, cfg commentrunner.Config, sandboxConfig sandbox.Config, binary string, args ...string) ([]byte, error) {
 	root, err := os.MkdirTemp("", "issue-spec-runner-preflight-")
 	if err != nil {
 		return nil, err
@@ -788,10 +816,6 @@ func runSandboxedAgentRuntimeCommand(ctx context.Context, cfg commentrunner.Conf
 	if profile, _, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname); err == nil && profile.Kind == auth.ProfileKindHosted {
 		childProfile = &profile
 	}
-	sandboxConfig, _, err := runnerSandboxRuntimeConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("runner preflight host SSH: %w", err)
-	}
 	env, err := (jobs.SandboxRunner{Config: sandboxConfig}).Prepare(ctx, jobs.SandboxRequest{
 		WorkspacePath:        workspacePath,
 		AcpxWorkingDirectory: workspacePath,
@@ -804,7 +828,7 @@ func runSandboxedAgentRuntimeCommand(ctx context.Context, cfg commentrunner.Conf
 		ChildProfile:         childProfile,
 	})
 	if err != nil {
-		return nil, err
+		return nil, commentrunner.NewAgentRuntimeProbeError(classifyAgentRuntimeProbeFailure(ctx, acpx.CommandResult{}, err), err)
 	}
 	result, err := env.Runner.Run(ctx, acpx.Command{Binary: env.AcpxBinary, Args: args, Dir: env.WorkingDirectory})
 	if err != nil {
@@ -817,7 +841,12 @@ func classifyAgentRuntimeProbeFailure(ctx context.Context, result acpx.CommandRe
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
 		return commentrunner.AgentRuntimeFailureTimeout
 	}
-	output := strings.ToLower(string(append(append([]byte(nil), result.Stdout...), result.Stderr...)))
+	diagnostic := append(append([]byte(nil), result.Stdout...), result.Stderr...)
+	if err != nil {
+		diagnostic = append(diagnostic, '\n')
+		diagnostic = append(diagnostic, err.Error()...)
+	}
+	output := strings.ToLower(string(diagnostic))
 	if strings.Contains(output, "timed out") || strings.Contains(output, "timeout") || strings.Contains(output, "deadline exceeded") {
 		return commentrunner.AgentRuntimeFailureTimeout
 	}

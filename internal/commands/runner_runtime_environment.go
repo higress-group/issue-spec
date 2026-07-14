@@ -1,7 +1,10 @@
 package commands
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
@@ -38,6 +41,23 @@ func runnerSandboxRuntimeConfig(cfg commentrunner.Config) (sandbox.Config, crede
 	sandboxConfig.HostSSHDir = hostConfig.SSHDir
 	sandboxConfig.HostSSHAgentSocket = hostConfig.AgentSocket
 	return sandboxConfig, provider, nil
+}
+
+func runnerRuntimeHostHome(cfg sandbox.Config) (string, error) {
+	if sshDir := strings.TrimSpace(cfg.HostSSHDir); sshDir != "" {
+		return filepath.Dir(filepath.Clean(sshDir)), nil
+	}
+	for _, entry := range cfg.HostEnv {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok && name == "HOME" && strings.TrimSpace(value) != "" {
+			return filepath.Clean(value), nil
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return "", fmt.Errorf("resolve runner host HOME")
+	}
+	return filepath.Clean(home), nil
 }
 
 func runnerWorkspaceManager(cfg commentrunner.Config) workspace.Manager {
