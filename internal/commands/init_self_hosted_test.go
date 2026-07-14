@@ -14,8 +14,144 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	"github.com/higress-group/issue-spec/internal/github"
+	"github.com/higress-group/issue-spec/internal/workflow"
 )
+
+func TestGeneratedExternalCodeWorkflowDoesNotPreGateFirstRunnerDispatch(t *testing.T) {
+	root := t.TempDir()
+	provider := workflow.ProviderPlan{ProviderKey: "code.example", EvidenceSnapshot: true}
+	if err := writeExternalCodeWorkflowConfig(root, provider); err != nil {
+		t.Fatal(err)
+	}
+
+	config := readTestFile(t, filepath.Join(root, "issue-spec", "config.yaml"))
+	if !strings.Contains(config, "- verify") || strings.Contains(config, "- runner") {
+		t.Fatalf("generated evidence synchronization policy =\n%s", config)
+	}
+
+	// A first /new dispatch has no code-change reference yet. The generated
+	// policy must therefore skip the runner pre-gate before it reads evidence
+	// credentials or attempts to resolve an external change.
+	result, err := (&runnerEvidencePreGate{}).BeforeDispatch(t.Context(), jobs.EvidencePreGateRequest{
+		WorkflowRoot:   root,
+		CredentialFile: filepath.Join(root, "missing-first-dispatch-credential"),
+	})
+	if err != nil {
+		t.Fatalf("first runner dispatch evidence pre-gate: %v", err)
+	}
+	if !result.Skipped {
+		t.Fatalf("first runner dispatch evidence pre-gate = %+v, want skipped", result)
+	}
+}
+
+func TestExternalCodeWorkflowConfigDefaultsMissingSyncWithoutOverwritingEvidence(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "issue-spec", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`external_code:
+  provider_key: code.example
+  evidence:
+    required_checks: [unit]
+    freshness:
+      check: 1h
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := workflow.ProviderPlan{ProviderKey: "code.example", EvidenceSnapshot: true}
+	if err := writeExternalCodeWorkflowConfig(root, provider); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := workflow.Resolve(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := plan.Config.ExternalCode.Evidence
+	if !evidence.SynchronizesBefore("verify") || evidence.SynchronizesBefore("runner") {
+		t.Fatalf("generated sync timing = %+v", evidence.SyncBefore)
+	}
+	if len(evidence.RequiredChecks) != 1 || evidence.RequiredChecks[0] != "unit" || evidence.Freshness["check"] != "1h" {
+		t.Fatalf("existing evidence policy was not preserved: %+v", evidence)
+	}
+}
+
+func TestExternalCodeWorkflowConfigRerunPreservesExplicitRunnerAndEvidencePolicy(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "issue-spec", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`context:
+  note: preserved
+external_code:
+  provider_key: code.example
+  evidence:
+    required: [review]
+    required_checks: [unit, dco]
+    freshness:
+      review: 24h
+      check: 1h
+    sync_before: [verify, runner]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := workflow.ProviderPlan{ProviderKey: "code.example", EvidenceSnapshot: true}
+	if err := writeExternalCodeWorkflowConfig(root, provider); err != nil {
+		t.Fatal(err)
+	}
+	afterFirstRun := readTestFile(t, path)
+	if err := writeExternalCodeWorkflowConfig(root, provider); err != nil {
+		t.Fatal(err)
+	}
+	afterSecondRun := readTestFile(t, path)
+	if afterSecondRun != afterFirstRun {
+		t.Fatalf("provider workflow config is not idempotent:\nfirst:\n%s\nsecond:\n%s", afterFirstRun, afterSecondRun)
+	}
+
+	plan, err := workflow.Resolve(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Config.ExternalCode.ProviderKey != "code.example" {
+		t.Fatalf("provider key = %q", plan.Config.ExternalCode.ProviderKey)
+	}
+	evidence := plan.Config.ExternalCode.Evidence
+	if !evidence.SynchronizesBefore("verify") || !evidence.SynchronizesBefore("runner") {
+		t.Fatalf("explicit sync timing was not preserved: %+v", evidence.SyncBefore)
+	}
+	if len(evidence.Required) != 1 || evidence.Required[0] != "review" ||
+		len(evidence.RequiredChecks) != 2 || evidence.RequiredChecks[0] != "unit" || evidence.RequiredChecks[1] != "dco" ||
+		evidence.Freshness["review"] != "24h" || evidence.Freshness["check"] != "1h" {
+		t.Fatalf("existing evidence policy was not preserved: %+v", evidence)
+	}
+	if !strings.Contains(afterSecondRun, "note: preserved") {
+		t.Fatalf("existing workflow config was not preserved:\n%s", afterSecondRun)
+	}
+}
+
+func TestExternalCodeWorkflowConfigRejectsProviderReplacement(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "issue-spec", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("external_code:\n  provider_key: first.example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := writeExternalCodeWorkflowConfig(root, workflow.ProviderPlan{ProviderKey: "second.example", EvidenceSnapshot: true})
+	if err == nil || !strings.Contains(err.Error(), "selects external code provider") {
+		t.Fatalf("provider replacement error = %v", err)
+	}
+	if config := readTestFile(t, path); !strings.Contains(config, "provider_key: first.example") {
+		t.Fatalf("conflicting provider config was modified:\n%s", config)
+	}
+}
 
 func TestParseCanonicalGitRemoteConfigNormalizesIngressHTTPBin(t *testing.T) {
 	remotes, err := parseCanonicalGitRemoteConfig("remote.origin.url git@gitlab.alibaba-inc.com:Ingress/httpbin.git\n")
@@ -229,10 +365,13 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		}
 	}
 	workflowConfig := readTestFile(t, filepath.Join(root, "issue-spec", "config.yaml"))
-	for _, want := range []string{"provider_key: aone", "sync_before:", "- verify", "- runner"} {
+	for _, want := range []string{"sync_before:", "- verify"} {
 		if !strings.Contains(workflowConfig, want) {
 			t.Fatalf("workflow config missing %q:\n%s", want, workflowConfig)
 		}
+	}
+	if strings.Contains(workflowConfig, "- runner") {
+		t.Fatalf("workflow config must leave runner synchronization opt-in:\n%s", workflowConfig)
 	}
 	workflowSkill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-workflow", "SKILL.md"))
 	if !strings.Contains(workflowSkill, "browser-e2e/httpbin") || strings.Contains(workflowSkill, "local-source/local-checkout") {

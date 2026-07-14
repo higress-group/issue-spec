@@ -36,7 +36,7 @@ func ProviderWorkflowNotice(provider workflow.ProviderPlan) string {
 		lines = append(lines, "- `change.comment`: unavailable; keep external discussion on the provider and synchronize only supported evidence.")
 	}
 	if provider.EvidenceSnapshot {
-		lines = append(lines, "- `evidence.snapshot`: available; synchronize exact-revision evidence before verify and runner gates.")
+		lines = append(lines, "- `evidence.snapshot`: available; synchronize exact-revision evidence before verification gates. Runner dispatch synchronization remains an explicit `external_code.evidence.sync_before` project-policy opt-in.")
 	} else {
 		lines = append(lines, "- `evidence.snapshot`: unavailable; no generated step may claim automatic pre-gate synchronization.")
 	}
@@ -70,7 +70,7 @@ func providerWorkflowBody(repo string, provider workflow.ProviderPlan) string {
 		steps = append(steps, "3. Do not request external finding/reply write-back because `change.comment` is not available.")
 	}
 	if provider.EvidenceSnapshot {
-		steps = append(steps, "4. Before verify and runner gates, synchronize a provider snapshot for the exact active head revision, then evaluate only server-accepted evidence IDs.")
+		steps = append(steps, "4. Before verification gates, synchronize a provider snapshot for the exact active head revision, then evaluate only server-accepted evidence IDs. Add `runner` to `external_code.evidence.sync_before` only when every dispatch is expected to have an active external change.")
 	} else {
 		steps = append(steps, "4. Verify only against already-authoritative server evidence; automatic provider snapshot synchronization is unavailable.")
 	}
