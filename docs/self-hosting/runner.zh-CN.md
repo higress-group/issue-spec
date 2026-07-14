@@ -106,8 +106,8 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 2. 在目标仓库的 **协作者** 页面解析该 Login，并授予最低的 `write` 角色；
 3. 在 **管理后台 > 托管访问令牌** 中解析该 Service Account；
 4. 选择 **运行器预设**，并且只选择 Runner 要服务的那个仓库；
-5. 确认 Scope 包含 `read:user`、`issues:read`、`issues:write` 和
-   `runner:delegate`；
+5. 确认 Scope 包含 `read:user`、`issues:read`、`issues:write`、
+   `runner:delegate` 和 `evidence:write`；
 6. 创建并保存只显示一次的 Managed PAT。
 
 ![为独立服务账号签发 Runner Managed PAT](assets/self-hosted-runner-service-account.zh-CN.png)
@@ -125,7 +125,7 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 3. 保存只显示一次的个人 PAT；
 4. 启动时把自己的准确 Login 传给 `--runner`。
 
-个人 PAT 使用相同的四个 Scope，并且同样必须精确绑定一个仓库。默认只有
+个人 PAT 使用相同的五个 Scope，并且同样必须精确绑定一个仓库。默认只有
 `--runner` 对应的自己可以发出命令；需要允许其他维护者时再增加 `--allowed-user`。
 这种方式配置更少，但 Runner 写入、凭据轮换和账号停用都与个人身份绑定，不适合作为
 团队长期运行或多人共用的生产自动化。不要用浏览器 Session Cookie 或登录会话替代 PAT。
@@ -421,7 +421,7 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 | Webhook 为 `401` | Subscription ID、当前 Secret、Runner 与 Server 时钟 |
 | Webhook 无法连接 | Receiver URL、DNS、防火墙、反向代理和 TLS |
 | 评论被忽略 | 命令是否位于开头、作者是否在允许列表、是否具有 Write 权限 |
-| `runner:delegate` 失败 | PAT 是否只限制到该仓库，以及是否包含 `read:user`、`issues:read`、`issues:write`、`runner:delegate` |
+| `runner:delegate` 失败 | PAT 是否只限制到该仓库，以及是否包含 `read:user`、`issues:read`、`issues:write`、`runner:delegate`、`evidence:write` |
 | 新签发的委托 Token 被判为过期 | 校准 Server 与 Runner 时钟；只在修复校时的短期过渡中使用有上限的 `--delegation-ttl` |
 | 找不到源码或 Clone 失败 | Source Binding 是否 Active；短期凭据模式检查 HTTPS URL 与 Command 回显，宿主 SSH 模式检查 Runner 用户的 Key、Agent、`known_hosts` 和仓库权限 |
 | Preflight 报沙箱失败 | Linux 上安装 `bubblewrap` 或显式配置 `--bwrap` |

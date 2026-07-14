@@ -1,11 +1,33 @@
 package staticui
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestProductionAssetsContainRunnerScopePreset(t *testing.T) {
+	const runnerScopes = "read:user, issues:read, issues:write, runner:delegate, evidence:write"
+	found := false
+	if err := fs.WalkDir(production, "dist/assets", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || !strings.HasSuffix(name, ".js") {
+			return err
+		}
+		content, err := production.ReadFile(name)
+		if err != nil {
+			return err
+		}
+		found = found || strings.Contains(string(content), runnerScopes)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatalf("generated production assets do not contain runner scope preset %q", runnerScopes)
+	}
+}
 
 func TestProductionAssetsAndSPAFallback(t *testing.T) {
 	handler, err := New(Options{Production: true})
