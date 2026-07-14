@@ -147,7 +147,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-uEi8SbLw.js",
+    "file": "assets/index-DJQkDOSF.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -174,7 +174,7 @@
       "src/features/issues/detail-page.tsx"
     ],
     "css": [
-      "assets/index-B4L5_is1.css"
+      "assets/index-Chms4P4q.css"
     ]
   },
   "src/features/boards/board-page.tsx": {

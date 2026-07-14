@@ -107,7 +107,7 @@ security boundary:
 5. confirm these scopes and create the Managed PAT:
 
 ```text
-read:user, issues:read, issues:write, runner:delegate
+read:user, issues:read, issues:write, runner:delegate, evidence:write
 ```
 
 ![Issue a Runner Managed PAT to an independent service account](assets/self-hosted-runner-service-account.png)
@@ -127,7 +127,7 @@ runner may use your own issue-spec account:
 3. save the one-time personal PAT;
 4. pass your exact login to `--runner` when starting the process.
 
-The personal PAT uses the same four scopes and exact one-repository cap. By
+The personal PAT uses the same five scopes and exact one-repository cap. By
 default, only the account named by `--runner` can issue commands; add
 `--allowed-user` only when other maintainers should be accepted. This option is
 quicker to configure, but runner writes, credential rotation, and account
@@ -410,7 +410,7 @@ team workflow:
 | Webhook returns `401` | Subscription ID, current secret, and server/runner clocks |
 | Webhook cannot connect | Receiver URL, DNS, firewall, reverse proxy, and TLS |
 | Comment is ignored | Command position, allowlist, and write-equivalent permission |
-| `runner:delegate` fails | Exact repository restriction and scopes (`read:user`, `issues:read`, `issues:write`, `runner:delegate`) |
+| `runner:delegate` fails | Exact repository restriction and scopes (`read:user`, `issues:read`, `issues:write`, `runner:delegate`, `evidence:write`) |
 | Newly issued delegated token is rejected as expired | Synchronize Server and Runner clocks; only temporarily use a bounded `--delegation-ttl` while repairing clock sync |
 | Clone fails | Active source binding; for credentials, the HTTPS URL and exact binding echo; for host SSH, the runner user's key, agent, `known_hosts`, and repository access |
 | Sandbox preflight fails | Install `bubblewrap` or configure `--bwrap` on Linux |
