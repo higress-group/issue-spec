@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,6 +25,33 @@ const (
 
 	BwrapPathEnv = "ISSUE_SPEC_BWRAP_PATH"
 )
+
+const (
+	AgentRuntimeFailureTimeout = "timeout"
+	AgentRuntimeFailureAdapter = "adapter"
+	AgentRuntimeFailureModel   = "model"
+	AgentRuntimeFailureRuntime = "runtime"
+)
+
+// AgentRuntimeProbeError carries only a bounded failure category into the
+// preflight report. Raw adapter output remains in local diagnostics and is
+// never copied into reports or issue comments.
+type AgentRuntimeProbeError struct {
+	Kind string
+	Err  error
+}
+
+func NewAgentRuntimeProbeError(kind string, err error) error {
+	switch kind {
+	case AgentRuntimeFailureTimeout, AgentRuntimeFailureAdapter, AgentRuntimeFailureModel:
+	default:
+		kind = AgentRuntimeFailureRuntime
+	}
+	return &AgentRuntimeProbeError{Kind: kind, Err: err}
+}
+
+func (e *AgentRuntimeProbeError) Error() string { return "agent runtime probe " + e.Kind }
+func (e *AgentRuntimeProbeError) Unwrap() error { return e.Err }
 
 const (
 	bwrapInstallHint = "Install or upgrade bubblewrap, or explicitly rerun with --unsafe-no-sandbox to disable the filesystem boundary."
@@ -498,12 +526,29 @@ func agentRuntimeProbeCheck(ctx context.Context, cfg Config, deps PreflightDepen
 	}
 	args = append(args, "codex", "exec", "Reply with exactly OK and do not use tools.")
 	if _, err := deps.RunAgentCommand(probeCtx, cfg.AcpxPath, args...); err != nil {
-		return PreflightCheck{
-			Name:   "agent-runtime-probe",
-			Status: CheckError,
-			Detail: "Codex ACP runtime probe failed",
-			Hint:   "Confirm the ACP adapter and requested --model as the runner service user. Inspect the bounded runner diagnostic logs for the adapter error; do not copy raw runtime output into issue comments.",
+		kind := AgentRuntimeFailureRuntime
+		var classified *AgentRuntimeProbeError
+		if errors.As(err, &classified) {
+			kind = classified.Kind
+		} else if errors.Is(err, context.DeadlineExceeded) || errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+			kind = AgentRuntimeFailureTimeout
 		}
+		check := PreflightCheck{Name: "agent-runtime-probe", Status: CheckError}
+		switch kind {
+		case AgentRuntimeFailureTimeout:
+			check.Detail = "Codex ACP runtime probe timed out"
+			check.Hint = "Confirm the selected ACP adapter is already available to the runner account and can start without a cold package download."
+		case AgentRuntimeFailureAdapter:
+			check.Detail = "Codex ACP adapter failed to start or initialize"
+			check.Hint = "Confirm the operator-selected ACPX agent override and adapter package are available to the runner account."
+		case AgentRuntimeFailureModel:
+			check.Detail = "Codex ACP runtime rejected the requested model"
+			check.Hint = "Confirm the exact --model identifier is supported by the selected adapter and authenticated Codex account."
+		default:
+			check.Detail = "Codex ACP runtime probe failed"
+			check.Hint = "Inspect the bounded runner diagnostic logs as the runner service user; do not copy raw runtime output into issue comments."
+		}
+		return check
 	}
 	detail := "Codex ACP runtime probe succeeded with tools denied"
 	if model := strings.TrimSpace(cfg.Agent.Model); model != "" {

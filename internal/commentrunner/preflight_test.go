@@ -189,6 +189,35 @@ func TestPreflightRuntimeProbeDoesNotExposeAdapterOutput(t *testing.T) {
 	}
 }
 
+func TestPreflightRuntimeProbeReportsBoundedFailureCategory(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		kind       string
+		wantDetail string
+		wantHint   string
+	}{
+		{name: "timeout", kind: AgentRuntimeFailureTimeout, wantDetail: "timed out", wantHint: "cold package download"},
+		{name: "adapter", kind: AgentRuntimeFailureAdapter, wantDetail: "adapter failed", wantHint: "agent override"},
+		{name: "model", kind: AgentRuntimeFailureModel, wantDetail: "requested model", wantHint: "--model"},
+		{name: "runtime", kind: AgentRuntimeFailureRuntime, wantDetail: "runtime probe failed", wantHint: "diagnostic logs"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testPreflightConfig(t)
+			cfg.UnsafeNoSandbox = true
+			deps := passingPreflightDependencies(t)
+			deps.RunAgentCommand = func(context.Context, string, ...string) ([]byte, error) {
+				return []byte("token=must-not-leak"), NewAgentRuntimeProbeError(tc.kind, errors.New("raw must-not-leak"))
+			}
+			report := RunPreflightForTransportWithOptions(t.Context(), cfg, PreflightTransportPoll, deps, PreflightOptions{VerifyAgentRuntime: true})
+			check := findCheck(t, report, "agent-runtime-probe")
+			if check.Status != CheckError || !strings.Contains(check.Detail, tc.wantDetail) || !strings.Contains(check.Hint, tc.wantHint) ||
+				strings.Contains(check.Detail, "must-not-leak") || strings.Contains(check.Hint, "must-not-leak") {
+				t.Fatalf("unexpected runtime probe check: %+v", check)
+			}
+		})
+	}
+}
+
 func TestPreflightFailsWhenRepositoryWatchCannotBeConfirmed(t *testing.T) {
 	cfg := testPreflightConfig(t)
 	cfg.UnsafeNoSandbox = true

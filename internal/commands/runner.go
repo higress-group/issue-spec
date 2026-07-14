@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -533,6 +534,8 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	bwrapPath := fs.String("bwrap-path", defaults.BwrapPath, "bubblewrap binary path")
 	unsafeNoSandbox := fs.Bool("unsafe-no-sandbox", defaults.UnsafeNoSandbox, "explicitly disable the default bubblewrap filesystem boundary")
 	ghConfigDir := fs.String("gh-config-dir", "", "host gh config directory to mirror for sandboxed issue-spec CLI auth")
+	gitAuthorName := fs.String("git-author-name", defaults.GitAuthorName, "repo-local Git commit author name; requires --git-author-email")
+	gitAuthorEmail := fs.String("git-author-email", defaults.GitAuthorEmail, "repo-local Git commit author email; requires --git-author-name")
 	strictAgentCapabilities := fs.Bool("strict-agent-capabilities", defaults.StrictAgentCapabilities, "require operator-issued short-lived credentials proven for every delegated operation")
 	allowCancel := fs.Bool("allow-cancel", defaults.CancellationEnabled, "allow authorized cancellation commands")
 	codexFullAccess := fs.Bool("codex-agent-full-access", defaults.Agent.CodexAgentFullAccess, "require Codex agent-full-access policy for workflow CLI/shell work")
@@ -546,8 +549,10 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	logRawCapture := fs.Int("log-raw-capture", defaults.LogRawCaptureKB, "maximum raw stdout/stderr capture size in KB (default: 100KB)")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	var verifyAgentRuntime *bool
+	var allowHostSSH *bool
 	if !includePollFlags {
 		verifyAgentRuntime = fs.Bool("verify-agent-runtime", false, "create a tools-denied Codex ACP session in the configured Runner sandbox to verify the runtime and --model")
+		allowHostSSH = fs.Bool("allow-host-ssh", defaults.AllowHostSSH, "simulate runner serve host SSH HOME and agent socket during runtime verification")
 	}
 	fs.Var(&repoValues, "repo", "repository owner/name; repeat or comma-separate for multiple repositories")
 	fs.Var(&allowedUsers, "allowed-user", "GitHub login allowed to trigger runner commands; repeat or comma-separate, and users still need write-equivalent repository permission")
@@ -674,6 +679,15 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	if seen["gh-config-dir"] {
 		cfg.GHConfigDir = *ghConfigDir
 	}
+	if seen["git-author-name"] {
+		cfg.GitAuthorName = *gitAuthorName
+	}
+	if seen["git-author-email"] {
+		cfg.GitAuthorEmail = *gitAuthorEmail
+	}
+	if allowHostSSH != nil && seen["allow-host-ssh"] {
+		cfg.AllowHostSSH = *allowHostSSH
+	}
 	if seen["strict-agent-capabilities"] {
 		cfg.StrictAgentCapabilities = *strictAgentCapabilities
 	}
@@ -774,12 +788,11 @@ func runSandboxedAgentRuntimeCommand(ctx context.Context, cfg commentrunner.Conf
 	if profile, _, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname); err == nil && profile.Kind == auth.ProfileKindHosted {
 		childProfile = &profile
 	}
-	env, err := (jobs.SandboxRunner{Config: sandbox.Config{
-		UnsafeNoSandbox: cfg.UnsafeNoSandbox,
-		BwrapPath:       cfg.BwrapPath,
-		HostGHConfigDir: cfg.GHConfigDir,
-		HostEnv:         os.Environ(),
-	}}).Prepare(ctx, jobs.SandboxRequest{
+	sandboxConfig, _, err := runnerSandboxRuntimeConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("runner preflight host SSH: %w", err)
+	}
+	env, err := (jobs.SandboxRunner{Config: sandboxConfig}).Prepare(ctx, jobs.SandboxRequest{
 		WorkspacePath:        workspacePath,
 		AcpxWorkingDirectory: workspacePath,
 		AcpxBinary:           binary,
@@ -794,7 +807,30 @@ func runSandboxedAgentRuntimeCommand(ctx context.Context, cfg commentrunner.Conf
 		return nil, err
 	}
 	result, err := env.Runner.Run(ctx, acpx.Command{Binary: env.AcpxBinary, Args: args, Dir: env.WorkingDirectory})
-	return result.Stdout, err
+	if err != nil {
+		return result.Stdout, commentrunner.NewAgentRuntimeProbeError(classifyAgentRuntimeProbeFailure(ctx, result, err), err)
+	}
+	return result.Stdout, nil
+}
+
+func classifyAgentRuntimeProbeFailure(ctx context.Context, result acpx.CommandResult, err error) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return commentrunner.AgentRuntimeFailureTimeout
+	}
+	output := strings.ToLower(string(append(append([]byte(nil), result.Stdout...), result.Stderr...)))
+	if strings.Contains(output, "timed out") || strings.Contains(output, "timeout") || strings.Contains(output, "deadline exceeded") {
+		return commentrunner.AgentRuntimeFailureTimeout
+	}
+	if strings.Contains(output, "model") && (strings.Contains(output, "unsupported") || strings.Contains(output, "not found") ||
+		strings.Contains(output, "unknown") || strings.Contains(output, "invalid") || strings.Contains(output, "unavailable")) {
+		return commentrunner.AgentRuntimeFailureModel
+	}
+	for _, marker := range []string{"adapter", "acp", "npx", "npm", "package", "module", "spawn", "enoent", "initialize", "handshake"} {
+		if strings.Contains(output, marker) {
+			return commentrunner.AgentRuntimeFailureAdapter
+		}
+	}
+	return commentrunner.AgentRuntimeFailureRuntime
 }
 
 func validateRunnerPollProfile(cfg commentrunner.Config) error {
@@ -917,10 +953,7 @@ func (a *app) runRunnerReconcileWithStore(ctx context.Context, cfg commentrunner
 		defer opened.Close()
 		store = opened
 	}
-	workspaces := workspace.Manager{
-		Root:      cfg.WorkspaceRoot,
-		Retention: cfg.WorkspaceRetention.Duration,
-	}
+	workspaces := runnerWorkspaceManager(cfg)
 	dispatcher := jobs.Dispatcher{
 		Store:      store,
 		Workspaces: workspaces,
@@ -946,11 +979,8 @@ func (a *app) runRunnerWorkspaceCleanupWithStore(ctx context.Context, cfg commen
 		store = opened
 	}
 	dispatcher := jobs.Dispatcher{
-		Store: store,
-		Workspaces: workspace.Manager{
-			Root:      cfg.WorkspaceRoot,
-			Retention: cfg.WorkspaceRetention.Duration,
-		},
+		Store:      store,
+		Workspaces: runnerWorkspaceManager(cfg),
 	}
 	return dispatcher.CleanupWorkspaces(ctx)
 }
@@ -1032,10 +1062,7 @@ func (a *app) buildRunnerDispatcher(ctx context.Context, cfg commentrunner.Confi
 		cleanup = func() { _ = opened.Close() }
 		store = opened
 	}
-	workspaces := workspace.Manager{
-		Root:      cfg.WorkspaceRoot,
-		Retention: cfg.WorkspaceRetention.Duration,
-	}
+	workspaces := runnerWorkspaceManager(cfg)
 	dispatcher := &jobs.Dispatcher{
 		Store:        store,
 		Repositories: jobs.StaticRepositoryResolver{Hostname: cfg.Hostname},

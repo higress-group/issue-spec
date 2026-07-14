@@ -1700,9 +1700,33 @@ func TestConfiguredAgentRuntimeRecordsAdapterNotConfigPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".acpx", "config.json"), []byte(`{"agents":{"codex":{"command":"npx","args":["-y","@agentclientprotocol/codex-acp@1.1.2"]}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := configuredAgentRuntime([]string{"HOME=" + home}, acpx.AgentCodex)
+	got := configuredAgentRuntime(sandbox.Config{HostEnv: []string{"HOME=" + home}}, acpx.AgentCodex)
 	if got != "@agentclientprotocol/codex-acp@1.1.2" || strings.Contains(got, home) {
 		t.Fatalf("configured agent runtime = %q", got)
+	}
+}
+
+func TestHostSSHRuntimeLoadsAcpxOverrideFromReusedHome(t *testing.T) {
+	hostHome := t.TempDir()
+	for _, dir := range []string{filepath.Join(hostHome, ".ssh"), filepath.Join(hostHome, ".acpx")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(hostHome, ".acpx", "config.json"), []byte(`{"agents":{"codex":{"command":"npx","args":["-y","@agentclientprotocol/codex-acp@1.1.2"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtimeHome := t.TempDir()
+	cfg := sandbox.Config{HostEnv: []string{"HOME=" + t.TempDir()}, HostSSHDir: filepath.Join(hostHome, ".ssh"), TempHome: runtimeHome}
+	if err := materializeHostAcpxAgentOverride(&cfg, acpx.AgentCodex); err != nil {
+		t.Fatal(err)
+	}
+	if got := configuredAgentRuntime(cfg, acpx.AgentCodex); got != "@agentclientprotocol/codex-acp@1.1.2" {
+		t.Fatalf("configured agent runtime = %q", got)
+	}
+	data, err := os.ReadFile(filepath.Join(runtimeHome, ".acpx", "config.json"))
+	if err != nil || !strings.Contains(string(data), "@agentclientprotocol/codex-acp@1.1.2") {
+		t.Fatalf("materialized ACPX override = %q err=%v", data, err)
 	}
 }
 

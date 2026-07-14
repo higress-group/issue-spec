@@ -17,6 +17,7 @@ import (
 	webhook "github.com/higress-group/issue-spec/internal/commentrunner/intake/webhook"
 	runnerserver "github.com/higress-group/issue-spec/internal/commentrunner/server"
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/gitidentity"
 )
 
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -66,6 +67,8 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	production := fs.Bool("production", false, "require TLS and an explicit non-loopback bind")
 	gitCredentialCommand := fs.String("git-credential-command", "", "absolute operator command implementing issue-spec-git-credential-v1")
 	allowHostSSH := fs.Bool("allow-host-ssh", false, "reuse the runner account ~/.ssh inside the sandbox for trusted internal repositories")
+	gitAuthorName := fs.String("git-author-name", "", "repo-local Git commit author name; requires --git-author-email")
+	gitAuthorEmail := fs.String("git-author-email", "", "repo-local Git commit author email; requires --git-author-name")
 	fs.Var(&operatorSkillDirs, "operator-skill-dir", "operator-owned local skill directory, or a directory containing skill directories; repeat as needed")
 	gitCredentialTimeout := fs.Duration("git-credential-timeout", 30*time.Second, "operator git credential command timeout")
 	gitCredentialMaxOutput := fs.Int64("git-credential-max-output", 1<<20, "maximum operator git credential command output bytes")
@@ -102,6 +105,10 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	}
 	if len(repos.Values()) == 0 || strings.TrimSpace(*runner) == "" {
 		a.errorf("runner serve requires at least one --repo and --runner\n")
+		return 2
+	}
+	if _, err := gitidentity.Normalize(*gitAuthorName, *gitAuthorEmail); err != nil {
+		a.errorf("runner serve --git-author-name and --git-author-email: %v\n", err)
 		return 2
 	}
 	if *allowHostSSH && strings.TrimSpace(*gitCredentialCommand) != "" {
@@ -232,6 +239,7 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	runnerConfig.WorkspaceRetention = commentrunner.NewDuration(*workspaceRetention)
 	runnerConfig.UnsafeNoSandbox, runnerConfig.BwrapPath = *unsafeNoSandbox, strings.TrimSpace(*bwrapPath)
 	runnerConfig.AllowHostSSH = *allowHostSSH
+	runnerConfig.GitAuthorName, runnerConfig.GitAuthorEmail = *gitAuthorName, *gitAuthorEmail
 	runnerConfig.OperatorSkillDirs, err = resolveRunnerOperatorSkillDirs(operatorSkillDirs.Values())
 	if err != nil {
 		a.errorf("runner serve operator skills: %v\n", err)

@@ -222,7 +222,25 @@ issue-spec --profile team runner serve \
 
 启动前先用运行 Runner 的同一个系统用户验证 SSH 可非交互访问目标仓库，并把代码平台
 Host Key 固定写入其 `~/.ssh/known_hosts`。`--allow-host-ssh` 与
-`--git-credential-command` 二选一。
+`--git-credential-command` 二选一。执行 `runner preflight --verify-agent-runtime` 时也要传入
+同一个 `--allow-host-ssh`；否则 preflight 会使用隔离的临时 HOME，不能代表实际 Runner 环境。
+
+### 配置 repo-local 提交身份
+
+如果 Agent 任务需要创建提交，在 `runner serve` 中同时配置两个参数：
+
+```bash
+issue-spec --profile team runner serve \
+  ... \
+  --git-author-name "Issue Spec Runner" \
+  --git-author-email runner@example.test
+```
+
+Runner 会严格校验这两个值，并在每个受管 clone 完成后立即写入 repo-local
+`user.name` 与 `user.email`。Agent 任务仍保留 `GIT_CONFIG_GLOBAL=/dev/null` 和
+`GIT_CONFIG_NOSYSTEM=1`，不会继承宿主的 URL Rewrite、Credential Helper、签名设置或其他
+全局 Git 策略。只读任务可以同时省略两个参数，但只提供其中一个会报错。应使用目标代码平台
+认可的提交身份。
 
 ### macOS 本地开发例外
 
@@ -276,6 +294,8 @@ issue-spec --profile team runner preflight \
   --repo acme/workflow \
   --runner svc-runner-bot-a1b2c3d4 \
   --agent codex \
+  --git-author-name "Issue Spec Runner" \
+  --git-author-email runner@example.test \
   --verify-agent-runtime \
   --json
 ```
@@ -293,13 +313,16 @@ issue-spec --profile team runner serve \
   --git-credential-command /usr/local/libexec/issue-spec-git-credential \
   --state /var/lib/issue-spec-runner/state.json \
   --workspace-root /var/lib/issue-spec-runner/workspaces \
+  --git-author-name "Issue Spec Runner" \
+  --git-author-email runner@example.test \
   --operator-skill-dir /etc/issue-spec-runner/skills/code-host \
   --agent codex
 ```
 
 内部 SSH 模式只需把上例中的
 `--git-credential-command /usr/local/libexec/issue-spec-git-credential` 替换为
-`--allow-host-ssh`。
+`--allow-host-ssh`，并在 preflight 命令中也添加 `--allow-host-ssh`。macOS 上两个命令都应使用
+相同的显式 `--unsafe-no-sandbox --allow-host-ssh` 组合。
 
 `--allowed-user` 可以重复。默认最多并行运行 3 个任务，可用
 `--max-concurrent-jobs` 调整。同一个父凭据不能跨仓库委托任务。
@@ -346,6 +369,8 @@ ExecStart=/usr/local/bin/issue-spec --profile team runner serve \
   --git-credential-command /usr/local/libexec/issue-spec-git-credential \
   --state /var/lib/issue-spec-runner/state.json \
   --workspace-root /var/lib/issue-spec-runner/workspaces \
+  --git-author-name "Issue Spec Runner" \
+  --git-author-email runner@example.test \
   --operator-skill-dir /etc/issue-spec-runner/skills/code-host \
   --agent codex
 Restart=on-failure
@@ -410,7 +435,8 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
    Runner 状态评论；
 3. 用配置的任务凭据完成 clone 和无修改的 Git 读取；适用时确认凭据已撤销。宿主 SSH 模式
    则确认实际 Remote 正确；
-4. 下达一个只修改文档的最小任务，确认它能提交并推送隔离分支；
+4. 下达一个只修改文档的最小任务，确认它能提交并推送隔离分支；配置显式 Git Author 时，
+   还要确认在禁用全局和系统 Git 配置后第一次提交即可成功；
 5. 当 code-provider bridge 广告 `change.create` 时，确认 Agent 通过该 provider 创建 PR/MR，
    并把变更 URL 回写到 Issue。未提供该能力时，把推送证据作为终点，在沙箱外创建变更；不要
    为此向 bubblewrap 挂载任意宿主 CLI；
@@ -424,8 +450,9 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 | `runner:delegate` 失败 | PAT 是否只限制到该仓库，以及是否包含 `read:user`、`issues:read`、`issues:write`、`runner:delegate` |
 | 新签发的委托 Token 被判为过期 | 校准 Server 与 Runner 时钟；只在修复校时的短期过渡中使用有上限的 `--delegation-ttl` |
 | 找不到源码或 Clone 失败 | Source Binding 是否 Active；短期凭据模式检查 HTTPS URL 与 Command 回显，宿主 SSH 模式检查 Runner 用户的 Key、Agent、`known_hosts` 和仓库权限 |
+| 提交时报作者身份未知 | 同时配置 `--git-author-name` 与 `--git-author-email`，并使用代码平台认可的值；不要恢复宿主全局 Git 配置 |
 | Preflight 报沙箱失败 | Linux 上安装 `bubblewrap` 或显式配置 `--bwrap` |
-| Codex 无法启动 | 运行 `runner preflight --verify-agent-runtime`，确认 adapter 固定版本、精确模型 ID 和 Proxy 环境对 systemd 用户可用 |
+| Codex 无法启动 | 使用与实际 Runner 相同的 `--allow-host-ssh`、`--unsafe-no-sandbox`、adapter 固定版本、模型和 Proxy 环境运行 `runner preflight --verify-agent-runtime`；有界结果会区分超时、adapter 初始化失败与模型拒绝 |
 
 轮换 Webhook Secret 时，先在 Web UI 轮换，再把旧 Secret 作为
 `--previous-secret-file` 提供，并用 `--previous-secrets-valid-until` 设置最长 24 小时的

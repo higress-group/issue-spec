@@ -1644,7 +1644,7 @@ func (p SandboxRunner) Prepare(ctx context.Context, req SandboxRequest) (Executi
 	env := ExecutionEnvironment{
 		WorkingDirectory: firstNonEmpty(req.AcpxWorkingDirectory, req.WorkspacePath),
 		AcpxBinary:       acpxBinary,
-		Sandbox:          sandboxMetadata(metadata, err, configuredAgentRuntime(p.Config.HostEnv, req.AcpxAgent)),
+		Sandbox:          sandboxMetadata(metadata, err, configuredAgentRuntime(cfg, req.AcpxAgent)),
 		Runner:           sandboxedRunner{cfg: cfg, deps: p.Deps, acpxBinary: firstNonEmpty(req.AcpxBinary, "acpx"), resolvedAcpxBinary: resolvedAcpxBinary},
 	}
 	return env, err
@@ -1777,7 +1777,7 @@ func materializeHostAcpxAgentOverride(cfg *sandbox.Config, agent string) error {
 	if cfg == nil || strings.TrimSpace(agent) == "" || strings.TrimSpace(cfg.TempHome) == "" {
 		return nil
 	}
-	home := hostHomeDir(cfg.HostEnv)
+	home := runnerHostHome(cfg)
 	override, ok, err := acpx.LoadAgentOverride(home, agent)
 	if err != nil {
 		return fmt.Errorf("load host acpx %s agent override: %w", agent, err)
@@ -1797,16 +1797,26 @@ func materializeHostAcpxAgentOverride(cfg *sandbox.Config, agent string) error {
 
 // configuredAgentRuntime records only the selected adapter identity. It never
 // records the host config location, command arguments, or credentials.
-func configuredAgentRuntime(hostEnv []string, agent string) string {
+func configuredAgentRuntime(cfg sandbox.Config, agent string) string {
 	agent = strings.TrimSpace(agent)
 	if agent == "" {
 		return ""
 	}
-	override, ok, err := acpx.LoadAgentOverride(hostHomeDir(hostEnv), agent)
+	override, ok, err := acpx.LoadAgentOverride(runnerHostHome(&cfg), agent)
 	if err != nil || !ok {
 		return "builtin"
 	}
 	return acpx.AgentOverrideDescription(override)
+}
+
+func runnerHostHome(cfg *sandbox.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	if sshDir := strings.TrimSpace(cfg.HostSSHDir); sshDir != "" {
+		return filepath.Dir(filepath.Clean(sshDir))
+	}
+	return hostHomeDir(cfg.HostEnv)
 }
 
 func materializeChildProfile(xdgConfigHome string, profile clientauth.Profile) error {

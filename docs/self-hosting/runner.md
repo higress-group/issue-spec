@@ -216,7 +216,27 @@ issue-spec --profile team runner serve \
 
 First verify non-interactive SSH access as the same OS account and pin the code
 host key in that account's `known_hosts`. `--allow-host-ssh` is mutually
-exclusive with `--git-credential-command`.
+exclusive with `--git-credential-command`. Pass the same `--allow-host-ssh`
+flag to `runner preflight --verify-agent-runtime`; otherwise preflight uses an
+isolated temporary HOME and does not represent the live Runner environment.
+
+### Configure a repo-local commit identity
+
+If Agent tasks create commits, configure both flags on `runner serve`:
+
+```bash
+issue-spec --profile team runner serve \
+  ... \
+  --git-author-name "Issue Spec Runner" \
+  --git-author-email runner@example.test
+```
+
+The values are strictly validated and written as repo-local `user.name` and
+`user.email` immediately after each managed clone. The Runner continues to set
+`GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1` in Agent jobs, so this
+does not import host URL rewrites, credential helpers, signing settings, or
+other global Git policy. Omit both flags for read-only jobs; providing only one
+is an error. Use an identity accepted by the target code host.
 
 ### macOS local development exception
 
@@ -276,6 +296,8 @@ issue-spec --profile team runner preflight \
   --repo acme/workflow \
   --runner svc-runner-bot-a1b2c3d4 \
   --agent codex \
+  --git-author-name "Issue Spec Runner" \
+  --git-author-email runner@example.test \
   --verify-agent-runtime \
   --json
 
@@ -289,13 +311,17 @@ issue-spec --profile team runner serve \
   --git-credential-command /usr/local/libexec/issue-spec-git-credential \
   --state /var/lib/issue-spec-runner/state.json \
   --workspace-root /var/lib/issue-spec-runner/workspaces \
+  --git-author-name "Issue Spec Runner" \
+  --git-author-email runner@example.test \
   --operator-skill-dir /etc/issue-spec-runner/skills/code-host \
   --agent codex
 ```
 
 For the internal SSH mode, replace the example's
 `--git-credential-command /usr/local/libexec/issue-spec-git-credential` with
-`--allow-host-ssh`.
+`--allow-host-ssh`, and add `--allow-host-ssh` to the preflight command too. On
+macOS, use the same explicit `--unsafe-no-sandbox --allow-host-ssh`
+combination in both commands.
 
 Repeat `--allowed-user` as needed. One parent credential cannot delegate across
 repositories. The default maximum is three concurrent jobs.
@@ -332,6 +358,8 @@ ExecStart=/usr/local/bin/issue-spec --profile team runner serve \
   --git-credential-command /usr/local/libexec/issue-spec-git-credential \
   --state /var/lib/issue-spec-runner/state.json \
   --workspace-root /var/lib/issue-spec-runner/workspaces \
+  --git-author-name "Issue Spec Runner" \
+  --git-author-email runner@example.test \
   --operator-skill-dir /etc/issue-spec-runner/skills/code-host \
   --agent codex
 Restart=on-failure
@@ -396,7 +424,8 @@ team workflow:
    the expected SSH remote in host SSH mode), then verify credential revocation
    where applicable;
 4. post a small documentation-only task that makes one commit and pushes its
-   isolated branch;
+   isolated branch; when an explicit Git author is configured, verify the
+   first commit succeeds with global and system Git config disabled;
 5. when a code-provider bridge advertises `change.create`, verify that the
    agent creates the PR/MR through that provider and writes the resulting change
    URL back to the issue. Without that capability, treat push evidence as the
@@ -413,8 +442,9 @@ team workflow:
 | `runner:delegate` fails | Exact repository restriction and scopes (`read:user`, `issues:read`, `issues:write`, `runner:delegate`) |
 | Newly issued delegated token is rejected as expired | Synchronize Server and Runner clocks; only temporarily use a bounded `--delegation-ttl` while repairing clock sync |
 | Clone fails | Active source binding; for credentials, the HTTPS URL and exact binding echo; for host SSH, the runner user's key, agent, `known_hosts`, and repository access |
+| Commit reports an unknown author | Configure both `--git-author-name` and `--git-author-email` with values accepted by the code host; do not restore the host global Git config |
 | Sandbox preflight fails | Install `bubblewrap` or configure `--bwrap` on Linux |
-| Codex does not start | Run `runner preflight --verify-agent-runtime`; confirm the adapter pin, exact model ID, and proxy environment are available to the systemd user |
+| Codex does not start | Run `runner preflight --verify-agent-runtime` with the same `--allow-host-ssh`, `--unsafe-no-sandbox`, adapter pin, model, and proxy environment as the live Runner; the bounded result distinguishes timeout, adapter initialization, and model rejection |
 
 When rotating a webhook secret, provide the old value with
 `--previous-secret-file` and set a `--previous-secrets-valid-until` overlap no

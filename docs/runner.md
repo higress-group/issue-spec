@@ -74,7 +74,15 @@ acpx --verbose --timeout 60 --deny-all --format json \
 and runs the same tools-denied ACP session through the configured Runner
 sandbox, isolated HOME, CODEX_HOME, ACPX override, and proxy environment. Use it
 for a deployment candidate; the default preflight remains offline with respect
-to the model runtime.
+to the model runtime. For a self-hosted Runner that uses host SSH, also pass
+`--allow-host-ssh` to preflight so unsafe macOS runs reuse the same host HOME
+and Linux runs validate the same SSH directory and agent socket as `runner
+serve`.
+
+When Runner tasks create commits, configure `--git-author-name` and
+`--git-author-email` together. The Runner writes only repo-local `user.name`
+and `user.email` in each managed clone. It deliberately does not expose the
+host's global or system Git configuration to the Agent.
 
 If `--model` is configured for the runner, it is passed to ACPX and takes
 precedence over the model in the copied Codex configuration. Use the exact

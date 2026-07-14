@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,8 +19,6 @@ import (
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/github"
-	"github.com/higress-group/issue-spec/internal/sandbox"
-	"github.com/higress-group/issue-spec/internal/workspace"
 )
 
 type runnerServeRuntime interface{ Run(context.Context) error }
@@ -80,15 +77,13 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	if err != nil {
 		return nil, err
 	}
+	sandboxConfig, hostSSHProvider, err := runnerSandboxRuntimeConfig(input.Runner)
+	if err != nil {
+		return nil, fmt.Errorf("runner serve host SSH: %w", err)
+	}
 	var gitProvider credentials.GitProvider
-	var hostSSHDir, hostSSHAgentSocket string
 	if input.Runner.AllowHostSSH {
-		hostSSHConfig, configErr := credentials.CurrentUserHostSSHGitProviderConfig(os.Getenv("SSH_AUTH_SOCK"))
-		if configErr != nil {
-			return nil, fmt.Errorf("runner serve host SSH: %w", configErr)
-		}
-		hostSSHDir, hostSSHAgentSocket = hostSSHConfig.SSHDir, hostSSHConfig.AgentSocket
-		gitProvider, err = credentials.NewHostSSHGitProvider(hostSSHConfig)
+		gitProvider = hostSSHProvider
 	} else {
 		gitProvider, err = credentials.NewCommandGitProvider(credentials.CommandGitProviderConfig{Path: input.GitCredentialCommand,
 			Args: input.GitCredentialArgs, Timeout: input.GitCredentialTimeout, MaxOutput: input.GitCredentialMaxOutput,
@@ -131,10 +126,8 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 		Subject: subject, ParentToken: input.ParentToken, HTTPClient: nativeHTTPClient,
 		Materializer: credentials.Materializer{Root: credentialRoot}, GitProvider: gitProvider, TTL: delegationTTL,
 		Scopes: []string{"read:user", "issues:read", "issues:write"}}
-	workspaces := jobs.WorkspaceManager(workspace.Manager{Root: input.Runner.WorkspaceRoot, Retention: input.Runner.WorkspaceRetention.Duration})
-	sandboxer := jobs.SandboxPreparer(jobs.SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: input.Runner.UnsafeNoSandbox,
-		BwrapPath: input.Runner.BwrapPath, HostGHConfigDir: input.Runner.GHConfigDir,
-		HostSSHDir: hostSSHDir, HostSSHAgentSocket: hostSSHAgentSocket}})
+	workspaces := jobs.WorkspaceManager(runnerWorkspaceManager(input.Runner))
+	sandboxer := jobs.SandboxPreparer(jobs.SandboxRunner{Config: sandboxConfig})
 	acpxFactory := jobs.AcpxFactory(jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(input.Runner)})
 	artifacts := jobs.ArtifactProvider(&jobs.IssueSpecArtifactProvider{GitHub: compatibility})
 	writebacks := jobs.Writeback(&writeback.Service{GitHub: compatibility, Store: input.Store})

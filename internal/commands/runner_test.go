@@ -14,8 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
+	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
 	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
 	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
@@ -108,6 +110,9 @@ func TestRunnerPreflightHelpShowsSharedOptionsOnly(t *testing.T) {
 		"(default: 168h0m0s)",
 		"--verify-agent-runtime",
 		"create a tools-denied Codex ACP session",
+		"--allow-host-ssh",
+		"--git-author-name",
+		"--git-author-email",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("runner preflight help missing %q:\n%s", want, text)
@@ -174,6 +179,82 @@ func TestRunSandboxedAgentRuntimeCommandUsesIsolatedRuntimePaths(t *testing.T) {
 	if parts[0] == hostHome || !strings.Contains(parts[0], "issue-spec-runner-preflight-") ||
 		!strings.Contains(parts[1], "issue-spec-runner-preflight-") || !strings.HasSuffix(parts[2], string(filepath.Separator)+"workspace") {
 		t.Fatalf("probe runtime paths = %#v, host home = %q", parts, hostHome)
+	}
+}
+
+func TestRunSandboxedAgentRuntimeCommandMatchesUnsafeHostSSHRuntime(t *testing.T) {
+	sshHome := t.TempDir()
+	sshDir := filepath.Join(sshHome, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(sshHome, ".acpx"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sshHome, ".acpx", "config.json"), []byte(`{"agents":{"codex":{"command":"npx","args":["-y","@agentclientprotocol/codex-acp@1.1.2"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldCurrent, oldNew := currentRunnerHostSSHConfig, newRunnerHostSSHProvider
+	currentRunnerHostSSHConfig = func(string) (credentials.HostSSHGitProviderConfig, error) {
+		return credentials.HostSSHGitProviderConfig{SSHDir: sshDir}, nil
+	}
+	newRunnerHostSSHProvider = credentials.NewHostSSHGitProvider
+	t.Cleanup(func() { currentRunnerHostSSHConfig, newRunnerHostSSHProvider = oldCurrent, oldNew })
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HTTP_PROXY", "http://proxy.example.test:8080")
+	ghConfig := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ghConfig, "hosts.yml"), []byte("github.com:\n  oauth_token: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probe := filepath.Join(t.TempDir(), "probe.sh")
+	if err := os.WriteFile(probe, []byte("#!/bin/sh\nprintf '%s|%s|%s|%s' \"$HOME\" \"$CODEX_HOME\" \"$HTTP_PROXY\" \"$(grep -c codex-acp \"$HOME/.acpx/config.json\")\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := commentrunner.Config{UnsafeNoSandbox: true, AllowHostSSH: true, GHConfigDir: ghConfig, Agent: commentrunner.DefaultAgentConfig()}
+	output, err := runSandboxedAgentRuntimeCommand(t.Context(), cfg, probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(string(output), "|")
+	if len(parts) != 4 || parts[0] != sshHome || !strings.Contains(parts[1], "issue-spec-runner-preflight-") ||
+		parts[2] != "http://proxy.example.test:8080" || parts[3] != "1" {
+		t.Fatalf("host SSH runtime = %#v, want HOME=%q isolated CODEX_HOME inherited proxy and host ACPX override", parts, sshHome)
+	}
+}
+
+func TestRunnerPreflightParsesServeParityAndGitAuthorFlags(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	cfg, _, ok := app.parseRunnerOptions([]string{"--repo", "o/r", "--runner", "runner-bot",
+		"--state", filepath.Join(t.TempDir(), "state.json"), "--workspace-root", t.TempDir(),
+		"--unsafe-no-sandbox", "--allow-host-ssh", "--git-author-name", "Issue Spec Runner",
+		"--git-author-email", "runner@example.test"}, false)
+	if !ok {
+		t.Fatalf("parse failed: %s", errOut.String())
+	}
+	if !cfg.AllowHostSSH || !cfg.UnsafeNoSandbox || cfg.GitAuthorName != "Issue Spec Runner" || cfg.GitAuthorEmail != "runner@example.test" {
+		t.Fatalf("parsed config = %+v", cfg)
+	}
+}
+
+func TestClassifyAgentRuntimeProbeFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result acpx.CommandResult
+		err    error
+		want   string
+	}{
+		{name: "timeout", result: acpx.CommandResult{Stderr: []byte("adapter timed out")}, err: errors.New("exit 1"), want: commentrunner.AgentRuntimeFailureTimeout},
+		{name: "model", result: acpx.CommandResult{Stdout: []byte(`{"error":"model unknown"}`)}, err: errors.New("exit 1"), want: commentrunner.AgentRuntimeFailureModel},
+		{name: "adapter", result: acpx.CommandResult{Stderr: []byte("npx could not initialize ACP")}, err: errors.New("exit 1"), want: commentrunner.AgentRuntimeFailureAdapter},
+		{name: "runtime", result: acpx.CommandResult{Stderr: []byte("request failed")}, err: errors.New("exit 1"), want: commentrunner.AgentRuntimeFailureRuntime},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyAgentRuntimeProbeFailure(t.Context(), tc.result, tc.err); got != tc.want {
+				t.Fatalf("classification = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

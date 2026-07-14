@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/gitidentity"
 )
 
 const (
@@ -82,13 +83,15 @@ func (ExecRunner) Run(ctx context.Context, command Command) (Result, error) {
 }
 
 type Manager struct {
-	Root      string
-	Retention time.Duration
-	GitBinary string
-	Runner    Runner
-	Now       func() time.Time
-	IDFunc    func(NewRequest) (string, error)
-	TokenFunc func() (string, error)
+	Root           string
+	Retention      time.Duration
+	GitBinary      string
+	GitAuthorName  string
+	GitAuthorEmail string
+	Runner         Runner
+	Now            func() time.Time
+	IDFunc         func(NewRequest) (string, error)
+	TokenFunc      func() (string, error)
 }
 
 type NewRequest struct {
@@ -221,6 +224,9 @@ func (m Manager) PrepareNew(ctx context.Context, req NewRequest) (Binding, error
 	}
 	if cleanupErr != nil {
 		return Binding{}, fmt.Errorf("git clone credential cleanup: %w", cleanupErr)
+	}
+	if err := nm.configureGitAuthor(ctx, path); err != nil {
+		return Binding{}, err
 	}
 	if _, err := nm.runGit(ctx, "git checkout base ref", path, "checkout", "--force", baseRef); err != nil {
 		return Binding{}, err
@@ -654,6 +660,11 @@ func (m Manager) normalized() (Manager, string, error) {
 	if m.GitBinary == "" {
 		m.GitBinary = "git"
 	}
+	identity, err := gitidentity.Normalize(m.GitAuthorName, m.GitAuthorEmail)
+	if err != nil {
+		return Manager{}, "", err
+	}
+	m.GitAuthorName, m.GitAuthorEmail = identity.Name, identity.Email
 	if m.Runner == nil {
 		m.Runner = ExecRunner{}
 	}
@@ -667,6 +678,19 @@ func (m Manager) normalized() (Manager, string, error) {
 		m.TokenFunc = randomHex
 	}
 	return m, filepath.Clean(absRoot), nil
+}
+
+func (m Manager) configureGitAuthor(ctx context.Context, dir string) error {
+	if m.GitAuthorName == "" {
+		return nil
+	}
+	if _, err := m.runGit(ctx, "git configure local author name", dir, "config", "--local", "user.name", m.GitAuthorName); err != nil {
+		return err
+	}
+	if _, err := m.runGit(ctx, "git configure local author email", dir, "config", "--local", "user.email", m.GitAuthorEmail); err != nil {
+		return err
+	}
+	return nil
 }
 
 func validateNewRequest(req NewRequest) error {

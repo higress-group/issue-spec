@@ -14,6 +14,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
+	"github.com/higress-group/issue-spec/internal/gitidentity"
 )
 
 const (
@@ -49,6 +50,8 @@ type Config struct {
 	BwrapPath               string                 `json:"bwrap_path,omitempty"`
 	UnsafeNoSandbox         bool                   `json:"unsafe_no_sandbox"`
 	AllowHostSSH            bool                   `json:"allow_host_ssh,omitempty"`
+	GitAuthorName           string                 `json:"git_author_name,omitempty"`
+	GitAuthorEmail          string                 `json:"git_author_email,omitempty"`
 	// OperatorSkillDirs are operator-trusted local skill roots copied into each
 	// session's isolated CODEX_HOME. Repository workflow skills belong in the
 	// repository and arrive through the normal clone path.
@@ -189,6 +192,8 @@ func (c Config) Normalized() Config {
 		c.AcpxPath = "acpx"
 	}
 	c.BwrapPath = strings.TrimSpace(c.BwrapPath)
+	c.GitAuthorName = strings.TrimSpace(c.GitAuthorName)
+	c.GitAuthorEmail = strings.TrimSpace(c.GitAuthorEmail)
 	c.GHConfigDir = strings.TrimSpace(c.GHConfigDir)
 	c.OperatorSkillDirs = normalizeStringList(c.OperatorSkillDirs)
 	c.Agent.Kind = strings.ToLower(strings.TrimSpace(c.Agent.Kind))
@@ -254,6 +259,9 @@ func (c Config) Validate() error {
 	}
 	if len(c.OperatorSkillDirs) > 0 && c.Agent.Kind != AgentCodex {
 		return fmt.Errorf("--operator-skill-dir is supported only with --agent codex")
+	}
+	if _, err := gitidentity.Normalize(c.GitAuthorName, c.GitAuthorEmail); err != nil {
+		return fmt.Errorf("--git-author-name and --git-author-email: %w", err)
 	}
 	return nil
 }
