@@ -32,7 +32,9 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Set up pinned npm
-        run: npm install --global "$(node --print \"require('./web/package.json').packageManager\")"
+        run: |
+          npm_package="$(node --print 'require("./web/package.json").packageManager')"
+          npm install --global "${npm_package}"
 
       - name: Verify generated web assets
         run: make verify-generated
