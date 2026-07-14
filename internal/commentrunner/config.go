@@ -242,9 +242,6 @@ func (c Config) Validate() error {
 	if c.MaxConcurrentJobs <= 0 {
 		return fmt.Errorf("--max-concurrency must be positive")
 	}
-	if c.AllowHostSSH && c.UnsafeNoSandbox {
-		return fmt.Errorf("--allow-host-ssh requires the filesystem sandbox and cannot be combined with --unsafe-no-sandbox")
-	}
 	switch c.Agent.Kind {
 	case AgentCodex, AgentClaude:
 	default:

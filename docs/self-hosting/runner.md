@@ -208,8 +208,18 @@ issue-spec --profile team runner serve \
 
 First verify non-interactive SSH access as the same OS account and pin the code
 host key in that account's `known_hosts`. `--allow-host-ssh` is mutually
-exclusive with `--git-credential-command` and cannot be combined with
-`--unsafe-no-sandbox`.
+exclusive with `--git-credential-command`.
+
+### macOS local development exception
+
+Bubblewrap is Linux-only. On a trusted developer Mac, an explicit
+`--unsafe-no-sandbox --allow-host-ssh` combination reuses the current Runner
+OS account's SSH home directly so a private SSH source binding can clone and
+push. This is for short-lived local verification only: it disables the
+filesystem boundary and exposes the account's SSH authority to the Agent.
+Use a dedicated low-privilege SSH identity and never use this mode for a
+shared or production Runner. Linux production deployments continue to use the
+read-only SSH mount above, or a job-scoped credential command.
 
 This mode has no per-job expiry or revocation. Every agent job receives all
 repository authority available to that dedicated runner SSH identity. Use a

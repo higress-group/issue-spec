@@ -154,7 +154,7 @@ func TestRunnerServeHelpDocumentsSecurityAndCapacityControls(t *testing.T) {
 	}
 }
 
-func TestRunnerServeRejectsUnsafeHostSSHFlagCombinations(t *testing.T) {
+func TestRunnerServeRejectsInvalidHostSSHFlagCombinations(t *testing.T) {
 	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
 	profile := auth.Profile{Name: "runner-host-ssh", Kind: auth.ProfileKindHosted,
 		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
@@ -169,7 +169,6 @@ func TestRunnerServeRejectsUnsafeHostSSHFlagCombinations(t *testing.T) {
 		want string
 	}{
 		{name: "both credential modes", args: []string{"--allow-host-ssh", "--git-credential-command", "/usr/bin/true"}, want: "exactly one of --git-credential-command or --allow-host-ssh"},
-		{name: "sandbox disabled", args: []string{"--allow-host-ssh", "--unsafe-no-sandbox"}, want: "requires the filesystem sandbox"},
 		{name: "credential args without command", args: []string{"--allow-host-ssh", "--git-credential-arg", "value"}, want: "--git-credential-arg requires --git-credential-command"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -216,7 +215,7 @@ func TestRunnerServeAcceptsExplicitHostSSHMode(t *testing.T) {
 	app.profileName = profile.Name
 	code := app.runRunner(context.Background(), []string{"serve", "--repo", "o/r", "--runner", "runner-bot",
 		"--state", filepath.Join(t.TempDir(), "state.json"), "--subscription-id", uuid.NewString(),
-		"--secret-env", "RUNNER_HOST_SSH_SECRET", "--allow-host-ssh"})
+		"--secret-env", "RUNNER_HOST_SSH_SECRET", "--allow-host-ssh", "--unsafe-no-sandbox"})
 	if code != 0 || !called {
 		t.Fatalf("serve code=%d called=%v stdout=%q stderr=%q", code, called, stdout.String(), stderr.String())
 	}

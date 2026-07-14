@@ -270,7 +270,7 @@ func TestConfigValidateAllowsZeroFallbackInitialLookback(t *testing.T) {
 	}
 }
 
-func TestConfigValidateRejectsHostSSHWithoutSandbox(t *testing.T) {
+func TestConfigValidateAllowsExplicitUnsafeHostSSH(t *testing.T) {
 	cfg := Config{
 		Repositories:       []string{"o/r"},
 		RunnerIdentity:     "bot",
@@ -284,8 +284,7 @@ func TestConfigValidateRejectsHostSSHWithoutSandbox(t *testing.T) {
 		AllowHostSSH:       true,
 		UnsafeNoSandbox:    true,
 	}
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "--allow-host-ssh requires the filesystem sandbox") {
+	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate error = %v", err)
 	}
 }

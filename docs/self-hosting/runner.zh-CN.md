@@ -215,7 +215,16 @@ issue-spec --profile team runner serve \
 
 启动前先用运行 Runner 的同一个系统用户验证 SSH 可非交互访问目标仓库，并把代码平台
 Host Key 固定写入其 `~/.ssh/known_hosts`。`--allow-host-ssh` 与
-`--git-credential-command` 二选一，且不能和 `--unsafe-no-sandbox` 一起使用。
+`--git-credential-command` 二选一。
+
+### macOS 本地开发例外
+
+Bubblewrap 只支持 Linux。在受信开发机的 macOS 上，可以显式组合
+`--unsafe-no-sandbox --allow-host-ssh`，使 Runner 直接复用当前系统用户的 SSH
+Home，以便私有 SSH Source Binding 完成 clone 和 push。该组合仅用于短期本地验证：
+它关闭文件系统隔离，并把该用户的 SSH 权限暴露给 Agent。必须使用权限最小化的专用
+SSH 身份，不能用于共享或生产 Runner。Linux 生产环境仍应使用前述只读 SSH 挂载，或
+任务级短期凭据 Command。
 
 这是面向可信内网的兼容模式，不具备任务级凭据的过期和撤销能力。Agent 会继承该
 Runner 系统用户 SSH Key 或 Agent 能访问的全部仓库权限，因此应使用专用系统账号和
