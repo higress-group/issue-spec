@@ -72,6 +72,7 @@ type SandboxRequest struct {
 	RuntimeGHConfigDir   string
 	RuntimeXDGConfigHome string
 	RuntimeCodexHome     string
+	OperatorSkillDirs    []string
 	FileCapabilities     []sandbox.FileCapability
 	ChildProfile         *clientauth.Profile
 	AcpxAgent            string
@@ -152,6 +153,7 @@ type Dispatcher struct {
 	AcpxBinary          string
 	IssueSpecBinary     string
 	CoordinatorExtraEnv map[string]string
+	OperatorSkillDirs   []string
 	CredentialBroker    CredentialBroker
 	CredentialScopes    map[string]models.RepoScope
 	CapabilityPreflight CapabilityPreflight
@@ -933,6 +935,7 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 		RuntimeGHConfigDir:   runtimePaths.ghConfigDir,
 		RuntimeXDGConfigHome: runtimePaths.xdgConfigHome,
 		RuntimeCodexHome:     runtimePaths.codexHome,
+		OperatorSkillDirs:    append([]string(nil), d.OperatorSkillDirs...),
 		AcpxAgent:            job.CoordinatorKind,
 		ProcessWorkspaceRoot: processRoot,
 	}
@@ -1739,6 +1742,9 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 		}
 	}
 	if err := mirrorHostCodexConfig(&cfg); err != nil {
+		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
+	}
+	if err := materializeTrustedAgentSkills(cfg.TempCodexHome, req.OperatorSkillDirs); err != nil {
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
 	if err := materializeHostAcpxAgentOverride(&cfg, req.AcpxAgent); err != nil {

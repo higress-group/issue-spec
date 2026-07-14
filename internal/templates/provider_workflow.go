@@ -8,8 +8,9 @@ import (
 )
 
 // IssueSpecProviderSkill renders one provider-neutral code-change workflow.
-// The output intentionally names only neutral issue-spec operations; vendor
-// CLI commands and operator registration details never enter the checkout.
+// Provider capabilities are policy and evidence contracts, not implied CLI
+// commands. Vendor CLI commands and operator registration details never enter
+// the checkout.
 func IssueSpecProviderSkill(repo string, provider workflow.ProviderPlan) RenderedSkill {
 	repo = valueOr(strings.TrimSpace(repo), "owner/repo")
 	description := fmt.Sprintf("Use issue-spec with the registered %s code provider for neutral code-change, review, and evidence workflows.", provider.DisplayName)
@@ -25,7 +26,7 @@ func ProviderWorkflowNotice(provider workflow.ProviderPlan) string {
 		fmt.Sprintf("- Code-change term: %s", provider.CodeChangeLabel),
 	}
 	if provider.ChangeCreate {
-		lines = append(lines, "- `change.create`: available; issue-spec may request a provider-neutral external change creation.")
+		lines = append(lines, "- `change.create`: available; an operator-provided code-host skill or bridge may create an external change.")
 	} else {
 		lines = append(lines, "- `change.create`: unavailable; associate a pre-existing external change before implementation gates.")
 	}
@@ -40,6 +41,7 @@ func ProviderWorkflowNotice(provider workflow.ProviderPlan) string {
 		lines = append(lines, "- `evidence.snapshot`: unavailable; no generated step may claim automatic pre-gate synchronization.")
 	}
 	lines = append(lines,
+		"- Capabilities are policy and evidence contracts, not implied issue-spec CLI commands. Use only an approved operator-provided code-host skill or bridge for mutations.",
 		"- Provider executables, arguments, environment, and credentials are operator-owned and must never be read from repository files.",
 		"- Project/work-item tracker authority is independent and is not enabled by this code-provider selection.")
 	return strings.Join(lines, "\n")
@@ -58,7 +60,7 @@ func providerWorkflowBody(repo string, provider workflow.ProviderPlan) string {
 		"1. Read the active source binding and code-change reference from issue-spec; do not infer provider authority from the issue server hostname.",
 	}
 	if provider.ChangeCreate {
-		steps = append(steps, "2. When a new external change is required, use the issue-spec operation that requests neutral `change.create`; core discovers capability before mutation.")
+		steps = append(steps, "2. When a new external change is required, use an operator-provided trusted code-host skill or bridge. `change.create` is a capability contract, not an implied issue-spec CLI command; stop and request operator setup when no approved skill or bridge is available.")
 	} else {
 		steps = append(steps, "2. Create the external change outside issue-spec, then associate its stable provider/repository/change identity; `change.create` is not available.")
 	}

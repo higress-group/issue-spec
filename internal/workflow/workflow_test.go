@@ -101,6 +101,51 @@ func TestResolveBuiltInFallbackWhenNoConfigExists(t *testing.T) {
 	}
 }
 
+func TestResolveAcceptsLegacyScalarContext(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "openspec", "config.yaml"), "schema: issue-spec\ncontext: |\n  Project: existing repository\n")
+	plan, err := Resolve(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Config.Context["text"] != "Project: existing repository\n" {
+		t.Fatalf("context=%#v", plan.Config.Context)
+	}
+}
+
+func TestResolveAcceptsLegacyArtifactRequiresAndInstruction(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "openspec", "config.yaml"), "schema: custom\n")
+	writeFile(t, filepath.Join(root, "openspec", "schemas", "custom", "schema.yaml"), `
+artifacts:
+  proposal:
+    type: proposal
+    template: proposal.md
+    instruction: Draft the proposal.
+    requires: []
+  specs:
+    type: SPEC
+    template: spec.md
+    requires:
+      - proposal
+`)
+	writeFile(t, filepath.Join(root, "openspec", "schemas", "custom", "templates", "proposal.md"), "# Proposal\n")
+	writeFile(t, filepath.Join(root, "openspec", "schemas", "custom", "templates", "spec.md"), "# Spec\n")
+
+	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+	if err != nil {
+		t.Fatalf("legacy requires/instruction should resolve: %v diagnostics=%+v", err, plan.Diagnostics)
+	}
+	proposal := artifactByID(plan.Artifacts, "proposal")
+	if proposal.Instructions != "Draft the proposal." {
+		t.Fatalf("instruction = %q", proposal.Instructions)
+	}
+	specs := artifactByID(plan.Artifacts, "specs")
+	if len(specs.Dependencies) != 1 || specs.Dependencies[0] != "proposal" {
+		t.Fatalf("requires should map to dependencies: %+v", specs)
+	}
+}
+
 func TestExternalCodeConfigAllowsOnlyProviderSelectionAndEvidencePolicy(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), `

@@ -83,7 +83,8 @@ type Config struct {
 	HostGHConfigDir   string
 	// HostSSHDir and HostSSHAgentSocket are explicit opt-ins. In bubblewrap
 	// mode the directory is mounted read-only at HOME/.ssh and the optional
-	// Unix socket is mounted at a fixed path.
+	// Unix socket is mounted at a fixed path. In explicit unsafe mode the host
+	// home is reused so stock SSH can find this directory without a mount.
 	HostSSHDir         string
 	HostSSHAgentSocket string
 
