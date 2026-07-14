@@ -13,7 +13,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func newInitTestApp(out, errOut *bytes.Buffer) *app {
+func newInitTestApp(t *testing.T, out, errOut *bytes.Buffer) *app {
+	t.Helper()
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
 	app := newApp(strings.NewReader(""), out, errOut)
 	app.selectGitHubBackend = func(context.Context, string) (auth.GitHubBackendSelection, error) {
 		return auth.GitHubBackendSelection{
@@ -38,7 +40,7 @@ func newInitTestApp(out, errOut *bytes.Buffer) *app {
 func TestInitLanguageWritesWorkflowConfig(t *testing.T) {
 	t.Chdir(t.TempDir())
 	var out, errOut bytes.Buffer
-	app := newInitTestApp(&out, &errOut)
+	app := newInitTestApp(t, &out, &errOut)
 
 	code := app.runInit(context.Background(), []string{"--repo", "o/r", "--tools", "none", "--language", "zh"})
 	if code != 0 {
@@ -65,6 +67,15 @@ func TestInitLanguageWritesWorkflowConfig(t *testing.T) {
 	if !strings.Contains(out.String(), "workflow language: Simplified Chinese") {
 		t.Fatalf("stdout missing language line: %q", out.String())
 	}
+	projectConfig, err := os.ReadFile(filepath.Join(".issue-spec", "config.json"))
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	for _, want := range []string{`"version": 1`, `"repo": "o/r"`, `"hostname": "github.com"`, `"profile": "github"`} {
+		if !strings.Contains(string(projectConfig), want) {
+			t.Fatalf("project config missing %q:\n%s", want, projectConfig)
+		}
+	}
 }
 
 func TestInitLanguageMergesExistingConfig(t *testing.T) {
@@ -78,7 +89,7 @@ func TestInitLanguageMergesExistingConfig(t *testing.T) {
 	}
 
 	var out, errOut bytes.Buffer
-	app := newInitTestApp(&out, &errOut)
+	app := newInitTestApp(t, &out, &errOut)
 	code := app.runInit(context.Background(), []string{"--repo", "o/r", "--tools", "none", "--language", "en"})
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr=%q", code, errOut.String())
@@ -116,7 +127,7 @@ func TestInitLanguageMergesExistingConfig(t *testing.T) {
 func TestInitWithoutLanguageDoesNotWriteWorkflowConfig(t *testing.T) {
 	t.Chdir(t.TempDir())
 	var out, errOut bytes.Buffer
-	app := newInitTestApp(&out, &errOut)
+	app := newInitTestApp(t, &out, &errOut)
 
 	code := app.runInit(context.Background(), []string{"--repo", "o/r", "--tools", "none"})
 	if code != 0 {
