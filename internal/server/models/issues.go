@@ -36,16 +36,20 @@ type RepositoryResource struct {
 	Scope                     RepoScope
 	Owner                     string
 	Name                      string
+	Visibility                Visibility
 	IssuesCollectionVersion   int64
 	CommentsCollectionVersion int64
 	UpdatedAt                 time.Time
 }
 
 type IssueSnapshot struct {
-	Issue        Issue
-	AuthorLogin  string
-	Labels       []Label
-	CommentCount int
+	Issue                       Issue
+	AuthorLogin                 string
+	AuthorDisplayName           string
+	AuthorRepresentationVersion int64
+	AuthorUpdatedAt             time.Time
+	Labels                      []Label
+	CommentCount                int
 }
 
 type IssuePage struct {
@@ -90,10 +94,13 @@ type Comment struct {
 }
 
 type CommentSnapshot struct {
-	Comment     Comment
-	IssueNumber int64
-	AuthorLogin string
-	Reactions   ReactionSummary
+	Comment                     Comment
+	IssueNumber                 int64
+	AuthorLogin                 string
+	AuthorDisplayName           string
+	AuthorRepresentationVersion int64
+	AuthorUpdatedAt             time.Time
+	Reactions                   ReactionSummary
 }
 
 type CommentPage struct {

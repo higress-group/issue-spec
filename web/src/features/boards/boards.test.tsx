@@ -10,6 +10,8 @@ import { ChangeCard } from "./components";
 import { anomalyCopy, boardPageSchema, type BoardPageModel, type ChangeCardModel } from "./types";
 import { CodeChangeList } from "../changes/relationships";
 import { codeChangeKind, safeCodeChangeURL, type CodeChangeRelationship } from "../../lib/api/relationships";
+import { api } from "../../lib/api/resources";
+import { LegacyOrganizationChangeRedirect } from "../issues/repository-context";
 
 const orgId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const repoId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -82,12 +84,24 @@ describe("change board projection UI", () => {
     vi.spyOn(boardApi, "organizationBoard").mockResolvedValue(boardFixture());
     vi.spyOn(boardApi, "repositoryBoard").mockResolvedValue(boardFixture());
     const user = userEvent.setup();
-    renderApp(<Routes><Route path="/changes/:orgId" element={<BoardListPage />} /><Route path="/:owner/:repo/changes" element={<LocationProbe />} /></Routes>, `/changes/${orgId}`);
+    renderApp(<Routes><Route path="/orgs/:owner/changes" element={<BoardListPage />} /><Route path="/:owner/:repo/changes" element={<LocationProbe />} /></Routes>, "/orgs/acme/changes");
     expect(await screen.findByRole("heading", { name: "Acme Studio changes" })).toBeVisible();
     await user.selectOptions(screen.getByLabelText("Stage"), "design");
     expect(screen.getByDisplayValue("Design")).toBeVisible();
     await user.selectOptions(screen.getByLabelText("Board scope"), repoId);
     expect(await screen.findByTestId("location")).toHaveTextContent("/acme/workflow/changes");
+  });
+
+  it("redirects legacy organization UUID boards to their canonical named route", async () => {
+    vi.spyOn(api, "context").mockResolvedValue(contextFixture);
+    renderApp(
+      <Routes>
+        <Route path="/changes/:orgId" element={<LegacyOrganizationChangeRedirect />} />
+        <Route path="/orgs/:owner/changes" element={<LocationProbe />} />
+      </Routes>,
+      `/changes/${orgId}?stage=design#change-results`,
+    );
+    expect(await screen.findByTestId("location")).toHaveTextContent("/orgs/acme/changes?stage=design#change-results");
   });
 
   it("uses one concealed state for missing or unauthorized details", async () => {
@@ -98,7 +112,10 @@ describe("change board projection UI", () => {
   });
 });
 
-function LocationProbe() { return <output data-testid="location">{useLocation().pathname}</output>; }
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname}{location.search}{location.hash}</output>;
+}
 
 const contextFixture = {
   user: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", login: "alice", display_name: "Alice", email: "alice@example.test", site_admin: false },

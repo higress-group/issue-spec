@@ -1,6 +1,6 @@
 import axe from "axe-core";
 import { http, HttpResponse } from "msw";
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
@@ -41,6 +41,25 @@ describe("identity and trusted transport UI", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Sign out" }));
     expect(await screen.findByRole("heading", { name: "Signed out" })).toBeVisible();
     expect(logouts).toBe(1);
+  });
+
+  it("saves a preferred nickname and keeps the stable login visible", async () => {
+    let submitted: unknown;
+    document.cookie = "issue_spec_csrf=profile-csrf; Path=/";
+    server.use(http.patch("http://localhost/api/v1/profile", async ({ request }) => {
+      expect(request.headers.get("X-CSRF-Token")).toBe("profile-csrf");
+      submitted = await request.json();
+      return HttpResponse.json({ id: 101, login: "alice", display_name: "澄潭", identity_display_name: "Alice",
+        nickname: "澄潭", representation_version: 2, avatar_url: "http://localhost/api/v1/avatars/alice",
+        html_url: "http://localhost/users/alice", type: "User", site_admin: true });
+    }));
+    renderApp(<AccountPage />, "/settings/account");
+    const nickname = await screen.findByRole("textbox", { name: /Nickname/ });
+    fireEvent.change(nickname, { target: { value: "澄潭" } });
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save nickname" }));
+    await waitFor(() => expect(submitted).toEqual({ nickname: "澄潭", expected_version: 1 }));
+    expect(screen.getByText("@alice")).toBeVisible();
+    expect(screen.getByDisplayValue("澄潭")).toBeVisible();
   });
 
   it("refreshes context after the callback landing page", async () => {

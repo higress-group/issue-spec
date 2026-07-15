@@ -283,7 +283,7 @@ func (s *Service) AuthenticateBearer(ctx context.Context, plaintext string) (ser
 	var digest []byte
 	var expires, revoked *time.Time
 	err = s.pool.QueryRow(ctx, `SELECT p.id, p.token_hash, p.expires_at, p.revoked_at,
-		u.id, u.login, u.display_name, u.email, u.status
+		u.id, u.login, COALESCE(u.nickname, u.display_name), u.email, u.status
 		FROM personal_access_tokens p JOIN users u ON u.id = p.user_id WHERE p.token_prefix = $1`, prefix).
 		Scan(&p.CredentialID, &digest, &expires, &revoked, &p.User.ID, &p.User.Login,
 			&p.User.DisplayName, &p.User.Email, &p.User.Status)

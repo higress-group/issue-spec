@@ -6,12 +6,25 @@ import "time"
 
 type User struct {
 	Login     string `json:"login"`
+	Name      string `json:"name,omitempty"`
 	ID        int64  `json:"id"`
 	NodeID    string `json:"node_id,omitempty"`
 	AvatarURL string `json:"avatar_url,omitempty"`
 	HTMLURL   string `json:"html_url,omitempty"`
 	Type      string `json:"type"`
 	SiteAdmin bool   `json:"site_admin"`
+}
+
+type Repository struct {
+	ID        int64  `json:"id"`
+	NodeID    string `json:"node_id,omitempty"`
+	Name      string `json:"name"`
+	FullName  string `json:"full_name"`
+	Private   bool   `json:"private"`
+	Owner     User   `json:"owner"`
+	HTMLURL   string `json:"html_url"`
+	URL       string `json:"url"`
+	IssuesURL string `json:"issues_url"`
 }
 
 type Reactions struct {
@@ -44,7 +57,7 @@ type Issue struct {
 	RepositoryURL string     `json:"repository_url"`
 	LabelsURL     string     `json:"labels_url"`
 	CommentsURL   string     `json:"comments_url"`
-	EventsURL     string     `json:"events_url"`
+	EventsURL     string     `json:"events_url,omitempty"`
 	HTMLURL       string     `json:"html_url"`
 	Number        int64      `json:"number"`
 	State         string     `json:"state"`
