@@ -45,6 +45,17 @@ describe("secure issue markdown", () => {
     expect(container.querySelector("code.hljs")).toBeInTheDocument();
     expect((await axe.run(container)).violations).toEqual([]);
   });
+
+  it("keeps same-page comment permalinks in the current tab", () => {
+    const source = `[same comment](http://localhost/#issuecomment-9) [another issue](http://localhost/other#issuecomment-9) [external](https://example.test/#issuecomment-9)`;
+    renderApp(<MarkdownView source={source} />);
+
+    const sameComment = screen.getByRole("link", { name: "same comment" });
+    expect(sameComment).not.toHaveAttribute("target");
+    expect(sameComment).not.toHaveAttribute("rel");
+    expect(screen.getByRole("link", { name: "another issue" })).toHaveAttribute("target", "_blank");
+    expect(screen.getByRole("link", { name: "external" })).toHaveAttribute("target", "_blank");
+  });
 });
 
 describe("issue editing semantics", () => {

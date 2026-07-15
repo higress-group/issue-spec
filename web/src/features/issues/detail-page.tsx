@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleDot, LockKeyhole, Pencil, RotateCcw } from "lucide-react";
-import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { LabelChips, LabelSelector } from "../../components/labels/label-chips";
 import { MarkdownView } from "../../components/markdown/markdown-view";
 import { ReactionPicker } from "../../components/reactions/reaction-picker";
@@ -16,18 +16,47 @@ import type { IssueComment } from "./types";
 import { Avatar } from "../../app/avatar";
 import { useTranslation } from "react-i18next";
 
+const commentAnchorPattern = /^#issuecomment-[1-9]\d*$/;
+
+function useCommentAnchor({ comments, hash, owner, repo, number }: { comments: IssueComment[] | undefined; hash: string; owner: string; repo: string; number: number }) {
+  const handledAnchor = useRef("");
+
+  useEffect(() => {
+    if (!commentAnchorPattern.test(hash)) {
+      handledAnchor.current = "";
+      document.querySelector('[data-comment-anchor-active="true"]')?.removeAttribute("data-comment-anchor-active");
+      return;
+    }
+    if (!comments) return;
+    const anchorKey = `${owner}/${repo}/issues/${number}${hash}`;
+    if (handledAnchor.current === anchorKey) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      const target = document.getElementById(hash.slice(1));
+      if (!target) return;
+      handledAnchor.current = anchorKey;
+      document.querySelector('[data-comment-anchor-active="true"]')?.removeAttribute("data-comment-anchor-active");
+      target.setAttribute("data-comment-anchor-active", "true");
+      target.scrollIntoView({ block: "start" });
+      target.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [comments, hash, number, owner, repo]);
+}
+
 function EditableComment({ comment, owner, repo, currentLogin, canContribute, canTriage }: { comment: IssueComment; owner: string; repo: string; currentLogin: string; canContribute: boolean; canTriage: boolean }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const queryClient = useQueryClient();
   const mutation = useMutation({ mutationFn: (body: string) => issueApi.updateComment(owner, repo, comment.id, body), onSuccess: async () => { setEditing(false); await queryClient.invalidateQueries({ queryKey: ["issues", owner, repo] }); } });
   const canEdit = canTriage || (canContribute && comment.user.login === currentLogin);
-  return <article className="timeline-card" id={`issuecomment-${comment.id}`}><header><Avatar login={comment.user.login} src={comment.user.avatar_url} /><span><strong>@{comment.user.login}</strong><small>{t("issues.detail.commented", { date: formatRelative(comment.created_at) })}</small></span>{canEdit && !editing ? <button className="quiet-action" type="button" onClick={() => setEditing(true)}><Pencil aria-hidden="true" />{t("issues.detail.edit")}</button> : null}</header><div className="timeline-body">{editing ? <CommentEditor initial={comment.body} submitLabel={t("issues.detail.saveComment")} pending={mutation.isPending} error={mutation.error} onCancel={() => setEditing(false)} onSubmit={(body) => mutation.mutate(body)} /> : <MarkdownView source={comment.body} />}</div>{!editing ? <ReactionPicker owner={owner} repo={repo} commentId={comment.id} summary={comment.reactions} currentLogin={currentLogin} readOnly={!canContribute} /> : null}</article>;
+  return <article className="timeline-card" id={`issuecomment-${comment.id}`} tabIndex={-1}><header><Avatar login={comment.user.login} src={comment.user.avatar_url} /><span><strong>@{comment.user.login}</strong><small>{t("issues.detail.commented", { date: formatRelative(comment.created_at) })}</small></span>{canEdit && !editing ? <button className="quiet-action" type="button" onClick={() => setEditing(true)}><Pencil aria-hidden="true" />{t("issues.detail.edit")}</button> : null}</header><div className="timeline-body">{editing ? <CommentEditor initial={comment.body} submitLabel={t("issues.detail.saveComment")} pending={mutation.isPending} error={mutation.error} onCancel={() => setEditing(false)} onSubmit={(body) => mutation.mutate(body)} /> : <MarkdownView source={comment.body} />}</div>{!editing ? <ReactionPicker owner={owner} repo={repo} commentId={comment.id} summary={comment.reactions} currentLogin={currentLogin} readOnly={!canContribute} /> : null}</article>;
 }
 
 export function IssueDetail({ active }: { active: ActiveRepository }) {
   const { t } = useTranslation();
   const { number: rawNumber = "" } = useParams();
+  const location = useLocation();
   const number = Number(rawNumber);
   const owner = active.organization.name;
   const repo = active.repository.repository.name;
@@ -39,6 +68,7 @@ export function IssueDetail({ active }: { active: ActiveRepository }) {
   const issue = useQuery({ queryKey: ["issues", owner, repo, number], queryFn: ({ signal }) => issueApi.getIssue(owner, repo, number, signal), enabled: Number.isInteger(number) && number > 0 });
   const relationships = useQuery({ queryKey: ["issues", owner, repo, number, "relationships"], queryFn: ({ signal }) => issueApi.getRelationships(owner, repo, number, signal), enabled: issue.isSuccess });
   const comments = useQuery({ queryKey: ["issues", owner, repo, number, "comments"], queryFn: ({ signal }) => issueApi.listComments(owner, repo, number, signal), enabled: issue.isSuccess });
+  useCommentAnchor({ comments: comments.data, hash: location.hash, owner, repo, number });
   const labels = useQuery({ queryKey: ["issues", owner, repo, "labels"], queryFn: ({ signal }) => issueApi.listLabels(owner, repo, signal) });
   const updateIssue = useMutation({ mutationFn: async (draft: { title: string; body: string; labels: string[] }) => {
     const updated = await issueApi.updateIssue(owner, repo, number, { title: draft.title, body: draft.body });
