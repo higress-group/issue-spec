@@ -32,12 +32,12 @@ func TestPolicyBlocksSpecialAddressesAndRequiresExplicitPrivateAllowance(t *test
 	if err := allowed.CheckAddress(netip.MustParseAddr("10.20.1.2")); err != nil {
 		t.Fatalf("operator-allowed private address denied: %v", err)
 	}
-	metadataAllowed := Policy{Production: true, AllowedPrivate: []netip.Prefix{
+	broadlyAllowed := Policy{Production: true, AllowedPrivate: []netip.Prefix{
 		netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}}
 	for _, raw := range []string{"169.254.169.254", "100.100.100.200", "fd00:ec2::254",
-		"127.0.0.1", "169.254.1.1", "::1", "fe80::1"} {
-		if err := metadataAllowed.CheckAddress(netip.MustParseAddr(raw)); !errors.Is(err, ErrAddressDenied) {
-			t.Fatalf("metadata %s was allowlisted: %v", raw, err)
+		"127.0.0.1", "169.254.1.1", "0.0.0.0", "224.0.0.1", "::1", "fe80::1", "::", "ff02::1"} {
+		if err := broadlyAllowed.CheckAddress(netip.MustParseAddr(raw)); !errors.Is(err, ErrAddressDenied) {
+			t.Fatalf("unsafe address %s was allowlisted: %v", raw, err)
 		}
 	}
 	for _, raw := range []string{"http://example.test/hook", "https://user:pass@example.test/hook",
@@ -60,7 +60,7 @@ func TestPolicyAllowsHTTPForTrustedInternalProduction(t *testing.T) {
 	}
 }
 
-func TestTrustedInternalHTTPRequiresExplicitPrivateDestination(t *testing.T) {
+func TestTrustedInternalHTTPRequiresExplicitDestinationCIDR(t *testing.T) {
 	resolver := staticResolver{addresses: map[string][]net.IPAddr{
 		"runner.intra.example": {{IP: net.ParseIP("10.20.1.2")}},
 		"public.example":       {{IP: net.ParseIP("93.184.216.34")}},
@@ -75,6 +75,56 @@ func TestTrustedInternalHTTPRequiresExplicitPrivateDestination(t *testing.T) {
 	}
 	if err := preflight.Validate(t.Context(), "https://public.example/hook"); err != nil {
 		t.Fatalf("public HTTPS destination rejected: %v", err)
+	}
+}
+
+func TestTrustedInternalHTTPAllowsExplicitNonPrivateCIDR(t *testing.T) {
+	address := netip.MustParseAddr("100.64.1.2")
+	if address.IsPrivate() {
+		t.Fatalf("regression address %s unexpectedly classified as private", address)
+	}
+	resolver := staticResolver{addresses: map[string][]net.IPAddr{
+		"runner.intra.example": {{IP: net.IP(address.AsSlice())}},
+		"mixed.intra.example": {
+			{IP: net.IP(address.AsSlice())},
+			{IP: net.ParseIP("93.184.216.34")},
+		},
+	}}
+	policy := Policy{Production: true, AllowHTTP: true, AllowedPrivate: []netip.Prefix{
+		netip.MustParsePrefix("100.64.0.0/10"),
+	}}
+	preflight := Preflight{Policy: policy, Resolver: resolver}
+	for _, raw := range []string{
+		"http://" + address.String() + "/hook",
+		"http://runner.intra.example/hook",
+	} {
+		if err := preflight.Validate(t.Context(), raw); err != nil {
+			t.Errorf("allowlisted non-private HTTP destination %q rejected: %v", raw, err)
+		}
+	}
+	if err := preflight.Validate(t.Context(), "http://mixed.intra.example/hook"); !errors.Is(err, ErrAddressDenied) {
+		t.Errorf("mixed allowlisted and non-allowlisted DNS answer error = %v, want ErrAddressDenied", err)
+	}
+}
+
+func TestTrustedInternalHTTPConnectTimeHonorsCIDRAndPreventsRebinding(t *testing.T) {
+	allowed := netip.MustParseAddr("100.64.1.2")
+	policy := Policy{Production: true, AllowHTTP: true, AllowedPrivate: []netip.Prefix{
+		netip.MustParsePrefix("100.64.0.0/10"),
+	}}
+	resolver := staticResolver{addresses: map[string][]net.IPAddr{
+		"runner.intra.example": {{IP: net.IP(allowed.AsSlice())}},
+	}}
+	dial := secureDialContext(resolver, fakeDialer{remote: allowed}, policy, "http")
+	connection, err := dial(t.Context(), "tcp", "runner.intra.example:80")
+	if err != nil {
+		t.Fatalf("connect-time check rejected allowlisted non-private address: %v", err)
+	}
+	_ = connection.Close()
+
+	rebound := secureDialContext(resolver, fakeDialer{remote: netip.MustParseAddr("100.64.1.3")}, policy, "http")
+	if _, err := rebound(t.Context(), "tcp", "runner.intra.example:80"); !errors.Is(err, ErrAddressDenied) {
+		t.Fatalf("connect-time rebinding error = %v, want ErrAddressDenied", err)
 	}
 }
 

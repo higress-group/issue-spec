@@ -29,10 +29,14 @@ type Dialer interface {
 type Policy struct {
 	Production bool
 	// AllowHTTP permits HTTP webhook receivers in an explicitly trusted internal
-	// deployment. It does not relax address validation: private destinations
-	// still require an AllowedPrivate CIDR and loopback, link-local, multicast,
-	// and metadata addresses remain denied.
-	AllowHTTP      bool
+	// deployment. It does not relax address validation: every production HTTP
+	// destination still requires an AllowedPrivate CIDR and loopback, link-local,
+	// multicast, and metadata addresses remain denied.
+	AllowHTTP bool
+	// AllowedPrivate is the explicit operator-owned destination allowlist. The
+	// legacy name mirrors WEBHOOK_ALLOWED_PRIVATE_CIDRS, but entries may cover
+	// internally routed ranges that netip.Addr.IsPrivate does not classify as
+	// RFC 1918 or RFC 4193 space.
 	AllowedPrivate []netip.Prefix
 }
 
@@ -86,10 +90,8 @@ func (p Policy) CheckAddress(address netip.Addr) error {
 		return ErrAddressDenied
 	}
 	if address.IsPrivate() {
-		for _, allowed := range p.AllowedPrivate {
-			if allowed.Contains(address) {
-				return nil
-			}
+		if p.isExplicitlyAllowed(address) {
+			return nil
 		}
 		return ErrAddressDenied
 	}
@@ -104,18 +106,20 @@ func (p Policy) checkAddressForScheme(scheme string, address netip.Addr) error {
 	if err := p.CheckAddress(address); err != nil {
 		return err
 	}
-	if scheme == "http" && p.Production {
-		if !address.IsPrivate() {
-			return ErrAddressDenied
-		}
-		for _, allowed := range p.AllowedPrivate {
-			if allowed.Contains(address) {
-				return nil
-			}
-		}
+	if scheme == "http" && p.Production && !p.isExplicitlyAllowed(address) {
 		return ErrAddressDenied
 	}
 	return nil
+}
+
+func (p Policy) isExplicitlyAllowed(address netip.Addr) bool {
+	address = address.Unmap()
+	for _, allowed := range p.AllowedPrivate {
+		if allowed.Contains(address) {
+			return true
+		}
+	}
+	return false
 }
 
 func isMetadata(address netip.Addr) bool {

@@ -23,10 +23,14 @@ uses the API origin verbatim, for example
 `http://issues.intra.example:18080/api/v1/auth/github/callback`.
 
 This posture also permits `http://` webhook receivers for internal Runner
-deployments only when every resolved receiver address is private and has an
-explicit matching `WEBHOOK_ALLOWED_PRIVATE_CIDRS` entry. Public receiver
-addresses continue to require HTTPS; loopback, link-local, multicast, and
-cloud-metadata destinations are always denied.
+deployments only when every resolved and connect-time receiver address has an
+explicit matching `WEBHOOK_ALLOWED_PRIVATE_CIDRS` entry. Despite the legacy
+variable name, the CIDR trust boundary may include operator-owned ranges that
+are internally routed but are not classified as RFC 1918 private space. An
+empty allowlist permits no production HTTP receivers. Configuring a CIDR trusts
+plaintext delivery to every otherwise-safe address in that range; loopback,
+link-local, unspecified, multicast, and cloud-metadata destinations are always
+denied. Receivers outside the explicit allowlist continue to require HTTPS.
 
 ## Network checklist
 

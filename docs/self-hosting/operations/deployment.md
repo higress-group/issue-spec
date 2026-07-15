@@ -32,13 +32,17 @@ and names are unique, client secrets belong only in the protected file, and
 callback URLs are always constructed from `API_PUBLIC_URL`, never request
 headers.
 
-Use `WEBHOOK_ALLOWED_PRIVATE_CIDRS` only for explicit operator-owned internal
-destinations. When `TRANSPORT_POSTURE=trusted-internal-http`, HTTP webhook
-receivers are permitted only when every resolved address is private and covered
-by an explicit allowed CIDR; public destinations continue to require HTTPS. TLS
-remains required for every other production posture. Loopback, link-local and
-cloud metadata addresses remain denied. The same DNS resolver and policy are
-used for subscription preflight and the actual delivery connection.
+Use `WEBHOOK_ALLOWED_PRIVATE_CIDRS` only for explicit operator-owned destination
+ranges. The legacy variable name does not restrict entries to RFC 1918 space:
+it may include non-private ranges that are internally routed and controlled by
+the operator. When `TRANSPORT_POSTURE=trusted-internal-http`, HTTP webhook
+receivers are permitted only when every resolved and connect-time address is
+covered by an explicit allowed CIDR; an empty allowlist permits none. TLS remains
+required for every other production posture and for destinations outside the
+allowlist. Loopback, link-local, unspecified, multicast, and cloud metadata
+addresses remain denied even when a configured CIDR contains them. The same DNS
+resolver and policy are used for subscription preflight and the actual delivery
+connection.
 
 The container runs as uid 65532, needs only a writable `/tmp`, and supports a
 read-only root filesystem. Drop all Linux capabilities and set
