@@ -139,6 +139,27 @@ describe("repository integrations workspace", () => {
     expect((await axe.run(container)).violations).toEqual([]);
   });
 
+  it("updates a notification with server-formatted compound retry durations", async () => {
+    let update: unknown;
+    const notification = webhookFixture({ url: "https://robot.example.test/hook", delivery_format: "github.v3", signing_mode: "hmac-sha256", has_destination_query: true });
+    server.use(
+      metaHandler(),
+      http.get(webhookCollectionPath(), () => HttpResponse.json({ subscriptions: [notification] })),
+      http.get(deliveryCollectionPath(), () => HttpResponse.json({ deliveries: [] })),
+      http.patch(`${webhookCollectionPath()}/${webhookId}`, async ({ request }) => { update = await request.json(); return HttpResponse.json({ ...notification, representation_version: 4 }); }),
+    );
+    renderIntegration("webhooks");
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Configure" }));
+    expect(screen.getByRole("textbox", { name: "Maximum backoff" })).toHaveValue("5m0s");
+    await userEvent.setup().click(screen.getByRole("checkbox", { name: /PAT, delegated or service automation/ }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(update).toMatchObject({
+      retry: { max_attempts: 8, initial_backoff: "1s", max_backoff: "5m0s" },
+      content_policy: { actor_classes: ["human", "automation"] },
+    }));
+    expect(screen.queryByText(/Use retry durations/)).not.toBeInTheDocument();
+  });
+
   it("shows encrypted-query and suppression state without returning credential material", async () => {
     const notification = webhookFixture({ url: "https://robot.example.test/hook", delivery_format: "github.v3", signing_mode: "hmac-sha256", has_destination_query: true });
     server.use(

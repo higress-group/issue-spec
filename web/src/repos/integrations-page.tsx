@@ -264,7 +264,19 @@ function validateWebhookDraft(draft: WebhookDraft, t: TFunction) {
   if (maximum < initial) return t("integrations.validation.backoffOrder");
   return undefined;
 }
-function durationMilliseconds(value: string) { const match = /^(\d+)(ms|s|m|h)$/.exec(value.trim()); if (!match) return undefined; const unit = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }[match[2] as "ms" | "s" | "m" | "h"]; return Number(match[1]) * unit; }
+function durationMilliseconds(value: string) {
+  const input = value.trim();
+  if (!input) return undefined;
+  const units: Record<string, number> = { ns: 0.000001, us: 0.001, "µs": 0.001, "μs": 0.001, ms: 1, s: 1_000, m: 60_000, h: 3_600_000 };
+  const segments = /(\d+(?:\.\d+)?)(ns|us|µs|μs|ms|s|m|h)/gy;
+  let milliseconds = 0;
+  while (segments.lastIndex < input.length) {
+    const match = segments.exec(input);
+    if (!match) return undefined;
+    milliseconds += Number(match[1]) * units[match[2]];
+  }
+  return Number.isFinite(milliseconds) ? milliseconds : undefined;
+}
 function policySummary(policy: WebhookContentPolicy) { return [...policy.issue_actions.map((item) => `issue:${item}`), ...policy.comment_actions.map((item) => `comment:${item}`), ...policy.issue_kinds.map((item) => `kind:${item}`), ...policy.comment_classes.map((item) => `class:${item}`)]; }
 function signingLabel(mode: WebhookSigningMode, t: TFunction) { if (mode === "hmac-sha256") return "HMAC SHA-256"; if (mode === "bearer") return t("integrations.signingBearer"); return t("integrations.unsigned"); }
 function shortID(id: string) { return id.slice(0, 8); }
