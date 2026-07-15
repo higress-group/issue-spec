@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useCurrentContext } from "../../auth/session";
 import { api } from "../../lib/api/resources";
-import { IssueLoading } from "./repository-context";
+import { IssueLoading, repositoryIssuePathForNames } from "./repository-context";
 
 function OrganizationRepositories({ id, name }: { id: string; name: string }) {
   const { t } = useTranslation();
@@ -12,7 +12,7 @@ function OrganizationRepositories({ id, name }: { id: string; name: string }) {
   if (repositories.isLoading) return <IssueLoading label={t("issues.workspace.openingRepository", { name })} />;
   if (repositories.error) return <p className="issue-inline-error">{t("issues.workspace.repositoryUnavailable", { name })}</p>;
   if (!repositories.data?.repositories.length) return <p className="issue-empty-copy">{t("issues.workspace.noRepositories")}</p>;
-  return <div className="repository-cards">{repositories.data.repositories.map((item) => <Link className="repository-card" key={item.repository.id} to={`/issues/${id}/${item.repository.id}`}><span className="repository-icon"><PanelsTopLeft aria-hidden="true" /></span><span><strong>{item.repository.display_name}</strong><small>{name} / {item.repository.name}</small></span><span className="permission-note"><LockKeyhole aria-hidden="true" size={14} />{t(`common.permission.${item.effective_permission}`)}</span><ArrowRight aria-hidden="true" /></Link>)}</div>;
+  return <div className="repository-cards">{repositories.data.repositories.map((item) => <Link className="repository-card" key={item.repository.id} to={repositoryIssuePathForNames(name, item.repository.name)}><span className="repository-icon"><PanelsTopLeft aria-hidden="true" /></span><span><strong>{item.repository.display_name}</strong><small>{name} / {item.repository.name}</small></span><span className="permission-note"><LockKeyhole aria-hidden="true" size={14} />{t(`common.permission.${item.effective_permission}`)}</span><ArrowRight aria-hidden="true" /></Link>)}</div>;
 }
 export function IssueWorkspacePage() {
   const { t } = useTranslation();

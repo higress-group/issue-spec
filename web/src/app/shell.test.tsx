@@ -6,11 +6,38 @@ import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import { fixtureMeta, server } from "../../tests/server";
 import { InspectorProvider } from "./problem-inspector";
-import { AuthenticatedShell } from "./shell";
+import { AuthenticatedShell, isCanonicalRepositoryReadPath, isPublicUserProfilePath } from "./shell";
+import { isChangeFeaturePath, isIssueFeaturePath } from "../lib/canonical-routes";
 import { RepositoryGate, type ActiveRepository } from "../features/issues/repository-context";
 import { useCurrentContext } from "../auth/session";
 
 describe("application navigation and canonical public shell", () => {
+  it("recognizes repository roots without capturing reserved application routes", () => {
+    expect(isCanonicalRepositoryReadPath("/acme/public")).toBe(true);
+    expect(isCanonicalRepositoryReadPath("/acme/public/issues/7")).toBe(true);
+    expect(isCanonicalRepositoryReadPath("/acme/public/changes/change-key")).toBe(true);
+    expect(isCanonicalRepositoryReadPath("/_repos/users/public")).toBe(true);
+    expect(isCanonicalRepositoryReadPath("/_repos/users/public/issues/7")).toBe(true);
+    for (const pathname of ["/admin/settings", "/api/v1", "/orgs/acme", "/settings/account", "/readyz/check"]) {
+      expect(isCanonicalRepositoryReadPath(pathname)).toBe(false);
+    }
+  });
+
+  it("recognizes public profile and legacy profile issue links", () => {
+    expect(isPublicUserProfilePath("/users/johnlanni")).toBe(true);
+    expect(isPublicUserProfilePath("/users/johnlanni/issues")).toBe(true);
+    expect(isPublicUserProfilePath("/users/johnlanni/settings")).toBe(false);
+  });
+
+  it("keeps feature navigation active on canonical named routes", () => {
+    expect(isIssueFeaturePath("/acme/public/issues/7")).toBe(true);
+    expect(isIssueFeaturePath("/issues/an-org/a-repo")).toBe(true);
+    expect(isIssueFeaturePath("/settings/account/issues")).toBe(false);
+    expect(isChangeFeaturePath("/acme/public/changes/change-key")).toBe(true);
+    expect(isChangeFeaturePath("/orgs/acme/changes")).toBe(true);
+    expect(isChangeFeaturePath("/admin/acme/changes")).toBe(false);
+  });
+
   it("orders Issues and Changes before Repositories with distinct feature icons on desktop and mobile", async () => {
     server.use(http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, change_boards: true } })));
     const { container } = renderShell("/");
@@ -37,7 +64,7 @@ describe("application navigation and canonical public shell", () => {
     );
     const { container } = renderShell("/acme/public/issues/7?view=timeline", true);
     expect(await screen.findByText("Public issue content")).toBeVisible();
-    expect(screen.getByText("public repository view")).toBeVisible();
+    expect(screen.getByText("public view")).toBeVisible();
     expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
     expect(screen.queryByRole("navigation", { name: "Primary navigation" })).not.toBeInTheDocument();
     expect(contextRequests).toBe(1);

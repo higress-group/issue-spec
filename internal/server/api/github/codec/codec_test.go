@@ -87,9 +87,12 @@ func TestPresenterMatchesExistingGitHubClientFieldsAndPreservesRawBody(t *testin
 func TestDTOsRoundTripThroughExistingGitHubRunnerClient(t *testing.T) {
 	p := presenter(t)
 	now := time.Date(2026, 7, 3, 1, 2, 3, 0, time.UTC)
-	user := p.PresentUser(codec.UserView{StableID: "u1", Login: "alice"})
+	user := p.PresentUser(codec.UserView{StableID: "u1", Login: "alice", Name: "澄潭"})
 	if user.AvatarURL != "https://issues.test/api/v1/avatars/alice" {
 		t.Fatalf("avatar_url = %q", user.AvatarURL)
+	}
+	if user.HTMLURL != "https://issues.test/users/alice" || user.Name != "澄潭" {
+		t.Fatalf("profile user = %+v", user)
 	}
 	issue := p.PresentIssue(codec.IssueView{
 		StableID: "i1", Owner: "o", Repository: "r", Number: 7, State: "open", Title: "title", Body: "raw",
@@ -137,6 +140,30 @@ func TestDTOsRoundTripThroughExistingGitHubRunnerClient(t *testing.T) {
 	gotSubscription, err := githubClient.GetRepositorySubscription(context.Background(), "o/r")
 	if err != nil || !gotSubscription.Subscription.Subscribed || gotSubscription.Subscription.RepositoryURL == "" {
 		t.Fatalf("subscription = %+v err=%v", gotSubscription, err)
+	}
+}
+
+func TestPresenterOmitsUnsupportedAndMissingIdentityLinks(t *testing.T) {
+	p := presenter(t)
+	ghost := p.PresentUser(codec.UserView{StableID: "ghost", Login: "ghost", NoProfile: true})
+	if ghost.HTMLURL != "" || ghost.AvatarURL != "" {
+		t.Fatalf("ghost user has profile links: %+v", ghost)
+	}
+	repository := p.PresentRepository(codec.RepositoryView{StableID: "repo", OwnerStableID: "org",
+		Owner: "users", Name: "workflow", Private: true})
+	if repository.URL != "https://api.issues.test/repos/users/workflow" ||
+		repository.HTMLURL != "https://issues.test/_repos/users/workflow" || repository.Owner.Type != "Organization" ||
+		repository.Owner.HTMLURL != "" || repository.Owner.AvatarURL != "" {
+		t.Fatalf("repository = %+v", repository)
+	}
+	issue := p.PresentIssue(codec.IssueView{StableID: "issue", Owner: "o", Repository: "r", Number: 1,
+		State: "open", Author: codec.UserView{StableID: "ghost", Login: "ghost", NoProfile: true}})
+	encoded, err := json.Marshal(issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "events_url") {
+		t.Fatalf("unsupported events_url was encoded: %s", encoded)
 	}
 }
 
