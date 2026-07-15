@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleDot, LockKeyhole, Pencil, RotateCcw } from "lucide-react";
+import { Check, CircleDot, Link2, LockKeyhole, Pencil, RotateCcw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { LabelChips, LabelSelector } from "../../components/labels/label-chips";
@@ -17,6 +17,30 @@ import { Avatar } from "../../app/avatar";
 import { useTranslation } from "react-i18next";
 
 const commentAnchorPattern = /^#issuecomment-[1-9]\d*$/;
+
+async function copyText(value: string) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+  } catch {
+    // HTTP deployments may expose the Clipboard API but reject writes.
+  }
+  const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.readOnly = true;
+  textarea.style.position = "fixed";
+  textarea.style.inset = "0 auto auto -9999px";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  const copied = typeof document.execCommand === "function" && document.execCommand("copy");
+  textarea.remove();
+  active?.focus({ preventScroll: true });
+  if (!copied) throw new Error("copy failed");
+}
 
 function useCommentAnchor({ comments, hash, owner, repo, number }: { comments: IssueComment[] | undefined; hash: string; owner: string; repo: string; number: number }) {
   const handledAnchor = useRef("");
@@ -44,13 +68,24 @@ function useCommentAnchor({ comments, hash, owner, repo, number }: { comments: I
   }, [comments, hash, number, owner, repo]);
 }
 
-function EditableComment({ comment, owner, repo, currentLogin, canContribute, canTriage }: { comment: IssueComment; owner: string; repo: string; currentLogin: string; canContribute: boolean; canTriage: boolean }) {
+function EditableComment({ comment, owner, repo, issuePath, currentLogin, canContribute, canTriage }: { comment: IssueComment; owner: string; repo: string; issuePath: string; currentLogin: string; canContribute: boolean; canTriage: boolean }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const queryClient = useQueryClient();
   const mutation = useMutation({ mutationFn: (body: string) => issueApi.updateComment(owner, repo, comment.id, body), onSuccess: async () => { setEditing(false); await queryClient.invalidateQueries({ queryKey: ["issues", owner, repo] }); } });
   const canEdit = canTriage || (canContribute && comment.user.login === currentLogin);
-  return <article className="timeline-card" id={`issuecomment-${comment.id}`} tabIndex={-1}><header><Avatar login={comment.user.login} src={comment.user.avatar_url} /><span><strong>@{comment.user.login}</strong><small>{t("issues.detail.commented", { date: formatRelative(comment.created_at) })}</small></span>{canEdit && !editing ? <button className="quiet-action" type="button" onClick={() => setEditing(true)}><Pencil aria-hidden="true" />{t("issues.detail.edit")}</button> : null}</header><div className="timeline-body">{editing ? <CommentEditor initial={comment.body} submitLabel={t("issues.detail.saveComment")} pending={mutation.isPending} error={mutation.error} onCancel={() => setEditing(false)} onSubmit={(body) => mutation.mutate(body)} /> : <MarkdownView source={comment.body} />}</div>{!editing ? <ReactionPicker owner={owner} repo={repo} commentId={comment.id} summary={comment.reactions} currentLogin={currentLogin} readOnly={!canContribute} /> : null}</article>;
+  const copyLink = async () => {
+    const permalink = new URL(`${issuePath}#issuecomment-${comment.id}`, window.location.origin).href;
+    try {
+      await copyText(permalink);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("failed");
+    }
+  };
+  const copyLabel = t(copyStatus === "copied" ? "issues.detail.linkCopied" : copyStatus === "failed" ? "issues.detail.copyLinkFailed" : "issues.detail.copyLink");
+  return <article className="timeline-card" id={`issuecomment-${comment.id}`} tabIndex={-1}><header><Avatar login={comment.user.login} src={comment.user.avatar_url} /><span><strong>@{comment.user.login}</strong><small>{t("issues.detail.commented", { date: formatRelative(comment.created_at) })}</small></span><div className="comment-actions"><button className="quiet-action" type="button" onClick={copyLink} aria-live="polite">{copyStatus === "copied" ? <Check aria-hidden="true" /> : <Link2 aria-hidden="true" />}{copyLabel}</button>{canEdit && !editing ? <button className="quiet-action" type="button" onClick={() => setEditing(true)}><Pencil aria-hidden="true" />{t("issues.detail.edit")}</button> : null}</div></header><div className="timeline-body">{editing ? <CommentEditor initial={comment.body} submitLabel={t("issues.detail.saveComment")} pending={mutation.isPending} error={mutation.error} onCancel={() => setEditing(false)} onSubmit={(body) => mutation.mutate(body)} /> : <MarkdownView source={comment.body} />}</div>{!editing ? <ReactionPicker owner={owner} repo={repo} commentId={comment.id} summary={comment.reactions} currentLogin={currentLogin} readOnly={!canContribute} /> : null}</article>;
 }
 
 export function IssueDetail({ active }: { active: ActiveRepository }) {
@@ -85,10 +120,10 @@ export function IssueDetail({ active }: { active: ActiveRepository }) {
   const status = typeof issue.error === "object" && issue.error && "status" in issue.error ? Number(issue.error.status) : 0;
   if (!issue.data) return <IssueStatus status={status === 403 ? 403 : 404} />;
   const item = issue.data;
-  return <div className="issue-page"><header className="detail-header"><div className="detail-title"><Link className="issue-back" to={repositoryIssuePath(active)}>← {owner} / {repo}</Link><h1>{item.title} <span>#{item.number}</span></h1><div className="detail-state-row"><span className={`state-badge ${item.state}`}><CircleDot aria-hidden="true" />{t(item.state === "open" ? "issues.detail.stateOpen" : "issues.detail.stateClosed")}</span><span>{t("issues.detail.openedOn", { login: item.user.login, date: formatRelative(item.created_at) })}</span><span>{t("issues.detail.comments", { count: item.comments })}</span></div></div>{canTriage ? <div className="header-actions"><button className="issue-button" type="button" onClick={() => setEditing((value) => !value)}><Pencil aria-hidden="true" />{t(editing ? "issues.detail.cancelEdit" : "issues.detail.edit")}</button><button className="issue-button" type="button" disabled={updateState.isPending} onClick={() => updateState.mutate(item.state === "open" ? "closed" : "open")}><RotateCcw aria-hidden="true" />{t(item.state === "open" ? "issues.detail.close" : "issues.detail.reopen")}</button></div> : null}</header>
+  return <div className="issue-page issue-detail-page"><header className="detail-header"><div className="detail-title"><Link className="issue-back" to={repositoryIssuePath(active)}>← {owner} / {repo}</Link><h1>{item.title} <span>#{item.number}</span></h1><div className="detail-state-row"><span className={`state-badge ${item.state}`}><CircleDot aria-hidden="true" />{t(item.state === "open" ? "issues.detail.stateOpen" : "issues.detail.stateClosed")}</span><span>{t("issues.detail.openedOn", { login: item.user.login, date: formatRelative(item.created_at) })}</span><span>{t("issues.detail.comments", { count: item.comments })}</span></div></div>{canTriage ? <div className="header-actions"><button className="issue-button" type="button" onClick={() => setEditing((value) => !value)}><Pencil aria-hidden="true" />{t(editing ? "issues.detail.cancelEdit" : "issues.detail.edit")}</button><button className="issue-button" type="button" disabled={updateState.isPending} onClick={() => updateState.mutate(item.state === "open" ? "closed" : "open")}><RotateCcw aria-hidden="true" />{t(item.state === "open" ? "issues.detail.close" : "issues.detail.reopen")}</button></div> : null}</header>
     <MutationProblem error={updateState.error} />
     <div className="detail-grid"><div className="timeline"><article className="timeline-card issue-origin"><header><Avatar login={item.user.login} src={item.user.avatar_url} tone="coral" /><span><strong>@{item.user.login}</strong><small>{t("issues.detail.openingNote")}</small></span></header><div className="timeline-body">{editing ? <IssueEditor initial={{ title: item.title, body: item.body, labels: item.labels.map((label) => label.name) }} labels={labels.data ?? []} submitLabel={t("issues.detail.saveIssue")} pending={updateIssue.isPending} error={updateIssue.error} onCancel={() => setEditing(false)} onSubmit={(draft) => updateIssue.mutate(draft)} /> : item.body ? <MarkdownView source={item.body} /> : <p className="issue-empty-copy">{t("issues.detail.noDescription")}</p>}</div></article>
-      {comments.isLoading ? <IssueLoading label={t("issues.detail.loadingConversation")} /> : comments.data?.map((comment) => <EditableComment key={comment.id} comment={comment} owner={owner} repo={repo} currentLogin={current.data?.user.login ?? ""} canContribute={canContribute} canTriage={canTriage} />)}
+      {comments.isLoading ? <IssueLoading label={t("issues.detail.loadingConversation")} /> : comments.data?.map((comment) => <EditableComment key={comment.id} comment={comment} owner={owner} repo={repo} issuePath={repositoryIssuePath(active, item.number)} currentLogin={current.data?.user.login ?? ""} canContribute={canContribute} canTriage={canTriage} />)}
       {canContribute ? <section className="new-comment" aria-labelledby="new-comment-heading"><h2 id="new-comment-heading">{t("issues.detail.continueConversation")}</h2><CommentEditor key={comments.data?.length ?? 0} pending={createComment.isPending} error={createComment.error} onSubmit={(body) => createComment.mutate(body)} /></section> : <section className="new-comment read-only-note" aria-label={t("issues.detail.readOnlyAccess")}><h2>{t("issues.detail.readOnlyConversation")}</h2><p>{t(active.authenticated ? "issues.detail.noCommentPermission" : "issues.detail.signInToComment")}</p>{active.authenticated ? null : <Link className="issue-button" to="/login" state={{ returnTo: repositoryIssuePath(active, item.number) }}>{t("issues.detail.signIn")}</Link>}</section>}</div>
       <aside className="issue-sidebar" aria-label={t("issues.detail.metadata")}><section><span className="issue-kicker purple">{t("issues.detail.labels")}</span><LabelChips labels={item.labels} />{canTriage ? <details><summary>{t("issues.detail.manageLabels")}</summary><LabelSelector labels={labels.data ?? []} selected={item.labels.map((label) => label.name)} disabled={replaceLabels.isPending} onChange={(names) => replaceLabels.mutate(names)} /></details> : null}<MutationProblem error={replaceLabels.error} /></section><section className="issue-relationships" aria-labelledby="issue-relationships-heading"><span className="issue-kicker coral" id="issue-relationships-heading">{t("issues.detail.codeChanges")}</span>{relationships.isLoading ? <p className="relationship-status" role="status">{t("issues.detail.loadingDelivery")}</p> : relationships.error ? <p className="relationship-status relationship-error" role="alert">{t("issues.detail.deliveryUnavailable")}</p> : <CodeChangeList relationships={relationships.data?.relationships ?? []} />}</section><section><span className="issue-kicker">{t("issues.detail.authority")}</span><p><LockKeyhole aria-hidden="true" />{t(`common.permission.${active.repository.effective_permission}`)}</p><small>{t(active.authenticated ? "issues.detail.serverChecks" : "issues.detail.publicRead")}</small></section></aside></div>
   </div>;

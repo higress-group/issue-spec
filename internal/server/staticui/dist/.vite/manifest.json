@@ -86,13 +86,13 @@
     "file": "assets/relationships-BcELNV6j.css",
     "src": "_relationships-BcELNV6j.css"
   },
-  "_relationships-Bpsemu79.js": {
-    "file": "assets/relationships-Bpsemu79.js",
+  "_relationships-b8iBdkaZ.js": {
+    "file": "assets/relationships-b8iBdkaZ.js",
     "name": "relationships",
     "imports": [
       "_session-C1IzhPRf.js",
       "_createLucideIcon-BbHIZPk-.js",
-      "_shield-alert-CMkLSAT7.js",
+      "_shield-alert-B85TgCZo.js",
       "_relationships-BD5xiq_F.js"
     ],
     "css": [
@@ -124,15 +124,15 @@
       "_rolldown-runtime-QTnfLwEv.js"
     ]
   },
-  "_shield-alert-CMkLSAT7.js": {
-    "file": "assets/shield-alert-CMkLSAT7.js",
+  "_shield-alert-B85TgCZo.js": {
+    "file": "assets/shield-alert-B85TgCZo.js",
     "name": "shield-alert",
     "imports": [
       "_createLucideIcon-BbHIZPk-.js"
     ]
   },
-  "_triangle-alert-BOBVId98.js": {
-    "file": "assets/triangle-alert-BOBVId98.js",
+  "_triangle-alert-DJK1pnxR.js": {
+    "file": "assets/triangle-alert-DJK1pnxR.js",
     "name": "triangle-alert",
     "imports": [
       "_createLucideIcon-BbHIZPk-.js"
@@ -147,7 +147,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-B2b7a3tq.js",
+    "file": "assets/index-CoPrsJsL.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -157,9 +157,9 @@
       "_useMutation-BwGH4ZSY.js",
       "_createLucideIcon-BbHIZPk-.js",
       "_arrow-right-DOMk8KY7.js",
-      "_triangle-alert-BOBVId98.js",
+      "_triangle-alert-DJK1pnxR.js",
+      "_shield-alert-B85TgCZo.js",
       "_circle-dot-CXDtp1Y5.js",
-      "_shield-alert-CMkLSAT7.js",
       "_git-branch-C7fU4pqL.js",
       "_lock-keyhole-Dwj6eI6W.js",
       "_search-zfaaAr8m.js",
@@ -174,11 +174,11 @@
       "src/features/issues/detail-page.tsx"
     ],
     "css": [
-      "assets/index-CQUtVfnQ.css"
+      "assets/index-Cczz6ESF.css"
     ]
   },
   "src/features/boards/board-page.tsx": {
-    "file": "assets/board-page-CYg30FNn.js",
+    "file": "assets/board-page-C6V0aC9T.js",
     "name": "board-page",
     "src": "src/features/boards/board-page.tsx",
     "isDynamicEntry": true,
@@ -186,25 +186,25 @@
       "_session-C1IzhPRf.js",
       "_createLucideIcon-BbHIZPk-.js",
       "_arrow-right-DOMk8KY7.js",
-      "_triangle-alert-BOBVId98.js",
+      "_triangle-alert-DJK1pnxR.js",
+      "_shield-alert-B85TgCZo.js",
       "_circle-dot-CXDtp1Y5.js",
-      "_shield-alert-CMkLSAT7.js",
-      "_relationships-Bpsemu79.js",
+      "_relationships-b8iBdkaZ.js",
       "_relationships-BD5xiq_F.js",
       "_repository-context-C4OHZqVd.js"
     ]
   },
   "src/features/boards/detail-page.tsx": {
-    "file": "assets/detail-page-DmVMjfJ0.js",
+    "file": "assets/detail-page-BvhDreYl.js",
     "name": "detail-page",
     "src": "src/features/boards/detail-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_session-C1IzhPRf.js",
       "_createLucideIcon-BbHIZPk-.js",
-      "_shield-alert-CMkLSAT7.js",
+      "_shield-alert-B85TgCZo.js",
       "_git-branch-C7fU4pqL.js",
-      "_relationships-Bpsemu79.js",
+      "_relationships-b8iBdkaZ.js",
       "_repository-context-C4OHZqVd.js",
       "src/features/boards/board-page.tsx"
     ]
@@ -224,7 +224,7 @@
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-BI9YjNh1.js",
+    "file": "assets/detail-page-DYFaOetN.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
@@ -233,8 +233,9 @@
       "_session-C1IzhPRf.js",
       "_useMutation-BwGH4ZSY.js",
       "_createLucideIcon-BbHIZPk-.js",
+      "_shield-alert-B85TgCZo.js",
       "_circle-dot-CXDtp1Y5.js",
-      "_relationships-Bpsemu79.js",
+      "_relationships-b8iBdkaZ.js",
       "_lock-keyhole-Dwj6eI6W.js",
       "_avatar-BQ6y85iu.js",
       "_repository-context-C4OHZqVd.js",
