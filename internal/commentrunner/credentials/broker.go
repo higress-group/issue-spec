@@ -94,7 +94,7 @@ func (b *Broker) Acquire(ctx context.Context, request AcquireRequest) (*Lease, e
 	}
 	ttl := b.TTL
 	if ttl == 0 {
-		ttl = 5 * time.Minute
+		ttl = delegation.DefaultTTL
 	}
 	if ttl < delegation.MinTTL || ttl > delegation.MaxTTL {
 		return nil, errors.New("credential broker: lease TTL is outside server limits")
@@ -133,7 +133,7 @@ func (b *Broker) Probe(_ context.Context, request PreflightRequest) capability.R
 	profile, profileErr := b.Profile.Normalized()
 	ttl := b.TTL
 	if ttl == 0 {
-		ttl = 5 * time.Minute
+		ttl = delegation.DefaultTTL
 	}
 	if profileErr != nil || profile.Kind != clientauth.ProfileKindHosted || request.Repo.Validate() != nil ||
 		!validJobID(request.JobID) || strings.TrimSpace(req.Repository) == "" ||

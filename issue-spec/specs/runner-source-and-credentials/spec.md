@@ -44,6 +44,11 @@ The runner MUST broker short-lived repository, job, audience and purpose scoped 
 - **WHEN** a sandboxed coordinator starts
 - **THEN** the runner MUST mint or obtain a short-lived issue token with only required repository scopes, write it to a session-private read-only file, expose the selected profile and token-file path, and pass child auth status before agent dispatch
 
+#### Scenario: an uninterrupted agent job runs for multiple days
+
+- **WHEN** a `/new` or `/resume` job remains active beyond a minute-scale credential lifetime
+- **THEN** its delegated issue token MUST remain usable for up to the seven-day default job lifetime, remain bound to the repository and job, and be revoked immediately when the job reaches a terminal state
+
 #### Scenario: source clone uses an operator credential helper
 
 - **WHEN** the runner clones or writes the bound source repository

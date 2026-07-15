@@ -202,10 +202,13 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 		Issuer: patPrincipal, Repo: models.RepoScope{OrgID: orgID, RepoID: repoID}, JobID: "job-1",
 		Purpose: "comment-writeback", Audience: "issue-spec-server", Subject: "runner-child",
 		Scopes: []string{"issues:write"}, Operations: []capability.Operation{capability.OperationIssueRead,
-			capability.OperationArtifactWrite}, TTL: 5 * time.Minute,
+			capability.OperationArtifactWrite}, TTL: delegation.DefaultTTL,
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if remaining := time.Until(delegatedCreated.ExpiresAt); remaining < delegation.DefaultTTL-10*time.Second || remaining > delegation.DefaultTTL {
+		t.Fatalf("delegated default lifetime = %s, want approximately %s", remaining, delegation.DefaultTTL)
 	}
 	delegatedPrincipal, err := delegated.Authenticate(t.Context(), delegatedCreated.Plaintext, delegation.Expected{
 		Repo: models.RepoScope{OrgID: orgID, RepoID: repoID}, JobID: "job-1",

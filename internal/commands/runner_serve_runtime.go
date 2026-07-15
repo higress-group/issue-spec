@@ -19,6 +19,7 @@ import (
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/github"
+	"github.com/higress-group/issue-spec/internal/server/auth/delegation"
 )
 
 type runnerServeRuntime interface{ Run(context.Context) error }
@@ -117,10 +118,10 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	}
 	delegationTTL := input.DelegationTTL
 	if delegationTTL == 0 {
-		delegationTTL = 5 * time.Minute
+		delegationTTL = delegation.DefaultTTL
 	}
-	if delegationTTL < 30*time.Second || delegationTTL > 15*time.Minute {
-		return nil, fmt.Errorf("runner serve delegation TTL must be between 30s and 15m")
+	if delegationTTL < delegation.MinTTL || delegationTTL > delegation.MaxTTL {
+		return nil, fmt.Errorf("runner serve delegation TTL must be between %s and %s", delegation.MinTTL, delegation.MaxTTL)
 	}
 	broker := &credentials.Broker{Profile: profile, Audience: audience,
 		Subject: subject, ParentToken: input.ParentToken, HTTPClient: nativeHTTPClient,

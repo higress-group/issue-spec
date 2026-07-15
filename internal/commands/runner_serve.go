@@ -18,6 +18,7 @@ import (
 	runnerserver "github.com/higress-group/issue-spec/internal/commentrunner/server"
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/gitidentity"
+	"github.com/higress-group/issue-spec/internal/server/auth/delegation"
 )
 
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -61,7 +62,8 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	retryAfter := fs.Duration("retry-after", 5*time.Second, "backpressure Retry-After duration")
 	delegationAudience := fs.String("delegation-audience", defaultDelegationAudience, "server-configured delegated credential audience")
 	delegationSubject := fs.String("delegation-subject", defaultDelegationSubject, "server-configured delegated credential subject")
-	delegationTTL := fs.Duration("delegation-ttl", 5*time.Minute, "delegated credential lifetime; 30s to 15m")
+	delegationTTL := fs.Duration("delegation-ttl", delegation.DefaultTTL,
+		fmt.Sprintf("delegated credential lifetime; %s to %s", delegation.MinTTL, delegation.MaxTTL))
 	tlsCert := fs.String("tls-cert", "", "TLS certificate PEM file")
 	tlsKey := fs.String("tls-key", "", "0600 TLS private key PEM file")
 	production := fs.Bool("production", false, "require TLS and an explicit non-loopback bind")
@@ -161,8 +163,8 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		a.errorf("runner serve delegation audience and subject must be printable values of at most 128 bytes\n")
 		return 2
 	}
-	if *delegationTTL < 30*time.Second || *delegationTTL > 15*time.Minute {
-		a.errorf("runner serve delegation TTL must be between 30s and 15m\n")
+	if *delegationTTL < delegation.MinTTL || *delegationTTL > delegation.MaxTTL {
+		a.errorf("runner serve delegation TTL must be between %s and %s\n", delegation.MinTTL, delegation.MaxTTL)
 		return 2
 	}
 	if *gitCredentialTimeout <= 0 || *gitCredentialTimeout > 2*time.Minute || *gitCredentialMaxOutput < 1024 ||
