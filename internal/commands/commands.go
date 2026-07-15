@@ -295,9 +295,22 @@ func (a *app) selectBackendForProfile(ctx context.Context, host, profile string)
 
 func (a *app) selectBackend(ctx context.Context, host string) (auth.GitHubBackendSelection, error) {
 	profileName := strings.TrimSpace(a.profileName)
-	_, source, profileErr := auth.ResolveProfile(profileName, host)
+	profile, source, profileErr := auth.ResolveProfile(profileName, host)
 	if profileErr != nil {
 		return auth.GitHubBackendSelection{}, profileErr
+	}
+	if (source == "builtin" || source == "project") && auth.IsBuiltinGitHubProfile(profile) {
+		var selection auth.GitHubBackendSelection
+		var err error
+		if a.selectGitHubBackend != nil {
+			selection, err = a.selectGitHubBackend(ctx, profile.Hostname)
+		} else {
+			selection, err = defaultSelectGitHubBackend(ctx, profile.Hostname)
+		}
+		if source == "project" {
+			selection.SelectionSource = "profile:project"
+		}
+		return selection.WithProfile(profile, source), err
 	}
 	if source != "builtin" || profileName != "" || auth.ProfileNameFromEnv() != "" || strings.TrimSpace(os.Getenv(auth.GitHubBackendAPIURLEnv)) != "" {
 		return auth.SelectProfileBackendWithOptions(ctx, profileName, host, auth.GitHubBackendSelectionOptions{GHAuthenticated: ghAuthenticated})
@@ -310,9 +323,22 @@ func (a *app) selectBackend(ctx context.Context, host string) (auth.GitHubBacken
 
 func (a *app) selectBackendForRunner(ctx context.Context, cfg commentrunner.Config) (auth.GitHubBackendSelection, error) {
 	cfg = cfg.Normalized()
-	_, source, profileErr := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
+	profile, source, profileErr := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
 	if profileErr != nil {
 		return auth.GitHubBackendSelection{}, profileErr
+	}
+	if (source == "builtin" || source == "project") && auth.IsBuiltinGitHubProfile(profile) {
+		var selection auth.GitHubBackendSelection
+		var err error
+		if a.selectRunnerBackend != nil {
+			selection, err = a.selectRunnerBackend(ctx, profile.Hostname, cfg.GitHubBackend)
+		} else {
+			selection, err = defaultSelectRunnerBackend(ctx, profile.Hostname, cfg.GitHubBackend)
+		}
+		if source == "project" {
+			selection.SelectionSource = "profile:project"
+		}
+		return selection.WithProfile(profile, source), err
 	}
 	if source != "builtin" || cfg.Profile != "" || strings.TrimSpace(os.Getenv(auth.GitHubBackendAPIURLEnv)) != "" {
 		mode := cfg.GitHubBackend

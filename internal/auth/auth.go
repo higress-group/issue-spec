@@ -86,6 +86,16 @@ type GitHubBackendSelectionOptions struct {
 	Mode            *GitHubBackendMode
 }
 
+// WithProfile attaches resolved profile metadata without changing the backend
+// that was selected. Callers that preserve an injected backend selector can
+// use this to add profile diagnostics after selection.
+func (s GitHubBackendSelection) WithProfile(profile Profile, source string) GitHubBackendSelection {
+	s.Profile = profile
+	s.ProfileSource = source
+	s.Token = withProfile(s.Token, profile)
+	return s
+}
+
 type credentialFile struct {
 	Hosts  map[string]StoredCredential `json:"hosts"`
 	Realms map[string]StoredCredential `json:"realms,omitempty"`
