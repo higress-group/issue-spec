@@ -1,169 +1,161 @@
 {
-  "_arrow-right-Cah7VAQz.js": {
-    "file": "assets/arrow-right-Cah7VAQz.js",
+  "_arrow-right-bvjEP-oX.js": {
+    "file": "assets/arrow-right-bvjEP-oX.js",
     "name": "arrow-right",
     "imports": [
-      "_createLucideIcon-ClwMzZSU.js"
+      "_createLucideIcon-CdRiI4Ou.js"
     ]
   },
-  "_avatar-taR87UnU.js": {
-    "file": "assets/avatar-taR87UnU.js",
+  "_avatar-bvBCVKqz.js": {
+    "file": "assets/avatar-bvBCVKqz.js",
     "name": "avatar",
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
-      "_session-NQj1yTKg.js"
+      "_repository-context-D4QSNRrv.js"
     ]
   },
-  "_circle-dot-Di9UTAdt.js": {
-    "file": "assets/circle-dot-Di9UTAdt.js",
+  "_circle-dot-nmTRa4a8.js": {
+    "file": "assets/circle-dot-nmTRa4a8.js",
     "name": "circle-dot",
     "imports": [
-      "_createLucideIcon-ClwMzZSU.js"
+      "_createLucideIcon-CdRiI4Ou.js"
     ]
   },
-  "_createLucideIcon-ClwMzZSU.js": {
-    "file": "assets/createLucideIcon-ClwMzZSU.js",
+  "_createLucideIcon-CdRiI4Ou.js": {
+    "file": "assets/createLucideIcon-CdRiI4Ou.js",
     "name": "createLucideIcon",
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
-      "_session-NQj1yTKg.js"
+      "_repository-context-D4QSNRrv.js"
     ]
   },
-  "_git-branch-BhN5YFzB.js": {
-    "file": "assets/git-branch-BhN5YFzB.js",
+  "_git-branch-BR05jWrB.js": {
+    "file": "assets/git-branch-BR05jWrB.js",
     "name": "git-branch",
     "imports": [
-      "_createLucideIcon-ClwMzZSU.js"
-    ]
-  },
-  "_issue-editor-C7b4qyef.js": {
-    "file": "assets/issue-editor-C7b4qyef.js",
-    "name": "issue-editor",
-    "imports": [
-      "_rolldown-runtime-QTnfLwEv.js",
-      "_session-NQj1yTKg.js",
-      "_repository-context-l-cT5PH5.js",
-      "_label-chips-C1aS543r.js"
-    ],
-    "css": [
-      "assets/issue-editor-CdnBa9Ix.css"
+      "_createLucideIcon-CdRiI4Ou.js"
     ]
   },
   "_issue-editor-CdnBa9Ix.css": {
     "file": "assets/issue-editor-CdnBa9Ix.css",
     "src": "_issue-editor-CdnBa9Ix.css"
   },
-  "_label-chips-C1aS543r.js": {
-    "file": "assets/label-chips-C1aS543r.js",
-    "name": "label-chips",
+  "_issue-editor-DPlT4Fv3.js": {
+    "file": "assets/issue-editor-DPlT4Fv3.js",
+    "name": "issue-editor",
     "imports": [
-      "_session-NQj1yTKg.js",
-      "_relationships-Cege9JW7.js"
+      "_rolldown-runtime-QTnfLwEv.js",
+      "_repository-context-D4QSNRrv.js",
+      "_label-chips-T9XIBadg.js"
     ],
     "css": [
-      "assets/label-chips-DMPnSd3b.css"
+      "assets/issue-editor-CdnBa9Ix.css"
     ]
   },
   "_label-chips-DMPnSd3b.css": {
     "file": "assets/label-chips-DMPnSd3b.css",
     "src": "_label-chips-DMPnSd3b.css"
   },
-  "_lock-keyhole-CfSGUPBh.js": {
-    "file": "assets/lock-keyhole-CfSGUPBh.js",
+  "_label-chips-T9XIBadg.js": {
+    "file": "assets/label-chips-T9XIBadg.js",
+    "name": "label-chips",
+    "imports": [
+      "_repository-context-D4QSNRrv.js",
+      "_relationships-fCqC1FcJ.js"
+    ],
+    "css": [
+      "assets/label-chips-DMPnSd3b.css"
+    ]
+  },
+  "_lock-keyhole-BtPgH1Ap.js": {
+    "file": "assets/lock-keyhole-BtPgH1Ap.js",
     "name": "lock-keyhole",
     "imports": [
-      "_createLucideIcon-ClwMzZSU.js"
+      "_createLucideIcon-CdRiI4Ou.js"
     ]
   },
   "_relationships-BcELNV6j.css": {
     "file": "assets/relationships-BcELNV6j.css",
     "src": "_relationships-BcELNV6j.css"
   },
-  "_relationships-Cege9JW7.js": {
-    "file": "assets/relationships-Cege9JW7.js",
+  "_relationships-fCqC1FcJ.js": {
+    "file": "assets/relationships-fCqC1FcJ.js",
     "name": "relationships",
     "imports": [
-      "_session-NQj1yTKg.js"
+      "_repository-context-D4QSNRrv.js"
     ]
   },
-  "_relationships-DEsc8xXk.js": {
-    "file": "assets/relationships-DEsc8xXk.js",
+  "_relationships-lnLs524w.js": {
+    "file": "assets/relationships-lnLs524w.js",
     "name": "relationships",
     "imports": [
-      "_session-NQj1yTKg.js",
-      "_createLucideIcon-ClwMzZSU.js",
-      "_shield-alert-LmLNOWCo.js",
-      "_relationships-Cege9JW7.js"
+      "_repository-context-D4QSNRrv.js",
+      "_createLucideIcon-CdRiI4Ou.js",
+      "_shield-alert-DQLHcsO-.js",
+      "_relationships-fCqC1FcJ.js"
     ],
     "css": [
       "assets/relationships-BcELNV6j.css"
     ]
   },
-  "_repository-context-l-cT5PH5.js": {
-    "file": "assets/repository-context-l-cT5PH5.js",
+  "_repository-context-D4QSNRrv.js": {
+    "file": "assets/repository-context-D4QSNRrv.js",
     "name": "repository-context",
     "imports": [
-      "_session-NQj1yTKg.js"
+      "_rolldown-runtime-QTnfLwEv.js"
     ]
   },
   "_rolldown-runtime-QTnfLwEv.js": {
     "file": "assets/rolldown-runtime-QTnfLwEv.js",
     "name": "rolldown-runtime"
   },
-  "_search-DzZVPBay.js": {
-    "file": "assets/search-DzZVPBay.js",
+  "_search-CFAZc4LM.js": {
+    "file": "assets/search-CFAZc4LM.js",
     "name": "search",
     "imports": [
-      "_createLucideIcon-ClwMzZSU.js"
+      "_createLucideIcon-CdRiI4Ou.js"
     ]
   },
-  "_session-NQj1yTKg.js": {
-    "file": "assets/session-NQj1yTKg.js",
-    "name": "session",
-    "imports": [
-      "_rolldown-runtime-QTnfLwEv.js"
-    ]
-  },
-  "_shield-alert-LmLNOWCo.js": {
-    "file": "assets/shield-alert-LmLNOWCo.js",
+  "_shield-alert-DQLHcsO-.js": {
+    "file": "assets/shield-alert-DQLHcsO-.js",
     "name": "shield-alert",
     "imports": [
-      "_createLucideIcon-ClwMzZSU.js"
+      "_createLucideIcon-CdRiI4Ou.js"
     ]
   },
-  "_triangle-alert-CnmXxj-d.js": {
-    "file": "assets/triangle-alert-CnmXxj-d.js",
+  "_triangle-alert-4IxRZ_J1.js": {
+    "file": "assets/triangle-alert-4IxRZ_J1.js",
     "name": "triangle-alert",
     "imports": [
-      "_createLucideIcon-ClwMzZSU.js"
+      "_createLucideIcon-CdRiI4Ou.js"
     ]
   },
-  "_useMutation-Clc45Rl6.js": {
-    "file": "assets/useMutation-Clc45Rl6.js",
+  "_useMutation-Cg2hIceN.js": {
+    "file": "assets/useMutation-Cg2hIceN.js",
     "name": "useMutation",
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
-      "_session-NQj1yTKg.js"
+      "_repository-context-D4QSNRrv.js"
     ]
   },
   "index.html": {
-    "file": "assets/index-0MiV8kZe.js",
+    "file": "assets/index-Cc1dnF1v.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
-      "_session-NQj1yTKg.js",
-      "_useMutation-Clc45Rl6.js",
-      "_createLucideIcon-ClwMzZSU.js",
-      "_arrow-right-Cah7VAQz.js",
-      "_triangle-alert-CnmXxj-d.js",
-      "_shield-alert-LmLNOWCo.js",
-      "_circle-dot-Di9UTAdt.js",
-      "_git-branch-BhN5YFzB.js",
-      "_lock-keyhole-CfSGUPBh.js",
-      "_search-DzZVPBay.js",
-      "_avatar-taR87UnU.js"
+      "_repository-context-D4QSNRrv.js",
+      "_useMutation-Cg2hIceN.js",
+      "_createLucideIcon-CdRiI4Ou.js",
+      "_arrow-right-bvjEP-oX.js",
+      "_triangle-alert-4IxRZ_J1.js",
+      "_shield-alert-DQLHcsO-.js",
+      "_circle-dot-nmTRa4a8.js",
+      "_git-branch-BR05jWrB.js",
+      "_lock-keyhole-BtPgH1Ap.js",
+      "_search-CFAZc4LM.js",
+      "_avatar-bvBCVKqz.js"
     ],
     "dynamicImports": [
       "src/features/boards/board-page.tsx",
@@ -174,73 +166,69 @@
       "src/features/issues/detail-page.tsx"
     ],
     "css": [
-      "assets/index-BirxPCXP.css"
+      "assets/index-DtvcycKG.css"
     ]
   },
   "src/features/boards/board-page.tsx": {
-    "file": "assets/board-page-CDWYvrg2.js",
+    "file": "assets/board-page-EDrp4Zf4.js",
     "name": "board-page",
     "src": "src/features/boards/board-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_session-NQj1yTKg.js",
-      "_createLucideIcon-ClwMzZSU.js",
-      "_arrow-right-Cah7VAQz.js",
-      "_triangle-alert-CnmXxj-d.js",
-      "_shield-alert-LmLNOWCo.js",
-      "_circle-dot-Di9UTAdt.js",
-      "_relationships-DEsc8xXk.js",
-      "_relationships-Cege9JW7.js",
-      "_repository-context-l-cT5PH5.js"
+      "_repository-context-D4QSNRrv.js",
+      "_createLucideIcon-CdRiI4Ou.js",
+      "_arrow-right-bvjEP-oX.js",
+      "_triangle-alert-4IxRZ_J1.js",
+      "_shield-alert-DQLHcsO-.js",
+      "_circle-dot-nmTRa4a8.js",
+      "_relationships-lnLs524w.js",
+      "_relationships-fCqC1FcJ.js"
     ]
   },
   "src/features/boards/detail-page.tsx": {
-    "file": "assets/detail-page-DrDGB8bh.js",
+    "file": "assets/detail-page-DlSQB26m.js",
     "name": "detail-page",
     "src": "src/features/boards/detail-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_session-NQj1yTKg.js",
-      "_createLucideIcon-ClwMzZSU.js",
-      "_shield-alert-LmLNOWCo.js",
-      "_git-branch-BhN5YFzB.js",
-      "_relationships-DEsc8xXk.js",
-      "_repository-context-l-cT5PH5.js",
+      "_repository-context-D4QSNRrv.js",
+      "_createLucideIcon-CdRiI4Ou.js",
+      "_shield-alert-DQLHcsO-.js",
+      "_git-branch-BR05jWrB.js",
+      "_relationships-lnLs524w.js",
       "src/features/boards/board-page.tsx"
     ]
   },
   "src/features/issues/create-page.tsx": {
-    "file": "assets/create-page-Dt9OrVwG.js",
+    "file": "assets/create-page-DIkbODLN.js",
     "name": "create-page",
     "src": "src/features/issues/create-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
-      "_session-NQj1yTKg.js",
-      "_useMutation-Clc45Rl6.js",
-      "_repository-context-l-cT5PH5.js",
-      "_label-chips-C1aS543r.js",
-      "_issue-editor-C7b4qyef.js"
+      "_repository-context-D4QSNRrv.js",
+      "_useMutation-Cg2hIceN.js",
+      "_label-chips-T9XIBadg.js",
+      "_issue-editor-DPlT4Fv3.js"
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-D62iGWpy.js",
+    "file": "assets/detail-page-62BfRiMr.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
-      "_session-NQj1yTKg.js",
-      "_useMutation-Clc45Rl6.js",
-      "_createLucideIcon-ClwMzZSU.js",
-      "_shield-alert-LmLNOWCo.js",
-      "_circle-dot-Di9UTAdt.js",
-      "_relationships-DEsc8xXk.js",
-      "_lock-keyhole-CfSGUPBh.js",
-      "_avatar-taR87UnU.js",
-      "_repository-context-l-cT5PH5.js",
-      "_label-chips-C1aS543r.js",
-      "_issue-editor-C7b4qyef.js",
+      "_repository-context-D4QSNRrv.js",
+      "_useMutation-Cg2hIceN.js",
+      "_createLucideIcon-CdRiI4Ou.js",
+      "_shield-alert-DQLHcsO-.js",
+      "_circle-dot-nmTRa4a8.js",
+      "_relationships-lnLs524w.js",
+      "_lock-keyhole-BtPgH1Ap.js",
+      "_avatar-bvBCVKqz.js",
+      "_label-chips-T9XIBadg.js",
+      "_issue-editor-DPlT4Fv3.js",
       "src/features/issues/list-page.tsx"
     ],
     "css": [
@@ -248,30 +236,28 @@
     ]
   },
   "src/features/issues/list-page.tsx": {
-    "file": "assets/list-page-C9bGFsZ3.js",
+    "file": "assets/list-page-DhVGKp3A.js",
     "name": "list-page",
     "src": "src/features/issues/list-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_session-NQj1yTKg.js",
-      "_createLucideIcon-ClwMzZSU.js",
-      "_circle-dot-Di9UTAdt.js",
-      "_search-DzZVPBay.js",
-      "_repository-context-l-cT5PH5.js",
-      "_label-chips-C1aS543r.js"
+      "_repository-context-D4QSNRrv.js",
+      "_createLucideIcon-CdRiI4Ou.js",
+      "_circle-dot-nmTRa4a8.js",
+      "_search-CFAZc4LM.js",
+      "_label-chips-T9XIBadg.js"
     ]
   },
   "src/features/issues/workspace-page.tsx": {
-    "file": "assets/workspace-page-CMHLaFGX.js",
+    "file": "assets/workspace-page-DyALrwqJ.js",
     "name": "workspace-page",
     "src": "src/features/issues/workspace-page.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_session-NQj1yTKg.js",
-      "_createLucideIcon-ClwMzZSU.js",
-      "_arrow-right-Cah7VAQz.js",
-      "_lock-keyhole-CfSGUPBh.js",
-      "_repository-context-l-cT5PH5.js"
+      "_repository-context-D4QSNRrv.js",
+      "_createLucideIcon-CdRiI4Ou.js",
+      "_arrow-right-bvjEP-oX.js",
+      "_lock-keyhole-BtPgH1Ap.js"
     ]
   }
 }

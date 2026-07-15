@@ -179,7 +179,7 @@ func (s *Service) Authenticate(ctx context.Context, token string) (serverauth.Pr
 	var digest []byte
 	var idleExpires time.Time
 	err = s.pool.QueryRow(ctx, `SELECT s.id, s.token_hash, s.csrf_hash, s.absolute_expires_at,
-		s.idle_expires_at, u.id, u.login, u.display_name, u.email, u.status
+		s.idle_expires_at, u.id, u.login, COALESCE(u.nickname, u.display_name), u.email, u.status
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_prefix = $1 AND s.revoked_at IS NULL`, prefix).
 		Scan(&principal.CredentialID, &digest, &principal.CSRFHash, &principal.ExpiresAt,

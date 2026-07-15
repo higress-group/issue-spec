@@ -149,6 +149,20 @@ describe("canonical issue read authority", () => {
     expect((await axe.run(container)).violations).toEqual([]);
   });
 
+  it("renders a deleted author as text without linking an unrelated ghost account", async () => {
+    installIssueDetailHandlers();
+    const ghost = { login: "ghost", name: "ghost", id: 1, avatar_url: "", html_url: "", type: "User", site_admin: false };
+    server.use(
+      http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture({ user: ghost }))),
+      http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json([commentFixture({ user: ghost })])),
+    );
+    renderIssueDetail(activeRepository(false, ["read"]));
+    expect(await screen.findByRole("heading", { name: /Runner contract/ })).toBeVisible();
+    for (const identity of screen.getAllByText("@ghost")) {
+      expect(identity.closest("a")).toBeNull();
+    }
+  });
+
   it("shows authenticated mutations only when allowed_actions grants them", async () => {
     installIssueDetailHandlers([relationshipFixture("github", "42"), relationshipFixture("aone-bridge", "73", "mismatched", { head_revision: "abc123" })]);
     renderIssueDetail(activeRepository(true, ["read", "contribute", "triage"]));
@@ -236,7 +250,7 @@ function commentFixture(overrides: Record<string, unknown> = {}) {
 }
 
 function reactionFixture() { return { id: 7, user: userFixture(), content: "+1", created_at: "2026-07-10T11:30:00Z" }; }
-function userFixture() { return { login: "alice", id: 1, avatar_url: "", html_url: "", type: "User", site_admin: false }; }
+function userFixture() { return { login: "alice", id: 1, avatar_url: "", html_url: "http://localhost/users/alice", type: "User", site_admin: false }; }
 
 function installIssueDetailHandlers(relationships: CodeChangeRelationship[] = []) {
   server.use(

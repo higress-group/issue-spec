@@ -23,6 +23,11 @@ export const fixtureMeta = {
 export const handlers = [
   http.get("http://localhost/api/v1/meta", () => HttpResponse.json(fixtureMeta)),
   http.get("http://localhost/api/v1/context", () => HttpResponse.json(fixtureContext)),
+  http.get("http://localhost/api/v1/profile", () => HttpResponse.json({
+    id: 101, login: "alice", display_name: "Alice", identity_display_name: "Alice",
+    nickname: null, representation_version: 1, avatar_url: "http://localhost/api/v1/avatars/alice",
+    html_url: "http://localhost/users/alice", type: "User", site_admin: true,
+  })),
   http.get("http://localhost/api/v1/auth/providers", () => HttpResponse.json({ providers: [{ name: "company-oidc", kind: "oidc" }] })),
   http.get("http://localhost/api/v1/bootstrap", () => HttpResponse.json({ available: true, completed: false, representation_version: 1 })),
   http.get("http://localhost/api/v1/pats", () => HttpResponse.json({ tokens: [] })),
