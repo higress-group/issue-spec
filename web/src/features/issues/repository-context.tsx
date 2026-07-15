@@ -6,19 +6,59 @@ import { useCurrentContext } from "../../auth/session";
 import { api } from "../../lib/api/resources";
 import { isApiProblem } from "../../lib/api/client";
 import type { OrganizationContext, RepositoryContext } from "../../lib/api/types";
+import {
+  isRepositoryRootOwner,
+  organizationChangePath,
+  repositoryChangePathForNames,
+  repositoryIssuePathForNames,
+} from "../../lib/canonical-routes";
+
+export { organizationChangePath, repositoryIssuePathForNames, repositoryRootPath } from "../../lib/canonical-routes";
 
 export type ActiveRepository = { organization: OrganizationContext; repository: RepositoryContext; authenticated: boolean };
 
-function segment(value: string) { return encodeURIComponent(value); }
-
 export function repositoryIssuePath(active: ActiveRepository, number?: number) {
-  const base = `/${segment(active.organization.name)}/${segment(active.repository.repository.name)}/issues`;
-  return number === undefined ? base : `${base}/${number}`;
+  return repositoryIssuePathForNames(active.organization.name, active.repository.repository.name, number);
 }
 
 export function repositoryChangePath(active: ActiveRepository, change?: string) {
-  const base = `/${segment(active.organization.name)}/${segment(active.repository.repository.name)}/changes`;
-  return change === undefined ? base : `${base}/${segment(change)}`;
+  return repositoryChangePathForNames(active.organization.name, active.repository.repository.name, change);
+}
+
+export function LegacyOrganizationChangeRedirect() {
+  const { orgId = "" } = useParams();
+  const location = useLocation();
+  const context = useCurrentContext();
+  if (context.isLoading) return <IssueLoading />;
+  if (context.error) return <IssueStatus status={403} />;
+  const organization = context.data?.organizations.find((item) => item.id === orgId);
+  if (!organization) return <IssueStatus status={404} />;
+  return <Navigate replace to={{ pathname: organizationChangePath(organization.name), search: location.search, hash: location.hash }} />;
+}
+
+export function RepositoryRootRedirect({ allowReserved = false }: { allowReserved?: boolean }) {
+  const { owner = "", repo = "" } = useParams();
+  const location = useLocation();
+  if (!repo || (!allowReserved && !isRepositoryRootOwner(owner))) return <IssueStatus status={404} />;
+  return <Navigate replace to={{ pathname: repositoryIssuePathForNames(owner, repo), search: location.search, hash: location.hash }} />;
+}
+
+export type LegacyRepositoryDestination = "issues" | "issue-new" | "issue-detail" | "changes" | "change-detail";
+
+export function LegacyRepositoryRedirect({ destination }: { destination: LegacyRepositoryDestination }) {
+  const location = useLocation();
+  const { number = "", change = "" } = useParams();
+  return <RepositoryGate>{(active) => {
+    let pathname: string;
+    switch (destination) {
+      case "issues": pathname = repositoryIssuePath(active); break;
+      case "issue-new": pathname = `${repositoryIssuePath(active)}/new`; break;
+      case "issue-detail": pathname = repositoryIssuePathForNames(active.organization.name, active.repository.repository.name, number); break;
+      case "changes": pathname = repositoryChangePath(active); break;
+      case "change-detail": pathname = repositoryChangePath(active, change); break;
+    }
+    return <Navigate replace to={{ pathname, search: location.search, hash: location.hash }} />;
+  }}</RepositoryGate>;
 }
 
 export function RepositoryGate({ children }: { children: (active: ActiveRepository) => ReactNode }) {

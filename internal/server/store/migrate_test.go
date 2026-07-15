@@ -42,6 +42,22 @@ func TestEmbeddedMigrationsMetadata(t *testing.T) {
 	}
 }
 
+func TestUserNicknameMigrationKeepsProviderNameSeparate(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nickname := migrations[16]
+	if nickname.Version != 17 || nickname.Name != "0017_user_nicknames.sql" {
+		t.Fatalf("nickname migration = %+v", nickname.MigrationInfo)
+	}
+	for _, contract := range []string{"ADD COLUMN nickname text", "users_nickname_valid", "char_length(nickname) <= 80"} {
+		if !containsSQL(nickname.sql, contract) {
+			t.Errorf("nickname migration is missing %q", contract)
+		}
+	}
+}
+
 func TestLoadMigrationsIncludesCompleteInitialSchema(t *testing.T) {
 	migrations, err := loadMigrations()
 	if err != nil {

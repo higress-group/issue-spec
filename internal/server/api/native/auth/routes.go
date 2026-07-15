@@ -106,6 +106,9 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 		{Name: "native.auth.login", Method: http.MethodGet, Pattern: "/api/v1/auth/{provider}/login", Handler: public(http.HandlerFunc(h.login))},
 		{Name: "native.auth.callback", Method: http.MethodGet, Pattern: "/api/v1/auth/{provider}/callback", Handler: public(http.HandlerFunc(h.callback))},
 		{Name: "native.auth.avatar", Method: http.MethodGet, Pattern: "/api/v1/avatars/{login}", Handler: public(http.HandlerFunc(h.avatar))},
+		{Name: "native.users.get", Method: http.MethodGet, Pattern: "/api/v1/users/{login}", Handler: public(http.HandlerFunc(h.publicProfile))},
+		{Name: "native.profile.get", Method: http.MethodGet, Pattern: "/api/v1/profile", Handler: protected(http.HandlerFunc(h.profile))},
+		{Name: "native.profile.update", Method: http.MethodPatch, Pattern: "/api/v1/profile", Handler: protected(http.HandlerFunc(h.updateProfile))},
 		{Name: "native.session.rotate", Method: http.MethodPost, Pattern: "/api/v1/session/rotate", Handler: protected(http.HandlerFunc(h.rotateSession))},
 		{Name: "native.session.logout", Method: http.MethodDelete, Pattern: "/api/v1/session", Handler: protected(http.HandlerFunc(h.logout))},
 		{Name: "native.pats.list", Method: http.MethodGet, Pattern: "/api/v1/pats", Handler: protected(http.HandlerFunc(h.listPATs))},
@@ -333,6 +336,68 @@ func (h *handlers) user(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *handlers) publicProfile(w http.ResponseWriter, r *http.Request) {
+	profile, err := h.deps.Identity.PublicProfile(r.Context(), r.PathValue("login"))
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h.publicProfileResponse(profile))
+}
+
+func (h *handlers) profile(w http.ResponseWriter, r *http.Request) {
+	principal, _ := serverauth.PrincipalFromContext(r.Context())
+	profile, err := h.deps.Identity.Profile(r.Context(), principal.User.ID)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h.privateProfileResponse(profile))
+}
+
+type profileUpdateRequest struct {
+	Nickname        string `json:"nickname"`
+	ExpectedVersion int64  `json:"expected_version"`
+}
+
+func (h *handlers) updateProfile(w http.ResponseWriter, r *http.Request) {
+	principal, _ := serverauth.PrincipalFromContext(r.Context())
+	if principal.Kind != serverauth.CredentialSession {
+		writeError(w, http.StatusForbidden, "Browser session required")
+		return
+	}
+	var request profileUpdateRequest
+	if err := decodeJSON(w, r, &request); err != nil || len([]rune(strings.TrimSpace(request.Nickname))) > 80 || request.ExpectedVersion < 1 {
+		writeError(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+	profile, err := h.deps.Identity.UpdateNickname(r.Context(), principal.User.ID, request.Nickname,
+		request.ExpectedVersion, adminapi.RequestID(r))
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h.privateProfileResponse(profile))
+}
+
+func (h *handlers) publicProfileResponse(profile serverauth.Profile) map[string]any {
+	return map[string]any{
+		"id": codec.StableNumericID(profile.ID.String()), "node_id": codec.NodeID("User", profile.ID.String()),
+		"login": profile.Login, "display_name": profile.DisplayName,
+		"avatar_url": h.canonicalWebOrigin + "/api/v1/avatars/" + url.PathEscape(profile.Login),
+		"html_url":   h.canonicalWebOrigin + "/users/" + url.PathEscape(profile.Login),
+		"type":       "User", "site_admin": false,
+	}
+}
+
+func (h *handlers) privateProfileResponse(profile serverauth.Profile) map[string]any {
+	response := h.publicProfileResponse(profile)
+	response["identity_display_name"] = profile.IdentityDisplayName
+	response["nickname"] = profile.Nickname
+	response["representation_version"] = profile.RepresentationVersion
+	return response
+}
+
 type patRequest struct {
 	Name         string   `json:"name"`
 	Scopes       []string `json:"scopes"`
@@ -442,6 +507,8 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, serverauth.ErrNotFound):
 		writeError(w, http.StatusNotFound, "Not Found")
+	case errors.Is(err, serverauth.ErrConflict):
+		writeError(w, http.StatusConflict, "Conflict")
 	case errors.Is(err, serverauth.ErrInsufficientScope), errors.Is(err, serverauth.ErrInvalidCredential), errors.Is(err, serverauth.ErrExpiredCredential):
 		writeError(w, http.StatusUnprocessableEntity, "Invalid request")
 	case errors.Is(err, serverauth.ErrDisabledAccount), errors.Is(err, serverauth.ErrRevokedCredential):
