@@ -146,22 +146,6 @@ func (s RepoStore) IssueByNumber(ctx context.Context, number int64) (models.Issu
 	return issue, nil
 }
 
-// IssueNumberByID resolves a legacy stable issue identifier inside its
-// tenant-composite repository scope. Browser routes use this only to preserve
-// old UUID links while keeping repository-local issue numbers canonical.
-func (s RepoStore) IssueNumberByID(ctx context.Context, issueID uuid.UUID) (int64, error) {
-	if err := s.validate(); err != nil || issueID == uuid.Nil {
-		return 0, ErrInvalidInput
-	}
-	var number int64
-	if err := s.db.QueryRow(ctx, `SELECT number FROM issues
-		WHERE organization_id = $1 AND repository_id = $2 AND id = $3`,
-		s.scope.OrgID, s.scope.RepoID, issueID).Scan(&number); err != nil {
-		return 0, fmt.Errorf("resolve issue number: %w", mapError(err))
-	}
-	return number, nil
-}
-
 func (s RepoStore) IssueSnapshotByNumber(ctx context.Context, number int64) (models.IssueSnapshot, error) {
 	if err := s.validate(); err != nil || number <= 0 {
 		return models.IssueSnapshot{}, ErrInvalidInput

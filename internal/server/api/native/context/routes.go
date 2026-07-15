@@ -33,7 +33,6 @@ type ContextService interface {
 	Current(context.Context, serverauth.Principal, string) (spa.CurrentContext, error)
 	Repositories(context.Context, serverauth.Principal, uuid.UUID) (spa.RepositoriesContext, error)
 	Repository(context.Context, authz.Subject, string, string) (spa.RepositoryContext, error)
-	LegacyIssue(context.Context, serverauth.Principal, uuid.UUID, uuid.UUID, uuid.UUID) (spa.LegacyIssueContext, error)
 	UserCandidates(context.Context, serverauth.Principal, uuid.UUID, spa.CandidatePurpose, spa.CandidateMatch, string, int) (spa.UserCandidates, error)
 }
 
@@ -61,7 +60,6 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 		{Name: "native.context.get", Method: http.MethodGet, Pattern: "/api/v1/context", Handler: protected(http.HandlerFunc(h.current))},
 		{Name: "native.context.repositories", Method: http.MethodGet, Pattern: "/api/v1/context/orgs/{org}/repos", Handler: protected(http.HandlerFunc(h.repositories))},
 		{Name: "native.context.repository", Method: http.MethodGet, Pattern: "/api/v1/context/repos/{owner}/{repo}", Handler: optional(http.HandlerFunc(h.repository))},
-		{Name: "native.context.legacy_issue", Method: http.MethodGet, Pattern: "/api/v1/context/orgs/{org}/repos/{repo}/issues/{issue}", Handler: protected(http.HandlerFunc(h.legacyIssue))},
 		{Name: "native.context.user_candidates", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/user-candidates", Handler: protected(http.HandlerFunc(h.userCandidates))},
 		{Name: "native.session.recovery", Method: http.MethodPost, Pattern: "/api/v1/session/recovery", Handler: adminapi.WithRequestID(http.HandlerFunc(h.recoverSession))},
 	}}
@@ -109,27 +107,6 @@ func (h handlers) repositories(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.deps.Service.Repositories(r.Context(), principal, orgID)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	adminapi.WriteJSON(w, http.StatusOK, result)
-}
-
-func (h handlers) legacyIssue(w http.ResponseWriter, r *http.Request) {
-	principal, ok := serverauth.PrincipalFromContext(r.Context())
-	if !ok || principal.User.ID == uuid.Nil {
-		adminapi.WriteProblem(w, http.StatusUnauthorized, "authentication_required", "Authentication required")
-		return
-	}
-	orgID, orgErr := uuid.Parse(r.PathValue("org"))
-	repoID, repoErr := uuid.Parse(r.PathValue("repo"))
-	issueID, issueErr := uuid.Parse(r.PathValue("issue"))
-	if orgErr != nil || repoErr != nil || issueErr != nil {
-		adminapi.WriteProblem(w, http.StatusUnprocessableEntity, "invalid_request", "Invalid legacy issue route")
-		return
-	}
-	result, err := h.deps.Service.LegacyIssue(r.Context(), principal, orgID, repoID, issueID)
 	if err != nil {
 		writeServiceError(w, err)
 		return

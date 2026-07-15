@@ -11,7 +11,6 @@ import { LegacyRepositoryRedirect, RepositoryGate, RepositoryRootRedirect, repos
 
 const orgId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const repoId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-const issueId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
 describe("canonical repository Web routes", () => {
   it("registers one canonical repository root and keeps UUID routes as compatibility adapters", () => {
@@ -49,24 +48,6 @@ describe("canonical repository Web routes", () => {
     );
     expect(await screen.findByTestId("redirect-location")).toHaveTextContent("/acme/issue-spec-e2e/issues/41?view=timeline#issuecomment-9");
     expect(router.state.location).toMatchObject({ pathname: "/acme/issue-spec-e2e/issues/41", search: "?view=timeline", hash: "#issuecomment-9" });
-  });
-
-  it("resolves the stable issue UUID used by historical browser links", async () => {
-    server.use(
-      http.get("http://localhost/api/v1/context/orgs/:orgId/repos", () => HttpResponse.json({ repositories: [repositoryRouteFixture(true).repository] })),
-      http.get("http://localhost/api/v1/context/orgs/:orgId/repos/:repoId/issues/:issueId", ({ params }) => {
-        expect(params).toMatchObject({ orgId, repoId, issueId });
-        return HttpResponse.json({ number: 21 });
-      }),
-    );
-    const { router } = renderRedirect(
-      `/issues/${orgId}/${repoId}/${issueId}?view=timeline#issuecomment-9`,
-      "/issues/:orgId/:repoId/:number",
-      <LegacyRepositoryRedirect destination="issue-detail" />,
-      "/:owner/:repo/issues/:number",
-    );
-    expect(await screen.findByTestId("redirect-location")).toHaveTextContent("/acme/issue-spec-e2e/issues/21?view=timeline#issuecomment-9");
-    expect(router.state.location).toMatchObject({ pathname: "/acme/issue-spec-e2e/issues/21", search: "?view=timeline", hash: "#issuecomment-9" });
   });
 
   it("keeps the canonical URL and generates canonical issue/change links for an anonymous public repository", async () => {

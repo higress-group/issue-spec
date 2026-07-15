@@ -139,10 +139,6 @@ type RepositoryContext struct {
 	Authenticated bool                          `json:"authenticated"`
 }
 
-type LegacyIssueContext struct {
-	Number int64 `json:"number"`
-}
-
 func (s *Service) Repository(ctx context.Context, subject authz.Subject, owner, name string) (RepositoryContext, error) {
 	resource, err := s.database.ResolveRepository(ctx, owner, name)
 	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidInput) {
@@ -214,31 +210,6 @@ func (s *Service) Repositories(ctx context.Context, principal serverauth.Princip
 		return RepositoriesContext{}, err
 	}
 	return RepositoriesContext{Repositories: repositories}, nil
-}
-
-// LegacyIssue resolves the UUID carried by pre-canonical browser URLs after
-// applying the same repository read decision as the destination issue page.
-func (s *Service) LegacyIssue(ctx context.Context, principal serverauth.Principal, orgID, repoID, issueID uuid.UUID) (LegacyIssueContext, error) {
-	if orgID == uuid.Nil || repoID == uuid.Nil || issueID == uuid.Nil {
-		return LegacyIssueContext{}, ErrInvalidInput
-	}
-	decision, err := s.authz.EvaluateRepository(ctx, authz.Authenticated(principal), authz.RepositoryRequest{
-		Scope: models.RepoScope{OrgID: orgID, RepoID: repoID}, Operation: authz.OperationRead,
-	})
-	if err != nil {
-		return LegacyIssueContext{}, err
-	}
-	if !decision.Allowed {
-		return LegacyIssueContext{}, adminservice.ErrNotFound
-	}
-	number, err := s.database.Repo(orgID, repoID).IssueNumberByID(ctx, issueID)
-	if errors.Is(err, store.ErrNotFound) {
-		return LegacyIssueContext{}, adminservice.ErrNotFound
-	}
-	if err != nil {
-		return LegacyIssueContext{}, err
-	}
-	return LegacyIssueContext{Number: number}, nil
 }
 
 type CandidatePurpose string

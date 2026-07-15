@@ -180,37 +180,6 @@ func TestRepositoryContextSuccessNotFoundAndInvalidScope(t *testing.T) {
 	}
 }
 
-func TestLegacyIssueContextResolvesUUIDAndRejectsInvalidRoute(t *testing.T) {
-	orgID, repoID, issueID := uuid.New(), uuid.New(), uuid.New()
-	service := fakeContextService{legacyIssue: func(_ context.Context, principal serverauth.Principal, gotOrg, gotRepo, gotIssue uuid.UUID) (spa.LegacyIssueContext, error) {
-		if principal.User.ID == uuid.Nil || gotOrg != orgID || gotRepo != repoID || gotIssue != issueID {
-			t.Fatalf("legacy issue principal=%+v org=%s repo=%s issue=%s", principal, gotOrg, gotRepo, gotIssue)
-		}
-		return spa.LegacyIssueContext{Number: 21}, nil
-	}}
-	set := testRouteSet(t, service, fakeTakeover{}, fakeCookies{})
-	handler := routeHandler(t, set, "native.context.legacy_issue")
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/context/orgs/"+orgID.String()+"/repos/"+repoID.String()+"/issues/"+issueID.String(), nil)
-	request.SetPathValue("org", orgID.String())
-	request.SetPathValue("repo", repoID.String())
-	request.SetPathValue("issue", issueID.String())
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"number":21`) {
-		t.Fatalf("success status=%d body=%s", response.Code, response.Body.String())
-	}
-
-	invalid := httptest.NewRequest(http.MethodGet, "/api/v1/context/orgs/bad/repos/"+repoID.String()+"/issues/"+issueID.String(), nil)
-	invalid.SetPathValue("org", "bad")
-	invalid.SetPathValue("repo", repoID.String())
-	invalid.SetPathValue("issue", issueID.String())
-	invalidResponse := httptest.NewRecorder()
-	handler.ServeHTTP(invalidResponse, invalid)
-	if invalidResponse.Code != http.StatusUnprocessableEntity || !strings.Contains(invalidResponse.Body.String(), `"code":"invalid_request"`) {
-		t.Fatalf("invalid status=%d body=%s", invalidResponse.Code, invalidResponse.Body.String())
-	}
-}
-
 func TestUserCandidatesSuccessAndInvalidLimit(t *testing.T) {
 	orgID := uuid.New()
 	service := fakeContextService{candidates: func(_ context.Context, _ serverauth.Principal, got uuid.UUID,
@@ -243,7 +212,6 @@ type fakeContextService struct {
 	current      func(context.Context, serverauth.Principal, string) (spa.CurrentContext, error)
 	repositories func(context.Context, serverauth.Principal, uuid.UUID) (spa.RepositoriesContext, error)
 	repository   func(context.Context, authz.Subject, string, string) (spa.RepositoryContext, error)
-	legacyIssue  func(context.Context, serverauth.Principal, uuid.UUID, uuid.UUID, uuid.UUID) (spa.LegacyIssueContext, error)
 	candidates   func(context.Context, serverauth.Principal, uuid.UUID, spa.CandidatePurpose, spa.CandidateMatch, string, int) (spa.UserCandidates, error)
 }
 
@@ -266,13 +234,6 @@ func (f fakeContextService) Repositories(ctx context.Context, principal serverau
 		return f.repositories(ctx, principal, orgID)
 	}
 	return spa.RepositoriesContext{}, nil
-}
-
-func (f fakeContextService) LegacyIssue(ctx context.Context, principal serverauth.Principal, orgID, repoID, issueID uuid.UUID) (spa.LegacyIssueContext, error) {
-	if f.legacyIssue != nil {
-		return f.legacyIssue(ctx, principal, orgID, repoID, issueID)
-	}
-	return spa.LegacyIssueContext{}, nil
 }
 
 func (f fakeContextService) UserCandidates(ctx context.Context, principal serverauth.Principal, orgID uuid.UUID, purpose spa.CandidatePurpose, match spa.CandidateMatch, query string, limit int) (spa.UserCandidates, error) {

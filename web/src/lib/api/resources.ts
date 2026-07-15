@@ -10,7 +10,6 @@ import {
   profileSchema,
   providersSchema,
   publicProfileSchema,
-  legacyIssueContextSchema,
   repositoriesContextSchema,
   repositoryRouteContextSchema,
   type AdminOrganization,
@@ -47,8 +46,6 @@ export const api = {
   repositoriesContext: (orgId: string, signal?: AbortSignal) => apiRequest(`/api/v1/context/orgs/${orgId}/repos`, { schema: repositoriesContextSchema, signal }),
   repositoryRouteContext: (owner: string, repository: string, signal?: AbortSignal) =>
     apiRequest(`/api/v1/context/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`, { schema: repositoryRouteContextSchema, signal }),
-  legacyIssueContext: (orgId: string, repoId: string, issueId: string, signal?: AbortSignal) =>
-    apiRequest(`/api/v1/context/orgs/${encodeURIComponent(orgId)}/repos/${encodeURIComponent(repoId)}/issues/${encodeURIComponent(issueId)}`, { schema: legacyIssueContextSchema, signal }),
   providers: (signal?: AbortSignal) => apiRequest("/api/v1/auth/providers", { schema: providersSchema, signal }),
   rotateSession: () => apiRequest<{ csrf_token: string }>("/api/v1/session/rotate", { method: "POST" }),
   logout: () => apiRequest<void>("/api/v1/session", { method: "DELETE" }),
