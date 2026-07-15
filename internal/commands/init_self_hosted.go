@@ -59,15 +59,16 @@ type discoveredSource struct {
 }
 
 type selfHostedInitPlan struct {
-	Mode         string                           `json:"mode"`
-	Profile      string                           `json:"profile"`
-	Registry     string                           `json:"registry_source,omitempty"`
-	Server       github.NativeServerMetadata      `json:"server"`
-	Organization github.NativeOrganizationContext `json:"organization"`
-	Repository   selfHostedRepositoryPlan         `json:"repository"`
-	Source       *discoveredSource                `json:"source,omitempty"`
-	Provider     *workflow.ProviderPlan           `json:"provider,omitempty"`
-	Mutations    []string                         `json:"mutations,omitempty"`
+	Mode              string                           `json:"mode"`
+	Profile           string                           `json:"profile"`
+	Registry          string                           `json:"registry_source,omitempty"`
+	Server            github.NativeServerMetadata      `json:"server"`
+	Organization      github.NativeOrganizationContext `json:"organization"`
+	Repository        selfHostedRepositoryPlan         `json:"repository"`
+	Source            *discoveredSource                `json:"source,omitempty"`
+	Provider          *workflow.ProviderPlan           `json:"provider,omitempty"`
+	Mutations         []string                         `json:"mutations,omitempty"`
+	GlobalPromptFiles []string                         `json:"global_prompt_files,omitempty"`
 }
 
 type selfHostedRepositoryPlan struct {
@@ -251,6 +252,14 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 		}
 	}
 	if options.PlanOnly {
+		if options.GlobalPromptsDryRun {
+			preview := workflowGenerationResult{Delivery: options.Delivery}
+			previewOptions := globalPromptInstallOptions{Enabled: true, Directory: options.GlobalPromptsDir, DryRun: true}
+			if err := installGlobalCodexPrompts(".", serverRepoKey, providerPlan, previewOptions, &preview); err != nil {
+				return a.selfHostedInitError("plan global Codex prompts", err)
+			}
+			plan.GlobalPromptFiles = preview.GlobalPromptFiles
+		}
 		return a.outputSelfHostedInitPlan(plan, user.Login, scopes, options.JSON)
 	}
 	if len(plan.Mutations) > 0 && !options.Yes && !profile.OnboardingPolicy.AllowUnattended {
@@ -416,6 +425,12 @@ func (a *app) outputSelfHostedInitPlan(plan selfHostedInitPlan, user string, sco
 	}
 	for _, mutation := range plan.Mutations {
 		fmt.Fprintf(a.out, "mutation: %s\n", mutation)
+	}
+	if len(plan.GlobalPromptFiles) > 0 {
+		fmt.Fprintln(a.out, "user-global prompt dry-run:")
+		for _, path := range plan.GlobalPromptFiles {
+			fmt.Fprintf(a.out, "  %s\n", path)
+		}
 	}
 	return 0
 }
