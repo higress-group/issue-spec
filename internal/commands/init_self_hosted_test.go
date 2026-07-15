@@ -304,7 +304,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 
 	args := []string{"--repo", "local-source/local-checkout", "--server-org", "browser-e2e", "--server-repo", "httpbin",
 		"--provider", "aone", "--source-web-url", "https://code.alibaba-inc.com/Ingress/httpbin",
-		"--create-labels", "--tools", "codex", "--delivery", "skills", "--json"}
+		"--tools", "codex", "--delivery", "skills", "--json"}
 	{
 		var out, errOut bytes.Buffer
 		app := newApp(strings.NewReader(""), &out, &errOut)
@@ -383,6 +383,13 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		if !strings.Contains(journal, want) {
 			t.Fatalf("journal missing %q:\n%s", want, journal)
 		}
+	}
+	var journalState selfHostedInitJournal
+	if err := json.Unmarshal([]byte(journal), &journalState); err != nil {
+		t.Fatal(err)
+	}
+	if labels := journalState.Stages["labels"]; labels.State != "complete" || labels.Detail != "ensured" {
+		t.Fatalf("default labels stage = %+v", labels)
 	}
 }
 

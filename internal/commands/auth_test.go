@@ -479,6 +479,9 @@ func TestInitJSONIncludesBackendDiagnostics(t *testing.T) {
 		return fakeGitHubBackend{
 			info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
 			user: github.User{Login: "octocat"},
+			createLabel: func(_ context.Context, _ string, name, _, _ string) (github.LabelResult, error) {
+				return github.LabelResult{Name: name, Skipped: true}, nil
+			},
 		}, nil
 	}
 
@@ -880,6 +883,7 @@ type fakeGitHubBackend struct {
 	updatePullRequest func(context.Context, string, int, github.UpdatePullRequestOptions) (github.PullRequest, error)
 	createComment     func(context.Context, string, int, string) (github.Comment, error)
 	updateComment     func(context.Context, string, int64, string) (github.Comment, error)
+	createLabel       func(context.Context, string, string, string, string) (github.LabelResult, error)
 
 	listPRReviewComments func(context.Context, string, int) ([]github.PullRequestReviewComment, error)
 }
@@ -934,7 +938,10 @@ func (f fakeGitHubBackend) UpdateComment(ctx context.Context, repo string, comme
 	return github.Comment{}, errors.New("unused")
 }
 
-func (fakeGitHubBackend) CreateLabel(context.Context, string, string, string, string) (github.LabelResult, error) {
+func (f fakeGitHubBackend) CreateLabel(ctx context.Context, repo, name, color, description string) (github.LabelResult, error) {
+	if f.createLabel != nil {
+		return f.createLabel(ctx, repo, name, color, description)
+	}
 	return github.LabelResult{}, errors.New("unused")
 }
 

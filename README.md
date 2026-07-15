@@ -117,8 +117,10 @@ issue-spec auth status --json
 Initialize a repository:
 
 ```bash
-issue-spec init --repo owner/repo --create-labels --tools codex,claude --delivery both
+issue-spec init --repo owner/repo --tools codex,claude --delivery both
 ```
+
+Initialization ensures the issue-spec workflow labels by default. Use `--skip-labels` only when the repository labels are managed separately.
 
 Then use the generated skills or slash-command style workflows from your agent:
 

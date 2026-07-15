@@ -24,7 +24,9 @@ func TestLeafCommandHelpShowsOptionsAndDefaults(t *testing.T) {
 		"--delivery string",
 		"workflow artifact delivery: both, skills, or commands (default: both)",
 		"--create-labels",
-		"create issue-spec labels (default: false)",
+		"ensure issue-spec labels (default: true)",
+		"--skip-labels",
+		"skip ensuring issue-spec labels (default: false)",
 		"--language string",
 	} {
 		if !strings.Contains(text, want) {
