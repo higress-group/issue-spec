@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/templates"
@@ -93,6 +94,52 @@ func TestCompatibilityInitCanDisableDefaultLabels(t *testing.T) {
 				t.Fatalf("exit code = %d, stderr=%q", code, errOut.String())
 			}
 		})
+	}
+}
+
+func TestProjectGitHubProfilePreservesInjectedBackendSelectors(t *testing.T) {
+	chdirGitHubProfileProject(t)
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+
+	var commandCalls int
+	app.selectGitHubBackend = func(_ context.Context, host string) (auth.GitHubBackendSelection, error) {
+		commandCalls++
+		return auth.GitHubBackendSelection{
+			Mode:            auth.GitHubBackendModeAuto,
+			Name:            auth.GitHubBackendNameGH,
+			Kind:            auth.GitHubBackendKindCLI,
+			Host:            host,
+			SelectionSource: "test:command",
+		}, nil
+	}
+	selection, err := app.selectBackend(context.Background(), "github.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commandCalls != 1 || selection.ProfileSource != "project" || selection.SelectionSource != "profile:project" || selection.Token.Profile != auth.DefaultProfileName {
+		t.Fatalf("command selection = %+v calls=%d", selection, commandCalls)
+	}
+
+	var runnerCalls int
+	app.selectRunnerBackend = func(_ context.Context, host string, mode auth.GitHubBackendMode) (auth.GitHubBackendSelection, error) {
+		runnerCalls++
+		return auth.GitHubBackendSelection{
+			Mode:            mode,
+			Name:            auth.GitHubBackendNameGH,
+			Kind:            auth.GitHubBackendKindCLI,
+			Host:            host,
+			SelectionSource: "test:runner",
+		}, nil
+	}
+	selection, err = app.selectBackendForRunner(context.Background(), commentrunner.Config{
+		Hostname:      "github.com",
+		GitHubBackend: auth.GitHubBackendModeAuto,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runnerCalls != 1 || selection.ProfileSource != "project" || selection.SelectionSource != "profile:project" || selection.Token.Profile != auth.DefaultProfileName {
+		t.Fatalf("runner selection = %+v calls=%d", selection, runnerCalls)
 	}
 }
 
