@@ -99,6 +99,11 @@ test("issue detail is polished, accessible and preserves raw workflow text", asy
   expect(accessibility.violations).toEqual([]);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await expect(page).toHaveScreenshot(documentationSnapshot("issue-detail"), { fullPage: true, animations: "disabled" });
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
+  const copyLink = page.locator("#issuecomment-9").getByRole("button", { name: documentationText("Copy link", "复制链接") });
+  await copyLink.click();
+  await expect(page.locator("#issuecomment-9").getByRole("button", { name: documentationText("Link copied", "已复制链接") })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("http://127.0.0.1:4173/acme/workflow/issues/41#issuecomment-9");
   if (testInfo.project.name === "issues-desktop-1440") {
     comments = [
       ...comments,

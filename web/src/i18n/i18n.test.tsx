@@ -38,6 +38,7 @@ describe("language configuration", () => {
     expect(i18n.t("issues.workspace.title")).toBe("切问而近思。");
     expect(i18n.t("issues.list.newIssue")).toBe("新建议题");
     expect(i18n.t("issues.detail.continueConversation")).toBe("继续讨论");
+    expect(i18n.t("issues.detail.copyLink")).toBe("复制链接");
     expect(i18n.t("changes.workspace.eyebrow")).toBe("变更工作台");
     expect(i18n.t("changes.workspace.title")).toBe("穷则变，变则通，通则久。");
     expect(i18n.t("changes.board.currentProjection")).toBe("当前汇总");

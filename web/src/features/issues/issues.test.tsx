@@ -102,6 +102,34 @@ describe("issue editing semantics", () => {
 });
 
 describe("canonical issue read authority", () => {
+  it("copies a canonical comment permalink and falls back when Clipboard API writes fail", async () => {
+    installIssueDetailHandlers();
+    const user = userEvent.setup();
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const execCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
+    const writeText = vi.fn().mockRejectedValue(new Error("insecure context"));
+    let copiedValue = "";
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    Object.defineProperty(document, "execCommand", { configurable: true, value: vi.fn(() => {
+      copiedValue = document.querySelector<HTMLTextAreaElement>("textarea[readonly]")?.value ?? "";
+      return true;
+    }) });
+    try {
+      renderIssueDetail(activeRepository(false, ["read"]));
+      const copy = await screen.findByRole("button", { name: "Copy link" });
+      await user.click(copy);
+      const permalink = "http://localhost/acme/workflow/issues/41#issuecomment-9";
+      expect(writeText).toHaveBeenCalledWith(permalink);
+      expect(copiedValue).toBe(permalink);
+      expect(screen.getByRole("button", { name: "Link copied" })).toBeVisible();
+    } finally {
+      if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      else Reflect.deleteProperty(navigator, "clipboard");
+      if (execCommandDescriptor) Object.defineProperty(document, "execCommand", execCommandDescriptor);
+      else Reflect.deleteProperty(document, "execCommand");
+    }
+  });
+
   it("renders anonymous public issue content without any mutation controls", async () => {
     installIssueDetailHandlers([relationshipFixture("github", "42")]);
     const { container } = renderIssueDetail(activeRepository(false, ["read"]));

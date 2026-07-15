@@ -62,6 +62,9 @@ export const workflowResources = {
       detail: {
         commented: "commented {{date}}",
         edit: "Edit",
+        copyLink: "Copy link",
+        linkCopied: "Link copied",
+        copyLinkFailed: "Copy failed — retry",
         saveComment: "Save comment",
         openingTimeline: "Opening issue timeline",
         stateOpen: "open",
@@ -333,6 +336,9 @@ export const workflowResources = {
       detail: {
         commented: "评论于 {{date}}",
         edit: "编辑",
+        copyLink: "复制链接",
+        linkCopied: "已复制链接",
+        copyLinkFailed: "复制失败，请重试",
         saveComment: "保存评论",
         openingTimeline: "正在打开议题时间线",
         stateOpen: "开放中",

@@ -106,6 +106,8 @@
 .coral-avatar { background: var(--coral); }
 .timeline-body { margin: .9rem 0 0; min-width: 0; }
 .quiet-action { align-items: center; background: transparent; border: 0; color: var(--teal); cursor: pointer; display: flex; font: inherit; font-size: .76rem; font-weight: 800; gap: .3rem; }
+.comment-actions { align-items: center; display: flex; flex: none; gap: .4rem; }
+.comment-actions .quiet-action { min-height: 2rem; padding: .25rem; white-space: nowrap; }
 .new-comment { margin-left: 3.45rem; }
 .new-comment h2 { font: 700 1.2rem/1.2 Georgia, serif; margin: 0 0 .8rem; }
 .issue-sidebar { align-self: start; position: sticky; top: 1.5rem; }
