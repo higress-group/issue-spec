@@ -64,6 +64,10 @@ type CommandCandidate struct {
 	Verb                   CommandVerb `json:"verb"`
 	Prompt                 string      `json:"prompt,omitempty"`
 	PublicSessionID        string      `json:"public_session_id,omitempty"`
+	// Agent is the coordinator kind selected by a `/new <agent> …` command,
+	// normalized to lower case. Empty means the command did not select one and
+	// intake falls back to the runner's configured default agent.
+	Agent string `json:"agent,omitempty"`
 }
 
 type CommandRejection struct {
@@ -90,11 +94,12 @@ func ParseCommandComment(comment TriggerComment) ParseResult {
 	token, rest := splitToken(body)
 	switch token {
 	case "/new":
-		prompt := normalizePromptTail(rest)
+		agent, promptTail := splitAgentSelector(rest)
+		prompt := normalizePromptTail(promptTail)
 		if prompt == "" {
 			return rejected(ReasonMissingPrompt, "/new requires prompt text")
 		}
-		return accepted(comment, VerbNew, "", prompt)
+		return accepted(comment, VerbNew, "", prompt, agent)
 	case "/resume":
 		sessionID, promptTail := splitToken(strings.TrimLeftFunc(rest, unicode.IsSpace))
 		if sessionID == "" {
@@ -107,7 +112,7 @@ func ParseCommandComment(comment TriggerComment) ParseResult {
 		if prompt == "" {
 			return rejected(ReasonMissingPrompt, "/resume requires prompt text")
 		}
-		return accepted(comment, VerbResume, sessionID, prompt)
+		return accepted(comment, VerbResume, sessionID, prompt, "")
 	case "/cancel":
 		sessionID, extra := splitToken(strings.TrimLeftFunc(rest, unicode.IsSpace))
 		if sessionID == "" {
@@ -119,7 +124,7 @@ func ParseCommandComment(comment TriggerComment) ParseResult {
 		if strings.TrimSpace(extra) != "" {
 			return rejected(ReasonUnexpectedCancelText, "/cancel accepts only a public session id")
 		}
-		return accepted(comment, VerbCancel, sessionID, "")
+		return accepted(comment, VerbCancel, sessionID, "", "")
 	default:
 		return rejected(ReasonUnknownCommand, fmt.Sprintf("unsupported runner command %q", strings.TrimPrefix(token, "/")))
 	}
@@ -142,13 +147,13 @@ func BodyHash(body string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-func accepted(comment TriggerComment, verb CommandVerb, sessionID, prompt string) ParseResult {
+func accepted(comment TriggerComment, verb CommandVerb, sessionID, prompt, agent string) ParseResult {
 	if strings.TrimSpace(comment.Repo) == "" || comment.Issue <= 0 || comment.CommentID <= 0 || strings.TrimSpace(comment.Commenter) == "" {
 		return rejected(ReasonInvalidMetadata, "command candidate is missing repo, issue, comment id, or commenter")
 	}
 
 	bodyHash := BodyHash(comment.Body)
-	idempotencyKey := commandIdempotencyKey(comment, verb, sessionID, bodyHash)
+	idempotencyKey := commandIdempotencyKey(comment, verb, sessionID, agent, bodyHash)
 	return ParseResult{
 		Status: ParseStatusAccepted,
 		Candidate: CommandCandidate{
@@ -165,7 +170,27 @@ func accepted(comment TriggerComment, verb CommandVerb, sessionID, prompt string
 			Verb:                   verb,
 			Prompt:                 prompt,
 			PublicSessionID:        sessionID,
+			Agent:                  agent,
 		},
+	}
+}
+
+// splitAgentSelector consumes an optional leading agent selector token from a
+// `/new` command tail. The token is matched case-insensitively against the
+// fixed {codex, claude} allow-list and normalized to lower case. When the first
+// token is not an allow-listed agent (including a quoted prompt that literally
+// begins with "codex"/"claude"), no agent is consumed and the entire tail is
+// returned as the prompt. The comment cannot inject any agent outside the
+// allow-list, and readiness of the selected agent is a dispatch concern.
+func splitAgentSelector(tail string) (agent, prompt string) {
+	token, rest := splitToken(tail)
+	switch strings.ToLower(token) {
+	case AgentCodex:
+		return AgentCodex, rest
+	case AgentClaude:
+		return AgentClaude, rest
+	default:
+		return "", tail
 	}
 }
 
@@ -205,7 +230,7 @@ func normalizePromptTail(value string) string {
 	return prompt
 }
 
-func commandIdempotencyKey(comment TriggerComment, verb CommandVerb, sessionID, bodyHash string) string {
+func commandIdempotencyKey(comment TriggerComment, verb CommandVerb, sessionID, agent, bodyHash string) string {
 	updatedAt := ""
 	if !comment.UpdatedAt.IsZero() {
 		updatedAt = comment.UpdatedAt.UTC().Format(time.RFC3339Nano)
@@ -219,6 +244,7 @@ func commandIdempotencyKey(comment TriggerComment, verb CommandVerb, sessionID, 
 		strings.TrimSpace(comment.Commenter),
 		string(verb),
 		sessionID,
+		agent,
 		bodyHash,
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
