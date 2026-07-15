@@ -36,9 +36,10 @@ type selfHostedInitOptions struct {
 	Repo, ServerOrg, ServerRepo                    string
 	ProviderKey, ExternalRepo, SourceRemote        string
 	SourceCloneURL, SourceWebURL, DefaultBranch    string
-	Tools, Delivery, Language                      string
+	Tools, Delivery, Language, GlobalPromptsDir    string
 	CreateIfMissing, BindSource, SkipSourceBinding bool
 	Yes, PlanOnly, CreateLabels, JSON              bool
+	InstallGlobalPrompts, GlobalPromptsDryRun      bool
 }
 
 func (o selfHostedInitOptions) hasSelfHostedOnlyFlags() bool {
@@ -364,6 +365,14 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 	if err != nil {
 		return a.selfHostedInitError("generate workflow artifacts", err)
 	}
+	globalPromptOptions := globalPromptInstallOptions{
+		Enabled:   options.InstallGlobalPrompts || strings.TrimSpace(options.GlobalPromptsDir) != "" || options.GlobalPromptsDryRun,
+		Directory: options.GlobalPromptsDir,
+		DryRun:    options.GlobalPromptsDryRun,
+	}
+	if err := installGlobalCodexPrompts(".", serverRepoKey, providerPlan, globalPromptOptions, &workflows); err != nil {
+		return a.selfHostedInitError("install global Codex prompts", err)
+	}
 	markJournalStage(&journal, "workflow", "complete", fmt.Sprintf("%d skills, %d commands", len(workflows.SkillFiles), len(workflows.CommandFiles)))
 	if err := writeInitJournal(journalPath, journal); err != nil {
 		return a.selfHostedInitError("complete init resume journal", err)
@@ -382,6 +391,9 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 		organization.Name, options.ServerRepo, repositoryID, filepath.ToSlash(configPath), filepath.ToSlash(journalPath))
 	if providerPlan != nil {
 		fmt.Fprintf(a.out, "external code provider: %s (%s)\n", providerPlan.ProviderKey, providerPlan.DisplayName)
+	}
+	if len(workflows.Tools) > 0 || len(workflows.GlobalPromptFiles) > 0 {
+		a.printWorkflowGeneration(workflows)
 	}
 	return 0
 }

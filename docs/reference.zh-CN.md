@@ -60,6 +60,8 @@ issue-spec init --repo owner/repo
 issue-spec init --repo owner/repo --skip-labels  # 标签由其他系统单独管理时显式跳过
 issue-spec init --repo owner/repo --tools codex,claude --delivery both
 issue-spec init --repo owner/repo --tools codex,claude --language zh
+issue-spec init --repo owner/repo --tools codex --install-global-prompts
+issue-spec init --repo owner/repo --tools none --global-prompts-dir /tmp/issue-spec-prompts --global-prompts-dry-run
 
 issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md [--title "Custom proposal title"]
 issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md [--title "Custom design title"]

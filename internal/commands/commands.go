@@ -175,7 +175,7 @@ Usage:
   issue-spec [--profile name] <command> [options]
   issue-spec auth status|login|logout|token
   issue-spec doctor agent --repo owner/repo --operation issue.read [--operation pr.read]
-  issue-spec init --repo owner/repo [--skip-labels] [--tools codex,claude|all|none] [--delivery both|skills|commands]
+  issue-spec init --repo owner/repo [--skip-labels] [--tools codex,claude|all|none] [--delivery both|skills|commands] [--install-global-prompts]
   issue-spec issue create proposal|design|implement --repo owner/repo --change name [--body-file file.md] [--title title]
   issue-spec issue update --repo owner/repo --issue N [--title title] [--body-file file.md] [--summary "what changed"]
   issue-spec comment generate --type SPEC --id SPEC-001 --input-file spec.json [--status confirmed] [--scope "..."]
