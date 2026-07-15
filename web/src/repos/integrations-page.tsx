@@ -8,6 +8,7 @@ import {
 import { EmptyState, ErrorNotice, Field, Loading, Panel, SecretDialog, SelectInput, StatusBadge, TextInput } from "../app/components";
 import { useInspector } from "../app/problem-inspector";
 import { queryKeys, useMeta } from "../auth/session";
+import { webhookValidationFromError, type WebhookValidationMetadata } from "../lib/api/client";
 import { api } from "../lib/api/resources";
 import type { AdminRepository, SourceBinding, WebhookContentPolicy, WebhookDelivery, WebhookDeliveryFormat, WebhookRetry, WebhookSecret, WebhookSigningMode, WebhookSubscription } from "../lib/api/types";
 import { RepositoryHeader, useRepositoryContext } from "./repository-header";
@@ -162,8 +163,14 @@ function WebhookEditor({ orgId, repoId, subscription, onSaved }: { orgId: string
   const inspector = useInspector();
   const defaults = useMemo(() => subscription ? webhookDraft(subscription) : emptyWebhookDraft, [subscription]);
   const [validationError, setValidationError] = useState<string>();
+  const [serverValidation, setServerValidation] = useState<WebhookValidationMetadata>();
   const { register, handleSubmit, control, formState: { errors } } = useForm<WebhookDraft>({ defaultValues: defaults });
   const format = useWatch({ control, name: "delivery_format" });
+  const serverMessage = serverValidation ? webhookValidationMessage(serverValidation.reason, t) : undefined;
+  const serverErrorFor = (...fields: WebhookValidationMetadata["field"][]) =>
+    serverValidation && fields.includes(serverValidation.field) ? serverMessage : undefined;
+  const deliveryContractError = serverErrorFor("delivery_format") ||
+    (format === "issue-spec.v1" ? serverErrorFor("signing_mode") : undefined);
   const save = useMutation({
     mutationFn: (draft: WebhookDraft) => {
       const retry = retryFromDraft(draft);
@@ -173,28 +180,29 @@ function WebhookEditor({ orgId, repoId, subscription, onSaved }: { orgId: string
         ? api.updateWebhookSubscription(orgId, subscription.id, { url: draft.url, event_types, delivery_format: draft.delivery_format, signing_mode: signingMode(draft), content_policy, retry, active: subscription.active, expected_version: subscription.representation_version, clear_destination_query: shouldClearDestinationQuery(subscription, draft) })
         : api.createWebhookSubscription(orgId, { repository_id: repoId, url: draft.url, event_types, delivery_format: draft.delivery_format, signing_mode: signingMode(draft), content_policy, retry });
     },
-    onSuccess: (result) => { inspector.note(t(subscription ? "integrations.configSaved" : "integrations.createdSaveSecret")); onSaved(result); },
-    onError: inspector.report,
+    onSuccess: (result) => { setServerValidation(undefined); inspector.note(t(subscription ? "integrations.configSaved" : "integrations.createdSaveSecret")); onSaved(result); },
+    onError: (error) => { setServerValidation(webhookValidationFromError(error)); inspector.report(error); },
   });
-  const submit = handleSubmit((draft) => { const error = validateWebhookDraft(draft, t); setValidationError(error); if (!error) save.mutate(draft); });
+  const submit = handleSubmit((draft) => { const error = validateWebhookDraft(draft, t); setValidationError(error); setServerValidation(undefined); if (!error) save.mutate(draft); });
   return <form className="webhook-editor" onSubmit={submit}>
     <fieldset className="delivery-format-picker"><legend>{t("integrations.deliveryContract")}</legend><label><input type="radio" value="issue-spec.v1" {...register("delivery_format")} /><Bot aria-hidden="true" /><span><strong>{t("integrations.runnerIntake")}</strong><small>{t("integrations.runnerContract")}</small></span></label><label><input type="radio" value="github.v3" {...register("delivery_format")} /><Bell aria-hidden="true" /><span><strong>{t("integrations.githubCompatible")}</strong><small>{t("integrations.githubContract")}</small></span></label></fieldset>
-    <div className="integration-form compact"><Field label={t("integrations.receiverUrl")} hint={format === "github.v3" ? t("integrations.githubUrlHint") : t("integrations.runnerUrlHint")} error={errors.url?.message}><TextInput type="url" autoComplete="off" placeholder={format === "github.v3" ? "https://robot.example.test/hook?access_token=…" : "https://runner.example.test/api/v1/runner/webhooks"} {...register("url", { required: t("integrations.receiverRequired"), validate: (value) => validateWebhookURL(value, format, t) })} /></Field>{format === "github.v3" ? <Field label={t("integrations.signing")}><SelectInput {...register("signing_mode")}><option value="none">{t("integrations.noSignature")}</option><option value="hmac-sha256">HMAC SHA-256</option></SelectInput></Field> : <div className="contract-note"><LockKeyhole size={16} /><span><strong>{t("integrations.bearerAuth")}</strong><small>{t("integrations.bearerHelp")}</small></span></div>}<Field label={t("integrations.maximumAttempts")} error={errors.max_attempts?.message}><TextInput type="number" min={1} max={100} {...register("max_attempts", { valueAsNumber: true, required: t("integrations.retryRequired"), min: { value: 1, message: t("integrations.atLeastOneAttempt") }, max: { value: 100, message: t("integrations.maximumIs100") } })} /></Field><Field label={t("integrations.initialBackoff")}><TextInput placeholder="1s" {...register("initial_backoff", { required: true })} /></Field><Field label={t("integrations.maximumBackoff")}><TextInput placeholder="5m" {...register("max_backoff", { required: true })} /></Field></div>
-    {subscription?.has_destination_query && format === "github.v3" ? <label className="clear-query"><input type="checkbox" {...register("clear_destination_query")} /><span><strong>{t("integrations.removeCredential")}</strong><small>{t("integrations.removeCredentialHelp")}</small></span></label> : null}
-    {format === "issue-spec.v1" ? <OptionPicker legend={t("integrations.runnerEvents")} options={eventOptions} register={register("event_types")} /> : <NotificationPolicyEditor register={register} />}
+    {deliveryContractError ? <p className="webhook-field-error" role="alert">{deliveryContractError}</p> : null}
+    <div className="integration-form compact"><Field label={t("integrations.receiverUrl")} hint={format === "github.v3" ? t("integrations.githubUrlHint") : t("integrations.runnerUrlHint")} error={errors.url?.message || serverErrorFor("url")}><TextInput type="url" autoComplete="off" placeholder={format === "github.v3" ? "https://robot.example.test/hook?access_token=…" : "https://runner.example.test/api/v1/runner/webhooks"} {...register("url", { required: t("integrations.receiverRequired"), validate: (value) => validateWebhookURL(value, format, t) })} /></Field>{format === "github.v3" ? <Field label={t("integrations.signing")} error={serverErrorFor("signing_mode")}><SelectInput {...register("signing_mode")}><option value="none">{t("integrations.noSignature")}</option><option value="hmac-sha256">HMAC SHA-256</option></SelectInput></Field> : <div className="contract-note"><LockKeyhole size={16} /><span><strong>{t("integrations.bearerAuth")}</strong><small>{t("integrations.bearerHelp")}</small></span></div>}<Field label={t("integrations.maximumAttempts")} error={errors.max_attempts?.message || serverErrorFor("retry.max_attempts")}><TextInput type="number" min={1} max={100} {...register("max_attempts", { valueAsNumber: true, required: t("integrations.retryRequired"), min: { value: 1, message: t("integrations.atLeastOneAttempt") }, max: { value: 100, message: t("integrations.maximumIs100") } })} /></Field><Field label={t("integrations.initialBackoff")} error={serverErrorFor("retry.initial_backoff")}><TextInput placeholder="1s" {...register("initial_backoff", { required: true })} /></Field><Field label={t("integrations.maximumBackoff")} error={serverErrorFor("retry.max_backoff")}><TextInput placeholder="5m" {...register("max_backoff", { required: true })} /></Field></div>
+    {subscription?.has_destination_query && format === "github.v3" ? <><label className="clear-query"><input type="checkbox" {...register("clear_destination_query")} /><span><strong>{t("integrations.removeCredential")}</strong><small>{t("integrations.removeCredentialHelp")}</small></span></label>{serverErrorFor("clear_destination_query") ? <p className="webhook-field-error" role="alert">{serverErrorFor("clear_destination_query")}</p> : null}</> : null}
+    {format === "issue-spec.v1" ? <OptionPicker legend={t("integrations.runnerEvents")} options={eventOptions} register={register("event_types")} error={serverErrorFor("event_types")} /> : <NotificationPolicyEditor register={register} error={serverErrorFor("content_policy", "event_types")} />}
     {validationError ? <p className="form-alert" role="alert">{validationError}</p> : null}
     <button className="button primary" type="submit" disabled={save.isPending}><Send size={16} />{save.isPending ? t("integrations.saving") : subscription ? t("integrations.saveRoute") : t("integrations.createRoute")}</button>
   </form>;
 }
 
-function NotificationPolicyEditor({ register }: { register: ReturnType<typeof useForm<WebhookDraft>>["register"] }) {
+function NotificationPolicyEditor({ register, error }: { register: ReturnType<typeof useForm<WebhookDraft>>["register"]; error?: string }) {
   const { t } = useTranslation();
-  return <div className="policy-editor"><div><OptionPicker legend={t("integrations.issueActions")} options={issueActionOptions} register={register("issue_actions")} /><OptionPicker legend={t("integrations.issueKinds")} options={issueKindOptions} register={register("issue_kinds")} /></div><div><OptionPicker legend={t("integrations.commentActions")} options={commentActionOptions} register={register("comment_actions")} /><OptionPicker legend={t("integrations.commentClasses")} options={commentClassOptions} register={register("comment_classes")} /></div><OptionPicker legend={t("integrations.actorClasses")} options={actorClassOptions} register={register("actor_classes")} /><p><ShieldCheck size={15} />{t("integrations.classificationHelp")}</p></div>;
+  return <div className="policy-editor"><div><OptionPicker legend={t("integrations.issueActions")} options={issueActionOptions} register={register("issue_actions")} /><OptionPicker legend={t("integrations.issueKinds")} options={issueKindOptions} register={register("issue_kinds")} /></div><div><OptionPicker legend={t("integrations.commentActions")} options={commentActionOptions} register={register("comment_actions")} /><OptionPicker legend={t("integrations.commentClasses")} options={commentClassOptions} register={register("comment_classes")} /></div><OptionPicker legend={t("integrations.actorClasses")} options={actorClassOptions} register={register("actor_classes")} /><p><ShieldCheck size={15} />{t("integrations.classificationHelp")}</p>{error ? <p className="webhook-field-error" role="alert">{error}</p> : null}</div>;
 }
 
-function OptionPicker({ legend, options, register }: { legend: string; options: ReadonlyArray<string>; register: ReturnType<ReturnType<typeof useForm<WebhookDraft>>["register"]> }) {
+function OptionPicker({ legend, options, register, error }: { legend: string; options: ReadonlyArray<string>; register: ReturnType<ReturnType<typeof useForm<WebhookDraft>>["register"]>; error?: string }) {
   const { t } = useTranslation();
-  return <fieldset className="event-picker"><legend>{legend}</legend>{options.map((value) => <label key={value}><input type="checkbox" value={value} {...register} /><span><strong>{t(`integrations.option.${optionKey(value)}`)}</strong><small>{value}</small></span></label>)}</fieldset>;
+  return <fieldset className="event-picker"><legend>{legend}</legend>{options.map((value) => <label key={value}><input type="checkbox" value={value} {...register} /><span><strong>{t(`integrations.option.${optionKey(value)}`)}</strong><small>{value}</small></span></label>)}{error ? <small className="webhook-field-error event-picker-error" role="alert">{error}</small> : null}</fieldset>;
 }
 
 function SuppressionLedger({ orgId, subscription }: { orgId: string; subscription: WebhookSubscription }) {
@@ -263,6 +271,16 @@ function validateWebhookDraft(draft: WebhookDraft, t: TFunction) {
   if (initial === undefined || maximum === undefined) return t("integrations.validation.retryDuration");
   if (maximum < initial) return t("integrations.validation.backoffOrder");
   return undefined;
+}
+function webhookValidationMessage(reason: WebhookValidationMetadata["reason"], t: TFunction) {
+  switch (reason) {
+    case "invalid_destination_url": return t("integrations.validation.invalidDestinationUrl");
+    case "destination_denied": return t("integrations.validation.destinationDenied");
+    case "invalid_event_type": return t("integrations.validation.invalidEventType");
+    case "invalid_delivery_policy": return t("integrations.validation.invalidDeliveryPolicy");
+    case "invalid_retry_policy": return t("integrations.validation.invalidRetryPolicy");
+    case "invalid_destination_query": return t("integrations.validation.invalidDestinationQuery");
+  }
 }
 function durationMilliseconds(value: string) {
   const input = value.trim();
