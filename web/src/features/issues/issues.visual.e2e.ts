@@ -84,6 +84,15 @@ test("issue detail is polished, accessible and preserves raw workflow text", asy
   await expect(page.getByText(documentationText("Pull request", "拉取请求"))).toBeVisible();
   await expect(page.getByRole("link", { name: documentationText("Runner projection", "运行器投影") })).toHaveAttribute("href", "https://code.example/acme/workflow/pull/42");
   await expect(page.getByText(documentationText("Binding mismatch", "绑定不一致"))).toBeVisible();
+  if (testInfo.project.name === "issues-desktop-1440") {
+    const [pageBox, timelineBox] = await Promise.all([
+      page.locator(".issue-detail-page").boundingBox(),
+      page.locator(".timeline").boundingBox(),
+    ]);
+    expect(pageBox).not.toBeNull();
+    expect(timelineBox).not.toBeNull();
+    expect((timelineBox?.width ?? 0) / (pageBox?.width ?? 1)).toBeGreaterThan(.68);
+  }
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
   const accessibility = await new AxeBuilder({ page }).analyze();
