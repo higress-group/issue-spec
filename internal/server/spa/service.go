@@ -298,7 +298,7 @@ func (s *Service) UserCandidates(ctx context.Context, principal serverauth.Princ
 		filters = append(filters, "u.status = 'active'", "((m.id IS NOT NULL AND m.state = 'active') OR (sa.id IS NOT NULL AND sa.disabled_at IS NULL))")
 	}
 	args = append(args, limit)
-	statement := `SELECT u.id, u.login, u.display_name, u.status,
+	statement := `SELECT u.id, u.login, COALESCE(u.nickname, u.display_name), u.status,
 		m.id, m.role, m.state, sa.id
 		FROM users u
 		LEFT JOIN LATERAL (

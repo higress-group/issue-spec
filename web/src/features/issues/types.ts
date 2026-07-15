@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const issueUserSchema = z.object({
   login: z.string(),
+  name: z.string().optional().default(""),
   id: z.number(),
   avatar_url: z.string().optional().default(""),
   html_url: z.string().optional().default(""),

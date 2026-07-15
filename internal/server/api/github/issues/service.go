@@ -89,6 +89,10 @@ func (s *Service) ListIssues(ctx context.Context, owner, repository string, subj
 	return resource, page, err
 }
 
+func (s *Service) GetRepository(ctx context.Context, owner, repository string, subject authz.Subject) (models.RepositoryResource, error) {
+	return s.resolveRead(ctx, owner, repository, subject)
+}
+
 func (s *Service) GetIssue(ctx context.Context, owner, repository string, number int64, subject authz.Subject) (models.RepositoryResource, models.IssueSnapshot, error) {
 	resource, err := s.resolveRead(ctx, owner, repository, subject)
 	if err != nil {

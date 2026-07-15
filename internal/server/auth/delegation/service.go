@@ -221,7 +221,7 @@ func (s *Service) Authenticate(ctx context.Context, plaintext string, expected E
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `SELECT d.id, d.token_hash, d.organization_id, d.repository_id,
 			d.job_id, d.purpose, d.audience, d.claims, d.expires_at, d.revoked_at,
-			d.personal_access_token_id, u.id, u.login, u.display_name, u.email, u.status
+			d.personal_access_token_id, u.id, u.login, COALESCE(u.nickname, u.display_name), u.email, u.status
 			FROM delegated_tokens d JOIN users u ON u.id = d.user_id
 			WHERE d.token_hash = $1 FOR SHARE OF d, u`, s.secrets.Digest("delegated-token", plaintext)).
 			Scan(&principal.CredentialID, &digest, &principal.OrgID, &principal.RepoID,

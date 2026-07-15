@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/server/models"
+	"github.com/higress-group/issue-spec/internal/server/publicurl"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -47,7 +48,7 @@ func validMembershipRole(role string) bool {
 
 func (s *Service) CreateOrganization(ctx context.Context, actor Actor, input CreateOrganizationInput) (models.AdminOrganization, error) {
 	input.Name, input.DisplayName = strings.TrimSpace(input.Name), strings.TrimSpace(input.DisplayName)
-	if err := actor.validate(); err != nil || input.Name == "" || input.DisplayName == "" || !input.BasePermission.Valid() {
+	if err := actor.validate(); err != nil || !publicurl.IsCanonicalRepositoryOwner(input.Name) || input.DisplayName == "" || !input.BasePermission.Valid() {
 		return models.AdminOrganization{}, ErrInvalidInput
 	}
 	now := s.now().Truncate(time.Microsecond)

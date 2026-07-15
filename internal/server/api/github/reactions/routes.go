@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
@@ -125,7 +126,8 @@ func (h handlers) delete(w http.ResponseWriter, r *http.Request) {
 
 func presentReaction(p codec.Presenter, reaction models.CommentReaction) codec.Reaction {
 	return p.PresentReaction(codec.ReactionView{StableID: reaction.ID.String(),
-		Author:  codec.UserView{StableID: stableUserID(reaction.UserID), Login: reaction.AuthorLogin},
+		Author: codec.UserView{StableID: stableUserID(reaction.UserID), Login: reaction.AuthorLogin,
+			NoProfile: reaction.UserID == nil},
 		Content: reaction.ReactionKey, CreatedAt: reaction.CreatedAt})
 }
 
@@ -138,8 +140,16 @@ func stableUserID(id *uuid.UUID) string {
 
 func (h handlers) setCommentHeaders(w http.ResponseWriter, comment models.CommentSnapshot) {
 	pagination.SetConditionalHeaders(w.Header(), pagination.StrongETag("comment", comment.Comment.ID,
-		comment.Comment.RepresentationVersion, comment.Comment.ReactionsCollectionVersion), comment.Comment.UpdatedAt)
+		comment.Comment.RepresentationVersion, comment.Comment.ReactionsCollectionVersion,
+		comment.AuthorRepresentationVersion), latestTime(comment.Comment.UpdatedAt, comment.AuthorUpdatedAt))
 	pagination.SetRateHeaders(w.Header(), h.conditional.Rate())
+}
+
+func latestTime(left, right time.Time) time.Time {
+	if right.After(left) {
+		return right
+	}
+	return left
 }
 
 func positive(w http.ResponseWriter, r *http.Request, key string) (int64, bool) {
