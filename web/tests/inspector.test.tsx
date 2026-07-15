@@ -12,6 +12,7 @@ test("version conflicts open the inspector and preserve the local draft", async 
   render(<InspectorProvider><ConflictTrigger /><ProblemInspector identity="@alice" permission="admin" /></InspectorProvider>);
   await userEvent.click(screen.getByRole("button", { name: "Create conflict" }));
   expect(screen.getByRole("complementary", { name: "Request inspector" })).toHaveClass("open");
+  expect(screen.getByRole("button", { name: "Close inspector" })).toHaveFocus();
   expect(screen.getByText("request-conflict")).toBeInTheDocument();
   expect(screen.getByText("Your draft is preserved")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Copy draft" })).toBeEnabled();

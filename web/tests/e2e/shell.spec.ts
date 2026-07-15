@@ -49,16 +49,16 @@ test("responsive shell remains accessible and visually stable", async ({ page },
   expect(accessibility.violations).toEqual([]);
   await page.keyboard.press("Tab");
   await expect(page.getByRole("link", { name: documentationText("Skip to main content", "跳至主要内容") })).toBeFocused();
-  if (testInfo.project.name === "desktop-1440") {
-    await expect(page.getByRole("complementary", { name: documentationText("Request inspector", "请求检视") })).toBeVisible();
-  } else {
-    const toggle = page.getByRole("button", { name: documentationText("Inspector", "请求检视"), exact: true });
-    await expect(toggle).toHaveAttribute("aria-expanded", "false");
-    await toggle.click();
-    await expect(toggle).toHaveAttribute("aria-expanded", "true");
-    await page.getByRole("button", { name: documentationText("Close inspector", "关闭请求检视") }).click();
-    await expect(toggle).toBeFocused();
-  }
+  const toggle = page.getByRole("button", { name: documentationText("Inspector", "请求检视"), exact: true });
+  const mainWidth = await page.locator("#main-content").evaluate((element) => element.getBoundingClientRect().width);
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  const closeInspector = page.getByRole("button", { name: documentationText("Close inspector", "关闭请求检视") });
+  await expect(closeInspector).toBeFocused();
+  expect(await page.locator("#main-content").evaluate((element) => element.getBoundingClientRect().width)).toBe(mainWidth);
+  await closeInspector.click();
+  await expect(toggle).toBeFocused();
   if (testInfo.project.name === "mobile-390") {
     const menu = page.getByRole("button", { name: documentationText("Toggle navigation", "展开或收起导航") });
     await menu.click();

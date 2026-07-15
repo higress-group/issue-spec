@@ -52,7 +52,7 @@ export function ProblemInspector({ identity, permission }: { identity?: string; 
   const { t } = useTranslation();
   const { state, open, clear, closeInspector } = useInspector();
   const closeRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => { if (open && window.matchMedia("(max-width: 1180px)").matches) closeRef.current?.focus(); }, [open]);
+  useEffect(() => { if (open) closeRef.current?.focus(); }, [open]);
   const close = () => {
     closeInspector();
     document.getElementById("inspector-toggle")?.focus();
