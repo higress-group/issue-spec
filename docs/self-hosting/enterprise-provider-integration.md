@@ -103,6 +103,13 @@ deployment.
 | `subject_revision` | Exact head commit SHA |
 | `canonical_url` | Credential-free canonical HTTPS browser URL |
 
+External-reference metadata has the same visibility as its reference. Metadata
+on a `repository` reference is repository-readable and becomes public when the
+repository is public; a `maintainers` reference is hidden in full from other
+callers. Store only non-secret workflow coordinates there. Keep tokens,
+cookies, authorization headers, and provider credentials in the operator
+bridge or delegated credential channel.
+
 For `snapshot`, fetch data for the requested `subject_revision`; never silently
 substitute the latest head. Normalize platform objects into `change`, `review`,
 `check`, `merge`, and `archive` facts with stable IDs and canonical payload

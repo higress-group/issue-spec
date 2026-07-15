@@ -172,11 +172,12 @@ func TestCodeChangeRelationshipsProjectionPermissionsBindingsAndValidators(t *te
 	mismatched := requireCodeChange(t, anonymous.Relationships, "44")
 	if matched.SourceBindingMatch != models.SourceBindingMatched || matched.CodeChangeLabel != "Code change" ||
 		mismatched.SourceBindingMatch != models.SourceBindingMismatched || mismatched.CodeChangeLabel != "Merge request" ||
-		len(matched.Metadata) != 0 || len(mismatched.Metadata) != 0 {
+		!strings.Contains(string(matched.Metadata), "abc123") || !strings.Contains(string(mismatched.Metadata), "def456") {
 		t.Fatalf("anonymous relationship projection matched=%+v mismatched=%+v", matched, mismatched)
 	}
 	encoded, err := json.Marshal(anonymous)
-	if err != nil || strings.Contains(string(encoded), "head_revision") || !strings.Contains(string(encoded), `"relationships":[`) {
+	if err != nil || !strings.Contains(string(encoded), "head_revision") || strings.Contains(string(encoded), "secret") ||
+		!strings.Contains(string(encoded), `"relationships":[`) {
 		t.Fatalf("anonymous relationship JSON=%s err=%v", encoded, err)
 	}
 

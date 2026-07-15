@@ -2,6 +2,7 @@ package referencesapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,11 +18,12 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
 
-func TestReferenceRouteSetSuccessRedactionAndDelete(t *testing.T) {
+func TestReferenceRouteSetSuccessVisibilityAndDelete(t *testing.T) {
 	if _, err := NewRouteSet(Dependencies{}); err == nil {
 		t.Fatal("NewRouteSet() accepted missing dependencies")
 	}
-	service := &fakeReferenceService{items: []bindings.Reference{{ID: uuid.New(), Visibility: bindings.VisibilityRepository, Metadata: nil}}}
+	service := &fakeReferenceService{items: []bindings.Reference{{ID: uuid.New(), Visibility: bindings.VisibilityRepository,
+		Metadata: json.RawMessage(`{"head_revision":"abc123"}`)}}}
 	set, err := NewRouteSet(Dependencies{Service: service, Authenticate: referenceAuthenticate})
 	if err != nil || len(set.Routes) != 3 {
 		t.Fatalf("NewRouteSet() = %+v, %v", set, err)
@@ -35,7 +37,7 @@ func TestReferenceRouteSetSuccessRedactionAndDelete(t *testing.T) {
 	listResponse := httptest.NewRecorder()
 	mux.ServeHTTP(listResponse, list)
 	if listResponse.Code != http.StatusOK || listResponse.Header().Get("Cache-Control") != "no-store" ||
-		strings.Contains(listResponse.Body.String(), "metadata") {
+		!strings.Contains(listResponse.Body.String(), `"metadata":{"head_revision":"abc123"}`) {
 		t.Fatalf("list response=%d headers=%v body=%s", listResponse.Code, listResponse.Header(), listResponse.Body.String())
 	}
 
