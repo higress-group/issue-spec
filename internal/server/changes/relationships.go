@@ -153,9 +153,7 @@ func loadCodeChangeRelationships(ctx context.Context, tx pgx.Tx, orgID uuid.UUID
 		if !safeCanonicalHTTPSURL(relationship.CanonicalURL) {
 			return nil, time.Time{}, errors.New("changes: stored code-change relationship has unsafe canonical URL")
 		}
-		if permission >= authz.PermissionMaintain {
-			relationship.Metadata = append(json.RawMessage(nil), metadata...)
-		}
+		relationship.Metadata = append(json.RawMessage(nil), metadata...)
 		relationship.SourceBindingMatch = models.SourceBindingUnbound
 		if binding, ok := bindings[repositoryID]; ok {
 			if binding.providerKey == relationship.ProviderKey && binding.externalRepositoryID == relationship.ExternalRepositoryID {

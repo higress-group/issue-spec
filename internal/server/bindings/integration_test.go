@@ -164,8 +164,8 @@ func TestReferencesIdentityVisibilityCollectionsAndTenantIsolation(t *testing.T)
 		t.Fatalf("reader references = %+v, %v", readerItems, err)
 	}
 	for _, item := range readerItems {
-		if item.Metadata != nil {
-			t.Fatalf("reader received sensitive metadata: %s", item.Metadata)
+		if !strings.Contains(string(item.Metadata), "9007199254740993") {
+			t.Fatalf("reader did not receive repository-visible metadata: %s", item.Metadata)
 		}
 	}
 	ownerItems, err := env.service.ListReferences(t.Context(), authz.Authenticated(env.owner), env.scope, env.issueID)

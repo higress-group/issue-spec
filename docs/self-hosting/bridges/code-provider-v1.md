@@ -136,6 +136,11 @@ canonical HTTPS coordinates only: userinfo, query strings (including a bare
 `?`), fragments, control characters, default-port aliases, and dot-segment or
 otherwise non-canonical forms are rejected. Credentials belong in the
 operator bridge or delegated credential channel, never in a persisted URL.
+External-reference metadata follows the reference visibility: metadata on a
+`repository` reference is repository-readable (and public for a public
+repository), while a `maintainers` reference is hidden in full from other
+callers. Treat metadata as non-secret workflow coordinates, never as a place
+for tokens, cookies, authorization headers, or provider credentials.
 
 Every `review` record additionally carries canonical `finding_id`,
 `process_id`, and `spec_id` fields (for example `FINDING-030`, `PROCESS-020`,

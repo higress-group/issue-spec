@@ -93,6 +93,11 @@ python3 .agents/skills/configure-enterprise-provider/scripts/scaffold_provider.p
 | `subject_revision` | 精确 Head Commit SHA |
 | `canonical_url` | 不含凭据的规范 HTTPS 页面地址 |
 
+外部 Reference 的 metadata 与该 Reference 使用相同的可见性：`repository` Reference
+的 metadata 对仓库读者可见，公开仓库中也会公开；`maintainers` Reference 则对其他调用方
+整条隐藏。metadata 只能保存非敏感的流程坐标；Token、Cookie、Authorization Header 和
+Provider 凭据必须保存在 Operator Bridge 或委派凭据通道中。
+
 处理 `snapshot` 时必须查询请求指定的 `subject_revision`，不能静默替换成最新 Head。
 平台对象需要规范化为 `change`、`review`、`check`、`merge` 和 `archive` Fact，并使用
 稳定 ID 与规范 Payload Digest。是否通过流程 Gate 由 issue-spec 判断，Wrapper 不得
