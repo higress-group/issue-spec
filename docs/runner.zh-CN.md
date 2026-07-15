@@ -137,6 +137,7 @@ issue-spec runner poll \
 
 - `--state <path>` 存储持久化的 runner 状态。默认情况下，单仓库 runner 使用 `~/.issue-spec/runners/<host>/<owner>/<repo>/<runner>/state.json`；多仓库 runner 使用一个稳定的共享作用域 `~/.issue-spec/runners/<host>/multi/.../<runner>/state.json`。重复的命令投递由稳定的命令幂等性与 runner 的 `eyes` reaction 确认来控制。
 - `--workspace-root <path>` 存储受管理的仓库克隆。默认使用与 `state.json` 相邻的 `workspaces` 目录，位于同一 runner 作用域下。显式路径按给定值使用。
+- `--log-dir <path>` 存储私有的持久诊断日志。默认使用 `state.json` 同级的 `logs` 目录，启动时会打印实际路径。排障时先运行 `rg -n '"level":"error"' <日志目录>/errors.ndjson`，再通过 `index.ndjson` 按 delivery、job 或 public session ID 缩小范围。
 - `--workspace-retention <duration>` 控制真实轮询周期何时移除过期、非活跃的受管 session clone。默认 7 天。处于 queued、dispatched、running、locked 与 interrupted 状态的 session job 会被保护。删除 clone 前 retention 会调用 `git worktree list`；当 runner metadata 为 dirty 或 uncertain、存在 linked worktree，或 git worktree inspection 失败时都会 fail closed 并保留 clone。它不会清理 child PROCESS workspace。
 - `--poll-interval` 与 `--fallback-interval` 分别控制通知轮询与较低频率的仓库评论回退。
 - `--fallback-initial-lookback <duration>` 在尚未存储游标时限制首次仓库评论回退的范围。默认 `720h`（30 天）；设为 `0` 可扫描所有历史评论。

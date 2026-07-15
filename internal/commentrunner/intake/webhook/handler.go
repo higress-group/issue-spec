@@ -36,6 +36,22 @@ type Acceptor interface {
 	Accept(context.Context, state.WebhookDelivery) (Acceptance, error)
 }
 
+// HandlerDiagnostic is the bounded, secret-free result of one webhook intake
+// request. Raw headers, credentials, and envelope bodies never cross this
+// observer boundary.
+type HandlerDiagnostic struct {
+	RequestID  string
+	DeliveryID string
+	EventID    string
+	StatusCode int
+	Outcome    string
+	Duplicate  bool
+}
+
+type HandlerObserver interface {
+	ObserveWebhook(HandlerDiagnostic)
+}
+
 type HandlerConfig struct {
 	Credentials           *Credentials
 	Queue                 Acceptor
@@ -45,6 +61,7 @@ type HandlerConfig struct {
 	MaxConcurrentRequests int
 	RetryAfter            time.Duration
 	Clock                 func() time.Time
+	Observer              HandlerObserver
 }
 
 type Handler struct {
@@ -128,6 +145,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusNotFound, "not_found", requestID)
 		return
 	}
+	diagnostic := HandlerDiagnostic{RequestID: requestID, Outcome: "rejected"}
+	recorder := &diagnosticResponseWriter{ResponseWriter: w}
+	w = recorder
+	defer func() {
+		diagnostic.StatusCode = recorder.statusCode
+		if h.config.Observer != nil {
+			h.config.Observer.ObserveWebhook(diagnostic)
+		}
+	}()
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeProblem(w, http.StatusMethodNotAllowed, "method_not_allowed", requestID)
@@ -165,6 +191,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusUnprocessableEntity, "invalid_identity", requestID)
 		return
 	}
+	diagnostic.DeliveryID, diagnostic.EventID = deliveryID, eventID
 	timestamp, err := strconv.ParseInt(strings.TrimSpace(r.Header.Get(HeaderTimestamp)), 10, 64)
 	if err != nil {
 		writeProblem(w, http.StatusUnauthorized, "invalid_timestamp", requestID)
@@ -205,9 +232,28 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		writeProblem(w, http.StatusInternalServerError, "persistence_failed", requestID)
 	default:
+		diagnostic.Outcome = "accepted"
+		diagnostic.Duplicate = accepted.Duplicate
 		writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "duplicate": accepted.Duplicate,
 			"delivery_id": deliveryID, "request_id": requestID})
 	}
+}
+
+type diagnosticResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (w *diagnosticResponseWriter) WriteHeader(statusCode int) {
+	w.statusCode = statusCode
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *diagnosticResponseWriter) Write(data []byte) (int, error) {
+	if w.statusCode == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(data)
 }
 
 func uniqueSecurityHeaders(header http.Header) bool {

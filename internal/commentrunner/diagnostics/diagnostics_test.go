@@ -1,8 +1,10 @@
 package diagnostics
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -154,8 +156,8 @@ func TestEventCreation(t *testing.T) {
 
 func TestEventWithMethods(t *testing.T) {
 	correlation := Correlation{
-		JobID:     "job-123",
-		CycleID:   "cycle-abc",
+		JobID:           "job-123",
+		CycleID:         "cycle-abc",
 		PublicSessionID: "session-xyz",
 	}
 
@@ -230,8 +232,8 @@ func TestWriterAndRotation(t *testing.T) {
 	logPath := filepath.Join(tmpDir, "test.ndjson")
 
 	cfg := Config{
-		LogDir:  tmpDir,
-		MaxSize: 100, // Small size to trigger rotation
+		LogDir:   tmpDir,
+		MaxSize:  100, // Small size to trigger rotation
 		MaxFiles: 2,
 	}
 
@@ -320,6 +322,114 @@ func TestConfigApplyDefaults(t *testing.T) {
 	expectedDir := filepath.Join(tmpDir, "logs")
 	if cfg.LogDir != expectedDir {
 		t.Errorf("expected log dir %s, got %s", expectedDir, cfg.LogDir)
+	}
+}
+
+func TestBoundedWriterPreservesCaptureLimitAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs", "job-acpx-stdout.log")
+	firstWriter, err := NewWriter(path, NewRedactor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := NewBoundedWriter(firstWriter, 8)
+	if _, err := first.WriteBytes([]byte("123456")); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	secondWriter, err := NewWriter(path, NewRedactor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := NewBoundedWriter(secondWriter, 8)
+	if second.Written() != 6 {
+		t.Fatalf("restart written=%d want=6", second.Written())
+	}
+	if _, err := second.WriteBytes([]byte("7890")); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdWriter, err := NewWriter(path, NewRedactor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	third := NewBoundedWriter(thirdWriter, 8)
+	if _, err := third.WriteBytes([]byte("must-not-append")); err != nil {
+		t.Fatal(err)
+	}
+	if err := third.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) || !strings.HasPrefix(string(after), "12345678") ||
+		strings.Count(string(after), "[TRUNCATED:") != 1 {
+		t.Fatalf("restart capture=%q", after)
+	}
+}
+
+func TestBoundedWriterRedactsBeforeTruncating(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job-acpx-stderr.log")
+	writer, err := NewWriter(path, NewRedactor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bounded := NewBoundedWriter(writer, 24)
+	if _, err := bounded.WriteBytes([]byte("1234567890token=abcdefghijklmnopqrstuvwxyz0123456789")); err != nil {
+		t.Fatal(err)
+	}
+	if err := bounded.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("abcdefgh")) || !bytes.Contains(data, []byte("[REDACTED")) {
+		t.Fatalf("bounded capture leaked a truncated secret: %q", data)
+	}
+}
+
+func TestLoggerRestartAppendsLifecycleWithPrivatePermissions(t *testing.T) {
+	logDir := filepath.Join(t.TempDir(), "logs")
+	cfg := Config{LogDir: logDir, MaxSize: 1 << 20, MaxFiles: 2, RetentionDays: 30, RawCaptureKB: 1}
+	for _, event := range []string{"first_start", "restart_start"} {
+		logger, err := NewLogger(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := logger.WriteEventWithCorrelation(LevelInfo, "runner", event, "runner lifecycle",
+			Correlation{CycleID: event}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := logger.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(logDir, "runner.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"event":"first_start"`)) ||
+		!bytes.Contains(data, []byte(`"event":"restart_start"`)) {
+		t.Fatalf("restart log=%s", data)
+	}
+	if info, err := os.Stat(logDir); err != nil || info.Mode().Perm() != DefaultDirMode {
+		t.Fatalf("log dir mode info=%v err=%v", info, err)
+	}
+	if info, err := os.Stat(filepath.Join(logDir, "runner.ndjson")); err != nil || info.Mode().Perm() != DefaultFileMode {
+		t.Fatalf("runner log mode info=%v err=%v", info, err)
 	}
 }
 

@@ -27,7 +27,7 @@ func TestReconcilerPersistsJobBeforeEyesAndDeduplicatesRedelivery(t *testing.T) 
 	reconciler, queue, store := fixture.open(t, nil)
 	defer store.Close()
 	first, err := reconciler.ProcessOne(t.Context())
-	if err != nil || !first.Completed || first.Outcome != state.DeliveryOutcomeJob {
+	if err != nil || !first.Completed || first.Outcome != state.DeliveryOutcomeJob || first.Idempotent {
 		t.Fatalf("first=%+v err=%v", first, err)
 	}
 	loaded, _ := store.Load(t.Context())
@@ -41,7 +41,7 @@ func TestReconcilerPersistsJobBeforeEyesAndDeduplicatesRedelivery(t *testing.T) 
 		t.Fatal(err)
 	}
 	second, err := reconciler.ProcessOne(t.Context())
-	if err != nil || !second.Completed {
+	if err != nil || !second.Completed || !second.Idempotent {
 		t.Fatalf("second=%+v err=%v", second, err)
 	}
 	loaded, _ = store.Load(t.Context())

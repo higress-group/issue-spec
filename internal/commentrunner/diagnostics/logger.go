@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -9,16 +10,16 @@ import (
 
 // Logger provides structured logging capabilities
 type Logger struct {
-	store         *Store
-	runnerWriter  *RotatingWriter
-	errorWriter   *RotatingWriter
-	indexWriter   *Writer
-	config        Config
-	redactor      *Redactor
-	correlation   Correlation
-	scope         Scope
-	mu            sync.Mutex
-	processID     int
+	store        *Store
+	runnerWriter *RotatingWriter
+	errorWriter  *RotatingWriter
+	indexWriter  *Writer
+	config       Config
+	redactor     *Redactor
+	correlation  Correlation
+	scope        Scope
+	mu           sync.Mutex
+	processID    int
 }
 
 // NewLogger creates a new logger with the given configuration
@@ -36,11 +37,14 @@ func NewLogger(config Config) (*Logger, error) {
 
 	errorWriter, err := store.ErrorsLogWriter()
 	if err != nil {
+		_ = runnerWriter.Close()
 		return nil, fmt.Errorf("create error writer: %w", err)
 	}
 
 	indexWriter, err := store.IndexWriter()
 	if err != nil {
+		_ = errorWriter.Close()
+		_ = runnerWriter.Close()
 		return nil, fmt.Errorf("create index writer: %w", err)
 	}
 
@@ -98,12 +102,29 @@ func (l *Logger) WithCycleID(cycleID string) *Logger {
 
 // LogEvent logs an event at the specified level
 func (l *Logger) LogEvent(level Level, component, event, message string) {
-	l.logEvent(level, component, event, message, nil)
+	if err := l.WriteEventWithDetails(level, component, event, message, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to write diagnostic event: %v\n", err)
+	}
 }
 
 // LogEventWithDetails logs an event with additional details
 func (l *Logger) LogEventWithDetails(level Level, component, event, message string, details map[string]interface{}) {
-	l.logEvent(level, component, event, message, details)
+	if err := l.WriteEventWithDetails(level, component, event, message, details); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to write diagnostic event: %v\n", err)
+	}
+}
+
+// WriteEventWithDetails persists an event and returns any writer failure to
+// callers that require durable diagnostics as part of their lifecycle.
+func (l *Logger) WriteEventWithDetails(level Level, component, event, message string, details map[string]interface{}) error {
+	return l.writeEvent(level, component, event, message, details, nil)
+}
+
+// WriteEventWithCorrelation persists an event using an immutable correlation
+// snapshot instead of mutating the logger-wide context. Long-running runner
+// serve processes use this for concurrent job lifecycles.
+func (l *Logger) WriteEventWithCorrelation(level Level, component, event, message string, correlation Correlation, details map[string]interface{}) error {
+	return l.writeEvent(level, component, event, message, details, &correlation)
 }
 
 // Info logs an info event
@@ -122,14 +143,18 @@ func (l *Logger) Error(component, event, message string) {
 }
 
 // logEvent is the internal logging method
-func (l *Logger) logEvent(level Level, component, event, message string, details map[string]interface{}) {
+func (l *Logger) writeEvent(level Level, component, event, message string, details map[string]interface{}, correlation *Correlation) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	currentCorrelation := l.correlation
+	if correlation != nil {
+		currentCorrelation = *correlation
+	}
 
 	e := NewEvent(level, component, event, message).
 		WithScope(l.scope.Host, l.scope.Repo, l.scope.RunnerLogin).
 		WithProcessID(l.processID).
-		WithCorrelation(l.correlation)
+		WithCorrelation(currentCorrelation)
 
 	if details != nil {
 		for key, value := range details {
@@ -137,10 +162,11 @@ func (l *Logger) logEvent(level Level, component, event, message string, details
 		}
 	}
 
+	var errs []error
 	// Write to runner log
 	if l.runnerWriter != nil {
 		if err := l.runnerWriter.WriteEvent(e); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to write runner log: %v\n", err)
+			errs = append(errs, fmt.Errorf("write runner log: %w", err))
 		}
 	}
 
@@ -148,10 +174,11 @@ func (l *Logger) logEvent(level Level, component, event, message string, details
 	if level == LevelWarn || level == LevelError {
 		if l.errorWriter != nil {
 			if err := l.errorWriter.WriteEvent(e); err != nil {
-				fmt.Fprintf(os.Stderr, "failed to write error log: %v\n", err)
+				errs = append(errs, fmt.Errorf("write error log: %w", err))
 			}
 		}
 	}
+	return errors.Join(errs...)
 }
 
 // LogIndex writes an index entry
@@ -166,8 +193,7 @@ func (l *Logger) LogIndex(entry IndexEntry) error {
 
 	redacted, err := l.redactor.RedactJSON(data)
 	if err != nil {
-		// If redaction fails, use the original data but mark it
-		redacted = data
+		return fmt.Errorf("redact index entry: %w", err)
 	}
 
 	if _, err := l.indexWriter.WriteBytes(redacted); err != nil {
@@ -175,19 +201,41 @@ func (l *Logger) LogIndex(entry IndexEntry) error {
 	}
 
 	// Add newline for NDJSON
-	l.indexWriter.WriteBytes([]byte("\n"))
+	if _, err := l.indexWriter.WriteBytes([]byte("\n")); err != nil {
+		return fmt.Errorf("write index newline: %w", err)
+	}
 
 	return nil
 }
 
 // JobLogger returns a job-specific logger
 func (l *Logger) JobLogger(jobID string) (*JobLogger, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	return NewJobLogger(l.store, l.redactor, l.scope, l.correlation)
+}
+
+// JobLoggerWithCorrelation creates a job logger from an immutable correlation
+// snapshot without changing the root logger's context.
+func (l *Logger) JobLoggerWithCorrelation(correlation Correlation) (*JobLogger, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return NewJobLogger(l.store, l.redactor, l.scope, correlation)
 }
 
 // SessionLogger returns a session-specific logger
 func (l *Logger) SessionLogger(sessionID string) (*SessionLogger, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	return NewSessionLogger(l.store, l.redactor, l.scope, l.correlation)
+}
+
+// SessionLoggerWithCorrelation creates a session logger from an immutable
+// correlation snapshot without changing the root logger's context.
+func (l *Logger) SessionLoggerWithCorrelation(correlation Correlation) (*SessionLogger, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return NewSessionLogger(l.store, l.redactor, l.scope, correlation)
 }
 
 // Sync flushes all log writers

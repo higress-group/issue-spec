@@ -466,6 +466,8 @@ func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previ
 		Status:               terminal,
 		Phase:                "reconciled-" + string(terminal),
 		CoordinatorReplyBody: reconciled.Output.ReplyText,
+		AcpxStdout:           reconciled.Output.RawStdout,
+		AcpxStderr:           reconciled.Output.RawStderr,
 		Diagnostics:          splitDiagnostic(diagnostic),
 	}
 	if reconciled.Output.SummaryFound {

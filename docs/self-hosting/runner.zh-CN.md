@@ -448,6 +448,21 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 
 ## 9. 验证与排障
 
+`runner serve` 启动时会以 `logs=...` 打印实际使用的私有诊断目录。未设置
+`--log-dir` 时，该目录是实际 `state.json` 同级的 `logs/`。目录权限为 `0700`，
+Runner、错误、索引、按 Job、ACPX stdout/stderr 有界捕获以及按 Session 的文件权限均为
+`0600`。应使用启动输出中的路径，不要猜测服务账号目录。最小的首次检查命令为：
+
+```bash
+rg -n '"level":"error"|"event":"(job_failed|job_interrupted|webhook_rejected)"' <启动输出中的日志目录>/{runner,errors}.ndjson
+```
+
+先在 `index.ndjson` 中用 delivery、job、public session、comment、ACPX record 或
+workspace 标识定位，再只读取对应的 job/session 文件。`--log-max-size`、
+`--log-max-files`、`--log-retention` 与 `--log-raw-capture` 分别控制轮转、保留期和
+每个 Job 的原始输出捕获上限。不要把这些本地诊断原样贴到公开 Issue；只复制已脱敏的标识
+和有界错误类别。
+
 在启用团队工作流前，先在非生产仓库按以下阶梯验收：
 
 1. 以服务用户运行 `runner preflight --verify-agent-runtime`，保留有界的结果以及选中的

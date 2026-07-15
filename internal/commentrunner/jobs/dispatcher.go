@@ -731,6 +731,8 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 		Phase:                string(terminal),
 		CoordinatorSummary:   &dispatch.Output.Summary,
 		CoordinatorReplyBody: dispatch.Output.ReplyText,
+		AcpxStdout:           dispatch.Output.RawStdout,
+		AcpxStderr:           dispatch.Output.RawStderr,
 		Err:                  terminalErr,
 	}); err != nil {
 		return Result{Executed: true, JobID: job.ID, Status: terminal, Error: safeError(err)}, err
@@ -1383,6 +1385,8 @@ func (d *Dispatcher) completeWithCoordinatorSummaryWarning(ctx context.Context, 
 		Status:               state.StatusCompleted,
 		Phase:                string(state.StatusCompleted),
 		CoordinatorReplyBody: dispatch.Output.ReplyText,
+		AcpxStdout:           dispatch.Output.RawStdout,
+		AcpxStderr:           dispatch.Output.RawStderr,
 		Diagnostics:          []string{diagnostic},
 	}); err != nil {
 		return Result{Executed: true, JobID: jobID, Status: state.StatusCompleted, Error: safeError(err)}, err
@@ -1468,7 +1472,8 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 		return cancelledDuringDispatchResult(jobID), nil
 	}
 	if failed.ID != "" && d.Writeback != nil {
-		_, _ = d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase, Err: cause})
+		_, _ = d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase,
+			AcpxStdout: dispatch.Output.RawStdout, AcpxStderr: dispatch.Output.RawStderr, Err: cause})
 	}
 	return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: msg}, cause
 }
