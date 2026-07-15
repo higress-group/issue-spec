@@ -10,6 +10,9 @@ import { featureNavigation } from "./feature-contributions";
 import { Avatar } from "./avatar";
 import { useTranslation } from "react-i18next";
 import { LanguageSwitcher } from "../i18n/language-switcher";
+import { isCanonicalRepositoryReadPath } from "../lib/canonical-routes";
+
+export { isCanonicalRepositoryReadPath } from "../lib/canonical-routes";
 
 const navClass = ({ isActive }: { isActive: boolean }) => isActive ? "nav-link active" : "nav-link";
 
@@ -48,7 +51,7 @@ export function AuthenticatedShell() {
       </div>
       <div className="nav-group"><span className="nav-label">{t("navigation.workspace")}</span>
         <NavLink className={navClass} to="/" end><LayoutDashboard size={18} /><span>{t("navigation.overview")}</span></NavLink>
-        {visibleFeatureNav.map((item) => <NavLink key={item.to} className={navClass} to={item.to}><item.icon size={18} aria-hidden="true" /><span>{item.labelKey ? t(item.labelKey) : item.label}</span></NavLink>)}
+        {visibleFeatureNav.map((item) => <NavLink key={item.to} className={({ isActive }) => navClass({ isActive: isActive || Boolean(item.matches?.(location.pathname)) })} to={item.to}><item.icon size={18} aria-hidden="true" /><span>{item.labelKey ? t(item.labelKey) : item.label}</span></NavLink>)}
         {firstOrg ? <NavLink className={navClass} to={`/orgs/${firstOrg.id}/repos`}><Boxes size={18} /><span>{t("navigation.repositories")}</span></NavLink> : null}
       </div>
       <div className="nav-group"><span className="nav-label">{t("navigation.account")}</span>
@@ -63,15 +66,11 @@ export function AuthenticatedShell() {
     <button id="inspector-toggle" className="inspector-toggle" type="button" onClick={inspector.openInspector} aria-expanded={inspector.open} aria-controls="request-inspector"><AlertCircle size={17} /><span>{inspector.state.problem ? t("navigation.requestProblem") : t("navigation.inspector")}</span></button>
     <nav className="bottom-nav" aria-label={t("navigation.mobile")}>
       <NavLink to="/" end><LayoutDashboard /><span>{t("navigation.home")}</span></NavLink>
-      {visibleFeatureNav.map((item) => <NavLink key={item.to} to={item.to}><item.icon aria-hidden="true" /><span>{item.labelKey ? t(item.labelKey) : item.label}</span></NavLink>)}
+      {visibleFeatureNav.map((item) => <NavLink key={item.to} className={({ isActive }) => isActive || item.matches?.(location.pathname) ? "active" : undefined} to={item.to}><item.icon aria-hidden="true" /><span>{item.labelKey ? t(item.labelKey) : item.label}</span></NavLink>)}
       {firstOrg ? <NavLink to={`/orgs/${firstOrg.id}/repos`}><Boxes /><span>{t("navigation.repos")}</span></NavLink> : <span />}
       <NavLink to="/settings/account"><Avatar login={context.user.login} displayName={context.user.display_name} src={context.user.avatar_url} size={24} /><span>{t("navigation.account")}</span></NavLink>
     </nav>
   </div>;
-}
-
-export function isCanonicalRepositoryReadPath(pathname: string) {
-  return /^\/[^/]+\/[^/]+\/(?:issues(?:\/[1-9]\d*)?|changes(?:\/[^/]+)?)\/?$/.test(pathname);
 }
 
 export function PublicRepositoryShell() {

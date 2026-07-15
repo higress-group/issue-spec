@@ -1,4 +1,5 @@
 import axe from "axe-core";
+import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
 import { render, screen } from "@testing-library/react";
@@ -6,16 +7,47 @@ import { createMemoryRouter, Link, RouterProvider, useLocation } from "react-rou
 import { describe, expect, it } from "vitest";
 import { server } from "../../../tests/server";
 import contribution from "./contribution";
-import { RepositoryGate, repositoryChangePath, repositoryIssuePath, type ActiveRepository } from "./repository-context";
+import { LegacyRepositoryRedirect, RepositoryGate, RepositoryRootRedirect, repositoryChangePath, repositoryIssuePath, type ActiveRepository } from "./repository-context";
 
 const orgId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const repoId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 describe("canonical repository Web routes", () => {
-  it("registers stable issue list, create and detail routes without a UUID redirect adapter", () => {
+  it("registers one canonical repository root and keeps UUID routes as compatibility adapters", () => {
     const paths = contribution.routes?.map((route) => route.path);
-    expect(paths).toEqual(expect.arrayContaining([":owner/:repo/issues", ":owner/:repo/issues/new", ":owner/:repo/issues/:number"]));
+    expect(paths).toEqual(expect.arrayContaining([
+      ":owner/:repo",
+      ":owner/:repo/issues",
+      ":owner/:repo/issues/new",
+      ":owner/:repo/issues/:number",
+      "issues/:orgId/:repoId",
+      "issues/:orgId/:repoId/new",
+      "issues/:orgId/:repoId/:number",
+    ]));
     expect(paths).not.toContain(":owner/:repo/issues/:issueNumber");
+  });
+
+  it("redirects a repository WebURL to its canonical issue desk and preserves URL state", async () => {
+    const { router } = renderRedirect(
+      "/AcMe/WorkFlow?state=open#issue-list",
+      "/:owner/:repo",
+      <RepositoryRootRedirect />,
+      "/:owner/:repo/issues",
+    );
+    expect(await screen.findByTestId("redirect-location")).toHaveTextContent("/AcMe/WorkFlow/issues?state=open#issue-list");
+    expect(router.state.location).toMatchObject({ pathname: "/AcMe/WorkFlow/issues", search: "?state=open", hash: "#issue-list" });
+  });
+
+  it("redirects legacy UUID issue links to the named canonical route", async () => {
+    server.use(http.get("http://localhost/api/v1/context/orgs/:orgId/repos", () => HttpResponse.json({ repositories: [repositoryRouteFixture(true).repository] })));
+    const { router } = renderRedirect(
+      `/issues/${orgId}/${repoId}/41?view=timeline#issuecomment-9`,
+      "/issues/:orgId/:repoId/:number",
+      <LegacyRepositoryRedirect destination="issue-detail" />,
+      "/:owner/:repo/issues/:number",
+    );
+    expect(await screen.findByTestId("redirect-location")).toHaveTextContent("/acme/issue-spec-e2e/issues/41?view=timeline#issuecomment-9");
+    expect(router.state.location).toMatchObject({ pathname: "/acme/issue-spec-e2e/issues/41", search: "?view=timeline", hash: "#issuecomment-9" });
   });
 
   it("keeps the canonical URL and generates canonical issue/change links for an anonymous public repository", async () => {
@@ -59,6 +91,20 @@ function renderCanonical(initialEntry: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createMemoryRouter([{ path: "/:owner/:repo/issues/:number", element: <RepositoryGate>{(active) => <RepositoryProbe active={active} />}</RepositoryGate> }], { initialEntries: [initialEntry] });
   return { router, ...render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>) };
+}
+
+function renderRedirect(initialEntry: string, sourcePath: string, element: ReactNode, targetPath: string) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const router = createMemoryRouter([
+    { path: sourcePath, element },
+    { path: targetPath, element: <RedirectLocationProbe /> },
+  ], { initialEntries: [initialEntry] });
+  return { router, ...render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>) };
+}
+
+function RedirectLocationProbe() {
+  const location = useLocation();
+  return <output data-testid="redirect-location">{location.pathname}{location.search}{location.hash}</output>;
 }
 
 function RepositoryProbe({ active }: { active: ActiveRepository }) {

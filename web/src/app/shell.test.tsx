@@ -6,11 +6,30 @@ import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import { fixtureMeta, server } from "../../tests/server";
 import { InspectorProvider } from "./problem-inspector";
-import { AuthenticatedShell } from "./shell";
+import { AuthenticatedShell, isCanonicalRepositoryReadPath } from "./shell";
+import { isChangeFeaturePath, isIssueFeaturePath } from "../lib/canonical-routes";
 import { RepositoryGate, type ActiveRepository } from "../features/issues/repository-context";
 import { useCurrentContext } from "../auth/session";
 
 describe("application navigation and canonical public shell", () => {
+  it("recognizes repository roots without capturing reserved application routes", () => {
+    expect(isCanonicalRepositoryReadPath("/acme/public")).toBe(true);
+    expect(isCanonicalRepositoryReadPath("/acme/public/issues/7")).toBe(true);
+    expect(isCanonicalRepositoryReadPath("/acme/public/changes/change-key")).toBe(true);
+    for (const pathname of ["/admin/settings", "/api/v1", "/orgs/acme", "/settings/account", "/readyz/check"]) {
+      expect(isCanonicalRepositoryReadPath(pathname)).toBe(false);
+    }
+  });
+
+  it("keeps feature navigation active on canonical named routes", () => {
+    expect(isIssueFeaturePath("/acme/public/issues/7")).toBe(true);
+    expect(isIssueFeaturePath("/issues/an-org/a-repo")).toBe(true);
+    expect(isIssueFeaturePath("/settings/account/issues")).toBe(false);
+    expect(isChangeFeaturePath("/acme/public/changes/change-key")).toBe(true);
+    expect(isChangeFeaturePath("/orgs/acme/changes")).toBe(true);
+    expect(isChangeFeaturePath("/admin/acme/changes")).toBe(false);
+  });
+
   it("orders Issues and Changes before Repositories with distinct feature icons on desktop and mobile", async () => {
     server.use(http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, change_boards: true } })));
     const { container } = renderShell("/");
