@@ -126,6 +126,28 @@ func (s *Service) IsDesignatedWriter(ctx context.Context, scope models.RepoScope
 	return designated, err
 }
 
+// DesignatedWriterStatus exposes the authenticated identity's own assignment
+// after the same repository-read authorization used by other native reads.
+// The result is intentionally independent of evidence:write: a token scope is
+// neither evidence-writer designation nor permission to manage one.
+func (s *Service) DesignatedWriterStatus(ctx context.Context, subject authz.Subject, scope models.RepoScope) (WriterStatus, error) {
+	if subject.Principal == nil || subject.Principal.User.ID == uuid.Nil {
+		return WriterStatus{}, adminservice.ErrForbidden
+	}
+	decision, err := s.authz.EvaluateRepository(ctx, subject, authz.RepositoryRequest{Scope: scope, Operation: authz.OperationRead})
+	if err != nil {
+		return WriterStatus{}, err
+	}
+	if err := decision.AuthorizationError(); err != nil {
+		return WriterStatus{}, err
+	}
+	active, err := s.IsDesignatedWriter(ctx, scope, subject.Principal.User.ID)
+	if err != nil {
+		return WriterStatus{}, err
+	}
+	return WriterStatus{UserID: subject.Principal.User.ID, Login: subject.Principal.User.Login, Active: active}, nil
+}
+
 func (s *Service) SetDesignatedWriter(ctx context.Context, subject authz.Subject, actor adminservice.Actor, scope models.RepoScope, userID uuid.UUID, active bool) (WriterAssignment, error) {
 	if userID == uuid.Nil || validateActor(subject, actor) != nil {
 		return WriterAssignment{}, adminservice.ErrInvalidInput

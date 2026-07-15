@@ -33,6 +33,45 @@ credential source is rejected. Provider keys do not grant authority: evidence
 ingestion still requires a designated repository writer, `evidence:write`, an
 exact repository cap, and live repository permission.
 
+### Assign an evidence writer
+
+The assignment belongs to a Server user, not to a PAT. Personal Runner accounts
+and service accounts use the same flow. Resolve the Runner user with its own PAT,
+then use a separate repository-operator credential to activate the assignment:
+
+```bash
+SERVER_URL=https://issues.example.test
+ORG_ID=00000000-0000-4000-8000-000000000001
+REPO_ID=00000000-0000-4000-8000-000000000002
+
+read -rsp "Runner PAT: " RUNNER_PAT
+printf '\n'
+RUNNER_USER_ID="$(
+  curl -fsS \
+    -H "Authorization: Bearer ${RUNNER_PAT}" \
+    "${SERVER_URL}/api/v1/context" | jq -er '.user.id'
+)"
+
+read -rsp "Repository operator PAT: " OPERATOR_PAT
+printf '\n'
+curl -fsS --request PUT \
+  -H "Authorization: Bearer ${OPERATOR_PAT}" \
+  -H 'Content-Type: application/json' \
+  --data '{"active":true}' \
+  "${SERVER_URL}/api/v1/orgs/${ORG_ID}/repos/${REPO_ID}/evidence/writers/${RUNNER_USER_ID}"
+
+unset RUNNER_PAT OPERATOR_PAT
+```
+
+The operator credential must belong to an identity allowed to manage repository
+integrations. A short-lived, exact-repository `admin:repo` PAT is sufficient
+when that identity has the required repository authority. Do not add
+`admin:repo` to the Runner PAT. To retire the writer, repeat the `PUT` with
+`{"active":false}`. PAT rotation for the same user preserves the assignment;
+changing Runner identity requires a new assignment and deactivating the old one.
+Runner preflight reads only the authenticated identity's own active status and
+cannot create or change an assignment.
+
 For the CLI, command bridges are registered by pointing
 `ISSUE_SPEC_CODE_PROVIDERS_FILE` at a clean absolute private regular file
 (POSIX mode `0600` or stricter and one hard link, or an equivalent private

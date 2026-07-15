@@ -769,6 +769,7 @@ func (a *app) runRunnerPreflightWithOptions(ctx context.Context, cfg commentrunn
 			}
 			return runnerBackend, nil
 		},
+		OpenEvidenceWriterBackend: a.newRunnerEvidenceWriterBackend,
 		OpenNotificationBackend: func(ctx context.Context, cfg commentrunner.Config) (commentrunner.PreflightNotificationBackend, error) {
 			backend, err := a.notificationBackendForRunner(ctx, cfg)
 			if err != nil || backend == nil {

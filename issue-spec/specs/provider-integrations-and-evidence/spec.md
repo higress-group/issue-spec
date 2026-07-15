@@ -54,6 +54,11 @@ The server MUST store mutable provider-namespaced external references separately
 - **WHEN** a caller without repository evidence-writer authorization or evidence:write scope submits evidence
 - **THEN** the server MUST reject the write and audit the attempt while ordinary authorized users MAY still manage non-authoritative external references according to repository policy
 
+#### Scenario: authenticated writers can inspect only their own designation
+
+- **WHEN** an authenticated repository reader queries its Evidence Writer status through the native evidence API
+- **THEN** the server SHALL return only that identity's active assignment for the exact repository, SHALL NOT grant or mutate an assignment, and SHALL keep the result independent from PAT scopes while evidence publication continues to re-evaluate all authorization gates
+
 #### Scenario: reads respect tenant and field visibility
 
 - **WHEN** the SPA, board or CLI lists references or evidence

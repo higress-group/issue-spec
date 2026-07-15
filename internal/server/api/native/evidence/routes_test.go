@@ -24,7 +24,7 @@ func TestEvidenceRouteSetSuccessAndParameterForwarding(t *testing.T) {
 	}
 	service := &fakeEvidenceService{}
 	set, err := NewRouteSet(Dependencies{Service: service, Authenticate: evidenceAuthenticate})
-	if err != nil || len(set.Routes) != 6 {
+	if err != nil || len(set.Routes) != 7 {
 		t.Fatalf("NewRouteSet() = %+v, %v", set, err)
 	}
 	mux, _ := routeset.NewMux(routeset.Policy{}, set)
@@ -46,6 +46,16 @@ func TestEvidenceRouteSetSuccessAndParameterForwarding(t *testing.T) {
 	mux.ServeHTTP(writerResponse, writer)
 	if writerResponse.Code != http.StatusOK || service.writerID != writerID || !service.writerActive {
 		t.Fatalf("writer response=%d id=%s active=%t", writerResponse.Code, service.writerID, service.writerActive)
+	}
+
+	service.writerStatus = evidence.WriterStatus{UserID: uuid.MustParse("33333333-3333-3333-3333-333333333333"), Login: "runner", Active: true}
+	status := httptest.NewRequest(http.MethodGet, base+"/evidence/writers/me", nil)
+	status.Header.Set("Authorization", "test")
+	statusResponse := httptest.NewRecorder()
+	mux.ServeHTTP(statusResponse, status)
+	if statusResponse.Code != http.StatusOK || service.statusScope != (models.RepoScope{OrgID: orgID, RepoID: repoID}) ||
+		!strings.Contains(statusResponse.Body.String(), `"login":"runner"`) || !strings.Contains(statusResponse.Body.String(), `"active":true`) {
+		t.Fatalf("writer status response=%d scope=%+v body=%s", statusResponse.Code, service.statusScope, statusResponse.Body.String())
 	}
 
 	appendPath := base + "/issues/" + issueID.String() + "/evidence"
@@ -181,6 +191,8 @@ type fakeEvidenceService struct {
 	policyInput        evidence.SetPolicyInput
 	writerID           uuid.UUID
 	writerActive       bool
+	writerStatus       evidence.WriterStatus
+	statusScope        models.RepoScope
 	appendInput        evidence.AppendInput
 	snapshotInput      evidence.SnapshotIngestInput
 	query              evidence.ExactRevisionQuery
@@ -196,6 +208,11 @@ func (f *fakeEvidenceService) EvidencePolicy(context.Context, authz.Subject, mod
 func (f *fakeEvidenceService) SetEvidencePolicy(_ context.Context, _ authz.Subject, actor adminservice.Actor, _ models.RepoScope, input evidence.SetPolicyInput) (evidence.Policy, error) {
 	f.policyInput, f.actor = input, actor
 	return evidence.Policy{RepresentationVersion: input.ExpectedVersion + 1, Requirements: input.Requirements}, f.err
+}
+
+func (f *fakeEvidenceService) DesignatedWriterStatus(_ context.Context, _ authz.Subject, scope models.RepoScope) (evidence.WriterStatus, error) {
+	f.statusScope = scope
+	return f.writerStatus, f.err
 }
 
 func (f *fakeEvidenceService) SetDesignatedWriter(_ context.Context, _ authz.Subject, actor adminservice.Actor, _ models.RepoScope, userID uuid.UUID, active bool) (evidence.WriterAssignment, error) {

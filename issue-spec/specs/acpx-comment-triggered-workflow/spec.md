@@ -126,6 +126,11 @@ The runner MUST invoke acpx as an external coordinator backend using argv arrays
 - **WHEN** the coordinator agent is `codex` or `claude`
 - **THEN** preflight SHALL distinguish the relevant host auth/config requirements, acpx availability, Codex agent-full-access needs, and Claude user-settings/auth/allowed-tool requirements before dispatching workflow work that depends on them.
 
+#### Scenario: self-hosted evidence-writer preflight
+
+- **WHEN** a self-hosted Runner preflights one or more configured repositories
+- **THEN** it SHALL use the native read-only evidence authority to verify that the PAT authenticates as the configured Runner login and that this identity has an active Evidence Writer assignment for every exact repository before dispatch, without treating `evidence:write` scope or a capability result as the assignment
+
 #### Scenario: native child workers
 
 - **WHEN** the acpx-launched coordinator uses the selected code agent's native child worker mechanism for issue-spec DAG work
