@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -16,10 +17,48 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
+	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
 	webhook "github.com/higress-group/issue-spec/internal/commentrunner/intake/webhook"
 	runnerserver "github.com/higress-group/issue-spec/internal/commentrunner/server"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 )
+
+func TestRunnerServeCredentialRootIsBoundToFullStatePath(t *testing.T) {
+	parent := t.TempDir()
+	first, err := runnerServeCredentialRoot(filepath.Join(parent, "first.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := runnerServeCredentialRoot(filepath.Join(parent, "second.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || first != filepath.Join(parent, "first.json.credentials") ||
+		second != filepath.Join(parent, "second.json.credentials") {
+		t.Fatalf("credential roots first=%q second=%q", first, second)
+	}
+	firstMaterializer := credentials.Materializer{Root: first}
+	secondMaterializer := credentials.Materializer{Root: second}
+	firstToken, err := firstMaterializer.WriteProfileToken("first-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondToken, err := secondMaterializer.WriteProfileToken("second-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstValue, err := os.ReadFile(firstToken.HostPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondValue, err := os.ReadFile(secondToken.HostPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(firstValue) != "first-token\n" || string(secondValue) != "second-token\n" || firstToken.HostPath == secondToken.HostPath {
+		t.Fatalf("profile token isolation first=%q second=%q", firstToken.HostPath, secondToken.HostPath)
+	}
+}
 
 func TestDefaultRunnerServeRuntimeIgnoresUnrelatedOperatorRegistryAndNeverPollsNotifications(t *testing.T) {
 	orgID, repoID := uuid.New(), uuid.New()

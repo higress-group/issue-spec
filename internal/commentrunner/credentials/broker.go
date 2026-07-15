@@ -41,6 +41,7 @@ type Broker struct {
 	HTTPClient   *http.Client
 	Materializer Materializer
 	GitProvider  GitProvider
+	ProfileProbe ProfileCapabilityProbe
 	TTL          time.Duration
 	Scopes       []string
 }
@@ -68,6 +69,13 @@ type OperationIssuer interface {
 	Probe(context.Context, PreflightRequest) capability.Report
 	Acquire(context.Context, AcquireRequest) (*Lease, error)
 	RevokeJob(context.Context, models.RepoScope, string) error
+}
+
+// ProfileCapabilityProbe performs the live, origin-bound issue API checks for
+// a stable profile credential. The broker independently proves Git operations
+// through its configured Git provider and merges both reports.
+type ProfileCapabilityProbe interface {
+	ProbeProfileCredential(context.Context, PreflightRequest) capability.Report
 }
 
 type Lease struct {
@@ -164,11 +172,11 @@ func validateProfileTokenLease(lease *FileLease) error {
 	return nil
 }
 
-func (b *Broker) Probe(_ context.Context, request PreflightRequest) capability.Report {
+func (b *Broker) Probe(ctx context.Context, request PreflightRequest) capability.Report {
 	req := request.Request
 	profile, profileErr := b.Profile.Normalized()
 	if b.ProfileToken != nil {
-		return b.probeProfileCredential(request, profile, profileErr)
+		return b.probeProfileCredential(ctx, request, profile, profileErr)
 	}
 	ttl := b.TTL
 	if ttl == 0 {
@@ -217,23 +225,40 @@ func (b *Broker) Probe(_ context.Context, request PreflightRequest) capability.R
 	return report
 }
 
-func (b *Broker) probeProfileCredential(request PreflightRequest, profile clientauth.Profile, profileErr error) capability.Report {
+func (b *Broker) probeProfileCredential(ctx context.Context, request PreflightRequest, profile clientauth.Profile, profileErr error) capability.Report {
 	req := request.Request
 	if profileErr != nil || profile.Kind != clientauth.ProfileKindHosted || request.Repo.Validate() != nil ||
 		!validJobID(request.JobID) || strings.TrimSpace(req.Repository) == "" ||
 		!strings.EqualFold(strings.TrimSpace(req.Host), profile.Hostname) || b.GitProvider == nil ||
-		validateProfileTokenLease(b.ProfileToken) != nil {
+		b.ProfileProbe == nil || validateProfileTokenLease(b.ProfileToken) != nil {
 		return capability.FailureReport(req, "private-file", "profile-credential", "unknown", capability.DecisionDenied,
 			capability.FailureInvalidRequest, "runner profile credential is unavailable")
 	}
+	issueRequest := request
+	issueRequest.Request.Operations = issueCredentialOperations(req.Operations)
+	issueReport := capability.Report{Host: req.Host, Repository: req.Repository,
+		Credential: capability.CredentialSummary{SourceClass: "private-file"},
+		Network:    capability.NetworkSummary{Status: "unknown"}}
+	if len(issueRequest.Request.Operations) > 0 {
+		issueReport = b.ProfileProbe.ProbeProfileCredential(ctx, issueRequest)
+		if !validProfileCapabilityReport(issueReport, issueRequest.Request) {
+			issueReport = capability.FailureReport(issueRequest.Request, "private-file", "profile-credential", "unknown",
+				capability.DecisionDenied, capability.FailureInvalidRequest,
+				"runner profile capability probe returned an invalid report")
+		}
+	}
 	report := capability.Report{Host: req.Host, Repository: req.Repository, Backend: "profile-credential",
 		Credential: capability.CredentialSummary{SourceClass: "private-file"},
-		Network:    capability.NetworkSummary{Status: "configured"}}
+		Network:    capability.NetworkSummary{Status: issueReport.Network.Status}}
+	issueResults := make(map[capability.Operation]capability.OperationResult, len(issueReport.Operations))
+	for _, result := range issueReport.Operations {
+		issueResults[result.Operation] = result
+	}
 	for _, operation := range effectiveBrokerOperations(req.Operations) {
 		result := capability.OperationResult{Operation: operation}
 		switch operation {
 		case capability.OperationIssueRead, capability.OperationIssueCommentWrite, capability.OperationArtifactWrite:
-			result.Decision = capability.DecisionAllowed
+			result = issueResults[operation]
 		case capability.OperationGitClone, capability.OperationGitPush:
 			provider, supported := b.GitProvider.(GitPurposeProvider)
 			if supported && provider.SupportsPurpose(operation) {
@@ -250,6 +275,31 @@ func (b *Broker) probeProfileCredential(request PreflightRequest, profile client
 	}
 	report.Finish()
 	return report
+}
+
+func validProfileCapabilityReport(report capability.Report, request capability.Request) bool {
+	if !strings.EqualFold(strings.TrimSpace(report.Host), strings.TrimSpace(request.Host)) ||
+		strings.TrimSpace(report.Repository) != strings.TrimSpace(request.Repository) ||
+		report.Credential.SourceClass != "private-file" {
+		return false
+	}
+	want := issueCredentialOperations(request.Operations)
+	seen := make(map[capability.Operation]bool, len(report.Operations))
+	for _, result := range report.Operations {
+		if seen[result.Operation] {
+			return false
+		}
+		seen[result.Operation] = true
+	}
+	if len(seen) != len(want) {
+		return false
+	}
+	for _, operation := range want {
+		if !seen[operation] {
+			return false
+		}
+	}
+	return true
 }
 
 // compensateFailedAcquire treats every exchange error as an uncertain remote

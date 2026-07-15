@@ -173,6 +173,12 @@ The Managed PAT or personal PAT selected above is the credential used by every
 `/new` and `/resume` job. `runner serve` materializes it once in a private,
 stable file outside the repository workspaces, then exposes that same file to
 each agent session. It does not mint or revoke a delegated issue token per job.
+Before each job, the Runner revalidates that the file still authenticates as the
+configured identity, exposes exactly the four scopes above, remains restricted
+to the one configured repository, and still has the required repository role.
+The job fails closed on authentication, permission, repository-cap, or network
+drift; Git clone and push remain independently proven by the Git credential
+provider.
 The Server delegation API remains available for other integrations, but is not
 part of the Runner execution path. Restrict this PAT to exactly one repository;
 use a separate PAT, profile, and `runner serve` process for each additional
@@ -348,9 +354,9 @@ For the internal SSH mode, replace the example's
 macOS, use the same explicit `--unsafe-no-sandbox --allow-host-ssh`
 combination in both commands.
 
-Repeat `--allowed-user` as needed. Keep each Runner profile PAT restricted to
-the repositories served by that process. The default maximum is three
-concurrent jobs.
+Repeat `--allowed-user` as needed. `runner serve` accepts exactly one repository
+for a self-hosted profile PAT. Use one exact-repository PAT, profile, and process
+per repository. The default maximum is three concurrent jobs.
 
 If TLS terminates at a reverse proxy, listen on loopback and expose only
 `/api/v1/runner/webhooks`. For direct TLS, bind an exact non-loopback IP—not a
@@ -482,7 +488,7 @@ new value.
 ## Security boundaries
 
 - the webhook secret authenticates delivery only; it grants no issue or source authority;
-- the origin-bound profile PAT is reused by every job and must be restricted to the Runner's intended repositories and scopes;
+- the origin-bound profile PAT is reused by every job, revalidated before dispatch, and restricted to the Runner's one intended repository and exact scopes;
 - source bindings contain no credentials; prefer short-lived, binding-specific Git credentials;
 - `--allow-host-ssh` exposes the dedicated runner user's SSH authority to the sandboxed agent and is only for an explicitly trusted internal boundary;
 - the runner handles only explicit `--repo` values, and authors must pass both allowlist and repository authorization;

@@ -51,6 +51,8 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/context":
 			writeRunnerJSON(w, http.StatusOK, map[string]any{"user": map[string]string{"id": uuid.NewString(), "login": "runner"},
+				"credential": map[string]any{"kind": "pat", "scopes": runnerProfileScopes,
+					"repository_restricted": true, "repository_count": 1},
 				"organizations": []map[string]string{{"id": orgID.String(), "name": "owner"}}})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/context/orgs/"+orgID.String()+"/repos":
 			writeRunnerJSON(w, http.StatusOK, map[string]any{"repositories": []map[string]any{{"repository": map[string]string{
@@ -61,6 +63,7 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 				"web_url": "https://git.example.test/org/repo", "default_branch": "main", "version": 1, "active": true,
 				"created_at": now, "updated_at": now})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/user":
+			w.Header().Set("X-OAuth-Scopes", strings.Join(runnerProfileScopes, ", "))
 			writeRunnerJSON(w, http.StatusOK, map[string]any{"id": 1, "node_id": "runner", "login": "runner"})
 		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/api/v3/repos/owner/repo/issues/comments/%d", commentNumericID):
 			w.Header().Set("X-Issue-Spec-Representation-Version", "1")
@@ -71,6 +74,8 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 				"html_url": "https://issues.test/owner/repo/issues/17", "url": "https://issues.test/api/v3/repos/owner/repo/issues/17",
 				"title": "runner composition", "body": "", "state": "open"})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/repos/owner/repo/collaborators/alice/permission":
+			writeRunnerJSON(w, http.StatusOK, map[string]string{"permission": "write", "role_name": "write"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/repos/owner/repo/collaborators/runner/permission":
 			writeRunnerJSON(w, http.StatusOK, map[string]string{"permission": "write", "role_name": "write"})
 		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/api/v3/repos/owner/repo/issues/comments/%d/reactions", commentNumericID):
 			writeRunnerJSON(w, http.StatusOK, []any{})

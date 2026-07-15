@@ -31,6 +31,7 @@ type NativeContextCredential struct {
 	Kind                 string   `json:"kind"`
 	Scopes               []string `json:"scopes"`
 	RepositoryRestricted bool     `json:"repository_restricted"`
+	RepositoryCount      int      `json:"repository_count"`
 }
 
 type NativeOrganizationContext struct {

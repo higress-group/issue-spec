@@ -163,7 +163,11 @@ issue-spec --profile team auth status --json
 上述 Managed PAT 或个人 PAT 会由每个 `/new` 与 `/resume` 作业直接使用。
 `runner serve` 启动时把它写入仓库 Workspace 之外的固定私有文件，所有 Agent Session
 都复用同一个文件，不再为每个作业签发和撤销委托 Issue Token。Server 的委托 Token
-API 仍可供其他集成使用，但不在 Runner 执行链路中。该 PAT 必须精确绑定一个仓库；
+每个作业开始前，Runner 都会重新确认该文件仍以配置的身份通过认证、只包含上述四个
+Scope、仍精确限制到唯一配置的仓库，并且当前仓库角色仍满足所需操作；身份、权限、
+仓库限制或网络状态发生漂移时，作业会闭合失败。Git Clone 与 Push 仍由独立的 Git
+凭据 Provider 证明。Server 的委托 Token API 仍可供其他集成使用，但不在 Runner
+执行链路中。该 PAT 必须精确绑定一个仓库；
 需要服务多个仓库时，应为每个仓库创建独立的 PAT、Profile 和 `runner serve` 进程。
 
 ## 4. 创建 Runner Intake Webhook
@@ -340,8 +344,9 @@ issue-spec --profile team runner serve \
 `--allow-host-ssh`，并在 preflight 命令中也添加 `--allow-host-ssh`。macOS 上两个命令都应使用
 相同的显式 `--unsafe-no-sandbox --allow-host-ssh` 组合。
 
-`--allowed-user` 可以重复。默认最多并行运行 3 个任务，可用
-`--max-concurrent-jobs` 调整。每个 Runner Profile PAT 都应限制到该进程实际服务的仓库。
+`--allowed-user` 可以重复。self-hosted Profile PAT 模式下，`runner serve` 只接受一个
+仓库；每个仓库分别使用精确限制的 PAT、Profile 与进程。默认最多并行运行 3 个任务，
+可用 `--max-concurrent-jobs` 调整。
 
 ### 网络和 TLS
 
@@ -479,7 +484,7 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 ## 安全边界
 
 - Webhook Secret 只验证 Server 到 Runner 的投递，不授予 Issue 或代码权限；
-- 与 Origin 绑定的 Profile PAT 会由每个作业复用，必须限制到 Runner 预期服务的仓库与 Scope；
+- 与 Origin 绑定的 Profile PAT 会由每个作业复用，并在 dispatch 前重新校验；它必须限制到 Runner 唯一预期服务的仓库和准确 Scope；
 - Source Binding 始终不含凭据；优先按 Job 和 Binding 短期签发 Git 凭据；
 - `--allow-host-ssh` 会把专用 Runner 用户的 SSH 权限暴露给沙箱内 Agent，只适用于明确
   接受这一边界的可信内网；

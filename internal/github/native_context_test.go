@@ -17,6 +17,7 @@ func TestNativeContextOperationsUseOnlyNativeProfilePaths(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v1/context":
 			_ = json.NewEncoder(w).Encode(NativeContext{User: NativeContextUser{ID: "user-id", Login: "runner"},
+				Credential:    NativeContextCredential{Kind: "pat", RepositoryRestricted: true, RepositoryCount: 1},
 				Organizations: []NativeOrganizationContext{{ID: "org-id", Name: "owner"}}})
 		case "/api/v1/context/orgs/org-id/repos":
 			_ = json.NewEncoder(w).Encode(NativeRepositoriesContext{Repositories: []NativeRepositoryContext{{
@@ -40,7 +41,7 @@ func TestNativeContextOperationsUseOnlyNativeProfilePaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(requests) != 2 || len(repositories.Repositories) != 1 ||
+	if len(requests) != 2 || current.Credential.RepositoryCount != 1 || len(repositories.Repositories) != 1 ||
 		repositories.Repositories[0].Repository.OrganizationID != "org-id" {
 		t.Fatalf("requests=%v current=%+v repositories=%+v", requests, current, repositories)
 	}
