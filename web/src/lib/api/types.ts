@@ -48,6 +48,7 @@ export const contextSchema = z.object({
     scope_mode: z.enum(["identity", "token"]),
     scopes: z.array(z.string()).optional(),
     repository_restricted: z.boolean(),
+    repository_count: z.number().int().nonnegative().optional(),
     absolute_expires_at: z.string().datetime({ offset: true }).optional(),
     idle_expires_at: z.string().datetime({ offset: true }).optional(),
   }),

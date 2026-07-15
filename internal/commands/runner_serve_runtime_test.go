@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -16,10 +17,48 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
+	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
 	webhook "github.com/higress-group/issue-spec/internal/commentrunner/intake/webhook"
 	runnerserver "github.com/higress-group/issue-spec/internal/commentrunner/server"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 )
+
+func TestRunnerServeCredentialRootIsBoundToFullStatePath(t *testing.T) {
+	parent := t.TempDir()
+	first, err := runnerServeCredentialRoot(filepath.Join(parent, "first.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := runnerServeCredentialRoot(filepath.Join(parent, "second.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || first != filepath.Join(parent, "first.json.credentials") ||
+		second != filepath.Join(parent, "second.json.credentials") {
+		t.Fatalf("credential roots first=%q second=%q", first, second)
+	}
+	firstMaterializer := credentials.Materializer{Root: first}
+	secondMaterializer := credentials.Materializer{Root: second}
+	firstToken, err := firstMaterializer.WriteProfileToken("first-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondToken, err := secondMaterializer.WriteProfileToken("second-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstValue, err := os.ReadFile(firstToken.HostPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondValue, err := os.ReadFile(secondToken.HostPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(firstValue) != "first-token\n" || string(secondValue) != "second-token\n" || firstToken.HostPath == secondToken.HostPath {
+		t.Fatalf("profile token isolation first=%q second=%q", firstToken.HostPath, secondToken.HostPath)
+	}
+}
 
 func TestDefaultRunnerServeRuntimeIgnoresUnrelatedOperatorRegistryAndNeverPollsNotifications(t *testing.T) {
 	orgID, repoID := uuid.New(), uuid.New()
@@ -29,7 +68,7 @@ func TestDefaultRunnerServeRuntimeIgnoresUnrelatedOperatorRegistryAndNeverPollsN
 		mu.Lock()
 		requests = append(requests, r.URL.Path)
 		mu.Unlock()
-		if got := r.Header.Get("Authorization"); got != "Bearer parent-token" {
+		if got := r.Header.Get("Authorization"); got != "Bearer profile-token" {
 			t.Fatalf("authorization=%q", got)
 		}
 		switch r.URL.Path {
@@ -73,7 +112,7 @@ func TestDefaultRunnerServeRuntimeIgnoresUnrelatedOperatorRegistryAndNeverPollsN
 		RunnerIdentity: "runner", StatePath: filepath.Join(temp, "state.json"), WorkspaceRoot: filepath.Join(temp, "workspaces"),
 		WorkspaceRetention: commentrunner.NewDuration(time.Hour), MaxConcurrentJobs: 1, AcpxPath: "acpx",
 		Agent: commentrunner.DefaultAgentConfig(), CancellationEnabled: true, UnsafeNoSandbox: true}
-	runtime, err := defaultBuildRunnerServeRuntime(t.Context(), runnerServeRuntimeInput{Profile: profile, ParentToken: "parent-token",
+	runtime, err := defaultBuildRunnerServeRuntime(t.Context(), runnerServeRuntimeInput{Profile: profile, ProfileToken: "profile-token",
 		Runner: runner, Queue: queue, Store: store, HTTP: httpService, GitCredentialCommand: command,
 		GitCredentialTimeout: time.Second, GitCredentialMaxOutput: 1024, GitCredentialConcurrency: 1,
 		ReconcileWorkers: 1, ReconcileLease: time.Minute})

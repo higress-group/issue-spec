@@ -14,7 +14,6 @@ import (
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
-	"github.com/higress-group/issue-spec/internal/server/auth/delegation"
 )
 
 func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.T) {
@@ -29,19 +28,16 @@ func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.
 	statePath := filepath.Join(t.TempDir(), "runner-state.json")
 	currentSecret := strings.Repeat("c", 32)
 	previousSecret := strings.Repeat("p", 32)
-	parentToken := "origin-bound-parent-token"
+	profileToken := "origin-bound-profile-token"
 	t.Setenv("RUNNER_CURRENT_SECRET", currentSecret)
 	t.Setenv("RUNNER_PREVIOUS_SECRET", previousSecret)
-	t.Setenv("ISSUE_SPEC_TOKEN", parentToken)
+	t.Setenv("ISSUE_SPEC_TOKEN", profileToken)
 	previousExpiry := time.Now().UTC().Add(10 * time.Minute).Truncate(time.Second).Format(time.RFC3339)
 	originalBuild, originalRun := runnerServeBuildRuntime, runnerServeRun
 	called := false
 	runnerServeBuildRuntime = func(_ context.Context, input runnerServeRuntimeInput) (runnerServeRuntime, error) {
-		if input.ParentToken != parentToken || input.Profile.Name != profile.Name || len(input.Runner.Repositories) != 1 {
+		if input.ProfileToken != profileToken || input.Profile.Name != profile.Name || len(input.Runner.Repositories) != 1 {
 			t.Fatalf("runtime input=%+v", input)
-		}
-		if input.DelegationTTL != delegation.DefaultTTL {
-			t.Fatalf("delegation TTL=%s, want %s", input.DelegationTTL, delegation.DefaultTTL)
 		}
 		return runnerServeRuntimeFunc(func(context.Context) error { return nil }), nil
 	}
@@ -84,7 +80,7 @@ func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.
 		t.Fatal("previous secret remained in process environment")
 	}
 	if _, exists := os.LookupEnv("ISSUE_SPEC_TOKEN"); exists {
-		t.Fatal("parent token remained in process environment")
+		t.Fatal("profile token remained in process environment")
 	}
 	data, err := os.ReadFile(statePath)
 	if err != nil {
@@ -151,13 +147,15 @@ func TestRunnerServeHelpDocumentsSecurityAndCapacityControls(t *testing.T) {
 		"--secret-file", "--previous-secrets-valid-until", "--timestamp-window", "--max-body-bytes",
 		"--max-header-bytes", "--max-queue-deliveries", "--max-queue-bytes", "--shutdown-timeout",
 		"--workspace-root", "--max-concurrent-jobs", "--reconcile-workers", "--git-credential-command",
-		"--allow-host-ssh", "--git-author-name", "--git-author-email", "--operator-skill-dir", "--delegation-audience", "--delegation-subject", "--delegation-ttl"} {
+		"--allow-host-ssh", "--git-author-name", "--git-author-email", "--operator-skill-dir"} {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("help missing %s:\n%s", required, stdout.String())
 		}
 	}
-	if !strings.Contains(stdout.String(), "default: 168h0m0s") {
-		t.Fatalf("help does not report the seven-day delegation default:\n%s", stdout.String())
+	for _, removed := range []string{"--delegation-audience", "--delegation-subject", "--delegation-ttl"} {
+		if strings.Contains(stdout.String(), removed) {
+			t.Fatalf("help still advertises unused %s:\n%s", removed, stdout.String())
+		}
 	}
 }
 
@@ -203,7 +201,7 @@ func TestRunnerServeAcceptsExplicitUnsafeHostSSHMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("RUNNER_UNSAFE_HOST_SSH_SECRET", strings.Repeat("s", 32))
-	t.Setenv("ISSUE_SPEC_TOKEN", "origin-bound-parent-token")
+	t.Setenv("ISSUE_SPEC_TOKEN", "origin-bound-profile-token")
 	originalBuild, originalRun := runnerServeBuildRuntime, runnerServeRun
 	runnerServeBuildRuntime = func(_ context.Context, input runnerServeRuntimeInput) (runnerServeRuntime, error) {
 		if !input.Runner.AllowHostSSH || !input.Runner.UnsafeNoSandbox || input.Runner.GitAuthorName != "Issue Spec Runner" ||
@@ -235,7 +233,7 @@ func TestRunnerServeAcceptsExplicitHostSSHMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("RUNNER_HOST_SSH_SECRET", strings.Repeat("s", 32))
-	t.Setenv("ISSUE_SPEC_TOKEN", "origin-bound-parent-token")
+	t.Setenv("ISSUE_SPEC_TOKEN", "origin-bound-profile-token")
 
 	originalBuild, originalRun := runnerServeBuildRuntime, runnerServeRun
 	called := false

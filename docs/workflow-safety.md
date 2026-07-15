@@ -76,11 +76,13 @@ issue-spec doctor agent --repo owner/repo \
 Other stable operations include `issue.comment.write`, `pr.read`,
 `pr.review.write`, `pr.update`, `checks.read`, and
 `external.change.comment`. Reports are redacted and describe the source class,
-expiry knowledge, network result, and per-operation decision. Strict runner
-execution requires an operator-owned short-lived issuer scoped to the exact
-host, repository, job, purpose, and operations. Mirrored host-gh credentials
-are reported as `legacy_long_lived`; they are migration-only and never satisfy
-strict policy.
+expiry knowledge, network result, and per-operation decision. A self-hosted
+runner may use the private PAT from its origin-bound profile when the token is
+restricted to the exact repository and minimum runner scopes; that file may
+report unknown expiry. Strict GitHub delegated execution still requires an
+operator-owned short-lived issuer scoped to the exact host, repository, job,
+purpose, and operations. Mirrored host-gh credentials are reported as
+`legacy_long_lived`; they are migration-only and never satisfy strict policy.
 
 ## Choose a PROCESS execution class
 

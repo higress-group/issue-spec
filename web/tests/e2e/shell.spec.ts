@@ -32,7 +32,7 @@ test("runner managed PAT keeps the service identity and repository cap explicit"
   await page.getByRole("button", { name: documentationText("Runner preset", "运行器预设") }).click();
   await page.getByRole("combobox", { name: documentationText("Repository access", "仓库范围") }).selectOption(repositoryId);
   await expect(page.getByRole("textbox", { name: documentationText("Token name", "令牌名称") })).toHaveValue("runner");
-  await expect(page.getByRole("textbox", { name: documentationText("Scopes", "权限范围") })).toHaveValue("read:user, issues:read, issues:write, runner:delegate, evidence:write");
+  await expect(page.getByRole("textbox", { name: documentationText("Scopes", "权限范围") })).toHaveValue("read:user, issues:read, issues:write, evidence:write");
   expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());

@@ -18,15 +18,9 @@ import (
 	runnerserver "github.com/higress-group/issue-spec/internal/commentrunner/server"
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/gitidentity"
-	"github.com/higress-group/issue-spec/internal/server/auth/delegation"
 )
 
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
-const (
-	defaultDelegationAudience = "issue-spec-api"
-	defaultDelegationSubject  = "issue-spec-runner"
-)
 
 func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	fs := newFlagSet("runner serve", a.err)
@@ -60,10 +54,6 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	idleTimeout := fs.Duration("idle-timeout", time.Minute, "HTTP idle connection timeout")
 	shutdownTimeout := fs.Duration("shutdown-timeout", 30*time.Second, "graceful shutdown deadline")
 	retryAfter := fs.Duration("retry-after", 5*time.Second, "backpressure Retry-After duration")
-	delegationAudience := fs.String("delegation-audience", defaultDelegationAudience, "server-configured delegated credential audience")
-	delegationSubject := fs.String("delegation-subject", defaultDelegationSubject, "server-configured delegated credential subject")
-	delegationTTL := fs.Duration("delegation-ttl", delegation.DefaultTTL,
-		fmt.Sprintf("delegated credential lifetime; %s to %s", delegation.MinTTL, delegation.MaxTTL))
 	tlsCert := fs.String("tls-cert", "", "TLS certificate PEM file")
 	tlsKey := fs.String("tls-key", "", "0600 TLS private key PEM file")
 	production := fs.Bool("production", false, "require TLS and an explicit non-loopback bind")
@@ -157,14 +147,6 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		*idleTimeout > 10*time.Minute || *shutdownTimeout <= 0 || *shutdownTimeout > 5*time.Minute ||
 		*retryAfter <= 0 || *retryAfter > time.Hour {
 		a.errorf("runner serve limits and timeouts are outside their safe bounds\n")
-		return 2
-	}
-	if !validRunnerDelegationBinding(*delegationAudience) || !validRunnerDelegationBinding(*delegationSubject) {
-		a.errorf("runner serve delegation audience and subject must be printable values of at most 128 bytes\n")
-		return 2
-	}
-	if *delegationTTL < delegation.MinTTL || *delegationTTL > delegation.MaxTTL {
-		a.errorf("runner serve delegation TTL must be between %s and %s\n", delegation.MinTTL, delegation.MaxTTL)
 		return 2
 	}
 	if *gitCredentialTimeout <= 0 || *gitCredentialTimeout > 2*time.Minute || *gitCredentialMaxOutput < 1024 ||
@@ -293,21 +275,19 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		a.errorf("runner serve configuration: %v\n", err)
 		return 2
 	}
-	parentToken, err := auth.ResolveProfileToken(ctx, profile)
-	if err != nil || strings.TrimSpace(parentToken.Value) == "" {
-		a.errorf("runner serve parent credential: origin-bound profile PAT is required\n")
+	profileToken, err := auth.ResolveProfileToken(ctx, profile)
+	if err != nil || strings.TrimSpace(profileToken.Value) == "" {
+		a.errorf("runner serve profile credential: origin-bound profile PAT is required\n")
 		return 2
 	}
-	if parentToken.Source == "env:ISSUE_SPEC_TOKEN" {
+	if profileToken.Source == "env:ISSUE_SPEC_TOKEN" {
 		_ = os.Unsetenv("ISSUE_SPEC_TOKEN")
 	}
-	runtime, err := runnerServeBuildRuntime(ctx, runnerServeRuntimeInput{Profile: profile, ParentToken: parentToken.Value,
+	runtime, err := runnerServeBuildRuntime(ctx, runnerServeRuntimeInput{Profile: profile, ProfileToken: profileToken.Value,
 		Runner: runnerConfig, Queue: queue, Store: store, HTTP: service, GitCredentialCommand: *gitCredentialCommand,
 		GitCredentialArgs: gitCredentialArgs.Values(), GitCredentialTimeout: *gitCredentialTimeout,
 		GitCredentialMaxOutput: *gitCredentialMaxOutput, GitCredentialConcurrency: *gitCredentialConcurrency,
-		ReconcileWorkers: *reconcileWorkers, ReconcileLease: *reconcileLease,
-		DelegationAudience: strings.TrimSpace(*delegationAudience), DelegationSubject: strings.TrimSpace(*delegationSubject),
-		DelegationTTL: *delegationTTL})
+		ReconcileWorkers: *reconcileWorkers, ReconcileLease: *reconcileLease})
 	if err != nil {
 		a.errorf("runner serve runtime: %v\n", err)
 		return 2
@@ -321,19 +301,6 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		return 1
 	}
 	return 0
-}
-
-func validRunnerDelegationBinding(value string) bool {
-	value = strings.TrimSpace(value)
-	if value == "" || len(value) > 128 {
-		return false
-	}
-	for _, char := range value {
-		if char < 0x21 || char == 0x7f {
-			return false
-		}
-	}
-	return true
 }
 
 func resolveRunnerOperatorSkillDirs(values []string) ([]string, error) {

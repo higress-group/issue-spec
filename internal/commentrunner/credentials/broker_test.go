@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -305,6 +306,110 @@ func TestBrokerPreflightProvesOnlyConfiguredIssuerOperations(t *testing.T) {
 	if report.OK || report.Operations[0].Decision != capability.DecisionUnknown {
 		t.Fatalf("unsupported report = %+v", report)
 	}
+}
+
+func TestBrokerReusesStableProfilePATAcrossJobs(t *testing.T) {
+	materializer := Materializer{Root: t.TempDir()}
+	profileToken, err := materializer.WriteProfileToken("iss_pat_runner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := clientauth.Profile{Name: "runner", Kind: clientauth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "instance-a"}
+	broker := &Broker{Profile: profile, ProfileToken: &profileToken, Materializer: materializer,
+		GitProvider: staticGitProvider{lease: GitProviderLease{Credential: GitSecret{Username: "runner", Password: "git-secret"},
+			ExpiresAt: time.Now().Add(time.Minute), Revoke: func(context.Context) error { return nil }}},
+		ProfileProbe: profileCapabilityProbeFunc(func(_ context.Context, request PreflightRequest) capability.Report {
+			report := capability.Report{Host: request.Request.Host, Repository: request.Request.Repository,
+				Backend: "rest", Credential: capability.CredentialSummary{SourceClass: "private-file"},
+				Network: capability.NetworkSummary{Status: "reachable"}}
+			for _, operation := range request.Request.Operations {
+				report.Operations = append(report.Operations, capability.OperationResult{Operation: operation,
+					Decision: capability.DecisionAllowed})
+			}
+			report.Finish()
+			return report
+		})}
+	repo := models.RepoScope{OrgID: uuid.New(), RepoID: uuid.New()}
+	var paths []string
+	for _, jobID := range []string{"job-profile-1", "job-profile-2"} {
+		lease, acquireErr := broker.Acquire(t.Context(), AcquireRequest{Repo: repo, JobID: jobID, Binding: testBinding()})
+		if acquireErr != nil {
+			t.Fatal(acquireErr)
+		}
+		paths = append(paths, lease.IssueToken.HostPath)
+		if revokeErr := lease.Revoke(t.Context()); revokeErr != nil {
+			t.Fatal(revokeErr)
+		}
+	}
+	if paths[0] != profileToken.HostPath || paths[1] != profileToken.HostPath {
+		t.Fatalf("profile token paths = %v, want %s", paths, profileToken.HostPath)
+	}
+	if _, err := os.Stat(profileToken.HostPath); err != nil {
+		t.Fatalf("profile token removed after job cleanup: %v", err)
+	}
+	report := broker.Probe(t.Context(), PreflightRequest{Request: capability.Request{Host: "issues.example.test",
+		Repository: "o/r", Operations: []capability.Operation{capability.OperationIssueRead, capability.OperationGitPush}},
+		Repo: repo, JobID: "job-profile-probe"})
+	if !report.OK || report.Credential.ExpiryKnown || report.Credential.SourceClass != "private-file" ||
+		report.Backend != "profile-credential" {
+		t.Fatalf("profile report = %+v", report)
+	}
+}
+
+func TestBrokerProfilePreflightUsesLiveIssueProbeForEveryJob(t *testing.T) {
+	materializer := Materializer{Root: t.TempDir()}
+	profileToken, err := materializer.WriteProfileToken("iss_pat_runner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := clientauth.Profile{Name: "runner", Kind: clientauth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "instance-a"}
+	var calls atomic.Int32
+	broker := &Broker{Profile: profile, ProfileToken: &profileToken, Materializer: materializer,
+		GitProvider: staticGitProvider{lease: GitProviderLease{Credential: GitSecret{Username: "runner", Password: "git-secret"},
+			ExpiresAt: time.Now().Add(time.Minute), Revoke: func(context.Context) error { return nil }}},
+		ProfileProbe: profileCapabilityProbeFunc(func(_ context.Context, request PreflightRequest) capability.Report {
+			call := calls.Add(1)
+			report := capability.Report{Host: request.Request.Host, Repository: request.Request.Repository,
+				Credential: capability.CredentialSummary{SourceClass: "private-file"},
+				Network:    capability.NetworkSummary{Status: "reachable"}}
+			for _, operation := range request.Request.Operations {
+				result := capability.OperationResult{Operation: operation, Decision: capability.DecisionAllowed}
+				if call == 2 && operation == capability.OperationArtifactWrite {
+					result.Decision, result.Code = capability.DecisionDenied, capability.FailureInsufficientPermission
+				}
+				report.Operations = append(report.Operations, result)
+			}
+			report.Finish()
+			return report
+		})}
+	repo := models.RepoScope{OrgID: uuid.New(), RepoID: uuid.New()}
+	request := PreflightRequest{Request: capability.Request{Host: "issues.example.test", Repository: "o/r",
+		Operations: []capability.Operation{capability.OperationIssueRead, capability.OperationArtifactWrite,
+			capability.OperationGitPush}}, Repo: repo, JobID: "job-profile-live"}
+	first := broker.Probe(t.Context(), request)
+	request.JobID = "job-profile-revoked"
+	second := broker.Probe(t.Context(), request)
+	if calls.Load() != 2 || !first.OK || second.OK || second.Network.Status != "reachable" {
+		t.Fatalf("calls=%d first=%+v second=%+v", calls.Load(), first, second)
+	}
+	results := make(map[capability.Operation]capability.OperationResult, len(second.Operations))
+	for _, result := range second.Operations {
+		results[result.Operation] = result
+	}
+	if results[capability.OperationArtifactWrite].Decision != capability.DecisionDenied ||
+		results[capability.OperationGitPush].Decision != capability.DecisionAllowed {
+		t.Fatalf("live issue and Git results were not merged independently: %+v", second)
+	}
+}
+
+type profileCapabilityProbeFunc func(context.Context, PreflightRequest) capability.Report
+
+func (f profileCapabilityProbeFunc) ProbeProfileCredential(ctx context.Context, request PreflightRequest) capability.Report {
+	return f(ctx, request)
 }
 
 type trackingGitProvider struct {

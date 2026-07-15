@@ -9,7 +9,7 @@ import (
 )
 
 func TestProductionAssetsContainRunnerScopePreset(t *testing.T) {
-	const runnerScopes = "read:user, issues:read, issues:write, runner:delegate, evidence:write"
+	const runnerScopes = "read:user, issues:read, issues:write, evidence:write"
 	found := false
 	if err := fs.WalkDir(production, "dist/assets", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil || entry.IsDir() || !strings.HasSuffix(name, ".js") {

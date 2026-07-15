@@ -59,6 +59,32 @@ func TestMaterializerPrivateAtomicRotationAndRevoke(t *testing.T) {
 	}
 }
 
+func TestMaterializerProfileTokenKeepsStablePathOutsideJobCleanup(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "credentials")
+	materializer := Materializer{Root: root}
+	profile, err := materializer.WriteProfileToken("iss_pat_profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := materializer.WriteProfileToken("iss_pat_rotated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.HostPath != profile.HostPath || rotated.SandboxPath != IssueTokenSandboxPath {
+		t.Fatalf("rotated profile token = %+v, initial = %+v", rotated, profile)
+	}
+	assertMode(t, profile.HostPath, 0o600)
+	if data, readErr := os.ReadFile(profile.HostPath); readErr != nil || string(data) != "iss_pat_rotated\n" {
+		t.Fatalf("profile token = %q, %v", data, readErr)
+	}
+	if err := materializer.Revoke("job-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(profile.HostPath); err != nil {
+		t.Fatalf("profile token removed by job cleanup: %v", err)
+	}
+}
+
 func TestMaterializerRejectsSymlinkRootAndHardlink(t *testing.T) {
 	base := t.TempDir()
 	realRoot := filepath.Join(base, "real")

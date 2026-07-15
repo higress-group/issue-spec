@@ -40,7 +40,7 @@ describe("managed runner credentials", () => {
     expect(await screen.findByRole("dialog")).toBeVisible();
     expect(capture).toHaveBeenCalledWith({
       name: "runner",
-      scopes: ["read:user", "issues:read", "issues:write", "runner:delegate", "evidence:write"],
+      scopes: ["read:user", "issues:read", "issues:write", "evidence:write"],
       repository_ids: [repoId],
     });
   });

@@ -112,8 +112,8 @@ process configuration. The command implementation:
 
 The operator should run bridges as a dedicated low-privilege identity, provide
 the narrowest credential scopes, isolate their network access, and rotate
-credentials independently from runner delegated tokens. Bridge stderr is
-diagnostic only and must never contain secrets.
+credentials independently from the Runner's issue API credential. Bridge
+stderr is diagnostic only and must never contain secrets.
 
 ## Envelope
 
@@ -180,6 +180,12 @@ External-reference metadata follows the reference visibility: metadata on a
 repository), while a `maintainers` reference is hidden in full from other
 callers. Treat metadata as non-secret workflow coordinates, never as a place
 for tokens, cookies, authorization headers, or provider credentials.
+
+Persisted evidence follows the same row-level visibility rule. A `repository`
+evidence row exposes its normalized payload and provenance to repository
+readers, while a `maintainers` row is omitted entirely for non-maintainers.
+Wrappers must therefore keep credentials, request headers, cookies, and raw
+provider responses out of repository-visible evidence.
 
 Every `review` record additionally carries canonical `finding_id`,
 `process_id`, and `spec_id` fields (for example `FINDING-030`, `PROCESS-020`,

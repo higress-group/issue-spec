@@ -19,6 +19,25 @@ type FileLease struct {
 
 type Materializer struct{ Root string }
 
+// WriteProfileToken materializes the long-lived, origin-bound PAT selected by
+// runner serve at one stable path. Unlike job credentials, this file is not
+// removed when an individual job finishes, so resumed ACPX sessions keep the
+// same credential source across turns.
+func (m Materializer) WriteProfileToken(token string) (FileLease, error) {
+	if invalidToken(token) {
+		return FileLease{}, errors.New("credential materializer: profile token is required")
+	}
+	root, err := m.secureRoot()
+	if err != nil {
+		return FileLease{}, err
+	}
+	path := filepath.Join(root, "profile.token")
+	if err := atomicSecretFile(path, []byte(strings.TrimSpace(token)+"\n")); err != nil {
+		return FileLease{}, err
+	}
+	return FileLease{HostPath: path, SandboxPath: IssueTokenSandboxPath}, nil
+}
+
 func (m Materializer) WriteIssueToken(jobID, token string) (FileLease, error) {
 	if strings.TrimSpace(jobID) == "" || invalidToken(token) {
 		return FileLease{}, errors.New("credential materializer: job id and token are required")

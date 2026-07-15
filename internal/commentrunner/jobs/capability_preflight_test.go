@@ -96,3 +96,23 @@ func TestStrictCapabilityMissingIssuerFailsClosedBeforeWorkspace(t *testing.T) {
 		t.Fatalf("missing issuer did not fail before workspace: err=%v workspace=%+v", err, workspaces)
 	}
 }
+
+func TestCapabilityReportAcceptsProfileCredentialWithoutKnownExpiry(t *testing.T) {
+	request := capability.Request{Host: "issues.example.test", Repository: "o/r",
+		Operations: []capability.Operation{capability.OperationIssueRead}}
+	report := capability.Report{OK: true, Host: request.Host, Repository: request.Repository,
+		Backend: "profile-credential", Credential: capability.CredentialSummary{SourceClass: "private-file"},
+		Operations: []capability.OperationResult{{Operation: capability.OperationIssueRead, Decision: capability.DecisionAllowed}}}
+	if !sameCapabilityReportScope(report, request) {
+		t.Fatalf("profile credential report rejected: %+v", report)
+	}
+	report.Credential.SourceClass = "delegated"
+	if sameCapabilityReportScope(report, request) {
+		t.Fatalf("delegated credential without known expiry accepted: %+v", report)
+	}
+	report.Credential.SourceClass = "private-file"
+	report.Credential.ExpiryKnown = true
+	if sameCapabilityReportScope(report, request) {
+		t.Fatalf("known expiry without expires_at accepted: %+v", report)
+	}
+}
