@@ -37,6 +37,7 @@ type Broker struct {
 	Audience     string
 	Subject      string
 	ParentToken  string
+	ProfileToken *FileLease
 	HTTPClient   *http.Client
 	Materializer Materializer
 	GitProvider  GitProvider
@@ -84,13 +85,18 @@ type Lease struct {
 }
 
 func (b *Broker) Acquire(ctx context.Context, request AcquireRequest) (*Lease, error) {
-	if b == nil || request.Repo.Validate() != nil || !validJobID(request.JobID) || !request.Binding.Complete() ||
-		invalidToken(b.ParentToken) || !validLeaseValue(b.Audience) || !validLeaseValue(b.Subject) || b.GitProvider == nil {
+	if b == nil || request.Repo.Validate() != nil || !validJobID(request.JobID) || !request.Binding.Complete() || b.GitProvider == nil {
 		return nil, errors.New("credential broker: invalid acquisition request")
 	}
 	profile, err := b.Profile.Normalized()
 	if err != nil || profile.Kind != clientauth.ProfileKindHosted {
 		return nil, errors.New("credential broker: a valid self-hosted profile is required")
+	}
+	if b.ProfileToken != nil {
+		return b.acquireProfileCredential(ctx, request, profile)
+	}
+	if invalidToken(b.ParentToken) || !validLeaseValue(b.Audience) || !validLeaseValue(b.Subject) {
+		return nil, errors.New("credential broker: invalid acquisition request")
 	}
 	ttl := b.TTL
 	if ttl == 0 {
@@ -128,9 +134,42 @@ func (b *Broker) Acquire(ctx context.Context, request AcquireRequest) (*Lease, e
 	return lease, nil
 }
 
+func (b *Broker) acquireProfileCredential(ctx context.Context, request AcquireRequest, profile clientauth.Profile) (*Lease, error) {
+	if err := validateProfileTokenLease(b.ProfileToken); err != nil {
+		return nil, err
+	}
+	root, err := b.Materializer.secureRoot()
+	if err != nil {
+		return nil, err
+	}
+	jobRoot := filepath.Join(root, safeJobDir(request.JobID))
+	if err := secureMkdir(jobRoot); err != nil {
+		return nil, err
+	}
+	lease := &Lease{JobID: request.JobID, Repo: request.Repo, Profile: profile, broker: b,
+		IssueToken: *b.ProfileToken, binding: request.Binding, gitRoot: jobRoot}
+	lease.Git, err = NewGitLease(ctx, jobRoot, request.JobID, capability.OperationGitClone, request.Binding, b.GitProvider)
+	if err != nil {
+		cleanupErr := errors.Join(b.Materializer.Revoke(request.JobID), b.revokeGitJobBounded(ctx, request.JobID))
+		return nil, errors.Join(fmt.Errorf("credential broker: acquire git credential: %w", err), cleanupErr)
+	}
+	return lease, nil
+}
+
+func validateProfileTokenLease(lease *FileLease) error {
+	if lease == nil || lease.SandboxPath != IssueTokenSandboxPath || !filepath.IsAbs(lease.HostPath) ||
+		verifyRegularPrivateFile(filepath.Clean(lease.HostPath)) != nil {
+		return errors.New("credential broker: stable profile credential is unavailable")
+	}
+	return nil
+}
+
 func (b *Broker) Probe(_ context.Context, request PreflightRequest) capability.Report {
 	req := request.Request
 	profile, profileErr := b.Profile.Normalized()
+	if b.ProfileToken != nil {
+		return b.probeProfileCredential(request, profile, profileErr)
+	}
 	ttl := b.TTL
 	if ttl == 0 {
 		ttl = delegation.DefaultTTL
@@ -171,6 +210,41 @@ func (b *Broker) Probe(_ context.Context, request PreflightRequest) capability.R
 		default:
 			result.Decision, result.Code, result.Detail = capability.DecisionUnknown,
 				capability.FailureUnsupportedOperationSurface, "self-hosted runner issuer does not provide this operation"
+		}
+		report.Operations = append(report.Operations, result)
+	}
+	report.Finish()
+	return report
+}
+
+func (b *Broker) probeProfileCredential(request PreflightRequest, profile clientauth.Profile, profileErr error) capability.Report {
+	req := request.Request
+	if profileErr != nil || profile.Kind != clientauth.ProfileKindHosted || request.Repo.Validate() != nil ||
+		!validJobID(request.JobID) || strings.TrimSpace(req.Repository) == "" ||
+		!strings.EqualFold(strings.TrimSpace(req.Host), profile.Hostname) || b.GitProvider == nil ||
+		validateProfileTokenLease(b.ProfileToken) != nil {
+		return capability.FailureReport(req, "private-file", "profile-credential", "unknown", capability.DecisionDenied,
+			capability.FailureInvalidRequest, "runner profile credential is unavailable")
+	}
+	report := capability.Report{Host: req.Host, Repository: req.Repository, Backend: "profile-credential",
+		Credential: capability.CredentialSummary{SourceClass: "private-file"},
+		Network:    capability.NetworkSummary{Status: "configured"}}
+	for _, operation := range effectiveBrokerOperations(req.Operations) {
+		result := capability.OperationResult{Operation: operation}
+		switch operation {
+		case capability.OperationIssueRead, capability.OperationIssueCommentWrite, capability.OperationArtifactWrite:
+			result.Decision = capability.DecisionAllowed
+		case capability.OperationGitClone, capability.OperationGitPush:
+			provider, supported := b.GitProvider.(GitPurposeProvider)
+			if supported && provider.SupportsPurpose(operation) {
+				result.Decision = capability.DecisionAllowed
+			} else {
+				result.Decision, result.Code, result.Detail = capability.DecisionDenied,
+					capability.FailureOperationNotProvable, "operator git credential issuer is unavailable"
+			}
+		default:
+			result.Decision, result.Code, result.Detail = capability.DecisionUnknown,
+				capability.FailureUnsupportedOperationSurface, "self-hosted runner profile does not provide this operation"
 		}
 		report.Operations = append(report.Operations, result)
 	}
@@ -248,7 +322,7 @@ func (l *Lease) Revoke(ctx context.Context) error {
 		return nil
 	}
 	l.revoked.Do(func() {
-		if l.broker != nil {
+		if l.broker != nil && l.broker.ProfileToken == nil {
 			l.err = errors.Join(l.err, l.broker.revokeRemoteBounded(ctx, l.Repo, l.JobID))
 		}
 		if l.Git != nil {
@@ -263,8 +337,12 @@ func (l *Lease) Revoke(ctx context.Context) error {
 }
 
 func (b *Broker) RevokeJob(ctx context.Context, repo models.RepoScope, jobID string) error {
-	if b == nil || b.GitProvider == nil || repo.Validate() != nil || !validJobID(jobID) || invalidToken(b.ParentToken) {
+	if b == nil || b.GitProvider == nil || repo.Validate() != nil || !validJobID(jobID) ||
+		(b.ProfileToken == nil && invalidToken(b.ParentToken)) {
 		return errors.New("credential broker: invalid revoke request")
+	}
+	if b.ProfileToken != nil {
+		return errors.Join(b.Materializer.Revoke(jobID), b.revokeGitJobBounded(ctx, jobID))
 	}
 	return errors.Join(b.revokeRemoteBounded(ctx, repo, jobID), b.Materializer.Revoke(jobID), b.revokeGitJobBounded(ctx, jobID))
 }

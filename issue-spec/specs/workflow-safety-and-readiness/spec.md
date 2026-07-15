@@ -58,7 +58,7 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/166#issu
 
 ### Requirement: Delegated work starts only after scoped agent capability preflight
 
-The workflow runner MUST preflight authentication source, token safety, network reachability and required repository operations before dispatching delegated review or implementation work. In strict delegated mode it MUST provide agents only short-lived credentials scoped to the approved host, repository and operation set; explicitly enabled legacy credentials remain migration-only and MUST NOT satisfy the strict gate.
+The workflow runner MUST preflight authentication source, token safety, network reachability and required repository operations before dispatching delegated review or implementation work. A self-hosted runner MAY satisfy the gate with its origin-bound private profile PAT when that credential is restricted to the exact repository and required scopes. Strict GitHub delegated mode MUST still use short-lived credentials scoped to the approved host, repository and operation set; explicitly enabled legacy host credentials remain migration-only and MUST NOT satisfy that gate.
 
 #### Scenario: failed preflight consumes no worker execution
 
@@ -68,7 +68,7 @@ The workflow runner MUST preflight authentication source, token safety, network 
 #### Scenario: successful preflight returns a capability matrix
 
 - **WHEN** the requested agent operations are available
-- **THEN** the runner MUST record a redacted result containing token source class, host, repository, permitted operations, expiry and network status
+- **THEN** the runner MUST record a redacted result containing token source class, host, repository, permitted operations, expiry knowledge and network status; a private self-hosted profile file MAY report unknown expiry
 
 #### Scenario: credentials cannot escape delegated scope
 

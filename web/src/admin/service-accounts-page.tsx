@@ -29,7 +29,7 @@ export function ServiceAccountsPage() {
 type ManagedToken = { id: string; name: string; token_prefix?: string; scopes?: string[]; repository_ids?: string[]; revoked_at?: string };
 type ManagedTokenForm = { name: string; scopes: string; repository: string };
 
-const runnerScopes = "read:user, issues:read, issues:write, runner:delegate, evidence:write";
+const runnerScopes = "read:user, issues:read, issues:write, evidence:write";
 
 export function ManagedTokensPage() {
   const { t } = useTranslation();
@@ -56,7 +56,7 @@ export function ManagedTokensPage() {
     <div className="two-column token-layout"><Panel title={t("managedTokens.createTitle")} description={t("managedTokens.createDescription")}><form className="form-grid" onSubmit={handleSubmit((form) => create.mutate(form))}>
       <Field label={t("managedTokens.tokenName")} error={errors.name?.message}><TextInput {...register("name", { required: t("managedTokens.nameRequired") })} /></Field>
       <Field label={t("managedTokens.scopes")} hint={t("managedTokens.scopesHint")}><TextInput className="input mono" {...register("scopes")} /><div className="scope-list token-scope-preview">{selectedScopes.map((scope) => <StatusBadge key={scope}>{scope}</StatusBadge>)}</div></Field>
-      <Field label={t("managedTokens.repositoryAccess")} hint={t("managedTokens.repositoryHint")} error={errors.repository?.message}><SelectInput aria-label={t("managedTokens.repositoryAccess")} {...register("repository", { validate: (value) => !managedScopes(getValues("scopes")).includes("runner:delegate") || value !== "" || t("managedTokens.delegationRequired") })}><option value="">{t("managedTokens.allRepositories")}</option>{(repositories.data?.repositories ?? []).map((repository) => <option key={repository.id} value={repository.id}>{repository.name}</option>)}</SelectInput></Field>
+      <Field label={t("managedTokens.repositoryAccess")} hint={t("managedTokens.repositoryHint")} error={errors.repository?.message}><SelectInput aria-label={t("managedTokens.repositoryAccess")} {...register("repository", { validate: (value) => !requiresRepository(managedScopes(getValues("scopes"))) || value !== "" || t("managedTokens.runnerRepositoryRequired") })}><option value="">{t("managedTokens.allRepositories")}</option>{(repositories.data?.repositories ?? []).map((repository) => <option key={repository.id} value={repository.id}>{repository.name}</option>)}</SelectInput></Field>
       <div className="button-row"><button className="button secondary" type="button" onClick={() => { if (!getValues("name")) setValue("name", "runner"); setValue("scopes", runnerScopes, { shouldValidate: true }); }}><ShieldCheck size={16} />{t("managedTokens.runnerPreset")}</button><button className="button primary" type="submit" disabled={!target || create.isPending}><KeyRound size={16} />{t("managedTokens.create")}</button></div>
     </form></Panel><Panel title={t("managedTokens.runnerBoundaryTitle")}><div className="editorial-note"><Bot size={22} /><p>{t("managedTokens.runnerBoundaryDescription")}</p></div></Panel></div>
     <Panel title={t("managedTokens.credentials")}>{repositories.error ? <ErrorNotice error={repositories.error} /> : null}{tokens.error ? <ErrorNotice error={tokens.error} /> : null}<div className="resource-list">{(tokens.data?.tokens as ManagedToken[] | undefined)?.map((token) => <article className="resource-row" key={token.id}><div><strong>{token.name}</strong><span className="mono">{token.token_prefix}</span><small>{managedTokenBoundary(token, repositories.data?.repositories ?? [], t)}</small></div><div className="scope-list">{token.scopes?.map((scope) => <StatusBadge key={scope}>{scope}</StatusBadge>)}</div><div className="row-actions"><button className="icon-button" type="button" onClick={() => rotate.mutate(token.id)} aria-label={t("managedTokens.rotate", { name: token.name })}><RefreshCw size={16} /></button><button className="icon-button danger-text" type="button" onClick={() => revoke.mutate(token.id)} aria-label={t("managedTokens.revoke", { name: token.name })}><Trash2 size={16} /></button></div></article>)}</div></Panel>
@@ -72,4 +72,8 @@ function managedTokenBoundary(token: ManagedToken, repositories: Array<{ id: str
 
 function managedScopes(value: string | undefined) {
   return (value ?? "").split(",").map((scope) => scope.trim()).filter(Boolean);
+}
+
+function requiresRepository(scopes: string[]) {
+  return scopes.includes("evidence:write") || scopes.includes("runner:delegate");
 }

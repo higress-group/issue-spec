@@ -582,8 +582,8 @@ func appendEvidenceTx(ctx context.Context, tx pgx.Tx, actor adminservice.Actor, 
 }
 
 // ExactRevision only returns evidence whose provider, external repository and
-// subject revision all match exactly. Payload and provenance remain
-// maintainer-only even for repository-visible summaries.
+// subject revision all match exactly. Repository-visible evidence includes its
+// payload and provenance; maintainer-visible rows remain filtered as a unit.
 func (s *Service) ExactRevision(ctx context.Context, subject authz.Subject, scope models.RepoScope, query ExactRevisionQuery) ([]Evidence, error) {
 	query.ProviderKey = strings.TrimSpace(query.ProviderKey)
 	query.ExternalRepositoryID = strings.TrimSpace(query.ExternalRepositoryID)
@@ -623,10 +623,6 @@ func (s *Service) ExactRevision(ctx context.Context, subject authz.Subject, scop
 		item, scanErr := scanEvidence(rows)
 		if scanErr != nil {
 			return nil, scanErr
-		}
-		if decision.EffectivePermission < authz.PermissionMaintain {
-			item.Payload = nil
-			item.Provenance = nil
 		}
 		items = append(items, item)
 	}

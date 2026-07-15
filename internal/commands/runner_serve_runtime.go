@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,14 +18,13 @@ import (
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/github"
-	"github.com/higress-group/issue-spec/internal/server/auth/delegation"
 )
 
 type runnerServeRuntime interface{ Run(context.Context) error }
 
 type runnerServeRuntimeInput struct {
 	Profile                  auth.Profile
-	ParentToken              string
+	ProfileToken             string
 	Runner                   commentrunner.Config
 	Queue                    *webhook.Queue
 	Store                    crstate.StateStore
@@ -38,9 +36,6 @@ type runnerServeRuntimeInput struct {
 	GitCredentialConcurrency int
 	ReconcileWorkers         int
 	ReconcileLease           time.Duration
-	DelegationAudience       string
-	DelegationSubject        string
-	DelegationTTL            time.Duration
 	Dependencies             *runnerServeRuntimeDependencies
 }
 
@@ -61,16 +56,16 @@ var runnerServeRun = func(ctx context.Context, runtime runnerServeRuntime) error
 
 func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntimeInput) (runnerServeRuntime, error) {
 	profile, err := input.Profile.Normalized()
-	if err != nil || profile.Kind != auth.ProfileKindHosted || strings.TrimSpace(input.ParentToken) == "" {
-		return nil, fmt.Errorf("runner serve runtime requires a self-hosted profile and parent PAT")
+	if err != nil || profile.Kind != auth.ProfileKindHosted || strings.TrimSpace(input.ProfileToken) == "" {
+		return nil, fmt.Errorf("runner serve runtime requires a self-hosted profile and profile PAT")
 	}
 	compatibility, err := github.NewClientWithOptions(github.ClientOptions{Host: profile.Hostname, BaseURL: profile.APIURL,
-		Token: input.ParentToken, CAFile: profile.CAFile})
+		Token: input.ProfileToken, CAFile: profile.CAFile})
 	if err != nil {
 		return nil, err
 	}
 	native, err := github.NewClientWithOptions(github.ClientOptions{Host: profile.Hostname, BaseURL: profile.NativeAPIURL,
-		Token: input.ParentToken, CAFile: profile.CAFile})
+		Token: input.ProfileToken, CAFile: profile.CAFile})
 	if err != nil {
 		return nil, err
 	}
@@ -105,28 +100,13 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	if err != nil {
 		return nil, err
 	}
-	nativeHTTPClient, ok := native.HTTPClient.(*http.Client)
-	if !ok {
-		return nil, fmt.Errorf("runner serve native profile requires an HTTP client")
+	materializer := credentials.Materializer{Root: credentialRoot}
+	profileToken, err := materializer.WriteProfileToken(input.ProfileToken)
+	if err != nil {
+		return nil, fmt.Errorf("runner serve profile credential: %w", err)
 	}
-	audience, subject := strings.TrimSpace(input.DelegationAudience), strings.TrimSpace(input.DelegationSubject)
-	if audience == "" {
-		audience = defaultDelegationAudience
-	}
-	if subject == "" {
-		subject = defaultDelegationSubject
-	}
-	delegationTTL := input.DelegationTTL
-	if delegationTTL == 0 {
-		delegationTTL = delegation.DefaultTTL
-	}
-	if delegationTTL < delegation.MinTTL || delegationTTL > delegation.MaxTTL {
-		return nil, fmt.Errorf("runner serve delegation TTL must be between %s and %s", delegation.MinTTL, delegation.MaxTTL)
-	}
-	broker := &credentials.Broker{Profile: profile, Audience: audience,
-		Subject: subject, ParentToken: input.ParentToken, HTTPClient: nativeHTTPClient,
-		Materializer: credentials.Materializer{Root: credentialRoot}, GitProvider: gitProvider, TTL: delegationTTL,
-		Scopes: []string{"read:user", "issues:read", "issues:write"}}
+	broker := &credentials.Broker{Profile: profile, ProfileToken: &profileToken,
+		Materializer: materializer, GitProvider: gitProvider}
 	workspaces := jobs.WorkspaceManager(runnerWorkspaceManager(input.Runner))
 	sandboxer := jobs.SandboxPreparer(jobs.SandboxRunner{Config: sandboxConfig})
 	acpxFactory := jobs.AcpxFactory(jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(input.Runner)})

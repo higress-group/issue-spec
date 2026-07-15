@@ -33,7 +33,7 @@ The server is authoritative for:
 - organizations, repositories, memberships, collaborators, and visibility;
 - issues, comments, labels, reactions, typed workflow projections, and change
   boards;
-- personal and managed access tokens, service accounts, runner delegation,
+- personal and managed access tokens, service accounts, optional token delegation,
   source bindings, and evidence-writer designation;
 - webhook subscriptions, filtering, encrypted credentials, delivery attempts,
   retries, replay, and audit records.

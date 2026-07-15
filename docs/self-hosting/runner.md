@@ -21,7 +21,7 @@ runner serve /api/v1/runner/webhooks
         |
         +--> authorize comment author and repository
         +--> resolve source binding and job-scoped Git credential
-        +--> delegate a short-lived issue token
+        +--> reuse the origin-bound profile PAT
         v
       acpx --> Codex or Claude
         |
@@ -107,7 +107,7 @@ security boundary:
 5. confirm these scopes and create the Managed PAT:
 
 ```text
-read:user, issues:read, issues:write, runner:delegate, evidence:write
+read:user, issues:read, issues:write, evidence:write
 ```
 
 6. using a repository owner or operator identity, designate that exact service
@@ -132,7 +132,7 @@ runner may use your own issue-spec account:
    **Evidence Writer** for that repository;
 5. pass your exact login to `--runner` when starting the process.
 
-The personal PAT uses the same five scopes and exact one-repository cap. By
+The personal PAT uses the same four scopes and exact one-repository cap. By
 default, only the account named by `--runner` can issue commands; add
 `--allowed-user` only when other maintainers should be accepted. This option is
 quicker to configure, but runner writes, credential rotation, and account
@@ -142,7 +142,7 @@ or login session for the PAT.
 
 Evidence Writer is a durable Server assignment to the user identity. It is not
 a PAT scope or token option, so `evidence:write` never designates its holder.
-Keep the Runner PAT restricted to the five scopes above. Use a separate
+Keep the Runner PAT restricted to the four scopes above. Use a separate
 repository-administration session or short-lived, exact-repository `admin:repo`
 PAT to manage the assignment; never add `admin:repo` to the Runner PAT. Rotating
 a PAT for the same identity preserves the assignment. Deactivate the assignment
@@ -169,23 +169,14 @@ unset ISSUE_SPEC_TOKEN
 issue-spec --profile team auth status --json
 ```
 
-The Managed PAT or personal PAT selected above is the parent credential. Each
-job receives a short-lived, repository-scoped issue token delegated by the
-server. A parent credential is restricted to exactly one repository; use a
-separate PAT, profile, and `runner serve` process for each additional repository.
-
-The defaults for `--delegation-audience` and `--delegation-subject` are the
-server defaults, `issue-spec-api` and `issue-spec-runner`. Keep them aligned
-with `DELEGATION_AUDIENCE` and `DELEGATION_SUBJECT` when an operator changes
-those server settings. The Runner issues one delegated token per `/new` or
-`/resume` job and does not renew it while that agent turn is active. The
-default and maximum lifetime are therefore seven days so uninterrupted,
-multi-day jobs retain issue API access. The token remains bound to one
-repository and job, and the Runner revokes it immediately when the job
-completes, fails, or is canceled, so seven days is a fail-safe upper bound
-rather than the normal effective lifetime. Operators whose jobs are always
-shorter can reduce `--delegation-ttl` down to `30s`. Correct the clocks on both
-hosts if a Runner rejects a newly issued token as expired.
+The Managed PAT or personal PAT selected above is the credential used by every
+`/new` and `/resume` job. `runner serve` materializes it once in a private,
+stable file outside the repository workspaces, then exposes that same file to
+each agent session. It does not mint or revoke a delegated issue token per job.
+The Server delegation API remains available for other integrations, but is not
+part of the Runner execution path. Restrict this PAT to exactly one repository;
+use a separate PAT, profile, and `runner serve` process for each additional
+repository.
 
 ## 4. Create the Runner intake webhook
 
@@ -357,8 +348,9 @@ For the internal SSH mode, replace the example's
 macOS, use the same explicit `--unsafe-no-sandbox --allow-host-ssh`
 combination in both commands.
 
-Repeat `--allowed-user` as needed. One parent credential cannot delegate across
-repositories. The default maximum is three concurrent jobs.
+Repeat `--allowed-user` as needed. Keep each Runner profile PAT restricted to
+the repositories served by that process. The default maximum is three
+concurrent jobs.
 
 If TLS terminates at a reverse proxy, listen on loopback and expose only
 `/api/v1/runner/webhooks`. For direct TLS, bind an exact non-loopback IP—not a
@@ -475,9 +467,8 @@ team workflow:
 | Webhook returns `401` | Subscription ID, current secret, and server/runner clocks |
 | Webhook cannot connect | Receiver URL, DNS, firewall, reverse proxy, and TLS |
 | Comment is ignored | Command position, allowlist, and write-equivalent permission |
-| `runner:delegate` fails | Exact repository restriction and scopes (`read:user`, `issues:read`, `issues:write`, `runner:delegate`, `evidence:write`) |
+| Profile PAT authentication fails | Confirm the origin-bound profile still resolves the intended Runner identity and includes `read:user`, `issues:read`, `issues:write`, and `evidence:write` |
 | `evidence-writer:<repo>` fails | The Runner PAT login exactly matches `--runner`, and that identity has an active repository Evidence Writer assignment; `evidence:write` alone is not an assignment |
-| Newly issued delegated token is rejected as expired | Synchronize Server and Runner clocks; do not use a longer `--delegation-ttl` to hide clock drift |
 | Clone fails | Active source binding; for credentials, the HTTPS URL and exact binding echo; for host SSH, the runner user's key, agent, `known_hosts`, and repository access |
 | Commit reports an unknown author | Configure both `--git-author-name` and `--git-author-email` with values accepted by the code host; do not restore the host global Git config |
 | Sandbox preflight fails | Install `bubblewrap` or configure `--bwrap` on Linux |
@@ -491,7 +482,7 @@ new value.
 ## Security boundaries
 
 - the webhook secret authenticates delivery only; it grants no issue or source authority;
-- the profile PAT delegates short-lived, repository-scoped job tokens;
+- the origin-bound profile PAT is reused by every job and must be restricted to the Runner's intended repositories and scopes;
 - source bindings contain no credentials; prefer short-lived, binding-specific Git credentials;
 - `--allow-host-ssh` exposes the dedicated runner user's SSH authority to the sandboxed agent and is only for an explicitly trusted internal boundary;
 - the runner handles only explicit `--repo` values, and authors must pass both allowlist and repository authorization;

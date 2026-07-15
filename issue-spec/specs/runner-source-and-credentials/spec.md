@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define trusted source-repository resolution and short-lived purpose-scoped credentials supplied to isolated runner jobs.
+Define trusted source-repository resolution and the narrowly scoped issue and source credentials supplied to isolated runner jobs.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/160
@@ -35,33 +35,44 @@ The runner MUST treat issue repository identity and source repository location a
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4932916831
 
-### Requirement: Sandboxed agents receive only short-lived purpose-scoped credentials
+### Requirement: Sandboxed agents receive explicit repository-scoped credentials
 
-The runner MUST broker short-lived repository, job, audience and purpose scoped credentials for issue API and source access, MUST keep long-lived human and service credentials outside the sandbox, and MUST revoke or expire every lease when the job or session ends.
+For self-hosted issue API access, the runner MUST reuse the operator-selected,
+origin-bound profile PAT through a stable private read-only file shared by jobs
+served by that process. The PAT MUST remain restricted to the exact repository
+and minimum runner scopes. Source access MUST continue to use an operator-owned,
+purpose-scoped credential helper or an explicitly enabled host SSH boundary.
+Neither credential may be embedded in repository state, prompts, clone URLs, or
+durable runner records.
 
-#### Scenario: child issue access uses a delegated token file
+#### Scenario: child issue access uses the profile PAT file
 
 - **WHEN** a sandboxed coordinator starts
-- **THEN** the runner MUST mint or obtain a short-lived issue token with only required repository scopes, write it to a session-private read-only file, expose the selected profile and token-file path, and pass child auth status before agent dispatch
+- **THEN** the runner MUST expose the selected self-hosted profile and stable private token-file path, reuse the configured profile PAT without a per-job delegation exchange, and pass child auth status before agent dispatch
 
-#### Scenario: an uninterrupted agent job runs for multiple days
+#### Scenario: issue access remains stable across jobs and resume
 
-- **WHEN** a `/new` or `/resume` job remains active beyond a minute-scale credential lifetime
-- **THEN** its delegated issue token MUST remain usable for up to the seven-day default job lifetime, remain bound to the repository and job, and be revoked immediately when the job reaches a terminal state
+- **WHEN** the runner dispatches successive `/new` or `/resume` jobs for its configured repository
+- **THEN** each job MUST receive the same profile PAT file capability, job cleanup MUST NOT delete that file, and PAT rotation or revocation MUST remain an explicit operator action
+
+#### Scenario: optional delegation remains outside the default runner path
+
+- **WHEN** another integration needs a short-lived delegated issue credential
+- **THEN** the server MAY issue and revoke that credential through its delegation API, but `runner serve` MUST NOT require or invoke that exchange for its normal job lifecycle
 
 #### Scenario: source clone uses an operator credential helper
 
 - **WHEN** the runner clones or writes the bound source repository
 - **THEN** it MUST use an operator-owned credential helper or askpass lease, MUST NOT embed a token in the URL, and MUST not copy the credential into issue, workspace or agent prompt content
 
-#### Scenario: broker failure cannot fall back to host secrets
+#### Scenario: credential failure cannot fall back to host secrets
 
-- **WHEN** the credential broker cannot issue or refresh a required lease
+- **WHEN** the profile PAT file or required source credential cannot be prepared
 - **THEN** the job MUST fail before agent startup and MUST NOT inherit ISSUE_SPEC_TOKEN, GH_TOKEN, GITHUB_TOKEN or a host credential store as a fallback
 
-#### Scenario: leases are revoked and audited
+#### Scenario: job-scoped source leases are revoked and audited
 
 - **WHEN** a job completes, is canceled, fails or exceeds its lifetime
-- **THEN** the runner MUST revoke revocable leases, delete private token files, record the lease lifecycle without secret values and prevent reuse by later sessions
+- **THEN** the runner MUST revoke revocable source leases, delete job-private source credential files, record the lease lifecycle without secret values, and preserve only the process-level profile PAT file for later authorized sessions
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4932917391

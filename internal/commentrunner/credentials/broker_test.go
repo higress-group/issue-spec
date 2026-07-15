@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -304,6 +305,45 @@ func TestBrokerPreflightProvesOnlyConfiguredIssuerOperations(t *testing.T) {
 		Repo: repo, JobID: "job-preflight"})
 	if report.OK || report.Operations[0].Decision != capability.DecisionUnknown {
 		t.Fatalf("unsupported report = %+v", report)
+	}
+}
+
+func TestBrokerReusesStableProfilePATAcrossJobs(t *testing.T) {
+	materializer := Materializer{Root: t.TempDir()}
+	profileToken, err := materializer.WriteProfileToken("iss_pat_runner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := clientauth.Profile{Name: "runner", Kind: clientauth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "instance-a"}
+	broker := &Broker{Profile: profile, ProfileToken: &profileToken, Materializer: materializer,
+		GitProvider: staticGitProvider{lease: GitProviderLease{Credential: GitSecret{Username: "runner", Password: "git-secret"},
+			ExpiresAt: time.Now().Add(time.Minute), Revoke: func(context.Context) error { return nil }}}}
+	repo := models.RepoScope{OrgID: uuid.New(), RepoID: uuid.New()}
+	var paths []string
+	for _, jobID := range []string{"job-profile-1", "job-profile-2"} {
+		lease, acquireErr := broker.Acquire(t.Context(), AcquireRequest{Repo: repo, JobID: jobID, Binding: testBinding()})
+		if acquireErr != nil {
+			t.Fatal(acquireErr)
+		}
+		paths = append(paths, lease.IssueToken.HostPath)
+		if revokeErr := lease.Revoke(t.Context()); revokeErr != nil {
+			t.Fatal(revokeErr)
+		}
+	}
+	if paths[0] != profileToken.HostPath || paths[1] != profileToken.HostPath {
+		t.Fatalf("profile token paths = %v, want %s", paths, profileToken.HostPath)
+	}
+	if _, err := os.Stat(profileToken.HostPath); err != nil {
+		t.Fatalf("profile token removed after job cleanup: %v", err)
+	}
+	report := broker.Probe(t.Context(), PreflightRequest{Request: capability.Request{Host: "issues.example.test",
+		Repository: "o/r", Operations: []capability.Operation{capability.OperationIssueRead, capability.OperationGitPush}},
+		Repo: repo, JobID: "job-profile-probe"})
+	if !report.OK || report.Credential.ExpiryKnown || report.Credential.SourceClass != "private-file" ||
+		report.Backend != "profile-credential" {
+		t.Fatalf("profile report = %+v", report)
 	}
 }
 

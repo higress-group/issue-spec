@@ -20,7 +20,7 @@ runner serve /api/v1/runner/webhooks
         |
         +--> 校验评论作者与仓库权限
         +--> 获取 Source Binding 和任务级 Git 凭据，或使用宿主 SSH
-        +--> 委托短期 Issue Token
+        +--> 复用与 Origin 绑定的 Profile PAT
         v
       acpx --> Codex 或 Claude
         |
@@ -106,8 +106,8 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 2. 在目标仓库的 **协作者** 页面解析该 Login，并授予最低的 `write` 角色；
 3. 在 **管理后台 > 托管访问令牌** 中解析该 Service Account；
 4. 选择 **运行器预设**，并且只选择 Runner 要服务的那个仓库；
-5. 确认 Scope 包含 `read:user`、`issues:read`、`issues:write`、
-   `runner:delegate` 和 `evidence:write`；
+5. 确认 Scope 包含 `read:user`、`issues:read`、`issues:write` 和
+   `evidence:write`；
 6. 创建并保存只显示一次的 Managed PAT。
 7. 由仓库 Owner 或运维身份把该 Service Account 显式指定为目标仓库的有效
    **Evidence Writer**。
@@ -129,14 +129,14 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
    **Evidence Writer**；
 5. 启动时把自己的准确 Login 传给 `--runner`。
 
-个人 PAT 使用相同的五个 Scope，并且同样必须精确绑定一个仓库。默认只有
+个人 PAT 使用相同的四个 Scope，并且同样必须精确绑定一个仓库。默认只有
 `--runner` 对应的自己可以发出命令；需要允许其他维护者时再增加 `--allowed-user`。
 这种方式配置更少，但 Runner 写入、凭据轮换和账号停用都与个人身份绑定，不适合作为
 团队长期运行或多人共用的生产自动化。不要用浏览器 Session Cookie 或登录会话替代 PAT。
 
 Evidence Writer 是 Server 按用户身份保存的持久授权，不是 PAT Scope，也不是创建 Token
 时的选项；`evidence:write` 不会让 Token 持有人自动成为 Evidence Writer。Runner PAT
-仍只保留上述五个 Scope；使用独立的仓库管理 Session 或短期、准确限定到该仓库的
+仍只保留上述四个 Scope；使用独立的仓库管理 Session 或短期、准确限定到该仓库的
 `admin:repo` PAT 管理指定，绝不能把 `admin:repo` 加到 Runner PAT。为同一身份轮换 PAT
 不会改变指定；停用该身份或把 Runner 迁移到其他账号时，应同时停用原指定。Native API
 操作和撤销示例见[指定 Evidence Writer](bridges/code-provider-v1.md#assign-an-evidence-writer)。
@@ -160,19 +160,11 @@ unset ISSUE_SPEC_TOKEN
 issue-spec --profile team auth status --json
 ```
 
-上述 Managed PAT 或个人 PAT 是 Runner 的父凭据。每个任务实际使用的是 Server
-委托的短期、仓库范围 Issue Token。父凭据必须精确绑定一个仓库；需要服务多个仓库时，
-应为每个仓库创建独立的 PAT、Profile 和 `runner serve` 进程。
-
-`--delegation-audience` 与 `--delegation-subject` 默认分别为 Server 的
-默认值 `issue-spec-api`、`issue-spec-runner`。如果运维修改了
-`DELEGATION_AUDIENCE` 或 `DELEGATION_SUBJECT`，Runner 参数也必须保持一致。
-Runner 会为每个 `/new` 或 `/resume` 作业签发一次委托 Token，Agent Turn 运行期间
-暂不自动续期。因此默认和最长有效期均为 7 天，确保连续运行数日的任务仍可访问
-Issue API。Token 仍严格绑定单个仓库与作业，并在作业完成、失败或取消时由 Runner
-立即撤销，所以 7 天是异常情况下的兜底上限，而不是通常的实际有效时长。任务始终
-较短的环境可以通过 `--delegation-ttl` 把有效期缩短，最低为 `30s`。新签发 Token
-在 Runner 上被判为过期时，应校准 Server 与 Runner 的时钟。
+上述 Managed PAT 或个人 PAT 会由每个 `/new` 与 `/resume` 作业直接使用。
+`runner serve` 启动时把它写入仓库 Workspace 之外的固定私有文件，所有 Agent Session
+都复用同一个文件，不再为每个作业签发和撤销委托 Issue Token。Server 的委托 Token
+API 仍可供其他集成使用，但不在 Runner 执行链路中。该 PAT 必须精确绑定一个仓库；
+需要服务多个仓库时，应为每个仓库创建独立的 PAT、Profile 和 `runner serve` 进程。
 
 ## 4. 创建 Runner Intake Webhook
 
@@ -349,7 +341,7 @@ issue-spec --profile team runner serve \
 相同的显式 `--unsafe-no-sandbox --allow-host-ssh` 组合。
 
 `--allowed-user` 可以重复。默认最多并行运行 3 个任务，可用
-`--max-concurrent-jobs` 调整。同一个父凭据不能跨仓库委托任务。
+`--max-concurrent-jobs` 调整。每个 Runner Profile PAT 都应限制到该进程实际服务的仓库。
 
 ### 网络和 TLS
 
@@ -473,9 +465,8 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 | Webhook 为 `401` | Subscription ID、当前 Secret、Runner 与 Server 时钟 |
 | Webhook 无法连接 | Receiver URL、DNS、防火墙、反向代理和 TLS |
 | 评论被忽略 | 命令是否位于开头、作者是否在允许列表、是否具有 Write 权限 |
-| `runner:delegate` 失败 | PAT 是否只限制到该仓库，以及是否包含 `read:user`、`issues:read`、`issues:write`、`runner:delegate`、`evidence:write` |
+| Profile PAT 认证失败 | 与 Origin 绑定的 Profile 是否仍解析到预期 Runner 身份，以及 PAT 是否包含 `read:user`、`issues:read`、`issues:write`、`evidence:write` |
 | `evidence-writer:<repo>` 失败 | Runner PAT 的 Login 是否与 `--runner` 完全一致，以及该身份是否为当前仓库的有效 Evidence Writer；只有 `evidence:write` 并不构成指定 |
-| 新签发的委托 Token 被判为过期 | 校准 Server 与 Runner 时钟；不要通过延长 `--delegation-ttl` 掩盖时钟漂移 |
 | 找不到源码或 Clone 失败 | Source Binding 是否 Active；短期凭据模式检查 HTTPS URL 与 Command 回显，宿主 SSH 模式检查 Runner 用户的 Key、Agent、`known_hosts` 和仓库权限 |
 | 提交时报作者身份未知 | 同时配置 `--git-author-name` 与 `--git-author-email`，并使用代码平台认可的值；不要恢复宿主全局 Git 配置 |
 | Preflight 报沙箱失败 | Linux 上安装 `bubblewrap` 或显式配置 `--bwrap` |
@@ -488,7 +479,7 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 ## 安全边界
 
 - Webhook Secret 只验证 Server 到 Runner 的投递，不授予 Issue 或代码权限；
-- Profile PAT 只用于向 Server 委托短期、仓库范围的任务 Token；
+- 与 Origin 绑定的 Profile PAT 会由每个作业复用，必须限制到 Runner 预期服务的仓库与 Scope；
 - Source Binding 始终不含凭据；优先按 Job 和 Binding 短期签发 Git 凭据；
 - `--allow-host-ssh` 会把专用 Runner 用户的 SSH 权限暴露给沙箱内 Agent，只适用于明确
   接受这一边界的可信内网；

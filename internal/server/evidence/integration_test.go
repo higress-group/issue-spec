@@ -101,7 +101,8 @@ func TestEvidencePolicyWriterTenantAndPublicationLifecycle(t *testing.T) {
 	readerItems, err := env.service.ExactRevision(t.Context(), authz.Authenticated(env.reader), env.scope, ExactRevisionQuery{
 		IssueID: env.issueID, ProviderKey: "github", ExternalRepositoryID: "acme/widgets", SubjectRevision: "abc",
 	})
-	if err != nil || len(readerItems) != 1 || readerItems[0].Payload != nil || readerItems[0].Provenance != nil {
+	if err != nil || len(readerItems) != 1 || string(readerItems[0].Payload) != string(first.Payload) ||
+		string(readerItems[0].Provenance) != string(first.Provenance) {
 		t.Fatalf("reader exact evidence = %+v, %v", readerItems, err)
 	}
 	ownerItems, err := env.service.ExactRevision(t.Context(), authz.Authenticated(env.owner), env.scope, ExactRevisionQuery{

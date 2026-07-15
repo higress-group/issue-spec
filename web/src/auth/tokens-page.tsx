@@ -13,7 +13,7 @@ import type { TFunction } from "i18next";
 type TokenForm = { name: string; scopes: string; repository: string };
 type RepositoryOption = { organizationId: string; repositoryId: string; label: string };
 
-const runnerScopes = "read:user, issues:read, issues:write, runner:delegate, evidence:write";
+const runnerScopes = "read:user, issues:read, issues:write, evidence:write";
 
 export function TokensPage() {
   const { t, i18n } = useTranslation();
@@ -54,7 +54,7 @@ export function TokensPage() {
     <div className="two-column token-layout"><Panel title={t("personalTokens.createTitle")} description={t("personalTokens.createDescription")}><form className="form-grid" onSubmit={handleSubmit((form) => create.mutate(form))}>
       <Field label={t("personalTokens.tokenName")} error={errors.name?.message}><TextInput {...register("name", { required: t("personalTokens.nameRequired") })} /></Field>
       <Field label={t("personalTokens.scopes")} hint={t("personalTokens.scopesHint")}><TextInput className="input mono" {...register("scopes")} /></Field>
-      <Field label={t("personalTokens.repositoryAccess")} hint={t("personalTokens.repositoryHint")} error={errors.repository?.message}><SelectInput aria-label={t("personalTokens.repositoryAccess")} {...register("repository", { validate: (value) => !getValues("scopes").split(",").map((scope) => scope.trim()).includes("runner:delegate") || value !== "" || t("personalTokens.delegationRequired") })}><option value="">{t("personalTokens.allRepositories")}</option>{repositoryOptions.map((repository) => <option key={`${repository.organizationId}/${repository.repositoryId}`} value={repository.repositoryId}>{repository.label}</option>)}</SelectInput></Field>
+      <Field label={t("personalTokens.repositoryAccess")} hint={t("personalTokens.repositoryHint")} error={errors.repository?.message}><SelectInput aria-label={t("personalTokens.repositoryAccess")} {...register("repository", { validate: (value) => !requiresRepository(getValues("scopes").split(",").map((scope) => scope.trim())) || value !== "" || t("personalTokens.runnerRepositoryRequired") })}><option value="">{t("personalTokens.allRepositories")}</option>{repositoryOptions.map((repository) => <option key={`${repository.organizationId}/${repository.repositoryId}`} value={repository.repositoryId}>{repository.label}</option>)}</SelectInput></Field>
       <div className="button-row"><button className="button secondary" type="button" onClick={() => setValue("scopes", runnerScopes, { shouldValidate: true })}><ShieldCheck size={16} />{t("personalTokens.runnerPreset")}</button><button className="button primary" type="submit" disabled={create.isPending}><Plus size={16} />{t("personalTokens.create")}</button></div>
     </form></Panel>
       <Panel title={t("personalTokens.hygieneTitle")}><div className="editorial-note"><KeyRound size={22} /><p>{t("personalTokens.hygieneDescription")}</p></div></Panel></div>
@@ -75,6 +75,10 @@ function tokenBoundaryLabel(token: PAT, repositories: RepositoryOption[], t: TFu
   const labels = token.repositories.map((selection) => repositories.find((repository) => repository.organizationId === selection.organization_id && repository.repositoryId === selection.repository_id)?.label).filter(Boolean);
   if (labels.length === token.repositories.length && labels.length > 0) return t("personalTokens.restrictedTo", { repositories: labels.join(", ") });
   return t("personalTokens.restrictedRepositories", { count: token.repositories.length });
+}
+
+function requiresRepository(scopes: string[]) {
+  return scopes.includes("evidence:write") || scopes.includes("runner:delegate");
 }
 
 function formatDate(value: string | null | undefined, language: string | undefined, t: TFunction) {

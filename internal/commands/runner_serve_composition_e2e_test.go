@@ -38,9 +38,9 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	orgID, repoID, issueID, commentID, actorID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	commentNumericID := int64(71)
-	var exchangeCalls, revokeCalls, reactionCalls, writebackCalls atomic.Int32
+	var reactionCalls, writebackCalls atomic.Int32
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer parent-profile-pat" {
+		if r.Header.Get("Authorization") != "Bearer profile-pat" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -60,13 +60,6 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 				"external_repository_id": "org/repo", "clone_url": "https://git.example.test/org/repo.git",
 				"web_url": "https://git.example.test/org/repo", "default_branch": "main", "version": 1, "active": true,
 				"created_at": now, "updated_at": now})
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/delegated-tokens/exchange"):
-			exchangeCalls.Add(1)
-			writeRunnerJSON(w, http.StatusCreated, map[string]any{"id": uuid.New(), "token": "iss_dgt_aabbccdd_child-e2e",
-				"expires_at": time.Now().UTC().Add(4 * time.Minute)})
-		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/delegated-tokens"):
-			revokeCalls.Add(1)
-			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/user":
 			writeRunnerJSON(w, http.StatusOK, map[string]any{"id": 1, "node_id": "runner", "login": "runner"})
 		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/api/v3/repos/owner/repo/issues/comments/%d", commentNumericID):
@@ -140,7 +133,7 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 		RunnerIdentity: "runner", AllowedUsers: []string{"alice"}, StatePath: filepath.Join(root, "state.json"),
 		WorkspaceRoot: workspaces.root, WorkspaceRetention: commentrunner.NewDuration(time.Hour), MaxConcurrentJobs: 1,
 		AcpxPath: "acpx-e2e", Agent: commentrunner.DefaultAgentConfig(), CancellationEnabled: true, UnsafeNoSandbox: true}
-	runtime, err := defaultBuildRunnerServeRuntime(t.Context(), runnerServeRuntimeInput{Profile: profile, ParentToken: "parent-profile-pat",
+	runtime, err := defaultBuildRunnerServeRuntime(t.Context(), runnerServeRuntimeInput{Profile: profile, ProfileToken: "profile-pat",
 		Runner: runner, Queue: queue, Store: store, HTTP: httpService, GitCredentialCommand: executable,
 		GitCredentialArgs:    []string{"-test.run=^TestRunnerServeCredentialCommandHelper$", "--", auditPath},
 		GitCredentialTimeout: 5 * time.Second, GitCredentialMaxOutput: 1 << 20, GitCredentialConcurrency: 1,
@@ -202,17 +195,16 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 	if runErr := <-done; runErr != nil {
 		t.Fatal(runErr)
 	}
-	if !sandboxer.authenticated.Load() || !workspaces.cloneCredentialUsed.Load() || exchangeCalls.Load() != 1 ||
-		revokeCalls.Load() != 1 || reactionCalls.Load() != 1 || writebackCalls.Load() != 2 {
-		t.Fatalf("child_auth=%t clone_credential=%t exchange=%d revoke=%d reactions=%d writebacks=%d",
-			sandboxer.authenticated.Load(), workspaces.cloneCredentialUsed.Load(), exchangeCalls.Load(), revokeCalls.Load(),
-			reactionCalls.Load(), writebackCalls.Load())
+	if !sandboxer.authenticated.Load() || !workspaces.cloneCredentialUsed.Load() ||
+		reactionCalls.Load() != 1 || writebackCalls.Load() != 2 {
+		t.Fatalf("child_auth=%t clone_credential=%t reactions=%d writebacks=%d",
+			sandboxer.authenticated.Load(), workspaces.cloneCredentialUsed.Load(), reactionCalls.Load(), writebackCalls.Load())
 	}
 	serialized, err := json.Marshal(mustLoadRunnerState(t, store))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"parent-profile-pat", "iss_dgt_aabbccdd_child-e2e", "git-child-secret"} {
+	for _, forbidden := range []string{"profile-pat", "git-child-secret"} {
 		if bytes.Contains(serialized, []byte(forbidden)) {
 			t.Fatalf("credential leaked into state: %s", serialized)
 		}
@@ -345,7 +337,7 @@ func (w *compositionWorkspace) PrepareNew(ctx context.Context, request workspace
 		return workspace.Binding{}, err
 	}
 	for _, entry := range credential.Env {
-		if strings.Contains(entry, "parent-profile-pat") || strings.Contains(entry, "iss_dgt") || strings.Contains(entry, "git-child-secret") {
+		if strings.Contains(entry, "profile-pat") || strings.Contains(entry, "iss_dgt") || strings.Contains(entry, "git-child-secret") {
 			return workspace.Binding{}, errors.New("plaintext credential entered git environment")
 		}
 	}
@@ -388,16 +380,20 @@ func (s *compositionSandbox) Prepare(_ context.Context, request jobs.SandboxRequ
 	s.requests = append(s.requests, request)
 	s.mu.Unlock()
 	if request.ChildProfile == nil || len(request.FileCapabilities) != 4 {
-		return jobs.ExecutionEnvironment{}, errors.New("delegated child profile or file capabilities missing")
+		return jobs.ExecutionEnvironment{}, errors.New("profile child credential or file capabilities missing")
 	}
+	profileCredentialFound := false
 	for _, capability := range request.FileCapabilities {
 		data, err := os.ReadFile(capability.Source)
 		if err != nil {
 			return jobs.ExecutionEnvironment{}, err
 		}
-		if bytes.Contains(data, []byte("parent-profile-pat")) {
-			return jobs.ExecutionEnvironment{}, errors.New("parent PAT entered sandbox capability")
+		if capability.EnvName == "ISSUE_SPEC_TOKEN_FILE" {
+			profileCredentialFound = string(data) == "profile-pat\n"
 		}
+	}
+	if !profileCredentialFound {
+		return jobs.ExecutionEnvironment{}, errors.New("stable profile PAT capability missing")
 	}
 	return jobs.ExecutionEnvironment{WorkingDirectory: request.AcpxWorkingDirectory, AcpxBinary: request.AcpxBinary,
 		Sandbox: state.SandboxMetadata{Enabled: false, UnsafeNoSandbox: true, SandboxProvider: "unsafe-explicit-test", FSBoundary: "workspace"},

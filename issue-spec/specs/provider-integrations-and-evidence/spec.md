@@ -62,7 +62,7 @@ The server MUST store mutable provider-namespaced external references separately
 #### Scenario: reads respect tenant and field visibility
 
 - **WHEN** the SPA, board or CLI lists references or evidence
-- **THEN** the server MUST filter by repository visibility, caller permission and record visibility and MUST not leak hidden provider URLs or metadata
+- **THEN** the server MUST filter by repository visibility, caller permission and record visibility, return the normalized payload and provenance of a repository-visible evidence row to repository readers, omit a maintainers-visible row in full from non-maintainers, and MUST not leak credentials or hidden provider URLs or metadata
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4926919280
 
