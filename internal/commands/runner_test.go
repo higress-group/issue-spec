@@ -1587,6 +1587,8 @@ func requireHostCodexAuth(t *testing.T) {
 func TestRunnerBackendFlagOverridesEnvForEveryPhase(t *testing.T) {
 	requireHostCodexAuth(t)
 	clearCommandAuthEnv(t)
+	t.Setenv(auth.ProfileEnv, "")
+	t.Chdir(t.TempDir())
 	t.Setenv(auth.GitHubBackendEnv, "gh")
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)

@@ -476,8 +476,11 @@ func SelectProfileBackendWithOptions(ctx context.Context, profileName, host stri
 	if err != nil {
 		return GitHubBackendSelection{}, err
 	}
-	if profile.Kind == ProfileKindGitHub && source == "builtin" {
+	if profile.Kind == ProfileKindGitHub && (source == "builtin" || source == "project") {
 		selection, err := selectGitHubBackendCore(ctx, profile.Hostname, opts, true)
+		if source == "project" {
+			selection.SelectionSource = "profile:project"
+		}
 		selection.Profile = profile
 		selection.ProfileSource = source
 		selection.Token = withProfile(selection.Token, profile)

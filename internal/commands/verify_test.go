@@ -86,7 +86,7 @@ func TestFinalVerifyUsesAuthoritativePullRequestAncestry(t *testing.T) {
 
 func TestRunVerifyRejectsUnstablePullRequestIdentity(t *testing.T) {
 	t.Setenv(auth.ConfigDirEnv, t.TempDir())
-	t.Setenv(auth.ProfileEnv, "")
+	t.Setenv(auth.ProfileEnv, auth.DefaultProfileName)
 	t.Setenv(auth.GitHubBackendAPIURLEnv, "")
 	initialHead := strings.Repeat("a", 40)
 	advancedHead := strings.Repeat("b", 40)

@@ -163,7 +163,7 @@ func TestProfilePersistenceAndRedactedDiagnostics(t *testing.T) {
 	if err := SaveProfile(profile, true); err != nil {
 		t.Fatal(err)
 	}
-	resolved, source, err := ResolveProfile("", "github.com")
+	resolved, source, err := ResolveProfileAt("", "github.com", dir)
 	if err != nil || source != "config" || resolved.Name != "staging" || resolved.CAFile != profile.CAFile {
 		t.Fatalf("resolved = %+v source=%q err=%v", resolved, source, err)
 	}
@@ -218,6 +218,31 @@ func TestResolveProfileAtUsesRepositoryRootGitHubMarkerBeforeGlobalDefault(t *te
 	profile, source, err = ResolveProfileAt("", "github.com", child)
 	if err != nil || source != "config" || profile.Name != "team" {
 		t.Fatalf("environment profile=%+v source=%q err=%v", profile, source, err)
+	}
+}
+
+func TestProjectGitHubProfileCanReuseAuthenticatedGH(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".issue-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".issue-spec", "config.json"), []byte(`{"version":1,"repo":"higress-group/issue-spec","hostname":"github.com","profile":"github"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+	selection, err := SelectProfileBackendWithOptions(context.Background(), "", "github.com", GitHubBackendSelectionOptions{
+		GHAuthenticated: func(context.Context, string) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Name != GitHubBackendNameGH || selection.ProfileSource != "project" || selection.SelectionSource != "profile:project" {
+		t.Fatalf("project selection = %+v", selection)
 	}
 }
 

@@ -1,4 +1,6 @@
 {
+  "version": 1,
   "hostname": "github.com",
+  "profile": "github",
   "repo": "higress-group/issue-spec"
 }

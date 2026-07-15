@@ -18,6 +18,9 @@ import (
 )
 
 func TestAuthStatusJSONIncludesBackendDiagnosticsWithoutToken(t *testing.T) {
+	t.Setenv(auth.ProfileEnv, "")
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
+	t.Chdir(t.TempDir())
 	const secret = "secret-token-value"
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
@@ -165,6 +168,7 @@ exit 1
 
 func TestAuthStatusJSONRedactsRESTErrorBodyToken(t *testing.T) {
 	clearCommandAuthEnv(t)
+	t.Setenv(auth.ProfileEnv, "")
 	const secret = "rest-error-body-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer "+secret {
@@ -264,6 +268,9 @@ func TestAuthTokenPlainForGHUsesExplicitTokenProvider(t *testing.T) {
 }
 
 func TestAuthTokenJSONIncludeTokenForGHUsesExplicitTokenProvider(t *testing.T) {
+	t.Setenv(auth.ProfileEnv, "")
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
+	t.Chdir(t.TempDir())
 	const secret = "gh-secret-token"
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
@@ -461,6 +468,8 @@ func TestAuthLoginWithoutTokenFallsBackToRESTWhenGHMissing(t *testing.T) {
 }
 
 func TestInitJSONIncludesBackendDiagnostics(t *testing.T) {
+	t.Setenv(auth.ProfileEnv, "")
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
 	t.Chdir(t.TempDir())
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
@@ -625,6 +634,8 @@ func TestDefaultGitHubBackendTokenForGHUsesProvider(t *testing.T) {
 
 func TestAuthLoginAndStatusUseNamedSelfHostedProfile(t *testing.T) {
 	clearCommandAuthEnv(t)
+	t.Setenv(auth.ProfileEnv, "")
+	t.Chdir(t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/user" || r.Header.Get("Authorization") != "Bearer profile-secret" {
 			t.Fatalf("request = %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
@@ -648,7 +659,7 @@ func TestAuthLoginAndStatusUseNamedSelfHostedProfile(t *testing.T) {
 	if strings.Contains(out.String()+errOut.String(), "profile-secret") {
 		t.Fatalf("login leaked token: stdout=%q stderr=%q", out.String(), errOut.String())
 	}
-	profile, source, err := auth.ResolveProfile("", "github.com")
+	profile, source, err := auth.ResolveProfileAt("", "github.com", t.TempDir())
 	if err != nil || source != "config" || profile.Name != "staging" {
 		t.Fatalf("default profile = %+v source=%q err=%v", profile, source, err)
 	}
@@ -764,6 +775,8 @@ func TestAuthStatusSelfHostedRunnerUsesTokenFileWithoutGH(t *testing.T) {
 
 func TestOrdinaryClientUsesSavedDefaultSelfHostedProfile(t *testing.T) {
 	clearCommandAuthEnv(t)
+	t.Setenv(auth.ProfileEnv, "")
+	t.Chdir(t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer default-secret" {
 			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
@@ -814,7 +827,7 @@ func clearCommandAuthEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv(auth.GitHubBackendEnv, "")
 	t.Setenv(auth.GitHubBackendAPIURLEnv, "")
-	t.Setenv(auth.ProfileEnv, "")
+	t.Setenv(auth.ProfileEnv, auth.DefaultProfileName)
 	t.Setenv("ISSUE_SPEC_TOKEN", "")
 	t.Setenv(auth.IssueSpecTokenFileEnv, "")
 	t.Setenv("GH_TOKEN", "")
