@@ -1,4 +1,5 @@
 const reservedRepositoryOwners = new Set([
+  "_repos",
   "admin",
   "api",
   "assets",
@@ -15,6 +16,7 @@ const reservedRepositoryOwners = new Set([
   "repos",
   "settings",
   "user",
+  "users",
 ]);
 
 function segment(value: string) {
@@ -26,7 +28,8 @@ export function isRepositoryRootOwner(owner: string) {
 }
 
 export function repositoryRootPath(owner: string, repository: string) {
-  return `/${segment(owner)}/${segment(repository)}`;
+  const prefix = isRepositoryRootOwner(owner) ? "" : "/_repos";
+  return `${prefix}/${segment(owner)}/${segment(repository)}`;
 }
 
 export function repositoryIssuePathForNames(owner: string, repository: string, number?: number | string) {
@@ -44,6 +47,8 @@ export function organizationChangePath(owner: string) {
 }
 
 export function isCanonicalRepositoryReadPath(pathname: string) {
+  if (/^\/_repos\/[^/]+\/[^/]+\/?$/.test(pathname)) return true;
+  if (/^\/_repos\/[^/]+\/[^/]+\/(?:issues(?:\/[1-9]\d*)?|changes(?:\/[^/]+)?)\/?$/.test(pathname)) return true;
   if (/^\/[^/]+\/[^/]+\/(?:issues(?:\/[1-9]\d*)?|changes(?:\/[^/]+)?)\/?$/.test(pathname)) return true;
   const match = pathname.match(/^\/([^/]+)\/([^/]+)\/?$/);
   return Boolean(match && isRepositoryRootOwner(match[1]));
@@ -55,12 +60,14 @@ export function isPublicUserProfilePath(pathname: string) {
 
 export function isIssueFeaturePath(pathname: string) {
   if (/^\/issues(?:\/|$)/.test(pathname)) return true;
+  if (/^\/_repos\/[^/]+\/[^/]+\/issues(?:\/|$)/.test(pathname)) return true;
   const match = pathname.match(/^\/([^/]+)\/[^/]+\/issues(?:\/|$)/);
   return Boolean(match && isRepositoryRootOwner(match[1]));
 }
 
 export function isChangeFeaturePath(pathname: string) {
   if (/^\/changes(?:\/|$)/.test(pathname) || /^\/orgs\/[^/]+\/changes(?:\/|$)/.test(pathname)) return true;
+  if (/^\/_repos\/[^/]+\/[^/]+\/changes(?:\/|$)/.test(pathname)) return true;
   const match = pathname.match(/^\/([^/]+)\/[^/]+\/changes(?:\/|$)/);
   return Boolean(match && isRepositoryRootOwner(match[1]));
 }

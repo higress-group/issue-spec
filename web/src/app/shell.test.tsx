@@ -16,6 +16,8 @@ describe("application navigation and canonical public shell", () => {
     expect(isCanonicalRepositoryReadPath("/acme/public")).toBe(true);
     expect(isCanonicalRepositoryReadPath("/acme/public/issues/7")).toBe(true);
     expect(isCanonicalRepositoryReadPath("/acme/public/changes/change-key")).toBe(true);
+    expect(isCanonicalRepositoryReadPath("/_repos/users/public")).toBe(true);
+    expect(isCanonicalRepositoryReadPath("/_repos/users/public/issues/7")).toBe(true);
     for (const pathname of ["/admin/settings", "/api/v1", "/orgs/acme", "/settings/account", "/readyz/check"]) {
       expect(isCanonicalRepositoryReadPath(pathname)).toBe(false);
     }

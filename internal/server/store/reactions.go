@@ -155,7 +155,9 @@ func (s RepoStore) bumpCommentReactionVersions(ctx context.Context, commentID uu
 		AND i.organization_id = c.organization_id AND i.repository_id = c.repository_id AND i.id = c.issue_id
 		RETURNING `+qualifiedCommentColumns+`, i.number,
 		COALESCE((SELECT u.login FROM users u WHERE u.id = c.author_id), 'ghost'),
-		COALESCE((SELECT COALESCE(u.nickname, u.display_name, u.login) FROM users u WHERE u.id = c.author_id), 'ghost')`,
+		COALESCE((SELECT COALESCE(u.nickname, u.display_name, u.login) FROM users u WHERE u.id = c.author_id), 'ghost'),
+		COALESCE((SELECT u.representation_version FROM users u WHERE u.id = c.author_id), 0),
+		COALESCE((SELECT u.updated_at FROM users u WHERE u.id = c.author_id), to_timestamp(0))`,
 		s.scope.OrgID, s.scope.RepoID, commentID)
 	comment, err := scanCommentSnapshot(row)
 	if err != nil {

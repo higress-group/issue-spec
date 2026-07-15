@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/server/models"
@@ -73,12 +74,13 @@ func (s RepoStore) CreateComment(ctx context.Context, input models.NewComment) (
 	if _, err := s.IncrementCollectionVersions(ctx, RepoCollectionIssues, RepoCollectionComments); err != nil {
 		return models.CommentSnapshot{}, err
 	}
-	login, displayName, err := s.authorIdentity(ctx, comment.AuthorID)
+	login, displayName, authorVersion, authorUpdatedAt, err := s.authorIdentity(ctx, comment.AuthorID)
 	if err != nil {
 		return models.CommentSnapshot{}, err
 	}
 	return models.CommentSnapshot{Comment: comment, IssueNumber: input.IssueNumber,
-		AuthorLogin: login, AuthorDisplayName: displayName}, nil
+		AuthorLogin: login, AuthorDisplayName: displayName,
+		AuthorRepresentationVersion: authorVersion, AuthorUpdatedAt: authorUpdatedAt}, nil
 }
 
 func (s RepoStore) CommentByCompatibilityID(ctx context.Context, compatibilityID int64) (models.CommentSnapshot, error) {
@@ -86,7 +88,8 @@ func (s RepoStore) CommentByCompatibilityID(ctx context.Context, compatibilityID
 		return models.CommentSnapshot{}, ErrInvalidInput
 	}
 	row := s.db.QueryRow(ctx, `SELECT `+qualifiedCommentColumns+`, i.number, COALESCE(u.login, 'ghost'),
-		COALESCE(u.nickname, u.display_name, u.login, 'ghost')
+		COALESCE(u.nickname, u.display_name, u.login, 'ghost'), COALESCE(u.representation_version, 0),
+		COALESCE(u.updated_at, to_timestamp(0))
 		FROM comments c JOIN issues i ON i.organization_id = c.organization_id
 		AND i.repository_id = c.repository_id AND i.id = c.issue_id
 		LEFT JOIN users u ON u.id = c.author_id
@@ -122,7 +125,9 @@ func (s RepoStore) UpdateCommentCAS(ctx context.Context, compatibilityID, expect
 		AND i.organization_id = c.organization_id AND i.repository_id = c.repository_id AND i.id = c.issue_id
 		RETURNING `+qualifiedCommentColumns+`, i.number,
 		COALESCE((SELECT u.login FROM users u WHERE u.id = c.author_id), 'ghost'),
-		COALESCE((SELECT COALESCE(u.nickname, u.display_name, u.login) FROM users u WHERE u.id = c.author_id), 'ghost')`,
+		COALESCE((SELECT COALESCE(u.nickname, u.display_name, u.login) FROM users u WHERE u.id = c.author_id), 'ghost'),
+		COALESCE((SELECT u.representation_version FROM users u WHERE u.id = c.author_id), 0),
+		COALESCE((SELECT u.updated_at FROM users u WHERE u.id = c.author_id), to_timestamp(0))`,
 		s.scope.OrgID, s.scope.RepoID, compatibilityID, body, expected)
 	result, err := scanCommentSnapshot(row)
 	if err != nil {
@@ -180,7 +185,8 @@ func (s RepoStore) ListComments(ctx context.Context, options models.CommentListO
 	}
 	args = append(args, options.PerPage, (options.Page-1)*options.PerPage)
 	rows, err := s.db.Query(ctx, `SELECT `+qualifiedCommentColumns+`, i.number, COALESCE(u.login, 'ghost'),
-		COALESCE(u.nickname, u.display_name, u.login, 'ghost')
+		COALESCE(u.nickname, u.display_name, u.login, 'ghost'), COALESCE(u.representation_version, 0),
+		COALESCE(u.updated_at, to_timestamp(0))
 		FROM comments c JOIN issues i ON i.organization_id = c.organization_id
 		AND i.repository_id = c.repository_id AND i.id = c.issue_id
 		LEFT JOIN users u ON u.id = c.author_id WHERE `+where+
@@ -195,6 +201,9 @@ func (s RepoStore) ListComments(ctx context.Context, options models.CommentListO
 			return models.CommentPage{}, err
 		}
 		page.Items = append(page.Items, item)
+		if item.AuthorUpdatedAt.After(page.LastModified) {
+			page.LastModified = item.AuthorUpdatedAt
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return models.CommentPage{}, err
@@ -213,16 +222,18 @@ func (s RepoStore) ListComments(ctx context.Context, options models.CommentListO
 	return page, nil
 }
 
-func (s RepoStore) authorIdentity(ctx context.Context, userID *uuid.UUID) (string, string, error) {
+func (s RepoStore) authorIdentity(ctx context.Context, userID *uuid.UUID) (string, string, int64, time.Time, error) {
 	if userID == nil {
-		return "ghost", "ghost", nil
+		return "ghost", "ghost", 0, time.Time{}, nil
 	}
 	var login, displayName string
-	if err := s.db.QueryRow(ctx, `SELECT login, COALESCE(nickname, display_name, login)
-		FROM users WHERE id = $1`, *userID).Scan(&login, &displayName); err != nil {
-		return "", "", fmt.Errorf("load author identity: %w", mapError(err))
+	var version int64
+	var updatedAt time.Time
+	if err := s.db.QueryRow(ctx, `SELECT login, COALESCE(nickname, display_name, login), representation_version, updated_at
+		FROM users WHERE id = $1`, *userID).Scan(&login, &displayName, &version, &updatedAt); err != nil {
+		return "", "", 0, time.Time{}, fmt.Errorf("load author identity: %w", mapError(err))
 	}
-	return login, displayName, nil
+	return login, displayName, version, updatedAt, nil
 }
 
 func scanComment(row rowScanner) (models.Comment, error) {
@@ -239,6 +250,7 @@ func scanCommentSnapshot(row rowScanner) (models.CommentSnapshot, error) {
 		&result.Comment.IssueID, &result.Comment.AuthorID, &result.Comment.Body,
 		&result.Comment.RepresentationVersion, &result.Comment.ReactionsCollectionVersion,
 		&result.Comment.CreatedAt, &result.Comment.UpdatedAt, &result.IssueNumber,
-		&result.AuthorLogin, &result.AuthorDisplayName)
+		&result.AuthorLogin, &result.AuthorDisplayName, &result.AuthorRepresentationVersion,
+		&result.AuthorUpdatedAt)
 	return result, err
 }

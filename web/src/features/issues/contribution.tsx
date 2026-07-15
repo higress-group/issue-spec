@@ -27,6 +27,10 @@ const contribution: FeatureContribution = {
     { path: ":owner/:repo/issues/new", element: <LazyIssueRoute><IssueCreatePage /></LazyIssueRoute> },
     { path: ":owner/:repo/issues/:number", element: <LazyIssueRoute><IssueDetailPage /></LazyIssueRoute> },
     { path: ":owner/:repo", element: <LazyIssueRoute><RepositoryRootRedirect /></LazyIssueRoute> },
+    { path: "_repos/:owner/:repo/issues", element: <LazyIssueRoute><IssueListPage /></LazyIssueRoute> },
+    { path: "_repos/:owner/:repo/issues/new", element: <LazyIssueRoute><IssueCreatePage /></LazyIssueRoute> },
+    { path: "_repos/:owner/:repo/issues/:number", element: <LazyIssueRoute><IssueDetailPage /></LazyIssueRoute> },
+    { path: "_repos/:owner/:repo", element: <LazyIssueRoute><RepositoryRootRedirect allowReserved /></LazyIssueRoute> },
   ],
 };
 

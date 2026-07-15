@@ -7,7 +7,7 @@ import { createMemoryRouter, Link, RouterProvider, useLocation } from "react-rou
 import { describe, expect, it } from "vitest";
 import { server } from "../../../tests/server";
 import contribution from "./contribution";
-import { LegacyRepositoryRedirect, RepositoryGate, RepositoryRootRedirect, repositoryChangePath, repositoryIssuePath, type ActiveRepository } from "./repository-context";
+import { LegacyRepositoryRedirect, RepositoryGate, RepositoryRootRedirect, repositoryChangePath, repositoryIssuePath, repositoryIssuePathForNames, type ActiveRepository } from "./repository-context";
 
 const orgId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const repoId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -20,11 +20,26 @@ describe("canonical repository Web routes", () => {
       ":owner/:repo/issues",
       ":owner/:repo/issues/new",
       ":owner/:repo/issues/:number",
+      "_repos/:owner/:repo",
+      "_repos/:owner/:repo/issues",
+      "_repos/:owner/:repo/issues/:number",
       "issues/:orgId/:repoId",
       "issues/:orgId/:repoId/new",
       "issues/:orgId/:repoId/:number",
     ]));
     expect(paths).not.toContain(":owner/:repo/issues/:issueNumber");
+  });
+
+  it("uses an unambiguous fallback namespace for historical reserved owners", async () => {
+    expect(repositoryIssuePathForNames("users", "john", 21)).toBe("/_repos/users/john/issues/21");
+    const { router } = renderRedirect(
+      "/_repos/users/john?state=open#issue-list",
+      "/_repos/:owner/:repo",
+      <RepositoryRootRedirect allowReserved />,
+      "/_repos/:owner/:repo/issues",
+    );
+    expect(await screen.findByTestId("redirect-location")).toHaveTextContent("/_repos/users/john/issues?state=open#issue-list");
+    expect(router.state.location.pathname).toBe("/_repos/users/john/issues");
   });
 
   it("redirects a repository WebURL to its canonical issue desk and preserves URL state", async () => {

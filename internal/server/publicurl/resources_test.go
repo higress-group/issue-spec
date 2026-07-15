@@ -28,3 +28,18 @@ func TestRepositoryResourcePathsKeepCanonicalWebAndAPIShapes(t *testing.T) {
 		}
 	}
 }
+
+func TestRepositoryResourcePathsUseUnambiguousFallbackForReservedOwners(t *testing.T) {
+	for _, owner := range []string{"users", "Issues", "_repos"} {
+		if IsCanonicalRepositoryOwner(owner) {
+			t.Fatalf("reserved owner %q was accepted", owner)
+		}
+		paths := RepositoryResource(owner, "workflow")
+		if got, want := paths.Web(), "/_repos/"+owner+"/workflow"; got != want {
+			t.Fatalf("Web() = %q, want %q", got, want)
+		}
+	}
+	if !IsCanonicalRepositoryOwner("ingress") {
+		t.Fatal("ordinary owner was rejected")
+	}
+}

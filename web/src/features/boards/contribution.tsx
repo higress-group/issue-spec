@@ -26,6 +26,8 @@ const contribution: FeatureContribution = {
     { path: "orgs/:owner/changes", element: <LazyBoardRoute><BoardListPage /></LazyBoardRoute> },
     { path: ":owner/:repo/changes", element: <LazyBoardRoute><RepositoryBoardPage /></LazyBoardRoute> },
     { path: ":owner/:repo/changes/:change", element: <LazyBoardRoute><BoardDetailPage /></LazyBoardRoute> },
+    { path: "_repos/:owner/:repo/changes", element: <LazyBoardRoute><RepositoryBoardPage /></LazyBoardRoute> },
+    { path: "_repos/:owner/:repo/changes/:change", element: <LazyBoardRoute><BoardDetailPage /></LazyBoardRoute> },
   ],
 };
 

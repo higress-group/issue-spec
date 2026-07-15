@@ -52,8 +52,9 @@ func TestRenderGitHubUsesCanonicalRepositoryIssueAndCommentURLs(t *testing.T) {
 	}
 	var payload struct {
 		Issue struct {
-			URL     string `json:"url"`
-			HTMLURL string `json:"html_url"`
+			URL       string `json:"url"`
+			HTMLURL   string `json:"html_url"`
+			EventsURL string `json:"events_url"`
 		} `json:"issue"`
 		Comment struct {
 			URL      string `json:"url"`
@@ -64,7 +65,16 @@ func TestRenderGitHubUsesCanonicalRepositoryIssueAndCommentURLs(t *testing.T) {
 			URL       string `json:"url"`
 			HTMLURL   string `json:"html_url"`
 			IssuesURL string `json:"issues_url"`
+			Owner     struct {
+				URL     string `json:"url"`
+				HTMLURL string `json:"html_url"`
+			} `json:"owner"`
 		} `json:"repository"`
+		Organization struct {
+			URL       string `json:"url"`
+			ReposURL  string `json:"repos_url"`
+			AvatarURL string `json:"avatar_url"`
+		} `json:"organization"`
 		Sender struct {
 			Name    string `json:"name"`
 			URL     string `json:"url"`
@@ -93,5 +103,41 @@ func TestRenderGitHubUsesCanonicalRepositoryIssueAndCommentURLs(t *testing.T) {
 	}
 	if payload.Sender.Name != "澄潭" {
 		t.Errorf("sender name = %q, want nickname", payload.Sender.Name)
+	}
+	if payload.Issue.EventsURL != "" || payload.Repository.Owner.URL != "" || payload.Repository.Owner.HTMLURL != "" ||
+		payload.Organization.URL != "" || payload.Organization.ReposURL != "" || payload.Organization.AvatarURL != "" {
+		t.Fatalf("unsupported links were advertised: %+v", payload)
+	}
+}
+
+func TestRenderGitHubDoesNotLinkDeletedAuthorToGhostProfile(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	envelope := outbox.Envelope{EventType: "issue.created", Issue: outbox.IssueIdentity{StableID: uuid.New(), Number: 1},
+		Notification: &outbox.NotificationFacts{
+			Organization: outbox.NotificationOrganization{ID: uuid.New(), Login: "ingress"},
+			Repository:   outbox.NotificationRepository{ID: uuid.New(), Name: "istio", FullName: "ingress/istio"},
+			Sender:       outbox.NotificationUser{ID: uuid.New(), Login: "alice"},
+			Issue: outbox.NotificationIssue{ID: uuid.New(), Number: 1, State: "open", Title: "ghost",
+				Author: outbox.NotificationUser{Login: "ghost", DisplayName: "ghost"}, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	body, _, err := renderGitHub(envelope, "https://api.issue.test", "https://issues.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Issue struct {
+			User struct {
+				URL       string `json:"url"`
+				HTMLURL   string `json:"html_url"`
+				AvatarURL string `json:"avatar_url"`
+			} `json:"user"`
+		} `json:"issue"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Issue.User.URL != "" || payload.Issue.User.HTMLURL != "" || payload.Issue.User.AvatarURL != "" {
+		t.Fatalf("ghost author has profile links: %+v", payload.Issue.User)
 	}
 }

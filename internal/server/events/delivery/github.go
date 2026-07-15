@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	"github.com/higress-group/issue-spec/internal/server/events/outbox"
 	"github.com/higress-group/issue-spec/internal/server/publicurl"
@@ -75,11 +76,14 @@ func renderGitHub(envelope outbox.Envelope, apiOrigin, webOrigin string) ([]byte
 	repoPath := paths.API()
 	issuePath := paths.IssueAPI(envelope.Issue.Number)
 	user := func(value outbox.NotificationUser) map[string]any {
-		return map[string]any{"login": value.Login, "name": value.DisplayName,
+		result := map[string]any{"login": value.Login, "name": value.DisplayName,
 			"id":      codec.StableNumericID(value.ID.String()),
-			"node_id": value.ID.String(), "type": "User", "site_admin": false,
-			"url":      origins.API.MustURL("/api/v1/users/" + url.PathEscape(value.Login)),
-			"html_url": origins.Web.MustURL("/users/" + url.PathEscape(value.Login))}
+			"node_id": value.ID.String(), "type": "User", "site_admin": false}
+		if value.ID != uuid.Nil {
+			result["url"] = origins.API.MustURL("/api/v1/users/" + url.PathEscape(value.Login))
+			result["html_url"] = origins.Web.MustURL("/users/" + url.PathEscape(value.Login))
+		}
+		return result
 	}
 	labels := make([]map[string]any, 0, len(facts.Issue.Labels))
 	for _, label := range facts.Issue.Labels {
@@ -88,22 +92,19 @@ func renderGitHub(envelope outbox.Envelope, apiOrigin, webOrigin string) ([]byte
 	issue := map[string]any{"id": codec.StableNumericID(facts.Issue.ID.String()), "node_id": facts.Issue.ID.String(),
 		"url": origins.API.MustURL(issuePath), "repository_url": origins.API.MustURL(repoPath),
 		"labels_url": origins.API.String() + issuePath + "/labels{/name}", "comments_url": origins.API.MustURL(issuePath + "/comments"),
-		"events_url": origins.API.MustURL(issuePath + "/events"), "html_url": origins.Web.MustURL(paths.IssueWeb(envelope.Issue.Number)),
-		"number": facts.Issue.Number, "state": facts.Issue.State, "title": facts.Issue.Title,
+		"html_url": origins.Web.MustURL(paths.IssueWeb(envelope.Issue.Number)),
+		"number":   facts.Issue.Number, "state": facts.Issue.State, "title": facts.Issue.Title,
 		"body": facts.Issue.Body, "user": user(facts.Issue.Author), "labels": labels,
 		"created_at": facts.Issue.CreatedAt, "updated_at": facts.Issue.UpdatedAt, "closed_at": facts.Issue.ClosedAt}
-	owner := user(outbox.NotificationUser{ID: facts.Organization.ID, Login: facts.Organization.Login,
-		DisplayName: facts.Organization.DisplayName})
-	owner["type"] = "Organization"
+	owner := map[string]any{"login": facts.Organization.Login, "name": facts.Organization.DisplayName,
+		"id": codec.StableNumericID(facts.Organization.ID.String()), "node_id": facts.Organization.ID.String(),
+		"type": "Organization", "site_admin": false}
 	repository := map[string]any{"id": codec.StableNumericID(facts.Repository.ID.String()), "node_id": facts.Repository.ID.String(),
 		"name": facts.Repository.Name, "full_name": facts.Repository.FullName, "private": facts.Repository.Private, "owner": owner,
 		"html_url": origins.Web.MustURL(paths.Web()), "url": origins.API.MustURL(repoPath),
 		"issues_url": origins.API.String() + paths.IssuesAPI() + "{/number}"}
 	organization := map[string]any{"login": facts.Organization.Login,
-		"id": codec.StableNumericID(facts.Organization.ID.String()), "node_id": facts.Organization.ID.String(),
-		"url":        origins.API.MustURL("/orgs/" + url.PathEscape(facts.Organization.Login)),
-		"repos_url":  origins.API.MustURL("/orgs/" + url.PathEscape(facts.Organization.Login) + "/repos"),
-		"avatar_url": origins.Web.MustURL("/api/v1/avatars/" + url.PathEscape(facts.Organization.Login))}
+		"id": codec.StableNumericID(facts.Organization.ID.String()), "node_id": facts.Organization.ID.String()}
 	payload := map[string]any{"action": notificationAction(envelope), "issue": issue, "repository": repository,
 		"organization": organization, "sender": user(facts.Sender)}
 	eventName := "issues"

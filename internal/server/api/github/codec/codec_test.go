@@ -143,6 +143,30 @@ func TestDTOsRoundTripThroughExistingGitHubRunnerClient(t *testing.T) {
 	}
 }
 
+func TestPresenterOmitsUnsupportedAndMissingIdentityLinks(t *testing.T) {
+	p := presenter(t)
+	ghost := p.PresentUser(codec.UserView{StableID: "ghost", Login: "ghost", NoProfile: true})
+	if ghost.HTMLURL != "" || ghost.AvatarURL != "" {
+		t.Fatalf("ghost user has profile links: %+v", ghost)
+	}
+	repository := p.PresentRepository(codec.RepositoryView{StableID: "repo", OwnerStableID: "org",
+		Owner: "users", Name: "workflow", Private: true})
+	if repository.URL != "https://api.issues.test/repos/users/workflow" ||
+		repository.HTMLURL != "https://issues.test/_repos/users/workflow" || repository.Owner.Type != "Organization" ||
+		repository.Owner.HTMLURL != "" || repository.Owner.AvatarURL != "" {
+		t.Fatalf("repository = %+v", repository)
+	}
+	issue := p.PresentIssue(codec.IssueView{StableID: "issue", Owner: "o", Repository: "r", Number: 1,
+		State: "open", Author: codec.UserView{StableID: "ghost", Login: "ghost", NoProfile: true}})
+	encoded, err := json.Marshal(issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "events_url") {
+		t.Fatalf("unsupported events_url was encoded: %s", encoded)
+	}
+}
+
 func TestIssuePresenterUsesOnlyConfiguredOrigins(t *testing.T) {
 	p := presenter(t)
 	issue := p.PresentIssue(codec.IssueView{

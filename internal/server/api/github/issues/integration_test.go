@@ -41,6 +41,16 @@ func TestIssueCommentHTTPCompatibilityMarkerAndAuthorization(t *testing.T) {
 	}
 	mux := environment.mux(t)
 
+	repositoryResponse := request(t, mux, http.MethodGet, "/repos/acme/widgets", "", "")
+	var repository codec.Repository
+	decode(t, repositoryResponse, &repository)
+	if repositoryResponse.Code != http.StatusOK || repository.FullName != "acme/widgets" ||
+		repository.URL != "https://api.example.test/repos/acme/widgets" ||
+		repository.HTMLURL != "https://web.example.test/acme/widgets" ||
+		repository.Owner.Type != "Organization" || repository.Owner.HTMLURL != "" {
+		t.Fatalf("repository resource status=%d value=%+v", repositoryResponse.Code, repository)
+	}
+
 	response := request(t, mux, http.MethodGet, "/repos/acme/widgets/issues", "", "")
 	if response.Code != http.StatusOK || response.Header().Get("ETag") == "" {
 		t.Fatalf("anonymous list status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
@@ -239,6 +249,71 @@ func TestIssueCommentHTTPCompatibilityMarkerAndAuthorization(t *testing.T) {
 	environment.hook.fail.Store(false)
 	if response.Code != http.StatusInternalServerError || countRows(t, environment.pool, "issues") != before {
 		t.Fatalf("hook rollback status=%d before=%d after=%d", response.Code, before, countRows(t, environment.pool, "issues"))
+	}
+}
+
+func TestAuthorNicknameInvalidatesIssueAndCommentRepresentations(t *testing.T) {
+	environment := newEnvironment(t, models.VisibilityPublic)
+	mux := environment.mux(t)
+	createdIssue := request(t, mux, http.MethodPost, "/repos/acme/widgets/issues",
+		jsonBody(map[string]any{"title": "nickname", "body": "body"}), "owner")
+	if createdIssue.Code != http.StatusCreated {
+		t.Fatal(createdIssue.Body.String())
+	}
+	createdComment := request(t, mux, http.MethodPost, "/repos/acme/widgets/issues/1/comments", `{"body":"comment"}`, "owner")
+	if createdComment.Code != http.StatusCreated {
+		t.Fatal(createdComment.Body.String())
+	}
+	var comment codec.Comment
+	decode(t, createdComment, &comment)
+
+	paths := []string{
+		"/repos/acme/widgets/issues?state=all",
+		"/repos/acme/widgets/issues/1",
+		"/repos/acme/widgets/issues/1/comments",
+		fmt.Sprintf("/repos/acme/widgets/issues/comments/%d", comment.ID),
+	}
+	before := make(map[string]http.Header, len(paths))
+	for _, path := range paths {
+		response := request(t, mux, http.MethodGet, path, "", "")
+		if response.Code != http.StatusOK || response.Header().Get("ETag") == "" || response.Header().Get("Last-Modified") == "" {
+			t.Fatalf("initial %s status=%d headers=%v body=%s", path, response.Code, response.Header(), response.Body.String())
+		}
+		before[path] = response.Header().Clone()
+	}
+
+	if _, err := environment.pool.Exec(t.Context(), `UPDATE users SET nickname = '澄潭',
+		representation_version = representation_version + 1, updated_at = clock_timestamp() + interval '2 seconds'
+		WHERE id = $1`, environment.owner.User.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		for header, value := range map[string]string{
+			"If-None-Match":     before[path].Get("ETag"),
+			"If-Modified-Since": before[path].Get("Last-Modified"),
+		} {
+			response := request(t, mux, http.MethodGet, path, "", "", map[string]string{header: value})
+			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "澄潭") {
+				t.Fatalf("nickname did not invalidate %s with %s: status=%d headers=%v body=%s",
+					path, header, response.Code, response.Header(), response.Body.String())
+			}
+		}
+	}
+}
+
+func TestDeletedIssueAuthorIsTextOnlyGhostIdentity(t *testing.T) {
+	environment := newEnvironment(t, models.VisibilityPublic)
+	if _, err := environment.pool.Exec(t.Context(), `INSERT INTO issues
+		(id, organization_id, repository_id, number, author_id, title, body)
+		VALUES ($1, $2, $3, 1, NULL, 'ghost issue', 'body')`,
+		uuid.New(), environment.scope.OrgID, environment.scope.RepoID); err != nil {
+		t.Fatal(err)
+	}
+	response := request(t, environment.mux(t), http.MethodGet, "/repos/acme/widgets/issues/1", "", "")
+	var issue codec.Issue
+	decode(t, response, &issue)
+	if response.Code != http.StatusOK || issue.User.Login != "ghost" || issue.User.HTMLURL != "" || issue.User.AvatarURL != "" {
+		t.Fatalf("ghost issue status=%d user=%+v", response.Code, issue.User)
 	}
 }
 
@@ -656,7 +731,7 @@ func (failingProjector) ProjectComment(context.Context, store.RepoStore, models.
 	return errors.New("injected projector failure")
 }
 
-func request(t *testing.T, handler http.Handler, method, path, body, bearer string) *httptest.ResponseRecorder {
+func request(t *testing.T, handler http.Handler, method, path, body, bearer string, headers ...map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 	request.Host = "attacker.invalid"
@@ -665,6 +740,11 @@ func request(t *testing.T, handler http.Handler, method, path, body, bearer stri
 	}
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
+	}
+	for _, values := range headers {
+		for name, value := range values {
+			request.Header.Set(name, value)
+		}
 	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

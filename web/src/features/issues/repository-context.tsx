@@ -36,10 +36,10 @@ export function LegacyOrganizationChangeRedirect() {
   return <Navigate replace to={{ pathname: organizationChangePath(organization.name), search: location.search, hash: location.hash }} />;
 }
 
-export function RepositoryRootRedirect() {
+export function RepositoryRootRedirect({ allowReserved = false }: { allowReserved?: boolean }) {
   const { owner = "", repo = "" } = useParams();
   const location = useLocation();
-  if (!repo || !isRepositoryRootOwner(owner)) return <IssueStatus status={404} />;
+  if (!repo || (!allowReserved && !isRepositoryRootOwner(owner))) return <IssueStatus status={404} />;
   return <Navigate replace to={{ pathname: repositoryIssuePathForNames(owner, repo), search: location.search, hash: location.hash }} />;
 }
 

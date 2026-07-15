@@ -174,7 +174,7 @@ func notificationFacts(snapshot store.NotificationSnapshot, mutation issues.Muta
 	result := &NotificationFacts{IssueKind: snapshot.IssueKind, ActorClass: actorClass,
 		ActorCredentialKind: mutation.ActorCredentialKind, ActorServiceAccount: snapshot.ActorServiceAccount,
 		Organization: NotificationOrganization{ID: mutation.Scope.OrgID, Login: snapshot.OrganizationName, DisplayName: snapshot.OrganizationDisplayName},
-		Repository:   NotificationRepository{ID: mutation.Scope.RepoID, Name: snapshot.RepositoryName, FullName: snapshot.OrganizationName + "/" + snapshot.RepositoryName, Private: snapshot.RepositoryVisibility == "private"},
+		Repository:   NotificationRepository{ID: mutation.Scope.RepoID, Name: snapshot.RepositoryName, FullName: snapshot.OrganizationName + "/" + snapshot.RepositoryName, Private: snapshot.RepositoryVisibility != "public"},
 		Sender:       NotificationUser{ID: mutation.ActorUserID, Login: snapshot.ActorLogin, DisplayName: snapshot.ActorDisplayName},
 		Issue: NotificationIssue{ID: issue.ID, Number: issue.Number, Title: issue.Title, Body: issue.Body,
 			State: string(issue.State), Author: NotificationUser{Login: snapshot.Issue.AuthorLogin,

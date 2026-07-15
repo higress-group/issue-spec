@@ -97,7 +97,7 @@ func PresentIssue(presenter codec.Presenter, resource models.RepositoryResource,
 		Owner: resource.Owner, Repository: resource.Name, Number: snapshot.Issue.Number,
 		State: string(snapshot.Issue.State), Title: snapshot.Issue.Title, Body: snapshot.Issue.Body,
 		Author: codec.UserView{StableID: stableAuthorID(snapshot.Issue.AuthorID), Login: snapshot.AuthorLogin,
-			Name: snapshot.AuthorDisplayName},
+			Name: snapshot.AuthorDisplayName, NoProfile: snapshot.Issue.AuthorID == nil},
 		Labels: labels, CommentCount: snapshot.CommentCount, CreatedAt: snapshot.Issue.CreatedAt,
 		UpdatedAt: snapshot.Issue.UpdatedAt, ClosedAt: snapshot.Issue.ClosedAt})
 }
@@ -106,7 +106,7 @@ func PresentComment(presenter codec.Presenter, resource models.RepositoryResourc
 	return presenter.PresentComment(codec.CommentView{StableID: snapshot.Comment.ID.String(), Owner: resource.Owner,
 		Repository: resource.Name, IssueNumber: snapshot.IssueNumber, Body: snapshot.Comment.Body,
 		Author: codec.UserView{StableID: stableAuthorID(snapshot.Comment.AuthorID), Login: snapshot.AuthorLogin,
-			Name: snapshot.AuthorDisplayName},
+			Name: snapshot.AuthorDisplayName, NoProfile: snapshot.Comment.AuthorID == nil},
 		CreatedAt: snapshot.Comment.CreatedAt, UpdatedAt: snapshot.Comment.UpdatedAt,
 		Reactions: presentReactionSummary(snapshot.Reactions)})
 }
