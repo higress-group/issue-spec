@@ -49,16 +49,35 @@ export function LegacyRepositoryRedirect({ destination }: { destination: LegacyR
   const location = useLocation();
   const { number = "", change = "" } = useParams();
   return <RepositoryGate>{(active) => {
+    if (destination === "issue-detail") return <LegacyIssueDetailRedirect active={active} reference={number} />;
     let pathname: string;
     switch (destination) {
       case "issues": pathname = repositoryIssuePath(active); break;
       case "issue-new": pathname = `${repositoryIssuePath(active)}/new`; break;
-      case "issue-detail": pathname = repositoryIssuePathForNames(active.organization.name, active.repository.repository.name, number); break;
       case "changes": pathname = repositoryChangePath(active); break;
       case "change-detail": pathname = repositoryChangePath(active, change); break;
+      default: return <IssueStatus status={404} />;
     }
     return <Navigate replace to={{ pathname, search: location.search, hash: location.hash }} />;
   }}</RepositoryGate>;
+}
+
+function LegacyIssueDetailRedirect({ active, reference }: { active: ActiveRepository; reference: string }) {
+  const location = useLocation();
+  const { orgId = "", repoId = "" } = useParams();
+  const isNumber = /^[1-9]\d*$/.test(reference);
+  const legacy = useQuery({
+    queryKey: ["context", "legacy-issue", orgId, repoId, reference],
+    queryFn: ({ signal }) => api.legacyIssueContext(orgId, repoId, reference, signal),
+    enabled: !isNumber && Boolean(orgId && repoId && reference),
+    retry: false,
+  });
+  if (isNumber) {
+    return <Navigate replace to={{ pathname: repositoryIssuePath(active, Number(reference)), search: location.search, hash: location.hash }} />;
+  }
+  if (legacy.isLoading) return <IssueLoading />;
+  if (legacy.error || !legacy.data) return <IssueStatus status={404} />;
+  return <Navigate replace to={{ pathname: repositoryIssuePath(active, legacy.data.number), search: location.search, hash: location.hash }} />;
 }
 
 export function RepositoryGate({ children }: { children: (active: ActiveRepository) => ReactNode }) {

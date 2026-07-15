@@ -196,6 +196,37 @@ func TestRepositoryContextUsesSharedVisibilityAndMutationAuthority(t *testing.T)
 	}
 }
 
+func TestLegacyIssueResolvesScopedUUIDToRepositoryNumber(t *testing.T) {
+	pool := spaPool(t)
+	authorization, err := authz.New(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(store.New(pool), authorization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orgID := insertSPAOrg(t, pool, "legacy-links")
+	repoID := insertSPARepo(t, pool, orgID, "public-repo")
+	if _, err := pool.Exec(t.Context(), `UPDATE repos SET visibility = 'public' WHERE organization_id = $1 AND id = $2`, orgID, repoID); err != nil {
+		t.Fatal(err)
+	}
+	userID := insertSPAUser(t, pool, "legacy-reader")
+	issueID := uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO issues (id, organization_id, repository_id, number, title)
+		VALUES ($1, $2, $3, 21, 'legacy issue')`, issueID, orgID, repoID); err != nil {
+		t.Fatal(err)
+	}
+	principal := serverauth.Principal{User: serverauth.User{ID: userID, Login: "legacy-reader"}, Kind: serverauth.CredentialSession}
+	resolved, err := service.LegacyIssue(t.Context(), principal, orgID, repoID, issueID)
+	if err != nil || resolved.Number != 21 {
+		t.Fatalf("legacy issue=%+v err=%v", resolved, err)
+	}
+	if _, err := service.LegacyIssue(t.Context(), principal, orgID, repoID, uuid.New()); !errors.Is(err, adminservice.ErrNotFound) {
+		t.Fatalf("missing legacy issue error=%v", err)
+	}
+}
+
 func containsAccess(values []authz.AccessAction, target authz.AccessAction) bool {
 	for _, value := range values {
 		if value == target {

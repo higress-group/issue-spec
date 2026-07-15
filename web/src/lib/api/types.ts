@@ -101,6 +101,9 @@ export const repositoryRouteContextSchema = z.object({
 });
 export type RepositoryRouteContext = z.infer<typeof repositoryRouteContextSchema>;
 
+export const legacyIssueContextSchema = z.object({ number: z.number().int().positive() });
+export type LegacyIssueContext = z.infer<typeof legacyIssueContextSchema>;
+
 export const providersSchema = z.object({ providers: z.array(z.object({ name: z.string(), kind: z.string() })) });
 export type Provider = z.infer<typeof providersSchema>["providers"][number];
 
