@@ -156,9 +156,12 @@ issue-spec --profile team auth status --json
 `--delegation-audience` 与 `--delegation-subject` 默认分别为 Server 的
 默认值 `issue-spec-api`、`issue-spec-runner`。如果运维修改了
 `DELEGATION_AUDIENCE` 或 `DELEGATION_SUBJECT`，Runner 参数也必须保持一致。
-委托 Token 默认有效期为 5 分钟。新签发 Token 在 Runner 上被判为过期时，应先校准
-Server 与 Runner 的时钟；仅在修复时钟同步的短暂过渡期内，才可以显式把
-`--delegation-ttl` 调高，且上限为 `15m`。
+Runner 会为每个 `/new` 或 `/resume` 作业签发一次委托 Token，Agent Turn 运行期间
+暂不自动续期。因此默认和最长有效期均为 7 天，确保连续运行数日的任务仍可访问
+Issue API。Token 仍严格绑定单个仓库与作业，并在作业完成、失败或取消时由 Runner
+立即撤销，所以 7 天是异常情况下的兜底上限，而不是通常的实际有效时长。任务始终
+较短的环境可以通过 `--delegation-ttl` 把有效期缩短，最低为 `30s`。新签发 Token
+在 Runner 上被判为过期时，应校准 Server 与 Runner 的时钟。
 
 ## 4. 创建 Runner Intake Webhook
 
@@ -452,7 +455,7 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 | Webhook 无法连接 | Receiver URL、DNS、防火墙、反向代理和 TLS |
 | 评论被忽略 | 命令是否位于开头、作者是否在允许列表、是否具有 Write 权限 |
 | `runner:delegate` 失败 | PAT 是否只限制到该仓库，以及是否包含 `read:user`、`issues:read`、`issues:write`、`runner:delegate`、`evidence:write` |
-| 新签发的委托 Token 被判为过期 | 校准 Server 与 Runner 时钟；只在修复校时的短期过渡中使用有上限的 `--delegation-ttl` |
+| 新签发的委托 Token 被判为过期 | 校准 Server 与 Runner 时钟；不要通过延长 `--delegation-ttl` 掩盖时钟漂移 |
 | 找不到源码或 Clone 失败 | Source Binding 是否 Active；短期凭据模式检查 HTTPS URL 与 Command 回显，宿主 SSH 模式检查 Runner 用户的 Key、Agent、`known_hosts` 和仓库权限 |
 | 提交时报作者身份未知 | 同时配置 `--git-author-name` 与 `--git-author-email`，并使用代码平台认可的值；不要恢复宿主全局 Git 配置 |
 | Preflight 报沙箱失败 | Linux 上安装 `bubblewrap` 或显式配置 `--bwrap` |

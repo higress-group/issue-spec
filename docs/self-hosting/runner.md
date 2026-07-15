@@ -162,10 +162,15 @@ separate PAT, profile, and `runner serve` process for each additional repository
 The defaults for `--delegation-audience` and `--delegation-subject` are the
 server defaults, `issue-spec-api` and `issue-spec-runner`. Keep them aligned
 with `DELEGATION_AUDIENCE` and `DELEGATION_SUBJECT` when an operator changes
-those server settings. Delegated tokens last five minutes by default. Correct
-the clocks on both hosts if a Runner rejects a newly issued token as expired;
-`--delegation-ttl` can be explicitly raised up to `15m` only as a short-lived
-recovery measure while clock synchronization is being repaired.
+those server settings. The Runner issues one delegated token per `/new` or
+`/resume` job and does not renew it while that agent turn is active. The
+default and maximum lifetime are therefore seven days so uninterrupted,
+multi-day jobs retain issue API access. The token remains bound to one
+repository and job, and the Runner revokes it immediately when the job
+completes, fails, or is canceled, so seven days is a fail-safe upper bound
+rather than the normal effective lifetime. Operators whose jobs are always
+shorter can reduce `--delegation-ttl` down to `30s`. Correct the clocks on both
+hosts if a Runner rejects a newly issued token as expired.
 
 ## 4. Create the Runner intake webhook
 
@@ -446,7 +451,7 @@ team workflow:
 | Webhook cannot connect | Receiver URL, DNS, firewall, reverse proxy, and TLS |
 | Comment is ignored | Command position, allowlist, and write-equivalent permission |
 | `runner:delegate` fails | Exact repository restriction and scopes (`read:user`, `issues:read`, `issues:write`, `runner:delegate`, `evidence:write`) |
-| Newly issued delegated token is rejected as expired | Synchronize Server and Runner clocks; only temporarily use a bounded `--delegation-ttl` while repairing clock sync |
+| Newly issued delegated token is rejected as expired | Synchronize Server and Runner clocks; do not use a longer `--delegation-ttl` to hide clock drift |
 | Clone fails | Active source binding; for credentials, the HTTPS URL and exact binding echo; for host SSH, the runner user's key, agent, `known_hosts`, and repository access |
 | Commit reports an unknown author | Configure both `--git-author-name` and `--git-author-email` with values accepted by the code host; do not restore the host global Git config |
 | Sandbox preflight fails | Install `bubblewrap` or configure `--bwrap` on Linux |

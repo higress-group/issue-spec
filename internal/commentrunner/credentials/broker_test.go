@@ -15,8 +15,48 @@ import (
 	"github.com/google/uuid"
 	clientauth "github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/capability"
+	"github.com/higress-group/issue-spec/internal/server/auth/delegation"
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
+
+func TestBrokerUsesSevenDayDefaultTTL(t *testing.T) {
+	var requestedTTL int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			var body struct {
+				TTLSeconds int64 `json:"ttl_seconds"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			requestedTTL = body.TTLSeconds
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": uuid.New(), "token": delegatedTestToken("long-job"),
+				"expires_at": time.Now().UTC().Add(delegation.DefaultTTL - time.Minute)})
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	broker := testBroker(t, server.URL, func(context.Context) error { return nil })
+	broker.TTL = 0
+	broker.GitProvider = staticGitProvider{lease: GitProviderLease{Credential: GitSecret{Username: "runner", Password: "git-secret"},
+		ExpiresAt: time.Now().UTC().Add(delegation.DefaultTTL - time.Minute), Revoke: func(context.Context) error { return nil }}}
+	lease, err := broker.Acquire(t.Context(), AcquireRequest{Repo: models.RepoScope{OrgID: uuid.New(), RepoID: uuid.New()},
+		JobID: "job-long-running", Binding: testBinding()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lease.Revoke(t.Context()) }()
+	if requestedTTL != int64(delegation.DefaultTTL/time.Second) {
+		t.Fatalf("requested TTL=%d, want %d", requestedTTL, int64(delegation.DefaultTTL/time.Second))
+	}
+}
 
 func TestBrokerAcquireAndRevokeLifecycle(t *testing.T) {
 	var exchangeCalls, revokeCalls atomic.Int32

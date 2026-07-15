@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	MinTTL = 30 * time.Second
-	MaxTTL = 15 * time.Minute
+	MinTTL     = 30 * time.Second
+	DefaultTTL = 7 * 24 * time.Hour
+	MaxTTL     = DefaultTTL
 )
 
 type IssueInput struct {

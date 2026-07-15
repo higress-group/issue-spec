@@ -14,6 +14,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/server/auth/delegation"
 )
 
 func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.T) {
@@ -38,6 +39,9 @@ func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.
 	runnerServeBuildRuntime = func(_ context.Context, input runnerServeRuntimeInput) (runnerServeRuntime, error) {
 		if input.ParentToken != parentToken || input.Profile.Name != profile.Name || len(input.Runner.Repositories) != 1 {
 			t.Fatalf("runtime input=%+v", input)
+		}
+		if input.DelegationTTL != delegation.DefaultTTL {
+			t.Fatalf("delegation TTL=%s, want %s", input.DelegationTTL, delegation.DefaultTTL)
 		}
 		return runnerServeRuntimeFunc(func(context.Context) error { return nil }), nil
 	}
@@ -151,6 +155,9 @@ func TestRunnerServeHelpDocumentsSecurityAndCapacityControls(t *testing.T) {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("help missing %s:\n%s", required, stdout.String())
 		}
+	}
+	if !strings.Contains(stdout.String(), "default: 168h0m0s") {
+		t.Fatalf("help does not report the seven-day delegation default:\n%s", stdout.String())
 	}
 }
 
