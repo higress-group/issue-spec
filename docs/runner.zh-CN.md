@@ -114,7 +114,7 @@ resume 或 restart 后，top-level runner 只恢复 ACPX/session job。coordinat
 
 `/new` 会创建一个全新的公共 runner 会话，把目标仓库克隆进一个受管理的 workspace，从该 workspace 启动 acpx，并写一条包含公共会话 id 的简洁状态评论。`/resume` 复用该公共会话与 workspace。公共会话是「仓库范围」的，由被授权的仓库维护者共享；它们不是私有的用户会话。
 
-协调器与人的讨论是显式的。被沙箱隔离的协调器可以使用镜像进来的 GitHub 认证来提出澄清问题。阻塞性的工作流决策应记录为 `QUESTION` 类型化评论；轻量的澄清可以使用普通的 issue 时间线评论，例如 `gh issue comment <issue> --repo owner/repo --body-file <file>`。GitHub issue 评论是扁平的时间线评论，而非嵌套在某条 issue 评论下的回复；协调器应链接触发评论或状态评论，并带上公共会话 id。要继续同一个 acpx 会话，被授权的维护者必须新建一条命令评论：
+协调器与人的讨论是显式的。常规命令完成结果应放在 coordinator summary 中，并由 Runner 写入状态评论；coordinator 不应额外创建一条讨论评论来重复结果。阻塞性的工作流决策应记录为 `QUESTION` 类型化评论。当轻量澄清、建议或交接确实需要一条独立、面向人的时间线记录时，被沙箱隔离的 coordinator 使用 `issue-spec comment create --repo owner/repo --issue <issue> --body-file <file> --json`。该命令通过当前选择的 issue backend 写入，也支持自托管 REST profile，不依赖 `gh`。类型化工作流证据继续使用 `comment upsert` 与 `comment transition`；普通正文不会被转换成 typed artifact。issue 评论是扁平的时间线评论，而非嵌套在某条评论下的回复；coordinator 应链接触发评论或状态评论，并带上公共会话 id。要继续同一个 acpx 会话，被授权的维护者必须新建一条命令评论：
 
 ```text
 /resume <public-session-id> <answer or next instruction>
