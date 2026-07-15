@@ -7,7 +7,9 @@ import {
   createdSecretSchema,
   metaSchema,
   patsSchema,
+  profileSchema,
   providersSchema,
+  publicProfileSchema,
   repositoriesContextSchema,
   repositoryRouteContextSchema,
   type AdminOrganization,
@@ -38,6 +40,9 @@ type WebhookUpdateInput = Omit<WebhookInput, "repository_id"> & { active: boolea
 export const api = {
   meta: (signal?: AbortSignal) => apiRequest("/api/v1/meta", { schema: metaSchema, signal }),
   context: (signal?: AbortSignal) => apiRequest("/api/v1/context", { schema: contextSchema, signal }),
+  publicProfile: (login: string, signal?: AbortSignal) => apiRequest(`/api/v1/users/${encodeURIComponent(login)}`, { schema: publicProfileSchema, signal }),
+  profile: (signal?: AbortSignal) => apiRequest("/api/v1/profile", { schema: profileSchema, signal }),
+  updateProfile: (body: { nickname: string; expected_version: number }) => apiRequest("/api/v1/profile", { method: "PATCH", body, schema: profileSchema }),
   repositoriesContext: (orgId: string, signal?: AbortSignal) => apiRequest(`/api/v1/context/orgs/${orgId}/repos`, { schema: repositoriesContextSchema, signal }),
   repositoryRouteContext: (owner: string, repository: string, signal?: AbortSignal) =>
     apiRequest(`/api/v1/context/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`, { schema: repositoryRouteContextSchema, signal }),

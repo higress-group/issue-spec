@@ -10,9 +10,9 @@ import { featureNavigation } from "./feature-contributions";
 import { Avatar } from "./avatar";
 import { useTranslation } from "react-i18next";
 import { LanguageSwitcher } from "../i18n/language-switcher";
-import { isCanonicalRepositoryReadPath } from "../lib/canonical-routes";
+import { isCanonicalRepositoryReadPath, isPublicUserProfilePath } from "../lib/canonical-routes";
 
-export { isCanonicalRepositoryReadPath } from "../lib/canonical-routes";
+export { isCanonicalRepositoryReadPath, isPublicUserProfilePath } from "../lib/canonical-routes";
 
 const navClass = ({ isActive }: { isActive: boolean }) => isActive ? "nav-link active" : "nav-link";
 
@@ -25,7 +25,7 @@ export function AuthenticatedShell() {
   const inspector = useInspector();
   if (contextQuery.isLoading || metaQuery.isLoading) return <Loading />;
   if (contextQuery.error && isApiProblem(contextQuery.error) && contextQuery.error.problem.status === 401) {
-    if (isCanonicalRepositoryReadPath(location.pathname)) return <PublicRepositoryShell />;
+    if (isCanonicalRepositoryReadPath(location.pathname) || isPublicUserProfilePath(location.pathname)) return <PublicRepositoryShell />;
     return <Navigate to="/login" replace state={{ returnTo: `${location.pathname}${location.search}${location.hash}` }} />;
   }
   if (contextQuery.error) {

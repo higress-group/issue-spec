@@ -96,7 +96,8 @@ func PresentIssue(presenter codec.Presenter, resource models.RepositoryResource,
 	return presenter.PresentIssue(codec.IssueView{StableID: snapshot.Issue.ID.String(),
 		Owner: resource.Owner, Repository: resource.Name, Number: snapshot.Issue.Number,
 		State: string(snapshot.Issue.State), Title: snapshot.Issue.Title, Body: snapshot.Issue.Body,
-		Author: codec.UserView{StableID: stableAuthorID(snapshot.Issue.AuthorID), Login: snapshot.AuthorLogin},
+		Author: codec.UserView{StableID: stableAuthorID(snapshot.Issue.AuthorID), Login: snapshot.AuthorLogin,
+			Name: snapshot.AuthorDisplayName},
 		Labels: labels, CommentCount: snapshot.CommentCount, CreatedAt: snapshot.Issue.CreatedAt,
 		UpdatedAt: snapshot.Issue.UpdatedAt, ClosedAt: snapshot.Issue.ClosedAt})
 }
@@ -104,7 +105,8 @@ func PresentIssue(presenter codec.Presenter, resource models.RepositoryResource,
 func PresentComment(presenter codec.Presenter, resource models.RepositoryResource, snapshot models.CommentSnapshot) codec.Comment {
 	return presenter.PresentComment(codec.CommentView{StableID: snapshot.Comment.ID.String(), Owner: resource.Owner,
 		Repository: resource.Name, IssueNumber: snapshot.IssueNumber, Body: snapshot.Comment.Body,
-		Author:    codec.UserView{StableID: stableAuthorID(snapshot.Comment.AuthorID), Login: snapshot.AuthorLogin},
+		Author: codec.UserView{StableID: stableAuthorID(snapshot.Comment.AuthorID), Login: snapshot.AuthorLogin,
+			Name: snapshot.AuthorDisplayName},
 		CreatedAt: snapshot.Comment.CreatedAt, UpdatedAt: snapshot.Comment.UpdatedAt,
 		Reactions: presentReactionSummary(snapshot.Reactions)})
 }

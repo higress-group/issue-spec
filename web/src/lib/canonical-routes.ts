@@ -49,6 +49,10 @@ export function isCanonicalRepositoryReadPath(pathname: string) {
   return Boolean(match && isRepositoryRootOwner(match[1]));
 }
 
+export function isPublicUserProfilePath(pathname: string) {
+  return /^\/users\/[^/]+(?:\/issues)?\/?$/.test(pathname);
+}
+
 export function isIssueFeaturePath(pathname: string) {
   if (/^\/issues(?:\/|$)/.test(pathname)) return true;
   const match = pathname.match(/^\/([^/]+)\/[^/]+\/issues(?:\/|$)/);

@@ -36,7 +36,7 @@ func TestRenderGitHubUsesCanonicalRepositoryIssueAndCommentURLs(t *testing.T) {
 		Notification: &outbox.NotificationFacts{
 			Organization: outbox.NotificationOrganization{ID: uuid.New(), Login: "ingress", DisplayName: "Ingress"},
 			Repository:   outbox.NotificationRepository{ID: uuid.New(), Name: "istio", FullName: "ingress/istio"},
-			Sender:       outbox.NotificationUser{ID: uuid.New(), Login: "alice"},
+			Sender:       outbox.NotificationUser{ID: uuid.New(), Login: "alice", DisplayName: "澄潭"},
 			Issue: outbox.NotificationIssue{ID: uuid.New(), Number: 21, State: "open", Title: "Canonical URLs",
 				Author: outbox.NotificationUser{ID: uuid.New(), Login: "alice"}, CreatedAt: now, UpdatedAt: now},
 			Comment: &outbox.NotificationComment{ID: commentID, NumericID: 42, Body: "body",
@@ -65,6 +65,11 @@ func TestRenderGitHubUsesCanonicalRepositoryIssueAndCommentURLs(t *testing.T) {
 			HTMLURL   string `json:"html_url"`
 			IssuesURL string `json:"issues_url"`
 		} `json:"repository"`
+		Sender struct {
+			Name    string `json:"name"`
+			URL     string `json:"url"`
+			HTMLURL string `json:"html_url"`
+		} `json:"sender"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
@@ -78,10 +83,15 @@ func TestRenderGitHubUsesCanonicalRepositoryIssueAndCommentURLs(t *testing.T) {
 		"comment API":       {payload.Comment.URL, "https://api.issue.test/repos/ingress/istio/issues/comments/42"},
 		"comment Web":       {payload.Comment.HTMLURL, "https://issues.test/ingress/istio/issues/21#issuecomment-42"},
 		"comment issue API": {payload.Comment.IssueURL, "https://api.issue.test/repos/ingress/istio/issues/21"},
+		"user API":          {payload.Sender.URL, "https://api.issue.test/api/v1/users/alice"},
+		"user Web":          {payload.Sender.HTMLURL, "https://issues.test/users/alice"},
 	}
 	for name, check := range checks {
 		if check[0] != check[1] {
 			t.Errorf("%s = %q, want %q", name, check[0], check[1])
 		}
+	}
+	if payload.Sender.Name != "澄潭" {
+		t.Errorf("sender name = %q, want nickname", payload.Sender.Name)
 	}
 }

@@ -6,7 +6,7 @@ import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import { fixtureMeta, server } from "../../tests/server";
 import { InspectorProvider } from "./problem-inspector";
-import { AuthenticatedShell, isCanonicalRepositoryReadPath } from "./shell";
+import { AuthenticatedShell, isCanonicalRepositoryReadPath, isPublicUserProfilePath } from "./shell";
 import { isChangeFeaturePath, isIssueFeaturePath } from "../lib/canonical-routes";
 import { RepositoryGate, type ActiveRepository } from "../features/issues/repository-context";
 import { useCurrentContext } from "../auth/session";
@@ -19,6 +19,12 @@ describe("application navigation and canonical public shell", () => {
     for (const pathname of ["/admin/settings", "/api/v1", "/orgs/acme", "/settings/account", "/readyz/check"]) {
       expect(isCanonicalRepositoryReadPath(pathname)).toBe(false);
     }
+  });
+
+  it("recognizes public profile and legacy profile issue links", () => {
+    expect(isPublicUserProfilePath("/users/johnlanni")).toBe(true);
+    expect(isPublicUserProfilePath("/users/johnlanni/issues")).toBe(true);
+    expect(isPublicUserProfilePath("/users/johnlanni/settings")).toBe(false);
   });
 
   it("keeps feature navigation active on canonical named routes", () => {
@@ -56,7 +62,7 @@ describe("application navigation and canonical public shell", () => {
     );
     const { container } = renderShell("/acme/public/issues/7?view=timeline", true);
     expect(await screen.findByText("Public issue content")).toBeVisible();
-    expect(screen.getByText("public repository view")).toBeVisible();
+    expect(screen.getByText("public view")).toBeVisible();
     expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
     expect(screen.queryByRole("navigation", { name: "Primary navigation" })).not.toBeInTheDocument();
     expect(contextRequests).toBe(1);

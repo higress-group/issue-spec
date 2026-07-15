@@ -151,7 +151,8 @@ func (s RepoStore) IssueSnapshotByNumber(ctx context.Context, number int64) (mod
 		return models.IssueSnapshot{}, ErrInvalidInput
 	}
 	row := s.db.QueryRow(ctx, `SELECT `+qualifiedIssueColumns+`,
-		COALESCE(u.login, 'ghost'), (SELECT count(*) FROM comments c
+		COALESCE(u.login, 'ghost'), COALESCE(u.nickname, u.display_name, u.login, 'ghost'),
+		(SELECT count(*) FROM comments c
 		WHERE c.organization_id = i.organization_id AND c.repository_id = i.repository_id AND c.issue_id = i.id)
 		FROM issues i LEFT JOIN users u ON u.id = i.author_id
 		WHERE i.organization_id = $1 AND i.repository_id = $2 AND i.number = $3`,
@@ -197,6 +198,7 @@ func (s RepoStore) ListIssues(ctx context.Context, options models.IssueListOptio
 	}
 	args = append(args, options.PerPage, (options.Page-1)*options.PerPage)
 	rows, err := s.db.Query(ctx, `SELECT `+qualifiedIssueColumns+`, COALESCE(u.login, 'ghost'),
+		COALESCE(u.nickname, u.display_name, u.login, 'ghost'),
 		(SELECT count(*) FROM comments c WHERE c.organization_id = i.organization_id
 		AND c.repository_id = i.repository_id AND c.issue_id = i.id)
 		FROM issues i LEFT JOIN users u ON u.id = i.author_id WHERE `+where+
@@ -309,6 +311,7 @@ func scanIssueSnapshot(row rowScanner) (models.IssueSnapshot, error) {
 		&snapshot.Issue.BindingsCollectionVersion, &snapshot.Issue.ReferencesCollectionVersion,
 		&snapshot.Issue.EvidenceCollectionVersion, &snapshot.Issue.CreatedAt,
 		&snapshot.Issue.UpdatedAt, &snapshot.Issue.ClosedAt, &snapshot.AuthorLogin,
+		&snapshot.AuthorDisplayName,
 		&snapshot.CommentCount,
 	)
 	return snapshot, err

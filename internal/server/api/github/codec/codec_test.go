@@ -87,9 +87,12 @@ func TestPresenterMatchesExistingGitHubClientFieldsAndPreservesRawBody(t *testin
 func TestDTOsRoundTripThroughExistingGitHubRunnerClient(t *testing.T) {
 	p := presenter(t)
 	now := time.Date(2026, 7, 3, 1, 2, 3, 0, time.UTC)
-	user := p.PresentUser(codec.UserView{StableID: "u1", Login: "alice"})
+	user := p.PresentUser(codec.UserView{StableID: "u1", Login: "alice", Name: "澄潭"})
 	if user.AvatarURL != "https://issues.test/api/v1/avatars/alice" {
 		t.Fatalf("avatar_url = %q", user.AvatarURL)
+	}
+	if user.HTMLURL != "https://issues.test/users/alice" || user.Name != "澄潭" {
+		t.Fatalf("profile user = %+v", user)
 	}
 	issue := p.PresentIssue(codec.IssueView{
 		StableID: "i1", Owner: "o", Repository: "r", Number: 7, State: "open", Title: "title", Body: "raw",

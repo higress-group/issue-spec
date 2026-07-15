@@ -29,6 +29,15 @@ type User struct {
 	Status      string    `json:"status"`
 }
 
+type Profile struct {
+	ID                    uuid.UUID `json:"id"`
+	Login                 string    `json:"login"`
+	DisplayName           string    `json:"display_name"`
+	IdentityDisplayName   string    `json:"identity_display_name"`
+	Nickname              *string   `json:"nickname"`
+	RepresentationVersion int64     `json:"representation_version"`
+}
+
 type Provider struct {
 	ID      uuid.UUID
 	Name    string
@@ -120,11 +129,15 @@ func (s *IdentityService) ResolveOrProvision(ctx context.Context, provider Provi
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(tx pgx.Tx) error {
 		var identityID uuid.UUID
 		var profileIdentityID *uuid.UUID
-		err := tx.QueryRow(ctx, `SELECT i.id, u.id, u.login, u.display_name, u.email, u.status, u.profile_identity_id
+		var identityDisplayName string
+		var nickname *string
+		err := tx.QueryRow(ctx, `SELECT i.id, u.id, u.login, u.display_name, u.nickname,
+			u.email, u.status, u.profile_identity_id
 			FROM identities i JOIN users u ON u.id = i.user_id
 			WHERE i.provider_id = $1 AND i.issuer = $2 AND i.subject = $3
 			FOR UPDATE OF i, u`, provider.ID, ext.Issuer, ext.Subject).
-			Scan(&identityID, &user.ID, &user.Login, &user.DisplayName, &user.Email, &user.Status, &profileIdentityID)
+			Scan(&identityID, &user.ID, &user.Login, &identityDisplayName, &nickname,
+				&user.Email, &user.Status, &profileIdentityID)
 		if err == nil {
 			if user.Status != "active" {
 				return ErrDisabledAccount
@@ -145,13 +158,17 @@ func (s *IdentityService) ResolveOrProvision(ctx context.Context, provider Provi
 			if profileIdentityID != nil && *profileIdentityID == identityID {
 				displayName := strings.TrimSpace(ext.DisplayName)
 				if displayName == "" {
-					displayName = user.DisplayName
+					displayName = identityDisplayName
 				}
 				if err := tx.QueryRow(ctx, `UPDATE users SET display_name=$2, email=$3,
 					representation_version=representation_version+1, updated_at=$4 WHERE id=$1
-					RETURNING display_name,email`, user.ID, displayName, ext.Email, s.now()).Scan(&user.DisplayName, &user.Email); err != nil {
+					RETURNING display_name,email`, user.ID, displayName, ext.Email, s.now()).Scan(&identityDisplayName, &user.Email); err != nil {
 					return err
 				}
+			}
+			user.DisplayName = identityDisplayName
+			if nickname != nil {
+				user.DisplayName = *nickname
 			}
 			return nil
 		}
@@ -198,6 +215,92 @@ func (s *IdentityService) ResolveOrProvision(ctx context.Context, provider Provi
 		return User{}, fmt.Errorf("auth: resolve identity: %w", err)
 	}
 	return user, nil
+}
+
+func (s *IdentityService) PublicProfile(ctx context.Context, login string) (Profile, error) {
+	if s == nil || s.pool == nil || strings.TrimSpace(login) == "" {
+		return Profile{}, ErrNotFound
+	}
+	var profile Profile
+	err := s.pool.QueryRow(ctx, `SELECT id, login, COALESCE(nickname, display_name), display_name,
+		nickname, representation_version FROM users
+		WHERE login_key = lower($1) AND status = 'active'`, strings.TrimSpace(login)).Scan(
+		&profile.ID, &profile.Login, &profile.DisplayName, &profile.IdentityDisplayName,
+		&profile.Nickname, &profile.RepresentationVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Profile{}, ErrNotFound
+	}
+	if err != nil {
+		return Profile{}, fmt.Errorf("auth: load public profile: %w", err)
+	}
+	return profile, nil
+}
+
+func (s *IdentityService) Profile(ctx context.Context, userID uuid.UUID) (Profile, error) {
+	if s == nil || s.pool == nil || userID == uuid.Nil {
+		return Profile{}, ErrNotFound
+	}
+	var profile Profile
+	err := s.pool.QueryRow(ctx, `SELECT id, login, COALESCE(nickname, display_name), display_name,
+		nickname, representation_version FROM users WHERE id = $1 AND status = 'active'`, userID).Scan(
+		&profile.ID, &profile.Login, &profile.DisplayName, &profile.IdentityDisplayName,
+		&profile.Nickname, &profile.RepresentationVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Profile{}, ErrNotFound
+	}
+	if err != nil {
+		return Profile{}, fmt.Errorf("auth: load profile: %w", err)
+	}
+	return profile, nil
+}
+
+func (s *IdentityService) UpdateNickname(ctx context.Context, userID uuid.UUID, nickname string,
+	expectedVersion int64, requestID string) (Profile, error) {
+	nickname = strings.TrimSpace(nickname)
+	if s == nil || s.pool == nil || userID == uuid.Nil || expectedVersion < 1 ||
+		len([]rune(nickname)) > 80 || strings.TrimSpace(requestID) == "" {
+		return Profile{}, ErrInvalidCredential
+	}
+	var value *string
+	if nickname != "" {
+		value = &nickname
+	}
+	var profile Profile
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `UPDATE users SET nickname = $2,
+			representation_version = representation_version + 1, updated_at = $3
+			WHERE id = $1 AND status = 'active' AND representation_version = $4
+			RETURNING id, login, COALESCE(nickname, display_name), display_name,
+				nickname, representation_version`, userID, value, s.now(), expectedVersion).Scan(
+			&profile.ID, &profile.Login, &profile.DisplayName, &profile.IdentityDisplayName,
+			&profile.Nickname, &profile.RepresentationVersion)
+		if errors.Is(err, pgx.ErrNoRows) {
+			var exists bool
+			if lookupErr := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users
+				WHERE id = $1 AND status = 'active')`, userID).Scan(&exists); lookupErr != nil {
+				return lookupErr
+			}
+			if !exists {
+				return ErrNotFound
+			}
+			return ErrConflict
+		}
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO audit_events
+			(id, actor_user_id, actor_identity_key, action, resource_type, resource_id, request_id)
+			VALUES ($1, $2, $3, 'user.nickname.update', 'user', $2, $4)`,
+			uuid.New(), userID, "user:"+userID.String(), requestID)
+		return err
+	})
+	if err != nil {
+		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrConflict) {
+			return Profile{}, err
+		}
+		return Profile{}, fmt.Errorf("auth: update nickname: %w", err)
+	}
+	return profile, nil
 }
 
 // LinkIdentity is an explicit administrative operation. It never infers a

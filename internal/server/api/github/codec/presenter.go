@@ -20,6 +20,7 @@ type Presenter struct {
 type UserView struct {
 	StableID string
 	Login    string
+	Name     string
 	Admin    bool
 }
 
@@ -72,8 +73,9 @@ type ReactionView struct {
 }
 
 func (p Presenter) PresentUser(view UserView) User {
-	return User{Login: view.Login, ID: StableNumericID(view.StableID), NodeID: NodeID("User", view.StableID),
-		AvatarURL: p.AvatarURL(view.Login), Type: "User", SiteAdmin: view.Admin}
+	return User{Login: view.Login, Name: view.Name, ID: StableNumericID(view.StableID), NodeID: NodeID("User", view.StableID),
+		AvatarURL: p.AvatarURL(view.Login), HTMLURL: p.Origins.Web.MustURL("/users/" + segment(view.Login)),
+		Type: "User", SiteAdmin: view.Admin}
 }
 
 func (p Presenter) AvatarURL(login string) string {
