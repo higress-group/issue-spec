@@ -40,9 +40,18 @@ func TestProductionAssetsAndSPAFallback(t *testing.T) {
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `<div id="root"></div>`) {
 			t.Fatalf("GET %s = %d %q", target, response.Code, response.Body.String())
 		}
+		if !strings.Contains(response.Body.String(), `<link rel="icon" type="image/svg+xml" href="/favicon.svg" />`) {
+			t.Fatalf("GET %s does not reference the favicon", target)
+		}
 		if got := response.Header().Get("Cache-Control"); got != "no-store" {
 			t.Fatalf("GET %s cache = %q", target, got)
 		}
+	}
+	favicon := httptest.NewRecorder()
+	handler.ServeHTTP(favicon, httptest.NewRequest(http.MethodGet, "/favicon.svg", nil))
+	if favicon.Code != http.StatusOK || favicon.Header().Get("Content-Type") != "image/svg+xml" ||
+		favicon.Header().Get("Cache-Control") != "no-cache" || !strings.Contains(favicon.Body.String(), ">is</text>") {
+		t.Fatalf("favicon response = %d headers=%v body=%q", favicon.Code, favicon.Header(), favicon.Body.String())
 	}
 	var hashed string
 	for name, asset := range manifest {

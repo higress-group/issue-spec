@@ -34,6 +34,7 @@ func init() {
 		"assets/triangle-alert-DJK1pnxR.js":     {ContentType: "text/javascript; charset=utf-8", SHA256: "c8f4975d57ef6f7d1db8ac305fcfcf98f2cd33ce195148269f79cf6dd9ff4bb9", Immutable: true},
 		"assets/useMutation-BwGH4ZSY.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "3db7ca1a43f32d5016705e95ae90d06c4fec2ce717f08fc9033a9dca5d45f31d", Immutable: true},
 		"assets/workspace-page-Dp227f2r.js":     {ContentType: "text/javascript; charset=utf-8", SHA256: "f8ab4e1a7146dce81023d5440ca37431d49d32ba2c38482fa2b929a75a29ede6", Immutable: true},
-		"index.html":                            {ContentType: "text/html; charset=utf-8", SHA256: "65c993c7d72ebfa19833beb0a5c10d31199b3109543d72f4f2c7eb3615d70a24", Immutable: false},
+		"favicon.svg":                           {ContentType: "image/svg+xml", SHA256: "eb7ac46eb3c97babd15fefaa58f745f2d4d33e12483ec88a541f1bf051e56646", Immutable: false},
+		"index.html":                            {ContentType: "text/html; charset=utf-8", SHA256: "5b30314ac623c3cffa2a17a2d5df6b7175a96b63c00e6b71d0195bb3b0db5761", Immutable: false},
 	}
 }
