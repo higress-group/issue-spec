@@ -4,20 +4,27 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 // RotatingWriter wraps a Writer and handles log rotation
 type RotatingWriter struct {
-	writer    *Writer
-	config    Config
-	basePath  string
-	maxSize   int64
-	maxFiles  int
+	writer   *Writer
+	config   Config
+	basePath string
+	maxSize  int64
+	maxFiles int
 }
 
 // NewRotatingWriter creates a new rotating writer
 func NewRotatingWriter(path string, config Config, redactor *Redactor) (*RotatingWriter, error) {
+	if err := secureDirectory(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
+	if err := secureRotatedFiles(path); err != nil {
+		return nil, fmt.Errorf("secure rotated files: %w", err)
+	}
 	w, err := NewWriter(path, redactor)
 	if err != nil {
 		return nil, err
@@ -68,31 +75,43 @@ func (rw *RotatingWriter) checkRotate() error {
 
 // rotate performs the log rotation
 func (rw *RotatingWriter) rotate() error {
+	if err := secureRotatedFiles(rw.basePath); err != nil {
+		return fmt.Errorf("validate rotated files: %w", err)
+	}
 	// Close current writer
 	if err := rw.writer.Close(); err != nil {
 		return fmt.Errorf("close current writer: %w", err)
 	}
 
-	// Rotate existing files
+	if rw.maxFiles <= 0 {
+		if err := removeRegularFileIfExists(rw.basePath); err != nil {
+			return fmt.Errorf("remove current file: %w", err)
+		}
+	} else {
+		if err := removeRegularFileIfExists(rw.rotatedPath(rw.maxFiles)); err != nil {
+			return fmt.Errorf("remove oldest rotated file: %w", err)
+		}
+	}
+
+	// Rotate existing files. Every source and destination is validated as a
+	// private regular file before a path mutation occurs.
 	for i := rw.maxFiles - 1; i >= 1; i-- {
 		oldPath := rw.rotatedPath(i)
 		newPath := rw.rotatedPath(i + 1)
 
-		if i == rw.maxFiles-1 {
-			// Delete the oldest file
-			os.Remove(newPath)
-		}
-
-		if _, err := os.Stat(oldPath); err == nil {
-			if err := os.Rename(oldPath, newPath); err != nil {
+		if _, err := os.Lstat(oldPath); err == nil {
+			if err := renameRegularFile(oldPath, newPath); err != nil {
 				return fmt.Errorf("rotate file %d: %w", i, err)
 			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect rotated file %d: %w", i, err)
 		}
 	}
 
-	// Rename current file to .1
-	if err := os.Rename(rw.basePath, rw.rotatedPath(1)); err != nil {
-		return fmt.Errorf("rotate current file: %w", err)
+	if rw.maxFiles > 0 {
+		if err := renameRegularFile(rw.basePath, rw.rotatedPath(1)); err != nil {
+			return fmt.Errorf("rotate current file: %w", err)
+		}
 	}
 
 	// Create new writer
@@ -135,7 +154,8 @@ func (rw *RotatingWriter) RotatedFiles() []string {
 	// Check for rotated files
 	for i := 1; i <= rw.maxFiles; i++ {
 		path := rw.rotatedPath(i)
-		if _, err := os.Stat(path); err == nil {
+		if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink == 0 &&
+			info.Mode().IsRegular() && diagnosticPermissionsMatch(info, DefaultFileMode) {
 			files = append(files, path)
 		}
 	}
@@ -145,6 +165,9 @@ func (rw *RotatingWriter) RotatedFiles() []string {
 
 // Cleanup removes rotated files beyond the max limit
 func (rw *RotatingWriter) Cleanup() error {
+	if err := secureRotatedFiles(rw.basePath); err != nil {
+		return err
+	}
 	files, err := filepath.Glob(rw.basePath + ".*")
 	if err != nil {
 		return err
@@ -153,10 +176,10 @@ func (rw *RotatingWriter) Cleanup() error {
 	for _, file := range files {
 		// Extract the rotation number
 		numStr := strings.TrimPrefix(file, rw.basePath+".")
-		var num int
-		if _, err := fmt.Sscanf(numStr, "%d", &num); err == nil {
-			if num > rw.maxFiles {
-				os.Remove(file)
+		num, err := strconv.Atoi(numStr)
+		if err == nil && num > 0 && strconv.Itoa(num) == numStr && num > rw.maxFiles {
+			if err := removeRegularFileIfExists(file); err != nil {
+				return err
 			}
 		}
 	}

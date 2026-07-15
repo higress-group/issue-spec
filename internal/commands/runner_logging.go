@@ -29,6 +29,7 @@ import (
 // mutate shared logger correlation state.
 type runnerLogger struct {
 	logger  *diagnostics.Logger
+	scope   diagnostics.Scope
 	cycleMu sync.RWMutex
 	cycleID string
 }
@@ -59,12 +60,9 @@ func newRunnerLogger(cfg commentrunner.Config) (*runnerLogger, error) {
 	if hostname == "" {
 		hostname = "github.com"
 	}
-	repository := ""
-	if len(cfg.Repositories) > 0 {
-		repository = cfg.Repositories[0]
-	}
-	logger.WithScope(hostname, repository, cfg.RunnerIdentity)
-	return &runnerLogger{logger: logger}, nil
+	scope := diagnostics.Scope{Host: hostname, RunnerLogin: cfg.RunnerIdentity}
+	logger.WithScope(scope.Host, "", scope.RunnerLogin)
+	return &runnerLogger{logger: logger, scope: scope}, nil
 }
 
 func (rl *runnerLogger) close() error {
@@ -139,10 +137,17 @@ func (rl *runnerLogger) currentCorrelation(correlation diagnostics.Correlation) 
 
 func (rl *runnerLogger) write(level diagnostics.Level, component, event, message string,
 	correlation diagnostics.Correlation, details map[string]interface{}) error {
+	return rl.writeForRepo("", level, component, event, message, correlation, details)
+}
+
+func (rl *runnerLogger) writeForRepo(repo string, level diagnostics.Level, component, event, message string,
+	correlation diagnostics.Correlation, details map[string]interface{}) error {
 	if rl == nil || rl.logger == nil {
 		return nil
 	}
-	return rl.logger.WriteEventWithCorrelation(level, component, event, message,
+	scope := rl.scope
+	scope.Repo = strings.TrimSpace(repo)
+	return rl.logger.WriteEventWithScopeAndCorrelation(level, component, event, message, scope,
 		rl.currentCorrelation(correlation), details)
 }
 
@@ -178,7 +183,7 @@ func (rl *runnerLogger) logIntake(result *intake.Result) error {
 		}
 		correlation := diagnostics.Correlation{JobID: command.JobID, CancellationID: command.CancellationID,
 			PublicSessionID: command.PublicSessionID, TriggerCommentID: command.CommentID}
-		errs = append(errs, rl.write(level, "intake", "command_"+command.Status, "command intake decision recorded",
+		errs = append(errs, rl.writeForRepo(command.Repo, level, "intake", "command_"+command.Status, "command intake decision recorded",
 			correlation, map[string]interface{}{"repo": command.Repo, "issue": command.Issue,
 				"verb": command.Verb, "reason": command.Reason, "created": command.Created}))
 	}
@@ -198,7 +203,7 @@ func (rl *runnerLogger) logIntake(result *intake.Result) error {
 		if !candidate.Created {
 			event = "cancellation_duplicate"
 		}
-		errs = append(errs, rl.write(diagnostics.LevelInfo, "cancellation", event, "cancellation intake decision recorded",
+		errs = append(errs, rl.writeForRepo(candidate.Repo, diagnostics.LevelInfo, "cancellation", event, "cancellation intake decision recorded",
 			diagnostics.Correlation{CancellationID: candidate.CancellationID, PublicSessionID: candidate.PublicSessionID,
 				TriggerCommentID: candidate.TriggerComment}, map[string]interface{}{"repo": candidate.Repo, "created": candidate.Created}))
 	}
@@ -218,7 +223,7 @@ func (rl *runnerLogger) logReconcile(result *crjobs.ReconcileResult) error {
 		}))
 	for _, job := range result.Jobs {
 		level := lifecycleLogLevel(job.Status)
-		errs = append(errs, rl.write(level, "reconcile", "job_reconciled", "job restart reconciliation recorded",
+		errs = append(errs, rl.writeForRepo(job.Repo, level, "reconcile", "job_reconciled", "job restart reconciliation recorded",
 			diagnostics.Correlation{JobID: job.JobID, PublicSessionID: job.PublicSessionID},
 			map[string]interface{}{"previous_status": job.PreviousStatus, "status": job.Status,
 				"action": job.Action, "diagnostic": job.Diagnostic}))
@@ -305,7 +310,7 @@ func (rl *runnerLogger) ObserveWebhookReconcile(result webhook.ReconcileResult) 
 		level, event = diagnostics.LevelWarn, "webhook_reconcile_retry"
 	}
 	var errs []error
-	errs = append(errs, rl.write(level, "intake", event, "webhook reconciliation decision recorded", correlation,
+	errs = append(errs, rl.writeForRepo(result.Repository, level, "intake", event, "webhook reconciliation decision recorded", correlation,
 		map[string]interface{}{"repo": result.Repository, "outcome": result.Outcome,
 			"reason": result.Reason, "completed": result.Completed, "retried": result.Retried,
 			"idempotent": result.Idempotent}))
@@ -324,7 +329,7 @@ func (rl *runnerLogger) ObserveWebhookReconcile(result webhook.ReconcileResult) 
 		if result.Idempotent {
 			cancelEvent, cancelMessage = "cancellation_duplicate", "idempotent runner cancellation observed"
 		}
-		errs = append(errs, rl.write(diagnostics.LevelInfo, "cancellation", cancelEvent,
+		errs = append(errs, rl.writeForRepo(result.Repository, diagnostics.LevelInfo, "cancellation", cancelEvent,
 			cancelMessage, correlation, map[string]interface{}{"delivery_outcome": result.Outcome,
 				"idempotent": result.Idempotent}))
 	}
@@ -474,10 +479,12 @@ func (rl *runnerLogger) logJobEvent(job crstate.Job, extra diagnostics.Correlati
 	}
 	correlation := mergeDiagnosticCorrelation(jobCorrelation(job), extra)
 	correlation = rl.currentCorrelation(correlation)
+	scope := rl.scope
+	scope.Repo = strings.TrimSpace(job.Repo)
 	var errs []error
-	errs = append(errs, rl.logger.WriteEventWithCorrelation(level, "jobs", event, message, correlation, details))
+	errs = append(errs, rl.logger.WriteEventWithScopeAndCorrelation(level, "jobs", event, message, scope, correlation, details))
 
-	jobLogger, err := rl.logger.JobLoggerWithCorrelation(correlation)
+	jobLogger, err := rl.logger.JobLoggerWithScopeAndCorrelation(scope, correlation)
 	if err != nil {
 		return errors.Join(errors.Join(errs...), fmt.Errorf("create job logger: %w", err))
 	}
@@ -501,7 +508,7 @@ func (rl *runnerLogger) logJobEvent(job crstate.Job, extra diagnostics.Correlati
 	}
 	var sessionLogger *diagnostics.SessionLogger
 	if safeDiagnosticID(correlation.PublicSessionID) && safeDiagnosticID(turnID) {
-		sessionLogger, err = rl.logger.SessionLoggerWithCorrelation(correlation)
+		sessionLogger, err = rl.logger.SessionLoggerWithScopeAndCorrelation(scope, correlation)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("create session logger: %w", err))
 		} else {

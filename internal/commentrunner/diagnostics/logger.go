@@ -117,14 +117,22 @@ func (l *Logger) LogEventWithDetails(level Level, component, event, message stri
 // WriteEventWithDetails persists an event and returns any writer failure to
 // callers that require durable diagnostics as part of their lifecycle.
 func (l *Logger) WriteEventWithDetails(level Level, component, event, message string, details map[string]interface{}) error {
-	return l.writeEvent(level, component, event, message, details, nil)
+	return l.writeEvent(level, component, event, message, details, nil, nil)
 }
 
 // WriteEventWithCorrelation persists an event using an immutable correlation
 // snapshot instead of mutating the logger-wide context. Long-running runner
 // serve processes use this for concurrent job lifecycles.
 func (l *Logger) WriteEventWithCorrelation(level Level, component, event, message string, correlation Correlation, details map[string]interface{}) error {
-	return l.writeEvent(level, component, event, message, details, &correlation)
+	return l.writeEvent(level, component, event, message, details, nil, &correlation)
+}
+
+// WriteEventWithScopeAndCorrelation persists an event with immutable scope and
+// correlation snapshots. Multi-repository runners use this instead of
+// mutating the process-wide logger scope between concurrent events.
+func (l *Logger) WriteEventWithScopeAndCorrelation(level Level, component, event, message string, scope Scope,
+	correlation Correlation, details map[string]interface{}) error {
+	return l.writeEvent(level, component, event, message, details, &scope, &correlation)
 }
 
 // Info logs an info event
@@ -143,16 +151,21 @@ func (l *Logger) Error(component, event, message string) {
 }
 
 // logEvent is the internal logging method
-func (l *Logger) writeEvent(level Level, component, event, message string, details map[string]interface{}, correlation *Correlation) error {
+func (l *Logger) writeEvent(level Level, component, event, message string, details map[string]interface{}, scope *Scope,
+	correlation *Correlation) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	currentScope := l.scope
+	if scope != nil {
+		currentScope = *scope
+	}
 	currentCorrelation := l.correlation
 	if correlation != nil {
 		currentCorrelation = *correlation
 	}
 
 	e := NewEvent(level, component, event, message).
-		WithScope(l.scope.Host, l.scope.Repo, l.scope.RunnerLogin).
+		WithScope(currentScope.Host, currentScope.Repo, currentScope.RunnerLogin).
 		WithProcessID(l.processID).
 		WithCorrelation(currentCorrelation)
 
@@ -223,6 +236,14 @@ func (l *Logger) JobLoggerWithCorrelation(correlation Correlation) (*JobLogger, 
 	return NewJobLogger(l.store, l.redactor, l.scope, correlation)
 }
 
+// JobLoggerWithScopeAndCorrelation creates a job logger with immutable scope
+// and correlation snapshots.
+func (l *Logger) JobLoggerWithScopeAndCorrelation(scope Scope, correlation Correlation) (*JobLogger, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return NewJobLogger(l.store, l.redactor, scope, correlation)
+}
+
 // SessionLogger returns a session-specific logger
 func (l *Logger) SessionLogger(sessionID string) (*SessionLogger, error) {
 	l.mu.Lock()
@@ -236,6 +257,14 @@ func (l *Logger) SessionLoggerWithCorrelation(correlation Correlation) (*Session
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return NewSessionLogger(l.store, l.redactor, l.scope, correlation)
+}
+
+// SessionLoggerWithScopeAndCorrelation creates a session logger with immutable
+// scope and correlation snapshots.
+func (l *Logger) SessionLoggerWithScopeAndCorrelation(scope Scope, correlation Correlation) (*SessionLogger, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return NewSessionLogger(l.store, l.redactor, scope, correlation)
 }
 
 // Sync flushes all log writers
