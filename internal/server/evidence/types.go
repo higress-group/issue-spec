@@ -50,6 +50,15 @@ type WriterAssignment struct {
 	UpdatedAt             time.Time        `json:"updated_at"`
 }
 
+// WriterStatus reports only the authenticated identity's current repository
+// designation. It deliberately carries no mutation authority or credential
+// scope inference.
+type WriterStatus struct {
+	UserID uuid.UUID `json:"user_id"`
+	Login  string    `json:"login"`
+	Active bool      `json:"active"`
+}
+
 type Evidence struct {
 	ID                   uuid.UUID        `json:"id"`
 	Scope                models.RepoScope `json:"-"`
