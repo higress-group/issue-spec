@@ -110,6 +110,9 @@ security boundary:
 read:user, issues:read, issues:write, runner:delegate, evidence:write
 ```
 
+6. using a repository owner or operator identity, designate that exact service
+   account as an active **Evidence Writer** for the repository.
+
 ![Issue a Runner Managed PAT to an independent service account](assets/self-hosted-runner-service-account.png)
 
 Save the one-time token. `--runner` must be the exact service-account login.
@@ -125,7 +128,9 @@ runner may use your own issue-spec account:
 1. confirm that your account has `write` or higher permission on the repository;
 2. select **Runner preset** on **Access tokens** and choose exactly that repository;
 3. save the one-time personal PAT;
-4. pass your exact login to `--runner` when starting the process.
+4. have a repository owner or operator designate your account as an active
+   **Evidence Writer** for that repository;
+5. pass your exact login to `--runner` when starting the process.
 
 The personal PAT uses the same five scopes and exact one-repository cap. By
 default, only the account named by `--runner` can issue commands; add
@@ -134,6 +139,16 @@ quicker to configure, but runner writes, credential rotation, and account
 disablement remain coupled to a person. Prefer a service account for shared or
 long-running production automation. Never substitute a browser session cookie
 or login session for the PAT.
+
+The Evidence Writer designation is a durable, server-side assignment to the
+identity, not a PAT scope or token option. `evidence:write` therefore does not
+self-designate its holder. Keep the Runner PAT restricted to the five scopes
+above; use a separate repository-administration session or short-lived
+`admin:repo` PAT to manage the assignment. Rotating a PAT for the same identity
+does not require another assignment. Deactivate the assignment when retiring
+the identity or moving the Runner to a different account. See
+[Assign an evidence writer](bridges/code-provider-v1.md#assign-an-evidence-writer)
+for the native API example.
 
 Read the public origins and instance ID from `/api/v1/meta`, then create the
 origin-bound profile as the runner system user:
@@ -442,7 +457,9 @@ team workflow:
    URL back to the issue. Without that capability, treat push evidence as the
    endpoint and create the change outside the sandbox; do not mount arbitrary
    host CLIs into bubblewrap;
-6. verify `/resume` by a different authorized maintainer, then revoke the test
+6. sync an `evidence.snapshot` for the exact current change revision and confirm
+   that the Server accepts it through the designated Runner identity;
+7. verify `/resume` by a different authorized maintainer, then revoke the test
    credential and remove the test workspace.
 
 | Symptom | Check first |
@@ -451,6 +468,7 @@ team workflow:
 | Webhook cannot connect | Receiver URL, DNS, firewall, reverse proxy, and TLS |
 | Comment is ignored | Command position, allowlist, and write-equivalent permission |
 | `runner:delegate` fails | Exact repository restriction and scopes (`read:user`, `issues:read`, `issues:write`, `runner:delegate`, `evidence:write`) |
+| Provider snapshot returns `403` | The PAT identity is an active repository Evidence Writer; it also has `evidence:write`, an exact one-repository cap, and current write-equivalent repository permission |
 | Newly issued delegated token is rejected as expired | Synchronize Server and Runner clocks; do not use a longer `--delegation-ttl` to hide clock drift |
 | Clone fails | Active source binding; for credentials, the HTTPS URL and exact binding echo; for host SSH, the runner user's key, agent, `known_hosts`, and repository access |
 | Commit reports an unknown author | Configure both `--git-author-name` and `--git-author-email` with values accepted by the code host; do not restore the host global Git config |

@@ -109,6 +109,8 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 5. 确认 Scope 包含 `read:user`、`issues:read`、`issues:write`、
    `runner:delegate` 和 `evidence:write`；
 6. 创建并保存只显示一次的 Managed PAT。
+7. 由仓库 Owner 或运维身份把该 Service Account 显式指定为目标仓库的有效
+   **Evidence Writer**。
 
 ![为独立服务账号签发 Runner Managed PAT](assets/self-hosted-runner-service-account.zh-CN.png)
 
@@ -123,12 +125,21 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 1. 确认自己的账号对目标仓库具有 `write` 或更高权限；
 2. 在 **访问令牌** 页面选择 **运行器预设**，并且只选择目标仓库；
 3. 保存只显示一次的个人 PAT；
-4. 启动时把自己的准确 Login 传给 `--runner`。
+4. 由仓库 Owner 或运维身份把自己的账号显式指定为目标仓库的有效
+   **Evidence Writer**；
+5. 启动时把自己的准确 Login 传给 `--runner`。
 
 个人 PAT 使用相同的五个 Scope，并且同样必须精确绑定一个仓库。默认只有
 `--runner` 对应的自己可以发出命令；需要允许其他维护者时再增加 `--allowed-user`。
 这种方式配置更少，但 Runner 写入、凭据轮换和账号停用都与个人身份绑定，不适合作为
 团队长期运行或多人共用的生产自动化。不要用浏览器 Session Cookie 或登录会话替代 PAT。
+
+Evidence Writer 是 Server 按用户身份保存的持久化授权，不是 PAT Scope，也不是创建
+Token 时的选项；`evidence:write` 不会让 Token 持有人自动成为 Evidence Writer。
+Runner PAT 仍只保留上述五个 Scope；应使用独立的仓库管理 Session 或短期
+`admin:repo` PAT 完成指定。为同一身份轮换 PAT 不需要重新指定；停用该身份或把 Runner
+迁移到其他账号时，应同时停用原指定。Native API 示例见
+[指定 Evidence Writer](bridges/code-provider-v1.md#assign-an-evidence-writer)。
 
 从 Server 的 `/api/v1/meta` 读取公开地址和 Instance ID，然后在 Runner 系统用户下
 创建与 Origin 绑定的 Profile：
@@ -447,7 +458,9 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 5. 当 code-provider bridge 广告 `change.create` 时，确认 Agent 通过该 provider 创建 PR/MR，
    并把变更 URL 回写到 Issue。未提供该能力时，把推送证据作为终点，在沙箱外创建变更；不要
    为此向 bubblewrap 挂载任意宿主 CLI；
-6. 让另一位被授权维护者执行 `/resume`，然后撤销测试凭据并删除测试 Workspace。
+6. 对变更的准确当前 Revision 同步一次 `evidence.snapshot`，确认 Server 接受由已指定
+   Runner 身份写入的证据；
+7. 让另一位被授权维护者执行 `/resume`，然后撤销测试凭据并删除测试 Workspace。
 
 | 现象 | 优先检查 |
 | --- | --- |
@@ -455,6 +468,7 @@ Runner 会在 Issue 时间线写入状态、阶段、Public Session ID、结果�
 | Webhook 无法连接 | Receiver URL、DNS、防火墙、反向代理和 TLS |
 | 评论被忽略 | 命令是否位于开头、作者是否在允许列表、是否具有 Write 权限 |
 | `runner:delegate` 失败 | PAT 是否只限制到该仓库，以及是否包含 `read:user`、`issues:read`、`issues:write`、`runner:delegate`、`evidence:write` |
+| Provider Snapshot 返回 `403` | PAT 所属身份是否为当前仓库的有效 Evidence Writer；同时检查 `evidence:write`、准确的单仓库限定和当前 Write 等效权限 |
 | 新签发的委托 Token 被判为过期 | 校准 Server 与 Runner 时钟；不要通过延长 `--delegation-ttl` 掩盖时钟漂移 |
 | 找不到源码或 Clone 失败 | Source Binding 是否 Active；短期凭据模式检查 HTTPS URL 与 Command 回显，宿主 SSH 模式检查 Runner 用户的 Key、Agent、`known_hosts` 和仓库权限 |
 | 提交时报作者身份未知 | 同时配置 `--git-author-name` 与 `--git-author-email`，并使用代码平台认可的值；不要恢复宿主全局 Git 配置 |

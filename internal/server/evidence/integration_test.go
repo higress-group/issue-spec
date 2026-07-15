@@ -209,6 +209,55 @@ func TestConcurrentEvidenceRetryCreatesExactlyOneRow(t *testing.T) {
 	}
 }
 
+func TestProviderSnapshotRequiresActiveEvidenceWriterDesignation(t *testing.T) {
+	env := newEvidenceEnvironment(t)
+	referenceID := uuid.New()
+	if _, err := env.pool.Exec(t.Context(), `INSERT INTO external_references
+		(id, organization_id, repository_id, issue_id, provider_key, relation_kind,
+		external_repository_id, external_id, canonical_url, metadata)
+		VALUES ($1, $2, $3, $4, 'code.example', 'code_change', 'acme/widgets-code', '42',
+		'https://code.example/changes/42', '{"head_revision":"abc","base_revision":"base"}'::jsonb)`,
+		referenceID, env.scope.OrgID, env.scope.RepoID, env.issueID); err != nil {
+		t.Fatal(err)
+	}
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "42"}
+	input := SnapshotIngestInput{IssueID: env.issueID, ReferenceID: referenceID, ExpectedReferenceVersion: 1,
+		Snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion, Reference: reference,
+			SubjectRevision: "abc", Facts: []codereview.ProviderFact{
+				providerFact("designation-required", "ci", "abc", strings.Repeat("a", 64)),
+			}, CapturedAt: time.Date(2026, 7, 11, 4, 0, 1, 0, time.UTC)}}
+
+	if _, err := env.service.IngestProviderSnapshot(t.Context(), authz.Authenticated(env.writer),
+		env.actor(env.writer, "snapshot-before-designation"), env.scope, input); !errors.Is(err, adminservice.ErrForbidden) {
+		t.Fatalf("snapshot before writer designation error = %v, want forbidden", err)
+	}
+	if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner),
+		env.actor(env.owner, "designate-writer"), env.scope, env.writer.User.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	result, err := env.service.IngestProviderSnapshot(t.Context(), authz.Authenticated(env.writer),
+		env.actor(env.writer, "snapshot-after-designation"), env.scope, input)
+	if err != nil || result.Created != 1 || result.Replayed != 0 {
+		t.Fatalf("snapshot after writer designation = %+v, %v", result, err)
+	}
+	if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner),
+		env.actor(env.owner, "deactivate-writer"), env.scope, env.writer.User.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	next := input
+	next.Snapshot.Facts = []codereview.ProviderFact{
+		providerFact("designation-revoked", "ci-next", "abc", strings.Repeat("b", 64)),
+	}
+	if _, err := env.service.IngestProviderSnapshot(t.Context(), authz.Authenticated(env.writer),
+		env.actor(env.writer, "snapshot-after-deactivation"), env.scope, next); !errors.Is(err, adminservice.ErrForbidden) {
+		t.Fatalf("snapshot after writer deactivation error = %v, want forbidden", err)
+	}
+	var evidenceRows int
+	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM external_evidence`).Scan(&evidenceRows); err != nil || evidenceRows != 1 {
+		t.Fatalf("evidence rows after designation lifecycle = %d, %v", evidenceRows, err)
+	}
+}
+
 func TestProviderSnapshotBatchCASIdempotencyAtomicityAndSupersession(t *testing.T) {
 	env := newEvidenceEnvironment(t)
 	if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner),
