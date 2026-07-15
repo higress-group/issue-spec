@@ -481,10 +481,7 @@ func SelectProfileBackendWithOptions(ctx context.Context, profileName, host stri
 		if source == "project" {
 			selection.SelectionSource = "profile:project"
 		}
-		selection.Profile = profile
-		selection.ProfileSource = source
-		selection.Token = withProfile(selection.Token, profile)
-		return selection, err
+		return selection.WithProfile(profile, source), err
 	}
 	mode, modeErr := gitHubBackendModeForSelection(opts)
 	if modeErr != nil {
@@ -492,9 +489,7 @@ func SelectProfileBackendWithOptions(ctx context.Context, profileName, host stri
 	}
 	if mode == GitHubBackendModeGH {
 		selection := selectGHBackend(mode, profile.Hostname, "profile:"+source)
-		selection.Profile = profile
-		selection.ProfileSource = source
-		selection.Token = withProfile(selection.Token, profile)
+		selection = selection.WithProfile(profile, source)
 		if profile.Ephemeral {
 			return selection, fmt.Errorf("%s selects an ephemeral self-hosted profile that cannot use the gh backend", GitHubBackendAPIURLEnv)
 		}
@@ -505,9 +500,7 @@ func SelectProfileBackendWithOptions(ctx context.Context, profileName, host stri
 	}
 	token, tokenErr := ResolveProfileToken(ctx, profile)
 	selection := selectRESTBackend(mode, profile.Hostname, "profile:"+source, token)
-	selection.Profile = profile
-	selection.ProfileSource = source
-	selection.Token = withProfile(selection.Token, profile)
+	selection = selection.WithProfile(profile, source)
 	if tokenErr != nil {
 		selection.Probes = append(selection.Probes, GitHubBackendProbe{Name: GitHubBackendNameREST, Status: "unavailable", Error: tokenErr.Error()})
 		return selection, tokenErr

@@ -128,10 +128,30 @@ test("combined label filters produce an intentional empty state", async ({ page 
 
 test("canonical public WebURL keeps its owner/repository route and comment fragment", async ({ page }, testInfo) => {
   test.skip(!["issues-desktop-1440", "issues-mobile-390"].includes(testInfo.project.name));
+  comments = [
+    ...Array.from({ length: 8 }, (_, index) => commentFixture(index + 1, `Earlier comment ${index + 1}\n\nKeep the permalink target below the initial viewport.`)),
+    commentFixture(9, "Permalink target comment."),
+    commentFixture(10, "Later comment 10 keeps enough content below the permalink target."),
+    commentFixture(11, "Later comment 11 keeps enough content below the permalink target."),
+  ];
   await page.goto("/AcMe/WorkFlow/issues/41?view=timeline#issuecomment-9");
   await expect(page).toHaveURL("/AcMe/WorkFlow/issues/41?view=timeline#issuecomment-9");
   await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(issueTitle);
-  await expect(page.locator("#issuecomment-9")).toBeVisible();
+  const target = page.locator("#issuecomment-9");
+  const expectLockedToTarget = async () => {
+    await expect(target).toBeVisible();
+    await expect(target).toBeInViewport();
+    await expect(target).toBeFocused();
+    await expect(target).toHaveCSS("border-color", "rgb(23, 109, 103)");
+    const box = await target.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box?.y ?? -1).toBeGreaterThanOrEqual(testInfo.project.name === "issues-mobile-390" ? 68 : 0);
+    expect(box?.y ?? Number.POSITIVE_INFINITY).toBeLessThan(100);
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  };
+  await expectLockedToTarget();
+  await page.reload();
+  await expectLockedToTarget();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
 });

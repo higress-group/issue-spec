@@ -1,6 +1,7 @@
 package commentrunner
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -153,6 +154,35 @@ func TestDefaultRunnerScopePathsSeparateCredentialRealms(t *testing.T) {
 	}
 	if !strings.Contains(githubState, filepath.Join("github.com", "o", "r", "bot")) {
 		t.Fatalf("builtin GitHub path changed: %q", githubState)
+	}
+}
+
+func TestDefaultRunnerScopePathsTreatsProjectGitHubProfileAsBuiltinRealm(t *testing.T) {
+	home := t.TempDir()
+	setDefaultConfigPathEnv(t, home, filepath.Join(t.TempDir(), "config"), filepath.Join(t.TempDir(), "cache"))
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".issue-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".issue-spec", "config.json"), []byte(`{"version":1,"repo":"o/r","profile":"github","hostname":"github.com"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	statePath, workspaceRoot, err := DefaultRunnerScopePaths(Config{
+		Hostname:       "github.com",
+		Repositories:   []string{"o/r"},
+		RunnerIdentity: "bot",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(home, ".issue-spec", "runners", "github.com", "o", "r", "bot")
+	if statePath != filepath.Join(root, "state.json") || workspaceRoot != filepath.Join(root, "workspaces") {
+		t.Fatalf("project GitHub profile changed builtin paths: state=%q workspace=%q", statePath, workspaceRoot)
 	}
 }
 

@@ -23,6 +23,22 @@ const schema = {
   },
 };
 
+const commentAnchorPattern = /^#issuecomment-[1-9]\d*$/;
+
+function isSamePageCommentLink(href: string | undefined) {
+  if (!href || typeof window === "undefined") return false;
+  try {
+    const current = new URL(window.location.href);
+    const candidate = new URL(href, current);
+    const normalizePath = (path: string) => (path.replace(/\/+$/, "") || "/").toLowerCase();
+    return candidate.origin === current.origin
+      && normalizePath(candidate.pathname) === normalizePath(current.pathname)
+      && commentAnchorPattern.test(candidate.hash);
+  } catch {
+    return false;
+  }
+}
+
 export function MarkdownView({ source, className = "" }: { source: string; className?: string }) {
   const { t } = useTranslation();
   return <div className={`markdown-view ${className}`.trim()} data-testid="rendered-markdown">
@@ -32,7 +48,8 @@ export function MarkdownView({ source, className = "" }: { source: string; class
       components={{
         a: ({ href, children, node, ...props }) => {
           void node;
-          return <a {...props} href={href} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">{children}</a>;
+          const samePageComment = isSamePageCommentLink(href);
+          return <a {...props} href={href} target={samePageComment ? undefined : "_blank"} rel={samePageComment ? undefined : "noopener noreferrer"} referrerPolicy="no-referrer">{children}</a>;
         },
         img: ({ node, ...props }) => {
           void node;
