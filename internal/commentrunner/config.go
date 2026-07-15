@@ -268,12 +268,12 @@ func (c Config) Validate() error {
 
 func runnerScopeSegments(cfg Config) ([]string, error) {
 	host := safePathSegment(strings.ToLower(auth.NormalizeHost(cfg.Hostname)))
-	profile, profileSource, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
+	profile, _, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
 	if err != nil {
 		return nil, err
 	}
 	var realmSegment string
-	if profileSource != "builtin" {
+	if !auth.IsBuiltinGitHubProfile(profile) {
 		digest := sha256.Sum256([]byte(profile.RealmKey()))
 		realmSegment = safePathSegment(strings.ToLower(profile.Name)) + "-" + hex.EncodeToString(digest[:8])
 	}
