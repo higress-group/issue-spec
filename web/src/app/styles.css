@@ -237,6 +237,11 @@ p { line-height: 1.65; color: var(--muted); }
 .resource-row.user-resource-row.membership-resource-row { grid-template-columns: auto minmax(180px, 1.4fr) minmax(110px, auto) minmax(130px, auto) auto; }
 .profile-line strong, .profile-line .mono { display: block; }
 .profile-line .mono { color: var(--muted); font-size: .75rem; }
+.profile-link { margin-top: 1rem; }
+.public-profile-card { display: flex; align-items: center; gap: 1.25rem; padding: .5rem; }
+.public-profile-card h2 { margin: 0 0 .25rem; font-size: 1.7rem; }
+.public-profile-card p { display: flex; align-items: center; gap: .25rem; margin: 0 0 .65rem; color: var(--muted); font-family: "SFMono-Regular", Consolas, monospace; }
+.public-profile-card span { color: var(--muted); font-size: .82rem; }
 .detail-list { margin: 0; }
 .detail-list div { display: flex; justify-content: space-between; gap: 1rem; padding: .6rem 0; border-bottom: 1px solid var(--line); }
 .detail-list dt { color: var(--muted); font-size: .78rem; }

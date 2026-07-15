@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	"github.com/higress-group/issue-spec/internal/server/api/github/conditional"
@@ -111,7 +112,7 @@ func (h handlers) list(w http.ResponseWriter, r *http.Request, issueNumber *int6
 		return
 	}
 	etag := pagination.StrongETag("comments", resource.Scope.OrgID, resource.Scope.RepoID,
-		page.CollectionVersion, issueNumber, r.URL.Query().Encode(), pageOptions.Page, pageOptions.PerPage)
+		page.CollectionVersion, commentAuthorVersions(page.Items), issueNumber, r.URL.Query().Encode(), pageOptions.Page, pageOptions.PerPage)
 	if pagination.WriteNotModified(w, r, etag, page.LastModified, h.conditional.Rate()) {
 		return
 	}
@@ -138,7 +139,7 @@ func (h handlers) get(w http.ResponseWriter, r *http.Request) {
 	}
 	h.setCommentConditional(w, item)
 	etag := commentETag(item)
-	if pagination.WriteNotModified(w, r, etag, item.Comment.UpdatedAt, h.conditional.Rate()) {
+	if pagination.WriteNotModified(w, r, etag, commentLastModified(item), h.conditional.Rate()) {
 		return
 	}
 	issues.WriteJSON(w, http.StatusOK, issues.PresentComment(h.presenter, resource, item))
@@ -229,14 +230,29 @@ func positivePath(w http.ResponseWriter, r *http.Request, name string) (int64, b
 
 func commentETag(item models.CommentSnapshot) string {
 	return pagination.StrongETag("comment", item.Comment.ID, item.Comment.RepresentationVersion,
-		item.Comment.ReactionsCollectionVersion)
+		item.Comment.ReactionsCollectionVersion, item.AuthorRepresentationVersion)
 }
 
 func (h handlers) setCommentConditional(w http.ResponseWriter, item models.CommentSnapshot) {
 	w.Header().Set(githubRepresentationVersionHeader, strconv.FormatInt(item.Comment.RepresentationVersion, 10))
 	w.Header().Set(githubConditionalCommentMutationHeader, conditionalCommentMutationVersion)
-	pagination.SetConditionalHeaders(w.Header(), commentETag(item), item.Comment.UpdatedAt)
+	pagination.SetConditionalHeaders(w.Header(), commentETag(item), commentLastModified(item))
 	pagination.SetRateHeaders(w.Header(), h.conditional.Rate())
+}
+
+func commentAuthorVersions(items []models.CommentSnapshot) []int64 {
+	versions := make([]int64, len(items))
+	for index := range items {
+		versions[index] = items[index].AuthorRepresentationVersion
+	}
+	return versions
+}
+
+func commentLastModified(item models.CommentSnapshot) time.Time {
+	if item.AuthorUpdatedAt.After(item.Comment.UpdatedAt) {
+		return item.AuthorUpdatedAt
+	}
+	return item.Comment.UpdatedAt
 }
 
 const (

@@ -14,6 +14,7 @@ import { RepositoriesPage } from "../repos/repositories-page";
 import { RepositorySettingsPage } from "../repos/repository-settings-page";
 import { CollaboratorsPage } from "../repos/collaborators-page";
 import { IntegrationsPage } from "../repos/integrations-page";
+import { LegacyUserIssuesRedirect, ProfilePage } from "../users/profile-page";
 import { useTranslation } from "react-i18next";
 
 export const router = createBrowserRouter([
@@ -33,6 +34,8 @@ export const router = createBrowserRouter([
       { index: true, element: <DashboardPage /> },
       { path: "settings/account", element: <AccountPage /> },
       { path: "settings/tokens", element: <TokensPage /> },
+      { path: "users/:login", element: <ProfilePage /> },
+      { path: "users/:login/issues", element: <LegacyUserIssuesRedirect /> },
       { path: "admin", element: <AdminPage /> },
       { path: "admin/orgs/:orgId", element: <OrganizationPage /> },
       { path: "admin/orgs/:orgId/members", element: <MembersPage /> },

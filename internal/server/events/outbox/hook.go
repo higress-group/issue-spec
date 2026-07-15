@@ -89,8 +89,9 @@ type NotificationRepository struct {
 	Private  bool      `json:"private"`
 }
 type NotificationUser struct {
-	ID    uuid.UUID `json:"id"`
-	Login string    `json:"login"`
+	ID          uuid.UUID `json:"id"`
+	Login       string    `json:"login"`
+	DisplayName string    `json:"display_name,omitempty"`
 }
 type NotificationLabel struct {
 	Name        string `json:"name"`
@@ -173,10 +174,11 @@ func notificationFacts(snapshot store.NotificationSnapshot, mutation issues.Muta
 	result := &NotificationFacts{IssueKind: snapshot.IssueKind, ActorClass: actorClass,
 		ActorCredentialKind: mutation.ActorCredentialKind, ActorServiceAccount: snapshot.ActorServiceAccount,
 		Organization: NotificationOrganization{ID: mutation.Scope.OrgID, Login: snapshot.OrganizationName, DisplayName: snapshot.OrganizationDisplayName},
-		Repository:   NotificationRepository{ID: mutation.Scope.RepoID, Name: snapshot.RepositoryName, FullName: snapshot.OrganizationName + "/" + snapshot.RepositoryName, Private: snapshot.RepositoryVisibility == "private"},
-		Sender:       NotificationUser{ID: mutation.ActorUserID, Login: snapshot.ActorLogin},
+		Repository:   NotificationRepository{ID: mutation.Scope.RepoID, Name: snapshot.RepositoryName, FullName: snapshot.OrganizationName + "/" + snapshot.RepositoryName, Private: snapshot.RepositoryVisibility != "public"},
+		Sender:       NotificationUser{ID: mutation.ActorUserID, Login: snapshot.ActorLogin, DisplayName: snapshot.ActorDisplayName},
 		Issue: NotificationIssue{ID: issue.ID, Number: issue.Number, Title: issue.Title, Body: issue.Body,
-			State: string(issue.State), Author: NotificationUser{Login: snapshot.Issue.AuthorLogin}, Labels: labels,
+			State: string(issue.State), Author: NotificationUser{Login: snapshot.Issue.AuthorLogin,
+				DisplayName: snapshot.Issue.AuthorDisplayName}, Labels: labels,
 			CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt, ClosedAt: issue.ClosedAt}}
 	if issue.AuthorID != nil {
 		result.Issue.Author.ID = *issue.AuthorID
@@ -188,7 +190,8 @@ func notificationFacts(snapshot store.NotificationSnapshot, mutation issues.Muta
 			result.CommentClass = "typed"
 		}
 		result.Comment = &NotificationComment{ID: comment.ID, NumericID: codec.StableNumericID(comment.ID.String()),
-			Body: comment.Body, Author: NotificationUser{Login: mutation.Comment.AuthorLogin},
+			Body: comment.Body, Author: NotificationUser{Login: mutation.Comment.AuthorLogin,
+				DisplayName: mutation.Comment.AuthorDisplayName},
 			CreatedAt: comment.CreatedAt, UpdatedAt: comment.UpdatedAt}
 		if comment.AuthorID != nil {
 			result.Comment.Author.ID = *comment.AuthorID

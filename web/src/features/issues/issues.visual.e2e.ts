@@ -70,7 +70,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("issue detail is polished, accessible and preserves raw workflow text", async ({ page }, testInfo) => {
-  await page.goto(`/issues/${organizationId}/${repositoryId}/41`);
+  await page.goto("/acme/workflow/issues/41");
   await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(issueTitle);
   if (testInfo.project.name === "issues-mobile-390") {
     const backLink = page.locator(".detail-title .issue-back");
@@ -130,7 +130,7 @@ test("issue detail is polished, accessible and preserves raw workflow text", asy
 
 test("combined label filters produce an intentional empty state", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "issues-desktop-1440");
-  await page.goto(`/issues/${organizationId}/${repositoryId}`);
+  await page.goto("/acme/workflow/issues");
   await page.locator("summary").filter({ hasText: documentationText("Labels", "标签") }).click();
   await page.getByRole("checkbox", { name: "issue-spec/design" }).click();
   await expect(page).toHaveURL(/labels=issue-spec%2Fdesign/);
@@ -138,6 +138,21 @@ test("combined label filters produce an intentional empty state", async ({ page 
   await page.getByRole("checkbox", { name: "runner" }).click();
   await expect(page).toHaveURL(/labels=issue-spec%2Fdesign%2Crunner/);
   await expect(page.getByRole("heading", { name: documentationText("No issues match this view", "没有符合当前条件的议题") })).toBeVisible();
+});
+
+test("repository roots and legacy UUID links converge on canonical named routes", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "issues-desktop-1440");
+  await page.goto("/AcMe/WorkFlow?state=open#issue-list");
+  await expect(page).toHaveURL("/AcMe/WorkFlow/issues?state=open#issue-list");
+  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+
+  await page.goto(`/issues/${organizationId}/${repositoryId}?state=open#issue-list`);
+  await expect(page).toHaveURL("/acme/workflow/issues?state=open#issue-list");
+
+  await page.goto(`/issues/${organizationId}/${repositoryId}/41?view=timeline#issuecomment-9`);
+  await expect(page).toHaveURL("/acme/workflow/issues/41?view=timeline#issuecomment-9");
+  await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(issueTitle);
+  await expect(page.locator("#issuecomment-9")).toBeFocused();
 });
 
 test("canonical public WebURL keeps its owner/repository route and comment fragment", async ({ page }, testInfo) => {
