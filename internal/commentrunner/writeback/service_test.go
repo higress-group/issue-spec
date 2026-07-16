@@ -30,9 +30,9 @@ func TestWritebackCreatesThenUpdatesTrackedComment(t *testing.T) {
 	if !created.Created || created.Comment.ID != 501 || ops.creates != 1 {
 		t.Fatalf("create result=%+v creates=%d", created, ops.creates)
 	}
-	if !strings.Contains(created.Body, "| Status | `queued` |") ||
-		!strings.Contains(created.Body, "| Phase | `queued` |") ||
-		!strings.Contains(created.Body, "| Public session | `s_123` |") {
+	if !strings.Contains(created.Body, "- Status: `queued`") ||
+		!strings.Contains(created.Body, "- Phase: `queued`") ||
+		!strings.Contains(created.Body, "- Public session: `s_123`") {
 		t.Fatalf("created body missing concise status fields:\n%s", created.Body)
 	}
 	if strings.Contains(created.Body, "| Runner job |") || strings.Contains(created.Body, "| Trigger comment |") {

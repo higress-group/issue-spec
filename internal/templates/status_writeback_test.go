@@ -53,10 +53,10 @@ func TestRenderRunnerStatusCommentKeepsPublicBodyConcise(t *testing.T) {
 	}
 	for _, want := range []string{
 		"issue-spec-runner:status",
-		"| Status | `running` |",
-		"| Phase | `dispatch` |",
-		"| Public session | `s_123` |",
-		"| Agent | `codex` |",
+		"- Status: `running`",
+		"- Phase: `dispatch`",
+		"- Public session: `s_123`",
+		"- Agent: `codex`",
 		"## Result",
 		"Completed the requested command.",
 		"updated typed_comment PROCESS-001: https://github.com/o/r/issues/1#issuecomment-1",
@@ -99,6 +99,9 @@ func TestRenderRunnerStatusCommentKeepsPublicBodyConcise(t *testing.T) {
 			t.Fatalf("body leaked %q:\n%s", forbidden, body)
 		}
 	}
+	if strings.Contains(body, "\n|") {
+		t.Fatalf("status comment should use portable Markdown instead of a GFM table:\n%s", body)
+	}
 	if strings.Contains(body, "runner wrote") || strings.Contains(body, "action envelope") {
 		t.Fatalf("body claims artifact ownership or action envelope:\n%s", body)
 	}
@@ -136,7 +139,7 @@ func TestRenderRunnerStatusCommentShowsResultWithoutCoordinatorSummary(t *testin
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"| Status | `completed` |",
+		"- Status: `completed`",
 		"## Result",
 		"Completed the requested command.",
 	} {
@@ -232,8 +235,8 @@ func TestRunnerStatusCommentShowsConciseRejectedReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"| Status | `rejected` |",
-		"| Phase | `command-unauthorized` |",
+		"- Status: `rejected`",
+		"- Phase: `command-unauthorized`",
 		"## Reason",
 		"command unauthorized; auth=insufficient_permission",
 	} {

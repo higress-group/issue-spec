@@ -18,11 +18,9 @@ const runnerCommand = documentationText(
 const runnerStatus = `<!-- issue-spec-runner:status {"schema_version":1,"status_writeback_key":"status:fixture"} -->
 ### issue-spec runner status
 
-| Field | Value |
-| --- | --- |
-| Status | \`completed\` |
-| Phase | \`completed\` |
-| Public session | \`s_demo_42\` |
+- Status: \`completed\`
+- Phase: \`completed\`
+- Public session: \`s_demo_42\`
 
 ## Result
 
