@@ -65,3 +65,25 @@ func TestIssueListAndStateHelpShowsOptions(t *testing.T) {
 		})
 	}
 }
+
+func TestCommentListHelpShowsIncludeBodyRequirement(t *testing.T) {
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+
+	if code := app.runComment(t.Context(), []string{"list", "-h"}); code != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	for _, want := range []string{
+		"issue-spec comment list [options]",
+		"--include-body",
+		"include original backend Markdown in JSON output (requires --json)",
+		"--json",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("help missing %q:\n%s", want, out.String())
+		}
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("help wrote stderr: %q", errOut.String())
+	}
+}

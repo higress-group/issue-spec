@@ -351,6 +351,167 @@ func TestCommentListReportsCanonicalDiagnosticsForMalformedExistingSpec(t *testi
 	}
 }
 
+func TestCommentListDefaultJSONContractRemainsCompatible(t *testing.T) {
+	body, err := model.EnsureTypedBody("QUESTION", "QUESTION-007", "## Question\n\nShould the default JSON contract remain unchanged?\n", model.BodyOptions{
+		Agent:  "Compatibility Worker",
+		Status: "confirmed",
+		Scope:  "comment list output",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	comment := github.Comment{
+		ID:      71,
+		HTMLURL: "https://github.com/o/r/issues/5#issuecomment-71",
+		URL:     "https://api.github.com/repos/o/r/issues/comments/71",
+		Body:    body,
+	}
+	var out bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &bytes.Buffer{})
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+			return []github.Comment{comment}, nil
+		}
+	})
+
+	code := app.runCommentList(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--json"})
+	if code != 0 {
+		t.Fatalf("list failed exit=%d out=%q", code, out.String())
+	}
+	artifact := model.Artifact{Issue: 5, CommentID: comment.ID, URL: comment.HTMLURL, APIURL: comment.URL, Comment: model.ParseTypedComment(body)}
+	artifact.Canonical = model.ValidateArtifact(artifact)
+	want, err := json.MarshalIndent(map[string]any{"ok": true, "issue": 5, "comments": []model.Artifact{artifact}}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = append(want, '\n')
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Fatalf("default JSON changed\nwant:\n%s\ngot:\n%s", want, out.Bytes())
+	}
+
+	var raw struct {
+		Comments []map[string]json.RawMessage `json:"comments"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := raw.Comments[0]["body"]; found {
+		t.Fatalf("default artifact unexpectedly exposes body: %s", out.String())
+	}
+	var parsedComment map[string]json.RawMessage
+	if err := json.Unmarshal(raw.Comments[0]["comment"], &parsedComment); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := parsedComment["body"]; found {
+		t.Fatalf("default typed comment unexpectedly exposes body: %s", out.String())
+	}
+}
+
+func TestCommentListIncludeBodyPreservesExactMarkdownFilteringAndDiagnostics(t *testing.T) {
+	specBody, err := model.EnsureTypedBody("SPEC", "SPEC-007", "## Requirement: Exact Markdown\n\nThe CLI MUST preserve `code`, 中文, and trailing whitespace.  \n\n", model.BodyOptions{
+		Agent:  "Body Worker",
+		Status: "confirmed",
+		Scope:  "lossless output",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskBody, err := model.EnsureTypedBody("TASK", "TASK-007", "## Task: excluded\n\n- [ ] Keep filtering\n\n### Execution Planning\n\n- Owned Areas: command tests\n", model.BodyOptions{Status: "ready"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &bytes.Buffer{})
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+			return []github.Comment{
+				{ID: 70, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-70", Body: taskBody},
+				{ID: 71, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-71", Body: specBody},
+			}, nil
+		}
+	})
+
+	code := app.runCommentList(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--type", "spec", "--json", "--include-body"})
+	if code != 0 {
+		t.Fatalf("list failed exit=%d out=%q", code, out.String())
+	}
+	var got struct {
+		Comments []struct {
+			model.Artifact
+			Body string `json:"body"`
+		} `json:"comments"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Comments) != 1 || got.Comments[0].Comment.ID != "SPEC-007" {
+		t.Fatalf("type filtering changed in include-body mode: %+v", got.Comments)
+	}
+	if got.Comments[0].Body != specBody {
+		t.Fatalf("body did not round-trip exactly\nwant: %q\ngot:  %q", specBody, got.Comments[0].Body)
+	}
+	if len(got.Comments[0].Canonical) == 0 {
+		t.Fatalf("include-body mode dropped canonical diagnostics: %+v", got.Comments[0])
+	}
+}
+
+func TestCommentListIncludeBodyRequiresJSONBeforeBackendSelection(t *testing.T) {
+	var out, errOut bytes.Buffer
+	backendSelected := false
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = func(context.Context, string) (auth.GitHubBackendSelection, error) {
+		backendSelected = true
+		return ghSelection(context.Background(), "github.com")
+	}
+
+	code := app.runCommentList(context.Background(), []string{"--repo", "o/r", "--issue", "5", "--include-body"})
+	if code != 2 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if backendSelected {
+		t.Fatal("invalid flag combination selected a backend")
+	}
+	if !strings.Contains(errOut.String(), "--include-body requires --json") {
+		t.Fatalf("unexpected error: %q", errOut.String())
+	}
+}
+
+func TestCommentListJSONEmptyResultsAreArrays(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{name: "default", args: []string{"--repo", "o/r", "--issue", "5", "--json"}},
+		{name: "include body", args: []string{"--repo", "o/r", "--issue", "5", "--json", "--include-body"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			app := newApp(strings.NewReader(""), &out, &bytes.Buffer{})
+			app.selectGitHubBackend = ghSelection
+			app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+				f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+					return nil, nil
+				}
+			})
+
+			if code := app.runCommentList(context.Background(), tt.args); code != 0 {
+				t.Fatalf("list failed exit=%d out=%q", code, out.String())
+			}
+			var got struct {
+				Comments []json.RawMessage `json:"comments"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Comments == nil || len(got.Comments) != 0 {
+				t.Fatalf("empty comments must be []: %s", out.String())
+			}
+		})
+	}
+}
+
 func generateCanonicalSpecBody(t *testing.T) string {
 	t.Helper()
 	inPath := writeTempInput(t, specInputJSON)

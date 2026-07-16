@@ -76,6 +76,7 @@ issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
 issue-spec comment list --repo owner/repo --issue 1 --json
+issue-spec comment list --repo owner/repo --issue 1 --type SPEC --json --include-body
 
 issue-spec question create --repo owner/repo --issue 1 --id QUESTION-001 --blocking --question "What must be decided?"
 issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-001 --resolution-file resolution.md
@@ -123,6 +124,12 @@ hosted GitHub or self-hosted REST issue backend. It accepts `--body-file -` for
 stdin pipelines and, with `--json`, returns only bounded creation metadata such
 as the comment ID and URL. It does not add a typed marker or validate the body
 as a workflow artifact.
+
+`comment list --json` keeps its existing parsed-artifact schema by default.
+Adding `--include-body` gives each returned artifact a top-level `body` field
+containing the exact original backend Markdown; the flag requires `--json`.
+Type filtering and canonical diagnostics are unchanged in either mode, and no
+matches are encoded as `[]` rather than `null`.
 
 ## Canonical Typed Comments
 

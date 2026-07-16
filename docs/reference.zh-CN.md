@@ -76,6 +76,7 @@ issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
 issue-spec comment list --repo owner/repo --issue 1 --json
+issue-spec comment list --repo owner/repo --issue 1 --type SPEC --json --include-body
 
 issue-spec question create --repo owner/repo --issue 1 --id QUESTION-001 --blocking --question "What must be decided?"
 issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-001 --resolution-file resolution.md
@@ -120,6 +121,12 @@ issue；若其状态已符合目标则跳过更新，并在 JSON 的 `changed` �
 issue 时间线评论。它支持 `--body-file -` 从 stdin 读取，并可通过 `--json` 仅返回
 comment ID、URL 等有界的创建元数据。该命令不会添加 typed marker，也不会把正文
 当作工作流 artifact 校验。
+
+`comment list --json` 默认保持现有的解析后 artifact schema 不变。加上
+`--include-body` 后，每条返回的 artifact 会新增顶层 `body` 字段，其中包含后端
+返回的原始 Markdown（逐字节保持）；该 flag 必须与 `--json` 一起使用。两种模式
+下的类型过滤与 canonical diagnostics 都保持不变；没有匹配项时编码为 `[]`，而
+不是 `null`。
 
 ## Canonical 类型化评论
 
