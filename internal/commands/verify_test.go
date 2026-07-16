@@ -383,12 +383,12 @@ func TestBuildFinalVerifyReportReportsSessionDiagnosticsWithoutErrors(t *testing
 	}
 }
 
-func TestBuildFinalVerifyReportChecksDurableSpec(t *testing.T) {
+func TestBuildFinalVerifyReportChecksDurableSpecForNonChangeBearingWorkflow(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
 	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
-	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContentWithClass(model.ProcessExecutionVerification))
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 	review := typedArtifact(t, 3, "REVIEW", "REVIEW-001", "done", "## Review\n\nnone")
 	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
@@ -421,6 +421,62 @@ Source SPEC comment: https://github.com/o/r/issues/1#issuecomment-1
 	if !report.OK {
 		t.Fatalf("expected final verify OK: %+v", report.Errors)
 	}
+}
+
+func TestBuildFinalVerifyReportWithoutPRAuthorityFailsChangeBearing(t *testing.T) {
+	fixture := func(t *testing.T) (model.Artifact, model.Artifact, model.Artifact, model.Artifact) {
+		t.Helper()
+		spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+		spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
+		task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+		task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
+		process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
+		process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
+		verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+		linkArtifacts(t, &spec, &task)
+		linkArtifacts(t, &task, &process)
+		return spec, task, process, verify
+	}
+
+	t.Run("missing carrier", func(t *testing.T) {
+		spec, task, process, verify := fixture(t)
+		report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, verify},
+			"https://github.com/o/r/issues/1", finalVerifyOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.OK || !finalReportHasGateCode(report, gates.CodeProcessCarrierMissing) {
+			t.Fatalf("change-bearing helper call without PR carrier must fail closed: %+v", report)
+		}
+	})
+
+	t.Run("carrier still requires independent review", func(t *testing.T) {
+		spec, task, process, verify := fixture(t)
+		linkArtifacts(t, &spec, &process)
+		processBody, _, err := model.AddPRLink(process.Comment.Body, "https://github.com/o/r/pull/7")
+		if err != nil {
+			t.Fatal(err)
+		}
+		process.Comment = model.ParseTypedComment(processBody)
+		rationale, err := model.RenderRationaleBody("Worker Agent A", "PROCESS-001", "SPEC-001", spec.URL,
+			"Explain why.", "internal/foo.go", 12)
+		if err != nil {
+			t.Fatal(err)
+		}
+		report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, verify},
+			"https://github.com/o/r/issues/1", finalVerifyOptions{
+				RationaleComments: []github.PullRequestReviewComment{{Body: rationale, Path: "internal/foo.go", Line: 12}},
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.OK || !finalReportHasGateCode(report, gates.CodeProcessReviewRequired) {
+			t.Fatalf("change-bearing helper call without independent review must fail closed: %+v", report)
+		}
+		if finalReportHasGateCode(report, gates.CodeProcessCarrierMissing) {
+			t.Fatalf("valid carrier was not credited before the review gate: %+v", report.Gate.Diagnostics)
+		}
+	})
 }
 
 func TestBuildFinalVerifyReportChecksRationaleCoverageWhenPRProvided(t *testing.T) {
@@ -749,9 +805,9 @@ func TestBuildFinalVerifyReportRequiresSerialHandoff(t *testing.T) {
 		spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 		task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
 		task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
-		p1 := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process: p1\n\n### Owner\n\n- Worker\n\n### Parent TASK\n\n- TASK-001\n\n### Dependencies\n\n- N/A\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\n"+handoff)
+		p1 := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process: p1\n\n### Owner\n\n- Worker\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- orchestration\n\n### Dependencies\n\n- N/A\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\n"+handoff)
 		p1.URL = "https://github.com/o/r/issues/3#issuecomment-31"
-		p2 := typedArtifact(t, 3, "PROCESS", "PROCESS-002", "done", "## Process: p2\n\n### Owner\n\n- Worker\n\n### Parent TASK\n\n- TASK-001\n\n### Dependencies\n\n- PROCESS-001\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\nN/A")
+		p2 := typedArtifact(t, 3, "PROCESS", "PROCESS-002", "done", "## Process: p2\n\n### Owner\n\n- Worker\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- orchestration\n\n### Dependencies\n\n- PROCESS-001\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\nN/A")
 		p2.URL = "https://github.com/o/r/issues/3#issuecomment-32"
 		verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
 		linkArtifacts(t, &spec, &task)

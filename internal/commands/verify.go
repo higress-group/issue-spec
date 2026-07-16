@@ -350,7 +350,7 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		target = gates.TargetArchive
 	}
 	var processEvidence []gates.ProcessEvidenceInput
-	if opts.RationaleRequired || opts.ExternalEvidence != nil || hasExplicitProcessWorkspace(artifacts) {
+	if opts.RationaleRequired || opts.ExternalEvidence != nil || hasExplicitProcessWorkspace(artifacts) || hasActiveChangeBearingProcess(artifacts) {
 		processEvidence = buildProcessEvidenceInputs(artifacts, opts.PRURL, opts.RationaleComments, reviewReport, opts.ExternalEvidence)
 	}
 	gateReport, err := gates.Evaluate(gates.Snapshot{
