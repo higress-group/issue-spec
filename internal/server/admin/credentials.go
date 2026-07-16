@@ -161,6 +161,11 @@ func (s *Service) CreateManagedPAT(ctx context.Context, actor Actor, orgID uuid.
 		if err != nil {
 			return err
 		}
+		if len(repositories) == 0 {
+			if err := requireSiteWideManagedPATIssuer(ctx, tx, actor.UserID, orgID, input.TargetUserID); err != nil {
+				return err
+			}
+		}
 		created.RepositoryIDs = repositories
 		if _, err := tx.Exec(ctx, `INSERT INTO personal_access_tokens
 			(id, user_id, name, token_prefix, token_hash, expires_at, created_at, updated_at)
@@ -214,6 +219,11 @@ func (s *Service) RotateManagedPAT(ctx context.Context, actor Actor, orgID, toke
 			return err
 		}
 		created.Scopes, created.RepositoryIDs = scopes, repos
+		if len(repos) == 0 {
+			if err := requireSiteWideManagedPATIssuer(ctx, tx, actor.UserID, orgID, created.UserID); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO personal_access_tokens
 			(id, user_id, name, token_prefix, token_hash, expires_at, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`, created.ID, created.UserID, created.Name,
@@ -330,6 +340,23 @@ func requireOrgCredentialSubject(ctx context.Context, tx pgx.Tx, orgID, userID u
 			AND om.state = 'active' AND om.archived_at IS NULL)
 		OR EXISTS (SELECT 1 FROM service_accounts sa WHERE sa.organization_id = $1 AND sa.user_id = u.id
 			AND sa.disabled_at IS NULL)) FROM users u WHERE u.id = $2 FOR UPDATE`, orgID, userID).Scan(&allowed)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return ErrForbidden
+	}
+	return nil
+}
+
+func requireSiteWideManagedPATIssuer(ctx context.Context, tx pgx.Tx, actorUserID, orgID, targetUserID uuid.UUID) error {
+	var allowed bool
+	err := tx.QueryRow(ctx, `SELECT
+		EXISTS (SELECT 1 FROM users u JOIN site_role_assignments sr ON sr.user_id = u.id
+			WHERE u.id = $1 AND u.status = 'active' AND sr.role = 'site_admin')
+		OR EXISTS (SELECT 1 FROM users u JOIN service_accounts sa ON sa.user_id = u.id
+			WHERE u.id = $3 AND u.status = 'active' AND sa.organization_id = $2 AND sa.disabled_at IS NULL)`,
+		actorUserID, orgID, targetUserID).Scan(&allowed)
 	if err != nil {
 		return err
 	}

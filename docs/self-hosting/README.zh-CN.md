@@ -186,6 +186,10 @@ Service Account 是组织范围内的非人类身份，适用于 CI、Runner、E
 4. 把一次性显示的 Token 放入自动化系统的 Secret Store；
 5. 下线时禁用 Service Account，使其凭据失效。
 
+组织管理员可以为本组织拥有且已启用的 Service Account 签发全站 Managed PAT。普通成员
+通常应自行创建全站个人 PAT；只有站点管理员可以代其签发或轮换全站 Managed PAT。
+“全站”表示令牌始终跟随主体的实时权限，本身不会授予任何仓库权限。
+
 Service Account 与 PAT 的操作会被标记为 Automation，Webhook 策略和审计可以把
 它们与浏览器中的真人操作区分开。
 

@@ -161,7 +161,7 @@ func TestEvidenceAuthorizationMatrixAllowsBroadCapsAndRejectsMissingGates(t *tes
 		t.Fatal(err)
 	}
 	if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(withoutTarget), env.actor(withoutTarget, "target-cap-removed"), env.scope,
-		env.appendInput("target-cap-removed", "denied", VisibilityRepository)); !errors.Is(err, adminservice.ErrForbidden) {
+		env.appendInput("target-cap-removed", "denied", VisibilityRepository)); !errors.Is(err, adminservice.ErrNotFound) {
 		t.Fatalf("removed target cap evidence error = %v", err)
 	}
 	beforeIssue, beforeRepo := env.evidenceVersions(t)

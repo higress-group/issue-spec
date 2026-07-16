@@ -74,6 +74,11 @@ The server MUST implement generic OIDC and GitHub OAuth as separate authenticati
 - **WHEN** a personal or managed PAT is created with all repositories across the site
 - **THEN** the PAT MUST omit a repository allowlist, MUST remain bounded by the subject's live organization memberships, repository roles and token scopes, and MUST NOT create or elevate organization membership or repository authority
 
+#### Scenario: delegated site-wide PAT issuance preserves the issuer's tenant boundary
+
+- **WHEN** an organization administrator creates or rotates a site-wide managed PAT
+- **THEN** the subject MUST be an enabled service account owned by that organization, while site administrators MAY issue one for an active human member and human members MAY always create their own site-wide personal PAT
+
 #### Scenario: air-gapped recovery does not depend on GitHub
 
 - **WHEN** the configured identity provider is unavailable in an air-gapped deployment

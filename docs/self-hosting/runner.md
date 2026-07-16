@@ -120,6 +120,8 @@ Save the one-time token. `--runner` must be the exact service-account login.
 Add human maintainers with repeatable `--allowed-user` flags; each author must
 also have write-equivalent repository permission. This keeps the runner
 automation identity, command author, and Linux process user separate.
+Site-wide access follows the service account's live repository roles and does
+not grant access to a repository by itself.
 
 ### Simpler option: use your own account
 
@@ -135,8 +137,9 @@ runner may use your own issue-spec account:
 5. pass your exact login to `--runner` when starting the process.
 
 The personal PAT requires the same four minimum scopes and may cover all
-repositories site-wide or a selected set of repositories. By
-default, only the account named by `--runner` can issue commands; add
+repositories site-wide or a selected set of repositories. Site-wide access
+follows the account's live permissions and does not grant repository authority.
+By default, only the account named by `--runner` can issue commands; add
 `--allowed-user` only when other maintainers should be accepted. This option is
 quicker to configure, but runner writes, credential rotation, and account
 disablement remain coupled to a person. Prefer a service account for shared or

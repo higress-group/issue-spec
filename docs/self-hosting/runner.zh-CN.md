@@ -117,6 +117,7 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 `--runner` 必须填写 Service Account 的准确 Login。其他真人维护者若要触发任务，使用
 可重复的 `--allowed-user` 加入允许列表；Server 还会独立校验评论作者具有仓库 Write
 等效权限。这样 Runner 自动化身份、评论发起人和 Linux 进程用户互不混用。
+全站访问始终跟随 Service Account 当前拥有的仓库角色，本身不会授予任何仓库权限。
 
 ### 简化方式：使用自己的账号
 
@@ -130,7 +131,8 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
    **Evidence Writer**；
 5. 启动时把自己的准确 Login 传给 `--runner`。
 
-个人 PAT 至少需要相同的四个 Scope，可以覆盖全站全部仓库或指定的多个仓库。默认只有
+个人 PAT 至少需要相同的四个 Scope，可以覆盖全站全部仓库或指定的多个仓库；全站访问
+始终跟随账号的实时权限，本身不会授予仓库权限。默认只有
 `--runner` 对应的自己可以发出命令；需要允许其他维护者时再增加 `--allowed-user`。
 这种方式配置更少，但 Runner 写入、凭据轮换和账号停用都与个人身份绑定，不适合作为
 团队长期运行或多人共用的生产自动化。不要用浏览器 Session Cookie 或登录会话替代 PAT。

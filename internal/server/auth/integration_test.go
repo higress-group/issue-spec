@@ -110,7 +110,7 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	if err := pool.QueryRow(t.Context(), `SELECT i.provider_id,i.avatar_url FROM users u JOIN identities i ON i.id=u.profile_identity_id WHERE u.id=$1`, userA.ID).Scan(&sourceProvider, &sourceAvatar); err != nil {
 		t.Fatal(err)
 	}
-	if sourceProvider != providerA.ID || sourceAvatar != "https://avatars.example/alice-v2.png" {
+	if sourceProvider != providerA.ID || sourceAvatar != "https://avatars.example/alice-v3.png" {
 		t.Fatalf("profile source provider=%s avatar=%q", sourceProvider, sourceAvatar)
 	}
 	if err := identities.LinkIdentity(t.Context(), userB.ID, userB.ID, providerB,
@@ -203,6 +203,46 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	if !patPrincipal.HasScope("issues:write") || !patPrincipal.AllowsRepository(orgID, repoID) ||
 		patPrincipal.AllowsRepository(orgID, uuid.New()) {
 		t.Fatalf("PAT caps are incorrect: %+v", patPrincipal)
+	}
+	siteWideCreated, err := pats.Create(t.Context(), userA.ID, pat.CreateInput{
+		Name: "site-wide", Scopes: []string{"issues:read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	siteWidePrincipal, err := pats.AuthenticateBearer(t.Context(), siteWideCreated.Plaintext)
+	if err != nil || siteWidePrincipal.RepoRestricted {
+		t.Fatalf("site-wide personal PAT = %+v, %v", siteWidePrincipal, err)
+	}
+	authority, err := authz.New(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(scope models.RepoScope) authz.Decision {
+		t.Helper()
+		decision, evaluateErr := authority.EvaluateRepository(t.Context(), authz.Authenticated(siteWidePrincipal), authz.RepositoryRequest{
+			Scope: scope, Operation: authz.OperationRead,
+		})
+		if evaluateErr != nil {
+			t.Fatal(evaluateErr)
+		}
+		return decision
+	}
+	if decision := read(models.RepoScope{OrgID: orgID, RepoID: repoID}); !decision.Allowed {
+		t.Fatalf("site-wide personal PAT existing permission = %+v", decision)
+	}
+	liveOrgID, liveRepoID := insertOrgRepo(t, pool, "site-wide-live-authority")
+	liveScope := models.RepoScope{OrgID: liveOrgID, RepoID: liveRepoID}
+	if decision := read(liveScope); decision.Allowed {
+		t.Fatalf("site-wide personal PAT invented permission = %+v", decision)
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO org_memberships
+		(id, organization_id, user_id, role, state, activated_at)
+		VALUES ($1, $2, $3, 'reader', 'active', clock_timestamp())`, uuid.New(), liveOrgID, userA.ID); err != nil {
+		t.Fatal(err)
+	}
+	if decision := read(liveScope); !decision.Allowed {
+		t.Fatalf("site-wide personal PAT did not follow live permission = %+v", decision)
 	}
 	rotatedPAT, err := pats.Rotate(t.Context(), userA.ID, patCreated.ID)
 	if err != nil {
