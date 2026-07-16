@@ -237,7 +237,8 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		mode = gates.ModeAuthoritative
 	}
 	processEvidence := collection.ProcessEvidence
-	if (target == gates.TargetFinal || target == gates.TargetArchive) && len(processEvidence) == 0 && hasActiveChangeBearingProcess(artifacts) {
+	if (target == gates.TargetFinal || target == gates.TargetArchive) && len(processEvidence) == 0 &&
+		(hasActiveChangeBearingProcess(artifacts) || hasExplicitProcessWorkspace(artifacts)) {
 		processEvidence = buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, nil)
 	}
 	snapshot := gates.Snapshot{

@@ -133,6 +133,54 @@ func TestStatusAndVerifyLocallyKnowableCodesStayInParity(t *testing.T) {
 	}
 }
 
+func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *testing.T) {
+	classes := []model.ProcessExecutionClass{
+		model.ProcessExecutionChangeBearing,
+		model.ProcessExecutionReview,
+		model.ProcessExecutionVerification,
+		model.ProcessExecutionOrchestration,
+		model.ProcessExecutionExternal,
+	}
+	for _, class := range classes {
+		for _, target := range []gates.Target{gates.TargetFinal, gates.TargetArchive} {
+			t.Run(string(class)+"/"+string(target), func(t *testing.T) {
+				spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+				spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
+				task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+				task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
+				process := statusWorkspaceProcess(t, class, strings.Repeat("a", 40))
+				process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
+				verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+				linkArtifacts(t, &spec, &task)
+				linkArtifacts(t, &task, &process)
+				linkArtifacts(t, &spec, &process)
+				artifacts := []model.Artifact{spec, task, process, verify}
+
+				verifyReport, err := buildFinalVerifyReport(artifacts, "https://github.com/o/r/issues/1", finalVerifyOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				status := summarizeStatusForGate("o/r", 1, 2, 3, target, artifacts, workflow.Plan{}, nil)
+				if len(verifyReport.ProcessEvidence) != 1 || len(status.Gate.Processes) != 1 {
+					t.Fatalf("process evidence missing: verify=%+v status=%+v", verifyReport.ProcessEvidence, status.Gate.Processes)
+				}
+				want, got := verifyReport.ProcessEvidence[0], status.Gate.Processes[0]
+				if want.ProcessID != got.ProcessID || want.ExecutionClass != got.ExecutionClass || want.ExplicitClass != got.ExplicitClass ||
+					!reflect.DeepEqual(want.Required, got.Required) || !reflect.DeepEqual(want.Satisfied, got.Satisfied) ||
+					!reflect.DeepEqual(want.Missing, got.Missing) ||
+					!reflect.DeepEqual(statusGateCodes(want.Diagnostics), statusGateCodes(got.Diagnostics)) {
+					t.Fatalf("status/verify PROCESS evidence drift: verify=%+v status=%+v", want, got)
+				}
+				for _, code := range []string{gates.CodePRChecksUnknown, gates.CodeReviewFindingsUnknown} {
+					if !statusHasCode(status, code) {
+						t.Fatalf("status stopped reporting remote fact %s as unknown: %+v", code, status.Gate.Diagnostics)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestStatusDefaultProcessEvidenceDoesNotOverrideCollectedEvidence(t *testing.T) {
 	const (
 		specURL    = "https://github.com/o/r/issues/1#issuecomment-1"

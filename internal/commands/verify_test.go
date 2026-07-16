@@ -238,6 +238,67 @@ func canonicalProcessContentWithClass(class model.ProcessExecutionClass) string 
 }
 
 func TestRunVerifySelfHostedPreservesBlockingGateAndSkipsEvidenceConsumption(t *testing.T) {
+	app, out, errOut, updates := newSelfHostedVerifyApp(t)
+
+	buildBlockedReport := func([]model.Artifact, string, finalVerifyOptions) (finalVerifyReport, error) {
+		return finalVerifyReport{OK: false, Gate: gates.Report{
+			Ready: false, Target: gates.TargetFinal, Mode: gates.ModeAuthoritative,
+			Diagnostics: []gates.Diagnostic{{
+				Code: "future.blocking", Gate: gates.TargetFinal, Severity: gates.SeverityError,
+				Blocking: true, Message: "future blocking diagnostic without a legacy error projection",
+			}},
+		}}, nil
+	}
+	code := app.runVerifyWithReportBuilder(t.Context(), []string{
+		"--repo", "acme/widgets", "--proposal", "1", "--design", "2", "--implement", "3", "--json",
+	}, buildBlockedReport)
+	if code != 1 {
+		t.Fatalf("self-hosted verify exit=%d, want 1; stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if *updates != 0 {
+		t.Fatalf("blocking gate consumed external evidence with %d comment updates", *updates)
+	}
+	var report finalVerifyReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode verify report: %v\n%s", err, out.String())
+	}
+	if report.OK || report.Gate.Ready || len(report.Errors) != 0 {
+		t.Fatalf("blocking gate was not preserved without legacy errors: %+v", report)
+	}
+}
+
+func TestRunVerifySelfHostedRejectsAnyExplicitPR(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		prArg    string
+		wantCode int
+		rejected bool
+	}{
+		{name: "omitted uses active code change", wantCode: 1},
+		{name: "explicit zero", prArg: "--pr=0", wantCode: 2, rejected: true},
+		{name: "explicit negative", prArg: "--pr=-1", wantCode: 2, rejected: true},
+		{name: "explicit positive", prArg: "--pr=7", wantCode: 2, rejected: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app, out, errOut, updates := newSelfHostedVerifyApp(t)
+			args := []string{"--repo", "acme/widgets", "--proposal", "1", "--design", "2", "--implement", "3", "--json"}
+			if test.prArg != "" {
+				args = append(args, test.prArg)
+			}
+			code := app.runVerify(t.Context(), args)
+			rejected := strings.Contains(errOut.String(), "--pr is not a self-hosted code authority")
+			if code != test.wantCode || rejected != test.rejected {
+				t.Fatalf("self-hosted verify exit=%d rejected=%t stdout=%q stderr=%q", code, rejected, out.String(), errOut.String())
+			}
+			if *updates != 0 {
+				t.Fatalf("self-hosted verify unexpectedly consumed evidence with %d comment updates", *updates)
+			}
+		})
+	}
+}
+
+func newSelfHostedVerifyApp(t *testing.T) (*app, *bytes.Buffer, *bytes.Buffer, *int) {
+	t.Helper()
 	clearCommandAuthEnv(t)
 	revision := "head-abc"
 	profile := auth.Profile{Name: "verify-fail-closed", Kind: auth.ProfileKindHosted,
@@ -267,7 +328,7 @@ func TestRunVerifySelfHostedPreservesBlockingGateAndSkipsEvidenceConsumption(t *
 		canonicalVerifyContent+"\n\n### Revision\n\n`"+revision+"`", 4,
 		"https://issues.example/acme/widgets/issues/3#issuecomment-4")
 
-	updates := 0
+	updates := new(int)
 	backend := fakeGitHubBackend{
 		info: github.BackendInfo{Name: "rest", Kind: "rest", Host: "issues.example"},
 		getIssue: func(_ context.Context, _ string, issue int) (github.Issue, error) {
@@ -280,12 +341,12 @@ func TestRunVerifySelfHostedPreservesBlockingGateAndSkipsEvidenceConsumption(t *
 			return nil, nil
 		},
 		updateComment: func(context.Context, string, int64, string) (github.Comment, error) {
-			updates++
+			(*updates)++
 			return github.Comment{}, nil
 		},
 	}
-	var out, errOut bytes.Buffer
-	app := newApp(strings.NewReader(""), &out, &errOut)
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	app := newApp(strings.NewReader(""), out, errOut)
 	app.profileName = profile.Name
 	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) {
 		return backend, nil
@@ -293,32 +354,7 @@ func TestRunVerifySelfHostedPreservesBlockingGateAndSkipsEvidenceConsumption(t *
 	app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) {
 		return native, nil
 	}
-
-	buildBlockedReport := func([]model.Artifact, string, finalVerifyOptions) (finalVerifyReport, error) {
-		return finalVerifyReport{OK: false, Gate: gates.Report{
-			Ready: false, Target: gates.TargetFinal, Mode: gates.ModeAuthoritative,
-			Diagnostics: []gates.Diagnostic{{
-				Code: "future.blocking", Gate: gates.TargetFinal, Severity: gates.SeverityError,
-				Blocking: true, Message: "future blocking diagnostic without a legacy error projection",
-			}},
-		}}, nil
-	}
-	code := app.runVerifyWithReportBuilder(t.Context(), []string{
-		"--repo", "acme/widgets", "--proposal", "1", "--design", "2", "--implement", "3", "--json",
-	}, buildBlockedReport)
-	if code != 1 {
-		t.Fatalf("self-hosted verify exit=%d, want 1; stdout=%q stderr=%q", code, out.String(), errOut.String())
-	}
-	if updates != 0 {
-		t.Fatalf("blocking gate consumed external evidence with %d comment updates", updates)
-	}
-	var report finalVerifyReport
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
-		t.Fatalf("decode verify report: %v\n%s", err, out.String())
-	}
-	if report.OK || report.Gate.Ready || len(report.Errors) != 0 {
-		t.Fatalf("blocking gate was not preserved without legacy errors: %+v", report)
-	}
+	return app, out, errOut, updates
 }
 
 func finalVerifyChangeBearingArtifacts(t *testing.T, integrationSHA string) []model.Artifact {

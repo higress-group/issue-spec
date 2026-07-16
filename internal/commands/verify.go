@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"sort"
@@ -69,6 +70,12 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
+	prProvided := false
+	fs.Visit(func(current *flag.Flag) {
+		if current.Name == "pr" {
+			prProvided = true
+		}
+	})
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {
 		return 2
@@ -111,13 +118,13 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 	var expectedRevision string
 	externalGate, selfHosted, err := a.externalGate(ctx, *host, token.Value, repo, implementIssue,
 		"code_change", *revision, coreevidence.GateVerify)
+	if selfHosted && prProvided {
+		a.errorf("--pr is not a self-hosted code authority; omit it and use the active code_change reference\n")
+		return 2
+	}
 	if err != nil {
 		a.errorf("verify external evidence: %v\n", err)
 		return 1
-	}
-	if selfHosted && *prFlag > 0 {
-		a.errorf("--pr is not a self-hosted code authority; omit it and use the active code_change reference\n")
-		return 2
 	}
 	if !selfHosted && *prFlag <= 0 && hasActiveChangeBearingProcess(artifacts) {
 		a.errorf("--pr is required for GitHub verify when an active change-bearing PROCESS exists\n")
