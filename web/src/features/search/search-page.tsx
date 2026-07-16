@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Building2, ChevronLeft, ChevronRight, FileSearch, MessageSquareText, RotateCcw, Search, Workflow } from "lucide-react";
 import { useRef, type FormEvent, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useCurrentContext, useMeta } from "../../auth/session";
 import { isApiProblem } from "../../lib/api/client";
@@ -11,10 +12,11 @@ import { searchSourceSchema, searchStageSchema, searchStateSchema, type SearchFi
 const perPage = 12;
 
 function CapabilityGate({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
   const meta = useMeta();
-  if (meta.isLoading) return <SearchState>Discovering search capability…</SearchState>;
-  if (meta.error) return <SearchState kind="error"><h1>Search capability is unavailable</h1><p>Refresh the page or inspect the request details.</p></SearchState>;
-  if (!meta.data?.features.search) return <SearchState kind="empty"><FileSearch aria-hidden="true" /><h1>Search is not enabled</h1><p>Ask the server operator to configure PostgreSQL search mode.</p></SearchState>;
+  if (meta.isLoading) return <SearchState>{t("search.capability.discovering")}</SearchState>;
+  if (meta.error) return <SearchState kind="error"><h1>{t("search.capability.unavailableTitle")}</h1><p>{t("search.capability.unavailableDescription")}</p></SearchState>;
+  if (!meta.data?.features.search) return <SearchState kind="empty"><FileSearch aria-hidden="true" /><h1>{t("search.capability.disabledTitle")}</h1><p>{t("search.capability.disabledDescription")}</p></SearchState>;
   return children;
 }
 
@@ -23,38 +25,41 @@ export function SearchWorkspacePage() {
 }
 
 function SearchWorkspace() {
+  const { t } = useTranslation();
   const context = useCurrentContext();
-  if (context.isLoading) return <SearchState>Opening visible organizations…</SearchState>;
-  if (context.error || !context.data) return <SearchState kind="error"><h1>Search could not open</h1><p>Your visible organization context is unavailable.</p></SearchState>;
+  if (context.isLoading) return <SearchState>{t("search.workspace.openingOrganizations")}</SearchState>;
+  if (context.error || !context.data) return <SearchState kind="error"><h1>{t("search.workspace.unavailableTitle")}</h1><p>{t("search.workspace.unavailableDescription")}</p></SearchState>;
   return <div className="search-page search-workspace">
-    <header className="search-hero"><div><span className="search-eyebrow">Discussion memory</span><h1>Find the decision before changing the code.</h1><p>Search issue bodies, comments, and prior change keys without leaving the self-hosted workspace.</p></div><Search aria-hidden="true" /></header>
-    <section className="search-scope-deck" aria-labelledby="search-scope-heading"><header><div><span className="search-eyebrow">Search scope</span><h2 id="search-scope-heading">Choose an organization</h2></div><small>{context.data.organizations.length} visible</small></header>
-      <div className="search-scope-grid">{context.data.organizations.map((organization) => <Link key={organization.id} to={`/search/${organization.id}`} className="search-scope-card"><Building2 aria-hidden="true" /><span><strong>{organization.display_name}</strong><small>{organization.name} · {organization.effective_permission}</small></span><ArrowRight aria-hidden="true" /></Link>)}</div>
-      {!context.data.organizations.length ? <SearchState kind="empty"><h2>No searchable organizations</h2><p>Search appears after you receive repository read access.</p></SearchState> : null}
+    <header className="search-hero"><div><span className="search-eyebrow">{t("search.workspace.eyebrow")}</span><h1>{t("search.workspace.title")}</h1><p>{t("search.workspace.description")}</p></div><Search aria-hidden="true" /></header>
+    <section className="search-scope-deck" aria-labelledby="search-scope-heading"><header><div><span className="search-eyebrow">{t("search.workspace.scopeEyebrow")}</span><h2 id="search-scope-heading">{t("search.workspace.chooseOrganization")}</h2></div><small>{t("search.workspace.visible", { count: context.data.organizations.length })}</small></header>
+      <div className="search-scope-grid">{context.data.organizations.map((organization) => <Link key={organization.id} to={`/search/${organization.id}`} className="search-scope-card"><Building2 aria-hidden="true" /><span><strong>{organization.display_name}</strong><small>{organization.name} · {t(`common.permission.${organization.effective_permission}`, { defaultValue: organization.effective_permission })}</small></span><ArrowRight aria-hidden="true" /></Link>)}</div>
+      {!context.data.organizations.length ? <SearchState kind="empty"><h2>{t("search.workspace.noOrganizationsTitle")}</h2><p>{t("search.workspace.noOrganizationsDescription")}</p></SearchState> : null}
     </section>
   </div>;
 }
 
 export function OrganizationSearchPage() {
+  const { t } = useTranslation();
   const { orgId = "" } = useParams();
   const context = useCurrentContext();
   const repositories = useQuery({ queryKey: ["search", "repositories", orgId], queryFn: ({ signal }) => searchApi.repositories(orgId, signal), enabled: Boolean(orgId) });
-  if (context.isLoading || repositories.isLoading) return <SearchState>Opening search scope…</SearchState>;
+  if (context.isLoading || repositories.isLoading) return <SearchState>{t("search.scope.opening")}</SearchState>;
   const organization = context.data?.organizations.find((item) => item.id === orgId);
   if (!organization || isApiProblem(repositories.error, "not_found") || isApiProblem(repositories.error, "forbidden")) return <SafeSearchState />;
-  if (context.error || repositories.error) return <SearchState kind="error"><h1>Search scope is unavailable</h1><p>Try again or inspect the request details.</p></SearchState>;
+  if (context.error || repositories.error) return <SearchState kind="error"><h1>{t("search.scope.unavailableTitle")}</h1><p>{t("search.scope.unavailableDescription")}</p></SearchState>;
   return <CapabilityGate><SearchSurface organization={organization} repositories={repositories.data?.repositories ?? []} /></CapabilityGate>;
 }
 
 export function RepositorySearchPage() {
+  const { t } = useTranslation();
   const { orgId = "", repoId = "" } = useParams();
   const context = useCurrentContext();
   const repositories = useQuery({ queryKey: ["search", "repositories", orgId], queryFn: ({ signal }) => searchApi.repositories(orgId, signal), enabled: Boolean(orgId) });
-  if (context.isLoading || repositories.isLoading) return <SearchState>Opening repository search…</SearchState>;
+  if (context.isLoading || repositories.isLoading) return <SearchState>{t("search.scope.openingRepository")}</SearchState>;
   const organization = context.data?.organizations.find((item) => item.id === orgId);
   const repository = repositories.data?.repositories.find((item) => item.repository.id === repoId);
   if (!organization || !repository || isApiProblem(repositories.error, "not_found") || isApiProblem(repositories.error, "forbidden")) return <SafeSearchState />;
-  if (context.error || repositories.error) return <SearchState kind="error"><h1>Search scope is unavailable</h1><p>Try again or inspect the request details.</p></SearchState>;
+  if (context.error || repositories.error) return <SearchState kind="error"><h1>{t("search.scope.unavailableTitle")}</h1><p>{t("search.scope.unavailableDescription")}</p></SearchState>;
   return <CapabilityGate><SearchSurface organization={organization} repositories={repositories.data?.repositories ?? []} repository={repository} /></CapabilityGate>;
 }
 
@@ -69,6 +74,7 @@ function parseFilters(search: URLSearchParams): SearchFilters {
 }
 
 export function SearchSurface({ organization, repositories, repository }: { organization: OrganizationContext; repositories: RepositoryContext[]; repository?: RepositoryContext }) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [search, setSearch] = useSearchParams();
   const filters = parseFilters(search);
@@ -83,28 +89,29 @@ export function SearchSurface({ organization, repositories, repository }: { orga
   const switchScope = (value: string) => { const suffix = search.toString() ? `?${search}` : ""; navigate(value ? `/search/${organization.id}/repos/${value}${suffix}` : `/search/${organization.id}${suffix}`); };
   const title = repository?.repository.display_name ?? organization.display_name;
   return <div className="search-page">
-    <header className="search-masthead"><div><Link to="/search" className="search-back">Search workspace</Link><span className="search-eyebrow">{repository ? "Repository memory" : "Organization memory"}</span><h1>{title}</h1><p>Issue and comment text stays grouped by its original discussion, with related change metadata alongside it.</p></div>
-      <label className="search-scope-select"><span>Search scope</span><select value={repository?.repository.id ?? ""} onChange={(event) => switchScope(event.target.value)}><option value="">All visible repositories</option>{repositories.map((item) => <option key={item.repository.id} value={item.repository.id}>{item.repository.display_name}</option>)}</select></label></header>
-    <form className="search-controls" role="search" onSubmit={submit}><label className="search-query"><span>Search issue discussions</span><div><Search aria-hidden="true" /><input key={filters.query} ref={queryRef} defaultValue={filters.query} maxLength={256} placeholder="change key, error, decision, or code symbol" /><button type="submit">Search</button></div></label>
-      <div className="search-filters"><label><span>State</span><select value={filters.state} onChange={(event) => update("state", event.target.value)}><option value="all">Open and closed</option><option value="open">Open</option><option value="closed">Closed</option></select></label>
-        <label><span>Match</span><select value={filters.source} onChange={(event) => update("source", event.target.value)}><option value="all">Issue or comment</option><option value="issue">Issue text</option><option value="comments">Comments</option><option value="change">Change key</option></select></label>
-        <label><span>Change stage</span><select value={filters.stage ?? ""} onChange={(event) => update("stage", event.target.value)}><option value="">Any stage</option><option value="proposal">Proposal</option><option value="design">Design</option><option value="implement">Implement</option></select></label>
-        <button className="search-reset" type="button" onClick={clear} disabled={!filters.query && filters.state === "all" && filters.source === "all" && !filters.stage}><RotateCcw aria-hidden="true" />Reset</button></div></form>
+    <header className="search-masthead"><div><Link to="/search" className="search-back">{t("search.scope.workspace")}</Link><span className="search-eyebrow">{t(repository ? "search.scope.repositoryMemory" : "search.scope.organizationMemory")}</span><h1>{title}</h1><p>{t("search.scope.description")}</p></div>
+      <label className="search-scope-select"><span>{t("search.scope.label")}</span><select value={repository?.repository.id ?? ""} onChange={(event) => switchScope(event.target.value)}><option value="">{t("search.scope.allRepositories")}</option>{repositories.map((item) => <option key={item.repository.id} value={item.repository.id}>{item.repository.display_name}</option>)}</select></label></header>
+    <form className="search-controls" role="search" onSubmit={submit}><label className="search-query"><span>{t("search.controls.queryLabel")}</span><div><Search aria-hidden="true" /><input key={filters.query} ref={queryRef} defaultValue={filters.query} maxLength={256} placeholder={t("search.controls.placeholder")} /><button type="submit">{t("search.controls.submit")}</button></div></label>
+      <div className="search-filters"><label><span>{t("search.controls.state")}</span><select value={filters.state} onChange={(event) => update("state", event.target.value)}><option value="all">{t("search.controls.stateAll")}</option><option value="open">{t("search.controls.stateOpen")}</option><option value="closed">{t("search.controls.stateClosed")}</option></select></label>
+        <label><span>{t("search.controls.match")}</span><select value={filters.source} onChange={(event) => update("source", event.target.value)}><option value="all">{t("search.controls.matchAll")}</option><option value="issue">{t("search.controls.matchIssue")}</option><option value="comments">{t("search.controls.matchComments")}</option><option value="change">{t("search.controls.matchChange")}</option></select></label>
+        <label><span>{t("search.controls.stage")}</span><select value={filters.stage ?? ""} onChange={(event) => update("stage", event.target.value)}><option value="">{t("search.controls.stageAny")}</option><option value="proposal">{t("search.controls.stageProposal")}</option><option value="design">{t("search.controls.stageDesign")}</option><option value="implement">{t("search.controls.stageImplement")}</option></select></label>
+        <button className="search-reset" type="button" onClick={clear} disabled={!filters.query && filters.state === "all" && filters.source === "all" && !filters.stage}><RotateCcw aria-hidden="true" />{t("search.controls.reset")}</button></div></form>
     <SearchResults query={filters.query} page={results.data} loading={results.isLoading} error={results.error} goPage={goPage} />
   </div>;
 }
 
 function SearchResults({ query, page, loading, error, goPage }: { query: string; page?: SearchPageModel; loading: boolean; error: unknown; goPage: (page: number) => void }) {
-  if (!query) return <SearchState kind="empty"><FileSearch aria-hidden="true" /><h2>Search earlier discussions</h2><p>Enter a decision, failure mode, change key, or code symbol.</p></SearchState>;
-  if (loading) return <SearchState>Searching visible discussions…</SearchState>;
+  const { t } = useTranslation();
+  if (!query) return <SearchState kind="empty"><FileSearch aria-hidden="true" /><h2>{t("search.results.initialTitle")}</h2><p>{t("search.results.initialDescription")}</p></SearchState>;
+  if (loading) return <SearchState>{t("search.results.searching")}</SearchState>;
   if (isApiProblem(error, "not_found") || isApiProblem(error, "forbidden")) return <SafeSearchState />;
-  if (error || !page) return <SearchState kind="error"><h2>Search failed</h2><p>Try again or inspect the request details.</p></SearchState>;
+  if (error || !page) return <SearchState kind="error"><h2>{t("search.results.failedTitle")}</h2><p>{t("search.results.failedDescription")}</p></SearchState>;
   const groups = groupSearchResults(page.items);
-  return <section id="search-results" className="search-results" tabIndex={-1} aria-labelledby="search-results-heading"><header><div><span className="search-eyebrow">Discussion matches</span><h2 id="search-results-heading">{page.items.length ? `${page.total} matching discussions` : "No matching discussions"}</h2></div><span>Page {page.page} · {page.items.length} shown</span></header>
+  return <section id="search-results" className="search-results" tabIndex={-1} aria-labelledby="search-results-heading"><header><div><span className="search-eyebrow">{t("search.results.eyebrow")}</span><h2 id="search-results-heading">{page.items.length ? t("search.results.matching", { count: page.total }) : t("search.results.noMatches")}</h2></div><span>{t("search.results.shown", { page: page.page, count: page.items.length })}</span></header>
     {page.items.length ? <div className="search-result-list">{groups.map((group) => group.change
       ? <ChangeResultGroup key={group.id} group={group} />
-      : <SearchResultCard key={group.id} item={group.items[0]} />)}</div> : <SearchState kind="empty"><FileSearch aria-hidden="true" /><h2>Nothing matched this scope</h2><p>Try a shorter term, include closed issues, or search comments.</p></SearchState>}
-    <nav className="search-pagination" aria-label="Search result pages"><button type="button" disabled={page.page === 1} onClick={() => goPage(page.page - 1)}><ChevronLeft aria-hidden="true" />Previous</button><span>Page <strong>{page.page}</strong></span><button type="button" disabled={!page.has_next} onClick={() => goPage(page.page + 1)}>Next<ChevronRight aria-hidden="true" /></button></nav>
+      : <SearchResultCard key={group.id} item={group.items[0]} />)}</div> : <SearchState kind="empty"><FileSearch aria-hidden="true" /><h2>{t("search.results.emptyTitle")}</h2><p>{t("search.results.emptyDescription")}</p></SearchState>}
+    <nav className="search-pagination" aria-label={t("search.results.pages")}><button type="button" disabled={page.page === 1} onClick={() => goPage(page.page - 1)}><ChevronLeft aria-hidden="true" />{t("search.results.previous")}</button><span>{t("search.results.page", { page: page.page })}</span><button type="button" disabled={!page.has_next} onClick={() => goPage(page.page + 1)}>{t("search.results.next")}<ChevronRight aria-hidden="true" /></button></nav>
   </section>;
 }
 
@@ -142,23 +149,25 @@ function stageRank(stage?: string) {
 }
 
 function ChangeResultGroup({ group }: { group: SearchResultGroup }) {
+  const { t } = useTranslation();
   if (!group.change) return null;
   const first = group.items[0];
   const headingID = `search-change-${first.repository_id}-${group.change.key.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   const changePath = `/changes/${first.organization_id}/repos/${first.repository_id}/${encodeURIComponent(group.change.key)}`;
   return <section className="search-change-group" aria-labelledby={headingID}>
-    <header><div><span className="search-eyebrow">Related change</span><h3 id={headingID}><Link to={changePath}><Workflow aria-hidden="true" />{group.change.key} change</Link></h3></div><span>{group.items.length} matching {group.items.length === 1 ? "artifact" : "artifacts"} · {group.change.stage}</span></header>
+    <header><div><span className="search-eyebrow">{t("search.results.relatedChange")}</span><h3 id={headingID}><Link to={changePath}><Workflow aria-hidden="true" />{t("search.results.changeHeading", { key: group.change.key })}</Link></h3></div><span>{t("search.results.artifacts", { count: group.items.length, stage: t(`search.value.stage.${group.change.stage}`) })}</span></header>
     <div className="search-change-artifacts">{group.items.map((item) => <SearchResultCard key={item.id} item={item} />)}</div>
   </section>;
 }
 
 function SearchResultCard({ item }: { item: SearchIssueModel }) {
+  const { t, i18n } = useTranslation();
   const issuePath = `/issues/${item.organization_id}/${item.repository_id}/${item.number}`;
-  return <article className="search-result-card"><header><div><span className={`search-state-pill ${item.state}`}>{item.state}</span><span>{item.organization} / {item.repository} · #{item.number}</span></div><time dateTime={item.updated_at}>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(item.updated_at))}</time></header>
+  return <article className="search-result-card"><header><div><span className={`search-state-pill ${item.state}`}>{t(`search.value.state.${item.state}`)}</span><span>{item.organization} / {item.repository} · #{item.number}</span></div><time dateTime={item.updated_at}>{new Intl.DateTimeFormat(i18n.resolvedLanguage, { dateStyle: "medium" }).format(new Date(item.updated_at))}</time></header>
     <h3><Link to={issuePath}>{item.title}</Link></h3>
-    {item.changes.length ? <div className="search-changes">{item.changes.map((change) => <Link key={change.key} to={`/changes/${item.organization_id}/repos/${item.repository_id}/${encodeURIComponent(change.key)}`}><Workflow aria-hidden="true" />{change.key}<span>{change.stage}</span></Link>)}</div> : null}
-    <div className="search-matches">{item.matches.map((match, index) => <div className="search-match" key={`${match.source}:${match.comment_id ?? index}`}><span>{match.source === "comment" ? <MessageSquareText aria-hidden="true" /> : <FileSearch aria-hidden="true" />}{match.source}</span><p>{match.excerpt}</p></div>)}</div>
-    <Link className="search-open" to={issuePath}>Open full discussion<ArrowRight aria-hidden="true" /></Link>
+    {item.changes.length ? <div className="search-changes">{item.changes.map((change) => <Link key={change.key} to={`/changes/${item.organization_id}/repos/${item.repository_id}/${encodeURIComponent(change.key)}`}><Workflow aria-hidden="true" />{change.key}<span>{t(`search.value.stage.${change.stage}`)}</span></Link>)}</div> : null}
+    <div className="search-matches">{item.matches.map((match, index) => <div className="search-match" key={`${match.source}:${match.comment_id ?? index}`}><span>{match.source === "comment" ? <MessageSquareText aria-hidden="true" /> : <FileSearch aria-hidden="true" />}{t(`search.value.source.${match.source}`)}</span><p>{match.excerpt}</p></div>)}</div>
+    <Link className="search-open" to={issuePath}>{t("search.results.openDiscussion")}<ArrowRight aria-hidden="true" /></Link>
   </article>;
 }
 
@@ -166,4 +175,7 @@ function SearchState({ children, kind = "loading" }: { children: ReactNode; kind
   return <div className={`search-state ${kind}`} role={kind === "loading" ? "status" : undefined}>{kind === "loading" ? <span className="search-loader" aria-hidden="true" /> : null}{children}</div>;
 }
 
-function SafeSearchState() { return <SearchState kind="safe"><h1>This search scope is not available</h1><p>It may not exist, or your current credential cannot see it.</p><Link to="/search">Return to visible organizations</Link></SearchState>; }
+function SafeSearchState() {
+  const { t } = useTranslation();
+  return <SearchState kind="safe"><h1>{t("search.safe.title")}</h1><p>{t("search.safe.description")}</p><Link to="/search">{t("search.safe.return")}</Link></SearchState>;
+}

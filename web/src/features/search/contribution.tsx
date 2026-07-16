@@ -1,5 +1,6 @@
 import { lazy, Suspense, type ReactNode } from "react";
 import { Search } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { FeatureContribution } from "../../app/feature-contributions";
 import "./search.css";
 
@@ -8,7 +9,8 @@ const OrganizationSearchPage = lazy(() => import("./search-page").then((module) 
 const RepositorySearchPage = lazy(() => import("./search-page").then((module) => ({ default: module.RepositorySearchPage })));
 
 function LazySearchRoute({ children }: { children: ReactNode }) {
-  return <Suspense fallback={<div className="search-state" role="status"><span className="search-loader" aria-hidden="true" />Opening search…</div>}>{children}</Suspense>;
+  const { t } = useTranslation();
+  return <Suspense fallback={<div className="search-state" role="status"><span className="search-loader" aria-hidden="true" />{t("search.lazyOpening")}</div>}>{children}</Suspense>;
 }
 
 const contribution: FeatureContribution = {

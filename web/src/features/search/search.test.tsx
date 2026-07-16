@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { renderApp } from "../../../tests/render";
+import i18n from "../../i18n/i18n";
 import { searchApi } from "./api";
 import { SearchSurface } from "./search-page";
 import { searchPageSchema, type SearchPageModel } from "./types";
@@ -42,6 +43,22 @@ describe("self-hosted discussion search", () => {
     expect(screen.getByRole("heading", { name: "Standalone discussion" })).toBeVisible();
     await user.selectOptions(screen.getByLabelText("Match"), "comments");
     expect(await screen.findByTestId("search-location")).toHaveTextContent("source=comments");
+    expect((await axe.run(container)).violations).toEqual([]);
+  });
+
+  it("translates the complete search surface into Chinese", async () => {
+    await i18n.changeLanguage("zh-CN");
+    vi.spyOn(searchApi, "organization").mockResolvedValue(groupedPageFixture());
+    const { container } = renderApp(<Routes><Route path="/search/:orgId" element={<SearchSurface organization={organization} repositories={[repository]} />}/></Routes>, `/search/${orgId}?q=lock&state=closed`);
+    expect(await screen.findByRole("heading", { name: "3 个匹配讨论" })).toBeVisible();
+    expect(screen.getByLabelText("检索范围")).toBeVisible();
+    expect(screen.getByLabelText("匹配内容")).toHaveValue("all");
+    expect(screen.getByRole("region", { name: "auth-lock 变更" })).toBeVisible();
+    expect(screen.getByText("2 个匹配产物 · 实现")).toBeVisible();
+    expect(screen.getAllByText("已关闭").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("议题").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("打开完整讨论").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Open full discussion")).not.toBeInTheDocument();
     expect((await axe.run(container)).violations).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
 import { administrationResources } from "./administration-resources";
+import { searchResources } from "./search-resources";
 import { workflowResources } from "./workflow-resources";
 
 export const resources = {
@@ -116,6 +117,7 @@ export const resources = {
       },
       ...administrationResources.en,
       ...workflowResources.en,
+      ...searchResources.en,
     },
   },
   "zh-CN": {
@@ -232,6 +234,7 @@ export const resources = {
       },
       ...administrationResources["zh-CN"],
       ...workflowResources["zh-CN"],
+      ...searchResources["zh-CN"],
     },
   },
 } as const;
