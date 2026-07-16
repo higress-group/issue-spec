@@ -27,6 +27,7 @@ services:
       DATABASE_URL: postgres://issue_spec:issue_spec@postgres:5432/issue_spec?sslmode=disable
       API_PUBLIC_URL: http://127.0.0.1:8080
       WEB_PUBLIC_URL: http://127.0.0.1:8080
+      SEARCH_MODE: ${ISSUE_SPEC_SEARCH_MODE:-disabled}
       BOOTSTRAP_SECRET_FILE: /run/issue-spec-secrets/bootstrap
       TOKEN_PEPPER_FILE: /run/issue-spec-secrets/token-pepper
       ENCRYPTION_KEY_FILE: /run/issue-spec-secrets/encryption-key

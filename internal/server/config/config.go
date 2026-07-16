@@ -42,6 +42,7 @@ const (
 	DelegationAudienceEnv      = "DELEGATION_AUDIENCE"
 	DelegationSubjectEnv       = "DELEGATION_SUBJECT"
 	TransportPostureEnv        = "TRANSPORT_POSTURE"
+	SearchModeEnv              = "SEARCH_MODE"
 
 	DefaultGracefulShutdownTimeout = 30 * time.Second
 	DefaultHealthReadTimeout       = 5 * time.Second
@@ -64,6 +65,11 @@ const (
 
 type MigrationsMode string
 
+// SearchMode controls the optional PostgreSQL-backed issue search surface.
+// Extensions remain an operator responsibility; selecting postgres makes the
+// server validate them and reconcile its own indexes before accepting traffic.
+type SearchMode string
+
 type TransportPosture string
 
 const (
@@ -75,6 +81,11 @@ const (
 	MigrationsAuto     MigrationsMode = "auto"
 	MigrationsValidate MigrationsMode = "validate"
 	MigrationsOff      MigrationsMode = "off"
+)
+
+const (
+	SearchDisabled SearchMode = "disabled"
+	SearchPostgres SearchMode = "postgres"
 )
 
 // SecretFile holds a secure file reference and its loaded value. Its value is
@@ -123,6 +134,7 @@ type Config struct {
 	AuthProviders           SecretFile       `json:"auth_providers_file,omitempty"`
 	WebhookKeys             SecretFile       `json:"webhook_encryption_keys_file,omitempty"`
 	MigrationsMode          MigrationsMode   `json:"migrations_mode"`
+	SearchMode              SearchMode       `json:"search_mode"`
 	GracefulShutdownTimeout time.Duration    `json:"graceful_shutdown_timeout"`
 	HealthReadTimeout       time.Duration    `json:"health_read_timeout"`
 	HealthWriteTimeout      time.Duration    `json:"health_write_timeout"`
@@ -152,6 +164,7 @@ func Load() (Config, error) {
 		Environment:             EnvironmentDevelopment,
 		TransportPosture:        TransportHTTPS,
 		MigrationsMode:          MigrationsAuto,
+		SearchMode:              SearchDisabled,
 		GracefulShutdownTimeout: DefaultGracefulShutdownTimeout,
 		HealthReadTimeout:       DefaultHealthReadTimeout,
 		HealthWriteTimeout:      DefaultHealthWriteTimeout,
@@ -181,6 +194,9 @@ func Load() (Config, error) {
 	}
 	if value := env(MigrationsModeEnv); value != "" {
 		cfg.MigrationsMode = MigrationsMode(strings.ToLower(value))
+	}
+	if value := env(SearchModeEnv); value != "" {
+		cfg.SearchMode = SearchMode(strings.ToLower(value))
 	}
 
 	var err error
@@ -240,6 +256,9 @@ func (c Config) Validate() error {
 	}
 	if c.TransportPosture != TransportHTTPS && c.TransportPosture != TransportTrustedInternalHTTP {
 		return fmt.Errorf("%s must be https or trusted-internal-http", TransportPostureEnv)
+	}
+	if c.SearchMode != SearchDisabled && c.SearchMode != SearchPostgres {
+		return fmt.Errorf("%s must be disabled or postgres", SearchModeEnv)
 	}
 	if err := validateListenAddr(c.ListenAddr); err != nil {
 		return err

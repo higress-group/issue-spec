@@ -69,6 +69,33 @@ the same change while retaining their provider identity.
 
 ![Change detail and code evidence](assets/self-hosted-change-detail.png)
 
+### Search recovers earlier decisions before the next change
+
+When the operator enables PostgreSQL search, the browser workspace can search
+visible issue bodies and comments, including closed discussions, and group
+matches by issue with related change keys and stages. Authorization filtering
+happens before matching, ranking, totals, excerpts, or pagination. Search
+requests accept at most 256 query bytes and 50 results per page, and the
+server applies a five-second database query deadline while preserving any
+earlier caller deadline.
+
+Direct Codex, Claude, and other issue-spec clients use the same capability:
+
+```bash
+issue-spec --profile team search issues \
+  --repo acme/workflow \
+  --query ListConfigsBySource \
+  --state all \
+  --limit 10
+```
+
+Search output keeps user-authored titles and excerpts inside untrusted data
+boundaries and points the agent to `read issue --comments` for the selected
+full discussion. This is a general issue-spec workflow; runner-dispatched
+agents reuse it rather than defining a runner-only search process. See the
+[deployment guide](operations/deployment.md#optional-postgresql-issue-search)
+for the explicit extension and startup contract.
+
 ### Integrations are policy controlled and auditable
 
 Repository administrators can configure runner intake or `github.v3`

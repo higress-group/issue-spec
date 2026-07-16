@@ -15,6 +15,7 @@ import type { ActiveRepository } from "./repository-context";
 import type { IssueComment } from "./types";
 import { Avatar } from "../../app/avatar";
 import { useTranslation } from "react-i18next";
+import { copyText } from "../../lib/clipboard";
 
 const commentAnchorPattern = /^#issuecomment-[1-9]\d*$/;
 
@@ -23,30 +24,6 @@ function AuthorName({ user }: { user: IssueComment["user"] }) {
   return user.html_url
     ? <Link className="author-link" to={`/users/${encodeURIComponent(user.login)}`}>{content}</Link>
     : <span className="author-link">{content}</span>;
-}
-
-async function copyText(value: string) {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(value);
-      return;
-    }
-  } catch {
-    // HTTP deployments may expose the Clipboard API but reject writes.
-  }
-  const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const textarea = document.createElement("textarea");
-  textarea.value = value;
-  textarea.readOnly = true;
-  textarea.style.position = "fixed";
-  textarea.style.inset = "0 auto auto -9999px";
-  textarea.style.opacity = "0";
-  document.body.append(textarea);
-  textarea.select();
-  const copied = typeof document.execCommand === "function" && document.execCommand("copy");
-  textarea.remove();
-  active?.focus({ preventScroll: true });
-  if (!copied) throw new Error("copy failed");
 }
 
 function useCommentAnchor({ comments, hash, owner, repo, number }: { comments: IssueComment[] | undefined; hash: string; owner: string; repo: string; number: number }) {

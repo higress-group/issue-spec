@@ -21,8 +21,8 @@ func TestLoadDefaultsAndExplicitValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Environment != EnvironmentDevelopment || cfg.MigrationsMode != MigrationsAuto {
-		t.Fatalf("defaults = environment %q, migrations %q", cfg.Environment, cfg.MigrationsMode)
+	if cfg.Environment != EnvironmentDevelopment || cfg.MigrationsMode != MigrationsAuto || cfg.SearchMode != SearchDisabled {
+		t.Fatalf("defaults = environment %q, migrations %q, search %q", cfg.Environment, cfg.MigrationsMode, cfg.SearchMode)
 	}
 	if cfg.GracefulShutdownTimeout != 30*time.Second || cfg.HealthReadTimeout != 5*time.Second || cfg.HealthWriteTimeout != 5*time.Second {
 		t.Fatalf("duration defaults = %s, %s, %s", cfg.GracefulShutdownTimeout, cfg.HealthReadTimeout, cfg.HealthWriteTimeout)
@@ -43,6 +43,7 @@ func TestLoadValidation(t *testing.T) {
 		{name: "database required", env: map[string]string{ListenAddrEnv: ":8080"}, wantErr: DatabaseURLEnv + " is required"},
 		{name: "environment", env: baseEnv(EnvironmentEnv, "staging"), wantErr: "development, test, or production"},
 		{name: "migration mode", env: baseEnv(MigrationsModeEnv, "maybe"), wantErr: "auto, validate, or off"},
+		{name: "search mode", env: baseEnv(SearchModeEnv, "fallback"), wantErr: "disabled or postgres"},
 		{name: "graceful duration", env: baseEnv(GracefulShutdownTimeoutEnv, "0s"), wantErr: "positive duration"},
 		{name: "read duration", env: baseEnv(HealthReadTimeoutEnv, "later"), wantErr: "positive duration"},
 		{name: "write duration", env: baseEnv(HealthWriteTimeoutEnv, "-1s"), wantErr: "positive duration"},
@@ -312,7 +313,7 @@ func resetEnv(t *testing.T) {
 		MigrationsModeEnv, GracefulShutdownTimeoutEnv, HealthReadTimeoutEnv, HealthWriteTimeoutEnv,
 		AuthProvidersFileEnv, WebhookKeysFileEnv, StaticDirectoryEnv, WebhookAllowedPrivateEnv,
 		DeliveryConcurrencyEnv, DeliveryLeaseDurationEnv, DeliveryPollIntervalEnv,
-		DelegationAudienceEnv, DelegationSubjectEnv, TransportPostureEnv,
+		DelegationAudienceEnv, DelegationSubjectEnv, TransportPostureEnv, SearchModeEnv,
 	} {
 		t.Setenv(name, "")
 	}

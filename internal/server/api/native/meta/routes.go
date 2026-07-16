@@ -24,6 +24,7 @@ type Features struct {
 	ChangeBoards         bool `json:"change_boards"`
 	Runner               bool `json:"runner"`
 	RecoveryExchange     bool `json:"recovery_exchange"`
+	Search               bool `json:"search"`
 }
 
 type Transport struct {

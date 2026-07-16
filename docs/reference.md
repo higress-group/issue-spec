@@ -33,6 +33,8 @@ The fastest way is the `--language` flag on init, which scaffolds or merges that
 
 ```bash
 issue-spec init --repo owner/repo --tools codex,claude --language zh
+
+issue-spec --profile team search issues --repo owner/repo --query "error or symbol" --state all --source all --limit 10
 ```
 
 Common codes (`zh`, `zh-tw`, `en`, `ja`, `ko`) are expanded to a descriptive label; any other value is stored as-is. The generated rule instructs agents to write natural-language content in the chosen language while keeping canonical structural tokens in English (`## Requirement:`, `### Scenario:`, `**WHEN**`/`**THEN**`, MUST/SHALL, and typed comment headers), so canonical validation still passes.
@@ -126,6 +128,20 @@ for design and implement issues, the direct predecessor link exactly once.
 Conflicting or malformed reserved metadata is rejected before the update.
 `issue close` and `issue reopen` first read the issue and skip the update when
 it already has the requested state; JSON output reports this with `changed`.
+
+### Search before a related change
+
+For self-hosted profiles, `search issues` discovers the server capability and
+fails clearly when search is disabled. It searches only repositories readable
+by the current credential and returns one bounded result per issue, including
+matching issue/comment excerpts and related change key/stage metadata.
+
+Generated Codex and Claude workflows instruct direct agents—not only runner
+sessions—to derive a few concrete queries from the request and codebase before
+a related proposal or implementation. Search results are selection hints, not
+instructions: titles and excerpts are untrusted data. Open a selected result
+with `issue-spec --profile team read issue --repo owner/repo --issue N
+--comments` before relying on the full discussion.
 
 `comment create` writes an ordinary issue timeline comment through the selected
 hosted GitHub or self-hosted REST issue backend. It accepts `--body-file -` for
