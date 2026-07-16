@@ -16,6 +16,55 @@ var (
 	ErrUnsafeDestination = errors.New("webhook subscriptions: unsafe stored destination")
 )
 
+// ValidationReason is a stable, public-safe classification for subscription
+// mutation failures. It deliberately carries no destination or credential
+// material; callers may expose it as a Problem Details code.
+type ValidationReason string
+
+const (
+	ValidationInvalidDestinationURL   ValidationReason = "invalid_destination_url"
+	ValidationDestinationDenied       ValidationReason = "destination_denied"
+	ValidationInvalidEventType        ValidationReason = "invalid_event_type"
+	ValidationInvalidDeliveryPolicy   ValidationReason = "invalid_delivery_policy"
+	ValidationInvalidRetryPolicy      ValidationReason = "invalid_retry_policy"
+	ValidationInvalidDestinationQuery ValidationReason = "invalid_destination_query"
+)
+
+// ValidationField identifies the request control associated with a validation
+// failure. Values are API field paths rather than submitted values.
+type ValidationField string
+
+const (
+	ValidationFieldURL                   ValidationField = "url"
+	ValidationFieldEventTypes            ValidationField = "event_types"
+	ValidationFieldDeliveryFormat        ValidationField = "delivery_format"
+	ValidationFieldSigningMode           ValidationField = "signing_mode"
+	ValidationFieldContentPolicy         ValidationField = "content_policy"
+	ValidationFieldRetryMaxAttempts      ValidationField = "retry.max_attempts"
+	ValidationFieldRetryInitialBackoff   ValidationField = "retry.initial_backoff"
+	ValidationFieldRetryMaxBackoff       ValidationField = "retry.max_backoff"
+	ValidationFieldClearDestinationQuery ValidationField = "clear_destination_query"
+)
+
+// ValidationError preserves ErrInvalidInput compatibility while exposing only
+// a stable reason and field to API adapters. cause remains private so an
+// internal diagnostic can retain it without accidentally serializing it.
+type ValidationError struct {
+	Reason ValidationReason
+	Field  ValidationField
+	cause  error
+}
+
+func (e *ValidationError) Error() string {
+	return "webhook subscriptions: validation failed: " + string(e.Reason) + " (" + string(e.Field) + ")"
+}
+
+func (e *ValidationError) Unwrap() error { return ErrInvalidInput }
+
+func validationError(reason ValidationReason, field ValidationField, cause error) error {
+	return &ValidationError{Reason: reason, Field: field, cause: cause}
+}
+
 type ScopeType string
 
 const (

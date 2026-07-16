@@ -2,7 +2,10 @@ package webhooks
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -56,3 +59,78 @@ func TestReadViewsNeverExposeSecretMaterial(t *testing.T) {
 		t.Fatalf("create view omitted show-once secret: %s", created)
 	}
 }
+
+func TestValidationProblemsExposeOnlyStableSafeMetadata(t *testing.T) {
+	tests := []struct {
+		reason subscriptions.ValidationReason
+		field  subscriptions.ValidationField
+	}{
+		{subscriptions.ValidationInvalidDestinationURL, subscriptions.ValidationFieldURL},
+		{subscriptions.ValidationDestinationDenied, subscriptions.ValidationFieldURL},
+		{subscriptions.ValidationInvalidEventType, subscriptions.ValidationFieldEventTypes},
+		{subscriptions.ValidationInvalidDeliveryPolicy, subscriptions.ValidationFieldContentPolicy},
+		{subscriptions.ValidationInvalidRetryPolicy, subscriptions.ValidationFieldRetryMaxBackoff},
+		{subscriptions.ValidationInvalidDestinationQuery, subscriptions.ValidationFieldClearDestinationQuery},
+	}
+	for _, test := range tests {
+		t.Run(string(test.reason), func(t *testing.T) {
+			response := httptest.NewRecorder()
+			response.Header().Set("X-Request-ID", "request-222")
+			privateCause := "access_token=top-secret resolved=10.0.0.7 destination=https://private.example/hook?token=top-secret"
+			writeError(response, fmt.Errorf("%s: %w", privateCause,
+				&subscriptions.ValidationError{Reason: test.reason, Field: test.field}))
+
+			if response.Code != http.StatusUnprocessableEntity ||
+				response.Header().Get("Content-Type") != "application/problem+json" {
+				t.Fatalf("status=%d content-type=%q body=%s", response.Code,
+					response.Header().Get("Content-Type"), response.Body.String())
+			}
+			var problem struct {
+				Type      string         `json:"type"`
+				Status    int            `json:"status"`
+				Code      string         `json:"code"`
+				RequestID string         `json:"request_id"`
+				Meta      map[string]any `json:"meta"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &problem); err != nil {
+				t.Fatal(err)
+			}
+			if problem.Type != "https://issue-spec.dev/problems/"+string(test.reason) ||
+				problem.Status != http.StatusUnprocessableEntity || problem.Code != string(test.reason) ||
+				problem.RequestID != "request-222" ||
+				problem.Meta["field"] != string(test.field) {
+				t.Fatalf("problem=%+v", problem)
+			}
+			for _, forbidden := range []string{"top-secret", "access_token", "10.0.0.7", "private.example"} {
+				if strings.Contains(response.Body.String(), forbidden) {
+					t.Fatalf("response leaked %q: %s", forbidden, response.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestParseRetryIdentifiesTheInvalidField(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		request retryRequest
+		field   subscriptions.ValidationField
+	}{
+		{"attempts", retryRequest{MaxAttempts: pointer(0)}, subscriptions.ValidationFieldRetryMaxAttempts},
+		{"initial", retryRequest{InitialBackoff: pointer("not-a-duration")}, subscriptions.ValidationFieldRetryInitialBackoff},
+		{"zero initial", retryRequest{InitialBackoff: pointer("0s")}, subscriptions.ValidationFieldRetryInitialBackoff},
+		{"maximum", retryRequest{MaxBackoff: pointer("not-a-duration")}, subscriptions.ValidationFieldRetryMaxBackoff},
+		{"zero maximum", retryRequest{MaxBackoff: pointer("0s")}, subscriptions.ValidationFieldRetryMaxBackoff},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := parseRetry(test.request)
+			var validation *subscriptions.ValidationError
+			if !errors.As(err, &validation) || validation.Reason != subscriptions.ValidationInvalidRetryPolicy ||
+				validation.Field != test.field {
+				t.Fatalf("error=%v validation=%+v", err, validation)
+			}
+		})
+	}
+}
+
+func pointer[T any](value T) *T { return &value }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,13 +57,17 @@ func New(database *store.Store, authorizer Authorizer, keys *Keyring, config Con
 
 func (s *Service) Create(ctx context.Context, actor Actor, subject authz.Subject, input CreateInput) (SecretResult, error) {
 	input.Retry = normalizeRetry(input.Retry)
-	input = normalizeCreate(input)
+	var err error
+	input, err = normalizeCreate(input)
+	if err != nil {
+		return SecretResult{}, err
+	}
 	baseURL, destinationQuery, err := splitDestination(input.URL)
 	if err != nil {
-		return SecretResult{}, ErrInvalidInput
+		return SecretResult{}, err
 	}
 	if destinationQuery != "" && input.DeliveryFormat != DeliveryFormatGitHubV3 {
-		return SecretResult{}, ErrInvalidInput
+		return SecretResult{}, validationError(ValidationInvalidDestinationQuery, ValidationFieldURL, nil)
 	}
 	input.URL = baseURL
 	if err := validateActor(actor); err != nil {
@@ -77,7 +82,7 @@ func (s *Service) Create(ctx context.Context, actor Actor, subject authz.Subject
 	}
 	if s.config.DestinationPreflight != nil {
 		if err := s.config.DestinationPreflight.Validate(ctx, input.URL); err != nil {
-			return SecretResult{}, ErrInvalidInput
+			return SecretResult{}, validationError(ValidationDestinationDenied, ValidationFieldURL, err)
 		}
 	}
 	secret, err := s.keys.GenerateSecret()
@@ -225,15 +230,27 @@ func (s *Service) ListSuppressions(ctx context.Context, subject authz.Subject, o
 
 func (s *Service) Update(ctx context.Context, actor Actor, subject authz.Subject, orgID, id uuid.UUID, input UpdateInput) (Subscription, error) {
 	input.Retry = normalizeRetry(input.Retry)
-	input = normalizeUpdate(input)
+	var err error
+	input, err = normalizeUpdate(input)
+	if err != nil {
+		return Subscription{}, err
+	}
 	baseURL, destinationQuery, splitErr := splitDestination(input.URL)
 	if splitErr != nil {
-		return Subscription{}, ErrInvalidInput
+		return Subscription{}, splitErr
 	}
 	input.URL = baseURL
-	if validateActor(actor) != nil || input.ExpectedVersion < 1 || validateURL(input.URL, s.config.Production, s.config.AllowHTTP) != nil ||
-		validatePolicy(input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes) != nil || validateRetry(input.Retry) != nil {
+	if validateActor(actor) != nil || input.ExpectedVersion < 1 {
 		return Subscription{}, ErrInvalidInput
+	}
+	if err := validateURL(input.URL, s.config.Production, s.config.AllowHTTP); err != nil {
+		return Subscription{}, err
+	}
+	if err := validatePolicy(input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes); err != nil {
+		return Subscription{}, err
+	}
+	if err := validateRetry(input.Retry); err != nil {
+		return Subscription{}, err
 	}
 	current, err := s.load(ctx, s.database.Pool(), orgID, id, false)
 	if err != nil {
@@ -247,14 +264,18 @@ func (s *Service) Update(ctx context.Context, actor Actor, subject authz.Subject
 	}
 	if input.DeliveryFormat != DeliveryFormatGitHubV3 &&
 		(destinationQuery != "" || preservesDestinationQuery(current, input, destinationQuery)) {
-		return Subscription{}, ErrInvalidInput
+		field := ValidationFieldURL
+		if destinationQuery == "" {
+			field = ValidationFieldDeliveryFormat
+		}
+		return Subscription{}, validationError(ValidationInvalidDestinationQuery, field, nil)
 	}
 	if input.ClearDestinationQuery && destinationQuery != "" {
-		return Subscription{}, ErrInvalidInput
+		return Subscription{}, validationError(ValidationInvalidDestinationQuery, ValidationFieldClearDestinationQuery, nil)
 	}
 	if s.config.DestinationPreflight != nil {
 		if err := s.config.DestinationPreflight.Validate(ctx, input.URL); err != nil {
-			return Subscription{}, ErrInvalidInput
+			return Subscription{}, validationError(ValidationDestinationDenied, ValidationFieldURL, err)
 		}
 	}
 	var updated Subscription
@@ -273,7 +294,11 @@ func (s *Service) Update(ctx context.Context, actor Actor, subject authz.Subject
 			current.DestinationQuery, current.DestinationQueryVersion
 		if input.DeliveryFormat != DeliveryFormatGitHubV3 &&
 			(destinationQuery != "" || preservesDestinationQuery(current, input, destinationQuery)) {
-			return ErrInvalidInput
+			field := ValidationFieldURL
+			if destinationQuery == "" {
+				field = ValidationFieldDeliveryFormat
+			}
+			return validationError(ValidationInvalidDestinationQuery, field, nil)
 		}
 		// The encrypted query is bound to the exact stored destination. A
 		// redacted edit cannot silently carry it to another host or path. An
@@ -607,9 +632,17 @@ func audit(ctx context.Context, tx pgx.Tx, actor Actor, item Subscription, actio
 }
 
 func validateCreate(input CreateInput, production, allowHTTP bool) (ScopeType, error) {
-	if input.OrganizationID == uuid.Nil || validateURL(input.URL, production, allowHTTP) != nil ||
-		validatePolicy(input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes) != nil || validateRetry(input.Retry) != nil {
+	if input.OrganizationID == uuid.Nil {
 		return "", ErrInvalidInput
+	}
+	if err := validateURL(input.URL, production, allowHTTP); err != nil {
+		return "", err
+	}
+	if err := validatePolicy(input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes); err != nil {
+		return "", err
+	}
+	if err := validateRetry(input.Retry); err != nil {
+		return "", err
 	}
 	if input.RepositoryID == nil {
 		return ScopeOrganization, nil
@@ -621,8 +654,20 @@ func validateCreate(input CreateInput, production, allowHTTP bool) (ScopeType, e
 }
 
 func validateURL(raw string, production, allowHTTP bool) error {
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil || parsed.Fragment != "" ||
+		parsed.RawQuery != "" || parsed.ForceQuery || parsed.Opaque != "" || strings.ContainsAny(raw, "?#\\") ||
+		(parsed.Scheme != "https" && parsed.Scheme != "http") {
+		return validationError(ValidationInvalidDestinationURL, ValidationFieldURL, networkpolicy.ErrInvalidDestination)
+	}
+	if parsed.Port() != "" {
+		port, err := strconv.Atoi(parsed.Port())
+		if err != nil || port < 1 || port > 65535 {
+			return validationError(ValidationInvalidDestinationURL, ValidationFieldURL, networkpolicy.ErrInvalidDestination)
+		}
+	}
 	if _, err := (networkpolicy.Policy{Production: production, AllowHTTP: allowHTTP}).ValidateURL(raw); err != nil {
-		return ErrInvalidInput
+		return validationError(ValidationDestinationDenied, ValidationFieldURL, err)
 	}
 	return nil
 }
@@ -636,16 +681,20 @@ func (s *Service) validateStoredDestination(item Subscription) error {
 
 func validateEventTypes(values []string) error {
 	if len(values) == 0 {
-		return ErrInvalidInput
+		return validationError(ValidationInvalidEventType, ValidationFieldEventTypes, nil)
 	}
+	allowed := setOf("issue_comment.created", "issue_comment.edited", "issue.created", "issue.edited", "issue.closed", "issue.reopened")
 	seen := map[string]struct{}{}
 	for _, value := range values {
 		value = strings.TrimSpace(value)
 		if value == "" {
-			return ErrInvalidInput
+			return validationError(ValidationInvalidEventType, ValidationFieldEventTypes, nil)
+		}
+		if _, ok := allowed[value]; !ok {
+			return validationError(ValidationInvalidEventType, ValidationFieldEventTypes, nil)
 		}
 		if _, ok := seen[value]; ok {
-			return ErrInvalidInput
+			return validationError(ValidationInvalidEventType, ValidationFieldEventTypes, nil)
 		}
 		seen[value] = struct{}{}
 	}
@@ -653,19 +702,21 @@ func validateEventTypes(values []string) error {
 	return nil
 }
 
-func normalizeCreate(input CreateInput) CreateInput {
-	input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes =
+func normalizeCreate(input CreateInput) (CreateInput, error) {
+	var err error
+	input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes, err =
 		normalizePolicy(input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes)
-	return input
+	return input, err
 }
 
-func normalizeUpdate(input UpdateInput) UpdateInput {
-	input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes =
+func normalizeUpdate(input UpdateInput) (UpdateInput, error) {
+	var err error
+	input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes, err =
 		normalizePolicy(input.DeliveryFormat, input.SigningMode, input.ContentPolicy, input.EventTypes)
-	return input
+	return input, err
 }
 
-func normalizePolicy(format DeliveryFormat, signing SigningMode, policy ContentPolicy, eventTypes []string) (DeliveryFormat, SigningMode, ContentPolicy, []string) {
+func normalizePolicy(format DeliveryFormat, signing SigningMode, policy ContentPolicy, eventTypes []string) (DeliveryFormat, SigningMode, ContentPolicy, []string, error) {
 	if format == "" {
 		format = DeliveryFormatIssueSpecV1
 	}
@@ -682,11 +733,31 @@ func normalizePolicy(format DeliveryFormat, signing SigningMode, policy ContentP
 	policy.CommentClasses = normalizeSet(policy.CommentClasses, []string{"human-untyped", "typed"})
 	policy.ActorClasses = normalizeSet(policy.ActorClasses, []string{"human"})
 	if format == DeliveryFormatGitHubV3 {
-		eventTypes = eventTypesForPolicy(policy)
+		derived := eventTypesForPolicy(policy)
+		if len(eventTypes) > 0 {
+			supplied := normalizeEventTypes(eventTypes)
+			if err := validateEventTypes(supplied); err != nil || !equalStrings(supplied, derived) {
+				return format, signing, policy, supplied,
+					validationError(ValidationInvalidEventType, ValidationFieldEventTypes, err)
+			}
+		}
+		eventTypes = derived
 	} else {
 		eventTypes = normalizeEventTypes(eventTypes)
 	}
-	return format, signing, policy, eventTypes
+	return format, signing, policy, eventTypes, nil
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeSet(values, defaults []string) []string {
@@ -721,15 +792,18 @@ func eventTypesForPolicy(policy ContentPolicy) []string {
 func validatePolicy(format DeliveryFormat, signing SigningMode, policy ContentPolicy, eventTypes []string) error {
 	if format == DeliveryFormatIssueSpecV1 {
 		if signing != SigningModeBearer {
-			return ErrInvalidInput
+			return validationError(ValidationInvalidDeliveryPolicy, ValidationFieldSigningMode, nil)
 		}
 		return validateEventTypes(eventTypes)
 	}
-	if format != DeliveryFormatGitHubV3 || (signing != SigningModeNone && signing != SigningModeHMACSHA256) {
-		return ErrInvalidInput
+	if format != DeliveryFormatGitHubV3 {
+		return validationError(ValidationInvalidDeliveryPolicy, ValidationFieldDeliveryFormat, nil)
+	}
+	if signing != SigningModeNone && signing != SigningModeHMACSHA256 {
+		return validationError(ValidationInvalidDeliveryPolicy, ValidationFieldSigningMode, nil)
 	}
 	if len(policy.IssueActions) == 0 && len(policy.CommentActions) == 0 {
-		return ErrInvalidInput
+		return validationError(ValidationInvalidDeliveryPolicy, ValidationFieldContentPolicy, nil)
 	}
 	for values, allowed := range map[*[]string]map[string]struct{}{
 		&policy.IssueActions:   setOf("opened", "edited", "closed", "reopened"),
@@ -739,12 +813,12 @@ func validatePolicy(format DeliveryFormat, signing SigningMode, policy ContentPo
 		&policy.ActorClasses:   setOf("human", "automation"),
 	} {
 		if validateValues(*values, allowed) != nil {
-			return ErrInvalidInput
+			return validationError(ValidationInvalidDeliveryPolicy, ValidationFieldContentPolicy, nil)
 		}
 	}
 	if len(policy.IssueKinds) == 0 || len(policy.ActorClasses) == 0 ||
 		(len(policy.CommentActions) > 0 && len(policy.CommentClasses) == 0) {
-		return ErrInvalidInput
+		return validationError(ValidationInvalidDeliveryPolicy, ValidationFieldContentPolicy, nil)
 	}
 	return validateEventTypes(eventTypes)
 }
@@ -773,11 +847,14 @@ func validateValues(values []string, allowed map[string]struct{}) error {
 
 func splitDestination(raw string) (string, string, error) {
 	if raw != strings.TrimSpace(raw) {
-		return "", "", ErrInvalidInput
+		return "", "", validationError(ValidationInvalidDestinationURL, ValidationFieldURL, nil)
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Fragment != "" || parsed.ForceQuery {
-		return "", "", ErrInvalidInput
+	if err != nil || parsed.Fragment != "" {
+		return "", "", validationError(ValidationInvalidDestinationURL, ValidationFieldURL, err)
+	}
+	if parsed.ForceQuery {
+		return "", "", validationError(ValidationInvalidDestinationQuery, ValidationFieldURL, nil)
 	}
 	query := parsed.RawQuery
 	parsed.RawQuery, parsed.ForceQuery = "", false
@@ -817,8 +894,14 @@ func normalizeRetry(policy RetryPolicy) RetryPolicy {
 }
 
 func validateRetry(policy RetryPolicy) error {
-	if policy.MaxAttempts < 1 || policy.MaxAttempts > 100 || policy.InitialBackoff <= 0 || policy.MaxBackoff < policy.InitialBackoff {
-		return ErrInvalidInput
+	if policy.MaxAttempts < 1 || policy.MaxAttempts > 100 {
+		return validationError(ValidationInvalidRetryPolicy, ValidationFieldRetryMaxAttempts, nil)
+	}
+	if policy.InitialBackoff <= 0 {
+		return validationError(ValidationInvalidRetryPolicy, ValidationFieldRetryInitialBackoff, nil)
+	}
+	if policy.MaxBackoff < policy.InitialBackoff {
+		return validationError(ValidationInvalidRetryPolicy, ValidationFieldRetryMaxBackoff, nil)
 	}
 	return nil
 }
