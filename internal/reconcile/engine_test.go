@@ -38,6 +38,9 @@ func (f *fakeBackend) CreateIssue(context.Context, string, string, string, []str
 func (f *fakeBackend) GetIssue(context.Context, string, int) (github.Issue, error) {
 	return github.Issue{}, errors.New("unused")
 }
+func (f *fakeBackend) ListIssues(context.Context, string, github.ListIssueOptions) ([]github.Issue, error) {
+	return nil, errors.New("unused")
+}
 func (f *fakeBackend) UpdateIssue(context.Context, string, int, github.UpdateIssueOptions) (github.Issue, error) {
 	return github.Issue{}, errors.New("unused")
 }

@@ -37,3 +37,31 @@ func TestLeafCommandHelpShowsOptionsAndDefaults(t *testing.T) {
 		t.Fatalf("init help wrote stderr: %q", errOut.String())
 	}
 }
+
+func TestIssueListAndStateHelpShowsOptions(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{name: "list", args: []string{"list", "-h"}, want: []string{"issue-spec issue list [options]", "--state string", "issue state: open, closed, or all (default: open)", "--json"}},
+		{name: "close", args: []string{"close", "-h"}, want: []string{"issue-spec issue close [options]", "--issue string", "--json"}},
+		{name: "reopen", args: []string{"reopen", "-h"}, want: []string{"issue-spec issue reopen [options]", "--issue string", "--json"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			app := newApp(strings.NewReader(""), &out, &errOut)
+			if code := app.runIssue(t.Context(), tt.args); code != 0 {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("help missing %q:\n%s", want, out.String())
+				}
+			}
+			if errOut.Len() != 0 {
+				t.Fatalf("help wrote stderr: %q", errOut.String())
+			}
+		})
+	}
+}

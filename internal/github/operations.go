@@ -65,6 +65,7 @@ type IssueBackend interface {
 	GetUser(context.Context) (User, []string, error)
 	CreateIssue(context.Context, string, string, string, []string) (Issue, error)
 	GetIssue(context.Context, string, int) (Issue, error)
+	ListIssues(context.Context, string, ListIssueOptions) ([]Issue, error)
 	UpdateIssue(context.Context, string, int, UpdateIssueOptions) (Issue, error)
 	ListIssueComments(context.Context, string, int) ([]Comment, error)
 	CreateComment(context.Context, string, int, string) (Comment, error)

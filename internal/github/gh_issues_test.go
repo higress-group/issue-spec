@@ -196,6 +196,36 @@ func TestGHBackendListIssueCommentsUsesPaginationHostAndNormalizesPages(t *testi
 	}
 }
 
+func TestGHBackendListIssuesUsesPaginationStateAndNormalizesPages(t *testing.T) {
+	runner := &recordingCLIRunner{
+		result: ExternalCLIResult{Stdout: []byte(`[{"number":1,"body":"one","state":"open"}]
+[{"number":2,"body":"two","state":"closed","pull_request":{"url":"https://api.github.com/repos/o/r/pulls/2"}}]`)},
+	}
+	backend, err := NewGHBackend(GHBackendOptions{Host: "ghe.example.com", CLIOptions: GHCLIOptions{Runner: runner}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	issues, err := backend.ListIssues(t.Context(), "o/r", ListIssueOptions{State: "all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issues) != 2 || issues[0].Body != "one" || issues[1].PullRequest == nil {
+		t.Fatalf("issues=%+v", issues)
+	}
+	wantArgs := []string{
+		"api",
+		"--method", http.MethodGet,
+		"--header", githubAPIVersion,
+		"--hostname", "ghe.example.com",
+		"--paginate",
+		"/repos/o/r/issues?per_page=100&state=all",
+	}
+	if !reflect.DeepEqual(runner.command.Args, wantArgs) {
+		t.Fatalf("args=%#v, want %#v", runner.command.Args, wantArgs)
+	}
+}
+
 func TestGHBackendCreateLabelAlreadyExistsIsSkipped(t *testing.T) {
 	runner := &recordingCLIRunner{
 		result: ExternalCLIResult{Stderr: []byte("Validation Failed: code already_exists"), ExitCode: 1},

@@ -46,6 +46,20 @@ func (b *GHBackend) GetIssue(ctx context.Context, repo string, issueNumber int) 
 	return issue, err
 }
 
+func (b *GHBackend) ListIssues(ctx context.Context, repo string, opts ListIssueOptions) ([]Issue, error) {
+	var issues []Issue
+	if err := b.runPagedJSON(ctx, ExternalCLIAPIRequest{
+		Operation: "ListIssues",
+		Method:    http.MethodGet,
+		Endpoint:  "/repos/" + repo + "/issues",
+		Query:     url.Values{"per_page": {"100"}, "state": {opts.State}},
+		Paginate:  true,
+	}, &issues); err != nil {
+		return nil, err
+	}
+	return issues, nil
+}
+
 func (b *GHBackend) UpdateIssue(ctx context.Context, repo string, issueNumber int, opts UpdateIssueOptions) (Issue, error) {
 	payload := map[string]any{}
 	if opts.Title != nil {

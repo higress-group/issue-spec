@@ -103,6 +103,40 @@ func TestClientListPullRequestCommitsPaginates(t *testing.T) {
 	}
 }
 
+func TestClientListIssuesPaginatesAndDecodesPullRequestMarkers(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/repos/o/r/issues" || r.URL.Query().Get("per_page") != "100" || r.URL.Query().Get("state") != "all" {
+			t.Fatalf("unexpected request %s", r.URL.String())
+		}
+		switch r.URL.Query().Get("page") {
+		case "1":
+			issues := make([]Issue, 100)
+			for i := range issues {
+				issues[i] = Issue{Number: i + 1, State: "open", Body: fmt.Sprintf("body-%d", i+1)}
+			}
+			pullRequest := struct{}{}
+			issues[0].PullRequest = &pullRequest
+			_ = json.NewEncoder(w).Encode(issues)
+		case "2":
+			_ = json.NewEncoder(w).Encode([]Issue{{Number: 101, State: "closed", Body: "complete final body"}})
+		default:
+			t.Fatalf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL("github.com", server.URL, "token", server.Client())
+	issues, err := client.ListIssues(t.Context(), "o/r", ListIssueOptions{State: "all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 || len(issues) != 101 || issues[0].PullRequest == nil || issues[100].Body != "complete final body" {
+		t.Fatalf("requests=%d issues=%+v", requests, issues)
+	}
+}
+
 func TestClientUpdatesIssue(t *testing.T) {
 	title := "new title"
 	body := "new body"

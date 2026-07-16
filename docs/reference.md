@@ -66,7 +66,10 @@ issue-spec init --repo owner/repo --tools none --global-prompts-dir /tmp/issue-s
 issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md [--title "Custom proposal title"]
 issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md [--title "Custom design title"]
 issue-spec issue create implement --repo owner/repo --change my-change --proposal 1 --design 2 --body-file implement.md [--title "Custom implementation title"]
+issue-spec issue list --repo owner/repo --state all --json
 issue-spec issue update --repo owner/repo --issue 1 --body-file proposal.md --summary "Clarified goals after review."
+issue-spec issue close --repo owner/repo --issue 1 --json
+issue-spec issue reopen --repo owner/repo --issue 1 --json
 
 issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --json
 issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
@@ -101,6 +104,19 @@ issue-spec runner preflight --repo owner/repo --runner login
 issue-spec runner poll --repo owner/repo --runner login --once --dry-run
 issue-spec runner poll --repo owner/repo --runner login --agent codex
 ```
+
+`issue list` is JSON-only and defaults to open issues. `--state` accepts
+`open`, `closed`, or `all`; all pages are collected, ordinary issues are
+included whether or not they have issue-spec metadata, and GitHub pull
+requests are excluded. Each result contains the issue number, title, state,
+human-facing URL, and complete body.
+
+`issue update --body-file` keeps ordinary, unmarked issues as plain body
+replacement. For marked issue-spec issues it preserves the stored marker and,
+for design and implement issues, the direct predecessor link exactly once.
+Conflicting or malformed reserved metadata is rejected before the update.
+`issue close` and `issue reopen` first read the issue and skip the update when
+it already has the requested state; JSON output reports this with `changed`.
 
 `comment create` writes an ordinary issue timeline comment through the selected
 hosted GitHub or self-hosted REST issue backend. It accepts `--body-file -` for

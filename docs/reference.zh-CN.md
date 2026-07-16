@@ -66,7 +66,10 @@ issue-spec init --repo owner/repo --tools none --global-prompts-dir /tmp/issue-s
 issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md [--title "Custom proposal title"]
 issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md [--title "Custom design title"]
 issue-spec issue create implement --repo owner/repo --change my-change --proposal 1 --design 2 --body-file implement.md [--title "Custom implementation title"]
+issue-spec issue list --repo owner/repo --state all --json
 issue-spec issue update --repo owner/repo --issue 1 --body-file proposal.md --summary "Clarified goals after review."
+issue-spec issue close --repo owner/repo --issue 1 --json
+issue-spec issue reopen --repo owner/repo --issue 1 --json
 
 issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --json
 issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
@@ -101,6 +104,17 @@ issue-spec runner preflight --repo owner/repo --runner login
 issue-spec runner poll --repo owner/repo --runner login --once --dry-run
 issue-spec runner poll --repo owner/repo --runner login --agent codex
 ```
+
+`issue list` 只提供 JSON 输出，默认列出 open issue。`--state` 接受
+`open`、`closed` 或 `all`；命令会收集所有分页，包含无 issue-spec 元数据的
+普通 issue，并排除 GitHub pull request。每条结果包含 issue 编号、标题、状态、
+面向用户的 URL 与完整正文。
+
+对普通、无 marker 的 issue，`issue update --body-file` 仍是纯正文替换。
+对于带 marker 的 issue-spec issue，命令会确保已存储的 marker 只保留一次；
+design 与 implement issue 还会确保直接前置 issue 链接只保留一次。冲突或格式
+错误的保留元数据会在更新前被拒绝。`issue close` 与 `issue reopen` 会先读取
+issue；若其状态已符合目标则跳过更新，并在 JSON 的 `changed` 字段中报告。
 
 `comment create` 通过当前选择的托管 GitHub 或自托管 REST issue backend 写入普通
 issue 时间线评论。它支持 `--body-file -` 从 stdin 读取，并可通过 `--json` 仅返回
