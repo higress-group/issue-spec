@@ -24,9 +24,10 @@ var managedPATScopes = map[string]struct{}{
 type CreateServiceAccountInput struct{ Name string }
 
 type CreateManagedPATInput struct {
-	TargetUserID  uuid.UUID
-	Name          string
-	Scopes        []string
+	TargetUserID uuid.UUID
+	Name         string
+	Scopes       []string
+	// RepositoryIDs is empty for a site-wide PAT and non-empty for an explicit repository allowlist.
 	RepositoryIDs []uuid.UUID
 	ExpiresAt     *time.Time
 }
@@ -339,21 +340,10 @@ func requireOrgCredentialSubject(ctx context.Context, tx pgx.Tx, orgID, userID u
 }
 
 func resolveManagedRepositories(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, input []uuid.UUID) ([]uuid.UUID, error) {
-	if input == nil {
-		rows, err := tx.Query(ctx, `SELECT id FROM repos WHERE organization_id = $1 AND archived_at IS NULL ORDER BY id`, orgID)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		var result []uuid.UUID
-		for rows.Next() {
-			var id uuid.UUID
-			if err := rows.Scan(&id); err != nil {
-				return nil, err
-			}
-			result = append(result, id)
-		}
-		return result, rows.Err()
+	// An empty selection is the explicit site-wide mode. The PAT remains capped
+	// by the subject identity's live organization and repository permissions.
+	if len(input) == 0 {
+		return []uuid.UUID{}, nil
 	}
 	seen := map[uuid.UUID]struct{}{}
 	for _, id := range input {

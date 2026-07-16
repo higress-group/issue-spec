@@ -69,6 +69,11 @@ The server MUST implement generic OIDC and GitHub OAuth as separate authenticati
 - **WHEN** a user creates, rotates, expires or revokes a PAT
 - **THEN** the plaintext MUST be shown only once, only a protected digest MUST be stored, repository selection and scopes MUST cap current permissions, and revocation or account disablement MUST take effect immediately
 
+#### Scenario: a site-wide PAT preserves the subject's live authorization
+
+- **WHEN** a personal or managed PAT is created with all repositories across the site
+- **THEN** the PAT MUST omit a repository allowlist, MUST remain bounded by the subject's live organization memberships, repository roles and token scopes, and MUST NOT create or elevate organization membership or repository authority
+
 #### Scenario: air-gapped recovery does not depend on GitHub
 
 - **WHEN** the configured identity provider is unavailable in an air-gapped deployment

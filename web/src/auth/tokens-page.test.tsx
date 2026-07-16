@@ -24,7 +24,7 @@ describe("personal access token repository boundaries", () => {
     await user.type(await screen.findByRole("textbox", { name: "Token name" }), "full access");
     expect(screen.getAllByRole("checkbox")).toHaveLength(9);
     screen.getAllByRole("checkbox").forEach((checkbox) => expect(checkbox).toBeChecked());
-    expect(screen.getByRole("radio", { name: "All repositories" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "All repositories (site-wide)" })).toBeChecked();
     await user.click(screen.getByRole("button", { name: "Create token" }));
 
     await waitFor(() => expect(created).toEqual({

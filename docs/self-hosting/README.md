@@ -205,7 +205,7 @@ The safe sequence is:
 
 1. create the service account;
 2. grant only the required repository collaborator role;
-3. create a managed PAT with an explicit repository cap and minimum scopes;
+3. create a managed PAT with the required scopes and either site-wide access or an explicit repository cap;
 4. store the one-time token in the automation secret store;
 5. disable the service account to invalidate its credentials when retired.
 

@@ -182,7 +182,7 @@ Service Account 是组织范围内的非人类身份，适用于 CI、Runner、E
 
 1. 创建 Service Account；
 2. 只授予必需的仓库 Collaborator Role；
-3. 创建绑定明确仓库、仅包含最小 Scope 的 Managed PAT；
+3. 创建包含必需 Scope 的 Managed PAT，并按需选择全站访问或明确的仓库范围；
 4. 把一次性显示的 Token 放入自动化系统的 Secret Store；
 5. 下线时禁用 Service Account，使其凭据失效。
 

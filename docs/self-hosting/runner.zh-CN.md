@@ -105,7 +105,7 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
    Login，例如 `svc-runner-bot-a1b2c3d4`；
 2. 在目标仓库的 **协作者** 页面解析该 Login，并授予最低的 `write` 角色；
 3. 在 **管理后台 > 托管访问令牌** 中解析该 Service Account；
-4. 选择 **运行器预设**，再选择 **全部仓库**，或选中该 Runner 进程要服务的所有仓库；
+4. 选择 **运行器预设**，再选择 **全站全部仓库**，或选中该 Runner 进程要服务的所有仓库；
 5. 确认 Scope 至少包含 `read:user`、`issues:read`、`issues:write` 和
    `evidence:write`；
 6. 创建并保存只显示一次的 Managed PAT。
@@ -123,14 +123,14 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 本地试用、个人环境或短期联调也可以直接使用自己的 issue-spec 账号：
 
 1. 确认自己的账号对目标仓库具有 `write` 或更高权限；
-2. 在 **访问令牌** 页面选择 **运行器预设**，再选择 **全部仓库**，或选中该 Runner
+2. 在 **访问令牌** 页面选择 **运行器预设**，再选择 **全站全部仓库**，或选中该 Runner
    进程要服务的所有仓库；
 3. 保存只显示一次的个人 PAT；
 4. 由仓库 Owner 或运维身份把自己的账号显式指定为目标仓库的有效
    **Evidence Writer**；
 5. 启动时把自己的准确 Login 传给 `--runner`。
 
-个人 PAT 至少需要相同的四个 Scope，可以覆盖全部仓库或指定的多个仓库。默认只有
+个人 PAT 至少需要相同的四个 Scope，可以覆盖全站全部仓库或指定的多个仓库。默认只有
 `--runner` 对应的自己可以发出命令；需要允许其他维护者时再增加 `--allowed-user`。
 这种方式配置更少，但 Runner 写入、凭据轮换和账号停用都与个人身份绑定，不适合作为
 团队长期运行或多人共用的生产自动化。不要用浏览器 Session Cookie 或登录会话替代 PAT。
@@ -346,7 +346,7 @@ issue-spec --profile team runner serve \
 `--allow-host-ssh`，并在 preflight 命令中也添加 `--allow-host-ssh`。macOS 上两个命令都应使用
 相同的显式 `--unsafe-no-sandbox --allow-host-ssh` 组合。
 
-`--allowed-user` 和 `--repo` 都可以重复。self-hosted Profile PAT 可以覆盖全部仓库或指定的
+`--allowed-user` 和 `--repo` 都可以重复。self-hosted Profile PAT 可以覆盖全站全部仓库或指定的
 多个仓库，但 Runner 会分别预检每个已配置仓库。默认最多并行运行 3 个任务，可用
 `--max-concurrent-jobs` 调整。
 

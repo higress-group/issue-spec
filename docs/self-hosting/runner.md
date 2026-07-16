@@ -103,7 +103,7 @@ security boundary:
 2. resolve that login under the repository's **Collaborators** page and grant
    the minimum `write` role;
 3. resolve the service account under **Administration > Managed access tokens**;
-4. select **Runner preset**, then choose **All repositories** or every repository
+4. select **Runner preset**, then choose **All repositories (site-wide)** or every repository
    this Runner process will serve;
 5. confirm the PAT includes these minimum scopes and create it:
 
@@ -127,15 +127,15 @@ For a local trial, personal environment, or short-lived integration, the
 runner may use your own issue-spec account:
 
 1. confirm that your account has `write` or higher permission on the repository;
-2. select **Runner preset** on **Access tokens**, then choose **All repositories**
+2. select **Runner preset** on **Access tokens**, then choose **All repositories (site-wide)**
    or every repository this Runner process will serve;
 3. save the one-time personal PAT;
 4. have a repository owner or operator designate your account as an active
    **Evidence Writer** for that repository;
 5. pass your exact login to `--runner` when starting the process.
 
-The personal PAT requires the same four minimum scopes and may cover all or a
-selected set of repositories. By
+The personal PAT requires the same four minimum scopes and may cover all
+repositories site-wide or a selected set of repositories. By
 default, only the account named by `--runner` can issue commands; add
 `--allowed-user` only when other maintainers should be accepted. This option is
 quicker to configure, but runner writes, credential rotation, and account
@@ -360,9 +360,9 @@ macOS, use the same explicit `--unsafe-no-sandbox --allow-host-ssh`
 combination in both commands.
 
 Repeat `--allowed-user` and `--repo` as needed. A self-hosted profile PAT may
-cover all repositories or any selected set, but the Runner preflights each
-configured repository independently. The default maximum is three concurrent
-jobs.
+cover all repositories site-wide or any selected set, but the Runner preflights
+each configured repository independently. The default maximum is three
+concurrent jobs.
 
 If TLS terminates at a reverse proxy, listen on loopback and expose only
 `/api/v1/runner/webhooks`. For direct TLS, bind an exact non-loopback IP—not a

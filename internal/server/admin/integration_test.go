@@ -15,6 +15,7 @@ import (
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/auth/pat"
 	"github.com/higress-group/issue-spec/internal/server/auth/recovery"
+	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/server/store"
 	"github.com/jackc/pgx/v5"
@@ -382,6 +383,8 @@ func TestServiceAccountManagedPATRecoveryAndRollback(t *testing.T) {
 	otherOrg := createOrganization(t, service, actor, "other-org")
 	actor.RequestID = "credential-repo"
 	repo := createRepository(t, service, actor, org.ID, "evidence-repo")
+	actor.RequestID = "other-credential-repo"
+	otherRepo := createRepository(t, service, actor, otherOrg.ID, "other-evidence-repo")
 	emptyAccounts, err := service.ListServiceAccounts(t.Context(), org.ID, false)
 	if err != nil || emptyAccounts == nil || len(emptyAccounts) != 0 {
 		t.Fatalf("empty ListServiceAccounts = %+v, %v", emptyAccounts, err)
@@ -408,6 +411,28 @@ func TestServiceAccountManagedPATRecoveryAndRollback(t *testing.T) {
 	listed, err := service.ListManagedPATs(t.Context(), org.ID, account.UserID)
 	if err != nil || len(listed) != 1 || listed[0].Scopes[0] != "evidence:write" || len(listed[0].RepositoryIDs) != 1 {
 		t.Fatalf("ListManagedPATs = %+v, %v", listed, err)
+	}
+	actor.RequestID = "site-wide-managed-pat-create"
+	siteWide, err := service.CreateManagedPAT(t.Context(), actor, org.ID, adminservice.CreateManagedPATInput{
+		TargetUserID: account.UserID, Name: "site-wide", Scopes: []string{"issues:read"}, RepositoryIDs: []uuid.UUID{},
+	})
+	if err != nil || len(siteWide.RepositoryIDs) != 0 {
+		t.Fatalf("site-wide managed PAT = %+v, %v", siteWide, err)
+	}
+	siteWidePrincipal, err := pat.New(pool, secrets).AuthenticateBearer(t.Context(), siteWide.Plaintext)
+	if err != nil || siteWidePrincipal.RepoRestricted || !siteWidePrincipal.AllowsRepository(org.ID, repo.ID) ||
+		!siteWidePrincipal.AllowsRepository(otherOrg.ID, otherRepo.ID) {
+		t.Fatalf("site-wide managed PAT auth = %+v, %v", siteWidePrincipal, err)
+	}
+	authorizer, err := authz.New(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := authorizer.EvaluateRepository(t.Context(), authz.Authenticated(siteWidePrincipal), authz.RepositoryRequest{
+		Scope: models.RepoScope{OrgID: otherOrg.ID, RepoID: otherRepo.ID}, Operation: authz.OperationRead,
+	})
+	if err != nil || decision.Allowed {
+		t.Fatalf("site-wide managed PAT cross-org authorization = %+v, %v", decision, err)
 	}
 	actor.RequestID = "managed-pat-rotate"
 	rotated, err := service.RotateManagedPAT(t.Context(), actor, org.ID, created.ID)
