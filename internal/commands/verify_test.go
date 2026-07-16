@@ -3,13 +3,17 @@ package commands
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/codereview"
+	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
@@ -122,6 +126,90 @@ func TestRunVerifyRejectsUnstablePullRequestIdentity(t *testing.T) {
 				t.Fatalf("verify code=%d out=%q err=%q", code, out.String(), errOut.String())
 			}
 		})
+	}
+}
+
+func TestRunVerifySelfHostedPreservesBlockingGateAndSkipsEvidenceConsumption(t *testing.T) {
+	clearCommandAuthEnv(t)
+	revision := "head-abc"
+	profile := auth.Profile{Name: "verify-fail-closed", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example/api/v3", NativeAPIURL: "https://issues.example/api/v1",
+		WebURL: "https://issues.example", ServerInstanceID: "instance-verify-fail-closed"}
+	if err := auth.SaveProfile(profile, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.StoreProfileToken(t.Context(), profile, "realm-token", true); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	review := testEvidenceRecord("review-1", codereview.EvidenceReview, "resolved", revision, now)
+	check := testEvidenceRecord("check-1", codereview.EvidenceCheck, "passed", revision, now)
+	check.Name = "unit"
+	provider := &commandEvidenceProvider{snapshot: codereview.Snapshot{
+		ProtocolVersion: codereview.ProtocolVersion, Reference: reference, SubjectRevision: revision, CapturedAt: now,
+		Records: []codereview.EvidenceRecord{review, check},
+	}}
+	native := &commandNativeEvidence{target: coreevidence.NativeTarget{
+		Reference: reference, SubjectRevision: revision, Provider: provider,
+		IssueID: uuid.New(), OrgID: uuid.New(), RepoID: uuid.New(),
+	}}
+	verify := typedCommentWithLinks(t, "VERIFY", "VERIFY-001", "done",
+		canonicalVerifyContent+"\n\n### Revision\n\n`"+revision+"`", 4,
+		"https://issues.example/acme/widgets/issues/3#issuecomment-4")
+
+	updates := 0
+	backend := fakeGitHubBackend{
+		info: github.BackendInfo{Name: "rest", Kind: "rest", Host: "issues.example"},
+		getIssue: func(_ context.Context, _ string, issue int) (github.Issue, error) {
+			return github.Issue{Number: issue, HTMLURL: "https://issues.example/acme/widgets/issues/1"}, nil
+		},
+		listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			if issue == 3 {
+				return []github.Comment{verify}, nil
+			}
+			return nil, nil
+		},
+		updateComment: func(context.Context, string, int64, string) (github.Comment, error) {
+			updates++
+			return github.Comment{}, nil
+		},
+	}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.profileName = profile.Name
+	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) {
+		return backend, nil
+	}
+	app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) {
+		return native, nil
+	}
+
+	buildBlockedReport := func([]model.Artifact, string, finalVerifyOptions) (finalVerifyReport, error) {
+		return finalVerifyReport{OK: false, Gate: gates.Report{
+			Ready: false, Target: gates.TargetFinal, Mode: gates.ModeAuthoritative,
+			Diagnostics: []gates.Diagnostic{{
+				Code: "future.blocking", Gate: gates.TargetFinal, Severity: gates.SeverityError,
+				Blocking: true, Message: "future blocking diagnostic without a legacy error projection",
+			}},
+		}}, nil
+	}
+	code := app.runVerifyWithReportBuilder(t.Context(), []string{
+		"--repo", "acme/widgets", "--proposal", "1", "--design", "2", "--implement", "3", "--json",
+	}, buildBlockedReport)
+	if code != 1 {
+		t.Fatalf("self-hosted verify exit=%d, want 1; stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if updates != 0 {
+		t.Fatalf("blocking gate consumed external evidence with %d comment updates", updates)
+	}
+	var report finalVerifyReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode verify report: %v\n%s", err, out.String())
+	}
+	if report.OK || report.Gate.Ready || len(report.Errors) != 0 {
+		t.Fatalf("blocking gate was not preserved without legacy errors: %+v", report)
 	}
 }
 

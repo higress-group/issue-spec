@@ -51,6 +51,11 @@ type finalVerifyOptions struct {
 }
 
 func (a *app) runVerify(ctx context.Context, args []string) int {
+	return a.runVerifyWithReportBuilder(ctx, args, buildFinalVerifyReport)
+}
+
+func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
+	buildReport func([]model.Artifact, string, finalVerifyOptions) (finalVerifyReport, error)) int {
 	fs := newFlagSet("verify", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
 	host := fs.String("hostname", "github.com", "GitHub hostname")
@@ -133,7 +138,7 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 		processExternalEvidence = &externalGate.Consumption
 		expectedRevision = externalGate.Target.SubjectRevision
 	}
-	report, err := buildFinalVerifyReport(artifacts, proposalIssueData.HTMLURL, finalVerifyOptions{
+	report, err := buildReport(artifacts, proposalIssueData.HTMLURL, finalVerifyOptions{
 		DurableSpecPath:   *durableSpec,
 		PR:                *prFlag,
 		PRURL:             prURL,
@@ -158,7 +163,11 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 			finalVerify = candidate
 			report.ExternalEvidence = &externalGate.Consumption
 		}
-		report.OK = len(report.Errors) == 0
+		// Exact-revision validation may add another error, but it must never
+		// replace the fail-closed gate decision made by buildReport. Otherwise a
+		// blocking diagnostic without a legacy Errors projection can be reset to
+		// OK here and self-hosted evidence would be consumed despite the blocker.
+		report.OK = report.OK && len(report.Errors) == 0
 	}
 	report.Diagnostics = append(report.Diagnostics, authoringCompletenessDiagnostics("proposal", proposalIssueData.HTMLURL, proposalIssueData.Body)...)
 	if designIssue > 0 {
