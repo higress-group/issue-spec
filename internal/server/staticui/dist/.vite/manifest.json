@@ -6,8 +6,8 @@
       "_createLucideIcon-CK4U31sS.js"
     ]
   },
-  "_avatar-B4PgH1Tm.js": {
-    "file": "assets/avatar-B4PgH1Tm.js",
+  "_avatar-RU_Gdb9L.js": {
+    "file": "assets/avatar-RU_Gdb9L.js",
     "name": "avatar",
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
@@ -175,7 +175,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-iNeyO0CR.js",
+    "file": "assets/index-Ci05s4K7.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -193,8 +193,8 @@
       "_lock-keyhole-BkfNw0mZ.js",
       "_search-BaEss6p5.js",
       "_workflow-7v9cFob2.js",
-      "_repository-context-uCP9Wuvp.js",
-      "_avatar-B4PgH1Tm.js"
+      "_avatar-RU_Gdb9L.js",
+      "_repository-context-uCP9Wuvp.js"
     ],
     "dynamicImports": [
       "src/features/boards/board-page.tsx",
@@ -258,7 +258,7 @@
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-wmBHuDVY.js",
+    "file": "assets/detail-page-BBXoo7Vs.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
@@ -272,8 +272,8 @@
       "_relationships-C3lbJ0lV.js",
       "_lock-keyhole-BkfNw0mZ.js",
       "_rotate-ccw-BHHCkAHH.js",
+      "_avatar-RU_Gdb9L.js",
       "_repository-context-uCP9Wuvp.js",
-      "_avatar-B4PgH1Tm.js",
       "_label-chips-CdhQ93qv.js",
       "_issue-editor-bt_DDKwF.js",
       "src/features/issues/list-page.tsx"

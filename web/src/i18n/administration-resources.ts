@@ -15,7 +15,7 @@ export const administrationResources = {
     },
     ui: {
       loadingWorkspace: "Loading workspace", unexpectedError: "Unexpected error", closeSecret: "Close secret dialog", shownOnce: "Shown once",
-      secretHelp: "Copy this credential now. It is held only in this dialog and disappears when you close it.", copyCredential: "Copy credential", savedCredential: "I saved it",
+      secretHelp: "Copy this credential now. It is held only in this dialog and disappears when you close it.", copyCredential: "Copy credential", credentialCopied: "Credential copied", credentialCopyFailed: "Copy failed — select it manually", savedCredential: "I saved it",
       inspectorNow: "Right now", inspector: "Inspector", inspectorAria: "Request inspector", closeInspector: "Close inspector", identity: "Identity", permission: "Permission", anonymous: "Anonymous",
       status: "Status", client: "client", requestId: "Request ID", notSupplied: "not supplied", draftPreserved: "Your draft is preserved",
       draftHelp: "Reload the latest resource, then reapply or copy this draft.", copyDraft: "Copy draft", noProblems: "No request problems in this session.",
@@ -142,7 +142,7 @@ export const administrationResources = {
     },
     ui: {
       loadingWorkspace: "正在加载工作区", unexpectedError: "发生未知错误", closeSecret: "关闭凭据对话框", shownOnce: "仅显示一次",
-      secretHelp: "请立即复制此凭据。关闭对话框后，浏览器不会再保留或显示它。", copyCredential: "复制凭据", savedCredential: "我已保存",
+      secretHelp: "请立即复制此凭据。关闭对话框后，浏览器不会再保留或显示它。", copyCredential: "复制凭据", credentialCopied: "凭据已复制", credentialCopyFailed: "复制失败，请手动选择", savedCredential: "我已保存",
       inspectorNow: "当前状态", inspector: "请求检视", inspectorAria: "请求检视器", closeInspector: "关闭请求检视", identity: "身份", permission: "权限", anonymous: "匿名用户",
       status: "状态", client: "客户端", requestId: "请求 ID", notSupplied: "未提供", draftPreserved: "你的草稿仍在",
       draftHelp: "请重新加载最新内容，再重新应用或复制此草稿。", copyDraft: "复制草稿", noProblems: "本次会话中没有请求错误。",
