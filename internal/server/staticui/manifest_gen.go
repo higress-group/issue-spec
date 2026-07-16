@@ -4,18 +4,18 @@ package staticui
 
 func init() {
 	manifest = map[string]Asset{
-		".vite/manifest.json":                   {ContentType: "application/json", SHA256: "022b4f74c298b6a0e70e7b277d00232e8209d50a36c9827ef20d778d7f8587ca", Immutable: false},
+		".vite/manifest.json":                   {ContentType: "application/json", SHA256: "1cc523db0cac7e746cc2297c25c0591067afdd19e975a8ca8413bda3a5f216ed", Immutable: false},
 		"assets/arrow-right-bvjEP-oX.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "443331fc1cf641d7a0bbcb6e4fbef6c19e5667dfea8f3febb90f20386712ab33", Immutable: true},
-		"assets/avatar-bvBCVKqz.js":             {ContentType: "text/javascript; charset=utf-8", SHA256: "d5c82ea434f282cbb031af3c3aa864e5c033a04480eff6f32cac97aa58c4544b", Immutable: true},
+		"assets/avatar-DJpk_QjZ.js":             {ContentType: "text/javascript; charset=utf-8", SHA256: "298b27b199eaceaf06605f1d0dfcab53bcad9324ded44794d3c95e020a453e32", Immutable: true},
 		"assets/board-page-EDrp4Zf4.js":         {ContentType: "text/javascript; charset=utf-8", SHA256: "eb3b4bdae0026d84b11855f486fe5e31658ff597317b73cab3ed576ec9fe480e", Immutable: true},
 		"assets/circle-dot-nmTRa4a8.js":         {ContentType: "text/javascript; charset=utf-8", SHA256: "6b61d5d345da462be19a19c323e964baf45a57da71688dfeb5b4b3f4550278d4", Immutable: true},
 		"assets/create-page-DIkbODLN.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "10f68a3f93fb1ef76a94e376d35a6c7a3812592481324c19401b3d66159c1c56", Immutable: true},
 		"assets/createLucideIcon-CdRiI4Ou.js":   {ContentType: "text/javascript; charset=utf-8", SHA256: "42cfaae1fe672657b704c8936c1b4c17fda19ee0f3f4aee77656d06dd633fdf7", Immutable: true},
-		"assets/detail-page-62BfRiMr.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "4ec46c27eb8cc350d81d29a9f0c1005e1c89782f39a35b27f62df8098098a65d", Immutable: true},
 		"assets/detail-page-BkVKKMmE.css":       {ContentType: "text/css; charset=utf-8", SHA256: "7c28931d34a683f50e7a4bd5f4d1e014eebe8931f81d8eec54a6e38b429d5b11", Immutable: true},
+		"assets/detail-page-CT4ipvSb.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "d43ec8ce10cb8de6e400ba355c34d297c8a4bb77f14bfed3eb9f6743502c3ed9", Immutable: true},
 		"assets/detail-page-DlSQB26m.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "594ad79b6615ea1ead84f2f5e0317cb7552599d99b8bdcbd4f0bbff2293d1e58", Immutable: true},
 		"assets/git-branch-BR05jWrB.js":         {ContentType: "text/javascript; charset=utf-8", SHA256: "676700da3380cb1b2ba0147f292922c56f23df31636d6ef5c54683de45213a14", Immutable: true},
-		"assets/index-Cc1dnF1v.js":              {ContentType: "text/javascript; charset=utf-8", SHA256: "17337a6982dc129f00b479b17e999c3d02a96734612602656dc28bbab10e8206", Immutable: true},
+		"assets/index-CenT_ifl.js":              {ContentType: "text/javascript; charset=utf-8", SHA256: "aca0a13601c1b6e6197f57c5cb91d6ee27eed4dcdfdf28e6112f4701b927f1a6", Immutable: true},
 		"assets/index-DtvcycKG.css":             {ContentType: "text/css; charset=utf-8", SHA256: "429ae5831473df8ecd9f9a95d1290ab3c7ea6d7ee0eaa06caa36a7e7c460dac1", Immutable: true},
 		"assets/issue-editor-CdnBa9Ix.css":      {ContentType: "text/css; charset=utf-8", SHA256: "0c14176e9384da786c8e23a779b7e6a4afbe360da2012bcff3f60656f3fbbdb4", Immutable: true},
 		"assets/issue-editor-DPlT4Fv3.js":       {ContentType: "text/javascript; charset=utf-8", SHA256: "3df840c3b7ac7a8e8301cb247ad4e97d03f19a8fd3f73b5165e17638c7b9ef9f", Immutable: true},
@@ -34,6 +34,6 @@ func init() {
 		"assets/useMutation-Cg2hIceN.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "d03bf0fd8271447d22030be0d9a5639f2ecd6e188df14a3f2c790864f4ded3b3", Immutable: true},
 		"assets/workspace-page-DyALrwqJ.js":     {ContentType: "text/javascript; charset=utf-8", SHA256: "d9efa42297c1d6e6e9365dd7a3d3f63963a846ba62c8db41358e5a171a15f479", Immutable: true},
 		"favicon.svg":                           {ContentType: "image/svg+xml", SHA256: "eb7ac46eb3c97babd15fefaa58f745f2d4d33e12483ec88a541f1bf051e56646", Immutable: false},
-		"index.html":                            {ContentType: "text/html; charset=utf-8", SHA256: "5c5ad393b249e82e084f7a56d13ea9e6190755136c2e0041cf7d79bb68e53bdd", Immutable: false},
+		"index.html":                            {ContentType: "text/html; charset=utf-8", SHA256: "e4628ee01cc67e377b806a97d6ae8a1fa8668632398837e443e5106ed44631a1", Immutable: false},
 	}
 }
