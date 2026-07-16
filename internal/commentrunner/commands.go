@@ -236,7 +236,7 @@ func commandIdempotencyKey(comment TriggerComment, verb CommandVerb, sessionID, 
 		updatedAt = comment.UpdatedAt.UTC().Format(time.RFC3339Nano)
 	}
 	parts := []string{
-		"runner-command-v1",
+		"runner-command-v2",
 		strings.TrimSpace(comment.Repo),
 		fmt.Sprintf("%d", comment.Issue),
 		fmt.Sprintf("%d", comment.CommentID),
@@ -248,7 +248,7 @@ func commandIdempotencyKey(comment TriggerComment, verb CommandVerb, sessionID, 
 		bodyHash,
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
-	return "runner-command-v1:" + hex.EncodeToString(sum[:])
+	return "runner-command-v2:" + hex.EncodeToString(sum[:])
 }
 
 func shortHash(value string) string {

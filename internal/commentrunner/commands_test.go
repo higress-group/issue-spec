@@ -166,7 +166,7 @@ func TestParseCommandCommentAcceptsNormalizedCommands(t *testing.T) {
 			if got.Repo != "o/r" || got.Issue != 9 || got.TriggerCommentID != 101 || got.Commenter != "alice" {
 				t.Fatalf("candidate metadata = %+v", got)
 			}
-			if !strings.HasPrefix(got.FirstObservedBodyHash, "sha256:") || !strings.HasPrefix(got.IdempotencyKey, "runner-command-v1:") || got.ID == "" {
+			if !strings.HasPrefix(got.FirstObservedBodyHash, "sha256:") || !strings.HasPrefix(got.IdempotencyKey, "runner-command-v2:") || got.ID == "" {
 				t.Fatalf("candidate ids/hashes not populated: %+v", got)
 			}
 			again := ParseCommandComment(TriggerComment{
