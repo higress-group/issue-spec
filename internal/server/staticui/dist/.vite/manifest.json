@@ -175,7 +175,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-Ci05s4K7.js",
+    "file": "assets/index-CBLceh8F.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -206,7 +206,7 @@
       "src/features/search/search-page.tsx"
     ],
     "css": [
-      "assets/index-BYsn394O.css"
+      "assets/index-DiiAxOXx.css"
     ]
   },
   "src/features/boards/board-page.tsx": {

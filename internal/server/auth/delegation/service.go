@@ -74,7 +74,7 @@ func (s *Service) Issue(ctx context.Context, input IssueInput) (Created, error) 
 		return Created{}, serverauth.ErrInvalidCredential
 	}
 	if input.Issuer.Kind != serverauth.CredentialPAT || input.Issuer.CredentialID == uuid.Nil ||
-		!input.Issuer.HasScope("runner:delegate") || !exactRepositoryCap(input.Issuer, input.Repo) {
+		!input.Issuer.HasScope("runner:delegate") || !repositoryAllowed(input.Issuer, input.Repo) {
 		return Created{}, serverauth.ErrInsufficientScope
 	}
 	if input.TTL < MinTTL || input.TTL > MaxTTL {
@@ -134,7 +134,7 @@ func (s *Service) Issue(ctx context.Context, input IssueInput) (Created, error) 
 		if err != nil {
 			return err
 		}
-		if !liveParent.HasScope("runner:delegate") || !exactRepositoryCap(liveParent, input.Repo) {
+		if !liveParent.HasScope("runner:delegate") || !repositoryAllowed(liveParent, input.Repo) {
 			return serverauth.ErrInsufficientScope
 		}
 		for _, scope := range allowedScopes {
@@ -254,7 +254,7 @@ func (s *Service) Authenticate(ctx context.Context, plaintext string, expected E
 		if err != nil {
 			return err
 		}
-		if !decision.Allowed || !parent.HasScope("runner:delegate") || !exactRepositoryCap(parent,
+		if !decision.Allowed || !parent.HasScope("runner:delegate") || !repositoryAllowed(parent,
 			models.RepoScope{OrgID: principal.OrgID, RepoID: principal.RepoID}) {
 			return serverauth.ErrInsufficientScope
 		}
@@ -348,9 +348,8 @@ func equalStrings(left, right []string) bool {
 	return true
 }
 
-func exactRepositoryCap(principal serverauth.Principal, repo models.RepoScope) bool {
-	return principal.RepoRestricted && len(principal.RepositoryCaps) == 1 &&
-		principal.RepositoryCaps[0].OrgID == repo.OrgID && principal.RepositoryCaps[0].RepoID == repo.RepoID
+func repositoryAllowed(principal serverauth.Principal, repo models.RepoScope) bool {
+	return principal.AllowsRepository(repo.OrgID, repo.RepoID)
 }
 
 func lockJob(ctx context.Context, tx pgx.Tx, repo models.RepoScope, jobID string) error {
@@ -465,7 +464,7 @@ func (s *Service) RevokeJob(ctx context.Context, repo models.RepoScope, jobID st
 // RevokeJobAs revokes every child lease for one repository/job after the
 // requesting parent PAT is revalidated in the same transaction.
 func (s *Service) RevokeJobAs(ctx context.Context, issuer serverauth.Principal, repo models.RepoScope, jobID, requestID string) error {
-	if issuer.Kind != serverauth.CredentialPAT || !issuer.HasScope("runner:delegate") || !exactRepositoryCap(issuer, repo) {
+	if issuer.Kind != serverauth.CredentialPAT || !issuer.HasScope("runner:delegate") || !repositoryAllowed(issuer, repo) {
 		return serverauth.ErrInsufficientScope
 	}
 	return s.revokeJob(ctx, issuer, repo, jobID, requestID)
@@ -490,7 +489,7 @@ func (s *Service) revokeJob(ctx context.Context, issuer serverauth.Principal, re
 			if err != nil {
 				return err
 			}
-			if !liveParent.HasScope("runner:delegate") || !exactRepositoryCap(liveParent, repo) {
+			if !liveParent.HasScope("runner:delegate") || !repositoryAllowed(liveParent, repo) {
 				return serverauth.ErrInsufficientScope
 			}
 			decision, err := s.authz.EvaluateRepositoryTx(ctx, tx, authz.Authenticated(liveParent), authz.RepositoryRequest{

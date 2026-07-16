@@ -9,8 +9,9 @@ import (
 )
 
 func TestProductionAssetsContainRunnerScopePreset(t *testing.T) {
-	const runnerScopes = "read:user, issues:read, issues:write, evidence:write"
-	found := false
+	requiredScopes := []string{"read:user", "issues:read", "issues:write", "evidence:write"}
+	foundScopes := make(map[string]bool, len(requiredScopes))
+	foundPreset := false
 	if err := fs.WalkDir(production, "dist/assets", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil || entry.IsDir() || !strings.HasSuffix(name, ".js") {
 			return err
@@ -19,13 +20,21 @@ func TestProductionAssetsContainRunnerScopePreset(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		found = found || strings.Contains(string(content), runnerScopes)
+		for _, scope := range requiredScopes {
+			foundScopes[scope] = foundScopes[scope] || strings.Contains(string(content), scope)
+		}
+		foundPreset = foundPreset || strings.Contains(string(content), "Runner preset")
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !found {
-		t.Fatalf("generated production assets do not contain runner scope preset %q", runnerScopes)
+	for _, scope := range requiredScopes {
+		if !foundScopes[scope] {
+			t.Fatalf("generated production assets do not contain runner scope %q", scope)
+		}
+	}
+	if !foundPreset {
+		t.Fatal("generated production assets do not contain the Runner preset control")
 	}
 }
 

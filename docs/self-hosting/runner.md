@@ -103,8 +103,9 @@ security boundary:
 2. resolve that login under the repository's **Collaborators** page and grant
    the minimum `write` role;
 3. resolve the service account under **Administration > Managed access tokens**;
-4. select **Runner preset** and exactly one repository;
-5. confirm these scopes and create the Managed PAT:
+4. select **Runner preset**, then choose **All repositories** or every repository
+   this Runner process will serve;
+5. confirm the PAT includes these minimum scopes and create it:
 
 ```text
 read:user, issues:read, issues:write, evidence:write
@@ -126,13 +127,15 @@ For a local trial, personal environment, or short-lived integration, the
 runner may use your own issue-spec account:
 
 1. confirm that your account has `write` or higher permission on the repository;
-2. select **Runner preset** on **Access tokens** and choose exactly that repository;
+2. select **Runner preset** on **Access tokens**, then choose **All repositories**
+   or every repository this Runner process will serve;
 3. save the one-time personal PAT;
 4. have a repository owner or operator designate your account as an active
    **Evidence Writer** for that repository;
 5. pass your exact login to `--runner` when starting the process.
 
-The personal PAT uses the same four scopes and exact one-repository cap. By
+The personal PAT requires the same four minimum scopes and may cover all or a
+selected set of repositories. By
 default, only the account named by `--runner` can issue commands; add
 `--allowed-user` only when other maintainers should be accepted. This option is
 quicker to configure, but runner writes, credential rotation, and account
@@ -142,11 +145,13 @@ or login session for the PAT.
 
 Evidence Writer is a durable Server assignment to the user identity. It is not
 a PAT scope or token option, so `evidence:write` never designates its holder.
-Keep the Runner PAT restricted to the four scopes above. Use a separate
-repository-administration session or short-lived, exact-repository `admin:repo`
-PAT to manage the assignment; never add `admin:repo` to the Runner PAT. Rotating
-a PAT for the same identity preserves the assignment. Deactivate the assignment
-when retiring the identity or moving the Runner to another account. See
+The Runner preset selects the four minimum scopes above; additional scopes no
+longer prevent startup, but remove any that the automation does not need. Use a
+separate repository-administration session or short-lived, exact-repository
+`admin:repo` PAT to manage the assignment; never add `admin:repo` to the Runner
+PAT. Rotating a PAT for the same identity preserves the assignment. Deactivate
+the assignment when retiring the identity or moving the Runner to another
+account. See
 [Assign an evidence writer](bridges/code-provider-v1.md#assign-an-evidence-writer)
 for the native API flow and revocation request.
 
@@ -174,15 +179,15 @@ The Managed PAT or personal PAT selected above is the credential used by every
 stable file outside the repository workspaces, then exposes that same file to
 each agent session. It does not mint or revoke a delegated issue token per job.
 Before each job, the Runner revalidates that the file still authenticates as the
-configured identity, exposes exactly the four scopes above, remains restricted
-to the one configured repository, and still has the required repository role.
+configured identity, includes the four scopes above, grants the current job's
+repository, and still has the required repository role.
 The job fails closed on authentication, permission, repository-cap, or network
 drift; Git clone and push remain independently proven by the Git credential
 provider.
 The Server delegation API remains available for other integrations, but is not
-part of the Runner execution path. Restrict this PAT to exactly one repository;
-use a separate PAT, profile, and `runner serve` process for each additional
-repository.
+part of the Runner execution path. One PAT and profile may serve multiple
+explicit `--repo` values when its repository access and identity permissions
+cover each of them.
 
 ## 4. Create the Runner intake webhook
 
@@ -354,9 +359,10 @@ For the internal SSH mode, replace the example's
 macOS, use the same explicit `--unsafe-no-sandbox --allow-host-ssh`
 combination in both commands.
 
-Repeat `--allowed-user` as needed. `runner serve` accepts exactly one repository
-for a self-hosted profile PAT. Use one exact-repository PAT, profile, and process
-per repository. The default maximum is three concurrent jobs.
+Repeat `--allowed-user` and `--repo` as needed. A self-hosted profile PAT may
+cover all repositories or any selected set, but the Runner preflights each
+configured repository independently. The default maximum is three concurrent
+jobs.
 
 If TLS terminates at a reverse proxy, listen on loopback and expose only
 `/api/v1/runner/webhooks`. For direct TLS, bind an exact non-loopback IP—not a
@@ -506,7 +512,7 @@ new value.
 ## Security boundaries
 
 - the webhook secret authenticates delivery only; it grants no issue or source authority;
-- the origin-bound profile PAT is reused by every job, revalidated before dispatch, and restricted to the Runner's one intended repository and exact scopes;
+- the origin-bound profile PAT is reused by every job and revalidated before dispatch for the current explicitly configured repository and minimum Runner scopes;
 - source bindings contain no credentials; prefer short-lived, binding-specific Git credentials;
 - `--allow-host-ssh` exposes the dedicated runner user's SSH authority to the sandboxed agent and is only for an explicitly trusted internal boundary;
 - the runner handles only explicit `--repo` values, and authors must pass both allowlist and repository authorization;

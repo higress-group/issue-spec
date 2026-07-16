@@ -23,16 +23,21 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("runner managed PAT keeps the service identity and repository cap explicit", async ({ page }, testInfo) => {
+test("runner managed PAT keeps identity and authority controls explicit", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-1440");
   await page.goto(`/admin/orgs/${fixtureContext.organizations[0].id}/managed-tokens`);
   await page.getByRole("textbox", { name: documentationText("Exact local login", "准确的本地登录名") }).fill(serviceAccountLogin);
   await page.getByRole("button", { name: documentationText("Resolve", "确认用户") }).click();
   await expect(page.getByText(`@${serviceAccountLogin}`)).toBeVisible();
   await page.getByRole("button", { name: documentationText("Runner preset", "运行器预设") }).click();
-  await page.getByRole("combobox", { name: documentationText("Repository access", "仓库范围") }).selectOption(repositoryId);
+  await page.getByRole("radio", { name: documentationText("Selected repositories", "指定仓库") }).click();
   await expect(page.getByRole("textbox", { name: documentationText("Token name", "令牌名称") })).toHaveValue("runner");
-  await expect(page.getByRole("textbox", { name: documentationText("Scopes", "权限范围") })).toHaveValue("read:user, issues:read, issues:write, evidence:write");
+  await expect(page.getByRole("checkbox", { name: "read:user" })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "issues:read" })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "issues:write" })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "evidence:write" })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "admin:repo" })).not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: documentationText("workflow", "workflow") })).toBeChecked();
   expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());

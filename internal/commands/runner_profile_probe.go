@@ -17,20 +17,19 @@ import (
 var runnerProfileScopes = []string{"read:user", "issues:read", "issues:write", "evidence:write"}
 
 // runnerProfileCapabilityProbe revalidates the stable profile PAT at the job
-// boundary. Native context proves the PAT kind, exact scope set and exact
-// repository cap; the compatibility API proves the current repository role.
+// boundary. Native context proves the PAT kind, required scopes and access to
+// the job repository; the compatibility API proves the current repository role.
 type runnerProfileCapabilityProbe struct {
 	native        github.NativeContextOperations
 	compatibility github.AgentCapabilityBackend
 	runnerLogin   string
-	repository    string
-	scope         models.RepoScope
+	repositories  map[string]models.RepoScope
 }
 
 func (p runnerProfileCapabilityProbe) ProbeProfileCredential(ctx context.Context, request credentials.PreflightRequest) capability.Report {
 	req := request.Request
-	if p.native == nil || p.compatibility == nil || p.scope.Validate() != nil || request.Repo != p.scope ||
-		!strings.EqualFold(strings.TrimSpace(req.Repository), strings.TrimSpace(p.repository)) ||
+	repository, scope, configured := p.configuredRepository(req.Repository)
+	if p.native == nil || p.compatibility == nil || !configured || scope.Validate() != nil || request.Repo != scope ||
 		strings.TrimSpace(p.runnerLogin) == "" {
 		return runnerProfileProbeFailure(req, "unknown", capability.FailureInvalidRequest,
 			"runner profile capability probe is not configured for this repository")
@@ -45,17 +44,17 @@ func (p runnerProfileCapabilityProbe) ProbeProfileCredential(ctx context.Context
 		return runnerProfileProbeFailure(req, "reachable", capability.FailureAuthenticationFailed,
 			"runner profile PAT does not authenticate as the configured identity")
 	}
-	if !exactScopeSet(current.Credential.Scopes, runnerProfileScopes) {
+	if !includesRequiredScopes(current.Credential.Scopes, runnerProfileScopes) {
 		return runnerProfileProbeFailure(req, "reachable", capability.FailureInsufficientPermission,
-			"runner profile PAT does not have the exact required scope set")
+			"runner profile PAT does not include the required scopes")
 	}
-	exactRepository, err := p.exactRepositoryCap(ctx, current)
+	repositoryAllowed, err := p.repositoryAllowed(ctx, current, repository, scope)
 	if err != nil {
-		return runnerProfileProbeError(req, err, "runner profile repository restriction probe failed")
+		return runnerProfileProbeError(req, err, "runner profile repository access probe failed")
 	}
-	if !current.Credential.RepositoryRestricted || current.Credential.RepositoryCount != 1 || !exactRepository {
+	if !repositoryAllowed {
 		return runnerProfileProbeFailure(req, "reachable", capability.FailureInsufficientPermission,
-			"runner profile PAT is not restricted to the exact configured repository")
+			"runner profile PAT does not grant access to the configured repository")
 	}
 
 	user, scopes, err := p.compatibility.GetUser(ctx)
@@ -66,9 +65,9 @@ func (p runnerProfileCapabilityProbe) ProbeProfileCredential(ctx context.Context
 		return runnerProfileProbeFailure(req, "reachable", capability.FailureAuthenticationFailed,
 			"runner profile PAT does not authenticate as the configured identity")
 	}
-	if !exactScopeSet(scopes, runnerProfileScopes) {
+	if !includesRequiredScopes(scopes, runnerProfileScopes) {
 		return runnerProfileProbeFailure(req, "reachable", capability.FailureInsufficientPermission,
-			"runner profile PAT does not expose the exact required scope set")
+			"runner profile PAT does not expose the required scopes")
 	}
 	backend := cachedAgentCapabilityBackend{AgentCapabilityBackend: p.compatibility, user: user, scopes: scopes}
 	return github.ProbeAgentCapabilities(ctx, backend, req, github.AgentCapabilityProbeOptions{
@@ -76,28 +75,51 @@ func (p runnerProfileCapabilityProbe) ProbeProfileCredential(ctx context.Context
 	})
 }
 
-func (p runnerProfileCapabilityProbe) exactRepositoryCap(ctx context.Context, current github.NativeContext) (bool, error) {
-	owner, name, ok := strings.Cut(strings.TrimSpace(p.repository), "/")
-	if !ok || len(current.Organizations) != 1 {
+func (p runnerProfileCapabilityProbe) configuredRepository(requested string) (string, models.RepoScope, bool) {
+	requested = strings.TrimSpace(requested)
+	for repository, scope := range p.repositories {
+		if strings.EqualFold(strings.TrimSpace(repository), requested) {
+			return repository, scope, true
+		}
+	}
+	return "", models.RepoScope{}, false
+}
+
+func (p runnerProfileCapabilityProbe) repositoryAllowed(ctx context.Context, current github.NativeContext,
+	repository string, scope models.RepoScope) (bool, error) {
+	owner, name, ok := strings.Cut(strings.TrimSpace(repository), "/")
+	if !ok {
 		return false, nil
 	}
-	organization := current.Organizations[0]
+	var organizations []github.NativeOrganizationContext
+	for _, organization := range current.Organizations {
+		if strings.EqualFold(strings.TrimSpace(organization.Name), owner) {
+			organizations = append(organizations, organization)
+		}
+	}
+	if len(organizations) != 1 {
+		return false, nil
+	}
+	organization := organizations[0]
 	organizationID, err := uuid.Parse(strings.TrimSpace(organization.ID))
-	if err != nil || organizationID != p.scope.OrgID || !strings.EqualFold(strings.TrimSpace(organization.Name), owner) {
+	if err != nil || organizationID != scope.OrgID {
 		return false, nil
 	}
 	page, err := p.native.ListNativeContextRepositories(ctx, organizationID.String())
 	if err != nil {
 		return false, err
 	}
-	if len(page.Repositories) != 1 {
-		return false, nil
+	matches := 0
+	for _, item := range page.Repositories {
+		candidate := item.Repository
+		repositoryID, parseErr := uuid.Parse(strings.TrimSpace(candidate.ID))
+		if parseErr == nil && repositoryID == scope.RepoID &&
+			strings.EqualFold(strings.TrimSpace(candidate.OrganizationID), organizationID.String()) &&
+			strings.EqualFold(strings.TrimSpace(candidate.Name), name) {
+			matches++
+		}
 	}
-	repository := page.Repositories[0].Repository
-	repositoryID, err := uuid.Parse(strings.TrimSpace(repository.ID))
-	return err == nil && repositoryID == p.scope.RepoID &&
-		strings.EqualFold(strings.TrimSpace(repository.OrganizationID), organizationID.String()) &&
-		strings.EqualFold(strings.TrimSpace(repository.Name), name), nil
+	return matches == 1, nil
 }
 
 type cachedAgentCapabilityBackend struct {
@@ -110,10 +132,7 @@ func (b cachedAgentCapabilityBackend) GetUser(context.Context) (github.User, []s
 	return b.user, append([]string(nil), b.scopes...), nil
 }
 
-func exactScopeSet(actual, expected []string) bool {
-	if len(actual) != len(expected) {
-		return false
-	}
+func includesRequiredScopes(actual, expected []string) bool {
 	want := make(map[string]bool, len(expected))
 	for _, scope := range expected {
 		want[strings.ToLower(strings.TrimSpace(scope))] = true
@@ -121,12 +140,17 @@ func exactScopeSet(actual, expected []string) bool {
 	seen := make(map[string]bool, len(actual))
 	for _, scope := range actual {
 		scope = strings.ToLower(strings.TrimSpace(scope))
-		if scope == "" || seen[scope] || !want[scope] {
-			return false
+		if scope == "" || seen[scope] {
+			continue
 		}
 		seen[scope] = true
 	}
-	return len(seen) == len(want)
+	for scope := range want {
+		if !seen[scope] {
+			return false
+		}
+	}
+	return true
 }
 
 func runnerProfileProbeError(request capability.Request, err error, detail string) capability.Report {

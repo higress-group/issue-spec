@@ -371,16 +371,16 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	if _, err := pool.Exec(t.Context(), `INSERT INTO pat_scopes (id, personal_access_token_id, scope) VALUES ($1, $2, 'issues:write')`, uuid.New(), patPrincipal.CredentialID); err != nil {
 		t.Fatal(err)
 	}
+	otherRepoID := uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO repos (id, organization_id, name, display_name) VALUES ($1, $2, 'other-repo', 'other-repo')`, otherRepoID, orgID); err != nil {
+		t.Fatal(err)
+	}
 	assertDelegatedLiveParent("cap", func() {
-		if _, err := pool.Exec(t.Context(), `DELETE FROM pat_repositories WHERE personal_access_token_id = $1`, patPrincipal.CredentialID); err != nil {
+		if _, err := pool.Exec(t.Context(), `UPDATE pat_repositories SET repository_id = $1 WHERE personal_access_token_id = $2`, otherRepoID, patPrincipal.CredentialID); err != nil {
 			t.Fatal(err)
 		}
 	})
-	if _, err := pool.Exec(t.Context(), `INSERT INTO pat_repositories (personal_access_token_id, organization_id, repository_id) VALUES ($1, $2, $3)`, patPrincipal.CredentialID, orgID, repoID); err != nil {
-		t.Fatal(err)
-	}
-	otherRepoID := uuid.New()
-	if _, err := pool.Exec(t.Context(), `INSERT INTO repos (id, organization_id, name, display_name) VALUES ($1, $2, 'other-repo', 'other-repo')`, otherRepoID, orgID); err != nil {
+	if _, err := pool.Exec(t.Context(), `UPDATE pat_repositories SET repository_id = $1 WHERE personal_access_token_id = $2`, repoID, patPrincipal.CredentialID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(t.Context(), `INSERT INTO pat_repositories (personal_access_token_id, organization_id, repository_id) VALUES ($1, $2, $3)`, patPrincipal.CredentialID, orgID, otherRepoID); err != nil {
@@ -388,11 +388,16 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	}
 	if _, err := delegated.Issue(t.Context(), delegation.IssueInput{Issuer: patPrincipal,
 		Repo: models.RepoScope{OrgID: orgID, RepoID: repoID}, JobID: "job-live-multiple-cap", Purpose: "issue-api",
-		Audience: "issue-spec-server", Subject: "runner-child", Scopes: []string{"issues:write"}, TTL: 5 * time.Minute}); !errors.Is(err, serverauth.ErrInsufficientScope) {
+		Audience: "issue-spec-server", Subject: "runner-child", Scopes: []string{"issues:write"}, TTL: 5 * time.Minute}); err != nil {
 		t.Fatalf("multiple live repository caps issue error = %v", err)
 	}
-	if _, err := pool.Exec(t.Context(), `DELETE FROM pat_repositories WHERE personal_access_token_id = $1 AND repository_id = $2`, patPrincipal.CredentialID, otherRepoID); err != nil {
+	if _, err := pool.Exec(t.Context(), `DELETE FROM pat_repositories WHERE personal_access_token_id = $1`, patPrincipal.CredentialID); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := delegated.Issue(t.Context(), delegation.IssueInput{Issuer: patPrincipal,
+		Repo: models.RepoScope{OrgID: orgID, RepoID: repoID}, JobID: "job-live-unrestricted-cap", Purpose: "issue-api",
+		Audience: "issue-spec-server", Subject: "runner-child", Scopes: []string{"issues:write"}, TTL: 5 * time.Minute}); err != nil {
+		t.Fatalf("unrestricted live repository caps issue error = %v", err)
 	}
 	assertDelegatedLiveParent("permission", func() {
 		if _, err := pool.Exec(t.Context(), `DELETE FROM repo_collaborators WHERE organization_id = $1 AND repository_id = $2 AND user_id = $3`, orgID, repoID, userA.ID); err != nil {

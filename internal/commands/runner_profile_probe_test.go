@@ -12,35 +12,41 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
 
-func TestRunnerProfileCapabilityProbeValidatesLivePATAndExactRepository(t *testing.T) {
-	orgID, repoID := uuid.New(), uuid.New()
+func TestRunnerProfileCapabilityProbeValidatesLivePATForEachConfiguredRepository(t *testing.T) {
+	orgID, repoID, otherRepoID := uuid.New(), uuid.New(), uuid.New()
 	scope := models.RepoScope{OrgID: orgID, RepoID: repoID}
+	otherScope := models.RepoScope{OrgID: orgID, RepoID: otherRepoID}
 	native := &fakeRunnerProfileNative{current: github.NativeContext{
 		User: github.NativeContextUser{ID: uuid.NewString(), Login: "runner"},
-		Credential: github.NativeContextCredential{Kind: "pat", Scopes: append([]string(nil), runnerProfileScopes...),
-			RepositoryRestricted: true, RepositoryCount: 1},
+		Credential: github.NativeContextCredential{Kind: "pat", Scopes: append(append([]string(nil), runnerProfileScopes...), "admin:repo"),
+			RepositoryRestricted: true, RepositoryCount: 2},
 		Organizations: []github.NativeOrganizationContext{{ID: orgID.String(), Name: "owner"}},
-	}, page: github.NativeRepositoriesContext{Repositories: []github.NativeRepositoryContext{{
-		Repository: github.NativeRepositorySummary{ID: repoID.String(), OrganizationID: orgID.String(), Name: "repo"},
-	}}}}
+	}, page: github.NativeRepositoriesContext{Repositories: []github.NativeRepositoryContext{
+		{Repository: github.NativeRepositorySummary{ID: repoID.String(), OrganizationID: orgID.String(), Name: "repo"}},
+		{Repository: github.NativeRepositorySummary{ID: otherRepoID.String(), OrganizationID: orgID.String(), Name: "other"}},
+	}}}
 	compatibility := &fakeRunnerProfileCompatibility{user: github.User{Login: "runner"},
-		scopes: append([]string(nil), runnerProfileScopes...), permission: "write"}
+		scopes: append(append([]string(nil), runnerProfileScopes...), "admin:repo"), permission: "write"}
 	probe := runnerProfileCapabilityProbe{native: native, compatibility: compatibility, runnerLogin: "runner",
-		repository: "owner/repo", scope: scope}
-	report := probe.ProbeProfileCredential(t.Context(), runnerProfileRequest(scope))
+		repositories: map[string]models.RepoScope{"owner/repo": scope, "owner/other": otherScope}}
+	report := probe.ProbeProfileCredential(t.Context(), runnerProfileRequest("owner/repo", scope))
 	if !report.OK || report.Network.Status != "reachable" || native.currentCalls != 1 || native.repositoryCalls != 1 ||
 		compatibility.userCalls != 1 || compatibility.permissionCalls != 1 {
 		t.Fatalf("report=%+v native=%+v compatibility=%+v", report, native, compatibility)
 	}
+	report = probe.ProbeProfileCredential(t.Context(), runnerProfileRequest("owner/other", otherScope))
+	if !report.OK || native.currentCalls != 2 || native.repositoryCalls != 2 || compatibility.permissionCalls != 2 {
+		t.Fatalf("second repository report=%+v native=%+v compatibility=%+v", report, native, compatibility)
+	}
 	compatibility.permission = "read"
-	report = probe.ProbeProfileCredential(t.Context(), runnerProfileRequest(scope))
+	report = probe.ProbeProfileCredential(t.Context(), runnerProfileRequest("owner/repo", scope))
 	results := make(map[capability.Operation]capability.OperationResult, len(report.Operations))
 	for _, result := range report.Operations {
 		results[result.Operation] = result
 	}
 	if report.OK || results[capability.OperationIssueRead].Decision != capability.DecisionAllowed ||
 		results[capability.OperationIssueCommentWrite].Decision != capability.DecisionDenied ||
-		results[capability.OperationArtifactWrite].Decision != capability.DecisionDenied || compatibility.permissionCalls != 2 {
+		results[capability.OperationArtifactWrite].Decision != capability.DecisionDenied || compatibility.permissionCalls != 3 {
 		t.Fatalf("permission drift report=%+v compatibility=%+v", report, compatibility)
 	}
 }
@@ -69,13 +75,9 @@ func TestRunnerProfileCapabilityProbeFailsClosedOnPATDrift(t *testing.T) {
 		{name: "scope removed", mutate: func(native *fakeRunnerProfileNative, _ *fakeRunnerProfileCompatibility) {
 			native.current.Credential.Scopes = runnerProfileScopes[:3]
 		}, wantCode: capability.FailureInsufficientPermission, wantNetwork: "reachable"},
-		{name: "scope added", mutate: func(native *fakeRunnerProfileNative, _ *fakeRunnerProfileCompatibility) {
-			native.current.Credential.Scopes = append(append([]string(nil), runnerProfileScopes...), "admin:repo")
-		}, wantCode: capability.FailureInsufficientPermission, wantNetwork: "reachable"},
-		{name: "repository cap widened", mutate: func(native *fakeRunnerProfileNative, _ *fakeRunnerProfileCompatibility) {
-			native.current.Credential.RepositoryCount = 2
-			native.page.Repositories = append(native.page.Repositories, github.NativeRepositoryContext{Repository: github.NativeRepositorySummary{
-				ID: uuid.NewString(), OrganizationID: orgID.String(), Name: "other"}})
+		{name: "configured repository removed", mutate: func(native *fakeRunnerProfileNative, _ *fakeRunnerProfileCompatibility) {
+			native.page.Repositories = []github.NativeRepositoryContext{{Repository: github.NativeRepositorySummary{
+				ID: uuid.NewString(), OrganizationID: orgID.String(), Name: "other"}}}
 		}, wantCode: capability.FailureInsufficientPermission, wantNetwork: "reachable"},
 		{name: "native network unavailable", mutate: func(native *fakeRunnerProfileNative, _ *fakeRunnerProfileCompatibility) {
 			native.currentErr = &net.DNSError{Err: "unreachable", Name: "issues.example.test"}
@@ -88,8 +90,8 @@ func TestRunnerProfileCapabilityProbeFailsClosedOnPATDrift(t *testing.T) {
 				scopes: append([]string(nil), runnerProfileScopes...), permission: "write"}
 			tt.mutate(native, compatibility)
 			probe := runnerProfileCapabilityProbe{native: native, compatibility: compatibility, runnerLogin: "runner",
-				repository: "owner/repo", scope: scope}
-			report := probe.ProbeProfileCredential(t.Context(), runnerProfileRequest(scope))
+				repositories: map[string]models.RepoScope{"owner/repo": scope}}
+			report := probe.ProbeProfileCredential(t.Context(), runnerProfileRequest("owner/repo", scope))
 			if report.OK || report.Network.Status != tt.wantNetwork || len(report.Operations) != 3 {
 				t.Fatalf("report=%+v", report)
 			}
@@ -102,8 +104,8 @@ func TestRunnerProfileCapabilityProbeFailsClosedOnPATDrift(t *testing.T) {
 	}
 }
 
-func runnerProfileRequest(scope models.RepoScope) credentials.PreflightRequest {
-	return credentials.PreflightRequest{Request: capability.Request{Host: "issues.example.test", Repository: "owner/repo",
+func runnerProfileRequest(repository string, scope models.RepoScope) credentials.PreflightRequest {
+	return credentials.PreflightRequest{Request: capability.Request{Host: "issues.example.test", Repository: repository,
 		Operations: []capability.Operation{capability.OperationIssueRead, capability.OperationIssueCommentWrite,
 			capability.OperationArtifactWrite}}, Repo: scope, JobID: "job-profile-probe"}
 }

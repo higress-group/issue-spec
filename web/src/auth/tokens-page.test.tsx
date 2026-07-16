@@ -9,9 +9,10 @@ import { TokensPage } from "./tokens-page";
 
 const orgId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const repoId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const secondRepoId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 
 describe("personal access token repository boundaries", () => {
-  it("creates an exactly repository-scoped runner token", async () => {
+  it("defaults to every permission and all repositories", async () => {
     let created: unknown;
     server.use(...handlers(), http.post("http://localhost/api/v1/pats", async ({ request }) => {
       created = await request.json();
@@ -19,32 +20,61 @@ describe("personal access token repository boundaries", () => {
     }));
     const { container } = renderApp(<TokensPage />, "/settings/tokens");
 
-    await userEvent.setup().type(await screen.findByRole("textbox", { name: "Token name" }), "local runner");
-    await userEvent.setup().click(screen.getByRole("button", { name: "Runner preset" }));
-    await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "Repository access" }), repoId);
-    await userEvent.setup().click(screen.getByRole("button", { name: "Create token" }));
+    const user = userEvent.setup();
+    await user.type(await screen.findByRole("textbox", { name: "Token name" }), "full access");
+    expect(screen.getAllByRole("checkbox")).toHaveLength(9);
+    screen.getAllByRole("checkbox").forEach((checkbox) => expect(checkbox).toBeChecked());
+    expect(screen.getByRole("radio", { name: "All repositories" })).toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Create token" }));
 
     await waitFor(() => expect(created).toEqual({
-      name: "local runner",
-      scopes: ["read:user", "issues:read", "issues:write", "evidence:write"],
-      repositories: [{ organization_id: orgId, repository_id: repoId }],
+      name: "full access",
+      scopes: ["read:user", "read:org", "repo", "issues:read", "issues:write", "admin:org", "admin:repo", "evidence:write", "runner:delegate"],
       expires_at: null,
     }));
     expect(await screen.findByRole("dialog", { name: "Save this access token" })).toHaveTextContent("pat-show-once");
     expect((await axe.run(container)).violations).toEqual([]);
   });
 
-  it("requires a repository for runner credentials and names persisted boundaries", async () => {
+  it("creates a runner token for multiple selected repositories", async () => {
+    let created: unknown;
+    server.use(...handlers(), http.post("http://localhost/api/v1/pats", async ({ request }) => {
+      created = await request.json();
+      return HttpResponse.json({ token: "pat-show-once" }, { status: 201 });
+    }));
+    renderApp(<TokensPage />, "/settings/tokens");
+    const user = userEvent.setup();
+
+    await user.type(await screen.findByRole("textbox", { name: "Token name" }), "multi runner");
+    await user.click(screen.getByRole("button", { name: "Runner preset" }));
+    await user.click(screen.getByRole("radio", { name: "Selected repositories" }));
+    await user.click(screen.getByRole("button", { name: "Create token" }));
+
+    await waitFor(() => expect(created).toEqual({
+      name: "multi runner",
+      scopes: ["read:user", "issues:read", "issues:write", "evidence:write"],
+      repositories: [
+        { organization_id: orgId, repository_id: repoId },
+        { organization_id: orgId, repository_id: secondRepoId },
+      ],
+      expires_at: null,
+    }));
+  });
+
+  it("requires a repository only when selected-repository mode is empty", async () => {
     let posts = 0;
     server.use(...handlers(), http.post("http://localhost/api/v1/pats", () => { posts += 1; return HttpResponse.json({ token: "unexpected" }, { status: 201 }); }));
     renderApp(<TokensPage />, "/settings/tokens");
 
+    const user = userEvent.setup();
     expect(await screen.findByText("Restricted to browser-e2e/issue-spec-e2e")).toBeVisible();
-    await userEvent.setup().type(screen.getByRole("textbox", { name: "Token name" }), "unsafe runner");
-    await userEvent.setup().click(screen.getByRole("button", { name: "Runner preset" }));
-    await userEvent.setup().click(screen.getByRole("button", { name: "Create token" }));
+    await user.type(screen.getByRole("textbox", { name: "Token name" }), "empty selection");
+    await user.click(screen.getByRole("radio", { name: "Selected repositories" }));
+    await user.click(screen.getByRole("checkbox", { name: "browser-e2e/issue-spec-e2e" }));
+    await user.click(screen.getByRole("checkbox", { name: "browser-e2e/secondary" }));
+    await user.click(screen.getByRole("button", { name: "Create token" }));
 
-    expect(await screen.findByText("Runner credentials require exactly one repository")).toBeVisible();
+    expect(await screen.findByText("Select at least one repository")).toBeVisible();
     expect(posts).toBe(0);
   });
 
@@ -75,7 +105,10 @@ function handlers() {
       allowed_actions: ["site.admin"],
       organizations: [{ id: orgId, name: "browser-e2e", display_name: "Browser E2E", effective_permission: "admin", container_only: false, allowed_actions: ["organization.admin"] }],
     })),
-    http.get(`http://localhost/api/v1/context/orgs/${orgId}/repos`, () => HttpResponse.json({ repositories: [{ repository: { id: repoId, organization_id: orgId, name: "issue-spec-e2e", display_name: "Issue Spec E2E", visibility: "private", contribution_policy: "members" }, effective_permission: "admin", allowed_actions: ["repository.admin"] }] })),
+    http.get(`http://localhost/api/v1/context/orgs/${orgId}/repos`, () => HttpResponse.json({ repositories: [
+      { repository: { id: repoId, organization_id: orgId, name: "issue-spec-e2e", display_name: "Issue Spec E2E", visibility: "private", contribution_policy: "members" }, effective_permission: "admin", allowed_actions: ["repository.admin"] },
+      { repository: { id: secondRepoId, organization_id: orgId, name: "secondary", display_name: "Secondary", visibility: "private", contribution_policy: "members" }, effective_permission: "admin", allowed_actions: ["repository.admin"] },
+    ] })),
     http.get("http://localhost/api/v1/pats", () => HttpResponse.json({ tokens: [{ id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", name: "existing runner", token_prefix: "pat_demo", scopes: ["runner:delegate"], repositories: [{ organization_id: orgId, repository_id: repoId }], repository_restricted: true, representation_version: 1 }] })),
   ];
 }
