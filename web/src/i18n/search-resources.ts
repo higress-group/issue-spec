@@ -103,7 +103,7 @@ export const searchResources = {
         unavailableTitle: "无法打开检索工作台",
         unavailableDescription: "当前无法获取你可见的组织范围。",
         eyebrow: "讨论记忆",
-        title: "改代码前，先找到当时的决定。",
+        title: "前事不忘，后事之师。",
         description: "在自托管工作台中检索议题正文、评论和历史变更标识。",
         scopeEyebrow: "检索范围",
         chooseOrganization: "选择组织",
