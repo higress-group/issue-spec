@@ -48,6 +48,14 @@ rules:
 
 编辑 config 后重新运行 `issue-spec init`，让生成的 skills 与命令拾取该规则。注意：当 `--language` 合并一个已存在的 `issue-spec/config.yaml` 时，会通过 YAML 往返重写该文件，因此手写的注释会被丢弃、key 会被重新排序。
 
+### 工作流中立的初始化
+
+显式且不区分大小写的 `--tools none` 会初始化 issue-spec 运行时状态，但不会选择或更改项目工作流。它不会读取、校验、创建或修改 `issue-spec/config.yaml` 或 `openspec/config.yaml`，也不会生成仓库 skills、commands 或用户全局 prompts。已有工作流文件会保持逐字节不变；尤其是只有 `openspec/config.yaml` 的仓库，初始化之后仍会通过遗留 OpenSpec 兼容模式发现工作流。
+
+运行时初始化仍会执行：GitHub init 会写入 `.issue-spec/config.json`，并可确保 labels；自托管 init 仍可注册已批准的仓库与 binding、确保 labels、更新 init journal，并在 `.issue-spec/config.json` 中记录服务器、provider、外部仓库与 capability 元数据。provider 工作流策略不会复制到 `issue-spec/config.yaml`。
+
+显式 `--tools none` 可以与 `--language` 一起使用，但 JSON 会报告 `language_applied: false`，文本输出也会说明该语言未应用。请改在所选项目工作流中配置 `rules.language`；遗留 OpenSpec 项目使用 `openspec/config.yaml`。任何显式的 `--install-global-prompts`、`--global-prompts-dir` 或 `--global-prompts-dry-run` 选项都与 `--tools none` 冲突，并会在 profile/backend 选择或任何变更之前被拒绝。
+
 ## CLI 参考
 
 ```bash
@@ -61,7 +69,7 @@ issue-spec init --repo owner/repo --skip-labels  # 标签由其他系统单独�
 issue-spec init --repo owner/repo --tools codex,claude --delivery both
 issue-spec init --repo owner/repo --tools codex,claude --language zh
 issue-spec init --repo owner/repo --tools codex --install-global-prompts
-issue-spec init --repo owner/repo --tools none --global-prompts-dir /tmp/issue-spec-prompts --global-prompts-dry-run
+issue-spec init --repo owner/repo --tools none --language zh  # 会报告语言，但不会应用
 
 issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md [--title "Custom proposal title"]
 issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md [--title "Custom design title"]

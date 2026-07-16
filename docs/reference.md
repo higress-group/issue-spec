@@ -48,6 +48,14 @@ rules:
 
 Re-run `issue-spec init` after editing the config so the generated skills and commands pick up the rule. Note that when `--language` merges an existing `issue-spec/config.yaml`, it rewrites the file through a YAML round-trip, so hand-added comments are dropped and keys are re-sorted.
 
+### Workflow-neutral initialization
+
+An explicit, case-insensitive `--tools none` initializes issue-spec runtime state without selecting or changing a project workflow. It does not read, validate, create, or modify `issue-spec/config.yaml` or `openspec/config.yaml`, and it generates no repository skills, commands, or user-global prompts. Existing workflow files remain byte-for-byte unchanged; in particular, a repository with only `openspec/config.yaml` continues to use legacy OpenSpec workflow discovery afterward.
+
+Runtime initialization still applies: GitHub init writes `.issue-spec/config.json` and may ensure labels, while self-hosted init may register the approved repository and binding, ensure labels, update its init journal, and record server, provider, external-repository, and capability metadata in `.issue-spec/config.json`. Provider workflow policy is not copied into `issue-spec/config.yaml`.
+
+`--language` is accepted with explicit `--tools none`, but JSON reports `language_applied: false` and text output says it was not applied. Configure `rules.language` in the selected project workflow instead; legacy OpenSpec projects use `openspec/config.yaml`. Any explicit `--install-global-prompts`, `--global-prompts-dir`, or `--global-prompts-dry-run` option conflicts with `--tools none` and is rejected before profile/backend selection or mutation.
+
 ## CLI Reference
 
 ```bash
@@ -61,7 +69,7 @@ issue-spec init --repo owner/repo --skip-labels  # opt out when labels are manag
 issue-spec init --repo owner/repo --tools codex,claude --delivery both
 issue-spec init --repo owner/repo --tools codex,claude --language zh
 issue-spec init --repo owner/repo --tools codex --install-global-prompts
-issue-spec init --repo owner/repo --tools none --global-prompts-dir /tmp/issue-spec-prompts --global-prompts-dry-run
+issue-spec init --repo owner/repo --tools none --language zh  # language is reported but not applied
 
 issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md [--title "Custom proposal title"]
 issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md [--title "Custom design title"]

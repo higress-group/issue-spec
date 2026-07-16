@@ -27,7 +27,10 @@ func TestLeafCommandHelpShowsOptionsAndDefaults(t *testing.T) {
 		"ensure issue-spec labels (default: true)",
 		"--skip-labels",
 		"skip ensuring issue-spec labels (default: false)",
+		"explicit none leaves project workflow configuration untouched",
 		"--language string",
+		"not applied with explicit --tools none",
+		"conflicts with explicit --tools none",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("init help missing %q:\n%s", want, text)
