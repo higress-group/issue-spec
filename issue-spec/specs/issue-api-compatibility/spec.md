@@ -2,10 +2,11 @@
 
 ## Purpose
 
-Define the GitHub-compatible issue protocol, lossless marker persistence, canonical URL behavior and machine-actionable compatibility errors exposed by the self-hosted server.
+Define the long-lived behavior contract for this capability.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/160
+- https://github.com/higress-group/issue-spec/issues/241
 
 ## Requirements
 
@@ -86,3 +87,168 @@ The GitHub-compatible surface MUST return the status codes and error JSON requir
 - **THEN** it MUST return application/problem+json with a stable code and request_id suitable for audit and support without exposing tokens or cross-tenant identifiers
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4927189589
+
+### Requirement: Workflow-neutral initialization with --tools none
+
+When `issue-spec init` is invoked with explicit `--tools none`, the CLI MUST initialize issue-spec-owned runtime metadata without reading, validating, creating, or modifying workflow-selection files or generated workflow artifacts. It MUST leave existing OpenSpec configuration unchanged and allow subsequent issue-spec workflow discovery to keep selecting legacy OpenSpec compatibility mode when no pre-existing issue-spec workflow file exists.
+
+#### Scenario: Fresh repository with language and provider options
+
+- **WHEN** initialization runs with `--tools none` while a language and external-code provider are selected
+- **THEN** the CLI writes runtime metadata under `.issue-spec`, records provider identity and capabilities, reports the language as not applied, and creates no `issue-spec/config.yaml`, `.agents`, `.claude`, `.codex`, repository command, or global-prompt artifact
+
+#### Scenario: Repository already uses OpenSpec
+
+- **WHEN** a repository containing only `openspec/config.yaml` is initialized with `--tools none`
+- **THEN** the OpenSpec file remains byte-for-byte unchanged and subsequent issue-spec workflow discovery still selects legacy OpenSpec compatibility mode
+
+#### Scenario: Existing issue-spec workflow remains operator-owned
+
+- **WHEN** a repository already contains `issue-spec/config.yaml` and initialization runs with `--tools none`
+- **THEN** the CLI leaves that file byte-for-byte unchanged and does not validate or merge language or provider workflow settings into it
+
+#### Scenario: Runtime metadata remains available
+
+- **WHEN** workflow-neutral initialization completes successfully
+- **THEN** `.issue-spec/config.json` still records the selected profile, repository, server or realm identity, source binding, provider identity, and provider capabilities needed by runtime operations
+
+#### Scenario: Global prompt installation conflicts with tools none
+
+- **WHEN** a caller combines `--tools none` with an explicit global-prompt installation option
+- **THEN** the CLI rejects the arguments before local or remote mutation with an actionable error
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/241#issuecomment-4990799840
+
+### Requirement: Minimal provider-neutral issue discovery
+
+The `issue-spec` CLI MUST provide a repository-scoped JSON issue listing operation that returns ordinary issues through the selected backend, defaults to open issues, supports open, closed, or all lifecycle states, exhausts backend pagination, excludes pull requests, and exposes stable issue number, title, state, URL, and complete body fields.
+
+#### Scenario: Default to open issues
+
+- **WHEN** the caller omits `--state`
+- **THEN** the command lists open ordinary issues and reports the effective open-state filter
+
+#### Scenario: Discover all issues across pages
+
+- **WHEN** a repository has more issues than one backend response page and the caller requests `--state all --json`
+- **THEN** the CLI follows pagination to completion and returns every ordinary issue supplied by the stable backend pages
+
+#### Scenario: Exclude pull requests from GitHub issue results
+
+- **WHEN** the GitHub Issues API returns pull requests alongside ordinary issues
+- **THEN** the CLI omits pull-request entries from the issue result
+
+#### Scenario: Return lossless stable fields
+
+- **WHEN** an ordinary issue is included in JSON output
+- **THEN** its number, title, normalized state, human-facing URL, and complete backend body are present
+
+#### Scenario: Empty repository result
+
+- **WHEN** no visible ordinary issues match the requested state
+- **THEN** the CLI succeeds with an empty issue array instead of an error or null collection
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/241#issuecomment-4990829767
+
+### Requirement: Opt-in original typed-comment bodies
+
+The `issue-spec comment list --json` command MUST offer an `--include-body` opt-in that adds each typed artifact's complete original backend Markdown as a top-level `body` field while preserving the existing default JSON contract for callers that do not request bodies.
+
+#### Scenario: Request original comment bodies
+
+- **WHEN** the caller lists typed comments with `--json --include-body`
+- **THEN** each returned artifact includes a top-level body field containing the complete body returned by the backend without reconstruction
+
+#### Scenario: Require JSON output for body inclusion
+
+- **WHEN** the caller passes `--include-body` without `--json`
+- **THEN** the CLI rejects the arguments with an actionable error
+
+#### Scenario: Preserve default compatibility
+
+- **WHEN** an existing caller uses `comment list --json` without `--include-body`
+- **THEN** the output retains its existing fields and does not add a body field
+
+#### Scenario: Combine type filtering and bodies
+
+- **WHEN** the caller requests a typed-comment filter together with body inclusion
+- **THEN** only matching typed comments are returned and every returned artifact contains parsed metadata plus its original body
+
+#### Scenario: No matching comments
+
+- **WHEN** no typed comments match the query
+- **THEN** the CLI succeeds with an empty comment array rather than a null collection
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/241#issuecomment-4990831137
+
+### Requirement: Preserve direct issue lineage during body updates
+
+When an issue-spec issue body is replaced, the CLI MUST preserve the complete stored issue marker and the issue's direct predecessor metadata exactly once, and MUST reject different replacement metadata before mutation. A design's direct predecessor is its Proposal Issue; an implement's direct predecessor is its Design Issue.
+
+#### Scenario: Restore omitted design lineage
+
+- **WHEN** a replacement design body omits its marker and Proposal Issue line
+- **THEN** the updated body contains the complete stored design marker and original Proposal Issue line exactly once
+
+#### Scenario: Restore omitted implement lineage
+
+- **WHEN** a replacement implement body omits its marker and Design Issue line
+- **THEN** the updated body contains the complete stored implement marker and original Design Issue line exactly once without adding an indirect Proposal Issue requirement
+
+#### Scenario: Normalize identical duplicate metadata
+
+- **WHEN** the replacement repeats the exact stored marker or direct predecessor more than once
+- **THEN** the updated body contains one copy of each stored metadata line
+
+#### Scenario: Reject a different issue marker
+
+- **WHEN** the replacement contains an issue marker that differs from the complete stored marker, including class, change, or version metadata
+- **THEN** the CLI returns an actionable error and leaves the remote issue unchanged
+
+#### Scenario: Reject a different direct predecessor
+
+- **WHEN** the replacement names a Proposal Issue or Design Issue value different from the exact stored direct predecessor value
+- **THEN** the CLI returns an actionable error and leaves the remote issue unchanged without attempting semantic reference normalization
+
+#### Scenario: Do not repair malformed stored lineage
+
+- **WHEN** the stored issue has missing or conflicting reserved lineage metadata
+- **THEN** the CLI fails before mutation and reports that historical metadata must be repaired explicitly
+
+#### Scenario: Repeat the same update
+
+- **WHEN** the same body replacement is applied more than once
+- **THEN** the stored marker and direct predecessor remain singular and unchanged
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/241#issuecomment-4990831775
+
+### Requirement: Provider-neutral idempotent issue close and reopen
+
+The `issue-spec` CLI MUST provide dedicated provider-neutral `issue close` and `issue reopen` operations through the selected backend. Each operation MUST read the current state, avoid a PATCH when already in the target state, and return deterministic machine-readable state and changed fields.
+
+#### Scenario: Close an open issue
+
+- **WHEN** the caller closes an open issue
+- **THEN** the backend issue becomes closed and the CLI reports state closed with changed true
+
+#### Scenario: Close an already closed issue
+
+- **WHEN** the caller closes an already closed issue
+- **THEN** the operation succeeds without issuing a PATCH and reports state closed with changed false
+
+#### Scenario: Reopen a closed issue
+
+- **WHEN** the caller reopens a closed issue
+- **THEN** the backend issue becomes open and the CLI reports state open with changed true
+
+#### Scenario: Reopen an already open issue
+
+- **WHEN** the caller reopens an already open issue
+- **THEN** the operation succeeds without issuing a PATCH and reports state open with changed false
+
+#### Scenario: Honor selected backend and authorization
+
+- **WHEN** a close or reopen command runs under a GitHub or self-hosted profile
+- **THEN** the CLI uses only that profile's selected issue backend and returns actionable authorization or not-found errors without fallback
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/241#issuecomment-4990832627
