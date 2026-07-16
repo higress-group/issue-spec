@@ -10,7 +10,7 @@ export const searchMatchSchema = z.object({
   comment_id: z.string().uuid().optional(),
 });
 
-export const searchChangeSchema = z.object({ key: z.string().min(1), stage: z.enum(["proposal", "design", "implement", "unknown"]) });
+export const searchChangeSchema = z.object({ key: z.string().min(1), stage: z.enum(["proposal", "design", "implement", "unknown"]), matched: z.boolean() });
 
 export const searchIssueSchema = z.object({
   organization_id: z.string().uuid(),

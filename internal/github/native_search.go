@@ -45,8 +45,9 @@ type NativeIssueSearchResult struct {
 }
 
 type NativeIssueSearchChange struct {
-	Key   string `json:"key"`
-	Stage string `json:"stage"`
+	Key     string `json:"key"`
+	Stage   string `json:"stage"`
+	Matched bool   `json:"matched"`
 }
 
 type NativeIssueSearchMatch struct {

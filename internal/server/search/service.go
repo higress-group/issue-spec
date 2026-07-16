@@ -113,6 +113,9 @@ func (s *Service) query(ctx context.Context, orgID uuid.UUID, repositories []uui
 		if err := json.Unmarshal(changesJSON, &item.Changes); err != nil {
 			return Page{}, fmt.Errorf("search: decode change matches: %w", err)
 		}
+		for index := range item.Changes {
+			item.Changes[index].Matched = changeMatched && strings.EqualFold(item.Changes[index].Key, options.Query)
+		}
 		item.Matches = make([]Match, 0, 4)
 		if issueMatched {
 			item.Matches = append(item.Matches, Match{Source: SourceIssue, Excerpt: excerpt(item.Title+"\n"+issueBody, options.Query)})
@@ -120,9 +123,13 @@ func (s *Service) query(ctx context.Context, orgID uuid.UUID, repositories []uui
 		if changeMatched && len(item.Changes) > 0 {
 			keys := make([]string, 0, len(item.Changes))
 			for _, change := range item.Changes {
-				keys = append(keys, change.Key)
+				if change.Matched {
+					keys = append(keys, change.Key)
+				}
 			}
-			item.Matches = append(item.Matches, Match{Source: SourceChange, Excerpt: strings.Join(keys, ", ")})
+			if len(keys) > 0 {
+				item.Matches = append(item.Matches, Match{Source: SourceChange, Excerpt: strings.Join(keys, ", ")})
+			}
 		}
 		var comments []rawCommentMatch
 		if err := json.Unmarshal(commentsJSON, &comments); err != nil {
@@ -140,6 +147,16 @@ func (s *Service) query(ctx context.Context, orgID uuid.UUID, repositories []uui
 	hasNext := len(items) > options.PerPage
 	if hasNext {
 		items = items[:options.PerPage]
+	}
+	if len(items) == 0 && options.Page > 1 {
+		firstPageOptions := options
+		firstPageOptions.Page = 1
+		firstPageOptions.PerPage = 1
+		firstPage, err := s.query(ctx, orgID, repositories, firstPageOptions)
+		if err != nil {
+			return Page{}, fmt.Errorf("search: recover total for empty page: %w", err)
+		}
+		total = firstPage.Total
 	}
 	return Page{Items: items, Page: options.Page, PerPage: options.PerPage, Total: total, HasNext: hasNext}, nil
 }

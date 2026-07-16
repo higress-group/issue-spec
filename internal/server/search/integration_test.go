@@ -48,14 +48,8 @@ func TestPostgresSearchRecallAuthorizationAndIndexes(t *testing.T) {
 	if _, err := pool.Exec(t.Context(), `CREATE INDEX issue_spec_search_issues_bigm_v1 ON issues (id)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := Prepare(t.Context(), pool); err == nil || !strings.Contains(err.Error(), "unexpected definition") {
-		t.Fatalf("same-name wrong search index error = %v", err)
-	}
-	if _, err := pool.Exec(t.Context(), `DROP INDEX issue_spec_search_issues_bigm_v1`); err != nil {
-		t.Fatal(err)
-	}
 	if err := Prepare(t.Context(), pool); err != nil {
-		t.Fatal(err)
+		t.Fatalf("recover same-name wrong search index: %v", err)
 	}
 
 	orgID, publicRepoID, privateRepoID := uuid.New(), uuid.New(), uuid.New()
@@ -121,12 +115,16 @@ func TestPostgresSearchRecallAuthorizationAndIndexes(t *testing.T) {
 	if err != nil || len(ranked.Items) != 4 || ranked.Total != 4 || ranked.Items[0].Number != 17 || ranked.Items[len(ranked.Items)-1].Number != 19 {
 		t.Fatalf("title/body/comment ranking = %+v, %v", ranked, err)
 	}
+	emptyPage, err := service.Repository(t.Context(), authz.Anonymous(), scope, Options{Query: "鉴权", Page: 99, PerPage: 1})
+	if err != nil || len(emptyPage.Items) != 0 || emptyPage.Total != ranked.Total || emptyPage.HasNext {
+		t.Fatalf("out-of-range page = %+v, %v", emptyPage, err)
+	}
 	exact, err := service.Repository(t.Context(), authz.Anonymous(), scope, Options{Query: "17"})
 	if err != nil || len(exact.Items) < 2 || exact.Items[0].Number != 17 {
 		t.Fatalf("exact issue ranking = %+v, %v", exact, err)
 	}
 	exact, err = service.Repository(t.Context(), authz.Anonymous(), scope, Options{Query: "auth-lock"})
-	if err != nil || len(exact.Items) < 2 || exact.Items[0].Number != 1 {
+	if err != nil || len(exact.Items) < 2 || exact.Items[0].Number != 1 || len(exact.Items[0].Changes) != 1 || !exact.Items[0].Changes[0].Matched {
 		t.Fatalf("exact change ranking = %+v, %v", exact, err)
 	}
 	const updatedComment = "updated-body-token 更新后立即可检索"

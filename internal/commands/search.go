@@ -44,10 +44,12 @@ func (a *app) runSearchIssues(ctx context.Context, args []string) int {
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
-	repo, ok := a.validateRepo(*repoFlag)
-	if !ok {
+	if _, ok := a.validateRepo(*repoFlag); !ok {
 		return 2
 	}
+	// Native search owns route escaping. Keep the validated repository raw so
+	// special characters are encoded exactly once by SearchNativeIssues.
+	repo := strings.TrimSpace(*repoFlag)
 	options := github.NativeIssueSearchOptions{Query: strings.TrimSpace(*query), State: strings.ToLower(strings.TrimSpace(*state)),
 		Source: strings.ToLower(strings.TrimSpace(*source)), Stage: strings.ToLower(strings.TrimSpace(*stage)), Page: 1, PerPage: *limit}
 	if err := validateSearchOptions(options); err != nil {
@@ -130,7 +132,7 @@ func renderSearchResults(output *strings.Builder, nonce string, redactor github.
 		writeTrustedField(output, redactor, "url", item.URL)
 		writeTrustedField(output, redactor, "state", item.State)
 		for _, change := range item.Changes {
-			writeTrustedField(output, redactor, "change", change.Key)
+			writeUntrustedField(output, nonce, redactor, "change", change.Key)
 			writeTrustedField(output, redactor, "stage", change.Stage)
 		}
 		writeUntrustedField(output, nonce, redactor, "title", item.Title)

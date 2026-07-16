@@ -9,8 +9,8 @@ import (
 
 func TestNativeIssueSearchUsesContextRouteAndBoundedOptions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/context/repos/acme/widgets/search/issues" {
-			t.Fatalf("path=%q", r.URL.Path)
+		if r.URL.EscapedPath() != "/api/v1/context/repos/acme/widget%20name%25%E4%B8%AD%E6%96%87/search/issues" {
+			t.Fatalf("path=%q escaped=%q", r.URL.Path, r.URL.EscapedPath())
 		}
 		if r.Header.Get("Authorization") != "Bearer search-token" || r.URL.Query().Get("q") != "鉴权锁" ||
 			r.URL.Query().Get("state") != "closed" || r.URL.Query().Get("source") != "comments" ||
@@ -26,7 +26,7 @@ func TestNativeIssueSearchUsesContextRouteAndBoundedOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := client.SearchNativeIssues(t.Context(), "acme/widgets", NativeIssueSearchOptions{Query: "鉴权锁",
+	page, err := client.SearchNativeIssues(t.Context(), "acme/widget name%中文", NativeIssueSearchOptions{Query: "鉴权锁",
 		State: "closed", Source: "comments", Stage: "implement", Page: 2, PerPage: 7})
 	if err != nil || len(page.Items) != 1 || page.Items[0].Number != 17 {
 		t.Fatalf("page=%+v err=%v", page, err)

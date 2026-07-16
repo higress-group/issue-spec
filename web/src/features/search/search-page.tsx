@@ -125,7 +125,8 @@ export function groupSearchResults(items: SearchIssueModel[]): SearchResultGroup
   const groups: SearchResultGroup[] = [];
   const changes = new Map<string, SearchResultGroup>();
   for (const item of items) {
-    const change = item.changes[0];
+    const matchedChanges = item.changes.filter((change) => change.matched);
+    const change = matchedChanges.length === 1 ? matchedChanges[0] : matchedChanges.length === 0 && item.changes.length === 1 ? item.changes[0] : undefined;
     if (!change) {
       groups.push({ id: `issue:${item.id}`, items: [item] });
       continue;

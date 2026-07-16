@@ -84,8 +84,9 @@ type Match struct {
 }
 
 type Change struct {
-	Key   string `json:"key"`
-	Stage string `json:"stage"`
+	Key     string `json:"key"`
+	Stage   string `json:"stage"`
+	Matched bool   `json:"matched"`
 }
 
 type Issue struct {

@@ -2,20 +2,24 @@ package search
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const advisoryLockKey = "issue-spec:postgres-search-indexes:v1"
 
-var searchIndexes = []struct {
+type searchIndex struct {
 	name      string
 	statement string
 	signature string
-}{
+}
+
+var searchIndexes = []searchIndex{
 	{"issue_spec_search_issues_bigm_v1",
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_issues_bigm_v1
 			ON issues USING gin (lower(title || E'\n' || body) public.gin_bigm_ops)`,
@@ -62,8 +66,8 @@ func Prepare(ctx context.Context, pool *pgxpool.Pool) error {
 		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, advisoryLockKey)
 	}()
 	for _, index := range searchIndexes {
-		if _, err := conn.Exec(ctx, index.statement); err != nil {
-			return fmt.Errorf("search prepare: reconcile index: %w", err)
+		if err := reconcileIndex(ctx, conn, index); err != nil {
+			return err
 		}
 	}
 	return validateIndexes(ctx, conn)
@@ -71,6 +75,51 @@ func Prepare(ctx context.Context, pool *pgxpool.Pool) error {
 
 type capabilityConn interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+type indexConn interface {
+	capabilityConn
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func reconcileIndex(ctx context.Context, conn indexConn, expected searchIndex) error {
+	exists, healthy, _, err := inspectIndex(ctx, conn, expected)
+	if err != nil {
+		return fmt.Errorf("search prepare: inspect index %s: %w", expected.name, err)
+	}
+	if exists && !healthy {
+		if _, err := conn.Exec(ctx, "DROP INDEX CONCURRENTLY "+pgx.Identifier{expected.name}.Sanitize()); err != nil {
+			return fmt.Errorf("search prepare: drop stale index %s: %w", expected.name, err)
+		}
+	}
+	if !exists || !healthy {
+		if _, err := conn.Exec(ctx, expected.statement); err != nil {
+			return fmt.Errorf("search prepare: create index %s: %w", expected.name, err)
+		}
+	}
+	return nil
+}
+
+func inspectIndex(ctx context.Context, conn capabilityConn, expected searchIndex) (bool, bool, string, error) {
+	var definition string
+	var valid, ready bool
+	err := conn.QueryRow(ctx, `SELECT pg_get_indexdef(c.oid), i.indisvalid, i.indisready
+		FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		JOIN pg_index i ON i.indexrelid = c.oid
+		WHERE n.nspname = current_schema() AND c.relname = $1`, expected.name).Scan(&definition, &valid, &ready)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, "", nil
+	}
+	if err != nil {
+		return false, false, "", err
+	}
+	return true, valid && ready && indexDefinitionMatches(definition, expected.signature), definition, nil
+}
+
+func indexDefinitionMatches(definition, signature string) bool {
+	normalized := strings.ReplaceAll(definition, "public.", "")
+	normalized = strings.ReplaceAll(normalized, "\n", `\n`)
+	return strings.Contains(normalized, signature)
 }
 
 func validateCapabilities(ctx context.Context, conn capabilityConn) error {
@@ -111,18 +160,11 @@ func validateCapabilities(ctx context.Context, conn capabilityConn) error {
 
 func validateIndexes(ctx context.Context, conn capabilityConn) error {
 	for _, expected := range searchIndexes {
-		var definition string
-		var valid, ready bool
-		err := conn.QueryRow(ctx, `SELECT pg_get_indexdef(c.oid), i.indisvalid, i.indisready
-			FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-			JOIN pg_index i ON i.indexrelid = c.oid
-			WHERE n.nspname = current_schema() AND c.relname = $1`, expected.name).Scan(&definition, &valid, &ready)
+		exists, healthy, definition, err := inspectIndex(ctx, conn, expected)
 		if err != nil {
 			return fmt.Errorf("search prepare: validate index %s: %w", expected.name, err)
 		}
-		normalized := strings.ReplaceAll(definition, "public.", "")
-		normalized = strings.ReplaceAll(normalized, "\n", `\n`)
-		if !valid || !ready || !strings.Contains(normalized, expected.signature) {
+		if !exists || !healthy {
 			return fmt.Errorf("search prepare: index %s is invalid, not ready, or has an unexpected definition: %s", expected.name, definition)
 		}
 	}
