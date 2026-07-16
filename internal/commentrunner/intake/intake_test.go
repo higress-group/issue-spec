@@ -806,7 +806,7 @@ func TestRunOnceRejectedWritebackDoesNotEchoUnauthorizedPrompt(t *testing.T) {
 		t.Fatalf("expected one rejected writeback, got %+v", backend.createdRunnerComments)
 	}
 	body := backend.createdRunnerComments[0].Body
-	if !strings.Contains(body, "| Status | `rejected` |") || !strings.Contains(body, "command unauthorized") {
+	if !strings.Contains(body, "- Status: `rejected`") || !strings.Contains(body, "command unauthorized") {
 		t.Fatalf("rejected writeback missing status/diagnostic:\n%s", body)
 	}
 	if strings.Contains(body, secretPrompt) || strings.Contains(body, "secret-token-secret-token-secret-token") {

@@ -72,14 +72,13 @@ func RenderRunnerStatusComment(comment RunnerStatusComment) (string, error) {
 	var b strings.Builder
 	b.WriteString(marker)
 	b.WriteString("\n\n### issue-spec runner status\n\n")
-	b.WriteString("| Field | Value |\n| --- | --- |\n")
-	tableRow(&b, "Status", codeOrNA(comment.Status))
-	tableRow(&b, "Phase", codeOrNA(comment.Phase))
+	statusListItem(&b, "Status", codeOrNA(comment.Status))
+	statusListItem(&b, "Phase", codeOrNA(comment.Phase))
 	if strings.TrimSpace(comment.PublicSessionID) != "" {
-		tableRow(&b, "Public session", codeOrNA(comment.PublicSessionID))
+		statusListItem(&b, "Public session", codeOrNA(comment.PublicSessionID))
 	}
 	if strings.TrimSpace(comment.AgentKind) != "" {
-		tableRow(&b, "Agent", codeOrNA(comment.AgentKind))
+		statusListItem(&b, "Agent", codeOrNA(comment.AgentKind))
 	}
 
 	writeResultSummary(&b, comment)
@@ -340,8 +339,8 @@ func writeResumeGuidance(b *strings.Builder, comment RunnerStatusComment) {
 	b.WriteString("Ordinary follow-up comments are recorded on GitHub, but the runner only sends `/resume` command comments to the coordinator.\n")
 }
 
-func tableRow(b *strings.Builder, key, value string) {
-	fmt.Fprintf(b, "| %s | %s |\n", escapeTable(key), escapeTable(value))
+func statusListItem(b *strings.Builder, key, value string) {
+	fmt.Fprintf(b, "- %s: %s\n", key, value)
 }
 
 func codeOrNA(value string) string {
@@ -380,10 +379,6 @@ func truncateUTF8(value string, maxBytes int) string {
 		value = value[:len(value)-size]
 	}
 	return value + "..."
-}
-
-func escapeTable(value string) string {
-	return strings.ReplaceAll(value, "|", "\\|")
 }
 
 func joinNonEmpty(sep string, values ...string) string {
