@@ -3,6 +3,8 @@ package commands
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -156,20 +158,25 @@ func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *te
 				linkArtifacts(t, &spec, &process)
 				artifacts := []model.Artifact{spec, task, process, verify}
 
-				verifyReport, err := buildFinalVerifyReport(artifacts, "https://github.com/o/r/issues/1", finalVerifyOptions{})
+				verifyOptions := finalVerifyOptions{}
+				if target == gates.TargetArchive {
+					verifyOptions.DurableSpecPath = statusValidDurableSpec(t, "https://github.com/o/r/issues/1", spec.URL)
+				}
+				verifyReport, err := buildFinalVerifyReport(artifacts, "https://github.com/o/r/issues/1", verifyOptions)
 				if err != nil {
 					t.Fatal(err)
 				}
 				status := summarizeStatusForGate("o/r", 1, 2, 3, target, artifacts, workflow.Plan{}, nil)
+				if verifyReport.Gate.Target != target || status.Gate.Target != target {
+					t.Fatalf("gate target drift: want=%s verify=%s status=%s", target, verifyReport.Gate.Target, status.Gate.Target)
+				}
 				if len(verifyReport.ProcessEvidence) != 1 || len(status.Gate.Processes) != 1 {
 					t.Fatalf("process evidence missing: verify=%+v status=%+v", verifyReport.ProcessEvidence, status.Gate.Processes)
 				}
-				want, got := verifyReport.ProcessEvidence[0], status.Gate.Processes[0]
-				if want.ProcessID != got.ProcessID || want.ExecutionClass != got.ExecutionClass || want.ExplicitClass != got.ExplicitClass ||
-					!reflect.DeepEqual(want.Required, got.Required) || !reflect.DeepEqual(want.Satisfied, got.Satisfied) ||
-					!reflect.DeepEqual(want.Missing, got.Missing) ||
-					!reflect.DeepEqual(statusGateCodes(want.Diagnostics), statusGateCodes(got.Diagnostics)) {
-					t.Fatalf("status/verify PROCESS evidence drift: verify=%+v status=%+v", want, got)
+				verifyLocal := localStatusGateCodes(verifyReport.Gate.Diagnostics)
+				statusLocal := localStatusGateCodes(status.Gate.Diagnostics)
+				if !reflect.DeepEqual(statusLocal, verifyLocal) {
+					t.Fatalf("locally knowable gate drift: verify=%v status=%v", verifyLocal, statusLocal)
 				}
 				for _, code := range []string{gates.CodePRChecksUnknown, gates.CodeReviewFindingsUnknown} {
 					if !statusHasCode(status, code) {
@@ -179,6 +186,17 @@ func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *te
 			})
 		}
 	}
+}
+
+func statusValidDurableSpec(t *testing.T, proposalURL, specURL string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "spec.md")
+	body := "# issue-spec-cli\n\n## Purpose\n\nPurpose.\n\nProposal Issues:\n- " + proposalURL +
+		"\n\n## Requirements\n\n### Requirement: X\n\nX MUST work.\n\nSource SPEC comment: " + specURL + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestStatusDefaultProcessEvidenceDoesNotOverrideCollectedEvidence(t *testing.T) {

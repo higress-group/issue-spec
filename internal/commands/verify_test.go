@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -268,33 +269,83 @@ func TestRunVerifySelfHostedPreservesBlockingGateAndSkipsEvidenceConsumption(t *
 }
 
 func TestRunVerifySelfHostedRejectsAnyExplicitPR(t *testing.T) {
-	for _, test := range []struct {
+	const externalEvidenceError = "external evidence fixture failed"
+	failures := []struct {
+		name   string
+		inject func(*app)
+	}{
+		{
+			name: "provider construction fails",
+			inject: func(app *app) {
+				app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) {
+					return nil, errors.New(externalEvidenceError)
+				}
+			},
+		},
+		{
+			name: "target resolution fails",
+			inject: func(app *app) {
+				baseProvider := app.newNativeEvidenceProvider
+				app.newNativeEvidenceProvider = func(profile auth.Profile, token string) (nativeEvidenceProvider, error) {
+					provider, err := baseProvider(profile, token)
+					if err != nil {
+						return nil, err
+					}
+					return &failingResolveNativeEvidence{nativeEvidenceProvider: provider, err: errors.New(externalEvidenceError)}, nil
+				}
+			},
+		},
+	}
+	arguments := []struct {
 		name     string
 		prArg    string
 		wantCode int
 		rejected bool
 	}{
-		{name: "omitted uses active code change", wantCode: 1},
+		{name: "omitted uses external evidence", wantCode: 1},
 		{name: "explicit zero", prArg: "--pr=0", wantCode: 2, rejected: true},
 		{name: "explicit negative", prArg: "--pr=-1", wantCode: 2, rejected: true},
 		{name: "explicit positive", prArg: "--pr=7", wantCode: 2, rejected: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			app, out, errOut, updates := newSelfHostedVerifyApp(t)
-			args := []string{"--repo", "acme/widgets", "--proposal", "1", "--design", "2", "--implement", "3", "--json"}
-			if test.prArg != "" {
-				args = append(args, test.prArg)
-			}
-			code := app.runVerify(t.Context(), args)
-			rejected := strings.Contains(errOut.String(), "--pr is not a self-hosted code authority")
-			if code != test.wantCode || rejected != test.rejected {
-				t.Fatalf("self-hosted verify exit=%d rejected=%t stdout=%q stderr=%q", code, rejected, out.String(), errOut.String())
-			}
-			if *updates != 0 {
-				t.Fatalf("self-hosted verify unexpectedly consumed evidence with %d comment updates", *updates)
+	}
+	for _, failure := range failures {
+		t.Run(failure.name, func(t *testing.T) {
+			for _, argument := range arguments {
+				t.Run(argument.name, func(t *testing.T) {
+					app, out, errOut, updates := newSelfHostedVerifyApp(t)
+					failure.inject(app)
+					args := []string{"--repo", "acme/widgets", "--proposal", "1", "--design", "2", "--implement", "3", "--json"}
+					if argument.prArg != "" {
+						args = append(args, argument.prArg)
+					}
+					code := app.runVerify(t.Context(), args)
+					stderr := errOut.String()
+					rejected := strings.Contains(stderr, "--pr is not a self-hosted code authority")
+					externalError := strings.Contains(stderr, "verify external evidence:") || strings.Contains(stderr, externalEvidenceError)
+					if code != argument.wantCode || rejected != argument.rejected {
+						t.Fatalf("self-hosted verify exit=%d rejected=%t stdout=%q stderr=%q", code, rejected, out.String(), stderr)
+					}
+					if argument.rejected && externalError {
+						t.Fatalf("explicit --pr exposed lower-priority external evidence error: %q", stderr)
+					}
+					if !argument.rejected && (!strings.Contains(stderr, "verify external evidence:") || !strings.Contains(stderr, externalEvidenceError)) {
+						t.Fatalf("omitted --pr did not report external evidence failure: %q", stderr)
+					}
+					if *updates != 0 {
+						t.Fatalf("self-hosted verify unexpectedly consumed evidence with %d comment updates", *updates)
+					}
+				})
 			}
 		})
 	}
+}
+
+type failingResolveNativeEvidence struct {
+	nativeEvidenceProvider
+	err error
+}
+
+func (e *failingResolveNativeEvidence) ResolveTarget(context.Context, string, int, string) (coreevidence.NativeTarget, error) {
+	return coreevidence.NativeTarget{}, e.err
 }
 
 func newSelfHostedVerifyApp(t *testing.T) (*app, *bytes.Buffer, *bytes.Buffer, *int) {
