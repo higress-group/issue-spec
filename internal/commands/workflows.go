@@ -217,7 +217,7 @@ func workflowSkillsWithProvider(repo string, plan workflow.Plan, provider *workf
 		if skills[i].Name == "issue-spec-github" {
 			continue
 		}
-		skills[i].Content = strings.TrimRight(skills[i].Content, "\n") + "\n\n" + notice + "\n"
+		skills[i].Content = strings.TrimRight(skills[i].Content, "\n") + "\n\n" + strings.TrimRight(notice, "\n") + "\n"
 	}
 	if provider != nil {
 		providerNotice := templates.ProviderWorkflowNotice(*provider)
@@ -225,7 +225,7 @@ func workflowSkillsWithProvider(repo string, plan workflow.Plan, provider *workf
 			if skills[i].Name == "issue-spec-github" {
 				continue
 			}
-			skills[i].Content = strings.TrimRight(skills[i].Content, "\n") + "\n\n" + providerNotice + "\n"
+			skills[i].Content = strings.TrimRight(skills[i].Content, "\n") + "\n\n" + strings.TrimRight(providerNotice, "\n") + "\n"
 		}
 		skills = append(skills, templates.IssueSpecProviderSkill(repo, *provider))
 	}
@@ -240,9 +240,9 @@ func workflowCommandContentsWithProvider(repo string, plan workflow.Plan, provid
 	commands := templates.IssueSpecCommandContents(repo)
 	notice := workflowNotice(plan)
 	for i := range commands {
-		commands[i].Body = strings.TrimRight(commands[i].Body, "\n") + "\n\n" + notice + "\n"
+		commands[i].Body = strings.TrimRight(commands[i].Body, "\n") + "\n\n" + strings.TrimRight(notice, "\n") + "\n"
 		if provider != nil {
-			commands[i].Body = strings.TrimRight(commands[i].Body, "\n") + "\n\n" + templates.ProviderWorkflowNotice(*provider) + "\n"
+			commands[i].Body = strings.TrimRight(commands[i].Body, "\n") + "\n\n" + strings.TrimRight(templates.ProviderWorkflowNotice(*provider), "\n") + "\n"
 		}
 	}
 	return commands

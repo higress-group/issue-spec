@@ -60,4 +60,3 @@ links. Run `issue-spec verify-links` after propose as a smoke check.
 - Workflow Diagnostics:
 
 Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in GitHub issue-native storage; durable specs are repository files created during archive.
-

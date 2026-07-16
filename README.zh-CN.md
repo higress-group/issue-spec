@@ -201,7 +201,7 @@ implement issue 记录该 DAG：
 - 关联的 TASK/SPEC 评论
 - 状态、阻塞项与验证证据
 
-对于非平凡的变更，DAG 应包含专门的 review PROCESS 节点，而不仅仅是实现 PROCESS 节点。review 是 MUST，且必须由不同于代码作者的 agent 执行：若某个 review PROCESS 的 reviewer `--agent` 名称与同一 SPEC 的代码作者相同，将在最终 gate 失败（`process.review.author_conflict`）。当各 review 范围相互独立时（例如 CLI/API 行为、工作流文档、测试、兼容性或安全敏感面），协调器可以并行运行多个 review agent。小改动可以由协调器直接实现并 review，但 implement 或 verify 记录应说明该任务是有意保持串行的。
+编码可以由协调器 inline 完成，也可以委派给 worker 子 agent；委派是出于上下文隔离的推荐默认，而非硬性要求。但对任何 change-bearing 工作，review 都是 MUST，且必须由不同于代码作者的 agent 执行：DAG 必须包含专门的 review PROCESS 节点，若某个 review PROCESS 的 reviewer `--agent` 名称与同一 SPEC 的代码作者相同，将在最终 gate 失败（`process.review.author_conflict`）。协调器可以 inline 编写代码并保持串行链，但不得 review 自己写的代码——应改由独立的 reviewing agent 执行 review。当各 review 范围相互独立时（例如 CLI/API 行为、工作流文档、测试、兼容性或安全敏感面），协调器可以并行运行多个 review agent。
 
 协调器执行遵循一个「就绪节点」循环：
 

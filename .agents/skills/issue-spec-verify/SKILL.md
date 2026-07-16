@@ -35,4 +35,3 @@ Use when the user asks for /issue-spec:verify, issue-spec verify, or final readi
 - Workflow Diagnostics:
 
 Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in GitHub issue-native storage; durable specs are repository files created during archive.
-

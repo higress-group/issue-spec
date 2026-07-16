@@ -43,6 +43,7 @@ const (
 	CodeProviderEvidenceUnknown   = "provider.evidence.unknown"
 	CodeDurableSpecInvalid        = "durable_spec.invalid"
 	CodeDurableSpecUnknown        = "durable_spec.unknown"
+	CodeProcessReviewRequired     = "process.review.required"
 )
 
 // Evaluate applies all policy locally and deterministically. It performs no
@@ -97,6 +98,43 @@ func (e *evaluator) evaluateProcessEvidence() {
 		e.diagnostics = append(e.diagnostics, report.Diagnostics...)
 	}
 	sort.Slice(e.processes, func(i, j int) bool { return e.processes[i].ProcessID < e.processes[j].ProcessID })
+	e.requireIndependentReviewPresence()
+}
+
+// requireIndependentReviewPresence fails closed when a SPEC has satisfied
+// change-bearing code but no satisfied, independent review PROCESS covering it.
+// The name-based author-conflict check on a review PROCESS only runs when such a
+// PROCESS exists, so without this presence requirement a non-trivial change could
+// bypass independent review entirely by never creating the review node.
+func (e *evaluator) requireIndependentReviewPresence() {
+	reviewed := map[string]bool{}
+	changeBearing := map[string]ArtifactRef{}
+	for _, report := range e.processes {
+		switch report.ExecutionClass {
+		case model.ProcessExecutionReview:
+			for _, spec := range report.SatisfiedSpecs {
+				reviewed[spec] = true
+			}
+		case model.ProcessExecutionChangeBearing:
+			for _, spec := range report.SatisfiedSpecs {
+				if _, seen := changeBearing[spec]; !seen {
+					changeBearing[spec] = ArtifactRef{Type: "SPEC", ID: spec}
+				}
+			}
+		}
+	}
+	specs := make([]string, 0, len(changeBearing))
+	for spec := range changeBearing {
+		specs = append(specs, spec)
+	}
+	sort.Strings(specs)
+	for _, spec := range specs {
+		if reviewed[spec] {
+			continue
+		}
+		e.add(CodeProcessReviewRequired, fmt.Sprintf("%s has change-bearing code but no independent review PROCESS covering it", spec),
+			changeBearing[spec], "missing independent review", "review PROCESS by an agent other than the code author", "comment generate", "--type", "PROCESS")
+	}
 }
 
 func (e *evaluator) evaluateWorkspaceEvidence() error {

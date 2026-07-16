@@ -102,6 +102,12 @@ type ProcessEvidenceReport struct {
 	Missing         []string                    `json:"missing,omitempty"`
 	Diagnostics     []Diagnostic                `json:"diagnostics,omitempty"`
 	CarrierRevision CarrierRevisionFact         `json:"carrier_revision"`
+	// SatisfiedSpecs lists the active SPEC IDs this PROCESS cleanly satisfied
+	// for its execution class: for change-bearing, the SPECs with a matching
+	// inline rationale carrier; for review, the SPECs independently (non-self)
+	// reviewed. The final gate joins these across PROCESS reports to require an
+	// independent review PROCESS for every change-bearing SPEC.
+	SatisfiedSpecs []string `json:"satisfied_specs,omitempty"`
 }
 
 // ProcessCarrierRevisionFacts projects provider-owned carrier facts by PROCESS.
@@ -159,6 +165,7 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 	case model.ProcessExecutionChangeBearing:
 		report.Required = append(report.Required, "inline rationale on matching PR path/line")
 		carrier := false
+		carriedSpecs := map[string]bool{}
 		for _, evidence := range input.Rationales {
 			if evidence.ProcessID != report.ProcessID || !activeSpec(evidence.SpecID) {
 				continue
@@ -170,8 +177,9 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 				continue
 			}
 			carrier, specSatisfied = true, true
-			break
+			carriedSpecs[evidence.SpecID] = true
 		}
+		report.SatisfiedSpecs = sortedKeys(carriedSpecs)
 		if carrier {
 			report.Satisfied = append(report.Satisfied, "matching inline rationale")
 		} else {
@@ -248,6 +256,7 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 		if carrier {
 			specSatisfied = true
 		}
+		report.SatisfiedSpecs = sortedKeys(cleanCovered)
 		report.CarrierRevision = aggregateCarrierRevisions(revisions)
 		switch {
 		case carrier:
@@ -358,6 +367,18 @@ func aggregateCarrierRevisions(candidates []CarrierRevisionFact) CarrierRevision
 
 func normalizeAgent(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func sortedKeys(set map[string]bool) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func firstNonEmptySource(candidates []CarrierRevisionFact) string {

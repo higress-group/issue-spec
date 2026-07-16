@@ -39,4 +39,3 @@ Use when the user asks for /issue-spec:review, issue-spec review, or a PR review
 - Workflow Diagnostics:
 
 Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in GitHub issue-native storage; durable specs are repository files created during archive.
-
