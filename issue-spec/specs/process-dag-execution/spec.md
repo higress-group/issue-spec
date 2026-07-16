@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for this capability.
+Define the long-lived behavior contract for how the implement phase plans and executes the PROCESS DAG: capturing execution-planning metadata on TASK comments, requiring agent-executed change-bearing nodes to run in real non-coordinator native workers, allowing one worker to execute multiple compatible nodes while preserving per-PROCESS boundaries and bounded handoff, gating parallel dispatch on proven decoupling, treating review and repair as first-class PROCESS nodes with mandatory independent review for change-bearing work, guiding reviewer coverage for every distinct change-bearing author, and auditing execution-planning evidence at final verify. It also defines whether a PROCESS uses the coordinator-managed workspace lifecycle or a genuinely external or human-owned independently managed workspace.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/144
 - https://github.com/higress-group/issue-spec/issues/196
-- https://github.com/higress-group/issue-spec/issues/247
 - https://github.com/higress-group/issue-spec/issues/32
+- https://github.com/higress-group/issue-spec/issues/247
 
 ## Requirements
 
@@ -221,7 +221,8 @@ The coordinator retains planning, scheduling, workspace management, integration,
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904042881
 - https://github.com/higress-group/issue-spec/pull/232
-- https://github.com/higress-group/issue-spec/issues/247
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992293971
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992294654
 
 ### Requirement: Compatible serial PROCESS nodes may reuse a worker while preserving bounded handoff
 
@@ -239,7 +240,7 @@ The same real worker MAY execute multiple compatible serial change-bearing or re
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043156
-- https://github.com/higress-group/issue-spec/issues/247
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992293971
 
 ### Requirement: Coordinator prompt carries a phase-aware worker and review contract
 
@@ -267,7 +268,9 @@ The generated coordinator prompt MUST express the DAG-execution contract at fide
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043410
-- https://github.com/higress-group/issue-spec/issues/247
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992293971
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992294654
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992295279
 
 ### Requirement: Coordinator retains only orchestration state during agent-executed implementation
 
@@ -285,7 +288,7 @@ During agent-executed implementation the coordinator MUST retain only planning, 
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043650
-- https://github.com/higress-group/issue-spec/issues/247
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992293971
 
 ### Requirement: Explicit workspace-management declaration
 
@@ -329,77 +332,4 @@ A done PROCESS genuinely declared `independent` for external or human-owned self
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/196#issuecomment-4964218213
-- https://github.com/higress-group/issue-spec/issues/247
-
-### Requirement: Delegate agent-executed change-bearing PROCESS nodes to non-coordinator workers
-
-Every agent-executed change-bearing PROCESS MUST be dispatched to a real runtime-native child or sub-agent. The coordinator MUST NOT implement such a node inline and MUST NOT use workspace_management: independent as an inline escape hatch. A worker MAY execute multiple compatible change-bearing or code-repair PROCESS nodes while preserving each node's state, dependencies, bounded handoff, and evidence. Trusted external or human execution and non-change-bearing execution classes SHALL retain their existing execution policies.
-
-#### Scenario: Coordinator cannot execute a change-bearing node inline
-
-- **WHEN** the coordinator selects an agent-executed change-bearing PROCESS whose dependencies are ready
-- **THEN** it SHALL dispatch the node to a real non-coordinator worker instead of implementing, testing, or committing the node itself
-
-#### Scenario: One worker may execute multiple compatible nodes
-
-- **WHEN** several serial or otherwise compatible change-bearing or code-repair PROCESS nodes can be owned safely by the same worker
-- **THEN** the coordinator MAY dispatch them to that worker without creating a fresh worker for every node, while retaining separate PROCESS state and evidence
-
-#### Scenario: Unsupported child capability fails closed
-
-- **WHEN** the active runtime cannot dispatch a native child or sub-agent for an agent-executed change-bearing PROCESS
-- **THEN** the workflow MUST report an actionable unsupported-capability failure and MUST NOT fall back to coordinator-inline implementation
-
-#### Scenario: Other execution classes remain unchanged
-
-- **WHEN** a PROCESS is verification, orchestration, external, or trusted human-owned work rather than agent-executed change-bearing work
-- **THEN** this requirement SHALL NOT add a new native-child or executor-identity gate beyond that class's existing policy
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992293971
-
-### Requirement: Reject coordinator-authored change-bearing evidence using existing logical Agent identities
-
-Final verification MUST reuse the existing logical Agent identity model and the name normalization established by process.review.author_conflict. The PROCESS typed-comment Agent SHALL identify the coordinator that planned and scheduled the node, and the valid change-bearing rationale carrier Agent SHALL identify the code author. When those normalized names match, final verification MUST fail closed with process.executor.coordinator_conflict. Agent Session ID and Agent Session Source MUST remain diagnostic-only and MUST NOT be compared for executor independence.
-
-#### Scenario: Coordinator-authored rationale is rejected
-
-- **WHEN** a valid rationale carrier for a change-bearing PROCESS has the same normalized Agent name as the PROCESS coordinator Agent
-- **THEN** final verification MUST emit the blocking process.executor.coordinator_conflict diagnostic
-
-#### Scenario: Independent worker rationale passes coordinator separation
-
-- **WHEN** a valid change-bearing rationale carrier is authored by a logical Agent whose normalized name differs from the coordinator Agent
-- **THEN** the coordinator-separation gate SHALL NOT block that carrier on Agent-name conflict
-
-#### Scenario: Missing session metadata does not determine independence
-
-- **WHEN** a valid worker carrier has missing or runtime-incompatible Agent Session metadata
-- **THEN** the coordinator-separation gate MUST evaluate logical Agent names and MUST NOT fail solely because session metadata is absent
-
-#### Scenario: Generated guidance prohibits fabricated worker names
-
-- **WHEN** workflow prompts or skills explain the logical-name backstop
-- **THEN** they MUST state that a different Agent name is not sufficient without a real dispatched worker and MUST prohibit fabricated or relabeled identities used only to pass the gate
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992294654
-
-### Requirement: Guide independent review coverage for every distinct change-bearing code author
-
-Generated coordinator, apply, and workflow guidance MUST instruct the coordinator that, for each distinct Agent authoring one or more change-bearing PROCESS nodes, it SHOULD assign at least one independent review agent whose scope covers that author's PROCESS outputs and affected SPECs. One review agent MAY cover multiple implementation authors when it authored none of the code in its assigned scope. This is scheduling guidance: final verification SHALL continue enforcing review presence and author independence per SPEC and MUST NOT require a one-to-one mapping between implementation and review agents.
-
-#### Scenario: Review planning covers each development author
-
-- **WHEN** multiple distinct worker Agents author change-bearing PROCESS outputs
-- **THEN** generated guidance SHALL tell the coordinator to assign independent review coverage for every author and include the relevant PROCESS outputs and affected SPECs in the review scopes
-
-#### Scenario: One independent reviewer may cover multiple authors
-
-- **WHEN** one review agent authored none of the code produced by several implementation workers and can review their combined scope
-- **THEN** the coordinator MAY assign that reviewer to all of those workers without creating one unique reviewer per implementation Agent
-
-#### Scenario: Final verification remains per SPEC
-
-- **WHEN** review coverage is evaluated at final verification
-- **THEN** the gate MUST require independent review for every change-bearing SPEC and MUST NOT add a blocking implementation-Agent-to-reviewer pairing requirement
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992295279
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992293971
