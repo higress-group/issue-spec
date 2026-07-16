@@ -140,6 +140,9 @@ func (r *Runtime) runJobLoop(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
+			if jobs.IsOnlyTerminalJobFailures(err) {
+				continue
+			}
 			return err
 		}
 		if result.Executed {

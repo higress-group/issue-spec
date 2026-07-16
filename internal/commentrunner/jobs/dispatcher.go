@@ -442,7 +442,7 @@ func aggregateJobRunResults(results []jobRunResult) (Result, error) {
 		return withJobExecutedCount(results[0].result), results[0].err
 	}
 	aggregate := Result{Results: make([]Result, 0, len(results))}
-	var firstErr error
+	var runErrors []error
 	for _, item := range results {
 		result := item.result
 		result.Results = nil
@@ -462,11 +462,11 @@ func aggregateJobRunResults(results []jobRunResult) (Result, error) {
 		if aggregate.Error == "" && result.Error != "" {
 			aggregate.Error = result.Error
 		}
-		if firstErr == nil && item.err != nil {
-			firstErr = item.err
+		if item.err != nil {
+			runErrors = append(runErrors, item.err)
 		}
 	}
-	return aggregate, firstErr
+	return aggregate, errors.Join(runErrors...)
 }
 
 func withJobExecutedCount(result Result) Result {
@@ -1482,7 +1482,7 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 		_, _ = d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase,
 			AcpxStdout: dispatch.Output.RawStdout, AcpxStderr: dispatch.Output.RawStderr, Err: cause})
 	}
-	return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: msg}, cause
+	return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: msg}, terminalJobFailure(cause)
 }
 
 func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error) (Result, error) {
@@ -1527,7 +1527,7 @@ func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error)
 	if failed.ID != "" && d.Writeback != nil {
 		_, _ = d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase, Err: cause})
 	}
-	return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: msg}, cause
+	return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: msg}, terminalJobFailure(cause)
 }
 
 func cancelledDuringDispatchResult(jobID string) Result {

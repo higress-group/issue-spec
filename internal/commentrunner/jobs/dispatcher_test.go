@@ -692,6 +692,9 @@ func TestRunNextFailurePersistsFailedStateAndBoundedError(t *testing.T) {
 	if err == nil {
 		t.Fatal("RunNext succeeded, want workspace error")
 	}
+	if !errors.Is(err, ErrTerminalJobFailure) || !errors.Is(err, longErr) {
+		t.Fatalf("RunNext error classification = %v, want terminal job failure preserving workspace cause", err)
+	}
 	if result.Status != state.StatusFailed || len([]byte(result.Error)) > 1024 {
 		t.Fatalf("failure result not bounded: %+v", result)
 	}
@@ -1060,6 +1063,9 @@ func TestRunNextSummaryFailureDoesNotMaskDispatchFailures(t *testing.T) {
 			result, err := dispatcher.RunNext(context.Background())
 			if err == nil {
 				t.Fatal("RunNext succeeded, want dispatch failure")
+			}
+			if !errors.Is(err, ErrTerminalJobFailure) {
+				t.Fatalf("dispatch failure was not classified as a persisted terminal job failure: %v", err)
 			}
 			if result.Status != state.StatusFailed || result.JobID != jobID || !strings.Contains(result.Error, tc.wantDiagnostic) {
 				t.Fatalf("unexpected result: %+v err=%v", result, err)

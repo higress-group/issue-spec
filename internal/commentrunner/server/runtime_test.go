@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -70,6 +72,50 @@ func TestRuntimeJobLoopSurvivesBenignCancelledDispatchCompletion(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRuntimeJobLoopContinuesAfterPersistedJobFailure(t *testing.T) {
+	log := &runtimeLog{}
+	dispatcher := &terminalFailureRuntimeDispatcher{secondCall: make(chan struct{})}
+	runtime, err := NewRuntime(RuntimeConfig{
+		HTTP: &fakeRuntimeHTTP{log: log}, Reconciler: &fakeRuntimeReconciler{log: log}, Dispatcher: dispatcher,
+		MaxConcurrentJobs: 1, DispatchIdleDelay: time.Millisecond, CancelIdleDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	select {
+	case <-dispatcher.secondCall:
+		// The failed job was already persisted as terminal, so the runtime
+		// continued to the next dispatch cycle.
+	case err := <-done:
+		t.Fatalf("runner serve exited after persisted job failure: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("runner job loop did not continue after persisted job failure")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeJobLoopStillStopsOnInfrastructureFailure(t *testing.T) {
+	log := &runtimeLog{}
+	dispatcher := &infrastructureFailureRuntimeDispatcher{}
+	runtime, err := NewRuntime(RuntimeConfig{
+		HTTP: &fakeRuntimeHTTP{log: log}, Reconciler: &fakeRuntimeReconciler{log: log}, Dispatcher: dispatcher,
+		MaxConcurrentJobs: 1, DispatchIdleDelay: time.Millisecond, CancelIdleDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = runtime.Run(t.Context())
+	if err == nil || !errors.Is(err, dispatcher.err) {
+		t.Fatalf("runner serve infrastructure error = %v, want %v", err, dispatcher.err)
 	}
 }
 
@@ -208,6 +254,58 @@ func (*benignCancellationRuntimeDispatcher) DrainCancellations(ctx context.Conte
 type interruptedReconcileRuntimeDispatcher struct {
 	jobsStarted chan struct{}
 	once        sync.Once
+}
+
+type terminalFailureRuntimeDispatcher struct {
+	mu         sync.Mutex
+	calls      int
+	secondCall chan struct{}
+	once       sync.Once
+}
+
+func (*terminalFailureRuntimeDispatcher) Reconcile(context.Context) (jobs.ReconcileResult, error) {
+	return jobs.ReconcileResult{}, nil
+}
+
+func (f *terminalFailureRuntimeDispatcher) RunJobsReady(ctx context.Context, _ int) (jobs.Result, error) {
+	f.mu.Lock()
+	f.calls++
+	call := f.calls
+	f.mu.Unlock()
+	if call == 1 {
+		return jobs.Result{Executed: true, JobID: "job-failed", Status: state.StatusFailed},
+			fmt.Errorf("%w: prepare workspace", jobs.ErrTerminalJobFailure)
+	}
+	f.once.Do(func() { close(f.secondCall) })
+	<-ctx.Done()
+	return jobs.Result{}, ctx.Err()
+}
+
+func (*terminalFailureRuntimeDispatcher) DrainCancellations(ctx context.Context, _ int) (jobs.Result, error) {
+	select {
+	case <-ctx.Done():
+		return jobs.Result{}, ctx.Err()
+	case <-time.After(time.Millisecond):
+		return jobs.Result{Reason: "no queued cancellations"}, nil
+	}
+}
+
+type infrastructureFailureRuntimeDispatcher struct{ err error }
+
+func (f *infrastructureFailureRuntimeDispatcher) Reconcile(context.Context) (jobs.ReconcileResult, error) {
+	if f.err == nil {
+		f.err = errors.New("state store unavailable")
+	}
+	return jobs.ReconcileResult{}, nil
+}
+
+func (f *infrastructureFailureRuntimeDispatcher) RunJobsReady(context.Context, int) (jobs.Result, error) {
+	return jobs.Result{}, f.err
+}
+
+func (*infrastructureFailureRuntimeDispatcher) DrainCancellations(ctx context.Context, _ int) (jobs.Result, error) {
+	<-ctx.Done()
+	return jobs.Result{}, ctx.Err()
 }
 
 func (*interruptedReconcileRuntimeDispatcher) Reconcile(context.Context) (jobs.ReconcileResult, error) {
