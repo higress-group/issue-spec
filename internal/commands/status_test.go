@@ -3,6 +3,8 @@ package commands
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -74,7 +76,11 @@ func TestStatusFinalReportsDogfoodBlockersAndForecastUnknowns(t *testing.T) {
 	}
 	want := []string{
 		gates.CodePRChecksUnknown,
+		gates.CodeProcessCarrierMissing,
+		gates.CodeProcessExecutionClassLegacy,
 		gates.CodeProcessNotDone,
+		gates.CodeProcessPRLinkMissing,
+		gates.CodeProcessSpecLinkMissing,
 		gates.CodeProcessWorkspaceMigrationWarning,
 		gates.CodeReviewFindingsUnknown,
 		gates.CodeTaskNotDone,
@@ -107,6 +113,139 @@ func TestStatusAndVerifyLocallyKnowableCodesStayInParity(t *testing.T) {
 	verifyLocal := localStatusGateCodes(verify.Gate.Diagnostics)
 	if !reflect.DeepEqual(statusLocal, verifyLocal) {
 		t.Fatalf("locally knowable gate drift: status=%v verify=%v", statusLocal, verifyLocal)
+	}
+	for _, code := range []string{
+		gates.CodeProcessCarrierMissing,
+		gates.CodeProcessPRLinkMissing,
+		gates.CodeProcessSpecLinkMissing,
+	} {
+		if !statusHasCode(status, code) {
+			t.Fatalf("final status without PR authority omitted local fail-closed code %s: %+v", code, status.Gate.Diagnostics)
+		}
+	}
+	archive := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetArchive, artifacts, workflow.Plan{}, nil)
+	for _, code := range []string{
+		gates.CodeProcessCarrierMissing,
+		gates.CodeProcessPRLinkMissing,
+		gates.CodeProcessSpecLinkMissing,
+	} {
+		if !statusHasCode(archive, code) {
+			t.Fatalf("archive status without PR authority omitted local fail-closed code %s: %+v", code, archive.Gate.Diagnostics)
+		}
+	}
+}
+
+func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *testing.T) {
+	classes := []model.ProcessExecutionClass{
+		model.ProcessExecutionChangeBearing,
+		model.ProcessExecutionReview,
+		model.ProcessExecutionVerification,
+		model.ProcessExecutionOrchestration,
+		model.ProcessExecutionExternal,
+	}
+	for _, class := range classes {
+		for _, target := range []gates.Target{gates.TargetFinal, gates.TargetArchive} {
+			t.Run(string(class)+"/"+string(target), func(t *testing.T) {
+				spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+				spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
+				task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+				task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
+				process := statusWorkspaceProcess(t, class, strings.Repeat("a", 40))
+				process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
+				verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+				linkArtifacts(t, &spec, &task)
+				linkArtifacts(t, &task, &process)
+				linkArtifacts(t, &spec, &process)
+				artifacts := []model.Artifact{spec, task, process, verify}
+
+				verifyOptions := finalVerifyOptions{}
+				if target == gates.TargetArchive {
+					verifyOptions.DurableSpecPath = statusValidDurableSpec(t, "https://github.com/o/r/issues/1", spec.URL)
+				}
+				verifyReport, err := buildFinalVerifyReport(artifacts, "https://github.com/o/r/issues/1", verifyOptions)
+				if err != nil {
+					t.Fatal(err)
+				}
+				status := summarizeStatusForGate("o/r", 1, 2, 3, target, artifacts, workflow.Plan{}, nil)
+				if verifyReport.Gate.Target != target || status.Gate.Target != target {
+					t.Fatalf("gate target drift: want=%s verify=%s status=%s", target, verifyReport.Gate.Target, status.Gate.Target)
+				}
+				if len(verifyReport.ProcessEvidence) != 1 || len(status.Gate.Processes) != 1 {
+					t.Fatalf("process evidence missing: verify=%+v status=%+v", verifyReport.ProcessEvidence, status.Gate.Processes)
+				}
+				verifyLocal := localStatusGateCodes(verifyReport.Gate.Diagnostics)
+				statusLocal := localStatusGateCodes(status.Gate.Diagnostics)
+				if !reflect.DeepEqual(statusLocal, verifyLocal) {
+					t.Fatalf("locally knowable gate drift: verify=%v status=%v", verifyLocal, statusLocal)
+				}
+				for _, code := range []string{gates.CodePRChecksUnknown, gates.CodeReviewFindingsUnknown} {
+					if !statusHasCode(status, code) {
+						t.Fatalf("status stopped reporting remote fact %s as unknown: %+v", code, status.Gate.Diagnostics)
+					}
+				}
+			})
+		}
+	}
+}
+
+func statusValidDurableSpec(t *testing.T, proposalURL, specURL string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "spec.md")
+	body := "# issue-spec-cli\n\n## Purpose\n\nPurpose.\n\nProposal Issues:\n- " + proposalURL +
+		"\n\n## Requirements\n\n### Requirement: X\n\nX MUST work.\n\nSource SPEC comment: " + specURL + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestStatusDefaultProcessEvidenceDoesNotOverrideCollectedEvidence(t *testing.T) {
+	const (
+		specURL    = "https://github.com/o/r/issues/1#issuecomment-1"
+		taskURL    = "https://github.com/o/r/issues/2#issuecomment-2"
+		processURL = "https://github.com/o/r/issues/3#issuecomment-3"
+		prURL      = "https://github.com/o/r/pull/7"
+	)
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	spec.URL = specURL
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	task.URL = taskURL
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContentWithClass(model.ProcessExecutionChangeBearing))
+	process.URL = processURL
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &process)
+	linkArtifacts(t, &spec, &process)
+	processBody, _, err := model.AddPRLink(process.Comment.Body, prURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.Comment = model.ParseTypedComment(processBody)
+	collection := statusGateCollection{
+		Remote: statusForecastRemoteFacts(gates.TargetFinal),
+		ProcessEvidence: []gates.ProcessEvidenceInput{{
+			Process: process, RequiredPRURL: prURL,
+			ActiveSpecs: map[string]string{"SPEC-001": specURL},
+			TaskURLs:    map[string]bool{model.NormalizeURL(taskURL): true},
+			Rationales: []gates.RationaleEvidence{{
+				ProcessID: "PROCESS-001", SpecID: "SPEC-001", SpecURL: specURL,
+				MarkerPath: "internal/foo.go", MarkerLine: 12, CommentPath: "internal/foo.go", CommentLine: 12,
+				AuthorAgent: "Worker Agent A",
+			}},
+		}},
+	}
+	summary := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetFinal,
+		[]model.Artifact{spec, task, process, verify}, workflow.Plan{}, nil, collection)
+	if statusHasCode(summary, gates.CodeProcessCarrierMissing) {
+		t.Fatalf("default local evidence overwrote collected carrier facts: %+v", summary.Gate.Diagnostics)
+	}
+	if !statusHasCode(summary, gates.CodeProcessReviewRequired) {
+		t.Fatalf("collected carrier did not reach the independent-review gate: %+v", summary.Gate.Diagnostics)
+	}
+	for _, code := range []string{gates.CodePRChecksUnknown, gates.CodeReviewFindingsUnknown} {
+		if !statusHasCode(summary, code) {
+			t.Fatalf("status stopped reporting remote fact %s as unknown: %+v", code, summary.Gate.Diagnostics)
+		}
 	}
 }
 

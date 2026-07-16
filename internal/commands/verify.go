@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"sort"
@@ -51,6 +52,11 @@ type finalVerifyOptions struct {
 }
 
 func (a *app) runVerify(ctx context.Context, args []string) int {
+	return a.runVerifyWithReportBuilder(ctx, args, buildFinalVerifyReport)
+}
+
+func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
+	buildReport func([]model.Artifact, string, finalVerifyOptions) (finalVerifyReport, error)) int {
 	fs := newFlagSet("verify", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
 	host := fs.String("hostname", "github.com", "GitHub hostname")
@@ -64,6 +70,12 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
+	prProvided := false
+	fs.Visit(func(current *flag.Flag) {
+		if current.Name == "pr" {
+			prProvided = true
+		}
+	})
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {
 		return 2
@@ -106,12 +118,16 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 	var expectedRevision string
 	externalGate, selfHosted, err := a.externalGate(ctx, *host, token.Value, repo, implementIssue,
 		"code_change", *revision, coreevidence.GateVerify)
+	if selfHosted && prProvided {
+		a.errorf("--pr is not a self-hosted code authority; omit it and use the active code_change reference\n")
+		return 2
+	}
 	if err != nil {
 		a.errorf("verify external evidence: %v\n", err)
 		return 1
 	}
-	if selfHosted && *prFlag > 0 {
-		a.errorf("--pr is not a self-hosted code authority; omit it and use the active code_change reference\n")
+	if !selfHosted && *prFlag <= 0 && hasActiveChangeBearingProcess(artifacts) {
+		a.errorf("--pr is required for GitHub verify when an active change-bearing PROCESS exists\n")
 		return 2
 	}
 	if !selfHosted && *prFlag > 0 {
@@ -133,7 +149,7 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 		processExternalEvidence = &externalGate.Consumption
 		expectedRevision = externalGate.Target.SubjectRevision
 	}
-	report, err := buildFinalVerifyReport(artifacts, proposalIssueData.HTMLURL, finalVerifyOptions{
+	report, err := buildReport(artifacts, proposalIssueData.HTMLURL, finalVerifyOptions{
 		DurableSpecPath:   *durableSpec,
 		PR:                *prFlag,
 		PRURL:             prURL,
@@ -158,7 +174,11 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 			finalVerify = candidate
 			report.ExternalEvidence = &externalGate.Consumption
 		}
-		report.OK = len(report.Errors) == 0
+		// Exact-revision validation may add another error, but it must never
+		// replace the fail-closed gate decision made by buildReport. Otherwise a
+		// blocking diagnostic without a legacy Errors projection can be reset to
+		// OK here and self-hosted evidence would be consumed despite the blocker.
+		report.OK = report.OK && len(report.Errors) == 0
 	}
 	report.Diagnostics = append(report.Diagnostics, authoringCompletenessDiagnostics("proposal", proposalIssueData.HTMLURL, proposalIssueData.Body)...)
 	if designIssue > 0 {
@@ -193,6 +213,18 @@ func (a *app) runVerify(ctx context.Context, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func hasActiveChangeBearingProcess(artifacts []model.Artifact) bool {
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type != "PROCESS" || artifact.Comment.Status == "superseded" {
+			continue
+		}
+		if model.ParseProcessExecutionClass(artifact.Comment.ID, artifact.URL, artifact.Comment.Body).Class == model.ProcessExecutionChangeBearing {
+			return true
+		}
+	}
+	return false
 }
 
 const (
@@ -325,7 +357,7 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		target = gates.TargetArchive
 	}
 	var processEvidence []gates.ProcessEvidenceInput
-	if opts.RationaleRequired || opts.ExternalEvidence != nil || hasExplicitProcessWorkspace(artifacts) {
+	if opts.RationaleRequired || opts.ExternalEvidence != nil || hasExplicitProcessWorkspace(artifacts) || hasActiveChangeBearingProcess(artifacts) {
 		processEvidence = buildProcessEvidenceInputs(artifacts, opts.PRURL, opts.RationaleComments, reviewReport, opts.ExternalEvidence)
 	}
 	gateReport, err := gates.Evaluate(gates.Snapshot{
@@ -417,7 +449,11 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	}
 	sort.Strings(report.Errors)
 	sort.Strings(report.Warnings)
-	report.OK = len(report.Errors) == 0
+	// gateReport.Ready reflects every blocking diagnostic (including workspace
+	// blockers folded in above). Anchoring OK to it means a future blocking gate
+	// code that legacyVerifyGateError does not yet project cannot silently pass
+	// final verify; it fails closed even without a bespoke legacy error string.
+	report.OK = gateReport.Ready && len(report.Errors) == 0
 	return report, nil
 }
 
@@ -468,7 +504,8 @@ func legacyVerifyGateError(diagnostic gates.Diagnostic) (string, bool) {
 	case gates.CodeTraceabilityInvalid:
 		return diagnostic.Message, true
 	case gates.CodeProcessExecutionClassInvalid, gates.CodeProcessTaskLinkMissing,
-		gates.CodeProcessSpecLinkMissing, gates.CodeProcessPRLinkMissing, gates.CodeProcessCarrierMissing:
+		gates.CodeProcessSpecLinkMissing, gates.CodeProcessPRLinkMissing, gates.CodeProcessCarrierMissing,
+		gates.CodeProcessReviewRequired, gates.CodeProcessReviewAuthorConflict:
 		return diagnostic.Message, true
 	case gates.CodeProcessWorkspaceRequired, gates.CodeProcessWorkspaceInvalid, gates.CodeProcessWorkspaceStateInvalid,
 		gates.CodeProcessWorkspaceModeInvalid, gates.CodeProcessWorkspaceRevisionUnknown, gates.CodeProcessWorkspaceRevisionStale,

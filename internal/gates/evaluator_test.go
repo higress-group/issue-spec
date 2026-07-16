@@ -96,6 +96,55 @@ func TestEvaluateReadyFinalSnapshot(t *testing.T) {
 	}
 }
 
+func TestEvaluateRequiresIndependentReviewPresenceForChangeBearingSpec(t *testing.T) {
+	const specURL = "https://example.test/issues/1#issuecomment-spec"
+	const taskURL = "https://example.test/issues/2#issuecomment-task"
+	const prURL = "https://example.test/pull/7"
+	active := map[string]string{"SPEC-001": specURL}
+	process := func(id string, class model.ProcessExecutionClass) ProcessEvidenceInput {
+		body, err := model.EnsureTypedBody("PROCESS", id, "## Process: p\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- "+string(class)+"\n\n### Covers\n\n- SPEC-001\n\n### Handoff\n\ncoordination complete",
+			model.BodyOptions{Status: "done", Links: map[string][]string{"Related Comments": {taskURL}, "PR": {prURL}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ProcessEvidenceInput{Process: model.Artifact{URL: "https://example.test/process/" + id, Comment: model.ParseTypedComment(body)},
+			RequiredPRURL: prURL, ActiveSpecs: active, TaskURLs: map[string]bool{model.NormalizeURL(taskURL): true}}
+	}
+	changeBearing := process("PROCESS-001", model.ProcessExecutionChangeBearing)
+	changeBearing.Rationales = []RationaleEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", SpecURL: specURL,
+		MarkerPath: "a.go", MarkerLine: 12, CommentPath: "a.go", CommentLine: 12, AuthorAgent: "coordinator"}}
+
+	// Change-bearing SPEC with no review PROCESS at all must fail closed.
+	missing := evaluate(t, Snapshot{Target: TargetFinal, Mode: ModeAuthoritative,
+		ProcessEvidence: []ProcessEvidenceInput{changeBearing}})
+	presence := findDiagnostic(t, missing, CodeProcessReviewRequired)
+	if missing.Ready || presence.Artifact.ID != "SPEC-001" || !presence.Blocking {
+		t.Fatalf("coded SPEC without review PROCESS did not fail closed: %+v", missing.Diagnostics)
+	}
+
+	// An independent review PROCESS covering the SPEC satisfies presence.
+	independent := process("PROCESS-002", model.ProcessExecutionReview)
+	independent.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-001": {"coordinator": true}}
+	independent.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-002", SpecID: "SPEC-001", Done: true, ReviewerAgent: "Independent Reviewer"}}
+	satisfied := evaluate(t, Snapshot{Target: TargetFinal, Mode: ModeAuthoritative,
+		ProcessEvidence: []ProcessEvidenceInput{changeBearing, independent}})
+	if containsCode(satisfied, CodeProcessReviewRequired) {
+		t.Fatalf("independent review PROCESS did not satisfy presence: %+v", satisfied.Diagnostics)
+	}
+
+	// A self-authored review PROCESS (reviewer == code author) does not satisfy
+	// presence: the SPEC is not cleanly reviewed, so the presence gate still fires
+	// alongside the author-conflict diagnostic.
+	selfReview := process("PROCESS-003", model.ProcessExecutionReview)
+	selfReview.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-001": {"coordinator": true}}
+	selfReview.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-003", SpecID: "SPEC-001", Done: true, ReviewerAgent: "Coordinator"}}
+	selfOnly := evaluate(t, Snapshot{Target: TargetFinal, Mode: ModeAuthoritative,
+		ProcessEvidence: []ProcessEvidenceInput{changeBearing, selfReview}})
+	if !containsCode(selfOnly, CodeProcessReviewRequired) || !containsCode(selfOnly, CodeProcessReviewAuthorConflict) {
+		t.Fatalf("self-authored review must not satisfy presence: %+v", selfOnly.Diagnostics)
+	}
+}
+
 func TestEvaluateSpecCoverageRequiresExactArtifactID(t *testing.T) {
 	spec := artifact(t, "SPEC", "SPEC-001", "confirmed", specLogical)
 	task := artifact(t, "TASK", "TASK-001", "done", taskLogical)

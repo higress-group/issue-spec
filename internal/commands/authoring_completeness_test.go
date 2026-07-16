@@ -128,7 +128,8 @@ func TestRunVerifyReportsAuthoringDiagnosticsWithoutBlocking(t *testing.T) {
 	)
 	spec := typedCommentWithLinks(t, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y", 1, specURL, taskURL)
 	task := typedCommentWithLinks(t, "TASK", "TASK-001", "done", canonicalTaskContent, 2, taskURL, specURL, processURL)
-	process := typedCommentWithLinks(t, "PROCESS", "PROCESS-001", "done", canonicalProcessContent, 3, processURL, taskURL)
+	process := typedCommentWithLinks(t, "PROCESS", "PROCESS-001", "done",
+		canonicalProcessContentWithClass(model.ProcessExecutionVerification), 3, processURL, taskURL)
 	verify := typedCommentWithLinks(t, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent, 4, verifyURL)
 	_, proposalBody, _ := templates.ProposalIssue("demo-change")
 

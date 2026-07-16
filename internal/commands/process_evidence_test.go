@@ -6,6 +6,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/gates"
+	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
@@ -77,6 +78,53 @@ func TestBuildProcessEvidenceRejectsMixedReplayAndUnknownBindings(t *testing.T) 
 			}
 		})
 	}
+}
+
+func TestBuildProcessEvidenceValidatesAuthorRationaleBeforeCrediting(t *testing.T) {
+	const specURL = "https://example/proposal#issuecomment-spec"
+	artifacts := []model.Artifact{
+		{URL: specURL, Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
+		processClassArtifact(t, "PROCESS-001", "change-bearing", "SPEC-001", "done"),       // genuine carrier
+		processClassArtifact(t, "PROCESS-002", "review", "SPEC-001", "done"),               // wrong class
+		processClassArtifact(t, "PROCESS-003", "change-bearing", "SPEC-999", "done"),       // does not cover SPEC-001
+		processClassArtifact(t, "PROCESS-004", "change-bearing", "SPEC-001", "superseded"), // inactive
+	}
+	mustRationale := func(agent, process, path string, line int) string {
+		body, err := model.RenderRationaleBody(agent, process, "SPEC-001", specURL, "rationale", path, line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	comments := []github.PullRequestReviewComment{
+		{Body: mustRationale("coordinator", "PROCESS-001", "real.go", 12), Path: "real.go", Line: 12}, // credited
+		{Body: mustRationale("ghost", "PROCESS-001", "forged.go", 99), Path: "real.go", Line: 12},     // forged path/line
+		{Body: mustRationale("reviewbot", "PROCESS-002", "real2.go", 5), Path: "real2.go", Line: 5},   // non change-bearing PROCESS
+		{Body: mustRationale("wanderer", "PROCESS-003", "real3.go", 7), Path: "real3.go", Line: 7},    // PROCESS does not cover SPEC-001
+		{Body: mustRationale("zombie", "PROCESS-004", "real4.go", 9), Path: "real4.go", Line: 9},      // superseded PROCESS
+	}
+	inputs := buildProcessEvidenceInputs(artifacts, "", comments, reviewSyncReport{}, nil)
+	if len(inputs) == 0 {
+		t.Fatalf("expected PROCESS inputs, got none")
+	}
+	authors := inputs[0].AuthorAgentsBySpec["SPEC-001"]
+	if !authors["coordinator"] {
+		t.Fatalf("validated change-bearing rationale author must be credited: %+v", authors)
+	}
+	for _, bad := range []string{"ghost", "reviewbot", "wanderer", "zombie"} {
+		if authors[bad] {
+			t.Fatalf("%q rationale must not credit an author: %+v", bad, authors)
+		}
+	}
+}
+
+func processClassArtifact(t *testing.T, id, class, spec, status string) model.Artifact {
+	t.Helper()
+	body, err := model.EnsureTypedBody("PROCESS", id, "## Process: n\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- "+class+"\n\n### Covers\n\n- "+spec, model.BodyOptions{Status: status})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model.Artifact{URL: "https://example/" + strings.ToLower(id), Comment: model.ParseTypedComment(body)}
 }
 
 func externalProcessArtifact(t *testing.T, processID string) model.Artifact {

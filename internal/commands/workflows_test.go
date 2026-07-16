@@ -131,6 +131,20 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 		}
 	}
 
+	for _, relative := range []string{
+		filepath.Join(".agents", "skills", "issue-spec-workflow", "SKILL.md"),
+		filepath.Join(".agents", "skills", "issue-spec-apply", "SKILL.md"),
+		filepath.Join(".claude", "skills", "issue-spec-workflow", "SKILL.md"),
+		filepath.Join(".claude", "skills", "issue-spec-apply", "SKILL.md"),
+		filepath.Join(".claude", "commands", "issue-spec", "apply.md"),
+	} {
+		generated := readTestFile(t, filepath.Join(root, relative))
+		checkedIn := strings.ReplaceAll(readTestFile(t, filepath.Join("..", "..", relative)), "higress-group/issue-spec", "owner/repo")
+		if generated != checkedIn {
+			t.Fatalf("checked-in generated inline/delegated workflow guidance is stale: %s", relative)
+		}
+	}
+
 	if got := readTestFile(t, existingPrompt); got != "user customization\n" {
 		t.Fatalf("default generation modified user-global prompt: %q", got)
 	}

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for how the implement phase plans and executes the PROCESS DAG: capturing execution-planning metadata on TASK comments, delegating every non-trivial coding node to a worker sub-agent by default for context isolation, defaulting to serial PROCESS chains with bounded handoff (serial chains still delegate across separate workers), gating parallel dispatch on proven decoupling as a concern separate from the context-isolation default, treating review and repair as first-class PROCESS nodes, and auditing execution-planning evidence at final verify. It also defines whether a PROCESS uses the coordinator-managed workspace lifecycle or an independently managed workspace.
+Define the long-lived behavior contract for how the implement phase plans and executes the PROCESS DAG: capturing execution-planning metadata on TASK comments, allowing coding nodes to be implemented inline by the coordinator or delegated to a worker sub-agent (delegation is the recommended default for context isolation, not a hard requirement), defaulting to serial PROCESS chains with bounded handoff, gating parallel dispatch on proven decoupling as a concern separate from the context-isolation default, treating review and repair as first-class PROCESS nodes with mandatory independent review for change-bearing work, and auditing execution-planning evidence at final verify. It also defines whether a PROCESS uses the coordinator-managed workspace lifecycle or an independently managed workspace.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/144
@@ -125,7 +125,7 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/32#issue
 
 ### Requirement: review and repair are first-class PROCESS nodes
 
-Review and repair work MUST be represented as first-class PROCESS nodes in the implementation DAG for non-trivial changes.
+Review and repair work MUST be represented as first-class PROCESS nodes in the implementation DAG for every active SPEC that has a valid change-bearing carrier, regardless of change size.
 
 Review findings SHALL be assigned to owner PROCESS nodes or to dedicated repair PROCESS nodes based on coupling and write ownership.
 
@@ -147,6 +147,27 @@ Repair PROCESS scheduling SHALL follow the same serial/parallel constraints as i
 - **THEN** review sync SHALL show no open actionable or blocking findings before final verify
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/32#issuecomment-4877853100
+
+### Requirement: Change-bearing work requires a present, independent review PROCESS
+
+Every active SPEC that has satisfied change-bearing carrier evidence (a matching inline rationale on the PR) MUST also be covered by a satisfied review PROCESS whose reviewing agent is independent of the code author. Because the independent-review check only runs when a review PROCESS exists, final verify MUST fail closed when a change-bearing SPEC has no review PROCESS covering it, so that omitting the review node cannot silently bypass the independence contract. The reviewing agent's identity is judged by its `--agent` name, and a review PROCESS whose reviewer name matches a code author of the same SPEC MUST NOT satisfy this requirement for that SPEC.
+
+#### Scenario: coded SPEC without any review PROCESS fails closed
+
+- **WHEN** an active SPEC has a satisfied change-bearing carrier but no satisfied review PROCESS covers it at final verify
+- **THEN** the gate MUST emit a blocking diagnostic requiring an independent review PROCESS for that SPEC
+
+#### Scenario: independent review PROCESS satisfies the requirement
+
+- **WHEN** a change-bearing SPEC is covered by a review PROCESS whose reviewer `--agent` differs from every code author of that SPEC
+- **THEN** the presence and independence requirements are both satisfied and the gate MUST NOT block on this basis
+
+#### Scenario: self-authored review does not satisfy presence
+
+- **WHEN** the only review PROCESS covering a change-bearing SPEC has a reviewer `--agent` equal to a code author of that SPEC
+- **THEN** the gate MUST treat the SPEC as lacking independent review and MUST block final verify
+
+Source change: https://github.com/higress-group/issue-spec/pull/232
 
 ### Requirement: final verify audits execution-planning evidence
 
@@ -175,51 +196,55 @@ Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/32#issuecomment-4877853419
 - https://github.com/higress-group/issue-spec/issues/166#issuecomment-4951036789
 
-### Requirement: Delegate coding PROCESS nodes to worker sub-agents by default
+### Requirement: Coding PROCESS nodes MAY be inlined or delegated, with delegation the recommended default
 
-The implement/apply coordinator MUST dispatch each non-trivial coding PROCESS node to a worker sub-agent by default for context isolation. This default MUST be independent of whether the node is eligible for parallel execution; serial nodes MUST also be delegated. The coordinator MAY inline only trivial work such as a single-file, low-coupling edit or pure orchestration.
+The implement/apply coordinator MAY implement any coding PROCESS node inline in its own context OR delegate it to a worker sub-agent. Delegation is the recommended default for context isolation — it keeps the coordinator context bounded and avoids mid-task compaction on large or context-heavy nodes — but it MUST NOT be treated as a hard requirement, and inline coding MUST be allowed for a node of any size because independent review (see the independent-review requirement) is mandatory and catches what the author cannot. This choice MUST be independent of whether the node is eligible for parallel execution.
 
-#### Scenario: Non-trivial serial node is delegated
+#### Scenario: Coordinator may inline a non-trivial node
 
-- **WHEN** the coordinator executes a non-trivial coding PROCESS node that must run serially
-- **THEN** it SHALL dispatch the node to a worker sub-agent rather than implementing the code in its own context
+- **WHEN** the coordinator executes a non-trivial coding PROCESS node
+- **THEN** it MAY implement the code inline in its own context or delegate it to a worker sub-agent, and the gate MUST NOT reject the change solely because it was authored inline
 
-#### Scenario: Trivial edit may be inlined
+#### Scenario: Delegation is recommended for large context
 
-- **WHEN** a PROCESS node is a trivial single-file, low-coupling edit or pure orchestration
-- **THEN** the coordinator MAY implement it inline without spawning a worker
+- **WHEN** a coding node is large or context-heavy enough to risk coordinator compaction
+- **THEN** the coordinator SHOULD delegate it to a worker sub-agent to keep its own context bounded
 
-#### Scenario: Delegation is not conditioned on parallelism
+#### Scenario: Inline authoring still requires independent review
 
-- **WHEN** a node is not eligible for parallel dispatch because of shared write ownership
-- **THEN** the coordinator SHALL still delegate it to a worker for context isolation and run it serially
+- **WHEN** the coordinator authors change-bearing code inline
+- **THEN** the SPEC that code covers MUST still be reviewed by a different agent than the author, and final verify MUST fail closed if no independent review PROCESS covers it
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904042881
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904042881
+- https://github.com/higress-group/issue-spec/pull/232
 
-### Requirement: Serial PROCESS chains run across separate workers via bounded handoff
+### Requirement: Delegated serial PROCESS nodes run across separate workers via bounded handoff
 
-Serial PROCESS nodes under a parent TASK MUST execute in separate worker sub-agents connected by a bounded ### Handoff summary. A successor node MUST start from the parent TASK context plus its predecessor's handoff, and MUST NOT require the predecessor's full transcript or run inside the coordinator's accumulated context.
+A coding PROCESS node is executed on one of two paths. A delegated node (declared `managed`) runs through `workflow workspace prepare` -> child/worker -> `complete` -> `integrate`. An inline node (declared `independent`) is implemented, tested, and committed by the coordinator in its integration checkout, skipping prepare/child/complete/integrate. Both paths MUST record change-bearing rationale.
 
-#### Scenario: Predecessor produces handoff for successor
+Delegated serial PROCESS nodes under a parent TASK MUST execute in separate worker sub-agents connected by a bounded ### Handoff summary. A delegated successor node MUST start from the parent TASK context plus its predecessor's handoff, and MUST NOT require the predecessor's full transcript. Inline serial nodes are executed by the coordinator, but MUST still keep per-PROCESS state and record a bounded ### Handoff at each node boundary so the chain remains auditable and any successor can later be switched to the delegated path.
 
-- **WHEN** PROCESS-B depends on PROCESS-A under the same parent TASK
+#### Scenario: Delegated predecessor produces handoff for successor
+
+- **WHEN** PROCESS-B depends on delegated PROCESS-A under the same parent TASK
 - **THEN** PROCESS-A SHALL complete in its own worker and record a bounded ### Handoff, and PROCESS-B SHALL start in a separate worker seeded with that handoff
 
-#### Scenario: Coordinator context is not the serial carrier
+#### Scenario: Inline serial nodes keep per-PROCESS handoff boundaries
 
-- **WHEN** a serial chain of coding nodes is executed
-- **THEN** the chain SHALL be carried by per-node worker contexts and handoff artifacts, not by accumulating each node's implementation inside the coordinator context
+- **WHEN** a serial chain of coding nodes is executed inline by the coordinator
+- **THEN** each node SHALL retain its own PROCESS state and record a bounded ### Handoff at its boundary, rather than collapsing the chain into one undifferentiated coordinator step
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043156
 
 ### Requirement: Coordinator prompt carries a phase-aware delegation contract with rationale
 
-The generated coordinator prompt MUST express the DAG-execution and delegation contract at fidelity matching the apply workflow guidance. On an implement turn it MUST direct the coordinator to plan the PROCESS DAG and then dispatch coding nodes to workers, and MUST state that the coordinator SHALL NOT implement non-trivial code inline. The prompt MUST include an explicit context-budget rationale for delegation and MUST present the parallelism gate as a concern separate from the context-isolation default.
+The generated coordinator prompt MUST express the DAG-execution and delegation contract at fidelity matching the apply workflow guidance. On an implement turn it MUST direct the coordinator to plan the PROCESS DAG before execution, and MUST state that coding nodes MAY be implemented inline or delegated to workers, with delegation the recommended default for context isolation rather than a hard requirement. The prompt MUST include an explicit context-budget rationale for delegation, MUST present the parallelism gate as a concern separate from the context-isolation default, and MUST state that independent review is mandatory for change-bearing work regardless of whether the code was authored inline or by a worker.
 
-#### Scenario: Implement-turn prompt mandates plan-then-dispatch
+#### Scenario: Implement-turn prompt mandates plan-then-execute
 
 - **WHEN** the coordinator prompt is rendered for an implement-phase command
-- **THEN** it SHALL contain a directive to build the PROCESS DAG and dispatch non-trivial coding nodes to worker sub-agents instead of coding inline
+- **THEN** it SHALL contain a directive to build the PROCESS DAG first and SHALL state that coding nodes MAY be inlined or delegated while independent review remains mandatory
 
 #### Scenario: Prompt states the context-budget reason
 

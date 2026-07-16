@@ -15,6 +15,7 @@ const (
 	CodeProcessTaskLinkMissing       = "process.task_link_missing"
 	CodeProcessSpecLinkMissing       = "process.spec_link_missing"
 	CodeProcessCarrierMissing        = "process.carrier_missing"
+	CodeProcessReviewAuthorConflict  = "process.review.author_conflict"
 )
 
 type RationaleEvidence struct {
@@ -25,6 +26,7 @@ type RationaleEvidence struct {
 	MarkerLine  int    `json:"marker_line"`
 	CommentPath string `json:"comment_path"`
 	CommentLine int    `json:"comment_line"`
+	AuthorAgent string `json:"author_agent,omitempty"`
 }
 
 type ReviewEvidence struct {
@@ -33,6 +35,7 @@ type ReviewEvidence struct {
 	URL             string `json:"url,omitempty"`
 	Done            bool   `json:"done"`
 	FindingResolved bool   `json:"finding_resolved"`
+	ReviewerAgent   string `json:"reviewer_agent,omitempty"`
 	SubjectRevision string `json:"subject_revision,omitempty"`
 	Trusted         bool   `json:"trusted"`
 	Source          string `json:"source,omitempty"`
@@ -73,15 +76,20 @@ type ExternalProcessEvidence struct {
 }
 
 type ProcessEvidenceInput struct {
-	Process       model.Artifact            `json:"process"`
-	RequiredPRURL string                    `json:"required_pr_url,omitempty"`
-	ActiveSpecs   map[string]string         `json:"active_specs,omitempty"`
-	TaskURLs      map[string]bool           `json:"task_urls,omitempty"`
-	Rationales    []RationaleEvidence       `json:"rationales,omitempty"`
-	Reviews       []ReviewEvidence          `json:"reviews,omitempty"`
-	Verifications []VerificationEvidence    `json:"verifications,omitempty"`
-	Checks        []CheckEvidence           `json:"checks,omitempty"`
-	External      []ExternalProcessEvidence `json:"external,omitempty"`
+	Process       model.Artifact    `json:"process"`
+	RequiredPRURL string            `json:"required_pr_url,omitempty"`
+	ActiveSpecs   map[string]string `json:"active_specs,omitempty"`
+	TaskURLs      map[string]bool   `json:"task_urls,omitempty"`
+	// AuthorAgentsBySpec maps an active SPEC ID to the set of normalized
+	// (lowercased, trimmed) --agent names that authored change-bearing code
+	// rationale for that SPEC. A review PROCESS whose reviewer --agent name is
+	// in this set for the SPEC it covers fails the independence check.
+	AuthorAgentsBySpec map[string]map[string]bool `json:"author_agents_by_spec,omitempty"`
+	Rationales         []RationaleEvidence        `json:"rationales,omitempty"`
+	Reviews            []ReviewEvidence           `json:"reviews,omitempty"`
+	Verifications      []VerificationEvidence     `json:"verifications,omitempty"`
+	Checks             []CheckEvidence            `json:"checks,omitempty"`
+	External           []ExternalProcessEvidence  `json:"external,omitempty"`
 }
 
 type ProcessEvidenceReport struct {
@@ -94,6 +102,12 @@ type ProcessEvidenceReport struct {
 	Missing         []string                    `json:"missing,omitempty"`
 	Diagnostics     []Diagnostic                `json:"diagnostics,omitempty"`
 	CarrierRevision CarrierRevisionFact         `json:"carrier_revision"`
+	// SatisfiedSpecs lists the active SPEC IDs this PROCESS cleanly satisfied
+	// for its execution class: for change-bearing, the SPECs with a matching
+	// inline rationale carrier; for review, the SPECs independently (non-self)
+	// reviewed. The final gate joins these across PROCESS reports to require an
+	// independent review PROCESS for every change-bearing SPEC.
+	SatisfiedSpecs []string `json:"satisfied_specs,omitempty"`
 }
 
 // ProcessCarrierRevisionFacts projects provider-owned carrier facts by PROCESS.
@@ -151,6 +165,7 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 	case model.ProcessExecutionChangeBearing:
 		report.Required = append(report.Required, "inline rationale on matching PR path/line")
 		carrier := false
+		carriedSpecs := map[string]bool{}
 		for _, evidence := range input.Rationales {
 			if evidence.ProcessID != report.ProcessID || !activeSpec(evidence.SpecID) {
 				continue
@@ -162,8 +177,9 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 				continue
 			}
 			carrier, specSatisfied = true, true
-			break
+			carriedSpecs[evidence.SpecID] = true
 		}
+		report.SatisfiedSpecs = sortedKeys(carriedSpecs)
 		if carrier {
 			report.Satisfied = append(report.Satisfied, "matching inline rationale")
 		} else {
@@ -171,20 +187,86 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 			add(CodeProcessCarrierMissing, SeverityError, true, "change-bearing PROCESS lacks an inline rationale whose marker path/line matches the real PR comment and active SPEC", "missing", "matching rationale", "pr rationale")
 		}
 	case model.ProcessExecutionReview:
-		report.Required = append(report.Required, "linked done REVIEW or resolved finding")
-		carrier := false
+		report.Required = append(report.Required, "linked done REVIEW or resolved finding by an independent agent")
+		// Group review evidence by REVIEW artifact: a reviewer who authored code
+		// for ANY SPEC the artifact covers taints the whole artifact, so a clean
+		// SPEC on the same REVIEW can never rescue another SPEC's conflict.
+		// Satisfaction is then tracked PER SPEC: a SPEC whose review conflicts
+		// with its code author MUST be independently re-covered by a clean
+		// artifact for THAT SPEC; a clean review of some other SPEC cannot
+		// substitute. The node is satisfied only when at least one SPEC is
+		// cleanly covered and every conflicted SPEC is independently re-covered.
+		type reviewGroup struct {
+			specs      map[string]bool
+			conflicted bool
+			revisions  []CarrierRevisionFact
+		}
+		groups := map[string]*reviewGroup{}
+		var order []string
+		cleanCovered := map[string]bool{}
+		conflictedAgentBySpec := map[string]string{}
+		var conflictOrder []string
+		for i, evidence := range input.Reviews {
+			if evidence.ProcessID != report.ProcessID || !activeSpec(evidence.SpecID) || !(evidence.Done || evidence.FindingResolved) {
+				continue
+			}
+			key := strings.TrimSpace(evidence.URL)
+			if key == "" {
+				key = fmt.Sprintf("\x00entry-%d", i)
+			}
+			group := groups[key]
+			if group == nil {
+				group = &reviewGroup{specs: map[string]bool{}}
+				groups[key] = group
+				order = append(order, key)
+			}
+			group.specs[evidence.SpecID] = true
+			if reviewer := normalizeAgent(evidence.ReviewerAgent); reviewer != "" && input.AuthorAgentsBySpec[evidence.SpecID][reviewer] {
+				group.conflicted = true
+				if _, seen := conflictedAgentBySpec[evidence.SpecID]; !seen {
+					conflictOrder = append(conflictOrder, evidence.SpecID)
+				}
+				conflictedAgentBySpec[evidence.SpecID] = strings.TrimSpace(evidence.ReviewerAgent)
+				continue
+			}
+			group.revisions = append(group.revisions, CarrierRevisionFact{Known: strings.TrimSpace(evidence.SubjectRevision) != "",
+				Revision: strings.TrimSpace(evidence.SubjectRevision), Trusted: evidence.Trusted, Source: evidence.Source})
+		}
+		cleanArtifact := false
 		var revisions []CarrierRevisionFact
-		for _, evidence := range input.Reviews {
-			if evidence.ProcessID == report.ProcessID && activeSpec(evidence.SpecID) && (evidence.Done || evidence.FindingResolved) {
-				carrier, specSatisfied = true, true
-				revisions = append(revisions, CarrierRevisionFact{Known: strings.TrimSpace(evidence.SubjectRevision) != "",
-					Revision: strings.TrimSpace(evidence.SubjectRevision), Trusted: evidence.Trusted, Source: evidence.Source})
+		for _, key := range order {
+			group := groups[key]
+			if group.conflicted {
+				continue
+			}
+			cleanArtifact = true
+			for spec := range group.specs {
+				cleanCovered[spec] = true
+			}
+			revisions = append(revisions, group.revisions...)
+		}
+		var conflictAgent, conflictSpec string
+		for _, spec := range conflictOrder {
+			if !cleanCovered[spec] {
+				conflictSpec, conflictAgent = spec, conflictedAgentBySpec[spec]
+				break
 			}
 		}
-		report.CarrierRevision = aggregateCarrierRevisions(revisions)
+		carrier := cleanArtifact && conflictSpec == ""
 		if carrier {
+			specSatisfied = true
+		}
+		report.SatisfiedSpecs = sortedKeys(cleanCovered)
+		report.CarrierRevision = aggregateCarrierRevisions(revisions)
+		switch {
+		case carrier:
 			report.Satisfied = append(report.Satisfied, "review evidence")
-		} else {
+		case conflictSpec != "":
+			report.Missing = append(report.Missing, "independent review evidence")
+			add(CodeProcessReviewAuthorConflict, SeverityError, true,
+				fmt.Sprintf("review PROCESS evidence for %s was authored by agent %q, which also authored the code under review; the review MUST be authored by a different agent than the code author, so route %s through a review PROCESS owned by an independent reviewing agent (its --agent must differ from the code author) and re-run review sync once that node produces its REVIEW or resolved finding", conflictSpec, conflictAgent, conflictSpec),
+				"same agent as code author", "review authored by an independent reviewing agent (different --agent than the code author)", "review sync")
+		default:
 			report.Missing = append(report.Missing, "review evidence")
 			add(CodeProcessCarrierMissing, SeverityError, true, "review PROCESS lacks linked done REVIEW or resolved finding evidence for an active SPEC", "missing", "review evidence", "review sync")
 		}
@@ -281,6 +363,22 @@ func aggregateCarrierRevisions(candidates []CarrierRevisionFact) CarrierRevision
 		}
 	}
 	return CarrierRevisionFact{Known: true, Revision: revision, Trusted: true, Source: strings.Join(sortedNonEmpty(sources), ",")}
+}
+
+func normalizeAgent(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func sortedKeys(set map[string]bool) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func firstNonEmptySource(candidates []CarrierRevisionFact) string {

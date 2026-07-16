@@ -136,6 +136,73 @@ func TestOrchestrationSpecCoverageRejectsPrefixCollision(t *testing.T) {
 	}
 }
 
+func TestReviewProcessRejectsSelfReviewByAgentName(t *testing.T) {
+	// Reviewer --agent name equals a code author of the same SPEC: blocked.
+	input := processEvidenceFixture(t, model.ProcessExecutionReview)
+	input.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-001": {"coordinator": true}}
+	input.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Done: true, ReviewerAgent: "Coordinator"}}
+	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !hasDiagnostic(report.Diagnostics, CodeProcessReviewAuthorConflict, true) {
+		t.Fatalf("self-review by same agent name must block: %+v", report)
+	}
+	if containsString(report.Satisfied, "review evidence") {
+		t.Fatalf("conflicted review must not count as satisfied: %+v", report)
+	}
+
+	// Different reviewer name for the same SPEC: independent review passes.
+	input.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Done: true, ReviewerAgent: "Independent Reviewer"}}
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if hasDiagnostic(report.Diagnostics, CodeProcessReviewAuthorConflict, true) || len(report.Missing) != 0 {
+		t.Fatalf("independent reviewer must pass: %+v", report)
+	}
+
+	// Same name but author of a different SPEC only: no cross-SPEC false positive.
+	input.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-999": {"coordinator": true}}
+	input.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Done: true, ReviewerAgent: "Coordinator"}}
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if hasDiagnostic(report.Diagnostics, CodeProcessReviewAuthorConflict, true) || len(report.Missing) != 0 {
+		t.Fatalf("reviewer who authored a different SPEC must pass: %+v", report)
+	}
+}
+
+func TestReviewProcessRejectsMultiSpecConflictOnSameArtifact(t *testing.T) {
+	// One REVIEW artifact covers two active SPECs. The reviewer authored code
+	// for SPEC-001, so the whole artifact is conflicted; a clean SPEC-002 on the
+	// same artifact MUST NOT rescue it.
+	input := processEvidenceFixture(t, model.ProcessExecutionReview)
+	input.ActiveSpecs = map[string]string{"SPEC-001": "https://example/spec1", "SPEC-002": "https://example/spec2"}
+	input.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-001": {"coordinator": true}}
+	const reviewURL = "https://example/issues/9#issuecomment-review"
+	input.Reviews = []ReviewEvidence{
+		{ProcessID: "PROCESS-001", SpecID: "SPEC-001", URL: reviewURL, Done: true, ReviewerAgent: "Coordinator"},
+		{ProcessID: "PROCESS-001", SpecID: "SPEC-002", URL: reviewURL, Done: true, ReviewerAgent: "Coordinator"},
+	}
+	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !hasDiagnostic(report.Diagnostics, CodeProcessReviewAuthorConflict, true) {
+		t.Fatalf("clean SPEC on a conflicted REVIEW artifact must not rescue it: %+v", report)
+	}
+	if containsString(report.Satisfied, "review evidence") {
+		t.Fatalf("conflicted REVIEW artifact must not count as satisfied: %+v", report)
+	}
+
+	// An independent REVIEW that covers only the OTHER SPEC-002 must NOT rescue
+	// SPEC-001's unresolved author conflict: satisfaction is tracked per SPEC.
+	input.Reviews = append(input.Reviews, ReviewEvidence{ProcessID: "PROCESS-001", SpecID: "SPEC-002",
+		URL: "https://example/issues/9#issuecomment-review2", Done: true, ReviewerAgent: "Independent Reviewer"})
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !hasDiagnostic(report.Diagnostics, CodeProcessReviewAuthorConflict, true) || containsString(report.Satisfied, "review evidence") {
+		t.Fatalf("independent review of a different SPEC must not rescue SPEC-001's conflict: %+v", report)
+	}
+
+	// An independent REVIEW that covers the conflicted SPEC-001 resolves it.
+	input.Reviews = append(input.Reviews, ReviewEvidence{ProcessID: "PROCESS-001", SpecID: "SPEC-001",
+		URL: "https://example/issues/9#issuecomment-review3", Done: true, ReviewerAgent: "Independent Reviewer"})
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !containsString(report.Satisfied, "review evidence") || containsString(report.Missing, "independent review evidence") {
+		t.Fatalf("independent review covering the conflicted SPEC must satisfy the node: %+v", report)
+	}
+}
+
 func processEvidenceFixture(t *testing.T, class model.ProcessExecutionClass) ProcessEvidenceInput {
 	t.Helper()
 	if class == "" {

@@ -40,9 +40,56 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 		}
 	}
 	externalValid := external != nil && validateExternalEvidenceConsumption(*external, processes, activeSpecs) == nil
+	processByID := make(map[string]model.Artifact, len(processes))
+	for _, process := range processes {
+		processByID[process.Comment.ID] = process
+	}
+	authorAgentsBySpec := map[string]map[string]bool{}
+	for _, comment := range reviewComments {
+		marker, ok, err := model.FindRationaleMarker(comment.Body)
+		if err != nil || !ok {
+			continue
+		}
+		agent := strings.ToLower(strings.TrimSpace(marker.Agent))
+		spec := strings.TrimSpace(marker.Spec)
+		if agent == "" || spec == "" {
+			continue
+		}
+		// Credit an author identity only from a genuine change-bearing carrier,
+		// mirroring the gate's change-bearing validation: real path/line, active
+		// SPEC, matching SPEC URL, and an active (non-superseded) change-bearing
+		// PROCESS that actually covers the SPEC. Otherwise a stale, forged, or
+		// wrong-class marker could pollute the author set and falsely block an
+		// independent reviewer of that SPEC.
+		if marker.Path == "" || marker.Line <= 0 || marker.Path != comment.Path || marker.Line != comment.Line {
+			continue
+		}
+		want, active := activeSpecs[spec]
+		if !active {
+			continue
+		}
+		if specURL := rationaleSpecURL(comment.Body); specURL == "" || model.NormalizeURL(specURL) != model.NormalizeURL(want) {
+			continue
+		}
+		process, resolved := processByID[strings.TrimSpace(marker.Process)]
+		if !resolved {
+			continue
+		}
+		if model.ParseProcessExecutionClass(process.Comment.ID, process.URL, process.Comment.Body).Class != model.ProcessExecutionChangeBearing {
+			continue
+		}
+		if !artifactReferencesSpec(process, spec, want) {
+			continue
+		}
+		if authorAgentsBySpec[spec] == nil {
+			authorAgentsBySpec[spec] = map[string]bool{}
+		}
+		authorAgentsBySpec[spec][agent] = true
+	}
 	inputs := make([]gates.ProcessEvidenceInput, 0, len(processes))
 	for _, process := range processes {
-		input := gates.ProcessEvidenceInput{Process: process, RequiredPRURL: prURL, ActiveSpecs: activeSpecs, TaskURLs: taskURLs}
+		input := gates.ProcessEvidenceInput{Process: process, RequiredPRURL: prURL, ActiveSpecs: activeSpecs, TaskURLs: taskURLs,
+			AuthorAgentsBySpec: authorAgentsBySpec}
 		for _, comment := range reviewComments {
 			marker, ok, err := model.FindRationaleMarker(comment.Body)
 			if err != nil || !ok || marker.Process != process.Comment.ID {
@@ -50,7 +97,7 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 			}
 			input.Rationales = append(input.Rationales, gates.RationaleEvidence{ProcessID: marker.Process, SpecID: marker.Spec,
 				SpecURL: rationaleSpecURL(comment.Body), MarkerPath: marker.Path, MarkerLine: marker.Line,
-				CommentPath: comment.Path, CommentLine: comment.Line})
+				CommentPath: comment.Path, CommentLine: comment.Line, AuthorAgent: marker.Agent})
 		}
 		for _, artifact := range reviews {
 			if !artifactReferencesProcess(artifact, process) {
@@ -59,14 +106,14 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 			for specID := range activeSpecs {
 				if artifactReferencesSpec(artifact, specID, activeSpecs[specID]) {
 					input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: process.Comment.ID, SpecID: specID, URL: artifact.URL,
-						Done: true, Source: "typed-review"})
+						Done: true, ReviewerAgent: artifact.Comment.Agent, Source: "typed-review"})
 				}
 			}
 		}
 		for _, finding := range review.ResolvedFindings {
 			if finding.Process == process.Comment.ID {
 				input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: finding.Process, SpecID: finding.Spec, URL: finding.URL,
-					FindingResolved: true, SubjectRevision: finding.SubjectRevision, Trusted: finding.SubjectRevision != "", Source: finding.RevisionSource})
+					FindingResolved: true, ReviewerAgent: finding.Agent, SubjectRevision: finding.SubjectRevision, Trusted: finding.SubjectRevision != "", Source: finding.RevisionSource})
 			}
 		}
 		for _, artifact := range verifications {
