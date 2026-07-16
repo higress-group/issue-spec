@@ -112,7 +112,7 @@ func TestEvaluateRequiresIndependentReviewPresenceForChangeBearingSpec(t *testin
 	}
 	changeBearing := process("PROCESS-001", model.ProcessExecutionChangeBearing)
 	changeBearing.Rationales = []RationaleEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", SpecURL: specURL,
-		MarkerPath: "a.go", MarkerLine: 12, CommentPath: "a.go", CommentLine: 12, AuthorAgent: "coordinator"}}
+		MarkerPath: "a.go", MarkerLine: 12, CommentPath: "a.go", CommentLine: 12, AuthorAgent: "Implementation Worker"}}
 
 	// Change-bearing SPEC with no review PROCESS at all must fail closed.
 	missing := evaluate(t, Snapshot{Target: TargetFinal, Mode: ModeAuthoritative,
@@ -124,7 +124,7 @@ func TestEvaluateRequiresIndependentReviewPresenceForChangeBearingSpec(t *testin
 
 	// An independent review PROCESS covering the SPEC satisfies presence.
 	independent := process("PROCESS-002", model.ProcessExecutionReview)
-	independent.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-001": {"coordinator": true}}
+	independent.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-001": {"implementation worker": true}}
 	independent.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-002", SpecID: "SPEC-001", Done: true, ReviewerAgent: "Independent Reviewer"}}
 	satisfied := evaluate(t, Snapshot{Target: TargetFinal, Mode: ModeAuthoritative,
 		ProcessEvidence: []ProcessEvidenceInput{changeBearing, independent}})
@@ -136,8 +136,8 @@ func TestEvaluateRequiresIndependentReviewPresenceForChangeBearingSpec(t *testin
 	// presence: the SPEC is not cleanly reviewed, so the presence gate still fires
 	// alongside the author-conflict diagnostic.
 	selfReview := process("PROCESS-003", model.ProcessExecutionReview)
-	selfReview.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-001": {"coordinator": true}}
-	selfReview.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-003", SpecID: "SPEC-001", Done: true, ReviewerAgent: "Coordinator"}}
+	selfReview.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-001": {"implementation worker": true}}
+	selfReview.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-003", SpecID: "SPEC-001", Done: true, ReviewerAgent: "Implementation Worker"}}
 	selfOnly := evaluate(t, Snapshot{Target: TargetFinal, Mode: ModeAuthoritative,
 		ProcessEvidence: []ProcessEvidenceInput{changeBearing, selfReview}})
 	if !containsCode(selfOnly, CodeProcessReviewRequired) || !containsCode(selfOnly, CodeProcessReviewAuthorConflict) {
