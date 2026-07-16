@@ -692,6 +692,9 @@ func TestRunNextFailurePersistsFailedStateAndBoundedError(t *testing.T) {
 	if err == nil {
 		t.Fatal("RunNext succeeded, want workspace error")
 	}
+	if !errors.Is(err, ErrTerminalJobFailure) || !errors.Is(err, longErr) {
+		t.Fatalf("RunNext error classification = %v, want terminal job failure preserving workspace cause", err)
+	}
 	if result.Status != state.StatusFailed || len([]byte(result.Error)) > 1024 {
 		t.Fatalf("failure result not bounded: %+v", result)
 	}
@@ -703,6 +706,49 @@ func TestRunNextFailurePersistsFailedStateAndBoundedError(t *testing.T) {
 	job := loadState(t, store).Jobs["job-fail"]
 	if job.Status != state.StatusFailed || len(job.Diagnostics) != 1 || len([]byte(job.Diagnostics[0])) > 1024 {
 		t.Fatalf("failed lifecycle state not safely persisted: %+v", job)
+	}
+}
+
+func TestRunNextFailureRetainsFailedStatusWritebackError(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 12, 1, 0, 0, time.UTC)
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-fail-writeback",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "alice",
+		TriggerCommentID:      304,
+		CommandID:             "cmd-fail-writeback",
+		CommandName:           "new",
+		CommandPrompt:         "do work",
+		CommandIdempotencyKey: "cmd-key-fail-writeback",
+		StatusWritebackKey:    "status-fail-writeback",
+		Status:                state.StatusQueued,
+		CreatedAt:             now,
+	})
+	jobErr := errors.New("workspace unavailable")
+	writebackErr := errors.New("status backend unavailable")
+	writebacks := &fakeWriteback{err: writebackErr, errStatus: state.StatusFailed}
+	dispatcher := testDispatcher(store, &fakeWorkspaces{err: jobErr}, &fakeCoordinator{}, writebacks, now)
+	dispatcher.PublicSessionID = func() (string, error) { return "ps-fail-writeback", nil }
+
+	result, err := dispatcher.RunNext(context.Background())
+	if err == nil {
+		t.Fatal("RunNext succeeded, want job and writeback errors")
+	}
+	if !errors.Is(err, ErrTerminalJobFailure) || !errors.Is(err, jobErr) || !errors.Is(err, writebackErr) {
+		t.Fatalf("RunNext error = %v, want terminal job, workspace, and writeback errors", err)
+	}
+	if IsOnlyTerminalJobFailures(err) {
+		t.Fatalf("mixed job/writeback error classified as terminal-job-only: %v", err)
+	}
+	if result.Status != state.StatusFailed || result.JobID != "job-fail-writeback" {
+		t.Fatalf("unexpected failure result: %+v", result)
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusFailed)
+	if job := loadState(t, store).Jobs["job-fail-writeback"]; job.Status != state.StatusFailed {
+		t.Fatalf("failed lifecycle state not persisted: %+v", job)
 	}
 }
 
@@ -1061,6 +1107,9 @@ func TestRunNextSummaryFailureDoesNotMaskDispatchFailures(t *testing.T) {
 			if err == nil {
 				t.Fatal("RunNext succeeded, want dispatch failure")
 			}
+			if !errors.Is(err, ErrTerminalJobFailure) {
+				t.Fatalf("dispatch failure was not classified as a persisted terminal job failure: %v", err)
+			}
 			if result.Status != state.StatusFailed || result.JobID != jobID || !strings.Contains(result.Error, tc.wantDiagnostic) {
 				t.Fatalf("unexpected result: %+v err=%v", result, err)
 			}
@@ -1074,6 +1123,54 @@ func TestRunNextSummaryFailureDoesNotMaskDispatchFailures(t *testing.T) {
 				t.Fatalf("failed boundary should not persist coordinator provenance: summary=%q cli=%+v", job.CoordinatorSummary, job.CLIDirect)
 			}
 		})
+	}
+}
+
+func TestRunNextDispatchMetadataFailureRetainsFailedStatusWritebackError(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 12, 18, 0, 0, time.UTC)
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-dispatch-writeback",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "alice",
+		TriggerCommentID:      335,
+		CommandID:             "cmd-dispatch-writeback",
+		CommandName:           "new",
+		CommandPrompt:         "do work",
+		CommandIdempotencyKey: "cmd-key-dispatch-writeback",
+		StatusWritebackKey:    "status-dispatch-writeback",
+		Status:                state.StatusQueued,
+		CreatedAt:             now,
+	})
+	publicID := "ps-dispatch-writeback"
+	partial := dispatchResult(publicID, "rec-dispatch-writeback", "turn-dispatch-writeback", runnercontext.CoordinatorSummary{})
+	partial.Output = acpx.TurnOutput{RawStdout: "assistant output without coordinator summary"}
+	dispatchErr := &acpx.PartialDispatchError{Result: partial, Err: errors.New("invalid coordinator summary")}
+	writebackErr := errors.New("status backend unavailable")
+	writebacks := &fakeWriteback{err: writebackErr, errStatus: state.StatusFailed}
+	dispatcher := testDispatcher(store, &fakeWorkspaces{binding: testBinding("ws-dispatch-writeback")},
+		&fakeCoordinator{newErr: dispatchErr}, writebacks, now)
+	dispatcher.PublicSessionID = func() (string, error) { return publicID, nil }
+	dispatcher.TurnCorrelationID = func() (string, error) { return "turn-token-dispatch-writeback", nil }
+
+	result, err := dispatcher.RunNext(context.Background())
+	if err == nil {
+		t.Fatal("RunNext succeeded, want dispatch and writeback errors")
+	}
+	if !errors.Is(err, ErrTerminalJobFailure) || !errors.Is(err, dispatchErr) || !errors.Is(err, writebackErr) {
+		t.Fatalf("RunNext error = %v, want terminal job, dispatch, and writeback errors", err)
+	}
+	if IsOnlyTerminalJobFailures(err) {
+		t.Fatalf("mixed dispatch/writeback error classified as terminal-job-only: %v", err)
+	}
+	if result.Status != state.StatusFailed || result.JobID != "job-dispatch-writeback" {
+		t.Fatalf("unexpected failure result: %+v", result)
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusRunning, state.StatusFailed)
+	if job := loadState(t, store).Jobs["job-dispatch-writeback"]; job.Status != state.StatusFailed || job.Acpx.StableRecordID == "" {
+		t.Fatalf("failed lifecycle/dispatch metadata not persisted: %+v", job)
 	}
 }
 
@@ -2705,15 +2802,20 @@ func (f *fakeCoordinator) Resume(ctx context.Context, req acpx.ResumeRequest) (a
 }
 
 type fakeWriteback struct {
-	mu       sync.Mutex
-	store    *memoryStore
-	requests []writeback.Request
+	mu        sync.Mutex
+	store     *memoryStore
+	requests  []writeback.Request
+	err       error
+	errStatus state.LifecycleStatus
 }
 
 func (f *fakeWriteback) Write(_ context.Context, req writeback.Request) (writeback.Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, req)
+	if f.err != nil && (f.errStatus == "" || f.errStatus == req.Status) {
+		return writeback.Result{}, f.err
+	}
 	id := req.Job.StatusCommentID
 	if id == 0 {
 		id = int64(9000 + len(f.requests))
