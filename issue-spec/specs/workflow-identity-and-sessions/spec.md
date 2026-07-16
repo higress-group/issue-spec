@@ -9,6 +9,7 @@ This durable spec is organized by stable capability surfaces rather than by the 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/20
 - https://github.com/higress-group/issue-spec/issues/99
+- https://github.com/higress-group/issue-spec/issues/247
 
 ## Requirements
 
@@ -114,11 +115,44 @@ Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703552
 - https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795688
 
+### Requirement: change-bearing executor separation uses logical Agent identity
+
+For each agent-executed change-bearing PROCESS, the PROCESS header `Agent` identifies the coordinator and each carrier-valid PR rationale `Agent` identifies a code author. After carrier validation, implementations MUST trim surrounding whitespace and compare those logical names case-insensitively. If an author equals the coordinator, final evaluation MUST emit the blocking diagnostic `process.executor.coordinator_conflict`. If any valid rationale carrier conflicts, the PROCESS remains blocked even when other valid rationale carriers identify non-coordinator authors.
+
+Logical-name comparison is a fail-closed backstop and MUST NOT be presented as proof that a real native child executed the work. `Agent Session ID` and `Agent Session Source` remain diagnostic provenance fields and MUST NOT participate in executor-separation comparison. Other PROCESS execution classes remain unchanged.
+
+#### Scenario: coordinator-authored change-bearing rationale is rejected
+
+- **WHEN** a valid rationale for a change-bearing PROCESS names the same logical agent as the PROCESS coordinator after trimming and case-folding
+- **THEN** final evaluation SHALL report `process.executor.coordinator_conflict`
+
+#### Scenario: non-coordinator author passes identity comparison
+
+- **WHEN** every valid rationale for a change-bearing PROCESS names a logical agent different from the coordinator
+- **THEN** executor-separation evaluation SHALL emit no coordinator-conflict diagnostic
+
+#### Scenario: one conflicting carrier blocks mixed authorship
+
+- **WHEN** valid rationale carriers include both coordinator and non-coordinator logical authors
+- **THEN** the PROCESS SHALL remain blocked by `process.executor.coordinator_conflict`
+
+#### Scenario: session metadata is absent or differs
+
+- **WHEN** logical coordinator and author identities differ but session provenance is missing, equal, or different
+- **THEN** executor-separation evaluation SHALL depend only on logical `Agent` identity
+
+Source SPEC comment:
+- https://github.com/higress-group/issue-spec/issues/247
+
 ### Requirement: generated workflow guidance teaches dispatch ids and artifact writer provenance
 
 Generated skills, prompts, and workflow templates MUST teach coordinators and subagents how logical roles, assigned subagent ids, and artifact writer session provenance differ.
 
 Coordinators SHOULD assign each worker or review subagent an explicit subagent/session id when dispatching work. Subagents SHOULD pass that assigned id through supported issue-spec writer command parameters. Codex runtime identity may still override the supplied id as the resolved artifact writer session provenance.
+
+Generated guidance MUST require every agent-executed change-bearing PROCESS to run in a managed workspace through a real runtime-native child whose logical `Agent` differs from the coordinator. It MUST prohibit coordinator-inline implementation, use of `independent` as an inline escape, and logical-name fabrication. The same real worker MAY execute multiple compatible PROCESS nodes when each node keeps its own lifecycle, evidence, rationale, and handoff.
+
+Generated guidance MUST preserve per-SPEC independent review as the blocking rule and SHOULD tell coordinators to assign at least one independent reviewer for every distinct change-bearing author. One reviewer MAY cover multiple authors; the guidance MUST NOT introduce a new one-reviewer-per-author blocking gate.
 
 #### Scenario: coordinator dispatch instructions
 
@@ -133,6 +167,16 @@ Coordinators SHOULD assign each worker or review subagent an explicit subagent/s
 - **THEN** those instructions SHALL tell the subagent to pass its assigned session or subagent id through the supported CLI parameter
 - **THEN** those instructions SHALL explain that Codex runtime identity may override the supplied id as artifact writer provenance
 - **THEN** those instructions SHALL preserve default non-strict behavior when neither Codex identity nor explicit session id is available
+
+#### Scenario: generated change-bearing instructions require a real child
+
+- **WHEN** generated issue-spec workflow instructions dispatch agent-executed change-bearing work
+- **THEN** they SHALL require a managed real non-coordinator native child and SHALL reject coordinator-inline execution or fabricated identity
+
+#### Scenario: generated review scheduling covers distinct authors softly
+
+- **WHEN** generated coordinator instructions schedule review PROCESS nodes
+- **THEN** they SHALL recommend independent reviewer coverage for every distinct change-bearing author, allow one reviewer to cover multiple authors, and keep per-SPEC coverage as the only blocking review relation
 
 Generated skills, slash commands, and workflow templates MUST also teach the agent-owned review boundaries: review agents author findings directly, owning workers fix and reply on finding threads directly, review agents re-check and resolve their own findings, the coordinator orchestrates only, and final rationale is a post-review-convergence step owned by workers. These instructions MUST NOT tell the coordinator to author findings, fix replies, resolutions, or rationale on another agent's behalf, and MUST NOT place rationale as a pre-review step.
 
@@ -158,6 +202,7 @@ Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052362
 - https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052418
 - https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052466
+- https://github.com/higress-group/issue-spec/issues/247
 
 ### Requirement: review findings and worker fix replies carry distinct logical owners
 
@@ -210,7 +255,7 @@ Source SPEC comments:
 
 ### Requirement: coordinator owns orchestration and gates only
 
-The coordinator SHALL own scheduling, status synchronization, unresolved blocker routing, and readiness gates. The coordinator SHALL NOT be the logical owner of review findings, worker fix replies, review resolutions, or final code rationale unless the coordinator is explicitly assigned as the worker or review PROCESS owner for that artifact. Existing verify blocking on open P0/P1 findings SHALL be preserved.
+The coordinator SHALL own planning, scheduling, managed workspace preparation and integration, status synchronization, unresolved blocker routing, bounded handoff, and readiness gates. The coordinator SHALL NOT implement, test, commit, or write rationale for agent-executed change-bearing work and SHALL NOT be the logical owner of review findings, worker fix replies, review resolutions, or final code rationale. Existing verify blocking on open P0/P1 findings SHALL be preserved. Genuine external or human-owned independent work, other PROCESS execution classes, and the direct one-file path remain unchanged.
 
 #### Scenario: unresolved blocking finding exists
 
@@ -226,6 +271,7 @@ The coordinator SHALL own scheduling, status synchronization, unresolved blocker
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/99#issuecomment-4885052362
+- https://github.com/higress-group/issue-spec/issues/247
 
 ### Requirement: final PR rationale is post-review-convergence and worker-owned
 

@@ -10,12 +10,13 @@ import (
 )
 
 const (
-	CodeProcessExecutionClassLegacy  = "process.execution_class.legacy"
-	CodeProcessExecutionClassInvalid = "process.execution_class.invalid"
-	CodeProcessTaskLinkMissing       = "process.task_link_missing"
-	CodeProcessSpecLinkMissing       = "process.spec_link_missing"
-	CodeProcessCarrierMissing        = "process.carrier_missing"
-	CodeProcessReviewAuthorConflict  = "process.review.author_conflict"
+	CodeProcessExecutionClassLegacy        = "process.execution_class.legacy"
+	CodeProcessExecutionClassInvalid       = "process.execution_class.invalid"
+	CodeProcessTaskLinkMissing             = "process.task_link_missing"
+	CodeProcessSpecLinkMissing             = "process.spec_link_missing"
+	CodeProcessCarrierMissing              = "process.carrier_missing"
+	CodeProcessExecutorCoordinatorConflict = "process.executor.coordinator_conflict"
+	CodeProcessReviewAuthorConflict        = "process.review.author_conflict"
 )
 
 type RationaleEvidence struct {
@@ -170,6 +171,8 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 		report.Required = append(report.Required, "inline rationale on matching PR path/line")
 		carrier := false
 		carriedSpecs := map[string]bool{}
+		conflictedAgentsBySpec := map[string]string{}
+		coordinator := normalizeAgent(process.Comment.Agent)
 		for _, evidence := range input.Rationales {
 			if evidence.ProcessID != report.ProcessID || !activeSpec(evidence.SpecID) {
 				continue
@@ -180,12 +183,24 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 			if want := input.ActiveSpecs[evidence.SpecID]; evidence.SpecURL == "" || model.NormalizeURL(evidence.SpecURL) != model.NormalizeURL(want) {
 				continue
 			}
+			if author := normalizeAgent(evidence.AuthorAgent); coordinator != "" && author != "" && author == coordinator {
+				conflictedAgentsBySpec[evidence.SpecID] = strings.TrimSpace(evidence.AuthorAgent)
+				continue
+			}
 			carrier, specSatisfied = true, true
 			carriedSpecs[evidence.SpecID] = true
 		}
 		report.SatisfiedSpecs = sortedKeys(carriedSpecs)
+		for _, spec := range sortedKeys(conflictedAgentsBySpec) {
+			agent := conflictedAgentsBySpec[spec]
+			add(CodeProcessExecutorCoordinatorConflict, SeverityError, true,
+				fmt.Sprintf("change-bearing PROCESS evidence for %s was authored by agent %q, which is also the PROCESS coordinator; agent-executed change-bearing code MUST be authored by a real non-coordinator worker, so dispatch the work to a runtime-native child and add rationale under that worker's --agent identity", spec, agent),
+				"same agent as PROCESS coordinator", "rationale authored by a real non-coordinator worker", "pr rationale")
+		}
 		if carrier {
 			report.Satisfied = append(report.Satisfied, "matching inline rationale")
+		} else if len(conflictedAgentsBySpec) > 0 {
+			report.Missing = append(report.Missing, "non-coordinator matching inline rationale")
 		} else {
 			report.Missing = append(report.Missing, "matching inline rationale")
 			add(CodeProcessCarrierMissing, SeverityError, true, "change-bearing PROCESS lacks an inline rationale whose marker path/line matches the real PR comment and active SPEC", "missing", "matching rationale", "pr rationale")
@@ -437,7 +452,7 @@ func normalizeAgent(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
-func sortedKeys(set map[string]bool) []string {
+func sortedKeys[V any](set map[string]V) []string {
 	if len(set) == 0 {
 		return nil
 	}

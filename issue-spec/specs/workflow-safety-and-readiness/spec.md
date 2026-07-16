@@ -6,6 +6,7 @@ Define the long-lived safety and readiness contract for issue-native workflow ex
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/166
+- https://github.com/higress-group/issue-spec/issues/247
 
 ## Requirements
 
@@ -110,7 +111,7 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/166#issu
 
 ### Requirement: Review PROCESS evidence MUST be authored by an agent independent of the code author
 
-The workflow MUST treat code review as mandatory for every active SPEC that has a valid change-bearing carrier, regardless of change size, and MUST require that a review PROCESS be authored by a different agent than the code author of the SPEC under review, judged by the `--agent` identity recorded on the review evidence. Small changes MAY be implemented inline by the coordinator, but they still MUST be reviewed by a different agent. The final gate MUST fail closed with a distinct diagnostic when a review PROCESS's reviewer `--agent` name matches a code author of the same SPEC. Author and reviewer identities MUST be joined per SPEC so that a reviewer who authored a *different* SPEC is not falsely flagged. This name-based check is a machine backstop for the prompt contract, not full provenance enforcement.
+The workflow MUST treat code review as mandatory for every active SPEC that has a valid change-bearing carrier, regardless of change size, and MUST require that a review PROCESS be authored by a different agent than the code author of the SPEC under review, judged by the `--agent` identity recorded on the review evidence. Agent-executed change-bearing work of every size MUST be implemented by a real non-coordinator native child; coordinator-inline implementation is prohibited. This requirement does not change non-change-bearing PROCESS execution or the direct one-file delivery path. The final gate MUST fail closed with a distinct diagnostic when a review PROCESS's reviewer `--agent` name matches a code author of the same SPEC. Author and reviewer identities MUST be joined per SPEC so that a reviewer who authored a *different* SPEC is not falsely flagged. This name-based check is a machine backstop for the prompt contract, not full provenance enforcement.
 
 #### Scenario: self-review by the same agent name is blocked
 
@@ -127,4 +128,6 @@ The workflow MUST treat code review as mandatory for every active SPEC that has 
 - **WHEN** a reviewer `--agent` name matches a code author of a SPEC other than the one under review
 - **THEN** the final gate MUST NOT flag the review as an author conflict for the SPEC under review
 
-Source change: https://github.com/higress-group/issue-spec/pull/232
+Source changes:
+- https://github.com/higress-group/issue-spec/pull/232
+- https://github.com/higress-group/issue-spec/issues/247

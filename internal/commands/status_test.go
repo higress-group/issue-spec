@@ -249,6 +249,40 @@ func TestStatusDefaultProcessEvidenceDoesNotOverrideCollectedEvidence(t *testing
 	}
 }
 
+func TestStatusSurfacesCoordinatorAuthoredChangeBearingEvidence(t *testing.T) {
+	const (
+		specURL = "https://github.com/o/r/issues/1#issuecomment-1"
+		taskURL = "https://github.com/o/r/issues/2#issuecomment-2"
+		prURL   = "https://github.com/o/r/pull/7"
+	)
+	process := typedArtifactWithAgent(t, 3, "PROCESS", "PROCESS-001", "done", "Coordinator",
+		canonicalProcessContentWithClass(model.ProcessExecutionChangeBearing))
+	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
+	processBody, _, err := model.AddPRLink(process.Comment.Body, prURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.Comment = model.ParseTypedComment(processBody)
+	collection := statusGateCollection{
+		Remote: statusForecastRemoteFacts(gates.TargetFinal),
+		ProcessEvidence: []gates.ProcessEvidenceInput{{
+			Process: process, RequiredPRURL: prURL,
+			ActiveSpecs: map[string]string{"SPEC-001": specURL},
+			TaskURLs:    map[string]bool{model.NormalizeURL(taskURL): true},
+			Rationales: []gates.RationaleEvidence{{
+				ProcessID: "PROCESS-001", SpecID: "SPEC-001", SpecURL: specURL,
+				MarkerPath: "internal/foo.go", MarkerLine: 12, CommentPath: "internal/foo.go", CommentLine: 12,
+				AuthorAgent: "Coordinator",
+			}},
+		}},
+	}
+	summary := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetFinal,
+		[]model.Artifact{process}, workflow.Plan{}, nil, collection)
+	if summary.OK || !statusHasCode(summary, gates.CodeProcessExecutorCoordinatorConflict) {
+		t.Fatalf("final status must surface coordinator-authored change-bearing evidence: %+v", summary.Gate.Diagnostics)
+	}
+}
+
 func statusGateCodes(diagnostics []gates.Diagnostic) []string {
 	codes := make([]string, 0, len(diagnostics))
 	for _, diagnostic := range diagnostics {

@@ -682,6 +682,42 @@ func TestBuildFinalVerifyReportRequiresIndependentReviewProcess(t *testing.T) {
 	}
 }
 
+func TestBuildFinalVerifyReportRejectsCoordinatorAuthoredChangeBearingEvidence(t *testing.T) {
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
+	process := typedArtifactWithAgent(t, 3, "PROCESS", "PROCESS-001", "done", "Coordinator", canonicalProcessContent)
+	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &spec, &process)
+	linkArtifacts(t, &task, &process)
+	processBody, _, err := model.AddPRLink(process.Comment.Body, "https://github.com/o/r/pull/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.Comment = model.ParseTypedComment(processBody)
+	rationale, err := model.RenderRationaleBody("  cOoRdInAtOr  ", "PROCESS-001", "SPEC-001", spec.URL,
+		"Explain why.", "internal/foo.go", 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
+		PR: 7, PRURL: "https://github.com/o/r/pull/7", RationaleRequired: true,
+		RationaleComments: []github.PullRequestReviewComment{{Body: rationale, Path: "internal/foo.go", Line: 12}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OK || !finalReportHasGateCode(report, gates.CodeProcessExecutorCoordinatorConflict) {
+		t.Fatalf("coordinator-authored change-bearing evidence must fail final verify: %+v", report)
+	}
+	if !errorsContain(report.Errors, "also the PROCESS coordinator") {
+		t.Fatalf("coordinator conflict must be projected to final verify errors: %+v", report.Errors)
+	}
+}
+
 // TestBuildFinalVerifyReportRejectsSelfAuthoredReview proves a review PROCESS
 // whose reviewing agent equals the code author of the SPEC does not satisfy the
 // independence requirement and blocks final verify at the command layer.

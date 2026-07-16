@@ -157,6 +157,72 @@ func TestProcessEvidenceRejectsForgedRationalePathLine(t *testing.T) {
 	}
 }
 
+func TestChangeBearingProcessRejectsCoordinatorAuthoredCarrier(t *testing.T) {
+	validRationale := func(input ProcessEvidenceInput, agent string) RationaleEvidence {
+		return RationaleEvidence{ProcessID: "PROCESS-001", SpecID: "SPEC-001", SpecURL: input.ActiveSpecs["SPEC-001"],
+			MarkerPath: "real.go", MarkerLine: 12, CommentPath: "real.go", CommentLine: 12, AuthorAgent: agent}
+	}
+
+	t.Run("normalized coordinator name conflicts", func(t *testing.T) {
+		input := processEvidenceFixture(t, model.ProcessExecutionChangeBearing)
+		input.Rationales = []RationaleEvidence{validRationale(input, "  cOoRdInAtOr  ")}
+		report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+		if !hasDiagnostic(report.Diagnostics, CodeProcessExecutorCoordinatorConflict, true) {
+			t.Fatalf("coordinator-authored carrier must block: %+v", report)
+		}
+		if containsString(report.Satisfied, "matching inline rationale") || len(report.SatisfiedSpecs) != 0 {
+			t.Fatalf("coordinator-authored carrier must not receive clean satisfaction credit: %+v", report)
+		}
+	})
+
+	t.Run("independent worker without session metadata passes", func(t *testing.T) {
+		input := processEvidenceFixture(t, model.ProcessExecutionChangeBearing)
+		input.Rationales = []RationaleEvidence{validRationale(input, "Implementation Worker")}
+		report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+		if hasDiagnostic(report.Diagnostics, CodeProcessExecutorCoordinatorConflict, true) || !containsString(report.Satisfied, "matching inline rationale") {
+			t.Fatalf("independent worker carrier must pass coordinator separation: %+v", report)
+		}
+	})
+
+	t.Run("mixed worker and coordinator carriers still conflict", func(t *testing.T) {
+		input := processEvidenceFixture(t, model.ProcessExecutionChangeBearing)
+		input.Rationales = []RationaleEvidence{
+			validRationale(input, "Implementation Worker"),
+			validRationale(input, "Coordinator"),
+		}
+		report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+		if !hasDiagnostic(report.Diagnostics, CodeProcessExecutorCoordinatorConflict, true) {
+			t.Fatalf("worker carrier must not rescue coordinator-authored evidence: %+v", report)
+		}
+		if !containsString(report.Satisfied, "matching inline rationale") {
+			t.Fatalf("clean worker carrier should retain its satisfaction credit: %+v", report)
+		}
+	})
+
+	t.Run("invalid coordinator carrier does not trigger identity conflict", func(t *testing.T) {
+		input := processEvidenceFixture(t, model.ProcessExecutionChangeBearing)
+		invalid := validRationale(input, "Coordinator")
+		invalid.CommentLine = 99
+		input.Rationales = []RationaleEvidence{invalid}
+		report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+		if hasDiagnostic(report.Diagnostics, CodeProcessExecutorCoordinatorConflict, true) {
+			t.Fatalf("identity comparison must run only after existing carrier validation: %+v", report)
+		}
+		if !hasDiagnostic(report.Diagnostics, CodeProcessCarrierMissing, true) {
+			t.Fatalf("invalid carrier must retain the existing missing-carrier diagnostic: %+v", report)
+		}
+	})
+}
+
+func TestCoordinatorAgentDoesNotAffectOtherExecutionClasses(t *testing.T) {
+	input := processEvidenceFixture(t, model.ProcessExecutionVerification)
+	input.Verifications = []VerificationEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Done: true, TestEvidence: true}}
+	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if hasDiagnostic(report.Diagnostics, CodeProcessExecutorCoordinatorConflict, true) || len(report.Missing) != 0 {
+		t.Fatalf("coordinator separation must not change verification evidence: %+v", report)
+	}
+}
+
 func TestProcessEvidenceLegacyAndUnknownClass(t *testing.T) {
 	legacy := processEvidenceFixture(t, "")
 	legacy.Process.Comment.Body = removeExecutionClass(legacy.Process.Comment.Body)

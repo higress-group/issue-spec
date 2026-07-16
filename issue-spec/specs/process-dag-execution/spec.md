@@ -2,12 +2,13 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for how the implement phase plans and executes the PROCESS DAG: capturing execution-planning metadata on TASK comments, allowing coding nodes to be implemented inline by the coordinator or delegated to a worker sub-agent (delegation is the recommended default for context isolation, not a hard requirement), defaulting to serial PROCESS chains with bounded handoff, gating parallel dispatch on proven decoupling as a concern separate from the context-isolation default, treating review and repair as first-class PROCESS nodes with mandatory independent review for change-bearing work, and auditing execution-planning evidence at final verify. It also defines whether a PROCESS uses the coordinator-managed workspace lifecycle or an independently managed workspace.
+Define the long-lived behavior contract for how the implement phase plans and executes the PROCESS DAG: capturing execution-planning metadata on TASK comments, requiring agent-executed change-bearing nodes to run in real non-coordinator native workers, allowing one worker to execute multiple compatible nodes while preserving per-PROCESS boundaries and bounded handoff, gating parallel dispatch on proven decoupling, treating review and repair as first-class PROCESS nodes with mandatory independent review for change-bearing work, guiding reviewer coverage for every distinct change-bearing author, and auditing execution-planning evidence at final verify. It also defines whether a PROCESS uses the coordinator-managed workspace lifecycle or a genuinely external or human-owned independently managed workspace.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/144
 - https://github.com/higress-group/issue-spec/issues/196
 - https://github.com/higress-group/issue-spec/issues/32
+- https://github.com/higress-group/issue-spec/issues/247
 
 ## Requirements
 
@@ -196,71 +197,81 @@ Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/32#issuecomment-4877853419
 - https://github.com/higress-group/issue-spec/issues/166#issuecomment-4951036789
 
-### Requirement: Coding PROCESS nodes MAY be inlined or delegated, with delegation the recommended default
+### Requirement: Agent-executed change-bearing PROCESS nodes require non-coordinator workers
 
-The implement/apply coordinator MAY implement any coding PROCESS node inline in its own context OR delegate it to a worker sub-agent. Delegation is the recommended default for context isolation — it keeps the coordinator context bounded and avoids mid-task compaction on large or context-heavy nodes — but it MUST NOT be treated as a hard requirement, and inline coding MUST be allowed for a node of any size because independent review (see the independent-review requirement) is mandatory and catches what the author cannot. This choice MUST be independent of whether the node is eligible for parallel execution.
+Every agent-executed change-bearing PROCESS MUST run in a real runtime-native child or sub-agent whose logical `Agent` differs from the coordinator. The PROCESS MUST use the coordinator-managed `workflow workspace prepare` -> child/worker -> `complete` -> `integrate` lifecycle. The coordinator MUST NOT implement, test, or commit the node inline and MUST NOT select `independent` as an escape from that lifecycle. Merely choosing another logical agent name, relabeling the coordinator, or fabricating child identity MUST NOT satisfy the requirement.
 
-#### Scenario: Coordinator may inline a non-trivial node
+The coordinator retains planning, scheduling, workspace management, integration, synchronization, gate evaluation, blocker handling, and bounded handoff duties. Genuine external or human-owned independently managed work remains supported. Verification-only and orchestration-only PROCESS classes, session diagnostics, parallelism eligibility, and the direct one-file delivery path remain unchanged.
 
-- **WHEN** the coordinator executes a non-trivial coding PROCESS node
-- **THEN** it MAY implement the code inline in its own context or delegate it to a worker sub-agent, and the gate MUST NOT reject the change solely because it was authored inline
+#### Scenario: Ready change-bearing node is dispatched
 
-#### Scenario: Delegation is recommended for large context
+- **WHEN** an agent-executed change-bearing PROCESS becomes ready
+- **THEN** the coordinator SHALL prepare its managed workspace and dispatch a real non-coordinator native child to implement, test, and commit it
 
-- **WHEN** a coding node is large or context-heavy enough to risk coordinator compaction
-- **THEN** the coordinator SHOULD delegate it to a worker sub-agent to keep its own context bounded
+#### Scenario: Missing native child support fails closed
 
-#### Scenario: Inline authoring still requires independent review
+- **WHEN** the runtime cannot create a real native child for an agent-executed change-bearing PROCESS
+- **THEN** the coordinator SHALL report the blocker instead of implementing inline or fabricating a distinct logical identity
 
-- **WHEN** the coordinator authors change-bearing code inline
-- **THEN** the SPEC that code covers MUST still be reviewed by a different agent than the author, and final verify MUST fail closed if no independent review PROCESS covers it
+#### Scenario: Other execution paths remain unchanged
+
+- **WHEN** work is genuinely external or human-owned, verification-only, orchestration-only, or eligible for the direct one-file path
+- **THEN** its existing execution and delivery behavior SHALL remain unchanged
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904042881
 - https://github.com/higress-group/issue-spec/pull/232
+- https://github.com/higress-group/issue-spec/issues/247
 
-### Requirement: Delegated serial PROCESS nodes run across separate workers via bounded handoff
+### Requirement: Compatible serial PROCESS nodes may reuse a worker while preserving bounded handoff
 
-A coding PROCESS node is executed on one of two paths. A delegated node (declared `managed`) runs through `workflow workspace prepare` -> child/worker -> `complete` -> `integrate`. An inline node (declared `independent`) is implemented, tested, and committed by the coordinator in its integration checkout, skipping prepare/child/complete/integrate. Both paths MUST record change-bearing rationale.
+The same real worker MAY execute multiple compatible serial change-bearing or repair PROCESS nodes. A fresh worker per node is not required, but each node MUST retain its own PROCESS state, dependency checks, write ownership, managed workspace result, evidence, rationale, and bounded `### Handoff`. A successor MUST be seeded with the parent TASK context plus its predecessor's handoff and MUST NOT require the predecessor's full transcript.
 
-Delegated serial PROCESS nodes under a parent TASK MUST execute in separate worker sub-agents connected by a bounded ### Handoff summary. A delegated successor node MUST start from the parent TASK context plus its predecessor's handoff, and MUST NOT require the predecessor's full transcript. Inline serial nodes are executed by the coordinator, but MUST still keep per-PROCESS state and record a bounded ### Handoff at each node boundary so the chain remains auditable and any successor can later be switched to the delegated path.
+#### Scenario: Same worker continues to a compatible successor
 
-#### Scenario: Delegated predecessor produces handoff for successor
+- **WHEN** PROCESS-B depends on PROCESS-A, their ownership and dependencies are compatible, and the coordinator keeps the same real worker assigned
+- **THEN** the worker MAY continue with PROCESS-B after PROCESS-A completes while preserving both PROCESS lifecycles and the bounded handoff between them
 
-- **WHEN** PROCESS-B depends on delegated PROCESS-A under the same parent TASK
-- **THEN** PROCESS-A SHALL complete in its own worker and record a bounded ### Handoff, and PROCESS-B SHALL start in a separate worker seeded with that handoff
+#### Scenario: Reuse does not collapse PROCESS boundaries
 
-#### Scenario: Inline serial nodes keep per-PROCESS handoff boundaries
+- **WHEN** one worker executes more than one PROCESS node
+- **THEN** each node SHALL still be independently prepared, completed, integrated, evidenced, and synchronized
 
-- **WHEN** a serial chain of coding nodes is executed inline by the coordinator
-- **THEN** each node SHALL retain its own PROCESS state and record a bounded ### Handoff at its boundary, rather than collapsing the chain into one undifferentiated coordinator step
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043156
+- https://github.com/higress-group/issue-spec/issues/247
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043156
+### Requirement: Coordinator prompt carries a phase-aware worker and review contract
 
-### Requirement: Coordinator prompt carries a phase-aware delegation contract with rationale
+The generated coordinator prompt MUST express the DAG-execution contract at fidelity matching the apply workflow guidance. On an implement turn it MUST direct the coordinator to plan the PROCESS DAG before execution, require agent-executed change-bearing nodes to use managed real non-coordinator native children, prohibit coordinator-inline execution and fabricated identities, allow one worker to execute multiple compatible nodes without collapsing per-PROCESS boundaries, and keep parallel execution as a separately gated optimization. It MUST preserve mandatory per-SPEC independent review and SHOULD direct the coordinator to assign at least one independent reviewer for every distinct change-bearing author. One reviewer MAY cover multiple authors, and this author-oriented guidance MUST NOT introduce a new one-reviewer-per-author blocking gate.
 
-The generated coordinator prompt MUST express the DAG-execution and delegation contract at fidelity matching the apply workflow guidance. On an implement turn it MUST direct the coordinator to plan the PROCESS DAG before execution, and MUST state that coding nodes MAY be implemented inline or delegated to workers, with delegation the recommended default for context isolation rather than a hard requirement. The prompt MUST include an explicit context-budget rationale for delegation, MUST present the parallelism gate as a concern separate from the context-isolation default, and MUST state that independent review is mandatory for change-bearing work regardless of whether the code was authored inline or by a worker.
-
-#### Scenario: Implement-turn prompt mandates plan-then-execute
+#### Scenario: Implement-turn prompt mandates plan then worker dispatch
 
 - **WHEN** the coordinator prompt is rendered for an implement-phase command
-- **THEN** it SHALL contain a directive to build the PROCESS DAG first and SHALL state that coding nodes MAY be inlined or delegated while independent review remains mandatory
+- **THEN** it SHALL direct the coordinator to build the PROCESS DAG first and dispatch every agent-executed change-bearing node to a real non-coordinator managed worker
 
-#### Scenario: Prompt states the context-budget reason
+#### Scenario: Prompt rejects identity fabrication
 
-- **WHEN** the coordinator prompt is rendered
-- **THEN** it SHALL explain that delegation exists to keep the coordinator context bounded and avoid mid-task compaction
+- **WHEN** the coordinator prompt describes executor separation
+- **THEN** it SHALL state that a different logical name without a real native child is insufficient
 
-#### Scenario: Delegation and parallelism are stated separately
+#### Scenario: Parallelism remains a separate gate
 
 - **WHEN** the coordinator prompt describes worker dispatch
-- **THEN** it SHALL present context-isolation delegation as the default and parallel execution as a separately gated optimization
+- **THEN** it SHALL allow serial worker reuse while requiring separate workers for nodes actually dispatched in parallel
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043410
+#### Scenario: Prompt guides reviewer coverage without a new gate
 
-### Requirement: Coordinator retains only orchestration state during delegated implementation
+- **WHEN** the coordinator prompt describes review scheduling
+- **THEN** it SHALL recommend independent reviewer coverage for each distinct author, allow one reviewer to cover multiple authors, and retain per-SPEC independent review as the blocking rule
 
-During delegated implementation the coordinator MUST retain only orchestration, gate-evaluation, integration, and handoff state. It MUST consume bounded worker outputs and issue-spec read results rather than inlining full issue or pull request bodies or full diffs into its own context.
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043410
+- https://github.com/higress-group/issue-spec/issues/247
+
+### Requirement: Coordinator retains only orchestration state during agent-executed implementation
+
+During agent-executed implementation the coordinator MUST retain only planning, scheduling, workspace management, gate evaluation, integration, synchronization, blocker handling, and bounded handoff state. It MUST consume bounded worker outputs and issue-spec read results rather than implementing, testing, committing, writing rationale, or inlining full issue or pull request bodies or full diffs into its own context.
 
 #### Scenario: Coordinator integrates via bounded outputs
 
@@ -272,7 +283,9 @@ During delegated implementation the coordinator MUST retain only orchestration, 
 - **WHEN** the coordinator advances the DAG across multiple nodes
 - **THEN** its retained context SHALL be limited to scheduling, gate status, integration ownership, and handoff references
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043650
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043650
+- https://github.com/higress-group/issue-spec/issues/247
 
 ### Requirement: Explicit workspace-management declaration
 
@@ -292,7 +305,7 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/196#issu
 
 ### Requirement: Independent workspace final-gate behavior
 
-A done change-bearing PROCESS explicitly declared `independent` MUST NOT require portable Workspace metadata at the final gate. A `managed` or legacy undeclared change-bearing PROCESS MUST retain the existing portable Workspace requirement. `workflow workspace prepare` MUST reject an explicitly independent PROCESS so runner and managed child execution cannot claim it. Independent mode MUST NOT weaken existing PROCESS PR, rationale, review, verification, or traceability checks.
+A done PROCESS genuinely declared `independent` for external or human-owned self-managed change-bearing work MUST NOT require portable Workspace metadata at the final gate. Agent-executed change-bearing nodes MUST use `managed` and MUST NOT select `independent` for coordinator-inline execution. A `managed` or legacy undeclared change-bearing PROCESS MUST retain the existing portable Workspace requirement. `workflow workspace prepare` MUST reject an explicitly independent PROCESS so runner and managed child execution cannot claim it. Independent mode MUST NOT weaken existing PROCESS PR, rationale, review, verification, or traceability checks.
 
 #### Scenario: Independent process is not blocked for absent lease
 
@@ -309,4 +322,11 @@ A done change-bearing PROCESS explicitly declared `independent` MUST NOT require
 - **WHEN** workflow workspace prepare targets an explicit independent PROCESS
 - **THEN** the command rejects the request before creating a workspace lease
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/196#issuecomment-4964218213
+#### Scenario: Coordinator cannot select independent for inline implementation
+
+- **WHEN** the coordinator owns an agent-executed change-bearing PROCESS
+- **THEN** it SHALL use a managed non-coordinator worker rather than declaring the PROCESS independent and implementing it inline
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/196#issuecomment-4964218213
+- https://github.com/higress-group/issue-spec/issues/247

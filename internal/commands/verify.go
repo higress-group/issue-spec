@@ -507,7 +507,7 @@ func legacyVerifyGateError(diagnostic gates.Diagnostic) (string, bool) {
 		return diagnostic.Message, true
 	case gates.CodeProcessExecutionClassInvalid, gates.CodeProcessTaskLinkMissing,
 		gates.CodeProcessSpecLinkMissing, gates.CodeProcessPRLinkMissing, gates.CodeProcessCarrierMissing,
-		gates.CodeProcessReviewRequired, gates.CodeProcessReviewAuthorConflict:
+		gates.CodeProcessExecutorCoordinatorConflict, gates.CodeProcessReviewRequired, gates.CodeProcessReviewAuthorConflict:
 		return diagnostic.Message, true
 	case gates.CodeProcessWorkspaceRequired, gates.CodeProcessWorkspaceInvalid, gates.CodeProcessWorkspaceStateInvalid,
 		gates.CodeProcessWorkspaceModeInvalid, gates.CodeProcessWorkspaceRevisionUnknown, gates.CodeProcessWorkspaceRevisionStale,
