@@ -74,8 +74,7 @@ type DiagnosticSummary struct {
 func (d *DiagnosticSummary) UnmarshalJSON(data []byte) error {
 	var message string
 	if err := json.Unmarshal(data, &message); err == nil {
-		d.Severity = ""
-		d.Message = message
+		*d = DiagnosticSummary{Message: message}
 		return nil
 	}
 
@@ -97,12 +96,15 @@ func (d *DiagnosticSummary) UnmarshalJSON(data []byte) error {
 		}
 		return err
 	}
-	d.Code = object.Code
-	d.Severity = object.Severity
-	if d.Severity == "" {
-		d.Severity = object.Level
+	severity := object.Severity
+	if severity == "" {
+		severity = object.Level
 	}
-	d.Message = object.Message
+	*d = DiagnosticSummary{
+		Code:     object.Code,
+		Severity: severity,
+		Message:  object.Message,
+	}
 	return nil
 }
 

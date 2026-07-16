@@ -1,6 +1,7 @@
 package contextbundle
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -82,6 +83,41 @@ func TestParseCoordinatorSummaryAcceptsDiagnosticCode(t *testing.T) {
 	}
 	if got := summary.Diagnostics[0].Message; got != "selector=claude; agent kind confirmed" {
 		t.Fatalf("diagnostic message = %q", got)
+	}
+}
+
+func TestDiagnosticSummaryUnmarshalJSONResetsReusedReceiver(t *testing.T) {
+	var diagnostic DiagnosticSummary
+	for _, test := range []struct {
+		name string
+		json string
+		want DiagnosticSummary
+	}{
+		{
+			name: "coded object",
+			json: `{"code":"selector_echo","severity":"info","message":"selector confirmed"}`,
+			want: DiagnosticSummary{Code: "selector_echo", Severity: "info", Message: "selector confirmed"},
+		},
+		{
+			name: "string clears object fields",
+			json: `"plain diagnostic"`,
+			want: DiagnosticSummary{Message: "plain diagnostic"},
+		},
+		{
+			name: "object with omitted fields stays clear",
+			json: `{"message":"object diagnostic"}`,
+			want: DiagnosticSummary{Message: "object diagnostic"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			diagnostic = DiagnosticSummary{Code: "stale", Severity: "warning", Message: "stale"}
+			if err := json.Unmarshal([]byte(test.json), &diagnostic); err != nil {
+				t.Fatal(err)
+			}
+			if diagnostic != test.want {
+				t.Fatalf("diagnostic = %+v, want %+v", diagnostic, test.want)
+			}
+		})
 	}
 }
 
