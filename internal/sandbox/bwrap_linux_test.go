@@ -124,6 +124,7 @@ func TestLinuxPrepareBuildsBwrapCommand(t *testing.T) {
 	assertArgSequence(t, cmd.Args, "--perms", "0700", "--tmpfs", "/tmp")
 	assertArgSequence(t, cmd.Args, "--bind", "/tmp/gh", "/tmp/issue-spec-gh")
 	assertArgSequence(t, cmd.Args, "--bind", "/tmp/codex", "/tmp/issue-spec-codex")
+	assertArgSequence(t, cmd.Args, "--bind", "/tmp/home/.acpx/runtime", acpxQueueSocketSandboxPath())
 	assertArgSequence(t, cmd.Args, "--ro-bind", "/usr", "/usr")
 	assertArgSequence(t, cmd.Args, "--setenv", "HOME", "/tmp/issue-spec-home")
 	assertArgSequence(t, cmd.Args, "--setenv", "GH_CONFIG_DIR", "/tmp/issue-spec-gh")
@@ -136,6 +137,12 @@ func TestLinuxPrepareBuildsBwrapCommand(t *testing.T) {
 	}
 	if prepared.Metadata.SandboxProvider != ProviderBubblewrap || prepared.Metadata.FSBoundary != FSBoundaryWorkspace {
 		t.Fatalf("unexpected metadata: %+v", prepared.Metadata)
+	}
+}
+
+func TestAcpxQueueSocketSandboxPathMatchesAcpxContract(t *testing.T) {
+	if got, want := acpxQueueSocketSandboxPath(), "/tmp/acpx-316f81fba6"; got != want {
+		t.Fatalf("acpxQueueSocketSandboxPath() = %q, want %q", got, want)
 	}
 }
 

@@ -80,6 +80,7 @@ type Config struct {
 	TempGHConfigDir   string
 	TempXDGConfigHome string
 	TempCodexHome     string
+	AcpxRuntimeDir    string
 	HostGHConfigDir   string
 	// HostSSHDir and HostSSHAgentSocket are explicit opt-ins. In bubblewrap
 	// mode the directory is mounted read-only at HOME/.ssh and the optional
@@ -211,6 +212,7 @@ type Mount struct {
 }
 
 func Preflight(ctx context.Context, cfg Config, deps Dependencies) (Metadata, error) {
+	cfg = withDefaultAcpxRuntimeDir(cfg)
 	if err := validateFileCapabilities(cfg.FileCapabilities); err != nil {
 		return Metadata{}, err
 	}
@@ -228,6 +230,7 @@ func Preflight(ctx context.Context, cfg Config, deps Dependencies) (Metadata, er
 }
 
 func Prepare(ctx context.Context, cfg Config, target Command, deps Dependencies) (PreparedCommand, error) {
+	cfg = withDefaultAcpxRuntimeDir(cfg)
 	if strings.TrimSpace(target.Binary) == "" {
 		return PreparedCommand{}, fmt.Errorf("%w: target binary is required", ErrSandboxConfigInvalid)
 	}
@@ -289,6 +292,13 @@ func hostEnvPaths(cfg Config) envPaths {
 
 func sandboxEnvPaths() envPaths {
 	return envPaths{home: "/tmp/issue-spec-home", ghConfigDir: "/tmp/issue-spec-gh", xdgConfigHome: "/tmp/issue-spec-xdg", codexHome: "/tmp/issue-spec-codex"}
+}
+
+func withDefaultAcpxRuntimeDir(cfg Config) Config {
+	if strings.TrimSpace(cfg.AcpxRuntimeDir) == "" && strings.TrimSpace(cfg.TempHome) != "" {
+		cfg.AcpxRuntimeDir = filepath.Join(cfg.TempHome, ".acpx", "runtime")
+	}
+	return cfg
 }
 
 type envBuildResult struct {
@@ -428,7 +438,7 @@ func validatedWritableBinds(cfg Config) ([]string, error) {
 		}
 		workspace = filepath.Clean(canonicalWorkspace)
 	}
-	reserved := []string{workspace, cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome, cfg.HostSSHDir, cfg.HostSSHAgentSocket}
+	reserved := []string{workspace, cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome, cfg.AcpxRuntimeDir, cfg.HostSSHDir, cfg.HostSSHAgentSocket}
 	reserved = append(reserved, cfg.ReadOnlyBinds...)
 	systemBinds := cfg.SystemReadOnlyBinds
 	if len(systemBinds) == 0 {

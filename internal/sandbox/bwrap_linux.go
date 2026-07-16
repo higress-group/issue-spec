@@ -4,6 +4,8 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -129,6 +131,7 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		{"temporary GH_CONFIG_DIR path", cfg.TempGHConfigDir},
 		{"temporary XDG_CONFIG_HOME path", cfg.TempXDGConfigHome},
 		{"temporary CODEX_HOME path", cfg.TempCodexHome},
+		{"ACPX runtime path", cfg.AcpxRuntimeDir},
 	} {
 		if item.name == "temporary CODEX_HOME path" && strings.TrimSpace(item.value) == "" {
 			continue
@@ -152,6 +155,7 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	}
 
 	workspacePath := filepath.Clean(cfg.WorkspacePath)
+	acpxSocketDir := acpxQueueSocketSandboxPath()
 	workspaceMode := "rw"
 	if cfg.WorkspaceReadOnly {
 		workspaceMode = "ro"
@@ -162,6 +166,7 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		{Source: cfg.TempHome, Destination: "/tmp/issue-spec-home", Mode: "rw"},
 		{Source: cfg.TempGHConfigDir, Destination: "/tmp/issue-spec-gh", Mode: "rw"},
 		{Source: cfg.TempXDGConfigHome, Destination: "/tmp/issue-spec-xdg", Mode: "rw"},
+		{Source: cfg.AcpxRuntimeDir, Destination: acpxSocketDir, Mode: "rw"},
 		{Destination: "/proc", Mode: "proc"},
 		{Destination: "/dev", Mode: "dev"},
 	}
@@ -170,7 +175,7 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	if cfg.WorkspaceReadOnly {
 		workspaceBind = "--ro-bind"
 	}
-	args = append(args, workspaceBind, workspacePath, "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg", "--proc", "/proc", "--dev", "/dev")
+	args = append(args, workspaceBind, workspacePath, "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg", "--dir", acpxSocketDir, "--bind", cfg.AcpxRuntimeDir, acpxSocketDir, "--proc", "/proc", "--dev", "/dev")
 	if sshDir := strings.TrimSpace(cfg.HostSSHDir); sshDir != "" {
 		sshDir = filepath.Clean(sshDir)
 		args = append(args, "--ro-bind", sshDir, HostSSHDirSandboxPath)
@@ -193,6 +198,7 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		"/tmp/issue-spec-gh":    true,
 		"/tmp/issue-spec-xdg":   true,
 		"/tmp/issue-spec-codex": true,
+		acpxSocketDir:           true,
 		"/proc":                 true,
 		"/dev":                  true,
 	}
@@ -251,6 +257,19 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	args = append(args, target.Args...)
 
 	return Command{Binary: bwrapPath, Args: args, Stdin: append([]byte(nil), target.Stdin...)}, mounts, nil
+}
+
+// acpxQueueSocketSandboxPath mirrors ACPX's queue socket path contract:
+// /tmp/acpx-<first 10 hex characters of sha256(HOME)>.
+//
+// Every sandbox exposes the same HOME path, so the in-sandbox socket path is
+// deterministic. Its backing host directory remains scoped to one public
+// session, allowing that session's queue owner to survive later invocations
+// without sharing its socket with another session.
+func acpxQueueSocketSandboxPath() string {
+	home := sandboxEnvPaths().home
+	digest := sha256.Sum256([]byte(home))
+	return filepath.Join("/tmp", "acpx-"+hex.EncodeToString(digest[:])[:10])
 }
 
 func sandboxWorkingDirectory(targetDir, workspacePath string) (string, error) {

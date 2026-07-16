@@ -408,6 +408,7 @@ func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing
 		"GH_CONFIG_DIR":   {newReq.RuntimeGHConfigDir, resumeReq.RuntimeGHConfigDir},
 		"XDG_CONFIG_HOME": {newReq.RuntimeXDGConfigHome, resumeReq.RuntimeXDGConfigHome},
 		"CODEX_HOME":      {newReq.RuntimeCodexHome, resumeReq.RuntimeCodexHome},
+		"ACPX runtime":    {newReq.RuntimeAcpxDir, resumeReq.RuntimeAcpxDir},
 	} {
 		if pair[0] == "" || pair[0] != pair[1] {
 			t.Fatalf("runtime %s not stable: new=%q resume=%q", name, pair[0], pair[1])
@@ -422,7 +423,7 @@ func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if newReq.RuntimeHome != filepath.Join(wantRoot, "home") || newReq.RuntimeGHConfigDir != filepath.Join(wantRoot, "gh") || newReq.RuntimeXDGConfigHome != filepath.Join(wantRoot, "xdg") || newReq.RuntimeCodexHome != filepath.Join(wantRoot, "codex") {
+	if newReq.RuntimeHome != filepath.Join(wantRoot, "home") || newReq.RuntimeGHConfigDir != filepath.Join(wantRoot, "gh") || newReq.RuntimeXDGConfigHome != filepath.Join(wantRoot, "xdg") || newReq.RuntimeCodexHome != filepath.Join(wantRoot, "codex") || newReq.RuntimeAcpxDir != filepath.Join(wantRoot, "acpx-runtime") {
 		t.Fatalf("runtime paths not under stable root %s: %+v", wantRoot, newReq)
 	}
 }
@@ -531,10 +532,10 @@ func TestStableSessionRuntimePathsSeparatePublicSessions(t *testing.T) {
 	if left.home == right.home || filepath.Join(left.home, ".acpx", "sessions", "index.json") == filepath.Join(right.home, ".acpx", "sessions", "index.json") {
 		t.Fatalf("different public sessions share a runtime HOME: left=%q right=%q", left.home, right.home)
 	}
-	if left.ghConfigDir == right.ghConfigDir || left.codexHome == right.codexHome {
+	if left.ghConfigDir == right.ghConfigDir || left.codexHome == right.codexHome || left.acpxRuntimeDir == right.acpxRuntimeDir {
 		t.Fatalf("different public sessions share runtime config dirs: left=%+v right=%+v", left, right)
 	}
-	for _, path := range []string{left.home, left.ghConfigDir, left.xdgConfigHome, left.codexHome, right.home, right.ghConfigDir, right.xdgConfigHome, right.codexHome} {
+	for _, path := range []string{left.home, left.ghConfigDir, left.xdgConfigHome, left.codexHome, left.acpxRuntimeDir, right.home, right.ghConfigDir, right.xdgConfigHome, right.codexHome, right.acpxRuntimeDir} {
 		assertPathOutsideRoot(t, workspacePath, path)
 		assertPathInsideRoot(t, filepath.Join(workspaceRoot, ".sessions"), path)
 	}
@@ -1514,6 +1515,7 @@ func TestSandboxRunnerUsesRequestRuntimePaths(t *testing.T) {
 		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
 		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
 		RuntimeCodexHome:     filepath.Join(runtimeRoot, "codex"),
+		RuntimeAcpxDir:       filepath.Join(runtimeRoot, "acpx-runtime"),
 	}
 	runner := SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: true, HostGHConfigDir: hostGH}}
 	first, err := runner.Prepare(context.Background(), req)
@@ -1536,6 +1538,13 @@ func TestSandboxRunnerUsesRequestRuntimePaths(t *testing.T) {
 		if got := second.Sandbox.TempPaths[name]; got != want {
 			t.Fatalf("second %s = %q, want %q", name, got, want)
 		}
+	}
+	runtimeInfo, err := os.Stat(req.RuntimeAcpxDir)
+	if err != nil {
+		t.Fatalf("stat ACPX runtime dir: %v", err)
+	}
+	if !runtimeInfo.IsDir() || runtimeInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("ACPX runtime dir mode = %v, want private directory 0700", runtimeInfo.Mode())
 	}
 	firstIndex := filepath.Join(first.Sandbox.TempPaths["HOME"], ".acpx", "sessions", "index.json")
 	secondIndex := filepath.Join(second.Sandbox.TempPaths["HOME"], ".acpx", "sessions", "index.json")
