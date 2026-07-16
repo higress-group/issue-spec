@@ -76,10 +76,14 @@ type ExternalProcessEvidence struct {
 }
 
 type ProcessEvidenceInput struct {
-	Process       model.Artifact    `json:"process"`
-	RequiredPRURL string            `json:"required_pr_url,omitempty"`
-	ActiveSpecs   map[string]string `json:"active_specs,omitempty"`
-	TaskURLs      map[string]bool   `json:"task_urls,omitempty"`
+	Process       model.Artifact `json:"process"`
+	RequiredPRURL string         `json:"required_pr_url,omitempty"`
+	// RequiredRevision is the authoritative PR/provider head that review
+	// evidence must cover. When present, review satisfaction is evaluated per
+	// SPEC so one current carrier cannot hide another SPEC's stale evidence.
+	RequiredRevision string            `json:"required_revision,omitempty"`
+	ActiveSpecs      map[string]string `json:"active_specs,omitempty"`
+	TaskURLs         map[string]bool   `json:"task_urls,omitempty"`
 	// AuthorAgentsBySpec maps an active SPEC ID to the set of normalized
 	// (lowercased, trimmed) --agent names that authored change-bearing code
 	// rationale for that SPEC. A review PROCESS whose reviewer --agent name is
@@ -197,12 +201,12 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 		// substitute. The node is satisfied only when at least one SPEC is
 		// cleanly covered and every conflicted SPEC is independently re-covered.
 		type reviewGroup struct {
-			specs      map[string]bool
 			conflicted bool
-			revisions  []CarrierRevisionFact
+			evidence   []ReviewEvidence
 		}
 		groups := map[string]*reviewGroup{}
 		var order []string
+		claimedSpecs := map[string]bool{}
 		cleanCovered := map[string]bool{}
 		conflictedAgentBySpec := map[string]string{}
 		var conflictOrder []string
@@ -210,17 +214,17 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 			if evidence.ProcessID != report.ProcessID || !activeSpec(evidence.SpecID) || !(evidence.Done || evidence.FindingResolved) {
 				continue
 			}
+			claimedSpecs[evidence.SpecID] = true
 			key := strings.TrimSpace(evidence.URL)
 			if key == "" {
 				key = fmt.Sprintf("\x00entry-%d", i)
 			}
 			group := groups[key]
 			if group == nil {
-				group = &reviewGroup{specs: map[string]bool{}}
+				group = &reviewGroup{}
 				groups[key] = group
 				order = append(order, key)
 			}
-			group.specs[evidence.SpecID] = true
 			if reviewer := normalizeAgent(evidence.ReviewerAgent); reviewer != "" && input.AuthorAgentsBySpec[evidence.SpecID][reviewer] {
 				group.conflicted = true
 				if _, seen := conflictedAgentBySpec[evidence.SpecID]; !seen {
@@ -229,21 +233,75 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 				conflictedAgentBySpec[evidence.SpecID] = strings.TrimSpace(evidence.ReviewerAgent)
 				continue
 			}
-			group.revisions = append(group.revisions, CarrierRevisionFact{Known: strings.TrimSpace(evidence.SubjectRevision) != "",
-				Revision: strings.TrimSpace(evidence.SubjectRevision), Trusted: evidence.Trusted, Source: evidence.Source})
+			group.evidence = append(group.evidence, evidence)
 		}
-		cleanArtifact := false
-		var revisions []CarrierRevisionFact
+		cleanBySpec := map[string][]ReviewEvidence{}
 		for _, key := range order {
 			group := groups[key]
 			if group.conflicted {
 				continue
 			}
-			cleanArtifact = true
-			for spec := range group.specs {
-				cleanCovered[spec] = true
+			for _, evidence := range group.evidence {
+				cleanBySpec[evidence.SpecID] = append(cleanBySpec[evidence.SpecID], evidence)
 			}
-			revisions = append(revisions, group.revisions...)
+		}
+
+		// Select carriers only after independence is known. At an authoritative
+		// revision, every claimed SPEC needs its own exact-current trusted
+		// carrier. A current typed REVIEW takes precedence over resolved findings
+		// for the same SPEC, but a self-authored typed REVIEW never suppresses an
+		// independent finding because it was removed with its conflicted group.
+		requiredRevision := strings.TrimSpace(input.RequiredRevision)
+		var revisions []CarrierRevisionFact
+		var missingCurrentSpec string
+		for _, spec := range sortedKeys(claimedSpecs) {
+			candidates := cleanBySpec[spec]
+			var typed, findings []ReviewEvidence
+			for _, evidence := range candidates {
+				revision := strings.TrimSpace(evidence.SubjectRevision)
+				if requiredRevision != "" && (!evidence.Trusted || revision == "" || !strings.EqualFold(revision, requiredRevision)) {
+					continue
+				}
+				if evidence.Done {
+					typed = append(typed, evidence)
+				} else {
+					findings = append(findings, evidence)
+				}
+			}
+			var selected []ReviewEvidence
+			if requiredRevision != "" {
+				selected = append(selected, typed...)
+				if len(selected) == 0 {
+					selected = findings
+				}
+			} else {
+				// Without an authoritative head, retain legacy semantic
+				// visibility. Prefer a revision-bound typed REVIEW when one is
+				// available; otherwise a resolved finding remains the trusted
+				// compatibility carrier before falling back to revisionless text.
+				for _, evidence := range typed {
+					if evidence.Trusted && strings.TrimSpace(evidence.SubjectRevision) != "" {
+						selected = append(selected, evidence)
+					}
+				}
+				if len(selected) == 0 {
+					selected = append(selected, findings...)
+				}
+				if len(selected) == 0 {
+					selected = typed
+				}
+			}
+			if len(selected) == 0 {
+				if missingCurrentSpec == "" {
+					missingCurrentSpec = spec
+				}
+				continue
+			}
+			cleanCovered[spec] = true
+			for _, evidence := range selected {
+				revisions = append(revisions, CarrierRevisionFact{Known: strings.TrimSpace(evidence.SubjectRevision) != "",
+					Revision: strings.TrimSpace(evidence.SubjectRevision), Trusted: evidence.Trusted, Source: evidence.Source})
+			}
 		}
 		var conflictAgent, conflictSpec string
 		for _, spec := range conflictOrder {
@@ -252,12 +310,17 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 				break
 			}
 		}
-		carrier := cleanArtifact && conflictSpec == ""
-		if carrier {
-			specSatisfied = true
-		}
+		carrier := len(cleanCovered) > 0 && missingCurrentSpec == "" && conflictSpec == ""
+		specSatisfied = len(cleanCovered) > 0
 		report.SatisfiedSpecs = sortedKeys(cleanCovered)
 		report.CarrierRevision = aggregateCarrierRevisions(revisions)
+		if requiredRevision != "" && missingCurrentSpec != "" && report.CarrierRevision.Known {
+			// A trusted current carrier for one SPEC must not become the PROCESS
+			// carrier while another claimed SPEC has no exact-current carrier.
+			// Preserve the observed revision for diagnostics, but fail closed on
+			// trust so the workspace gate also rejects the mixed evidence set.
+			report.CarrierRevision.Trusted = false
+		}
 		switch {
 		case carrier:
 			report.Satisfied = append(report.Satisfied, "review evidence")
@@ -266,6 +329,11 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 			add(CodeProcessReviewAuthorConflict, SeverityError, true,
 				fmt.Sprintf("review PROCESS evidence for %s was authored by agent %q, which also authored the code under review; the review MUST be authored by a different agent than the code author, so route %s through a review PROCESS owned by an independent reviewing agent (its --agent must differ from the code author) and re-run review sync once that node produces its REVIEW or resolved finding", conflictSpec, conflictAgent, conflictSpec),
 				"same agent as code author", "review authored by an independent reviewing agent (different --agent than the code author)", "review sync")
+		case missingCurrentSpec != "" && requiredRevision != "":
+			report.Missing = append(report.Missing, "exact-current independent review evidence")
+			add(CodeProcessCarrierMissing, SeverityError, true,
+				fmt.Sprintf("review PROCESS lacks exact-current trusted independent review evidence for %s", missingCurrentSpec),
+				"missing or stale", requiredRevision, "review sync")
 		default:
 			report.Missing = append(report.Missing, "review evidence")
 			add(CodeProcessCarrierMissing, SeverityError, true, "review PROCESS lacks linked done REVIEW or resolved finding evidence for an active SPEC", "missing", "review evidence", "review sync")
