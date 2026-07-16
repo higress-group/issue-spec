@@ -180,23 +180,58 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 		}
 	case model.ProcessExecutionReview:
 		report.Required = append(report.Required, "linked done REVIEW or resolved finding by an independent agent")
+		// Group review evidence by REVIEW artifact: a reviewer who authored code
+		// for ANY SPEC the artifact covers taints the whole artifact, so a clean
+		// SPEC on the same REVIEW can never rescue another SPEC's conflict. A
+		// separate, fully-independent REVIEW artifact can still satisfy the node.
+		type reviewGroup struct {
+			clean, conflicted bool
+			agent, spec       string
+			revisions         []CarrierRevisionFact
+		}
+		groups := map[string]*reviewGroup{}
+		var order []string
+		for i, evidence := range input.Reviews {
+			if evidence.ProcessID != report.ProcessID || !activeSpec(evidence.SpecID) || !(evidence.Done || evidence.FindingResolved) {
+				continue
+			}
+			key := strings.TrimSpace(evidence.URL)
+			if key == "" {
+				key = fmt.Sprintf("\x00entry-%d", i)
+			}
+			group := groups[key]
+			if group == nil {
+				group = &reviewGroup{}
+				groups[key] = group
+				order = append(order, key)
+			}
+			if reviewer := normalizeAgent(evidence.ReviewerAgent); reviewer != "" && input.AuthorAgentsBySpec[evidence.SpecID][reviewer] {
+				group.conflicted = true
+				group.agent = strings.TrimSpace(evidence.ReviewerAgent)
+				group.spec = evidence.SpecID
+				continue
+			}
+			group.clean = true
+			group.revisions = append(group.revisions, CarrierRevisionFact{Known: strings.TrimSpace(evidence.SubjectRevision) != "",
+				Revision: strings.TrimSpace(evidence.SubjectRevision), Trusted: evidence.Trusted, Source: evidence.Source})
+		}
 		carrier := false
 		conflicted := false
 		var conflictAgent, conflictSpec string
 		var revisions []CarrierRevisionFact
-		for _, evidence := range input.Reviews {
-			if evidence.ProcessID != report.ProcessID || !activeSpec(evidence.SpecID) || !(evidence.Done || evidence.FindingResolved) {
-				continue
-			}
-			if reviewer := normalizeAgent(evidence.ReviewerAgent); reviewer != "" && input.AuthorAgentsBySpec[evidence.SpecID][reviewer] {
+		for _, key := range order {
+			group := groups[key]
+			if group.conflicted {
 				conflicted = true
-				conflictAgent = strings.TrimSpace(evidence.ReviewerAgent)
-				conflictSpec = evidence.SpecID
+				if conflictSpec == "" {
+					conflictAgent, conflictSpec = group.agent, group.spec
+				}
 				continue
 			}
-			carrier, specSatisfied = true, true
-			revisions = append(revisions, CarrierRevisionFact{Known: strings.TrimSpace(evidence.SubjectRevision) != "",
-				Revision: strings.TrimSpace(evidence.SubjectRevision), Trusted: evidence.Trusted, Source: evidence.Source})
+			if group.clean {
+				carrier, specSatisfied = true, true
+				revisions = append(revisions, group.revisions...)
+			}
 		}
 		report.CarrierRevision = aggregateCarrierRevisions(revisions)
 		switch {

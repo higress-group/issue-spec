@@ -51,6 +51,19 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 		if agent == "" || spec == "" {
 			continue
 		}
+		// Mirror the change-bearing carrier validation before crediting an
+		// author identity: an unvalidated marker could otherwise inject a forged
+		// name and falsely block an independent reviewer of the same SPEC.
+		if marker.Path == "" || marker.Line <= 0 || marker.Path != comment.Path || marker.Line != comment.Line {
+			continue
+		}
+		want, active := activeSpecs[spec]
+		if !active {
+			continue
+		}
+		if specURL := rationaleSpecURL(comment.Body); specURL == "" || model.NormalizeURL(specURL) != model.NormalizeURL(want) {
+			continue
+		}
 		if authorAgentsBySpec[spec] == nil {
 			authorAgentsBySpec[spec] = map[string]bool{}
 		}

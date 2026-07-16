@@ -6,6 +6,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/codereview"
 	"github.com/higress-group/issue-spec/internal/gates"
+	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
@@ -76,6 +77,48 @@ func TestBuildProcessEvidenceRejectsMixedReplayAndUnknownBindings(t *testing.T) 
 				t.Fatalf("invalid mixed binding retained carrier: %+v", inputs)
 			}
 		})
+	}
+}
+
+func TestBuildProcessEvidenceValidatesAuthorRationaleBeforeCrediting(t *testing.T) {
+	const specURL = "https://example/proposal#issuecomment-spec"
+	artifacts := []model.Artifact{
+		{URL: specURL, Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
+	}
+	valid, err := model.RenderRationaleBody("coordinator", "PROCESS-001", "SPEC-001", specURL, "rationale", "real.go", 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Forged marker: claims agent "ghost" authored SPEC-001 but its marker path/line
+	// do not match the hosting comment, so it must not credit an author identity.
+	forged, err := model.RenderRationaleBody("ghost", "PROCESS-001", "SPEC-001", specURL, "rationale", "forged.go", 99)
+	if err != nil {
+		t.Fatal(err)
+	}
+	comments := []github.PullRequestReviewComment{
+		{Body: valid, Path: "real.go", Line: 12},
+		{Body: forged, Path: "real.go", Line: 12},
+	}
+	inputs := buildProcessEvidenceInputs(artifacts, "", comments, reviewSyncReport{}, nil)
+	if len(inputs) != 0 {
+		t.Fatalf("no PROCESS artifacts present, unexpected inputs: %+v", inputs)
+	}
+	// Re-run with a review PROCESS so AuthorAgentsBySpec is observable on the input.
+	processBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-001", "## Process: review\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- review\n\n### Covers\n\n- SPEC-001", model.BodyOptions{Status: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts = append(artifacts, model.Artifact{URL: "https://example/process", Comment: model.ParseTypedComment(processBody)})
+	inputs = buildProcessEvidenceInputs(artifacts, "", comments, reviewSyncReport{}, nil)
+	if len(inputs) != 1 {
+		t.Fatalf("inputs = %+v", inputs)
+	}
+	authors := inputs[0].AuthorAgentsBySpec["SPEC-001"]
+	if !authors["coordinator"] {
+		t.Fatalf("validated rationale author must be credited: %+v", authors)
+	}
+	if authors["ghost"] {
+		t.Fatalf("forged path/line rationale must not credit an author: %+v", authors)
 	}
 }
 

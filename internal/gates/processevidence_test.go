@@ -165,6 +165,35 @@ func TestReviewProcessRejectsSelfReviewByAgentName(t *testing.T) {
 	}
 }
 
+func TestReviewProcessRejectsMultiSpecConflictOnSameArtifact(t *testing.T) {
+	// One REVIEW artifact covers two active SPECs. The reviewer authored code
+	// for SPEC-001, so the whole artifact is conflicted; a clean SPEC-002 on the
+	// same artifact MUST NOT rescue it.
+	input := processEvidenceFixture(t, model.ProcessExecutionReview)
+	input.ActiveSpecs = map[string]string{"SPEC-001": "https://example/spec1", "SPEC-002": "https://example/spec2"}
+	input.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-001": {"coordinator": true}}
+	const reviewURL = "https://example/issues/9#issuecomment-review"
+	input.Reviews = []ReviewEvidence{
+		{ProcessID: "PROCESS-001", SpecID: "SPEC-001", URL: reviewURL, Done: true, ReviewerAgent: "Coordinator"},
+		{ProcessID: "PROCESS-001", SpecID: "SPEC-002", URL: reviewURL, Done: true, ReviewerAgent: "Coordinator"},
+	}
+	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !hasDiagnostic(report.Diagnostics, CodeProcessReviewAuthorConflict, true) {
+		t.Fatalf("clean SPEC on a conflicted REVIEW artifact must not rescue it: %+v", report)
+	}
+	if containsString(report.Satisfied, "review evidence") {
+		t.Fatalf("conflicted REVIEW artifact must not count as satisfied: %+v", report)
+	}
+
+	// A separate, fully independent REVIEW artifact for SPEC-002 still satisfies.
+	input.Reviews = append(input.Reviews, ReviewEvidence{ProcessID: "PROCESS-001", SpecID: "SPEC-002",
+		URL: "https://example/issues/9#issuecomment-review2", Done: true, ReviewerAgent: "Independent Reviewer"})
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !containsString(report.Satisfied, "review evidence") || containsString(report.Missing, "review evidence") {
+		t.Fatalf("independent REVIEW artifact must satisfy the node: %+v", report)
+	}
+}
+
 func processEvidenceFixture(t *testing.T, class model.ProcessExecutionClass) ProcessEvidenceInput {
 	t.Helper()
 	if class == "" {
