@@ -221,7 +221,8 @@ The coordinator retains planning, scheduling, workspace management, integration,
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904042881
 - https://github.com/higress-group/issue-spec/pull/232
-- https://github.com/higress-group/issue-spec/issues/247
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992293971
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992294654
 
 ### Requirement: Compatible serial PROCESS nodes may reuse a worker while preserving bounded handoff
 
@@ -239,7 +240,7 @@ The same real worker MAY execute multiple compatible serial change-bearing or re
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043156
-- https://github.com/higress-group/issue-spec/issues/247
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992293971
 
 ### Requirement: Coordinator prompt carries a phase-aware worker and review contract
 
@@ -267,7 +268,9 @@ The generated coordinator prompt MUST express the DAG-execution contract at fide
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043410
-- https://github.com/higress-group/issue-spec/issues/247
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992293971
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992294654
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992295279
 
 ### Requirement: Coordinator retains only orchestration state during agent-executed implementation
 
@@ -285,7 +288,7 @@ During agent-executed implementation the coordinator MUST retain only planning, 
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043650
-- https://github.com/higress-group/issue-spec/issues/247
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992293971
 
 ### Requirement: Explicit workspace-management declaration
 
@@ -329,4 +332,4 @@ A done PROCESS genuinely declared `independent` for external or human-owned self
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/196#issuecomment-4964218213
-- https://github.com/higress-group/issue-spec/issues/247
+- https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992293971
