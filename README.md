@@ -210,7 +210,7 @@ The implement issue records the DAG:
 - linked TASK/SPEC comments
 - status, blockers, and verification evidence
 
-For non-trivial changes, the DAG should include dedicated review PROCESS nodes, not only implementation PROCESS nodes. A coordinator may run multiple review agents in parallel when their review scopes are independent, such as CLI/API behavior, workflow documentation, tests, compatibility, or security-sensitive surfaces. Small changes may be implemented and reviewed by the coordinator directly, but the implement or verify record should state that the task was intentionally kept serial.
+For non-trivial changes, the DAG should include dedicated review PROCESS nodes, not only implementation PROCESS nodes. Review is a MUST, and it must be performed by a different agent than the code author: a review PROCESS whose reviewer `--agent` name matches a code author of the same SPEC fails the final gate (`process.review.author_conflict`). A coordinator may run multiple review agents in parallel when their review scopes are independent, such as CLI/API behavior, workflow documentation, tests, compatibility, or security-sensitive surfaces. Small changes may be implemented and reviewed by the coordinator directly, but the implement or verify record should state that the task was intentionally kept serial.
 
 Coordinator execution follows a ready-node loop:
 

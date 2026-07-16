@@ -107,3 +107,24 @@ The workflow MUST classify PROCESS artifacts by execution responsibility and MUS
 - **THEN** verification MUST apply a documented conservative default and expose a migration diagnostic without invalidating already accepted historical archives
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/166#issuecomment-4951036789
+
+### Requirement: Review PROCESS evidence MUST be authored by an agent independent of the code author
+
+The workflow MUST treat code review as mandatory for non-trivial changes and MUST require that a review PROCESS be authored by a different agent than the code author of the SPEC under review, judged by the `--agent` identity recorded on the review evidence. The final gate MUST fail closed with a distinct diagnostic when a review PROCESS's reviewer `--agent` name matches a code author of the same SPEC. Author and reviewer identities MUST be joined per SPEC so that a reviewer who authored a *different* SPEC is not falsely flagged. This name-based check is a machine backstop for the prompt contract, not full provenance enforcement.
+
+#### Scenario: self-review by the same agent name is blocked
+
+- **WHEN** a review PROCESS covering an active SPEC records a reviewer `--agent` name that also authored a change-bearing rationale for that SPEC
+- **THEN** the final gate MUST emit `process.review.author_conflict` and MUST NOT count that review as satisfied for the conflicted SPEC
+
+#### Scenario: an independent reviewer of the same SPEC satisfies the node
+
+- **WHEN** the SPEC under review is covered by a review PROCESS whose reviewer `--agent` name differs from every code author of that SPEC
+- **THEN** the final gate MUST accept the review evidence, and a clean review of one SPEC MUST NOT rescue another SPEC that still has only a conflicted review
+
+#### Scenario: authoring a different SPEC is not a conflict
+
+- **WHEN** a reviewer `--agent` name matches a code author of a SPEC other than the one under review
+- **THEN** the final gate MUST NOT flag the review as an author conflict for the SPEC under review
+
+Source change: https://github.com/higress-group/issue-spec/pull/232
