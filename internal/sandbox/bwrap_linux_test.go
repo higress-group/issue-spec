@@ -106,6 +106,7 @@ func TestLinuxPrepareBuildsBwrapCommand(t *testing.T) {
 		TempGHConfigDir:     "/tmp/gh",
 		TempXDGConfigHome:   "/tmp/xdg",
 		TempCodexHome:       "/tmp/codex",
+		AcpxRuntimeDir:      "/tmp/acpx-runtime",
 		HostEnv:             []string{"PATH=/usr/bin", "HTTPS_PROXY=http://proxy", "GH_TOKEN=secret", "CLAUDE_CODE_EFFORT_LEVEL=max"},
 		SystemReadOnlyBinds: []string{"/usr"},
 	}
@@ -124,7 +125,7 @@ func TestLinuxPrepareBuildsBwrapCommand(t *testing.T) {
 	assertArgSequence(t, cmd.Args, "--perms", "0700", "--tmpfs", "/tmp")
 	assertArgSequence(t, cmd.Args, "--bind", "/tmp/gh", "/tmp/issue-spec-gh")
 	assertArgSequence(t, cmd.Args, "--bind", "/tmp/codex", "/tmp/issue-spec-codex")
-	assertArgSequence(t, cmd.Args, "--bind", "/tmp/home/.acpx/runtime", acpxQueueSocketSandboxPath())
+	assertArgSequence(t, cmd.Args, "--bind", "/tmp/acpx-runtime", acpxQueueSocketSandboxPath())
 	assertArgSequence(t, cmd.Args, "--ro-bind", "/usr", "/usr")
 	assertArgSequence(t, cmd.Args, "--setenv", "HOME", "/tmp/issue-spec-home")
 	assertArgSequence(t, cmd.Args, "--setenv", "GH_CONFIG_DIR", "/tmp/issue-spec-gh")

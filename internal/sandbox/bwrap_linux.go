@@ -123,17 +123,18 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		return Command{}, nil, err
 	}
 	for _, item := range []struct {
-		name  string
-		value string
+		name     string
+		value    string
+		optional bool
 	}{
-		{"workspace path", cfg.WorkspacePath},
-		{"temporary HOME path", cfg.TempHome},
-		{"temporary GH_CONFIG_DIR path", cfg.TempGHConfigDir},
-		{"temporary XDG_CONFIG_HOME path", cfg.TempXDGConfigHome},
-		{"temporary CODEX_HOME path", cfg.TempCodexHome},
-		{"ACPX runtime path", cfg.AcpxRuntimeDir},
+		{name: "workspace path", value: cfg.WorkspacePath},
+		{name: "temporary HOME path", value: cfg.TempHome},
+		{name: "temporary GH_CONFIG_DIR path", value: cfg.TempGHConfigDir},
+		{name: "temporary XDG_CONFIG_HOME path", value: cfg.TempXDGConfigHome},
+		{name: "temporary CODEX_HOME path", value: cfg.TempCodexHome, optional: true},
+		{name: "ACPX runtime path", value: cfg.AcpxRuntimeDir, optional: true},
 	} {
-		if item.name == "temporary CODEX_HOME path" && strings.TrimSpace(item.value) == "" {
+		if item.optional && strings.TrimSpace(item.value) == "" {
 			continue
 		}
 		if strings.TrimSpace(item.value) == "" {
@@ -166,7 +167,6 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		{Source: cfg.TempHome, Destination: "/tmp/issue-spec-home", Mode: "rw"},
 		{Source: cfg.TempGHConfigDir, Destination: "/tmp/issue-spec-gh", Mode: "rw"},
 		{Source: cfg.TempXDGConfigHome, Destination: "/tmp/issue-spec-xdg", Mode: "rw"},
-		{Source: cfg.AcpxRuntimeDir, Destination: acpxSocketDir, Mode: "rw"},
 		{Destination: "/proc", Mode: "proc"},
 		{Destination: "/dev", Mode: "dev"},
 	}
@@ -175,7 +175,12 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	if cfg.WorkspaceReadOnly {
 		workspaceBind = "--ro-bind"
 	}
-	args = append(args, workspaceBind, workspacePath, "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg", "--dir", acpxSocketDir, "--bind", cfg.AcpxRuntimeDir, acpxSocketDir, "--proc", "/proc", "--dev", "/dev")
+	args = append(args, workspaceBind, workspacePath, "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg")
+	if strings.TrimSpace(cfg.AcpxRuntimeDir) != "" {
+		args = append(args, "--dir", acpxSocketDir, "--bind", cfg.AcpxRuntimeDir, acpxSocketDir)
+		mounts = append(mounts, Mount{Source: cfg.AcpxRuntimeDir, Destination: acpxSocketDir, Mode: "rw"})
+	}
+	args = append(args, "--proc", "/proc", "--dev", "/dev")
 	if sshDir := strings.TrimSpace(cfg.HostSSHDir); sshDir != "" {
 		sshDir = filepath.Clean(sshDir)
 		args = append(args, "--ro-bind", sshDir, HostSSHDirSandboxPath)
@@ -198,9 +203,11 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		"/tmp/issue-spec-gh":    true,
 		"/tmp/issue-spec-xdg":   true,
 		"/tmp/issue-spec-codex": true,
-		acpxSocketDir:           true,
 		"/proc":                 true,
 		"/dev":                  true,
+	}
+	if strings.TrimSpace(cfg.AcpxRuntimeDir) != "" {
+		seenDirs[acpxSocketDir] = true
 	}
 	if socket := strings.TrimSpace(cfg.HostSSHAgentSocket); socket != "" {
 		socket = filepath.Clean(socket)

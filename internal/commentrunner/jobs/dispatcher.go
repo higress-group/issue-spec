@@ -1684,6 +1684,9 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 	cfg.TempXDGConfigHome = firstNonEmpty(req.RuntimeXDGConfigHome, cfg.TempXDGConfigHome)
 	cfg.TempCodexHome = firstNonEmpty(req.RuntimeCodexHome, cfg.TempCodexHome)
 	cfg.AcpxRuntimeDir = firstNonEmpty(req.RuntimeAcpxDir, cfg.AcpxRuntimeDir)
+	if strings.TrimSpace(cfg.AcpxRuntimeDir) == "" && strings.TrimSpace(cfg.TempHome) != "" {
+		cfg.AcpxRuntimeDir = filepath.Join(cfg.TempHome, ".acpx", "runtime")
+	}
 	acpxBinary := firstNonEmpty(req.AcpxBinary, acpx.DefaultBinary)
 	var pathPrefixes []string
 	var resolvedAcpxBinary string
