@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/acpx"
+	"github.com/higress-group/issue-spec/internal/commentrunner"
 	runnercontext "github.com/higress-group/issue-spec/internal/commentrunner/context"
 	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
@@ -2088,6 +2089,91 @@ func TestAcpxAdapterFactoryUsesExecutionEnvironmentBinary(t *testing.T) {
 	}
 	if cmd.Dir != "/workspace" {
 		t.Fatalf("adapter cwd = %q, want environment workspace", cmd.Dir)
+	}
+}
+
+func TestAcpxConfigForKindDerivesPerAgentBehavior(t *testing.T) {
+	cfg := commentrunner.Config{
+		AcpxPath: "acpx",
+		Agent: commentrunner.AgentConfig{
+			Kind:                      commentrunner.AgentCodex,
+			Model:                     "gpt-5.5",
+			CodexAgentFullAccess:      true,
+			ClaudeAgentFullAccess:     true,
+			ClaudeIncludeUserSettings: true,
+			ClaudeAllowedTools:        []string{"Task", "Bash"},
+		},
+	}
+
+	defaultCfg := AcpxConfigForKind(cfg, commentrunner.AgentCodex)
+	if defaultCfg.Agent != commentrunner.AgentCodex {
+		t.Fatalf("default agent = %q, want codex", defaultCfg.Agent)
+	}
+	if defaultCfg.Model != "gpt-5.5" {
+		t.Fatalf("default model = %q, want operator model", defaultCfg.Model)
+	}
+	if defaultCfg.Mode != "agent-full-access" {
+		t.Fatalf("default mode = %q, want agent-full-access", defaultCfg.Mode)
+	}
+	if defaultCfg.MaxPermissions != acpx.PermissionApproveAll {
+		t.Fatalf("default permissions = %v, want approve-all", defaultCfg.MaxPermissions)
+	}
+	if defaultCfg.ClaudeIncludeUserSettings || defaultCfg.ClaudeAllowedTools != nil {
+		t.Fatalf("codex config leaked claude settings: %+v", defaultCfg)
+	}
+
+	secondary := AcpxConfigForKind(cfg, commentrunner.AgentClaude)
+	if secondary.Agent != commentrunner.AgentClaude {
+		t.Fatalf("secondary agent = %q, want claude", secondary.Agent)
+	}
+	if secondary.Model != "" {
+		t.Fatalf("secondary model = %q, want empty (own default)", secondary.Model)
+	}
+	if secondary.Mode != "" {
+		t.Fatalf("secondary mode = %q, want empty (no codex mode)", secondary.Mode)
+	}
+	if secondary.MaxPermissions != acpx.PermissionApproveAll {
+		t.Fatalf("secondary permissions = %v, want approve-all from claude full access", secondary.MaxPermissions)
+	}
+	if !secondary.ClaudeIncludeUserSettings {
+		t.Fatalf("secondary config missing claude user settings: %+v", secondary)
+	}
+	if len(secondary.ClaudeAllowedTools) != 2 {
+		t.Fatalf("secondary claude allowed tools = %v, want configured tools", secondary.ClaudeAllowedTools)
+	}
+}
+
+func TestAcpxAdapterFactoryOverridesConfigForCoordinatorKind(t *testing.T) {
+	factory := AcpxAdapterFactory{
+		Config: acpx.Config{Binary: "acpx", Agent: commentrunner.AgentCodex},
+		RunnerConfig: commentrunner.Config{
+			AcpxPath: "acpx",
+			Agent:    commentrunner.AgentConfig{Kind: commentrunner.AgentCodex, Model: "gpt-5.5"},
+		},
+	}
+	coordinator, err := factory.NewCoordinator(ExecutionEnvironment{
+		WorkingDirectory: "/workspace",
+		AcpxBinary:       "acpx",
+		CoordinatorKind:  commentrunner.AgentClaude,
+		Runner:           &recordingSandboxRunner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := coordinator.(*acpx.Adapter)
+	if !ok {
+		t.Fatalf("coordinator type = %T, want *acpx.Adapter", coordinator)
+	}
+	cmd := adapter.BuildNewSessionCommand("ps-1", false)
+	foundClaude := false
+	for _, arg := range cmd.Args {
+		if arg == commentrunner.AgentClaude {
+			foundClaude = true
+			break
+		}
+	}
+	if !foundClaude {
+		t.Fatalf("adapter args = %v, want claude agent from coordinator kind", cmd.Args)
 	}
 }
 

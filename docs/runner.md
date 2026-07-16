@@ -112,10 +112,12 @@ The notification token is used only for `notifications` polling and notification
 Supported command comments:
 
 ```text
-/new <prompt>
+/new [<agent>] <prompt>
 /resume <public-session-id> <prompt>
 /cancel <public-session-id>
 ```
+
+`/new` accepts an optional agent selector as its first token: `/new codex <prompt>` or `/new claude <prompt>` picks the coordinator agent for that session. The selector is matched case-insensitively against the fixed `codex`/`claude` allow-list; any other first token is treated as prompt text, so `/new <prompt>` keeps using the runner's configured default agent. To send a prompt that literally begins with `codex` or `claude`, quote it (for example `/new "codex should ..."`). The comment cannot inject any agent outside the allow-list, nor any command, model, flag, or permission mode. The selected agent is bound to the new session and reused by every later `/resume`; it uses its own default model unless it is the runner's configured default agent, which uses `--model`. If the selected agent is not ready on the host, only that `/new` job fails fast — the runner keeps serving its default agent. The status comment names the coordinating agent for every job.
 
 Runner command grammar deliberately has no PROCESS selector. `/new` and `/resume` address the public coordinator session only. The runner launches exactly one ACPX coordinator for that session and keeps its cwd and primary sandbox workspace at the managed session clone across new, resume, cancellation, and restart reconciliation. It never starts a nested ACPX worker or rebinds the coordinator to a PROCESS worktree.
 

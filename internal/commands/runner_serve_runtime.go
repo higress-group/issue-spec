@@ -115,7 +115,7 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 			runnerLogin: input.Runner.RunnerIdentity, repository: repositoryName, scope: scopes.ByRepository[repositoryName]}}
 	workspaces := jobs.WorkspaceManager(runnerWorkspaceManager(input.Runner))
 	sandboxer := jobs.SandboxPreparer(jobs.SandboxRunner{Config: sandboxConfig})
-	acpxFactory := jobs.AcpxFactory(jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(input.Runner)})
+	acpxFactory := jobs.AcpxFactory(jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(input.Runner), RunnerConfig: input.Runner})
 	artifacts := jobs.ArtifactProvider(&jobs.IssueSpecArtifactProvider{GitHub: compatibility})
 	writebacks := jobs.Writeback(&writeback.Service{GitHub: compatibility, Store: input.Store})
 	issueSpecBinary := issueSpecBinaryForRunner()
