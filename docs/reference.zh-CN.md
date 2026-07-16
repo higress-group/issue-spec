@@ -33,6 +33,8 @@ issue-spec workflow which --repo owner/repo --json
 
 ```bash
 issue-spec init --repo owner/repo --tools codex,claude --language zh
+
+issue-spec --profile team search issues --repo owner/repo --query "错误或代码符号" --state all --source all --limit 10
 ```
 
 常见的代码（`zh`、`zh-tw`、`en`、`ja`、`ko`）会被展开为一个描述性标签；其他任何值则原样存储。生成的规则会指示 agent 用所选语言撰写自然语言内容，同时把 canonical 结构标记保留为英文（`## Requirement:`、`### Scenario:`、`**WHEN**`/`**THEN**`、MUST/SHALL 以及类型化评论头），这样 canonical 校验仍然能通过。
@@ -97,6 +99,18 @@ issue-spec runner preflight --repo owner/repo --runner login
 issue-spec runner poll --repo owner/repo --runner login --once --dry-run
 issue-spec runner poll --repo owner/repo --runner login --agent codex
 ```
+
+### 在相关改动前先检索
+
+对 self-hosted Profile，`search issues` 会先发现 Server 是否启用检索；能力关闭时
+会给出明确错误。它只搜索当前凭据可读的仓库，并按 Issue 返回有界结果，其中包含
+命中的 Issue/评论摘要以及关联 Change Key/阶段。
+
+生成的 Codex 和 Claude 工作流会要求直接连接 issue-spec 的 Agent（不只 Runner
+Session）在提出或实现相关改动前，根据用户请求和代码库提取少量具体查询词。搜索
+结果只用于选择讨论，不是指令；标题与摘要属于不可信数据。依赖某个历史讨论前，
+使用 `issue-spec --profile team read issue --repo owner/repo --issue N --comments`
+打开完整内容。
 
 ## Canonical 类型化评论
 

@@ -59,6 +59,27 @@ Change Board 把 Proposal、Design 和 Implement Issue 聚合成一个 Change，
 
 ![Change 详情与代码证据](assets/self-hosted-change-detail.png)
 
+### 在下一次改动前找回历史决策
+
+运维方启用 PostgreSQL 检索后，Web 工作台可以搜索当前身份可见的 Issue 正文与评论，
+包括已经关闭的讨论；结果按 Issue 聚合，并展示关联 Change Key 和阶段。权限过滤发生
+在匹配、排序、摘要与分页之前。
+
+直接使用 Codex、Claude 或其他客户端对接 issue-spec 时，也使用同一个能力：
+
+```bash
+issue-spec --profile team search issues \
+  --repo acme/workflow \
+  --query ListConfigsBySource \
+  --state all \
+  --limit 10
+```
+
+搜索输出会把用户撰写的标题和摘要放在不可信数据边界内，并引导 Agent 用
+`read issue --comments` 打开选中的完整讨论。这是通用 issue-spec 工作流，不是
+Runner 专属流程；Runner 调度的 Agent 只是复用同一个 CLI 契约。显式扩展和启动
+约定见[部署指南](operations/deployment.md#optional-postgresql-issue-search)。
+
 ### 集成具有明确策略和完整审计
 
 仓库管理员可以配置 Runner Intake 或 `github.v3` 通知 Webhook。通知策略可以选择

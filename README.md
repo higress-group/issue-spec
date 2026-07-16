@@ -29,6 +29,12 @@ It supports private-network deployment and GitHub OAuth or OIDC sign-in, while
 keeping source code, pull requests or merge requests, reviews, and CI on the
 code provider your team already uses.
 
+With explicit PostgreSQL search enabled, the workspace and direct agent CLI
+can recover relevant issue bodies, comments, and prior change discussions
+before a new modification. Generated Codex and Claude workflows use this
+capability directly; runner sessions reuse the same workflow rather than
+owning a separate search path.
+
 **[Explore the self-hosted server, architecture, access model, deployment, and operations →](docs/self-hosting/README.md)**
 
 ## See it in action

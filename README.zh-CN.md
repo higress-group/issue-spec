@@ -27,6 +27,10 @@
 它支持私网部署以及 GitHub OAuth 或 OIDC 登录，同时让源代码、PR/MR、
 Review 和 CI 继续留在团队已有的代码托管平台中。
 
+显式启用 PostgreSQL 检索后，Web 工作台和直接连接的 Agent CLI 可以在新改动前
+找回相关 Issue 正文、评论与历史 Change 讨论。生成的 Codex/Claude 工作流会直接
+使用这一能力；Runner Session 复用相同流程，不再拥有一条独立的检索路径。
+
 **[查看自托管 Server、架构、权限模型、部署与运维详情 →](docs/self-hosting/README.zh-CN.md)**
 
 ## 实际效果一览

@@ -37,6 +37,32 @@ destinations. Loopback, link-local and cloud metadata addresses remain denied.
 The same DNS resolver and policy are used for subscription preflight and the
 actual delivery connection.
 
+## Optional PostgreSQL issue search
+
+Search is explicit and disabled by default. Leave `SEARCH_MODE=disabled` when
+the PostgreSQL instance does not provide search extensions; the server starts
+normally, advertises `features.search=false`, mounts no search routes, and does
+not run a sequential-scan fallback.
+
+To enable full-text search, the database operator must install `pg_bigm` and
+`pg_jieba` in the issue-spec database and configure `pg_jieba` in
+`shared_preload_libraries` according to the PostgreSQL provider's extension
+procedure. For example, after the provider parameter change and database
+restart:
+
+```sql
+CREATE EXTENSION pg_bigm;
+CREATE EXTENSION pg_jieba;
+```
+
+Then start the server with `SEARCH_MODE=postgres`. The server never installs
+extensions or changes PostgreSQL parameters. It validates extension presence,
+preload state, tokenization/query behavior, and operator classes, then
+reconciles five application-owned expression indexes under an advisory lock.
+If any required capability is missing, explicit postgres mode fails startup
+instead of silently degrading. Ordinary schema migrations remain independent
+from this optional capability.
+
 The container runs as uid 65532, needs only a writable `/tmp`, and supports a
 read-only root filesystem. Drop all Linux capabilities and set
 `no-new-privileges`. Terminate with SIGTERM. Readiness drops first, delivery

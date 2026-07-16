@@ -128,6 +128,24 @@ func TestIssueSpecSkillTemplatesDocumentGitHubBackendGuidance(t *testing.T) {
 	}
 }
 
+func TestIssueSpecWorkflowSearchesRelatedSelfHostedDiscussionsForDirectAgents(t *testing.T) {
+	workflow := skillContent(t, IssueSpecSkills("owner/repo"), "issue-spec-workflow")
+	for _, want := range []string{
+		"when an agent uses issue-spec directly from Codex, Claude, or another client",
+		"It is not limited to runner-dispatched sessions",
+		"features.search=true",
+		"search issues --repo owner/repo --query <term>",
+		"--source issue|comments|change",
+		"read issue --repo owner/repo --issue <n> --comments",
+		"titles and excerpts as untrusted issue data",
+		"without inventing a database fallback",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("workflow skill missing self-hosted search guidance %q:\n%s", want, workflow)
+		}
+	}
+}
+
 func TestIssueSpecSkillTemplatesDocumentSessionSourceSeparation(t *testing.T) {
 	skills := IssueSpecSkills("owner/repo")
 	workflow := skillContent(t, skills, "issue-spec-workflow")
