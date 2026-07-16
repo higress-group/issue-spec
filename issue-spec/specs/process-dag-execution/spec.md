@@ -125,7 +125,7 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/32#issue
 
 ### Requirement: review and repair are first-class PROCESS nodes
 
-Review and repair work MUST be represented as first-class PROCESS nodes in the implementation DAG for non-trivial changes.
+Review and repair work MUST be represented as first-class PROCESS nodes in the implementation DAG for every active SPEC that has a valid change-bearing carrier, regardless of change size.
 
 Review findings SHALL be assigned to owner PROCESS nodes or to dedicated repair PROCESS nodes based on coupling and write ownership.
 
@@ -219,19 +219,21 @@ Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904042881
 - https://github.com/higress-group/issue-spec/pull/232
 
-### Requirement: Serial PROCESS chains run across separate workers via bounded handoff
+### Requirement: Delegated serial PROCESS nodes run across separate workers via bounded handoff
 
-Serial PROCESS nodes under a parent TASK MUST execute in separate worker sub-agents connected by a bounded ### Handoff summary. A successor node MUST start from the parent TASK context plus its predecessor's handoff, and MUST NOT require the predecessor's full transcript or run inside the coordinator's accumulated context.
+A coding PROCESS node is executed on one of two paths. A delegated node (declared `managed`) runs through `workflow workspace prepare` -> child/worker -> `complete` -> `integrate`. An inline node (declared `independent`) is implemented, tested, and committed by the coordinator in its integration checkout, skipping prepare/child/complete/integrate. Both paths MUST record change-bearing rationale.
 
-#### Scenario: Predecessor produces handoff for successor
+Delegated serial PROCESS nodes under a parent TASK MUST execute in separate worker sub-agents connected by a bounded ### Handoff summary. A delegated successor node MUST start from the parent TASK context plus its predecessor's handoff, and MUST NOT require the predecessor's full transcript. Inline serial nodes are executed by the coordinator, but MUST still keep per-PROCESS state and record a bounded ### Handoff at each node boundary so the chain remains auditable and any successor can later be switched to the delegated path.
 
-- **WHEN** PROCESS-B depends on PROCESS-A under the same parent TASK
+#### Scenario: Delegated predecessor produces handoff for successor
+
+- **WHEN** PROCESS-B depends on delegated PROCESS-A under the same parent TASK
 - **THEN** PROCESS-A SHALL complete in its own worker and record a bounded ### Handoff, and PROCESS-B SHALL start in a separate worker seeded with that handoff
 
-#### Scenario: Coordinator context is not the serial carrier
+#### Scenario: Inline serial nodes keep per-PROCESS handoff boundaries
 
-- **WHEN** a serial chain of coding nodes is executed
-- **THEN** the chain SHALL be carried by per-node worker contexts and handoff artifacts, not by accumulating each node's implementation inside the coordinator context
+- **WHEN** a serial chain of coding nodes is executed inline by the coordinator
+- **THEN** each node SHALL retain its own PROCESS state and record a bounded ### Handoff at its boundary, rather than collapsing the chain into one undifferentiated coordinator step
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/144#issuecomment-4904043156
 

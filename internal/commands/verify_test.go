@@ -19,6 +19,7 @@ import (
 const (
 	canonicalTaskContent    = "## Task: work\n\n### Implementation Checklist\n\n- [x] 1. work\n\n### Execution Planning\n\n- Owned modules / write areas:\n  - internal/x\n- Coupling class: low\n- Recommended execution mode: coordinator-owned\n\n### Covers\n\n- SPEC-001"
 	canonicalProcessContent = "## Process: impl\n\n### Owner\n\n- Worker\n\n### Parent TASK\n\n- TASK-001\n\n### Write Ownership\n\n- internal/x\n\n### Dependencies\n\n- N/A\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\nN/A"
+	canonicalReviewProcess  = "## Process: review\n\n### Owner\n\n- Reviewer\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- review\n\n### Write Ownership\n\n- N/A\n\n### Dependencies\n\n- N/A\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\nN/A"
 	canonicalVerifyContent  = "## Verification Summary: final\n\nTests, review, and traceability confirmed.\n\n### Evidence\n\n- go test ./...\n\n### Covered SPECs\n\n- SPEC-001"
 )
 
@@ -158,6 +159,15 @@ func finalReportHasGateCode(report finalVerifyReport, code string) bool {
 	return false
 }
 
+func errorsContain(errs []string, substr string) bool {
+	for _, err := range errs {
+		if strings.Contains(err, substr) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuildFinalVerifyReportReportsSessionDiagnosticsWithoutErrors(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
@@ -224,11 +234,22 @@ func TestBuildFinalVerifyReportChecksRationaleCoverageWhenPRProvided(t *testing.
 	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
-	review := typedArtifact(t, 3, "REVIEW", "REVIEW-001", "done", "## Review\n\nnone")
+	// An independent review PROCESS is mandatory for any SPEC with a valid
+	// change-bearing carrier. Its reviewing agent differs from the code author,
+	// so it satisfies both the presence and independence requirements.
+	reviewProcess := typedArtifact(t, 3, "PROCESS", "PROCESS-002", "done", canonicalReviewProcess)
+	reviewProcess.URL = "https://github.com/o/r/issues/3#issuecomment-4"
+	reviewProcessBody, _, err := model.AddPRLink(reviewProcess.Comment.Body, "https://github.com/o/r/pull/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewProcess.Comment = model.ParseTypedComment(reviewProcessBody)
+	review := typedArtifactWithAgent(t, 3, "REVIEW", "REVIEW-001", "done", "Reviewer Agent B", "## Review\n\nReviewed PROCESS-002 covering SPEC-001. No blocking findings.")
 	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
 	linkArtifacts(t, &spec, &task)
 	linkArtifacts(t, &task, &process)
-	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
+	linkArtifacts(t, &task, &reviewProcess)
+	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, reviewProcess, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
 		PR:                7,
 		PRURL:             "https://github.com/o/r/pull/7",
 		RationaleRequired: true,
@@ -252,7 +273,7 @@ func TestBuildFinalVerifyReportChecksRationaleCoverageWhenPRProvided(t *testing.
 		t.Fatal("expected PR link to change process body")
 	}
 	processWithPR.Comment = model.ParseTypedComment(processBody)
-	report, err = buildFinalVerifyReport([]model.Artifact{spec, task, process, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
+	report, err = buildFinalVerifyReport([]model.Artifact{spec, task, process, reviewProcess, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
 		PR:                7,
 		PRURL:             "https://github.com/o/r/pull/7",
 		RationaleRequired: true,
@@ -264,7 +285,7 @@ func TestBuildFinalVerifyReportChecksRationaleCoverageWhenPRProvided(t *testing.
 	if report.OK {
 		t.Fatal("missing PROCESS PR link should fail even when rationale exists")
 	}
-	report, err = buildFinalVerifyReport([]model.Artifact{spec, task, processWithPR, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
+	report, err = buildFinalVerifyReport([]model.Artifact{spec, task, processWithPR, reviewProcess, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
 		PR:                7,
 		PRURL:             "https://github.com/o/r/pull/7",
 		RationaleRequired: true,
@@ -275,6 +296,104 @@ func TestBuildFinalVerifyReportChecksRationaleCoverageWhenPRProvided(t *testing.
 	}
 	if !report.OK {
 		t.Fatalf("expected rationale coverage OK: %+v", report.Errors)
+	}
+}
+
+// TestBuildFinalVerifyReportRequiresIndependentReviewProcess proves the command
+// layer fails closed when a change-bearing SPEC has valid rationale but no review
+// PROCESS covers it. Before OK was anchored to gateReport.Ready, the
+// process.review.required diagnostic was silently dropped by the
+// legacyVerifyGateError allowlist and final verify passed.
+func TestBuildFinalVerifyReportRequiresIndependentReviewProcess(t *testing.T) {
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
+	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &process)
+	processBody, _, err := model.AddPRLink(process.Comment.Body, "https://github.com/o/r/pull/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.Comment = model.ParseTypedComment(processBody)
+	body, err := model.RenderRationaleBody("Worker Agent A", "PROCESS-001", "SPEC-001", spec.URL, "Explain why.", "internal/foo.go", 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
+		PR:                7,
+		PRURL:             "https://github.com/o/r/pull/7",
+		RationaleRequired: true,
+		RationaleComments: []github.PullRequestReviewComment{{Body: body, Path: "internal/foo.go", Line: 12}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OK {
+		t.Fatal("change-bearing SPEC without any review PROCESS must fail final verify")
+	}
+	if !finalReportHasGateCode(report, gates.CodeProcessReviewRequired) {
+		t.Fatalf("expected %s diagnostic: %+v", gates.CodeProcessReviewRequired, report.Gate.Diagnostics)
+	}
+	if !errorsContain(report.Errors, "no independent review PROCESS") && !errorsContain(report.Errors, "independent review") {
+		t.Fatalf("expected review-required error projected to report.Errors: %+v", report.Errors)
+	}
+}
+
+// TestBuildFinalVerifyReportRejectsSelfAuthoredReview proves a review PROCESS
+// whose reviewing agent equals the code author of the SPEC does not satisfy the
+// independence requirement and blocks final verify at the command layer.
+func TestBuildFinalVerifyReportRejectsSelfAuthoredReview(t *testing.T) {
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
+	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
+	reviewProcess := typedArtifact(t, 3, "PROCESS", "PROCESS-002", "done", canonicalReviewProcess)
+	reviewProcess.URL = "https://github.com/o/r/issues/3#issuecomment-4"
+	reviewProcessBody, _, err := model.AddPRLink(reviewProcess.Comment.Body, "https://github.com/o/r/pull/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewProcess.Comment = model.ParseTypedComment(reviewProcessBody)
+	// The reviewing agent is the same identity that authored the change-bearing
+	// rationale for SPEC-001, so the review is not independent.
+	review := typedArtifactWithAgent(t, 3, "REVIEW", "REVIEW-001", "done", "Worker Agent A", "## Review\n\nReviewed PROCESS-002 covering SPEC-001. No blocking findings.")
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &spec, &process)
+	linkArtifacts(t, &task, &process)
+	linkArtifacts(t, &task, &reviewProcess)
+	processBody, _, err := model.AddPRLink(process.Comment.Body, "https://github.com/o/r/pull/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.Comment = model.ParseTypedComment(processBody)
+	body, err := model.RenderRationaleBody("Worker Agent A", "PROCESS-001", "SPEC-001", spec.URL, "Explain why.", "internal/foo.go", 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, reviewProcess, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
+		PR:                7,
+		PRURL:             "https://github.com/o/r/pull/7",
+		RationaleRequired: true,
+		RationaleComments: []github.PullRequestReviewComment{{Body: body, Path: "internal/foo.go", Line: 12}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OK {
+		t.Fatal("self-authored review must fail final verify")
+	}
+	if !finalReportHasGateCode(report, gates.CodeProcessReviewAuthorConflict) {
+		t.Fatalf("expected %s diagnostic: %+v", gates.CodeProcessReviewAuthorConflict, report.Gate.Diagnostics)
+	}
+	if !errorsContain(report.Errors, "authored by agent") {
+		t.Fatalf("expected author-conflict error projected to report.Errors: %+v", report.Errors)
 	}
 }
 
@@ -311,10 +430,18 @@ func TestBuildFinalVerifyReportBlocksOpenP0P1Findings(t *testing.T) {
 	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
 	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
-	review := typedArtifact(t, 3, "REVIEW", "REVIEW-001", "done", "## Review\n\nnone")
+	reviewProcess := typedArtifact(t, 3, "PROCESS", "PROCESS-002", "done", canonicalReviewProcess)
+	reviewProcess.URL = "https://github.com/o/r/issues/3#issuecomment-4"
+	reviewProcessBody, _, err := model.AddPRLink(reviewProcess.Comment.Body, "https://github.com/o/r/pull/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewProcess.Comment = model.ParseTypedComment(reviewProcessBody)
+	review := typedArtifactWithAgent(t, 3, "REVIEW", "REVIEW-001", "done", "Reviewer Agent B", "## Review\n\nReviewed PROCESS-002 covering SPEC-001. No blocking findings.")
 	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
 	linkArtifacts(t, &spec, &task)
 	linkArtifacts(t, &task, &process)
+	linkArtifacts(t, &task, &reviewProcess)
 	processBody, changed, err := model.AddPRLink(process.Comment.Body, "https://github.com/o/r/pull/7")
 	if err != nil {
 		t.Fatal(err)
@@ -331,7 +458,7 @@ func TestBuildFinalVerifyReportBlocksOpenP0P1Findings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
+	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, reviewProcess, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
 		PR:                7,
 		PRURL:             "https://github.com/o/r/pull/7",
 		RationaleRequired: true,
@@ -353,7 +480,7 @@ func TestBuildFinalVerifyReportBlocksOpenP0P1Findings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	report, err = buildFinalVerifyReport([]model.Artifact{spec, task, process, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
+	report, err = buildFinalVerifyReport([]model.Artifact{spec, task, process, reviewProcess, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
 		PR:                7,
 		PRURL:             "https://github.com/o/r/pull/7",
 		RationaleRequired: true,
@@ -515,7 +642,12 @@ func linkArtifacts(t *testing.T, from, to *model.Artifact) {
 
 func typedArtifact(t *testing.T, issue int, typ, id, status, content string) model.Artifact {
 	t.Helper()
-	body, err := model.EnsureTypedBody(typ, id, content, model.BodyOptions{Status: status})
+	return typedArtifactWithAgent(t, issue, typ, id, status, "", content)
+}
+
+func typedArtifactWithAgent(t *testing.T, issue int, typ, id, status, agent, content string) model.Artifact {
+	t.Helper()
+	body, err := model.EnsureTypedBody(typ, id, content, model.BodyOptions{Status: status, Agent: agent})
 	if err != nil {
 		t.Fatal(err)
 	}

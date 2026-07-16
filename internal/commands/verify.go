@@ -417,7 +417,11 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	}
 	sort.Strings(report.Errors)
 	sort.Strings(report.Warnings)
-	report.OK = len(report.Errors) == 0
+	// gateReport.Ready reflects every blocking diagnostic (including workspace
+	// blockers folded in above). Anchoring OK to it means a future blocking gate
+	// code that legacyVerifyGateError does not yet project cannot silently pass
+	// final verify; it fails closed even without a bespoke legacy error string.
+	report.OK = gateReport.Ready && len(report.Errors) == 0
 	return report, nil
 }
 
@@ -468,7 +472,8 @@ func legacyVerifyGateError(diagnostic gates.Diagnostic) (string, bool) {
 	case gates.CodeTraceabilityInvalid:
 		return diagnostic.Message, true
 	case gates.CodeProcessExecutionClassInvalid, gates.CodeProcessTaskLinkMissing,
-		gates.CodeProcessSpecLinkMissing, gates.CodeProcessPRLinkMissing, gates.CodeProcessCarrierMissing:
+		gates.CodeProcessSpecLinkMissing, gates.CodeProcessPRLinkMissing, gates.CodeProcessCarrierMissing,
+		gates.CodeProcessReviewRequired, gates.CodeProcessReviewAuthorConflict:
 		return diagnostic.Message, true
 	case gates.CodeProcessWorkspaceRequired, gates.CodeProcessWorkspaceInvalid, gates.CodeProcessWorkspaceStateInvalid,
 		gates.CodeProcessWorkspaceModeInvalid, gates.CodeProcessWorkspaceRevisionUnknown, gates.CodeProcessWorkspaceRevisionStale,
