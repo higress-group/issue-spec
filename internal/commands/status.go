@@ -236,6 +236,10 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 	if target == gates.TargetFinal || target == gates.TargetArchive {
 		mode = gates.ModeAuthoritative
 	}
+	processEvidence := collection.ProcessEvidence
+	if (target == gates.TargetFinal || target == gates.TargetArchive) && len(processEvidence) == 0 && hasActiveChangeBearingProcess(artifacts) {
+		processEvidence = buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, nil)
+	}
 	snapshot := gates.Snapshot{
 		Target:          target,
 		Mode:            mode,
@@ -244,7 +248,7 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		Traceability:    gates.TraceabilityFacts{Observed: true, Report: report},
 		Workflow:        workflowFacts,
 		Remote:          collection.Remote,
-		ProcessEvidence: collection.ProcessEvidence,
+		ProcessEvidence: processEvidence,
 	}
 	gateReport, gateErr := gates.Evaluate(snapshot)
 	if gateErr != nil {
