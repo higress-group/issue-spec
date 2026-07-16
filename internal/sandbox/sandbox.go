@@ -80,6 +80,7 @@ type Config struct {
 	TempGHConfigDir   string
 	TempXDGConfigHome string
 	TempCodexHome     string
+	AcpxRuntimeDir    string
 	HostGHConfigDir   string
 	// HostSSHDir and HostSSHAgentSocket are explicit opt-ins. In bubblewrap
 	// mode the directory is mounted read-only at HOME/.ssh and the optional
@@ -428,7 +429,7 @@ func validatedWritableBinds(cfg Config) ([]string, error) {
 		}
 		workspace = filepath.Clean(canonicalWorkspace)
 	}
-	reserved := []string{workspace, cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome, cfg.HostSSHDir, cfg.HostSSHAgentSocket}
+	reserved := []string{workspace, cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome, cfg.AcpxRuntimeDir, cfg.HostSSHDir, cfg.HostSSHAgentSocket}
 	reserved = append(reserved, cfg.ReadOnlyBinds...)
 	systemBinds := cfg.SystemReadOnlyBinds
 	if len(systemBinds) == 0 {

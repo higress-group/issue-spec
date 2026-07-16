@@ -4,6 +4,8 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,16 +123,18 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		return Command{}, nil, err
 	}
 	for _, item := range []struct {
-		name  string
-		value string
+		name     string
+		value    string
+		optional bool
 	}{
-		{"workspace path", cfg.WorkspacePath},
-		{"temporary HOME path", cfg.TempHome},
-		{"temporary GH_CONFIG_DIR path", cfg.TempGHConfigDir},
-		{"temporary XDG_CONFIG_HOME path", cfg.TempXDGConfigHome},
-		{"temporary CODEX_HOME path", cfg.TempCodexHome},
+		{name: "workspace path", value: cfg.WorkspacePath},
+		{name: "temporary HOME path", value: cfg.TempHome},
+		{name: "temporary GH_CONFIG_DIR path", value: cfg.TempGHConfigDir},
+		{name: "temporary XDG_CONFIG_HOME path", value: cfg.TempXDGConfigHome},
+		{name: "temporary CODEX_HOME path", value: cfg.TempCodexHome, optional: true},
+		{name: "ACPX runtime path", value: cfg.AcpxRuntimeDir, optional: true},
 	} {
-		if item.name == "temporary CODEX_HOME path" && strings.TrimSpace(item.value) == "" {
+		if item.optional && strings.TrimSpace(item.value) == "" {
 			continue
 		}
 		if strings.TrimSpace(item.value) == "" {
@@ -152,6 +156,7 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	}
 
 	workspacePath := filepath.Clean(cfg.WorkspacePath)
+	acpxSocketDir := acpxQueueSocketSandboxPath()
 	workspaceMode := "rw"
 	if cfg.WorkspaceReadOnly {
 		workspaceMode = "ro"
@@ -170,7 +175,12 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	if cfg.WorkspaceReadOnly {
 		workspaceBind = "--ro-bind"
 	}
-	args = append(args, workspaceBind, workspacePath, "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg", "--proc", "/proc", "--dev", "/dev")
+	args = append(args, workspaceBind, workspacePath, "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg")
+	if strings.TrimSpace(cfg.AcpxRuntimeDir) != "" {
+		args = append(args, "--dir", acpxSocketDir, "--bind", cfg.AcpxRuntimeDir, acpxSocketDir)
+		mounts = append(mounts, Mount{Source: cfg.AcpxRuntimeDir, Destination: acpxSocketDir, Mode: "rw"})
+	}
+	args = append(args, "--proc", "/proc", "--dev", "/dev")
 	if sshDir := strings.TrimSpace(cfg.HostSSHDir); sshDir != "" {
 		sshDir = filepath.Clean(sshDir)
 		args = append(args, "--ro-bind", sshDir, HostSSHDirSandboxPath)
@@ -195,6 +205,9 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		"/tmp/issue-spec-codex": true,
 		"/proc":                 true,
 		"/dev":                  true,
+	}
+	if strings.TrimSpace(cfg.AcpxRuntimeDir) != "" {
+		seenDirs[acpxSocketDir] = true
 	}
 	if socket := strings.TrimSpace(cfg.HostSSHAgentSocket); socket != "" {
 		socket = filepath.Clean(socket)
@@ -251,6 +264,19 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	args = append(args, target.Args...)
 
 	return Command{Binary: bwrapPath, Args: args, Stdin: append([]byte(nil), target.Stdin...)}, mounts, nil
+}
+
+// acpxQueueSocketSandboxPath mirrors ACPX's queue socket path contract:
+// /tmp/acpx-<first 10 hex characters of sha256(HOME)>.
+//
+// Every sandbox exposes the same HOME path, so the in-sandbox socket path is
+// deterministic. Its backing host directory remains scoped to one public
+// session, allowing that session's queue owner to survive later invocations
+// without sharing its socket with another session.
+func acpxQueueSocketSandboxPath() string {
+	home := sandboxEnvPaths().home
+	digest := sha256.Sum256([]byte(home))
+	return filepath.Join("/tmp", "acpx-"+hex.EncodeToString(digest[:])[:10])
 }
 
 func sandboxWorkingDirectory(targetDir, workspacePath string) (string, error) {

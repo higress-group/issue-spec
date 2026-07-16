@@ -72,6 +72,7 @@ type SandboxRequest struct {
 	RuntimeGHConfigDir   string
 	RuntimeXDGConfigHome string
 	RuntimeCodexHome     string
+	RuntimeAcpxDir       string
 	OperatorSkillDirs    []string
 	FileCapabilities     []sandbox.FileCapability
 	ChildProfile         *clientauth.Profile
@@ -942,6 +943,7 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 		RuntimeGHConfigDir:   runtimePaths.ghConfigDir,
 		RuntimeXDGConfigHome: runtimePaths.xdgConfigHome,
 		RuntimeCodexHome:     runtimePaths.codexHome,
+		RuntimeAcpxDir:       runtimePaths.acpxRuntimeDir,
 		OperatorSkillDirs:    append([]string(nil), d.OperatorSkillDirs...),
 		AcpxAgent:            job.CoordinatorKind,
 		ProcessWorkspaceRoot: processRoot,
@@ -1691,6 +1693,10 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 	cfg.TempGHConfigDir = firstNonEmpty(req.RuntimeGHConfigDir, cfg.TempGHConfigDir)
 	cfg.TempXDGConfigHome = firstNonEmpty(req.RuntimeXDGConfigHome, cfg.TempXDGConfigHome)
 	cfg.TempCodexHome = firstNonEmpty(req.RuntimeCodexHome, cfg.TempCodexHome)
+	cfg.AcpxRuntimeDir = firstNonEmpty(req.RuntimeAcpxDir, cfg.AcpxRuntimeDir)
+	if strings.TrimSpace(cfg.AcpxRuntimeDir) == "" && strings.TrimSpace(cfg.TempHome) != "" {
+		cfg.AcpxRuntimeDir = filepath.Join(cfg.TempHome, ".acpx", "runtime")
+	}
 	acpxBinary := firstNonEmpty(req.AcpxBinary, acpx.DefaultBinary)
 	var pathPrefixes []string
 	var resolvedAcpxBinary string
@@ -1725,7 +1731,7 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 	if !cfg.UnsafeNoSandbox {
 		addSandboxPATHPrefixes(&cfg, pathPrefixes...)
 	}
-	if cfg.TempHome == "" || cfg.TempGHConfigDir == "" || cfg.TempXDGConfigHome == "" || cfg.TempCodexHome == "" {
+	if cfg.TempHome == "" || cfg.TempGHConfigDir == "" || cfg.TempXDGConfigHome == "" || cfg.TempCodexHome == "" || cfg.AcpxRuntimeDir == "" {
 		root, err := os.MkdirTemp("", "issue-spec-runner-*")
 		if err != nil {
 			return sandbox.Config{}, "", ghAuthMirrorResult{}, err
@@ -1734,8 +1740,9 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 		cfg.TempGHConfigDir = firstNonEmpty(cfg.TempGHConfigDir, filepath.Join(root, "gh"))
 		cfg.TempXDGConfigHome = firstNonEmpty(cfg.TempXDGConfigHome, filepath.Join(root, "xdg"))
 		cfg.TempCodexHome = firstNonEmpty(cfg.TempCodexHome, filepath.Join(root, "codex"))
+		cfg.AcpxRuntimeDir = firstNonEmpty(cfg.AcpxRuntimeDir, filepath.Join(root, "acpx-runtime"))
 	}
-	for _, dir := range []string{cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome} {
+	for _, dir := range []string{cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome, cfg.AcpxRuntimeDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 		}
@@ -2068,10 +2075,11 @@ func prependPathEntries(current string, prefixes ...string) string {
 }
 
 type sessionRuntimePaths struct {
-	home          string
-	ghConfigDir   string
-	xdgConfigHome string
-	codexHome     string
+	home           string
+	ghConfigDir    string
+	xdgConfigHome  string
+	codexHome      string
+	acpxRuntimeDir string
 }
 
 type ghAuthMirrorResult struct {
@@ -2088,10 +2096,11 @@ func stableSessionRuntimePaths(workspacePath, repo, publicID string) (sessionRun
 		return sessionRuntimePaths{}, err
 	}
 	return sessionRuntimePaths{
-		home:          filepath.Join(root, "home"),
-		ghConfigDir:   filepath.Join(root, "gh"),
-		xdgConfigHome: filepath.Join(root, "xdg"),
-		codexHome:     filepath.Join(root, "codex"),
+		home:           filepath.Join(root, "home"),
+		ghConfigDir:    filepath.Join(root, "gh"),
+		xdgConfigHome:  filepath.Join(root, "xdg"),
+		codexHome:      filepath.Join(root, "codex"),
+		acpxRuntimeDir: filepath.Join(root, "acpx-runtime"),
 	}, nil
 }
 
