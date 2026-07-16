@@ -119,6 +119,10 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 		a.errorf("--pr is not a self-hosted code authority; omit it and use the active code_change reference\n")
 		return 2
 	}
+	if !selfHosted && *prFlag <= 0 && hasActiveChangeBearingProcess(artifacts) {
+		a.errorf("--pr is required for GitHub verify when an active change-bearing PROCESS exists\n")
+		return 2
+	}
 	if !selfHosted && *prFlag > 0 {
 		facts, err := collectPullRequestGateFacts(ctx, client, repo, *prFlag)
 		if err != nil {
@@ -202,6 +206,18 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 		return 1
 	}
 	return 0
+}
+
+func hasActiveChangeBearingProcess(artifacts []model.Artifact) bool {
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type != "PROCESS" || artifact.Comment.Status == "superseded" {
+			continue
+		}
+		if model.ParseProcessExecutionClass(artifact.Comment.ID, artifact.URL, artifact.Comment.Body).Class == model.ProcessExecutionChangeBearing {
+			return true
+		}
+	}
+	return false
 }
 
 const (

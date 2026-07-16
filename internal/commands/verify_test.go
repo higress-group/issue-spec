@@ -129,6 +129,114 @@ func TestRunVerifyRejectsUnstablePullRequestIdentity(t *testing.T) {
 	}
 }
 
+func TestRunVerifyRequiresGitHubPRAuthorityForChangeBearingProcesses(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		processContent string
+		pr             string
+	}{
+		{name: "legacy defaults to change-bearing", processContent: canonicalProcessContent},
+		{name: "explicit change-bearing", processContent: canonicalProcessContentWithClass(model.ProcessExecutionChangeBearing)},
+		{name: "non-positive PR cannot bypass authority", processContent: canonicalProcessContentWithClass(model.ProcessExecutionChangeBearing), pr: "-1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app, out, errOut := newGitHubVerifyWithoutPRApp(t, test.processContent)
+			args := []string{
+				"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--json",
+			}
+			if test.pr != "" {
+				args = append(args, "--pr", test.pr)
+			}
+			code := app.runVerify(t.Context(), args)
+			if code != 2 || !strings.Contains(errOut.String(), "--pr is required for GitHub verify") {
+				t.Fatalf("verify exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+			}
+		})
+	}
+}
+
+func TestRunVerifyWithoutPRAuthorityAllowsNonChangeBearingProcesses(t *testing.T) {
+	for _, test := range []struct {
+		class    model.ProcessExecutionClass
+		wantCode int
+	}{
+		{class: model.ProcessExecutionVerification, wantCode: 0},
+		{class: model.ProcessExecutionReview, wantCode: 0},
+		{class: model.ProcessExecutionOrchestration, wantCode: 0},
+		// External PROCESS has its own exact-revision provider-evidence gate.
+		// The missing GitHub PR authority check must not replace that contract.
+		{class: model.ProcessExecutionExternal, wantCode: 1},
+	} {
+		t.Run(string(test.class), func(t *testing.T) {
+			app, out, errOut := newGitHubVerifyWithoutPRApp(t, canonicalProcessContentWithClass(test.class))
+			code := app.runVerify(t.Context(), []string{
+				"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--json",
+			})
+			if code != test.wantCode || strings.Contains(errOut.String(), "--pr is required") {
+				t.Fatalf("verify exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+			}
+			var report finalVerifyReport
+			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+				t.Fatalf("decode verify report: %v\n%s", err, out.String())
+			}
+			if test.wantCode == 0 && !report.OK {
+				t.Fatalf("non-change-bearing verify unexpectedly failed: %+v", report)
+			}
+			if test.class == model.ProcessExecutionExternal &&
+				!finalReportHasGateCode(report, gates.CodeProcessWorkspaceProviderEvidenceMissing) {
+				t.Fatalf("external PROCESS lost its provider-evidence contract: %+v", report.Gate.Diagnostics)
+			}
+		})
+	}
+}
+
+func newGitHubVerifyWithoutPRApp(t *testing.T, processContent string) (*app, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
+	t.Setenv(auth.ProfileEnv, auth.DefaultProfileName)
+	t.Setenv(auth.GitHubBackendAPIURLEnv, "")
+	const (
+		specURL    = "https://github.com/o/r/issues/1#issuecomment-1"
+		taskURL    = "https://github.com/o/r/issues/2#issuecomment-2"
+		processURL = "https://github.com/o/r/issues/3#issuecomment-3"
+		verifyURL  = "https://github.com/o/r/issues/3#issuecomment-4"
+	)
+	spec := typedCommentWithLinks(t, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y", 1, specURL, taskURL)
+	task := typedCommentWithLinks(t, "TASK", "TASK-001", "done", canonicalTaskContent, 2, taskURL, specURL, processURL)
+	process := typedCommentWithLinks(t, "PROCESS", "PROCESS-001", "done", processContent, 3, processURL, taskURL)
+	verify := typedCommentWithLinks(t, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent, 4, verifyURL)
+	backend := fakeGitHubBackend{
+		info: github.BackendInfo{Name: "rest", Kind: "rest", Host: "github.com"},
+		getIssue: func(_ context.Context, _ string, issue int) (github.Issue, error) {
+			return github.Issue{Number: issue, HTMLURL: "https://github.com/o/r/issues/1"}, nil
+		},
+		listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			switch issue {
+			case 1:
+				return []github.Comment{spec}, nil
+			case 2:
+				return []github.Comment{task}, nil
+			case 3:
+				return []github.Comment{process, verify}, nil
+			default:
+				return nil, nil
+			}
+		},
+	}
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	application := newApp(strings.NewReader(""), out, errOut)
+	application.selectGitHubBackend = ghSelection
+	application.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) {
+		return backend, nil
+	}
+	return application, out, errOut
+}
+
+func canonicalProcessContentWithClass(class model.ProcessExecutionClass) string {
+	return strings.Replace(canonicalProcessContent, "### Write Ownership",
+		"### Execution Class\n\n- "+string(class)+"\n\n### Write Ownership", 1)
+}
+
 func TestRunVerifySelfHostedPreservesBlockingGateAndSkipsEvidenceConsumption(t *testing.T) {
 	clearCommandAuthEnv(t)
 	revision := "head-abc"
@@ -259,7 +367,7 @@ func errorsContain(errs []string, substr string) bool {
 func TestBuildFinalVerifyReportReportsSessionDiagnosticsWithoutErrors(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContent)
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContentWithClass(model.ProcessExecutionVerification))
 	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
 	linkArtifacts(t, &spec, &task)
 	linkArtifacts(t, &task, &process)
