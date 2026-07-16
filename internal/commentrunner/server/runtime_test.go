@@ -119,6 +119,26 @@ func TestRuntimeJobLoopStillStopsOnInfrastructureFailure(t *testing.T) {
 	}
 }
 
+func TestRuntimeJobLoopStopsOnTerminalFailureJoinedWithWritebackFailure(t *testing.T) {
+	log := &runtimeLog{}
+	writebackErr := errors.New("failed status writeback")
+	dispatcher := &infrastructureFailureRuntimeDispatcher{err: errors.Join(
+		fmt.Errorf("%w: workspace unavailable", jobs.ErrTerminalJobFailure),
+		writebackErr,
+	)}
+	runtime, err := NewRuntime(RuntimeConfig{
+		HTTP: &fakeRuntimeHTTP{log: log}, Reconciler: &fakeRuntimeReconciler{log: log}, Dispatcher: dispatcher,
+		MaxConcurrentJobs: 1, DispatchIdleDelay: time.Millisecond, CancelIdleDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = runtime.Run(t.Context())
+	if err == nil || !errors.Is(err, jobs.ErrTerminalJobFailure) || !errors.Is(err, writebackErr) {
+		t.Fatalf("runner serve mixed job/writeback error = %v", err)
+	}
+}
+
 func TestRuntimeContinuesAfterInterruptedStartupReconciliation(t *testing.T) {
 	log := &runtimeLog{}
 	dispatcher := &interruptedReconcileRuntimeDispatcher{jobsStarted: make(chan struct{})}
