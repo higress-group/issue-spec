@@ -89,7 +89,7 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 	inputs := make([]gates.ProcessEvidenceInput, 0, len(processes))
 	for _, process := range processes {
 		input := gates.ProcessEvidenceInput{Process: process, RequiredPRURL: prURL, ActiveSpecs: activeSpecs, TaskURLs: taskURLs,
-			AuthorAgentsBySpec: authorAgentsBySpec}
+			RequiredRevision: strings.TrimSpace(review.SubjectRevision), AuthorAgentsBySpec: authorAgentsBySpec}
 		for _, comment := range reviewComments {
 			marker, ok, err := model.FindRationaleMarker(comment.Body)
 			if err != nil || !ok || marker.Process != process.Comment.ID {
@@ -103,10 +103,11 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 			if !artifactReferencesProcess(artifact, process) {
 				continue
 			}
+			revision, trusted, source := reviewArtifactRevision(artifact, prURL, review)
 			for specID := range activeSpecs {
 				if artifactReferencesSpec(artifact, specID, activeSpecs[specID]) {
 					input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: process.Comment.ID, SpecID: specID, URL: artifact.URL,
-						Done: true, ReviewerAgent: artifact.Comment.Agent, Source: "typed-review"})
+						Done: true, ReviewerAgent: artifact.Comment.Agent, SubjectRevision: revision, Trusted: trusted, Source: source})
 				}
 			}
 		}
@@ -150,6 +151,48 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 		inputs = append(inputs, input)
 	}
 	return inputs
+}
+
+// reviewArtifactRevision turns a review-sync subject revision into trusted
+// process evidence only after re-binding it to the authoritative PR facts
+// collected for this command. The typed value records what review sync saw;
+// the trusted value returned on a match comes from the current PR head.
+func reviewArtifactRevision(artifact model.Artifact, requiredPRURL string, report reviewSyncReport) (string, bool, string) {
+	recorded := strings.TrimSpace(artifact.Comment.SubjectRevision)
+	if recorded == "" {
+		return "", false, "typed-review"
+	}
+	requiredPRURL = model.NormalizeURL(requiredPRURL)
+	authoritativePRURL := model.NormalizeURL(report.PRURL)
+	authoritativeRevision := strings.TrimSpace(report.SubjectRevision)
+	authoritativeSource := strings.TrimSpace(report.RevisionSource)
+	if requiredPRURL == "" || authoritativePRURL != requiredPRURL || authoritativeRevision == "" ||
+		authoritativeSource == "" || !hasExactReviewPRCarrier(artifact.Comment.Links["PR"], requiredPRURL) ||
+		!strings.EqualFold(recorded, authoritativeRevision) {
+		return recorded, false, "typed-review"
+	}
+	return authoritativeRevision, true, authoritativeSource
+}
+
+func hasExactReviewPRCarrier(values []string, want string) bool {
+	want = model.NormalizeURL(want)
+	if want == "" {
+		return false
+	}
+	var carrier string
+	count := 0
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || strings.EqualFold(value, "N/A") {
+			continue
+		}
+		count++
+		if count > 1 {
+			return false
+		}
+		carrier = model.NormalizeURL(value)
+	}
+	return count == 1 && carrier == want
 }
 
 func validateExternalEvidenceConsumption(consumption externalEvidenceConsumption, processes []model.Artifact, activeSpecs map[string]string) error {

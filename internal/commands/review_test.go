@@ -250,10 +250,13 @@ func TestBuildReviewSyncReportDoesNotResolveDuplicateFindingIDAcrossThreads(t *t
 }
 
 func TestRenderReviewSyncComment(t *testing.T) {
+	const head = "0123456789abcdef0123456789abcdef01234567"
 	body, err := renderReviewSyncComment("REVIEW-001", "Coordinator", writerSession{}, "pr-review", "https://github.com/o/r/pull/4", reviewSyncReport{
 		OK:                true,
 		PR:                4,
 		PRURL:             "https://github.com/o/r/pull/4",
+		SubjectRevision:   head,
+		RevisionSource:    "github-pull-request-head:4",
 		RationaleComments: 2,
 		PassedChecks:      []reviewCheck{{Name: "DCO", State: "completed", Conclusion: "success"}},
 	})
@@ -264,6 +267,19 @@ func TestRenderReviewSyncComment(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in:\n%s", want, body)
 		}
+	}
+	parsed := model.ParseTypedComment(body)
+	if parsed.SubjectRevision != head {
+		t.Fatalf("subject revision = %q, want %q", parsed.SubjectRevision, head)
+	}
+}
+
+func TestBuildReviewSyncReportCapturesAuthoritativePullRequestHead(t *testing.T) {
+	pr := github.PullRequest{Number: 4, HTMLURL: "https://github.com/o/r/pull/4"}
+	pr.Head.SHA = "0123456789abcdef0123456789abcdef01234567"
+	report := buildReviewSyncReport(pr, nil, nil, github.CombinedStatus{}, nil)
+	if report.SubjectRevision != pr.Head.SHA || report.RevisionSource != "github-pull-request-head:4" {
+		t.Fatalf("subject revision was not captured from PR head: %+v", report)
 	}
 }
 

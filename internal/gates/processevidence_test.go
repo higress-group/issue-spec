@@ -80,6 +80,74 @@ func TestProcessEvidenceLegacyTypedCarrierHasUnknownRevision(t *testing.T) {
 	}
 }
 
+func TestReviewProcessRequiresExactCurrentCarrierPerSpec(t *testing.T) {
+	const current = "head-current"
+	input := processEvidenceFixture(t, model.ProcessExecutionReview)
+	input.RequiredRevision = current
+	input.ActiveSpecs = map[string]string{"SPEC-001": "https://example/spec1", "SPEC-002": "https://example/spec2"}
+	input.Reviews = []ReviewEvidence{
+		{ProcessID: "PROCESS-001", SpecID: "SPEC-001", URL: "https://example/review1", Done: true,
+			SubjectRevision: current, Trusted: true, Source: "github-pull-request-head:7"},
+		{ProcessID: "PROCESS-001", SpecID: "SPEC-002", URL: "https://example/review2", Done: true,
+			SubjectRevision: "head-stale", Source: "typed-review"},
+	}
+	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !containsString(report.Missing, "exact-current independent review evidence") ||
+		!hasDiagnostic(report.Diagnostics, CodeProcessCarrierMissing, true) {
+		t.Fatalf("current SPEC rescued stale SPEC: %+v", report)
+	}
+	if len(report.SatisfiedSpecs) != 1 || report.SatisfiedSpecs[0] != "SPEC-001" || report.CarrierRevision.Trusted {
+		t.Fatalf("stale SPEC became satisfied or carrier stayed trusted: %+v", report)
+	}
+
+	input.Reviews[1].SubjectRevision = current
+	input.Reviews[1].Trusted = true
+	input.Reviews[1].Source = "github-pull-request-head:7"
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if len(report.Missing) != 0 || len(report.SatisfiedSpecs) != 2 || !report.CarrierRevision.Trusted || report.CarrierRevision.Revision != current {
+		t.Fatalf("one current carrier per SPEC should pass: %+v", report)
+	}
+}
+
+func TestReviewProcessSelectsCarrierAfterIndependence(t *testing.T) {
+	const current = "head-current"
+	input := processEvidenceFixture(t, model.ProcessExecutionReview)
+	input.RequiredRevision = current
+	input.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-001": {"worker": true}}
+	input.Reviews = []ReviewEvidence{
+		{ProcessID: "PROCESS-001", SpecID: "SPEC-001", URL: "https://example/self-review", Done: true,
+			ReviewerAgent: "Worker", SubjectRevision: current, Trusted: true, Source: "github-pull-request-head:7"},
+		{ProcessID: "PROCESS-001", SpecID: "SPEC-001", URL: "https://example/finding", FindingResolved: true,
+			ReviewerAgent: "Independent Reviewer", SubjectRevision: current, Trusted: true, Source: "github-pr-review-comment:3"},
+	}
+	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if len(report.Missing) != 0 || hasDiagnostic(report.Diagnostics, CodeProcessReviewAuthorConflict, true) ||
+		!report.CarrierRevision.Trusted || report.CarrierRevision.Source != "github-pr-review-comment:3" {
+		t.Fatalf("independent finding did not survive self-review filtering: %+v", report)
+	}
+
+	input.AuthorAgentsBySpec = nil
+	input.Reviews[1].SubjectRevision = "head-stale"
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if len(report.Missing) != 0 || !report.CarrierRevision.Trusted || report.CarrierRevision.Revision != current ||
+		report.CarrierRevision.Source != "github-pull-request-head:7" {
+		t.Fatalf("current typed review did not take precedence over old finding: %+v", report)
+	}
+}
+
+func TestReviewProcessResolvedFindingCarrierRemainsCompatible(t *testing.T) {
+	const current = "head-current"
+	input := processEvidenceFixture(t, model.ProcessExecutionReview)
+	input.RequiredRevision = current
+	input.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", URL: "https://example/finding",
+		FindingResolved: true, ReviewerAgent: "Independent Reviewer", SubjectRevision: current, Trusted: true,
+		Source: "github-pr-review-comment:3"}}
+	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if len(report.Missing) != 0 || !report.CarrierRevision.Trusted || report.CarrierRevision.Revision != current {
+		t.Fatalf("resolved-finding carrier compatibility changed: %+v", report)
+	}
+}
+
 func TestProcessEvidenceRejectsForgedRationalePathLine(t *testing.T) {
 	input := processEvidenceFixture(t, model.ProcessExecutionChangeBearing)
 	input.Rationales = []RationaleEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", MarkerPath: "forged.go", MarkerLine: 99, CommentPath: "real.go", CommentLine: 12}}

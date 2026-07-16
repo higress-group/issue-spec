@@ -328,7 +328,9 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	var reviewReport reviewSyncReport
 	remote := gates.RemoteFacts{}
 	if opts.RationaleRequired {
-		reviewReport = buildReviewSyncReport(github.PullRequest{Number: opts.PR, HTMLURL: opts.PRURL}, opts.RationaleComments, nil, opts.PRStatus, opts.PRCheckRuns)
+		pr := github.PullRequest{Number: opts.PR, HTMLURL: opts.PRURL}
+		pr.Head.SHA = strings.TrimSpace(opts.ExpectedRevision)
+		reviewReport = buildReviewSyncReport(pr, opts.RationaleComments, nil, opts.PRStatus, opts.PRCheckRuns)
 		remote.PRChecks = gates.Fact{Required: true, Known: true,
 			Passed:   len(reviewReport.FailedChecks) == 0 && len(reviewReport.PendingChecks) == 0,
 			Current:  fmt.Sprintf("failed=%d pending=%d", len(reviewReport.FailedChecks), len(reviewReport.PendingChecks)),
