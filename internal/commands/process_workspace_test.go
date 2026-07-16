@@ -299,6 +299,74 @@ func TestFinalVerifyWiresExactSnapshotWorkspaceEvidence(t *testing.T) {
 	}
 }
 
+func TestFinalVerifyBindsZeroFindingReviewToExactSubjectRevision(t *testing.T) {
+	const (
+		prURL = "https://github.com/o/r/pull/7"
+		head  = "0123456789abcdef0123456789abcdef01234567"
+		stale = "89abcdef0123456789abcdef0123456789abcdef"
+	)
+	build := func(subjectRevision string) finalVerifyReport {
+		t.Helper()
+		spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+		spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
+		task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+		task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
+		process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalReviewProcess)
+		process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
+		reviewBody, err := model.EnsureTypedBody("REVIEW", "REVIEW-001", "## Review Sync Summary\n\nReviewed PROCESS-001 and SPEC-001 with zero findings.", model.BodyOptions{
+			Agent: "Reviewer Agent", Status: "done", SubjectRevision: subjectRevision, Links: map[string][]string{"PR": {prURL}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		review := model.Artifact{Issue: 3, URL: "https://github.com/o/r/issues/3#issuecomment-4", Comment: model.ParseTypedComment(reviewBody)}
+		verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+		linkArtifacts(t, &spec, &task)
+		linkArtifacts(t, &task, &process)
+		linkArtifacts(t, &process, &review)
+		linkArtifacts(t, &spec, &review)
+		processBody, _, err := model.AddPRLink(process.Comment.Body, prURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Unix(100, 0).UTC()
+		workspace := processworkspace.PortableLease{SchemaVersion: processworkspace.LeaseSchemaVersion, WorkspaceID: "ws-process-001", Repository: "o/r", ProcessID: "PROCESS-001",
+			ExecutionClass: processworkspace.ExecutionReview, Mode: processworkspace.ModeSnapshot, BaseSHA: head, DetachedRevision: head,
+			RuntimeNamespace: "ws-process-001", State: processworkspace.StateCleaned, CreatedAt: now, UpdatedAt: now}
+		transition, err := model.ApplyTypedTransition(processBody, model.TransitionRequest{ExpectedType: "PROCESS", ExpectedID: "PROCESS-001", Workspace: &workspace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		process.Comment = model.ParseTypedComment(transition.Body)
+
+		report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
+			PR: 7, PRURL: prURL, ExpectedRevision: head, RationaleRequired: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return report
+	}
+	t.Run("matching head", func(t *testing.T) {
+		report := build(head)
+		if !report.OK || finalReportHasGateCode(report, gates.CodeProcessWorkspaceRevisionUnknown) || finalReportHasGateCode(report, gates.CodeProcessWorkspaceRevisionStale) {
+			t.Fatalf("exact zero-finding review did not pass final verify: errors=%v diagnostics=%+v evidence=%+v", report.Errors, report.Gate.Diagnostics, report.ProcessEvidence)
+		}
+	})
+	t.Run("stale head", func(t *testing.T) {
+		report := build(stale)
+		if report.OK || (!finalReportHasGateCode(report, gates.CodeProcessWorkspaceRevisionUnknown) && !finalReportHasGateCode(report, gates.CodeProcessWorkspaceRevisionStale)) {
+			t.Fatalf("stale zero-finding review passed final verify: errors=%v diagnostics=%+v evidence=%+v", report.Errors, report.Gate.Diagnostics, report.ProcessEvidence)
+		}
+	})
+	t.Run("missing subject revision", func(t *testing.T) {
+		report := build("")
+		if report.OK || !finalReportHasGateCode(report, gates.CodeProcessWorkspaceRevisionUnknown) {
+			t.Fatalf("revisionless zero-finding review passed final verify: errors=%v diagnostics=%+v evidence=%+v", report.Errors, report.Gate.Diagnostics, report.ProcessEvidence)
+		}
+	})
+}
+
 var errWorkspaceRemoteUnavailable = &workspaceTestError{"remote unavailable"}
 
 type workspaceTestError struct{ message string }

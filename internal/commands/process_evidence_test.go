@@ -165,6 +165,109 @@ func TestBuildProcessEvidenceUsesCollectorRevisionNotTypedText(t *testing.T) {
 	}
 }
 
+func TestBuildProcessEvidenceBindsZeroFindingReviewToAuthoritativeHead(t *testing.T) {
+	const (
+		prURL   = "https://github.com/o/r/pull/7"
+		current = "0123456789abcdef0123456789abcdef01234567"
+		stale   = "89abcdef0123456789abcdef0123456789abcdef"
+	)
+	report := reviewSyncReport{PR: 7, PRURL: prURL, SubjectRevision: current, RevisionSource: "github-pull-request-head:7"}
+	tests := map[string]struct {
+		revision string
+		prLinks  []string
+		trusted  bool
+	}{
+		"matching head":   {revision: current, prLinks: []string{prURL}, trusted: true},
+		"stale head":      {revision: stale, prLinks: []string{prURL}},
+		"different PR":    {revision: current, prLinks: []string{"https://github.com/o/r/pull/8"}},
+		"ambiguous PR":    {revision: current, prLinks: []string{prURL, "https://github.com/o/r/pull/8"}},
+		"missing carrier": {revision: current},
+		"legacy review":   {prLinks: []string{prURL}},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			reviewBody, err := model.EnsureTypedBody("REVIEW", "REVIEW-001", "Reviewed PROCESS-001 and SPEC-001 with zero findings.", model.BodyOptions{
+				Status: "done", SubjectRevision: test.revision, Links: map[string][]string{"PR": test.prLinks},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			artifacts := []model.Artifact{
+				{URL: "https://example/spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
+				processClassArtifact(t, "PROCESS-001", "review", "SPEC-001", "done"),
+				{URL: "https://example/review", Comment: model.ParseTypedComment(reviewBody)},
+			}
+			inputs := buildProcessEvidenceInputs(artifacts, prURL, nil, report, nil)
+			if len(inputs) != 1 || len(inputs[0].Reviews) != 1 {
+				t.Fatalf("inputs = %+v", inputs)
+			}
+			got := gates.EvaluateProcessEvidence(inputs[0], gates.TargetFinal, gates.ModeAuthoritative).CarrierRevision
+			if test.trusted {
+				if !got.Known || !got.Trusted || got.Revision != current || got.Source != report.RevisionSource {
+					t.Fatalf("matching zero-finding review carrier = %+v", got)
+				}
+			} else if got.Trusted || got.Known {
+				t.Fatalf("unbound review became trusted: %+v", got)
+			}
+		})
+	}
+}
+
+func TestBuildProcessEvidenceCurrentReviewSupersedesOldResolvedFindingRevision(t *testing.T) {
+	const (
+		prURL   = "https://github.com/o/r/pull/7"
+		old     = "89abcdef0123456789abcdef0123456789abcdef"
+		current = "0123456789abcdef0123456789abcdef01234567"
+	)
+	reviewBody, err := model.EnsureTypedBody("REVIEW", "REVIEW-001", "Reviewed PROCESS-001 and SPEC-001 at the current head.", model.BodyOptions{
+		Status: "done", SubjectRevision: current, Links: map[string][]string{"PR": {prURL}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := []model.Artifact{
+		{URL: "https://example/spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
+		processClassArtifact(t, "PROCESS-001", "review", "SPEC-001", "done"),
+		{URL: "https://example/review", Comment: model.ParseTypedComment(reviewBody)},
+	}
+	report := reviewSyncReport{PR: 7, PRURL: prURL, SubjectRevision: current, RevisionSource: "github-pull-request-head:7",
+		ResolvedFindings: []reviewFinding{{Process: "PROCESS-001", Spec: "SPEC-001", URL: "https://example/finding", Agent: "Reviewer",
+			SubjectRevision: old, RevisionSource: "github-pr-review-comment:3"}}}
+	inputs := buildProcessEvidenceInputs(artifacts, prURL, nil, report, nil)
+	if len(inputs) != 1 || len(inputs[0].Reviews) != 1 {
+		t.Fatalf("current review did not supersede old resolved finding: %+v", inputs)
+	}
+	got := gates.EvaluateProcessEvidence(inputs[0], gates.TargetFinal, gates.ModeAuthoritative).CarrierRevision
+	if !got.Known || !got.Trusted || got.Revision != current || got.Source != report.RevisionSource {
+		t.Fatalf("current review carrier = %+v", got)
+	}
+}
+
+func TestBuildProcessEvidenceResolvedFindingRevisionRemainsCompatible(t *testing.T) {
+	const revision = "0123456789abcdef0123456789abcdef01234567"
+	reviewBody, err := model.EnsureTypedBody("REVIEW", "REVIEW-001", "Reviewed PROCESS-001 and SPEC-001.", model.BodyOptions{Status: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := []model.Artifact{
+		{URL: "https://example/spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
+		processClassArtifact(t, "PROCESS-001", "review", "SPEC-001", "done"),
+		{URL: "https://example/review", Comment: model.ParseTypedComment(reviewBody)},
+	}
+	report := reviewSyncReport{ResolvedFindings: []reviewFinding{{
+		Process: "PROCESS-001", Spec: "SPEC-001", URL: "https://example/finding", Agent: "Reviewer",
+		SubjectRevision: revision, RevisionSource: "github-pr-review-comment:3",
+	}}}
+	inputs := buildProcessEvidenceInputs(artifacts, "https://github.com/o/r/pull/7", nil, report, nil)
+	if len(inputs) != 1 || len(inputs[0].Reviews) != 2 {
+		t.Fatalf("inputs = %+v", inputs)
+	}
+	got := gates.EvaluateProcessEvidence(inputs[0], gates.TargetFinal, gates.ModeAuthoritative).CarrierRevision
+	if !got.Known || !got.Trusted || got.Revision != revision || got.Source != "github-pr-review-comment:3" {
+		t.Fatalf("resolved-finding carrier changed: %+v", got)
+	}
+}
+
 func TestBuildProcessEvidenceExternalSubstringCannotCreateBinding(t *testing.T) {
 	processBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-001", "## Process: external\n\n### Execution Class\n\n- external\n\n### Covers\n\n- SPEC-001\n\nProvider revision head-abc", model.BodyOptions{Status: "done"})
 	if err != nil {

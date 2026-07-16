@@ -34,6 +34,7 @@ type TypedComment struct {
 	Agent              string              `json:"agent"`
 	AgentSessionID     string              `json:"agent_session_id,omitempty"`
 	AgentSessionSource string              `json:"agent_session_source,omitempty"`
+	SubjectRevision    string              `json:"subject_revision,omitempty"`
 	Type               string              `json:"type"`
 	ID                 string              `json:"id"`
 	Status             string              `json:"status"`
@@ -48,6 +49,7 @@ type BodyOptions struct {
 	Agent              string
 	AgentSessionID     string
 	AgentSessionSource string
+	SubjectRevision    string
 	Status             string
 	Scope              string
 	Links              map[string][]string
@@ -103,6 +105,9 @@ func ParseTypedComment(body string) TypedComment {
 			tc.HasHead = true
 		case "Agent Session Source":
 			tc.AgentSessionSource = value
+			tc.HasHead = true
+		case "Subject Revision":
+			tc.SubjectRevision = value
 			tc.HasHead = true
 		case "Type":
 			if tc.Type != "" && tc.Type != strings.ToUpper(value) {
@@ -223,6 +228,9 @@ func RenderHeader(commentType, id string, opts BodyOptions) string {
 	}
 	if strings.TrimSpace(opts.AgentSessionSource) != "" {
 		fmt.Fprintf(&b, "Agent Session Source: %s\n", strings.TrimSpace(opts.AgentSessionSource))
+	}
+	if strings.TrimSpace(opts.SubjectRevision) != "" {
+		fmt.Fprintf(&b, "Subject Revision: %s\n", strings.TrimSpace(opts.SubjectRevision))
 	}
 	fmt.Fprintf(&b, "Type: %s\n", strings.ToUpper(commentType))
 	fmt.Fprintf(&b, "ID: %s\n", id)

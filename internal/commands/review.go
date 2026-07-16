@@ -615,6 +615,8 @@ type reviewSyncReport struct {
 	OK                 bool                          `json:"ok"`
 	PR                 int                           `json:"pr"`
 	PRURL              string                        `json:"pr_url"`
+	SubjectRevision    string                        `json:"subject_revision,omitempty"`
+	RevisionSource     string                        `json:"revision_source,omitempty"`
 	RationaleComments  int                           `json:"rationale_comments"`
 	ActionableFindings []reviewFinding               `json:"actionable_findings"`
 	BlockingFindings   []reviewFinding               `json:"blocking_findings"`
@@ -681,6 +683,10 @@ type reviewCheck struct {
 
 func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRequestReviewComment, issueComments []github.Comment, status github.CombinedStatus, checkRuns []github.CheckRun) reviewSyncReport {
 	report := reviewSyncReport{PR: pr.Number, PRURL: pr.HTMLURL, IssueComments: len(issueComments)}
+	if revision := strings.TrimSpace(pr.Head.SHA); revision != "" {
+		report.SubjectRevision = revision
+		report.RevisionSource = fmt.Sprintf("github-pull-request-head:%d", pr.Number)
+	}
 	findingOwnerByID := map[int64]string{}
 	for _, comment := range reviewComments {
 		if comment.InReplyToID != 0 {
@@ -846,6 +852,7 @@ func renderReviewSyncComment(id, agent string, session writerSession, scope, prU
 		Agent:              agent,
 		AgentSessionID:     session.ID,
 		AgentSessionSource: session.Source,
+		SubjectRevision:    report.SubjectRevision,
 		Status:             status,
 		Scope:              scope,
 		Links:              map[string][]string{"Implement Issue": {"N/A"}, "PR": {prURL}},
