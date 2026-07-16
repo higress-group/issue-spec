@@ -50,6 +50,30 @@ describe("repository integrations workspace", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Create route" }));
     await waitFor(() => expect(created).toMatchObject({ repository_id: repoId, url: "http://127.0.0.1:19090/api/v1/runner/webhooks", delivery_format: "issue-spec.v1", signing_mode: "bearer", event_types: ["issue_comment.created", "issue_comment.edited"], retry: { max_attempts: 8, initial_backoff: "1s", max_backoff: "5m" } }));
     expect(await screen.findByRole("dialog", { name: "Webhook secret v1" })).toHaveTextContent("show-once-secret");
+    expect(screen.getByRole("dialog", { name: "Webhook secret v1" })).toHaveTextContent(webhookId);
+  });
+
+  it("renders a safe create destination rejection beside the receiver URL", async () => {
+    server.use(
+      metaHandler(),
+      http.get(webhookCollectionPath(), () => HttpResponse.json({ subscriptions: [] })),
+      http.get(deliveryCollectionPath(), () => HttpResponse.json({ deliveries: [] })),
+      http.post(webhookCollectionPath(), () => HttpResponse.json({
+        type: "https://issue-spec.dev/problems/destination_denied",
+        title: "Invalid webhook subscription",
+        status: 422,
+        code: "destination_denied",
+        request_id: "request-create-validation",
+        meta: { field: "url" },
+      }, { status: 422 })),
+    );
+    renderIntegration("webhooks");
+    await userEvent.setup().click(await screen.findByRole("button", { name: "New webhook" }));
+    await userEvent.setup().type(screen.getByRole("textbox", { name: /^Receiver URL/ }), "https://private.example.test/hook");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Create route" }));
+
+    const error = await screen.findByText("This receiver is blocked by the destination network policy.");
+    expect(error.closest("label")).toHaveTextContent("Receiver URL");
   });
 
   it("pauses and rotates a route, inspects attempts, and replays the immutable delivery", async () => {
@@ -136,6 +160,49 @@ describe("repository integrations workspace", () => {
     await waitFor(() => expect(created).toMatchObject({ delivery_format: "github.v3", signing_mode: "hmac-sha256", url: "https://robot.example.test/hook?access_token=browser-secret", content_policy: { issue_actions: ["opened", "edited", "closed", "reopened"], comment_classes: ["human-untyped"], actor_classes: ["human"] } }));
     expect(await screen.findByRole("dialog", { name: "Webhook secret v1" })).toHaveTextContent("github-hmac-secret");
     expect((await axe.run(container)).violations).toEqual([]);
+  });
+
+  it("updates a notification with server-formatted compound retry durations", async () => {
+    let update: unknown;
+    const notification = webhookFixture({ url: "https://robot.example.test/hook", delivery_format: "github.v3", signing_mode: "hmac-sha256", has_destination_query: true });
+    server.use(
+      metaHandler(),
+      http.get(webhookCollectionPath(), () => HttpResponse.json({ subscriptions: [notification] })),
+      http.get(deliveryCollectionPath(), () => HttpResponse.json({ deliveries: [] })),
+      http.patch(`${webhookCollectionPath()}/${webhookId}`, async ({ request }) => { update = await request.json(); return HttpResponse.json({ ...notification, representation_version: 4 }); }),
+    );
+    renderIntegration("webhooks");
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Configure" }));
+    expect(screen.getByRole("textbox", { name: "Maximum backoff" })).toHaveValue("5m0s");
+    await userEvent.setup().click(screen.getByRole("checkbox", { name: /PAT, delegated or service automation/ }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(update).toMatchObject({
+      retry: { max_attempts: 8, initial_backoff: "1s", max_backoff: "5m0s" },
+      content_policy: { actor_classes: ["human", "automation"] },
+    }));
+    expect(screen.queryByText(/Use retry durations/)).not.toBeInTheDocument();
+  });
+
+  it("renders a safe update retry rejection beside the maximum backoff", async () => {
+    server.use(
+      metaHandler(),
+      http.get(webhookCollectionPath(), () => HttpResponse.json({ subscriptions: [webhookFixture()] })),
+      http.get(deliveryCollectionPath(), () => HttpResponse.json({ deliveries: [] })),
+      http.patch(`${webhookCollectionPath()}/${webhookId}`, () => HttpResponse.json({
+        type: "https://issue-spec.dev/problems/invalid_retry_policy",
+        title: "Invalid webhook subscription",
+        status: 422,
+        code: "invalid_retry_policy",
+        request_id: "request-update-validation",
+        meta: { field: "retry.max_backoff" },
+      }, { status: 422 })),
+    );
+    renderIntegration("webhooks");
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Configure" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save route" }));
+
+    const error = await screen.findByText("Correct this retry setting.");
+    expect(error.closest("label")).toHaveTextContent("Maximum backoff");
   });
 
   it("shows encrypted-query and suppression state without returning credential material", async () => {

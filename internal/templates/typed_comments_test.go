@@ -3,8 +3,10 @@ package templates
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
 
 func TestSpecCommentRendersCanonicalBodyAcceptedByValidator(t *testing.T) {
@@ -160,6 +162,9 @@ func TestTaskAndProcessGeneratorsFillCanonicalDefaults(t *testing.T) {
 	if !strings.Contains(proc, "### Execution Class\n\n- change-bearing") {
 		t.Fatalf("default PROCESS must use conservative change-bearing class:\n%s", proc)
 	}
+	if !strings.Contains(proc, "### Workspace Management\n\n- managed") {
+		t.Fatalf("default PROCESS must use managed workspace handling:\n%s", proc)
+	}
 }
 
 func TestProcessGeneratorRejectsUnknownExecutionClass(t *testing.T) {
@@ -168,6 +173,66 @@ func TestProcessGeneratorRejectsUnknownExecutionClass(t *testing.T) {
 	}})
 	if err == nil || !strings.Contains(err.Error(), "unknown PROCESS execution class") {
 		t.Fatalf("expected unknown class error, got %v", err)
+	}
+}
+
+func TestProcessGeneratorRejectsUnknownWorkspaceManagement(t *testing.T) {
+	_, err := ProcessComment(ProcessCommentOptions{Common: CommonOptions{ID: "PROCESS-003"}, Input: ProcessInput{
+		Title: "p", WorkspaceManagement: model.ProcessWorkspaceManagement("unmanaged"),
+	}})
+	if err == nil || !strings.Contains(err.Error(), "unknown PROCESS workspace management") {
+		t.Fatalf("expected unknown workspace management error, got %v", err)
+	}
+}
+
+func TestProcessGeneratorRendersIndependentWorkspaceManagement(t *testing.T) {
+	body, err := ProcessComment(ProcessCommentOptions{Common: CommonOptions{ID: "PROCESS-003"}, Input: ProcessInput{
+		Title: "p", WorkspaceManagement: model.ProcessWorkspaceIndependent,
+	}})
+	if err != nil || !strings.Contains(body, "### Workspace Management\n\n- independent") {
+		t.Fatalf("independent workspace management body=%q err=%v", body, err)
+	}
+}
+
+func TestProcessGeneratorRendersPortableWorkspace(t *testing.T) {
+	now := time.Date(2026, 7, 13, 1, 2, 3, 0, time.UTC)
+	workspace := model.ProcessWorkspace{
+		SchemaVersion: processworkspace.LeaseSchemaVersion, WorkspaceID: "ws-process-004",
+		Repository: "higress-group/issue-spec", ProcessID: "PROCESS-004",
+		ExecutionClass: processworkspace.ExecutionChangeBearing, Mode: processworkspace.ModeWritable,
+		BaseSHA: "1111111111111111111111111111111111111111", Branch: "codex/process-004",
+		WriteOwnership: []string{"internal/model/**"}, RuntimeNamespace: "runtime-process-004",
+		State: processworkspace.StatePrepared, CreatedAt: now, UpdatedAt: now,
+	}
+	body, err := ProcessComment(ProcessCommentOptions{
+		Common: CommonOptions{ID: "PROCESS-004", Status: "in-progress"},
+		Input: ProcessInput{Title: "metadata", ParentTask: "TASK-002", ExecutionClass: model.ProcessExecutionChangeBearing,
+			Workspace: &workspace, Handoff: "N/A"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "### Workspace\n\n```json") {
+		t.Fatalf("generated PROCESS missing Workspace section:\n%s", body)
+	}
+	parsed := model.ParseProcessWorkspace("PROCESS-004", "", body)
+	if parsed.Blocking() || parsed.Workspace == nil || parsed.Workspace.WorkspaceID != "ws-process-004" {
+		t.Fatalf("generated Workspace = %+v", parsed)
+	}
+	for _, forbidden := range []string{"worktree_path", "integration_root", "lock_token", "/private/", "/Users/"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("generated PROCESS contains local field %q:\n%s", forbidden, body)
+		}
+	}
+}
+
+func TestProcessGeneratorRejectsWorkspaceIdentityOrClassMismatch(t *testing.T) {
+	workspace := model.ProcessWorkspace{ProcessID: "PROCESS-OTHER", ExecutionClass: processworkspace.ExecutionReview}
+	_, err := ProcessComment(ProcessCommentOptions{Common: CommonOptions{ID: "PROCESS-005"}, Input: ProcessInput{
+		Title: "metadata", ExecutionClass: model.ProcessExecutionChangeBearing, Workspace: &workspace,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "execution class") {
+		t.Fatalf("expected workspace class mismatch, got %v", err)
 	}
 }
 

@@ -163,8 +163,9 @@ func TestCommandProviderHelper(t *testing.T) {
 	}
 	switch request.Action {
 	case "capabilities":
+		values := []Capability{CapabilityEvidenceSnapshot, CapabilityChangeComment, CapabilityChangeCreate}
 		response["capabilities"] = Capabilities{ProtocolVersion: ProtocolVersion,
-			Values: []Capability{CapabilityEvidenceSnapshot, CapabilityChangeComment, CapabilityChangeCreate}}
+			Values: values}
 	case "snapshot":
 		var payload SnapshotRequest
 		_ = json.Unmarshal(request.Payload, &payload)

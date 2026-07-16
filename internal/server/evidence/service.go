@@ -126,6 +126,28 @@ func (s *Service) IsDesignatedWriter(ctx context.Context, scope models.RepoScope
 	return designated, err
 }
 
+// DesignatedWriterStatus exposes the authenticated identity's own assignment
+// after the same repository-read authorization used by other native reads.
+// The result is intentionally independent of evidence:write: a token scope is
+// neither evidence-writer designation nor permission to manage one.
+func (s *Service) DesignatedWriterStatus(ctx context.Context, subject authz.Subject, scope models.RepoScope) (WriterStatus, error) {
+	if subject.Principal == nil || subject.Principal.User.ID == uuid.Nil {
+		return WriterStatus{}, adminservice.ErrForbidden
+	}
+	decision, err := s.authz.EvaluateRepository(ctx, subject, authz.RepositoryRequest{Scope: scope, Operation: authz.OperationRead})
+	if err != nil {
+		return WriterStatus{}, err
+	}
+	if err := decision.AuthorizationError(); err != nil {
+		return WriterStatus{}, err
+	}
+	active, err := s.IsDesignatedWriter(ctx, scope, subject.Principal.User.ID)
+	if err != nil {
+		return WriterStatus{}, err
+	}
+	return WriterStatus{UserID: subject.Principal.User.ID, Login: subject.Principal.User.Login, Active: active}, nil
+}
+
 func (s *Service) SetDesignatedWriter(ctx context.Context, subject authz.Subject, actor adminservice.Actor, scope models.RepoScope, userID uuid.UUID, active bool) (WriterAssignment, error) {
 	if userID == uuid.Nil || validateActor(subject, actor) != nil {
 		return WriterAssignment{}, adminservice.ErrInvalidInput
@@ -560,8 +582,8 @@ func appendEvidenceTx(ctx context.Context, tx pgx.Tx, actor adminservice.Actor, 
 }
 
 // ExactRevision only returns evidence whose provider, external repository and
-// subject revision all match exactly. Payload and provenance remain
-// maintainer-only even for repository-visible summaries.
+// subject revision all match exactly. Repository-visible evidence includes its
+// payload and provenance; maintainer-visible rows remain filtered as a unit.
 func (s *Service) ExactRevision(ctx context.Context, subject authz.Subject, scope models.RepoScope, query ExactRevisionQuery) ([]Evidence, error) {
 	query.ProviderKey = strings.TrimSpace(query.ProviderKey)
 	query.ExternalRepositoryID = strings.TrimSpace(query.ExternalRepositoryID)
@@ -601,10 +623,6 @@ func (s *Service) ExactRevision(ctx context.Context, subject authz.Subject, scop
 		item, scanErr := scanEvidence(rows)
 		if scanErr != nil {
 			return nil, scanErr
-		}
-		if decision.EffectivePermission < authz.PermissionMaintain {
-			item.Payload = nil
-			item.Provenance = nil
 		}
 		items = append(items, item)
 	}

@@ -115,7 +115,7 @@ func (s *Service) ConsumeInTx(ctx context.Context, tx pgx.Tx, plaintext, request
 	var principal serverauth.Principal
 	var digest []byte
 	err = tx.QueryRow(ctx, `SELECT r.id, r.token_hash, r.expires_at,
-			u.id, u.login, u.display_name, u.email, u.status
+			u.id, u.login, COALESCE(u.nickname, u.display_name), u.email, u.status
 			FROM recovery_credentials r JOIN users u ON u.id = r.user_id
 			WHERE r.token_prefix = $1 AND r.consumed_at IS NULL AND r.revoked_at IS NULL
 			AND r.expires_at > $2 AND u.status = 'active' FOR UPDATE OF r, u`, prefix, now).

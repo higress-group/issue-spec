@@ -148,9 +148,14 @@ func sameCapabilityReportScope(report capability.Report, request capability.Requ
 		strings.TrimSpace(report.Repository) != strings.TrimSpace(request.Repository) {
 		return false
 	}
-	if report.OK && (!report.Credential.ExpiryKnown || report.Credential.ExpiresAt == nil ||
-		!time.Now().UTC().Before(report.Credential.ExpiresAt.UTC())) {
-		return false
+	if report.OK {
+		if report.Credential.ExpiryKnown {
+			if report.Credential.ExpiresAt == nil || !time.Now().UTC().Before(report.Credential.ExpiresAt.UTC()) {
+				return false
+			}
+		} else if report.Credential.SourceClass != "private-file" {
+			return false
+		}
 	}
 	want := normalizedRequiredOperations(request.Operations)
 	got := make([]capability.Operation, 0, len(report.Operations))

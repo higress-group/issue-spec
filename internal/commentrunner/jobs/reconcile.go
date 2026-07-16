@@ -46,6 +46,7 @@ type ReconcileResult struct {
 
 type ReconcileJob struct {
 	JobID           string                `json:"job_id"`
+	Repo            string                `json:"repo,omitempty"`
 	PublicSessionID string                `json:"public_session_id,omitempty"`
 	PreviousStatus  state.LifecycleStatus `json:"previous_status"`
 	Status          state.LifecycleStatus `json:"status"`
@@ -92,6 +93,7 @@ func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 			result.Queued++
 			result.Jobs = append(result.Jobs, ReconcileJob{
 				JobID:           job.ID,
+				Repo:            job.Repo,
 				PublicSessionID: job.PublicSessionID,
 				PreviousStatus:  job.Status,
 				Status:          job.Status,
@@ -333,17 +335,37 @@ func (d *Dispatcher) coordinatorForStoredJob(ctx context.Context, job state.Job)
 	if strings.TrimSpace(job.Workspace.Path) == "" {
 		return nil, fmt.Errorf("job %s is missing workspace path", job.ID)
 	}
+	workspacePath := job.Workspace.Path
+	publicID := firstNonEmpty(job.PublicSessionID, job.DispatchIntent.PublicSessionID)
+	processRoot, err := prepareSessionProcessWorkspaceRoot(workspacePath, job.Repo, publicID)
+	if err != nil {
+		return nil, err
+	}
+	runtimePaths, err := stableSessionRuntimePaths(workspacePath, job.Repo, publicID)
+	if err != nil {
+		return nil, err
+	}
+	extraEnv := cloneStringMap(d.CoordinatorExtraEnv)
+	extraEnv[workspace.ProcessIntegrationRootEnv] = workspacePath
+	extraEnv[workspace.ProcessWorkspaceRootEnv] = processRoot
 	env, err := d.Sandbox.Prepare(ctx, SandboxRequest{
-		WorkspacePath:        job.Workspace.Path,
-		AcpxWorkingDirectory: job.Workspace.Path,
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
 		AcpxBinary:           firstNonEmpty(d.AcpxBinary, acpx.DefaultBinary),
-		ExtraEnv:             d.CoordinatorExtraEnv,
+		IssueSpecBinary:      d.IssueSpecBinary,
+		ExtraEnv:             extraEnv,
 		AcpxAgent:            job.CoordinatorKind,
+		ProcessWorkspaceRoot: processRoot,
+		RuntimeHome:          runtimePaths.home,
+		RuntimeGHConfigDir:   runtimePaths.ghConfigDir,
+		RuntimeXDGConfigHome: runtimePaths.xdgConfigHome,
+		RuntimeCodexHome:     runtimePaths.codexHome,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return d.Acpx.NewCoordinator(env)
+	coordinator, err := d.Acpx.NewCoordinator(env)
+	return coordinator, err
 }
 
 func (d *Dispatcher) applyReconcile(ctx context.Context, job state.Job, previous state.LifecycleStatus, reconciled acpx.TurnReconcileResult) (ReconcileJob, error) {
@@ -398,7 +420,7 @@ func (d *Dispatcher) recoveredRunning(ctx context.Context, job state.Job, previo
 	if _, err := d.Writeback.Write(ctx, writeback.Request{Job: running, Status: state.StatusRunning, Phase: "reconciled-running", Diagnostics: splitDiagnostic(diagnostic)}); err != nil {
 		return ReconcileJob{}, err
 	}
-	return ReconcileJob{JobID: job.ID, PublicSessionID: running.PublicSessionID, PreviousStatus: previous, Status: state.StatusRunning, Action: "running", Diagnostic: diagnostic}, nil
+	return ReconcileJob{JobID: job.ID, Repo: running.Repo, PublicSessionID: running.PublicSessionID, PreviousStatus: previous, Status: state.StatusRunning, Action: "running", Diagnostic: diagnostic}, nil
 }
 
 func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previous, terminal state.LifecycleStatus, reconciled acpx.TurnReconcileResult, diagnostic string) (ReconcileJob, error) {
@@ -407,15 +429,20 @@ func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previ
 	lock := d.storedLock(ctx, job)
 	if err := d.Store.Update(ctx, func(st *state.RunnerState) error {
 		st.Normalize()
-		next, err := st.UpdateJobStatus(job.ID, terminal, now, splitDiagnostic(diagnostic)...)
+		_, ok := st.Jobs[job.ID]
+		if !ok {
+			return fmt.Errorf("job %q not found", job.ID)
+		}
+		effectiveTerminal, effectiveDiagnostic := terminal, diagnostic
+		next, err := st.UpdateJobStatus(job.ID, effectiveTerminal, now, splitDiagnostic(effectiveDiagnostic)...)
 		if err != nil {
 			return err
 		}
 		fillJobSessionRefs(&next)
 		next.Restart = state.RestartMetadata{
 			ReconciledAt:    now,
-			RecoveredStatus: terminal,
-			Diagnostics:     safeString(diagnostic, 1024),
+			RecoveredStatus: effectiveTerminal,
+			Diagnostics:     safeString(effectiveDiagnostic, 1024),
 		}
 		mergeAcpxMetadata(&next, reconciled.Metadata, now)
 		if reconciled.Output.SummaryFound {
@@ -426,10 +453,11 @@ func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previ
 		if err := upsertWorkspaceIfPresent(st, next.Workspace); err != nil {
 			return err
 		}
-		if err := upsertSessionForReconciledJob(st, next, terminal, now, false); err != nil {
+		if err := upsertSessionForReconciledJob(st, next, effectiveTerminal, now, false); err != nil {
 			return err
 		}
 		final = next
+		terminal, diagnostic = effectiveTerminal, effectiveDiagnostic
 		return st.UpsertJob(next)
 	}); err != nil {
 		return ReconcileJob{}, err
@@ -440,6 +468,8 @@ func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previ
 		Status:               terminal,
 		Phase:                "reconciled-" + string(terminal),
 		CoordinatorReplyBody: reconciled.Output.ReplyText,
+		AcpxStdout:           reconciled.Output.RawStdout,
+		AcpxStderr:           reconciled.Output.RawStderr,
 		Diagnostics:          splitDiagnostic(diagnostic),
 	}
 	if reconciled.Output.SummaryFound {
@@ -451,7 +481,7 @@ func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previ
 	if _, err := d.Writeback.Write(ctx, req); err != nil {
 		return ReconcileJob{}, err
 	}
-	return ReconcileJob{JobID: job.ID, PublicSessionID: final.PublicSessionID, PreviousStatus: previous, Status: terminal, Action: string(terminal), Diagnostic: diagnostic}, nil
+	return ReconcileJob{JobID: job.ID, Repo: final.Repo, PublicSessionID: final.PublicSessionID, PreviousStatus: previous, Status: terminal, Action: string(terminal), Diagnostic: diagnostic}, nil
 }
 
 func (d *Dispatcher) interrupt(ctx context.Context, job state.Job, previous state.LifecycleStatus, diagnostic string) (ReconcileJob, error) {
@@ -494,7 +524,7 @@ func (d *Dispatcher) interrupt(ctx context.Context, job state.Job, previous stat
 	}); err != nil {
 		return ReconcileJob{}, err
 	}
-	return ReconcileJob{JobID: job.ID, PublicSessionID: interrupted.PublicSessionID, PreviousStatus: previous, Status: state.StatusInterrupted, Action: "interrupted", Diagnostic: diagnostic}, nil
+	return ReconcileJob{JobID: job.ID, Repo: interrupted.Repo, PublicSessionID: interrupted.PublicSessionID, PreviousStatus: previous, Status: state.StatusInterrupted, Action: "interrupted", Diagnostic: diagnostic}, nil
 }
 
 func sessionRefForJob(job state.Job) (acpx.SessionRef, string, bool) {

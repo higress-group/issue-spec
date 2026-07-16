@@ -27,7 +27,16 @@ type Dialer interface {
 }
 
 type Policy struct {
-	Production     bool
+	Production bool
+	// AllowHTTP permits HTTP webhook receivers in an explicitly trusted internal
+	// deployment. It does not relax address validation: every production HTTP
+	// destination still requires an AllowedPrivate CIDR and loopback, link-local,
+	// multicast, and metadata addresses remain denied.
+	AllowHTTP bool
+	// AllowedPrivate is the explicit operator-owned destination allowlist. The
+	// legacy name mirrors WEBHOOK_ALLOWED_PRIVATE_CIDRS, but entries may cover
+	// internally routed ranges that netip.Addr.IsPrivate does not classify as
+	// RFC 1918 or RFC 4193 space.
 	AllowedPrivate []netip.Prefix
 }
 
@@ -45,7 +54,7 @@ func (p Preflight) Validate(ctx context.Context, raw string) error {
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
-	_, err = resolveAllowed(ctx, resolver, p.Policy, parsed.Hostname())
+	_, err = resolveAllowed(ctx, resolver, p.Policy, parsed.Scheme, parsed.Hostname())
 	return err
 }
 
@@ -58,7 +67,10 @@ func (p Policy) ValidateURL(raw string) (*url.URL, error) {
 		parsed.RawQuery != "" || parsed.ForceQuery || parsed.Opaque != "" {
 		return nil, ErrInvalidDestination
 	}
-	if parsed.Scheme != "https" && (p.Production || parsed.Scheme != "http") {
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return nil, ErrInvalidDestination
+	}
+	if parsed.Scheme == "http" && p.Production && !p.AllowHTTP {
 		return nil, ErrInvalidDestination
 	}
 	if parsed.Port() != "" {
@@ -78,10 +90,8 @@ func (p Policy) CheckAddress(address netip.Addr) error {
 		return ErrAddressDenied
 	}
 	if address.IsPrivate() {
-		for _, allowed := range p.AllowedPrivate {
-			if allowed.Contains(address) {
-				return nil
-			}
+		if p.isExplicitlyAllowed(address) {
+			return nil
 		}
 		return ErrAddressDenied
 	}
@@ -89,6 +99,27 @@ func (p Policy) CheckAddress(address netip.Addr) error {
 		return ErrAddressDenied
 	}
 	return nil
+}
+
+func (p Policy) checkAddressForScheme(scheme string, address netip.Addr) error {
+	address = address.Unmap()
+	if err := p.CheckAddress(address); err != nil {
+		return err
+	}
+	if scheme == "http" && p.Production && !p.isExplicitlyAllowed(address) {
+		return ErrAddressDenied
+	}
+	return nil
+}
+
+func (p Policy) isExplicitlyAllowed(address netip.Addr) bool {
+	address = address.Unmap()
+	for _, allowed := range p.AllowedPrivate {
+		if allowed.Contains(address) {
+			return true
+		}
+	}
+	return false
 }
 
 func isMetadata(address netip.Addr) bool {
@@ -102,9 +133,9 @@ var metadataAddresses = map[netip.Addr]struct{}{
 	netip.MustParseAddr("fd00:ec2::254"):   {},
 }
 
-func resolveAllowed(ctx context.Context, resolver Resolver, policy Policy, host string) ([]netip.Addr, error) {
+func resolveAllowed(ctx context.Context, resolver Resolver, policy Policy, scheme, host string) ([]netip.Addr, error) {
 	if literal, err := netip.ParseAddr(host); err == nil {
-		if err := policy.CheckAddress(literal); err != nil {
+		if err := policy.checkAddressForScheme(scheme, literal); err != nil {
 			return nil, err
 		}
 		return []netip.Addr{literal.Unmap()}, nil
@@ -123,7 +154,7 @@ func resolveAllowed(ctx context.Context, resolver Resolver, policy Policy, host 
 			return nil, ErrAddressDenied
 		}
 		address = address.Unmap()
-		if err := policy.CheckAddress(address); err != nil {
+		if err := policy.checkAddressForScheme(scheme, address); err != nil {
 			return nil, err
 		}
 		result = append(result, address)

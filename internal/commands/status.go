@@ -3,11 +3,15 @@ package commands
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
+	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
@@ -64,7 +68,7 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 		a.errorf("--gate: %v\n", err)
 		return 2
 	}
-	client, _, err := a.clientFor(ctx, *host)
+	client, token, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("auth required for status on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
@@ -75,7 +79,12 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 		return 1
 	}
 	workflowPlan, workflowErr := workflow.Resolve(".")
-	summary := summarizeStatusForGate(*repoFlag, proposalIssue, designIssue, implementIssue, target, artifacts, workflowPlan, workflowErr)
+	profile, _, profileErr := auth.ResolveProfile(a.profileName, *host)
+	collection := statusGateCollection{Remote: statusForecastRemoteFacts(target)}
+	if profileErr == nil {
+		collection = a.collectStatusGateFacts(ctx, client, profile, token.Value, repo, implementIssue, target, artifacts)
+	}
+	summary := summarizeStatusForGate(*repoFlag, proposalIssue, designIssue, implementIssue, target, artifacts, workflowPlan, workflowErr, collection)
 	if proposalIssueData, perr := client.GetIssue(ctx, repo, proposalIssue); perr == nil {
 		summary.Diagnostics = append(summary.Diagnostics, authoringCompletenessDiagnostics("proposal", proposalIssueData.HTMLURL, proposalIssueData.Body)...)
 	}
@@ -169,14 +178,16 @@ func summarizeStatus(repo string, proposal, design, implement int, artifacts []m
 func summarizeStatusForGate(repo string, proposal, design, implement int, target gates.Target, artifacts []model.Artifact, workflowState ...any) statusSummary {
 	var workflowPlan workflow.Plan
 	var workflowErr error
-	if len(workflowState) > 0 {
-		if plan, ok := workflowState[0].(workflow.Plan); ok {
+	collection := statusGateCollection{Remote: statusForecastRemoteFacts(target)}
+	for _, value := range workflowState {
+		if plan, ok := value.(workflow.Plan); ok {
 			workflowPlan = plan
 		}
-	}
-	if len(workflowState) > 1 {
-		if err, ok := workflowState[1].(error); ok {
+		if err, ok := value.(error); ok {
 			workflowErr = err
+		}
+		if collected, ok := value.(statusGateCollection); ok {
+			collection = collected
 		}
 	}
 	counts := map[string]map[string]int{}
@@ -221,18 +232,28 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 			workflowFacts.Errors = append(workflowFacts.Errors, diagnostic.Code+": "+diagnostic.Message)
 		}
 	}
+	mode := gates.ModeForecast
+	if target == gates.TargetFinal || target == gates.TargetArchive {
+		mode = gates.ModeAuthoritative
+	}
+	processEvidence := collection.ProcessEvidence
+	if (target == gates.TargetFinal || target == gates.TargetArchive) && len(processEvidence) == 0 &&
+		(hasActiveChangeBearingProcess(artifacts) || hasExplicitProcessWorkspace(artifacts)) {
+		processEvidence = buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, nil)
+	}
 	snapshot := gates.Snapshot{
-		Target:       target,
-		Mode:         gates.ModeForecast,
-		Artifacts:    artifacts,
-		Canonical:    gates.CanonicalFacts{Observed: true, Diagnostics: malformed},
-		Traceability: gates.TraceabilityFacts{Observed: true, Report: report},
-		Workflow:     workflowFacts,
-		Remote:       statusForecastRemoteFacts(target),
+		Target:          target,
+		Mode:            mode,
+		Artifacts:       artifacts,
+		Canonical:       gates.CanonicalFacts{Observed: true, Diagnostics: malformed},
+		Traceability:    gates.TraceabilityFacts{Observed: true, Report: report},
+		Workflow:        workflowFacts,
+		Remote:          collection.Remote,
+		ProcessEvidence: processEvidence,
 	}
 	gateReport, gateErr := gates.Evaluate(snapshot)
 	if gateErr != nil {
-		gateReport = gates.Report{Ready: false, Target: target, Mode: gates.ModeForecast, PointInTime: true,
+		gateReport = gates.Report{Ready: false, Target: target, Mode: mode, PointInTime: mode == gates.ModeForecast,
 			Diagnostics: []gates.Diagnostic{{Code: "gate.evaluation_failed", Gate: target, Severity: gates.SeverityError,
 				Blocking: true, Message: gateErr.Error(), Current: "invalid", Expected: "valid gate snapshot",
 				Remediation: gates.Remediation{CommandFamily: "status"}, Freshness: gates.FreshnessLocal}}}
@@ -291,10 +312,11 @@ func resolveStatusGate(raw string, design, implement int) (gates.Target, error) 
 }
 
 func statusForecastRemoteFacts(target gates.Target) gates.RemoteFacts {
-	var facts gates.RemoteFacts
+	facts := gates.RemoteFacts{Workspace: gates.WorkspaceFacts{Observed: true}}
 	if target == gates.TargetFinal || target == gates.TargetArchive {
 		facts.PRChecks = gates.Fact{Required: true, Expected: "all required checks passed"}
 		facts.ReviewFindings = gates.Fact{Required: true, Expected: "no blocking findings"}
+		facts.Workspace.ExpectedRevision = gates.Fact{Required: true, Expected: "exact PR or external subject revision"}
 	}
 	if target == gates.TargetArchive {
 		facts.DurableSpec = gates.Fact{Required: true, Expected: "durable spec valid"}
@@ -302,10 +324,227 @@ func statusForecastRemoteFacts(target gates.Target) gates.RemoteFacts {
 	return facts
 }
 
+type statusGateCollection struct {
+	Remote          gates.RemoteFacts
+	ProcessEvidence []gates.ProcessEvidenceInput
+}
+
+func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend, profile auth.Profile, token, repo string,
+	implementIssue int, target gates.Target, artifacts []model.Artifact) statusGateCollection {
+	collection := statusGateCollection{Remote: statusForecastRemoteFacts(target)}
+	if target != gates.TargetFinal && target != gates.TargetArchive {
+		return collection
+	}
+	if profile.Kind == auth.ProfileKindHosted {
+		collection.Remote.PRChecks = gates.Fact{}
+		collection.Remote.ReviewFindings = gates.Fact{}
+		gate, _, gateErr := a.externalGateWithProfile(ctx, profile, token, repo, implementIssue, "code_change", "",
+			coreevidence.GateVerify, ".", "status")
+		if revision := strings.TrimSpace(gate.Target.SubjectRevision); revision != "" {
+			collection.Remote.Workspace.ExpectedRevision = gates.Fact{Required: true, Known: true, Passed: true,
+				Expected: revision, Current: revision}
+		} else if a.newNativeEvidenceProvider != nil {
+			if native, nativeErr := a.newNativeEvidenceProvider(profile, token); nativeErr == nil {
+				if target, targetErr := native.ResolveTarget(ctx, repo, implementIssue, "code_change"); targetErr == nil && strings.TrimSpace(target.SubjectRevision) != "" {
+					collection.Remote.Workspace.ExpectedRevision = gates.Fact{Required: true, Known: true, Passed: true,
+						Expected: strings.TrimSpace(target.SubjectRevision), Current: strings.TrimSpace(target.SubjectRevision)}
+				}
+			}
+		}
+		collection.Remote.ProviderEvidence = gates.Fact{Required: true, Known: true, Passed: gateErr == nil,
+			Expected: "trusted exact-revision provider evidence"}
+		if gateErr != nil {
+			collection.Remote.ProviderEvidence.Current = "unavailable"
+			return collection
+		}
+		collection.ProcessEvidence = buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, &gate.Consumption)
+		return collection
+	}
+
+	prNumber, prURL, ok := exactStatusPullRequest(artifacts, repo)
+	if !ok {
+		return collection
+	}
+	facts, err := collectPullRequestGateFacts(ctx, client, repo, prNumber)
+	if err != nil {
+		return collection
+	}
+	pr := facts.PullRequest
+	if strings.TrimSpace(pr.HTMLURL) != "" {
+		prURL = pr.HTMLURL
+	}
+	collection.Remote.Workspace.ExpectedRevision = gates.Fact{Required: true, Known: true, Passed: true,
+		Expected: pr.Head.SHA, Current: pr.Head.SHA}
+	collection.Remote.Workspace.IntegrationAncestry = pullRequestIntegrationAncestry(artifacts, facts.Commits, pr.Head.SHA)
+	review := buildReviewSyncReport(pr, facts.ReviewComments, nil, facts.Status, facts.CheckRuns)
+	collection.Remote.PRChecks = gates.Fact{Required: true, Known: true,
+		Passed:  len(review.FailedChecks) == 0 && len(review.PendingChecks) == 0,
+		Current: fmt.Sprintf("failed=%d pending=%d", len(review.FailedChecks), len(review.PendingChecks)), Expected: "failed=0 pending=0"}
+	collection.Remote.ReviewFindings = gates.Fact{Required: true, Known: true, Passed: len(review.BlockingFindings) == 0,
+		Current: fmt.Sprintf("blocking=%d", len(review.BlockingFindings)), Expected: "blocking=0"}
+	collection.ProcessEvidence = buildProcessEvidenceInputs(artifacts, prURL, facts.ReviewComments, review, nil)
+	return collection
+}
+
+type pullRequestGateFacts struct {
+	PullRequest    github.PullRequest
+	ReviewComments []github.PullRequestReviewComment
+	Status         github.CombinedStatus
+	CheckRuns      []github.CheckRun
+	Commits        []github.PullRequestCommit
+}
+
+func collectPullRequestGateFacts(ctx context.Context, client github.Backend, repo string, prNumber int) (pullRequestGateFacts, error) {
+	initial, err := client.GetPullRequest(ctx, repo, prNumber)
+	if err != nil || strings.TrimSpace(initial.Head.SHA) == "" {
+		if err == nil {
+			err = fmt.Errorf("pull request head is missing")
+		}
+		return pullRequestGateFacts{}, err
+	}
+	comments, err := client.ListPullRequestReviewComments(ctx, repo, prNumber)
+	if err != nil {
+		return pullRequestGateFacts{}, err
+	}
+	status, err := client.GetCombinedStatus(ctx, repo, initial.Head.SHA)
+	if err != nil {
+		return pullRequestGateFacts{}, err
+	}
+	checks, err := client.ListCheckRuns(ctx, repo, initial.Head.SHA)
+	if err != nil {
+		return pullRequestGateFacts{}, err
+	}
+	commits, err := listPullRequestCommits(ctx, client, repo, prNumber)
+	if err != nil {
+		return pullRequestGateFacts{}, err
+	}
+	refreshed, err := client.GetPullRequest(ctx, repo, prNumber)
+	if err != nil {
+		return pullRequestGateFacts{}, err
+	}
+	if !samePullRequestRevision(initial, refreshed, repo, prNumber) {
+		return pullRequestGateFacts{}, fmt.Errorf("pull request changed while collecting gate facts")
+	}
+	return pullRequestGateFacts{PullRequest: refreshed, ReviewComments: comments, Status: status, CheckRuns: checks, Commits: commits}, nil
+}
+
+func samePullRequestRevision(initial, refreshed github.PullRequest, repo string, requestedNumber int) bool {
+	initialHead, refreshedHead := strings.TrimSpace(initial.Head.SHA), strings.TrimSpace(refreshed.Head.SHA)
+	if initialHead == "" || refreshedHead == "" || initialHead != refreshedHead {
+		return false
+	}
+	if initial.Number != requestedNumber || refreshed.Number != requestedNumber {
+		return false
+	}
+	initialURL, refreshedURL := model.NormalizeURL(initial.HTMLURL), model.NormalizeURL(refreshed.HTMLURL)
+	return initialURL != "" && initialURL == refreshedURL && pullRequestURLMatches(initialURL, repo, requestedNumber)
+}
+
+func pullRequestURLMatches(raw, repo string, requestedNumber int) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	repoParts := strings.Split(strings.Trim(repo, "/"), "/")
+	pathParts := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	if len(repoParts) != 2 || len(pathParts) != 4 || pathParts[2] != "pull" || pathParts[3] != strconv.Itoa(requestedNumber) {
+		return false
+	}
+	owner, ownerErr := url.PathUnescape(pathParts[0])
+	name, nameErr := url.PathUnescape(pathParts[1])
+	return ownerErr == nil && nameErr == nil && strings.EqualFold(owner, repoParts[0]) && strings.EqualFold(name, repoParts[1])
+}
+
+func listPullRequestCommits(ctx context.Context, client github.Backend, repo string, prNumber int) ([]github.PullRequestCommit, error) {
+	collector, ok := client.(github.PullRequestCommitBackend)
+	if !ok {
+		return nil, fmt.Errorf("GitHub backend does not expose authoritative pull request commits")
+	}
+	return collector.ListPullRequestCommits(ctx, repo, prNumber)
+}
+
+func pullRequestIntegrationAncestry(artifacts []model.Artifact, commits []github.PullRequestCommit, head string) map[string]gates.Fact {
+	head = strings.TrimSpace(head)
+	if head == "" {
+		return nil
+	}
+	commitSet := make(map[string]struct{}, len(commits))
+	for _, commit := range commits {
+		sha := strings.TrimSpace(commit.SHA)
+		if sha != "" {
+			commitSet[sha] = struct{}{}
+		}
+	}
+	if _, ok := commitSet[head]; !ok {
+		return nil
+	}
+	ancestry := map[string]gates.Fact{}
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type != "PROCESS" || artifact.Comment.Status == "superseded" {
+			continue
+		}
+		class := model.ParseProcessExecutionClass(artifact.Comment.ID, artifact.URL, artifact.Comment.Body)
+		if class.Blocking() || class.Class != model.ProcessExecutionChangeBearing {
+			continue
+		}
+		workspace := model.ParseProcessWorkspace(artifact.Comment.ID, artifact.URL, artifact.Comment.Body)
+		if workspace.Blocking() || workspace.Workspace == nil {
+			continue
+		}
+		integrationSHA := strings.TrimSpace(workspace.Workspace.IntegrationSHA)
+		if _, ok := commitSet[integrationSHA]; !ok {
+			continue
+		}
+		ancestry[artifact.Comment.ID] = gates.Fact{Required: true, Known: true, Passed: true,
+			Current: integrationSHA, Expected: head}
+	}
+	if len(ancestry) == 0 {
+		return nil
+	}
+	return ancestry
+}
+
+func exactStatusPullRequest(artifacts []model.Artifact, repo string) (int, string, bool) {
+	seen := map[string]bool{}
+	var selected string
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type != "PROCESS" || artifact.Comment.Status == "superseded" {
+			continue
+		}
+		for _, raw := range artifact.Comment.Links["PR"] {
+			normalized := model.NormalizeURL(raw)
+			if normalized != "" {
+				seen[normalized] = true
+				selected = normalized
+			}
+		}
+	}
+	if len(seen) != 1 {
+		return 0, "", false
+	}
+	parsed, err := url.Parse(selected)
+	if err != nil {
+		return 0, "", false
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	repoParts := strings.Split(strings.Trim(repo, "/"), "/")
+	if len(parts) != 4 || len(repoParts) != 2 || parts[0] != repoParts[0] || parts[1] != repoParts[1] || parts[2] != "pull" {
+		return 0, "", false
+	}
+	number, err := strconv.Atoi(parts[3])
+	if err != nil || number <= 0 {
+		return 0, "", false
+	}
+	return number, selected, true
+}
+
 func legacyStatusGateMessages(diagnostics []gates.Diagnostic) []string {
 	seen := map[string]bool{}
 	var messages []string
 	for _, diagnostic := range diagnostics {
+		if !diagnostic.Blocking {
+			continue
+		}
 		message := diagnostic.Message
 		switch diagnostic.Code {
 		case gates.CodeArtifactNoncanonical:
@@ -390,8 +629,8 @@ func printStatus(out interface{ Write([]byte) (int, error) }, summary statusSumm
 			if identity == "" {
 				identity = "change"
 			}
-			fmt.Fprintf(out, "- %s %s freshness=%s current=%s expected=%s: %s\n",
-				diagnostic.Code, identity, diagnostic.Freshness, diagnostic.Current, diagnostic.Expected, diagnostic.Message)
+			fmt.Fprintf(out, "- %s %s severity=%s blocking=%v freshness=%s current=%s expected=%s: %s\n",
+				diagnostic.Code, identity, diagnostic.Severity, diagnostic.Blocking, diagnostic.Freshness, diagnostic.Current, diagnostic.Expected, diagnostic.Message)
 		}
 	}
 }

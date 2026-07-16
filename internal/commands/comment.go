@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
@@ -38,10 +39,12 @@ func parseCoversSectionIDs(body string) []string {
 
 func (a *app) runComment(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec comment generate|upsert|transition|list ...\n")
+		a.errorf("usage: issue-spec comment create|generate|upsert|transition|list ...\n")
 		return 2
 	}
 	switch args[0] {
+	case "create":
+		return a.runCommentCreate(ctx, args[1:])
 	case "generate":
 		return a.runCommentGenerate(ctx, args[1:])
 	case "upsert":
@@ -54,6 +57,91 @@ func (a *app) runComment(ctx context.Context, args []string) int {
 		a.errorf("unknown comment command %q\n", args[0])
 		return 2
 	}
+}
+
+func (a *app) runCommentCreate(ctx context.Context, args []string) int {
+	fs := newFlagSet("comment create", a.err)
+	repoFlag := fs.String("repo", "", "repository owner/name")
+	host := fs.String("hostname", "github.com", "issue backend hostname")
+	issueFlag := fs.String("issue", "", "issue number or URL")
+	bodyFile := fs.String("body-file", "", "ordinary comment body file, or - for stdin")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	repo, ok := a.validateRepo(*repoFlag)
+	if !ok {
+		return 2
+	}
+	issueNumber, err := parseIssueFlag(*issueFlag, "issue")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	body, ok := a.readBodyFile(*bodyFile)
+	if !ok {
+		return 2
+	}
+	if strings.TrimSpace(body) == "" {
+		a.errorf("--body-file must not be empty\n")
+		return 2
+	}
+	client, _, err := a.clientFor(ctx, *host)
+	if err != nil {
+		a.errorf("auth required for comment create on %s: %v\n", auth.NormalizeHost(*host), err)
+		return 1
+	}
+	if err := validateIssueReferenceHost(*issueFlag, client.BackendInfo().Host); err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	comment, err := client.CreateComment(ctx, repo, issueNumber, body)
+	if err != nil {
+		a.errorf("create ordinary comment: %v\n", err)
+		return 1
+	}
+	result := map[string]any{
+		"ok":         true,
+		"action":     "created",
+		"issue":      issueNumber,
+		"comment_id": comment.ID,
+		"url":        comment.HTMLURL,
+		"api_url":    comment.URL,
+	}
+	if *jsonOut {
+		return a.outputJSON(result)
+	}
+	fmt.Fprintf(a.out, "created ordinary comment %d on issue #%d: %s\n", comment.ID, issueNumber, comment.HTMLURL)
+	return 0
+}
+
+func validateIssueReferenceHost(rawIssue, selectedHost string) error {
+	rawIssue = strings.TrimSpace(rawIssue)
+	if rawIssue == "" {
+		return nil
+	}
+	u, err := url.Parse(rawIssue)
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("--issue URL must use http or https")
+	}
+	want := hostnameOnly(selectedHost)
+	got := strings.ToLower(u.Hostname())
+	if want == "" || got != want {
+		return fmt.Errorf("--issue URL host %q does not match selected issue backend host %q", got, want)
+	}
+	return nil
+}
+
+func hostnameOnly(raw string) string {
+	raw = auth.NormalizeHost(raw)
+	u, err := url.Parse("//" + raw)
+	if err == nil && u.Hostname() != "" {
+		return strings.ToLower(u.Hostname())
+	}
+	return strings.ToLower(raw)
 }
 
 func (a *app) runCommentGenerate(_ context.Context, args []string) int {

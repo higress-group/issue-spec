@@ -10,17 +10,17 @@ const SchemaVersion = 1
 
 // Event represents a structured log event
 type Event struct {
-	SchemaVersion int       `json:"schema_version"`
-	Timestamp     time.Time `json:"timestamp"`
-	Level         Level     `json:"level"`
-	Component     string    `json:"component"`
-	Event         string    `json:"event"`
-	Message       string    `json:"message"`
-	RunnerScope   Scope     `json:"runner_scope"`
-	ProcessID     int       `json:"process_id"`
-	Correlation   Correlation `json:"correlation"`
-	RedactionStatus string  `json:"redaction_status"`
-	Details       map[string]interface{} `json:"details,omitempty"`
+	SchemaVersion   int                    `json:"schema_version"`
+	Timestamp       time.Time              `json:"timestamp"`
+	Level           Level                  `json:"level"`
+	Component       string                 `json:"component"`
+	Event           string                 `json:"event"`
+	Message         string                 `json:"message"`
+	RunnerScope     Scope                  `json:"runner_scope"`
+	ProcessID       int                    `json:"process_id"`
+	Correlation     Correlation            `json:"correlation"`
+	RedactionStatus string                 `json:"redaction_status"`
+	Details         map[string]interface{} `json:"details,omitempty"`
 }
 
 // Level represents the severity level of an event
@@ -34,21 +34,25 @@ const (
 
 // Scope represents the runner scope information
 type Scope struct {
-	Host       string `json:"host"`
-	Repo       string `json:"repo,omitempty"`
+	Host        string `json:"host"`
+	Repo        string `json:"repo,omitempty"`
 	RunnerLogin string `json:"runner_login,omitempty"`
 }
 
 // Correlation holds correlation identifiers for event linking
 type Correlation struct {
-	CycleID            string `json:"cycle_id,omitempty"`
-	JobID              string `json:"job_id,omitempty"`
-	PublicSessionID    string `json:"public_session_id,omitempty"`
-	TriggerCommentID   int64  `json:"trigger_comment_id,omitempty"`
-	StatusCommentID    int64  `json:"status_comment_id,omitempty"`
-	AcpxRecordID       string `json:"acpx_record_id,omitempty"`
-	AcpxLastTurnID     string `json:"acpx_last_turn_id,omitempty"`
-	TurnCorrelationID  string `json:"turn_correlation_id,omitempty"`
+	DeliveryID        string `json:"delivery_id,omitempty"`
+	EventID           string `json:"event_id,omitempty"`
+	CycleID           string `json:"cycle_id,omitempty"`
+	JobID             string `json:"job_id,omitempty"`
+	CancellationID    string `json:"cancellation_id,omitempty"`
+	PublicSessionID   string `json:"public_session_id,omitempty"`
+	TriggerCommentID  int64  `json:"trigger_comment_id,omitempty"`
+	StatusCommentID   int64  `json:"status_comment_id,omitempty"`
+	WorkspaceID       string `json:"workspace_id,omitempty"`
+	AcpxRecordID      string `json:"acpx_record_id,omitempty"`
+	AcpxLastTurnID    string `json:"acpx_last_turn_id,omitempty"`
+	TurnCorrelationID string `json:"turn_correlation_id,omitempty"`
 }
 
 // NewEvent creates a new event with the given parameters
@@ -68,8 +72,8 @@ func NewEvent(level Level, component, event, message string) Event {
 // WithScope adds runner scope information to the event
 func (e Event) WithScope(host, repo, runnerLogin string) Event {
 	e.RunnerScope = Scope{
-		Host:       host,
-		Repo:       repo,
+		Host:        host,
+		Repo:        repo,
 		RunnerLogin: runnerLogin,
 	}
 	return e

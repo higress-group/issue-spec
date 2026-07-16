@@ -14,13 +14,33 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/acpx"
+	"github.com/higress-group/issue-spec/internal/commentrunner"
 	runnercontext "github.com/higress-group/issue-spec/internal/commentrunner/context"
+	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/sandbox"
 	"github.com/higress-group/issue-spec/internal/workspace"
 )
+
+var testBindingRoot string
+
+func TestMain(m *testing.M) {
+	root, err := os.MkdirTemp("", "issue-spec-jobs-bindings-*")
+	if err != nil {
+		panic(err)
+	}
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		_ = os.RemoveAll(root)
+		panic(err)
+	}
+	testBindingRoot = filepath.Clean(canonical)
+	code := m.Run()
+	_ = os.RemoveAll(testBindingRoot)
+	os.Exit(code)
+}
 
 func TestRunNextNewCreatesSessionMappingAndCompletionWriteback(t *testing.T) {
 	store := newMemoryStore()
@@ -164,7 +184,7 @@ func TestRunNextRecordsResidualWorkspaceLockRecoveryDiagnostic(t *testing.T) {
 func TestRunNextResumeReusesSessionMappingAndWorkspace(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 11, 0, 0, 0, time.UTC)
-	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-existing", Path: "/tmp/ws-existing", Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-existing", RepositoryBinding: testRepositoryBinding()}
+	resumeWorkspace := testBinding("ws-existing").Workspace
 	seedState(t, store, func(st *state.RunnerState) error {
 		if err := st.UpsertWorkspace(resumeWorkspace); err != nil {
 			return err
@@ -250,11 +270,42 @@ func TestRunNextResumeReusesSessionMappingAndWorkspace(t *testing.T) {
 	}
 }
 
+func TestPrepareWorkspaceResumeCarriesCurrentCredentialTransport(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 11, 15, 0, 0, time.UTC)
+	job := state.Job{ID: "job-resume-transport", Repo: "o/r", IssueNumber: 30, Status: state.StatusQueued, CreatedAt: now,
+		CommandID: "cmd-resume-transport", CommandName: "resume", CommandPrompt: "resume with current transport",
+		CommandIdempotencyKey: "cmd-key-resume-transport", StatusWritebackKey: "status-resume-transport",
+		TriggeringUserLogin: "alice", SessionCreatorLogin: "alice", CoordinatorKind: "codex",
+		FirstObservedComment: state.SeenComment{Repo: "o/r", IssueNumber: 30, CommentID: 303,
+			HTMLURL: "https://github.com/o/r/issues/30#issuecomment-303", AuthorLogin: "alice",
+			FirstObservedBodyHash: "sha256:resume-transport"}}
+	seedQueuedJob(t, store, job)
+	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-transport", Path: "/tmp/ws-transport", Repo: "o/r",
+		CloneURL: "https://github.com/o/r.git", RepositoryBinding: testRepositoryBinding()}
+	session := state.PublicSession{Repo: "o/r", PublicSessionID: "ps-transport", Workspace: resumeWorkspace,
+		RepositoryBinding: testRepositoryBinding()}
+	workspaces := &fakeWorkspaces{binding: workspace.Binding{Workspace: resumeWorkspace}}
+	dispatcher := testDispatcher(store, workspaces, &fakeCoordinator{}, &fakeWriteback{}, now)
+	lease := &credentials.Lease{Git: &credentials.GitLease{CloneURL: "git@github.com:o/r.git"}}
+
+	if _, _, err := dispatcher.prepareWorkspace(t.Context(), job, runnercontext.CommandResume, session.PublicSessionID,
+		RepositoryInfo{}, session, lease); err != nil {
+		t.Fatal(err)
+	}
+	if got := workspaces.lastResumeRequest.ExpectedCloneURL; got != lease.Git.CloneURL {
+		t.Fatalf("ExpectedCloneURL = %q, want %q", got, lease.Git.CloneURL)
+	}
+}
+
 func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 11, 30, 0, 0, time.UTC)
 	workspaceRoot := t.TempDir()
 	workspacePath := filepath.Join(workspaceRoot, "workspace")
+	if err := os.Mkdir(workspacePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	binding := workspace.Binding{
 		Workspace:            state.WorkspaceMetadata{ID: "ws-stable", Path: workspacePath, Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-stable"},
 		AcpxWorkingDirectory: workspacePath,
@@ -296,6 +347,10 @@ func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing
 	dispatcher := testDispatcher(store, workspaces, coordinator, writebacks, now)
 	dispatcher.Sandbox = sandbox
 	dispatcher.PublicSessionID = func() (string, error) { return "ps-stable", nil }
+	dispatcher.CoordinatorExtraEnv = map[string]string{
+		workspace.ProcessIntegrationRootEnv: "/operator/must-not-win",
+		workspace.ProcessWorkspaceRootEnv:   "/operator/must-not-win",
+	}
 
 	if result, err := dispatcher.RunNext(context.Background()); err != nil || result.Status != state.StatusCompleted {
 		t.Fatalf("new RunNext result=%+v err=%v", result, err)
@@ -332,12 +387,28 @@ func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing
 	if len(sandbox.requests) != 2 {
 		t.Fatalf("sandbox request count = %d, want 2", len(sandbox.requests))
 	}
+	if len(coordinator.newPrompts) != 1 || len(coordinator.resumePrompts) != 1 {
+		t.Fatalf("runner must dispatch exactly one ACPX coordinator turn per job, not child ACPX sessions: new=%d resume=%d", len(coordinator.newPrompts), len(coordinator.resumePrompts))
+	}
 	newReq, resumeReq := sandbox.requests[0], sandbox.requests[1]
+	for phase, req := range map[string]SandboxRequest{"new": newReq, "resume": resumeReq} {
+		if req.WorkspacePath != workspacePath || req.AcpxWorkingDirectory != workspacePath {
+			t.Fatalf("%s coordinator escaped session clone: workspace=%q cwd=%q want=%q", phase, req.WorkspacePath, req.AcpxWorkingDirectory, workspacePath)
+		}
+		if req.ProcessWorkspaceRoot == "" || req.ExtraEnv[workspace.ProcessIntegrationRootEnv] != workspacePath || req.ExtraEnv[workspace.ProcessWorkspaceRootEnv] != req.ProcessWorkspaceRoot {
+			t.Fatalf("%s runner-owned PROCESS paths not injected: %+v", phase, req)
+		}
+		assertPathOutsideRoot(t, workspacePath, req.ProcessWorkspaceRoot)
+	}
+	if newReq.ProcessWorkspaceRoot != resumeReq.ProcessWorkspaceRoot {
+		t.Fatalf("PROCESS workspace pool changed across resume: new=%q resume=%q", newReq.ProcessWorkspaceRoot, resumeReq.ProcessWorkspaceRoot)
+	}
 	for name, pair := range map[string][2]string{
 		"HOME":            {newReq.RuntimeHome, resumeReq.RuntimeHome},
 		"GH_CONFIG_DIR":   {newReq.RuntimeGHConfigDir, resumeReq.RuntimeGHConfigDir},
 		"XDG_CONFIG_HOME": {newReq.RuntimeXDGConfigHome, resumeReq.RuntimeXDGConfigHome},
 		"CODEX_HOME":      {newReq.RuntimeCodexHome, resumeReq.RuntimeCodexHome},
+		"ACPX runtime":    {newReq.RuntimeAcpxDir, resumeReq.RuntimeAcpxDir},
 	} {
 		if pair[0] == "" || pair[0] != pair[1] {
 			t.Fatalf("runtime %s not stable: new=%q resume=%q", name, pair[0], pair[1])
@@ -352,12 +423,12 @@ func TestRunNextNewAndResumeUseSameStableRuntimeOutsideWorkspaceClone(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if newReq.RuntimeHome != filepath.Join(wantRoot, "home") || newReq.RuntimeGHConfigDir != filepath.Join(wantRoot, "gh") || newReq.RuntimeXDGConfigHome != filepath.Join(wantRoot, "xdg") || newReq.RuntimeCodexHome != filepath.Join(wantRoot, "codex") {
+	if newReq.RuntimeHome != filepath.Join(wantRoot, "home") || newReq.RuntimeGHConfigDir != filepath.Join(wantRoot, "gh") || newReq.RuntimeXDGConfigHome != filepath.Join(wantRoot, "xdg") || newReq.RuntimeCodexHome != filepath.Join(wantRoot, "codex") || newReq.RuntimeAcpxDir != filepath.Join(wantRoot, "acpx-runtime") {
 		t.Fatalf("runtime paths not under stable root %s: %+v", wantRoot, newReq)
 	}
 }
 
-func TestRunNextResumeUsesStoredAcpxCWDForRuntimeCompatibility(t *testing.T) {
+func TestRunNextResumeKeepsCoordinatorInSessionClone(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 11, 45, 0, 0, time.UTC)
 	realRoot := t.TempDir()
@@ -432,18 +503,18 @@ func TestRunNextResumeUsesStoredAcpxCWDForRuntimeCompatibility(t *testing.T) {
 		t.Fatalf("sandbox request count = %d, want 1", len(sandbox.requests))
 	}
 	req := sandbox.requests[0]
-	if req.WorkspacePath != legacyPath {
-		t.Fatalf("sandbox workspace path = %q, want stored cwd %q", req.WorkspacePath, legacyPath)
+	if req.WorkspacePath != canonicalPath {
+		t.Fatalf("sandbox workspace path = %q, want session clone %q", req.WorkspacePath, canonicalPath)
 	}
-	if req.AcpxWorkingDirectory != legacyPath {
-		t.Fatalf("acpx working directory = %q, want stored cwd %q", req.AcpxWorkingDirectory, legacyPath)
+	if req.AcpxWorkingDirectory != canonicalPath {
+		t.Fatalf("acpx working directory = %q, want session clone %q", req.AcpxWorkingDirectory, canonicalPath)
 	}
-	wantRoot, err := stableSessionRuntimeRoot(legacyPath, "o/r", "ps-existing")
+	wantRoot, err := stableSessionRuntimeRoot(canonicalPath, "o/r", "ps-existing")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if req.RuntimeHome != filepath.Join(wantRoot, "home") {
-		t.Fatalf("runtime HOME = %q, want legacy cwd root %q", req.RuntimeHome, filepath.Join(wantRoot, "home"))
+		t.Fatalf("runtime HOME = %q, want session clone root %q", req.RuntimeHome, filepath.Join(wantRoot, "home"))
 	}
 }
 
@@ -461,12 +532,135 @@ func TestStableSessionRuntimePathsSeparatePublicSessions(t *testing.T) {
 	if left.home == right.home || filepath.Join(left.home, ".acpx", "sessions", "index.json") == filepath.Join(right.home, ".acpx", "sessions", "index.json") {
 		t.Fatalf("different public sessions share a runtime HOME: left=%q right=%q", left.home, right.home)
 	}
-	if left.ghConfigDir == right.ghConfigDir || left.codexHome == right.codexHome {
+	if left.ghConfigDir == right.ghConfigDir || left.codexHome == right.codexHome || left.acpxRuntimeDir == right.acpxRuntimeDir {
 		t.Fatalf("different public sessions share runtime config dirs: left=%+v right=%+v", left, right)
 	}
-	for _, path := range []string{left.home, left.ghConfigDir, left.xdgConfigHome, left.codexHome, right.home, right.ghConfigDir, right.xdgConfigHome, right.codexHome} {
+	for _, path := range []string{left.home, left.ghConfigDir, left.xdgConfigHome, left.codexHome, left.acpxRuntimeDir, right.home, right.ghConfigDir, right.xdgConfigHome, right.codexHome, right.acpxRuntimeDir} {
 		assertPathOutsideRoot(t, workspacePath, path)
 		assertPathInsideRoot(t, filepath.Join(workspaceRoot, ".sessions"), path)
+	}
+}
+
+func TestPrepareSessionProcessWorkspaceRootIsStablePrivateAndSessionScoped(t *testing.T) {
+	runnerRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := filepath.Join(runnerRoot, "session-clone")
+	if err := os.Mkdir(clone, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	left, err := prepareSessionProcessWorkspaceRoot(clone, "o/r", "ps-left")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := prepareSessionProcessWorkspaceRoot(clone, "o/r", "ps-left")
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := prepareSessionProcessWorkspaceRoot(clone, "o/r", "ps-right")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left != again || left == right {
+		t.Fatalf("pool isolation/stability failed: left=%q again=%q right=%q", left, again, right)
+	}
+	if filepath.Dir(filepath.Dir(left)) != runnerRoot || filepath.Base(filepath.Dir(left)) != processWorkspacePoolDir {
+		t.Fatalf("pool %q is not under the controlled sibling root %q", left, runnerRoot)
+	}
+	info, err := os.Stat(left)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("pool is not a private directory: info=%v err=%v", info, err)
+	}
+}
+
+func TestPrepareSessionProcessWorkspaceRootRejectsSymlinkPoolBase(t *testing.T) {
+	runnerRoot := t.TempDir()
+	clone := filepath.Join(runnerRoot, "session-clone")
+	if err := os.Mkdir(clone, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(runnerRoot, processWorkspacePoolDir)); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if _, err := prepareSessionProcessWorkspaceRoot(clone, "o/r", "ps-1"); err == nil {
+		t.Fatal("expected symlink pool base to be rejected")
+	}
+}
+
+func TestCoordinatorForStoredJobKeepsSessionCloneAndRunnerOwnedProcessAuthority(t *testing.T) {
+	runnerRoot := t.TempDir()
+	clone := filepath.Join(runnerRoot, "session-clone")
+	if err := os.Mkdir(clone, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	dispatcher := Dispatcher{
+		Sandbox:         sandbox,
+		Acpx:            fakeAcpxFactory{coordinator: &fakeCoordinator{}},
+		IssueSpecBinary: "/opt/issue-spec/bin/issue-spec",
+		CoordinatorExtraEnv: map[string]string{
+			workspace.ProcessIntegrationRootEnv: "/operator/must-not-win",
+			workspace.ProcessWorkspaceRootEnv:   "/operator/must-not-win",
+		},
+	}
+	_, err := dispatcher.coordinatorForStoredJob(context.Background(), state.Job{
+		ID: "job-reconcile", Repo: "o/r", PublicSessionID: "ps-reconcile", CoordinatorKind: "codex",
+		Workspace: state.WorkspaceMetadata{Path: clone},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sandbox.requests) != 1 {
+		t.Fatalf("sandbox request count = %d, want 1", len(sandbox.requests))
+	}
+	req := sandbox.requests[0]
+	if req.WorkspacePath != clone || req.AcpxWorkingDirectory != clone || req.IssueSpecBinary != dispatcher.IssueSpecBinary || req.ProcessWorkspaceRoot == "" {
+		t.Fatalf("restart coordinator escaped session clone or lost CLI capability: %+v", req)
+	}
+	if req.ExtraEnv[workspace.ProcessIntegrationRootEnv] != clone || req.ExtraEnv[workspace.ProcessWorkspaceRootEnv] != req.ProcessWorkspaceRoot {
+		t.Fatalf("restart coordinator missing runner-owned PROCESS authority: %+v", req.ExtraEnv)
+	}
+}
+
+func TestSandboxRunnerRejectsPreconfiguredWritableBindsAndUsesOnlyCurrentPool(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := filepath.Join(root, "session")
+	current := filepath.Join(root, "current-pool")
+	sibling := filepath.Join(root, "sibling-pool")
+	home := filepath.Join(root, "home")
+	gh := filepath.Join(root, "gh")
+	xdg := filepath.Join(root, "xdg")
+	codex := filepath.Join(root, "codex")
+	hostGH := filepath.Join(root, "host-gh")
+	for _, dir := range []string{clone, current, sibling, home, gh, xdg, codex, hostGH} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(hostGH, "hosts.yml"), []byte("github.com: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := SandboxRequest{
+		WorkspacePath: clone, AcpxWorkingDirectory: clone, ProcessWorkspaceRoot: current,
+		RuntimeHome: home, RuntimeGHConfigDir: gh, RuntimeXDGConfigHome: xdg, RuntimeCodexHome: codex,
+	}
+	_, _, _, err = (SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: true, WritableBinds: []string{sibling}}}).config(request)
+	if !errors.Is(err, sandbox.ErrSandboxConfigInvalid) {
+		t.Fatalf("preconfigured sibling RW bind error = %v, want invalid config", err)
+	}
+	cfg, _, _, err := (SandboxRunner{Config: sandbox.Config{
+		UnsafeNoSandbox: true, HostEnv: []string{}, HostGHConfigDir: hostGH,
+	}}).config(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.WritableBinds) != 1 || cfg.WritableBinds[0] != current {
+		t.Fatalf("writable binds = %v, want current pool only %q", cfg.WritableBinds, current)
 	}
 }
 
@@ -499,6 +693,9 @@ func TestRunNextFailurePersistsFailedStateAndBoundedError(t *testing.T) {
 	if err == nil {
 		t.Fatal("RunNext succeeded, want workspace error")
 	}
+	if !errors.Is(err, ErrTerminalJobFailure) || !errors.Is(err, longErr) {
+		t.Fatalf("RunNext error classification = %v, want terminal job failure preserving workspace cause", err)
+	}
 	if result.Status != state.StatusFailed || len([]byte(result.Error)) > 1024 {
 		t.Fatalf("failure result not bounded: %+v", result)
 	}
@@ -510,6 +707,49 @@ func TestRunNextFailurePersistsFailedStateAndBoundedError(t *testing.T) {
 	job := loadState(t, store).Jobs["job-fail"]
 	if job.Status != state.StatusFailed || len(job.Diagnostics) != 1 || len([]byte(job.Diagnostics[0])) > 1024 {
 		t.Fatalf("failed lifecycle state not safely persisted: %+v", job)
+	}
+}
+
+func TestRunNextFailureRetainsFailedStatusWritebackError(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 12, 1, 0, 0, time.UTC)
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-fail-writeback",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "alice",
+		TriggerCommentID:      304,
+		CommandID:             "cmd-fail-writeback",
+		CommandName:           "new",
+		CommandPrompt:         "do work",
+		CommandIdempotencyKey: "cmd-key-fail-writeback",
+		StatusWritebackKey:    "status-fail-writeback",
+		Status:                state.StatusQueued,
+		CreatedAt:             now,
+	})
+	jobErr := errors.New("workspace unavailable")
+	writebackErr := errors.New("status backend unavailable")
+	writebacks := &fakeWriteback{err: writebackErr, errStatus: state.StatusFailed}
+	dispatcher := testDispatcher(store, &fakeWorkspaces{err: jobErr}, &fakeCoordinator{}, writebacks, now)
+	dispatcher.PublicSessionID = func() (string, error) { return "ps-fail-writeback", nil }
+
+	result, err := dispatcher.RunNext(context.Background())
+	if err == nil {
+		t.Fatal("RunNext succeeded, want job and writeback errors")
+	}
+	if !errors.Is(err, ErrTerminalJobFailure) || !errors.Is(err, jobErr) || !errors.Is(err, writebackErr) {
+		t.Fatalf("RunNext error = %v, want terminal job, workspace, and writeback errors", err)
+	}
+	if IsOnlyTerminalJobFailures(err) {
+		t.Fatalf("mixed job/writeback error classified as terminal-job-only: %v", err)
+	}
+	if result.Status != state.StatusFailed || result.JobID != "job-fail-writeback" {
+		t.Fatalf("unexpected failure result: %+v", result)
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusFailed)
+	if job := loadState(t, store).Jobs["job-fail-writeback"]; job.Status != state.StatusFailed {
+		t.Fatalf("failed lifecycle state not persisted: %+v", job)
 	}
 }
 
@@ -868,6 +1108,9 @@ func TestRunNextSummaryFailureDoesNotMaskDispatchFailures(t *testing.T) {
 			if err == nil {
 				t.Fatal("RunNext succeeded, want dispatch failure")
 			}
+			if !errors.Is(err, ErrTerminalJobFailure) {
+				t.Fatalf("dispatch failure was not classified as a persisted terminal job failure: %v", err)
+			}
 			if result.Status != state.StatusFailed || result.JobID != jobID || !strings.Contains(result.Error, tc.wantDiagnostic) {
 				t.Fatalf("unexpected result: %+v err=%v", result, err)
 			}
@@ -881,6 +1124,54 @@ func TestRunNextSummaryFailureDoesNotMaskDispatchFailures(t *testing.T) {
 				t.Fatalf("failed boundary should not persist coordinator provenance: summary=%q cli=%+v", job.CoordinatorSummary, job.CLIDirect)
 			}
 		})
+	}
+}
+
+func TestRunNextDispatchMetadataFailureRetainsFailedStatusWritebackError(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 7, 3, 12, 18, 0, 0, time.UTC)
+	seedQueuedJob(t, store, state.Job{
+		ID:                    "job-dispatch-writeback",
+		Repo:                  "o/r",
+		IssueNumber:           30,
+		SessionCreatorLogin:   "alice",
+		TriggeringUserLogin:   "alice",
+		TriggerCommentID:      335,
+		CommandID:             "cmd-dispatch-writeback",
+		CommandName:           "new",
+		CommandPrompt:         "do work",
+		CommandIdempotencyKey: "cmd-key-dispatch-writeback",
+		StatusWritebackKey:    "status-dispatch-writeback",
+		Status:                state.StatusQueued,
+		CreatedAt:             now,
+	})
+	publicID := "ps-dispatch-writeback"
+	partial := dispatchResult(publicID, "rec-dispatch-writeback", "turn-dispatch-writeback", runnercontext.CoordinatorSummary{})
+	partial.Output = acpx.TurnOutput{RawStdout: "assistant output without coordinator summary"}
+	dispatchErr := &acpx.PartialDispatchError{Result: partial, Err: errors.New("invalid coordinator summary")}
+	writebackErr := errors.New("status backend unavailable")
+	writebacks := &fakeWriteback{err: writebackErr, errStatus: state.StatusFailed}
+	dispatcher := testDispatcher(store, &fakeWorkspaces{binding: testBinding("ws-dispatch-writeback")},
+		&fakeCoordinator{newErr: dispatchErr}, writebacks, now)
+	dispatcher.PublicSessionID = func() (string, error) { return publicID, nil }
+	dispatcher.TurnCorrelationID = func() (string, error) { return "turn-token-dispatch-writeback", nil }
+
+	result, err := dispatcher.RunNext(context.Background())
+	if err == nil {
+		t.Fatal("RunNext succeeded, want dispatch and writeback errors")
+	}
+	if !errors.Is(err, ErrTerminalJobFailure) || !errors.Is(err, dispatchErr) || !errors.Is(err, writebackErr) {
+		t.Fatalf("RunNext error = %v, want terminal job, dispatch, and writeback errors", err)
+	}
+	if IsOnlyTerminalJobFailures(err) {
+		t.Fatalf("mixed dispatch/writeback error classified as terminal-job-only: %v", err)
+	}
+	if result.Status != state.StatusFailed || result.JobID != "job-dispatch-writeback" {
+		t.Fatalf("unexpected failure result: %+v", result)
+	}
+	assertWritebackStatuses(t, writebacks, state.StatusRunning, state.StatusFailed)
+	if job := loadState(t, store).Jobs["job-dispatch-writeback"]; job.Status != state.StatusFailed || job.Acpx.StableRecordID == "" {
+		t.Fatalf("failed lifecycle/dispatch metadata not persisted: %+v", job)
 	}
 }
 
@@ -1066,7 +1357,7 @@ func TestRunReadyWithCapStartsDifferentPublicSessionsTogether(t *testing.T) {
 func TestRunReadySameSessionPreservesFIFO(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 7, 3, 13, 0, 0, 0, time.UTC)
-	resumeWorkspace := state.WorkspaceMetadata{ID: "ws-same-session", Path: "/tmp/ws-same-session", Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-ws-same-session", RepositoryBinding: testRepositoryBinding()}
+	resumeWorkspace := testBinding("ws-same-session").Workspace
 	seedState(t, store, func(st *state.RunnerState) error {
 		if err := st.UpsertWorkspace(resumeWorkspace); err != nil {
 			return err
@@ -1321,6 +1612,7 @@ func TestSandboxRunnerUsesRequestRuntimePaths(t *testing.T) {
 		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
 		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
 		RuntimeCodexHome:     filepath.Join(runtimeRoot, "codex"),
+		RuntimeAcpxDir:       filepath.Join(runtimeRoot, "acpx-runtime"),
 	}
 	runner := SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: true, HostGHConfigDir: hostGH}}
 	first, err := runner.Prepare(context.Background(), req)
@@ -1343,6 +1635,13 @@ func TestSandboxRunnerUsesRequestRuntimePaths(t *testing.T) {
 		if got := second.Sandbox.TempPaths[name]; got != want {
 			t.Fatalf("second %s = %q, want %q", name, got, want)
 		}
+	}
+	runtimeInfo, err := os.Stat(req.RuntimeAcpxDir)
+	if err != nil {
+		t.Fatalf("stat ACPX runtime dir: %v", err)
+	}
+	if !runtimeInfo.IsDir() || runtimeInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("ACPX runtime dir mode = %v, want private directory 0700", runtimeInfo.Mode())
 	}
 	firstIndex := filepath.Join(first.Sandbox.TempPaths["HOME"], ".acpx", "sessions", "index.json")
 	secondIndex := filepath.Join(second.Sandbox.TempPaths["HOME"], ".acpx", "sessions", "index.json")
@@ -1474,6 +1773,7 @@ func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
 		WorkspacePath:        workspacePath,
 		AcpxWorkingDirectory: workspacePath,
 		AcpxBinary:           "acpx",
+		AcpxAgent:            acpx.AgentCodex,
 		RuntimeHome:          runtimeHome,
 		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
 		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
@@ -1485,6 +1785,9 @@ func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
 	if env.Sandbox.TempPaths["CODEX_HOME"] != runtimeCodex {
 		t.Fatalf("runtime CODEX_HOME = %q, want %q", env.Sandbox.TempPaths["CODEX_HOME"], runtimeCodex)
 	}
+	if env.Sandbox.AgentRuntime != "builtin" {
+		t.Fatalf("agent runtime = %q, want builtin", env.Sandbox.AgentRuntime)
+	}
 	for _, dest := range []string{runtimeCodex, filepath.Join(runtimeHome, ".codex")} {
 		assertFileContentAndMode(t, filepath.Join(dest, "auth.json"), `{"token":"codex"}`, 0o600)
 		assertFileContentAndMode(t, filepath.Join(dest, "config.toml"), "model = \"gpt-5\"\n", 0o640)
@@ -1493,6 +1796,68 @@ func TestSandboxRunnerMaterializesLimitedHostCodexConfig(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dest, "settings.json")); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("non-allowlisted Codex file was copied to %s: %v", dest, err)
 		}
+	}
+}
+
+func TestConfiguredAgentRuntimeRecordsAdapterNotConfigPath(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".acpx"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".acpx", "config.json"), []byte(`{"agents":{"codex":{"command":"npx","args":["-y","@agentclientprotocol/codex-acp@1.1.2"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := configuredAgentRuntime(sandbox.Config{HostEnv: []string{"HOME=" + home}}, acpx.AgentCodex)
+	if got != "@agentclientprotocol/codex-acp@1.1.2" || strings.Contains(got, home) {
+		t.Fatalf("configured agent runtime = %q", got)
+	}
+}
+
+func TestHostSSHRuntimeLoadsAcpxOverrideFromReusedHome(t *testing.T) {
+	hostHome := t.TempDir()
+	for _, dir := range []string{filepath.Join(hostHome, ".ssh"), filepath.Join(hostHome, ".acpx")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(hostHome, ".acpx", "config.json"), []byte(`{"agents":{"codex":{"command":"npx","args":["-y","@agentclientprotocol/codex-acp@1.1.2"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtimeHome := t.TempDir()
+	cfg := sandbox.Config{HostEnv: []string{"HOME=" + t.TempDir()}, HostSSHDir: filepath.Join(hostHome, ".ssh"), TempHome: runtimeHome}
+	if err := materializeHostAcpxAgentOverride(&cfg, acpx.AgentCodex); err != nil {
+		t.Fatal(err)
+	}
+	if got := configuredAgentRuntime(cfg, acpx.AgentCodex); got != "@agentclientprotocol/codex-acp@1.1.2" {
+		t.Fatalf("configured agent runtime = %q", got)
+	}
+	data, err := os.ReadFile(filepath.Join(runtimeHome, ".acpx", "config.json"))
+	if err != nil || !strings.Contains(string(data), "@agentclientprotocol/codex-acp@1.1.2") {
+		t.Fatalf("materialized ACPX override = %q err=%v", data, err)
+	}
+}
+
+func TestSandboxRunnerRejectsRepositoryAcpxConfig(t *testing.T) {
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspacePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspacePath, ".acpxrc.json"), []byte(`{"agents":{"codex":{"command":"untrusted"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err := (SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: true}}).config(SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           "acpx",
+		AcpxAgent:            acpx.AgentCodex,
+		RuntimeHome:          filepath.Join(root, "runtime", "home"),
+		RuntimeGHConfigDir:   filepath.Join(root, "runtime", "gh"),
+		RuntimeXDGConfigHome: filepath.Join(root, "runtime", "xdg"),
+		RuntimeCodexHome:     filepath.Join(root, "runtime", "codex"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "repository-owned .acpxrc.json is not allowed") {
+		t.Fatalf("repository ACPX config error = %v", err)
 	}
 }
 
@@ -1833,6 +2198,91 @@ func TestAcpxAdapterFactoryUsesExecutionEnvironmentBinary(t *testing.T) {
 	}
 }
 
+func TestAcpxConfigForKindDerivesPerAgentBehavior(t *testing.T) {
+	cfg := commentrunner.Config{
+		AcpxPath: "acpx",
+		Agent: commentrunner.AgentConfig{
+			Kind:                      commentrunner.AgentCodex,
+			Model:                     "gpt-5.5",
+			CodexAgentFullAccess:      true,
+			ClaudeAgentFullAccess:     true,
+			ClaudeIncludeUserSettings: true,
+			ClaudeAllowedTools:        []string{"Task", "Bash"},
+		},
+	}
+
+	defaultCfg := AcpxConfigForKind(cfg, commentrunner.AgentCodex)
+	if defaultCfg.Agent != commentrunner.AgentCodex {
+		t.Fatalf("default agent = %q, want codex", defaultCfg.Agent)
+	}
+	if defaultCfg.Model != "gpt-5.5" {
+		t.Fatalf("default model = %q, want operator model", defaultCfg.Model)
+	}
+	if defaultCfg.Mode != "agent-full-access" {
+		t.Fatalf("default mode = %q, want agent-full-access", defaultCfg.Mode)
+	}
+	if defaultCfg.MaxPermissions != acpx.PermissionApproveAll {
+		t.Fatalf("default permissions = %v, want approve-all", defaultCfg.MaxPermissions)
+	}
+	if defaultCfg.ClaudeIncludeUserSettings || defaultCfg.ClaudeAllowedTools != nil {
+		t.Fatalf("codex config leaked claude settings: %+v", defaultCfg)
+	}
+
+	secondary := AcpxConfigForKind(cfg, commentrunner.AgentClaude)
+	if secondary.Agent != commentrunner.AgentClaude {
+		t.Fatalf("secondary agent = %q, want claude", secondary.Agent)
+	}
+	if secondary.Model != "" {
+		t.Fatalf("secondary model = %q, want empty (own default)", secondary.Model)
+	}
+	if secondary.Mode != "" {
+		t.Fatalf("secondary mode = %q, want empty (no codex mode)", secondary.Mode)
+	}
+	if secondary.MaxPermissions != acpx.PermissionApproveAll {
+		t.Fatalf("secondary permissions = %v, want approve-all from claude full access", secondary.MaxPermissions)
+	}
+	if !secondary.ClaudeIncludeUserSettings {
+		t.Fatalf("secondary config missing claude user settings: %+v", secondary)
+	}
+	if len(secondary.ClaudeAllowedTools) != 2 {
+		t.Fatalf("secondary claude allowed tools = %v, want configured tools", secondary.ClaudeAllowedTools)
+	}
+}
+
+func TestAcpxAdapterFactoryOverridesConfigForCoordinatorKind(t *testing.T) {
+	factory := AcpxAdapterFactory{
+		Config: acpx.Config{Binary: "acpx", Agent: commentrunner.AgentCodex},
+		RunnerConfig: commentrunner.Config{
+			AcpxPath: "acpx",
+			Agent:    commentrunner.AgentConfig{Kind: commentrunner.AgentCodex, Model: "gpt-5.5"},
+		},
+	}
+	coordinator, err := factory.NewCoordinator(ExecutionEnvironment{
+		WorkingDirectory: "/workspace",
+		AcpxBinary:       "acpx",
+		CoordinatorKind:  commentrunner.AgentClaude,
+		Runner:           &recordingSandboxRunner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := coordinator.(*acpx.Adapter)
+	if !ok {
+		t.Fatalf("coordinator type = %T, want *acpx.Adapter", coordinator)
+	}
+	cmd := adapter.BuildNewSessionCommand("ps-1", false)
+	foundClaude := false
+	for _, arg := range cmd.Args {
+		if arg == commentrunner.AgentClaude {
+			foundClaude = true
+			break
+		}
+	}
+	if !foundClaude {
+		t.Fatalf("adapter args = %v, want claude agent from coordinator kind", cmd.Args)
+	}
+}
+
 func TestSandboxRunnerFailsFastWhenHostGHAuthMissing(t *testing.T) {
 	temp := t.TempDir()
 	workspacePath := filepath.Join(temp, "workspace")
@@ -2096,7 +2546,15 @@ func stringSliceContains(values []string, want string) bool {
 }
 
 func testBinding(id string) workspace.Binding {
-	path := "/tmp/" + id
+	path := filepath.Join(testBindingRoot, id)
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		panic(err)
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		panic(err)
+	}
+	path = filepath.Clean(canonical)
 	return workspace.Binding{
 		Workspace:            state.WorkspaceMetadata{ID: id, Path: path, Repo: "o/r", CloneURL: "https://github.com/o/r.git", Branch: "issue-spec-" + id, Ref: "main", RepositoryBinding: testRepositoryBinding()},
 		AcpxWorkingDirectory: path,
@@ -2212,6 +2670,7 @@ type fakeWorkspaces struct {
 	prepareNewCalled    bool
 	lastNewRequest      workspace.NewRequest
 	resolveResumeCalled bool
+	lastResumeRequest   workspace.ResumeRequest
 	released            bool
 }
 
@@ -2233,10 +2692,11 @@ func (f *fakeWorkspaces) PrepareNew(_ context.Context, req workspace.NewRequest)
 	return binding, nil
 }
 
-func (f *fakeWorkspaces) ResolveResume(context.Context, workspace.ResumeRequest) (workspace.Binding, error) {
+func (f *fakeWorkspaces) ResolveResume(_ context.Context, req workspace.ResumeRequest) (workspace.Binding, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resolveResumeCalled = true
+	f.lastResumeRequest = req
 	if f.err != nil {
 		return workspace.Binding{}, f.err
 	}
@@ -2351,15 +2811,20 @@ func (f *fakeCoordinator) Resume(ctx context.Context, req acpx.ResumeRequest) (a
 }
 
 type fakeWriteback struct {
-	mu       sync.Mutex
-	store    *memoryStore
-	requests []writeback.Request
+	mu        sync.Mutex
+	store     *memoryStore
+	requests  []writeback.Request
+	err       error
+	errStatus state.LifecycleStatus
 }
 
 func (f *fakeWriteback) Write(_ context.Context, req writeback.Request) (writeback.Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, req)
+	if f.err != nil && (f.errStatus == "" || f.errStatus == req.Status) {
+		return writeback.Result{}, f.err
+	}
 	id := req.Job.StatusCommentID
 	if id == 0 {
 		id = int64(9000 + len(f.requests))

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	apierrors "github.com/higress-group/issue-spec/internal/server/api/github/errors"
 	adminapi "github.com/higress-group/issue-spec/internal/server/api/native/admin"
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
@@ -50,9 +51,9 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 type handlers struct{ service *subscriptions.Service }
 
 type retryRequest struct {
-	MaxAttempts    int    `json:"max_attempts"`
-	InitialBackoff string `json:"initial_backoff"`
-	MaxBackoff     string `json:"max_backoff"`
+	MaxAttempts    *int    `json:"max_attempts"`
+	InitialBackoff *string `json:"initial_backoff"`
+	MaxBackoff     *string `json:"max_backoff"`
 }
 
 type createRequest struct {
@@ -211,18 +212,27 @@ func (h handlers) revoke(w http.ResponseWriter, r *http.Request) {
 }
 
 func parseRetry(request retryRequest) (subscriptions.RetryPolicy, error) {
-	policy := subscriptions.RetryPolicy{MaxAttempts: request.MaxAttempts}
-	var err error
-	if request.InitialBackoff != "" {
-		policy.InitialBackoff, err = time.ParseDuration(request.InitialBackoff)
-		if err != nil {
-			return policy, subscriptions.ErrInvalidInput
+	var policy subscriptions.RetryPolicy
+	if request.MaxAttempts != nil {
+		policy.MaxAttempts = *request.MaxAttempts
+		if policy.MaxAttempts < 1 || policy.MaxAttempts > 100 {
+			return policy, &subscriptions.ValidationError{Reason: subscriptions.ValidationInvalidRetryPolicy,
+				Field: subscriptions.ValidationFieldRetryMaxAttempts}
 		}
 	}
-	if request.MaxBackoff != "" {
-		policy.MaxBackoff, err = time.ParseDuration(request.MaxBackoff)
-		if err != nil {
-			return policy, subscriptions.ErrInvalidInput
+	var err error
+	if request.InitialBackoff != nil {
+		policy.InitialBackoff, err = time.ParseDuration(*request.InitialBackoff)
+		if err != nil || policy.InitialBackoff <= 0 {
+			return policy, &subscriptions.ValidationError{Reason: subscriptions.ValidationInvalidRetryPolicy,
+				Field: subscriptions.ValidationFieldRetryInitialBackoff}
+		}
+	}
+	if request.MaxBackoff != nil {
+		policy.MaxBackoff, err = time.ParseDuration(*request.MaxBackoff)
+		if err != nil || policy.MaxBackoff <= 0 {
+			return policy, &subscriptions.ValidationError{Reason: subscriptions.ValidationInvalidRetryPolicy,
+				Field: subscriptions.ValidationFieldRetryMaxBackoff}
 		}
 	}
 	return policy, nil
@@ -275,7 +285,13 @@ func pathIDs(w http.ResponseWriter, r *http.Request) (uuid.UUID, uuid.UUID, bool
 }
 
 func writeError(w http.ResponseWriter, err error) {
+	var validation *subscriptions.ValidationError
 	switch {
+	case errors.As(err, &validation):
+		problem := apierrors.NewProblem(http.StatusUnprocessableEntity, string(validation.Reason),
+			"Invalid webhook subscription", "", w.Header().Get("X-Request-ID"))
+		problem.Meta = map[string]any{"field": validation.Field}
+		apierrors.WriteProblem(w, problem)
 	case errors.Is(err, subscriptions.ErrInvalidInput):
 		adminapi.WriteProblem(w, http.StatusUnprocessableEntity, "invalid_request", "Invalid webhook subscription")
 	case errors.Is(err, subscriptions.ErrNotFound):

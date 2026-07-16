@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -16,13 +17,14 @@ import (
 	webhook "github.com/higress-group/issue-spec/internal/commentrunner/intake/webhook"
 	runnerserver "github.com/higress-group/issue-spec/internal/commentrunner/server"
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
+	"github.com/higress-group/issue-spec/internal/gitidentity"
 )
 
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-func (a *app) runRunnerServe(ctx context.Context, args []string) int {
+func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) {
 	fs := newFlagSet("runner serve", a.err)
-	var repos, allowedUsers, previousFiles, previousEnvs, gitCredentialArgs stringListFlag
+	var repos, allowedUsers, previousFiles, previousEnvs, gitCredentialArgs, operatorSkillDirs stringListFlag
 	listen := fs.String("listen", "127.0.0.1:9876", "dedicated webhook listen address")
 	runner := fs.String("runner", "", "self-hosted runner identity")
 	statePath := fs.String("state", "", "durable runner state path")
@@ -56,12 +58,21 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	tlsKey := fs.String("tls-key", "", "0600 TLS private key PEM file")
 	production := fs.Bool("production", false, "require TLS and an explicit non-loopback bind")
 	gitCredentialCommand := fs.String("git-credential-command", "", "absolute operator command implementing issue-spec-git-credential-v1")
+	allowHostSSH := fs.Bool("allow-host-ssh", false, "reuse the runner account ~/.ssh inside the sandbox for trusted internal repositories")
+	gitAuthorName := fs.String("git-author-name", "", "repo-local Git commit author name; requires --git-author-email")
+	gitAuthorEmail := fs.String("git-author-email", "", "repo-local Git commit author email; requires --git-author-name")
+	fs.Var(&operatorSkillDirs, "operator-skill-dir", "operator-owned local skill directory, or a directory containing skill directories; repeat as needed")
 	gitCredentialTimeout := fs.Duration("git-credential-timeout", 30*time.Second, "operator git credential command timeout")
 	gitCredentialMaxOutput := fs.Int64("git-credential-max-output", 1<<20, "maximum operator git credential command output bytes")
 	gitCredentialConcurrency := fs.Int("git-credential-concurrency", 4, "maximum concurrent operator git credential command invocations")
 	reconcileWorkers := fs.Int("reconcile-workers", 2, "durable webhook reconciliation workers")
 	reconcileLease := fs.Duration("reconcile-lease", 2*time.Minute, "durable webhook processing lease")
 	maxConcurrentJobs := fs.Int("max-concurrent-jobs", 3, "maximum concurrently dispatched runner jobs")
+	logDir := fs.String("log-dir", "", "directory for persistent diagnostic logs; default is a sibling 'logs/' directory beside the state file")
+	logMaxSize := fs.Int("log-max-size", 10, "maximum diagnostic log file size in MB before rotation")
+	logMaxFiles := fs.Int("log-max-files", 5, "maximum number of rotated diagnostic log files to retain")
+	logRetention := fs.Int("log-retention", 30, "diagnostic log retention duration in days")
+	logRawCapture := fs.Int("log-raw-capture", 100, "maximum ACPX stdout/stderr capture size in KB per job")
 	fs.Var(&repos, "repo", "repository owner/name; repeat for every repository served by this subscription")
 	fs.Var(&allowedUsers, "allowed-user", "runner command author allowlist; repeat as needed")
 	fs.Var(&previousFiles, "previous-secret-file", "0600 previous secret file; repeat up to four times")
@@ -93,8 +104,20 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		a.errorf("runner serve requires at least one --repo and --runner\n")
 		return 2
 	}
-	if strings.TrimSpace(*gitCredentialCommand) == "" {
+	if _, err := gitidentity.Normalize(*gitAuthorName, *gitAuthorEmail); err != nil {
+		a.errorf("runner serve --git-author-name and --git-author-email: %v\n", err)
+		return 2
+	}
+	if *allowHostSSH && strings.TrimSpace(*gitCredentialCommand) != "" {
+		a.errorf("runner serve requires exactly one of --git-credential-command or --allow-host-ssh\n")
+		return 2
+	}
+	if !*allowHostSSH && strings.TrimSpace(*gitCredentialCommand) == "" {
 		a.errorf("runner serve requires --git-credential-command for job-scoped clone credentials\n")
+		return 2
+	}
+	if *allowHostSSH && len(gitCredentialArgs.Values()) > 0 {
+		a.errorf("runner serve --git-credential-arg requires --git-credential-command\n")
 		return 2
 	}
 	if (*secretFile == "") == (*secretEnv == "") {
@@ -204,7 +227,29 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	runnerConfig.Agent.Kind, runnerConfig.Agent.Model = strings.TrimSpace(*agentKind), strings.TrimSpace(*model)
 	runnerConfig.WorkspaceRetention = commentrunner.NewDuration(*workspaceRetention)
 	runnerConfig.UnsafeNoSandbox, runnerConfig.BwrapPath = *unsafeNoSandbox, strings.TrimSpace(*bwrapPath)
+	runnerConfig.AllowHostSSH = *allowHostSSH
+	runnerConfig.GitAuthorName, runnerConfig.GitAuthorEmail = *gitAuthorName, *gitAuthorEmail
+	runnerConfig.OperatorSkillDirs, err = resolveRunnerOperatorSkillDirs(operatorSkillDirs.Values())
+	if err != nil {
+		a.errorf("runner serve operator skills: %v\n", err)
+		return 2
+	}
 	runnerConfig.CancellationEnabled = *cancellationEnabled
+	if seen["log-dir"] {
+		runnerConfig.LogDir = strings.TrimSpace(*logDir)
+	}
+	if seen["log-max-size"] {
+		runnerConfig.LogMaxSizeMB = *logMaxSize
+	}
+	if seen["log-max-files"] {
+		runnerConfig.LogMaxFiles = *logMaxFiles
+	}
+	if seen["log-retention"] {
+		runnerConfig.LogRetentionDays = *logRetention
+	}
+	if seen["log-raw-capture"] {
+		runnerConfig.LogRawCaptureKB = *logRawCapture
+	}
 	runnerConfig, err = commentrunner.ApplyDefaultRunnerScopePaths(runnerConfig, seen["state"], seen["workspace-root"])
 	if err != nil {
 		a.errorf("runner serve state scope: %v\n", err)
@@ -213,6 +258,40 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	if err := runnerConfig.Validate(); err != nil {
 		a.errorf("runner serve runner configuration: %v\n", err)
 		return 2
+	}
+	logger, err := newRunnerLogger(runnerConfig)
+	if err != nil {
+		a.errorf("runner serve diagnostics: %v\n", err)
+		return 1
+	}
+	a.runnerDiagnostics = logger
+	runnerConfig.LogDir = logger.config().LogDir
+	defer func() {
+		if err := logger.shutdown("serve"); err != nil {
+			a.errorf("runner serve diagnostics shutdown: %v\n", err)
+			if exitCode == 0 {
+				exitCode = 1
+			}
+		}
+		a.runnerDiagnostics = nil
+	}()
+	if err := logger.logStartup("serve"); err != nil {
+		a.errorf("runner serve diagnostics: %v\n", err)
+		return 1
+	}
+	if _, err := logger.newCycle(); err != nil {
+		a.errorf("runner serve diagnostics: %v\n", err)
+		return 1
+	}
+	preflight := a.runRunnerPreflight(ctx, runnerConfig)
+	if err := logger.logPreflight(preflight); err != nil {
+		a.errorf("runner serve diagnostics: %v\n", err)
+		return 1
+	}
+	if !preflight.OK {
+		a.errorf("runner serve preflight failed\n")
+		a.printPreflightReport(preflight)
+		return 1
 	}
 	store, err := crstate.OpenFileStore(runnerConfig.StatePath)
 	if err != nil {
@@ -237,7 +316,7 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	}
 	handler, err := webhook.NewHandler(webhook.HandlerConfig{Credentials: credentials, Queue: queue,
 		TimestampWindow: *timestampWindow, MaxBodyBytes: *maxBody, MaxRawCommentBytes: *maxRawComment,
-		MaxConcurrentRequests: *maxRequests, RetryAfter: *retryAfter})
+		MaxConcurrentRequests: *maxRequests, RetryAfter: *retryAfter, Observer: logger})
 	if err != nil {
 		a.errorf("runner serve handler: %v\n", err)
 		return 2
@@ -250,32 +329,60 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		a.errorf("runner serve configuration: %v\n", err)
 		return 2
 	}
-	parentToken, err := auth.ResolveProfileToken(ctx, profile)
-	if err != nil || strings.TrimSpace(parentToken.Value) == "" {
-		a.errorf("runner serve parent credential: origin-bound profile PAT is required\n")
+	profileToken, err := auth.ResolveProfileToken(ctx, profile)
+	if err != nil || strings.TrimSpace(profileToken.Value) == "" {
+		a.errorf("runner serve profile credential: origin-bound profile PAT is required\n")
 		return 2
 	}
-	if parentToken.Source == "env:ISSUE_SPEC_TOKEN" {
+	if profileToken.Source == "env:ISSUE_SPEC_TOKEN" {
 		_ = os.Unsetenv("ISSUE_SPEC_TOKEN")
 	}
-	runtime, err := runnerServeBuildRuntime(ctx, runnerServeRuntimeInput{Profile: profile, ParentToken: parentToken.Value,
+	runtime, err := runnerServeBuildRuntime(ctx, runnerServeRuntimeInput{Profile: profile, ProfileToken: profileToken.Value,
 		Runner: runnerConfig, Queue: queue, Store: store, HTTP: service, GitCredentialCommand: *gitCredentialCommand,
 		GitCredentialArgs: gitCredentialArgs.Values(), GitCredentialTimeout: *gitCredentialTimeout,
 		GitCredentialMaxOutput: *gitCredentialMaxOutput, GitCredentialConcurrency: *gitCredentialConcurrency,
-		ReconcileWorkers: *reconcileWorkers, ReconcileLease: *reconcileLease})
+		ReconcileWorkers: *reconcileWorkers, ReconcileLease: *reconcileLease, Diagnostics: logger})
 	if err != nil {
 		a.errorf("runner serve runtime: %v\n", err)
 		return 2
 	}
 	serveContext, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	fmt.Fprintf(a.out, "runner serve: profile=%s subscription=%s listen=%s endpoint=%s state=%s\n",
-		profile.Name, credentials.SubscriptionID(), *listen, webhook.Endpoint, runnerConfig.StatePath)
+	fmt.Fprintf(a.out, "runner serve: profile=%s subscription=%s listen=%s endpoint=%s state=%s logs=%s\n",
+		profile.Name, credentials.SubscriptionID(), *listen, webhook.Endpoint, runnerConfig.StatePath, logger.config().LogDir)
 	if err := runnerServeRun(serveContext, runtime); err != nil && !errors.Is(err, context.Canceled) {
 		a.errorf("runner serve: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+func resolveRunnerOperatorSkillDirs(values []string) ([]string, error) {
+	seen := map[string]bool{}
+	resolved := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil, fmt.Errorf("--operator-skill-dir must not be empty")
+		}
+		path, err := filepath.Abs(value)
+		if err != nil {
+			return nil, fmt.Errorf("resolve %q: %w", value, err)
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect %s: %w", path, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, fmt.Errorf("%s must be a non-symlink directory", path)
+		}
+		path = filepath.Clean(path)
+		if !seen[path] {
+			seen[path] = true
+			resolved = append(resolved, path)
+		}
+	}
+	return resolved, nil
 }
 
 func parsePreviousExpiry(now time.Time, raw string, count int) (time.Time, error) {

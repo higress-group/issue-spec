@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -63,6 +64,34 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	if again.ID != userA.ID || again.Login != userA.Login || again.DisplayName != "Renamed" {
 		t.Fatalf("provider display change moved local identity: first=%+v again=%+v", userA, again)
 	}
+	profile, err := identities.Profile(t.Context(), userA.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err = identities.UpdateNickname(t.Context(), userA.ID, "澄潭", profile.RepresentationVersion, "req-nickname")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.DisplayName != "澄潭" || profile.IdentityDisplayName != "Renamed" || profile.Nickname == nil || *profile.Nickname != "澄潭" {
+		t.Fatalf("updated profile = %+v", profile)
+	}
+	if _, err := identities.UpdateNickname(t.Context(), userA.ID, "stale", profile.RepresentationVersion-1, "req-nickname-stale"); !errors.Is(err, serverauth.ErrConflict) {
+		t.Fatalf("stale nickname update error = %v, want conflict", err)
+	}
+	again, err = identities.ResolveOrProvision(t.Context(), providerA, serverauth.ExternalIdentity{
+		Issuer: providerA.Issuer, Subject: "subject-a", Login: "renamed", DisplayName: "Company Name",
+		Email: &changedEmail, AvatarURL: "https://avatars.example/alice-v3.png", Claims: json.RawMessage(`{"sub":"subject-a","name":"Company Name"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.DisplayName != "澄潭" {
+		t.Fatalf("provider refresh overwrote nickname: %+v", again)
+	}
+	profile, err = identities.PublicProfile(t.Context(), userA.Login)
+	if err != nil || profile.DisplayName != "澄潭" || profile.IdentityDisplayName != "Company Name" {
+		t.Fatalf("public profile = %+v err=%v", profile, err)
+	}
 	userB, err := identities.ResolveOrProvision(t.Context(), providerB, serverauth.ExternalIdentity{
 		Issuer: providerB.Issuer, Subject: "subject-b", Login: "Alice", DisplayName: "Other Alice", Email: &sharedEmail,
 	})
@@ -103,6 +132,9 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	principal, err := sessions.Authenticate(t.Context(), createdSession.Token)
 	if err != nil || principal.User.ID != userA.ID {
 		t.Fatalf("Authenticate(session) = %+v, %v", principal, err)
+	}
+	if principal.User.DisplayName != "澄潭" {
+		t.Fatalf("session display name = %q, want nickname", principal.User.DisplayName)
 	}
 	if err := sessions.ValidateCSRF(principal, createdSession.CSRFToken); err != nil {
 		t.Fatal(err)
@@ -202,10 +234,13 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 		Issuer: patPrincipal, Repo: models.RepoScope{OrgID: orgID, RepoID: repoID}, JobID: "job-1",
 		Purpose: "comment-writeback", Audience: "issue-spec-server", Subject: "runner-child",
 		Scopes: []string{"issues:write"}, Operations: []capability.Operation{capability.OperationIssueRead,
-			capability.OperationArtifactWrite}, TTL: 5 * time.Minute,
+			capability.OperationArtifactWrite}, TTL: delegation.DefaultTTL,
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if remaining := time.Until(delegatedCreated.ExpiresAt); remaining < delegation.DefaultTTL-10*time.Second || remaining > delegation.DefaultTTL {
+		t.Fatalf("delegated default lifetime = %s, want approximately %s", remaining, delegation.DefaultTTL)
 	}
 	delegatedPrincipal, err := delegated.Authenticate(t.Context(), delegatedCreated.Plaintext, delegation.Expected{
 		Repo: models.RepoScope{OrgID: orgID, RepoID: repoID}, JobID: "job-1",
@@ -584,6 +619,33 @@ func TestNativeUserAndPATRoutesEnforceCookieCSRFAndExposeScopes(t *testing.T) {
 	mux, err := routeset.NewMux(routeset.Policy{}, routes)
 	if err != nil {
 		t.Fatal(err)
+	}
+	publicProfileRequest := httptest.NewRequest(http.MethodGet, "/api/v1/users/route-user", nil)
+	publicProfileResponse := httptest.NewRecorder()
+	mux.ServeHTTP(publicProfileResponse, publicProfileRequest)
+	if publicProfileResponse.Code != http.StatusOK || !strings.Contains(publicProfileResponse.Body.String(), `"html_url":"https://issues.example.test/users/route-user"`) ||
+		strings.Contains(publicProfileResponse.Body.String(), `"email"`) || strings.Contains(publicProfileResponse.Body.String(), `"identity_display_name"`) {
+		t.Fatalf("public profile = %d body=%s", publicProfileResponse.Code, publicProfileResponse.Body.String())
+	}
+	profileRequest := httptest.NewRequest(http.MethodGet, "/api/v1/profile", nil)
+	profileRequest.AddCookie(sessions.Cookie(createdSession.Token))
+	profileResponse := httptest.NewRecorder()
+	mux.ServeHTTP(profileResponse, profileRequest)
+	var editableProfile struct {
+		RepresentationVersion int64 `json:"representation_version"`
+	}
+	if profileResponse.Code != http.StatusOK || json.Unmarshal(profileResponse.Body.Bytes(), &editableProfile) != nil || editableProfile.RepresentationVersion < 1 {
+		t.Fatalf("private profile = %d body=%s", profileResponse.Code, profileResponse.Body.String())
+	}
+	updateProfileRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/profile", strings.NewReader(fmt.Sprintf(
+		`{"nickname":"澄潭","expected_version":%d}`, editableProfile.RepresentationVersion)))
+	updateProfileRequest.AddCookie(sessions.Cookie(createdSession.Token))
+	updateProfileRequest.Header.Set("Origin", "https://issues.example.test")
+	updateProfileRequest.Header.Set("X-CSRF-Token", createdSession.CSRFToken)
+	updateProfileResponse := httptest.NewRecorder()
+	mux.ServeHTTP(updateProfileResponse, updateProfileRequest)
+	if updateProfileResponse.Code != http.StatusOK || !strings.Contains(updateProfileResponse.Body.String(), `"display_name":"澄潭"`) {
+		t.Fatalf("PATCH profile = %d body=%s", updateProfileResponse.Code, updateProfileResponse.Body.String())
 	}
 	unauthenticated := httptest.NewRequest(http.MethodGet, "/api/v1/pats", nil)
 	unauthenticatedResponse := httptest.NewRecorder()

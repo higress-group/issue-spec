@@ -5,7 +5,10 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -103,6 +106,7 @@ func TestLinuxPrepareBuildsBwrapCommand(t *testing.T) {
 		TempGHConfigDir:     "/tmp/gh",
 		TempXDGConfigHome:   "/tmp/xdg",
 		TempCodexHome:       "/tmp/codex",
+		AcpxRuntimeDir:      "/tmp/acpx-runtime",
 		HostEnv:             []string{"PATH=/usr/bin", "HTTPS_PROXY=http://proxy", "GH_TOKEN=secret", "CLAUDE_CODE_EFFORT_LEVEL=max"},
 		SystemReadOnlyBinds: []string{"/usr"},
 	}
@@ -121,6 +125,7 @@ func TestLinuxPrepareBuildsBwrapCommand(t *testing.T) {
 	assertArgSequence(t, cmd.Args, "--perms", "0700", "--tmpfs", "/tmp")
 	assertArgSequence(t, cmd.Args, "--bind", "/tmp/gh", "/tmp/issue-spec-gh")
 	assertArgSequence(t, cmd.Args, "--bind", "/tmp/codex", "/tmp/issue-spec-codex")
+	assertArgSequence(t, cmd.Args, "--bind", "/tmp/acpx-runtime", acpxQueueSocketSandboxPath())
 	assertArgSequence(t, cmd.Args, "--ro-bind", "/usr", "/usr")
 	assertArgSequence(t, cmd.Args, "--setenv", "HOME", "/tmp/issue-spec-home")
 	assertArgSequence(t, cmd.Args, "--setenv", "GH_CONFIG_DIR", "/tmp/issue-spec-gh")
@@ -133,6 +138,12 @@ func TestLinuxPrepareBuildsBwrapCommand(t *testing.T) {
 	}
 	if prepared.Metadata.SandboxProvider != ProviderBubblewrap || prepared.Metadata.FSBoundary != FSBoundaryWorkspace {
 		t.Fatalf("unexpected metadata: %+v", prepared.Metadata)
+	}
+}
+
+func TestAcpxQueueSocketSandboxPathMatchesAcpxContract(t *testing.T) {
+	if got, want := acpxQueueSocketSandboxPath(), "/tmp/acpx-316f81fba6"; got != want {
+		t.Fatalf("acpxQueueSocketSandboxPath() = %q, want %q", got, want)
 	}
 }
 
@@ -157,6 +168,82 @@ func TestLinuxPrepareDefaultBindsResolverConfig(t *testing.T) {
 		}
 		assertArgSequence(t, prepared.Command.Args, "--ro-bind", path, path)
 		assertMount(t, prepared.Metadata.Mounts, Mount{Source: path, Destination: path, Mode: "ro"})
+	}
+}
+
+func TestLinuxPrepareMountsOptInHostSSHAtFixedPaths(t *testing.T) {
+	root := t.TempDir()
+	paths := map[string]string{}
+	for _, name := range []string{"workspace", "home", "gh", "xdg", "codex", "host-home"} {
+		paths[name] = filepath.Join(root, name)
+		if err := os.Mkdir(paths[name], 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sshDir := filepath.Join(paths["host-home"], ".ssh")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(root, "agent.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Skipf("Unix sockets unavailable: %v", err)
+	}
+	defer listener.Close()
+	cfg := Config{BwrapPath: "/usr/bin/bwrap", WorkspacePath: paths["workspace"], TempHome: paths["home"],
+		TempGHConfigDir: paths["gh"], TempXDGConfigHome: paths["xdg"], TempCodexHome: paths["codex"],
+		HostSSHDir: sshDir, HostSSHAgentSocket: socket, HostEnv: []string{"PATH=/usr/bin", "SSH_AUTH_SOCK=/untrusted.sock"}}
+	prepared, err := Prepare(context.Background(), cfg, Command{Binary: "acpx", Dir: paths["workspace"]}, Dependencies{Runner: capableBwrapRunner(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertArgSequence(t, prepared.Command.Args, "--ro-bind", sshDir, HostSSHDirSandboxPath)
+	assertArgSequence(t, prepared.Command.Args, "--ro-bind", sshDir, sshDir)
+	assertArgSequence(t, prepared.Command.Args, "--bind", socket, HostSSHAgentSandboxPath)
+	assertArgSequence(t, prepared.Command.Args, "--setenv", "SSH_AUTH_SOCK", HostSSHAgentSandboxPath)
+	if _, err := os.Stat("/etc/passwd"); err == nil {
+		assertArgSequence(t, prepared.Command.Args, "--ro-bind", "/etc/passwd", "/etc/passwd")
+		assertMount(t, prepared.Metadata.Mounts, Mount{Source: "/etc/passwd", Destination: "/etc/passwd", Mode: "ro"})
+	}
+	assertMount(t, prepared.Metadata.Mounts, Mount{Source: sshDir, Destination: HostSSHDirSandboxPath, Mode: "ro"})
+	assertMount(t, prepared.Metadata.Mounts, Mount{Source: sshDir, Destination: sshDir, Mode: "ro"})
+	assertMount(t, prepared.Metadata.Mounts, Mount{Source: socket, Destination: HostSSHAgentSandboxPath, Mode: "socket"})
+}
+
+func TestLinuxHostSSHStartsStockOpenSSHInsideBwrap(t *testing.T) {
+	bwrapPath, err := exec.LookPath("bwrap")
+	if err != nil {
+		t.Skip("bubblewrap is not installed")
+	}
+	sshPath, err := exec.LookPath("ssh")
+	if err != nil {
+		t.Skip("OpenSSH is not installed")
+	}
+	root := t.TempDir()
+	dir := func(name string) string {
+		path := filepath.Join(root, name)
+		if mkdirErr := os.Mkdir(path, 0o700); mkdirErr != nil {
+			t.Fatal(mkdirErr)
+		}
+		return path
+	}
+	workspace, home, gh, xdg, hostHome := dir("workspace"), dir("home"), dir("gh"), dir("xdg"), dir("host-home")
+	sshDir := filepath.Join(hostHome, ".ssh")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{BwrapPath: bwrapPath, WorkspacePath: workspace, TempHome: home,
+		TempGHConfigDir: gh, TempXDGConfigHome: xdg, HostSSHDir: sshDir, HostEnv: []string{"PATH=/usr/bin:/bin"}}
+	prepared, err := Prepare(context.Background(), cfg, Command{Binary: sshPath, Args: []string{"-G", "host.invalid"}, Dir: workspace}, Dependencies{})
+	if err != nil {
+		if errors.Is(err, ErrSandboxPreflightFailed) {
+			t.Skipf("bubblewrap is installed but unavailable in this environment: %v", err)
+		}
+		t.Fatal(err)
+	}
+	result, err := (ExecRunner{}).Run(context.Background(), prepared.Command)
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("stock OpenSSH could not resolve current user inside bubblewrap: %s", commandOutputSummary(result, err))
 	}
 }
 

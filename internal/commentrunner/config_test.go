@@ -1,6 +1,7 @@
 package commentrunner
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -156,6 +157,35 @@ func TestDefaultRunnerScopePathsSeparateCredentialRealms(t *testing.T) {
 	}
 }
 
+func TestDefaultRunnerScopePathsTreatsProjectGitHubProfileAsBuiltinRealm(t *testing.T) {
+	home := t.TempDir()
+	setDefaultConfigPathEnv(t, home, filepath.Join(t.TempDir(), "config"), filepath.Join(t.TempDir(), "cache"))
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".issue-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".issue-spec", "config.json"), []byte(`{"version":1,"repo":"o/r","profile":"github","hostname":"github.com"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	statePath, workspaceRoot, err := DefaultRunnerScopePaths(Config{
+		Hostname:       "github.com",
+		Repositories:   []string{"o/r"},
+		RunnerIdentity: "bot",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(home, ".issue-spec", "runners", "github.com", "o", "r", "bot")
+	if statePath != filepath.Join(root, "state.json") || workspaceRoot != filepath.Join(root, "workspaces") {
+		t.Fatalf("project GitHub profile changed builtin paths: state=%q workspace=%q", statePath, workspaceRoot)
+	}
+}
+
 func TestDefaultRunnerScopePathsUsesStableMultiRepoScope(t *testing.T) {
 	home := t.TempDir()
 	setDefaultConfigPathEnv(t, home, filepath.Join(t.TempDir(), "config"), filepath.Join(t.TempDir(), "cache"))
@@ -267,6 +297,71 @@ func TestConfigValidateAllowsZeroFallbackInitialLookback(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestConfigValidateAllowsExplicitUnsafeHostSSH(t *testing.T) {
+	cfg := Config{
+		Repositories:       []string{"o/r"},
+		RunnerIdentity:     "bot",
+		StatePath:          filepath.Join(t.TempDir(), "state.json"),
+		WorkspaceRoot:      t.TempDir(),
+		PollInterval:       NewDuration(time.Minute),
+		FallbackInterval:   NewDuration(time.Hour),
+		WorkspaceRetention: NewDuration(24 * time.Hour),
+		MaxConcurrentJobs:  1,
+		Agent:              DefaultAgentConfig(),
+		AllowHostSSH:       true,
+		UnsafeNoSandbox:    true,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate error = %v", err)
+	}
+}
+
+func TestConfigValidateRequiresCompleteSafeGitAuthor(t *testing.T) {
+	base := Config{
+		Repositories: []string{"o/r"}, RunnerIdentity: "bot", StatePath: filepath.Join(t.TempDir(), "state.json"),
+		WorkspaceRoot: t.TempDir(), PollInterval: NewDuration(time.Minute), FallbackInterval: NewDuration(time.Hour),
+		WorkspaceRetention: NewDuration(24 * time.Hour), MaxConcurrentJobs: 1, Agent: DefaultAgentConfig(),
+	}
+	valid := base
+	valid.GitAuthorName, valid.GitAuthorEmail = " Issue Spec Runner ", " runner@example.test "
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("complete Git author rejected: %v", err)
+	}
+	for _, tc := range []Config{
+		func() Config { cfg := base; cfg.GitAuthorName = "Runner"; return cfg }(),
+		func() Config { cfg := base; cfg.GitAuthorEmail = "runner@example.test"; return cfg }(),
+		func() Config {
+			cfg := base
+			cfg.GitAuthorName, cfg.GitAuthorEmail = "Runner\nInjected", "runner@example.test"
+			return cfg
+		}(),
+	} {
+		if err := tc.Validate(); err == nil || !strings.Contains(err.Error(), "--git-author-name and --git-author-email") {
+			t.Fatalf("invalid Git author Validate error = %v", err)
+		}
+	}
+}
+
+func TestConfigValidateRejectsOperatorSkillsForClaude(t *testing.T) {
+	cfg := Config{
+		Repositories:       []string{"o/r"},
+		RunnerIdentity:     "bot",
+		StatePath:          filepath.Join(t.TempDir(), "state.json"),
+		WorkspaceRoot:      t.TempDir(),
+		PollInterval:       NewDuration(time.Minute),
+		FallbackInterval:   NewDuration(time.Hour),
+		WorkspaceRetention: NewDuration(24 * time.Hour),
+		MaxConcurrentJobs:  1,
+		Agent:              DefaultAgentConfig(),
+		OperatorSkillDirs:  []string{"/operator/skill"},
+	}
+	cfg.Agent.Kind = AgentClaude
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "supported only with --agent codex") {
+		t.Fatalf("Validate error = %v", err)
 	}
 }
 

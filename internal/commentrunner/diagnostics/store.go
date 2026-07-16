@@ -19,9 +19,11 @@ func NewStore(config Config, redactor *Redactor) (*Store, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	// Ensure log directory exists
-	if err := os.MkdirAll(config.LogDir, DefaultDirMode); err != nil {
-		return nil, fmt.Errorf("create log directory: %w", err)
+	// Validate and tighten the complete restart tree before any writer is
+	// opened. A dedicated diagnostics tree must never contain symlinks or
+	// special files because later append, rotation, and cleanup are path based.
+	if err := secureDiagnosticTree(config.LogDir); err != nil {
+		return nil, fmt.Errorf("secure log directory: %w", err)
 	}
 
 	// Ensure subdirectories exist
@@ -31,7 +33,7 @@ func NewStore(config Config, redactor *Redactor) (*Store, error) {
 	}
 
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, DefaultDirMode); err != nil {
+		if err := secureDirectory(dir); err != nil {
 			return nil, fmt.Errorf("create subdirectory %s: %w", dir, err)
 		}
 	}
@@ -89,7 +91,7 @@ func (s *Store) JobStderrWriter(jobID string) (*BoundedWriter, error) {
 // SessionLogWriter returns a writer for a session-specific log
 func (s *Store) SessionLogWriter(sessionID, turnID string) (*RotatingWriter, error) {
 	path := s.config.SessionLogPath(sessionID, turnID)
-	if err := os.MkdirAll(filepath.Dir(path), DefaultDirMode); err != nil {
+	if err := secureDirectory(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("create session directory: %w", err)
 	}
 	return NewRotatingWriter(path, s.config, s.redactor)
@@ -97,6 +99,9 @@ func (s *Store) SessionLogWriter(sessionID, turnID string) (*RotatingWriter, err
 
 // Cleanup removes expired log files
 func (s *Store) Cleanup() error {
+	if err := secureDiagnosticTree(s.config.LogDir); err != nil {
+		return fmt.Errorf("validate diagnostic tree before cleanup: %w", err)
+	}
 	cutoff := time.Now().Add(-s.config.RetentionDuration())
 
 	// Clean up job logs
@@ -135,13 +140,15 @@ func (s *Store) cleanupDirectory(dir string, cutoff time.Time) error {
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
 
-		info, err := entry.Info()
+		info, err := os.Lstat(path)
 		if err != nil {
-			continue
+			return err
 		}
 
 		if info.ModTime().Before(cutoff) {
-			os.RemoveAll(path)
+			if err := removeDiagnosticPath(path); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -154,13 +161,21 @@ func (s *Store) cleanupRotatedLogs(baseName string, cutoff time.Time) error {
 
 	for i := 1; i <= s.config.MaxFiles; i++ {
 		path := basePath + "." + fmt.Sprint(i)
-		info, err := os.Stat(path)
+		info, err := os.Lstat(path)
 		if err != nil {
-			continue
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("unsafe rotated diagnostic path %s", path)
 		}
 
 		if info.ModTime().Before(cutoff) {
-			os.Remove(path)
+			if err := os.Remove(path); err != nil {
+				return err
+			}
 		}
 	}
 

@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
 
 // HandoffMutation changes only the logical ### Handoff section of a PROCESS.
@@ -22,6 +24,7 @@ type TransitionRequest struct {
 	ExpectedID         string
 	ToStatus           string
 	Handoff            *HandoffMutation
+	Workspace          *ProcessWorkspace
 	PRLinks            []string
 	RelatedLinks       []string
 	AgentSessionID     string
@@ -69,6 +72,20 @@ func ApplyTypedTransition(body string, request TransitionRequest) (TransitionRes
 	if request.Handoff != nil && before.Type != "PROCESS" {
 		return TransitionResult{}, fmt.Errorf("handoff mutation only applies to PROCESS, got %s", before.Type)
 	}
+	if request.Workspace != nil && before.Type != "PROCESS" {
+		return TransitionResult{}, fmt.Errorf("workspace mutation only applies to PROCESS, got %s", before.Type)
+	}
+	if request.Workspace != nil {
+		current := ParseProcessWorkspace(before.ID, "", body)
+		if current.Explicit && current.Blocking() {
+			return TransitionResult{}, errors.New(CanonicalDiagnosticStrings(current.Diagnostics)[0])
+		}
+		if current.Workspace != nil {
+			if err := validateProcessWorkspaceMutation(*current.Workspace, *request.Workspace); err != nil {
+				return TransitionResult{}, err
+			}
+		}
+	}
 
 	updated := body
 	var err error
@@ -80,6 +97,12 @@ func ApplyTypedTransition(body string, request TransitionRequest) (TransitionRes
 	}
 	if request.Handoff != nil {
 		updated, err = mutateHandoff(updated, *request.Handoff)
+		if err != nil {
+			return TransitionResult{}, err
+		}
+	}
+	if request.Workspace != nil {
+		updated, err = mutateWorkspace(updated, *request.Workspace)
 		if err != nil {
 			return TransitionResult{}, err
 		}
@@ -157,26 +180,15 @@ func mutateHandoff(body string, mutation HandoffMutation) (string, error) {
 	if value == "" {
 		return "", errors.New("handoff value is empty")
 	}
-	lines := strings.Split(body, "\n")
-	heading := -1
-	end := len(lines)
-	for index, line := range lines {
-		if strings.TrimSpace(line) == "### Handoff" {
-			heading = index
-			for next := index + 1; next < len(lines); next++ {
-				trimmed := strings.TrimSpace(lines[next])
-				if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ") {
-					end = next
-					break
-				}
-			}
-			break
-		}
-	}
-	if heading < 0 {
+	sections := markdownSectionRanges(body, "### Handoff")
+	if len(sections) == 0 {
 		return "", errors.New("PROCESS is missing ### Handoff section")
 	}
-	existing := strings.TrimSpace(strings.Join(lines[heading+1:end], "\n"))
+	if len(sections) != 1 {
+		return "", errors.New("PROCESS has multiple `### Handoff` sections")
+	}
+	section := sections[0]
+	existing := strings.TrimSpace(body[section.ContentStart:section.End])
 	desired := value
 	if mutation.Append && !emptyTransitionSection(existing) {
 		if containsExactParagraph(existing, value) {
@@ -184,11 +196,83 @@ func mutateHandoff(body string, mutation HandoffMutation) (string, error) {
 		}
 		desired = existing + "\n\n" + value
 	}
-	replacement := []string{"", desired}
-	updated := append([]string(nil), lines[:heading+1]...)
-	updated = append(updated, replacement...)
-	updated = append(updated, lines[end:]...)
-	return strings.Join(updated, "\n"), nil
+	replacement := "\n" + desired
+	if section.End < len(body) {
+		replacement += "\n\n"
+	}
+	return body[:section.ContentStart] + replacement + body[section.End:], nil
+}
+
+func mutateWorkspace(body string, workspace ProcessWorkspace) (string, error) {
+	section, err := RenderProcessWorkspaceSection(workspace)
+	if err != nil {
+		return "", err
+	}
+	section += "\n\n"
+	bounds := workspaceSectionBounds(body)
+	if len(bounds) > 1 {
+		return "", errors.New("PROCESS has multiple `### Workspace` sections")
+	}
+	if len(bounds) == 1 {
+		return body[:bounds[0][0]] + section + body[bounds[0][1]:], nil
+	}
+	handoffs := markdownSectionRanges(body, "### Handoff")
+	if len(handoffs) == 0 {
+		return "", errors.New("PROCESS is missing ### Handoff section")
+	}
+	insert := handoffs[0].Start
+	return body[:insert] + section + body[insert:], nil
+}
+
+// validateProcessWorkspaceMutation separates reservation identity from mutable
+// lifecycle evidence. A structured transition may advance observations, but it
+// must not silently rebind a PROCESS to another reservation or rewrite durable
+// commit evidence.
+func validateProcessWorkspaceMutation(before, after ProcessWorkspace) error {
+	if before.SchemaVersion != after.SchemaVersion || before.WorkspaceID != after.WorkspaceID ||
+		before.Repository != after.Repository || before.ProcessID != after.ProcessID ||
+		before.ExecutionClass != after.ExecutionClass || before.Mode != after.Mode ||
+		before.BaseSHA != after.BaseSHA || before.Branch != after.Branch ||
+		before.DetachedRevision != after.DetachedRevision || before.IntegrationOwner != after.IntegrationOwner ||
+		before.RuntimeNamespace != after.RuntimeNamespace || !before.CreatedAt.Equal(after.CreatedAt) ||
+		!reflect.DeepEqual(before.WriteOwnership, after.WriteOwnership) ||
+		!reflect.DeepEqual(before.SharedTouchpoints, after.SharedTouchpoints) ||
+		!reflect.DeepEqual(before.RuntimeResources, after.RuntimeResources) {
+		return errors.New("workspace mutation changed immutable reservation identity")
+	}
+	if before.State != after.State && !processworkspace.CanTransition(before.State, after.State, before.Mode) {
+		return fmt.Errorf("illegal workspace lifecycle transition %s -> %s", before.State, after.State)
+	}
+	if before.ResultCommit != "" && before.ResultCommit != after.ResultCommit {
+		return errors.New("workspace mutation cannot clear or replace result commit evidence")
+	}
+	if before.IntegrationSHA != "" && before.IntegrationSHA != after.IntegrationSHA {
+		return errors.New("workspace mutation cannot clear or replace integration SHA evidence")
+	}
+	resultAdded := before.ResultCommit == "" && after.ResultCommit != ""
+	integrationAdded := before.IntegrationSHA == "" && after.IntegrationSHA != ""
+	if resultAdded && after.State != processworkspace.StateWorkerComplete {
+		return errors.New("workspace result commit evidence may first appear only when entering worker-complete")
+	}
+	if integrationAdded && after.State != processworkspace.StateIntegrated {
+		return errors.New("workspace integration SHA evidence may first appear only when entering integrated")
+	}
+	if before.State == after.State && (before.State == processworkspace.StateConflicted || before.State == processworkspace.StateCleanupPending || before.State == processworkspace.StateCleaned) &&
+		(before.ResultCommit != after.ResultCommit || before.IntegrationSHA != after.IntegrationSHA) {
+		return fmt.Errorf("workspace %s state cannot acquire or change commit evidence", before.State)
+	}
+	if !before.RetentionExpiresAt.IsZero() && (after.RetentionExpiresAt.IsZero() || after.RetentionExpiresAt.Before(before.RetentionExpiresAt)) {
+		return errors.New("workspace retention expiration cannot be cleared or shortened")
+	}
+	if after.UpdatedAt.Before(before.UpdatedAt) {
+		return errors.New("workspace updated_at cannot move backwards")
+	}
+	materialChange := before.State != after.State || before.ResultCommit != after.ResultCommit ||
+		before.IntegrationSHA != after.IntegrationSHA || !before.RetentionExpiresAt.Equal(after.RetentionExpiresAt)
+	if materialChange && !after.UpdatedAt.After(before.UpdatedAt) {
+		return errors.New("workspace state, evidence, or retention changes require updated_at to advance")
+	}
+	return nil
 }
 
 func emptyTransitionSection(value string) bool {
@@ -228,6 +312,10 @@ func validateTransitionInvariants(before, after TypedComment, original, updated 
 		beforeLogical = withoutHandoff(beforeLogical)
 		afterLogical = withoutHandoff(afterLogical)
 	}
+	if request.Workspace != nil {
+		beforeLogical = withoutWorkspace(beforeLogical)
+		afterLogical = withoutWorkspace(afterLogical)
+	}
 	if beforeLogical != afterLogical {
 		return errors.New("transition changed undeclared logical body content")
 	}
@@ -235,6 +323,10 @@ func validateTransitionInvariants(before, after TypedComment, original, updated 
 	afterCanonical := canonicalElements(after.Type, after.ID, updated)
 	if !reflect.DeepEqual(beforeCanonical, afterCanonical) {
 		return errors.New("transition changed canonical validity")
+	}
+	workspace := ParseProcessWorkspace(after.ID, "", updated)
+	if workspace.Explicit && workspace.Blocking() {
+		return errors.New(CanonicalDiagnosticStrings(workspace.Diagnostics)[0])
 	}
 	return nil
 }
@@ -262,25 +354,24 @@ func canonicalElements(commentType, id, body string) []string {
 }
 
 func withoutHandoff(logical string) string {
-	lines := strings.Split(logical, "\n")
-	for index, line := range lines {
-		if strings.TrimSpace(line) != "### Handoff" {
-			continue
-		}
-		end := len(lines)
-		for next := index + 1; next < len(lines); next++ {
-			trimmed := strings.TrimSpace(lines[next])
-			if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ") {
-				end = next
-				break
-			}
-		}
-		result := append([]string(nil), lines[:index+1]...)
-		result = append(result, "", "<declared-handoff>")
-		result = append(result, lines[end:]...)
-		return strings.TrimSpace(strings.Join(result, "\n"))
+	sections := markdownSectionRanges(logical, "### Handoff")
+	if len(sections) != 1 {
+		return logical
 	}
-	return logical
+	section := sections[0]
+	replacement := "\n<declared-handoff>"
+	if section.End < len(logical) {
+		replacement += "\n\n"
+	}
+	return logical[:section.ContentStart] + replacement + logical[section.End:]
+}
+
+func withoutWorkspace(logical string) string {
+	bounds := workspaceSectionBounds(logical)
+	if len(bounds) != 1 {
+		return logical
+	}
+	return logical[:bounds[0][0]] + logical[bounds[0][1]:]
 }
 
 // transitionLogicalBody strips the complete visible header, including session

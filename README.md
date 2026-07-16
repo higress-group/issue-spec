@@ -37,6 +37,33 @@ owning a separate search path.
 
 **[Explore the self-hosted server, architecture, access model, deployment, and operations →](docs/self-hosting/README.md)**
 
+**[Connect private code hosts and work trackers safely →](docs/self-hosting/enterprise-provider-integration.md)**
+
+### From transparent change specs to handoff-ready agent execution
+
+Proposal, design, TASK, PROCESS, review, and verification evidence already live
+transparently in the issue timeline. Runner takes the next step: an authorized
+maintainer triggers an agent with an ordinary issue comment, while status,
+public session, results, and continuation instructions stay in that same
+timeline.
+
+```text
+Alice:  /new Implement the current design, test it, and open a PR
+Runner: started · public session s_demo_42
+        ...status, PROCESS, and code evidence continue in the issue...
+Bob:    /resume s_demo_42 Apply the review decision to error handling
+```
+
+A public session belongs to authorized repository maintainers, not to one
+person's private conversation. Another maintainer can read the complete issue
+context and use `/resume` to take over the same agent session and workspace.
+The handoff requires no copied local chat and remains connected to the change
+spec, review, and verification trail.
+
+[![Trigger an agent from an issue comment and continue it as another maintainer](docs/self-hosting/assets/self-hosted-runner-command.png)](docs/self-hosting/runner.md)
+
+**[Explore self-hosted Runner setup, comment triggers, multi-maintainer handoff, and operations →](docs/self-hosting/runner.md)**
+
 ## See it in action
 
 ```text
@@ -96,8 +123,10 @@ issue-spec auth status --json
 Initialize a repository:
 
 ```bash
-issue-spec init --repo owner/repo --create-labels --tools codex,claude --delivery both
+issue-spec init --repo owner/repo --tools codex,claude --delivery both
 ```
+
+Initialization ensures the issue-spec workflow labels by default. Use `--skip-labels` only when the repository labels are managed separately.
 
 Then use the generated skills or slash-command style workflows from your agent:
 
@@ -132,16 +161,20 @@ issue-spec auth status --hostname ghe.example.com --json
 ## Runner: Comment-Triggered Workflows
 
 `issue-spec runner` watches authorized issue command comments and dispatches
-Codex or Claude through acpx in managed repository workspaces.
+Codex or Claude through acpx in managed repository workspaces. `/new` creates a
+public session, and any authorized maintainer with repository write permission
+can continue it with `/resume <public-session-id> ...`, enabling agent handoff
+across people.
 
 ```bash
 issue-spec runner preflight --repo owner/repo --runner "$(gh api user --jq .login)"
 issue-spec runner poll --repo owner/repo --runner "$(gh api user --jq .login)" --agent codex
 ```
 
-See the **[runner operations guide](docs/runner.md)** for command intake,
+See the **[GitHub runner operations guide](docs/runner.md)** for command intake,
 authorization, notification identities, sandboxing, concurrency, workspaces,
-recovery, and all runner options.
+recovery, and all runner options. A self-hosted server uses webhook-driven
+`runner serve`; see the **[self-hosted Runner guide](docs/self-hosting/runner.md)**.
 
 ## Why issue-spec
 
@@ -183,14 +216,16 @@ The implement issue records the DAG:
 - linked TASK/SPEC comments
 - status, blockers, and verification evidence
 
-For non-trivial changes, the DAG should include dedicated review PROCESS nodes, not only implementation PROCESS nodes. A coordinator may run multiple review agents in parallel when their review scopes are independent, such as CLI/API behavior, workflow documentation, tests, compatibility, or security-sensitive surfaces. Small changes may be implemented and reviewed by the coordinator directly, but the implement or verify record should state that the task was intentionally kept serial.
+Coding may be done inline by the coordinator or delegated to a worker sub-agent; delegation is the recommended default for context isolation, not a hard requirement. A coordinator-authored inline node uses `workspace_management: independent` and skips prepare/child/complete/integrate, but `independent` remains the general self-managed mode for external or human executors too and does not force those executors into the coordinator checkout. Review is a MUST for any change-bearing work, and it must be performed by a different agent than the code author: the DAG must include dedicated review PROCESS nodes, and a review PROCESS whose reviewer `--agent` name matches a code author of the same SPEC fails the final gate (`process.review.author_conflict`). The coordinator may author code inline and keep a chain serial, but it must not review its own code — route the review through an independent reviewing agent instead. A coordinator may run multiple review agents in parallel when their review scopes are independent, such as CLI/API behavior, workflow documentation, tests, compatibility, or security-sensitive surfaces. Final PR rationale is written by the code author only after independent review and all fixes converge.
 
 Coordinator execution follows a ready-node loop:
 
 - select PROCESS nodes whose dependencies are done and whose write/review scopes do not overlap
-- dispatch independent worker or review agents in parallel when that reduces context size without creating integration risk
-- integrate completed worker outputs by dependency order and add PR rationale for the changed lines
-- route P0/P1 review findings back to the owner PROCESS before final verification
+- execute coordinator-inline nodes in the integration checkout, or dispatch delegated managed workers when that reduces context size without creating integration risk
+- validate and integrate delegated worker outputs by dependency order; collect commit, test, and applicable handoff evidence for every path
+- dispatch independent review agents only after the code is reviewable
+- route P0/P1 review findings back to the owner PROCESS and converge all fixes
+- only after review/fix convergence, have each code author add final PR rationale for its changed lines
 - mark review PROCESS nodes done only after their review evidence is recorded and blocking findings are resolved
 
 The CLI does not act as a scheduler that launches agents automatically. It provides the shared state, links, and gates that let a coordinator safely split work across multiple agents without losing traceability.
@@ -211,6 +246,8 @@ Final verification checks unresolved blocking questions, traceability, P0/P1 fin
 ### Safe workflow gates and proportional evidence
 
 Use `status --gate proposal|design|implement|final|archive --json` to forecast the next boundary, `comment transition` with an observed version or digest for a single safe mutation, and `workflow reconcile --plan ... --checkpoint ... --json` for resumable dependency-ordered batches. Run `doctor agent --operation ... --json` before delegated workspace or worker allocation. PROCESS nodes now declare one of five execution classes so change-bearing, review, verification, orchestration, and external work use truthful evidence carriers instead of all requiring arbitrary line rationale.
+
+Delegated workspaces are selected by an exact PROCESS id and managed with `workflow workspace prepare|inspect|complete|integrate|reconcile|cleanup`. Runner commands address a public session, not a PROCESS: the runner keeps exactly one ACPX coordinator in the session clone, the coordinator selects a ready PROCESS from the typed DAG, and a runtime-native child works in the exact prepared worktree without starting nested ACPX. The coordinator owns the PROCESS lifecycle, validates the child's commit, tests, and handoff, and completes or integrates from the unchanged session clone. After resume or restart the top-level runner recovers only the ACPX/session job; the coordinator inspects or reconciles the exact PROCESS lease. Session-clone retention consults `git worktree list` and fails closed by retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails; it does not clean child PROCESS workspaces. Review and verification use detached workflow snapshots with dirty-state rejection, but native children share the coordinator's outer sandbox rather than receiving a separate OS sandbox. Workspace cleanup is an owner-token-authorized destructive command that does not decide integration or retention eligibility for its caller. See the [reference](docs/reference.md#process-workspaces) and [runner guide](docs/runner.md).
 
 See [Workflow safety, reconciliation, and PROCESS evidence](docs/workflow-safety.md) for the commands, atomicity boundary, strict credential policy, resume behavior, and complete evidence matrix.
 
@@ -249,7 +286,7 @@ issue-spec init --repo owner/repo --tools codex,claude --delivery both
 - Claude skills are written to `.claude/skills/issue-spec-*`.
 - Both skill sets also include a generated `.*/skills/issue-spec-github/SKILL.md` support skill for adjacent GitHub CLI operations that issue-spec does not wrap directly.
 - Claude slash commands are written to `.claude/commands/issue-spec/*.md`, invoked like `/issue-spec:propose`.
-- Codex slash prompts are written to `${CODEX_HOME:-~/.codex}/prompts/issue-spec-*.md` for compatibility with Codex custom prompts. Codex custom prompts are deprecated by current Codex docs; prefer skills for shared workflows.
+- User-global Codex prompts are not modified by default. Use `--install-global-prompts` to explicitly install compatibility prompts under `${CODEX_HOME:-~/.codex}/prompts`; use `--global-prompts-dir <dir>` for an isolated destination and `--global-prompts-dry-run` to preview every absolute target path without writing. Codex custom prompts are deprecated by current Codex docs; prefer skills for shared workflows.
 - `--delivery skills` writes only skills; `--delivery commands` writes only slash commands.
 
 If `--tools` is omitted, init detects existing `.agents` or `.claude` directories and refreshes those workflows. Use `--tools none` to initialize only `.issue-spec/config.json` and optional labels.

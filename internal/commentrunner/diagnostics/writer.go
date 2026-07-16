@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,11 +19,11 @@ type Writer struct {
 
 // NewWriter creates a new writer for the given file path
 func NewWriter(path string, redactor *Redactor) (*Writer, error) {
-	if err := os.MkdirAll(filepath.Dir(path), DefaultDirMode); err != nil {
+	if err := secureDirectory(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("create directory: %w", err)
 	}
 
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, DefaultFileMode)
+	file, err := openPrivateAppendFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("open file: %w", err)
 	}
@@ -38,6 +39,9 @@ func NewWriter(path string, redactor *Redactor) (*Writer, error) {
 func (w *Writer) WriteEvent(event Event) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if err := verifyOpenFilePath(w.path, w.file); err != nil {
+		return err
+	}
 
 	// Apply redaction before writing
 	if w.redactor != nil {
@@ -63,6 +67,9 @@ func (w *Writer) WriteEvent(event Event) error {
 func (w *Writer) WriteBytes(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if err := verifyOpenFilePath(w.path, w.file); err != nil {
+		return 0, err
+	}
 
 	// Apply redaction before writing
 	if w.redactor != nil {
@@ -81,7 +88,9 @@ func (w *Writer) WriteBytes(data []byte) (int, error) {
 func (w *Writer) Sync() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
+	if err := verifyOpenFilePath(w.path, w.file); err != nil {
+		return err
+	}
 	return w.file.Sync()
 }
 
@@ -90,10 +99,10 @@ func (w *Writer) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if err := w.file.Sync(); err != nil {
-		return err
-	}
-	return w.file.Close()
+	pathErr := verifyOpenFilePath(w.path, w.file)
+	syncErr := w.file.Sync()
+	closeErr := w.file.Close()
+	return errors.Join(pathErr, syncErr, closeErr)
 }
 
 // Path returns the file path
@@ -105,6 +114,9 @@ func (w *Writer) Path() string {
 func (w *Writer) Size() (int64, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if err := verifyOpenFilePath(w.path, w.file); err != nil {
+		return 0, err
+	}
 
 	info, err := w.file.Stat()
 	if err != nil {

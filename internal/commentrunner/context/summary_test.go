@@ -1,6 +1,7 @@
 package contextbundle
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -67,6 +68,59 @@ func TestParseCoordinatorSummaryAcceptsDiagnosticLevelAlias(t *testing.T) {
 	}
 }
 
+func TestParseCoordinatorSummaryAcceptsDiagnosticCode(t *testing.T) {
+	summary, err := ParseCoordinatorSummary([]byte(`{
+  "status": "completed",
+  "diagnostics": [
+    {"code": "selector_echo", "message": "selector=claude; agent kind confirmed"}
+  ]
+}`), SummaryBounds{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := summary.Diagnostics[0].Code; got != "selector_echo" {
+		t.Fatalf("diagnostic code = %q, want selector_echo", got)
+	}
+	if got := summary.Diagnostics[0].Message; got != "selector=claude; agent kind confirmed" {
+		t.Fatalf("diagnostic message = %q", got)
+	}
+}
+
+func TestDiagnosticSummaryUnmarshalJSONResetsReusedReceiver(t *testing.T) {
+	var diagnostic DiagnosticSummary
+	for _, test := range []struct {
+		name string
+		json string
+		want DiagnosticSummary
+	}{
+		{
+			name: "coded object",
+			json: `{"code":"selector_echo","severity":"info","message":"selector confirmed"}`,
+			want: DiagnosticSummary{Code: "selector_echo", Severity: "info", Message: "selector confirmed"},
+		},
+		{
+			name: "string clears object fields",
+			json: `"plain diagnostic"`,
+			want: DiagnosticSummary{Message: "plain diagnostic"},
+		},
+		{
+			name: "object with omitted fields stays clear",
+			json: `{"message":"object diagnostic"}`,
+			want: DiagnosticSummary{Message: "object diagnostic"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			diagnostic = DiagnosticSummary{Code: "stale", Severity: "warning", Message: "stale"}
+			if err := json.Unmarshal([]byte(test.json), &diagnostic); err != nil {
+				t.Fatal(err)
+			}
+			if diagnostic != test.want {
+				t.Fatalf("diagnostic = %+v, want %+v", diagnostic, test.want)
+			}
+		})
+	}
+}
+
 func TestParseCoordinatorSummaryRejectsMalformedOrOversizedOutput(t *testing.T) {
 	_, err := ParseCoordinatorSummary([]byte(`{"status":"queued"}`), SummaryBounds{})
 	if err == nil {
@@ -87,6 +141,14 @@ func TestParseCoordinatorSummaryRejectsMalformedOrOversizedOutput(t *testing.T) 
 }`), SummaryBounds{MaxOutputBytes: 3})
 	if err == nil || !strings.Contains(err.Error(), "stdout_summary exceeds limit") {
 		t.Fatalf("expected stdout bound failure, got %v", err)
+	}
+
+	_, err = ParseCoordinatorSummary([]byte(`{
+  "status": "completed",
+  "diagnostics": [{"category": "runtime", "message": "unknown fields stay rejected"}]
+}`), SummaryBounds{})
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("expected unknown diagnostic field failure, got %v", err)
 	}
 }
 

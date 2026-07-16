@@ -18,6 +18,9 @@ import (
 )
 
 func TestAuthStatusJSONIncludesBackendDiagnosticsWithoutToken(t *testing.T) {
+	t.Setenv(auth.ProfileEnv, "")
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
+	t.Chdir(t.TempDir())
 	const secret = "secret-token-value"
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
@@ -165,6 +168,7 @@ exit 1
 
 func TestAuthStatusJSONRedactsRESTErrorBodyToken(t *testing.T) {
 	clearCommandAuthEnv(t)
+	t.Setenv(auth.ProfileEnv, "")
 	const secret = "rest-error-body-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer "+secret {
@@ -264,6 +268,9 @@ func TestAuthTokenPlainForGHUsesExplicitTokenProvider(t *testing.T) {
 }
 
 func TestAuthTokenJSONIncludeTokenForGHUsesExplicitTokenProvider(t *testing.T) {
+	t.Setenv(auth.ProfileEnv, "")
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
+	t.Chdir(t.TempDir())
 	const secret = "gh-secret-token"
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
@@ -294,6 +301,40 @@ func TestAuthTokenJSONIncludeTokenForGHUsesExplicitTokenProvider(t *testing.T) {
 	}
 	if got.Token != secret || got.Backend.Name != "gh" || got.Backend.SelectionSource != "override:gh" {
 		t.Fatalf("unexpected token JSON: %+v", got)
+	}
+}
+
+func TestResolveAuthLoginProfilePreservesTrustedSelfHostedOperatorSettings(t *testing.T) {
+	clearCommandAuthEnv(t)
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
+	existing := auth.Profile{
+		Name: "team", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "issue-spec:team",
+		OperatorRegistryFile: "/opt/issue-spec/providers.json",
+		OnboardingPolicy:     auth.OnboardingPolicy{AllowRepositoryCreate: true, AllowSourceBinding: true},
+	}
+	if err := auth.SaveProfile(existing, false); err != nil {
+		t.Fatal(err)
+	}
+
+	flags := authLoginProfileFlags{Name: "team", Kind: "self-hosted", APIURL: existing.APIURL,
+		NativeAPIURL: existing.NativeAPIURL, WebURL: existing.WebURL, InstanceID: existing.ServerInstanceID}
+	resolved, configured, err := resolveAuthLoginProfile(flags, "issues.example.test")
+	if err != nil || !configured {
+		t.Fatalf("resolveAuthLoginProfile error = %v configured=%v", err, configured)
+	}
+	if resolved.OperatorRegistryFile != existing.OperatorRegistryFile || resolved.OnboardingPolicy != existing.OnboardingPolicy {
+		t.Fatalf("trusted realm lost operator settings: %+v", resolved)
+	}
+
+	flags.InstanceID = "issue-spec:other"
+	resolved, configured, err = resolveAuthLoginProfile(flags, "issues.example.test")
+	if err != nil || !configured {
+		t.Fatalf("resolveAuthLoginProfile changed realm error = %v configured=%v", err, configured)
+	}
+	if resolved.OperatorRegistryFile != "" || resolved.OnboardingPolicy != (auth.OnboardingPolicy{}) {
+		t.Fatalf("changed realm inherited operator settings: %+v", resolved)
 	}
 }
 
@@ -427,6 +468,8 @@ func TestAuthLoginWithoutTokenFallsBackToRESTWhenGHMissing(t *testing.T) {
 }
 
 func TestInitJSONIncludesBackendDiagnostics(t *testing.T) {
+	t.Setenv(auth.ProfileEnv, "")
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
 	t.Chdir(t.TempDir())
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
@@ -445,6 +488,9 @@ func TestInitJSONIncludesBackendDiagnostics(t *testing.T) {
 		return fakeGitHubBackend{
 			info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
 			user: github.User{Login: "octocat"},
+			createLabel: func(_ context.Context, _ string, name, _, _ string) (github.LabelResult, error) {
+				return github.LabelResult{Name: name, Skipped: true}, nil
+			},
 		}, nil
 	}
 
@@ -588,6 +634,8 @@ func TestDefaultGitHubBackendTokenForGHUsesProvider(t *testing.T) {
 
 func TestAuthLoginAndStatusUseNamedSelfHostedProfile(t *testing.T) {
 	clearCommandAuthEnv(t)
+	t.Setenv(auth.ProfileEnv, "")
+	t.Chdir(t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/user" || r.Header.Get("Authorization") != "Bearer profile-secret" {
 			t.Fatalf("request = %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
@@ -611,7 +659,7 @@ func TestAuthLoginAndStatusUseNamedSelfHostedProfile(t *testing.T) {
 	if strings.Contains(out.String()+errOut.String(), "profile-secret") {
 		t.Fatalf("login leaked token: stdout=%q stderr=%q", out.String(), errOut.String())
 	}
-	profile, source, err := auth.ResolveProfile("", "github.com")
+	profile, source, err := auth.ResolveProfileAt("", "github.com", t.TempDir())
 	if err != nil || source != "config" || profile.Name != "staging" {
 		t.Fatalf("default profile = %+v source=%q err=%v", profile, source, err)
 	}
@@ -727,6 +775,8 @@ func TestAuthStatusSelfHostedRunnerUsesTokenFileWithoutGH(t *testing.T) {
 
 func TestOrdinaryClientUsesSavedDefaultSelfHostedProfile(t *testing.T) {
 	clearCommandAuthEnv(t)
+	t.Setenv(auth.ProfileEnv, "")
+	t.Chdir(t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer default-secret" {
 			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
@@ -777,7 +827,7 @@ func clearCommandAuthEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv(auth.GitHubBackendEnv, "")
 	t.Setenv(auth.GitHubBackendAPIURLEnv, "")
-	t.Setenv(auth.ProfileEnv, "")
+	t.Setenv(auth.ProfileEnv, auth.DefaultProfileName)
 	t.Setenv("ISSUE_SPEC_TOKEN", "")
 	t.Setenv(auth.IssueSpecTokenFileEnv, "")
 	t.Setenv("GH_TOKEN", "")
@@ -846,6 +896,7 @@ type fakeGitHubBackend struct {
 	updatePullRequest func(context.Context, string, int, github.UpdatePullRequestOptions) (github.PullRequest, error)
 	createComment     func(context.Context, string, int, string) (github.Comment, error)
 	updateComment     func(context.Context, string, int64, string) (github.Comment, error)
+	createLabel       func(context.Context, string, string, string, string) (github.LabelResult, error)
 
 	listPRReviewComments func(context.Context, string, int) ([]github.PullRequestReviewComment, error)
 }
@@ -900,7 +951,10 @@ func (f fakeGitHubBackend) UpdateComment(ctx context.Context, repo string, comme
 	return github.Comment{}, errors.New("unused")
 }
 
-func (fakeGitHubBackend) CreateLabel(context.Context, string, string, string, string) (github.LabelResult, error) {
+func (f fakeGitHubBackend) CreateLabel(ctx context.Context, repo, name, color, description string) (github.LabelResult, error) {
+	if f.createLabel != nil {
+		return f.createLabel(ctx, repo, name, color, description)
+	}
 	return github.LabelResult{}, errors.New("unused")
 }
 

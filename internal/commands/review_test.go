@@ -101,6 +101,41 @@ func TestBuildReviewSyncReportResolvedFindingReply(t *testing.T) {
 	}
 }
 
+func TestBuildReviewSyncReportRetainsProviderOwnedRevisions(t *testing.T) {
+	finding, err := model.RenderFindingBody("Review", "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Fix this.", "open", "b.go", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := model.RenderFindingReplyBody("Review", "FINDING-001", "PROCESS-001", "resolved", "Re-checked old revision.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := buildReviewSyncReport(github.PullRequest{Number: 4}, []github.PullRequestReviewComment{
+		{ID: 2, Body: finding, CommitID: "finding-head", Path: "b.go", Line: 20},
+		{ID: 3, InReplyToID: 2, Body: reply, CommitID: "reviewed-old-head"},
+	}, nil, github.CombinedStatus{Statuses: []github.Status{{Context: "legacy", State: "success"}}}, []github.CheckRun{
+		{ID: 9, Name: "unit", HeadSHA: "checked-new-head", Status: "completed", Conclusion: "success"},
+	})
+	if got := report.ResolvedFindings[0]; got.SubjectRevision != "reviewed-old-head" || got.RevisionSource != "github-pr-review-comment:3" {
+		t.Fatalf("resolved finding revision = %+v", got)
+	}
+	if len(report.PassedChecks) != 2 {
+		t.Fatalf("passed checks = %+v", report.PassedChecks)
+	}
+	for _, check := range report.PassedChecks {
+		switch check.Name {
+		case "legacy":
+			if check.Trusted || check.SubjectRevision != "" {
+				t.Fatalf("revisionless status context became trusted: %+v", check)
+			}
+		case "unit":
+			if !check.Trusted || check.SubjectRevision != "checked-new-head" {
+				t.Fatalf("check-run head not retained: %+v", check)
+			}
+		}
+	}
+}
+
 func TestBuildReviewSyncReportWorkerReplyAloneDoesNotResolve(t *testing.T) {
 	finding, err := model.RenderFindingBody("Review Agent", "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Fix this before merge.", "open", "b.go", 20)
 	if err != nil {

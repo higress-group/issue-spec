@@ -1,9 +1,11 @@
 package state
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -11,7 +13,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/capability"
 )
 
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 type LifecycleStatus string
 
@@ -40,6 +42,36 @@ type RunnerState struct {
 	StatusWritebacks map[string]StatusWriteback   `json:"status_writebacks,omitempty"`
 	Deliveries       map[string]WebhookDelivery   `json:"webhook_deliveries,omitempty"`
 	Idempotency      IdempotencyIndex             `json:"idempotency,omitempty"`
+}
+
+// UnmarshalJSON keeps schema v6 as the persistence boundary while removing the
+// short-lived runner-owned PROCESS association store. The two explicitly known
+// legacy top-level fields are accepted and dropped; every other unknown field
+// remains a fail-closed error. A subsequent save emits only the current shape.
+func (s *RunnerState) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("decode runner state: %w", err)
+	}
+	delete(fields, "seen_comments")
+	delete(fields, "process_workspaces")
+	clean, err := json.Marshal(fields)
+	if err != nil {
+		return fmt.Errorf("decode runner state: %w", err)
+	}
+	type alias RunnerState
+	var decoded alias
+	decoder := json.NewDecoder(bytes.NewReader(clean))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("decode runner state: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("decode runner state: unexpected trailing JSON")
+	}
+	*s = RunnerState(decoded)
+	return nil
 }
 
 type DeliveryStatus string
@@ -241,6 +273,37 @@ type Job struct {
 	Diagnostics           []string                  `json:"diagnostics,omitempty"`
 }
 
+func (j *Job) UnmarshalJSON(data []byte) error {
+	// State schema v6 briefly persisted runner-owned PROCESS selection and
+	// workspace assignment fields. They belonged to the removed top-level
+	// coordinator rebinding path. Accept those two legacy keys so existing v6
+	// state can be opened, but discard them before strict decoding; the next save
+	// naturally writes the corrected schema without either field.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("decode job: %w", err)
+	}
+	delete(fields, "exact_process_id")
+	delete(fields, "process_workspace_assignment")
+	clean, err := json.Marshal(fields)
+	if err != nil {
+		return fmt.Errorf("decode job: %w", err)
+	}
+	type alias Job
+	var decoded alias
+	decoder := json.NewDecoder(bytes.NewReader(clean))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("decode job: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("decode job: unexpected trailing JSON")
+	}
+	*j = Job(decoded)
+	return nil
+}
+
 type CredentialCleanupStatus string
 
 const (
@@ -284,6 +347,11 @@ type PublicSession struct {
 	IssueNumber       int                       `json:"issue_number,omitempty"`
 	AcpxRecordID      string                    `json:"acpx_record_id"`
 	CreatorLogin      string                    `json:"creator_login,omitempty"`
+	// CoordinatorKind is the acpx agent bound to this session at `/new`. It is
+	// reused by every `/resume` turn so a session's workspace/history stays
+	// coherent with a single agent. Empty for sessions created before per-command
+	// agent selection; readers fall back to the runner's configured default.
+	CoordinatorKind   string                    `json:"coordinator_kind,omitempty"`
 	Status            LifecycleStatus           `json:"status,omitempty"`
 	Acpx              AcpxMetadata              `json:"acpx,omitempty"`
 	Workspace         WorkspaceMetadata         `json:"workspace,omitempty"`
@@ -346,12 +414,54 @@ type SessionQueue struct {
 	AcceptedSequence int64    `json:"accepted_sequence,omitempty"`
 }
 
+func (q *SessionQueue) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("decode session queue: %w", err)
+	}
+	delete(fields, "heartbeat_at")
+	clean, err := json.Marshal(fields)
+	if err != nil {
+		return fmt.Errorf("decode session queue: %w", err)
+	}
+	type alias SessionQueue
+	var decoded alias
+	decoder := json.NewDecoder(bytes.NewReader(clean))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("decode session queue: %w", err)
+	}
+	*q = SessionQueue(decoded)
+	return nil
+}
+
 type SessionLock struct {
 	OwnerJobID         string    `json:"owner_job_id,omitempty"`
 	AcquiredAt         time.Time `json:"acquired_at,omitempty"`
 	WorkspaceLockToken string    `json:"workspace_lock_token,omitempty"`
 	WorkspaceLockPath  string    `json:"workspace_lock_path,omitempty"`
 	StaleRecoveredAt   time.Time `json:"stale_recovered_at,omitempty"`
+}
+
+func (l *SessionLock) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("decode session lock: %w", err)
+	}
+	delete(fields, "heartbeat_at")
+	clean, err := json.Marshal(fields)
+	if err != nil {
+		return fmt.Errorf("decode session lock: %w", err)
+	}
+	type alias SessionLock
+	var decoded alias
+	decoder := json.NewDecoder(bytes.NewReader(clean))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("decode session lock: %w", err)
+	}
+	*l = SessionLock(decoded)
+	return nil
 }
 
 type Cancellation struct {
@@ -427,6 +537,7 @@ type SandboxMetadata struct {
 	EnvDecisions     []string          `json:"env_decisions,omitempty"`
 	TempPaths        map[string]string `json:"temp_paths,omitempty"`
 	MountPlanSummary string            `json:"mount_plan_summary,omitempty"`
+	AgentRuntime     string            `json:"agent_runtime,omitempty"`
 	Diagnostics      string            `json:"diagnostics,omitempty"`
 	CheckedAt        time.Time         `json:"checked_at,omitempty"`
 }
@@ -528,6 +639,22 @@ func (s *RunnerState) Normalize() {
 		}
 		s.Repositories[key] = repo
 	}
+	// A legacy v6 runner could persist the top-level ACPX cwd as a PROCESS
+	// worktree. The coordinator now always owns the session integration clone,
+	// so make the stored session workspace authoritative during migration and
+	// restart. Empty historical CWD values remain empty.
+	for key, job := range s.Jobs {
+		if job.Acpx.CWD != "" && job.Workspace.Path != "" {
+			job.Acpx.CWD = job.Workspace.Path
+			s.Jobs[key] = job
+		}
+	}
+	for key, session := range s.PublicSessions {
+		if session.Acpx.CWD != "" && session.Workspace.Path != "" {
+			session.Acpx.CWD = session.Workspace.Path
+			s.PublicSessions[key] = session
+		}
+	}
 	for id, job := range s.Jobs {
 		if job.ID == "" {
 			job.ID = id
@@ -574,6 +701,16 @@ func (s *RunnerState) Normalize() {
 	// Backstop: drop idempotency index entries whose target record no longer
 	// exists so a re-delivered command never resolves to a missing record.
 	s.dropDanglingIndexes()
+}
+
+// Validate is the persistence-boundary validation for the complete runner
+// state. Schema v6 remains the compatibility boundary after dropping the
+// short-lived runner-owned PROCESS assignment fields.
+func (s RunnerState) Validate() error {
+	if s.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("unsupported runner state schema version %d", s.SchemaVersion)
+	}
+	return nil
 }
 
 func PublicSessionKey(repo, publicSessionID string) string {

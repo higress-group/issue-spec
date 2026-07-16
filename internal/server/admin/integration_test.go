@@ -382,6 +382,10 @@ func TestServiceAccountManagedPATRecoveryAndRollback(t *testing.T) {
 	otherOrg := createOrganization(t, service, actor, "other-org")
 	actor.RequestID = "credential-repo"
 	repo := createRepository(t, service, actor, org.ID, "evidence-repo")
+	emptyAccounts, err := service.ListServiceAccounts(t.Context(), org.ID, false)
+	if err != nil || emptyAccounts == nil || len(emptyAccounts) != 0 {
+		t.Fatalf("empty ListServiceAccounts = %+v, %v", emptyAccounts, err)
+	}
 	actor.RequestID = "service-account-create"
 	account, err := service.CreateServiceAccount(t.Context(), actor, org.ID,
 		adminservice.CreateServiceAccountInput{Name: "evidence-writer"})

@@ -7,18 +7,23 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
+	"github.com/higress-group/issue-spec/internal/commentrunner/credentials"
 	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
 	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/github"
+	"github.com/higress-group/issue-spec/internal/sandbox"
 )
 
 func TestRootUsageDocumentsRunnerCommand(t *testing.T) {
@@ -105,6 +110,11 @@ func TestRunnerPreflightHelpShowsSharedOptionsOnly(t *testing.T) {
 		"maximum concurrent runner jobs (default: 3)",
 		"--workspace-retention duration",
 		"(default: 168h0m0s)",
+		"--verify-agent-runtime",
+		"create a tools-denied Codex ACP session",
+		"--allow-host-ssh",
+		"--git-author-name",
+		"--git-author-email",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("runner preflight help missing %q:\n%s", want, text)
@@ -141,6 +151,181 @@ func TestIssueSpecBinaryForRunnerFallsBackToCommandName(t *testing.T) {
 
 	if got := issueSpecBinaryForRunner(); got != "issue-spec" {
 		t.Fatalf("issueSpecBinaryForRunner() = %q", got)
+	}
+}
+
+func TestRunSandboxedAgentRuntimeCommandUsesIsolatedRuntimePaths(t *testing.T) {
+	hostHome := t.TempDir()
+	t.Setenv("HOME", hostHome)
+	t.Setenv("CODEX_HOME", filepath.Join(hostHome, "missing-codex"))
+	ghConfig := filepath.Join(hostHome, "gh")
+	if err := os.MkdirAll(ghConfig, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ghConfig, "hosts.yml"), []byte("github.com:\n  oauth_token: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probe := filepath.Join(t.TempDir(), "probe.sh")
+	if err := os.WriteFile(probe, []byte("#!/bin/sh\nprintf '%s|%s|%s' \"$HOME\" \"$CODEX_HOME\" \"$PWD\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := commentrunner.Config{UnsafeNoSandbox: true, GHConfigDir: ghConfig, Agent: commentrunner.DefaultAgentConfig()}
+	output, err := runSandboxedAgentRuntimeCommand(t.Context(), cfg, probe, "--ignored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(string(output), "|")
+	if len(parts) != 3 {
+		t.Fatalf("probe output = %q", output)
+	}
+	if parts[0] == hostHome || !strings.Contains(parts[0], "issue-spec-runner-preflight-") ||
+		!strings.Contains(parts[1], "issue-spec-runner-preflight-") || !strings.HasSuffix(parts[2], string(filepath.Separator)+"workspace") {
+		t.Fatalf("probe runtime paths = %#v, host home = %q", parts, hostHome)
+	}
+}
+
+func TestRunSandboxedAgentRuntimeCommandMatchesUnsafeHostSSHRuntime(t *testing.T) {
+	sshHome := t.TempDir()
+	sshDir := filepath.Join(sshHome, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(sshHome, ".acpx"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sshHome, ".acpx", "config.json"), []byte(`{"agents":{"codex":{"command":"npx","args":["-y","@agentclientprotocol/codex-acp@1.1.2"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldCurrent, oldNew := currentRunnerHostSSHConfig, newRunnerHostSSHProvider
+	currentRunnerHostSSHConfig = func(string) (credentials.HostSSHGitProviderConfig, error) {
+		return credentials.HostSSHGitProviderConfig{SSHDir: sshDir}, nil
+	}
+	newRunnerHostSSHProvider = credentials.NewHostSSHGitProvider
+	t.Cleanup(func() { currentRunnerHostSSHConfig, newRunnerHostSSHProvider = oldCurrent, oldNew })
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HTTP_PROXY", "http://proxy.example.test:8080")
+	ghConfig := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ghConfig, "hosts.yml"), []byte("github.com:\n  oauth_token: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probe := filepath.Join(t.TempDir(), "probe.sh")
+	if err := os.WriteFile(probe, []byte("#!/bin/sh\nprintf '%s|%s|%s|%s' \"$HOME\" \"$CODEX_HOME\" \"$HTTP_PROXY\" \"$(grep -c codex-acp \"$HOME/.acpx/config.json\")\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := commentrunner.Config{UnsafeNoSandbox: true, AllowHostSSH: true, GHConfigDir: ghConfig, Agent: commentrunner.DefaultAgentConfig()}
+	output, err := runSandboxedAgentRuntimeCommand(t.Context(), cfg, probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(string(output), "|")
+	if len(parts) != 4 || parts[0] != sshHome || !strings.Contains(parts[1], "issue-spec-runner-preflight-") ||
+		parts[2] != "http://proxy.example.test:8080" || parts[3] != "1" {
+		t.Fatalf("host SSH runtime = %#v, want HOME=%q isolated CODEX_HOME inherited proxy and host ACPX override", parts, sshHome)
+	}
+}
+
+func TestRunnerRuntimeHostHomePrefersExplicitHostSSHAccount(t *testing.T) {
+	sshHome := t.TempDir()
+	environmentHome := t.TempDir()
+	home, err := runnerRuntimeHostHome(sandbox.Config{
+		HostSSHDir: filepath.Join(sshHome, ".ssh"),
+		HostEnv:    []string{"HOME=" + environmentHome},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home != sshHome {
+		t.Fatalf("runtime host HOME = %q, want host SSH account %q", home, sshHome)
+	}
+}
+
+func TestRunSandboxedAgentRuntimeCommandClassifiesPrepareAdapterError(t *testing.T) {
+	hostHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(hostHome, ".acpx"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostHome, ".acpx", "config.json"), []byte(`{must-not-leak`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runSandboxedAgentRuntimeCommandWithConfig(t.Context(),
+		commentrunner.Config{UnsafeNoSandbox: true, Agent: commentrunner.DefaultAgentConfig()},
+		sandbox.Config{UnsafeNoSandbox: true, HostEnv: []string{"HOME=" + hostHome}},
+		"/bin/true")
+	var classified *commentrunner.AgentRuntimeProbeError
+	if !errors.As(err, &classified) || classified.Kind != commentrunner.AgentRuntimeFailureAdapter {
+		t.Fatalf("prepare error = %v (%T), want bounded adapter category", err, err)
+	}
+	if strings.Contains(err.Error(), "must-not-leak") || err.Error() != "agent runtime probe adapter" {
+		t.Fatalf("prepare error exposed raw adapter diagnostics: %q", err.Error())
+	}
+}
+
+func TestRunnerPreflightParsesServeParityAndGitAuthorFlags(t *testing.T) {
+	clearCommandAuthEnv(t)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	cfg, _, ok := app.parseRunnerOptions([]string{"--repo", "o/r", "--runner", "runner-bot",
+		"--state", filepath.Join(t.TempDir(), "state.json"), "--workspace-root", t.TempDir(),
+		"--unsafe-no-sandbox", "--allow-host-ssh", "--git-author-name", "Issue Spec Runner",
+		"--git-author-email", "runner@example.test"}, false)
+	if !ok {
+		t.Fatalf("parse failed: %s", errOut.String())
+	}
+	if !cfg.AllowHostSSH || !cfg.UnsafeNoSandbox || cfg.GitAuthorName != "Issue Spec Runner" || cfg.GitAuthorEmail != "runner@example.test" {
+		t.Fatalf("parsed config = %+v", cfg)
+	}
+}
+
+func TestRunnerPreflightRejectsHostSSHForGitHubBeforeRuntimeResolution(t *testing.T) {
+	clearCommandAuthEnv(t)
+	oldCurrent := currentRunnerHostSSHConfig
+	currentRunnerHostSSHConfig = func(string) (credentials.HostSSHGitProviderConfig, error) {
+		t.Fatal("GitHub poll preflight must reject host SSH before resolving host credentials")
+		return credentials.HostSSHGitProviderConfig{}, nil
+	}
+	t.Cleanup(func() { currentRunnerHostSSHConfig = oldCurrent })
+
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	cfg := commentrunner.Config{
+		Profile: auth.DefaultProfileName, Hostname: "github.com", Repositories: []string{"o/r"}, RunnerIdentity: "runner-bot",
+		StatePath: filepath.Join(t.TempDir(), "state.json"), PollInterval: commentrunner.NewDuration(time.Minute),
+		FallbackInterval: commentrunner.NewDuration(time.Hour), MaxConcurrentJobs: 1, AcpxPath: "acpx",
+		Agent: commentrunner.DefaultAgentConfig(), WorkspaceRoot: t.TempDir(), WorkspaceRetention: commentrunner.NewDuration(time.Hour),
+		UnsafeNoSandbox: true, AllowHostSSH: true,
+	}
+	report := app.runRunnerPreflightWithOptions(t.Context(), cfg, commentrunner.PreflightOptions{VerifyAgentRuntime: true})
+	if report.OK {
+		t.Fatalf("GitHub poll preflight unexpectedly accepted host SSH: %+v", report)
+	}
+	check := runnerPreflightCheck(t, report, "host-ssh-transport")
+	if check.Status != commentrunner.CheckError || !strings.Contains(check.Detail, "runner serve") {
+		t.Fatalf("unexpected host SSH transport report: %+v", report)
+	}
+	for _, check := range report.Checks {
+		if check.Name == "agent-runtime-probe" {
+			t.Fatalf("runtime probe ran before host SSH transport rejection: %+v", report)
+		}
+	}
+}
+
+func TestClassifyAgentRuntimeProbeFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result acpx.CommandResult
+		err    error
+		want   string
+	}{
+		{name: "timeout", result: acpx.CommandResult{Stderr: []byte("adapter timed out")}, err: errors.New("exit 1"), want: commentrunner.AgentRuntimeFailureTimeout},
+		{name: "model", result: acpx.CommandResult{Stdout: []byte(`{"error":"model unknown"}`)}, err: errors.New("exit 1"), want: commentrunner.AgentRuntimeFailureModel},
+		{name: "adapter", result: acpx.CommandResult{Stderr: []byte("npx could not initialize ACP")}, err: errors.New("exit 1"), want: commentrunner.AgentRuntimeFailureAdapter},
+		{name: "adapter error without output", err: errors.New("materialize host acpx codex agent override: token=must-not-leak"), want: commentrunner.AgentRuntimeFailureAdapter},
+		{name: "runtime", result: acpx.CommandResult{Stderr: []byte("request failed")}, err: errors.New("exit 1"), want: commentrunner.AgentRuntimeFailureRuntime},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyAgentRuntimeProbeFailure(t.Context(), tc.result, tc.err); got != tc.want {
+				t.Fatalf("classification = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -588,6 +773,49 @@ func TestRunnerPreflightProfileFlagFlowsIntoUnifiedSelectionConfig(t *testing.T)
 	}
 }
 
+func TestRunnerGlobalProfileFlagSurvivesConfigReload(t *testing.T) {
+	clearCommandAuthEnv(t)
+	if err := auth.SaveProfile(auth.Profile{
+		Name: "runner-staging", Kind: auth.ProfileKindGitHub, Hostname: "github.com",
+		APIURL: "https://api.github.com", WebURL: "https://github.com",
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name             string
+		subcommand       string
+		includePollFlags bool
+	}{
+		{name: "preflight", subcommand: "preflight"},
+		{name: "poll", subcommand: "poll", includePollFlags: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			statePath := filepath.Join(t.TempDir(), "state.json")
+			workspaceRoot := t.TempDir()
+			profileName, args, err := extractGlobalProfile([]string{
+				"runner", tc.subcommand, "--profile", "runner-staging",
+				"--repo", "o/r", "--runner", "runner-bot",
+				"--state", statePath, "--workspace-root", workspaceRoot,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var out, errOut bytes.Buffer
+			app := newApp(strings.NewReader(""), &out, &errOut)
+			app.profileName = profileName
+			cfg, _, ok := app.parseRunnerOptions(args[2:], tc.includePollFlags)
+			if !ok {
+				t.Fatalf("parse failed: stdout=%q stderr=%q", out.String(), errOut.String())
+			}
+			if cfg.Profile != "runner-staging" {
+				t.Fatalf("profile = %q, want global profile %q", cfg.Profile, "runner-staging")
+			}
+		})
+	}
+}
+
 func TestRunnerPreflightSelfHostedSkipsNotificationAndWatchCalls(t *testing.T) {
 	clearCommandAuthEnv(t)
 	profile := auth.Profile{
@@ -620,6 +848,9 @@ func TestRunnerPreflightSelfHostedSkipsNotificationAndWatchCalls(t *testing.T) {
 	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) {
 		return backend, nil
 	}
+	app.newRunnerEvidenceWriterBackend = func(context.Context, auth.GitHubBackendSelection) (commentrunner.PreflightEvidenceWriterBackend, error) {
+		return backend, nil
+	}
 	app.newRunnerNotificationBackend = func(context.Context, commentrunner.Config) (runnerNotificationBackend, error) {
 		t.Fatal("self-hosted preflight called notification backend")
 		return nil, nil
@@ -642,6 +873,9 @@ func TestRunnerPreflightSelfHostedSkipsNotificationAndWatchCalls(t *testing.T) {
 	}
 	if check := runnerPreflightCheck(t, report, "command-intake-transport"); check.Status != commentrunner.CheckOK || !strings.Contains(check.Detail, "runner serve") {
 		t.Fatalf("unexpected transport check: %+v", check)
+	}
+	if check := runnerPreflightCheck(t, report, "evidence-writer:o/r"); check.Status != commentrunner.CheckOK || !strings.Contains(check.Detail, "active Evidence Writer") {
+		t.Fatalf("unexpected Evidence Writer check: %+v", check)
 	}
 }
 
@@ -1135,6 +1369,7 @@ func TestRunnerPollDefaultsToAsyncDispatchAndDoesNotBlockNextIntake(t *testing.T
 	clearCommandAuthEnv(t)
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
+	stubRunnerCancellationDrain(app)
 	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
 		return commentrunner.PreflightReport{OK: true, Config: cfg}
 	}
@@ -1208,6 +1443,7 @@ func TestRunnerPollAsyncRunsPeriodicReconcileWhenDispatchIdle(t *testing.T) {
 	clearCommandAuthEnv(t)
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
+	stubRunnerCancellationDrain(app)
 	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
 		return commentrunner.PreflightReport{OK: true, Config: cfg}
 	}
@@ -1257,6 +1493,11 @@ func TestRunnerPollAsyncDispatchCleansWorkspacesAfterStartup(t *testing.T) {
 	if err := os.MkdirAll(expiredPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	command := exec.Command("git", "init", "-b", "main")
+	command.Dir = expiredPath
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("initialize expired Git workspace: %v: %s", err, output)
+	}
 	st := state.NewState()
 	now := time.Now().UTC()
 	if err := st.UpsertWorkspace(state.WorkspaceMetadata{
@@ -1275,6 +1516,7 @@ func TestRunnerPollAsyncDispatchCleansWorkspacesAfterStartup(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
+	stubRunnerCancellationDrain(app)
 	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
 		return commentrunner.PreflightReport{OK: true, Config: cfg}
 	}
@@ -1325,6 +1567,12 @@ func TestRunnerPollAsyncDispatchCleansWorkspacesAfterStartup(t *testing.T) {
 	}
 	if _, ok := loaded.GetWorkspace("ws-expired"); ok {
 		t.Fatalf("removed workspace still indexed: %+v", loaded.Workspaces["ws-expired"])
+	}
+}
+
+func stubRunnerCancellationDrain(app *app) {
+	app.runnerCancellationDrain = func(context.Context, commentrunner.Config) (jobs.Result, error) {
+		return jobs.Result{}, nil
 	}
 }
 
@@ -1398,6 +1646,8 @@ func requireHostCodexAuth(t *testing.T) {
 func TestRunnerBackendFlagOverridesEnvForEveryPhase(t *testing.T) {
 	requireHostCodexAuth(t)
 	clearCommandAuthEnv(t)
+	t.Setenv(auth.ProfileEnv, "")
+	t.Chdir(t.TempDir())
 	t.Setenv(auth.GitHubBackendEnv, "gh")
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
@@ -1459,6 +1709,10 @@ func (b *runnerPhaseBackend) PollNotifications(_ context.Context, opts github.No
 func (b *runnerPhaseBackend) GetRepositorySubscription(context.Context, string) (github.RepositorySubscriptionResult, error) {
 	b.repositorySubscriptionCalls++
 	return github.RepositorySubscriptionResult{Subscription: github.RepositorySubscription{Subscribed: true, Reason: "subscribed"}}, nil
+}
+
+func (b *runnerPhaseBackend) GetNativeEvidenceWriterStatus(context.Context, string) (github.NativeEvidenceWriterStatus, error) {
+	return github.NativeEvidenceWriterStatus{UserID: uuid.NewString(), Login: "runner-bot", Active: true}, nil
 }
 
 func runnerPreflightCheck(t *testing.T, report commentrunner.PreflightReport, name string) commentrunner.PreflightCheck {

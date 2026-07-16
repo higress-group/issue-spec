@@ -31,13 +31,25 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 	skipSourceBinding := fs.Bool("skip-source-binding", false, "disable profile source-binding automation for this invocation")
 	yes := fs.Bool("yes", false, "approve the displayed self-hosted remote mutation plan")
 	planOnly := fs.Bool("plan", false, "show the self-hosted init plan without mutations or local writes")
-	createLabels := fs.Bool("create-labels", false, "create issue-spec labels")
+	createLabels := fs.Bool("create-labels", true, "ensure issue-spec labels")
+	skipLabels := fs.Bool("skip-labels", false, "skip ensuring issue-spec labels")
 	tools := fs.String("tools", "", "generate workflow artifacts for AI tools: all, none, or comma-separated codex,claude")
 	delivery := fs.String("delivery", "both", "workflow artifact delivery: both, skills, or commands")
+	installGlobalPrompts := fs.Bool("install-global-prompts", false, "install user-global Codex prompts (disabled by default)")
+	globalPromptsDir := fs.String("global-prompts-dir", "", "user-global Codex prompt directory; implies --install-global-prompts")
+	globalPromptsDryRun := fs.Bool("global-prompts-dry-run", false, "preview user-global Codex prompt paths without writing them; implies --install-global-prompts")
 	language := fs.String("language", "", "preferred natural language for generated workflow artifacts (e.g. zh, en, ja); writes rules.language to issue-spec/config.yaml")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
+	}
+	if *skipLabels {
+		*createLabels = false
+	}
+	globalPromptOptions, err := resolveGlobalPromptInstallOptions(*installGlobalPrompts, *globalPromptsDir, *globalPromptsDryRun, *delivery)
+	if err != nil {
+		a.errorf("configure global Codex prompts: %v\n", err)
+		return 2
 	}
 	profile, _, err := auth.ResolveProfile(a.profileName, *host)
 	if err != nil {
@@ -49,7 +61,8 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 		SourceCloneURL: *sourceCloneURL, SourceWebURL: *sourceWebURL, DefaultBranch: *defaultBranch,
 		CreateIfMissing: *createIfMissing, BindSource: *bindSource, SkipSourceBinding: *skipSourceBinding,
 		Yes: *yes, PlanOnly: *planOnly, CreateLabels: *createLabels, Tools: *tools, Delivery: *delivery,
-		Language: *language, JSON: *jsonOut}
+		Language: *language, InstallGlobalPrompts: *installGlobalPrompts, GlobalPromptsDir: *globalPromptsDir,
+		GlobalPromptsDryRun: *globalPromptsDryRun, JSON: *jsonOut}
 	if profile.Kind == auth.ProfileKindHosted {
 		return a.runSelfHostedInit(ctx, profile, hostedOptions)
 	}
@@ -79,7 +92,7 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 		a.errorf("create .issue-spec: %v\n", err)
 		return 1
 	}
-	config := map[string]string{"repo": *repoFlag, "hostname": auth.NormalizeHost(*host)}
+	config := map[string]any{"version": 1, "repo": *repoFlag, "hostname": auth.NormalizeHost(*host), "profile": auth.DefaultProfileName}
 	data, _ := json.MarshalIndent(config, "", "  ")
 	if err := os.WriteFile(configPath, append(data, '\n'), 0o644); err != nil {
 		a.errorf("write %s: %v\n", configPath, err)
@@ -112,6 +125,10 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 		a.errorf("generate workflow artifacts: %v\n", err)
 		return 1
 	}
+	if err := installGlobalCodexPrompts(".", *repoFlag, nil, globalPromptOptions, &workflows); err != nil {
+		a.errorf("install global Codex prompts: %v\n", err)
+		return 1
+	}
 
 	result := map[string]any{"ok": true, "repo": *repoFlag, "hostname": token.Host, "auth": token, "backend": token.Backend, "config": configPath, "labels": labels, "workflows": workflows}
 	if languageConfigPath != "" {
@@ -136,19 +153,56 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 		}
 	}
 	if len(workflows.Tools) > 0 {
-		fmt.Fprintf(a.out, "workflow delivery: %s\n", workflows.Delivery)
-		if len(workflows.SkillFiles) > 0 {
-			fmt.Fprintf(a.out, "generated skills: %d\n", len(workflows.SkillFiles))
-		}
-		if len(workflows.CommandFiles) > 0 {
-			fmt.Fprintf(a.out, "generated commands: %d\n", len(workflows.CommandFiles))
-		}
-		if len(workflows.CommandsSkipped) > 0 {
-			fmt.Fprintf(a.out, "commands skipped for: %s (no adapter)\n", strings.Join(workflows.CommandsSkipped, ", "))
-		}
-		fmt.Fprintln(a.out, "restart your IDE for slash commands to take effect")
+		a.printWorkflowGeneration(workflows)
+	} else if len(workflows.GlobalPromptFiles) > 0 {
+		a.printWorkflowGeneration(workflows)
 	}
 	return 0
+}
+
+func resolveGlobalPromptInstallOptions(install bool, directory string, dryRun bool, delivery string) (globalPromptInstallOptions, error) {
+	options := globalPromptInstallOptions{
+		Enabled:   install || strings.TrimSpace(directory) != "" || dryRun,
+		Directory: directory,
+		DryRun:    dryRun,
+	}
+	if !options.Enabled {
+		return options, nil
+	}
+	normalizedDelivery, err := normalizeWorkflowDelivery(delivery)
+	if err != nil {
+		return globalPromptInstallOptions{}, err
+	}
+	if normalizedDelivery == workflowDeliverySkills {
+		return globalPromptInstallOptions{}, fmt.Errorf("--install-global-prompts requires --delivery both or commands")
+	}
+	return options, nil
+}
+
+func (a *app) printWorkflowGeneration(workflows workflowGenerationResult) {
+	fmt.Fprintf(a.out, "workflow delivery: %s\n", workflows.Delivery)
+	if len(workflows.SkillFiles) > 0 {
+		fmt.Fprintf(a.out, "repository skills: %d\n", len(workflows.SkillFiles))
+	}
+	if len(workflows.CommandFiles) > 0 {
+		fmt.Fprintf(a.out, "repository commands: %d\n", len(workflows.CommandFiles))
+	}
+	if len(workflows.CommandsSkipped) > 0 {
+		fmt.Fprintf(a.out, "repository commands skipped for: %s (no repository command adapter)\n", strings.Join(workflows.CommandsSkipped, ", "))
+	}
+	if len(workflows.GlobalPromptFiles) > 0 {
+		label := "installed user-global prompts"
+		if workflows.GlobalPromptsDryRun {
+			label = "user-global prompt dry-run"
+		}
+		fmt.Fprintf(a.out, "%s:\n", label)
+		for _, path := range workflows.GlobalPromptFiles {
+			fmt.Fprintf(a.out, "  %s\n", path)
+		}
+	}
+	if len(workflows.CommandFiles) > 0 || (len(workflows.GlobalPromptFiles) > 0 && !workflows.GlobalPromptsDryRun) {
+		fmt.Fprintln(a.out, "restart your IDE for slash commands to take effect")
+	}
 }
 
 // writeWorkflowLanguageConfig creates or updates issue-spec/config.yaml so that

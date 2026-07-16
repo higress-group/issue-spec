@@ -68,3 +68,36 @@ func TestParseProcessExecutionClassValue(t *testing.T) {
 		t.Fatalf("unknown class should report accepted values: %v", err)
 	}
 }
+
+func TestParseProcessWorkspaceManagement(t *testing.T) {
+	for _, management := range processWorkspaceManagementModes {
+		t.Run(string(management), func(t *testing.T) {
+			body := "## Process: p\n\n### Parent TASK\n\n- TASK-001\n\n### Workspace Management\n\n- " + string(management)
+			result := ParseProcessWorkspaceManagement("PROCESS-001", "", body)
+			if result.Management != management || !result.Explicit || result.Blocking() {
+				t.Fatalf("unexpected parse result: %+v", result)
+			}
+		})
+	}
+
+	legacy := ParseProcessWorkspaceManagement("PROCESS-OLD", "", "## Process: old\n\n### Parent TASK\n\n- TASK-001")
+	if legacy.Management != ProcessWorkspaceManaged || legacy.Explicit || legacy.Blocking() {
+		t.Fatalf("legacy management = %+v", legacy)
+	}
+
+	for _, section := range []string{
+		"### Workspace Management\n\n- unmanaged",
+		"### Workspace Management\n\n",
+		"### Workspace Management\n\n- managed\n- independent",
+		"### Workspace Management\n\n- managed\n\n### Workspace Management\n\n- independent",
+	} {
+		body := "## Process: p\n\n### Parent TASK\n\n- TASK-001\n\n" + section
+		result := ParseProcessWorkspaceManagement("PROCESS-001", "", body)
+		if !result.Blocking() {
+			t.Fatalf("unsafe workspace management accepted: %+v", result)
+		}
+		if diags := ValidateCanonicalBody("PROCESS", "PROCESS-001", "", body); len(diags) == 0 {
+			t.Fatalf("unsafe workspace management must fail canonical validation: %+v", diags)
+		}
+	}
+}

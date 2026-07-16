@@ -45,11 +45,11 @@ func resolveRepository(ctx context.Context, db DBTX, owner, name string) (models
 	}
 	var resource models.RepositoryResource
 	err := db.QueryRow(ctx, `SELECT o.id, r.id, o.name, r.name,
-		r.issues_collection_version, r.comments_collection_version, r.updated_at
+		r.visibility, r.issues_collection_version, r.comments_collection_version, r.updated_at
 		FROM orgs o JOIN repos r ON r.organization_id = o.id
 		WHERE o.name_key = lower($1) AND r.name_key = lower($2)
 		AND o.archived_at IS NULL AND r.archived_at IS NULL`, owner, name).
-		Scan(&resource.Scope.OrgID, &resource.Scope.RepoID, &resource.Owner, &resource.Name,
+		Scan(&resource.Scope.OrgID, &resource.Scope.RepoID, &resource.Owner, &resource.Name, &resource.Visibility,
 			&resource.IssuesCollectionVersion, &resource.CommentsCollectionVersion, &resource.UpdatedAt)
 	if err != nil {
 		return models.RepositoryResource{}, fmt.Errorf("resolve repository: %w", mapError(err))
@@ -151,7 +151,9 @@ func (s RepoStore) IssueSnapshotByNumber(ctx context.Context, number int64) (mod
 		return models.IssueSnapshot{}, ErrInvalidInput
 	}
 	row := s.db.QueryRow(ctx, `SELECT `+qualifiedIssueColumns+`,
-		COALESCE(u.login, 'ghost'), (SELECT count(*) FROM comments c
+		COALESCE(u.login, 'ghost'), COALESCE(u.nickname, u.display_name, u.login, 'ghost'),
+		COALESCE(u.representation_version, 0), COALESCE(u.updated_at, to_timestamp(0)),
+		(SELECT count(*) FROM comments c
 		WHERE c.organization_id = i.organization_id AND c.repository_id = i.repository_id AND c.issue_id = i.id)
 		FROM issues i LEFT JOIN users u ON u.id = i.author_id
 		WHERE i.organization_id = $1 AND i.repository_id = $2 AND i.number = $3`,
@@ -197,6 +199,8 @@ func (s RepoStore) ListIssues(ctx context.Context, options models.IssueListOptio
 	}
 	args = append(args, options.PerPage, (options.Page-1)*options.PerPage)
 	rows, err := s.db.Query(ctx, `SELECT `+qualifiedIssueColumns+`, COALESCE(u.login, 'ghost'),
+		COALESCE(u.nickname, u.display_name, u.login, 'ghost'),
+		COALESCE(u.representation_version, 0), COALESCE(u.updated_at, to_timestamp(0)),
 		(SELECT count(*) FROM comments c WHERE c.organization_id = i.organization_id
 		AND c.repository_id = i.repository_id AND c.issue_id = i.id)
 		FROM issues i LEFT JOIN users u ON u.id = i.author_id WHERE `+where+
@@ -211,6 +215,9 @@ func (s RepoStore) ListIssues(ctx context.Context, options models.IssueListOptio
 			return models.IssuePage{}, err
 		}
 		page.Items = append(page.Items, item)
+		if item.AuthorUpdatedAt.After(page.LastModified) {
+			page.LastModified = item.AuthorUpdatedAt
+		}
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -309,6 +316,7 @@ func scanIssueSnapshot(row rowScanner) (models.IssueSnapshot, error) {
 		&snapshot.Issue.BindingsCollectionVersion, &snapshot.Issue.ReferencesCollectionVersion,
 		&snapshot.Issue.EvidenceCollectionVersion, &snapshot.Issue.CreatedAt,
 		&snapshot.Issue.UpdatedAt, &snapshot.Issue.ClosedAt, &snapshot.AuthorLogin,
+		&snapshot.AuthorDisplayName, &snapshot.AuthorRepresentationVersion, &snapshot.AuthorUpdatedAt,
 		&snapshot.CommentCount,
 	)
 	return snapshot, err

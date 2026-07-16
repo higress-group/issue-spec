@@ -3,6 +3,7 @@ package delegationapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -37,6 +38,31 @@ func TestExchangeReturnsPlaintextOnceWithNoStore(t *testing.T) {
 		service.issue.Repo.OrgID != orgID || service.issue.Repo.RepoID != repoID || len(service.issue.Operations) != 1 ||
 		service.issue.Operations[0] != capability.OperationArtifactWrite {
 		t.Fatalf("issue input = %+v", service.issue)
+	}
+}
+
+func TestExchangeAcceptsSevenDayJobLeaseAndRejectsLongerTTL(t *testing.T) {
+	orgID, repoID := uuid.New(), uuid.New()
+	service := &fakeService{created: delegation.Created{ID: uuid.New(), Plaintext: "dgt_secret",
+		ExpiresAt: time.Now().Add(delegation.DefaultTTL)}}
+	mux := testMux(t, service)
+	base := "/api/v1/orgs/" + orgID.String() + "/repos/" + repoID.String() + "/delegated-tokens/exchange"
+	body := func(ttl time.Duration) string {
+		return fmt.Sprintf(`{"job_id":"long-job","purpose":"issue-api","audience":"runner.test","subject":"runner-child","scopes":["issues:write"],"operations":["artifact.write"],"ttl_seconds":%d}`,
+			int64(ttl/time.Second))
+	}
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base, strings.NewReader(body(delegation.DefaultTTL))))
+	if response.Code != http.StatusCreated || service.issue.TTL != delegation.DefaultTTL {
+		t.Fatalf("seven-day exchange response=%d ttl=%s body=%s", response.Code, service.issue.TTL, response.Body.String())
+	}
+
+	service.issue = delegation.IssueInput{}
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base, strings.NewReader(body(delegation.MaxTTL+time.Second))))
+	if response.Code != http.StatusUnprocessableEntity || service.issue.TTL != 0 {
+		t.Fatalf("overlong exchange response=%d issue=%+v body=%s", response.Code, service.issue, response.Body.String())
 	}
 }
 

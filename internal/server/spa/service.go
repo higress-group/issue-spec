@@ -56,6 +56,7 @@ type CredentialContext struct {
 	ScopeMode            string                    `json:"scope_mode"`
 	Scopes               []string                  `json:"scopes,omitempty"`
 	RepositoryRestricted bool                      `json:"repository_restricted"`
+	RepositoryCount      int                       `json:"repository_count"`
 	AbsoluteExpiresAt    *time.Time                `json:"absolute_expires_at,omitempty"`
 	IdleExpiresAt        *time.Time                `json:"idle_expires_at,omitempty"`
 }
@@ -96,7 +97,7 @@ func (s *Service) Current(ctx context.Context, principal serverauth.Principal, c
 		User: UserContext{ID: principal.User.ID, Login: principal.User.Login, DisplayName: principal.User.DisplayName,
 			Email: principal.User.Email, AvatarURL: s.avatarURL(principal.User.Login), SiteAdmin: site.IdentitySiteAdmin},
 		Credential: CredentialContext{Kind: principal.Kind, ScopeMode: "token", Scopes: append([]string(nil), principal.Scopes...),
-			RepositoryRestricted: principal.RepoRestricted},
+			RepositoryRestricted: principal.RepoRestricted, RepositoryCount: len(principal.RepositoryCaps)},
 		AllowedActions: append([]authz.AccessAction{}, site.AllowedActions...),
 		Organizations:  make([]OrganizationContext, 0, len(organizations)),
 	}
@@ -297,7 +298,7 @@ func (s *Service) UserCandidates(ctx context.Context, principal serverauth.Princ
 		filters = append(filters, "u.status = 'active'", "((m.id IS NOT NULL AND m.state = 'active') OR (sa.id IS NOT NULL AND sa.disabled_at IS NULL))")
 	}
 	args = append(args, limit)
-	statement := `SELECT u.id, u.login, u.display_name, u.status,
+	statement := `SELECT u.id, u.login, COALESCE(u.nickname, u.display_name), u.status,
 		m.id, m.role, m.state, sa.id
 		FROM users u
 		LEFT JOIN LATERAL (

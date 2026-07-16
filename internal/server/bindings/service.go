@@ -192,7 +192,8 @@ func (s *Service) DeactivateBinding(ctx context.Context, subject authz.Subject, 
 }
 
 // ListReferences returns tenant-scoped references. Maintainer-only records are
-// filtered before return and metadata is redacted below maintain permission.
+// filtered before return; repository-visible records, including their metadata,
+// are visible to every caller with repository read permission.
 func (s *Service) ListReferences(ctx context.Context, subject authz.Subject, scope models.RepoScope, issueID uuid.UUID) ([]Reference, error) {
 	if issueID == uuid.Nil {
 		return nil, adminservice.ErrInvalidInput
@@ -225,9 +226,6 @@ func (s *Service) ListReferences(ctx context.Context, subject authz.Subject, sco
 		item, scanErr := scanReference(rows)
 		if scanErr != nil {
 			return nil, scanErr
-		}
-		if decision.EffectivePermission < authz.PermissionMaintain {
-			item.Metadata = nil
 		}
 		items = append(items, item)
 	}

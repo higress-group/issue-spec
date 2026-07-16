@@ -22,7 +22,7 @@
 将组织与仓库权限、Issue 和 Change 页面、Service Account、Provider-neutral
 代码证据、Runner、通知 Webhook 与持久化 PostgreSQL 状态整合在一起。
 
-[![自托管 issue-spec 工作台](docs/self-hosting/assets/self-hosted-dashboard.png)](docs/self-hosting/README.zh-CN.md)
+[![自托管 issue-spec 工作台](docs/self-hosting/assets/self-hosted-dashboard.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
 
 它支持私网部署以及 GitHub OAuth 或 OIDC 登录，同时让源代码、PR/MR、
 Review 和 CI 继续留在团队已有的代码托管平台中。
@@ -32,6 +32,29 @@ Review 和 CI 继续留在团队已有的代码托管平台中。
 使用这一能力；Runner Session 复用相同流程，不再拥有一条独立的检索路径。
 
 **[查看自托管 Server、架构、权限模型、部署与运维详情 →](docs/self-hosting/README.zh-CN.md)**
+
+**[安全对接企业代码平台与工作项平台 →](docs/self-hosting/enterprise-provider-integration.zh-CN.md)**
+
+### 从透明 Change Spec 到可交接的 Agent 执行
+
+Change Spec 的 Proposal、Design、TASK、PROCESS、Review 和验证证据原本就公开保存在
+Issue 时间线中。Runner 在此基础上再向前一步：被授权的维护者通过普通 Issue 评论
+触发 Agent，执行状态、Public Session、结果和继续方式仍写回同一条时间线。
+
+```text
+Alice: /new 按当前 Design 完成实现、测试并创建 PR
+Runner: started · public session s_demo_42
+        ...状态、PROCESS 与代码证据持续写回 Issue...
+Bob:   /resume s_demo_42 根据 Review 结论修改错误处理
+```
+
+Public Session 属于仓库中被授权的维护者，而不是某个人的私有对话。另一位维护者可以
+从 Issue 中看到完整上下文，并用 `/resume` 接手同一个 Agent Session 和 Workspace；
+handoff 不需要复制本地聊天记录，也不会脱离 Change Spec、Review 和验证轨迹。
+
+[![Issue 评论触发 Agent 并由其他维护者继续](docs/self-hosting/assets/self-hosted-runner-command.zh-CN.png)](docs/self-hosting/runner.zh-CN.md)
+
+**[查看自托管 Runner、评论触发、多人 handoff 与部署指南 →](docs/self-hosting/runner.zh-CN.md)**
 
 ## 实际效果一览
 
@@ -92,8 +115,10 @@ issue-spec auth status --json
 初始化一个仓库：
 
 ```bash
-issue-spec init --repo owner/repo --create-labels --tools codex,claude --delivery both
+issue-spec init --repo owner/repo --tools codex,claude --delivery both
 ```
+
+初始化默认会确保 issue-spec 工作流标签存在。只有在仓库标签由其他系统单独管理时，才使用 `--skip-labels` 跳过。
 
 然后就可以在你的 agent 里使用生成的 skills 或 slash 命令风格的工作流：
 
@@ -128,7 +153,8 @@ issue-spec auth status --hostname ghe.example.com --json
 ## Runner：评论触发的工作流
 
 `issue-spec runner` 监听经过授权的 issue 命令评论，并通过 acpx 在受管仓库工作区中
-调度 Codex 或 Claude。
+调度 Codex 或 Claude。`/new` 创建公共 Session，任意被授权且具有仓库写权限的维护者
+都可以使用 `/resume <public-session-id> ...` 继续同一 Session，实现跨人的 Agent handoff。
 
 ```bash
 issue-spec runner preflight --repo owner/repo --runner "$(gh api user --jq .login)"
@@ -136,7 +162,8 @@ issue-spec runner poll --repo owner/repo --runner "$(gh api user --jq .login)" -
 ```
 
 命令接入、权限校验、通知账号、沙箱、并发、工作区、恢复和全部运行参数见
-**[Runner 运维指南](docs/runner.zh-CN.md)**。
+**[GitHub Runner 运维指南](docs/runner.zh-CN.md)**。自托管 Server 使用 Webhook 驱动的
+`runner serve`，参见 **[自托管 Runner 接入指南](docs/self-hosting/runner.zh-CN.md)**。
 
 ## 为什么选择 issue-spec
 
@@ -178,14 +205,16 @@ implement issue 记录该 DAG：
 - 关联的 TASK/SPEC 评论
 - 状态、阻塞项与验证证据
 
-对于非平凡的变更，DAG 应包含专门的 review PROCESS 节点，而不仅仅是实现 PROCESS 节点。当各 review 范围相互独立时（例如 CLI/API 行为、工作流文档、测试、兼容性或安全敏感面），协调器可以并行运行多个 review agent。小改动可以由协调器直接实现并 review，但 implement 或 verify 记录应说明该任务是有意保持串行的。
+编码可以由协调器 inline 完成，也可以委派给 worker 子 agent；委派是出于上下文隔离的推荐默认，而非硬性要求。由协调器 inline 编写的节点使用 `workspace_management: independent`，并跳过 prepare/child/complete/integrate；但 `independent` 仍是适用于外部或人工执行者的通用自管模式，不会强制这些执行者改用协调器 checkout。对任何 change-bearing 工作，review 都是 MUST，且必须由不同于代码作者的 agent 执行：DAG 必须包含专门的 review PROCESS 节点，若某个 review PROCESS 的 reviewer `--agent` 名称与同一 SPEC 的代码作者相同，将在最终 gate 失败（`process.review.author_conflict`）。协调器可以 inline 编写代码并保持串行链，但不得 review 自己写的代码——应改由独立的 reviewing agent 执行 review。当各 review 范围相互独立时（例如 CLI/API 行为、工作流文档、测试、兼容性或安全敏感面），协调器可以并行运行多个 review agent。只有在独立 review 与所有修复收敛后，代码作者才添加最终 PR rationale。
 
 协调器执行遵循一个「就绪节点」循环：
 
 - 选择那些依赖已完成、且写/审范围互不重叠的 PROCESS 节点
-- 当能在不制造集成风险的前提下减小上下文时，并行分发相互独立的 worker 或 review agent
-- 按依赖顺序集成已完成的 worker 输出，并为改动的行添加 PR rationale
-- 在最终验证之前，把 P0/P1 review 发现路由回其 owner PROCESS
+- 在 integration checkout 中执行 coordinator-inline 节点；需要减小上下文且不会制造集成风险时，分发 delegated managed worker
+- 按依赖顺序验证并集成 delegated worker 输出；所有路径都先记录 commit、测试及适用的 handoff 证据
+- 仅在代码可 review 后分发独立 review agent
+- 把 P0/P1 review 发现路由回其 owner PROCESS，并让所有修复收敛
+- 只有在 review/fix 收敛后，才由各代码作者为自己改动的行添加最终 PR rationale
 - 仅在 review 证据已记录且阻塞性发现已解决后，才把 review PROCESS 节点标记为 done
 
 CLI 不充当自动拉起 agent 的调度器。它提供共享状态、链接与关卡（gate），让协调器能够安全地把工作拆分到多个 agent 之间，而不丢失可追溯性。
@@ -206,6 +235,8 @@ OpenSpec 本就把 review 与 verify 作为工作流阶段来鼓励。`issue-spe
 ### 安全工作流关卡与分级证据
 
 使用 `status --gate proposal|design|implement|final|archive --json` 预判下一关；使用带已观察 version 或 digest 的 `comment transition` 安全修改单个产物；使用 `workflow reconcile --plan ... --checkpoint ... --json` 执行可恢复、按依赖排序的批处理。在分配 delegated workspace 或 worker 之前，先运行 `doctor agent --operation ... --json`。PROCESS 现在显式声明五种 execution class，让 change-bearing、review、verification、orchestration 与 external 工作分别使用真实的证据载体，而不是一律伪造行级 rationale。
+
+Delegated workspace 由精确 PROCESS id 选择，并通过 `workflow workspace prepare|inspect|complete|integrate|reconcile|cleanup` 管理。runner 命令只定位 public session，不定位 PROCESS：runner 始终让唯一一个 ACPX coordinator 留在 session clone，coordinator 从 typed DAG 选择 ready PROCESS，再把精确 worktree 交给当前 agent runtime 的原生 child 执行，不会嵌套启动 ACPX。PROCESS 生命周期由 coordinator 所有；它校验 child 返回的 commit、测试与 handoff，并从未改变的 session clone 执行 complete 或 integrate。resume 或 restart 后，top-level runner 只恢复 ACPX/session job，coordinator 负责 inspect 或 reconcile 精确 PROCESS lease。session-clone retention 会查询 `git worktree list`；当 runner metadata 为 dirty 或 uncertain、存在 linked worktree，或 git worktree inspection 失败时都会 fail closed 并保留 clone，而不会清理 child PROCESS workspace。review 与 verification 使用 detached workflow snapshot 并在 dirty 时拒绝继续，但原生 child 共享 coordinator 的外层 sandbox，不具备独立的 OS sandbox。workspace cleanup 是 owner-token 授权的破坏性命令，不会替调用者判断 integration 或 retention eligibility。详见[参考文档](docs/reference.zh-CN.md#process-workspace)与 [runner 指南](docs/runner.zh-CN.md)。
 
 命令、原子性边界、严格凭据策略、恢复行为与完整证据矩阵见 [Workflow safety, reconciliation, and PROCESS evidence](docs/workflow-safety.md)。
 
@@ -244,7 +275,7 @@ issue-spec init --repo owner/repo --tools codex,claude --delivery both
 - Claude skills 写入 `.claude/skills/issue-spec-*`。
 - 两套 skill 还都包含一个生成的 `.*/skills/issue-spec-github/SKILL.md` 支持 skill，用于处理 issue-spec 未直接封装的相邻 GitHub CLI 操作。
 - Claude slash 命令写入 `.claude/commands/issue-spec/*.md`，以 `/issue-spec:propose` 的方式调用。
-- Codex slash prompts 写入 `${CODEX_HOME:-~/.codex}/prompts/issue-spec-*.md`，以兼容 Codex 自定义 prompt。当前 Codex 文档已弃用 Codex 自定义 prompt；对于共享工作流，优先使用 skills。
+- 默认不会修改用户全局 Codex prompt。只有显式传入 `--install-global-prompts` 才会把兼容 prompt 安装到 `${CODEX_HOME:-~/.codex}/prompts`；可用 `--global-prompts-dir <dir>` 指定隔离目录，并用 `--global-prompts-dry-run` 在不写文件的情况下预览全部绝对目标路径。当前 Codex 文档已弃用 Codex 自定义 prompt；对于共享工作流，优先使用 skills。
 - `--delivery skills` 只写 skills；`--delivery commands` 只写 slash 命令。
 
 若省略 `--tools`，init 会检测已存在的 `.agents` 或 `.claude` 目录并刷新这些工作流。使用 `--tools none` 只初始化 `.issue-spec/config.json` 与可选的标签（labels）。

@@ -4,6 +4,8 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -117,17 +119,22 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	if strings.TrimSpace(bwrapPath) == "" {
 		return Command{}, nil, fmt.Errorf("%w: bwrap path is required", ErrSandboxConfigInvalid)
 	}
+	if err := validateHostSSHConfig(cfg); err != nil {
+		return Command{}, nil, err
+	}
 	for _, item := range []struct {
-		name  string
-		value string
+		name     string
+		value    string
+		optional bool
 	}{
-		{"workspace path", cfg.WorkspacePath},
-		{"temporary HOME path", cfg.TempHome},
-		{"temporary GH_CONFIG_DIR path", cfg.TempGHConfigDir},
-		{"temporary XDG_CONFIG_HOME path", cfg.TempXDGConfigHome},
-		{"temporary CODEX_HOME path", cfg.TempCodexHome},
+		{name: "workspace path", value: cfg.WorkspacePath},
+		{name: "temporary HOME path", value: cfg.TempHome},
+		{name: "temporary GH_CONFIG_DIR path", value: cfg.TempGHConfigDir},
+		{name: "temporary XDG_CONFIG_HOME path", value: cfg.TempXDGConfigHome},
+		{name: "temporary CODEX_HOME path", value: cfg.TempCodexHome, optional: true},
+		{name: "ACPX runtime path", value: cfg.AcpxRuntimeDir, optional: true},
 	} {
-		if item.name == "temporary CODEX_HOME path" && strings.TrimSpace(item.value) == "" {
+		if item.optional && strings.TrimSpace(item.value) == "" {
 			continue
 		}
 		if strings.TrimSpace(item.value) == "" {
@@ -149,8 +156,13 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	}
 
 	workspacePath := filepath.Clean(cfg.WorkspacePath)
+	acpxSocketDir := acpxQueueSocketSandboxPath()
+	workspaceMode := "rw"
+	if cfg.WorkspaceReadOnly {
+		workspaceMode = "ro"
+	}
 	mounts := []Mount{
-		{Source: workspacePath, Destination: "/workspace", Mode: "rw"},
+		{Source: workspacePath, Destination: "/workspace", Mode: workspaceMode},
 		{Destination: "/tmp", Mode: "tmpfs"},
 		{Source: cfg.TempHome, Destination: "/tmp/issue-spec-home", Mode: "rw"},
 		{Source: cfg.TempGHConfigDir, Destination: "/tmp/issue-spec-gh", Mode: "rw"},
@@ -159,7 +171,21 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		{Destination: "/dev", Mode: "dev"},
 	}
 
-	args = append(args, "--bind", workspacePath, "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg", "--proc", "/proc", "--dev", "/dev")
+	workspaceBind := "--bind"
+	if cfg.WorkspaceReadOnly {
+		workspaceBind = "--ro-bind"
+	}
+	args = append(args, workspaceBind, workspacePath, "/workspace", "--perms", "0700", "--tmpfs", "/tmp", "--dir", "/tmp/issue-spec-home", "--bind", cfg.TempHome, "/tmp/issue-spec-home", "--dir", "/tmp/issue-spec-gh", "--bind", cfg.TempGHConfigDir, "/tmp/issue-spec-gh", "--dir", "/tmp/issue-spec-xdg", "--bind", cfg.TempXDGConfigHome, "/tmp/issue-spec-xdg")
+	if strings.TrimSpace(cfg.AcpxRuntimeDir) != "" {
+		args = append(args, "--dir", acpxSocketDir, "--bind", cfg.AcpxRuntimeDir, acpxSocketDir)
+		mounts = append(mounts, Mount{Source: cfg.AcpxRuntimeDir, Destination: acpxSocketDir, Mode: "rw"})
+	}
+	args = append(args, "--proc", "/proc", "--dev", "/dev")
+	if sshDir := strings.TrimSpace(cfg.HostSSHDir); sshDir != "" {
+		sshDir = filepath.Clean(sshDir)
+		args = append(args, "--ro-bind", sshDir, HostSSHDirSandboxPath)
+		mounts = append(mounts, Mount{Source: sshDir, Destination: HostSSHDirSandboxPath, Mode: "ro"})
+	}
 	if strings.TrimSpace(cfg.TempCodexHome) != "" {
 		mounts = append(mounts, Mount{Source: cfg.TempCodexHome, Destination: "/tmp/issue-spec-codex", Mode: "rw"})
 		args = append(args, "--dir", "/tmp/issue-spec-codex", "--bind", cfg.TempCodexHome, "/tmp/issue-spec-codex")
@@ -180,13 +206,45 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 		"/proc":                 true,
 		"/dev":                  true,
 	}
+	if strings.TrimSpace(cfg.AcpxRuntimeDir) != "" {
+		seenDirs[acpxSocketDir] = true
+	}
+	if socket := strings.TrimSpace(cfg.HostSSHAgentSocket); socket != "" {
+		socket = filepath.Clean(socket)
+		args, mounts = appendBindParentDirs(args, mounts, HostSSHAgentSandboxPath, seenDirs, nil)
+		args = append(args, "--bind", socket, HostSSHAgentSandboxPath)
+		mounts = append(mounts, Mount{Source: socket, Destination: HostSSHAgentSandboxPath, Mode: "socket"})
+	}
 	if workspacePath != "/workspace" {
 		args, mounts = appendBindParentDirs(args, mounts, workspacePath, seenDirs, systemBinds)
-		args = append(args, "--bind", workspacePath, workspacePath)
-		mounts = append(mounts, Mount{Source: workspacePath, Destination: workspacePath, Mode: "rw"})
+		args = append(args, workspaceBind, workspacePath, workspacePath)
+		mounts = append(mounts, Mount{Source: workspacePath, Destination: workspacePath, Mode: workspaceMode})
+	}
+	// OpenSSH resolves ~/.ssh from the process user's passwd entry rather than
+	// the HOME environment. Keep the fixed temporary-HOME mount for tools that
+	// honor HOME, and additionally expose the exact same directory read-only at
+	// its original absolute path so stock OpenSSH can find config, known_hosts,
+	// and default identity files.
+	if sshDir := strings.TrimSpace(cfg.HostSSHDir); sshDir != "" {
+		sshDir = filepath.Clean(sshDir)
+		coveredRoots := append([]string{}, systemBinds...)
+		coveredRoots = append(coveredRoots, workspacePath)
+		args, mounts = appendBindParentDirs(args, mounts, sshDir, seenDirs, coveredRoots)
+		args = append(args, "--ro-bind", sshDir, sshDir)
+		mounts = append(mounts, Mount{Source: sshDir, Destination: sshDir, Mode: "ro"})
 	}
 	coveredRoots := append([]string{}, systemBinds...)
 	coveredRoots = append(coveredRoots, workspacePath)
+	writableBinds, err := validatedWritableBinds(cfg)
+	if err != nil {
+		return Command{}, nil, err
+	}
+	for _, bind := range writableBinds {
+		args, mounts = appendBindParentDirs(args, mounts, bind, seenDirs, coveredRoots)
+		args = append(args, "--bind", bind, bind)
+		mounts = append(mounts, Mount{Source: bind, Destination: bind, Mode: "rw"})
+		coveredRoots = append(coveredRoots, bind)
+	}
 	for _, bind := range readOnlyBinds(cfg) {
 		if coveredByMount(bind, coveredRoots) {
 			continue
@@ -206,6 +264,19 @@ func buildBwrapCommand(cfg Config, target Command, env []string, bwrapPath strin
 	args = append(args, target.Args...)
 
 	return Command{Binary: bwrapPath, Args: args, Stdin: append([]byte(nil), target.Stdin...)}, mounts, nil
+}
+
+// acpxQueueSocketSandboxPath mirrors ACPX's queue socket path contract:
+// /tmp/acpx-<first 10 hex characters of sha256(HOME)>.
+//
+// Every sandbox exposes the same HOME path, so the in-sandbox socket path is
+// deterministic. Its backing host directory remains scoped to one public
+// session, allowing that session's queue owner to survive later invocations
+// without sharing its socket with another session.
+func acpxQueueSocketSandboxPath() string {
+	home := sandboxEnvPaths().home
+	digest := sha256.Sum256([]byte(home))
+	return filepath.Join("/tmp", "acpx-"+hex.EncodeToString(digest[:])[:10])
 }
 
 func sandboxWorkingDirectory(targetDir, workspacePath string) (string, error) {
@@ -286,20 +357,19 @@ func readOnlyBinds(cfg Config) []string {
 
 func systemReadOnlyBinds(cfg Config) []string {
 	if len(cfg.SystemReadOnlyBinds) > 0 {
-		return cleanBinds(cfg.SystemReadOnlyBinds, false)
+		binds := cleanBinds(cfg.SystemReadOnlyBinds, false)
+		if strings.TrimSpace(cfg.HostSSHDir) != "" {
+			binds = append(binds, cleanBinds([]string{"/etc/passwd"}, true)...)
+		}
+		return sortedUnique(binds)
 	}
-	return cleanBinds([]string{
-		"/usr",
-		"/bin",
-		"/lib",
-		"/lib64",
-		"/etc/ssl/certs",
-		"/etc/pki",
-		"/etc/alternatives",
-		"/etc/resolv.conf",
-		"/etc/hosts",
-		"/etc/nsswitch.conf",
-	}, true)
+	binds := append([]string(nil), defaultSystemReadOnlyBindPaths...)
+	if strings.TrimSpace(cfg.HostSSHDir) != "" {
+		// Stock OpenSSH resolves the current account with getpwuid before it
+		// reads ~/.ssh. files-NSS needs passwd available inside bubblewrap.
+		binds = append(binds, "/etc/passwd")
+	}
+	return cleanBinds(binds, true)
 }
 
 func cleanBinds(paths []string, existingOnly bool) []string {

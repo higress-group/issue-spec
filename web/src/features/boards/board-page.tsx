@@ -2,23 +2,26 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { ArrowRight, Building2, Filter, RotateCcw, SearchX } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { isApiProblem } from "../../lib/api/client";
 import { boardApi } from "./api";
 import { BoardState, BoardSummary, ChangeCard, DiagnosticSummary } from "./components";
 import { anomalyCatalog, changeLifecycleSchema, changeStageSchema, type BoardFilters, type BoardPageModel } from "./types";
-import { RepositoryGate, repositoryChangePath, type ActiveRepository } from "../issues/repository-context";
+import { organizationChangePath, RepositoryGate, repositoryChangePath, type ActiveRepository } from "../issues/repository-context";
+import { repositoryChangePathForNames } from "../../lib/canonical-routes";
 
 const perPage = 12;
 
 export function BoardWorkspacePage() {
+  const { t } = useTranslation();
   const context = useQuery({ queryKey: ["boards", "context"], queryFn: ({ signal }) => boardApi.context(signal) });
-  if (context.isLoading) return <BoardState>Opening change control…</BoardState>;
-  if (!context.data) return <BoardState kind="error"><h1>Change control could not open</h1><p>Refresh the page or inspect the request details.</p></BoardState>;
+  if (context.isLoading) return <BoardState>{t("changes.workspace.opening")}</BoardState>;
+  if (!context.data) return <BoardState kind="error"><h1>{t("changes.workspace.unavailableTitle")}</h1><p>{t("changes.workspace.unavailableDescription")}</p></BoardState>;
   return <div className="board-page board-workspace">
-    <header className="board-hero"><div><span className="board-eyebrow">Workflow control</span><h1>See the change, not the paperwork.</h1><p>Proposal, design, and implementation converge into one readable operational view.</p></div><div className="board-hero-orbit" aria-hidden="true"><span>01</span><span>02</span><span>03</span></div></header>
-    <section className="organization-deck" aria-labelledby="organization-heading"><header><div><span className="board-eyebrow">Your organizations</span><h2 id="organization-heading">Choose a control surface</h2></div><small>{context.data.organizations.length} visible</small></header>
-      <div className="organization-grid">{context.data.organizations.map((organization, index) => <Link className="organization-card" to={`/changes/${organization.id}`} key={organization.id}><span className="organization-index">{String(index + 1).padStart(2, "0")}</span><Building2 aria-hidden="true" /><span><strong>{organization.display_name}</strong><small>{organization.name} · {organization.effective_permission}</small></span><ArrowRight aria-hidden="true" /></Link>)}</div>
-      {!context.data.organizations.length ? <BoardState kind="empty"><h2>No visible organizations</h2><p>Change boards appear after you receive organization read access.</p></BoardState> : null}
+    <header className="board-hero"><div><span className="board-eyebrow">{t("changes.workspace.eyebrow")}</span><h1>{t("changes.workspace.title")}</h1><p>{t("changes.workspace.description")}</p></div><div className="board-hero-orbit" aria-hidden="true"><span>01</span><span>02</span><span>03</span></div></header>
+    <section className="organization-deck" aria-labelledby="organization-heading"><header><div><span className="board-eyebrow">{t("changes.workspace.organizations")}</span><h2 id="organization-heading">{t("changes.workspace.choose")}</h2></div><small>{t("changes.workspace.visible", { count: context.data.organizations.length })}</small></header>
+      <div className="organization-grid">{context.data.organizations.map((organization, index) => <Link className="organization-card" to={organizationChangePath(organization.name)} key={organization.id}><span className="organization-index">{String(index + 1).padStart(2, "0")}</span><Building2 aria-hidden="true" /><span><strong>{organization.display_name}</strong><small>{organization.name} · {t(`common.permission.${organization.effective_permission}`)}</small></span><ArrowRight aria-hidden="true" /></Link>)}</div>
+      {!context.data.organizations.length ? <BoardState kind="empty"><h2>{t("changes.workspace.emptyTitle")}</h2><p>{t("changes.workspace.emptyDescription")}</p></BoardState> : null}
     </section>
   </div>;
 }
@@ -37,37 +40,40 @@ function parseFilters(search: URLSearchParams): BoardFilters {
 }
 
 function FilterBar({ filters, update, clear }: { filters: BoardFilters; update: (key: string, value: string) => void; clear: () => void }) {
+  const { t } = useTranslation();
   const active = Boolean(filters.stage || filters.lifecycle || filters.anomaly);
-  return <section className="board-filters" aria-label="Change filters"><span className="filter-heading"><Filter aria-hidden="true" />Focus</span>
-    <label><span>Stage</span><select value={filters.stage ?? ""} onChange={(event) => update("stage", event.target.value)}><option value="">All stages</option><option value="proposal">Proposal</option><option value="design">Design</option><option value="implement">Implement</option><option value="unknown">Unknown</option></select></label>
-    <label><span>Lifecycle</span><select value={filters.lifecycle ?? ""} onChange={(event) => update("lifecycle", event.target.value)}><option value="">All states</option><option value="active">Active</option><option value="blocked">Blocked</option><option value="completed">Completed</option><option value="closed">Closed</option></select></label>
-    <label><span>Diagnostic</span><select value={filters.anomaly ?? ""} onChange={(event) => update("anomaly", event.target.value)}><option value="">Any diagnostic</option>{Object.entries(anomalyCatalog).map(([code, copy]) => <option value={code} key={code}>{copy.label}</option>)}</select></label>
-    <button type="button" className="filter-reset" onClick={clear} disabled={!active}><RotateCcw aria-hidden="true" />Clear all</button>
+  return <section className="board-filters" aria-label={t("changes.filters.aria")}><span className="filter-heading"><Filter aria-hidden="true" />{t("changes.filters.focus")}</span>
+    <label><span>{t("changes.filters.stage")}</span><select value={filters.stage ?? ""} onChange={(event) => update("stage", event.target.value)}><option value="">{t("changes.filters.allStages")}</option><option value="proposal">{t("changes.stage.proposal")}</option><option value="design">{t("changes.stage.design")}</option><option value="implement">{t("changes.stage.implement")}</option><option value="unknown">{t("changes.stage.unknown")}</option></select></label>
+    <label><span>{t("changes.filters.lifecycle")}</span><select value={filters.lifecycle ?? ""} onChange={(event) => update("lifecycle", event.target.value)}><option value="">{t("changes.filters.allStates")}</option><option value="active">{t("changes.lifecycle.active")}</option><option value="blocked">{t("changes.lifecycle.blocked")}</option><option value="completed">{t("changes.lifecycle.completed")}</option><option value="closed">{t("changes.lifecycle.closed")}</option></select></label>
+    <label><span>{t("changes.filters.diagnostic")}</span><select value={filters.anomaly ?? ""} onChange={(event) => update("anomaly", event.target.value)}><option value="">{t("changes.filters.anyDiagnostic")}</option>{Object.entries(anomalyCatalog).map(([code, copy]) => <option value={code} key={code}>{t(`changes.anomalies.${code}.label`, { defaultValue: copy.label })}</option>)}</select></label>
+    <button type="button" className="filter-reset" onClick={clear} disabled={!active}><RotateCcw aria-hidden="true" />{t("changes.filters.clear")}</button>
   </section>;
 }
 
 export function BoardListPage() {
-  const { orgId = "" } = useParams();
+  const { t } = useTranslation();
+  const { owner = "" } = useParams();
   const navigate = useNavigate();
   const controls = useBoardControls();
   const context = useQuery({ queryKey: ["boards", "context"], queryFn: ({ signal }) => boardApi.context(signal) });
-  const repositories = useQuery({ queryKey: ["boards", "repositories", orgId], queryFn: ({ signal }) => boardApi.repositories(orgId, signal), enabled: Boolean(orgId) });
-  const organization = context.data?.organizations.find((item) => item.id === orgId);
+  const organization = context.data?.organizations.find((item) => item.name.toLowerCase() === owner.toLowerCase());
+  const organizationId = organization?.id ?? "";
+  const repositories = useQuery({ queryKey: ["boards", "repositories", organizationId], queryFn: ({ signal }) => boardApi.repositories(organizationId, signal), enabled: Boolean(organizationId) });
   const board = useQuery({
-    queryKey: ["boards", orgId, "organization", controls.filters],
-    queryFn: ({ signal }) => boardApi.organizationBoard(orgId, controls.filters, signal),
-    enabled: Boolean(orgId && organization),
+    queryKey: ["boards", organizationId, "organization", controls.filters],
+    queryFn: ({ signal }) => boardApi.organizationBoard(organizationId, controls.filters, signal),
+    enabled: Boolean(organizationId),
   });
-  if (context.isLoading || repositories.isLoading || board.isLoading) return <BoardState>Projecting visible changes…</BoardState>;
+  if (context.isLoading || repositories.isLoading || board.isLoading) return <BoardState>{t("changes.board.projecting")}</BoardState>;
   if ((context.isSuccess && !organization) || isApiProblem(repositories.error, "not_found") || isApiProblem(repositories.error, "forbidden") ||
     isApiProblem(board.error, "not_found") || isApiProblem(board.error, "forbidden")) return <SafeBoardState />;
-  if (context.error || repositories.error || board.error || !board.data || !organization) return <BoardState kind="error"><h1>Board unavailable</h1><p>The projection could not be loaded. Try again or inspect the request ID.</p></BoardState>;
+  if (context.error || repositories.error || board.error || !board.data || !organization) return <BoardState kind="error"><h1>{t("changes.board.unavailableTitle")}</h1><p>{t("changes.board.unavailableDescription")}</p></BoardState>;
   const repositoryOptions = repositories.data?.repositories ?? [];
-  const scopeControl = <label className="context-switcher"><span>Board scope</span><select value="" onChange={(event) => {
+  const scopeControl = <label className="context-switcher"><span>{t("changes.board.scope")}</span><select value="" onChange={(event) => {
     const selected = repositoryOptions.find(({ repository }) => repository.id === event.target.value);
-    navigate(selected ? `/${encodeURIComponent(organization.name)}/${encodeURIComponent(selected.repository.name)}/changes` : `/changes/${orgId}`);
-  }}><option value="">All visible repositories</option>{repositoryOptions.map(({ repository }) => <option key={repository.id} value={repository.id}>{repository.display_name}</option>)}</select></label>;
-  return <BoardSurface owner={organization.name} title={`${organization.display_name} changes`} description="Every visible repository, aggregated only after permission filtering." board={board.data} controls={controls} scopeLabel="Organization board" scopeControl={scopeControl} />;
+    navigate(selected ? repositoryChangePathForNames(organization.name, selected.repository.name) : organizationChangePath(organization.name));
+  }}><option value="">{t("changes.board.allRepositories")}</option>{repositoryOptions.map(({ repository }) => <option key={repository.id} value={repository.id}>{repository.display_name}</option>)}</select></label>;
+  return <BoardSurface owner={organization.name} title={t("changes.board.organizationTitle", { name: organization.display_name })} description={t("changes.board.organizationDescription")} board={board.data} controls={controls} scopeLabel={t("changes.board.organizationBoard")} scopeControl={scopeControl} />;
 }
 
 function useBoardControls() {
@@ -80,31 +86,34 @@ function useBoardControls() {
 }
 
 function BoardSurface({ owner, title, description, board, controls, scopeLabel, scopeControl }: { owner: string; title: string; description: string; board: BoardPageModel; controls: ReturnType<typeof useBoardControls>; scopeLabel: string; scopeControl?: ReactNode }) {
+  const { t } = useTranslation();
   const hasNext = board.page * board.per_page < board.total;
   return <div className="board-page">
-    <header className="board-masthead"><div><Link to="/changes" className="board-back">Change control</Link><span className="board-eyebrow">{scopeLabel}</span><h1>{title}</h1><p>{description}</p></div>{scopeControl}</header>
+    <header className="board-masthead"><div><Link to="/changes" className="board-back">{t("changes.board.back")}</Link><span className="board-eyebrow">{scopeLabel}</span><h1>{title}</h1><p>{description}</p></div>{scopeControl}</header>
     <BoardSummary page={board} />
     <FilterBar filters={controls.filters} update={controls.update} clear={controls.clear} />
     <DiagnosticSummary diagnostics={board.diagnostics} />
-    <section id="change-results" className="change-results" aria-labelledby="results-heading" tabIndex={-1}><header><div><span className="board-eyebrow">Current projection</span><h2 id="results-heading">{board.total} {board.total === 1 ? "change" : "changes"}</h2></div><span>Page {board.page}</span></header>
-      {board.cards.length ? <div className="change-card-grid">{board.cards.map((card) => <ChangeCard key={`${card.repository.id}:${card.change_key}`} card={card} owner={owner} />)}</div> : <BoardState kind="empty"><SearchX aria-hidden="true" /><h2>No changes match this view</h2><p>Clear a filter or choose another repository.</p><button type="button" className="board-text-button" onClick={controls.clear}>Reset filters</button></BoardState>}
+    <section id="change-results" className="change-results" aria-labelledby="results-heading" tabIndex={-1}><header><div><span className="board-eyebrow">{t("changes.board.currentProjection")}</span><h2 id="results-heading">{t("changes.board.changes", { count: board.total })}</h2></div><span>{t("changes.board.page", { page: board.page })}</span></header>
+      {board.cards.length ? <div className="change-card-grid">{board.cards.map((card) => <ChangeCard key={`${card.repository.id}:${card.change_key}`} card={card} owner={owner} />)}</div> : <BoardState kind="empty"><SearchX aria-hidden="true" /><h2>{t("changes.board.emptyTitle")}</h2><p>{t("changes.board.emptyDescription")}</p><button type="button" className="board-text-button" onClick={controls.clear}>{t("changes.board.resetFilters")}</button></BoardState>}
     </section>
-    <nav className="board-pagination" aria-label="Change pages"><button type="button" disabled={board.page === 1} onClick={() => controls.goPage(board.page - 1)}>Previous</button><span><strong>{board.page}</strong><small>of {Math.max(1, Math.ceil(board.total / board.per_page))}</small></span><button type="button" disabled={!hasNext} onClick={() => controls.goPage(board.page + 1)}>Next</button></nav>
+    <nav className="board-pagination" aria-label={t("changes.board.pages")}><button type="button" disabled={board.page === 1} onClick={() => controls.goPage(board.page - 1)}>{t("changes.board.previous")}</button><span><strong>{board.page}</strong><small>{t("changes.board.pageOf", { total: Math.max(1, Math.ceil(board.total / board.per_page)) })}</small></span><button type="button" disabled={!hasNext} onClick={() => controls.goPage(board.page + 1)}>{t("changes.board.next")}</button></nav>
   </div>;
 }
 
 function RepositoryBoard({ active }: { active: ActiveRepository }) {
+  const { t } = useTranslation();
   const controls = useBoardControls();
   const board = useQuery({ queryKey: ["boards", active.organization.id, active.repository.repository.id, controls.filters], queryFn: ({ signal }) => boardApi.repositoryBoard(active.organization.id, active.repository.repository.id, controls.filters, signal) });
-  if (board.isLoading) return <BoardState>Projecting visible changes…</BoardState>;
+  if (board.isLoading) return <BoardState>{t("changes.board.projecting")}</BoardState>;
   if (isApiProblem(board.error, "not_found") || isApiProblem(board.error, "forbidden")) return <SafeBoardState />;
-  if (board.error || !board.data) return <BoardState kind="error"><h1>Board unavailable</h1><p>The projection could not be loaded. Try again or inspect the request ID.</p></BoardState>;
-  const scopeControl = active.authenticated ? <Link className="board-text-button" to={`/changes/${active.organization.id}`}>Organization board</Link> : <Link className="board-text-button" to="/login" state={{ returnTo: repositoryChangePath(active) }}>Sign in</Link>;
-  return <BoardSurface owner={active.organization.name} title={active.repository.repository.display_name} description={`A focused workflow projection for ${active.repository.repository.name}.`} board={board.data} controls={controls} scopeLabel="Repository board" scopeControl={scopeControl} />;
+  if (board.error || !board.data) return <BoardState kind="error"><h1>{t("changes.board.unavailableTitle")}</h1><p>{t("changes.board.unavailableDescription")}</p></BoardState>;
+  const scopeControl = active.authenticated ? <Link className="board-text-button" to={organizationChangePath(active.organization.name)}>{t("changes.board.organizationBoard")}</Link> : <Link className="board-text-button" to="/login" state={{ returnTo: repositoryChangePath(active) }}>{t("changes.board.signIn")}</Link>;
+  return <BoardSurface owner={active.organization.name} title={active.repository.repository.display_name} description={t("changes.board.repositoryDescription", { name: active.repository.repository.name })} board={board.data} controls={controls} scopeLabel={t("changes.board.repositoryBoard")} scopeControl={scopeControl} />;
 }
 
 export function RepositoryBoardPage() { return <RepositoryGate>{(active) => <RepositoryBoard active={active} />}</RepositoryGate>; }
 
 export function SafeBoardState() {
-  return <BoardState kind="safe"><h1>This change board is not available</h1><p>It may not exist, or your current credential cannot see it.</p><Link className="board-state-link" to="/changes">Return to visible organizations</Link></BoardState>;
+  const { t } = useTranslation();
+  return <BoardState kind="safe"><h1>{t("changes.board.safeTitle")}</h1><p>{t("changes.board.safeDescription")}</p><Link className="board-state-link" to="/changes">{t("changes.board.returnOrganizations")}</Link></BoardState>;
 }

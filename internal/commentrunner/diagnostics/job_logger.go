@@ -1,6 +1,7 @@
 package diagnostics
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -8,15 +9,15 @@ import (
 
 // JobLogger handles job-specific logging
 type JobLogger struct {
-	writer    *RotatingWriter
-	stdout    *BoundedWriter
-	stderr    *BoundedWriter
-	store     *Store
-	redactor  *Redactor
-	scope     Scope
+	writer      *RotatingWriter
+	stdout      *BoundedWriter
+	stderr      *BoundedWriter
+	store       *Store
+	redactor    *Redactor
+	scope       Scope
 	correlation Correlation
-	mu        sync.Mutex
-	jobID     string
+	mu          sync.Mutex
+	jobID       string
 }
 
 // NewJobLogger creates a new job-specific logger
@@ -46,6 +47,8 @@ func (jl *JobLogger) Initialize(jobID string) error {
 	// Create stdout writer
 	stdout, err := jl.store.JobStdoutWriter(jobID)
 	if err != nil {
+		_ = jl.writer.Close()
+		jl.writer = nil
 		return fmt.Errorf("create stdout writer: %w", err)
 	}
 	jl.stdout = stdout
@@ -53,6 +56,10 @@ func (jl *JobLogger) Initialize(jobID string) error {
 	// Create stderr writer
 	stderr, err := jl.store.JobStderrWriter(jobID)
 	if err != nil {
+		_ = jl.stdout.Close()
+		_ = jl.writer.Close()
+		jl.stdout = nil
+		jl.writer = nil
 		return fmt.Errorf("create stderr writer: %w", err)
 	}
 	jl.stderr = stderr
@@ -65,21 +72,30 @@ func (jl *JobLogger) Initialize(jobID string) error {
 
 // LogEvent logs a job event
 func (jl *JobLogger) LogEvent(level Level, component, event, message string) {
-	jl.logEvent(level, component, event, message, nil)
+	if err := jl.WriteEventWithDetails(level, component, event, message, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to write job log: %v\n", err)
+	}
 }
 
 // LogEventWithDetails logs a job event with details
 func (jl *JobLogger) LogEventWithDetails(level Level, component, event, message string, details map[string]interface{}) {
-	jl.logEvent(level, component, event, message, details)
+	if err := jl.WriteEventWithDetails(level, component, event, message, details); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to write job log: %v\n", err)
+	}
+}
+
+// WriteEventWithDetails persists a job event and reports writer failures.
+func (jl *JobLogger) WriteEventWithDetails(level Level, component, event, message string, details map[string]interface{}) error {
+	return jl.writeEvent(level, component, event, message, details)
 }
 
 // logEvent is the internal logging method
-func (jl *JobLogger) logEvent(level Level, component, event, message string, details map[string]interface{}) {
+func (jl *JobLogger) writeEvent(level Level, component, event, message string, details map[string]interface{}) error {
 	jl.mu.Lock()
 	defer jl.mu.Unlock()
 
 	if jl.writer == nil {
-		return
+		return fmt.Errorf("job writer not initialized")
 	}
 
 	e := NewEvent(level, component, event, message).
@@ -93,9 +109,7 @@ func (jl *JobLogger) logEvent(level Level, component, event, message string, det
 		}
 	}
 
-	if err := jl.writer.WriteEvent(e); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write job log: %v\n", err)
-	}
+	return jl.writer.WriteEvent(e)
 }
 
 // WriteStdout writes to the job stdout file
@@ -147,11 +161,7 @@ func (jl *JobLogger) Close() error {
 		}
 	}
 
-	if len(errs) > 0 {
-		return fmt.Errorf("close errors: %v", errs)
-	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
 // Sync flushes all writers
@@ -179,11 +189,7 @@ func (jl *JobLogger) Sync() error {
 		}
 	}
 
-	if len(errs) > 0 {
-		return fmt.Errorf("sync errors: %v", errs)
-	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
 // JobID returns the job ID

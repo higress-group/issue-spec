@@ -49,6 +49,7 @@ export const contextSchema = z.object({
     scope_mode: z.enum(["identity", "token"]),
     scopes: z.array(z.string()).optional(),
     repository_restricted: z.boolean(),
+    repository_count: z.number().int().nonnegative().optional(),
     absolute_expires_at: z.string().datetime({ offset: true }).optional(),
     idle_expires_at: z.string().datetime({ offset: true }).optional(),
   }),
@@ -59,6 +60,24 @@ export const contextSchema = z.object({
 
 export type CurrentContext = z.infer<typeof contextSchema>;
 export type OrganizationContext = z.infer<typeof organizationContextSchema>;
+
+export const publicProfileSchema = z.object({
+  id: z.number(),
+  login: z.string(),
+  display_name: z.string(),
+  avatar_url: z.string().optional().default(""),
+  html_url: z.string().optional().default(""),
+  type: z.string().default("User"),
+  site_admin: z.boolean().default(false),
+});
+
+export const profileSchema = publicProfileSchema.extend({
+  identity_display_name: z.string(),
+  nickname: z.string().nullable(),
+  representation_version: z.number().int().positive(),
+});
+export type PublicProfile = z.infer<typeof publicProfileSchema>;
+export type Profile = z.infer<typeof profileSchema>;
 
 export const repositoryContextSchema = z.object({
   repository: z.object({

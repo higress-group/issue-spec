@@ -1,10 +1,13 @@
+import { administrationResources } from "./administration-resources";
+import { workflowResources } from "./workflow-resources";
+
 export const resources = {
   en: {
     translation: {
       language: { label: "Language", english: "English", chinese: "中文" },
       brand: {
         controlRoom: "workflow control room",
-        publicView: "public repository view",
+        publicView: "public view",
         selfHostedDesk: "self-hosted workflow desk",
       },
       navigation: {
@@ -44,6 +47,15 @@ export const resources = {
         noProvider: "No interactive provider is configured. Ask an operator to enable OIDC or GitHub OAuth.",
         bootstrap: "Setting up the first administrator?",
       },
+      bootstrap: {
+        checking: "Checking bootstrap state", closedTitle: "Bootstrap is closed", closedDescription: "The one-time administrator claim has already completed or this server was not started with a bootstrap secret.",
+        continueSignIn: "Continue to sign in", eyebrow: "One-time operation", title: "Claim the first administrator",
+        description: "This uses the operator-provided bootstrap secret once, then exchanges the short-lived recovery credential for a normal browser session.",
+        warning: "Use this page only from a trusted workstation. Secrets are never stored in browser storage.", secret: "Bootstrap secret", secretRequired: "Bootstrap secret is required",
+        localLogin: "Local login", localLoginHint: "Immutable identifier used in issue authorship.", loginRequired: "Login is required", displayName: "Display name", displayNameRequired: "Display name is required",
+        emailOptional: "Email (optional)", claiming: "Claiming…", claim: "Claim and take over", retryDescription: "The claim succeeded but session takeover did not finish. Retry while this one-time credential remains in memory.", retry: "Retry takeover",
+        openingWorkspace: "Opening your workspace",
+      },
       dashboard: {
         eyebrow: "Control room",
         title: "Good work starts with orientation",
@@ -65,6 +77,15 @@ export const resources = {
         title: "Freedom within clear bounds.",
         description: "Your identity authority and credential lifetime are separate, visible facts.",
         identity: "Identity",
+        viewProfile: "View profile",
+        profileTitle: "Preferred name",
+        profileHelp: "Set the name people see across issue-spec. Your stable login remains visible for unambiguous identity.",
+        nickname: "Nickname",
+        nicknameHint: "Leave this empty to use the name from your identity provider: {{identityName}}",
+        nicknamePlaceholder: "For example, Chengtang",
+        saveNickname: "Save nickname",
+        savingNickname: "Saving…",
+        nicknameSaved: "Your preferred name has been updated.",
         siteAdmin: "site admin",
         member: "member",
         credential: "Credential",
@@ -78,6 +99,12 @@ export const resources = {
         rotated: "Browser session rotated. The absolute expiry is unchanged.",
         notReported: "Not reported",
       },
+      profile: {
+        eyebrow: "User profile",
+        loading: "Opening profile…",
+        edit: "Edit profile",
+        preferredName: "This preferred name is shown across issue-spec; the login remains the stable account identifier.",
+      },
       route: {
         errorEyebrow: "Route error",
         errorTitle: "That desk could not open",
@@ -87,6 +114,8 @@ export const resources = {
         notFoundTitle: "No workflow lives here",
         notFoundDescription: "The path may be stale, or the resource is concealed by your current authority.",
       },
+      ...administrationResources.en,
+      ...workflowResources.en,
     },
   },
   "zh-CN": {
@@ -94,7 +123,7 @@ export const resources = {
       language: { label: "语言", english: "English", chinese: "中文" },
       brand: {
         controlRoom: "工作流中枢",
-        publicView: "仓库公开视图",
+        publicView: "公开视图",
         selfHostedDesk: "自托管工作台",
       },
       navigation: {
@@ -109,11 +138,11 @@ export const resources = {
         issues: "议题",
         changes: "变更",
         search: "检索",
-        repositories: "代码仓库",
+        repositories: "仓库",
         account: "账户",
         session: "会话",
         tokens: "访问令牌",
-        administration: "系统治理",
+        administration: "管理后台",
         inspector: "请求检视",
         requestProblem: "请求有误",
         home: "首页",
@@ -133,6 +162,15 @@ export const resources = {
         discovering: "正在探寻可用的身份提供方",
         noProvider: "尚未配置交互式身份提供方，请联系管理员启用 OIDC 或 GitHub OAuth。",
         bootstrap: "正在配置首位管理员？",
+      },
+      bootstrap: {
+        checking: "正在检查首次引导状态", closedTitle: "首次引导已关闭", closedDescription: "首次管理员认领已经完成，或服务器启动时未配置引导密钥。",
+        continueSignIn: "继续登录", eyebrow: "一次性操作", title: "认领首位管理员",
+        description: "此操作只使用一次管理员提供的引导密钥，然后将短期恢复凭据交换为正常的浏览器会话。",
+        warning: "请仅在受信的工作设备上使用此页面。浏览器存储不会保存任何密钥。", secret: "引导密钥", secretRequired: "请填写引导密钥",
+        localLogin: "本地登录名", localLoginHint: "用于议题署名且不可更改的身份标识。", loginRequired: "请填写登录名", displayName: "显示名称", displayNameRequired: "请填写显示名称",
+        emailOptional: "邮箱（可选）", claiming: "正在认领…", claim: "认领并接管", retryDescription: "管理员认领已成功，但会话接管尚未完成。请在一次性凭据仍保留于内存时重试。", retry: "重试接管",
+        openingWorkspace: "正在打开工作区",
       },
       dashboard: {
         eyebrow: "工作总览",
@@ -155,6 +193,15 @@ export const resources = {
         title: "从心所欲，不逾矩。",
         description: "这里会分别显示你的身份来源、权限范围和会话有效期。",
         identity: "身份",
+        viewProfile: "查看个人主页",
+        profileTitle: "平台显示名",
+        profileHelp: "设置在 issue-spec 中优先展示的昵称；稳定登录名仍会保留，避免身份混淆。",
+        nickname: "昵称",
+        nicknameHint: "留空则使用身份源提供的姓名：{{identityName}}",
+        nicknamePlaceholder: "例如：澄潭",
+        saveNickname: "保存昵称",
+        savingNickname: "正在保存…",
+        nicknameSaved: "平台显示名已更新。",
         siteAdmin: "站点管理员",
         member: "成员",
         credential: "凭据",
@@ -168,6 +215,12 @@ export const resources = {
         rotated: "浏览器会话已轮换，最终有效期未改变。",
         notReported: "未提供",
       },
+      profile: {
+        eyebrow: "个人主页",
+        loading: "正在打开个人主页…",
+        edit: "编辑个人资料",
+        preferredName: "平台会优先展示此名称；登录名仍作为稳定的账户标识。",
+      },
       route: {
         errorEyebrow: "路由有误",
         errorTitle: "未能打开此处",
@@ -177,6 +230,8 @@ export const resources = {
         notFoundTitle: "此处无可循之事",
         notFoundDescription: "路径或已失效，也可能因当前权限而不可见。",
       },
+      ...administrationResources["zh-CN"],
+      ...workflowResources["zh-CN"],
     },
   },
 } as const;

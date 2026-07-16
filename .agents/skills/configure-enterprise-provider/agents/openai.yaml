@@ -1,0 +1,4 @@
+interface:
+  display_name: "Configure Enterprise Provider"
+  short_description: "Connect private code and issue platforms safely"
+  default_prompt: "Use $configure-enterprise-provider to plan, scaffold, configure, and validate our private platform integration."

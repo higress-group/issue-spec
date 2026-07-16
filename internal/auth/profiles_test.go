@@ -163,7 +163,7 @@ func TestProfilePersistenceAndRedactedDiagnostics(t *testing.T) {
 	if err := SaveProfile(profile, true); err != nil {
 		t.Fatal(err)
 	}
-	resolved, source, err := ResolveProfile("", "github.com")
+	resolved, source, err := ResolveProfileAt("", "github.com", dir)
 	if err != nil || source != "config" || resolved.Name != "staging" || resolved.CAFile != profile.CAFile {
 		t.Fatalf("resolved = %+v source=%q err=%v", resolved, source, err)
 	}
@@ -183,6 +183,89 @@ func TestProfilePersistenceAndRedactedDiagnostics(t *testing.T) {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("missing %s in %s", want, data)
 		}
+	}
+}
+
+func TestResolveProfileAtUsesRepositoryRootGitHubMarkerBeforeGlobalDefault(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	if err := SaveProfile(hostedProfile("team", "team-instance", "https://issues.example.test"), true); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".issue-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".issue-spec", "config.json"), []byte(`{"version":1,"repo":"higress-group/issue-spec","hostname":"github.com","profile":"github"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(repo, "internal", "auth")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile, source, err := ResolveProfileAt("", "github.com", child)
+	if err != nil || source != "project" || profile.Name != DefaultProfileName || profile.Kind != ProfileKindGitHub {
+		t.Fatalf("project profile=%+v source=%q err=%v", profile, source, err)
+	}
+	profile, source, err = ResolveProfileAt("team", "github.com", child)
+	if err != nil || source != "config" || profile.Name != "team" {
+		t.Fatalf("explicit profile=%+v source=%q err=%v", profile, source, err)
+	}
+	t.Setenv(ProfileEnv, "team")
+	profile, source, err = ResolveProfileAt("", "github.com", child)
+	if err != nil || source != "config" || profile.Name != "team" {
+		t.Fatalf("environment profile=%+v source=%q err=%v", profile, source, err)
+	}
+}
+
+func TestProjectGitHubProfileCanReuseAuthenticatedGH(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".issue-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".issue-spec", "config.json"), []byte(`{"version":1,"repo":"higress-group/issue-spec","hostname":"github.com","profile":"github"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+	selection, err := SelectProfileBackendWithOptions(context.Background(), "", "github.com", GitHubBackendSelectionOptions{
+		GHAuthenticated: func(context.Context, string) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Name != GitHubBackendNameGH || selection.ProfileSource != "project" || selection.SelectionSource != "profile:project" {
+		t.Fatalf("project selection = %+v", selection)
+	}
+}
+
+func TestResolveProfileAtIgnoresProjectConfigAboveRepositoryRoot(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	if err := SaveProfile(hostedProfile("team", "team-instance", "https://issues.example.test"), true); err != nil {
+		t.Fatal(err)
+	}
+	parent := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(parent, ".issue-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, ".issue-spec", "config.json"), []byte(`{"version":1,"hostname":"github.com","profile":"github"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(parent, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile, source, err := ResolveProfileAt("", "github.com", repo)
+	if err != nil || source != "config" || profile.Name != "team" {
+		t.Fatalf("outside-root profile=%+v source=%q err=%v", profile, source, err)
 	}
 }
 

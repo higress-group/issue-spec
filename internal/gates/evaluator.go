@@ -43,6 +43,7 @@ const (
 	CodeProviderEvidenceUnknown   = "provider.evidence.unknown"
 	CodeDurableSpecInvalid        = "durable_spec.invalid"
 	CodeDurableSpecUnknown        = "durable_spec.unknown"
+	CodeProcessReviewRequired     = "process.review.required"
 )
 
 // Evaluate applies all policy locally and deterministically. It performs no
@@ -61,6 +62,9 @@ func Evaluate(snapshot Snapshot) (Report, error) {
 	e.evaluateTraceability()
 	e.evaluateWorkflow()
 	e.evaluateProcessEvidence()
+	if err := e.evaluateWorkspaceEvidence(); err != nil {
+		return Report{}, err
+	}
 	e.evaluateRemoteFacts()
 	e.sort()
 
@@ -94,6 +98,64 @@ func (e *evaluator) evaluateProcessEvidence() {
 		e.diagnostics = append(e.diagnostics, report.Diagnostics...)
 	}
 	sort.Slice(e.processes, func(i, j int) bool { return e.processes[i].ProcessID < e.processes[j].ProcessID })
+	e.requireIndependentReviewPresence()
+}
+
+// requireIndependentReviewPresence fails closed when a SPEC has satisfied
+// change-bearing code but no satisfied, independent review PROCESS covering it.
+// The name-based author-conflict check on a review PROCESS only runs when such a
+// PROCESS exists, so without this presence requirement a non-trivial change could
+// bypass independent review entirely by never creating the review node.
+func (e *evaluator) requireIndependentReviewPresence() {
+	reviewed := map[string]bool{}
+	changeBearing := map[string]ArtifactRef{}
+	for _, report := range e.processes {
+		switch report.ExecutionClass {
+		case model.ProcessExecutionReview:
+			for _, spec := range report.SatisfiedSpecs {
+				reviewed[spec] = true
+			}
+		case model.ProcessExecutionChangeBearing:
+			for _, spec := range report.SatisfiedSpecs {
+				if _, seen := changeBearing[spec]; !seen {
+					changeBearing[spec] = ArtifactRef{Type: "SPEC", ID: spec}
+				}
+			}
+		}
+	}
+	specs := make([]string, 0, len(changeBearing))
+	for spec := range changeBearing {
+		specs = append(specs, spec)
+	}
+	sort.Strings(specs)
+	for _, spec := range specs {
+		if reviewed[spec] {
+			continue
+		}
+		e.add(CodeProcessReviewRequired, fmt.Sprintf("%s has change-bearing code but no independent review PROCESS covering it", spec),
+			changeBearing[spec], "missing independent review", "review PROCESS by an agent other than the code author", "comment generate", "--type", "PROCESS")
+	}
+}
+
+func (e *evaluator) evaluateWorkspaceEvidence() error {
+	workspace := e.snapshot.Remote.Workspace
+	if !workspace.Observed {
+		return nil
+	}
+	carriers := ProcessCarrierRevisionFacts(e.processes)
+	for processID, fact := range workspace.CarrierRevisions {
+		carriers[processID] = fact
+	}
+	report, err := EvaluateWorkspaceEvidence(WorkspaceEvaluationInput{
+		Target: e.snapshot.Target, Mode: e.snapshot.Mode, Artifacts: e.snapshot.Artifacts,
+		ExpectedRevision: workspace.ExpectedRevision, IntegrationAncestry: workspace.IntegrationAncestry,
+		ProcessEvidence: e.processes, CarrierRevisions: carriers,
+	})
+	if err != nil {
+		return err
+	}
+	e.diagnostics = append(e.diagnostics, report.Diagnostics...)
+	return nil
 }
 
 func (e *evaluator) add(code, message string, artifact ArtifactRef, current, expected, command string, args ...string) {
@@ -290,8 +352,43 @@ func (e *evaluator) sort() {
 		if a.Current != b.Current {
 			return a.Current < b.Current
 		}
-		return a.Message < b.Message
+		if a.Message != b.Message {
+			return a.Message < b.Message
+		}
+		left, right := diagnosticSemanticKey(a), diagnosticSemanticKey(b)
+		if left != right {
+			return left < right
+		}
+		// Equivalent point-in-time facts collapse to the latest non-zero
+		// observation. This order is independent of collector input order.
+		if a.ObservedAt == nil {
+			return false
+		}
+		if b.ObservedAt == nil {
+			return true
+		}
+		return a.ObservedAt.After(*b.ObservedAt)
 	})
+	result := e.diagnostics[:0]
+	for _, diagnostic := range e.diagnostics {
+		if len(result) > 0 && diagnosticSemanticKey(result[len(result)-1]) == diagnosticSemanticKey(diagnostic) {
+			continue
+		}
+		result = append(result, diagnostic)
+	}
+	e.diagnostics = result
+}
+
+func diagnosticSemanticKey(diagnostic Diagnostic) string {
+	parts := []string{diagnostic.Code, string(diagnostic.Gate), string(diagnostic.Severity), fmt.Sprintf("%t", diagnostic.Blocking),
+		diagnostic.Message, diagnostic.Artifact.Type, diagnostic.Artifact.ID, diagnostic.Artifact.URL, diagnostic.Current, diagnostic.Expected,
+		diagnostic.Remediation.CommandFamily, string(diagnostic.Freshness), fmt.Sprintf("%d", len(diagnostic.Remediation.Arguments))}
+	parts = append(parts, diagnostic.Remediation.Arguments...)
+	var key strings.Builder
+	for _, part := range parts {
+		fmt.Fprintf(&key, "%d:%s", len(part), part)
+	}
+	return key.String()
 }
 
 func atLeast(actual, threshold Target) bool {

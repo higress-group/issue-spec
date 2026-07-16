@@ -67,7 +67,15 @@ an `error` object containing only a stable lowercase `code`; stderr and response
 bodies are never surfaced to the job.
 
 The adapter should mint one credential for the exact HTTPS clone URL in the
-pinned binding and should not return a broad host credential. Runner-side
-timeouts, output limits and concurrency bounds are configurable, but cannot be
-disabled. Credentials are materialized only into per-job private files and are
-not accepted from issue content, webhook bodies or ambient host credentials.
+pinned binding and should not return a broad host credential. The Runner
+accepts an expiry of at most seven days and still revokes the lease as soon as
+the job reaches a terminal state. Operators supporting uninterrupted,
+multi-day jobs should configure the adapter to mint a lease that covers the
+expected job window. Runner-side timeouts, output limits and concurrency
+bounds are configurable, but cannot be disabled. Credentials are materialized
+only into per-job private files and are not accepted from issue content,
+webhook bodies or ambient host credentials.
+
+For choosing between a credential command, host SSH, and a code-provider
+bridge, see
+[Integrate company code and work platforms](../enterprise-provider-integration.md).

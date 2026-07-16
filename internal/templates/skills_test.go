@@ -40,15 +40,58 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 		"matching path/line rationale", "done REVIEW or resolved finding",
 		"done VERIFY or required passing check with test evidence",
 		"non-empty coordination handoff", "consumed exact-revision provider evidence",
+		"workflow workspace prepare, inspect, complete, integrate, reconcile, and cleanup",
+		"coordinator owns every PROCESS workspace lifecycle operation",
+		"review and verification use detached immutable workflow snapshots and fail closed when dirty",
+		"external uses mode none", "consumed provider-neutral exact-revision evidence",
+		"single runner-managed coordinator session", "supplied session checkout", "otherwise operate standalone",
+		"ISSUE_SPEC_PROCESS_INTEGRATION_ROOT", "ISSUE_SPEC_PROCESS_WORKSPACE_ROOT",
+		"current runtime native child/subagent facility", "exact worktree path, branch, write ownership, PROCESS id",
+		"runtime-native child is not a coordinator session", "does not launch a nested coordinator session or claim a separate per-child OS sandbox",
+		"children share the runner-managed coordinator session's outer sandbox", "unsafe-no-sandbox has no filesystem isolation",
+		"result commit", "runs complete and integrate",
+		"runtime recovers only the runner-managed coordinator session", "inspects or reconciles the exact managed PROCESS lease",
+		"Runner-managed session retention cleanup consults git worktree list", "retaining the session checkout when runtime metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails",
+		"does not own, persist, or retry child PROCESS cleanup",
+		"workflow workspace cleanup is always an explicit owner-token-authorized destructive operation",
+		"does not decide or enforce integration/retention eligibility for its caller",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("workflow skill missing %q:\n%s", want, workflow)
 		}
 	}
+	for _, forbidden := range []string{
+		"/resume <public-session-id> --process",
+		"bubblewrap adds a read-only bind",
+		"Target runner work with",
+		"provider adapter", "adapter readiness", "readiness gate",
+		"Runner terminal, cancellation, and reconciliation paths record cleanup intent",
+		"A restart reconciles durable workspace lifecycle state",
+		"record cleanup intent durably", "apply integration/retention eligibility",
+		"retrying pending cleanup", "performs eligible cleanup",
+		"runner external execution additionally", "configured provider adapter",
+	} {
+		if strings.Contains(workflow, forbidden) {
+			t.Fatalf("workflow skill contains stale runner PROCESS dispatch guidance %q:\n%s", forbidden, workflow)
+		}
+	}
 	apply := skillContent(t, skills, "issue-spec-apply")
-	for _, want := range []string{"--gate implement", "doctor agent", "execution_class", "only for change-bearing", "same digest/checkpoint"} {
+	for _, want := range []string{"--gate implement", "doctor agent", "execution_class", "only for change-bearing", "same digest/checkpoint", "workspace prepare, inspect, complete, integrate, reconcile, and cleanup", "single runner-managed coordinator session", "otherwise operate standalone", "coordinator owns every PROCESS workspace lifecycle operation", "current runtime native child/subagent facility", "exact worktree path as cwd", "one result commit, focused tests, and a bounded handoff", "there is no nested coordinator session or separate per-child OS sandbox", "workspace complete and integrate from its unchanged checkout", "detached immutable workflow snapshots and fail closed when dirty", "external uses mode none and requires consumed provider-neutral exact-revision evidence", "runtime recovers only the runner-managed coordinator session", "coordinator inspects or reconciles the exact managed PROCESS lease", "Runner-managed session retention cleanup consults git worktree list", "fails closed by retaining the session checkout when runtime metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails", "does not own, persist, or retry child PROCESS cleanup", "workflow workspace cleanup is destructive and does not decide or enforce integration/retention eligibility"} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply skill missing %q:\n%s", want, apply)
+		}
+	}
+	if strings.Contains(apply, "/resume <public-session-id> --process") {
+		t.Fatalf("apply skill still advertises runner PROCESS selection:\n%s", apply)
+	}
+	for _, forbidden := range []string{"provider adapter", "adapter readiness", "readiness gate", "performs eligible cleanup", "retrying pending cleanup", "runner external execution additionally", "A restart reconciles durable workspace lifecycle state", "record cleanup intent durably", "apply integration/retention eligibility"} {
+		if strings.Contains(apply, forbidden) {
+			t.Fatalf("apply skill contains stale runner-owned PROCESS lifecycle guidance %q:\n%s", forbidden, apply)
+		}
+	}
+	for _, incomplete := range []string{"retaining the clone when a linked worktree exists or inspection fails", "retains the clone when a linked worktree exists or inspection fails"} {
+		if strings.Contains(workflow, incomplete) || strings.Contains(apply, incomplete) {
+			t.Fatalf("generated skill contains incomplete session-clone retention guidance %q", incomplete)
 		}
 	}
 	review := skillContent(t, skills, "issue-spec-review")
@@ -78,6 +121,82 @@ func TestIssueSpecSkillsStateSelfContainedAuthoringInvariant(t *testing.T) {
 	}
 }
 
+func TestIssueSpecSkillsSeparateInlineAndDelegatedProcessLifecycles(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+	workflow := skillContent(t, skills, "issue-spec-workflow")
+	for _, want := range []string{
+		"Execute an inline (independent) coding node in the coordinator's integration checkout",
+		"dispatch only delegated (managed) coding nodes and review nodes",
+		"When a serial node is inline, the coordinator executes it in the integration checkout but still preserves distinct per-PROCESS state and the same bounded ### Handoff boundary",
+		"For each delegated (managed) output, validate the child result commit and focused-test handoff",
+		"Inline or externally self-managed independent nodes skip this child-output lifecycle",
+		"workspace_management: independent remains a general self-managed mode",
+		"MAY instead be used by an external or human executor that owns its own workspace; it is not restricted to coordinator-inline execution",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("workflow skill missing inline/delegated lifecycle guidance %q:\n%s", want, workflow)
+		}
+	}
+	for _, forbidden := range []string{
+		"Select ready PROCESS nodes whose dependencies are done and dispatch each to its assigned worker",
+		"After prepare, delegate through the current runtime native child/subagent facility",
+		"The coordinator validates the child handoff, then runs complete and integrate",
+		"Validate each child result commit and focused-test handoff",
+	} {
+		if strings.Contains(workflow, forbidden) {
+			t.Fatalf("workflow skill contains unscoped delegated lifecycle guidance %q:\n%s", forbidden, workflow)
+		}
+	}
+
+	apply := skillContent(t, skills, "issue-spec-apply")
+	for _, want := range []string{
+		"For a delegated (managed) node, after prepare",
+		"After the delegated child returns",
+		"Inline (independent) nodes have no child result and skip this entire lifecycle",
+		"For each delegated (managed) output, validate the child result commit/tests/handoff",
+		"Inline or externally self-managed independent nodes skip the child-output lifecycle and retain their own per-PROCESS handoff boundary",
+		"workspace_management: independent remains the general self-managed mode for coordinator-inline, external, or human executors",
+	} {
+		if !strings.Contains(apply, want) {
+			t.Fatalf("apply skill missing inline/delegated lifecycle guidance %q:\n%s", want, apply)
+		}
+	}
+	for _, forbidden := range []string{
+		"8. After prepare, use the current runtime native child/subagent facility",
+		"8. Validate child result commit/tests/handoff",
+	} {
+		if strings.Contains(apply, forbidden) {
+			t.Fatalf("apply skill contains unscoped delegated lifecycle guidance %q:\n%s", forbidden, apply)
+		}
+	}
+}
+
+func TestIssueSpecSkillsPlaceFinalRationaleAfterIndependentReviewConvergence(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+	for _, name := range []string{"issue-spec-workflow", "issue-spec-apply"} {
+		content := skillContent(t, skills, name)
+		parts := strings.SplitN(content, "## Coordinator DAG Execution", 2)
+		if len(parts) != 2 {
+			t.Fatalf("%s skill missing Coordinator DAG Execution section", name)
+		}
+		dag := parts[1]
+		reviewAt := strings.Index(dag, "independent review")
+		rationaleAt := strings.Index(dag, "Only after independent review/fix convergence")
+		if reviewAt < 0 || rationaleAt < 0 || rationaleAt <= reviewAt {
+			t.Fatalf("%s skill does not place final rationale after independent review convergence:\n%s", name, dag)
+		}
+		for _, forbidden := range []string{
+			"Both paths record change-bearing rationale",
+			"Both record change-bearing rationale",
+			"then records rationale and (for a serial predecessor)",
+		} {
+			if strings.Contains(dag, forbidden) {
+				t.Fatalf("%s skill contains rationale-before-review guidance %q:\n%s", name, forbidden, dag)
+			}
+		}
+	}
+}
+
 func TestIssueSpecSkillsIncludeGitHubCLISupportSkill(t *testing.T) {
 	skills := IssueSpecSkills("owner/repo")
 	if hasSkill(skills, "github") {
@@ -91,10 +210,22 @@ func TestIssueSpecSkillsIncludeGitHubCLISupportSkill(t *testing.T) {
 		"gh auth login",
 		"gh pr checks",
 		"gh api",
+		"Ordinary issue discussion writes",
+		"issue-spec comment create --repo owner/repo --issue 42 --body-file reply.md --json",
+		"selected issue backend owns the write",
 		"issue-spec owns the proposal, design, implement",
 	} {
 		if !strings.Contains(github, want) {
 			t.Fatalf("github skill missing %q:\n%s", want, github)
+		}
+	}
+	for _, forbidden := range []string{
+		"gh issue comment",
+		"gh api repos/owner/repo/issues/42/comments",
+		"or commenting on GitHub issues",
+	} {
+		if strings.Contains(github, forbidden) {
+			t.Fatalf("github skill recommends forbidden ordinary discussion write %q:\n%s", forbidden, github)
 		}
 	}
 }
@@ -170,9 +301,9 @@ func TestIssueSpecSkillTemplatesDocumentSessionSourceSeparation(t *testing.T) {
 		"Agent Session ID and Agent Session Source as artifact writer provenance",
 		"--agent-session",
 		"CODEX_THREAD_ID may override",
-		"runner.public_session_id is the public /resume handle",
+		"When runner context supplies runner.public_session_id, it is the public /resume handle",
 		"/resume <public-session-id> <answer or next instruction>",
-		"Do not present Agent Session ID, CODEX_THREAD_ID, acpx record ids, or provider session ids as /resume handles",
+		"Do not present Agent Session ID, CODEX_THREAD_ID, coordinator record ids, or provider session ids as /resume handles",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("workflow skill missing %q:\n%s", want, workflow)
@@ -287,7 +418,9 @@ func TestIssueSpecSkillTemplatesEnforceAgentOwnedReviewWorkflow(t *testing.T) {
 	apply := skillContent(t, skills, "issue-spec-apply")
 	for _, want := range []string{
 		"Add final PR rationale only after review/fix convergence",
-		"the coordinator dispatches each owning worker to add rationale",
+		"each code author adds rationale on the key code blocks it owns",
+		"for delegated code, the coordinator dispatches the owning worker",
+		"for inline code, the coordinator records rationale under its own author identity without fabricating a worker",
 		"does not author review findings, worker fix replies, review resolutions, or rationale on another agent's behalf",
 	} {
 		if !strings.Contains(apply, want) {

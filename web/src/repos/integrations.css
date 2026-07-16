@@ -50,6 +50,8 @@
 .clear-query strong, .clear-query small { display: block; }
 .clear-query small { margin-top: .15rem; color: var(--muted); font-size: .66rem; }
 .form-alert { margin: 0 0 .8rem; padding: .65rem .75rem; border-left: 3px solid var(--coral); background: #faeeeb; color: #7d443e; font-size: .72rem; font-weight: 700; }
+.webhook-field-error, .policy-editor > .webhook-field-error { margin: -.45rem 0 .8rem; color: var(--coral); font-size: .68rem; font-weight: 700; }
+.event-picker .event-picker-error { grid-column: 1 / -1; margin: 0; color: var(--coral); font-family: inherit; font-weight: 700; }
 .event-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; margin: 0 0 1rem; padding: 0; border: 0; }
 .event-picker legend { margin-bottom: .5rem; color: #394146; font-size: .78rem; font-weight: 800; }
 .event-picker label { display: flex; align-items: center; gap: .55rem; min-width: 0; padding: .65rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); cursor: pointer; }

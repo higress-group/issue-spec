@@ -14,6 +14,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
+	"github.com/higress-group/issue-spec/internal/gitidentity"
 )
 
 const (
@@ -48,9 +49,16 @@ type Config struct {
 	WorkspaceRetention      Duration               `json:"workspace_retention"`
 	BwrapPath               string                 `json:"bwrap_path,omitempty"`
 	UnsafeNoSandbox         bool                   `json:"unsafe_no_sandbox"`
-	GHConfigDir             string                 `json:"gh_config_dir,omitempty"`
-	StrictAgentCapabilities bool                   `json:"strict_agent_capabilities"`
-	CancellationEnabled     bool                   `json:"cancellation_enabled"`
+	AllowHostSSH            bool                   `json:"allow_host_ssh,omitempty"`
+	GitAuthorName           string                 `json:"git_author_name,omitempty"`
+	GitAuthorEmail          string                 `json:"git_author_email,omitempty"`
+	// OperatorSkillDirs are operator-trusted local skill roots copied into each
+	// session's isolated CODEX_HOME. Repository workflow skills belong in the
+	// repository and arrive through the normal clone path.
+	OperatorSkillDirs       []string `json:"operator_skill_dirs,omitempty"`
+	GHConfigDir             string   `json:"gh_config_dir,omitempty"`
+	StrictAgentCapabilities bool     `json:"strict_agent_capabilities"`
+	CancellationEnabled     bool     `json:"cancellation_enabled"`
 	// Logging configuration
 	LogDir           string `json:"log_dir,omitempty"`
 	LogMaxSizeMB     int    `json:"log_max_size_mb,omitempty"`
@@ -184,7 +192,10 @@ func (c Config) Normalized() Config {
 		c.AcpxPath = "acpx"
 	}
 	c.BwrapPath = strings.TrimSpace(c.BwrapPath)
+	c.GitAuthorName = strings.TrimSpace(c.GitAuthorName)
+	c.GitAuthorEmail = strings.TrimSpace(c.GitAuthorEmail)
 	c.GHConfigDir = strings.TrimSpace(c.GHConfigDir)
+	c.OperatorSkillDirs = normalizeStringList(c.OperatorSkillDirs)
 	c.Agent.Kind = strings.ToLower(strings.TrimSpace(c.Agent.Kind))
 	if c.Agent.Kind == "" {
 		c.Agent.Kind = AgentCodex
@@ -246,17 +257,23 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid --agent %q; valid values: codex, claude", c.Agent.Kind)
 	}
+	if len(c.OperatorSkillDirs) > 0 && c.Agent.Kind != AgentCodex {
+		return fmt.Errorf("--operator-skill-dir is supported only with --agent codex")
+	}
+	if _, err := gitidentity.Normalize(c.GitAuthorName, c.GitAuthorEmail); err != nil {
+		return fmt.Errorf("--git-author-name and --git-author-email: %w", err)
+	}
 	return nil
 }
 
 func runnerScopeSegments(cfg Config) ([]string, error) {
 	host := safePathSegment(strings.ToLower(auth.NormalizeHost(cfg.Hostname)))
-	profile, profileSource, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
+	profile, _, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
 	if err != nil {
 		return nil, err
 	}
 	var realmSegment string
-	if profileSource != "builtin" {
+	if !auth.IsBuiltinGitHubProfile(profile) {
 		digest := sha256.Sum256([]byte(profile.RealmKey()))
 		realmSegment = safePathSegment(strings.ToLower(profile.Name)) + "-" + hex.EncodeToString(digest[:8])
 	}

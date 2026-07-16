@@ -2,6 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -191,6 +194,45 @@ func TestPreflightUnsafeDoesNotRequireBwrap(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Preflight unsafe returned error: %v", err)
+	}
+}
+
+func TestHostSSHPassthroughIsOptInAndValidatesPaths(t *testing.T) {
+	root := t.TempDir()
+	sshDir := filepath.Join(root, "home", ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := Prepare(context.Background(), Config{UnsafeNoSandbox: true, HostSSHDir: sshDir,
+		TempHome: filepath.Join(root, "temporary-home"), TempGHConfigDir: filepath.Join(root, "gh"),
+		TempXDGConfigHome: filepath.Join(root, "xdg")}, Command{Binary: "true"}, Dependencies{})
+	if err != nil {
+		t.Fatalf("unsafe host SSH prepare: %v", err)
+	}
+	if want := "HOME=" + filepath.Dir(sshDir); !strings.Contains(strings.Join(prepared.Command.Env, "\n"), want) {
+		t.Fatalf("unsafe host SSH environment = %v, want %q", prepared.Command.Env, want)
+	}
+	if _, err := Preflight(context.Background(), Config{HostSSHDir: "relative/.ssh"}, Dependencies{}); err == nil {
+		t.Fatal("relative host SSH directory accepted")
+	}
+	if _, err := Preflight(context.Background(), Config{}, Dependencies{
+		LookPath: func(string) (string, error) { return "", errors.New("not installed") },
+	}); err == nil || errors.Is(err, ErrSandboxConfigInvalid) {
+		t.Fatalf("default configuration did not proceed to normal sandbox preflight: %v", err)
+	}
+}
+
+func TestHostSSHPassthroughRejectsRunnerPathOverlap(t *testing.T) {
+	root := t.TempDir()
+	sshDir := filepath.Join(root, ".ssh")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateHostSSHConfig(Config{HostSSHDir: sshDir, TempHome: root}); err == nil {
+		t.Fatal("host SSH directory overlapping temporary HOME was accepted")
+	}
+	if err := validateHostSSHConfig(Config{HostSSHDir: sshDir, WorkspacePath: root}); err == nil {
+		t.Fatal("host SSH directory inside workspace was accepted")
 	}
 }
 

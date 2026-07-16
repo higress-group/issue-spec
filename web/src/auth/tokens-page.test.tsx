@@ -11,7 +11,7 @@ const orgId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const repoId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 describe("personal access token repository boundaries", () => {
-  it("creates an exactly repository-scoped runner parent token", async () => {
+  it("creates an exactly repository-scoped runner token", async () => {
     let created: unknown;
     server.use(...handlers(), http.post("http://localhost/api/v1/pats", async ({ request }) => {
       created = await request.json();
@@ -26,7 +26,7 @@ describe("personal access token repository boundaries", () => {
 
     await waitFor(() => expect(created).toEqual({
       name: "local runner",
-      scopes: ["read:user", "issues:read", "issues:write", "runner:delegate"],
+      scopes: ["read:user", "issues:read", "issues:write", "evidence:write"],
       repositories: [{ organization_id: orgId, repository_id: repoId }],
       expires_at: null,
     }));
@@ -34,7 +34,7 @@ describe("personal access token repository boundaries", () => {
     expect((await axe.run(container)).violations).toEqual([]);
   });
 
-  it("requires a repository for delegation and names persisted boundaries", async () => {
+  it("requires a repository for runner credentials and names persisted boundaries", async () => {
     let posts = 0;
     server.use(...handlers(), http.post("http://localhost/api/v1/pats", () => { posts += 1; return HttpResponse.json({ token: "unexpected" }, { status: 201 }); }));
     renderApp(<TokensPage />, "/settings/tokens");
@@ -44,7 +44,7 @@ describe("personal access token repository boundaries", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Runner preset" }));
     await userEvent.setup().click(screen.getByRole("button", { name: "Create token" }));
 
-    expect(await screen.findByText("Runner delegation requires exactly one repository")).toBeVisible();
+    expect(await screen.findByText("Runner credentials require exactly one repository")).toBeVisible();
     expect(posts).toBe(0);
   });
 

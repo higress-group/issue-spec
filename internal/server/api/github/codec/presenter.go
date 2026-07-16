@@ -18,9 +18,20 @@ type Presenter struct {
 }
 
 type UserView struct {
-	StableID string
-	Login    string
-	Admin    bool
+	StableID  string
+	Login     string
+	Name      string
+	Admin     bool
+	Type      string
+	NoProfile bool
+}
+
+type RepositoryView struct {
+	StableID      string
+	OwnerStableID string
+	Owner         string
+	Name          string
+	Private       bool
 }
 
 type LabelView struct {
@@ -72,8 +83,27 @@ type ReactionView struct {
 }
 
 func (p Presenter) PresentUser(view UserView) User {
-	return User{Login: view.Login, ID: StableNumericID(view.StableID), NodeID: NodeID("User", view.StableID),
-		AvatarURL: p.AvatarURL(view.Login), Type: "User", SiteAdmin: view.Admin}
+	userType := view.Type
+	if userType == "" {
+		userType = "User"
+	}
+	result := User{Login: view.Login, Name: view.Name, ID: StableNumericID(view.StableID),
+		NodeID: NodeID(userType, view.StableID), Type: userType, SiteAdmin: view.Admin}
+	if !view.NoProfile {
+		result.AvatarURL = p.AvatarURL(view.Login)
+		result.HTMLURL = p.Origins.Web.MustURL("/users/" + segment(view.Login))
+	}
+	return result
+}
+
+func (p Presenter) PresentRepository(view RepositoryView) Repository {
+	paths := publicurl.RepositoryResource(view.Owner, view.Name)
+	return Repository{ID: StableNumericID(view.StableID), NodeID: NodeID("Repository", view.StableID),
+		Name: view.Name, FullName: view.Owner + "/" + view.Name, Private: view.Private,
+		Owner: p.PresentUser(UserView{StableID: view.OwnerStableID, Login: view.Owner,
+			Type: "Organization", NoProfile: true}),
+		HTMLURL: p.Origins.Web.MustURL(paths.Web()), URL: p.Origins.API.MustURL(paths.API()),
+		IssuesURL: p.Origins.API.String() + paths.IssuesAPI() + "{/number}"}
 }
 
 func (p Presenter) AvatarURL(login string) string {
@@ -85,8 +115,9 @@ func (p Presenter) AvatarURL(login string) string {
 }
 
 func (p Presenter) PresentIssue(view IssueView) Issue {
-	repoPath := "/repos/" + segment(view.Owner) + "/" + segment(view.Repository)
-	issuePath := repoPath + "/issues/" + strconv.FormatInt(view.Number, 10)
+	paths := publicurl.RepositoryResource(view.Owner, view.Repository)
+	repoPath := paths.API()
+	issuePath := paths.IssueAPI(view.Number)
 	labels := make([]Label, len(view.Labels))
 	for index, label := range view.Labels {
 		labels[index] = p.PresentLabel(label)
@@ -97,30 +128,30 @@ func (p Presenter) PresentIssue(view IssueView) Issue {
 		ID: StableNumericID(view.StableID), NodeID: NodeID("Issue", view.StableID),
 		URL: p.Origins.API.MustURL(issuePath), RepositoryURL: p.Origins.API.MustURL(repoPath),
 		LabelsURL: p.Origins.API.MustURL(issuePath + "/labels"), CommentsURL: p.Origins.API.MustURL(issuePath + "/comments"),
-		EventsURL: p.Origins.API.MustURL(issuePath + "/events"), HTMLURL: p.Origins.Web.MustURL("/" + segment(view.Owner) + "/" + segment(view.Repository) + "/issues/" + strconv.FormatInt(view.Number, 10)),
-		Number: view.Number, State: view.State, StateReason: view.StateReason, Title: view.Title, Body: view.Body,
+		HTMLURL: p.Origins.Web.MustURL(paths.IssueWeb(view.Number)),
+		Number:  view.Number, State: view.State, StateReason: view.StateReason, Title: view.Title, Body: view.Body,
 		User: p.PresentUser(view.Author), Labels: labels, Locked: view.Locked, Comments: view.CommentCount,
 		CreatedAt: view.CreatedAt, UpdatedAt: view.UpdatedAt, ClosedAt: view.ClosedAt, Reactions: reactions,
 	}
 }
 
 func (p Presenter) PresentComment(view CommentView) Comment {
-	repoPath := "/repos/" + segment(view.Owner) + "/" + segment(view.Repository)
-	issuePath := repoPath + "/issues/" + strconv.FormatInt(view.IssueNumber, 10)
+	paths := publicurl.RepositoryResource(view.Owner, view.Repository)
+	issuePath := paths.IssueAPI(view.IssueNumber)
 	commentID := StableNumericID(view.StableID)
-	commentPath := repoPath + "/issues/comments/" + strconv.FormatInt(commentID, 10)
+	commentPath := paths.CommentAPI(commentID)
 	reactions := view.Reactions
 	reactions.URL = p.Origins.API.MustURL(commentPath + "/reactions")
 	return Comment{
 		ID: commentID, NodeID: NodeID("IssueComment", view.StableID), URL: p.Origins.API.MustURL(commentPath),
-		HTMLURL:  p.Origins.Web.MustURLWithFragment("/"+segment(view.Owner)+"/"+segment(view.Repository)+"/issues/"+strconv.FormatInt(view.IssueNumber, 10), "issuecomment-"+strconv.FormatInt(commentID, 10)),
+		HTMLURL:  p.Origins.Web.MustURLWithFragment(paths.IssueWeb(view.IssueNumber), "issuecomment-"+strconv.FormatInt(commentID, 10)),
 		IssueURL: p.Origins.API.MustURL(issuePath), Body: view.Body, User: p.PresentUser(view.Author),
 		CreatedAt: view.CreatedAt, UpdatedAt: view.UpdatedAt, Reactions: reactions,
 	}
 }
 
 func (p Presenter) PresentLabel(view LabelView) Label {
-	repoPath := "/repos/" + segment(view.Owner) + "/" + segment(view.Repository)
+	repoPath := publicurl.RepositoryResource(view.Owner, view.Repository).API()
 	return Label{
 		ID: StableNumericID(view.StableID), NodeID: NodeID("Label", view.StableID),
 		URL: p.Origins.API.MustURL(repoPath + "/labels/" + segment(view.Name)), Name: view.Name,

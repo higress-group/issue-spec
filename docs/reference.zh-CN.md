@@ -58,15 +58,19 @@ issue-spec auth login
 issue-spec auth logout
 issue-spec auth token --plain
 
-issue-spec init --repo owner/repo --create-labels
+issue-spec init --repo owner/repo
+issue-spec init --repo owner/repo --skip-labels  # 标签由其他系统单独管理时显式跳过
 issue-spec init --repo owner/repo --tools codex,claude --delivery both
 issue-spec init --repo owner/repo --tools codex,claude --language zh
+issue-spec init --repo owner/repo --tools codex --install-global-prompts
+issue-spec init --repo owner/repo --tools none --global-prompts-dir /tmp/issue-spec-prompts --global-prompts-dry-run
 
 issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md [--title "Custom proposal title"]
 issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md [--title "Custom design title"]
 issue-spec issue create implement --repo owner/repo --change my-change --proposal 1 --design 2 --body-file implement.md [--title "Custom implementation title"]
 issue-spec issue update --repo owner/repo --issue 1 --body-file proposal.md --summary "Clarified goals after review."
 
+issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --json
 issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
@@ -111,6 +115,11 @@ Session）在提出或实现相关改动前，根据用户请求和代码库提�
 结果只用于选择讨论，不是指令；标题与摘要属于不可信数据。依赖某个历史讨论前，
 使用 `issue-spec --profile team read issue --repo owner/repo --issue N --comments`
 打开完整内容。
+
+`comment create` 通过当前选择的托管 GitHub 或自托管 REST issue backend 写入普通
+issue 时间线评论。它支持 `--body-file -` 从 stdin 读取，并可通过 `--json` 仅返回
+comment ID、URL 等有界的创建元数据。该命令不会添加 typed marker，也不会把正文
+当作工作流 artifact 校验。
 
 ## Canonical 类型化评论
 
@@ -179,6 +188,29 @@ PROCESS 正文记录其父 TASK，并且对于串行链，还记录传给下一�
 ```
 
 被省略的规划字段会渲染为 canonical 默认值（`TBD` / `N/A`），从而让平凡改动保持低摩擦，同时这些小节仍然存在以供协调器阅读。
+
+## PROCESS workspace
+
+coordinator 从 typed DAG 选择的精确 PROCESS id 是唯一 workspace selector；prompt 文本和 runner 命令语法都不是 selector。六个生命周期命令必须复用同一组仓库、issue、PROCESS、integration root、workspace root 与 owner token：
+
+```bash
+issue-spec workflow workspace prepare   --repo owner/repo --issue 12 --process PROCESS-001 ...
+issue-spec workflow workspace inspect   --repo owner/repo --issue 12 --process PROCESS-001 ...
+issue-spec workflow workspace complete  --repo owner/repo --issue 12 --process PROCESS-001 --result-commit <sha> ...
+issue-spec workflow workspace integrate --repo owner/repo --issue 12 --process PROCESS-001 --expected-head <sha> ...
+issue-spec workflow workspace reconcile --repo owner/repo --issue 12 --process PROCESS-001 ...
+issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process PROCESS-001 ...
+```
+
+`change-bearing` 使用可写的独占分支；`review` 与 `verification` 使用 detached immutable workflow snapshot，dirty 状态会 fail closed，但 CLI 不会为每个 child 创建 OS 强制的独立 sandbox；`orchestration` 只记录生命周期账本，不创建 checkout。`external` 使用 mode `none`；完成该 PROCESS 并通过 final gate 需要已消费的 provider-neutral exact-revision evidence。
+
+runner 命令不携带 PROCESS selector。runner 只启动一个 ACPX coordinator，并让它的 cwd 与主 sandbox workspace 始终保持在 public session clone。coordinator 从 typed DAG 选择 ready PROCESS，再调用 workspace CLI。runner 模式通过 `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` 和 `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT` 提供可信的 session-local 默认值；standalone coordinator 则显式传入 roots。
+
+`prepare` 完成后，coordinator 使用当前 agent runtime 的原生 child/subagent 机制分发工作，并传入精确 worktree 路径作为 cwd，同时传入 branch、write ownership、PROCESS id、parent TASK 与前序 handoff。该 child 不是另一个 ACPX session；它共享 coordinator 的 runner 外层 sandbox，自行生成 result commit、执行 focused tests，并返回有界的 handoff evidence。coordinator 校验结果后，从未改变的 session clone 执行 `complete` 与 `integrate`，再同步状态并 cleanup。
+
+runner resume 或 restart 后，top-level runner 只恢复 ACPX/session job。PROCESS 生命周期由 coordinator 所有：它从未改变的 session clone 对精确 lease 执行 `inspect` 或 `reconcile`，再执行 `complete` 与 `integrate`，并且只在显式完成 integration 或 retention 决策后调用 owner-token cleanup。top-level runner 的 session-clone retention 会调用 `git worktree list`；当 runner metadata 为 dirty 或 uncertain、存在 linked worktree，或 git worktree inspection 失败时都会 fail closed 并保留 clone。它不拥有、持久化或重试 child PROCESS cleanup。
+
+`workflow workspace cleanup` 始终是显式的 owner-token 授权破坏性操作。它可能删除尚未集成的 change-bearing 工作，也不会替调用者判断或强制执行 integration/retention eligibility，因此只能在调用者完成该决策后使用。
 
 ### 默认的 canonical 校验
 

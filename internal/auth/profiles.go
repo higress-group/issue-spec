@@ -215,9 +215,21 @@ func legacyAPIProfile(raw string) (Profile, error) {
 	}).Normalized()
 }
 
-// ResolveProfile applies explicit name, ISSUE_SPEC_PROFILE, legacy URL, saved
-// default, then the built-in GitHub profile in that order.
+// ResolveProfile applies explicit name, ISSUE_SPEC_PROFILE, legacy URL,
+// a repository-root GitHub project marker, saved default, then the built-in
+// GitHub profile in that order.
 func ResolveProfile(name, host string) (Profile, string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = ""
+	}
+	return ResolveProfileAt(name, host, cwd)
+}
+
+// ResolveProfileAt is ResolveProfile with an explicit working directory. It is
+// primarily useful for callers and tests that need deterministic project
+// discovery without changing the process working directory.
+func ResolveProfileAt(name, host, cwd string) (Profile, string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		name = ProfileNameFromEnv()
@@ -233,6 +245,13 @@ func ResolveProfile(name, host string) (Profile, string, error) {
 		return Profile{}, "", err
 	}
 	if name == "" {
+		projectProfile, found, err := projectGitHubProfile(cwd)
+		if err != nil {
+			return Profile{}, "", err
+		}
+		if found {
+			return BuiltinGitHubProfile(projectProfile.Hostname), "project", nil
+		}
 		name = strings.TrimSpace(profiles.DefaultProfile)
 	}
 	if name == "" {
@@ -249,6 +268,61 @@ func ResolveProfile(name, host string) (Profile, string, error) {
 		return BuiltinGitHubProfile(host), "builtin", nil
 	}
 	return Profile{}, "", fmt.Errorf("profile %q is not configured", name)
+}
+
+type projectProfileConfig struct {
+	Version  int    `json:"version"`
+	Profile  string `json:"profile"`
+	Hostname string `json:"hostname"`
+}
+
+// projectGitHubProfile reads only the repository-root marker. This narrow
+// delivery deliberately activates only the credential-free built-in GitHub
+// profile; named self-hosted profiles remain explicit/global configuration.
+func projectGitHubProfile(cwd string) (projectProfileConfig, bool, error) {
+	root, ok := repositoryRoot(cwd)
+	if !ok {
+		return projectProfileConfig{}, false, nil
+	}
+	path := filepath.Join(root, ".issue-spec", "config.json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return projectProfileConfig{}, false, nil
+	}
+	if err != nil {
+		return projectProfileConfig{}, false, fmt.Errorf("read project profile config %s: %w", path, err)
+	}
+	var config projectProfileConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return projectProfileConfig{}, false, fmt.Errorf("parse project profile config %s: %w", path, err)
+	}
+	if strings.TrimSpace(config.Profile) != DefaultProfileName {
+		return projectProfileConfig{}, false, nil
+	}
+	if NormalizeHost(config.Hostname) != "github.com" {
+		return projectProfileConfig{}, false, fmt.Errorf("project profile config %s selects github with unsupported hostname %q", path, config.Hostname)
+	}
+	return projectProfileConfig{Version: config.Version, Profile: DefaultProfileName, Hostname: "github.com"}, true, nil
+}
+
+func repositoryRoot(cwd string) (string, bool) {
+	if strings.TrimSpace(cwd) == "" {
+		return "", false
+	}
+	path, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", false
+	}
+	for {
+		if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
+			return path, true
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return "", false
+		}
+		path = parent
+	}
 }
 
 func SaveProfile(profile Profile, makeDefault bool) error {
@@ -402,12 +476,12 @@ func SelectProfileBackendWithOptions(ctx context.Context, profileName, host stri
 	if err != nil {
 		return GitHubBackendSelection{}, err
 	}
-	if profile.Kind == ProfileKindGitHub && source == "builtin" {
+	if profile.Kind == ProfileKindGitHub && (source == "builtin" || source == "project") {
 		selection, err := selectGitHubBackendCore(ctx, profile.Hostname, opts, true)
-		selection.Profile = profile
-		selection.ProfileSource = source
-		selection.Token = withProfile(selection.Token, profile)
-		return selection, err
+		if source == "project" {
+			selection.SelectionSource = "profile:project"
+		}
+		return selection.WithProfile(profile, source), err
 	}
 	mode, modeErr := gitHubBackendModeForSelection(opts)
 	if modeErr != nil {
@@ -415,9 +489,7 @@ func SelectProfileBackendWithOptions(ctx context.Context, profileName, host stri
 	}
 	if mode == GitHubBackendModeGH {
 		selection := selectGHBackend(mode, profile.Hostname, "profile:"+source)
-		selection.Profile = profile
-		selection.ProfileSource = source
-		selection.Token = withProfile(selection.Token, profile)
+		selection = selection.WithProfile(profile, source)
 		if profile.Ephemeral {
 			return selection, fmt.Errorf("%s selects an ephemeral self-hosted profile that cannot use the gh backend", GitHubBackendAPIURLEnv)
 		}
@@ -428,9 +500,7 @@ func SelectProfileBackendWithOptions(ctx context.Context, profileName, host stri
 	}
 	token, tokenErr := ResolveProfileToken(ctx, profile)
 	selection := selectRESTBackend(mode, profile.Hostname, "profile:"+source, token)
-	selection.Profile = profile
-	selection.ProfileSource = source
-	selection.Token = withProfile(selection.Token, profile)
+	selection = selection.WithProfile(profile, source)
 	if tokenErr != nil {
 		selection.Probes = append(selection.Probes, GitHubBackendProbe{Name: GitHubBackendNameREST, Status: "unavailable", Error: tokenErr.Error()})
 		return selection, tokenErr

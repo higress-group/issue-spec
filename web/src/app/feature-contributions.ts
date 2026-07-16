@@ -10,6 +10,7 @@ export type FeatureNavItem = {
   capability?: string;
   requiredAction?: string;
   order?: number;
+  matches?: (pathname: string) => boolean;
   icon: FeatureIcon;
 };
 

@@ -58,7 +58,7 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/166#issu
 
 ### Requirement: Delegated work starts only after scoped agent capability preflight
 
-The workflow runner MUST preflight authentication source, token safety, network reachability and required repository operations before dispatching delegated review or implementation work. In strict delegated mode it MUST provide agents only short-lived credentials scoped to the approved host, repository and operation set; explicitly enabled legacy credentials remain migration-only and MUST NOT satisfy the strict gate.
+The workflow runner MUST preflight authentication source, token safety, network reachability and required repository operations before dispatching delegated review or implementation work. A self-hosted runner MAY satisfy the gate with its origin-bound private profile PAT when that credential is restricted to the exact repository and required scopes. Strict GitHub delegated mode MUST still use short-lived credentials scoped to the approved host, repository and operation set; explicitly enabled legacy host credentials remain migration-only and MUST NOT satisfy that gate.
 
 #### Scenario: failed preflight consumes no worker execution
 
@@ -68,7 +68,7 @@ The workflow runner MUST preflight authentication source, token safety, network 
 #### Scenario: successful preflight returns a capability matrix
 
 - **WHEN** the requested agent operations are available
-- **THEN** the runner MUST record a redacted result containing token source class, host, repository, permitted operations, expiry and network status
+- **THEN** the runner MUST record a redacted result containing token source class, host, repository, permitted operations, expiry knowledge and network status; a private self-hosted profile file MAY report unknown expiry
 
 #### Scenario: credentials cannot escape delegated scope
 
@@ -107,3 +107,24 @@ The workflow MUST classify PROCESS artifacts by execution responsibility and MUS
 - **THEN** verification MUST apply a documented conservative default and expose a migration diagnostic without invalidating already accepted historical archives
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/166#issuecomment-4951036789
+
+### Requirement: Review PROCESS evidence MUST be authored by an agent independent of the code author
+
+The workflow MUST treat code review as mandatory for every active SPEC that has a valid change-bearing carrier, regardless of change size, and MUST require that a review PROCESS be authored by a different agent than the code author of the SPEC under review, judged by the `--agent` identity recorded on the review evidence. Small changes MAY be implemented inline by the coordinator, but they still MUST be reviewed by a different agent. The final gate MUST fail closed with a distinct diagnostic when a review PROCESS's reviewer `--agent` name matches a code author of the same SPEC. Author and reviewer identities MUST be joined per SPEC so that a reviewer who authored a *different* SPEC is not falsely flagged. This name-based check is a machine backstop for the prompt contract, not full provenance enforcement.
+
+#### Scenario: self-review by the same agent name is blocked
+
+- **WHEN** a review PROCESS covering an active SPEC records a reviewer `--agent` name that also authored a change-bearing rationale for that SPEC
+- **THEN** the final gate MUST emit `process.review.author_conflict` and MUST NOT count that review as satisfied for the conflicted SPEC
+
+#### Scenario: an independent reviewer of the same SPEC satisfies the node
+
+- **WHEN** the SPEC under review is covered by a review PROCESS whose reviewer `--agent` name differs from every code author of that SPEC
+- **THEN** the final gate MUST accept the review evidence, and a clean review of one SPEC MUST NOT rescue another SPEC that still has only a conflicted review
+
+#### Scenario: authoring a different SPEC is not a conflict
+
+- **WHEN** a reviewer `--agent` name matches a code author of a SPEC other than the one under review
+- **THEN** the final gate MUST NOT flag the review as an author conflict for the SPEC under review
+
+Source change: https://github.com/higress-group/issue-spec/pull/232

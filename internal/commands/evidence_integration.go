@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -58,12 +59,28 @@ type commandNativeEvidenceClient struct {
 }
 
 type externalEvidenceConsumption struct {
-	ProviderKey        string   `json:"provider_key"`
-	ExternalRepository string   `json:"external_repository"`
-	ChangeID           string   `json:"change_id"`
-	SubjectRevision    string   `json:"subject_revision"`
-	EvidenceIDs        []string `json:"evidence_ids"`
+	ProviderKey        string                    `json:"provider_key"`
+	ExternalRepository string                    `json:"external_repository"`
+	ChangeID           string                    `json:"change_id"`
+	SubjectRevision    string                    `json:"subject_revision"`
+	EvidenceIDs        []string                  `json:"evidence_ids"`
+	Bindings           []externalEvidenceBinding `json:"bindings,omitempty"`
 }
+
+type externalEvidenceBinding struct {
+	ProcessID       string                  `json:"process_id"`
+	SpecID          string                  `json:"spec_id"`
+	EvidenceID      string                  `json:"evidence_id"`
+	Kind            codereview.EvidenceKind `json:"kind"`
+	SubjectRevision string                  `json:"subject_revision"`
+	Trusted         bool                    `json:"trusted"`
+	Source          string                  `json:"source"`
+}
+
+var (
+	externalProcessIDPattern = regexp.MustCompile(`^PROCESS-[0-9]{3,}$`)
+	externalSpecIDPattern    = regexp.MustCompile(`^SPEC-[0-9]{3,}$`)
+)
 
 type externalGateResult struct {
 	Consumption externalEvidenceConsumption `json:"consumption"`
@@ -204,7 +221,96 @@ func (a *app) externalGateWithProfile(ctx context.Context, profile auth.Profile,
 	if !evaluation.Passed {
 		return result, true, externalGateFailure(relationKind, evaluation)
 	}
+	bindings, bindingErr := authoritativeExternalEvidenceBindings(snapshot, result.Consumption)
+	if bindingErr != nil && (gate == coreevidence.GateReview || gate == coreevidence.GateVerify) {
+		return result, true, fmt.Errorf("bind authoritative external evidence: %w", bindingErr)
+	}
+	if bindingErr == nil {
+		result.Consumption.Bindings = bindings
+	}
 	return result, true, nil
+}
+
+// authoritativeExternalEvidenceBindings derives PROCESS carrier identity only
+// from native-ledger Records selected by the successful evaluation. Provider
+// Facts are deliberately ignored because they have not crossed the native
+// evidence authority boundary yet.
+func authoritativeExternalEvidenceBindings(snapshot codereview.Snapshot, consumption externalEvidenceConsumption) ([]externalEvidenceBinding, error) {
+	selected := make(map[string]bool, len(consumption.EvidenceIDs))
+	for _, id := range consumption.EvidenceIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return nil, errors.New("selected evidence id is empty")
+		}
+		selected[id] = true
+	}
+	if len(selected) == 0 {
+		return nil, errors.New("no selected evidence ids")
+	}
+	records := make(map[string]codereview.EvidenceRecord, len(snapshot.Records))
+	for _, record := range snapshot.Records {
+		id := strings.TrimSpace(record.ID)
+		if !selected[id] {
+			continue
+		}
+		if _, duplicate := records[id]; duplicate {
+			return nil, fmt.Errorf("selected evidence id %q is ambiguous", id)
+		}
+		records[id] = record
+	}
+	for id := range selected {
+		if _, ok := records[id]; !ok {
+			return nil, fmt.Errorf("selected evidence id %q is absent from the authoritative ledger", id)
+		}
+	}
+
+	bindings := make([]externalEvidenceBinding, 0, len(selected))
+	for id := range selected {
+		record := records[id]
+		if record.Kind != codereview.EvidenceReview && record.Kind != codereview.EvidenceCheck {
+			continue
+		}
+		if !record.Trusted || strings.TrimSpace(record.WriterIdentity) == "" {
+			return nil, fmt.Errorf("selected %s evidence %q is not trusted authoritative evidence", record.Kind, id)
+		}
+		revision := strings.TrimSpace(record.SubjectRevision)
+		if revision == "" || revision != strings.TrimSpace(consumption.SubjectRevision) {
+			return nil, fmt.Errorf("selected %s evidence %q revision does not match consumption", record.Kind, id)
+		}
+		processID, specID := strings.TrimSpace(record.ProcessID), strings.TrimSpace(record.SpecID)
+		if processID == "" && specID == "" && record.Kind == codereview.EvidenceCheck {
+			// Current provider-neutral check records intentionally have no workflow
+			// linkage. They remain selected gate evidence but cannot independently
+			// vouch for a PROCESS carrier.
+			continue
+		}
+		if !externalProcessIDPattern.MatchString(processID) || !externalSpecIDPattern.MatchString(specID) {
+			return nil, fmt.Errorf("selected %s evidence %q lacks canonical PROCESS/SPEC linkage", record.Kind, id)
+		}
+		bindings = append(bindings, externalEvidenceBinding{ProcessID: processID, SpecID: specID, EvidenceID: id,
+			Kind: record.Kind, SubjectRevision: revision, Trusted: true, Source: "native-authoritative-ledger"})
+	}
+	bindings = normalizeExternalEvidenceBindings(bindings)
+	if len(bindings) == 0 {
+		return nil, errors.New("selected evidence has no authoritative PROCESS/SPEC carrier binding")
+	}
+	return bindings, nil
+}
+
+func normalizeExternalEvidenceBindings(bindings []externalEvidenceBinding) []externalEvidenceBinding {
+	sort.SliceStable(bindings, func(i, j int) bool {
+		left, right := bindings[i], bindings[j]
+		return left.ProcessID+"\x00"+left.SpecID+"\x00"+left.EvidenceID+"\x00"+string(left.Kind) <
+			right.ProcessID+"\x00"+right.SpecID+"\x00"+right.EvidenceID+"\x00"+string(right.Kind)
+	})
+	result := make([]externalEvidenceBinding, 0, len(bindings))
+	for _, binding := range bindings {
+		if len(result) > 0 && result[len(result)-1] == binding {
+			continue
+		}
+		result = append(result, binding)
+	}
+	return result
 }
 
 func (a *app) resolveOperatorEvidenceProvider(ctx context.Context, profile auth.Profile, key string) (codereview.Provider, error) {

@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,15 +18,13 @@ import (
 	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/commentrunner/writeback"
 	"github.com/higress-group/issue-spec/internal/github"
-	"github.com/higress-group/issue-spec/internal/sandbox"
-	"github.com/higress-group/issue-spec/internal/workspace"
 )
 
 type runnerServeRuntime interface{ Run(context.Context) error }
 
 type runnerServeRuntimeInput struct {
 	Profile                  auth.Profile
-	ParentToken              string
+	ProfileToken             string
 	Runner                   commentrunner.Config
 	Queue                    *webhook.Queue
 	Store                    crstate.StateStore
@@ -39,6 +36,7 @@ type runnerServeRuntimeInput struct {
 	GitCredentialConcurrency int
 	ReconcileWorkers         int
 	ReconcileLease           time.Duration
+	Diagnostics              *runnerLogger
 	Dependencies             *runnerServeRuntimeDependencies
 }
 
@@ -59,16 +57,19 @@ var runnerServeRun = func(ctx context.Context, runtime runnerServeRuntime) error
 
 func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntimeInput) (runnerServeRuntime, error) {
 	profile, err := input.Profile.Normalized()
-	if err != nil || profile.Kind != auth.ProfileKindHosted || strings.TrimSpace(input.ParentToken) == "" {
-		return nil, fmt.Errorf("runner serve runtime requires a self-hosted profile and parent PAT")
+	if err != nil || profile.Kind != auth.ProfileKindHosted || strings.TrimSpace(input.ProfileToken) == "" {
+		return nil, fmt.Errorf("runner serve runtime requires a self-hosted profile and profile PAT")
+	}
+	if len(input.Runner.Repositories) != 1 {
+		return nil, fmt.Errorf("runner serve profile PAT must serve exactly one repository")
 	}
 	compatibility, err := github.NewClientWithOptions(github.ClientOptions{Host: profile.Hostname, BaseURL: profile.APIURL,
-		Token: input.ParentToken, CAFile: profile.CAFile})
+		Token: input.ProfileToken, CAFile: profile.CAFile})
 	if err != nil {
 		return nil, err
 	}
 	native, err := github.NewClientWithOptions(github.ClientOptions{Host: profile.Hostname, BaseURL: profile.NativeAPIURL,
-		Token: input.ParentToken, CAFile: profile.CAFile})
+		Token: input.ProfileToken, CAFile: profile.CAFile})
 	if err != nil {
 		return nil, err
 	}
@@ -76,36 +77,50 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	if err != nil {
 		return nil, err
 	}
-	gitProvider, err := credentials.NewCommandGitProvider(credentials.CommandGitProviderConfig{Path: input.GitCredentialCommand,
-		Args: input.GitCredentialArgs, Timeout: input.GitCredentialTimeout, MaxOutput: input.GitCredentialMaxOutput,
-		MaxConcurrent: input.GitCredentialConcurrency})
+	sandboxConfig, hostSSHProvider, err := runnerSandboxRuntimeConfig(input.Runner)
+	if err != nil {
+		return nil, fmt.Errorf("runner serve host SSH: %w", err)
+	}
+	var gitProvider credentials.GitProvider
+	if input.Runner.AllowHostSSH {
+		gitProvider = hostSSHProvider
+	} else {
+		gitProvider, err = credentials.NewCommandGitProvider(credentials.CommandGitProviderConfig{Path: input.GitCredentialCommand,
+			Args: input.GitCredentialArgs, Timeout: input.GitCredentialTimeout, MaxOutput: input.GitCredentialMaxOutput,
+			MaxConcurrent: input.GitCredentialConcurrency})
+	}
 	if err != nil {
 		return nil, err
+	}
+	var reconcileObserver webhook.ReconcileObserver
+	if input.Diagnostics != nil {
+		reconcileObserver = input.Diagnostics
 	}
 	reconciler, err := webhook.NewReconciler(webhook.ReconcilerConfig{Queue: input.Queue, Store: input.Store,
 		Backend: compatibility, Scopes: scopes, Runner: input.Runner,
 		AuthorizationPolicy: commentrunner.AuthorizationPolicy{RunnerLogin: input.Runner.RunnerIdentity,
 			AllowedUsers: input.Runner.AllowedUsers}, WorkerID: "runner-serve", Workers: input.ReconcileWorkers,
-		LeaseDuration: input.ReconcileLease})
+		LeaseDuration: input.ReconcileLease, Observer: reconcileObserver})
 	if err != nil {
 		return nil, err
 	}
-	credentialRoot, err := filepath.Abs(filepath.Join(filepath.Dir(input.Runner.StatePath), "credentials"))
+	credentialRoot, err := runnerServeCredentialRoot(input.Runner.StatePath)
 	if err != nil {
 		return nil, err
 	}
-	nativeHTTPClient, ok := native.HTTPClient.(*http.Client)
-	if !ok {
-		return nil, fmt.Errorf("runner serve native profile requires an HTTP client")
+	materializer := credentials.Materializer{Root: credentialRoot}
+	profileToken, err := materializer.WriteProfileToken(input.ProfileToken)
+	if err != nil {
+		return nil, fmt.Errorf("runner serve profile credential: %w", err)
 	}
-	broker := &credentials.Broker{Profile: profile, Audience: profile.ServerInstanceID,
-		Subject: input.Runner.RunnerIdentity, ParentToken: input.ParentToken, HTTPClient: nativeHTTPClient,
-		Materializer: credentials.Materializer{Root: credentialRoot}, GitProvider: gitProvider, TTL: 5 * time.Minute,
-		Scopes: []string{"read:user", "issues:read", "issues:write", "evidence:write"}}
-	workspaces := jobs.WorkspaceManager(workspace.Manager{Root: input.Runner.WorkspaceRoot, Retention: input.Runner.WorkspaceRetention.Duration})
-	sandboxer := jobs.SandboxPreparer(jobs.SandboxRunner{Config: sandbox.Config{UnsafeNoSandbox: input.Runner.UnsafeNoSandbox,
-		BwrapPath: input.Runner.BwrapPath, HostGHConfigDir: input.Runner.GHConfigDir}})
-	acpxFactory := jobs.AcpxFactory(jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(input.Runner)})
+	repositoryName := input.Runner.Repositories[0]
+	broker := &credentials.Broker{Profile: profile, ProfileToken: &profileToken,
+		Materializer: materializer, GitProvider: gitProvider,
+		ProfileProbe: runnerProfileCapabilityProbe{native: native, compatibility: compatibility,
+			runnerLogin: input.Runner.RunnerIdentity, repository: repositoryName, scope: scopes.ByRepository[repositoryName]}}
+	workspaces := jobs.WorkspaceManager(runnerWorkspaceManager(input.Runner))
+	sandboxer := jobs.SandboxPreparer(jobs.SandboxRunner{Config: sandboxConfig})
+	acpxFactory := jobs.AcpxFactory(jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(input.Runner), RunnerConfig: input.Runner})
 	artifacts := jobs.ArtifactProvider(&jobs.IssueSpecArtifactProvider{GitHub: compatibility})
 	writebacks := jobs.Writeback(&writeback.Service{GitHub: compatibility, Store: input.Store})
 	issueSpecBinary := issueSpecBinaryForRunner()
@@ -129,14 +144,26 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 			issueSpecBinary = strings.TrimSpace(deps.IssueSpecBinary)
 		}
 	}
+	// Wrap the selected writeback boundary, including hermetic test or operator
+	// dependencies, so every live lifecycle transition reaches diagnostics.
+	writebacks = wrapRunnerWriteback(writebacks, input.Diagnostics)
 	dispatcher := &jobs.Dispatcher{Store: input.Store,
 		Repositories: repository.NativeResolver{Bindings: native, Scopes: scopes.ByRepository},
 		Workspaces:   workspaces, Sandbox: sandboxer, Acpx: acpxFactory, Artifacts: artifacts, Writeback: writebacks,
 		AcpxBinary: input.Runner.AcpxPath, IssueSpecBinary: issueSpecBinary, CredentialBroker: broker,
 		CredentialScopes: scopes.ByRepository, CapabilityPreflight: broker, CapabilityHost: profile.Hostname,
+		OperatorSkillDirs: input.Runner.OperatorSkillDirs,
 		RequiredOperations: []capability.Operation{capability.OperationIssueRead, capability.OperationIssueCommentWrite,
 			capability.OperationArtifactWrite, capability.OperationGitClone, capability.OperationGitPush},
 		EvidencePreGate: newRunnerEvidencePreGate(profile)}
 	return runnerserver.NewRuntime(runnerserver.RuntimeConfig{HTTP: input.HTTP, Reconciler: reconciler,
 		Dispatcher: dispatcher, MaxConcurrentJobs: input.Runner.MaxConcurrentJobs})
+}
+
+func runnerServeCredentialRoot(statePath string) (string, error) {
+	statePath = strings.TrimSpace(statePath)
+	if statePath == "" {
+		return "", fmt.Errorf("runner serve state path is required")
+	}
+	return filepath.Abs(statePath + ".credentials")
 }

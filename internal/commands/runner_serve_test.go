@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
+	crstate "github.com/higress-group/issue-spec/internal/commentrunner/state"
 )
 
 func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.T) {
@@ -26,15 +28,15 @@ func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.
 	statePath := filepath.Join(t.TempDir(), "runner-state.json")
 	currentSecret := strings.Repeat("c", 32)
 	previousSecret := strings.Repeat("p", 32)
-	parentToken := "origin-bound-parent-token"
+	profileToken := "origin-bound-profile-token"
 	t.Setenv("RUNNER_CURRENT_SECRET", currentSecret)
 	t.Setenv("RUNNER_PREVIOUS_SECRET", previousSecret)
-	t.Setenv("ISSUE_SPEC_TOKEN", parentToken)
+	t.Setenv("ISSUE_SPEC_TOKEN", profileToken)
 	previousExpiry := time.Now().UTC().Add(10 * time.Minute).Truncate(time.Second).Format(time.RFC3339)
 	originalBuild, originalRun := runnerServeBuildRuntime, runnerServeRun
 	called := false
 	runnerServeBuildRuntime = func(_ context.Context, input runnerServeRuntimeInput) (runnerServeRuntime, error) {
-		if input.ParentToken != parentToken || input.Profile.Name != profile.Name || len(input.Runner.Repositories) != 1 {
+		if input.ProfileToken != profileToken || input.Profile.Name != profile.Name || len(input.Runner.Repositories) != 1 {
 			t.Fatalf("runtime input=%+v", input)
 		}
 		return runnerServeRuntimeFunc(func(context.Context) error { return nil }), nil
@@ -47,9 +49,9 @@ func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.
 	var stdout, stderr bytes.Buffer
 	app := newApp(strings.NewReader(""), &stdout, &stderr)
 	app.profileName = profile.Name
-	app.runnerPreflight = func(context.Context, commentrunner.Config) commentrunner.PreflightReport {
-		t.Fatal("self-hosted serve called polling preflight")
-		return commentrunner.PreflightReport{}
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{OK: true, Config: cfg,
+			Checks: []commentrunner.PreflightCheck{{Name: "command-intake-transport", Status: commentrunner.CheckOK}}}
 	}
 	app.selectRunnerBackend = func(context.Context, string, auth.GitHubBackendMode) (auth.GitHubBackendSelection, error) {
 		t.Fatal("self-hosted serve selected a GitHub backend")
@@ -66,6 +68,19 @@ func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.
 	if code != 0 || !called {
 		t.Fatalf("serve code=%d called=%v stdout=%q stderr=%q", code, called, stdout.String(), stderr.String())
 	}
+	logDir := filepath.Join(filepath.Dir(statePath), "logs")
+	if !strings.Contains(stdout.String(), "logs="+logDir) {
+		t.Fatalf("serve output does not expose effective log directory: %q", stdout.String())
+	}
+	runnerLog, err := os.ReadFile(filepath.Join(logDir, "runner.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []string{`"event":"startup"`, `"event":"preflight_complete"`, `"event":"shutdown_start"`} {
+		if !bytes.Contains(runnerLog, []byte(event)) {
+			t.Fatalf("runner log missing %s: %s", event, runnerLog)
+		}
+	}
 	for _, secret := range []string{currentSecret, previousSecret} {
 		if strings.Contains(stdout.String(), secret) || strings.Contains(stderr.String(), secret) {
 			t.Fatalf("CLI output leaked secret %q", secret)
@@ -78,16 +93,89 @@ func TestRunnerServeSelfHostedUsesNoGitHubTransportAndLeaksNoSecrets(t *testing.
 		t.Fatal("previous secret remained in process environment")
 	}
 	if _, exists := os.LookupEnv("ISSUE_SPEC_TOKEN"); exists {
-		t.Fatal("parent token remained in process environment")
+		t.Fatal("profile token remained in process environment")
 	}
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(data, []byte(`"schema_version": 5`)) || bytes.Contains(data, []byte(currentSecret)) ||
+	if !bytes.Contains(data, []byte(fmt.Sprintf(`"schema_version": %d`, crstate.SchemaVersion))) || bytes.Contains(data, []byte(currentSecret)) ||
 		bytes.Contains(data, []byte(previousSecret)) ||
 		bytes.Contains(data, []byte("RUNNER_CURRENT_SECRET")) {
 		t.Fatalf("state contains secret/config material: %s", data)
+	}
+}
+
+func TestRunnerServeDiagnosticsInitializationFailsClosed(t *testing.T) {
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	profile := auth.Profile{Name: "runner-diagnostics-init", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance"}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RUNNER_DIAGNOSTICS_SECRET", strings.Repeat("s", 32))
+	t.Setenv("ISSUE_SPEC_TOKEN", "origin-bound-profile-token")
+	root := t.TempDir()
+	invalidLogDir := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(invalidLogDir, []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	app := newApp(strings.NewReader(""), &stdout, &stderr)
+	app.profileName = profile.Name
+	app.runnerPreflight = func(context.Context, commentrunner.Config) commentrunner.PreflightReport {
+		t.Fatal("preflight ran after diagnostics initialization failure")
+		return commentrunner.PreflightReport{}
+	}
+	code := app.runRunner(context.Background(), []string{"serve", "--repo", "o/r", "--runner", "runner-bot",
+		"--state", filepath.Join(root, "state.json"), "--log-dir", invalidLogDir,
+		"--subscription-id", uuid.NewString(), "--secret-env", "RUNNER_DIAGNOSTICS_SECRET",
+		"--git-credential-command", "/usr/bin/true"})
+	if code != 1 || !strings.Contains(stderr.String(), "runner serve diagnostics: create logger") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunnerServePreflightFailureIsPersistedBeforeRuntime(t *testing.T) {
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	profile := auth.Profile{Name: "runner-diagnostics-preflight", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance"}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RUNNER_PREFLIGHT_SECRET", strings.Repeat("p", 32))
+	t.Setenv("ISSUE_SPEC_TOKEN", "origin-bound-profile-token")
+	root := t.TempDir()
+	logDir := filepath.Join(root, "diagnostics")
+	originalBuild := runnerServeBuildRuntime
+	runnerServeBuildRuntime = func(context.Context, runnerServeRuntimeInput) (runnerServeRuntime, error) {
+		t.Fatal("runtime built after failed preflight")
+		return nil, nil
+	}
+	t.Cleanup(func() { runnerServeBuildRuntime = originalBuild })
+	var stdout, stderr bytes.Buffer
+	app := newApp(strings.NewReader(""), &stdout, &stderr)
+	app.profileName = profile.Name
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{Config: cfg,
+			Checks: []commentrunner.PreflightCheck{{Name: "acpx", Status: commentrunner.CheckError, Detail: "unavailable"}}}
+	}
+	code := app.runRunner(context.Background(), []string{"serve", "--repo", "o/r", "--runner", "runner-bot",
+		"--state", filepath.Join(root, "state.json"), "--log-dir", logDir,
+		"--subscription-id", uuid.NewString(), "--secret-env", "RUNNER_PREFLIGHT_SECRET",
+		"--git-credential-command", "/usr/bin/true"})
+	if code != 1 || !strings.Contains(stderr.String(), "runner serve preflight failed") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	runnerLog, err := os.ReadFile(filepath.Join(logDir, "runner.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(runnerLog, []byte(`"event":"preflight_failed"`)) ||
+		!bytes.Contains(runnerLog, []byte(`"event":"shutdown_start"`)) {
+		t.Fatalf("preflight failure diagnostics=%s", runnerLog)
 	}
 }
 
@@ -144,9 +232,123 @@ func TestRunnerServeHelpDocumentsSecurityAndCapacityControls(t *testing.T) {
 	for _, required := range []string{"--listen", "--tls-cert", "--tls-key", "--subscription-id",
 		"--secret-file", "--previous-secrets-valid-until", "--timestamp-window", "--max-body-bytes",
 		"--max-header-bytes", "--max-queue-deliveries", "--max-queue-bytes", "--shutdown-timeout",
-		"--workspace-root", "--max-concurrent-jobs", "--reconcile-workers", "--git-credential-command"} {
+		"--workspace-root", "--max-concurrent-jobs", "--reconcile-workers", "--git-credential-command",
+		"--allow-host-ssh", "--git-author-name", "--git-author-email", "--operator-skill-dir",
+		"--log-dir", "--log-max-size", "--log-max-files", "--log-retention", "--log-raw-capture"} {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("help missing %s:\n%s", required, stdout.String())
 		}
+	}
+	for _, removed := range []string{"--delegation-audience", "--delegation-subject", "--delegation-ttl"} {
+		if strings.Contains(stdout.String(), removed) {
+			t.Fatalf("help still advertises unused %s:\n%s", removed, stdout.String())
+		}
+	}
+}
+
+func TestRunnerServeRejectsInvalidHostSSHFlagCombinations(t *testing.T) {
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	profile := auth.Profile{Name: "runner-host-ssh", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance"}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "both credential modes", args: []string{"--allow-host-ssh", "--git-credential-command", "/usr/bin/true"}, want: "exactly one of --git-credential-command or --allow-host-ssh"},
+		{name: "credential args without command", args: []string{"--allow-host-ssh", "--git-credential-arg", "value"}, want: "--git-credential-arg requires --git-credential-command"},
+		{name: "author name without email", args: []string{"--allow-host-ssh", "--git-author-name", "Runner"}, want: "git author name and email must be configured together"},
+		{name: "author email without name", args: []string{"--allow-host-ssh", "--git-author-email", "runner@example.test"}, want: "git author name and email must be configured together"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			app := newApp(strings.NewReader(""), &stdout, &stderr)
+			app.profileName = profile.Name
+			args := []string{"serve", "--repo", "o/r", "--runner", "bot"}
+			args = append(args, tc.args...)
+			if code := app.runRunner(context.Background(), args); code != 2 || !strings.Contains(stderr.String(), tc.want) {
+				t.Fatalf("code=%d stderr=%q want=%q", code, stderr.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestRunnerServeAcceptsExplicitUnsafeHostSSHMode(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", configDir)
+	profile := auth.Profile{Name: "runner-unsafe-host-ssh", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance"}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RUNNER_UNSAFE_HOST_SSH_SECRET", strings.Repeat("s", 32))
+	t.Setenv("ISSUE_SPEC_TOKEN", "origin-bound-profile-token")
+	originalBuild, originalRun := runnerServeBuildRuntime, runnerServeRun
+	runnerServeBuildRuntime = func(_ context.Context, input runnerServeRuntimeInput) (runnerServeRuntime, error) {
+		if !input.Runner.AllowHostSSH || !input.Runner.UnsafeNoSandbox || input.Runner.GitAuthorName != "Issue Spec Runner" ||
+			input.Runner.GitAuthorEmail != "runner@example.test" {
+			t.Fatalf("runner input=%+v", input.Runner)
+		}
+		return runnerServeRuntimeFunc(func(context.Context) error { return nil }), nil
+	}
+	runnerServeRun = func(ctx context.Context, runtime runnerServeRuntime) error { return runtime.Run(ctx) }
+	t.Cleanup(func() { runnerServeBuildRuntime, runnerServeRun = originalBuild, originalRun })
+	var stdout, stderr bytes.Buffer
+	app := newApp(strings.NewReader(""), &stdout, &stderr)
+	app.profileName = profile.Name
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	if code := app.runRunner(context.Background(), []string{"serve", "--repo", "o/r", "--runner", "runner-bot",
+		"--state", filepath.Join(t.TempDir(), "state.json"), "--subscription-id", uuid.NewString(),
+		"--secret-env", "RUNNER_UNSAFE_HOST_SSH_SECRET", "--allow-host-ssh", "--unsafe-no-sandbox",
+		"--git-author-name", "Issue Spec Runner", "--git-author-email", "runner@example.test"}); code != 0 {
+		t.Fatalf("serve code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunnerServeAcceptsExplicitHostSSHMode(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", configDir)
+	profile := auth.Profile{Name: "runner-host-ssh", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance"}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RUNNER_HOST_SSH_SECRET", strings.Repeat("s", 32))
+	t.Setenv("ISSUE_SPEC_TOKEN", "origin-bound-profile-token")
+
+	originalBuild, originalRun := runnerServeBuildRuntime, runnerServeRun
+	called := false
+	runnerServeBuildRuntime = func(_ context.Context, input runnerServeRuntimeInput) (runnerServeRuntime, error) {
+		if !input.Runner.AllowHostSSH || input.GitCredentialCommand != "" {
+			t.Fatalf("runtime input=%+v", input)
+		}
+		return runnerServeRuntimeFunc(func(context.Context) error { return nil }), nil
+	}
+	runnerServeRun = func(ctx context.Context, runtime runnerServeRuntime) error {
+		called = true
+		return runtime.Run(ctx)
+	}
+	t.Cleanup(func() { runnerServeBuildRuntime, runnerServeRun = originalBuild, originalRun })
+
+	var stdout, stderr bytes.Buffer
+	app := newApp(strings.NewReader(""), &stdout, &stderr)
+	app.profileName = profile.Name
+	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+		return commentrunner.PreflightReport{OK: true, Config: cfg}
+	}
+	code := app.runRunner(context.Background(), []string{"serve", "--repo", "o/r", "--runner", "runner-bot",
+		"--state", filepath.Join(t.TempDir(), "state.json"), "--subscription-id", uuid.NewString(),
+		"--secret-env", "RUNNER_HOST_SSH_SECRET", "--allow-host-ssh", "--unsafe-no-sandbox"})
+	if code != 0 || !called {
+		t.Fatalf("serve code=%d called=%v stdout=%q stderr=%q", code, called, stdout.String(), stderr.String())
 	}
 }

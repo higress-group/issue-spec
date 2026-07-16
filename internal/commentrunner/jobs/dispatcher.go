@@ -38,7 +38,6 @@ var ErrNoReadyJob = errors.New("no ready queued job")
 const workspaceLockResidualDiagnostic = "workspace lock recovered from residual lock file"
 
 var errDispatchCancelled = errors.New("runner job was cancelled during dispatch")
-
 var authDiagnosticSecretPattern = regexp.MustCompile(`(?i)(["']?[a-z0-9_]*(?:token|secret)[a-z0-9_]*["']?\s*[:=]\s*["']?)([^"',\s}]+)`)
 
 type Store interface {
@@ -73,16 +72,25 @@ type SandboxRequest struct {
 	RuntimeGHConfigDir   string
 	RuntimeXDGConfigHome string
 	RuntimeCodexHome     string
+	RuntimeAcpxDir       string
+	OperatorSkillDirs    []string
 	FileCapabilities     []sandbox.FileCapability
 	ChildProfile         *clientauth.Profile
 	AcpxAgent            string
+	WorkspaceReadOnly    bool
+	ProcessWorkspaceRoot string
 }
 
 type ExecutionEnvironment struct {
 	WorkingDirectory string
 	AcpxBinary       string
-	Sandbox          state.SandboxMetadata
-	Runner           acpx.CommandRunner
+	// CoordinatorKind is the per-job acpx agent resolved from the job's
+	// CoordinatorKind. The adapter factory derives the job's acpx config from it
+	// so a `/new <agent>` job runs with the selected agent's config, not the
+	// runner default. Empty falls back to the factory's default-agent config.
+	CoordinatorKind string
+	Sandbox         state.SandboxMetadata
+	Runner          acpx.CommandRunner
 }
 
 type AcpxFactory interface {
@@ -151,6 +159,7 @@ type Dispatcher struct {
 	AcpxBinary          string
 	IssueSpecBinary     string
 	CoordinatorExtraEnv map[string]string
+	OperatorSkillDirs   []string
 	CredentialBroker    CredentialBroker
 	CredentialScopes    map[string]models.RepoScope
 	CapabilityPreflight CapabilityPreflight
@@ -434,7 +443,7 @@ func aggregateJobRunResults(results []jobRunResult) (Result, error) {
 		return withJobExecutedCount(results[0].result), results[0].err
 	}
 	aggregate := Result{Results: make([]Result, 0, len(results))}
-	var firstErr error
+	var runErrors []error
 	for _, item := range results {
 		result := item.result
 		result.Results = nil
@@ -454,11 +463,11 @@ func aggregateJobRunResults(results []jobRunResult) (Result, error) {
 		if aggregate.Error == "" && result.Error != "" {
 			aggregate.Error = result.Error
 		}
-		if firstErr == nil && item.err != nil {
-			firstErr = item.err
+		if item.err != nil {
+			runErrors = append(runErrors, item.err)
 		}
 	}
-	return aggregate, firstErr
+	return aggregate, errors.Join(runErrors...)
 }
 
 func withJobExecutedCount(result Result) Result {
@@ -633,7 +642,7 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 			return d.fail(ctx, job.ID, "evidence-pre-gate", errors.New("delegated evidence credential is unavailable"))
 		}
 		identity, err := d.EvidencePreGate.BeforeDispatch(ctx, EvidencePreGateRequest{Repo: job.Repo,
-			IssueNumber: job.IssueNumber, WorkflowRoot: binding.Workspace.Path,
+			IssueNumber: job.IssueNumber, WorkflowRoot: firstNonEmpty(binding.AcpxWorkingDirectory, binding.Workspace.Path),
 			CredentialFile: credentialLease.IssueToken.HostPath})
 		if err != nil {
 			return d.fail(ctx, job.ID, "evidence-pre-gate", err)
@@ -728,6 +737,8 @@ func (d *Dispatcher) runJob(ctx context.Context, job state.Job) (result Result, 
 		Phase:                string(terminal),
 		CoordinatorSummary:   &dispatch.Output.Summary,
 		CoordinatorReplyBody: dispatch.Output.ReplyText,
+		AcpxStdout:           dispatch.Output.RawStdout,
+		AcpxStderr:           dispatch.Output.RawStderr,
 		Err:                  terminalErr,
 	}); err != nil {
 		return Result{Executed: true, JobID: job.ID, Status: terminal, Error: safeError(err)}, err
@@ -832,7 +843,7 @@ func (d *Dispatcher) prepareWorkspace(ctx context.Context, job state.Job, comman
 			return workspace.Binding{}, state.PublicSession{}, resolver.DriftError()
 		}
 		session = state.PublicSession{Repo: job.Repo, PublicSessionID: publicID, IssueNumber: job.IssueNumber,
-			CreatorLogin: job.SessionCreatorLogin, Status: state.StatusDispatched, CreatedAt: firstTime(job.CreatedAt, d.now()),
+			CreatorLogin: job.SessionCreatorLogin, CoordinatorKind: job.CoordinatorKind, Status: state.StatusDispatched, CreatedAt: firstTime(job.CreatedAt, d.now()),
 			Workspace: binding.Workspace, RepositoryBinding: repo.Binding}
 		if err := d.persistPreparedRepositoryBinding(ctx, job.ID, session, binding.Workspace, repo.Binding); err != nil {
 			return workspace.Binding{}, state.PublicSession{}, err
@@ -842,10 +853,15 @@ func (d *Dispatcher) prepareWorkspace(ctx context.Context, job state.Job, comman
 	if err := d.pinJobRepositoryBinding(ctx, job.ID, session.RepositoryBinding); err != nil {
 		return workspace.Binding{}, state.PublicSession{}, err
 	}
+	expectedCloneURL := ""
+	if lease != nil && lease.Git != nil {
+		expectedCloneURL = lease.Git.CloneURL
+	}
 	binding, err := d.Workspaces.ResolveResume(ctx, workspace.ResumeRequest{
-		Repo:      job.Repo,
-		CloneURL:  session.RepositoryBinding.CloneURL,
-		Workspace: session.Workspace,
+		Repo:             job.Repo,
+		CloneURL:         session.RepositoryBinding.CloneURL,
+		ExpectedCloneURL: expectedCloneURL,
+		Workspace:        session.Workspace,
 	})
 	if err == nil && !binding.Workspace.RepositoryBinding.Equal(session.RepositoryBinding) {
 		return workspace.Binding{}, state.PublicSession{}, resolver.DriftError()
@@ -858,7 +874,8 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
-	execBinding, err := resumeExecutionBinding(command, binding, session)
+	execBinding := binding
+	execBinding, err = resumeExecutionBinding(command, binding, session)
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
@@ -883,7 +900,7 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 			Repo:             job.Repo,
 			Issue:            job.IssueNumber,
 			TriggerCommentID: job.TriggerCommentID,
-			WorkspacePath:    execBinding.Workspace.Path,
+			WorkspacePath:    firstNonEmpty(execBinding.AcpxWorkingDirectory, execBinding.Workspace.Path),
 			CloneURL:         firstNonEmpty(execBinding.Workspace.CloneURL, repo.CloneURL),
 			Branch:           execBinding.Workspace.Branch,
 			Ref:              execBinding.Workspace.Ref,
@@ -906,21 +923,30 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
-	runtimePaths, err := stableSessionRuntimePaths(firstNonEmpty(execBinding.AcpxWorkingDirectory, execBinding.Workspace.Path, execBinding.SandboxWorkspacePath), job.Repo, publicID)
+	integrationRoot := firstNonEmpty(execBinding.AcpxWorkingDirectory, execBinding.Workspace.Path, execBinding.SandboxWorkspacePath)
+	runtimePaths, err := stableSessionRuntimePaths(integrationRoot, job.Repo, publicID)
 	if err != nil {
 		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
 	}
+	processRoot, err := prepareSessionProcessWorkspaceRoot(integrationRoot, job.Repo, publicID)
+	if err != nil {
+		return ExecutionEnvironment{}, runnercontext.Bundle{}, "", err
+	}
+	extraEnv := cloneStringMap(d.CoordinatorExtraEnv)
 	sandboxRequest := SandboxRequest{
 		WorkspacePath:        execBinding.SandboxWorkspacePath,
 		AcpxWorkingDirectory: execBinding.AcpxWorkingDirectory,
 		AcpxBinary:           firstNonEmpty(d.AcpxBinary, acpx.DefaultBinary),
 		IssueSpecBinary:      d.IssueSpecBinary,
-		ExtraEnv:             d.CoordinatorExtraEnv,
+		ExtraEnv:             extraEnv,
 		RuntimeHome:          runtimePaths.home,
 		RuntimeGHConfigDir:   runtimePaths.ghConfigDir,
 		RuntimeXDGConfigHome: runtimePaths.xdgConfigHome,
 		RuntimeCodexHome:     runtimePaths.codexHome,
+		RuntimeAcpxDir:       runtimePaths.acpxRuntimeDir,
+		OperatorSkillDirs:    append([]string(nil), d.OperatorSkillDirs...),
 		AcpxAgent:            job.CoordinatorKind,
+		ProcessWorkspaceRoot: processRoot,
 	}
 	if lease != nil {
 		sandboxRequest.FileCapabilities = lease.FileCapabilities()
@@ -933,6 +959,10 @@ func (d *Dispatcher) prepareExecution(ctx context.Context, job state.Job, comman
 			sandboxRequest.ExtraEnv[name] = value
 		}
 	}
+	// Runner-owned filesystem authority always wins over operator-provided or
+	// delegated environment entries.
+	sandboxRequest.ExtraEnv[workspace.ProcessIntegrationRootEnv] = integrationRoot
+	sandboxRequest.ExtraEnv[workspace.ProcessWorkspaceRootEnv] = processRoot
 	env, err := d.Sandbox.Prepare(ctx, sandboxRequest)
 	if err != nil {
 		return env, runnercontext.Bundle{}, "", err
@@ -1308,6 +1338,7 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 				IssueNumber:       job.IssueNumber,
 				AcpxRecordID:      meta.StableRecordID,
 				CreatorLogin:      job.SessionCreatorLogin,
+				CoordinatorKind:   job.CoordinatorKind,
 				CreatedAt:         firstTime(job.CreatedAt, now),
 				RepositoryBinding: job.RepositoryBinding,
 			}
@@ -1362,6 +1393,8 @@ func (d *Dispatcher) completeWithCoordinatorSummaryWarning(ctx context.Context, 
 		Status:               state.StatusCompleted,
 		Phase:                string(state.StatusCompleted),
 		CoordinatorReplyBody: dispatch.Output.ReplyText,
+		AcpxStdout:           dispatch.Output.RawStdout,
+		AcpxStderr:           dispatch.Output.RawStderr,
 		Diagnostics:          []string{diagnostic},
 	}); err != nil {
 		return Result{Executed: true, JobID: jobID, Status: state.StatusCompleted, Error: safeError(err)}, err
@@ -1409,6 +1442,7 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 				IssueNumber:       next.IssueNumber,
 				AcpxRecordID:      meta.StableRecordID,
 				CreatorLogin:      next.SessionCreatorLogin,
+				CoordinatorKind:   next.CoordinatorKind,
 				CreatedAt:         firstTime(next.CreatedAt, now),
 				RepositoryBinding: next.RepositoryBinding,
 			}
@@ -1446,10 +1480,16 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 	if cancelled {
 		return cancelledDuringDispatchResult(jobID), nil
 	}
+	terminalErr := terminalJobFailure(cause)
 	if failed.ID != "" && d.Writeback != nil {
-		_, _ = d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase, Err: cause})
+		_, writebackErr := d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase,
+			AcpxStdout: dispatch.Output.RawStdout, AcpxStderr: dispatch.Output.RawStderr, Err: cause})
+		if writebackErr != nil {
+			return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: msg},
+				errors.Join(terminalErr, fmt.Errorf("failed status writeback: %w", writebackErr))
+		}
 	}
-	return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: msg}, cause
+	return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: msg}, terminalErr
 }
 
 func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error) (Result, error) {
@@ -1483,7 +1523,7 @@ func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error)
 			}
 		}
 		failed = next
-		return nil
+		return st.UpsertJob(next)
 	})
 	if updateErr != nil {
 		return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: safeError(updateErr)}, updateErr
@@ -1491,10 +1531,15 @@ func (d *Dispatcher) fail(ctx context.Context, jobID, phase string, cause error)
 	if cancelled {
 		return cancelledDuringDispatchResult(jobID), nil
 	}
+	terminalErr := terminalJobFailure(cause)
 	if failed.ID != "" && d.Writeback != nil {
-		_, _ = d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase, Err: cause})
+		_, writebackErr := d.Writeback.Write(ctx, writeback.Request{Job: failed, Status: state.StatusFailed, Phase: phase, Err: cause})
+		if writebackErr != nil {
+			return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: msg},
+				errors.Join(terminalErr, fmt.Errorf("failed status writeback: %w", writebackErr))
+		}
 	}
-	return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: msg}, cause
+	return Result{Executed: true, JobID: jobID, Status: state.StatusFailed, Error: msg}, terminalErr
 }
 
 func cancelledDuringDispatchResult(jobID string) Result {
@@ -1623,7 +1668,8 @@ func (p SandboxRunner) Prepare(ctx context.Context, req SandboxRequest) (Executi
 	env := ExecutionEnvironment{
 		WorkingDirectory: firstNonEmpty(req.AcpxWorkingDirectory, req.WorkspacePath),
 		AcpxBinary:       acpxBinary,
-		Sandbox:          sandboxMetadata(metadata, err),
+		CoordinatorKind:  req.AcpxAgent,
+		Sandbox:          sandboxMetadata(metadata, err, configuredAgentRuntime(cfg, req.AcpxAgent)),
 		Runner:           sandboxedRunner{cfg: cfg, deps: p.Deps, acpxBinary: firstNonEmpty(req.AcpxBinary, "acpx"), resolvedAcpxBinary: resolvedAcpxBinary},
 	}
 	return env, err
@@ -1631,12 +1677,26 @@ func (p SandboxRunner) Prepare(ctx context.Context, req SandboxRequest) (Executi
 
 func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAuthMirrorResult, error) {
 	cfg := p.Config
+	if len(cfg.WritableBinds) != 0 {
+		return sandbox.Config{}, "", ghAuthMirrorResult{}, fmt.Errorf("%w: runner base writable binds are forbidden; only the current session PROCESS workspace pool may be exposed", sandbox.ErrSandboxConfigInvalid)
+	}
 	cfg.FileCapabilities = append([]sandbox.FileCapability(nil), req.FileCapabilities...)
 	cfg.WorkspacePath = firstNonEmpty(req.WorkspacePath, cfg.WorkspacePath)
+	if err := rejectRepositoryAcpxConfig(firstNonEmpty(req.AcpxWorkingDirectory, cfg.WorkspacePath)); err != nil {
+		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
+	}
+	cfg.WorkspaceReadOnly = req.WorkspaceReadOnly
+	if strings.TrimSpace(req.ProcessWorkspaceRoot) != "" {
+		cfg.WritableBinds = []string{filepath.Clean(req.ProcessWorkspaceRoot)}
+	}
 	cfg.TempHome = firstNonEmpty(req.RuntimeHome, cfg.TempHome)
 	cfg.TempGHConfigDir = firstNonEmpty(req.RuntimeGHConfigDir, cfg.TempGHConfigDir)
 	cfg.TempXDGConfigHome = firstNonEmpty(req.RuntimeXDGConfigHome, cfg.TempXDGConfigHome)
 	cfg.TempCodexHome = firstNonEmpty(req.RuntimeCodexHome, cfg.TempCodexHome)
+	cfg.AcpxRuntimeDir = firstNonEmpty(req.RuntimeAcpxDir, cfg.AcpxRuntimeDir)
+	if strings.TrimSpace(cfg.AcpxRuntimeDir) == "" && strings.TrimSpace(cfg.TempHome) != "" {
+		cfg.AcpxRuntimeDir = filepath.Join(cfg.TempHome, ".acpx", "runtime")
+	}
 	acpxBinary := firstNonEmpty(req.AcpxBinary, acpx.DefaultBinary)
 	var pathPrefixes []string
 	var resolvedAcpxBinary string
@@ -1671,7 +1731,7 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 	if !cfg.UnsafeNoSandbox {
 		addSandboxPATHPrefixes(&cfg, pathPrefixes...)
 	}
-	if cfg.TempHome == "" || cfg.TempGHConfigDir == "" || cfg.TempXDGConfigHome == "" || cfg.TempCodexHome == "" {
+	if cfg.TempHome == "" || cfg.TempGHConfigDir == "" || cfg.TempXDGConfigHome == "" || cfg.TempCodexHome == "" || cfg.AcpxRuntimeDir == "" {
 		root, err := os.MkdirTemp("", "issue-spec-runner-*")
 		if err != nil {
 			return sandbox.Config{}, "", ghAuthMirrorResult{}, err
@@ -1680,8 +1740,9 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 		cfg.TempGHConfigDir = firstNonEmpty(cfg.TempGHConfigDir, filepath.Join(root, "gh"))
 		cfg.TempXDGConfigHome = firstNonEmpty(cfg.TempXDGConfigHome, filepath.Join(root, "xdg"))
 		cfg.TempCodexHome = firstNonEmpty(cfg.TempCodexHome, filepath.Join(root, "codex"))
+		cfg.AcpxRuntimeDir = firstNonEmpty(cfg.AcpxRuntimeDir, filepath.Join(root, "acpx-runtime"))
 	}
-	for _, dir := range []string{cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome} {
+	for _, dir := range []string{cfg.TempHome, cfg.TempGHConfigDir, cfg.TempXDGConfigHome, cfg.TempCodexHome, cfg.AcpxRuntimeDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 		}
@@ -1716,6 +1777,9 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 	if err := mirrorHostCodexConfig(&cfg); err != nil {
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
+	if err := materializeTrustedAgentSkills(cfg.TempCodexHome, req.OperatorSkillDirs); err != nil {
+		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
+	}
 	if err := materializeHostAcpxAgentOverride(&cfg, req.AcpxAgent); err != nil {
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
@@ -1725,11 +1789,25 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 	return cfg, resolvedAcpxBinary, ghAuthMirror, nil
 }
 
+func rejectRepositoryAcpxConfig(workspacePath string) error {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return nil
+	}
+	path := filepath.Join(filepath.Clean(workspacePath), ".acpxrc.json")
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("repository-owned .acpxrc.json is not allowed in Runner workspaces; configure the ACPX agent in the runner account instead")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect repository ACPX config: %w", err)
+	}
+	return nil
+}
+
 func materializeHostAcpxAgentOverride(cfg *sandbox.Config, agent string) error {
 	if cfg == nil || strings.TrimSpace(agent) == "" || strings.TrimSpace(cfg.TempHome) == "" {
 		return nil
 	}
-	home := hostHomeDir(cfg.HostEnv)
+	home := runnerHostHome(cfg)
 	override, ok, err := acpx.LoadAgentOverride(home, agent)
 	if err != nil {
 		return fmt.Errorf("load host acpx %s agent override: %w", agent, err)
@@ -1745,6 +1823,30 @@ func materializeHostAcpxAgentOverride(cfg *sandbox.Config, agent string) error {
 		return fmt.Errorf("materialize host acpx %s agent override: %w", agent, err)
 	}
 	return nil
+}
+
+// configuredAgentRuntime records only the selected adapter identity. It never
+// records the host config location, command arguments, or credentials.
+func configuredAgentRuntime(cfg sandbox.Config, agent string) string {
+	agent = strings.TrimSpace(agent)
+	if agent == "" {
+		return ""
+	}
+	override, ok, err := acpx.LoadAgentOverride(runnerHostHome(&cfg), agent)
+	if err != nil || !ok {
+		return "builtin"
+	}
+	return acpx.AgentOverrideDescription(override)
+}
+
+func runnerHostHome(cfg *sandbox.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	if sshDir := strings.TrimSpace(cfg.HostSSHDir); sshDir != "" {
+		return filepath.Dir(filepath.Clean(sshDir))
+	}
+	return hostHomeDir(cfg.HostEnv)
 }
 
 func materializeChildProfile(xdgConfigHome string, profile clientauth.Profile) error {
@@ -1973,10 +2075,11 @@ func prependPathEntries(current string, prefixes ...string) string {
 }
 
 type sessionRuntimePaths struct {
-	home          string
-	ghConfigDir   string
-	xdgConfigHome string
-	codexHome     string
+	home           string
+	ghConfigDir    string
+	xdgConfigHome  string
+	codexHome      string
+	acpxRuntimeDir string
 }
 
 type ghAuthMirrorResult struct {
@@ -1993,10 +2096,11 @@ func stableSessionRuntimePaths(workspacePath, repo, publicID string) (sessionRun
 		return sessionRuntimePaths{}, err
 	}
 	return sessionRuntimePaths{
-		home:          filepath.Join(root, "home"),
-		ghConfigDir:   filepath.Join(root, "gh"),
-		xdgConfigHome: filepath.Join(root, "xdg"),
-		codexHome:     filepath.Join(root, "codex"),
+		home:           filepath.Join(root, "home"),
+		ghConfigDir:    filepath.Join(root, "gh"),
+		xdgConfigHome:  filepath.Join(root, "xdg"),
+		codexHome:      filepath.Join(root, "codex"),
+		acpxRuntimeDir: filepath.Join(root, "acpx-runtime"),
 	}, nil
 }
 
@@ -2024,6 +2128,103 @@ func stableSessionRuntimeRoot(workspacePath, repo, publicID string) (string, err
 	}
 	sum := sha256.Sum256([]byte(repo + "\x00" + publicID + "\x00" + cleanWorkspace))
 	return filepath.Join(runtimeBase, ".sessions", hex.EncodeToString(sum[:16])), nil
+}
+
+const processWorkspacePoolDir = ".process-workspaces"
+
+// prepareSessionProcessWorkspaceRoot creates the one writable PROCESS pool a
+// coordinator may see. The pool is a sibling of the session clone, partitioned
+// by repository and public session identity; the runner root and sibling pools
+// are never returned as capabilities.
+func prepareSessionProcessWorkspaceRoot(workspacePath, repo, publicID string) (string, error) {
+	workspacePath = strings.TrimSpace(workspacePath)
+	repo = strings.TrimSpace(repo)
+	publicID = strings.TrimSpace(publicID)
+	if workspacePath == "" || repo == "" || publicID == "" {
+		return "", fmt.Errorf("session clone, repo, and public session id are required for PROCESS workspace pool")
+	}
+	absWorkspace, err := filepath.Abs(workspacePath)
+	if err != nil {
+		return "", fmt.Errorf("resolve session clone: %w", err)
+	}
+	absWorkspace = filepath.Clean(absWorkspace)
+	canonicalWorkspace, err := filepath.EvalSymlinks(absWorkspace)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize session clone: %w", err)
+	}
+	canonicalWorkspace = filepath.Clean(canonicalWorkspace)
+	if canonicalWorkspace == string(os.PathSeparator) {
+		return "", fmt.Errorf("session clone cannot be filesystem root")
+	}
+	info, err := os.Stat(canonicalWorkspace)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("session clone must be an existing directory: %s", canonicalWorkspace)
+	}
+	parent := filepath.Dir(canonicalWorkspace)
+	if parent == string(os.PathSeparator) || parent == canonicalWorkspace {
+		return "", fmt.Errorf("session clone must be below a controlled runner root")
+	}
+	base, err := preparePrivateCanonicalDir(filepath.Join(parent, processWorkspacePoolDir))
+	if err != nil {
+		return "", fmt.Errorf("prepare PROCESS workspace pool base: %w", err)
+	}
+	sum := sha256.Sum256([]byte(repo + "\x00" + publicID + "\x00" + canonicalWorkspace))
+	pool, err := preparePrivateCanonicalDir(filepath.Join(base, hex.EncodeToString(sum[:16])))
+	if err != nil {
+		return "", fmt.Errorf("prepare PROCESS workspace pool: %w", err)
+	}
+	if pathsOverlapForSessionPool(canonicalWorkspace, pool) {
+		return "", fmt.Errorf("PROCESS workspace pool %s overlaps session clone %s", pool, canonicalWorkspace)
+	}
+	return pool, nil
+}
+
+func preparePrivateCanonicalDir(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("path must be absolute: %s", path)
+	}
+	path = filepath.Clean(path)
+	if path == string(os.PathSeparator) {
+		return "", fmt.Errorf("filesystem root is not a valid pool")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		if err := os.Mkdir(path, 0o700); err != nil && !os.IsExist(err) {
+			return "", err
+		}
+		info, err = os.Lstat(path)
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", fmt.Errorf("path must be a non-symlink directory: %s", path)
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		return "", err
+	}
+	info, err = os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		return "", fmt.Errorf("private permissions unavailable for PROCESS workspace pool directory: %s", path)
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil || filepath.Clean(canonical) != path {
+		return "", fmt.Errorf("path must be canonical and contain no symlink traversal: %s", path)
+	}
+	return path, nil
+}
+
+func pathsOverlapForSessionPool(left, right string) bool {
+	left, right = filepath.Clean(left), filepath.Clean(right)
+	return left == right || strings.HasPrefix(left, right+string(os.PathSeparator)) || strings.HasPrefix(right, left+string(os.PathSeparator))
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	clone := make(map[string]string, len(values)+2)
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
 }
 
 func (r ghAuthMirrorResult) diagnostic() string {
@@ -2458,38 +2659,69 @@ func shouldUseResolvedAcpxBinary(binary, requested, resolved string) bool {
 
 type AcpxAdapterFactory struct {
 	Config acpx.Config
+	// RunnerConfig lets the factory derive a per-job acpx config from the job's
+	// coordinator kind. When set, a job whose CoordinatorKind differs from the
+	// default agent gets that agent's mode/permissions/model/Claude settings.
+	RunnerConfig commentrunner.Config
 }
 
 func (f AcpxAdapterFactory) NewCoordinator(env ExecutionEnvironment) (Coordinator, error) {
 	cfg := f.Config
+	if kind := strings.TrimSpace(env.CoordinatorKind); kind != "" && kind != cfg.Agent {
+		cfg = AcpxConfigForKind(f.RunnerConfig, kind)
+	}
 	cfg.CWD = firstNonEmpty(env.WorkingDirectory, cfg.CWD)
 	cfg.Binary = firstNonEmpty(env.AcpxBinary, cfg.Binary)
 	return acpx.NewAdapter(cfg, env.Runner)
 }
 
+// NewAcpxConfig derives the acpx config for the runner's configured default
+// agent. Per-command selection derives a job's config from its coordinator kind
+// through AcpxConfigForKind, but this preserves the default-agent config used to
+// seed the adapter factory.
 func NewAcpxConfig(cfg commentrunner.Config) acpx.Config {
 	cfg = cfg.Normalized()
+	return AcpxConfigForKind(cfg, cfg.Agent.Kind)
+}
+
+// AcpxConfigForKind derives the acpx config for a specific coordinator kind
+// rather than the runner-wide default. Agent, mode, permissions, and
+// Claude-specific settings all follow the selected kind so a `/new <agent>` job
+// runs with that agent's operator-configured behavior. Only the runner's
+// configured default agent carries the operator model; a selected non-default
+// agent runs with its own default model (no explicit model).
+func AcpxConfigForKind(cfg commentrunner.Config, kind string) acpx.Config {
+	cfg = cfg.Normalized()
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = cfg.Agent.Kind
+	}
 	permissions := acpx.PermissionApproveReads
-	if cfg.Agent.Kind == commentrunner.AgentCodex && cfg.Agent.CodexAgentFullAccess {
-		permissions = acpx.PermissionApproveAll
-	}
-	if cfg.Agent.Kind == commentrunner.AgentClaude && cfg.Agent.ClaudeAgentFullAccess {
-		permissions = acpx.PermissionApproveAll
-	}
 	mode := ""
-	if cfg.Agent.Kind == commentrunner.AgentCodex && cfg.Agent.CodexAgentFullAccess {
+	if kind == commentrunner.AgentCodex && cfg.Agent.CodexAgentFullAccess {
+		permissions = acpx.PermissionApproveAll
 		mode = "agent-full-access"
 	}
-	return acpx.Config{
+	if kind == commentrunner.AgentClaude && cfg.Agent.ClaudeAgentFullAccess {
+		permissions = acpx.PermissionApproveAll
+	}
+	model := ""
+	if kind == cfg.Agent.Kind {
+		model = cfg.Agent.Model
+	}
+	config := acpx.Config{
 		Binary:                    cfg.AcpxPath,
-		Agent:                     cfg.Agent.Kind,
-		Model:                     cfg.Agent.Model,
+		Agent:                     kind,
+		Model:                     model,
 		Mode:                      mode,
 		MaxPermissions:            permissions,
 		NonInteractivePermissions: acpx.NonInteractiveFail,
-		ClaudeIncludeUserSettings: cfg.Agent.ClaudeIncludeUserSettings,
-		ClaudeAllowedTools:        cfg.Agent.ClaudeAllowedTools,
 	}
+	if kind == commentrunner.AgentClaude {
+		config.ClaudeIncludeUserSettings = cfg.Agent.ClaudeIncludeUserSettings
+		config.ClaudeAllowedTools = cfg.Agent.ClaudeAllowedTools
+	}
+	return config
 }
 
 type NoopArtifactProvider struct{}
@@ -2581,7 +2813,7 @@ func acpxMetadata(meta acpx.Metadata, at time.Time) state.AcpxMetadata {
 	}
 }
 
-func sandboxMetadata(meta sandbox.Metadata, err error) state.SandboxMetadata {
+func sandboxMetadata(meta sandbox.Metadata, err error, agentRuntime string) state.SandboxMetadata {
 	diagnostics := append([]string{}, meta.Diagnostics...)
 	if err != nil {
 		diagnostics = append(diagnostics, safeError(err))
@@ -2596,6 +2828,7 @@ func sandboxMetadata(meta sandbox.Metadata, err error) state.SandboxMetadata {
 		EnvDecisions:     envDecisions(meta.Env),
 		TempPaths:        tempPaths(meta.Env),
 		MountPlanSummary: mountSummary(meta.Mounts),
+		AgentRuntime:     agentRuntime,
 		Diagnostics:      strings.Join(diagnostics, "; "),
 		CheckedAt:        time.Now().UTC(),
 	}

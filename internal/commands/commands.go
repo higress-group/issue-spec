@@ -29,20 +29,22 @@ type app struct {
 	err         io.Writer
 	profileName string
 
-	selectGitHubBackend          func(context.Context, string) (auth.GitHubBackendSelection, error)
-	selectRunnerBackend          func(context.Context, string, auth.GitHubBackendMode) (auth.GitHubBackendSelection, error)
-	newGitHubBackend             func(context.Context, auth.GitHubBackendSelection) (github.Backend, error)
-	gitHubBackendToken           func(context.Context, auth.GitHubBackendSelection) (string, error)
-	runnerPreflight              func(context.Context, commentrunner.Config) commentrunner.PreflightReport
-	runnerIntake                 func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error)
-	newRunnerNotificationBackend func(context.Context, commentrunner.Config) (runnerNotificationBackend, error)
-	runnerReconcile              func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error)
-	runnerDispatch               func(context.Context, commentrunner.Config) (jobs.Result, error)
-	runnerCancellationDrain      func(context.Context, commentrunner.Config) (jobs.Result, error)
-	newNativeEvidenceProvider    func(auth.Profile, string) (nativeEvidenceProvider, error)
-	newNativeSearchProvider      func(auth.Profile, string) (nativeSearchProvider, error)
-	resolveCodeMutationProvider  func(context.Context, string) (codereview.MutationProvider, error)
-	doctorAgentProbe             func(context.Context, capability.Request) (capability.Report, error)
+	selectGitHubBackend            func(context.Context, string) (auth.GitHubBackendSelection, error)
+	selectRunnerBackend            func(context.Context, string, auth.GitHubBackendMode) (auth.GitHubBackendSelection, error)
+	newGitHubBackend               func(context.Context, auth.GitHubBackendSelection) (github.Backend, error)
+	gitHubBackendToken             func(context.Context, auth.GitHubBackendSelection) (string, error)
+	runnerPreflight                func(context.Context, commentrunner.Config) commentrunner.PreflightReport
+	newRunnerEvidenceWriterBackend func(context.Context, auth.GitHubBackendSelection) (commentrunner.PreflightEvidenceWriterBackend, error)
+	runnerIntake                   func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error)
+	newRunnerNotificationBackend   func(context.Context, commentrunner.Config) (runnerNotificationBackend, error)
+	runnerReconcile                func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error)
+	runnerDispatch                 func(context.Context, commentrunner.Config) (jobs.Result, error)
+	runnerCancellationDrain        func(context.Context, commentrunner.Config) (jobs.Result, error)
+	runnerDiagnostics              *runnerLogger
+	newNativeEvidenceProvider      func(auth.Profile, string) (nativeEvidenceProvider, error)
+	newNativeSearchProvider        func(auth.Profile, string) (nativeSearchProvider, error)
+	resolveCodeMutationProvider    func(context.Context, string) (codereview.MutationProvider, error)
+	doctorAgentProbe               func(context.Context, capability.Request) (capability.Report, error)
 }
 
 type commandFunc func(context.Context, []string) int
@@ -178,9 +180,10 @@ Usage:
   issue-spec [--profile name] <command> [options]
   issue-spec auth status|login|logout|token
   issue-spec doctor agent --repo owner/repo --operation issue.read [--operation pr.read]
-  issue-spec init --repo owner/repo [--create-labels] [--tools codex,claude|all|none] [--delivery both|skills|commands]
+  issue-spec init --repo owner/repo [--skip-labels] [--tools codex,claude|all|none] [--delivery both|skills|commands] [--install-global-prompts]
   issue-spec issue create proposal|design|implement --repo owner/repo --change name [--body-file file.md] [--title title]
   issue-spec issue update --repo owner/repo --issue N [--title title] [--body-file file.md] [--summary "what changed"]
+  issue-spec comment create --repo owner/repo --issue N --body-file reply.md [--json]
   issue-spec comment generate --type SPEC --id SPEC-001 --input-file spec.json [--status confirmed] [--scope "..."]
   issue-spec comment upsert --repo owner/repo --issue N --type SPEC --id SPEC-001 --body-file file.md [--allow-noncanonical]
   issue-spec comment transition --repo owner/repo --issue N --id TASK-001 --to done [--expected-version N|--expected-digest SHA256]
@@ -197,6 +200,7 @@ Usage:
   issue-spec archive durable-spec --repo owner/repo --proposal N --design N --implement N --pr N --capability my-capability --close-issues
   issue-spec workflow validate --repo owner/repo [--json]
   issue-spec workflow which --repo owner/repo [--schema name] [--json]
+  issue-spec workflow workspace prepare|inspect|complete|integrate|reconcile|cleanup --repo owner/repo --issue N --process PROCESS-001
   issue-spec link --repo owner/repo --from SPEC-001 --from-issue N --to TASK-001 --to-issue M
   issue-spec status --repo owner/repo --proposal N [--design N] [--implement N]
   issue-spec verify --repo owner/repo --proposal N --design N --implement N [--durable-spec path]
@@ -205,7 +209,7 @@ Usage:
   issue-spec read pr --repo owner/repo --pr N [--comments] [--typed-only]
   issue-spec search issues --repo owner/repo --query TEXT [--state all|open|closed] [--source all|issue|comments|change] [--stage proposal|design|implement] [--limit 10]
   issue-spec runner poll --repo owner/repo --runner login --once --dry-run
-  issue-spec runner serve --profile self-hosted --repo owner/repo --runner login --subscription-id UUID --secret-file FILE --git-credential-command /absolute/provider
+  issue-spec runner serve --profile self-hosted --repo owner/repo --runner login --subscription-id UUID --secret-file FILE (--git-credential-command /absolute/provider|--allow-host-ssh)
   issue-spec runner preflight --repo owner/repo --runner login`)
 }
 
@@ -299,9 +303,22 @@ func (a *app) selectBackendForProfile(ctx context.Context, host, profile string)
 
 func (a *app) selectBackend(ctx context.Context, host string) (auth.GitHubBackendSelection, error) {
 	profileName := strings.TrimSpace(a.profileName)
-	_, source, profileErr := auth.ResolveProfile(profileName, host)
+	profile, source, profileErr := auth.ResolveProfile(profileName, host)
 	if profileErr != nil {
 		return auth.GitHubBackendSelection{}, profileErr
+	}
+	if (source == "builtin" || source == "project") && auth.IsBuiltinGitHubProfile(profile) {
+		var selection auth.GitHubBackendSelection
+		var err error
+		if a.selectGitHubBackend != nil {
+			selection, err = a.selectGitHubBackend(ctx, profile.Hostname)
+		} else {
+			selection, err = defaultSelectGitHubBackend(ctx, profile.Hostname)
+		}
+		if source == "project" {
+			selection.SelectionSource = "profile:project"
+		}
+		return selection.WithProfile(profile, source), err
 	}
 	if source != "builtin" || profileName != "" || auth.ProfileNameFromEnv() != "" || strings.TrimSpace(os.Getenv(auth.GitHubBackendAPIURLEnv)) != "" {
 		return auth.SelectProfileBackendWithOptions(ctx, profileName, host, auth.GitHubBackendSelectionOptions{GHAuthenticated: ghAuthenticated})
@@ -314,9 +331,22 @@ func (a *app) selectBackend(ctx context.Context, host string) (auth.GitHubBacken
 
 func (a *app) selectBackendForRunner(ctx context.Context, cfg commentrunner.Config) (auth.GitHubBackendSelection, error) {
 	cfg = cfg.Normalized()
-	_, source, profileErr := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
+	profile, source, profileErr := auth.ResolveProfile(cfg.Profile, cfg.Hostname)
 	if profileErr != nil {
 		return auth.GitHubBackendSelection{}, profileErr
+	}
+	if (source == "builtin" || source == "project") && auth.IsBuiltinGitHubProfile(profile) {
+		var selection auth.GitHubBackendSelection
+		var err error
+		if a.selectRunnerBackend != nil {
+			selection, err = a.selectRunnerBackend(ctx, profile.Hostname, cfg.GitHubBackend)
+		} else {
+			selection, err = defaultSelectRunnerBackend(ctx, profile.Hostname, cfg.GitHubBackend)
+		}
+		if source == "project" {
+			selection.SelectionSource = "profile:project"
+		}
+		return selection.WithProfile(profile, source), err
 	}
 	if source != "builtin" || cfg.Profile != "" || strings.TrimSpace(os.Getenv(auth.GitHubBackendAPIURLEnv)) != "" {
 		mode := cfg.GitHubBackend

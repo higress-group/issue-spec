@@ -1,6 +1,7 @@
 package diagnostics
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -8,13 +9,13 @@ import (
 
 // SessionLogger handles session-specific logging
 type SessionLogger struct {
-	writers   map[string]*RotatingWriter
-	store     *Store
-	redactor  *Redactor
-	scope     Scope
+	writers     map[string]*RotatingWriter
+	store       *Store
+	redactor    *Redactor
+	scope       Scope
 	correlation Correlation
-	mu        sync.Mutex
-	sessionID string
+	mu          sync.Mutex
+	sessionID   string
 }
 
 // NewSessionLogger creates a new session-specific logger
@@ -39,29 +40,37 @@ func (sl *SessionLogger) SetSessionID(sessionID string) {
 
 // LogTurn logs an event for a specific turn
 func (sl *SessionLogger) LogTurn(turnID, component, event, message string) {
-	sl.logTurn(turnID, LevelInfo, component, event, message, nil)
+	if err := sl.WriteTurnWithDetails(turnID, LevelInfo, component, event, message, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to write session log: %v\n", err)
+	}
 }
 
 // LogTurnWithDetails logs an event with details for a specific turn
 func (sl *SessionLogger) LogTurnWithDetails(turnID string, level Level, component, event, message string, details map[string]interface{}) {
-	sl.logTurn(turnID, level, component, event, message, details)
+	if err := sl.WriteTurnWithDetails(turnID, level, component, event, message, details); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to write session log: %v\n", err)
+	}
+}
+
+// WriteTurnWithDetails persists a session turn event and reports writer failures.
+func (sl *SessionLogger) WriteTurnWithDetails(turnID string, level Level, component, event, message string, details map[string]interface{}) error {
+	return sl.writeTurn(turnID, level, component, event, message, details)
 }
 
 // logTurn is the internal logging method
-func (sl *SessionLogger) logTurn(turnID string, level Level, component, event, message string, details map[string]interface{}) {
+func (sl *SessionLogger) writeTurn(turnID string, level Level, component, event, message string, details map[string]interface{}) error {
 	sl.mu.Lock()
 	defer sl.mu.Unlock()
 
 	if sl.sessionID == "" {
-		return
+		return fmt.Errorf("session id not initialized")
 	}
 
 	writer, ok := sl.writers[turnID]
 	if !ok {
 		w, err := sl.store.SessionLogWriter(sl.sessionID, turnID)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to create session writer: %v\n", err)
-			return
+			return fmt.Errorf("create session writer: %w", err)
 		}
 		sl.writers[turnID] = w
 		writer = w
@@ -81,9 +90,7 @@ func (sl *SessionLogger) logTurn(turnID string, level Level, component, event, m
 		}
 	}
 
-	if err := writer.WriteEvent(e); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write session log: %v\n", err)
-	}
+	return writer.WriteEvent(e)
 }
 
 // Close closes all session writers
@@ -99,11 +106,7 @@ func (sl *SessionLogger) Close() error {
 		}
 	}
 
-	if len(errs) > 0 {
-		return fmt.Errorf("close errors: %v", errs)
-	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
 // Sync flushes all writers
@@ -119,11 +122,7 @@ func (sl *SessionLogger) Sync() error {
 		}
 	}
 
-	if len(errs) > 0 {
-		return fmt.Errorf("sync errors: %v", errs)
-	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
 // SessionID returns the session ID

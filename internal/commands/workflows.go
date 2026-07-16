@@ -28,13 +28,21 @@ type workflowCommandAdapter struct {
 }
 
 type workflowGenerationResult struct {
-	Delivery        string   `json:"delivery"`
-	Tools           []string `json:"tools"`
-	SkillFiles      []string `json:"skillFiles,omitempty"`
-	CommandFiles    []string `json:"commandFiles,omitempty"`
-	CommandsSkipped []string `json:"commandsSkipped,omitempty"`
-	WorkflowSource  string   `json:"workflowSource,omitempty"`
-	WorkflowSchema  string   `json:"workflowSchema,omitempty"`
+	Delivery            string   `json:"delivery"`
+	Tools               []string `json:"tools"`
+	SkillFiles          []string `json:"skillFiles,omitempty"`
+	CommandFiles        []string `json:"commandFiles,omitempty"`
+	CommandsSkipped     []string `json:"commandsSkipped,omitempty"`
+	GlobalPromptFiles   []string `json:"globalPromptFiles,omitempty"`
+	GlobalPromptsDryRun bool     `json:"globalPromptsDryRun,omitempty"`
+	WorkflowSource      string   `json:"workflowSource,omitempty"`
+	WorkflowSchema      string   `json:"workflowSchema,omitempty"`
+}
+
+type globalPromptInstallOptions struct {
+	Enabled   bool
+	Directory string
+	DryRun    bool
 }
 
 var workflowTools = []workflowTool{
@@ -138,6 +146,54 @@ func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, too
 	return result, nil
 }
 
+func installGlobalCodexPrompts(root, repo string, provider *workflow.ProviderPlan, options globalPromptInstallOptions, result *workflowGenerationResult) error {
+	if !options.Enabled {
+		return nil
+	}
+	if result == nil {
+		return fmt.Errorf("global prompt installation requires a workflow generation result")
+	}
+	if result.Delivery == workflowDeliverySkills {
+		return fmt.Errorf("--install-global-prompts requires --delivery both or commands")
+	}
+
+	plan, err := workflow.Resolve(root)
+	if err != nil {
+		return err
+	}
+	if result.WorkflowSource == "" {
+		result.WorkflowSource = string(plan.Source.Kind)
+		result.WorkflowSchema = plan.Source.SchemaName
+	}
+	directory := strings.TrimSpace(options.Directory)
+	if directory == "" {
+		home, err := codexHome()
+		if err != nil {
+			return err
+		}
+		directory = filepath.Join(home, "prompts")
+	} else if !filepath.IsAbs(directory) {
+		directory = filepath.Join(root, directory)
+	}
+	directory, err = filepath.Abs(directory)
+	if err != nil {
+		return fmt.Errorf("resolve global prompt directory: %w", err)
+	}
+
+	result.GlobalPromptsDryRun = options.DryRun
+	for _, command := range workflowCommandContentsWithProvider(repo, plan, provider) {
+		path := filepath.Join(directory, fmt.Sprintf("issue-spec-%s.md", command.ID))
+		result.GlobalPromptFiles = append(result.GlobalPromptFiles, filepath.ToSlash(path))
+		if options.DryRun {
+			continue
+		}
+		if err := writeTextFile(path, formatCodexCommand(command)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func resolveWorkflowGenerationOptions(root, toolsArg, delivery string) (string, []workflowTool, error) {
 	delivery, err := normalizeWorkflowDelivery(delivery)
 	if err != nil {
@@ -161,7 +217,7 @@ func workflowSkillsWithProvider(repo string, plan workflow.Plan, provider *workf
 		if skills[i].Name == "issue-spec-github" {
 			continue
 		}
-		skills[i].Content = strings.TrimRight(skills[i].Content, "\n") + "\n\n" + notice + "\n"
+		skills[i].Content = strings.TrimRight(skills[i].Content, "\n") + "\n\n" + strings.TrimRight(notice, "\n") + "\n"
 	}
 	if provider != nil {
 		providerNotice := templates.ProviderWorkflowNotice(*provider)
@@ -169,7 +225,7 @@ func workflowSkillsWithProvider(repo string, plan workflow.Plan, provider *workf
 			if skills[i].Name == "issue-spec-github" {
 				continue
 			}
-			skills[i].Content = strings.TrimRight(skills[i].Content, "\n") + "\n\n" + providerNotice + "\n"
+			skills[i].Content = strings.TrimRight(skills[i].Content, "\n") + "\n\n" + strings.TrimRight(providerNotice, "\n") + "\n"
 		}
 		skills = append(skills, templates.IssueSpecProviderSkill(repo, *provider))
 	}
@@ -184,9 +240,9 @@ func workflowCommandContentsWithProvider(repo string, plan workflow.Plan, provid
 	commands := templates.IssueSpecCommandContents(repo)
 	notice := workflowNotice(plan)
 	for i := range commands {
-		commands[i].Body = strings.TrimRight(commands[i].Body, "\n") + "\n\n" + notice + "\n"
+		commands[i].Body = strings.TrimRight(commands[i].Body, "\n") + "\n\n" + strings.TrimRight(notice, "\n") + "\n"
 		if provider != nil {
-			commands[i].Body = strings.TrimRight(commands[i].Body, "\n") + "\n\n" + templates.ProviderWorkflowNotice(*provider) + "\n"
+			commands[i].Body = strings.TrimRight(commands[i].Body, "\n") + "\n\n" + strings.TrimRight(templates.ProviderWorkflowNotice(*provider), "\n") + "\n"
 		}
 	}
 	return commands
@@ -269,17 +325,6 @@ func workflowToolList() string {
 
 func commandAdapterForTool(toolID string) *workflowCommandAdapter {
 	switch toolID {
-	case "codex":
-		return &workflowCommandAdapter{
-			FilePath: func(commandID string) (string, error) {
-				home, err := codexHome()
-				if err != nil {
-					return "", err
-				}
-				return filepath.Join(home, "prompts", fmt.Sprintf("issue-spec-%s.md", commandID)), nil
-			},
-			Format: formatCodexCommand,
-		}
 	case "claude":
 		return &workflowCommandAdapter{
 			FilePath: func(commandID string) (string, error) {

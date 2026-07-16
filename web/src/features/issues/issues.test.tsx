@@ -45,6 +45,17 @@ describe("secure issue markdown", () => {
     expect(container.querySelector("code.hljs")).toBeInTheDocument();
     expect((await axe.run(container)).violations).toEqual([]);
   });
+
+  it("keeps same-page comment permalinks in the current tab", () => {
+    const source = `[same comment](http://localhost/#issuecomment-9) [another issue](http://localhost/other#issuecomment-9) [external](https://example.test/#issuecomment-9)`;
+    renderApp(<MarkdownView source={source} />);
+
+    const sameComment = screen.getByRole("link", { name: "same comment" });
+    expect(sameComment).not.toHaveAttribute("target");
+    expect(sameComment).not.toHaveAttribute("rel");
+    expect(screen.getByRole("link", { name: "another issue" })).toHaveAttribute("target", "_blank");
+    expect(screen.getByRole("link", { name: "external" })).toHaveAttribute("target", "_blank");
+  });
 });
 
 describe("issue editing semantics", () => {
@@ -91,6 +102,34 @@ describe("issue editing semantics", () => {
 });
 
 describe("canonical issue read authority", () => {
+  it("copies a canonical comment permalink and falls back when Clipboard API writes fail", async () => {
+    installIssueDetailHandlers();
+    const user = userEvent.setup();
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const execCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
+    const writeText = vi.fn().mockRejectedValue(new Error("insecure context"));
+    let copiedValue = "";
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    Object.defineProperty(document, "execCommand", { configurable: true, value: vi.fn(() => {
+      copiedValue = document.querySelector<HTMLTextAreaElement>("textarea[readonly]")?.value ?? "";
+      return true;
+    }) });
+    try {
+      renderIssueDetail(activeRepository(false, ["read"]));
+      const copy = await screen.findByRole("button", { name: "Copy link" });
+      await user.click(copy);
+      const permalink = "http://localhost/acme/workflow/issues/41#issuecomment-9";
+      expect(writeText).toHaveBeenCalledWith(permalink);
+      expect(copiedValue).toBe(permalink);
+      expect(screen.getByRole("button", { name: "Link copied" })).toBeVisible();
+    } finally {
+      if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      else Reflect.deleteProperty(navigator, "clipboard");
+      if (execCommandDescriptor) Object.defineProperty(document, "execCommand", execCommandDescriptor);
+      else Reflect.deleteProperty(document, "execCommand");
+    }
+  });
+
   it("renders anonymous public issue content without any mutation controls", async () => {
     installIssueDetailHandlers([relationshipFixture("github", "42")]);
     const { container } = renderIssueDetail(activeRepository(false, ["read"]));
@@ -108,6 +147,20 @@ describe("canonical issue read authority", () => {
     expect(relationship).toHaveAttribute("referrerpolicy", "no-referrer");
     expect(container).not.toHaveTextContent("head_revision");
     expect((await axe.run(container)).violations).toEqual([]);
+  });
+
+  it("renders a deleted author as text without linking an unrelated ghost account", async () => {
+    installIssueDetailHandlers();
+    const ghost = { login: "ghost", name: "ghost", id: 1, avatar_url: "", html_url: "", type: "User", site_admin: false };
+    server.use(
+      http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture({ user: ghost }))),
+      http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json([commentFixture({ user: ghost })])),
+    );
+    renderIssueDetail(activeRepository(false, ["read"]));
+    expect(await screen.findByRole("heading", { name: /Runner contract/ })).toBeVisible();
+    for (const identity of screen.getAllByText("@ghost")) {
+      expect(identity.closest("a")).toBeNull();
+    }
   });
 
   it("shows authenticated mutations only when allowed_actions grants them", async () => {
@@ -197,7 +250,7 @@ function commentFixture(overrides: Record<string, unknown> = {}) {
 }
 
 function reactionFixture() { return { id: 7, user: userFixture(), content: "+1", created_at: "2026-07-10T11:30:00Z" }; }
-function userFixture() { return { login: "alice", id: 1, avatar_url: "", html_url: "", type: "User", site_admin: false }; }
+function userFixture() { return { login: "alice", id: 1, avatar_url: "", html_url: "http://localhost/users/alice", type: "User", site_admin: false }; }
 
 function installIssueDetailHandlers(relationships: CodeChangeRelationship[] = []) {
   server.use(

@@ -112,6 +112,17 @@ type RemoteFacts struct {
 	ProviderEvidence Fact                  `json:"provider_evidence"`
 	DurableSpec      Fact                  `json:"durable_spec"`
 	Processes        []ProcessEvidenceFact `json:"processes,omitempty"`
+	Workspace        WorkspaceFacts        `json:"workspace"`
+}
+
+// WorkspaceFacts are collector-owned revision facts for the shared Workspace
+// gate. Observed distinguishes callers that deliberately collected this
+// contract from older callers that still run the compatibility projection.
+type WorkspaceFacts struct {
+	Observed            bool                           `json:"observed"`
+	ExpectedRevision    Fact                           `json:"expected_revision"`
+	CarrierRevisions    map[string]CarrierRevisionFact `json:"carrier_revisions,omitempty"`
+	IntegrationAncestry map[string]Fact                `json:"integration_ancestry,omitempty"`
 }
 
 // WorkflowFacts describe local workflow-schema resolution.

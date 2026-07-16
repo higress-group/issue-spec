@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,6 +41,8 @@ func TestReconcileRunningCompletedPatchesStateWritebackAndReleasesLock(t *testin
 		Diagnostics: "terminal output recovered",
 	}}
 	dispatcher := testDispatcher(store, workspaces, &fakeCoordinator{}, writebacks, now)
+	sandbox := &fakeSandbox{}
+	dispatcher.Sandbox = sandbox
 	dispatcher.Acpx = staticAcpxFactory{coordinator: coordinator}
 	credentialBroker := &revokeOnlyBroker{}
 	dispatcher.CredentialBroker = credentialBroker
@@ -51,6 +54,10 @@ func TestReconcileRunningCompletedPatchesStateWritebackAndReleasesLock(t *testin
 	}
 	if result.Reconciled != 1 || result.Completed != 1 || coordinator.reconcileCalls != 1 {
 		t.Fatalf("unexpected reconcile result: %+v calls=%d", result, coordinator.reconcileCalls)
+	}
+	if len(sandbox.requests) != 1 || sandbox.requests[0].WorkspacePath != workspaceMeta.Path ||
+		sandbox.requests[0].AcpxWorkingDirectory != workspaceMeta.Path {
+		t.Fatalf("restart coordinator escaped session clone: requests=%+v want=%q", sandbox.requests, workspaceMeta.Path)
 	}
 	assertWritebackStatuses(t, writebacks, state.StatusCompleted)
 	if !workspaces.released {
@@ -384,6 +391,9 @@ func TestRunNextCancellationConfirmedCancelsRunningJob(t *testing.T) {
 		!session.RepositoryBinding.Equal(workspaceMeta.RepositoryBinding) || len(session.Queue.PendingJobIDs) != 0 || session.Lock.OwnerJobID != "" {
 		t.Fatalf("record-backed resume session was not preserved and terminalized: %+v ok=%v", session, ok)
 	}
+	if retry, err := dispatcher.cancel(context.Background(), cancel); err != nil || retry.Status != state.StatusCancelled {
+		t.Fatalf("terminal cancellation retry=%+v err=%v", retry, err)
+	}
 }
 
 func testWorkspacePath(t *testing.T, root, id string) string {
@@ -391,6 +401,11 @@ func testWorkspacePath(t *testing.T, root, id string) string {
 	path := filepath.Join(root, id)
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		t.Fatal(err)
+	}
+	command := exec.Command("git", "init", "-b", "main")
+	command.Dir = path
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("initialize test Git workspace %s: %v: %s", id, err, output)
 	}
 	return path
 }

@@ -36,9 +36,10 @@ type selfHostedInitOptions struct {
 	Repo, ServerOrg, ServerRepo                    string
 	ProviderKey, ExternalRepo, SourceRemote        string
 	SourceCloneURL, SourceWebURL, DefaultBranch    string
-	Tools, Delivery, Language                      string
+	Tools, Delivery, Language, GlobalPromptsDir    string
 	CreateIfMissing, BindSource, SkipSourceBinding bool
 	Yes, PlanOnly, CreateLabels, JSON              bool
+	InstallGlobalPrompts, GlobalPromptsDryRun      bool
 }
 
 func (o selfHostedInitOptions) hasSelfHostedOnlyFlags() bool {
@@ -58,15 +59,16 @@ type discoveredSource struct {
 }
 
 type selfHostedInitPlan struct {
-	Mode         string                           `json:"mode"`
-	Profile      string                           `json:"profile"`
-	Registry     string                           `json:"registry_source,omitempty"`
-	Server       github.NativeServerMetadata      `json:"server"`
-	Organization github.NativeOrganizationContext `json:"organization"`
-	Repository   selfHostedRepositoryPlan         `json:"repository"`
-	Source       *discoveredSource                `json:"source,omitempty"`
-	Provider     *workflow.ProviderPlan           `json:"provider,omitempty"`
-	Mutations    []string                         `json:"mutations,omitempty"`
+	Mode              string                           `json:"mode"`
+	Profile           string                           `json:"profile"`
+	Registry          string                           `json:"registry_source,omitempty"`
+	Server            github.NativeServerMetadata      `json:"server"`
+	Organization      github.NativeOrganizationContext `json:"organization"`
+	Repository        selfHostedRepositoryPlan         `json:"repository"`
+	Source            *discoveredSource                `json:"source,omitempty"`
+	Provider          *workflow.ProviderPlan           `json:"provider,omitempty"`
+	Mutations         []string                         `json:"mutations,omitempty"`
+	GlobalPromptFiles []string                         `json:"global_prompt_files,omitempty"`
 }
 
 type selfHostedRepositoryPlan struct {
@@ -250,6 +252,14 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 		}
 	}
 	if options.PlanOnly {
+		if options.GlobalPromptsDryRun {
+			preview := workflowGenerationResult{Delivery: options.Delivery}
+			previewOptions := globalPromptInstallOptions{Enabled: true, Directory: options.GlobalPromptsDir, DryRun: true}
+			if err := installGlobalCodexPrompts(".", serverRepoKey, providerPlan, previewOptions, &preview); err != nil {
+				return a.selfHostedInitError("plan global Codex prompts", err)
+			}
+			plan.GlobalPromptFiles = preview.GlobalPromptFiles
+		}
 		return a.outputSelfHostedInitPlan(plan, user.Login, scopes, options.JSON)
 	}
 	if len(plan.Mutations) > 0 && !options.Yes && !profile.OnboardingPolicy.AllowUnattended {
@@ -364,6 +374,14 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 	if err != nil {
 		return a.selfHostedInitError("generate workflow artifacts", err)
 	}
+	globalPromptOptions := globalPromptInstallOptions{
+		Enabled:   options.InstallGlobalPrompts || strings.TrimSpace(options.GlobalPromptsDir) != "" || options.GlobalPromptsDryRun,
+		Directory: options.GlobalPromptsDir,
+		DryRun:    options.GlobalPromptsDryRun,
+	}
+	if err := installGlobalCodexPrompts(".", serverRepoKey, providerPlan, globalPromptOptions, &workflows); err != nil {
+		return a.selfHostedInitError("install global Codex prompts", err)
+	}
 	markJournalStage(&journal, "workflow", "complete", fmt.Sprintf("%d skills, %d commands", len(workflows.SkillFiles), len(workflows.CommandFiles)))
 	if err := writeInitJournal(journalPath, journal); err != nil {
 		return a.selfHostedInitError("complete init resume journal", err)
@@ -382,6 +400,9 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 		organization.Name, options.ServerRepo, repositoryID, filepath.ToSlash(configPath), filepath.ToSlash(journalPath))
 	if providerPlan != nil {
 		fmt.Fprintf(a.out, "external code provider: %s (%s)\n", providerPlan.ProviderKey, providerPlan.DisplayName)
+	}
+	if len(workflows.Tools) > 0 || len(workflows.GlobalPromptFiles) > 0 {
+		a.printWorkflowGeneration(workflows)
 	}
 	return 0
 }
@@ -404,6 +425,12 @@ func (a *app) outputSelfHostedInitPlan(plan selfHostedInitPlan, user string, sco
 	}
 	for _, mutation := range plan.Mutations {
 		fmt.Fprintf(a.out, "mutation: %s\n", mutation)
+	}
+	if len(plan.GlobalPromptFiles) > 0 {
+		fmt.Fprintln(a.out, "user-global prompt dry-run:")
+		for _, path := range plan.GlobalPromptFiles {
+			fmt.Fprintf(a.out, "  %s\n", path)
+		}
 	}
 	return 0
 }
@@ -611,19 +638,46 @@ func writeExternalCodeWorkflowConfig(root string, provider workflow.ProviderPlan
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	external := map[string]any{}
+	if existing, ok := config["external_code"]; ok {
+		var mappingOK bool
+		external, mappingOK = existing.(map[string]any)
+		if !mappingOK {
+			return fmt.Errorf("existing %s external_code must be a mapping", filepath.ToSlash(path))
+		}
+	}
+	if existing, ok := external["provider_key"]; ok {
+		providerKey, stringOK := existing.(string)
+		if !stringOK {
+			return fmt.Errorf("existing %s external_code.provider_key must be a string", filepath.ToSlash(path))
+		}
+		if providerKey = strings.TrimSpace(providerKey); providerKey != "" && providerKey != provider.ProviderKey {
+			return fmt.Errorf("existing %s selects external code provider %q, not %q", filepath.ToSlash(path), providerKey, provider.ProviderKey)
+		}
+	}
+	external["provider_key"] = provider.ProviderKey
+
+	evidence := map[string]any{}
+	evidenceConfigured := false
+	if existing, ok := external["evidence"]; ok {
+		evidenceConfigured = true
+		var mappingOK bool
+		evidence, mappingOK = existing.(map[string]any)
+		if !mappingOK {
+			return fmt.Errorf("existing %s external_code.evidence must be a mapping", filepath.ToSlash(path))
+		}
+	}
 	required := make([]string, 0, len(provider.RecommendedEvidence))
 	for _, kind := range provider.RecommendedEvidence {
 		required = append(required, string(kind))
 	}
-	evidence := map[string]any{}
-	if len(required) > 0 {
+	if _, ok := evidence["required"]; !ok && len(required) > 0 {
 		evidence["required"] = required
 	}
-	if provider.EvidenceSnapshot {
-		evidence["sync_before"] = []string{"verify", "runner"}
+	if _, ok := evidence["sync_before"]; !ok && provider.EvidenceSnapshot {
+		evidence["sync_before"] = []string{"verify"}
 	}
-	external := map[string]any{"provider_key": provider.ProviderKey}
-	if len(evidence) > 0 {
+	if evidenceConfigured || len(evidence) > 0 {
 		external["evidence"] = evidence
 	}
 	config["external_code"] = external

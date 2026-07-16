@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -38,9 +39,9 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	orgID, repoID, issueID, commentID, actorID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	commentNumericID := int64(71)
-	var exchangeCalls, revokeCalls, reactionCalls, writebackCalls atomic.Int32
+	var reactionCalls, writebackCalls atomic.Int32
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer parent-profile-pat" {
+		if r.Header.Get("Authorization") != "Bearer profile-pat" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -51,6 +52,8 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/context":
 			writeRunnerJSON(w, http.StatusOK, map[string]any{"user": map[string]string{"id": uuid.NewString(), "login": "runner"},
+				"credential": map[string]any{"kind": "pat", "scopes": runnerProfileScopes,
+					"repository_restricted": true, "repository_count": 1},
 				"organizations": []map[string]string{{"id": orgID.String(), "name": "owner"}}})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/context/orgs/"+orgID.String()+"/repos":
 			writeRunnerJSON(w, http.StatusOK, map[string]any{"repositories": []map[string]any{{"repository": map[string]string{
@@ -60,14 +63,8 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 				"external_repository_id": "org/repo", "clone_url": "https://git.example.test/org/repo.git",
 				"web_url": "https://git.example.test/org/repo", "default_branch": "main", "version": 1, "active": true,
 				"created_at": now, "updated_at": now})
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/delegated-tokens/exchange"):
-			exchangeCalls.Add(1)
-			writeRunnerJSON(w, http.StatusCreated, map[string]any{"id": uuid.New(), "token": "iss_dgt_aabbccdd_child-e2e",
-				"expires_at": time.Now().UTC().Add(4 * time.Minute)})
-		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/delegated-tokens"):
-			revokeCalls.Add(1)
-			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/user":
+			w.Header().Set("X-OAuth-Scopes", strings.Join(runnerProfileScopes, ", "))
 			writeRunnerJSON(w, http.StatusOK, map[string]any{"id": 1, "node_id": "runner", "login": "runner"})
 		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/api/v3/repos/owner/repo/issues/comments/%d", commentNumericID):
 			w.Header().Set("X-Issue-Spec-Representation-Version", "1")
@@ -78,6 +75,8 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 				"html_url": "https://issues.test/owner/repo/issues/17", "url": "https://issues.test/api/v3/repos/owner/repo/issues/17",
 				"title": "runner composition", "body": "", "state": "open"})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/repos/owner/repo/collaborators/alice/permission":
+			writeRunnerJSON(w, http.StatusOK, map[string]string{"permission": "write", "role_name": "write"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/repos/owner/repo/collaborators/runner/permission":
 			writeRunnerJSON(w, http.StatusOK, map[string]string{"permission": "write", "role_name": "write"})
 		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/api/v3/repos/owner/repo/issues/comments/%d/reactions", commentNumericID):
 			writeRunnerJSON(w, http.StatusOK, []any{})
@@ -113,13 +112,33 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	logConfig := commentrunner.Config{Hostname: "127.0.0.1", Repositories: []string{"owner/repo"}, RunnerIdentity: "runner",
+		StatePath: filepath.Join(root, "state.json"), LogDir: filepath.Join(root, "logs"), LogMaxSizeMB: 1,
+		LogMaxFiles: 2, LogRetentionDays: 30, LogRawCaptureKB: 1}
+	diagnosticLogger, err := newRunnerLogger(logConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loggerClosed := false
+	t.Cleanup(func() {
+		if !loggerClosed {
+			_ = diagnosticLogger.close()
+		}
+	})
+	if err := diagnosticLogger.logStartup("serve"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := diagnosticLogger.newCycle(); err != nil {
+		t.Fatal(err)
+	}
 	secret := strings.Repeat("s", webhook.MinSecretBytes)
 	subscriptionID := uuid.NewString()
 	webhookCredentials, err := webhook.NewCredentials(subscriptionID, webhook.Secret{Value: []byte(secret)}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := webhook.NewHandler(webhook.HandlerConfig{Credentials: webhookCredentials, Queue: queue})
+	handler, err := webhook.NewHandler(webhook.HandlerConfig{Credentials: webhookCredentials, Queue: queue,
+		Observer: diagnosticLogger})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,18 +153,19 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 	workspaces := &compositionWorkspace{root: filepath.Join(root, "workspaces")}
 	sandboxer := &compositionSandbox{}
 	profile := auth.Profile{Name: "runner-composition", Kind: auth.ProfileKindHosted, Hostname: "127.0.0.1",
-		APIURL: api.URL + "/api/v3", NativeAPIURL: api.URL + "/api/v1", WebURL: api.URL, ServerInstanceID: "instance-e2e"}
+		APIURL: api.URL + "/api/v3", NativeAPIURL: api.URL + "/api/v1", WebURL: api.URL, ServerInstanceID: "instance-e2e",
+		OperatorRegistryFile: filepath.Join(root, "deliberately-missing-test-override-registry.json")}
 	runner := commentrunner.Config{Profile: profile.Name, Hostname: profile.Hostname, Repositories: []string{"owner/repo"},
 		RunnerIdentity: "runner", AllowedUsers: []string{"alice"}, StatePath: filepath.Join(root, "state.json"),
 		WorkspaceRoot: workspaces.root, WorkspaceRetention: commentrunner.NewDuration(time.Hour), MaxConcurrentJobs: 1,
 		AcpxPath: "acpx-e2e", Agent: commentrunner.DefaultAgentConfig(), CancellationEnabled: true, UnsafeNoSandbox: true}
-	runtime, err := defaultBuildRunnerServeRuntime(t.Context(), runnerServeRuntimeInput{Profile: profile, ParentToken: "parent-profile-pat",
+	runtime, err := defaultBuildRunnerServeRuntime(t.Context(), runnerServeRuntimeInput{Profile: profile, ProfileToken: "profile-pat",
 		Runner: runner, Queue: queue, Store: store, HTTP: httpService, GitCredentialCommand: executable,
 		GitCredentialArgs:    []string{"-test.run=^TestRunnerServeCredentialCommandHelper$", "--", auditPath},
 		GitCredentialTimeout: 5 * time.Second, GitCredentialMaxOutput: 1 << 20, GitCredentialConcurrency: 1,
 		ReconcileWorkers: 1, ReconcileLease: time.Minute, Dependencies: &runnerServeRuntimeDependencies{
 			Workspaces: workspaces, Sandbox: sandboxer, Acpx: compositionAcpxFactory{}, Artifacts: jobs.NoopArtifactProvider{},
-			IssueSpecBinary: "issue-spec-e2e"}})
+			IssueSpecBinary: "issue-spec-e2e"}, Diagnostics: diagnosticLogger})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,9 +178,18 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 	request := httptest.NewRequest(http.MethodPost, webhook.Endpoint, bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+secret)
-	request.Header.Set(webhook.HeaderDeliveryID, uuid.NewString())
+	deliveryID := uuid.NewString()
+	request.Header.Set(webhook.HeaderDeliveryID, deliveryID)
 	request.Header.Set(webhook.HeaderEventID, envelope.EventID.String())
 	request.Header.Set(webhook.HeaderTimestamp, strconv.FormatInt(now.Unix(), 10))
+	rejected := request.Clone(t.Context())
+	rejected.Body = io.NopCloser(bytes.NewReader(body))
+	rejected.Header.Set("Authorization", "Bearer rejected-credential")
+	rejectedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(rejectedResponse, rejected)
+	if rejectedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("webhook rejection=%d body=%s", rejectedResponse.Code, rejectedResponse.Body.String())
+	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted {
@@ -201,17 +230,16 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 	if runErr := <-done; runErr != nil {
 		t.Fatal(runErr)
 	}
-	if !sandboxer.authenticated.Load() || !workspaces.cloneCredentialUsed.Load() || exchangeCalls.Load() != 1 ||
-		revokeCalls.Load() != 1 || reactionCalls.Load() != 1 || writebackCalls.Load() != 2 {
-		t.Fatalf("child_auth=%t clone_credential=%t exchange=%d revoke=%d reactions=%d writebacks=%d",
-			sandboxer.authenticated.Load(), workspaces.cloneCredentialUsed.Load(), exchangeCalls.Load(), revokeCalls.Load(),
-			reactionCalls.Load(), writebackCalls.Load())
+	if !sandboxer.authenticated.Load() || !workspaces.cloneCredentialUsed.Load() ||
+		reactionCalls.Load() != 1 || writebackCalls.Load() != 2 {
+		t.Fatalf("child_auth=%t clone_credential=%t reactions=%d writebacks=%d",
+			sandboxer.authenticated.Load(), workspaces.cloneCredentialUsed.Load(), reactionCalls.Load(), writebackCalls.Load())
 	}
 	serialized, err := json.Marshal(mustLoadRunnerState(t, store))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"parent-profile-pat", "iss_dgt_aabbccdd_child-e2e", "git-child-secret"} {
+	for _, forbidden := range []string{"profile-pat", "git-child-secret"} {
 		if bytes.Contains(serialized, []byte(forbidden)) {
 			t.Fatalf("credential leaked into state: %s", serialized)
 		}
@@ -226,6 +254,96 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 			t.Fatalf("provider audit=%q want action=%s", audit, action)
 		}
 		audit = []byte(rest)
+	}
+	if err := diagnosticLogger.shutdown("serve"); err != nil {
+		t.Fatal(err)
+	}
+	loggerClosed = true
+	assertRunnerServeDiagnostics(t, logConfig.LogDir, deliveryID, completed)
+}
+
+func assertRunnerServeDiagnostics(t *testing.T, logDir, deliveryID string, job state.Job) {
+	t.Helper()
+	sessionPaths, err := filepath.Glob(filepath.Join(logDir, "sessions", job.PublicSessionID, "*.ndjson"))
+	if err != nil || len(sessionPaths) != 1 {
+		t.Fatalf("session diagnostic paths=%v err=%v", sessionPaths, err)
+	}
+	turnID := strings.TrimSuffix(filepath.Base(sessionPaths[0]), ".ndjson")
+	paths := []string{
+		filepath.Join(logDir, "runner.ndjson"), filepath.Join(logDir, "errors.ndjson"), filepath.Join(logDir, "index.ndjson"),
+		filepath.Join(logDir, "jobs", job.ID+".ndjson"),
+		filepath.Join(logDir, "jobs", job.ID+"-acpx-stdout.log"),
+		filepath.Join(logDir, "jobs", job.ID+"-acpx-stderr.log"),
+		sessionPaths[0],
+	}
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("diagnostic file %s: %v", path, err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("diagnostic file %s mode=%o", path, info.Mode().Perm())
+		}
+	}
+	if info, err := os.Stat(logDir); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("diagnostic directory mode info=%v err=%v", info, err)
+	}
+	runnerLog, err := os.ReadFile(filepath.Join(logDir, "runner.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`"event":"startup"`, `"event":"webhook_rejected"`, `"event":"webhook_accepted"`,
+		`"event":"job_queued"`, `"event":"job_started"`, `"event":"job_completed"`,
+		`"event":"shutdown_start"`, `"delivery_id":"` + deliveryID + `"`, `"job_id":"` + job.ID + `"`,
+		`"public_session_id":"` + job.PublicSessionID + `"`, `"trigger_comment_id":71`,
+		`"status_comment_id":900`, `"workspace_id":"workspace-e2e"`,
+		`"acpx_record_id":"record-e2e"`, `"acpx_last_turn_id":"turn-e2e"`,
+		`"turn_correlation_id":"` + turnID + `"`} {
+		if !bytes.Contains(runnerLog, []byte(expected)) {
+			t.Fatalf("runner diagnostics missing %q:\n%s", expected, runnerLog)
+		}
+	}
+	errorLog, err := os.ReadFile(filepath.Join(logDir, "errors.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(errorLog, []byte(`"event":"webhook_rejected"`)) {
+		t.Fatalf("error diagnostics missing webhook rejection: %s", errorLog)
+	}
+	jobLog, err := os.ReadFile(filepath.Join(logDir, "jobs", job.ID+".ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`"event":"job_queued"`, `"event":"job_started"`, `"event":"job_completed"`,
+		`"delivery_id":"` + deliveryID + `"`, `"public_session_id":"` + job.PublicSessionID + `"`} {
+		if !bytes.Contains(jobLog, []byte(expected)) {
+			t.Fatalf("job diagnostics missing %q: %s", expected, jobLog)
+		}
+	}
+	sessionLog, err := os.ReadFile(sessionPaths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(sessionLog, []byte(`"event":"job_started"`)) ||
+		!bytes.Contains(sessionLog, []byte(`"event":"job_completed"`)) {
+		t.Fatalf("session diagnostics=%s", sessionLog)
+	}
+	stdout, err := os.ReadFile(filepath.Join(logDir, "jobs", job.ID+"-acpx-stdout.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(stdout, []byte("abcdefghijklmnopqrstuvwxyz0123456789")) ||
+		!bytes.Contains(stdout, []byte("[REDACTED:token]")) {
+		t.Fatalf("stdout redaction=%q", stdout)
+	}
+	index, err := os.ReadFile(filepath.Join(logDir, "index.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{job.ID, job.PublicSessionID, deliveryID, "record-e2e", "workspace-e2e", `"id":"71"`, `"id":"900"`} {
+		if !bytes.Contains(index, []byte(expected)) {
+			t.Fatalf("diagnostic index missing %q: %s", expected, index)
+		}
 	}
 }
 
@@ -344,7 +462,7 @@ func (w *compositionWorkspace) PrepareNew(ctx context.Context, request workspace
 		return workspace.Binding{}, err
 	}
 	for _, entry := range credential.Env {
-		if strings.Contains(entry, "parent-profile-pat") || strings.Contains(entry, "iss_dgt") || strings.Contains(entry, "git-child-secret") {
+		if strings.Contains(entry, "profile-pat") || strings.Contains(entry, "iss_dgt") || strings.Contains(entry, "git-child-secret") {
 			return workspace.Binding{}, errors.New("plaintext credential entered git environment")
 		}
 	}
@@ -387,16 +505,20 @@ func (s *compositionSandbox) Prepare(_ context.Context, request jobs.SandboxRequ
 	s.requests = append(s.requests, request)
 	s.mu.Unlock()
 	if request.ChildProfile == nil || len(request.FileCapabilities) != 4 {
-		return jobs.ExecutionEnvironment{}, errors.New("delegated child profile or file capabilities missing")
+		return jobs.ExecutionEnvironment{}, errors.New("profile child credential or file capabilities missing")
 	}
+	profileCredentialFound := false
 	for _, capability := range request.FileCapabilities {
 		data, err := os.ReadFile(capability.Source)
 		if err != nil {
 			return jobs.ExecutionEnvironment{}, err
 		}
-		if bytes.Contains(data, []byte("parent-profile-pat")) {
-			return jobs.ExecutionEnvironment{}, errors.New("parent PAT entered sandbox capability")
+		if capability.EnvName == "ISSUE_SPEC_TOKEN_FILE" {
+			profileCredentialFound = string(data) == "profile-pat\n"
 		}
+	}
+	if !profileCredentialFound {
+		return jobs.ExecutionEnvironment{}, errors.New("stable profile PAT capability missing")
 	}
 	return jobs.ExecutionEnvironment{WorkingDirectory: request.AcpxWorkingDirectory, AcpxBinary: request.AcpxBinary,
 		Sandbox: state.SandboxMetadata{Enabled: false, UnsafeNoSandbox: true, SandboxProvider: "unsafe-explicit-test", FSBoundary: "workspace"},
@@ -426,7 +548,9 @@ type compositionCoordinator struct{}
 func (compositionCoordinator) NewSession(_ context.Context, request acpx.NewSessionRequest) (acpx.DispatchResult, error) {
 	return acpx.DispatchResult{PublicSessionID: request.PublicSessionID,
 		Metadata: acpx.Metadata{StableRecordID: "record-e2e", TrueSessionID: "true-e2e", ProviderSessionID: "provider-e2e", LastTurnID: "turn-e2e"},
-		Output:   acpx.TurnOutput{ReplyText: "completed", SummaryFound: true, Summary: runnercontext.CoordinatorSummary{Status: "completed"}}}, nil
+		Output: acpx.TurnOutput{ReplyText: "completed", SummaryFound: true,
+			Summary:   runnercontext.CoordinatorSummary{Status: "completed"},
+			RawStdout: "acpx output token=abcdefghijklmnopqrstuvwxyz0123456789", RawStderr: "bounded stderr"}}, nil
 }
 
 func (compositionCoordinator) Resume(context.Context, acpx.ResumeRequest) (acpx.DispatchResult, error) {

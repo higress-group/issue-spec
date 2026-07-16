@@ -96,6 +96,55 @@ func TestEvaluateReadyFinalSnapshot(t *testing.T) {
 	}
 }
 
+func TestEvaluateRequiresIndependentReviewPresenceForChangeBearingSpec(t *testing.T) {
+	const specURL = "https://example.test/issues/1#issuecomment-spec"
+	const taskURL = "https://example.test/issues/2#issuecomment-task"
+	const prURL = "https://example.test/pull/7"
+	active := map[string]string{"SPEC-001": specURL}
+	process := func(id string, class model.ProcessExecutionClass) ProcessEvidenceInput {
+		body, err := model.EnsureTypedBody("PROCESS", id, "## Process: p\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- "+string(class)+"\n\n### Covers\n\n- SPEC-001\n\n### Handoff\n\ncoordination complete",
+			model.BodyOptions{Status: "done", Links: map[string][]string{"Related Comments": {taskURL}, "PR": {prURL}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ProcessEvidenceInput{Process: model.Artifact{URL: "https://example.test/process/" + id, Comment: model.ParseTypedComment(body)},
+			RequiredPRURL: prURL, ActiveSpecs: active, TaskURLs: map[string]bool{model.NormalizeURL(taskURL): true}}
+	}
+	changeBearing := process("PROCESS-001", model.ProcessExecutionChangeBearing)
+	changeBearing.Rationales = []RationaleEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", SpecURL: specURL,
+		MarkerPath: "a.go", MarkerLine: 12, CommentPath: "a.go", CommentLine: 12, AuthorAgent: "coordinator"}}
+
+	// Change-bearing SPEC with no review PROCESS at all must fail closed.
+	missing := evaluate(t, Snapshot{Target: TargetFinal, Mode: ModeAuthoritative,
+		ProcessEvidence: []ProcessEvidenceInput{changeBearing}})
+	presence := findDiagnostic(t, missing, CodeProcessReviewRequired)
+	if missing.Ready || presence.Artifact.ID != "SPEC-001" || !presence.Blocking {
+		t.Fatalf("coded SPEC without review PROCESS did not fail closed: %+v", missing.Diagnostics)
+	}
+
+	// An independent review PROCESS covering the SPEC satisfies presence.
+	independent := process("PROCESS-002", model.ProcessExecutionReview)
+	independent.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-001": {"coordinator": true}}
+	independent.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-002", SpecID: "SPEC-001", Done: true, ReviewerAgent: "Independent Reviewer"}}
+	satisfied := evaluate(t, Snapshot{Target: TargetFinal, Mode: ModeAuthoritative,
+		ProcessEvidence: []ProcessEvidenceInput{changeBearing, independent}})
+	if containsCode(satisfied, CodeProcessReviewRequired) {
+		t.Fatalf("independent review PROCESS did not satisfy presence: %+v", satisfied.Diagnostics)
+	}
+
+	// A self-authored review PROCESS (reviewer == code author) does not satisfy
+	// presence: the SPEC is not cleanly reviewed, so the presence gate still fires
+	// alongside the author-conflict diagnostic.
+	selfReview := process("PROCESS-003", model.ProcessExecutionReview)
+	selfReview.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-001": {"coordinator": true}}
+	selfReview.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-003", SpecID: "SPEC-001", Done: true, ReviewerAgent: "Coordinator"}}
+	selfOnly := evaluate(t, Snapshot{Target: TargetFinal, Mode: ModeAuthoritative,
+		ProcessEvidence: []ProcessEvidenceInput{changeBearing, selfReview}})
+	if !containsCode(selfOnly, CodeProcessReviewRequired) || !containsCode(selfOnly, CodeProcessReviewAuthorConflict) {
+		t.Fatalf("self-authored review must not satisfy presence: %+v", selfOnly.Diagnostics)
+	}
+}
+
 func TestEvaluateSpecCoverageRequiresExactArtifactID(t *testing.T) {
 	spec := artifact(t, "SPEC", "SPEC-001", "confirmed", specLogical)
 	task := artifact(t, "TASK", "TASK-001", "done", taskLogical)
@@ -201,6 +250,67 @@ func TestEvaluateArchiveRequiresDurableSpec(t *testing.T) {
 	}
 }
 
+func TestEvaluateRegistersWorkspaceGateAfterProcessEvidence(t *testing.T) {
+	process := workspaceGateProcess(t, model.ProcessExecutionReview, true, workspaceGateRevision)
+	input := ProcessEvidenceInput{Process: process, ActiveSpecs: map[string]string{"SPEC-001": "https://example.test/spec"},
+		Reviews: []ReviewEvidence{{ProcessID: process.Comment.ID, SpecID: "SPEC-001", Done: true,
+			SubjectRevision: workspaceGateRevision, Trusted: true, Source: "github-review:1"}}}
+	snapshot := Snapshot{Target: TargetFinal, Mode: ModeAuthoritative, Artifacts: []model.Artifact{process}, ProcessEvidence: []ProcessEvidenceInput{input}}
+	snapshot.Remote.Workspace = WorkspaceFacts{Observed: true,
+		ExpectedRevision: Fact{Required: true, Known: true, Passed: true, Expected: workspaceGateRevision}}
+	report := evaluate(t, snapshot)
+	if containsCode(report, CodeProcessWorkspaceRevisionUnknown) || containsCode(report, CodeProcessWorkspaceRevisionStale) {
+		t.Fatalf("shared workspace gate did not consume collected carrier revision: %+v", report.Diagnostics)
+	}
+	if len(report.Processes) != 1 || !report.Processes[0].CarrierRevision.Trusted {
+		t.Fatalf("process evidence was not evaluated before workspace evidence: %+v", report.Processes)
+	}
+}
+
+func TestEvaluateWorkspaceGateFailsClosedForMixedCarrierAndDeduplicates(t *testing.T) {
+	process := workspaceGateProcess(t, model.ProcessExecutionReview, true, workspaceGateRevision)
+	input := ProcessEvidenceInput{Process: process, ActiveSpecs: map[string]string{"SPEC-001": "https://example.test/spec"},
+		Reviews: []ReviewEvidence{
+			{ProcessID: process.Comment.ID, SpecID: "SPEC-001", Done: true, SubjectRevision: workspaceGateRevision, Trusted: true, Source: "review:new"},
+			{ProcessID: process.Comment.ID, SpecID: "SPEC-001", Done: true, SubjectRevision: strings.Repeat("b", 40), Trusted: true, Source: "review:old"},
+		}}
+	snapshot := Snapshot{Target: TargetFinal, Mode: ModeAuthoritative, Artifacts: []model.Artifact{process}, ProcessEvidence: []ProcessEvidenceInput{input}}
+	snapshot.Remote.Workspace = WorkspaceFacts{Observed: true,
+		ExpectedRevision: Fact{Required: true, Known: true, Passed: true, Expected: workspaceGateRevision}}
+	report := evaluate(t, snapshot)
+	if !containsCode(report, CodeProcessWorkspaceRevisionStale) || report.Ready {
+		t.Fatalf("mixed carrier revisions did not fail closed: %+v", report)
+	}
+	counts := map[string]int{}
+	for _, diagnostic := range report.Diagnostics {
+		counts[diagnostic.Code+"\x00"+diagnostic.Artifact.ID+"\x00"+diagnostic.Message]++
+	}
+	for key, count := range counts {
+		if count != 1 {
+			t.Fatalf("duplicate diagnostic %q count=%d", key, count)
+		}
+	}
+}
+
+func TestEvaluateWorkspaceForecastAndMalformedImplementPolicy(t *testing.T) {
+	legacy := artifact(t, "PROCESS", "PROCESS-001", "done", processLogical("N/A", "done"))
+	forecast := Snapshot{Target: TargetImplement, Mode: ModeForecast, Artifacts: []model.Artifact{legacy}}
+	forecast.Remote.Workspace.Observed = true
+	report := evaluate(t, forecast)
+	diagnostic := findDiagnostic(t, report, CodeProcessWorkspaceMigrationWarning)
+	if diagnostic.Blocking || diagnostic.Severity != SeverityWarning {
+		t.Fatalf("legacy migration warning unexpectedly blocks implement forecast: %+v", diagnostic)
+	}
+
+	malformed := workspaceGateProcess(t, model.ProcessExecutionChangeBearing, true, workspaceGateRevision)
+	malformed.Comment.Body = strings.Replace(malformed.Comment.Body, `"mode": "writable"`, `"mode": "invalid"`, 1)
+	forecast.Artifacts = []model.Artifact{malformed}
+	report = evaluate(t, forecast)
+	if !containsCode(report, CodeProcessWorkspaceInvalid) || report.Ready {
+		t.Fatalf("malformed local Workspace must block implement: %+v", report)
+	}
+}
+
 func TestEvaluateDiagnosticsAreDeterministicAndSupersededArtifactsAreIgnored(t *testing.T) {
 	a := artifact(t, "QUESTION", "QUESTION-002", "blocked", "## Question\n\nTwo")
 	b := artifact(t, "QUESTION", "QUESTION-001", "blocked", "## Question\n\nOne")
@@ -219,6 +329,40 @@ func TestEvaluateDiagnosticsAreDeterministicAndSupersededArtifactsAreIgnored(t *
 	ids := []string{first.Diagnostics[0].Artifact.ID, first.Diagnostics[1].Artifact.ID}
 	if !reflect.DeepEqual(ids, []string{"QUESTION-001", "QUESTION-002"}) {
 		t.Fatalf("artifact order = %v", ids)
+	}
+}
+
+func TestEvaluateDiagnosticDedupKeepsLatestObservationIndependentOfInputOrder(t *testing.T) {
+	spec, task, process, verify := readyChain(t)
+	older := time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC)
+	newer := older.Add(time.Hour)
+	duplicate := func(observed *time.Time) ProcessEvidenceFact {
+		return ProcessEvidenceFact{ProcessID: process.Comment.ID, ProcessURL: process.URL,
+			PRLink: Fact{Required: true, Known: true, Passed: false, Current: "missing", Expected: "linked", ObservedAt: observed}}
+	}
+	different := duplicate(&older)
+	different.PRLink.Current = "wrong-pr"
+	snapshot := Snapshot{Target: TargetFinal, Mode: ModeAuthoritative, Artifacts: []model.Artifact{spec, task, process, verify}}
+	snapshot.Remote.Processes = []ProcessEvidenceFact{duplicate(&older), different, duplicate(&newer)}
+	forward := evaluate(t, snapshot)
+	snapshot.Remote.Processes = []ProcessEvidenceFact{duplicate(&newer), different, duplicate(&older)}
+	reverse := evaluate(t, snapshot)
+	if !reflect.DeepEqual(forward.Diagnostics, reverse.Diagnostics) {
+		t.Fatalf("diagnostic normalization depends on input order:\n%+v\n%+v", forward.Diagnostics, reverse.Diagnostics)
+	}
+	var matching []Diagnostic
+	for _, diagnostic := range forward.Diagnostics {
+		if diagnostic.Code == CodeProcessPRLinkMissing {
+			matching = append(matching, diagnostic)
+		}
+	}
+	if len(matching) != 2 {
+		t.Fatalf("semantic differences were incorrectly deduplicated: %+v", matching)
+	}
+	for _, diagnostic := range matching {
+		if diagnostic.Current == "missing" && (diagnostic.ObservedAt == nil || !diagnostic.ObservedAt.Equal(newer)) {
+			t.Fatalf("latest equivalent observation was not retained: %+v", diagnostic)
+		}
 	}
 }
 

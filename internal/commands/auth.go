@@ -206,6 +206,22 @@ func resolveAuthLoginProfile(flags authLoginProfileFlags, host string) (auth.Pro
 		ServerInstanceID: flags.InstanceID, CAFile: flags.CAFile,
 	}
 	profile, err := profile.Normalized()
+	if err != nil || profile.Kind != auth.ProfileKindHosted {
+		return profile, true, err
+	}
+	// Re-authenticating an unchanged self-hosted realm must not discard the
+	// operator-owned registry and onboarding policy that are intentionally not
+	// auth-login flags. Do not carry either setting across a realm change.
+	if existing, _, resolveErr := auth.ResolveProfile(profile.Name, host); resolveErr == nil &&
+		auth.ValidateServerHandshake(existing, auth.ServerHandshake{
+			ServerInstanceID: profile.ServerInstanceID,
+			APIURL:           profile.APIURL,
+			NativeAPIURL:     profile.NativeAPIURL,
+			WebURL:           profile.WebURL,
+		}) == nil {
+		profile.OperatorRegistryFile = existing.OperatorRegistryFile
+		profile.OnboardingPolicy = existing.OnboardingPolicy
+	}
 	return profile, true, err
 }
 

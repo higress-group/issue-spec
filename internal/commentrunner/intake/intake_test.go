@@ -723,7 +723,7 @@ func TestRunOnceCreatesResumeCandidateForKnownSession(t *testing.T) {
 		user:          github.User{Login: "bot"},
 		permissions:   map[string]string{"alice": "maintain"},
 		notifications: github.NotificationListResult{Metadata: meta(http.StatusNotModified, `"notes"`, 60)},
-		repoComments:  github.IssueCommentsResult{Comments: []github.Comment{commandComment(301, 6, "alice", "/resume sess-1 continue work")}},
+		repoComments:  github.IssueCommentsResult{Comments: []github.Comment{commandComment(301, 6, "alice", "/resume sess-1 --process PROCESS-008 continue work")}},
 	}
 	store := &fakeStore{state: st}
 
@@ -733,6 +733,11 @@ func TestRunOnceCreatesResumeCandidateForKnownSession(t *testing.T) {
 	}
 	if len(result.Jobs) != 1 || result.Jobs[0].Verb != commentrunner.VerbResume || result.Jobs[0].PublicSessionID != "sess-1" {
 		t.Fatalf("resume candidate not queued: %+v", result.Jobs)
+	}
+	for _, job := range store.state.Jobs {
+		if job.CommandPrompt != "--process PROCESS-008 continue work" {
+			t.Fatalf("poll job prompt=%q", job.CommandPrompt)
+		}
 	}
 }
 
@@ -801,7 +806,7 @@ func TestRunOnceRejectedWritebackDoesNotEchoUnauthorizedPrompt(t *testing.T) {
 		t.Fatalf("expected one rejected writeback, got %+v", backend.createdRunnerComments)
 	}
 	body := backend.createdRunnerComments[0].Body
-	if !strings.Contains(body, "| Status | `rejected` |") || !strings.Contains(body, "command unauthorized") {
+	if !strings.Contains(body, "- Status: `rejected`") || !strings.Contains(body, "command unauthorized") {
 		t.Fatalf("rejected writeback missing status/diagnostic:\n%s", body)
 	}
 	if strings.Contains(body, secretPrompt) || strings.Contains(body, "secret-token-secret-token-secret-token") {

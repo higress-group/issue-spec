@@ -188,6 +188,9 @@ func LoadFile(path string) (RunnerState, error) {
 		return RunnerState{}, &CorruptStateError{Path: path, Err: err}
 	}
 	state.Normalize()
+	if err := state.Validate(); err != nil {
+		return RunnerState{}, &CorruptStateError{Path: path, Err: err}
+	}
 	return state, nil
 }
 
@@ -200,6 +203,9 @@ func SaveFile(path string, state RunnerState) error {
 	// Keep state.json bounded automatically: tombstone terminal records and
 	// prune aged/over-cap ones on every save (Compact re-normalizes internally).
 	state.Compact(now, DefaultRetentionPolicy())
+	if err := state.Validate(); err != nil {
+		return fmt.Errorf("validate runner state: %w", err)
+	}
 	if state.CreatedAt.IsZero() {
 		state.CreatedAt = now
 	}

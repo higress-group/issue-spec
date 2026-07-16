@@ -15,16 +15,33 @@ type BoundedWriter struct {
 
 // NewBoundedWriter creates a new bounded writer
 func NewBoundedWriter(writer *Writer, maxBytes int64) *BoundedWriter {
-	return &BoundedWriter{
+	bw := &BoundedWriter{
 		writer:   writer,
 		maxBytes: maxBytes,
 	}
+	// Preserve the bound across runner restarts and repeated lifecycle opens.
+	// The previous implementation reset written to zero for an append-only file,
+	// allowing every restart to append another full capture budget.
+	if writer != nil {
+		if size, err := writer.Size(); err == nil {
+			bw.written = size
+			bw.truncated = size >= maxBytes
+		}
+	}
+	return bw
 }
 
 // WriteBytes writes bytes to the file, truncating if the limit is exceeded
 func (bw *BoundedWriter) WriteBytes(data []byte) (int, error) {
 	bw.mu.Lock()
 	defer bw.mu.Unlock()
+
+	// Redact the complete stream fragment before applying the byte bound. If a
+	// secret were sliced first, the truncated prefix might no longer match a
+	// redaction pattern and could be persisted verbatim.
+	if bw.writer != nil && bw.writer.redactor != nil {
+		data = bw.writer.redactor.RedactBytes(data)
+	}
 
 	if bw.truncated {
 		return len(data), nil // Silently drop data after truncation

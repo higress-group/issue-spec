@@ -2,14 +2,17 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
 	"github.com/higress-group/issue-spec/internal/commentrunner/intake"
@@ -22,11 +25,12 @@ import (
 )
 
 type runnerCommandOptions struct {
-	Once          bool
-	DryRun        bool
-	JSON          bool
-	AsyncDispatch bool
-	Help          bool
+	Once               bool
+	DryRun             bool
+	JSON               bool
+	AsyncDispatch      bool
+	VerifyAgentRuntime bool
+	Help               bool
 }
 
 type runnerDryRunResult struct {
@@ -85,7 +89,7 @@ Subcommands:
 Use "issue-spec runner <subcommand> -h" to show all options and defaults.`)
 }
 
-func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
+func (a *app) runRunnerPoll(ctx context.Context, args []string) (exitCode int) {
 	cfg, opts, ok := a.parseRunnerOptions(args, true)
 	if opts.Help {
 		return 0
@@ -98,10 +102,34 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 		return 2
 	}
 	if !opts.DryRun {
+		logger, err := newRunnerLogger(cfg)
+		if err != nil {
+			a.errorf("runner poll diagnostics: %v\n", err)
+			return 1
+		}
+		a.runnerDiagnostics = logger
+		cfg.LogDir = logger.config().LogDir
+		defer func() {
+			if err := logger.shutdown("poll"); err != nil {
+				a.errorf("runner poll diagnostics shutdown: %v\n", err)
+				if exitCode == 0 {
+					exitCode = 1
+				}
+			}
+			a.runnerDiagnostics = nil
+		}()
+		if err := logger.logStartup("poll"); err != nil {
+			a.errorf("runner poll diagnostics: %v\n", err)
+			return 1
+		}
 		if !opts.JSON {
 			a.printRunnerPollStart(cfg, opts)
 		}
 		report := a.runRunnerPreflight(ctx, cfg)
+		if err := logger.logPreflight(report); err != nil {
+			a.errorf("runner poll diagnostics: %v\n", err)
+			return 1
+		}
 		if !report.OK {
 			result := runnerDryRunResult{
 				OK:        false,
@@ -134,7 +162,15 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 			if !opts.JSON {
 				fmt.Fprintln(a.out, "poll cycle: running")
 			}
+			if _, err := logger.newCycle(); err != nil {
+				a.errorf("runner poll diagnostics: %v\n", err)
+				return 1
+			}
 			result := a.runRunnerPollCycle(ctx, cfg, opts, report)
+			if err := a.logRunnerPollCycle(result); err != nil {
+				a.errorf("runner poll diagnostics: %v\n", err)
+				return 1
+			}
 			if code := a.printRunnerPollResult(result, opts.JSON); code != 0 {
 				return code
 			}
@@ -278,6 +314,33 @@ func (a *app) runRunnerPollCycleWithStore(ctx context.Context, cfg commentrunner
 	}
 }
 
+func (a *app) logRunnerPollCycle(result runnerDryRunResult) error {
+	logger := a.runnerDiagnostics
+	if logger == nil {
+		return nil
+	}
+	var errs []error
+	if result.Reconcile != nil {
+		errs = append(errs, logger.logReconcile(result.Reconcile))
+		if len(result.Reconcile.WorkspaceCleanup) > 0 {
+			errs = append(errs, logger.logWorkspaceCleanup(result.Reconcile.WorkspaceCleanup))
+		}
+	}
+	if result.Intake != nil {
+		errs = append(errs, logger.logIntake(result.Intake))
+	}
+	if result.Dispatch != nil {
+		errs = append(errs, logger.logDispatch(result.Dispatch))
+		if result.Dispatch.CancellationID != "" {
+			errs = append(errs, logger.logCancellation(result.Dispatch.ExecutedCount))
+		}
+	}
+	if result.Error != "" {
+		errs = append(errs, logger.logError("runner", result.Error))
+	}
+	return errors.Join(errs...)
+}
+
 func (a *app) runRunnerPollAsync(ctx context.Context, cfg commentrunner.Config, opts runnerCommandOptions, report commentrunner.PreflightReport) int {
 	store, err := crstate.OpenFileStore(cfg.StatePath)
 	if err != nil {
@@ -324,8 +387,18 @@ func (a *app) runRunnerPollAsync(ctx context.Context, cfg commentrunner.Config, 
 		if !opts.JSON {
 			fmt.Fprintln(a.out, "poll cycle: running")
 		}
+		if a.runnerDiagnostics != nil {
+			if _, err := a.runnerDiagnostics.newCycle(); err != nil {
+				a.errorf("runner poll diagnostics: %v\n", err)
+				return 1
+			}
+		}
 		result := a.runRunnerPollCycleWithStore(ctx, cfg, opts, report, store, async, nextReconcile)
 		nextReconcile = nil
+		if err := a.logRunnerPollCycle(result); err != nil {
+			a.errorf("runner poll diagnostics: %v\n", err)
+			return 1
+		}
 		if code := a.printRunnerPollResult(result, opts.JSON); code != 0 {
 			return code
 		}
@@ -468,7 +541,7 @@ func (a *app) runRunnerPreflightCommand(ctx context.Context, args []string) int 
 	if !ok {
 		return 2
 	}
-	report := a.runRunnerPreflight(ctx, cfg)
+	report := a.runRunnerPreflightWithOptions(ctx, cfg, commentrunner.PreflightOptions{VerifyAgentRuntime: opts.VerifyAgentRuntime})
 	if opts.JSON {
 		if code := a.outputJSON(report); code != 0 {
 			return code
@@ -530,6 +603,8 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	bwrapPath := fs.String("bwrap-path", defaults.BwrapPath, "bubblewrap binary path")
 	unsafeNoSandbox := fs.Bool("unsafe-no-sandbox", defaults.UnsafeNoSandbox, "explicitly disable the default bubblewrap filesystem boundary")
 	ghConfigDir := fs.String("gh-config-dir", "", "host gh config directory to mirror for sandboxed issue-spec CLI auth")
+	gitAuthorName := fs.String("git-author-name", defaults.GitAuthorName, "repo-local Git commit author name; requires --git-author-email")
+	gitAuthorEmail := fs.String("git-author-email", defaults.GitAuthorEmail, "repo-local Git commit author email; requires --git-author-name")
 	strictAgentCapabilities := fs.Bool("strict-agent-capabilities", defaults.StrictAgentCapabilities, "require operator-issued short-lived credentials proven for every delegated operation")
 	allowCancel := fs.Bool("allow-cancel", defaults.CancellationEnabled, "allow authorized cancellation commands")
 	codexFullAccess := fs.Bool("codex-agent-full-access", defaults.Agent.CodexAgentFullAccess, "require Codex agent-full-access policy for workflow CLI/shell work")
@@ -542,6 +617,12 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	logRetention := fs.Int("log-retention", defaults.LogRetentionDays, "log retention duration in days (default: 30 days)")
 	logRawCapture := fs.Int("log-raw-capture", defaults.LogRawCaptureKB, "maximum raw stdout/stderr capture size in KB (default: 100KB)")
 	jsonOut := fs.Bool("json", false, "write JSON output")
+	var verifyAgentRuntime *bool
+	var allowHostSSH *bool
+	if !includePollFlags {
+		verifyAgentRuntime = fs.Bool("verify-agent-runtime", false, "create a tools-denied Codex ACP session in the configured Runner sandbox to verify the runtime and --model")
+		allowHostSSH = fs.Bool("allow-host-ssh", defaults.AllowHostSSH, "simulate runner serve host SSH HOME and agent socket during runtime verification")
+	}
 	fs.Var(&repoValues, "repo", "repository owner/name; repeat or comma-separate for multiple repositories")
 	fs.Var(&allowedUsers, "allowed-user", "GitHub login allowed to trigger runner commands; repeat or comma-separate, and users still need write-equivalent repository permission")
 	fs.Var(&claudeTools, "claude-allowed-tools", "Claude allowed tools; repeat or comma-separate, usually Task,Bash")
@@ -587,11 +668,17 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 		}
 	}
 	opts.JSON = *jsonOut
+	if verifyAgentRuntime != nil {
+		opts.VerifyAgentRuntime = *verifyAgentRuntime
+	}
 
 	cfg, err := commentrunner.DefaultConfigFromEnv()
 	if err != nil {
 		a.errorf("%v\n", err)
 		return commentrunner.Config{}, opts, false
+	}
+	if a.profileName != "" {
+		cfg.Profile = a.profileName
 	}
 	if seen["hostname"] {
 		cfg.Hostname = *host
@@ -664,6 +751,15 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	if seen["gh-config-dir"] {
 		cfg.GHConfigDir = *ghConfigDir
 	}
+	if seen["git-author-name"] {
+		cfg.GitAuthorName = *gitAuthorName
+	}
+	if seen["git-author-email"] {
+		cfg.GitAuthorEmail = *gitAuthorEmail
+	}
+	if allowHostSSH != nil && seen["allow-host-ssh"] {
+		cfg.AllowHostSSH = *allowHostSSH
+	}
 	if seen["strict-agent-capabilities"] {
 		cfg.StrictAgentCapabilities = *strictAgentCapabilities
 	}
@@ -710,6 +806,10 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 }
 
 func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+	return a.runRunnerPreflightWithOptions(ctx, cfg, commentrunner.PreflightOptions{})
+}
+
+func (a *app) runRunnerPreflightWithOptions(ctx context.Context, cfg commentrunner.Config, options commentrunner.PreflightOptions) commentrunner.PreflightReport {
 	if a.runnerPreflight != nil {
 		return a.runnerPreflight(ctx, cfg)
 	}
@@ -717,7 +817,16 @@ func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) 
 	if profile, _, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname); err == nil && profile.Kind == auth.ProfileKindHosted {
 		transport = commentrunner.PreflightTransportServe
 	}
-	return commentrunner.RunPreflightForTransport(ctx, cfg, transport, commentrunner.PreflightDependencies{
+	var runtimeOnce sync.Once
+	var runtimeSandbox sandbox.Config
+	var runtimeSandboxErr error
+	resolveRuntimeSandbox := func() (sandbox.Config, error) {
+		runtimeOnce.Do(func() {
+			runtimeSandbox, _, runtimeSandboxErr = runnerSandboxRuntimeConfig(cfg)
+		})
+		return runtimeSandbox, runtimeSandboxErr
+	}
+	return commentrunner.RunPreflightForTransportWithOptions(ctx, cfg, transport, commentrunner.PreflightDependencies{
 		SelectBackend: func(ctx context.Context, _ string) (auth.GitHubBackendSelection, error) {
 			return a.selectBackendForRunner(ctx, cfg)
 		},
@@ -732,6 +841,7 @@ func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) 
 			}
 			return runnerBackend, nil
 		},
+		OpenEvidenceWriterBackend: a.newRunnerEvidenceWriterBackend,
 		OpenNotificationBackend: func(ctx context.Context, cfg commentrunner.Config) (commentrunner.PreflightNotificationBackend, error) {
 			backend, err := a.notificationBackendForRunner(ctx, cfg)
 			if err != nil || backend == nil {
@@ -739,7 +849,90 @@ func (a *app) runRunnerPreflight(ctx context.Context, cfg commentrunner.Config) 
 			}
 			return backend, nil
 		},
+		RunAgentCommand: func(probeCtx context.Context, binary string, args ...string) ([]byte, error) {
+			sandboxConfig, err := resolveRuntimeSandbox()
+			if err != nil {
+				return nil, commentrunner.NewAgentRuntimeProbeError(commentrunner.AgentRuntimeFailureRuntime, fmt.Errorf("runner preflight host SSH: %w", err))
+			}
+			return runSandboxedAgentRuntimeCommandWithConfig(probeCtx, cfg, sandboxConfig, binary, args...)
+		},
+		AgentRuntimeHome: func() (string, error) {
+			sandboxConfig, err := resolveRuntimeSandbox()
+			if err != nil {
+				return "", err
+			}
+			return runnerRuntimeHostHome(sandboxConfig)
+		},
+	}, options)
+}
+
+func runSandboxedAgentRuntimeCommand(ctx context.Context, cfg commentrunner.Config, binary string, args ...string) ([]byte, error) {
+	sandboxConfig, _, err := runnerSandboxRuntimeConfig(cfg)
+	if err != nil {
+		return nil, commentrunner.NewAgentRuntimeProbeError(commentrunner.AgentRuntimeFailureRuntime, fmt.Errorf("runner preflight host SSH: %w", err))
+	}
+	return runSandboxedAgentRuntimeCommandWithConfig(ctx, cfg, sandboxConfig, binary, args...)
+}
+
+func runSandboxedAgentRuntimeCommandWithConfig(ctx context.Context, cfg commentrunner.Config, sandboxConfig sandbox.Config, binary string, args ...string) ([]byte, error) {
+	root, err := os.MkdirTemp("", "issue-spec-runner-preflight-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(root)
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.Mkdir(workspacePath, 0o700); err != nil {
+		return nil, err
+	}
+	runtimeRoot := filepath.Join(root, "runtime")
+	var childProfile *auth.Profile
+	if profile, _, err := auth.ResolveProfile(cfg.Profile, cfg.Hostname); err == nil && profile.Kind == auth.ProfileKindHosted {
+		childProfile = &profile
+	}
+	env, err := (jobs.SandboxRunner{Config: sandboxConfig}).Prepare(ctx, jobs.SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           binary,
+		AcpxAgent:            cfg.Agent.Kind,
+		RuntimeHome:          filepath.Join(runtimeRoot, "home"),
+		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
+		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
+		RuntimeCodexHome:     filepath.Join(runtimeRoot, "codex"),
+		ChildProfile:         childProfile,
 	})
+	if err != nil {
+		return nil, commentrunner.NewAgentRuntimeProbeError(classifyAgentRuntimeProbeFailure(ctx, acpx.CommandResult{}, err), err)
+	}
+	result, err := env.Runner.Run(ctx, acpx.Command{Binary: env.AcpxBinary, Args: args, Dir: env.WorkingDirectory})
+	if err != nil {
+		return result.Stdout, commentrunner.NewAgentRuntimeProbeError(classifyAgentRuntimeProbeFailure(ctx, result, err), err)
+	}
+	return result.Stdout, nil
+}
+
+func classifyAgentRuntimeProbeFailure(ctx context.Context, result acpx.CommandResult, err error) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return commentrunner.AgentRuntimeFailureTimeout
+	}
+	diagnostic := append(append([]byte(nil), result.Stdout...), result.Stderr...)
+	if err != nil {
+		diagnostic = append(diagnostic, '\n')
+		diagnostic = append(diagnostic, err.Error()...)
+	}
+	output := strings.ToLower(string(diagnostic))
+	if strings.Contains(output, "timed out") || strings.Contains(output, "timeout") || strings.Contains(output, "deadline exceeded") {
+		return commentrunner.AgentRuntimeFailureTimeout
+	}
+	if strings.Contains(output, "model") && (strings.Contains(output, "unsupported") || strings.Contains(output, "not found") ||
+		strings.Contains(output, "unknown") || strings.Contains(output, "invalid") || strings.Contains(output, "unavailable")) {
+		return commentrunner.AgentRuntimeFailureModel
+	}
+	for _, marker := range []string{"adapter", "acp", "npx", "npm", "package", "module", "spawn", "enoent", "initialize", "handshake"} {
+		if strings.Contains(output, marker) {
+			return commentrunner.AgentRuntimeFailureAdapter
+		}
+	}
+	return commentrunner.AgentRuntimeFailureRuntime
 }
 
 func validateRunnerPollProfile(cfg commentrunner.Config) error {
@@ -862,19 +1055,18 @@ func (a *app) runRunnerReconcileWithStore(ctx context.Context, cfg commentrunner
 		defer opened.Close()
 		store = opened
 	}
+	workspaces := runnerWorkspaceManager(cfg)
+	writebacks := wrapRunnerWriteback(&writeback.Service{GitHub: runnerBackend, Store: store}, a.runnerDiagnostics)
 	dispatcher := jobs.Dispatcher{
-		Store: store,
-		Workspaces: workspace.Manager{
-			Root:      cfg.WorkspaceRoot,
-			Retention: cfg.WorkspaceRetention.Duration,
-		},
+		Store:      store,
+		Workspaces: workspaces,
 		Sandbox: jobs.SandboxRunner{Config: sandbox.Config{
 			UnsafeNoSandbox: cfg.UnsafeNoSandbox,
 			BwrapPath:       cfg.BwrapPath,
 			HostGHConfigDir: cfg.GHConfigDir,
 		}},
-		Acpx:       jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg)},
-		Writeback:  &writeback.Service{GitHub: runnerBackend, Store: store},
+		Acpx:       jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg), RunnerConfig: cfg},
+		Writeback:  writebacks,
 		AcpxBinary: cfg.AcpxPath,
 	}
 	return dispatcher.Reconcile(ctx)
@@ -890,11 +1082,8 @@ func (a *app) runRunnerWorkspaceCleanupWithStore(ctx context.Context, cfg commen
 		store = opened
 	}
 	dispatcher := jobs.Dispatcher{
-		Store: store,
-		Workspaces: workspace.Manager{
-			Root:      cfg.WorkspaceRoot,
-			Retention: cfg.WorkspaceRetention.Duration,
-		},
+		Store:      store,
+		Workspaces: runnerWorkspaceManager(cfg),
 	}
 	return dispatcher.CleanupWorkspaces(ctx)
 }
@@ -976,21 +1165,20 @@ func (a *app) buildRunnerDispatcher(ctx context.Context, cfg commentrunner.Confi
 		cleanup = func() { _ = opened.Close() }
 		store = opened
 	}
+	workspaces := runnerWorkspaceManager(cfg)
+	writebacks := wrapRunnerWriteback(&writeback.Service{GitHub: runnerBackend, Store: store}, a.runnerDiagnostics)
 	dispatcher := &jobs.Dispatcher{
 		Store:        store,
 		Repositories: jobs.StaticRepositoryResolver{Hostname: cfg.Hostname},
-		Workspaces: workspace.Manager{
-			Root:      cfg.WorkspaceRoot,
-			Retention: cfg.WorkspaceRetention.Duration,
-		},
+		Workspaces:   workspaces,
 		Sandbox: jobs.SandboxRunner{Config: sandbox.Config{
 			UnsafeNoSandbox: cfg.UnsafeNoSandbox,
 			BwrapPath:       cfg.BwrapPath,
 			HostGHConfigDir: cfg.GHConfigDir,
 		}},
-		Acpx:            jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg)},
+		Acpx:            jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg), RunnerConfig: cfg},
 		Artifacts:       &jobs.IssueSpecArtifactProvider{GitHub: runnerBackend},
-		Writeback:       &writeback.Service{GitHub: runnerBackend, Store: store},
+		Writeback:       writebacks,
 		AcpxBinary:      cfg.AcpxPath,
 		IssueSpecBinary: issueSpecBinaryForRunner(),
 	}
@@ -1067,6 +1255,7 @@ func (a *app) printRunnerPollStart(cfg commentrunner.Config, opts runnerCommandO
 	}
 	fmt.Fprintln(a.out)
 	fmt.Fprintf(a.out, "state: %s\n", cfg.StatePath)
+	fmt.Fprintf(a.out, "logs: %s\n", cfg.LogDir)
 	fmt.Fprintf(a.out, "workspace_root: %s\n", cfg.WorkspaceRoot)
 	fmt.Fprintf(a.out, "poll_interval: %s fallback_interval: %s fallback_initial_lookback: %s mode: %s dispatch: %s\n", cfg.PollInterval.Duration, cfg.FallbackInterval.Duration, cfg.FallbackInitialLookback.Duration, mode, dispatchMode)
 	fmt.Fprintln(a.out, "preflight: running")

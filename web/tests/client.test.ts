@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiRequest } from "../src/lib/api/client";
+import { ApiProblem, apiRequest, webhookValidationFromError } from "../src/lib/api/client";
 
 describe("apiRequest", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -29,5 +29,32 @@ describe("apiRequest", () => {
     await expect(apiRequest("//evil.example/api")).rejects.toThrow("same-origin");
     await expect(apiRequest("https://evil.example/api")).rejects.toThrow("same-origin");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("maps every webhook validation code with its safe field", () => {
+    const cases = [
+      ["invalid_destination_url", "url"],
+      ["destination_denied", "url"],
+      ["invalid_event_type", "event_types"],
+      ["invalid_delivery_policy", "content_policy"],
+      ["invalid_retry_policy", "retry.max_backoff"],
+      ["invalid_destination_query", "clear_destination_query"],
+    ] as const;
+    for (const [reason, field] of cases) {
+      const error = new ApiProblem({
+        status: 422,
+        title: "Invalid webhook subscription",
+        code: reason,
+        request_id: "request-222",
+        meta: { field },
+      });
+      expect(webhookValidationFromError(error)).toEqual({ reason, field });
+    }
+    expect(webhookValidationFromError(new ApiProblem({
+      status: 422,
+      title: "Invalid webhook subscription",
+      code: "invalid_request",
+      meta: { field: "url" },
+    }))).toBeUndefined();
   });
 });

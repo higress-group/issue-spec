@@ -20,6 +20,7 @@ import (
 type Service interface {
 	EvidencePolicy(context.Context, authz.Subject, models.RepoScope) (evidence.Policy, error)
 	SetEvidencePolicy(context.Context, authz.Subject, adminservice.Actor, models.RepoScope, evidence.SetPolicyInput) (evidence.Policy, error)
+	DesignatedWriterStatus(context.Context, authz.Subject, models.RepoScope) (evidence.WriterStatus, error)
 	SetDesignatedWriter(context.Context, authz.Subject, adminservice.Actor, models.RepoScope, uuid.UUID, bool) (evidence.WriterAssignment, error)
 	AppendEvidence(context.Context, authz.Subject, adminservice.Actor, models.RepoScope, evidence.AppendInput) (evidence.Evidence, error)
 	IngestProviderSnapshot(context.Context, authz.Subject, adminservice.Actor, models.RepoScope, evidence.SnapshotIngestInput) (evidence.SnapshotIngestResult, error)
@@ -40,6 +41,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 	set := routeset.RouteSet{Name: "native-evidence", Routes: []routeset.Route{
 		{Name: "native.evidence.policy.get", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/repos/{repo}/evidence/policy", Handler: protect(h.policy)},
 		{Name: "native.evidence.policy.set", Method: http.MethodPut, Pattern: "/api/v1/orgs/{org}/repos/{repo}/evidence/policy", Handler: protect(h.setPolicy)},
+		{Name: "native.evidence.writer.status", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/repos/{repo}/evidence/writers/me", Handler: protect(h.writerStatus)},
 		{Name: "native.evidence.writer.set", Method: http.MethodPut, Pattern: "/api/v1/orgs/{org}/repos/{repo}/evidence/writers/{user}", Handler: protect(h.setWriter)},
 		{Name: "native.evidence.exact_revision", Method: http.MethodGet, Pattern: "/api/v1/orgs/{org}/repos/{repo}/issues/{issue}/evidence", Handler: protect(h.exactRevision)},
 		{Name: "native.evidence.append", Method: http.MethodPost, Pattern: "/api/v1/orgs/{org}/repos/{repo}/issues/{issue}/evidence", Handler: protect(h.appendEvidence)},
@@ -74,6 +76,19 @@ func (h handlers) setPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item, err := h.service.SetEvidencePolicy(r.Context(), authz.Authenticated(principal), actor(r, principal), scope, input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	adminapi.WriteJSON(w, http.StatusOK, item)
+}
+
+func (h handlers) writerStatus(w http.ResponseWriter, r *http.Request) {
+	principal, scope, ok := requestScope(w, r)
+	if !ok {
+		return
+	}
+	item, err := h.service.DesignatedWriterStatus(r.Context(), authz.Authenticated(principal), scope)
 	if err != nil {
 		writeError(w, err)
 		return

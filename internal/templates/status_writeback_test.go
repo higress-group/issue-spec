@@ -16,7 +16,7 @@ func TestRenderRunnerStatusCommentKeepsPublicBodyConcise(t *testing.T) {
 			PublicSessionID:     "s_123",
 			TriggerCommentID:    101,
 			TriggeringUserLogin: "alice",
-			AgentKind:           "native-codex",
+			AgentKind:           "codex",
 			Model:               "gpt-5.5",
 		},
 		Status:              "running",
@@ -53,9 +53,10 @@ func TestRenderRunnerStatusCommentKeepsPublicBodyConcise(t *testing.T) {
 	}
 	for _, want := range []string{
 		"issue-spec-runner:status",
-		"| Status | `running` |",
-		"| Phase | `dispatch` |",
-		"| Public session | `s_123` |",
+		"- Status: `running`",
+		"- Phase: `dispatch`",
+		"- Public session: `s_123`",
+		"- Agent: `codex`",
 		"## Result",
 		"Completed the requested command.",
 		"updated typed_comment PROCESS-001: https://github.com/o/r/issues/1#issuecomment-1",
@@ -70,7 +71,6 @@ func TestRenderRunnerStatusCommentKeepsPublicBodyConcise(t *testing.T) {
 		"| Triggering user |",
 		"| Session creator |",
 		"| Current turn user |",
-		"| Agent |",
 		"| Sandbox |",
 		"unsafe no-sandbox mode requested",
 		"Coordinator-reported CLI artifact",
@@ -87,7 +87,6 @@ func TestRenderRunnerStatusCommentKeepsPublicBodyConcise(t *testing.T) {
 		"job-1",
 		"alice",
 		"bob",
-		"native-codex",
 		"gpt-5.5",
 		"\"job_id\"",
 		"\"trigger_comment_id\"",
@@ -99,6 +98,9 @@ func TestRenderRunnerStatusCommentKeepsPublicBodyConcise(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("body leaked %q:\n%s", forbidden, body)
 		}
+	}
+	if strings.Contains(body, "\n|") {
+		t.Fatalf("status comment should use portable Markdown instead of a GFM table:\n%s", body)
 	}
 	if strings.Contains(body, "runner wrote") || strings.Contains(body, "action envelope") {
 		t.Fatalf("body claims artifact ownership or action envelope:\n%s", body)
@@ -137,7 +139,7 @@ func TestRenderRunnerStatusCommentShowsResultWithoutCoordinatorSummary(t *testin
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"| Status | `completed` |",
+		"- Status: `completed`",
 		"## Result",
 		"Completed the requested command.",
 	} {
@@ -233,8 +235,8 @@ func TestRunnerStatusCommentShowsConciseRejectedReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"| Status | `rejected` |",
-		"| Phase | `command-unauthorized` |",
+		"- Status: `rejected`",
+		"- Phase: `command-unauthorized`",
 		"## Reason",
 		"command unauthorized; auth=insufficient_permission",
 	} {

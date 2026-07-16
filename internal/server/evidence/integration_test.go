@@ -25,6 +25,10 @@ import (
 
 func TestEvidencePolicyWriterTenantAndPublicationLifecycle(t *testing.T) {
 	env := newEvidenceEnvironment(t)
+	status, err := env.service.DesignatedWriterStatus(t.Context(), authz.Authenticated(env.writer), env.scope)
+	if err != nil || status.UserID != env.writer.User.ID || status.Login != env.writer.User.Login || status.Active {
+		t.Fatalf("initial DesignatedWriterStatus() = %+v, %v", status, err)
+	}
 	freshness := 15 * time.Minute
 	policy, err := env.service.SetEvidencePolicy(t.Context(), authz.Authenticated(env.owner), env.actor(env.owner, "policy"),
 		env.scope, SetPolicyInput{ExpectedVersion: 0, Requirements: []Requirement{
@@ -52,6 +56,10 @@ func TestEvidencePolicyWriterTenantAndPublicationLifecycle(t *testing.T) {
 	}
 	if designated, err := env.service.IsDesignatedWriter(t.Context(), env.scope, env.writer.User.ID); err != nil || !designated {
 		t.Fatalf("IsDesignatedWriter() = %t, %v", designated, err)
+	}
+	status, err = env.service.DesignatedWriterStatus(t.Context(), authz.Authenticated(env.writer), env.scope)
+	if err != nil || !status.Active {
+		t.Fatalf("active DesignatedWriterStatus() = %+v, %v", status, err)
 	}
 
 	input := env.appendInput("check:1", "abc", VisibilityRepository)
@@ -93,7 +101,8 @@ func TestEvidencePolicyWriterTenantAndPublicationLifecycle(t *testing.T) {
 	readerItems, err := env.service.ExactRevision(t.Context(), authz.Authenticated(env.reader), env.scope, ExactRevisionQuery{
 		IssueID: env.issueID, ProviderKey: "github", ExternalRepositoryID: "acme/widgets", SubjectRevision: "abc",
 	})
-	if err != nil || len(readerItems) != 1 || readerItems[0].Payload != nil || readerItems[0].Provenance != nil {
+	if err != nil || len(readerItems) != 1 || string(readerItems[0].Payload) != string(first.Payload) ||
+		string(readerItems[0].Provenance) != string(first.Provenance) {
 		t.Fatalf("reader exact evidence = %+v, %v", readerItems, err)
 	}
 	ownerItems, err := env.service.ExactRevision(t.Context(), authz.Authenticated(env.owner), env.scope, ExactRevisionQuery{
@@ -162,6 +171,30 @@ func TestEvidenceFourGateMatrixRejectedAuditAndCrossOrgConcealment(t *testing.T)
 	var evidenceRows int
 	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM external_evidence`).Scan(&evidenceRows); err != nil || evidenceRows != 0 {
 		t.Fatalf("rejected evidence rows=%d, %v", evidenceRows, err)
+	}
+}
+
+func TestDesignatedWriterStatusTracksActivationAndRevocation(t *testing.T) {
+	env := newEvidenceEnvironment(t)
+	status, err := env.service.DesignatedWriterStatus(t.Context(), authz.Authenticated(env.writer), env.scope)
+	if err != nil || status.Active || status.UserID != env.writer.User.ID || status.Login != env.writer.User.Login {
+		t.Fatalf("initial status = %+v, %v", status, err)
+	}
+	if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner),
+		env.actor(env.owner, "activate-writer"), env.scope, env.writer.User.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	status, err = env.service.DesignatedWriterStatus(t.Context(), authz.Authenticated(env.writer), env.scope)
+	if err != nil || !status.Active {
+		t.Fatalf("active status = %+v, %v", status, err)
+	}
+	if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner),
+		env.actor(env.owner, "deactivate-writer"), env.scope, env.writer.User.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	status, err = env.service.DesignatedWriterStatus(t.Context(), authz.Authenticated(env.writer), env.scope)
+	if err != nil || status.Active {
+		t.Fatalf("revoked status = %+v, %v", status, err)
 	}
 }
 
@@ -386,8 +419,8 @@ func newEvidenceEnvironment(t *testing.T) evidenceEnvironment {
 	}
 	return evidenceEnvironment{pool: pool, service: service, scope: scope, otherOrgID: otherOrgID,
 		otherUserID: otherUserID, issueID: issueID, owner: evidenceSession(t, pool, ownerID),
-		reader: evidenceSession(t, pool, readerID), writer: evidencePAT(t, pool, writerID, scope, []string{"evidence:write"}, true),
-		undesignated:   evidencePAT(t, pool, undesignatedID, scope, []string{"evidence:write"}, true),
+		reader: evidenceSession(t, pool, readerID), writer: evidencePAT(t, pool, writerID, scope, []string{"evidence:write", "issues:read"}, true),
+		undesignated:   evidencePAT(t, pool, undesignatedID, scope, []string{"evidence:write", "issues:read"}, true),
 		missingScope:   evidencePAT(t, pool, missingScopeID, scope, []string{"issues:write"}, true),
 		readerEvidence: evidencePAT(t, pool, readerEvidenceID, scope, []string{"evidence:write"}, true),
 		unrestricted:   evidencePAT(t, pool, unrestrictedID, scope, []string{"evidence:write"}, false)}
@@ -499,7 +532,7 @@ func evidenceSession(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID) servera
 		id, userID, "s-"+id.String(), []byte("token-"+id.String()), []byte("csrf-"+id.String())); err != nil {
 		t.Fatal(err)
 	}
-	return serverauth.Principal{User: serverauth.User{ID: userID, Status: "active"}, Kind: serverauth.CredentialSession, CredentialID: id}
+	return serverauth.Principal{User: evidencePrincipalUser(t, pool, userID), Kind: serverauth.CredentialSession, CredentialID: id}
 }
 
 func evidencePAT(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID, scope models.RepoScope, scopes []string, restricted bool) serverauth.Principal {
@@ -523,8 +556,18 @@ func evidencePAT(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID, scope model
 		}
 		caps = []serverauth.RepositoryCap{{OrgID: scope.OrgID, RepoID: scope.RepoID}}
 	}
-	return serverauth.Principal{User: serverauth.User{ID: userID, Status: "active"}, Kind: serverauth.CredentialPAT,
+	return serverauth.Principal{User: evidencePrincipalUser(t, pool, userID), Kind: serverauth.CredentialPAT,
 		CredentialID: id, Scopes: append([]string(nil), scopes...), RepoRestricted: restricted, RepositoryCaps: caps}
+}
+
+func evidencePrincipalUser(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID) serverauth.User {
+	t.Helper()
+	var user serverauth.User
+	if err := pool.QueryRow(t.Context(), `SELECT id, login, status FROM users WHERE id = $1`, userID).
+		Scan(&user.ID, &user.Login, &user.Status); err != nil {
+		t.Fatal(err)
+	}
+	return user
 }
 
 func requireEvidencePGCode(t *testing.T, err error, code string) {
