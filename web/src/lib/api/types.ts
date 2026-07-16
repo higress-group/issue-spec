@@ -9,6 +9,7 @@ export const featuresSchema = z.object({
   change_boards: z.boolean(),
   runner: z.boolean(),
   recovery_exchange: z.boolean(),
+  search: z.boolean().optional().default(false),
 });
 
 export const metaSchema = z.object({
