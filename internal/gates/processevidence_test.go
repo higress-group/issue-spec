@@ -136,6 +136,35 @@ func TestOrchestrationSpecCoverageRejectsPrefixCollision(t *testing.T) {
 	}
 }
 
+func TestReviewProcessRejectsSelfReviewByAgentName(t *testing.T) {
+	// Reviewer --agent name equals a code author of the same SPEC: blocked.
+	input := processEvidenceFixture(t, model.ProcessExecutionReview)
+	input.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-001": {"coordinator": true}}
+	input.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Done: true, ReviewerAgent: "Coordinator"}}
+	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !hasDiagnostic(report.Diagnostics, CodeProcessReviewAuthorConflict, true) {
+		t.Fatalf("self-review by same agent name must block: %+v", report)
+	}
+	if containsString(report.Satisfied, "review evidence") {
+		t.Fatalf("conflicted review must not count as satisfied: %+v", report)
+	}
+
+	// Different reviewer name for the same SPEC: independent review passes.
+	input.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Done: true, ReviewerAgent: "Independent Reviewer"}}
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if hasDiagnostic(report.Diagnostics, CodeProcessReviewAuthorConflict, true) || len(report.Missing) != 0 {
+		t.Fatalf("independent reviewer must pass: %+v", report)
+	}
+
+	// Same name but author of a different SPEC only: no cross-SPEC false positive.
+	input.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-999": {"coordinator": true}}
+	input.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Done: true, ReviewerAgent: "Coordinator"}}
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if hasDiagnostic(report.Diagnostics, CodeProcessReviewAuthorConflict, true) || len(report.Missing) != 0 {
+		t.Fatalf("reviewer who authored a different SPEC must pass: %+v", report)
+	}
+}
+
 func processEvidenceFixture(t *testing.T, class model.ProcessExecutionClass) ProcessEvidenceInput {
 	t.Helper()
 	if class == "" {

@@ -15,6 +15,7 @@ const (
 	CodeProcessTaskLinkMissing       = "process.task_link_missing"
 	CodeProcessSpecLinkMissing       = "process.spec_link_missing"
 	CodeProcessCarrierMissing        = "process.carrier_missing"
+	CodeProcessReviewAuthorConflict  = "process.review.author_conflict"
 )
 
 type RationaleEvidence struct {
@@ -25,6 +26,7 @@ type RationaleEvidence struct {
 	MarkerLine  int    `json:"marker_line"`
 	CommentPath string `json:"comment_path"`
 	CommentLine int    `json:"comment_line"`
+	AuthorAgent string `json:"author_agent,omitempty"`
 }
 
 type ReviewEvidence struct {
@@ -33,6 +35,7 @@ type ReviewEvidence struct {
 	URL             string `json:"url,omitempty"`
 	Done            bool   `json:"done"`
 	FindingResolved bool   `json:"finding_resolved"`
+	ReviewerAgent   string `json:"reviewer_agent,omitempty"`
 	SubjectRevision string `json:"subject_revision,omitempty"`
 	Trusted         bool   `json:"trusted"`
 	Source          string `json:"source,omitempty"`
@@ -77,6 +80,11 @@ type ProcessEvidenceInput struct {
 	RequiredPRURL string                    `json:"required_pr_url,omitempty"`
 	ActiveSpecs   map[string]string         `json:"active_specs,omitempty"`
 	TaskURLs      map[string]bool           `json:"task_urls,omitempty"`
+	// AuthorAgentsBySpec maps an active SPEC ID to the set of normalized
+	// (lowercased, trimmed) --agent names that authored change-bearing code
+	// rationale for that SPEC. A review PROCESS whose reviewer --agent name is
+	// in this set for the SPEC it covers fails the independence check.
+	AuthorAgentsBySpec map[string]map[string]bool `json:"author_agents_by_spec,omitempty"`
 	Rationales    []RationaleEvidence       `json:"rationales,omitempty"`
 	Reviews       []ReviewEvidence          `json:"reviews,omitempty"`
 	Verifications []VerificationEvidence    `json:"verifications,omitempty"`
@@ -171,20 +179,35 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 			add(CodeProcessCarrierMissing, SeverityError, true, "change-bearing PROCESS lacks an inline rationale whose marker path/line matches the real PR comment and active SPEC", "missing", "matching rationale", "pr rationale")
 		}
 	case model.ProcessExecutionReview:
-		report.Required = append(report.Required, "linked done REVIEW or resolved finding")
+		report.Required = append(report.Required, "linked done REVIEW or resolved finding by an independent agent")
 		carrier := false
+		conflicted := false
+		var conflictAgent, conflictSpec string
 		var revisions []CarrierRevisionFact
 		for _, evidence := range input.Reviews {
-			if evidence.ProcessID == report.ProcessID && activeSpec(evidence.SpecID) && (evidence.Done || evidence.FindingResolved) {
-				carrier, specSatisfied = true, true
-				revisions = append(revisions, CarrierRevisionFact{Known: strings.TrimSpace(evidence.SubjectRevision) != "",
-					Revision: strings.TrimSpace(evidence.SubjectRevision), Trusted: evidence.Trusted, Source: evidence.Source})
+			if evidence.ProcessID != report.ProcessID || !activeSpec(evidence.SpecID) || !(evidence.Done || evidence.FindingResolved) {
+				continue
 			}
+			if reviewer := normalizeAgent(evidence.ReviewerAgent); reviewer != "" && input.AuthorAgentsBySpec[evidence.SpecID][reviewer] {
+				conflicted = true
+				conflictAgent = strings.TrimSpace(evidence.ReviewerAgent)
+				conflictSpec = evidence.SpecID
+				continue
+			}
+			carrier, specSatisfied = true, true
+			revisions = append(revisions, CarrierRevisionFact{Known: strings.TrimSpace(evidence.SubjectRevision) != "",
+				Revision: strings.TrimSpace(evidence.SubjectRevision), Trusted: evidence.Trusted, Source: evidence.Source})
 		}
 		report.CarrierRevision = aggregateCarrierRevisions(revisions)
-		if carrier {
+		switch {
+		case carrier:
 			report.Satisfied = append(report.Satisfied, "review evidence")
-		} else {
+		case conflicted:
+			report.Missing = append(report.Missing, "independent review evidence")
+			add(CodeProcessReviewAuthorConflict, SeverityError, true,
+				fmt.Sprintf("review PROCESS evidence for %s was authored by agent %q, which also authored the code under review; the review MUST be authored by a different agent than the code author, so route it through a review PROCESS owned by an independent reviewing agent (its --agent must differ from the code author) and re-run review sync once that node produces its REVIEW or resolved finding", conflictSpec, conflictAgent),
+				"same agent as code author", "review authored by an independent reviewing agent (different --agent than the code author)", "review sync")
+		default:
 			report.Missing = append(report.Missing, "review evidence")
 			add(CodeProcessCarrierMissing, SeverityError, true, "review PROCESS lacks linked done REVIEW or resolved finding evidence for an active SPEC", "missing", "review evidence", "review sync")
 		}
@@ -281,6 +304,10 @@ func aggregateCarrierRevisions(candidates []CarrierRevisionFact) CarrierRevision
 		}
 	}
 	return CarrierRevisionFact{Known: true, Revision: revision, Trusted: true, Source: strings.Join(sortedNonEmpty(sources), ",")}
+}
+
+func normalizeAgent(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
 }
 
 func firstNonEmptySource(candidates []CarrierRevisionFact) string {
