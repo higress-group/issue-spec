@@ -8,6 +8,7 @@ This durable spec is organized by stable workflow capability surfaces rather tha
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/23
+- https://github.com/higress-group/issue-spec/issues/241
 
 ## Requirements
 
@@ -126,6 +127,8 @@ Generated assets SHALL include the resolved workflow source, schema, config path
 
 When no project workflow exists, generated skills and slash commands SHALL use the built-in issue-spec workflow.
 
+When the caller explicitly selects `--tools none`, init MUST remain workflow-neutral: it MUST NOT read, validate, create, or modify workflow-selection files or generated workflow artifacts. It MUST preserve existing issue-spec and legacy OpenSpec workflow configuration byte-for-byte while still initializing issue-spec-owned runtime metadata.
+
 #### Scenario: init uses project workflow guidance
 
 - **WHEN** `issue-spec init --tools codex,claude --delivery both` runs in a repository with a valid project workflow schema
@@ -140,15 +143,35 @@ When no project workflow exists, generated skills and slash commands SHALL use t
 - **THEN** a global prompt dry-run SHALL report the same paths without writing them
 - **THEN** installed prompts SHALL contain the same resolved workflow guidance as repository command artifacts.
 
-#### Scenario: tools none does not require workflow resolution
+#### Scenario: Fresh repository with language and provider options
 
-- **WHEN** `issue-spec init --tools none` runs
-- **THEN** issue-spec SHALL skip workflow asset generation
-- **THEN** invalid workflow config SHALL NOT fail the command solely because no workflow assets were requested.
+- **WHEN** initialization runs with `--tools none` while a language and external-code provider are selected
+- **THEN** the CLI writes runtime metadata under `.issue-spec`, records provider identity and capabilities, reports the language as not applied, and creates no `issue-spec/config.yaml`, `.agents`, `.claude`, `.codex`, repository command, or global-prompt artifact
+
+#### Scenario: Repository already uses OpenSpec
+
+- **WHEN** a repository containing only `openspec/config.yaml` is initialized with `--tools none`
+- **THEN** the OpenSpec file remains byte-for-byte unchanged and subsequent issue-spec workflow discovery still selects legacy OpenSpec compatibility mode
+
+#### Scenario: Existing issue-spec workflow remains operator-owned
+
+- **WHEN** a repository already contains `issue-spec/config.yaml` and initialization runs with `--tools none`
+- **THEN** the CLI leaves that file byte-for-byte unchanged and does not validate or merge language or provider workflow settings into it
+
+#### Scenario: Runtime metadata remains available
+
+- **WHEN** workflow-neutral initialization completes successfully
+- **THEN** `.issue-spec/config.json` still records the selected profile, repository, server or realm identity, source binding, provider identity, and provider capabilities needed by runtime operations
+
+#### Scenario: Global prompt installation conflicts with tools none
+
+- **WHEN** a caller combines `--tools none` with an explicit global-prompt installation option
+- **THEN** the CLI rejects the arguments before local or remote mutation with an actionable error
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861704448
 - https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861704749
+- https://github.com/higress-group/issue-spec/issues/241#issuecomment-4990799840
 
 Source issue:
 - https://github.com/higress-group/issue-spec/issues/189

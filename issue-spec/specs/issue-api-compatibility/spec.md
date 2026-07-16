@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for this capability.
+Define the provider-neutral CLI and GitHub-compatible server contracts for issue and comment discovery, mutation, lifecycle state, lossless marker persistence, canonical URLs, and machine-actionable compatibility errors.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/160
@@ -87,37 +87,6 @@ The GitHub-compatible surface MUST return the status codes and error JSON requir
 - **THEN** it MUST return application/problem+json with a stable code and request_id suitable for audit and support without exposing tokens or cross-tenant identifiers
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4927189589
-
-### Requirement: Workflow-neutral initialization with --tools none
-
-When `issue-spec init` is invoked with explicit `--tools none`, the CLI MUST initialize issue-spec-owned runtime metadata without reading, validating, creating, or modifying workflow-selection files or generated workflow artifacts. It MUST leave existing OpenSpec configuration unchanged and allow subsequent issue-spec workflow discovery to keep selecting legacy OpenSpec compatibility mode when no pre-existing issue-spec workflow file exists.
-
-#### Scenario: Fresh repository with language and provider options
-
-- **WHEN** initialization runs with `--tools none` while a language and external-code provider are selected
-- **THEN** the CLI writes runtime metadata under `.issue-spec`, records provider identity and capabilities, reports the language as not applied, and creates no `issue-spec/config.yaml`, `.agents`, `.claude`, `.codex`, repository command, or global-prompt artifact
-
-#### Scenario: Repository already uses OpenSpec
-
-- **WHEN** a repository containing only `openspec/config.yaml` is initialized with `--tools none`
-- **THEN** the OpenSpec file remains byte-for-byte unchanged and subsequent issue-spec workflow discovery still selects legacy OpenSpec compatibility mode
-
-#### Scenario: Existing issue-spec workflow remains operator-owned
-
-- **WHEN** a repository already contains `issue-spec/config.yaml` and initialization runs with `--tools none`
-- **THEN** the CLI leaves that file byte-for-byte unchanged and does not validate or merge language or provider workflow settings into it
-
-#### Scenario: Runtime metadata remains available
-
-- **WHEN** workflow-neutral initialization completes successfully
-- **THEN** `.issue-spec/config.json` still records the selected profile, repository, server or realm identity, source binding, provider identity, and provider capabilities needed by runtime operations
-
-#### Scenario: Global prompt installation conflicts with tools none
-
-- **WHEN** a caller combines `--tools none` with an explicit global-prompt installation option
-- **THEN** the CLI rejects the arguments before local or remote mutation with an actionable error
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/241#issuecomment-4990799840
 
 ### Requirement: Minimal provider-neutral issue discovery
 
