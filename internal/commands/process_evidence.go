@@ -40,6 +40,10 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 		}
 	}
 	externalValid := external != nil && validateExternalEvidenceConsumption(*external, processes, activeSpecs) == nil
+	processByID := make(map[string]model.Artifact, len(processes))
+	for _, process := range processes {
+		processByID[process.Comment.ID] = process
+	}
 	authorAgentsBySpec := map[string]map[string]bool{}
 	for _, comment := range reviewComments {
 		marker, ok, err := model.FindRationaleMarker(comment.Body)
@@ -51,9 +55,12 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 		if agent == "" || spec == "" {
 			continue
 		}
-		// Mirror the change-bearing carrier validation before crediting an
-		// author identity: an unvalidated marker could otherwise inject a forged
-		// name and falsely block an independent reviewer of the same SPEC.
+		// Credit an author identity only from a genuine change-bearing carrier,
+		// mirroring the gate's change-bearing validation: real path/line, active
+		// SPEC, matching SPEC URL, and an active (non-superseded) change-bearing
+		// PROCESS that actually covers the SPEC. Otherwise a stale, forged, or
+		// wrong-class marker could pollute the author set and falsely block an
+		// independent reviewer of that SPEC.
 		if marker.Path == "" || marker.Line <= 0 || marker.Path != comment.Path || marker.Line != comment.Line {
 			continue
 		}
@@ -62,6 +69,16 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 			continue
 		}
 		if specURL := rationaleSpecURL(comment.Body); specURL == "" || model.NormalizeURL(specURL) != model.NormalizeURL(want) {
+			continue
+		}
+		process, resolved := processByID[strings.TrimSpace(marker.Process)]
+		if !resolved {
+			continue
+		}
+		if model.ParseProcessExecutionClass(process.Comment.ID, process.URL, process.Comment.Body).Class != model.ProcessExecutionChangeBearing {
+			continue
+		}
+		if !artifactReferencesSpec(process, spec, want) {
 			continue
 		}
 		if authorAgentsBySpec[spec] == nil {

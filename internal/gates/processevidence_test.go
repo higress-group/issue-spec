@@ -185,12 +185,21 @@ func TestReviewProcessRejectsMultiSpecConflictOnSameArtifact(t *testing.T) {
 		t.Fatalf("conflicted REVIEW artifact must not count as satisfied: %+v", report)
 	}
 
-	// A separate, fully independent REVIEW artifact for SPEC-002 still satisfies.
+	// An independent REVIEW that covers only the OTHER SPEC-002 must NOT rescue
+	// SPEC-001's unresolved author conflict: satisfaction is tracked per SPEC.
 	input.Reviews = append(input.Reviews, ReviewEvidence{ProcessID: "PROCESS-001", SpecID: "SPEC-002",
 		URL: "https://example/issues/9#issuecomment-review2", Done: true, ReviewerAgent: "Independent Reviewer"})
 	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
-	if !containsString(report.Satisfied, "review evidence") || containsString(report.Missing, "review evidence") {
-		t.Fatalf("independent REVIEW artifact must satisfy the node: %+v", report)
+	if !hasDiagnostic(report.Diagnostics, CodeProcessReviewAuthorConflict, true) || containsString(report.Satisfied, "review evidence") {
+		t.Fatalf("independent review of a different SPEC must not rescue SPEC-001's conflict: %+v", report)
+	}
+
+	// An independent REVIEW that covers the conflicted SPEC-001 resolves it.
+	input.Reviews = append(input.Reviews, ReviewEvidence{ProcessID: "PROCESS-001", SpecID: "SPEC-001",
+		URL: "https://example/issues/9#issuecomment-review3", Done: true, ReviewerAgent: "Independent Reviewer"})
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !containsString(report.Satisfied, "review evidence") || containsString(report.Missing, "independent review evidence") {
+		t.Fatalf("independent review covering the conflicted SPEC must satisfy the node: %+v", report)
 	}
 }
 

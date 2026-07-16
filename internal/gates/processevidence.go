@@ -76,20 +76,20 @@ type ExternalProcessEvidence struct {
 }
 
 type ProcessEvidenceInput struct {
-	Process       model.Artifact            `json:"process"`
-	RequiredPRURL string                    `json:"required_pr_url,omitempty"`
-	ActiveSpecs   map[string]string         `json:"active_specs,omitempty"`
-	TaskURLs      map[string]bool           `json:"task_urls,omitempty"`
+	Process       model.Artifact    `json:"process"`
+	RequiredPRURL string            `json:"required_pr_url,omitempty"`
+	ActiveSpecs   map[string]string `json:"active_specs,omitempty"`
+	TaskURLs      map[string]bool   `json:"task_urls,omitempty"`
 	// AuthorAgentsBySpec maps an active SPEC ID to the set of normalized
 	// (lowercased, trimmed) --agent names that authored change-bearing code
 	// rationale for that SPEC. A review PROCESS whose reviewer --agent name is
 	// in this set for the SPEC it covers fails the independence check.
 	AuthorAgentsBySpec map[string]map[string]bool `json:"author_agents_by_spec,omitempty"`
-	Rationales    []RationaleEvidence       `json:"rationales,omitempty"`
-	Reviews       []ReviewEvidence          `json:"reviews,omitempty"`
-	Verifications []VerificationEvidence    `json:"verifications,omitempty"`
-	Checks        []CheckEvidence           `json:"checks,omitempty"`
-	External      []ExternalProcessEvidence `json:"external,omitempty"`
+	Rationales         []RationaleEvidence        `json:"rationales,omitempty"`
+	Reviews            []ReviewEvidence           `json:"reviews,omitempty"`
+	Verifications      []VerificationEvidence     `json:"verifications,omitempty"`
+	Checks             []CheckEvidence            `json:"checks,omitempty"`
+	External           []ExternalProcessEvidence  `json:"external,omitempty"`
 }
 
 type ProcessEvidenceReport struct {
@@ -182,15 +182,22 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 		report.Required = append(report.Required, "linked done REVIEW or resolved finding by an independent agent")
 		// Group review evidence by REVIEW artifact: a reviewer who authored code
 		// for ANY SPEC the artifact covers taints the whole artifact, so a clean
-		// SPEC on the same REVIEW can never rescue another SPEC's conflict. A
-		// separate, fully-independent REVIEW artifact can still satisfy the node.
+		// SPEC on the same REVIEW can never rescue another SPEC's conflict.
+		// Satisfaction is then tracked PER SPEC: a SPEC whose review conflicts
+		// with its code author MUST be independently re-covered by a clean
+		// artifact for THAT SPEC; a clean review of some other SPEC cannot
+		// substitute. The node is satisfied only when at least one SPEC is
+		// cleanly covered and every conflicted SPEC is independently re-covered.
 		type reviewGroup struct {
-			clean, conflicted bool
-			agent, spec       string
-			revisions         []CarrierRevisionFact
+			specs      map[string]bool
+			conflicted bool
+			revisions  []CarrierRevisionFact
 		}
 		groups := map[string]*reviewGroup{}
 		var order []string
+		cleanCovered := map[string]bool{}
+		conflictedAgentBySpec := map[string]string{}
+		var conflictOrder []string
 		for i, evidence := range input.Reviews {
 			if evidence.ProcessID != report.ProcessID || !activeSpec(evidence.SpecID) || !(evidence.Done || evidence.FindingResolved) {
 				continue
@@ -201,46 +208,54 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 			}
 			group := groups[key]
 			if group == nil {
-				group = &reviewGroup{}
+				group = &reviewGroup{specs: map[string]bool{}}
 				groups[key] = group
 				order = append(order, key)
 			}
+			group.specs[evidence.SpecID] = true
 			if reviewer := normalizeAgent(evidence.ReviewerAgent); reviewer != "" && input.AuthorAgentsBySpec[evidence.SpecID][reviewer] {
 				group.conflicted = true
-				group.agent = strings.TrimSpace(evidence.ReviewerAgent)
-				group.spec = evidence.SpecID
+				if _, seen := conflictedAgentBySpec[evidence.SpecID]; !seen {
+					conflictOrder = append(conflictOrder, evidence.SpecID)
+				}
+				conflictedAgentBySpec[evidence.SpecID] = strings.TrimSpace(evidence.ReviewerAgent)
 				continue
 			}
-			group.clean = true
 			group.revisions = append(group.revisions, CarrierRevisionFact{Known: strings.TrimSpace(evidence.SubjectRevision) != "",
 				Revision: strings.TrimSpace(evidence.SubjectRevision), Trusted: evidence.Trusted, Source: evidence.Source})
 		}
-		carrier := false
-		conflicted := false
-		var conflictAgent, conflictSpec string
+		cleanArtifact := false
 		var revisions []CarrierRevisionFact
 		for _, key := range order {
 			group := groups[key]
 			if group.conflicted {
-				conflicted = true
-				if conflictSpec == "" {
-					conflictAgent, conflictSpec = group.agent, group.spec
-				}
 				continue
 			}
-			if group.clean {
-				carrier, specSatisfied = true, true
-				revisions = append(revisions, group.revisions...)
+			cleanArtifact = true
+			for spec := range group.specs {
+				cleanCovered[spec] = true
 			}
+			revisions = append(revisions, group.revisions...)
+		}
+		var conflictAgent, conflictSpec string
+		for _, spec := range conflictOrder {
+			if !cleanCovered[spec] {
+				conflictSpec, conflictAgent = spec, conflictedAgentBySpec[spec]
+				break
+			}
+		}
+		carrier := cleanArtifact && conflictSpec == ""
+		if carrier {
+			specSatisfied = true
 		}
 		report.CarrierRevision = aggregateCarrierRevisions(revisions)
 		switch {
 		case carrier:
 			report.Satisfied = append(report.Satisfied, "review evidence")
-		case conflicted:
+		case conflictSpec != "":
 			report.Missing = append(report.Missing, "independent review evidence")
 			add(CodeProcessReviewAuthorConflict, SeverityError, true,
-				fmt.Sprintf("review PROCESS evidence for %s was authored by agent %q, which also authored the code under review; the review MUST be authored by a different agent than the code author, so route it through a review PROCESS owned by an independent reviewing agent (its --agent must differ from the code author) and re-run review sync once that node produces its REVIEW or resolved finding", conflictSpec, conflictAgent),
+				fmt.Sprintf("review PROCESS evidence for %s was authored by agent %q, which also authored the code under review; the review MUST be authored by a different agent than the code author, so route %s through a review PROCESS owned by an independent reviewing agent (its --agent must differ from the code author) and re-run review sync once that node produces its REVIEW or resolved finding", conflictSpec, conflictAgent, conflictSpec),
 				"same agent as code author", "review authored by an independent reviewing agent (different --agent than the code author)", "review sync")
 		default:
 			report.Missing = append(report.Missing, "review evidence")
