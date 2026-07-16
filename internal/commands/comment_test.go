@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +47,139 @@ func writeTempInput(t *testing.T, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestCommentCreateUsesSelectedGHBackendAndProtectedStdin(t *testing.T) {
+	const body = "Could you clarify the rollout boundary?\n\nThis is ordinary discussion, not workflow evidence.\n"
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(body), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
+		if selection.Name != auth.GitHubBackendNameGH || selection.Host != "github.com" {
+			t.Fatalf("selection = %+v", selection)
+		}
+		return fakeGitHubBackend{
+			info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
+			createComment: func(_ context.Context, repo string, issue int, gotBody string) (github.Comment, error) {
+				if repo != "o/r" || issue != 17 || gotBody != body {
+					t.Fatalf("CreateComment repo=%q issue=%d body=%q", repo, issue, gotBody)
+				}
+				return github.Comment{ID: 901, HTMLURL: "https://github.com/o/r/issues/17#issuecomment-901",
+					URL: "https://api.github.com/repos/o/r/issues/comments/901", Body: gotBody}, nil
+			},
+		}, nil
+	}
+	code := app.runComment(t.Context(), []string{"create", "--repo", "o/r", "--issue", "17", "--body-file", "-", "--json"})
+	if code != 0 {
+		t.Fatalf("comment create exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 6 || result["ok"] != true || result["action"] != "created" || result["comment_id"] != float64(901) ||
+		result["url"] != "https://github.com/o/r/issues/17#issuecomment-901" {
+		t.Fatalf("bounded result = %#v", result)
+	}
+	for _, forbidden := range []string{"body", "type", "id", "status"} {
+		if _, found := result[forbidden]; found {
+			t.Fatalf("ordinary comment result exposed typed or unbounded field %q: %#v", forbidden, result)
+		}
+	}
+}
+
+func TestExecuteCommentCreateUsesSelfHostedRESTBackendWithoutGH(t *testing.T) {
+	clearCommandAuthEnv(t)
+	const body = "Please confirm whether the compatibility window includes v1 clients.\n"
+	requests := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v3/repos/acme/widgets/issues/23/comments" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer self-hosted-comment-secret" {
+			t.Fatalf("authorization = %q", got)
+		}
+		var input map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		if len(input) != 1 || input["body"] != body {
+			t.Fatalf("ordinary comment payload = %#v", input)
+		}
+		if model.IsLikelyTyped(input["body"]) {
+			t.Fatalf("ordinary clarification was converted into a typed artifact: %q", input["body"])
+		}
+		_ = json.NewEncoder(w).Encode(github.Comment{ID: 2301,
+			HTMLURL: server.URL + "/acme/widgets/issues/23#issuecomment-2301",
+			URL:     server.URL + "/api/v3/repos/acme/widgets/issues/comments/2301",
+			Body:    input["body"],
+		})
+	}))
+	t.Cleanup(server.Close)
+	profile := auth.Profile{Name: "comment-e2e", Kind: auth.ProfileKindHosted,
+		APIURL: server.URL + "/api/v3", NativeAPIURL: server.URL + "/api/v1", WebURL: server.URL,
+		ServerInstanceID: "comment-e2e-instance"}
+	if err := auth.SaveProfile(profile, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.StoreProfileToken(t.Context(), profile, "self-hosted-comment-secret", true); err != nil {
+		t.Fatal(err)
+	}
+	oldGHAuthenticated := ghAuthenticated
+	t.Cleanup(func() { ghAuthenticated = oldGHAuthenticated })
+	ghAuthenticated = func(context.Context, string) error {
+		t.Fatal("self-hosted ordinary comment write probed gh authentication")
+		return nil
+	}
+
+	var out, errOut bytes.Buffer
+	code := Execute([]string{"--profile", "comment-e2e", "comment", "create", "--repo", "acme/widgets",
+		"--issue", "23", "--body-file", "-", "--json"}, strings.NewReader(body), &out, &errOut)
+	if code != 0 {
+		t.Fatalf("self-hosted comment create exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if requests != 1 || strings.Contains(out.String()+errOut.String(), body) ||
+		strings.Contains(out.String()+errOut.String(), "self-hosted-comment-secret") {
+		t.Fatalf("requests=%d stdout=%q stderr=%q", requests, out.String(), errOut.String())
+	}
+	var result struct {
+		OK        bool   `json:"ok"`
+		CommentID int64  `json:"comment_id"`
+		URL       string `json:"url"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || result.CommentID != 2301 || result.URL != server.URL+"/acme/widgets/issues/23#issuecomment-2301" {
+		t.Fatalf("self-hosted result = %+v", result)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	code = Execute([]string{"--profile", "comment-e2e", "comment", "create", "--repo", "acme/widgets",
+		"--issue", "https://attacker.example.test/acme/widgets/issues/23", "--body-file", "-", "--json"},
+		strings.NewReader(body), &out, &errOut)
+	if code != 2 || !strings.Contains(errOut.String(), "does not match selected issue backend host") {
+		t.Fatalf("mismatched issue host exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if requests != 1 {
+		t.Fatalf("mismatched issue host reached selected backend; requests=%d", requests)
+	}
+}
+
+func TestCommentCreateRejectsEmptyBodyBeforeBackendSelection(t *testing.T) {
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(" \n\t"), &out, &errOut)
+	app.selectGitHubBackend = func(context.Context, string) (auth.GitHubBackendSelection, error) {
+		t.Fatal("empty ordinary comment selected a backend")
+		return auth.GitHubBackendSelection{}, nil
+	}
+	if code := app.runCommentCreate(t.Context(), []string{"--repo", "o/r", "--issue", "1", "--body-file", "-"}); code != 2 ||
+		!strings.Contains(errOut.String(), "--body-file must not be empty") {
+		t.Fatalf("empty body exit/result unexpected: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
 }
 
 func TestCommentGenerateSpecProducesUpsertReadyBody(t *testing.T) {

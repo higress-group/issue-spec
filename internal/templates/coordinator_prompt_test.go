@@ -33,12 +33,21 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 		"distinct from the `### Handoff` PROCESS serial-chain evidence section and from the `/resume` session handle",
 		"Issue Discussion",
 		"The runner preflights the selected issue backend inside the sandbox",
+		"Routine command completion belongs in the required coordinator summary",
+		"The Runner creates or updates its own status comment from that summary",
+		"issue-spec comment create --repo <repo> --issue <n> --body-file <file> --json",
+		"do not call `gh issue comment`",
+		"Workflow evidence remains typed",
+		"issue-spec comment generate",
+		"issue-spec comment upsert",
+		"Never send an ordinary discussion body through `comment upsert`",
+		"invent a typed VERIFY/QUESTION artifact for routine conversation",
 		"This agent reply is powered by [issue-spec](https://github.com/higress-group/issue-spec)",
 		"This issue is managed by [issue-spec](https://github.com/higress-group/issue-spec)",
 		"an issue-native workflow for specs, tasks, reviews, and resumable agent sessions",
 		"A QUESTION typed comment is an issue-spec workflow artifact for asking a human a blocking workflow question",
 		"Create one only when the issue-spec workflow is blocked",
-		"keep human-facing conversation in normal issue timeline comments",
+		"keep human-facing conversation in ordinary issue timeline comments",
 		"do not assume a GitHub CLI login can write the selected issue service",
 		"GitHub issue comments do not have nested reply semantics",
 		"command.trigger_comment_url",
@@ -119,6 +128,34 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 	}
 }
 
+func TestCoordinatorPromptSeparatesStatusOrdinaryAndTypedCommentWrites(t *testing.T) {
+	prompt, err := CoordinatorPrompt(coordinatorPromptBundle(t, runnercontext.CommandNew, "s_ordinary"), CoordinatorPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Routine command completion belongs in the required coordinator summary",
+		"do not create an extra ordinary discussion comment merely to repeat the terminal result",
+		"comment create --repo <repo> --issue <n> --body-file <file> --json",
+		"clarification, a recommendation, or a handoff",
+		"Workflow evidence remains typed",
+		"comment upsert",
+		"comment transition",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt does not distinguish comment write path %q:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{
+		"For conversational replies, status updates",
+		"use `gh issue comment`",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("prompt contains ambiguous or backend-specific write guidance %q:\n%s", forbidden, prompt)
+		}
+	}
+}
+
 func TestCoordinatorPromptConstructsResumeCommandContract(t *testing.T) {
 	bundle := coordinatorPromptBundle(t, runnercontext.CommandResume, "s_123")
 	prompt, err := CoordinatorPrompt(bundle, CoordinatorPromptOptions{IssueSpecBinary: "go run ./cmd/issue-spec"})
@@ -130,6 +167,7 @@ func TestCoordinatorPromptConstructsResumeCommandContract(t *testing.T) {
 		`"public_session_id": "s_123"`,
 		"existing go run ./cmd/issue-spec CLI commands",
 		"Read issue, pull request, and comment body content with `go run ./cmd/issue-spec read`",
+		"go run ./cmd/issue-spec comment create --repo <repo> --issue <n> --body-file <file> --json",
 		`"name": "go run ./cmd/issue-spec comment upsert"`,
 	} {
 		if !strings.Contains(prompt, want) {
