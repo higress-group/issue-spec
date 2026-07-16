@@ -17,6 +17,8 @@ func (a *app) runIssue(ctx context.Context, args []string) int {
 	if len(args) < 1 {
 		a.errorf("usage: issue-spec issue create proposal|design|implement --repo owner/repo --change name [--body-file file.md] [--title title]\n")
 		a.errorf("       issue-spec issue update --repo owner/repo --issue N [--title title] [--body-file file.md] [--summary \"what changed\"]\n")
+		a.errorf("       issue-spec issue list --repo owner/repo [--state open|closed|all] --json\n")
+		a.errorf("       issue-spec issue close|reopen --repo owner/repo --issue N [--json]\n")
 		return 2
 	}
 	switch args[0] {
@@ -28,10 +30,148 @@ func (a *app) runIssue(ctx context.Context, args []string) int {
 		return a.runIssueCreate(ctx, args[1], args[2:])
 	case "update":
 		return a.runIssueUpdate(ctx, args[1:])
+	case "list":
+		return a.runIssueList(ctx, args[1:])
+	case "close":
+		return a.runIssueState(ctx, "closed", args[1:])
+	case "reopen":
+		return a.runIssueState(ctx, "open", args[1:])
 	default:
 		a.errorf("unknown issue command %q\n", args[0])
 		return 2
 	}
+}
+
+type issueListItem struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	State  string `json:"state"`
+	URL    string `json:"url"`
+	Body   string `json:"body"`
+}
+
+type issueListResult struct {
+	OK     bool            `json:"ok"`
+	Repo   string          `json:"repo"`
+	State  string          `json:"state"`
+	Issues []issueListItem `json:"issues"`
+}
+
+func (a *app) runIssueList(ctx context.Context, args []string) int {
+	fs := newFlagSet("issue list", a.err)
+	repoFlag := fs.String("repo", "", "repository owner/name")
+	host := fs.String("hostname", "github.com", "GitHub hostname")
+	stateFlag := fs.String("state", "open", "issue state: open, closed, or all")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	if !*jsonOut {
+		a.errorf("--json is required for issue list\n")
+		return 2
+	}
+	state, ok := normalizeIssueListState(*stateFlag)
+	if !ok {
+		a.errorf("--state must be open, closed, or all\n")
+		return 2
+	}
+	repo, ok := a.validateRepo(*repoFlag)
+	if !ok {
+		return 2
+	}
+	client, _, err := a.clientFor(ctx, *host)
+	if err != nil {
+		a.errorf("auth required for issue list on %s: %v\n", auth.NormalizeHost(*host), err)
+		return 1
+	}
+	listed, err := client.ListIssues(ctx, repo, github.ListIssueOptions{State: state})
+	if err != nil {
+		a.errorf("list issues: %v\n", err)
+		return 1
+	}
+	issues := make([]issueListItem, 0, len(listed))
+	for _, issue := range listed {
+		if issue.PullRequest != nil {
+			continue
+		}
+		issues = append(issues, issueListItem{
+			Number: issue.Number,
+			Title:  issue.Title,
+			State:  strings.ToLower(strings.TrimSpace(issue.State)),
+			URL:    issue.HTMLURL,
+			Body:   issue.Body,
+		})
+	}
+	return a.outputJSON(issueListResult{OK: true, Repo: repo, State: state, Issues: issues})
+}
+
+func normalizeIssueListState(value string) (string, bool) {
+	state := strings.ToLower(strings.TrimSpace(value))
+	if state == "" {
+		state = "open"
+	}
+	switch state {
+	case "open", "closed", "all":
+		return state, true
+	default:
+		return "", false
+	}
+}
+
+type issueStateResult struct {
+	OK      bool   `json:"ok"`
+	Issue   int    `json:"issue"`
+	URL     string `json:"url"`
+	State   string `json:"state"`
+	Changed bool   `json:"changed"`
+}
+
+func (a *app) runIssueState(ctx context.Context, target string, args []string) int {
+	command := "issue " + map[string]string{"closed": "close", "open": "reopen"}[target]
+	fs := newFlagSet(command, a.err)
+	repoFlag := fs.String("repo", "", "repository owner/name")
+	host := fs.String("hostname", "github.com", "GitHub hostname")
+	issueFlag := fs.String("issue", "", "issue number or URL")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	repo, ok := a.validateRepo(*repoFlag)
+	if !ok {
+		return 2
+	}
+	issueNumber, err := parseIssueFlag(*issueFlag, "issue")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	client, _, err := a.clientFor(ctx, *host)
+	if err != nil {
+		a.errorf("auth required for %s on %s: %v\n", command, auth.NormalizeHost(*host), err)
+		return 1
+	}
+	issue, err := client.GetIssue(ctx, repo, issueNumber)
+	if err != nil {
+		a.errorf("read issue #%d: %v\n", issueNumber, err)
+		return 1
+	}
+	changed := strings.ToLower(strings.TrimSpace(issue.State)) != target
+	if changed {
+		issue, err = client.UpdateIssue(ctx, repo, issueNumber, github.UpdateIssueOptions{State: &target})
+		if err != nil {
+			a.errorf("set issue #%d state to %s: %v\n", issueNumber, target, err)
+			return 1
+		}
+	}
+	if issue.Number == 0 {
+		issue.Number = issueNumber
+	}
+	result := issueStateResult{OK: true, Issue: issue.Number, URL: issue.HTMLURL, State: target, Changed: changed}
+	if *jsonOut {
+		return a.outputJSON(result)
+	}
+	fmt.Fprintf(a.out, "issue #%d state=%s changed=%t: %s\n", result.Issue, result.State, result.Changed, result.URL)
+	return 0
 }
 
 func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) int {
@@ -264,7 +404,7 @@ func (a *app) runIssueUpdate(ctx context.Context, args []string) int {
 			a.errorf("read issue #%d: %v\n", issueNumber, err)
 			return 1
 		}
-		body, err := preserveIssueBodyMarker(existing.Body, rawBody)
+		body, err := preserveIssueBodyMetadata(existing.Body, rawBody)
 		if err != nil {
 			a.errorf("prepare issue body: %v\n", err)
 			return 2
@@ -315,8 +455,8 @@ func (a *app) runIssueUpdate(ctx context.Context, args []string) int {
 }
 
 var issueBodyMarkerLineRe = regexp.MustCompile(`^<!--\s*issue-spec:issue=([a-z]+)(?:\s+[^>]*)?-->$`)
-var proposalIssueLinkLineRe = regexp.MustCompile(`(?i)^\s*-\s*Proposal\s+Issue\s*:`)
-var designIssueLinkLineRe = regexp.MustCompile(`(?i)^\s*-\s*Design\s+Issue\s*:`)
+var proposalIssueLinkLineRe = regexp.MustCompile(`(?i)^\s*-\s*Proposal\s+Issue\s*:\s*(.*?)\s*$`)
+var designIssueLinkLineRe = regexp.MustCompile(`(?i)^\s*-\s*Design\s+Issue\s*:\s*(.*?)\s*$`)
 
 func ensureIssueBodyMarker(kind, change, body string) (string, error) {
 	body = strings.TrimLeft(body, "\n")
@@ -368,21 +508,23 @@ func ensureIssuePredecessorLink(kind, predecessor, body string) (string, error) 
 	if replaced {
 		return strings.Join(result, "\n"), nil
 	}
+	return strings.Join(insertIssueMetadataLine(result, predecessorLinkInsertIndex(result), authoritative), "\n"), nil
+}
 
-	insertAt := predecessorLinkInsertIndex(result)
+func insertIssueMetadataLine(lines []string, insertAt int, line string) []string {
 	block := make([]string, 0, 3)
-	if insertAt > 0 && strings.TrimSpace(result[insertAt-1]) != "" {
+	if insertAt > 0 && strings.TrimSpace(lines[insertAt-1]) != "" {
 		block = append(block, "")
 	}
-	block = append(block, authoritative)
-	if insertAt < len(result) && strings.TrimSpace(result[insertAt]) != "" {
+	block = append(block, line)
+	if insertAt < len(lines) && strings.TrimSpace(lines[insertAt]) != "" {
 		block = append(block, "")
 	}
-	withLink := make([]string, 0, len(result)+len(block))
-	withLink = append(withLink, result[:insertAt]...)
+	withLink := make([]string, 0, len(lines)+len(block))
+	withLink = append(withLink, lines[:insertAt]...)
 	withLink = append(withLink, block...)
-	withLink = append(withLink, result[insertAt:]...)
-	return strings.Join(withLink, "\n"), nil
+	withLink = append(withLink, lines[insertAt:]...)
+	return withLink
 }
 
 func predecessorLinkInsertIndex(lines []string) int {
@@ -407,18 +549,77 @@ func predecessorLinkInsertIndex(lines []string) int {
 	return insertAt
 }
 
-func preserveIssueBodyMarker(existing, replacement string) (string, error) {
+func preserveIssueBodyMetadata(existing, replacement string) (string, error) {
 	replacement = strings.TrimLeft(replacement, "\n")
-	if _, replacementKind := extractIssueBodyMarker(replacement); replacementKind != "" {
-		if _, existingKind := extractIssueBodyMarker(existing); existingKind != "" && replacementKind != existingKind {
-			return "", fmt.Errorf("replacement marker issue class is %s, existing issue class is %s", replacementKind, existingKind)
-		}
+	existingMarkers := extractIssueBodyMarkers(existing)
+	if len(existingMarkers) == 0 {
 		return replacement, nil
 	}
-	if marker, _ := extractIssueBodyMarker(existing); marker != "" {
-		return marker + "\n" + replacement, nil
+	if len(existingMarkers) != 1 {
+		return "", fmt.Errorf("stored issue body has %d issue-spec markers; exactly one is required", len(existingMarkers))
 	}
-	return replacement, nil
+	marker := existingMarkers[0]
+	if marker.kind != "proposal" && marker.kind != "design" && marker.kind != "implement" {
+		return "", fmt.Errorf("stored issue body has unsupported issue class %s", marker.kind)
+	}
+	lines := strings.Split(replacement, "\n")
+	withoutDuplicateMarkers := make([]string, 0, len(lines)+1)
+	markerWritten := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		match := issueBodyMarkerLineRe.FindStringSubmatch(trimmed)
+		if match == nil {
+			withoutDuplicateMarkers = append(withoutDuplicateMarkers, line)
+			continue
+		}
+		if trimmed != marker.line {
+			return "", fmt.Errorf("replacement issue marker conflicts with stored marker")
+		}
+		if !markerWritten {
+			withoutDuplicateMarkers = append(withoutDuplicateMarkers, marker.line)
+			markerWritten = true
+		}
+	}
+	if !markerWritten {
+		withoutDuplicateMarkers = append([]string{marker.line}, withoutDuplicateMarkers...)
+	}
+	prepared := strings.Join(withoutDuplicateMarkers, "\n")
+	if marker.kind == "proposal" {
+		return prepared, nil
+	}
+	pattern := proposalIssueLinkLineRe
+	label := "Proposal Issue"
+	if marker.kind == "implement" {
+		pattern = designIssueLinkLineRe
+		label = "Design Issue"
+	}
+	storedLinks := extractIssuePredecessorLines(existing, pattern)
+	if len(storedLinks) != 1 || storedLinks[0].reference == "" {
+		return "", fmt.Errorf("stored %s body must contain exactly one non-empty %s link", marker.kind, label)
+	}
+	stored := storedLinks[0]
+	lines = strings.Split(prepared, "\n")
+	result := make([]string, 0, len(lines)+1)
+	linkWritten := false
+	for _, line := range lines {
+		match := pattern.FindStringSubmatch(line)
+		if match == nil {
+			result = append(result, line)
+			continue
+		}
+		reference := strings.TrimSpace(match[1])
+		if reference != stored.reference {
+			return "", fmt.Errorf("replacement %s link %q conflicts with stored reference %q", label, reference, stored.reference)
+		}
+		if !linkWritten {
+			result = append(result, stored.line)
+			linkWritten = true
+		}
+	}
+	if linkWritten {
+		return strings.Join(result, "\n"), nil
+	}
+	return strings.Join(insertIssueMetadataLine(result, predecessorLinkInsertIndex(result), stored.line), "\n"), nil
 }
 
 func hasIssueBodyMarker(body string) bool {
@@ -427,13 +628,42 @@ func hasIssueBodyMarker(body string) bool {
 }
 
 func extractIssueBodyMarker(body string) (string, string) {
+	markers := extractIssueBodyMarkers(body)
+	if len(markers) > 0 {
+		return markers[0].line, markers[0].kind
+	}
+	return "", ""
+}
+
+type issueBodyMarker struct {
+	line string
+	kind string
+}
+
+func extractIssueBodyMarkers(body string) []issueBodyMarker {
+	var markers []issueBodyMarker
 	for _, line := range strings.Split(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if match := issueBodyMarkerLineRe.FindStringSubmatch(trimmed); match != nil {
-			return trimmed, match[1]
+			markers = append(markers, issueBodyMarker{line: trimmed, kind: match[1]})
 		}
 	}
-	return "", ""
+	return markers
+}
+
+type issuePredecessorLine struct {
+	line      string
+	reference string
+}
+
+func extractIssuePredecessorLines(body string, pattern *regexp.Regexp) []issuePredecessorLine {
+	var links []issuePredecessorLine
+	for _, line := range strings.Split(body, "\n") {
+		if match := pattern.FindStringSubmatch(line); match != nil {
+			links = append(links, issuePredecessorLine{line: strings.TrimSpace(line), reference: strings.TrimSpace(match[1])})
+		}
+	}
+	return links
 }
 
 func renderIssueUpdateSummary(issueNumber int, issueURL, summary string) string {

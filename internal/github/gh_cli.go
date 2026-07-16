@@ -294,6 +294,10 @@ func (unsupportedGHOperations) GetIssue(context.Context, string, int) (Issue, er
 	return Issue{}, unsupportedGHOperation("GetIssue")
 }
 
+func (unsupportedGHOperations) ListIssues(context.Context, string, ListIssueOptions) ([]Issue, error) {
+	return nil, unsupportedGHOperation("ListIssues")
+}
+
 func (unsupportedGHOperations) UpdateIssue(context.Context, string, int, UpdateIssueOptions) (Issue, error) {
 	return Issue{}, unsupportedGHOperation("UpdateIssue")
 }

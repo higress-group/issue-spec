@@ -387,8 +387,13 @@ func (a *app) runCommentList(ctx context.Context, args []string) int {
 	issueFlag := fs.String("issue", "", "issue number or URL")
 	commentType := fs.String("type", "", "filter by typed comment type")
 	jsonOut := fs.Bool("json", false, "write JSON output")
+	includeBody := fs.Bool("include-body", false, "include original backend Markdown in JSON output (requires --json)")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
+	}
+	if *includeBody && !*jsonOut {
+		a.errorf("--include-body requires --json\n")
+		return 2
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {
@@ -409,7 +414,8 @@ func (a *app) runCommentList(ctx context.Context, args []string) int {
 		a.errorf("list issue comments: %v\n", err)
 		return 1
 	}
-	var artifacts []model.Artifact
+	artifacts := make([]model.Artifact, 0)
+	artifactsWithBody := make([]commentListArtifactWithBody, 0)
 	for _, comment := range comments {
 		if !model.IsLikelyTyped(comment.Body) {
 			continue
@@ -421,8 +427,14 @@ func (a *app) runCommentList(ctx context.Context, args []string) int {
 		artifact := model.Artifact{Issue: issueNumber, CommentID: comment.ID, URL: comment.HTMLURL, APIURL: comment.URL, Comment: tc}
 		artifact.Canonical = model.ValidateArtifact(artifact)
 		artifacts = append(artifacts, artifact)
+		if *includeBody {
+			artifactsWithBody = append(artifactsWithBody, commentListArtifactWithBody{Artifact: artifact, Body: comment.Body})
+		}
 	}
 	if *jsonOut {
+		if *includeBody {
+			return a.outputJSON(map[string]any{"ok": true, "issue": issueNumber, "comments": artifactsWithBody})
+		}
 		return a.outputJSON(map[string]any{"ok": true, "issue": issueNumber, "comments": artifacts})
 	}
 	for _, artifact := range artifacts {
@@ -438,4 +450,12 @@ func (a *app) runCommentList(ctx context.Context, args []string) int {
 		}
 	}
 	return 0
+}
+
+// commentListArtifactWithBody is deliberately command-local: model.Artifact
+// and model.TypedComment retain their existing JSON contracts unless callers
+// explicitly opt into the original backend Markdown for comment list.
+type commentListArtifactWithBody struct {
+	model.Artifact
+	Body string `json:"body"`
 }

@@ -183,6 +183,8 @@ Usage:
   issue-spec init --repo owner/repo [--skip-labels] [--tools codex,claude|all|none] [--delivery both|skills|commands] [--install-global-prompts]
   issue-spec issue create proposal|design|implement --repo owner/repo --change name [--body-file file.md] [--title title]
   issue-spec issue update --repo owner/repo --issue N [--title title] [--body-file file.md] [--summary "what changed"]
+  issue-spec issue list --repo owner/repo [--state open|closed|all] --json
+  issue-spec issue close|reopen --repo owner/repo --issue N [--json]
   issue-spec comment create --repo owner/repo --issue N --body-file reply.md [--json]
   issue-spec comment generate --type SPEC --id SPEC-001 --input-file spec.json [--status confirmed] [--scope "..."]
   issue-spec comment upsert --repo owner/repo --issue N --type SPEC --id SPEC-001 --body-file file.md [--allow-noncanonical]

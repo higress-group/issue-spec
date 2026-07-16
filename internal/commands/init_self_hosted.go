@@ -62,6 +62,9 @@ type selfHostedInitPlan struct {
 	Mode              string                           `json:"mode"`
 	Profile           string                           `json:"profile"`
 	Registry          string                           `json:"registry_source,omitempty"`
+	Language          string                           `json:"language,omitempty"`
+	LanguageApplied   *bool                            `json:"language_applied,omitempty"`
+	LanguageGuidance  string                           `json:"language_guidance,omitempty"`
 	Server            github.NativeServerMetadata      `json:"server"`
 	Organization      github.NativeOrganizationContext `json:"organization"`
 	Repository        selfHostedRepositoryPlan         `json:"repository"`
@@ -116,6 +119,11 @@ type selfHostedProviderConfig struct {
 }
 
 func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, options selfHostedInitOptions) int {
+	workflowNeutral := strings.EqualFold(strings.TrimSpace(options.Tools), "none")
+	if workflowNeutral && (options.InstallGlobalPrompts || strings.TrimSpace(options.GlobalPromptsDir) != "" || options.GlobalPromptsDryRun) {
+		a.errorf("global Codex prompt options cannot be combined with explicit --tools none; select a workflow tool to generate prompts\n")
+		return 2
+	}
 	if options.BindSource && options.SkipSourceBinding {
 		a.errorf("--bind-source and --skip-source-binding cannot be combined\n")
 		return 2
@@ -212,6 +220,12 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 		Repository: selfHostedRepositoryPlan{Key: organization.Name + "/" + options.ServerRepo,
 			Name: options.ServerRepo, DefaultBranch: options.DefaultBranch, Existing: exists,
 			CreateAllowed: createAllowed, BindSource: bindSource}}
+	if workflowNeutral && strings.TrimSpace(options.Language) != "" {
+		languageApplied := false
+		plan.Language = languageDisplay(options.Language)
+		plan.LanguageApplied = &languageApplied
+		plan.LanguageGuidance = workflowNeutralLanguageGuidance
+	}
 	if exists {
 		plan.Repository.ID = existing.Repository.ID
 	} else {
@@ -246,7 +260,7 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 	if err := validateExistingSelfHostedConfig(filepath.Join(".issue-spec", "config.json"), serverRepoKey, profile); err != nil {
 		return a.selfHostedInitError("validate existing project config", err)
 	}
-	if providerPlan != nil {
+	if providerPlan != nil && !workflowNeutral {
 		if err := validateExistingWorkflowProvider(".", providerPlan.ProviderKey); err != nil {
 			return a.selfHostedInitError("validate existing provider workflow config", err)
 		}
@@ -355,34 +369,38 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 		return a.selfHostedInitError("write versioned project config", err)
 	}
 	markJournalStage(&journal, "config", "complete", filepath.ToSlash(configPath))
-	if strings.TrimSpace(options.Language) != "" {
-		if _, err := writeWorkflowLanguageConfig(".", options.Language); err != nil {
-			return a.selfHostedInitError("write workflow language config", err)
+	workflows := workflowGenerationResult{Delivery: options.Delivery}
+	if !workflowNeutral {
+		if strings.TrimSpace(options.Language) != "" {
+			if _, err := writeWorkflowLanguageConfig(".", options.Language); err != nil {
+				return a.selfHostedInitError("write workflow language config", err)
+			}
 		}
-	}
-	if providerPlan != nil {
-		if err := writeExternalCodeWorkflowConfig(".", *providerPlan); err != nil {
-			return a.selfHostedInitError("write provider workflow config", err)
+		if providerPlan != nil {
+			if err := writeExternalCodeWorkflowConfig(".", *providerPlan); err != nil {
+				return a.selfHostedInitError("write provider workflow config", err)
+			}
 		}
-	}
-	var workflows workflowGenerationResult
-	if providerPlan != nil {
-		workflows, err = writeWorkflowArtifactsWithProvider(".", serverRepoKey, options.Tools, options.Delivery, *providerPlan)
+		if providerPlan != nil {
+			workflows, err = writeWorkflowArtifactsWithProvider(".", serverRepoKey, options.Tools, options.Delivery, *providerPlan)
+		} else {
+			workflows, err = writeWorkflowArtifacts(".", serverRepoKey, options.Tools, options.Delivery)
+		}
+		if err != nil {
+			return a.selfHostedInitError("generate workflow artifacts", err)
+		}
+		globalPromptOptions := globalPromptInstallOptions{
+			Enabled:   options.InstallGlobalPrompts || strings.TrimSpace(options.GlobalPromptsDir) != "" || options.GlobalPromptsDryRun,
+			Directory: options.GlobalPromptsDir,
+			DryRun:    options.GlobalPromptsDryRun,
+		}
+		if err := installGlobalCodexPrompts(".", serverRepoKey, providerPlan, globalPromptOptions, &workflows); err != nil {
+			return a.selfHostedInitError("install global Codex prompts", err)
+		}
+		markJournalStage(&journal, "workflow", "complete", fmt.Sprintf("%d skills, %d commands", len(workflows.SkillFiles), len(workflows.CommandFiles)))
 	} else {
-		workflows, err = writeWorkflowArtifacts(".", serverRepoKey, options.Tools, options.Delivery)
+		markJournalStage(&journal, "workflow", "skipped", "--tools none")
 	}
-	if err != nil {
-		return a.selfHostedInitError("generate workflow artifacts", err)
-	}
-	globalPromptOptions := globalPromptInstallOptions{
-		Enabled:   options.InstallGlobalPrompts || strings.TrimSpace(options.GlobalPromptsDir) != "" || options.GlobalPromptsDryRun,
-		Directory: options.GlobalPromptsDir,
-		DryRun:    options.GlobalPromptsDryRun,
-	}
-	if err := installGlobalCodexPrompts(".", serverRepoKey, providerPlan, globalPromptOptions, &workflows); err != nil {
-		return a.selfHostedInitError("install global Codex prompts", err)
-	}
-	markJournalStage(&journal, "workflow", "complete", fmt.Sprintf("%d skills, %d commands", len(workflows.SkillFiles), len(workflows.CommandFiles)))
 	if err := writeInitJournal(journalPath, journal); err != nil {
 		return a.selfHostedInitError("complete init resume journal", err)
 	}
@@ -392,6 +410,11 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 		"repository_id": repositoryID, "auth": map[string]any{"source": token.Source, "user": user.Login, "scopes": scopes},
 		"plan": plan, "config": filepath.ToSlash(configPath), "journal": filepath.ToSlash(journalPath),
 		"labels": labels, "workflows": workflows}
+	if plan.LanguageApplied != nil {
+		result["language"] = plan.Language
+		result["language_applied"] = false
+		result["language_guidance"] = plan.LanguageGuidance
+	}
 	if options.JSON {
 		return a.outputJSON(result)
 	}
@@ -400,6 +423,9 @@ func (a *app) runSelfHostedInit(ctx context.Context, profile auth.Profile, optio
 		organization.Name, options.ServerRepo, repositoryID, filepath.ToSlash(configPath), filepath.ToSlash(journalPath))
 	if providerPlan != nil {
 		fmt.Fprintf(a.out, "external code provider: %s (%s)\n", providerPlan.ProviderKey, providerPlan.DisplayName)
+	}
+	if plan.LanguageApplied != nil {
+		fmt.Fprintf(a.out, "workflow language not applied: %s (--tools none); %s\n", plan.Language, plan.LanguageGuidance)
 	}
 	if len(workflows.Tools) > 0 || len(workflows.GlobalPromptFiles) > 0 {
 		a.printWorkflowGeneration(workflows)
@@ -414,14 +440,23 @@ func (a *app) selfHostedInitError(action string, err error) int {
 
 func (a *app) outputSelfHostedInitPlan(plan selfHostedInitPlan, user string, scopes []string, jsonOutput bool) int {
 	if jsonOutput {
-		return a.outputJSON(map[string]any{"ok": true, "plan_only": true, "plan": plan,
-			"auth": map[string]any{"user": user, "scopes": scopes}})
+		result := map[string]any{"ok": true, "plan_only": true, "plan": plan,
+			"auth": map[string]any{"user": user, "scopes": scopes}}
+		if plan.LanguageApplied != nil {
+			result["language"] = plan.Language
+			result["language_applied"] = false
+			result["language_guidance"] = plan.LanguageGuidance
+		}
+		return a.outputJSON(result)
 	}
 	fmt.Fprintf(a.out, "self-hosted init plan for %s via profile %s\n", plan.Repository.Key, plan.Profile)
 	fmt.Fprintf(a.out, "server: %s\nrepository: %s\n", plan.Server.ServerInstanceID,
 		map[bool]string{true: "reuse", false: "create"}[plan.Repository.Existing])
 	if plan.Provider != nil {
 		fmt.Fprintf(a.out, "provider: %s (%s)\n", plan.Provider.ProviderKey, plan.Provider.DisplayName)
+	}
+	if plan.LanguageApplied != nil {
+		fmt.Fprintf(a.out, "workflow language not applied: %s (--tools none); %s\n", plan.Language, plan.LanguageGuidance)
 	}
 	for _, mutation := range plan.Mutations {
 		fmt.Fprintf(a.out, "mutation: %s\n", mutation)

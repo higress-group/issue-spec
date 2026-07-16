@@ -890,6 +890,7 @@ type fakeGitHubBackend struct {
 	scopes            []string
 	createIssue       func(context.Context, string, string, string, []string) (github.Issue, error)
 	getIssue          func(context.Context, string, int) (github.Issue, error)
+	listIssues        func(context.Context, string, github.ListIssueOptions) ([]github.Issue, error)
 	updateIssue       func(context.Context, string, int, github.UpdateIssueOptions) (github.Issue, error)
 	listIssueComments func(context.Context, string, int) ([]github.Comment, error)
 	getPullRequest    func(context.Context, string, int) (github.PullRequest, error)
@@ -921,6 +922,13 @@ func (f fakeGitHubBackend) GetIssue(ctx context.Context, repo string, issueNumbe
 		return f.getIssue(ctx, repo, issueNumber)
 	}
 	return github.Issue{}, errors.New("unused")
+}
+
+func (f fakeGitHubBackend) ListIssues(ctx context.Context, repo string, opts github.ListIssueOptions) ([]github.Issue, error) {
+	if f.listIssues != nil {
+		return f.listIssues(ctx, repo, opts)
+	}
+	return nil, errors.New("unused")
 }
 
 func (f fakeGitHubBackend) UpdateIssue(ctx context.Context, repo string, issueNumber int, opts github.UpdateIssueOptions) (github.Issue, error) {

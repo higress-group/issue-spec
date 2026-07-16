@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"gopkg.in/yaml.v3"
 )
+
+const workflowNeutralLanguageGuidance = "configure rules.language in the selected project workflow; for legacy OpenSpec, use openspec/config.yaml"
 
 func (a *app) runInit(ctx context.Context, args []string) int {
 	fs := newFlagSet("init", a.err)
@@ -33,15 +36,27 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 	planOnly := fs.Bool("plan", false, "show the self-hosted init plan without mutations or local writes")
 	createLabels := fs.Bool("create-labels", true, "ensure issue-spec labels")
 	skipLabels := fs.Bool("skip-labels", false, "skip ensuring issue-spec labels")
-	tools := fs.String("tools", "", "generate workflow artifacts for AI tools: all, none, or comma-separated codex,claude")
+	tools := fs.String("tools", "", "generate workflow artifacts for AI tools: all, none, or comma-separated codex,claude; explicit none leaves project workflow configuration untouched")
 	delivery := fs.String("delivery", "both", "workflow artifact delivery: both, skills, or commands")
-	installGlobalPrompts := fs.Bool("install-global-prompts", false, "install user-global Codex prompts (disabled by default)")
-	globalPromptsDir := fs.String("global-prompts-dir", "", "user-global Codex prompt directory; implies --install-global-prompts")
-	globalPromptsDryRun := fs.Bool("global-prompts-dry-run", false, "preview user-global Codex prompt paths without writing them; implies --install-global-prompts")
-	language := fs.String("language", "", "preferred natural language for generated workflow artifacts (e.g. zh, en, ja); writes rules.language to issue-spec/config.yaml")
+	installGlobalPrompts := fs.Bool("install-global-prompts", false, "install user-global Codex prompts (disabled by default; conflicts with explicit --tools none)")
+	globalPromptsDir := fs.String("global-prompts-dir", "", "user-global Codex prompt directory; implies --install-global-prompts and conflicts with explicit --tools none")
+	globalPromptsDryRun := fs.Bool("global-prompts-dry-run", false, "preview user-global Codex prompt paths without writing them; implies --install-global-prompts and conflicts with explicit --tools none")
+	language := fs.String("language", "", "preferred natural language for generated workflow artifacts (e.g. zh, en, ja); not applied with explicit --tools none")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
+	}
+	workflowNeutral := strings.EqualFold(strings.TrimSpace(*tools), "none")
+	globalPromptOptionSet := false
+	fs.Visit(func(option *flag.Flag) {
+		switch option.Name {
+		case "install-global-prompts", "global-prompts-dir", "global-prompts-dry-run":
+			globalPromptOptionSet = true
+		}
+	})
+	if workflowNeutral && globalPromptOptionSet {
+		a.errorf("global Codex prompt options cannot be combined with explicit --tools none; select a workflow tool to generate prompts\n")
+		return 2
 	}
 	if *skipLabels {
 		*createLabels = false
@@ -111,8 +126,9 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 		}
 	}
 
+	languageRequested := strings.TrimSpace(*language) != ""
 	var languageConfigPath string
-	if strings.TrimSpace(*language) != "" {
+	if languageRequested && !workflowNeutral {
 		languageConfigPath, err = writeWorkflowLanguageConfig(".", *language)
 		if err != nil {
 			a.errorf("write workflow language config: %v\n", err)
@@ -120,20 +136,27 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 		}
 	}
 
-	workflows, err := writeWorkflowArtifacts(".", *repoFlag, *tools, *delivery)
-	if err != nil {
-		a.errorf("generate workflow artifacts: %v\n", err)
-		return 1
-	}
-	if err := installGlobalCodexPrompts(".", *repoFlag, nil, globalPromptOptions, &workflows); err != nil {
-		a.errorf("install global Codex prompts: %v\n", err)
-		return 1
+	workflows := workflowGenerationResult{Delivery: *delivery}
+	if !workflowNeutral {
+		workflows, err = writeWorkflowArtifacts(".", *repoFlag, *tools, *delivery)
+		if err != nil {
+			a.errorf("generate workflow artifacts: %v\n", err)
+			return 1
+		}
+		if err := installGlobalCodexPrompts(".", *repoFlag, nil, globalPromptOptions, &workflows); err != nil {
+			a.errorf("install global Codex prompts: %v\n", err)
+			return 1
+		}
 	}
 
 	result := map[string]any{"ok": true, "repo": *repoFlag, "hostname": token.Host, "auth": token, "backend": token.Backend, "config": configPath, "labels": labels, "workflows": workflows}
 	if languageConfigPath != "" {
 		result["language"] = languageDisplay(*language)
 		result["language_config"] = languageConfigPath
+	} else if languageRequested && workflowNeutral {
+		result["language"] = languageDisplay(*language)
+		result["language_applied"] = false
+		result["language_guidance"] = workflowNeutralLanguageGuidance
 	}
 	if *jsonOut {
 		return a.outputJSON(result)
@@ -144,6 +167,8 @@ func (a *app) runInit(ctx context.Context, args []string) int {
 	}
 	if languageConfigPath != "" {
 		fmt.Fprintf(a.out, "workflow language: %s (%s)\n", languageDisplay(*language), languageConfigPath)
+	} else if languageRequested && workflowNeutral {
+		fmt.Fprintf(a.out, "workflow language not applied: %s (--tools none); %s\n", languageDisplay(*language), workflowNeutralLanguageGuidance)
 	}
 	for _, label := range labels {
 		if label.Created {

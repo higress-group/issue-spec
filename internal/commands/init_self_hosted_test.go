@@ -352,6 +352,30 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		})
 	}
 	{
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.profileName = "e2e"
+		neutralPlanArgs := []string{"--repo", "local-source/local-checkout", "--server-org", "browser-e2e", "--server-repo", "httpbin",
+			"--provider", "aone", "--source-web-url", "https://code.alibaba-inc.com/Ingress/httpbin",
+			"--tools", "nOnE", "--delivery", "not-used", "--language", "zh", "--skip-labels", "--plan", "--json"}
+		if code := app.runInit(t.Context(), neutralPlanArgs); code != 0 {
+			t.Fatalf("tools-none plan exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
+		}
+		for _, want := range []string{`"language": "Simplified Chinese (简体中文)"`, `"language_applied": false`, "openspec/config.yaml"} {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("tools-none plan output missing %q: %s", want, out.String())
+			}
+		}
+		if ensureCalls != 0 || bindingCalls != 0 || labelCalls != 0 {
+			t.Fatalf("tools-none plan mutated remote state: repository=%d binding=%d labels=%d", ensureCalls, bindingCalls, labelCalls)
+		}
+		for _, path := range []string{filepath.Join(root, ".issue-spec"), filepath.Join(root, "issue-spec"), filepath.Join(root, ".agents")} {
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("tools-none plan created local artifact %q: %v", path, err)
+			}
+		}
+	}
+	{
 		strict := profile
 		strict.OnboardingPolicy.AllowUnattended = false
 		var out, errOut bytes.Buffer
@@ -366,6 +390,104 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 		if ensureCalls != 0 || bindingCalls != 0 {
 			t.Fatalf("rejected non-interactive run mutated remote state: repository=%d binding=%d", ensureCalls, bindingCalls)
 		}
+	}
+	openspecPath := filepath.Join(root, "openspec", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(openspecPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	openspecConfig := "schema: legacy-workflow\nrules:\n  language: Existing OpenSpec Language\n"
+	if err := os.WriteFile(openspecPath, []byte(openspecConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacySchemaPath := filepath.Join(root, "openspec", "schemas", "legacy-workflow", "schema.yaml")
+	if err := os.MkdirAll(filepath.Dir(legacySchemaPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacySchemaPath, []byte("artifacts:\n  specs:\n    type: specs\n    generates: specs/**/*.md\n    template: spec.md\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacyTemplatePath := filepath.Join(root, "openspec", "schemas", "legacy-workflow", "templates", "spec.md")
+	if err := os.MkdirAll(filepath.Dir(legacyTemplatePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyTemplatePath, []byte("## Requirement: {{.Input.requirement.title}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	neutralArgs := []string{"--repo", "local-source/local-checkout", "--server-org", "browser-e2e", "--server-repo", "httpbin",
+		"--provider", "aone", "--source-web-url", "https://code.alibaba-inc.com/Ingress/httpbin",
+		"--tools", "NoNe", "--delivery", "not-used", "--language", "zh", "--skip-labels", "--json"}
+	var neutralOutput string
+	{
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.profileName = "e2e"
+		if code := app.runInit(t.Context(), neutralArgs); code != 0 {
+			t.Fatalf("tools-none init exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
+		}
+		neutralOutput = out.String()
+	}
+	for _, want := range []string{`"language_applied": false`, `"provider_key": "aone"`, "openspec/config.yaml"} {
+		if !strings.Contains(neutralOutput, want) {
+			t.Fatalf("tools-none init output missing %q: %s", want, neutralOutput)
+		}
+	}
+	if got := readTestFile(t, openspecPath); got != openspecConfig {
+		t.Fatalf("tools-none init changed OpenSpec config:\nwant %q\n got %q", openspecConfig, got)
+	}
+	legacyPlan, err := workflow.Resolve(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacyPlan.Source.Kind != workflow.SourceLegacyOpenSpec || legacyPlan.Config.Rules["language"] != "Existing OpenSpec Language" {
+		t.Fatalf("workflow plan after tools-none init = source %q rules=%+v", legacyPlan.Source.Kind, legacyPlan.Config.Rules)
+	}
+	for _, path := range []string{filepath.Join(root, "issue-spec", "config.yaml"), filepath.Join(root, ".agents"), filepath.Join(root, ".claude"), filepath.Join(root, ".codex")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("tools-none init created workflow path %q: %v", path, err)
+		}
+	}
+	neutralConfig := readTestFile(t, filepath.Join(root, ".issue-spec", "config.json"))
+	for _, want := range []string{`"repo": "browser-e2e/httpbin"`, `"profile": "e2e"`, `"server_instance_id": "issue-spec:e2e"`,
+		`"key": "aone"`, `"external_repository": "Ingress/httpbin"`, `"change.comment"`, `"evidence.snapshot"`} {
+		if !strings.Contains(neutralConfig, want) {
+			t.Fatalf("tools-none runtime config missing %q:\n%s", want, neutralConfig)
+		}
+	}
+	if strings.Contains(neutralConfig, "language") {
+		t.Fatalf("tools-none runtime config persisted language:\n%s", neutralConfig)
+	}
+	neutralJournal := readTestFile(t, filepath.Join(root, ".issue-spec", "init-state.json"))
+	var neutralJournalState selfHostedInitJournal
+	if err := json.Unmarshal([]byte(neutralJournal), &neutralJournalState); err != nil {
+		t.Fatal(err)
+	}
+	if stage := neutralJournalState.Stages["workflow"]; stage.State != "skipped" || stage.Detail != "--tools none" {
+		t.Fatalf("tools-none workflow journal stage = %+v", stage)
+	}
+	invalidWorkflowPath := filepath.Join(root, "issue-spec", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(invalidWorkflowPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	invalidWorkflowConfig := "external_code: [invalid provider workflow\n"
+	if err := os.WriteFile(invalidWorkflowPath, []byte(invalidWorkflowConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	{
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.profileName = "e2e"
+		if code := app.runInit(t.Context(), neutralArgs); code != 0 {
+			t.Fatalf("tools-none invalid-config rerun exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
+		}
+	}
+	if got := readTestFile(t, invalidWorkflowPath); got != invalidWorkflowConfig {
+		t.Fatalf("tools-none init changed invalid workflow config:\nwant %q\n got %q", invalidWorkflowConfig, got)
+	}
+	if got := readTestFile(t, openspecPath); got != openspecConfig {
+		t.Fatalf("tools-none invalid-config rerun changed OpenSpec config:\nwant %q\n got %q", openspecConfig, got)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "issue-spec")); err != nil {
+		t.Fatal(err)
 	}
 	var finalOutput string
 	for run := 1; run <= 2; run++ {

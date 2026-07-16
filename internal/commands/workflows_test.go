@@ -244,12 +244,21 @@ func TestWriteWorkflowArtifactsToolsNoneSkipsWorkflowResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := writeWorkflowArtifacts(root, "owner/repo", "none", "both")
-	if err != nil {
-		t.Fatalf("--tools none should not resolve workflow config: %v", err)
+	for _, tools := range []string{"none", " NoNe "} {
+		result, err := writeWorkflowArtifacts(root, "owner/repo", tools, "both")
+		if err != nil {
+			t.Fatalf("--tools %q should not resolve workflow config: %v", tools, err)
+		}
+		if result.Delivery != "both" || len(result.Tools) != 0 || result.WorkflowSource != "" {
+			t.Fatalf("unexpected generation result for tools %q: %+v", tools, result)
+		}
 	}
-	if result.Delivery != "both" || len(result.Tools) != 0 || result.WorkflowSource != "" {
-		t.Fatalf("unexpected generation result for tools none: %+v", result)
+	providerResult, err := writeWorkflowArtifactsWithProvider(root, "owner/repo", "NONE", "both", workflow.ProviderPlan{ProviderKey: "code.example"})
+	if err != nil {
+		t.Fatalf("provider tools-none path should not resolve workflow config: %v", err)
+	}
+	if providerResult.Delivery != "both" || len(providerResult.Tools) != 0 || providerResult.WorkflowSource != "" {
+		t.Fatalf("unexpected provider generation result for tools none: %+v", providerResult)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".agents")); !os.IsNotExist(err) {
 		t.Fatalf("tools none should not create workflow artifacts, err=%v", err)

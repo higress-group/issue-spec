@@ -50,6 +50,14 @@ rules:
 
 Re-run `issue-spec init` after editing the config so the generated skills and commands pick up the rule. Note that when `--language` merges an existing `issue-spec/config.yaml`, it rewrites the file through a YAML round-trip, so hand-added comments are dropped and keys are re-sorted.
 
+### Workflow-neutral initialization
+
+An explicit, case-insensitive `--tools none` initializes issue-spec runtime state without selecting or changing a project workflow. It does not read, validate, create, or modify `issue-spec/config.yaml` or `openspec/config.yaml`, and it generates no repository skills, commands, or user-global prompts. Existing workflow files remain byte-for-byte unchanged; in particular, a repository with only `openspec/config.yaml` continues to use legacy OpenSpec workflow discovery afterward.
+
+Runtime initialization still applies: GitHub init writes `.issue-spec/config.json` and may ensure labels, while self-hosted init may register the approved repository and binding, ensure labels, update its init journal, and record server, provider, external-repository, and capability metadata in `.issue-spec/config.json`. Provider workflow policy is not copied into `issue-spec/config.yaml`.
+
+`--language` is accepted with explicit `--tools none`, but JSON reports `language_applied: false` and text output says it was not applied. Configure `rules.language` in the selected project workflow instead; legacy OpenSpec projects use `openspec/config.yaml`. Any explicit `--install-global-prompts`, `--global-prompts-dir`, or `--global-prompts-dry-run` option conflicts with `--tools none` and is rejected before profile/backend selection or mutation.
+
 ## CLI Reference
 
 ```bash
@@ -63,18 +71,22 @@ issue-spec init --repo owner/repo --skip-labels  # opt out when labels are manag
 issue-spec init --repo owner/repo --tools codex,claude --delivery both
 issue-spec init --repo owner/repo --tools codex,claude --language zh
 issue-spec init --repo owner/repo --tools codex --install-global-prompts
-issue-spec init --repo owner/repo --tools none --global-prompts-dir /tmp/issue-spec-prompts --global-prompts-dry-run
+issue-spec init --repo owner/repo --tools none --language zh  # language is reported but not applied
 
 issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md [--title "Custom proposal title"]
 issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md [--title "Custom design title"]
 issue-spec issue create implement --repo owner/repo --change my-change --proposal 1 --design 2 --body-file implement.md [--title "Custom implementation title"]
+issue-spec issue list --repo owner/repo --state all --json
 issue-spec issue update --repo owner/repo --issue 1 --body-file proposal.md --summary "Clarified goals after review."
+issue-spec issue close --repo owner/repo --issue 1 --json
+issue-spec issue reopen --repo owner/repo --issue 1 --json
 
 issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --json
 issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
 issue-spec comment list --repo owner/repo --issue 1 --json
+issue-spec comment list --repo owner/repo --issue 1 --type SPEC --json --include-body
 
 issue-spec question create --repo owner/repo --issue 1 --id QUESTION-001 --blocking --question "What must be decided?"
 issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-001 --resolution-file resolution.md
@@ -104,6 +116,19 @@ issue-spec runner poll --repo owner/repo --runner login --once --dry-run
 issue-spec runner poll --repo owner/repo --runner login --agent codex
 ```
 
+`issue list` is JSON-only and defaults to open issues. `--state` accepts
+`open`, `closed`, or `all`; all pages are collected, ordinary issues are
+included whether or not they have issue-spec metadata, and GitHub pull
+requests are excluded. Each result contains the issue number, title, state,
+human-facing URL, and complete body.
+
+`issue update --body-file` keeps ordinary, unmarked issues as plain body
+replacement. For marked issue-spec issues it preserves the stored marker and,
+for design and implement issues, the direct predecessor link exactly once.
+Conflicting or malformed reserved metadata is rejected before the update.
+`issue close` and `issue reopen` first read the issue and skip the update when
+it already has the requested state; JSON output reports this with `changed`.
+
 ### Search before a related change
 
 For self-hosted profiles, `search issues` discovers the server capability and
@@ -123,6 +148,12 @@ hosted GitHub or self-hosted REST issue backend. It accepts `--body-file -` for
 stdin pipelines and, with `--json`, returns only bounded creation metadata such
 as the comment ID and URL. It does not add a typed marker or validate the body
 as a workflow artifact.
+
+`comment list --json` keeps its existing parsed-artifact schema by default.
+Adding `--include-body` gives each returned artifact a top-level `body` field
+containing the exact original backend Markdown; the flag requires `--json`.
+Type filtering and canonical diagnostics are unchanged in either mode, and no
+matches are encoded as `[]` rather than `null`.
 
 ## Canonical Typed Comments
 

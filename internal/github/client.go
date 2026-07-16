@@ -51,14 +51,15 @@ type User struct {
 }
 
 type Issue struct {
-	ID      int64  `json:"id"`
-	NodeID  string `json:"node_id,omitempty"`
-	Number  int    `json:"number"`
-	HTMLURL string `json:"html_url"`
-	URL     string `json:"url"`
-	Title   string `json:"title"`
-	Body    string `json:"body"`
-	State   string `json:"state"`
+	ID          int64     `json:"id"`
+	NodeID      string    `json:"node_id,omitempty"`
+	Number      int       `json:"number"`
+	HTMLURL     string    `json:"html_url"`
+	URL         string    `json:"url"`
+	Title       string    `json:"title"`
+	Body        string    `json:"body"`
+	State       string    `json:"state"`
+	PullRequest *struct{} `json:"pull_request,omitempty"`
 }
 
 type Comment struct {
@@ -124,6 +125,10 @@ type UpdateIssueOptions struct {
 	Title *string
 	Body  *string
 	State *string
+}
+
+type ListIssueOptions struct {
+	State string
 }
 
 type PullRequestFile struct {
@@ -233,6 +238,27 @@ func (c *Client) GetIssue(ctx context.Context, repo string, issueNumber int) (Is
 	var issue Issue
 	err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d", repo, issueNumber), nil, &issue)
 	return issue, err
+}
+
+func (c *Client) ListIssues(ctx context.Context, repo string, opts ListIssueOptions) ([]Issue, error) {
+	var all []Issue
+	for page := 1; ; page++ {
+		var issues []Issue
+		query := url.Values{
+			"page":     {strconv.Itoa(page)},
+			"per_page": {"100"},
+			"state":    {opts.State},
+		}
+		path := "/repos/" + repo + "/issues?" + query.Encode()
+		if err := c.doJSON(ctx, http.MethodGet, path, nil, &issues); err != nil {
+			return nil, err
+		}
+		all = append(all, issues...)
+		if len(issues) < 100 {
+			break
+		}
+	}
+	return all, nil
 }
 
 func (c *Client) UpdatePullRequest(ctx context.Context, repo string, prNumber int, opts UpdatePullRequestOptions) (PullRequest, error) {

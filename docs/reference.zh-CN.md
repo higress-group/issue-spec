@@ -50,6 +50,14 @@ rules:
 
 编辑 config 后重新运行 `issue-spec init`，让生成的 skills 与命令拾取该规则。注意：当 `--language` 合并一个已存在的 `issue-spec/config.yaml` 时，会通过 YAML 往返重写该文件，因此手写的注释会被丢弃、key 会被重新排序。
 
+### 工作流中立的初始化
+
+显式且不区分大小写的 `--tools none` 会初始化 issue-spec 运行时状态，但不会选择或更改项目工作流。它不会读取、校验、创建或修改 `issue-spec/config.yaml` 或 `openspec/config.yaml`，也不会生成仓库 skills、commands 或用户全局 prompts。已有工作流文件会保持逐字节不变；尤其是只有 `openspec/config.yaml` 的仓库，初始化之后仍会通过遗留 OpenSpec 兼容模式发现工作流。
+
+运行时初始化仍会执行：GitHub init 会写入 `.issue-spec/config.json`，并可确保 labels；自托管 init 仍可注册已批准的仓库与 binding、确保 labels、更新 init journal，并在 `.issue-spec/config.json` 中记录服务器、provider、外部仓库与 capability 元数据。provider 工作流策略不会复制到 `issue-spec/config.yaml`。
+
+显式 `--tools none` 可以与 `--language` 一起使用，但 JSON 会报告 `language_applied: false`，文本输出也会说明该语言未应用。请改在所选项目工作流中配置 `rules.language`；遗留 OpenSpec 项目使用 `openspec/config.yaml`。任何显式的 `--install-global-prompts`、`--global-prompts-dir` 或 `--global-prompts-dry-run` 选项都与 `--tools none` 冲突，并会在 profile/backend 选择或任何变更之前被拒绝。
+
 ## CLI 参考
 
 ```bash
@@ -63,18 +71,22 @@ issue-spec init --repo owner/repo --skip-labels  # 标签由其他系统单独�
 issue-spec init --repo owner/repo --tools codex,claude --delivery both
 issue-spec init --repo owner/repo --tools codex,claude --language zh
 issue-spec init --repo owner/repo --tools codex --install-global-prompts
-issue-spec init --repo owner/repo --tools none --global-prompts-dir /tmp/issue-spec-prompts --global-prompts-dry-run
+issue-spec init --repo owner/repo --tools none --language zh  # 会报告语言，但不会应用
 
 issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md [--title "Custom proposal title"]
 issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md [--title "Custom design title"]
 issue-spec issue create implement --repo owner/repo --change my-change --proposal 1 --design 2 --body-file implement.md [--title "Custom implementation title"]
+issue-spec issue list --repo owner/repo --state all --json
 issue-spec issue update --repo owner/repo --issue 1 --body-file proposal.md --summary "Clarified goals after review."
+issue-spec issue close --repo owner/repo --issue 1 --json
+issue-spec issue reopen --repo owner/repo --issue 1 --json
 
 issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --json
 issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
 issue-spec comment list --repo owner/repo --issue 1 --json
+issue-spec comment list --repo owner/repo --issue 1 --type SPEC --json --include-body
 
 issue-spec question create --repo owner/repo --issue 1 --id QUESTION-001 --blocking --question "What must be decided?"
 issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-001 --resolution-file resolution.md
@@ -104,6 +116,17 @@ issue-spec runner poll --repo owner/repo --runner login --once --dry-run
 issue-spec runner poll --repo owner/repo --runner login --agent codex
 ```
 
+`issue list` 只提供 JSON 输出，默认列出 open issue。`--state` 接受
+`open`、`closed` 或 `all`；命令会收集所有分页，包含无 issue-spec 元数据的
+普通 issue，并排除 GitHub pull request。每条结果包含 issue 编号、标题、状态、
+面向用户的 URL 与完整正文。
+
+对普通、无 marker 的 issue，`issue update --body-file` 仍是纯正文替换。
+对于带 marker 的 issue-spec issue，命令会确保已存储的 marker 只保留一次；
+design 与 implement issue 还会确保直接前置 issue 链接只保留一次。冲突或格式
+错误的保留元数据会在更新前被拒绝。`issue close` 与 `issue reopen` 会先读取
+issue；若其状态已符合目标则跳过更新，并在 JSON 的 `changed` 字段中报告。
+
 ### 在相关改动前先检索
 
 对 self-hosted Profile，`search issues` 会先发现 Server 是否启用检索；能力关闭时
@@ -120,6 +143,12 @@ Session）在提出或实现相关改动前，根据用户请求和代码库提�
 issue 时间线评论。它支持 `--body-file -` 从 stdin 读取，并可通过 `--json` 仅返回
 comment ID、URL 等有界的创建元数据。该命令不会添加 typed marker，也不会把正文
 当作工作流 artifact 校验。
+
+`comment list --json` 默认保持现有的解析后 artifact schema 不变。加上
+`--include-body` 后，每条返回的 artifact 会新增顶层 `body` 字段，其中包含后端
+返回的原始 Markdown（逐字节保持）；该 flag 必须与 `--json` 一起使用。两种模式
+下的类型过滤与 canonical diagnostics 都保持不变；没有匹配项时编码为 `[]`，而
+不是 `null`。
 
 ## Canonical 类型化评论
 
