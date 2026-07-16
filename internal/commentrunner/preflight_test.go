@@ -641,9 +641,11 @@ func TestPreflightFailsCodexAuthBeforeRunnerStarts(t *testing.T) {
 	if codex.Status != CheckError || !strings.Contains(codex.Detail, "Codex auth unavailable") || !strings.Contains(codex.Hint, "CODEX_HOME") {
 		t.Fatalf("unexpected codex auth check: %+v", codex)
 	}
+	// The non-default claude agent is still reported, but its unreadiness is
+	// non-blocking: it is demoted to a warning and does not block startup.
 	claude := findCheck(t, report, "claude-auth")
-	if claude.Status != CheckSkipped || !strings.Contains(claude.Detail, "configured agent is codex") {
-		t.Fatalf("claude auth should be skipped for codex agent: %+v", claude)
+	if claude.Status != CheckWarning || !strings.Contains(claude.Detail, "secondary agent (non-blocking)") {
+		t.Fatalf("claude auth should be reported as non-blocking for codex default: %+v", claude)
 	}
 }
 
@@ -666,9 +668,11 @@ func TestPreflightDistinguishesClaudeAuthFromCodexAuth(t *testing.T) {
 	if report.OK {
 		t.Fatalf("preflight unexpectedly OK with only codex auth for claude agent: %+v", report)
 	}
+	// The non-default codex agent is still reported. Its auth is present here, so
+	// it stays OK; readiness of the secondary agent is reported, not skipped.
 	codex := findCheck(t, report, "codex-auth")
-	if codex.Status != CheckSkipped || !strings.Contains(codex.Detail, "configured agent is claude") {
-		t.Fatalf("codex auth should be skipped for claude agent: %+v", codex)
+	if codex.Status != CheckOK || !strings.Contains(codex.Detail, "Codex auth source") {
+		t.Fatalf("codex auth should be reported ready for claude default: %+v", codex)
 	}
 	claude := findCheck(t, report, "claude-auth")
 	if claude.Status != CheckError || !strings.Contains(claude.Detail, "Claude Code auth unavailable") || !strings.Contains(claude.Hint, "claude login") {

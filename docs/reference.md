@@ -60,12 +60,15 @@ issue-spec init --repo owner/repo
 issue-spec init --repo owner/repo --skip-labels  # opt out when labels are managed separately
 issue-spec init --repo owner/repo --tools codex,claude --delivery both
 issue-spec init --repo owner/repo --tools codex,claude --language zh
+issue-spec init --repo owner/repo --tools codex --install-global-prompts
+issue-spec init --repo owner/repo --tools none --global-prompts-dir /tmp/issue-spec-prompts --global-prompts-dry-run
 
 issue-spec issue create proposal --repo owner/repo --change my-change --body-file proposal.md [--title "Custom proposal title"]
 issue-spec issue create design --repo owner/repo --change my-change --proposal 1 --body-file design.md [--title "Custom design title"]
 issue-spec issue create implement --repo owner/repo --change my-change --proposal 1 --design 2 --body-file implement.md [--title "Custom implementation title"]
 issue-spec issue update --repo owner/repo --issue 1 --body-file proposal.md --summary "Clarified goals after review."
 
+issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --json
 issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
@@ -98,6 +101,12 @@ issue-spec runner preflight --repo owner/repo --runner login
 issue-spec runner poll --repo owner/repo --runner login --once --dry-run
 issue-spec runner poll --repo owner/repo --runner login --agent codex
 ```
+
+`comment create` writes an ordinary issue timeline comment through the selected
+hosted GitHub or self-hosted REST issue backend. It accepts `--body-file -` for
+stdin pipelines and, with `--json`, returns only bounded creation metadata such
+as the comment ID and URL. It does not add a typed marker or validate the body
+as a workflow artifact.
 
 ## Canonical Typed Comments
 

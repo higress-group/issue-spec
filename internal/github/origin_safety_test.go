@@ -47,6 +47,42 @@ func TestClientRejectsCrossOriginRedirectBeforeSendingToken(t *testing.T) {
 	}
 }
 
+func TestCreateCommentRejectsCrossOriginRedirectBeforeSendingToken(t *testing.T) {
+	const secret = "ordinary-comment-origin-secret"
+	var attackerRequests atomic.Int32
+	attacker := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		attackerRequests.Add(1)
+	}))
+	defer attacker.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+secret {
+			t.Fatalf("origin authorization = %q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Location", attacker.URL+"/steal-comment-token")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer origin.Close()
+
+	client, err := NewClientWithOptions(ClientOptions{Host: "issues.test", BaseURL: origin.URL, Token: secret, HTTPClient: origin.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.CreateComment(t.Context(), "o/r", 7, "ordinary body")
+	if err == nil {
+		t.Fatal("cross-origin ordinary comment redirect succeeded")
+	}
+	var unsafe *UnsafeOriginError
+	if !errors.As(err, &unsafe) || unsafe.Operation != "cross-origin redirect" {
+		t.Fatalf("error = %T %v", err, err)
+	}
+	if attackerRequests.Load() != 0 {
+		t.Fatalf("attacker received %d ordinary comment requests", attackerRequests.Load())
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("token leaked in error: %v", err)
+	}
+}
+
 func TestAbsoluteCursorOriginSafetyRunsBeforeRequest(t *testing.T) {
 	var requests atomic.Int32
 	doer := roundTripDoer(func(r *http.Request) (*http.Response, error) {

@@ -15,12 +15,53 @@ func TestParseCommandCommentAcceptsNormalizedCommands(t *testing.T) {
 		wantVerb      CommandVerb
 		wantPrompt    string
 		wantSessionID string
+		wantAgent     string
 	}{
 		{
 			name:       "new free form prompt",
 			body:       " \n\t/new fix the issue --model ignored-as-prompt\nthen run tests",
 			wantVerb:   VerbNew,
 			wantPrompt: "fix the issue --model ignored-as-prompt\nthen run tests",
+		},
+		{
+			name:       "new selects codex agent",
+			body:       "/new codex fix the issue",
+			wantVerb:   VerbNew,
+			wantPrompt: "fix the issue",
+			wantAgent:  "codex",
+		},
+		{
+			name:       "new selects claude agent",
+			body:       "/new claude fix the issue",
+			wantVerb:   VerbNew,
+			wantPrompt: "fix the issue",
+			wantAgent:  "claude",
+		},
+		{
+			name:       "new agent selector is case insensitive",
+			body:       "/new CLAUDE fix the issue",
+			wantVerb:   VerbNew,
+			wantPrompt: "fix the issue",
+			wantAgent:  "claude",
+		},
+		{
+			name:       "new mixed case codex selector normalizes",
+			body:       "/new Codex fix the issue",
+			wantVerb:   VerbNew,
+			wantPrompt: "fix the issue",
+			wantAgent:  "codex",
+		},
+		{
+			name:       "new quoted prompt beginning with codex stays prompt",
+			body:       `/new "codex should be treated as literal text"`,
+			wantVerb:   VerbNew,
+			wantPrompt: "codex should be treated as literal text",
+		},
+		{
+			name:       "new non-agent first token stays prompt",
+			body:       "/new codexify the workflow",
+			wantVerb:   VerbNew,
+			wantPrompt: "codexify the workflow",
 		},
 		{
 			name:       "new quoted prompt",
@@ -119,13 +160,13 @@ func TestParseCommandCommentAcceptsNormalizedCommands(t *testing.T) {
 				t.Fatalf("status = %s rejection=%+v, want accepted", result.Status, result.Rejection)
 			}
 			got := result.Candidate
-			if got.Verb != tt.wantVerb || got.Prompt != tt.wantPrompt || got.PublicSessionID != tt.wantSessionID {
+			if got.Verb != tt.wantVerb || got.Prompt != tt.wantPrompt || got.PublicSessionID != tt.wantSessionID || got.Agent != tt.wantAgent {
 				t.Fatalf("candidate = %+v", got)
 			}
 			if got.Repo != "o/r" || got.Issue != 9 || got.TriggerCommentID != 101 || got.Commenter != "alice" {
 				t.Fatalf("candidate metadata = %+v", got)
 			}
-			if !strings.HasPrefix(got.FirstObservedBodyHash, "sha256:") || !strings.HasPrefix(got.IdempotencyKey, "runner-command-v1:") || got.ID == "" {
+			if !strings.HasPrefix(got.FirstObservedBodyHash, "sha256:") || !strings.HasPrefix(got.IdempotencyKey, "runner-command-v2:") || got.ID == "" {
 				t.Fatalf("candidate ids/hashes not populated: %+v", got)
 			}
 			again := ParseCommandComment(TriggerComment{
@@ -152,6 +193,8 @@ func TestParseCommandCommentRejectsMalformedCommands(t *testing.T) {
 	}{
 		{name: "unknown command", body: "/deploy now", wantReason: ReasonUnknownCommand},
 		{name: "new missing prompt", body: "/new", wantReason: ReasonMissingPrompt},
+		{name: "new agent selector without prompt", body: "/new codex", wantReason: ReasonMissingPrompt},
+		{name: "new claude selector without prompt", body: "/new claude", wantReason: ReasonMissingPrompt},
 		{name: "resume missing session", body: "/resume", wantReason: ReasonMissingSessionID},
 		{name: "resume malformed session slash", body: "/resume bad/id continue", wantReason: ReasonMalformedSessionID},
 		{name: "resume malformed session flag", body: "/resume -danger continue", wantReason: ReasonMalformedSessionID},
@@ -178,8 +221,8 @@ func TestParseCommandCommentRejectsMalformedCommands(t *testing.T) {
 
 func TestCommandIdempotencyIncludesLiteralProcessPromptText(t *testing.T) {
 	comment := TriggerComment{Repo: "o/r", Issue: 1, CommentID: 2, Commenter: "alice"}
-	first := commandIdempotencyKey(comment, VerbResume, "sess-1", BodyHash("--process PROCESS-008 work"))
-	second := commandIdempotencyKey(comment, VerbResume, "sess-1", BodyHash("--process PROCESS-009 work"))
+	first := commandIdempotencyKey(comment, VerbResume, "sess-1", "", BodyHash("--process PROCESS-008 work"))
+	second := commandIdempotencyKey(comment, VerbResume, "sess-1", "", BodyHash("--process PROCESS-009 work"))
 	if first == second {
 		t.Fatal("literal PROCESS prompt text did not affect idempotency")
 	}

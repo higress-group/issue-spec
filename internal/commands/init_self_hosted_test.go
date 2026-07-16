@@ -305,23 +305,51 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 	args := []string{"--repo", "local-source/local-checkout", "--server-org", "browser-e2e", "--server-repo", "httpbin",
 		"--provider", "aone", "--source-web-url", "https://code.alibaba-inc.com/Ingress/httpbin",
 		"--tools", "codex", "--delivery", "skills", "--json"}
-	{
-		var out, errOut bytes.Buffer
-		app := newApp(strings.NewReader(""), &out, &errOut)
-		app.profileName = "e2e"
-		planArgs := append(append([]string(nil), args...), "--plan")
-		if code := app.runInit(t.Context(), planArgs); code != 0 {
-			t.Fatalf("plan exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
-		}
-		if ensureCalls != 0 || bindingCalls != 0 {
-			t.Fatalf("plan mutated remote state: repository=%d binding=%d", ensureCalls, bindingCalls)
-		}
-		if !strings.Contains(out.String(), `"key": "browser-e2e/httpbin"`) || strings.Contains(out.String(), "local-source/local-checkout") {
-			t.Fatalf("plan did not use the resolved server target: %s", out.String())
-		}
-		if _, err := os.Stat(filepath.Join(root, ".issue-spec")); !os.IsNotExist(err) {
-			t.Fatalf("plan created local state: %v", err)
-		}
+	previewDir := filepath.Join(root, "isolated-global-prompts")
+	planArgs := []string{"--repo", "local-source/local-checkout", "--server-org", "browser-e2e", "--server-repo", "httpbin",
+		"--provider", "aone", "--source-web-url", "https://code.alibaba-inc.com/Ingress/httpbin",
+		"--tools", "codex", "--delivery", "both", "--plan",
+		"--global-prompts-dir", previewDir, "--global-prompts-dry-run"}
+	for _, test := range []struct {
+		name       string
+		jsonOutput bool
+		marker     string
+	}{
+		{name: "text", marker: "user-global prompt dry-run:"},
+		{name: "json", jsonOutput: true, marker: `"global_prompt_files"`},
+	} {
+		t.Run("plan global prompt preview "+test.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			app := newApp(strings.NewReader(""), &out, &errOut)
+			app.profileName = "e2e"
+			currentArgs := append([]string(nil), planArgs...)
+			if test.jsonOutput {
+				currentArgs = append(currentArgs, "--json")
+			}
+			if code := app.runInit(t.Context(), currentArgs); code != 0 {
+				t.Fatalf("plan exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
+			}
+			if ensureCalls != 0 || bindingCalls != 0 || labelCalls != 0 {
+				t.Fatalf("plan mutated remote state: repository=%d binding=%d labels=%d", ensureCalls, bindingCalls, labelCalls)
+			}
+			if !strings.Contains(out.String(), test.marker) || strings.Contains(out.String(), "local-source/local-checkout") {
+				t.Fatalf("plan did not report the resolved global prompt preview: %s", out.String())
+			}
+			for _, command := range []string{"propose", "apply", "review", "verify", "archive"} {
+				path := filepath.Join(previewDir, "issue-spec-"+command+".md")
+				if !strings.Contains(out.String(), path) {
+					t.Fatalf("plan output missing absolute global prompt path %q: %s", path, out.String())
+				}
+			}
+			for _, path := range []string{
+				filepath.Join(root, ".issue-spec"), filepath.Join(root, "issue-spec"),
+				filepath.Join(root, ".agents"), filepath.Join(root, ".claude"), previewDir,
+			} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("plan created local artifact %q: %v", path, err)
+				}
+			}
+		})
 	}
 	{
 		strict := profile

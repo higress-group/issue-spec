@@ -83,8 +83,13 @@ type SandboxRequest struct {
 type ExecutionEnvironment struct {
 	WorkingDirectory string
 	AcpxBinary       string
-	Sandbox          state.SandboxMetadata
-	Runner           acpx.CommandRunner
+	// CoordinatorKind is the per-job acpx agent resolved from the job's
+	// CoordinatorKind. The adapter factory derives the job's acpx config from it
+	// so a `/new <agent>` job runs with the selected agent's config, not the
+	// runner default. Empty falls back to the factory's default-agent config.
+	CoordinatorKind string
+	Sandbox         state.SandboxMetadata
+	Runner          acpx.CommandRunner
 }
 
 type AcpxFactory interface {
@@ -837,7 +842,7 @@ func (d *Dispatcher) prepareWorkspace(ctx context.Context, job state.Job, comman
 			return workspace.Binding{}, state.PublicSession{}, resolver.DriftError()
 		}
 		session = state.PublicSession{Repo: job.Repo, PublicSessionID: publicID, IssueNumber: job.IssueNumber,
-			CreatorLogin: job.SessionCreatorLogin, Status: state.StatusDispatched, CreatedAt: firstTime(job.CreatedAt, d.now()),
+			CreatorLogin: job.SessionCreatorLogin, CoordinatorKind: job.CoordinatorKind, Status: state.StatusDispatched, CreatedAt: firstTime(job.CreatedAt, d.now()),
 			Workspace: binding.Workspace, RepositoryBinding: repo.Binding}
 		if err := d.persistPreparedRepositoryBinding(ctx, job.ID, session, binding.Workspace, repo.Binding); err != nil {
 			return workspace.Binding{}, state.PublicSession{}, err
@@ -1331,6 +1336,7 @@ func (d *Dispatcher) complete(ctx context.Context, jobID string, command runnerc
 				IssueNumber:       job.IssueNumber,
 				AcpxRecordID:      meta.StableRecordID,
 				CreatorLogin:      job.SessionCreatorLogin,
+				CoordinatorKind:   job.CoordinatorKind,
 				CreatedAt:         firstTime(job.CreatedAt, now),
 				RepositoryBinding: job.RepositoryBinding,
 			}
@@ -1434,6 +1440,7 @@ func (d *Dispatcher) failWithDispatchMetadata(ctx context.Context, jobID string,
 				IssueNumber:       next.IssueNumber,
 				AcpxRecordID:      meta.StableRecordID,
 				CreatorLogin:      next.SessionCreatorLogin,
+				CoordinatorKind:   next.CoordinatorKind,
 				CreatedAt:         firstTime(next.CreatedAt, now),
 				RepositoryBinding: next.RepositoryBinding,
 			}
@@ -1649,6 +1656,7 @@ func (p SandboxRunner) Prepare(ctx context.Context, req SandboxRequest) (Executi
 	env := ExecutionEnvironment{
 		WorkingDirectory: firstNonEmpty(req.AcpxWorkingDirectory, req.WorkspacePath),
 		AcpxBinary:       acpxBinary,
+		CoordinatorKind:  req.AcpxAgent,
 		Sandbox:          sandboxMetadata(metadata, err, configuredAgentRuntime(cfg, req.AcpxAgent)),
 		Runner:           sandboxedRunner{cfg: cfg, deps: p.Deps, acpxBinary: firstNonEmpty(req.AcpxBinary, "acpx"), resolvedAcpxBinary: resolvedAcpxBinary},
 	}
@@ -2632,38 +2640,69 @@ func shouldUseResolvedAcpxBinary(binary, requested, resolved string) bool {
 
 type AcpxAdapterFactory struct {
 	Config acpx.Config
+	// RunnerConfig lets the factory derive a per-job acpx config from the job's
+	// coordinator kind. When set, a job whose CoordinatorKind differs from the
+	// default agent gets that agent's mode/permissions/model/Claude settings.
+	RunnerConfig commentrunner.Config
 }
 
 func (f AcpxAdapterFactory) NewCoordinator(env ExecutionEnvironment) (Coordinator, error) {
 	cfg := f.Config
+	if kind := strings.TrimSpace(env.CoordinatorKind); kind != "" && kind != cfg.Agent {
+		cfg = AcpxConfigForKind(f.RunnerConfig, kind)
+	}
 	cfg.CWD = firstNonEmpty(env.WorkingDirectory, cfg.CWD)
 	cfg.Binary = firstNonEmpty(env.AcpxBinary, cfg.Binary)
 	return acpx.NewAdapter(cfg, env.Runner)
 }
 
+// NewAcpxConfig derives the acpx config for the runner's configured default
+// agent. Per-command selection derives a job's config from its coordinator kind
+// through AcpxConfigForKind, but this preserves the default-agent config used to
+// seed the adapter factory.
 func NewAcpxConfig(cfg commentrunner.Config) acpx.Config {
 	cfg = cfg.Normalized()
+	return AcpxConfigForKind(cfg, cfg.Agent.Kind)
+}
+
+// AcpxConfigForKind derives the acpx config for a specific coordinator kind
+// rather than the runner-wide default. Agent, mode, permissions, and
+// Claude-specific settings all follow the selected kind so a `/new <agent>` job
+// runs with that agent's operator-configured behavior. Only the runner's
+// configured default agent carries the operator model; a selected non-default
+// agent runs with its own default model (no explicit model).
+func AcpxConfigForKind(cfg commentrunner.Config, kind string) acpx.Config {
+	cfg = cfg.Normalized()
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = cfg.Agent.Kind
+	}
 	permissions := acpx.PermissionApproveReads
-	if cfg.Agent.Kind == commentrunner.AgentCodex && cfg.Agent.CodexAgentFullAccess {
-		permissions = acpx.PermissionApproveAll
-	}
-	if cfg.Agent.Kind == commentrunner.AgentClaude && cfg.Agent.ClaudeAgentFullAccess {
-		permissions = acpx.PermissionApproveAll
-	}
 	mode := ""
-	if cfg.Agent.Kind == commentrunner.AgentCodex && cfg.Agent.CodexAgentFullAccess {
+	if kind == commentrunner.AgentCodex && cfg.Agent.CodexAgentFullAccess {
+		permissions = acpx.PermissionApproveAll
 		mode = "agent-full-access"
 	}
-	return acpx.Config{
+	if kind == commentrunner.AgentClaude && cfg.Agent.ClaudeAgentFullAccess {
+		permissions = acpx.PermissionApproveAll
+	}
+	model := ""
+	if kind == cfg.Agent.Kind {
+		model = cfg.Agent.Model
+	}
+	config := acpx.Config{
 		Binary:                    cfg.AcpxPath,
-		Agent:                     cfg.Agent.Kind,
-		Model:                     cfg.Agent.Model,
+		Agent:                     kind,
+		Model:                     model,
 		Mode:                      mode,
 		MaxPermissions:            permissions,
 		NonInteractivePermissions: acpx.NonInteractiveFail,
-		ClaudeIncludeUserSettings: cfg.Agent.ClaudeIncludeUserSettings,
-		ClaudeAllowedTools:        cfg.Agent.ClaudeAllowedTools,
 	}
+	if kind == commentrunner.AgentClaude {
+		config.ClaudeIncludeUserSettings = cfg.Agent.ClaudeIncludeUserSettings
+		config.ClaudeAllowedTools = cfg.Agent.ClaudeAllowedTools
+	}
+	return config
 }
 
 type NoopArtifactProvider struct{}

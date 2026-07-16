@@ -78,6 +78,9 @@ func RenderRunnerStatusComment(comment RunnerStatusComment) (string, error) {
 	if strings.TrimSpace(comment.PublicSessionID) != "" {
 		tableRow(&b, "Public session", codeOrNA(comment.PublicSessionID))
 	}
+	if strings.TrimSpace(comment.AgentKind) != "" {
+		tableRow(&b, "Agent", codeOrNA(comment.AgentKind))
+	}
 
 	writeResultSummary(&b, comment)
 	writeRejectedReason(&b, comment)

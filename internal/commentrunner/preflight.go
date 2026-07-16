@@ -535,23 +535,47 @@ func unsafeSandboxDetail(cfg Config) string {
 
 func addAgentChecks(report *PreflightReport, cfg Config, deps PreflightDependencies) {
 	report.add(PreflightCheck{Name: "configured-agent", Status: CheckOK, Detail: configuredAgentDetail(cfg)})
-	switch cfg.Agent.Kind {
-	case AgentCodex:
-		report.add(codexAccessCheck(cfg))
-		report.add(codexACPCheck(deps))
-		report.add(codexAuthCheck())
-		report.add(PreflightCheck{Name: "claude-agent-full-access", Status: CheckSkipped, Detail: "configured agent is codex"})
-		report.add(PreflightCheck{Name: "claude-user-settings", Status: CheckSkipped, Detail: "configured agent is codex"})
-		report.add(PreflightCheck{Name: "claude-auth", Status: CheckSkipped, Detail: "configured agent is codex"})
-		report.add(PreflightCheck{Name: "claude-allowed-tools", Status: CheckSkipped, Detail: "configured agent is codex"})
-	case AgentClaude:
-		report.add(PreflightCheck{Name: "codex-agent-full-access", Status: CheckSkipped, Detail: "configured agent is claude"})
-		report.add(PreflightCheck{Name: "codex-acp", Status: CheckSkipped, Detail: "configured agent is claude"})
-		report.add(PreflightCheck{Name: "codex-auth", Status: CheckSkipped, Detail: "configured agent is claude"})
-		report.add(claudeAgentFullAccessCheck(cfg))
-		report.add(claudeUserSettingsCheck(cfg))
-		report.add(claudeAuthCheck())
-		report.add(claudeAllowedToolsCheck(cfg))
+	// Both codex and claude are selectable per `/new <agent>`, so preflight
+	// reports readiness for each. The configured default agent's failures block
+	// startup as before; a secondary (selectable but non-default) agent's
+	// failures are non-blocking here and instead fail only the specific
+	// `/new <that-agent>` job at dispatch, even under StrictAgentCapabilities.
+	report.add(codexAccessCheck(cfg))
+	report.add(codexACPCheck(deps))
+	report.add(codexAuthCheck())
+	report.add(claudeAgentFullAccessCheck(cfg))
+	report.add(claudeUserSettingsCheck(cfg))
+	report.add(claudeAuthCheck())
+	report.add(claudeAllowedToolsCheck(cfg))
+	demoteSecondaryAgentChecks(report, cfg.Agent.Kind)
+}
+
+// secondaryAgentCheckNames maps the runner's default agent kind to the check
+// names that belong to the other, non-default agent. Those checks are reported
+// for readiness but must never block runner startup.
+var secondaryAgentCheckNames = map[string][]string{
+	AgentCodex:  {"claude-agent-full-access", "claude-user-settings", "claude-auth", "claude-allowed-tools"},
+	AgentClaude: {"codex-agent-full-access", "codex-acp", "codex-auth"},
+}
+
+// demoteSecondaryAgentChecks downgrades any CheckError produced by the non-default
+// agent's checks to a non-blocking CheckWarning, so an unready secondary agent
+// reports its state without blocking runner start. The corresponding `/new`
+// job fails fast at dispatch instead.
+func demoteSecondaryAgentChecks(report *PreflightReport, defaultKind string) {
+	secondary := make(map[string]struct{}, len(secondaryAgentCheckNames[defaultKind]))
+	for _, name := range secondaryAgentCheckNames[defaultKind] {
+		secondary[name] = struct{}{}
+	}
+	for i := range report.Checks {
+		check := &report.Checks[i]
+		if _, ok := secondary[check.Name]; !ok {
+			continue
+		}
+		if check.Status == CheckError {
+			check.Status = CheckWarning
+			check.Detail = "secondary agent (non-blocking): " + check.Detail
+		}
 	}
 }
 

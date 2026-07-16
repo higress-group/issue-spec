@@ -1062,7 +1062,7 @@ func (a *app) runRunnerReconcileWithStore(ctx context.Context, cfg commentrunner
 			BwrapPath:       cfg.BwrapPath,
 			HostGHConfigDir: cfg.GHConfigDir,
 		}},
-		Acpx:       jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg)},
+		Acpx:       jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg), RunnerConfig: cfg},
 		Writeback:  writebacks,
 		AcpxBinary: cfg.AcpxPath,
 	}
@@ -1173,7 +1173,7 @@ func (a *app) buildRunnerDispatcher(ctx context.Context, cfg commentrunner.Confi
 			BwrapPath:       cfg.BwrapPath,
 			HostGHConfigDir: cfg.GHConfigDir,
 		}},
-		Acpx:            jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg)},
+		Acpx:            jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg), RunnerConfig: cfg},
 		Artifacts:       &jobs.IssueSpecArtifactProvider{GitHub: runnerBackend},
 		Writeback:       writebacks,
 		AcpxBinary:      cfg.AcpxPath,

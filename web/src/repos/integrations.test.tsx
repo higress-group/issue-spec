@@ -53,6 +53,29 @@ describe("repository integrations workspace", () => {
     expect(screen.getByRole("dialog", { name: "Webhook secret v1" })).toHaveTextContent(webhookId);
   });
 
+  it("renders a safe create destination rejection beside the receiver URL", async () => {
+    server.use(
+      metaHandler(),
+      http.get(webhookCollectionPath(), () => HttpResponse.json({ subscriptions: [] })),
+      http.get(deliveryCollectionPath(), () => HttpResponse.json({ deliveries: [] })),
+      http.post(webhookCollectionPath(), () => HttpResponse.json({
+        type: "https://issue-spec.dev/problems/destination_denied",
+        title: "Invalid webhook subscription",
+        status: 422,
+        code: "destination_denied",
+        request_id: "request-create-validation",
+        meta: { field: "url" },
+      }, { status: 422 })),
+    );
+    renderIntegration("webhooks");
+    await userEvent.setup().click(await screen.findByRole("button", { name: "New webhook" }));
+    await userEvent.setup().type(screen.getByRole("textbox", { name: /^Receiver URL/ }), "https://private.example.test/hook");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Create route" }));
+
+    const error = await screen.findByText("This receiver is blocked by the destination network policy.");
+    expect(error.closest("label")).toHaveTextContent("Receiver URL");
+  });
+
   it("pauses and rotates a route, inspects attempts, and replays the immutable delivery", async () => {
     let update: unknown;
     let replayed = false;
@@ -158,6 +181,28 @@ describe("repository integrations workspace", () => {
       content_policy: { actor_classes: ["human", "automation"] },
     }));
     expect(screen.queryByText(/Use retry durations/)).not.toBeInTheDocument();
+  });
+
+  it("renders a safe update retry rejection beside the maximum backoff", async () => {
+    server.use(
+      metaHandler(),
+      http.get(webhookCollectionPath(), () => HttpResponse.json({ subscriptions: [webhookFixture()] })),
+      http.get(deliveryCollectionPath(), () => HttpResponse.json({ deliveries: [] })),
+      http.patch(`${webhookCollectionPath()}/${webhookId}`, () => HttpResponse.json({
+        type: "https://issue-spec.dev/problems/invalid_retry_policy",
+        title: "Invalid webhook subscription",
+        status: 422,
+        code: "invalid_retry_policy",
+        request_id: "request-update-validation",
+        meta: { field: "retry.max_backoff" },
+      }, { status: 422 })),
+    );
+    renderIntegration("webhooks");
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Configure" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save route" }));
+
+    const error = await screen.findByText("Correct this retry setting.");
+    expect(error.closest("label")).toHaveTextContent("Maximum backoff");
   });
 
   it("shows encrypted-query and suppression state without returning credential material", async () => {

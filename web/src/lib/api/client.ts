@@ -12,6 +12,34 @@ export const problemSchema = z.object({
 
 export type Problem = z.infer<typeof problemSchema>;
 
+export const webhookValidationReasonSchema = z.enum([
+  "invalid_destination_url",
+  "destination_denied",
+  "invalid_event_type",
+  "invalid_delivery_policy",
+  "invalid_retry_policy",
+  "invalid_destination_query",
+]);
+
+export const webhookValidationFieldSchema = z.enum([
+  "url",
+  "event_types",
+  "delivery_format",
+  "signing_mode",
+  "content_policy",
+  "retry.max_attempts",
+  "retry.initial_backoff",
+  "retry.max_backoff",
+  "clear_destination_query",
+]);
+
+export const webhookValidationMetadataSchema = z.object({
+  reason: webhookValidationReasonSchema,
+  field: webhookValidationFieldSchema,
+});
+
+export type WebhookValidationMetadata = z.infer<typeof webhookValidationMetadataSchema>;
+
 export class ApiProblem extends Error {
   readonly problem: Problem;
 
@@ -96,4 +124,13 @@ export function cookieValue(name: string): string | undefined {
 
 export function isApiProblem(error: unknown, code?: string): error is ApiProblem {
   return error instanceof ApiProblem && (code === undefined || error.problem.code === code);
+}
+
+export function webhookValidationFromError(error: unknown): WebhookValidationMetadata | undefined {
+  if (!isApiProblem(error)) return undefined;
+  const parsed = webhookValidationMetadataSchema.safeParse({
+    reason: error.problem.code,
+    field: error.problem.meta?.field,
+  });
+  return parsed.success ? parsed.data : undefined;
 }

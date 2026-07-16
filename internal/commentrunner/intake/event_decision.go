@@ -120,8 +120,9 @@ func decideAcceptedEvent(ctx context.Context, backend commentrunner.PermissionBa
 	}
 	seen.ProducedCommandCandidate, seen.CommandCandidateID = true, candidate.ID
 	seen.CommandName, seen.CommandIdempotencyKey = string(candidate.Verb), candidate.IdempotencyKey
+	kind := resolveCoordinatorKind(cfg, snapshot, candidate)
 	job := crstate.Job{ID: stableID("job", candidate.IdempotencyKey), Repo: candidate.Repo, IssueNumber: candidate.Issue,
-		PublicSessionID: candidate.PublicSessionID, CoordinatorKind: cfg.Agent.Kind, Model: cfg.Agent.Model,
+		PublicSessionID: candidate.PublicSessionID, CoordinatorKind: kind, Model: modelForKind(cfg, kind),
 		SessionCreatorLogin: sessionCreator(candidate), TriggeringUserLogin: candidate.Commenter,
 		TriggerCommentID: candidate.TriggerCommentID, CommandID: candidate.ID, CommandName: string(candidate.Verb),
 		CommandPrompt: candidate.Prompt, CommandIdempotencyKey: candidate.IdempotencyKey, Status: crstate.StatusQueued,

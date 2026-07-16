@@ -633,13 +633,14 @@ func queueJob(ctx context.Context, backend Backend, cfg commentrunner.Config, st
 	seen.CommandCandidateID = candidate.ID
 	seen.CommandName = string(candidate.Verb)
 	seen.CommandIdempotencyKey = candidate.IdempotencyKey
+	kind := resolveCoordinatorKind(cfg, st, candidate)
 	job := crstate.Job{
 		ID:                    stableID("job", candidate.IdempotencyKey),
 		Repo:                  candidate.Repo,
 		IssueNumber:           candidate.Issue,
 		PublicSessionID:       candidate.PublicSessionID,
-		CoordinatorKind:       cfg.Agent.Kind,
-		Model:                 cfg.Agent.Model,
+		CoordinatorKind:       kind,
+		Model:                 modelForKind(cfg, kind),
 		SessionCreatorLogin:   sessionCreator(candidate),
 		TriggeringUserLogin:   candidate.Commenter,
 		TriggerCommentID:      candidate.TriggerCommentID,
@@ -688,6 +689,37 @@ func queueJob(ctx context.Context, backend Backend, cfg commentrunner.Config, st
 		Created:         created,
 	})
 	addQueuedJobReaction(ctx, backend, candidate, source, result)
+}
+
+// resolveCoordinatorKind determines the acpx agent a job runs with. A `/new`
+// command uses its selected agent when present, else the runner default. A
+// `/resume` inherits the agent bound to the existing session at creation, so a
+// session started on a non-default agent stays on that agent; when the session
+// is unknown or carries no bound agent (legacy sessions), the runner default
+// applies.
+func resolveCoordinatorKind(cfg commentrunner.Config, st *crstate.RunnerState, candidate commentrunner.CommandCandidate) string {
+	if candidate.Verb == commentrunner.VerbResume && st != nil {
+		if session, ok := st.GetPublicSession(candidate.Repo, candidate.PublicSessionID); ok {
+			if kind := strings.TrimSpace(session.CoordinatorKind); kind != "" {
+				return kind
+			}
+		}
+		return cfg.Agent.Kind
+	}
+	if kind := strings.TrimSpace(candidate.Agent); kind != "" {
+		return kind
+	}
+	return cfg.Agent.Kind
+}
+
+// modelForKind returns the operator-configured model only for the runner's
+// default agent. A selected non-default agent runs with its own default model
+// (no explicit model), per the per-command agent selection design.
+func modelForKind(cfg commentrunner.Config, kind string) string {
+	if kind == cfg.Agent.Kind {
+		return cfg.Agent.Model
+	}
+	return ""
 }
 
 func addQueuedJobReaction(ctx context.Context, backend Backend, candidate commentrunner.CommandCandidate, source string, result *Result) {

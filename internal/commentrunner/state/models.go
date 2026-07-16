@@ -347,6 +347,11 @@ type PublicSession struct {
 	IssueNumber       int                       `json:"issue_number,omitempty"`
 	AcpxRecordID      string                    `json:"acpx_record_id"`
 	CreatorLogin      string                    `json:"creator_login,omitempty"`
+	// CoordinatorKind is the acpx agent bound to this session at `/new`. It is
+	// reused by every `/resume` turn so a session's workspace/history stays
+	// coherent with a single agent. Empty for sessions created before per-command
+	// agent selection; readers fall back to the runner's configured default.
+	CoordinatorKind   string                    `json:"coordinator_kind,omitempty"`
 	Status            LifecycleStatus           `json:"status,omitempty"`
 	Acpx              AcpxMetadata              `json:"acpx,omitempty"`
 	Workspace         WorkspaceMetadata         `json:"workspace,omitempty"`

@@ -112,10 +112,12 @@ The notification token is used only for `notifications` polling and notification
 Supported command comments:
 
 ```text
-/new <prompt>
+/new [<agent>] <prompt>
 /resume <public-session-id> <prompt>
 /cancel <public-session-id>
 ```
+
+`/new` accepts an optional agent selector as its first token: `/new codex <prompt>` or `/new claude <prompt>` picks the coordinator agent for that session. The selector is matched case-insensitively against the fixed `codex`/`claude` allow-list; any other first token is treated as prompt text, so `/new <prompt>` keeps using the runner's configured default agent. To send a prompt that literally begins with `codex` or `claude`, quote it (for example `/new "codex should ..."`). The comment cannot inject any agent outside the allow-list, nor any command, model, flag, or permission mode. The selected agent is bound to the new session and reused by every later `/resume`; it uses its own default model unless it is the runner's configured default agent, which uses `--model`. If the selected agent is not ready on the host, only that `/new` job fails fast — the runner keeps serving its default agent. The status comment names the coordinating agent for every job.
 
 Runner command grammar deliberately has no PROCESS selector. `/new` and `/resume` address the public coordinator session only. The runner launches exactly one ACPX coordinator for that session and keeps its cwd and primary sandbox workspace at the managed session clone across new, resume, cancellation, and restart reconciliation. It never starts a nested ACPX worker or rebinds the coordinator to a PROCESS worktree.
 
@@ -127,7 +129,7 @@ After resume or restart, the top-level runner recovers only the ACPX/session job
 
 `/new` creates a fresh public runner session, clones the target repository into a managed workspace, starts acpx from that workspace, and writes a concise status comment containing the public session id. `/resume` reuses that public session and workspace. Public sessions are repository-scoped and shared by authorized repository maintainers; they are not private user sessions.
 
-Coordinator-human discussion is explicit. The sandboxed coordinator can use the mirrored GitHub auth to ask clarification questions. Blocking workflow decisions should be recorded as `QUESTION` typed comments; lightweight clarification can use ordinary issue timeline comments, for example with `gh issue comment <issue> --repo owner/repo --body-file <file>`. GitHub issue comments are flat timeline comments, not nested replies under a specific issue comment; the coordinator should link the trigger comment or status comment and include the public session id. To continue the same acpx session, an authorized maintainer must create a new command comment:
+Coordinator-human discussion is explicit. Routine command completion belongs in the coordinator summary and the Runner's status comment; the coordinator does not create another discussion comment just to repeat it. Blocking workflow decisions should be recorded as `QUESTION` typed comments. When lightweight clarification, a recommendation, or a handoff needs a separate human-facing timeline entry, the sandboxed coordinator uses `issue-spec comment create --repo owner/repo --issue <issue> --body-file <file> --json`. That command uses the selected issue backend, including self-hosted REST profiles, without depending on `gh`. Typed workflow evidence continues to use `comment upsert` and `comment transition`; an ordinary body is not converted into a typed artifact. Issue comments are flat timeline comments, not nested replies under a specific comment; the coordinator should link the trigger comment or status comment and include the public session id. To continue the same acpx session, an authorized maintainer must create a new command comment:
 
 ```text
 /resume <public-session-id> <answer or next instruction>

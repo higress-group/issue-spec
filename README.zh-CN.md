@@ -269,7 +269,7 @@ issue-spec init --repo owner/repo --tools codex,claude --delivery both
 - Claude skills 写入 `.claude/skills/issue-spec-*`。
 - 两套 skill 还都包含一个生成的 `.*/skills/issue-spec-github/SKILL.md` 支持 skill，用于处理 issue-spec 未直接封装的相邻 GitHub CLI 操作。
 - Claude slash 命令写入 `.claude/commands/issue-spec/*.md`，以 `/issue-spec:propose` 的方式调用。
-- Codex slash prompts 写入 `${CODEX_HOME:-~/.codex}/prompts/issue-spec-*.md`，以兼容 Codex 自定义 prompt。当前 Codex 文档已弃用 Codex 自定义 prompt；对于共享工作流，优先使用 skills。
+- 默认不会修改用户全局 Codex prompt。只有显式传入 `--install-global-prompts` 才会把兼容 prompt 安装到 `${CODEX_HOME:-~/.codex}/prompts`；可用 `--global-prompts-dir <dir>` 指定隔离目录，并用 `--global-prompts-dry-run` 在不写文件的情况下预览全部绝对目标路径。当前 Codex 文档已弃用 Codex 自定义 prompt；对于共享工作流，优先使用 skills。
 - `--delivery skills` 只写 skills；`--delivery commands` 只写 slash 命令。
 
 若省略 `--tools`，init 会检测已存在的 `.agents` 或 `.claude` 目录并刷新这些工作流。使用 `--tools none` 只初始化 `.issue-spec/config.json` 与可选的标签（labels）。

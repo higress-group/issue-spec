@@ -39,12 +39,22 @@ Source SPEC comments:
 
 ### Requirement: command parsing and authorization
 
-The runner MUST parse and authorize comment commands before acpx dispatch, and issue comment text MUST NOT control runner flags, shell commands, clone URLs, working directories, model settings, or permission modes.
+The runner MUST parse and authorize comment commands before acpx dispatch, and issue comment text MUST NOT control runner flags, shell commands, clone URLs, working directories, model settings, or permission modes. Issue comment text MAY select the coordinator agent for a `/new` command, but only from a fixed `codex`/`claude` allow-list; it MUST NOT introduce any agent, command, model, flag, or permission mode outside that allow-list.
 
 #### Scenario: accepted command grammar
 
-- **WHEN** a comment body begins with `/new <prompt>`, `/resume <public-session-id> <prompt>`, or `/cancel <public-session-id>`
-- **THEN** the runner SHALL normalize it into exactly one command candidate with repository, issue, trigger comment id, commenter, command verb, prompt or target public session id, body hash, GitHub comment updated timestamp, and idempotency key.
+- **WHEN** a comment body begins with `/new <prompt>`, `/new <agent> <prompt>` where `<agent>` case-insensitively matches the fixed `codex`/`claude` allow-list, `/resume <public-session-id> <prompt>`, or `/cancel <public-session-id>`
+- **THEN** the runner SHALL normalize it into exactly one command candidate with repository, issue, trigger comment id, commenter, command verb, prompt or target public session id, selected agent when present, body hash, GitHub comment updated timestamp, and idempotency key.
+
+#### Scenario: optional agent selector on new
+
+- **WHEN** a `/new` command's first token case-insensitively matches an allow-listed agent (`codex` or `claude`)
+- **THEN** the runner SHALL bind that normalized-lower-case agent as the new session's coordinator kind and use the remainder as the prompt; when the first token is not an allow-listed agent (including a quoted prompt that begins with the literal word `codex` or `claude`), the runner SHALL treat the entire tail as the prompt and use the runner's configured default agent.
+
+#### Scenario: selected agent bound to session
+
+- **WHEN** a `/new <agent>` session is created and later addressed by `/resume`
+- **THEN** the runner SHALL persist the selected coordinator agent with the public session and reuse it for every `/resume` turn without re-parsing an agent selector, and a selected non-default agent SHALL run with its own default model rather than the runner's configured `--model`.
 
 #### Scenario: rejected command grammar
 
@@ -86,7 +96,7 @@ The runner MUST map public session ids to durable acpx session metadata and mana
 #### Scenario: persisted session binding
 
 - **WHEN** a `/new` session is created
-- **THEN** the runner SHALL persist the public session id, repository scope, stable acpx record id, refreshed acpx metadata, session creator, workspace path, clone URL, branch/ref, checkout SHA, and lifecycle state for later resume.
+- **THEN** the runner SHALL persist the public session id, repository scope, stable acpx record id, refreshed acpx metadata, session creator, bound coordinator agent, workspace path, clone URL, branch/ref, checkout SHA, and lifecycle state for later resume.
 
 #### Scenario: repository-scoped resume
 
@@ -125,6 +135,11 @@ The runner MUST invoke acpx as an external coordinator backend using argv arrays
 
 - **WHEN** the coordinator agent is `codex` or `claude`
 - **THEN** preflight SHALL distinguish the relevant host auth/config requirements, acpx availability, Codex agent-full-access needs, and Claude user-settings/auth/allowed-tool requirements before dispatching workflow work that depends on them.
+
+#### Scenario: multi-agent non-blocking preflight
+
+- **WHEN** preflight runs on a runner where both `codex` and `claude` are selectable per `/new`
+- **THEN** preflight SHALL report readiness for each selectable agent, and an unready non-default agent SHALL NOT block runner startup even under strict agent capabilities; instead the specific `/new <that-agent>` job SHALL fail fast at dispatch while the configured default agent keeps serving.
 
 #### Scenario: self-hosted evidence-writer preflight
 
