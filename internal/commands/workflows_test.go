@@ -68,10 +68,30 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 		"compatibility: Requires GitHub CLI (gh).",
 		"gh auth login",
 		"gh pr checks",
+		"Ordinary issue discussion writes",
+		"issue-spec comment create --repo owner/repo --issue 42 --body-file reply.md --json",
+		"selected issue backend owns the write",
 		"issue-spec owns the proposal, design, implement",
 	} {
 		if !strings.Contains(githubSkill, want) {
 			t.Fatalf("github skill missing %q:\n%s", want, githubSkill)
+		}
+	}
+	for _, forbidden := range []string{
+		"gh issue comment",
+		"gh api repos/owner/repo/issues/42/comments",
+		"or commenting on GitHub issues",
+	} {
+		if strings.Contains(githubSkill, forbidden) {
+			t.Fatalf("generated github skill recommends forbidden ordinary discussion write %q:\n%s", forbidden, githubSkill)
+		}
+	}
+	for _, relative := range []string{
+		filepath.Join(".agents", "skills", "issue-spec-github", "SKILL.md"),
+		filepath.Join(".claude", "skills", "issue-spec-github", "SKILL.md"),
+	} {
+		if checkedIn := readTestFile(t, filepath.Join("..", "..", relative)); githubSkill != checkedIn {
+			t.Fatalf("checked-in generated GitHub guidance is stale: %s", relative)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(root, ".agents", "skills", "github", "SKILL.md")); !os.IsNotExist(err) {

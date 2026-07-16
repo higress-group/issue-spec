@@ -36,7 +36,7 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 		"Routine command completion belongs in the required coordinator summary",
 		"The Runner creates or updates its own status comment from that summary",
 		"issue-spec comment create --repo <repo> --issue <n> --body-file <file> --json",
-		"do not call `gh issue comment`",
+		"never use `gh issue comment`",
 		"Workflow evidence remains typed",
 		"issue-spec comment generate",
 		"issue-spec comment upsert",
@@ -140,8 +140,15 @@ func TestCoordinatorPromptSeparatesStatusOrdinaryAndTypedCommentWrites(t *testin
 	for _, want := range []string{
 		"Routine command completion belongs in the required coordinator summary",
 		"do not create an extra ordinary discussion comment merely to repeat the terminal result",
+		"explicitly asks you to reply, answer, respond, comment, report findings",
+		"a plain ACPX reply or coordinator summary does not satisfy the command",
+		"You MUST create an ordinary issue comment",
 		"comment create --repo <repo> --issue <n> --body-file <file> --json",
+		"the Runner status comment is lifecycle-only",
 		"clarification, a recommendation, or a handoff",
+		"never use `gh issue comment`",
+		"`gh api` issue-comment writes",
+		"returned comment URL in the coordinator summary as an `issue_comment` artifact",
 		"Workflow evidence remains typed",
 		"comment upsert",
 		"comment transition",
@@ -152,7 +159,6 @@ func TestCoordinatorPromptSeparatesStatusOrdinaryAndTypedCommentWrites(t *testin
 	}
 	for _, forbidden := range []string{
 		"For conversational replies, status updates",
-		"use `gh issue comment`",
 	} {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("prompt contains ambiguous or backend-specific write guidance %q:\n%s", forbidden, prompt)

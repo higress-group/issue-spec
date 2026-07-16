@@ -134,10 +134,22 @@ func TestIssueSpecSkillsIncludeGitHubCLISupportSkill(t *testing.T) {
 		"gh auth login",
 		"gh pr checks",
 		"gh api",
+		"Ordinary issue discussion writes",
+		"issue-spec comment create --repo owner/repo --issue 42 --body-file reply.md --json",
+		"selected issue backend owns the write",
 		"issue-spec owns the proposal, design, implement",
 	} {
 		if !strings.Contains(github, want) {
 			t.Fatalf("github skill missing %q:\n%s", want, github)
+		}
+	}
+	for _, forbidden := range []string{
+		"gh issue comment",
+		"gh api repos/owner/repo/issues/42/comments",
+		"or commenting on GitHub issues",
+	} {
+		if strings.Contains(github, forbidden) {
+			t.Fatalf("github skill recommends forbidden ordinary discussion write %q:\n%s", forbidden, github)
 		}
 	}
 }
