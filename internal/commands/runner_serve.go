@@ -22,7 +22,7 @@ import (
 
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-func (a *app) runRunnerServe(ctx context.Context, args []string) int {
+func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) {
 	fs := newFlagSet("runner serve", a.err)
 	var repos, allowedUsers, previousFiles, previousEnvs, gitCredentialArgs, operatorSkillDirs stringListFlag
 	listen := fs.String("listen", "127.0.0.1:9876", "dedicated webhook listen address")
@@ -68,6 +68,11 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	reconcileWorkers := fs.Int("reconcile-workers", 2, "durable webhook reconciliation workers")
 	reconcileLease := fs.Duration("reconcile-lease", 2*time.Minute, "durable webhook processing lease")
 	maxConcurrentJobs := fs.Int("max-concurrent-jobs", 3, "maximum concurrently dispatched runner jobs")
+	logDir := fs.String("log-dir", "", "directory for persistent diagnostic logs; default is a sibling 'logs/' directory beside the state file")
+	logMaxSize := fs.Int("log-max-size", 10, "maximum diagnostic log file size in MB before rotation")
+	logMaxFiles := fs.Int("log-max-files", 5, "maximum number of rotated diagnostic log files to retain")
+	logRetention := fs.Int("log-retention", 30, "diagnostic log retention duration in days")
+	logRawCapture := fs.Int("log-raw-capture", 100, "maximum ACPX stdout/stderr capture size in KB per job")
 	fs.Var(&repos, "repo", "repository owner/name; repeat for every repository served by this subscription")
 	fs.Var(&allowedUsers, "allowed-user", "runner command author allowlist; repeat as needed")
 	fs.Var(&previousFiles, "previous-secret-file", "0600 previous secret file; repeat up to four times")
@@ -230,6 +235,21 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		return 2
 	}
 	runnerConfig.CancellationEnabled = *cancellationEnabled
+	if seen["log-dir"] {
+		runnerConfig.LogDir = strings.TrimSpace(*logDir)
+	}
+	if seen["log-max-size"] {
+		runnerConfig.LogMaxSizeMB = *logMaxSize
+	}
+	if seen["log-max-files"] {
+		runnerConfig.LogMaxFiles = *logMaxFiles
+	}
+	if seen["log-retention"] {
+		runnerConfig.LogRetentionDays = *logRetention
+	}
+	if seen["log-raw-capture"] {
+		runnerConfig.LogRawCaptureKB = *logRawCapture
+	}
 	runnerConfig, err = commentrunner.ApplyDefaultRunnerScopePaths(runnerConfig, seen["state"], seen["workspace-root"])
 	if err != nil {
 		a.errorf("runner serve state scope: %v\n", err)
@@ -238,6 +258,40 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	if err := runnerConfig.Validate(); err != nil {
 		a.errorf("runner serve runner configuration: %v\n", err)
 		return 2
+	}
+	logger, err := newRunnerLogger(runnerConfig)
+	if err != nil {
+		a.errorf("runner serve diagnostics: %v\n", err)
+		return 1
+	}
+	a.runnerDiagnostics = logger
+	runnerConfig.LogDir = logger.config().LogDir
+	defer func() {
+		if err := logger.shutdown("serve"); err != nil {
+			a.errorf("runner serve diagnostics shutdown: %v\n", err)
+			if exitCode == 0 {
+				exitCode = 1
+			}
+		}
+		a.runnerDiagnostics = nil
+	}()
+	if err := logger.logStartup("serve"); err != nil {
+		a.errorf("runner serve diagnostics: %v\n", err)
+		return 1
+	}
+	if _, err := logger.newCycle(); err != nil {
+		a.errorf("runner serve diagnostics: %v\n", err)
+		return 1
+	}
+	preflight := a.runRunnerPreflight(ctx, runnerConfig)
+	if err := logger.logPreflight(preflight); err != nil {
+		a.errorf("runner serve diagnostics: %v\n", err)
+		return 1
+	}
+	if !preflight.OK {
+		a.errorf("runner serve preflight failed\n")
+		a.printPreflightReport(preflight)
+		return 1
 	}
 	store, err := crstate.OpenFileStore(runnerConfig.StatePath)
 	if err != nil {
@@ -262,7 +316,7 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 	}
 	handler, err := webhook.NewHandler(webhook.HandlerConfig{Credentials: credentials, Queue: queue,
 		TimestampWindow: *timestampWindow, MaxBodyBytes: *maxBody, MaxRawCommentBytes: *maxRawComment,
-		MaxConcurrentRequests: *maxRequests, RetryAfter: *retryAfter})
+		MaxConcurrentRequests: *maxRequests, RetryAfter: *retryAfter, Observer: logger})
 	if err != nil {
 		a.errorf("runner serve handler: %v\n", err)
 		return 2
@@ -287,15 +341,15 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) int {
 		Runner: runnerConfig, Queue: queue, Store: store, HTTP: service, GitCredentialCommand: *gitCredentialCommand,
 		GitCredentialArgs: gitCredentialArgs.Values(), GitCredentialTimeout: *gitCredentialTimeout,
 		GitCredentialMaxOutput: *gitCredentialMaxOutput, GitCredentialConcurrency: *gitCredentialConcurrency,
-		ReconcileWorkers: *reconcileWorkers, ReconcileLease: *reconcileLease})
+		ReconcileWorkers: *reconcileWorkers, ReconcileLease: *reconcileLease, Diagnostics: logger})
 	if err != nil {
 		a.errorf("runner serve runtime: %v\n", err)
 		return 2
 	}
 	serveContext, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	fmt.Fprintf(a.out, "runner serve: profile=%s subscription=%s listen=%s endpoint=%s state=%s\n",
-		profile.Name, credentials.SubscriptionID(), *listen, webhook.Endpoint, runnerConfig.StatePath)
+	fmt.Fprintf(a.out, "runner serve: profile=%s subscription=%s listen=%s endpoint=%s state=%s logs=%s\n",
+		profile.Name, credentials.SubscriptionID(), *listen, webhook.Endpoint, runnerConfig.StatePath, logger.config().LogDir)
 	if err := runnerServeRun(serveContext, runtime); err != nil && !errors.Is(err, context.Canceled) {
 		a.errorf("runner serve: %v\n", err)
 		return 1

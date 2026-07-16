@@ -46,6 +46,7 @@ type ReconcileResult struct {
 
 type ReconcileJob struct {
 	JobID           string                `json:"job_id"`
+	Repo            string                `json:"repo,omitempty"`
 	PublicSessionID string                `json:"public_session_id,omitempty"`
 	PreviousStatus  state.LifecycleStatus `json:"previous_status"`
 	Status          state.LifecycleStatus `json:"status"`
@@ -92,6 +93,7 @@ func (d *Dispatcher) Reconcile(ctx context.Context) (ReconcileResult, error) {
 			result.Queued++
 			result.Jobs = append(result.Jobs, ReconcileJob{
 				JobID:           job.ID,
+				Repo:            job.Repo,
 				PublicSessionID: job.PublicSessionID,
 				PreviousStatus:  job.Status,
 				Status:          job.Status,
@@ -418,7 +420,7 @@ func (d *Dispatcher) recoveredRunning(ctx context.Context, job state.Job, previo
 	if _, err := d.Writeback.Write(ctx, writeback.Request{Job: running, Status: state.StatusRunning, Phase: "reconciled-running", Diagnostics: splitDiagnostic(diagnostic)}); err != nil {
 		return ReconcileJob{}, err
 	}
-	return ReconcileJob{JobID: job.ID, PublicSessionID: running.PublicSessionID, PreviousStatus: previous, Status: state.StatusRunning, Action: "running", Diagnostic: diagnostic}, nil
+	return ReconcileJob{JobID: job.ID, Repo: running.Repo, PublicSessionID: running.PublicSessionID, PreviousStatus: previous, Status: state.StatusRunning, Action: "running", Diagnostic: diagnostic}, nil
 }
 
 func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previous, terminal state.LifecycleStatus, reconciled acpx.TurnReconcileResult, diagnostic string) (ReconcileJob, error) {
@@ -466,6 +468,8 @@ func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previ
 		Status:               terminal,
 		Phase:                "reconciled-" + string(terminal),
 		CoordinatorReplyBody: reconciled.Output.ReplyText,
+		AcpxStdout:           reconciled.Output.RawStdout,
+		AcpxStderr:           reconciled.Output.RawStderr,
 		Diagnostics:          splitDiagnostic(diagnostic),
 	}
 	if reconciled.Output.SummaryFound {
@@ -477,7 +481,7 @@ func (d *Dispatcher) recoveredTerminal(ctx context.Context, job state.Job, previ
 	if _, err := d.Writeback.Write(ctx, req); err != nil {
 		return ReconcileJob{}, err
 	}
-	return ReconcileJob{JobID: job.ID, PublicSessionID: final.PublicSessionID, PreviousStatus: previous, Status: terminal, Action: string(terminal), Diagnostic: diagnostic}, nil
+	return ReconcileJob{JobID: job.ID, Repo: final.Repo, PublicSessionID: final.PublicSessionID, PreviousStatus: previous, Status: terminal, Action: string(terminal), Diagnostic: diagnostic}, nil
 }
 
 func (d *Dispatcher) interrupt(ctx context.Context, job state.Job, previous state.LifecycleStatus, diagnostic string) (ReconcileJob, error) {
@@ -520,7 +524,7 @@ func (d *Dispatcher) interrupt(ctx context.Context, job state.Job, previous stat
 	}); err != nil {
 		return ReconcileJob{}, err
 	}
-	return ReconcileJob{JobID: job.ID, PublicSessionID: interrupted.PublicSessionID, PreviousStatus: previous, Status: state.StatusInterrupted, Action: "interrupted", Diagnostic: diagnostic}, nil
+	return ReconcileJob{JobID: job.ID, Repo: interrupted.Repo, PublicSessionID: interrupted.PublicSessionID, PreviousStatus: previous, Status: state.StatusInterrupted, Action: "interrupted", Diagnostic: diagnostic}, nil
 }
 
 func sessionRefForJob(job state.Job) (acpx.SessionRef, string, bool) {

@@ -49,21 +49,30 @@ type ReconcilerConfig struct {
 	LeaseDuration       time.Duration
 	IdleDelay           time.Duration
 	Clock               ReconcilerClock
+	Observer            ReconcileObserver
 }
 
 type Reconciler struct{ config ReconcilerConfig }
 
 type ReconcileResult struct {
-	Claimed        bool                  `json:"claimed"`
-	DeliveryID     string                `json:"delivery_id,omitempty"`
-	Repository     string                `json:"repository,omitempty"`
-	Outcome        state.DeliveryOutcome `json:"outcome,omitempty"`
-	JobID          string                `json:"job_id,omitempty"`
-	CancellationID string                `json:"cancellation_id,omitempty"`
-	Completed      bool                  `json:"completed,omitempty"`
-	Retried        bool                  `json:"retried,omitempty"`
-	Failed         bool                  `json:"failed,omitempty"`
-	Reason         string                `json:"reason,omitempty"`
+	Claimed          bool                  `json:"claimed"`
+	DeliveryID       string                `json:"delivery_id,omitempty"`
+	EventID          string                `json:"event_id,omitempty"`
+	Repository       string                `json:"repository,omitempty"`
+	TriggerCommentID int64                 `json:"trigger_comment_id,omitempty"`
+	PublicSessionID  string                `json:"public_session_id,omitempty"`
+	Outcome          state.DeliveryOutcome `json:"outcome,omitempty"`
+	JobID            string                `json:"job_id,omitempty"`
+	CancellationID   string                `json:"cancellation_id,omitempty"`
+	Completed        bool                  `json:"completed,omitempty"`
+	Retried          bool                  `json:"retried,omitempty"`
+	Failed           bool                  `json:"failed,omitempty"`
+	Idempotent       bool                  `json:"idempotent,omitempty"`
+	Reason           string                `json:"reason,omitempty"`
+}
+
+type ReconcileObserver interface {
+	ObserveWebhookReconcile(ReconcileResult) error
 }
 
 type systemClock struct{}
@@ -150,7 +159,15 @@ func (r *Reconciler) ProcessOne(ctx context.Context) (ReconcileResult, error) {
 	return r.processOne(ctx, r.config.WorkerID)
 }
 
-func (r *Reconciler) processOne(ctx context.Context, workerID string) (ReconcileResult, error) {
+func (r *Reconciler) processOne(ctx context.Context, workerID string) (result ReconcileResult, returnErr error) {
+	defer func() {
+		if !result.Claimed || r.config.Observer == nil {
+			return
+		}
+		if err := r.config.Observer.ObserveWebhookReconcile(result); err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("persist webhook reconciliation diagnostics: %w", err))
+		}
+	}()
 	now := r.config.Clock.Now().UTC()
 	delivery, err := r.config.Queue.Claim(ctx, workerID, r.config.LeaseDuration, now)
 	if errors.Is(err, ErrNoPending) {
@@ -159,7 +176,7 @@ func (r *Reconciler) processOne(ctx context.Context, workerID string) (Reconcile
 	if err != nil {
 		return ReconcileResult{}, fmt.Errorf("claim webhook delivery: %w", err)
 	}
-	result := ReconcileResult{Claimed: true, DeliveryID: delivery.DeliveryID}
+	result = ReconcileResult{Claimed: true, DeliveryID: delivery.DeliveryID, EventID: delivery.EventID}
 	return r.reconcileClaim(ctx, delivery, result)
 }
 
@@ -172,6 +189,7 @@ func (r *Reconciler) reconcileClaim(ctx context.Context, delivery state.WebhookD
 	if envelope.EventType != "issue_comment.created" && envelope.EventType != "issue_comment.edited" {
 		return r.fail(ctx, delivery, result, "invalid_envelope")
 	}
+	result.TriggerCommentID = envelope.Comment.NumericID
 	scope := models.RepoScope{OrgID: envelope.OrganizationID, RepoID: envelope.RepositoryID}
 	repository, ok := r.config.Scopes.Repository(scope)
 	if !ok {
@@ -227,6 +245,13 @@ func (r *Reconciler) reconcileClaim(ctx context.Context, delivery state.WebhookD
 		decision.Report.Authorization.Reason == commentrunner.AuthReasonRunnerIdentityLookupFailed {
 		return r.release(ctx, delivery, result, "authorization_unavailable")
 	}
+	result.Idempotent = eventDecisionAlreadyPresent(currentBeforeDecision, decision)
+	switch decision.Outcome {
+	case state.DeliveryOutcomeJob:
+		result.PublicSessionID = decision.Job.PublicSessionID
+	case state.DeliveryOutcomeCancellation:
+		result.PublicSessionID = decision.Cancellation.TargetPublicSessionID
+	}
 	durable := durableDecision(decision, remote.RepresentationVersion)
 	recorded, err := r.config.Queue.RecordDecision(ctx, delivery.DeliveryID, delivery.LeaseOwner,
 		delivery.LeaseToken, r.config.Clock.Now().UTC(), durable, decision.Apply)
@@ -255,6 +280,23 @@ func (r *Reconciler) reconcileClaim(ctx context.Context, delivery state.WebhookD
 		return r.release(ctx, delivery, result, "ack_state")
 	}
 	return r.complete(ctx, delivery, result)
+}
+
+func eventDecisionAlreadyPresent(current state.RunnerState, decision intake.EventDecision) bool {
+	current.Normalize()
+	switch decision.Outcome {
+	case state.DeliveryOutcomeJob:
+		_, ok := current.Jobs[decision.Job.ID]
+		return ok
+	case state.DeliveryOutcomeCancellation:
+		_, ok := current.FindCancellation(decision.Cancellation.IdempotencyKey)
+		return ok
+	case state.DeliveryOutcomeRejected:
+		_, ok := current.FindStatusWriteback(decision.Rejection.IdempotencyKey)
+		return ok
+	default:
+		return false
+	}
 }
 
 func (r *Reconciler) acknowledge(ctx context.Context, decision intake.EventDecision, repository string,

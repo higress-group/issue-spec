@@ -89,7 +89,7 @@ Subcommands:
 Use "issue-spec runner <subcommand> -h" to show all options and defaults.`)
 }
 
-func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
+func (a *app) runRunnerPoll(ctx context.Context, args []string) (exitCode int) {
 	cfg, opts, ok := a.parseRunnerOptions(args, true)
 	if opts.Help {
 		return 0
@@ -102,10 +102,34 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 		return 2
 	}
 	if !opts.DryRun {
+		logger, err := newRunnerLogger(cfg)
+		if err != nil {
+			a.errorf("runner poll diagnostics: %v\n", err)
+			return 1
+		}
+		a.runnerDiagnostics = logger
+		cfg.LogDir = logger.config().LogDir
+		defer func() {
+			if err := logger.shutdown("poll"); err != nil {
+				a.errorf("runner poll diagnostics shutdown: %v\n", err)
+				if exitCode == 0 {
+					exitCode = 1
+				}
+			}
+			a.runnerDiagnostics = nil
+		}()
+		if err := logger.logStartup("poll"); err != nil {
+			a.errorf("runner poll diagnostics: %v\n", err)
+			return 1
+		}
 		if !opts.JSON {
 			a.printRunnerPollStart(cfg, opts)
 		}
 		report := a.runRunnerPreflight(ctx, cfg)
+		if err := logger.logPreflight(report); err != nil {
+			a.errorf("runner poll diagnostics: %v\n", err)
+			return 1
+		}
 		if !report.OK {
 			result := runnerDryRunResult{
 				OK:        false,
@@ -138,7 +162,15 @@ func (a *app) runRunnerPoll(ctx context.Context, args []string) int {
 			if !opts.JSON {
 				fmt.Fprintln(a.out, "poll cycle: running")
 			}
+			if _, err := logger.newCycle(); err != nil {
+				a.errorf("runner poll diagnostics: %v\n", err)
+				return 1
+			}
 			result := a.runRunnerPollCycle(ctx, cfg, opts, report)
+			if err := a.logRunnerPollCycle(result); err != nil {
+				a.errorf("runner poll diagnostics: %v\n", err)
+				return 1
+			}
 			if code := a.printRunnerPollResult(result, opts.JSON); code != 0 {
 				return code
 			}
@@ -282,6 +314,33 @@ func (a *app) runRunnerPollCycleWithStore(ctx context.Context, cfg commentrunner
 	}
 }
 
+func (a *app) logRunnerPollCycle(result runnerDryRunResult) error {
+	logger := a.runnerDiagnostics
+	if logger == nil {
+		return nil
+	}
+	var errs []error
+	if result.Reconcile != nil {
+		errs = append(errs, logger.logReconcile(result.Reconcile))
+		if len(result.Reconcile.WorkspaceCleanup) > 0 {
+			errs = append(errs, logger.logWorkspaceCleanup(result.Reconcile.WorkspaceCleanup))
+		}
+	}
+	if result.Intake != nil {
+		errs = append(errs, logger.logIntake(result.Intake))
+	}
+	if result.Dispatch != nil {
+		errs = append(errs, logger.logDispatch(result.Dispatch))
+		if result.Dispatch.CancellationID != "" {
+			errs = append(errs, logger.logCancellation(result.Dispatch.ExecutedCount))
+		}
+	}
+	if result.Error != "" {
+		errs = append(errs, logger.logError("runner", result.Error))
+	}
+	return errors.Join(errs...)
+}
+
 func (a *app) runRunnerPollAsync(ctx context.Context, cfg commentrunner.Config, opts runnerCommandOptions, report commentrunner.PreflightReport) int {
 	store, err := crstate.OpenFileStore(cfg.StatePath)
 	if err != nil {
@@ -328,8 +387,18 @@ func (a *app) runRunnerPollAsync(ctx context.Context, cfg commentrunner.Config, 
 		if !opts.JSON {
 			fmt.Fprintln(a.out, "poll cycle: running")
 		}
+		if a.runnerDiagnostics != nil {
+			if _, err := a.runnerDiagnostics.newCycle(); err != nil {
+				a.errorf("runner poll diagnostics: %v\n", err)
+				return 1
+			}
+		}
 		result := a.runRunnerPollCycleWithStore(ctx, cfg, opts, report, store, async, nextReconcile)
 		nextReconcile = nil
+		if err := a.logRunnerPollCycle(result); err != nil {
+			a.errorf("runner poll diagnostics: %v\n", err)
+			return 1
+		}
 		if code := a.printRunnerPollResult(result, opts.JSON); code != 0 {
 			return code
 		}
@@ -984,6 +1053,7 @@ func (a *app) runRunnerReconcileWithStore(ctx context.Context, cfg commentrunner
 		store = opened
 	}
 	workspaces := runnerWorkspaceManager(cfg)
+	writebacks := wrapRunnerWriteback(&writeback.Service{GitHub: runnerBackend, Store: store}, a.runnerDiagnostics)
 	dispatcher := jobs.Dispatcher{
 		Store:      store,
 		Workspaces: workspaces,
@@ -993,7 +1063,7 @@ func (a *app) runRunnerReconcileWithStore(ctx context.Context, cfg commentrunner
 			HostGHConfigDir: cfg.GHConfigDir,
 		}},
 		Acpx:       jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg), RunnerConfig: cfg},
-		Writeback:  &writeback.Service{GitHub: runnerBackend, Store: store},
+		Writeback:  writebacks,
 		AcpxBinary: cfg.AcpxPath,
 	}
 	return dispatcher.Reconcile(ctx)
@@ -1093,6 +1163,7 @@ func (a *app) buildRunnerDispatcher(ctx context.Context, cfg commentrunner.Confi
 		store = opened
 	}
 	workspaces := runnerWorkspaceManager(cfg)
+	writebacks := wrapRunnerWriteback(&writeback.Service{GitHub: runnerBackend, Store: store}, a.runnerDiagnostics)
 	dispatcher := &jobs.Dispatcher{
 		Store:        store,
 		Repositories: jobs.StaticRepositoryResolver{Hostname: cfg.Hostname},
@@ -1104,7 +1175,7 @@ func (a *app) buildRunnerDispatcher(ctx context.Context, cfg commentrunner.Confi
 		}},
 		Acpx:            jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(cfg), RunnerConfig: cfg},
 		Artifacts:       &jobs.IssueSpecArtifactProvider{GitHub: runnerBackend},
-		Writeback:       &writeback.Service{GitHub: runnerBackend, Store: store},
+		Writeback:       writebacks,
 		AcpxBinary:      cfg.AcpxPath,
 		IssueSpecBinary: issueSpecBinaryForRunner(),
 	}
@@ -1181,6 +1252,7 @@ func (a *app) printRunnerPollStart(cfg commentrunner.Config, opts runnerCommandO
 	}
 	fmt.Fprintln(a.out)
 	fmt.Fprintf(a.out, "state: %s\n", cfg.StatePath)
+	fmt.Fprintf(a.out, "logs: %s\n", cfg.LogDir)
 	fmt.Fprintf(a.out, "workspace_root: %s\n", cfg.WorkspaceRoot)
 	fmt.Fprintf(a.out, "poll_interval: %s fallback_interval: %s fallback_initial_lookback: %s mode: %s dispatch: %s\n", cfg.PollInterval.Duration, cfg.FallbackInterval.Duration, cfg.FallbackInitialLookback.Duration, mode, dispatchMode)
 	fmt.Fprintln(a.out, "preflight: running")

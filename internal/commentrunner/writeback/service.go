@@ -37,9 +37,14 @@ type Request struct {
 	Phase                string
 	CoordinatorSummary   *runnercontext.CoordinatorSummary
 	CoordinatorReplyBody string
-	Diagnostics          []string
-	Err                  error
-	CancelingUserLogin   string
+	// AcpxStdout and AcpxStderr are local-only diagnostic streams. The
+	// writeback service never renders them into a public status comment; the
+	// command-level diagnostics wrapper captures them in bounded private files.
+	AcpxStdout         string
+	AcpxStderr         string
+	Diagnostics        []string
+	Err                error
+	CancelingUserLogin string
 }
 
 type Result struct {

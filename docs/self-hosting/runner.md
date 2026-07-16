@@ -445,6 +445,24 @@ and a copyable `/resume` template.
 
 ## 9. Verify and troubleshoot
 
+`runner serve` prints its effective private diagnostics directory as `logs=...`
+at startup. Unless `--log-dir` is set, it is the sibling `logs/` directory next
+to the effective `state.json`. The directory is `0700`; Runner, error, index,
+per-job, bounded ACPX stdout/stderr, and per-session files are `0600`. Use the
+printed path instead of guessing a service-account layout. A minimal first
+check is:
+
+```bash
+rg -n '"level":"error"|"event":"(job_failed|job_interrupted|webhook_rejected)"' <printed-log-dir>/{runner,errors}.ndjson
+```
+
+Use `index.ndjson` to resolve a delivery, job, public session, comment, ACPX
+record, or workspace identifier before reading only the matching job/session
+file. `--log-max-size`, `--log-max-files`, `--log-retention`, and
+`--log-raw-capture` control rotation, retention, and the per-job raw capture
+bound. Keep these local diagnostics out of public issue comments; copy only
+sanitized identifiers and bounded error categories.
+
 Use this acceptance ladder on a non-production repository before enabling a
 team workflow:
 

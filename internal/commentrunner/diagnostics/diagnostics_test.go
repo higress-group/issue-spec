@@ -1,8 +1,10 @@
 package diagnostics
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -154,8 +156,8 @@ func TestEventCreation(t *testing.T) {
 
 func TestEventWithMethods(t *testing.T) {
 	correlation := Correlation{
-		JobID:     "job-123",
-		CycleID:   "cycle-abc",
+		JobID:           "job-123",
+		CycleID:         "cycle-abc",
 		PublicSessionID: "session-xyz",
 	}
 
@@ -230,8 +232,8 @@ func TestWriterAndRotation(t *testing.T) {
 	logPath := filepath.Join(tmpDir, "test.ndjson")
 
 	cfg := Config{
-		LogDir:  tmpDir,
-		MaxSize: 100, // Small size to trigger rotation
+		LogDir:   tmpDir,
+		MaxSize:  100, // Small size to trigger rotation
 		MaxFiles: 2,
 	}
 
@@ -321,6 +323,352 @@ func TestConfigApplyDefaults(t *testing.T) {
 	if cfg.LogDir != expectedDir {
 		t.Errorf("expected log dir %s, got %s", expectedDir, cfg.LogDir)
 	}
+}
+
+func TestBoundedWriterPreservesCaptureLimitAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs", "job-acpx-stdout.log")
+	firstWriter, err := NewWriter(path, NewRedactor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := NewBoundedWriter(firstWriter, 8)
+	if _, err := first.WriteBytes([]byte("123456")); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	secondWriter, err := NewWriter(path, NewRedactor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := NewBoundedWriter(secondWriter, 8)
+	if second.Written() != 6 {
+		t.Fatalf("restart written=%d want=6", second.Written())
+	}
+	if _, err := second.WriteBytes([]byte("7890")); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdWriter, err := NewWriter(path, NewRedactor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	third := NewBoundedWriter(thirdWriter, 8)
+	if _, err := third.WriteBytes([]byte("must-not-append")); err != nil {
+		t.Fatal(err)
+	}
+	if err := third.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) || !strings.HasPrefix(string(after), "12345678") ||
+		strings.Count(string(after), "[TRUNCATED:") != 1 {
+		t.Fatalf("restart capture=%q", after)
+	}
+}
+
+func TestBoundedWriterRedactsBeforeTruncating(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job-acpx-stderr.log")
+	writer, err := NewWriter(path, NewRedactor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bounded := NewBoundedWriter(writer, 24)
+	if _, err := bounded.WriteBytes([]byte("1234567890token=abcdefghijklmnopqrstuvwxyz0123456789")); err != nil {
+		t.Fatal(err)
+	}
+	if err := bounded.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("abcdefgh")) || !bytes.Contains(data, []byte("[REDACTED")) {
+		t.Fatalf("bounded capture leaked a truncated secret: %q", data)
+	}
+}
+
+func TestLoggerRestartAppendsLifecycleWithPrivatePermissions(t *testing.T) {
+	logDir := filepath.Join(t.TempDir(), "logs")
+	cfg := Config{LogDir: logDir, MaxSize: 1 << 20, MaxFiles: 2, RetentionDays: 30, RawCaptureKB: 1}
+	for _, event := range []string{"first_start", "restart_start"} {
+		logger, err := NewLogger(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := logger.WriteEventWithCorrelation(LevelInfo, "runner", event, "runner lifecycle",
+			Correlation{CycleID: event}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := logger.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(logDir, "runner.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"event":"first_start"`)) ||
+		!bytes.Contains(data, []byte(`"event":"restart_start"`)) {
+		t.Fatalf("restart log=%s", data)
+	}
+	if info, err := os.Stat(logDir); err != nil || !diagnosticPermissionsMatch(info, DefaultDirMode) {
+		t.Fatalf("log dir mode info=%v err=%v", info, err)
+	}
+	if info, err := os.Stat(filepath.Join(logDir, "runner.ndjson")); err != nil || !diagnosticPermissionsMatch(info, DefaultFileMode) {
+		t.Fatalf("runner log mode info=%v err=%v", info, err)
+	}
+}
+
+func TestLoggerRestartTightensExistingDiagnosticTree(t *testing.T) {
+	logDir := filepath.Join(t.TempDir(), "logs")
+	directories := []string{
+		logDir,
+		filepath.Join(logDir, "jobs"),
+		filepath.Join(logDir, "sessions"),
+		filepath.Join(logDir, "sessions", "session-old"),
+	}
+	for _, path := range directories {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := []string{
+		filepath.Join(logDir, "runner.ndjson"),
+		filepath.Join(logDir, "runner.ndjson.1"),
+		filepath.Join(logDir, "errors.ndjson"),
+		filepath.Join(logDir, "errors.ndjson.1"),
+		filepath.Join(logDir, "index.ndjson"),
+		filepath.Join(logDir, "jobs", "job-old.ndjson"),
+		filepath.Join(logDir, "jobs", "job-old.ndjson.1"),
+		filepath.Join(logDir, "jobs", "job-old-acpx-stdout.log"),
+		filepath.Join(logDir, "jobs", "job-old-acpx-stderr.log"),
+		filepath.Join(logDir, "sessions", "session-old", "turn-old.ndjson"),
+		filepath.Join(logDir, "sessions", "session-old", "turn-old.ndjson.1"),
+	}
+	for _, path := range files {
+		if err := os.WriteFile(path, []byte("existing\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	logger, err := NewLogger(Config{LogDir: logDir, MaxSize: 1 << 20, MaxFiles: 2, RetentionDays: 30, RawCaptureKB: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range directories {
+		info, err := os.Lstat(path)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !diagnosticPermissionsMatch(info, DefaultDirMode) {
+			t.Fatalf("directory %s info=%v err=%v", path, info, err)
+		}
+	}
+	for _, path := range files {
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || !diagnosticPermissionsMatch(info, DefaultFileMode) {
+			t.Fatalf("file %s info=%v err=%v", path, info, err)
+		}
+	}
+}
+
+func TestLoggerRejectsSymlinksInDiagnosticTree(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		path func(string) string
+	}{
+		{name: "runner file", path: func(root string) string { return filepath.Join(root, "runner.ndjson") }},
+		{name: "rotated file", path: func(root string) string { return filepath.Join(root, "runner.ndjson.1") }},
+		{name: "job file", path: func(root string) string { return filepath.Join(root, "jobs", "job-old.ndjson") }},
+		{name: "session file", path: func(root string) string { return filepath.Join(root, "sessions", "session-old", "turn-old.ndjson") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base := t.TempDir()
+			logDir := filepath.Join(base, "logs")
+			path := test.path(logDir)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(base, "outside.log")
+			if err := os.WriteFile(target, []byte("outside\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, path); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+			logger, err := NewLogger(Config{LogDir: logDir, MaxSize: 1 << 20, MaxFiles: 2, RetentionDays: 30, RawCaptureKB: 1})
+			if logger != nil {
+				_ = logger.Close()
+			}
+			if err == nil {
+				t.Fatal("diagnostic symlink accepted")
+			}
+			data, readErr := os.ReadFile(target)
+			if readErr != nil || string(data) != "outside\n" {
+				t.Fatalf("symlink target changed: %q err=%v", data, readErr)
+			}
+		})
+	}
+}
+
+func TestLoggerRejectsSymlinkDirectories(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		path func(string) string
+	}{
+		{name: "log root", path: func(root string) string { return root }},
+		{name: "jobs directory", path: func(root string) string { return filepath.Join(root, "jobs") }},
+		{name: "sessions directory", path: func(root string) string { return filepath.Join(root, "sessions") }},
+		{name: "session directory", path: func(root string) string { return filepath.Join(root, "sessions", "session-old") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base := t.TempDir()
+			logDir := filepath.Join(base, "logs")
+			path := test.path(logDir)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(base, "outside")
+			if err := os.Mkdir(target, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, path); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+			logger, err := NewLogger(Config{LogDir: logDir, MaxSize: 1 << 20, MaxFiles: 2, RetentionDays: 30, RawCaptureKB: 1})
+			if logger != nil {
+				_ = logger.Close()
+			}
+			if err == nil {
+				t.Fatal("diagnostic directory symlink accepted")
+			}
+			info, statErr := os.Lstat(path)
+			if statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("directory symlink changed: info=%v err=%v", info, statErr)
+			}
+		})
+	}
+}
+
+func TestStoreCleanupRejectsLateSymlink(t *testing.T) {
+	base := t.TempDir()
+	logDir := filepath.Join(base, "logs")
+	store, err := NewStore(Config{LogDir: logDir, MaxSize: 1 << 20, MaxFiles: 2, RetentionDays: 30, RawCaptureKB: 1}, NewRedactor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(base, "outside.log")
+	if err := os.WriteFile(target, []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(logDir, "jobs", "late.ndjson")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := store.Cleanup(); err == nil {
+		t.Fatal("cleanup accepted late diagnostic symlink")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "outside\n" {
+		t.Fatalf("cleanup target changed: %q err=%v", data, err)
+	}
+}
+
+func TestWriterRejectsLateSymlinkReplacement(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "runner.ndjson")
+	writer, err := NewWriter(path, NewRedactor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "outside.log")
+	if err := os.WriteFile(target, []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := writer.WriteBytes([]byte("unsafe\n")); err == nil {
+		t.Fatal("writer accepted late symlink replacement")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "outside\n" {
+		t.Fatalf("writer target changed: %q err=%v", data, err)
+	}
+	_ = writer.Close()
+}
+
+func TestRotatingWriterRejectsLateSymlinkDestination(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "runner.ndjson")
+	writer, err := NewRotatingWriter(path, Config{LogDir: root, MaxSize: 1, MaxFiles: 2}, NewRedactor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteEvent(NewEvent(LevelInfo, "runner", "first", "first")); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "outside.log")
+	if err := os.WriteFile(target, []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path+".1"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := writer.WriteEvent(NewEvent(LevelInfo, "runner", "second", "second")); err == nil {
+		t.Fatal("rotation accepted symlink destination")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "outside\n" {
+		t.Fatalf("rotation target changed: %q err=%v", data, err)
+	}
+	_ = writer.Close()
+}
+
+func TestRotatingWriterCleanupRejectsLateSymlink(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "runner.ndjson")
+	writer, err := NewRotatingWriter(path, Config{LogDir: root, MaxSize: 1 << 20, MaxFiles: 2}, NewRedactor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "outside.log")
+	if err := os.WriteFile(target, []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path+".3"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := writer.Cleanup(); err == nil {
+		t.Fatal("rotating cleanup accepted late symlink")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "outside\n" {
+		t.Fatalf("rotating cleanup target changed: %q err=%v", data, err)
+	}
+	_ = writer.Close()
 }
 
 func contains(s, substr string) bool {

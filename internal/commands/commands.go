@@ -40,6 +40,7 @@ type app struct {
 	runnerReconcile                func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error)
 	runnerDispatch                 func(context.Context, commentrunner.Config) (jobs.Result, error)
 	runnerCancellationDrain        func(context.Context, commentrunner.Config) (jobs.Result, error)
+	runnerDiagnostics              *runnerLogger
 	newNativeEvidenceProvider      func(auth.Profile, string) (nativeEvidenceProvider, error)
 	resolveCodeMutationProvider    func(context.Context, string) (codereview.MutationProvider, error)
 	doctorAgentProbe               func(context.Context, capability.Request) (capability.Report, error)

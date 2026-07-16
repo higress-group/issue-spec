@@ -36,6 +36,7 @@ type runnerServeRuntimeInput struct {
 	GitCredentialConcurrency int
 	ReconcileWorkers         int
 	ReconcileLease           time.Duration
+	Diagnostics              *runnerLogger
 	Dependencies             *runnerServeRuntimeDependencies
 }
 
@@ -91,11 +92,15 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	if err != nil {
 		return nil, err
 	}
+	var reconcileObserver webhook.ReconcileObserver
+	if input.Diagnostics != nil {
+		reconcileObserver = input.Diagnostics
+	}
 	reconciler, err := webhook.NewReconciler(webhook.ReconcilerConfig{Queue: input.Queue, Store: input.Store,
 		Backend: compatibility, Scopes: scopes, Runner: input.Runner,
 		AuthorizationPolicy: commentrunner.AuthorizationPolicy{RunnerLogin: input.Runner.RunnerIdentity,
 			AllowedUsers: input.Runner.AllowedUsers}, WorkerID: "runner-serve", Workers: input.ReconcileWorkers,
-		LeaseDuration: input.ReconcileLease})
+		LeaseDuration: input.ReconcileLease, Observer: reconcileObserver})
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +144,9 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 			issueSpecBinary = strings.TrimSpace(deps.IssueSpecBinary)
 		}
 	}
+	// Wrap the selected writeback boundary, including hermetic test or operator
+	// dependencies, so every live lifecycle transition reaches diagnostics.
+	writebacks = wrapRunnerWriteback(writebacks, input.Diagnostics)
 	dispatcher := &jobs.Dispatcher{Store: input.Store,
 		Repositories: repository.NativeResolver{Bindings: native, Scopes: scopes.ByRepository},
 		Workspaces:   workspaces, Sandbox: sandboxer, Acpx: acpxFactory, Artifacts: artifacts, Writeback: writebacks,

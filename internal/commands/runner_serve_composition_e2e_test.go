@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -111,13 +112,33 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	logConfig := commentrunner.Config{Hostname: "127.0.0.1", Repositories: []string{"owner/repo"}, RunnerIdentity: "runner",
+		StatePath: filepath.Join(root, "state.json"), LogDir: filepath.Join(root, "logs"), LogMaxSizeMB: 1,
+		LogMaxFiles: 2, LogRetentionDays: 30, LogRawCaptureKB: 1}
+	diagnosticLogger, err := newRunnerLogger(logConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loggerClosed := false
+	t.Cleanup(func() {
+		if !loggerClosed {
+			_ = diagnosticLogger.close()
+		}
+	})
+	if err := diagnosticLogger.logStartup("serve"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := diagnosticLogger.newCycle(); err != nil {
+		t.Fatal(err)
+	}
 	secret := strings.Repeat("s", webhook.MinSecretBytes)
 	subscriptionID := uuid.NewString()
 	webhookCredentials, err := webhook.NewCredentials(subscriptionID, webhook.Secret{Value: []byte(secret)}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := webhook.NewHandler(webhook.HandlerConfig{Credentials: webhookCredentials, Queue: queue})
+	handler, err := webhook.NewHandler(webhook.HandlerConfig{Credentials: webhookCredentials, Queue: queue,
+		Observer: diagnosticLogger})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +165,7 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 		GitCredentialTimeout: 5 * time.Second, GitCredentialMaxOutput: 1 << 20, GitCredentialConcurrency: 1,
 		ReconcileWorkers: 1, ReconcileLease: time.Minute, Dependencies: &runnerServeRuntimeDependencies{
 			Workspaces: workspaces, Sandbox: sandboxer, Acpx: compositionAcpxFactory{}, Artifacts: jobs.NoopArtifactProvider{},
-			IssueSpecBinary: "issue-spec-e2e"}})
+			IssueSpecBinary: "issue-spec-e2e"}, Diagnostics: diagnosticLogger})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,9 +178,18 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 	request := httptest.NewRequest(http.MethodPost, webhook.Endpoint, bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+secret)
-	request.Header.Set(webhook.HeaderDeliveryID, uuid.NewString())
+	deliveryID := uuid.NewString()
+	request.Header.Set(webhook.HeaderDeliveryID, deliveryID)
 	request.Header.Set(webhook.HeaderEventID, envelope.EventID.String())
 	request.Header.Set(webhook.HeaderTimestamp, strconv.FormatInt(now.Unix(), 10))
+	rejected := request.Clone(t.Context())
+	rejected.Body = io.NopCloser(bytes.NewReader(body))
+	rejected.Header.Set("Authorization", "Bearer rejected-credential")
+	rejectedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(rejectedResponse, rejected)
+	if rejectedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("webhook rejection=%d body=%s", rejectedResponse.Code, rejectedResponse.Body.String())
+	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted {
@@ -224,6 +254,96 @@ func TestRunnerServeCompositionAcceptedDeliveryReachesChildAuthenticatedJob(t *t
 			t.Fatalf("provider audit=%q want action=%s", audit, action)
 		}
 		audit = []byte(rest)
+	}
+	if err := diagnosticLogger.shutdown("serve"); err != nil {
+		t.Fatal(err)
+	}
+	loggerClosed = true
+	assertRunnerServeDiagnostics(t, logConfig.LogDir, deliveryID, completed)
+}
+
+func assertRunnerServeDiagnostics(t *testing.T, logDir, deliveryID string, job state.Job) {
+	t.Helper()
+	sessionPaths, err := filepath.Glob(filepath.Join(logDir, "sessions", job.PublicSessionID, "*.ndjson"))
+	if err != nil || len(sessionPaths) != 1 {
+		t.Fatalf("session diagnostic paths=%v err=%v", sessionPaths, err)
+	}
+	turnID := strings.TrimSuffix(filepath.Base(sessionPaths[0]), ".ndjson")
+	paths := []string{
+		filepath.Join(logDir, "runner.ndjson"), filepath.Join(logDir, "errors.ndjson"), filepath.Join(logDir, "index.ndjson"),
+		filepath.Join(logDir, "jobs", job.ID+".ndjson"),
+		filepath.Join(logDir, "jobs", job.ID+"-acpx-stdout.log"),
+		filepath.Join(logDir, "jobs", job.ID+"-acpx-stderr.log"),
+		sessionPaths[0],
+	}
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("diagnostic file %s: %v", path, err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("diagnostic file %s mode=%o", path, info.Mode().Perm())
+		}
+	}
+	if info, err := os.Stat(logDir); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("diagnostic directory mode info=%v err=%v", info, err)
+	}
+	runnerLog, err := os.ReadFile(filepath.Join(logDir, "runner.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`"event":"startup"`, `"event":"webhook_rejected"`, `"event":"webhook_accepted"`,
+		`"event":"job_queued"`, `"event":"job_started"`, `"event":"job_completed"`,
+		`"event":"shutdown_start"`, `"delivery_id":"` + deliveryID + `"`, `"job_id":"` + job.ID + `"`,
+		`"public_session_id":"` + job.PublicSessionID + `"`, `"trigger_comment_id":71`,
+		`"status_comment_id":900`, `"workspace_id":"workspace-e2e"`,
+		`"acpx_record_id":"record-e2e"`, `"acpx_last_turn_id":"turn-e2e"`,
+		`"turn_correlation_id":"` + turnID + `"`} {
+		if !bytes.Contains(runnerLog, []byte(expected)) {
+			t.Fatalf("runner diagnostics missing %q:\n%s", expected, runnerLog)
+		}
+	}
+	errorLog, err := os.ReadFile(filepath.Join(logDir, "errors.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(errorLog, []byte(`"event":"webhook_rejected"`)) {
+		t.Fatalf("error diagnostics missing webhook rejection: %s", errorLog)
+	}
+	jobLog, err := os.ReadFile(filepath.Join(logDir, "jobs", job.ID+".ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`"event":"job_queued"`, `"event":"job_started"`, `"event":"job_completed"`,
+		`"delivery_id":"` + deliveryID + `"`, `"public_session_id":"` + job.PublicSessionID + `"`} {
+		if !bytes.Contains(jobLog, []byte(expected)) {
+			t.Fatalf("job diagnostics missing %q: %s", expected, jobLog)
+		}
+	}
+	sessionLog, err := os.ReadFile(sessionPaths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(sessionLog, []byte(`"event":"job_started"`)) ||
+		!bytes.Contains(sessionLog, []byte(`"event":"job_completed"`)) {
+		t.Fatalf("session diagnostics=%s", sessionLog)
+	}
+	stdout, err := os.ReadFile(filepath.Join(logDir, "jobs", job.ID+"-acpx-stdout.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(stdout, []byte("abcdefghijklmnopqrstuvwxyz0123456789")) ||
+		!bytes.Contains(stdout, []byte("[REDACTED:token]")) {
+		t.Fatalf("stdout redaction=%q", stdout)
+	}
+	index, err := os.ReadFile(filepath.Join(logDir, "index.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{job.ID, job.PublicSessionID, deliveryID, "record-e2e", "workspace-e2e", `"id":"71"`, `"id":"900"`} {
+		if !bytes.Contains(index, []byte(expected)) {
+			t.Fatalf("diagnostic index missing %q: %s", expected, index)
+		}
 	}
 }
 
@@ -428,7 +548,9 @@ type compositionCoordinator struct{}
 func (compositionCoordinator) NewSession(_ context.Context, request acpx.NewSessionRequest) (acpx.DispatchResult, error) {
 	return acpx.DispatchResult{PublicSessionID: request.PublicSessionID,
 		Metadata: acpx.Metadata{StableRecordID: "record-e2e", TrueSessionID: "true-e2e", ProviderSessionID: "provider-e2e", LastTurnID: "turn-e2e"},
-		Output:   acpx.TurnOutput{ReplyText: "completed", SummaryFound: true, Summary: runnercontext.CoordinatorSummary{Status: "completed"}}}, nil
+		Output: acpx.TurnOutput{ReplyText: "completed", SummaryFound: true,
+			Summary:   runnercontext.CoordinatorSummary{Status: "completed"},
+			RawStdout: "acpx output token=abcdefghijklmnopqrstuvwxyz0123456789", RawStderr: "bounded stderr"}}, nil
 }
 
 func (compositionCoordinator) Resume(context.Context, acpx.ResumeRequest) (acpx.DispatchResult, error) {
