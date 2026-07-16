@@ -35,6 +35,7 @@ import (
 	orgsapi "github.com/higress-group/issue-spec/internal/server/api/native/orgs"
 	referencesapi "github.com/higress-group/issue-spec/internal/server/api/native/references"
 	reposapi "github.com/higress-group/issue-spec/internal/server/api/native/repos"
+	searchapi "github.com/higress-group/issue-spec/internal/server/api/native/search"
 	webhooksapi "github.com/higress-group/issue-spec/internal/server/api/native/webhooks"
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
@@ -48,6 +49,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/events/subscriptions"
 	"github.com/higress-group/issue-spec/internal/server/evidence"
 	"github.com/higress-group/issue-spec/internal/server/publicurl"
+	searchservice "github.com/higress-group/issue-spec/internal/server/search"
 	"github.com/higress-group/issue-spec/internal/server/spa"
 )
 
@@ -83,6 +85,7 @@ type Dependencies struct {
 	Changes       *changes.Service
 	Subscriptions *subscriptions.Service
 	Deliveries    *delivery.Service
+	Search        *searchservice.Service
 
 	DelegationAudience string
 	DelegationSubject  string
@@ -110,7 +113,8 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	nativeAuthenticate := adminapi.NativeAuthenticate(deps.Authentication)
 	nativeAuthenticateOptional := adminapi.NativeAuthenticateOptional(deps.Authentication)
 	features := metaapi.Features{Bootstrap: true, PersonalAccessTokens: true, Organizations: true,
-		SourceBindings: true, Webhooks: true, ChangeBoards: true, Runner: true, RecoveryExchange: true}
+		SourceBindings: true, Webhooks: true, ChangeBoards: true, Runner: true, RecoveryExchange: true,
+		Search: deps.Search != nil}
 	serverMetadata, err := metaapi.NewServerMetadataWithPosture(deps.ServerInstanceID, deps.APIOrigin, deps.WebOrigin, deps.ProviderDescriptions, deps.TransportPosture)
 	if err != nil {
 		return nil, fmt.Errorf("compose server metadata: %w", err)
@@ -188,6 +192,12 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	}
 	for _, construct := range constructors {
 		if err := add(construct()); err != nil {
+			return nil, fmt.Errorf("compose server routes: %w", err)
+		}
+	}
+	if deps.Search != nil {
+		if err := add(searchapi.NewRouteSet(searchapi.Dependencies{Service: deps.Search, Authenticate: nativeAuthenticate,
+			AuthenticateOptional: nativeAuthenticateOptional, WebOrigin: deps.WebOrigin})); err != nil {
 			return nil, fmt.Errorf("compose server routes: %w", err)
 		}
 	}

@@ -28,6 +28,11 @@ curl -fsS http://127.0.0.1:8080/readyz
 These files are local fixtures, not production secret management. Remove the
 directory when the fixture is no longer needed.
 
+The fixture passes `ISSUE_SPEC_SEARCH_MODE` to the server as `SEARCH_MODE` and
+defaults it to `disabled`. The stock `postgres:17-alpine` service does not
+provide `pg_bigm` or `pg_jieba`; use an operator-managed PostgreSQL instance
+with both extensions installed before selecting `ISSUE_SPEC_SEARCH_MODE=postgres`.
+
 ## Production-shaped authentication fixture
 
 The authentication overlay runs the server with production parsing and an

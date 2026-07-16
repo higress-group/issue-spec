@@ -79,6 +79,7 @@ func TestComposeMountsAllRealRouteSets(t *testing.T) {
 		{http.MethodGet, "/user", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v3/user", http.StatusNotFound},
 		{http.MethodGet, "/api/v1/not-a-route", http.StatusNotFound},
+		{http.MethodGet, "/api/v1/context/repos/acme/widgets/search/issues?q=lock", http.StatusNotFound},
 		{http.MethodHead, "/", http.StatusOK},
 	} {
 		response := httptest.NewRecorder()

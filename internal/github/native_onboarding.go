@@ -31,6 +31,11 @@ type NativeServerMetadata struct {
 	WebURL           string                           `json:"web_url"`
 	Transport        NativeTransport                  `json:"transport"`
 	Providers        []codereview.ProviderDescription `json:"providers"`
+	Features         NativeServerFeatures             `json:"features"`
+}
+
+type NativeServerFeatures struct {
+	Search bool `json:"search"`
 }
 
 type NativeTransport struct {

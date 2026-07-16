@@ -572,7 +572,8 @@ func replyReviewFinding(ctx context.Context, client interface {
 		if err != nil {
 			return reviewReplyResult{}, err
 		}
-		if ok && marker.Finding == findingID && marker.Process == processID && marker.Status == status {
+		if ok && marker.Finding == findingID && marker.Process == processID && marker.Status == status &&
+			strings.TrimSpace(marker.Agent) == strings.TrimSpace(agent) {
 			return reviewReplyResult{
 				OK:              true,
 				Created:         false,

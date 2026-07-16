@@ -345,6 +345,26 @@ func TestReplyReviewFindingIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestReplyReviewFindingAllowsOwningReviewerAfterWorker(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeReviewClient{comments: []github.PullRequestReviewComment{{
+		ID: 10, HTMLURL: "https://github.com/o/r/pull/7#discussion_r10", Body: "P1: fix this",
+		Path: "internal/foo.go", Line: 2,
+	}}}
+	worker, err := replyReviewFinding(ctx, client, "o/r", 7, 10, "FINDING-001", "PROCESS-001", "resolved", "Worker Agent", writerSession{}, "Fixed.")
+	if err != nil || !worker.Created {
+		t.Fatalf("worker reply = %+v, %v", worker, err)
+	}
+	reviewer, err := replyReviewFinding(ctx, client, "o/r", 7, 10, "FINDING-001", "PROCESS-001", "resolved", "Review Agent", writerSession{}, "Re-checked.")
+	if err != nil || !reviewer.Created || reviewer.CommentID == worker.CommentID {
+		t.Fatalf("reviewer reply = %+v, %v", reviewer, err)
+	}
+	reviewer, err = replyReviewFinding(ctx, client, "o/r", 7, 10, "FINDING-001", "PROCESS-001", "resolved", "Review Agent", writerSession{}, "Re-checked.")
+	if err != nil || reviewer.Created {
+		t.Fatalf("idempotent reviewer reply = %+v, %v", reviewer, err)
+	}
+}
+
 type fakeReviewClient struct {
 	pr       github.PullRequest
 	files    []github.PullRequestFile

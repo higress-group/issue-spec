@@ -1,4 +1,5 @@
 import { administrationResources } from "./administration-resources";
+import { searchResources } from "./search-resources";
 import { workflowResources } from "./workflow-resources";
 
 export const resources = {
@@ -21,6 +22,7 @@ export const resources = {
         overview: "Overview",
         issues: "Issues",
         changes: "Changes",
+        search: "Search",
         repositories: "Repositories",
         account: "Account",
         session: "Session",
@@ -115,6 +117,7 @@ export const resources = {
       },
       ...administrationResources.en,
       ...workflowResources.en,
+      ...searchResources.en,
     },
   },
   "zh-CN": {
@@ -136,6 +139,7 @@ export const resources = {
         overview: "总览",
         issues: "议题",
         changes: "变更",
+        search: "检索",
         repositories: "仓库",
         account: "账户",
         session: "会话",
@@ -230,6 +234,7 @@ export const resources = {
       },
       ...administrationResources["zh-CN"],
       ...workflowResources["zh-CN"],
+      ...searchResources["zh-CN"],
     },
   },
 } as const;
