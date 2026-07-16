@@ -10,10 +10,17 @@ import (
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
-func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPath(t *testing.T) {
+func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *testing.T) {
 	root := t.TempDir()
-	codexHome := filepath.Join(root, "codex-home")
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
 	t.Setenv("CODEX_HOME", codexHome)
+	existingPrompt := filepath.Join(codexHome, "prompts", "issue-spec-propose.md")
+	if err := os.MkdirAll(filepath.Dir(existingPrompt), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(existingPrompt, []byte("user customization\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := writeWorkflowArtifacts(root, "owner/repo", "codex,claude", "both")
 	if err != nil {
@@ -22,11 +29,14 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPath(t *testing.T) {
 	if got, want := len(result.SkillFiles), 14; got != want {
 		t.Fatalf("skill file count = %d, want %d", got, want)
 	}
-	if got, want := len(result.CommandFiles), 10; got != want {
+	if got, want := len(result.CommandFiles), 5; got != want {
 		t.Fatalf("command file count = %d, want %d", got, want)
 	}
-	if got := strings.Join(result.CommandsSkipped, ","); got != "" {
-		t.Fatalf("commands skipped = %q, want none", got)
+	if got := strings.Join(result.CommandsSkipped, ","); got != "codex" {
+		t.Fatalf("commands skipped = %q, want codex", got)
+	}
+	if len(result.GlobalPromptFiles) != 0 {
+		t.Fatalf("default generation planned global prompts: %v", result.GlobalPromptFiles)
 	}
 
 	codexSkill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-propose", "SKILL.md"))
@@ -101,14 +111,8 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPath(t *testing.T) {
 		}
 	}
 
-	codexCommand := readTestFile(t, filepath.Join(codexHome, "prompts", "issue-spec-propose.md"))
-	for _, want := range []string{
-		"argument-hint: command arguments",
-		"issue-spec issue create proposal --repo owner/repo",
-	} {
-		if !strings.Contains(codexCommand, want) {
-			t.Fatalf("codex command missing %q:\n%s", want, codexCommand)
-		}
+	if got := readTestFile(t, existingPrompt); got != "user customization\n" {
+		t.Fatalf("default generation modified user-global prompt: %q", got)
 	}
 }
 
@@ -123,8 +127,11 @@ func TestWriteWorkflowArtifactsCommandsOnly(t *testing.T) {
 	if len(result.SkillFiles) != 0 {
 		t.Fatalf("skills generated in commands-only mode: %v", result.SkillFiles)
 	}
-	if got, want := len(result.CommandFiles), 5; got != want {
+	if got, want := len(result.CommandFiles), 0; got != want {
 		t.Fatalf("command file count = %d, want %d", got, want)
+	}
+	if got := strings.Join(result.CommandsSkipped, ","); got != "codex" {
+		t.Fatalf("commands skipped = %q, want codex", got)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".codex", "skills")); !os.IsNotExist(err) {
 		t.Fatalf("commands-only mode should not create .codex skills, err=%v", err)
@@ -132,6 +139,66 @@ func TestWriteWorkflowArtifactsCommandsOnly(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, ".agents", "skills")); !os.IsNotExist(err) {
 		t.Fatalf("commands-only mode should not create .agents skills, err=%v", err)
 	}
+	if _, err := os.Stat(filepath.Join(root, "codex-home")); !os.IsNotExist(err) {
+		t.Fatalf("commands-only mode should not create user-global prompts, err=%v", err)
+	}
+}
+
+func TestInstallGlobalCodexPromptsUsesExplicitDirectoryAndSharedTemplates(t *testing.T) {
+	root := t.TempDir()
+	result, err := writeWorkflowArtifacts(root, "owner/repo", "codex,claude", "both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "isolated-prompts")
+	if err := installGlobalCodexPrompts(root, "owner/repo", nil, globalPromptInstallOptions{
+		Enabled: true, Directory: target,
+	}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(result.GlobalPromptFiles), 5; got != want {
+		t.Fatalf("global prompt file count = %d, want %d", got, want)
+	}
+	for _, path := range result.GlobalPromptFiles {
+		if !filepath.IsAbs(filepath.FromSlash(path)) {
+			t.Fatalf("global prompt path is not absolute: %q", path)
+		}
+	}
+
+	globalPrompt := readTestFile(t, filepath.Join(target, "issue-spec-propose.md"))
+	commands := workflowCommandContents("owner/repo", mustResolveWorkflow(t, root))
+	if got, want := globalPrompt, formatCodexCommand(commands[0]); got != want {
+		t.Fatalf("global prompt did not use shared command template:\n%s", got)
+	}
+}
+
+func TestInstallGlobalCodexPromptsDryRunReportsPathsWithoutWrites(t *testing.T) {
+	root := t.TempDir()
+	result, err := writeWorkflowArtifacts(root, "owner/repo", "none", "both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "dry-run-prompts")
+	if err := installGlobalCodexPrompts(root, "owner/repo", nil, globalPromptInstallOptions{
+		Enabled: true, Directory: target, DryRun: true,
+	}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.GlobalPromptsDryRun || len(result.GlobalPromptFiles) != 5 || result.WorkflowSource == "" {
+		t.Fatalf("unexpected global prompt dry-run result: %+v", result)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created global prompt directory, err=%v", err)
+	}
+}
+
+func mustResolveWorkflow(t *testing.T, root string) workflow.Plan {
+	t.Helper()
+	plan, err := workflow.Resolve(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan
 }
 
 func TestWriteWorkflowArtifactsToolsNoneSkipsWorkflowResolve(t *testing.T) {

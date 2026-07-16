@@ -120,17 +120,25 @@ Source SPEC comments:
 
 ### Requirement: init-generated workflow assets reflect the resolved workflow
 
-`issue-spec init` SHALL generate skills, slash commands, and prompts from the resolved project workflow configuration when one is available.
+`issue-spec init` SHALL generate repository-scoped skills and slash commands from the resolved project workflow configuration when one is available. It MUST NOT write user-global Codex prompts unless the caller explicitly requests global prompt installation.
 
-Generated assets SHALL include the resolved workflow source, schema, config path, template directory, non-info diagnostics, workflow context, workflow rules, and artifact instructions where available. Generated guidance SHALL preserve issue-native storage rules and the default issue-spec path family.
+Generated assets SHALL include the resolved workflow source, schema, config path, template directory, non-info diagnostics, workflow context, workflow rules, and artifact instructions where available. Repository artifacts and explicitly installed user-global prompts SHALL use the same rendered command source. Generated guidance SHALL preserve issue-native storage rules and the default issue-spec path family.
 
 When no project workflow exists, generated skills and slash commands SHALL use the built-in issue-spec workflow.
 
 #### Scenario: init uses project workflow guidance
 
 - **WHEN** `issue-spec init --tools codex,claude --delivery both` runs in a repository with a valid project workflow schema
-- **THEN** generated Codex skills, Claude skills, Claude slash commands, and Codex prompts SHALL include the resolved workflow guidance
+- **THEN** generated Codex skills, Claude skills, and Claude slash commands SHALL include the resolved workflow guidance
+- **THEN** user-global Codex prompts SHALL remain unchanged
 - **THEN** generated assets SHALL state that active artifacts remain issue-native.
+
+#### Scenario: explicit global prompt installation is isolated and previewable
+
+- **WHEN** init explicitly enables global prompt installation with an optional destination directory
+- **THEN** every planned user-global prompt path SHALL be reported as an absolute path and installed only in the selected directory
+- **THEN** a global prompt dry-run SHALL report the same paths without writing them
+- **THEN** installed prompts SHALL contain the same resolved workflow guidance as repository command artifacts.
 
 #### Scenario: tools none does not require workflow resolution
 
@@ -141,6 +149,9 @@ When no project workflow exists, generated skills and slash commands SHALL use t
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861704448
 - https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861704749
+
+Source issue:
+- https://github.com/higress-group/issue-spec/issues/189
 
 ### Requirement: workflow diagnostics expose resolution and compatibility decisions
 

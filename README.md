@@ -278,7 +278,7 @@ issue-spec init --repo owner/repo --tools codex,claude --delivery both
 - Claude skills are written to `.claude/skills/issue-spec-*`.
 - Both skill sets also include a generated `.*/skills/issue-spec-github/SKILL.md` support skill for adjacent GitHub CLI operations that issue-spec does not wrap directly.
 - Claude slash commands are written to `.claude/commands/issue-spec/*.md`, invoked like `/issue-spec:propose`.
-- Codex slash prompts are written to `${CODEX_HOME:-~/.codex}/prompts/issue-spec-*.md` for compatibility with Codex custom prompts. Codex custom prompts are deprecated by current Codex docs; prefer skills for shared workflows.
+- User-global Codex prompts are not modified by default. Use `--install-global-prompts` to explicitly install compatibility prompts under `${CODEX_HOME:-~/.codex}/prompts`; use `--global-prompts-dir <dir>` for an isolated destination and `--global-prompts-dry-run` to preview every absolute target path without writing. Codex custom prompts are deprecated by current Codex docs; prefer skills for shared workflows.
 - `--delivery skills` writes only skills; `--delivery commands` writes only slash commands.
 
 If `--tools` is omitted, init detects existing `.agents` or `.claude` directories and refreshes those workflows. Use `--tools none` to initialize only `.issue-spec/config.json` and optional labels.
