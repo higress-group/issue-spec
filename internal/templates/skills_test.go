@@ -46,7 +46,7 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 		"external uses mode none", "consumed provider-neutral exact-revision evidence",
 		"single runner-managed coordinator session", "supplied session checkout", "otherwise operate standalone",
 		"ISSUE_SPEC_PROCESS_INTEGRATION_ROOT", "ISSUE_SPEC_PROCESS_WORKSPACE_ROOT",
-		"current runtime native child/subagent facility", "exact worktree path, branch, write ownership, PROCESS id",
+		"current runtime's real native child/subagent facility", "exact worktree path, branch, write ownership, PROCESS id",
 		"runtime-native child is not a coordinator session", "does not launch a nested coordinator session or claim a separate per-child OS sandbox",
 		"children share the runner-managed coordinator session's outer sandbox", "unsafe-no-sandbox has no filesystem isolation",
 		"result commit", "runs complete and integrate",
@@ -76,7 +76,7 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 		}
 	}
 	apply := skillContent(t, skills, "issue-spec-apply")
-	for _, want := range []string{"--gate implement", "doctor agent", "execution_class", "only for change-bearing", "same digest/checkpoint", "workspace prepare, inspect, complete, integrate, reconcile, and cleanup", "single runner-managed coordinator session", "otherwise operate standalone", "coordinator owns every PROCESS workspace lifecycle operation", "current runtime native child/subagent facility", "exact worktree path as cwd", "one result commit, focused tests, and a bounded handoff", "there is no nested coordinator session or separate per-child OS sandbox", "workspace complete and integrate from its unchanged checkout", "detached immutable workflow snapshots and fail closed when dirty", "external uses mode none and requires consumed provider-neutral exact-revision evidence", "runtime recovers only the runner-managed coordinator session", "coordinator inspects or reconciles the exact managed PROCESS lease", "Runner-managed session retention cleanup consults git worktree list", "fails closed by retaining the session checkout when runtime metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails", "does not own, persist, or retry child PROCESS cleanup", "workflow workspace cleanup is destructive and does not decide or enforce integration/retention eligibility"} {
+	for _, want := range []string{"--gate implement", "doctor agent", "execution_class", "only for change-bearing", "same digest/checkpoint", "workspace prepare, inspect, complete, integrate, reconcile, and cleanup", "single runner-managed coordinator session", "otherwise operate standalone", "coordinator owns the managed workspace lifecycle", "current runtime's real native child/subagent facility", "exact worktree path as cwd", "one result commit, focused tests, and a bounded handoff", "there is no nested coordinator session or separate per-child OS sandbox", "workspace complete and integrate from its unchanged checkout", "detached immutable workflow snapshots and fail closed when dirty", "external uses mode none and requires consumed provider-neutral exact-revision evidence", "runtime recovers only the runner-managed coordinator session", "coordinator inspects or reconciles the exact managed PROCESS lease", "Runner-managed session retention cleanup consults git worktree list", "fails closed by retaining the session checkout when runtime metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails", "does not own, persist, or retry child PROCESS cleanup", "workflow workspace cleanup is destructive and does not decide or enforce integration/retention eligibility"} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply skill missing %q:\n%s", want, apply)
 		}
@@ -121,52 +121,64 @@ func TestIssueSpecSkillsStateSelfContainedAuthoringInvariant(t *testing.T) {
 	}
 }
 
-func TestIssueSpecSkillsSeparateInlineAndDelegatedProcessLifecycles(t *testing.T) {
+func TestIssueSpecSkillsRequireNonCoordinatorChangeBearingWorkers(t *testing.T) {
 	skills := IssueSpecSkills("owner/repo")
 	workflow := skillContent(t, skills, "issue-spec-workflow")
 	for _, want := range []string{
-		"Execute an inline (independent) coding node in the coordinator's integration checkout",
-		"dispatch only delegated (managed) coding nodes and review nodes",
-		"When a serial node is inline, the coordinator executes it in the integration checkout but still preserves distinct per-PROCESS state and the same bounded ### Handoff boundary",
-		"For each delegated (managed) output, validate the child result commit and focused-test handoff",
-		"Inline or externally self-managed independent nodes skip this child-output lifecycle",
-		"workspace_management: independent remains a general self-managed mode",
-		"MAY instead be used by an external or human executor that owns its own workspace; it is not restricted to coordinator-inline execution",
+		"Every agent-executed change-bearing PROCESS MUST use workspace_management: managed",
+		"real non-coordinator runtime-native child",
+		"MUST NOT implement/test/commit such a node inline",
+		"One real worker MAY execute multiple compatible serial change-bearing or code-repair nodes",
+		"a fresh worker is not required for every PROCESS",
+		"each node retains distinct status, dependencies, workspace lifecycle, evidence, and handoff",
+		"An external or human independent PROCESS stays in its executor-owned workspace",
+		"For each distinct change-bearing author Agent",
+		"one reviewer MAY cover multiple authors",
+		"does not add a 1:1 final gate",
 	} {
 		if !strings.Contains(workflow, want) {
-			t.Fatalf("workflow skill missing inline/delegated lifecycle guidance %q:\n%s", want, workflow)
+			t.Fatalf("workflow skill missing mandatory worker guidance %q:\n%s", want, workflow)
 		}
 	}
 	for _, forbidden := range []string{
-		"Select ready PROCESS nodes whose dependencies are done and dispatch each to its assigned worker",
-		"After prepare, delegate through the current runtime native child/subagent facility",
-		"The coordinator validates the child handoff, then runs complete and integrate",
-		"Validate each child result commit and focused-test handoff",
+		"Coding MAY be inline or delegated",
+		"Inline: declare workspace_management: independent",
+		"inline coding is allowed for any node",
+		"Execute an inline (independent) coding node in the coordinator's integration checkout",
+		"run each node in its own worker",
 	} {
 		if strings.Contains(workflow, forbidden) {
-			t.Fatalf("workflow skill contains unscoped delegated lifecycle guidance %q:\n%s", forbidden, workflow)
+			t.Fatalf("workflow skill contains stale coordinator-inline guidance %q:\n%s", forbidden, workflow)
 		}
 	}
 
 	apply := skillContent(t, skills, "issue-spec-apply")
 	for _, want := range []string{
-		"For a delegated (managed) node, after prepare",
-		"After the delegated child returns",
-		"Inline (independent) nodes have no child result and skip this entire lifecycle",
-		"For each delegated (managed) output, validate the child result commit/tests/handoff",
-		"Inline or externally self-managed independent nodes skip the child-output lifecycle and retain their own per-PROCESS handoff boundary",
-		"workspace_management: independent remains the general self-managed mode for coordinator-inline, external, or human executors",
+		"Every agent-executed change-bearing node MUST declare workspace_management: managed",
+		"The worker's logical Agent MUST differ from the PROCESS coordinator Agent",
+		"A different Agent name without a real dispatched child is insufficient",
+		"MUST NOT be fabricated or relabeled only to pass process.executor.coordinator_conflict",
+		"MUST NOT implement/test/commit such a node inline",
+		"One real worker MAY execute multiple compatible serial change-bearing or code-repair PROCESS nodes",
+		"a fresh worker is not required for every node",
+		"each PROCESS keeps distinct state, dependencies, managed workspace lifecycle, evidence, and handoff",
+		"One reviewer MAY cover multiple authors when it authored none of their code",
+		"final verification remains per SPEC and MUST NOT require a 1:1 implementation-author-to-reviewer mapping",
+		"external or human independent PROCESS remains in its executor-owned workspace",
 	} {
 		if !strings.Contains(apply, want) {
-			t.Fatalf("apply skill missing inline/delegated lifecycle guidance %q:\n%s", want, apply)
+			t.Fatalf("apply skill missing mandatory worker guidance %q:\n%s", want, apply)
 		}
 	}
 	for _, forbidden := range []string{
-		"8. After prepare, use the current runtime native child/subagent facility",
-		"8. Validate child result commit/tests/handoff",
+		"The coordinator MAY implement coding nodes inline",
+		"Inline coordinator-authored node",
+		"inline coding is allowed for any node",
+		"coordinator-inline",
+		"run each in its own worker",
 	} {
 		if strings.Contains(apply, forbidden) {
-			t.Fatalf("apply skill contains unscoped delegated lifecycle guidance %q:\n%s", forbidden, apply)
+			t.Fatalf("apply skill contains stale coordinator-inline guidance %q:\n%s", forbidden, apply)
 		}
 	}
 }
@@ -418,10 +430,10 @@ func TestIssueSpecSkillTemplatesEnforceAgentOwnedReviewWorkflow(t *testing.T) {
 	apply := skillContent(t, skills, "issue-spec-apply")
 	for _, want := range []string{
 		"Add final PR rationale only after review/fix convergence",
-		"each code author adds rationale on the key code blocks it owns",
-		"for delegated code, the coordinator dispatches the owning worker",
-		"for inline code, the coordinator records rationale under its own author identity without fabricating a worker",
-		"does not author review findings, worker fix replies, review resolutions, or rationale on another agent's behalf",
+		"the coordinator dispatches each owning worker to add rationale on the key code blocks it owns",
+		"authored under that worker's own --agent and --agent-session",
+		"MUST NOT create worker rationale or relabel its identity on the worker's behalf",
+		"does not author implementation commits, review findings, worker fix replies, review resolutions, or rationale on another agent's behalf",
 	} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply skill missing ownership guidance %q:\n%s", want, apply)
