@@ -67,6 +67,24 @@ func TestParseCoordinatorSummaryAcceptsDiagnosticLevelAlias(t *testing.T) {
 	}
 }
 
+func TestParseCoordinatorSummaryAcceptsDiagnosticCode(t *testing.T) {
+	summary, err := ParseCoordinatorSummary([]byte(`{
+  "status": "completed",
+  "diagnostics": [
+    {"code": "selector_echo", "message": "selector=claude; agent kind confirmed"}
+  ]
+}`), SummaryBounds{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := summary.Diagnostics[0].Code; got != "selector_echo" {
+		t.Fatalf("diagnostic code = %q, want selector_echo", got)
+	}
+	if got := summary.Diagnostics[0].Message; got != "selector=claude; agent kind confirmed" {
+		t.Fatalf("diagnostic message = %q", got)
+	}
+}
+
 func TestParseCoordinatorSummaryRejectsMalformedOrOversizedOutput(t *testing.T) {
 	_, err := ParseCoordinatorSummary([]byte(`{"status":"queued"}`), SummaryBounds{})
 	if err == nil {
@@ -87,6 +105,14 @@ func TestParseCoordinatorSummaryRejectsMalformedOrOversizedOutput(t *testing.T) 
 }`), SummaryBounds{MaxOutputBytes: 3})
 	if err == nil || !strings.Contains(err.Error(), "stdout_summary exceeds limit") {
 		t.Fatalf("expected stdout bound failure, got %v", err)
+	}
+
+	_, err = ParseCoordinatorSummary([]byte(`{
+  "status": "completed",
+  "diagnostics": [{"category": "runtime", "message": "unknown fields stay rejected"}]
+}`), SummaryBounds{})
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("expected unknown diagnostic field failure, got %v", err)
 	}
 }
 

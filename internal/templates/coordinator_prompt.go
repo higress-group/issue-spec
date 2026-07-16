@@ -86,6 +86,7 @@ func CoordinatorPrompt(bundle runnercontext.Bundle, opts CoordinatorPromptOption
 	b.WriteString("When your turn is complete, include one JSON object in a fenced `issue_spec_coordinator_summary` block:\n\n")
 	b.WriteString("- The opening fence must be exactly ```issue_spec_coordinator_summary on its own line.\n")
 	b.WriteString("- Start the JSON object on the next line; do not append `{` or any JSON text to the opening fence line.\n\n")
+	b.WriteString("- Each `diagnostics` entry must be either a string or an object with only optional `code` and `severity` fields plus the required `message` field. Do not add other diagnostic fields.\n\n")
 	b.WriteString("```issue_spec_coordinator_summary\n")
 	fmt.Fprintf(&b, `{
   "status": "completed",
@@ -101,7 +102,9 @@ func CoordinatorPrompt(bundle runnercontext.Bundle, opts CoordinatorPromptOption
   "processes": [
     {"process_id": "PROCESS-001", "status": "done", "evidence": "implementation and verification evidence recorded"}
   ],
-  "diagnostics": []
+  "diagnostics": [
+    {"code": "no_changes", "severity": "info", "message": "No additional repository changes were required."}
+  ]
 }
 `, issueSpec)
 	b.WriteString("```\n")

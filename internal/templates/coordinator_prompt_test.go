@@ -107,6 +107,8 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 		"issue_spec_coordinator_summary",
 		"opening fence must be exactly ```issue_spec_coordinator_summary on its own line",
 		"Start the JSON object on the next line",
+		"Each `diagnostics` entry must be either a string or an object with only optional `code` and `severity` fields plus the required `message` field",
+		`{"code": "no_changes", "severity": "info", "message": "No additional repository changes were required."}`,
 		`"source_label": "authorized_command"`,
 		`"trigger_comment_url": "https://github.com/owner/repo/issues/25#issuecomment-123"`,
 		`"source_label": "issue_spec_artifact"`,

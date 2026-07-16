@@ -66,6 +66,7 @@ type ProcessEvidence struct {
 }
 
 type DiagnosticSummary struct {
+	Code     string `json:"code,omitempty"`
 	Severity string `json:"severity,omitempty"`
 	Message  string `json:"message"`
 }
@@ -79,6 +80,7 @@ func (d *DiagnosticSummary) UnmarshalJSON(data []byte) error {
 	}
 
 	var object struct {
+		Code     string `json:"code,omitempty"`
 		Severity string `json:"severity,omitempty"`
 		Level    string `json:"level,omitempty"`
 		Message  string `json:"message"`
@@ -95,6 +97,7 @@ func (d *DiagnosticSummary) UnmarshalJSON(data []byte) error {
 		}
 		return err
 	}
+	d.Code = object.Code
 	d.Severity = object.Severity
 	if d.Severity == "" {
 		d.Severity = object.Level
@@ -277,6 +280,9 @@ func ValidateCoordinatorSummary(summary CoordinatorSummary, bounds SummaryBounds
 	for i, diagnostic := range summary.Diagnostics {
 		if strings.TrimSpace(diagnostic.Message) == "" {
 			return fmt.Errorf("diagnostic %d message is required", i)
+		}
+		if len([]byte(diagnostic.Code)) > bounds.MaxDiagnosticBytes {
+			return fmt.Errorf("diagnostic %d code exceeds limit", i)
 		}
 		if len([]byte(diagnostic.Message)) > bounds.MaxDiagnosticBytes {
 			return fmt.Errorf("diagnostic %d message exceeds limit", i)
