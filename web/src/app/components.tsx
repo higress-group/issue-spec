@@ -1,6 +1,7 @@
-import { useEffect, useRef, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
+import { useEffect, useRef, useState, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
 import { AlertCircle, Check, Clipboard, LoaderCircle, X } from "lucide-react";
 import { isApiProblem } from "../lib/api/client";
+import { copyText } from "../lib/clipboard";
 import { useTranslation } from "react-i18next";
 
 export function PageHeader({ eyebrow, title, description, actions }: { eyebrow?: string; title: string; description?: string; actions?: ReactNode }) {
@@ -48,13 +49,22 @@ export function StatusBadge({ tone = "neutral", children }: { tone?: "neutral" |
 export function SecretDialog({ secret, title, details = [], onClose }: { secret: string; title: string; details?: Array<{ label: string; value: string }>; onClose: () => void }) {
   const { t } = useTranslation();
   const closeRef = useRef<HTMLButtonElement>(null);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   useEffect(() => {
     closeRef.current?.focus();
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-  const copy = () => void navigator.clipboard.writeText(secret);
+  const copy = async () => {
+    try {
+      await copyText(secret);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("failed");
+    }
+  };
+  const copyLabel = t(copyStatus === "copied" ? "ui.credentialCopied" : copyStatus === "failed" ? "ui.credentialCopyFailed" : "ui.copyCredential");
   return <div className="dialog-backdrop" role="presentation">
     <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="secret-title">
       <button ref={closeRef} className="icon-button dialog-close" type="button" onClick={onClose} aria-label={t("ui.closeSecret")}><X size={18} /></button>
@@ -62,8 +72,8 @@ export function SecretDialog({ secret, title, details = [], onClose }: { secret:
       <h2 id="secret-title">{title}</h2>
       <p>{t("ui.secretHelp")}</p>
       {details.length ? <dl className="secret-details">{details.map((detail) => <div key={detail.label}><dt>{detail.label}</dt><dd><code>{detail.value}</code></dd></div>)}</dl> : null}
-      <code className="secret-value">{secret}</code>
-      <div className="dialog-actions"><button className="button primary" type="button" onClick={copy}><Clipboard size={16} /> {t("ui.copyCredential")}</button><button className="button secondary" type="button" onClick={onClose}><Check size={16} /> {t("ui.savedCredential")}</button></div>
+      <code className="secret-value" tabIndex={0}>{secret}</code>
+      <div className="dialog-actions"><button className="button primary" type="button" onClick={copy} aria-live="polite">{copyStatus === "copied" ? <Check size={16} /> : <Clipboard size={16} />} {copyLabel}</button><button className="button secondary" type="button" onClick={onClose}><Check size={16} /> {t("ui.savedCredential")}</button></div>
     </section>
   </div>;
 }
