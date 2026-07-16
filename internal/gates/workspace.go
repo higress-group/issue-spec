@@ -180,7 +180,7 @@ func evaluateSnapshotWorkspace(process model.Artifact, input WorkspaceEvaluation
 			"snapshot PROCESS must be prepared, cleanup-pending, or cleaned after evidence collection", string(portable.State), "prepared|cleanup-pending|cleaned", "workflow workspace reconcile"))
 	}
 	diagnostics = append(diagnostics, evaluateWorkspaceRevision(process, input, portable.DetachedRevision, false)...)
-	if hasSatisfied(evidence, satisfied) {
+	if hasSatisfied(evidence, satisfied) || len(evidence.SatisfiedSpecs) > 0 {
 		if input.ExpectedRevision.Known && strings.TrimSpace(input.ExpectedRevision.Expected) != "" {
 			diagnostics = append(diagnostics, evaluateCarrierRevision(process, input, portable.DetachedRevision)...)
 		}

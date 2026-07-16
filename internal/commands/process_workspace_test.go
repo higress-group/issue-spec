@@ -355,14 +355,90 @@ func TestFinalVerifyBindsZeroFindingReviewToExactSubjectRevision(t *testing.T) {
 	})
 	t.Run("stale head", func(t *testing.T) {
 		report := build(stale)
-		if report.OK || (!finalReportHasGateCode(report, gates.CodeProcessWorkspaceRevisionUnknown) && !finalReportHasGateCode(report, gates.CodeProcessWorkspaceRevisionStale)) {
+		if report.OK || !finalReportHasGateCode(report, gates.CodeProcessCarrierMissing) {
 			t.Fatalf("stale zero-finding review passed final verify: errors=%v diagnostics=%+v evidence=%+v", report.Errors, report.Gate.Diagnostics, report.ProcessEvidence)
 		}
 	})
 	t.Run("missing subject revision", func(t *testing.T) {
 		report := build("")
-		if report.OK || !finalReportHasGateCode(report, gates.CodeProcessWorkspaceRevisionUnknown) {
+		if report.OK || !finalReportHasGateCode(report, gates.CodeProcessCarrierMissing) {
 			t.Fatalf("revisionless zero-finding review passed final verify: errors=%v diagnostics=%+v evidence=%+v", report.Errors, report.Gate.Diagnostics, report.ProcessEvidence)
+		}
+	})
+}
+
+func TestFinalVerifyRequiresExactCurrentReviewForEverySpec(t *testing.T) {
+	const (
+		prURL = "https://github.com/o/r/pull/7"
+		head  = "0123456789abcdef0123456789abcdef01234567"
+		stale = "89abcdef0123456789abcdef0123456789abcdef"
+	)
+	build := func(secondRevision string) finalVerifyReport {
+		t.Helper()
+		spec1 := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+		spec1.URL = "https://github.com/o/r/issues/1#issuecomment-1"
+		spec2 := typedArtifact(t, 1, "SPEC", "SPEC-002", "confirmed", "## Requirement: Z\n\nZ MUST work.\n\n### Scenario: ok\n\n- **WHEN** z\n- **THEN** it works")
+		spec2.URL = "https://github.com/o/r/issues/1#issuecomment-2"
+		task := typedArtifact(t, 2, "TASK", "TASK-001", "done", strings.Replace(canonicalTaskContent, "- SPEC-001", "- SPEC-001\n- SPEC-002", 1))
+		task.URL = "https://github.com/o/r/issues/2#issuecomment-3"
+		process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalReviewProcess)
+		process.URL = "https://github.com/o/r/issues/3#issuecomment-4"
+		verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", strings.Replace(canonicalVerifyContent, "- SPEC-001", "- SPEC-001\n- SPEC-002", 1))
+
+		makeReview := func(id, specID, revision, url string) model.Artifact {
+			body, err := model.EnsureTypedBody("REVIEW", id, "## Review Sync Summary\n\nReviewed PROCESS-001 and "+specID+" with zero findings.", model.BodyOptions{
+				Agent: "Independent Reviewer", Status: "done", SubjectRevision: revision, Links: map[string][]string{"PR": {prURL}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return model.Artifact{Issue: 3, URL: url, Comment: model.ParseTypedComment(body)}
+		}
+		review1 := makeReview("REVIEW-001", "SPEC-001", head, "https://github.com/o/r/issues/3#issuecomment-5")
+		review2 := makeReview("REVIEW-002", "SPEC-002", secondRevision, "https://github.com/o/r/issues/3#issuecomment-6")
+
+		linkArtifacts(t, &spec1, &task)
+		linkArtifacts(t, &spec2, &task)
+		linkArtifacts(t, &task, &process)
+		linkArtifacts(t, &process, &review1)
+		linkArtifacts(t, &process, &review2)
+		linkArtifacts(t, &spec1, &review1)
+		linkArtifacts(t, &spec2, &review2)
+		processBody, _, err := model.AddPRLink(process.Comment.Body, prURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Unix(100, 0).UTC()
+		workspace := processworkspace.PortableLease{SchemaVersion: processworkspace.LeaseSchemaVersion, WorkspaceID: "ws-process-001", Repository: "o/r", ProcessID: "PROCESS-001",
+			ExecutionClass: processworkspace.ExecutionReview, Mode: processworkspace.ModeSnapshot, BaseSHA: head, DetachedRevision: head,
+			RuntimeNamespace: "ws-process-001", State: processworkspace.StateCleaned, CreatedAt: now, UpdatedAt: now}
+		transition, err := model.ApplyTypedTransition(processBody, model.TransitionRequest{ExpectedType: "PROCESS", ExpectedID: "PROCESS-001", Workspace: &workspace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		process.Comment = model.ParseTypedComment(transition.Body)
+
+		report, err := buildFinalVerifyReport([]model.Artifact{spec1, spec2, task, process, review1, review2, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{
+			PR: 7, PRURL: prURL, ExpectedRevision: head, RationaleRequired: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return report
+	}
+
+	t.Run("one current and one stale", func(t *testing.T) {
+		report := build(stale)
+		if report.OK || !finalReportHasGateCode(report, gates.CodeProcessCarrierMissing) ||
+			!finalReportHasGateCode(report, gates.CodeProcessWorkspaceRevisionStale) {
+			t.Fatalf("current review rescued stale SPEC at final/workspace gate: errors=%v diagnostics=%+v evidence=%+v", report.Errors, report.Gate.Diagnostics, report.ProcessEvidence)
+		}
+	})
+	t.Run("every SPEC current", func(t *testing.T) {
+		report := build(head)
+		if !report.OK || finalReportHasGateCode(report, gates.CodeProcessCarrierMissing) ||
+			finalReportHasGateCode(report, gates.CodeProcessWorkspaceRevisionStale) {
+			t.Fatalf("one current review per SPEC should pass: errors=%v diagnostics=%+v evidence=%+v", report.Errors, report.Gate.Diagnostics, report.ProcessEvidence)
 		}
 	})
 }

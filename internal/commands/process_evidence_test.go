@@ -234,12 +234,56 @@ func TestBuildProcessEvidenceCurrentReviewSupersedesOldResolvedFindingRevision(t
 		ResolvedFindings: []reviewFinding{{Process: "PROCESS-001", Spec: "SPEC-001", URL: "https://example/finding", Agent: "Reviewer",
 			SubjectRevision: old, RevisionSource: "github-pr-review-comment:3"}}}
 	inputs := buildProcessEvidenceInputs(artifacts, prURL, nil, report, nil)
-	if len(inputs) != 1 || len(inputs[0].Reviews) != 1 {
-		t.Fatalf("current review did not supersede old resolved finding: %+v", inputs)
+	if len(inputs) != 1 || len(inputs[0].Reviews) != 2 {
+		t.Fatalf("review inputs did not preserve eligibility candidates: %+v", inputs)
 	}
 	got := gates.EvaluateProcessEvidence(inputs[0], gates.TargetFinal, gates.ModeAuthoritative).CarrierRevision
 	if !got.Known || !got.Trusted || got.Revision != current || got.Source != report.RevisionSource {
 		t.Fatalf("current review carrier = %+v", got)
+	}
+}
+
+func TestBuildProcessEvidenceIndependentFindingSurvivesCurrentSelfReview(t *testing.T) {
+	const (
+		prURL   = "https://github.com/o/r/pull/7"
+		current = "0123456789abcdef0123456789abcdef01234567"
+		specURL = "https://example/spec"
+	)
+	reviewBody, err := model.EnsureTypedBody("REVIEW", "REVIEW-001", "Reviewed PROCESS-002 and SPEC-001 at the current head.", model.BodyOptions{
+		Agent: "Worker", Status: "done", SubjectRevision: current, Links: map[string][]string{"PR": {prURL}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := []model.Artifact{
+		{URL: specURL, Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
+		processClassArtifact(t, "PROCESS-001", "change-bearing", "SPEC-001", "done"),
+		processClassArtifact(t, "PROCESS-002", "review", "SPEC-001", "done"),
+		{URL: "https://example/self-review", Comment: model.ParseTypedComment(reviewBody)},
+	}
+	rationale, err := model.RenderRationaleBody("Worker", "PROCESS-001", "SPEC-001", specURL, "rationale", "internal/x.go", 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := reviewSyncReport{PR: 7, PRURL: prURL, SubjectRevision: current, RevisionSource: "github-pull-request-head:7",
+		ResolvedFindings: []reviewFinding{{Process: "PROCESS-002", Spec: "SPEC-001", URL: "https://example/finding", Agent: "Independent Reviewer",
+			SubjectRevision: current, RevisionSource: "github-pr-review-comment:3"}}}
+	inputs := buildProcessEvidenceInputs(artifacts, prURL, []github.PullRequestReviewComment{{Body: rationale, Path: "internal/x.go", Line: 12}}, report, nil)
+	var reviewInput *gates.ProcessEvidenceInput
+	for i := range inputs {
+		if inputs[i].Process.Comment.ID == "PROCESS-002" {
+			reviewInput = &inputs[i]
+			break
+		}
+	}
+	if reviewInput == nil || len(reviewInput.Reviews) != 2 {
+		t.Fatalf("review input candidates = %+v", reviewInput)
+	}
+	evaluated := gates.EvaluateProcessEvidence(*reviewInput, gates.TargetFinal, gates.ModeAuthoritative)
+	if hasProcessDiagnostic(evaluated.Diagnostics, gates.CodeProcessReviewAuthorConflict) ||
+		!containsProcessSatisfied(evaluated.Satisfied, "review evidence") || !evaluated.CarrierRevision.Trusted ||
+		evaluated.CarrierRevision.Source != "github-pr-review-comment:3" {
+		t.Fatalf("independent finding did not survive current self-review: %+v", evaluated)
 	}
 }
 
@@ -266,6 +310,24 @@ func TestBuildProcessEvidenceResolvedFindingRevisionRemainsCompatible(t *testing
 	if !got.Known || !got.Trusted || got.Revision != revision || got.Source != "github-pr-review-comment:3" {
 		t.Fatalf("resolved-finding carrier changed: %+v", got)
 	}
+}
+
+func hasProcessDiagnostic(diagnostics []gates.Diagnostic, code string) bool {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func containsProcessSatisfied(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildProcessEvidenceExternalSubstringCannotCreateBinding(t *testing.T) {

@@ -89,7 +89,7 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 	inputs := make([]gates.ProcessEvidenceInput, 0, len(processes))
 	for _, process := range processes {
 		input := gates.ProcessEvidenceInput{Process: process, RequiredPRURL: prURL, ActiveSpecs: activeSpecs, TaskURLs: taskURLs,
-			AuthorAgentsBySpec: authorAgentsBySpec}
+			RequiredRevision: strings.TrimSpace(review.SubjectRevision), AuthorAgentsBySpec: authorAgentsBySpec}
 		for _, comment := range reviewComments {
 			marker, ok, err := model.FindRationaleMarker(comment.Body)
 			if err != nil || !ok || marker.Process != process.Comment.ID {
@@ -99,7 +99,6 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 				SpecURL: rationaleSpecURL(comment.Body), MarkerPath: marker.Path, MarkerLine: marker.Line,
 				CommentPath: comment.Path, CommentLine: comment.Line, AuthorAgent: marker.Agent})
 		}
-		authoritativeReviewSpecs := map[string]bool{}
 		for _, artifact := range reviews {
 			if !artifactReferencesProcess(artifact, process) {
 				continue
@@ -109,14 +108,11 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 				if artifactReferencesSpec(artifact, specID, activeSpecs[specID]) {
 					input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: process.Comment.ID, SpecID: specID, URL: artifact.URL,
 						Done: true, ReviewerAgent: artifact.Comment.Agent, SubjectRevision: revision, Trusted: trusted, Source: source})
-					if trusted {
-						authoritativeReviewSpecs[specID] = true
-					}
 				}
 			}
 		}
 		for _, finding := range review.ResolvedFindings {
-			if finding.Process == process.Comment.ID && !authoritativeReviewSpecs[finding.Spec] {
+			if finding.Process == process.Comment.ID {
 				input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: finding.Process, SpecID: finding.Spec, URL: finding.URL,
 					FindingResolved: true, ReviewerAgent: finding.Agent, SubjectRevision: finding.SubjectRevision, Trusted: finding.SubjectRevision != "", Source: finding.RevisionSource})
 			}
