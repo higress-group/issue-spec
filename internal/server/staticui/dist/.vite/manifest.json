@@ -30,11 +30,23 @@
     "file": "assets/label-chips-DMPnSd3b.css",
     "src": "_label-chips-DMPnSd3b.css"
   },
-  "_message-square-text-B4i1gjxr.js": {
-    "file": "assets/message-square-text-B4i1gjxr.js",
+  "_message-square-text-DJbl93tV.js": {
+    "file": "assets/message-square-text-DJbl93tV.js",
     "name": "message-square-text",
     "imports": [
       "index.html"
+    ]
+  },
+  "_relationships-2US2tFkG.js": {
+    "file": "assets/relationships-2US2tFkG.js",
+    "name": "relationships",
+    "imports": [
+      "_session-0AyzV_oc.js",
+      "index.html",
+      "_relationships-Bu2h6EZH.js"
+    ],
+    "css": [
+      "assets/relationships-BcELNV6j.css"
     ]
   },
   "_relationships-BcELNV6j.css": {
@@ -48,18 +60,6 @@
       "_session-0AyzV_oc.js"
     ]
   },
-  "_relationships-C0gPoYvJ.js": {
-    "file": "assets/relationships-C0gPoYvJ.js",
-    "name": "relationships",
-    "imports": [
-      "_session-0AyzV_oc.js",
-      "index.html",
-      "_relationships-Bu2h6EZH.js"
-    ],
-    "css": [
-      "assets/relationships-BcELNV6j.css"
-    ]
-  },
   "_repository-context-CTrLlgtY.js": {
     "file": "assets/repository-context-CTrLlgtY.js",
     "name": "repository-context",
@@ -67,8 +67,8 @@
       "_session-0AyzV_oc.js"
     ]
   },
-  "_rotate-ccw-7KyYm8wU.js": {
-    "file": "assets/rotate-ccw-7KyYm8wU.js",
+  "_rotate-ccw-B9yIrCp9.js": {
+    "file": "assets/rotate-ccw-B9yIrCp9.js",
     "name": "rotate-ccw",
     "imports": [
       "index.html"
@@ -79,7 +79,7 @@
     "name": "session"
   },
   "index.html": {
-    "file": "assets/index-JUor2FHO.js",
+    "file": "assets/index-CADVd-RL.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -96,38 +96,38 @@
       "src/features/search/search-page.tsx"
     ],
     "css": [
-      "assets/index-Bzi_M7jA.css"
+      "assets/index-CSagopqF.css"
     ]
   },
   "src/features/boards/board-page.tsx": {
-    "file": "assets/board-page-BtmoNpg7.js",
+    "file": "assets/board-page-C-sKXWMc.js",
     "name": "board-page",
     "src": "src/features/boards/board-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_session-0AyzV_oc.js",
-      "_relationships-C0gPoYvJ.js",
-      "_rotate-ccw-7KyYm8wU.js",
+      "_relationships-2US2tFkG.js",
+      "_rotate-ccw-B9yIrCp9.js",
       "index.html",
       "_relationships-Bu2h6EZH.js",
       "_repository-context-CTrLlgtY.js"
     ]
   },
   "src/features/boards/detail-page.tsx": {
-    "file": "assets/detail-page-BnWybqVf.js",
+    "file": "assets/detail-page-CCUllGzu.js",
     "name": "detail-page",
     "src": "src/features/boards/detail-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_session-0AyzV_oc.js",
-      "_relationships-C0gPoYvJ.js",
+      "_relationships-2US2tFkG.js",
       "index.html",
       "_repository-context-CTrLlgtY.js",
       "src/features/boards/board-page.tsx"
     ]
   },
   "src/features/issues/create-page.tsx": {
-    "file": "assets/create-page-BaOsEvVB.js",
+    "file": "assets/create-page-B1R--z-h.js",
     "name": "create-page",
     "src": "src/features/issues/create-page.tsx",
     "isDynamicEntry": true,
@@ -140,14 +140,14 @@
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-D1dNNqR9.js",
+    "file": "assets/detail-page-D6DTefic.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_session-0AyzV_oc.js",
-      "_relationships-C0gPoYvJ.js",
-      "_rotate-ccw-7KyYm8wU.js",
+      "_relationships-2US2tFkG.js",
+      "_rotate-ccw-B9yIrCp9.js",
       "index.html",
       "_repository-context-CTrLlgtY.js",
       "_label-chips-D-LX0cRZ.js",
@@ -159,20 +159,20 @@
     ]
   },
   "src/features/issues/list-page.tsx": {
-    "file": "assets/list-page-CXRzE2NS.js",
+    "file": "assets/list-page-CLpJBlnT.js",
     "name": "list-page",
     "src": "src/features/issues/list-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_session-0AyzV_oc.js",
-      "_message-square-text-B4i1gjxr.js",
+      "_message-square-text-DJbl93tV.js",
       "index.html",
       "_repository-context-CTrLlgtY.js",
       "_label-chips-D-LX0cRZ.js"
     ]
   },
   "src/features/issues/workspace-page.tsx": {
-    "file": "assets/workspace-page-CW-BIgda.js",
+    "file": "assets/workspace-page-BpMqzTnh.js",
     "name": "workspace-page",
     "src": "src/features/issues/workspace-page.tsx",
     "isDynamicEntry": true,
@@ -183,14 +183,14 @@
     ]
   },
   "src/features/search/search-page.tsx": {
-    "file": "assets/search-page-BkHTowtz.js",
+    "file": "assets/search-page-ClMxaFmR.js",
     "name": "search-page",
     "src": "src/features/search/search-page.tsx",
     "isDynamicEntry": true,
     "imports": [
       "_session-0AyzV_oc.js",
-      "_message-square-text-B4i1gjxr.js",
-      "_rotate-ccw-7KyYm8wU.js",
+      "_message-square-text-DJbl93tV.js",
+      "_rotate-ccw-B9yIrCp9.js",
       "index.html"
     ]
   }

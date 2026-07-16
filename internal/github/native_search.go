@@ -28,6 +28,7 @@ type NativeIssueSearchPage struct {
 	Items   []NativeIssueSearchResult `json:"items"`
 	Page    int                       `json:"page"`
 	PerPage int                       `json:"per_page"`
+	Total   int64                     `json:"total"`
 	HasNext bool                      `json:"has_next"`
 }
 
@@ -79,7 +80,7 @@ func (c *Client) SearchNativeIssues(ctx context.Context, repo string, options Na
 	if err != nil {
 		return NativeIssueSearchPage{}, err
 	}
-	if result.Items == nil || result.Page < 1 || result.PerPage < 1 || result.PerPage > 50 {
+	if result.Items == nil || result.Page < 1 || result.PerPage < 1 || result.PerPage > 50 || result.Total < 0 {
 		return NativeIssueSearchPage{}, errors.New("native issue search response is incomplete")
 	}
 	return result, nil

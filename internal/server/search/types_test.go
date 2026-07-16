@@ -33,7 +33,8 @@ func TestExcerptIsBoundedAroundMatch(t *testing.T) {
 }
 
 func TestSearchQueryKeepsAuthorizationOutsideAndUsesBothIndexes(t *testing.T) {
-	for _, required := range []string{"LIKE public.likequery($3)", "to_tsvector('public.jiebacfg'::regconfig", "issue_spec_artifacts", "LIMIT $8 OFFSET $9"} {
+	for _, required := range []string{"LIKE public.likequery($3)", "to_tsvector('public.jiebacfg'::regconfig", "ts_rank_cd(",
+		"public.bigm_similarity(", "issue_spec_artifacts", "(i.state = 'open') DESC", "LIMIT $8 OFFSET $9"} {
 		if !strings.Contains(searchQuery, required) {
 			t.Fatalf("search query missing %q", required)
 		}

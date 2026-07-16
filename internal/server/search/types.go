@@ -12,6 +12,7 @@ const (
 	DefaultPerPage = 20
 	MaxPerPage     = 50
 	MaxQueryBytes  = 256
+	QueryTimeout   = 5 * time.Second
 )
 
 var ErrInvalidOptions = errors.New("search: invalid options")
@@ -107,5 +108,6 @@ type Page struct {
 	Items   []Issue `json:"items"`
 	Page    int     `json:"page"`
 	PerPage int     `json:"per_page"`
+	Total   int64   `json:"total"`
 	HasNext bool    `json:"has_next"`
 }

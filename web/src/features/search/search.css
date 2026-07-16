@@ -26,6 +26,11 @@
 .search-reset { min-height: 2.8rem; display: inline-flex; align-items: center; justify-content: center; gap: .4rem; border: 1px solid #c7d0d9; border-radius: .65rem; background: white; }
 .search-results { outline: none; }
 .search-result-list { display: grid; gap: 1rem; }
+.search-change-group { padding: 1rem; border: 1px solid #bfcbed; border-radius: 1.2rem; background: #f5f7ff; }
+.search-change-group > header { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin: 0 .25rem 1rem; color: #64717a; }
+.search-change-group h3 { margin: .25rem 0 0; font-size: 1.25rem; }
+.search-change-group h3 a { display: inline-flex; align-items: center; gap: .45rem; color: #243e87; }
+.search-change-artifacts { display: grid; gap: .8rem; }
 .search-result-card { padding: 1.25rem; border: 1px solid #d9e1e8; border-left: .32rem solid #5674d8; border-radius: 1rem; background: white; }
 .search-result-card > header { display: flex; justify-content: space-between; gap: 1rem; color: #64717a; font-size: .84rem; }
 .search-result-card h3 { margin: .7rem 0; font-size: 1.3rem; }
@@ -47,5 +52,5 @@
 .search-pagination { display: flex; justify-content: center; align-items: center; gap: 1rem; margin-top: 1.25rem; }
 .search-pagination button { display: inline-flex; align-items: center; gap: .3rem; min-height: 2.5rem; padding: .45rem .8rem; border: 1px solid #bec9d3; border-radius: .55rem; background: white; }
 @keyframes search-spin { to { transform: rotate(360deg); } }
-@media (max-width: 760px) { .search-page { padding: 1rem; } .search-hero, .search-masthead { flex-direction: column; } .search-filters { grid-template-columns: 1fr; } .search-query > div { grid-template-columns: auto 1fr; } .search-query button { grid-column: 1 / -1; } .search-match { grid-template-columns: 1fr; } .search-result-card > header { flex-direction: column; } }
+@media (max-width: 760px) { .search-page { padding: 1rem; } .search-hero, .search-masthead, .search-change-group > header { flex-direction: column; align-items: flex-start; } .search-filters { grid-template-columns: 1fr; } .search-query > div { grid-template-columns: auto 1fr; } .search-query button { grid-column: 1 / -1; } .search-match { grid-template-columns: 1fr; } .search-result-card > header { flex-direction: column; } }
 @media (prefers-reduced-motion: reduce) { .search-loader { animation: none; } .search-scope-card { transition: none; } }

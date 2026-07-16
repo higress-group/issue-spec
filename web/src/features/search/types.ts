@@ -32,6 +32,7 @@ export const searchPageSchema = z.object({
   items: z.array(searchIssueSchema),
   page: z.number().int().positive(),
   per_page: z.number().int().min(1).max(50),
+  total: z.number().int().nonnegative(),
   has_next: z.boolean(),
 });
 

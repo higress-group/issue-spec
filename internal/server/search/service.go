@@ -83,6 +83,8 @@ type rawCommentMatch struct {
 }
 
 func (s *Service) query(ctx context.Context, orgID uuid.UUID, repositories []uuid.UUID, options Options) (Page, error) {
+	ctx, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
 	number := int64(0)
 	trimmedNumber := strings.TrimPrefix(options.Query, "#")
 	if parsed, err := strconv.ParseInt(trimmedNumber, 10, 64); err == nil && parsed > 0 {
@@ -95,16 +97,19 @@ func (s *Service) query(ctx context.Context, orgID uuid.UUID, repositories []uui
 	}
 	defer rows.Close()
 	items := make([]Issue, 0, options.PerPage+1)
+	var total int64
 	for rows.Next() {
 		var item Issue
 		var issueBody string
 		var issueMatched, changeMatched bool
 		var changesJSON, commentsJSON []byte
+		var itemTotal int64
 		if err := rows.Scan(&item.OrganizationID, &item.Organization, &item.RepositoryID, &item.Repository, &item.ID, &item.Number,
 			&item.Title, &issueBody, &item.State, &item.UpdatedAt, &changesJSON, &item.Score,
-			&issueMatched, &changeMatched, &commentsJSON); err != nil {
+			&issueMatched, &changeMatched, &commentsJSON, &itemTotal); err != nil {
 			return Page{}, fmt.Errorf("search: scan result: %w", err)
 		}
+		total = itemTotal
 		if err := json.Unmarshal(changesJSON, &item.Changes); err != nil {
 			return Page{}, fmt.Errorf("search: decode change matches: %w", err)
 		}
@@ -136,7 +141,7 @@ func (s *Service) query(ctx context.Context, orgID uuid.UUID, repositories []uui
 	if hasNext {
 		items = items[:options.PerPage]
 	}
-	return Page{Items: items, Page: options.Page, PerPage: options.PerPage, HasNext: hasNext}, nil
+	return Page{Items: items, Page: options.Page, PerPage: options.PerPage, Total: total, HasNext: hasNext}, nil
 }
 
 func excerpt(value, query string) string {

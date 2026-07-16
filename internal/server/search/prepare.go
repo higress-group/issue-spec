@@ -11,18 +11,32 @@ import (
 
 const advisoryLockKey = "issue-spec:postgres-search-indexes:v1"
 
-var searchIndexes = []string{
-	`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_issues_bigm_v1
-		ON issues USING gin (lower(title || E'\n' || body) public.gin_bigm_ops)`,
-	`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_comments_bigm_v1
-		ON comments USING gin (lower(body) public.gin_bigm_ops)`,
-	`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_issues_jieba_v1
-		ON issues USING gin (to_tsvector('public.jiebacfg'::regconfig, title || E'\n' || body))`,
-	`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_comments_jieba_v1
-		ON comments USING gin (to_tsvector('public.jiebacfg'::regconfig, body))`,
-	`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_change_keys_v1
-		ON issue_spec_artifacts (organization_id, repository_id, lower(change_key), issue_id)
-		WHERE active AND issue_id IS NOT NULL`,
+var searchIndexes = []struct {
+	name      string
+	statement string
+	signature string
+}{
+	{"issue_spec_search_issues_bigm_v1",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_issues_bigm_v1
+			ON issues USING gin (lower(title || E'\n' || body) public.gin_bigm_ops)`,
+		`issues USING gin (lower(((title || '\n'::text) || body)) gin_bigm_ops)`},
+	{"issue_spec_search_comments_bigm_v1",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_comments_bigm_v1
+			ON comments USING gin (lower(body) public.gin_bigm_ops)`,
+		`comments USING gin (lower(body) gin_bigm_ops)`},
+	{"issue_spec_search_issues_jieba_v1",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_issues_jieba_v1
+			ON issues USING gin (to_tsvector('public.jiebacfg'::regconfig, title || E'\n' || body))`,
+		`issues USING gin (to_tsvector('jiebacfg'::regconfig, ((title || '\n'::text) || body)))`},
+	{"issue_spec_search_comments_jieba_v1",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_comments_jieba_v1
+			ON comments USING gin (to_tsvector('public.jiebacfg'::regconfig, body))`,
+		`comments USING gin (to_tsvector('jiebacfg'::regconfig, body))`},
+	{"issue_spec_search_change_keys_v1",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS issue_spec_search_change_keys_v1
+			ON issue_spec_artifacts (organization_id, repository_id, lower(change_key), issue_id)
+			WHERE active AND issue_id IS NOT NULL`,
+		`issue_spec_artifacts USING btree (organization_id, repository_id, lower(change_key), issue_id) WHERE (active AND (issue_id IS NOT NULL))`},
 }
 
 // Prepare validates the explicitly selected PostgreSQL search mode and
@@ -47,8 +61,8 @@ func Prepare(ctx context.Context, pool *pgxpool.Pool) error {
 	defer func() {
 		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, advisoryLockKey)
 	}()
-	for _, statement := range searchIndexes {
-		if _, err := conn.Exec(ctx, statement); err != nil {
+	for _, index := range searchIndexes {
+		if _, err := conn.Exec(ctx, index.statement); err != nil {
 			return fmt.Errorf("search prepare: reconcile index: %w", err)
 		}
 	}
@@ -84,27 +98,33 @@ func validateCapabilities(ctx context.Context, conn capabilityConn) error {
 		return fmt.Errorf("search prepare: SEARCH_MODE=postgres requires pg_jieba in shared_preload_libraries")
 	}
 	var vector, pattern string
-	if err := conn.QueryRow(ctx, `SELECT to_tsvector('public.jiebacfg'::regconfig, '消费者鉴权锁争用')::text, public.likequery('锁')`).Scan(&vector, &pattern); err != nil {
+	var similarity float32
+	if err := conn.QueryRow(ctx, `SELECT to_tsvector('public.jiebacfg'::regconfig, '消费者鉴权锁争用')::text,
+		public.likequery('锁'), public.bigm_similarity('消费者鉴权锁争用', '鉴权')`).Scan(&vector, &pattern, &similarity); err != nil {
 		return fmt.Errorf("search prepare: validate pg_jieba and pg_bigm behavior: %w", err)
 	}
-	if strings.TrimSpace(vector) == "" || strings.TrimSpace(pattern) == "" {
+	if strings.TrimSpace(vector) == "" || strings.TrimSpace(pattern) == "" || similarity <= 0 {
 		return fmt.Errorf("search prepare: PostgreSQL search extensions returned unusable results")
 	}
 	return nil
 }
 
 func validateIndexes(ctx context.Context, conn capabilityConn) error {
-	var count int
-	if err := conn.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema()
-		AND indexname = ANY($1::text[])`, []string{
-		"issue_spec_search_issues_bigm_v1", "issue_spec_search_comments_bigm_v1",
-		"issue_spec_search_issues_jieba_v1", "issue_spec_search_comments_jieba_v1",
-		"issue_spec_search_change_keys_v1",
-	}).Scan(&count); err != nil {
-		return fmt.Errorf("search prepare: validate indexes: %w", err)
-	}
-	if count != len(searchIndexes) {
-		return fmt.Errorf("search prepare: expected %d application-owned indexes, found %d", len(searchIndexes), count)
+	for _, expected := range searchIndexes {
+		var definition string
+		var valid, ready bool
+		err := conn.QueryRow(ctx, `SELECT pg_get_indexdef(c.oid), i.indisvalid, i.indisready
+			FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+			JOIN pg_index i ON i.indexrelid = c.oid
+			WHERE n.nspname = current_schema() AND c.relname = $1`, expected.name).Scan(&definition, &valid, &ready)
+		if err != nil {
+			return fmt.Errorf("search prepare: validate index %s: %w", expected.name, err)
+		}
+		normalized := strings.ReplaceAll(definition, "public.", "")
+		normalized = strings.ReplaceAll(normalized, "\n", `\n`)
+		if !valid || !ready || !strings.Contains(normalized, expected.signature) {
+			return fmt.Errorf("search prepare: index %s is invalid, not ready, or has an unexpected definition: %s", expected.name, definition)
+		}
 	}
 	return nil
 }

@@ -74,7 +74,10 @@ the same change while retaining their provider identity.
 When the operator enables PostgreSQL search, the browser workspace can search
 visible issue bodies and comments, including closed discussions, and group
 matches by issue with related change keys and stages. Authorization filtering
-happens before matching, ranking, excerpts, or pagination.
+happens before matching, ranking, totals, excerpts, or pagination. Search
+requests accept at most 256 query bytes and 50 results per page, and the
+server applies a five-second database query deadline while preserving any
+earlier caller deadline.
 
 Direct Codex, Claude, and other issue-spec clients use the same capability:
 

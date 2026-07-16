@@ -36,6 +36,8 @@ func (r fakeRow) Scan(dest ...any) error {
 			*target = value.(string)
 		case *int:
 			*target = value.(int)
+		case *float32:
+			*target = value.(float32)
 		}
 	}
 	return nil
@@ -44,7 +46,7 @@ func (r fakeRow) Scan(dest ...any) error {
 func TestValidateCapabilities(t *testing.T) {
 	valid := func(preload string) *fakeCapabilityConn {
 		return &fakeCapabilityConn{rows: []fakeRow{
-			{values: []any{true, true}}, {values: []any{preload}}, {values: []any{"'消费者':1", "%锁%"}},
+			{values: []any{true, true}}, {values: []any{preload}}, {values: []any{"'消费者':1", "%锁%", float32(0.1)}},
 		}}
 	}
 	if err := validateCapabilities(t.Context(), valid("pg_stat_statements, pg_jieba")); err != nil {

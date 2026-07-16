@@ -63,7 +63,8 @@ Change Board 把 Proposal、Design 和 Implement Issue 聚合成一个 Change，
 
 运维方启用 PostgreSQL 检索后，Web 工作台可以搜索当前身份可见的 Issue 正文与评论，
 包括已经关闭的讨论；结果按 Issue 聚合，并展示关联 Change Key 和阶段。权限过滤发生
-在匹配、排序、摘要与分页之前。
+在匹配、排序、总数、摘要与分页之前。搜索请求最多接受 256 字节的查询和每页 50
+条结果；服务端对数据库查询应用 5 秒截止时间，同时保留调用方设置的更早截止时间。
 
 直接使用 Codex、Claude 或其他客户端对接 issue-spec 时，也使用同一个能力：
 

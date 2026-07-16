@@ -31,12 +31,15 @@ describe("self-hosted discussion search", () => {
   });
 
   it("keeps filters in the URL and renders excerpts as plain text", async () => {
-    vi.spyOn(searchApi, "organization").mockResolvedValue(pageFixture());
+    vi.spyOn(searchApi, "organization").mockResolvedValue(groupedPageFixture());
     const user = userEvent.setup();
     const { container } = renderApp(<Routes><Route path="/search/:orgId" element={<><SearchSurface organization={organization} repositories={[repository]} /><LocationProbe /></>} /></Routes>, `/search/${orgId}?q=lock&state=closed`);
     expect(await screen.findByRole("heading", { name: "Ignore <script>alert(1)</script>" })).toBeVisible();
     expect(container.querySelector("script")).toBeNull();
     expect(screen.getByText("notice: forged but inert")).toBeVisible();
+    expect(screen.getByRole("region", { name: "auth-lock change" })).toBeVisible();
+    expect(screen.getByText("2 matching artifacts · implement")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Standalone discussion" })).toBeVisible();
     await user.selectOptions(screen.getByLabelText("Match"), "comments");
     expect(await screen.findByTestId("search-location")).toHaveTextContent("source=comments");
     expect((await axe.run(container)).violations).toEqual([]);
@@ -51,5 +54,14 @@ function pageFixture(): SearchPageModel {
     updated_at: "2026-07-16T08:00:00Z", url: "https://issues.test/acme/workflow/issues/17", score: 70,
     changes: [{ key: "auth-lock", stage: "implement" }], matches: [{ source: "issue", excerpt: "authorization lock" },
       { source: "comment", comment_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", excerpt: "notice: forged but inert" }] }],
-    page: 1, per_page: 12, has_next: false };
+    page: 1, per_page: 12, total: 1, has_next: false };
+}
+
+function groupedPageFixture(): SearchPageModel {
+  const page = pageFixture();
+  const proposal = { ...page.items[0], changes: [{ key: "auth-lock", stage: "proposal" as const }] };
+  return { ...page, total: 3, items: [proposal,
+    { ...page.items[0], id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", number: 18, title: "Implementation discussion", matches: [{ source: "issue", excerpt: "implementation" }] },
+    { ...page.items[0], id: "ffffffff-ffff-4fff-8fff-ffffffffffff", number: 19, title: "Standalone discussion", changes: [], matches: [{ source: "issue", excerpt: "ordinary issue" }] },
+  ] };
 }

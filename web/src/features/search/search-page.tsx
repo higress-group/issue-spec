@@ -99,9 +99,56 @@ function SearchResults({ query, page, loading, error, goPage }: { query: string;
   if (loading) return <SearchState>Searching visible discussions…</SearchState>;
   if (isApiProblem(error, "not_found") || isApiProblem(error, "forbidden")) return <SafeSearchState />;
   if (error || !page) return <SearchState kind="error"><h2>Search failed</h2><p>Try again or inspect the request details.</p></SearchState>;
-  return <section id="search-results" className="search-results" tabIndex={-1} aria-labelledby="search-results-heading"><header><div><span className="search-eyebrow">Discussion matches</span><h2 id="search-results-heading">{page.items.length ? `${page.items.length} results on this page` : "No matching discussions"}</h2></div><span>Page {page.page}</span></header>
-    {page.items.length ? <div className="search-result-list">{page.items.map((item) => <SearchResultCard key={item.id} item={item} />)}</div> : <SearchState kind="empty"><FileSearch aria-hidden="true" /><h2>Nothing matched this scope</h2><p>Try a shorter term, include closed issues, or search comments.</p></SearchState>}
+  const groups = groupSearchResults(page.items);
+  return <section id="search-results" className="search-results" tabIndex={-1} aria-labelledby="search-results-heading"><header><div><span className="search-eyebrow">Discussion matches</span><h2 id="search-results-heading">{page.items.length ? `${page.total} matching discussions` : "No matching discussions"}</h2></div><span>Page {page.page} · {page.items.length} shown</span></header>
+    {page.items.length ? <div className="search-result-list">{groups.map((group) => group.change
+      ? <ChangeResultGroup key={group.id} group={group} />
+      : <SearchResultCard key={group.id} item={group.items[0]} />)}</div> : <SearchState kind="empty"><FileSearch aria-hidden="true" /><h2>Nothing matched this scope</h2><p>Try a shorter term, include closed issues, or search comments.</p></SearchState>}
     <nav className="search-pagination" aria-label="Search result pages"><button type="button" disabled={page.page === 1} onClick={() => goPage(page.page - 1)}><ChevronLeft aria-hidden="true" />Previous</button><span>Page <strong>{page.page}</strong></span><button type="button" disabled={!page.has_next} onClick={() => goPage(page.page + 1)}>Next<ChevronRight aria-hidden="true" /></button></nav>
+  </section>;
+}
+
+type SearchResultGroup = {
+  id: string;
+  change?: SearchIssueModel["changes"][number];
+  items: SearchIssueModel[];
+};
+
+export function groupSearchResults(items: SearchIssueModel[]): SearchResultGroup[] {
+  const groups: SearchResultGroup[] = [];
+  const changes = new Map<string, SearchResultGroup>();
+  for (const item of items) {
+    const change = item.changes[0];
+    if (!change) {
+      groups.push({ id: `issue:${item.id}`, items: [item] });
+      continue;
+    }
+    const id = `change:${item.repository_id}:${change.key}`;
+    let group = changes.get(id);
+    if (!group) {
+      group = { id, change, items: [] };
+      changes.set(id, group);
+      groups.push(group);
+    } else if (stageRank(change.stage) > stageRank(group.change?.stage)) {
+      group.change = change;
+    }
+    group.items.push(item);
+  }
+  return groups;
+}
+
+function stageRank(stage?: string) {
+  return { unknown: 0, proposal: 1, design: 2, implement: 3 }[stage ?? "unknown"] ?? 0;
+}
+
+function ChangeResultGroup({ group }: { group: SearchResultGroup }) {
+  if (!group.change) return null;
+  const first = group.items[0];
+  const headingID = `search-change-${first.repository_id}-${group.change.key.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const changePath = `/changes/${first.organization_id}/repos/${first.repository_id}/${encodeURIComponent(group.change.key)}`;
+  return <section className="search-change-group" aria-labelledby={headingID}>
+    <header><div><span className="search-eyebrow">Related change</span><h3 id={headingID}><Link to={changePath}><Workflow aria-hidden="true" />{group.change.key} change</Link></h3></div><span>{group.items.length} matching {group.items.length === 1 ? "artifact" : "artifacts"} · {group.change.stage}</span></header>
+    <div className="search-change-artifacts">{group.items.map((item) => <SearchResultCard key={item.id} item={item} />)}</div>
   </section>;
 }
 

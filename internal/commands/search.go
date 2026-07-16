@@ -123,7 +123,7 @@ func validateSearchOptions(options github.NativeIssueSearchOptions) error {
 
 func renderSearchResults(output *strings.Builder, nonce string, redactor github.ExternalCLIRedactor, profile string, page github.NativeIssueSearchPage) {
 	writeReadHeader(output, nonce)
-	fmt.Fprintf(output, "\nresults: %d\nhas_next: %t\n", len(page.Items), page.HasNext)
+	fmt.Fprintf(output, "\nresults: %d\ntotal: %d\nhas_next: %t\n", len(page.Items), page.Total, page.HasNext)
 	for _, item := range page.Items {
 		fmt.Fprintf(output, "\nissue: #%d\n", item.Number)
 		writeTrustedField(output, redactor, "repository", item.Organization+"/"+item.Repository)
