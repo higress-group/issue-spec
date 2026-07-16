@@ -18,7 +18,7 @@ Proposal Issues:
 
 ### Requirement: PROCESS execution classes determine coordinator-to-child workspace isolation
 
-The implement coordinator MUST retain its integration checkout as the coordinator execution root, MUST allocate a unique writable Git worktree and branch to every delegated managed change-bearing PROCESS executed by a native child agent, MUST execute an inline independent change-bearing PROCESS directly in the integration checkout without allocating a PROCESS worktree, MUST give review and verification child agents an immutable revision snapshot, and MUST avoid allocating a writable checkout to orchestration-only work that does not need repository files.
+The implement coordinator MUST retain its integration checkout as the coordinator execution root, MUST allocate a unique writable Git worktree and branch to every delegated managed change-bearing PROCESS executed by a native child agent, MUST execute a coordinator-authored inline independent change-bearing PROCESS directly in the integration checkout without allocating a PROCESS worktree, MUST allow an external or human independent executor to retain its own self-managed workspace without forcing it into the coordinator checkout, MUST give review and verification child agents an immutable revision snapshot, and MUST avoid allocating a writable checkout to orchestration-only work that does not need repository files.
 
 #### Scenario: Parallel change-bearing child agents are physically separated
 
@@ -34,6 +34,11 @@ The implement coordinator MUST retain its integration checkout as the coordinato
 
 - **WHEN** inline independent PROCESS-B depends on completed PROCESS-A
 - **THEN** the coordinator MUST execute PROCESS-B in the integration checkout without preparing or reusing a child worktree and MUST retain distinct PROCESS state plus the bounded handoff from PROCESS-A
+
+#### Scenario: External or human independent execution remains self-managed
+
+- **WHEN** a change-bearing PROCESS declares `workspace_management: independent` and an external or human executor owns its workspace
+- **THEN** the coordinator MUST NOT allocate a managed PROCESS worktree or require the executor to use the coordinator integration checkout, while the PROCESS MUST still provide commit, test and applicable handoff evidence before independent review and final rationale
 
 #### Scenario: Review child evaluates an immutable revision
 
@@ -54,7 +59,7 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/175#issu
 
 ### Requirement: Coordinator integration is revision-bound and dependency-ordered
 
-The coordinator MUST own the integration checkout, MUST prepare each delegated managed worker from an explicit base revision, MUST integrate delegated worker commits in PROCESS dependency order, and MUST permit a delegated managed change-bearing PROCESS to become done only after its commit is integrated and required integration checks pass. For an inline independent change-bearing PROCESS, the coordinator MAY author the commit directly in the integration checkout, but MUST preserve the PROCESS's declared write ownership, rationale, test evidence, serial handoff boundary, and mandatory independent review obligations before final verification.
+The coordinator MUST own the integration checkout, MUST prepare each delegated managed worker from an explicit base revision, MUST integrate delegated worker commits in PROCESS dependency order, and MUST permit a delegated managed change-bearing PROCESS to become done only after its commit is integrated and required integration checks pass. For a coordinator-authored inline independent change-bearing PROCESS, the coordinator MAY author the commit directly in the integration checkout, but MUST first preserve the PROCESS's declared write ownership, commit, test evidence and applicable serial handoff boundary, MUST next route the reviewable code through mandatory independent review and fix convergence, and MUST only then add final rationale under the code author's identity before final verification. An external or human independent executor follows the same evidence and review-to-rationale ordering from its own self-managed workspace.
 
 #### Scenario: Worker returns a bounded commit
 
@@ -69,7 +74,7 @@ The coordinator MUST own the integration checkout, MUST prepare each delegated m
 #### Scenario: Inline independent completion has no integration phase
 
 - **WHEN** the coordinator completes an inline independent change-bearing PROCESS in the integration checkout
-- **THEN** the coordinator MUST NOT run workspace complete or integrate for that PROCESS and MUST record its commit, tests, rationale and, when it is a serial predecessor, its bounded handoff before routing its active SPEC to an independent review agent
+- **THEN** the coordinator MUST NOT run workspace complete or integrate for that PROCESS, MUST first record its commit, tests and, when it is a serial predecessor, its bounded handoff, MUST next route its active SPEC to an independent review agent and converge any fixes, and MUST only afterward record final rationale under the code author's identity
 
 #### Scenario: Dependency changed after dispatch planning
 
@@ -162,7 +167,7 @@ A runner-managed ACPX coordinator MUST remain bound to its session integration c
 #### Scenario: Runner coordinator executes an inline independent PROCESS
 
 - **WHEN** the runner-managed coordinator selects an eligible inline independent change-bearing PROCESS
-- **THEN** the coordinator MUST implement, test and commit it in the session integration checkout, MUST NOT prepare a PROCESS worktree or dispatch a coding child or run complete/integrate, MUST preserve its distinct PROCESS state and, when it is a serial predecessor, its bounded handoff, MUST record change-bearing rationale, and MUST route every active SPEC with a valid change-bearing carrier to an independent review PROCESS owned by an agent other than the code author
+- **THEN** the coordinator MUST implement, test and commit it in the session integration checkout, MUST NOT prepare a PROCESS worktree or dispatch a coding child or run complete/integrate, MUST preserve its distinct PROCESS state and, when it is a serial predecessor, its bounded handoff, MUST next route every active SPEC with a valid change-bearing carrier to an independent review PROCESS owned by an agent other than the code author and converge any fixes, and MUST only afterward record final rationale under the code author's identity
 
 #### Scenario: Exact PROCESS targeting cannot mutate coordinator execution
 

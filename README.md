@@ -210,14 +210,16 @@ The implement issue records the DAG:
 - linked TASK/SPEC comments
 - status, blockers, and verification evidence
 
-Coding may be done inline by the coordinator or delegated to a worker sub-agent; delegation is the recommended default for context isolation, not a hard requirement. Review, however, is a MUST for any change-bearing work, and it must be performed by a different agent than the code author: the DAG must include dedicated review PROCESS nodes, and a review PROCESS whose reviewer `--agent` name matches a code author of the same SPEC fails the final gate (`process.review.author_conflict`). The coordinator may author code inline and keep a chain serial, but it must not review its own code — route the review through an independent reviewing agent instead. A coordinator may run multiple review agents in parallel when their review scopes are independent, such as CLI/API behavior, workflow documentation, tests, compatibility, or security-sensitive surfaces.
+Coding may be done inline by the coordinator or delegated to a worker sub-agent; delegation is the recommended default for context isolation, not a hard requirement. A coordinator-authored inline node uses `workspace_management: independent` and skips prepare/child/complete/integrate, but `independent` remains the general self-managed mode for external or human executors too and does not force those executors into the coordinator checkout. Review is a MUST for any change-bearing work, and it must be performed by a different agent than the code author: the DAG must include dedicated review PROCESS nodes, and a review PROCESS whose reviewer `--agent` name matches a code author of the same SPEC fails the final gate (`process.review.author_conflict`). The coordinator may author code inline and keep a chain serial, but it must not review its own code — route the review through an independent reviewing agent instead. A coordinator may run multiple review agents in parallel when their review scopes are independent, such as CLI/API behavior, workflow documentation, tests, compatibility, or security-sensitive surfaces. Final PR rationale is written by the code author only after independent review and all fixes converge.
 
 Coordinator execution follows a ready-node loop:
 
 - select PROCESS nodes whose dependencies are done and whose write/review scopes do not overlap
-- dispatch independent worker or review agents in parallel when that reduces context size without creating integration risk
-- integrate completed worker outputs by dependency order and add PR rationale for the changed lines
-- route P0/P1 review findings back to the owner PROCESS before final verification
+- execute coordinator-inline nodes in the integration checkout, or dispatch delegated managed workers when that reduces context size without creating integration risk
+- validate and integrate delegated worker outputs by dependency order; collect commit, test, and applicable handoff evidence for every path
+- dispatch independent review agents only after the code is reviewable
+- route P0/P1 review findings back to the owner PROCESS and converge all fixes
+- only after review/fix convergence, have each code author add final PR rationale for its changed lines
 - mark review PROCESS nodes done only after their review evidence is recorded and blocking findings are resolved
 
 The CLI does not act as a scheduler that launches agents automatically. It provides the shared state, links, and gates that let a coordinator safely split work across multiple agents without losing traceability.

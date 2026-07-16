@@ -201,14 +201,16 @@ implement issue 记录该 DAG：
 - 关联的 TASK/SPEC 评论
 - 状态、阻塞项与验证证据
 
-编码可以由协调器 inline 完成，也可以委派给 worker 子 agent；委派是出于上下文隔离的推荐默认，而非硬性要求。但对任何 change-bearing 工作，review 都是 MUST，且必须由不同于代码作者的 agent 执行：DAG 必须包含专门的 review PROCESS 节点，若某个 review PROCESS 的 reviewer `--agent` 名称与同一 SPEC 的代码作者相同，将在最终 gate 失败（`process.review.author_conflict`）。协调器可以 inline 编写代码并保持串行链，但不得 review 自己写的代码——应改由独立的 reviewing agent 执行 review。当各 review 范围相互独立时（例如 CLI/API 行为、工作流文档、测试、兼容性或安全敏感面），协调器可以并行运行多个 review agent。
+编码可以由协调器 inline 完成，也可以委派给 worker 子 agent；委派是出于上下文隔离的推荐默认，而非硬性要求。由协调器 inline 编写的节点使用 `workspace_management: independent`，并跳过 prepare/child/complete/integrate；但 `independent` 仍是适用于外部或人工执行者的通用自管模式，不会强制这些执行者改用协调器 checkout。对任何 change-bearing 工作，review 都是 MUST，且必须由不同于代码作者的 agent 执行：DAG 必须包含专门的 review PROCESS 节点，若某个 review PROCESS 的 reviewer `--agent` 名称与同一 SPEC 的代码作者相同，将在最终 gate 失败（`process.review.author_conflict`）。协调器可以 inline 编写代码并保持串行链，但不得 review 自己写的代码——应改由独立的 reviewing agent 执行 review。当各 review 范围相互独立时（例如 CLI/API 行为、工作流文档、测试、兼容性或安全敏感面），协调器可以并行运行多个 review agent。只有在独立 review 与所有修复收敛后，代码作者才添加最终 PR rationale。
 
 协调器执行遵循一个「就绪节点」循环：
 
 - 选择那些依赖已完成、且写/审范围互不重叠的 PROCESS 节点
-- 当能在不制造集成风险的前提下减小上下文时，并行分发相互独立的 worker 或 review agent
-- 按依赖顺序集成已完成的 worker 输出，并为改动的行添加 PR rationale
-- 在最终验证之前，把 P0/P1 review 发现路由回其 owner PROCESS
+- 在 integration checkout 中执行 coordinator-inline 节点；需要减小上下文且不会制造集成风险时，分发 delegated managed worker
+- 按依赖顺序验证并集成 delegated worker 输出；所有路径都先记录 commit、测试及适用的 handoff 证据
+- 仅在代码可 review 后分发独立 review agent
+- 把 P0/P1 review 发现路由回其 owner PROCESS，并让所有修复收敛
+- 只有在 review/fix 收敛后，才由各代码作者为自己改动的行添加最终 PR rationale
 - 仅在 review 证据已记录且阻塞性发现已解决后，才把 review PROCESS 节点标记为 done
 
 CLI 不充当自动拉起 agent 的调度器。它提供共享状态、链接与关卡（gate），让协调器能够安全地把工作拆分到多个 agent 之间，而不丢失可追溯性。

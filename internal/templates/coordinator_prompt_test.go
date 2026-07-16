@@ -85,7 +85,11 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 		"does not decide or enforce integration/retention eligibility for you",
 		"delegation exists to keep the coordinator context bounded and avoid mid-task compaction",
 		"plan the PROCESS DAG first, then execute each coding node either delegated or inline",
-		"Both paths MUST record change-bearing rationale, and both remain subject to mandatory independent review",
+		"`workspace_management: independent` remains the general self-managed mode",
+		"MAY instead use an external or human executor's own workspace; it is not restricted to coordinator-inline execution",
+		"Every path first produces commit/test evidence and any serial-predecessor handoff",
+		"then routes reviewable code through mandatory independent review and fix convergence",
+		"only afterward has the code author add final PR rationale under its own identity",
 		"Inline coding is allowed for a node of any size because independent review catches what the author cannot",
 		"Delegation is a recommended technique, not a requirement",
 		"avoid mid-task compaction on large or context-heavy nodes, serial or parallel",
@@ -139,6 +143,7 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 		"retains the clone when a linked worktree exists or inspection fails",
 		"Prepare PROCESS workspaces with",
 		"After a child returns, validate its result commit",
+		"Both paths MUST record change-bearing rationale, and both remain subject to mandatory independent review",
 	} {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("prompt contains stale PROCESS execution guidance %q:\n%s", forbidden, prompt)

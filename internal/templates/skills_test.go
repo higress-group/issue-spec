@@ -129,7 +129,9 @@ func TestIssueSpecSkillsSeparateInlineAndDelegatedProcessLifecycles(t *testing.T
 		"dispatch only delegated (managed) coding nodes and review nodes",
 		"When a serial node is inline, the coordinator executes it in the integration checkout but still preserves distinct per-PROCESS state and the same bounded ### Handoff boundary",
 		"For each delegated (managed) output, validate the child result commit and focused-test handoff",
-		"Inline (independent) nodes skip this child-output lifecycle",
+		"Inline or externally self-managed independent nodes skip this child-output lifecycle",
+		"workspace_management: independent remains a general self-managed mode",
+		"MAY instead be used by an external or human executor that owns its own workspace; it is not restricted to coordinator-inline execution",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("workflow skill missing inline/delegated lifecycle guidance %q:\n%s", want, workflow)
@@ -152,7 +154,8 @@ func TestIssueSpecSkillsSeparateInlineAndDelegatedProcessLifecycles(t *testing.T
 		"After the delegated child returns",
 		"Inline (independent) nodes have no child result and skip this entire lifecycle",
 		"For each delegated (managed) output, validate the child result commit/tests/handoff",
-		"Inline (independent) nodes skip the child-output lifecycle and retain their own per-PROCESS handoff boundary",
+		"Inline or externally self-managed independent nodes skip the child-output lifecycle and retain their own per-PROCESS handoff boundary",
+		"workspace_management: independent remains the general self-managed mode for coordinator-inline, external, or human executors",
 	} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply skill missing inline/delegated lifecycle guidance %q:\n%s", want, apply)
@@ -164,6 +167,32 @@ func TestIssueSpecSkillsSeparateInlineAndDelegatedProcessLifecycles(t *testing.T
 	} {
 		if strings.Contains(apply, forbidden) {
 			t.Fatalf("apply skill contains unscoped delegated lifecycle guidance %q:\n%s", forbidden, apply)
+		}
+	}
+}
+
+func TestIssueSpecSkillsPlaceFinalRationaleAfterIndependentReviewConvergence(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+	for _, name := range []string{"issue-spec-workflow", "issue-spec-apply"} {
+		content := skillContent(t, skills, name)
+		parts := strings.SplitN(content, "## Coordinator DAG Execution", 2)
+		if len(parts) != 2 {
+			t.Fatalf("%s skill missing Coordinator DAG Execution section", name)
+		}
+		dag := parts[1]
+		reviewAt := strings.Index(dag, "independent review")
+		rationaleAt := strings.Index(dag, "Only after independent review/fix convergence")
+		if reviewAt < 0 || rationaleAt < 0 || rationaleAt <= reviewAt {
+			t.Fatalf("%s skill does not place final rationale after independent review convergence:\n%s", name, dag)
+		}
+		for _, forbidden := range []string{
+			"Both paths record change-bearing rationale",
+			"Both record change-bearing rationale",
+			"then records rationale and (for a serial predecessor)",
+		} {
+			if strings.Contains(dag, forbidden) {
+				t.Fatalf("%s skill contains rationale-before-review guidance %q:\n%s", name, forbidden, dag)
+			}
 		}
 	}
 }
