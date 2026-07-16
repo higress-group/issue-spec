@@ -773,6 +773,49 @@ func TestRunnerPreflightProfileFlagFlowsIntoUnifiedSelectionConfig(t *testing.T)
 	}
 }
 
+func TestRunnerGlobalProfileFlagSurvivesConfigReload(t *testing.T) {
+	clearCommandAuthEnv(t)
+	if err := auth.SaveProfile(auth.Profile{
+		Name: "runner-staging", Kind: auth.ProfileKindGitHub, Hostname: "github.com",
+		APIURL: "https://api.github.com", WebURL: "https://github.com",
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name             string
+		subcommand       string
+		includePollFlags bool
+	}{
+		{name: "preflight", subcommand: "preflight"},
+		{name: "poll", subcommand: "poll", includePollFlags: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			statePath := filepath.Join(t.TempDir(), "state.json")
+			workspaceRoot := t.TempDir()
+			profileName, args, err := extractGlobalProfile([]string{
+				"runner", tc.subcommand, "--profile", "runner-staging",
+				"--repo", "o/r", "--runner", "runner-bot",
+				"--state", statePath, "--workspace-root", workspaceRoot,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var out, errOut bytes.Buffer
+			app := newApp(strings.NewReader(""), &out, &errOut)
+			app.profileName = profileName
+			cfg, _, ok := app.parseRunnerOptions(args[2:], tc.includePollFlags)
+			if !ok {
+				t.Fatalf("parse failed: stdout=%q stderr=%q", out.String(), errOut.String())
+			}
+			if cfg.Profile != "runner-staging" {
+				t.Fatalf("profile = %q, want global profile %q", cfg.Profile, "runner-staging")
+			}
+		})
+	}
+}
+
 func TestRunnerPreflightSelfHostedSkipsNotificationAndWatchCalls(t *testing.T) {
 	clearCommandAuthEnv(t)
 	profile := auth.Profile{

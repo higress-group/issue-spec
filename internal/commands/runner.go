@@ -677,6 +677,9 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 		a.errorf("%v\n", err)
 		return commentrunner.Config{}, opts, false
 	}
+	if a.profileName != "" {
+		cfg.Profile = a.profileName
+	}
 	if seen["hostname"] {
 		cfg.Hostname = *host
 	}
