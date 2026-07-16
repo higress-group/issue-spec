@@ -89,6 +89,7 @@ type Change struct {
 
 type Issue struct {
 	OrganizationID uuid.UUID `json:"organization_id"`
+	Organization   string    `json:"organization"`
 	RepositoryID   uuid.UUID `json:"repository_id"`
 	Repository     string    `json:"repository"`
 	ID             uuid.UUID `json:"id"`
@@ -96,6 +97,7 @@ type Issue struct {
 	Title          string    `json:"title"`
 	State          string    `json:"state"`
 	UpdatedAt      time.Time `json:"updated_at"`
+	URL            string    `json:"url"`
 	Changes        []Change  `json:"changes"`
 	Score          int       `json:"score"`
 	Matches        []Match   `json:"matches"`

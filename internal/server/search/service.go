@@ -100,7 +100,7 @@ func (s *Service) query(ctx context.Context, orgID uuid.UUID, repositories []uui
 		var issueBody string
 		var issueMatched, changeMatched bool
 		var changesJSON, commentsJSON []byte
-		if err := rows.Scan(&item.OrganizationID, &item.RepositoryID, &item.Repository, &item.ID, &item.Number,
+		if err := rows.Scan(&item.OrganizationID, &item.Organization, &item.RepositoryID, &item.Repository, &item.ID, &item.Number,
 			&item.Title, &issueBody, &item.State, &item.UpdatedAt, &changesJSON, &item.Score,
 			&issueMatched, &changeMatched, &commentsJSON); err != nil {
 			return Page{}, fmt.Errorf("search: scan result: %w", err)

@@ -40,6 +40,7 @@ type app struct {
 	runnerDispatch               func(context.Context, commentrunner.Config) (jobs.Result, error)
 	runnerCancellationDrain      func(context.Context, commentrunner.Config) (jobs.Result, error)
 	newNativeEvidenceProvider    func(auth.Profile, string) (nativeEvidenceProvider, error)
+	newNativeSearchProvider      func(auth.Profile, string) (nativeSearchProvider, error)
 	resolveCodeMutationProvider  func(context.Context, string) (codereview.MutationProvider, error)
 	doctorAgentProbe             func(context.Context, capability.Request) (capability.Report, error)
 }
@@ -90,6 +91,8 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return a.runVerifyLinks(ctx, args[1:])
 	case "read":
 		return a.runRead(ctx, args[1:])
+	case "search":
+		return a.runSearch(ctx, args[1:])
 	case "runner":
 		return a.runRunner(ctx, args[1:])
 	default:
@@ -141,6 +144,7 @@ func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 		newGitHubBackend:          defaultNewGitHubBackend,
 		gitHubBackendToken:        defaultGitHubBackendToken,
 		newNativeEvidenceProvider: defaultNewNativeEvidenceProvider,
+		newNativeSearchProvider:   defaultNewNativeSearchProvider,
 		resolveCodeMutationProvider: func(ctx context.Context, key string) (codereview.MutationProvider, error) {
 			if operatorRegistryErr != nil {
 				return nil, operatorRegistryErr
@@ -199,6 +203,7 @@ Usage:
   issue-spec verify-links --repo owner/repo --proposal N --design N --implement N
   issue-spec read issue --repo owner/repo --issue N [--comments] [--typed-only]
   issue-spec read pr --repo owner/repo --pr N [--comments] [--typed-only]
+  issue-spec search issues --repo owner/repo --query TEXT [--state all|open|closed] [--source all|issue|comments|change] [--stage proposal|design|implement] [--limit 10]
   issue-spec runner poll --repo owner/repo --runner login --once --dry-run
   issue-spec runner serve --profile self-hosted --repo owner/repo --runner login --subscription-id UUID --secret-file FILE --git-credential-command /absolute/provider
   issue-spec runner preflight --repo owner/repo --runner login`)

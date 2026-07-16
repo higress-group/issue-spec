@@ -34,10 +34,11 @@ const searchQuery = `WITH raw_candidates AS (
 		bool_or(comment_matched) AS comment_matched, bool_or(change_matched) AS change_matched
 	FROM raw_candidates GROUP BY issue_id
 ), selected AS (
-	SELECT i.organization_id, i.repository_id, r.name AS repository, i.id, i.number, i.title, i.body,
+	SELECT i.organization_id, o.name AS organization, i.repository_id, r.name AS repository, i.id, i.number, i.title, i.body,
 		i.state, i.updated_at, ranked.score, ranked.issue_matched, ranked.comment_matched, ranked.change_matched
 	FROM ranked JOIN issues i ON i.organization_id = $1 AND i.repository_id = ANY($2::uuid[]) AND i.id = ranked.issue_id
 	JOIN repos r ON r.organization_id = i.organization_id AND r.id = i.repository_id
+	JOIN orgs o ON o.id = i.organization_id
 	WHERE $7 = '' OR EXISTS (
 		SELECT 1 FROM issue_spec_artifacts stage_artifact
 		WHERE stage_artifact.organization_id = i.organization_id AND stage_artifact.repository_id = i.repository_id
@@ -49,7 +50,7 @@ const searchQuery = `WITH raw_candidates AS (
 	ORDER BY ranked.score DESC, i.updated_at DESC, lower(r.name), i.number
 	LIMIT $8 OFFSET $9
 )
-SELECT s.organization_id, s.repository_id, s.repository, s.id, s.number, s.title, s.body, s.state, s.updated_at,
+SELECT s.organization_id, s.organization, s.repository_id, s.repository, s.id, s.number, s.title, s.body, s.state, s.updated_at,
 	COALESCE((SELECT jsonb_agg(jsonb_build_object('key', changes.change_key, 'stage', changes.stage) ORDER BY changes.change_key)
 		FROM (SELECT a.change_key, CASE WHEN bool_or(a.artifact_type = 'implement') THEN 'implement'
 			WHEN bool_or(a.artifact_type = 'design') THEN 'design'

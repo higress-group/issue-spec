@@ -90,6 +90,16 @@ func TestPostgresSearchRecallAuthorizationAndIndexes(t *testing.T) {
 			t.Fatalf("search %+v = %+v, %v", test.options, page, err)
 		}
 	}
+	stagePage, err := service.Repository(t.Context(), authz.Anonymous(), scope,
+		Options{Query: "auth-lock", Source: SourceChange, Stage: "proposal"})
+	if err != nil || len(stagePage.Items) != 1 {
+		t.Fatalf("proposal stage search = %+v, %v", stagePage, err)
+	}
+	stagePage, err = service.Repository(t.Context(), authz.Anonymous(), scope,
+		Options{Query: "auth-lock", Source: SourceChange, Stage: "implement"})
+	if err != nil || len(stagePage.Items) != 0 {
+		t.Fatalf("implement stage search = %+v, %v", stagePage, err)
+	}
 	page, err := service.Organization(t.Context(), authz.Anonymous(), models.OrgScope{OrgID: orgID}, Options{Query: "private-only-secret"})
 	if err != nil || len(page.Items) != 0 {
 		t.Fatalf("private result leaked: %+v, %v", page, err)

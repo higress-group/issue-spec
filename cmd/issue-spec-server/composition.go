@@ -42,6 +42,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/evidence"
 	"github.com/higress-group/issue-spec/internal/server/projection/artifacts"
 	"github.com/higress-group/issue-spec/internal/server/publicurl"
+	"github.com/higress-group/issue-spec/internal/server/search"
 	"github.com/higress-group/issue-spec/internal/server/spa"
 	"github.com/higress-group/issue-spec/internal/server/staticui"
 	"github.com/higress-group/issue-spec/internal/server/store"
@@ -170,6 +171,16 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	if err != nil {
 		return fail(err)
 	}
+	var searchService *search.Service
+	if cfg.SearchMode == config.SearchPostgres {
+		if err := search.Prepare(ctx, database.Pool()); err != nil {
+			return fail(fmt.Errorf("prepare postgres search: %w", err))
+		}
+		searchService, err = search.New(database.Pool(), authorization)
+		if err != nil {
+			return fail(err)
+		}
+	}
 	spaService, err := spa.New(database, authorization, origins)
 	if err != nil {
 		return fail(err)
@@ -221,6 +232,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 		Subscription: subscriptionCompat, Presenter: codec.Presenter{Origins: origins}, Conditional: conditional.Policy{},
 		SPA: spaService, Bindings: bindingService, Evidence: evidenceService, Changes: changeService,
 		Subscriptions: subscriptionService, Deliveries: deliveryService,
+		Search:             searchService,
 		DelegationAudience: cfg.DelegationAudience, DelegationSubject: cfg.DelegationSubject,
 		Static: static, Ready: ready.check, LogRequest: logRequest,
 	})
