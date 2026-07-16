@@ -1369,6 +1369,7 @@ func TestRunnerPollDefaultsToAsyncDispatchAndDoesNotBlockNextIntake(t *testing.T
 	clearCommandAuthEnv(t)
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
+	stubRunnerCancellationDrain(app)
 	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
 		return commentrunner.PreflightReport{OK: true, Config: cfg}
 	}
@@ -1442,6 +1443,7 @@ func TestRunnerPollAsyncRunsPeriodicReconcileWhenDispatchIdle(t *testing.T) {
 	clearCommandAuthEnv(t)
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
+	stubRunnerCancellationDrain(app)
 	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
 		return commentrunner.PreflightReport{OK: true, Config: cfg}
 	}
@@ -1514,6 +1516,7 @@ func TestRunnerPollAsyncDispatchCleansWorkspacesAfterStartup(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
+	stubRunnerCancellationDrain(app)
 	app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
 		return commentrunner.PreflightReport{OK: true, Config: cfg}
 	}
@@ -1564,6 +1567,12 @@ func TestRunnerPollAsyncDispatchCleansWorkspacesAfterStartup(t *testing.T) {
 	}
 	if _, ok := loaded.GetWorkspace("ws-expired"); ok {
 		t.Fatalf("removed workspace still indexed: %+v", loaded.Workspaces["ws-expired"])
+	}
+}
+
+func stubRunnerCancellationDrain(app *app) {
+	app.runnerCancellationDrain = func(context.Context, commentrunner.Config) (jobs.Result, error) {
+		return jobs.Result{}, nil
 	}
 }
 
