@@ -113,7 +113,6 @@ jobs:
           echo "channel=$RELEASE_CHANNEL" >> "$GITHUB_OUTPUT"
           echo "revision=$RELEASE_REVISION" >> "$GITHUB_OUTPUT"
           echo "prerelease=$RELEASE_PRERELEASE" >> "$GITHUB_OUTPUT"
-          echo "latest=$RELEASE_LATEST" >> "$GITHUB_OUTPUT"
 
       - name: Attest every published asset
         uses: actions/attest-build-provenance@v4
@@ -139,20 +138,23 @@ jobs:
           RELEASE_CHANNEL: ${{ steps.identity.outputs.channel }}
           RELEASE_REVISION: ${{ steps.identity.outputs.revision }}
           RELEASE_PRERELEASE: ${{ steps.identity.outputs.prerelease }}
-          RELEASE_LATEST: ${{ steps.identity.outputs.latest }}
         shell: bash
         run: |
           set -euo pipefail
 
-          guard_revision() {
-            if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+          guard_tag_revision() {
+            git fetch --force origin "refs/tags/$1:refs/tags/$1"
+            test "$(git rev-parse "$1^{commit}")" = "$2"
+          }
+
+          guard_candidate_source() {
+            if [ "$RELEASE_CHANNEL" = rolling ]; then
+              test "$GITHUB_REF" = "refs/heads/main"
               git fetch --no-tags origin main
               git merge-base --is-ancestor "$RELEASE_REVISION" origin/main
-              test "$(git rev-parse origin/main)" = "$RELEASE_REVISION"
             else
               test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
-              git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-              test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_REVISION"
+              guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"
             fi
           }
 
@@ -170,12 +172,55 @@ jobs:
             trap - RETURN
           }
 
-          guard_revision
+          published_rolling_count() {
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --slurp \
+              --jq '[.[][] | select(.draft == false and (.tag_name | startswith("rolling-")))] | length'
+          }
+
+          read_latest_rolling_revision() {
+            latest_file=$(mktemp)
+            if gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$latest_file" 2>/dev/null; then
+              latest_tag=$(jq -er .tag_name < "$latest_file")
+              case "$latest_tag" in
+                rolling-*) latest_revision=${latest_tag#rolling-} ;;
+                *)
+                  rolling_count=$(published_rolling_count)
+                  rm -f "$latest_file"
+                  if [ "$rolling_count" = 0 ]; then
+                    printf '%s\n' '-'
+                    return
+                  fi
+                  echo "current GitHub latest Release is not the published rolling snapshot: $latest_tag" >&2
+                  return 1
+                  ;;
+              esac
+              printf '%s\n' "$latest_revision" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'
+              guard_tag_revision "$latest_tag" "$latest_revision"
+              rm -f "$latest_file"
+              printf '%s\n' "$latest_revision"
+              return
+            fi
+            rm -f "$latest_file"
+
+            # A missing/legacy latest pointer is valid only before the first
+            # published rolling snapshot. Otherwise fail closed.
+            rolling_count=$(published_rolling_count)
+            test "$rolling_count" = 0
+            printf '%s\n' '-'
+          }
+
+          rolling_latest_decision() {
+            git fetch --no-tags origin main
+            current_main=$(git rev-parse origin/main)
+            current_latest=$(read_latest_rolling_revision)
+            sh hack/release/rolling-latest.sh "$RELEASE_REVISION" "$current_main" "$current_latest"
+          }
+
+          guard_candidate_source
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
             if [ "$RELEASE_CHANNEL" = rolling ]; then
-              git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-              test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_REVISION"
+              guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"
             fi
             draft=$(jq -r .draft <<<"$release_json")
             if [ "$draft" = false ]; then
@@ -183,9 +228,13 @@ jobs:
               remote_body=$(jq -r .body <<<"$release_json")
               local_body=$(cat dist/release/release-notes.md)
               test "$remote_body" = "$local_body"
-              guard_revision
               if [ "$RELEASE_CHANNEL" = rolling ]; then
-                gh release edit "$RELEASE_TAG" --latest
+                decision=$(rolling_latest_decision)
+                case "$decision" in
+                  advance) gh release edit "$RELEASE_TAG" --latest ;;
+                  current|noop) ;;
+                  *) echo "unexpected rolling latest decision: $decision" >&2; exit 1 ;;
+                esac
               fi
               exit 0
             fi
@@ -197,6 +246,7 @@ jobs:
               gh release create "$RELEASE_TAG" --draft --target "$RELEASE_REVISION" \
                 --title "issue-spec $RELEASE_VERSION" --notes-file dist/release/release-notes.md \
                 --latest=false
+              guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"
             else
               gh release create "$RELEASE_TAG" --draft --verify-tag \
                 --title "issue-spec $RELEASE_VERSION" --notes-file dist/release/release-notes.md \
@@ -217,7 +267,23 @@ jobs:
           done
           verify_remote_assets
 
-          guard_revision
-          gh release edit "$RELEASE_TAG" --draft=false \
-            --notes-file dist/release/release-notes.md \
-            --prerelease="$RELEASE_PRERELEASE" --latest="$RELEASE_LATEST"
+          if [ "$RELEASE_CHANNEL" != rolling ]; then
+            guard_candidate_source
+            gh release edit "$RELEASE_TAG" --draft=false --latest=false \
+              --notes-file dist/release/release-notes.md \
+              --prerelease="$RELEASE_PRERELEASE"
+            exit 0
+          fi
+
+          decision=$(rolling_latest_decision)
+          case "$decision" in
+            advance)
+              gh release edit "$RELEASE_TAG" --draft=false --latest \
+                --notes-file dist/release/release-notes.md --prerelease=false
+              ;;
+            current|noop)
+              # The candidate remains an immutable draft. In particular, an
+              # older completion never rolls back or partially replaces latest.
+              ;;
+            *) echo "unexpected rolling latest decision: $decision" >&2; exit 1 ;;
+          esac
