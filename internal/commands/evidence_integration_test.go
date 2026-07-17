@@ -21,6 +21,7 @@ import (
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
 func TestExternalVerifyGateUsesAuthoritativeNativeTarget(t *testing.T) {
@@ -211,6 +212,81 @@ func TestExternalReviewGateAlwaysSynchronizesBeforeEvaluation(t *testing.T) {
 		"operator,persist,ledger,operator,persist,ledger" {
 		t.Fatalf("syncs=%d resolve_calls=%d calls=%v", native.syncs, native.resolveCalls, calls)
 	}
+}
+
+func TestExternalReviewAndVerifyProjectCompletionPolicyAndAllowZeroFindings(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "issue-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "issue-spec", "config.yaml"), []byte(`external_code:
+  provider_key: code.example
+  evidence:
+    required: [review, check]
+    freshness:
+      review: 2h
+      check: 3h
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	check := testEvidenceRecord("check-ledger", codereview.EvidenceCheck, "passed", "head-abc", now)
+	check.Name = "unit"
+	provider := &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+		Reference: reference, SubjectRevision: "head-abc", CapturedAt: now}}
+	for _, test := range []struct {
+		name    string
+		gate    coreevidence.Gate
+		records []codereview.EvidenceRecord
+	}{
+		{name: "review", gate: coreevidence.GateReview, records: []codereview.EvidenceRecord{check}},
+		{name: "verify", gate: coreevidence.GateVerify, records: []codereview.EvidenceRecord{check}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ledger := &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+				Reference: reference, SubjectRevision: "head-abc", CapturedAt: now, Records: test.records}}
+			native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7,
+				SubjectRevision: "head-abc", Policy: coreevidence.NativePolicy{Requirements: []coreevidence.NativeRequirement{
+					{Kind: codereview.EvidenceReview, Freshness: time.Hour},
+				}}, Provider: ledger}}
+			app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+			app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
+			app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) { return provider, nil }
+			result, hosted, err := app.externalGateWithProfile(t.Context(), auth.Profile{Kind: auth.ProfileKindHosted}, "token",
+				"acme/widgets", 9, "code_change", "head-abc", test.gate, root, string(test.gate))
+			if err != nil || !hosted || !result.Evaluation.Passed || !result.ReviewCompletionPolicy.Required ||
+				result.ReviewCompletionPolicy.Freshness != time.Hour {
+				t.Fatalf("result=%+v hosted=%t err=%v", result, hosted, err)
+			}
+		})
+	}
+}
+
+func TestProjectReviewCompletionPolicyPreservesOtherEvidencePolicy(t *testing.T) {
+	config := &workflow.ExternalCodeConfig{Evidence: workflow.EvidencePolicyConfig{
+		Required: []string{"review", "check"}, Freshness: map[string]string{"review": "2h", "check": "3h"},
+	}}
+	policy, err := mergedEvidencePolicy(config, coreevidence.NativePolicy{Requirements: []coreevidence.NativeRequirement{
+		{Kind: codereview.EvidenceReview, Freshness: time.Hour},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completion := projectReviewCompletionPolicy(&policy)
+	if !completion.Required || completion.Freshness != time.Hour ||
+		strings.Join(evidenceKindStrings(policy.RequiredKinds), ",") != "check" ||
+		policy.Freshness[codereview.EvidenceReview] != 0 || policy.Freshness[codereview.EvidenceCheck] != 3*time.Hour {
+		t.Fatalf("completion=%+v provider_policy=%+v", completion, policy)
+	}
+}
+
+func evidenceKindStrings(values []codereview.EvidenceKind) []string {
+	result := make([]string, len(values))
+	for index, value := range values {
+		result[index] = string(value)
+	}
+	return result
 }
 
 func TestExternalReviewGateRejectsInexactProviderSnapshotBeforePersistence(t *testing.T) {

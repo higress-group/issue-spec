@@ -84,11 +84,12 @@ var (
 )
 
 type externalGateResult struct {
-	Consumption externalEvidenceConsumption `json:"consumption"`
-	Evaluation  coreevidence.Result         `json:"evaluation"`
-	Snapshot    codereview.Snapshot         `json:"-"`
-	Target      coreevidence.NativeTarget   `json:"-"`
-	Native      nativeEvidenceProvider      `json:"-"`
+	Consumption            externalEvidenceConsumption `json:"consumption"`
+	Evaluation             coreevidence.Result         `json:"evaluation"`
+	ReviewCompletionPolicy ReviewCompletionPolicy      `json:"-"`
+	Snapshot               codereview.Snapshot         `json:"-"`
+	Target                 coreevidence.NativeTarget   `json:"-"`
+	Native                 nativeEvidenceProvider      `json:"-"`
 }
 
 type runnerEvidencePreGate struct {
@@ -192,6 +193,10 @@ func (a *app) externalGateWithProfile(ctx context.Context, profile auth.Profile,
 	if err != nil {
 		return externalGateResult{}, true, err
 	}
+	completionPolicy := ReviewCompletionPolicy{}
+	if gate == coreevidence.GateReview || gate == coreevidence.GateVerify {
+		completionPolicy = projectReviewCompletionPolicy(&policy)
+	}
 	request := codereview.SnapshotRequest{Reference: target.Reference, SubjectRevision: target.SubjectRevision}
 	// GateReview is the explicit review sync command. It must always refresh
 	// provider facts; sync_before remains an optional policy only for other gates.
@@ -233,7 +238,8 @@ func (a *app) externalGateWithProfile(ctx context.Context, profile auth.Profile,
 	}
 	evaluation := coreevidence.Evaluate(snapshot, policy, coreevidence.Target{Gate: gate,
 		Reference: target.Reference, SubjectRevision: target.SubjectRevision, Now: time.Now().UTC()})
-	result := externalGateResult{Evaluation: evaluation, Snapshot: snapshot, Target: target, Native: native,
+	result := externalGateResult{Evaluation: evaluation, ReviewCompletionPolicy: completionPolicy,
+		Snapshot: snapshot, Target: target, Native: native,
 		Consumption: externalEvidenceConsumption{ProviderKey: target.Reference.ProviderKey,
 			ExternalRepository: target.Reference.ExternalRepository, ChangeID: target.Reference.ChangeID,
 			ReferenceVersion: target.ReferenceVersion, SubjectRevision: target.SubjectRevision,
@@ -242,13 +248,45 @@ func (a *app) externalGateWithProfile(ctx context.Context, profile auth.Profile,
 		return result, true, externalGateFailure(relationKind, evaluation)
 	}
 	bindings, bindingErr := authoritativeExternalEvidenceBindings(snapshot, result.Consumption)
-	if bindingErr != nil && (gate == coreevidence.GateReview || gate == coreevidence.GateVerify) {
+	if bindingErr != nil && (gate == coreevidence.GateReview || gate == coreevidence.GateVerify) &&
+		selectedExternalReviewEvidence(snapshot, evaluation.EvidenceIDs) {
 		return result, true, fmt.Errorf("bind authoritative external evidence: %w", bindingErr)
 	}
 	if bindingErr == nil {
 		result.Consumption.Bindings = bindings
 	}
 	return result, true, nil
+}
+
+func projectReviewCompletionPolicy(policy *coreevidence.Policy) ReviewCompletionPolicy {
+	if policy == nil {
+		return ReviewCompletionPolicy{}
+	}
+	projected := ReviewCompletionPolicy{Freshness: policy.Freshness[codereview.EvidenceReview]}
+	required := policy.RequiredKinds[:0]
+	for _, kind := range policy.RequiredKinds {
+		if kind == codereview.EvidenceReview {
+			projected.Required = true
+			continue
+		}
+		required = append(required, kind)
+	}
+	policy.RequiredKinds = required
+	delete(policy.Freshness, codereview.EvidenceReview)
+	return projected
+}
+
+func selectedExternalReviewEvidence(snapshot codereview.Snapshot, selectedIDs []string) bool {
+	selected := make(map[string]bool, len(selectedIDs))
+	for _, id := range selectedIDs {
+		selected[strings.TrimSpace(id)] = true
+	}
+	for _, record := range snapshot.Records {
+		if record.Kind == codereview.EvidenceReview && selected[strings.TrimSpace(record.ID)] {
+			return true
+		}
+	}
+	return false
 }
 
 func validateExactProviderSnapshot(snapshot codereview.Snapshot, target coreevidence.NativeTarget) error {

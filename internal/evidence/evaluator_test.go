@@ -81,6 +81,105 @@ func TestMergeAndArchiveRequireMergedEvidence(t *testing.T) {
 	}
 }
 
+func TestReviewAndVerifyDoNotImplicitlyRequireProviderReviewRecords(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets", ChangeID: "42"}
+	check := validRecord("unit", codereview.EvidenceCheck, "abc123", now)
+	check.Name, check.State = "unit", "passed"
+	for _, test := range []struct {
+		name    string
+		gate    Gate
+		records []codereview.EvidenceRecord
+	}{
+		{name: "review zero findings", gate: GateReview},
+		{name: "verify zero findings", gate: GateVerify, records: []codereview.EvidenceRecord{check}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion, Reference: reference,
+				SubjectRevision: "abc123", CapturedAt: now, Records: test.records}
+			result := Evaluate(snapshot, Policy{}, Target{Gate: test.gate, Reference: reference, SubjectRevision: "abc123", Now: now})
+			if !result.Passed {
+				t.Fatalf("result=%+v", result)
+			}
+		})
+	}
+
+	snapshot := codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion, Reference: reference,
+		SubjectRevision: "abc123", CapturedAt: now}
+	result := Evaluate(snapshot, Policy{RequiredKinds: []codereview.EvidenceKind{codereview.EvidenceReview}},
+		Target{Gate: GateReview, Reference: reference, SubjectRevision: "abc123", Now: now})
+	if result.Passed || !hasFailure(result, "missing_evidence") {
+		t.Fatalf("explicit review requirement was ignored: %+v", result)
+	}
+}
+
+func TestPresentReviewRecordsRemainValidatedAndBlocking(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	snapshot, target := validSnapshot(now)
+	target.Gate = GateReview
+	snapshot.Records = snapshot.Records[:1]
+	base := snapshot.Records[0]
+	for _, test := range []struct {
+		name     string
+		state    string
+		severity string
+		edit     func(*codereview.EvidenceRecord)
+		want     string
+	}{
+		{name: "open P0", state: "open", severity: "P0", want: "blocking_review"},
+		{name: "open P1", state: "open", severity: "P1", want: "blocking_review"},
+		{name: "open P2", state: "open", severity: "P2"},
+		{name: "resolved P0", state: "resolved", severity: "P0"},
+		{name: "dismissed P1", state: "dismissed", severity: "P1"},
+		{name: "closed P1", state: "closed", severity: "P1"},
+		{name: "superseded P1", state: "superseded", severity: "P1"},
+		{name: "malformed linkage", state: "resolved", severity: "P2", edit: func(record *codereview.EvidenceRecord) {
+			record.ProcessID = ""
+		}, want: "malformed_review_linkage"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			record := base
+			record.State, record.Severity = test.state, test.severity
+			if test.edit != nil {
+				test.edit(&record)
+			}
+			snapshot.Records = []codereview.EvidenceRecord{record}
+			result := Evaluate(snapshot, Policy{}, target)
+			if test.want == "" && !result.Passed {
+				t.Fatalf("result=%+v", result)
+			}
+			if test.want != "" && (result.Passed || !hasFailure(result, test.want)) {
+				t.Fatalf("result=%+v, want %s", result, test.want)
+			}
+		})
+	}
+}
+
+func TestReviewSupersessionUsesOnlyActiveFindingState(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	snapshot, target := validSnapshot(now)
+	target.Gate = GateReview
+	old := snapshot.Records[0]
+	old.ID, old.State, old.Severity = "review-old", "open", "P1"
+	successor := old
+	successor.ID, successor.SupersedesID, successor.State = "review-current", old.ID, "resolved"
+	successor.ObservedAt = old.ObservedAt.Add(30 * time.Second)
+	snapshot.Records = []codereview.EvidenceRecord{old, successor}
+	result := Evaluate(snapshot, Policy{}, target)
+	if !result.Passed || len(result.EvidenceIDs) != 1 || result.EvidenceIDs[0] != successor.ID {
+		t.Fatalf("resolved successor result=%+v", result)
+	}
+	successor.State = "open"
+	snapshot.Records[1] = successor
+	result = Evaluate(snapshot, Policy{}, target)
+	if result.Passed || !hasFailure(result, "blocking_review") {
+		t.Fatalf("open successor result=%+v", result)
+	}
+}
+
 func validSnapshot(now time.Time) (codereview.Snapshot, Target) {
 	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets", ChangeID: "42"}
 	review := validRecord("review", codereview.EvidenceReview, "abc123", now)
