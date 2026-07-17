@@ -10,12 +10,15 @@ import { queryKeys, useCurrentContext } from "./session";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { RepositoryScopeSelector, RUNNER_TOKEN_SCOPES, TOKEN_SCOPES, TokenScopeSelector } from "./token-authority-fields";
+import { useSearchParams } from "react-router-dom";
 
 type TokenForm = { name: string; scopes: string[]; repositories: string[] | null };
 type RepositoryOption = { organizationId: string; repositoryId: string; label: string };
 
 export function TokensPage() {
   const { t, i18n } = useTranslation();
+  const [search] = useSearchParams();
+  const requirementsMode = search.get("mode") === "requirements";
   const tokens = useQuery({ queryKey: queryKeys.pats, queryFn: ({ signal }) => api.pats(signal) });
   const context = useCurrentContext();
   const repositoryQueries = useQueries({ queries: (context.data?.organizations ?? []).map((organization) => ({
@@ -51,12 +54,14 @@ export function TokensPage() {
   const tokenItems = tokens.data?.tokens ?? [];
   const activeTokens = tokenItems.filter((token) => !token.revoked_at);
   const revokedTokens = tokenItems.filter((token) => Boolean(token.revoked_at));
+  const authorityFields = <>
+    <Controller name="scopes" control={control} rules={{ validate: (value) => value.length > 0 || t("tokenAuthority.scopeRequired") }} render={({ field, fieldState }) => <TokenScopeSelector value={field.value} onChange={field.onChange} error={fieldState.error?.message} />} />
+    <Controller name="repositories" control={control} rules={{ validate: (value) => value === null || value.length > 0 || t("tokenAuthority.repositoryRequired") }} render={({ field, fieldState }) => <RepositoryScopeSelector name="personal-token-repositories" options={repositoryOptions.map((repository) => ({ id: repository.repositoryId, label: repository.label }))} value={field.value} onChange={field.onChange} error={fieldState.error?.message} />} />
+  </>;
   return <div className="page"><PageHeader eyebrow={t("personalTokens.eyebrow")} title={t("personalTokens.title")} description={t("personalTokens.description")} />
     <div className="two-column token-layout"><Panel title={t("personalTokens.createTitle")} description={t("personalTokens.createDescription")}><form className="form-grid" onSubmit={handleSubmit((form) => create.mutate(form))}>
       <Field label={t("personalTokens.tokenName")} error={errors.name?.message}><TextInput {...register("name", { required: t("personalTokens.nameRequired") })} /></Field>
-      <Controller name="scopes" control={control} rules={{ validate: (value) => value.length > 0 || t("tokenAuthority.scopeRequired") }} render={({ field, fieldState }) => <TokenScopeSelector value={field.value} onChange={field.onChange} error={fieldState.error?.message} />} />
-      <Controller name="repositories" control={control} rules={{ validate: (value) => value === null || value.length > 0 || t("tokenAuthority.repositoryRequired") }} render={({ field, fieldState }) => <RepositoryScopeSelector name="personal-token-repositories" options={repositoryOptions.map((repository) => ({ id: repository.repositoryId, label: repository.label }))} value={field.value} onChange={field.onChange} error={fieldState.error?.message} />} />
-      <div className="button-row"><button className="button secondary" type="button" onClick={() => setValue("scopes", [...RUNNER_TOKEN_SCOPES], { shouldValidate: true })}><ShieldCheck size={16} />{t("personalTokens.runnerPreset")}</button><button className="button primary" type="submit" disabled={create.isPending}><Plus size={16} />{t("personalTokens.create")}</button></div>
+      {requirementsMode ? <><details><summary>{t("tokenAuthority.scopes")} · {t("tokenAuthority.repositoryAccess")}</summary>{authorityFields}<div className="button-row"><button className="button secondary" type="button" onClick={() => setValue("scopes", [...RUNNER_TOKEN_SCOPES], { shouldValidate: true })}><ShieldCheck size={16} />{t("personalTokens.runnerPreset")}</button></div></details><div className="button-row"><button className="button primary" type="submit" disabled={create.isPending}><Plus size={16} />{t("personalTokens.create")}</button></div></> : <>{authorityFields}<div className="button-row"><button className="button secondary" type="button" onClick={() => setValue("scopes", [...RUNNER_TOKEN_SCOPES], { shouldValidate: true })}><ShieldCheck size={16} />{t("personalTokens.runnerPreset")}</button><button className="button primary" type="submit" disabled={create.isPending}><Plus size={16} />{t("personalTokens.create")}</button></div></>}
     </form></Panel>
       <Panel title={t("personalTokens.hygieneTitle")}><div className="editorial-note"><KeyRound size={22} /><p>{t("personalTokens.hygieneDescription")}</p></div></Panel></div>
     <Panel title={t("personalTokens.activeTitle")} description={t("personalTokens.usableCredentials", { count: activeTokens.length })}>

@@ -21,7 +21,8 @@ func TestNativeContextOperationsUseOnlyNativeProfilePaths(t *testing.T) {
 				Organizations: []NativeOrganizationContext{{ID: "org-id", Name: "owner"}}})
 		case "/api/v1/context/orgs/org-id/repos":
 			_ = json.NewEncoder(w).Encode(NativeRepositoriesContext{Repositories: []NativeRepositoryContext{{
-				Repository: NativeRepositorySummary{ID: "repo-id", OrganizationID: "org-id", Name: "repo"},
+				Repository:          NativeRepositorySummary{ID: "repo-id", OrganizationID: "org-id", Name: "repo", Visibility: "public", ContributionPolicy: "public"},
+				EffectivePermission: "external", AllowedActions: []string{"contribute"},
 			}}})
 		default:
 			t.Fatalf("unexpected native request %s", r.URL.Path)
@@ -42,7 +43,11 @@ func TestNativeContextOperationsUseOnlyNativeProfilePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(requests) != 2 || current.Credential.RepositoryCount != 1 || len(repositories.Repositories) != 1 ||
-		repositories.Repositories[0].Repository.OrganizationID != "org-id" {
+		repositories.Repositories[0].Repository.OrganizationID != "org-id" ||
+		repositories.Repositories[0].Repository.Visibility != "public" ||
+		repositories.Repositories[0].Repository.ContributionPolicy != "public" ||
+		repositories.Repositories[0].EffectivePermission != "external" ||
+		len(repositories.Repositories[0].AllowedActions) != 1 || repositories.Repositories[0].AllowedActions[0] != "contribute" {
 		t.Fatalf("requests=%v current=%+v repositories=%+v", requests, current, repositories)
 	}
 	for _, path := range requests {

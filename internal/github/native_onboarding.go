@@ -35,7 +35,8 @@ type NativeServerMetadata struct {
 }
 
 type NativeServerFeatures struct {
-	Search bool `json:"search"`
+	Search                 bool `json:"search"`
+	RequirementsOnboarding bool `json:"requirements_onboarding"`
 }
 
 type NativeTransport struct {
