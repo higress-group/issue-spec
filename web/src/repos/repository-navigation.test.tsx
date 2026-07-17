@@ -1,6 +1,7 @@
 import axe from "axe-core";
 import { http, HttpResponse } from "msw";
 import { screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import { renderApp } from "../../tests/render";
@@ -71,5 +72,65 @@ describe("repository navigation localization", () => {
     const sections = screen.getByRole("navigation", { name: "仓库功能" });
     expect(within(sections).getByRole("link", { name: "协作者" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("heading", { name: "仓库协作者" })).toBeVisible();
+  });
+});
+
+describe("repository email subscription control", () => {
+  it("toggles one explicit repository subscription", async () => {
+    await i18n.changeLanguage("en");
+    let subscribed = false;
+    server.use(
+      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({
+        api_version: "v1", features: {
+          bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: false,
+          webhooks: false, change_boards: false, runner: false, recovery_exchange: true,
+          email_notifications: true,
+        },
+      })),
+      http.get("http://localhost/api/v1/profile/email", () => HttpResponse.json({
+        available: true, notification_email: "reader@example.test",
+      })),
+      http.get(`http://localhost/api/v1/orgs/${orgId}/repos/${repoId}/subscription`, () => HttpResponse.json({
+        subscribed, ignored: false, reason: subscribed ? "manual" : "", representation_version: subscribed ? 1 : 0,
+        collection_version: subscribed ? 2 : 1,
+      })),
+      http.put(`http://localhost/api/v1/orgs/${orgId}/repos/${repoId}/subscription`, () => {
+        subscribed = true;
+        return HttpResponse.json({ subscribed: true, ignored: false, reason: "manual", representation_version: 1, collection_version: 2 });
+      }),
+      http.delete(`http://localhost/api/v1/orgs/${orgId}/repos/${repoId}/subscription`, () => {
+        subscribed = false;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderApp(<RepositoryHeader repository={repository} section="settings" title="Repository workspace" description="Repository administration" />, routes[0].route);
+    const user = userEvent.setup();
+    const subscribe = await screen.findByRole("button", { name: "Subscribe" });
+    expect(subscribe).toHaveAttribute("aria-pressed", "false");
+    await user.click(subscribe);
+    const active = await screen.findByRole("button", { name: "Subscribed" });
+    expect(active).toHaveAttribute("aria-pressed", "true");
+    await user.click(active);
+    expect(await screen.findByRole("button", { name: "Subscribe" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("guides a user without a verified address to account settings", async () => {
+    await i18n.changeLanguage("en");
+    server.use(
+      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({
+        api_version: "v1", features: {
+          bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: false,
+          webhooks: false, change_boards: false, runner: false, recovery_exchange: true,
+          email_notifications: true,
+        },
+      })),
+      http.get("http://localhost/api/v1/profile/email", () => HttpResponse.json({ available: true, notification_email: null })),
+      http.get(`http://localhost/api/v1/orgs/${orgId}/repos/${repoId}/subscription`, () => HttpResponse.json({
+        subscribed: false, ignored: false, reason: "", representation_version: 0, collection_version: 1,
+      })),
+    );
+    renderApp(<RepositoryHeader repository={repository} section="settings" title="Repository workspace" description="Repository administration" />, routes[0].route);
+    expect(await screen.findByRole("link", { name: "Set notification email" })).toHaveAttribute("href", "/settings/account");
+    expect(screen.queryByRole("button", { name: "Subscribe" })).not.toBeInTheDocument();
   });
 });

@@ -1,0 +1,7 @@
+.repository-header-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .65rem; }
+.repository-subscription-control { white-space: nowrap; }
+
+@media (max-width: 760px) {
+  .repository-header-actions { align-items: stretch; margin-top: 1rem; }
+  .repository-subscription-control { justify-content: center; }
+}

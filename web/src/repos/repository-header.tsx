@@ -6,6 +6,8 @@ import { queryKeys } from "../auth/session";
 import { api } from "../lib/api/resources";
 import type { AdminRepository } from "../lib/api/types";
 import { useTranslation } from "react-i18next";
+import { RepositorySubscriptionControl } from "./repository-subscription-control";
+import "./repository-notifications.css";
 
 export type RepositorySection = "settings" | "collaborators" | "source" | "webhooks";
 
@@ -44,9 +46,12 @@ export function RepositoryHeader({ repository, section, title, description }: {
       </ol>
     </nav>
     <PageHeader eyebrow={t("repositoryHeader.eyebrow", { section: sectionLabels[section] })} title={title} description={description} actions={
-      <nav className="repository-section-nav" aria-label={t("repositoryHeader.sections")}>
-        {sections.map(({ id, label, href, icon: Icon }) => <NavLink key={id} to={href} end aria-current={section === id ? "page" : undefined} className={section === id ? "active" : undefined}><Icon size={15} aria-hidden="true" />{label}</NavLink>)}
-      </nav>
+      <div className="repository-header-actions">
+        <RepositorySubscriptionControl orgId={repository.organization_id} repoId={repository.id} />
+        <nav className="repository-section-nav" aria-label={t("repositoryHeader.sections")}>
+          {sections.map(({ id, label, href, icon: Icon }) => <NavLink key={id} to={href} end aria-current={section === id ? "page" : undefined} className={section === id ? "active" : undefined}><Icon size={15} aria-hidden="true" />{label}</NavLink>)}
+        </nav>
+      </div>
     } />
   </>;
 }
