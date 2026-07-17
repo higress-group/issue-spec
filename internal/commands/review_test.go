@@ -17,13 +17,30 @@ import (
 
 func TestExternalReviewSyncIsForcedAndIdempotent(t *testing.T) {
 	app, native, comments, creates, updates, out, errOut := setupExternalReviewSyncCommand(t)
+	t.Setenv(codexThreadIDEnv, "")
 	args := []string{"--repo", "acme/widgets", "--hostname", "issues.test", "--implement", "9",
-		"--revision", "head-abc", "--id", "REVIEW-101", "--agent", "Review Agent"}
+		"--revision", "head-abc", "--id", "REVIEW-101", "--agent", "Review Agent", "--agent-session", "review-session-7"}
+	var firstCompletion externalReviewCompletion
 	for run := 1; run <= 2; run++ {
 		out.Reset()
 		errOut.Reset()
 		if code := app.runReviewSync(t.Context(), args); code != 0 {
 			t.Fatalf("run %d exit=%d stdout=%q stderr=%q", run, code, out.String(), errOut.String())
+		}
+		completion, found, err := parseExternalReviewCompletion((*comments)[0].Body)
+		if err != nil || !found {
+			t.Fatalf("run %d completion found=%t err=%v body=%q", run, found, err, (*comments)[0].Body)
+		}
+		if run == 1 {
+			firstCompletion = completion
+			linked, _, linkErr := model.AddRelatedCommentLink((*comments)[0].Body,
+				"https://issues.test/acme/widgets/issues/9#issuecomment-process")
+			if linkErr != nil {
+				t.Fatal(linkErr)
+			}
+			(*comments)[0].Body = linked
+		} else if !completion.SynchronizedAt.After(firstCompletion.SynchronizedAt) {
+			t.Fatalf("completion timestamp did not advance: first=%s second=%s", firstCompletion.SynchronizedAt, completion.SynchronizedAt)
 		}
 	}
 	if *creates != 1 || *updates != 1 || len(*comments) != 1 || native.syncs != 2 || native.resolveCalls != 4 {
@@ -32,8 +49,67 @@ func TestExternalReviewSyncIsForcedAndIdempotent(t *testing.T) {
 	}
 	parsed := model.ParseTypedComment((*comments)[0].Body)
 	if parsed.Type != "REVIEW" || parsed.ID != "REVIEW-101" || parsed.Status != "done" ||
+		parsed.Agent != "Review Agent" || parsed.AgentSessionID != "review-session-7" ||
+		parsed.AgentSessionSource != agentSessionParamSource || parsed.SubjectRevision != "head-abc" ||
+		strings.Count((*comments)[0].Body, externalReviewCompletionStart) != 1 ||
+		!linksContainURL(parsed.Links["Related Comments"], "https://issues.test/acme/widgets/issues/9#issuecomment-process") ||
 		!strings.Contains((*comments)[0].Body, `"subject_revision":"head-abc"`) {
 		t.Fatalf("persisted REVIEW=%+v", parsed)
+	}
+}
+
+func TestExternalReviewSyncZeroFindingsWritesCompletionWithoutReviewFacts(t *testing.T) {
+	app, native, comments, creates, updates, _, errOut := setupExternalReviewSyncCommand(t)
+	native.target.Provider = &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+		Reference: native.target.Reference, SubjectRevision: native.target.SubjectRevision, CapturedAt: time.Now().UTC()}}
+	code := app.runReviewSync(t.Context(), []string{"--repo", "acme/widgets", "--hostname", "issues.test",
+		"--implement", "9", "--revision", "head-abc", "--id", "REVIEW-101", "--agent", "Independent Reviewer"})
+	if code != 0 || *creates != 1 || *updates != 0 || len(*comments) != 1 {
+		t.Fatalf("exit=%d creates=%d updates=%d comments=%d stderr=%q", code, *creates, *updates, len(*comments), errOut.String())
+	}
+	body := (*comments)[0].Body
+	if strings.Contains(body, consumedEvidenceStart) || !strings.Contains(body, "### Canonical Findings\n\n```json\n[]\n```") {
+		t.Fatalf("zero-finding REVIEW invented review facts or consumed bindings: %q", body)
+	}
+	completion, found, err := parseExternalReviewCompletion(body)
+	if err != nil || !found || completion.SubjectRevision != "head-abc" || completion.ReferenceVersion != 7 {
+		t.Fatalf("completion=%+v found=%t err=%v", completion, found, err)
+	}
+}
+
+func TestExternalReviewSyncFailedRetryLeavesExistingReviewByteStable(t *testing.T) {
+	app, native, comments, creates, updates, _, errOut := setupExternalReviewSyncCommand(t)
+	args := []string{"--repo", "acme/widgets", "--hostname", "issues.test", "--implement", "9",
+		"--revision", "head-abc", "--id", "REVIEW-101"}
+	if code := app.runReviewSync(t.Context(), args); code != 0 {
+		t.Fatalf("initial sync exit=%d stderr=%q", code, errOut.String())
+	}
+	before := (*comments)[0].Body
+	native.syncErr = errors.New("ledger persistence unavailable")
+	errOut.Reset()
+	if code := app.runReviewSync(t.Context(), args); code != 1 {
+		t.Fatalf("retry exit=%d stderr=%q", code, errOut.String())
+	}
+	if *creates != 1 || *updates != 0 || len(*comments) != 1 || (*comments)[0].Body != before {
+		t.Fatalf("failed retry mutated REVIEW: creates=%d updates=%d body_changed=%t", *creates, *updates, (*comments)[0].Body != before)
+	}
+}
+
+func TestExternalReviewSyncDisplaysOnlyCanonicalLedgerFindings(t *testing.T) {
+	app, _, comments, _, _, _, errOut := setupExternalReviewSyncCommand(t)
+	if code := app.runReviewSync(t.Context(), []string{"--repo", "acme/widgets", "--hostname", "issues.test",
+		"--implement", "9", "--revision", "head-abc", "--id", "REVIEW-101"}); code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
+	}
+	body := (*comments)[0].Body
+	for _, want := range []string{`"evidence_id": "review-ledger"`, `"finding_id": "FINDING-001"`,
+		`"process_id": "PROCESS-001"`, `"spec_id": "SPEC-001"`, `"severity": "P2"`, `"state": "resolved"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("canonical finding field %q missing from %q", want, body)
+		}
+	}
+	if strings.Contains(body, "PayloadDigest") || strings.Contains(body, "payload_digest") {
+		t.Fatalf("provider payload detail leaked into REVIEW: %q", body)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
@@ -301,12 +302,8 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 			return 2
 		}
 		session := resolveWriterSession(*agentSession)
-		body, err := renderExternalReviewSyncComment(*id, *agent, session, *scope, externalGate)
-		if err != nil {
-			a.errorf("render external review sync comment: %v\n", err)
-			return 1
-		}
-		action, comment, _, err := upsertTypedComment(ctx, client, repo, implementIssue, "REVIEW", *id, body)
+		action, comment, err := upsertExternalReviewSyncCommentAt(ctx, client, repo, implementIssue,
+			*id, *agent, session, *scope, externalGate, time.Now().UTC())
 		if err != nil {
 			a.errorf("upsert REVIEW %s: %v\n", *id, err)
 			return 1
@@ -387,6 +384,20 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 }
 
 func renderExternalReviewSyncComment(id, agent string, session writerSession, scope string, gate externalGateResult) (string, error) {
+	return renderExternalReviewSyncCommentAt(id, agent, session, scope, gate, time.Now().UTC())
+}
+
+func renderExternalReviewSyncCommentAt(id, agent string, session writerSession, scope string, gate externalGateResult,
+	synchronizedAt time.Time) (string, error) {
+	if !gate.Evaluation.Passed {
+		return "", errors.New("external review evidence gate has not passed")
+	}
+	if err := validateReviewCompletionTarget(gate.Target); err != nil {
+		return "", err
+	}
+	if err := validateExactSnapshotIdentity(gate.Snapshot, gate.Target); err != nil {
+		return "", fmt.Errorf("external review snapshot: %w", err)
+	}
 	findings, err := canonicalExternalReviewFindings(gate)
 	if err != nil {
 		return "", err
@@ -398,12 +409,118 @@ func renderExternalReviewSyncComment(id, agent string, session writerSession, sc
 	logical := fmt.Sprintf("## Review Summary: external code evidence\n\nEvaluated trusted evidence for `%s` at exact revision `%s`.\n\n### Canonical Findings\n\n```json\n%s\n```\n\nNo open P0/P1 findings remain in the consumed snapshot. External code review remains the owner of line-level discussion content.\n\n### Verdict\n\nPassed provider-neutral review evidence gate.",
 		gate.Target.Reference.ChangeID, gate.Target.SubjectRevision, rawFindings)
 	body, err := model.EnsureTypedBody("REVIEW", id, logical, model.BodyOptions{Agent: agent,
-		AgentSessionID: session.ID, AgentSessionSource: session.Source, Status: "done", Scope: scope})
+		AgentSessionID: session.ID, AgentSessionSource: session.Source, SubjectRevision: gate.Target.SubjectRevision,
+		Status: "done", Scope: scope})
 	if err != nil {
 		return "", err
 	}
-	updated, _, err := stampConsumedEvidence(body, gate.Consumption)
-	return updated, err
+	if len(findings) > 0 {
+		body, _, err = stampConsumedEvidence(body, gate.Consumption)
+		if err != nil {
+			return "", err
+		}
+	}
+	body, _, err = stampExternalReviewCompletion(body, externalReviewCompletion{
+		ProviderKey: gate.Target.Reference.ProviderKey, ExternalRepository: gate.Target.Reference.ExternalRepository,
+		ChangeID: gate.Target.Reference.ChangeID, ReferenceVersion: gate.Target.ReferenceVersion,
+		SubjectRevision: gate.Target.SubjectRevision, SynchronizedAt: synchronizedAt.UTC(),
+	})
+	if err != nil {
+		return "", err
+	}
+	policy := gate.ReviewCompletionPolicy
+	policy.Required = true
+	if err := validateExternalReviewCompletionAt(model.ParseTypedComment(body), gate.Target, policy, synchronizedAt); err != nil {
+		return "", err
+	}
+	return body, nil
+}
+
+func stampExternalReviewCompletion(body string, completion externalReviewCompletion) (string, bool, error) {
+	if err := validateReviewCompletionIdentity(completion); err != nil {
+		return "", false, err
+	}
+	raw, err := json.Marshal(completion)
+	if err != nil {
+		return "", false, err
+	}
+	block := externalReviewCompletionStart + "\n" + string(raw) + "\n" + externalReviewCompletionEnd
+	startCount := strings.Count(body, externalReviewCompletionStart)
+	endCount := strings.Count(body, externalReviewCompletionEnd)
+	if startCount != endCount || startCount > 1 || strings.Count(body, "issue-spec:external-review-completion") != startCount+endCount {
+		return "", false, errors.New("existing external REVIEW completion block is malformed")
+	}
+	start := strings.Index(body, externalReviewCompletionStart)
+	end := strings.Index(body, externalReviewCompletionEnd)
+	if startCount == 1 && end < start+len(externalReviewCompletionStart) {
+		return "", false, errors.New("existing external REVIEW completion block is malformed")
+	}
+	updated := body
+	if start >= 0 {
+		end += len(externalReviewCompletionEnd)
+		updated = body[:start] + block + body[end:]
+	} else {
+		updated = strings.TrimRight(body, "\n") + "\n\n" + block + "\n"
+	}
+	return updated, updated != body, nil
+}
+
+// upsertExternalReviewSyncCommentAt computes the synchronization instant only
+// after the authoritative provider snapshot has passed. It performs every
+// local validation before the create/update call and advances a pre-existing
+// completion timestamp even when the injected/current clock has not moved.
+func upsertExternalReviewSyncCommentAt(ctx context.Context, client github.Operations, repo string, issueNumber int,
+	id, agent string, session writerSession, scope string, gate externalGateResult, synchronizationNow time.Time) (string, github.Comment, error) {
+	comments, err := client.ListIssueComments(ctx, repo, issueNumber)
+	if err != nil {
+		return "", github.Comment{}, err
+	}
+	var existing *github.Comment
+	var previous time.Time
+	for index := range comments {
+		parsed := model.ParseTypedComment(comments[index].Body)
+		if parsed.Type != "REVIEW" || parsed.ID != id {
+			continue
+		}
+		if existing != nil {
+			return "", github.Comment{}, fmt.Errorf("multiple active REVIEW comments use id %s", id)
+		}
+		existing = &comments[index]
+		if completion, found, parseErr := parseExternalReviewCompletion(comments[index].Body); parseErr == nil && found {
+			previous = completion.SynchronizedAt
+		}
+	}
+	synchronizedAt := synchronizationNow.UTC()
+	if synchronizedAt.IsZero() {
+		return "", github.Comment{}, errors.New("external REVIEW synchronization time is invalid")
+	}
+	if !previous.IsZero() && !synchronizedAt.After(previous) {
+		synchronizedAt = previous.Add(time.Nanosecond)
+		if !synchronizedAt.After(previous) {
+			return "", github.Comment{}, errors.New("external REVIEW synchronization time cannot advance")
+		}
+	}
+	body, err := renderExternalReviewSyncCommentAt(id, agent, session, scope, gate, synchronizedAt)
+	if err != nil {
+		return "", github.Comment{}, err
+	}
+	if existing == nil {
+		created, createErr := client.CreateComment(ctx, repo, issueNumber, body)
+		return "created", created, createErr
+	}
+	for _, url := range model.RelatedCommentURLs(model.ParseTypedComment(existing.Body)) {
+		body, _, err = model.AddRelatedCommentLink(body, url)
+		if err != nil {
+			return "", github.Comment{}, err
+		}
+	}
+	policy := gate.ReviewCompletionPolicy
+	policy.Required = true
+	if err := validateExternalReviewCompletionAt(model.ParseTypedComment(body), gate.Target, policy, synchronizationNow); err != nil {
+		return "", github.Comment{}, err
+	}
+	updated, updateErr := client.UpdateComment(ctx, repo, existing.ID, body)
+	return "updated", updated, updateErr
 }
 
 type canonicalExternalReviewFinding struct {
@@ -436,9 +553,6 @@ func canonicalExternalReviewFindings(gate externalGateResult) ([]canonicalExtern
 			FindingID: strings.TrimSpace(record.FindingID), ProcessID: strings.TrimSpace(record.ProcessID),
 			SpecID: strings.TrimSpace(record.SpecID), Severity: strings.ToUpper(strings.TrimSpace(record.Severity)),
 			State: strings.ToLower(strings.TrimSpace(record.State)), CanonicalURL: strings.TrimSpace(record.CanonicalURL)})
-	}
-	if len(findings) == 0 {
-		return nil, errors.New("passed external review gate contains no consumed canonical review finding")
 	}
 	sort.Slice(findings, func(i, j int) bool {
 		left := findings[i].FindingID + "\x00" + findings[i].ProcessID + "\x00" + findings[i].SpecID + "\x00" + findings[i].EvidenceID
