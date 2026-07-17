@@ -41,9 +41,12 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/events/outbox"
 	"github.com/higress-group/issue-spec/internal/server/events/subscriptions"
 	"github.com/higress-group/issue-spec/internal/server/evidence"
+	"github.com/higress-group/issue-spec/internal/server/mentionmail"
+	"github.com/higress-group/issue-spec/internal/server/notificationmail"
 	"github.com/higress-group/issue-spec/internal/server/profilemail"
 	"github.com/higress-group/issue-spec/internal/server/projection/artifacts"
 	"github.com/higress-group/issue-spec/internal/server/publicurl"
+	"github.com/higress-group/issue-spec/internal/server/reponotifications"
 	"github.com/higress-group/issue-spec/internal/server/search"
 	"github.com/higress-group/issue-spec/internal/server/spa"
 	"github.com/higress-group/issue-spec/internal/server/staticui"
@@ -121,6 +124,19 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	if err != nil {
 		return fail(err)
 	}
+	mailSettings, err := cfg.MailSettings()
+	if err != nil {
+		return fail(err)
+	}
+	var profileMailService *profilemail.Service
+	if mailSettings.Enabled() {
+		profileMailService, err = profilemail.New(database.Pool(), secrets, profilemail.Config{
+			ConfirmationURL: origins.Web.String() + "/verify-email",
+		})
+		if err != nil {
+			return fail(fmt.Errorf("initialize profile mail: %w", err))
+		}
+	}
 	adminService, err := admin.New(database.Pool(), cfg.BootstrapSecret.Bytes(), secrets)
 	if err != nil {
 		return fail(err)
@@ -158,7 +174,18 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	authentication := serverauth.Middleware{SessionCookieName: sessions.CookieName(), AllowedOrigins: allowedOrigins,
 		Sessions: sessions, Bearer: serverauth.BearerChain{delegated, pats}}
 
-	issueService, err := githubissues.NewService(database, authorization, artifacts.MarkerProjector{}, outbox.Hook{})
+	var notificationIntegration []githubissues.NotificationIntegration
+	if mailSettings.Enabled() {
+		adapter, err := newIssueNotificationAdapter()
+		if err != nil {
+			return fail(fmt.Errorf("initialize issue notification projection: %w", err))
+		}
+		notificationIntegration = append(notificationIntegration, githubissues.NotificationIntegration{
+			Enabled: true, OrdinaryIssue: adapter, Completed: adapter,
+		})
+	}
+	issueService, err := githubissues.NewService(database, authorization, artifacts.MarkerProjector{}, outbox.Hook{},
+		notificationIntegration...)
 	if err != nil {
 		return fail(err)
 	}
@@ -177,6 +204,13 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	subscriptionCompat, err := githubsubscription.NewService(database, authorization)
 	if err != nil {
 		return fail(err)
+	}
+	var repositoryNotificationService *reponotifications.SubscriptionService
+	if mailSettings.Enabled() {
+		repositoryNotificationService, err = reponotifications.NewSubscriptionService(database, authorization, true)
+		if err != nil {
+			return fail(fmt.Errorf("initialize repository notifications: %w", err))
+		}
 	}
 	bindingService, err := bindings.New(database.Pool(), authorization)
 	if err != nil {
@@ -236,25 +270,47 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 		return fail(err)
 	}
 	workers := []namedWorker{{name: "webhook delivery", worker: deliveryService}}
-	mailSettings, err := cfg.MailSettings()
-	if err != nil {
-		return fail(err)
-	}
-	var profileMailService *profilemail.Service
+	var emailWorker *emaildelivery.Worker
 	if mailSettings.Enabled() {
-		profileMailService, err = profilemail.New(database.Pool(), secrets, profilemail.Config{
-			ConfirmationURL: origins.Web.String() + "/verify-email",
+		verificationPreparer, err := profilemail.NewVerificationPreparer(database.Pool(), secrets,
+			profilemail.Config{ConfirmationURL: origins.Web.String() + "/verify-email"})
+		if err != nil {
+			return fail(fmt.Errorf("initialize verification mail preparation: %w", err))
+		}
+		mentionPreparer, err := mentionmail.NewPreparer(database.Pool(), authorization, origins.Web.String())
+		if err != nil {
+			return fail(fmt.Errorf("initialize mention mail preparation: %w", err))
+		}
+		repositoryEligibility, err := reponotifications.NewDatabaseEligibility(database.Pool())
+		if err != nil {
+			return fail(fmt.Errorf("initialize repository mail eligibility: %w", err))
+		}
+		repositoryPreparer, err := reponotifications.NewPreparer(repositoryEligibility, origins.Web)
+		if err != nil {
+			return fail(fmt.Errorf("initialize repository mail preparation: %w", err))
+		}
+		milestonePreparer, err := notificationmail.NewPreparer(repositoryEligibility, origins.Web)
+		if err != nil {
+			return fail(fmt.Errorf("initialize milestone mail preparation: %w", err))
+		}
+		dispatcher, err := notificationmail.NewDispatcher(map[emaildelivery.Kind]emaildelivery.Preparer{
+			emaildelivery.KindVerification: verificationPreparer, emaildelivery.KindMention: mentionPreparer,
+			emaildelivery.KindRepoIssueCreated: repositoryPreparer, emaildelivery.KindChangeMilestone: milestonePreparer,
 		})
 		if err != nil {
-			return fail(fmt.Errorf("initialize profile mail: %w", err))
+			return fail(fmt.Errorf("initialize notification mail dispatcher: %w", err))
 		}
+		emailWorker, err = composeEmailWorker(database, mailSettings, dispatcher, cfg)
+		if err != nil {
+			return fail(fmt.Errorf("initialize email delivery worker: %w", err))
+		}
+		expiryWorker, err := newProfileExpiryWorker(profileMailService, time.Minute)
+		if err != nil {
+			return fail(fmt.Errorf("initialize profile expiry worker: %w", err))
+		}
+		workers = append(workers, namedWorker{name: "email delivery", worker: emailWorker},
+			namedWorker{name: "profile mail expiry", worker: expiryWorker})
 	}
-	// P5 handoff: profile verification can now enqueue and render complete
-	// deliveries, but the production worker intentionally remains stopped until
-	// the operator-facing SMTP rollout, readiness and observability gate lands.
-	// Do not replace this nil with a partial preparer: that would consume queue
-	// rows before the P5 deployment gate is satisfied.
-	var emailWorker *emaildelivery.Worker
 	static, err := staticui.New(staticui.Options{DevelopmentDirectory: cfg.StaticDirectory,
 		Production: cfg.Environment == config.EnvironmentProduction})
 	if err != nil {
@@ -274,6 +330,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 		SPA: spaService, Bindings: bindingService, Evidence: evidenceService, Changes: changeService,
 		Subscriptions: subscriptionService, Deliveries: deliveryService,
 		ProfileMail: profileMailService, EmailNotifications: mailSettings.Enabled(),
+		MentionDirectory: database, RepositoryEmailSubscriptions: repositoryNotificationService,
 		Search:             searchService,
 		DelegationAudience: cfg.DelegationAudience, DelegationSubject: cfg.DelegationSubject,
 		Static: static, Ready: ready.check, LogRequest: logRequest,

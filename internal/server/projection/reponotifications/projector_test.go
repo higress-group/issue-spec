@@ -13,10 +13,13 @@ import (
 )
 
 type fakeRepository struct {
-	scope      models.RepoScope
-	artifact   bool
-	actor      store.RepositoryNotificationCandidate
-	candidates []store.RepositoryNotificationCandidate
+	scope               models.RepoScope
+	artifact            bool
+	createdArtifact     store.CreatedArtifactNotification
+	actor               store.RepositoryNotificationCandidate
+	candidates          []store.RepositoryNotificationCandidate
+	milestones          map[string]store.NotificationMilestoneFact
+	milestoneInsertions []store.NotificationMilestoneInput
 }
 
 func (r *fakeRepository) Scope() models.RepoScope { return r.scope }
@@ -25,6 +28,22 @@ func (r *fakeRepository) IssueHasActiveArtifactProjection(context.Context, uuid.
 }
 func (r *fakeRepository) RepositoryNotificationActor(context.Context, uuid.UUID) (store.RepositoryNotificationCandidate, error) {
 	return r.actor, nil
+}
+func (r *fakeRepository) CreatedIssueArtifactNotification(context.Context, uuid.UUID) (store.CreatedArtifactNotification, bool, error) {
+	return r.createdArtifact, r.createdArtifact.ChangeKey != "", nil
+}
+func (r *fakeRepository) InsertNotificationMilestone(_ context.Context, input store.NotificationMilestoneInput) (store.NotificationMilestoneFact, bool, error) {
+	if r.milestones == nil {
+		r.milestones = map[string]store.NotificationMilestoneFact{}
+	}
+	key := input.ChangeKey + ":" + string(input.Milestone)
+	if fact, exists := r.milestones[key]; exists {
+		return fact, false, nil
+	}
+	fact := store.NotificationMilestoneFact{NotificationMilestoneInput: input, Scope: r.scope, CreatedAt: time.Now().UTC()}
+	r.milestones[key] = fact
+	r.milestoneInsertions = append(r.milestoneInsertions, input)
+	return fact, true, nil
 }
 func (r *fakeRepository) ManualRepositoryNotificationSubscribers(_ context.Context, exclude uuid.UUID) ([]store.RepositoryNotificationCandidate, error) {
 	result := make([]store.RepositoryNotificationCandidate, 0, len(r.candidates))

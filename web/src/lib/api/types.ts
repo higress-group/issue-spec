@@ -11,6 +11,8 @@ export const featuresSchema = z.object({
   recovery_exchange: z.boolean(),
   search: z.boolean().optional().default(false),
   email_notifications: z.boolean().optional().default(false),
+  mention_candidates: z.boolean().optional().default(false),
+  repository_email_subscriptions: z.boolean().optional().default(false),
 });
 
 export const metaSchema = z.object({

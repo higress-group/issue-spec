@@ -25,6 +25,40 @@ Mount these regular, non-symlink files with mode `0600`:
   `keys` object whose values are base64-encoded keys of at least 32 bytes. If
   omitted, `ENCRYPTION_KEY_FILE` is used under key ID `primary`.
 
+### Optional notification email
+
+Set `SMTP_CONFIG_FILE` only when notification email is required. The target
+must use the same secret-file contract as the other protected inputs: a
+regular, non-symlink file readable by the service identity, mode `0600`, with
+a 64 KiB maximum. Its complete contents are one JSON object with exactly this
+provider-neutral schema:
+
+| Field | JSON type | Constraint |
+| --- | --- | --- |
+| `host` | string | relay DNS name or IPv4 address, without a scheme or path |
+| `port` | integer | `1` through `65535`; the implicit-TLS listener |
+| `username` | string | non-empty authentication identity |
+| `password` | string | non-empty authentication secret |
+| `from_address` | string | one syntactically valid bare sender mailbox |
+
+Unknown fields, malformed JSON, group/other-readable permissions, and partial
+configuration fail startup with redacted errors. The server supports
+authenticated SMTP over an already established TLS connection only; this file
+does not configure IMAP, plaintext SMTP, or a STARTTLS downgrade.
+
+When `SMTP_CONFIG_FILE` is absent, the server advertises mail-dependent
+capabilities as disabled, hides their browser controls, does not mount mention
+or repository-subscription mutation routes, and does not start the email or
+verification-expiry workers. Existing issues, comments, webhook delivery, and
+stored subscription rows remain usable and unchanged.
+
+Rotate the relay credential by atomically replacing the protected file and
+restarting replicas one at a time. The process reads and validates the file at
+startup; it does not watch for in-place changes. Keep the prior secret version
+available until every restarted replica is ready, then revoke it. Never put
+the file contents, relay response text, mailbox addresses, or credentials in
+command lines, logs, screenshots, or reusable deployment manifests.
+
 External identity configuration, safe placeholder examples, GitHub/OIDC
 quickstarts, admission, and rotation are maintained in the versioned
 [self-hosted authentication guide](../authentication/README.md). Provider IDs

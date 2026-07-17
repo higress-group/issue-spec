@@ -1,4 +1,6 @@
 import { administrationResources } from "./administration-resources";
+import { mentionResources } from "./mention-resources";
+import { repositoryNotificationResources } from "./repository-notification-resources";
 import { searchResources } from "./search-resources";
 import { workflowResources } from "./workflow-resources";
 
@@ -157,6 +159,8 @@ export const resources = {
       ...administrationResources.en,
       ...workflowResources.en,
       ...searchResources.en,
+      ...mentionResources.en,
+      ...repositoryNotificationResources.en.translation,
     },
   },
   "zh-CN": {
@@ -313,6 +317,8 @@ export const resources = {
       ...administrationResources["zh-CN"],
       ...workflowResources["zh-CN"],
       ...searchResources["zh-CN"],
+      ...mentionResources["zh-CN"],
+      ...repositoryNotificationResources["zh-CN"].translation,
     },
   },
 } as const;

@@ -43,7 +43,8 @@ func TestMetaReportsOnlyInjectedFeatures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	set, err := NewRouteSet(Dependencies{Features: Features{Organizations: true, RecoveryExchange: true, Search: true, EmailNotifications: true}, Metadata: metadata})
+	set, err := NewRouteSet(Dependencies{Features: Features{Organizations: true, RecoveryExchange: true, Search: true,
+		EmailNotifications: true, MentionCandidates: true, RepositoryEmailSubscriptions: true}, Metadata: metadata})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +56,8 @@ func TestMetaReportsOnlyInjectedFeatures(t *testing.T) {
 	}
 	features := payload["features"].(map[string]any)
 	if features["organizations"] != true || features["recovery_exchange"] != true || features["search"] != true ||
-		features["email_notifications"] != true || features["webhooks"] != false {
+		features["email_notifications"] != true || features["mention_candidates"] != true ||
+		features["repository_email_subscriptions"] != true || features["webhooks"] != false {
 		t.Fatalf("features = %#v", features)
 	}
 }

@@ -9,8 +9,10 @@ import (
 	"github.com/google/uuid"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
+	"github.com/higress-group/issue-spec/internal/server/emaildelivery"
 	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/server/projection/artifacts"
+	"github.com/higress-group/issue-spec/internal/server/projection/mentions"
 	"github.com/higress-group/issue-spec/internal/server/store"
 	"github.com/jackc/pgx/v5"
 )
@@ -41,17 +43,64 @@ type MutationEventHook interface {
 }
 
 type Service struct {
-	store      *store.Store
-	authorizer RepositoryAuthorizer
-	projector  artifacts.Projector
-	events     MutationEventHook
+	store         *store.Store
+	authorizer    RepositoryAuthorizer
+	projector     artifacts.Projector
+	events        MutationEventHook
+	notifications NotificationIntegration
 }
 
-func NewService(database *store.Store, authorizer RepositoryAuthorizer, projector artifacts.Projector, events MutationEventHook) (*Service, error) {
+// NotificationIntegration is the deliberately narrow shared mutation wiring.
+// A disabled value preserves deployments without SMTP configuration and all
+// pre-notification callers. The projectors always receive stores backed by the
+// authoritative issue/comment transaction.
+type NotificationIntegration struct {
+	Enabled       bool
+	OrdinaryIssue IssueCreatedNotificationProjector
+	Completed     CompletedNotificationProjector
+}
+
+// IssueCreatedNotificationProjector keeps the API transaction package free of
+// feature-package dependency cycles. Composition adapts the P4 projector to
+// this exact transaction-bound call.
+type IssueCreatedNotificationProjector interface {
+	ProjectIssueCreated(context.Context, store.RepoStore, *emaildelivery.Store,
+		models.RepositoryResource, models.Issue, uuid.UUID) error
+}
+
+type ChangeLifecycle struct {
+	ChangeKey string
+	Lifecycle string
+}
+
+type CompletedNotificationProjector interface {
+	Capture(context.Context, pgx.Tx, models.RepoScope, uuid.UUID) (ChangeLifecycle, error)
+	ProjectCompleted(context.Context, store.RepoStore, *emaildelivery.Store, models.RepositoryResource,
+		models.Issue, *models.CommentSnapshot, uuid.UUID, ChangeLifecycle, ChangeLifecycle) error
+}
+
+func NewService(database *store.Store, authorizer RepositoryAuthorizer, projector artifacts.Projector, events MutationEventHook,
+	optional ...NotificationIntegration) (*Service, error) {
 	if database == nil || authorizer == nil || projector == nil || events == nil {
 		return nil, errors.New("github issues: store, authorizer, projector and mutation event hook are required")
 	}
-	return &Service{store: database, authorizer: authorizer, projector: projector, events: events}, nil
+	if err := validateNotificationIntegrations(optional); err != nil {
+		return nil, errors.New("github issues: invalid notification integration")
+	}
+	var notifications NotificationIntegration
+	if len(optional) == 1 {
+		notifications = optional[0]
+	}
+	return &Service{store: database, authorizer: authorizer, projector: projector, events: events,
+		notifications: notifications}, nil
+}
+
+func validateNotificationIntegrations(optional []NotificationIntegration) error {
+	if len(optional) > 1 || (len(optional) == 1 && optional[0].Enabled &&
+		(optional[0].OrdinaryIssue == nil || optional[0].Completed == nil)) {
+		return errors.New("invalid notification integration")
+	}
+	return nil
 }
 
 type DecisionError struct{ Decision authz.Decision }
@@ -152,6 +201,16 @@ func (s *Service) CreateIssue(ctx context.Context, owner, repository string, sub
 		if err := s.projector.ProjectIssue(ctx, repositoryStore, issue); err != nil {
 			return err
 		}
+		if s.notifications.Enabled {
+			queue, err := emaildelivery.NewStore(tx.PGX())
+			if err != nil {
+				return err
+			}
+			if err := s.notifications.OrdinaryIssue.ProjectIssueCreated(ctx, repositoryStore, queue,
+				resource, issue, actor.User.ID); err != nil {
+				return err
+			}
+		}
 		if err := s.events.Emit(ctx, repositoryStore, MutationEvent{Key: mutationKey(issue.ID, issue.RepresentationVersion, "issue.created"), Type: "issue.created", Scope: resource.Scope,
 			Issue: issue, RawBody: issue.Body, BodyHash: sha256.Sum256([]byte(issue.Body)),
 			ActorUserID: actor.User.ID, ActorCredentialKind: actor.Kind, RepresentationVersion: issue.RepresentationVersion}); err != nil {
@@ -190,6 +249,10 @@ func (s *Service) UpdateIssue(ctx context.Context, owner, repository string, num
 		if err != nil {
 			return err
 		}
+		before, err := s.captureLifecycle(ctx, tx, resource.Scope, current.ID)
+		if err != nil {
+			return err
+		}
 		update, err := overlay(current)
 		if err != nil {
 			return err
@@ -202,6 +265,14 @@ func (s *Service) UpdateIssue(ctx context.Context, owner, repository string, num
 			return err
 		}
 		if err := s.projector.ProjectIssue(ctx, repositoryStore, updated); err != nil {
+			return err
+		}
+		after, err := s.captureLifecycle(ctx, tx, resource.Scope, updated.ID)
+		if err != nil {
+			return err
+		}
+		if err := s.projectCompletedNotifications(ctx, tx, repositoryStore, resource, updated, nil,
+			actor.User.ID, before, after); err != nil {
 			return err
 		}
 		action := "issue.edited"
@@ -287,6 +358,14 @@ func (s *Service) CreateComment(ctx context.Context, owner, repository string, i
 			return &DecisionError{Decision: decision}
 		}
 		repositoryStore := tx.ScopedRepo(resource.Scope)
+		issue, err := repositoryStore.IssueByNumber(ctx, issueNumber)
+		if err != nil {
+			return err
+		}
+		before, err := s.captureLifecycle(ctx, tx, resource.Scope, issue.ID)
+		if err != nil {
+			return err
+		}
 		snapshot, err = repositoryStore.CreateComment(ctx, models.NewComment{ID: uuid.New(), IssueNumber: issueNumber, AuthorID: &actor.User.ID, Body: body})
 		if err != nil {
 			return err
@@ -294,11 +373,18 @@ func (s *Service) CreateComment(ctx context.Context, owner, repository string, i
 		if err := s.projector.ProjectComment(ctx, repositoryStore, snapshot); err != nil {
 			return err
 		}
-		snapshot.Reactions, err = repositoryStore.ReactionSummary(ctx, snapshot.Comment.ID)
+		after, err := s.captureLifecycle(ctx, tx, resource.Scope, issue.ID)
 		if err != nil {
 			return err
 		}
-		issue, err := repositoryStore.IssueByNumber(ctx, issueNumber)
+		if err := s.projectCompletedNotifications(ctx, tx, repositoryStore, resource, issue, &snapshot,
+			actor.User.ID, before, after); err != nil {
+			return err
+		}
+		if err := s.projectCommentNotifications(ctx, tx, repositoryStore, actor.User.ID, snapshot); err != nil {
+			return err
+		}
+		snapshot.Reactions, err = repositoryStore.ReactionSummary(ctx, snapshot.Comment.ID)
 		if err != nil {
 			return err
 		}
@@ -354,6 +440,14 @@ func (s *Service) updateComment(ctx context.Context, owner, repository string, c
 		if !decision.Allowed {
 			return &DecisionError{Decision: decision}
 		}
+		issue, err := repositoryStore.IssueByNumber(ctx, current.IssueNumber)
+		if err != nil {
+			return err
+		}
+		before, err := s.captureLifecycle(ctx, tx, resource.Scope, issue.ID)
+		if err != nil {
+			return err
+		}
 		expectedVersion := current.Comment.RepresentationVersion
 		if expected != nil {
 			expectedVersion = *expected
@@ -365,11 +459,18 @@ func (s *Service) updateComment(ctx context.Context, owner, repository string, c
 		if err := s.projector.ProjectComment(ctx, repositoryStore, snapshot); err != nil {
 			return err
 		}
-		snapshot.Reactions, err = repositoryStore.ReactionSummary(ctx, snapshot.Comment.ID)
+		after, err := s.captureLifecycle(ctx, tx, resource.Scope, issue.ID)
 		if err != nil {
 			return err
 		}
-		issue, err := repositoryStore.IssueByNumber(ctx, snapshot.IssueNumber)
+		if err := s.projectCompletedNotifications(ctx, tx, repositoryStore, resource, issue, &snapshot,
+			actor.User.ID, before, after); err != nil {
+			return err
+		}
+		if err := s.projectCommentNotifications(ctx, tx, repositoryStore, actor.User.ID, snapshot); err != nil {
+			return err
+		}
+		snapshot.Reactions, err = repositoryStore.ReactionSummary(ctx, snapshot.Comment.ID)
 		if err != nil {
 			return err
 		}
@@ -379,6 +480,79 @@ func (s *Service) updateComment(ctx context.Context, owner, repository string, c
 			ActorUserID: actor.User.ID, ActorCredentialKind: actor.Kind, RepresentationVersion: snapshot.Comment.RepresentationVersion})
 	})
 	return resource, snapshot, err
+}
+
+func (s *Service) captureLifecycle(ctx context.Context, tx *store.Tx, scope models.RepoScope,
+	issueID uuid.UUID) (ChangeLifecycle, error) {
+	if !s.notifications.Enabled {
+		return ChangeLifecycle{}, nil
+	}
+	return s.notifications.Completed.Capture(ctx, tx.PGX(), scope, issueID)
+}
+
+func (s *Service) projectCompletedNotifications(ctx context.Context, tx *store.Tx, repository store.RepoStore,
+	resource models.RepositoryResource, issue models.Issue, comment *models.CommentSnapshot, actorID uuid.UUID,
+	before, after ChangeLifecycle) error {
+	if !s.notifications.Enabled {
+		return nil
+	}
+	queue, err := emaildelivery.NewStore(tx.PGX())
+	if err != nil {
+		return err
+	}
+	return s.notifications.Completed.ProjectCompleted(ctx, repository, queue, resource, issue, comment,
+		actorID, before, after)
+}
+
+func (s *Service) projectCommentNotifications(ctx context.Context, tx *store.Tx, repository store.RepoStore,
+	actorID uuid.UUID, snapshot models.CommentSnapshot) error {
+	if !s.notifications.Enabled {
+		return nil
+	}
+	queue, err := emaildelivery.NewStore(tx.PGX())
+	if err != nil {
+		return err
+	}
+	projector, err := mentions.NewProjector(transactionMentionEligibility{tx: tx.PGX()})
+	if err != nil {
+		return err
+	}
+	return projector.ProjectComment(ctx, repository, queue, mentions.CommentMutation{
+		Scope: repository.Scope(), CommentID: snapshot.Comment.ID, ActorUserID: actorID,
+		RepresentationVersion: snapshot.Comment.RepresentationVersion,
+	})
+}
+
+// transactionMentionEligibility evaluates the recipient's identity-derived
+// repository read authority through the same locked transaction as the comment
+// and delivery rows. It intentionally carries no credential or address data.
+type transactionMentionEligibility struct{ tx pgx.Tx }
+
+func (e transactionMentionEligibility) CanReadRepository(ctx context.Context, userID uuid.UUID, scope models.RepoScope) (bool, error) {
+	if e.tx == nil || userID == uuid.Nil || scope.Validate() != nil {
+		return false, store.ErrInvalidInput
+	}
+	var allowed bool
+	err := e.tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM users u
+		JOIN repos r ON r.organization_id = $2 AND r.id = $3
+		JOIN orgs o ON o.id = r.organization_id
+		WHERE u.id = $1 AND u.status = 'active'
+		AND o.archived_at IS NULL AND r.archived_at IS NULL
+		AND NOT EXISTS (SELECT 1 FROM service_accounts sa WHERE sa.user_id = u.id)
+		AND (
+			r.visibility IN ('public', 'internal')
+			OR EXISTS (SELECT 1 FROM site_role_assignments sr WHERE sr.user_id = u.id AND sr.role = 'site_admin')
+			OR EXISTS (SELECT 1 FROM org_memberships om WHERE om.organization_id = r.organization_id
+				AND om.user_id = u.id AND om.state = 'active')
+			OR EXISTS (SELECT 1 FROM repo_collaborators rc WHERE rc.organization_id = r.organization_id
+				AND rc.repository_id = r.id AND rc.user_id = u.id)
+		)
+	)`, userID, scope.OrgID, scope.RepoID).Scan(&allowed)
+	if err != nil {
+		return false, fmt.Errorf("github issues: evaluate mention recipient: %w", err)
+	}
+	return allowed, nil
 }
 
 // commentEventIssue keeps the issue identity and timestamps from the

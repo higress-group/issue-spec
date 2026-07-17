@@ -112,7 +112,9 @@ Issue 动作、Change 类型、普通/类型化评论，以及真人/自动化 A
 ## 部署路径
 
 生产制品是单个 `issue-spec-server` 二进制或仓库中的 Runtime 容器。二进制已内嵌
-生成后的 Web 应用。部署需要 PostgreSQL 和三个由运维方管理的密钥文件。
+生成后的 Web 应用。部署需要 PostgreSQL 和三个由运维方管理的密钥文件。第四个可选的
+SMTP 密钥文件用于启用已验证通知邮箱、Mention 和显式仓库邮件订阅；不提供该文件时，
+这些能力保持关闭，不影响 Issue 或 Webhook 的正常运行。
 
 1. 阅读[部署与加固指南](operations/deployment.md)。
 2. 选择 HTTPS；若必须使用内网 HTTP，完成

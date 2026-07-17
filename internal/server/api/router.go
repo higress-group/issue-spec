@@ -31,11 +31,13 @@ import (
 	delegationapi "github.com/higress-group/issue-spec/internal/server/api/native/delegation"
 	deliveriesapi "github.com/higress-group/issue-spec/internal/server/api/native/deliveries"
 	evidenceapi "github.com/higress-group/issue-spec/internal/server/api/native/evidence"
+	mentionsapi "github.com/higress-group/issue-spec/internal/server/api/native/mentions"
 	metaapi "github.com/higress-group/issue-spec/internal/server/api/native/meta"
 	orgsapi "github.com/higress-group/issue-spec/internal/server/api/native/orgs"
 	profilemailapi "github.com/higress-group/issue-spec/internal/server/api/native/profilemail"
 	referencesapi "github.com/higress-group/issue-spec/internal/server/api/native/references"
 	reposapi "github.com/higress-group/issue-spec/internal/server/api/native/repos"
+	reposubscriptionsapi "github.com/higress-group/issue-spec/internal/server/api/native/reposubscriptions"
 	searchapi "github.com/higress-group/issue-spec/internal/server/api/native/search"
 	webhooksapi "github.com/higress-group/issue-spec/internal/server/api/native/webhooks"
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
@@ -80,15 +82,17 @@ type Dependencies struct {
 	Presenter    codec.Presenter
 	Conditional  conditional.Policy
 
-	SPA                *spa.Service
-	Bindings           *bindings.Service
-	Evidence           *evidence.Service
-	Changes            *changes.Service
-	Subscriptions      *subscriptions.Service
-	Deliveries         *delivery.Service
-	Search             *searchservice.Service
-	ProfileMail        profilemailapi.Service
-	EmailNotifications bool
+	SPA                          *spa.Service
+	Bindings                     *bindings.Service
+	Evidence                     *evidence.Service
+	Changes                      *changes.Service
+	Subscriptions                *subscriptions.Service
+	Deliveries                   *delivery.Service
+	Search                       *searchservice.Service
+	ProfileMail                  profilemailapi.Service
+	MentionDirectory             mentionsapi.Directory
+	RepositoryEmailSubscriptions reposubscriptionsapi.Service
+	EmailNotifications           bool
 
 	DelegationAudience string
 	DelegationSubject  string
@@ -118,6 +122,8 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	features := metaapi.Features{Bootstrap: true, PersonalAccessTokens: true, Organizations: true,
 		SourceBindings: true, Webhooks: true, ChangeBoards: true, Runner: true, RecoveryExchange: true,
 		Search: deps.Search != nil, EmailNotifications: deps.EmailNotifications && deps.ProfileMail != nil}
+	features.MentionCandidates = features.EmailNotifications && deps.MentionDirectory != nil
+	features.RepositoryEmailSubscriptions = features.EmailNotifications && deps.RepositoryEmailSubscriptions != nil
 	serverMetadata, err := metaapi.NewServerMetadataWithPosture(deps.ServerInstanceID, deps.APIOrigin, deps.WebOrigin, deps.ProviderDescriptions, deps.TransportPosture)
 	if err != nil {
 		return nil, fmt.Errorf("compose server metadata: %w", err)
@@ -146,9 +152,6 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		},
 		func() (routeset.RouteSet, error) {
 			return githubpermissions.NewRouteSet(githubpermissions.Dependencies{Service: deps.Permissions, Presenter: deps.Presenter, Authentication: deps.Authentication, Conditional: deps.Conditional})
-		},
-		func() (routeset.RouteSet, error) {
-			return githubsubscription.NewRouteSet(githubsubscription.Dependencies{Service: deps.Subscription, Presenter: deps.Presenter, Authentication: deps.Authentication, Conditional: deps.Conditional})
 		},
 		func() (routeset.RouteSet, error) {
 			return bootstrapapi.NewRouteSet(bootstrapapi.Dependencies{Service: deps.Admin})
@@ -200,6 +203,29 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	for _, construct := range constructors {
 		if err := add(construct()); err != nil {
 			return nil, fmt.Errorf("compose server routes: %w", err)
+		}
+	}
+	if features.RepositoryEmailSubscriptions {
+		origins, err := publicurl.NewWithPosture(deps.APIOrigin, deps.WebOrigin, nil, deps.TransportPosture)
+		if err != nil {
+			return nil, fmt.Errorf("compose repository notification origins: %w", err)
+		}
+		if err := add(reposubscriptionsapi.NewRouteSet(reposubscriptionsapi.Dependencies{
+			Service: deps.RepositoryEmailSubscriptions, Origins: origins,
+			Authentication: deps.Authentication, Conditional: deps.Conditional,
+		})); err != nil {
+			return nil, fmt.Errorf("compose repository notification routes: %w", err)
+		}
+	} else if err := add(githubsubscription.NewRouteSet(githubsubscription.Dependencies{
+		Service: deps.Subscription, Presenter: deps.Presenter,
+		Authentication: deps.Authentication, Conditional: deps.Conditional,
+	})); err != nil {
+		return nil, fmt.Errorf("compose compatible subscription route: %w", err)
+	}
+	if features.MentionCandidates {
+		if err := add(mentionsapi.NewRouteSet(mentionsapi.Dependencies{Directory: deps.MentionDirectory,
+			Authenticate: nativeAuthenticate, WebOrigin: deps.WebOrigin})); err != nil {
+			return nil, fmt.Errorf("compose mention routes: %w", err)
 		}
 	}
 	if deps.Search != nil {

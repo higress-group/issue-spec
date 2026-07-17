@@ -85,6 +85,7 @@ describe("repository email subscription control", () => {
           bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: false,
           webhooks: false, change_boards: false, runner: false, recovery_exchange: true,
           email_notifications: true,
+          repository_email_subscriptions: true,
         },
       })),
       http.get("http://localhost/api/v1/profile/email", () => HttpResponse.json({
@@ -122,6 +123,7 @@ describe("repository email subscription control", () => {
           bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: false,
           webhooks: false, change_boards: false, runner: false, recovery_exchange: true,
           email_notifications: true,
+          repository_email_subscriptions: true,
         },
       })),
       http.get("http://localhost/api/v1/profile/email", () => HttpResponse.json({ available: true, notification_email: null })),
