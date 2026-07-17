@@ -290,17 +290,26 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 		a.errorf("auth required for review sync on %s: %v\n", auth.NormalizeHost(*host), err)
 		return 1
 	}
-	externalGate, selfHosted, err := a.externalGate(ctx, *host, token.Value, repo, implementIssue,
-		"code_change", *revision, coreevidence.GateReview)
+	profile, _, err := auth.ResolveProfile(a.profileName, *host)
+	if err != nil {
+		a.errorf("resolve review profile: %v\n", err)
+		return 1
+	}
+	if profile.Kind == auth.ProfileKindHosted && *prFlag > 0 {
+		a.errorf("--pr is not a self-hosted code authority; omit it and use the active code_change reference\n")
+		return 2
+	}
+	if profile.Kind != auth.ProfileKindHosted && *prFlag <= 0 {
+		a.errorf("--pr must be a positive pull request number\n")
+		return 2
+	}
+	externalGate, selfHosted, err := a.externalGateWithProfile(ctx, profile, token.Value, repo, implementIssue,
+		"code_change", *revision, coreevidence.GateReview, ".", string(coreevidence.GateReview))
 	if err != nil {
 		a.errorf("review external evidence: %v\n", err)
 		return 1
 	}
 	if selfHosted {
-		if *prFlag > 0 {
-			a.errorf("--pr is not a self-hosted code authority; omit it and use the active code_change reference\n")
-			return 2
-		}
 		session := resolveWriterSession(*agentSession)
 		action, comment, err := upsertExternalReviewSyncCommentAt(ctx, client, repo, implementIssue,
 			*id, *agent, session, *scope, externalGate, time.Now().UTC())
@@ -316,10 +325,6 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 		fmt.Fprintf(a.out, "%s REVIEW %s from external evidence revision %s: %s\n", action, *id,
 			externalGate.Target.SubjectRevision, comment.HTMLURL)
 		return 0
-	}
-	if *prFlag <= 0 {
-		a.errorf("--pr must be a positive pull request number\n")
-		return 2
 	}
 	pr, err := client.GetPullRequest(ctx, repo, *prFlag)
 	if err != nil {

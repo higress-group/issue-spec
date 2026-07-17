@@ -77,6 +77,19 @@ func TestExternalReviewSyncZeroFindingsWritesCompletionWithoutReviewFacts(t *tes
 	}
 }
 
+func TestExternalReviewSyncRejectsPRBeforeProviderSynchronization(t *testing.T) {
+	app, native, comments, creates, updates, _, errOut := setupExternalReviewSyncCommand(t)
+	code := app.runReviewSync(t.Context(), []string{"--repo", "acme/widgets", "--hostname", "issues.test",
+		"--implement", "9", "--revision", "head-abc", "--pr", "42", "--id", "REVIEW-101"})
+	if code != 2 || !strings.Contains(errOut.String(), "--pr is not a self-hosted code authority") {
+		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
+	}
+	if native.syncs != 0 || native.resolveCalls != 0 || *creates != 0 || *updates != 0 || len(*comments) != 0 {
+		t.Fatalf("invalid --pr crossed preflight: syncs=%d resolves=%d creates=%d updates=%d comments=%d",
+			native.syncs, native.resolveCalls, *creates, *updates, len(*comments))
+	}
+}
+
 func TestExternalReviewSyncFailedRetryLeavesExistingReviewByteStable(t *testing.T) {
 	app, native, comments, creates, updates, _, errOut := setupExternalReviewSyncCommand(t)
 	args := []string{"--repo", "acme/widgets", "--hostname", "issues.test", "--implement", "9",
