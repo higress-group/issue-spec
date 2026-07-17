@@ -299,6 +299,20 @@ Runner Clone/Push 优先使用实现
 - 重复的创建、关联和状态流转请求保持幂等，工作项更新失败可重试且不会回滚
   issue-spec。
 
+### Aone Code 脱敏一致性记录
+
+首次 Operator Bridge 一致性冒烟使用 Aone Code。这里只保留有界的 Provider-neutral
+结果；文档示例及后续复现仍必须使用 `code.example`、`example.test` 等虚构标识。
+
+| 检查项 | 脱敏结果 |
+|---|---|
+| `issue-spec.code-provider/v1` Capability Discovery | 通过：Operator Bridge 完成严格协议与 Capability 握手。 |
+| Exact-revision `evidence.snapshot` | 通过：顶层 Identity 与请求 Revision 精确匹配，只返回一个 `change` Fact，Canonical URL 安全。 |
+| 故意传入错误 Revision | 通过：Bridge 稳定返回 `revision_mismatch`，且不返回 Snapshot Payload。 |
+
+本仓库不记录该次冒烟的内部域名、仓库或 Change 标识、Commit Revision、用户身份、
+可执行路径、请求/响应 Payload 或任何凭据。
+
 企业具体配置和详细证据只保存在获批的内部系统。公开文档、Issue 与 PR 只使用通用
 示例和脱敏后的通过/失败摘要。
 

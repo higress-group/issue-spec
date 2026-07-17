@@ -344,6 +344,22 @@ Validate in a non-production repository:
 - repeated create, link, and transition requests are idempotent, while a failed
   tracker update remains retryable without rolling back issue-spec.
 
+### Sanitized Aone Code conformance record
+
+The first operator-bridge conformance smoke used Aone Code. Only the bounded
+provider-neutral outcomes are retained here; examples and future reproductions
+must continue to use identifiers such as `code.example` and `example.test`.
+
+| Check | Sanitized result |
+|---|---|
+| `issue-spec.code-provider/v1` capability discovery | Passed: the operator bridge completed the strict protocol and capability handshake. |
+| Exact-revision `evidence.snapshot` | Passed: the top-level identity and requested revision matched, exactly one `change` fact was returned, and its canonical URL was safe. |
+| Deliberately wrong revision | Passed: the bridge returned the stable `revision_mismatch` error and no snapshot payload. |
+
+No internal domain, repository or change identifier, commit revision, user
+identity, executable path, request/response payload, or credential from that
+smoke is recorded in this repository.
+
 Keep detailed company configuration and evidence in approved internal systems.
 Public documentation, issues, and PRs should contain only provider-neutral
 examples and sanitized pass/fail summaries.

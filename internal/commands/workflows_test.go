@@ -150,6 +150,38 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 	}
 }
 
+func TestWorkflowNoticeIsBackendNeutralAndOwnedArtifactsAreCurrent(t *testing.T) {
+	plan := mustResolveWorkflow(t, t.TempDir())
+	notice := workflowNotice(plan)
+	const neutralFooter = "artifacts remain in the selected issue backend's issue-native storage"
+	if !strings.Contains(notice, neutralFooter) || strings.Contains(notice, "remain in GitHub issue-native storage") {
+		t.Fatalf("workflow notice is not backend-neutral:\n%s", notice)
+	}
+
+	root := t.TempDir()
+	if _, err := writeWorkflowArtifacts(root, "higress-group/issue-spec", "codex,claude", "both"); err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 0, 17)
+	for _, skill := range []string{"apply", "archive", "propose", "review", "verify", "workflow"} {
+		paths = append(paths,
+			filepath.Join(".agents", "skills", "issue-spec-"+skill, "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-"+skill, "SKILL.md"))
+	}
+	for _, command := range []string{"apply", "archive", "propose", "review", "verify"} {
+		paths = append(paths, filepath.Join(".claude", "commands", "issue-spec", command+".md"))
+	}
+	for _, relative := range paths {
+		generated := readTestFile(t, filepath.Join(root, relative))
+		if !strings.Contains(generated, neutralFooter) || strings.Contains(generated, "remain in GitHub issue-native storage") {
+			t.Fatalf("generated workflow footer is not backend-neutral: %s", relative)
+		}
+		if checkedIn := readTestFile(t, filepath.Join("..", "..", relative)); generated != checkedIn {
+			t.Fatalf("checked-in generated workflow artifact is stale: %s", relative)
+		}
+	}
+}
+
 func TestWriteWorkflowArtifactsCommandsOnly(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CODEX_HOME", filepath.Join(root, "codex-home"))
