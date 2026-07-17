@@ -68,7 +68,8 @@ test("responsive shell remains accessible and visually stable", async ({ page },
     const menu = page.getByRole("button", { name: documentationText("Toggle navigation", "展开或收起导航") });
     await menu.click();
     await expect(menu).toHaveAttribute("aria-expanded", "true");
-    await page.getByRole("link", { name: documentationText("Repositories", "仓库") }).click();
+    const primaryNavigation = page.getByRole("navigation", { name: documentationText("Primary navigation", "主导航") });
+    await primaryNavigation.getByRole("link", { name: documentationText("Repositories", "仓库") }).click();
     await expect(menu).toHaveAttribute("aria-expanded", "false");
   }
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
