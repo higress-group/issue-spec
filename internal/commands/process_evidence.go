@@ -1,7 +1,10 @@
 package commands
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 
@@ -40,6 +43,10 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 		}
 	}
 	externalValid := external != nil && validateExternalEvidenceConsumption(*external, processes, activeSpecs) == nil
+	requiredRevision := strings.TrimSpace(review.SubjectRevision)
+	if externalValid {
+		requiredRevision = strings.TrimSpace(external.SubjectRevision)
+	}
 	processByID := make(map[string]model.Artifact, len(processes))
 	for _, process := range processes {
 		processByID[process.Comment.ID] = process
@@ -89,7 +96,7 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 	inputs := make([]gates.ProcessEvidenceInput, 0, len(processes))
 	for _, process := range processes {
 		input := gates.ProcessEvidenceInput{Process: process, RequiredPRURL: prURL, ActiveSpecs: activeSpecs, TaskURLs: taskURLs,
-			RequiredRevision: strings.TrimSpace(review.SubjectRevision), AuthorAgentsBySpec: authorAgentsBySpec}
+			RequiredRevision: requiredRevision, AuthorAgentsBySpec: authorAgentsBySpec}
 		for _, comment := range reviewComments {
 			marker, ok, err := model.FindRationaleMarker(comment.Body)
 			if err != nil || !ok || marker.Process != process.Comment.ID {
@@ -99,13 +106,37 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 				SpecURL: rationaleSpecURL(comment.Body), MarkerPath: marker.Path, MarkerLine: marker.Line,
 				CommentPath: comment.Path, CommentLine: comment.Line, AuthorAgent: marker.Agent})
 		}
+		if externalValid {
+			input.External = externalProcessEvidenceFor(process.Comment.ID, activeSpecs, *external)
+		}
+		for _, artifact := range artifacts {
+			if artifact.Issue != process.Issue || !model.IsLikelyCodeChangeRationale(artifact.Comment.Body) {
+				continue
+			}
+			marker, found, err := model.FindCodeChangeRationaleMarker(artifact.Comment.Body)
+			if err != nil || !found || marker.Process != process.Comment.ID {
+				continue
+			}
+			evidence := gates.CodeChangeRationaleEvidence{ProcessID: marker.Process, SpecID: marker.Spec,
+				SpecURL: marker.SpecURL, ProviderKey: marker.ProviderKey, ExternalRepository: marker.ExternalRepository,
+				ChangeID: marker.ChangeID, ReferenceVersion: marker.ReferenceVersion, SubjectRevision: marker.SubjectRevision,
+				AuthorAgent: marker.Agent, AuthorSessionID: marker.AgentSessionID, URL: artifact.URL}
+			input.CodeChangeRationales = append(input.CodeChangeRationales, evidence)
+			if validCodeChangeRationaleAuthor(evidence, process, activeSpecs, input.External) {
+				agent := strings.ToLower(strings.TrimSpace(evidence.AuthorAgent))
+				if authorAgentsBySpec[evidence.SpecID] == nil {
+					authorAgentsBySpec[evidence.SpecID] = map[string]bool{}
+				}
+				authorAgentsBySpec[evidence.SpecID][agent] = true
+			}
+		}
 		for _, artifact := range reviews {
 			if !artifactReferencesProcess(artifact, process) {
 				continue
 			}
-			revision, trusted, source := reviewArtifactRevision(artifact, prURL, review)
 			for specID := range activeSpecs {
 				if artifactReferencesSpec(artifact, specID, activeSpecs[specID]) {
+					revision, trusted, source := reviewArtifactRevision(artifact, prURL, review, input.External, process.Comment.ID, specID)
 					input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: process.Comment.ID, SpecID: specID, URL: artifact.URL,
 						Done: true, ReviewerAgent: artifact.Comment.Agent, SubjectRevision: revision, Trusted: trusted, Source: source})
 				}
@@ -145,9 +176,6 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 				}
 			}
 		}
-		if externalValid {
-			input.External = externalProcessEvidenceFor(process.Comment.ID, activeSpecs, *external)
-		}
 		inputs = append(inputs, input)
 	}
 	return inputs
@@ -157,7 +185,33 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 // process evidence only after re-binding it to the authoritative PR facts
 // collected for this command. The typed value records what review sync saw;
 // the trusted value returned on a match comes from the current PR head.
-func reviewArtifactRevision(artifact model.Artifact, requiredPRURL string, report reviewSyncReport) (string, bool, string) {
+func reviewArtifactRevision(artifact model.Artifact, requiredPRURL string, report reviewSyncReport,
+	external []gates.ExternalProcessEvidence, processID, specID string) (string, bool, string) {
+	if strings.TrimSpace(requiredPRURL) == "" {
+		stamped, ok := parseConsumedEvidenceBlock(artifact.Comment.Body)
+		if !ok {
+			return strings.TrimSpace(artifact.Comment.SubjectRevision), false, "typed-review"
+		}
+		var revision, source string
+		for _, evidence := range external {
+			if evidence.ProcessID != processID || evidence.SpecID != specID || evidence.EvidenceKind != string(codereview.EvidenceReview) ||
+				!evidence.Consumed || !evidence.Trusted ||
+				len(evidence.EvidenceIDs) == 0 || evidence.SubjectRevision == "" ||
+				evidence.SubjectRevision != evidence.EvidenceRevision || !strings.HasPrefix(evidence.Source, "native-authoritative-ledger:") ||
+				!consumptionBlockMatchesEvidence(stamped, evidence) {
+				continue
+			}
+			if revision != "" && revision != evidence.EvidenceRevision {
+				return "", false, "native-authoritative-ledger"
+			}
+			revision = evidence.EvidenceRevision
+			source = evidence.Source
+		}
+		if revision != "" {
+			return revision, true, source
+		}
+		return strings.TrimSpace(artifact.Comment.SubjectRevision), false, "typed-review"
+	}
 	recorded := strings.TrimSpace(artifact.Comment.SubjectRevision)
 	if recorded == "" {
 		return "", false, "typed-review"
@@ -172,6 +226,67 @@ func reviewArtifactRevision(artifact model.Artifact, requiredPRURL string, repor
 		return recorded, false, "typed-review"
 	}
 	return authoritativeRevision, true, authoritativeSource
+}
+
+func parseConsumedEvidenceBlock(body string) (externalEvidenceConsumption, bool) {
+	if strings.Count(body, consumedEvidenceStart) != 1 || strings.Count(body, consumedEvidenceEnd) != 1 {
+		return externalEvidenceConsumption{}, false
+	}
+	start := strings.Index(body, consumedEvidenceStart)
+	end := strings.Index(body, consumedEvidenceEnd)
+	if start < 0 || end <= start {
+		return externalEvidenceConsumption{}, false
+	}
+	const prefix = "\n### Consumed External Evidence\n\n```json\n"
+	const suffix = "\n```\n"
+	rawBlock := body[start+len(consumedEvidenceStart) : end]
+	if !strings.HasPrefix(rawBlock, prefix) || !strings.HasSuffix(rawBlock, suffix) {
+		return externalEvidenceConsumption{}, false
+	}
+	raw := []byte(strings.TrimSuffix(strings.TrimPrefix(rawBlock, prefix), suffix))
+	var consumption externalEvidenceConsumption
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&consumption); err != nil {
+		return externalEvidenceConsumption{}, false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return externalEvidenceConsumption{}, false
+	}
+	canonical, err := json.Marshal(consumption)
+	if err != nil || !bytes.Equal(raw, canonical) {
+		return externalEvidenceConsumption{}, false
+	}
+	return consumption, true
+}
+
+func consumptionBlockMatchesEvidence(consumption externalEvidenceConsumption, evidence gates.ExternalProcessEvidence) bool {
+	if consumption.ProviderKey != evidence.ProviderKey || consumption.ExternalRepository != evidence.ExternalRepository ||
+		consumption.ChangeID != evidence.ChangeID || consumption.ReferenceVersion != evidence.ReferenceVersion ||
+		consumption.SubjectRevision != evidence.SubjectRevision {
+		return false
+	}
+	id := strings.TrimPrefix(evidence.Source, "native-authoritative-ledger:")
+	if id == "" || id == evidence.Source {
+		return false
+	}
+	selected := false
+	for _, candidate := range consumption.EvidenceIDs {
+		if candidate == id {
+			selected = true
+		}
+	}
+	if !selected {
+		return false
+	}
+	for _, binding := range consumption.Bindings {
+		if binding.ProcessID == evidence.ProcessID && binding.SpecID == evidence.SpecID && binding.EvidenceID == id &&
+			binding.Kind == codereview.EvidenceReview && binding.SubjectRevision == evidence.EvidenceRevision &&
+			binding.Trusted && binding.Source == "native-authoritative-ledger" {
+			return true
+		}
+	}
+	return false
 }
 
 func hasExactReviewPRCarrier(values []string, want string) bool {
@@ -197,7 +312,10 @@ func hasExactReviewPRCarrier(values []string, want string) bool {
 
 func validateExternalEvidenceConsumption(consumption externalEvidenceConsumption, processes []model.Artifact, activeSpecs map[string]string) error {
 	revision := strings.TrimSpace(consumption.SubjectRevision)
-	if revision == "" || consumption.SubjectRevision != revision || len(consumption.Bindings) == 0 {
+	if strings.TrimSpace(consumption.ProviderKey) == "" || consumption.ProviderKey != strings.TrimSpace(consumption.ProviderKey) ||
+		strings.TrimSpace(consumption.ExternalRepository) == "" || consumption.ExternalRepository != strings.TrimSpace(consumption.ExternalRepository) ||
+		strings.TrimSpace(consumption.ChangeID) == "" || consumption.ChangeID != strings.TrimSpace(consumption.ChangeID) ||
+		consumption.ReferenceVersion <= 0 || revision == "" || consumption.SubjectRevision != revision || len(consumption.Bindings) == 0 {
 		return fmt.Errorf("external evidence consumption has no revision-bound bindings")
 	}
 	selected := make(map[string]bool, len(consumption.EvidenceIDs))
@@ -264,13 +382,40 @@ func externalProcessEvidenceFor(processID string, activeSpecs map[string]string,
 		}
 		seen[key] = true
 		result = append(result, gates.ExternalProcessEvidence{ProcessID: processID, SpecID: binding.SpecID,
-			SubjectRevision: consumption.SubjectRevision, EvidenceRevision: binding.SubjectRevision, Consumed: true,
+			ProviderKey: consumption.ProviderKey, ExternalRepository: consumption.ExternalRepository,
+			ChangeID: consumption.ChangeID, ReferenceVersion: consumption.ReferenceVersion,
+			SubjectRevision: consumption.SubjectRevision, EvidenceRevision: binding.SubjectRevision, EvidenceKind: string(binding.Kind), Consumed: true,
 			EvidenceIDs: []string{binding.EvidenceID}, Trusted: true, Source: binding.Source + ":" + binding.EvidenceID})
 	}
 	if invalid {
 		return nil
 	}
 	return result
+}
+
+func validCodeChangeRationaleAuthor(rationale gates.CodeChangeRationaleEvidence, process model.Artifact,
+	activeSpecs map[string]string, external []gates.ExternalProcessEvidence) bool {
+	want, active := activeSpecs[rationale.SpecID]
+	if !active || strings.TrimSpace(rationale.AuthorAgent) == "" || strings.TrimSpace(rationale.AuthorSessionID) == "" ||
+		model.NormalizeURL(rationale.SpecURL) != model.NormalizeURL(want) || !artifactReferencesSpec(process, rationale.SpecID, want) {
+		return false
+	}
+	matched := false
+	for _, evidence := range external {
+		if evidence.ProcessID != rationale.ProcessID || evidence.SpecID != rationale.SpecID {
+			continue
+		}
+		if !evidence.Consumed || !evidence.Trusted || len(evidence.EvidenceIDs) == 0 || !strings.HasPrefix(evidence.Source, "native-authoritative-ledger:") ||
+			evidence.SubjectRevision == "" || evidence.SubjectRevision != evidence.EvidenceRevision {
+			return false
+		}
+		if evidence.ProviderKey == rationale.ProviderKey && evidence.ExternalRepository == rationale.ExternalRepository &&
+			evidence.ChangeID == rationale.ChangeID && evidence.ReferenceVersion == rationale.ReferenceVersion &&
+			evidence.SubjectRevision == rationale.SubjectRevision {
+			matched = true
+		}
+	}
+	return matched
 }
 
 func rationaleSpecURL(body string) string {

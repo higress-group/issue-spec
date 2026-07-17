@@ -64,7 +64,7 @@ func TestExternalVerifyGateUsesAuthoritativeNativeTarget(t *testing.T) {
 				test.edit(&snapshot)
 			}
 			bridge := &commandEvidenceProvider{snapshot: snapshot}
-			native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference,
+			native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7,
 				SubjectRevision: "head-abc", Policy: coreevidence.NativePolicy{Requirements: []coreevidence.NativeRequirement{
 					{Kind: codereview.EvidenceCheck, Freshness: time.Hour},
 				}}, Provider: bridge, IssueID: uuid.New(), OrgID: uuid.New(), RepoID: uuid.New()}}
@@ -78,7 +78,8 @@ func TestExternalVerifyGateUsesAuthoritativeNativeTarget(t *testing.T) {
 				t.Fatal("self-hosted profile was not selected")
 			}
 			if test.want == "" {
-				if err != nil || !result.Evaluation.Passed || result.Consumption.SubjectRevision != "head-abc" {
+				if err != nil || !result.Evaluation.Passed || result.Consumption.SubjectRevision != "head-abc" ||
+					result.Consumption.ReferenceVersion != 7 {
 					t.Fatalf("result=%+v err=%v", result, err)
 				}
 				return
@@ -136,7 +137,7 @@ func TestExternalGateSynchronizesPersistsReloadsThenEvaluates(t *testing.T) {
 		}}
 	ledger.Records[1].Name = "unit"
 	ledgerProvider := &commandEvidenceProvider{label: "ledger", calls: &calls, snapshot: ledger}
-	native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, SubjectRevision: "head-abc",
+	native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7, SubjectRevision: "head-abc",
 		Provider: ledgerProvider, IssueID: uuid.New(), OrgID: uuid.New(), RepoID: uuid.New()}, calls: &calls}
 	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	app.profileName = profile.Name
@@ -147,7 +148,7 @@ func TestExternalGateSynchronizesPersistsReloadsThenEvaluates(t *testing.T) {
 	if err != nil || !hosted || !result.Evaluation.Passed || native.syncs != 1 || len(native.snapshot.Facts) != 1 {
 		t.Fatalf("externalGate() result=%+v hosted=%t syncs=%d snapshot=%+v err=%v", result, hosted, native.syncs, native.snapshot, err)
 	}
-	if strings.Join(calls, ",") != "operator,persist,ledger" ||
+	if strings.Join(calls, ",") != "operator,persist,ledger" || result.Consumption.ReferenceVersion != 7 ||
 		strings.Join(result.Consumption.EvidenceIDs, ",") != "check-ledger,review-ledger" {
 		t.Fatalf("calls=%v consumption=%+v", calls, result.Consumption)
 	}
@@ -397,12 +398,12 @@ func TestConsumedEvidenceStampAndRevisionBindingAreExactAndIdempotent(t *testing
 		t.Fatal("revision-only consumption without structured binding was accepted")
 	}
 	consumption := externalEvidenceConsumption{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code",
-		ChangeID: "change-42", SubjectRevision: "head-abc", EvidenceIDs: []string{"z", "a"}, Bindings: []externalEvidenceBinding{
+		ChangeID: "change-42", ReferenceVersion: 7, SubjectRevision: "head-abc", EvidenceIDs: []string{"z", "a"}, Bindings: []externalEvidenceBinding{
 			{ProcessID: "PROCESS-002", SpecID: "SPEC-002", EvidenceID: "z", Kind: codereview.EvidenceReview, SubjectRevision: "head-abc", Trusted: true, Source: "native-authoritative-ledger"},
 			{ProcessID: "PROCESS-001", SpecID: "SPEC-001", EvidenceID: "a", Kind: codereview.EvidenceReview, SubjectRevision: "head-abc", Trusted: true, Source: "native-authoritative-ledger"},
 		}}
 	first, changed, err := stampConsumedEvidence(body, consumption)
-	if err != nil || !changed || !strings.Contains(first, `"evidence_ids":["a","z"]`) ||
+	if err != nil || !changed || !strings.Contains(first, `"reference_version":7`) || !strings.Contains(first, `"evidence_ids":["a","z"]`) ||
 		!strings.Contains(first, `"process_id":"PROCESS-001"`) || strings.Index(first, "PROCESS-001") > strings.Index(first, "PROCESS-002") {
 		t.Fatalf("first stamp changed=%v err=%v body=%q", changed, err, first)
 	}
@@ -431,13 +432,13 @@ func TestExternalReviewSyncPreservesCanonicalFindingLinkage(t *testing.T) {
 	review := testEvidenceRecord("review-1", codereview.EvidenceReview, "resolved", "head-abc", now)
 	review.FindingID, review.ProcessID, review.SpecID = "FINDING-030", "PROCESS-020", "SPEC-010"
 	review.CanonicalURL = "https://code.example/reviews/30"
-	gate := externalGateResult{Target: coreevidence.NativeTarget{Reference: reference, SubjectRevision: "head-abc"},
+	gate := externalGateResult{Target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7, SubjectRevision: "head-abc"},
 		Snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion, Reference: reference,
 			SubjectRevision: "head-abc", CapturedAt: now, Records: []codereview.EvidenceRecord{review}},
 		Evaluation: coreevidence.Result{Passed: true, EvidenceIDs: []string{"review-1"}},
 		Consumption: externalEvidenceConsumption{ProviderKey: reference.ProviderKey,
 			ExternalRepository: reference.ExternalRepository, ChangeID: reference.ChangeID,
-			SubjectRevision: "head-abc", EvidenceIDs: []string{"review-1"}, Bindings: []externalEvidenceBinding{{
+			ReferenceVersion: 7, SubjectRevision: "head-abc", EvidenceIDs: []string{"review-1"}, Bindings: []externalEvidenceBinding{{
 				ProcessID: "PROCESS-020", SpecID: "SPEC-010", EvidenceID: "review-1", Kind: codereview.EvidenceReview,
 				SubjectRevision: "head-abc", Trusted: true, Source: "native-authoritative-ledger",
 			}}}}

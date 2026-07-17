@@ -123,7 +123,7 @@ func TestSelfHostedAttachLinkContinuesThroughProviderNeutralGates(t *testing.T) 
 	now := time.Now().UTC()
 	ledger := &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
 		Reference: reference, SubjectRevision: "head-abc", CapturedAt: now}}
-	native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, SubjectRevision: "head-abc",
+	native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: attached.RepresentationVersion, SubjectRevision: "head-abc",
 		Policy: coreevidence.NativePolicy{Requirements: []coreevidence.NativeRequirement{{Kind: codereview.EvidenceCheck,
 			Freshness: time.Hour}}}, Provider: ledger, IssueID: backend.issueID, OrgID: backend.scope.OrgID, RepoID: backend.scope.RepoID}}
 	app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
@@ -141,7 +141,7 @@ func TestSelfHostedAttachLinkContinuesThroughProviderNeutralGates(t *testing.T) 
 		"code_change", "head-abc", coreevidence.GateVerify)
 	if err != nil || !hosted || !gate.Evaluation.Passed || gate.Consumption.ProviderKey != reference.ProviderKey ||
 		gate.Consumption.ExternalRepository != reference.ExternalRepository || gate.Consumption.ChangeID != reference.ChangeID ||
-		gate.Consumption.SubjectRevision != "head-abc" {
+		gate.Consumption.ReferenceVersion != attached.RepresentationVersion || gate.Consumption.SubjectRevision != "head-abc" {
 		t.Fatalf("verify gate=%+v hosted=%t err=%v", gate, hosted, err)
 	}
 	reviewBody, err := renderExternalReviewSyncComment("REVIEW-008", "Independent Reviewer", writerSession{},
@@ -178,9 +178,9 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 		wants   []string
 	}{
 		{workflowSkill, []string{"search issues", "GitHub-backed workflows keep the existing `pr link-process`",
-			"code-change attach", "code-change link-process", "Do not call a GitHub PR endpoint"}},
+			"code-change attach", "code-change link-process", "code-change rationale", "exact-current", "trusted consumed native-ledger evidence", "Do not call a GitHub PR endpoint"}},
 		{applyCommand, []string{"For GitHub use issue-spec pr link-process",
-			"code-change attach", "code-change link-process", "do not call GitHub PR endpoints"}},
+			"code-change attach", "code-change link-process", "code-change rationale", "append-only Issue Backend comment", "do not call GitHub PR endpoints"}},
 	}
 	for _, check := range checks {
 		for _, want := range check.wants {
@@ -200,9 +200,12 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 		t.Fatal(err)
 	}
 	providerSkill := readTestFile(t, providerRoot+"/.agents/skills/issue-spec-code-provider/SKILL.md")
-	attachAt, linkAt, verifyAt := strings.Index(providerSkill, "code-change attach --repo owner/repo"),
-		strings.Index(providerSkill, "code-change link-process --repo owner/repo"), strings.Index(providerSkill, "Before verification gates")
-	if attachAt < 0 || linkAt <= attachAt || verifyAt <= linkAt || !strings.Contains(providerSkill, "do not substitute GitHub PR endpoints") {
-		t.Fatalf("provider workflow does not preserve attach -> link -> verify/backend split:\n%s", providerSkill)
+	attachAt, linkAt, verifyAt, rationaleAt := strings.Index(providerSkill, "code-change attach --repo owner/repo"),
+		strings.Index(providerSkill, "code-change link-process --repo owner/repo"), strings.Index(providerSkill, "Before verification gates"),
+		strings.Index(providerSkill, "code-change rationale --repo owner/repo")
+	if attachAt < 0 || linkAt <= attachAt || verifyAt <= linkAt || rationaleAt <= verifyAt ||
+		!strings.Contains(providerSkill, "exact-current trusted native-ledger evidence") ||
+		!strings.Contains(providerSkill, "do not substitute GitHub PR endpoints") {
+		t.Fatalf("provider workflow does not preserve attach -> link -> verify -> rationale/backend split:\n%s", providerSkill)
 	}
 }

@@ -214,6 +214,72 @@ func TestChangeBearingProcessRejectsCoordinatorAuthoredCarrier(t *testing.T) {
 	})
 }
 
+func TestChangeBearingProcessRequiresExactProviderRationaleAndTrustedBinding(t *testing.T) {
+	valid := func() ProcessEvidenceInput {
+		input := processEvidenceFixture(t, model.ProcessExecutionChangeBearing)
+		input.RequiredPRURL = ""
+		input.RequiredRevision = "head-current"
+		input.CodeChangeRationales = []CodeChangeRationaleEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001",
+			SpecURL: input.ActiveSpecs["SPEC-001"], ProviderKey: "code.example", ExternalRepository: "acme/widgets-code",
+			ChangeID: "change-1", ReferenceVersion: 7, SubjectRevision: "head-current", AuthorAgent: "Implementation Worker",
+			AuthorSessionID: "worker-session", URL: "https://issues.example/process-rationale"}}
+		input.External = []ExternalProcessEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001",
+			ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-1", ReferenceVersion: 7,
+			SubjectRevision: "head-current", EvidenceRevision: "head-current", Consumed: true,
+			EvidenceIDs: []string{"review-1"}, Trusted: true, Source: "native-authoritative-ledger:review-1"}}
+		return input
+	}
+
+	input := valid()
+	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !containsString(report.Satisfied, "exact-current provider rationale") || len(report.Missing) != 0 ||
+		len(report.SatisfiedSpecs) != 1 || report.SatisfiedSpecs[0] != "SPEC-001" ||
+		!report.CarrierRevision.Trusted || report.CarrierRevision.Revision != "head-current" {
+		t.Fatalf("exact-current provider carrier should pass: %+v", report)
+	}
+
+	tests := map[string]func(*ProcessEvidenceInput){
+		"stale rationale revision": func(input *ProcessEvidenceInput) { input.CodeChangeRationales[0].SubjectRevision = "head-old" },
+		"stale reference version":  func(input *ProcessEvidenceInput) { input.CodeChangeRationales[0].ReferenceVersion = 6 },
+		"wrong provider":           func(input *ProcessEvidenceInput) { input.CodeChangeRationales[0].ProviderKey = "other.example" },
+		"wrong process":            func(input *ProcessEvidenceInput) { input.CodeChangeRationales[0].ProcessID = "PROCESS-999" },
+		"wrong spec":               func(input *ProcessEvidenceInput) { input.CodeChangeRationales[0].SpecID = "SPEC-999" },
+		"wrong spec url":           func(input *ProcessEvidenceInput) { input.CodeChangeRationales[0].SpecURL = "https://example/wrong" },
+		"untrusted evidence":       func(input *ProcessEvidenceInput) { input.External[0].Trusted = false },
+		"unconsumed evidence":      func(input *ProcessEvidenceInput) { input.External[0].Consumed = false },
+		"wrong ledger source":      func(input *ProcessEvidenceInput) { input.External[0].Source = "provider-bridge:review-1" },
+		"wrong evidence process":   func(input *ProcessEvidenceInput) { input.External[0].ProcessID = "PROCESS-999" },
+		"wrong evidence spec":      func(input *ProcessEvidenceInput) { input.External[0].SpecID = "SPEC-999" },
+		"mixed evidence revision": func(input *ProcessEvidenceInput) {
+			stale := input.External[0]
+			stale.EvidenceRevision = "head-old"
+			stale.EvidenceIDs = []string{"review-old"}
+			stale.Source = "native-authoritative-ledger:review-old"
+			input.External = append(input.External, stale)
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			input := valid()
+			mutate(&input)
+			report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+			if containsString(report.Satisfied, "exact-current provider rationale") ||
+				!containsString(report.Missing, "exact-current provider rationale") ||
+				!hasDiagnostic(report.Diagnostics, CodeProcessCarrierMissing, true) {
+				t.Fatalf("invalid provider carrier rescued PROCESS: %+v", report)
+			}
+		})
+	}
+
+	input = valid()
+	input.CodeChangeRationales[0].AuthorAgent = " cOoRdInAtOr "
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !hasDiagnostic(report.Diagnostics, CodeProcessExecutorCoordinatorConflict, true) ||
+		containsString(report.Satisfied, "exact-current provider rationale") {
+		t.Fatalf("provider carrier must preserve coordinator conflict: %+v", report)
+	}
+}
+
 func TestCoordinatorAgentDoesNotAffectOtherExecutionClasses(t *testing.T) {
 	input := processEvidenceFixture(t, model.ProcessExecutionVerification)
 	input.Verifications = []VerificationEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Done: true, TestEvidence: true}}

@@ -372,7 +372,7 @@ func newSelfHostedVerifyApp(t *testing.T) (*app, *bytes.Buffer, *bytes.Buffer, *
 		Records: []codereview.EvidenceRecord{review, check},
 	}}
 	native := &commandNativeEvidence{target: coreevidence.NativeTarget{
-		Reference: reference, SubjectRevision: revision, Provider: provider,
+		Reference: reference, ReferenceVersion: 7, SubjectRevision: revision, Provider: provider,
 		IssueID: uuid.New(), OrgID: uuid.New(), RepoID: uuid.New(),
 	}}
 	verify := typedCommentWithLinks(t, "VERIFY", "VERIFY-001", "done",
@@ -635,6 +635,88 @@ func TestBuildFinalVerifyReportChecksRationaleCoverageWhenPRProvided(t *testing.
 	}
 	if !report.OK {
 		t.Fatalf("expected rationale coverage OK: %+v", report.Errors)
+	}
+}
+
+func TestBuildFinalVerifyReportAcceptsExactSelfHostedRationaleAndNativeLedgerReview(t *testing.T) {
+	const (
+		specURL   = "https://issues.example/acme/widgets/issues/1#issuecomment-1"
+		changeURL = "https://code.example/acme/widgets-code/changes/change-42"
+		revision  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	spec.URL = specURL
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	task.URL = "https://issues.example/acme/widgets/issues/2#issuecomment-2"
+	process := typedArtifactWithAgent(t, 3, "PROCESS", "PROCESS-001", "done", "Coordinator", canonicalProcessContentWithClass(model.ProcessExecutionChangeBearing))
+	process.URL = "https://issues.example/acme/widgets/issues/3#issuecomment-3"
+	reviewProcess := typedArtifact(t, 3, "PROCESS", "PROCESS-002", "done", canonicalReviewProcess)
+	reviewProcess.URL = "https://issues.example/acme/widgets/issues/3#issuecomment-4"
+	review := typedArtifactWithAgent(t, 3, "REVIEW", "REVIEW-001", "done", "Independent Reviewer",
+		"## Review\n\nReviewed PROCESS-002 covering SPEC-001 with no blocking findings.")
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &process)
+	linkArtifacts(t, &spec, &process)
+	linkArtifacts(t, &task, &reviewProcess)
+	linkArtifacts(t, &spec, &reviewProcess)
+	for _, candidate := range []*model.Artifact{&process, &reviewProcess} {
+		body, _, err := model.AddPRLink(candidate.Comment.Body, changeURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidate.Comment = model.ParseTypedComment(body)
+	}
+	now := time.Unix(100, 0).UTC()
+	workspace := processworkspace.PortableLease{SchemaVersion: processworkspace.LeaseSchemaVersion,
+		WorkspaceID: "ws-process-001", Repository: "acme/widgets", ProcessID: "PROCESS-001",
+		ExecutionClass: processworkspace.ExecutionChangeBearing, Mode: processworkspace.ModeWritable,
+		BaseSHA: strings.Repeat("0", 40), Branch: "codex/process-001", WriteOwnership: []string{"internal/x"},
+		RuntimeNamespace: "ws-process-001", State: processworkspace.StateIntegrated,
+		ResultCommit: strings.Repeat("1", 40), IntegrationSHA: revision, CreatedAt: now, UpdatedAt: now}
+	transition, err := model.ApplyTypedTransition(process.Comment.Body,
+		model.TransitionRequest{ExpectedType: "PROCESS", ExpectedID: "PROCESS-001", Workspace: &workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.Comment = model.ParseTypedComment(transition.Body)
+	rationaleBody, err := model.RenderCodeChangeRationaleBody(model.CodeChangeRationaleMarker{
+		Process: "PROCESS-001", Spec: "SPEC-001", SpecURL: specURL, ProviderKey: "code.example",
+		ExternalRepository: "acme/widgets-code", ChangeID: "change-42", ReferenceVersion: 7,
+		SubjectRevision: revision, Agent: "Worker Agent A", AgentSessionID: "worker-session",
+		AgentSessionSource: codexThreadIDEnv,
+	}, "The implementation preserves the provider-neutral boundary.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rationale := model.Artifact{Issue: 3, URL: "https://issues.example/acme/widgets/issues/3#issuecomment-5",
+		Comment: model.ParseTypedComment(rationaleBody)}
+	consumption := externalEvidenceConsumption{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code",
+		ChangeID: "change-42", ReferenceVersion: 7, SubjectRevision: revision, EvidenceIDs: []string{"review-code", "review-independent"},
+		Bindings: []externalEvidenceBinding{
+			{ProcessID: "PROCESS-001", SpecID: "SPEC-001", EvidenceID: "review-code", Kind: codereview.EvidenceReview,
+				SubjectRevision: revision, Trusted: true, Source: "native-authoritative-ledger"},
+			{ProcessID: "PROCESS-002", SpecID: "SPEC-001", EvidenceID: "review-independent", Kind: codereview.EvidenceReview,
+				SubjectRevision: revision, Trusted: true, Source: "native-authoritative-ledger"},
+		}}
+	stampedReview, _, err := stampConsumedEvidence(review.Comment.Body, consumption)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review.Comment = model.ParseTypedComment(stampedReview)
+	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, reviewProcess, review, verify, rationale},
+		"https://issues.example/acme/widgets/issues/1", finalVerifyOptions{ExpectedRevision: revision, ExternalEvidence: &consumption})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.OK || !report.Gate.Ready {
+		t.Fatalf("exact-current self-hosted flow must pass final verify: errors=%+v diagnostics=%+v processes=%+v",
+			report.Errors, report.Gate.Diagnostics, report.ProcessEvidence)
+	}
+	if len(report.ProcessEvidence) != 2 || report.ProcessEvidence[0].CarrierRevision.Revision != revision ||
+		!report.ProcessEvidence[0].CarrierRevision.Trusted || report.ProcessEvidence[1].CarrierRevision.Revision != revision ||
+		!report.ProcessEvidence[1].CarrierRevision.Trusted {
+		t.Fatalf("self-hosted carrier revisions were not exact and trusted: %+v", report.ProcessEvidence)
 	}
 }
 

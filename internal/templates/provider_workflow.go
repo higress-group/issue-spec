@@ -44,6 +44,7 @@ func ProviderWorkflowNotice(provider workflow.ProviderPlan) string {
 		"- Capabilities are policy and evidence contracts, not implied issue-spec CLI commands. Use only an approved operator-provided code-host skill or bridge for mutations.",
 		"- On a self-hosted profile, `code-change attach` validates and associates an existing provider change at an exact revision; it never creates that change or ingests evidence.",
 		"- After attach, `code-change link-process` links one PROCESS to the unique active code change with representation-version CAS.",
+		"- After independent review converges, the real code author uses `code-change rationale` to append an Implement Issue comment bound to the exact active reference version and revision. Final gates also require trusted consumed native-ledger evidence for the same PROCESS/SPEC; evidence-writer identity is never treated as the code author.",
 		"- Provider executables, arguments, environment, and credentials are operator-owned and must never be read from repository files.",
 		"- Project/work-item tracker authority is independent and is not enabled by this code-provider selection.")
 	return strings.Join(lines, "\n")
@@ -79,7 +80,8 @@ func providerWorkflowBody(repo string, provider workflow.ProviderPlan) string {
 	} else {
 		steps = append(steps, "7. Verify only against already-authoritative server evidence; automatic provider snapshot synchronization is unavailable.")
 	}
-	steps = append(steps, "8. Keep review, merge, and closure on the selected code provider; do not substitute GitHub PR endpoints for a self-hosted workflow.")
-	steps = append(steps, "9. Configure a project/work-item tracker only through a separate explicit provider selection; this code-provider workflow grants no tracker authority.")
+	steps = append(steps, "8. After independent review/fix convergence, each change-bearing code author runs `issue-spec --profile <self-hosted-profile> code-change rationale --repo "+repo+" --implement <issue> --process PROCESS-001 --spec SPEC-001 --spec-url <url> --body <why> --agent <worker> --agent-session <id>`. The append-only Issue Backend comment is not a GitHub PR call and passes final gates only with exact-current trusted native-ledger evidence for the same PROCESS/SPEC.")
+	steps = append(steps, "9. Keep review, merge, and closure on the selected code provider; do not substitute GitHub PR endpoints for a self-hosted workflow.")
+	steps = append(steps, "10. Configure a project/work-item tracker only through a separate explicit provider selection; this code-provider workflow grants no tracker authority.")
 	return strings.Join(steps, "\n") + "\n"
 }

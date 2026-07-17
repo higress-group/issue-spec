@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
+	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/server/models"
@@ -125,7 +127,7 @@ func nativeIssueNodeID(value string) (uuid.UUID, error) {
 
 func (a *app) runCodeChange(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec code-change attach|link-process ...\n")
+		a.errorf("usage: issue-spec code-change attach|link-process|rationale ...\n")
 		return 2
 	}
 	switch args[0] {
@@ -133,10 +135,190 @@ func (a *app) runCodeChange(ctx context.Context, args []string) int {
 		return a.runCodeChangeAttach(ctx, args[1:])
 	case "link-process":
 		return a.runCodeChangeLinkProcess(ctx, args[1:])
+	case "rationale":
+		return a.runCodeChangeRationale(ctx, args[1:])
 	default:
 		a.errorf("unknown code-change command %q\n", args[0])
 		return 2
 	}
+}
+
+type codeChangeRationaleResult struct {
+	OK                    bool   `json:"ok"`
+	Created               bool   `json:"created"`
+	Repo                  string `json:"repo"`
+	Implement             int    `json:"implement"`
+	CommentID             int64  `json:"comment_id,omitempty"`
+	CommentURL            string `json:"comment_url,omitempty"`
+	Process               string `json:"process"`
+	Spec                  string `json:"spec"`
+	ProviderKey           string `json:"provider_key"`
+	ExternalRepository    string `json:"external_repository"`
+	ChangeID              string `json:"change_id"`
+	SubjectRevision       string `json:"subject_revision"`
+	RepresentationVersion int64  `json:"representation_version"`
+}
+
+func (a *app) runCodeChangeRationale(ctx context.Context, args []string) int {
+	fs := newFlagSet("code-change rationale", a.err)
+	repoFlag := fs.String("repo", "", "self-hosted repository owner/name")
+	host := fs.String("hostname", "github.com", "issue backend hostname")
+	implementFlag := fs.String("implement", "", "Implement Issue number or URL")
+	processID := fs.String("process", "", "change-bearing PROCESS id on the Implement Issue")
+	specID := fs.String("spec", "", "active SPEC id covered by the PROCESS")
+	specURL := fs.String("spec-url", "", "active SPEC comment URL")
+	bodyFile := fs.String("body-file", "", "rationale body file, or - for stdin")
+	bodyText := fs.String("body", "", "rationale body text")
+	agent := fs.String("agent", "Worker Agent", "logical code-author agent identity")
+	agentSession := addAgentSessionFlag(fs)
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	if _, ok := a.validateRepo(*repoFlag); !ok {
+		return 2
+	}
+	repository := strings.TrimSpace(*repoFlag)
+	implement, err := parseIssueFlag(*implementFlag, "implement")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	*processID, *specID, *specURL, *agent = strings.TrimSpace(*processID), strings.TrimSpace(*specID), strings.TrimSpace(*specURL), strings.TrimSpace(*agent)
+	if *processID == "" || *specID == "" || *specURL == "" || *agent == "" {
+		a.errorf("--process, --spec, --spec-url, and --agent are required\n")
+		return 2
+	}
+	body := strings.TrimSpace(*bodyText)
+	if *bodyFile != "" {
+		content, ok := a.readBodyFile(*bodyFile)
+		if !ok {
+			return 2
+		}
+		body = strings.TrimSpace(content)
+	}
+	if body == "" {
+		a.errorf("--body or --body-file is required\n")
+		return 2
+	}
+	session := resolveWriterSession(*agentSession)
+	if session.ID == "" {
+		a.errorf("code-change rationale requires CODEX_THREAD_ID or --agent-session\n")
+		return 2
+	}
+	profile, _, err := auth.ResolveProfile(a.profileName, *host)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "profile_unavailable", "resolve issue backend profile", err)
+	}
+	if profile.Kind != auth.ProfileKindHosted {
+		return a.codeChangeRationaleError(*jsonOut, "self_hosted_required", "code-change rationale requires a self-hosted profile", nil)
+	}
+	token, err := auth.ResolveProfileToken(ctx, profile)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "auth_required", "resolve self-hosted profile credential", err)
+	}
+	if a.newNativeCodeChangeBackend == nil {
+		return a.codeChangeRationaleError(*jsonOut, "native_backend_unavailable", "configure native code-change backend", errors.New("backend is unavailable"))
+	}
+	backend, err := a.newNativeCodeChangeBackend(profile, token.Value)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "native_backend_unavailable", "configure native code-change backend", err)
+	}
+	scope, issueID, err := backend.ResolveNativeIssue(ctx, repository, implement)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "implement_unavailable", "resolve Implement Issue", err)
+	}
+	references, err := backend.ListNativeReferences(ctx, scope, issueID)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "reference_read_failed", "read Implement Issue references", err)
+	}
+	reference, revision, err := uniqueActiveCodeChangeIdentity(references)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "active_code_change_invalid", "resolve active code-change relationship", err)
+	}
+	issueBackend := backend.CompatibilityIssueBackend()
+	if issueBackend == nil {
+		return a.codeChangeRationaleError(*jsonOut, "issue_backend_unavailable", "configure Implement Issue backend", errors.New("backend is unavailable"))
+	}
+	process, _, err := findUniqueTransitionArtifactByID(ctx, issueBackend, repository, implement, *processID)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "process_unavailable", "resolve unique PROCESS typed comment", err)
+	}
+	if process.Comment.Type != "PROCESS" || process.Comment.Status == "superseded" ||
+		model.ParseProcessExecutionClass(process.Comment.ID, process.URL, process.Comment.Body).Class != model.ProcessExecutionChangeBearing {
+		return a.codeChangeRationaleError(*jsonOut, "process_invalid", "validate active change-bearing PROCESS", errors.New("PROCESS is missing, superseded, or not change-bearing"))
+	}
+	if !gates.ReferencesArtifactID(process.Comment.Body, *specID) ||
+		!linksContainURL(process.Comment.Links["Related Comments"], *specURL) {
+		return a.codeChangeRationaleError(*jsonOut, "spec_link_missing", "validate PROCESS/SPEC linkage", fmt.Errorf("%s does not cover %s", *processID, *specID))
+	}
+	if !linksContainURL(process.Comment.Links["PR"], reference.CanonicalURL) {
+		return a.codeChangeRationaleError(*jsonOut, "code_change_link_missing", "validate PROCESS code-change linkage", fmt.Errorf("%s does not link the active code change", *processID))
+	}
+	marker := model.CodeChangeRationaleMarker{Process: *processID, Spec: *specID, SpecURL: *specURL,
+		ProviderKey: reference.ProviderKey, ExternalRepository: reference.ExternalRepositoryID, ChangeID: reference.ExternalID,
+		ReferenceVersion: reference.RepresentationVersion, SubjectRevision: revision, Agent: *agent,
+		AgentSessionID: session.ID, AgentSessionSource: session.Source}
+	rendered, err := model.RenderCodeChangeRationaleBody(marker, body)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "rationale_invalid", "render code-change rationale", err)
+	}
+	comments, err := issueBackend.ListIssueComments(ctx, repository, implement)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "comment_read_failed", "read existing rationale comments", err)
+	}
+	for _, comment := range comments {
+		if !model.IsLikelyCodeChangeRationale(comment.Body) {
+			continue
+		}
+		existing, found, parseErr := model.FindCodeChangeRationaleMarker(comment.Body)
+		if parseErr != nil {
+			return a.codeChangeRationaleError(*jsonOut, "rationale_marker_invalid", "read existing rationale marker", parseErr)
+		}
+		if found && existing == marker && comment.Body == rendered {
+			return a.outputCodeChangeRationale(codeChangeRationaleResult{OK: true, Repo: repository, Implement: implement,
+				CommentID: comment.ID, CommentURL: comment.HTMLURL, Process: marker.Process, Spec: marker.Spec,
+				ProviderKey: marker.ProviderKey, ExternalRepository: marker.ExternalRepository, ChangeID: marker.ChangeID,
+				SubjectRevision: marker.SubjectRevision, RepresentationVersion: marker.ReferenceVersion}, *jsonOut)
+		}
+	}
+	created, err := issueBackend.CreateComment(ctx, repository, implement, rendered)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "comment_create_failed", "create append-only code-change rationale", err)
+	}
+	if created.ID <= 0 || created.Body != rendered {
+		return a.codeChangeRationaleError(*jsonOut, "comment_create_invalid", "create append-only code-change rationale", errors.New("response identity or body is incomplete or mismatched"))
+	}
+	return a.outputCodeChangeRationale(codeChangeRationaleResult{OK: true, Created: true, Repo: repository, Implement: implement,
+		CommentID: created.ID, CommentURL: created.HTMLURL, Process: marker.Process, Spec: marker.Spec,
+		ProviderKey: marker.ProviderKey, ExternalRepository: marker.ExternalRepository, ChangeID: marker.ChangeID,
+		SubjectRevision: marker.SubjectRevision, RepresentationVersion: marker.ReferenceVersion}, *jsonOut)
+}
+
+func (a *app) outputCodeChangeRationale(result codeChangeRationaleResult, jsonOut bool) int {
+	if jsonOut {
+		return a.outputJSON(result)
+	}
+	action := "already exists"
+	if result.Created {
+		action = "created"
+	}
+	fmt.Fprintf(a.out, "%s code-change rationale for %s/%s at %s (reference version %d): %s\n",
+		action, result.Process, result.Spec, result.SubjectRevision, result.RepresentationVersion, result.CommentURL)
+	return 0
+}
+
+func (a *app) codeChangeRationaleError(jsonOut bool, code, operation string, err error) int {
+	message := operation
+	if err != nil {
+		message += ": " + err.Error()
+	}
+	if jsonOut {
+		_ = a.outputJSON(map[string]any{"ok": false, "code": code, "message": message})
+	} else {
+		a.errorf("%s\n", message)
+	}
+	return 1
 }
 
 type codeChangeAttachResult struct {
@@ -483,6 +665,38 @@ func uniqueActiveCodeChangeURL(references []github.NativeReference) (string, err
 		return "", errors.New("active code_change relationship has no canonical URL")
 	}
 	return matches[0].CanonicalURL, nil
+}
+
+func uniqueActiveCodeChangeIdentity(references []github.NativeReference) (github.NativeReference, string, error) {
+	matches := make([]github.NativeReference, 0, 1)
+	for _, reference := range references {
+		if reference.RelationKind == "code_change" && reference.LifecycleState == "active" {
+			matches = append(matches, reference)
+		}
+	}
+	if len(matches) == 0 {
+		return github.NativeReference{}, "", errActiveCodeChangeMissing
+	}
+	if len(matches) != 1 {
+		return github.NativeReference{}, "", errActiveCodeChangeAmbiguous
+	}
+	reference := matches[0]
+	if strings.TrimSpace(reference.ProviderKey) == "" || strings.TrimSpace(reference.ExternalRepositoryID) == "" ||
+		strings.TrimSpace(reference.ExternalID) == "" || strings.TrimSpace(reference.CanonicalURL) == "" || reference.RepresentationVersion <= 0 {
+		return github.NativeReference{}, "", errors.New("active code_change relationship identity is incomplete")
+	}
+	var metadata struct {
+		HeadRevision string `json:"head_revision"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(reference.Metadata)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&metadata); err != nil || strings.TrimSpace(metadata.HeadRevision) == "" {
+		return github.NativeReference{}, "", errors.New("active code_change relationship revision is invalid")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return github.NativeReference{}, "", errors.New("active code_change relationship revision is invalid")
+	}
+	return reference, strings.TrimSpace(metadata.HeadRevision), nil
 }
 
 func (a *app) codeChangeLinkProcessError(jsonOut bool, code, operation string, err error,

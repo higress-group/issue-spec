@@ -66,14 +66,33 @@ type CheckEvidence struct {
 }
 
 type ExternalProcessEvidence struct {
-	ProcessID        string   `json:"process_id"`
-	SpecID           string   `json:"spec_id"`
-	SubjectRevision  string   `json:"subject_revision"`
-	EvidenceRevision string   `json:"evidence_revision"`
-	Consumed         bool     `json:"consumed"`
-	EvidenceIDs      []string `json:"evidence_ids,omitempty"`
-	Trusted          bool     `json:"trusted"`
-	Source           string   `json:"source,omitempty"`
+	ProcessID          string   `json:"process_id"`
+	SpecID             string   `json:"spec_id"`
+	ProviderKey        string   `json:"provider_key,omitempty"`
+	ExternalRepository string   `json:"external_repository,omitempty"`
+	ChangeID           string   `json:"change_id,omitempty"`
+	ReferenceVersion   int64    `json:"reference_version,omitempty"`
+	SubjectRevision    string   `json:"subject_revision"`
+	EvidenceRevision   string   `json:"evidence_revision"`
+	EvidenceKind       string   `json:"evidence_kind,omitempty"`
+	Consumed           bool     `json:"consumed"`
+	EvidenceIDs        []string `json:"evidence_ids,omitempty"`
+	Trusted            bool     `json:"trusted"`
+	Source             string   `json:"source,omitempty"`
+}
+
+type CodeChangeRationaleEvidence struct {
+	ProcessID          string `json:"process_id"`
+	SpecID             string `json:"spec_id"`
+	SpecURL            string `json:"spec_url"`
+	ProviderKey        string `json:"provider_key"`
+	ExternalRepository string `json:"external_repository"`
+	ChangeID           string `json:"change_id"`
+	ReferenceVersion   int64  `json:"reference_version"`
+	SubjectRevision    string `json:"subject_revision"`
+	AuthorAgent        string `json:"author_agent"`
+	AuthorSessionID    string `json:"author_session_id"`
+	URL                string `json:"url,omitempty"`
 }
 
 type ProcessEvidenceInput struct {
@@ -89,12 +108,13 @@ type ProcessEvidenceInput struct {
 	// (lowercased, trimmed) --agent names that authored change-bearing code
 	// rationale for that SPEC. A review PROCESS whose reviewer --agent name is
 	// in this set for the SPEC it covers fails the independence check.
-	AuthorAgentsBySpec map[string]map[string]bool `json:"author_agents_by_spec,omitempty"`
-	Rationales         []RationaleEvidence        `json:"rationales,omitempty"`
-	Reviews            []ReviewEvidence           `json:"reviews,omitempty"`
-	Verifications      []VerificationEvidence     `json:"verifications,omitempty"`
-	Checks             []CheckEvidence            `json:"checks,omitempty"`
-	External           []ExternalProcessEvidence  `json:"external,omitempty"`
+	AuthorAgentsBySpec   map[string]map[string]bool    `json:"author_agents_by_spec,omitempty"`
+	Rationales           []RationaleEvidence           `json:"rationales,omitempty"`
+	CodeChangeRationales []CodeChangeRationaleEvidence `json:"code_change_rationales,omitempty"`
+	Reviews              []ReviewEvidence              `json:"reviews,omitempty"`
+	Verifications        []VerificationEvidence        `json:"verifications,omitempty"`
+	Checks               []CheckEvidence               `json:"checks,omitempty"`
+	External             []ExternalProcessEvidence     `json:"external,omitempty"`
 }
 
 type ProcessEvidenceReport struct {
@@ -109,9 +129,10 @@ type ProcessEvidenceReport struct {
 	CarrierRevision CarrierRevisionFact         `json:"carrier_revision"`
 	// SatisfiedSpecs lists the active SPEC IDs this PROCESS cleanly satisfied
 	// for its execution class: for change-bearing, the SPECs with a matching
-	// inline rationale carrier; for review, the SPECs independently (non-self)
-	// reviewed. The final gate joins these across PROCESS reports to require an
-	// independent review PROCESS for every change-bearing SPEC.
+	// inline rationale or exact-current self-hosted rationale/evidence carrier;
+	// for review, the SPECs independently (non-self) reviewed. The final gate
+	// joins these across PROCESS reports to require an independent review PROCESS
+	// for every change-bearing SPEC.
 	SatisfiedSpecs []string `json:"satisfied_specs,omitempty"`
 }
 
@@ -168,27 +189,67 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 
 	switch parsed.Class {
 	case model.ProcessExecutionChangeBearing:
-		report.Required = append(report.Required, "inline rationale on matching PR path/line")
+		providerBacked := strings.TrimSpace(input.RequiredPRURL) == "" &&
+			(strings.TrimSpace(input.RequiredRevision) != "" || len(input.External) > 0 || len(input.CodeChangeRationales) > 0)
+		if providerBacked {
+			report.Required = append(report.Required, "exact-current code-change rationale with trusted provider evidence")
+		} else {
+			report.Required = append(report.Required, "inline rationale on matching PR path/line")
+		}
 		carrier := false
 		carriedSpecs := map[string]bool{}
 		conflictedAgentsBySpec := map[string]string{}
 		coordinator := normalizeAgent(process.Comment.Agent)
-		for _, evidence := range input.Rationales {
-			if evidence.ProcessID != report.ProcessID || !activeSpec(evidence.SpecID) {
-				continue
+		if providerBacked {
+			externalBySpec, invalidExternal := exactProviderEvidenceBySpec(input, report.ProcessID, activeSpec)
+			var revisions []CarrierRevisionFact
+			for _, rationale := range input.CodeChangeRationales {
+				if rationale.ProcessID != report.ProcessID || !activeSpec(rationale.SpecID) || invalidExternal[rationale.SpecID] {
+					continue
+				}
+				if want := input.ActiveSpecs[rationale.SpecID]; rationale.SpecURL == "" ||
+					model.NormalizeURL(rationale.SpecURL) != model.NormalizeURL(want) {
+					continue
+				}
+				matched := false
+				for _, external := range externalBySpec[rationale.SpecID] {
+					if rationale.ProviderKey == external.ProviderKey && rationale.ExternalRepository == external.ExternalRepository &&
+						rationale.ChangeID == external.ChangeID && rationale.ReferenceVersion == external.ReferenceVersion &&
+						rationale.SubjectRevision == external.SubjectRevision {
+						matched = true
+						revisions = append(revisions, CarrierRevisionFact{Known: true, Revision: external.EvidenceRevision,
+							Trusted: true, Source: external.Source})
+					}
+				}
+				if !matched {
+					continue
+				}
+				if author := normalizeAgent(rationale.AuthorAgent); coordinator != "" && author != "" && author == coordinator {
+					conflictedAgentsBySpec[rationale.SpecID] = strings.TrimSpace(rationale.AuthorAgent)
+					continue
+				}
+				carrier, specSatisfied = true, true
+				carriedSpecs[rationale.SpecID] = true
 			}
-			if evidence.MarkerPath == "" || evidence.MarkerLine <= 0 || evidence.MarkerPath != evidence.CommentPath || evidence.MarkerLine != evidence.CommentLine {
-				continue
+			report.CarrierRevision = aggregateCarrierRevisions(revisions)
+		} else {
+			for _, evidence := range input.Rationales {
+				if evidence.ProcessID != report.ProcessID || !activeSpec(evidence.SpecID) {
+					continue
+				}
+				if evidence.MarkerPath == "" || evidence.MarkerLine <= 0 || evidence.MarkerPath != evidence.CommentPath || evidence.MarkerLine != evidence.CommentLine {
+					continue
+				}
+				if want := input.ActiveSpecs[evidence.SpecID]; evidence.SpecURL == "" || model.NormalizeURL(evidence.SpecURL) != model.NormalizeURL(want) {
+					continue
+				}
+				if author := normalizeAgent(evidence.AuthorAgent); coordinator != "" && author != "" && author == coordinator {
+					conflictedAgentsBySpec[evidence.SpecID] = strings.TrimSpace(evidence.AuthorAgent)
+					continue
+				}
+				carrier, specSatisfied = true, true
+				carriedSpecs[evidence.SpecID] = true
 			}
-			if want := input.ActiveSpecs[evidence.SpecID]; evidence.SpecURL == "" || model.NormalizeURL(evidence.SpecURL) != model.NormalizeURL(want) {
-				continue
-			}
-			if author := normalizeAgent(evidence.AuthorAgent); coordinator != "" && author != "" && author == coordinator {
-				conflictedAgentsBySpec[evidence.SpecID] = strings.TrimSpace(evidence.AuthorAgent)
-				continue
-			}
-			carrier, specSatisfied = true, true
-			carriedSpecs[evidence.SpecID] = true
 		}
 		report.SatisfiedSpecs = sortedKeys(carriedSpecs)
 		for _, spec := range sortedKeys(conflictedAgentsBySpec) {
@@ -198,12 +259,25 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 				"same agent as PROCESS coordinator", "rationale authored by a real non-coordinator worker", "pr rationale")
 		}
 		if carrier {
-			report.Satisfied = append(report.Satisfied, "matching inline rationale")
+			if providerBacked {
+				report.Satisfied = append(report.Satisfied, "exact-current provider rationale")
+			} else {
+				report.Satisfied = append(report.Satisfied, "matching inline rationale")
+			}
 		} else if len(conflictedAgentsBySpec) > 0 {
-			report.Missing = append(report.Missing, "non-coordinator matching inline rationale")
+			if providerBacked {
+				report.Missing = append(report.Missing, "non-coordinator exact-current provider rationale")
+			} else {
+				report.Missing = append(report.Missing, "non-coordinator matching inline rationale")
+			}
 		} else {
-			report.Missing = append(report.Missing, "matching inline rationale")
-			add(CodeProcessCarrierMissing, SeverityError, true, "change-bearing PROCESS lacks an inline rationale whose marker path/line matches the real PR comment and active SPEC", "missing", "matching rationale", "pr rationale")
+			if providerBacked {
+				report.Missing = append(report.Missing, "exact-current provider rationale")
+				add(CodeProcessCarrierMissing, SeverityError, true, "change-bearing PROCESS lacks an append-only code-change rationale exactly matching the active reference and trusted native-ledger PROCESS/SPEC evidence", "missing or stale", "exact-current rationale plus trusted provider evidence", "code-change rationale")
+			} else {
+				report.Missing = append(report.Missing, "matching inline rationale")
+				add(CodeProcessCarrierMissing, SeverityError, true, "change-bearing PROCESS lacks an inline rationale whose marker path/line matches the real PR comment and active SPEC", "missing", "matching rationale", "pr rationale")
+			}
 		}
 	case model.ProcessExecutionReview:
 		report.Required = append(report.Required, "linked done REVIEW or resolved finding by an independent agent")
@@ -529,6 +603,30 @@ func hasRequiredPRLink(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func exactProviderEvidenceBySpec(input ProcessEvidenceInput, processID string,
+	activeSpec func(string) bool) (map[string][]ExternalProcessEvidence, map[string]bool) {
+	result := map[string][]ExternalProcessEvidence{}
+	invalid := map[string]bool{}
+	requiredRevision := strings.TrimSpace(input.RequiredRevision)
+	for _, evidence := range input.External {
+		if evidence.ProcessID != processID || !activeSpec(evidence.SpecID) {
+			continue
+		}
+		valid := evidence.Consumed && evidence.Trusted && len(evidence.EvidenceIDs) > 0 &&
+			strings.TrimSpace(evidence.ProviderKey) != "" && strings.TrimSpace(evidence.ExternalRepository) != "" &&
+			strings.TrimSpace(evidence.ChangeID) != "" && evidence.ReferenceVersion > 0 &&
+			strings.TrimSpace(evidence.SubjectRevision) != "" && evidence.SubjectRevision == evidence.EvidenceRevision &&
+			(requiredRevision == "" || evidence.SubjectRevision == requiredRevision) &&
+			strings.HasPrefix(evidence.Source, "native-authoritative-ledger:")
+		if !valid {
+			invalid[evidence.SpecID] = true
+			continue
+		}
+		result[evidence.SpecID] = append(result[evidence.SpecID], evidence)
+	}
+	return result, invalid
 }
 
 func (r ProcessEvidenceReport) Summary() string {

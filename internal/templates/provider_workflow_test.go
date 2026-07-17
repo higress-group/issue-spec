@@ -43,6 +43,10 @@ func TestProviderWorkflowAttachesExistingChangeWithoutGitHubAssumptions(t *testi
 		"code-change link-process --repo acme/widgets",
 		"requires exactly one active `code_change`",
 		"explicitly delete only the unwanted active reference",
+		"code-change rationale --repo acme/widgets",
+		"append-only Issue Backend comment",
+		"exact-current trusted native-ledger evidence",
+		"evidence-writer identity is never treated as the code author",
 		"do not substitute GitHub PR endpoints",
 	} {
 		if !strings.Contains(content, want) {

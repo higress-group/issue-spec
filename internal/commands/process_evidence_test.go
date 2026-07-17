@@ -27,10 +27,11 @@ func TestBuildProcessEvidenceMapsAuthoritativeBindingsToExactProcesses(t *testin
 		{URL: "https://example/spec-2", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-002", Status: "proposed"}},
 		externalProcessArtifact(t, "PROCESS-001"), externalProcessArtifact(t, "PROCESS-002"),
 	}
-	consumption := externalEvidenceConsumption{SubjectRevision: "head-new", EvidenceIDs: []string{"review-2", "review-1"}, Bindings: []externalEvidenceBinding{
-		{ProcessID: "PROCESS-002", SpecID: "SPEC-002", EvidenceID: "review-2", Kind: codereview.EvidenceReview, SubjectRevision: "head-new", Trusted: true, Source: "native-authoritative-ledger"},
-		{ProcessID: "PROCESS-001", SpecID: "SPEC-001", EvidenceID: "review-1", Kind: codereview.EvidenceReview, SubjectRevision: "head-new", Trusted: true, Source: "native-authoritative-ledger"},
-	}}
+	consumption := externalEvidenceConsumption{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code",
+		ChangeID: "change-1", ReferenceVersion: 7, SubjectRevision: "head-new", EvidenceIDs: []string{"review-2", "review-1"}, Bindings: []externalEvidenceBinding{
+			{ProcessID: "PROCESS-002", SpecID: "SPEC-002", EvidenceID: "review-2", Kind: codereview.EvidenceReview, SubjectRevision: "head-new", Trusted: true, Source: "native-authoritative-ledger"},
+			{ProcessID: "PROCESS-001", SpecID: "SPEC-001", EvidenceID: "review-1", Kind: codereview.EvidenceReview, SubjectRevision: "head-new", Trusted: true, Source: "native-authoritative-ledger"},
+		}}
 	inputs := buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, &consumption)
 	if len(inputs) != 2 || len(inputs[0].External) != 1 || len(inputs[1].External) != 1 ||
 		inputs[0].External[0].ProcessID != "PROCESS-001" || inputs[1].External[0].ProcessID != "PROCESS-002" {
@@ -71,7 +72,9 @@ func TestBuildProcessEvidenceRejectsMixedReplayAndUnknownBindings(t *testing.T) 
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			consumption := externalEvidenceConsumption{SubjectRevision: "head-new", EvidenceIDs: test.ids, Bindings: []externalEvidenceBinding{valid, test.binding}}
+			consumption := externalEvidenceConsumption{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code",
+				ChangeID: "change-1", ReferenceVersion: 7, SubjectRevision: "head-new", EvidenceIDs: test.ids,
+				Bindings: []externalEvidenceBinding{valid, test.binding}}
 			inputs := buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, &consumption)
 			if len(inputs) != 2 || len(inputs[0].External) != 0 || len(inputs[1].External) != 0 {
 				t.Fatalf("invalid mixed binding retained carrier: %+v", inputs)
@@ -115,6 +118,109 @@ func TestBuildProcessEvidenceValidatesAuthorRationaleBeforeCrediting(t *testing.
 		if authors[bad] {
 			t.Fatalf("%q rationale must not credit an author: %+v", bad, authors)
 		}
+	}
+}
+
+func TestBuildProcessEvidenceBindsIssueRationaleToExactExternalCarrier(t *testing.T) {
+	const specURL = "https://issues.example/acme/widgets/issues/1#issuecomment-2"
+	process := processClassArtifact(t, "PROCESS-001", "change-bearing", "SPEC-001", "done")
+	process.Issue = 3
+	process.Comment.Agent = "Coordinator"
+	rationale := func(revision string, version int64, processID, specID string) model.Artifact {
+		body, err := model.RenderCodeChangeRationaleBody(model.CodeChangeRationaleMarker{
+			Process: processID, Spec: specID, SpecURL: specURL, ProviderKey: "code.example",
+			ExternalRepository: "acme/widgets-code", ChangeID: "change-1", ReferenceVersion: version,
+			SubjectRevision: revision, Agent: "Worker", AgentSessionID: "worker-session", AgentSessionSource: codexThreadIDEnv,
+		}, "why")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return model.Artifact{Issue: 3, URL: "https://issues.example/acme/widgets/issues/3#issuecomment-rationale",
+			Comment: model.ParseTypedComment(body)}
+	}
+	consumption := externalEvidenceConsumption{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code",
+		ChangeID: "change-1", ReferenceVersion: 7, SubjectRevision: "head-current", EvidenceIDs: []string{"review-1"},
+		Bindings: []externalEvidenceBinding{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", EvidenceID: "review-1",
+			Kind: codereview.EvidenceReview, SubjectRevision: "head-current", Trusted: true, Source: "native-authoritative-ledger"}}}
+	base := []model.Artifact{{Issue: 1, URL: specURL, Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "confirmed"}}, process}
+
+	artifacts := append(append([]model.Artifact(nil), base...), rationale("head-current", 7, "PROCESS-001", "SPEC-001"))
+	inputs := buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, &consumption)
+	if len(inputs) != 1 || len(inputs[0].CodeChangeRationales) != 1 || !inputs[0].AuthorAgentsBySpec["SPEC-001"]["worker"] {
+		t.Fatalf("exact rationale was not retained and credited: %+v", inputs)
+	}
+	report := gates.EvaluateProcessEvidence(inputs[0], gates.TargetFinal, gates.ModeAuthoritative)
+	if !containsString(report.Satisfied, "exact-current provider rationale") || !report.CarrierRevision.Trusted {
+		t.Fatalf("exact provider rationale did not satisfy gate: %+v", report)
+	}
+
+	for name, artifact := range map[string]model.Artifact{
+		"stale revision": rationale("head-old", 7, "PROCESS-001", "SPEC-001"),
+		"stale version":  rationale("head-current", 6, "PROCESS-001", "SPEC-001"),
+		"wrong process":  rationale("head-current", 7, "PROCESS-999", "SPEC-001"),
+		"wrong spec":     rationale("head-current", 7, "PROCESS-001", "SPEC-999"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			inputs := buildProcessEvidenceInputs(append(append([]model.Artifact(nil), base...), artifact), "", nil, reviewSyncReport{}, &consumption)
+			if len(inputs) != 1 || inputs[0].AuthorAgentsBySpec["SPEC-001"]["worker"] {
+				t.Fatalf("invalid rationale credited author: %+v", inputs)
+			}
+			report := gates.EvaluateProcessEvidence(inputs[0], gates.TargetFinal, gates.ModeAuthoritative)
+			if containsString(report.Satisfied, "exact-current provider rationale") {
+				t.Fatalf("invalid rationale rescued gate: %+v", report)
+			}
+		})
+	}
+}
+
+func TestBuildProcessEvidenceBindsSelfHostedReviewToCurrentNativeLedgerReview(t *testing.T) {
+	const specURL = "https://issues.example/acme/widgets/issues/1#issuecomment-2"
+	reviewProcess := processClassArtifact(t, "PROCESS-002", "review", "SPEC-001", "done")
+	reviewBody, err := model.EnsureTypedBody("REVIEW", "REVIEW-001",
+		"Reviewed PROCESS-002 covering SPEC-001 with no blocking findings.",
+		model.BodyOptions{Agent: "Independent Reviewer", Status: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := []model.Artifact{
+		{Issue: 1, URL: specURL, Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "confirmed"}},
+		reviewProcess,
+		{Issue: 3, URL: "https://issues.example/acme/widgets/issues/3#issuecomment-review", Comment: model.ParseTypedComment(reviewBody)},
+	}
+	consumption := externalEvidenceConsumption{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code",
+		ChangeID: "change-1", ReferenceVersion: 7, SubjectRevision: "head-current", EvidenceIDs: []string{"review-2"},
+		Bindings: []externalEvidenceBinding{{ProcessID: "PROCESS-002", SpecID: "SPEC-001", EvidenceID: "review-2",
+			Kind: codereview.EvidenceReview, SubjectRevision: "head-current", Trusted: true, Source: "native-authoritative-ledger"}}}
+	stamped, _, err := stampConsumedEvidence(artifacts[2].Comment.Body, consumption)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts[2].Comment = model.ParseTypedComment(stamped)
+	inputs := buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, &consumption)
+	if len(inputs) != 1 || len(inputs[0].Reviews) != 1 {
+		t.Fatalf("self-hosted review input missing: %+v", inputs)
+	}
+	review := inputs[0].Reviews[0]
+	if !review.Trusted || review.SubjectRevision != "head-current" || review.ReviewerAgent != "Independent Reviewer" ||
+		!strings.HasPrefix(review.Source, "native-authoritative-ledger:") {
+		t.Fatalf("self-hosted review was not bound to current native ledger evidence: %+v", review)
+	}
+	report := gates.EvaluateProcessEvidence(inputs[0], gates.TargetFinal, gates.ModeAuthoritative)
+	if !report.CarrierRevision.Trusted || report.CarrierRevision.Revision != "head-current" ||
+		!containsString(report.Satisfied, "review evidence") {
+		t.Fatalf("self-hosted review did not satisfy exact-current carrier: %+v", report)
+	}
+	unstamped := append([]model.Artifact(nil), artifacts...)
+	unstamped[2].Comment = model.ParseTypedComment(reviewBody)
+	unstampedInputs := buildProcessEvidenceInputs(unstamped, "", nil, reviewSyncReport{}, &consumption)
+	if len(unstampedInputs) != 1 || len(unstampedInputs[0].Reviews) != 1 || unstampedInputs[0].Reviews[0].Trusted {
+		t.Fatalf("unstamped REVIEW borrowed native-ledger authority: %+v", unstampedInputs)
+	}
+
+	consumption.Bindings[0].Kind = codereview.EvidenceCheck
+	inputs = buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, &consumption)
+	if len(inputs) != 1 || len(inputs[0].Reviews) != 1 || inputs[0].Reviews[0].Trusted {
+		t.Fatalf("a check binding must not become independent review authority: %+v", inputs)
 	}
 }
 
@@ -339,7 +445,8 @@ func TestBuildProcessEvidenceExternalSubstringCannotCreateBinding(t *testing.T) 
 		{URL: "https://example/spec", Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
 		{URL: "https://example/process", Comment: model.ParseTypedComment(processBody)},
 	}
-	external := &externalEvidenceConsumption{SubjectRevision: "head-abc", EvidenceIDs: []string{"check-1"}}
+	external := &externalEvidenceConsumption{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code",
+		ChangeID: "change-1", ReferenceVersion: 7, SubjectRevision: "head-abc", EvidenceIDs: []string{"check-1"}}
 	inputs := buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, external)
 	if len(inputs) != 1 || len(inputs[0].External) != 0 {
 		t.Fatalf("PROCESS body substring created external trust: %+v", inputs)

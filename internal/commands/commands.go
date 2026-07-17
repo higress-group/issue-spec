@@ -216,6 +216,7 @@ Usage:
   issue-spec search issues --repo owner/repo --query TEXT [--state all|open|closed] [--source all|issue|comments|change] [--stage proposal|design|implement] [--limit 10]
   issue-spec code-change attach --repo owner/repo --implement N --change-id ID --revision REV [--refresh --expected-version N] [--json]
   issue-spec code-change link-process --repo owner/repo --implement N --process PROCESS-001 --expected-version N [--json]
+  issue-spec code-change rationale --repo owner/repo --implement N --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "why" --agent Worker [--agent-session ID] [--json]
   issue-spec runner poll --repo owner/repo --runner login --once --dry-run
   issue-spec runner serve --profile self-hosted --repo owner/repo --runner login --subscription-id UUID --secret-file FILE (--git-credential-command /absolute/provider|--allow-host-ssh)
   issue-spec runner preflight --repo owner/repo --runner login`)
@@ -494,7 +495,7 @@ func collectArtifacts(ctx context.Context, client github.Operations, repo string
 			return nil, err
 		}
 		for _, comment := range comments {
-			if !model.IsLikelyTyped(comment.Body) {
+			if !model.IsLikelyTyped(comment.Body) && !model.IsLikelyCodeChangeRationale(comment.Body) {
 				continue
 			}
 			tc := model.ParseTypedComment(comment.Body)

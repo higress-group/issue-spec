@@ -37,7 +37,7 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 		"doctor agent --repo owner/repo --operation <operation>",
 		"operator-owned short-lived issuer", "legacy_long_lived",
 		"change-bearing, review, verification, orchestration, or external",
-		"matching path/line rationale", "done REVIEW or resolved finding",
+		"matching GitHub path/line rationale or an exact-current self-hosted code-change rationale paired with trusted native-ledger PROCESS/SPEC evidence", "done REVIEW or resolved finding",
 		"done VERIFY or required passing check with test evidence",
 		"non-empty coordination handoff", "consumed exact-revision provider evidence",
 		"workflow workspace prepare, inspect, complete, integrate, reconcile, and cleanup",
@@ -99,7 +99,8 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 		t.Fatalf("review skill lacks class carrier guidance:\n%s", review)
 	}
 	verify := skillContent(t, skills, "issue-spec-verify")
-	if !strings.Contains(verify, "--gate final") || !strings.Contains(verify, "Only change-bearing PROCESS nodes require matching inline rationale") {
+	if !strings.Contains(verify, "--gate final") ||
+		!strings.Contains(verify, "exact-current append-only code-change rationale paired with trusted consumed native-ledger PROCESS/SPEC evidence") {
 		t.Fatalf("verify skill lacks proportional evidence guidance:\n%s", verify)
 	}
 }
@@ -429,8 +430,9 @@ func TestIssueSpecSkillTemplatesEnforceAgentOwnedReviewWorkflow(t *testing.T) {
 
 	apply := skillContent(t, skills, "issue-spec-apply")
 	for _, want := range []string{
-		"Add final PR rationale only after review/fix convergence",
-		"the coordinator dispatches each owning worker to add rationale on the key code blocks it owns",
+		"Add final rationale only after review/fix convergence and only for change-bearing PROCESS nodes",
+		"each owning worker adds issue-spec pr rationale on its key code blocks",
+		"each owning worker runs issue-spec code-change rationale",
 		"authored under that worker's own --agent and --agent-session",
 		"MUST NOT create worker rationale or relabel its identity on the worker's behalf",
 		"does not author implementation commits, review findings, worker fix replies, review resolutions, or rationale on another agent's behalf",
