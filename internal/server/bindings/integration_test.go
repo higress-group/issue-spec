@@ -2,6 +2,7 @@ package bindings
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -187,6 +188,209 @@ func TestReferencesIdentityVisibilityCollectionsAndTenantIsolation(t *testing.T)
 	}
 }
 
+func TestImplementCodeChangeLifecycleExactRetryAndConditionalRefresh(t *testing.T) {
+	env := newBindingsEnvironment(t)
+	env.markImplement(t)
+	input := env.codeChangeInput("42", "abc123")
+	missingRevision := input
+	missingRevision.Metadata = json.RawMessage(`{}`)
+	if err := env.upsertReference(t, "code-change-missing-revision", missingRevision); !errors.Is(err, adminservice.ErrInvalidInput) {
+		t.Fatalf("missing head revision error = %v, want invalid input", err)
+	}
+	first, err := env.service.UpsertReference(t.Context(), authz.Authenticated(env.owner),
+		env.actor("code-change-first"), env.scope, input)
+	if err != nil || first.RepresentationVersion != 1 {
+		t.Fatalf("first code-change = %+v, %v", first, err)
+	}
+	beforeIssue, beforeRepo := env.referenceVersions(t)
+	retry := input
+	retry.Visibility = VisibilityMaintainers
+	retry.Metadata = json.RawMessage(`{"head_revision":"abc123","presentation":"new"}`)
+	retried, err := env.service.UpsertReference(t.Context(), authz.Authenticated(env.owner),
+		env.actor("code-change-retry"), env.scope, retry)
+	if err != nil || retried.ID != first.ID || retried.RepresentationVersion != 1 || retried.Visibility != VisibilityRepository {
+		t.Fatalf("exact retry = %+v, %v", retried, err)
+	}
+	afterIssue, afterRepo := env.referenceVersions(t)
+	if beforeIssue != afterIssue || beforeRepo != afterRepo {
+		t.Fatalf("exact retry bumped collections issue %d/%d repo %d/%d", beforeIssue, afterIssue, beforeRepo, afterRepo)
+	}
+
+	urlDrift := input
+	urlDrift.CanonicalURL += "/moved"
+	assertCodeChangeConflict(t, env.upsertReference(t, "code-change-url-drift", urlDrift),
+		CodeChangeConflictCanonicalURLDrift, first.ID)
+	newHead := input
+	newHead.Metadata = json.RawMessage(`{"head_revision":"def456"}`)
+	assertCodeChangeConflict(t, env.upsertReference(t, "code-change-refresh-required", newHead),
+		CodeChangeConflictRefreshRequired, first.ID)
+	stale := int64(99)
+	newHead.Refresh, newHead.ExpectedVersion = true, &stale
+	assertCodeChangeConflict(t, env.upsertReference(t, "code-change-refresh-stale", newHead),
+		CodeChangeConflictStaleReferenceVersion, first.ID)
+
+	expected := first.RepresentationVersion
+	newHead.ExpectedVersion = &expected
+	newHead.CanonicalURL += "/revisions/def456"
+	refreshed, err := env.service.UpsertReference(t.Context(), authz.Authenticated(env.owner),
+		env.actor("code-change-refresh"), env.scope, newHead)
+	if err != nil || refreshed.ID != first.ID || refreshed.RepresentationVersion != 2 ||
+		!strings.Contains(string(refreshed.Metadata), "def456") {
+		t.Fatalf("refresh = %+v, %v", refreshed, err)
+	}
+	refreshedRetry, err := env.service.UpsertReference(t.Context(), authz.Authenticated(env.owner),
+		env.actor("code-change-refresh-retry"), env.scope, newHead)
+	if err != nil || refreshedRetry.RepresentationVersion != 2 {
+		t.Fatalf("refresh retry = %+v, %v", refreshedRetry, err)
+	}
+	staleAfterRefresh := input
+	staleAfterRefresh.Metadata = json.RawMessage(`{"head_revision":"ghi789"}`)
+	staleAfterRefresh.Refresh, staleAfterRefresh.ExpectedVersion = true, &expected
+	assertCodeChangeConflict(t, env.upsertReference(t, "code-change-stale-after-refresh", staleAfterRefresh),
+		CodeChangeConflictStaleReferenceVersion, first.ID)
+	current, err := env.service.ListReferences(t.Context(), authz.Authenticated(env.owner), env.scope, env.issueID)
+	if err != nil || len(current) != 1 || current[0].RepresentationVersion != 2 ||
+		!strings.Contains(string(current[0].Metadata), "def456") {
+		t.Fatalf("stale refresh changed current reference = %+v, %v", current, err)
+	}
+	assertCodeChangeConflict(t, env.upsertReference(t, "code-change-no-regression", input),
+		CodeChangeConflictRefreshRequired, first.ID)
+
+	var rows, audits int
+	if err := env.pool.QueryRow(t.Context(), `SELECT
+		(SELECT count(*) FROM external_references WHERE organization_id=$1 AND repository_id=$2 AND issue_id=$3),
+		(SELECT count(*) FROM audit_events WHERE organization_id=$1 AND repository_id=$2
+		 AND action='external_reference.upsert')`, env.scope.OrgID, env.scope.RepoID, env.issueID).Scan(&rows, &audits); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || audits != 2 {
+		t.Fatalf("rows=%d audits=%d, want one establishment plus one refresh", rows, audits)
+	}
+}
+
+func TestImplementCodeChangeConflictsWithDifferentAndAmbiguousActiveReferences(t *testing.T) {
+	env := newBindingsEnvironment(t)
+	env.markImplement(t)
+	first, err := env.service.UpsertReference(t.Context(), authz.Authenticated(env.owner),
+		env.actor("code-change-existing"), env.scope, env.codeChangeInput("42", "abc123"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCodeChangeConflict(t, env.upsertReference(t, "code-change-different", env.codeChangeInput("43", "abc123")),
+		CodeChangeConflictDifferentActiveChange, first.ID)
+
+	secondID := uuid.New()
+	if _, err := env.pool.Exec(t.Context(), `INSERT INTO external_references
+		(id, organization_id, repository_id, issue_id, provider_key, relation_kind,
+		 external_repository_id, external_id, canonical_url, lifecycle_state, visibility, metadata)
+		VALUES ($1,$2,$3,$4,'aone-bridge','code_change','acme/widgets','41',
+		 'https://code.example/acme/widgets/changes/41','active','maintainers','{"head_revision":"hidden"}')`,
+		secondID, env.scope.OrgID, env.scope.RepoID, env.issueID); err != nil {
+		t.Fatal(err)
+	}
+	beforeIssue, beforeRepo := env.referenceVersions(t)
+	err = env.upsertReference(t, "code-change-ambiguous", env.codeChangeInput("44", "next"))
+	var conflict *CodeChangeConflictError
+	if !errors.As(err, &conflict) || !errors.Is(err, adminservice.ErrConflict) ||
+		conflict.Reason != CodeChangeConflictAmbiguousActiveReferences || len(conflict.References) != 2 {
+		t.Fatalf("ambiguous conflict = %#v, %v", conflict, err)
+	}
+	if conflict.References[0].ID != secondID || conflict.References[1].ID != first.ID {
+		t.Fatalf("ambiguous identities are not deterministic: %+v", conflict.References)
+	}
+	encoded, err := json.Marshal(conflict)
+	if err != nil || strings.Contains(string(encoded), "canonical_url") || strings.Contains(string(encoded), "head_revision") ||
+		strings.Contains(string(encoded), "hidden") {
+		t.Fatalf("ambiguous diagnostics are not safe: %s, %v", encoded, err)
+	}
+	afterIssue, afterRepo := env.referenceVersions(t)
+	if beforeIssue != afterIssue || beforeRepo != afterRepo {
+		t.Fatalf("ambiguous conflict mutated collections issue %d/%d repo %d/%d", beforeIssue, afterIssue, beforeRepo, afterRepo)
+	}
+}
+
+func TestCodeChangeSpecializationPreservesGenericReferenceUpsert(t *testing.T) {
+	ordinary := newBindingsEnvironment(t)
+	first := ordinary.codeChangeInput("42", "abc123")
+	if _, err := ordinary.service.UpsertReference(t.Context(), authz.Authenticated(ordinary.owner),
+		ordinary.actor("ordinary-first"), ordinary.scope, first); err != nil {
+		t.Fatal(err)
+	}
+	second := ordinary.codeChangeInput("43", "def456")
+	if _, err := ordinary.service.UpsertReference(t.Context(), authz.Authenticated(ordinary.owner),
+		ordinary.actor("ordinary-second"), ordinary.scope, second); err != nil {
+		t.Fatalf("ordinary issue rejected a second generic code change: %v", err)
+	}
+
+	implement := newBindingsEnvironment(t)
+	implement.markImplement(t)
+	build := implement.codeChangeInput("build-1", "abc123")
+	build.RelationKind = "build"
+	if _, err := implement.service.UpsertReference(t.Context(), authz.Authenticated(implement.owner),
+		implement.actor("implement-build-first"), implement.scope, build); err != nil {
+		t.Fatal(err)
+	}
+	build.ExternalID = "build-2"
+	build.CanonicalURL = "https://code.example/acme/widgets/builds/2"
+	if _, err := implement.service.UpsertReference(t.Context(), authz.Authenticated(implement.owner),
+		implement.actor("implement-build-second"), implement.scope, build); err != nil {
+		t.Fatalf("Implement Issue rejected a generic non-code_change reference: %v", err)
+	}
+}
+
+func TestConcurrentImplementCodeChangeEstablishmentSerializesOnIssue(t *testing.T) {
+	env := newBindingsEnvironment(t)
+	env.markImplement(t)
+	const requests = 8
+	start := make(chan struct{})
+	errorsCh := make(chan error, requests)
+	results := make(chan Reference, requests)
+	var wait sync.WaitGroup
+	for index := 0; index < requests; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			<-start
+			input := env.codeChangeInput(fmt.Sprintf("change-%d", index), fmt.Sprintf("revision-%d", index))
+			result, err := env.service.UpsertReference(context.Background(), authz.Authenticated(env.owner),
+				env.actor(fmt.Sprintf("concurrent-code-change-%d", index)), env.scope, input)
+			if err != nil {
+				errorsCh <- err
+				return
+			}
+			results <- result
+		}(index)
+	}
+	close(start)
+	wait.Wait()
+	close(errorsCh)
+	close(results)
+	var successes, conflicts int
+	for range results {
+		successes++
+	}
+	for err := range errorsCh {
+		if !errors.Is(err, adminservice.ErrConflict) {
+			t.Fatalf("concurrent establishment error = %v", err)
+		}
+		conflicts++
+	}
+	if successes != 1 || conflicts != requests-1 {
+		t.Fatalf("successes=%d conflicts=%d", successes, conflicts)
+	}
+	var active, audits int
+	if err := env.pool.QueryRow(t.Context(), `SELECT
+		(SELECT count(*) FROM external_references WHERE organization_id=$1 AND repository_id=$2
+		 AND issue_id=$3 AND relation_kind='code_change' AND lifecycle_state='active'),
+		(SELECT count(*) FROM audit_events WHERE organization_id=$1 AND repository_id=$2
+		 AND action='external_reference.upsert')`, env.scope.OrgID, env.scope.RepoID, env.issueID).Scan(&active, &audits); err != nil {
+		t.Fatal(err)
+	}
+	if active != 1 || audits != 1 {
+		t.Fatalf("active=%d audits=%d, want 1/1", active, audits)
+	}
+}
+
 func TestPersistedExternalURLsRejectCredentialsAndReaderFailsClosed(t *testing.T) {
 	writeEnv := newBindingsEnvironment(t)
 	unsafeURLs := []string{
@@ -295,6 +499,39 @@ func newBindingsEnvironment(t *testing.T) bindingsEnvironment {
 
 func (e bindingsEnvironment) actor(requestID string) adminservice.Actor {
 	return adminservice.ActorFromPrincipal(e.owner, requestID)
+}
+
+func (e bindingsEnvironment) markImplement(t *testing.T) {
+	t.Helper()
+	if _, err := e.pool.Exec(t.Context(), `INSERT INTO issue_spec_artifacts
+		(id, organization_id, repository_id, issue_id, change_key, artifact_type, content, metadata)
+		VALUES ($1,$2,$3,$4,$5,'implement','valid implement marker','{"marker_version":1}')`,
+		uuid.New(), e.scope.OrgID, e.scope.RepoID, e.issueID, "change-"+e.issueID.String()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (e bindingsEnvironment) codeChangeInput(changeID, revision string) UpsertReferenceInput {
+	return UpsertReferenceInput{IssueID: e.issueID, ProviderKey: "aone-bridge", RelationKind: "code_change",
+		ExternalRepositoryID: "acme/widgets", ExternalID: changeID,
+		CanonicalURL:   "https://code.example/acme/widgets/changes/" + changeID,
+		LifecycleState: "active", Visibility: VisibilityRepository,
+		Metadata: json.RawMessage(`{"head_revision":` + fmt.Sprintf("%q", revision) + `}`)}
+}
+
+func (e bindingsEnvironment) upsertReference(t *testing.T, requestID string, input UpsertReferenceInput) error {
+	t.Helper()
+	_, err := e.service.UpsertReference(t.Context(), authz.Authenticated(e.owner), e.actor(requestID), e.scope, input)
+	return err
+}
+
+func assertCodeChangeConflict(t *testing.T, err error, reason CodeChangeConflictReason, referenceID uuid.UUID) {
+	t.Helper()
+	var conflict *CodeChangeConflictError
+	if !errors.As(err, &conflict) || !errors.Is(err, adminservice.ErrConflict) || conflict.Reason != reason ||
+		len(conflict.References) != 1 || conflict.References[0].ID != referenceID {
+		t.Fatalf("code-change conflict = %#v, %v; want reason=%s reference=%s", conflict, err, reason, referenceID)
+	}
 }
 
 func (e bindingsEnvironment) referenceVersions(t *testing.T) (int64, int64) {
