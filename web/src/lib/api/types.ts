@@ -10,6 +10,7 @@ export const featuresSchema = z.object({
   runner: z.boolean(),
   recovery_exchange: z.boolean(),
   search: z.boolean().optional().default(false),
+  email_notifications: z.boolean().optional().default(false),
 });
 
 export const metaSchema = z.object({
@@ -75,9 +76,41 @@ export const profileSchema = publicProfileSchema.extend({
   identity_display_name: z.string(),
   nickname: z.string().nullable(),
   representation_version: z.number().int().positive(),
+  notification_email_available: z.boolean().optional().default(false),
+  onboarding_completed: z.boolean().optional().default(true),
+  notification_email: z.string().email().nullable().optional().default(null),
+  notification_email_verified_at: z.string().datetime({ offset: true }).nullable().optional().default(null),
+  pending_notification_email: z.object({
+    id: z.string().uuid(),
+    email: z.string().email(),
+    expires_at: z.string().datetime({ offset: true }),
+    sent_at: z.string().datetime({ offset: true }).nullable().optional(),
+    representation_version: z.number().int().positive(),
+  }).nullable().optional().default(null),
 });
 export type PublicProfile = z.infer<typeof publicProfileSchema>;
 export type Profile = z.infer<typeof profileSchema>;
+
+export const emailVerificationSchema = z.object({
+  id: z.string().uuid(),
+  email: z.string().email(),
+  expires_at: z.string().datetime({ offset: true }),
+  sent_at: z.string().datetime({ offset: true }).nullable().optional(),
+  representation_version: z.number().int().positive(),
+});
+
+export const emailConfirmationSchema = z.object({
+  status: z.literal("ready"),
+  expires_at: z.string().datetime({ offset: true }),
+  representation_version: z.number().int().positive(),
+});
+
+export const confirmedEmailSchema = z.object({
+  status: z.literal("confirmed"),
+  notification_email: z.string().email(),
+  notification_email_verified_at: z.string().datetime({ offset: true }),
+  representation_version: z.number().int().positive(),
+});
 
 export const repositoryContextSchema = z.object({
   repository: z.object({

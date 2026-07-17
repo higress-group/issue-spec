@@ -8,6 +8,7 @@ import { AuthCompletePage } from "../auth/auth-complete-page";
 import { BootstrapPage } from "../auth/bootstrap-page";
 import { AccountPage } from "../auth/account-page";
 import { TokensPage } from "../auth/tokens-page";
+import { VerifyEmailPage } from "../auth/verify-email-page";
 import { OrganizationPage } from "../orgs/organization-page";
 import { MembersPage } from "../orgs/members-page";
 import { RepositoriesPage } from "../repos/repositories-page";
@@ -34,6 +35,7 @@ export const router = createBrowserRouter([
       { index: true, element: <DashboardPage /> },
       { path: "settings/account", element: <AccountPage /> },
       { path: "settings/tokens", element: <TokensPage /> },
+      { path: "verify-email", element: <VerifyEmailPage /> },
       { path: "users/:login", element: <ProfilePage /> },
       { path: "users/:login/issues", element: <LegacyUserIssuesRedirect /> },
       { path: "admin", element: <AdminPage /> },

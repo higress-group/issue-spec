@@ -41,6 +41,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/events/outbox"
 	"github.com/higress-group/issue-spec/internal/server/events/subscriptions"
 	"github.com/higress-group/issue-spec/internal/server/evidence"
+	"github.com/higress-group/issue-spec/internal/server/profilemail"
 	"github.com/higress-group/issue-spec/internal/server/projection/artifacts"
 	"github.com/higress-group/issue-spec/internal/server/publicurl"
 	"github.com/higress-group/issue-spec/internal/server/search"
@@ -239,16 +240,21 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	if err != nil {
 		return fail(err)
 	}
-	// PROCESS-002 supplies the first product preparer. Keeping nil here is
-	// deliberate: a placeholder must never consume future queue rows before it
-	// can reload recipients, authorize and render them.
-	emailWorker, err := composeEmailWorker(database, mailSettings, nil, cfg)
-	if err != nil {
-		return fail(err)
+	var profileMailService *profilemail.Service
+	if mailSettings.Enabled() {
+		profileMailService, err = profilemail.New(database.Pool(), secrets, profilemail.Config{
+			ConfirmationURL: origins.Web.String() + "/verify-email",
+		})
+		if err != nil {
+			return fail(fmt.Errorf("initialize profile mail: %w", err))
+		}
 	}
-	if emailWorker != nil {
-		workers = append(workers, namedWorker{name: "email delivery", worker: emailWorker})
-	}
+	// P5 handoff: profile verification can now enqueue and render complete
+	// deliveries, but the production worker intentionally remains stopped until
+	// the operator-facing SMTP rollout, readiness and observability gate lands.
+	// Do not replace this nil with a partial preparer: that would consume queue
+	// rows before the P5 deployment gate is satisfied.
+	var emailWorker *emaildelivery.Worker
 	static, err := staticui.New(staticui.Options{DevelopmentDirectory: cfg.StaticDirectory,
 		Production: cfg.Environment == config.EnvironmentProduction})
 	if err != nil {
@@ -267,6 +273,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 		Subscription: subscriptionCompat, Presenter: codec.Presenter{Origins: origins}, Conditional: conditional.Policy{},
 		SPA: spaService, Bindings: bindingService, Evidence: evidenceService, Changes: changeService,
 		Subscriptions: subscriptionService, Deliveries: deliveryService,
+		ProfileMail: profileMailService, EmailNotifications: mailSettings.Enabled(),
 		Search:             searchService,
 		DelegationAudience: cfg.DelegationAudience, DelegationSubject: cfg.DelegationSubject,
 		Static: static, Ready: ready.check, LogRequest: logRequest,

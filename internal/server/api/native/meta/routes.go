@@ -25,6 +25,7 @@ type Features struct {
 	Runner               bool `json:"runner"`
 	RecoveryExchange     bool `json:"recovery_exchange"`
 	Search               bool `json:"search"`
+	EmailNotifications   bool `json:"email_notifications"`
 }
 
 type Transport struct {

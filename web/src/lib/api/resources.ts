@@ -5,6 +5,9 @@ import {
   collaboratorsSchema,
   contextSchema,
   createdSecretSchema,
+  emailConfirmationSchema,
+  emailVerificationSchema,
+  confirmedEmailSchema,
   metaSchema,
   patsSchema,
   profileSchema,
@@ -43,6 +46,14 @@ export const api = {
   publicProfile: (login: string, signal?: AbortSignal) => apiRequest(`/api/v1/users/${encodeURIComponent(login)}`, { schema: publicProfileSchema, signal }),
   profile: (signal?: AbortSignal) => apiRequest("/api/v1/profile", { schema: profileSchema, signal }),
   updateProfile: (body: { nickname: string; expected_version: number }) => apiRequest("/api/v1/profile", { method: "PATCH", body, schema: profileSchema }),
+  setProfileEmail: (body: { email: string; expected_version: number }) => apiRequest("/api/v1/profile/email", { method: "PUT", body, schema: emailVerificationSchema }),
+  resendProfileEmail: (body: { expected_version: number; expected_verification_version: number }) => apiRequest("/api/v1/profile/email/verification/resend", { method: "POST", body, schema: emailVerificationSchema }),
+  removeProfileEmail: (expectedVersion: number) => apiRequest<void>("/api/v1/profile/email", { method: "DELETE", body: { expected_version: expectedVersion } }),
+  inspectProfileEmail: (token: string, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ token });
+    return apiRequest(`/api/v1/profile/email/verification?${params}`, { schema: emailConfirmationSchema, signal });
+  },
+  confirmProfileEmail: (token: string) => apiRequest("/api/v1/profile/email/verification", { method: "POST", body: { token }, schema: confirmedEmailSchema }),
   repositoriesContext: (orgId: string, signal?: AbortSignal) => apiRequest(`/api/v1/context/orgs/${orgId}/repos`, { schema: repositoriesContextSchema, signal }),
   repositoryRouteContext: (owner: string, repository: string, signal?: AbortSignal) =>
     apiRequest(`/api/v1/context/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`, { schema: repositoryRouteContextSchema, signal }),

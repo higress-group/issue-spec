@@ -11,6 +11,7 @@ import { Avatar } from "./avatar";
 import { useTranslation } from "react-i18next";
 import { LanguageSwitcher } from "../i18n/language-switcher";
 import { isCanonicalRepositoryReadPath, isPublicUserProfilePath } from "../lib/canonical-routes";
+import { ProfileOnboardingDialog } from "../auth/profile-onboarding-dialog";
 
 export { isCanonicalRepositoryReadPath, isPublicUserProfilePath } from "../lib/canonical-routes";
 
@@ -70,6 +71,7 @@ export function AuthenticatedShell() {
       {firstOrg ? <NavLink to={`/orgs/${firstOrg.id}/repos`}><Boxes /><span>{t("navigation.repos")}</span></NavLink> : <span />}
       <NavLink to="/settings/account"><Avatar login={context.user.login} displayName={context.user.display_name} src={context.user.avatar_url} size={24} /><span>{t("navigation.account")}</span></NavLink>
     </nav>
+    <ProfileOnboardingDialog enabled={Boolean(features?.email_notifications)} />
   </div>;
 }
 

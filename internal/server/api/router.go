@@ -33,6 +33,7 @@ import (
 	evidenceapi "github.com/higress-group/issue-spec/internal/server/api/native/evidence"
 	metaapi "github.com/higress-group/issue-spec/internal/server/api/native/meta"
 	orgsapi "github.com/higress-group/issue-spec/internal/server/api/native/orgs"
+	profilemailapi "github.com/higress-group/issue-spec/internal/server/api/native/profilemail"
 	referencesapi "github.com/higress-group/issue-spec/internal/server/api/native/references"
 	reposapi "github.com/higress-group/issue-spec/internal/server/api/native/repos"
 	searchapi "github.com/higress-group/issue-spec/internal/server/api/native/search"
@@ -79,13 +80,15 @@ type Dependencies struct {
 	Presenter    codec.Presenter
 	Conditional  conditional.Policy
 
-	SPA           *spa.Service
-	Bindings      *bindings.Service
-	Evidence      *evidence.Service
-	Changes       *changes.Service
-	Subscriptions *subscriptions.Service
-	Deliveries    *delivery.Service
-	Search        *searchservice.Service
+	SPA                *spa.Service
+	Bindings           *bindings.Service
+	Evidence           *evidence.Service
+	Changes            *changes.Service
+	Subscriptions      *subscriptions.Service
+	Deliveries         *delivery.Service
+	Search             *searchservice.Service
+	ProfileMail        profilemailapi.Service
+	EmailNotifications bool
 
 	DelegationAudience string
 	DelegationSubject  string
@@ -114,7 +117,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	nativeAuthenticateOptional := adminapi.NativeAuthenticateOptional(deps.Authentication)
 	features := metaapi.Features{Bootstrap: true, PersonalAccessTokens: true, Organizations: true,
 		SourceBindings: true, Webhooks: true, ChangeBoards: true, Runner: true, RecoveryExchange: true,
-		Search: deps.Search != nil}
+		Search: deps.Search != nil, EmailNotifications: deps.EmailNotifications && deps.ProfileMail != nil}
 	serverMetadata, err := metaapi.NewServerMetadataWithPosture(deps.ServerInstanceID, deps.APIOrigin, deps.WebOrigin, deps.ProviderDescriptions, deps.TransportPosture)
 	if err != nil {
 		return nil, fmt.Errorf("compose server metadata: %w", err)
@@ -151,7 +154,11 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			return bootstrapapi.NewRouteSet(bootstrapapi.Dependencies{Service: deps.Admin})
 		},
 		func() (routeset.RouteSet, error) {
-			return nativeauth.NewRouteSet(nativeauth.Dependencies{Identity: deps.Identity, Sessions: deps.Sessions, PATs: deps.PATs, Authority: deps.Authorization.(nativeauth.IdentityAuthority), Middleware: deps.Authentication, Adapters: deps.Adapters, Avatars: deps.Avatars, Diagnostics: deps.AuthDiagnostics, WebOrigin: deps.WebOrigin})
+			return nativeauth.NewRouteSet(nativeauth.Dependencies{Identity: deps.Identity, Sessions: deps.Sessions, PATs: deps.PATs, Authority: deps.Authorization.(nativeauth.IdentityAuthority), Middleware: deps.Authentication, Adapters: deps.Adapters, Avatars: deps.Avatars, Diagnostics: deps.AuthDiagnostics, WebOrigin: deps.WebOrigin, ProfileMail: deps.ProfileMail, EmailEnabled: features.EmailNotifications})
+		},
+		func() (routeset.RouteSet, error) {
+			return profilemailapi.NewRouteSet(profilemailapi.Dependencies{Service: deps.ProfileMail,
+				Authenticate: nativeAuthenticate, Enabled: features.EmailNotifications})
 		},
 		func() (routeset.RouteSet, error) {
 			return adminapi.NewRouteSet(adminapi.Dependencies{Service: deps.Admin, Authorizer: deps.Authorization, Authenticate: nativeAuthenticate})
