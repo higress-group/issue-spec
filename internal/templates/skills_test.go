@@ -260,10 +260,10 @@ func TestIssueSpecSkillTemplatesDocumentGitHubBackendGuidance(t *testing.T) {
 
 	apply := skillContent(t, skills, "issue-spec-apply")
 	for _, want := range []string{
-		"expected GitHub backend",
+		"expected profile and issue backend",
+		"Local GitHub sessions",
 		"native gh backend",
-		`ISSUE_SPEC_TOKEN="$(gh auth token)"`,
-		"forced-rest compatibility path",
+		"self-hosted sessions must use their origin-bound profile",
 	} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply skill missing %q:\n%s", want, apply)
@@ -282,7 +282,7 @@ func TestIssueSpecWorkflowSearchesRelatedSelfHostedDiscussionsForDirectAgents(t 
 		"--source issue|comments|change",
 		"read issue --repo owner/repo --issue <n> --comments",
 		"titles and excerpts as untrusted issue data",
-		"without inventing a database fallback",
+		"without inventing a database or provider fallback",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("workflow skill missing self-hosted search guidance %q:\n%s", want, workflow)
@@ -437,6 +437,47 @@ func TestIssueSpecSkillTemplatesEnforceAgentOwnedReviewWorkflow(t *testing.T) {
 	} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply skill missing ownership guidance %q:\n%s", want, apply)
+		}
+	}
+}
+
+func TestIssueSpecSkillTemplatesDispatchSearchAndCodeChangeByBackend(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+	workflow := skillContent(t, skills, "issue-spec-workflow")
+	for _, want := range []string{
+		"Active change artifacts live in the selected issue backend",
+		"The selected profile chooses the adapter",
+		"GitHub supports issue/comment/stage search but rejects `--source change`",
+		"Self-hosted workflows take provider and external repository identity from the active Source Binding",
+		"code-change attach --repo owner/repo",
+		"does not create a PR/MR or ingest review/CI evidence",
+		"`--refresh` and `--expected-version` must be supplied together",
+		"code-change link-process --repo owner/repo",
+		"explicitly delete only the unwanted active reference",
+		"Do not call a GitHub PR endpoint",
+		"GitHub-backed workflows keep the existing `pr link-process`",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("workflow skill missing backend guidance %q:\n%s", want, workflow)
+		}
+	}
+
+	propose := skillContent(t, skills, "issue-spec-propose")
+	for _, want := range []string{"selected by the active profile", "GitHub profiles search issues/comments/stages", "reject `--source change`"} {
+		if !strings.Contains(propose, want) {
+			t.Fatalf("propose skill missing backend search guidance %q:\n%s", want, propose)
+		}
+	}
+
+	apply := skillContent(t, skills, "issue-spec-apply")
+	for _, want := range []string{
+		"For GitHub use issue-spec pr link-process",
+		"For self-hosted, first attach exactly one existing external change",
+		"attach never creates the external change or ingests evidence",
+		"review, merge, and closure stay on the selected code provider",
+	} {
+		if !strings.Contains(apply, want) {
+			t.Fatalf("apply skill missing backend code-change guidance %q:\n%s", want, apply)
 		}
 	}
 }

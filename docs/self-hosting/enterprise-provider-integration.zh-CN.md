@@ -198,6 +198,41 @@ Clone URL 与 Web URL 的 authority 必须精确匹配所选 Provider 在握手�
 仓库内生成的工作流配置可以选择 `code.example` 及其证据策略，但不能替换运维侧
 Provider 注册。
 
+### 关联已存在的 Provider 代码变更
+
+先通过获批的代码平台流程创建 PR/MR，再使用 self-hosted Profile 校验并关联这个已经
+存在的 Provider Change：
+
+```bash
+issue-spec --profile team code-change attach \
+  --repo acme/payments-spec \
+  --implement 3 \
+  --change-id 42 \
+  --revision abc123 \
+  --json
+```
+
+Active Source Binding 固定 Provider 与外部仓库；调用方只提供 Provider 所有的 Change
+ID 和精确 Revision。这个操作不会调用 `change.create`，也不会导入证据。刷新同一个
+Relationship 时必须提供 `--refresh --expected-version <version>`。
+
+Implement Issue 恰好存在一个 Active `code_change` Reference 后，才能链接 PROCESS：
+
+```bash
+issue-spec --profile team code-change link-process \
+  --repo acme/payments-spec \
+  --implement 3 \
+  --process PROCESS-001 \
+  --expected-version 5 \
+  --json
+```
+
+Server 返回 `ambiguous_active_references` 时，应检查冲突中返回的 Reference ID 和当前
+Native Reference 列表，通过已认证 Native References API 或 Server UI 只删除不需要
+的 Active Reference，再重试。运维方与 Agent 都不能按返回顺序猜测胜出项，也不能
+覆盖全部 Reference。Review、Merge 与关闭继续通过所选 Provider Bridge 或可信代码
+平台 Skill 完成，不能改走 GitHub PR Endpoint。
+
 ## 6. 对接 Jira 类工作项平台
 
 issue-spec Server 仍是 Issue Body、类型化评论、权限、Change 状态和 Runner 命令的

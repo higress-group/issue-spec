@@ -314,6 +314,14 @@ hostnames, or credentials in the target repository or public documentation.
 The Runner copies only this explicit local input into the session's isolated
 `CODEX_HOME`; other agents reject this option.
 
+The coordinator must keep issue and code authority separate. After the
+operator skill or provider bridge creates a PR/MR, it uses self-hosted
+`code-change attach` to validate and associate the existing exact revision,
+then `code-change link-process` to link PROCESS comments. These commands do not
+create the change or ingest evidence. The Runner must not assume that a
+self-hosted issue backend provides GitHub PR endpoints; review, merge, and
+closure continue through the selected code provider.
+
 ```bash
 cd /srv/issue-spec-workflows/acme-workflow
 issue-spec --profile team init --repo acme/workflow --tools codex --delivery skills

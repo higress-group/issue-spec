@@ -2,14 +2,14 @@
 
 **[English](README.md) | 简体中文**
 
-`issue-spec` 是一个以 GitHub issue 为存储载体、采用 OpenSpec 风格工作流的命令行工具，面向 agent 驱动的软件开发。
+`issue-spec` 是一个 Issue-native、采用 OpenSpec 风格工作流的命令行工具，面向 Agent 驱动的软件开发，并支持 GitHub 与 self-hosted Issue Backend。
 
-它保留了 OpenSpec 的习惯：proposal -> specs -> design -> tasks -> review -> verify -> archive，但把「进行中的变更状态」从代码仓库里搬了出来，转而存放在 GitHub issue、类型化评论（typed comments）以及 PR review 线程中。
+它保留了 OpenSpec 的习惯：proposal -> specs -> design -> tasks -> review -> verify -> archive，但把进行中的变更状态从代码仓库移到所选 Issue Backend；代码变更、Review 与 CI 仍留在所选 Code Provider。
 
 我们的理念：
 
 ```text
--> 沿用 OpenSpec 习惯，状态原生落在 GitHub
+-> 沿用 OpenSpec 习惯，状态原生落在 Issue Backend
 -> 进行中的变更放在 issue 里，长期留存的 spec 放在仓库里
 -> 人的决策发生在评论线程中，而非隐藏的本地文件里
 -> 使用小而聚焦的 agent DAG，而非巨大的一次性实现 prompt
@@ -223,9 +223,9 @@ implement issue 记录该 DAG：
 
 CLI 不充当自动拉起 agent 的调度器。它提供共享状态、链接与关卡（gate），让协调器能够安全地把工作拆分到多个 agent 之间，而不丢失可追溯性。
 
-### PR 原生的 review 流程
+### GitHub PR 原生的 Review 流程
 
-OpenSpec 本就把 review 与 verify 作为工作流阶段来鼓励。`issue-spec` 把这一纪律直接连接到 GitHub PR review 评论：
+对于 GitHub Profile，`issue-spec` 把 OpenSpec 的 Review 与 Verify 纪律直接连接到 GitHub PR Review 评论：
 
 - `pr rationale` 记录 worker 为何改动某条具体 PR diff 行，并把它链接到某个 `SPEC` 与 `PROCESS`
 - `review finding` 创建可操作的 PR 行发现，带严重级别、owner process 与关联的 spec 上下文
@@ -257,13 +257,13 @@ Delegated workspace 由精确 PROCESS id 选择，并通过 `workflow workspace 
 可追溯性是双向的：
 
 ```text
-SPEC <-> TASK <-> PROCESS <-> PR rationale
+SPEC <-> TASK <-> PROCESS <-> implementation change (PR/MR)
                    |
                    +-> REVIEW findings and replies
                    +-> VERIFY evidence
 ```
 
-在实现 PR 合并之前，`pr link-issues` 会把 GitHub 关闭链接写入实现 PR 正文，这样 GitHub 会在合并时关闭与该 PR 关联的 proposal、design 与 implement issue。合并之后，`archive durable-spec --create-pr --close-issues` 会开一个单独的 PR，把长期行为契约写入仓库，并幂等地关闭任何仍处于打开状态的活跃 issue。
+GitHub 继续使用现有的 `pr link-process`、PR Review、Closing Link 与 Durable Archive 路径。对于 self-hosted Profile，`code-change attach` 按精确 Revision 校验并关联已经存在的 Provider Change，`code-change link-process` 再把 PROCESS Comment 链接到唯一 Active Change。Provider 与仓库身份来自 Source Binding；Attach 不会创建 PR/MR，也不会导入证据。self-hosted 的 Review、Merge 与关闭留在所选 Code Provider，不会改走 GitHub PR Endpoint。详见 [CLI 参考](docs/reference.zh-CN.md#关联-self-hosted-代码变更)。
 
 使用 `--capability` 作为稳定的能力（capability）目录，而不是原始变更名。在最终确定 archive PR 之前，检查现有的相关长期 spec，并把生成的长期 spec 当作草稿来合并、修订，或按长期功能模块重新分组，同时保留 Source SPEC 链接以维持可追溯性。
 

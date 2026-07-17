@@ -222,6 +222,44 @@ Do not silently substitute an alias just because it resolves in a browser.
 Generated repository workflow configuration may select `code.example` and its
 evidence policy, but cannot replace the operator registration.
 
+### Attach an existing provider change
+
+Create the PR/MR with the approved code-host workflow first. Then use the
+self-hosted profile to validate and associate that existing provider change:
+
+```bash
+issue-spec --profile team code-change attach \
+  --repo acme/payments-spec \
+  --implement 3 \
+  --change-id 42 \
+  --revision abc123 \
+  --json
+```
+
+The active Source Binding fixes the provider and external repository; callers
+supply only the provider-owned change ID and exact revision. This operation
+does not call `change.create` and does not ingest evidence. A refresh of the
+same relationship must supply `--refresh --expected-version <version>`.
+
+Link a PROCESS only after the Implement Issue has exactly one active
+`code_change` reference:
+
+```bash
+issue-spec --profile team code-change link-process \
+  --repo acme/payments-spec \
+  --implement 3 \
+  --process PROCESS-001 \
+  --expected-version 5 \
+  --json
+```
+
+If the server returns `ambiguous_active_references`, inspect the reference IDs
+returned by the conflict and the current native reference list. Delete only the
+unwanted active reference through the authenticated native references API or
+server UI, then retry. Operators and agents must not choose a winner by order
+or overwrite all references. Review, merge, and closure continue through the
+selected provider bridge or trusted code-host skill, not GitHub PR endpoints.
+
 ## 6. Connect a Jira-like work tracker
 
 Keep issue-spec Server authoritative for issue bodies, typed comments,

@@ -31,3 +31,22 @@ func TestProviderWorkflowKeepsRunnerEvidenceSynchronizationOptIn(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderWorkflowAttachesExistingChangeWithoutGitHubAssumptions(t *testing.T) {
+	provider := workflow.ProviderPlan{ProviderKey: "code.example", DisplayName: "Example Code", CodeChangeLabel: "change"}
+	content := IssueSpecProviderSkill("acme/widgets", provider).Content
+	for _, want := range []string{
+		"Source Binding",
+		"code-change attach --repo acme/widgets",
+		"Attach does not create the change or ingest review/CI evidence",
+		"Refresh only the same active change",
+		"code-change link-process --repo acme/widgets",
+		"requires exactly one active `code_change`",
+		"explicitly delete only the unwanted active reference",
+		"do not substitute GitHub PR endpoints",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("provider workflow missing %q:\n%s", want, content)
+		}
+	}
+}
