@@ -1,0 +1,17 @@
+{
+  "schema": "issue-spec.requirements-skill/v1",
+  "name": "issue-spec-requirements",
+  "content_id": "sha256:5e95ca9635c127068a0db7ea28fdcc6de01af82f180483fe80a4060c72aa8fac",
+  "minimum_cli_version": "0.1.0",
+  "channel": "development",
+  "source_revision": "",
+  "cli_build": "development",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "sha256": "734970343403d968030d6d3a3b893f5381ff0142e331d6bb873e722bec08875e",
+      "size": 6766,
+      "mode": 420
+    }
+  ]
+}
