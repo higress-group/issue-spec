@@ -413,7 +413,7 @@ func (a *app) runCodeChangeAttach(ctx context.Context, args []string) int {
 	if err := reference.Validate(); err != nil {
 		return a.codeChangeAttachError(*jsonOut, "invalid_change_identity", "construct binding-authoritative change identity", err, nil)
 	}
-	provider, err := a.resolveOperatorEvidenceProvider(ctx, profile, binding.ProviderKey)
+	provider, err := a.resolveOperatorProvider(ctx, profile, binding.ProviderKey)
 	if err != nil {
 		return a.codeChangeAttachError(*jsonOut, "provider_unavailable", "resolve operator code provider", err, nil)
 	}

@@ -1,13 +1,140 @@
 package commands
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/codereview"
+	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
+
+func TestExternalReviewSyncIsForcedAndIdempotent(t *testing.T) {
+	app, native, comments, creates, updates, out, errOut := setupExternalReviewSyncCommand(t)
+	args := []string{"--repo", "acme/widgets", "--hostname", "issues.test", "--implement", "9",
+		"--revision", "head-abc", "--id", "REVIEW-101", "--agent", "Review Agent"}
+	for run := 1; run <= 2; run++ {
+		out.Reset()
+		errOut.Reset()
+		if code := app.runReviewSync(t.Context(), args); code != 0 {
+			t.Fatalf("run %d exit=%d stdout=%q stderr=%q", run, code, out.String(), errOut.String())
+		}
+	}
+	if *creates != 1 || *updates != 1 || len(*comments) != 1 || native.syncs != 2 || native.resolveCalls != 4 {
+		t.Fatalf("creates=%d updates=%d comments=%d syncs=%d resolves=%d", *creates, *updates, len(*comments),
+			native.syncs, native.resolveCalls)
+	}
+	parsed := model.ParseTypedComment((*comments)[0].Body)
+	if parsed.Type != "REVIEW" || parsed.ID != "REVIEW-101" || parsed.Status != "done" ||
+		!strings.Contains((*comments)[0].Body, `"subject_revision":"head-abc"`) {
+		t.Fatalf("persisted REVIEW=%+v", parsed)
+	}
+}
+
+func TestExternalReviewSyncFailuresNeverMutateReview(t *testing.T) {
+	tests := map[string]func(*app, *commandNativeEvidence, *commandEvidenceProvider){
+		"authorization": func(app *app, _ *commandNativeEvidence, _ *commandEvidenceProvider) {
+			app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) {
+				return nil, errors.New("authorization denied")
+			}
+		},
+		"registry": func(app *app, _ *commandNativeEvidence, _ *commandEvidenceProvider) {
+			app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) {
+				return nil, errors.New("operator registry malformed")
+			}
+		},
+		"capability": func(_ *app, _ *commandNativeEvidence, provider *commandEvidenceProvider) {
+			provider.capabilities = []codereview.Capability{codereview.CapabilityChangeComment}
+		},
+		"snapshot": func(_ *app, _ *commandNativeEvidence, provider *commandEvidenceProvider) {
+			provider.snapshotErr = errors.New("snapshot unavailable")
+		},
+		"persistence": func(_ *app, native *commandNativeEvidence, _ *commandEvidenceProvider) {
+			native.syncErr = errors.New("writer authorization denied")
+		},
+		"reference movement": func(_ *app, native *commandNativeEvidence, _ *commandEvidenceProvider) {
+			moved := native.target
+			moved.ReferenceVersion++
+			native.targets = []coreevidence.NativeTarget{native.target, moved}
+		},
+	}
+	for name, fail := range tests {
+		t.Run(name, func(t *testing.T) {
+			app, native, comments, creates, updates, _, errOut := setupExternalReviewSyncCommand(t)
+			provider, err := app.lookupOperatorProvider(t.Context(), auth.Profile{}, "code.example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			fail(app, native, provider.(*commandEvidenceProvider))
+			code := app.runReviewSync(t.Context(), []string{"--repo", "acme/widgets", "--hostname", "issues.test",
+				"--implement", "9", "--revision", "head-abc", "--id", "REVIEW-101"})
+			if code != 1 || *creates != 0 || *updates != 0 || len(*comments) != 0 {
+				t.Fatalf("exit=%d creates=%d updates=%d comments=%d stderr=%q", code, *creates, *updates,
+					len(*comments), errOut.String())
+			}
+		})
+	}
+}
+
+func setupExternalReviewSyncCommand(t *testing.T) (*app, *commandNativeEvidence, *[]github.Comment, *int, *int,
+	*bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	clearCommandAuthEnv(t)
+	t.Setenv("ISSUE_SPEC_TOKEN", "review-token")
+	t.Setenv(codereview.OperatorProvidersFileEnv, "")
+	t.Chdir(t.TempDir())
+	profile := auth.Profile{Name: "review-sync-test", Kind: auth.ProfileKindHosted, Hostname: "issues.test",
+		APIURL: "https://issues.test/api/v3", NativeAPIURL: "https://issues.test/api/v1",
+		WebURL: "https://issues.test", ServerInstanceID: "review-sync-test-instance"}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	provider := &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+		Reference: reference, SubjectRevision: "head-abc", CapturedAt: now}}
+	ledger := codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion, Reference: reference,
+		SubjectRevision: "head-abc", CapturedAt: now, Records: []codereview.EvidenceRecord{
+			testEvidenceRecord("review-ledger", codereview.EvidenceReview, "resolved", "head-abc", now),
+		}}
+	native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7,
+		SubjectRevision: "head-abc", Provider: &commandEvidenceProvider{snapshot: ledger}}}
+	comments := []github.Comment{}
+	creates, updates := 0, 0
+	backend := fakeGitHubBackend{
+		info: github.BackendInfo{Name: "rest", Kind: "rest", Host: profile.Hostname},
+		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+			return append([]github.Comment(nil), comments...), nil
+		},
+		createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
+			creates++
+			created := github.Comment{ID: 71, Body: body, HTMLURL: "https://issues.test/acme/widgets/issues/9#comment-71"}
+			comments = append(comments, created)
+			return created, nil
+		},
+		updateComment: func(_ context.Context, _ string, id int64, body string) (github.Comment, error) {
+			updates++
+			if len(comments) != 1 || comments[0].ID != id {
+				return github.Comment{}, errors.New("unexpected REVIEW update target")
+			}
+			comments[0].Body = body
+			return comments[0], nil
+		},
+	}
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	app := newApp(strings.NewReader(""), out, errOut)
+	app.profileName = profile.Name
+	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
+	app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
+	app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) { return provider, nil }
+	return app, native, &comments, &creates, &updates, out, errOut
+}
 
 func TestBuildReviewSyncReportClassifiesRationaleFindingsAndChecks(t *testing.T) {
 	rationale, err := model.RenderRationaleBody("Worker", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "why", "a.go", 10)

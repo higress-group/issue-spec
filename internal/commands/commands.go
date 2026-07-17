@@ -44,7 +44,7 @@ type app struct {
 	newNativeEvidenceProvider      func(auth.Profile, string) (nativeEvidenceProvider, error)
 	newNativeSearchProvider        func(auth.Profile, string) (nativeSearchProvider, error)
 	newNativeCodeChangeBackend     func(auth.Profile, string) (nativeCodeChangeBackend, error)
-	resolveCodeMutationProvider    func(context.Context, string) (codereview.MutationProvider, error)
+	lookupOperatorProvider         func(context.Context, auth.Profile, string) (codereview.Provider, error)
 	doctorAgentProbe               func(context.Context, capability.Request) (capability.Report, error)
 }
 
@@ -139,7 +139,6 @@ func extractGlobalProfile(args []string) (string, []string, error) {
 }
 
 func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
-	operatorRegistry, operatorRegistryErr := codereview.LoadOperatorRegistryFromEnvironment()
 	return &app{
 		in:                         in,
 		out:                        out,
@@ -151,12 +150,7 @@ func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 		newNativeEvidenceProvider:  defaultNewNativeEvidenceProvider,
 		newNativeSearchProvider:    defaultNewNativeSearchProvider,
 		newNativeCodeChangeBackend: defaultNewNativeCodeChangeBackend,
-		resolveCodeMutationProvider: func(ctx context.Context, key string) (codereview.MutationProvider, error) {
-			if operatorRegistryErr != nil {
-				return nil, operatorRegistryErr
-			}
-			return operatorRegistry.ResolveMutationProvider(ctx, key)
-		},
+		lookupOperatorProvider:     defaultResolveOperatorProvider,
 	}
 }
 

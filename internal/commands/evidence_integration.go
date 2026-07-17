@@ -193,8 +193,12 @@ func (a *app) externalGateWithProfile(ctx context.Context, profile auth.Profile,
 		return externalGateResult{}, true, err
 	}
 	request := codereview.SnapshotRequest{Reference: target.Reference, SubjectRevision: target.SubjectRevision}
-	if plan.Config.ExternalCode != nil && plan.Config.ExternalCode.Evidence.SynchronizesBefore(syncStage) {
-		provider, err := a.resolveOperatorEvidenceProvider(ctx, profile, target.Reference.ProviderKey)
+	// GateReview is the explicit review sync command. It must always refresh
+	// provider facts; sync_before remains an optional policy only for other gates.
+	synchronize := gate == coreevidence.GateReview ||
+		(plan.Config.ExternalCode != nil && plan.Config.ExternalCode.Evidence.SynchronizesBefore(syncStage))
+	if synchronize {
+		provider, err := a.resolveOperatorProvider(ctx, profile, target.Reference.ProviderKey)
 		if err != nil {
 			return externalGateResult{}, true, fmt.Errorf("resolve operator evidence provider: %w", err)
 		}
@@ -202,16 +206,30 @@ func (a *app) externalGateWithProfile(ctx context.Context, profile auth.Profile,
 		if err != nil {
 			return externalGateResult{}, true, fmt.Errorf("fetch external provider facts: %w", err)
 		}
-		if err := codereview.ValidateProviderSnapshot(providerSnapshot); err != nil {
+		if err := validateExactProviderSnapshot(providerSnapshot, target); err != nil {
 			return externalGateResult{}, true, fmt.Errorf("validate external provider facts: %w", err)
 		}
 		if err := native.SynchronizeSnapshot(ctx, target, providerSnapshot); err != nil {
 			return externalGateResult{}, true, fmt.Errorf("persist external provider facts: %w", err)
 		}
+		reloaded, err := native.ResolveTarget(ctx, repo, issue, relationKind)
+		if err != nil {
+			return externalGateResult{}, true, fmt.Errorf("reload authoritative external reference: %w", err)
+		}
+		if err := validateUnchangedNativeTarget(target, reloaded); err != nil {
+			return externalGateResult{}, true, fmt.Errorf("reload authoritative external reference: %w", err)
+		}
+		target = reloaded
+		request = codereview.SnapshotRequest{Reference: target.Reference, SubjectRevision: target.SubjectRevision}
 	}
 	snapshot, err := codereview.FetchSnapshot(ctx, target.Provider, request)
 	if err != nil {
 		return externalGateResult{}, true, fmt.Errorf("reload authoritative external evidence ledger: %w", err)
+	}
+	if synchronize {
+		if err := validateExactSnapshotIdentity(snapshot, target); err != nil {
+			return externalGateResult{}, true, fmt.Errorf("reload authoritative external evidence ledger: %w", err)
+		}
 	}
 	evaluation := coreevidence.Evaluate(snapshot, policy, coreevidence.Target{Gate: gate,
 		Reference: target.Reference, SubjectRevision: target.SubjectRevision, Now: time.Now().UTC()})
@@ -231,6 +249,48 @@ func (a *app) externalGateWithProfile(ctx context.Context, profile auth.Profile,
 		result.Consumption.Bindings = bindings
 	}
 	return result, true, nil
+}
+
+func validateExactProviderSnapshot(snapshot codereview.Snapshot, target coreevidence.NativeTarget) error {
+	if err := codereview.ValidateProviderSnapshot(snapshot); err != nil {
+		return err
+	}
+	return validateExactSnapshotIdentity(snapshot, target)
+}
+
+func validateExactSnapshotIdentity(snapshot codereview.Snapshot, target coreevidence.NativeTarget) error {
+	if snapshot.Reference.ProviderKey != target.Reference.ProviderKey {
+		return errors.New("snapshot provider does not match the active reference")
+	}
+	if snapshot.Reference.ExternalRepository != target.Reference.ExternalRepository {
+		return errors.New("snapshot repository does not match the active reference")
+	}
+	if snapshot.Reference.ChangeID != target.Reference.ChangeID {
+		return errors.New("snapshot change does not match the active reference")
+	}
+	if strings.TrimSpace(snapshot.SubjectRevision) != strings.TrimSpace(target.SubjectRevision) {
+		return errors.New("snapshot revision does not match the active reference")
+	}
+	return nil
+}
+
+func validateUnchangedNativeTarget(before, after coreevidence.NativeTarget) error {
+	if before.Reference.ProviderKey != after.Reference.ProviderKey {
+		return errors.New("active reference provider moved during synchronization")
+	}
+	if before.Reference.ExternalRepository != after.Reference.ExternalRepository {
+		return errors.New("active reference repository moved during synchronization")
+	}
+	if before.Reference.ChangeID != after.Reference.ChangeID {
+		return errors.New("active reference change moved during synchronization")
+	}
+	if before.ReferenceVersion != after.ReferenceVersion {
+		return errors.New("active reference version moved during synchronization")
+	}
+	if strings.TrimSpace(before.SubjectRevision) != strings.TrimSpace(after.SubjectRevision) {
+		return errors.New("active reference revision moved during synchronization")
+	}
+	return nil
 }
 
 // authoritativeExternalEvidenceBindings derives PROCESS carrier identity only
@@ -315,28 +375,19 @@ func normalizeExternalEvidenceBindings(bindings []externalEvidenceBinding) []ext
 	return result
 }
 
-func (a *app) resolveOperatorEvidenceProvider(ctx context.Context, profile auth.Profile, key string) (codereview.Provider, error) {
-	registry, _, registryErr := codereview.LoadOperatorRegistry(profile.OperatorRegistryFile)
-	if registryErr != nil {
-		return nil, registryErr
+func (a *app) resolveOperatorProvider(ctx context.Context, profile auth.Profile, key string) (codereview.Provider, error) {
+	if a.lookupOperatorProvider == nil {
+		return nil, codereview.ErrProviderNotFound
 	}
-	if provider, err := registry.Lookup(key); err == nil {
-		return provider, nil
+	return a.lookupOperatorProvider(ctx, profile, key)
+}
+
+func defaultResolveOperatorProvider(_ context.Context, profile auth.Profile, key string) (codereview.Provider, error) {
+	registry, _, err := codereview.LoadOperatorRegistry(profile.OperatorRegistryFile)
+	if err != nil {
+		return nil, err
 	}
-	// Preserve the app-level seam for hermetic command tests and older callers,
-	// while production resolves the full Provider contract directly rather than
-	// requiring an adapter to implement unrelated mutation capabilities.
-	if a.resolveCodeMutationProvider != nil {
-		provider, err := a.resolveCodeMutationProvider(ctx, key)
-		if err == nil {
-			return provider, nil
-		}
-		registryErr = err
-	}
-	if registryErr == nil {
-		registryErr = codereview.ErrProviderNotFound
-	}
-	return nil, registryErr
+	return registry.Lookup(key)
 }
 
 func (c *commandNativeEvidenceClient) SynchronizeSnapshot(ctx context.Context, target coreevidence.NativeTarget,
@@ -552,6 +603,9 @@ func (a *app) externalMutationTarget(ctx context.Context, host, token, repo stri
 	if profile.Kind != auth.ProfileKindHosted {
 		return coreevidence.NativeTarget{}, nil, nil, false, nil
 	}
+	if a.newNativeEvidenceProvider == nil {
+		return coreevidence.NativeTarget{}, nil, nil, true, errors.New("self-hosted native evidence provider is unavailable")
+	}
 	native, err := a.newNativeEvidenceProvider(profile, token)
 	if err != nil {
 		return coreevidence.NativeTarget{}, nil, nil, true, err
@@ -572,17 +626,19 @@ func (a *app) externalMutationTarget(ctx context.Context, host, token, repo stri
 		return coreevidence.NativeTarget{}, nil, nil, true, fmt.Errorf("external code provider mismatch: workflow selects %s, active reference uses %s",
 			plan.Config.ExternalCode.ProviderKey, target.Reference.ProviderKey)
 	}
-	if a.resolveCodeMutationProvider == nil {
-		return coreevidence.NativeTarget{}, nil, nil, true, codereview.ErrProviderNotFound
-	}
-	provider, err := a.resolveCodeMutationProvider(ctx, target.Reference.ProviderKey)
+	provider, err := a.resolveOperatorProvider(ctx, profile, target.Reference.ProviderKey)
 	if err != nil {
 		return coreevidence.NativeTarget{}, nil, nil, true, err
 	}
 	if _, err := codereview.RequireCapabilities(ctx, provider, capability); err != nil {
 		return coreevidence.NativeTarget{}, nil, nil, true, err
 	}
-	return target, provider, native, true, nil
+	mutationProvider, ok := provider.(codereview.MutationProvider)
+	if !ok {
+		return coreevidence.NativeTarget{}, nil, nil, true,
+			fmt.Errorf("%w: %s does not implement mutations", codereview.ErrCapabilityMissing, target.Reference.ProviderKey)
+	}
+	return target, mutationProvider, native, true, nil
 }
 
 func mergedEvidencePolicy(config *workflow.ExternalCodeConfig, native coreevidence.NativePolicy) (coreevidence.Policy, error) {
