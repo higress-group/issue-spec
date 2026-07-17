@@ -12,11 +12,10 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/buildinfo"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/requirements"
 )
-
-const requirementsCLIVersion = "development"
 
 type requirementsAPI interface {
 	GetNativeServerMetadata(context.Context) (github.NativeServerMetadata, error)
@@ -399,13 +398,23 @@ func (a *app) requirementsSetupToken(ctx context.Context, profile auth.Profile, 
 }
 
 func (a *app) requirementsInstallPlan(agent requirements.Target) (requirements.Bundle, requirements.InstallPlan, error) {
-	bundle, err := requirements.Canonical(requirements.Distribution{})
+	identity := buildinfo.Current()
+	distribution := requirements.Distribution{}
+	cliVersion := "development"
+	if identity.Channel != "development" {
+		distribution = requirements.Distribution{Channel: identity.Channel, SourceRevision: identity.Revision, CLIBuild: identity.Version}
+		cliVersion = identity.Version
+	}
+	bundle, err := requirements.Canonical(distribution)
 	if err != nil {
 		return requirements.Bundle{}, requirements.InstallPlan{}, err
 	}
+	if bundle.Manifest.ContentID != identity.RequirementsSkillContentID {
+		return requirements.Bundle{}, requirements.InstallPlan{}, errors.New("embedded requirements skill does not match the CLI build identity")
+	}
 	options := requirements.TargetOptions{Home: strings.TrimSpace(os.Getenv("HOME")),
 		CodexHome: strings.TrimSpace(os.Getenv("CODEX_HOME")), ClaudeConfigDir: strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))}
-	plan, err := a.previewRequirementsInstall(bundle, agent, options, requirementsCLIVersion)
+	plan, err := a.previewRequirementsInstall(bundle, agent, options, cliVersion)
 	return bundle, plan, err
 }
 

@@ -1,0 +1,223 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref == 'refs/heads/main' && 'rolling' || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Build and verify complete release
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact source revision
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve reproducible source time
+        id: source
+        shell: bash
+        run: echo "epoch=$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+
+      - name: Run repository tests
+        run: go test ./...
+
+      - name: Build the complete release twice
+        shell: bash
+        run: |
+          go run ./hack/release/cmd/package \
+            --root . --out dist/release \
+            --ref "$GITHUB_REF" --revision "$GITHUB_SHA" \
+            --source-date-epoch "${{ steps.source.outputs.epoch }}"
+          go run ./hack/release/cmd/package \
+            --root . --out dist/release-repeat \
+            --ref "$GITHUB_REF" --revision "$GITHUB_SHA" \
+            --source-date-epoch "${{ steps.source.outputs.epoch }}"
+          diff -r dist/release dist/release-repeat
+          go run ./hack/release/cmd/package --verify dist/release
+
+      - name: Verify native CLI build identity
+        shell: bash
+        run: |
+          . dist/release/release.env
+          native_dir=$(mktemp -d)
+          trap 'rm -rf "$native_dir"' EXIT
+          tar -xzf dist/release/publish/issue-spec_linux_amd64.tar.gz -C "$native_dir"
+          "$native_dir/issue-spec" version --json > "$native_dir/version.json"
+          jq -e --arg version "$RELEASE_VERSION" --arg revision "$RELEASE_REVISION" --arg channel "$RELEASE_CHANNEL" \
+            '.version == $version and .revision == $revision and .channel == $channel and (.requirements_skill_content_id | startswith("sha256:"))' \
+            "$native_dir/version.json"
+
+      - name: Upload verified release candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ github.sha }}
+          path: dist/release
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Attest and publish complete draft
+    needs: package
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out exact source revision
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download verified release candidate
+        uses: actions/download-artifact@v8
+        with:
+          name: release-${{ github.sha }}
+          path: dist/release
+
+      - name: Reverify downloaded candidate
+        run: go run ./hack/release/cmd/package --verify dist/release
+
+      - name: Read canonical release identity
+        id: identity
+        shell: bash
+        run: |
+          . dist/release/release.env
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "channel=$RELEASE_CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "revision=$RELEASE_REVISION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$RELEASE_PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "latest=$RELEASE_LATEST" >> "$GITHUB_OUTPUT"
+
+      - name: Attest every published asset
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/release/publish/*
+
+      - name: Verify generated provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          for asset in dist/release/publish/*; do
+            gh attestation verify "$asset" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"
+          done
+
+      - name: Publish only the complete exact-revision candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.identity.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.identity.outputs.version }}
+          RELEASE_CHANNEL: ${{ steps.identity.outputs.channel }}
+          RELEASE_REVISION: ${{ steps.identity.outputs.revision }}
+          RELEASE_PRERELEASE: ${{ steps.identity.outputs.prerelease }}
+          RELEASE_LATEST: ${{ steps.identity.outputs.latest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          guard_revision() {
+            if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+              git fetch --no-tags origin main
+              git merge-base --is-ancestor "$RELEASE_REVISION" origin/main
+              test "$(git rev-parse origin/main)" = "$RELEASE_REVISION"
+            else
+              test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+              git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+              test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_REVISION"
+            fi
+          }
+
+          verify_remote_assets() {
+            remote_dir=$(mktemp -d)
+            trap 'rm -rf "$remote_dir"' RETURN
+            gh release download "$RELEASE_TAG" --dir "$remote_dir"
+            local_names=$(find dist/release/publish -maxdepth 1 -type f -printf '%f\n' | sort)
+            remote_names=$(find "$remote_dir" -maxdepth 1 -type f -printf '%f\n' | sort)
+            test "$local_names" = "$remote_names"
+            for local_asset in dist/release/publish/*; do
+              cmp "$local_asset" "$remote_dir/$(basename "$local_asset")"
+            done
+            rm -rf "$remote_dir"
+            trap - RETURN
+          }
+
+          guard_revision
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+            if [ "$RELEASE_CHANNEL" = rolling ]; then
+              git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+              test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_REVISION"
+            fi
+            draft=$(jq -r .draft <<<"$release_json")
+            if [ "$draft" = false ]; then
+              verify_remote_assets
+              remote_body=$(jq -r .body <<<"$release_json")
+              local_body=$(cat dist/release/release-notes.md)
+              test "$remote_body" = "$local_body"
+              guard_revision
+              if [ "$RELEASE_CHANNEL" = rolling ]; then
+                gh release edit "$RELEASE_TAG" --latest
+              fi
+              exit 0
+            fi
+            jq -r '.assets[].id' <<<"$release_json" | while read -r asset_id; do
+              test -z "$asset_id" || gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            done
+          else
+            if [ "$RELEASE_CHANNEL" = rolling ]; then
+              gh release create "$RELEASE_TAG" --draft --target "$RELEASE_REVISION" \
+                --title "issue-spec $RELEASE_VERSION" --notes-file dist/release/release-notes.md \
+                --latest=false
+            else
+              gh release create "$RELEASE_TAG" --draft --verify-tag \
+                --title "issue-spec $RELEASE_VERSION" --notes-file dist/release/release-notes.md \
+                --prerelease="$RELEASE_PRERELEASE" --latest=false
+            fi
+          fi
+
+          gh release upload "$RELEASE_TAG" dist/release/publish/*
+          remote_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+          local_names=$(find dist/release/publish -maxdepth 1 -type f -printf '%f\n' | sort)
+          remote_names=$(jq -r '.assets[].name' <<<"$remote_json" | sort)
+          test "$local_names" = "$remote_names"
+          for local_asset in dist/release/publish/*; do
+            name=$(basename "$local_asset")
+            local_size=$(stat -c %s "$local_asset")
+            remote_size=$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .size' <<<"$remote_json")
+            test "$local_size" = "$remote_size"
+          done
+          verify_remote_assets
+
+          guard_revision
+          gh release edit "$RELEASE_TAG" --draft=false \
+            --notes-file dist/release/release-notes.md \
+            --prerelease="$RELEASE_PRERELEASE" --latest="$RELEASE_LATEST"

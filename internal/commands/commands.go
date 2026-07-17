@@ -72,6 +72,8 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return 0
 	}
 	switch args[0] {
+	case "version", "--version":
+		return a.runVersion(ctx, args[1:])
 	case "auth":
 		return a.runAuth(ctx, args[1:])
 	case "doctor":
@@ -199,6 +201,8 @@ func (a *app) printUsage() {
 
 Usage:
   issue-spec [--profile name] <command> [options]
+	issue-spec version [--json]
+	issue-spec --version
   issue-spec auth status|login|logout|token
   issue-spec doctor agent --repo owner/repo --operation issue.read [--operation pr.read]
   issue-spec init --repo owner/repo [--skip-labels] [--tools codex,claude|all|none] [--delivery both|skills|commands] [--install-global-prompts]
