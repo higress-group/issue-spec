@@ -111,9 +111,52 @@ func ValidateManagedWriteScope(writeOwnership, sharedTouchpoints, changedPaths [
 	}
 	if len(unexpected) > 0 {
 		sort.Strings(unexpected)
-		return fmt.Errorf("%w: %s", ErrOwnershipViolation, strings.Join(unexpected, ", "))
+		return managedWriteScopeError(rules, unexpected)
 	}
 	return nil
+}
+
+func managedWriteScopeError(rules, unexpected []string) error {
+	grouped := make(map[string][]string)
+	var other []string
+	for _, changed := range unexpected {
+		declaration := mostSpecificBareAncestor(rules, changed)
+		if declaration == "" {
+			other = append(other, changed)
+			continue
+		}
+		grouped[declaration] = append(grouped[declaration], changed)
+	}
+	if len(grouped) == 0 {
+		return fmt.Errorf("%w: %s", ErrOwnershipViolation, strings.Join(unexpected, ", "))
+	}
+	parts := make([]string, 0, len(grouped)+1)
+	if len(other) > 0 {
+		parts = append(parts, "unexpected paths: "+strings.Join(other, ", "))
+	}
+	declarations := make([]string, 0, len(grouped))
+	for declaration := range grouped {
+		declarations = append(declarations, declaration)
+	}
+	sort.Strings(declarations)
+	for _, declaration := range declarations {
+		parts = append(parts, fmt.Sprintf("descendants of bare declaration %q (declare %q for recursive ownership): %s",
+			declaration, declaration+"/**", strings.Join(grouped[declaration], ", ")))
+	}
+	return fmt.Errorf("%w: %s", ErrOwnershipViolation, strings.Join(parts, "; "))
+}
+
+func mostSpecificBareAncestor(rules []string, changed string) string {
+	var match string
+	for _, rule := range rules {
+		if strings.HasSuffix(rule, "/**") || !strings.HasPrefix(changed, rule+"/") {
+			continue
+		}
+		if len(rule) > len(match) {
+			match = rule
+		}
+	}
+	return match
 }
 
 func normalizeChangedPath(value string) (string, error) {

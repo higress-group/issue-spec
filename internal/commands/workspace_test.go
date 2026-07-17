@@ -229,6 +229,69 @@ func TestWorkspacePrepareRejectsInvalidManagedOwnershipBeforeReservation(t *test
 	}
 }
 
+func TestWorkspacePrepareRejectsBareTrackedDirectoryBeforeMutationAndAllowsExplicitOverride(t *testing.T) {
+	repo, _ := workspaceGitRepository(t)
+	trackedDir := filepath.Join(repo, "internal", "commands")
+	if err := os.MkdirAll(trackedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(trackedDir, "command.go"), []byte("package commands\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspaceGit(t, repo, "add", "--", "internal/commands/command.go")
+	workspaceGit(t, repo, "commit", "-s", "-m", "tracked command directory")
+	base := workspaceGitOutput(t, repo, "rev-parse", "HEAD")
+
+	body := strings.Replace(workspaceProcessBody(t, model.ProcessExecutionChangeBearing),
+		"- internal/commands/**", "- internal/commands", 1)
+	if !strings.Contains(body, "- internal/commands\n") {
+		t.Fatal("failed to create bare directory declaration fixture")
+	}
+	backend := newWorkspaceCASBackend(body)
+	root := filepath.Join(t.TempDir(), "managed")
+	beforeWorktrees := workspaceGitOutput(t, repo, "worktree", "list", "--porcelain")
+	args := append(workspaceBaseArgs(repo, root, "tree-owner"), "--base", base, "--json")
+	app, out, _ := transitionAppWithError(backend)
+	if code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, args...)); code != 1 {
+		t.Fatalf("bare tree prepare code=%d out=%s", code, out.String())
+	}
+	result := decodeWorkspaceResult(t, out)
+	for _, detail := range []string{"PROCESS-004", `"internal/commands"`, base, `"internal/commands/**"`} {
+		if !strings.Contains(result.Message, detail) {
+			t.Fatalf("bare tree diagnostic missing %q: %+v", detail, result)
+		}
+	}
+	if result.Code != "reservation_invalid" || result.ReconcileRequired || backend.writes != 0 || backend.body != body {
+		t.Fatalf("bare tree mutated reservation or remote state: result=%+v writes=%d", result, backend.writes)
+	}
+	manager := openWorkspaceManager(t, repo, root)
+	if _, found, err := manager.Store.Get(t.Context(), "ws-process-004"); err != nil || found {
+		t.Fatalf("bare tree created lease: found=%v err=%v", found, err)
+	}
+	if after := workspaceGitOutput(t, repo, "worktree", "list", "--porcelain"); after != beforeWorktrees {
+		t.Fatalf("bare tree mutated worktrees:\nbefore=%s\nafter=%s", beforeWorktrees, after)
+	}
+	if branch := workspaceGitOutput(t, repo, "branch", "--list", "issue-spec/process-004"); branch != "" {
+		t.Fatalf("bare tree created process branch %q", branch)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "ws-process-004")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bare tree created workspace path: %v", err)
+	}
+
+	overrideArgs := append(workspaceBaseArgs(repo, root, "tree-owner"), "--base", base,
+		"--write-ownership", "internal/commands/**", "--json")
+	app, out, errOut := transitionAppWithError(backend)
+	if code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, overrideArgs...)); code != 0 {
+		t.Fatalf("explicit recursive override code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	prepared := decodeWorkspaceResult(t, out)
+	parsed := model.ParseProcessWorkspace("PROCESS-004", "", backend.body)
+	if !prepared.OK || prepared.State != processworkspace.StatePrepared || backend.writes != 1 || parsed.Workspace == nil ||
+		!reflect.DeepEqual(parsed.Workspace.WriteOwnership, []string{"internal/commands/**"}) {
+		t.Fatalf("explicit recursive override result=%+v writes=%d remote=%+v", prepared, backend.writes, parsed.Workspace)
+	}
+}
+
 func TestProcessSectionListIgnoresExamplesAndRejectsDuplicateRealSections(t *testing.T) {
 	body := workspaceProcessBody(t, model.ProcessExecutionChangeBearing)
 	fenced := strings.Replace(body, "### Write Ownership", "```markdown\n### Write Ownership\n- repository/**\n```\n\n### Write Ownership", 1)
