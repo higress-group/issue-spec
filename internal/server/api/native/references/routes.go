@@ -125,12 +125,18 @@ func writeError(w http.ResponseWriter, err error) {
 		problem := apierrors.NewProblem(http.StatusConflict, "code_change_conflict",
 			"Active code-change relationship conflict", "", w.Header().Get("X-Request-ID"))
 		problem.Meta = map[string]any{
-			"reason":     codeChangeConflict.Reason,
-			"references": codeChangeConflict.References,
+			"reason": codeChangeConflict.Reason,
 		}
-		if codeChangeConflict.Reason == bindings.CodeChangeConflictAmbiguousActiveReferences {
+		if len(codeChangeConflict.References) > 0 {
+			problem.Meta["references"] = codeChangeConflict.References
+		}
+		switch codeChangeConflict.Reason {
+		case bindings.CodeChangeConflictAmbiguousActiveReferences:
 			problem.Meta["action"] = "inspect_references_delete_unwanted_then_retry"
+		case bindings.CodeChangeConflictHiddenActiveReferences:
+			problem.Meta["action"] = "contact_maintainer"
 		}
+		w.Header().Set("Cache-Control", "no-store")
 		apierrors.WriteProblem(w, problem)
 	case errors.Is(err, adminservice.ErrNotFound):
 		adminapi.WriteProblem(w, http.StatusNotFound, "not_found", "Not found")

@@ -85,14 +85,15 @@ const (
 	CodeChangeConflictAmbiguousActiveReferences CodeChangeConflictReason = "ambiguous_active_references"
 	CodeChangeConflictCanonicalURLDrift         CodeChangeConflictReason = "canonical_url_drift"
 	CodeChangeConflictDifferentActiveChange     CodeChangeConflictReason = "different_active_change"
+	CodeChangeConflictHiddenActiveReferences    CodeChangeConflictReason = "hidden_active_references"
 	CodeChangeConflictInvalidActiveReference    CodeChangeConflictReason = "invalid_active_reference"
 	CodeChangeConflictRefreshRequired           CodeChangeConflictReason = "refresh_required"
 	CodeChangeConflictStaleReferenceVersion     CodeChangeConflictReason = "stale_reference_version"
 )
 
-// ReferenceIdentity is the credential-free, URL-free identity returned when an
-// Implement Issue's active code-change relationship cannot be selected safely.
-// The reference ID supports repair through the existing list/delete operations.
+// ReferenceIdentity is the credential-free, URL-free identity returned only
+// for active code-change references visible to the caller. The reference ID
+// supports repair through the existing list/delete operations.
 type ReferenceIdentity struct {
 	ID                    uuid.UUID `json:"id"`
 	ProviderKey           string    `json:"provider_key"`

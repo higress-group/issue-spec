@@ -171,6 +171,76 @@ func TestNativeReferenceUpsertDecodesOnlyStructuredCodeChangeConflicts(t *testin
 	}
 }
 
+func TestNativeReferenceUpsertDecodesRedactedHiddenConflictWithoutIdentities(t *testing.T) {
+	orgID, repoID, issueID := uuid.New(), uuid.New(), uuid.New()
+	meta := map[string]any{
+		"reason": NativeCodeChangeConflictHiddenActiveReferences,
+		"action": "contact_maintainer",
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type": "https://issue-spec.dev/problems/code_change_conflict", "title": "conflict", "status": 409,
+			"code": "code_change_conflict", "request_id": "hidden-request-901", "meta": meta,
+		})
+	}))
+	defer server.Close()
+	client, err := NewClientWithOptions(ClientOptions{Host: "issues.example.test", BaseURL: server.URL + "/api/v1",
+		Token: "native-token", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := NativeUpsertReferenceInput{ProviderKey: "request-provider-901", RelationKind: "code_change",
+		ExternalRepositoryID: "request/repository-901", ExternalID: "request-change-901",
+		CanonicalURL: "https://request.example.test/changes/901", LifecycleState: "active",
+		Visibility: "repository", Metadata: json.RawMessage(`{"head_revision":"request-revision-901"}`)}
+
+	_, err = client.UpsertNativeReference(t.Context(), models.RepoScope{OrgID: orgID, RepoID: repoID}, issueID, input)
+	var conflict *NativeCodeChangeConflictError
+	var apiErr *APIError
+	if !errors.As(err, &conflict) || !errors.As(err, &apiErr) ||
+		conflict.Reason != NativeCodeChangeConflictHiddenActiveReferences || conflict.Action != "contact_maintainer" ||
+		conflict.RequestID != "hidden-request-901" || len(conflict.References) != 0 || apiErr.StatusCode != http.StatusConflict {
+		t.Fatalf("hidden native conflict=%#v api=%#v error=%v", conflict, apiErr, err)
+	}
+	for _, forbidden := range []string{input.ProviderKey, input.ExternalRepositoryID, input.ExternalID,
+		input.CanonicalURL, "request-revision-901", "representation_version"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("hidden native conflict exposed %q: %v", forbidden, err)
+		}
+	}
+
+	for _, test := range []struct {
+		name string
+		meta map[string]any
+	}{
+		{name: "identity is rejected", meta: map[string]any{
+			"reason": NativeCodeChangeConflictHiddenActiveReferences,
+			"action": "contact_maintainer",
+			"references": []NativeReferenceIdentity{{ID: uuid.NewString(), ProviderKey: "hidden-provider",
+				ExternalRepositoryID: "hidden/repository", ExternalID: "hidden-change", RepresentationVersion: 1}},
+		}},
+		{name: "missing action is rejected", meta: map[string]any{
+			"reason": NativeCodeChangeConflictHiddenActiveReferences,
+		}},
+		{name: "wrong action is rejected", meta: map[string]any{
+			"reason": NativeCodeChangeConflictHiddenActiveReferences,
+			"action": "inspect_references_delete_unwanted_then_retry",
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			meta = test.meta
+			_, err := client.UpsertNativeReference(t.Context(), models.RepoScope{OrgID: orgID, RepoID: repoID}, issueID, input)
+			conflict = nil
+			apiErr = nil
+			if errors.As(err, &conflict) || !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusConflict {
+				t.Fatalf("malformed hidden conflict changed type: conflict=%#v api=%#v error=%v", conflict, apiErr, err)
+			}
+		})
+	}
+}
+
 func TestNativeReferenceUpsertRejectsInvalidInputBeforeRequestAndMismatchedResponse(t *testing.T) {
 	requests := 0
 	orgID, repoID, issueID := uuid.New(), uuid.New(), uuid.New()

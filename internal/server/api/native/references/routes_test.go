@@ -117,6 +117,7 @@ func TestReferenceCodeChangeConflictIsStructuredAndGenericConflictIsStable(t *te
 		t.Fatal(err)
 	}
 	if response.Code != http.StatusConflict || response.Header().Get("Content-Type") != "application/problem+json" ||
+		response.Header().Get("Cache-Control") != "no-store" ||
 		problem.Code != "code_change_conflict" || problem.RequestID != "code-change-conflict-request" ||
 		problem.Meta.Reason != bindings.CodeChangeConflictAmbiguousActiveReferences ||
 		len(problem.Meta.References) != 2 || problem.Meta.References[0].ID != referenceID ||
@@ -128,13 +129,55 @@ func TestReferenceCodeChangeConflictIsStructuredAndGenericConflictIsStable(t *te
 		t.Fatalf("structured conflict exposed mutable navigation data: %s", response.Body.String())
 	}
 
+	service.err = &bindings.CodeChangeConflictError{Reason: bindings.CodeChangeConflictHiddenActiveReferences}
+	hidden := httptest.NewRequest(http.MethodPut, path, strings.NewReader(`{
+		"provider_key":"hidden-provider-901","relation_kind":"code_change","external_repository_id":"hidden/repository-901",
+		"external_id":"hidden-change-901","canonical_url":"https://hidden.example.test/changes/901",
+		"lifecycle_state":"active","visibility":"repository","metadata":{"head_revision":"hidden-revision-901"}}`))
+	hidden.Header.Set("Authorization", "test")
+	hidden.Header.Set("X-Request-ID", "hidden-code-change-conflict-request")
+	hiddenResponse := httptest.NewRecorder()
+	mux.ServeHTTP(hiddenResponse, hidden)
+	var hiddenProblem struct {
+		Code      string                     `json:"code"`
+		RequestID string                     `json:"request_id"`
+		Meta      map[string]json.RawMessage `json:"meta"`
+	}
+	if err := json.Unmarshal(hiddenResponse.Body.Bytes(), &hiddenProblem); err != nil {
+		t.Fatal(err)
+	}
+	var hiddenReason bindings.CodeChangeConflictReason
+	var hiddenAction string
+	if err := json.Unmarshal(hiddenProblem.Meta["reason"], &hiddenReason); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(hiddenProblem.Meta["action"], &hiddenAction); err != nil {
+		t.Fatal(err)
+	}
+	if hiddenResponse.Code != http.StatusConflict || hiddenResponse.Header().Get("Cache-Control") != "no-store" ||
+		hiddenProblem.Code != "code_change_conflict" || hiddenProblem.RequestID != "hidden-code-change-conflict-request" ||
+		hiddenReason != bindings.CodeChangeConflictHiddenActiveReferences || hiddenAction != "contact_maintainer" {
+		t.Fatalf("hidden conflict response=%d headers=%v problem=%+v body=%s",
+			hiddenResponse.Code, hiddenResponse.Header(), hiddenProblem, hiddenResponse.Body.String())
+	}
+	if _, exists := hiddenProblem.Meta["references"]; exists {
+		t.Fatalf("hidden conflict included repair identities: %s", hiddenResponse.Body.String())
+	}
+	for _, forbidden := range []string{"hidden-provider-901", "hidden/repository-901", "hidden-change-901",
+		"https://hidden.example.test/changes/901", "hidden-revision-901", "representation_version"} {
+		if strings.Contains(hiddenResponse.Body.String(), forbidden) {
+			t.Fatalf("hidden conflict exposed %q: %s", forbidden, hiddenResponse.Body.String())
+		}
+	}
+
 	service.err = adminservice.ErrConflict
 	generic := httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
 	generic.Header.Set("Authorization", "test")
 	genericResponse := httptest.NewRecorder()
 	mux.ServeHTTP(genericResponse, generic)
 	assertReferenceProblem(t, genericResponse, http.StatusConflict, "conflict")
-	if strings.Contains(genericResponse.Body.String(), `"reason"`) || strings.Contains(genericResponse.Body.String(), `"references"`) {
+	if strings.Contains(genericResponse.Body.String(), `"reason"`) || strings.Contains(genericResponse.Body.String(), `"references"`) ||
+		strings.Contains(genericResponse.Body.String(), `"action"`) {
 		t.Fatalf("generic conflict response changed shape: %s", genericResponse.Body.String())
 	}
 }

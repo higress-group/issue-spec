@@ -309,6 +309,111 @@ func TestImplementCodeChangeConflictsWithDifferentAndAmbiguousActiveReferences(t
 	}
 }
 
+func TestImplementCodeChangeConflictRedactsMaintainerReferenceFromWriter(t *testing.T) {
+	env := newBindingsEnvironment(t)
+	env.markImplement(t)
+	hiddenInput := env.codeChangeInput("hidden-change-901", "hidden-revision-901")
+	hiddenInput.Visibility = VisibilityMaintainers
+	hidden, err := env.upsertReferenceAs(t, env.owner, "hidden-reference", hiddenInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name  string
+		input UpsertReferenceInput
+	}{
+		{name: "exact retry", input: hiddenInput},
+		{name: "different change", input: env.codeChangeInput("writer-change-902", "writer-revision-902")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := env.upsertReferenceAs(t, env.writer, "writer-hidden-conflict", test.input)
+			if result.ID != uuid.Nil {
+				t.Fatalf("writer received hidden reference result: %+v", result)
+			}
+			assertRedactedCodeChangeConflict(t, err, hidden, hiddenInput)
+		})
+	}
+
+	writerItems, err := env.service.ListReferences(t.Context(), authz.Authenticated(env.writer), env.scope, env.issueID)
+	if err != nil || len(writerItems) != 0 {
+		t.Fatalf("writer references = %+v, %v; want hidden reference concealed", writerItems, err)
+	}
+	maintainerItems, err := env.service.ListReferences(t.Context(), authz.Authenticated(env.maintainer), env.scope, env.issueID)
+	if err != nil || len(maintainerItems) != 1 || maintainerItems[0].ID != hidden.ID {
+		t.Fatalf("maintainer references = %+v, %v", maintainerItems, err)
+	}
+	_, err = env.upsertReferenceAs(t, env.maintainer, "maintainer-hidden-conflict",
+		env.codeChangeInput("maintainer-change-903", "maintainer-revision-903"))
+	assertCodeChangeConflict(t, err, CodeChangeConflictDifferentActiveChange, hidden.ID)
+}
+
+func TestImplementCodeChangeMixedVisibilityConflictFailsClosedForWriter(t *testing.T) {
+	env := newBindingsEnvironment(t)
+	env.markImplement(t)
+	visible, err := env.upsertReferenceAs(t, env.owner, "visible-reference",
+		env.codeChangeInput("visible-change-911", "visible-revision-911"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hiddenID := uuid.New()
+	if _, err := env.pool.Exec(t.Context(), `INSERT INTO external_references
+		(id, organization_id, repository_id, issue_id, provider_key, relation_kind,
+		 external_repository_id, external_id, canonical_url, lifecycle_state, visibility, metadata)
+		VALUES ($1,$2,$3,$4,'hidden-provider-912','code_change','hidden/repository-912','hidden-change-912',
+		 'https://hidden.example.test/changes/912','active','maintainers','{"head_revision":"hidden-revision-912"}')`,
+		hiddenID, env.scope.OrgID, env.scope.RepoID, env.issueID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = env.upsertReferenceAs(t, env.writer, "writer-mixed-conflict",
+		env.codeChangeInput("writer-change-913", "writer-revision-913"))
+	var writerConflict *CodeChangeConflictError
+	if !errors.As(err, &writerConflict) || !errors.Is(err, adminservice.ErrConflict) ||
+		writerConflict.Reason != CodeChangeConflictHiddenActiveReferences || len(writerConflict.References) != 0 {
+		t.Fatalf("writer mixed conflict = %#v, %v", writerConflict, err)
+	}
+	encoded, marshalErr := json.Marshal(writerConflict)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	for _, forbidden := range []string{visible.ID.String(), hiddenID.String(), "visible-change-911",
+		"hidden-provider-912", "hidden/repository-912", "hidden-change-912", "hidden-revision-912",
+		"https://hidden.example.test/changes/912", "representation_version", `"references":`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("writer mixed conflict exposed %q: %s", forbidden, encoded)
+		}
+	}
+
+	_, err = env.upsertReferenceAs(t, env.maintainer, "maintainer-mixed-conflict",
+		env.codeChangeInput("maintainer-change-914", "maintainer-revision-914"))
+	var maintainerConflict *CodeChangeConflictError
+	if !errors.As(err, &maintainerConflict) || maintainerConflict.Reason != CodeChangeConflictAmbiguousActiveReferences ||
+		len(maintainerConflict.References) != 2 {
+		t.Fatalf("maintainer mixed conflict = %#v, %v", maintainerConflict, err)
+	}
+	identities := map[uuid.UUID]bool{}
+	for _, reference := range maintainerConflict.References {
+		identities[reference.ID] = true
+	}
+	if !identities[visible.ID] || !identities[hiddenID] {
+		t.Fatalf("maintainer did not receive complete diagnostics: %+v", maintainerConflict.References)
+	}
+}
+
+func TestImplementRepositoryVisibleConflictRemainsRepairableForWriter(t *testing.T) {
+	env := newBindingsEnvironment(t)
+	env.markImplement(t)
+	visible, err := env.upsertReferenceAs(t, env.owner, "visible-reference",
+		env.codeChangeInput("visible-change-921", "visible-revision-921"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = env.upsertReferenceAs(t, env.writer, "writer-visible-conflict",
+		env.codeChangeInput("writer-change-922", "writer-revision-922"))
+	assertCodeChangeConflict(t, err, CodeChangeConflictDifferentActiveChange, visible.ID)
+}
+
 func TestCodeChangeSpecializationPreservesGenericReferenceUpsert(t *testing.T) {
 	ordinary := newBindingsEnvironment(t)
 	first := ordinary.codeChangeInput("42", "abc123")
@@ -466,6 +571,8 @@ type bindingsEnvironment struct {
 	otherOrgID uuid.UUID
 	issueID    uuid.UUID
 	owner      serverauth.Principal
+	maintainer serverauth.Principal
+	writer     serverauth.Principal
 	reader     serverauth.Principal
 }
 
@@ -481,12 +588,21 @@ func newBindingsEnvironment(t *testing.T) bindingsEnvironment {
 		t.Fatal(err)
 	}
 	ownerID := insertBindingsUser(t, pool, "owner")
+	maintainerID := insertBindingsUser(t, pool, "maintainer")
+	writerID := insertBindingsUser(t, pool, "writer")
 	readerID := insertBindingsUser(t, pool, "reader")
 	orgID := insertBindingsOrg(t, pool, "bindings-org")
 	otherOrgID := insertBindingsOrg(t, pool, "bindings-other-org")
 	repoID := insertBindingsRepo(t, pool, orgID, "repo")
 	insertBindingsMembership(t, pool, orgID, ownerID, "owner")
+	insertBindingsMembership(t, pool, orgID, maintainerID, "maintainer")
+	insertBindingsMembership(t, pool, orgID, writerID, "member")
 	insertBindingsMembership(t, pool, orgID, readerID, "reader")
+	if _, err := pool.Exec(t.Context(), `INSERT INTO repo_collaborators
+		(organization_id, repository_id, user_id, role) VALUES ($1, $2, $3, 'write')`,
+		orgID, repoID, writerID); err != nil {
+		t.Fatal(err)
+	}
 	issueID := uuid.New()
 	if _, err := pool.Exec(t.Context(), `INSERT INTO issues
 		(id, organization_id, repository_id, number, title) VALUES ($1, $2, $3, 1, 'issue')`, issueID, orgID, repoID); err != nil {
@@ -494,11 +610,20 @@ func newBindingsEnvironment(t *testing.T) bindingsEnvironment {
 	}
 	return bindingsEnvironment{pool: pool, service: service, scope: models.RepoScope{OrgID: orgID, RepoID: repoID},
 		otherOrgID: otherOrgID, issueID: issueID,
-		owner: bindingsSession(t, pool, ownerID), reader: bindingsSession(t, pool, readerID)}
+		owner: bindingsSession(t, pool, ownerID), maintainer: bindingsSession(t, pool, maintainerID),
+		writer: bindingsSession(t, pool, writerID), reader: bindingsSession(t, pool, readerID)}
 }
 
 func (e bindingsEnvironment) actor(requestID string) adminservice.Actor {
 	return adminservice.ActorFromPrincipal(e.owner, requestID)
+}
+
+func (e bindingsEnvironment) upsertReferenceAs(t *testing.T, principal serverauth.Principal, requestID string,
+	input UpsertReferenceInput,
+) (Reference, error) {
+	t.Helper()
+	return e.service.UpsertReference(t.Context(), authz.Authenticated(principal),
+		adminservice.ActorFromPrincipal(principal, requestID), e.scope, input)
 }
 
 func (e bindingsEnvironment) markImplement(t *testing.T) {
@@ -531,6 +656,26 @@ func assertCodeChangeConflict(t *testing.T, err error, reason CodeChangeConflict
 	if !errors.As(err, &conflict) || !errors.Is(err, adminservice.ErrConflict) || conflict.Reason != reason ||
 		len(conflict.References) != 1 || conflict.References[0].ID != referenceID {
 		t.Fatalf("code-change conflict = %#v, %v; want reason=%s reference=%s", conflict, err, reason, referenceID)
+	}
+}
+
+func assertRedactedCodeChangeConflict(t *testing.T, err error, hidden Reference, input UpsertReferenceInput) {
+	t.Helper()
+	var conflict *CodeChangeConflictError
+	if !errors.As(err, &conflict) || !errors.Is(err, adminservice.ErrConflict) ||
+		conflict.Reason != CodeChangeConflictHiddenActiveReferences || len(conflict.References) != 0 {
+		t.Fatalf("redacted code-change conflict = %#v, %v", conflict, err)
+	}
+	encoded, marshalErr := json.Marshal(conflict)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	diagnostics := string(encoded) + err.Error()
+	for _, forbidden := range []string{hidden.ID.String(), input.ProviderKey, input.ExternalRepositoryID,
+		input.ExternalID, input.CanonicalURL, "hidden-revision-901", "representation_version", "metadata", `"references":`} {
+		if strings.Contains(diagnostics, forbidden) {
+			t.Fatalf("redacted conflict exposed %q: %s", forbidden, diagnostics)
+		}
 	}
 }
 

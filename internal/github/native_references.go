@@ -56,6 +56,7 @@ const (
 	NativeCodeChangeConflictAmbiguousActiveReferences NativeCodeChangeConflictReason = "ambiguous_active_references"
 	NativeCodeChangeConflictCanonicalURLDrift         NativeCodeChangeConflictReason = "canonical_url_drift"
 	NativeCodeChangeConflictDifferentActiveChange     NativeCodeChangeConflictReason = "different_active_change"
+	NativeCodeChangeConflictHiddenActiveReferences    NativeCodeChangeConflictReason = "hidden_active_references"
 	NativeCodeChangeConflictInvalidActiveReference    NativeCodeChangeConflictReason = "invalid_active_reference"
 	NativeCodeChangeConflictRefreshRequired           NativeCodeChangeConflictReason = "refresh_required"
 	NativeCodeChangeConflictStaleReferenceVersion     NativeCodeChangeConflictReason = "stale_reference_version"
@@ -71,7 +72,8 @@ type NativeReferenceIdentity struct {
 
 type NativeCodeChangeConflictError struct {
 	Reason     NativeCodeChangeConflictReason `json:"reason"`
-	References []NativeReferenceIdentity      `json:"references"`
+	References []NativeReferenceIdentity      `json:"references,omitempty"`
+	Action     string                         `json:"action,omitempty"`
 	RequestID  string                         `json:"request_id,omitempty"`
 	cause      error
 }
@@ -161,11 +163,13 @@ func nativeReferenceError(err error) error {
 		Meta      struct {
 			Reason     NativeCodeChangeConflictReason `json:"reason"`
 			References []NativeReferenceIdentity      `json:"references"`
+			Action     string                         `json:"action"`
 		} `json:"meta"`
 	}
 	if json.Unmarshal([]byte(apiErr.Body), &problem) != nil || problem.Code != "code_change_conflict" ||
 		!knownNativeCodeChangeConflictReason(problem.Meta.Reason) ||
-		!validNativeConflictCardinality(problem.Meta.Reason, len(problem.Meta.References)) {
+		!validNativeConflictCardinality(problem.Meta.Reason, len(problem.Meta.References)) ||
+		(problem.Meta.Reason == NativeCodeChangeConflictHiddenActiveReferences && problem.Meta.Action != "contact_maintainer") {
 		return err
 	}
 	for _, reference := range problem.Meta.References {
@@ -177,10 +181,13 @@ func nativeReferenceError(err error) error {
 		}
 	}
 	return &NativeCodeChangeConflictError{Reason: problem.Meta.Reason, References: problem.Meta.References,
-		RequestID: strings.TrimSpace(problem.RequestID), cause: err}
+		Action: problem.Meta.Action, RequestID: strings.TrimSpace(problem.RequestID), cause: err}
 }
 
 func validNativeConflictCardinality(reason NativeCodeChangeConflictReason, count int) bool {
+	if reason == NativeCodeChangeConflictHiddenActiveReferences {
+		return count == 0
+	}
 	if reason == NativeCodeChangeConflictAmbiguousActiveReferences {
 		return count >= 2
 	}
@@ -190,7 +197,8 @@ func validNativeConflictCardinality(reason NativeCodeChangeConflictReason, count
 func knownNativeCodeChangeConflictReason(reason NativeCodeChangeConflictReason) bool {
 	switch reason {
 	case NativeCodeChangeConflictAmbiguousActiveReferences, NativeCodeChangeConflictCanonicalURLDrift,
-		NativeCodeChangeConflictDifferentActiveChange, NativeCodeChangeConflictInvalidActiveReference,
+		NativeCodeChangeConflictDifferentActiveChange, NativeCodeChangeConflictHiddenActiveReferences,
+		NativeCodeChangeConflictInvalidActiveReference,
 		NativeCodeChangeConflictRefreshRequired, NativeCodeChangeConflictStaleReferenceVersion:
 		return true
 	default:

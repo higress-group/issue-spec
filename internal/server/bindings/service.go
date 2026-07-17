@@ -260,7 +260,7 @@ func (s *Service) UpsertReference(ctx context.Context, subject authz.Subject, ac
 				return lockErr
 			}
 			if implement {
-				result, changed, err = establishCodeChangeReference(ctx, tx, scope, input)
+				result, changed, err = establishCodeChangeReference(ctx, tx, scope, input, decision.EffectivePermission)
 			} else {
 				result, changed, err = upsertGenericReference(ctx, tx, scope, input)
 			}
@@ -335,7 +335,7 @@ func lockIssueAndCheckImplement(ctx context.Context, tx pgx.Tx, scope models.Rep
 	return implement, err
 }
 
-func establishCodeChangeReference(ctx context.Context, tx pgx.Tx, scope models.RepoScope, input UpsertReferenceInput) (Reference, bool, error) {
+func establishCodeChangeReference(ctx context.Context, tx pgx.Tx, scope models.RepoScope, input UpsertReferenceInput, permission authz.Permission) (Reference, bool, error) {
 	incomingRevision, ok := headRevision(input.Metadata)
 	if !ok {
 		return Reference{}, false, adminservice.ErrInvalidInput
@@ -366,32 +366,39 @@ func establishCodeChangeReference(ctx context.Context, tx pgx.Tx, scope models.R
 		result, insertErr := insertReference(ctx, tx, scope, input)
 		return result, insertErr == nil, insertErr
 	}
+	if permission < authz.PermissionMaintain {
+		for _, reference := range active {
+			if reference.Visibility == VisibilityMaintainers {
+				return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictHiddenActiveReferences, active...)
+			}
+		}
+	}
 	if len(active) > 1 {
-		return Reference{}, false, codeChangeConflict(CodeChangeConflictAmbiguousActiveReferences, active...)
+		return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictAmbiguousActiveReferences, active...)
 	}
 	existing := active[0]
 	if validateHTTPSURL(existing.CanonicalURL) != nil {
-		return Reference{}, false, codeChangeConflict(CodeChangeConflictInvalidActiveReference, existing)
+		return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictInvalidActiveReference, existing)
 	}
 	existingRevision, ok := headRevision(existing.Metadata)
 	if !ok {
-		return Reference{}, false, codeChangeConflict(CodeChangeConflictInvalidActiveReference, existing)
+		return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictInvalidActiveReference, existing)
 	}
 	if existing.ProviderKey != input.ProviderKey || existing.ExternalRepositoryID != input.ExternalRepositoryID ||
 		existing.ExternalID != input.ExternalID {
-		return Reference{}, false, codeChangeConflict(CodeChangeConflictDifferentActiveChange, existing)
+		return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictDifferentActiveChange, existing)
 	}
 	if existingRevision == incomingRevision {
 		if existing.CanonicalURL != input.CanonicalURL {
-			return Reference{}, false, codeChangeConflict(CodeChangeConflictCanonicalURLDrift, existing)
+			return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictCanonicalURLDrift, existing)
 		}
 		return existing, false, nil
 	}
 	if !input.Refresh {
-		return Reference{}, false, codeChangeConflict(CodeChangeConflictRefreshRequired, existing)
+		return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictRefreshRequired, existing)
 	}
 	if input.ExpectedVersion == nil || *input.ExpectedVersion != existing.RepresentationVersion {
-		return Reference{}, false, codeChangeConflict(CodeChangeConflictStaleReferenceVersion, existing)
+		return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictStaleReferenceVersion, existing)
 	}
 	result, err := scanReference(tx.QueryRow(ctx, `UPDATE external_references SET canonical_url = $5,
 		title = $6, lifecycle_state = $7, visibility = $8, metadata = $9::jsonb,
@@ -404,7 +411,7 @@ func establishCodeChangeReference(ctx context.Context, tx pgx.Tx, scope models.R
 		input.IssueID, existing.ID, input.CanonicalURL, input.Title, input.LifecycleState,
 		input.Visibility, string(input.Metadata), *input.ExpectedVersion))
 	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, adminservice.ErrNotFound) {
-		return Reference{}, false, codeChangeConflict(CodeChangeConflictStaleReferenceVersion, existing)
+		return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictStaleReferenceVersion, existing)
 	}
 	return result, err == nil, err
 }
@@ -435,7 +442,14 @@ func headRevision(metadata json.RawMessage) (string, bool) {
 	return value.HeadRevision, true
 }
 
-func codeChangeConflict(reason CodeChangeConflictReason, references ...Reference) error {
+func codeChangeConflict(permission authz.Permission, reason CodeChangeConflictReason, references ...Reference) error {
+	if permission < authz.PermissionMaintain {
+		for _, reference := range references {
+			if reference.Visibility == VisibilityMaintainers {
+				return &CodeChangeConflictError{Reason: CodeChangeConflictHiddenActiveReferences}
+			}
+		}
+	}
 	identities := make([]ReferenceIdentity, 0, len(references))
 	for _, reference := range references {
 		identities = append(identities, ReferenceIdentity{ID: reference.ID, ProviderKey: reference.ProviderKey,
