@@ -305,6 +305,9 @@ type fakeCodeChangeBackend struct {
 	issueID      uuid.UUID
 	binding      github.NativeBinding
 	bindingErr   error
+	references   []github.NativeReference
+	referenceErr error
+	issueBackend github.IssueBackend
 	resolveRepo  string
 	resolveIssue int
 	inputs       []github.NativeUpsertReferenceInput
@@ -331,6 +334,10 @@ func (b *fakeCodeChangeBackend) GetNativeActiveBinding(context.Context, models.R
 	return b.binding, b.bindingErr
 }
 
+func (b *fakeCodeChangeBackend) ListNativeReferences(context.Context, models.RepoScope, uuid.UUID) ([]github.NativeReference, error) {
+	return append([]github.NativeReference(nil), b.references...), b.referenceErr
+}
+
 func (b *fakeCodeChangeBackend) UpsertNativeReference(_ context.Context, _ models.RepoScope, _ uuid.UUID,
 	input github.NativeUpsertReferenceInput) (github.NativeReference, error) {
 	b.inputs = append(b.inputs, input)
@@ -339,6 +346,8 @@ func (b *fakeCodeChangeBackend) UpsertNativeReference(_ context.Context, _ model
 	}
 	return b.reference(input, 1), nil
 }
+
+func (b *fakeCodeChangeBackend) CompatibilityIssueBackend() github.IssueBackend { return b.issueBackend }
 
 func (b *fakeCodeChangeBackend) reference(input github.NativeUpsertReferenceInput, version int64) github.NativeReference {
 	return github.NativeReference{ID: "d50bce8e-28a9-40e4-9bcb-9eb245628f43", IssueID: b.issueID.String(),

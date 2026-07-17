@@ -53,6 +53,47 @@ func TestNativeReferenceUpsertForwardsConditionalFieldsAndValidatesResponse(t *t
 	}
 }
 
+func TestNativeReferenceListValidatesProviderNeutralRelationships(t *testing.T) {
+	orgID, repoID, issueID := uuid.New(), uuid.New(), uuid.New()
+	requests := 0
+	valid := NativeReference{ID: uuid.NewString(), IssueID: issueID.String(), ProviderKey: "aone-bridge",
+		RelationKind: "code_change", ExternalRepositoryID: "acme/widgets", ExternalID: "42",
+		CanonicalURL: "https://code.example/acme/widgets/changes/42", LifecycleState: "active",
+		Visibility: "repository", Metadata: json.RawMessage(`{"head_revision":"abc"}`), RepresentationVersion: 3}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/orgs/"+orgID.String()+"/repos/"+repoID.String()+"/issues/"+issueID.String()+"/references" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer native-token" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"references": []NativeReference{valid}})
+	}))
+	defer server.Close()
+	client, err := NewClientWithOptions(ClientOptions{Host: "issues.example.test", BaseURL: server.URL + "/api/v1",
+		Token: "native-token", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := client.ListNativeReferences(t.Context(), models.RepoScope{OrgID: orgID, RepoID: repoID}, issueID)
+	if err != nil || len(items) != 1 || items[0].CanonicalURL != valid.CanonicalURL {
+		t.Fatalf("items=%+v error=%v", items, err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d", requests)
+	}
+
+	valid.CanonicalURL += "?token=secret"
+	if _, err := client.ListNativeReferences(t.Context(), models.RepoScope{OrgID: orgID, RepoID: repoID}, issueID); err == nil ||
+		!strings.Contains(err.Error(), "incomplete or invalid") {
+		t.Fatalf("unsafe list response error = %v", err)
+	}
+	if _, err := client.ListNativeReferences(t.Context(), models.RepoScope{}, issueID); err == nil || requests != 2 {
+		t.Fatalf("invalid scope error=%v requests=%d", err, requests)
+	}
+}
+
 func TestNativeReferenceUpsertPreservesGenericRequestShape(t *testing.T) {
 	orgID, repoID, issueID, referenceID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

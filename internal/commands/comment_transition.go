@@ -132,7 +132,7 @@ func (a *app) runCommentTransition(ctx context.Context, args []string) int {
 	return a.applyNonAtomicTransition(ctx, client, repo, issue, artifact, listedBody, request, *expectedDigest, *jsonOut)
 }
 
-func findUniqueTransitionArtifactByID(ctx context.Context, client github.Operations, repo string, issueNumber int, id string) (model.Artifact, string, error) {
+func findUniqueTransitionArtifactByID(ctx context.Context, client github.IssueBackend, repo string, issueNumber int, id string) (model.Artifact, string, error) {
 	comments, err := client.ListIssueComments(ctx, repo, issueNumber)
 	if err != nil {
 		return model.Artifact{}, "", err

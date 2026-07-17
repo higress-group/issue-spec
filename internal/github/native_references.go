@@ -15,6 +15,7 @@ import (
 )
 
 type NativeReferenceOperations interface {
+	ListNativeReferences(context.Context, models.RepoScope, uuid.UUID) ([]NativeReference, error)
 	UpsertNativeReference(context.Context, models.RepoScope, uuid.UUID, NativeUpsertReferenceInput) (NativeReference, error)
 }
 
@@ -81,6 +82,25 @@ func (e *NativeCodeChangeConflictError) Error() string {
 
 func (e *NativeCodeChangeConflictError) Unwrap() error { return e.cause }
 
+func (c *Client) ListNativeReferences(ctx context.Context, scope models.RepoScope, issueID uuid.UUID) ([]NativeReference, error) {
+	if err := scope.Validate(); err != nil || issueID == uuid.Nil {
+		return nil, errors.New("native reference list scope is invalid")
+	}
+	var result struct {
+		References []NativeReference `json:"references"`
+	}
+	path := fmt.Sprintf("/orgs/%s/repos/%s/issues/%s/references", scope.OrgID, scope.RepoID, issueID)
+	if _, err := c.doRunnerJSON(ctx, http.MethodGet, path, nil, nil, ConditionalRequest{}, false, &result); err != nil {
+		return nil, err
+	}
+	for _, reference := range result.References {
+		if !validNativeReference(reference, issueID) {
+			return nil, errors.New("native reference list response is incomplete or invalid")
+		}
+	}
+	return result.References, nil
+}
+
 func (c *Client) UpsertNativeReference(ctx context.Context, scope models.RepoScope, issueID uuid.UUID, input NativeUpsertReferenceInput) (NativeReference, error) {
 	if err := validateNativeReferenceInput(scope, issueID, input); err != nil {
 		return NativeReference{}, err
@@ -110,17 +130,24 @@ func validateNativeReferenceInput(scope models.RepoScope, issueID uuid.UUID, inp
 }
 
 func validateNativeReferenceResult(result NativeReference, issueID uuid.UUID, input NativeUpsertReferenceInput) error {
-	resultID, resultIDErr := uuid.Parse(strings.TrimSpace(result.ID))
-	resultIssueID, resultIssueIDErr := uuid.Parse(strings.TrimSpace(result.IssueID))
-	if resultIDErr != nil || resultIssueIDErr != nil || resultID == uuid.Nil || resultIssueID != issueID ||
+	if !validNativeReference(result, issueID) ||
 		result.ProviderKey != input.ProviderKey || result.RelationKind != input.RelationKind ||
 		result.ExternalRepositoryID != input.ExternalRepositoryID || result.ExternalID != input.ExternalID ||
-		result.CanonicalURL != input.CanonicalURL || !exactNonempty(result.LifecycleState) ||
-		(result.Visibility != "repository" && result.Visibility != "maintainers") ||
-		result.RepresentationVersion < 1 || !nativeMetadataObject(result.Metadata) {
+		result.CanonicalURL != input.CanonicalURL {
 		return errors.New("native reference upsert response is incomplete or mismatched")
 	}
 	return nil
+}
+
+func validNativeReference(result NativeReference, issueID uuid.UUID) bool {
+	resultID, resultIDErr := uuid.Parse(strings.TrimSpace(result.ID))
+	resultIssueID, resultIssueIDErr := uuid.Parse(strings.TrimSpace(result.IssueID))
+	return resultIDErr == nil && resultIssueIDErr == nil && resultID != uuid.Nil && resultIssueID == issueID &&
+		exactNonempty(result.ProviderKey) && exactNonempty(result.RelationKind) &&
+		exactNonempty(result.ExternalRepositoryID) && exactNonempty(result.ExternalID) &&
+		nativeReferenceURL(result.CanonicalURL) && exactNonempty(result.LifecycleState) &&
+		(result.Visibility == "repository" || result.Visibility == "maintainers") &&
+		result.RepresentationVersion >= 1 && nativeMetadataObject(result.Metadata)
 }
 
 func nativeReferenceError(err error) error {

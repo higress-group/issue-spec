@@ -215,6 +215,7 @@ Usage:
   issue-spec read pr --repo owner/repo --pr N [--comments] [--typed-only]
   issue-spec search issues --repo owner/repo --query TEXT [--state all|open|closed] [--source all|issue|comments|change] [--stage proposal|design|implement] [--limit 10]
   issue-spec code-change attach --repo owner/repo --implement N --change-id ID --revision REV [--refresh --expected-version N] [--json]
+  issue-spec code-change link-process --repo owner/repo --implement N --process PROCESS-001 --expected-version N [--json]
   issue-spec runner poll --repo owner/repo --runner login --once --dry-run
   issue-spec runner serve --profile self-hosted --repo owner/repo --runner login --subscription-id UUID --secret-file FILE (--git-credential-command /absolute/provider|--allow-host-ssh)
   issue-spec runner preflight --repo owner/repo --runner login`)
