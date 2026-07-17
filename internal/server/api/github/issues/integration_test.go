@@ -288,6 +288,38 @@ func TestPublicContributorIssueCompatibility(t *testing.T) {
 		t.Fatalf("standard proposal = %+v", standard)
 	}
 
+	standardComments := []string{
+		"<!-- issue-spec:type=SPEC id=SPEC-001 version=1 -->\nAgent: Requirements\nType: SPEC\nID: SPEC-001\nStatus: confirmed\nScope: external requirement\nLinks:\n\n## Raw\nThe export MUST omit credentials.\n",
+		"<!-- issue-spec:type=QUESTION id=QUESTION-001 version=1 -->\nAgent: Requirements\nType: QUESTION\nID: QUESTION-001\nStatus: open\nScope: external requirement\nLinks:\n\n## Question\nShould the first version exclude attachments?\n",
+		"Attachments can remain out of scope for the first version.",
+	}
+	var discussion codec.Comment
+	for index, body := range standardComments {
+		response = request(t, mux, http.MethodPost, "/repos/acme/widgets/issues/2/comments",
+			jsonBody(map[string]any{"body": body}), "contributor")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("standard comment %d status=%d body=%s", index, response.Code, response.Body.String())
+		}
+		var created codec.Comment
+		decode(t, response, &created)
+		if created.User.Login != contributor.User.Login || created.Body != body {
+			t.Fatalf("standard comment %d = %+v", index, created)
+		}
+		if index == len(standardComments)-1 {
+			discussion = created
+		}
+	}
+	response = request(t, mux, http.MethodPatch, fmt.Sprintf("/repos/acme/widgets/issues/comments/%d", discussion.ID),
+		jsonBody(map[string]any{"body": "Agreed: attachments remain out of scope."}), "contributor")
+	if response.Code != http.StatusOK {
+		t.Fatalf("discussion author update status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = request(t, mux, http.MethodPatch, fmt.Sprintf("/repos/acme/widgets/issues/comments/%d", discussion.ID),
+		jsonBody(map[string]any{"body": "other writer"}), "other-contributor")
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("other discussion update status=%d body=%s", response.Code, response.Body.String())
+	}
+
 	deniedCreates := []struct {
 		name   string
 		body   string

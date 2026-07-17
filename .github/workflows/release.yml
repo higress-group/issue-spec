@@ -73,9 +73,62 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  native-installer:
+    name: Native installer / ${{ matrix.label }}
+    needs: package
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Shell Linux amd64
+            runner: ubuntu-latest
+            kind: shell
+            os: linux
+          - label: Shell macOS amd64
+            runner: macos-15
+            kind: shell
+            os: darwin
+          - label: PowerShell Windows amd64
+            runner: windows-2025
+            kind: powershell
+            os: windows
+    steps:
+      - name: Download the exact verified release candidate
+        uses: actions/download-artifact@v8
+        with:
+          name: release-${{ github.sha }}
+          path: dist/release
+
+      - name: Install twice from manifest with Shell
+        if: matrix.kind == 'shell'
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x dist/release/publish/install.sh
+          install_dir="$RUNNER_TEMP/issue-spec-bin"
+          dist/release/publish/install.sh --asset-dir dist/release/publish --install-dir "$install_dir" --os "${{ matrix.os }}" --arch amd64
+          first_identity=$($install_dir/issue-spec version --json)
+          dist/release/publish/install.sh --asset-dir dist/release/publish --install-dir "$install_dir" --os "${{ matrix.os }}" --arch amd64
+          second_identity=$($install_dir/issue-spec version --json)
+          test "$first_identity" = "$second_identity"
+
+      - name: Install twice from manifest with PowerShell
+        if: matrix.kind == 'powershell'
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "issue-spec-bin"
+          ./dist/release/publish/install.ps1 -AssetDir ./dist/release/publish -InstallDir $installDir -Architecture amd64
+          $firstIdentity = (& (Join-Path $installDir "issue-spec.exe") version --json | Out-String)
+          ./dist/release/publish/install.ps1 -AssetDir ./dist/release/publish -InstallDir $installDir -Architecture amd64
+          $secondIdentity = (& (Join-Path $installDir "issue-spec.exe") version --json | Out-String)
+          if ($firstIdentity -ne $secondIdentity) { throw "repeated native installation changed build identity" }
+
   publish:
     name: Attest and publish complete draft
-    needs: package
+    needs: [package, native-installer]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     permissions:

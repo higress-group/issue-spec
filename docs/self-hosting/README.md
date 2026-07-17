@@ -158,6 +158,10 @@ credentials or development posture into production.
 
 ## Connect a local repository
 
+For the complete external-user path—from verified CLI installation and a
+name-only PAT through a simple issue or standard Proposal/SPEC—follow
+[Start a requirements workflow](requirements-onboarding.md).
+
 Create a PAT from **Access tokens** in the web application, then configure an
 origin-bound self-hosted profile. Read the canonical origins and instance ID
 from `/api/v1/meta` instead of guessing them.
@@ -259,6 +263,7 @@ setup, see [Self-hosted runner: trigger agents from issue comments](runner.md).
 
 ## Operations index
 
+- [Requirements onboarding](requirements-onboarding.md)
 - [Authentication guide](authentication/README.md)
 - [Deployment and hardening](operations/deployment.md)
 - [Backup, restore, upgrade, and recovery](operations/backup-restore.md)

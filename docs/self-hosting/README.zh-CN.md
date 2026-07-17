@@ -138,6 +138,9 @@ Issue 动作、Change 类型、普通/类型化评论，以及真人/自动化 A
 
 ## 接入本地仓库
 
+从已校验 CLI 安装和只填名称的 PAT，到创建简单 Issue 或标准 Proposal/SPEC 的完整
+外部用户路径，见[启动需求工作流](requirements-onboarding.zh-CN.md)。
+
 先在 Web 应用的 **Access tokens** 页面创建 PAT，然后配置与 Server Origin 绑定的
 self-hosted Profile。应从 `/api/v1/meta` 读取 Origin 和 Instance ID，不要自行猜测。
 
@@ -227,6 +230,7 @@ Service Account 与 PAT 的操作会被标记为 Automation，Webhook 策略和�
 
 ## 运维文档索引
 
+- [需求接入指南](requirements-onboarding.zh-CN.md)
 - [认证指南](authentication/README.md)
 - [部署与加固](operations/deployment.md)
 - [备份、恢复、升级与应急处理](operations/backup-restore.md)

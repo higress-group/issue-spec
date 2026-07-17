@@ -3,7 +3,7 @@ NPM ?= npm
 DIST_DIR ?= dist
 IMAGE ?= issue-spec-server:dev
 
-.PHONY: generate-web verify-generated verify-docs docs-self-hosted-screenshots build-server test-server release-server release-cli verify-release docker-server backup-smoke
+.PHONY: generate-web verify-generated verify-docs verify-requirements-acceptance docs-self-hosted-screenshots build-server test-server release-server release-cli verify-release docker-server backup-smoke
 
 generate-web:
 	cd web && $(NPM) ci && $(NPM) run build
@@ -15,6 +15,12 @@ verify-generated: generate-web
 
 verify-docs:
 	$(GO) test ./cmd/issue-spec-server -run '^TestExternalAuthDocumentation'
+	./hack/requirements-acceptance/verify.sh
+
+verify-requirements-acceptance:
+	$(GO) test ./internal/commands -run '^TestRequirementsAcceptance'
+	$(GO) test ./internal/server/api/github/issues -run '^TestPublicContributorIssueCompatibility$$'
+	./hack/requirements-acceptance/verify.sh
 
 docs-self-hosted-screenshots:
 	./hack/update-self-hosted-doc-screenshots.sh
