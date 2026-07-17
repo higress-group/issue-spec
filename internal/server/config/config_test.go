@@ -312,6 +312,7 @@ func resetEnv(t *testing.T) {
 		TrustedProxiesEnv, BootstrapSecretFileEnv, TokenPepperFileEnv, EncryptionKeyFileEnv,
 		MigrationsModeEnv, GracefulShutdownTimeoutEnv, HealthReadTimeoutEnv, HealthWriteTimeoutEnv,
 		AuthProvidersFileEnv, WebhookKeysFileEnv, StaticDirectoryEnv, WebhookAllowedPrivateEnv,
+		SMTPConfigFileEnv,
 		DeliveryConcurrencyEnv, DeliveryLeaseDurationEnv, DeliveryPollIntervalEnv,
 		DelegationAudienceEnv, DelegationSubjectEnv, TransportPostureEnv, SearchModeEnv,
 	} {
