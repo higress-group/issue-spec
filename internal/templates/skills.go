@@ -13,6 +13,7 @@ type WorkflowTemplate struct {
 	CommandID   string
 	CommandName string
 	Body        string
+	SkillOnly   string
 }
 
 type RenderedSkill struct {
@@ -33,7 +34,11 @@ func IssueSpecSkills(repo string) []RenderedSkill {
 	workflows := issueSpecWorkflows(repo)
 	out := make([]RenderedSkill, 0, len(workflows)+1)
 	for _, tmpl := range workflows {
-		out = append(out, RenderedSkill{Name: tmpl.Name, Content: renderSkill(tmpl.Name, tmpl.Description, tmpl.Body)})
+		body := tmpl.Body
+		if strings.TrimSpace(tmpl.SkillOnly) != "" {
+			body = strings.TrimRight(body, "\n") + "\n\n" + strings.TrimSpace(tmpl.SkillOnly) + "\n"
+		}
+		out = append(out, RenderedSkill{Name: tmpl.Name, Content: renderSkill(tmpl.Name, tmpl.Description, body)})
 	}
 	out = append(out, githubCLISkill())
 	return out
@@ -60,10 +65,16 @@ func IssueSpecCommandContents(repo string) []CommandContent {
 
 func issueSpecWorkflows(repo string) []WorkflowTemplate {
 	repo = valueOr(strings.TrimSpace(repo), "owner/repo")
+	const processWriteOwnershipGuidance = `## PROCESS Write Ownership
+
+- Treat a bare repository-relative ownership path as exact: ` + "`internal/templates/skills.go`" + ` owns only that file.
+- To own a directory subtree, use an explicit trailing ` + "`/**`" + ` declaration such as ` + "`internal/templates/**`" + `. Never use bare ` + "`internal/templates`" + ` to mean its descendants.
+- Existing PROCESS comments with bare paths remain readable and are not migrated automatically. Before workspace allocation, ` + "`prepare`" + ` may reject a bare path that resolves to a tracked directory; explicitly correct the PROCESS artifact or pass a corrected ` + "`--write-ownership internal/templates/**`" + ` value.`
 	workflows := []WorkflowTemplate{
 		{
 			Name:        "issue-spec-workflow",
 			Description: "Use issue-spec to run an issue-native OpenSpec-style workflow across GitHub or self-hosted issue backends and provider-owned code changes.",
+			SkillOnly:   processWriteOwnershipGuidance,
 			Body: `# Issue Spec Workflow
 
 Use this skill for issue-native OpenSpec work. Active change artifacts live in the selected issue backend; source, code changes, review, and CI stay with the selected code provider. Durable specs are repository files created after implementation merge.
@@ -236,6 +247,7 @@ Link matrix (each direction has a designated owner; rows marked ✓ are gated by
 			Description: "Implement PROCESS comments for an issue-spec change and keep implementation-change traceability synchronized.",
 			CommandID:   "apply",
 			CommandName: "Issue Spec: Apply",
+			SkillOnly:   processWriteOwnershipGuidance,
 			Body: `# Issue Spec Apply
 
 Use when the user asks for /issue-spec:apply, issue-spec apply, or implementing PROCESS/TASK scopes from an issue-spec change.

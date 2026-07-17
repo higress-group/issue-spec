@@ -1,6 +1,8 @@
 package templates
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -23,6 +25,53 @@ func TestIssueSpecSkillAndCommandTemplates(t *testing.T) {
 	}
 	if !strings.Contains(commands[0].Body, "issue-spec issue create proposal --repo owner/repo") {
 		t.Fatalf("command body missing repo-specific issue-spec usage:\n%s", commands[0].Body)
+	}
+}
+
+func TestIssueSpecSkillsDistinguishExactFilesFromRecursiveDirectories(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+	for _, name := range []string{"issue-spec-workflow", "issue-spec-apply"} {
+		content := skillContent(t, skills, name)
+		for _, want := range []string{
+			"Treat a bare repository-relative ownership path as exact",
+			"`internal/templates/skills.go` owns only that file",
+			"directory subtree, use an explicit trailing `/**` declaration such as `internal/templates/**`",
+			"Never use bare `internal/templates` to mean its descendants",
+			"Existing PROCESS comments with bare paths remain readable and are not migrated automatically",
+			"`prepare` may reject a bare path that resolves to a tracked directory",
+			"`--write-ownership internal/templates/**`",
+		} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s skill missing ownership guidance %q:\n%s", name, want, content)
+			}
+		}
+	}
+}
+
+func TestReferenceOwnershipExamplesUseRecursiveDirectoryDeclarations(t *testing.T) {
+	for _, relative := range []string{"reference.md", "reference.zh-CN.md"} {
+		path := filepath.Join("..", "..", "docs", relative)
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content := string(body)
+		for _, want := range []string{
+			`"owned_areas": ["internal/templates/**", "docs/reference.md"]`,
+			`"write_ownership": ["internal/templates/**", "docs/reference.md"]`,
+		} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s missing ownership example %q", relative, want)
+			}
+		}
+		for _, forbidden := range []string{
+			`"owned_areas": ["internal/templates"]`,
+			`"write_ownership": ["internal/templates"]`,
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("%s contains bare directory ownership example %q", relative, forbidden)
+			}
+		}
 	}
 }
 

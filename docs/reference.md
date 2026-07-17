@@ -262,7 +262,7 @@ TASK bodies carry the PROCESS-planning metadata a coordinator needs to decompose
   "checklist": ["Add execution_planning fields", "Enforce canonical validation"],
   "covers": ["SPEC-001", "SPEC-006"],
   "execution_planning": {
-    "owned_areas": ["internal/templates"],
+    "owned_areas": ["internal/templates/**", "docs/reference.md"],
     "shared_touchpoints": ["internal/model"],
     "dependencies": ["SPEC generator schema"],
     "coupling": "low",
@@ -272,6 +272,8 @@ TASK bodies carry the PROCESS-planning metadata a coordinator needs to decompose
 }
 ```
 
+Ownership declarations are literal. A bare repository-relative path such as `docs/reference.md` owns only that exact file; a directory subtree must use an explicit trailing `/**` declaration such as `internal/templates/**`. Do not use bare `internal/templates` to imply ownership of its descendants. Existing PROCESS comments with bare paths remain readable and are not migrated automatically, but `workspace prepare` may reject one that resolves to a tracked directory. Before allocation, explicitly correct the PROCESS artifact or pass a corrected `--write-ownership internal/templates/**` value.
+
 PROCESS bodies record their parent TASK and, for serial chains, the handoff evidence passed to the next node:
 
 ```json
@@ -280,7 +282,7 @@ PROCESS bodies record their parent TASK and, for serial chains, the handoff evid
   "owner": "Worker Agent A",
   "parent_task": "TASK-001",
   "dependencies": ["N/A"],
-  "write_ownership": ["internal/templates"],
+  "write_ownership": ["internal/templates/**", "docs/reference.md"],
   "covers": ["TASK-001"],
   "handoff": "state.json contract fixed; successor may parse it"
 }

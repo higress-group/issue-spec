@@ -249,7 +249,7 @@ TASK 正文承载协调器分解工作所需的 PROCESS 规划元数据。`execu
   "checklist": ["Add execution_planning fields", "Enforce canonical validation"],
   "covers": ["SPEC-001", "SPEC-006"],
   "execution_planning": {
-    "owned_areas": ["internal/templates"],
+    "owned_areas": ["internal/templates/**", "docs/reference.md"],
     "shared_touchpoints": ["internal/model"],
     "dependencies": ["SPEC generator schema"],
     "coupling": "low",
@@ -259,6 +259,8 @@ TASK 正文承载协调器分解工作所需的 PROCESS 规划元数据。`execu
 }
 ```
 
+Ownership 声明按字面解释。`docs/reference.md` 这样的仓库相对 bare path 只拥有该 exact file；目录 subtree 必须使用显式的尾部 `/**` 声明，例如 `internal/templates/**`。不得用 bare `internal/templates` 暗示拥有其后代路径。包含 bare path 的历史 PROCESS 评论仍可读取，也不会自动迁移，但当该路径解析为 tracked directory 时，`workspace prepare` 可能拒绝它。分配 workspace 前，必须显式修正 PROCESS artifact，或传入修正后的 `--write-ownership internal/templates/**`。
+
 PROCESS 正文记录其父 TASK，并且对于串行链，还记录传给下一节点的交接（handoff）证据：
 
 ```json
@@ -267,7 +269,7 @@ PROCESS 正文记录其父 TASK，并且对于串行链，还记录传给下一�
   "owner": "Worker Agent A",
   "parent_task": "TASK-001",
   "dependencies": ["N/A"],
-  "write_ownership": ["internal/templates"],
+  "write_ownership": ["internal/templates/**", "docs/reference.md"],
   "covers": ["TASK-001"],
   "handoff": "state.json contract fixed; successor may parse it"
 }

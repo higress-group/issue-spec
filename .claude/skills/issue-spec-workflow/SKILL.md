@@ -112,6 +112,12 @@ Link matrix (each direction has a designated owner; rows marked ✓ are gated by
 `verify-links` covers SPEC↔TASK and TASK↔PROCESS only; the other two directions
 are created by their owner steps but not auto-checked.
 
+## PROCESS Write Ownership
+
+- Treat a bare repository-relative ownership path as exact: `internal/templates/skills.go` owns only that file.
+- To own a directory subtree, use an explicit trailing `/**` declaration such as `internal/templates/**`. Never use bare `internal/templates` to mean its descendants.
+- Existing PROCESS comments with bare paths remain readable and are not migrated automatically. Before workspace allocation, `prepare` may reject a bare path that resolves to a tracked directory; explicitly correct the PROCESS artifact or pass a corrected `--write-ownership internal/templates/**` value.
+
 ## Project Workflow
 
 - Workflow Source: `builtin`
