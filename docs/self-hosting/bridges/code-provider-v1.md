@@ -30,8 +30,9 @@ external_code:
 
 Repository configuration containing an executable, arguments, environment, or
 credential source is rejected. Provider keys do not grant authority: evidence
-ingestion still requires a designated repository writer, `evidence:write`, an
-exact repository cap, and live repository permission.
+ingestion still requires a designated repository writer, `evidence:write`, a
+PAT repository cap that covers the target when one is configured, and live
+repository permission.
 
 ### Assign an evidence writer
 

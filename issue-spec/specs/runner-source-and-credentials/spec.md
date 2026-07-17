@@ -35,15 +35,16 @@ The runner MUST treat issue repository identity and source repository location a
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4932916831
 
-### Requirement: Sandboxed agents receive explicit repository-scoped credentials
+### Requirement: Sandboxed agents receive explicit repository-checked credentials
 
 For self-hosted issue API access, the runner MUST reuse the operator-selected,
 origin-bound profile PAT through a stable private read-only file shared by jobs
-served by that process. The PAT MUST remain restricted to the exact repository
-and minimum runner scopes. Source access MUST continue to use an operator-owned,
-purpose-scoped credential helper or an explicitly enabled host SSH boundary.
-Neither credential may be embedded in repository state, prompts, clone URLs, or
-durable runner records.
+served by that process. The PAT MUST grant every explicitly configured
+repository and include the minimum runner scopes; it MAY grant all repositories,
+a selected set of repositories, or additional scopes. Source access MUST
+continue to use an operator-owned, purpose-scoped credential helper or an
+explicitly enabled host SSH boundary. Neither credential may be embedded in
+repository state, prompts, clone URLs, or durable runner records.
 
 #### Scenario: child issue access uses the profile PAT file
 
@@ -52,8 +53,13 @@ durable runner records.
 
 #### Scenario: issue access remains stable across jobs and resume
 
-- **WHEN** the runner dispatches successive `/new` or `/resume` jobs for its configured repository
+- **WHEN** the runner dispatches successive `/new` or `/resume` jobs for any configured repository
 - **THEN** each job MUST receive the same profile PAT file capability, job cleanup MUST NOT delete that file, and PAT rotation or revocation MUST remain an explicit operator action
+
+#### Scenario: every configured repository is checked independently
+
+- **WHEN** one process serves multiple repositories
+- **THEN** startup and per-job preflight MUST verify that the PAT grants the current repository and that its identity has the required live repository role, without rejecting unrelated repository grants or additional scopes
 
 #### Scenario: optional delegation remains outside the default runner path
 

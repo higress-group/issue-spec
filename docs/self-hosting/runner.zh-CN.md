@@ -105,8 +105,8 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
    Login，例如 `svc-runner-bot-a1b2c3d4`；
 2. 在目标仓库的 **协作者** 页面解析该 Login，并授予最低的 `write` 角色；
 3. 在 **管理后台 > 托管访问令牌** 中解析该 Service Account；
-4. 选择 **运行器预设**，并且只选择 Runner 要服务的那个仓库；
-5. 确认 Scope 包含 `read:user`、`issues:read`、`issues:write` 和
+4. 选择 **运行器预设**，再选择 **全站全部仓库**，或选中该 Runner 进程要服务的所有仓库；
+5. 确认 Scope 至少包含 `read:user`、`issues:read`、`issues:write` 和
    `evidence:write`；
 6. 创建并保存只显示一次的 Managed PAT。
 7. 由仓库 Owner 或运维身份把该 Service Account 显式指定为目标仓库的有效
@@ -117,26 +117,30 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 `--runner` 必须填写 Service Account 的准确 Login。其他真人维护者若要触发任务，使用
 可重复的 `--allowed-user` 加入允许列表；Server 还会独立校验评论作者具有仓库 Write
 等效权限。这样 Runner 自动化身份、评论发起人和 Linux 进程用户互不混用。
+全站访问始终跟随 Service Account 当前拥有的仓库角色，本身不会授予任何仓库权限。
 
 ### 简化方式：使用自己的账号
 
 本地试用、个人环境或短期联调也可以直接使用自己的 issue-spec 账号：
 
 1. 确认自己的账号对目标仓库具有 `write` 或更高权限；
-2. 在 **访问令牌** 页面选择 **运行器预设**，并且只选择目标仓库；
+2. 在 **访问令牌** 页面选择 **运行器预设**，再选择 **全站全部仓库**，或选中该 Runner
+   进程要服务的所有仓库；
 3. 保存只显示一次的个人 PAT；
 4. 由仓库 Owner 或运维身份把自己的账号显式指定为目标仓库的有效
    **Evidence Writer**；
 5. 启动时把自己的准确 Login 传给 `--runner`。
 
-个人 PAT 使用相同的四个 Scope，并且同样必须精确绑定一个仓库。默认只有
+个人 PAT 至少需要相同的四个 Scope，可以覆盖全站全部仓库或指定的多个仓库；全站访问
+始终跟随账号的实时权限，本身不会授予仓库权限。默认只有
 `--runner` 对应的自己可以发出命令；需要允许其他维护者时再增加 `--allowed-user`。
 这种方式配置更少，但 Runner 写入、凭据轮换和账号停用都与个人身份绑定，不适合作为
 团队长期运行或多人共用的生产自动化。不要用浏览器 Session Cookie 或登录会话替代 PAT。
 
 Evidence Writer 是 Server 按用户身份保存的持久授权，不是 PAT Scope，也不是创建 Token
 时的选项；`evidence:write` 不会让 Token 持有人自动成为 Evidence Writer。Runner PAT
-仍只保留上述四个 Scope；使用独立的仓库管理 Session 或短期、准确限定到该仓库的
+通过运行器预设可快速选择上述四个最低必需 Scope；多余 Scope 不再阻止启动，但仍建议
+取消自动化不需要的权限。使用独立的仓库管理 Session 或短期、准确限定到该仓库的
 `admin:repo` PAT 管理指定，绝不能把 `admin:repo` 加到 Runner PAT。为同一身份轮换 PAT
 不会改变指定；停用该身份或把 Runner 迁移到其他账号时，应同时停用原指定。Native API
 操作和撤销示例见[指定 Evidence Writer](bridges/code-provider-v1.md#assign-an-evidence-writer)。
@@ -163,12 +167,12 @@ issue-spec --profile team auth status --json
 上述 Managed PAT 或个人 PAT 会由每个 `/new` 与 `/resume` 作业直接使用。
 `runner serve` 启动时把它写入仓库 Workspace 之外的固定私有文件，所有 Agent Session
 都复用同一个文件，不再为每个作业签发和撤销委托 Issue Token。Server 的委托 Token
-每个作业开始前，Runner 都会重新确认该文件仍以配置的身份通过认证、只包含上述四个
-Scope、仍精确限制到唯一配置的仓库，并且当前仓库角色仍满足所需操作；身份、权限、
+每个作业开始前，Runner 都会重新确认该文件仍以配置的身份通过认证、至少包含上述四个
+Scope、允许访问当前作业仓库，并且当前仓库角色仍满足所需操作；身份、权限、
 仓库限制或网络状态发生漂移时，作业会闭合失败。Git Clone 与 Push 仍由独立的 Git
 凭据 Provider 证明。Server 的委托 Token API 仍可供其他集成使用，但不在 Runner
-执行链路中。该 PAT 必须精确绑定一个仓库；
-需要服务多个仓库时，应为每个仓库创建独立的 PAT、Profile 和 `runner serve` 进程。
+执行链路中。当 PAT 的仓库范围和身份权限覆盖多个仓库时，一个 PAT 和 Profile 可以服务
+多个显式配置的 `--repo`。
 
 ## 4. 创建 Runner Intake Webhook
 
@@ -344,9 +348,9 @@ issue-spec --profile team runner serve \
 `--allow-host-ssh`，并在 preflight 命令中也添加 `--allow-host-ssh`。macOS 上两个命令都应使用
 相同的显式 `--unsafe-no-sandbox --allow-host-ssh` 组合。
 
-`--allowed-user` 可以重复。self-hosted Profile PAT 模式下，`runner serve` 只接受一个
-仓库；每个仓库分别使用精确限制的 PAT、Profile 与进程。默认最多并行运行 3 个任务，
-可用 `--max-concurrent-jobs` 调整。
+`--allowed-user` 和 `--repo` 都可以重复。self-hosted Profile PAT 可以覆盖全站全部仓库或指定的
+多个仓库，但 Runner 会分别预检每个已配置仓库。默认最多并行运行 3 个任务，可用
+`--max-concurrent-jobs` 调整。
 
 ### 网络和 TLS
 
@@ -499,7 +503,7 @@ workspace 标识定位，再只读取对应的 job/session 文件。`--log-max-s
 ## 安全边界
 
 - Webhook Secret 只验证 Server 到 Runner 的投递，不授予 Issue 或代码权限；
-- 与 Origin 绑定的 Profile PAT 会由每个作业复用，并在 dispatch 前重新校验；它必须限制到 Runner 唯一预期服务的仓库和准确 Scope；
+- 与 Origin 绑定的 Profile PAT 会由每个作业复用，并在 dispatch 前针对当前显式配置的仓库和最低必需 Scope 重新校验；
 - Source Binding 始终不含凭据；优先按 Job 和 Binding 短期签发 Git 凭据；
 - `--allow-host-ssh` 会把专用 Runner 用户的 SSH 权限暴露给沙箱内 Agent，只适用于明确
   接受这一边界的可信内网；

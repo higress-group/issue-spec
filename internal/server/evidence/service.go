@@ -16,7 +16,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
-	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/jackc/pgx/v5"
@@ -213,9 +212,9 @@ func (s *Service) SetDesignatedWriter(ctx context.Context, subject authz.Subject
 }
 
 // AppendEvidence enforces four independent gates: durable writer assignment,
-// evidence:write scope, live repository identity permission, and exactly one
-// cap for this repository. Denials are audited after the protected transaction
-// rolls back, without copying payload, provenance or credential material.
+// evidence:write scope, live repository identity permission, and PAT repository
+// access that includes the target. Denials are audited after the protected
+// transaction rolls back, without copying payload, provenance or credential material.
 func (s *Service) AppendEvidence(ctx context.Context, subject authz.Subject, actor adminservice.Actor, scope models.RepoScope, input AppendInput) (Evidence, error) {
 	input = normalizeAppendInput(input)
 	payload, payloadErr := canonicalObject(input.Payload)
@@ -242,8 +241,8 @@ func (s *Service) AppendEvidence(ctx context.Context, subject authz.Subject, act
 			denial = string(decision.Reason)
 			return decision.AuthorizationError()
 		}
-		if !exactRepositoryCap(principal, scope) {
-			denial = "exact_repository_cap_required"
+		if !principal.AllowsRepository(scope.OrgID, scope.RepoID) {
+			denial = "repository_cap_required"
 			return adminservice.ErrForbidden
 		}
 		if err := ensureIssue(ctx, tx, scope, input.IssueID); err != nil {
@@ -345,8 +344,8 @@ func (s *Service) IngestProviderSnapshot(ctx context.Context, subject authz.Subj
 			denial = string(decision.Reason)
 			return decision.AuthorizationError()
 		}
-		if !exactRepositoryCap(principal, scope) {
-			denial = "exact_repository_cap_required"
+		if !principal.AllowsRepository(scope.OrgID, scope.RepoID) {
+			denial = "repository_cap_required"
 			return adminservice.ErrForbidden
 		}
 		if err := ensureIssue(ctx, tx, scope, input.IssueID); err != nil {
@@ -790,11 +789,6 @@ func designatedWriterForUpdate(ctx context.Context, tx pgx.Tx, scope models.Repo
 		return false, nil
 	}
 	return active, err
-}
-
-func exactRepositoryCap(principal serverauth.Principal, scope models.RepoScope) bool {
-	return principal.RepoRestricted && len(principal.RepositoryCaps) == 1 &&
-		principal.RepositoryCaps[0].OrgID == scope.OrgID && principal.RepositoryCaps[0].RepoID == scope.RepoID
 }
 
 func validateSupersedes(ctx context.Context, tx pgx.Tx, scope models.RepoScope, input AppendInput) error {

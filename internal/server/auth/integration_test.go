@@ -110,7 +110,7 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	if err := pool.QueryRow(t.Context(), `SELECT i.provider_id,i.avatar_url FROM users u JOIN identities i ON i.id=u.profile_identity_id WHERE u.id=$1`, userA.ID).Scan(&sourceProvider, &sourceAvatar); err != nil {
 		t.Fatal(err)
 	}
-	if sourceProvider != providerA.ID || sourceAvatar != "https://avatars.example/alice-v2.png" {
+	if sourceProvider != providerA.ID || sourceAvatar != "https://avatars.example/alice-v3.png" {
 		t.Fatalf("profile source provider=%s avatar=%q", sourceProvider, sourceAvatar)
 	}
 	if err := identities.LinkIdentity(t.Context(), userB.ID, userB.ID, providerB,
@@ -203,6 +203,46 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	if !patPrincipal.HasScope("issues:write") || !patPrincipal.AllowsRepository(orgID, repoID) ||
 		patPrincipal.AllowsRepository(orgID, uuid.New()) {
 		t.Fatalf("PAT caps are incorrect: %+v", patPrincipal)
+	}
+	siteWideCreated, err := pats.Create(t.Context(), userA.ID, pat.CreateInput{
+		Name: "site-wide", Scopes: []string{"issues:read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	siteWidePrincipal, err := pats.AuthenticateBearer(t.Context(), siteWideCreated.Plaintext)
+	if err != nil || siteWidePrincipal.RepoRestricted {
+		t.Fatalf("site-wide personal PAT = %+v, %v", siteWidePrincipal, err)
+	}
+	authority, err := authz.New(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(scope models.RepoScope) authz.Decision {
+		t.Helper()
+		decision, evaluateErr := authority.EvaluateRepository(t.Context(), authz.Authenticated(siteWidePrincipal), authz.RepositoryRequest{
+			Scope: scope, Operation: authz.OperationRead,
+		})
+		if evaluateErr != nil {
+			t.Fatal(evaluateErr)
+		}
+		return decision
+	}
+	if decision := read(models.RepoScope{OrgID: orgID, RepoID: repoID}); !decision.Allowed {
+		t.Fatalf("site-wide personal PAT existing permission = %+v", decision)
+	}
+	liveOrgID, liveRepoID := insertOrgRepo(t, pool, "site-wide-live-authority")
+	liveScope := models.RepoScope{OrgID: liveOrgID, RepoID: liveRepoID}
+	if decision := read(liveScope); decision.Allowed {
+		t.Fatalf("site-wide personal PAT invented permission = %+v", decision)
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO org_memberships
+		(id, organization_id, user_id, role, state, activated_at)
+		VALUES ($1, $2, $3, 'reader', 'active', clock_timestamp())`, uuid.New(), liveOrgID, userA.ID); err != nil {
+		t.Fatal(err)
+	}
+	if decision := read(liveScope); !decision.Allowed {
+		t.Fatalf("site-wide personal PAT did not follow live permission = %+v", decision)
 	}
 	rotatedPAT, err := pats.Rotate(t.Context(), userA.ID, patCreated.ID)
 	if err != nil {
@@ -371,16 +411,16 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	if _, err := pool.Exec(t.Context(), `INSERT INTO pat_scopes (id, personal_access_token_id, scope) VALUES ($1, $2, 'issues:write')`, uuid.New(), patPrincipal.CredentialID); err != nil {
 		t.Fatal(err)
 	}
+	otherRepoID := uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO repos (id, organization_id, name, display_name) VALUES ($1, $2, 'other-repo', 'other-repo')`, otherRepoID, orgID); err != nil {
+		t.Fatal(err)
+	}
 	assertDelegatedLiveParent("cap", func() {
-		if _, err := pool.Exec(t.Context(), `DELETE FROM pat_repositories WHERE personal_access_token_id = $1`, patPrincipal.CredentialID); err != nil {
+		if _, err := pool.Exec(t.Context(), `UPDATE pat_repositories SET repository_id = $1 WHERE personal_access_token_id = $2`, otherRepoID, patPrincipal.CredentialID); err != nil {
 			t.Fatal(err)
 		}
 	})
-	if _, err := pool.Exec(t.Context(), `INSERT INTO pat_repositories (personal_access_token_id, organization_id, repository_id) VALUES ($1, $2, $3)`, patPrincipal.CredentialID, orgID, repoID); err != nil {
-		t.Fatal(err)
-	}
-	otherRepoID := uuid.New()
-	if _, err := pool.Exec(t.Context(), `INSERT INTO repos (id, organization_id, name, display_name) VALUES ($1, $2, 'other-repo', 'other-repo')`, otherRepoID, orgID); err != nil {
+	if _, err := pool.Exec(t.Context(), `UPDATE pat_repositories SET repository_id = $1 WHERE personal_access_token_id = $2`, repoID, patPrincipal.CredentialID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(t.Context(), `INSERT INTO pat_repositories (personal_access_token_id, organization_id, repository_id) VALUES ($1, $2, $3)`, patPrincipal.CredentialID, orgID, otherRepoID); err != nil {
@@ -388,11 +428,16 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	}
 	if _, err := delegated.Issue(t.Context(), delegation.IssueInput{Issuer: patPrincipal,
 		Repo: models.RepoScope{OrgID: orgID, RepoID: repoID}, JobID: "job-live-multiple-cap", Purpose: "issue-api",
-		Audience: "issue-spec-server", Subject: "runner-child", Scopes: []string{"issues:write"}, TTL: 5 * time.Minute}); !errors.Is(err, serverauth.ErrInsufficientScope) {
+		Audience: "issue-spec-server", Subject: "runner-child", Scopes: []string{"issues:write"}, TTL: 5 * time.Minute}); err != nil {
 		t.Fatalf("multiple live repository caps issue error = %v", err)
 	}
-	if _, err := pool.Exec(t.Context(), `DELETE FROM pat_repositories WHERE personal_access_token_id = $1 AND repository_id = $2`, patPrincipal.CredentialID, otherRepoID); err != nil {
+	if _, err := pool.Exec(t.Context(), `DELETE FROM pat_repositories WHERE personal_access_token_id = $1`, patPrincipal.CredentialID); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := delegated.Issue(t.Context(), delegation.IssueInput{Issuer: patPrincipal,
+		Repo: models.RepoScope{OrgID: orgID, RepoID: repoID}, JobID: "job-live-unrestricted-cap", Purpose: "issue-api",
+		Audience: "issue-spec-server", Subject: "runner-child", Scopes: []string{"issues:write"}, TTL: 5 * time.Minute}); err != nil {
+		t.Fatalf("unrestricted live repository caps issue error = %v", err)
 	}
 	assertDelegatedLiveParent("permission", func() {
 		if _, err := pool.Exec(t.Context(), `DELETE FROM repo_collaborators WHERE organization_id = $1 AND repository_id = $2 AND user_id = $3`, orgID, repoID, userA.ID); err != nil {

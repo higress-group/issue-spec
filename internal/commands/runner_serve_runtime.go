@@ -60,9 +60,6 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	if err != nil || profile.Kind != auth.ProfileKindHosted || strings.TrimSpace(input.ProfileToken) == "" {
 		return nil, fmt.Errorf("runner serve runtime requires a self-hosted profile and profile PAT")
 	}
-	if len(input.Runner.Repositories) != 1 {
-		return nil, fmt.Errorf("runner serve profile PAT must serve exactly one repository")
-	}
 	compatibility, err := github.NewClientWithOptions(github.ClientOptions{Host: profile.Hostname, BaseURL: profile.APIURL,
 		Token: input.ProfileToken, CAFile: profile.CAFile})
 	if err != nil {
@@ -113,11 +110,10 @@ func defaultBuildRunnerServeRuntime(ctx context.Context, input runnerServeRuntim
 	if err != nil {
 		return nil, fmt.Errorf("runner serve profile credential: %w", err)
 	}
-	repositoryName := input.Runner.Repositories[0]
 	broker := &credentials.Broker{Profile: profile, ProfileToken: &profileToken,
 		Materializer: materializer, GitProvider: gitProvider,
 		ProfileProbe: runnerProfileCapabilityProbe{native: native, compatibility: compatibility,
-			runnerLogin: input.Runner.RunnerIdentity, repository: repositoryName, scope: scopes.ByRepository[repositoryName]}}
+			runnerLogin: input.Runner.RunnerIdentity, repositories: scopes.ByRepository}}
 	workspaces := jobs.WorkspaceManager(runnerWorkspaceManager(input.Runner))
 	sandboxer := jobs.SandboxPreparer(jobs.SandboxRunner{Config: sandboxConfig})
 	acpxFactory := jobs.AcpxFactory(jobs.AcpxAdapterFactory{Config: jobs.NewAcpxConfig(input.Runner), RunnerConfig: input.Runner})

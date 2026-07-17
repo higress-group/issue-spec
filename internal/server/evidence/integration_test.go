@@ -15,6 +15,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/codereview"
 	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
+	"github.com/higress-group/issue-spec/internal/server/auth/pat"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/models"
 	"github.com/higress-group/issue-spec/internal/server/store"
@@ -127,7 +128,7 @@ func TestEvidencePolicyWriterTenantAndPublicationLifecycle(t *testing.T) {
 	requireEvidencePGCode(t, err, "55000")
 }
 
-func TestEvidenceFourGateMatrixRejectedAuditAndCrossOrgConcealment(t *testing.T) {
+func TestEvidenceAuthorizationMatrixAllowsBroadCapsAndRejectsMissingGates(t *testing.T) {
 	env := newEvidenceEnvironment(t)
 	if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner), env.actor(env.owner, "writer"), env.scope, env.writer.User.ID, true); err != nil {
 		t.Fatal(err)
@@ -139,8 +140,32 @@ func TestEvidenceFourGateMatrixRejectedAuditAndCrossOrgConcealment(t *testing.T)
 			}
 		}
 	}
+	if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(env.unrestricted), env.actor(env.unrestricted, "unrestricted"), env.scope,
+		env.appendInput("unrestricted", "allowed", VisibilityRepository)); err != nil {
+		t.Fatalf("unrestricted PAT evidence error = %v", err)
+	}
+	otherRepoID := evidenceRepo(t, env.pool, env.scope.OrgID, "multi-cap-repo")
+	multiRepository, multiToken := authenticatedEvidencePAT(t, env.pool, env.writer.User.ID,
+		[]string{"evidence:write", "issues:read"}, []models.RepoScope{env.scope, {OrgID: env.scope.OrgID, RepoID: otherRepoID}})
+	if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(multiRepository), env.actor(multiRepository, "multi-repository"), env.scope,
+		env.appendInput("multi-repository", "allowed", VisibilityRepository)); err != nil {
+		t.Fatalf("multi-repository PAT evidence error = %v", err)
+	}
+	if _, err := env.pool.Exec(t.Context(), `DELETE FROM pat_repositories
+		WHERE personal_access_token_id = $1 AND organization_id = $2 AND repository_id = $3`,
+		multiRepository.CredentialID, env.scope.OrgID, env.scope.RepoID); err != nil {
+		t.Fatal(err)
+	}
+	withoutTarget, err := pat.New(env.pool, evidenceSecrets(t)).AuthenticateBearer(t.Context(), multiToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(withoutTarget), env.actor(withoutTarget, "target-cap-removed"), env.scope,
+		env.appendInput("target-cap-removed", "denied", VisibilityRepository)); !errors.Is(err, adminservice.ErrNotFound) {
+		t.Fatalf("removed target cap evidence error = %v", err)
+	}
 	beforeIssue, beforeRepo := env.evidenceVersions(t)
-	principals := []serverauth.Principal{env.undesignated, env.missingScope, env.readerEvidence, env.unrestricted}
+	principals := []serverauth.Principal{env.undesignated, env.missingScope, env.readerEvidence}
 	for i, principal := range principals {
 		input := env.appendInput(fmt.Sprintf("denied:%d", i), "denied", VisibilityRepository)
 		if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(principal), env.actor(principal, fmt.Sprintf("deny-%d", i)), env.scope, input); !errors.Is(err, adminservice.ErrForbidden) {
@@ -169,8 +194,8 @@ func TestEvidenceFourGateMatrixRejectedAuditAndCrossOrgConcealment(t *testing.T)
 		t.Fatalf("rejected audits=%d unsafe=%d, want 5/0", rejected, unsafe)
 	}
 	var evidenceRows int
-	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM external_evidence`).Scan(&evidenceRows); err != nil || evidenceRows != 0 {
-		t.Fatalf("rejected evidence rows=%d, %v", evidenceRows, err)
+	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM external_evidence`).Scan(&evidenceRows); err != nil || evidenceRows != 2 {
+		t.Fatalf("evidence rows=%d, %v", evidenceRows, err)
 	}
 }
 
@@ -248,6 +273,9 @@ func TestProviderSnapshotBatchCASIdempotencyAtomicityAndSupersession(t *testing.
 		env.actor(env.owner, "writer"), env.scope, env.writer.User.ID, true); err != nil {
 		t.Fatal(err)
 	}
+	otherRepoID := evidenceRepo(t, env.pool, env.scope.OrgID, "snapshot-multi-cap-repo")
+	multiWriter, _ := authenticatedEvidencePAT(t, env.pool, env.writer.User.ID,
+		[]string{"evidence:write", "issues:read"}, []models.RepoScope{env.scope, {OrgID: env.scope.OrgID, RepoID: otherRepoID}})
 	referenceID := uuid.New()
 	if _, err := env.pool.Exec(t.Context(), `INSERT INTO external_references
 		(id, organization_id, repository_id, issue_id, provider_key, relation_kind,
@@ -265,8 +293,8 @@ func TestProviderSnapshotBatchCASIdempotencyAtomicityAndSupersession(t *testing.
 			CapturedAt: time.Date(2026, 7, 11, 4, 0, 1, 0, time.UTC)}}
 
 	beforeIssue, beforeRepo := env.evidenceVersions(t)
-	first, err := env.service.IngestProviderSnapshot(t.Context(), authz.Authenticated(env.writer),
-		env.actor(env.writer, "snapshot-first"), env.scope, input)
+	first, err := env.service.IngestProviderSnapshot(t.Context(), authz.Authenticated(multiWriter),
+		env.actor(multiWriter, "snapshot-first"), env.scope, input)
 	if err != nil || first.Created != 1 || first.Replayed != 0 || len(first.Evidence) != 1 {
 		t.Fatalf("first IngestProviderSnapshot() = %+v, %v", first, err)
 	}
@@ -558,6 +586,32 @@ func evidencePAT(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID, scope model
 	}
 	return serverauth.Principal{User: evidencePrincipalUser(t, pool, userID), Kind: serverauth.CredentialPAT,
 		CredentialID: id, Scopes: append([]string(nil), scopes...), RepoRestricted: restricted, RepositoryCaps: caps}
+}
+
+func authenticatedEvidencePAT(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID, scopes []string,
+	repositories []models.RepoScope) (serverauth.Principal, string) {
+	t.Helper()
+	service := pat.New(pool, evidenceSecrets(t))
+	created, err := service.Create(t.Context(), userID, pat.CreateInput{
+		Name: "evidence-integration", Scopes: scopes, Repositories: repositories,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := service.AuthenticateBearer(t.Context(), created.Plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return principal, created.Plaintext
+}
+
+func evidenceSecrets(t *testing.T) *serverauth.Secrets {
+	t.Helper()
+	secrets, err := serverauth.NewSecrets([]byte(strings.Repeat("p", 32)), []byte(strings.Repeat("e", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return secrets
 }
 
 func evidencePrincipalUser(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID) serverauth.User {

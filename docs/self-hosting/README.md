@@ -205,9 +205,16 @@ The safe sequence is:
 
 1. create the service account;
 2. grant only the required repository collaborator role;
-3. create a managed PAT with an explicit repository cap and minimum scopes;
+3. create a managed PAT with the required scopes and either site-wide access or
+   an explicit repository cap;
 4. store the one-time token in the automation secret store;
 5. disable the service account to invalidate its credentials when retired.
+
+An organization administrator may issue a site-wide managed PAT for an enabled
+service account owned by that organization. Human members normally create their
+own site-wide personal PAT; only a site administrator may issue or rotate a
+site-wide managed PAT on their behalf. Site-wide means the token follows the
+subject's live permissions—it does not grant repository authority by itself.
 
 Service-account and PAT activity is classified as automation, allowing webhook
 policies and audit review to distinguish it from human browser activity.

@@ -60,8 +60,8 @@ func TestRunnerServeCredentialRootIsBoundToFullStatePath(t *testing.T) {
 	}
 }
 
-func TestDefaultRunnerServeRuntimeIgnoresUnrelatedOperatorRegistryAndNeverPollsNotifications(t *testing.T) {
-	orgID, repoID := uuid.New(), uuid.New()
+func TestDefaultRunnerServeRuntimeSupportsMultipleRepositoriesAndNeverPollsNotifications(t *testing.T) {
+	orgID, repoID, otherRepoID := uuid.New(), uuid.New(), uuid.New()
 	var mu sync.Mutex
 	requests := []string{}
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,8 +76,10 @@ func TestDefaultRunnerServeRuntimeIgnoresUnrelatedOperatorRegistryAndNeverPollsN
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"user": map[string]string{"id": uuid.NewString(), "login": "runner"},
 				"organizations": []map[string]string{{"id": orgID.String(), "name": "owner"}}})
 		case "/api/v1/context/orgs/" + orgID.String() + "/repos":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"repositories": []map[string]interface{}{{"repository": map[string]string{
-				"id": repoID.String(), "organization_id": orgID.String(), "name": "repo"}}}})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"repositories": []map[string]interface{}{
+				{"repository": map[string]string{"id": repoID.String(), "organization_id": orgID.String(), "name": "repo"}},
+				{"repository": map[string]string{"id": otherRepoID.String(), "organization_id": orgID.String(), "name": "other"}},
+			}})
 		default:
 			t.Fatalf("unexpected API request %s", r.URL.Path)
 		}
@@ -108,7 +110,7 @@ func TestDefaultRunnerServeRuntimeIgnoresUnrelatedOperatorRegistryAndNeverPollsN
 	profile := auth.Profile{Name: "self-hosted-test", Kind: auth.ProfileKindHosted, Hostname: "issues.test",
 		APIURL: api.URL + "/api/v3", NativeAPIURL: api.URL + "/api/v1", WebURL: api.URL, ServerInstanceID: "instance-test",
 		OperatorRegistryFile: filepath.Join(temp, "deliberately-missing-unrelated-operator-registry.json")}
-	runner := commentrunner.Config{Profile: profile.Name, Hostname: profile.Hostname, Repositories: []string{"owner/repo"},
+	runner := commentrunner.Config{Profile: profile.Name, Hostname: profile.Hostname, Repositories: []string{"owner/repo", "owner/other"},
 		RunnerIdentity: "runner", StatePath: filepath.Join(temp, "state.json"), WorkspaceRoot: filepath.Join(temp, "workspaces"),
 		WorkspaceRetention: commentrunner.NewDuration(time.Hour), MaxConcurrentJobs: 1, AcpxPath: "acpx",
 		Agent: commentrunner.DefaultAgentConfig(), CancellationEnabled: true, UnsafeNoSandbox: true}

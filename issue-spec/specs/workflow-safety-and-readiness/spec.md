@@ -59,7 +59,7 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/166#issu
 
 ### Requirement: Delegated work starts only after scoped agent capability preflight
 
-The workflow runner MUST preflight authentication source, token safety, network reachability and required repository operations before dispatching delegated review or implementation work. A self-hosted runner MAY satisfy the gate with its origin-bound private profile PAT when that credential is restricted to the exact repository and required scopes. Strict GitHub delegated mode MUST still use short-lived credentials scoped to the approved host, repository and operation set; explicitly enabled legacy host credentials remain migration-only and MUST NOT satisfy that gate.
+The workflow runner MUST preflight authentication source, token safety, network reachability and required repository operations before dispatching delegated review or implementation work. A self-hosted runner MAY satisfy the gate with its origin-bound private profile PAT when that credential grants the requested repository and includes the required scopes; unrelated repository grants and additional scopes MUST NOT invalidate that credential. Strict GitHub delegated mode MUST still use short-lived credentials scoped to the approved host, repository and operation set; explicitly enabled legacy host credentials remain migration-only and MUST NOT satisfy that gate.
 
 #### Scenario: failed preflight consumes no worker execution
 
@@ -71,10 +71,10 @@ The workflow runner MUST preflight authentication source, token safety, network 
 - **WHEN** the requested agent operations are available
 - **THEN** the runner MUST record a redacted result containing token source class, host, repository, permitted operations, expiry knowledge and network status; a private self-hosted profile file MAY report unknown expiry
 
-#### Scenario: credentials cannot escape delegated scope
+#### Scenario: credential mode preserves its declared boundary
 
-- **WHEN** an agent attempts a different host, repository or mutation class
-- **THEN** the credential broker MUST deny the operation and audit the attempted scope expansion
+- **WHEN** an agent runs through a self-hosted profile PAT or a strict delegated credential
+- **THEN** the runner MUST dispatch self-hosted jobs only for explicitly configured repositories and revalidate the current target, while the strict delegated broker MUST deny and audit attempts outside its approved host, repository or mutation class
 
 #### Scenario: GitHub strict mode requires a short-lived issuer
 

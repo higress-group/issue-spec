@@ -42,6 +42,20 @@ jobs:
   go-test:
     name: Go unit tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: issue_spec_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d issue_spec_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -54,3 +68,14 @@ jobs:
 
       - name: Run unit tests
         run: go test ./...
+
+      - name: Run PAT and authorization PostgreSQL integration tests
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/issue_spec_test?sslmode=disable
+        run: >-
+          go test -count=1
+          ./internal/server/admin
+          ./internal/server/auth
+          ./internal/server/auth/delegation
+          ./internal/server/authz
+          ./internal/server/evidence

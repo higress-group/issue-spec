@@ -77,8 +77,8 @@ Other stable operations include `issue.comment.write`, `pr.read`,
 `pr.review.write`, `pr.update`, `checks.read`, and
 `external.change.comment`. Reports are redacted and describe the source class,
 expiry knowledge, network result, and per-operation decision. A self-hosted
-runner may use the private PAT from its origin-bound profile when the token is
-restricted to the exact repository and minimum runner scopes; that file may
+runner may use the private PAT from its origin-bound profile when the token
+grants the requested repository and includes the minimum runner scopes; that file may
 report unknown expiry. Strict GitHub delegated execution still requires an
 operator-owned short-lived issuer scoped to the exact host, repository, job,
 purpose, and operations. Mirrored host-gh credentials are reported as
