@@ -37,7 +37,7 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 		"doctor agent --repo owner/repo --operation <operation>",
 		"operator-owned short-lived issuer", "legacy_long_lived",
 		"change-bearing, review, verification, orchestration, or external",
-		"matching GitHub path/line rationale or an exact-current self-hosted code-change rationale paired with trusted native-ledger PROCESS/SPEC evidence", "done REVIEW or resolved finding",
+		"matching GitHub path/line rationale or an exact-current self-hosted code-change rationale backed by a fresh REVIEW completion", "existing finding-backed consumed binding retained only for legacy compatibility", "done REVIEW or resolved finding",
 		"done VERIFY or required passing check with test evidence",
 		"non-empty coordination handoff", "consumed exact-revision provider evidence",
 		"workflow workspace prepare, inspect, complete, integrate, reconcile, and cleanup",
@@ -100,7 +100,7 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 	}
 	verify := skillContent(t, skills, "issue-spec-verify")
 	if !strings.Contains(verify, "--gate final") ||
-		!strings.Contains(verify, "exact-current append-only code-change rationale paired with trusted consumed native-ledger PROCESS/SPEC evidence") {
+		!strings.Contains(verify, "exact-current append-only code-change rationale backed by the fresh synced REVIEW completion") {
 		t.Fatalf("verify skill lacks proportional evidence guidance:\n%s", verify)
 	}
 }
@@ -421,7 +421,7 @@ func TestIssueSpecSkillTemplatesEnforceAgentOwnedReviewWorkflow(t *testing.T) {
 		"--from REVIEW-<n> --from-issue <implement-issue> --to PROCESS-<n>",
 		"--from REVIEW-<n> --from-issue <implement-issue> --to SPEC-<n>",
 		"Run these commands after the final review sync",
-		"Related Comments contains the review PROCESS URL and each covered active SPEC URL",
+		"Related Comments contains the review PROCESS URL, every covered change-bearing PROCESS URL, and every covered active SPEC URL",
 	} {
 		if !strings.Contains(review, want) {
 			t.Fatalf("review skill missing ownership guidance %q:\n%s", want, review)
@@ -439,6 +439,61 @@ func TestIssueSpecSkillTemplatesEnforceAgentOwnedReviewWorkflow(t *testing.T) {
 	} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply skill missing ownership guidance %q:\n%s", want, apply)
+		}
+	}
+}
+
+func TestIssueSpecSkillTemplatesDocumentSelfHostedReviewCompletionContract(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+
+	for _, name := range []string{"issue-spec-workflow", "issue-spec-apply", "issue-spec-review"} {
+		content := skillContent(t, skills, name)
+		for _, want := range []string{
+			"review sync",
+			"--implement",
+			"--revision",
+			"zero findings",
+			"review PROCESS",
+			"change-bearing PROCESS",
+			"active SPEC",
+		} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s skill missing self-hosted review completion guidance %q:\n%s", name, want, content)
+			}
+		}
+	}
+
+	review := skillContent(t, skills, "issue-spec-review")
+	for _, want := range []string{
+		"never hand-edit either, fabricate a finding, or substitute a generic approval framework",
+		"Never rely on PROCESS/SPEC IDs in prose or auto-infer links",
+		"Status and final verify revalidate the same completion identity",
+		"they do not refresh REVIEW",
+	} {
+		if !strings.Contains(review, want) {
+			t.Fatalf("review skill missing completion safety guidance %q:\n%s", want, review)
+		}
+	}
+
+	verify := skillContent(t, skills, "issue-spec-verify")
+	for _, want := range []string{
+		"Status forecast and final verify use the same completion validator",
+		"explicit review/implementation/SPEC links",
+		"Neither command invents findings, hand-authors a stamp, or refreshes REVIEW",
+	} {
+		if !strings.Contains(verify, want) {
+			t.Fatalf("verify skill missing shared completion guidance %q:\n%s", want, verify)
+		}
+	}
+
+	archive := skillContent(t, skills, "issue-spec-archive")
+	for _, want := range []string{
+		"implementation code_change REVIEW completion only when implementation merge policy requires it",
+		"Archive never creates, updates, or refreshes REVIEW",
+		"never applies implementation completion to archive_change",
+	} {
+		if !strings.Contains(archive, want) {
+			t.Fatalf("archive skill missing read-only completion guidance %q:\n%s", want, archive)
 		}
 	}
 }
