@@ -131,10 +131,23 @@ it already has the requested state; JSON output reports this with `changed`.
 
 ### Search before a related change
 
-For self-hosted profiles, `search issues` discovers the server capability and
-fails clearly when search is disabled. It searches only repositories readable
-by the current credential and returns one bounded result per issue, including
-matching issue/comment excerpts and related change key/stage metadata.
+`search issues` selects behavior from the active Issue Backend. For self-hosted
+profiles it discovers the server capability, fails clearly when search is
+disabled, and returns matching issue/comment excerpts plus related change
+key/stage metadata. For GitHub profiles it uses GitHub Issue Search with a
+mandatory repository and issue-only scope, excludes pull requests again when
+decoding results, and bounds output to `--limit`. `--state` is supported on
+both backends. GitHub maps `--source issue` to title/body search,
+`--source comments` to comment search, and `--stage` to the canonical
+`issue-spec/proposal`, `issue-spec/design`, or `issue-spec/implement` label;
+GitHub does not support `--source change` because it has no equivalent change
+key index. A no-match search succeeds with zero results. Result order and
+ranking are backend-specific and are not parity guarantees.
+
+Both adapters search only within the requested repository and render the same
+bounded issue-centric fields through nonce-scoped untrusted-data boundaries.
+GitHub text-match fragments may differ from self-hosted excerpts, and optional
+change metadata may be absent.
 
 Generated Codex and Claude workflows instruct direct agents—not only runner
 sessions—to derive a few concrete queries from the request and codebase before

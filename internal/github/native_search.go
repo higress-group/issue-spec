@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type NativeSearchOperations interface {
@@ -15,45 +14,13 @@ type NativeSearchOperations interface {
 	SearchNativeIssues(context.Context, string, NativeIssueSearchOptions) (NativeIssueSearchPage, error)
 }
 
-type NativeIssueSearchOptions struct {
-	Query   string
-	State   string
-	Source  string
-	Stage   string
-	Page    int
-	PerPage int
-}
-
-type NativeIssueSearchPage struct {
-	Items   []NativeIssueSearchResult `json:"items"`
-	Page    int                       `json:"page"`
-	PerPage int                       `json:"per_page"`
-	Total   int64                     `json:"total"`
-	HasNext bool                      `json:"has_next"`
-}
-
-type NativeIssueSearchResult struct {
-	Organization string                    `json:"organization"`
-	Repository   string                    `json:"repository"`
-	Number       int64                     `json:"number"`
-	Title        string                    `json:"title"`
-	State        string                    `json:"state"`
-	URL          string                    `json:"url"`
-	UpdatedAt    time.Time                 `json:"updated_at"`
-	Changes      []NativeIssueSearchChange `json:"changes"`
-	Matches      []NativeIssueSearchMatch  `json:"matches"`
-}
-
-type NativeIssueSearchChange struct {
-	Key     string `json:"key"`
-	Stage   string `json:"stage"`
-	Matched bool   `json:"matched"`
-}
-
-type NativeIssueSearchMatch struct {
-	Source  string `json:"source"`
-	Excerpt string `json:"excerpt"`
-}
+// Native aliases preserve the existing self-hosted client API while the
+// command-facing result contract is shared with GitHub Issue Search.
+type NativeIssueSearchOptions = IssueSearchOptions
+type NativeIssueSearchPage = IssueSearchPage
+type NativeIssueSearchResult = IssueSearchResult
+type NativeIssueSearchChange = IssueSearchChange
+type NativeIssueSearchMatch = IssueSearchMatch
 
 func (c *Client) SearchNativeIssues(ctx context.Context, repo string, options NativeIssueSearchOptions) (NativeIssueSearchPage, error) {
 	parsed, err := ParseRepo(repo)
