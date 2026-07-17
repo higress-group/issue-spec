@@ -174,6 +174,9 @@ func (m *Manager) Inspect(ctx context.Context, workspaceID string) (Inspection, 
 	if !found {
 		return Inspection{}, fmt.Errorf("%s: %w", workspaceID, ErrLeaseNotFound)
 	}
+	if err := m.validatePreparationRecoveryOwnership(ctx, lease.Portable); err != nil {
+		return Inspection{Lease: lease}, err
+	}
 	return m.inspectLease(ctx, lease)
 }
 

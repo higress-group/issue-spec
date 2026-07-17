@@ -36,6 +36,19 @@ func (m *Manager) validateBaseWriteOwnership(ctx context.Context, lease Portable
 	return nil
 }
 
+// validatePreparationRecoveryOwnership repeats the exact-base check when a
+// historical reservation re-enters a preparation path without calling
+// Prepare. Later states retain their existing recovery and cleanup behavior;
+// completion remains the authoritative changed-path boundary for those states.
+func (m *Manager) validatePreparationRecoveryOwnership(ctx context.Context, lease PortableLease) error {
+	switch lease.State {
+	case StatePreparing, StatePrepared:
+		return m.validateBaseWriteOwnership(ctx, lease)
+	default:
+		return nil
+	}
+}
+
 func (m *Manager) basePathObjectType(ctx context.Context, base, declaration string) (string, bool, error) {
 	result, err := m.git(ctx, "classify exact base ownership path", m.IntegrationRoot,
 		"--literal-pathspecs", "ls-tree", "-z", "--full-tree", base, "--", declaration)

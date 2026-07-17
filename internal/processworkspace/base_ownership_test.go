@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestManagerPrepareClassifiesExactBaseOwnership(t *testing.T) {
@@ -93,6 +94,91 @@ func TestManagerPrepareClassifiesExactBaseOwnership(t *testing.T) {
 			markers := gitOutput(t, repo, "for-each-ref", "--format=%(refname)", "refs/issue-spec/process-workspaces/"+id+"/")
 			if strings.TrimSpace(markers) != "" {
 				t.Fatalf("rejected ownership created marker %q", markers)
+			}
+		})
+	}
+}
+
+func TestHistoricalPreparationRecoveryRevalidatesExactBaseOwnership(t *testing.T) {
+	for _, state := range []LifecycleState{StatePreparing, StatePrepared} {
+		t.Run(string(state), func(t *testing.T) {
+			repo, _ := newGitRepository(t)
+			if err := os.MkdirAll(filepath.Join(repo, "tracked-dir"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(repo, "tracked-dir", "child.txt"), []byte("child\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, repo, "add", "--", "tracked-dir/child.txt")
+			runGit(t, repo, "commit", "-m", "tracked directory")
+			base := gitOutput(t, repo, "rev-parse", "HEAD")
+			manager := openTestManager(t, repo)
+			id := "ws-historical-" + string(state)
+			lease := testLease(id, "PROCESS-204", ModeWritable, "historical-"+string(state), base, []string{"tracked-dir"})
+			lease.IntegrationRoot = manager.IntegrationRoot
+			lease.Portable.State = state
+			if state == StatePrepared {
+				lease.WorktreePath = filepath.Join(manager.WorkspaceRoot, id)
+			}
+			created, err := manager.Store.Create(context.Background(), lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state == StatePrepared {
+				if err := manager.addWorktree(context.Background(), created, created.WorktreePath); err != nil {
+					t.Fatal(err)
+				}
+				observed, err := manager.inspectLeaseAt(context.Background(), created, created.WorktreePath)
+				if err != nil || !observed.Registered || !observed.Present || observed.Dirty || len(observed.Problems) > 0 {
+					t.Fatalf("historical worktree fixture=%+v err=%v", observed, err)
+				}
+				if _, err := manager.Store.Update(context.Background(), id, func(current *LocalLease) error {
+					current.Observation = WorktreeObservation{
+						Registered: true, HeadSHA: observed.Head, Branch: observed.Branch, InspectedAt: time.Now().UTC(),
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			beforeRegistry, err := manager.Store.Load(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeWorktrees := gitOutput(t, repo, "worktree", "list", "--porcelain")
+			beforeBranch := gitOutput(t, repo, "branch", "--list", lease.Portable.Branch)
+			beforeMarkers := gitOutput(t, repo, "for-each-ref", "--format=%(refname)", "refs/issue-spec/process-workspaces/"+id+"/")
+
+			if state == StatePrepared {
+				inspection, inspectErr := manager.Inspect(context.Background(), id)
+				if !errors.Is(inspectErr, ErrAmbiguousOwnership) || inspection.Lease.Portable.State != state {
+					t.Fatalf("Inspect=%+v err=%v", inspection, inspectErr)
+				}
+			}
+			inspection, reconcileErr := manager.Reconcile(context.Background(), id)
+			if !errors.Is(reconcileErr, ErrAmbiguousOwnership) || inspection.Lease.Portable.State != state {
+				t.Fatalf("Reconcile=%+v err=%v", inspection, reconcileErr)
+			}
+
+			afterRegistry, err := manager.Store.Load(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, found, err := manager.Store.Get(context.Background(), id)
+			if err != nil || !found || stored.Portable.State != state ||
+				len(stored.Portable.WriteOwnership) != 1 || stored.Portable.WriteOwnership[0] != "tracked-dir" ||
+				afterRegistry.Generation != beforeRegistry.Generation {
+				t.Fatalf("recovery mutated lease: stored=%+v found=%v err=%v generations=%d->%d",
+					stored.Portable, found, err, beforeRegistry.Generation, afterRegistry.Generation)
+			}
+			if after := gitOutput(t, repo, "worktree", "list", "--porcelain"); after != beforeWorktrees {
+				t.Fatalf("recovery mutated worktrees:\nbefore=%s\nafter=%s", beforeWorktrees, after)
+			}
+			if branch := gitOutput(t, repo, "branch", "--list", lease.Portable.Branch); branch != beforeBranch {
+				t.Fatalf("recovery mutated branch: before=%q after=%q", beforeBranch, branch)
+			}
+			if markers := gitOutput(t, repo, "for-each-ref", "--format=%(refname)", "refs/issue-spec/process-workspaces/"+id+"/"); markers != beforeMarkers {
+				t.Fatalf("recovery mutated markers: before=%q after=%q", beforeMarkers, markers)
 			}
 		})
 	}

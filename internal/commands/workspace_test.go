@@ -292,6 +292,84 @@ func TestWorkspacePrepareRejectsBareTrackedDirectoryBeforeMutationAndAllowsExpli
 	}
 }
 
+func TestWorkspacePrepareRejectsHistoricalPreparedLeaseBeforeRemoteRecovery(t *testing.T) {
+	repo, _ := workspaceGitRepository(t)
+	trackedDir := filepath.Join(repo, "internal", "commands")
+	if err := os.MkdirAll(trackedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(trackedDir, "command.go"), []byte("package commands\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspaceGit(t, repo, "add", "--", "internal/commands/command.go")
+	workspaceGit(t, repo, "commit", "-s", "-m", "tracked command directory")
+	base := workspaceGitOutput(t, repo, "rev-parse", "HEAD")
+
+	body := strings.Replace(workspaceProcessBody(t, model.ProcessExecutionChangeBearing),
+		"- internal/commands/**", "- internal/commands", 1)
+	now := time.Unix(100, 0).UTC()
+	remoteLease := processworkspace.PortableLease{
+		SchemaVersion: processworkspace.LeaseSchemaVersion, WorkspaceID: "ws-process-004", Repository: "o/r", ProcessID: "PROCESS-004",
+		ExecutionClass: processworkspace.ExecutionChangeBearing, Mode: processworkspace.ModeWritable, BaseSHA: base,
+		Branch: "issue-spec/process-004", WriteOwnership: []string{"internal/commands"}, RuntimeNamespace: "ws-process-004",
+		State: processworkspace.StatePreparing, CreatedAt: now, UpdatedAt: now,
+	}
+	transition, err := model.ApplyTypedTransition(body, model.TransitionRequest{
+		ExpectedType: "PROCESS", ExpectedID: "PROCESS-004", Workspace: &remoteLease,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = transition.Body
+	backend := newWorkspaceCASBackend(body)
+	root := filepath.Join(t.TempDir(), "managed")
+	manager := openWorkspaceManager(t, repo, root)
+	historical := processworkspace.LocalLease{
+		Portable: remoteLease, IntegrationRoot: manager.IntegrationRoot,
+		WorktreePath:  filepath.Join(manager.WorkspaceRoot, "ws-process-004"),
+		Owner:         processworkspace.LeaseOwner{CoordinatorID: "historical-coordinator", Token: "historical-owner", AcquiredAt: now},
+		LocalRevision: 1,
+	}
+	historical.Portable.State = processworkspace.StatePrepared
+	if _, err := manager.Store.Create(t.Context(), historical); err != nil {
+		t.Fatal(err)
+	}
+	beforeRegistry, err := manager.Store.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	args := append(workspaceBaseArgs(repo, root, "historical-owner"), "--base", base, "--json")
+	app, out, _ := transitionAppWithError(backend)
+	if code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, args...)); code != 1 {
+		t.Fatalf("historical prepare code=%d out=%s", code, out.String())
+	}
+	result := decodeWorkspaceResult(t, out)
+	if result.Code != "reservation_invalid" || result.State != processworkspace.StatePrepared ||
+		!result.ReconcileRequired || backend.writes != 0 || backend.body != body {
+		t.Fatalf("historical prepare did not fail closed: result=%+v writes=%d", result, backend.writes)
+	}
+	for _, detail := range []string{"PROCESS-004", `"internal/commands"`, base, `"internal/commands/**"`} {
+		if !strings.Contains(result.Message, detail) {
+			t.Fatalf("historical diagnostic missing %q: %+v", detail, result)
+		}
+	}
+	afterRegistry, err := manager.Store.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, found, err := manager.Store.Get(t.Context(), "ws-process-004")
+	if err != nil || !found || stored.Portable.State != processworkspace.StatePrepared ||
+		!reflect.DeepEqual(stored.Portable.WriteOwnership, []string{"internal/commands"}) ||
+		afterRegistry.Generation != beforeRegistry.Generation {
+		t.Fatalf("historical prepare widened or mutated lease: stored=%+v found=%v err=%v generations=%d->%d",
+			stored.Portable, found, err, beforeRegistry.Generation, afterRegistry.Generation)
+	}
+	if _, err := os.Lstat(historical.WorktreePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("historical prepare created missing worktree: %v", err)
+	}
+}
+
 func TestProcessSectionListIgnoresExamplesAndRejectsDuplicateRealSections(t *testing.T) {
 	body := workspaceProcessBody(t, model.ProcessExecutionChangeBearing)
 	fenced := strings.Replace(body, "### Write Ownership", "```markdown\n### Write Ownership\n- repository/**\n```\n\n### Write Ownership", 1)
