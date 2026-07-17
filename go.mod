@@ -7,6 +7,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/yuin/goldmark v1.8.4
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sys v0.26.0

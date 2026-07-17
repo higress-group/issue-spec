@@ -56,6 +56,18 @@ describe("secure issue markdown", () => {
     expect(screen.getByRole("link", { name: "another issue" })).toHaveAttribute("target", "_blank");
     expect(screen.getByRole("link", { name: "external" })).toHaveAttribute("target", "_blank");
   });
+
+  it("links canonical prose mentions without touching code, links, URLs, or email", () => {
+    const source = "Hello @Alice `@code` [@label](https://example.test/profile) https://example.test/@path user@example.test";
+    renderApp(<MarkdownView source={source} />);
+    const mention = screen.getByRole("link", { name: "@Alice" });
+    expect(mention).toHaveAttribute("href", "/users/alice");
+    expect(mention).not.toHaveAttribute("target");
+    expect(screen.getByText("@code").closest("a")).toBeNull();
+    expect(screen.getByRole("link", { name: "@label" })).toHaveAttribute("href", "https://example.test/profile");
+    expect(screen.queryByRole("link", { name: "@path" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "@example" })).not.toBeInTheDocument();
+  });
 });
 
 describe("issue editing semantics", () => {
@@ -77,6 +89,30 @@ describe("issue editing semantics", () => {
     expect(screen.getByRole("textbox", { name: "Comment" })).toHaveValue("unsent decision");
     expect(screen.getByRole("alert")).toHaveTextContent("Your draft is still here");
     expect(screen.getByRole("button", { name: "Reload latest" })).toBeInTheDocument();
+  });
+
+  it("debounces mention discovery and inserts the selected canonical login", async () => {
+    let requestedPrefix = "";
+    server.use(http.get("http://localhost/api/v1/mentions/candidates", ({ request }) => {
+      requestedPrefix = new URL(request.url).searchParams.get("q") ?? "";
+      return HttpResponse.json([
+        { login: "alice", display_name: "Alice", avatar_url: "http://localhost/api/v1/avatars/alice" },
+        { login: "alicia", display_name: "Alicia", avatar_url: "http://localhost/api/v1/avatars/alicia" },
+      ]);
+    }));
+    const submit = vi.fn();
+    renderApp(<CommentEditor pending={false} onSubmit={submit} />);
+    const user = userEvent.setup();
+    const editor = screen.getByRole("textbox", { name: "Comment" });
+    await user.type(editor, "Hello @ali");
+    const suggestions = await screen.findByRole("listbox", { name: "Mention suggestions" });
+    expect(requestedPrefix).toBe("ali");
+    expect(suggestions).toHaveAttribute("id");
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(editor).toHaveValue("Hello @alicia ");
+    expect(editor).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Comment" }));
+    expect(submit).toHaveBeenCalledWith("Hello @alicia ");
   });
 
   it("assigns and removes labels with keyboard-operable controls", async () => {
