@@ -43,6 +43,7 @@ type app struct {
 	runnerDiagnostics              *runnerLogger
 	newNativeEvidenceProvider      func(auth.Profile, string) (nativeEvidenceProvider, error)
 	newNativeSearchProvider        func(auth.Profile, string) (nativeSearchProvider, error)
+	newNativeCodeChangeBackend     func(auth.Profile, string) (nativeCodeChangeBackend, error)
 	resolveCodeMutationProvider    func(context.Context, string) (codereview.MutationProvider, error)
 	doctorAgentProbe               func(context.Context, capability.Request) (capability.Report, error)
 }
@@ -95,6 +96,8 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return a.runRead(ctx, args[1:])
 	case "search":
 		return a.runSearch(ctx, args[1:])
+	case "code-change":
+		return a.runCodeChange(ctx, args[1:])
 	case "runner":
 		return a.runRunner(ctx, args[1:])
 	default:
@@ -138,15 +141,16 @@ func extractGlobalProfile(args []string) (string, []string, error) {
 func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 	operatorRegistry, operatorRegistryErr := codereview.LoadOperatorRegistryFromEnvironment()
 	return &app{
-		in:                        in,
-		out:                       out,
-		err:                       errOut,
-		selectGitHubBackend:       defaultSelectGitHubBackend,
-		selectRunnerBackend:       defaultSelectRunnerBackend,
-		newGitHubBackend:          defaultNewGitHubBackend,
-		gitHubBackendToken:        defaultGitHubBackendToken,
-		newNativeEvidenceProvider: defaultNewNativeEvidenceProvider,
-		newNativeSearchProvider:   defaultNewNativeSearchProvider,
+		in:                         in,
+		out:                        out,
+		err:                        errOut,
+		selectGitHubBackend:        defaultSelectGitHubBackend,
+		selectRunnerBackend:        defaultSelectRunnerBackend,
+		newGitHubBackend:           defaultNewGitHubBackend,
+		gitHubBackendToken:         defaultGitHubBackendToken,
+		newNativeEvidenceProvider:  defaultNewNativeEvidenceProvider,
+		newNativeSearchProvider:    defaultNewNativeSearchProvider,
+		newNativeCodeChangeBackend: defaultNewNativeCodeChangeBackend,
 		resolveCodeMutationProvider: func(ctx context.Context, key string) (codereview.MutationProvider, error) {
 			if operatorRegistryErr != nil {
 				return nil, operatorRegistryErr
@@ -210,6 +214,9 @@ Usage:
   issue-spec read issue --repo owner/repo --issue N [--comments] [--typed-only]
   issue-spec read pr --repo owner/repo --pr N [--comments] [--typed-only]
   issue-spec search issues --repo owner/repo --query TEXT [--state all|open|closed] [--source all|issue|comments|change] [--stage proposal|design|implement] [--limit 10]
+  issue-spec code-change attach --repo owner/repo --implement N --change-id ID --revision REV [--refresh --expected-version N] [--json]
+  issue-spec code-change link-process --repo owner/repo --implement N --process PROCESS-001 --expected-version N [--json]
+  issue-spec code-change rationale --repo owner/repo --implement N --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "why" --agent Worker [--agent-session ID] [--json]
   issue-spec runner poll --repo owner/repo --runner login --once --dry-run
   issue-spec runner serve --profile self-hosted --repo owner/repo --runner login --subscription-id UUID --secret-file FILE (--git-credential-command /absolute/provider|--allow-host-ssh)
   issue-spec runner preflight --repo owner/repo --runner login`)
@@ -488,7 +495,7 @@ func collectArtifacts(ctx context.Context, client github.Operations, repo string
 			return nil, err
 		}
 		for _, comment := range comments {
-			if !model.IsLikelyTyped(comment.Body) {
+			if !model.IsLikelyTyped(comment.Body) && !model.IsLikelyCodeChangeRationale(comment.Body) {
 				continue
 			}
 			tc := model.ParseTypedComment(comment.Body)

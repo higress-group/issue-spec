@@ -63,6 +63,125 @@ func TestReferenceRouteSetSuccessVisibilityAndDelete(t *testing.T) {
 	}
 }
 
+func TestReferenceUpsertForwardsConditionalRefreshFields(t *testing.T) {
+	service := &fakeReferenceService{}
+	set, _ := NewRouteSet(Dependencies{Service: service, Authenticate: referenceAuthenticate})
+	mux, _ := routeset.NewMux(routeset.Policy{}, set)
+	issueID := uuid.New()
+	path := "/api/v1/orgs/" + uuid.NewString() + "/repos/" + uuid.NewString() + "/issues/" + issueID.String() + "/references"
+	request := httptest.NewRequest(http.MethodPut, path, strings.NewReader(`{
+		"provider_key":"aone-bridge","relation_kind":"code_change","external_repository_id":"acme/widgets",
+		"external_id":"42","canonical_url":"https://code.example/acme/widgets/changes/42",
+		"lifecycle_state":"active","visibility":"repository","metadata":{"head_revision":"def456"},
+		"refresh":true,"expected_version":7}`))
+	request.Header.Set("Authorization", "test")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !service.input.Refresh || service.input.ExpectedVersion == nil ||
+		*service.input.ExpectedVersion != 7 || service.input.IssueID != issueID {
+		t.Fatalf("conditional upsert response=%d input=%+v body=%s", response.Code, service.input, response.Body.String())
+	}
+}
+
+func TestReferenceCodeChangeConflictIsStructuredAndGenericConflictIsStable(t *testing.T) {
+	referenceID := uuid.New()
+	otherReferenceID := uuid.New()
+	service := &fakeReferenceService{err: &bindings.CodeChangeConflictError{
+		Reason: bindings.CodeChangeConflictAmbiguousActiveReferences,
+		References: []bindings.ReferenceIdentity{{ID: referenceID, ProviderKey: "aone-bridge",
+			ExternalRepositoryID: "acme/widgets", ExternalID: "42", RepresentationVersion: 3},
+			{ID: otherReferenceID, ProviderKey: "aone-bridge", ExternalRepositoryID: "acme/widgets",
+				ExternalID: "41", RepresentationVersion: 1}},
+	}}
+	set, _ := NewRouteSet(Dependencies{Service: service, Authenticate: referenceAuthenticate})
+	mux, _ := routeset.NewMux(routeset.Policy{}, set)
+	path := "/api/v1/orgs/" + uuid.NewString() + "/repos/" + uuid.NewString() + "/issues/" + uuid.NewString() + "/references"
+	body := `{"provider_key":"aone-bridge","relation_kind":"code_change","external_repository_id":"acme/widgets",` +
+		`"external_id":"43","canonical_url":"https://code.example/acme/widgets/changes/43",` +
+		`"lifecycle_state":"active","visibility":"repository","metadata":{"head_revision":"next"}}`
+	request := httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
+	request.Header.Set("Authorization", "test")
+	request.Header.Set("X-Request-ID", "code-change-conflict-request")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	var problem struct {
+		Code      string `json:"code"`
+		RequestID string `json:"request_id"`
+		Meta      struct {
+			Reason     bindings.CodeChangeConflictReason `json:"reason"`
+			References []bindings.ReferenceIdentity      `json:"references"`
+			Action     string                            `json:"action"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &problem); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusConflict || response.Header().Get("Content-Type") != "application/problem+json" ||
+		response.Header().Get("Cache-Control") != "no-store" ||
+		problem.Code != "code_change_conflict" || problem.RequestID != "code-change-conflict-request" ||
+		problem.Meta.Reason != bindings.CodeChangeConflictAmbiguousActiveReferences ||
+		len(problem.Meta.References) != 2 || problem.Meta.References[0].ID != referenceID ||
+		problem.Meta.Action != "inspect_references_delete_unwanted_then_retry" {
+		t.Fatalf("structured conflict response=%d headers=%v problem=%+v body=%s",
+			response.Code, response.Header(), problem, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "canonical_url") || strings.Contains(response.Body.String(), "head_revision") {
+		t.Fatalf("structured conflict exposed mutable navigation data: %s", response.Body.String())
+	}
+
+	service.err = &bindings.CodeChangeConflictError{Reason: bindings.CodeChangeConflictHiddenActiveReferences}
+	hidden := httptest.NewRequest(http.MethodPut, path, strings.NewReader(`{
+		"provider_key":"hidden-provider-901","relation_kind":"code_change","external_repository_id":"hidden/repository-901",
+		"external_id":"hidden-change-901","canonical_url":"https://hidden.example.test/changes/901",
+		"lifecycle_state":"active","visibility":"repository","metadata":{"head_revision":"hidden-revision-901"}}`))
+	hidden.Header.Set("Authorization", "test")
+	hidden.Header.Set("X-Request-ID", "hidden-code-change-conflict-request")
+	hiddenResponse := httptest.NewRecorder()
+	mux.ServeHTTP(hiddenResponse, hidden)
+	var hiddenProblem struct {
+		Code      string                     `json:"code"`
+		RequestID string                     `json:"request_id"`
+		Meta      map[string]json.RawMessage `json:"meta"`
+	}
+	if err := json.Unmarshal(hiddenResponse.Body.Bytes(), &hiddenProblem); err != nil {
+		t.Fatal(err)
+	}
+	var hiddenReason bindings.CodeChangeConflictReason
+	var hiddenAction string
+	if err := json.Unmarshal(hiddenProblem.Meta["reason"], &hiddenReason); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(hiddenProblem.Meta["action"], &hiddenAction); err != nil {
+		t.Fatal(err)
+	}
+	if hiddenResponse.Code != http.StatusConflict || hiddenResponse.Header().Get("Cache-Control") != "no-store" ||
+		hiddenProblem.Code != "code_change_conflict" || hiddenProblem.RequestID != "hidden-code-change-conflict-request" ||
+		hiddenReason != bindings.CodeChangeConflictHiddenActiveReferences || hiddenAction != "contact_maintainer" {
+		t.Fatalf("hidden conflict response=%d headers=%v problem=%+v body=%s",
+			hiddenResponse.Code, hiddenResponse.Header(), hiddenProblem, hiddenResponse.Body.String())
+	}
+	if _, exists := hiddenProblem.Meta["references"]; exists {
+		t.Fatalf("hidden conflict included repair identities: %s", hiddenResponse.Body.String())
+	}
+	for _, forbidden := range []string{"hidden-provider-901", "hidden/repository-901", "hidden-change-901",
+		"https://hidden.example.test/changes/901", "hidden-revision-901", "representation_version"} {
+		if strings.Contains(hiddenResponse.Body.String(), forbidden) {
+			t.Fatalf("hidden conflict exposed %q: %s", forbidden, hiddenResponse.Body.String())
+		}
+	}
+
+	service.err = adminservice.ErrConflict
+	generic := httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
+	generic.Header.Set("Authorization", "test")
+	genericResponse := httptest.NewRecorder()
+	mux.ServeHTTP(genericResponse, generic)
+	assertReferenceProblem(t, genericResponse, http.StatusConflict, "conflict")
+	if strings.Contains(genericResponse.Body.String(), `"reason"`) || strings.Contains(genericResponse.Body.String(), `"references"`) ||
+		strings.Contains(genericResponse.Body.String(), `"action"`) {
+		t.Fatalf("generic conflict response changed shape: %s", genericResponse.Body.String())
+	}
+}
+
 func TestReferenceProblemsStrictJSONUUIDVisibilityAndConcealment(t *testing.T) {
 	service := &fakeReferenceService{}
 	set, _ := NewRouteSet(Dependencies{Service: service, Authenticate: referenceAuthenticate})

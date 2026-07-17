@@ -129,7 +129,7 @@ func workflowNotice(plan workflow.Plan) string {
 			fmt.Fprintf(&b, "  - `%s/%s`: %s\n", diagnostic.Severity, diagnostic.Code, diagnostic.Message)
 		}
 	}
-	b.WriteString("\nProject workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in GitHub issue-native storage; durable specs are repository files created during archive.\n")
+	b.WriteString("\nProject workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in the selected issue backend's issue-native storage; durable specs are repository files created during archive.\n")
 	return b.String()
 }
 

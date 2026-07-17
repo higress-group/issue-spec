@@ -4,9 +4,11 @@ package bindings
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
 	"github.com/higress-group/issue-spec/internal/server/models"
 )
 
@@ -73,4 +75,43 @@ type UpsertReferenceInput struct {
 	LifecycleState       string          `json:"lifecycle_state"`
 	Visibility           Visibility      `json:"visibility"`
 	Metadata             json.RawMessage `json:"metadata,omitempty"`
+	Refresh              bool            `json:"refresh,omitempty"`
+	ExpectedVersion      *int64          `json:"expected_version,omitempty"`
 }
+
+type CodeChangeConflictReason string
+
+const (
+	CodeChangeConflictAmbiguousActiveReferences CodeChangeConflictReason = "ambiguous_active_references"
+	CodeChangeConflictCanonicalURLDrift         CodeChangeConflictReason = "canonical_url_drift"
+	CodeChangeConflictDifferentActiveChange     CodeChangeConflictReason = "different_active_change"
+	CodeChangeConflictHiddenActiveReferences    CodeChangeConflictReason = "hidden_active_references"
+	CodeChangeConflictInvalidActiveReference    CodeChangeConflictReason = "invalid_active_reference"
+	CodeChangeConflictRefreshRequired           CodeChangeConflictReason = "refresh_required"
+	CodeChangeConflictStaleReferenceVersion     CodeChangeConflictReason = "stale_reference_version"
+)
+
+// ReferenceIdentity is the credential-free, URL-free identity returned only
+// for active code-change references visible to the caller. The reference ID
+// supports repair through the existing list/delete operations.
+type ReferenceIdentity struct {
+	ID                    uuid.UUID `json:"id"`
+	ProviderKey           string    `json:"provider_key"`
+	ExternalRepositoryID  string    `json:"external_repository_id"`
+	ExternalID            string    `json:"external_id"`
+	RepresentationVersion int64     `json:"representation_version"`
+}
+
+// CodeChangeConflictError describes an expected relationship conflict without
+// exposing stored canonical URLs or metadata. It remains compatible with the
+// existing conflict mapping through errors.Is(err, admin.ErrConflict).
+type CodeChangeConflictError struct {
+	Reason     CodeChangeConflictReason `json:"reason"`
+	References []ReferenceIdentity      `json:"references,omitempty"`
+}
+
+func (e *CodeChangeConflictError) Error() string {
+	return fmt.Sprintf("active code-change conflict (%s)", e.Reason)
+}
+
+func (e *CodeChangeConflictError) Unwrap() error { return adminservice.ErrConflict }

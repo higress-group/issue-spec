@@ -37,15 +37,16 @@ type NativeProvider struct {
 }
 
 type NativeTarget struct {
-	Reference       codereview.Reference
-	SubjectRevision string
-	BaseRevision    string
-	Policy          NativePolicy
-	Provider        codereview.Provider
-	CanonicalURL    string
-	IssueID         uuid.UUID
-	OrgID           uuid.UUID
-	RepoID          uuid.UUID
+	Reference        codereview.Reference
+	ReferenceVersion int64
+	SubjectRevision  string
+	BaseRevision     string
+	Policy           NativePolicy
+	Provider         codereview.Provider
+	CanonicalURL     string
+	IssueID          uuid.UUID
+	OrgID            uuid.UUID
+	RepoID           uuid.UUID
 }
 
 type NativePolicy struct {
@@ -125,6 +126,9 @@ func (p *NativeProvider) ResolveTarget(ctx context.Context, repo string, issueNu
 	if len(matching) != 1 {
 		return NativeTarget{}, fmt.Errorf("%w: issue must have exactly one active %s reference (found %d)", ErrNativeEvidence, relationKind, len(matching))
 	}
+	if matching[0].RepresentationVersion <= 0 {
+		return NativeTarget{}, fmt.Errorf("%w: active %s reference has no representation version", ErrNativeEvidence, relationKind)
+	}
 	metadata, err := decodeReferenceMetadata(matching[0].Metadata)
 	if err != nil {
 		return NativeTarget{}, err
@@ -136,7 +140,8 @@ func (p *NativeProvider) ResolveTarget(ctx context.Context, repo string, issueNu
 	}
 	bound := &nativeSnapshotProvider{parent: p, orgID: orgID, repoID: repoID, issueID: issueID,
 		reference: reference, canonicalURL: matching[0].CanonicalURL}
-	return NativeTarget{Reference: reference, SubjectRevision: metadata.HeadRevision, BaseRevision: metadata.BaseRevision,
+	return NativeTarget{Reference: reference, ReferenceVersion: matching[0].RepresentationVersion,
+		SubjectRevision: metadata.HeadRevision, BaseRevision: metadata.BaseRevision,
 		Policy: policy, Provider: bound, CanonicalURL: matching[0].CanonicalURL, IssueID: issueID, OrgID: orgID, RepoID: repoID}, nil
 }
 

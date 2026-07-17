@@ -15,6 +15,33 @@ type nativeSearchProvider interface {
 	SearchNativeIssues(context.Context, string, github.NativeIssueSearchOptions) (github.NativeIssueSearchPage, error)
 }
 
+type issueSearchAdapter interface {
+	SearchIssues(context.Context, string, github.IssueSearchOptions) (github.IssueSearchPage, error)
+}
+
+type nativeIssueSearchAdapter struct {
+	provider nativeSearchProvider
+}
+
+func (a nativeIssueSearchAdapter) SearchIssues(ctx context.Context, repo string, options github.IssueSearchOptions) (github.IssueSearchPage, error) {
+	metadata, err := a.provider.GetNativeServerMetadata(ctx)
+	if err != nil {
+		return github.IssueSearchPage{}, fmt.Errorf("discover issue search capability: %w", err)
+	}
+	if !metadata.Features.Search {
+		return github.IssueSearchPage{}, errors.New("issue search is disabled on the selected self-hosted server")
+	}
+	return a.provider.SearchNativeIssues(ctx, repo, options)
+}
+
+type githubIssueSearchAdapter struct {
+	provider github.IssueSearchOperations
+}
+
+func (a githubIssueSearchAdapter) SearchIssues(ctx context.Context, repo string, options github.IssueSearchOptions) (github.IssueSearchPage, error) {
+	return a.provider.SearchIssues(ctx, repo, options)
+}
+
 func defaultNewNativeSearchProvider(profile auth.Profile, token string) (nativeSearchProvider, error) {
 	return github.NewClientWithOptions(github.ClientOptions{Host: profile.Hostname, BaseURL: profile.NativeAPIURL,
 		Token: token, CAFile: profile.CAFile})
@@ -38,8 +65,8 @@ func (a *app) runSearchIssues(ctx context.Context, args []string) int {
 	host := fs.String("hostname", "github.com", "issue backend hostname")
 	query := fs.String("query", "", "full-text search query")
 	state := fs.String("state", "all", "issue state: all, open, or closed")
-	source := fs.String("source", "all", "match source: all, issue, comments, or change")
-	stage := fs.String("stage", "", "change stage: proposal, design, or implement")
+	source := fs.String("source", "all", "match source: all, issue, comments, or change (change is self-hosted only)")
+	stage := fs.String("stage", "", "change stage: proposal, design, or implement (canonical label on GitHub)")
 	limit := fs.Int("limit", 10, "maximum issue results (1-50)")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -47,10 +74,10 @@ func (a *app) runSearchIssues(ctx context.Context, args []string) int {
 	if _, ok := a.validateRepo(*repoFlag); !ok {
 		return 2
 	}
-	// Native search owns route escaping. Keep the validated repository raw so
-	// special characters are encoded exactly once by SearchNativeIssues.
+	// Each adapter owns route/query escaping. Keep the validated repository raw
+	// so special characters are encoded exactly once by the selected backend.
 	repo := strings.TrimSpace(*repoFlag)
-	options := github.NativeIssueSearchOptions{Query: strings.TrimSpace(*query), State: strings.ToLower(strings.TrimSpace(*state)),
+	options := github.IssueSearchOptions{Query: strings.TrimSpace(*query), State: strings.ToLower(strings.TrimSpace(*state)),
 		Source: strings.ToLower(strings.TrimSpace(*source)), Stage: strings.ToLower(strings.TrimSpace(*stage)), Page: 1, PerPage: *limit}
 	if err := validateSearchOptions(options); err != nil {
 		a.errorf("%v\n", err)
@@ -61,34 +88,12 @@ func (a *app) runSearchIssues(ctx context.Context, args []string) int {
 		a.errorf("resolve issue backend profile: %v\n", err)
 		return 1
 	}
-	if profile.Kind != auth.ProfileKindHosted {
-		a.errorf("issue search requires a self-hosted issue-spec profile\n")
-		return 1
-	}
-	token, err := auth.ResolveProfileToken(ctx, profile)
+	adapter, redactor, err := a.selectIssueSearchAdapter(ctx, profile)
 	if err != nil {
-		a.errorf("auth required for issue search on %s: %v\n", profile.Hostname, err)
+		a.errorf("%v\n", err)
 		return 1
 	}
-	if a.newNativeSearchProvider == nil {
-		a.errorf("native issue search client is unavailable\n")
-		return 1
-	}
-	provider, err := a.newNativeSearchProvider(profile, token.Value)
-	if err != nil {
-		a.errorf("configure native issue search: %v\n", err)
-		return 1
-	}
-	metadata, err := provider.GetNativeServerMetadata(ctx)
-	if err != nil {
-		a.errorf("discover issue search capability: %v\n", err)
-		return 1
-	}
-	if !metadata.Features.Search {
-		a.errorf("issue search is disabled on the selected self-hosted server\n")
-		return 1
-	}
-	page, err := provider.SearchNativeIssues(ctx, repo, options)
+	page, err := adapter.SearchIssues(ctx, repo, options)
 	if err != nil {
 		a.errorf("search issues: %v\n", err)
 		return 1
@@ -99,12 +104,50 @@ func (a *app) runSearchIssues(ctx context.Context, args []string) int {
 		return 1
 	}
 	var output strings.Builder
-	renderSearchResults(&output, nonce, untrustedRedactor(token.Value), profile.Name, page)
+	renderSearchResults(&output, nonce, redactor, profile.Name, page)
 	fmt.Fprint(a.out, output.String())
 	return 0
 }
 
-func validateSearchOptions(options github.NativeIssueSearchOptions) error {
+func (a *app) selectIssueSearchAdapter(ctx context.Context, profile auth.Profile) (issueSearchAdapter, github.ExternalCLIRedactor, error) {
+	switch profile.Kind {
+	case auth.ProfileKindHosted:
+		token, err := auth.ResolveProfileToken(ctx, profile)
+		if err != nil {
+			return nil, github.ExternalCLIRedactor{}, fmt.Errorf("auth required for issue search on %s: %w", profile.Hostname, err)
+		}
+		if a.newNativeSearchProvider == nil {
+			return nil, github.ExternalCLIRedactor{}, errors.New("native issue search client is unavailable")
+		}
+		provider, err := a.newNativeSearchProvider(profile, token.Value)
+		if err != nil {
+			return nil, github.ExternalCLIRedactor{}, fmt.Errorf("configure native issue search: %w", err)
+		}
+		return nativeIssueSearchAdapter{provider: provider}, untrustedRedactor(token.Value), nil
+	case auth.ProfileKindGitHub:
+		selection, err := a.selectBackend(ctx, profile.Hostname)
+		if err != nil {
+			return nil, github.ExternalCLIRedactor{}, fmt.Errorf("select GitHub issue search backend: %w", err)
+		}
+		backend, err := a.backendForSelection(ctx, selection)
+		if err != nil {
+			return nil, github.ExternalCLIRedactor{}, fmt.Errorf("configure GitHub issue search backend: %w", err)
+		}
+		provider, ok := backend.(github.IssueSearchOperations)
+		if !ok {
+			return nil, github.ExternalCLIRedactor{}, errors.New("issue search is unsupported by the selected GitHub backend")
+		}
+		token, err := a.tokenForSelection(ctx, selection)
+		if err != nil {
+			return nil, github.ExternalCLIRedactor{}, fmt.Errorf("resolve GitHub issue search redaction token: %w", err)
+		}
+		return githubIssueSearchAdapter{provider: provider}, untrustedRedactor(token, selection.Token.Value), nil
+	default:
+		return nil, github.ExternalCLIRedactor{}, fmt.Errorf("issue search is unsupported by profile kind %q", profile.Kind)
+	}
+}
+
+func validateSearchOptions(options github.IssueSearchOptions) error {
 	if options.Query == "" || len(options.Query) > 256 {
 		return errors.New("--query must contain 1-256 bytes")
 	}
@@ -123,7 +166,7 @@ func validateSearchOptions(options github.NativeIssueSearchOptions) error {
 	return nil
 }
 
-func renderSearchResults(output *strings.Builder, nonce string, redactor github.ExternalCLIRedactor, profile string, page github.NativeIssueSearchPage) {
+func renderSearchResults(output *strings.Builder, nonce string, redactor github.ExternalCLIRedactor, profile string, page github.IssueSearchPage) {
 	writeReadHeader(output, nonce)
 	fmt.Fprintf(output, "\nresults: %d\ntotal: %d\nhas_next: %t\n", len(page.Items), page.Total, page.HasNext)
 	for _, item := range page.Items {

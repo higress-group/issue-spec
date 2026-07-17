@@ -28,7 +28,7 @@ func TestNativeProviderResolvesExactReferenceAndBuildsSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if target.Reference != (codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}) ||
-		target.SubjectRevision != "head-abc" || target.BaseRevision != "base-123" || len(target.Policy.Requirements) != 1 {
+		target.ReferenceVersion != 1 || target.SubjectRevision != "head-abc" || target.BaseRevision != "base-123" || len(target.Policy.Requirements) != 1 {
 		t.Fatalf("target = %+v", target)
 	}
 	snapshot, err := codereview.FetchSnapshot(t.Context(), target.Provider, codereview.SnapshotRequest{

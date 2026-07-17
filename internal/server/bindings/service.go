@@ -235,6 +235,8 @@ func (s *Service) ListReferences(ctx context.Context, subject authz.Subject, sco
 // UpsertReference uses the full provider/relation/external-repository/object
 // identity, so identically numbered objects in different external repos never
 // alias. A semantic no-op leaves versions and collection validators unchanged.
+// Active code_change writes on valid Implement Issues additionally serialize on
+// the issue row and enforce the issue's single-active relationship lifecycle.
 func (s *Service) UpsertReference(ctx context.Context, subject authz.Subject, actor adminservice.Actor, scope models.RepoScope, input UpsertReferenceInput) (Reference, error) {
 	input = normalizeReferenceInput(input)
 	canonicalMetadata, err := canonicalObject(input.Metadata)
@@ -251,48 +253,28 @@ func (s *Service) UpsertReference(ctx context.Context, subject authz.Subject, ac
 		if err := decision.AuthorizationError(); err != nil {
 			return err
 		}
-		if err := ensureIssue(ctx, tx, scope, input.IssueID); err != nil {
-			return err
-		}
-		row := tx.QueryRow(ctx, `SELECT id, organization_id, repository_id, issue_id, provider_key,
-			relation_kind, external_repository_id, external_id, canonical_url, title, lifecycle_state,
-			visibility, metadata, representation_version, created_at, updated_at FROM external_references
-			WHERE organization_id = $1 AND repository_id = $2 AND issue_id = $3 AND provider_key = $4
-			AND relation_kind = $5 AND external_repository_id = $6 AND external_id = $7 FOR UPDATE`,
-			scope.OrgID, scope.RepoID, input.IssueID, input.ProviderKey, input.RelationKind,
-			input.ExternalRepositoryID, input.ExternalID)
-		existing, scanErr := scanReference(row)
-		switch {
-		case scanErr == nil:
-			if referenceEqual(existing, input) {
-				result = existing
-				return nil
+		changed := false
+		if activeCodeChangeInput(input) {
+			implement, lockErr := lockIssueAndCheckImplement(ctx, tx, scope, input.IssueID)
+			if lockErr != nil {
+				return lockErr
 			}
-			result, err = scanReference(tx.QueryRow(ctx, `UPDATE external_references SET canonical_url = $8,
-				title = $9, lifecycle_state = $10, visibility = $11, metadata = $12::jsonb,
-				representation_version = representation_version + 1, updated_at = clock_timestamp()
-				WHERE organization_id = $1 AND repository_id = $2 AND issue_id = $3 AND provider_key = $4
-				AND relation_kind = $5 AND external_repository_id = $6 AND external_id = $7
-				RETURNING id, organization_id, repository_id, issue_id, provider_key, relation_kind,
-				external_repository_id, external_id, canonical_url, title, lifecycle_state, visibility,
-				metadata, representation_version, created_at, updated_at`, scope.OrgID, scope.RepoID,
-				input.IssueID, input.ProviderKey, input.RelationKind, input.ExternalRepositoryID, input.ExternalID,
-				input.CanonicalURL, input.Title, input.LifecycleState, input.Visibility, string(input.Metadata)))
-		case errors.Is(scanErr, pgx.ErrNoRows):
-			result, err = scanReference(tx.QueryRow(ctx, `INSERT INTO external_references
-				(id, organization_id, repository_id, issue_id, provider_key, relation_kind,
-				 external_repository_id, external_id, canonical_url, title, lifecycle_state, visibility, metadata)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
-				RETURNING id, organization_id, repository_id, issue_id, provider_key, relation_kind,
-				external_repository_id, external_id, canonical_url, title, lifecycle_state, visibility,
-				metadata, representation_version, created_at, updated_at`, uuid.New(), scope.OrgID, scope.RepoID,
-				input.IssueID, input.ProviderKey, input.RelationKind, input.ExternalRepositoryID, input.ExternalID,
-				input.CanonicalURL, input.Title, input.LifecycleState, input.Visibility, string(input.Metadata)))
-		default:
-			return scanErr
+			if implement {
+				result, changed, err = establishCodeChangeReference(ctx, tx, scope, input, decision.EffectivePermission)
+			} else {
+				result, changed, err = upsertGenericReference(ctx, tx, scope, input)
+			}
+		} else {
+			if err := ensureIssue(ctx, tx, scope, input.IssueID); err != nil {
+				return err
+			}
+			result, changed, err = upsertGenericReference(ctx, tx, scope, input)
 		}
 		if err != nil {
 			return err
+		}
+		if !changed {
+			return nil
 		}
 		if err := bumpReferenceCollections(ctx, tx, scope, input.IssueID); err != nil {
 			return err
@@ -304,6 +286,177 @@ func (s *Service) UpsertReference(ctx context.Context, subject authz.Subject, ac
 		})
 	})
 	return result, mapError(err)
+}
+
+func upsertGenericReference(ctx context.Context, tx pgx.Tx, scope models.RepoScope, input UpsertReferenceInput) (Reference, bool, error) {
+	row := tx.QueryRow(ctx, `SELECT id, organization_id, repository_id, issue_id, provider_key,
+		relation_kind, external_repository_id, external_id, canonical_url, title, lifecycle_state,
+		visibility, metadata, representation_version, created_at, updated_at FROM external_references
+		WHERE organization_id = $1 AND repository_id = $2 AND issue_id = $3 AND provider_key = $4
+		AND relation_kind = $5 AND external_repository_id = $6 AND external_id = $7 FOR UPDATE`,
+		scope.OrgID, scope.RepoID, input.IssueID, input.ProviderKey, input.RelationKind,
+		input.ExternalRepositoryID, input.ExternalID)
+	existing, scanErr := scanReference(row)
+	switch {
+	case scanErr == nil:
+		if referenceEqual(existing, input) {
+			return existing, false, nil
+		}
+		result, err := scanReference(tx.QueryRow(ctx, `UPDATE external_references SET canonical_url = $8,
+			title = $9, lifecycle_state = $10, visibility = $11, metadata = $12::jsonb,
+			representation_version = representation_version + 1, updated_at = clock_timestamp()
+			WHERE organization_id = $1 AND repository_id = $2 AND issue_id = $3 AND provider_key = $4
+			AND relation_kind = $5 AND external_repository_id = $6 AND external_id = $7
+			RETURNING id, organization_id, repository_id, issue_id, provider_key, relation_kind,
+			external_repository_id, external_id, canonical_url, title, lifecycle_state, visibility,
+			metadata, representation_version, created_at, updated_at`, scope.OrgID, scope.RepoID,
+			input.IssueID, input.ProviderKey, input.RelationKind, input.ExternalRepositoryID, input.ExternalID,
+			input.CanonicalURL, input.Title, input.LifecycleState, input.Visibility, string(input.Metadata)))
+		return result, err == nil, err
+	case errors.Is(scanErr, pgx.ErrNoRows):
+		result, err := insertReference(ctx, tx, scope, input)
+		return result, err == nil, err
+	default:
+		return Reference{}, false, scanErr
+	}
+}
+
+func lockIssueAndCheckImplement(ctx context.Context, tx pgx.Tx, scope models.RepoScope, issueID uuid.UUID) (bool, error) {
+	var found uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM issues WHERE organization_id = $1
+		AND repository_id = $2 AND id = $3 FOR UPDATE`, scope.OrgID, scope.RepoID, issueID).Scan(&found); err != nil {
+		return false, err
+	}
+	var implement bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM issue_spec_artifacts
+		WHERE organization_id = $1 AND repository_id = $2 AND issue_id = $3
+		AND artifact_type = 'implement' AND active AND metadata->>'marker_version' = '1')`,
+		scope.OrgID, scope.RepoID, issueID).Scan(&implement)
+	return implement, err
+}
+
+func establishCodeChangeReference(ctx context.Context, tx pgx.Tx, scope models.RepoScope, input UpsertReferenceInput, permission authz.Permission) (Reference, bool, error) {
+	incomingRevision, ok := headRevision(input.Metadata)
+	if !ok {
+		return Reference{}, false, adminservice.ErrInvalidInput
+	}
+	rows, err := tx.Query(ctx, `SELECT id, organization_id, repository_id, issue_id, provider_key,
+		relation_kind, external_repository_id, external_id, canonical_url, title, lifecycle_state,
+		visibility, metadata, representation_version, created_at, updated_at FROM external_references
+		WHERE organization_id = $1 AND repository_id = $2 AND issue_id = $3
+		AND relation_kind = 'code_change' AND lifecycle_state = 'active'
+		ORDER BY provider_key, external_repository_id, external_id, id FOR UPDATE`,
+		scope.OrgID, scope.RepoID, input.IssueID)
+	if err != nil {
+		return Reference{}, false, err
+	}
+	defer rows.Close()
+	active := make([]Reference, 0, 2)
+	for rows.Next() {
+		item, scanErr := scanReferenceFields(rows)
+		if scanErr != nil {
+			return Reference{}, false, scanErr
+		}
+		active = append(active, item)
+	}
+	if err := rows.Err(); err != nil {
+		return Reference{}, false, err
+	}
+	if len(active) == 0 {
+		result, insertErr := insertReference(ctx, tx, scope, input)
+		return result, insertErr == nil, insertErr
+	}
+	if permission < authz.PermissionMaintain {
+		for _, reference := range active {
+			if reference.Visibility == VisibilityMaintainers {
+				return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictHiddenActiveReferences, active...)
+			}
+		}
+	}
+	if len(active) > 1 {
+		return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictAmbiguousActiveReferences, active...)
+	}
+	existing := active[0]
+	if validateHTTPSURL(existing.CanonicalURL) != nil {
+		return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictInvalidActiveReference, existing)
+	}
+	existingRevision, ok := headRevision(existing.Metadata)
+	if !ok {
+		return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictInvalidActiveReference, existing)
+	}
+	if existing.ProviderKey != input.ProviderKey || existing.ExternalRepositoryID != input.ExternalRepositoryID ||
+		existing.ExternalID != input.ExternalID {
+		return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictDifferentActiveChange, existing)
+	}
+	if existingRevision == incomingRevision {
+		if existing.CanonicalURL != input.CanonicalURL {
+			return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictCanonicalURLDrift, existing)
+		}
+		return existing, false, nil
+	}
+	if !input.Refresh {
+		return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictRefreshRequired, existing)
+	}
+	if input.ExpectedVersion == nil || *input.ExpectedVersion != existing.RepresentationVersion {
+		return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictStaleReferenceVersion, existing)
+	}
+	result, err := scanReference(tx.QueryRow(ctx, `UPDATE external_references SET canonical_url = $5,
+		title = $6, lifecycle_state = $7, visibility = $8, metadata = $9::jsonb,
+		representation_version = representation_version + 1, updated_at = clock_timestamp()
+		WHERE organization_id = $1 AND repository_id = $2 AND issue_id = $3 AND id = $4
+		AND representation_version = $10
+		RETURNING id, organization_id, repository_id, issue_id, provider_key, relation_kind,
+		external_repository_id, external_id, canonical_url, title, lifecycle_state, visibility,
+		metadata, representation_version, created_at, updated_at`, scope.OrgID, scope.RepoID,
+		input.IssueID, existing.ID, input.CanonicalURL, input.Title, input.LifecycleState,
+		input.Visibility, string(input.Metadata), *input.ExpectedVersion))
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, adminservice.ErrNotFound) {
+		return Reference{}, false, codeChangeConflict(permission, CodeChangeConflictStaleReferenceVersion, existing)
+	}
+	return result, err == nil, err
+}
+
+func insertReference(ctx context.Context, tx pgx.Tx, scope models.RepoScope, input UpsertReferenceInput) (Reference, error) {
+	return scanReference(tx.QueryRow(ctx, `INSERT INTO external_references
+		(id, organization_id, repository_id, issue_id, provider_key, relation_kind,
+		 external_repository_id, external_id, canonical_url, title, lifecycle_state, visibility, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+		RETURNING id, organization_id, repository_id, issue_id, provider_key, relation_kind,
+		external_repository_id, external_id, canonical_url, title, lifecycle_state, visibility,
+		metadata, representation_version, created_at, updated_at`, uuid.New(), scope.OrgID, scope.RepoID,
+		input.IssueID, input.ProviderKey, input.RelationKind, input.ExternalRepositoryID, input.ExternalID,
+		input.CanonicalURL, input.Title, input.LifecycleState, input.Visibility, string(input.Metadata)))
+}
+
+func activeCodeChangeInput(input UpsertReferenceInput) bool {
+	return input.RelationKind == "code_change" && input.LifecycleState == "active"
+}
+
+func headRevision(metadata json.RawMessage) (string, bool) {
+	var value struct {
+		HeadRevision string `json:"head_revision"`
+	}
+	if json.Unmarshal(metadata, &value) != nil || value.HeadRevision == "" || value.HeadRevision != strings.TrimSpace(value.HeadRevision) {
+		return "", false
+	}
+	return value.HeadRevision, true
+}
+
+func codeChangeConflict(permission authz.Permission, reason CodeChangeConflictReason, references ...Reference) error {
+	if permission < authz.PermissionMaintain {
+		for _, reference := range references {
+			if reference.Visibility == VisibilityMaintainers {
+				return &CodeChangeConflictError{Reason: CodeChangeConflictHiddenActiveReferences}
+			}
+		}
+	}
+	identities := make([]ReferenceIdentity, 0, len(references))
+	for _, reference := range references {
+		identities = append(identities, ReferenceIdentity{ID: reference.ID, ProviderKey: reference.ProviderKey,
+			ExternalRepositoryID: reference.ExternalRepositoryID, ExternalID: reference.ExternalID,
+			RepresentationVersion: reference.RepresentationVersion})
+	}
+	return &CodeChangeConflictError{Reason: reason, References: identities}
 }
 
 // DeleteReference removes a mutable link while keeping its safe audit record.
@@ -420,6 +573,9 @@ func validateReferenceInput(input UpsertReferenceInput) error {
 		(input.Visibility != VisibilityRepository && input.Visibility != VisibilityMaintainers) {
 		return adminservice.ErrInvalidInput
 	}
+	if input.Refresh != (input.ExpectedVersion != nil) || (input.ExpectedVersion != nil && *input.ExpectedVersion < 1) {
+		return adminservice.ErrInvalidInput
+	}
 	return validateHTTPSURL(input.CanonicalURL)
 }
 
@@ -448,6 +604,17 @@ func scanBinding(row rowScanner) (Binding, error) {
 }
 
 func scanReference(row rowScanner) (Reference, error) {
+	item, err := scanReferenceFields(row)
+	if err != nil {
+		return Reference{}, err
+	}
+	if validateHTTPSURL(item.CanonicalURL) != nil {
+		return Reference{}, errors.New("bindings: stored external reference contains an unsafe canonical URL")
+	}
+	return item, nil
+}
+
+func scanReferenceFields(row rowScanner) (Reference, error) {
 	var item Reference
 	err := row.Scan(&item.ID, &item.Scope.OrgID, &item.Scope.RepoID, &item.IssueID,
 		&item.ProviderKey, &item.RelationKind, &item.ExternalRepositoryID, &item.ExternalID,
@@ -455,9 +622,6 @@ func scanReference(row rowScanner) (Reference, error) {
 		&item.RepresentationVersion, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		return Reference{}, err
-	}
-	if validateHTTPSURL(item.CanonicalURL) != nil {
-		return Reference{}, errors.New("bindings: stored external reference contains an unsafe canonical URL")
 	}
 	return item, nil
 }

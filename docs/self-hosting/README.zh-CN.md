@@ -169,6 +169,24 @@ issue-spec --profile team init \
 平台时，使用 `--bind-source`、`--provider` 和外部仓库坐标。Source Binding 只包含
 规范化仓库身份和 URL，不保存个人 Clone Credential。
 
+Provider 所属的 PR/MR 已经存在后，先按精确 Head Revision 校验并关联到 Implement
+Issue，再让各 PROCESS 复用这个 Active Relationship：
+
+```bash
+issue-spec --profile team code-change attach \
+  --repo acme/workflow --implement 3 --change-id 42 --revision abc123 --json
+
+issue-spec --profile team code-change link-process \
+  --repo acme/workflow --implement 3 --process PROCESS-001 \
+  --expected-version 5 --json
+```
+
+Provider 与外部仓库身份来自 Source Binding。`code-change attach` 不会创建外部变更，
+也不会导入证据；Refresh 必须同时提供 `--refresh` 与 `--expected-version`。链接时必须
+恰好存在一个 Active `code_change`。如果 Reference 存在歧义，应先检查并只删除不需要
+的 Active Reference，再重试；禁止猜测或静默覆盖。GitHub 继续使用原有 PR 流程；
+self-hosted 的 Review、Merge 与关闭仍由所选 Code Provider 负责。
+
 完整的 Provider-neutral 集成方案、运维 Registry 示例、Bridge 脚手架、代码证据
 映射和 Jira 类工作项投影模式见
 [对接企业代码平台与工作项平台](enterprise-provider-integration.zh-CN.md)。

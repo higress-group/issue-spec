@@ -191,6 +191,27 @@ Use `--bind-source`, `--provider`, and the external repository coordinates when
 the source lives on a separate code host. Source bindings contain canonical
 repository identity and URLs, never a personal clone credential.
 
+After a provider-owned PR/MR already exists, validate and attach its exact head
+revision to the Implement Issue, then link each PROCESS through the same active
+relationship:
+
+```bash
+issue-spec --profile team code-change attach \
+  --repo acme/workflow --implement 3 --change-id 42 --revision abc123 --json
+
+issue-spec --profile team code-change link-process \
+  --repo acme/workflow --implement 3 --process PROCESS-001 \
+  --expected-version 5 --json
+```
+
+The Source Binding supplies provider and external repository identity.
+`code-change attach` neither creates the external change nor ingests evidence;
+refresh requires `--refresh` and `--expected-version` together. Linking requires
+exactly one active `code_change`. If references are ambiguous, inspect them,
+delete only the unwanted active reference, and retry—never guess or silently
+overwrite. GitHub keeps its existing PR workflow; self-hosted review, merge,
+and closure stay with the selected code provider.
+
 For a provider-neutral integration plan, operator registry example, bridge
 scaffold, code-evidence mapping, and Jira-like work-item projection pattern,
 read [Integrate company code and work platforms](enterprise-provider-integration.md).

@@ -42,6 +42,9 @@ func ProviderWorkflowNotice(provider workflow.ProviderPlan) string {
 	}
 	lines = append(lines,
 		"- Capabilities are policy and evidence contracts, not implied issue-spec CLI commands. Use only an approved operator-provided code-host skill or bridge for mutations.",
+		"- On a self-hosted profile, `code-change attach` validates and associates an existing provider change at an exact revision; it never creates that change or ingests evidence.",
+		"- After attach, `code-change link-process` links one PROCESS to the unique active code change with representation-version CAS.",
+		"- After independent review converges, the real code author uses `code-change rationale` to append an Implement Issue comment bound to the exact active reference version and revision. Final gates also require trusted consumed native-ledger evidence for the same PROCESS/SPEC; evidence-writer identity is never treated as the code author.",
 		"- Provider executables, arguments, environment, and credentials are operator-owned and must never be read from repository files.",
 		"- Project/work-item tracker authority is independent and is not enabled by this code-provider selection.")
 	return strings.Join(lines, "\n")
@@ -57,23 +60,28 @@ func providerWorkflowBody(repo string, provider workflow.ProviderPlan) string {
 		"",
 		"## Flow",
 		"",
-		"1. Read the active source binding and code-change reference from issue-spec; do not infer provider authority from the issue server hostname.",
+		"1. Read the active Source Binding and code-change references from issue-spec; the binding supplies provider and external repository identity. Do not infer provider authority from the issue server hostname.",
 	}
 	if provider.ChangeCreate {
-		steps = append(steps, "2. When a new external change is required, use an operator-provided trusted code-host skill or bridge. `change.create` is a capability contract, not an implied issue-spec CLI command; stop and request operator setup when no approved skill or bridge is available.")
+		steps = append(steps, "2. When a new external change is required, create it with an operator-provided trusted code-host skill or bridge. `change.create` is a capability contract, not an implied issue-spec CLI command; stop and request operator setup when no approved skill or bridge is available.")
 	} else {
-		steps = append(steps, "2. Create the external change outside issue-spec, then associate its stable provider/repository/change identity; `change.create` is not available.")
+		steps = append(steps, "2. Create the external change outside issue-spec; `change.create` is not available.")
 	}
+	steps = append(steps, "3. Validate and attach that existing change at its exact provider revision with `issue-spec --profile <self-hosted-profile> code-change attach --repo "+repo+" --implement <issue> --change-id <id> --revision <revision>`. Attach does not create the change or ingest review/CI evidence. Refresh only the same active change and provide `--refresh --expected-version <version>` together.")
+	steps = append(steps, "4. Link each PROCESS with `issue-spec --profile <self-hosted-profile> code-change link-process --repo "+repo+" --implement <issue> --process PROCESS-001 --expected-version <comment-version>`. The command requires exactly one active `code_change`; the same URL is a no-op and a different URL conflicts.")
+	steps = append(steps, "5. If active references are ambiguous, inspect the Implement Issue references, explicitly delete only the unwanted active reference through the self-hosted native references API or UI, then retry. Never guess or silently overwrite.")
 	if provider.ChangeComment {
-		steps = append(steps, "3. Use neutral `change.comment` for supported finding/reply write-back, preserving canonical FINDING/PROCESS/SPEC linkage.")
+		steps = append(steps, "6. Use neutral `change.comment` for supported finding/reply write-back, preserving canonical FINDING/PROCESS/SPEC linkage.")
 	} else {
-		steps = append(steps, "3. Do not request external finding/reply write-back because `change.comment` is not available.")
+		steps = append(steps, "6. Do not request external finding/reply write-back because `change.comment` is not available.")
 	}
 	if provider.EvidenceSnapshot {
-		steps = append(steps, "4. Before verification gates, synchronize a provider snapshot for the exact active head revision, then evaluate only server-accepted evidence IDs. Add `runner` to `external_code.evidence.sync_before` only when every dispatch is expected to have an active external change.")
+		steps = append(steps, "7. Before verification gates, synchronize a provider snapshot for the exact active head revision, then evaluate only server-accepted evidence IDs. Add `runner` to `external_code.evidence.sync_before` only when every dispatch is expected to have an active external change.")
 	} else {
-		steps = append(steps, "4. Verify only against already-authoritative server evidence; automatic provider snapshot synchronization is unavailable.")
+		steps = append(steps, "7. Verify only against already-authoritative server evidence; automatic provider snapshot synchronization is unavailable.")
 	}
-	steps = append(steps, "5. Configure a project/work-item tracker only through a separate explicit provider selection; this code-provider workflow grants no tracker authority.")
+	steps = append(steps, "8. After independent review/fix convergence, each change-bearing code author runs `issue-spec --profile <self-hosted-profile> code-change rationale --repo "+repo+" --implement <issue> --process PROCESS-001 --spec SPEC-001 --spec-url <url> --body <why> --agent <worker> --agent-session <id>`. The append-only Issue Backend comment is not a GitHub PR call and passes final gates only with exact-current trusted native-ledger evidence for the same PROCESS/SPEC.")
+	steps = append(steps, "9. Keep review, merge, and closure on the selected code provider; do not substitute GitHub PR endpoints for a self-hosted workflow.")
+	steps = append(steps, "10. Configure a project/work-item tracker only through a separate explicit provider selection; this code-provider workflow grants no tracker authority.")
 	return strings.Join(steps, "\n") + "\n"
 }

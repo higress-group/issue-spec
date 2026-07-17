@@ -62,6 +62,7 @@ type externalEvidenceConsumption struct {
 	ProviderKey        string                    `json:"provider_key"`
 	ExternalRepository string                    `json:"external_repository"`
 	ChangeID           string                    `json:"change_id"`
+	ReferenceVersion   int64                     `json:"reference_version"`
 	SubjectRevision    string                    `json:"subject_revision"`
 	EvidenceIDs        []string                  `json:"evidence_ids"`
 	Bindings           []externalEvidenceBinding `json:"bindings,omitempty"`
@@ -217,7 +218,8 @@ func (a *app) externalGateWithProfile(ctx context.Context, profile auth.Profile,
 	result := externalGateResult{Evaluation: evaluation, Snapshot: snapshot, Target: target, Native: native,
 		Consumption: externalEvidenceConsumption{ProviderKey: target.Reference.ProviderKey,
 			ExternalRepository: target.Reference.ExternalRepository, ChangeID: target.Reference.ChangeID,
-			SubjectRevision: target.SubjectRevision, EvidenceIDs: append([]string(nil), evaluation.EvidenceIDs...)}}
+			ReferenceVersion: target.ReferenceVersion, SubjectRevision: target.SubjectRevision,
+			EvidenceIDs: append([]string(nil), evaluation.EvidenceIDs...)}}
 	if !evaluation.Passed {
 		return result, true, externalGateFailure(relationKind, evaluation)
 	}

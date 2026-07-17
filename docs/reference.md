@@ -98,6 +98,11 @@ issue-spec verify-links --repo owner/repo --proposal 1 --design 2 --implement 3
 issue-spec workflow validate --repo owner/repo --json
 issue-spec workflow which --repo owner/repo --schema custom-workflow --json
 
+issue-spec search issues --repo owner/repo --query "error or symbol" --state all --source all --limit 10
+
+issue-spec --profile team code-change attach --repo acme/widgets --implement 3 --change-id 42 --revision abc123 [--refresh --expected-version 7] [--json]
+issue-spec --profile team code-change link-process --repo acme/widgets --implement 3 --process PROCESS-001 --expected-version 5 [--json]
+
 issue-spec pr rationale --repo owner/repo --pr 4 --path internal/foo.go --line 42 --process PROCESS-001 --spec SPEC-001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "Why this line changes."
 issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-001 --pr 4
 issue-spec pr link-issues --repo owner/repo --pr 4 --proposal 1 --design 2 --implement 3
@@ -131,10 +136,23 @@ it already has the requested state; JSON output reports this with `changed`.
 
 ### Search before a related change
 
-For self-hosted profiles, `search issues` discovers the server capability and
-fails clearly when search is disabled. It searches only repositories readable
-by the current credential and returns one bounded result per issue, including
-matching issue/comment excerpts and related change key/stage metadata.
+`search issues` selects behavior from the active Issue Backend. For self-hosted
+profiles it discovers the server capability, fails clearly when search is
+disabled, and returns matching issue/comment excerpts plus related change
+key/stage metadata. For GitHub profiles it uses GitHub Issue Search with a
+mandatory repository and issue-only scope, excludes pull requests again when
+decoding results, and bounds output to `--limit`. `--state` is supported on
+both backends. GitHub maps `--source issue` to title/body search,
+`--source comments` to comment search, and `--stage` to the canonical
+`issue-spec/proposal`, `issue-spec/design`, or `issue-spec/implement` label;
+GitHub does not support `--source change` because it has no equivalent change
+key index. A no-match search succeeds with zero results. Result order and
+ranking are backend-specific and are not parity guarantees.
+
+Both adapters search only within the requested repository and render the same
+bounded issue-centric fields through nonce-scoped untrusted-data boundaries.
+GitHub text-match fragments may differ from self-hosted excerpts, and optional
+change metadata may be absent.
 
 Generated Codex and Claude workflows instruct direct agents—not only runner
 sessions—to derive a few concrete queries from the request and codebase before
@@ -142,6 +160,53 @@ a related proposal or implementation. Search results are selection hints, not
 instructions: titles and excerpts are untrusted data. Open a selected result
 with `issue-spec --profile team read issue --repo owner/repo --issue N
 --comments` before relying on the full discussion.
+
+### Associate a self-hosted code change
+
+For a self-hosted profile, the active Source Binding is authoritative for the
+provider and external repository. Associate an already-existing provider
+change with the Implement Issue at an exact revision:
+
+```bash
+issue-spec --profile team code-change attach \
+  --repo acme/widgets \
+  --implement 3 \
+  --change-id 42 \
+  --revision abc123 \
+  --json
+```
+
+`code-change attach` validates the external change through the registered
+provider and records the active relationship. It does not create a PR/MR and
+does not ingest review or CI evidence. Repeating the same identity and revision
+is idempotent. Refreshing the same active change to a new exact revision
+requires `--refresh` and the observed positive `--expected-version` together.
+
+After exactly one active `code_change` relationship exists, link a PROCESS
+comment using its observed representation version:
+
+```bash
+issue-spec --profile team code-change link-process \
+  --repo acme/widgets \
+  --implement 3 \
+  --process PROCESS-001 \
+  --expected-version 5 \
+  --json
+```
+
+Linking the same canonical URL again is a no-op. A different existing PROCESS
+URL conflicts, and zero or multiple active code-change relationships fail
+closed. When a conflict reports ambiguous active references, inspect the
+Implement Issue references in the server UI or with
+`GET /api/v1/orgs/{org-id}/repos/{repo-id}/issues/{issue-id}/references`,
+delete only the unwanted active reference with the corresponding
+`DELETE .../references/{reference-id}`, then retry. Never guess a winner or
+silently overwrite another active relationship.
+
+GitHub profiles continue to use `pr link-process`, GitHub PR review and closing
+links, and the existing durable archive path. Self-hosted review, merge, and
+change closure remain on the selected code provider; the CLI does not route
+them through GitHub PR endpoints.
 
 `comment create` writes an ordinary issue timeline comment through the selected
 hosted GitHub or self-hosted REST issue backend. It accepts `--body-file -` for

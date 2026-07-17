@@ -2,14 +2,14 @@
 
 **English | [简体中文](README.zh-CN.md)**
 
-`issue-spec` is a GitHub issue-backed, OpenSpec-style workflow CLI for agentic software development.
+`issue-spec` is an issue-native, OpenSpec-style workflow CLI for agentic software development, with GitHub and self-hosted issue backends.
 
-It keeps the OpenSpec habit of proposal -> specs -> design -> tasks -> review -> verify -> archive, but moves active change state out of the code repository and into GitHub issues, typed comments, and PR review threads.
+It keeps the OpenSpec habit of proposal -> specs -> design -> tasks -> review -> verify -> archive, but moves active change state out of the code repository and into the selected issue backend while code changes, review, and CI remain on the selected code provider.
 
 Our philosophy:
 
 ```text
--> OpenSpec habits, GitHub-native state
+-> OpenSpec habits, issue-native state
 -> active changes in issues, durable specs in the repo
 -> human decisions in comment threads, not hidden local files
 -> small agent DAGs, not giant implementation prompts
@@ -234,9 +234,9 @@ Coordinator execution follows a ready-node loop:
 
 The CLI does not act as a scheduler that launches agents automatically. It provides the shared state, links, and gates that let a coordinator safely split work across multiple agents without losing traceability.
 
-### PR-native review flow
+### GitHub PR-native review flow
 
-OpenSpec already encourages review and verification as workflow phases. `issue-spec` connects that discipline directly to GitHub PR review comments:
+For GitHub profiles, `issue-spec` connects OpenSpec review and verification directly to GitHub PR review comments:
 
 - `pr rationale` records why a worker changed a specific PR diff line and links it to a `SPEC` and `PROCESS`
 - `review finding` creates actionable PR line findings with severity, owner process, and linked spec context
@@ -268,13 +268,13 @@ Each substantial change uses three issue classes.
 Traceability is bidirectional:
 
 ```text
-SPEC <-> TASK <-> PROCESS <-> PR rationale
+SPEC <-> TASK <-> PROCESS <-> implementation change (PR/MR)
                    |
                    +-> REVIEW findings and replies
                    +-> VERIFY evidence
 ```
 
-Before the implementation PR merges, `pr link-issues` writes GitHub closing links into the implementation PR body so GitHub closes the PR-associated proposal, design, and implement issues at merge time. After merge, `archive durable-spec --create-pr --close-issues` opens a separate PR that writes the long-lived behavior contract into the repository and idempotently closes any still-open active issues.
+GitHub keeps the existing `pr link-process`, PR review, closing-link, and durable archive path. For self-hosted profiles, `code-change attach` validates and associates an already-existing provider change at an exact revision, and `code-change link-process` links PROCESS comments to the unique active change. Source Binding chooses provider/repository identity; attach does not create a PR/MR or ingest evidence. Self-hosted review, merge, and closure stay on the selected code provider rather than using GitHub PR endpoints. See the [CLI reference](docs/reference.md#associate-a-self-hosted-code-change).
 
 Use `--capability` as a stable capability directory rather than the original change name. Before finalizing the archive PR, inspect existing related durable specs and treat the generated durable spec as a draft to merge, revise, or regroup by durable functional modules while preserving Source SPEC links for traceability.
 
