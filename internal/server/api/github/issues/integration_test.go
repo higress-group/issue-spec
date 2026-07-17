@@ -252,6 +252,106 @@ func TestIssueCommentHTTPCompatibilityMarkerAndAuthorization(t *testing.T) {
 	}
 }
 
+func TestPublicContributorIssueCompatibility(t *testing.T) {
+	environment := newEnvironment(t, models.VisibilityPublic)
+	if _, err := environment.pool.Exec(t.Context(), `UPDATE repos SET contribution_policy = 'public'
+		WHERE id = $1`, environment.scope.RepoID); err != nil {
+		t.Fatal(err)
+	}
+	insertLabel(t, environment.pool, environment.scope, "issue-spec/proposal")
+	insertLabel(t, environment.pool, environment.scope, "extra")
+	contributor := environment.addOutsider(t, "contributor")
+	other := environment.addOutsider(t, "other-contributor")
+	mux := environment.mux(t)
+
+	response := request(t, mux, http.MethodPost, "/repos/acme/widgets/issues",
+		jsonBody(map[string]any{"title": "simple requirement", "body": "plain text"}), "contributor")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("simple contribution status=%d body=%s", response.Code, response.Body.String())
+	}
+	var simple codec.Issue
+	decode(t, response, &simple)
+	if simple.User.Login != contributor.User.Login || len(simple.Labels) != 0 {
+		t.Fatalf("simple contribution = %+v", simple)
+	}
+
+	proposal := "<!-- issue-spec:issue=proposal change=external-requirement version=1 -->\n# Proposal\n"
+	response = request(t, mux, http.MethodPost, "/repos/acme/widgets/issues", jsonBody(map[string]any{
+		"title": "standard proposal", "body": proposal, "labels": []string{"ISSUE-SPEC/PROPOSAL"},
+	}), "contributor")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("standard proposal status=%d body=%s", response.Code, response.Body.String())
+	}
+	var standard codec.Issue
+	decode(t, response, &standard)
+	if standard.User.Login != contributor.User.Login || len(standard.Labels) != 1 || standard.Labels[0].Name != "issue-spec/proposal" {
+		t.Fatalf("standard proposal = %+v", standard)
+	}
+
+	deniedCreates := []struct {
+		name   string
+		body   string
+		labels []string
+		status int
+	}{
+		{name: "missing marker", body: "plain", labels: []string{"issue-spec/proposal"}, status: http.StatusForbidden},
+		{name: "mismatched marker", body: "<!-- issue-spec:issue=design change=x version=1 -->", labels: []string{"issue-spec/proposal"}, status: http.StatusForbidden},
+		{name: "future marker", body: "<!-- issue-spec:issue=proposal change=x version=2 -->", labels: []string{"issue-spec/proposal"}, status: http.StatusForbidden},
+		{name: "malformed marker", body: "<!-- issue-spec:issue=proposal change=x version=nope -->", labels: []string{"issue-spec/proposal"}, status: http.StatusForbidden},
+		{name: "multiple markers", body: proposal + "<!-- issue-spec:issue=proposal change=other version=1 -->", labels: []string{"issue-spec/proposal"}, status: http.StatusForbidden},
+		{name: "additional label", body: proposal, labels: []string{"issue-spec/proposal", "extra"}, status: http.StatusForbidden},
+		{name: "duplicate label", body: proposal, labels: []string{"issue-spec/proposal", "ISSUE-SPEC/PROPOSAL"}, status: http.StatusUnprocessableEntity},
+	}
+	for _, test := range deniedCreates {
+		t.Run(test.name, func(t *testing.T) {
+			response := request(t, mux, http.MethodPost, "/repos/acme/widgets/issues", jsonBody(map[string]any{
+				"title": test.name, "body": test.body, "labels": test.labels,
+			}), "contributor")
+			if response.Code != test.status {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, test.status, response.Body.String())
+			}
+		})
+	}
+
+	response = request(t, mux, http.MethodPatch, "/repos/acme/widgets/issues/1",
+		jsonBody(map[string]any{"title": "refined requirement", "body": "refined text"}), "contributor")
+	if response.Code != http.StatusOK {
+		t.Fatalf("author text update status=%d body=%s", response.Code, response.Body.String())
+	}
+	var refined codec.Issue
+	decode(t, response, &refined)
+	if refined.Title != "refined requirement" || refined.Body != "refined text" || refined.State != "open" {
+		t.Fatalf("refined issue = %+v", refined)
+	}
+
+	deniedUpdates := []struct {
+		name       string
+		mutation   map[string]any
+		credential string
+		visibility string
+		policy     string
+		status     int
+	}{
+		{name: "author state", mutation: map[string]any{"body": "state attempt", "state": "closed"}, credential: contributor.User.Login, visibility: "public", policy: "public", status: http.StatusForbidden},
+		{name: "other author text", mutation: map[string]any{"body": "other attempt"}, credential: other.User.Login, visibility: "public", policy: "public", status: http.StatusForbidden},
+		{name: "author under members", mutation: map[string]any{"body": "members attempt"}, credential: contributor.User.Login, visibility: "public", policy: "members", status: http.StatusForbidden},
+		{name: "author under disabled", mutation: map[string]any{"body": "disabled attempt"}, credential: contributor.User.Login, visibility: "public", policy: "disabled", status: http.StatusForbidden},
+		{name: "author in private repo", mutation: map[string]any{"body": "private attempt"}, credential: contributor.User.Login, visibility: "private", policy: "public", status: http.StatusNotFound},
+	}
+	for _, test := range deniedUpdates {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := environment.pool.Exec(t.Context(), `UPDATE repos SET visibility = $2, contribution_policy = $3 WHERE id = $1`,
+				environment.scope.RepoID, test.visibility, test.policy); err != nil {
+				t.Fatal(err)
+			}
+			response := request(t, mux, http.MethodPatch, "/repos/acme/widgets/issues/1", jsonBody(test.mutation), test.credential)
+			if response.Code != test.status {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, test.status, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestAuthorNicknameInvalidatesIssueAndCommentRepresentations(t *testing.T) {
 	environment := newEnvironment(t, models.VisibilityPublic)
 	mux := environment.mux(t)
@@ -655,6 +755,14 @@ func newEnvironment(t *testing.T, visibility models.Visibility) *environment {
 func (e *environment) addMember(t *testing.T, login, role string) serverauth.Principal {
 	userID := insertUser(t, e.pool, login)
 	insertMembership(t, e.pool, e.scope.OrgID, userID, role)
+	principal := serverauth.Principal{User: serverauth.User{ID: userID, Login: login, Status: "active"},
+		Kind: serverauth.CredentialSession, CredentialID: insertSession(t, e.pool, userID)}
+	e.bearer.principals[login] = principal
+	return principal
+}
+
+func (e *environment) addOutsider(t *testing.T, login string) serverauth.Principal {
+	userID := insertUser(t, e.pool, login)
 	principal := serverauth.Principal{User: serverauth.User{ID: userID, Login: login, Status: "active"},
 		Kind: serverauth.CredentialSession, CredentialID: insertSession(t, e.pool, userID)}
 	e.bearer.principals[login] = principal
