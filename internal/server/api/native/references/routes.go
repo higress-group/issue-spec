@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
+	apierrors "github.com/higress-group/issue-spec/internal/server/api/github/errors"
 	adminapi "github.com/higress-group/issue-spec/internal/server/api/native/admin"
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
@@ -118,7 +119,19 @@ func requestScope(w http.ResponseWriter, r *http.Request) (serverauth.Principal,
 }
 
 func writeError(w http.ResponseWriter, err error) {
+	var codeChangeConflict *bindings.CodeChangeConflictError
 	switch {
+	case errors.As(err, &codeChangeConflict):
+		problem := apierrors.NewProblem(http.StatusConflict, "code_change_conflict",
+			"Active code-change relationship conflict", "", w.Header().Get("X-Request-ID"))
+		problem.Meta = map[string]any{
+			"reason":     codeChangeConflict.Reason,
+			"references": codeChangeConflict.References,
+		}
+		if codeChangeConflict.Reason == bindings.CodeChangeConflictAmbiguousActiveReferences {
+			problem.Meta["action"] = "inspect_references_delete_unwanted_then_retry"
+		}
+		apierrors.WriteProblem(w, problem)
 	case errors.Is(err, adminservice.ErrNotFound):
 		adminapi.WriteProblem(w, http.StatusNotFound, "not_found", "Not found")
 	case errors.Is(err, adminservice.ErrForbidden):
