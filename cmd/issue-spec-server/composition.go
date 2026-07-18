@@ -35,13 +35,18 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/bindings"
 	"github.com/higress-group/issue-spec/internal/server/changes"
 	"github.com/higress-group/issue-spec/internal/server/config"
+	"github.com/higress-group/issue-spec/internal/server/emaildelivery"
 	"github.com/higress-group/issue-spec/internal/server/events/delivery"
 	"github.com/higress-group/issue-spec/internal/server/events/networkpolicy"
 	"github.com/higress-group/issue-spec/internal/server/events/outbox"
 	"github.com/higress-group/issue-spec/internal/server/events/subscriptions"
 	"github.com/higress-group/issue-spec/internal/server/evidence"
+	"github.com/higress-group/issue-spec/internal/server/mentionmail"
+	"github.com/higress-group/issue-spec/internal/server/notificationmail"
+	"github.com/higress-group/issue-spec/internal/server/profilemail"
 	"github.com/higress-group/issue-spec/internal/server/projection/artifacts"
 	"github.com/higress-group/issue-spec/internal/server/publicurl"
+	"github.com/higress-group/issue-spec/internal/server/reponotifications"
 	"github.com/higress-group/issue-spec/internal/server/search"
 	"github.com/higress-group/issue-spec/internal/server/spa"
 	"github.com/higress-group/issue-spec/internal/server/staticui"
@@ -71,7 +76,24 @@ type application struct {
 	handler  http.Handler
 	database *store.Store
 	delivery *delivery.Service
+	email    *emaildelivery.Worker
+	workers  []namedWorker
 	ready    *readiness
+}
+
+type managedWorker interface {
+	Run(context.Context) error
+	StopClaims()
+}
+
+type namedWorker struct {
+	name   string
+	worker managedWorker
+}
+
+type workerExit struct {
+	name string
+	err  error
 }
 
 func compose(ctx context.Context, cfg config.Config) (*application, error) {
@@ -101,6 +123,20 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	authorization, err := authz.New(database.Pool())
 	if err != nil {
 		return fail(err)
+	}
+	mailSettings, err := cfg.MailSettings()
+	if err != nil {
+		return fail(err)
+	}
+	var profileMailService *profilemail.Service
+	if mailSettings.Enabled() {
+		profileMailService, err = profilemail.New(database.Pool(), secrets, profilemail.Config{
+			ConfirmationURL: origins.Web.String() + "/verify-email",
+			AddressPolicy:   mailSettings.AddressPolicy(),
+		})
+		if err != nil {
+			return fail(fmt.Errorf("initialize profile mail: %w", err))
+		}
 	}
 	adminService, err := admin.New(database.Pool(), cfg.BootstrapSecret.Bytes(), secrets)
 	if err != nil {
@@ -139,7 +175,18 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	authentication := serverauth.Middleware{SessionCookieName: sessions.CookieName(), AllowedOrigins: allowedOrigins,
 		Sessions: sessions, Bearer: serverauth.BearerChain{delegated, pats}}
 
-	issueService, err := githubissues.NewService(database, authorization, artifacts.MarkerProjector{}, outbox.Hook{})
+	var notificationIntegration []githubissues.NotificationIntegration
+	if mailSettings.Enabled() {
+		adapter, err := newIssueNotificationAdapter()
+		if err != nil {
+			return fail(fmt.Errorf("initialize issue notification projection: %w", err))
+		}
+		notificationIntegration = append(notificationIntegration, githubissues.NotificationIntegration{
+			Enabled: true, OrdinaryIssue: adapter, Completed: adapter,
+		})
+	}
+	issueService, err := githubissues.NewService(database, authorization, artifacts.MarkerProjector{}, outbox.Hook{},
+		notificationIntegration...)
 	if err != nil {
 		return fail(err)
 	}
@@ -158,6 +205,13 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	subscriptionCompat, err := githubsubscription.NewService(database, authorization)
 	if err != nil {
 		return fail(err)
+	}
+	var repositoryNotificationService *reponotifications.SubscriptionService
+	if mailSettings.Enabled() {
+		repositoryNotificationService, err = reponotifications.NewSubscriptionService(database, authorization, true)
+		if err != nil {
+			return fail(fmt.Errorf("initialize repository notifications: %w", err))
+		}
 	}
 	bindingService, err := bindings.New(database.Pool(), authorization)
 	if err != nil {
@@ -216,6 +270,52 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	if err != nil {
 		return fail(err)
 	}
+	workers := []namedWorker{{name: "webhook delivery", worker: deliveryService}}
+	var emailWorker *emaildelivery.Worker
+	if mailSettings.Enabled() {
+		verificationPreparer, err := profilemail.NewVerificationPreparer(database.Pool(), secrets,
+			profilemail.Config{ConfirmationURL: origins.Web.String() + "/verify-email",
+				AddressPolicy: mailSettings.AddressPolicy()})
+		if err != nil {
+			return fail(fmt.Errorf("initialize verification mail preparation: %w", err))
+		}
+		mentionPreparer, err := mentionmail.NewPreparer(database.Pool(), authorization, origins.Web.String(),
+			mailSettings.AddressPolicy())
+		if err != nil {
+			return fail(fmt.Errorf("initialize mention mail preparation: %w", err))
+		}
+		repositoryEligibility, err := reponotifications.NewDatabaseEligibility(database.Pool())
+		if err != nil {
+			return fail(fmt.Errorf("initialize repository mail eligibility: %w", err))
+		}
+		repositoryPreparer, err := reponotifications.NewPreparer(repositoryEligibility, origins.Web,
+			mailSettings.AddressPolicy())
+		if err != nil {
+			return fail(fmt.Errorf("initialize repository mail preparation: %w", err))
+		}
+		milestonePreparer, err := notificationmail.NewPreparer(repositoryEligibility, origins.Web,
+			mailSettings.AddressPolicy())
+		if err != nil {
+			return fail(fmt.Errorf("initialize milestone mail preparation: %w", err))
+		}
+		dispatcher, err := notificationmail.NewDispatcher(map[emaildelivery.Kind]emaildelivery.Preparer{
+			emaildelivery.KindVerification: verificationPreparer, emaildelivery.KindMention: mentionPreparer,
+			emaildelivery.KindRepoIssueCreated: repositoryPreparer, emaildelivery.KindChangeMilestone: milestonePreparer,
+		})
+		if err != nil {
+			return fail(fmt.Errorf("initialize notification mail dispatcher: %w", err))
+		}
+		emailWorker, err = composeEmailWorker(database, mailSettings, dispatcher, cfg)
+		if err != nil {
+			return fail(fmt.Errorf("initialize email delivery worker: %w", err))
+		}
+		expiryWorker, err := newProfileExpiryWorker(profileMailService, time.Minute)
+		if err != nil {
+			return fail(fmt.Errorf("initialize profile expiry worker: %w", err))
+		}
+		workers = append(workers, namedWorker{name: "email delivery", worker: emailWorker},
+			namedWorker{name: "profile mail expiry", worker: expiryWorker})
+	}
 	static, err := staticui.New(staticui.Options{DevelopmentDirectory: cfg.StaticDirectory,
 		Production: cfg.Environment == config.EnvironmentProduction})
 	if err != nil {
@@ -234,6 +334,8 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 		Subscription: subscriptionCompat, Presenter: codec.Presenter{Origins: origins}, Conditional: conditional.Policy{},
 		SPA: spaService, Bindings: bindingService, Evidence: evidenceService, Changes: changeService,
 		Subscriptions: subscriptionService, Deliveries: deliveryService,
+		ProfileMail: profileMailService, EmailNotifications: mailSettings.Enabled(),
+		MentionDirectory: database, RepositoryEmailSubscriptions: repositoryNotificationService,
 		Search:             searchService,
 		DelegationAudience: cfg.DelegationAudience, DelegationSubject: cfg.DelegationSubject,
 		Static: static, Ready: ready.check, LogRequest: logRequest,
@@ -241,7 +343,30 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	if err != nil {
 		return fail(err)
 	}
-	return &application{handler: handler, database: database, delivery: deliveryService, ready: ready}, nil
+	return &application{handler: handler, database: database, delivery: deliveryService,
+		email: emailWorker, workers: workers, ready: ready}, nil
+}
+
+func composeEmailWorker(database *store.Store, settings config.MailSettings, preparer emaildelivery.Preparer,
+	cfg config.Config) (*emaildelivery.Worker, error) {
+	if !settings.Enabled() || preparer == nil {
+		return nil, nil
+	}
+	sender, err := emaildelivery.NewImplicitTLSSender(emaildelivery.SMTPConfig{
+		Host: settings.Host(), Port: settings.Port(), Username: settings.Username(),
+		Password: settings.Password(), FromAddress: settings.FromAddress(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	queue, err := emaildelivery.NewStore(database.Pool())
+	if err != nil {
+		return nil, err
+	}
+	return emaildelivery.NewWorker(queue, preparer, sender, emaildelivery.WorkerConfig{
+		LeaseDuration: cfg.DeliveryLeaseDuration, PollInterval: cfg.DeliveryPollInterval,
+		MaxConcurrency: emaildelivery.DefaultConcurrent,
+	})
 }
 
 func prepareMigrations(ctx context.Context, database *store.Store, mode config.MigrationsMode) error {
@@ -327,14 +452,9 @@ func run(ctx context.Context, cfg config.Config) error {
 	startup, _ := json.Marshal(map[string]any{"level": "info", "event": "server_starting",
 		"transport_posture": origins.Posture, "api_public_url": origins.API.String(), "web_public_url": origins.Web.String()})
 	fmt.Fprintln(os.Stderr, string(startup))
-	workerCtx, cancelWorker := context.WithCancel(context.Background())
-	defer cancelWorker()
-	workerDone := make(chan error, 1)
-	go func() {
-		err := app.delivery.Run(workerCtx)
-		app.ready.worker.Store(false)
-		workerDone <- err
-	}()
+	workerCtx, cancelWorkers := context.WithCancel(context.Background())
+	defer cancelWorkers()
+	workerDone := startWorkers(workerCtx, app.workers, app.ready)
 	server := &http.Server{Addr: cfg.ListenAddr, Handler: app.handler, ReadTimeout: cfg.HealthReadTimeout,
 		ReadHeaderTimeout: cfg.HealthReadTimeout, WriteTimeout: cfg.HealthWriteTimeout, IdleTimeout: 60 * time.Second,
 		MaxHeaderBytes: 1 << 20}
@@ -342,7 +462,7 @@ func run(ctx context.Context, cfg config.Config) error {
 	go func() { serveDone <- server.ListenAndServe() }()
 
 	var cause error
-	workerConsumed := false
+	workersConsumed := 0
 	serveConsumed := false
 	select {
 	case err := <-serveDone:
@@ -350,29 +470,28 @@ func run(ctx context.Context, cfg config.Config) error {
 		if !errors.Is(err, http.ErrServerClosed) {
 			cause = fmt.Errorf("serve: %w", err)
 		}
-	case err := <-workerDone:
-		workerConsumed = true
-		if err == nil {
-			err = errors.New("delivery worker stopped unexpectedly")
+	case result := <-workerDone:
+		workersConsumed = 1
+		if result.err == nil {
+			result.err = errors.New("worker stopped unexpectedly")
 		}
-		cause = fmt.Errorf("delivery worker: %w", err)
+		cause = fmt.Errorf("%s worker: %w", result.name, result.err)
 	case <-ctx.Done():
 	}
 
 	app.ready.accepting.Store(false)
-	app.delivery.StopClaims()
+	for _, item := range app.workers {
+		item.worker.StopClaims()
+	}
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.GracefulShutdownTimeout)
 	defer cancelShutdown()
 	shutdownErr := server.Shutdown(shutdownCtx)
-	var workerErr error
-	if !workerConsumed {
-		workerErr = waitWorker(shutdownCtx, workerDone, cancelWorker)
-	}
+	workerErr := waitWorkers(shutdownCtx, workerDone, cancelWorkers, len(app.workers)-workersConsumed)
 	if shutdownErr != nil && cause == nil {
 		cause = fmt.Errorf("graceful HTTP shutdown: %w", shutdownErr)
 	}
 	if workerErr != nil && cause == nil {
-		cause = fmt.Errorf("delivery worker shutdown: %w", workerErr)
+		cause = fmt.Errorf("worker shutdown: %w", workerErr)
 	}
 	if !serveConsumed {
 		select {
@@ -389,17 +508,42 @@ func run(ctx context.Context, cfg config.Config) error {
 	return cause
 }
 
-func waitWorker(ctx context.Context, done <-chan error, cancel context.CancelFunc) error {
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
-		cancel()
+func startWorkers(ctx context.Context, workers []namedWorker, ready *readiness) <-chan workerExit {
+	done := make(chan workerExit, len(workers))
+	for _, item := range workers {
+		item := item
+		go func() {
+			err := item.worker.Run(ctx)
+			ready.worker.Store(false)
+			done <- workerExit{name: item.name, err: err}
+		}()
+	}
+	return done
+}
+
+func waitWorkers(ctx context.Context, done <-chan workerExit, cancel context.CancelFunc, remaining int) error {
+	var first error
+	for remaining > 0 {
 		select {
-		case <-done:
+		case result := <-done:
+			remaining--
+			if result.err != nil && first == nil {
+				first = fmt.Errorf("%s: %w", result.name, result.err)
+			}
+		case <-ctx.Done():
+			cancel()
+			timer := time.NewTimer(time.Second)
+			defer timer.Stop()
+			for remaining > 0 {
+				select {
+				case <-done:
+					remaining--
+				case <-timer.C:
+					return errors.New("workers did not release after cancellation")
+				}
+			}
 			return ctx.Err()
-		case <-time.After(time.Second):
-			return errors.New("worker did not release after cancellation")
 		}
 	}
+	return first
 }

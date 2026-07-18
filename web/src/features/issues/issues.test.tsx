@@ -13,6 +13,7 @@ import { Route, Routes } from "react-router-dom";
 import { issueApi, IssueApiError } from "./api";
 import { CommentEditor, IssueEditor } from "./issue-editor";
 import { IssueDetail } from "./detail-page";
+import { IssueList } from "./list-page";
 import { IssueLoading, IssueStatus, MutationProblem } from "./repository-context";
 import type { ActiveRepository } from "./repository-context";
 import type { Label, Reactions } from "./types";
@@ -56,6 +57,18 @@ describe("secure issue markdown", () => {
     expect(screen.getByRole("link", { name: "another issue" })).toHaveAttribute("target", "_blank");
     expect(screen.getByRole("link", { name: "external" })).toHaveAttribute("target", "_blank");
   });
+
+  it("links canonical prose mentions without touching code, links, URLs, or email", () => {
+    const source = "Hello @Alice `@code` [@label](https://example.test/profile) https://example.test/@path user@example.test";
+    renderApp(<MarkdownView source={source} />);
+    const mention = screen.getByRole("link", { name: "@Alice" });
+    expect(mention).toHaveAttribute("href", "/users/alice");
+    expect(mention).not.toHaveAttribute("target");
+    expect(screen.getByText("@code").closest("a")).toBeNull();
+    expect(screen.getByRole("link", { name: "@label" })).toHaveAttribute("href", "https://example.test/profile");
+    expect(screen.queryByRole("link", { name: "@path" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "@example" })).not.toBeInTheDocument();
+  });
 });
 
 describe("issue editing semantics", () => {
@@ -77,6 +90,34 @@ describe("issue editing semantics", () => {
     expect(screen.getByRole("textbox", { name: "Comment" })).toHaveValue("unsent decision");
     expect(screen.getByRole("alert")).toHaveTextContent("Your draft is still here");
     expect(screen.getByRole("button", { name: "Reload latest" })).toBeInTheDocument();
+  });
+
+  it("debounces mention discovery and inserts the selected canonical login", async () => {
+    let requestedPrefix = "";
+    server.use(http.get("http://localhost/api/v1/mentions/candidates", ({ request }) => {
+      requestedPrefix = new URL(request.url).searchParams.get("q") ?? "";
+      return HttpResponse.json([
+        { login: "alice", display_name: "Alice", avatar_url: "http://localhost/api/v1/avatars/alice" },
+        { login: "alicia", display_name: "Alicia", avatar_url: "http://localhost/api/v1/avatars/alicia" },
+      ]);
+    }));
+    const submit = vi.fn();
+    renderApp(<CommentEditor pending={false} onSubmit={submit} />);
+    const user = userEvent.setup();
+    const editor = screen.getByRole("textbox", { name: "Comment" });
+    await user.type(editor, "Hello @ali");
+    const suggestions = await screen.findByRole("listbox", { name: "Mention suggestions" });
+    expect(requestedPrefix).toBe("ali");
+    expect(suggestions).toHaveAttribute("id");
+    expect(editor).toHaveAttribute("aria-controls", suggestions.id);
+    expect(editor).toHaveAttribute("aria-activedescendant");
+    expect(editor).not.toHaveAttribute("aria-expanded");
+    expect(editor).not.toHaveAttribute("aria-haspopup");
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(editor).toHaveValue("Hello @alicia ");
+    expect(editor).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Comment" }));
+    expect(submit).toHaveBeenCalledWith("Hello @alicia ");
   });
 
   it("assigns and removes labels with keyboard-operable controls", async () => {
@@ -131,6 +172,12 @@ describe("canonical issue read authority", () => {
   });
 
   it("renders anonymous public issue content without any mutation controls", async () => {
+    let subscriptionRequests = 0;
+    server.use(
+      repositorySubscriptionMetaHandler(),
+      http.get("http://localhost/api/v1/profile/email", () => { subscriptionRequests += 1; return HttpResponse.json({ available: true, notification_email: "reader@example.test" }); }),
+      http.get("http://localhost/api/v1/orgs/:orgId/repos/:repoId/subscription", () => { subscriptionRequests += 1; return HttpResponse.json(repositorySubscriptionFixture()); }),
+    );
     installIssueDetailHandlers([relationshipFixture("github", "42")]);
     const { container } = renderIssueDetail(activeRepository(false, ["read"]));
     expect(await screen.findByRole("heading", { name: /Runner contract/ })).toBeVisible();
@@ -141,6 +188,9 @@ describe("canonical issue read authority", () => {
     expect(screen.queryByRole("button", { name: /reaction/i })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Read-only conversation" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
+    expect(screen.queryByRole("button", { name: "Subscribe to repository" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Set email for repository notifications" })).not.toBeInTheDocument();
+    expect(subscriptionRequests).toBe(0);
     const relationship = await screen.findByRole("link", { name: /Runner projection/ });
     expect(screen.getByText("Pull request")).toBeVisible();
     expect(relationship).toHaveAttribute("target", "_blank");
@@ -175,6 +225,31 @@ describe("canonical issue read authority", () => {
     expect(await screen.findByText("Merge request")).toBeVisible();
     expect(screen.getByText("Binding mismatch")).toBeVisible();
     expect(screen.queryByText("abc123")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Subscribe to repository" })).not.toBeInTheDocument();
+  });
+
+  it("offers repository subscription on the issue list to a reader without triage authority", async () => {
+    server.use(
+      repositorySubscriptionMetaHandler(),
+      http.get("http://localhost/api/v1/profile/email", () => HttpResponse.json({ available: true, notification_email: "reader@example.test" })),
+      http.get("http://localhost/api/v1/orgs/:orgId/repos/:repoId/subscription", () => HttpResponse.json(repositorySubscriptionFixture())),
+    );
+    installIssueListHandlers();
+    renderIssueList(activeRepository(true, ["read"]));
+    expect(await screen.findByRole("button", { name: "Subscribe to repository" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("link", { name: "New issue" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the account-settings guide on the issue list when a reader has no verified email", async () => {
+    server.use(
+      repositorySubscriptionMetaHandler(),
+      http.get("http://localhost/api/v1/profile/email", () => HttpResponse.json({ available: true, notification_email: null })),
+      http.get("http://localhost/api/v1/orgs/:orgId/repos/:repoId/subscription", () => HttpResponse.json(repositorySubscriptionFixture())),
+    );
+    installIssueListHandlers();
+    renderIssueList(activeRepository(true, ["read"]));
+    expect(await screen.findByRole("link", { name: "Set email for repository notifications" })).toHaveAttribute("href", "/settings/account");
+    expect(screen.queryByRole("button", { name: "Subscribe to repository" })).not.toBeInTheDocument();
   });
 });
 
@@ -262,6 +337,28 @@ function installIssueDetailHandlers(relationships: CodeChangeRelationship[] = []
   );
 }
 
+function installIssueListHandlers() {
+  server.use(
+    http.get("http://localhost/repos/acme/workflow/issues", () => HttpResponse.json([issueFixture()])),
+    http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
+  );
+}
+
+function repositorySubscriptionMetaHandler() {
+  return http.get("http://localhost/api/v1/meta", () => HttpResponse.json({
+    api_version: "v1",
+    features: {
+      bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: false,
+      webhooks: false, change_boards: false, runner: false, recovery_exchange: true,
+      email_notifications: true, repository_email_subscriptions: true,
+    },
+  }));
+}
+
+function repositorySubscriptionFixture() {
+  return { subscribed: false, ignored: false, reason: "", representation_version: 0, collection_version: 1 };
+}
+
 function relationshipFixture(provider = "github", externalId = "42", sourceBindingMatch: CodeChangeRelationship["source_binding_match"] = "matched", metadata?: Record<string, unknown>): CodeChangeRelationship {
   return {
     provider_key: provider,
@@ -279,6 +376,10 @@ function relationshipFixture(provider = "github", externalId = "42", sourceBindi
 
 function renderIssueDetail(active: ActiveRepository) {
   return renderApp(<Routes><Route path="/:owner/:repo/issues/:number" element={<IssueDetail active={active} />} /></Routes>, "/acme/workflow/issues/41");
+}
+
+function renderIssueList(active: ActiveRepository) {
+  return renderApp(<Routes><Route path="/:owner/:repo/issues" element={<IssueList active={active} />} /></Routes>, "/acme/workflow/issues");
 }
 
 function activeRepository(authenticated: boolean, allowed_actions: string[]): ActiveRepository {

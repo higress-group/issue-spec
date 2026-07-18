@@ -64,6 +64,15 @@ func TestIdentitySessionPATDelegationAndDisableLifecycle(t *testing.T) {
 	if again.ID != userA.ID || again.Login != userA.Login || again.DisplayName != "Renamed" {
 		t.Fatalf("provider display change moved local identity: first=%+v again=%+v", userA, again)
 	}
+	var notificationEmail *string
+	var notificationVerifiedAt *time.Time
+	if err := pool.QueryRow(t.Context(), `SELECT notification_email, notification_email_verified_at
+		FROM users WHERE id = $1`, userA.ID).Scan(&notificationEmail, &notificationVerifiedAt); err != nil {
+		t.Fatal(err)
+	}
+	if notificationEmail != nil || notificationVerifiedAt != nil {
+		t.Fatalf("provider email was trusted as notification email: %v/%v", notificationEmail, notificationVerifiedAt)
+	}
 	profile, err := identities.Profile(t.Context(), userA.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -628,8 +637,10 @@ func TestServiceAccountAndAuthMigrationTenantConstraints(t *testing.T) {
 		t.Fatal(err)
 	}
 	var status string
-	if err := pool.QueryRow(t.Context(), `SELECT status FROM users WHERE id = $1`, account.UserID).Scan(&status); err != nil || status != "disabled" {
-		t.Fatalf("service account user status = %q, %v", status, err)
+	var onboardingCompletedAt *time.Time
+	if err := pool.QueryRow(t.Context(), `SELECT status, onboarding_completed_at FROM users WHERE id = $1`, account.UserID).
+		Scan(&status, &onboardingCompletedAt); err != nil || status != "disabled" || onboardingCompletedAt == nil {
+		t.Fatalf("service account user status/onboarding = %q/%v, %v", status, onboardingCompletedAt, err)
 	}
 }
 

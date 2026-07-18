@@ -24,6 +24,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/auth/pat"
 	"github.com/higress-group/issue-spec/internal/server/auth/session"
 	"github.com/higress-group/issue-spec/internal/server/models"
+	mailservice "github.com/higress-group/issue-spec/internal/server/profilemail"
 )
 
 type LoginAdapter interface {
@@ -66,15 +67,21 @@ func (f IdentityAuthorityFunc) IdentitySiteAdmin(ctx context.Context, principal 
 }
 
 type Dependencies struct {
-	Identity    *serverauth.IdentityService
-	Sessions    *session.Service
-	PATs        *pat.Service
-	Authority   IdentityAuthority
-	Middleware  serverauth.Middleware
-	Adapters    map[string]LoginAdapter
-	Avatars     *serverauth.AvatarService
-	Diagnostics DiagnosticObserver
-	WebOrigin   string
+	Identity     *serverauth.IdentityService
+	Sessions     *session.Service
+	PATs         *pat.Service
+	Authority    IdentityAuthority
+	Middleware   serverauth.Middleware
+	Adapters     map[string]LoginAdapter
+	Avatars      *serverauth.AvatarService
+	Diagnostics  DiagnosticObserver
+	WebOrigin    string
+	ProfileMail  ProfileMailReader
+	EmailEnabled bool
+}
+
+type ProfileMailReader interface {
+	Get(context.Context, uuid.UUID) (mailservice.Profile, error)
 }
 
 func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
@@ -352,7 +359,12 @@ func (h *handlers) profile(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, h.privateProfileResponse(profile))
+	response, err := h.privateProfileResponse(r.Context(), profile)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "Profile email status unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 type profileUpdateRequest struct {
@@ -377,7 +389,12 @@ func (h *handlers) updateProfile(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, h.privateProfileResponse(profile))
+	response, err := h.privateProfileResponse(r.Context(), profile)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "Profile email status unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *handlers) publicProfileResponse(profile serverauth.Profile) map[string]any {
@@ -390,12 +407,34 @@ func (h *handlers) publicProfileResponse(profile serverauth.Profile) map[string]
 	}
 }
 
-func (h *handlers) privateProfileResponse(profile serverauth.Profile) map[string]any {
+func (h *handlers) privateProfileResponse(ctx context.Context, profile serverauth.Profile) (map[string]any, error) {
 	response := h.publicProfileResponse(profile)
 	response["identity_display_name"] = profile.IdentityDisplayName
 	response["nickname"] = profile.Nickname
 	response["representation_version"] = profile.RepresentationVersion
-	return response
+	response["notification_email_available"] = h.deps.EmailEnabled && h.deps.ProfileMail != nil
+	response["onboarding_completed"] = !h.deps.EmailEnabled
+	response["notification_email"] = nil
+	response["notification_email_verified_at"] = nil
+	response["pending_notification_email"] = nil
+	response["allowed_email_domain_suffixes"] = []string{}
+	if h.deps.EmailEnabled && h.deps.ProfileMail != nil {
+		mailProfile, err := h.deps.ProfileMail.Get(ctx, profile.ID)
+		if err != nil {
+			return nil, err
+		}
+		response["onboarding_completed"] = mailProfile.OnboardingCompletedAt != nil
+		response["notification_email"] = mailProfile.NotificationEmail
+		response["notification_email_verified_at"] = mailProfile.NotificationVerifiedAt
+		response["allowed_email_domain_suffixes"] = mailProfile.AllowedEmailDomainSuffixes
+		if mailProfile.Pending != nil {
+			response["pending_notification_email"] = map[string]any{"id": mailProfile.Pending.ID,
+				"email": mailProfile.Pending.PendingEmail, "expires_at": mailProfile.Pending.ExpiresAt,
+				"sent_at": mailProfile.Pending.SentAt, "representation_version": mailProfile.Pending.RepresentationVersion}
+		}
+		response["representation_version"] = mailProfile.RepresentationVersion
+	}
+	return response, nil
 }
 
 type patRequest struct {

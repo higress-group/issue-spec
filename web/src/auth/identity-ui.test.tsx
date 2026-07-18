@@ -9,6 +9,8 @@ import { renderApp } from "../../tests/render";
 import { fixtureContext, fixtureMeta, server } from "../../tests/server";
 import { AccountPage } from "./account-page";
 import { AuthCompletePage } from "./auth-complete-page";
+import { ProfileOnboardingDialog } from "./profile-onboarding-dialog";
+import { VerifyEmailPage } from "./verify-email-page";
 
 describe("identity and trusted transport UI", () => {
   it("shows trusted HTTP posture clearly to authenticated administrators", async () => {
@@ -68,5 +70,92 @@ describe("identity and trusted transport UI", () => {
     renderApp(<Routes><Route path="/auth/complete" element={<AuthCompletePage />} /><Route path="/" element={<h1>Workspace ready</h1>} /></Routes>, "/auth/complete");
     expect(await screen.findByRole("heading", { name: "Workspace ready" })).toBeVisible();
     expect(contexts).toBeGreaterThan(0);
+  });
+
+  it("requires name and email in a non-dismissible first-login dialog", async () => {
+    let completed = false;
+    let onboardingBody: unknown;
+    document.cookie = "issue_spec_csrf=onboarding-csrf; Path=/";
+    server.use(
+      http.get("http://localhost/api/v1/profile", () => HttpResponse.json({
+        id: 101, login: "alice", display_name: "Alice", identity_display_name: "Provider Alice",
+        nickname: null, representation_version: completed ? 3 : 1, avatar_url: "", html_url: "", type: "User", site_admin: true,
+        notification_email_available: true, onboarding_completed: completed, notification_email: null,
+        notification_email_verified_at: null, pending_notification_email: null,
+        allowed_email_domain_suffixes: ["corp.example"],
+      })),
+      http.post("http://localhost/api/v1/profile/onboarding", async ({ request }) => {
+        expect(request.headers.get("X-CSRF-Token")).toBe("onboarding-csrf");
+        onboardingBody = await request.json();
+        completed = true;
+        return HttpResponse.json({ id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", email: "alice.notify@example.test",
+          expires_at: "2030-01-01T00:00:00Z", sent_at: null, representation_version: 1 });
+      }),
+    );
+    const { container } = renderApp(<ProfileOnboardingDialog enabled />);
+    const dialog = await screen.findByRole("dialog", { name: "How should people find you?" });
+    expect(screen.getByText(/Allowed domains \(including subdomains\): @corp\.example/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /skip|close/i })).not.toBeInTheDocument();
+    const name = screen.getByRole("textbox", { name: /Your name/ });
+    await userEvent.setup().clear(name);
+    await userEvent.setup().type(name, "Alice Zhang");
+    await userEvent.setup().type(screen.getByRole("textbox", { name: /Notification email/ }), "alice.notify@example.test");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save and continue" }));
+    await waitFor(() => expect(onboardingBody).toEqual({ name: "Alice Zhang", email: "alice.notify@example.test", expected_version: 1 }));
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect((await axe.run(container)).violations).toEqual([]);
+  });
+
+  it("clears the verification fragment immediately and sends the token only in the explicit POST body", async () => {
+    let getRequests = 0;
+    let confirmations = 0;
+    document.cookie = "issue_spec_csrf=; Max-Age=0; Path=/";
+    window.history.replaceState({}, "", "/verify-email#token=fragment-secret");
+    server.use(
+      http.get("http://localhost/api/v1/profile/email/verification", () => {
+        getRequests += 1;
+        return new HttpResponse(null, { status: 405 });
+      }),
+      http.post("http://localhost/api/v1/profile/email/verification", async ({ request }) => {
+        confirmations += 1;
+        expect(new URL(request.url).search).toBe("");
+        expect(await request.json()).toEqual({ token: "fragment-secret" });
+        return HttpResponse.json({ status: "confirmed" });
+      }),
+    );
+    renderApp(<VerifyEmailPage />, "/verify-email#token=fragment-secret");
+    expect(window.location.hash).toBe("");
+    expect(window.location.href).not.toContain("fragment-secret");
+    expect(screen.getByRole("button", { name: "Confirm email" })).toBeVisible();
+    expect(getRequests).toBe(0);
+    expect(confirmations).toBe(0);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm email" }));
+    expect(await screen.findByRole("heading", { name: "Email confirmed" })).toBeVisible();
+    expect(confirmations).toBe(1);
+    expect(getRequests).toBe(0);
+  });
+
+  it("shows pending account email controls only when the capability is available", async () => {
+    let resendBody: unknown;
+    server.use(
+      http.get("http://localhost/api/v1/profile", () => HttpResponse.json({
+        id: 101, login: "alice", display_name: "Alice", identity_display_name: "Alice", nickname: null,
+        representation_version: 4, avatar_url: "", html_url: "", type: "User", site_admin: true,
+        notification_email_available: true, onboarding_completed: true, notification_email: null,
+        notification_email_verified_at: null, pending_notification_email: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+          email: "pending@example.test", expires_at: "2030-01-01T00:00:00Z", sent_at: null, representation_version: 2 },
+        allowed_email_domain_suffixes: ["corp.example"],
+      })),
+      http.post("http://localhost/api/v1/profile/email/verification/resend", async ({ request }) => {
+        resendBody = await request.json();
+        return HttpResponse.json({ id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", email: "pending@example.test",
+          expires_at: "2030-01-02T00:00:00Z", sent_at: null, representation_version: 1 });
+      }),
+    );
+    renderApp(<AccountPage />, "/settings/account");
+    expect(await screen.findByText(/Allowed domains \(including subdomains\): @corp\.example/)).toBeVisible();
+    expect(screen.getByTestId("pending-notification-email")).toHaveTextContent("pending@example.test");
+    await userEvent.setup().click(screen.getByTestId("notification-email-resend"));
+    await waitFor(() => expect(resendBody).toEqual({ expected_version: 4, expected_verification_version: 2 }));
   });
 });

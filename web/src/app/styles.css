@@ -273,6 +273,16 @@ p { line-height: 1.65; color: var(--muted); }
 .secret-details code { display: block; padding: .75rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); overflow-wrap: anywhere; user-select: all; }
 .secret-value { display: block; max-height: 150px; overflow: auto; margin: 1.2rem 0; padding: 1rem; border: 1px dashed #b99e98; border-radius: 8px; background: #fff7f4; overflow-wrap: anywhere; user-select: all; }
 
+.modal-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 1rem; background: rgba(16, 30, 34, .76); }
+.modal-card { width: min(520px, 100%); max-height: calc(100vh - 2rem); overflow: auto; padding: clamp(1.4rem, 4vw, 2.25rem); border: 1px solid var(--line); border-radius: 18px; background: var(--surface); box-shadow: 0 24px 80px rgba(0, 0, 0, .28); }
+.onboarding-dialog h1 { margin: .35rem 0 .7rem; }
+.onboarding-dialog form { display: grid; gap: 1rem; margin-top: 1.4rem; }
+.onboarding-dialog form .button { justify-self: start; }
+.email-status { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; padding: .85rem 1rem; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-strong); }
+.email-status > div { display: grid; gap: .2rem; }
+.email-status span { color: var(--muted); font-size: .86rem; }
+.verification-review { display: grid; justify-items: start; gap: 1rem; }
+
 @media (max-width: 1180px) {
   .app-shell { grid-template-columns: 76px minmax(0, 1fr); }
   .sidebar { padding-inline: .7rem; align-items: center; }

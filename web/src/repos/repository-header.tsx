@@ -2,10 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 import { Cable, RadioTower, Settings2, Users } from "lucide-react";
 import { Link, NavLink, useParams } from "react-router-dom";
 import { PageHeader } from "../app/components";
-import { queryKeys } from "../auth/session";
+import { queryKeys, useMeta } from "../auth/session";
 import { api } from "../lib/api/resources";
 import type { AdminRepository } from "../lib/api/types";
 import { useTranslation } from "react-i18next";
+import { RepositorySubscriptionControl } from "./repository-subscription-control";
+import "./repository-notifications.css";
 
 export type RepositorySection = "settings" | "collaborators" | "source" | "webhooks";
 
@@ -25,6 +27,7 @@ export function RepositoryHeader({ repository, section, title, description }: {
   description: string;
 }) {
   const { t } = useTranslation();
+  const meta = useMeta();
   const sectionLabels: Record<RepositorySection, string> = {
     settings: t("common.settings"), collaborators: t("common.collaborators"), source: t("common.source"), webhooks: t("common.webhooks"),
   };
@@ -44,9 +47,13 @@ export function RepositoryHeader({ repository, section, title, description }: {
       </ol>
     </nav>
     <PageHeader eyebrow={t("repositoryHeader.eyebrow", { section: sectionLabels[section] })} title={title} description={description} actions={
-      <nav className="repository-section-nav" aria-label={t("repositoryHeader.sections")}>
-        {sections.map(({ id, label, href, icon: Icon }) => <NavLink key={id} to={href} end aria-current={section === id ? "page" : undefined} className={section === id ? "active" : undefined}><Icon size={15} aria-hidden="true" />{label}</NavLink>)}
-      </nav>
+      <div className="repository-header-actions">
+        {meta.data?.features.repository_email_subscriptions ?
+          <RepositorySubscriptionControl orgId={repository.organization_id} repoId={repository.id} /> : null}
+        <nav className="repository-section-nav" aria-label={t("repositoryHeader.sections")}>
+          {sections.map(({ id, label, href, icon: Icon }) => <NavLink key={id} to={href} end aria-current={section === id ? "page" : undefined} className={section === id ? "active" : undefined}><Icon size={15} aria-hidden="true" />{label}</NavLink>)}
+        </nav>
+      </div>
     } />
   </>;
 }

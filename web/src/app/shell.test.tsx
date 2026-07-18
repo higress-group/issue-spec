@@ -4,9 +4,9 @@ import { http, HttpResponse } from "msw";
 import { render, screen, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { describe, expect, it } from "vitest";
-import { fixtureMeta, server } from "../../tests/server";
+import { fixtureContext, fixtureMeta, server } from "../../tests/server";
 import { InspectorProvider } from "./problem-inspector";
-import { AuthenticatedShell, isCanonicalRepositoryReadPath, isPublicUserProfilePath } from "./shell";
+import { AuthenticatedShell, isCanonicalRepositoryReadPath, isPublicUserProfilePath, resolveNavigationOrganization } from "./shell";
 import { isChangeFeaturePath, isIssueFeaturePath } from "../lib/canonical-routes";
 import { RepositoryGate, type ActiveRepository } from "../features/issues/repository-context";
 import { useCurrentContext } from "../auth/session";
@@ -38,12 +38,27 @@ describe("application navigation and canonical public shell", () => {
     expect(isChangeFeaturePath("/admin/acme/changes")).toBe(false);
   });
 
-  it("orders Issues and Changes before Repositories with distinct feature icons on desktop and mobile", async () => {
+  it("resolves sidebar context from organization and canonical repository paths without defaulting to the first organization", () => {
+    const organizations = [
+      fixtureContext.organizations[0],
+      { ...fixtureContext.organizations[0], id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", name: "beta", display_name: "Beta", effective_permission: "read" },
+    ];
+    expect(resolveNavigationOrganization("/", organizations)).toBeUndefined();
+    expect(resolveNavigationOrganization(`/orgs/${organizations[1].id}/repos`, organizations)?.name).toBe("beta");
+    expect(resolveNavigationOrganization("/orgs/beta/changes", organizations)?.name).toBe("beta");
+    expect(resolveNavigationOrganization("/beta/workflow/issues/7", organizations)?.name).toBe("beta");
+    expect(resolveNavigationOrganization("/_repos/beta/workflow/issues/7", organizations)?.name).toBe("beta");
+  });
+
+  it("puts Issues first and uses the root repository chooser as the only repository navigation entry", async () => {
     server.use(http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, change_boards: true } })));
     const { container } = renderShell("/");
     const primary = await screen.findByRole("navigation", { name: "Primary navigation" });
     const workspace = within(primary).getAllByRole("link").map((link) => link.textContent?.trim()).filter((label) => ["Overview", "Issues", "Changes", "Repositories"].includes(label ?? ""));
-    expect(workspace).toEqual(["Overview", "Issues", "Changes", "Repositories"]);
+    expect(workspace).toEqual(["Issues", "Changes", "Repositories"]);
+    expect(within(primary).getByRole("link", { name: "Repositories" })).toHaveAttribute("href", "/");
+    expect(within(primary).getByText("All organizations")).toBeVisible();
+    expect(within(primary).getByText("Choose an organization")).toBeVisible();
     const issues = within(primary).getByRole("link", { name: "Issues" });
     const changes = within(primary).getByRole("link", { name: "Changes" });
     expect(issues.querySelector("svg")?.getAttribute("class")).toContain("lucide-circle-dot");
@@ -51,7 +66,7 @@ describe("application navigation and canonical public shell", () => {
     expect(issues.querySelector("svg")?.getAttribute("class")).not.toBe(changes.querySelector("svg")?.getAttribute("class"));
     const mobile = screen.getByRole("navigation", { name: "Mobile navigation" });
     const mobileLabels = within(mobile).getAllByRole("link").map((link) => link.textContent?.trim());
-    expect(mobileLabels).toEqual(["Home", "Issues", "Changes", "Repos", "Account"]);
+    expect(mobileLabels).toEqual(["Issues", "Changes", "Repositories", "Account"]);
     expect((await axe.run(container)).violations).toEqual([]);
   });
 

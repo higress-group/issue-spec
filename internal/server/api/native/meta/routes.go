@@ -16,16 +16,19 @@ import (
 )
 
 type Features struct {
-	Bootstrap              bool `json:"bootstrap"`
-	PersonalAccessTokens   bool `json:"personal_access_tokens"`
-	Organizations          bool `json:"organizations"`
-	SourceBindings         bool `json:"source_bindings"`
-	Webhooks               bool `json:"webhooks"`
-	ChangeBoards           bool `json:"change_boards"`
-	Runner                 bool `json:"runner"`
-	RecoveryExchange       bool `json:"recovery_exchange"`
-	Search                 bool `json:"search"`
-	RequirementsOnboarding bool `json:"requirements_onboarding"`
+	Bootstrap                    bool `json:"bootstrap"`
+	PersonalAccessTokens         bool `json:"personal_access_tokens"`
+	Organizations                bool `json:"organizations"`
+	SourceBindings               bool `json:"source_bindings"`
+	Webhooks                     bool `json:"webhooks"`
+	ChangeBoards                 bool `json:"change_boards"`
+	Runner                       bool `json:"runner"`
+	RecoveryExchange             bool `json:"recovery_exchange"`
+	Search                       bool `json:"search"`
+	EmailNotifications           bool `json:"email_notifications"`
+	MentionCandidates            bool `json:"mention_candidates"`
+	RepositoryEmailSubscriptions bool `json:"repository_email_subscriptions"`
+	RequirementsOnboarding       bool `json:"requirements_onboarding"`
 }
 
 type Transport struct {

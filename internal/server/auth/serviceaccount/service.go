@@ -49,7 +49,10 @@ func (s *Service) Create(ctx context.Context, actorID, orgID uuid.UUID, name, re
 		account.Login = account.Login[:55] + "-" + hex.EncodeToString(digest[:4])
 	}
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO users (id, login, display_name) VALUES ($1, $2, $3)`,
+		// Non-human identities never participate in interactive profile
+		// onboarding or notification-email verification.
+		if _, err := tx.Exec(ctx, `INSERT INTO users (id, login, display_name, onboarding_completed_at)
+			VALUES ($1, $2, $3, clock_timestamp())`,
 			account.UserID, account.Login, name); err != nil {
 			return err
 		}

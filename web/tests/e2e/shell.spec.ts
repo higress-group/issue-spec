@@ -47,7 +47,7 @@ test("runner managed PAT keeps identity and authority controls explicit", async 
 
 test("responsive shell remains accessible and visually stable", async ({ page }, testInfo) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: documentationText("Good work starts with orientation", "知止而后有定，定而后能静。") })).toBeVisible();
+  await expect(page.getByRole("heading", { name: documentationText("Repositories", "仓库") })).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
   const accessibility = await new AxeBuilder({ page }).analyze();
@@ -80,7 +80,7 @@ test("200 percent equivalent reflow has no horizontal clipping", async ({ page }
   test.skip(testInfo.project.name !== "desktop-1440");
   await page.setViewportSize({ width: 720, height: 900 });
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: documentationText("Good work starts with orientation", "知止而后有定，定而后能静。") })).toBeVisible();
+  await expect(page.getByRole("heading", { name: documentationText("Repositories", "仓库") })).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
   await expect(page).toHaveScreenshot(documentationSnapshot("dashboard-200-percent"), { fullPage: true, animations: "disabled" });

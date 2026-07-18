@@ -7,6 +7,7 @@ import { stripIssueSpecMarkersForRender } from "./issue-markers";
 import "highlight.js/styles/github.css";
 import "./markdown.css";
 import { useTranslation } from "react-i18next";
+import { remarkMentions } from "./mentions";
 
 const schema = {
   ...defaultSchema,
@@ -39,17 +40,28 @@ function isSamePageCommentLink(href: string | undefined) {
   }
 }
 
+function isSameOriginUserLink(href: string | undefined) {
+  if (!href || typeof window === "undefined") return false;
+  try {
+    const candidate = new URL(href, window.location.origin);
+    return candidate.origin === window.location.origin && /^\/users\/[^/]+$/.test(candidate.pathname)
+      && candidate.search === "" && candidate.hash === "";
+  } catch {
+    return false;
+  }
+}
+
 export function MarkdownView({ source, className = "" }: { source: string; className?: string }) {
   const { t } = useTranslation();
   return <div className={`markdown-view ${className}`.trim()} data-testid="rendered-markdown">
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={[remarkGfm, remarkMentions]}
       rehypePlugins={[rehypeRaw, [rehypeSanitize, schema], rehypeHighlight]}
       components={{
         a: ({ href, children, node, ...props }) => {
           void node;
-          const samePageComment = isSamePageCommentLink(href);
-          return <a {...props} href={href} target={samePageComment ? undefined : "_blank"} rel={samePageComment ? undefined : "noopener noreferrer"} referrerPolicy="no-referrer">{children}</a>;
+          const internal = isSamePageCommentLink(href) || isSameOriginUserLink(href);
+          return <a {...props} href={href} target={internal ? undefined : "_blank"} rel={internal ? undefined : "noopener noreferrer"} referrerPolicy="no-referrer">{children}</a>;
         },
         img: ({ node, ...props }) => {
           void node;

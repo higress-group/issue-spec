@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, NavLink, Navigate, Outlet, useLocation } from "react-router-dom";
-import { AlertCircle, Boxes, KeyRound, LayoutDashboard, LogIn, Menu, Settings2, X } from "lucide-react";
+import { AlertCircle, Boxes, KeyRound, LogIn, Menu, Settings2, X } from "lucide-react";
 import { ErrorNotice, Loading } from "./components";
 import { ProblemInspector } from "./problem-inspector";
 import { useInspector } from "./problem-inspector";
@@ -10,11 +10,30 @@ import { featureNavigation } from "./feature-contributions";
 import { Avatar } from "./avatar";
 import { useTranslation } from "react-i18next";
 import { LanguageSwitcher } from "../i18n/language-switcher";
-import { isCanonicalRepositoryReadPath, isPublicUserProfilePath } from "../lib/canonical-routes";
+import { isCanonicalRepositoryReadPath, isPublicUserProfilePath, isRepositoryRootOwner } from "../lib/canonical-routes";
+import type { OrganizationContext } from "../lib/api/types";
+import { ProfileOnboardingDialog } from "../auth/profile-onboarding-dialog";
 
 export { isCanonicalRepositoryReadPath, isPublicUserProfilePath } from "../lib/canonical-routes";
 
 const navClass = ({ isActive }: { isActive: boolean }) => isActive ? "nav-link active" : "nav-link";
+
+function decodePathSegment(segment: string) {
+  try { return decodeURIComponent(segment); } catch { return segment; }
+}
+
+export function resolveNavigationOrganization(pathname: string, organizations: OrganizationContext[]) {
+  const segments = pathname.split("/").filter(Boolean).map(decodePathSegment);
+  let candidate = "";
+  if (segments[0] === "admin" && segments[1] === "orgs") candidate = segments[2] ?? "";
+  else if (segments[0] === "orgs") candidate = segments[1] ?? "";
+  else if (segments[0] === "_repos") candidate = segments[1] ?? "";
+  else if (["issues", "changes", "search"].includes(segments[0]) && segments.length > 1) candidate = segments[1];
+  else if (segments.length > 1 && isRepositoryRootOwner(segments[0])) candidate = segments[0];
+  if (!candidate) return undefined;
+  const normalized = candidate.toLowerCase();
+  return organizations.find((organization) => organization.id === candidate || organization.name.toLowerCase() === normalized);
+}
 
 export function AuthenticatedShell() {
   const { t } = useTranslation();
@@ -34,7 +53,7 @@ export function AuthenticatedShell() {
   if (!contextQuery.data) return <Navigate to="/login" replace />;
   const context = contextQuery.data;
   const features = metaQuery.data?.features;
-  const firstOrg = context.organizations[0];
+  const currentOrganization = resolveNavigationOrganization(location.pathname, context.organizations);
   const visibleFeatureNav = featureNavigation.filter((item) => !item.capability || features?.[item.capability as keyof typeof features]);
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">{t("navigation.skip")}</a>
@@ -46,13 +65,12 @@ export function AuthenticatedShell() {
       <Link className="brand" to="/"><span className="brand-mark">is</span><span><strong>issue-spec</strong><small>{t("brand.controlRoom")}</small></span></Link>
       <div className="nav-context">
         <span className="eyebrow inverse-muted">{t("navigation.currentDesk")}</span>
-        <strong>{firstOrg?.display_name ?? t("navigation.noOrganization")}</strong>
-        <span>{firstOrg?.effective_permission ?? "observer"}</span>
+        <strong>{currentOrganization?.display_name ?? t("navigation.allOrganizations")}</strong>
+        <span>{currentOrganization ? t(`common.permission.${currentOrganization.effective_permission}`, { defaultValue: currentOrganization.effective_permission }) : t("navigation.chooseOrganization")}</span>
       </div>
       <div className="nav-group"><span className="nav-label">{t("navigation.workspace")}</span>
-        <NavLink className={navClass} to="/" end><LayoutDashboard size={18} /><span>{t("navigation.overview")}</span></NavLink>
         {visibleFeatureNav.map((item) => <NavLink key={item.to} className={({ isActive }) => navClass({ isActive: isActive || Boolean(item.matches?.(location.pathname)) })} to={item.to}><item.icon size={18} aria-hidden="true" /><span>{item.labelKey ? t(item.labelKey) : item.label}</span></NavLink>)}
-        {firstOrg ? <NavLink className={navClass} to={`/orgs/${firstOrg.id}/repos`}><Boxes size={18} /><span>{t("navigation.repositories")}</span></NavLink> : null}
+        <NavLink className={navClass} to="/" end><Boxes size={18} /><span>{t("navigation.repositories")}</span></NavLink>
       </div>
       <div className="nav-group"><span className="nav-label">{t("navigation.account")}</span>
         <NavLink className={navClass} to="/settings/account"><Avatar login={context.user.login} displayName={context.user.display_name} src={context.user.avatar_url} size={24} tone="inverse" /><span>{t("navigation.session")}</span></NavLink>
@@ -62,14 +80,14 @@ export function AuthenticatedShell() {
       <div className="nav-group nav-language"><LanguageSwitcher inverse /></div>
     </nav>
     <main id="main-content" className="main-content" tabIndex={-1}><Outlet /></main>
-    <ProblemInspector identity={`@${context.user.login}`} permission={firstOrg?.effective_permission} />
+    <ProblemInspector identity={`@${context.user.login}`} permission={currentOrganization?.effective_permission} />
     <button id="inspector-toggle" className="inspector-toggle" type="button" onClick={inspector.openInspector} aria-expanded={inspector.open} aria-controls="request-inspector"><AlertCircle size={17} /><span>{inspector.state.problem ? t("navigation.requestProblem") : t("navigation.inspector")}</span></button>
-    <nav className="bottom-nav" aria-label={t("navigation.mobile")}>
-      <NavLink to="/" end><LayoutDashboard /><span>{t("navigation.home")}</span></NavLink>
+    <nav className="bottom-nav" aria-label={t("navigation.mobile")} style={{ gridTemplateColumns: `repeat(${visibleFeatureNav.length + 2}, 1fr)` }}>
       {visibleFeatureNav.map((item) => <NavLink key={item.to} className={({ isActive }) => isActive || item.matches?.(location.pathname) ? "active" : undefined} to={item.to}><item.icon aria-hidden="true" /><span>{item.labelKey ? t(item.labelKey) : item.label}</span></NavLink>)}
-      {firstOrg ? <NavLink to={`/orgs/${firstOrg.id}/repos`}><Boxes /><span>{t("navigation.repos")}</span></NavLink> : <span />}
+      <NavLink to="/" end><Boxes /><span>{t("navigation.repositories")}</span></NavLink>
       <NavLink to="/settings/account"><Avatar login={context.user.login} displayName={context.user.display_name} src={context.user.avatar_url} size={24} /><span>{t("navigation.account")}</span></NavLink>
     </nav>
+    <ProfileOnboardingDialog enabled={Boolean(features?.email_notifications)} />
   </div>;
 }
 

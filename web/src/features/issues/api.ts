@@ -63,6 +63,13 @@ const issueListSchema = z.array(issueSchema);
 const commentListSchema = z.array(commentSchema);
 const labelListSchema = z.array(labelSchema);
 const reactionListSchema = z.array(reactionSchema);
+const mentionCandidateSchema = z.object({
+  login: z.string().min(1).max(64),
+  display_name: z.string().min(1).max(256),
+  avatar_url: z.string(),
+}).strict();
+
+export type MentionCandidate = z.infer<typeof mentionCandidateSchema>;
 
 export const issueApi = {
   listIssues: (owner: string, repo: string, options: { state: string; labels: string[]; page: number; perPage?: number }, signal?: AbortSignal) => {
@@ -83,6 +90,10 @@ export const issueApi = {
   listReactions: (owner: string, repo: string, commentId: number, signal?: AbortSignal) => request(`${base(owner, repo)}/issues/comments/${commentId}/reactions?per_page=100`, { schema: reactionListSchema, signal }),
   createReaction: (owner: string, repo: string, commentId: number, content: ReactionContent) => request(`${base(owner, repo)}/issues/comments/${commentId}/reactions`, { method: "POST", body: { content }, schema: reactionSchema }),
   deleteReaction: (owner: string, repo: string, commentId: number, reactionId: number) => request<void>(`${base(owner, repo)}/issues/comments/${commentId}/reactions/${reactionId}`, { method: "DELETE" }),
+  mentionCandidates: (prefix: string, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ q: prefix });
+    return request(`/api/v1/mentions/candidates?${query}`, { schema: z.array(mentionCandidateSchema).max(10), signal });
+  },
 };
 
 export function isIssueApiError(error: unknown, status?: number): error is IssueApiError {

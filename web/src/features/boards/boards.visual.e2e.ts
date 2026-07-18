@@ -68,7 +68,7 @@ test("change board is responsive, keyboard reachable, accessible, and visually s
 test("organization and repository navigation stays inside visible context", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "boards-desktop-1440");
   await page.goto("/changes");
-  await expect(page.getByRole("heading", { name: documentationText("See the change, not the paperwork.", "穷则变，变则通，通则久。") })).toBeVisible();
+  await expect(page.getByRole("heading", { name: documentationText("See the change, not the paperwork.", "慎终如始，则无败事。") })).toBeVisible();
   await page.getByRole("link", { name: /Acme Studio/ }).click();
   await expect(page.getByRole("heading", { name: documentationText("Acme Studio changes", "Acme Studio的变更") })).toBeVisible();
   await page.getByLabel(documentationText("Board scope", "看板范围")).selectOption(repoId);

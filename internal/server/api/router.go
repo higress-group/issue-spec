@@ -31,10 +31,13 @@ import (
 	delegationapi "github.com/higress-group/issue-spec/internal/server/api/native/delegation"
 	deliveriesapi "github.com/higress-group/issue-spec/internal/server/api/native/deliveries"
 	evidenceapi "github.com/higress-group/issue-spec/internal/server/api/native/evidence"
+	mentionsapi "github.com/higress-group/issue-spec/internal/server/api/native/mentions"
 	metaapi "github.com/higress-group/issue-spec/internal/server/api/native/meta"
 	orgsapi "github.com/higress-group/issue-spec/internal/server/api/native/orgs"
+	profilemailapi "github.com/higress-group/issue-spec/internal/server/api/native/profilemail"
 	referencesapi "github.com/higress-group/issue-spec/internal/server/api/native/references"
 	reposapi "github.com/higress-group/issue-spec/internal/server/api/native/repos"
+	reposubscriptionsapi "github.com/higress-group/issue-spec/internal/server/api/native/reposubscriptions"
 	searchapi "github.com/higress-group/issue-spec/internal/server/api/native/search"
 	webhooksapi "github.com/higress-group/issue-spec/internal/server/api/native/webhooks"
 	"github.com/higress-group/issue-spec/internal/server/api/routeset"
@@ -79,13 +82,17 @@ type Dependencies struct {
 	Presenter    codec.Presenter
 	Conditional  conditional.Policy
 
-	SPA           *spa.Service
-	Bindings      *bindings.Service
-	Evidence      *evidence.Service
-	Changes       *changes.Service
-	Subscriptions *subscriptions.Service
-	Deliveries    *delivery.Service
-	Search        *searchservice.Service
+	SPA                          *spa.Service
+	Bindings                     *bindings.Service
+	Evidence                     *evidence.Service
+	Changes                      *changes.Service
+	Subscriptions                *subscriptions.Service
+	Deliveries                   *delivery.Service
+	Search                       *searchservice.Service
+	ProfileMail                  profilemailapi.Service
+	MentionDirectory             mentionsapi.Directory
+	RepositoryEmailSubscriptions reposubscriptionsapi.Service
+	EmailNotifications           bool
 
 	DelegationAudience string
 	DelegationSubject  string
@@ -112,7 +119,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	}
 	nativeAuthenticate := adminapi.NativeAuthenticate(deps.Authentication)
 	nativeAuthenticateOptional := adminapi.NativeAuthenticateOptional(deps.Authentication)
-	features := mountedFeatures(deps.Search != nil)
+	features := configuredFeatures(deps)
 	serverMetadata, err := metaapi.NewServerMetadataWithPosture(deps.ServerInstanceID, deps.APIOrigin, deps.WebOrigin, deps.ProviderDescriptions, deps.TransportPosture)
 	if err != nil {
 		return nil, fmt.Errorf("compose server metadata: %w", err)
@@ -143,13 +150,14 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			return githubpermissions.NewRouteSet(githubpermissions.Dependencies{Service: deps.Permissions, Presenter: deps.Presenter, Authentication: deps.Authentication, Conditional: deps.Conditional})
 		},
 		func() (routeset.RouteSet, error) {
-			return githubsubscription.NewRouteSet(githubsubscription.Dependencies{Service: deps.Subscription, Presenter: deps.Presenter, Authentication: deps.Authentication, Conditional: deps.Conditional})
-		},
-		func() (routeset.RouteSet, error) {
 			return bootstrapapi.NewRouteSet(bootstrapapi.Dependencies{Service: deps.Admin})
 		},
 		func() (routeset.RouteSet, error) {
-			return nativeauth.NewRouteSet(nativeauth.Dependencies{Identity: deps.Identity, Sessions: deps.Sessions, PATs: deps.PATs, Authority: deps.Authorization.(nativeauth.IdentityAuthority), Middleware: deps.Authentication, Adapters: deps.Adapters, Avatars: deps.Avatars, Diagnostics: deps.AuthDiagnostics, WebOrigin: deps.WebOrigin})
+			return nativeauth.NewRouteSet(nativeauth.Dependencies{Identity: deps.Identity, Sessions: deps.Sessions, PATs: deps.PATs, Authority: deps.Authorization.(nativeauth.IdentityAuthority), Middleware: deps.Authentication, Adapters: deps.Adapters, Avatars: deps.Avatars, Diagnostics: deps.AuthDiagnostics, WebOrigin: deps.WebOrigin, ProfileMail: deps.ProfileMail, EmailEnabled: features.EmailNotifications})
+		},
+		func() (routeset.RouteSet, error) {
+			return profilemailapi.NewRouteSet(profilemailapi.Dependencies{Service: deps.ProfileMail,
+				Authenticate: nativeAuthenticate, Enabled: features.EmailNotifications})
 		},
 		func() (routeset.RouteSet, error) {
 			return adminapi.NewRouteSet(adminapi.Dependencies{Service: deps.Admin, Authorizer: deps.Authorization, Authenticate: nativeAuthenticate})
@@ -193,6 +201,30 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			return nil, fmt.Errorf("compose server routes: %w", err)
 		}
 	}
+	if features.RepositoryEmailSubscriptions {
+		origins, err := publicurl.NewWithPosture(deps.APIOrigin, deps.WebOrigin, nil, deps.TransportPosture)
+		if err != nil {
+			return nil, fmt.Errorf("compose repository notification origins: %w", err)
+		}
+		if err := add(reposubscriptionsapi.NewRouteSet(reposubscriptionsapi.Dependencies{
+			Service: deps.RepositoryEmailSubscriptions, Origins: origins,
+			Authentication: deps.Authentication, Conditional: deps.Conditional,
+		})); err != nil {
+			return nil, fmt.Errorf("compose repository notification routes: %w", err)
+		}
+	} else if err := add(githubsubscription.NewRouteSet(githubsubscription.Dependencies{
+		Service: deps.Subscription, Presenter: deps.Presenter,
+		Authentication: deps.Authentication, Conditional: deps.Conditional,
+	})); err != nil {
+		return nil, fmt.Errorf("compose compatible subscription route: %w", err)
+	}
+	if mentionRoutes, enabled, err := composeMentionCandidateRoutes(deps, features, nativeAuthenticate); err != nil {
+		return nil, fmt.Errorf("compose mention routes: %w", err)
+	} else if enabled {
+		if err := add(mentionRoutes, nil); err != nil {
+			return nil, fmt.Errorf("compose mention routes: %w", err)
+		}
+	}
 	if deps.Search != nil {
 		if err := add(searchapi.NewRouteSet(searchapi.Dependencies{Service: deps.Search, Authenticate: nativeAuthenticate,
 			AuthenticateOptional: nativeAuthenticateOptional, WebOrigin: deps.WebOrigin})); err != nil {
@@ -214,6 +246,28 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	handler = credentialedCORS(deps.APIOrigin, deps.WebOrigin, handler)
 	handler = observeRequests(stats, deps.LogRequest, handler)
 	return handler, nil
+}
+
+func configuredFeatures(deps Dependencies) metaapi.Features {
+	features := mountedFeatures(deps.Search != nil)
+	features.EmailNotifications = deps.EmailNotifications && deps.ProfileMail != nil
+	// Site-wide discovery is useful independently of email transport. The
+	// candidate RouteSet still requires the server's configured session
+	// authentication, while verified-email and repository-email mutations stay
+	// behind the mail capability.
+	features.MentionCandidates = deps.MentionDirectory != nil
+	features.RepositoryEmailSubscriptions = features.EmailNotifications && deps.RepositoryEmailSubscriptions != nil
+	return features
+}
+
+func composeMentionCandidateRoutes(deps Dependencies, features metaapi.Features,
+	authenticate adminapi.Authenticate) (routeset.RouteSet, bool, error) {
+	if !features.MentionCandidates {
+		return routeset.RouteSet{}, false, nil
+	}
+	set, err := mentionsapi.NewRouteSet(mentionsapi.Dependencies{Directory: deps.MentionDirectory,
+		Authenticate: authenticate, WebOrigin: deps.WebOrigin})
+	return set, true, err
 }
 
 func mountedFeatures(search bool) metaapi.Features {

@@ -4,6 +4,7 @@ import { LabelSelector } from "../../components/labels/label-chips";
 import { useTranslation } from "react-i18next";
 import type { Label } from "./types";
 import { MutationProblem } from "./repository-context";
+import { MentionTextarea } from "./mention-autocomplete";
 
 export type IssueDraft = { title: string; body: string; labels: string[] };
 
@@ -31,7 +32,7 @@ export function CommentEditor({ initial = "", submitLabel, pending, error, onCan
   const [preview, setPreview] = useState(false);
   return <form className="comment-editor" onSubmit={(event) => { event.preventDefault(); if (body.trim()) onSubmit(body); }}>
     <div className="editor-tabs" role="tablist" aria-label={t("issues.editor.commentView")}><button type="button" role="tab" aria-selected={!preview} onClick={() => setPreview(false)}>{t("issues.editor.write")}</button><button type="button" role="tab" aria-selected={preview} onClick={() => setPreview(true)}>{t("issues.editor.preview")}</button></div>
-    {preview ? <div className="editor-preview"><MarkdownView source={body} /></div> : <label className="issue-field"><span className="sr-only">{t("issues.editor.comment")}</span><textarea aria-label={t("issues.editor.comment")} value={body} rows={7} placeholder={t("issues.editor.commentPlaceholder")} onChange={(event) => setBody(event.target.value)} /></label>}
+    {preview ? <div className="editor-preview"><MarkdownView source={body} /></div> : <label className="issue-field"><span className="sr-only">{t("issues.editor.comment")}</span><MentionTextarea label={t("issues.editor.comment")} value={body} rows={7} placeholder={t("issues.editor.commentPlaceholder")} onChange={setBody} /></label>}
     <MutationProblem error={error} />
     <div className="editor-actions">{onCancel ? <button className="issue-button" type="button" onClick={onCancel}>{t("issues.editor.cancel")}</button> : null}<button className="issue-button primary" disabled={pending || !body.trim()} type="submit">{pending ? t("issues.editor.saving") : submitLabel ?? t("issues.editor.comment")}</button></div>
   </form>;

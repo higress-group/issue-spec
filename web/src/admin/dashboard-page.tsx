@@ -17,7 +17,7 @@ export function DashboardPage() {
   return <div className="page"><PageHeader eyebrow={t("dashboard.eyebrow")} title={t("dashboard.title")} description={t("dashboard.description")} />
     {context.error ? <ErrorNotice error={context.error} /> : null}
     <section className="metric-strip"><div><span>{t("dashboard.organizations")}</span><strong>{context.data?.organizations.length ?? 0}</strong></div><div><span>{t("dashboard.credentialRealm")}</span><strong>{context.data?.credential.kind ?? "—"}</strong></div><div><span>{t("dashboard.siteAuthority")}</span><strong>{context.data?.allowed_actions.includes("site.admin") ? t("dashboard.administrator") : t("dashboard.scoped")}</strong></div></section>
-    <Panel title={t("dashboard.yourOrganizations")} description={t("dashboard.organizationsHelp")}>
+    <Panel title={t("dashboard.chooseOrganization")} description={t("dashboard.organizationsHelp")}>
       {context.data?.organizations.length === 0 ? <EmptyState title={t("dashboard.noWorkspace")} description={t("dashboard.noWorkspaceHelp")} /> : <div className="card-grid">{context.data?.organizations.map((org, index) => <Link className="org-card" to={`/orgs/${org.id}/repos`} key={org.id}><span className={`stage-number stage-${index % 3}`}>0{index + 1}</span><div><span className="eyebrow">{org.container_only ? t("dashboard.repositoryContainer") : t("dashboard.organization")}</span><h2>{org.display_name}</h2><p className="mono">{org.name}</p></div><div className="card-foot"><StatusBadge tone={org.effective_permission === "admin" ? "purple" : "teal"}>{org.effective_permission}</StatusBadge><ArrowRight size={18} /></div></Link>)}</div>}
     </Panel>
   </div>;

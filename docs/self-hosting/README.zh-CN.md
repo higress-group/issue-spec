@@ -9,7 +9,7 @@ provider-neutral 代码证据、Webhook、Runner，以及由 PostgreSQL 持久�
 当团队需要私网部署、本地身份与权限、内部代码平台接入，或不依赖个人 GitHub
 账号的自动化身份时，可以使用 self-hosted 模式。
 
-![自托管工作台总览](assets/self-hosted-dashboard.zh-CN.png)
+![带仓库订阅入口的议题列表](assets/self-hosted-dashboard.zh-CN.png)
 
 ## Server 负责什么
 
@@ -112,7 +112,27 @@ Issue 动作、Change 类型、普通/类型化评论，以及真人/自动化 A
 ## 部署路径
 
 生产制品是单个 `issue-spec-server` 二进制或仓库中的 Runtime 容器。二进制已内嵌
-生成后的 Web 应用。部署需要 PostgreSQL 和三个由运维方管理的密钥文件。
+生成后的 Web 应用。部署需要 PostgreSQL 和三个由运维方管理的密钥文件。第四个可选的
+SMTP 密钥文件用于启用已验证通知邮箱、Mention 和显式仓库邮件订阅；不提供该文件时，
+这些能力保持关闭，不影响 Issue 或 Webhook 的正常运行。
+
+可在 SMTP JSON 中增加可选的通知邮箱域名限制（以下仅为脱敏示例）：
+
+```json
+{
+  "host": "mail.example.test",
+  "port": 2465,
+  "username": "mailer@example.test",
+  "password": "<smtp-password>",
+  "from_address": "notifications@example.test",
+  "allowed_email_domain_suffixes": ["example.test"]
+}
+```
+
+后缀匹配不区分大小写，并严格遵循点分隔的域名边界。配置 `example.test` 时，
+`person@example.test` 和 `person@team.example.test` 均允许，
+`person@evilexample.test` 与 `person@example.test.evil.test` 则会被拒绝。
+未配置该字段或配置空数组时保持原有兼容行为，允许任意语法有效的通知邮箱域名。
 
 1. 阅读[部署与加固指南](operations/deployment.md)。
 2. 选择 HTTPS；若必须使用内网 HTTP，完成

@@ -8,6 +8,7 @@ import { AuthCompletePage } from "../auth/auth-complete-page";
 import { BootstrapPage } from "../auth/bootstrap-page";
 import { AccountPage } from "../auth/account-page";
 import { TokensPage } from "../auth/tokens-page";
+import { VerifyEmailPage } from "../auth/verify-email-page";
 import { OrganizationPage } from "../orgs/organization-page";
 import { MembersPage } from "../orgs/members-page";
 import { RepositoriesPage } from "../repos/repositories-page";
@@ -34,6 +35,7 @@ export const router = createBrowserRouter([
       { index: true, element: <DashboardPage /> },
       { path: "settings/account", element: <AccountPage /> },
       { path: "settings/tokens", element: <TokensPage /> },
+      { path: "verify-email", element: <VerifyEmailPage /> },
       { path: "users/:login", element: <ProfilePage /> },
       { path: "users/:login/issues", element: <LegacyUserIssuesRedirect /> },
       { path: "admin", element: <AdminPage /> },
@@ -55,10 +57,10 @@ export const router = createBrowserRouter([
 function RouteErrorPage() {
   const { t } = useTranslation();
   const error = useRouteError();
-  return <div className="public-narrow"><div className="empty-state"><span className="eyebrow coral-text">{t("route.errorEyebrow")}</span><h1>{t("route.errorTitle")}</h1><p>{error instanceof Error ? error.message : t("route.errorFallback")}</p><Link className="button primary" to="/">{t("route.returnOverview")}</Link></div></div>;
+  return <div className="public-narrow"><div className="empty-state"><span className="eyebrow coral-text">{t("route.errorEyebrow")}</span><h1>{t("route.errorTitle")}</h1><p>{error instanceof Error ? error.message : t("route.errorFallback")}</p><Link className="button primary" to="/">{t("route.returnRepositories")}</Link></div></div>;
 }
 
 function NotFoundPage() {
   const { t } = useTranslation();
-  return <div className="page"><div className="empty-state"><span className="eyebrow">{t("route.notFoundEyebrow")}</span><h1>{t("route.notFoundTitle")}</h1><p>{t("route.notFoundDescription")}</p><Link className="button primary" to="/">{t("route.returnOverview")}</Link></div></div>;
+  return <div className="page"><div className="empty-state"><span className="eyebrow">{t("route.notFoundEyebrow")}</span><h1>{t("route.notFoundTitle")}</h1><p>{t("route.notFoundDescription")}</p><Link className="button primary" to="/">{t("route.returnRepositories")}</Link></div></div>;
 }

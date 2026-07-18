@@ -24,6 +24,10 @@ describe("language configuration", () => {
   it("uses product-specific Chinese terminology across administration and repository surfaces", async () => {
     await i18n.changeLanguage("zh-CN");
     expect(i18n.t("navigation.repositories")).toBe("仓库");
+    expect(i18n.t("navigation.allOrganizations")).toBe("全部组织");
+    expect(i18n.t("dashboard.title")).toBe("仓库");
+    expect(i18n.t("dashboard.chooseOrganization")).toBe("选择组织");
+    expect(i18n.t("repositoryNotifications.subscribe")).toBe("订阅仓库");
     expect(i18n.t("navigation.administration")).toBe("管理后台");
     expect(i18n.t("members.title")).toBe("组织成员");
     expect(i18n.t("collaborators.title")).toBe("仓库协作者");
@@ -40,7 +44,7 @@ describe("language configuration", () => {
     expect(i18n.t("issues.detail.continueConversation")).toBe("继续讨论");
     expect(i18n.t("issues.detail.copyLink")).toBe("复制链接");
     expect(i18n.t("changes.workspace.eyebrow")).toBe("变更工作台");
-    expect(i18n.t("changes.workspace.title")).toBe("穷则变，变则通，通则久。");
+    expect(i18n.t("changes.workspace.title")).toBe("慎终如始，则无败事。");
     expect(i18n.t("changes.board.currentProjection")).toBe("当前汇总");
     expect(i18n.t("changes.detail.artifactChain")).toBe("产物链");
     expect(i18n.t("changes.detail.diagnostics")).toBe("结构诊断");

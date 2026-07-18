@@ -50,6 +50,11 @@ func TestComposeMountsAllRealRouteSets(t *testing.T) {
 	t.Setenv(config.BootstrapSecretFileEnv, testSecret(t, "bootstrap"))
 	t.Setenv(config.TokenPepperFileEnv, testSecret(t, "pepper"))
 	t.Setenv(config.EncryptionKeyFileEnv, testSecret(t, "encryption"))
+	smtpFile := filepath.Join(t.TempDir(), "smtp.json")
+	if err := os.WriteFile(smtpFile, []byte(`{"host":"smtp.example.test","port":465,"username":"fixture-user","password":"fixture-secret","from_address":"notifications@example.test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.SMTPConfigFileEnv, smtpFile)
 	providerFile := filepath.Join(t.TempDir(), "providers.json")
 	providerExecutable, err := os.Executable()
 	if err != nil {
@@ -79,6 +84,8 @@ func TestComposeMountsAllRealRouteSets(t *testing.T) {
 		{http.MethodGet, "/user", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v3/user", http.StatusNotFound},
 		{http.MethodGet, "/api/v1/not-a-route", http.StatusNotFound},
+		{http.MethodGet, "/api/v1/mentions/candidates?q=a", http.StatusUnauthorized},
+		{http.MethodPut, "/api/v1/orgs/00000000-0000-0000-0000-000000000001/repos/00000000-0000-0000-0000-000000000002/subscription", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/context/repos/acme/widgets/search/issues?q=lock", http.StatusNotFound},
 		{http.MethodHead, "/", http.StatusOK},
 	} {
@@ -105,6 +112,11 @@ func TestComposeMountsAllRealRouteSets(t *testing.T) {
 			DisplayName     string `json:"display_name"`
 			CodeChangeLabel string `json:"code_change_label"`
 		} `json:"providers"`
+		Features struct {
+			EmailNotifications              bool `json:"email_notifications"`
+			MentionCandidates               bool `json:"mention_candidates"`
+			RepositoryEmailSubscriptions    bool `json:"repository_email_subscriptions"`
+		} `json:"features"`
 	}
 	if err := json.Unmarshal(metaResponse.Body.Bytes(), &meta); err != nil {
 		t.Fatal(err)
@@ -113,7 +125,8 @@ func TestComposeMountsAllRealRouteSets(t *testing.T) {
 		meta.NativeAPIURL != "http://127.0.0.1:8080/api/v1" || meta.WebURL != "http://127.0.0.1:8080" ||
 		meta.Transport.Mode != "loopback-http" || meta.Transport.Secure || meta.TransportPosture != "trusted-internal-http" || len(meta.Providers) != 1 ||
 		meta.Providers[0].ProviderKey != "code.example" || meta.Providers[0].DisplayName != "Example Code" ||
-		meta.Providers[0].CodeChangeLabel != "Merge request" {
+		meta.Providers[0].CodeChangeLabel != "Merge request" || !meta.Features.EmailNotifications ||
+		!meta.Features.MentionCandidates || !meta.Features.RepositoryEmailSubscriptions {
 		t.Fatalf("meta composition = %+v", meta)
 	}
 	persistedInstanceID, err := app.database.ServerInstanceID(t.Context())

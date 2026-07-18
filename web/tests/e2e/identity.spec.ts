@@ -43,6 +43,6 @@ test("unavailable avatars fall back while session rotation, logout and callback 
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/login$/);
   await page.goto("/auth/complete");
-  await expect(page.getByRole("heading", { name: "Good work starts with orientation" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Repositories" })).toBeVisible();
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });

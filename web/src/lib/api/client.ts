@@ -51,13 +51,13 @@ export class ApiProblem extends Error {
 }
 
 export type RequestOptions<T> = {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   schema?: ZodType<T>;
   signal?: AbortSignal;
 };
 
-const mutationMethods = new Set(["POST", "PATCH", "DELETE"]);
+const mutationMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 export async function apiRequest<T = unknown>(path: string, options: RequestOptions<T> = {}): Promise<T> {
   if (!path.startsWith("/") || path.startsWith("//")) {

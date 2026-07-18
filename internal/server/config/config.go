@@ -30,6 +30,7 @@ const (
 	EncryptionKeyFileEnv       = "ENCRYPTION_KEY_FILE"
 	AuthProvidersFileEnv       = "AUTH_PROVIDERS_FILE"
 	WebhookKeysFileEnv         = "WEBHOOK_ENCRYPTION_KEYS_FILE"
+	SMTPConfigFileEnv          = "SMTP_CONFIG_FILE"
 	MigrationsModeEnv          = "MIGRATIONS_MODE"
 	GracefulShutdownTimeoutEnv = "GRACEFUL_SHUTDOWN_TIMEOUT"
 	HealthReadTimeoutEnv       = "HEALTH_READ_TIMEOUT"
@@ -133,6 +134,7 @@ type Config struct {
 	EncryptionKey           SecretFile       `json:"encryption_key_file,omitempty"`
 	AuthProviders           SecretFile       `json:"auth_providers_file,omitempty"`
 	WebhookKeys             SecretFile       `json:"webhook_encryption_keys_file,omitempty"`
+	SMTPConfig              SecretFile       `json:"smtp_config_file,omitempty"`
 	MigrationsMode          MigrationsMode   `json:"migrations_mode"`
 	SearchMode              SearchMode       `json:"search_mode"`
 	GracefulShutdownTimeout time.Duration    `json:"graceful_shutdown_timeout"`
@@ -146,6 +148,12 @@ type Config struct {
 	DelegationAudience      string           `json:"delegation_audience"`
 	DelegationSubject       string           `json:"delegation_subject"`
 }
+
+// MailEnabled reports operator capability only. Product controls must still
+// apply their authenticated user and repository eligibility checks.
+func (c Config) MailEnabled() bool { return !c.SMTPConfig.IsZero() }
+
+func (c Config) MailSettings() (MailSettings, error) { return ParseMailSettings(c.SMTPConfig) }
 
 func (c Config) String() string {
 	b, err := json.Marshal(c)
@@ -242,6 +250,9 @@ func Load() (Config, error) {
 	if cfg.WebhookKeys, err = loadSecretFile(WebhookKeysFileEnv); err != nil {
 		return Config{}, err
 	}
+	if cfg.SMTPConfig, err = loadSecretFile(SMTPConfigFileEnv); err != nil {
+		return Config{}, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -298,6 +309,9 @@ func (c Config) Validate() error {
 	}
 	if !validBinding(c.DelegationAudience) || !validBinding(c.DelegationSubject) {
 		return fmt.Errorf("delegation audience and subject must be printable values of at most 128 bytes")
+	}
+	if _, err := ParseMailSettings(c.SMTPConfig); err != nil {
+		return err
 	}
 	if c.Environment == EnvironmentProduction {
 		if c.StaticDirectory != "" {
@@ -501,18 +515,24 @@ func RedactError(err error) error {
 // Unlike the package helper it remains effective after a mounted secret file
 // is rotated or removed.
 func (c Config) RedactError(err error) error {
-	return redactError(err, c.DatabaseURL, string(c.BootstrapSecret.value), string(c.TokenPepper.value), string(c.EncryptionKey.value), string(c.AuthProviders.value), string(c.WebhookKeys.value))
+	values := []string{c.DatabaseURL, string(c.BootstrapSecret.value), string(c.TokenPepper.value),
+		string(c.EncryptionKey.value), string(c.AuthProviders.value), string(c.WebhookKeys.value), string(c.SMTPConfig.value)}
+	values = append(values, mailSensitiveValues(c.SMTPConfig.value)...)
+	return redactError(err, values...)
 }
 
 func secretValuesFromEnvironment() []string {
 	var values []string
-	for _, name := range []string{BootstrapSecretFileEnv, TokenPepperFileEnv, EncryptionKeyFileEnv, AuthProvidersFileEnv, WebhookKeysFileEnv} {
+	for _, name := range []string{BootstrapSecretFileEnv, TokenPepperFileEnv, EncryptionKeyFileEnv, AuthProvidersFileEnv, WebhookKeysFileEnv, SMTPConfigFileEnv} {
 		path := env(name)
 		if path == "" {
 			continue
 		}
 		if value, readErr := os.ReadFile(path); readErr == nil {
 			values = append(values, string(value), string(bytes.TrimRight(value, "\r\n")))
+			if name == SMTPConfigFileEnv {
+				values = append(values, mailSensitiveValues(value)...)
+			}
 		}
 	}
 	return values

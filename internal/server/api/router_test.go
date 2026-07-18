@@ -1,11 +1,78 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
+	adminapi "github.com/higress-group/issue-spec/internal/server/api/native/admin"
+	metaapi "github.com/higress-group/issue-spec/internal/server/api/native/meta"
+	profilemailservice "github.com/higress-group/issue-spec/internal/server/profilemail"
+	reponotificationservice "github.com/higress-group/issue-spec/internal/server/reponotifications"
+	"github.com/higress-group/issue-spec/internal/server/store"
 )
+
+func TestMentionCandidateCapabilityAndRoutesDoNotRequireEmail(t *testing.T) {
+	deps := Dependencies{WebOrigin: "https://web.example.test", MentionDirectory: routerMentionDirectory{},
+		ProfileMail:                  (*profilemailservice.Service)(nil),
+		RepositoryEmailSubscriptions: (*reponotificationservice.SubscriptionService)(nil)}
+	features := configuredFeatures(deps)
+	if features.EmailNotifications || !features.MentionCandidates || features.RepositoryEmailSubscriptions {
+		t.Fatalf("SMTP-disabled features = %+v", features)
+	}
+	authenticate := adminapi.Authenticate(func(next http.Handler) http.Handler { return next })
+	set, enabled, err := composeMentionCandidateRoutes(deps, features, authenticate)
+	if err != nil || !enabled || set.Name != "native-mentions" || len(set.Routes) != 1 ||
+		set.Routes[0].Pattern != "/api/v1/mentions/candidates" {
+		t.Fatalf("mention route composition = %+v enabled=%v err=%v", set, enabled, err)
+	}
+
+	metadata, err := metaapi.NewServerMetadata("issue-spec:router-test", "https://api.example.test",
+		"https://web.example.test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaSet, err := metaapi.NewRouteSet(metaapi.Dependencies{Features: features, Metadata: metadata})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	metaSet.Routes[0].Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/meta", nil))
+	var payload struct {
+		Features metaapi.Features `json:"features"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Features.EmailNotifications || !payload.Features.MentionCandidates ||
+		payload.Features.RepositoryEmailSubscriptions {
+		t.Fatalf("SMTP-disabled meta features = %+v", payload.Features)
+	}
+
+	deps.EmailNotifications = true
+	features = configuredFeatures(deps)
+	if !features.EmailNotifications || !features.MentionCandidates || !features.RepositoryEmailSubscriptions {
+		t.Fatalf("SMTP-enabled features = %+v", features)
+	}
+	deps.MentionDirectory = nil
+	features = configuredFeatures(deps)
+	if features.MentionCandidates || !features.EmailNotifications || !features.RepositoryEmailSubscriptions {
+		t.Fatalf("directory-disabled features = %+v", features)
+	}
+	if _, enabled, err := composeMentionCandidateRoutes(deps, features, authenticate); err != nil || enabled {
+		t.Fatalf("directory-disabled route enabled=%v err=%v", enabled, err)
+	}
+}
+
+type routerMentionDirectory struct{}
+
+func (routerMentionDirectory) MentionCandidates(context.Context, uuid.UUID, string, int) ([]store.MentionCandidate, error) {
+	return []store.MentionCandidate{}, nil
+}
 
 func TestSecurityHeadersAndCredentialedCORS(t *testing.T) {
 	base := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })

@@ -12,7 +12,7 @@ Use self-hosting when a team needs private-network deployment, local identity
 and authorization, internal code-host integration, or automation identities
 that do not depend on a personal GitHub account.
 
-![Self-hosted workspace overview](assets/self-hosted-dashboard.png)
+![Repository issue list with repository subscription](assets/self-hosted-dashboard.png)
 
 ## What the server owns
 
@@ -131,7 +131,10 @@ role, repository permission, runner authority, or evidence-writer status.
 
 The production artifact is a single `issue-spec-server` binary or the
 repository runtime container. The binary embeds the generated web application.
-PostgreSQL and three operator-owned secret files are required.
+PostgreSQL and three operator-owned secret files are required. A fourth,
+optional SMTP secret file enables verified notification email, mentions, and
+explicit repository email subscriptions; leaving it absent keeps those
+capabilities disabled without affecting issue or webhook operation.
 
 1. Read the [deployment and hardening guide](operations/deployment.md).
 2. Choose HTTPS or complete the

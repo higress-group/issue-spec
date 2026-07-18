@@ -421,7 +421,7 @@ export const workflowResources = {
         unavailableTitle: "未能打开变更工作台",
         unavailableDescription: "请刷新页面，或查看请求详情。",
         eyebrow: "变更工作台",
-        title: "穷则变，变则通，通则久。",
+        title: "慎终如始，则无败事。",
         description: "在一处查看提议、设计、实施与交付进展，及时识别阻塞和结构异常。",
         organizations: "你的组织",
         choose: "选择一个变更工作台",
