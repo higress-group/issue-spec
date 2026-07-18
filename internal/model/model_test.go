@@ -6,6 +6,20 @@ import (
 	"testing"
 )
 
+func TestRepresentationDigestUsesExactMarkdownBytes(t *testing.T) {
+	withoutNewline := RepresentationDigest("body")
+	withNewline := RepresentationDigest("body\n")
+	if withoutNewline != "230d8358dc8e8890b4c58deeb62912ee2f20357ae92a5cc861b98e68fe31acb5" {
+		t.Fatalf("digest = %q", withoutNewline)
+	}
+	if withNewline != "9e2ec912af5dff2a72300863864fc4da04e81999339d9fac5c7590ba8a3f4e11" {
+		t.Fatalf("newline digest = %q", withNewline)
+	}
+	if withoutNewline == withNewline {
+		t.Fatal("digest normalized the trailing newline")
+	}
+}
+
 func TestEnsureTypedBodyAddsMarkerAndHeader(t *testing.T) {
 	body, err := EnsureTypedBody("SPEC", "SPEC-001", "## Requirement: X\n\nX MUST work.", BodyOptions{Agent: "Coordinator", Status: "confirmed", Scope: "workflow"})
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,15 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
+
+type observingFakeBackend struct {
+	fakeGitHubBackend
+	observeIssueComment func(context.Context, string, int64) (github.IssueCommentObservation, error)
+}
+
+func (f observingFakeBackend) ObserveIssueComment(ctx context.Context, repo string, commentID int64) (github.IssueCommentObservation, error) {
+	return f.observeIssueComment(ctx, repo, commentID)
+}
 
 func newFakeBackend(configure func(*fakeGitHubBackend)) func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) {
 	return func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
@@ -475,6 +485,197 @@ func TestCommentListIncludeBodyRequiresJSONBeforeBackendSelection(t *testing.T) 
 	}
 	if !strings.Contains(errOut.String(), "--include-body requires --json") {
 		t.Fatalf("unexpected error: %q", errOut.String())
+	}
+}
+
+func TestCommentGetUsesDirectObservationAndReturnsExactBoundedProjection(t *testing.T) {
+	links := make([]string, 12)
+	for i := range links {
+		links[i] = fmt.Sprintf("https://github.com/o/r/issues/8#issuecomment-%02d", i+1)
+	}
+	body, err := model.EnsureTypedBody("QUESTION", "QUESTION-007", "## Question\n\nKeep reads bounded?  \n", model.BodyOptions{
+		Agent: "Reader", Status: "confirmed", Scope: "targeted reads",
+		Links: map[string][]string{"Related Comments": links},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	comment := github.Comment{
+		ID: 77, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-77",
+		URL: "https://api.github.com/repos/o/r/issues/comments/77", IssueURL: "https://api.github.com/repos/o/r/issues/5", Body: body,
+	}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
+		base := fakeGitHubBackend{
+			info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
+			listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+				t.Fatal("direct observation unexpectedly scanned the issue timeline")
+				return nil, nil
+			},
+		}
+		return observingFakeBackend{fakeGitHubBackend: base,
+			observeIssueComment: func(_ context.Context, repo string, id int64) (github.IssueCommentObservation, error) {
+				if repo != "o/r" || id != 77 {
+					t.Fatalf("observe repo=%q id=%d", repo, id)
+				}
+				return github.IssueCommentObservation{Comment: comment, RepresentationVersion: 14}, nil
+			}}, nil
+	}
+	code := app.runCommentGet(t.Context(), []string{"--repo", "o/r", "--issue", "5", "--id", "QUESTION-007", "--type", "QUESTION", "--comment-id", "77", "--include-body", "--json"})
+	if code != 0 {
+		t.Fatalf("get exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var got struct {
+		OK      bool                `json:"ok"`
+		Comment commentReadArtifact `json:"comment"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.OK || got.Comment.CommentID != 77 || got.Comment.ID != "QUESTION-007" || got.Comment.Status != "confirmed" || got.Comment.RepresentationVersion != 14 {
+		t.Fatalf("targeted result = %+v", got)
+	}
+	if got.Comment.Body != body || got.Comment.RepresentationDigest != model.RepresentationDigest(body) {
+		t.Fatalf("exact representation was not preserved: %+v", got.Comment)
+	}
+	related := got.Comment.Links["Related Comments"]
+	if related.Count != 12 || len(related.Items) != 10 || related.TruncatedCount != 2 {
+		t.Fatalf("bounded related links = %+v", related)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	code = app.runCommentGet(t.Context(), []string{"--repo", "o/r", "--issue", "5", "--id", "QUESTION-007", "--comment-id", "77", "--include-all-links", "--json"})
+	if code != 0 {
+		t.Fatalf("full-link get exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	related = got.Comment.Links["Related Comments"]
+	if related.Count != 12 || len(related.Items) != 12 || related.TruncatedCount != 0 {
+		t.Fatalf("full related links = %+v", related)
+	}
+}
+
+func TestCommentGetFallsBackToScanButReturnsOnlyTarget(t *testing.T) {
+	target, err := model.EnsureTypedBody("QUESTION", "QUESTION-001", "## Question\n\nTarget?\n", model.BodyOptions{Status: "confirmed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated, err := model.EnsureTypedBody("QUESTION", "QUESTION-002", "## Question\n\nUNRELATED-BODY\n", model.BodyOptions{Status: "confirmed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+			return []github.Comment{
+				{ID: 1, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-1", Body: target},
+				{ID: 2, HTMLURL: "https://github.com/o/r/issues/5#issuecomment-2", Body: unrelated},
+			}, nil
+		}
+	})
+	code := app.runCommentGet(t.Context(), []string{"--repo", "o/r", "--issue", "5", "--id", "QUESTION-001", "--include-body", "--json"})
+	if code != 0 {
+		t.Fatalf("get exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if strings.Contains(out.String(), "UNRELATED-BODY") || !strings.Contains(out.String(), "Target?") {
+		t.Fatalf("targeted output leaked or omitted a body: %s", out.String())
+	}
+}
+
+func TestCommentGetFailsClosedOnDuplicateAndDirectMismatch(t *testing.T) {
+	body, err := model.EnsureTypedBody("QUESTION", "QUESTION-001", "## Question\n\nDuplicate?\n", model.BodyOptions{Status: "confirmed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("duplicate scan", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.selectGitHubBackend = ghSelection
+		app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+			f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+				return []github.Comment{{ID: 1, Body: body}, {ID: 2, Body: body}}, nil
+			}
+		})
+		if code := app.runCommentGet(t.Context(), []string{"--repo", "o/r", "--issue", "5", "--id", "QUESTION-001", "--json"}); code != 1 || !strings.Contains(errOut.String(), "duplicate") {
+			t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+		}
+	})
+
+	t.Run("direct marker mismatch", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.selectGitHubBackend = ghSelection
+		app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
+			base := fakeGitHubBackend{info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host}}
+			return observingFakeBackend{fakeGitHubBackend: base,
+				observeIssueComment: func(context.Context, string, int64) (github.IssueCommentObservation, error) {
+					return github.IssueCommentObservation{Comment: github.Comment{
+						ID: 1, IssueURL: "https://api.github.com/repos/o/r/issues/5", Body: body,
+					}}, nil
+				}}, nil
+		}
+		if code := app.runCommentGet(t.Context(), []string{"--repo", "o/r", "--issue", "5", "--id", "QUESTION-999", "--comment-id", "1", "--json"}); code != 1 || !strings.Contains(errOut.String(), "id mismatch") {
+			t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+		}
+	})
+}
+
+func TestCommentListExplicitActiveStatusAndHistoryModes(t *testing.T) {
+	makeBody := func(id, status, text string) string {
+		body, err := model.EnsureTypedBody("QUESTION", id, "## Question\n\n"+text+"\n", model.BodyOptions{Status: status})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	noncanonical, err := model.EnsureTypedBody("SPEC", "SPEC-004", "# Legacy body\n", model.BodyOptions{Status: "confirmed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	comments := []github.Comment{
+		{ID: 1, HTMLURL: "https://example/1", Body: makeBody("QUESTION-001", "confirmed", "Confirmed")},
+		{ID: 2, HTMLURL: "https://example/2", Body: makeBody("QUESTION-002", "done", "Done")},
+		{ID: 3, HTMLURL: "https://example/3", Body: makeBody("QUESTION-003", "superseded", "Historical")},
+		{ID: 4, HTMLURL: "https://example/4", Body: noncanonical},
+	}
+	run := func(t *testing.T, args ...string) []commentReadArtifact {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.selectGitHubBackend = ghSelection
+		app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+			f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) { return comments, nil }
+		})
+		base := []string{"--repo", "o/r", "--issue", "5", "--json"}
+		if code := app.runCommentList(t.Context(), append(base, args...)); code != 0 {
+			t.Fatalf("list exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+		}
+		var got struct {
+			Comments []commentReadArtifact `json:"comments"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Comments
+	}
+	active := run(t, "--active-only")
+	if len(active) != 2 || active[0].Status != "confirmed" || active[1].Status != "done" {
+		t.Fatalf("active comments = %+v", active)
+	}
+	done := run(t, "--status", "done")
+	if len(done) != 1 || done[0].ID != "QUESTION-002" {
+		t.Fatalf("status comments = %+v", done)
+	}
+	history := run(t, "--history", "--include-body")
+	if len(history) != 1 || history[0].ID != "QUESTION-003" || !strings.Contains(history[0].Body, "Historical") {
+		t.Fatalf("history comments = %+v", history)
 	}
 }
 

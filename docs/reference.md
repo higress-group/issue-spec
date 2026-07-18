@@ -85,8 +85,13 @@ issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --jso
 issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
+issue-spec comment get --repo owner/repo --issue 1 --id SPEC-001 --type SPEC --json
+issue-spec comment get --repo owner/repo --issue 1 --id SPEC-001 --comment-id 123 --include-body --json
 issue-spec comment list --repo owner/repo --issue 1 --json
 issue-spec comment list --repo owner/repo --issue 1 --type SPEC --json --include-body
+issue-spec comment list --repo owner/repo --issue 1 --active-only --json
+issue-spec comment list --repo owner/repo --issue 1 --status ready,in-progress,done --json
+issue-spec comment list --repo owner/repo --issue 1 --history --include-body --json
 
 issue-spec question create --repo owner/repo --issue 1 --id QUESTION-001 --blocking --question "What must be decided?"
 issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-001 --resolution-file resolution.md
@@ -248,6 +253,29 @@ Adding `--include-body` gives each returned artifact a top-level `body` field
 containing the exact original backend Markdown; the flag requires `--json`.
 Type filtering and canonical diagnostics are unchanged in either mode, and no
 matches are encoded as `[]` rather than `null`.
+
+`comment get --issue N --id PROCESS-001 --json` returns one bounded typed
+artifact rather than the issue timeline. An optional `--type` asserts its type.
+When `--comment-id` supplies a prior provider locator and the backend supports
+direct observation, the CLI reads that comment directly and verifies its issue,
+marker, type, and stable ID. Otherwise it may scan internally, but unrelated
+bodies are never returned. Duplicate stable IDs and locator mismatches fail
+closed. `--include-body` includes only the target's exact Markdown.
+
+Targeted and explicitly filtered list results include `representation_digest`,
+the lowercase SHA-256 of the exact remote Markdown bytes; no newline or
+whitespace normalization is performed. `representation_version` is included
+when the backend exposes one. Links are grouped by header relation and normally
+contain `count`, at most 10 sorted `{type,id,url}` items, and
+`truncated_count`; unresolved external references still retain their URL.
+`--include-all-links` returns every item and requires `--json`.
+
+`comment list --active-only --json` selects every non-superseded canonical
+artifact, including `done` and `confirmed`. `--status` accepts a comma-separated
+set of exact statuses. `--history` selects superseded artifacts and can be
+combined with `--include-body` for explicit audit detail. `--active-only` and
+`--history` are mutually exclusive. With none of these new filters (and without
+`--include-all-links`), the existing list JSON contract remains unchanged.
 
 ## Canonical Typed Comments
 

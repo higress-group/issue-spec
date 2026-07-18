@@ -85,8 +85,13 @@ issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --jso
 issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
+issue-spec comment get --repo owner/repo --issue 1 --id SPEC-001 --type SPEC --json
+issue-spec comment get --repo owner/repo --issue 1 --id SPEC-001 --comment-id 123 --include-body --json
 issue-spec comment list --repo owner/repo --issue 1 --json
 issue-spec comment list --repo owner/repo --issue 1 --type SPEC --json --include-body
+issue-spec comment list --repo owner/repo --issue 1 --active-only --json
+issue-spec comment list --repo owner/repo --issue 1 --status ready,in-progress,done --json
+issue-spec comment list --repo owner/repo --issue 1 --history --include-body --json
 
 issue-spec question create --repo owner/repo --issue 1 --id QUESTION-001 --blocking --question "What must be decided?"
 issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-001 --resolution-file resolution.md
@@ -234,6 +239,26 @@ comment ID、URL 等有界的创建元数据。该命令不会添加 typed marke
 返回的原始 Markdown（逐字节保持）；该 flag 必须与 `--json` 一起使用。两种模式
 下的类型过滤与 canonical diagnostics 都保持不变；没有匹配项时编码为 `[]`，而
 不是 `null`。
+
+`comment get --issue N --id PROCESS-001 --json` 只返回一个有界的 typed
+artifact，而不是整条 issue 时间线。可选的 `--type` 用来断言类型。当
+`--comment-id` 提供了先前读取到的 provider locator 且 backend 支持直接观察时，
+CLI 会直接读取该评论，并校验 issue、marker、type 和 stable ID；否则可以在内部
+扫描，但绝不会向调用者返回无关正文。重复 stable ID 或 locator 不匹配都会
+fail closed。`--include-body` 只包含目标 artifact 的精确 Markdown。
+
+定向读取和显式过滤后的 list 结果包含 `representation_digest`：它是远端 Markdown
+精确字节的 lowercase SHA-256，不会规范化换行或空白。Backend 提供时还会返回
+`representation_version`。链接按 header relation 分组，默认包含 `count`、最多 10
+个排序后的 `{type,id,url}` item 和 `truncated_count`；无法在当前 issue 内解析的
+外部引用仍会保留 URL。`--include-all-links` 返回全部 item，且必须与 `--json`
+一起使用。
+
+`comment list --active-only --json` 选择所有未 superseded 的 canonical artifact，
+其中包括 `done` 和 `confirmed`。`--status` 接受逗号分隔的精确状态集合。
+`--history` 选择 superseded artifact，可配合 `--include-body` 显式读取审计详情。
+`--active-only` 与 `--history` 互斥。不使用这些新 filter（且不使用
+`--include-all-links`）时，原有 list JSON contract 保持不变。
 
 ## Canonical 类型化评论
 

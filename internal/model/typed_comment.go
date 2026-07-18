@@ -1,12 +1,22 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
 	"sort"
 	"strings"
 )
+
+// RepresentationDigest returns the lowercase SHA-256 digest of the exact
+// remote Markdown representation. It intentionally performs no whitespace,
+// newline, or semantic normalization.
+func RepresentationDigest(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
+}
 
 var idRe = regexp.MustCompile(`^[A-Z]+-[0-9]{3,}$`)
 
