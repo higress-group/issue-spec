@@ -27,21 +27,44 @@ func TestCompleteAcceptsBoundImplementationReceiptAndRetainsEvidenceThroughInteg
 		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt,
 	})
 	if err != nil || completed.Lease.Portable.State != StateWorkerComplete || completed.Lease.Portable.ResultCommit != resultCommit ||
-		completed.Lease.AcceptedReceiptID != receipt.ID {
+		completed.Lease.AcceptedReceiptID != receipt.ID || completed.Lease.Portable.AcceptedReceiptID != receipt.ID ||
+		completed.Lease.Portable.AcceptedReceiptDigest != receipt.ReceiptDigest ||
+		completed.Lease.Portable.AcceptedReceiptGeneration != receipt.AssignmentGeneration {
 		t.Fatalf("receipt completion=%+v err=%v", completed.Lease, err)
 	}
 	retry, err := fixture.manager.Complete(context.Background(), CompleteRequest{
 		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt,
 	})
-	if err != nil || retry.Lease.AcceptedReceiptID != receipt.ID || retry.Lease.Portable.ResultCommit != resultCommit {
+	if err != nil || retry.Lease.AcceptedReceiptID != receipt.ID || retry.Lease.Portable.ResultCommit != resultCommit ||
+		retry.Lease.Portable.AcceptedReceiptDigest != receipt.ReceiptDigest {
 		t.Fatalf("receipt retry=%+v err=%v", retry.Lease, err)
+	}
+	replacement := receipt
+	replacement.ID = "receipt-implementation-replacement"
+	replacement = sealImplementationReceipt(t, replacement)
+	if _, err := fixture.manager.Complete(context.Background(), CompleteRequest{
+		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &replacement,
+	}); !errors.Is(err, ErrInvalidWorkerResult) || !strings.Contains(err.Error(), "cannot be replaced") {
+		t.Fatalf("replacement receipt err=%v", err)
 	}
 	integrated, err := fixture.manager.Integrate(context.Background(), IntegrateRequest{
 		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, ExpectedHead: fixture.base,
 	})
 	if err != nil || integrated.Lease.Portable.IntegrationSHA == "" || integrated.Lease.AcceptedReceiptID != receipt.ID ||
-		integrated.Lease.Portable.ResultCommit != resultCommit {
+		integrated.Lease.Portable.ResultCommit != resultCommit || integrated.Lease.Portable.AcceptedReceiptID != receipt.ID ||
+		integrated.Lease.Portable.AcceptedReceiptDigest != receipt.ReceiptDigest {
 		t.Fatalf("receipt integration=%+v err=%v", integrated.Lease, err)
+	}
+	cleaned, err := fixture.manager.Cleanup(context.Background(), fixture.lease.Portable.WorkspaceID, fixture.lease.Owner.Token)
+	if err != nil || cleaned.Lease.Portable.State != StateCleaned || cleaned.Lease.Portable.AcceptedReceiptID != receipt.ID ||
+		cleaned.Lease.Portable.AcceptedReceiptDigest != receipt.ReceiptDigest ||
+		cleaned.Lease.Portable.AcceptedReceiptGeneration != receipt.AssignmentGeneration {
+		t.Fatalf("receipt cleanup=%+v err=%v", cleaned.Lease, err)
+	}
+	recovered, found, err := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
+	if err != nil || !found || recovered.Portable.AcceptedReceiptID != receipt.ID ||
+		recovered.Portable.AcceptedReceiptDigest != receipt.ReceiptDigest || recovered.Portable.AcceptedReceiptGeneration != receipt.AssignmentGeneration {
+		t.Fatalf("receipt recovery=%+v found=%v err=%v", recovered, found, err)
 	}
 }
 

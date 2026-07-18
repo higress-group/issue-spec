@@ -1,6 +1,7 @@
 package processworkspace
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -68,30 +69,57 @@ type AssignmentBinding struct {
 	Generation      uint64          `json:"generation"`
 }
 
+// AcceptedReceiptBinding is the append-only portable authority retained after
+// an implementation receipt has been validated. The full receipt is
+// intentionally absent: only its immutable identity is projected to PROCESS.
+type AcceptedReceiptBinding struct {
+	ReceiptID            string `json:"receipt_id"`
+	ReceiptDigest        string `json:"receipt_digest"`
+	AssignmentGeneration uint64 `json:"assignment_generation"`
+}
+
 // PortableLease is safe to project into PROCESS metadata. It deliberately has
 // no absolute local path, PID, hostname, or lock token.
 type PortableLease struct {
-	SchemaVersion      int                `json:"schema_version"`
-	WorkspaceID        string             `json:"workspace_id"`
-	Repository         string             `json:"repository"`
-	ProcessID          string             `json:"process_id"`
-	ExecutionClass     ExecutionClass     `json:"execution_class"`
-	Mode               WorkspaceMode      `json:"mode"`
-	BaseSHA            string             `json:"base_sha,omitempty"`
-	Branch             string             `json:"branch,omitempty"`
-	DetachedRevision   string             `json:"detached_revision,omitempty"`
-	WriteOwnership     []string           `json:"write_ownership,omitempty"`
-	SharedTouchpoints  []string           `json:"shared_touchpoints,omitempty"`
-	IntegrationOwner   string             `json:"integration_owner,omitempty"`
-	RuntimeNamespace   string             `json:"runtime_namespace,omitempty"`
-	RuntimeResources   []RuntimeResource  `json:"runtime_resources,omitempty"`
-	Assignment         *AssignmentBinding `json:"assignment,omitempty"`
-	State              LifecycleState     `json:"state"`
-	ResultCommit       string             `json:"result_commit,omitempty"`
-	IntegrationSHA     string             `json:"integration_sha,omitempty"`
-	CreatedAt          time.Time          `json:"created_at"`
-	UpdatedAt          time.Time          `json:"updated_at"`
-	RetentionExpiresAt time.Time          `json:"retention_expires_at,omitempty"`
+	SchemaVersion             int                `json:"schema_version"`
+	WorkspaceID               string             `json:"workspace_id"`
+	Repository                string             `json:"repository"`
+	ProcessID                 string             `json:"process_id"`
+	ExecutionClass            ExecutionClass     `json:"execution_class"`
+	Mode                      WorkspaceMode      `json:"mode"`
+	BaseSHA                   string             `json:"base_sha,omitempty"`
+	Branch                    string             `json:"branch,omitempty"`
+	DetachedRevision          string             `json:"detached_revision,omitempty"`
+	WriteOwnership            []string           `json:"write_ownership,omitempty"`
+	SharedTouchpoints         []string           `json:"shared_touchpoints,omitempty"`
+	IntegrationOwner          string             `json:"integration_owner,omitempty"`
+	RuntimeNamespace          string             `json:"runtime_namespace,omitempty"`
+	RuntimeResources          []RuntimeResource  `json:"runtime_resources,omitempty"`
+	Assignment                *AssignmentBinding `json:"assignment,omitempty"`
+	AcceptedReceiptID         string             `json:"accepted_receipt_id,omitempty"`
+	AcceptedReceiptDigest     string             `json:"accepted_receipt_digest,omitempty"`
+	AcceptedReceiptGeneration uint64             `json:"accepted_receipt_generation,omitempty"`
+	State                     LifecycleState     `json:"state"`
+	ResultCommit              string             `json:"result_commit,omitempty"`
+	IntegrationSHA            string             `json:"integration_sha,omitempty"`
+	CreatedAt                 time.Time          `json:"created_at"`
+	UpdatedAt                 time.Time          `json:"updated_at"`
+	RetentionExpiresAt        time.Time          `json:"retention_expires_at,omitempty"`
+}
+
+// MarshalJSON keeps the ownership marker's historical identity stable. The
+// marker code deliberately clears State before hashing; accepted receipt
+// authority is lifecycle evidence and is omitted only from that synthetic
+// representation, never from a valid portable lease projection.
+func (l PortableLease) MarshalJSON() ([]byte, error) {
+	type portableLeaseJSON PortableLease
+	projection := portableLeaseJSON(l)
+	if l.State == "" {
+		projection.AcceptedReceiptID = ""
+		projection.AcceptedReceiptDigest = ""
+		projection.AcceptedReceiptGeneration = 0
+	}
+	return json.Marshal(projection)
 }
 
 type LeaseOwner struct {
@@ -142,6 +170,8 @@ type Registry struct {
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 var fullSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
+var acceptedReceiptID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+var lowerSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func NewRegistry() Registry {
 	return Registry{SchemaVersion: RegistrySchemaVersion, Leases: map[string]LocalLease{}}
@@ -193,6 +223,9 @@ func (l PortableLease) Validate() error {
 		return err
 	}
 	if err := validateAssignmentBinding(l); err != nil {
+		return err
+	}
+	if err := validateAcceptedReceiptBinding(l); err != nil {
 		return err
 	}
 	if l.CreatedAt.IsZero() || l.UpdatedAt.IsZero() || l.UpdatedAt.Before(l.CreatedAt) {
@@ -312,7 +345,7 @@ func validateAssignmentBinding(lease PortableLease) error {
 	if !safeID.MatchString(binding.AssignmentID) {
 		return fmt.Errorf("invalid assignment id %q", binding.AssignmentID)
 	}
-	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(binding.Digest) {
+	if !lowerSHA256.MatchString(binding.Digest) {
 		return errors.New("assignment binding digest must be a lowercase SHA-256 digest")
 	}
 	if binding.Generation == 0 {
@@ -345,6 +378,29 @@ func validateAssignmentBinding(lease PortableLease) error {
 	return nil
 }
 
+func validateAcceptedReceiptBinding(lease PortableLease) error {
+	if lease.AcceptedReceiptID == "" && lease.AcceptedReceiptDigest == "" && lease.AcceptedReceiptGeneration == 0 {
+		return nil
+	}
+	if !acceptedReceiptID.MatchString(lease.AcceptedReceiptID) {
+		return fmt.Errorf("invalid accepted receipt id %q", lease.AcceptedReceiptID)
+	}
+	if !lowerSHA256.MatchString(lease.AcceptedReceiptDigest) {
+		return errors.New("accepted receipt digest must be a lowercase SHA-256 digest")
+	}
+	if lease.AcceptedReceiptGeneration == 0 {
+		return errors.New("accepted receipt assignment generation must be positive")
+	}
+	if lease.Assignment == nil || lease.ExecutionClass != ExecutionChangeBearing || lease.Assignment.Role != assignment.RoleImplementation ||
+		lease.AcceptedReceiptGeneration != lease.Assignment.Generation {
+		return errors.New("accepted receipt must match the implementation assignment generation")
+	}
+	if lease.ResultCommit == "" {
+		return errors.New("accepted receipt requires result commit evidence")
+	}
+	return nil
+}
+
 func validateLocalAssignment(lease LocalLease) error {
 	if lease.Portable.Assignment == nil && lease.Assignment == nil {
 		if lease.AcceptedReceiptID != "" {
@@ -372,8 +428,12 @@ func validateLocalAssignment(lease LocalLease) error {
 		binding.Role != lease.Assignment.Role || binding.BaseRevision != lease.Assignment.BaseRevision || binding.SubjectRevision != lease.Assignment.SubjectRevision {
 		return errors.New("portable assignment binding differs from local assignment")
 	}
-	if lease.AcceptedReceiptID != "" && !safeID.MatchString(lease.AcceptedReceiptID) {
+	if lease.AcceptedReceiptID != "" && !acceptedReceiptID.MatchString(lease.AcceptedReceiptID) {
 		return fmt.Errorf("invalid accepted receipt id %q", lease.AcceptedReceiptID)
+	}
+	if lease.Portable.AcceptedReceiptID != "" && lease.AcceptedReceiptID != "" &&
+		lease.AcceptedReceiptID != lease.Portable.AcceptedReceiptID {
+		return errors.New("legacy accepted receipt id differs from portable accepted receipt authority")
 	}
 	return nil
 }

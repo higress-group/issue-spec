@@ -58,36 +58,38 @@ type workspaceRemoteResult struct {
 }
 
 type workspaceCommandResult struct {
-	OK                bool                            `json:"ok"`
-	Action            string                          `json:"action"`
-	Code              string                          `json:"code,omitempty"`
-	Message           string                          `json:"message,omitempty"`
-	Repo              string                          `json:"repo"`
-	Issue             int                             `json:"issue"`
-	ProcessID         string                          `json:"process_id"`
-	WorkspaceID       string                          `json:"workspace_id"`
-	Generation        uint64                          `json:"generation"`
-	LocalRevision     uint64                          `json:"local_revision"`
-	State             processworkspace.LifecycleState `json:"state"`
-	ExecutionClass    processworkspace.ExecutionClass `json:"execution_class"`
-	Mode              processworkspace.WorkspaceMode  `json:"mode"`
-	BaseSHA           string                          `json:"base_sha,omitempty"`
-	Branch            string                          `json:"branch,omitempty"`
-	DetachedRevision  string                          `json:"detached_revision,omitempty"`
-	ResultCommit      string                          `json:"result_commit,omitempty"`
-	IntegrationSHA    string                          `json:"integration_sha,omitempty"`
-	AcceptedReceiptID string                          `json:"accepted_receipt_id,omitempty"`
-	RuntimeNamespace  string                          `json:"runtime_namespace,omitempty"`
-	WorktreePath      string                          `json:"worktree_path,omitempty"`
-	Registered        bool                            `json:"registered"`
-	Present           bool                            `json:"present"`
-	Dirty             bool                            `json:"dirty"`
-	Head              string                          `json:"head,omitempty"`
-	GitBranch         string                          `json:"git_branch,omitempty"`
-	Problems          []string                        `json:"problems,omitempty"`
-	Remote            workspaceRemoteResult           `json:"remote"`
-	ReconcileRequired bool                            `json:"reconcile_required,omitempty"`
-	Assignment        *assignment.Packet              `json:"assignment,omitempty"`
+	OK                        bool                            `json:"ok"`
+	Action                    string                          `json:"action"`
+	Code                      string                          `json:"code,omitempty"`
+	Message                   string                          `json:"message,omitempty"`
+	Repo                      string                          `json:"repo"`
+	Issue                     int                             `json:"issue"`
+	ProcessID                 string                          `json:"process_id"`
+	WorkspaceID               string                          `json:"workspace_id"`
+	Generation                uint64                          `json:"generation"`
+	LocalRevision             uint64                          `json:"local_revision"`
+	State                     processworkspace.LifecycleState `json:"state"`
+	ExecutionClass            processworkspace.ExecutionClass `json:"execution_class"`
+	Mode                      processworkspace.WorkspaceMode  `json:"mode"`
+	BaseSHA                   string                          `json:"base_sha,omitempty"`
+	Branch                    string                          `json:"branch,omitempty"`
+	DetachedRevision          string                          `json:"detached_revision,omitempty"`
+	ResultCommit              string                          `json:"result_commit,omitempty"`
+	IntegrationSHA            string                          `json:"integration_sha,omitempty"`
+	AcceptedReceiptID         string                          `json:"accepted_receipt_id,omitempty"`
+	AcceptedReceiptDigest     string                          `json:"accepted_receipt_digest,omitempty"`
+	AcceptedReceiptGeneration uint64                          `json:"accepted_receipt_generation,omitempty"`
+	RuntimeNamespace          string                          `json:"runtime_namespace,omitempty"`
+	WorktreePath              string                          `json:"worktree_path,omitempty"`
+	Registered                bool                            `json:"registered"`
+	Present                   bool                            `json:"present"`
+	Dirty                     bool                            `json:"dirty"`
+	Head                      string                          `json:"head,omitempty"`
+	GitBranch                 string                          `json:"git_branch,omitempty"`
+	Problems                  []string                        `json:"problems,omitempty"`
+	Remote                    workspaceRemoteResult           `json:"remote"`
+	ReconcileRequired         bool                            `json:"reconcile_required,omitempty"`
+	Assignment                *assignment.Packet              `json:"assignment,omitempty"`
 }
 
 func (a *app) runWorkflowWorkspace(ctx context.Context, args []string) int {
@@ -204,6 +206,15 @@ func validateWorkspaceWriteBoundary(target workspaceRemoteTarget, flags workspac
 }
 
 func applyWorkspaceRemote(ctx context.Context, target workspaceRemoteTarget, repo string, issue int, workspace processworkspace.PortableLease) (workspaceRemoteTarget, workspaceRemoteResult, error) {
+	remote := model.ParseProcessWorkspace(workspace.ProcessID, target.artifact.URL, target.body)
+	if remote.Blocking() {
+		return target, workspaceRemoteResult{}, errors.New("remote PROCESS has invalid Workspace metadata")
+	}
+	if remote.Workspace != nil {
+		if err := validateAcceptedReceiptProjection(processworkspace.PortableLease(*remote.Workspace), workspace); err != nil {
+			return target, workspaceRemoteResult{}, err
+		}
+	}
 	transition, err := model.ApplyTypedTransition(target.body, model.TransitionRequest{ExpectedType: "PROCESS", ExpectedID: workspace.ProcessID, Workspace: (*model.ProcessWorkspace)(&workspace)})
 	if err != nil {
 		return target, workspaceRemoteResult{}, err
@@ -239,6 +250,17 @@ func applyWorkspaceRemote(ctx context.Context, target workspaceRemoteTarget, rep
 		target.artifact.URL = updated.HTMLURL
 	}
 	return target, result, nil
+}
+
+func validateAcceptedReceiptProjection(before, after processworkspace.PortableLease) error {
+	if before.AcceptedReceiptID == "" {
+		return nil
+	}
+	if before.AcceptedReceiptID != after.AcceptedReceiptID || before.AcceptedReceiptDigest != after.AcceptedReceiptDigest ||
+		before.AcceptedReceiptGeneration != after.AcceptedReceiptGeneration {
+		return errors.New("remote accepted implementation receipt authority cannot be cleared or replaced")
+	}
+	return nil
 }
 
 func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
@@ -1101,6 +1123,10 @@ func validateCompletionConvergence(remote processworkspace.PortableLease, local 
 		remote.IntegrationSHA != "" && !strings.EqualFold(remote.IntegrationSHA, portable.IntegrationSHA) {
 		return errors.New("remote PROCESS Workspace carries conflicting result or integration evidence")
 	}
+	if remote.AcceptedReceiptID != "" && (remote.AcceptedReceiptID != portable.AcceptedReceiptID ||
+		remote.AcceptedReceiptDigest != portable.AcceptedReceiptDigest || remote.AcceptedReceiptGeneration != portable.AcceptedReceiptGeneration) {
+		return errors.New("remote PROCESS Workspace carries conflicting accepted receipt authority")
+	}
 	rank := map[processworkspace.LifecycleState]int{
 		processworkspace.StatePrepared:       0,
 		processworkspace.StateWorkerComplete: 1,
@@ -1289,9 +1315,18 @@ func workspaceResult(ctx context.Context, manager *processworkspace.Manager, ins
 	return workspaceCommandResult{OK: true, Action: action, Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: lease.Portable.WorkspaceID,
 		Generation: registry.Generation, LocalRevision: lease.LocalRevision, State: lease.Portable.State, ExecutionClass: lease.Portable.ExecutionClass,
 		Mode: lease.Portable.Mode, BaseSHA: lease.Portable.BaseSHA, Branch: lease.Portable.Branch, DetachedRevision: lease.Portable.DetachedRevision,
-		ResultCommit: lease.Portable.ResultCommit, IntegrationSHA: lease.Portable.IntegrationSHA, AcceptedReceiptID: lease.AcceptedReceiptID, RuntimeNamespace: lease.Portable.RuntimeNamespace,
+		ResultCommit: lease.Portable.ResultCommit, IntegrationSHA: lease.Portable.IntegrationSHA,
+		AcceptedReceiptID: acceptedReceiptIDForResult(lease), AcceptedReceiptDigest: lease.Portable.AcceptedReceiptDigest,
+		AcceptedReceiptGeneration: lease.Portable.AcceptedReceiptGeneration, RuntimeNamespace: lease.Portable.RuntimeNamespace,
 		WorktreePath: lease.WorktreePath, Registered: inspection.Registered, Present: inspection.Present, Dirty: inspection.Dirty,
 		Head: inspection.Head, GitBranch: inspection.Branch, Problems: append([]string(nil), inspection.Problems...), Remote: remote}
+}
+
+func acceptedReceiptIDForResult(lease processworkspace.LocalLease) string {
+	if lease.Portable.AcceptedReceiptID != "" {
+		return lease.Portable.AcceptedReceiptID
+	}
+	return lease.AcceptedReceiptID
 }
 
 func (a *app) workspaceLocalFailure(ctx context.Context, manager *processworkspace.Manager, inspection processworkspace.Inspection, repo string, issue int, processID, code string, err error, jsonOut bool) int {

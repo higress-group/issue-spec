@@ -115,6 +115,9 @@ func TestWorkspaceMarkerIdentityCompatibilityAndIsolation(t *testing.T) {
 	lease.AcceptedReceiptID = "receipt-023"
 	lease.Portable.State = StateIntegrated
 	lease.Portable.ResultCommit = strings.Repeat("b", 40)
+	lease.Portable.AcceptedReceiptID = "receipt-023"
+	lease.Portable.AcceptedReceiptDigest = strings.Repeat("e", 64)
+	lease.Portable.AcceptedReceiptGeneration = 1
 	lease.Portable.IntegrationSHA = strings.Repeat("c", 40)
 	lease.Portable.CreatedAt = lease.Portable.CreatedAt.Add(-time.Hour)
 	lease.Portable.UpdatedAt = lease.Portable.UpdatedAt.Add(time.Hour)

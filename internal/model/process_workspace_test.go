@@ -107,6 +107,53 @@ func TestProcessWorkspaceRoundTripsAuthoritativeResultAndIntegrationRevisions(t 
 	}
 }
 
+func TestProcessWorkspaceRendersOnlyCompactAcceptedImplementationReceiptAuthority(t *testing.T) {
+	workspace := testProcessWorkspace("PROCESS-024", ProcessExecutionChangeBearing)
+	workspace.Assignment = &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion, AssignmentID: "assignment-024-1",
+		Digest: strings.Repeat("a", 64), Role: assignment.RoleImplementation, BaseRevision: workspace.BaseSHA, Generation: 3}
+	workspace.State = processworkspace.StateWorkerComplete
+	workspace.ResultCommit = strings.Repeat("b", 40)
+	workspace.AcceptedReceiptID = "receipt:implementation:024"
+	workspace.AcceptedReceiptDigest = strings.Repeat("c", 64)
+	workspace.AcceptedReceiptGeneration = 3
+	workspace.UpdatedAt = workspace.UpdatedAt.Add(time.Minute)
+	body := processBodyWithWorkspace("PROCESS-024", ProcessExecutionChangeBearing, workspace)
+	wantMarker := acceptedImplementationReceiptStart + "\n" +
+		`{"receipt_id":"receipt:implementation:024","receipt_digest":"` + strings.Repeat("c", 64) + `","assignment_generation":3}` + "\n" +
+		acceptedImplementationReceiptEnd
+	if strings.Count(body, wantMarker) != 1 {
+		t.Fatalf("accepted receipt marker is not strict and singular:\n%s", body)
+	}
+	for _, forbidden := range []string{`"provenance"`, `"assurance"`, `"tests"`, `"changed_paths"`, `"rationale_draft"`, `"content"`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("portable receipt authority leaked %q:\n%s", forbidden, body)
+		}
+	}
+	authority, found, err := ObserveAcceptedReceiptAuthority(body, assignment.RoleImplementation)
+	if err != nil || !found || authority.ReceiptID != workspace.AcceptedReceiptID || authority.Digest != workspace.AcceptedReceiptDigest ||
+		authority.Generation != workspace.AcceptedReceiptGeneration {
+		t.Fatalf("authority=%+v found=%v err=%v", authority, found, err)
+	}
+	parsed := ParseProcessWorkspace("PROCESS-024", "", body)
+	if parsed.Blocking() || parsed.Workspace == nil || parsed.Workspace.AcceptedReceiptDigest != workspace.AcceptedReceiptDigest {
+		t.Fatalf("accepted receipt round trip=%+v", parsed)
+	}
+
+	tampered := strings.Replace(body, workspace.AcceptedReceiptDigest, strings.Repeat("d", 64), 1)
+	if result := ParseProcessWorkspace("PROCESS-024", "", tampered); !result.Blocking() || result.Workspace != nil {
+		t.Fatalf("marker mismatch accepted: %+v", result)
+	}
+	legacy := workspace
+	legacy.AcceptedReceiptID, legacy.AcceptedReceiptDigest, legacy.AcceptedReceiptGeneration = "", "", 0
+	legacyBody := processBodyWithWorkspace("PROCESS-024", ProcessExecutionChangeBearing, legacy)
+	if strings.Contains(legacyBody, "accepted-implementation-receipt") {
+		t.Fatalf("legacy result-commit acquired receipt marker:\n%s", legacyBody)
+	}
+	if result := ParseProcessWorkspace("PROCESS-024", "", legacyBody); result.Blocking() || result.Workspace == nil {
+		t.Fatalf("legacy result-commit did not remain compatible: %+v", result)
+	}
+}
+
 func TestExternalProcessWorkspaceRejectsCheckoutModesInRenderingAndParsing(t *testing.T) {
 	external := testProcessWorkspace("PROCESS-EXT", ProcessExecutionExternal)
 	valid, err := RenderProcessWorkspaceSection(external)

@@ -115,11 +115,12 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 		}
 	}
 	if lease.Portable.State != StatePrepared {
-		if request.Receipt != nil && lease.AcceptedReceiptID == "" {
+		if request.Receipt != nil && lease.Portable.AcceptedReceiptID == "" {
 			updated, updateErr := m.Store.Update(ctx, lease.Portable.WorkspaceID, func(current *LocalLease) error {
-				if current.Portable.State != lease.Portable.State || !strings.EqualFold(current.Portable.ResultCommit, resultCommit) || current.AcceptedReceiptID != "" {
+				if current.Portable.State != lease.Portable.State || !strings.EqualFold(current.Portable.ResultCommit, resultCommit) || current.Portable.AcceptedReceiptID != "" {
 					return fmt.Errorf("%w: lease changed during receipt acceptance", ErrWorkspaceConflict)
 				}
+				persistAcceptedImplementationReceipt(&current.Portable, *request.Receipt)
 				current.AcceptedReceiptID = request.Receipt.ID
 				return nil
 			})
@@ -139,6 +140,7 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 		current.Portable.ResultCommit = resultCommit
 		current.Portable.State = StateWorkerComplete
 		if request.Receipt != nil {
+			persistAcceptedImplementationReceipt(&current.Portable, *request.Receipt)
 			current.AcceptedReceiptID = request.Receipt.ID
 		}
 		current.Observation = WorktreeObservation{Registered: true, HeadSHA: resultCommit, Branch: inspection.Branch, Dirty: false, InspectedAt: m.Now().UTC()}
@@ -174,10 +176,33 @@ func validateImplementationReceiptBinding(lease LocalLease, receipt assignment.R
 	if !strings.EqualFold(receipt.ResultRevision, resultCommit) {
 		return errors.New("receipt result revision differs from the exact worker result")
 	}
+	want := acceptedImplementationReceipt(receipt)
+	if current := acceptedReceiptBinding(lease.Portable); current != nil && *current != *want {
+		return errors.New("accepted receipt identity cannot be replaced")
+	}
 	if lease.AcceptedReceiptID != "" && lease.AcceptedReceiptID != receipt.ID {
 		return errors.New("accepted receipt identity cannot be replaced")
 	}
 	return nil
+}
+
+func acceptedImplementationReceipt(receipt assignment.Receipt) *AcceptedReceiptBinding {
+	return &AcceptedReceiptBinding{ReceiptID: receipt.ID, ReceiptDigest: receipt.ReceiptDigest,
+		AssignmentGeneration: receipt.AssignmentGeneration}
+}
+
+func acceptedReceiptBinding(lease PortableLease) *AcceptedReceiptBinding {
+	if lease.AcceptedReceiptID == "" {
+		return nil
+	}
+	return &AcceptedReceiptBinding{ReceiptID: lease.AcceptedReceiptID, ReceiptDigest: lease.AcceptedReceiptDigest,
+		AssignmentGeneration: lease.AcceptedReceiptGeneration}
+}
+
+func persistAcceptedImplementationReceipt(lease *PortableLease, receipt assignment.Receipt) {
+	lease.AcceptedReceiptID = receipt.ID
+	lease.AcceptedReceiptDigest = receipt.ReceiptDigest
+	lease.AcceptedReceiptGeneration = receipt.AssignmentGeneration
 }
 
 func (m *Manager) validateImplementationReceiptContract(ctx context.Context, lease LocalLease, receipt assignment.Receipt, resultCommit string, changed []string) error {
