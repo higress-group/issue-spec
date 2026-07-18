@@ -45,7 +45,7 @@ type app struct {
 	newNativeEvidenceProvider      func(auth.Profile, string) (nativeEvidenceProvider, error)
 	newNativeSearchProvider        func(auth.Profile, string) (nativeSearchProvider, error)
 	newNativeCodeChangeBackend     func(auth.Profile, string) (nativeCodeChangeBackend, error)
-	resolveCodeMutationProvider    func(context.Context, string) (codereview.MutationProvider, error)
+	lookupOperatorProvider         func(context.Context, auth.Profile, string) (codereview.Provider, error)
 	doctorAgentProbe               func(context.Context, capability.Request) (capability.Report, error)
 	newRequirementsAPI             func(auth.Profile, string) (requirementsAPI, error)
 	saveRequirementsProfile        func(auth.Profile, bool) error
@@ -152,18 +152,10 @@ func extractGlobalProfile(args []string) (string, []string, error) {
 }
 
 func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
-	operatorRegistry, operatorRegistryErr := codereview.LoadOperatorRegistryFromEnvironment()
 	return &app{
 		in:                         in,
 		out:                        out,
 		err:                        errOut,
-		selectGitHubBackend:        defaultSelectGitHubBackend,
-		selectRunnerBackend:        defaultSelectRunnerBackend,
-		newGitHubBackend:           defaultNewGitHubBackend,
-		gitHubBackendToken:         defaultGitHubBackendToken,
-		newNativeEvidenceProvider:  defaultNewNativeEvidenceProvider,
-		newNativeSearchProvider:    defaultNewNativeSearchProvider,
-		newNativeCodeChangeBackend: defaultNewNativeCodeChangeBackend,
 		newRequirementsAPI:         defaultNewRequirementsAPI,
 		saveRequirementsProfile:    auth.SaveProfile,
 		storeRequirementsToken:     auth.StoreProfileToken,
@@ -172,12 +164,14 @@ func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 		stdinIsTerminal:            requirementsInputIsTerminal,
 		previewRequirementsInstall: requirements.PreviewInstall,
 		installRequirements:        requirements.Install,
-		resolveCodeMutationProvider: func(ctx context.Context, key string) (codereview.MutationProvider, error) {
-			if operatorRegistryErr != nil {
-				return nil, operatorRegistryErr
-			}
-			return operatorRegistry.ResolveMutationProvider(ctx, key)
-		},
+		selectGitHubBackend:        defaultSelectGitHubBackend,
+		selectRunnerBackend:        defaultSelectRunnerBackend,
+		newGitHubBackend:           defaultNewGitHubBackend,
+		gitHubBackendToken:         defaultGitHubBackendToken,
+		newNativeEvidenceProvider:  defaultNewNativeEvidenceProvider,
+		newNativeSearchProvider:    defaultNewNativeSearchProvider,
+		newNativeCodeChangeBackend: defaultNewNativeCodeChangeBackend,
+		lookupOperatorProvider:     defaultResolveOperatorProvider,
 	}
 }
 

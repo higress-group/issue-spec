@@ -652,14 +652,23 @@ func TestBuildFinalVerifyReportAcceptsExactSelfHostedRationaleAndNativeLedgerRev
 	process.URL = "https://issues.example/acme/widgets/issues/3#issuecomment-3"
 	reviewProcess := typedArtifact(t, 3, "PROCESS", "PROCESS-002", "done", canonicalReviewProcess)
 	reviewProcess.URL = "https://issues.example/acme/widgets/issues/3#issuecomment-4"
-	review := typedArtifactWithAgent(t, 3, "REVIEW", "REVIEW-001", "done", "Independent Reviewer",
-		"## Review\n\nReviewed PROCESS-002 covering SPEC-001 with no blocking findings.")
+	reviewBody, err := model.EnsureTypedBody("REVIEW", "REVIEW-001",
+		"## Review\n\nReviewed PROCESS-002 and implementation PROCESS-001 covering SPEC-001 with no blocking findings.",
+		model.BodyOptions{Agent: "Independent Reviewer", Status: "done", SubjectRevision: revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := model.Artifact{Issue: 3, URL: "https://issues.example/acme/widgets/issues/3#issuecomment-review",
+		Comment: model.ParseTypedComment(reviewBody)}
 	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
 	linkArtifacts(t, &spec, &task)
 	linkArtifacts(t, &task, &process)
 	linkArtifacts(t, &spec, &process)
 	linkArtifacts(t, &task, &reviewProcess)
 	linkArtifacts(t, &spec, &reviewProcess)
+	linkArtifacts(t, &review, &reviewProcess)
+	linkArtifacts(t, &review, &process)
+	linkArtifacts(t, &review, &spec)
 	for _, candidate := range []*model.Artifact{&process, &reviewProcess} {
 		body, _, err := model.AddPRLink(candidate.Comment.Body, changeURL)
 		if err != nil {
@@ -692,20 +701,27 @@ func TestBuildFinalVerifyReportAcceptsExactSelfHostedRationaleAndNativeLedgerRev
 	rationale := model.Artifact{Issue: 3, URL: "https://issues.example/acme/widgets/issues/3#issuecomment-5",
 		Comment: model.ParseTypedComment(rationaleBody)}
 	consumption := externalEvidenceConsumption{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code",
-		ChangeID: "change-42", ReferenceVersion: 7, SubjectRevision: revision, EvidenceIDs: []string{"review-code", "review-independent"},
-		Bindings: []externalEvidenceBinding{
-			{ProcessID: "PROCESS-001", SpecID: "SPEC-001", EvidenceID: "review-code", Kind: codereview.EvidenceReview,
-				SubjectRevision: revision, Trusted: true, Source: "native-authoritative-ledger"},
-			{ProcessID: "PROCESS-002", SpecID: "SPEC-001", EvidenceID: "review-independent", Kind: codereview.EvidenceReview,
-				SubjectRevision: revision, Trusted: true, Source: "native-authoritative-ledger"},
-		}}
-	stampedReview, _, err := stampConsumedEvidence(review.Comment.Body, consumption)
+		ChangeID: "change-42", ReferenceVersion: 7, SubjectRevision: revision}
+	reference := codereview.Reference{ProviderKey: consumption.ProviderKey,
+		ExternalRepository: consumption.ExternalRepository, ChangeID: consumption.ChangeID}
+	target := coreevidence.NativeTarget{Reference: reference, ReferenceVersion: consumption.ReferenceVersion,
+		SubjectRevision: consumption.SubjectRevision}
+	stampedReview, _, err := stampExternalReviewCompletion(review.Comment.Body, externalReviewCompletion{
+		ProviderKey: reference.ProviderKey, ExternalRepository: reference.ExternalRepository,
+		ChangeID: reference.ChangeID, ReferenceVersion: target.ReferenceVersion,
+		SubjectRevision: target.SubjectRevision, SynchronizedAt: now.Add(-30 * time.Minute),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	review.Comment = model.ParseTypedComment(stampedReview)
+	externalReview := externalGateResult{Target: target, ReviewCompletionPolicy: ReviewCompletionPolicy{Required: true, Freshness: time.Hour},
+		Evaluation: coreevidence.Result{Passed: true}, Consumption: consumption,
+		Snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion, Reference: reference,
+			SubjectRevision: target.SubjectRevision, CapturedAt: now}}
 	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, reviewProcess, review, verify, rationale},
-		"https://issues.example/acme/widgets/issues/1", finalVerifyOptions{ExpectedRevision: revision, ExternalEvidence: &consumption})
+		"https://issues.example/acme/widgets/issues/1", finalVerifyOptions{ExpectedRevision: revision,
+			ExternalEvidence: &consumption, ExternalReview: &externalReview, ValidationNow: now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,6 +733,52 @@ func TestBuildFinalVerifyReportAcceptsExactSelfHostedRationaleAndNativeLedgerRev
 		!report.ProcessEvidence[0].CarrierRevision.Trusted || report.ProcessEvidence[1].CarrierRevision.Revision != revision ||
 		!report.ProcessEvidence[1].CarrierRevision.Trusted {
 		t.Fatalf("self-hosted carrier revisions were not exact and trusted: %+v", report.ProcessEvidence)
+	}
+	futureBody, _, err := stampExternalReviewCompletion(review.Comment.Body, externalReviewCompletion{
+		ProviderKey: reference.ProviderKey, ExternalRepository: reference.ExternalRepository,
+		ChangeID: reference.ChangeID, ReferenceVersion: target.ReferenceVersion,
+		SubjectRevision: target.SubjectRevision, SynchronizedAt: now.Add(time.Minute + time.Nanosecond),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	futureReview := review
+	futureReview.Comment = model.ParseTypedComment(futureBody)
+	futureReport, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, reviewProcess, futureReview, verify, rationale},
+		"https://issues.example/acme/widgets/issues/1", finalVerifyOptions{ExpectedRevision: revision,
+			ExternalEvidence: &consumption, ExternalReview: &externalReview, ValidationNow: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if futureReport.OK || futureReport.Gate.Ready {
+		t.Fatalf("future REVIEW completion satisfied final verify: %+v", futureReport.ProcessEvidence)
+	}
+}
+
+func TestBuildFinalVerifyReportAppliesLegacyReviewFreshness(t *testing.T) {
+	now := time.Date(2026, 7, 18, 1, 0, 0, 0, time.UTC)
+	for name, observedAt := range map[string]time.Time{
+		"fresh":   now.Add(-30 * time.Minute),
+		"expired": now.Add(-2 * time.Hour),
+	} {
+		t.Run(name, func(t *testing.T) {
+			artifacts, externalReview := legacyExternalReviewFixture(t, now, []time.Time{observedAt}, false, false)
+			report, err := buildFinalVerifyReport(artifacts, artifacts[0].URL, finalVerifyOptions{
+				ExpectedRevision: externalReview.Target.SubjectRevision, ExternalReview: &externalReview, ValidationNow: now,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var carrier gates.CarrierRevisionFact
+			for _, process := range report.ProcessEvidence {
+				if process.ProcessID == "PROCESS-002" {
+					carrier = process.CarrierRevision
+				}
+			}
+			if got, want := carrier.Trusted, name == "fresh"; got != want {
+				t.Fatalf("legacy carrier trusted=%t want=%t process evidence=%+v", got, want, report.ProcessEvidence)
+			}
+		})
 	}
 }
 

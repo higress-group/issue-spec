@@ -1,10 +1,13 @@
 package commands
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/higress-group/issue-spec/internal/codereview"
+	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
@@ -222,6 +225,303 @@ func TestBuildProcessEvidenceBindsSelfHostedReviewToCurrentNativeLedgerReview(t 
 	if len(inputs) != 1 || len(inputs[0].Reviews) != 1 || inputs[0].Reviews[0].Trusted {
 		t.Fatalf("a check binding must not become independent review authority: %+v", inputs)
 	}
+}
+
+func TestBuildProcessEvidenceAcceptsFreshCompletionWithExplicitCoverage(t *testing.T) {
+	now := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	artifacts, gate := externalReviewCompletionFixture(t, now, "Independent Reviewer")
+	artifacts = append(artifacts, externalCodeRationaleArtifact(t, artifacts[1], "Worker", gate.Target, "SPEC-001", artifacts[0].URL))
+	inputs := buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil, reviewSyncReport{}, nil, &gate, now)
+	implementation := processInputByID(t, inputs, "PROCESS-001")
+	review := processInputByID(t, inputs, "PROCESS-002")
+	if !implementation.AuthorAgentsBySpec["SPEC-001"]["worker"] || len(implementation.External) != 1 ||
+		implementation.External[0].EvidenceKind != "review_completion" {
+		t.Fatalf("completion did not back exact-current PROCESS rationale: %+v", implementation)
+	}
+	if len(review.Reviews) != 1 || !review.Reviews[0].Trusted || review.Reviews[0].SubjectRevision != "head-current" ||
+		review.Reviews[0].Source != "external-review-completion" {
+		t.Fatalf("completion REVIEW carrier missing: %+v", review.Reviews)
+	}
+	report := gates.EvaluateProcessEvidence(review, gates.TargetFinal, gates.ModeAuthoritative)
+	if !report.CarrierRevision.Trusted || report.CarrierRevision.Revision != "head-current" ||
+		!containsString(report.Satisfied, "review evidence") {
+		t.Fatalf("fresh completion did not satisfy review PROCESS: %+v", report)
+	}
+
+	conflictedArtifacts, conflictedGate := externalReviewCompletionFixture(t, now, "Worker")
+	conflictedArtifacts = append(conflictedArtifacts,
+		externalCodeRationaleArtifact(t, conflictedArtifacts[1], "Worker", conflictedGate.Target, "SPEC-001", conflictedArtifacts[0].URL))
+	conflicted := processInputByID(t, buildProcessEvidenceInputsWithExternalReview(conflictedArtifacts, "", nil,
+		reviewSyncReport{}, nil, &conflictedGate, now), "PROCESS-002")
+	conflictReport := gates.EvaluateProcessEvidence(conflicted, gates.TargetFinal, gates.ModeAuthoritative)
+	if !hasDiagnosticCode(conflictReport.Diagnostics, gates.CodeProcessReviewAuthorConflict) ||
+		containsString(conflictReport.Satisfied, "review evidence") {
+		t.Fatalf("self-review was accepted: %+v", conflictReport)
+	}
+}
+
+func TestExternalReviewCarrierRequiresExplicitExactCoverageLinks(t *testing.T) {
+	now := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	tests := map[string][]string{
+		"body ids without links": nil,
+		"missing review process": {"implementation", "spec"},
+		"missing implementation": {"review", "spec"},
+		"missing spec":           {"review", "implementation"},
+	}
+	for name, selections := range tests {
+		t.Run(name, func(t *testing.T) {
+			artifacts, gate := externalReviewCompletionFixture(t, now, "Independent Reviewer")
+			urls := map[string]string{"review": artifacts[2].URL, "implementation": artifacts[1].URL, "spec": artifacts[0].URL}
+			body, err := model.EnsureTypedBody("REVIEW", "REVIEW-001",
+				"Reviewed PROCESS-002 and implementation PROCESS-001 for SPEC-001.", model.BodyOptions{
+					Agent: "Independent Reviewer", Status: "done", SubjectRevision: gate.Target.SubjectRevision})
+			if err != nil {
+				t.Fatal(err)
+			}
+			completion, found, err := parseExternalReviewCompletion(artifacts[3].Comment.Body)
+			if err != nil || !found {
+				t.Fatalf("completion found=%t err=%v", found, err)
+			}
+			body, _, err = stampExternalReviewCompletion(body, completion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, selection := range selections {
+				body, _, err = model.AddRelatedCommentLink(body, urls[selection])
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			artifacts[3].Comment = model.ParseTypedComment(body)
+			input := processInputByID(t, buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
+				reviewSyncReport{}, nil, &gate, now), "PROCESS-002")
+			if len(input.Reviews) != 0 {
+				t.Fatalf("invalid link carrier accepted: %+v", input.Reviews)
+			}
+		})
+	}
+
+	t.Run("stale spec link", func(t *testing.T) {
+		artifacts, gate := externalReviewCompletionFixture(t, now, "Independent Reviewer")
+		stale := model.Artifact{URL: "https://issues.example/spec-stale",
+			Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-099", Status: "superseded"}}
+		body, _, err := model.AddRelatedCommentLink(artifacts[3].Comment.Body, stale.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		artifacts[3].Comment = model.ParseTypedComment(body)
+		artifacts = append(artifacts, stale)
+		input := processInputByID(t, buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
+			reviewSyncReport{}, nil, &gate, now), "PROCESS-002")
+		if len(input.Reviews) != 0 {
+			t.Fatalf("stale SPEC link accepted: %+v", input.Reviews)
+		}
+	})
+
+	t.Run("mixed spec coverage", func(t *testing.T) {
+		artifacts, gate := externalReviewCompletionFixture(t, now, "Independent Reviewer")
+		secondSpec := model.Artifact{URL: "https://issues.example/spec-2",
+			Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-002", Status: "confirmed"}}
+		artifacts = append(artifacts, secondSpec)
+		artifacts[1] = processClassArtifact(t, "PROCESS-001", "change-bearing", "SPEC-001\n- SPEC-002", "done")
+		artifacts[1].URL, artifacts[1].Issue = "https://issues.example/process-1", 9
+		artifacts[2] = processClassArtifact(t, "PROCESS-002", "review", "SPEC-001\n- SPEC-002", "done")
+		artifacts[2].URL, artifacts[2].Issue = "https://issues.example/process-2", 9
+		// The carrier remains linked only to SPEC-001, so it cannot cover the
+		// mixed two-SPEC implementation/review edge.
+		input := processInputByID(t, buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
+			reviewSyncReport{}, nil, &gate, now), "PROCESS-002")
+		if len(input.Reviews) != 0 {
+			t.Fatalf("partially linked multi-SPEC carrier accepted: %+v", input.Reviews)
+		}
+	})
+}
+
+func TestExternalReviewCompletionCarrierRejectsStaleIdentityAndRevision(t *testing.T) {
+	now := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	tests := map[string]func(*model.Artifact){
+		"change identity": func(review *model.Artifact) {
+			completion, _, _ := parseExternalReviewCompletion(review.Comment.Body)
+			completion.ChangeID = "change-old"
+			body, _, err := stampExternalReviewCompletion(review.Comment.Body, completion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			review.Comment = model.ParseTypedComment(body)
+		},
+		"reference version": func(review *model.Artifact) {
+			completion, _, _ := parseExternalReviewCompletion(review.Comment.Body)
+			completion.ReferenceVersion--
+			body, _, err := stampExternalReviewCompletion(review.Comment.Body, completion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			review.Comment = model.ParseTypedComment(body)
+		},
+		"subject revision": func(review *model.Artifact) {
+			review.Comment = model.ParseTypedComment(strings.Replace(review.Comment.Body,
+				"Subject Revision: head-current", "Subject Revision: head-old", 1))
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			artifacts, gate := externalReviewCompletionFixture(t, now, "Independent Reviewer")
+			mutate(&artifacts[3])
+			input := processInputByID(t, buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
+				reviewSyncReport{}, nil, &gate, now), "PROCESS-002")
+			if len(input.Reviews) != 1 || input.Reviews[0].Trusted {
+				t.Fatalf("stale completion identity became trusted: %+v", input.Reviews)
+			}
+		})
+	}
+}
+
+func TestLegacyExternalReviewCarrierUsesActiveRecordsAndEarliestFreshness(t *testing.T) {
+	now := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	tests := map[string]struct {
+		times      []time.Time
+		superseded bool
+		noReview   bool
+		trusted    bool
+	}{
+		"required policy compatibility": {times: []time.Time{now.Add(-30 * time.Minute)}, trusted: true},
+		"earliest observation stale":    {times: []time.Time{now.Add(-30 * time.Minute), now.Add(-2 * time.Hour)}},
+		"consumed record superseded":    {times: []time.Time{now.Add(-30 * time.Minute)}, superseded: true},
+		"no consumed review":            {times: []time.Time{now.Add(-30 * time.Minute)}, noReview: true},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			artifacts, gate := legacyExternalReviewFixture(t, now, test.times, test.superseded, test.noReview)
+			input := processInputByID(t, buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
+				reviewSyncReport{}, nil, &gate, now), "PROCESS-002")
+			if len(input.Reviews) != 1 || input.Reviews[0].Trusted != test.trusted {
+				t.Fatalf("legacy carrier trusted=%t want=%t reviews=%+v", len(input.Reviews) == 1 && input.Reviews[0].Trusted,
+					test.trusted, input.Reviews)
+			}
+			if test.trusted && input.Reviews[0].Source != "native-authoritative-ledger:review-1" {
+				t.Fatalf("legacy source=%q", input.Reviews[0].Source)
+			}
+		})
+	}
+}
+
+func externalReviewCompletionFixture(t *testing.T, now time.Time, reviewer string) ([]model.Artifact, externalGateResult) {
+	t.Helper()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-1"}
+	target := coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7, SubjectRevision: "head-current"}
+	gate := externalGateResult{Evaluation: coreevidence.Result{Passed: true}, Target: target,
+		ReviewCompletionPolicy: ReviewCompletionPolicy{Required: true, Freshness: time.Hour},
+		Snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion, Reference: reference,
+			SubjectRevision: target.SubjectRevision, CapturedAt: now},
+		Consumption: externalEvidenceConsumption{ProviderKey: reference.ProviderKey,
+			ExternalRepository: reference.ExternalRepository, ChangeID: reference.ChangeID,
+			ReferenceVersion: target.ReferenceVersion, SubjectRevision: target.SubjectRevision}}
+	spec := model.Artifact{Issue: 1, URL: "https://issues.example/spec-1",
+		Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "confirmed"}}
+	implementation := processClassArtifact(t, "PROCESS-001", "change-bearing", "SPEC-001", "done")
+	implementation.Issue, implementation.URL = 9, "https://issues.example/process-1"
+	reviewProcess := processClassArtifact(t, "PROCESS-002", "review", "SPEC-001", "done")
+	reviewProcess.Issue, reviewProcess.URL = 9, "https://issues.example/process-2"
+	body, err := renderExternalReviewSyncCommentAt("REVIEW-001", reviewer,
+		writerSession{ID: "review-session", Source: agentSessionParamSource}, "external review", gate, now.Add(-15*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, url := range []string{reviewProcess.URL, implementation.URL, spec.URL} {
+		body, _, err = model.AddRelatedCommentLink(body, url)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	review := model.Artifact{Issue: 9, URL: "https://issues.example/review-1", Comment: model.ParseTypedComment(body)}
+	return []model.Artifact{spec, implementation, reviewProcess, review}, gate
+}
+
+func externalCodeRationaleArtifact(t *testing.T, process model.Artifact, agent string,
+	target coreevidence.NativeTarget, specID, specURL string) model.Artifact {
+	t.Helper()
+	body, err := model.RenderCodeChangeRationaleBody(model.CodeChangeRationaleMarker{
+		Process: process.Comment.ID, Spec: specID, SpecURL: specURL, ProviderKey: target.Reference.ProviderKey,
+		ExternalRepository: target.Reference.ExternalRepository, ChangeID: target.Reference.ChangeID,
+		ReferenceVersion: target.ReferenceVersion, SubjectRevision: target.SubjectRevision, Agent: agent,
+		AgentSessionID: "worker-session", AgentSessionSource: agentSessionParamSource,
+	}, "implementation rationale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model.Artifact{Issue: process.Issue, URL: "https://issues.example/rationale-1", Comment: model.ParseTypedComment(body)}
+}
+
+func legacyExternalReviewFixture(t *testing.T, now time.Time, observed []time.Time,
+	superseded, noReview bool) ([]model.Artifact, externalGateResult) {
+	t.Helper()
+	artifacts, gate := externalReviewCompletionFixture(t, now, "Independent Reviewer")
+	consumption := gate.Consumption
+	for index, observedAt := range observed {
+		id := fmt.Sprintf("review-%d", index+1)
+		kind := codereview.EvidenceReview
+		if noReview {
+			kind = codereview.EvidenceCheck
+		}
+		record := codereview.EvidenceRecord{ID: id, Kind: kind, State: "resolved", Name: "review-check",
+			SubjectRevision: gate.Target.SubjectRevision, ObservedAt: observedAt, Trusted: true,
+			WriterIdentity: "bridge:test", PayloadDigest: "sha256:test"}
+		if kind == codereview.EvidenceReview {
+			record.Severity, record.FindingID, record.ProcessID, record.SpecID = "P2",
+				fmt.Sprintf("FINDING-%03d", index+1), "PROCESS-001", "SPEC-001"
+		}
+		gate.Snapshot.Records = append(gate.Snapshot.Records, record)
+		consumption.EvidenceIDs = append(consumption.EvidenceIDs, id)
+		consumption.Bindings = append(consumption.Bindings, externalEvidenceBinding{ProcessID: "PROCESS-001",
+			SpecID: "SPEC-001", EvidenceID: id, Kind: kind, SubjectRevision: gate.Target.SubjectRevision,
+			Trusted: true, Source: "native-authoritative-ledger"})
+	}
+	if superseded {
+		gate.Snapshot.Records = append(gate.Snapshot.Records, codereview.EvidenceRecord{ID: "review-successor",
+			Kind: codereview.EvidenceReview, State: "resolved", SubjectRevision: gate.Target.SubjectRevision,
+			Severity: "P2", FindingID: "FINDING-001", ProcessID: "PROCESS-001", SpecID: "SPEC-001",
+			ObservedAt: observed[0].Add(time.Minute), Trusted: true, WriterIdentity: "bridge:test",
+			PayloadDigest: "sha256:test-successor", SupersedesID: "review-1"})
+	}
+	body, err := model.EnsureTypedBody("REVIEW", "REVIEW-001", "Legacy synchronized external review.",
+		model.BodyOptions{Agent: "Independent Reviewer", Status: "done", SubjectRevision: gate.Target.SubjectRevision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, url := range []string{artifacts[2].URL, artifacts[1].URL, artifacts[0].URL} {
+		body, _, err = model.AddRelatedCommentLink(body, url)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	body, _, err = stampConsumedEvidence(body, consumption)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts[3].Comment = model.ParseTypedComment(body)
+	gate.Consumption = consumption
+	gate.Evaluation.EvidenceIDs = append([]string(nil), consumption.EvidenceIDs...)
+	return artifacts, gate
+}
+
+func processInputByID(t *testing.T, inputs []gates.ProcessEvidenceInput, id string) gates.ProcessEvidenceInput {
+	t.Helper()
+	for _, input := range inputs {
+		if input.Process.Comment.ID == id {
+			return input
+		}
+	}
+	t.Fatalf("PROCESS input %s missing: %+v", id, inputs)
+	return gates.ProcessEvidenceInput{}
+}
+
+func hasDiagnosticCode(diagnostics []gates.Diagnostic, code string) bool {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 func processClassArtifact(t *testing.T, id, class, spec, status string) model.Artifact {

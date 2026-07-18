@@ -216,6 +216,18 @@ delete only the unwanted active reference, and retry—never guess or silently
 overwrite. GitHub keeps its existing PR workflow; self-hosted review, merge,
 and closure stay with the selected code provider.
 
+After independent review converges, the reviewer runs `review sync` with the
+Implement Issue, exact active revision, stable REVIEW id, and its own
+agent/session identity. A clean provider review still produces a stable done
+REVIEW completion with zero findings. Link the final REVIEW explicitly to its
+review PROCESS, every covered change-bearing PROCESS, and every covered active
+SPEC. Never fabricate findings, hand-edit the completion stamp, infer links
+from prose IDs, or substitute a generic approval framework. Status and final
+verify share the same exact-current completion validator and do not refresh
+REVIEW. Archive reads this completion only for required implementation
+`code_change` merge review; it never mutates REVIEW or applies the completion
+to `archive_change`.
+
 For a provider-neutral integration plan, operator registry example, bridge
 scaffold, code-evidence mapping, and Jira-like work-item projection pattern,
 read [Integrate company code and work platforms](enterprise-provider-integration.md).

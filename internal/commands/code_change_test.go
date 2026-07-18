@@ -421,7 +421,10 @@ func setupCodeChangeApp(t *testing.T, profile auth.Profile, backend *fakeCodeCha
 		}
 		return backend, nil
 	}
-	app.resolveCodeMutationProvider = func(_ context.Context, key string) (codereview.MutationProvider, error) {
+	app.lookupOperatorProvider = func(_ context.Context, gotProfile auth.Profile, key string) (codereview.Provider, error) {
+		if gotProfile.Name != profile.Name {
+			t.Fatalf("provider profile = %q, want %q", gotProfile.Name, profile.Name)
+		}
 		if key != backend.binding.ProviderKey {
 			t.Fatalf("provider key = %q, want %q", key, backend.binding.ProviderKey)
 		}

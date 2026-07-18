@@ -45,8 +45,16 @@ func TestProviderWorkflowAttachesExistingChangeWithoutGitHubAssumptions(t *testi
 		"explicitly delete only the unwanted active reference",
 		"code-change rationale --repo acme/widgets",
 		"append-only Issue Backend comment",
-		"exact-current trusted native-ledger evidence",
+		"fresh REVIEW completion",
+		"finding-backed consumed native-ledger evidence retained only for legacy compatibility",
 		"evidence-writer identity is never treated as the code author",
+		"review sync --repo acme/widgets --implement <issue> --revision <revision>",
+		"even with zero findings",
+		"review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC",
+		"never fabricate findings or hand-author its stamp",
+		"Prose IDs, automatic inference, and generic approval frameworks are not carriers",
+		"Archive reads implementation REVIEW completion only for implementation code_change merge policy",
+		"never applies it to archive_change or mutates REVIEW",
 		"do not substitute GitHub PR endpoints",
 	} {
 		if !strings.Contains(content, want) {

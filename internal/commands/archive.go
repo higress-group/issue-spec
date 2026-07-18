@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
+	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/templates"
@@ -104,6 +106,26 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 		}
 		implementationGate, _, gateErr := a.externalGate(ctx, *host, token.Value, repo, closeSet.Implement,
 			"code_change", *implementationRevision, coreevidence.GateMerge)
+		mergePolicy, completionPolicy, policyErr := archiveImplementationReviewCompletionPolicy(implementationGate.Target)
+		if policyErr != nil {
+			a.errorf("implementation review completion policy: %v\n", policyErr)
+			return 1
+		}
+		implementationGate.ReviewCompletionPolicy = completionPolicy
+		validationNow := time.Now().UTC()
+		if completionPolicy.Required && validateReviewCompletionTarget(implementationGate.Target) == nil &&
+			validateExactSnapshotIdentity(implementationGate.Snapshot, implementationGate.Target) == nil {
+			// Project the repository's review requirement onto the CLI-owned REVIEW
+			// completion, then re-evaluate every remaining provider fact. This keeps
+			// merge/check failures and open findings authoritative while permitting a
+			// clean zero-finding review to use the workflow completion carrier.
+			implementationGate = evaluateArchiveImplementationMerge(implementationGate, mergePolicy, validationNow)
+			if implementationGate.Evaluation.Passed {
+				gateErr = nil
+			} else {
+				gateErr = externalGateFailure("code_change", implementationGate.Evaluation)
+			}
+		}
 		if gateErr != nil {
 			a.errorf("implementation merge evidence: %v\n", gateErr)
 			return 1
@@ -127,6 +149,10 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 		if !processArtifactsLinkPullRequest(artifacts, implementationGate.Target.CanonicalURL) {
 			a.errorf("implement issue #%d has no active PROCESS linked to implementation change %s\n",
 				closeSet.Implement, implementationGate.Target.CanonicalURL)
+			return 1
+		}
+		if completionErr := validateArchiveImplementationReviewCompletion(artifacts, implementationGate, validationNow); completionErr != nil {
+			a.errorf("implementation review completion: %v\n", completionErr)
 			return 1
 		}
 		closePlan = archiveCloseIssuePlan{Enabled: true, Issues: archiveCloseIssuePlanRefs(archiveCloseIssueRefs(closeSet)),
@@ -242,6 +268,65 @@ func (a *app) runArchiveDurableSpec(ctx context.Context, args []string) int {
 	}
 	printArchiveClosedIssues(a.out, closePlan)
 	return 0
+}
+
+func archiveImplementationReviewCompletionPolicy(target coreevidence.NativeTarget) (coreevidence.Policy, ReviewCompletionPolicy, error) {
+	plan, err := workflow.Resolve(".")
+	if err != nil {
+		return coreevidence.Policy{}, ReviewCompletionPolicy{}, err
+	}
+	policy, err := mergedEvidencePolicy(plan.Config.ExternalCode, target.Policy)
+	if err != nil {
+		return coreevidence.Policy{}, ReviewCompletionPolicy{}, err
+	}
+	completion := projectReviewCompletionPolicy(&policy)
+	return policy, completion, nil
+}
+
+func evaluateArchiveImplementationMerge(implementationGate externalGateResult, policy coreevidence.Policy,
+	validationNow time.Time) externalGateResult {
+	implementationGate.Evaluation = coreevidence.Evaluate(implementationGate.Snapshot, policy, coreevidence.Target{
+		Gate: coreevidence.GateMerge, Reference: implementationGate.Target.Reference,
+		SubjectRevision: implementationGate.Target.SubjectRevision, Now: validationNow,
+	})
+	implementationGate.Consumption.EvidenceIDs = append([]string(nil), implementationGate.Evaluation.EvidenceIDs...)
+	implementationGate.Consumption.Bindings = nil
+	if implementationGate.Evaluation.Passed {
+		if bindings, err := authoritativeExternalEvidenceBindings(implementationGate.Snapshot,
+			implementationGate.Consumption); err == nil {
+			implementationGate.Consumption.Bindings = bindings
+		}
+	}
+	return implementationGate
+}
+
+// validateArchiveImplementationReviewCompletion is deliberately read-only and
+// accepts only the implementation code_change gate. The archive_change gate is
+// never passed here, so a durable-change identity cannot borrow implementation
+// REVIEW completion and archive cannot create or refresh REVIEW state.
+func validateArchiveImplementationReviewCompletion(artifacts []model.Artifact, implementationGate externalGateResult,
+	validationNow time.Time) error {
+	if !implementationGate.ReviewCompletionPolicy.Required {
+		return nil
+	}
+	inputs := buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil, reviewSyncReport{}, nil,
+		&implementationGate, validationNow)
+	for _, input := range inputs {
+		if model.ParseProcessExecutionClass(input.Process.Comment.ID, input.Process.URL,
+			input.Process.Comment.Body).Class != model.ProcessExecutionReview {
+			continue
+		}
+		report := gates.EvaluateProcessEvidence(input, gates.TargetArchive, gates.ModeAuthoritative)
+		if report.CarrierRevision.Trusted && report.CarrierRevision.Revision == implementationGate.Target.SubjectRevision {
+			for _, satisfied := range report.Satisfied {
+				if satisfied == "review evidence" {
+					return nil
+				}
+			}
+		}
+	}
+	return fmt.Errorf("required exact-current independent REVIEW completion is missing for implementation revision %s",
+		implementationGate.Target.SubjectRevision)
 }
 
 type durableSpecPROptions struct {

@@ -1,13 +1,229 @@
 package commands
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/codereview"
+	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
+
+func TestExternalReviewSyncIsForcedAndIdempotent(t *testing.T) {
+	app, native, comments, creates, updates, out, errOut := setupExternalReviewSyncCommand(t)
+	t.Setenv(codexThreadIDEnv, "")
+	args := []string{"--repo", "acme/widgets", "--hostname", "issues.test", "--implement", "9",
+		"--revision", "head-abc", "--id", "REVIEW-101", "--agent", "Review Agent", "--agent-session", "review-session-7"}
+	var firstCompletion externalReviewCompletion
+	for run := 1; run <= 2; run++ {
+		out.Reset()
+		errOut.Reset()
+		if code := app.runReviewSync(t.Context(), args); code != 0 {
+			t.Fatalf("run %d exit=%d stdout=%q stderr=%q", run, code, out.String(), errOut.String())
+		}
+		completion, found, err := parseExternalReviewCompletion((*comments)[0].Body)
+		if err != nil || !found {
+			t.Fatalf("run %d completion found=%t err=%v body=%q", run, found, err, (*comments)[0].Body)
+		}
+		if run == 1 {
+			firstCompletion = completion
+			linked, _, linkErr := model.AddRelatedCommentLink((*comments)[0].Body,
+				"https://issues.test/acme/widgets/issues/9#issuecomment-process")
+			if linkErr != nil {
+				t.Fatal(linkErr)
+			}
+			(*comments)[0].Body = linked
+		} else if !completion.SynchronizedAt.After(firstCompletion.SynchronizedAt) {
+			t.Fatalf("completion timestamp did not advance: first=%s second=%s", firstCompletion.SynchronizedAt, completion.SynchronizedAt)
+		}
+	}
+	if *creates != 1 || *updates != 1 || len(*comments) != 1 || native.syncs != 2 || native.resolveCalls != 4 {
+		t.Fatalf("creates=%d updates=%d comments=%d syncs=%d resolves=%d", *creates, *updates, len(*comments),
+			native.syncs, native.resolveCalls)
+	}
+	parsed := model.ParseTypedComment((*comments)[0].Body)
+	if parsed.Type != "REVIEW" || parsed.ID != "REVIEW-101" || parsed.Status != "done" ||
+		parsed.Agent != "Review Agent" || parsed.AgentSessionID != "review-session-7" ||
+		parsed.AgentSessionSource != agentSessionParamSource || parsed.SubjectRevision != "head-abc" ||
+		strings.Count((*comments)[0].Body, externalReviewCompletionStart) != 1 ||
+		!linksContainURL(parsed.Links["Related Comments"], "https://issues.test/acme/widgets/issues/9#issuecomment-process") ||
+		!strings.Contains((*comments)[0].Body, `"subject_revision":"head-abc"`) {
+		t.Fatalf("persisted REVIEW=%+v", parsed)
+	}
+}
+
+func TestExternalReviewSyncZeroFindingsWritesCompletionWithoutReviewFacts(t *testing.T) {
+	app, native, comments, creates, updates, _, errOut := setupExternalReviewSyncCommand(t)
+	native.target.Provider = &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+		Reference: native.target.Reference, SubjectRevision: native.target.SubjectRevision, CapturedAt: time.Now().UTC()}}
+	code := app.runReviewSync(t.Context(), []string{"--repo", "acme/widgets", "--hostname", "issues.test",
+		"--implement", "9", "--revision", "head-abc", "--id", "REVIEW-101", "--agent", "Independent Reviewer"})
+	if code != 0 || *creates != 1 || *updates != 0 || len(*comments) != 1 {
+		t.Fatalf("exit=%d creates=%d updates=%d comments=%d stderr=%q", code, *creates, *updates, len(*comments), errOut.String())
+	}
+	body := (*comments)[0].Body
+	if strings.Contains(body, consumedEvidenceStart) || !strings.Contains(body, "### Canonical Findings\n\n```json\n[]\n```") {
+		t.Fatalf("zero-finding REVIEW invented review facts or consumed bindings: %q", body)
+	}
+	completion, found, err := parseExternalReviewCompletion(body)
+	if err != nil || !found || completion.SubjectRevision != "head-abc" || completion.ReferenceVersion != 7 {
+		t.Fatalf("completion=%+v found=%t err=%v", completion, found, err)
+	}
+}
+
+func TestExternalReviewSyncRejectsPRBeforeProviderSynchronization(t *testing.T) {
+	app, native, comments, creates, updates, _, errOut := setupExternalReviewSyncCommand(t)
+	code := app.runReviewSync(t.Context(), []string{"--repo", "acme/widgets", "--hostname", "issues.test",
+		"--implement", "9", "--revision", "head-abc", "--pr", "42", "--id", "REVIEW-101"})
+	if code != 2 || !strings.Contains(errOut.String(), "--pr is not a self-hosted code authority") {
+		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
+	}
+	if native.syncs != 0 || native.resolveCalls != 0 || *creates != 0 || *updates != 0 || len(*comments) != 0 {
+		t.Fatalf("invalid --pr crossed preflight: syncs=%d resolves=%d creates=%d updates=%d comments=%d",
+			native.syncs, native.resolveCalls, *creates, *updates, len(*comments))
+	}
+}
+
+func TestExternalReviewSyncFailedRetryLeavesExistingReviewByteStable(t *testing.T) {
+	app, native, comments, creates, updates, _, errOut := setupExternalReviewSyncCommand(t)
+	args := []string{"--repo", "acme/widgets", "--hostname", "issues.test", "--implement", "9",
+		"--revision", "head-abc", "--id", "REVIEW-101"}
+	if code := app.runReviewSync(t.Context(), args); code != 0 {
+		t.Fatalf("initial sync exit=%d stderr=%q", code, errOut.String())
+	}
+	before := (*comments)[0].Body
+	native.syncErr = errors.New("ledger persistence unavailable")
+	errOut.Reset()
+	if code := app.runReviewSync(t.Context(), args); code != 1 {
+		t.Fatalf("retry exit=%d stderr=%q", code, errOut.String())
+	}
+	if *creates != 1 || *updates != 0 || len(*comments) != 1 || (*comments)[0].Body != before {
+		t.Fatalf("failed retry mutated REVIEW: creates=%d updates=%d body_changed=%t", *creates, *updates, (*comments)[0].Body != before)
+	}
+}
+
+func TestExternalReviewSyncDisplaysOnlyCanonicalLedgerFindings(t *testing.T) {
+	app, _, comments, _, _, _, errOut := setupExternalReviewSyncCommand(t)
+	if code := app.runReviewSync(t.Context(), []string{"--repo", "acme/widgets", "--hostname", "issues.test",
+		"--implement", "9", "--revision", "head-abc", "--id", "REVIEW-101"}); code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
+	}
+	body := (*comments)[0].Body
+	for _, want := range []string{`"evidence_id": "review-ledger"`, `"finding_id": "FINDING-001"`,
+		`"process_id": "PROCESS-001"`, `"spec_id": "SPEC-001"`, `"severity": "P2"`, `"state": "resolved"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("canonical finding field %q missing from %q", want, body)
+		}
+	}
+	if strings.Contains(body, "PayloadDigest") || strings.Contains(body, "payload_digest") {
+		t.Fatalf("provider payload detail leaked into REVIEW: %q", body)
+	}
+}
+
+func TestExternalReviewSyncFailuresNeverMutateReview(t *testing.T) {
+	tests := map[string]func(*app, *commandNativeEvidence, *commandEvidenceProvider){
+		"authorization": func(app *app, _ *commandNativeEvidence, _ *commandEvidenceProvider) {
+			app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) {
+				return nil, errors.New("authorization denied")
+			}
+		},
+		"registry": func(app *app, _ *commandNativeEvidence, _ *commandEvidenceProvider) {
+			app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) {
+				return nil, errors.New("operator registry malformed")
+			}
+		},
+		"capability": func(_ *app, _ *commandNativeEvidence, provider *commandEvidenceProvider) {
+			provider.capabilities = []codereview.Capability{codereview.CapabilityChangeComment}
+		},
+		"snapshot": func(_ *app, _ *commandNativeEvidence, provider *commandEvidenceProvider) {
+			provider.snapshotErr = errors.New("snapshot unavailable")
+		},
+		"persistence": func(_ *app, native *commandNativeEvidence, _ *commandEvidenceProvider) {
+			native.syncErr = errors.New("writer authorization denied")
+		},
+		"reference movement": func(_ *app, native *commandNativeEvidence, _ *commandEvidenceProvider) {
+			moved := native.target
+			moved.ReferenceVersion++
+			native.targets = []coreevidence.NativeTarget{native.target, moved}
+		},
+	}
+	for name, fail := range tests {
+		t.Run(name, func(t *testing.T) {
+			app, native, comments, creates, updates, _, errOut := setupExternalReviewSyncCommand(t)
+			provider, err := app.lookupOperatorProvider(t.Context(), auth.Profile{}, "code.example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			fail(app, native, provider.(*commandEvidenceProvider))
+			code := app.runReviewSync(t.Context(), []string{"--repo", "acme/widgets", "--hostname", "issues.test",
+				"--implement", "9", "--revision", "head-abc", "--id", "REVIEW-101"})
+			if code != 1 || *creates != 0 || *updates != 0 || len(*comments) != 0 {
+				t.Fatalf("exit=%d creates=%d updates=%d comments=%d stderr=%q", code, *creates, *updates,
+					len(*comments), errOut.String())
+			}
+		})
+	}
+}
+
+func setupExternalReviewSyncCommand(t *testing.T) (*app, *commandNativeEvidence, *[]github.Comment, *int, *int,
+	*bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	clearCommandAuthEnv(t)
+	t.Setenv("ISSUE_SPEC_TOKEN", "review-token")
+	t.Setenv(codereview.OperatorProvidersFileEnv, "")
+	t.Chdir(t.TempDir())
+	profile := auth.Profile{Name: "review-sync-test", Kind: auth.ProfileKindHosted, Hostname: "issues.test",
+		APIURL: "https://issues.test/api/v3", NativeAPIURL: "https://issues.test/api/v1",
+		WebURL: "https://issues.test", ServerInstanceID: "review-sync-test-instance"}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	provider := &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+		Reference: reference, SubjectRevision: "head-abc", CapturedAt: now}}
+	ledger := codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion, Reference: reference,
+		SubjectRevision: "head-abc", CapturedAt: now, Records: []codereview.EvidenceRecord{
+			testEvidenceRecord("review-ledger", codereview.EvidenceReview, "resolved", "head-abc", now),
+		}}
+	native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7,
+		SubjectRevision: "head-abc", Provider: &commandEvidenceProvider{snapshot: ledger}}}
+	comments := []github.Comment{}
+	creates, updates := 0, 0
+	backend := fakeGitHubBackend{
+		info: github.BackendInfo{Name: "rest", Kind: "rest", Host: profile.Hostname},
+		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+			return append([]github.Comment(nil), comments...), nil
+		},
+		createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
+			creates++
+			created := github.Comment{ID: 71, Body: body, HTMLURL: "https://issues.test/acme/widgets/issues/9#comment-71"}
+			comments = append(comments, created)
+			return created, nil
+		},
+		updateComment: func(_ context.Context, _ string, id int64, body string) (github.Comment, error) {
+			updates++
+			if len(comments) != 1 || comments[0].ID != id {
+				return github.Comment{}, errors.New("unexpected REVIEW update target")
+			}
+			comments[0].Body = body
+			return comments[0], nil
+		},
+	}
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	app := newApp(strings.NewReader(""), out, errOut)
+	app.profileName = profile.Name
+	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
+	app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
+	app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) { return provider, nil }
+	return app, native, &comments, &creates, &updates, out, errOut
+}
 
 func TestBuildReviewSyncReportClassifiesRationaleFindingsAndChecks(t *testing.T) {
 	rationale, err := model.RenderRationaleBody("Worker", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "why", "a.go", 10)

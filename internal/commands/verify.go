@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
@@ -48,6 +49,8 @@ type finalVerifyOptions struct {
 	PRCheckRuns       []github.CheckRun
 	PRCommits         []github.PullRequestCommit
 	ExternalEvidence  *externalEvidenceConsumption
+	ExternalReview    *externalGateResult
+	ValidationNow     time.Time
 	CarrierRevisions  map[string]gates.CarrierRevisionFact
 }
 
@@ -145,8 +148,10 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 		prCommits = facts.Commits
 	}
 	var processExternalEvidence *externalEvidenceConsumption
+	var processExternalReview *externalGateResult
 	if selfHosted {
 		processExternalEvidence = &externalGate.Consumption
+		processExternalReview = &externalGate
 		expectedRevision = externalGate.Target.SubjectRevision
 	}
 	report, err := buildReport(artifacts, proposalIssueData.HTMLURL, finalVerifyOptions{
@@ -160,6 +165,8 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 		PRCheckRuns:       prCheckRuns,
 		PRCommits:         prCommits,
 		ExternalEvidence:  processExternalEvidence,
+		ExternalReview:    processExternalReview,
+		ValidationNow:     time.Now().UTC(),
 	})
 	if err != nil {
 		a.errorf("verify: %v\n", err)
@@ -186,7 +193,7 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 			report.Diagnostics = append(report.Diagnostics, authoringCompletenessDiagnostics("design", designIssueData.HTMLURL, designIssueData.Body)...)
 		}
 	}
-	if selfHosted && report.OK && finalVerify != nil {
+	if selfHosted && report.OK && finalVerify != nil && len(externalGate.Consumption.Bindings) > 0 {
 		updated, changed, stampErr := stampConsumedEvidence(finalVerify.Comment.Body, externalGate.Consumption)
 		if stampErr != nil {
 			a.errorf("record consumed external evidence: %v\n", stampErr)
@@ -360,7 +367,16 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	}
 	var processEvidence []gates.ProcessEvidenceInput
 	if opts.RationaleRequired || opts.ExternalEvidence != nil || hasExplicitProcessWorkspace(artifacts) || hasActiveChangeBearingProcess(artifacts) {
-		processEvidence = buildProcessEvidenceInputs(artifacts, opts.PRURL, opts.RationaleComments, reviewReport, opts.ExternalEvidence)
+		if opts.ExternalReview != nil {
+			validationNow := opts.ValidationNow
+			if validationNow.IsZero() {
+				validationNow = time.Now().UTC()
+			}
+			processEvidence = buildProcessEvidenceInputsWithExternalReview(artifacts, opts.PRURL, opts.RationaleComments,
+				reviewReport, opts.ExternalEvidence, opts.ExternalReview, validationNow)
+		} else {
+			processEvidence = buildProcessEvidenceInputs(artifacts, opts.PRURL, opts.RationaleComments, reviewReport, opts.ExternalEvidence)
+		}
 	}
 	gateReport, err := gates.Evaluate(gates.Snapshot{
 		Target: target, Mode: gates.ModeAuthoritative, Artifacts: artifacts,
