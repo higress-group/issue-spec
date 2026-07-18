@@ -119,11 +119,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	}
 	nativeAuthenticate := adminapi.NativeAuthenticate(deps.Authentication)
 	nativeAuthenticateOptional := adminapi.NativeAuthenticateOptional(deps.Authentication)
-	features := metaapi.Features{Bootstrap: true, PersonalAccessTokens: true, Organizations: true,
-		SourceBindings: true, Webhooks: true, ChangeBoards: true, Runner: true, RecoveryExchange: true,
-		Search: deps.Search != nil, EmailNotifications: deps.EmailNotifications && deps.ProfileMail != nil}
-	features.MentionCandidates = features.EmailNotifications && deps.MentionDirectory != nil
-	features.RepositoryEmailSubscriptions = features.EmailNotifications && deps.RepositoryEmailSubscriptions != nil
+	features := configuredFeatures(deps)
 	serverMetadata, err := metaapi.NewServerMetadataWithPosture(deps.ServerInstanceID, deps.APIOrigin, deps.WebOrigin, deps.ProviderDescriptions, deps.TransportPosture)
 	if err != nil {
 		return nil, fmt.Errorf("compose server metadata: %w", err)
@@ -222,9 +218,10 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	})); err != nil {
 		return nil, fmt.Errorf("compose compatible subscription route: %w", err)
 	}
-	if features.MentionCandidates {
-		if err := add(mentionsapi.NewRouteSet(mentionsapi.Dependencies{Directory: deps.MentionDirectory,
-			Authenticate: nativeAuthenticate, WebOrigin: deps.WebOrigin})); err != nil {
+	if mentionRoutes, enabled, err := composeMentionCandidateRoutes(deps, features, nativeAuthenticate); err != nil {
+		return nil, fmt.Errorf("compose mention routes: %w", err)
+	} else if enabled {
+		if err := add(mentionRoutes, nil); err != nil {
 			return nil, fmt.Errorf("compose mention routes: %w", err)
 		}
 	}
@@ -249,6 +246,29 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	handler = credentialedCORS(deps.APIOrigin, deps.WebOrigin, handler)
 	handler = observeRequests(stats, deps.LogRequest, handler)
 	return handler, nil
+}
+
+func configuredFeatures(deps Dependencies) metaapi.Features {
+	features := metaapi.Features{Bootstrap: true, PersonalAccessTokens: true, Organizations: true,
+		SourceBindings: true, Webhooks: true, ChangeBoards: true, Runner: true, RecoveryExchange: true,
+		Search: deps.Search != nil, EmailNotifications: deps.EmailNotifications && deps.ProfileMail != nil}
+	// Site-wide discovery is useful independently of email transport. The
+	// candidate RouteSet still requires the server's configured session
+	// authentication, while verified-email and repository-email mutations stay
+	// behind the mail capability.
+	features.MentionCandidates = deps.MentionDirectory != nil
+	features.RepositoryEmailSubscriptions = features.EmailNotifications && deps.RepositoryEmailSubscriptions != nil
+	return features
+}
+
+func composeMentionCandidateRoutes(deps Dependencies, features metaapi.Features,
+	authenticate adminapi.Authenticate) (routeset.RouteSet, bool, error) {
+	if !features.MentionCandidates {
+		return routeset.RouteSet{}, false, nil
+	}
+	set, err := mentionsapi.NewRouteSet(mentionsapi.Dependencies{Directory: deps.MentionDirectory,
+		Authenticate: authenticate, WebOrigin: deps.WebOrigin})
+	return set, true, err
 }
 
 func validateDependencies(deps Dependencies) error {
