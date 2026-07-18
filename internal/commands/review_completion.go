@@ -6,18 +6,134 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
 
 const (
 	externalReviewCompletionStart = "<!-- issue-spec:external-review-completion version=1 -->"
 	externalReviewCompletionEnd   = "<!-- /issue-spec:external-review-completion -->"
+	acceptedReviewReceiptStart    = "<!-- issue-spec:accepted-review-receipt version=1 -->"
+	acceptedReviewReceiptEnd      = "<!-- /issue-spec:accepted-review-receipt -->"
 )
+
+// acceptedReviewReceipt is the compact immutable authority projected from a
+// validated role-owned receipt. Detailed findings remain in their stable
+// provider-native carriers and are not duplicated into this block.
+type acceptedReviewReceipt struct {
+	ReceiptID            string                   `json:"receipt_id"`
+	ReceiptDigest        string                   `json:"receipt_digest"`
+	AssignmentID         string                   `json:"assignment_id"`
+	AssignmentDigest     string                   `json:"assignment_digest"`
+	AssignmentGeneration uint64                   `json:"assignment_generation"`
+	SubjectRevision      string                   `json:"subject_revision"`
+	Verdict              assignment.ReviewVerdict `json:"verdict"`
+	FindingIDs           []string                 `json:"finding_ids,omitempty"`
+	Provenance           assignment.Provenance    `json:"provenance"`
+}
+
+func validateReviewReceiptBinding(receipt assignment.Receipt, binding *processworkspace.AssignmentBinding) error {
+	if err := receipt.ValidateForAcceptance(); err != nil {
+		return err
+	}
+	if receipt.Role != assignment.RoleReview || receipt.Review == nil {
+		return errors.New("--result-file must contain a review receipt")
+	}
+	if binding == nil || binding.SchemaVersion != assignment.AssignmentSchemaVersion ||
+		binding.Role != assignment.RoleReview || binding.BaseRevision != "" || binding.SubjectRevision == "" {
+		return errors.New("PROCESS does not contain an authoritative review assignment binding")
+	}
+	if receipt.AssignmentID != binding.AssignmentID || receipt.AssignmentDigest != binding.Digest ||
+		receipt.AssignmentGeneration != binding.Generation {
+		return errors.New("review receipt does not match the authoritative assignment id, digest, and generation")
+	}
+	if receipt.SubjectRevision != binding.SubjectRevision {
+		return errors.New("review receipt subject revision does not match the authoritative exact snapshot")
+	}
+	writer := strings.TrimSpace(receipt.Provenance.Writer)
+	if writer == "" || !strings.EqualFold(writer, strings.TrimSpace(receipt.Provenance.Subject)) ||
+		strings.EqualFold(writer, "Coordinator") {
+		return errors.New("review receipt must be owned by one non-Coordinator reviewer identity")
+	}
+	return nil
+}
+
+func acceptedReviewReceiptFrom(receipt assignment.Receipt) acceptedReviewReceipt {
+	result := acceptedReviewReceipt{ReceiptID: receipt.ID, ReceiptDigest: receipt.ReceiptDigest,
+		AssignmentID: receipt.AssignmentID, AssignmentDigest: receipt.AssignmentDigest,
+		AssignmentGeneration: receipt.AssignmentGeneration, SubjectRevision: receipt.SubjectRevision,
+		Verdict: receipt.Review.Verdict, Provenance: receipt.Provenance}
+	for _, finding := range receipt.Review.Findings {
+		result.FindingIDs = append(result.FindingIDs, finding.ID)
+	}
+	sort.Strings(result.FindingIDs)
+	return result
+}
+
+func stampAcceptedReviewReceipt(body string, receipt acceptedReviewReceipt) (string, bool, error) {
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		return "", false, err
+	}
+	block := acceptedReviewReceiptStart + "\n" + string(raw) + "\n" + acceptedReviewReceiptEnd
+	startCount, endCount := strings.Count(body, acceptedReviewReceiptStart), strings.Count(body, acceptedReviewReceiptEnd)
+	if startCount != endCount || startCount > 1 || strings.Count(body, "issue-spec:accepted-review-receipt") != startCount+endCount {
+		return "", false, errors.New("existing accepted review receipt block is malformed")
+	}
+	if startCount == 0 {
+		updated := strings.TrimRight(body, "\n") + "\n\n" + block + "\n"
+		return updated, true, nil
+	}
+	start, end := strings.Index(body, acceptedReviewReceiptStart), strings.Index(body, acceptedReviewReceiptEnd)
+	if end < start+len(acceptedReviewReceiptStart) {
+		return "", false, errors.New("existing accepted review receipt block is malformed")
+	}
+	end += len(acceptedReviewReceiptEnd)
+	if body[start:end] != block {
+		return "", false, errors.New("accepted review receipt authority is immutable")
+	}
+	return body, false, nil
+}
+
+func parseAcceptedReviewReceipt(body string) (acceptedReviewReceipt, bool, error) {
+	if !strings.Contains(body, "issue-spec:accepted-review-receipt") {
+		return acceptedReviewReceipt{}, false, nil
+	}
+	if strings.Count(body, acceptedReviewReceiptStart) != 1 || strings.Count(body, acceptedReviewReceiptEnd) != 1 ||
+		strings.Count(body, "issue-spec:accepted-review-receipt") != 2 {
+		return acceptedReviewReceipt{}, true, errors.New("accepted review receipt must contain exactly one version-1 marker pair")
+	}
+	start, end := strings.Index(body, acceptedReviewReceiptStart), strings.Index(body, acceptedReviewReceiptEnd)
+	if end <= start {
+		return acceptedReviewReceipt{}, true, errors.New("accepted review receipt marker order is invalid")
+	}
+	rawBlock := body[start+len(acceptedReviewReceiptStart) : end]
+	if len(rawBlock) < 3 || rawBlock[0] != '\n' || rawBlock[len(rawBlock)-1] != '\n' {
+		return acceptedReviewReceipt{}, true, errors.New("accepted review receipt payload framing is invalid")
+	}
+	raw := []byte(rawBlock[1 : len(rawBlock)-1])
+	var result acceptedReviewReceipt
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&result); err != nil {
+		return acceptedReviewReceipt{}, true, fmt.Errorf("decode accepted review receipt: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return acceptedReviewReceipt{}, true, errors.New("accepted review receipt has trailing JSON")
+	}
+	canonical, _ := json.Marshal(result)
+	if !bytes.Equal(raw, canonical) {
+		return acceptedReviewReceipt{}, true, errors.New("accepted review receipt payload is not canonical JSON")
+	}
+	return result, true, nil
+}
 
 // ReviewCompletionPolicy projects repository and native review policy onto the
 // CLI-owned REVIEW completion artifact. Provider review records remain facts:

@@ -5,10 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
@@ -19,7 +24,7 @@ import (
 
 func (a *app) runReview(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec review finding|reply|sync ...\n")
+		a.errorf("usage: issue-spec review finding|reply|submit|sync ...\n")
 		return 2
 	}
 	switch args[0] {
@@ -27,12 +32,251 @@ func (a *app) runReview(ctx context.Context, args []string) int {
 		return a.runReviewFinding(ctx, args[1:])
 	case "reply":
 		return a.runReviewReply(ctx, args[1:])
+	case "submit":
+		return a.runReviewSubmit(ctx, args[1:])
 	case "sync":
 		return a.runReviewSync(ctx, args[1:])
 	default:
 		a.errorf("unknown review command %q\n", args[0])
 		return 2
 	}
+}
+
+type reviewSubmitResult struct {
+	OK              bool                                `json:"ok"`
+	Action          string                              `json:"action"`
+	ReviewID        string                              `json:"review_id"`
+	ReceiptID       string                              `json:"receipt_id"`
+	ReceiptDigest   string                              `json:"receipt_digest"`
+	SubjectRevision string                              `json:"subject_revision"`
+	Verdict         assignment.ReviewVerdict            `json:"verdict"`
+	Findings        []reviewFindingResult               `json:"findings,omitempty"`
+	NativeEvidence  []github.NativeReviewEvidenceResult `json:"native_evidence,omitempty"`
+	CommentID       int64                               `json:"comment_id"`
+	URL             string                              `json:"url"`
+}
+
+func (a *app) runReviewSubmit(ctx context.Context, args []string) int {
+	fs := newFlagSet("review submit", a.err)
+	repoFlag := fs.String("repo", "", "repository owner/name")
+	host := fs.String("hostname", "github.com", "GitHub hostname")
+	implementFlag := fs.String("implement", "", "implement issue containing the review PROCESS")
+	prFlag := fs.Int("pr", 0, "GitHub pull request number")
+	processID := fs.String("process", "", "review PROCESS id")
+	reviewID := fs.String("id", "", "REVIEW id to upsert")
+	resultFile := fs.String("result-file", "", "absolute path to a sealed review receipt")
+	specID := fs.String("spec", "", "SPEC id for submitted findings")
+	specURL := fs.String("spec-url", "", "SPEC comment URL for submitted findings")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	repo, ok := a.validateRepo(*repoFlag)
+	if !ok {
+		return 2
+	}
+	implementIssue, err := parseIssueFlag(*implementFlag, "implement")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	if strings.TrimSpace(*processID) == "" || strings.TrimSpace(*reviewID) == "" {
+		a.errorf("--process and --id are required\n")
+		return 2
+	}
+	receipt, err := readReviewResultFile(*resultFile)
+	if err != nil {
+		a.errorf("read review result: %v\n", err)
+		return 2
+	}
+	client, token, err := a.clientFor(ctx, *host)
+	if err != nil {
+		a.errorf("auth required for review submit on %s: %v\n", auth.NormalizeHost(*host), err)
+		return 1
+	}
+	process, processBody, err := findArtifactByID(ctx, client, repo, implementIssue, strings.TrimSpace(*processID))
+	if err != nil {
+		a.errorf("load review PROCESS: %v\n", err)
+		return 1
+	}
+	workspace := model.ParseProcessWorkspace(*processID, process.URL, processBody)
+	class := model.ParseProcessExecutionClass(*processID, process.URL, processBody)
+	if process.Comment.Type != "PROCESS" || process.Comment.ID != *processID || len(process.Comment.Errors) != 0 ||
+		class.Blocking() || class.Class != model.ProcessExecutionReview || !workspace.Explicit || workspace.Blocking() ||
+		workspace.Workspace == nil || workspace.Workspace.Mode != "snapshot" {
+		a.errorf("review PROCESS must be one canonical managed snapshot assignment\n")
+		return 1
+	}
+	if err := validateReviewReceiptBinding(receipt, workspace.Workspace.Assignment); err != nil {
+		a.errorf("validate review receipt: %v\n", err)
+		return 1
+	}
+	covers, err := processSectionList(processBody, "### Covers")
+	if err != nil {
+		a.errorf("validate review coverage: %v\n", err)
+		return 1
+	}
+	if len(receipt.Review.Findings) > 0 && (!stringSliceContains(covers, *specID) || strings.TrimSpace(*specURL) == "") {
+		a.errorf("--spec must name a SPEC covered by the review PROCESS and --spec-url is required for findings\n")
+		return 2
+	}
+	comments, err := client.ListIssueComments(ctx, repo, implementIssue)
+	if err != nil {
+		a.errorf("observe submitted REVIEW: %v\n", err)
+		return 1
+	}
+	if err := validateExistingReviewReceipt(comments, *reviewID, receipt); err != nil {
+		a.errorf("validate submitted REVIEW replay: %v\n", err)
+		return 1
+	}
+	body, err := renderSubmittedReview(*reviewID, *processID, process.URL, receipt)
+	if err != nil {
+		a.errorf("render submitted REVIEW: %v\n", err)
+		return 1
+	}
+	profile, _, err := auth.ResolveProfile(a.profileName, *host)
+	if err != nil {
+		a.errorf("resolve review profile: %v\n", err)
+		return 1
+	}
+	result := reviewSubmitResult{OK: true, ReviewID: *reviewID, ReceiptID: receipt.ID,
+		ReceiptDigest: receipt.ReceiptDigest, SubjectRevision: receipt.SubjectRevision, Verdict: receipt.Review.Verdict}
+	if profile.Kind == auth.ProfileKindHosted {
+		if *prFlag > 0 {
+			a.errorf("--pr is not a self-hosted code authority\n")
+			return 2
+		}
+		native, err := a.newNativeEvidenceProvider(profile, token.Value)
+		if err != nil {
+			a.errorf("open native evidence: %v\n", err)
+			return 1
+		}
+		target, err := native.ResolveTarget(ctx, repo, implementIssue, "code_change")
+		if err != nil || target.SubjectRevision != receipt.SubjectRevision {
+			a.errorf("review receipt does not target the exact active code revision\n")
+			return 1
+		}
+		writer, err := github.NewClientWithOptions(github.ClientOptions{Host: profile.Hostname,
+			BaseURL: profile.NativeAPIURL, Token: token.Value, CAFile: profile.CAFile})
+		if err != nil {
+			a.errorf("open native review evidence writer: %v\n", err)
+			return 1
+		}
+		for _, finding := range receipt.Review.Findings {
+			if finding.Severity == "P3" {
+				a.errorf("finding %s uses unsupported provider severity P3\n", finding.ID)
+				return 1
+			}
+			item, err := writer.AppendNativeReviewEvidence(ctx, repo, implementIssue, github.NativeReviewEvidenceInput{
+				OrganizationID: target.OrgID.String(), RepositoryID: target.RepoID.String(), IssueID: target.IssueID.String(),
+				ProviderKey: target.Reference.ProviderKey, ExternalRepository: target.Reference.ExternalRepository,
+				ChangeID: target.Reference.ChangeID, IngestKey: reviewFindingIngestKey(receipt, finding),
+				SubjectRevision: receipt.SubjectRevision, FindingID: finding.ID, ProcessID: *processID,
+				SpecID: *specID, Path: finding.Path, Side: finding.Side, Line: finding.Line,
+				Severity: finding.Severity, Message: finding.Message, ReceiptID: receipt.ID, ReceiptDigest: receipt.ReceiptDigest})
+			if err != nil {
+				a.errorf("submit native finding %s: %v\n", finding.ID, err)
+				return 1
+			}
+			result.NativeEvidence = append(result.NativeEvidence, item)
+		}
+	} else {
+		if *prFlag <= 0 {
+			a.errorf("--pr must be a positive pull request number\n")
+			return 2
+		}
+		pr, err := client.GetPullRequest(ctx, repo, *prFlag)
+		if err != nil || pr.Head.SHA != receipt.SubjectRevision {
+			a.errorf("review receipt does not target the exact current PR revision\n")
+			return 1
+		}
+		for _, finding := range receipt.Review.Findings {
+			item, err := createReceiptReviewFinding(ctx, client, repo, *prFlag, pr.Head.SHA, finding,
+				*processID, *specID, *specURL, receipt)
+			if err != nil {
+				a.errorf("submit finding %s: %v\n", finding.ID, err)
+				return 1
+			}
+			result.Findings = append(result.Findings, item)
+		}
+	}
+	action, comment, _, err := upsertTypedComment(ctx, client, repo, implementIssue, "REVIEW", *reviewID, body)
+	if err != nil {
+		a.errorf("upsert submitted REVIEW: %v\n", err)
+		return 1
+	}
+	result.Action, result.CommentID, result.URL = action, comment.ID, comment.HTMLURL
+	if *jsonOut {
+		return a.outputJSON(result)
+	}
+	fmt.Fprintf(a.out, "%s REVIEW %s from receipt %s at %s: %s\n", action, *reviewID, receipt.ID, receipt.SubjectRevision, comment.HTMLURL)
+	return 0
+}
+
+func readReviewResultFile(path string) (assignment.Receipt, error) {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "-" || !filepath.IsAbs(path) {
+		return assignment.Receipt{}, errors.New("--result-file must be an absolute regular file path and cannot be '-'")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return assignment.Receipt{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return assignment.Receipt{}, errors.New("--result-file must name a regular non-symlink file")
+	}
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return assignment.Receipt{}, err
+	}
+	return assignment.ParseReceiptJSON(payload)
+}
+
+func stringSliceContains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == strings.TrimSpace(wanted) {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewFindingIngestKey(receipt assignment.Receipt, finding assignment.Finding) string {
+	return "review-submit:" + receipt.ReceiptDigest + ":" + finding.ID
+}
+
+func validateExistingReviewReceipt(comments []github.Comment, reviewID string, receipt assignment.Receipt) error {
+	for _, comment := range comments {
+		parsed := model.ParseTypedComment(comment.Body)
+		if parsed.Type != "REVIEW" {
+			continue
+		}
+		existing, found, err := parseAcceptedReviewReceipt(comment.Body)
+		if err != nil {
+			return fmt.Errorf("REVIEW %s: %w", parsed.ID, err)
+		}
+		if !found {
+			if parsed.ID == reviewID {
+				return fmt.Errorf("REVIEW %s already exists without accepted receipt authority", reviewID)
+			}
+			continue
+		}
+		sameGeneration := existing.AssignmentID == receipt.AssignmentID &&
+			existing.AssignmentDigest == receipt.AssignmentDigest && existing.AssignmentGeneration == receipt.AssignmentGeneration
+		if sameGeneration && existing.ReceiptDigest != receipt.ReceiptDigest {
+			return fmt.Errorf("assignment generation already accepted different receipt %s", existing.ReceiptID)
+		}
+		if existing.ReceiptID == receipt.ID && existing.ReceiptDigest != receipt.ReceiptDigest {
+			return fmt.Errorf("receipt id %s already exists with different digest", receipt.ID)
+		}
+		if existing.ReceiptDigest == receipt.ReceiptDigest && parsed.ID != reviewID {
+			return fmt.Errorf("receipt %s is already projected by REVIEW %s", receipt.ID, parsed.ID)
+		}
+		if parsed.ID == reviewID && existing.ReceiptDigest != receipt.ReceiptDigest {
+			return fmt.Errorf("REVIEW %s already carries different receipt authority", reviewID)
+		}
+	}
+	return nil
 }
 
 func (a *app) runReviewFinding(ctx context.Context, args []string) int {
@@ -665,6 +909,117 @@ func createReviewFinding(ctx context.Context, client interface {
 		Process:   processID,
 		Spec:      specID,
 	}, nil
+}
+
+func createReceiptReviewFinding(ctx context.Context, client interface {
+	ListPullRequestFiles(context.Context, string, int) ([]github.PullRequestFile, error)
+	ListPullRequestReviewComments(context.Context, string, int) ([]github.PullRequestReviewComment, error)
+	CreatePullRequestReviewComment(context.Context, string, int, string, string, string, int, string) (github.PullRequestReviewComment, error)
+}, repo string, prNumber int, revision string, finding assignment.Finding, processID, specID, specURL string,
+	receipt assignment.Receipt) (reviewFindingResult, error) {
+	if finding.Severity == "P3" {
+		return reviewFindingResult{}, errors.New("provider finding severity P3 is unsupported")
+	}
+	body, err := model.RenderFindingBody(receipt.Provenance.Writer, finding.ID, finding.Severity, processID,
+		specID, specURL, finding.Message, "open", finding.Path, finding.Line)
+	if err != nil {
+		return reviewFindingResult{}, err
+	}
+	body = strings.Replace(body, "Type: FINDING\n", "Receipt Digest: "+receipt.ReceiptDigest+"\nReview Side: "+finding.Side+"\nType: FINDING\n", 1)
+	files, err := client.ListPullRequestFiles(ctx, repo, prNumber)
+	if err != nil {
+		return reviewFindingResult{}, err
+	}
+	if !lineExistsOnReviewSide(finding.Path, finding.Side, finding.Line, files) {
+		return reviewFindingResult{}, fmt.Errorf("%s:%d is not a changed %s-side line in PR #%d", finding.Path, finding.Line, finding.Side, prNumber)
+	}
+	comments, err := client.ListPullRequestReviewComments(ctx, repo, prNumber)
+	if err != nil {
+		return reviewFindingResult{}, err
+	}
+	for _, comment := range comments {
+		marker, ok, markerErr := model.FindFindingMarker(comment.Body)
+		if markerErr != nil {
+			return reviewFindingResult{}, markerErr
+		}
+		if !ok || marker.ID != finding.ID {
+			continue
+		}
+		if !model.SameFinding(marker, finding.ID, finding.Path, finding.Line) || comment.Body != body || comment.CommitID != revision {
+			return reviewFindingResult{}, fmt.Errorf("stable finding id %s already exists with different receipt identity", finding.ID)
+		}
+		return reviewFindingResult{OK: true, Created: false, CommentID: comment.ID, URL: comment.HTMLURL,
+			PR: prNumber, Path: finding.Path, Line: finding.Line, Finding: finding.ID,
+			Severity: finding.Severity, Process: processID, Spec: specID}, nil
+	}
+	comment, err := client.CreatePullRequestReviewComment(ctx, repo, prNumber, body, revision, finding.Path, finding.Line, finding.Side)
+	if err != nil {
+		return reviewFindingResult{}, err
+	}
+	return reviewFindingResult{OK: true, Created: true, CommentID: comment.ID, URL: comment.HTMLURL,
+		PR: prNumber, Path: finding.Path, Line: finding.Line, Finding: finding.ID,
+		Severity: finding.Severity, Process: processID, Spec: specID}, nil
+}
+
+var receiptReviewHunkHeader = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
+
+func lineExistsOnReviewSide(path, side string, line int, files []github.PullRequestFile) bool {
+	for _, file := range files {
+		if file.Filename != path {
+			continue
+		}
+		left, right := 0, 0
+		for _, raw := range strings.Split(file.Patch, "\n") {
+			if match := receiptReviewHunkHeader.FindStringSubmatch(raw); match != nil {
+				left, _ = strconv.Atoi(match[1])
+				right, _ = strconv.Atoi(match[3])
+				continue
+			}
+			if left == 0 || raw == "" {
+				continue
+			}
+			switch raw[0] {
+			case '-':
+				if side == "LEFT" && left == line {
+					return true
+				}
+				left++
+			case '+':
+				if side == "RIGHT" && right == line {
+					return true
+				}
+				right++
+			default:
+				left++
+				right++
+			}
+		}
+	}
+	return false
+}
+
+func renderSubmittedReview(reviewID, processID, processURL string, receipt assignment.Receipt) (string, error) {
+	var logical strings.Builder
+	fmt.Fprintf(&logical, "## Review Summary: role-owned receipt\n\nReviewed exact revision `%s`.\n\n### Findings\n\n", receipt.SubjectRevision)
+	if len(receipt.Review.Findings) == 0 {
+		logical.WriteString("- None.\n")
+	} else {
+		for _, finding := range receipt.Review.Findings {
+			fmt.Fprintf(&logical, "- %s %s `%s:%d`\n", finding.ID, finding.Severity, finding.Path, finding.Line)
+		}
+	}
+	fmt.Fprintf(&logical, "\n### Verdict\n\n%s\n", receipt.Review.Verdict)
+	body, err := model.EnsureTypedBody("REVIEW", reviewID, logical.String(), model.BodyOptions{
+		Agent: receipt.Provenance.Writer, SubjectRevision: receipt.SubjectRevision, Status: "done", Scope: "role-owned review submission"})
+	if err != nil {
+		return "", err
+	}
+	body, _, err = model.AddRelatedCommentLink(body, processURL)
+	if err != nil {
+		return "", err
+	}
+	body, _, err = stampAcceptedReviewReceipt(body, acceptedReviewReceiptFrom(receipt))
+	return body, err
 }
 
 func replyReviewFinding(ctx context.Context, client interface {
