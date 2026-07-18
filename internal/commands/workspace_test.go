@@ -82,12 +82,74 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 	if err != nil || review.Role != assignment.RoleReview || len(review.Review.Authors) != 1 || !reflect.DeepEqual(review.Review.Scope, []string{"worker.go"}) {
 		t.Fatalf("review=%+v err=%v", review, err)
 	}
+	reviewJSON, err := assignment.CanonicalAssignmentJSON(review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewFile := filepath.Join(t.TempDir(), "review.json")
+	if err := os.WriteFile(reviewFile, reviewJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fromFile, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
+		processBody(model.ProcessExecutionReview, assignment.ProcessInput{ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false)
+	if err != nil || !reflect.DeepEqual(fromFile.Review, review.Review) {
+		t.Fatalf("review file=%+v err=%v", fromFile, err)
+	}
+	review.Review.Authors = []string{"Omitted Author <omitted@example.com>"}
+	reviewJSON, err = assignment.CanonicalAssignmentJSON(review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reviewFile, reviewJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
+		processBody(model.ProcessExecutionReview, assignment.ProcessInput{ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false); err == nil || !strings.Contains(err.Error(), "compiler-derived") {
+		t.Fatalf("review file bypassed Git-derived authors: %v", err)
+	}
+	omittedScope := fromFile
+	omittedScope.Review.Scope = []string{"different.go"}
+	reviewJSON, err = assignment.CanonicalAssignmentJSON(omittedScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reviewFile, reviewJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
+		processBody(model.ProcessExecutionReview, assignment.ProcessInput{ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false); err == nil || !strings.Contains(err.Error(), "compiler-derived") {
+		t.Fatalf("review file bypassed Git-derived scope: %v", err)
+	}
+	invalidBase := fromFile
+	invalidBase.Review.DiffBaseRevision = strings.Repeat("f", 40)
+	reviewJSON, err = assignment.CanonicalAssignmentJSON(invalidBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reviewFile, reviewJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
+		processBody(model.ProcessExecutionReview, assignment.ProcessInput{ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false); err == nil || !strings.Contains(err.Error(), "ancestor") {
+		t.Fatalf("review file accepted non-ancestor diff base: %v", err)
+	}
 
 	verification, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionVerification,
 		processBody(model.ProcessExecutionVerification, assignment.ProcessInput{ScenarioSelectors: scenarios,
 			RequiredTests: []assignment.TestSelector{{ID: "unit", Command: "go test ./internal/commands"}}}), snapshot, "", "", scenarios, false)
 	if err != nil || verification.Role != assignment.RoleVerification || len(verification.Verification.RequiredTests) != 1 {
 		t.Fatalf("verification=%+v err=%v", verification, err)
+	}
+}
+
+func TestDeriveReviewAssignmentIncludesDeleteOnlyScope(t *testing.T) {
+	repo, base := workspaceGitRepository(t)
+	workspaceGit(t, repo, "rm", "README.md")
+	workspaceGit(t, repo, "commit", "-s", "-m", "delete README")
+	subject := workspaceGitOutput(t, repo, "rev-parse", "HEAD")
+	authors, scope, err := deriveReviewAssignment(t.Context(), repo, base, subject)
+	if err != nil || len(authors) != 1 || !reflect.DeepEqual(scope, []string{"README.md"}) {
+		t.Fatalf("delete-only review authors=%v scope=%v err=%v", authors, scope, err)
 	}
 }
 
@@ -226,6 +288,116 @@ func TestWorkspacePreparePersistsAssignmentBeforePacketAndRedispatchesExplicitly
 	second := decodeWorkspaceResult(t, out)
 	if second.Assignment == nil || second.Assignment.Generation != 2 || second.Assignment.Assignment.ID == first.Assignment.Assignment.ID {
 		t.Fatalf("redispatch assignment=%+v", second.Assignment)
+	}
+}
+
+func TestWorkspacePrepareRemoteOnlyAssignmentRecoveryProvesBindingBeforeMutation(t *testing.T) {
+	for _, name := range []string{"match", "mismatch", "generation-mismatch", "local-only"} {
+		t.Run(name, func(t *testing.T) {
+			repo, base := workspaceGitRepository(t)
+			specBody, err := templates.SpecComment(templates.SpecCommentOptions{Common: templates.CommonOptions{ID: "SPEC-001", Status: "confirmed"},
+				Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{Title: "assignment", Text: "The CLI MUST recover assignments."},
+					Scenarios: []templates.SpecScenarioInput{{Title: "recover packet", When: "retried", Then: "matched"}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			processBody, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: "PROCESS-004", Status: "in-progress"},
+				Input: templates.ProcessInput{Title: "recovery", ParentTask: "TASK-004", ExecutionClass: model.ProcessExecutionChangeBearing,
+					WriteOwnership: []string{"internal/commands/**"}, Covers: []string{"SPEC-001"}, Handoff: "ready",
+					Assignment: &assignment.ProcessInput{Objective: "recover exact packet"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend := newWorkspaceCASBackend(processBody)
+			backend.listIssueComments = func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+				if issue == 295 {
+					return []github.Comment{{ID: 91, Body: specBody}}, nil
+				}
+				return []github.Comment{{ID: 77, HTMLURL: "https://example.test/process/77", Body: backend.body}}, nil
+			}
+			root := filepath.Join(t.TempDir(), "managed")
+			prepareArgs := append(workspaceBaseArgs(repo, root, "owner-secret"), "--base", base, "--json")
+			app, out, errOut := transitionAppWithError(backend)
+			if code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, prepareArgs...)); code != 0 {
+				t.Fatalf("legacy prepare code=%d out=%s err=%s", code, out.String(), errOut.String())
+			}
+			legacy := decodeWorkspaceResult(t, out)
+			manager := openWorkspaceManager(t, repo, root)
+			local, found, err := manager.Store.Get(t.Context(), legacy.WorkspaceID)
+			if err != nil || !found || local.Assignment != nil || local.Portable.Assignment != nil {
+				t.Fatalf("legacy local lease=%+v found=%v err=%v", local, found, err)
+			}
+			catalog := []assignment.ScenarioRef{{SpecID: "SPEC-001", Scenario: "recover packet"}}
+			value, err := compileWorkspaceAssignment(t.Context(), "o/r", 177, "PROCESS-004", model.ProcessExecutionChangeBearing,
+				backend.body, local, "", "", catalog, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest, err := assignment.AssignmentDigest(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name == "mismatch" {
+				digest = strings.Repeat("f", 64)
+			}
+			if name == "local-only" {
+				if _, err := manager.Store.BindAssignment(t.Context(), legacy.WorkspaceID, value, false, nil); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				generation := uint64(1)
+				if name == "generation-mismatch" {
+					generation = 2
+				}
+				remoteLease := local.Portable
+				remoteLease.Assignment = &processworkspace.AssignmentBinding{SchemaVersion: value.SchemaVersion, AssignmentID: value.ID,
+					Digest: digest, Role: value.Role, BaseRevision: value.BaseRevision, SubjectRevision: value.SubjectRevision, Generation: generation}
+				transition, err := model.ApplyTypedTransition(backend.body, model.TransitionRequest{ExpectedType: "PROCESS", ExpectedID: "PROCESS-004", Workspace: &remoteLease})
+				if err != nil {
+					t.Fatal(err)
+				}
+				backend.body = transition.Body
+				backend.version++
+			}
+			backend.writes = 0
+
+			issueArgs := append([]string{}, prepareArgs...)
+			issueArgs = append(issueArgs, "--issue-assignment", "--proposal", "295")
+			app, out, errOut = transitionAppWithError(backend)
+			code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, issueArgs...))
+			after, afterFound, getErr := manager.Store.Get(t.Context(), legacy.WorkspaceID)
+			if getErr != nil || !afterFound {
+				t.Fatalf("local lease disappeared found=%v err=%v", afterFound, getErr)
+			}
+			if name == "local-only" {
+				if code == 0 || backend.writes != 0 || after.Assignment == nil || after.Portable.Assignment == nil {
+					t.Fatalf("local-only conflict mutated state code=%d writes=%d lease=%+v out=%s err=%s", code, backend.writes, after, out.String(), errOut.String())
+				}
+				var result workspaceCommandResult
+				if err := json.Unmarshal(out.Bytes(), &result); err != nil || result.Code != "assignment_binding_conflict" {
+					t.Fatalf("local-only result=%+v decode=%v", result, err)
+				}
+				return
+			}
+			if name == "mismatch" || name == "generation-mismatch" {
+				if code == 0 || backend.writes != 0 || after.Assignment != nil || after.Portable.Assignment != nil {
+					t.Fatalf("mismatch mutated state code=%d writes=%d lease=%+v out=%s err=%s", code, backend.writes, after, out.String(), errOut.String())
+				}
+				var result workspaceCommandResult
+				if err := json.Unmarshal(out.Bytes(), &result); err != nil || result.Code != "assignment_recovery_mismatch" {
+					t.Fatalf("mismatch result=%+v decode=%v", result, err)
+				}
+				return
+			}
+			if code != 0 || after.Assignment == nil || after.Portable.Assignment == nil ||
+				after.Portable.Assignment.Digest != digest || after.Portable.Assignment.Generation != 1 {
+				t.Fatalf("matching recovery code=%d writes=%d lease=%+v out=%s err=%s", code, backend.writes, after, out.String(), errOut.String())
+			}
+			remote := model.ParseProcessWorkspace("PROCESS-004", "", backend.body)
+			if remote.Blocking() || remote.Workspace == nil || !reflect.DeepEqual(remote.Workspace.Assignment, after.Portable.Assignment) {
+				t.Fatalf("matching recovery remote=%+v local=%+v", remote, after.Portable.Assignment)
+			}
+		})
 	}
 }
 

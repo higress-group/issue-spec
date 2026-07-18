@@ -314,13 +314,19 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: portable.WorkspaceID}, "reservation_observation_failed", err, *flags.jsonOut)
 	}
+	var scenarioCatalog []assignment.ScenarioRef
+	var preflightAssignment *assignment.Assignment
 	if localFound {
 		remoteBinding, localBinding := portable.Assignment, existingLocal.Portable.Assignment
 		if remoteBinding != nil && localBinding != nil && !reflect.DeepEqual(remoteBinding, localBinding) {
 			return a.workspaceError(workspaceResult(ctx, manager, processworkspace.Inspection{Lease: existingLocal}, repo, issue, processID, "prepare", workspaceRemoteResult{}),
 				"assignment_binding_conflict", errors.New("remote and local assignment bindings differ; inspect both reservations and reconcile explicitly"), *flags.jsonOut)
 		}
-		if (remoteBinding == nil) != (localBinding == nil) && !*issueAssignment {
+		if remoteBinding == nil && localBinding != nil {
+			return a.workspaceError(workspaceResult(ctx, manager, processworkspace.Inspection{Lease: existingLocal}, repo, issue, processID, "prepare", workspaceRemoteResult{}),
+				"assignment_binding_conflict", errors.New("local assignment binding has no matching remote binding; inspect and reconcile explicitly"), *flags.jsonOut)
+		}
+		if remoteBinding != nil && localBinding == nil && !*issueAssignment {
 			return a.workspaceError(workspaceResult(ctx, manager, processworkspace.Inspection{Lease: existingLocal}, repo, issue, processID, "prepare", workspaceRemoteResult{}),
 				"assignment_recovery_required", errors.New("assignment binding exists on only one side; rerun with explicit --issue-assignment and matching structured input to reconcile"), *flags.jsonOut)
 		}
@@ -328,6 +334,37 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: portable.WorkspaceID,
 			State: portable.State}, "assignment_recovery_required",
 			errors.New("remote PROCESS has an assignment binding but the local assignment is absent; rerun with explicit --issue-assignment and matching structured input"), *flags.jsonOut)
+	}
+	if portable.Assignment != nil && (!localFound || existingLocal.Portable.Assignment == nil) {
+		if *redispatch {
+			return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: portable.WorkspaceID,
+				State: portable.State}, "assignment_recovery_required", errors.New("recover the exact remote assignment before redispatching it"), *flags.jsonOut)
+		}
+		scenarioCatalog, err = loadCoveredScenarioCatalog(ctx, target.client, repo, proposalIssue, target.body)
+		if err != nil {
+			return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: portable.WorkspaceID,
+				State: portable.State}, "assignment_scenarios_invalid", err, *flags.jsonOut)
+		}
+		compileLease := local
+		compileLease.Portable = portable
+		value, compileErr := compileWorkspaceAssignment(ctx, repo, issue, processID, class.Class, target.body, compileLease, *assignmentFile, *assignmentDiffBase, scenarioCatalog, false)
+		if compileErr != nil {
+			return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: portable.WorkspaceID,
+				State: portable.State}, "assignment_recovery_mismatch", compileErr, *flags.jsonOut)
+		}
+		recoveryGeneration := portable.Assignment.Generation
+		if localFound {
+			recoveryGeneration = 1
+		}
+		if localFound && portable.Assignment.Generation != recoveryGeneration {
+			return a.workspaceError(workspaceResult(ctx, manager, processworkspace.Inspection{Lease: existingLocal}, repo, issue, processID, "prepare", workspaceRemoteResult{}),
+				"assignment_recovery_mismatch", errors.New("existing legacy local lease can recover only the first assignment generation; inspect and reconcile explicitly"), *flags.jsonOut)
+		}
+		if bindingErr := validateCompiledAssignmentBinding(value, recoveryGeneration, *portable.Assignment); bindingErr != nil {
+			return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: portable.WorkspaceID,
+				State: portable.State}, "assignment_recovery_mismatch", bindingErr, *flags.jsonOut)
+		}
+		preflightAssignment = &value
 	}
 	remoteLaterState := remoteWorkspace.Workspace != nil && portable.State != processworkspace.StatePreparing && portable.State != processworkspace.StatePrepared
 	if remoteLaterState {
@@ -359,13 +396,22 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 	}
 	var packet *assignment.Packet
 	if *issueAssignment {
-		catalog, catalogErr := loadCoveredScenarioCatalog(ctx, target.client, repo, proposalIssue, target.body)
-		if catalogErr != nil {
-			return a.workspaceLocalFailure(ctx, manager, inspection, repo, issue, processID, "assignment_scenarios_invalid", catalogErr, *flags.jsonOut)
+		if scenarioCatalog == nil {
+			var catalogErr error
+			scenarioCatalog, catalogErr = loadCoveredScenarioCatalog(ctx, target.client, repo, proposalIssue, target.body)
+			if catalogErr != nil {
+				return a.workspaceLocalFailure(ctx, manager, inspection, repo, issue, processID, "assignment_scenarios_invalid", catalogErr, *flags.jsonOut)
+			}
 		}
-		value, compileErr := compileWorkspaceAssignment(ctx, repo, issue, processID, class.Class, target.body, inspection.Lease, *assignmentFile, *assignmentDiffBase, catalog, *redispatch)
-		if compileErr != nil {
-			return a.workspaceLocalFailure(ctx, manager, inspection, repo, issue, processID, "assignment_invalid", compileErr, *flags.jsonOut)
+		var value assignment.Assignment
+		if preflightAssignment != nil {
+			value = *preflightAssignment
+		} else {
+			var compileErr error
+			value, compileErr = compileWorkspaceAssignment(ctx, repo, issue, processID, class.Class, target.body, inspection.Lease, *assignmentFile, *assignmentDiffBase, scenarioCatalog, *redispatch)
+			if compileErr != nil {
+				return a.workspaceLocalFailure(ctx, manager, inspection, repo, issue, processID, "assignment_invalid", compileErr, *flags.jsonOut)
+			}
 		}
 		var expected *uint64
 		if *redispatch {
@@ -408,6 +454,15 @@ func compileWorkspaceAssignment(ctx context.Context, repo string, issue int, pro
 		}
 		if err := validateAssignmentForLease(value, repo, issue, processID, class, lease, redispatch); err != nil {
 			return assignment.Assignment{}, err
+		}
+		if value.Role == assignment.RoleReview {
+			authors, scope, err := deriveReviewAssignment(ctx, lease.IntegrationRoot, value.Review.DiffBaseRevision, lease.Portable.DetachedRevision)
+			if err != nil {
+				return assignment.Assignment{}, err
+			}
+			if !reflect.DeepEqual(value.Review.Authors, authors) || !reflect.DeepEqual(value.Review.Scope, scope) {
+				return assignment.Assignment{}, errors.New("review assignment file authors and scope must exactly match the compiler-derived Git revision range")
+			}
 		}
 		if err := validateAssignmentScenarios(value.Scenarios, scenarioCatalog); err != nil {
 			return assignment.Assignment{}, err
@@ -481,6 +536,18 @@ func compileWorkspaceAssignment(ctx context.Context, repo string, issue int, pro
 		return assignment.Assignment{}, err
 	}
 	return value, nil
+}
+
+func validateCompiledAssignmentBinding(value assignment.Assignment, generation uint64, binding processworkspace.AssignmentBinding) error {
+	digest, err := assignment.AssignmentDigest(value)
+	if err != nil {
+		return err
+	}
+	if binding.SchemaVersion != value.SchemaVersion || binding.AssignmentID != value.ID || binding.Digest != digest ||
+		binding.Role != value.Role || binding.BaseRevision != value.BaseRevision || binding.SubjectRevision != value.SubjectRevision || binding.Generation != generation || generation == 0 {
+		return errors.New("compiled assignment does not exactly match the authoritative remote binding")
+	}
+	return nil
 }
 
 func loadCoveredScenarioCatalog(ctx context.Context, client github.Operations, repo string, proposalIssue int, processBody string) ([]assignment.ScenarioRef, error) {
@@ -599,7 +666,7 @@ func deriveReviewAssignment(ctx context.Context, integrationRoot, diffBase, subj
 	if err != nil {
 		return nil, nil, fmt.Errorf("derive review authors from exact revision range: %w", err)
 	}
-	scopeOutput, err := exec.CommandContext(ctx, "git", "-C", integrationRoot, "diff", "--name-only", "--diff-filter=ACMRT", diffBase, subject).Output()
+	scopeOutput, err := exec.CommandContext(ctx, "git", "-C", integrationRoot, "diff", "--name-only", "--diff-filter=ACDMRT", diffBase, subject).Output()
 	if err != nil {
 		return nil, nil, fmt.Errorf("derive review scope from exact revision range: %w", err)
 	}
