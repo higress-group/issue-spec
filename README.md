@@ -23,7 +23,7 @@ The self-hosted server combines organization and repository authorization,
 Issue and Change views, service accounts, provider-neutral code evidence,
 runners, and notification webhooks with durable PostgreSQL state.
 
-[![Self-hosted issue-spec workspace](docs/self-hosting/assets/self-hosted-dashboard.png)](docs/self-hosting/README.md)
+[![Self-hosted repository issue list](docs/self-hosting/assets/self-hosted-dashboard.png)](docs/self-hosting/README.md)
 
 It supports private-network deployment and GitHub OAuth or OIDC sign-in, while
 keeping source code, pull requests or merge requests, reviews, and CI on the

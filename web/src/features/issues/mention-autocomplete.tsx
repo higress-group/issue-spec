@@ -123,8 +123,6 @@ export function MentionTextarea({ value, rows, label, placeholder, onChange }: {
       aria-label={label}
       aria-autocomplete="list"
       aria-controls={suggestionsOpen ? listboxID : undefined}
-      aria-expanded={suggestionsOpen}
-      aria-haspopup="listbox"
       aria-activedescendant={suggestionsOpen ? `${listboxID}-${selected}` : undefined}
       value={value}
       rows={rows}

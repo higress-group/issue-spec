@@ -13,6 +13,7 @@ import { Route, Routes } from "react-router-dom";
 import { issueApi, IssueApiError } from "./api";
 import { CommentEditor, IssueEditor } from "./issue-editor";
 import { IssueDetail } from "./detail-page";
+import { IssueList } from "./list-page";
 import { IssueLoading, IssueStatus, MutationProblem } from "./repository-context";
 import type { ActiveRepository } from "./repository-context";
 import type { Label, Reactions } from "./types";
@@ -108,6 +109,10 @@ describe("issue editing semantics", () => {
     const suggestions = await screen.findByRole("listbox", { name: "Mention suggestions" });
     expect(requestedPrefix).toBe("ali");
     expect(suggestions).toHaveAttribute("id");
+    expect(editor).toHaveAttribute("aria-controls", suggestions.id);
+    expect(editor).toHaveAttribute("aria-activedescendant");
+    expect(editor).not.toHaveAttribute("aria-expanded");
+    expect(editor).not.toHaveAttribute("aria-haspopup");
     await user.keyboard("{ArrowDown}{Enter}");
     expect(editor).toHaveValue("Hello @alicia ");
     expect(editor).toHaveFocus();
@@ -220,29 +225,29 @@ describe("canonical issue read authority", () => {
     expect(await screen.findByText("Merge request")).toBeVisible();
     expect(screen.getByText("Binding mismatch")).toBeVisible();
     expect(screen.queryByText("abc123")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Subscribe to repository" })).not.toBeInTheDocument();
   });
 
-  it("offers repository subscription to an authenticated reader without triage authority", async () => {
+  it("offers repository subscription on the issue list to a reader without triage authority", async () => {
     server.use(
       repositorySubscriptionMetaHandler(),
       http.get("http://localhost/api/v1/profile/email", () => HttpResponse.json({ available: true, notification_email: "reader@example.test" })),
       http.get("http://localhost/api/v1/orgs/:orgId/repos/:repoId/subscription", () => HttpResponse.json(repositorySubscriptionFixture())),
     );
-    installIssueDetailHandlers();
-    renderIssueDetail(activeRepository(true, ["read"]));
+    installIssueListHandlers();
+    renderIssueList(activeRepository(true, ["read"]));
     expect(await screen.findByRole("button", { name: "Subscribe to repository" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.queryByRole("button", { name: /^Edit$/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "New issue" })).not.toBeInTheDocument();
   });
 
-  it("keeps the account-settings guide when an authenticated reader has no verified email", async () => {
+  it("keeps the account-settings guide on the issue list when a reader has no verified email", async () => {
     server.use(
       repositorySubscriptionMetaHandler(),
       http.get("http://localhost/api/v1/profile/email", () => HttpResponse.json({ available: true, notification_email: null })),
       http.get("http://localhost/api/v1/orgs/:orgId/repos/:repoId/subscription", () => HttpResponse.json(repositorySubscriptionFixture())),
     );
-    installIssueDetailHandlers();
-    renderIssueDetail(activeRepository(true, ["read"]));
+    installIssueListHandlers();
+    renderIssueList(activeRepository(true, ["read"]));
     expect(await screen.findByRole("link", { name: "Set email for repository notifications" })).toHaveAttribute("href", "/settings/account");
     expect(screen.queryByRole("button", { name: "Subscribe to repository" })).not.toBeInTheDocument();
   });
@@ -332,6 +337,13 @@ function installIssueDetailHandlers(relationships: CodeChangeRelationship[] = []
   );
 }
 
+function installIssueListHandlers() {
+  server.use(
+    http.get("http://localhost/repos/acme/workflow/issues", () => HttpResponse.json([issueFixture()])),
+    http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
+  );
+}
+
 function repositorySubscriptionMetaHandler() {
   return http.get("http://localhost/api/v1/meta", () => HttpResponse.json({
     api_version: "v1",
@@ -364,6 +376,10 @@ function relationshipFixture(provider = "github", externalId = "42", sourceBindi
 
 function renderIssueDetail(active: ActiveRepository) {
   return renderApp(<Routes><Route path="/:owner/:repo/issues/:number" element={<IssueDetail active={active} />} /></Routes>, "/acme/workflow/issues/41");
+}
+
+function renderIssueList(active: ActiveRepository) {
+  return renderApp(<Routes><Route path="/:owner/:repo/issues" element={<IssueList active={active} />} /></Routes>, "/acme/workflow/issues");
 }
 
 function activeRepository(authenticated: boolean, allowed_actions: string[]): ActiveRepository {

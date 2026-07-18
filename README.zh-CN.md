@@ -22,7 +22,7 @@
 将组织与仓库权限、Issue 和 Change 页面、Service Account、Provider-neutral
 代码证据、Runner、通知 Webhook 与持久化 PostgreSQL 状态整合在一起。
 
-[![自托管 issue-spec 工作台](docs/self-hosting/assets/self-hosted-dashboard.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
+[![自托管仓库议题列表](docs/self-hosting/assets/self-hosted-dashboard.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
 
 它支持私网部署以及 GitHub OAuth 或 OIDC 登录，同时让源代码、PR/MR、
 Review 和 CI 继续留在团队已有的代码托管平台中。

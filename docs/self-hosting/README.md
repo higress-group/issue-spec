@@ -12,7 +12,7 @@ Use self-hosting when a team needs private-network deployment, local identity
 and authorization, internal code-host integration, or automation identities
 that do not depend on a personal GitHub account.
 
-![Self-hosted workspace overview](assets/self-hosted-dashboard.png)
+![Repository issue list with repository subscription](assets/self-hosted-dashboard.png)
 
 ## What the server owns
 

@@ -48,8 +48,10 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/*", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
-    if (url.pathname === "/api/v1/meta") return route.fulfill({ json: { api_version: "v1", features: { bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: false, webhooks: false, change_boards: false, runner: true, recovery_exchange: true } } });
+    if (url.pathname === "/api/v1/meta") return route.fulfill({ json: { api_version: "v1", features: { bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: false, webhooks: false, change_boards: false, runner: true, recovery_exchange: true, email_notifications: true, repository_email_subscriptions: true } } });
     if (url.pathname === "/api/v1/context") return route.fulfill({ json: { user: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", login: "alice", display_name: "Alice", email: "alice@example.test", site_admin: !externalContributor }, credential: { kind: "session", scope_mode: "identity", repository_restricted: false }, session: { csrf_cookie_name: "issue_spec_csrf", csrf_header_name: "X-CSRF-Token" }, allowed_actions: externalContributor ? [] : ["site.admin"], organizations: [{ id: organizationId, name: "acme", display_name: "Acme Studio", effective_permission: externalContributor ? "read" : "admin", container_only: false, allowed_actions: externalContributor ? ["organization.read"] : ["organization.read", "organization.admin"] }] } });
+    if (url.pathname === "/api/v1/profile/email") return route.fulfill({ json: { available: true, notification_email: "alice@example.test" } });
+    if (url.pathname === `/api/v1/orgs/${organizationId}/repos/${repositoryId}/subscription`) return route.fulfill({ json: { subscribed: false, ignored: false, reason: "", representation_version: 0, collection_version: 1 } });
     if (url.pathname === `/api/v1/context/orgs/${organizationId}/repos`) return route.fulfill({ json: { repositories: [{ repository: { id: repositoryId, organization_id: organizationId, name: "workflow", display_name: "Workflow control", visibility: externalContributor ? "public" : "private", contribution_policy: externalContributor ? "public" : "members" }, effective_permission: externalContributor ? "read" : "admin", allowed_actions: externalContributor ? ["read", "contribute"] : ["read", "contribute", "triage", "write", "repository.admin"] }] } });
     if (url.pathname.toLowerCase() === "/api/v1/context/repos/acme/workflow") return route.fulfill({ json: { organization: { id: organizationId, name: "acme", display_name: "Acme Studio", effective_permission: externalContributor ? "read" : "admin", container_only: false, allowed_actions: externalContributor ? ["organization.read"] : ["organization.read", "organization.admin"] }, repository: { repository: { id: repositoryId, organization_id: organizationId, name: "workflow", display_name: "Workflow control", visibility: "public", contribution_policy: externalContributor ? "public" : "authenticated" }, effective_permission: externalContributor ? "read" : "admin", allowed_actions: externalContributor ? ["read", "contribute"] : ["read", "contribute", "triage", "write", "repository.admin"] }, authenticated: true } });
     if (url.pathname === "/repos/acme/workflow/labels") return route.fulfill({ json: labels });
@@ -125,6 +127,18 @@ test("issue detail is polished, accessible and preserves raw workflow text", asy
     await page.getByRole("button", { name: documentationText("Comment", "评论"), exact: true }).click();
     await expect(comment).toHaveValue("");
     await expect(page.getByText(newComment)).toBeVisible();
+  }
+});
+
+test("issue list presents the repository subscription entry", async ({ page }, testInfo) => {
+  await page.goto("/acme/workflow/issues");
+  await expect(page.getByRole("heading", { name: documentationText("Issues", "议题") })).toBeVisible();
+  await expect(page.getByRole("button", { name: documentationText("Subscribe to repository", "订阅仓库") })).toHaveAttribute("aria-pressed", "false");
+  const accessibility = await new AxeBuilder({ page }).analyze();
+  expect(accessibility.violations).toEqual([]);
+  if (testInfo.project.name === "issues-desktop-1440") {
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await expect(page).toHaveScreenshot(documentationSnapshot("issue-list"), { fullPage: true, animations: "disabled" });
   }
 });
 

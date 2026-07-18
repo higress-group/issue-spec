@@ -9,7 +9,7 @@ provider-neutral 代码证据、Webhook、Runner，以及由 PostgreSQL 持久�
 当团队需要私网部署、本地身份与权限、内部代码平台接入，或不依赖个人 GitHub
 账号的自动化身份时，可以使用 self-hosted 模式。
 
-![自托管工作台总览](assets/self-hosted-dashboard.zh-CN.png)
+![带仓库订阅入口的议题列表](assets/self-hosted-dashboard.zh-CN.png)
 
 ## Server 负责什么
 
