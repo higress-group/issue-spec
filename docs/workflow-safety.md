@@ -91,8 +91,8 @@ still require a TASK link, the required PR link, and active SPEC coverage.
 
 | Class | Required evidence carrier |
 | --- | --- |
-| `change-bearing` | Inline rationale whose marker path/line matches the actual PR comment and an active SPEC |
-| `review` | Linked done REVIEW or resolved finding for an active SPEC |
+| `change-bearing` | GitHub inline rationale whose marker path/line matches the actual PR comment and an active SPEC, or exact-current self-hosted rationale backed by fresh REVIEW completion |
+| `review` | Linked done REVIEW completion (including a clean zero-finding review) or resolved finding for an active SPEC |
 | `verification` | Linked done VERIFY, or required passing check, with test evidence for an active SPEC |
 | `orchestration` | Non-empty coordination handoff plus active SPEC coverage |
 | `external` | Consumed provider evidence at the exact subject revision with stable evidence IDs |
@@ -102,6 +102,17 @@ A legacy PROCESS without the section remains readable but projects to
 multi-valued class blocks verification. `review sync` and final `verify` expose
 required, satisfied, and missing evidence per PROCESS; do not invent code-line
 rationale for non-change-bearing work.
+
+For self-hosted review, the independent reviewer runs `review sync` with the
+Implement Issue, exact revision, stable REVIEW id, and its own agent/session
+identity. After the final sync, link the REVIEW explicitly to the review
+PROCESS, every covered change-bearing PROCESS, and every covered active SPEC.
+The completion stamp belongs to sync: never hand-edit it, fabricate a finding,
+infer links from prose IDs, or replace it with a generic approval framework.
+Status forecast and final verify use the same exact-current completion
+validator and do not refresh REVIEW. Archive only reads this completion for an
+implementation `code_change` whose merge policy requires review; it never
+mutates REVIEW or applies the completion to `archive_change`.
 
 ## Keep PROCESS workspaces exact and recoverable
 

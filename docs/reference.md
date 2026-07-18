@@ -203,6 +203,35 @@ delete only the unwanted active reference with the corresponding
 `DELETE .../references/{reference-id}`, then retry. Never guess a winner or
 silently overwrite another active relationship.
 
+After the independent provider review converges, its review agent synchronizes
+the exact active revision under its own identity:
+
+```bash
+issue-spec --profile team review sync \
+  --repo acme/widgets \
+  --implement 3 \
+  --revision abc123 \
+  --id REVIEW-001 \
+  --agent reviewer \
+  --agent-session review-session \
+  --json
+```
+
+A successful self-hosted sync persists and reloads provider facts, then writes
+one stable done REVIEW completion even when the provider reports zero findings.
+After the final sync, use `issue-spec link` to link that REVIEW explicitly to
+its review PROCESS, every covered change-bearing PROCESS, and every covered
+active SPEC. Do not fabricate findings, hand-edit the completion stamp, infer
+links from IDs in prose, or substitute a generic approval framework. `status`
+and final `verify` validate the same exact provider/repository/change,
+reference-version, revision, freshness, links, and reviewer-independence
+carrier without refreshing REVIEW.
+
+During self-hosted closure, `archive` reads that existing implementation REVIEW
+completion only when the implementation `code_change` merge policy requires
+review. It does not create, update, refresh, or add archive-specific REVIEW
+state, and it never applies implementation completion to `archive_change`.
+
 GitHub profiles continue to use `pr link-process`, GitHub PR review and closing
 links, and the existing durable archive path. Self-hosted review, merge, and
 change closure remain on the selected code provider; the CLI does not route

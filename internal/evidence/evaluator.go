@@ -89,10 +89,8 @@ func Evaluate(snapshot codereview.Snapshot, policy Policy, target Target) Result
 
 	requiredKinds := append([]codereview.EvidenceKind(nil), policy.RequiredKinds...)
 	switch target.Gate {
-	case GateReview:
-		requiredKinds = append(requiredKinds, codereview.EvidenceReview)
 	case GateVerify:
-		requiredKinds = append(requiredKinds, codereview.EvidenceReview, codereview.EvidenceCheck)
+		requiredKinds = append(requiredKinds, codereview.EvidenceCheck)
 	case GateMerge:
 		requiredKinds = append(requiredKinds, codereview.EvidenceMerge)
 	case GateArchive:

@@ -338,6 +338,46 @@ func TestStatusWorkspaceExternalUsesAuthoritativeCarrier(t *testing.T) {
 	}
 }
 
+func TestStatusForecastUsesSameExternalReviewCompletionCarrier(t *testing.T) {
+	now := time.Date(2026, 7, 18, 1, 0, 0, 0, time.UTC)
+	artifacts, externalReview := externalReviewCompletionFixture(t, now, "Independent Reviewer")
+	collection := statusGateCollection{Remote: statusForecastRemoteFacts(gates.TargetFinal)}
+	collection.Remote.ProviderEvidence = gates.Fact{Required: true, Known: true, Passed: true}
+	collection.Remote.Workspace.ExpectedRevision = gates.Fact{Required: true, Known: true, Passed: true,
+		Expected: externalReview.Target.SubjectRevision, Current: externalReview.Target.SubjectRevision}
+	collection.ProcessEvidence = buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
+		reviewSyncReport{}, nil, &externalReview, now)
+	summary := summarizeStatusForGate("acme/widgets", 1, 2, 3, gates.TargetFinal, artifacts, workflow.Plan{}, nil, collection)
+	var reviewCarrier gates.CarrierRevisionFact
+	for _, process := range summary.Gate.Processes {
+		if process.ProcessID == "PROCESS-002" {
+			reviewCarrier = process.CarrierRevision
+		}
+	}
+	if !reviewCarrier.Trusted || reviewCarrier.Revision != externalReview.Target.SubjectRevision {
+		t.Fatalf("status forecast discarded completion carrier: %+v", summary.Gate.Processes)
+	}
+
+	completion, found, err := parseExternalReviewCompletion(artifacts[3].Comment.Body)
+	if err != nil || !found {
+		t.Fatalf("completion found=%t err=%v", found, err)
+	}
+	completion.SynchronizedAt = now.Add(time.Minute + time.Nanosecond)
+	futureBody, _, err := stampExternalReviewCompletion(artifacts[3].Comment.Body, completion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts[3].Comment = model.ParseTypedComment(futureBody)
+	collection.ProcessEvidence = buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
+		reviewSyncReport{}, nil, &externalReview, now)
+	future := summarizeStatusForGate("acme/widgets", 1, 2, 3, gates.TargetFinal, artifacts, workflow.Plan{}, nil, collection)
+	for _, process := range future.Gate.Processes {
+		if process.ProcessID == "PROCESS-002" && process.CarrierRevision.Trusted {
+			t.Fatalf("future completion survived status forecast: %+v", process)
+		}
+	}
+}
+
 func TestStatusWorkspaceUsesAuthoritativePullRequestAncestry(t *testing.T) {
 	ancestor := strings.Repeat("a", 40)
 	head := strings.Repeat("b", 40)

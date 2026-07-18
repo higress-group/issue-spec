@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
@@ -357,7 +358,8 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 			collection.Remote.ProviderEvidence.Current = "unavailable"
 			return collection
 		}
-		collection.ProcessEvidence = buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, &gate.Consumption)
+		collection.ProcessEvidence = buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
+			reviewSyncReport{}, nil, &gate, time.Now().UTC())
 		return collection
 	}
 

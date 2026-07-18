@@ -9,8 +9,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/codereview"
+	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
@@ -171,6 +174,89 @@ func TestArchiveDurableSpecRequiresClosingLinksBeforeClosingIssues(t *testing.T)
 			}
 			if !strings.Contains(errOut.String(), tt.wantErr) {
 				t.Fatalf("stderr missing %q: %q", tt.wantErr, errOut.String())
+			}
+		})
+	}
+}
+
+func TestArchiveReadsOnlyImplementationReviewCompletion(t *testing.T) {
+	now := time.Date(2026, 7, 18, 1, 0, 0, 0, time.UTC)
+	artifacts, implementationGate := externalReviewCompletionFixture(t, now, "Independent Reviewer")
+	implementationGate.ReviewCompletionPolicy = ReviewCompletionPolicy{Required: true, Freshness: time.Hour}
+	before := artifacts[3].Comment.Body
+	if err := validateArchiveImplementationReviewCompletion(artifacts, implementationGate, now); err != nil {
+		t.Fatalf("implementation completion rejected: %v", err)
+	}
+	if artifacts[3].Comment.Body != before {
+		t.Fatal("archive completion validation mutated REVIEW bytes")
+	}
+
+	archiveGate := implementationGate
+	archiveGate.Target.Reference.ChangeID = "archive-change-9"
+	archiveGate.Snapshot.Reference = archiveGate.Target.Reference
+	archiveGate.Target.SubjectRevision = "archive-head"
+	archiveGate.Snapshot.SubjectRevision = "archive-head"
+	if err := validateArchiveImplementationReviewCompletion(artifacts, archiveGate, now); err == nil {
+		t.Fatal("implementation REVIEW completion was applied to archive_change")
+	}
+	if artifacts[3].Comment.Body != before {
+		t.Fatal("archive_change mismatch mutated implementation REVIEW")
+	}
+
+	optional := implementationGate
+	optional.ReviewCompletionPolicy = ReviewCompletionPolicy{}
+	withoutReview := append([]model.Artifact(nil), artifacts[:3]...)
+	if err := validateArchiveImplementationReviewCompletion(withoutReview, optional, now); err != nil {
+		t.Fatalf("archive required completion when merge policy did not: %v", err)
+	}
+}
+
+func TestArchiveMergeProjectsReviewCompletionAndPreservesProviderFacts(t *testing.T) {
+	now := time.Date(2026, 7, 18, 1, 0, 0, 0, time.UTC)
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	check := testEvidenceRecord("check-ledger", codereview.EvidenceCheck, "passed", "head-abc", now)
+	check.Name = "unit"
+	merge := testEvidenceRecord("merge-ledger", codereview.EvidenceMerge, "merged", "head-abc", now)
+	merge.MergeRevision = "head-abc"
+	gate := externalGateResult{
+		Target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7, SubjectRevision: "head-abc"},
+		Snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion, Reference: reference,
+			SubjectRevision: "head-abc", CapturedAt: now, Records: []codereview.EvidenceRecord{check, merge}},
+		Consumption: externalEvidenceConsumption{ProviderKey: reference.ProviderKey,
+			ExternalRepository: reference.ExternalRepository, ChangeID: reference.ChangeID,
+			ReferenceVersion: 7, SubjectRevision: "head-abc"},
+	}
+	policy := coreevidence.Policy{RequiredKinds: []codereview.EvidenceKind{codereview.EvidenceReview, codereview.EvidenceCheck},
+		Freshness: map[codereview.EvidenceKind]time.Duration{codereview.EvidenceReview: time.Hour}}
+	completion := projectReviewCompletionPolicy(&policy)
+	if !completion.Required || completion.Freshness != time.Hour {
+		t.Fatalf("review completion policy was not projected: %+v", completion)
+	}
+	evaluated := evaluateArchiveImplementationMerge(gate, policy, now)
+	if !evaluated.Evaluation.Passed || strings.Join(evaluated.Consumption.EvidenceIDs, ",") != "check-ledger,merge-ledger" {
+		t.Fatalf("projected merge gate lost authoritative evidence: %+v", evaluated)
+	}
+
+	for name, mutate := range map[string]func(*externalGateResult){
+		"open finding": func(candidate *externalGateResult) {
+			open := testEvidenceRecord("review-open", codereview.EvidenceReview, "open", "head-abc", now)
+			open.Severity = "P1"
+			candidate.Snapshot.Records = append(candidate.Snapshot.Records, open)
+		},
+		"missing merge": func(candidate *externalGateResult) {
+			candidate.Snapshot.Records = candidate.Snapshot.Records[:1]
+		},
+		"failed check": func(candidate *externalGateResult) {
+			candidate.Snapshot.Records[0].State = "failed"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := gate
+			candidate.Snapshot.Records = append([]codereview.EvidenceRecord(nil), gate.Snapshot.Records...)
+			mutate(&candidate)
+			result := evaluateArchiveImplementationMerge(candidate, policy, now)
+			if result.Evaluation.Passed {
+				t.Fatalf("archive suppressed authoritative provider failure: %+v", result.Evaluation)
 			}
 		})
 	}

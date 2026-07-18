@@ -26,7 +26,7 @@ Use when the user asks for /issue-spec:verify, issue-spec verify, or final readi
 
        issue-spec verify --repo higress-group/issue-spec --proposal <issue> --design <issue> --implement <issue> --pr <pr> --durable-spec /tmp/<capability>-spec.md --json
 
-6. Final verify must fail if blocking questions, missing links, missing class-specific PROCESS evidence, open P0/P1 findings, failed or pending PR checks, or durable spec omissions exist. Change-bearing PROCESS nodes require matching GitHub inline rationale or, on self-hosted profiles, an exact-current append-only code-change rationale paired with trusted consumed native-ledger PROCESS/SPEC evidence. Review, verification, orchestration, and external nodes use their proportional evidence carriers.
+6. Final verify must fail if blocking questions, missing links, missing class-specific PROCESS evidence, open P0/P1 findings, failed or pending PR checks, or durable spec omissions exist. Change-bearing PROCESS nodes require backend-appropriate rationale and REVIEW completion evidence. Status forecast and final verify use the same authoritative validator for that rationale and completion evidence, required traceability, and reviewer independence. The validator owns exact identity, revision, freshness, and legacy compatibility. Neither command creates, updates, or refreshes REVIEW. Review, verification, orchestration, and external nodes use their proportional evidence carriers.
 
 ## Project Workflow
 
