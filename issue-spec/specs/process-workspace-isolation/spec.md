@@ -2,17 +2,11 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for safely executing a PROCESS DAG from
-isolated Git workspaces. The coordinator retains one integration checkout;
-delegated change-bearing native children receive leased writable worktrees,
-inline independent nodes execute in that integration checkout, and review and
-verification use exact snapshots. The contract covers explicit revision
-binding, ownership-aware integration, crash-safe lifecycle reconciliation, and
-the runner boundary that keeps one coordinator session distinct from its child
-workspaces.
+Define the long-lived behavior contract for this capability.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/175
+- https://github.com/higress-group/issue-spec/issues/272
 
 ## Requirements
 
@@ -180,3 +174,55 @@ A runner-managed ACPX coordinator MUST remain bound to its session integration c
 - **THEN** issue-spec MUST guarantee distinct Git worktrees, branches, leases and commit-scope enforcement but MUST NOT claim a per-child operating-system sandbox unless the underlying agent runtime explicitly provides one
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/175#issuecomment-4956889860
+
+### Requirement: Managed workspace preparation rejects ambiguous directory ownership before allocation
+
+The CLI MUST validate every normalized bare PROCESS write-ownership path against the exact integrated base Git tree before creating a worker worktree, activating a portable lease, dispatching a worker, or mutating remote Workspace metadata. A bare path that resolves to a tracked Git tree MUST be rejected with an actionable `path/**` replacement, while a tracked blob and a path absent from the base tree MUST retain exact-path semantics and an explicit trailing `/**` declaration MUST retain recursive semantics. Classification MUST use Git object identity at the exact base revision and MUST NOT follow host filesystem symlinks or infer directory intent from filename shape. The CLI MUST NOT silently widen ownership or rewrite PROCESS artifacts. Workspace completion MUST remain authoritative and fail closed for every unowned committed path; when the mismatch is a descendant of a relevant bare declaration, its diagnostic MUST identify that declaration and suggest the recursive form without integrating the commit or marking the PROCESS done.
+
+#### Scenario: Bare tracked directory is rejected before workspace mutation
+
+- **WHEN** workspace prepare receives a bare ownership path that resolves to a Git tree at the exact integrated base revision
+- **THEN** preparation MUST fail before worktree creation, lease activation, worker dispatch, or remote Workspace mutation, and the error MUST name the PROCESS, offending declaration, base revision, and exact `path/**` remediation
+
+#### Scenario: Bare tracked file remains exact ownership
+
+- **WHEN** workspace prepare receives a bare ownership path that resolves to a tracked blob at the exact integrated base revision
+- **THEN** preparation MUST accept it as exact-file ownership and MUST NOT grant authority over descendants or sibling paths
+
+#### Scenario: Missing base path is not guessed to be a directory
+
+- **WHEN** workspace prepare receives a bare ownership path that is absent from the exact integrated base revision
+- **THEN** preparation MUST preserve exact-path semantics and MUST NOT automatically append `/**` or otherwise widen the lease
+
+#### Scenario: Explicit recursive ownership remains valid
+
+- **WHEN** workspace prepare receives an ownership declaration ending in `/**`
+- **THEN** preparation MUST preserve the existing recursive ownership behavior for descendants
+
+#### Scenario: Completion still rejects an unowned descendant
+
+- **WHEN** workspace complete observes a committed path outside ownership that is a descendant of a relevant bare declaration
+- **THEN** completion MUST fail closed, MUST NOT integrate the commit or mark the PROCESS done, and MUST report the unexpected path with the corresponding `path/**` suggestion
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/272#issuecomment-5005441972
+
+### Requirement: PROCESS ownership guidance distinguishes exact paths from recursive directories
+
+Generated PROCESS planning guidance and maintained English and Chinese workspace documentation MUST describe a bare ownership path as exact and MUST use a trailing `/**` declaration whenever a directory subtree is intended to be writable. Examples MUST NOT imply that a bare directory path authorizes descendants. Existing PROCESS comments MUST remain readable without automatic migration, and users MUST be directed to explicitly correct the artifact or pass a corrected `--write-ownership path/**` value before workspace allocation.
+
+#### Scenario: Directory write area is rendered recursively
+
+- **WHEN** generated guidance or documentation demonstrates a PROCESS that owns a directory subtree
+- **THEN** the example MUST render the ownership as `path/**` and explain that recursion is explicit
+
+#### Scenario: Exact file ownership remains bare
+
+- **WHEN** generated guidance or documentation demonstrates ownership of one file
+- **THEN** the example MUST retain the bare file path and MUST NOT append `/**`
+
+#### Scenario: Historical PROCESS remains readable
+
+- **WHEN** the CLI reads an existing PROCESS comment containing a bare path
+- **THEN** the artifact MUST remain parseable without migration, while preparation MAY reject it when the path resolves to a tracked directory and MUST provide the explicit correction
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/272#issuecomment-5005442423
