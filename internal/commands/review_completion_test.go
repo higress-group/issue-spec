@@ -101,6 +101,19 @@ func TestReviewReceiptBindingMatchesNormalizedExactDiffAuthors(t *testing.T) {
 	}
 }
 
+func TestReviewReceiptBindingRejectsFindingOutsideSealedSpecs(t *testing.T) {
+	finding := assignment.Finding{ID: "FINDING-101", SpecID: "SPEC-003", OwnerProcessID: "PROCESS-102",
+		Path: "internal/foo.go", Side: "RIGHT", Line: 2, Severity: "P1", Message: "Wrong sealed SPEC."}
+	receipt := testSealedReviewReceipt(t, assignment.ReviewChangesRequested, []assignment.Finding{finding})
+	sealed := testReviewAssignment(t, receipt.SubjectRevision)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleReview,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	if err := validateReviewReceiptBinding(receipt, sealed, binding); err == nil || !strings.Contains(err.Error(), "sealed assignment scenarios") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func testSealedReviewReceipt(t *testing.T, verdict assignment.ReviewVerdict, findings []assignment.Finding) assignment.Receipt {
 	t.Helper()
 	sealed := testReviewAssignment(t, "head-abc")

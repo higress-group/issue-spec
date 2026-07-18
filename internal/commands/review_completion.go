@@ -66,6 +66,15 @@ func validateReviewReceiptBinding(receipt assignment.Receipt, sealed assignment.
 	if receipt.SubjectRevision != binding.SubjectRevision {
 		return errors.New("review receipt subject revision does not match the authoritative exact snapshot")
 	}
+	sealedSpecs := map[string]bool{}
+	for _, scenario := range sealed.Scenarios {
+		sealedSpecs[scenario.SpecID] = true
+	}
+	for _, finding := range receipt.Review.Findings {
+		if !sealedSpecs[finding.SpecID] {
+			return fmt.Errorf("review finding %s spec_id %s is not present in the sealed assignment scenarios", finding.ID, finding.SpecID)
+		}
+	}
 	writer := strings.TrimSpace(receipt.Provenance.Writer)
 	if writer == "" || !strings.EqualFold(writer, strings.TrimSpace(receipt.Provenance.Subject)) ||
 		strings.EqualFold(writer, "Coordinator") {

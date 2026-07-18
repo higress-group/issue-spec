@@ -192,6 +192,7 @@ func TestRunReviewSubmitNoFindingAndExactRevision(t *testing.T) {
 		{ID: 2, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-2", Body: specBody},
 		{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody},
 	}
+	var proposalComments []github.Comment
 	created := 0
 	head := receipt.SubjectRevision
 	reviewClient := &fakeReviewClient{}
@@ -200,8 +201,15 @@ func TestRunReviewSubmitNoFindingAndExactRevision(t *testing.T) {
 	app.selectGitHubBackend = ghSelection
 	app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
 		backend := fakeGitHubBackend{info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
-			listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
-				return append([]github.Comment(nil), comments...), nil
+			listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+				switch issue {
+				case 1:
+					return append([]github.Comment(nil), proposalComments...), nil
+				case 9:
+					return append([]github.Comment(nil), comments...), nil
+				default:
+					return nil, nil
+				}
 			}, getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
 				pr := github.PullRequest{Number: 7, HTMLURL: "https://github.com/o/r/pull/7"}
 				pr.Head.SHA = head
@@ -267,25 +275,105 @@ func TestRunReviewSubmitNoFindingAndExactRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	const proposalSpecURL = "https://github.com/o/r/issues/1#issuecomment-2"
+	proposalComments = []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: specBody}}
 	comments = []github.Comment{
-		{ID: 2, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-2", Body: specBody},
 		{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody},
 		{ID: 12, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-12", Body: ownerBody},
 	}
+	implementComments := append([]github.Comment(nil), comments...)
 	reviewClient = &fakeReviewClient{files: []github.PullRequestFile{{Filename: finding.Path,
 		Patch: "@@ -1,2 +1,3 @@\n package foo\n+var X = 1\n"}}}
 	head = findingReceipt.SubjectRevision
+	for _, test := range []struct {
+		name             string
+		proposal         string
+		specURL          string
+		proposalComments []github.Comment
+		want             string
+	}{
+		{name: "wrong issue", proposal: "2", specURL: proposalSpecURL, proposalComments: proposalComments, want: "not one canonical"},
+		{name: "wrong spec", proposal: "1", specURL: proposalSpecURL,
+			proposalComments: []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: strings.ReplaceAll(specBody, "SPEC-002", "SPEC-003")}}, want: "not one canonical"},
+		{name: "noncanonical", proposal: "1", specURL: proposalSpecURL,
+			proposalComments: []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: strings.ReplaceAll(specBody, "### Scenario:", "### Example:")}}, want: "not one canonical"},
+		{name: "missing", proposal: "1", specURL: proposalSpecURL, want: "not one canonical"},
+		{name: "ambiguous", proposal: "1", specURL: proposalSpecURL,
+			proposalComments: []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: specBody},
+				{ID: 3, HTMLURL: "https://github.com/o/r/issues/1#issuecomment-3", Body: specBody}}, want: "not one canonical"},
+		{name: "wrong explicit URL", proposal: "1", specURL: "https://github.com/o/r/issues/2#issuecomment-2",
+			proposalComments: proposalComments, want: "--spec-url conflicts"},
+	} {
+		t.Run("finding target "+test.name, func(t *testing.T) {
+			comments = append([]github.Comment(nil), implementComments...)
+			proposalComments = append([]github.Comment(nil), test.proposalComments...)
+			reviewClient.comments = nil
+			out.Reset()
+			errOut.Reset()
+			args := []string{"--repo", "o/r", "--proposal", test.proposal, "--implement", "9", "--pr", "7",
+				"--process", "PROCESS-101", "--id", "REVIEW-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
+				"--spec", "SPEC-002", "--spec-url", test.specURL}
+			if code := app.runReviewSubmit(t.Context(), args); code == 0 || created != 1 || len(reviewClient.comments) != 0 ||
+				!strings.Contains(errOut.String(), test.want) {
+				t.Fatalf("exit=%d created=%d findings=%d err=%q", code, created, len(reviewClient.comments), errOut.String())
+			}
+		})
+	}
+	comments = append([]github.Comment(nil), implementComments...)
+	proposalComments = []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: specBody}}
+	reviewClient.comments = nil
 	out.Reset()
 	errOut.Reset()
-	if code := app.runReviewSubmit(t.Context(), []string{"--repo", "o/r", "--implement", "9", "--pr", "7",
+	if code := app.runReviewSubmit(t.Context(), []string{"--repo", "o/r", "--proposal", "1", "--implement", "9", "--pr", "7",
 		"--process", "PROCESS-101", "--id", "REVIEW-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
-		"--spec", "SPEC-002", "--spec-url", "https://github.com/o/r/issues/9#issuecomment-2"}); code != 0 ||
+		"--spec", "SPEC-002", "--spec-url", proposalSpecURL}); code != 0 ||
 		len(reviewClient.comments) != 1 || created != 2 {
 		t.Fatalf("finding exit=%d created=%d findings=%d err=%q", code, created, len(reviewClient.comments), errOut.String())
 	}
 	marker, found, err := model.FindFindingMarker(reviewClient.comments[0].Body)
 	if err != nil || !found || marker.Process != finding.OwnerProcessID || marker.Spec != finding.SpecID {
 		t.Fatalf("sealed finding routing marker=%+v found=%t err=%v", marker, found, err)
+	}
+}
+
+func TestSubmittedReviewTargetsResolveExistingProposalRelationship(t *testing.T) {
+	const specURL = "https://github.com/o/r/issues/1#issuecomment-2"
+	specBody, err := templates.SpecComment(templates.SpecCommentOptions{
+		Common: templates.CommonOptions{ID: "SPEC-002", Status: "confirmed"},
+		Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{Title: "related review", Text: "Review routing MUST use authority."},
+			Scenarios: []templates.SpecScenarioInput{{Title: "related proposal", When: "a review is submitted", Then: "the SPEC is resolved exactly"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	processBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-101", "## Process: related review", model.BodyOptions{
+		Status: "in-progress", Links: map[string][]string{"Related Comments": {specURL}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := model.Artifact{Issue: 9, CommentID: 10, URL: "https://github.com/o/r/issues/9#issuecomment-10",
+		Comment: model.ParseTypedComment(processBody)}
+	backend := fakeGitHubBackend{listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+		if issue != 1 {
+			return nil, errors.New("unexpected issue lookup")
+		}
+		return []github.Comment{{ID: 2, HTMLURL: specURL, Body: specBody}}, nil
+	}}
+	sources, err := loadSubmittedReviewSpecSources(t.Context(), backend, "o/r", 0, 9, process, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := findUniqueSubmittedReviewSpec(sources, "SPEC-002")
+	if err != nil || artifact.Issue != 1 || artifact.URL != specURL {
+		t.Fatalf("artifact=%+v err=%v", artifact, err)
+	}
+
+	process.Comment.Links["Related Comments"] = []string{"https://github.com/o/r/issues/1#issuecomment-99"}
+	sources, err = loadSubmittedReviewSpecSources(t.Context(), backend, "o/r", 0, 9, process, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := findUniqueSubmittedReviewSpec(sources, "SPEC-002"); err == nil {
+		t.Fatal("unrelated SPEC comment was accepted without an exact PROCESS relationship")
 	}
 }
 

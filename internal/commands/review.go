@@ -60,6 +60,7 @@ func (a *app) runReviewSubmit(ctx context.Context, args []string) int {
 	fs := newFlagSet("review submit", a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
 	host := fs.String("hostname", "github.com", "GitHub hostname")
+	proposalFlag := fs.String("proposal", "", "proposal issue containing canonical covered SPEC comments")
 	implementFlag := fs.String("implement", "", "implement issue containing the review PROCESS")
 	prFlag := fs.Int("pr", 0, "GitHub pull request number")
 	processID := fs.String("process", "", "review PROCESS id")
@@ -80,6 +81,14 @@ func (a *app) runReviewSubmit(ctx context.Context, args []string) int {
 	if err != nil {
 		a.errorf("%v\n", err)
 		return 2
+	}
+	proposalIssue := 0
+	if strings.TrimSpace(*proposalFlag) != "" {
+		proposalIssue, err = parseIssueFlag(*proposalFlag, "proposal")
+		if err != nil {
+			a.errorf("%v\n", err)
+			return 2
+		}
 	}
 	if strings.TrimSpace(*processID) == "" || strings.TrimSpace(*reviewID) == "" {
 		a.errorf("--process and --id are required\n")
@@ -136,7 +145,12 @@ func (a *app) runReviewSubmit(ctx context.Context, args []string) int {
 		a.errorf("validate submitted REVIEW replay: %v\n", err)
 		return 1
 	}
-	findingTargets, coveredSpecURLs, err := validateSubmittedReviewTargets(comments, implementIssue, process, covers, receipt)
+	specSources, err := loadSubmittedReviewSpecSources(ctx, client, repo, proposalIssue, implementIssue, process, comments)
+	if err != nil {
+		a.errorf("resolve submitted review SPEC authority: %v\n", err)
+		return 1
+	}
+	findingTargets, coveredSpecURLs, err := validateSubmittedReviewTargets(comments, implementIssue, specSources, process, covers, receipt)
 	if err != nil {
 		a.errorf("validate submitted review routing: %v\n", err)
 		return 1
@@ -247,7 +261,55 @@ type submittedFindingTarget struct {
 	SpecURL string
 }
 
-func validateSubmittedReviewTargets(comments []github.Comment, issue int, reviewProcess model.Artifact, covers []string,
+type submittedReviewSpecSource struct {
+	Issue     int
+	Comments  []github.Comment
+	ExactURLs map[string]bool
+}
+
+// loadSubmittedReviewSpecSources resolves only bounded authority supplied by
+// the caller or already recorded on the review PROCESS. It never searches the
+// repository for a matching typed id. Same-issue comments remain as the legacy
+// compatibility source when no proposal is explicit.
+func loadSubmittedReviewSpecSources(ctx context.Context, client github.Operations, repo string, proposalIssue,
+	implementIssue int, reviewProcess model.Artifact, implementComments []github.Comment) ([]submittedReviewSpecSource, error) {
+	if proposalIssue > 0 {
+		comments, err := client.ListIssueComments(ctx, repo, proposalIssue)
+		if err != nil {
+			return nil, fmt.Errorf("list explicit proposal issue %d comments: %w", proposalIssue, err)
+		}
+		return []submittedReviewSpecSource{{Issue: proposalIssue, Comments: comments}}, nil
+	}
+
+	sources := []submittedReviewSpecSource{{Issue: implementIssue, Comments: implementComments}}
+	issues := map[int]map[string]bool{}
+	for _, raw := range model.RelatedCommentURLs(reviewProcess.Comment) {
+		issue, err := github.ParseIssueNumber(raw)
+		if err != nil || issue == implementIssue {
+			continue
+		}
+		if issues[issue] == nil {
+			issues[issue] = map[string]bool{}
+		}
+		issues[issue][model.NormalizeURL(raw)] = true
+	}
+	var ordered []int
+	for issue := range issues {
+		ordered = append(ordered, issue)
+	}
+	sort.Ints(ordered)
+	for _, issue := range ordered {
+		comments, err := client.ListIssueComments(ctx, repo, issue)
+		if err != nil {
+			return nil, fmt.Errorf("list related issue %d comments: %w", issue, err)
+		}
+		sources = append(sources, submittedReviewSpecSource{Issue: issue, Comments: comments, ExactURLs: issues[issue]})
+	}
+	return sources, nil
+}
+
+func validateSubmittedReviewTargets(comments []github.Comment, issue int, specSources []submittedReviewSpecSource,
+	reviewProcess model.Artifact, covers []string,
 	receipt assignment.Receipt) (map[string]submittedFindingTarget, []string, error) {
 	covered := map[string]string{}
 	var specURLs []string
@@ -255,9 +317,9 @@ func validateSubmittedReviewTargets(comments []github.Comment, issue int, review
 		if !strings.HasPrefix(id, "SPEC-") {
 			continue
 		}
-		spec, _, err := findUniqueSubmittedReviewArtifact(comments, issue, id, "SPEC")
+		spec, err := findUniqueSubmittedReviewSpec(specSources, id)
 		if err != nil {
-			return nil, nil, fmt.Errorf("review PROCESS covered SPEC %s is not one canonical typed artifact", id)
+			return nil, nil, fmt.Errorf("review PROCESS covered SPEC %s is not one canonical typed artifact: %w", id, err)
 		}
 		covered[id] = spec.URL
 		specURLs = append(specURLs, spec.URL)
@@ -284,6 +346,48 @@ func validateSubmittedReviewTargets(comments []github.Comment, issue int, review
 		targets[finding.ID] = submittedFindingTarget{SpecURL: specURL}
 	}
 	return targets, specURLs, nil
+}
+
+func findUniqueSubmittedReviewSpec(sources []submittedReviewSpecSource, id string) (model.Artifact, error) {
+	type match struct {
+		artifact model.Artifact
+		body     string
+	}
+	var matches []match
+	seen := map[string]bool{}
+	for _, source := range sources {
+		for _, comment := range source.Comments {
+			parsed := model.ParseTypedComment(comment.Body)
+			if parsed.ID != id {
+				continue
+			}
+			htmlURL, apiURL := model.NormalizeURL(comment.HTMLURL), model.NormalizeURL(comment.URL)
+			if source.ExactURLs != nil && !source.ExactURLs[htmlURL] && !source.ExactURLs[apiURL] {
+				continue
+			}
+			observedIssue, issueErr := github.ParseIssueNumber(comment.HTMLURL)
+			key := fmt.Sprintf("%d:%d:%s", source.Issue, comment.ID, htmlURL)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			artifact := model.Artifact{Issue: source.Issue, CommentID: comment.ID, URL: comment.HTMLURL,
+				APIURL: comment.URL, Comment: parsed}
+			if issueErr != nil || observedIssue != source.Issue {
+				artifact.Comment.Errors = append(artifact.Comment.Errors, "provider comment URL does not belong to the authoritative issue")
+			}
+			matches = append(matches, match{artifact: artifact, body: comment.Body})
+		}
+	}
+	if len(matches) != 1 {
+		return model.Artifact{}, fmt.Errorf("typed comment %s has %d authoritative carriers", id, len(matches))
+	}
+	item := matches[0]
+	if item.artifact.Comment.Type != "SPEC" || item.artifact.Comment.Status != "confirmed" ||
+		len(item.artifact.Comment.Errors) != 0 || len(model.SpecBodyErrors(model.LogicalBody(item.body))) != 0 {
+		return model.Artifact{}, fmt.Errorf("typed comment %s is not one canonical confirmed SPEC", id)
+	}
+	return item.artifact, nil
 }
 
 func findUniqueSubmittedReviewArtifact(comments []github.Comment, issue int, id, artifactType string) (model.Artifact, string, error) {
