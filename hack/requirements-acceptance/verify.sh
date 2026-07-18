@@ -72,7 +72,6 @@ if ! cmp -s "$temp_root/expected-images" "$temp_root/actual-images"; then
 fi
 
 scan_files="$english $chinese
-$root/docs/self-hosting/requirements-acceptance.md
 $root/internal/commands/requirements_acceptance_test.go
 $root/web/tests/e2e/requirements-onboarding.spec.ts
 $root/web/src/features/issues/issues.visual.e2e.ts"

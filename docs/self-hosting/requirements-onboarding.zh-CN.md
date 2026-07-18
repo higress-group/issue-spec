@@ -125,4 +125,4 @@ Proposal、SPEC 与未决 QUESTION 已经一致后，汇总已确认需求，请
 需求接入到此结束：可以只读后续 Design 讨论，但不会代做方案设计、创建实现任务、
 修改代码或扩大权限。
 
-这段旅程的可执行证据列在[需求验收映射](requirements-acceptance.md)中。
+维护者可运行 `make verify-requirements-acceptance` 验证这段旅程。

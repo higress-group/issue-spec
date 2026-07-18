@@ -141,5 +141,4 @@ requirements and ask the project to enter design. Requirements onboarding ends
 there: it may read the resulting design discussion, but it does not design the
 solution, create implementation tasks, modify code, or expand permissions.
 
-The executable evidence for this journey is listed in the
-[requirements acceptance map](requirements-acceptance.md).
+Maintainers can run `make verify-requirements-acceptance` to validate this journey.
