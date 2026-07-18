@@ -196,7 +196,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-C9goIBa_.js",
+    "file": "assets/index-CCtpTuLu.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -229,7 +229,7 @@
       "src/features/search/search-page.tsx"
     ],
     "css": [
-      "assets/index-D5LvhkBG.css"
+      "assets/index-BLDzvq3L.css"
     ]
   },
   "src/features/boards/board-page.tsx": {
@@ -322,7 +322,7 @@
     ]
   },
   "src/features/issues/workspace-page.tsx": {
-    "file": "assets/workspace-page-IQ83wtwq.js",
+    "file": "assets/workspace-page-U0IoDGZG.js",
     "name": "workspace-page",
     "src": "src/features/issues/workspace-page.tsx",
     "isDynamicEntry": true,
