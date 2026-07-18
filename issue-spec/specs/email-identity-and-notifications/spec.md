@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for this capability.
+Define verified notification-email identity, privacy-safe site-wide mentions, permission-aware email delivery, repository subscriptions, change milestone notifications, operator domain policy, and user-facing subscription controls.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/268
@@ -15,18 +15,18 @@ The server MUST require newly provisioned human accounts to submit a preferred n
 
 #### Scenario: New human account submits onboarding without waiting for mail delivery
 
-- **WHEN** a human account provisioned after rollout opens its first authenticated browser session while operator mail capability is enabled
+- **WHEN** a newly provisioned human account opens its first authenticated browser session while operator mail capability is enabled
 - **THEN** the SPA requires a non-empty preferred name and syntactically valid email submission, persists pending verification, and allows normal use after submission while email notification remains disabled until confirmation
 
 #### Scenario: Existing account remains compatible
 
-- **WHEN** an account created before the migration signs in without a verified notification email
+- **WHEN** an account that predates notification-email onboarding signs in without a verified notification email
 - **THEN** the account remains usable without a forced onboarding dialog and can request, replace, resend, or remove email binding from its account page when operator mail capability is enabled
 
 #### Scenario: Disabled mail capability preserves current behavior
 
 - **WHEN** an operator does not configure the mail capability
-- **THEN** the server remains usable, does not present email onboarding or binding controls, reports the capability unavailable, and may prompt still-incomplete post-rollout human accounts if the operator enables it later
+- **THEN** the server remains usable, does not present email onboarding or binding controls, reports the capability unavailable, and may prompt newly provisioned human accounts whose initial profile is still incomplete if the operator enables it later
 
 #### Scenario: Verification proves control without scanner-triggered binding
 
@@ -154,7 +154,7 @@ The server MUST allow an eligible active human user to opt in to or out of one r
 #### Scenario: Unselected repository activity remains silent
 
 - **WHEN** an issue is edited, including conversion of an ordinary issue into an artifact, commented on, labeled, closed, or reopened, or a change becomes blocked or merely closed without completing
-- **THEN** the first release creates no repository-subscription email for that activity
+- **THEN** the repository subscription capability creates no email for that activity
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/268#issuecomment-5004824390
 
@@ -205,39 +205,9 @@ The repository issue list MUST expose the existing repository-wide email subscri
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/268#issuecomment-5009979521
 
-### Requirement: Issue-first repository navigation
+## Related Capability Modules
 
-The authenticated application navigation MUST place Issues first, MUST replace the separate Overview and direct first-organization Repositories entries with one Repositories entry backed by the organization-selection landing page, MUST retain canonical organization and repository routes, and MUST display navigation context for the selected organization instead of assuming the first visible organization.
+Issue-first repository navigation and product presentation are maintained in [issue-and-change-web-experience](../issue-and-change-web-experience/spec.md), sourced from:
 
-#### Scenario: Navigation starts with issues
-
-- **WHEN** an authenticated user opens the desktop sidebar or mobile navigation
-- **THEN** Issues is the first workspace destination and Repositories appears once
-
-#### Scenario: Repositories starts with organization selection
-
-- **WHEN** the user chooses Repositories
-- **THEN** the landing page lists visible organizations and selecting one opens its existing repository list
-
-#### Scenario: Existing repository links remain compatible
-
-- **WHEN** the user follows an existing canonical organization or repository URL
-- **THEN** the route continues to resolve and the shell identifies the organization from the current path
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/268#issuecomment-5009979689
-
-### Requirement: Issue-first product presentation
-
-The leading README workspace screenshot MUST show the repository issue list, including the repository subscription entry when available, and the Chinese Changes workspace headline MUST use the concise existing phrase “慎终如始，则无败事” instead of the longer change-specific phrase.
-
-#### Scenario: Reader sees the primary product workflow
-
-- **WHEN** a reader opens the English or Chinese README
-- **THEN** the first product screenshot shows the Issue list rather than the overview dashboard
-
-#### Scenario: Changes headline stays concise
-
-- **WHEN** a Chinese user opens the Changes workspace
-- **THEN** its headline is “慎终如始，则无败事”
-
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/268#issuecomment-5010424793
+- https://github.com/higress-group/issue-spec/issues/268#issuecomment-5009979689
+- https://github.com/higress-group/issue-spec/issues/268#issuecomment-5010424793

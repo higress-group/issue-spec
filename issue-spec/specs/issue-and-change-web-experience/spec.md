@@ -2,10 +2,11 @@
 
 ## Purpose
 
-Define the embedded issue SPA, secure Markdown, workflow change boards and provider-neutral code-change relationships presented to users.
+Define the embedded issue SPA, secure Markdown, issue-first navigation and product presentation, workflow change boards, and provider-neutral code-change relationships presented to users.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/160
+- https://github.com/higress-group/issue-spec/issues/268
 
 ## Requirements
 
@@ -101,3 +102,36 @@ The self-hosted server and SPA MUST project every caller-visible active `code_ch
 - **THEN** the UI uses only the server-validated canonical URL, opens it with safe external-link protections, and never constructs a provider URL from untrusted issue text or embeds provider credentials
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4949546738
+
+### Requirement: Issue-first repository navigation and product presentation
+
+The authenticated application navigation and public project documentation MUST present Issues as the primary product workflow, MUST expose one Repositories entry backed by organization selection instead of separate Overview and implicit first-organization destinations, MUST preserve canonical organization and repository routes with path-derived context, and MUST keep the Changes workspace headline concise.
+
+#### Scenario: Navigation starts with issues
+
+- **WHEN** an authenticated user opens the desktop sidebar or mobile navigation
+- **THEN** Issues is the first workspace destination and Repositories appears once
+
+#### Scenario: Repositories starts with organization selection
+
+- **WHEN** the user chooses Repositories
+- **THEN** the landing page lists visible organizations and selecting one opens its existing repository list
+
+#### Scenario: Existing repository links remain compatible
+
+- **WHEN** the user follows an existing canonical organization or repository URL
+- **THEN** the route continues to resolve and the shell identifies the organization from the current path
+
+#### Scenario: Reader sees the primary product workflow
+
+- **WHEN** a reader opens the English or Chinese README
+- **THEN** the first product screenshot shows the Issue list, including the repository subscription entry when available, rather than the overview dashboard
+
+#### Scenario: Changes headline stays concise
+
+- **WHEN** a Chinese user opens the Changes workspace
+- **THEN** its headline is “慎终如始，则无败事”
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/268#issuecomment-5009979689
+- https://github.com/higress-group/issue-spec/issues/268#issuecomment-5010424793
