@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -59,7 +60,7 @@ func (c *requirementsClients) GetUser(ctx context.Context) (github.User, []strin
 
 func (a *app) runRequirements(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec requirements setup --server URL --repo owner/repo --agent codex|claude [--token-stdin] [--yes] [--json]\n")
+		a.errorf("usage: issue-spec requirements setup --server URL --repo owner/repo --agent codex|claude [--token-stdin] [--skill-archive PATH --skill-archive-sha256 SHA256] [--skill-conflict cancel|replace|alternate] [--yes] [--json]\n")
 		a.errorf("       issue-spec requirements status [--json]\n")
 		return 2
 	}
@@ -106,23 +107,26 @@ type requirementsStatusResult struct {
 }
 
 type requirementsSetupResult struct {
-	OK             bool                        `json:"ok"`
-	Applied        bool                        `json:"applied"`
-	Profile        string                      `json:"profile"`
-	ProfileCreated bool                        `json:"profile_created"`
-	TokenStored    bool                        `json:"token_stored"`
-	ContextChanged bool                        `json:"context_changed"`
-	ContextPath    string                      `json:"context_path"`
-	Repository     string                      `json:"repository"`
-	Agent          requirements.Target         `json:"agent"`
-	User           string                      `json:"user"`
-	Visibility     string                      `json:"visibility"`
-	Policy         string                      `json:"contribution_policy"`
-	AllowedActions []string                    `json:"allowed_actions"`
-	CanContribute  bool                        `json:"can_contribute"`
-	ReadOnly       bool                        `json:"read_only"`
-	SkillPlan      requirements.InstallPlan    `json:"skill_plan"`
-	SkillResult    *requirements.InstallResult `json:"skill_result,omitempty"`
+	OK               bool                        `json:"ok"`
+	Applied          bool                        `json:"applied"`
+	Profile          string                      `json:"profile"`
+	ProfileCreated   bool                        `json:"profile_created"`
+	TokenStored      bool                        `json:"token_stored"`
+	ContextChanged   bool                        `json:"context_changed"`
+	ContextPath      string                      `json:"context_path"`
+	Repository       string                      `json:"repository"`
+	Agent            requirements.Target         `json:"agent"`
+	User             string                      `json:"user"`
+	Visibility       string                      `json:"visibility"`
+	Policy           string                      `json:"contribution_policy"`
+	AllowedActions   []string                    `json:"allowed_actions"`
+	CanContribute    bool                        `json:"can_contribute"`
+	ReadOnly         bool                        `json:"read_only"`
+	SkillPlan        requirements.InstallPlan    `json:"skill_plan"`
+	SkillSource      string                      `json:"skill_source"`
+	Compatibility    string                      `json:"skill_compatibility"`
+	ConflictDecision string                      `json:"skill_conflict_decision"`
+	SkillResult      *requirements.InstallResult `json:"skill_result,omitempty"`
 }
 
 func (a *app) runRequirementsSetup(ctx context.Context, args []string) int {
@@ -132,10 +136,39 @@ func (a *app) runRequirementsSetup(ctx context.Context, args []string) int {
 	agentFlag := fs.String("agent", "", "agent target: codex or claude")
 	profileFlag := fs.String("profile", a.profileName, "origin-bound profile name")
 	tokenStdin := fs.Bool("token-stdin", false, "read the PAT from protected stdin")
+	skillArchive := fs.String("skill-archive", "", "verified standalone requirements skill archive")
+	skillArchiveSHA256 := fs.String("skill-archive-sha256", "", "required SHA-256 for --skill-archive")
+	skillConflict := fs.String("skill-conflict", "cancel", "user-modified target choice: cancel, replace, or alternate")
+	skillAlternateTarget := fs.String("skill-alternate-target", "", "alternate skill directory used with --skill-conflict alternate")
 	yes := fs.Bool("yes", false, "apply the displayed profile, context, and skill plan")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
+	}
+	if *tokenStdin && a.stdinIsTerminal(a.in) {
+		a.errorf("--token-stdin refuses terminal input; omit --token-stdin to use the hidden PAT prompt\n")
+		return 1
+	}
+	conflictChoice, err := parseRequirementsConflictChoice(*skillConflict)
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	if strings.TrimSpace(*skillArchive) == "" && strings.TrimSpace(*skillArchiveSHA256) != "" {
+		a.errorf("--skill-archive-sha256 requires --skill-archive\n")
+		return 2
+	}
+	if strings.TrimSpace(*skillArchive) != "" && strings.TrimSpace(*skillArchiveSHA256) == "" {
+		a.errorf("--skill-archive requires --skill-archive-sha256\n")
+		return 2
+	}
+	if conflictChoice == requirements.ConflictAlternate && strings.TrimSpace(*skillAlternateTarget) == "" {
+		a.errorf("--skill-conflict alternate requires --skill-alternate-target\n")
+		return 2
+	}
+	if conflictChoice != requirements.ConflictAlternate && strings.TrimSpace(*skillAlternateTarget) != "" {
+		a.errorf("--skill-alternate-target requires --skill-conflict alternate\n")
+		return 2
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {
@@ -214,14 +247,29 @@ func (a *app) runRequirementsSetup(ctx context.Context, args []string) int {
 		a.errorf("validate requirements access: %v\n", safeRequirementsError(err, token))
 		return 1
 	}
-	bundle, plan, err := a.requirementsInstallPlan(agent)
+	bundle, plan, skillSource, err := a.requirementsInstallPlanFrom(agent, *skillArchive, *skillArchiveSHA256)
 	if err != nil {
 		a.errorf("preview requirements skill installation: %v\n", err)
 		return 1
 	}
-	if plan.Action == requirements.ActionUserModified {
-		a.errorf("requirements skill target %s is user-modified; resolve it explicitly before setup\n", plan.Path)
-		return 1
+	userModified := plan.Action == requirements.ActionUserModified
+	if userModified {
+		switch conflictChoice {
+		case requirements.ConflictCancel:
+		case requirements.ConflictReplace, requirements.ConflictAlternate:
+			plan, err = requirements.ApplyConflictDecision(bundle, plan, requirementsCLIVersion(), conflictChoice, *skillAlternateTarget)
+			if err != nil {
+				a.errorf("apply requirements skill conflict choice: %v\n", err)
+				return 1
+			}
+			if conflictChoice == requirements.ConflictAlternate && plan.Action == requirements.ActionUserModified {
+				a.errorf("alternate requirements skill target %s is also user-modified; choose an empty or managed alternate target\n", plan.Path)
+				return 1
+			}
+		}
+	} else if conflictChoice != requirements.ConflictCancel {
+		a.errorf("--skill-conflict %s requires a user-modified target\n", conflictChoice)
+		return 2
 	}
 	contextPath, err := requirements.ContextPath()
 	if err != nil {
@@ -231,7 +279,8 @@ func (a *app) runRequirementsSetup(ctx context.Context, args []string) int {
 	result := requirementsSetupResult{OK: true, Applied: false, Profile: candidate.Name, ProfileCreated: profileCreated,
 		ContextPath: contextPath, Repository: repo, Agent: agent, User: access.User.Login,
 		Visibility: access.Repository.Repository.Visibility, Policy: access.Repository.Repository.ContributionPolicy,
-		AllowedActions: access.AllowedActions, CanContribute: access.CanContribute, ReadOnly: !access.CanContribute, SkillPlan: plan}
+		AllowedActions: access.AllowedActions, CanContribute: access.CanContribute, ReadOnly: !access.CanContribute, SkillPlan: plan,
+		SkillSource: skillSource, Compatibility: "compatible with CLI " + requirementsCLIVersion(), ConflictDecision: requirementsConflictChoiceName(conflictChoice)}
 	if !*yes {
 		if *jsonOut {
 			return a.outputJSON(result)
@@ -239,6 +288,10 @@ func (a *app) runRequirementsSetup(ctx context.Context, args []string) int {
 		printRequirementsSetupPreview(a.out, result)
 		fmt.Fprintln(a.out, "preview only; rerun with --yes to apply these sequential, idempotent steps")
 		return 0
+	}
+	if userModified && conflictChoice == requirements.ConflictCancel {
+		a.errorf("requirements skill installation cancelled for user-modified target %s; choose replace or alternate explicitly\n", plan.Path)
+		return 1
 	}
 	if profileCreated {
 		if err := a.saveRequirementsProfile(candidate, false); err != nil {
@@ -398,24 +451,54 @@ func (a *app) requirementsSetupToken(ctx context.Context, profile auth.Profile, 
 }
 
 func (a *app) requirementsInstallPlan(agent requirements.Target) (requirements.Bundle, requirements.InstallPlan, error) {
+	bundle, plan, _, err := a.requirementsInstallPlanFrom(agent, "", "")
+	return bundle, plan, err
+}
+
+func (a *app) requirementsInstallPlanFrom(agent requirements.Target, archivePath, archiveSHA256 string) (requirements.Bundle, requirements.InstallPlan, string, error) {
 	identity := buildinfo.Current()
-	distribution := requirements.Distribution{}
-	cliVersion := "development"
-	if identity.Channel != "development" {
-		distribution = requirements.Distribution{Channel: identity.Channel, SourceRevision: identity.Revision, CLIBuild: identity.Version}
-		cliVersion = identity.Version
-	}
-	bundle, err := requirements.Canonical(distribution)
-	if err != nil {
-		return requirements.Bundle{}, requirements.InstallPlan{}, err
-	}
-	if bundle.Manifest.ContentID != identity.RequirementsSkillContentID {
-		return requirements.Bundle{}, requirements.InstallPlan{}, errors.New("embedded requirements skill does not match the CLI build identity")
+	var bundle requirements.Bundle
+	source := "embedded"
+	if strings.TrimSpace(archivePath) != "" {
+		absolute, err := filepath.Abs(strings.TrimSpace(archivePath))
+		if err != nil {
+			return requirements.Bundle{}, requirements.InstallPlan{}, "", fmt.Errorf("resolve requirements skill archive: %w", err)
+		}
+		raw, err := os.ReadFile(filepath.Clean(absolute))
+		if err != nil {
+			return requirements.Bundle{}, requirements.InstallPlan{}, "", fmt.Errorf("read requirements skill archive: %w", err)
+		}
+		bundle, err = requirements.VerifyArchive(raw, archiveSHA256)
+		if err != nil {
+			return requirements.Bundle{}, requirements.InstallPlan{}, "", err
+		}
+		source = "archive:" + filepath.Clean(absolute)
+	} else {
+		distribution := requirements.Distribution{}
+		if identity.Channel != "development" {
+			distribution = requirements.Distribution{Channel: identity.Channel, SourceRevision: identity.Revision, CLIBuild: identity.Version}
+		}
+		var err error
+		bundle, err = requirements.Canonical(distribution)
+		if err != nil {
+			return requirements.Bundle{}, requirements.InstallPlan{}, "", err
+		}
+		if bundle.Manifest.ContentID != identity.RequirementsSkillContentID {
+			return requirements.Bundle{}, requirements.InstallPlan{}, "", errors.New("embedded requirements skill does not match the CLI build identity")
+		}
 	}
 	options := requirements.TargetOptions{Home: strings.TrimSpace(os.Getenv("HOME")),
 		CodexHome: strings.TrimSpace(os.Getenv("CODEX_HOME")), ClaudeConfigDir: strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))}
-	plan, err := a.previewRequirementsInstall(bundle, agent, options, cliVersion)
-	return bundle, plan, err
+	plan, err := a.previewRequirementsInstall(bundle, agent, options, requirementsCLIVersion())
+	return bundle, plan, source, err
+}
+
+func requirementsCLIVersion() string {
+	identity := buildinfo.Current()
+	if identity.Channel == "development" {
+		return "development"
+	}
+	return identity.Version
 }
 
 func resolveRequirementsRepositoryAccess(ctx context.Context, api requirementsAPI, repo string) (requirementsRepositoryAccess, error) {
@@ -483,6 +566,26 @@ func parseRequirementsAgent(value string) (requirements.Target, error) {
 	return target, nil
 }
 
+func parseRequirementsConflictChoice(value string) (requirements.ConflictDecision, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "cancel":
+		return requirements.ConflictCancel, nil
+	case "replace":
+		return requirements.ConflictReplace, nil
+	case "alternate":
+		return requirements.ConflictAlternate, nil
+	default:
+		return "", errors.New("--skill-conflict must be cancel, replace, or alternate")
+	}
+}
+
+func requirementsConflictChoiceName(choice requirements.ConflictDecision) string {
+	if choice == requirements.ConflictAlternate {
+		return "alternate"
+	}
+	return string(choice)
+}
+
 func canonicalRequirementsServer(value string) (string, string, error) {
 	value = strings.TrimSpace(value)
 	parsed, err := url.Parse(value)
@@ -548,7 +651,9 @@ func keyringRequirementsError(err error, secret string) error {
 func printRequirementsSetupPreview(w io.Writer, result requirementsSetupResult) {
 	fmt.Fprintf(w, "profile: %s (create=%t)\nrepository: %s\nagent: %s\nuser: %s\n", result.Profile, result.ProfileCreated, result.Repository, result.Agent, result.User)
 	fmt.Fprintf(w, "visibility: %s\ncontribution policy: %s\nallowed actions: %s\n", result.Visibility, result.Policy, strings.Join(result.AllowedActions, ", "))
-	fmt.Fprintf(w, "context: %s\nskill: %s (%s)\n", result.ContextPath, result.SkillPlan.Path, result.SkillPlan.Action)
+	fmt.Fprintf(w, "context: %s\nskill source: %s\nskill compatibility: %s\nskill target: %s\nskill path: %s\nskill action: %s\nskill reason: %s\nskill content ID: %s\nskill conflict decision: %s\n",
+		result.ContextPath, result.SkillSource, result.Compatibility, result.SkillPlan.Target, result.SkillPlan.Path,
+		result.SkillPlan.Action, result.SkillPlan.Reason, result.SkillPlan.ContentID, result.ConflictDecision)
 	if result.ReadOnly {
 		fmt.Fprintln(w, "access: read-only (allowed_actions does not include contribute)")
 	} else {

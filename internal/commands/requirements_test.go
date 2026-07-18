@@ -170,6 +170,11 @@ func TestRequirementsSetupPreviewDoesNotWrite(t *testing.T) {
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(secret+"\n"), &out, &errOut)
 	app.resolveRequirementsToken = noRequirementsToken
+	stdinChecked := false
+	app.stdinIsTerminal = func(io.Reader) bool {
+		stdinChecked = true
+		return false
+	}
 	code := app.runRequirementsSetup(t.Context(), []string{"--server", server.URL, "--repo", "owner/repo", "--agent", "claude", "--profile", "preview", "--token-stdin", "--json"})
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
@@ -178,7 +183,8 @@ func TestRequirementsSetupPreviewDoesNotWrite(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Applied || !result.ProfileCreated || result.SkillPlan.Action != requirements.ActionCreate {
+	if !stdinChecked || result.Applied || !result.ProfileCreated || result.SkillPlan.Action != requirements.ActionCreate ||
+		result.SkillSource != "embedded" || !strings.Contains(result.Compatibility, "development") || result.ConflictDecision != "cancel" {
 		t.Fatalf("preview=%+v", result)
 	}
 	if _, _, err := auth.ResolveProfile("preview", ""); err == nil {

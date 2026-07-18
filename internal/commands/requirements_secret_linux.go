@@ -13,7 +13,7 @@ import (
 
 func readHiddenRequirementsSecret(input io.Reader, output io.Writer) (string, error) {
 	file, ok := input.(*os.File)
-	if !ok {
+	if !ok || !requirementsInputIsTerminal(file) {
 		return "", errors.New("interactive PAT input requires a terminal; use --token-stdin for explicit protected stdin")
 	}
 	fd := file.Fd()
@@ -31,4 +31,14 @@ func readHiddenRequirementsSecret(input io.Reader, output io.Writer) (string, er
 	line, err := bufio.NewReader(file).ReadString('\n')
 	_, _ = io.WriteString(output, "\n")
 	return line, err
+}
+
+func requirementsInputIsTerminal(input io.Reader) bool {
+	file, ok := input.(*os.File)
+	if !ok {
+		return false
+	}
+	var state syscall.Termios
+	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, file.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&state)), 0, 0, 0)
+	return errno == 0
 }

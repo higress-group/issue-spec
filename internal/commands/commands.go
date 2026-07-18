@@ -52,6 +52,7 @@ type app struct {
 	storeRequirementsToken         func(context.Context, auth.Profile, string, bool) (string, error)
 	resolveRequirementsToken       func(context.Context, auth.Profile) (auth.Token, error)
 	readRequirementsSecret         func(io.Reader, io.Writer) (string, error)
+	stdinIsTerminal                func(io.Reader) bool
 	previewRequirementsInstall     func(requirements.Bundle, requirements.Target, requirements.TargetOptions, string) (requirements.InstallPlan, error)
 	installRequirements            func(requirements.Bundle, requirements.InstallPlan) (requirements.InstallResult, error)
 }
@@ -168,6 +169,7 @@ func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 		storeRequirementsToken:     auth.StoreProfileToken,
 		resolveRequirementsToken:   auth.ResolveProfileToken,
 		readRequirementsSecret:     readHiddenRequirementsSecret,
+		stdinIsTerminal:            requirementsInputIsTerminal,
 		previewRequirementsInstall: requirements.PreviewInstall,
 		installRequirements:        requirements.Install,
 		resolveCodeMutationProvider: func(ctx context.Context, key string) (codereview.MutationProvider, error) {
