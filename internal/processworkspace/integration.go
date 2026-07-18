@@ -160,6 +160,11 @@ func validateImplementationReceiptBinding(lease LocalLease, receipt assignment.R
 	if receipt.Role != assignment.RoleImplementation || receipt.Implementation == nil {
 		return errors.New("completion requires an implementation receipt")
 	}
+	writer := strings.TrimSpace(receipt.Provenance.Writer)
+	subject := strings.TrimSpace(receipt.Provenance.Subject)
+	if writer == "" || subject == "" || !strings.EqualFold(writer, subject) || strings.EqualFold(writer, "Coordinator") {
+		return errors.New("implementation receipt must be owned by one non-Coordinator worker identity")
+	}
 	binding := lease.Portable.Assignment
 	if binding == nil || lease.Assignment == nil {
 		return errors.New("result-file completion requires the authoritative persisted assignment binding")

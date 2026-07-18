@@ -20,6 +20,8 @@ func TestCompleteAcceptsBoundImplementationReceiptAndRetainsEvidenceThroughInteg
 	contract := bindImplementationAssignment(t, fixture, []assignment.TestSelector{{ID: "focused", Command: "go test ./internal/processworkspace"}})
 	resultCommit := commitWorkerFile(t, fixture, "internal/receipt.go", "package internal\n", true)
 	receipt := implementationReceiptForFixture(t, contract, resultCommit, []string{"internal/receipt.go"})
+	receipt.Provenance.Writer = "Worker Agent"
+	receipt.Provenance.Subject = "worker agent"
 	receipt.Tests = []assignment.TestResult{{ID: "focused", Command: "go test ./internal/processworkspace", Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}
 	receipt = sealImplementationReceipt(t, receipt)
 
@@ -82,6 +84,17 @@ func TestCompleteRejectsInvalidImplementationReceiptWithoutPersistingEvidence(t 
 		"required test": func(receipt *assignment.Receipt) {
 			receipt.Tests[0].Outcome = assignment.TestFailed
 		},
+		"writer and subject differ": func(receipt *assignment.Receipt) {
+			receipt.Provenance.Subject = "Different Worker"
+		},
+		"coordinator identity": func(receipt *assignment.Receipt) {
+			receipt.Provenance.Writer = "Coordinator"
+			receipt.Provenance.Subject = "Coordinator"
+		},
+		"case variant coordinator identity": func(receipt *assignment.Receipt) {
+			receipt.Provenance.Writer = "cOoRdInAtOr"
+			receipt.Provenance.Subject = "CoOrDiNaToR"
+		},
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -99,10 +112,28 @@ func TestCompleteRejectsInvalidImplementationReceiptWithoutPersistingEvidence(t 
 				t.Fatalf("invalid receipt accepted: %v", err)
 			}
 			stored, found, getErr := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
-			if getErr != nil || !found || stored.Portable.State != StatePrepared || stored.Portable.ResultCommit != "" || stored.AcceptedReceiptID != "" {
+			if getErr != nil || !found || stored.Portable.State != StatePrepared || stored.Portable.ResultCommit != "" ||
+				stored.Portable.IntegrationSHA != "" || stored.AcceptedReceiptID != "" || stored.Portable.AcceptedReceiptID != "" ||
+				stored.Portable.AcceptedReceiptDigest != "" || stored.Portable.AcceptedReceiptGeneration != 0 {
 				t.Fatalf("invalid receipt mutated lease=%+v found=%v err=%v", stored, found, getErr)
 			}
+			if got := gitOutput(t, fixture.repo, "rev-parse", "HEAD"); got != fixture.base {
+				t.Fatalf("invalid receipt mutated integration HEAD=%s base=%s", got, fixture.base)
+			}
 		})
+	}
+}
+
+func TestCompleteLegacyResultCommitDoesNotRequireReceiptProvenance(t *testing.T) {
+	fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
+	resultCommit := commitWorkerFile(t, fixture, "internal/legacy.go", "package internal\n", true)
+	completed, err := fixture.manager.Complete(context.Background(), CompleteRequest{
+		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, ResultCommit: resultCommit,
+	})
+	if err != nil || completed.Lease.Portable.State != StateWorkerComplete || completed.Lease.Portable.ResultCommit != resultCommit ||
+		completed.Lease.AcceptedReceiptID != "" || completed.Lease.Portable.AcceptedReceiptID != "" ||
+		completed.Lease.Portable.AcceptedReceiptDigest != "" || completed.Lease.Portable.AcceptedReceiptGeneration != 0 {
+		t.Fatalf("legacy completion=%+v err=%v", completed.Lease, err)
 	}
 }
 
