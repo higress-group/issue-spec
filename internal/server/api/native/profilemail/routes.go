@@ -1,6 +1,6 @@
-// Package profilemail exposes the private notification-email lifecycle. All
-// mutations require a browser session and therefore inherit Origin and CSRF
-// enforcement from the shared native authentication middleware.
+// Package profilemail exposes the private notification-email lifecycle plus a
+// public, token-only confirmation action. Account mutations require a browser
+// session; confirmation possession is its only credential.
 package profilemail
 
 import (
@@ -19,9 +19,9 @@ import (
 type Service interface {
 	Get(context.Context, uuid.UUID) (mailservice.Profile, error)
 	Set(context.Context, mailservice.SetInput) (mailservice.Verification, error)
+	Onboard(context.Context, mailservice.OnboardingInput) (mailservice.Verification, error)
 	Resend(context.Context, mailservice.ResendInput) (mailservice.Verification, error)
-	InspectForUser(context.Context, uuid.UUID, string) (mailservice.Confirmation, error)
-	ConfirmForUser(context.Context, uuid.UUID, string) (mailservice.Confirmed, error)
+	Confirm(context.Context, string) (mailservice.Confirmed, error)
 	Remove(context.Context, mailservice.RemoveInput) error
 }
 
@@ -39,15 +39,43 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 	protected := func(handler http.Handler) http.Handler {
 		return adminapi.WithRequestID(deps.Authenticate(handler))
 	}
+	public := func(handler http.Handler) http.Handler {
+		return adminapi.WithRequestID(handler)
+	}
 	set := routeset.RouteSet{Name: "native-profile-mail", Routes: []routeset.Route{
 		{Name: "native.profile_mail.get", Method: http.MethodGet, Pattern: "/api/v1/profile/email", Handler: protected(http.HandlerFunc(h.get))},
 		{Name: "native.profile_mail.set", Method: http.MethodPut, Pattern: "/api/v1/profile/email", Handler: protected(http.HandlerFunc(h.set))},
+		{Name: "native.profile_mail.onboard", Method: http.MethodPost, Pattern: "/api/v1/profile/onboarding", Handler: protected(http.HandlerFunc(h.onboard))},
 		{Name: "native.profile_mail.remove", Method: http.MethodDelete, Pattern: "/api/v1/profile/email", Handler: protected(http.HandlerFunc(h.remove))},
-		{Name: "native.profile_mail.inspect", Method: http.MethodGet, Pattern: "/api/v1/profile/email/verification", Handler: protected(http.HandlerFunc(h.inspect))},
-		{Name: "native.profile_mail.confirm", Method: http.MethodPost, Pattern: "/api/v1/profile/email/verification", Handler: protected(http.HandlerFunc(h.confirm))},
+		{Name: "native.profile_mail.confirm", Method: http.MethodPost, Pattern: "/api/v1/profile/email/verification", Handler: public(http.HandlerFunc(h.confirm))},
 		{Name: "native.profile_mail.resend", Method: http.MethodPost, Pattern: "/api/v1/profile/email/verification/resend", Handler: protected(http.HandlerFunc(h.resend))},
 	}}
 	return set, set.Validate()
+}
+
+func (h handlers) onboard(w http.ResponseWriter, r *http.Request) {
+	principal, ok := h.browserPrincipal(w, r)
+	if !ok || !h.available(w) {
+		return
+	}
+	var request struct {
+		PreferredName   string `json:"name"`
+		Email           string `json:"email"`
+		ExpectedVersion int64  `json:"expected_version"`
+	}
+	if err := adminapi.DecodeJSON(w, r, &request); err != nil {
+		adminapi.WriteProblem(w, http.StatusBadRequest, "invalid_json", "Invalid request body")
+		return
+	}
+	verification, err := h.deps.Service.Onboard(r.Context(), mailservice.OnboardingInput{
+		UserID: principal.User.ID, PreferredName: request.PreferredName, Email: request.Email,
+		ExpectedUserVersion: request.ExpectedVersion,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	adminapi.WriteJSON(w, http.StatusAccepted, verificationResponse(verification))
 }
 
 type handlers struct{ deps Dependencies }
@@ -108,45 +136,23 @@ func (h handlers) resend(w http.ResponseWriter, r *http.Request) {
 	adminapi.WriteJSON(w, http.StatusAccepted, verificationResponse(verification))
 }
 
-func (h handlers) inspect(w http.ResponseWriter, r *http.Request) {
-	if !h.available(w) {
-		return
-	}
-	token := strings.TrimSpace(r.URL.Query().Get("token"))
-	if token == "" || len(token) > 512 {
-		adminapi.WriteProblem(w, http.StatusUnprocessableEntity, "invalid_verification", "Verification link is invalid")
-		return
-	}
-	confirmation, err := h.deps.Service.InspectForUser(r.Context(), adminapi.Principal(r).User.ID, token)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	// Deliberately omit the token and pending address. GET is read-only and can
-	// be requested by a link scanner without consuming the one-time action.
-	adminapi.WriteJSON(w, http.StatusOK, map[string]any{"status": "ready", "expires_at": confirmation.ExpiresAt,
-		"representation_version": confirmation.RepresentationVersion})
-}
-
 func (h handlers) confirm(w http.ResponseWriter, r *http.Request) {
-	principal, ok := h.browserPrincipal(w, r)
-	if !ok || !h.available(w) {
+	if !h.available(w) {
 		return
 	}
 	var request struct {
 		Token string `json:"token"`
 	}
 	if err := adminapi.DecodeJSON(w, r, &request); err != nil || strings.TrimSpace(request.Token) == "" || len(request.Token) > 512 {
-		adminapi.WriteProblem(w, http.StatusBadRequest, "invalid_verification", "Verification link is invalid")
+		writeConfirmationError(w, mailservice.ErrInvalid)
 		return
 	}
-	confirmed, err := h.deps.Service.ConfirmForUser(r.Context(), principal.User.ID, request.Token)
+	_, err := h.deps.Service.Confirm(r.Context(), request.Token)
 	if err != nil {
-		writeServiceError(w, err)
+		writeConfirmationError(w, err)
 		return
 	}
-	adminapi.WriteJSON(w, http.StatusOK, map[string]any{"status": "confirmed", "notification_email": confirmed.NotificationEmail,
-		"notification_email_verified_at": confirmed.VerifiedAt, "representation_version": confirmed.RepresentationVersion})
+	adminapi.WriteJSON(w, http.StatusOK, map[string]any{"status": "confirmed"})
 }
 
 func (h handlers) remove(w http.ResponseWriter, r *http.Request) {
@@ -228,4 +234,14 @@ func writeServiceError(w http.ResponseWriter, err error) {
 	default:
 		adminapi.WriteProblem(w, http.StatusServiceUnavailable, "email_unavailable", "Notification email is temporarily unavailable")
 	}
+}
+
+func writeConfirmationError(w http.ResponseWriter, err error) {
+	if errors.Is(err, mailservice.ErrUnavailable) {
+		adminapi.WriteProblem(w, http.StatusServiceUnavailable, "email_unavailable", "Notification email is temporarily unavailable")
+		return
+	}
+	// Token state, recipient identity, account state, address conflicts and
+	// concurrent consumption deliberately collapse to one public response.
+	adminapi.WriteProblem(w, http.StatusBadRequest, "invalid_verification", "Verification link is invalid")
 }

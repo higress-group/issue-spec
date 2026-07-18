@@ -32,27 +32,63 @@ func TestServiceVerificationLifecycleAndFoundationWorker(t *testing.T) {
 	}
 	service.now = func() time.Time { return clock }
 
-	request, err := service.Set(t.Context(), SetInput{UserID: userID, Email: "notify@example.test", ExpectedUserVersion: 1})
+	if _, err := service.Onboard(t.Context(), OnboardingInput{UserID: userID, PreferredName: "   ",
+		Email: "invalid-name@example.test", ExpectedUserVersion: 1}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty onboarding name = %v", err)
+	}
+	ordinary, err := service.Set(t.Context(), SetInput{UserID: userID, Email: "ordinary@example.test", ExpectedUserVersion: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var beforeOnboarding *time.Time
+	var beforeNickname *string
+	var beforeVersion int64
+	if err := pool.QueryRow(t.Context(), `SELECT onboarding_completed_at, nickname, representation_version
+		FROM users WHERE id = $1`, userID).Scan(&beforeOnboarding, &beforeNickname, &beforeVersion); err != nil {
+		t.Fatal(err)
+	}
+	if beforeOnboarding != nil || beforeNickname != nil || beforeVersion != 2 {
+		t.Fatalf("ordinary email bypassed onboarding: completed=%v nickname=%v version=%d", beforeOnboarding, beforeNickname, beforeVersion)
+	}
+
+	request, err := service.Onboard(t.Context(), OnboardingInput{UserID: userID, PreferredName: "  Preferred Person  ",
+		Email: "notify@example.test", ExpectedUserVersion: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if request.PendingEmail != "notify@example.test" || request.RepresentationVersion != 1 {
 		t.Fatalf("request = %+v", request)
 	}
-	if _, err := service.Set(t.Context(), SetInput{UserID: userID, Email: "stale@example.test", ExpectedUserVersion: 1}); !errors.Is(err, ErrConflict) {
+	if _, err := service.Set(t.Context(), SetInput{UserID: userID, Email: "stale@example.test", ExpectedUserVersion: 2}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale set = %v", err)
+	}
+	if _, err := service.Onboard(t.Context(), OnboardingInput{UserID: userID, PreferredName: "Overwrite Attempt",
+		Email: "second-onboarding@example.test", ExpectedUserVersion: 3}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("completed onboarding replay = %v", err)
 	}
 
 	var providerEmail string
 	var notificationEmail *string
+	var nickname *string
 	var onboardingCompletedAt *time.Time
 	var userVersion int64
-	if err := pool.QueryRow(t.Context(), `SELECT email, notification_email, onboarding_completed_at, representation_version
-		FROM users WHERE id = $1`, userID).Scan(&providerEmail, &notificationEmail, &onboardingCompletedAt, &userVersion); err != nil {
+	if err := pool.QueryRow(t.Context(), `SELECT email, notification_email, nickname, onboarding_completed_at, representation_version
+		FROM users WHERE id = $1`, userID).Scan(&providerEmail, &notificationEmail, &nickname, &onboardingCompletedAt, &userVersion); err != nil {
 		t.Fatal(err)
 	}
-	if providerEmail != "provider-identity@example.test" || notificationEmail != nil || onboardingCompletedAt == nil || userVersion != 2 {
-		t.Fatalf("unconfirmed profile provider=%q notification=%v onboarding=%v version=%d", providerEmail, notificationEmail, onboardingCompletedAt, userVersion)
+	if providerEmail != "provider-identity@example.test" || notificationEmail != nil || nickname == nil || *nickname != "Preferred Person" || onboardingCompletedAt == nil || userVersion != 3 {
+		t.Fatalf("unconfirmed profile provider=%q notification=%v nickname=%v onboarding=%v version=%d", providerEmail, notificationEmail, nickname, onboardingCompletedAt, userVersion)
+	}
+	var verificationCount int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM email_verification_requests WHERE user_id = $1`, userID).Scan(&verificationCount); err != nil {
+		t.Fatal(err)
+	}
+	if verificationCount != 2 {
+		t.Fatalf("transactional onboarding request count = %d, want ordinary plus onboarding only", verificationCount)
+	}
+	var ordinarySuperseded *time.Time
+	if err := pool.QueryRow(t.Context(), `SELECT superseded_at FROM email_verification_requests WHERE id = $1`, ordinary.ID).Scan(&ordinarySuperseded); err != nil || ordinarySuperseded == nil {
+		t.Fatalf("ordinary pending request was not atomically superseded: %v/%v", ordinarySuperseded, err)
 	}
 
 	var digest, ciphertext []byte
@@ -73,14 +109,6 @@ func TestServiceVerificationLifecycleAndFoundationWorker(t *testing.T) {
 	if strings.Contains(snapshot, token) || strings.Contains(snapshot, request.PendingEmail) || strings.Contains(snapshot, string(ciphertext)) {
 		t.Fatalf("queue snapshot leaked verification data: %s", snapshot)
 	}
-	inspected, err := service.InspectForUser(t.Context(), userID, token)
-	if err != nil || inspected.RequestID != request.ID {
-		t.Fatalf("read-only inspection = %+v/%v", inspected, err)
-	}
-	if _, err := service.InspectForUser(t.Context(), uuid.New(), token); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("cross-user inspection = %v", err)
-	}
-
 	queue, err := emaildelivery.NewStore(pool)
 	if err != nil {
 		t.Fatal(err)
@@ -128,18 +156,18 @@ func TestServiceVerificationLifecycleAndFoundationWorker(t *testing.T) {
 		t.Fatalf("successful delivery retained ciphertext: %x/%v", ciphertext, err)
 	}
 
-	confirmed, err := service.ConfirmForUser(t.Context(), userID, token)
+	confirmed, err := service.Confirm(t.Context(), token)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if confirmed.NotificationEmail != request.PendingEmail || confirmed.RepresentationVersion != 3 {
+	if confirmed.NotificationEmail != request.PendingEmail || confirmed.RepresentationVersion != 4 {
 		t.Fatalf("confirmed = %+v", confirmed)
 	}
 	if _, err := service.Confirm(t.Context(), token); !errors.Is(err, ErrConsumed) {
 		t.Fatalf("confirmation replay = %v", err)
 	}
 
-	replacement, err := service.Set(t.Context(), SetInput{UserID: userID, Email: "replacement@example.test", ExpectedUserVersion: 3})
+	replacement, err := service.Set(t.Context(), SetInput{UserID: userID, Email: "replacement@example.test", ExpectedUserVersion: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +181,7 @@ func TestServiceVerificationLifecycleAndFoundationWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	clock = clock.Add(2 * time.Minute)
-	resent, err := service.Resend(t.Context(), ResendInput{UserID: userID, ExpectedUserVersion: 4,
+	resent, err := service.Resend(t.Context(), ResendInput{UserID: userID, ExpectedUserVersion: 5,
 		ExpectedVerificationVersion: replacement.RepresentationVersion})
 	if err != nil {
 		t.Fatal(err)
@@ -169,21 +197,21 @@ func TestServiceVerificationLifecycleAndFoundationWorker(t *testing.T) {
 		t.Fatalf("superseded delivery = %q/%v", state, err)
 	}
 
-	if err := service.Remove(t.Context(), RemoveInput{UserID: userID, ExpectedUserVersion: 5}); err != nil {
+	if err := service.Remove(t.Context(), RemoveInput{UserID: userID, ExpectedUserVersion: 6}); err != nil {
 		t.Fatal(err)
 	}
 	profile, err := service.Get(t.Context(), userID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.NotificationEmail != nil || profile.Pending != nil || profile.RepresentationVersion != 6 {
+	if profile.NotificationEmail != nil || profile.Pending != nil || profile.RepresentationVersion != 7 {
 		t.Fatalf("removed profile = %+v", profile)
 	}
 	if err := pool.QueryRow(t.Context(), `SELECT email FROM users WHERE id = $1`, userID).Scan(&providerEmail); err != nil || providerEmail != "provider-identity@example.test" {
 		t.Fatalf("provider email changed = %q/%v", providerEmail, err)
 	}
 
-	expiring, err := service.Set(t.Context(), SetInput{UserID: userID, Email: "expires@example.test", ExpectedUserVersion: 6})
+	expiring, err := service.Set(t.Context(), SetInput{UserID: userID, Email: "expires@example.test", ExpectedUserVersion: 7})
 	if err != nil {
 		t.Fatal(err)
 	}

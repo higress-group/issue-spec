@@ -83,9 +83,9 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID) (Profile, error) {
 	return result, nil
 }
 
-// Set starts initial verification or atomically replaces an outstanding
-// request. An already verified address remains active until the new address is
-// confirmed. The caller's user version prevents stale profile forms winning.
+// Set starts or replaces verification for ordinary account email management.
+// It deliberately does not complete onboarding; only Onboard can make the
+// name-plus-email transition required for a newly provisioned account.
 func (s *Service) Set(ctx context.Context, input SetInput) (Verification, error) {
 	address, err := normalizeAddress(input.Email)
 	if s == nil || input.UserID == uuid.Nil || input.ExpectedUserVersion < 1 || err != nil {
@@ -107,8 +107,7 @@ func (s *Service) Set(ctx context.Context, input SetInput) (Verification, error)
 		if err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `UPDATE users SET onboarding_completed_at = COALESCE(onboarding_completed_at, $3),
-			representation_version = representation_version + 1,
+		tag, err := tx.Exec(ctx, `UPDATE users SET representation_version = representation_version + 1,
 			updated_at = $3 WHERE id = $1 AND representation_version = $2`, input.UserID,
 			input.ExpectedUserVersion, now)
 		if err != nil {
@@ -125,42 +124,48 @@ func (s *Service) Set(ctx context.Context, input SetInput) (Verification, error)
 	return result, nil
 }
 
-// InspectForUser validates a confirmation token without consuming it. The
-// authenticated user binding prevents one signed-in account from learning
-// another account's pending address or consuming its link.
-func (s *Service) InspectForUser(ctx context.Context, userID uuid.UUID, token string) (Confirmation, error) {
-	if s == nil || userID == uuid.Nil || strings.TrimSpace(token) == "" {
-		return Confirmation{}, ErrInvalid
+// Onboard atomically accepts the non-empty preferred name, creates the email
+// verification request, and marks onboarding complete. Existing/completed
+// accounts must continue to use Set for ordinary email changes.
+func (s *Service) Onboard(ctx context.Context, input OnboardingInput) (Verification, error) {
+	name, nameErr := normalizePreferredName(input.PreferredName)
+	address, addressErr := normalizeAddress(input.Email)
+	if s == nil || input.UserID == uuid.Nil || input.ExpectedUserVersion < 1 || nameErr != nil || addressErr != nil {
+		return Verification{}, ErrInvalid
 	}
-	var result Confirmation
-	var consumed, superseded *time.Time
-	err := s.pool.QueryRow(ctx, `SELECT id, expires_at, consumed_at, superseded_at, representation_version
-		FROM email_verification_requests WHERE user_id = $1 AND token_digest = $2`, userID,
-		s.secrets.Digest(tokenPurpose, token)).Scan(&result.RequestID, &result.ExpiresAt,
-		&consumed, &superseded, &result.RepresentationVersion)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Confirmation{}, ErrNotFound
-	}
+	var result Verification
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(tx pgx.Tx) error {
+		now := s.now().Truncate(time.Microsecond)
+		if err := lockUser(ctx, tx, input.UserID, input.ExpectedUserVersion); err != nil {
+			return err
+		}
+		if err := s.checkRate(ctx, tx, input.UserID, now); err != nil {
+			return err
+		}
+		if err := supersedeCurrent(ctx, tx, input.UserID, now, 0); err != nil {
+			return err
+		}
+		var err error
+		result, err = s.issue(ctx, tx, input.UserID, address, now)
+		if err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `UPDATE users SET nickname = $3, onboarding_completed_at = $4,
+			representation_version = representation_version + 1, updated_at = $4
+			WHERE id = $1 AND representation_version = $2 AND onboarding_completed_at IS NULL`,
+			input.UserID, input.ExpectedUserVersion, name, now)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrConflict
+		}
+		return nil
+	})
 	if err != nil {
-		return Confirmation{}, safeError(err)
+		return Verification{}, safeError(err)
 	}
-	switch {
-	case consumed != nil:
-		return Confirmation{}, ErrConsumed
-	case superseded != nil:
-		return Confirmation{}, ErrSuperseded
-	case !result.ExpiresAt.After(s.now()):
-		return Confirmation{}, ErrExpired
-	default:
-		return result, nil
-	}
-}
-
-func (s *Service) ConfirmForUser(ctx context.Context, userID uuid.UUID, token string) (Confirmed, error) {
-	if userID == uuid.Nil {
-		return Confirmed{}, ErrInvalid
-	}
-	return s.confirm(ctx, userID, token)
+	return result, nil
 }
 
 // Resend rotates the token rather than reviving sent ciphertext. This makes
@@ -247,10 +252,6 @@ func (s *Service) Remove(ctx context.Context, input RemoveInput) error {
 // Confirm consumes exactly one live request. Digest lookup, row locks and the
 // representation predicate jointly fence expiry, replay and concurrent edits.
 func (s *Service) Confirm(ctx context.Context, token string) (Confirmed, error) {
-	return s.confirm(ctx, uuid.Nil, token)
-}
-
-func (s *Service) confirm(ctx context.Context, expectedUserID uuid.UUID, token string) (Confirmed, error) {
 	if s == nil || strings.TrimSpace(token) == "" {
 		return Confirmed{}, ErrInvalid
 	}
@@ -274,9 +275,6 @@ func (s *Service) confirm(ctx context.Context, expectedUserID uuid.UUID, token s
 		}
 		if err != nil {
 			return err
-		}
-		if expectedUserID != uuid.Nil && result.UserID != expectedUserID {
-			return ErrNotFound
 		}
 		if userStatus != "active" {
 			return ErrAccountDisabled
@@ -493,6 +491,14 @@ func normalizeAddress(value string) (string, error) {
 	}
 	parsed, err := mail.ParseAddress(value)
 	if err != nil || parsed.Name != "" || parsed.Address != value || strings.Count(value, "@") != 1 {
+		return "", ErrInvalid
+	}
+	return value, nil
+}
+
+func normalizePreferredName(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || len([]rune(value)) > 80 {
 		return "", ErrInvalid
 	}
 	return value, nil

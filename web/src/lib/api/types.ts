@@ -101,17 +101,8 @@ export const emailVerificationSchema = z.object({
   representation_version: z.number().int().positive(),
 });
 
-export const emailConfirmationSchema = z.object({
-  status: z.literal("ready"),
-  expires_at: z.string().datetime({ offset: true }),
-  representation_version: z.number().int().positive(),
-});
-
 export const confirmedEmailSchema = z.object({
   status: z.literal("confirmed"),
-  notification_email: z.string().email(),
-  notification_email_verified_at: z.string().datetime({ offset: true }),
-  representation_version: z.number().int().positive(),
 });
 
 export const repositoryContextSchema = z.object({

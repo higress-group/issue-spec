@@ -74,8 +74,7 @@ describe("identity and trusted transport UI", () => {
 
   it("requires name and email in a non-dismissible first-login dialog", async () => {
     let completed = false;
-    let nicknameBody: unknown;
-    let emailBody: unknown;
+    let onboardingBody: unknown;
     document.cookie = "issue_spec_csrf=onboarding-csrf; Path=/";
     server.use(
       http.get("http://localhost/api/v1/profile", () => HttpResponse.json({
@@ -84,17 +83,9 @@ describe("identity and trusted transport UI", () => {
         notification_email_available: true, onboarding_completed: completed, notification_email: null,
         notification_email_verified_at: null, pending_notification_email: null,
       })),
-      http.patch("http://localhost/api/v1/profile", async ({ request }) => {
+      http.post("http://localhost/api/v1/profile/onboarding", async ({ request }) => {
         expect(request.headers.get("X-CSRF-Token")).toBe("onboarding-csrf");
-        nicknameBody = await request.json();
-        return HttpResponse.json({ id: 101, login: "alice", display_name: "Alice Zhang", identity_display_name: "Provider Alice",
-          nickname: "Alice Zhang", representation_version: 2, avatar_url: "", html_url: "", type: "User", site_admin: true,
-          notification_email_available: true, onboarding_completed: false, notification_email: null,
-          notification_email_verified_at: null, pending_notification_email: null });
-      }),
-      http.put("http://localhost/api/v1/profile/email", async ({ request }) => {
-        expect(request.headers.get("X-CSRF-Token")).toBe("onboarding-csrf");
-        emailBody = await request.json();
+        onboardingBody = await request.json();
         completed = true;
         return HttpResponse.json({ id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", email: "alice.notify@example.test",
           expires_at: "2030-01-01T00:00:00Z", sent_at: null, representation_version: 1 });
@@ -108,37 +99,38 @@ describe("identity and trusted transport UI", () => {
     await userEvent.setup().type(name, "Alice Zhang");
     await userEvent.setup().type(screen.getByRole("textbox", { name: /Notification email/ }), "alice.notify@example.test");
     await userEvent.setup().click(screen.getByRole("button", { name: "Save and continue" }));
-    await waitFor(() => expect(emailBody).toEqual({ email: "alice.notify@example.test", expected_version: 2 }));
-    expect(nicknameBody).toEqual({ nickname: "Alice Zhang", expected_version: 1 });
+    await waitFor(() => expect(onboardingBody).toEqual({ name: "Alice Zhang", email: "alice.notify@example.test", expected_version: 1 }));
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
     expect((await axe.run(container)).violations).toEqual([]);
   });
 
-  it("keeps fragment verification read-only until explicit confirmation", async () => {
-    let inspections = 0;
+  it("clears the verification fragment immediately and sends the token only in the explicit POST body", async () => {
+    let getRequests = 0;
     let confirmations = 0;
-    document.cookie = "issue_spec_csrf=verification-csrf; Path=/";
+    document.cookie = "issue_spec_csrf=; Max-Age=0; Path=/";
+    window.history.replaceState({}, "", "/verify-email#token=fragment-secret");
     server.use(
-      http.get("http://localhost/api/v1/profile/email/verification", ({ request }) => {
-        inspections += 1;
-        expect(new URL(request.url).searchParams.get("token")).toBe("fragment-secret");
-        return HttpResponse.json({ status: "ready", expires_at: "2030-01-01T00:00:00Z", representation_version: 1 });
+      http.get("http://localhost/api/v1/profile/email/verification", () => {
+        getRequests += 1;
+        return new HttpResponse(null, { status: 405 });
       }),
       http.post("http://localhost/api/v1/profile/email/verification", async ({ request }) => {
         confirmations += 1;
-        expect(request.headers.get("X-CSRF-Token")).toBe("verification-csrf");
+        expect(new URL(request.url).search).toBe("");
         expect(await request.json()).toEqual({ token: "fragment-secret" });
-        return HttpResponse.json({ status: "confirmed", notification_email: "alice@example.test",
-          notification_email_verified_at: "2026-07-18T08:00:00Z", representation_version: 4 });
+        return HttpResponse.json({ status: "confirmed" });
       }),
     );
     renderApp(<VerifyEmailPage />, "/verify-email#token=fragment-secret");
-    expect(await screen.findByRole("button", { name: "Confirm email" })).toBeVisible();
-    expect(inspections).toBe(1);
+    expect(window.location.hash).toBe("");
+    expect(window.location.href).not.toContain("fragment-secret");
+    expect(screen.getByRole("button", { name: "Confirm email" })).toBeVisible();
+    expect(getRequests).toBe(0);
     expect(confirmations).toBe(0);
     await userEvent.setup().click(screen.getByRole("button", { name: "Confirm email" }));
     expect(await screen.findByRole("heading", { name: "Email confirmed" })).toBeVisible();
     expect(confirmations).toBe(1);
+    expect(getRequests).toBe(0);
   });
 
   it("shows pending account email controls only when the capability is available", async () => {

@@ -67,6 +67,16 @@ type SetInput struct {
 	ExpectedUserVersion int64
 }
 
+// OnboardingInput is the one operation allowed to complete first-session
+// onboarding. The preferred name and verification request are committed in the
+// same transaction so neither half can become visible by itself.
+type OnboardingInput struct {
+	UserID              uuid.UUID
+	PreferredName       string
+	Email               string
+	ExpectedUserVersion int64
+}
+
 type ResendInput struct {
 	UserID                      uuid.UUID
 	ExpectedUserVersion         int64
@@ -82,14 +92,5 @@ type Confirmed struct {
 	UserID                uuid.UUID
 	NotificationEmail     string
 	VerifiedAt            time.Time
-	RepresentationVersion int64
-}
-
-// Confirmation describes a token without returning its recipient or token.
-// It is used by the scanner-safe confirmation GET before the user explicitly
-// consumes the token with POST.
-type Confirmation struct {
-	RequestID             uuid.UUID
-	ExpiresAt             time.Time
 	RepresentationVersion int64
 }

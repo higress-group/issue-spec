@@ -17,15 +17,9 @@ export function ProfileOnboardingDialog({ enabled }: { enabled: boolean }) {
   const complete = useMutation({
     mutationFn: async () => {
       if (!profile.data) throw new Error(t("onboarding.profileUnavailable"));
-      const updated = await api.updateProfile({ nickname: nameValue.trim(), expected_version: profile.data.representation_version });
-      return api.setProfileEmail({ email: email.trim(), expected_version: updated.representation_version });
+      return api.completeProfileOnboarding({ name: nameValue.trim(), email: email.trim(), expected_version: profile.data.representation_version });
     },
     onSuccess: async () => {
-      await client.invalidateQueries({ queryKey: ["profile"] });
-    },
-    onError: async () => {
-      // The name update precedes email issuance. Refresh its bumped version so
-      // a corrected email can be retried without a stale-form loop.
       await client.invalidateQueries({ queryKey: ["profile"] });
     },
   });
