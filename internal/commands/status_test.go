@@ -12,12 +12,49 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/codereview"
+	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
+
+func TestSelfHostedStatusOnlyForcesProviderSyncForFinal(t *testing.T) {
+	now := time.Now().UTC()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	for _, test := range []struct {
+		target    gates.Target
+		wantSyncs int
+		wantCalls string
+	}{
+		{target: gates.TargetFinal, wantSyncs: 1, wantCalls: "operator,persist,ledger"},
+		{target: gates.TargetArchive, wantCalls: "ledger"},
+	} {
+		t.Run(string(test.target), func(t *testing.T) {
+			var calls []string
+			check := testEvidenceRecord("check-ledger", codereview.EvidenceCheck, "passed", "head-abc", now)
+			check.Name = "unit"
+			ledger := &commandEvidenceProvider{label: "ledger", calls: &calls, snapshot: codereview.Snapshot{
+				ProtocolVersion: codereview.ProtocolVersion, Reference: reference, SubjectRevision: "head-abc", CapturedAt: now,
+				Records: []codereview.EvidenceRecord{check}}}
+			native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7,
+				SubjectRevision: "head-abc", Provider: ledger}, calls: &calls}
+			app := newApp(strings.NewReader(""), nil, nil)
+			app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
+			app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) {
+				return &commandEvidenceProvider{label: "operator", calls: &calls, snapshot: codereview.Snapshot{
+					ProtocolVersion: codereview.ProtocolVersion, Reference: reference, SubjectRevision: "head-abc", CapturedAt: now}}, nil
+			}
+			collection := app.collectStatusGateFacts(t.Context(), fakeGitHubBackend{}, auth.Profile{Kind: auth.ProfileKindHosted},
+				"token", "acme/widgets", 3, test.target, nil)
+			if !collection.Remote.ProviderEvidence.Passed || native.syncs != test.wantSyncs || strings.Join(calls, ",") != test.wantCalls {
+				t.Fatalf("provider=%+v syncs=%d calls=%v", collection.Remote.ProviderEvidence, native.syncs, calls)
+			}
+		})
+	}
+}
 
 func TestSummarizeStatusBlocksOnBlockedQuestion(t *testing.T) {
 	specBody, err := model.EnsureTypedBody("SPEC", "SPEC-001", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y", model.BodyOptions{Status: "confirmed"})
@@ -335,6 +372,46 @@ func TestStatusWorkspaceExternalUsesAuthoritativeCarrier(t *testing.T) {
 	if statusHasCode(summary, gates.CodeProcessWorkspaceRevisionUnknown) || statusHasCode(summary, gates.CodeProcessWorkspaceRevisionStale) ||
 		statusHasCode(summary, gates.CodeProcessWorkspaceProviderEvidenceMissing) {
 		t.Fatalf("authoritative external carrier was not retained: %+v", summary.Gate.Diagnostics)
+	}
+}
+
+func TestStatusForecastUsesSameExternalReviewCompletionCarrier(t *testing.T) {
+	now := time.Date(2026, 7, 18, 1, 0, 0, 0, time.UTC)
+	artifacts, externalReview := externalReviewCompletionFixture(t, now, "Independent Reviewer")
+	collection := statusGateCollection{Remote: statusForecastRemoteFacts(gates.TargetFinal)}
+	collection.Remote.ProviderEvidence = gates.Fact{Required: true, Known: true, Passed: true}
+	collection.Remote.Workspace.ExpectedRevision = gates.Fact{Required: true, Known: true, Passed: true,
+		Expected: externalReview.Target.SubjectRevision, Current: externalReview.Target.SubjectRevision}
+	collection.ProcessEvidence = buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
+		reviewSyncReport{}, nil, &externalReview, now)
+	summary := summarizeStatusForGate("acme/widgets", 1, 2, 3, gates.TargetFinal, artifacts, workflow.Plan{}, nil, collection)
+	var reviewCarrier gates.CarrierRevisionFact
+	for _, process := range summary.Gate.Processes {
+		if process.ProcessID == "PROCESS-002" {
+			reviewCarrier = process.CarrierRevision
+		}
+	}
+	if !reviewCarrier.Trusted || reviewCarrier.Revision != externalReview.Target.SubjectRevision {
+		t.Fatalf("status forecast discarded completion carrier: %+v", summary.Gate.Processes)
+	}
+
+	completion, found, err := parseExternalReviewCompletion(artifacts[3].Comment.Body)
+	if err != nil || !found {
+		t.Fatalf("completion found=%t err=%v", found, err)
+	}
+	completion.SynchronizedAt = now.Add(time.Minute + time.Nanosecond)
+	futureBody, _, err := stampExternalReviewCompletion(artifacts[3].Comment.Body, completion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts[3].Comment = model.ParseTypedComment(futureBody)
+	collection.ProcessEvidence = buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
+		reviewSyncReport{}, nil, &externalReview, now)
+	future := summarizeStatusForGate("acme/widgets", 1, 2, 3, gates.TargetFinal, artifacts, workflow.Plan{}, nil, collection)
+	for _, process := range future.Gate.Processes {
+		if process.ProcessID == "PROCESS-002" && process.CarrierRevision.Trusted {
+			t.Fatalf("future completion survived status forecast: %+v", process)
+		}
 	}
 }
 

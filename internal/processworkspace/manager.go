@@ -135,6 +135,9 @@ func (m *Manager) Prepare(ctx context.Context, request PrepareRequest) (Inspecti
 	if err := m.validateIntegration(ctx, lease.Portable.BaseSHA, lease.Portable.Mode == ModeWritable); err != nil {
 		return Inspection{}, err
 	}
+	if err := m.validateBaseWriteOwnership(ctx, lease.Portable); err != nil {
+		return Inspection{}, err
+	}
 	path, err := m.workspacePath(lease.Portable.WorkspaceID)
 	if err != nil {
 		return Inspection{}, err
@@ -170,6 +173,9 @@ func (m *Manager) Inspect(ctx context.Context, workspaceID string) (Inspection, 
 	}
 	if !found {
 		return Inspection{}, fmt.Errorf("%s: %w", workspaceID, ErrLeaseNotFound)
+	}
+	if err := m.validatePreparationRecoveryOwnership(ctx, lease.Portable); err != nil {
+		return Inspection{Lease: lease}, err
 	}
 	return m.inspectLease(ctx, lease)
 }

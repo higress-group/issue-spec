@@ -203,6 +203,35 @@ delete only the unwanted active reference with the corresponding
 `DELETE .../references/{reference-id}`, then retry. Never guess a winner or
 silently overwrite another active relationship.
 
+After the independent provider review converges, its review agent synchronizes
+the exact active revision under its own identity:
+
+```bash
+issue-spec --profile team review sync \
+  --repo acme/widgets \
+  --implement 3 \
+  --revision abc123 \
+  --id REVIEW-001 \
+  --agent reviewer \
+  --agent-session review-session \
+  --json
+```
+
+A successful self-hosted sync persists and reloads provider facts, then writes
+one stable done REVIEW completion even when the provider reports zero findings.
+After the final sync, use `issue-spec link` to link that REVIEW explicitly to
+its review PROCESS, every covered change-bearing PROCESS, and every covered
+active SPEC. Do not fabricate findings, hand-edit the completion stamp, infer
+links from IDs in prose, or substitute a generic approval framework. `status`
+and final `verify` validate the same exact provider/repository/change,
+reference-version, revision, freshness, links, and reviewer-independence
+carrier without refreshing REVIEW.
+
+During self-hosted closure, `archive` reads that existing implementation REVIEW
+completion only when the implementation `code_change` merge policy requires
+review. It does not create, update, refresh, or add archive-specific REVIEW
+state, and it never applies implementation completion to `archive_change`.
+
 GitHub profiles continue to use `pr link-process`, GitHub PR review and closing
 links, and the existing durable archive path. Self-hosted review, merge, and
 change closure remain on the selected code provider; the CLI does not route
@@ -262,7 +291,7 @@ TASK bodies carry the PROCESS-planning metadata a coordinator needs to decompose
   "checklist": ["Add execution_planning fields", "Enforce canonical validation"],
   "covers": ["SPEC-001", "SPEC-006"],
   "execution_planning": {
-    "owned_areas": ["internal/templates"],
+    "owned_areas": ["internal/templates/**", "docs/reference.md"],
     "shared_touchpoints": ["internal/model"],
     "dependencies": ["SPEC generator schema"],
     "coupling": "low",
@@ -272,6 +301,8 @@ TASK bodies carry the PROCESS-planning metadata a coordinator needs to decompose
 }
 ```
 
+Ownership declarations are literal. A bare repository-relative path such as `docs/reference.md` owns only that exact file; a directory subtree must use an explicit trailing `/**` declaration such as `internal/templates/**`. Do not use bare `internal/templates` to imply ownership of its descendants. Existing PROCESS comments with bare paths remain readable and are not migrated automatically, but `workspace prepare` may reject one that resolves to a tracked directory. Before allocation, explicitly correct the PROCESS artifact or pass a corrected `--write-ownership internal/templates/**` value.
+
 PROCESS bodies record their parent TASK and, for serial chains, the handoff evidence passed to the next node:
 
 ```json
@@ -280,7 +311,7 @@ PROCESS bodies record their parent TASK and, for serial chains, the handoff evid
   "owner": "Worker Agent A",
   "parent_task": "TASK-001",
   "dependencies": ["N/A"],
-  "write_ownership": ["internal/templates"],
+  "write_ownership": ["internal/templates/**", "docs/reference.md"],
   "covers": ["TASK-001"],
   "handoff": "state.json contract fixed; successor may parse it"
 }

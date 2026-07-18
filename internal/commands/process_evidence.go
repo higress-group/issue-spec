@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/higress-group/issue-spec/internal/codereview"
+	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
@@ -18,7 +21,21 @@ var processTestEvidencePattern = regexp.MustCompile(`(?i)\btest(s|ing|ed)?\b`)
 
 func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, reviewComments []github.PullRequestReviewComment,
 	review reviewSyncReport, external *externalEvidenceConsumption) []gates.ProcessEvidenceInput {
+	return buildProcessEvidenceInputsWithExternalReview(artifacts, prURL, reviewComments, review, external, nil, time.Now().UTC())
+}
+
+// buildProcessEvidenceInputsWithExternalReview is the narrow integration seam
+// for self-hosted gates. The ordinary wrapper preserves existing callers while
+// a caller that has explicitly reloaded the authoritative ledger can supply
+// that gate result and obtain completion/legacy REVIEW carrier validation.
+func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, prURL string,
+	reviewComments []github.PullRequestReviewComment, review reviewSyncReport, external *externalEvidenceConsumption,
+	externalReview *externalGateResult, validationNow time.Time) []gates.ProcessEvidenceInput {
+	if external == nil && externalReview != nil {
+		external = &externalReview.Consumption
+	}
 	activeSpecs := map[string]string{}
+	inactiveSpecURLs := map[string]bool{}
 	taskURLs := map[string]bool{}
 	var processes, reviews, verifications []model.Artifact
 	for _, artifact := range artifacts {
@@ -42,10 +59,18 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 			}
 		}
 	}
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type == "SPEC" && artifact.Comment.Status == "superseded" {
+			inactiveSpecURLs[model.NormalizeURL(artifact.URL)] = true
+		}
+	}
 	externalValid := external != nil && validateExternalEvidenceConsumption(*external, processes, activeSpecs) == nil
 	requiredRevision := strings.TrimSpace(review.SubjectRevision)
 	if externalValid {
 		requiredRevision = strings.TrimSpace(external.SubjectRevision)
+	}
+	if externalReview != nil {
+		requiredRevision = strings.TrimSpace(externalReview.Target.SubjectRevision)
 	}
 	processByID := make(map[string]model.Artifact, len(processes))
 	for _, process := range processes {
@@ -109,6 +134,10 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 		if externalValid {
 			input.External = externalProcessEvidenceFor(process.Comment.ID, activeSpecs, *external)
 		}
+		if externalReview != nil && strings.TrimSpace(prURL) == "" {
+			input.External = append(input.External, completionRationaleEvidenceForProcess(process, reviews, processes,
+				activeSpecs, inactiveSpecURLs, *externalReview, validationNow)...)
+		}
 		for _, artifact := range artifacts {
 			if artifact.Issue != process.Issue || !model.IsLikelyCodeChangeRationale(artifact.Comment.Body) {
 				continue
@@ -131,6 +160,20 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 			}
 		}
 		for _, artifact := range reviews {
+			if externalReview != nil && strings.TrimSpace(prURL) == "" {
+				coverage, covered := explicitExternalReviewCoverage(artifact, processes, activeSpecs, inactiveSpecURLs)
+				if !covered || coverage.ReviewProcessID != process.Comment.ID {
+					continue
+				}
+				for _, specID := range coverage.SpecIDs {
+					revision, trusted, source := externalReviewCarrierRevision(artifact, coverage, specID, processes,
+						activeSpecs, *externalReview, validationNow)
+					input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: process.Comment.ID, SpecID: specID,
+						URL: artifact.URL, Done: true, ReviewerAgent: artifact.Comment.Agent, SubjectRevision: revision,
+						Trusted: trusted, Source: source})
+				}
+				continue
+			}
 			if !artifactReferencesProcess(artifact, process) {
 				continue
 			}
@@ -179,6 +222,281 @@ func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, review
 		inputs = append(inputs, input)
 	}
 	return inputs
+}
+
+type explicitReviewCoverage struct {
+	ReviewProcessID      string
+	SpecIDs              []string
+	ImplementationBySpec map[string][]string
+}
+
+// explicitExternalReviewCoverage accepts no textual ID inference. A carrier
+// must link one active review PROCESS, at least one active change-bearing
+// PROCESS, and the exact active SPEC URLs covered by both sides. Equality of
+// those SPEC sets prevents a partially linked multi-SPEC REVIEW from rescuing
+// the covered subset while silently omitting the rest.
+func explicitExternalReviewCoverage(review model.Artifact, processes []model.Artifact, activeSpecs map[string]string,
+	inactiveSpecURLs map[string]bool) (explicitReviewCoverage, bool) {
+	related := review.Comment.Links["Related Comments"]
+	if len(related) == 0 {
+		return explicitReviewCoverage{}, false
+	}
+	linked := map[string]bool{}
+	for _, raw := range related {
+		url := model.NormalizeURL(raw)
+		if url == "" || inactiveSpecURLs[url] {
+			return explicitReviewCoverage{}, false
+		}
+		linked[url] = true
+	}
+	var reviewProcesses []model.Artifact
+	var implementations []model.Artifact
+	for _, process := range processes {
+		if !linked[model.NormalizeURL(process.URL)] {
+			continue
+		}
+		switch model.ParseProcessExecutionClass(process.Comment.ID, process.URL, process.Comment.Body).Class {
+		case model.ProcessExecutionReview:
+			reviewProcesses = append(reviewProcesses, process)
+		case model.ProcessExecutionChangeBearing:
+			implementations = append(implementations, process)
+		}
+	}
+	if len(reviewProcesses) != 1 || len(implementations) == 0 {
+		return explicitReviewCoverage{}, false
+	}
+	reviewSpecs := processActiveSpecs(reviewProcesses[0], activeSpecs)
+	if len(reviewSpecs) == 0 {
+		return explicitReviewCoverage{}, false
+	}
+	implementationBySpec := map[string][]string{}
+	for _, process := range implementations {
+		specs := processActiveSpecs(process, activeSpecs)
+		if len(specs) == 0 {
+			return explicitReviewCoverage{}, false
+		}
+		for _, specID := range specs {
+			implementationBySpec[specID] = append(implementationBySpec[specID], process.Comment.ID)
+		}
+	}
+	linkedSpecs := map[string]bool{}
+	for specID, specURL := range activeSpecs {
+		if linked[model.NormalizeURL(specURL)] {
+			linkedSpecs[specID] = true
+		}
+	}
+	if len(linkedSpecs) != len(reviewSpecs) || len(linkedSpecs) != len(implementationBySpec) {
+		return explicitReviewCoverage{}, false
+	}
+	for _, specID := range reviewSpecs {
+		if !linkedSpecs[specID] || len(implementationBySpec[specID]) == 0 {
+			return explicitReviewCoverage{}, false
+		}
+	}
+	for specID := range implementationBySpec {
+		if !linkedSpecs[specID] {
+			return explicitReviewCoverage{}, false
+		}
+		sort.Strings(implementationBySpec[specID])
+	}
+	return explicitReviewCoverage{ReviewProcessID: reviewProcesses[0].Comment.ID,
+		SpecIDs: reviewSpecs, ImplementationBySpec: implementationBySpec}, true
+}
+
+func processActiveSpecs(process model.Artifact, activeSpecs map[string]string) []string {
+	var result []string
+	for specID, specURL := range activeSpecs {
+		if artifactReferencesSpec(process, specID, specURL) {
+			result = append(result, specID)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func completionRationaleEvidenceForProcess(process model.Artifact, reviews, processes []model.Artifact,
+	activeSpecs map[string]string, inactiveSpecURLs map[string]bool, gate externalGateResult,
+	validationNow time.Time) []gates.ExternalProcessEvidence {
+	if model.ParseProcessExecutionClass(process.Comment.ID, process.URL, process.Comment.Body).Class != model.ProcessExecutionChangeBearing {
+		return nil
+	}
+	if !validExternalReviewGateContext(gate) {
+		return nil
+	}
+	seen := map[string]bool{}
+	var result []gates.ExternalProcessEvidence
+	for _, review := range reviews {
+		coverage, ok := explicitExternalReviewCoverage(review, processes, activeSpecs, inactiveSpecURLs)
+		if !ok {
+			continue
+		}
+		completion, found, err := parseExternalReviewCompletion(review.Comment.Body)
+		if err != nil || !found {
+			continue
+		}
+		policy := gate.ReviewCompletionPolicy
+		policy.Required = true
+		if validateExternalReviewCompletionAt(review.Comment, gate.Target, policy, validationNow) != nil {
+			continue
+		}
+		for _, specID := range coverage.SpecIDs {
+			if !exactStringInSlice(coverage.ImplementationBySpec[specID], process.Comment.ID) {
+				continue
+			}
+			key := process.Comment.ID + "\x00" + specID + "\x00" + review.Comment.ID
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			result = append(result, gates.ExternalProcessEvidence{ProcessID: process.Comment.ID, SpecID: specID,
+				ProviderKey: completion.ProviderKey, ExternalRepository: completion.ExternalRepository,
+				ChangeID: completion.ChangeID, ReferenceVersion: completion.ReferenceVersion,
+				SubjectRevision: completion.SubjectRevision, EvidenceRevision: completion.SubjectRevision,
+				EvidenceKind: "review_completion", Consumed: true,
+				EvidenceIDs: []string{"external-review-completion:" + review.Comment.ID}, Trusted: true,
+				Source: "native-authoritative-ledger:external-review-completion:" + review.Comment.ID})
+		}
+	}
+	return result
+}
+
+func externalReviewCarrierRevision(review model.Artifact, coverage explicitReviewCoverage, specID string,
+	processes []model.Artifact, activeSpecs map[string]string, gate externalGateResult,
+	validationNow time.Time) (string, bool, string) {
+	if !validExternalReviewGateContext(gate) {
+		return strings.TrimSpace(review.Comment.SubjectRevision), false, "typed-review"
+	}
+	completion, found, err := parseExternalReviewCompletion(review.Comment.Body)
+	if err != nil {
+		return strings.TrimSpace(review.Comment.SubjectRevision), false, "typed-review"
+	}
+	if found {
+		policy := gate.ReviewCompletionPolicy
+		policy.Required = true
+		if validateExternalReviewCompletionAt(review.Comment, gate.Target, policy, validationNow) != nil {
+			return strings.TrimSpace(review.Comment.SubjectRevision), false, "typed-review"
+		}
+		return completion.SubjectRevision, true, "external-review-completion"
+	}
+	return legacyExternalReviewCarrierRevision(review, coverage, specID, processes, activeSpecs, gate, validationNow)
+}
+
+func legacyExternalReviewCarrierRevision(review model.Artifact, coverage explicitReviewCoverage, specID string,
+	processes []model.Artifact, activeSpecs map[string]string, gate externalGateResult,
+	validationNow time.Time) (string, bool, string) {
+	recorded := strings.TrimSpace(review.Comment.SubjectRevision)
+	if recorded == "" || recorded != gate.Target.SubjectRevision {
+		return recorded, false, "typed-review"
+	}
+	if header, err := exactReviewSubjectRevision(review.Comment.Body); err != nil || header != gate.Target.SubjectRevision {
+		return recorded, false, "typed-review"
+	}
+	consumption, ok := parseConsumedEvidenceBlock(review.Comment.Body)
+	if !ok || validateReviewCompletionTarget(gate.Target) != nil ||
+		validateExactSnapshotIdentity(gate.Snapshot, gate.Target) != nil ||
+		validateExternalEvidenceConsumption(consumption, processes, activeSpecs) != nil ||
+		!sameExternalReviewIdentity(consumption, gate.Target) {
+		return recorded, false, "typed-review"
+	}
+	selected := map[string]bool{}
+	for _, id := range consumption.EvidenceIDs {
+		selected[id] = true
+	}
+	evaluated := map[string]bool{}
+	for _, id := range gate.Evaluation.EvidenceIDs {
+		evaluated[id] = true
+	}
+	superseded := map[string]bool{}
+	records := map[string]codereview.EvidenceRecord{}
+	for _, record := range gate.Snapshot.Records {
+		id := strings.TrimSpace(record.ID)
+		if id == "" || records[id].ID != "" {
+			return recorded, false, "typed-review"
+		}
+		records[id] = record
+		if predecessor := strings.TrimSpace(record.SupersedesID); predecessor != "" {
+			superseded[predecessor] = true
+		}
+	}
+	bindings := map[string]externalEvidenceBinding{}
+	for _, binding := range consumption.Bindings {
+		if binding.Kind != codereview.EvidenceReview {
+			continue
+		}
+		if bindings[binding.EvidenceID].EvidenceID != "" {
+			return recorded, false, "typed-review"
+		}
+		bindings[binding.EvidenceID] = binding
+	}
+	var earliest time.Time
+	var relevant []string
+	reviewRecords := 0
+	for id := range selected {
+		record, exists := records[id]
+		if !exists || record.Kind != codereview.EvidenceReview {
+			continue
+		}
+		reviewRecords++
+		binding, bound := bindings[id]
+		if superseded[id] || !evaluated[id] || !bound || !validLegacyReviewRecord(record, binding, gate.Target, validationNow) {
+			return recorded, false, "typed-review"
+		}
+		if earliest.IsZero() || record.ObservedAt.Before(earliest) {
+			earliest = record.ObservedAt
+		}
+		if binding.SpecID == specID && exactStringInSlice(coverage.ImplementationBySpec[specID], binding.ProcessID) {
+			relevant = append(relevant, id)
+		}
+	}
+	if reviewRecords == 0 || earliest.IsZero() || len(relevant) == 0 {
+		return recorded, false, "typed-review"
+	}
+	for id := range bindings {
+		record, exists := records[id]
+		if !selected[id] || !exists || record.Kind != codereview.EvidenceReview || superseded[id] {
+			return recorded, false, "typed-review"
+		}
+	}
+	if maximum := gate.ReviewCompletionPolicy.Freshness; maximum < 0 ||
+		(maximum > 0 && validationNow.UTC().Sub(earliest) > maximum) {
+		return recorded, false, "typed-review"
+	}
+	sort.Strings(relevant)
+	return gate.Target.SubjectRevision, true, "native-authoritative-ledger:" + relevant[0]
+}
+
+func validExternalReviewGateContext(gate externalGateResult) bool {
+	return gate.Evaluation.Passed && validateReviewCompletionTarget(gate.Target) == nil &&
+		validateExactSnapshotIdentity(gate.Snapshot, gate.Target) == nil
+}
+
+func sameExternalReviewIdentity(consumption externalEvidenceConsumption, target coreevidence.NativeTarget) bool {
+	return consumption.ProviderKey == target.Reference.ProviderKey &&
+		consumption.ExternalRepository == target.Reference.ExternalRepository &&
+		consumption.ChangeID == target.Reference.ChangeID && consumption.ReferenceVersion == target.ReferenceVersion &&
+		consumption.SubjectRevision == target.SubjectRevision
+}
+
+func validLegacyReviewRecord(record codereview.EvidenceRecord, binding externalEvidenceBinding,
+	target coreevidence.NativeTarget, validationNow time.Time) bool {
+	if record.Kind != codereview.EvidenceReview || record.SubjectRevision != target.SubjectRevision ||
+		!record.Trusted || strings.TrimSpace(record.WriterIdentity) == "" || strings.TrimSpace(record.PayloadDigest) == "" ||
+		record.ObservedAt.IsZero() || record.ObservedAt.After(validationNow.UTC().Add(time.Minute)) ||
+		(record.ValidUntil != nil && !validationNow.UTC().Before(*record.ValidUntil)) || record.ValidateReviewLinkage() != nil {
+		return false
+	}
+	return binding.EvidenceID == record.ID && binding.Kind == codereview.EvidenceReview && binding.Trusted &&
+		binding.Source == "native-authoritative-ledger" && binding.SubjectRevision == target.SubjectRevision &&
+		binding.ProcessID == record.ProcessID && binding.SpecID == record.SpecID
+}
+
+func exactStringInSlice(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // reviewArtifactRevision turns a review-sync subject revision into trusted

@@ -3,6 +3,8 @@ package commands
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -124,8 +126,10 @@ func TestSelfHostedAttachLinkContinuesThroughProviderNeutralGates(t *testing.T) 
 	ledger := &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
 		Reference: reference, SubjectRevision: "head-abc", CapturedAt: now}}
 	native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: attached.RepresentationVersion, SubjectRevision: "head-abc",
-		Policy: coreevidence.NativePolicy{Requirements: []coreevidence.NativeRequirement{{Kind: codereview.EvidenceCheck,
-			Freshness: time.Hour}}}, Provider: ledger, IssueID: backend.issueID, OrgID: backend.scope.OrgID, RepoID: backend.scope.RepoID}}
+		Policy: coreevidence.NativePolicy{Requirements: []coreevidence.NativeRequirement{
+			{Kind: codereview.EvidenceReview, Freshness: time.Hour},
+			{Kind: codereview.EvidenceCheck, Freshness: time.Hour},
+		}}, Provider: ledger, IssueID: backend.issueID, OrgID: backend.scope.OrgID, RepoID: backend.scope.RepoID}}
 	app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
 	if _, hosted, err := app.externalGate(t.Context(), "github.com", "attach-secret", "acme/widgets", 9,
 		"code_change", "head-abc", coreevidence.GateVerify); !hosted || err == nil {
@@ -136,6 +140,20 @@ func TestSelfHostedAttachLinkContinuesThroughProviderNeutralGates(t *testing.T) 
 	review.CanonicalURL = "https://code.example/reviews/1"
 	check := testEvidenceRecord("check-ledger", codereview.EvidenceCheck, "passed", "head-abc", now)
 	check.Name = "unit"
+	ledger.snapshot.Records = []codereview.EvidenceRecord{check}
+	zeroFindingGate, hosted, err := app.externalGate(t.Context(), "github.com", "attach-secret", "acme/widgets", 9,
+		"code_change", "head-abc", coreevidence.GateVerify)
+	if err != nil || !hosted || !zeroFindingGate.Evaluation.Passed || !zeroFindingGate.ReviewCompletionPolicy.Required ||
+		zeroFindingGate.ReviewCompletionPolicy.Freshness != time.Hour || len(zeroFindingGate.Consumption.Bindings) != 0 {
+		t.Fatalf("zero-finding verify gate=%+v hosted=%t err=%v", zeroFindingGate, hosted, err)
+	}
+	open := review
+	open.State, open.Severity = "open", "P1"
+	ledger.snapshot.Records = []codereview.EvidenceRecord{open, check}
+	if _, _, err := app.externalGate(t.Context(), "github.com", "attach-secret", "acme/widgets", 9,
+		"code_change", "head-abc", coreevidence.GateVerify); err == nil || !strings.Contains(err.Error(), "blocking_review") {
+		t.Fatalf("open authoritative finding did not block verify: %v", err)
+	}
 	ledger.snapshot.Records = []codereview.EvidenceRecord{review, check}
 	gate, hosted, err := app.externalGate(t.Context(), "github.com", "attach-secret", "acme/widgets", 9,
 		"code_change", "head-abc", coreevidence.GateVerify)
@@ -173,23 +191,63 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 	}
 	workflowSkill := readTestFile(t, root+"/.agents/skills/issue-spec-workflow/SKILL.md")
 	applyCommand := readTestFile(t, root+"/.claude/commands/issue-spec/apply.md")
+	reviewCommand := readTestFile(t, root+"/.claude/commands/issue-spec/review.md")
+	verifyCommand := readTestFile(t, root+"/.claude/commands/issue-spec/verify.md")
+	archiveCommand := readTestFile(t, root+"/.claude/commands/issue-spec/archive.md")
 	checks := []struct {
+		name    string
 		content string
 		wants   []string
 	}{
-		{workflowSkill, []string{"search issues", "GitHub-backed workflows keep the existing `pr link-process`",
-			"code-change attach", "code-change link-process", "code-change rationale", "exact-current", "trusted consumed native-ledger evidence", "Do not call a GitHub PR endpoint"}},
-		{applyCommand, []string{"For GitHub use issue-spec pr link-process",
-			"code-change attach", "code-change link-process", "code-change rationale", "append-only Issue Backend comment", "do not call GitHub PR endpoints"}},
+		{"workflow", workflowSkill, []string{"search issues", "GitHub-backed workflows keep the existing `pr link-process`",
+			"code-change attach", "code-change link-process", "review sync", "zero findings", "code-change rationale", "fresh REVIEW completion", "Do not call a GitHub PR endpoint",
+			"persists and reloads provider facts", "exact-current completion stamp", "finding-backed consumed binding retained only for legacy compatibility"}},
+		{"review", reviewCommand, []string{"On GitHub add --pr <number>; on a self-hosted profile omit --pr and add --revision <exact-head>",
+			"Sync authoritatively captures current rationale", "one stable done REVIEW completion even with zero findings"}},
+		{"apply", applyCommand, []string{"following the backend-appropriate routing in issue-spec-workflow",
+			"authoritative final sync by following issue-spec-review",
+			"After that sync, explicitly link the REVIEW to its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC",
+			"Follow issue-spec-workflow for the backend-appropriate rationale command",
+			"Each owning worker authors its own rationale under that worker's --agent and --agent-session"}},
+		{"verify", verifyCommand, []string{"backend-appropriate rationale and REVIEW completion evidence",
+			"Status forecast and final verify use the same authoritative validator",
+			"The validator owns exact identity, revision, freshness, and legacy compatibility"}},
+		{"archive", archiveCommand, []string{"Archive may read an existing required REVIEW completion when implementation merge policy requires it",
+			"Archive never creates, updates, or refreshes REVIEW or adds archive-specific review state"}},
 	}
 	for _, check := range checks {
 		for _, want := range check.wants {
 			if !strings.Contains(check.content, want) {
-				t.Fatalf("generated workflow missing %q:\n%s", want, check.content)
+				t.Fatalf("generated %s workflow missing %q:\n%s", check.name, want, check.content)
 			}
 		}
 		if strings.Contains(check.content, "remain in GitHub issue-native storage") {
-			t.Fatalf("generated workflow retained GitHub-only storage footer:\n%s", check.content)
+			t.Fatalf("generated %s workflow retained GitHub-only storage footer:\n%s", check.name, check.content)
+		}
+	}
+	for name, content := range map[string]string{
+		"review":  reviewCommand,
+		"apply":   applyCommand,
+		"verify":  verifyCommand,
+		"archive": archiveCommand,
+	} {
+		for _, forbidden := range []string{
+			"provider facts",
+			"completion stamp",
+			"finding-backed consumed",
+			"native-ledger",
+			"append-only Issue Backend comment",
+			"provider/repository/change/version/revision identity",
+			"repository freshness",
+			"code-change attach",
+			"code-change link-process",
+			"code-change rationale",
+			"code_change",
+			"archive_change",
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("generated %s workflow duplicates workflow-owned backend protocol %q:\n%s", name, forbidden, content)
+			}
 		}
 	}
 
@@ -200,12 +258,59 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 		t.Fatal(err)
 	}
 	providerSkill := readTestFile(t, providerRoot+"/.agents/skills/issue-spec-code-provider/SKILL.md")
-	attachAt, linkAt, verifyAt, rationaleAt := strings.Index(providerSkill, "code-change attach --repo owner/repo"),
+	attachAt, linkAt, verifyAt, reviewAt, rationaleAt := strings.Index(providerSkill, "code-change attach --repo owner/repo"),
 		strings.Index(providerSkill, "code-change link-process --repo owner/repo"), strings.Index(providerSkill, "Before verification gates"),
+		strings.Index(providerSkill, "review sync --repo owner/repo"),
 		strings.Index(providerSkill, "code-change rationale --repo owner/repo")
-	if attachAt < 0 || linkAt <= attachAt || verifyAt <= linkAt || rationaleAt <= verifyAt ||
-		!strings.Contains(providerSkill, "exact-current trusted native-ledger evidence") ||
+	if attachAt < 0 || linkAt <= attachAt || verifyAt <= linkAt || reviewAt <= verifyAt || rationaleAt <= reviewAt ||
+		!strings.Contains(providerSkill, "fresh exact-current REVIEW completion") ||
+		!strings.Contains(providerSkill, "zero findings") ||
 		!strings.Contains(providerSkill, "do not substitute GitHub PR endpoints") {
 		t.Fatalf("provider workflow does not preserve attach -> link -> verify -> rationale/backend split:\n%s", providerSkill)
+	}
+}
+
+func TestProviderBridgeContractRequiresStableCurrentHeadSnapshot(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/self-hosting/bridges/code-provider-v1.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := strings.Join(strings.Fields(string(raw)), " ")
+	for _, want := range []string{
+		"For every evidence snapshot request",
+		"MUST read the change's current HEAD",
+		"MUST read it again after fact collection",
+		"both observations equal the requested revision",
+		"`revision_mismatch` and no snapshot",
+		"no provider facts to persist",
+	} {
+		if !strings.Contains(contract, want) {
+			t.Fatalf("provider bridge contract missing %q:\n%s", want, contract)
+		}
+	}
+}
+
+func TestCheckedInCodexWorkflowSkillsMatchGenerator(t *testing.T) {
+	generatedRoot := t.TempDir()
+	if _, err := writeWorkflowArtifacts(generatedRoot, "higress-group/issue-spec", "codex", "skills"); err != nil {
+		t.Fatal(err)
+	}
+	projectRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, skill := range []string{"apply", "archive", "github", "propose", "review", "verify", "workflow"} {
+		relative := filepath.Join(".agents", "skills", "issue-spec-"+skill, "SKILL.md")
+		generated, err := os.ReadFile(filepath.Join(generatedRoot, relative))
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkedIn, err := os.ReadFile(filepath.Join(projectRoot, relative))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(generated, checkedIn) {
+			t.Fatalf("checked-in Codex workflow skill is stale: %s", relative)
+		}
 	}
 }

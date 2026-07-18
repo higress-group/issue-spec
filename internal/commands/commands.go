@@ -44,8 +44,14 @@ type app struct {
 	newNativeEvidenceProvider      func(auth.Profile, string) (nativeEvidenceProvider, error)
 	newNativeSearchProvider        func(auth.Profile, string) (nativeSearchProvider, error)
 	newNativeCodeChangeBackend     func(auth.Profile, string) (nativeCodeChangeBackend, error)
-	resolveCodeMutationProvider    func(context.Context, string) (codereview.MutationProvider, error)
+	lookupOperatorProvider         func(context.Context, auth.Profile, string) (codereview.Provider, error)
 	doctorAgentProbe               func(context.Context, capability.Request) (capability.Report, error)
+	newRequirementsAPI             func(auth.Profile, string) (requirementsAPI, error)
+	saveRequirementsProfile        func(auth.Profile, bool) error
+	storeRequirementsToken         func(context.Context, auth.Profile, string, bool) (string, error)
+	resolveRequirementsToken       func(context.Context, auth.Profile) (auth.Token, error)
+	readRequirementsSecret         func(io.Reader, io.Writer) (string, error)
+	stdinIsTerminal                func(io.Reader) bool
 }
 
 type commandFunc func(context.Context, []string) int
@@ -64,6 +70,8 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return 0
 	}
 	switch args[0] {
+	case "version", "--version":
+		return a.runVersion(ctx, args[1:])
 	case "auth":
 		return a.runAuth(ctx, args[1:])
 	case "doctor":
@@ -100,6 +108,8 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return a.runCodeChange(ctx, args[1:])
 	case "runner":
 		return a.runRunner(ctx, args[1:])
+	case "requirements":
+		return a.runRequirements(ctx, args[1:])
 	default:
 		a.errorf("unknown command %q\n", args[0])
 		a.printUsage()
@@ -139,11 +149,16 @@ func extractGlobalProfile(args []string) (string, []string, error) {
 }
 
 func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
-	operatorRegistry, operatorRegistryErr := codereview.LoadOperatorRegistryFromEnvironment()
 	return &app{
 		in:                         in,
 		out:                        out,
 		err:                        errOut,
+		newRequirementsAPI:         defaultNewRequirementsAPI,
+		saveRequirementsProfile:    auth.SaveProfile,
+		storeRequirementsToken:     auth.StoreProfileToken,
+		resolveRequirementsToken:   auth.ResolveProfileToken,
+		readRequirementsSecret:     readHiddenRequirementsSecret,
+		stdinIsTerminal:            requirementsInputIsTerminal,
 		selectGitHubBackend:        defaultSelectGitHubBackend,
 		selectRunnerBackend:        defaultSelectRunnerBackend,
 		newGitHubBackend:           defaultNewGitHubBackend,
@@ -151,12 +166,7 @@ func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 		newNativeEvidenceProvider:  defaultNewNativeEvidenceProvider,
 		newNativeSearchProvider:    defaultNewNativeSearchProvider,
 		newNativeCodeChangeBackend: defaultNewNativeCodeChangeBackend,
-		resolveCodeMutationProvider: func(ctx context.Context, key string) (codereview.MutationProvider, error) {
-			if operatorRegistryErr != nil {
-				return nil, operatorRegistryErr
-			}
-			return operatorRegistry.ResolveMutationProvider(ctx, key)
-		},
+		lookupOperatorProvider:     defaultResolveOperatorProvider,
 	}
 }
 
@@ -182,10 +192,13 @@ func (a *app) printUsage() {
 
 Usage:
   issue-spec [--profile name] <command> [options]
+	issue-spec version [--json]
+	issue-spec --version
   issue-spec auth status|login|logout|token
   issue-spec doctor agent --repo owner/repo --operation issue.read [--operation pr.read]
   issue-spec init --repo owner/repo [--skip-labels] [--tools codex,claude|all|none] [--delivery both|skills|commands] [--install-global-prompts]
-  issue-spec issue create proposal|design|implement --repo owner/repo --change name [--body-file file.md] [--title title]
+	issue-spec issue create simple --repo owner/repo --title title --body-file file.md
+	issue-spec issue create proposal|design|implement --repo owner/repo --change name [--body-file file.md] [--title title]
   issue-spec issue update --repo owner/repo --issue N [--title title] [--body-file file.md] [--summary "what changed"]
   issue-spec issue list --repo owner/repo [--state open|closed|all] --json
   issue-spec issue close|reopen --repo owner/repo --issue N [--json]
@@ -217,9 +230,11 @@ Usage:
   issue-spec code-change attach --repo owner/repo --implement N --change-id ID --revision REV [--refresh --expected-version N] [--json]
   issue-spec code-change link-process --repo owner/repo --implement N --process PROCESS-001 --expected-version N [--json]
   issue-spec code-change rationale --repo owner/repo --implement N --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "why" --agent Worker [--agent-session ID] [--json]
+  issue-spec requirements setup --server URL [--token-stdin] [--yes] [--json]
+  issue-spec requirements status [--repo owner/repo] [--json]
   issue-spec runner poll --repo owner/repo --runner login --once --dry-run
   issue-spec runner serve --profile self-hosted --repo owner/repo --runner login --subscription-id UUID --secret-file FILE (--git-credential-command /absolute/provider|--allow-host-ssh)
-  issue-spec runner preflight --repo owner/repo --runner login`)
+	issue-spec runner preflight --repo owner/repo --runner login`)
 }
 
 func newFlagSet(name string, errOut io.Writer) *flag.FlagSet {

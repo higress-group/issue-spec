@@ -1,6 +1,8 @@
 package templates
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -26,6 +28,53 @@ func TestIssueSpecSkillAndCommandTemplates(t *testing.T) {
 	}
 }
 
+func TestIssueSpecSkillsDistinguishExactFilesFromRecursiveDirectories(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+	for _, name := range []string{"issue-spec-workflow", "issue-spec-apply"} {
+		content := skillContent(t, skills, name)
+		for _, want := range []string{
+			"Treat a bare repository-relative ownership path as exact",
+			"`internal/templates/skills.go` owns only that file",
+			"directory subtree, use an explicit trailing `/**` declaration such as `internal/templates/**`",
+			"Never use bare `internal/templates` to mean its descendants",
+			"Existing PROCESS comments with bare paths remain readable and are not migrated automatically",
+			"`prepare` may reject a bare path that resolves to a tracked directory",
+			"`--write-ownership internal/templates/**`",
+		} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s skill missing ownership guidance %q:\n%s", name, want, content)
+			}
+		}
+	}
+}
+
+func TestReferenceOwnershipExamplesUseRecursiveDirectoryDeclarations(t *testing.T) {
+	for _, relative := range []string{"reference.md", "reference.zh-CN.md"} {
+		path := filepath.Join("..", "..", "docs", relative)
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content := string(body)
+		for _, want := range []string{
+			`"owned_areas": ["internal/templates/**", "docs/reference.md"]`,
+			`"write_ownership": ["internal/templates/**", "docs/reference.md"]`,
+		} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s missing ownership example %q", relative, want)
+			}
+		}
+		for _, forbidden := range []string{
+			`"owned_areas": ["internal/templates"]`,
+			`"write_ownership": ["internal/templates"]`,
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("%s contains bare directory ownership example %q", relative, forbidden)
+			}
+		}
+	}
+}
+
 func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 	skills := IssueSpecSkills("owner/repo")
 	workflow := skillContent(t, skills, "issue-spec-workflow")
@@ -37,7 +86,7 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 		"doctor agent --repo owner/repo --operation <operation>",
 		"operator-owned short-lived issuer", "legacy_long_lived",
 		"change-bearing, review, verification, orchestration, or external",
-		"matching GitHub path/line rationale or an exact-current self-hosted code-change rationale paired with trusted native-ledger PROCESS/SPEC evidence", "done REVIEW or resolved finding",
+		"matching GitHub path/line rationale or an exact-current self-hosted code-change rationale backed by a fresh REVIEW completion", "existing finding-backed consumed binding retained only for legacy compatibility", "done REVIEW or resolved finding",
 		"done VERIFY or required passing check with test evidence",
 		"non-empty coordination handoff", "consumed exact-revision provider evidence",
 		"workflow workspace prepare, inspect, complete, integrate, reconcile, and cleanup",
@@ -100,7 +149,7 @@ func TestIssueSpecSkillsDocumentSafeWorkflowAndProcessEvidence(t *testing.T) {
 	}
 	verify := skillContent(t, skills, "issue-spec-verify")
 	if !strings.Contains(verify, "--gate final") ||
-		!strings.Contains(verify, "exact-current append-only code-change rationale paired with trusted consumed native-ledger PROCESS/SPEC evidence") {
+		!strings.Contains(verify, "backend-appropriate rationale and REVIEW completion evidence") {
 		t.Fatalf("verify skill lacks proportional evidence guidance:\n%s", verify)
 	}
 }
@@ -421,7 +470,7 @@ func TestIssueSpecSkillTemplatesEnforceAgentOwnedReviewWorkflow(t *testing.T) {
 		"--from REVIEW-<n> --from-issue <implement-issue> --to PROCESS-<n>",
 		"--from REVIEW-<n> --from-issue <implement-issue> --to SPEC-<n>",
 		"Run these commands after the final review sync",
-		"Related Comments contains the review PROCESS URL and each covered active SPEC URL",
+		"Related Comments contains the review PROCESS URL, every covered change-bearing PROCESS URL, and every covered active SPEC URL",
 	} {
 		if !strings.Contains(review, want) {
 			t.Fatalf("review skill missing ownership guidance %q:\n%s", want, review)
@@ -431,14 +480,78 @@ func TestIssueSpecSkillTemplatesEnforceAgentOwnedReviewWorkflow(t *testing.T) {
 	apply := skillContent(t, skills, "issue-spec-apply")
 	for _, want := range []string{
 		"Add final rationale only after review/fix convergence and only for change-bearing PROCESS nodes",
-		"each owning worker adds issue-spec pr rationale on its key code blocks",
-		"each owning worker runs issue-spec code-change rationale",
-		"authored under that worker's own --agent and --agent-session",
+		"Follow issue-spec-workflow for the backend-appropriate rationale command",
+		"Each owning worker authors its own rationale under that worker's --agent and --agent-session",
 		"MUST NOT create worker rationale or relabel its identity on the worker's behalf",
 		"does not author implementation commits, review findings, worker fix replies, review resolutions, or rationale on another agent's behalf",
 	} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply skill missing ownership guidance %q:\n%s", want, apply)
+		}
+	}
+}
+
+func TestIssueSpecSkillTemplatesDocumentSelfHostedReviewCompletionContract(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+
+	workflow := skillContent(t, skills, "issue-spec-workflow")
+	for _, want := range []string{"persists and reloads provider facts", "exact-current completion stamp", "finding-backed consumed binding retained only for legacy compatibility"} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("workflow skill missing detailed backend routing guidance %q:\n%s", want, workflow)
+		}
+	}
+
+	review := skillContent(t, skills, "issue-spec-review")
+	for _, want := range []string{
+		"On GitHub add --pr <number>; on a self-hosted profile omit --pr and add --revision <exact-head>",
+		"Sync authoritatively captures current rationale",
+		"one stable done REVIEW completion even with zero findings",
+		"never hand-edit either, fabricate a finding, or substitute a generic approval framework",
+		"Never rely on PROCESS/SPEC IDs in prose or auto-infer links",
+		"Status and final verify validate the same backend-appropriate completion",
+		"they do not refresh REVIEW",
+	} {
+		if !strings.Contains(review, want) {
+			t.Fatalf("review skill missing completion safety guidance %q:\n%s", want, review)
+		}
+	}
+
+	verify := skillContent(t, skills, "issue-spec-verify")
+	for _, want := range []string{
+		"Status forecast and final verify use the same authoritative validator",
+		"The validator owns exact identity, revision, freshness, and legacy compatibility",
+		"Neither command creates, updates, or refreshes REVIEW",
+	} {
+		if !strings.Contains(verify, want) {
+			t.Fatalf("verify skill missing shared completion guidance %q:\n%s", want, verify)
+		}
+	}
+
+	archive := skillContent(t, skills, "issue-spec-archive")
+	for _, want := range []string{
+		"Archive may read an existing required REVIEW completion when implementation merge policy requires it",
+		"Archive never creates, updates, or refreshes REVIEW",
+		"adds archive-specific review state",
+	} {
+		if !strings.Contains(archive, want) {
+			t.Fatalf("archive skill missing read-only completion guidance %q:\n%s", want, archive)
+		}
+	}
+
+	for name, forbidden := range map[string][]string{
+		"issue-spec-apply": {
+			"Successful sync writes the exact-current completion",
+			"finding-backed consumed binding accepted only for legacy compatibility",
+			"finding-backed consumed native-ledger PROCESS/SPEC binding",
+		},
+		"issue-spec-review":  {"persists and reloads provider facts", "exact-current completion stamp", "For separate GitHub manual review evidence", "GitHub conversation"},
+		"issue-spec-archive": {"code_change", "archive_change"},
+	} {
+		content := skillContent(t, skills, name)
+		for _, phrase := range forbidden {
+			if strings.Contains(content, phrase) {
+				t.Fatalf("%s skill exposes backend protocol detail %q:\n%s", name, phrase, content)
+			}
 		}
 	}
 }
@@ -473,13 +586,17 @@ func TestIssueSpecSkillTemplatesDispatchSearchAndCodeChangeByBackend(t *testing.
 
 	apply := skillContent(t, skills, "issue-spec-apply")
 	for _, want := range []string{
-		"For GitHub use issue-spec pr link-process",
-		"For self-hosted, first attach exactly one existing external change",
-		"attach never creates the external change or ingests evidence",
-		"review, merge, and closure stay on the selected code provider",
+		"following the backend-appropriate routing in issue-spec-workflow",
+		"authoritative final sync by following issue-spec-review",
+		"Follow issue-spec-workflow for backend-appropriate implementation-change closure",
 	} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply skill missing backend code-change guidance %q:\n%s", want, apply)
+		}
+	}
+	for _, forbidden := range []string{"issue-spec pr link-process", "code-change attach", "code-change link-process", "code-change rationale"} {
+		if strings.Contains(apply, forbidden) {
+			t.Fatalf("apply skill duplicates workflow backend routing %q:\n%s", forbidden, apply)
 		}
 	}
 }

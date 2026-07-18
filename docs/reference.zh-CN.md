@@ -192,6 +192,34 @@ issue-spec --profile team code-change link-process \
 `DELETE .../references/{reference-id}` 只删除不需要的 Active Reference，然后重试。
 禁止猜测胜出项或静默覆盖另一个 Active Relationship。
 
+独立的 Provider Review 收敛后，由 Review Agent 使用自身身份同步精确的 Active
+Revision：
+
+```bash
+issue-spec --profile team review sync \
+  --repo acme/widgets \
+  --implement 3 \
+  --revision abc123 \
+  --id REVIEW-001 \
+  --agent reviewer \
+  --agent-session review-session \
+  --json
+```
+
+self-hosted Sync 成功时会先持久化并重新读取 Provider Fact，再写入一个稳定的 Done
+REVIEW Completion；即使 Provider 返回零 Finding，该 Completion 仍然有效。最终 Sync
+后，使用 `issue-spec link` 把 REVIEW 显式链接到它的 Review PROCESS、每个覆盖到的
+Change-bearing PROCESS 以及每个覆盖到的 Active SPEC。禁止伪造 Finding、手工编辑
+Completion Stamp、从正文中的 ID 推断链接，或用通用 Approval Framework 替代证据。
+`status` 与最终 `verify` 使用同一个 Validator 检查精确的 Provider、Repository、
+Change、Reference Version、Revision、Freshness、链接和 Reviewer Independence，且都不
+刷新 REVIEW。
+
+self-hosted 关闭流程中，只有 Implementation `code_change` 的 Merge Policy 要求 Review
+时，`archive` 才会读取已有的 Implementation REVIEW Completion。它不会创建、更新或
+刷新 REVIEW，不会添加 Archive 专属 Review 状态，也绝不会把 Implementation
+Completion 应用于 `archive_change`。
+
 GitHub Profile 继续使用 `pr link-process`、GitHub PR Review/Closing Link 与现有 Durable
 Archive 路径。self-hosted 的 Review、Merge 与代码变更关闭仍由所选 Code Provider
 负责；CLI 不会把它们路由到 GitHub PR Endpoint。
@@ -249,7 +277,7 @@ TASK 正文承载协调器分解工作所需的 PROCESS 规划元数据。`execu
   "checklist": ["Add execution_planning fields", "Enforce canonical validation"],
   "covers": ["SPEC-001", "SPEC-006"],
   "execution_planning": {
-    "owned_areas": ["internal/templates"],
+    "owned_areas": ["internal/templates/**", "docs/reference.md"],
     "shared_touchpoints": ["internal/model"],
     "dependencies": ["SPEC generator schema"],
     "coupling": "low",
@@ -259,6 +287,8 @@ TASK 正文承载协调器分解工作所需的 PROCESS 规划元数据。`execu
 }
 ```
 
+Ownership 声明按字面解释。`docs/reference.md` 这样的仓库相对 bare path 只拥有该 exact file；目录 subtree 必须使用显式的尾部 `/**` 声明，例如 `internal/templates/**`。不得用 bare `internal/templates` 暗示拥有其后代路径。包含 bare path 的历史 PROCESS 评论仍可读取，也不会自动迁移，但当该路径解析为 tracked directory 时，`workspace prepare` 可能拒绝它。分配 workspace 前，必须显式修正 PROCESS artifact，或传入修正后的 `--write-ownership internal/templates/**`。
+
 PROCESS 正文记录其父 TASK，并且对于串行链，还记录传给下一节点的交接（handoff）证据：
 
 ```json
@@ -267,7 +297,7 @@ PROCESS 正文记录其父 TASK，并且对于串行链，还记录传给下一�
   "owner": "Worker Agent A",
   "parent_task": "TASK-001",
   "dependencies": ["N/A"],
-  "write_ownership": ["internal/templates"],
+  "write_ownership": ["internal/templates/**", "docs/reference.md"],
   "covers": ["TASK-001"],
   "handoff": "state.json contract fixed; successor may parse it"
 }

@@ -42,14 +42,16 @@ let comments = [commentFixture(9, "The runner should preserve **raw Markdown** a
 
 test.beforeEach(async ({ page }) => {
   await installDocumentationLanguage(page);
+  activeIssue = issue;
+  externalContributor = false;
   comments = [commentFixture(9, documentationText("The runner should preserve **raw Markdown** and agent metadata.", "运行器应保留**原始 Markdown**和智能体元数据。"))];
   await page.route("**/*", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === "/api/v1/meta") return route.fulfill({ json: { api_version: "v1", features: { bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: false, webhooks: false, change_boards: false, runner: true, recovery_exchange: true } } });
-    if (url.pathname === "/api/v1/context") return route.fulfill({ json: { user: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", login: "alice", display_name: "Alice", email: "alice@example.test", site_admin: true }, credential: { kind: "session", scope_mode: "identity", repository_restricted: false }, session: { csrf_cookie_name: "issue_spec_csrf", csrf_header_name: "X-CSRF-Token" }, allowed_actions: ["site.admin"], organizations: [{ id: organizationId, name: "acme", display_name: "Acme Studio", effective_permission: "admin", container_only: false, allowed_actions: ["organization.read", "organization.admin"] }] } });
-    if (url.pathname === `/api/v1/context/orgs/${organizationId}/repos`) return route.fulfill({ json: { repositories: [{ repository: { id: repositoryId, organization_id: organizationId, name: "workflow", display_name: "Workflow control", visibility: "private", contribution_policy: "members" }, effective_permission: "admin", allowed_actions: ["read", "contribute", "triage", "write", "repository.admin"] }] } });
-    if (url.pathname.toLowerCase() === "/api/v1/context/repos/acme/workflow") return route.fulfill({ json: { organization: { id: organizationId, name: "acme", display_name: "Acme Studio", effective_permission: "admin", container_only: false, allowed_actions: ["organization.read", "organization.admin"] }, repository: { repository: { id: repositoryId, organization_id: organizationId, name: "workflow", display_name: "Workflow control", visibility: "public", contribution_policy: "authenticated" }, effective_permission: "admin", allowed_actions: ["read", "contribute", "triage", "write", "repository.admin"] }, authenticated: true } });
+    if (url.pathname === "/api/v1/context") return route.fulfill({ json: { user: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", login: "alice", display_name: "Alice", email: "alice@example.test", site_admin: !externalContributor }, credential: { kind: "session", scope_mode: "identity", repository_restricted: false }, session: { csrf_cookie_name: "issue_spec_csrf", csrf_header_name: "X-CSRF-Token" }, allowed_actions: externalContributor ? [] : ["site.admin"], organizations: [{ id: organizationId, name: "acme", display_name: "Acme Studio", effective_permission: externalContributor ? "read" : "admin", container_only: false, allowed_actions: externalContributor ? ["organization.read"] : ["organization.read", "organization.admin"] }] } });
+    if (url.pathname === `/api/v1/context/orgs/${organizationId}/repos`) return route.fulfill({ json: { repositories: [{ repository: { id: repositoryId, organization_id: organizationId, name: "workflow", display_name: "Workflow control", visibility: externalContributor ? "public" : "private", contribution_policy: externalContributor ? "public" : "members" }, effective_permission: externalContributor ? "read" : "admin", allowed_actions: externalContributor ? ["read", "contribute"] : ["read", "contribute", "triage", "write", "repository.admin"] }] } });
+    if (url.pathname.toLowerCase() === "/api/v1/context/repos/acme/workflow") return route.fulfill({ json: { organization: { id: organizationId, name: "acme", display_name: "Acme Studio", effective_permission: externalContributor ? "read" : "admin", container_only: false, allowed_actions: externalContributor ? ["organization.read"] : ["organization.read", "organization.admin"] }, repository: { repository: { id: repositoryId, organization_id: organizationId, name: "workflow", display_name: "Workflow control", visibility: "public", contribution_policy: externalContributor ? "public" : "authenticated" }, effective_permission: externalContributor ? "read" : "admin", allowed_actions: externalContributor ? ["read", "contribute"] : ["read", "contribute", "triage", "write", "repository.admin"] }, authenticated: true } });
     if (url.pathname === "/repos/acme/workflow/labels") return route.fulfill({ json: labels });
     if (url.pathname === "/repos/acme/workflow/issues/41/comments" && request.method() === "GET") return route.fulfill({ json: comments });
     if (url.pathname === "/repos/acme/workflow/issues/41/comments" && request.method() === "POST") {
@@ -60,9 +62,9 @@ test.beforeEach(async ({ page }) => {
     }
     if (url.pathname === "/repos/acme/workflow/issues/comments/9/reactions") return route.fulfill({ json: [{ id: 7, user: user, content: "+1", created_at: "2026-07-10T12:00:00Z" }] });
     if (/^\/repos\/acme\/workflow\/issues\/comments\/\d+\/reactions$/.test(url.pathname)) return route.fulfill({ json: [] });
-    if (url.pathname === "/api/v1/context/repos/acme/workflow/issues/41/relationships") return route.fulfill({ json: { relationships } });
-    if (url.pathname === "/repos/acme/workflow/issues/41") return route.fulfill({ json: issue });
-    if (url.pathname === "/repos/acme/workflow/issues") return route.fulfill({ json: url.searchParams.get("labels") ? [] : [issue] });
+    if (url.pathname === "/api/v1/context/repos/acme/workflow/issues/41/relationships") return route.fulfill({ json: { relationships: externalContributor ? [] : relationships } });
+    if (url.pathname === "/repos/acme/workflow/issues/41") return route.fulfill({ json: activeIssue });
+    if (url.pathname === "/repos/acme/workflow/issues") return route.fulfill({ json: url.searchParams.get("labels") ? [] : [activeIssue] });
     return route.fallback();
   });
 });
@@ -138,6 +140,58 @@ test("combined label filters produce an intentional empty state", async ({ page 
   await expect(page.getByRole("heading", { name: documentationText("No issues match this view", "没有符合当前条件的议题") })).toBeVisible();
 });
 
+test("external contributor simple request is an ordinary issue", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "issues-desktop-1440");
+  externalContributor = true;
+  comments = [];
+  activeIssue = {
+    ...issue,
+    title: documentationText("Allow a compact export format", "支持紧凑导出格式"),
+    body: documentationText(
+      "Our small team needs a compact export that can be attached to a support request. A free-form issue is enough to start the discussion.",
+      "我们的小团队需要一种可附在支持请求中的紧凑导出格式。先用自由格式 Issue 讨论即可。",
+    ),
+    labels: [],
+    comments: 0,
+  };
+  await page.goto("/acme/workflow/issues/41");
+  await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(activeIssue.title);
+  await expect(page.getByText("issue-spec/proposal")).toHaveCount(0);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await expect(page).toHaveScreenshot(documentationSnapshot("requirements-simple-issue"), { fullPage: true, animations: "disabled" });
+});
+
+test("external contributor standard request keeps Proposal SPEC QUESTION and discussion together", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "issues-desktop-1440");
+  externalContributor = true;
+  activeIssue = {
+    ...issue,
+    title: documentationText("Proposal: compact-export", "Proposal：compact-export"),
+    body: documentationText(
+      "<!-- issue-spec:issue=proposal change=compact-export version=1 -->\n# Proposal: compact-export\n\n## Background\nSupport requests need a small, portable export.\n\n## Goals\n- Preserve the fields needed to reproduce a report.\n- Keep credentials out of the export.",
+      "<!-- issue-spec:issue=proposal change=compact-export version=1 -->\n# Proposal：compact-export\n\n## 背景\n支持请求需要小巧、可移植的导出文件。\n\n## 目标\n- 保留复现报告所需字段。\n- 导出中不得包含凭据。",
+    ),
+    labels: [{ id: 3, name: "issue-spec/proposal", color: "0969da", default: false, description: "Proposal", url: "" }],
+    comments: 3,
+  };
+  comments = [
+    commentFixture(12, documentationText(
+      "<!-- issue-spec:type=SPEC id=SPEC-001 version=1 -->\nAgent: Requirements\nType: SPEC\nID: SPEC-001\nStatus: confirmed\nScope: compact export\nLinks:\n\n## Requirement: credential-free export\nThe export MUST contain only the fields needed to reproduce the report.",
+      "<!-- issue-spec:type=SPEC id=SPEC-001 version=1 -->\nAgent: Requirements\nType: SPEC\nID: SPEC-001\nStatus: confirmed\nScope: 紧凑导出\nLinks:\n\n## Requirement：无凭据导出\n导出必须只包含复现报告所需字段。",
+    )),
+    commentFixture(13, documentationText(
+      "<!-- issue-spec:type=QUESTION id=QUESTION-001 version=1 -->\nAgent: Requirements\nType: QUESTION\nID: QUESTION-001\nStatus: open\nScope: export size\nLinks:\n\n## Question\nShould attachments be excluded from the first version?",
+      "<!-- issue-spec:type=QUESTION id=QUESTION-001 version=1 -->\nAgent: Requirements\nType: QUESTION\nID: QUESTION-001\nStatus: open\nScope: 导出大小\nLinks:\n\n## Question\n首个版本是否应排除附件？",
+    )),
+    commentFixture(14, documentationText("Attachments can remain out of scope for the first version.", "首个版本可以先不包含附件。")),
+  ];
+  await page.goto("/acme/workflow/issues/41");
+  await expect(page.getByText("ID: SPEC-001", { exact: false })).toBeVisible();
+  await expect(page.getByText("ID: QUESTION-001", { exact: false })).toBeVisible();
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await expect(page).toHaveScreenshot(documentationSnapshot("requirements-standard-proposal"), { fullPage: true, animations: "disabled" });
+});
+
 test("repository roots and legacy UUID links converge on canonical named routes", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "issues-desktop-1440");
   await page.goto("/AcMe/WorkFlow?state=open#issue-list");
@@ -189,4 +243,6 @@ const relationships = [
   { provider_key: "aone-bridge", code_change_label: "Merge request", relation_kind: "code_change", external_repository_id: "Ingress/workflow", external_id: "73", canonical_url: "https://code.example/Ingress/workflow/merge_requests/73", title: documentationText("Internal mirror", "内部镜像"), lifecycle_state: "active", source_binding_match: "mismatched" },
 ];
 const issue = { id: 41, number: 41, state: "open", state_reason: null, title: issueTitle, body: rawBody, user, labels, locked: false, comments: 1, created_at: "2026-07-10T10:00:00Z", updated_at: "2026-07-10T10:00:00Z", closed_at: null, html_url: "https://code.example.test/acme/workflow/issues/41", reactions: reactionSummary };
+let activeIssue = issue;
+let externalContributor = false;
 function commentFixture(id: number, body: string, author = user) { return { id, body, user: author, created_at: "2026-07-10T11:00:00Z", updated_at: "2026-07-10T11:00:00Z", html_url: `https://code.example.test/acme/workflow/issues/41#issuecomment-${id}`, reactions: id === 9 ? reactionSummary : { ...reactionSummary, total_count: 0, "+1": 0 } }; }

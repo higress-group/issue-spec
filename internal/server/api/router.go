@@ -249,9 +249,8 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 }
 
 func configuredFeatures(deps Dependencies) metaapi.Features {
-	features := metaapi.Features{Bootstrap: true, PersonalAccessTokens: true, Organizations: true,
-		SourceBindings: true, Webhooks: true, ChangeBoards: true, Runner: true, RecoveryExchange: true,
-		Search: deps.Search != nil, EmailNotifications: deps.EmailNotifications && deps.ProfileMail != nil}
+	features := mountedFeatures(deps.Search != nil)
+	features.EmailNotifications = deps.EmailNotifications && deps.ProfileMail != nil
 	// Site-wide discovery is useful independently of email transport. The
 	// candidate RouteSet still requires the server's configured session
 	// authentication, while verified-email and repository-email mutations stay
@@ -269,6 +268,12 @@ func composeMentionCandidateRoutes(deps Dependencies, features metaapi.Features,
 	set, err := mentionsapi.NewRouteSet(mentionsapi.Dependencies{Directory: deps.MentionDirectory,
 		Authenticate: authenticate, WebOrigin: deps.WebOrigin})
 	return set, true, err
+}
+
+func mountedFeatures(search bool) metaapi.Features {
+	return metaapi.Features{Bootstrap: true, PersonalAccessTokens: true, Organizations: true,
+		SourceBindings: true, Webhooks: true, ChangeBoards: true, Runner: true, RecoveryExchange: true,
+		Search: search, RequirementsOnboarding: true}
 }
 
 func validateDependencies(deps Dependencies) error {

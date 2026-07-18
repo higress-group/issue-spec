@@ -158,6 +158,9 @@ SMTP 密钥文件用于启用已验证通知邮箱、Mention 和显式仓库邮�
 
 ## 接入本地仓库
 
+从已校验 CLI 安装和只填名称的 PAT，到创建简单 Issue 或标准 Proposal/SPEC 的完整
+外部用户路径，见[启动需求工作流](requirements-onboarding.zh-CN.md)。
+
 先在 Web 应用的 **Access tokens** 页面创建 PAT，然后配置与 Server Origin 绑定的
 self-hosted Profile。应从 `/api/v1/meta` 读取 Origin 和 Instance ID，不要自行猜测。
 
@@ -207,6 +210,16 @@ Provider 与外部仓库身份来自 Source Binding。`code-change attach` 不�
 的 Active Reference，再重试；禁止猜测或静默覆盖。GitHub 继续使用原有 PR 流程；
 self-hosted 的 Review、Merge 与关闭仍由所选 Code Provider 负责。
 
+独立 Review 收敛后，Reviewer 使用 Implement Issue、精确 Active Revision、稳定的
+REVIEW ID 和自身 Agent/Session 身份运行 `review sync`。Provider Review 没有 Finding
+时仍会产生稳定的 Done REVIEW Completion。最终 Sync 后，应把 REVIEW 显式链接到它的
+Review PROCESS、每个覆盖到的 Change-bearing PROCESS 和每个覆盖到的 Active SPEC。
+禁止伪造 Finding、手工编辑 Completion Stamp、从正文 ID 推断链接，或用通用 Approval
+Framework 替代证据。`status` 与最终 `verify` 使用同一个 Exact-current Completion
+Validator，且都不会刷新 REVIEW。只有 Implementation `code_change` 的 Merge Review
+为必需时，`archive` 才会读取该 Completion；它不会修改 REVIEW，也不会把 Completion
+应用于 `archive_change`。
+
 完整的 Provider-neutral 集成方案、运维 Registry 示例、Bridge 脚手架、代码证据
 映射和 Jira 类工作项投影模式见
 [对接企业代码平台与工作项平台](enterprise-provider-integration.zh-CN.md)。
@@ -247,6 +260,7 @@ Service Account 与 PAT 的操作会被标记为 Automation，Webhook 策略和�
 
 ## 运维文档索引
 
+- [需求接入指南](requirements-onboarding.zh-CN.md)
 - [认证指南](authentication/README.md)
 - [部署与加固](operations/deployment.md)
 - [备份、恢复、升级与应急处理](operations/backup-restore.md)

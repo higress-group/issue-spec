@@ -44,13 +44,17 @@ type NativeRepositoriesContext struct {
 }
 
 type NativeRepositoryContext struct {
-	Repository NativeRepositorySummary `json:"repository"`
+	Repository          NativeRepositorySummary `json:"repository"`
+	EffectivePermission string                  `json:"effective_permission"`
+	AllowedActions      []string                `json:"allowed_actions"`
 }
 
 type NativeRepositorySummary struct {
-	ID             string `json:"id"`
-	OrganizationID string `json:"organization_id"`
-	Name           string `json:"name"`
+	ID                 string `json:"id"`
+	OrganizationID     string `json:"organization_id"`
+	Name               string `json:"name"`
+	Visibility         string `json:"visibility"`
+	ContributionPolicy string `json:"contribution_policy"`
 }
 
 func (c *Client) GetNativeContext(ctx context.Context) (NativeContext, error) {

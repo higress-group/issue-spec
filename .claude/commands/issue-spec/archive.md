@@ -11,7 +11,7 @@ Use when the user asks for /issue-spec:archive, issue-spec archive, or creating 
 
 ## Steps
 
-1. Confirm the implementation PR is merged and had issue-spec closing links before merge.
+1. Confirm the implementation change is merged and required closing links were present. Archive may read an existing required REVIEW completion when implementation merge policy requires it. Archive never creates, updates, or refreshes REVIEW or adds archive-specific review state.
 2. Choose the --capability value as a stable long-lived capability or domain directory, not the original change/proposal name. Treat it as an umbrella capability: a single spec that accumulates related current and future changes. Prefer names that can host related future durable specs, for example workflow-identity-and-sessions instead of agent-session-source-of-truth.
 3. Inspect existing durable specs before creating or finalizing the archive PR. Read `issue-spec/specs/<capability>/spec.md` when it exists, and scan related `issue-spec/specs/*/spec.md` files when the new behavior may belong with an existing capability. If `openspec/specs/<capability>/spec.md` already exists, issue-spec may select that legacy path for update and report the compatibility choice. Decide whether to update, merge, or reorganize existing durable requirements instead of adding a duplicate or narrowly named spec.
 4. Create the durable spec PR and idempotently close any still-open PR-associated active issues:

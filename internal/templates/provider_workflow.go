@@ -36,7 +36,7 @@ func ProviderWorkflowNotice(provider workflow.ProviderPlan) string {
 		lines = append(lines, "- `change.comment`: unavailable; keep external discussion on the provider and synchronize only supported evidence.")
 	}
 	if provider.EvidenceSnapshot {
-		lines = append(lines, "- `evidence.snapshot`: available; synchronize exact-revision evidence before verification gates. Runner dispatch synchronization remains an explicit `external_code.evidence.sync_before` project-policy opt-in.")
+		lines = append(lines, "- `evidence.snapshot`: available; synchronize exact-current-HEAD evidence before verification gates. The bridge reads HEAD before and after fact collection and returns `revision_mismatch` without a snapshot if either observation differs from the requested revision. Runner dispatch synchronization remains an explicit `external_code.evidence.sync_before` project-policy opt-in.")
 	} else {
 		lines = append(lines, "- `evidence.snapshot`: unavailable; no generated step may claim automatic pre-gate synchronization.")
 	}
@@ -44,7 +44,9 @@ func ProviderWorkflowNotice(provider workflow.ProviderPlan) string {
 		"- Capabilities are policy and evidence contracts, not implied issue-spec CLI commands. Use only an approved operator-provided code-host skill or bridge for mutations.",
 		"- On a self-hosted profile, `code-change attach` validates and associates an existing provider change at an exact revision; it never creates that change or ingests evidence.",
 		"- After attach, `code-change link-process` links one PROCESS to the unique active code change with representation-version CAS.",
-		"- After independent review converges, the real code author uses `code-change rationale` to append an Implement Issue comment bound to the exact active reference version and revision. Final gates also require trusted consumed native-ledger evidence for the same PROCESS/SPEC; evidence-writer identity is never treated as the code author.",
+		"- The independent reviewer runs `review sync --implement <issue> --revision <exact-head>` under its own agent identity. Successful sync persists and reloads provider facts, then upserts one stable done REVIEW completion even with zero findings; never fabricate findings or hand-author its stamp.",
+		"- After final sync, explicitly link the REVIEW to its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC. Prose IDs, automatic inference, and generic approval frameworks are not carriers.",
+		"- After independent review converges, the real code author uses `code-change rationale` to append an Implement Issue comment bound to the exact active reference version and revision. Final gates accept the fresh REVIEW completion, with valid existing finding-backed consumed native-ledger evidence retained only for legacy compatibility; evidence-writer identity is never treated as the code author.",
 		"- Provider executables, arguments, environment, and credentials are operator-owned and must never be read from repository files.",
 		"- Project/work-item tracker authority is independent and is not enabled by this code-provider selection.")
 	return strings.Join(lines, "\n")
@@ -76,12 +78,13 @@ func providerWorkflowBody(repo string, provider workflow.ProviderPlan) string {
 		steps = append(steps, "6. Do not request external finding/reply write-back because `change.comment` is not available.")
 	}
 	if provider.EvidenceSnapshot {
-		steps = append(steps, "7. Before verification gates, synchronize a provider snapshot for the exact active head revision, then evaluate only server-accepted evidence IDs. Add `runner` to `external_code.evidence.sync_before` only when every dispatch is expected to have an active external change.")
+		steps = append(steps, "7. Before verification gates, always synchronize a provider snapshot for the exact active head revision, then evaluate only server-accepted evidence IDs. The bridge reads HEAD before and after fact collection and returns `revision_mismatch` without a snapshot when either observation differs from the requested revision. Add `runner` to `external_code.evidence.sync_before` only when every dispatch is expected to have an active external change.")
 	} else {
 		steps = append(steps, "7. Verify only against already-authoritative server evidence; automatic provider snapshot synchronization is unavailable.")
 	}
-	steps = append(steps, "8. After independent review/fix convergence, each change-bearing code author runs `issue-spec --profile <self-hosted-profile> code-change rationale --repo "+repo+" --implement <issue> --process PROCESS-001 --spec SPEC-001 --spec-url <url> --body <why> --agent <worker> --agent-session <id>`. The append-only Issue Backend comment is not a GitHub PR call and passes final gates only with exact-current trusted native-ledger evidence for the same PROCESS/SPEC.")
-	steps = append(steps, "9. Keep review, merge, and closure on the selected code provider; do not substitute GitHub PR endpoints for a self-hosted workflow.")
-	steps = append(steps, "10. Configure a project/work-item tracker only through a separate explicit provider selection; this code-provider workflow grants no tracker authority.")
+	steps = append(steps, "8. The independent reviewer runs `issue-spec --profile <self-hosted-profile> review sync --repo "+repo+" --implement <issue> --revision <revision> --id REVIEW-001 --agent <review-agent> --agent-session <id> --json`. After the final sync, explicitly link that REVIEW to its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC.")
+	steps = append(steps, "9. After independent review/fix convergence, each change-bearing code author runs `issue-spec --profile <self-hosted-profile> code-change rationale --repo "+repo+" --implement <issue> --process PROCESS-001 --spec SPEC-001 --spec-url <url> --body <why> --agent <worker> --agent-session <id>`. The append-only Issue Backend comment is not a GitHub PR call and passes final gates with the fresh exact-current REVIEW completion, or a valid existing finding-backed consumed binding for legacy compatibility.")
+	steps = append(steps, "10. Keep review, merge, and closure on the selected code provider; do not substitute GitHub PR endpoints for a self-hosted workflow. Archive reads implementation REVIEW completion only for implementation code_change merge policy and never applies it to archive_change or mutates REVIEW.")
+	steps = append(steps, "11. Configure a project/work-item tracker only through a separate explicit provider selection; this code-provider workflow grants no tracker authority.")
 	return strings.Join(steps, "\n") + "\n"
 }

@@ -3,6 +3,7 @@ package processworkspace
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -61,5 +62,32 @@ func TestSharedTouchpointDoesNotGrantWriteScope(t *testing.T) {
 	}
 	if err := ValidateManagedWriteScope([]string{"internal/**", "go.mod"}, []string{"go.mod"}, []string{"internal/x.go", "go.mod"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestManagedWriteScopeGroupsBareDeclarationDescendants(t *testing.T) {
+	err := ValidateManagedWriteScope(
+		[]string{"internal", "internal/deeper", "pkg", "single.txt"},
+		nil,
+		[]string{"pkg/z.go", "external.go", "internal/z.go", "internal/deeper/b.go", "pkg/a.go", "internal/a.go"},
+	)
+	if !errors.Is(err, ErrOwnershipViolation) {
+		t.Fatalf("descendants were accepted: %v", err)
+	}
+	want := strings.Join([]string{
+		ErrOwnershipViolation.Error() + ": unexpected paths: external.go",
+		`descendants of bare declaration "internal" (declare "internal/**" for recursive ownership): internal/a.go, internal/z.go`,
+		`descendants of bare declaration "internal/deeper" (declare "internal/deeper/**" for recursive ownership): internal/deeper/b.go`,
+		`descendants of bare declaration "pkg" (declare "pkg/**" for recursive ownership): pkg/a.go, pkg/z.go`,
+	}, "; ")
+	if err.Error() != want {
+		t.Fatalf("diagnostic=%q\nwant=%q", err, want)
+	}
+}
+
+func TestManagedWriteScopePreservesUnrelatedDiagnostic(t *testing.T) {
+	err := ValidateManagedWriteScope([]string{"internal/file.go"}, nil, []string{"z.go", "a.go"})
+	if got, want := err.Error(), ErrOwnershipViolation.Error()+": a.go, z.go"; got != want {
+		t.Fatalf("diagnostic=%q want=%q", got, want)
 	}
 }
