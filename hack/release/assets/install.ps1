@@ -38,6 +38,7 @@ if ($Tag -or $Latest) {
 }
 $stage = $null
 $stagedBinary = $null
+$backupBinary = $null
 try {
 $archive = Join-Path $AssetDir $asset
 $manifestPath = Join-Path $AssetDir "manifest.json"
@@ -75,7 +76,9 @@ New-Item -ItemType Directory -Path $stage | Out-Null
   Copy-Item -LiteralPath $candidate -Destination $stagedBinary
   $destination = Join-Path $InstallDir "issue-spec.exe"
   if (Test-Path -LiteralPath $destination -PathType Leaf) {
-    [System.IO.File]::Replace($stagedBinary, $destination, $null, $true)
+    $backupBinary = Join-Path $InstallDir (".issue-spec.backup." + [guid]::NewGuid().ToString("N") + ".exe")
+    [System.IO.File]::Replace($stagedBinary, $destination, $backupBinary, $true)
+    Remove-Item -LiteralPath $backupBinary -Force -ErrorAction SilentlyContinue
   } else {
     [System.IO.File]::Move($stagedBinary, $destination)
   }
@@ -83,6 +86,7 @@ New-Item -ItemType Directory -Path $stage | Out-Null
   Write-Output "installed $destination from $asset"
 } finally {
   if ($null -ne $stagedBinary -and (Test-Path -LiteralPath $stagedBinary)) { Remove-Item -LiteralPath $stagedBinary -Force -ErrorAction SilentlyContinue }
+  if ($null -ne $backupBinary -and (Test-Path -LiteralPath $backupBinary)) { Remove-Item -LiteralPath $backupBinary -Force -ErrorAction SilentlyContinue }
   if ($null -ne $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
   if ($null -ne $downloadDir) { Remove-Item -LiteralPath $downloadDir -Recurse -Force -ErrorAction SilentlyContinue }
 }
