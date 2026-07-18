@@ -20,17 +20,18 @@ const testRevision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 func TestPlanPublicationGuardsTrustedRefs(t *testing.T) {
 	tests := []struct {
-		name        string
-		ref         string
-		wantTag     string
-		wantVersion string
-		wantChannel string
-		wantLatest  bool
-		wantError   bool
+		name          string
+		ref           string
+		wantTag       string
+		wantVersion   string
+		wantChannel   string
+		wantLatest    bool
+		wantImmutable bool
+		wantError     bool
 	}{
-		{name: "main rolling", ref: "refs/heads/main", wantTag: "rolling-" + testRevision, wantVersion: "0.0.0-main.1710000000+gaaaaaaaaaaaa", wantChannel: "rolling", wantLatest: true},
-		{name: "stable", ref: "refs/tags/v1.2.3", wantTag: "v1.2.3", wantVersion: "v1.2.3", wantChannel: "stable"},
-		{name: "prerelease", ref: "refs/tags/v1.2.3-rc.1", wantTag: "v1.2.3-rc.1", wantVersion: "v1.2.3-rc.1", wantChannel: "prerelease"},
+		{name: "main rolling", ref: "refs/heads/main", wantTag: "rolling", wantVersion: "0.0.0-main.1710000000+gaaaaaaaaaaaa", wantChannel: "rolling", wantLatest: true},
+		{name: "stable", ref: "refs/tags/v1.2.3", wantTag: "v1.2.3", wantVersion: "v1.2.3", wantChannel: "stable", wantImmutable: true},
+		{name: "prerelease", ref: "refs/tags/v1.2.3-rc.1", wantTag: "v1.2.3-rc.1", wantVersion: "v1.2.3-rc.1", wantChannel: "prerelease", wantImmutable: true},
 		{name: "pull request", ref: "refs/pull/9/merge", wantError: true},
 		{name: "other branch", ref: "refs/heads/feature", wantError: true},
 		{name: "unsupported tag", ref: "refs/tags/latest", wantError: true},
@@ -49,7 +50,7 @@ func TestPlanPublicationGuardsTrustedRefs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if plan.Tag != test.wantTag || plan.Version != test.wantVersion || plan.Channel != test.wantChannel || plan.Latest != test.wantLatest || !plan.Immutable {
+			if plan.Tag != test.wantTag || plan.Version != test.wantVersion || plan.Channel != test.wantChannel || plan.Latest != test.wantLatest || plan.Immutable != test.wantImmutable {
 				t.Fatalf("plan = %+v", plan)
 			}
 			if plan.Channel == "rolling" && plan.Prerelease {
@@ -140,6 +141,7 @@ func TestAssemblyIsReproducibleAndComplete(t *testing.T) {
 	}
 	rollingNotes := releaseNotes(rolling)
 	for _, required := range []string{
+		"mutable rolling release from main",
 		"https://github.com/higress-group/issue-spec/releases/latest/download/install.sh", "./install.sh --latest",
 		"https://github.com/higress-group/issue-spec/releases/latest/download/install.ps1", ".\\install.ps1 -Latest",
 		"https://github.com/higress-group/issue-spec/releases/latest/download/issue-spec-requirements.zip",
@@ -442,70 +444,6 @@ func TestShellInstallerUsesCurlWithoutDownloaderFallback(t *testing.T) {
 	}
 }
 
-func TestRollingLatestDecision(t *testing.T) {
-	repository := t.TempDir()
-	runGit(t, repository, "init", "--quiet")
-	runGit(t, repository, "config", "user.name", "Release Test")
-	runGit(t, repository, "config", "user.email", "release-test@example.com")
-	commit := func(content string) string {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(repository, "state"), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		runGit(t, repository, "add", "state")
-		runGit(t, repository, "commit", "--quiet", "--no-gpg-sign", "-m", content)
-		return strings.TrimSpace(runGit(t, repository, "rev-parse", "HEAD"))
-	}
-	first := commit("first")
-	second := commit("second")
-	runGit(t, repository, "checkout", "--quiet", "--orphan", "diverged")
-	if err := os.Remove(filepath.Join(repository, "state")); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, repository, "rm", "--quiet", "--cached", "state")
-	diverged := commit("diverged")
-
-	script, err := filepath.Abs("rolling-latest.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tests := []struct {
-		name      string
-		candidate string
-		main      string
-		latest    string
-		want      string
-		wantError bool
-	}{
-		{name: "first rolling snapshot", candidate: first, main: first, latest: "-", want: "advance"},
-		{name: "second rolling snapshot", candidate: second, main: second, latest: first, want: "advance"},
-		{name: "already current", candidate: second, main: second, latest: second, want: "current"},
-		{name: "older completion", candidate: first, main: second, latest: second, want: "noop"},
-		{name: "A succeeds after B reached main but failed", candidate: first, main: second, latest: "-", want: "advance"},
-		{name: "diverged latest", candidate: second, main: second, latest: diverged, wantError: true},
-		{name: "candidate not on main", candidate: diverged, main: second, latest: first, wantError: true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			command := exec.Command("sh", script, test.candidate, test.main, test.latest)
-			command.Dir = repository
-			output, err := command.CombinedOutput()
-			if test.wantError {
-				if err == nil {
-					t.Fatalf("decision unexpectedly succeeded: %s", output)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("decision failed: %v\n%s", err, output)
-			}
-			if got := strings.TrimSpace(string(output)); got != test.want {
-				t.Fatalf("decision = %q, want %q", got, test.want)
-			}
-		})
-	}
-}
-
 func TestWorkflowKeepsPublicationAuthorityBehindCompleteTrustedBuild(t *testing.T) {
 	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
 	if err != nil {
@@ -519,11 +457,12 @@ func TestWorkflowKeepsPublicationAuthorityBehindCompleteTrustedBuild(t *testing.
 	for _, required := range []string{
 		"branches: [main]", "tags: ['v*']", "contents: read", "contents: write", "id-token: write", "attestations: write",
 		"cancel-in-progress: false", "go test ./...", "diff -r dist/release dist/release-repeat",
-		"actions/attest-build-provenance@v4", "gh attestation verify", "hack/release/rolling-latest.sh",
-		"repos/$GITHUB_REPOSITORY/releases/latest", `select(.draft == false and (.tag_name | startswith("rolling-")))`,
-		`--slurp |`, `if [ "$rolling_count" = 0 ]; then`, "gh release create", "--draft", ".target_commitish",
-		`gh release view "$1" --json databaseId --jq .databaseId`, `repos/$GITHUB_REPOSITORY/releases/$release_id`,
-		"gh release upload", "gh release edit \"$RELEASE_TAG\" --draft=false --latest \\",
+		"actions/attest-build-provenance@v4", "gh attestation verify",
+		`if [ "$RELEASE_CHANNEL" = rolling ]; then`, `if [ "$current_main" != "$RELEASE_REVISION" ]; then`,
+		`git/ref/tags/$RELEASE_TAG`, `git/refs/tags/$RELEASE_TAG`, `-F force=true`, `-f ref="refs/tags/$RELEASE_TAG"`,
+		`gh release upload "$RELEASE_TAG" dist/release/publish/* --clobber`,
+		`gh release edit "$RELEASE_TAG" --title "issue-spec $RELEASE_VERSION"`,
+		`gh release create "$RELEASE_TAG" --draft --verify-tag`,
 		"gh release edit \"$RELEASE_TAG\" --draft=false --latest=false",
 		`binary="$HOME/.local/bin/issue-spec"`, `"$binary" requirements setup --help`,
 		`Join-Path $env:LOCALAPPDATA "issue-spec\bin\issue-spec.exe"`, `& $binary requirements setup --help`,
@@ -532,41 +471,39 @@ func TestWorkflowKeepsPublicationAuthorityBehindCompleteTrustedBuild(t *testing.
 			t.Errorf("release workflow missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"pull_request:", "workflow_dispatch:"} {
+	for _, forbidden := range []string{
+		"pull_request:", "workflow_dispatch:", "hack/release/rolling-latest.sh", "rolling_latest_decision",
+		"published_rolling_count", "read_latest_rolling_revision", "releases/latest", "rolling-", ".target_commitish",
+	} {
 		if strings.Contains(body, forbidden) {
-			t.Errorf("release workflow unexpectedly grants a trigger to %q", forbidden)
+			t.Errorf("release workflow unexpectedly contains %q", forbidden)
 		}
 	}
-	if strings.Contains(body, `releases/tags/$RELEASE_TAG`) {
-		t.Error("release workflow must resolve draft releases by database ID")
-	}
-	create := strings.Index(body, "gh release create")
-	upload := strings.Index(body, "gh release upload")
-	verify := strings.LastIndex(body, "verify_remote_assets")
-	decision := strings.LastIndex(body, "rolling_latest_decision")
-	publish := strings.LastIndex(body, "gh release edit")
-	draftTargetGuard := strings.LastIndex(body, `test "$(jq -r .target_commitish <<<"$release_json")" = "$RELEASE_REVISION"`)
-	if create < 0 || draftTargetGuard < create || upload < draftTargetGuard || verify < upload || decision < verify || publish < decision {
-		t.Fatalf("draft/upload/publish order is unsafe: create=%d upload=%d publish=%d", create, upload, publish)
-	}
-	semanticBranch := strings.Index(body, `if [ "$RELEASE_CHANNEL" != rolling ]; then`)
-	semanticPublish := strings.Index(body, `gh release edit "$RELEASE_TAG" --draft=false --latest=false`)
-	rollingPublish := strings.Index(body, `gh release edit "$RELEASE_TAG" --draft=false --latest \`)
-	publishedTagGuard := strings.LastIndex(body, `guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"`)
-	if semanticBranch < verify || semanticPublish < semanticBranch || decision < semanticPublish || rollingPublish < decision || publishedTagGuard < rollingPublish {
-		t.Fatalf("semantic and rolling latest-pointer paths are not separated")
-	}
-}
 
-func runGit(t *testing.T, directory string, arguments ...string) string {
-	t.Helper()
-	command := exec.Command("git", arguments...)
-	command.Dir = directory
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(arguments, " "), err, output)
+	rollingStart := strings.Index(body, `if [ "$RELEASE_CHANNEL" = rolling ]; then`)
+	semanticStart := strings.Index(body, `test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"`)
+	if rollingStart < 0 || semanticStart < rollingStart {
+		t.Fatalf("rolling and semantic publication paths are not separated")
 	}
-	return string(output)
+	rollingBody := body[rollingStart:semanticStart]
+	moveTag := strings.Index(rollingBody, `git/refs/tags/$RELEASE_TAG`)
+	createRolling := strings.Index(rollingBody, `gh release create "$RELEASE_TAG" --verify-tag`)
+	uploadRolling := strings.Index(rollingBody, `gh release upload "$RELEASE_TAG"`)
+	verifyRolling := strings.LastIndex(rollingBody, "verify_remote_assets")
+	publishRolling := strings.Index(rollingBody, `gh release edit "$RELEASE_TAG" --title`)
+	guardRolling := strings.LastIndex(rollingBody, `guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"`)
+	if moveTag < 0 || createRolling < moveTag || uploadRolling < createRolling || verifyRolling < uploadRolling || publishRolling < verifyRolling || guardRolling < publishRolling {
+		t.Fatalf("rolling update order is unsafe")
+	}
+
+	semanticBody := body[semanticStart:]
+	createSemantic := strings.Index(semanticBody, `gh release create "$RELEASE_TAG" --draft --verify-tag`)
+	uploadSemantic := strings.Index(semanticBody, `gh release upload "$RELEASE_TAG"`)
+	verifySemantic := strings.LastIndex(semanticBody, "verify_remote_assets")
+	publishSemantic := strings.Index(semanticBody, `gh release edit "$RELEASE_TAG" --draft=false --latest=false`)
+	if createSemantic < 0 || uploadSemantic < createSemantic || verifySemantic < uploadSemantic || publishSemantic < verifySemantic {
+		t.Fatalf("semantic draft/upload/publish order is unsafe")
+	}
 }
 
 func fakeBinaries(content string) map[string][]byte {

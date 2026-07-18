@@ -124,11 +124,11 @@ func PlanPublication(ref, revision string, sourceDateEpoch int64) (Plan, error) 
 	plan := Plan{Ref: ref, Revision: revision, SourceDateEpoch: sourceDateEpoch}
 	switch {
 	case ref == "refs/heads/main":
-		plan.Tag = "rolling-" + revision
+		plan.Tag = "rolling"
 		plan.Version = fmt.Sprintf("0.0.0-main.%d+g%s", sourceDateEpoch, revision[:12])
 		plan.Channel = "rolling"
 		plan.Latest = true
-		plan.Immutable = true
+		plan.Immutable = false
 	case strings.HasPrefix(ref, "refs/tags/"):
 		tag := strings.TrimPrefix(ref, "refs/tags/")
 		if !validSemanticTag(tag) {
@@ -561,7 +561,7 @@ func releaseNotes(plan Plan) string {
 	if plan.Channel == "prerelease" {
 		channelDescription = "immutable semantic-version prerelease"
 	} else if plan.Channel == "rolling" {
-		channelDescription = "rolling latest snapshot from main; the tagged snapshot remains immutable"
+		channelDescription = "mutable rolling release from main; every complete publication replaces its assets"
 		downloadPath = "latest/download"
 		shellMode = "--latest"
 		powerShellMode = "-Latest"

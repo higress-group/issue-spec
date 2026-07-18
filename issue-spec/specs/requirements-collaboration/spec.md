@@ -11,22 +11,22 @@ Proposal Issues:
 
 ### Requirement: publish complete releases with curl-only installation guidance
 
-issue-spec MUST publish complete immutable semantic-version and rolling latest cross-platform releases with platform archives, Shell and PowerShell installers, a standalone agent-neutral requirements-skill archive, SHA-256 metadata, provenance or signatures, and a manifest. Every user-facing installation path in generated Release descriptions and onboarding documentation MUST download Release assets with curl only, MUST NOT require GitHub CLI, wget, Invoke-WebRequest, or another provider-specific downloader, and MUST verify the downloaded manifest, checksums, and selected archive before replacing an existing CLI.
+issue-spec MUST publish complete immutable semantic-version Releases and one mutable rolling latest cross-platform Release with platform archives, Shell and PowerShell installers, a standalone agent-neutral requirements-skill archive, SHA-256 metadata, provenance or signatures, and a manifest. Every user-facing installation path in generated Release descriptions and onboarding documentation MUST download Release assets with curl only, MUST NOT require GitHub CLI, wget, Invoke-WebRequest, or another provider-specific downloader, and MUST verify the downloaded manifest, checksums, and selected archive before replacing an existing CLI.
 
 #### Scenario: build an immutable semantic-version release
 
 - **WHEN** a maintainer pushes a documented stable or prerelease semantic-version tag
 - **THEN** GitHub Actions MUST build every supported target from the exact tagged revision and publish one matching immutable Release whose CLI and manifest report that version and revision
 
-#### Scenario: trigger and advance rolling latest
+#### Scenario: update the single rolling latest Release
 
 - **WHEN** a commit reaches main and its complete release matrix succeeds while it remains the newest successful main revision
-- **THEN** the workflow MUST atomically update the rolling latest Release and stable latest download URLs without modifying immutable semantic-version Releases
+- **THEN** the workflow MUST move the fixed `rolling` tag to that revision, replace the assets and description of the single rolling Release, and mark it as GitHub latest without creating a per-revision rolling Release or modifying immutable semantic-version Releases
 
 #### Scenario: prevent stale or partial publication
 
 - **WHEN** a required build, test, packaging, integrity, provenance, skill, or documentation job fails or an older rolling run finishes late
-- **THEN** the workflow MUST leave the previously complete Release unchanged and MUST NOT expose partial assets or regress latest
+- **THEN** the workflow MUST NOT start a rolling update from that candidate; if an in-place asset replacement is interrupted, installers MUST reject any mixed asset set through manifest and checksum verification and the same rolling Release MUST remain safely retryable
 
 #### Scenario: publish the complete asset set
 
@@ -215,7 +215,7 @@ The project MUST publish equivalent English and Chinese onboarding guides, gener
 
 #### Scenario: install from a Release description
 
-- **WHEN** a user opens an immutable semantic-version or rolling latest Release
+- **WHEN** a user opens a semantic-version or rolling latest Release
 - **THEN** the generated description MUST identify the channel and source revision and provide copyable curl-only Shell and PowerShell commands for CLI installation, version verification, and integrity checking
 
 #### Scenario: configure one global server

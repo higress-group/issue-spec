@@ -11,8 +11,9 @@ server is `https://issues.example.test`; no displayed value is a credential.
 
 `https://github.com/higress-group/issue-spec/releases/latest/download` follows
 the latest GitHub Release from the most recent complete successful publication.
-In the current release design, that is the latest `rolling` snapshot. Its
-specific `rolling-<revision>` snapshot, tag, and assets remain immutable.
+In the current release design, that is the single mutable `rolling` Release.
+Each complete publication replaces its assets and moves the `rolling` tag to
+the source revision recorded in the manifest and release description.
 
 Do not pipe a remote script into a shell. Use `curl` to download the installer,
 manifest, checksums, and matching platform archive, then verify before executing:

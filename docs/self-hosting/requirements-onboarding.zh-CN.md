@@ -9,8 +9,9 @@
 ## 1. 安装经过校验的 Release
 
 `https://github.com/higress-group/issue-spec/releases/latest/download` 跟随最近一次完整成功
-发布所生成的 GitHub latest Release；在当前发布设计中，它就是最新的 `rolling` 快照。
-具体的 `rolling-<revision>` 快照、Tag 及其制品仍然不可变。
+发布所生成的 GitHub latest Release；在当前发布设计中，它是唯一且可更新的 `rolling`
+Release。每次完整发布都会替换其中的制品，并把 `rolling` Tag 移动到 Manifest 和 Release
+描述所记录的源码 Revision。
 
 不要把远程脚本通过管道直接交给 Shell。只用 `curl` 把安装器、Manifest、Checksum
 和对应平台制品下载到同一目录，再校验执行：
