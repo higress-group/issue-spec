@@ -155,6 +155,7 @@ func validateReview(p ReviewPayload, subject string) error {
 	if len(p.KnownTests) > maxListItems {
 		return fmt.Errorf("review.known_tests: exceeds %d items", maxListItems)
 	}
+	seenKnownTests := map[string]int{}
 	for i, test := range p.KnownTests {
 		if err := validateRequiredText(fmt.Sprintf("review.known_tests[%d].id", i), test.ID, maxIDLength); err != nil {
 			return err
@@ -164,6 +165,9 @@ func validateReview(p ReviewPayload, subject string) error {
 		}
 		if !validTestOutcome(test.Outcome) {
 			return fmt.Errorf("review.known_tests[%d].outcome: unsupported value %q", i, test.Outcome)
+		}
+		if err := recordIdentityKey(seenKnownTests, "review.known_tests", i, test.ID, test.ID); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -282,6 +286,7 @@ func validateReceipt(r Receipt, requireDigest bool) error {
 	if len(r.Tests) > maxListItems {
 		return fmt.Errorf("tests: exceeds %d items", maxListItems)
 	}
+	seenTests := map[string]int{}
 	for i, result := range r.Tests {
 		if err := validateRequiredText(fmt.Sprintf("tests[%d].id", i), result.ID, maxIDLength); err != nil {
 			return err
@@ -294,6 +299,9 @@ func validateReceipt(r Receipt, requireDigest bool) error {
 		}
 		if !validAssurance(result.Assurance) {
 			return fmt.Errorf("tests[%d].assurance: unsupported value %q", i, result.Assurance)
+		}
+		if err := recordIdentityKey(seenTests, "tests", i, result.ID, result.ID); err != nil {
+			return err
 		}
 	}
 	if !validRoute(r.Provenance.Route) {
@@ -366,8 +374,12 @@ func validateReceipt(r Receipt, requireDigest bool) error {
 		if len(r.Review.Findings) > maxListItems {
 			return fmt.Errorf("review.findings: exceeds %d items", maxListItems)
 		}
+		seenFindings := map[string]int{}
 		for i, finding := range r.Review.Findings {
 			if err := validateFinding(i, finding); err != nil {
+				return err
+			}
+			if err := recordIdentityKey(seenFindings, "review.findings", i, finding.ID, finding.ID); err != nil {
 				return err
 			}
 		}
@@ -439,6 +451,7 @@ func validateGenerators(name string, values []GeneratorPolicy) error {
 	if len(values) > maxListItems {
 		return fmt.Errorf("%s: exceeds %d items", name, maxListItems)
 	}
+	seen := map[string]int{}
 	for i, generator := range values {
 		if err := validateRequiredText(fmt.Sprintf("%s[%d].name", name, i), generator.Name, maxIDLength); err != nil {
 			return err
@@ -449,6 +462,9 @@ func validateGenerators(name string, values []GeneratorPolicy) error {
 		if err := validateStringList(fmt.Sprintf("%s[%d].required_outputs", name, i), generator.RequiredOutputs, maxShortTextLength, true, true); err != nil {
 			return err
 		}
+		if err := recordIdentityKey(seen, name, i, generator.Name, generator.Name); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -457,11 +473,15 @@ func validateTestSelectors(name string, values []TestSelector) error {
 	if len(values) > maxListItems {
 		return fmt.Errorf("%s: exceeds %d items", name, maxListItems)
 	}
+	seen := map[string]int{}
 	for i, value := range values {
 		if err := validateRequiredText(fmt.Sprintf("%s[%d].id", name, i), value.ID, maxIDLength); err != nil {
 			return err
 		}
 		if err := validateRequiredText(fmt.Sprintf("%s[%d].command", name, i), value.Command, maxCommandLength); err != nil {
+			return err
+		}
+		if err := recordIdentityKey(seen, name, i, value.ID, value.ID); err != nil {
 			return err
 		}
 	}
@@ -472,6 +492,7 @@ func validateCheckSelectors(name string, values []CheckSelector) error {
 	if len(values) > maxListItems {
 		return fmt.Errorf("%s: exceeds %d items", name, maxListItems)
 	}
+	seen := map[string]int{}
 	for i, value := range values {
 		if err := validateRequiredText(fmt.Sprintf("%s[%d].provider", name, i), value.Provider, maxIDLength); err != nil {
 			return err
@@ -479,7 +500,19 @@ func validateCheckSelectors(name string, values []CheckSelector) error {
 		if err := validateRequiredText(fmt.Sprintf("%s[%d].name", name, i), value.Name, maxShortTextLength); err != nil {
 			return err
 		}
+		key := value.Provider + "\x00" + value.Name
+		if err := recordIdentityKey(seen, name, i, key, value.Provider+"/"+value.Name); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+func recordIdentityKey(seen map[string]int, list string, index int, key, display string) error {
+	if first, ok := seen[key]; ok {
+		return fmt.Errorf("%s[%d]: duplicate key %q (first at index %d)", list, index, display, first)
+	}
+	seen[key] = index
 	return nil
 }
 

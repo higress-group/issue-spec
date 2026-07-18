@@ -159,6 +159,147 @@ func TestAssignmentRejectsUnknownFieldsRoleMismatchAndBounds(t *testing.T) {
 	}
 }
 
+func TestAssignmentRejectsDuplicateIdentityKeys(t *testing.T) {
+	tests := []struct {
+		name  string
+		value Assignment
+		want  string
+	}{
+		{
+			name: "generator name with different commands",
+			value: func() Assignment {
+				value := implementationAssignment()
+				value.Implementation.Generators = append(value.Implementation.Generators,
+					GeneratorPolicy{Name: "types", Command: "go generate ./...", RequiredOutputs: []string{"internal/assignment/other.go"}})
+				return value
+			}(),
+			want: `implementation.generators[1]: duplicate key "types"`,
+		},
+		{
+			name: "test selector id with different commands",
+			value: func() Assignment {
+				value := implementationAssignment()
+				value.Implementation.FocusedTests = append(value.Implementation.FocusedTests,
+					TestSelector{ID: "assignment", Command: "go test ./internal/assignment -run TestDigest"})
+				return value
+			}(),
+			want: `implementation.focused_tests[1]: duplicate key "assignment"`,
+		},
+		{
+			name: "known test id with different evidence",
+			value: func() Assignment {
+				value := reviewAssignment()
+				value.Review.KnownTests = append(value.Review.KnownTests,
+					KnownTestEvidence{ID: "assignment", Command: "go test ./...", Outcome: TestFailed})
+				return value
+			}(),
+			want: `review.known_tests[1]: duplicate key "assignment"`,
+		},
+		{
+			name: "provider check composite key",
+			value: func() Assignment {
+				value := verificationAssignment()
+				value.Verification.RequiredChecks = append(value.Verification.RequiredChecks,
+					CheckSelector{Provider: "github", Name: "test"})
+				return value
+			}(),
+			want: `verification.required_checks[1]: duplicate key "github/test"`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.value.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestReceiptRejectsDuplicateIdentityKeys(t *testing.T) {
+	implementation := implementationReceipt()
+	implementation.Tests = append(implementation.Tests,
+		TestResult{ID: "unit", Command: "go test ./...", Outcome: TestFailed, Assurance: AssuranceProviderOwned})
+
+	review := Receipt{
+		SchemaVersion: ReceiptSchemaVersion, ID: "receipt-007-duplicate",
+		AssignmentID: "asg-007-1", AssignmentDigest: validDigest, AssignmentGeneration: 1,
+		Role: RoleReview, ResultSchemaVersion: ReceiptSchemaVersion, SubjectRevision: subjectRevision,
+		Provenance: Provenance{Route: RouteRoleOwned, Assurance: AssuranceSelfReported, Writer: "Reviewer", Subject: "Reviewer", Source: "review-submit"},
+		Review: &ReviewResult{Verdict: ReviewChangesRequested, Findings: []Finding{
+			{ID: "FINDING-001", Path: "internal/assignment/types.go", Side: "RIGHT", Line: 10, Severity: "P2", Message: "first"},
+			{ID: "FINDING-001", Path: "internal/assignment/codec.go", Side: "RIGHT", Line: 20, Severity: "P1", Message: "conflicting duplicate"},
+		}},
+	}
+
+	verification := Receipt{
+		SchemaVersion: ReceiptSchemaVersion, ID: "receipt-016-duplicate",
+		AssignmentID: "asg-016-1", AssignmentDigest: validDigest, AssignmentGeneration: 1,
+		Role: RoleVerification, ResultSchemaVersion: ReceiptSchemaVersion, SubjectRevision: subjectRevision,
+		Provenance: Provenance{Route: RouteRoleOwned, Assurance: AssuranceSelfReported, Writer: "Verifier", Subject: "Verifier", Source: "verify-submit"},
+		Verification: &VerificationResult{CheckSelectors: []CheckSelector{
+			{Provider: "github", Name: "test"},
+			{Provider: "github", Name: "test"},
+		}},
+	}
+
+	for name, test := range map[string]struct {
+		value Receipt
+		want  string
+	}{
+		"test result id with different results": {implementation, `tests[1]: duplicate key "unit"`},
+		"finding id with different anchors":     {review, `review.findings[1]: duplicate key "FINDING-001"`},
+		"verification check composite key":      {verification, `verification.check_selectors[1]: duplicate key "github/test"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := SealReceipt(test.value)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestDifferentIdentityKeysKeepOrderIndependentDigests(t *testing.T) {
+	firstAssignment := implementationAssignment()
+	firstAssignment.Implementation.FocusedTests = append(firstAssignment.Implementation.FocusedTests,
+		TestSelector{ID: "model", Command: "go test ./internal/model"})
+	secondAssignment := firstAssignment
+	secondAssignment.Implementation = &ImplementationPayload{}
+	*secondAssignment.Implementation = *firstAssignment.Implementation
+	secondAssignment.Implementation.FocusedTests = append([]TestSelector(nil), firstAssignment.Implementation.FocusedTests...)
+	secondAssignment.Implementation.FocusedTests[0], secondAssignment.Implementation.FocusedTests[1] = secondAssignment.Implementation.FocusedTests[1], secondAssignment.Implementation.FocusedTests[0]
+	firstDigest, err := AssignmentDigest(firstAssignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := AssignmentDigest(secondAssignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest != secondDigest {
+		t.Fatalf("assignment digests differ: %s != %s", firstDigest, secondDigest)
+	}
+
+	firstReceipt := implementationReceipt()
+	firstReceipt.Tests = append(firstReceipt.Tests,
+		TestResult{ID: "model", Command: "go test ./internal/model", Outcome: TestPassed, Assurance: AssuranceSelfReported})
+	secondReceipt := firstReceipt
+	secondReceipt.Tests = append([]TestResult(nil), firstReceipt.Tests...)
+	secondReceipt.Tests[0], secondReceipt.Tests[1] = secondReceipt.Tests[1], secondReceipt.Tests[0]
+	sealedFirst, err := SealReceipt(firstReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealedSecond, err := SealReceipt(secondReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sealedFirst.ReceiptDigest != sealedSecond.ReceiptDigest {
+		t.Fatalf("receipt digests differ: %s != %s", sealedFirst.ReceiptDigest, sealedSecond.ReceiptDigest)
+	}
+}
+
 func TestProcessInputStrictParsingAndNoSelectorMeansAllScenarios(t *testing.T) {
 	input := ProcessInput{Objective: "Implement the typed schema"}
 	payload, err := ProcessInputJSON(input)
