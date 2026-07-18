@@ -5,6 +5,9 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
@@ -14,6 +17,10 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/store"
 	"github.com/jackc/pgx/v5"
 )
+
+const proposalLabel = "issue-spec/proposal"
+
+var issueMarker = regexp.MustCompile(`(?s)<!--\s*issue-spec:issue=([^\s>]+)\s+change=([^\s>]+)\s+version=([^\s>]+)\s*-->`)
 
 type RepositoryAuthorizer interface {
 	EvaluateRepository(context.Context, authz.Subject, authz.RepositoryRequest) (authz.Decision, error)
@@ -130,7 +137,7 @@ func (s *Service) CreateIssue(ctx context.Context, owner, repository string, sub
 		if !decision.Allowed {
 			return &DecisionError{Decision: decision}
 		}
-		if len(input.Labels) > 0 {
+		if len(input.Labels) > 0 && !canonicalProposalContribution(input) {
 			decision, err = s.authorizer.EvaluateRepositoryTx(ctx, tx.PGX(), subject, authz.RepositoryRequest{
 				Scope: resource.Scope, Operation: authz.OperationTriage,
 			})
@@ -176,15 +183,6 @@ func (s *Service) UpdateIssue(ctx context.Context, owner, repository string, num
 		if err != nil {
 			return err
 		}
-		decision, err := s.authorizer.EvaluateRepositoryTx(ctx, tx.PGX(), subject, authz.RepositoryRequest{
-			Scope: resource.Scope, Operation: authz.OperationTriage,
-		})
-		if err != nil {
-			return err
-		}
-		if !decision.Allowed {
-			return &DecisionError{Decision: decision}
-		}
 		repositoryStore := tx.ScopedRepo(resource.Scope)
 		current, err := repositoryStore.IssueByNumber(ctx, number)
 		if err != nil {
@@ -193,6 +191,20 @@ func (s *Service) UpdateIssue(ctx context.Context, owner, repository string, num
 		update, err := overlay(current)
 		if err != nil {
 			return err
+		}
+		operation := authz.OperationTriage
+		if current.AuthorID != nil && *current.AuthorID == actor.User.ID && update.State == current.State &&
+			(update.Title != current.Title || update.Body != current.Body) {
+			operation = authz.OperationContribute
+		}
+		decision, err := s.authorizer.EvaluateRepositoryTx(ctx, tx.PGX(), subject, authz.RepositoryRequest{
+			Scope: resource.Scope, Operation: operation,
+		})
+		if err != nil {
+			return err
+		}
+		if !decision.Allowed {
+			return &DecisionError{Decision: decision}
 		}
 		updated, err := repositoryStore.UpdateIssueCAS(ctx, number, current.RepresentationVersion, update)
 		if err != nil {
@@ -221,6 +233,21 @@ func (s *Service) UpdateIssue(ctx context.Context, owner, repository string, num
 		return err
 	})
 	return resource, snapshot, err
+}
+
+// canonicalProposalContribution is the sole label exception for contributors.
+// It deliberately mirrors the existing issue projection marker shape in this
+// service instead of introducing an artifact-aware authorization layer.
+func canonicalProposalContribution(input models.NewIssue) bool {
+	if len(input.Labels) != 1 || !strings.EqualFold(strings.TrimSpace(input.Labels[0]), proposalLabel) {
+		return false
+	}
+	matches := issueMarker.FindAllStringSubmatch(input.Body, -1)
+	if len(matches) != 1 || !strings.EqualFold(strings.TrimSpace(matches[0][1]), "proposal") || strings.TrimSpace(matches[0][2]) == "" {
+		return false
+	}
+	version, err := strconv.Atoi(strings.TrimSpace(matches[0][3]))
+	return err == nil && version == 1
 }
 
 func (s *Service) ListComments(ctx context.Context, owner, repository string, subject authz.Subject, options models.CommentListOptions) (models.RepositoryResource, models.CommentPage, error) {

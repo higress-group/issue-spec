@@ -112,9 +112,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	}
 	nativeAuthenticate := adminapi.NativeAuthenticate(deps.Authentication)
 	nativeAuthenticateOptional := adminapi.NativeAuthenticateOptional(deps.Authentication)
-	features := metaapi.Features{Bootstrap: true, PersonalAccessTokens: true, Organizations: true,
-		SourceBindings: true, Webhooks: true, ChangeBoards: true, Runner: true, RecoveryExchange: true,
-		Search: deps.Search != nil}
+	features := mountedFeatures(deps.Search != nil)
 	serverMetadata, err := metaapi.NewServerMetadataWithPosture(deps.ServerInstanceID, deps.APIOrigin, deps.WebOrigin, deps.ProviderDescriptions, deps.TransportPosture)
 	if err != nil {
 		return nil, fmt.Errorf("compose server metadata: %w", err)
@@ -216,6 +214,12 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	handler = credentialedCORS(deps.APIOrigin, deps.WebOrigin, handler)
 	handler = observeRequests(stats, deps.LogRequest, handler)
 	return handler, nil
+}
+
+func mountedFeatures(search bool) metaapi.Features {
+	return metaapi.Features{Bootstrap: true, PersonalAccessTokens: true, Organizations: true,
+		SourceBindings: true, Webhooks: true, ChangeBoards: true, Runner: true, RecoveryExchange: true,
+		Search: search, RequirementsOnboarding: true}
 }
 
 func validateDependencies(deps Dependencies) error {

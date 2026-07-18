@@ -12,6 +12,42 @@ const repoId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const secondRepoId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 
 describe("personal access token repository boundaries", () => {
+  it("keeps requirements onboarding to the token name happy path", async () => {
+    let created: unknown;
+    server.use(...handlers(), http.post("http://localhost/api/v1/pats", async ({ request }) => {
+      created = await request.json();
+      return HttpResponse.json({ token: "pat-requirements" }, { status: 201 });
+    }));
+    renderApp(<TokensPage />, "/settings/tokens?mode=requirements");
+
+    const user = userEvent.setup();
+    await user.type(await screen.findByRole("textbox", { name: "Token name" }), "requirements CLI");
+    screen.getAllByRole("checkbox").forEach((control) => expect(control).not.toBeVisible());
+    screen.getAllByRole("radio").forEach((control) => expect(control).not.toBeVisible());
+    expect(screen.getByRole("button", { name: "Runner preset" })).not.toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Create token" }));
+
+    await waitFor(() => expect(created).toEqual({
+      name: "requirements CLI",
+      scopes: ["read:user", "read:org", "repo", "issues:read", "issues:write", "admin:org", "admin:repo", "evidence:write", "runner:delegate"],
+      expires_at: null,
+    }));
+    expect(await screen.findByText("pat-requirements")).toBeVisible();
+  });
+
+  it("exposes authority controls only when requirements advanced settings expand", async () => {
+    server.use(...handlers());
+    renderApp(<TokensPage />, "/settings/tokens?mode=requirements");
+    const user = userEvent.setup();
+
+    const advanced = await screen.findByText("Scopes · Repository access");
+    screen.getAllByRole("checkbox").forEach((control) => expect(control).not.toBeVisible());
+    await user.click(advanced);
+    expect(screen.getAllByRole("checkbox")).toHaveLength(9);
+    expect(screen.getByRole("radio", { name: "All repositories (site-wide)" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Runner preset" })).toBeVisible();
+  });
+
   it("defaults to every permission and all repositories", async () => {
     let created: unknown;
     server.use(...handlers(), http.post("http://localhost/api/v1/pats", async ({ request }) => {

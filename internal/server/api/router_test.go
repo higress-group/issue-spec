@@ -68,3 +68,14 @@ func TestRequestObserverPreservesResponseControllerCapabilities(t *testing.T) {
 		t.Fatal("underlying flusher was not reached through Unwrap")
 	}
 }
+
+func TestMountedFeaturesAdvertiseRequirementsOnboarding(t *testing.T) {
+	withoutSearch := mountedFeatures(false)
+	if !withoutSearch.RequirementsOnboarding || withoutSearch.Search {
+		t.Fatalf("features without search=%+v", withoutSearch)
+	}
+	withSearch := mountedFeatures(true)
+	if !withSearch.RequirementsOnboarding || !withSearch.Search {
+		t.Fatalf("features with search=%+v", withSearch)
+	}
+}

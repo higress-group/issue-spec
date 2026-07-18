@@ -15,7 +15,8 @@ import (
 
 func (a *app) runIssue(ctx context.Context, args []string) int {
 	if len(args) < 1 {
-		a.errorf("usage: issue-spec issue create proposal|design|implement --repo owner/repo --change name [--body-file file.md] [--title title]\n")
+		a.errorf("usage: issue-spec issue create simple --repo owner/repo --title title --body-file file.md\n")
+		a.errorf("       issue-spec issue create proposal|design|implement --repo owner/repo --change name [--body-file file.md] [--title title]\n")
 		a.errorf("       issue-spec issue update --repo owner/repo --issue N [--title title] [--body-file file.md] [--summary \"what changed\"]\n")
 		a.errorf("       issue-spec issue list --repo owner/repo [--state open|closed|all] --json\n")
 		a.errorf("       issue-spec issue close|reopen --repo owner/repo --issue N [--json]\n")
@@ -24,7 +25,7 @@ func (a *app) runIssue(ctx context.Context, args []string) int {
 	switch args[0] {
 	case "create":
 		if len(args) < 2 {
-			a.errorf("issue class is required: proposal, design, or implement\n")
+			a.errorf("issue class is required: simple, proposal, design, or implement\n")
 			return 2
 		}
 		return a.runIssueCreate(ctx, args[1], args[2:])
@@ -175,6 +176,9 @@ func (a *app) runIssueState(ctx context.Context, target string, args []string) i
 }
 
 func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) int {
+	if kind == "simple" {
+		return a.runIssueCreateSimple(ctx, args)
+	}
 	fs := newFlagSet("issue create "+kind, a.err)
 	repoFlag := fs.String("repo", "", "repository owner/name")
 	host := fs.String("hostname", "github.com", "GitHub hostname")
@@ -344,6 +348,59 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 		return a.outputJSON(result)
 	}
 	fmt.Fprintf(a.out, "created %s issue #%d: %s\n", kind, issue.Number, issue.HTMLURL)
+	return 0
+}
+
+func (a *app) runIssueCreateSimple(ctx context.Context, args []string) int {
+	fs := newFlagSet("issue create simple", a.err)
+	repoFlag := fs.String("repo", "", "repository owner/name")
+	host := fs.String("hostname", "github.com", "GitHub hostname")
+	titleFlag := fs.String("title", "", "ordinary issue title")
+	bodyFile := fs.String("body-file", "", "ordinary markdown issue body file, or - for stdin")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	repo, ok := a.validateRepo(*repoFlag)
+	if !ok {
+		return 2
+	}
+	title := strings.TrimSpace(*titleFlag)
+	if title == "" {
+		a.errorf("--title is required\n")
+		return 2
+	}
+	if *bodyFile == "" {
+		a.errorf("--body-file is required\n")
+		return 2
+	}
+	body, ok := a.readBodyFile(*bodyFile)
+	if !ok {
+		return 2
+	}
+	if strings.TrimSpace(body) == "" {
+		a.errorf("--body-file must not be empty\n")
+		return 2
+	}
+	if hasIssueBodyMarker(body) {
+		a.errorf("simple issue body must not contain an issue-spec typed issue marker; use proposal, design, or implement instead\n")
+		return 2
+	}
+	client, _, err := a.clientFor(ctx, *host)
+	if err != nil {
+		a.errorf("auth required for issue create on %s: %v\n", auth.NormalizeHost(*host), err)
+		return 1
+	}
+	issue, err := client.CreateIssue(ctx, repo, title, body, nil)
+	if err != nil {
+		a.errorf("create simple issue: %v\n", err)
+		return 1
+	}
+	result := map[string]any{"ok": true, "type": "simple", "number": issue.Number, "url": issue.HTMLURL, "title": issue.Title}
+	if *jsonOut {
+		return a.outputJSON(result)
+	}
+	fmt.Fprintf(a.out, "created simple issue #%d: %s\n", issue.Number, issue.HTMLURL)
 	return 0
 }
 

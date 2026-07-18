@@ -105,6 +105,49 @@ func TestIssueUpdateRejectsSummaryFlagConflict(t *testing.T) {
 	}
 }
 
+func TestIssueCreateSimpleCreatesOrdinaryUnlabelledIssue(t *testing.T) {
+	bodyPath := filepath.Join(t.TempDir(), "request.md")
+	if err := os.WriteFile(bodyPath, []byte("Please support a smaller setup flow.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.createIssue = func(_ context.Context, repo, title, body string, labels []string) (github.Issue, error) {
+			if repo != "o/r" || title != "Smaller setup" || body != "Please support a smaller setup flow.\n" {
+				t.Fatalf("create repo=%q title=%q body=%q", repo, title, body)
+			}
+			if len(labels) != 0 {
+				t.Fatalf("simple issue labels=%v", labels)
+			}
+			return github.Issue{Number: 12, HTMLURL: "https://github.com/o/r/issues/12", Title: title}, nil
+		}
+	})
+	code := app.runIssue(t.Context(), []string{"create", "simple", "--repo", "o/r", "--title", "Smaller setup", "--body-file", bodyPath, "--json"})
+	if code != 0 || !strings.Contains(out.String(), `"type": "simple"`) || !strings.Contains(out.String(), `"number": 12`) {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestIssueCreateSimpleRejectsTypedIssueMarkerBeforeAuthentication(t *testing.T) {
+	bodyPath := filepath.Join(t.TempDir(), "typed.md")
+	if err := os.WriteFile(bodyPath, []byte("<!-- issue-spec:issue=proposal change=x version=1 -->\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	selected := false
+	app.selectGitHubBackend = func(context.Context, string) (auth.GitHubBackendSelection, error) {
+		selected = true
+		return auth.GitHubBackendSelection{}, nil
+	}
+	code := app.runIssue(t.Context(), []string{"create", "simple", "--repo", "o/r", "--title", "not ordinary", "--body-file", bodyPath})
+	if code != 2 || selected || !strings.Contains(errOut.String(), "must not contain") {
+		t.Fatalf("exit=%d selected=%t stdout=%q stderr=%q", code, selected, out.String(), errOut.String())
+	}
+}
+
 func TestIssueListReturnsStableJSONAndExcludesPullRequests(t *testing.T) {
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
