@@ -95,6 +95,28 @@ func (b *GHBackend) ListIssueComments(ctx context.Context, repo string, issueNum
 	return comments, nil
 }
 
+// ObserveIssueComment resolves a provider comment locator without enumerating
+// the issue timeline. The response version is optional because github.com does
+// not currently expose the self-hosted representation-version header.
+func (b *GHBackend) ObserveIssueComment(ctx context.Context, repo string, commentID int64) (IssueCommentObservation, error) {
+	if commentID <= 0 {
+		return IssueCommentObservation{}, fmt.Errorf("comment id must be positive")
+	}
+	var comment Comment
+	metadata, err := b.runRunnerJSON(ctx, ExternalCLIAPIRequest{
+		Operation: "ObserveIssueComment",
+		Method:    http.MethodGet,
+		Endpoint:  fmt.Sprintf("/repos/%s/issues/comments/%d", repo, commentID),
+	}, &comment)
+	if err != nil {
+		return IssueCommentObservation{}, err
+	}
+	comments := []Comment{comment}
+	annotateCommentIssueNumbers(comments, 0)
+	version, _ := parseHeaderInt64(metadata.Headers, HeaderRepresentationVersion)
+	return IssueCommentObservation{Comment: comments[0], RepresentationVersion: version}, nil
+}
+
 func (b *GHBackend) CreateComment(ctx context.Context, repo string, issueNumber int, body string) (Comment, error) {
 	var comment Comment
 	err := b.runJSON(ctx, ExternalCLIAPIRequest{
