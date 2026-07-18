@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,6 +22,66 @@ import (
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
+
+func TestRunStatusSummaryRequiresJSON(t *testing.T) {
+	var errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &errOut)
+	if code := app.runStatus(t.Context(), []string{"--summary"}); code != 2 || !strings.Contains(errOut.String(), "--summary requires --json") {
+		t.Fatalf("status exit=%d stderr=%q", code, errOut.String())
+	}
+}
+
+func TestRunStatusSummaryIsAdditiveAndExitEquivalent(t *testing.T) {
+	args := []string{"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--gate", "final", "--json"}
+	fullApp, fullOut, fullErr := newGitHubVerifyWithoutPRApp(t, canonicalProcessContentWithClass(model.ProcessExecutionVerification))
+	fullCode := fullApp.runStatus(t.Context(), args)
+	if fullErr.Len() != 0 {
+		t.Fatalf("full status stderr=%q", fullErr.String())
+	}
+	var full statusSummary
+	if err := json.Unmarshal(fullOut.Bytes(), &full); err != nil {
+		t.Fatalf("decode full status: %v\n%s", err, fullOut.String())
+	}
+	if strings.Contains(fullOut.String(), `"schema_version"`) || !strings.Contains(fullOut.String(), `"traceability"`) {
+		t.Fatalf("existing full JSON contract changed: %s", fullOut.String())
+	}
+
+	compactApp, compactOut, compactErr := newGitHubVerifyWithoutPRApp(t, canonicalProcessContentWithClass(model.ProcessExecutionVerification))
+	compactCode := compactApp.runStatus(t.Context(), append(append([]string(nil), args...), "--summary"))
+	if compactErr.Len() != 0 {
+		t.Fatalf("compact status stderr=%q", compactErr.String())
+	}
+	var compact gates.CompactSummary
+	if err := json.Unmarshal(compactOut.Bytes(), &compact); err != nil {
+		t.Fatalf("decode compact status: %v\n%s", err, compactOut.String())
+	}
+	if compactCode != fullCode || compact.OK != full.OK || compact.Gate.Target != full.Gate.Target || compact.Gate.Mode != full.Gate.Mode {
+		t.Fatalf("decision drift: fullCode=%d compactCode=%d full=%+v compact=%+v", fullCode, compactCode, full.Gate, compact.Gate)
+	}
+	if compact.SchemaVersion != 1 || len(compact.Blockers) == 0 || compact.Counts["PROCESS"]["done"] != 1 {
+		t.Fatalf("compact routing data missing: %+v", compact)
+	}
+	for _, blocker := range compact.Blockers {
+		if blocker.Detail.CommandFamily != "status" || containsArgument(blocker.Detail.Arguments, "--summary") ||
+			!containsArgument(blocker.Detail.Arguments, "--json") {
+			t.Fatalf("invalid structured detail action: %+v", blocker.Detail)
+		}
+	}
+	for _, forbidden := range []string{`"traceability"`, `"next_gates"`, `"processes"`, `"evaluation_digest"`} {
+		if strings.Contains(compactOut.String(), forbidden) {
+			t.Fatalf("compact status contains %s: %s", forbidden, compactOut.String())
+		}
+	}
+}
+
+func containsArgument(arguments []string, want string) bool {
+	for _, argument := range arguments {
+		if argument == want {
+			return true
+		}
+	}
+	return false
+}
 
 func TestSelfHostedStatusOnlyForcesProviderSyncForFinal(t *testing.T) {
 	now := time.Now().UTC()

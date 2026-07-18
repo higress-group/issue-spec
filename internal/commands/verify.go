@@ -72,8 +72,13 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 	revision := fs.String("revision", "", "expected external code head revision for self-hosted evidence")
 	durableSpec := fs.String("durable-spec", "", "durable spec file to verify")
 	jsonOut := fs.Bool("json", false, "write JSON output")
+	summaryOut := fs.Bool("summary", false, "write compact versioned JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
+	}
+	if *summaryOut && !*jsonOut {
+		a.errorf("--summary requires --json\n")
+		return 2
 	}
 	prProvided := false
 	fs.Visit(func(current *flag.Flag) {
@@ -213,7 +218,18 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 		}
 	}
 	if *jsonOut {
-		if code := a.outputJSON(report); code != 0 {
+		var output any = report
+		if *summaryOut {
+			var subject *gates.CompactSubject
+			if selfHosted {
+				subject = compactExternalSubject(externalGate)
+			} else {
+				subject = compactPullRequestSubject(*prFlag, prURL, expectedRevision)
+			}
+			output = gates.ProjectCompactSummary(report.Gate, artifactStatusCounts(artifacts), subject,
+				gates.Remediation{CommandFamily: "verify", Arguments: compactDetailArguments(args)})
+		}
+		if code := a.outputJSON(output); code != 0 {
 			return code
 		}
 		if !report.OK {

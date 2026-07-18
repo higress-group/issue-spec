@@ -28,6 +28,95 @@ const (
 	canonicalVerifyContent  = "## Verification Summary: final\n\nTests, review, and traceability confirmed.\n\n### Evidence\n\n- go test ./...\n\n### Covered SPECs\n\n- SPEC-001"
 )
 
+func TestRunVerifySummaryRequiresJSON(t *testing.T) {
+	var errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &errOut)
+	if code := app.runVerify(t.Context(), []string{"--summary"}); code != 2 || !strings.Contains(errOut.String(), "--summary requires --json") {
+		t.Fatalf("verify exit=%d stderr=%q", code, errOut.String())
+	}
+}
+
+func TestRunVerifySummaryIsAdditiveAndExitEquivalent(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		processClass model.ProcessExecutionClass
+		wantCode     int
+	}{
+		{name: "success", processClass: model.ProcessExecutionVerification, wantCode: 0},
+		{name: "blocked", processClass: model.ProcessExecutionExternal, wantCode: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := []string{"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--json"}
+			process := canonicalProcessContentWithClass(test.processClass)
+			fullApp, fullOut, fullErr := newGitHubVerifyWithoutPRApp(t, process)
+			fullCode := fullApp.runVerify(t.Context(), args)
+			if fullErr.Len() != 0 {
+				t.Fatalf("full verify stderr=%q", fullErr.String())
+			}
+			var full finalVerifyReport
+			if err := json.Unmarshal(fullOut.Bytes(), &full); err != nil {
+				t.Fatalf("decode full verify: %v\n%s", err, fullOut.String())
+			}
+			if strings.Contains(fullOut.String(), `"schema_version"`) || !strings.Contains(fullOut.String(), `"traceability"`) {
+				t.Fatalf("existing full JSON contract changed: %s", fullOut.String())
+			}
+
+			compactApp, compactOut, compactErr := newGitHubVerifyWithoutPRApp(t, process)
+			compactCode := compactApp.runVerify(t.Context(), append(append([]string(nil), args...), "--summary"))
+			if compactErr.Len() != 0 {
+				t.Fatalf("compact verify stderr=%q", compactErr.String())
+			}
+			var compact gates.CompactSummary
+			if err := json.Unmarshal(compactOut.Bytes(), &compact); err != nil {
+				t.Fatalf("decode compact verify: %v\n%s", err, compactOut.String())
+			}
+			if fullCode != test.wantCode || compactCode != fullCode || compact.OK != full.OK || compact.OK != full.Gate.Ready ||
+				compact.Gate.Target != full.Gate.Target || compact.Gate.Mode != full.Gate.Mode {
+				t.Fatalf("decision drift: fullCode=%d compactCode=%d full=%+v compact=%+v", fullCode, compactCode, full.Gate, compact.Gate)
+			}
+			if compact.SchemaVersion != 1 || compact.Counts["PROCESS"]["done"] != 1 {
+				t.Fatalf("compact routing data missing: %+v", compact)
+			}
+			if test.wantCode == 0 && len(compact.Blockers) != 0 {
+				t.Fatalf("successful summary contains blockers: %+v", compact.Blockers)
+			}
+			for _, blocker := range compact.Blockers {
+				if blocker.Detail.CommandFamily != "verify" || containsArgument(blocker.Detail.Arguments, "--summary") ||
+					!containsArgument(blocker.Detail.Arguments, "--json") {
+					t.Fatalf("invalid structured detail action: %+v", blocker.Detail)
+				}
+			}
+			for _, forbidden := range []string{`"errors"`, `"traceability"`, `"process_evidence"`, `"external_evidence"`, `"evaluation_digest"`} {
+				if strings.Contains(compactOut.String(), forbidden) {
+					t.Fatalf("compact verify contains %s: %s", forbidden, compactOut.String())
+				}
+			}
+		})
+	}
+}
+
+func TestRunVerifySummaryCarriesExternalSubjectIdentity(t *testing.T) {
+	app, out, _, updates := newSelfHostedVerifyAppAtRevision(t, "head-abc")
+	code := app.runVerify(t.Context(), []string{
+		"--repo", "acme/widgets", "--proposal", "1", "--design", "2", "--implement", "3", "--json", "--summary",
+	})
+	if code != 1 {
+		t.Fatalf("verify exit=%d stdout=%q", code, out.String())
+	}
+	var summary gates.CompactSummary
+	if err := json.Unmarshal(out.Bytes(), &summary); err != nil {
+		t.Fatalf("decode compact verify: %v\n%s", err, out.String())
+	}
+	if summary.Subject == nil || summary.Subject.Revision != "head-abc" || summary.Subject.Evidence == nil ||
+		summary.Subject.Evidence.Kind != "code_change" || summary.Subject.Evidence.Provider != "code.example" ||
+		summary.Subject.Evidence.Repository != "acme/widgets-code" || summary.Subject.Evidence.ID != "change-42" {
+		t.Fatalf("external subject identity = %+v", summary.Subject)
+	}
+	if *updates != 0 {
+		t.Fatalf("blocked summary consumed evidence with %d updates", *updates)
+	}
+}
+
 func TestBuildFinalVerifyReportRequiresDoneTasksAndCoverage(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "ready", canonicalTaskContent)
