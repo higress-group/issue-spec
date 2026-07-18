@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -58,6 +59,27 @@ func TestCompleteRejectsScopeSharedSignoffDirtyAndCommitShape(t *testing.T) {
 				t.Fatalf("failed completion changed lease: %+v err=%v", stored, getErr)
 			}
 		})
+	}
+}
+
+func TestCompleteBareDescendantDiagnosticFailsClosed(t *testing.T) {
+	fixture := newIntegrationFixture(t, []string{"internal"}, nil)
+	result := commitWorkerFile(t, fixture, "internal/child.go", "package internal\n", true)
+	_, err := fixture.manager.Complete(context.Background(), CompleteRequest{
+		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, ResultCommit: result,
+	})
+	if !errors.Is(err, ErrOwnershipViolation) ||
+		!strings.Contains(err.Error(), `descendants of bare declaration "internal"`) ||
+		!strings.Contains(err.Error(), `declare "internal/**"`) ||
+		!strings.Contains(err.Error(), "internal/child.go") {
+		t.Fatalf("Complete descendant diagnostic=%v", err)
+	}
+	stored, found, getErr := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
+	if getErr != nil || !found || stored.Portable.State != StatePrepared || stored.Portable.ResultCommit != "" || stored.Portable.IntegrationSHA != "" {
+		t.Fatalf("failed completion mutated lease: %+v found=%v err=%v", stored.Portable, found, getErr)
+	}
+	if got := gitOutput(t, fixture.repo, "rev-parse", "HEAD"); got != fixture.base {
+		t.Fatalf("failed completion integrated commit: HEAD=%s base=%s", got, fixture.base)
 	}
 }
 
@@ -598,10 +620,23 @@ func commitWorkerFile(t *testing.T, fixture integrationFixture, name, content st
 		t.Fatal(err)
 	}
 	runGit(t, fixture.worktree, "add", "--", name)
-	args := []string{"commit"}
-	if signoff {
-		args = append(args, "-s")
+	if !signoff {
+		tree := gitOutput(t, fixture.worktree, "write-tree")
+		parent := gitOutput(t, fixture.worktree, "rev-parse", "HEAD")
+		command := exec.Command("git", "commit-tree", tree, "-p", parent)
+		command.Dir = fixture.worktree
+		command.Stdin = strings.NewReader("worker change\n")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git commit-tree: %v: %s", err, output)
+		}
+		commit := strings.TrimSpace(string(output))
+		runGit(t, fixture.worktree, "update-ref", "HEAD", commit, parent)
+		runGit(t, fixture.worktree, "reset", "--hard", commit)
+		return commit
 	}
+	args := []string{"commit"}
+	args = append(args, "-s")
 	args = append(args, "-m", "worker change")
 	runGit(t, fixture.worktree, args...)
 	return gitOutput(t, fixture.worktree, "rev-parse", "HEAD")

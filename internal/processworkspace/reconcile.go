@@ -23,6 +23,9 @@ func (m *Manager) reconcileLocked(ctx context.Context, workspaceID string) (Insp
 	if !found {
 		return Inspection{}, fmt.Errorf("%s: %w", workspaceID, ErrLeaseNotFound)
 	}
+	if err := m.validatePreparationRecoveryOwnership(ctx, lease.Portable); err != nil {
+		return Inspection{Lease: lease}, err
+	}
 	switch lease.Portable.State {
 	case StatePreparing:
 		path, err := m.workspacePath(workspaceID)
