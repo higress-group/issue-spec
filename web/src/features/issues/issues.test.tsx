@@ -213,6 +213,41 @@ describe("canonical issue read authority", () => {
     }
   });
 
+  it("shares relative issue time and shows edited time only for comments actually edited", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-07-10T11:08:00Z"));
+    const clockIntervals = vi.spyOn(window, "setInterval");
+    server.use(
+      http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture({ updated_at: "2026-07-10T11:07:00Z" }))),
+      http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json([commentFixture({ updated_at: "2026-07-10T11:04:00Z" })])),
+      http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
+      http.get("http://localhost/repos/acme/workflow/issues/comments/9/reactions", () => HttpResponse.json([])),
+      http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", () => HttpResponse.json({ relationships: [] })),
+    );
+    const { container } = renderIssueDetail(activeRepository(false, ["read"]));
+    expect(await screen.findByRole("heading", { name: /Runner contract/ })).toBeVisible();
+    expect(await screen.findByText("Comment")).toBeVisible();
+    expect(container.querySelector(".detail-state-row")?.textContent).toContain("@alice opened this 1h ago");
+    const commentMetadata = container.querySelector("#issuecomment-9 header small");
+    expect(commentMetadata).toHaveTextContent("commented 8m ago · edited 4m ago");
+    expect(container.querySelectorAll("#issuecomment-9 time")).toHaveLength(2);
+    expect(container.textContent?.match(/edited/g)).toHaveLength(1);
+    expect(clockIntervals.mock.calls.filter(([, delay]) => delay === 1_000)).toHaveLength(1);
+    for (const time of container.querySelectorAll("time")) {
+      expect(time).toHaveAttribute("datetime");
+      expect(time).toHaveAttribute("title", expect.stringMatching(/:\d{2}:\d{2}/));
+      expect(time).toHaveAttribute("aria-label", expect.stringContaining(time.title));
+    }
+  });
+
+  it("renders the issue list opened time as a structured relative time node", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-07-10T10:08:00Z"));
+    installIssueListHandlers();
+    const { container } = renderIssueList(activeRepository(false, ["read"]));
+    expect(await screen.findByRole("heading", { name: "Issues" })).toBeVisible();
+    expect(container.querySelector(".issue-meta")).toHaveTextContent("#41 opened 8m ago by @alice");
+    expect(container.querySelector(".issue-meta time")).toHaveAttribute("datetime", "2026-07-10T10:00:00.000Z");
+  });
+
   it("shows authenticated mutations only when allowed_actions grants them", async () => {
     installIssueDetailHandlers([relationshipFixture("github", "42"), relationshipFixture("aone-bridge", "73", "mismatched", { head_revision: "abc123" })]);
     renderIssueDetail(activeRepository(true, ["read", "contribute", "triage"]));
