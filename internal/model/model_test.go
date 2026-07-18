@@ -22,6 +22,47 @@ func TestRepresentationDigestUsesExactMarkdownBytes(t *testing.T) {
 	}
 }
 
+func TestObserveAcceptedReceiptAuthorityAcrossRoleMarkers(t *testing.T) {
+	payload := `{"receipt_id":"receipt-1","receipt_digest":"` + strings.Repeat("a", 64) +
+		`","assignment_generation":2,"subject_revision":"not-projected","provenance":{"writer":"not-projected"}}`
+	markers := map[assignment.Role][2]string{
+		assignment.RoleImplementation: {"<!-- issue-spec:accepted-implementation-receipt version=1 -->", "<!-- /issue-spec:accepted-implementation-receipt -->"},
+		assignment.RoleReview:         {"<!-- issue-spec:accepted-review-receipt version=1 -->", "<!-- /issue-spec:accepted-review-receipt -->"},
+		assignment.RoleVerification:   {"<!-- issue-spec:accepted-verification-receipt version=1 -->", "<!-- /issue-spec:accepted-verification-receipt -->"},
+	}
+	for role, marker := range markers {
+		t.Run(string(role), func(t *testing.T) {
+			body := "typed carrier\n\n" + marker[0] + "\n" + payload + "\n" + marker[1] + "\n"
+			authority, found, err := ObserveAcceptedReceiptAuthority(body, role)
+			if err != nil || !found || authority.Role != role || authority.ReceiptID != "receipt-1" ||
+				authority.Digest != strings.Repeat("a", 64) || authority.Generation != 2 {
+				t.Fatalf("authority=%+v found=%t err=%v", authority, found, err)
+			}
+		})
+	}
+}
+
+func TestObserveAcceptedReceiptAuthorityFailsClosedOnMissingOrMalformedMarker(t *testing.T) {
+	if authority, found, err := ObserveAcceptedReceiptAuthority("typed PROCESS without receipt", assignment.RoleImplementation); err != nil || found || authority.ReceiptID != "" {
+		t.Fatalf("missing marker authority=%+v found=%t err=%v", authority, found, err)
+	}
+	start := "<!-- issue-spec:accepted-review-receipt version=1 -->"
+	end := "<!-- /issue-spec:accepted-review-receipt -->"
+	valid := `{"receipt_id":"receipt-1","receipt_digest":"` + strings.Repeat("b", 64) + `","assignment_generation":1}`
+	for name, body := range map[string]string{
+		"duplicate field": start + "\n" + strings.TrimSuffix(valid, "}") + `,"receipt_id":"receipt-2"}` + "\n" + end,
+		"noncompact":      start + "\n" + strings.Replace(valid, `,"receipt_digest"`, `, "receipt_digest"`, 1) + "\n" + end,
+		"wrong version":   strings.Replace(start, "version=1", "version=2", 1) + "\n" + valid + "\n" + end,
+		"duplicate pair":  start + "\n" + valid + "\n" + end + "\n" + start + "\n" + valid + "\n" + end,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, found, err := ObserveAcceptedReceiptAuthority(body, assignment.RoleReview); !found || err == nil {
+				t.Fatalf("found=%t err=%v", found, err)
+			}
+		})
+	}
+}
+
 func TestEnsureTypedBodyAddsMarkerAndHeader(t *testing.T) {
 	body, err := EnsureTypedBody("SPEC", "SPEC-001", "## Requirement: X\n\nX MUST work.", BodyOptions{Agent: "Coordinator", Status: "confirmed", Scope: "workflow"})
 	if err != nil {

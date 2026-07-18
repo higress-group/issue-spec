@@ -17,20 +17,36 @@ import (
 func (a *app) runWorkflowReconcile(ctx context.Context, args []string) int {
 	fs := newFlagSet("workflow reconcile", a.err)
 	planPath := fs.String("plan", "", "versioned reconcile plan JSON file, or - for stdin")
+	projectionPath := fs.String("projection", "", "versioned accepted-receipt projection JSON file, or - for stdin")
 	checkpoint := fs.String("checkpoint", "", "durable checkpoint JSON path")
 	host := fs.String("hostname", "", "issue backend hostname override")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
-	if strings.TrimSpace(*planPath) == "" {
-		a.errorf("--plan is required\n")
+	planProvided, projectionProvided := strings.TrimSpace(*planPath) != "", strings.TrimSpace(*projectionPath) != ""
+	if planProvided == projectionProvided {
+		a.errorf("exactly one of --plan or --projection is required\n")
 		return 2
 	}
-	plan, err := readReconcilePlan(*planPath, a.in)
-	if err != nil {
-		a.errorf("read reconcile plan: %v\n", err)
-		return 2
+	var plan reconcile.Plan
+	var err error
+	if projectionProvided {
+		var projection reconcile.ReceiptProjection
+		projection, err = readReceiptProjection(*projectionPath, a.in)
+		if err == nil {
+			plan, err = reconcile.CompileReceiptProjection(projection)
+		}
+		if err != nil {
+			a.errorf("read receipt projection: %v\n", err)
+			return 2
+		}
+	} else {
+		plan, err = readReconcilePlan(*planPath, a.in)
+		if err != nil {
+			a.errorf("read reconcile plan: %v\n", err)
+			return 2
+		}
 	}
 	if _, ok := a.validateRepo(plan.Repo); !ok {
 		return 2
@@ -57,6 +73,15 @@ func (a *app) runWorkflowReconcile(ctx context.Context, args []string) int {
 			a.errorf("resolve plan target: %v\n", err)
 			return 2
 		}
+		if projectionProvided {
+			plan.PlanDigest = ""
+			if _, digest, validateErr := reconcile.Validate(plan); validateErr != nil {
+				a.errorf("validate resolved receipt projection: %v\n", validateErr)
+				return 2
+			} else {
+				plan.PlanDigest = digest
+			}
+		}
 	} else if hasPlanRoles(plan) {
 		a.errorf("plan targets use roles but proposal is absent\n")
 		return 2
@@ -80,6 +105,37 @@ func (a *app) runWorkflowReconcile(ctx context.Context, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func readReceiptProjection(path string, stdin io.Reader) (reconcile.ReceiptProjection, error) {
+	reader, closeReader, err := reconcileInput(path, stdin)
+	if err != nil {
+		return reconcile.ReceiptProjection{}, err
+	}
+	if closeReader != nil {
+		defer closeReader.Close()
+	}
+	decoder := json.NewDecoder(reader)
+	decoder.DisallowUnknownFields()
+	var projection reconcile.ReceiptProjection
+	if err := decoder.Decode(&projection); err != nil {
+		return projection, err
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return projection, fmt.Errorf("projection contains trailing JSON")
+	}
+	return projection, nil
+}
+
+func reconcileInput(path string, stdin io.Reader) (io.Reader, io.Closer, error) {
+	if path == "-" {
+		return stdin, nil, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return file, file, nil
 }
 
 func readReconcilePlan(path string, stdin io.Reader) (reconcile.Plan, error) {

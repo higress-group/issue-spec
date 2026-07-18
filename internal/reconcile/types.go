@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/higress-group/issue-spec/internal/assignment"
+	"github.com/higress-group/issue-spec/internal/model"
 )
 
 const PlanVersion = 1
@@ -49,8 +52,9 @@ type Desired struct {
 }
 
 type Precondition struct {
-	RepresentationVersion int64  `json:"representation_version,omitempty"`
-	BodyDigest            string `json:"body_digest,omitempty"`
+	RepresentationVersion int64                           `json:"representation_version,omitempty"`
+	BodyDigest            string                          `json:"body_digest,omitempty"`
+	AcceptedReceipt       *model.AcceptedReceiptAuthority `json:"accepted_receipt,omitempty"`
 }
 
 type OperationResult struct {
@@ -142,6 +146,18 @@ func Validate(plan Plan) ([]Operation, string, error) {
 		if op.Precondition.RepresentationVersion < 0 || (op.Precondition.RepresentationVersion > 0 && op.Precondition.BodyDigest != "") {
 			return nil, "", fmt.Errorf("operation %s: representation version and body digest preconditions are mutually exclusive", op.ID)
 		}
+		if expected := op.Precondition.AcceptedReceipt; expected != nil {
+			if op.Kind != "transition" {
+				return nil, "", fmt.Errorf("operation %s: accepted receipt precondition requires a transition", op.ID)
+			}
+			if !validReceiptRole(expected.Role) || !projectionReceiptID.MatchString(expected.ReceiptID) ||
+				!projectionDigest.MatchString(expected.Digest) || expected.Generation == 0 {
+				return nil, "", fmt.Errorf("operation %s: accepted receipt precondition is invalid", op.ID)
+			}
+			if carrierTypes[expected.Role] != strings.ToUpper(strings.TrimSpace(op.Target.Type)) {
+				return nil, "", fmt.Errorf("operation %s: accepted %s receipt precondition targets %s", op.ID, expected.Role, op.Target.Type)
+			}
+		}
 		byID[op.ID] = op
 	}
 	indegree := map[string]int{}
@@ -182,6 +198,10 @@ func Validate(plan Plan) ([]Operation, string, error) {
 		return nil, "", fmt.Errorf("operation dependency cycle detected")
 	}
 	return ordered, digest, nil
+}
+
+func validReceiptRole(role assignment.Role) bool {
+	return role == assignment.RoleImplementation || role == assignment.RoleReview || role == assignment.RoleVerification
 }
 
 func validateTarget(target Target) error {

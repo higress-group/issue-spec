@@ -370,6 +370,56 @@ After runner resume or restart, the top-level runner recovers only the ACPX/sess
 
 `workflow workspace cleanup` is always an explicit owner-token-authorized destructive operation. It can remove unintegrated change-bearing work and does not decide or enforce integration/retention eligibility for its caller, so invoke it only after making that decision.
 
+## Accepted receipt projection
+
+`workflow reconcile --projection` compiles already-accepted role receipt references into the existing deterministic transition/link plan and checkpoint engine:
+
+```bash
+issue-spec workflow reconcile \
+  --projection receipt-projection.json \
+  --checkpoint .issue-spec/reconcile/receipt-projection.json \
+  --json
+```
+
+The version-1 projection is deliberately identity-only. It accepts no receipt content, subject revision, provenance, assurance, arbitrary body, or provider mutation:
+
+```json
+{
+  "version": 1,
+  "repo": "owner/repo",
+  "hostname": "github.com",
+  "proposal": 101,
+  "issue": 103,
+  "accepted_receipts": [
+    {
+      "role": "review",
+      "carrier": {"type": "REVIEW", "id": "REVIEW-001"},
+      "receipt_id": "receipt-review-1",
+      "receipt_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "generation": 1,
+      "lifecycle": [
+        {"target": {"type": "REVIEW", "id": "REVIEW-001"}, "status": "done"},
+        {"target": {"type": "PROCESS", "id": "PROCESS-002"}, "status": "done"}
+      ],
+      "coverage_targets": [
+        {"type": "PROCESS", "id": "PROCESS-002"},
+        {"type": "SPEC", "id": "SPEC-001"}
+      ],
+      "current_targets": [
+        {"type": "PROCESS", "id": "PROCESS-002"}
+      ],
+      "evidence_refs": [
+        {"kind": "finding", "url": "https://code.example/reviews/7#finding-1"}
+      ]
+    }
+  ]
+}
+```
+
+Before any write, reconcile observes the carrier's compact immutable accepted-receipt marker and requires its role, receipt id, digest, and assignment generation to match exactly. Review carriers are `REVIEW`, verification carriers are `VERIFY`, and implementation carriers are `PROCESS`. Implementation projection currently fails closed until the PROCESS contains the issue-native accepted-implementation-receipt marker; workspace assignment/result state is not a substitute.
+
+Relationship types are fixed: implementation coverage targets are `TASK`/`SPEC` and current targets are `TASK`; review and verification coverage targets are `PROCESS`/`SPEC` and current targets are `PROCESS`. Lifecycle targets are limited to the role carrier plus its owning `PROCESS` or parent `TASK` as applicable. Stable provider evidence URLs may only be attached to the carrier with the role's existing kind (`rationale`, `finding`, or `check`); reconcile never creates, updates, or strengthens provider evidence. Every relationship compiles to the existing bidirectional typed-comment link operation. Reusing the same compiled plan and checkpoint resumes its existing digest-bound retry path.
+
 ### Canonical validation by default
 
 `comment upsert` validates canonical discipline by default before creating or updating the remote comment:

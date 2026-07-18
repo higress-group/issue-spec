@@ -102,6 +102,9 @@ func (e Engine) preflight(ctx context.Context, plan Plan, ordered []Operation) (
 				state[key] = ""
 			}
 		}
+		if err := checkAcceptedReceiptPrecondition(op.Precondition, state[targetKey(op.Target)]); err != nil {
+			return nil, fmt.Errorf("operation %s: %w", op.ID, err)
+		}
 		switch op.Kind {
 		case "upsert":
 			tc := model.ParseTypedComment(op.Desired.Body)
@@ -194,6 +197,9 @@ func (e Engine) applyTransition(ctx context.Context, plan Plan, op Operation) Op
 	}
 	if !found {
 		return conflictResult(op, "transition target is absent")
+	}
+	if err := checkAcceptedReceiptPrecondition(op.Precondition, item.Body); err != nil {
+		return conflictResult(op, err.Error())
 	}
 	tr, err := applyTransition(item.Body, op)
 	if err != nil {
@@ -368,6 +374,25 @@ func checkPrecondition(p Precondition, item observed) error {
 	}
 	if p.BodyDigest != "" && normalizeDigest(p.BodyDigest) != bodyDigest(item.Body) {
 		return fmt.Errorf("body digest conflict: expected=%s current=%s", normalizeDigest(p.BodyDigest), bodyDigest(item.Body))
+	}
+	return nil
+}
+
+func checkAcceptedReceiptPrecondition(precondition Precondition, body string) error {
+	expected := precondition.AcceptedReceipt
+	if expected == nil {
+		return nil
+	}
+	observed, found, err := model.ObserveAcceptedReceiptAuthority(body, expected.Role)
+	if err != nil {
+		return fmt.Errorf("observe accepted %s receipt authority: %w", expected.Role, err)
+	}
+	if !found {
+		return fmt.Errorf("accepted %s receipt authority is missing from carrier", expected.Role)
+	}
+	if observed.ReceiptID != expected.ReceiptID || observed.Digest != expected.Digest ||
+		observed.Generation != expected.Generation {
+		return fmt.Errorf("accepted %s receipt authority does not match projection", expected.Role)
 	}
 	return nil
 }

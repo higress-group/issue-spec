@@ -1,10 +1,13 @@
 package model
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
 	"strings"
@@ -21,6 +24,8 @@ func RepresentationDigest(body string) string {
 }
 
 var idRe = regexp.MustCompile(`^[A-Z]+-[0-9]{3,}$`)
+var acceptedReceiptIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+var acceptedReceiptDigestRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 var AllowedTypes = map[string]bool{
 	"SPEC":     true,
@@ -39,6 +44,20 @@ var AllowedStatuses = map[string]bool{
 	"ready":       true,
 	"done":        true,
 	"superseded":  true,
+}
+
+// ValidateTypedIdentity validates one issue-native typed artifact identity
+// without parsing or generating a body.
+func ValidateTypedIdentity(commentType, id string) error {
+	commentType = strings.ToUpper(strings.TrimSpace(commentType))
+	id = strings.TrimSpace(id)
+	if !AllowedTypes[commentType] {
+		return fmt.Errorf("unsupported type %s", commentType)
+	}
+	if !idRe.MatchString(id) || !strings.HasPrefix(id, commentType+"-") {
+		return fmt.Errorf("invalid %s id %s", commentType, id)
+	}
+	return nil
 }
 
 type TypedComment struct {
@@ -66,6 +85,125 @@ type BodyOptions struct {
 	Status             string
 	Scope              string
 	Links              map[string][]string
+}
+
+// AcceptedReceiptAuthority is the immutable identity shared by compact
+// accepted-receipt carriers. Receipt content, provenance, assurance, and
+// subject revisions deliberately remain in the role-owned carrier body.
+type AcceptedReceiptAuthority struct {
+	Role       assignment.Role `json:"role"`
+	ReceiptID  string          `json:"receipt_id"`
+	Digest     string          `json:"receipt_digest"`
+	Generation uint64          `json:"generation"`
+}
+
+var acceptedReceiptMarkers = map[assignment.Role]struct{ start, end, token string }{
+	assignment.RoleImplementation: {
+		start: "<!-- issue-spec:accepted-implementation-receipt version=1 -->",
+		end:   "<!-- /issue-spec:accepted-implementation-receipt -->",
+		token: "issue-spec:accepted-implementation-receipt",
+	},
+	assignment.RoleReview: {
+		start: "<!-- issue-spec:accepted-review-receipt version=1 -->",
+		end:   "<!-- /issue-spec:accepted-review-receipt -->",
+		token: "issue-spec:accepted-review-receipt",
+	},
+	assignment.RoleVerification: {
+		start: "<!-- issue-spec:accepted-verification-receipt version=1 -->",
+		end:   "<!-- /issue-spec:accepted-verification-receipt -->",
+		token: "issue-spec:accepted-verification-receipt",
+	},
+}
+
+// ObserveAcceptedReceiptAuthority reads only the common immutable identity
+// fields from one role-specific compact marker. It does not accept a receipt
+// or interpret any role result content. Implementation marker framing is
+// supported now so projections fail closed until its carrier writer exists.
+func ObserveAcceptedReceiptAuthority(body string, role assignment.Role) (AcceptedReceiptAuthority, bool, error) {
+	marker, ok := acceptedReceiptMarkers[role]
+	if !ok {
+		return AcceptedReceiptAuthority{}, false, fmt.Errorf("unsupported accepted receipt role %q", role)
+	}
+	if !strings.Contains(body, marker.token) {
+		return AcceptedReceiptAuthority{}, false, nil
+	}
+	if strings.Count(body, marker.start) != 1 || strings.Count(body, marker.end) != 1 ||
+		strings.Count(body, marker.token) != 2 {
+		return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt must contain exactly one version-1 marker pair")
+	}
+	start, end := strings.Index(body, marker.start), strings.Index(body, marker.end)
+	if end <= start {
+		return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt marker order is invalid")
+	}
+	rawBlock := body[start+len(marker.start) : end]
+	if len(rawBlock) < 3 || rawBlock[0] != '\n' || rawBlock[len(rawBlock)-1] != '\n' {
+		return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt payload framing is invalid")
+	}
+	raw := []byte(rawBlock[1 : len(rawBlock)-1])
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil || !bytes.Equal(compact.Bytes(), raw) {
+		return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt payload is not compact JSON")
+	}
+	fields, err := decodeAcceptedReceiptIdentity(raw)
+	if err != nil {
+		return AcceptedReceiptAuthority{}, true, err
+	}
+	authority := AcceptedReceiptAuthority{Role: role}
+	if err := json.Unmarshal(fields["receipt_id"], &authority.ReceiptID); err != nil {
+		return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt receipt_id is invalid")
+	}
+	if err := json.Unmarshal(fields["receipt_digest"], &authority.Digest); err != nil {
+		return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt receipt_digest is invalid")
+	}
+	// Existing compact carriers call this field assignment_generation. The
+	// projection schema shortens only its own input field to generation.
+	if err := json.Unmarshal(fields["assignment_generation"], &authority.Generation); err != nil {
+		return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt assignment_generation is invalid")
+	}
+	if !acceptedReceiptIDRe.MatchString(authority.ReceiptID) ||
+		!acceptedReceiptDigestRe.MatchString(authority.Digest) || authority.Generation == 0 {
+		return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt immutable identity is invalid")
+	}
+	return authority, true, nil
+}
+
+func decodeAcceptedReceiptIdentity(raw []byte) (map[string]json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return nil, errors.New("accepted receipt payload must be one JSON object")
+	}
+	fields := map[string]json.RawMessage{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, errors.New("accepted receipt payload is invalid")
+		}
+		name, ok := token.(string)
+		if !ok {
+			return nil, errors.New("accepted receipt payload field name is invalid")
+		}
+		if _, duplicate := fields[name]; duplicate {
+			return nil, fmt.Errorf("accepted receipt payload has duplicate field %q", name)
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("accepted receipt payload field %q is invalid", name)
+		}
+		fields[name] = value
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return nil, errors.New("accepted receipt payload is invalid")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return nil, errors.New("accepted receipt payload has trailing JSON")
+	}
+	for _, required := range []string{"receipt_id", "receipt_digest", "assignment_generation"} {
+		if len(fields[required]) == 0 {
+			return nil, fmt.Errorf("accepted receipt payload is missing %s", required)
+		}
+	}
+	return fields, nil
 }
 
 func ParseTypedComment(body string) TypedComment {

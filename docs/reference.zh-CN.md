@@ -353,6 +353,56 @@ runner resume 或 restart 后，top-level runner 只恢复 ACPX/session job。PR
 
 `workflow workspace cleanup` 始终是显式的 owner-token 授权破坏性操作。它可能删除尚未集成的 change-bearing 工作，也不会替调用者判断或强制执行 integration/retention eligibility，因此只能在调用者完成该决策后使用。
 
+## 已接受 receipt 的投影
+
+`workflow reconcile --projection` 会把已经由角色命令接受的 receipt 引用编译成现有的确定性 transition/link plan，并复用原有 checkpoint engine：
+
+```bash
+issue-spec workflow reconcile \
+  --projection receipt-projection.json \
+  --checkpoint .issue-spec/reconcile/receipt-projection.json \
+  --json
+```
+
+版本 1 的 projection 只承载身份，不接受 receipt 内容、subject revision、provenance、assurance、任意正文或 provider mutation：
+
+```json
+{
+  "version": 1,
+  "repo": "owner/repo",
+  "hostname": "github.com",
+  "proposal": 101,
+  "issue": 103,
+  "accepted_receipts": [
+    {
+      "role": "review",
+      "carrier": {"type": "REVIEW", "id": "REVIEW-001"},
+      "receipt_id": "receipt-review-1",
+      "receipt_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "generation": 1,
+      "lifecycle": [
+        {"target": {"type": "REVIEW", "id": "REVIEW-001"}, "status": "done"},
+        {"target": {"type": "PROCESS", "id": "PROCESS-002"}, "status": "done"}
+      ],
+      "coverage_targets": [
+        {"type": "PROCESS", "id": "PROCESS-002"},
+        {"type": "SPEC", "id": "SPEC-001"}
+      ],
+      "current_targets": [
+        {"type": "PROCESS", "id": "PROCESS-002"}
+      ],
+      "evidence_refs": [
+        {"kind": "finding", "url": "https://code.example/reviews/7#finding-1"}
+      ]
+    }
+  ]
+}
+```
+
+任何写入发生前，reconcile 都会观察 carrier 上紧凑且不可变的 accepted-receipt marker，并要求 role、receipt id、digest 与 assignment generation 完全匹配。review carrier 必须是 `REVIEW`，verification carrier 必须是 `VERIFY`，implementation carrier 必须是 `PROCESS`。在 PROCESS 尚未包含 issue-native accepted-implementation-receipt marker 时，implementation projection 会 fail closed；workspace assignment/result 状态不能替代该 marker。
+
+关系类型是固定的：implementation 的 coverage target 为 `TASK`/`SPEC`，current target 为 `TASK`；review 与 verification 的 coverage target 为 `PROCESS`/`SPEC`，current target 为 `PROCESS`。lifecycle target 仅限角色 carrier，以及适用的所属 `PROCESS` 或父 `TASK`。稳定的 provider evidence URL 只能按角色已有 kind（`rationale`、`finding` 或 `check`）附加到 carrier；reconcile 绝不会创建、更新或增强 provider evidence。每个关系都会编译为现有的双向 typed-comment link 操作。复用相同的已编译 plan 与 checkpoint，会沿用现有的 digest 绑定重试路径。
+
 ### 默认的 canonical 校验
 
 `comment upsert` 在创建或更新远端评论之前，默认校验 canonical 纪律：

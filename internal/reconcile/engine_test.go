@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
@@ -237,6 +238,49 @@ func TestReconcilePrewriteDuplicateAndIllegalTransitionDoZeroWrites(t *testing.T
 	}
 }
 
+func TestReconcileAcceptedImplementationReceiptMissingOrMismatchDoesZeroWrites(t *testing.T) {
+	const receiptID = "receipt-implementation-1"
+	digest := strings.Repeat("a", 64)
+	expected := &model.AcceptedReceiptAuthority{Role: assignment.RoleImplementation,
+		ReceiptID: receiptID, Digest: digest, Generation: 1}
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "missing marker", body: typedBody(t, "PROCESS", "PROCESS-001", "in-progress")},
+		{name: "mismatched marker", body: acceptedReceiptBody(t, "PROCESS", "PROCESS-001", "in-progress",
+			assignment.RoleImplementation, receiptID, strings.Repeat("b", 64), 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFake()
+			addComment(f, 1, 1, test.body)
+			plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "accept", Kind: "transition",
+				Target: Target{Issue: 1, Type: "PROCESS", ID: "PROCESS-001"}, Desired: Desired{Status: "done"},
+				Precondition: Precondition{AcceptedReceipt: expected}}}}
+			if _, err := (Engine{Backend: f}).Run(context.Background(), plan, ""); err == nil || f.writes != 0 {
+				t.Fatalf("err=%v writes=%d", err, f.writes)
+			}
+		})
+	}
+}
+
+func TestReconcileAcceptedReviewReceiptMatchesExactCarrierBeforeTransition(t *testing.T) {
+	const receiptID = "receipt-review-1"
+	digest := strings.Repeat("c", 64)
+	f := newFake()
+	addComment(f, 1, 1, acceptedReceiptBody(t, "REVIEW", "REVIEW-001", "in-progress",
+		assignment.RoleReview, receiptID, digest, 2))
+	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "accept", Kind: "transition",
+		Target: Target{Issue: 1, Type: "REVIEW", ID: "REVIEW-001"}, Desired: Desired{Status: "done"},
+		Precondition: Precondition{AcceptedReceipt: &model.AcceptedReceiptAuthority{Role: assignment.RoleReview,
+			ReceiptID: receiptID, Digest: digest, Generation: 2}}}}}
+	result, err := (Engine{Backend: f}).Run(context.Background(), plan, "")
+	if err != nil || !result.OK || result.Updated != 1 || f.writes != 1 ||
+		model.ParseTypedComment(f.comments[1][0].Body).Status != "done" {
+		t.Fatalf("result=%+v writes=%d err=%v", result, f.writes, err)
+	}
+}
+
 func TestReconcileStrictConditionalDefaultAndPlanAcknowledgement(t *testing.T) {
 	f := newFake()
 	addComment(f, 1, 1, typedBody(t, "TASK", "TASK-001", "confirmed"))
@@ -284,4 +328,16 @@ func typedBody(t *testing.T, kind, id, status string) string {
 		t.Fatal(err)
 	}
 	return body
+}
+
+func acceptedReceiptBody(t *testing.T, kind, id, status string, role assignment.Role,
+	receiptID, digest string, generation uint64) string {
+	t.Helper()
+	body := typedBody(t, kind, id, status)
+	name := map[assignment.Role]string{assignment.RoleImplementation: "implementation",
+		assignment.RoleReview: "review", assignment.RoleVerification: "verification"}[role]
+	payload := fmt.Sprintf(`{"receipt_id":%q,"receipt_digest":%q,"assignment_generation":%d}`,
+		receiptID, digest, generation)
+	return strings.TrimRight(body, "\n") + "\n\n<!-- issue-spec:accepted-" + name + "-receipt version=1 -->\n" +
+		payload + "\n<!-- /issue-spec:accepted-" + name + "-receipt -->\n"
 }

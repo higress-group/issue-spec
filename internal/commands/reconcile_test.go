@@ -50,3 +50,36 @@ func TestReadReconcilePlanRejectsUnknownField(t *testing.T) {
 		t.Fatal("expected unknown field error")
 	}
 }
+
+func TestReadReceiptProjectionRejectsReceiptContentAndCompilesIdentityOnly(t *testing.T) {
+	valid := `{"version":1,"repo":"o/r","hostname":"issues.example","proposal":7,"issue":9,"accepted_receipts":[{` +
+		`"role":"review","carrier":{"type":"REVIEW","id":"REVIEW-001"},"receipt_id":"receipt-review-1",` +
+		`"receipt_digest":"` + strings.Repeat("a", 64) + `","generation":1,` +
+		`"lifecycle":[{"target":{"type":"REVIEW","id":"REVIEW-001"},"status":"done"}],` +
+		`"coverage_targets":[{"type":"SPEC","id":"SPEC-001"}],` +
+		`"current_targets":[{"type":"PROCESS","id":"PROCESS-001"}]}]}`
+	projection, err := readReceiptProjection("-", strings.NewReader(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := reconcile.CompileReceiptProjection(projection)
+	if err != nil || len(plan.Operations) != 3 || plan.Operations[0].Precondition.AcceptedReceipt == nil {
+		t.Fatalf("plan=%+v err=%v", plan, err)
+	}
+	for _, forbidden := range []string{"subject_revision", "provenance", "assurance", "content"} {
+		candidate := strings.Replace(valid, `"role":"review"`, `"role":"review","`+forbidden+`":"forged"`, 1)
+		if _, err := readReceiptProjection("-", strings.NewReader(candidate)); err == nil {
+			t.Fatalf("projection accepted forbidden %s", forbidden)
+		}
+	}
+}
+
+func TestWorkflowReconcileRequiresExactlyOneInputKind(t *testing.T) {
+	for _, args := range [][]string{nil, {"--plan", "a.json", "--projection", "b.json"}} {
+		app, _, errOut := transitionAppWithError(nil)
+		if code := app.runWorkflowReconcile(t.Context(), args); code != 2 ||
+			!strings.Contains(errOut.String(), "exactly one of --plan or --projection") {
+			t.Fatalf("args=%v code=%d err=%q", args, code, errOut.String())
+		}
+	}
+}
