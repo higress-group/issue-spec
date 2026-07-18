@@ -521,7 +521,7 @@ func TestWorkflowKeepsPublicationAuthorityBehindCompleteTrustedBuild(t *testing.
 		"cancel-in-progress: false", "go test ./...", "diff -r dist/release dist/release-repeat",
 		"actions/attest-build-provenance@v4", "gh attestation verify", "hack/release/rolling-latest.sh",
 		"repos/$GITHUB_REPOSITORY/releases/latest", `select(.draft == false and (.tag_name | startswith("rolling-")))`,
-		`if [ "$rolling_count" = 0 ]; then`, "gh release create", "--draft",
+		`if [ "$rolling_count" = 0 ]; then`, "gh release create", "--draft", ".target_commitish",
 		"gh release upload", "gh release edit \"$RELEASE_TAG\" --draft=false --latest \\",
 		"gh release edit \"$RELEASE_TAG\" --draft=false --latest=false",
 		`binary="$HOME/.local/bin/issue-spec"`, `"$binary" requirements setup --help`,
@@ -541,13 +541,15 @@ func TestWorkflowKeepsPublicationAuthorityBehindCompleteTrustedBuild(t *testing.
 	verify := strings.LastIndex(body, "verify_remote_assets")
 	decision := strings.LastIndex(body, "rolling_latest_decision")
 	publish := strings.LastIndex(body, "gh release edit")
-	if create < 0 || upload < create || verify < upload || decision < verify || publish < decision {
+	draftTargetGuard := strings.LastIndex(body, `test "$(jq -r .target_commitish <<<"$release_json")" = "$RELEASE_REVISION"`)
+	if create < 0 || draftTargetGuard < create || upload < draftTargetGuard || verify < upload || decision < verify || publish < decision {
 		t.Fatalf("draft/upload/publish order is unsafe: create=%d upload=%d publish=%d", create, upload, publish)
 	}
 	semanticBranch := strings.Index(body, `if [ "$RELEASE_CHANNEL" != rolling ]; then`)
 	semanticPublish := strings.Index(body, `gh release edit "$RELEASE_TAG" --draft=false --latest=false`)
 	rollingPublish := strings.Index(body, `gh release edit "$RELEASE_TAG" --draft=false --latest \`)
-	if semanticBranch < verify || semanticPublish < semanticBranch || decision < semanticPublish || rollingPublish < decision {
+	publishedTagGuard := strings.LastIndex(body, `guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"`)
+	if semanticBranch < verify || semanticPublish < semanticBranch || decision < semanticPublish || rollingPublish < decision || publishedTagGuard < rollingPublish {
 		t.Fatalf("semantic and rolling latest-pointer paths are not separated")
 	}
 }
