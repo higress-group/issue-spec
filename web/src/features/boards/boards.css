@@ -21,7 +21,7 @@
 .board-hero {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 18rem;
+  grid-template-columns: minmax(0, 1fr) 13rem;
   align-items: end;
   min-height: 20rem;
   overflow: hidden;
