@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
@@ -19,6 +20,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
+	"github.com/higress-group/issue-spec/internal/templates"
 )
 
 const (
@@ -27,6 +29,223 @@ const (
 	canonicalReviewProcess  = "## Process: review\n\n### Owner\n\n- Reviewer\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- review\n\n### Write Ownership\n\n- N/A\n\n### Dependencies\n\n- N/A\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\nN/A"
 	canonicalVerifyContent  = "## Verification Summary: final\n\nTests, review, and traceability confirmed.\n\n### Evidence\n\n- go test ./...\n\n### Covered SPECs\n\n- SPEC-001"
 )
+
+func TestVerificationReceiptBindingAndImmutableProjection(t *testing.T) {
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}},
+		[]assignment.CheckSelector{{Provider: "github", Name: "unit"}})
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	if err := validateVerificationReceiptBinding(receipt, binding); err != nil {
+		t.Fatal(err)
+	}
+	checks := []observedVerificationCheck{{Provider: "github", Name: "unit", EvidenceID: "42", State: "success",
+		SubjectRevision: receipt.SubjectRevision, Source: "github-check-run:42"}}
+	projected := acceptedVerificationReceiptFrom(receipt, checks)
+	body, changed, err := stampAcceptedVerificationReceipt("canonical VERIFY\n", projected)
+	if err != nil || !changed {
+		t.Fatalf("changed=%t err=%v", changed, err)
+	}
+	parsed, found, err := parseAcceptedVerificationReceipt(body)
+	if err != nil || !found || parsed.ReceiptDigest != receipt.ReceiptDigest || len(parsed.Tests) != 1 || len(parsed.Checks) != 1 {
+		t.Fatalf("parsed=%+v found=%t err=%v", parsed, found, err)
+	}
+	if retry, changed, err := stampAcceptedVerificationReceipt(body, projected); err != nil || changed || retry != body {
+		t.Fatalf("retry changed=%t err=%v", changed, err)
+	}
+	other := projected
+	other.ReceiptID = "receipt-verification-other"
+	if _, _, err := stampAcceptedVerificationReceipt(body, other); err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("conflicting accepted receipt error=%v", err)
+	}
+}
+
+func TestVerificationReceiptBindingRejectsUntrustedLocalCompletion(t *testing.T) {
+	valid := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./...",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	binding := processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: valid.AssignmentID, Digest: valid.AssignmentDigest, Role: assignment.RoleVerification,
+		SubjectRevision: valid.SubjectRevision, Generation: valid.AssignmentGeneration}
+	tests := map[string]func(*assignment.Receipt, *processworkspace.AssignmentBinding){
+		"generation": func(_ *assignment.Receipt, b *processworkspace.AssignmentBinding) { b.Generation++ },
+		"revision":   func(_ *assignment.Receipt, b *processworkspace.AssignmentBinding) { b.SubjectRevision = "head-old" },
+		"impersonated": func(r *assignment.Receipt, _ *processworkspace.AssignmentBinding) {
+			r.Provenance.Subject = "Another Verifier"
+		},
+		"provider-owned local result": func(r *assignment.Receipt, _ *processworkspace.AssignmentBinding) {
+			r.Tests[0].Assurance = assignment.AssuranceProviderOwned
+		},
+		"failed local result": func(r *assignment.Receipt, _ *processworkspace.AssignmentBinding) {
+			r.Tests[0].Outcome = assignment.TestFailed
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			receipt, candidateBinding := valid, binding
+			receipt.Tests = append([]assignment.TestResult(nil), valid.Tests...)
+			mutate(&receipt, &candidateBinding)
+			if err := validateVerificationReceiptBinding(receipt, &candidateBinding); err == nil {
+				t.Fatal("invalid verification authority was accepted")
+			}
+		})
+	}
+}
+
+func TestObserveGitHubVerificationChecksRequiresStableExactSnapshot(t *testing.T) {
+	receipt := testSealedVerificationReceipt(t, nil,
+		[]assignment.CheckSelector{{Provider: "github", Name: "unit"}})
+	head := receipt.SubjectRevision
+	prReads := 0
+	backend := verifySubmitCommandBackend{fakeGitHubBackend: fakeGitHubBackend{
+		getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
+			prReads++
+			pr := github.PullRequest{Number: 7}
+			pr.Head.SHA = head
+			if prReads == 2 {
+				pr.Head.SHA = strings.Repeat("c", 40)
+			}
+			return pr, nil
+		}}, checkRuns: []github.CheckRun{{ID: 42, Name: "unit", HeadSHA: head, Status: "completed", Conclusion: "success"}}}
+	if _, err := observeGitHubVerificationChecks(t.Context(), backend, "o/r", 7, receipt); err == nil ||
+		!strings.Contains(err.Error(), "changed while observing") {
+		t.Fatalf("unstable snapshot error=%v", err)
+	}
+	prReads = 0
+	backend.fakeGitHubBackend.getPullRequest = func(context.Context, string, int) (github.PullRequest, error) {
+		prReads++
+		pr := github.PullRequest{Number: 7}
+		pr.Head.SHA = head
+		return pr, nil
+	}
+	checks, err := observeGitHubVerificationChecks(t.Context(), backend, "o/r", 7, receipt)
+	if err != nil || len(checks) != 1 || checks[0].SubjectRevision != head || checks[0].Source != "github-check-run:42" {
+		t.Fatalf("checks=%+v err=%v", checks, err)
+	}
+}
+
+func TestObserveNativeVerificationChecksUsesTrustedExactRevision(t *testing.T) {
+	now := time.Now().UTC()
+	external := externalGateResult{Target: coreevidence.NativeTarget{Reference: codereview.Reference{ProviderKey: "code.example"},
+		SubjectRevision: "head-abc"}, Snapshot: codereview.Snapshot{Records: []codereview.EvidenceRecord{
+		{ID: "stale", Kind: codereview.EvidenceCheck, Name: "unit", State: "passed", SubjectRevision: "head-old",
+			Trusted: true, ObservedAt: now.Add(time.Minute)},
+		{ID: "current", Kind: codereview.EvidenceCheck, Name: "unit", State: "passed", SubjectRevision: "head-abc",
+			Trusted: true, ObservedAt: now},
+	}}}
+	checks, err := observeNativeVerificationChecks([]assignment.CheckSelector{{Provider: "code.example", Name: "unit"}}, external)
+	if err != nil || len(checks) != 1 || checks[0].EvidenceID != "current" || checks[0].Source != "native-evidence:current" {
+		t.Fatalf("checks=%+v err=%v", checks, err)
+	}
+	external.Snapshot.Records[1].Trusted = false
+	if _, err := observeNativeVerificationChecks([]assignment.CheckSelector{{Provider: "code.example", Name: "unit"}}, external); err == nil {
+		t.Fatal("untrusted native check was accepted")
+	}
+}
+
+func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T) {
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}},
+		[]assignment.CheckSelector{{Provider: "github", Name: "unit"}})
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	now := time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC)
+	workspace := model.ProcessWorkspace{SchemaVersion: processworkspace.LeaseSchemaVersion,
+		WorkspaceID: "verification-process-101", Repository: "o/r", ProcessID: "PROCESS-101",
+		ExecutionClass: processworkspace.ExecutionVerification, Mode: processworkspace.ModeSnapshot,
+		BaseSHA: receipt.SubjectRevision, DetachedRevision: receipt.SubjectRevision,
+		RuntimeNamespace: "verification-process-101", Assignment: binding, State: processworkspace.StatePrepared,
+		CreatedAt: now, UpdatedAt: now}
+	processBody, err := templates.ProcessComment(templates.ProcessCommentOptions{
+		Common: templates.CommonOptions{ID: "PROCESS-101", Status: "in-progress"}, Input: templates.ProcessInput{
+			Title: "verify exact receipt", Owner: "Verifier", ParentTask: "TASK-006",
+			ExecutionClass: model.ProcessExecutionVerification, WorkspaceManagement: model.ProcessWorkspaceManaged,
+			Workspace: &workspace, Covers: []string{"SPEC-005"}, Handoff: "N/A"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(receipt)
+	resultPath := filepath.Join(t.TempDir(), "verification-receipt.json")
+	if err := os.WriteFile(resultPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	comments := []github.Comment{{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody}}
+	created, updated := 0, 0
+	backend := verifySubmitCommandBackend{checkRuns: []github.CheckRun{{ID: 42, Name: "unit",
+		HeadSHA: receipt.SubjectRevision, Status: "completed", Conclusion: "success"}}}
+	backend.fakeGitHubBackend = fakeGitHubBackend{info: github.BackendInfo{Name: "gh", Kind: "external-cli", Host: "github.com"},
+		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+			return append([]github.Comment(nil), comments...), nil
+		}, getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
+			pr := github.PullRequest{Number: 7}
+			pr.Head.SHA = receipt.SubjectRevision
+			return pr, nil
+		}, createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
+			created++
+			comment := github.Comment{ID: 11, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-11", Body: body}
+			comments = append(comments, comment)
+			return comment, nil
+		}, updateComment: func(_ context.Context, _ string, id int64, body string) (github.Comment, error) {
+			updated++
+			for index := range comments {
+				if comments[index].ID == id {
+					comments[index].Body = body
+					return comments[index], nil
+				}
+			}
+			return github.Comment{}, errors.New("missing comment")
+		}}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
+	args := []string{"submit", "--repo", "o/r", "--implement", "9", "--pr", "7", "--process", "PROCESS-101",
+		"--id", "VERIFY-101", "--result-file", resultPath}
+	for run := 0; run < 2; run++ {
+		out.Reset()
+		errOut.Reset()
+		if code := app.runVerify(t.Context(), args); code != 0 {
+			t.Fatalf("run=%d exit=%d out=%q err=%q", run, code, out.String(), errOut.String())
+		}
+	}
+	if created != 1 || updated != 1 || len(comments) != 2 {
+		t.Fatalf("created=%d updated=%d comments=%d", created, updated, len(comments))
+	}
+	parsed := model.ParseTypedComment(comments[1].Body)
+	authority, found, err := parseAcceptedVerificationReceipt(comments[1].Body)
+	if err != nil || !found || parsed.Agent != "Verifier" || parsed.SubjectRevision != receipt.SubjectRevision ||
+		parsed.Status != "done" || len(authority.Tests) != 1 || len(authority.Checks) != 1 ||
+		!strings.Contains(comments[1].Body, "### Local Tests") || !strings.Contains(comments[1].Body, "### Provider Checks") {
+		t.Fatalf("VERIFY=%+v authority=%+v found=%t err=%v body=%s", parsed, authority, found, err, comments[1].Body)
+	}
+}
+
+type verifySubmitCommandBackend struct {
+	fakeGitHubBackend
+	checkRuns []github.CheckRun
+}
+
+func (b verifySubmitCommandBackend) ListCheckRuns(context.Context, string, string) ([]github.CheckRun, error) {
+	return append([]github.CheckRun(nil), b.checkRuns...), nil
+}
+
+func testSealedVerificationReceipt(t *testing.T, tests []assignment.TestResult,
+	selectors []assignment.CheckSelector) assignment.Receipt {
+	t.Helper()
+	value := assignment.Receipt{SchemaVersion: assignment.ReceiptSchemaVersion, ID: "receipt-verification-1",
+		AssignmentID: "assignment-verification-1", AssignmentDigest: strings.Repeat("a", 64), AssignmentGeneration: 1,
+		Role: assignment.RoleVerification, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		SubjectRevision: strings.Repeat("b", 40), Tests: tests,
+		Provenance: assignment.Provenance{Route: assignment.RouteRoleOwned, Assurance: assignment.AssuranceSelfReported,
+			Writer: "Verifier", Subject: "Verifier", Source: "verify-submit"},
+		Verification: &assignment.VerificationResult{Summary: "Exact revision verified.", CheckSelectors: selectors}}
+	sealed, err := assignment.SealReceipt(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
 
 func TestRunVerifySummaryRequiresJSON(t *testing.T) {
 	var errOut bytes.Buffer

@@ -67,6 +67,48 @@ func TestProcessEvidenceCarrierRevisionTrustAndMixing(t *testing.T) {
 	}
 }
 
+func TestVerificationProcessRequiresExactCurrentTrustedCarrierWhenRevisionKnown(t *testing.T) {
+	const current = "head-current"
+	input := processEvidenceFixture(t, model.ProcessExecutionVerification)
+	input.RequiredRevision = current
+	input.Verifications = []VerificationEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Done: true,
+		TestEvidence: true, SubjectRevision: "head-stale", Trusted: true, Source: "accepted-verification-receipt"}}
+	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !containsString(report.Missing, "exact-current verification evidence") ||
+		!hasDiagnostic(report.Diagnostics, CodeProcessCarrierMissing, true) || report.CarrierRevision.Trusted {
+		t.Fatalf("stale verification receipt satisfied exact current gate: %+v", report)
+	}
+
+	input.Verifications[0].SubjectRevision = current
+	input.Verifications[0].Trusted = false
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !containsString(report.Missing, "exact-current verification evidence") {
+		t.Fatalf("untrusted verification receipt satisfied exact current gate: %+v", report)
+	}
+
+	input.Verifications[0].Trusted = true
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if len(report.Missing) != 0 || !report.CarrierRevision.Known || !report.CarrierRevision.Trusted ||
+		report.CarrierRevision.Revision != current {
+		t.Fatalf("trusted exact-current verification receipt did not satisfy gate: %+v", report)
+	}
+}
+
+func TestVerificationProcessExactCurrentCheckDoesNotMixWithStaleEvidence(t *testing.T) {
+	const current = "head-current"
+	input := processEvidenceFixture(t, model.ProcessExecutionVerification)
+	input.RequiredRevision = current
+	input.Verifications = []VerificationEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Done: true,
+		TestEvidence: true, SubjectRevision: "head-stale", Trusted: true, Source: "typed-verify"}}
+	input.Checks = []CheckEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Name: "unit", Required: true,
+		Passed: true, TestEvidence: true, SubjectRevision: current, Trusted: true, Source: "github-check-run:42"}}
+	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if len(report.Missing) != 0 || !report.CarrierRevision.Trusted || report.CarrierRevision.Revision != current ||
+		report.CarrierRevision.Source != "github-check-run:42" {
+		t.Fatalf("stale semantic evidence tainted exact provider check: %+v", report)
+	}
+}
+
 func TestProcessEvidenceLegacyTypedCarrierHasUnknownRevision(t *testing.T) {
 	input := processEvidenceFixture(t, model.ProcessExecutionReview)
 	input.Reviews = []ReviewEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Done: true, Source: "typed-review"}}

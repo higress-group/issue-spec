@@ -320,3 +320,26 @@ func TestReviewCommentDoesNotUseReviewSyncSummaryShape(t *testing.T) {
 		t.Fatalf("review body has parse errors: %v", tc.Errors)
 	}
 }
+
+func TestVerifyCommentRendersStructuredRevisionBoundEvidenceAdditively(t *testing.T) {
+	body, err := VerifyComment(VerifyCommentOptions{Common: CommonOptions{ID: "VERIFY-101", Agent: "Verifier",
+		SubjectRevision: "head-abc", Status: "done", Scope: "role-owned verification submission"}, Input: VerifyInput{
+		Title: "role-owned receipt", Summary: "Exact revision verified.", SubjectRevision: "head-abc",
+		Evidence: []string{"Test unit: passed"}, Tests: []VerifyTestEvidence{{ID: "unit",
+			Command: "go test ./internal/gates", Outcome: "passed", Assurance: "self-reported"}},
+		Checks: []VerifyCheckEvidence{{Provider: "github", Name: "unit", State: "success",
+			SubjectRevision: "head-abc", Source: "github-check-run:42"}}, SpecRefs: []string{"SPEC-005"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Subject Revision: head-abc", "### Revision\n\n`head-abc`", "### Local Tests",
+		"go test ./internal/gates", "self-reported", "### Provider Checks", "github-check-run:42", "SPEC-005"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q in:\n%s", want, body)
+		}
+	}
+	parsed := model.ParseTypedComment(body)
+	if len(parsed.Errors) != 0 || parsed.SubjectRevision != "head-abc" || parsed.Status != "done" {
+		t.Fatalf("parsed VERIFY=%+v", parsed)
+	}
+}
