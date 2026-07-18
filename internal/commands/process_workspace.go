@@ -102,7 +102,8 @@ func validateIntegrationConvergence(remote processworkspace.PortableLease, local
 		return fmt.Errorf("immutable reservation or result commit differs")
 	}
 	if remote.AcceptedReceiptID != portable.AcceptedReceiptID || remote.AcceptedReceiptDigest != portable.AcceptedReceiptDigest ||
-		remote.AcceptedReceiptGeneration != portable.AcceptedReceiptGeneration {
+		remote.AcceptedReceiptGeneration != portable.AcceptedReceiptGeneration ||
+		!sameAcceptedReceiptSubmission(remote.AcceptedReceiptSubmission, portable.AcceptedReceiptSubmission) {
 		return fmt.Errorf("accepted receipt authority differs")
 	}
 	attemptStarted := func() bool {

@@ -116,6 +116,9 @@ func TestProcessWorkspaceRendersOnlyCompactAcceptedImplementationReceiptAuthorit
 	workspace.AcceptedReceiptID = "receipt:implementation:024"
 	workspace.AcceptedReceiptDigest = strings.Repeat("c", 64)
 	workspace.AcceptedReceiptGeneration = 3
+	workspace.AcceptedReceiptSubmission = &processworkspace.RoleOwnedSubmissionEvidence{Agent: "Worker Agent",
+		AgentSessionID: "worker-session", AgentSessionSource: processworkspace.AgentSessionSourceRuntimeNative,
+		Assurance: assignment.AssuranceSelfReported}
 	workspace.UpdatedAt = workspace.UpdatedAt.Add(time.Minute)
 	body := processBodyWithWorkspace("PROCESS-024", ProcessExecutionChangeBearing, workspace)
 	wantMarker := acceptedImplementationReceiptStart + "\n" +
@@ -124,7 +127,7 @@ func TestProcessWorkspaceRendersOnlyCompactAcceptedImplementationReceiptAuthorit
 	if strings.Count(body, wantMarker) != 1 {
 		t.Fatalf("accepted receipt marker is not strict and singular:\n%s", body)
 	}
-	for _, forbidden := range []string{`"provenance"`, `"assurance"`, `"tests"`, `"changed_paths"`, `"rationale_draft"`, `"content"`} {
+	for _, forbidden := range []string{`"provenance"`, `"tests"`, `"changed_paths"`, `"rationale_draft"`, `"content"`} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("portable receipt authority leaked %q:\n%s", forbidden, body)
 		}
@@ -135,7 +138,9 @@ func TestProcessWorkspaceRendersOnlyCompactAcceptedImplementationReceiptAuthorit
 		t.Fatalf("authority=%+v found=%v err=%v", authority, found, err)
 	}
 	parsed := ParseProcessWorkspace("PROCESS-024", "", body)
-	if parsed.Blocking() || parsed.Workspace == nil || parsed.Workspace.AcceptedReceiptDigest != workspace.AcceptedReceiptDigest {
+	if parsed.Blocking() || parsed.Workspace == nil || parsed.Workspace.AcceptedReceiptDigest != workspace.AcceptedReceiptDigest ||
+		parsed.Workspace.AcceptedReceiptSubmission == nil ||
+		*parsed.Workspace.AcceptedReceiptSubmission != *workspace.AcceptedReceiptSubmission {
 		t.Fatalf("accepted receipt round trip=%+v", parsed)
 	}
 
@@ -145,12 +150,20 @@ func TestProcessWorkspaceRendersOnlyCompactAcceptedImplementationReceiptAuthorit
 	}
 	legacy := workspace
 	legacy.AcceptedReceiptID, legacy.AcceptedReceiptDigest, legacy.AcceptedReceiptGeneration = "", "", 0
+	legacy.AcceptedReceiptSubmission = nil
 	legacyBody := processBodyWithWorkspace("PROCESS-024", ProcessExecutionChangeBearing, legacy)
 	if strings.Contains(legacyBody, "accepted-implementation-receipt") {
 		t.Fatalf("legacy result-commit acquired receipt marker:\n%s", legacyBody)
 	}
 	if result := ParseProcessWorkspace("PROCESS-024", "", legacyBody); result.Blocking() || result.Workspace == nil {
 		t.Fatalf("legacy result-commit did not remain compatible: %+v", result)
+	}
+	coordinator := workspace
+	coordinator.AcceptedReceiptSubmission = &processworkspace.RoleOwnedSubmissionEvidence{Agent: "Coordinator",
+		AgentSessionID: "coordinator-session", AgentSessionSource: processworkspace.AgentSessionSourceRuntimeNative,
+		Assurance: assignment.AssuranceSelfReported}
+	if _, err := RenderProcessWorkspaceSection(coordinator); err == nil || !strings.Contains(err.Error(), "non-Coordinator") {
+		t.Fatalf("Coordinator submission rendered: %v", err)
 	}
 }
 

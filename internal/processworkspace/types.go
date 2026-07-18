@@ -73,38 +73,121 @@ type AssignmentBinding struct {
 // an implementation receipt has been validated. The full receipt is
 // intentionally absent: only its immutable identity is projected to PROCESS.
 type AcceptedReceiptBinding struct {
-	ReceiptID            string `json:"receipt_id"`
-	ReceiptDigest        string `json:"receipt_digest"`
-	AssignmentGeneration uint64 `json:"assignment_generation"`
+	ReceiptID            string                       `json:"receipt_id"`
+	ReceiptDigest        string                       `json:"receipt_digest"`
+	AssignmentGeneration uint64                       `json:"assignment_generation"`
+	Submission           *RoleOwnedSubmissionEvidence `json:"submission,omitempty"`
+}
+
+const (
+	AgentSessionSourceRuntimeNative = "CODEX_THREAD_ID"
+	AgentSessionSourceParameter     = "agent-session-parameter"
+	AgentSessionSourceCompatibility = "role-owned-compatibility"
+)
+
+// RoleOwnedSubmissionEvidence binds a receipt to the command invocation that
+// submitted it. Receipt writer/subject labels remain self-reported content;
+// they are not a substitute for this independently captured session evidence.
+type RoleOwnedSubmissionEvidence struct {
+	Agent              string               `json:"agent"`
+	AgentSessionID     string               `json:"agent_session_id,omitempty"`
+	AgentSessionSource string               `json:"agent_session_source"`
+	Assurance          assignment.Assurance `json:"assurance"`
+}
+
+func (e RoleOwnedSubmissionEvidence) Validate() error {
+	agent := strings.TrimSpace(e.Agent)
+	if agent == "" || agent != e.Agent || strings.EqualFold(agent, "Coordinator") {
+		return errors.New("role-owned submission requires one trimmed non-Coordinator agent")
+	}
+	if e.Assurance != assignment.AssuranceSelfReported {
+		return errors.New("role-owned submission evidence must remain self-reported")
+	}
+	sessionID := strings.TrimSpace(e.AgentSessionID)
+	if sessionID != e.AgentSessionID {
+		return errors.New("role-owned submission session id must be trimmed")
+	}
+	switch e.AgentSessionSource {
+	case AgentSessionSourceRuntimeNative, AgentSessionSourceParameter:
+		if sessionID == "" {
+			return errors.New("role-owned submission session source requires a session id")
+		}
+	case AgentSessionSourceCompatibility:
+		if sessionID != "" {
+			return errors.New("no-runtime role-owned compatibility cannot claim a session id")
+		}
+	default:
+		return fmt.Errorf("unsupported role-owned submission session source %q", e.AgentSessionSource)
+	}
+	return nil
+}
+
+// ValidateRoleOwnedReceiptSubmission ensures accepted v1 receipt content stays
+// explicitly low-assurance and is bound to a real command invocation. A native
+// caller may not reuse the PROCESS Coordinator session, even when free-form
+// receipt labels claim a different role.
+func ValidateRoleOwnedReceiptSubmission(receipt assignment.Receipt, submission RoleOwnedSubmissionEvidence,
+	coordinatorSessionID string) error {
+	if err := submission.Validate(); err != nil {
+		return err
+	}
+	writer := strings.TrimSpace(receipt.Provenance.Writer)
+	subject := strings.TrimSpace(receipt.Provenance.Subject)
+	if writer == "" || subject == "" || !strings.EqualFold(writer, subject) ||
+		!strings.EqualFold(writer, submission.Agent) {
+		return errors.New("receipt writer and subject must match the role-owned submitting agent")
+	}
+	if strings.EqualFold(writer, "Coordinator") {
+		return errors.New("receipt submission must be owned by a non-Coordinator role agent")
+	}
+	if receipt.Provenance.Route != assignment.RouteRoleOwned ||
+		receipt.Provenance.Assurance != assignment.AssuranceSelfReported {
+		return errors.New("version-1 role-owned receipt submission must remain self-reported")
+	}
+	for _, test := range receipt.Tests {
+		if test.Assurance != assignment.AssuranceSelfReported {
+			return fmt.Errorf("receipt test %s must remain self-reported", test.ID)
+		}
+	}
+	coordinatorSessionID = strings.TrimSpace(coordinatorSessionID)
+	if submission.AgentSessionSource == AgentSessionSourceRuntimeNative && coordinatorSessionID == "" {
+		return errors.New("runtime-native receipt submission requires Coordinator session evidence")
+	}
+	if coordinatorSessionID != "" && submission.AgentSessionID != "" &&
+		strings.EqualFold(coordinatorSessionID, submission.AgentSessionID) {
+		return errors.New("role-owned receipt submission cannot use the Coordinator session")
+	}
+	return nil
 }
 
 // PortableLease is safe to project into PROCESS metadata. It deliberately has
 // no absolute local path, PID, hostname, or lock token.
 type PortableLease struct {
-	SchemaVersion             int                `json:"schema_version"`
-	WorkspaceID               string             `json:"workspace_id"`
-	Repository                string             `json:"repository"`
-	ProcessID                 string             `json:"process_id"`
-	ExecutionClass            ExecutionClass     `json:"execution_class"`
-	Mode                      WorkspaceMode      `json:"mode"`
-	BaseSHA                   string             `json:"base_sha,omitempty"`
-	Branch                    string             `json:"branch,omitempty"`
-	DetachedRevision          string             `json:"detached_revision,omitempty"`
-	WriteOwnership            []string           `json:"write_ownership,omitempty"`
-	SharedTouchpoints         []string           `json:"shared_touchpoints,omitempty"`
-	IntegrationOwner          string             `json:"integration_owner,omitempty"`
-	RuntimeNamespace          string             `json:"runtime_namespace,omitempty"`
-	RuntimeResources          []RuntimeResource  `json:"runtime_resources,omitempty"`
-	Assignment                *AssignmentBinding `json:"assignment,omitempty"`
-	AcceptedReceiptID         string             `json:"accepted_receipt_id,omitempty"`
-	AcceptedReceiptDigest     string             `json:"accepted_receipt_digest,omitempty"`
-	AcceptedReceiptGeneration uint64             `json:"accepted_receipt_generation,omitempty"`
-	State                     LifecycleState     `json:"state"`
-	ResultCommit              string             `json:"result_commit,omitempty"`
-	IntegrationSHA            string             `json:"integration_sha,omitempty"`
-	CreatedAt                 time.Time          `json:"created_at"`
-	UpdatedAt                 time.Time          `json:"updated_at"`
-	RetentionExpiresAt        time.Time          `json:"retention_expires_at,omitempty"`
+	SchemaVersion             int                          `json:"schema_version"`
+	WorkspaceID               string                       `json:"workspace_id"`
+	Repository                string                       `json:"repository"`
+	ProcessID                 string                       `json:"process_id"`
+	ExecutionClass            ExecutionClass               `json:"execution_class"`
+	Mode                      WorkspaceMode                `json:"mode"`
+	BaseSHA                   string                       `json:"base_sha,omitempty"`
+	Branch                    string                       `json:"branch,omitempty"`
+	DetachedRevision          string                       `json:"detached_revision,omitempty"`
+	WriteOwnership            []string                     `json:"write_ownership,omitempty"`
+	SharedTouchpoints         []string                     `json:"shared_touchpoints,omitempty"`
+	IntegrationOwner          string                       `json:"integration_owner,omitempty"`
+	RuntimeNamespace          string                       `json:"runtime_namespace,omitempty"`
+	RuntimeResources          []RuntimeResource            `json:"runtime_resources,omitempty"`
+	Assignment                *AssignmentBinding           `json:"assignment,omitempty"`
+	AcceptedReceiptID         string                       `json:"accepted_receipt_id,omitempty"`
+	AcceptedReceiptDigest     string                       `json:"accepted_receipt_digest,omitempty"`
+	AcceptedReceiptGeneration uint64                       `json:"accepted_receipt_generation,omitempty"`
+	AcceptedReceiptSubmission *RoleOwnedSubmissionEvidence `json:"accepted_receipt_submission,omitempty"`
+	State                     LifecycleState               `json:"state"`
+	ResultCommit              string                       `json:"result_commit,omitempty"`
+	IntegrationSHA            string                       `json:"integration_sha,omitempty"`
+	CreatedAt                 time.Time                    `json:"created_at"`
+	UpdatedAt                 time.Time                    `json:"updated_at"`
+	RetentionExpiresAt        time.Time                    `json:"retention_expires_at,omitempty"`
 }
 
 // MarshalJSON keeps the ownership marker's historical identity stable. The
@@ -118,6 +201,7 @@ func (l PortableLease) MarshalJSON() ([]byte, error) {
 		projection.AcceptedReceiptID = ""
 		projection.AcceptedReceiptDigest = ""
 		projection.AcceptedReceiptGeneration = 0
+		projection.AcceptedReceiptSubmission = nil
 	}
 	return json.Marshal(projection)
 }
@@ -380,6 +464,9 @@ func validateAssignmentBinding(lease PortableLease) error {
 
 func validateAcceptedReceiptBinding(lease PortableLease) error {
 	if lease.AcceptedReceiptID == "" && lease.AcceptedReceiptDigest == "" && lease.AcceptedReceiptGeneration == 0 {
+		if lease.AcceptedReceiptSubmission != nil {
+			return errors.New("accepted receipt submission evidence requires accepted receipt authority")
+		}
 		return nil
 	}
 	if !acceptedReceiptID.MatchString(lease.AcceptedReceiptID) {
@@ -397,6 +484,14 @@ func validateAcceptedReceiptBinding(lease PortableLease) error {
 	}
 	if lease.ResultCommit == "" {
 		return errors.New("accepted receipt requires result commit evidence")
+	}
+	// A nil submission remains readable for already-persisted legacy receipt
+	// authority. Every newly accepted receipt records non-nil evidence, and the
+	// append-only binding prevents a later assurance upgrade.
+	if lease.AcceptedReceiptSubmission != nil {
+		if err := lease.AcceptedReceiptSubmission.Validate(); err != nil {
+			return fmt.Errorf("accepted receipt submission: %w", err)
+		}
 	}
 	return nil
 }

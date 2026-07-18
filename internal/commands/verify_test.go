@@ -38,12 +38,13 @@ func TestVerificationReceiptBindingAndImmutableProjection(t *testing.T) {
 	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
 		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
 		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
-	if err := validateVerificationReceiptBinding(receipt, sealed, binding); err != nil {
+	submission := testVerificationSubmission("Verifier")
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, submission, ""); err != nil {
 		t.Fatal(err)
 	}
 	checks := []observedVerificationCheck{{Provider: "github", Name: "unit", EvidenceID: "42", State: "success",
 		SubjectRevision: receipt.SubjectRevision, Source: "github-check-run:42"}}
-	projected := acceptedVerificationReceiptFrom(receipt, checks)
+	projected := acceptedVerificationReceiptFrom(receipt, checks, submission)
 	body, changed, err := stampAcceptedVerificationReceipt("canonical VERIFY\n", projected)
 	if err != nil || !changed {
 		t.Fatalf("changed=%t err=%v", changed, err)
@@ -87,7 +88,8 @@ func TestVerificationReceiptBindingRejectsUntrustedLocalCompletion(t *testing.T)
 			receipt, candidateBinding := valid, binding
 			receipt.Tests = append([]assignment.TestResult(nil), valid.Tests...)
 			mutate(&receipt, &candidateBinding)
-			if err := validateVerificationReceiptBinding(receipt, sealed, &candidateBinding); err == nil {
+			if err := validateVerificationReceiptBinding(receipt, sealed, &candidateBinding,
+				testVerificationSubmission("Verifier"), ""); err == nil {
 				t.Fatal("invalid verification authority was accepted")
 			}
 		})
@@ -99,9 +101,34 @@ func TestVerificationReceiptBindingRejectsUntrustedLocalCompletion(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := validateVerificationReceiptBinding(coordinator, sealed, &binding); err == nil ||
+	if err := validateVerificationReceiptBinding(coordinator, sealed, &binding,
+		testVerificationSubmission("Coordinator"), ""); err == nil ||
 		!strings.Contains(err.Error(), "non-Coordinator") {
 		t.Fatalf("coordinator verifier error=%v", err)
+	}
+}
+
+func TestVerificationReceiptBindingUsesRuntimeSessionAndExplicitCompatibilityEvidence(t *testing.T) {
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./...",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	sealed := testVerificationAssignment(t, receipt.SubjectRevision, receipt.Tests, nil)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	native := processworkspace.RoleOwnedSubmissionEvidence{Agent: "Verifier", AgentSessionID: "verifier-session",
+		AgentSessionSource: processworkspace.AgentSessionSourceRuntimeNative, Assurance: assignment.AssuranceSelfReported}
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, native, "coordinator-session"); err != nil {
+		t.Fatalf("valid runtime verifier rejected: %v", err)
+	}
+	forged := native
+	forged.AgentSessionID = "coordinator-session"
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, forged, "coordinator-session"); err == nil ||
+		!strings.Contains(err.Error(), "Coordinator session") {
+		t.Fatalf("forged verifier label under Coordinator session error=%v", err)
+	}
+	compatibility := testVerificationSubmission("Verifier")
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, compatibility, ""); err != nil {
+		t.Fatalf("explicit no-runtime compatibility rejected: %v", err)
 	}
 }
 
@@ -134,7 +161,8 @@ func TestVerificationReceiptRequiresExactAssignedTestsAndChecks(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := validateVerificationReceiptBinding(candidate, sealed, binding); err == nil ||
+			if err := validateVerificationReceiptBinding(candidate, sealed, binding,
+				testVerificationSubmission("Verifier"), ""); err == nil ||
 				!strings.Contains(err.Error(), "assigned") {
 				t.Fatalf("coverage substitution error=%v", err)
 			}
@@ -146,7 +174,7 @@ func TestPublishAcceptedVerificationIsAppendOnlyUnderConcurrentReceipt(t *testin
 	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
 		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
 	body, err := renderSubmittedVerification("VERIFY-101", "https://github.com/o/r/issues/9#issuecomment-10",
-		[]string{"SPEC-005"}, receipt, nil)
+		[]string{"SPEC-005"}, receipt, nil, testVerificationSubmission("Verifier"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +186,7 @@ func TestPublishAcceptedVerificationIsAppendOnlyUnderConcurrentReceipt(t *testin
 		t.Fatal(err)
 	}
 	otherBody, err := renderSubmittedVerification("VERIFY-102", "https://github.com/o/r/issues/9#issuecomment-10",
-		[]string{"SPEC-005"}, other, nil)
+		[]string{"SPEC-005"}, other, nil, testVerificationSubmission("Verifier"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,6 +273,7 @@ func TestObserveNativeVerificationChecksUsesTrustedExactRevision(t *testing.T) {
 }
 
 func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T) {
+	t.Setenv(codexThreadIDEnv, "")
 	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
 		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}},
 		[]assignment.CheckSelector{{Provider: "github", Name: "unit"}})
@@ -308,7 +337,7 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 	app.selectGitHubBackend = ghSelection
 	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
 	args := []string{"submit", "--repo", "o/r", "--implement", "9", "--pr", "7", "--process", "PROCESS-101",
-		"--id", "VERIFY-101", "--result-file", resultPath, "--assignment-file", assignmentPath}
+		"--id", "VERIFY-101", "--result-file", resultPath, "--assignment-file", assignmentPath, "--agent", "Verifier"}
 	for run := 0; run < 2; run++ {
 		out.Reset()
 		errOut.Reset()
@@ -323,6 +352,7 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 	authority, found, err := parseAcceptedVerificationReceipt(comments[1].Body)
 	if err != nil || !found || parsed.Agent != "Verifier" || parsed.SubjectRevision != receipt.SubjectRevision ||
 		parsed.Status != "done" || len(authority.Tests) != 1 || len(authority.Checks) != 1 ||
+		authority.Submission == nil || authority.Submission.AgentSessionSource != processworkspace.AgentSessionSourceCompatibility ||
 		!strings.Contains(comments[1].Body, "### Local Tests") || !strings.Contains(comments[1].Body, "### Provider Checks") {
 		t.Fatalf("VERIFY=%+v authority=%+v found=%t err=%v body=%s", parsed, authority, found, err, comments[1].Body)
 	}
@@ -347,6 +377,10 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 			Title: "verify exact local receipt", Owner: "Verifier", ParentTask: "TASK-006",
 			ExecutionClass: model.ProcessExecutionVerification, WorkspaceManagement: model.ProcessWorkspaceManaged,
 			Workspace: &workspace, Covers: []string{"SPEC-005"}, Handoff: "N/A"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	processBody, err = model.StampTypedSessionMetadata(processBody, "coordinator-session", codexThreadIDEnv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +430,7 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 	app.selectGitHubBackend = ghSelection
 	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
 	coordinatorArgs := []string{"submit", "--repo", "o/r", "--implement", "9", "--pr", "7", "--process", "PROCESS-101",
-		"--id", "VERIFY-COORDINATOR", "--result-file", coordinatorPath, "--assignment-file", assignmentPath}
+		"--id", "VERIFY-COORDINATOR", "--result-file", coordinatorPath, "--assignment-file", assignmentPath, "--agent", "Coordinator"}
 	if code := app.runVerify(t.Context(), coordinatorArgs); code != 1 || providerReads != 0 || creates != 0 ||
 		len(comments) != 1 || !strings.Contains(errOut.String(), "non-Coordinator") {
 		t.Fatalf("coordinator exit=%d providerReads=%d creates=%d comments=%d err=%q",
@@ -405,7 +439,16 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 	out.Reset()
 	errOut.Reset()
 	args := []string{"submit", "--repo", "o/r", "--implement", "9", "--pr", "7", "--process", "PROCESS-101",
-		"--id", "VERIFY-101", "--result-file", resultPath, "--assignment-file", assignmentPath}
+		"--id", "VERIFY-101", "--result-file", resultPath, "--assignment-file", assignmentPath, "--agent", "Verifier"}
+	t.Setenv(codexThreadIDEnv, "coordinator-session")
+	if code := app.runVerify(t.Context(), args); code != 1 || providerReads != 0 || creates != 0 || len(comments) != 1 ||
+		!strings.Contains(errOut.String(), "Coordinator session") {
+		t.Fatalf("forged worker label exit=%d providerReads=%d creates=%d comments=%d err=%q",
+			code, providerReads, creates, len(comments), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	t.Setenv(codexThreadIDEnv, "verifier-session")
 	if code := app.runVerify(t.Context(), args); code != 0 || len(comments) != 2 || providerReads != 2 || creates != 1 {
 		t.Fatalf("submit exit=%d comments=%d providerReads=%d creates=%d out=%q err=%q",
 			code, len(comments), providerReads, creates, out.String(), errOut.String())
@@ -426,6 +469,12 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 	finalProcess.Comment = model.ParseTypedComment(linkedProcess)
 	verify := model.Artifact{Issue: 9, CommentID: comments[1].ID, URL: comments[1].HTMLURL,
 		Comment: model.ParseTypedComment(comments[1].Body)}
+	authority, found, err := parseAcceptedVerificationReceipt(comments[1].Body)
+	if err != nil || !found || authority.Submission == nil || authority.Submission.Agent != "Verifier" ||
+		authority.Submission.AgentSessionID != "verifier-session" ||
+		authority.Submission.AgentSessionSource != codexThreadIDEnv || verify.Comment.AgentSessionID != "verifier-session" {
+		t.Fatalf("persisted verification submission=%+v found=%t err=%v typed=%+v", authority.Submission, found, err, verify.Comment)
+	}
 	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, finalProcess, verify}, spec.URL,
 		finalVerifyOptions{PR: 7, PRURL: "https://github.com/o/r/pull/7", ExpectedRevision: receipt.SubjectRevision, RationaleRequired: true})
 	if err != nil {
@@ -454,7 +503,8 @@ func TestBuildFinalVerifyReportConsumesExactAcceptedLocalTestReceipt(t *testing.
 	process.Comment = model.ParseTypedComment(processBody)
 	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
 		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
-	verifyBody, err := renderSubmittedVerification("VERIFY-001", process.URL, []string{"SPEC-001"}, receipt, nil)
+	verifyBody, err := renderSubmittedVerification("VERIFY-001", process.URL, []string{"SPEC-001"}, receipt, nil,
+		testVerificationSubmission("Verifier"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,6 +529,12 @@ func TestBuildFinalVerifyReportConsumesExactAcceptedLocalTestReceipt(t *testing.
 type verifySubmitCommandBackend struct {
 	fakeGitHubBackend
 	checkRuns []github.CheckRun
+}
+
+func testVerificationSubmission(agent string) processworkspace.RoleOwnedSubmissionEvidence {
+	return processworkspace.RoleOwnedSubmissionEvidence{Agent: agent,
+		AgentSessionSource: processworkspace.AgentSessionSourceCompatibility,
+		Assurance:          assignment.AssuranceSelfReported}
 }
 
 func (b verifySubmitCommandBackend) ListCheckRuns(context.Context, string, string) ([]github.CheckRun, error) {

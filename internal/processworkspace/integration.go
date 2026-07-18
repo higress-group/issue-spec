@@ -21,10 +21,12 @@ var (
 )
 
 type CompleteRequest struct {
-	WorkspaceID  string
-	OwnerToken   string
-	ResultCommit string
-	Receipt      *assignment.Receipt
+	WorkspaceID          string
+	OwnerToken           string
+	ResultCommit         string
+	Receipt              *assignment.Receipt
+	Submission           RoleOwnedSubmissionEvidence
+	CoordinatorSessionID string
 }
 
 type IntegrateRequest struct {
@@ -87,7 +89,8 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 			return Inspection{Lease: lease}, fmt.Errorf("%w: receipt result revision differs from requested result commit", ErrInvalidWorkerResult)
 		}
 		resultCommit = strings.TrimSpace(request.Receipt.ResultRevision)
-		if err := validateImplementationReceiptBinding(lease, *request.Receipt, resultCommit); err != nil {
+		if err := validateImplementationReceiptBinding(lease, *request.Receipt, resultCommit, request.Submission,
+			request.CoordinatorSessionID); err != nil {
 			return Inspection{Lease: lease}, fmt.Errorf("%w: %v", ErrInvalidWorkerResult, err)
 		}
 	}
@@ -120,7 +123,7 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 				if current.Portable.State != lease.Portable.State || !strings.EqualFold(current.Portable.ResultCommit, resultCommit) || current.Portable.AcceptedReceiptID != "" {
 					return fmt.Errorf("%w: lease changed during receipt acceptance", ErrWorkspaceConflict)
 				}
-				persistAcceptedImplementationReceipt(&current.Portable, *request.Receipt)
+				persistAcceptedImplementationReceipt(&current.Portable, *request.Receipt, request.Submission)
 				current.AcceptedReceiptID = request.Receipt.ID
 				return nil
 			})
@@ -140,7 +143,7 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 		current.Portable.ResultCommit = resultCommit
 		current.Portable.State = StateWorkerComplete
 		if request.Receipt != nil {
-			persistAcceptedImplementationReceipt(&current.Portable, *request.Receipt)
+			persistAcceptedImplementationReceipt(&current.Portable, *request.Receipt, request.Submission)
 			current.AcceptedReceiptID = request.Receipt.ID
 		}
 		current.Observation = WorktreeObservation{Registered: true, HeadSHA: resultCommit, Branch: inspection.Branch, Dirty: false, InspectedAt: m.Now().UTC()}
@@ -153,17 +156,24 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 	return inspection, nil
 }
 
-func validateImplementationReceiptBinding(lease LocalLease, receipt assignment.Receipt, resultCommit string) error {
+func validateImplementationReceiptBinding(lease LocalLease, receipt assignment.Receipt, resultCommit string,
+	submission RoleOwnedSubmissionEvidence, coordinatorSessionID string) error {
 	if err := receipt.ValidateForAcceptance(); err != nil {
 		return err
 	}
 	if receipt.Role != assignment.RoleImplementation || receipt.Implementation == nil {
 		return errors.New("completion requires an implementation receipt")
 	}
-	writer := strings.TrimSpace(receipt.Provenance.Writer)
-	subject := strings.TrimSpace(receipt.Provenance.Subject)
-	if writer == "" || subject == "" || !strings.EqualFold(writer, subject) || strings.EqualFold(writer, "Coordinator") {
-		return errors.New("implementation receipt must be owned by one non-Coordinator worker identity")
+	coordinatorSessionID = strings.TrimSpace(coordinatorSessionID)
+	ownerSessionID := strings.TrimSpace(lease.Owner.AgentSession)
+	if ownerSessionID != "" {
+		if coordinatorSessionID != "" && !strings.EqualFold(coordinatorSessionID, ownerSessionID) {
+			return errors.New("completion Coordinator session differs from the authoritative lease owner session")
+		}
+		coordinatorSessionID = ownerSessionID
+	}
+	if err := ValidateRoleOwnedReceiptSubmission(receipt, submission, coordinatorSessionID); err != nil {
+		return fmt.Errorf("implementation receipt provenance: %w", err)
 	}
 	binding := lease.Portable.Assignment
 	if binding == nil || lease.Assignment == nil {
@@ -181,8 +191,8 @@ func validateImplementationReceiptBinding(lease LocalLease, receipt assignment.R
 	if !strings.EqualFold(receipt.ResultRevision, resultCommit) {
 		return errors.New("receipt result revision differs from the exact worker result")
 	}
-	want := acceptedImplementationReceipt(receipt)
-	if current := acceptedReceiptBinding(lease.Portable); current != nil && *current != *want {
+	want := acceptedImplementationReceipt(receipt, submission)
+	if current := acceptedReceiptBinding(lease.Portable); current != nil && !sameAcceptedReceiptBinding(*current, *want) {
 		return errors.New("accepted receipt identity cannot be replaced")
 	}
 	if lease.AcceptedReceiptID != "" && lease.AcceptedReceiptID != receipt.ID {
@@ -191,9 +201,10 @@ func validateImplementationReceiptBinding(lease LocalLease, receipt assignment.R
 	return nil
 }
 
-func acceptedImplementationReceipt(receipt assignment.Receipt) *AcceptedReceiptBinding {
+func acceptedImplementationReceipt(receipt assignment.Receipt, submission RoleOwnedSubmissionEvidence) *AcceptedReceiptBinding {
+	evidence := submission
 	return &AcceptedReceiptBinding{ReceiptID: receipt.ID, ReceiptDigest: receipt.ReceiptDigest,
-		AssignmentGeneration: receipt.AssignmentGeneration}
+		AssignmentGeneration: receipt.AssignmentGeneration, Submission: &evidence}
 }
 
 func acceptedReceiptBinding(lease PortableLease) *AcceptedReceiptBinding {
@@ -201,13 +212,26 @@ func acceptedReceiptBinding(lease PortableLease) *AcceptedReceiptBinding {
 		return nil
 	}
 	return &AcceptedReceiptBinding{ReceiptID: lease.AcceptedReceiptID, ReceiptDigest: lease.AcceptedReceiptDigest,
-		AssignmentGeneration: lease.AcceptedReceiptGeneration}
+		AssignmentGeneration: lease.AcceptedReceiptGeneration, Submission: lease.AcceptedReceiptSubmission}
 }
 
-func persistAcceptedImplementationReceipt(lease *PortableLease, receipt assignment.Receipt) {
+func sameAcceptedReceiptBinding(left, right AcceptedReceiptBinding) bool {
+	if left.ReceiptID != right.ReceiptID || left.ReceiptDigest != right.ReceiptDigest ||
+		left.AssignmentGeneration != right.AssignmentGeneration {
+		return false
+	}
+	if left.Submission == nil || right.Submission == nil {
+		return left.Submission == nil && right.Submission == nil
+	}
+	return *left.Submission == *right.Submission
+}
+
+func persistAcceptedImplementationReceipt(lease *PortableLease, receipt assignment.Receipt, submission RoleOwnedSubmissionEvidence) {
 	lease.AcceptedReceiptID = receipt.ID
 	lease.AcceptedReceiptDigest = receipt.ReceiptDigest
 	lease.AcceptedReceiptGeneration = receipt.AssignmentGeneration
+	evidence := submission
+	lease.AcceptedReceiptSubmission = &evidence
 }
 
 func (m *Manager) validateImplementationReceiptContract(ctx context.Context, lease LocalLease, receipt assignment.Receipt, resultCommit string, changed []string) error {

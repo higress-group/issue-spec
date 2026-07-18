@@ -33,15 +33,16 @@ const (
 // validated role-owned receipt plus provider-owned checks observed by the
 // coordinator. It contains no evaluator forecast or runtime attestation.
 type acceptedVerificationReceipt struct {
-	ReceiptID            string                      `json:"receipt_id"`
-	ReceiptDigest        string                      `json:"receipt_digest"`
-	AssignmentID         string                      `json:"assignment_id"`
-	AssignmentDigest     string                      `json:"assignment_digest"`
-	AssignmentGeneration uint64                      `json:"assignment_generation"`
-	SubjectRevision      string                      `json:"subject_revision"`
-	Tests                []acceptedVerificationTest  `json:"tests,omitempty"`
-	Checks               []observedVerificationCheck `json:"checks,omitempty"`
-	Provenance           assignment.Provenance       `json:"provenance"`
+	ReceiptID            string                                        `json:"receipt_id"`
+	ReceiptDigest        string                                        `json:"receipt_digest"`
+	AssignmentID         string                                        `json:"assignment_id"`
+	AssignmentDigest     string                                        `json:"assignment_digest"`
+	AssignmentGeneration uint64                                        `json:"assignment_generation"`
+	SubjectRevision      string                                        `json:"subject_revision"`
+	Tests                []acceptedVerificationTest                    `json:"tests,omitempty"`
+	Checks               []observedVerificationCheck                   `json:"checks,omitempty"`
+	Provenance           assignment.Provenance                         `json:"provenance"`
+	Submission           *processworkspace.RoleOwnedSubmissionEvidence `json:"submission,omitempty"`
 }
 
 type acceptedVerificationTest struct {
@@ -61,16 +62,17 @@ type observedVerificationCheck struct {
 }
 
 type verificationSubmitResult struct {
-	OK              bool                        `json:"ok"`
-	Action          string                      `json:"action"`
-	VerificationID  string                      `json:"verification_id"`
-	ReceiptID       string                      `json:"receipt_id"`
-	ReceiptDigest   string                      `json:"receipt_digest"`
-	SubjectRevision string                      `json:"subject_revision"`
-	Tests           []acceptedVerificationTest  `json:"tests,omitempty"`
-	Checks          []observedVerificationCheck `json:"checks,omitempty"`
-	CommentID       int64                       `json:"comment_id"`
-	URL             string                      `json:"url"`
+	OK              bool                                          `json:"ok"`
+	Action          string                                        `json:"action"`
+	VerificationID  string                                        `json:"verification_id"`
+	ReceiptID       string                                        `json:"receipt_id"`
+	ReceiptDigest   string                                        `json:"receipt_digest"`
+	SubjectRevision string                                        `json:"subject_revision"`
+	Tests           []acceptedVerificationTest                    `json:"tests,omitempty"`
+	Checks          []observedVerificationCheck                   `json:"checks,omitempty"`
+	Submission      *processworkspace.RoleOwnedSubmissionEvidence `json:"submission,omitempty"`
+	CommentID       int64                                         `json:"comment_id"`
+	URL             string                                        `json:"url"`
 }
 
 type finalVerifyReport struct {
@@ -128,6 +130,8 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 	verifyID := fs.String("id", "", "VERIFY id to upsert")
 	resultFile := fs.String("result-file", "", "absolute path to a sealed verification receipt")
 	assignmentFile := fs.String("assignment-file", "", "absolute path to the sealed verification assignment or packet")
+	agent := fs.String("agent", "", "logical verifier agent submitting the role-owned receipt")
+	agentSession := addAgentSessionFlag(fs)
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -173,7 +177,9 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 		a.errorf("verification PROCESS must be one canonical managed snapshot assignment\n")
 		return 1
 	}
-	if err := validateVerificationReceiptBinding(receipt, sealedAssignment, workspace.Workspace.Assignment); err != nil {
+	submission := roleOwnedSubmissionEvidence(*agent, resolveWriterSession(*agentSession))
+	if err := validateVerificationReceiptBinding(receipt, sealedAssignment, workspace.Workspace.Assignment, submission,
+		process.Comment.AgentSessionID); err != nil {
 		a.errorf("validate verification receipt: %v\n", err)
 		return 1
 	}
@@ -229,7 +235,7 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 		a.errorf("observe provider verification checks: %v\n", err)
 		return 1
 	}
-	body, err := renderSubmittedVerification(*verifyID, process.URL, covers, receipt, checks)
+	body, err := renderSubmittedVerification(*verifyID, process.URL, covers, receipt, checks, submission)
 	if err != nil {
 		a.errorf("render submitted VERIFY: %v\n", err)
 		return 1
@@ -239,10 +245,10 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 		a.errorf("publish submitted VERIFY: %v\n", err)
 		return 1
 	}
-	authority := acceptedVerificationReceiptFrom(receipt, checks)
+	authority := acceptedVerificationReceiptFrom(receipt, checks, submission)
 	result := verificationSubmitResult{OK: true, Action: action, VerificationID: *verifyID,
 		ReceiptID: receipt.ID, ReceiptDigest: receipt.ReceiptDigest, SubjectRevision: receipt.SubjectRevision,
-		Tests: authority.Tests, Checks: authority.Checks, CommentID: comment.ID, URL: comment.HTMLURL}
+		Tests: authority.Tests, Checks: authority.Checks, Submission: authority.Submission, CommentID: comment.ID, URL: comment.HTMLURL}
 	if *jsonOut {
 		return a.outputJSON(result)
 	}
@@ -252,7 +258,8 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 }
 
 func validateVerificationReceiptBinding(receipt assignment.Receipt, sealed assignment.Assignment,
-	binding *processworkspace.AssignmentBinding) error {
+	binding *processworkspace.AssignmentBinding, submission processworkspace.RoleOwnedSubmissionEvidence,
+	coordinatorSessionID string) error {
 	if err := receipt.ValidateForAcceptance(); err != nil {
 		return err
 	}
@@ -278,18 +285,10 @@ func validateVerificationReceiptBinding(receipt assignment.Receipt, sealed assig
 	if receipt.SubjectRevision != binding.SubjectRevision {
 		return errors.New("verification receipt subject revision does not match the authoritative exact snapshot")
 	}
-	writer := strings.TrimSpace(receipt.Provenance.Writer)
-	if writer == "" || !strings.EqualFold(writer, strings.TrimSpace(receipt.Provenance.Subject)) ||
-		strings.EqualFold(writer, "Coordinator") {
-		return errors.New("verification receipt must be owned by one non-Coordinator verifier identity")
-	}
-	if receipt.Provenance.Assurance != assignment.AssuranceSelfReported {
-		return errors.New("version-1 role-owned verification provenance must be self-reported")
+	if err := processworkspace.ValidateRoleOwnedReceiptSubmission(receipt, submission, coordinatorSessionID); err != nil {
+		return fmt.Errorf("verification receipt provenance: %w", err)
 	}
 	for _, test := range receipt.Tests {
-		if test.Assurance != assignment.AssuranceSelfReported {
-			return fmt.Errorf("verification test %s must use self-reported assurance", test.ID)
-		}
 		if test.Outcome != assignment.TestPassed {
 			return fmt.Errorf("verification test %s must pass before VERIFY completion", test.ID)
 		}
@@ -438,11 +437,12 @@ func sortObservedVerificationChecks(checks []observedVerificationCheck) {
 }
 
 func acceptedVerificationReceiptFrom(receipt assignment.Receipt,
-	checks []observedVerificationCheck) acceptedVerificationReceipt {
+	checks []observedVerificationCheck, submission processworkspace.RoleOwnedSubmissionEvidence) acceptedVerificationReceipt {
+	evidence := submission
 	result := acceptedVerificationReceipt{ReceiptID: receipt.ID, ReceiptDigest: receipt.ReceiptDigest,
 		AssignmentID: receipt.AssignmentID, AssignmentDigest: receipt.AssignmentDigest,
 		AssignmentGeneration: receipt.AssignmentGeneration, SubjectRevision: receipt.SubjectRevision,
-		Checks: append([]observedVerificationCheck(nil), checks...), Provenance: receipt.Provenance}
+		Checks: append([]observedVerificationCheck(nil), checks...), Provenance: receipt.Provenance, Submission: &evidence}
 	for _, test := range receipt.Tests {
 		result.Tests = append(result.Tests, acceptedVerificationTest{ID: test.ID, Command: test.Command,
 			Outcome: test.Outcome, Assurance: test.Assurance})
@@ -594,7 +594,7 @@ func publishAcceptedVerification(ctx context.Context, client github.Operations, 
 }
 
 func renderSubmittedVerification(verifyID, processURL string, covers []string, receipt assignment.Receipt,
-	checks []observedVerificationCheck) (string, error) {
+	checks []observedVerificationCheck, submission processworkspace.RoleOwnedSubmissionEvidence) (string, error) {
 	evidence := make([]string, 0, len(receipt.Tests)+len(checks))
 	tests := make([]templates.VerifyTestEvidence, 0, len(receipt.Tests))
 	for _, test := range receipt.Tests {
@@ -613,18 +613,24 @@ func renderSubmittedVerification(verifyID, processURL string, covers []string, r
 		summary = "Role-owned verification completed for the exact assigned revision."
 	}
 	body, err := templates.VerifyComment(templates.VerifyCommentOptions{Common: templates.CommonOptions{
-		ID: verifyID, Agent: receipt.Provenance.Writer, SubjectRevision: receipt.SubjectRevision,
+		ID: verifyID, Agent: submission.Agent, SubjectRevision: receipt.SubjectRevision,
 		Status: "done", Scope: "role-owned verification submission"}, Input: templates.VerifyInput{
 		Title: "role-owned receipt", Summary: summary, SubjectRevision: receipt.SubjectRevision,
 		Evidence: evidence, Tests: tests, Checks: providerChecks, SpecRefs: covers}})
 	if err != nil {
 		return "", err
 	}
+	if submission.AgentSessionID != "" {
+		body, err = model.StampTypedSessionMetadata(body, submission.AgentSessionID, submission.AgentSessionSource)
+		if err != nil {
+			return "", err
+		}
+	}
 	body, _, err = model.AddRelatedCommentLink(body, processURL)
 	if err != nil {
 		return "", err
 	}
-	body, _, err = stampAcceptedVerificationReceipt(body, acceptedVerificationReceiptFrom(receipt, checks))
+	body, _, err = stampAcceptedVerificationReceipt(body, acceptedVerificationReceiptFrom(receipt, checks, submission))
 	return body, err
 }
 
@@ -1143,6 +1149,10 @@ func exactAcceptedVerificationCarrier(artifact model.Artifact, expectedRevision 
 	if authority.Provenance.Route != assignment.RouteRoleOwned ||
 		authority.Provenance.Assurance != assignment.AssuranceSelfReported || writer == "" ||
 		!strings.EqualFold(writer, strings.TrimSpace(authority.Provenance.Subject)) || strings.EqualFold(writer, "Coordinator") {
+		return "", false, false, false
+	}
+	if authority.Submission == nil || authority.Submission.Validate() != nil ||
+		!strings.EqualFold(writer, authority.Submission.Agent) {
 		return "", false, false, false
 	}
 	if len(authority.Tests) == 0 && len(authority.Checks) == 0 {
