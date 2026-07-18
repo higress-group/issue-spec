@@ -227,6 +227,30 @@ func TestProcessGeneratorRendersPortableWorkspace(t *testing.T) {
 	}
 }
 
+func TestProcessGeneratorCarriesBoundCompletionRevisions(t *testing.T) {
+	now := time.Unix(100, 0).UTC()
+	base, result, integrated := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	workspace := model.ProcessWorkspace{
+		SchemaVersion: processworkspace.LeaseSchemaVersion, WorkspaceID: "ws-process-008", Repository: "o/r", ProcessID: "PROCESS-008",
+		ExecutionClass: processworkspace.ExecutionChangeBearing, Mode: processworkspace.ModeWritable, BaseSHA: base, Branch: "worker",
+		WriteOwnership: []string{"internal/**"}, RuntimeNamespace: "ws-process-008", State: processworkspace.StateIntegrated,
+		Assignment: &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion, AssignmentID: "assignment-008-1",
+			Digest: strings.Repeat("d", 64), Role: assignment.RoleImplementation, BaseRevision: base, Generation: 1},
+		ResultCommit: result, IntegrationSHA: integrated, CreatedAt: now, UpdatedAt: now,
+	}
+	body, err := ProcessComment(ProcessCommentOptions{Common: CommonOptions{ID: "PROCESS-008"}, Input: ProcessInput{
+		Title: "receipt completion", ParentTask: "TASK-005", ExecutionClass: model.ProcessExecutionChangeBearing,
+		WriteOwnership: []string{"internal/**"}, Workspace: &workspace, Handoff: "receipt accepted",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := model.ParseProcessWorkspace("PROCESS-008", "", body)
+	if parsed.Workspace == nil || parsed.Workspace.Assignment == nil || parsed.Workspace.ResultCommit != result || parsed.Workspace.IntegrationSHA != integrated {
+		t.Fatalf("generated completion carrier=%+v\n%s", parsed, body)
+	}
+}
+
 func TestProcessGeneratorRejectsWorkspaceIdentityOrClassMismatch(t *testing.T) {
 	workspace := model.ProcessWorkspace{ProcessID: "PROCESS-OTHER", ExecutionClass: processworkspace.ExecutionReview}
 	_, err := ProcessComment(ProcessCommentOptions{Common: CommonOptions{ID: "PROCESS-005"}, Input: ProcessInput{

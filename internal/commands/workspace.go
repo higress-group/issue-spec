@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -75,6 +76,7 @@ type workspaceCommandResult struct {
 	DetachedRevision  string                          `json:"detached_revision,omitempty"`
 	ResultCommit      string                          `json:"result_commit,omitempty"`
 	IntegrationSHA    string                          `json:"integration_sha,omitempty"`
+	AcceptedReceiptID string                          `json:"accepted_receipt_id,omitempty"`
 	RuntimeNamespace  string                          `json:"runtime_namespace,omitempty"`
 	WorktreePath      string                          `json:"worktree_path,omitempty"`
 	Registered        bool                            `json:"registered"`
@@ -1017,20 +1019,100 @@ func (a *app) runWorkspaceComplete(ctx context.Context, args []string) int {
 	fs := newFlagSet("workflow workspace complete", a.err)
 	flags := addWorkspaceCommandFlags(fs)
 	resultCommit := fs.String("result-commit", "", "exact worker result commit")
+	resultFile := fs.String("result-file", "", "absolute path to a sealed implementation receipt")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
 	repo, issue, processID, ok := a.validateWorkspaceFlags(flags, true)
-	if !ok || strings.TrimSpace(*resultCommit) == "" {
+	commitProvided, fileProvided := strings.TrimSpace(*resultCommit) != "", strings.TrimSpace(*resultFile) != ""
+	if !ok || commitProvided == fileProvided {
 		if ok {
-			a.errorf("--result-commit is required\n")
+			a.errorf("exactly one of --result-file or --result-commit is required\n")
 		}
 		return 2
 	}
+	var receipt *assignment.Receipt
+	if fileProvided {
+		value, err := readWorkspaceResultFile(*resultFile)
+		if err != nil {
+			return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "result_file_invalid", err, *flags.jsonOut)
+		}
+		receipt = &value
+	}
 	return a.runWorkspaceLocalRemoteMutation(ctx, flags, repo, issue, processID, "complete", func(ctx context.Context, manager *processworkspace.Manager, target workspaceRemoteTarget, workspaceID string) (processworkspace.Inspection, error) {
+		local, found, err := manager.Store.Get(ctx, workspaceID)
+		if err != nil || !found {
+			if err == nil {
+				err = processworkspace.ErrLeaseNotFound
+			}
+			return processworkspace.Inspection{Lease: local}, err
+		}
+		remote := model.ParseProcessWorkspace(processID, target.artifact.URL, target.body)
+		if remote.Blocking() || remote.Workspace == nil {
+			return processworkspace.Inspection{Lease: local}, errors.New("remote PROCESS lacks one valid authoritative Workspace reservation")
+		}
+		if err := validateCompletionConvergence(processworkspace.PortableLease(*remote.Workspace), local, repo); err != nil {
+			return processworkspace.Inspection{Lease: local}, err
+		}
 		return manager.Complete(ctx, processworkspace.CompleteRequest{WorkspaceID: workspaceID,
-			OwnerToken: strings.TrimSpace(*flags.ownerToken), ResultCommit: strings.TrimSpace(*resultCommit)})
+			OwnerToken: strings.TrimSpace(*flags.ownerToken), ResultCommit: strings.TrimSpace(*resultCommit), Receipt: receipt})
 	})
+}
+
+func readWorkspaceResultFile(path string) (assignment.Receipt, error) {
+	path = strings.TrimSpace(path)
+	if path == "-" || !filepath.IsAbs(path) {
+		return assignment.Receipt{}, errors.New("--result-file must be an absolute regular file path and cannot be '-'")
+	}
+	info, err := os.Lstat(filepath.Clean(path))
+	if err != nil {
+		return assignment.Receipt{}, fmt.Errorf("inspect result file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return assignment.Receipt{}, errors.New("--result-file must name a regular non-symlink file")
+	}
+	payload, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return assignment.Receipt{}, fmt.Errorf("read result file: %w", err)
+	}
+	value, err := assignment.ParseReceiptJSON(payload)
+	if err != nil {
+		return assignment.Receipt{}, err
+	}
+	if value.Role != assignment.RoleImplementation {
+		return assignment.Receipt{}, errors.New("--result-file must contain an implementation receipt")
+	}
+	return value, nil
+}
+
+func validateCompletionConvergence(remote processworkspace.PortableLease, local processworkspace.LocalLease, repository string) error {
+	portable := local.Portable
+	immutableEqual := remote.SchemaVersion == portable.SchemaVersion && remote.WorkspaceID == portable.WorkspaceID && remote.Repository == portable.Repository &&
+		remote.Repository == repository && remote.ProcessID == portable.ProcessID && remote.ExecutionClass == portable.ExecutionClass && remote.Mode == portable.Mode &&
+		remote.BaseSHA == portable.BaseSHA && remote.Branch == portable.Branch && remote.DetachedRevision == portable.DetachedRevision &&
+		slices.Equal(remote.WriteOwnership, portable.WriteOwnership) && slices.Equal(remote.SharedTouchpoints, portable.SharedTouchpoints) &&
+		remote.IntegrationOwner == portable.IntegrationOwner && remote.RuntimeNamespace == portable.RuntimeNamespace &&
+		slices.Equal(remote.RuntimeResources, portable.RuntimeResources) && remote.CreatedAt.Equal(portable.CreatedAt) &&
+		remote.RetentionExpiresAt.Equal(portable.RetentionExpiresAt) && samePortableAssignmentBinding(remote.Assignment, portable.Assignment)
+	if !immutableEqual {
+		return errors.New("remote PROCESS Workspace differs from the authoritative local reservation or assignment binding")
+	}
+	if remote.ResultCommit != "" && !strings.EqualFold(remote.ResultCommit, portable.ResultCommit) ||
+		remote.IntegrationSHA != "" && !strings.EqualFold(remote.IntegrationSHA, portable.IntegrationSHA) {
+		return errors.New("remote PROCESS Workspace carries conflicting result or integration evidence")
+	}
+	rank := map[processworkspace.LifecycleState]int{
+		processworkspace.StatePrepared:       0,
+		processworkspace.StateWorkerComplete: 1,
+		processworkspace.StateIntegrating:    2,
+		processworkspace.StateIntegrated:     3,
+	}
+	remoteRank, remoteOK := rank[remote.State]
+	localRank, localOK := rank[portable.State]
+	if !remoteOK || !localOK || remoteRank > localRank {
+		return fmt.Errorf("remote/local completion lifecycle convergence is unsafe: remote=%s local=%s", remote.State, portable.State)
+	}
+	return nil
 }
 
 type workspaceMutation func(context.Context, *processworkspace.Manager, workspaceRemoteTarget, string) (processworkspace.Inspection, error)
@@ -1207,7 +1289,7 @@ func workspaceResult(ctx context.Context, manager *processworkspace.Manager, ins
 	return workspaceCommandResult{OK: true, Action: action, Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: lease.Portable.WorkspaceID,
 		Generation: registry.Generation, LocalRevision: lease.LocalRevision, State: lease.Portable.State, ExecutionClass: lease.Portable.ExecutionClass,
 		Mode: lease.Portable.Mode, BaseSHA: lease.Portable.BaseSHA, Branch: lease.Portable.Branch, DetachedRevision: lease.Portable.DetachedRevision,
-		ResultCommit: lease.Portable.ResultCommit, IntegrationSHA: lease.Portable.IntegrationSHA, RuntimeNamespace: lease.Portable.RuntimeNamespace,
+		ResultCommit: lease.Portable.ResultCommit, IntegrationSHA: lease.Portable.IntegrationSHA, AcceptedReceiptID: lease.AcceptedReceiptID, RuntimeNamespace: lease.Portable.RuntimeNamespace,
 		WorktreePath: lease.WorktreePath, Registered: inspection.Registered, Present: inspection.Present, Dirty: inspection.Dirty,
 		Head: inspection.Head, GitBranch: inspection.Branch, Problems: append([]string(nil), inspection.Problems...), Remote: remote}
 }

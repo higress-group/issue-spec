@@ -90,6 +90,23 @@ func TestProcessWorkspaceRoundTripsPortableAssignmentBindingOnly(t *testing.T) {
 	}
 }
 
+func TestProcessWorkspaceRoundTripsAuthoritativeResultAndIntegrationRevisions(t *testing.T) {
+	workspace := testProcessWorkspace("PROCESS-008", ProcessExecutionChangeBearing)
+	workspace.Assignment = &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion, AssignmentID: "assignment-008-1",
+		Digest: strings.Repeat("a", 64), Role: assignment.RoleImplementation, BaseRevision: workspace.BaseSHA, Generation: 1}
+	workspace.State = processworkspace.StateIntegrated
+	workspace.ResultCommit = strings.Repeat("b", 40)
+	workspace.IntegrationSHA = strings.Repeat("c", 40)
+	workspace.UpdatedAt = workspace.UpdatedAt.Add(time.Minute)
+	body := processBodyWithWorkspace("PROCESS-008", ProcessExecutionChangeBearing, workspace)
+	parsed := ParseProcessWorkspace("PROCESS-008", "", body)
+	if parsed.Blocking() || parsed.Workspace == nil || parsed.Workspace.Assignment == nil ||
+		parsed.Workspace.Assignment.AssignmentID != workspace.Assignment.AssignmentID ||
+		parsed.Workspace.ResultCommit != workspace.ResultCommit || parsed.Workspace.IntegrationSHA != workspace.IntegrationSHA {
+		t.Fatalf("durable completion evidence round trip=%+v", parsed)
+	}
+}
+
 func TestExternalProcessWorkspaceRejectsCheckoutModesInRenderingAndParsing(t *testing.T) {
 	external := testProcessWorkspace("PROCESS-EXT", ProcessExecutionExternal)
 	valid, err := RenderProcessWorkspaceSection(external)

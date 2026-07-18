@@ -7,7 +7,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
+
+	"github.com/higress-group/issue-spec/internal/assignment"
 )
 
 var (
@@ -20,6 +24,7 @@ type CompleteRequest struct {
 	WorkspaceID  string
 	OwnerToken   string
 	ResultCommit string
+	Receipt      *assignment.Receipt
 }
 
 type IntegrateRequest struct {
@@ -77,6 +82,15 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 		return Inspection{Lease: lease}, fmt.Errorf("%w: %v", ErrInvalidWorkerResult, err)
 	}
 	resultCommit := strings.TrimSpace(request.ResultCommit)
+	if request.Receipt != nil {
+		if resultCommit != "" && !strings.EqualFold(resultCommit, request.Receipt.ResultRevision) {
+			return Inspection{Lease: lease}, fmt.Errorf("%w: receipt result revision differs from requested result commit", ErrInvalidWorkerResult)
+		}
+		resultCommit = strings.TrimSpace(request.Receipt.ResultRevision)
+		if err := validateImplementationReceiptBinding(lease, *request.Receipt, resultCommit); err != nil {
+			return Inspection{Lease: lease}, fmt.Errorf("%w: %v", ErrInvalidWorkerResult, err)
+		}
+	}
 	if lease.Portable.Mode != ModeWritable {
 		return Inspection{Lease: lease}, fmt.Errorf("%w: completion requires writable mode", ErrInvalidWorkerResult)
 	}
@@ -91,7 +105,30 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 	if err != nil {
 		return inspection, err
 	}
+	if request.Receipt != nil {
+		changed, err := m.changedPaths(ctx, lease.WorktreePath, lease.Portable.BaseSHA, resultCommit)
+		if err != nil {
+			return inspection, err
+		}
+		if err := m.validateImplementationReceiptContract(ctx, lease, *request.Receipt, resultCommit, changed); err != nil {
+			return inspection, fmt.Errorf("%w: %v", ErrInvalidWorkerResult, err)
+		}
+	}
 	if lease.Portable.State != StatePrepared {
+		if request.Receipt != nil && lease.AcceptedReceiptID == "" {
+			updated, updateErr := m.Store.Update(ctx, lease.Portable.WorkspaceID, func(current *LocalLease) error {
+				if current.Portable.State != lease.Portable.State || !strings.EqualFold(current.Portable.ResultCommit, resultCommit) || current.AcceptedReceiptID != "" {
+					return fmt.Errorf("%w: lease changed during receipt acceptance", ErrWorkspaceConflict)
+				}
+				current.AcceptedReceiptID = request.Receipt.ID
+				return nil
+			})
+			if updateErr != nil {
+				return inspection, updateErr
+			}
+			inspection.Lease = updated
+			return inspection, nil
+		}
 		inspection.Lease = lease
 		return inspection, nil
 	}
@@ -101,6 +138,9 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 		}
 		current.Portable.ResultCommit = resultCommit
 		current.Portable.State = StateWorkerComplete
+		if request.Receipt != nil {
+			current.AcceptedReceiptID = request.Receipt.ID
+		}
 		current.Observation = WorktreeObservation{Registered: true, HeadSHA: resultCommit, Branch: inspection.Branch, Dirty: false, InspectedAt: m.Now().UTC()}
 		return nil
 	})
@@ -109,6 +149,74 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 	}
 	inspection.Lease = updated
 	return inspection, nil
+}
+
+func validateImplementationReceiptBinding(lease LocalLease, receipt assignment.Receipt, resultCommit string) error {
+	if err := receipt.ValidateForAcceptance(); err != nil {
+		return err
+	}
+	if receipt.Role != assignment.RoleImplementation || receipt.Implementation == nil {
+		return errors.New("completion requires an implementation receipt")
+	}
+	binding := lease.Portable.Assignment
+	if binding == nil || lease.Assignment == nil {
+		return errors.New("result-file completion requires the authoritative persisted assignment binding")
+	}
+	if receipt.AssignmentID != binding.AssignmentID || receipt.AssignmentDigest != binding.Digest ||
+		receipt.AssignmentGeneration != binding.Generation || receipt.Role != binding.Role ||
+		receipt.ResultSchemaVersion != lease.Assignment.ResultSchemaVersion {
+		return errors.New("receipt does not exactly match the authoritative assignment binding")
+	}
+	if !strings.EqualFold(receipt.BaseRevision, binding.BaseRevision) || !strings.EqualFold(receipt.BaseRevision, lease.Assignment.BaseRevision) ||
+		!strings.EqualFold(receipt.BaseRevision, lease.Portable.BaseSHA) {
+		return errors.New("receipt base revision differs from the authoritative assignment")
+	}
+	if !strings.EqualFold(receipt.ResultRevision, resultCommit) {
+		return errors.New("receipt result revision differs from the exact worker result")
+	}
+	if lease.AcceptedReceiptID != "" && lease.AcceptedReceiptID != receipt.ID {
+		return errors.New("accepted receipt identity cannot be replaced")
+	}
+	return nil
+}
+
+func (m *Manager) validateImplementationReceiptContract(ctx context.Context, lease LocalLease, receipt assignment.Receipt, resultCommit string, changed []string) error {
+	contract := lease.Assignment.Implementation
+	if contract == nil {
+		return errors.New("authoritative assignment lacks an implementation contract")
+	}
+	itemCount := len(receipt.Tests) + len(receipt.Implementation.ChangedPaths) + len(receipt.Implementation.Decisions) + len(receipt.Implementation.Risks)
+	if itemCount > lease.Assignment.Policy.MaxResultItems {
+		return fmt.Errorf("receipt has %d result items, assignment permits %d", itemCount, lease.Assignment.Policy.MaxResultItems)
+	}
+	actualPaths := append([]string(nil), changed...)
+	reportedPaths := append([]string(nil), receipt.Implementation.ChangedPaths...)
+	sort.Strings(actualPaths)
+	sort.Strings(reportedPaths)
+	if !slices.Equal(actualPaths, reportedPaths) {
+		return errors.New("receipt changed_paths differ from the exact Git result")
+	}
+	tests := make(map[string]assignment.TestResult, len(receipt.Tests))
+	for _, result := range receipt.Tests {
+		if result.Outcome != assignment.TestPassed {
+			return fmt.Errorf("reported test %q did not pass", result.ID)
+		}
+		tests[result.ID] = result
+	}
+	for _, required := range contract.FocusedTests {
+		result, ok := tests[required.ID]
+		if !ok || result.Command != required.Command || result.Outcome != assignment.TestPassed {
+			return fmt.Errorf("required focused test %q lacks an exact passing result", required.ID)
+		}
+	}
+	for _, generator := range contract.Generators {
+		for _, output := range generator.RequiredOutputs {
+			if _, err := m.git(ctx, "validate required generator output", lease.WorktreePath, "cat-file", "-e", resultCommit+":"+output); err != nil {
+				return fmt.Errorf("required generator output %q is absent at the result revision: %w", output, err)
+			}
+		}
+	}
+	return nil
 }
 
 // Integrate cherry-picks exactly one validated worker commit while holding the

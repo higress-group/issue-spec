@@ -43,6 +43,47 @@ func TestWorkspaceCommandRootsDefaultFromRunnerEnvAndExplicitFlagsOverride(t *te
 	}
 }
 
+func TestWorkspaceResultFileParsingAndCompletionConvergence(t *testing.T) {
+	base, result := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	receipt, err := assignment.SealReceipt(assignment.Receipt{
+		SchemaVersion: assignment.ReceiptSchemaVersion, ID: "receipt-process-004-1", AssignmentID: "assignment-process-004-1",
+		AssignmentDigest: strings.Repeat("c", 64), AssignmentGeneration: 1, Role: assignment.RoleImplementation,
+		ResultSchemaVersion: assignment.ReceiptSchemaVersion, BaseRevision: base, ResultRevision: result,
+		Provenance:     assignment.Provenance{Route: assignment.RouteRoleOwned, Assurance: assignment.AssuranceSelfReported, Writer: "Worker", Subject: "Worker", Source: "role-result-file"},
+		Implementation: &assignment.ImplementationResult{ChangedPaths: []string{"internal/commands/result.go"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(receipt)
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := readWorkspaceResultFile(path)
+	if err != nil || parsed.ID != receipt.ID || parsed.ResultRevision != result {
+		t.Fatalf("parsed receipt=%+v err=%v", parsed, err)
+	}
+
+	now := time.Unix(100, 0).UTC()
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion, AssignmentID: receipt.AssignmentID,
+		Digest: receipt.AssignmentDigest, Role: assignment.RoleImplementation, BaseRevision: base, Generation: 1}
+	remote := processworkspace.PortableLease{SchemaVersion: 1, WorkspaceID: "ws-process-004", Repository: "o/r", ProcessID: "PROCESS-004",
+		ExecutionClass: processworkspace.ExecutionChangeBearing, Mode: processworkspace.ModeWritable, BaseSHA: base, Branch: "worker",
+		WriteOwnership: []string{"internal/commands/**"}, RuntimeNamespace: "ws-process-004", Assignment: binding,
+		State: processworkspace.StatePrepared, CreatedAt: now, UpdatedAt: now}
+	local := processworkspace.LocalLease{Portable: remote}
+	if err := validateCompletionConvergence(remote, local, "o/r"); err != nil {
+		t.Fatal(err)
+	}
+	drifted := remote
+	drifted.Assignment = &processworkspace.AssignmentBinding{SchemaVersion: binding.SchemaVersion, AssignmentID: binding.AssignmentID,
+		Digest: strings.Repeat("d", 64), Role: binding.Role, BaseRevision: binding.BaseRevision, Generation: binding.Generation}
+	if err := validateCompletionConvergence(drifted, local, "o/r"); err == nil || !strings.Contains(err.Error(), "assignment binding") {
+		t.Fatalf("binding drift accepted: %v", err)
+	}
+}
+
 func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *testing.T) {
 	repo, base := workspaceGitRepository(t)
 	write := func(name, value string) {
