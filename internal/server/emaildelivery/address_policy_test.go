@@ -27,12 +27,37 @@ func TestAddressPolicyNormalizesDeduplicatesAndMatchesDomainBoundaries(t *testin
 }
 
 func TestAddressPolicyEmptyAllowsAnyValidMailbox(t *testing.T) {
-	policy, err := NewAddressPolicy(nil)
+	policies := []AddressPolicy{{}}
+	for _, configured := range [][]string{nil, {}} {
+		policy, err := NewAddressPolicy(configured)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policies = append(policies, policy)
+	}
+	for _, policy := range policies {
+		for _, address := range []string{"person@personal.example", "person@例子.测试", "person@[192.0.2.1]"} {
+			if !policy.Allows(address) {
+				t.Errorf("empty policy Allows(%q) = false", address)
+			}
+		}
+		for _, address := range []string{"not an address", "Name <person@example.test>", "person@example.test\r\nBcc: other@example.test"} {
+			if policy.Allows(address) {
+				t.Errorf("empty policy Allows(%q) = true", address)
+			}
+		}
+	}
+}
+
+func TestAddressPolicyConfiguredSuffixStillRequiresASCIIDNSDomain(t *testing.T) {
+	policy, err := NewAddressPolicy([]string{"example.test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !policy.Allows("person@personal.example") || policy.Allows("not an address") {
-		t.Fatal("empty policy did not preserve valid any-domain behavior")
+	for _, address := range []string{"person@例子.测试", "person@[192.0.2.1]", "person@evilexample.test", "person@example.test.evil.test"} {
+		if policy.Allows(address) {
+			t.Errorf("configured policy Allows(%q) = true", address)
+		}
 	}
 }
 

@@ -40,16 +40,23 @@ func (p AddressPolicy) Suffixes() []string {
 // Allows parses a bare mailbox and performs a label-boundary suffix match.
 func (p AddressPolicy) Allows(address string) bool {
 	address = strings.TrimSpace(address)
+	if address == "" || len(address) > 320 || strings.ContainsAny(address, "\r\n") {
+		return false
+	}
 	parsed, err := mail.ParseAddress(address)
 	if err != nil || parsed.Name != "" || parsed.Address != address || strings.Count(address, "@") != 1 {
 		return false
 	}
+	// With no operator suffix configured, retain the established bare-mailbox
+	// contract exactly. net/mail accepts valid non-DNS domains such as
+	// internationalized names and address literals; applying validDomain here
+	// would silently tighten otherwise-compatible installations.
+	if len(p.suffixes) == 0 {
+		return true
+	}
 	domain := strings.ToLower(address[strings.LastIndexByte(address, '@')+1:])
 	if !validDomain(domain) {
 		return false
-	}
-	if len(p.suffixes) == 0 {
-		return true
 	}
 	for _, suffix := range p.suffixes {
 		if domain == suffix || strings.HasSuffix(domain, "."+suffix) {

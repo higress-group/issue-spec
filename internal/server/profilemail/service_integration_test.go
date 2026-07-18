@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -339,6 +340,52 @@ func TestServiceEnforcesChangedAddressPolicyAcrossLifecycle(t *testing.T) {
 	}
 	if consumedAt != nil || notificationEmail != nil {
 		t.Fatalf("disallowed confirmation mutated state: consumed=%v email=%v", consumedAt, notificationEmail)
+	}
+}
+
+func TestServiceEmptyAddressPolicyPreservesEnrollmentThroughVerifiedCompatibility(t *testing.T) {
+	pool := profileMailPool(t)
+	secrets := testSecrets(t)
+	service, err := New(pool, secrets, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for index, address := range []string{"person@例子.测试", "person@[192.0.2.1]"} {
+		userID := uuid.New()
+		if _, err := pool.Exec(t.Context(), `INSERT INTO users (id, login, display_name, email)
+			VALUES ($1,$2,'Compatibility Person','provider-only@example.test')`, userID,
+			fmt.Sprintf("compatibility-%d-%s", index, userID)); err != nil {
+			t.Fatal(err)
+		}
+		request, err := service.Onboard(t.Context(), OnboardingInput{UserID: userID,
+			PreferredName: "Compatibility Person", Email: address, ExpectedUserVersion: 1})
+		if err != nil {
+			t.Fatalf("Onboard(%q) error = %v", address, err)
+		}
+		pending, err := service.Get(t.Context(), userID)
+		if err != nil || pending.OnboardingCompletedAt == nil || pending.Pending == nil ||
+			pending.Pending.PendingEmail != address || pending.NotificationEmail != nil {
+			t.Fatalf("pending profile for %q = %+v err=%v", address, pending, err)
+		}
+		var ciphertext []byte
+		if err := pool.QueryRow(t.Context(), `SELECT token_ciphertext FROM email_verification_requests WHERE id = $1`, request.ID).
+			Scan(&ciphertext); err != nil {
+			t.Fatal(err)
+		}
+		token, err := secrets.Decrypt(tokenCipherPurpose(request.ID), ciphertext)
+		if err != nil {
+			t.Fatal(err)
+		}
+		confirmed, err := service.Confirm(t.Context(), string(token))
+		if err != nil || confirmed.NotificationEmail != address {
+			t.Fatalf("Confirm(%q) = %+v err=%v", address, confirmed, err)
+		}
+		verified, err := service.Get(t.Context(), userID)
+		if err != nil || verified.Pending != nil || verified.NotificationEmail == nil ||
+			*verified.NotificationEmail != address || verified.NotificationVerifiedAt == nil {
+			t.Fatalf("verified profile for %q = %+v err=%v", address, verified, err)
+		}
 	}
 }
 
