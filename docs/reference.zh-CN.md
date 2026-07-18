@@ -398,7 +398,7 @@ issue-spec workflow reconcile \
 
 任何写入发生前，reconcile 都会观察 carrier 上紧凑且不可变的 accepted-receipt marker，并要求 role、receipt id、digest、assignment generation 以及 carrier 现有的 `done` 状态完全匹配。因此唯一的 lifecycle 条目是断言，而不是转换 carrier 的授权：projection 不能完成、supersede、降级或重新打开 carrier，也不能这样修改相关 `PROCESS`/`TASK`。review carrier 必须是 `REVIEW`，verification carrier 必须是 `VERIFY`，implementation carrier 必须是 `PROCESS`。在 PROCESS 尚未包含 issue-native accepted-implementation-receipt marker 时，implementation projection 会 fail closed；workspace assignment/result 状态不能替代该 marker。
 
-关系类型是固定的：implementation 的 coverage target 为 `TASK`/`SPEC`，current target 为 `TASK`；review 与 verification 的 coverage target 为 `PROCESS`/`SPEC`，current target 为 `PROCESS`。版本 1 不接受调用方提供的 provider evidence URL；rationale、finding 与 check 只能留在角色自有 carrier 或 provider 权威观察中。每个关系都会编译为现有的双向 typed-comment link 操作。
+关系类型是固定的：implementation 的 coverage target 为 `TASK`/`SPEC`，current target 为 `TASK`；review 与 verification 的 coverage target 为 `PROCESS`/`SPEC`，current target 为 `PROCESS`。版本 1 不接受调用方提供的 provider evidence URL；rationale、finding 与 check 只能留在角色自有 carrier 或 provider 权威观察中。只有当 accepted carrier 已经包含目标 artifact 的精确 provider URL 时，该关系才获得授权。reconcile 会在写入前重新观察这个已封存的 carrier 关系与 accepted-receipt 身份，然后只在可变目标上补齐缺失的反向链接；它不会为了收敛 backlink 而改写不可变的 accepted-carrier 字节。即使类型合法，换成另一个 artifact id 也会在任何 provider 写入前 fail closed。
 
 非原子 provider fallback 默认关闭。GitHub projection 写入必须通过 `--allow-nonatomic`（或 projection 顶层的 `"allow_nonatomic": true`）显式选择。编译后的 plan 会把该策略纳入 digest。每次 fallback mutation 都会重新进行一次精确观察，将当前 representation digest 与计算 mutation 所依据的正文比较，并且只有在写后精确观察完全匹配时才写入 checkpoint。因此复用相同的已编译 plan 与 checkpoint 仍沿用原有的 digest 绑定重试路径；由于不支持 conditional mutation 的 backend 无法消除最后的写入竞态，结果仍会标记为 non-atomic。
 

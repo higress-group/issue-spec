@@ -254,12 +254,16 @@ func compileAcceptedReceipt(receipt AcceptedReceiptProjection) ([]Operation, err
 				continue
 			}
 			linked[key] = true
+			authority := &model.AcceptedReceiptAuthority{Role: receipt.Role, ReceiptID: receipt.ReceiptID,
+				Digest: receipt.ReceiptDigest, Generation: receipt.Generation}
 			operations = append(operations, Operation{
 				ID:        fmt.Sprintf("%s-%s-%03d", prefix, group.name, index+1),
 				Kind:      "link",
 				DependsOn: append([]string(nil), lifecycleIDs...),
-				Target:    target,
-				Desired:   Desired{Peer: cloneTarget(receipt.Carrier)},
+				Target:    receipt.Carrier,
+				Desired: Desired{Peer: cloneTarget(target),
+					CarrierAuthorizedBacklink: true},
+				Precondition: Precondition{AcceptedReceipt: authority},
 			})
 		}
 	}

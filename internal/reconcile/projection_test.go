@@ -47,6 +47,10 @@ func TestCompileReceiptProjectionDeterministicExistingOperations(t *testing.T) {
 		if operation.Kind == "upsert" || operation.Desired.Body != "" || operation.Desired.BodyFile != "" {
 			t.Fatalf("projection emitted arbitrary body mutation %+v", operation)
 		}
+		if operation.Kind == "link" && (!operation.Desired.CarrierAuthorizedBacklink ||
+			operation.Precondition.AcceptedReceipt == nil || operation.Target.Type != carrierTypes[operation.Precondition.AcceptedReceipt.Role]) {
+			t.Fatalf("projection emitted a relationship without sealed carrier authority %+v", operation)
+		}
 	}
 	if !first.AllowNonAtomic || first.Operations[0].Target.Type != "PROCESS" || len(first.Operations[0].Desired.RelatedLinks) != 0 ||
 		first.Operations[0].Precondition.AcceptedReceipt == nil ||

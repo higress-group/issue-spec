@@ -49,6 +49,10 @@ type Desired struct {
 	PRLinks       []string `json:"pr_links,omitempty"`
 	RelatedLinks  []string `json:"related_links,omitempty"`
 	Peer          *Target  `json:"peer,omitempty"`
+	// CarrierAuthorizedBacklink requires Target to be an immutable accepted
+	// receipt carrier that already links the exact Peer. Reconcile may mutate
+	// only Peer to add the missing reverse link.
+	CarrierAuthorizedBacklink bool `json:"carrier_authorized_backlink,omitempty"`
 }
 
 type Precondition struct {
@@ -143,13 +147,13 @@ func Validate(plan Plan) ([]Operation, string, error) {
 		default:
 			return nil, "", fmt.Errorf("operation %s: unsupported kind %q", op.ID, op.Kind)
 		}
+		if op.Desired.CarrierAuthorizedBacklink && op.Kind != "link" {
+			return nil, "", fmt.Errorf("operation %s: carrier-authorized backlink requires a link", op.ID)
+		}
 		if op.Precondition.RepresentationVersion < 0 || (op.Precondition.RepresentationVersion > 0 && op.Precondition.BodyDigest != "") {
 			return nil, "", fmt.Errorf("operation %s: representation version and body digest preconditions are mutually exclusive", op.ID)
 		}
 		if expected := op.Precondition.AcceptedReceipt; expected != nil {
-			if op.Kind != "transition" {
-				return nil, "", fmt.Errorf("operation %s: accepted receipt precondition requires a transition", op.ID)
-			}
 			if !validReceiptRole(expected.Role) || !projectionReceiptID.MatchString(expected.ReceiptID) ||
 				!projectionDigest.MatchString(expected.Digest) || expected.Generation == 0 {
 				return nil, "", fmt.Errorf("operation %s: accepted receipt precondition is invalid", op.ID)
@@ -157,11 +161,31 @@ func Validate(plan Plan) ([]Operation, string, error) {
 			if carrierTypes[expected.Role] != strings.ToUpper(strings.TrimSpace(op.Target.Type)) {
 				return nil, "", fmt.Errorf("operation %s: accepted %s receipt precondition targets %s", op.ID, expected.Role, op.Target.Type)
 			}
-			if strings.ToLower(strings.TrimSpace(op.Desired.Status)) != "done" || op.Desired.Body != "" ||
-				op.Desired.BodyFile != "" || op.Desired.Handoff != "" || op.Desired.AppendHandoff ||
-				len(op.Desired.PRLinks) != 0 || len(op.Desired.RelatedLinks) != 0 || op.Desired.Peer != nil {
-				return nil, "", fmt.Errorf("operation %s: accepted receipt precondition may only assert the carrier's immutable done status", op.ID)
+			switch op.Kind {
+			case "transition":
+				if strings.ToLower(strings.TrimSpace(op.Desired.Status)) != "done" || op.Desired.Body != "" ||
+					op.Desired.BodyFile != "" || op.Desired.Handoff != "" || op.Desired.AppendHandoff ||
+					len(op.Desired.PRLinks) != 0 || len(op.Desired.RelatedLinks) != 0 || op.Desired.Peer != nil ||
+					op.Desired.CarrierAuthorizedBacklink {
+					return nil, "", fmt.Errorf("operation %s: accepted receipt precondition may only assert the carrier's immutable done status", op.ID)
+				}
+			case "link":
+				if !op.Desired.CarrierAuthorizedBacklink || op.Precondition.RepresentationVersion != 0 ||
+					op.Precondition.BodyDigest != "" || op.Desired.Body != "" || op.Desired.BodyFile != "" ||
+					op.Desired.Status != "" || op.Desired.Handoff != "" || op.Desired.AppendHandoff ||
+					len(op.Desired.PRLinks) != 0 || len(op.Desired.RelatedLinks) != 0 {
+					return nil, "", fmt.Errorf("operation %s: accepted receipt link may only backfill a relationship explicitly carried by the immutable carrier", op.ID)
+				}
+				peerType := strings.ToUpper(strings.TrimSpace(op.Desired.Peer.Type))
+				if sameProjectionTarget(op.Target, *op.Desired.Peer) ||
+					(!relationshipTargets[expected.Role]["coverage"][peerType] && !relationshipTargets[expected.Role]["current"][peerType]) {
+					return nil, "", fmt.Errorf("operation %s: accepted %s receipt cannot authorize a %s backlink target", op.ID, expected.Role, peerType)
+				}
+			default:
+				return nil, "", fmt.Errorf("operation %s: accepted receipt precondition requires a carrier assertion or carrier-authorized backlink", op.ID)
 			}
+		} else if op.Desired.CarrierAuthorizedBacklink {
+			return nil, "", fmt.Errorf("operation %s: carrier-authorized backlink requires an accepted receipt precondition", op.ID)
 		}
 		byID[op.ID] = op
 	}

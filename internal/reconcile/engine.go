@@ -86,6 +86,7 @@ func (e Engine) Run(ctx context.Context, plan Plan, checkpointPath string) (Resu
 
 func (e Engine) preflight(ctx context.Context, plan Plan, ordered []Operation) (map[string]string, error) {
 	state := map[string]string{}
+	observations := map[string]observed{}
 	for _, op := range ordered {
 		for _, target := range operationTargets(op) {
 			key := targetKey(target)
@@ -98,6 +99,7 @@ func (e Engine) preflight(ctx context.Context, plan Plan, ordered []Operation) (
 			}
 			if found {
 				state[key] = item.Body
+				observations[key] = item
 			} else {
 				state[key] = ""
 			}
@@ -126,6 +128,25 @@ func (e Engine) preflight(ctx context.Context, plan Plan, ordered []Operation) (
 			left, right := state[targetKey(op.Target)], state[targetKey(*op.Desired.Peer)]
 			if left == "" || right == "" {
 				return nil, fmt.Errorf("operation %s link target is absent", op.ID)
+			}
+			if op.Desired.CarrierAuthorizedBacklink {
+				peer, peerFound := observations[targetKey(*op.Desired.Peer)]
+				carrier, ok := observations[targetKey(op.Target)]
+				if !ok {
+					return nil, fmt.Errorf("operation %s: accepted receipt carrier has no provider identity", op.ID)
+				}
+				if err := checkAcceptedReceiptPrecondition(op.Precondition, carrier.Body); err != nil {
+					return nil, fmt.Errorf("operation %s: %w", op.ID, err)
+				}
+				if !peerFound || !hasRelatedCommentLink(carrier.Body, peer.Comment) {
+					return nil, fmt.Errorf("operation %s: relationship target %s is not explicitly authorized by the accepted receipt carrier", op.ID, projectionTargetKey(*op.Desired.Peer))
+				}
+				right, _, err := model.AddRelatedCommentLink(right, carrier.Comment.HTMLURL)
+				if err != nil {
+					return nil, err
+				}
+				state[targetKey(*op.Desired.Peer)] = right
+				continue
 			}
 			leftURL, rightURL := artifactURL(plan.Repo, op.Target, 1), artifactURL(plan.Repo, *op.Desired.Peer, 1)
 			left, _, err := model.AddRelatedCommentLink(left, rightURL)
@@ -222,6 +243,9 @@ func (e Engine) applyTransition(ctx context.Context, plan Plan, op Operation) Op
 }
 
 func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) OperationResult {
+	if op.Desired.CarrierAuthorizedBacklink {
+		return e.applyCarrierAuthorizedBacklink(ctx, plan, op)
+	}
 	left, leftFound, err := e.observe(ctx, plan.Repo, op.Target, true)
 	if err != nil {
 		return failureResult(op, err, !plan.AllowNonAtomic)
@@ -287,6 +311,34 @@ func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) Operatio
 		atomic = false
 	}
 	return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: atomic, CommentID: left.Comment.ID, URL: left.Comment.HTMLURL}
+}
+
+func (e Engine) applyCarrierAuthorizedBacklink(ctx context.Context, plan Plan, op Operation) OperationResult {
+	carrier, carrierFound, err := e.observe(ctx, plan.Repo, op.Target, true)
+	if err != nil {
+		return failureResult(op, err, !plan.AllowNonAtomic)
+	}
+	peer, peerFound, err := e.observe(ctx, plan.Repo, *op.Desired.Peer, true)
+	if err != nil {
+		return failureResult(op, err, !plan.AllowNonAtomic)
+	}
+	if !carrierFound || !peerFound {
+		return conflictResult(op, "carrier-authorized backlink target is absent")
+	}
+	if err := checkAcceptedReceiptPrecondition(op.Precondition, carrier.Body); err != nil {
+		return conflictResult(op, err.Error())
+	}
+	if !hasRelatedCommentLink(carrier.Body, peer.Comment) {
+		return conflictResult(op, fmt.Sprintf("relationship target %s is not explicitly authorized by the accepted receipt carrier", projectionTargetKey(*op.Desired.Peer)))
+	}
+	peerBody, changed, err := model.AddRelatedCommentLink(peer.Body, carrier.Comment.HTMLURL)
+	if err != nil {
+		return conflictResult(op, err.Error())
+	}
+	if !changed {
+		return unchangedResult(op, peer, !plan.AllowNonAtomic)
+	}
+	return e.mutate(ctx, plan, op, *op.Desired.Peer, peer, peerBody)
 }
 
 func (e Engine) mutate(ctx context.Context, plan Plan, op Operation, target Target, item observed, body string) OperationResult {
@@ -409,6 +461,25 @@ func mergeRelated(before, desired string) string {
 		}
 	}
 	return desired
+}
+
+func hasRelatedCommentLink(body string, comment github.Comment) bool {
+	typed := model.ParseTypedComment(body)
+	if len(typed.Errors) != 0 {
+		return false
+	}
+	want := map[string]bool{}
+	for _, candidate := range []string{comment.HTMLURL, comment.URL} {
+		if normalized := model.NormalizeURL(candidate); normalized != "" {
+			want[normalized] = true
+		}
+	}
+	for _, related := range model.RelatedCommentURLs(typed) {
+		if want[model.NormalizeURL(related)] {
+			return true
+		}
+	}
+	return false
 }
 func checkPrecondition(p Precondition, item observed) error {
 	if p.RepresentationVersion > 0 && p.RepresentationVersion != item.Version {

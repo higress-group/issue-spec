@@ -315,6 +315,93 @@ func TestReconcileAcceptedReceiptCannotStrengthenCarrierLifecycle(t *testing.T) 
 	}
 }
 
+func TestReconcileAcceptedReceiptBackfillsOnlyCarrierAuthorizedRelationshipsWithoutRewritingCarrier(t *testing.T) {
+	const receiptID = "receipt-verification-1"
+	digest := strings.Repeat("d", 64)
+	f := newFake()
+	carrier := acceptedReceiptBody(t, "VERIFY", "VERIFY-001", "done", assignment.RoleVerification, receiptID, digest, 3)
+	for _, targetURL := range []string{
+		"https://x/o/r/issues/9#issuecomment-2",
+		"https://x/o/r/issues/9#issuecomment-3",
+	} {
+		var changed bool
+		var err error
+		carrier, changed, err = model.AddRelatedCommentLink(carrier, targetURL)
+		if err != nil || !changed {
+			t.Fatalf("seed carrier relationship changed=%t err=%v", changed, err)
+		}
+	}
+	immutableCarrier := carrier
+	addComment(f, 9, 1, carrier)
+	addComment(f, 9, 2, typedBody(t, "SPEC", "SPEC-001", "confirmed"))
+	addComment(f, 9, 3, typedBody(t, "PROCESS", "PROCESS-001", "done"))
+
+	plan, err := CompileReceiptProjection(ReceiptProjection{Version: 1, Repo: "o/r", Hostname: "github.com", Proposal: 7, Issue: 9,
+		AcceptedReceipts: []AcceptedReceiptProjection{{Role: assignment.RoleVerification,
+			Carrier: Target{Type: "VERIFY", ID: "VERIFY-001"}, ReceiptID: receiptID, ReceiptDigest: digest, Generation: 3,
+			Lifecycle:       []ReceiptLifecycle{{Target: Target{Type: "VERIFY", ID: "VERIFY-001"}, Status: "done"}},
+			CoverageTargets: []Target{{Type: "SPEC", ID: "SPEC-001"}},
+			CurrentTargets:  []Target{{Type: "PROCESS", ID: "PROCESS-001"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := t.TempDir() + "/checkpoint.json"
+	first, err := (Engine{Backend: f}).Run(context.Background(), plan, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.OK || first.Updated != 2 || first.Unchanged != 1 || f.writes != 2 || f.comments[9][0].Body != immutableCarrier {
+		t.Fatalf("first=%+v writes=%d carrier_changed=%t", first, f.writes, f.comments[9][0].Body != immutableCarrier)
+	}
+	carrierURL := f.comments[9][0].HTMLURL
+	for _, comment := range f.comments[9][1:] {
+		if !hasRelatedCommentLink(comment.Body, f.comments[9][0]) {
+			t.Fatalf("target %d missing carrier backlink %s: %s", comment.ID, carrierURL, comment.Body)
+		}
+	}
+
+	second, err := (Engine{Backend: f}).Run(context.Background(), plan, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.OK || second.Unchanged != 3 || f.writes != 2 || f.comments[9][0].Body != immutableCarrier {
+		t.Fatalf("replay=%+v writes=%d carrier_changed=%t", second, f.writes, f.comments[9][0].Body != immutableCarrier)
+	}
+
+	f.comments[9][0].Body = strings.Replace(f.comments[9][0].Body, digest, strings.Repeat("f", 64), 1)
+	if _, err := (Engine{Backend: f}).Run(context.Background(), plan, cp); err == nil ||
+		!strings.Contains(err.Error(), "does not match projection") || f.writes != 2 {
+		t.Fatalf("stale accepted carrier err=%v writes=%d", err, f.writes)
+	}
+}
+
+func TestReconcileAcceptedReceiptRejectsWrongTypeValidRelationshipBeforeWrite(t *testing.T) {
+	const receiptID = "receipt-verification-1"
+	digest := strings.Repeat("e", 64)
+	f := newFake()
+	carrier := acceptedReceiptBody(t, "VERIFY", "VERIFY-001", "done", assignment.RoleVerification, receiptID, digest, 1)
+	carrier, _, _ = model.AddRelatedCommentLink(carrier, "https://x/o/r/issues/9#issuecomment-2")
+	carrier, _, _ = model.AddRelatedCommentLink(carrier, "https://x/o/r/issues/9#issuecomment-4")
+	addComment(f, 9, 1, carrier)
+	addComment(f, 9, 2, typedBody(t, "SPEC", "SPEC-001", "confirmed"))
+	addComment(f, 9, 3, typedBody(t, "SPEC", "SPEC-999", "confirmed"))
+	addComment(f, 9, 4, typedBody(t, "PROCESS", "PROCESS-001", "done"))
+
+	plan, err := CompileReceiptProjection(ReceiptProjection{Version: 1, Repo: "o/r", Hostname: "github.com", Proposal: 7, Issue: 9,
+		AcceptedReceipts: []AcceptedReceiptProjection{{Role: assignment.RoleVerification,
+			Carrier: Target{Type: "VERIFY", ID: "VERIFY-001"}, ReceiptID: receiptID, ReceiptDigest: digest, Generation: 1,
+			Lifecycle:       []ReceiptLifecycle{{Target: Target{Type: "VERIFY", ID: "VERIFY-001"}, Status: "done"}},
+			CoverageTargets: []Target{{Type: "SPEC", ID: "SPEC-999"}},
+			CurrentTargets:  []Target{{Type: "PROCESS", ID: "PROCESS-001"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Engine{Backend: f}).Run(context.Background(), plan, ""); err == nil ||
+		!strings.Contains(err.Error(), "not explicitly authorized") || f.writes != 0 {
+		t.Fatalf("err=%v writes=%d", err, f.writes)
+	}
+}
+
 func TestReconcileStrictConditionalDefaultAndPlanAcknowledgement(t *testing.T) {
 	f := newFake()
 	addComment(f, 1, 1, typedBody(t, "TASK", "TASK-001", "confirmed"))
