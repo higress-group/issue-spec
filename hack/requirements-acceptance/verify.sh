@@ -16,6 +16,18 @@ printf '%s\n' release pat context skill draft handoff > "$temp_root/expected-ste
 cmp "$temp_root/expected-steps" "$temp_root/english-steps"
 cmp "$temp_root/expected-steps" "$temp_root/chinese-steps"
 
+latest_download='https://github.com/higress-group/issue-spec/releases/latest/download'
+for document in "$english" "$chinese"; do
+  grep -Fq "$latest_download" "$document" || {
+    echo "requirements onboarding must use the GitHub latest Release download endpoint: $document" >&2
+    exit 1
+  }
+  if grep -Fq 'v1.8.0' "$document"; then
+    echo "requirements onboarding must not pin the obsolete v1.8.0 example: $document" >&2
+    exit 1
+  fi
+done
+
 expected_images='requirements-pat-secret.png
 requirements-pat-secret.zh-CN.png
 requirements-simple-issue.png

@@ -52,7 +52,7 @@ func TestExternalVerifyGateUsesAuthoritativeNativeTarget(t *testing.T) {
 		{name: "missing check", edit: func(s *codereview.Snapshot) { s.Records = s.Records[:1] }, want: "missing_evidence"},
 		{name: "stale check", edit: func(s *codereview.Snapshot) { s.Records[1].ObservedAt = now.Add(-2 * time.Hour) }, want: "stale_evidence"},
 		{name: "untrusted check", edit: func(s *codereview.Snapshot) { s.Records[1].Trusted = false }, want: "untrusted_evidence"},
-		{name: "wrong provider", edit: func(s *codereview.Snapshot) { s.Reference.ProviderKey = "other.example" }, want: "reference_mismatch"},
+		{name: "wrong provider", edit: func(s *codereview.Snapshot) { s.Reference.ProviderKey = "other.example" }, want: "snapshot provider"},
 		{name: "wrong record revision", edit: func(s *codereview.Snapshot) { s.Records[1].SubjectRevision = "other-head" }, want: "record_revision_mismatch"},
 		{name: "pending check", edit: func(s *codereview.Snapshot) { s.Records[1].State = "pending" }, want: "required_check_pending"},
 		{name: "failed check", edit: func(s *codereview.Snapshot) { s.Records[1].State = "failed" }, want: "required_check_failed"},
@@ -73,6 +73,10 @@ func TestExternalVerifyGateUsesAuthoritativeNativeTarget(t *testing.T) {
 			app := newApp(strings.NewReader(""), &out, &errOut)
 			app.profileName = "staging"
 			app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
+			app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) {
+				return &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+					Reference: reference, SubjectRevision: "head-abc", CapturedAt: now}}, nil
+			}
 			result, hosted, err := app.externalGate(t.Context(), "github.com", "realm-token", "acme/widgets", 9,
 				"code_change", test.expected, coreevidence.GateVerify)
 			if !hosted {
@@ -80,7 +84,7 @@ func TestExternalVerifyGateUsesAuthoritativeNativeTarget(t *testing.T) {
 			}
 			if test.want == "" {
 				if err != nil || !result.Evaluation.Passed || result.Consumption.SubjectRevision != "head-abc" ||
-					result.Consumption.ReferenceVersion != 7 {
+					result.Consumption.ReferenceVersion != 7 || native.syncs != 1 {
 					t.Fatalf("result=%+v err=%v", result, err)
 				}
 				return
@@ -211,6 +215,71 @@ func TestExternalReviewGateAlwaysSynchronizesBeforeEvaluation(t *testing.T) {
 	if native.syncs != 2 || native.resolveCalls != 4 || strings.Join(calls, ",") !=
 		"operator,persist,ledger,operator,persist,ledger" {
 		t.Fatalf("syncs=%d resolve_calls=%d calls=%v", native.syncs, native.resolveCalls, calls)
+	}
+}
+
+func TestExternalVerifyStageSynchronizesWithoutPolicyAndOtherStagesRemainOptIn(t *testing.T) {
+	now := time.Now().UTC()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	providerSnapshot := codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+		Reference: reference, SubjectRevision: "head-abc", CapturedAt: now}
+	check := testEvidenceRecord("check-ledger", codereview.EvidenceCheck, "passed", "head-abc", now)
+	check.Name = "unit"
+	ledgerSnapshot := codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+		Reference: reference, SubjectRevision: "head-abc", CapturedAt: now, Records: []codereview.EvidenceRecord{check}}
+	for _, test := range []struct {
+		stage     string
+		wantSyncs int
+		wantCalls string
+	}{
+		{stage: "verify", wantSyncs: 2, wantCalls: "operator,persist,ledger,operator,persist,ledger"},
+		{stage: "runner", wantCalls: "ledger,ledger"},
+		{stage: "status", wantCalls: "ledger,ledger"},
+	} {
+		t.Run(test.stage, func(t *testing.T) {
+			var calls []string
+			provider := &commandEvidenceProvider{label: "operator", calls: &calls, snapshot: providerSnapshot}
+			native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7,
+				SubjectRevision: "head-abc", Provider: &commandEvidenceProvider{label: "ledger", calls: &calls, snapshot: ledgerSnapshot}}, calls: &calls}
+			app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+			app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
+			app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) { return provider, nil }
+			for i := 0; i < 2; i++ {
+				result, hosted, err := app.externalGateWithProfile(t.Context(), auth.Profile{Kind: auth.ProfileKindHosted}, "token",
+					"acme/widgets", 9, "code_change", "head-abc", coreevidence.GateVerify, t.TempDir(), test.stage)
+				if err != nil || !hosted || !result.Evaluation.Passed {
+					t.Fatalf("run %d result=%+v hosted=%t err=%v", i+1, result, hosted, err)
+				}
+			}
+			if native.syncs != test.wantSyncs || strings.Join(calls, ",") != test.wantCalls {
+				t.Fatalf("syncs=%d calls=%v", native.syncs, calls)
+			}
+		})
+	}
+}
+
+func TestExternalVerifyRevisionMismatchDoesNotPersistProviderFacts(t *testing.T) {
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	for _, message := range []string{
+		"revision_mismatch: requested revision is no longer current",
+		"revision_mismatch: HEAD moved while collecting facts",
+	} {
+		t.Run(message, func(t *testing.T) {
+			var calls []string
+			native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7,
+				SubjectRevision: "head-abc", Provider: &commandEvidenceProvider{label: "ledger", calls: &calls}}, calls: &calls}
+			app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+			app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
+			app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) {
+				return &commandEvidenceProvider{label: "operator", calls: &calls, snapshotErr: errors.New(message)}, nil
+			}
+			_, hosted, err := app.externalGateWithProfile(t.Context(), auth.Profile{Kind: auth.ProfileKindHosted}, "token",
+				"acme/widgets", 9, "code_change", "head-abc", coreevidence.GateVerify, t.TempDir(), "verify")
+			if err == nil || !hosted || !strings.Contains(err.Error(), "revision_mismatch") || native.syncs != 0 ||
+				strings.Join(calls, ",") != "operator" {
+				t.Fatalf("hosted=%t err=%v syncs=%d calls=%v", hosted, err, native.syncs, calls)
+			}
+		})
 	}
 }
 

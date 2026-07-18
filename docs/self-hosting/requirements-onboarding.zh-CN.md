@@ -8,15 +8,16 @@
 <!-- requirements-step:release -->
 ## 1. 安装经过校验的 Release
 
-`v1.8.0` 这样的语义版本 Release 不可变。`rolling` 只是完整构建成功后才更新的指针；
-每个 `rolling-<revision>` 快照仍然不可变。
+`https://github.com/higress-group/issue-spec/releases/latest/download` 跟随最近一次完整成功
+发布所生成的 GitHub latest Release；在当前发布设计中，它就是最新的 `rolling` 快照。
+具体的 `rolling-<revision>` 快照、Tag 及其制品仍然不可变。
 
 不要把远程脚本通过管道直接交给 Shell。只用 `curl` 把安装器、Manifest、Checksum
 和对应平台制品下载到同一目录，再校验执行：
 
 ```bash
 mkdir issue-spec-install && cd issue-spec-install
-base=https://github.com/higress-group/issue-spec/releases/download/v1.8.0
+base=https://github.com/higress-group/issue-spec/releases/latest/download
 for file in install.sh manifest.json SHA256SUMS issue-spec_linux_amd64.tar.gz; do
   curl -fLO "$base/$file"
 done
@@ -27,7 +28,7 @@ issue-spec version --json
 Windows PowerShell 使用同一组已下载证据：
 
 ```powershell
-$base = "https://github.com/higress-group/issue-spec/releases/download/v1.8.0"
+$base = "https://github.com/higress-group/issue-spec/releases/latest/download"
 @("install.ps1", "manifest.json", "SHA256SUMS", "issue-spec_windows_amd64.zip") | ForEach-Object {
   curl.exe -fLO "$base/$_"
 }
@@ -35,8 +36,10 @@ $base = "https://github.com/higress-group/issue-spec/releases/download/v1.8.0"
 issue-spec version --json
 ```
 
-安装器根据 Manifest 和 SHA-256 Checksum 校验所选制品。对同一已校验版本重复执行是
-幂等的。最后把输出的版本、Revision、Channel 与 Platform 和 Release 描述进行比对。
+把安装器、Manifest、Checksum 和制品下载到同一目录，可确保这些证据属于同一个
+Release 集合。安装器根据该 Manifest 和 SHA-256 Checksum 校验所选制品。对同一已校验
+快照重复执行是幂等的。最后把输出的版本、Revision、Channel 与 Platform 和 Release
+描述进行比对。
 
 <!-- requirements-step:pat -->
 ## 2. 创建需求 PAT
@@ -81,7 +84,7 @@ Profile 和全局 Server Context 不含 Secret，也不保存 Repo 或 Agent。�
 CLI Setup 不猜测 Codex、Claude 或其他 Agent 的 Skill 安装方式。把下面这个独立
 Release 制品交给目标 Agent，让它用自己的原生机制安装：
 
-[下载 v1.8.0 的 `issue-spec-requirements.zip`](https://github.com/higress-group/issue-spec/releases/download/v1.8.0/issue-spec-requirements.zip)
+[从 latest Release 下载 `issue-spec-requirements.zip`](https://github.com/higress-group/issue-spec/releases/latest/download/issue-spec-requirements.zip)
 
 Release 的 `manifest.json` 和 `SHA256SUMS` 同样覆盖该制品。压缩包只包含规范 Skill
 及兼容性 Manifest，不包含 Server、Repo、Agent 路径或凭据。

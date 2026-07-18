@@ -9,16 +9,17 @@ server is `https://issues.example.test`; no displayed value is a credential.
 <!-- requirements-step:release -->
 ## 1. Install a verified release
 
-A semantic-version release such as `v1.8.0` is immutable. `rolling` is only a
-pointer updated after a complete successful build; each
-`rolling-<revision>` snapshot remains immutable.
+`https://github.com/higress-group/issue-spec/releases/latest/download` follows
+the latest GitHub Release from the most recent complete successful publication.
+In the current release design, that is the latest `rolling` snapshot. Its
+specific `rolling-<revision>` snapshot, tag, and assets remain immutable.
 
 Do not pipe a remote script into a shell. Use `curl` to download the installer,
 manifest, checksums, and matching platform archive, then verify before executing:
 
 ```bash
 mkdir issue-spec-install && cd issue-spec-install
-base=https://github.com/higress-group/issue-spec/releases/download/v1.8.0
+base=https://github.com/higress-group/issue-spec/releases/latest/download
 for file in install.sh manifest.json SHA256SUMS issue-spec_linux_amd64.tar.gz; do
   curl -fLO "$base/$file"
 done
@@ -29,7 +30,7 @@ issue-spec version --json
 PowerShell on Windows uses the same downloaded evidence:
 
 ```powershell
-$base = "https://github.com/higress-group/issue-spec/releases/download/v1.8.0"
+$base = "https://github.com/higress-group/issue-spec/releases/latest/download"
 @("install.ps1", "manifest.json", "SHA256SUMS", "issue-spec_windows_amd64.zip") | ForEach-Object {
   curl.exe -fLO "$base/$_"
 }
@@ -37,9 +38,11 @@ $base = "https://github.com/higress-group/issue-spec/releases/download/v1.8.0"
 issue-spec version --json
 ```
 
-The installer checks the selected asset against the manifest and SHA-256
-checksums. Re-running the same verified release is idempotent. Compare the
-reported version, revision, channel, and platform to the release description.
+Downloading the installer, manifest, checksums, and asset into the same
+directory keeps the evidence in one Release set. The installer checks the
+selected asset against that manifest and its SHA-256 checksums. Re-running the
+same verified snapshot is idempotent. Compare the reported version, revision,
+channel, and platform to the release description.
 
 <!-- requirements-step:pat -->
 ## 2. Create the requirements PAT
@@ -91,7 +94,7 @@ CLI setup does not guess how Codex, Claude, or another agent installs skills.
 Give the agent this standalone Release asset and ask it to install the skill
 with its own native mechanism:
 
-[Download `issue-spec-requirements.zip` from v1.8.0](https://github.com/higress-group/issue-spec/releases/download/v1.8.0/issue-spec-requirements.zip)
+[Download `issue-spec-requirements.zip` from the latest Release](https://github.com/higress-group/issue-spec/releases/latest/download/issue-spec-requirements.zip)
 
 The archive is also listed in the Release `manifest.json` and `SHA256SUMS`.
 It contains only the canonical skill and its compatibility manifest—never a

@@ -339,8 +339,12 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 	if profile.Kind == auth.ProfileKindHosted {
 		collection.Remote.PRChecks = gates.Fact{}
 		collection.Remote.ReviewFindings = gates.Fact{}
+		syncStage := "status"
+		if target == gates.TargetFinal {
+			syncStage = "verify"
+		}
 		gate, _, gateErr := a.externalGateWithProfile(ctx, profile, token, repo, implementIssue, "code_change", "",
-			coreevidence.GateVerify, ".", "status")
+			coreevidence.GateVerify, ".", syncStage)
 		if revision := strings.TrimSpace(gate.Target.SubjectRevision); revision != "" {
 			collection.Remote.Workspace.ExpectedRevision = gates.Fact{Required: true, Known: true, Passed: true,
 				Expected: revision, Current: revision}

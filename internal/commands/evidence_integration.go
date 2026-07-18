@@ -198,9 +198,10 @@ func (a *app) externalGateWithProfile(ctx context.Context, profile auth.Profile,
 		completionPolicy = projectReviewCompletionPolicy(&policy)
 	}
 	request := codereview.SnapshotRequest{Reference: target.Reference, SubjectRevision: target.SubjectRevision}
-	// GateReview is the explicit review sync command. It must always refresh
-	// provider facts; sync_before remains an optional policy only for other gates.
-	synchronize := gate == coreevidence.GateReview ||
+	// GateReview is the explicit review sync command, while the verify stage is
+	// the terminal current-HEAD assertion. Both must always refresh provider
+	// facts; sync_before remains an optional policy for other stages.
+	synchronize := gate == coreevidence.GateReview || syncStage == "verify" ||
 		(plan.Config.ExternalCode != nil && plan.Config.ExternalCode.Evidence.SynchronizesBefore(syncStage))
 	if synchronize {
 		provider, err := a.resolveOperatorProvider(ctx, profile, target.Reference.ProviderKey)
