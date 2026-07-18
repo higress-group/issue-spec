@@ -13,14 +13,14 @@ A semantic-version release such as `v1.8.0` is immutable. `rolling` is only a
 pointer updated after a complete successful build; each
 `rolling-<revision>` snapshot remains immutable.
 
-Do not pipe a remote script into a shell. Download the installer, manifest,
-checksums, and attestation together, then verify before executing:
+Do not pipe a remote script into a shell. Use `curl` to download the installer,
+manifest, checksums, and matching platform archive, then verify before executing:
 
 ```bash
 mkdir issue-spec-install && cd issue-spec-install
-gh release download v1.8.0 --repo higress-group/issue-spec --dir .
+base=https://github.com/higress-group/issue-spec/releases/download/v1.8.0
 for file in install.sh manifest.json SHA256SUMS issue-spec_linux_amd64.tar.gz; do
-  gh attestation verify "$file" --repo higress-group/issue-spec
+  curl -fLO "$base/$file"
 done
 sh ./install.sh --asset-dir .
 issue-spec version --json
@@ -29,9 +29,10 @@ issue-spec version --json
 PowerShell on Windows uses the same downloaded evidence:
 
 ```powershell
-gh release download v1.8.0 --repo higress-group/issue-spec --dir .
-@("install.ps1", "manifest.json", "SHA256SUMS", "issue-spec_windows_amd64.zip") |
-  ForEach-Object { gh attestation verify $_ --repo higress-group/issue-spec }
+$base = "https://github.com/higress-group/issue-spec/releases/download/v1.8.0"
+@("install.ps1", "manifest.json", "SHA256SUMS", "issue-spec_windows_amd64.zip") | ForEach-Object {
+  curl.exe -fLO "$base/$_"
+}
 .\install.ps1 -AssetDir .
 issue-spec version --json
 ```
@@ -39,8 +40,6 @@ issue-spec version --json
 The installer checks the selected asset against the manifest and SHA-256
 checksums. Re-running the same verified release is idempotent. Compare the
 reported version, revision, channel, and platform to the release description.
-
-![Synthetic release verification](assets/requirements-release.png)
 
 <!-- requirements-step:pat -->
 ## 2. Create the requirements PAT
@@ -59,13 +58,12 @@ The secret is shown once. The screenshot displays only
 <!-- requirements-step:context -->
 ## 3. Preview and save the connection
 
-Run setup without `--yes` first. It prints the server profile, non-secret
-repository context, and skill destination, but writes nothing:
+Run setup without `--yes` first. It prints the global server profile and
+authenticated identity, but writes nothing:
 
 ```bash
 issue-spec requirements setup \
-  --server https://issues.example.test \
-  --repo acme/widgets --agent codex
+  --server https://issues.example.test
 ```
 
 After reviewing the preview, repeat with `--yes`. The normal prompt hides the
@@ -75,29 +73,29 @@ private file and standard input; never place the token in shell arguments:
 ```bash
 issue-spec requirements setup \
   --server https://issues.example.test \
-  --repo acme/widgets --agent codex --token-stdin --yes < ./private-token
+  --token-stdin --yes < ./private-token
 rm ./private-token
 issue-spec requirements status
 ```
 
 Setup stores the PAT in the OS keyring and fails closed if secure storage is
-unavailable. Profile and repository context files contain no secret. Running
-the same command again is safe and reports the current status.
+unavailable. The origin-bound profile and global server context contain no
+secret, repository, or agent choice. The saved connection works for every
+project visible through that self-hosted server. Running the same command again
+is safe and reports the current status.
 
 <!-- requirements-step:skill -->
-## 4. Preview the skill destination
+## 4. Give the skill to your agent
 
-Setup explicitly previews and installs the versioned requirements skill into
-the selected global Codex or Claude destination. It does not replace a
-repository-local skill. If a user-modified global skill already exists, setup
-stops so the user can replace it explicitly, choose another destination, or
-cancel.
+CLI setup does not guess how Codex, Claude, or another agent installs skills.
+Give the agent this standalone Release asset and ask it to install the skill
+with its own native mechanism:
 
-The standalone skill archive is an advanced alternative. Verify its
-attestation, manifest, and checksum, extract into a temporary directory, print
-the absolute destination, and compare the bundled compatibility manifest with
-`issue-spec version --json` before copying. Prefer CLI-managed setup because it
-applies the same conflict checks.
+[Download `issue-spec-requirements.zip` from v1.8.0](https://github.com/higress-group/issue-spec/releases/download/v1.8.0/issue-spec-requirements.zip)
+
+The archive is also listed in the Release `manifest.json` and `SHA256SUMS`.
+It contains only the canonical skill and its compatibility manifest—never a
+server, repository, agent path, or credential.
 
 <!-- requirements-step:draft -->
 ## 5. Choose a simple or standard request
@@ -120,8 +118,8 @@ Choose one path:
 
 The skill drafts locally first. Before any remote write it shows the exact
 repository, issue title/body, labels, and comments, refreshes
-`requirements status`, and asks for explicit confirmation. After confirmation
-it uses the equivalent of:
+`requirements status --repo acme/widgets --json`, and asks for explicit
+confirmation. After confirmation it uses the equivalent of:
 
 ```bash
 issue-spec --profile team issue create simple --repo acme/widgets --title "..." --body-file ./issue.md --json

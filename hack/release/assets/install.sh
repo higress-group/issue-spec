@@ -72,15 +72,12 @@ fi
 if [ -n "$release_tag" ] || [ "$latest" = true ]; then
   download_dir=$(mktemp -d "${TMPDIR:-/tmp}/issue-spec-download.XXXXXX")
   asset_dir=$download_dir
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "install.sh: curl is required for release downloads" >&2
+    exit 1
+  fi
   for name in manifest.json SHA256SUMS "$asset"; do
-    if command -v curl >/dev/null 2>&1; then
-      curl -fL --retry 2 --output "$asset_dir/$name" "$download_url/$name"
-    elif command -v wget >/dev/null 2>&1; then
-      wget -O "$asset_dir/$name" "$download_url/$name"
-    else
-      echo "install.sh: curl or wget is required for release downloads" >&2
-      exit 1
-    fi
+    curl -fL --retry 2 --output "$asset_dir/$name" "$download_url/$name"
   done
 fi
 

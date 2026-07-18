@@ -23,7 +23,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/templates"
 )
 
-func TestRequirementsAcceptanceSetupTargetsAndSecretBoundary(t *testing.T) {
+func TestRequirementsAcceptanceGlobalSetupAndSecretBoundary(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "config")
 	homeDir := filepath.Join(root, "home")
@@ -44,12 +44,12 @@ func TestRequirementsAcceptanceSetupTargetsAndSecretBoundary(t *testing.T) {
 	state := newRequirementsAcceptanceState("public", []string{"read", "contribute"})
 	server := newRequirementsAcceptanceServer(t, secret, state)
 	defer server.Close()
-	common := []string{"--server", server.URL, "--repo", "owner/repo", "--profile", "acceptance", "--json"}
+	common := []string{"--server", server.URL, "--profile", "acceptance", "--json"}
 
 	var transcript bytes.Buffer
 	preview := newApp(strings.NewReader(secret+"\n"), &transcript, &transcript)
 	preview.resolveRequirementsToken = noRequirementsToken
-	previewArgs := append(append([]string(nil), common...), "--agent", "codex", "--token-stdin")
+	previewArgs := append(append([]string(nil), common...), "--token-stdin")
 	if code := preview.runRequirementsSetup(t.Context(), previewArgs); code != 0 {
 		t.Fatalf("preview exit=%d transcript=%q", code, transcript.String())
 	}
@@ -58,14 +58,11 @@ func TestRequirementsAcceptanceSetupTargetsAndSecretBoundary(t *testing.T) {
 	if err := json.Unmarshal(transcript.Bytes(), &previewResult); err != nil {
 		t.Fatal(err)
 	}
-	if previewResult.Applied || previewResult.SkillPlan.Target != requirements.TargetCodex || previewResult.SkillPlan.Action != requirements.ActionCreate {
+	if previewResult.Applied || previewResult.User != "external-user" {
 		t.Fatalf("unexpected preview: %+v", previewResult)
 	}
 	if _, _, err := auth.ResolveProfile("acceptance", ""); err == nil {
 		t.Fatal("preview wrote the profile")
-	}
-	if _, err := os.Stat(previewResult.SkillPlan.Path); !os.IsNotExist(err) {
-		t.Fatalf("preview wrote the skill: %v", err)
 	}
 
 	transcript.Reset()
@@ -79,7 +76,7 @@ func TestRequirementsAcceptanceSetupTargetsAndSecretBoundary(t *testing.T) {
 		storedSecret = token
 		return "keyring", nil
 	}
-	applyArgs := append(append([]string(nil), common...), "--agent", "codex", "--token-stdin", "--yes")
+	applyArgs := append(append([]string(nil), common...), "--token-stdin", "--yes")
 	if code := applyCodex.runRequirementsSetup(t.Context(), applyArgs); code != 0 {
 		t.Fatalf("codex apply exit=%d transcript=%q", code, transcript.String())
 	}
@@ -89,29 +86,27 @@ func TestRequirementsAcceptanceSetupTargetsAndSecretBoundary(t *testing.T) {
 	}
 
 	transcript.Reset()
-	applyClaude := newApp(strings.NewReader(""), &transcript, &transcript)
-	applyClaude.resolveRequirementsToken = func(context.Context, auth.Profile) (auth.Token, error) {
+	rerun := newApp(strings.NewReader(""), &transcript, &transcript)
+	rerun.resolveRequirementsToken = func(context.Context, auth.Profile) (auth.Token, error) {
 		return auth.Token{Value: secret, Source: "keyring"}, nil
 	}
-	applyClaude.storeRequirementsToken = func(context.Context, auth.Profile, string, bool) (string, error) {
-		t.Fatal("second target attempted to store the existing PAT")
+	rerun.storeRequirementsToken = func(context.Context, auth.Profile, string, bool) (string, error) {
+		t.Fatal("idempotent setup attempted to store the existing PAT")
 		return "", nil
 	}
-	claudeArgs := append(append([]string(nil), common...), "--agent", "claude", "--yes")
-	if code := applyClaude.runRequirementsSetup(t.Context(), claudeArgs); code != 0 {
-		t.Fatalf("claude apply exit=%d transcript=%q", code, transcript.String())
+	if code := rerun.runRequirementsSetup(t.Context(), append(append([]string(nil), common...), "--yes")); code != 0 {
+		t.Fatalf("rerun exit=%d transcript=%q", code, transcript.String())
 	}
 	assertRequirementsOutputDoesNotContain(t, transcript.String(), secret)
 
-	for _, target := range []string{
-		filepath.Join(codexDir, "skills", requirements.SkillName),
-		filepath.Join(claudeDir, "skills", requirements.SkillName),
-	} {
-		assertRequirementsAcceptanceSkillInstall(t, target)
-	}
 	configured, err := requirements.LoadActiveContext()
-	if err != nil || configured.Agent != requirements.TargetClaude || configured.Repository != "owner/repo" {
+	if err != nil || configured.Profile != "acceptance" || configured.ServerInstanceID != "issue-spec:acceptance" {
 		t.Fatalf("active context=%+v err=%v", configured, err)
+	}
+	for _, agentDir := range []string{codexDir, claudeDir} {
+		if _, err := os.Stat(agentDir); !os.IsNotExist(err) {
+			t.Fatalf("requirements setup wrote agent directory %s: %v", agentDir, err)
+		}
 	}
 	assertRequirementsTreeDoesNotContain(t, root, secret)
 	if _, err := os.Stat(browserLog); !os.IsNotExist(err) {
@@ -149,15 +144,14 @@ func TestRequirementsAcceptanceExecutableJourney(t *testing.T) {
 		storedSecret = token
 		return "keyring", nil
 	}
-	if code := setup.runRequirementsSetup(t.Context(), []string{"--server", server.URL, "--repo", "owner/repo", "--profile", "acceptance",
-		"--agent", "codex", "--token-stdin", "--yes", "--json"}); code != 0 {
+	if code := setup.runRequirementsSetup(t.Context(), []string{"--server", server.URL, "--profile", "acceptance",
+		"--token-stdin", "--yes", "--json"}); code != 0 {
 		t.Fatalf("setup exit=%d output=%q", code, output.String())
 	}
 	if storedSecret != secret {
 		t.Fatalf("fake keyring stored %q", storedSecret)
 	}
 	assertRequirementsOutputDoesNotContain(t, output.String(), secret)
-	assertRequirementsAcceptanceSkillInstall(t, filepath.Join(root, "codex", "skills", requirements.SkillName))
 	tokenFile := filepath.Join(root, "journey.token")
 	if err := os.WriteFile(tokenFile, []byte(secret), 0o600); err != nil {
 		t.Fatal(err)
@@ -238,7 +232,7 @@ func runRequirementsAcceptanceJourney(t *testing.T, root, profile, request strin
 		return result
 	}
 
-	statusOutput := runRequirementsAcceptanceCLI(t, profile, nil, "requirements", "status", "--json")
+	statusOutput := runRequirementsAcceptanceCLI(t, profile, nil, "requirements", "status", "--repo", "owner/repo", "--json")
 	var status requirementsStatusResult
 	if err := json.Unmarshal(statusOutput, &status); err != nil {
 		t.Fatal(err)
@@ -546,28 +540,6 @@ func handleRequirementsAcceptanceREST(t *testing.T, state *requirementsAcceptanc
 		return
 	}
 	http.NotFound(w, r)
-}
-
-func assertRequirementsAcceptanceSkillInstall(t *testing.T, target string) {
-	t.Helper()
-	if info, err := os.Stat(filepath.Join(target, "SKILL.md")); err != nil || !info.Mode().IsRegular() {
-		t.Fatalf("skill target %s: info=%v err=%v", target, info, err)
-	}
-	raw, err := os.ReadFile(filepath.Join(target, requirements.ManagedManifestName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var manifest requirements.Manifest
-	if err := json.Unmarshal(raw, &manifest); err != nil {
-		t.Fatal(err)
-	}
-	wantContentID, err := requirements.ContentID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifest.Schema != requirements.ManifestSchema || manifest.Name != requirements.SkillName || manifest.ContentID != wantContentID {
-		t.Fatalf("installed manifest=%+v want_content_id=%s", manifest, wantContentID)
-	}
 }
 
 func assertRequirementsTreeDoesNotContain(t *testing.T, root, secret string) {

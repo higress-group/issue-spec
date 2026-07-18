@@ -12,7 +12,7 @@ import (
 
 func TestActiveContextRoundTripIsPrivateNonSecretAndIdempotent(t *testing.T) {
 	t.Setenv(auth.ConfigDirEnv, t.TempDir())
-	context := ActiveContext{Profile: "issues", ServerInstanceID: "issue-spec:realm-a", Repository: "owner/repo", Agent: TargetCodex}
+	context := ActiveContext{Profile: "issues", ServerInstanceID: "issue-spec:realm-a"}
 	changed, err := SaveActiveContext(context)
 	if err != nil || !changed {
 		t.Fatalf("first save changed=%t err=%v", changed, err)
@@ -32,8 +32,10 @@ func TestActiveContextRoundTripIsPrivateNonSecretAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "secret-token") || strings.Contains(string(raw), "api_url") {
-		t.Fatalf("context contains credential or duplicated endpoint: %s", raw)
+	for _, forbidden := range []string{"secret-token", "api_url", "repository", "agent"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("context contains forbidden field %q: %s", forbidden, raw)
+		}
 	}
 	before := info.ModTime()
 	time.Sleep(time.Millisecond)
@@ -57,7 +59,7 @@ func TestLoadActiveContextRejectsPermissiveAndLinkedFiles(t *testing.T) {
 		make func(t *testing.T, path string)
 	}{
 		{name: "permissive", make: func(t *testing.T, path string) {
-			if err := os.WriteFile(path, []byte(`{"profile":"issues","server_instance_id":"issue-spec:a","repository":"o/r","agent":"codex"}`), 0o644); err != nil {
+			if err := os.WriteFile(path, []byte(`{"profile":"issues","server_instance_id":"issue-spec:a"}`), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Chmod(path, 0o644); err != nil {
@@ -66,7 +68,7 @@ func TestLoadActiveContextRejectsPermissiveAndLinkedFiles(t *testing.T) {
 		}},
 		{name: "symlink", make: func(t *testing.T, path string) {
 			target := path + ".target"
-			if err := os.WriteFile(target, []byte(`{"profile":"issues","server_instance_id":"issue-spec:a","repository":"o/r","agent":"codex"}`), 0o600); err != nil {
+			if err := os.WriteFile(target, []byte(`{"profile":"issues","server_instance_id":"issue-spec:a"}`), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Symlink(target, path); err != nil {

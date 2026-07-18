@@ -21,7 +21,6 @@ import (
 	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
-	"github.com/higress-group/issue-spec/internal/requirements"
 )
 
 type app struct {
@@ -53,8 +52,6 @@ type app struct {
 	resolveRequirementsToken       func(context.Context, auth.Profile) (auth.Token, error)
 	readRequirementsSecret         func(io.Reader, io.Writer) (string, error)
 	stdinIsTerminal                func(io.Reader) bool
-	previewRequirementsInstall     func(requirements.Bundle, requirements.Target, requirements.TargetOptions, string) (requirements.InstallPlan, error)
-	installRequirements            func(requirements.Bundle, requirements.InstallPlan) (requirements.InstallResult, error)
 }
 
 type commandFunc func(context.Context, []string) int
@@ -162,8 +159,6 @@ func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 		resolveRequirementsToken:   auth.ResolveProfileToken,
 		readRequirementsSecret:     readHiddenRequirementsSecret,
 		stdinIsTerminal:            requirementsInputIsTerminal,
-		previewRequirementsInstall: requirements.PreviewInstall,
-		installRequirements:        requirements.Install,
 		selectGitHubBackend:        defaultSelectGitHubBackend,
 		selectRunnerBackend:        defaultSelectRunnerBackend,
 		newGitHubBackend:           defaultNewGitHubBackend,
@@ -235,8 +230,8 @@ Usage:
   issue-spec code-change attach --repo owner/repo --implement N --change-id ID --revision REV [--refresh --expected-version N] [--json]
   issue-spec code-change link-process --repo owner/repo --implement N --process PROCESS-001 --expected-version N [--json]
   issue-spec code-change rationale --repo owner/repo --implement N --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "why" --agent Worker [--agent-session ID] [--json]
-  issue-spec requirements setup --server URL --repo owner/repo --agent codex|claude [--token-stdin] [--yes] [--json]
-  issue-spec requirements status [--json]
+  issue-spec requirements setup --server URL [--token-stdin] [--yes] [--json]
+  issue-spec requirements status [--repo owner/repo] [--json]
   issue-spec runner poll --repo owner/repo --runner login --once --dry-run
   issue-spec runner serve --profile self-hosted --repo owner/repo --runner login --subscription-id UUID --secret-file FILE (--git-credential-command /absolute/provider|--allow-host-ssh)
 	issue-spec runner preflight --repo owner/repo --runner login`)

@@ -18,6 +18,48 @@ import (
 	"github.com/higress-group/issue-spec/internal/requirements"
 )
 
+type countingRequirementsReader struct {
+	reader io.Reader
+	reads  int
+}
+
+func (r *countingRequirementsReader) Read(data []byte) (int, error) {
+	r.reads++
+	return r.reader.Read(data)
+}
+
+func TestRequirementsSetupTokenStdinRejectsTerminalBeforeRead(t *testing.T) {
+	input := &countingRequirementsReader{reader: strings.NewReader("must-not-be-read\n")}
+	var output, errOutput bytes.Buffer
+	app := newApp(input, &output, &errOutput)
+	predicateCalls := 0
+	app.stdinIsTerminal = func(got io.Reader) bool {
+		predicateCalls++
+		if got != input {
+			t.Fatalf("terminal predicate input = %T, want the command stdin", got)
+		}
+		return true
+	}
+
+	if code := app.runRequirementsSetup(t.Context(), []string{"--token-stdin"}); code != 1 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, output.String(), errOutput.String())
+	}
+	if predicateCalls != 1 || input.reads != 0 || !strings.Contains(errOutput.String(), "refuses terminal input") ||
+		!strings.Contains(errOutput.String(), "hidden PAT prompt") {
+		t.Fatalf("predicate_calls=%d reads=%d stdout=%q stderr=%q", predicateCalls, input.reads, output.String(), errOutput.String())
+	}
+}
+
+func TestRequirementsSetupDoesNotExposeRepositoryAgentOrSkillFlags(t *testing.T) {
+	for _, flag := range []string{"--repo", "--agent", "--skill-archive", "--skill-archive-sha256", "--skill-conflict", "--skill-alternate-target"} {
+		var output, errOutput bytes.Buffer
+		app := newApp(strings.NewReader(""), &output, &errOutput)
+		if code := app.runRequirementsSetup(t.Context(), []string{flag, "value"}); code != 2 || !strings.Contains(errOutput.String(), "flag provided but not defined") {
+			t.Errorf("flag=%s exit=%d stdout=%q stderr=%q", flag, code, output.String(), errOutput.String())
+		}
+	}
+}
+
 func TestRequirementsSetupRecoversFromKeyringFailureAndRerunsIdempotently(t *testing.T) {
 	configDir, home := t.TempDir(), t.TempDir()
 	t.Setenv(auth.ConfigDirEnv, configDir)
@@ -38,7 +80,7 @@ func TestRequirementsSetupRecoversFromKeyringFailureAndRerunsIdempotently(t *tes
 		}
 		return "", fmt.Errorf("keyring unavailable while storing %s; rerun with --insecure-storage", token)
 	}
-	args := []string{"--server", server.URL, "--repo", "owner/repo", "--agent", "codex", "--profile", "team", "--token-stdin", "--yes", "--json"}
+	args := []string{"--server", server.URL, "--profile", "team", "--token-stdin", "--yes", "--json"}
 	if code := first.runRequirementsSetup(t.Context(), args); code != 1 {
 		t.Fatalf("first exit=%d stdout=%q stderr=%q", code, firstOut.String(), firstErr.String())
 	}
@@ -72,11 +114,10 @@ func TestRequirementsSetupRecoversFromKeyringFailureAndRerunsIdempotently(t *tes
 	if err := json.Unmarshal(recoveredOut.Bytes(), &recoveredResult); err != nil {
 		t.Fatal(err)
 	}
-	if recoveredResult.ProfileCreated || !recoveredResult.TokenStored || !recoveredResult.ContextChanged ||
-		recoveredResult.SkillResult == nil || !recoveredResult.SkillResult.Changed || storeCalls != 1 {
+	if recoveredResult.ProfileCreated || !recoveredResult.TokenStored || !recoveredResult.ContextChanged || storeCalls != 1 {
 		t.Fatalf("recovery result=%+v storeCalls=%d", recoveredResult, storeCalls)
 	}
-	if context, err := requirements.LoadActiveContext(); err != nil || context.Repository != "owner/repo" || context.Agent != requirements.TargetCodex {
+	if context, err := requirements.LoadActiveContext(); err != nil || context.Profile != "team" || context.ServerInstanceID != "issue-spec:realm-a" {
 		t.Fatalf("context=%+v err=%v", context, err)
 	}
 
@@ -89,15 +130,14 @@ func TestRequirementsSetupRecoversFromKeyringFailureAndRerunsIdempotently(t *tes
 		t.Fatal("idempotent rerun attempted to store an existing token")
 		return "", nil
 	}
-	if code := rerun.runRequirementsSetup(t.Context(), []string{"--server", server.URL, "--repo", "owner/repo", "--agent", "codex", "--profile", "team", "--yes", "--json"}); code != 0 {
+	if code := rerun.runRequirementsSetup(t.Context(), []string{"--server", server.URL, "--profile", "team", "--yes", "--json"}); code != 0 {
 		t.Fatalf("rerun exit=%d stdout=%q stderr=%q", code, rerunOut.String(), rerunErr.String())
 	}
 	var rerunResult requirementsSetupResult
 	if err := json.Unmarshal(rerunOut.Bytes(), &rerunResult); err != nil {
 		t.Fatal(err)
 	}
-	if rerunResult.ProfileCreated || rerunResult.TokenStored || rerunResult.ContextChanged ||
-		rerunResult.SkillResult == nil || rerunResult.SkillResult.Changed || rerunResult.SkillPlan.Action != requirements.ActionNoop {
+	if rerunResult.ProfileCreated || rerunResult.TokenStored || rerunResult.ContextChanged {
 		t.Fatalf("non-idempotent rerun=%+v", rerunResult)
 	}
 
@@ -105,6 +145,18 @@ func TestRequirementsSetupRecoversFromKeyringFailureAndRerunsIdempotently(t *tes
 	status := newApp(strings.NewReader(""), &statusOut, &statusErr)
 	status.resolveRequirementsToken = rerun.resolveRequirementsToken
 	if code := status.runRequirementsStatus(t.Context(), []string{"--json"}); code != 0 {
+		t.Fatalf("global status exit=%d stdout=%q stderr=%q", code, statusOut.String(), statusErr.String())
+	}
+	var global requirementsStatusResult
+	if err := json.Unmarshal(statusOut.Bytes(), &global); err != nil {
+		t.Fatal(err)
+	}
+	if global.Repository != "" || len(global.AllowedActions) != 0 || global.User != "external-user" || !global.RequirementsOnboarding {
+		t.Fatalf("global status=%+v", global)
+	}
+	statusOut.Reset()
+	statusErr.Reset()
+	if code := status.runRequirementsStatus(t.Context(), []string{"--repo", "owner/repo", "--json"}); code != 0 {
 		t.Fatalf("status exit=%d stdout=%q stderr=%q", code, statusOut.String(), statusErr.String())
 	}
 	var readOnly requirementsStatusResult
@@ -118,7 +170,7 @@ func TestRequirementsSetupRecoversFromKeyringFailureAndRerunsIdempotently(t *tes
 	actions = []string{"issue.create", "contribute"}
 	statusOut.Reset()
 	statusErr.Reset()
-	if code := status.runRequirementsStatus(t.Context(), []string{"--json"}); code != 0 {
+	if code := status.runRequirementsStatus(t.Context(), []string{"--repo", "owner/repo", "--json"}); code != 0 {
 		t.Fatalf("writable status exit=%d stderr=%q", code, statusErr.String())
 	}
 	var writable requirementsStatusResult
@@ -150,7 +202,7 @@ func TestRequirementsSetupRejectsSavedProfileRealmMismatchBeforePAT(t *testing.T
 		secretRead = true
 		return "", nil
 	}
-	code := app.runRequirementsSetup(t.Context(), []string{"--server", server.URL, "--repo", "owner/repo", "--agent", "codex", "--profile", "team", "--yes"})
+	code := app.runRequirementsSetup(t.Context(), []string{"--server", server.URL, "--profile", "team", "--yes"})
 	if code != 1 || secretRead || !strings.Contains(errOut.String(), "realm mismatch") {
 		t.Fatalf("exit=%d secretRead=%t stdout=%q stderr=%q", code, secretRead, out.String(), errOut.String())
 	}
@@ -175,7 +227,7 @@ func TestRequirementsSetupPreviewDoesNotWrite(t *testing.T) {
 		stdinChecked = true
 		return false
 	}
-	code := app.runRequirementsSetup(t.Context(), []string{"--server", server.URL, "--repo", "owner/repo", "--agent", "claude", "--profile", "preview", "--token-stdin", "--json"})
+	code := app.runRequirementsSetup(t.Context(), []string{"--server", server.URL, "--profile", "preview", "--token-stdin", "--json"})
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
@@ -183,8 +235,7 @@ func TestRequirementsSetupPreviewDoesNotWrite(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if !stdinChecked || result.Applied || !result.ProfileCreated || result.SkillPlan.Action != requirements.ActionCreate ||
-		result.SkillSource != "embedded" || !strings.Contains(result.Compatibility, "development") || result.ConflictDecision != "cancel" {
+	if !stdinChecked || result.Applied || !result.ProfileCreated || result.User != "external-user" {
 		t.Fatalf("preview=%+v", result)
 	}
 	if _, _, err := auth.ResolveProfile("preview", ""); err == nil {
@@ -192,9 +243,6 @@ func TestRequirementsSetupPreviewDoesNotWrite(t *testing.T) {
 	}
 	if _, err := requirements.LoadActiveContext(); !errors.Is(err, requirements.ErrContextNotConfigured) {
 		t.Fatalf("preview persisted context: %v", err)
-	}
-	if _, err := os.Stat(result.SkillPlan.Path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("preview installed skill: %v", err)
 	}
 	if strings.Contains(out.String()+errOut.String(), secret) {
 		t.Fatal("preview exposed the PAT")
@@ -249,7 +297,7 @@ func newRequirementsTestServer(t *testing.T, realm, secret string, actions *[]st
 
 func TestRequirementsContextFileDoesNotContainPAT(t *testing.T) {
 	t.Setenv(auth.ConfigDirEnv, t.TempDir())
-	context := requirements.ActiveContext{Profile: "team", ServerInstanceID: "issue-spec:test", Repository: "owner/repo", Agent: requirements.TargetCodex}
+	context := requirements.ActiveContext{Profile: "team", ServerInstanceID: "issue-spec:test"}
 	if _, err := requirements.SaveActiveContext(context); err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +306,9 @@ func TestRequirementsContextFileDoesNotContainPAT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "token") || strings.Contains(string(raw), "secret") {
-		t.Fatalf("context contains secret-shaped fields: %s", raw)
+	for _, forbidden := range []string{"token", "secret", "repository", "agent"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("context contains forbidden field %q: %s", forbidden, raw)
+		}
 	}
 }

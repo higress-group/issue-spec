@@ -18,8 +18,6 @@ cmp "$temp_root/expected-steps" "$temp_root/chinese-steps"
 
 expected_images='requirements-pat-secret.png
 requirements-pat-secret.zh-CN.png
-requirements-release.png
-requirements-release.zh-CN.png
 requirements-simple-issue.png
 requirements-simple-issue.zh-CN.png
 requirements-standard-proposal.png
@@ -39,8 +37,6 @@ compare_snapshot() {
     exit 1
   }
 }
-compare_snapshot requirements-release.png web/tests/e2e/requirements-onboarding.spec.ts-snapshots/requirements-release-desktop-1440-linux.png
-compare_snapshot requirements-release.zh-CN.png web/tests/e2e/requirements-onboarding.spec.ts-snapshots/requirements-release-zh-CN-desktop-1440-linux.png
 compare_snapshot requirements-pat-secret.png web/tests/e2e/requirements-onboarding.spec.ts-snapshots/requirements-pat-secret-desktop-1440-linux.png
 compare_snapshot requirements-pat-secret.zh-CN.png web/tests/e2e/requirements-onboarding.spec.ts-snapshots/requirements-pat-secret-zh-CN-desktop-1440-linux.png
 compare_snapshot requirements-simple-issue.png web/src/features/issues/issues.visual.e2e.ts-snapshots/requirements-simple-issue-issues-desktop-1440-linux.png
@@ -70,6 +66,10 @@ $root/web/tests/e2e/requirements-onboarding.spec.ts
 $root/web/src/features/issues/issues.visual.e2e.ts"
 if grep -En '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|Bearer[[:space:]]+[A-Za-z0-9._-]{20,}|eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|alibaba-inc\.com)' $scan_files; then
   echo "credential-like or internal value found in requirements documentation fixtures" >&2
+  exit 1
+fi
+if grep -En '(^|[^[:alnum:]_])(gh[[:space:]]+(release|attestation)|wget|Invoke-WebRequest)([^[:alnum:]_]|$)' "$english" "$chinese"; then
+  echo "requirements onboarding installation must use curl-only Release downloads" >&2
   exit 1
 fi
 

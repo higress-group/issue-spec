@@ -572,26 +572,30 @@ Channel: **%s** (%s)
 
 Source revision: **%s**
 
-Download the installer file first; do not pipe it into a shell. The installer downloads `+"`manifest.json`"+`, `+"`SHA256SUMS`"+`, and the archive for this release, verifies all three, then atomically replaces the binary.
+Download the installer with `+"`curl`"+`; do not pipe it into a shell. The installer uses `+"`curl`"+` to download `+"`manifest.json`"+`, `+"`SHA256SUMS`"+`, and the archive for this release, verifies all three, then atomically replaces the binary.
 
 `+"```sh"+`
 curl -fL --output install.sh https://github.com/higress-group/issue-spec/releases/%s/install.sh
 chmod +x install.sh
 ./install.sh %s
 "$HOME/.local/bin/issue-spec" version --json
-"$HOME/.local/bin/issue-spec" requirements setup --server https://issue-spec.example.com --repo owner/repository --agent codex
+"$HOME/.local/bin/issue-spec" requirements setup --server https://issue-spec.example.com
 `+"```"+`
 
 `+"```powershell"+`
-Invoke-WebRequest -Uri "https://github.com/higress-group/issue-spec/releases/%s/install.ps1" -OutFile install.ps1
+curl.exe -fL --output install.ps1 "https://github.com/higress-group/issue-spec/releases/%s/install.ps1"
 .\install.ps1 %s
 $IssueSpec = Join-Path $env:LOCALAPPDATA "issue-spec\bin\issue-spec.exe"
 & $IssueSpec version --json
-& $IssueSpec requirements setup --server https://issue-spec.example.com --repo owner/repository --agent codex
+& $IssueSpec requirements setup --server https://issue-spec.example.com
 `+"```"+`
 
-Both installers verify the selected archive against `+"`manifest.json`"+` and `+"`SHA256SUMS`"+` before replacing an existing binary. GitHub artifact attestations cover every published asset; verify provenance with `+"`gh attestation verify <file> --repo higress-group/issue-spec`"+`.
-`, plan.Version, plan.Channel, channelDescription, plan.Revision, downloadPath, shellMode, downloadPath, powerShellMode)
+Both installers verify the selected archive against `+"`manifest.json`"+` and `+"`SHA256SUMS`"+` before replacing an existing binary.
+
+Standalone requirements skill: https://github.com/higress-group/issue-spec/releases/%s/issue-spec-requirements.zip
+
+Give that Release URL to the target agent and let it install the skill with its native mechanism. The archive contains no server, repository, agent path, or credential.
+`, plan.Version, plan.Channel, channelDescription, plan.Revision, downloadPath, shellMode, downloadPath, powerShellMode, downloadPath)
 }
 
 func releaseEnvironmentFile(plan Plan) string {

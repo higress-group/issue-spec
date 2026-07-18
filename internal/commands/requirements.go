@@ -6,14 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
-	"github.com/higress-group/issue-spec/internal/buildinfo"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/requirements"
 )
@@ -60,8 +57,8 @@ func (c *requirementsClients) GetUser(ctx context.Context) (github.User, []strin
 
 func (a *app) runRequirements(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec requirements setup --server URL --repo owner/repo --agent codex|claude [--token-stdin] [--skill-archive PATH --skill-archive-sha256 SHA256] [--skill-conflict cancel|replace|alternate] [--yes] [--json]\n")
-		a.errorf("       issue-spec requirements status [--json]\n")
+		a.errorf("usage: issue-spec requirements setup --server URL [--token-stdin] [--yes] [--json]\n")
+		a.errorf("       issue-spec requirements status [--repo owner/repo] [--json]\n")
 		return 2
 	}
 	switch args[0] {
@@ -76,71 +73,51 @@ func (a *app) runRequirements(ctx context.Context, args []string) int {
 }
 
 type requirementsRepositoryAccess struct {
-	User             github.User
-	Scopes           []string
-	Repository       github.NativeRepositoryContext
-	AllowedActions   []string
-	CanContribute    bool
-	OrganizationID   string
-	OrganizationName string
+	User           github.User
+	Scopes         []string
+	Repository     github.NativeRepositoryContext
+	AllowedActions []string
+	CanContribute  bool
 }
 
 type requirementsStatusResult struct {
-	OK                     bool                     `json:"ok"`
-	Profile                string                   `json:"profile"`
-	ServerInstanceID       string                   `json:"server_instance_id"`
-	APIOrigin              string                   `json:"api_origin"`
-	Repository             string                   `json:"repository"`
-	Agent                  requirements.Target      `json:"agent"`
-	User                   string                   `json:"user"`
-	CredentialSource       string                   `json:"credential_source"`
-	Scopes                 []string                 `json:"scopes"`
-	Visibility             string                   `json:"visibility"`
-	ContributionPolicy     string                   `json:"contribution_policy"`
-	EffectivePermission    string                   `json:"effective_permission"`
-	AllowedActions         []string                 `json:"allowed_actions"`
-	CanContribute          bool                     `json:"can_contribute"`
-	ReadOnly               bool                     `json:"read_only"`
-	SearchAvailable        bool                     `json:"search_available"`
-	RequirementsOnboarding bool                     `json:"requirements_onboarding"`
-	Skill                  requirements.InstallPlan `json:"skill"`
+	OK                     bool     `json:"ok"`
+	Profile                string   `json:"profile"`
+	ServerInstanceID       string   `json:"server_instance_id"`
+	APIOrigin              string   `json:"api_origin"`
+	Repository             string   `json:"repository,omitempty"`
+	User                   string   `json:"user"`
+	CredentialSource       string   `json:"credential_source"`
+	Scopes                 []string `json:"scopes"`
+	Visibility             string   `json:"visibility,omitempty"`
+	ContributionPolicy     string   `json:"contribution_policy,omitempty"`
+	EffectivePermission    string   `json:"effective_permission,omitempty"`
+	AllowedActions         []string `json:"allowed_actions,omitempty"`
+	CanContribute          bool     `json:"can_contribute,omitempty"`
+	ReadOnly               bool     `json:"read_only,omitempty"`
+	SearchAvailable        bool     `json:"search_available"`
+	RequirementsOnboarding bool     `json:"requirements_onboarding"`
 }
 
 type requirementsSetupResult struct {
-	OK               bool                        `json:"ok"`
-	Applied          bool                        `json:"applied"`
-	Profile          string                      `json:"profile"`
-	ProfileCreated   bool                        `json:"profile_created"`
-	TokenStored      bool                        `json:"token_stored"`
-	ContextChanged   bool                        `json:"context_changed"`
-	ContextPath      string                      `json:"context_path"`
-	Repository       string                      `json:"repository"`
-	Agent            requirements.Target         `json:"agent"`
-	User             string                      `json:"user"`
-	Visibility       string                      `json:"visibility"`
-	Policy           string                      `json:"contribution_policy"`
-	AllowedActions   []string                    `json:"allowed_actions"`
-	CanContribute    bool                        `json:"can_contribute"`
-	ReadOnly         bool                        `json:"read_only"`
-	SkillPlan        requirements.InstallPlan    `json:"skill_plan"`
-	SkillSource      string                      `json:"skill_source"`
-	Compatibility    string                      `json:"skill_compatibility"`
-	ConflictDecision string                      `json:"skill_conflict_decision"`
-	SkillResult      *requirements.InstallResult `json:"skill_result,omitempty"`
+	OK               bool   `json:"ok"`
+	Applied          bool   `json:"applied"`
+	Profile          string `json:"profile"`
+	ProfileCreated   bool   `json:"profile_created"`
+	ServerInstanceID string `json:"server_instance_id"`
+	APIOrigin        string `json:"api_origin"`
+	TokenStored      bool   `json:"token_stored"`
+	ContextChanged   bool   `json:"context_changed"`
+	ContextPath      string `json:"context_path"`
+	User             string `json:"user"`
 }
 
 func (a *app) runRequirementsSetup(ctx context.Context, args []string) int {
 	fs := newFlagSet("requirements setup", a.err)
 	serverFlag := fs.String("server", "", "self-hosted issue-spec server URL")
-	repoFlag := fs.String("repo", "", "repository owner/name")
-	agentFlag := fs.String("agent", "", "agent target: codex or claude")
 	profileFlag := fs.String("profile", a.profileName, "origin-bound profile name")
 	tokenStdin := fs.Bool("token-stdin", false, "read the PAT from protected stdin")
-	skillArchive := fs.String("skill-archive", "", "verified standalone requirements skill archive")
-	skillArchiveSHA256 := fs.String("skill-archive-sha256", "", "required SHA-256 for --skill-archive")
-	skillConflict := fs.String("skill-conflict", "cancel", "user-modified target choice: cancel, replace, or alternate")
-	skillAlternateTarget := fs.String("skill-alternate-target", "", "alternate skill directory used with --skill-conflict alternate")
-	yes := fs.Bool("yes", false, "apply the displayed profile, context, and skill plan")
+	yes := fs.Bool("yes", false, "apply the displayed profile, context, and PAT plan")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -148,36 +125,6 @@ func (a *app) runRequirementsSetup(ctx context.Context, args []string) int {
 	if *tokenStdin && a.stdinIsTerminal(a.in) {
 		a.errorf("--token-stdin refuses terminal input; omit --token-stdin to use the hidden PAT prompt\n")
 		return 1
-	}
-	conflictChoice, err := parseRequirementsConflictChoice(*skillConflict)
-	if err != nil {
-		a.errorf("%v\n", err)
-		return 2
-	}
-	if strings.TrimSpace(*skillArchive) == "" && strings.TrimSpace(*skillArchiveSHA256) != "" {
-		a.errorf("--skill-archive-sha256 requires --skill-archive\n")
-		return 2
-	}
-	if strings.TrimSpace(*skillArchive) != "" && strings.TrimSpace(*skillArchiveSHA256) == "" {
-		a.errorf("--skill-archive requires --skill-archive-sha256\n")
-		return 2
-	}
-	if conflictChoice == requirements.ConflictAlternate && strings.TrimSpace(*skillAlternateTarget) == "" {
-		a.errorf("--skill-conflict alternate requires --skill-alternate-target\n")
-		return 2
-	}
-	if conflictChoice != requirements.ConflictAlternate && strings.TrimSpace(*skillAlternateTarget) != "" {
-		a.errorf("--skill-alternate-target requires --skill-conflict alternate\n")
-		return 2
-	}
-	repo, ok := a.validateRepo(*repoFlag)
-	if !ok {
-		return 2
-	}
-	agent, err := parseRequirementsAgent(*agentFlag)
-	if err != nil {
-		a.errorf("%v\n", err)
-		return 2
 	}
 	serverRoot, host, err := canonicalRequirementsServer(*serverFlag)
 	if err != nil {
@@ -242,34 +189,14 @@ func (a *app) runRequirementsSetup(ctx context.Context, args []string) int {
 		a.errorf("configure requirements clients: %v\n", safeRequirementsError(err, token))
 		return 1
 	}
-	access, err := resolveRequirementsRepositoryAccess(ctx, api, repo)
+	user, _, err := api.GetUser(ctx)
 	if err != nil {
-		a.errorf("validate requirements access: %v\n", safeRequirementsError(err, token))
+		a.errorf("validate requirements PAT identity: %v\n", safeRequirementsError(err, token))
 		return 1
 	}
-	bundle, plan, skillSource, err := a.requirementsInstallPlanFrom(agent, *skillArchive, *skillArchiveSHA256)
-	if err != nil {
-		a.errorf("preview requirements skill installation: %v\n", err)
+	if strings.TrimSpace(user.Login) == "" {
+		a.errorf("validate requirements PAT identity: response has no login\n")
 		return 1
-	}
-	userModified := plan.Action == requirements.ActionUserModified
-	if userModified {
-		switch conflictChoice {
-		case requirements.ConflictCancel:
-		case requirements.ConflictReplace, requirements.ConflictAlternate:
-			plan, err = requirements.ApplyConflictDecision(bundle, plan, requirementsCLIVersion(), conflictChoice, *skillAlternateTarget)
-			if err != nil {
-				a.errorf("apply requirements skill conflict choice: %v\n", err)
-				return 1
-			}
-			if conflictChoice == requirements.ConflictAlternate && plan.Action == requirements.ActionUserModified {
-				a.errorf("alternate requirements skill target %s is also user-modified; choose an empty or managed alternate target\n", plan.Path)
-				return 1
-			}
-		}
-	} else if conflictChoice != requirements.ConflictCancel {
-		a.errorf("--skill-conflict %s requires a user-modified target\n", conflictChoice)
-		return 2
 	}
 	contextPath, err := requirements.ContextPath()
 	if err != nil {
@@ -277,10 +204,7 @@ func (a *app) runRequirementsSetup(ctx context.Context, args []string) int {
 		return 1
 	}
 	result := requirementsSetupResult{OK: true, Applied: false, Profile: candidate.Name, ProfileCreated: profileCreated,
-		ContextPath: contextPath, Repository: repo, Agent: agent, User: access.User.Login,
-		Visibility: access.Repository.Repository.Visibility, Policy: access.Repository.Repository.ContributionPolicy,
-		AllowedActions: access.AllowedActions, CanContribute: access.CanContribute, ReadOnly: !access.CanContribute, SkillPlan: plan,
-		SkillSource: skillSource, Compatibility: "compatible with CLI " + requirementsCLIVersion(), ConflictDecision: requirementsConflictChoiceName(conflictChoice)}
+		ServerInstanceID: candidate.ServerInstanceID, APIOrigin: candidate.APIOrigin(), ContextPath: contextPath, User: user.Login}
 	if !*yes {
 		if *jsonOut {
 			return a.outputJSON(result)
@@ -288,10 +212,6 @@ func (a *app) runRequirementsSetup(ctx context.Context, args []string) int {
 		printRequirementsSetupPreview(a.out, result)
 		fmt.Fprintln(a.out, "preview only; rerun with --yes to apply these sequential, idempotent steps")
 		return 0
-	}
-	if userModified && conflictChoice == requirements.ConflictCancel {
-		a.errorf("requirements skill installation cancelled for user-modified target %s; choose replace or alternate explicitly\n", plan.Path)
-		return 1
 	}
 	if profileCreated {
 		if err := a.saveRequirementsProfile(candidate, false); err != nil {
@@ -307,36 +227,36 @@ func (a *app) runRequirementsSetup(ctx context.Context, args []string) int {
 		result.TokenStored = true
 	}
 	contextChanged, err := requirements.SaveActiveContext(requirements.ActiveContext{Profile: candidate.Name,
-		ServerInstanceID: candidate.ServerInstanceID, Repository: repo, Agent: agent})
+		ServerInstanceID: candidate.ServerInstanceID})
 	if err != nil {
 		a.errorf("save requirements context: %v\n", safeRequirementsError(err, token))
 		return 1
 	}
 	result.ContextChanged = contextChanged
-	installed, err := a.installRequirements(bundle, plan)
-	if err != nil {
-		a.errorf("install requirements skill: %v\n", safeRequirementsError(err, token))
-		return 1
-	}
 	result.Applied = true
-	result.SkillResult = &installed
 	if *jsonOut {
 		return a.outputJSON(result)
 	}
 	printRequirementsSetupPreview(a.out, result)
-	fmt.Fprintf(a.out, "setup applied; profile_created=%t token_stored=%t context_changed=%t skill_changed=%t\n",
-		result.ProfileCreated, result.TokenStored, result.ContextChanged, installed.Changed)
-	if result.ReadOnly {
-		fmt.Fprintln(a.out, "repository is read-only for this PAT because allowed_actions does not include contribute")
-	}
+	fmt.Fprintf(a.out, "setup applied; profile_created=%t token_stored=%t context_changed=%t\n",
+		result.ProfileCreated, result.TokenStored, result.ContextChanged)
 	return 0
 }
 
 func (a *app) runRequirementsStatus(ctx context.Context, args []string) int {
 	fs := newFlagSet("requirements status", a.err)
+	repoFlag := fs.String("repo", "", "optional repository owner/name for live authorization")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
+	}
+	repo := ""
+	if strings.TrimSpace(*repoFlag) != "" {
+		var ok bool
+		repo, ok = a.validateRepo(*repoFlag)
+		if !ok {
+			return 2
+		}
 	}
 	configured, err := requirements.LoadActiveContext()
 	if err != nil {
@@ -383,35 +303,53 @@ func (a *app) runRequirementsStatus(ctx context.Context, args []string) int {
 		a.errorf("configure requirements clients: %v\n", safeRequirementsError(err, token.Value))
 		return 1
 	}
-	access, err := resolveRequirementsRepositoryAccess(ctx, api, configured.Repository)
-	if err != nil {
-		a.errorf("validate requirements access: %v\n", safeRequirementsError(err, token.Value))
-		return 1
-	}
-	_, skill, err := a.requirementsInstallPlan(configured.Agent)
-	if err != nil {
-		a.errorf("inspect requirements skill: %v\n", err)
-		return 1
-	}
 	result := requirementsStatusResult{OK: true, Profile: profile.Name, ServerInstanceID: profile.ServerInstanceID,
-		APIOrigin: profile.APIOrigin(), Repository: configured.Repository, Agent: configured.Agent, User: access.User.Login,
-		CredentialSource: token.Source, Scopes: access.Scopes, Visibility: access.Repository.Repository.Visibility,
-		ContributionPolicy: access.Repository.Repository.ContributionPolicy, EffectivePermission: access.Repository.EffectivePermission,
-		AllowedActions: access.AllowedActions, CanContribute: access.CanContribute, ReadOnly: !access.CanContribute,
-		SearchAvailable: metadata.Features.Search, RequirementsOnboarding: metadata.Features.RequirementsOnboarding, Skill: skill}
+		APIOrigin: profile.APIOrigin(), CredentialSource: token.Source, SearchAvailable: metadata.Features.Search,
+		RequirementsOnboarding: metadata.Features.RequirementsOnboarding}
+	if repo != "" {
+		access, accessErr := resolveRequirementsRepositoryAccess(ctx, api, repo)
+		if accessErr != nil {
+			a.errorf("validate requirements access: %v\n", safeRequirementsError(accessErr, token.Value))
+			return 1
+		}
+		result.User = access.User.Login
+		result.Scopes = access.Scopes
+		result.Repository = repo
+		result.Visibility = access.Repository.Repository.Visibility
+		result.ContributionPolicy = access.Repository.Repository.ContributionPolicy
+		result.EffectivePermission = access.Repository.EffectivePermission
+		result.AllowedActions = access.AllowedActions
+		result.CanContribute = access.CanContribute
+		result.ReadOnly = !access.CanContribute
+	} else {
+		user, scopes, identityErr := api.GetUser(ctx)
+		if identityErr != nil {
+			a.errorf("validate requirements PAT identity: %v\n", safeRequirementsError(identityErr, token.Value))
+			return 1
+		}
+		if strings.TrimSpace(user.Login) == "" {
+			a.errorf("validate requirements PAT identity: response has no login\n")
+			return 1
+		}
+		result.User = user.Login
+		result.Scopes = scopes
+	}
 	if *jsonOut {
 		return a.outputJSON(result)
 	}
-	fmt.Fprintf(a.out, "profile: %s\nserver instance: %s\nrepository: %s\nagent: %s\nuser: %s\n",
-		result.Profile, result.ServerInstanceID, result.Repository, result.Agent, result.User)
-	fmt.Fprintf(a.out, "visibility: %s\ncontribution policy: %s\neffective permission: %s\nallowed actions: %s\n",
-		result.Visibility, result.ContributionPolicy, result.EffectivePermission, strings.Join(result.AllowedActions, ", "))
-	if result.ReadOnly {
-		fmt.Fprintln(a.out, "mode: read-only (allowed_actions does not include contribute)")
-	} else {
-		fmt.Fprintln(a.out, "mode: contribute")
+	fmt.Fprintf(a.out, "profile: %s\nserver instance: %s\nAPI origin: %s\nuser: %s\ncredential source: %s\n",
+		result.Profile, result.ServerInstanceID, result.APIOrigin, result.User, result.CredentialSource)
+	fmt.Fprintf(a.out, "scopes: %s\nfeatures: requirements_onboarding=%t search=%t\n",
+		strings.Join(result.Scopes, ", "), result.RequirementsOnboarding, result.SearchAvailable)
+	if result.Repository != "" {
+		fmt.Fprintf(a.out, "repository: %s\nvisibility: %s\ncontribution policy: %s\neffective permission: %s\nallowed actions: %s\n",
+			result.Repository, result.Visibility, result.ContributionPolicy, result.EffectivePermission, strings.Join(result.AllowedActions, ", "))
+		if result.ReadOnly {
+			fmt.Fprintln(a.out, "mode: read-only (allowed_actions does not include contribute)")
+		} else {
+			fmt.Fprintln(a.out, "mode: contribute")
+		}
 	}
-	fmt.Fprintf(a.out, "skill: %s (%s)\n", result.Skill.Path, result.Skill.Action)
 	return 0
 }
 
@@ -448,57 +386,6 @@ func (a *app) requirementsSetupToken(ctx context.Context, profile auth.Profile, 
 		return "", false, errors.New("PAT must be one non-empty line")
 	}
 	return token, false, nil
-}
-
-func (a *app) requirementsInstallPlan(agent requirements.Target) (requirements.Bundle, requirements.InstallPlan, error) {
-	bundle, plan, _, err := a.requirementsInstallPlanFrom(agent, "", "")
-	return bundle, plan, err
-}
-
-func (a *app) requirementsInstallPlanFrom(agent requirements.Target, archivePath, archiveSHA256 string) (requirements.Bundle, requirements.InstallPlan, string, error) {
-	identity := buildinfo.Current()
-	var bundle requirements.Bundle
-	source := "embedded"
-	if strings.TrimSpace(archivePath) != "" {
-		absolute, err := filepath.Abs(strings.TrimSpace(archivePath))
-		if err != nil {
-			return requirements.Bundle{}, requirements.InstallPlan{}, "", fmt.Errorf("resolve requirements skill archive: %w", err)
-		}
-		raw, err := os.ReadFile(filepath.Clean(absolute))
-		if err != nil {
-			return requirements.Bundle{}, requirements.InstallPlan{}, "", fmt.Errorf("read requirements skill archive: %w", err)
-		}
-		bundle, err = requirements.VerifyArchive(raw, archiveSHA256)
-		if err != nil {
-			return requirements.Bundle{}, requirements.InstallPlan{}, "", err
-		}
-		source = "archive:" + filepath.Clean(absolute)
-	} else {
-		distribution := requirements.Distribution{}
-		if identity.Channel != "development" {
-			distribution = requirements.Distribution{Channel: identity.Channel, SourceRevision: identity.Revision, CLIBuild: identity.Version}
-		}
-		var err error
-		bundle, err = requirements.Canonical(distribution)
-		if err != nil {
-			return requirements.Bundle{}, requirements.InstallPlan{}, "", err
-		}
-		if bundle.Manifest.ContentID != identity.RequirementsSkillContentID {
-			return requirements.Bundle{}, requirements.InstallPlan{}, "", errors.New("embedded requirements skill does not match the CLI build identity")
-		}
-	}
-	options := requirements.TargetOptions{Home: strings.TrimSpace(os.Getenv("HOME")),
-		CodexHome: strings.TrimSpace(os.Getenv("CODEX_HOME")), ClaudeConfigDir: strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))}
-	plan, err := a.previewRequirementsInstall(bundle, agent, options, requirementsCLIVersion())
-	return bundle, plan, source, err
-}
-
-func requirementsCLIVersion() string {
-	identity := buildinfo.Current()
-	if identity.Channel == "development" {
-		return "development"
-	}
-	return identity.Version
 }
 
 func resolveRequirementsRepositoryAccess(ctx context.Context, api requirementsAPI, repo string) (requirementsRepositoryAccess, error) {
@@ -554,36 +441,7 @@ func resolveRequirementsRepositoryAccess(ctx context.Context, api requirementsAP
 		}
 	}
 	return requirementsRepositoryAccess{User: user, Scopes: append([]string{}, scopes...), Repository: selected,
-		AllowedActions: actions, CanContribute: canContribute, OrganizationID: organizations[0].ID,
-		OrganizationName: organizations[0].Name}, nil
-}
-
-func parseRequirementsAgent(value string) (requirements.Target, error) {
-	target := requirements.Target(strings.ToLower(strings.TrimSpace(value)))
-	if target != requirements.TargetCodex && target != requirements.TargetClaude {
-		return "", errors.New("--agent must be codex or claude")
-	}
-	return target, nil
-}
-
-func parseRequirementsConflictChoice(value string) (requirements.ConflictDecision, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "cancel":
-		return requirements.ConflictCancel, nil
-	case "replace":
-		return requirements.ConflictReplace, nil
-	case "alternate":
-		return requirements.ConflictAlternate, nil
-	default:
-		return "", errors.New("--skill-conflict must be cancel, replace, or alternate")
-	}
-}
-
-func requirementsConflictChoiceName(choice requirements.ConflictDecision) string {
-	if choice == requirements.ConflictAlternate {
-		return "alternate"
-	}
-	return string(choice)
+		AllowedActions: actions, CanContribute: canContribute}, nil
 }
 
 func canonicalRequirementsServer(value string) (string, string, error) {
@@ -649,14 +507,6 @@ func keyringRequirementsError(err error, secret string) error {
 }
 
 func printRequirementsSetupPreview(w io.Writer, result requirementsSetupResult) {
-	fmt.Fprintf(w, "profile: %s (create=%t)\nrepository: %s\nagent: %s\nuser: %s\n", result.Profile, result.ProfileCreated, result.Repository, result.Agent, result.User)
-	fmt.Fprintf(w, "visibility: %s\ncontribution policy: %s\nallowed actions: %s\n", result.Visibility, result.Policy, strings.Join(result.AllowedActions, ", "))
-	fmt.Fprintf(w, "context: %s\nskill source: %s\nskill compatibility: %s\nskill target: %s\nskill path: %s\nskill action: %s\nskill reason: %s\nskill content ID: %s\nskill conflict decision: %s\n",
-		result.ContextPath, result.SkillSource, result.Compatibility, result.SkillPlan.Target, result.SkillPlan.Path,
-		result.SkillPlan.Action, result.SkillPlan.Reason, result.SkillPlan.ContentID, result.ConflictDecision)
-	if result.ReadOnly {
-		fmt.Fprintln(w, "access: read-only (allowed_actions does not include contribute)")
-	} else {
-		fmt.Fprintln(w, "access: contribute")
-	}
+	fmt.Fprintf(w, "profile: %s (create=%t)\nserver instance: %s\nAPI origin: %s\nuser: %s\ncontext: %s\n",
+		result.Profile, result.ProfileCreated, result.ServerInstanceID, result.APIOrigin, result.User, result.ContextPath)
 }

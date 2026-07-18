@@ -28,7 +28,8 @@ if ($Tag -or $Latest) {
   $downloadUrl = if ($Tag) { $BaseUrl.TrimEnd('/') + "/download/$Tag" } else { $BaseUrl.TrimEnd('/') + "/latest/download" }
   try {
     foreach ($name in @("manifest.json", "SHA256SUMS", $asset)) {
-      Invoke-WebRequest -Uri "$downloadUrl/$name" -OutFile (Join-Path $AssetDir $name)
+      & curl.exe -fL --retry 2 --output (Join-Path $AssetDir $name) "$downloadUrl/$name"
+      if ($LASTEXITCODE -ne 0) { throw "curl.exe failed to download $name" }
     }
   } catch {
     Remove-Item -LiteralPath $downloadDir -Recurse -Force -ErrorAction SilentlyContinue

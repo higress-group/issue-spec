@@ -16,7 +16,7 @@ func TestCanonicalContentIdentityAndManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bundle.Manifest.ContentID != "sha256:5e95ca9635c127068a0db7ea28fdcc6de01af82f180483fe80a4060c72aa8fac" {
+	if bundle.Manifest.ContentID != "sha256:102fb777cdaf6489d79fa8b3c5d35cf50b1e36bac1d64dcd56fad71a787de413" {
 		t.Fatalf("content ID = %q", bundle.Manifest.ContentID)
 	}
 	if got, err := ContentID(); err != nil || got != bundle.Manifest.ContentID {
@@ -131,6 +131,22 @@ func TestCompatibility(t *testing.T) {
 	if _, err := Canonical(Distribution{Channel: "rolling", SourceRevision: "short", CLIBuild: "0.1.0"}); err == nil {
 		t.Fatal("rolling distribution with abbreviated source revision was accepted")
 	}
+}
+
+func filesEqual(left, right []File) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	left = cloneFiles(left)
+	right = cloneFiles(right)
+	sortFiles(left)
+	sortFiles(right)
+	for index := range left {
+		if left[index].Path != right[index].Path || left[index].Mode.Perm() != right[index].Mode.Perm() || !bytes.Equal(left[index].Data, right[index].Data) {
+			return false
+		}
+	}
+	return true
 }
 
 func testBundle(t *testing.T, skill string) Bundle {

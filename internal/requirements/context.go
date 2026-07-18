@@ -22,8 +22,6 @@ var ErrContextNotConfigured = errors.New("requirements context is not configured
 type ActiveContext struct {
 	Profile          string `json:"profile"`
 	ServerInstanceID string `json:"server_instance_id"`
-	Repository       string `json:"repository"`
-	Agent            Target `json:"agent"`
 }
 
 func (c ActiveContext) Validate() error {
@@ -33,21 +31,7 @@ func (c ActiveContext) Validate() error {
 	if strings.TrimSpace(c.ServerInstanceID) == "" || strings.ContainsAny(c.ServerInstanceID, "\r\n\x00") {
 		return errors.New("requirements context server instance id is invalid")
 	}
-	if !validRepositoryName(c.Repository) {
-		return errors.New("requirements context repository must be owner/name")
-	}
-	if c.Agent != TargetCodex && c.Agent != TargetClaude {
-		return fmt.Errorf("requirements context agent must be %s or %s", TargetCodex, TargetClaude)
-	}
 	return nil
-}
-
-func validRepositoryName(value string) bool {
-	if value != strings.TrimSpace(value) || strings.ContainsAny(value, "\\\r\n\t\x00 ") {
-		return false
-	}
-	parts := strings.Split(value, "/")
-	return len(parts) == 2 && parts[0] != "" && parts[1] != "" && parts[0] != "." && parts[1] != "." && parts[0] != ".." && parts[1] != ".."
 }
 
 func ContextPath() (string, error) {
@@ -59,7 +43,7 @@ func ContextPath() (string, error) {
 }
 
 // LoadActiveContext rejects permissive, linked, oversized, or ambiguous
-// context files before using their profile and repository selection.
+// context files before using their server profile selection.
 func LoadActiveContext() (ActiveContext, error) {
 	path, err := ContextPath()
 	if err != nil {
@@ -100,7 +84,6 @@ func LoadActiveContext() (ActiveContext, error) {
 func SaveActiveContext(context ActiveContext) (bool, error) {
 	context.Profile = strings.TrimSpace(context.Profile)
 	context.ServerInstanceID = strings.TrimSpace(context.ServerInstanceID)
-	context.Repository = strings.TrimSpace(context.Repository)
 	if err := context.Validate(); err != nil {
 		return false, err
 	}

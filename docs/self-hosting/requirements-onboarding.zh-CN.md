@@ -11,14 +11,14 @@
 `v1.8.0` 这样的语义版本 Release 不可变。`rolling` 只是完整构建成功后才更新的指针；
 每个 `rolling-<revision>` 快照仍然不可变。
 
-不要把远程脚本通过管道直接交给 Shell。应把安装器、Manifest、Checksum 和
-Attestation 下载到同一目录，先校验再执行：
+不要把远程脚本通过管道直接交给 Shell。只用 `curl` 把安装器、Manifest、Checksum
+和对应平台制品下载到同一目录，再校验执行：
 
 ```bash
 mkdir issue-spec-install && cd issue-spec-install
-gh release download v1.8.0 --repo higress-group/issue-spec --dir .
+base=https://github.com/higress-group/issue-spec/releases/download/v1.8.0
 for file in install.sh manifest.json SHA256SUMS issue-spec_linux_amd64.tar.gz; do
-  gh attestation verify "$file" --repo higress-group/issue-spec
+  curl -fLO "$base/$file"
 done
 sh ./install.sh --asset-dir .
 issue-spec version --json
@@ -27,17 +27,16 @@ issue-spec version --json
 Windows PowerShell 使用同一组已下载证据：
 
 ```powershell
-gh release download v1.8.0 --repo higress-group/issue-spec --dir .
-@("install.ps1", "manifest.json", "SHA256SUMS", "issue-spec_windows_amd64.zip") |
-  ForEach-Object { gh attestation verify $_ --repo higress-group/issue-spec }
+$base = "https://github.com/higress-group/issue-spec/releases/download/v1.8.0"
+@("install.ps1", "manifest.json", "SHA256SUMS", "issue-spec_windows_amd64.zip") | ForEach-Object {
+  curl.exe -fLO "$base/$_"
+}
 .\install.ps1 -AssetDir .
 issue-spec version --json
 ```
 
 安装器根据 Manifest 和 SHA-256 Checksum 校验所选制品。对同一已校验版本重复执行是
 幂等的。最后把输出的版本、Revision、Channel 与 Platform 和 Release 描述进行比对。
-
-![合成的 Release 校验页面](assets/requirements-release.zh-CN.png)
 
 <!-- requirements-step:pat -->
 ## 2. 创建需求 PAT
@@ -54,13 +53,11 @@ Secret 只显示一次。截图中只会出现
 <!-- requirements-step:context -->
 ## 3. 预览并保存连接
 
-第一次不加 `--yes`，只打印 Server Profile、无 Secret 的仓库 Context 和 Skill
-目标，不产生写入：
+第一次不加 `--yes`，只打印全局 Server Profile 和认证身份，不产生写入：
 
 ```bash
 issue-spec requirements setup \
-  --server https://issues.example.test \
-  --repo acme/widgets --agent codex
+  --server https://issues.example.test
 ```
 
 检查预览后再加 `--yes`。正常交互会隐藏 PAT；自动化或不支持安全输入提示的平台应从
@@ -69,24 +66,25 @@ issue-spec requirements setup \
 ```bash
 issue-spec requirements setup \
   --server https://issues.example.test \
-  --repo acme/widgets --agent codex --token-stdin --yes < ./private-token
+  --token-stdin --yes < ./private-token
 rm ./private-token
 issue-spec requirements status
 ```
 
-Setup 只把 PAT 写入操作系统 Keyring；安全存储不可用时会失败并停止。Profile 与仓库
-Context 不含 Secret。重复执行同一命令是安全的，并会报告当前状态。
+Setup 只把 PAT 写入操作系统 Keyring；安全存储不可用时会失败并停止。Origin-bound
+Profile 和全局 Server Context 不含 Secret，也不保存 Repo 或 Agent。一次配置即可对接
+该 Self-hosted Server 中当前用户可见的所有项目。重复执行同一命令是安全的。
 
 <!-- requirements-step:skill -->
-## 4. 预览 Skill 目标
+## 4. 把 Skill 交给 Agent
 
-Setup 会明确预览并把带版本的需求 Skill 安装到所选 Codex 或 Claude 全局目录，不会
-替换仓库内的本地 Skill。如果目标已有用户修改内容，Setup 会停止，让用户显式选择
-替换、其他目标或取消。
+CLI Setup 不猜测 Codex、Claude 或其他 Agent 的 Skill 安装方式。把下面这个独立
+Release 制品交给目标 Agent，让它用自己的原生机制安装：
 
-独立 Skill 压缩包是高级替代方案。先验证 Attestation、Manifest 和 Checksum，再解压
-到临时目录，打印绝对目标路径，并用 `issue-spec version --json` 对比兼容 Manifest
-后复制。优先使用 CLI 管理的 Setup，因为它执行相同的冲突检查。
+[下载 v1.8.0 的 `issue-spec-requirements.zip`](https://github.com/higress-group/issue-spec/releases/download/v1.8.0/issue-spec-requirements.zip)
+
+Release 的 `manifest.json` 和 `SHA256SUMS` 同样覆盖该制品。压缩包只包含规范 Skill
+及兼容性 Manifest，不包含 Server、Repo、Agent 路径或凭据。
 
 <!-- requirements-step:draft -->
 ## 5. 选择简单或标准需求
@@ -105,7 +103,8 @@ Public 仓库使用 `public` Contribution Policy 时，已登录外部用户可�
 ![合成的 Proposal、SPEC 和 QUESTION](assets/requirements-standard-proposal.zh-CN.png)
 
 Skill 先在本地起草。每次远程写入前，它会显示准确的仓库、Issue 标题/正文、Label
-和评论，刷新 `requirements status`，并请求明确确认。确认后使用等价命令：
+和评论，刷新 `requirements status --repo acme/widgets --json`，并请求明确确认。确认后
+使用等价命令：
 
 ```bash
 issue-spec --profile team issue create simple --repo acme/widgets --title "..." --body-file ./issue.md --json

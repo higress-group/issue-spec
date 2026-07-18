@@ -119,12 +119,19 @@ func TestAssemblyIsReproducibleAndComplete(t *testing.T) {
 		"immutable stable semantic-version release", testRevision,
 		"https://github.com/higress-group/issue-spec/releases/download/v1.2.3/install.sh", "./install.sh --tag v1.2.3",
 		"https://github.com/higress-group/issue-spec/releases/download/v1.2.3/install.ps1", ".\\install.ps1 -Tag v1.2.3",
+		"curl.exe -fL --output install.ps1", "https://github.com/higress-group/issue-spec/releases/download/v1.2.3/issue-spec-requirements.zip",
 		`"$HOME/.local/bin/issue-spec" version --json`, `Join-Path $env:LOCALAPPDATA "issue-spec\bin\issue-spec.exe"`,
-		"requirements setup", "gh attestation verify", "do not pipe it into a shell",
+		"requirements setup --server https://issue-spec.example.com", "do not pipe it into a shell",
 	} {
 		data, err := os.ReadFile(filepath.Join(first, "release-notes.md"))
 		if err != nil || !bytes.Contains(data, []byte(notes)) {
 			t.Fatalf("release notes missing %q: %v\n%s", notes, err, data)
+		}
+	}
+	stableNotes := releaseNotes(plan)
+	for _, forbidden := range []string{"gh attestation", "gh release", "Invoke-WebRequest", "--repo owner/repository", "--agent codex"} {
+		if strings.Contains(stableNotes, forbidden) {
+			t.Errorf("stable release notes unexpectedly contain %q", forbidden)
 		}
 	}
 	rolling, err := PlanPublication("refs/heads/main", testRevision, 1710000000)
@@ -135,6 +142,7 @@ func TestAssemblyIsReproducibleAndComplete(t *testing.T) {
 	for _, required := range []string{
 		"https://github.com/higress-group/issue-spec/releases/latest/download/install.sh", "./install.sh --latest",
 		"https://github.com/higress-group/issue-spec/releases/latest/download/install.ps1", ".\\install.ps1 -Latest",
+		"https://github.com/higress-group/issue-spec/releases/latest/download/issue-spec-requirements.zip",
 	} {
 		if !strings.Contains(rollingNotes, required) {
 			t.Errorf("rolling release notes missing %q", required)
@@ -396,10 +404,13 @@ func TestPowerShellInstallerHasEquivalentIntegrityAndAtomicGuards(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"ConvertFrom-Json", "Get-FileHash", "manifest.json", "SHA256SUMS", "[System.IO.File]::Replace", "version --json", "finally", "$env:LOCALAPPDATA", "issue-spec\\bin", "/download/$Tag", "/latest/download", "Invoke-WebRequest"} {
+	for _, required := range []string{"ConvertFrom-Json", "Get-FileHash", "manifest.json", "SHA256SUMS", "[System.IO.File]::Replace", "version --json", "finally", "$env:LOCALAPPDATA", "issue-spec\\bin", "/download/$Tag", "/latest/download", "curl.exe"} {
 		if !bytes.Contains(data, []byte(required)) {
 			t.Errorf("PowerShell installer missing %q", required)
 		}
+	}
+	if bytes.Contains(data, []byte("Invoke-WebRequest")) {
+		t.Error("PowerShell installer must use curl.exe for release downloads")
 	}
 	if powerShell, err := exec.LookPath("pwsh"); err == nil {
 		path, pathErr := filepath.Abs(filepath.Join("assets", "install.ps1"))
@@ -410,6 +421,21 @@ func TestPowerShellInstallerHasEquivalentIntegrityAndAtomicGuards(t *testing.T) 
 		if output, parseErr := command.CombinedOutput(); parseErr != nil {
 			t.Fatalf("PowerShell installer does not parse: %v\n%s", parseErr, output)
 		}
+	}
+}
+
+func TestShellInstallerUsesCurlWithoutDownloaderFallback(t *testing.T) {
+	data, err := installerAssets.ReadFile("assets/install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"command -v curl", "curl -fL", "manifest.json", "SHA256SUMS"} {
+		if !bytes.Contains(data, []byte(required)) {
+			t.Errorf("Shell installer missing %q", required)
+		}
+	}
+	if bytes.Contains(data, []byte("wget")) {
+		t.Error("Shell installer must not fall back to wget")
 	}
 }
 
