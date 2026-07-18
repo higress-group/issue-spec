@@ -172,6 +172,24 @@ func TestStatusAndVerifyLocallyKnowableCodesStayInParity(t *testing.T) {
 	}
 }
 
+func TestStatusIncludesCollectedExactRevisionFailure(t *testing.T) {
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done",
+		canonicalVerifyContent+"\n\n### Revision\n\n`stale-head`")
+	verify.URL = "https://issues.example/acme/widgets/issues/3#issuecomment-3"
+	collection := statusGateCollection{Remote: statusForecastRemoteFacts(gates.TargetFinal)}
+	collection.Remote.ProviderEvidence = gates.Fact{Required: true, Known: true, Passed: true}
+	collection.Remote.VerifyRevision, _ = collectVerifyRevisionFact([]model.Artifact{verify}, "head-abc",
+		time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC))
+
+	summary := summarizeStatusForGate("acme/widgets", 1, 2, 3, gates.TargetFinal,
+		[]model.Artifact{verify}, workflow.Plan{}, nil, collection)
+	diagnostic := statusGateDiagnostic(summary, gates.CodeVerifyRevisionInvalid)
+	if summary.OK || diagnostic == nil || diagnostic.Artifact.ID != "VERIFY-001" ||
+		diagnostic.Expected != "head-abc" || diagnostic.Remediation.CommandFamily != "comment upsert" {
+		t.Fatalf("status exact-revision diagnostic = %+v gate=%+v", diagnostic, summary.Gate)
+	}
+}
+
 func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *testing.T) {
 	classes := []model.ProcessExecutionClass{
 		model.ProcessExecutionChangeBearing,
@@ -644,6 +662,15 @@ func statusHasCode(summary statusSummary, code string) bool {
 		}
 	}
 	return false
+}
+
+func statusGateDiagnostic(summary statusSummary, code string) *gates.Diagnostic {
+	for index := range summary.Gate.Diagnostics {
+		if summary.Gate.Diagnostics[index].Code == code {
+			return &summary.Gate.Diagnostics[index]
+		}
+	}
+	return nil
 }
 
 func TestSummarizeStatusReportsSessionMetadataDiagnosticsWithoutBlocking(t *testing.T) {

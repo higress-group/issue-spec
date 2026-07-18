@@ -268,6 +268,31 @@ func TestRunVerifySelfHostedPreservesBlockingGateAndSkipsEvidenceConsumption(t *
 	}
 }
 
+func TestRunVerifySelfHostedRevisionFailureIsAuthoritativeDiagnostic(t *testing.T) {
+	app, out, errOut, updates := newSelfHostedVerifyAppAtRevision(t, "stale-head")
+	code := app.runVerify(t.Context(), []string{
+		"--repo", "acme/widgets", "--proposal", "1", "--design", "2", "--implement", "3", "--json",
+	})
+	if code != 1 {
+		t.Fatalf("self-hosted verify exit=%d, want 1; stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var report finalVerifyReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode verify report: %v\n%s", err, out.String())
+	}
+	diagnostic := finalReportGateDiagnostic(report, gates.CodeVerifyRevisionInvalid)
+	if report.OK || diagnostic == nil || diagnostic.Artifact.ID != "VERIFY-001" ||
+		diagnostic.Expected != "head-abc" || diagnostic.Remediation.CommandFamily != "comment upsert" {
+		t.Fatalf("exact-revision failure missing authoritative diagnostic: %+v", report.Gate)
+	}
+	if !errorsContain(report.Errors, "exact external head revision head-abc") {
+		t.Fatalf("legacy exact-revision error projection changed: %+v", report.Errors)
+	}
+	if *updates != 0 {
+		t.Fatalf("revision mismatch consumed external evidence with %d comment updates", *updates)
+	}
+}
+
 func TestRunVerifySelfHostedRejectsAnyExplicitPR(t *testing.T) {
 	const externalEvidenceError = "external evidence fixture failed"
 	failures := []struct {
@@ -330,6 +355,16 @@ func TestRunVerifySelfHostedRejectsAnyExplicitPR(t *testing.T) {
 					if !argument.rejected && (!strings.Contains(stderr, "verify external evidence:") || !strings.Contains(stderr, externalEvidenceError)) {
 						t.Fatalf("omitted --pr did not report external evidence failure: %q", stderr)
 					}
+					if !argument.rejected {
+						var report finalVerifyReport
+						if decodeErr := json.Unmarshal(out.Bytes(), &report); decodeErr != nil {
+							t.Fatalf("provider failure did not return final decision JSON: %v\nstdout=%q", decodeErr, out.String())
+						}
+						diagnostic := finalReportGateDiagnostic(report, gates.CodeProviderEvidenceMissing)
+						if report.OK || diagnostic == nil || diagnostic.Remediation.CommandFamily != "evidence explain" {
+							t.Fatalf("provider failure missing actionable gate diagnostic: %+v", report.Gate)
+						}
+					}
 					if *updates != 0 {
 						t.Fatalf("self-hosted verify unexpectedly consumed evidence with %d comment updates", *updates)
 					}
@@ -349,6 +384,10 @@ func (e *failingResolveNativeEvidence) ResolveTarget(context.Context, string, in
 }
 
 func newSelfHostedVerifyApp(t *testing.T) (*app, *bytes.Buffer, *bytes.Buffer, *int) {
+	return newSelfHostedVerifyAppAtRevision(t, "head-abc")
+}
+
+func newSelfHostedVerifyAppAtRevision(t *testing.T, verifyRevision string) (*app, *bytes.Buffer, *bytes.Buffer, *int) {
 	t.Helper()
 	clearCommandAuthEnv(t)
 	revision := "head-abc"
@@ -376,7 +415,7 @@ func newSelfHostedVerifyApp(t *testing.T) (*app, *bytes.Buffer, *bytes.Buffer, *
 		IssueID: uuid.New(), OrgID: uuid.New(), RepoID: uuid.New(),
 	}}
 	verify := typedCommentWithLinks(t, "VERIFY", "VERIFY-001", "done",
-		canonicalVerifyContent+"\n\n### Revision\n\n`"+revision+"`", 4,
+		canonicalVerifyContent+"\n\n### Revision\n\n`"+verifyRevision+"`", 4,
 		"https://issues.example/acme/widgets/issues/3#issuecomment-4")
 
 	updates := new(int)
@@ -444,6 +483,15 @@ func finalReportHasGateCode(report finalVerifyReport, code string) bool {
 		}
 	}
 	return false
+}
+
+func finalReportGateDiagnostic(report finalVerifyReport, code string) *gates.Diagnostic {
+	for index := range report.Gate.Diagnostics {
+		if report.Gate.Diagnostics[index].Code == code {
+			return &report.Gate.Diagnostics[index]
+		}
+	}
+	return nil
 }
 
 func errorsContain(errs []string, substr string) bool {

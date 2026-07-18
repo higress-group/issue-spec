@@ -359,9 +359,10 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 		collection.Remote.ProviderEvidence = gates.Fact{Required: true, Known: true, Passed: gateErr == nil,
 			Expected: "trusted exact-revision provider evidence"}
 		if gateErr != nil {
-			collection.Remote.ProviderEvidence.Current = "unavailable"
+			collection.Remote.ProviderEvidence.Current = gateErr.Error()
 			return collection
 		}
+		collection.Remote.VerifyRevision, _ = collectVerifyRevisionFact(artifacts, gate.Target.SubjectRevision, time.Now().UTC())
 		collection.ProcessEvidence = buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
 			reviewSyncReport{}, nil, &gate, time.Now().UTC())
 		return collection

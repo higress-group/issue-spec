@@ -50,6 +50,8 @@ type finalVerifyOptions struct {
 	PRCommits         []github.PullRequestCommit
 	ExternalEvidence  *externalEvidenceConsumption
 	ExternalReview    *externalGateResult
+	ProviderEvidence  gates.Fact
+	VerifyRevision    gates.ScopedFact
 	ValidationNow     time.Time
 	CarrierRevisions  map[string]gates.CarrierRevisionFact
 }
@@ -119,14 +121,14 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 	var prCommits []github.PullRequestCommit
 	var prURL string
 	var expectedRevision string
-	externalGate, selfHosted, err := a.externalGate(ctx, *host, token.Value, repo, implementIssue,
+	externalGate, selfHosted, externalGateErr := a.externalGate(ctx, *host, token.Value, repo, implementIssue,
 		"code_change", *revision, coreevidence.GateVerify)
 	if selfHosted && prProvided {
 		a.errorf("--pr is not a self-hosted code authority; omit it and use the active code_change reference\n")
 		return 2
 	}
-	if err != nil {
-		a.errorf("verify external evidence: %v\n", err)
+	if externalGateErr != nil && !selfHosted {
+		a.errorf("verify external evidence: %v\n", externalGateErr)
 		return 1
 	}
 	if !selfHosted && *prFlag <= 0 && hasActiveChangeBearingProcess(artifacts) {
@@ -149,10 +151,24 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 	}
 	var processExternalEvidence *externalEvidenceConsumption
 	var processExternalReview *externalGateResult
-	if selfHosted {
+	var providerEvidence gates.Fact
+	var verifyRevision gates.ScopedFact
+	var finalVerify *model.Artifact
+	if selfHosted && externalGateErr != nil {
+		// Preserve the legacy stderr detail while also carrying this provider
+		// failure into the authoritative evaluator result used by JSON/summary
+		// consumers and the final exit decision.
+		a.errorf("verify external evidence: %v\n", externalGateErr)
+		providerEvidence = gates.Fact{Required: true, Known: true, Passed: false,
+			Current: externalGateErr.Error(), Expected: "trusted exact-revision provider evidence"}
+	}
+	if selfHosted && externalGateErr == nil {
 		processExternalEvidence = &externalGate.Consumption
 		processExternalReview = &externalGate
 		expectedRevision = externalGate.Target.SubjectRevision
+		providerEvidence = gates.Fact{Required: true, Known: true, Passed: true,
+			Current: expectedRevision, Expected: "trusted exact-revision provider evidence"}
+		verifyRevision, finalVerify = collectVerifyRevisionFact(artifacts, expectedRevision, time.Now().UTC())
 	}
 	report, err := buildReport(artifacts, proposalIssueData.HTMLURL, finalVerifyOptions{
 		DurableSpecPath:   *durableSpec,
@@ -166,26 +182,16 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 		PRCommits:         prCommits,
 		ExternalEvidence:  processExternalEvidence,
 		ExternalReview:    processExternalReview,
+		ProviderEvidence:  providerEvidence,
+		VerifyRevision:    verifyRevision,
 		ValidationNow:     time.Now().UTC(),
 	})
 	if err != nil {
 		a.errorf("verify: %v\n", err)
 		return 1
 	}
-	var finalVerify *model.Artifact
-	if selfHosted {
-		candidate, revisionErr := exactRevisionBoundVerify(artifacts, externalGate.Target.SubjectRevision)
-		if revisionErr != nil {
-			report.Errors = append(report.Errors, revisionErr.Error())
-		} else {
-			finalVerify = candidate
-			report.ExternalEvidence = &externalGate.Consumption
-		}
-		// Exact-revision validation may add another error, but it must never
-		// replace the fail-closed gate decision made by buildReport. Otherwise a
-		// blocking diagnostic without a legacy Errors projection can be reset to
-		// OK here and self-hosted evidence would be consumed despite the blocker.
-		report.OK = report.OK && len(report.Errors) == 0
+	if selfHosted && externalGateErr == nil && finalVerify != nil {
+		report.ExternalEvidence = &externalGate.Consumption
 	}
 	report.Diagnostics = append(report.Diagnostics, authoringCompletenessDiagnostics("proposal", proposalIssueData.HTMLURL, proposalIssueData.Body)...)
 	if designIssue > 0 {
@@ -193,7 +199,7 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 			report.Diagnostics = append(report.Diagnostics, authoringCompletenessDiagnostics("design", designIssueData.HTMLURL, designIssueData.Body)...)
 		}
 	}
-	if selfHosted && report.OK && finalVerify != nil && len(externalGate.Consumption.Bindings) > 0 {
+	if selfHosted && externalGateErr == nil && report.OK && finalVerify != nil && len(externalGate.Consumption.Bindings) > 0 {
 		updated, changed, stampErr := stampConsumedEvidence(finalVerify.Comment.Body, externalGate.Consumption)
 		if stampErr != nil {
 			a.errorf("record consumed external evidence: %v\n", stampErr)
@@ -252,9 +258,32 @@ func exactRevisionBoundVerify(artifacts []model.Artifact, revision string) (*mod
 	raw := strings.TrimSpace(sectionContent(candidates[0].Comment.Body, "### Revision"))
 	raw = strings.Trim(raw, "`")
 	if fields := strings.Fields(raw); len(fields) != 1 || fields[0] != revision {
-		return nil, fmt.Errorf("%s must contain `### Revision` with exact external head revision %s", candidates[0].Comment.ID, revision)
+		return candidates[0], fmt.Errorf("%s must contain `### Revision` with exact external head revision %s", candidates[0].Comment.ID, revision)
 	}
 	return candidates[0], nil
+}
+
+func collectVerifyRevisionFact(artifacts []model.Artifact, revision string, observedAt time.Time) (gates.ScopedFact, *model.Artifact) {
+	revision = strings.TrimSpace(revision)
+	fact := gates.ScopedFact{Fact: gates.Fact{Required: true, Known: revision != "", Expected: revision}}
+	if !observedAt.IsZero() {
+		observedAt = observedAt.UTC()
+		fact.Fact.ObservedAt = &observedAt
+	}
+	if revision == "" {
+		return fact, nil
+	}
+	candidate, err := exactRevisionBoundVerify(artifacts, revision)
+	if candidate != nil {
+		fact.Artifact = gates.ArtifactRef{Type: candidate.Comment.Type, ID: candidate.Comment.ID, URL: candidate.URL}
+	}
+	fact.Fact.Passed = err == nil
+	if err != nil {
+		fact.Fact.Current = err.Error()
+		return fact, nil
+	}
+	fact.Fact.Current = revision
+	return fact, candidate
 }
 
 func stampConsumedEvidence(body string, consumption externalEvidenceConsumption) (string, bool, error) {
@@ -333,7 +362,7 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	}
 
 	var reviewReport reviewSyncReport
-	remote := gates.RemoteFacts{}
+	remote := gates.RemoteFacts{ProviderEvidence: opts.ProviderEvidence, VerifyRevision: opts.VerifyRevision}
 	if opts.RationaleRequired {
 		pr := github.PullRequest{Number: opts.PR, HTMLURL: opts.PRURL}
 		pr.Head.SHA = strings.TrimSpace(opts.ExpectedRevision)
@@ -467,11 +496,10 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	}
 	sort.Strings(report.Errors)
 	sort.Strings(report.Warnings)
-	// gateReport.Ready reflects every blocking diagnostic (including workspace
-	// blockers folded in above). Anchoring OK to it means a future blocking gate
-	// code that legacyVerifyGateError does not yet project cannot silently pass
-	// final verify; it fails closed even without a bespoke legacy error string.
-	report.OK = gateReport.Ready && len(report.Errors) == 0
+	// Errors is now only a compatibility projection for the full report. Every
+	// blocker represented there is collected into gateReport first, so the shared
+	// authoritative decision is the sole source of OK and the exit status.
+	report.OK = gateReport.Ready
 	return report, nil
 }
 
@@ -520,6 +548,20 @@ func legacyVerifyGateError(diagnostic gates.Diagnostic) (string, bool) {
 		}
 		return fmt.Sprintf("%s %s (%s) is noncanonical: %s", diagnostic.Artifact.Type, id, url, diagnostic.Message), true
 	case gates.CodeTraceabilityInvalid:
+		return diagnostic.Message, true
+	case gates.CodeProviderEvidenceMissing:
+		if current := strings.TrimSpace(diagnostic.Current); current != "" && current != "failed" {
+			return "verify external evidence: " + current, true
+		}
+		return diagnostic.Message, true
+	case gates.CodeProviderEvidenceUnknown:
+		return diagnostic.Message, true
+	case gates.CodeVerifyRevisionInvalid:
+		if current := strings.TrimSpace(diagnostic.Current); current != "" && current != "failed" {
+			return current, true
+		}
+		return diagnostic.Message, true
+	case gates.CodeVerifyRevisionUnknown:
 		return diagnostic.Message, true
 	case gates.CodeProcessExecutionClassInvalid, gates.CodeProcessTaskLinkMissing,
 		gates.CodeProcessSpecLinkMissing, gates.CodeProcessPRLinkMissing, gates.CodeProcessCarrierMissing,
