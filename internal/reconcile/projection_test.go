@@ -9,23 +9,18 @@ import (
 )
 
 func TestCompileReceiptProjectionDeterministicExistingOperations(t *testing.T) {
-	input := ReceiptProjection{Version: 1, Repo: "o/r", Hostname: "issues.example", Proposal: 7, Issue: 9,
+	input := ReceiptProjection{Version: 1, Repo: "o/r", Hostname: "issues.example", Proposal: 7, Issue: 9, AllowNonAtomic: true,
 		AcceptedReceipts: []AcceptedReceiptProjection{
 			{Role: assignment.RoleReview, Carrier: Target{Type: "review", ID: "REVIEW-002"}, ReceiptID: "review-2",
 				ReceiptDigest: strings.Repeat("b", 64), Generation: 2,
 				Lifecycle:       []ReceiptLifecycle{{Target: Target{Type: "review", ID: "REVIEW-002"}, Status: "done"}},
 				CoverageTargets: []Target{{Type: "spec", ID: "SPEC-002"}, {Type: "process", ID: "PROCESS-002"}},
-				CurrentTargets:  []Target{{Type: "process", ID: "PROCESS-009"}},
-				EvidenceRefs:    []ProviderEvidenceRef{{Kind: "finding", URL: "https://code.example/reviews/2#finding-1"}}},
+				CurrentTargets:  []Target{{Type: "process", ID: "PROCESS-009"}}},
 			{Role: assignment.RoleImplementation, Carrier: Target{Type: "process", ID: "PROCESS-001"}, ReceiptID: "implementation-1",
 				ReceiptDigest: strings.Repeat("a", 64), Generation: 1,
-				Lifecycle: []ReceiptLifecycle{
-					{Target: Target{Type: "task", ID: "TASK-001"}, Status: "done"},
-					{Target: Target{Type: "process", ID: "PROCESS-001"}, Status: "done"},
-				},
+				Lifecycle:       []ReceiptLifecycle{{Target: Target{Type: "process", ID: "PROCESS-001"}, Status: "done"}},
 				CoverageTargets: []Target{{Type: "spec", ID: "SPEC-001"}, {Type: "task", ID: "TASK-001"}},
-				CurrentTargets:  []Target{{Type: "task", ID: "TASK-009"}},
-				EvidenceRefs:    []ProviderEvidenceRef{{Kind: "rationale", URL: "https://code.example/changes/1#rationale"}}},
+				CurrentTargets:  []Target{{Type: "task", ID: "TASK-009"}}},
 		}}
 
 	first, err := CompileReceiptProjection(input)
@@ -53,7 +48,7 @@ func TestCompileReceiptProjectionDeterministicExistingOperations(t *testing.T) {
 			t.Fatalf("projection emitted arbitrary body mutation %+v", operation)
 		}
 	}
-	if first.Operations[0].Target.Type != "PROCESS" || len(first.Operations[0].Desired.RelatedLinks) != 1 ||
+	if !first.AllowNonAtomic || first.Operations[0].Target.Type != "PROCESS" || len(first.Operations[0].Desired.RelatedLinks) != 0 ||
 		first.Operations[0].Precondition.AcceptedReceipt == nil ||
 		first.Operations[0].Precondition.AcceptedReceipt.ReceiptID != "implementation-1" {
 		t.Fatalf("implementation carrier lifecycle=%+v", first.Operations[0])
@@ -61,14 +56,18 @@ func TestCompileReceiptProjectionDeterministicExistingOperations(t *testing.T) {
 	if _, digest, err := Validate(first); err != nil || digest != first.PlanDigest {
 		t.Fatalf("compiled plan validation digest=%s err=%v plan=%+v", digest, err, first)
 	}
+	input.AllowNonAtomic = false
+	strict, err := CompileReceiptProjection(input)
+	if err != nil || strict.AllowNonAtomic || strict.PlanDigest == first.PlanDigest {
+		t.Fatalf("non-atomic policy was not bound into compiled plan strict=%+v err=%v", strict, err)
+	}
 }
 
-func TestCompileReceiptProjectionRejectsInvalidRelationshipsAndEvidenceBeforePlan(t *testing.T) {
+func TestCompileReceiptProjectionRejectsInvalidRelationshipsBeforePlan(t *testing.T) {
 	valid := AcceptedReceiptProjection{Role: assignment.RoleReview, Carrier: Target{Type: "REVIEW", ID: "REVIEW-001"},
 		ReceiptID: "review-1", ReceiptDigest: strings.Repeat("c", 64), Generation: 1,
 		Lifecycle:       []ReceiptLifecycle{{Target: Target{Type: "REVIEW", ID: "REVIEW-001"}, Status: "done"}},
-		CoverageTargets: []Target{{Type: "SPEC", ID: "SPEC-001"}}, CurrentTargets: []Target{{Type: "PROCESS", ID: "PROCESS-001"}},
-		EvidenceRefs: []ProviderEvidenceRef{{Kind: "finding", URL: "https://code.example/review/1#finding"}}}
+		CoverageTargets: []Target{{Type: "SPEC", ID: "SPEC-001"}}, CurrentTargets: []Target{{Type: "PROCESS", ID: "PROCESS-001"}}}
 	tests := map[string]func(*AcceptedReceiptProjection){
 		"carrier": func(value *AcceptedReceiptProjection) { value.Carrier.Type = "PROCESS" },
 		"question target": func(value *AcceptedReceiptProjection) {
@@ -80,8 +79,6 @@ func TestCompileReceiptProjectionRejectsInvalidRelationshipsAndEvidenceBeforePla
 		"provider URL as typed peer": func(value *AcceptedReceiptProjection) {
 			value.CoverageTargets = []Target{{Type: "https://code.example/review/1", ID: "SPEC-001"}}
 		},
-		"evidence kind": func(value *AcceptedReceiptProjection) { value.EvidenceRefs[0].Kind = "check" },
-		"evidence URL":  func(value *AcceptedReceiptProjection) { value.EvidenceRefs[0].URL = "http://code.example/review/1" },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -89,7 +86,6 @@ func TestCompileReceiptProjectionRejectsInvalidRelationshipsAndEvidenceBeforePla
 			candidate.Lifecycle = append([]ReceiptLifecycle(nil), valid.Lifecycle...)
 			candidate.CoverageTargets = append([]Target(nil), valid.CoverageTargets...)
 			candidate.CurrentTargets = append([]Target(nil), valid.CurrentTargets...)
-			candidate.EvidenceRefs = append([]ProviderEvidenceRef(nil), valid.EvidenceRefs...)
 			mutate(&candidate)
 			if plan, err := CompileReceiptProjection(ReceiptProjection{Version: 1, Repo: "o/r", Hostname: "issues.example",
 				Proposal: 7, Issue: 9,
@@ -108,14 +104,17 @@ func TestCompileReceiptProjectionRequiresExplicitSafeLifecycleAndRelationships(t
 		CoverageTargets: []Target{{Type: "SPEC", ID: "SPEC-001"}},
 		CurrentTargets:  []Target{{Type: "PROCESS", ID: "PROCESS-001"}}}
 	tests := map[string]func(*AcceptedReceiptProjection){
+		"missing lifecycle": func(value *AcceptedReceiptProjection) { value.Lifecycle = nil },
 		"missing carrier lifecycle": func(value *AcceptedReceiptProjection) {
 			value.Lifecycle = []ReceiptLifecycle{{Target: Target{Type: "PROCESS", ID: "PROCESS-001"}, Status: "done"}}
 		},
-		"unsafe lifecycle type": func(value *AcceptedReceiptProjection) {
+		"additional lifecycle target": func(value *AcceptedReceiptProjection) {
 			value.Lifecycle = append(value.Lifecycle, ReceiptLifecycle{Target: Target{Type: "TASK", ID: "TASK-001"}, Status: "done"})
 		},
-		"missing coverage": func(value *AcceptedReceiptProjection) { value.CoverageTargets = nil },
-		"missing current":  func(value *AcceptedReceiptProjection) { value.CurrentTargets = nil },
+		"carrier superseded":  func(value *AcceptedReceiptProjection) { value.Lifecycle[0].Status = "superseded" },
+		"carrier in progress": func(value *AcceptedReceiptProjection) { value.Lifecycle[0].Status = "in-progress" },
+		"missing coverage":    func(value *AcceptedReceiptProjection) { value.CoverageTargets = nil },
+		"missing current":     func(value *AcceptedReceiptProjection) { value.CurrentTargets = nil },
 		"mismatched typed id": func(value *AcceptedReceiptProjection) {
 			value.CurrentTargets = []Target{{Type: "PROCESS", ID: "SPEC-001"}}
 		},

@@ -18,6 +18,7 @@ type fakeBackend struct {
 	versions     map[int64]int64
 	nextID       int64
 	createLost   bool
+	updateLost   bool
 	failUpdateID int64
 	writes       int
 	listCalls    map[int]int
@@ -68,7 +69,12 @@ func (f *fakeBackend) CreateComment(_ context.Context, _ string, issue int, body
 	return c, nil
 }
 func (f *fakeBackend) UpdateComment(_ context.Context, _ string, id int64, body string) (github.Comment, error) {
-	return f.update(id, body)
+	comment, err := f.update(id, body)
+	if err == nil && f.updateLost {
+		f.updateLost = false
+		return github.Comment{}, &github.APIError{StatusCode: http.StatusServiceUnavailable}
+	}
+	return comment, err
 }
 func (f *fakeBackend) GetCommentRepresentation(_ context.Context, _ string, id int64) (github.CommentRepresentation, error) {
 	for _, cs := range f.comments {
@@ -179,7 +185,7 @@ func TestReconcileCreateReobservesDuplicateLogicalMarker(t *testing.T) {
 	body := typedBody(t, "TASK", "TASK-001", "confirmed")
 	f.listHook = func(f *fakeBackend, issue, call int) {
 		if issue == 1 && call == 3 {
-			addComment(f, issue, 99, body)
+			addComment(f, issue, 99, body+"\n\nConcurrent human note.")
 		}
 	}
 	plan := Plan{Version: 1, Repo: "o/r", AllowNonAtomic: true, Operations: []Operation{{ID: "create", Kind: "upsert", Target: Target{Issue: 1, Type: "TASK", ID: "TASK-001"}, Desired: Desired{Body: body}}}}
@@ -188,7 +194,7 @@ func TestReconcileCreateReobservesDuplicateLogicalMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Conflicted != 1 || f.writes != 1 || !strings.Contains(result.Operations[0].Message, "duplicate logical marker") {
+	if result.Conflicted != 1 || f.writes != 0 || !strings.Contains(result.Operations[0].Message, "appeared after initial observation") {
 		t.Fatalf("result=%+v writes=%d", result, f.writes)
 	}
 }
@@ -264,20 +270,48 @@ func TestReconcileAcceptedImplementationReceiptMissingOrMismatchDoesZeroWrites(t
 	}
 }
 
-func TestReconcileAcceptedReviewReceiptMatchesExactCarrierBeforeTransition(t *testing.T) {
+func TestReconcileAcceptedReviewReceiptMatchesAlreadyDoneCarrier(t *testing.T) {
 	const receiptID = "receipt-review-1"
 	digest := strings.Repeat("c", 64)
 	f := newFake()
-	addComment(f, 1, 1, acceptedReceiptBody(t, "REVIEW", "REVIEW-001", "in-progress",
+	addComment(f, 1, 1, acceptedReceiptBody(t, "REVIEW", "REVIEW-001", "done",
 		assignment.RoleReview, receiptID, digest, 2))
 	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "accept", Kind: "transition",
 		Target: Target{Issue: 1, Type: "REVIEW", ID: "REVIEW-001"}, Desired: Desired{Status: "done"},
 		Precondition: Precondition{AcceptedReceipt: &model.AcceptedReceiptAuthority{Role: assignment.RoleReview,
 			ReceiptID: receiptID, Digest: digest, Generation: 2}}}}}
 	result, err := (Engine{Backend: f}).Run(context.Background(), plan, "")
-	if err != nil || !result.OK || result.Updated != 1 || f.writes != 1 ||
+	if err != nil || !result.OK || result.Unchanged != 1 || f.writes != 0 ||
 		model.ParseTypedComment(f.comments[1][0].Body).Status != "done" {
 		t.Fatalf("result=%+v writes=%d err=%v", result, f.writes, err)
+	}
+}
+
+func TestReconcileAcceptedReceiptCannotStrengthenCarrierLifecycle(t *testing.T) {
+	const receiptID = "receipt-review-1"
+	digest := strings.Repeat("c", 64)
+	expected := &model.AcceptedReceiptAuthority{Role: assignment.RoleReview,
+		ReceiptID: receiptID, Digest: digest, Generation: 2}
+	for _, test := range []struct {
+		name    string
+		status  string
+		desired Desired
+	}{
+		{name: "in-progress to done", status: "in-progress", desired: Desired{Status: "done"}},
+		{name: "done to superseded", status: "done", desired: Desired{Status: "superseded"}},
+		{name: "done with caller link", status: "done", desired: Desired{Status: "done", RelatedLinks: []string{"https://example.test/forged"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFake()
+			addComment(f, 1, 1, acceptedReceiptBody(t, "REVIEW", "REVIEW-001", test.status,
+				assignment.RoleReview, receiptID, digest, 2))
+			plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "accept", Kind: "transition",
+				Target: Target{Issue: 1, Type: "REVIEW", ID: "REVIEW-001"}, Desired: test.desired,
+				Precondition: Precondition{AcceptedReceipt: expected}}}}
+			if _, err := (Engine{Backend: f}).Run(context.Background(), plan, ""); err == nil || f.writes != 0 {
+				t.Fatalf("err=%v writes=%d", err, f.writes)
+			}
+		})
 	}
 }
 
@@ -299,6 +333,51 @@ func TestReconcileStrictConditionalDefaultAndPlanAcknowledgement(t *testing.T) {
 	}
 	if !accepted.OK || accepted.Updated != 1 || accepted.Operations[0].Atomic {
 		t.Fatalf("accepted=%+v", accepted)
+	}
+}
+
+func TestReconcileNonAtomicDigestGuardRejectsChangedFreshObservation(t *testing.T) {
+	f := newFake()
+	addComment(f, 1, 1, typedBody(t, "TASK", "TASK-001", "confirmed"))
+	f.listHook = func(f *fakeBackend, issue, call int) {
+		if issue == 1 && call == 3 {
+			f.comments[issue][0].Body += "\n\nConcurrent human note."
+			f.versions[1]++
+		}
+	}
+	plan := Plan{Version: 1, Repo: "o/r", AllowNonAtomic: true, Operations: []Operation{{ID: "transition", Kind: "transition",
+		Target: Target{Issue: 1, Type: "TASK", ID: "TASK-001"}, Desired: Desired{Status: "done"}}}}
+
+	result, err := (Engine{Backend: plainBackend{IssueBackend: f}}).Run(context.Background(), plan, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Conflicted != 1 || f.writes != 0 || model.ParseTypedComment(f.comments[1][0].Body).Status != "confirmed" ||
+		!strings.Contains(f.comments[1][0].Body, "Concurrent human note.") ||
+		!strings.Contains(result.Operations[0].Message, "representation digest changed") {
+		t.Fatalf("result=%+v writes=%d body=%q", result, f.writes, f.comments[1][0].Body)
+	}
+}
+
+func TestReconcileNonAtomicLostUpdateResponseUsesExactRecovery(t *testing.T) {
+	f := newFake()
+	f.updateLost = true
+	addComment(f, 1, 1, typedBody(t, "TASK", "TASK-001", "confirmed"))
+	plan := Plan{Version: 1, Repo: "o/r", AllowNonAtomic: true, Operations: []Operation{{ID: "transition", Kind: "transition",
+		Target: Target{Issue: 1, Type: "TASK", ID: "TASK-001"}, Desired: Desired{Status: "done"}}}}
+	cp := t.TempDir() + "/cp.json"
+
+	result, err := (Engine{Backend: plainBackend{IssueBackend: f}}).Run(context.Background(), plan, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || result.Updated != 1 || result.Atomic || f.writes != 1 ||
+		model.ParseTypedComment(f.comments[1][0].Body).Status != "done" {
+		t.Fatalf("result=%+v writes=%d", result, f.writes)
+	}
+	checkpoint, err := LoadCheckpoint(cp, result.PlanDigest)
+	if err != nil || checkpoint.Completed["transition"] != "updated" {
+		t.Fatalf("checkpoint=%+v err=%v", checkpoint, err)
 	}
 }
 

@@ -377,6 +377,7 @@ After runner resume or restart, the top-level runner recovers only the ACPX/sess
 ```bash
 issue-spec workflow reconcile \
   --projection receipt-projection.json \
+  --allow-nonatomic \
   --checkpoint .issue-spec/reconcile/receipt-projection.json \
   --json
 ```
@@ -398,8 +399,7 @@ The version-1 projection is deliberately identity-only. It accepts no receipt co
       "receipt_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "generation": 1,
       "lifecycle": [
-        {"target": {"type": "REVIEW", "id": "REVIEW-001"}, "status": "done"},
-        {"target": {"type": "PROCESS", "id": "PROCESS-002"}, "status": "done"}
+        {"target": {"type": "REVIEW", "id": "REVIEW-001"}, "status": "done"}
       ],
       "coverage_targets": [
         {"type": "PROCESS", "id": "PROCESS-002"},
@@ -407,18 +407,17 @@ The version-1 projection is deliberately identity-only. It accepts no receipt co
       ],
       "current_targets": [
         {"type": "PROCESS", "id": "PROCESS-002"}
-      ],
-      "evidence_refs": [
-        {"kind": "finding", "url": "https://code.example/reviews/7#finding-1"}
       ]
     }
   ]
 }
 ```
 
-Before any write, reconcile observes the carrier's compact immutable accepted-receipt marker and requires its role, receipt id, digest, and assignment generation to match exactly. Review carriers are `REVIEW`, verification carriers are `VERIFY`, and implementation carriers are `PROCESS`. Implementation projection currently fails closed until the PROCESS contains the issue-native accepted-implementation-receipt marker; workspace assignment/result state is not a substitute.
+Before any write, reconcile observes the carrier's compact immutable accepted-receipt marker and requires its role, receipt id, digest, assignment generation, and existing `done` carrier status to match exactly. The single lifecycle entry is therefore an assertion, not permission to transition the carrier: a projection cannot complete, supersede, downgrade, or reopen either the carrier or a related `PROCESS`/`TASK`. Review carriers are `REVIEW`, verification carriers are `VERIFY`, and implementation carriers are `PROCESS`. Implementation projection currently fails closed until the PROCESS contains the issue-native accepted-implementation-receipt marker; workspace assignment/result state is not a substitute.
 
-Relationship types are fixed: implementation coverage targets are `TASK`/`SPEC` and current targets are `TASK`; review and verification coverage targets are `PROCESS`/`SPEC` and current targets are `PROCESS`. Lifecycle targets are limited to the role carrier plus its owning `PROCESS` or parent `TASK` as applicable. Stable provider evidence URLs may only be attached to the carrier with the role's existing kind (`rationale`, `finding`, or `check`); reconcile never creates, updates, or strengthens provider evidence. Every relationship compiles to the existing bidirectional typed-comment link operation. Reusing the same compiled plan and checkpoint resumes its existing digest-bound retry path.
+Relationship types are fixed: implementation coverage targets are `TASK`/`SPEC` and current targets are `TASK`; review and verification coverage targets are `PROCESS`/`SPEC` and current targets are `PROCESS`. Version 1 accepts no caller-supplied provider evidence URL; rationale, findings, and checks remain only in role-owned carriers or provider-authoritative observations. Every relationship compiles to the existing bidirectional typed-comment link operation.
+
+Non-atomic provider fallback is disabled by default. GitHub projection writes require an explicit `--allow-nonatomic` invocation (or top-level `"allow_nonatomic": true` in the projection). The compiled plan records that policy in its digest. Each fallback mutation performs a fresh exact observation, compares the representation digest with the body used to compute the mutation, and requires an exact post-write observation before checkpointing. Reusing the same compiled plan and checkpoint therefore resumes the existing digest-bound retry path; the result remains marked non-atomic because a backend without conditional mutation cannot eliminate the final write race.
 
 ### Canonical validation by default
 

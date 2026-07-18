@@ -360,6 +360,7 @@ runner resume 或 restart 后，top-level runner 只恢复 ACPX/session job。PR
 ```bash
 issue-spec workflow reconcile \
   --projection receipt-projection.json \
+  --allow-nonatomic \
   --checkpoint .issue-spec/reconcile/receipt-projection.json \
   --json
 ```
@@ -381,8 +382,7 @@ issue-spec workflow reconcile \
       "receipt_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "generation": 1,
       "lifecycle": [
-        {"target": {"type": "REVIEW", "id": "REVIEW-001"}, "status": "done"},
-        {"target": {"type": "PROCESS", "id": "PROCESS-002"}, "status": "done"}
+        {"target": {"type": "REVIEW", "id": "REVIEW-001"}, "status": "done"}
       ],
       "coverage_targets": [
         {"type": "PROCESS", "id": "PROCESS-002"},
@@ -390,18 +390,17 @@ issue-spec workflow reconcile \
       ],
       "current_targets": [
         {"type": "PROCESS", "id": "PROCESS-002"}
-      ],
-      "evidence_refs": [
-        {"kind": "finding", "url": "https://code.example/reviews/7#finding-1"}
       ]
     }
   ]
 }
 ```
 
-任何写入发生前，reconcile 都会观察 carrier 上紧凑且不可变的 accepted-receipt marker，并要求 role、receipt id、digest 与 assignment generation 完全匹配。review carrier 必须是 `REVIEW`，verification carrier 必须是 `VERIFY`，implementation carrier 必须是 `PROCESS`。在 PROCESS 尚未包含 issue-native accepted-implementation-receipt marker 时，implementation projection 会 fail closed；workspace assignment/result 状态不能替代该 marker。
+任何写入发生前，reconcile 都会观察 carrier 上紧凑且不可变的 accepted-receipt marker，并要求 role、receipt id、digest、assignment generation 以及 carrier 现有的 `done` 状态完全匹配。因此唯一的 lifecycle 条目是断言，而不是转换 carrier 的授权：projection 不能完成、supersede、降级或重新打开 carrier，也不能这样修改相关 `PROCESS`/`TASK`。review carrier 必须是 `REVIEW`，verification carrier 必须是 `VERIFY`，implementation carrier 必须是 `PROCESS`。在 PROCESS 尚未包含 issue-native accepted-implementation-receipt marker 时，implementation projection 会 fail closed；workspace assignment/result 状态不能替代该 marker。
 
-关系类型是固定的：implementation 的 coverage target 为 `TASK`/`SPEC`，current target 为 `TASK`；review 与 verification 的 coverage target 为 `PROCESS`/`SPEC`，current target 为 `PROCESS`。lifecycle target 仅限角色 carrier，以及适用的所属 `PROCESS` 或父 `TASK`。稳定的 provider evidence URL 只能按角色已有 kind（`rationale`、`finding` 或 `check`）附加到 carrier；reconcile 绝不会创建、更新或增强 provider evidence。每个关系都会编译为现有的双向 typed-comment link 操作。复用相同的已编译 plan 与 checkpoint，会沿用现有的 digest 绑定重试路径。
+关系类型是固定的：implementation 的 coverage target 为 `TASK`/`SPEC`，current target 为 `TASK`；review 与 verification 的 coverage target 为 `PROCESS`/`SPEC`，current target 为 `PROCESS`。版本 1 不接受调用方提供的 provider evidence URL；rationale、finding 与 check 只能留在角色自有 carrier 或 provider 权威观察中。每个关系都会编译为现有的双向 typed-comment link 操作。
+
+非原子 provider fallback 默认关闭。GitHub projection 写入必须通过 `--allow-nonatomic`（或 projection 顶层的 `"allow_nonatomic": true`）显式选择。编译后的 plan 会把该策略纳入 digest。每次 fallback mutation 都会重新进行一次精确观察，将当前 representation digest 与计算 mutation 所依据的正文比较，并且只有在写后精确观察完全匹配时才写入 checkpoint。因此复用相同的已编译 plan 与 checkpoint 仍沿用原有的 digest 绑定重试路径；由于不支持 conditional mutation 的 backend 无法消除最后的写入竞态，结果仍会标记为 non-atomic。
 
 ### 默认的 canonical 校验
 

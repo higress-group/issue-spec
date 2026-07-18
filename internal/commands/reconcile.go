@@ -20,6 +20,7 @@ func (a *app) runWorkflowReconcile(ctx context.Context, args []string) int {
 	projectionPath := fs.String("projection", "", "versioned accepted-receipt projection JSON file, or - for stdin")
 	checkpoint := fs.String("checkpoint", "", "durable checkpoint JSON path")
 	host := fs.String("hostname", "", "issue backend hostname override")
+	allowNonAtomic := fs.Bool("allow-nonatomic", false, "allow guarded non-atomic fallback for an accepted-receipt projection")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -29,12 +30,17 @@ func (a *app) runWorkflowReconcile(ctx context.Context, args []string) int {
 		a.errorf("exactly one of --plan or --projection is required\n")
 		return 2
 	}
+	if planProvided && *allowNonAtomic {
+		a.errorf("--allow-nonatomic is only valid with --projection; plan files declare allow_nonatomic directly\n")
+		return 2
+	}
 	var plan reconcile.Plan
 	var err error
 	if projectionProvided {
 		var projection reconcile.ReceiptProjection
 		projection, err = readReceiptProjection(*projectionPath, a.in)
 		if err == nil {
+			projection.AllowNonAtomic = projection.AllowNonAtomic || *allowNonAtomic
 			plan, err = reconcile.CompileReceiptProjection(projection)
 		}
 		if err != nil {

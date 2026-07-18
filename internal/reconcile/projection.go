@@ -23,32 +23,24 @@ type ReceiptProjection struct {
 	Hostname         string                      `json:"hostname"`
 	Proposal         int                         `json:"proposal"`
 	Issue            int                         `json:"issue"`
+	AllowNonAtomic   bool                        `json:"allow_nonatomic,omitempty"`
 	AcceptedReceipts []AcceptedReceiptProjection `json:"accepted_receipts"`
 }
 
 type AcceptedReceiptProjection struct {
-	Role            assignment.Role       `json:"role"`
-	Carrier         Target                `json:"carrier"`
-	ReceiptID       string                `json:"receipt_id"`
-	ReceiptDigest   string                `json:"receipt_digest"`
-	Generation      uint64                `json:"generation"`
-	Lifecycle       []ReceiptLifecycle    `json:"lifecycle"`
-	CoverageTargets []Target              `json:"coverage_targets"`
-	CurrentTargets  []Target              `json:"current_targets"`
-	EvidenceRefs    []ProviderEvidenceRef `json:"evidence_refs,omitempty"`
+	Role            assignment.Role    `json:"role"`
+	Carrier         Target             `json:"carrier"`
+	ReceiptID       string             `json:"receipt_id"`
+	ReceiptDigest   string             `json:"receipt_digest"`
+	Generation      uint64             `json:"generation"`
+	Lifecycle       []ReceiptLifecycle `json:"lifecycle"`
+	CoverageTargets []Target           `json:"coverage_targets"`
+	CurrentTargets  []Target           `json:"current_targets"`
 }
 
 type ReceiptLifecycle struct {
 	Target Target `json:"target"`
 	Status string `json:"status"`
-}
-
-// ProviderEvidenceRef names an already-stable provider discussion or check.
-// Compilation may add its URL to the issue-native carrier; it never mutates or
-// upgrades the referenced provider object.
-type ProviderEvidenceRef struct {
-	Kind string `json:"kind"`
-	URL  string `json:"url"`
 }
 
 var projectionReceiptID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
@@ -74,18 +66,6 @@ var relationshipTargets = map[assignment.Role]map[string]map[string]bool{
 		"coverage": {"PROCESS": true, "SPEC": true},
 		"current":  {"PROCESS": true},
 	},
-}
-
-var lifecycleTargets = map[assignment.Role]map[string]bool{
-	assignment.RoleImplementation: {"PROCESS": true, "TASK": true},
-	assignment.RoleReview:         {"REVIEW": true, "PROCESS": true},
-	assignment.RoleVerification:   {"VERIFY": true, "PROCESS": true},
-}
-
-var evidenceKinds = map[assignment.Role]string{
-	assignment.RoleImplementation: "rationale",
-	assignment.RoleReview:         "finding",
-	assignment.RoleVerification:   "check",
 }
 
 // CompileReceiptProjection validates an accepted-receipt projection and
@@ -114,7 +94,8 @@ func CompileReceiptProjection(input ReceiptProjection) (Plan, error) {
 	sort.Slice(receipts, func(i, j int) bool { return receiptProjectionKey(receipts[i]) < receiptProjectionKey(receipts[j]) })
 
 	seenID, seenDigest := map[string]bool{}, map[string]bool{}
-	plan := Plan{Version: PlanVersion, Repo: input.Repo, Hostname: input.Hostname, Proposal: input.Proposal}
+	plan := Plan{Version: PlanVersion, Repo: input.Repo, Hostname: input.Hostname, Proposal: input.Proposal,
+		AllowNonAtomic: input.AllowNonAtomic}
 	for _, receipt := range receipts {
 		idKey := strings.ToLower(receipt.ReceiptID)
 		digestKey := receipt.ReceiptDigest
@@ -164,41 +145,22 @@ func normalizeReceiptProjection(receipt *AcceptedReceiptProjection, defaultIssue
 	if receipt.Generation == 0 {
 		return fmt.Errorf("generation must be positive")
 	}
-	if len(receipt.Lifecycle) == 0 {
-		return fmt.Errorf("lifecycle is required")
+	if len(receipt.Lifecycle) != 1 {
+		return fmt.Errorf("lifecycle must contain exactly one immutable carrier assertion")
 	}
 
-	seenLifecycle, carrierLifecycle := map[string]bool{}, false
-	for index := range receipt.Lifecycle {
-		item := &receipt.Lifecycle[index]
-		item.Target, err = normalizeProjectionTarget(item.Target, defaultIssue)
-		if err != nil {
-			return fmt.Errorf("lifecycle %d target: %w", index, err)
-		}
-		item.Status = strings.ToLower(strings.TrimSpace(item.Status))
-		if !lifecycleTargets[receipt.Role][item.Target.Type] {
-			return fmt.Errorf("%s receipt cannot use %s as a lifecycle target", receipt.Role, item.Target.Type)
-		}
-		if !model.AllowedStatuses[item.Status] {
-			return fmt.Errorf("lifecycle %d has unsupported status %q", index, item.Status)
-		}
-		key := projectionTargetKey(item.Target)
-		if seenLifecycle[key] {
-			return fmt.Errorf("duplicate lifecycle target %s", key)
-		}
-		seenLifecycle[key] = true
-		carrierLifecycle = carrierLifecycle || sameProjectionTarget(item.Target, receipt.Carrier)
+	item := &receipt.Lifecycle[0]
+	item.Target, err = normalizeProjectionTarget(item.Target, defaultIssue)
+	if err != nil {
+		return fmt.Errorf("lifecycle carrier target: %w", err)
 	}
-	if !carrierLifecycle {
-		return fmt.Errorf("lifecycle must explicitly include the receipt carrier")
+	item.Status = strings.ToLower(strings.TrimSpace(item.Status))
+	if !sameProjectionTarget(item.Target, receipt.Carrier) {
+		return fmt.Errorf("lifecycle may only assert the receipt carrier")
 	}
-	sort.Slice(receipt.Lifecycle, func(i, j int) bool {
-		left, right := projectionTargetKey(receipt.Lifecycle[i].Target), projectionTargetKey(receipt.Lifecycle[j].Target)
-		if left == right {
-			return receipt.Lifecycle[i].Status < receipt.Lifecycle[j].Status
-		}
-		return left < right
-	})
+	if item.Status != "done" {
+		return fmt.Errorf("accepted receipt carrier lifecycle must be the immutable done assertion, got %q", item.Status)
+	}
 
 	if receipt.CoverageTargets, err = normalizeRelationshipTargets(receipt.Role, "coverage", receipt.Carrier, receipt.CoverageTargets, defaultIssue); err != nil {
 		return err
@@ -208,9 +170,6 @@ func normalizeReceiptProjection(receipt *AcceptedReceiptProjection, defaultIssue
 	}
 	if len(receipt.CoverageTargets) == 0 || len(receipt.CurrentTargets) == 0 {
 		return fmt.Errorf("coverage_targets and current_targets must be explicit and non-empty")
-	}
-	if err := normalizeEvidenceRefs(receipt); err != nil {
-		return err
 	}
 	return nil
 }
@@ -261,34 +220,6 @@ func normalizeRelationshipTargets(role assignment.Role, relationship string, car
 	return result, nil
 }
 
-func normalizeEvidenceRefs(receipt *AcceptedReceiptProjection) error {
-	want, seen := evidenceKinds[receipt.Role], map[string]bool{}
-	for index := range receipt.EvidenceRefs {
-		ref := &receipt.EvidenceRefs[index]
-		ref.Kind = strings.ToLower(strings.TrimSpace(ref.Kind))
-		ref.URL = strings.TrimSpace(ref.URL)
-		if ref.Kind != want {
-			return fmt.Errorf("%s receipt evidence kind must be %q, got %q", receipt.Role, want, ref.Kind)
-		}
-		parsed, err := url.ParseRequestURI(ref.URL)
-		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
-			return fmt.Errorf("evidence ref %d must be an absolute HTTPS URL", index)
-		}
-		key := ref.Kind + ":" + ref.URL
-		if seen[key] {
-			return fmt.Errorf("duplicate evidence ref %s", ref.URL)
-		}
-		seen[key] = true
-	}
-	sort.Slice(receipt.EvidenceRefs, func(i, j int) bool {
-		if receipt.EvidenceRefs[i].Kind == receipt.EvidenceRefs[j].Kind {
-			return receipt.EvidenceRefs[i].URL < receipt.EvidenceRefs[j].URL
-		}
-		return receipt.EvidenceRefs[i].Kind < receipt.EvidenceRefs[j].Kind
-	})
-	return nil
-}
-
 func compileAcceptedReceipt(receipt AcceptedReceiptProjection) ([]Operation, error) {
 	prefix := fmt.Sprintf("receipt-%s-%s-g%d-%s", receipt.Role, receipt.ReceiptID, receipt.Generation, receipt.ReceiptDigest[:12])
 	lifecycleIDs := make([]string, 0, len(receipt.Lifecycle))
@@ -302,9 +233,6 @@ func compileAcceptedReceipt(receipt AcceptedReceiptProjection) ([]Operation, err
 			carrierLifecycleID = id
 			precondition.AcceptedReceipt = &model.AcceptedReceiptAuthority{Role: receipt.Role,
 				ReceiptID: receipt.ReceiptID, Digest: receipt.ReceiptDigest, Generation: receipt.Generation}
-			for _, ref := range receipt.EvidenceRefs {
-				desired.RelatedLinks = append(desired.RelatedLinks, ref.URL)
-			}
 		}
 		operations = append(operations, Operation{ID: id, Kind: "transition", Target: lifecycle.Target,
 			Desired: desired, Precondition: precondition})
@@ -350,7 +278,6 @@ func cloneAcceptedReceiptProjection(receipt AcceptedReceiptProjection) AcceptedR
 	receipt.Lifecycle = append([]ReceiptLifecycle(nil), receipt.Lifecycle...)
 	receipt.CoverageTargets = append([]Target(nil), receipt.CoverageTargets...)
 	receipt.CurrentTargets = append([]Target(nil), receipt.CurrentTargets...)
-	receipt.EvidenceRefs = append([]ProviderEvidenceRef(nil), receipt.EvidenceRefs...)
 	return receipt
 }
 

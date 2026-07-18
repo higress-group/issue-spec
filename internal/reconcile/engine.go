@@ -171,6 +171,16 @@ func (e Engine) applyUpsert(ctx context.Context, plan Plan, op Operation) Operat
 		if !plan.AllowNonAtomic {
 			return conflictResult(op, "comment creation is non-atomic; plan allow_nonatomic is false")
 		}
+		fresh, freshFound, observeErr := e.observe(ctx, plan.Repo, op.Target, true)
+		if observeErr != nil {
+			return failureResult(op, fmt.Errorf("pre-create exact observation: %w", observeErr), false)
+		}
+		if freshFound {
+			if fresh.Body == desired {
+				return unchangedResult(op, fresh, false)
+			}
+			return conflictResult(op, "comment appeared after initial observation; refusing non-atomic creation")
+		}
 		_, err := e.Backend.CreateComment(ctx, plan.Repo, op.Target.Issue, desired)
 		if err != nil {
 			if _, _, observeErr := e.observe(ctx, plan.Repo, op.Target, true); observeErr != nil {
@@ -187,7 +197,7 @@ func (e Engine) applyUpsert(ctx context.Context, plan Plan, op Operation) Operat
 		}
 		return OperationResult{ID: op.ID, Kind: op.Kind, Status: "created", Atomic: false, CommentID: observedCreated.Comment.ID, URL: observedCreated.Comment.HTMLURL}
 	}
-	return e.mutate(ctx, plan, op, item, desired)
+	return e.mutate(ctx, plan, op, op.Target, item, desired)
 }
 
 func (e Engine) applyTransition(ctx context.Context, plan Plan, op Operation) OperationResult {
@@ -208,7 +218,7 @@ func (e Engine) applyTransition(ctx context.Context, plan Plan, op Operation) Op
 	if !tr.Changed {
 		return unchangedResult(op, item, !plan.AllowNonAtomic)
 	}
-	return e.mutate(ctx, plan, op, item, tr.Body)
+	return e.mutate(ctx, plan, op, op.Target, item, tr.Body)
 }
 
 func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) OperationResult {
@@ -234,7 +244,7 @@ func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) Operatio
 	mutations := 0
 	atomic := true
 	if leftChanged {
-		r := e.mutate(ctx, plan, op, left, leftBody)
+		r := e.mutate(ctx, plan, op, op.Target, left, leftBody)
 		if r.Status != "updated" && r.Status != "unchanged" {
 			return r
 		}
@@ -257,7 +267,7 @@ func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) Operatio
 		if !stillChanged {
 			rightChanged = false
 		} else {
-			r := e.mutate(ctx, plan, op, right, rightBody)
+			r := e.mutate(ctx, plan, op, *op.Desired.Peer, right, rightBody)
 			if r.Status != "updated" && r.Status != "unchanged" {
 				if mutations > 0 {
 					r.Atomic = false
@@ -279,7 +289,7 @@ func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) Operatio
 	return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: atomic, CommentID: left.Comment.ID, URL: left.Comment.HTMLURL}
 }
 
-func (e Engine) mutate(ctx context.Context, plan Plan, op Operation, item observed, body string) OperationResult {
+func (e Engine) mutate(ctx context.Context, plan Plan, op Operation, target Target, item observed, body string) OperationResult {
 	if err := checkPrecondition(op.Precondition, item); err != nil {
 		return conflictResult(op, err.Error())
 	}
@@ -299,11 +309,43 @@ func (e Engine) mutate(ctx context.Context, plan Plan, op Operation, item observ
 	if op.Precondition.RepresentationVersion > 0 {
 		return conflictResult(op, "representation version requires conditional mutation")
 	}
-	updated, err := e.Backend.UpdateComment(ctx, plan.Repo, item.Comment.ID, body)
+	// A non-conditional provider cannot close the final compare-and-swap race,
+	// but it must still use the freshest exact representation as a digest guard
+	// and checkpoint only an exactly re-observed write.
+	fresh, found, err := e.observe(ctx, plan.Repo, target, true)
+	if err != nil {
+		return failureResult(op, fmt.Errorf("pre-update exact observation: %w", err), false)
+	}
+	if !found || fresh.Comment.ID != item.Comment.ID {
+		return conflictResult(op, "mutation target changed after initial observation")
+	}
+	if bodyDigest(fresh.Body) != bodyDigest(item.Body) {
+		return conflictResult(op, fmt.Sprintf("representation digest changed after initial observation: expected=%s current=%s",
+			bodyDigest(item.Body), bodyDigest(fresh.Body)))
+	}
+	if err := checkPrecondition(op.Precondition, fresh); err != nil {
+		return conflictResult(op, err.Error())
+	}
+	_, err = e.Backend.UpdateComment(ctx, plan.Repo, item.Comment.ID, body)
+	confirmed, confirmedFound, observeErr := e.observe(ctx, plan.Repo, target, true)
+	if observeErr != nil {
+		if err != nil {
+			return failureResult(op, fmt.Errorf("update outcome uncertain: %v; exact re-observation: %w", err, observeErr), false)
+		}
+		return failureResult(op, fmt.Errorf("update succeeded but exact re-observation failed: %w", observeErr), false)
+	}
+	if confirmedFound && confirmed.Comment.ID == item.Comment.ID && confirmed.Body == body {
+		return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: false,
+			CommentID: confirmed.Comment.ID, URL: confirmed.Comment.HTMLURL}
+	}
 	if err != nil {
 		return failureResult(op, err, false)
 	}
-	return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: false, CommentID: updated.ID, URL: updated.HTMLURL}
+	if !confirmedFound || confirmed.Comment.ID != item.Comment.ID {
+		return conflictResult(op, "update returned but the exact target could not be re-observed")
+	}
+	return conflictResult(op, fmt.Sprintf("update returned but exact representation digest did not match: expected=%s current=%s",
+		bodyDigest(body), bodyDigest(confirmed.Body)))
 }
 
 func (e Engine) observe(ctx context.Context, repo string, target Target, exact bool) (observed, bool, error) {
@@ -393,6 +435,9 @@ func checkAcceptedReceiptPrecondition(precondition Precondition, body string) er
 	if observed.ReceiptID != expected.ReceiptID || observed.Digest != expected.Digest ||
 		observed.Generation != expected.Generation {
 		return fmt.Errorf("accepted %s receipt authority does not match projection", expected.Role)
+	}
+	if status := model.ParseTypedComment(body).Status; status != "done" {
+		return fmt.Errorf("accepted %s receipt carrier must already have immutable done status, got %q", expected.Role, status)
 	}
 	return nil
 }

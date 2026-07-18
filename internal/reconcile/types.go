@@ -157,6 +157,11 @@ func Validate(plan Plan) ([]Operation, string, error) {
 			if carrierTypes[expected.Role] != strings.ToUpper(strings.TrimSpace(op.Target.Type)) {
 				return nil, "", fmt.Errorf("operation %s: accepted %s receipt precondition targets %s", op.ID, expected.Role, op.Target.Type)
 			}
+			if strings.ToLower(strings.TrimSpace(op.Desired.Status)) != "done" || op.Desired.Body != "" ||
+				op.Desired.BodyFile != "" || op.Desired.Handoff != "" || op.Desired.AppendHandoff ||
+				len(op.Desired.PRLinks) != 0 || len(op.Desired.RelatedLinks) != 0 || op.Desired.Peer != nil {
+				return nil, "", fmt.Errorf("operation %s: accepted receipt precondition may only assert the carrier's immutable done status", op.ID)
+			}
 		}
 		byID[op.ID] = op
 	}
