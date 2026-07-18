@@ -116,6 +116,24 @@ Issue 动作、Change 类型、普通/类型化评论，以及真人/自动化 A
 SMTP 密钥文件用于启用已验证通知邮箱、Mention 和显式仓库邮件订阅；不提供该文件时，
 这些能力保持关闭，不影响 Issue 或 Webhook 的正常运行。
 
+可在 SMTP JSON 中增加可选的通知邮箱域名限制（以下仅为脱敏示例）：
+
+```json
+{
+  "host": "mail.example.test",
+  "port": 2465,
+  "username": "mailer@example.test",
+  "password": "<smtp-password>",
+  "from_address": "notifications@example.test",
+  "allowed_email_domain_suffixes": ["example.test"]
+}
+```
+
+后缀匹配不区分大小写，并严格遵循点分隔的域名边界。配置 `example.test` 时，
+`person@example.test` 和 `person@team.example.test` 均允许，
+`person@evilexample.test` 与 `person@example.test.evil.test` 则会被拒绝。
+未配置该字段或配置空数组时保持原有兼容行为，允许任意语法有效的通知邮箱域名。
+
 1. 阅读[部署与加固指南](operations/deployment.md)。
 2. 选择 HTTPS；若必须使用内网 HTTP，完成
    [Trusted Internal HTTP 检查表](authentication/v1/trusted-internal-http.md)。

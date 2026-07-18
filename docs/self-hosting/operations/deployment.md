@@ -40,6 +40,28 @@ provider-neutral schema:
 | `username` | string | non-empty authentication identity |
 | `password` | string | non-empty authentication secret |
 | `from_address` | string | one syntactically valid bare sender mailbox |
+| `allowed_email_domain_suffixes` | array of strings | optional notification-recipient domain suffixes |
+
+For example, the following redacted configuration restricts notification
+addresses to `example.test` and its subdomains:
+
+```json
+{
+  "host": "mail.example.test",
+  "port": 2465,
+  "username": "mailer@example.test",
+  "password": "<smtp-password>",
+  "from_address": "notifications@example.test",
+  "allowed_email_domain_suffixes": ["example.test"]
+}
+```
+
+Suffix matching is case-insensitive and follows DNS label boundaries. A suffix
+of `example.test` permits both `person@example.test` and
+`person@team.example.test`, but not `person@evilexample.test` or
+`person@example.test.evil.test`. Omitting the field or setting it to an empty
+array preserves the existing behavior of accepting any syntactically valid
+notification-email domain.
 
 Unknown fields, malformed JSON, group/other-readable permissions, and partial
 configuration fail startup with redacted errors. The server supports
