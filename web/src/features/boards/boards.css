@@ -22,7 +22,7 @@
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 13rem;
-  align-items: end;
+  align-items: center;
   min-height: 20rem;
   overflow: hidden;
   padding: clamp(2rem, 4vw, 4rem);
@@ -60,7 +60,7 @@
 .board-eyebrow { display: block; color: var(--board-teal); font-size: .7rem; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
 .board-workspace .board-eyebrow { font-size: .75rem; letter-spacing: .15em; }
 .board-hero .board-eyebrow { color: #82c9c1; }
-.board-hero-orbit { position: relative; z-index: 1; display: flex; align-items: center; justify-content: flex-end; padding-bottom: 1rem; }
+.board-hero-orbit { position: relative; z-index: 1; display: flex; align-items: center; justify-content: flex-end; }
 .board-hero-orbit span { display: grid; width: 5.25rem; height: 5.25rem; place-items: center; border: 1px solid rgb(255 255 255 / 30%); border-radius: 50%; color: #d9e9e7; font: 700 .75rem/1 ui-monospace, monospace; }
 .board-hero-orbit span + span { margin-left: -1rem; }
 .board-hero-orbit span:nth-child(2) { background: #eadfb7; color: #26393b; }
