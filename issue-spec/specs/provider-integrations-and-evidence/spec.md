@@ -2,10 +2,11 @@
 
 ## Purpose
 
-Define operator-controlled provider contracts, external references, immutable revision-bound evidence and fail-closed evidence synchronization at workflow gates.
+Define operator-controlled provider contracts, external references, immutable revision-bound evidence, fail-closed synchronization, and authoritative current-revision assertions at terminal workflow gates.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/160
+- https://github.com/higress-group/issue-spec/issues/271
 
 ## Requirements
 
@@ -137,3 +138,54 @@ The issue-spec CLI and runner MUST provide a provider-neutral evidence synchroni
 - **THEN** all modes use the same provider-neutral snapshot validation, exact-revision persistence, idempotency, authorization, audit, and gate-evaluation semantics and produce equivalent evidence identities
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4949554236
+
+### Requirement: Authoritative final gates assert the current code-change revision
+
+At authoritative final gates, issue-spec MUST resolve the current code-change revision through the existing mode-specific authority: GitHub-native mode MUST read the live pull-request HEAD, while self-hosted external-Provider mode MUST synchronously request the active code_change revision through the existing evidence.snapshot path regardless of optional sync_before policy and accept it only when the operator-trusted Provider asserts that the requested revision is still current. For a self-hosted code_change snapshot, the Provider MUST read current HEAD before collecting facts and read it again after collection, and MUST return success only when both observations equal the requested revision; movement before or during collection MUST return a stable revision-mismatch failure instead of a snapshot. In both modes, verify and status --gate final MUST fail closed unless the authoritative revision agrees with the eligible REVIEW completion and VERIFY input, including active reference identity and version where applicable. The assertion SHALL remain read-only, preserve historical artifacts, avoid mandatory Provider calls for non-terminal authoring and synchronization, expose the asserted revision for human pre-merge comparison, and MUST NOT perform merge or introduce a new Provider capability, evidence kind, Server API, or persisted-data model.
+
+#### Scenario: GitHub-native final gate reads the live pull-request HEAD
+
+- **WHEN** GitHub-native verify or status --gate final reads a pull request whose live HEAD, eligible review state, and VERIFY input all identify revision A
+- **THEN** issue-spec uses the existing GitHub pull-request authority without a Code Provider bridge and may pass the final gate for revision A under the remaining policy
+
+#### Scenario: GitHub-native HEAD movement invalidates old final evidence
+
+- **WHEN** the GitHub pull-request HEAD advances from revision A to revision B after review or verification evidence for A was recorded
+- **THEN** verify and status --gate final treat the evidence for A as stale and do not report current final readiness
+
+#### Scenario: Self-hosted Provider confirms the pinned revision is current
+
+- **WHEN** a self-hosted Implement Issue has one active code_change at reference version 3 and revision A, the Provider reads HEAD A both before and after collecting the exact-revision facts, and the eligible external REVIEW completion and VERIFY input are bound to the same identity, version, and revision
+- **THEN** issue-spec validates and persists the snapshot through the existing native evidence authority, confirms the active reference did not move, and may pass verify or status --gate final under the remaining policy
+
+#### Scenario: Self-hosted Provider rejects a retrievable historical revision
+
+- **WHEN** the Provider current HEAD has advanced to revision B while the Server active code_change and stored REVIEW and VERIFY state still consistently identify revision A
+- **THEN** the Provider reports a stable revision mismatch for the requested historical revision A and verify and status --gate final fail closed without silently refreshing the active reference
+
+#### Scenario: Provider HEAD movement during snapshot collection fails closed
+
+- **WHEN** the Provider reads current HEAD A for requested revision A, the code change advances to revision B while facts are collected, and the Provider's post-collection HEAD read observes B
+- **THEN** the Provider returns a stable revision mismatch instead of a successful snapshot, issue-spec persists no partial Provider facts from that attempt, and verify and status --gate final do not report current readiness
+
+#### Scenario: Provider authority failure cannot become a final green result
+
+- **WHEN** the self-hosted Provider is unavailable, lacks evidence.snapshot, returns malformed or mismatched identity, or the active reference moves during synchronization
+- **THEN** the current final invocation returns a non-success result with actionable retry or refresh guidance and does not accept stored Server state as proof of current HEAD
+
+#### Scenario: Explicit refresh starts a new exact-revision evidence cycle
+
+- **WHEN** an operator observes revision movement, explicitly refreshes the same active code_change from revision A to revision B, and reruns review synchronization and final verification
+- **THEN** evidence bound to the former reference version or revision A remains historical but is ineligible, and only matching evidence for the refreshed reference version and revision B may satisfy the final gate
+
+#### Scenario: Failure preserves history and unchanged retry is idempotent
+
+- **WHEN** a final assertion fails or the same unchanged current revision is asserted again
+- **THEN** issue-spec preserves earlier REVIEW, VERIFY, and Provider evidence without deletion or downgrade and repeats the exact successful synchronization without duplicating authoritative evidence
+
+#### Scenario: Non-terminal work and human merge remain outside enforcement
+
+- **WHEN** proposal, design, task, apply, local authoring, or another non-terminal synchronization operation continues, or a human prepares to merge after a successful final assertion
+- **THEN** non-terminal work does not require a live Provider round trip, final output identifies the asserted revision for immediate comparison with the code host, and issue-spec does not execute or proxy merge
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/271#issuecomment-5009746561
