@@ -274,10 +274,14 @@ jobs:
           guard_candidate_source
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
-            if [ "$RELEASE_CHANNEL" = rolling ]; then
-              guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"
-            fi
             draft=$(jq -r .draft <<<"$release_json")
+            if [ "$RELEASE_CHANNEL" = rolling ]; then
+              if [ "$draft" = false ]; then
+                guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"
+              else
+                test "$(jq -r .target_commitish <<<"$release_json")" = "$RELEASE_REVISION"
+              fi
+            fi
             if [ "$draft" = false ]; then
               verify_remote_assets
               remote_body=$(jq -r .body <<<"$release_json")
@@ -301,7 +305,8 @@ jobs:
               gh release create "$RELEASE_TAG" --draft --target "$RELEASE_REVISION" \
                 --title "issue-spec $RELEASE_VERSION" --notes-file dist/release/release-notes.md \
                 --latest=false
-              guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"
+              release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+              test "$(jq -r .target_commitish <<<"$release_json")" = "$RELEASE_REVISION"
             else
               gh release create "$RELEASE_TAG" --draft --verify-tag \
                 --title "issue-spec $RELEASE_VERSION" --notes-file dist/release/release-notes.md \
@@ -335,6 +340,7 @@ jobs:
             advance)
               gh release edit "$RELEASE_TAG" --draft=false --latest \
                 --notes-file dist/release/release-notes.md --prerelease=false
+              guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"
               ;;
             current|noop)
               # The candidate remains an immutable draft. In particular, an
