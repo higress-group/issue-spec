@@ -127,6 +127,7 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 	processID := fs.String("process", "", "verification PROCESS id")
 	verifyID := fs.String("id", "", "VERIFY id to upsert")
 	resultFile := fs.String("result-file", "", "absolute path to a sealed verification receipt")
+	assignmentFile := fs.String("assignment-file", "", "absolute path to the sealed verification assignment or packet")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -149,6 +150,11 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 		a.errorf("read verification result: %v\n", err)
 		return 2
 	}
+	sealedAssignment, err := readReviewAssignmentFile(*assignmentFile)
+	if err != nil {
+		a.errorf("read verification assignment: %v\n", err)
+		return 2
+	}
 	client, token, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("auth required for verify submit on %s: %v\n", auth.NormalizeHost(*host), err)
@@ -167,8 +173,13 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 		a.errorf("verification PROCESS must be one canonical managed snapshot assignment\n")
 		return 1
 	}
-	if err := validateVerificationReceiptBinding(receipt, workspace.Workspace.Assignment); err != nil {
+	if err := validateVerificationReceiptBinding(receipt, sealedAssignment, workspace.Workspace.Assignment); err != nil {
 		a.errorf("validate verification receipt: %v\n", err)
+		return 1
+	}
+	if sealedAssignment.Repository != repo || sealedAssignment.Issue != int64(implementIssue) ||
+		sealedAssignment.ProcessID != strings.TrimSpace(*processID) {
+		a.errorf("validate verification receipt: sealed assignment repository, issue, or PROCESS identity does not match submission target\n")
 		return 1
 	}
 	covers, err := processSectionList(processBody, "### Covers")
@@ -223,21 +234,9 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 		a.errorf("render submitted VERIFY: %v\n", err)
 		return 1
 	}
-	// Re-observe immutable receipt authority after the provider read. A retry
-	// after a lost provider or comment response therefore recovers from the
-	// latest durable issue snapshot before attempting the idempotent upsert.
-	comments, err = client.ListIssueComments(ctx, repo, implementIssue)
+	action, comment, err := publishAcceptedVerification(ctx, client, repo, implementIssue, *verifyID, body, receipt)
 	if err != nil {
-		a.errorf("recover submitted VERIFY snapshot: %v\n", err)
-		return 1
-	}
-	if err := validateExistingVerificationReceipt(comments, *verifyID, receipt); err != nil {
-		a.errorf("validate recovered VERIFY replay: %v\n", err)
-		return 1
-	}
-	action, comment, _, err := upsertTypedComment(ctx, client, repo, implementIssue, "VERIFY", *verifyID, body)
-	if err != nil {
-		a.errorf("upsert submitted VERIFY: %v\n", err)
+		a.errorf("publish submitted VERIFY: %v\n", err)
 		return 1
 	}
 	authority := acceptedVerificationReceiptFrom(receipt, checks)
@@ -252,7 +251,8 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 	return 0
 }
 
-func validateVerificationReceiptBinding(receipt assignment.Receipt, binding *processworkspace.AssignmentBinding) error {
+func validateVerificationReceiptBinding(receipt assignment.Receipt, sealed assignment.Assignment,
+	binding *processworkspace.AssignmentBinding) error {
 	if err := receipt.ValidateForAcceptance(); err != nil {
 		return err
 	}
@@ -267,12 +267,21 @@ func validateVerificationReceiptBinding(receipt assignment.Receipt, binding *pro
 		receipt.AssignmentGeneration != binding.Generation {
 		return errors.New("verification receipt does not match the authoritative assignment id, digest, and generation")
 	}
+	digest, err := assignment.AssignmentDigest(sealed)
+	if err != nil {
+		return fmt.Errorf("validate sealed verification assignment: %w", err)
+	}
+	if sealed.Role != assignment.RoleVerification || sealed.Verification == nil || sealed.ID != binding.AssignmentID ||
+		digest != binding.Digest || sealed.SubjectRevision != binding.SubjectRevision || sealed.ProcessID == "" {
+		return errors.New("sealed verification assignment does not exactly match the authoritative PROCESS binding")
+	}
 	if receipt.SubjectRevision != binding.SubjectRevision {
 		return errors.New("verification receipt subject revision does not match the authoritative exact snapshot")
 	}
 	writer := strings.TrimSpace(receipt.Provenance.Writer)
-	if writer == "" || !strings.EqualFold(writer, strings.TrimSpace(receipt.Provenance.Subject)) {
-		return errors.New("verification receipt writer must own the role subject identity")
+	if writer == "" || !strings.EqualFold(writer, strings.TrimSpace(receipt.Provenance.Subject)) ||
+		strings.EqualFold(writer, "Coordinator") {
+		return errors.New("verification receipt must be owned by one non-Coordinator verifier identity")
 	}
 	if receipt.Provenance.Assurance != assignment.AssuranceSelfReported {
 		return errors.New("version-1 role-owned verification provenance must be self-reported")
@@ -283,6 +292,35 @@ func validateVerificationReceiptBinding(receipt assignment.Receipt, binding *pro
 		}
 		if test.Outcome != assignment.TestPassed {
 			return fmt.Errorf("verification test %s must pass before VERIFY completion", test.ID)
+		}
+	}
+	return validateVerificationRequirementCoverage(receipt, *sealed.Verification)
+}
+
+func validateVerificationRequirementCoverage(receipt assignment.Receipt, required assignment.VerificationPayload) error {
+	if len(receipt.Tests) != len(required.RequiredTests) {
+		return fmt.Errorf("verification receipt tests must exactly cover all %d assigned required tests", len(required.RequiredTests))
+	}
+	tests := make(map[string]string, len(receipt.Tests))
+	for _, test := range receipt.Tests {
+		tests[test.ID] = test.Command
+	}
+	for _, expected := range required.RequiredTests {
+		if command, ok := tests[expected.ID]; !ok || command != expected.Command {
+			return fmt.Errorf("verification receipt is missing exact assigned test %s command %q", expected.ID, expected.Command)
+		}
+	}
+	actualChecks := receipt.Verification.CheckSelectors
+	if len(actualChecks) != len(required.RequiredChecks) {
+		return fmt.Errorf("verification receipt checks must exactly cover all %d assigned required checks", len(required.RequiredChecks))
+	}
+	checks := make(map[string]bool, len(actualChecks))
+	for _, check := range actualChecks {
+		checks[check.Provider+"\x00"+check.Name] = true
+	}
+	for _, expected := range required.RequiredChecks {
+		if !checks[expected.Provider+"\x00"+expected.Name] {
+			return fmt.Errorf("verification receipt is missing exact assigned check %s/%s", expected.Provider, expected.Name)
 		}
 	}
 	return nil
@@ -474,6 +512,14 @@ func parseAcceptedVerificationReceipt(body string) (acceptedVerificationReceipt,
 }
 
 func validateExistingVerificationReceipt(comments []github.Comment, verifyID string, receipt assignment.Receipt) error {
+	_, _, err := observeAcceptedVerificationReceipt(comments, verifyID, receipt)
+	return err
+}
+
+func observeAcceptedVerificationReceipt(comments []github.Comment, verifyID string,
+	receipt assignment.Receipt) (github.Comment, bool, error) {
+	var exact github.Comment
+	exactCount := 0
 	for _, comment := range comments {
 		parsed := model.ParseTypedComment(comment.Body)
 		if parsed.Type != "VERIFY" {
@@ -481,30 +527,70 @@ func validateExistingVerificationReceipt(comments []github.Comment, verifyID str
 		}
 		existing, found, err := parseAcceptedVerificationReceipt(comment.Body)
 		if err != nil {
-			return fmt.Errorf("VERIFY %s: %w", parsed.ID, err)
+			return github.Comment{}, false, fmt.Errorf("VERIFY %s: %w", parsed.ID, err)
 		}
 		if !found {
 			if parsed.ID == verifyID {
-				return fmt.Errorf("VERIFY %s already exists without accepted receipt authority", verifyID)
+				return github.Comment{}, false, fmt.Errorf("VERIFY %s already exists without accepted receipt authority", verifyID)
 			}
 			continue
 		}
 		sameGeneration := existing.AssignmentID == receipt.AssignmentID &&
 			existing.AssignmentDigest == receipt.AssignmentDigest && existing.AssignmentGeneration == receipt.AssignmentGeneration
 		if sameGeneration && existing.ReceiptDigest != receipt.ReceiptDigest {
-			return fmt.Errorf("assignment generation already accepted different receipt %s", existing.ReceiptID)
+			return github.Comment{}, false, fmt.Errorf("assignment generation already accepted different receipt %s", existing.ReceiptID)
 		}
 		if existing.ReceiptID == receipt.ID && existing.ReceiptDigest != receipt.ReceiptDigest {
-			return fmt.Errorf("receipt id %s already exists with different digest", receipt.ID)
+			return github.Comment{}, false, fmt.Errorf("receipt id %s already exists with different digest", receipt.ID)
 		}
 		if existing.ReceiptDigest == receipt.ReceiptDigest && parsed.ID != verifyID {
-			return fmt.Errorf("receipt %s is already projected by VERIFY %s", receipt.ID, parsed.ID)
+			return github.Comment{}, false, fmt.Errorf("receipt %s is already projected by VERIFY %s", receipt.ID, parsed.ID)
 		}
 		if parsed.ID == verifyID && existing.ReceiptDigest != receipt.ReceiptDigest {
-			return fmt.Errorf("VERIFY %s already carries different receipt authority", verifyID)
+			return github.Comment{}, false, fmt.Errorf("VERIFY %s already carries different receipt authority", verifyID)
+		}
+		if parsed.ID == verifyID && existing.ReceiptDigest == receipt.ReceiptDigest {
+			exact, exactCount = comment, exactCount+1
 		}
 	}
-	return nil
+	if exactCount > 1 {
+		return github.Comment{}, false, fmt.Errorf("VERIFY %s has duplicate accepted receipt authority", verifyID)
+	}
+	return exact, exactCount == 1, nil
+}
+
+func publishAcceptedVerification(ctx context.Context, client github.Operations, repo string, issue int,
+	verifyID, body string, receipt assignment.Receipt) (string, github.Comment, error) {
+	comments, err := client.ListIssueComments(ctx, repo, issue)
+	if err != nil {
+		return "", github.Comment{}, err
+	}
+	existing, found, err := observeAcceptedVerificationReceipt(comments, verifyID, receipt)
+	if err != nil {
+		return "", github.Comment{}, err
+	}
+	if found {
+		if existing.Body != body {
+			return "", github.Comment{}, fmt.Errorf("VERIFY %s accepted authority exists with a different immutable body", verifyID)
+		}
+		return "unchanged", existing, nil
+	}
+	created, err := client.CreateComment(ctx, repo, issue, body)
+	if err != nil {
+		return "", github.Comment{}, err
+	}
+	comments, err = client.ListIssueComments(ctx, repo, issue)
+	if err != nil {
+		return "", github.Comment{}, fmt.Errorf("re-observe accepted VERIFY after create: %w", err)
+	}
+	observed, found, err := observeAcceptedVerificationReceipt(comments, verifyID, receipt)
+	if err != nil {
+		return "", github.Comment{}, fmt.Errorf("accepted VERIFY publication conflicted: %w", err)
+	}
+	if !found || observed.ID != created.ID {
+		return "", github.Comment{}, errors.New("accepted VERIFY publication was not observed as one unique append-only authority")
+	}
+	return "created", created, nil
 }
 
 func renderSubmittedVerification(verifyID, processURL string, covers []string, receipt assignment.Receipt,
@@ -904,6 +990,7 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		} else {
 			processEvidence = buildProcessEvidenceInputs(artifacts, opts.PRURL, opts.RationaleComments, reviewReport, opts.ExternalEvidence)
 		}
+		processEvidence = consumeAcceptedVerificationEvidence(processEvidence, artifacts, opts.ExpectedRevision)
 	}
 	gateReport, err := gates.Evaluate(gates.Snapshot{
 		Target: target, Mode: gates.ModeAuthoritative, Artifacts: artifacts,
@@ -999,6 +1086,102 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	// authoritative decision is the sole source of OK and the exit status.
 	report.OK = gateReport.Ready
 	return report, nil
+}
+
+func consumeAcceptedVerificationEvidence(inputs []gates.ProcessEvidenceInput, artifacts []model.Artifact,
+	expectedRevision string) []gates.ProcessEvidenceInput {
+	expectedRevision = strings.TrimSpace(expectedRevision)
+	if expectedRevision == "" {
+		return inputs
+	}
+	byURL := map[string]model.Artifact{}
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type == "VERIFY" && artifact.Comment.Status == "done" {
+			byURL[model.NormalizeURL(artifact.URL)] = artifact
+		}
+	}
+	for inputIndex := range inputs {
+		for evidenceIndex := range inputs[inputIndex].Verifications {
+			evidence := &inputs[inputIndex].Verifications[evidenceIndex]
+			artifact, ok := byURL[model.NormalizeURL(evidence.URL)]
+			if !ok {
+				continue
+			}
+			source, hasTests, hasChecks, ok := exactAcceptedVerificationCarrier(artifact, expectedRevision)
+			if !ok {
+				continue
+			}
+			evidence.SubjectRevision = expectedRevision
+			evidence.Trusted = true
+			evidence.TestEvidence = true
+			evidence.StructuredTests = hasTests
+			evidence.StructuredChecks = hasChecks
+			if hasTests {
+				evidence.TestAssurance = string(assignment.AssuranceSelfReported)
+			}
+			evidence.Source = source
+		}
+	}
+	return inputs
+}
+
+func exactAcceptedVerificationCarrier(artifact model.Artifact, expectedRevision string) (string, bool, bool, bool) {
+	if artifact.Comment.Type != "VERIFY" || artifact.Comment.Status != "done" || len(artifact.Comment.Errors) != 0 ||
+		!strings.EqualFold(strings.TrimSpace(artifact.Comment.SubjectRevision), strings.TrimSpace(expectedRevision)) {
+		return "", false, false, false
+	}
+	authority, found, err := parseAcceptedVerificationReceipt(artifact.Comment.Body)
+	if err != nil || !found || !strings.EqualFold(strings.TrimSpace(authority.SubjectRevision), strings.TrimSpace(expectedRevision)) {
+		return "", false, false, false
+	}
+	identity, found, err := model.ObserveAcceptedReceiptAuthority(artifact.Comment.Body, assignment.RoleVerification)
+	if err != nil || !found || identity.ReceiptID != authority.ReceiptID || identity.Digest != authority.ReceiptDigest ||
+		identity.Generation != authority.AssignmentGeneration {
+		return "", false, false, false
+	}
+	writer := strings.TrimSpace(authority.Provenance.Writer)
+	if authority.Provenance.Route != assignment.RouteRoleOwned ||
+		authority.Provenance.Assurance != assignment.AssuranceSelfReported || writer == "" ||
+		!strings.EqualFold(writer, strings.TrimSpace(authority.Provenance.Subject)) || strings.EqualFold(writer, "Coordinator") {
+		return "", false, false, false
+	}
+	if len(authority.Tests) == 0 && len(authority.Checks) == 0 {
+		return "", false, false, false
+	}
+	seenTests := map[string]bool{}
+	for _, test := range authority.Tests {
+		if strings.TrimSpace(test.ID) == "" || strings.TrimSpace(test.Command) == "" || seenTests[test.ID] ||
+			test.Outcome != assignment.TestPassed || test.Assurance != assignment.AssuranceSelfReported {
+			return "", false, false, false
+		}
+		seenTests[test.ID] = true
+	}
+	seenChecks := map[string]bool{}
+	for _, check := range authority.Checks {
+		key := check.Provider + "\x00" + check.Name
+		state := strings.ToLower(strings.TrimSpace(check.State))
+		if strings.TrimSpace(check.Provider) == "" || strings.TrimSpace(check.Name) == "" ||
+			strings.TrimSpace(check.EvidenceID) == "" || strings.TrimSpace(check.State) == "" || seenChecks[key] ||
+			!strings.EqualFold(strings.TrimSpace(check.SubjectRevision), strings.TrimSpace(expectedRevision)) ||
+			(!strings.HasPrefix(check.Source, "github-check-run:") && !strings.HasPrefix(check.Source, "native-evidence:")) {
+			return "", false, false, false
+		}
+		if state != "success" && state != "neutral" && state != "skipped" && state != "passed" && state != "successful" {
+			return "", false, false, false
+		}
+		if strings.HasPrefix(check.Source, "github-check-run:") && !strings.EqualFold(strings.TrimSpace(check.Provider), "github") {
+			return "", false, false, false
+		}
+		seenChecks[key] = true
+	}
+	switch {
+	case len(authority.Tests) > 0 && len(authority.Checks) > 0:
+		return "accepted-verification-receipt:mixed-self-reported-tests-and-provider-checks", true, true, true
+	case len(authority.Tests) > 0:
+		return "accepted-verification-receipt:self-reported-tests", true, false, true
+	default:
+		return "accepted-verification-receipt:provider-checks", false, true, true
+	}
 }
 
 func mergeCarrierRevisionFacts(collected, supplied map[string]gates.CarrierRevisionFact) map[string]gates.CarrierRevisionFact {

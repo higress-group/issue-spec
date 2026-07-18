@@ -43,14 +43,17 @@ type ReviewEvidence struct {
 }
 
 type VerificationEvidence struct {
-	ProcessID       string `json:"process_id"`
-	SpecID          string `json:"spec_id"`
-	URL             string `json:"url,omitempty"`
-	Done            bool   `json:"done"`
-	TestEvidence    bool   `json:"test_evidence"`
-	SubjectRevision string `json:"subject_revision,omitempty"`
-	Trusted         bool   `json:"trusted"`
-	Source          string `json:"source,omitempty"`
+	ProcessID        string `json:"process_id"`
+	SpecID           string `json:"spec_id"`
+	URL              string `json:"url,omitempty"`
+	Done             bool   `json:"done"`
+	TestEvidence     bool   `json:"test_evidence"`
+	StructuredTests  bool   `json:"structured_tests,omitempty"`
+	TestAssurance    string `json:"test_assurance,omitempty"`
+	StructuredChecks bool   `json:"structured_checks,omitempty"`
+	SubjectRevision  string `json:"subject_revision,omitempty"`
+	Trusted          bool   `json:"trusted"`
+	Source           string `json:"source,omitempty"`
 }
 
 type CheckEvidence struct {
@@ -434,6 +437,11 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 		var revisions []CarrierRevisionFact
 		for _, evidence := range input.Verifications {
 			if evidence.ProcessID != report.ProcessID || !activeSpec(evidence.SpecID) || !evidence.Done || !evidence.TestEvidence {
+				continue
+			}
+			if strings.HasPrefix(evidence.Source, "accepted-verification-receipt:") &&
+				((!evidence.StructuredTests && !evidence.StructuredChecks) ||
+					(evidence.StructuredTests && evidence.TestAssurance != "self-reported")) {
 				continue
 			}
 			revision := strings.TrimSpace(evidence.SubjectRevision)

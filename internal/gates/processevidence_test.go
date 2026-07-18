@@ -72,7 +72,8 @@ func TestVerificationProcessRequiresExactCurrentTrustedCarrierWhenRevisionKnown(
 	input := processEvidenceFixture(t, model.ProcessExecutionVerification)
 	input.RequiredRevision = current
 	input.Verifications = []VerificationEvidence{{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Done: true,
-		TestEvidence: true, SubjectRevision: "head-stale", Trusted: true, Source: "accepted-verification-receipt"}}
+		TestEvidence: true, StructuredTests: true, TestAssurance: "self-reported", SubjectRevision: "head-stale",
+		Trusted: true, Source: "accepted-verification-receipt:self-reported-tests"}}
 	report := EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
 	if !containsString(report.Missing, "exact-current verification evidence") ||
 		!hasDiagnostic(report.Diagnostics, CodeProcessCarrierMissing, true) || report.CarrierRevision.Trusted {
@@ -87,6 +88,13 @@ func TestVerificationProcessRequiresExactCurrentTrustedCarrierWhenRevisionKnown(
 	}
 
 	input.Verifications[0].Trusted = true
+	input.Verifications[0].TestAssurance = "provider-owned"
+	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
+	if !containsString(report.Missing, "exact-current verification evidence") {
+		t.Fatalf("self-reported accepted receipt was promoted to provider-owned assurance: %+v", report)
+	}
+
+	input.Verifications[0].TestAssurance = "self-reported"
 	report = EvaluateProcessEvidence(input, TargetFinal, ModeAuthoritative)
 	if len(report.Missing) != 0 || !report.CarrierRevision.Known || !report.CarrierRevision.Trusted ||
 		report.CarrierRevision.Revision != current {
