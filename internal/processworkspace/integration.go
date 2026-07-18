@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -21,12 +22,16 @@ var (
 )
 
 type CompleteRequest struct {
-	WorkspaceID          string
-	OwnerToken           string
-	ResultCommit         string
-	Receipt              *assignment.Receipt
-	Submission           RoleOwnedSubmissionEvidence
-	CoordinatorSessionID string
+	WorkspaceID  string
+	OwnerToken   string
+	ResultCommit string
+	Receipt      *assignment.Receipt
+}
+
+type SubmitResultRequest struct {
+	WorkspaceID string
+	Receipt     assignment.Receipt
+	Submission  RoleOwnedSubmissionEvidence
 }
 
 type IntegrateRequest struct {
@@ -63,6 +68,183 @@ func runIntegrationRaceHook(ctx context.Context, phase string) error {
 	return hook(phase)
 }
 
+// SubmitResult validates a role-owned result and appends its machine-local
+// attestation. It requires no Coordinator credential and never changes the
+// portable lifecycle; only an environment-owned CODEX_THREAD_ID is accepted.
+func (m *Manager) SubmitResult(ctx context.Context, request SubmitResultRequest) (Inspection, error) {
+	if m == nil || m.Store == nil {
+		return Inspection{}, errors.New("process workspace manager is not open")
+	}
+	lease, found, err := m.Store.Get(ctx, request.WorkspaceID)
+	if err != nil || !found {
+		if err == nil {
+			err = ErrLeaseNotFound
+		}
+		return Inspection{Lease: lease}, err
+	}
+	if lease.Portable.State != StatePrepared {
+		return Inspection{Lease: lease}, fmt.Errorf("%w: result submission requires prepared lease", ErrInvalidWorkerResult)
+	}
+	if request.Submission.AgentSessionSource != AgentSessionSourceRuntimeNative || strings.TrimSpace(request.Submission.AgentSessionID) == "" {
+		return Inspection{Lease: lease}, fmt.Errorf("%w: result submission requires environment-owned CODEX_THREAD_ID evidence", ErrInvalidWorkerResult)
+	}
+	runtimeSessionID := strings.TrimSpace(os.Getenv(AgentSessionSourceRuntimeNative))
+	if runtimeSessionID == "" || runtimeSessionID != request.Submission.AgentSessionID {
+		return Inspection{Lease: lease}, fmt.Errorf("%w: submitted session does not match the environment-owned CODEX_THREAD_ID", ErrInvalidWorkerResult)
+	}
+	if err := validateRoleOwnedReceiptBinding(lease, request.Receipt, request.Submission); err != nil {
+		return Inspection{Lease: lease}, fmt.Errorf("%w: %v", ErrInvalidWorkerResult, err)
+	}
+	var inspection Inspection
+	switch request.Receipt.Role {
+	case assignment.RoleImplementation:
+		if lease.Portable.Mode != ModeWritable || request.Receipt.Implementation == nil {
+			return Inspection{Lease: lease}, fmt.Errorf("%w: implementation submission requires a writable implementation workspace", ErrInvalidWorkerResult)
+		}
+		if err := ValidateManagedOwnership(lease.Portable.WriteOwnership, lease.Portable.SharedTouchpoints); err != nil {
+			return Inspection{Lease: lease}, fmt.Errorf("%w: %v", ErrInvalidWorkerResult, err)
+		}
+		inspection, err = m.validateWorkerResult(ctx, lease, request.Receipt.ResultRevision)
+		if err != nil {
+			return inspection, err
+		}
+		changed, changedErr := m.changedPaths(ctx, lease.WorktreePath, lease.Portable.BaseSHA, request.Receipt.ResultRevision)
+		if changedErr != nil {
+			return inspection, changedErr
+		}
+		if err := m.validateImplementationReceiptContract(ctx, lease, request.Receipt, request.Receipt.ResultRevision, changed); err != nil {
+			return inspection, fmt.Errorf("%w: %v", ErrInvalidWorkerResult, err)
+		}
+	case assignment.RoleVerification:
+		if lease.Portable.Mode != ModeSnapshot || request.Receipt.Verification == nil {
+			return Inspection{Lease: lease}, fmt.Errorf("%w: verification submission requires a verification snapshot", ErrInvalidWorkerResult)
+		}
+		if lease.Assignment.Verification == nil {
+			return Inspection{Lease: lease}, fmt.Errorf("%w: authoritative assignment lacks a verification contract", ErrInvalidWorkerResult)
+		}
+		if err := validateVerificationReceiptContract(request.Receipt, *lease.Assignment.Verification); err != nil {
+			return Inspection{Lease: lease}, fmt.Errorf("%w: %v", ErrInvalidWorkerResult, err)
+		}
+		inspection, err = m.Inspect(ctx, lease.Portable.WorkspaceID)
+		if err != nil {
+			return inspection, err
+		}
+	default:
+		return Inspection{Lease: lease}, fmt.Errorf("%w: role %s cannot submit a result attestation", ErrInvalidWorkerResult, request.Receipt.Role)
+	}
+	revision := request.Receipt.ResultRevision
+	if request.Receipt.Role == assignment.RoleVerification {
+		revision = request.Receipt.SubjectRevision
+	}
+	attestation := RoleOwnedResultAttestation{AssignmentID: request.Receipt.AssignmentID,
+		AssignmentDigest: request.Receipt.AssignmentDigest, AssignmentGeneration: request.Receipt.AssignmentGeneration,
+		Role: request.Receipt.Role, ReceiptID: request.Receipt.ID, ReceiptDigest: request.Receipt.ReceiptDigest,
+		ResultRevision: revision, Submission: request.Submission}
+	updated, err := m.Store.bindResultAttestation(ctx, request.WorkspaceID, attestation)
+	if err != nil {
+		return inspection, err
+	}
+	inspection.Lease = updated
+	return inspection, nil
+}
+
+func validateRoleOwnedReceiptBinding(lease LocalLease, receipt assignment.Receipt, submission RoleOwnedSubmissionEvidence) error {
+	if err := receipt.ValidateForAcceptance(); err != nil {
+		return err
+	}
+	binding := lease.Portable.Assignment
+	if binding == nil || lease.Assignment == nil {
+		return errors.New("result submission requires the authoritative persisted assignment binding")
+	}
+	if receipt.AssignmentID != binding.AssignmentID || receipt.AssignmentDigest != binding.Digest ||
+		receipt.AssignmentGeneration != binding.Generation || receipt.Role != binding.Role ||
+		receipt.ResultSchemaVersion != lease.Assignment.ResultSchemaVersion {
+		return errors.New("receipt does not exactly match the authoritative assignment binding")
+	}
+	if err := ValidateRoleOwnedReceiptSubmission(receipt, submission, lease.Owner.AgentSession); err != nil {
+		return fmt.Errorf("receipt provenance: %w", err)
+	}
+	switch receipt.Role {
+	case assignment.RoleImplementation:
+		if !strings.EqualFold(receipt.BaseRevision, binding.BaseRevision) ||
+			!strings.EqualFold(receipt.BaseRevision, lease.Portable.BaseSHA) || receipt.ResultRevision == "" {
+			return errors.New("implementation receipt revisions differ from the authoritative assignment")
+		}
+	case assignment.RoleVerification:
+		if receipt.BaseRevision != "" || receipt.ResultRevision != "" ||
+			!strings.EqualFold(receipt.SubjectRevision, binding.SubjectRevision) {
+			return errors.New("verification receipt revision differs from the authoritative exact snapshot")
+		}
+	default:
+		return fmt.Errorf("role %s cannot create a result attestation", receipt.Role)
+	}
+	return nil
+}
+
+func validateVerificationReceiptContract(receipt assignment.Receipt, required assignment.VerificationPayload) error {
+	if len(receipt.Tests) != len(required.RequiredTests) {
+		return fmt.Errorf("verification receipt tests must exactly cover all %d assigned required tests", len(required.RequiredTests))
+	}
+	tests := make(map[string]assignment.TestResult, len(receipt.Tests))
+	for _, test := range receipt.Tests {
+		if test.Outcome != assignment.TestPassed {
+			return fmt.Errorf("verification test %s must pass before submission", test.ID)
+		}
+		tests[test.ID] = test
+	}
+	for _, expected := range required.RequiredTests {
+		if actual, ok := tests[expected.ID]; !ok || actual.Command != expected.Command {
+			return fmt.Errorf("verification receipt is missing exact assigned test %s command %q", expected.ID, expected.Command)
+		}
+	}
+	if len(receipt.Verification.CheckSelectors) != len(required.RequiredChecks) {
+		return fmt.Errorf("verification receipt checks must exactly cover all %d assigned required checks", len(required.RequiredChecks))
+	}
+	checks := make(map[string]bool, len(receipt.Verification.CheckSelectors))
+	for _, check := range receipt.Verification.CheckSelectors {
+		checks[check.Provider+"\x00"+check.Name] = true
+	}
+	for _, expected := range required.RequiredChecks {
+		if !checks[expected.Provider+"\x00"+expected.Name] {
+			return fmt.Errorf("verification receipt is missing exact assigned check %s/%s", expected.Provider, expected.Name)
+		}
+	}
+	return nil
+}
+
+// AttestedReceipt returns the exact append-only worker evidence to a
+// Coordinator that proves lease ownership. No remote state is changed here.
+func (m *Manager) AttestedReceipt(ctx context.Context, workspaceID, ownerToken string, receipt assignment.Receipt) (RoleOwnedSubmissionEvidence, error) {
+	lease, err := m.ownedLease(ctx, workspaceID, ownerToken)
+	if err != nil {
+		return RoleOwnedSubmissionEvidence{}, err
+	}
+	if err := validatePersistedAttestation(lease, receipt); err != nil {
+		return RoleOwnedSubmissionEvidence{}, err
+	}
+	return lease.ResultAttestation.Submission, nil
+}
+
+func validatePersistedAttestation(lease LocalLease, receipt assignment.Receipt) error {
+	if lease.ResultAttestation == nil {
+		return errors.New("exact role-owned result attestation is missing")
+	}
+	if err := validateRoleOwnedReceiptBinding(lease, receipt, lease.ResultAttestation.Submission); err != nil {
+		return err
+	}
+	revision := receipt.ResultRevision
+	if receipt.Role == assignment.RoleVerification {
+		revision = receipt.SubjectRevision
+	}
+	want := RoleOwnedResultAttestation{AssignmentID: receipt.AssignmentID, AssignmentDigest: receipt.AssignmentDigest,
+		AssignmentGeneration: receipt.AssignmentGeneration, Role: receipt.Role, ReceiptID: receipt.ID,
+		ReceiptDigest: receipt.ReceiptDigest, ResultRevision: revision, Submission: lease.ResultAttestation.Submission}
+	if *lease.ResultAttestation != want {
+		return errors.New("receipt does not exactly match the persisted role-owned result attestation")
+	}
+	return nil
+}
+
 // Complete validates a clean one-commit worker result and records
 // worker-complete evidence. It never reads changes from a dirty directory.
 func (m *Manager) Complete(ctx context.Context, request CompleteRequest) (result Inspection, resultErr error) {
@@ -89,8 +271,7 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 			return Inspection{Lease: lease}, fmt.Errorf("%w: receipt result revision differs from requested result commit", ErrInvalidWorkerResult)
 		}
 		resultCommit = strings.TrimSpace(request.Receipt.ResultRevision)
-		if err := validateImplementationReceiptBinding(lease, *request.Receipt, resultCommit, request.Submission,
-			request.CoordinatorSessionID); err != nil {
+		if err := validateImplementationReceiptBinding(lease, *request.Receipt, resultCommit); err != nil {
 			return Inspection{Lease: lease}, fmt.Errorf("%w: %v", ErrInvalidWorkerResult, err)
 		}
 	}
@@ -123,7 +304,7 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 				if current.Portable.State != lease.Portable.State || !strings.EqualFold(current.Portable.ResultCommit, resultCommit) || current.Portable.AcceptedReceiptID != "" {
 					return fmt.Errorf("%w: lease changed during receipt acceptance", ErrWorkspaceConflict)
 				}
-				persistAcceptedImplementationReceipt(&current.Portable, *request.Receipt, request.Submission)
+				persistAcceptedImplementationReceipt(&current.Portable, *request.Receipt, lease.ResultAttestation.Submission)
 				current.AcceptedReceiptID = request.Receipt.ID
 				return nil
 			})
@@ -143,7 +324,7 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 		current.Portable.ResultCommit = resultCommit
 		current.Portable.State = StateWorkerComplete
 		if request.Receipt != nil {
-			persistAcceptedImplementationReceipt(&current.Portable, *request.Receipt, request.Submission)
+			persistAcceptedImplementationReceipt(&current.Portable, *request.Receipt, lease.ResultAttestation.Submission)
 			current.AcceptedReceiptID = request.Receipt.ID
 		}
 		current.Observation = WorktreeObservation{Registered: true, HeadSHA: resultCommit, Branch: inspection.Branch, Dirty: false, InspectedAt: m.Now().UTC()}
@@ -156,42 +337,17 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 	return inspection, nil
 }
 
-func validateImplementationReceiptBinding(lease LocalLease, receipt assignment.Receipt, resultCommit string,
-	submission RoleOwnedSubmissionEvidence, coordinatorSessionID string) error {
-	if err := receipt.ValidateForAcceptance(); err != nil {
-		return err
-	}
+func validateImplementationReceiptBinding(lease LocalLease, receipt assignment.Receipt, resultCommit string) error {
 	if receipt.Role != assignment.RoleImplementation || receipt.Implementation == nil {
 		return errors.New("completion requires an implementation receipt")
 	}
-	coordinatorSessionID = strings.TrimSpace(coordinatorSessionID)
-	ownerSessionID := strings.TrimSpace(lease.Owner.AgentSession)
-	if ownerSessionID != "" {
-		if coordinatorSessionID != "" && !strings.EqualFold(coordinatorSessionID, ownerSessionID) {
-			return errors.New("completion Coordinator session differs from the authoritative lease owner session")
-		}
-		coordinatorSessionID = ownerSessionID
-	}
-	if err := ValidateRoleOwnedReceiptSubmission(receipt, submission, coordinatorSessionID); err != nil {
-		return fmt.Errorf("implementation receipt provenance: %w", err)
-	}
-	binding := lease.Portable.Assignment
-	if binding == nil || lease.Assignment == nil {
-		return errors.New("result-file completion requires the authoritative persisted assignment binding")
-	}
-	if receipt.AssignmentID != binding.AssignmentID || receipt.AssignmentDigest != binding.Digest ||
-		receipt.AssignmentGeneration != binding.Generation || receipt.Role != binding.Role ||
-		receipt.ResultSchemaVersion != lease.Assignment.ResultSchemaVersion {
-		return errors.New("receipt does not exactly match the authoritative assignment binding")
-	}
-	if !strings.EqualFold(receipt.BaseRevision, binding.BaseRevision) || !strings.EqualFold(receipt.BaseRevision, lease.Assignment.BaseRevision) ||
-		!strings.EqualFold(receipt.BaseRevision, lease.Portable.BaseSHA) {
-		return errors.New("receipt base revision differs from the authoritative assignment")
+	if err := validatePersistedAttestation(lease, receipt); err != nil {
+		return fmt.Errorf("implementation receipt attestation: %w", err)
 	}
 	if !strings.EqualFold(receipt.ResultRevision, resultCommit) {
 		return errors.New("receipt result revision differs from the exact worker result")
 	}
-	want := acceptedImplementationReceipt(receipt, submission)
+	want := acceptedImplementationReceipt(receipt, lease.ResultAttestation.Submission)
 	if current := acceptedReceiptBinding(lease.Portable); current != nil && !sameAcceptedReceiptBinding(*current, *want) {
 		return errors.New("accepted receipt identity cannot be replaced")
 	}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 	"github.com/higress-group/issue-spec/internal/templates"
+	runnerworkspace "github.com/higress-group/issue-spec/internal/workspace"
 )
 
 const (
@@ -130,8 +132,13 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 	verifyID := fs.String("id", "", "VERIFY id to upsert")
 	resultFile := fs.String("result-file", "", "absolute path to a sealed verification receipt")
 	assignmentFile := fs.String("assignment-file", "", "absolute path to the sealed verification assignment or packet")
-	agent := fs.String("agent", "", "logical verifier agent submitting the role-owned receipt")
-	agentSession := addAgentSessionFlag(fs)
+	integrationRootDefault := strings.TrimSpace(os.Getenv(runnerworkspace.ProcessIntegrationRootEnv))
+	if integrationRootDefault == "" {
+		integrationRootDefault = "."
+	}
+	integrationRoot := fs.String("integration-root", integrationRootDefault, "Coordinator Git integration root")
+	workspaceRoot := fs.String("workspace-root", strings.TrimSpace(os.Getenv(runnerworkspace.ProcessWorkspaceRootEnv)), "managed linked-worktree root")
+	ownerToken := fs.String("owner-token", "", "machine-local Coordinator lease owner token")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -147,6 +154,10 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 	}
 	if strings.TrimSpace(*processID) == "" || strings.TrimSpace(*verifyID) == "" {
 		a.errorf("--process and --id are required\n")
+		return 2
+	}
+	if strings.TrimSpace(*ownerToken) == "" {
+		a.errorf("--owner-token is required\n")
 		return 2
 	}
 	receipt, err := readReviewResultFile(*resultFile)
@@ -177,7 +188,30 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 		a.errorf("verification PROCESS must be one canonical managed snapshot assignment\n")
 		return 1
 	}
-	submission := roleOwnedSubmissionEvidence(*agent, resolveWriterSession(*agentSession))
+	manager, err := processworkspace.OpenManager(ctx, *integrationRoot, *workspaceRoot, processworkspace.ManagerOptions{})
+	if err != nil {
+		a.errorf("open verification workspace manager: %v\n", err)
+		return 1
+	}
+	local, found, err := manager.Store.Get(ctx, workspace.Workspace.WorkspaceID)
+	if err != nil || !found {
+		if err == nil {
+			err = processworkspace.ErrLeaseNotFound
+		}
+		a.errorf("load verification workspace attestation: %v\n", err)
+		return 1
+	}
+	if local.Portable.Repository != repo || local.Portable.ProcessID != strings.TrimSpace(*processID) ||
+		!reflect.DeepEqual(local.Portable, processworkspace.PortableLease(*workspace.Workspace)) ||
+		strings.TrimSpace(local.Owner.AgentSession) != strings.TrimSpace(process.Comment.AgentSessionID) {
+		a.errorf("validate verification workspace attestation: local lease differs from the authoritative PROCESS reservation or Coordinator session\n")
+		return 1
+	}
+	submission, err := manager.AttestedReceipt(ctx, local.Portable.WorkspaceID, strings.TrimSpace(*ownerToken), receipt)
+	if err != nil {
+		a.errorf("validate verification workspace attestation: %v\n", err)
+		return 1
+	}
 	if err := validateVerificationReceiptBinding(receipt, sealedAssignment, workspace.Workspace.Assignment, submission,
 		process.Comment.AgentSessionID); err != nil {
 		a.errorf("validate verification receipt: %v\n", err)

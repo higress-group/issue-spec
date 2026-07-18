@@ -225,6 +225,9 @@ func (s *Store) CreateAtGeneration(ctx context.Context, expected uint64, lease L
 }
 
 func (s *Store) create(ctx context.Context, expected *uint64, lease LocalLease) (LocalLease, error) {
+	if lease.ResultAttestation != nil {
+		return LocalLease{}, errors.New("result attestation can only be appended to a prepared assigned lease")
+	}
 	var result LocalLease
 	err := s.withLock(ctx, func() error {
 		registry, err := loadRegistry(s.path)
@@ -313,7 +316,7 @@ func (s *Store) BindAssignment(ctx context.Context, workspaceID string, value as
 				if expectedAssignmentGeneration == nil || *expectedAssignmentGeneration != current.Generation {
 					return fmt.Errorf("assignment redispatch generation conflict: expected current generation %d", current.Generation)
 				}
-				if original.AcceptedReceiptID != "" || original.Portable.ResultCommit != "" || original.Portable.IntegrationSHA != "" {
+				if original.ResultAttestation != nil || original.AcceptedReceiptID != "" || original.Portable.ResultCommit != "" || original.Portable.IntegrationSHA != "" {
 					return errors.New("assignment redispatch is forbidden after receipt acceptance, worker completion, or integration")
 				}
 				binding.Generation = current.Generation + 1
@@ -335,6 +338,56 @@ func (s *Store) BindAssignment(ctx context.Context, workspaceID string, value as
 		registry.Leases[workspaceID] = updated
 		registry.Generation++
 		registry.UpdatedAt = updated.Portable.UpdatedAt
+		if err := registry.Validate(); err != nil {
+			return err
+		}
+		if err := writeRegistryAtomic(s.path, registry); err != nil {
+			return err
+		}
+		result = cloneLocalLease(updated)
+		return nil
+	})
+	return result, err
+}
+
+// bindResultAttestation atomically appends the role worker's local receipt
+// handoff without mutating portable lifecycle state. An exact retry is
+// idempotent; a different receipt or session can never replace the first one.
+func (s *Store) bindResultAttestation(ctx context.Context, workspaceID string, value RoleOwnedResultAttestation) (LocalLease, error) {
+	if err := value.Validate(); err != nil {
+		return LocalLease{}, err
+	}
+	var result LocalLease
+	err := s.withLock(ctx, func() error {
+		registry, err := loadRegistry(s.path)
+		if err != nil {
+			return err
+		}
+		original, exists := registry.Leases[workspaceID]
+		if !exists {
+			return fmt.Errorf("%s: %w", workspaceID, ErrLeaseNotFound)
+		}
+		if original.Portable.State != StatePrepared {
+			return fmt.Errorf("result attestation requires prepared lease, current state is %s", original.Portable.State)
+		}
+		if original.ResultAttestation != nil {
+			if *original.ResultAttestation != value {
+				return errors.New("result attestation is append-only and cannot be replaced")
+			}
+			result = cloneLocalLease(original)
+			return nil
+		}
+		updated := cloneLocalLease(original)
+		attestation := value
+		updated.ResultAttestation = &attestation
+		updated.LocalRevision++
+		if err := updated.Validate(); err != nil {
+			return err
+		}
+		now := s.now().UTC()
+		registry.Leases[workspaceID] = updated
+		registry.Generation++
+		registry.UpdatedAt = now
 		if err := registry.Validate(); err != nil {
 			return err
 		}
@@ -384,6 +437,9 @@ func (s *Store) update(ctx context.Context, expected *uint64, workspaceID string
 		if err := validateWorktreePathMutation(original, updated); err != nil {
 			return err
 		}
+		if err := validateResultAttestationMutation(original, updated); err != nil {
+			return err
+		}
 		if !CanTransition(original.Portable.State, updated.Portable.State, original.Portable.Mode) {
 			return fmt.Errorf("illegal workspace lifecycle transition %s -> %s", original.Portable.State, updated.Portable.State)
 		}
@@ -402,6 +458,19 @@ func (s *Store) update(ctx context.Context, expected *uint64, workspaceID string
 		return nil
 	})
 	return result, err
+}
+
+func validateResultAttestationMutation(before, after LocalLease) error {
+	if before.ResultAttestation == nil {
+		if after.ResultAttestation != nil {
+			return errors.New("result attestation must be appended through the role-owned submit operation")
+		}
+		return nil
+	}
+	if after.ResultAttestation == nil || *before.ResultAttestation != *after.ResultAttestation {
+		return errors.New("result attestation is append-only and cannot be removed or replaced")
+	}
+	return nil
 }
 
 // Purge removes only a cleaned lease and requires the machine-local owner
@@ -821,6 +890,14 @@ func cloneLocalLease(lease LocalLease) LocalLease {
 	if lease.Assignment != nil {
 		value := *lease.Assignment
 		result.Assignment = &value
+	}
+	if lease.ResultAttestation != nil {
+		value := *lease.ResultAttestation
+		result.ResultAttestation = &value
+	}
+	if lease.Portable.AcceptedReceiptSubmission != nil {
+		value := *lease.Portable.AcceptedReceiptSubmission
+		result.Portable.AcceptedReceiptSubmission = &value
 	}
 	return result
 }

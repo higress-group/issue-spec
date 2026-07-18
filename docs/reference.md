@@ -349,7 +349,7 @@ Omitted planning fields render canonical defaults (`TBD` / `N/A`) so trivial cha
 
 ## PROCESS workspaces
 
-The exact PROCESS id selected by the coordinator from the typed DAG is the workspace selector; prompt text and runner command grammar are never selectors. Use the same repository, issue, PROCESS, integration root, workspace root, and owner token across the six lifecycle commands:
+The exact PROCESS id selected by the coordinator from the typed DAG is the workspace selector; prompt text and runner command grammar are never selectors. Use the same repository, issue, PROCESS, integration root, workspace root, and owner token across the six Coordinator-owned lifecycle commands:
 
 ```bash
 issue-spec workflow workspace prepare   --repo owner/repo --issue 12 --process PROCESS-001 ...
@@ -360,11 +360,24 @@ issue-spec workflow workspace reconcile --repo owner/repo --issue 12 --process P
 issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process PROCESS-001 ...
 ```
 
+The assigned implementation or verification worker does not invoke `complete`, `integrate`, or `verify submit`. Before returning its handoff, it validates and appends its sealed result receipt to the existing machine-local workspace registry with the role-owned operation:
+
+```bash
+issue-spec workflow workspace submit-result \
+  --integration-root /absolute/integration \
+  --workspace-root /absolute/workspaces \
+  --workspace-id ws-PROCESS-001 \
+  --result-file /absolute/receipt.json \
+  --agent "Implementation Receipt Worker"
+```
+
+`submit-result` has no owner-token or remote-issue authority and does not change portable workspace lifecycle state. It accepts session evidence only from the command environment's native `CODEX_THREAD_ID`. An explicit `--agent-session` value or an unset runtime session cannot create an attestation, and the append-only assignment/receipt/revision/session binding cannot be replaced. The Coordinator later supplies its owner token and the same exact receipt to `workspace complete --result-file` or `verify submit`; those operations fail before lifecycle or provider/comment mutation when the local attestation is missing or different. The persisted receipt and test assurance remains `self-reported` and is never upgraded by the runtime session evidence.
+
 `change-bearing` uses a writable owned branch. `review` and `verification` use detached immutable workflow snapshots: dirty state fails closed, but the CLI does not create an OS-enforced per-child sandbox. `orchestration` records lifecycle bookkeeping without a checkout. `external` uses mode `none`; completion and the final gate require consumed provider-neutral exact-revision evidence.
 
 Runner commands never carry a PROCESS selector. The runner launches exactly one ACPX coordinator and keeps its cwd and primary sandbox workspace at the public session clone. The coordinator selects a ready PROCESS from the typed DAG and invokes the workspace CLI. Runner mode supplies trusted session-local defaults through `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` and `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT`; a standalone coordinator passes explicit roots.
 
-After `prepare`, the coordinator delegates through the current agent runtime's native child/subagent facility, passing the exact worktree path as cwd plus the branch, write ownership, PROCESS id, parent TASK, and predecessor handoff. The child is not another ACPX session. It shares the coordinator's outer runner sandbox, authors a result commit, runs focused tests, and returns bounded handoff evidence. The coordinator validates that result and runs `complete` and `integrate` from its unchanged session clone before synchronizing status and cleanup.
+After `prepare`, the coordinator delegates through the current agent runtime's native child/subagent facility, passing the exact worktree path as cwd plus the branch, write ownership, PROCESS id, parent TASK, and predecessor handoff. The child is not another ACPX session. It shares the coordinator's outer runner sandbox, authors a result commit, runs focused tests, seals its receipt, and invokes `submit-result` under its native role session. The coordinator consumes and revalidates that exact local handoff while running `complete` and `integrate` from its unchanged session clone before synchronizing status and cleanup. Verification uses the same worker `submit-result` boundary; only the Coordinator invokes `verify submit`, with `--integration-root`, `--workspace-root`, and `--owner-token`, before provider checks and the accepted VERIFY comment are published.
 
 After runner resume or restart, the top-level runner recovers only the ACPX/session job. From the unchanged session clone, the coordinator owns the PROCESS lifecycle: it uses `inspect` or `reconcile` on the exact lease before `complete` and `integrate`, then invokes owner-token cleanup only after an explicit integration or retention decision. Top-level runner session-clone retention calls `git worktree list` and fails closed by retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails. It does not own, persist, or retry child PROCESS cleanup.
 

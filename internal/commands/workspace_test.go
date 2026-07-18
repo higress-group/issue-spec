@@ -400,14 +400,16 @@ func TestWorkspaceResultFileAuthoritySurvivesRemoteRecoveryIntegrationAndCleanup
 	if err := os.WriteFile(receiptPath, receiptPayload, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	submitArgs := []string{"submit-result", "--integration-root", repo, "--workspace-root", root,
+		"--workspace-id", prepared.WorkspaceID, "--result-file", receiptPath, "--agent", "Worker", "--json"}
 	completeArgs := append([]string{"complete"}, workspaceBaseArgs(repo, root, "receipt-owner")...)
-	completeArgs = append(completeArgs, "--result-file", receiptPath, "--agent", "Worker", "--json")
+	completeArgs = append(completeArgs, "--result-file", receiptPath, "--json")
 
 	t.Setenv(codexThreadIDEnv, "coordinator-session")
 	app, out, errOut = transitionAppWithError(backend)
-	if code := app.runWorkflowWorkspace(t.Context(), completeArgs); code != 1 ||
+	if code := app.runWorkflowWorkspace(t.Context(), submitArgs); code != 1 ||
 		!strings.Contains(out.String(), "Coordinator session") {
-		t.Fatalf("forged worker complete code=%d out=%s err=%s", code, out.String(), errOut.String())
+		t.Fatalf("forged worker submit code=%d out=%s err=%s", code, out.String(), errOut.String())
 	}
 	manager := openWorkspaceManager(t, repo, root)
 	rejected, found, err := manager.Store.Get(t.Context(), prepared.WorkspaceID)
@@ -419,6 +421,16 @@ func TestWorkspaceResultFileAuthoritySurvivesRemoteRecoveryIntegrationAndCleanup
 		t.Fatalf("forged worker changed remote marker: found=%v err=%v", found, observeErr)
 	}
 	t.Setenv(codexThreadIDEnv, "worker-session")
+	app, out, errOut = transitionAppWithError(backend)
+	if code := app.runWorkflowWorkspace(t.Context(), submitArgs); code != 0 {
+		t.Fatalf("worker submit code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	submitted := decodeWorkspaceResult(t, out)
+	if submitted.State != processworkspace.StatePrepared || submitted.ResultCommit != "" || submitted.ResultAttestation == nil ||
+		submitted.AcceptedReceiptID != "" {
+		t.Fatalf("worker submission mutated lifecycle=%+v", submitted)
+	}
+	t.Setenv(codexThreadIDEnv, "coordinator-session")
 	backend.updateErr = errWorkspaceRemoteUnavailable
 	app, out, _ = transitionAppWithError(backend)
 	if code := app.runWorkflowWorkspace(t.Context(), completeArgs); code != 1 {

@@ -95,6 +95,49 @@ type RoleOwnedSubmissionEvidence struct {
 	Assurance          assignment.Assurance `json:"assurance"`
 }
 
+// RoleOwnedResultAttestation is the machine-local handoff written by the
+// assigned role worker before a Coordinator performs any lifecycle or remote
+// mutation. It intentionally retains only immutable receipt identity and the
+// runtime-native session evidence captured by the local submit operation.
+type RoleOwnedResultAttestation struct {
+	AssignmentID         string                      `json:"assignment_id"`
+	AssignmentDigest     string                      `json:"assignment_digest"`
+	AssignmentGeneration uint64                      `json:"assignment_generation"`
+	Role                 assignment.Role             `json:"role"`
+	ReceiptID            string                      `json:"receipt_id"`
+	ReceiptDigest        string                      `json:"receipt_digest"`
+	ResultRevision       string                      `json:"result_revision"`
+	Submission           RoleOwnedSubmissionEvidence `json:"submission"`
+}
+
+func (a RoleOwnedResultAttestation) Validate() error {
+	if !safeID.MatchString(a.AssignmentID) {
+		return fmt.Errorf("invalid attested assignment id %q", a.AssignmentID)
+	}
+	if !lowerSHA256.MatchString(a.AssignmentDigest) || !lowerSHA256.MatchString(a.ReceiptDigest) {
+		return errors.New("attested assignment and receipt digests must be lowercase SHA-256 digests")
+	}
+	if a.AssignmentGeneration == 0 {
+		return errors.New("attested assignment generation must be positive")
+	}
+	if a.Role != assignment.RoleImplementation && a.Role != assignment.RoleVerification {
+		return fmt.Errorf("unsupported attested result role %q", a.Role)
+	}
+	if !acceptedReceiptID.MatchString(a.ReceiptID) {
+		return fmt.Errorf("invalid attested receipt id %q", a.ReceiptID)
+	}
+	if !fullSHA.MatchString(a.ResultRevision) {
+		return errors.New("attested result revision must be a full Git object id")
+	}
+	if err := a.Submission.Validate(); err != nil {
+		return fmt.Errorf("attested submission: %w", err)
+	}
+	if a.Submission.AgentSessionSource != AgentSessionSourceRuntimeNative || strings.TrimSpace(a.Submission.AgentSessionID) == "" {
+		return errors.New("result attestation requires an environment-owned CODEX_THREAD_ID session")
+	}
+	return nil
+}
+
 func (e RoleOwnedSubmissionEvidence) Validate() error {
 	agent := strings.TrimSpace(e.Agent)
 	if agent == "" || agent != e.Agent || strings.EqualFold(agent, "Coordinator") {
@@ -234,15 +277,16 @@ type IntegrationState struct {
 // LocalLease is machine-local registry state. Absolute paths and ownership
 // credentials belong here and must never be copied into PortableLease.
 type LocalLease struct {
-	Portable          PortableLease          `json:"portable"`
-	IntegrationRoot   string                 `json:"integration_root"`
-	WorktreePath      string                 `json:"worktree_path,omitempty"`
-	Owner             LeaseOwner             `json:"owner"`
-	Observation       WorktreeObservation    `json:"observation,omitempty"`
-	Integration       IntegrationState       `json:"integration,omitempty"`
-	Assignment        *assignment.Assignment `json:"assignment,omitempty"`
-	AcceptedReceiptID string                 `json:"accepted_receipt_id,omitempty"`
-	LocalRevision     uint64                 `json:"local_revision"`
+	Portable          PortableLease               `json:"portable"`
+	IntegrationRoot   string                      `json:"integration_root"`
+	WorktreePath      string                      `json:"worktree_path,omitempty"`
+	Owner             LeaseOwner                  `json:"owner"`
+	Observation       WorktreeObservation         `json:"observation,omitempty"`
+	Integration       IntegrationState            `json:"integration,omitempty"`
+	Assignment        *assignment.Assignment      `json:"assignment,omitempty"`
+	ResultAttestation *RoleOwnedResultAttestation `json:"result_attestation,omitempty"`
+	AcceptedReceiptID string                      `json:"accepted_receipt_id,omitempty"`
+	LocalRevision     uint64                      `json:"local_revision"`
 }
 
 type Registry struct {
@@ -498,14 +542,17 @@ func validateAcceptedReceiptBinding(lease PortableLease) error {
 
 func validateLocalAssignment(lease LocalLease) error {
 	if lease.Portable.Assignment == nil && lease.Assignment == nil {
-		if lease.AcceptedReceiptID != "" {
-			return errors.New("accepted receipt requires an assignment binding")
+		if lease.AcceptedReceiptID != "" || lease.ResultAttestation != nil {
+			return errors.New("accepted or attested receipt requires an assignment binding")
 		}
 		return nil
 	}
 	if lease.Portable.Assignment != nil && lease.Assignment == nil {
 		// A remote-only binding may be recovered only through explicit issuance,
 		// which recompiles and proves the full assignment before delivery.
+		if lease.ResultAttestation != nil {
+			return errors.New("result attestation requires the complete local assignment")
+		}
 		return nil
 	}
 	if lease.Portable.Assignment == nil {
@@ -529,6 +576,31 @@ func validateLocalAssignment(lease LocalLease) error {
 	if lease.Portable.AcceptedReceiptID != "" && lease.AcceptedReceiptID != "" &&
 		lease.AcceptedReceiptID != lease.Portable.AcceptedReceiptID {
 		return errors.New("legacy accepted receipt id differs from portable accepted receipt authority")
+	}
+	if lease.ResultAttestation != nil {
+		if err := lease.ResultAttestation.Validate(); err != nil {
+			return err
+		}
+		attestation, binding := lease.ResultAttestation, lease.Portable.Assignment
+		if attestation.AssignmentID != binding.AssignmentID || attestation.AssignmentDigest != binding.Digest ||
+			attestation.AssignmentGeneration != binding.Generation || attestation.Role != binding.Role {
+			return errors.New("result attestation differs from the authoritative assignment binding")
+		}
+		expectedRevision := binding.SubjectRevision
+		if binding.Role == assignment.RoleImplementation {
+			expectedRevision = lease.Portable.ResultCommit
+			if expectedRevision == "" {
+				expectedRevision = attestation.ResultRevision
+			}
+		}
+		if expectedRevision != "" && !strings.EqualFold(attestation.ResultRevision, expectedRevision) {
+			return errors.New("result attestation revision differs from the authoritative lease revision")
+		}
+		if lease.Portable.AcceptedReceiptID != "" && (lease.Portable.AcceptedReceiptID != attestation.ReceiptID ||
+			lease.Portable.AcceptedReceiptDigest != attestation.ReceiptDigest ||
+			lease.Portable.AcceptedReceiptGeneration != attestation.AssignmentGeneration) {
+			return errors.New("accepted receipt authority differs from the local result attestation")
+		}
 	}
 	return nil
 }

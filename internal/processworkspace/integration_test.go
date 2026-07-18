@@ -16,6 +16,7 @@ import (
 )
 
 func TestCompleteAcceptsBoundImplementationReceiptAndRetainsEvidenceThroughIntegration(t *testing.T) {
+	t.Setenv(AgentSessionSourceRuntimeNative, "worker-session")
 	fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
 	contract := bindImplementationAssignment(t, fixture, []assignment.TestSelector{{ID: "focused", Command: "go test ./internal/processworkspace"}})
 	resultCommit := commitWorkerFile(t, fixture, "internal/receipt.go", "package internal\n", true)
@@ -26,10 +27,42 @@ func TestCompleteAcceptsBoundImplementationReceiptAndRetainsEvidenceThroughInteg
 	receipt = sealImplementationReceipt(t, receipt)
 	submission := RoleOwnedSubmissionEvidence{Agent: "worker agent", AgentSessionID: "worker-session",
 		AgentSessionSource: AgentSessionSourceRuntimeNative, Assurance: assignment.AssuranceSelfReported}
+	beforeSubmission, found, err := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
+	if err != nil || !found {
+		t.Fatalf("load pre-submission lease: found=%v err=%v", found, err)
+	}
 
+	submitted, err := fixture.manager.SubmitResult(context.Background(), SubmitResultRequest{
+		WorkspaceID: fixture.lease.Portable.WorkspaceID, Receipt: receipt, Submission: submission,
+	})
+	if err != nil || submitted.Lease.Portable.State != StatePrepared || submitted.Lease.Portable.ResultCommit != "" ||
+		submitted.Lease.ResultAttestation == nil || submitted.Lease.Portable.AcceptedReceiptID != "" ||
+		!submitted.Lease.Portable.UpdatedAt.Equal(beforeSubmission.Portable.UpdatedAt) {
+		t.Fatalf("receipt submission=%+v err=%v", submitted.Lease, err)
+	}
+	retrySubmission, err := fixture.manager.SubmitResult(context.Background(), SubmitResultRequest{
+		WorkspaceID: fixture.lease.Portable.WorkspaceID, Receipt: receipt, Submission: submission,
+	})
+	if err != nil || retrySubmission.Lease.LocalRevision != submitted.Lease.LocalRevision ||
+		retrySubmission.Lease.ResultAttestation == nil || *retrySubmission.Lease.ResultAttestation != *submitted.Lease.ResultAttestation {
+		t.Fatalf("receipt submission retry=%+v err=%v", retrySubmission.Lease, err)
+	}
+	t.Setenv(AgentSessionSourceRuntimeNative, "replacement-worker-session")
+	replacementSubmission := submission
+	replacementSubmission.AgentSessionID = "replacement-worker-session"
+	if _, err := fixture.manager.SubmitResult(context.Background(), SubmitResultRequest{WorkspaceID: fixture.lease.Portable.WorkspaceID,
+		Receipt: receipt, Submission: replacementSubmission}); err == nil || !strings.Contains(err.Error(), "append-only") {
+		t.Fatalf("replacement submission err=%v", err)
+	}
+	if _, err := fixture.manager.Store.Update(context.Background(), fixture.lease.Portable.WorkspaceID, func(current *LocalLease) error {
+		current.ResultAttestation = nil
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "append-only") {
+		t.Fatalf("generic attestation removal err=%v", err)
+	}
+	t.Setenv(AgentSessionSourceRuntimeNative, "worker-session")
 	completed, err := fixture.manager.Complete(context.Background(), CompleteRequest{
 		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt,
-		Submission: submission, CoordinatorSessionID: "coordinator-session",
 	})
 	if err != nil || completed.Lease.Portable.State != StateWorkerComplete || completed.Lease.Portable.ResultCommit != resultCommit ||
 		completed.Lease.AcceptedReceiptID != receipt.ID || completed.Lease.Portable.AcceptedReceiptID != receipt.ID ||
@@ -41,7 +74,6 @@ func TestCompleteAcceptsBoundImplementationReceiptAndRetainsEvidenceThroughInteg
 	}
 	retry, err := fixture.manager.Complete(context.Background(), CompleteRequest{
 		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt,
-		Submission: submission, CoordinatorSessionID: "coordinator-session",
 	})
 	if err != nil || retry.Lease.AcceptedReceiptID != receipt.ID || retry.Lease.Portable.ResultCommit != resultCommit ||
 		retry.Lease.Portable.AcceptedReceiptDigest != receipt.ReceiptDigest {
@@ -52,8 +84,7 @@ func TestCompleteAcceptsBoundImplementationReceiptAndRetainsEvidenceThroughInteg
 	replacement = sealImplementationReceipt(t, replacement)
 	if _, err := fixture.manager.Complete(context.Background(), CompleteRequest{
 		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &replacement,
-		Submission: submission, CoordinatorSessionID: "coordinator-session",
-	}); !errors.Is(err, ErrInvalidWorkerResult) || !strings.Contains(err.Error(), "cannot be replaced") {
+	}); !errors.Is(err, ErrInvalidWorkerResult) || !strings.Contains(err.Error(), "does not exactly match") {
 		t.Fatalf("replacement receipt err=%v", err)
 	}
 	integrated, err := fixture.manager.Integrate(context.Background(), IntegrateRequest{
@@ -119,6 +150,7 @@ func TestCompleteRejectsInvalidImplementationReceiptWithoutPersistingEvidence(t 
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Setenv(AgentSessionSourceRuntimeNative, "worker-session")
 			fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
 			contract := bindImplementationAssignment(t, fixture, []assignment.TestSelector{{ID: "focused", Command: "go test ./internal/processworkspace"}})
 			resultCommit := commitWorkerFile(t, fixture, "internal/receipt.go", "package internal\n", true)
@@ -133,9 +165,8 @@ func TestCompleteRejectsInvalidImplementationReceiptWithoutPersistingEvidence(t 
 			if test.mutateSubmission != nil {
 				test.mutateSubmission(&submission)
 			}
-			_, err := fixture.manager.Complete(context.Background(), CompleteRequest{
-				WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt,
-				Submission: submission, CoordinatorSessionID: "coordinator-session",
+			_, err := fixture.manager.SubmitResult(context.Background(), SubmitResultRequest{
+				WorkspaceID: fixture.lease.Portable.WorkspaceID, Receipt: receipt, Submission: submission,
 			})
 			if !errors.Is(err, ErrInvalidWorkerResult) {
 				t.Fatalf("invalid receipt accepted: %v", err)
@@ -144,7 +175,7 @@ func TestCompleteRejectsInvalidImplementationReceiptWithoutPersistingEvidence(t 
 			if getErr != nil || !found || stored.Portable.State != StatePrepared || stored.Portable.ResultCommit != "" ||
 				stored.Portable.IntegrationSHA != "" || stored.AcceptedReceiptID != "" || stored.Portable.AcceptedReceiptID != "" ||
 				stored.Portable.AcceptedReceiptDigest != "" || stored.Portable.AcceptedReceiptGeneration != 0 ||
-				stored.Portable.AcceptedReceiptSubmission != nil {
+				stored.Portable.AcceptedReceiptSubmission != nil || stored.ResultAttestation != nil {
 				t.Fatalf("invalid receipt mutated lease=%+v found=%v err=%v", stored, found, getErr)
 			}
 			if got := gitOutput(t, fixture.repo, "rev-parse", "HEAD"); got != fixture.base {
@@ -154,20 +185,39 @@ func TestCompleteRejectsInvalidImplementationReceiptWithoutPersistingEvidence(t 
 	}
 }
 
-func TestCompleteAcceptsExplicitLowAssuranceRoleOwnedCompatibilityWithoutRuntimeSession(t *testing.T) {
+func TestSubmitResultRequiresEnvironmentOwnedNonCoordinatorSession(t *testing.T) {
 	fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
 	contract := bindImplementationAssignment(t, fixture, nil)
 	resultCommit := commitWorkerFile(t, fixture, "internal/compatibility.go", "package internal\n", true)
 	receipt := sealImplementationReceipt(t, implementationReceiptForFixture(t, contract, resultCommit,
 		[]string{"internal/compatibility.go"}))
-	submission := RoleOwnedSubmissionEvidence{Agent: "Worker", AgentSessionSource: AgentSessionSourceCompatibility,
-		Assurance: assignment.AssuranceSelfReported}
-	completed, err := fixture.manager.Complete(context.Background(), CompleteRequest{WorkspaceID: fixture.lease.Portable.WorkspaceID,
-		OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt, Submission: submission})
-	if err != nil || completed.Lease.Portable.State != StateWorkerComplete ||
-		completed.Lease.Portable.AcceptedReceiptSubmission == nil ||
-		*completed.Lease.Portable.AcceptedReceiptSubmission != submission {
-		t.Fatalf("compatibility completion=%+v err=%v", completed.Lease, err)
+	if _, err := fixture.manager.Complete(context.Background(), CompleteRequest{WorkspaceID: fixture.lease.Portable.WorkspaceID,
+		OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt}); !errors.Is(err, ErrInvalidWorkerResult) ||
+		!strings.Contains(err.Error(), "attestation is missing") {
+		t.Fatalf("completion without attestation err=%v", err)
+	}
+	for name, test := range map[string]struct {
+		environment string
+		submission  RoleOwnedSubmissionEvidence
+	}{
+		"unset compatibility": {submission: RoleOwnedSubmissionEvidence{Agent: "Worker", AgentSessionSource: AgentSessionSourceCompatibility,
+			Assurance: assignment.AssuranceSelfReported}},
+		"parameter spoof": {submission: RoleOwnedSubmissionEvidence{Agent: "Worker", AgentSessionID: "forged-worker-session", AgentSessionSource: AgentSessionSourceParameter,
+			Assurance: assignment.AssuranceSelfReported}},
+		"forged native source": {submission: RoleOwnedSubmissionEvidence{Agent: "Worker", AgentSessionID: "forged-worker-session", AgentSessionSource: AgentSessionSourceRuntimeNative,
+			Assurance: assignment.AssuranceSelfReported}},
+		"Coordinator native session": {environment: "coordinator-session", submission: RoleOwnedSubmissionEvidence{Agent: "Worker", AgentSessionID: "coordinator-session", AgentSessionSource: AgentSessionSourceRuntimeNative,
+			Assurance: assignment.AssuranceSelfReported}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(AgentSessionSourceRuntimeNative, test.environment)
+			completed, err := fixture.manager.SubmitResult(context.Background(), SubmitResultRequest{WorkspaceID: fixture.lease.Portable.WorkspaceID,
+				Receipt: receipt, Submission: test.submission})
+			if !errors.Is(err, ErrInvalidWorkerResult) || completed.Lease.ResultAttestation != nil ||
+				completed.Lease.Portable.State != StatePrepared {
+				t.Fatalf("submission=%+v err=%v", completed.Lease, err)
+			}
+		})
 	}
 }
 
@@ -819,6 +869,7 @@ func newIntegrationFixture(t *testing.T, ownership, shared []string) integration
 	repo, base := newGitRepository(t)
 	manager := openTestManager(t, repo)
 	lease := testLease("ws-integration", "PROCESS-005", ModeWritable, "worker-integration", base, ownership)
+	lease.Owner.AgentSession = "coordinator-session"
 	lease.Portable.SharedTouchpoints = shared
 	prepared, err := manager.Prepare(context.Background(), PrepareRequest{Lease: lease})
 	if err != nil {
