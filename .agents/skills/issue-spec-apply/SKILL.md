@@ -50,6 +50,12 @@ links. Run `issue-spec verify-links` after propose as a smoke check.
 10. The coordinator owns planning, scheduling, managed workspace lifecycle, integration, gate evaluation, status/link synchronization, unresolved-blocker routing, and final rationale dispatch only. It stays lean by consuming bounded worker outputs and issue-spec read results rather than full issue/PR bodies or full diffs, remains in the integration checkout/session clone, and does not author implementation commits, review findings, worker fix replies, review resolutions, or rationale on another agent's behalf.
 11. Follow issue-spec-workflow for backend-appropriate merge and closure, preserving the managed closure block's final-write rule when that route uses it.
 
+## PROCESS Write Ownership
+
+- Treat a bare repository-relative ownership path as exact: `internal/templates/skills.go` owns only that file.
+- To own a directory subtree, use an explicit trailing `/**` declaration such as `internal/templates/**`. Never use bare `internal/templates` to mean its descendants.
+- Existing PROCESS comments with bare paths remain readable and are not migrated automatically. Before workspace allocation, `prepare` may reject a bare path that resolves to a tracked directory; explicitly correct the PROCESS artifact or pass a corrected `--write-ownership internal/templates/**` value.
+
 ## Project Workflow
 
 - Workflow Source: `builtin`

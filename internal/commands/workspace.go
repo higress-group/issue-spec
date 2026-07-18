@@ -306,7 +306,11 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 		}
 	}
 	if err != nil {
-		return a.workspaceLocalFailure(ctx, manager, inspection, repo, issue, processID, "prepare_failed", err, *flags.jsonOut)
+		code := "prepare_failed"
+		if errors.Is(err, processworkspace.ErrAmbiguousOwnership) {
+			code = "reservation_invalid"
+		}
+		return a.workspaceLocalFailure(ctx, manager, inspection, repo, issue, processID, code, err, *flags.jsonOut)
 	}
 	updatedTarget, remoteResult, err := applyWorkspaceRemote(ctx, target, repo, issue, inspection.Lease.Portable)
 	_ = updatedTarget
