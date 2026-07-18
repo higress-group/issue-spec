@@ -191,23 +191,63 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 	}
 	workflowSkill := readTestFile(t, root+"/.agents/skills/issue-spec-workflow/SKILL.md")
 	applyCommand := readTestFile(t, root+"/.claude/commands/issue-spec/apply.md")
+	reviewCommand := readTestFile(t, root+"/.claude/commands/issue-spec/review.md")
+	verifyCommand := readTestFile(t, root+"/.claude/commands/issue-spec/verify.md")
+	archiveCommand := readTestFile(t, root+"/.claude/commands/issue-spec/archive.md")
 	checks := []struct {
+		name    string
 		content string
 		wants   []string
 	}{
-		{workflowSkill, []string{"search issues", "GitHub-backed workflows keep the existing `pr link-process`",
-			"code-change attach", "code-change link-process", "review sync", "zero findings", "code-change rationale", "fresh REVIEW completion", "Do not call a GitHub PR endpoint"}},
-		{applyCommand, []string{"For GitHub use issue-spec pr link-process",
-			"code-change attach", "code-change link-process", "review sync", "zero findings", "code-change rationale", "append-only Issue Backend comment", "do not call GitHub PR endpoints"}},
+		{"workflow", workflowSkill, []string{"search issues", "GitHub-backed workflows keep the existing `pr link-process`",
+			"code-change attach", "code-change link-process", "review sync", "zero findings", "code-change rationale", "fresh REVIEW completion", "Do not call a GitHub PR endpoint",
+			"persists and reloads provider facts", "exact-current completion stamp", "finding-backed consumed binding retained only for legacy compatibility"}},
+		{"review", reviewCommand, []string{"On GitHub add --pr <number>; on a self-hosted profile omit --pr and add --revision <exact-head>",
+			"Sync authoritatively captures current rationale", "one stable done REVIEW completion even with zero findings"}},
+		{"apply", applyCommand, []string{"following the backend-appropriate routing in issue-spec-workflow",
+			"authoritative final sync by following issue-spec-review",
+			"After that sync, explicitly link the REVIEW to its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC",
+			"Follow issue-spec-workflow for the backend-appropriate rationale command",
+			"Each owning worker authors its own rationale under that worker's --agent and --agent-session"}},
+		{"verify", verifyCommand, []string{"backend-appropriate rationale and REVIEW completion evidence",
+			"Status forecast and final verify use the same authoritative validator",
+			"The validator owns exact identity, revision, freshness, and legacy compatibility"}},
+		{"archive", archiveCommand, []string{"Archive may read an existing required REVIEW completion when implementation merge policy requires it",
+			"Archive never creates, updates, or refreshes REVIEW or adds archive-specific review state"}},
 	}
 	for _, check := range checks {
 		for _, want := range check.wants {
 			if !strings.Contains(check.content, want) {
-				t.Fatalf("generated workflow missing %q:\n%s", want, check.content)
+				t.Fatalf("generated %s workflow missing %q:\n%s", check.name, want, check.content)
 			}
 		}
 		if strings.Contains(check.content, "remain in GitHub issue-native storage") {
-			t.Fatalf("generated workflow retained GitHub-only storage footer:\n%s", check.content)
+			t.Fatalf("generated %s workflow retained GitHub-only storage footer:\n%s", check.name, check.content)
+		}
+	}
+	for name, content := range map[string]string{
+		"review":  reviewCommand,
+		"apply":   applyCommand,
+		"verify":  verifyCommand,
+		"archive": archiveCommand,
+	} {
+		for _, forbidden := range []string{
+			"provider facts",
+			"completion stamp",
+			"finding-backed consumed",
+			"native-ledger",
+			"append-only Issue Backend comment",
+			"provider/repository/change/version/revision identity",
+			"repository freshness",
+			"code-change attach",
+			"code-change link-process",
+			"code-change rationale",
+			"code_change",
+			"archive_change",
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("generated %s workflow duplicates workflow-owned backend protocol %q:\n%s", name, forbidden, content)
+			}
 		}
 	}
 
