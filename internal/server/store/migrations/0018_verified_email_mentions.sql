@@ -15,12 +15,6 @@ ALTER TABLE users
         (notification_email IS NOT NULL AND notification_email_verified_at IS NOT NULL)
     );
 
--- Every account which predates this capability remains usable. Provider email
--- metadata is intentionally not copied into the new notification columns.
-UPDATE users
-SET onboarding_completed_at = clock_timestamp()
-WHERE onboarding_completed_at IS NULL;
-
 CREATE UNIQUE INDEX users_notification_email_key_unique
     ON users (notification_email_key)
     WHERE notification_email_key IS NOT NULL;
@@ -257,3 +251,11 @@ COMMENT ON COLUMN email_verification_requests.token_ciphertext IS
     'Purpose-bound encrypted token retained only until SMTP acceptance, expiry, consumption, or supersession.';
 COMMENT ON COLUMN email_deliveries.render_snapshot IS
     'Bounded immutable render input. Recipient addresses and plaintext verification tokens are forbidden.';
+
+-- Run the legacy-account backfill after every schema change in this migration.
+-- PostgreSQL rejects DDL on a table while that table still has pending trigger
+-- events from an earlier write in the same transaction. Provider email metadata
+-- is intentionally not copied into the new notification columns.
+UPDATE users
+SET onboarding_completed_at = clock_timestamp()
+WHERE onboarding_completed_at IS NULL;

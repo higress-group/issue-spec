@@ -40,3 +40,26 @@ func TestVerifiedEmailMigrationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestVerifiedEmailMigrationBackfillsUsersAfterSchemaDDL(t *testing.T) {
+	contents, err := os.ReadFile("../store/migrations/0018_verified_email_mentions.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const backfill = "UPDATE users\nSET onboarding_completed_at = clock_timestamp()\nWHERE onboarding_completed_at IS NULL;"
+	backfillAt := strings.Index(string(contents), backfill)
+	if backfillAt < 0 {
+		t.Fatalf("migration is missing the legacy onboarding backfill")
+	}
+
+	afterBackfill := string(contents[backfillAt+len(backfill):])
+	for lineNumber, line := range strings.Split(afterBackfill, "\n") {
+		statement := strings.ToUpper(strings.TrimSpace(line))
+		for _, prefix := range []string{"ALTER ", "CREATE ", "DROP ", "COMMENT ", "GRANT ", "REVOKE "} {
+			if strings.HasPrefix(statement, prefix) {
+				t.Errorf("schema DDL %q follows the users backfill at trailing line %d", statement, lineNumber+1)
+			}
+		}
+	}
+}
