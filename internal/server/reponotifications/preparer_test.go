@@ -35,7 +35,7 @@ func TestPreparerRevalidatesEligibilityAndRendersCanonicalLink(t *testing.T) {
 			UserID: userID, Login: "reader", DisplayName: "Reader",
 		}, Address: "reader@example.test", RepositoryOwner: "acme", RepositoryName: "widgets"}, nil
 	})
-	preparer, err := NewPreparer(eligibility, origin)
+	preparer, err := NewPreparer(eligibility, origin, emaildelivery.AddressPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestPreparerSuppressesUnsubscribeAndDoesNotExposePolicyDetails(t *testing.T
 	origin, _ := publicurl.ParseOrigin("web", "https://issues.example.test")
 	preparer, _ := NewPreparer(eligibilityFunc(func(context.Context, models.RepoScope, uuid.UUID) (store.RepositoryNotificationRecipient, error) {
 		return store.RepositoryNotificationRecipient{}, store.ErrNotFound
-	}), origin)
+	}), origin, emaildelivery.AddressPolicy{})
 	_, err := preparer.Prepare(t.Context(), issueDelivery(t, orgID, repoID, issueID, userID))
 	var outcome *emaildelivery.OutcomeError
 	if !errors.As(err, &outcome) || !outcome.Suppressed || outcome.Reason != emaildelivery.ReasonRecipientUnavailable {
@@ -62,6 +62,28 @@ func TestPreparerSuppressesUnsubscribeAndDoesNotExposePolicyDetails(t *testing.T
 		if strings.Contains(err.Error(), forbidden) {
 			t.Fatalf("suppression leaked %q: %v", forbidden, err)
 		}
+	}
+}
+
+func TestPreparerSuppressesAddressOutsideCurrentDomainPolicy(t *testing.T) {
+	orgID, repoID, issueID, userID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	origin, _ := publicurl.ParseOrigin("web", "https://issues.example.test")
+	policy, err := emaildelivery.NewAddressPolicy([]string{"corp.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparer, err := NewPreparer(eligibilityFunc(func(context.Context, models.RepoScope,
+		uuid.UUID) (store.RepositoryNotificationRecipient, error) {
+		return store.RepositoryNotificationRecipient{Address: "reader@personal.example",
+			RepositoryOwner: "acme", RepositoryName: "widgets"}, nil
+	}), origin, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = preparer.Prepare(t.Context(), issueDelivery(t, orgID, repoID, issueID, userID))
+	var outcome *emaildelivery.OutcomeError
+	if !errors.As(err, &outcome) || !outcome.Suppressed || outcome.Reason != emaildelivery.ReasonRecipientUnavailable {
+		t.Fatalf("Prepare() error = %#v / %v", outcome, err)
 	}
 }
 

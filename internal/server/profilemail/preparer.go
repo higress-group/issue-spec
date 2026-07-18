@@ -56,6 +56,7 @@ type VerificationPreparer struct {
 	secrets *serverauth.Secrets
 	baseURL *url.URL
 	subject string
+	policy  emaildelivery.AddressPolicy
 	now     func() time.Time
 }
 
@@ -71,7 +72,8 @@ func NewVerificationPreparer(db serverstore.DBTX, secrets *serverauth.Secrets, c
 		config.Subject = "Confirm your notification email"
 	}
 	return &VerificationPreparer{loader: databaseLoader{db: db}, secrets: secrets,
-		baseURL: baseURL, subject: config.Subject, now: func() time.Time { return time.Now().UTC() }}, nil
+		baseURL: baseURL, subject: config.Subject, policy: config.AddressPolicy,
+		now: func() time.Time { return time.Now().UTC() }}, nil
 }
 
 func (p *VerificationPreparer) Prepare(ctx context.Context, delivery emaildelivery.Delivery) (emaildelivery.Message, error) {
@@ -85,6 +87,9 @@ func (p *VerificationPreparer) Prepare(ctx context.Context, delivery emaildelive
 		return emaildelivery.Message{}, err
 	}
 	if !request.ExpiresAt.After(p.now()) || len(request.Ciphertext) == 0 {
+		return emaildelivery.Message{}, emaildelivery.Suppressed(emaildelivery.ReasonRecipientUnavailable)
+	}
+	if !p.policy.Allows(request.Address) {
 		return emaildelivery.Message{}, emaildelivery.Suppressed(emaildelivery.ReasonRecipientUnavailable)
 	}
 	plaintext, err := p.secrets.Decrypt(tokenCipherPurpose(request.RequestID), request.Ciphertext)

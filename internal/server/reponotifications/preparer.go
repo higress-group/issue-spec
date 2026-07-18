@@ -40,9 +40,11 @@ func (e *DatabaseEligibility) Recipient(ctx context.Context, scope models.RepoSc
 type Preparer struct {
 	eligibility Eligibility
 	webOrigin   publicurl.Origin
+	policy      emaildelivery.AddressPolicy
 }
 
-func NewPreparer(eligibility Eligibility, webOrigin publicurl.Origin) (*Preparer, error) {
+func NewPreparer(eligibility Eligibility, webOrigin publicurl.Origin,
+	policy emaildelivery.AddressPolicy) (*Preparer, error) {
 	if eligibility == nil {
 		return nil, ErrInvalid
 	}
@@ -51,7 +53,7 @@ func NewPreparer(eligibility Eligibility, webOrigin publicurl.Origin) (*Preparer
 	if err != nil || parseErr != nil || !parsed.IsAbs() || parsed.Host == "" {
 		return nil, ErrInvalid
 	}
-	return &Preparer{eligibility: eligibility, webOrigin: webOrigin}, nil
+	return &Preparer{eligibility: eligibility, webOrigin: webOrigin, policy: policy}, nil
 }
 
 func (p *Preparer) Prepare(ctx context.Context, delivery emaildelivery.Delivery) (emaildelivery.Message, error) {
@@ -72,6 +74,9 @@ func (p *Preparer) Prepare(ctx context.Context, delivery emaildelivery.Delivery)
 	}
 	if err != nil {
 		return emaildelivery.Message{}, emaildelivery.Retryable(emaildelivery.ReasonPreparationUnavailable)
+	}
+	if !p.policy.Allows(recipient.Address) {
+		return emaildelivery.Message{}, emaildelivery.Suppressed(emaildelivery.ReasonRecipientUnavailable)
 	}
 	path := publicurl.RepositoryResource(recipient.RepositoryOwner, recipient.RepositoryName).IssueWeb(snapshot.IssueNumber)
 	link, err := p.webOrigin.URL(path, nil)

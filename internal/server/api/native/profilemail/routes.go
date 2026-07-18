@@ -195,7 +195,8 @@ func (h handlers) browserPrincipal(w http.ResponseWriter, r *http.Request) (serv
 func statusResponse(profile mailservice.Profile) map[string]any {
 	response := map[string]any{"available": true, "onboarding_completed": profile.OnboardingCompletedAt != nil,
 		"notification_email": profile.NotificationEmail, "notification_email_verified_at": profile.NotificationVerifiedAt,
-		"representation_version": profile.RepresentationVersion}
+		"representation_version":        profile.RepresentationVersion,
+		"allowed_email_domain_suffixes": profile.AllowedEmailDomainSuffixes}
 	if profile.Pending != nil {
 		response["pending"] = verificationResponse(*profile.Pending)
 	} else {
@@ -220,6 +221,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		adminapi.WriteProblem(w, http.StatusConflict, "version_conflict", "Profile changed; reload and try again")
 	case errors.Is(err, mailservice.ErrEmailInUse):
 		adminapi.WriteProblem(w, http.StatusConflict, "email_in_use", "Notification email is already in use")
+	case errors.Is(err, mailservice.ErrEmailDomainNotAllowed):
+		adminapi.WriteProblem(w, http.StatusUnprocessableEntity, "email_domain_not_allowed", "Notification email domain is not allowed")
 	case errors.Is(err, mailservice.ErrExpired):
 		adminapi.WriteProblem(w, http.StatusGone, "verification_expired", "Verification link has expired")
 	case errors.Is(err, mailservice.ErrConsumed):

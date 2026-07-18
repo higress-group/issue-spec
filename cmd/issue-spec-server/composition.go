@@ -132,6 +132,7 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	if mailSettings.Enabled() {
 		profileMailService, err = profilemail.New(database.Pool(), secrets, profilemail.Config{
 			ConfirmationURL: origins.Web.String() + "/verify-email",
+			AddressPolicy:   mailSettings.AddressPolicy(),
 		})
 		if err != nil {
 			return fail(fmt.Errorf("initialize profile mail: %w", err))
@@ -273,11 +274,13 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 	var emailWorker *emaildelivery.Worker
 	if mailSettings.Enabled() {
 		verificationPreparer, err := profilemail.NewVerificationPreparer(database.Pool(), secrets,
-			profilemail.Config{ConfirmationURL: origins.Web.String() + "/verify-email"})
+			profilemail.Config{ConfirmationURL: origins.Web.String() + "/verify-email",
+				AddressPolicy: mailSettings.AddressPolicy()})
 		if err != nil {
 			return fail(fmt.Errorf("initialize verification mail preparation: %w", err))
 		}
-		mentionPreparer, err := mentionmail.NewPreparer(database.Pool(), authorization, origins.Web.String())
+		mentionPreparer, err := mentionmail.NewPreparer(database.Pool(), authorization, origins.Web.String(),
+			mailSettings.AddressPolicy())
 		if err != nil {
 			return fail(fmt.Errorf("initialize mention mail preparation: %w", err))
 		}
@@ -285,11 +288,13 @@ func compose(ctx context.Context, cfg config.Config) (*application, error) {
 		if err != nil {
 			return fail(fmt.Errorf("initialize repository mail eligibility: %w", err))
 		}
-		repositoryPreparer, err := reponotifications.NewPreparer(repositoryEligibility, origins.Web)
+		repositoryPreparer, err := reponotifications.NewPreparer(repositoryEligibility, origins.Web,
+			mailSettings.AddressPolicy())
 		if err != nil {
 			return fail(fmt.Errorf("initialize repository mail preparation: %w", err))
 		}
-		milestonePreparer, err := notificationmail.NewPreparer(repositoryEligibility, origins.Web)
+		milestonePreparer, err := notificationmail.NewPreparer(repositoryEligibility, origins.Web,
+			mailSettings.AddressPolicy())
 		if err != nil {
 			return fail(fmt.Errorf("initialize milestone mail preparation: %w", err))
 		}

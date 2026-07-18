@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/server/emaildelivery"
 )
 
 const (
@@ -17,16 +18,17 @@ const (
 )
 
 var (
-	ErrInvalid         = errors.New("profile mail: invalid input")
-	ErrNotFound        = errors.New("profile mail: user or verification not found")
-	ErrConflict        = errors.New("profile mail: representation changed")
-	ErrEmailInUse      = errors.New("profile mail: notification email is already in use")
-	ErrExpired         = errors.New("profile mail: verification expired")
-	ErrConsumed        = errors.New("profile mail: verification already consumed")
-	ErrSuperseded      = errors.New("profile mail: verification superseded")
-	ErrRateLimited     = errors.New("profile mail: verification rate limited")
-	ErrAccountDisabled = errors.New("profile mail: account disabled")
-	ErrUnavailable     = errors.New("profile mail: storage unavailable")
+	ErrInvalid               = errors.New("profile mail: invalid input")
+	ErrNotFound              = errors.New("profile mail: user or verification not found")
+	ErrConflict              = errors.New("profile mail: representation changed")
+	ErrEmailInUse            = errors.New("profile mail: notification email is already in use")
+	ErrEmailDomainNotAllowed = errors.New("profile mail: notification email domain is not allowed")
+	ErrExpired               = errors.New("profile mail: verification expired")
+	ErrConsumed              = errors.New("profile mail: verification already consumed")
+	ErrSuperseded            = errors.New("profile mail: verification superseded")
+	ErrRateLimited           = errors.New("profile mail: verification rate limited")
+	ErrAccountDisabled       = errors.New("profile mail: account disabled")
+	ErrUnavailable           = errors.New("profile mail: storage unavailable")
 )
 
 type Config struct {
@@ -36,17 +38,19 @@ type Config struct {
 	ResendInterval  time.Duration
 	ConfirmationURL string
 	Subject         string
+	AddressPolicy   emaildelivery.AddressPolicy
 }
 
 // Profile exposes only the explicitly verified notification address. It never
 // falls back to provider-owned users.email metadata.
 type Profile struct {
-	UserID                 uuid.UUID
-	OnboardingCompletedAt  *time.Time
-	NotificationEmail      *string
-	NotificationVerifiedAt *time.Time
-	Pending                *Verification
-	RepresentationVersion  int64
+	UserID                     uuid.UUID
+	OnboardingCompletedAt      *time.Time
+	NotificationEmail          *string
+	NotificationVerifiedAt     *time.Time
+	Pending                    *Verification
+	RepresentationVersion      int64
+	AllowedEmailDomainSuffixes []string
 }
 
 // Verification is safe to return from service methods. In particular it does

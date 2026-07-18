@@ -417,6 +417,7 @@ func (h *handlers) privateProfileResponse(ctx context.Context, profile serveraut
 	response["notification_email"] = nil
 	response["notification_email_verified_at"] = nil
 	response["pending_notification_email"] = nil
+	response["allowed_email_domain_suffixes"] = []string{}
 	if h.deps.EmailEnabled && h.deps.ProfileMail != nil {
 		mailProfile, err := h.deps.ProfileMail.Get(ctx, profile.ID)
 		if err != nil {
@@ -425,6 +426,7 @@ func (h *handlers) privateProfileResponse(ctx context.Context, profile serveraut
 		response["onboarding_completed"] = mailProfile.OnboardingCompletedAt != nil
 		response["notification_email"] = mailProfile.NotificationEmail
 		response["notification_email_verified_at"] = mailProfile.NotificationVerifiedAt
+		response["allowed_email_domain_suffixes"] = mailProfile.AllowedEmailDomainSuffixes
 		if mailProfile.Pending != nil {
 			response["pending_notification_email"] = map[string]any{"id": mailProfile.Pending.ID,
 				"email": mailProfile.Pending.PendingEmail, "expires_at": mailProfile.Pending.ExpiresAt,

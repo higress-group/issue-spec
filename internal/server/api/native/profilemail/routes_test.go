@@ -78,7 +78,7 @@ func TestAccountMailMutationsRequireSessionOriginAndCSRF(t *testing.T) {
 func TestPublicConfirmationErrorsAreGenericAndNonEnumerating(t *testing.T) {
 	tokenErrors := []error{mailservice.ErrInvalid, mailservice.ErrNotFound, mailservice.ErrConflict,
 		mailservice.ErrEmailInUse, mailservice.ErrExpired, mailservice.ErrConsumed,
-		mailservice.ErrSuperseded, mailservice.ErrAccountDisabled}
+		mailservice.ErrSuperseded, mailservice.ErrAccountDisabled, mailservice.ErrEmailDomainNotAllowed}
 	var firstBody string
 	for _, serviceErr := range tokenErrors {
 		t.Run(serviceErr.Error(), func(t *testing.T) {
@@ -108,6 +108,18 @@ func TestPublicConfirmationErrorsAreGenericAndNonEnumerating(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDomainPolicyErrorAndStatusResponseAreStable(t *testing.T) {
+	response := httptest.NewRecorder()
+	writeServiceError(response, mailservice.ErrEmailDomainNotAllowed)
+	assertProblem(t, response, http.StatusUnprocessableEntity, "email_domain_not_allowed")
+
+	status := statusResponse(mailservice.Profile{AllowedEmailDomainSuffixes: []string{"corp.example"}})
+	suffixes, ok := status["allowed_email_domain_suffixes"].([]string)
+	if !ok || len(suffixes) != 1 || suffixes[0] != "corp.example" {
+		t.Fatalf("status suffixes = %#v", status["allowed_email_domain_suffixes"])
 	}
 }
 

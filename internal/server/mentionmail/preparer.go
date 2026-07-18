@@ -56,9 +56,11 @@ type Preparer struct {
 	loader     recipientLoader
 	authorizer RepositoryAuthorizer
 	webOrigin  *url.URL
+	policy     emaildelivery.AddressPolicy
 }
 
-func NewPreparer(db serverstore.DBTX, authorizer RepositoryAuthorizer, webOrigin string) (*Preparer, error) {
+func NewPreparer(db serverstore.DBTX, authorizer RepositoryAuthorizer, webOrigin string,
+	policy emaildelivery.AddressPolicy) (*Preparer, error) {
 	if db == nil || authorizer == nil {
 		return nil, ErrInvalid
 	}
@@ -69,7 +71,8 @@ func NewPreparer(db serverstore.DBTX, authorizer RepositoryAuthorizer, webOrigin
 		return nil, ErrInvalid
 	}
 	origin.Path = strings.TrimRight(origin.Path, "/") + "/"
-	return &Preparer{loader: databaseRecipientLoader{db: db}, authorizer: authorizer, webOrigin: origin}, nil
+	return &Preparer{loader: databaseRecipientLoader{db: db}, authorizer: authorizer,
+		webOrigin: origin, policy: policy}, nil
 }
 
 func (p *Preparer) Prepare(ctx context.Context, delivery emaildelivery.Delivery) (emaildelivery.Message, error) {
@@ -87,6 +90,9 @@ func (p *Preparer) Prepare(ctx context.Context, delivery emaildelivery.Delivery)
 	address, err := p.loader.loadRecipient(ctx, delivery.RecipientUserID)
 	if err != nil {
 		return emaildelivery.Message{}, err
+	}
+	if !p.policy.Allows(address) {
+		return emaildelivery.Message{}, emaildelivery.Suppressed(emaildelivery.ReasonRecipientUnavailable)
 	}
 	principal := serverauth.Principal{Kind: serverauth.CredentialSession,
 		User: serverauth.User{ID: delivery.RecipientUserID, Status: string(models.UserStatusActive)}}

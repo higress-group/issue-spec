@@ -18,6 +18,7 @@ func TestPrivateProfileMergesNotificationEmailWithoutProviderFallback(t *testing
 	h := handlers{deps: Dependencies{EmailEnabled: true, ProfileMail: profileReader{profile: mailservice.Profile{
 		UserID: userID, OnboardingCompletedAt: &completed, NotificationEmail: &verified,
 		NotificationVerifiedAt: &verifiedAt, RepresentationVersion: 7,
+		AllowedEmailDomainSuffixes: []string{"corp.example"},
 		Pending: &mailservice.Verification{ID: pendingID, PendingEmail: "replacement@example.test",
 			ExpiresAt: time.Now().Add(time.Hour), RepresentationVersion: 2},
 	}}}, canonicalWebOrigin: "https://web.example.test"}
@@ -29,6 +30,10 @@ func TestPrivateProfileMergesNotificationEmailWithoutProviderFallback(t *testing
 	if response["notification_email"] != &verified || response["notification_email_available"] != true ||
 		response["onboarding_completed"] != true || response["representation_version"] != int64(7) {
 		t.Fatalf("private profile = %+v", response)
+	}
+	suffixes, ok := response["allowed_email_domain_suffixes"].([]string)
+	if !ok || len(suffixes) != 1 || suffixes[0] != "corp.example" {
+		t.Fatalf("allowed suffixes = %#v", response["allowed_email_domain_suffixes"])
 	}
 	pending, ok := response["pending_notification_email"].(map[string]any)
 	if !ok || pending["email"] != "replacement@example.test" {

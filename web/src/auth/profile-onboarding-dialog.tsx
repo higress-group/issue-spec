@@ -14,6 +14,10 @@ export function ProfileOnboardingDialog({ enabled }: { enabled: boolean }) {
   const dialog = useRef<HTMLDivElement>(null);
   const nameValue = name ?? profile.data?.nickname ?? profile.data?.display_name ?? "";
   const visible = enabled && Boolean(profile.data && !profile.data.onboarding_completed);
+  const suffixes = profile.data?.allowed_email_domain_suffixes ?? [];
+  const emailHint = suffixes.length > 0
+    ? `${t("onboarding.emailHint")} ${t("onboarding.emailDomainHint", { domains: suffixes.map((suffix) => `@${suffix}`).join(", ") })}`
+    : t("onboarding.emailHint");
   const complete = useMutation({
     mutationFn: async () => {
       if (!profile.data) throw new Error(t("onboarding.profileUnavailable"));
@@ -59,7 +63,7 @@ export function ProfileOnboardingDialog({ enabled }: { enabled: boolean }) {
         <Field label={t("onboarding.name")} hint={t("onboarding.nameHint")}>
           <TextInput value={nameValue} maxLength={80} required autoComplete="name" onChange={(event) => setName(event.target.value)} disabled={complete.isPending} data-testid="onboarding-name" />
         </Field>
-        <Field label={t("onboarding.email")} hint={t("onboarding.emailHint")}>
+        <Field label={t("onboarding.email")} hint={emailHint}>
           <TextInput type="email" value={email} maxLength={320} required autoComplete="email" onChange={(event) => setEmail(event.target.value)} disabled={complete.isPending} data-testid="onboarding-email" />
         </Field>
         <button className="button primary" type="submit" disabled={complete.isPending || !nameValue.trim() || !email.trim()} data-testid="onboarding-submit"><MailCheck size={17} />{complete.isPending ? t("onboarding.saving") : t("onboarding.continue")}</button>

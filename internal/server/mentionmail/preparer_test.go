@@ -76,6 +76,21 @@ func TestMentionPreparerSuppressesRecipientOrAuthorizationChanges(t *testing.T) 
 	}
 }
 
+func TestMentionPreparerSuppressesAddressOutsideCurrentDomainPolicy(t *testing.T) {
+	policy, err := emaildelivery.NewAddressPolicy([]string{"corp.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparer := &Preparer{loader: staticRecipient{address: "recipient@personal.example"},
+		authorizer: staticAuthorizer{allowed: true}, webOrigin: mustURL(t, "https://issues.example.test/"),
+		policy: policy}
+	_, err = preparer.Prepare(t.Context(), mentionDelivery(t, time.Now().UTC()))
+	var outcome *emaildelivery.OutcomeError
+	if !errors.As(err, &outcome) || !outcome.Suppressed || outcome.Reason != emaildelivery.ReasonRecipientUnavailable {
+		t.Fatalf("Prepare() error = %#v / %v", outcome, err)
+	}
+}
+
 func mentionDelivery(t *testing.T, now time.Time) emaildelivery.Delivery {
 	t.Helper()
 	orgID, repoID, commentID := uuid.New(), uuid.New(), uuid.New()

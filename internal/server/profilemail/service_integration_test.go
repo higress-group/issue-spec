@@ -277,6 +277,71 @@ func TestServiceRateLimitAndExpirySweep(t *testing.T) {
 	}
 }
 
+func TestServiceEnforcesChangedAddressPolicyAcrossLifecycle(t *testing.T) {
+	pool := profileMailPool(t)
+	userID := uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO users (id, login, display_name, email)
+		VALUES ($1,$2,'Policy Person','provider-only@example.test')`, userID, "policy-"+userID.String()); err != nil {
+		t.Fatal(err)
+	}
+	allowed, err := emaildelivery.NewAddressPolicy([]string{"corp.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(pool, testSecrets(t), Config{AddressPolicy: allowed, ResendInterval: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Set(t.Context(), SetInput{UserID: userID, Email: "person@personal.example",
+		ExpectedUserVersion: 1}); !errors.Is(err, ErrEmailDomainNotAllowed) {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if _, err := service.Onboard(t.Context(), OnboardingInput{UserID: userID, PreferredName: "Policy Person",
+		Email: "person@personal.example", ExpectedUserVersion: 1}); !errors.Is(err, ErrEmailDomainNotAllowed) {
+		t.Fatalf("Onboard() error = %v", err)
+	}
+	request, err := service.Set(t.Context(), SetInput{UserID: userID, Email: "person@team.corp.example",
+		ExpectedUserVersion: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := service.Get(t.Context(), userID)
+	if err != nil || strings.Join(profile.AllowedEmailDomainSuffixes, ",") != "corp.example" {
+		t.Fatalf("Get() profile = %+v err=%v", profile, err)
+	}
+	var ciphertext []byte
+	if err := pool.QueryRow(t.Context(), `SELECT token_ciphertext FROM email_verification_requests WHERE id = $1`, request.ID).
+		Scan(&ciphertext); err != nil {
+		t.Fatal(err)
+	}
+	token, err := service.secrets.Decrypt(tokenCipherPurpose(request.ID), ciphertext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tightened, err := emaildelivery.NewAddressPolicy([]string{"other.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.config.AddressPolicy = tightened
+	if _, err := service.Resend(t.Context(), ResendInput{UserID: userID, ExpectedUserVersion: 2,
+		ExpectedVerificationVersion: request.RepresentationVersion}); !errors.Is(err, ErrEmailDomainNotAllowed) {
+		t.Fatalf("Resend() error = %v", err)
+	}
+	if _, err := service.Confirm(t.Context(), string(token)); !errors.Is(err, ErrEmailDomainNotAllowed) {
+		t.Fatalf("Confirm() error = %v", err)
+	}
+	var consumedAt *time.Time
+	var notificationEmail *string
+	if err := pool.QueryRow(t.Context(), `SELECT r.consumed_at, u.notification_email
+		FROM email_verification_requests r JOIN users u ON u.id = r.user_id WHERE r.id = $1`, request.ID).
+		Scan(&consumedAt, &notificationEmail); err != nil {
+		t.Fatal(err)
+	}
+	if consumedAt != nil || notificationEmail != nil {
+		t.Fatalf("disallowed confirmation mutated state: consumed=%v email=%v", consumedAt, notificationEmail)
+	}
+}
+
 func profileMailPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	databaseURL := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))

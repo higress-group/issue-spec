@@ -61,7 +61,7 @@ func TestMilestonePreparerRechecksEligibilityAndSuppressesWithoutDetails(t *test
 			t.Fatalf("eligibility input = %+v/%s", scope, userID)
 		}
 		return store.RepositoryNotificationRecipient{}, store.ErrNotFound
-	}), origin)
+	}), origin, emaildelivery.AddressPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +74,34 @@ func TestMilestonePreparerRechecksEligibilityAndSuppressesWithoutDetails(t *test
 		if strings.Contains(err.Error(), forbidden) {
 			t.Fatalf("suppression leaked %q: %v", forbidden, err)
 		}
+	}
+}
+
+func TestMilestonePreparerSuppressesAddressOutsideCurrentDomainPolicy(t *testing.T) {
+	orgID, repoID, issueID, recipientID, milestoneID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	origin, _ := publicurl.ParseOrigin("web", "https://issues.example.test")
+	policy, err := emaildelivery.NewAddressPolicy([]string{"corp.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := MilestoneSnapshot{Version: SnapshotVersion, ActorLogin: "actor", RepositoryOwner: "acme",
+		RepositoryName: "widgets", ChangeKey: "email-flow", Milestone: store.NotificationMilestoneCompleted,
+		IssueID: issueID, OccurredAt: time.Now().UTC()}
+	payload, _ := json.Marshal(snapshot)
+	delivery := emaildelivery.Delivery{ID: uuid.New(), Kind: emaildelivery.KindChangeMilestone,
+		RecipientUserID: recipientID, OrganizationID: &orgID, RepositoryID: &repoID,
+		MilestoneID: &milestoneID, Snapshot: payload}
+	preparer, err := NewPreparer(milestoneEligibilityFunc(func(context.Context, models.RepoScope,
+		uuid.UUID) (store.RepositoryNotificationRecipient, error) {
+		return store.RepositoryNotificationRecipient{Address: "reader@personal.example"}, nil
+	}), origin, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = preparer.Prepare(t.Context(), delivery)
+	var outcome *emaildelivery.OutcomeError
+	if !errors.As(err, &outcome) || !outcome.Suppressed || outcome.Reason != emaildelivery.ReasonRecipientUnavailable {
+		t.Fatalf("Prepare() error = %#v / %v", outcome, err)
 	}
 }
 

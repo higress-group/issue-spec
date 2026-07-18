@@ -82,6 +82,7 @@ describe("identity and trusted transport UI", () => {
         nickname: null, representation_version: completed ? 3 : 1, avatar_url: "", html_url: "", type: "User", site_admin: true,
         notification_email_available: true, onboarding_completed: completed, notification_email: null,
         notification_email_verified_at: null, pending_notification_email: null,
+        allowed_email_domain_suffixes: ["corp.example"],
       })),
       http.post("http://localhost/api/v1/profile/onboarding", async ({ request }) => {
         expect(request.headers.get("X-CSRF-Token")).toBe("onboarding-csrf");
@@ -93,6 +94,7 @@ describe("identity and trusted transport UI", () => {
     );
     const { container } = renderApp(<ProfileOnboardingDialog enabled />);
     const dialog = await screen.findByRole("dialog", { name: "How should people find you?" });
+    expect(screen.getByText(/Allowed domains \(including subdomains\): @corp\.example/)).toBeVisible();
     expect(screen.queryByRole("button", { name: /skip|close/i })).not.toBeInTheDocument();
     const name = screen.getByRole("textbox", { name: /Your name/ });
     await userEvent.setup().clear(name);
@@ -142,6 +144,7 @@ describe("identity and trusted transport UI", () => {
         notification_email_available: true, onboarding_completed: true, notification_email: null,
         notification_email_verified_at: null, pending_notification_email: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
           email: "pending@example.test", expires_at: "2030-01-01T00:00:00Z", sent_at: null, representation_version: 2 },
+        allowed_email_domain_suffixes: ["corp.example"],
       })),
       http.post("http://localhost/api/v1/profile/email/verification/resend", async ({ request }) => {
         resendBody = await request.json();
@@ -150,7 +153,8 @@ describe("identity and trusted transport UI", () => {
       }),
     );
     renderApp(<AccountPage />, "/settings/account");
-    expect(await screen.findByTestId("pending-notification-email")).toHaveTextContent("pending@example.test");
+    expect(await screen.findByText(/Allowed domains \(including subdomains\): @corp\.example/)).toBeVisible();
+    expect(screen.getByTestId("pending-notification-email")).toHaveTextContent("pending@example.test");
     await userEvent.setup().click(screen.getByTestId("notification-email-resend"));
     await waitFor(() => expect(resendBody).toEqual({ expected_version: 4, expected_verification_version: 2 }));
   });

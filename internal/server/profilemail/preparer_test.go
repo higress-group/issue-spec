@@ -3,6 +3,7 @@ package profilemail
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/url"
 	"strings"
 	"sync"
@@ -124,6 +125,27 @@ func TestVerificationPreparerSuppressesExpiredOrSupersededRequests(t *testing.T)
 				t.Fatalf("suppression = %s/%s messages=%d", queue.state, queue.reason, len(sender.messages))
 			}
 		})
+	}
+}
+
+func TestVerificationPreparerSuppressesAddressDisallowedAfterQueueing(t *testing.T) {
+	now := time.Date(2026, 7, 18, 8, 0, 0, 0, time.UTC)
+	secrets := testSecrets(t)
+	requestID := uuid.New()
+	claim := verificationClaim(requestID, now)
+	policy, err := emaildelivery.NewAddressPolicy([]string{"corp.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparer := testPreparer(secrets, staticLoader{request: preparedVerification{
+		RequestID: requestID, UserID: claim.RecipientUserID, Address: "person@personal.example",
+		Ciphertext: []byte("must-not-be-decrypted"), ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+	}}, now)
+	preparer.policy = policy
+	_, err = preparer.Prepare(t.Context(), claim.Delivery)
+	var outcome *emaildelivery.OutcomeError
+	if !errors.As(err, &outcome) || !outcome.Suppressed || outcome.Reason != emaildelivery.ReasonRecipientUnavailable {
+		t.Fatalf("Prepare() error = %#v / %v", outcome, err)
 	}
 }
 

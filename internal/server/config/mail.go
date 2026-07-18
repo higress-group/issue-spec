@@ -9,17 +9,20 @@ import (
 	"net"
 	"net/mail"
 	"strings"
+
+	"github.com/higress-group/issue-spec/internal/server/emaildelivery"
 )
 
 // MailSettings is the validated, provider-neutral configuration for the
 // optional outbound mail capability. Formatting never reveals any field: the
 // settings may contain both an account identifier and its credential.
 type MailSettings struct {
-	host        string
-	port        int
-	username    string
-	password    string
-	fromAddress string
+	host          string
+	port          int
+	username      string
+	password      string
+	fromAddress   string
+	addressPolicy emaildelivery.AddressPolicy
 }
 
 func (m MailSettings) Enabled() bool { return m.host != "" }
@@ -33,6 +36,8 @@ func (m MailSettings) Username() string { return m.username }
 func (m MailSettings) Password() string { return m.password }
 
 func (m MailSettings) FromAddress() string { return m.fromAddress }
+
+func (m MailSettings) AddressPolicy() emaildelivery.AddressPolicy { return m.addressPolicy }
 
 func (m MailSettings) String() string {
 	if !m.Enabled() {
@@ -54,11 +59,12 @@ func ParseMailSettings(secret SecretFile) (MailSettings, error) {
 		return MailSettings{}, nil
 	}
 	var payload struct {
-		Host     string `json:"host"`
-		Port     int    `json:"port"`
-		Username string `json:"username"`
-		Password string `json:"password"`
-		From     string `json:"from_address"`
+		Host                       string   `json:"host"`
+		Port                       int      `json:"port"`
+		Username                   string   `json:"username"`
+		Password                   string   `json:"password"`
+		From                       string   `json:"from_address"`
+		AllowedEmailDomainSuffixes []string `json:"allowed_email_domain_suffixes"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(secret.Bytes()))
 	decoder.DisallowUnknownFields()
@@ -87,8 +93,12 @@ func ParseMailSettings(secret SecretFile) (MailSettings, error) {
 	if err != nil || address.Name != "" || address.Address != from || len(from) > 320 || strings.ContainsAny(from, "\r\n") {
 		return MailSettings{}, errors.New("SMTP_CONFIG_FILE from_address is invalid")
 	}
+	addressPolicy, err := emaildelivery.NewAddressPolicy(payload.AllowedEmailDomainSuffixes)
+	if err != nil {
+		return MailSettings{}, errors.New("SMTP_CONFIG_FILE allowed_email_domain_suffixes is invalid")
+	}
 	return MailSettings{host: host, port: payload.Port, username: username,
-		password: payload.Password, fromAddress: from}, nil
+		password: payload.Password, fromAddress: from, addressPolicy: addressPolicy}, nil
 }
 
 func validMailHost(host string) bool {

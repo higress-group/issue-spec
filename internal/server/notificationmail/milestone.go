@@ -57,16 +57,18 @@ func (s MilestoneSnapshot) Validate() error {
 type Preparer struct {
 	eligibility notifications.Eligibility
 	webOrigin   publicurl.Origin
+	policy      emaildelivery.AddressPolicy
 }
 
-func NewPreparer(eligibility notifications.Eligibility, webOrigin publicurl.Origin) (*Preparer, error) {
+func NewPreparer(eligibility notifications.Eligibility, webOrigin publicurl.Origin,
+	policy emaildelivery.AddressPolicy) (*Preparer, error) {
 	if eligibility == nil {
 		return nil, emaildelivery.ErrInvalid
 	}
 	if _, err := webOrigin.URL("/", nil); err != nil {
 		return nil, emaildelivery.ErrInvalid
 	}
-	return &Preparer{eligibility: eligibility, webOrigin: webOrigin}, nil
+	return &Preparer{eligibility: eligibility, webOrigin: webOrigin, policy: policy}, nil
 }
 
 func (p *Preparer) Prepare(ctx context.Context, delivery emaildelivery.Delivery) (emaildelivery.Message, error) {
@@ -86,6 +88,9 @@ func (p *Preparer) Prepare(ctx context.Context, delivery emaildelivery.Delivery)
 	}
 	if err != nil {
 		return emaildelivery.Message{}, emaildelivery.Retryable(emaildelivery.ReasonPreparationUnavailable)
+	}
+	if !p.policy.Allows(recipient.Address) {
+		return emaildelivery.Message{}, emaildelivery.Suppressed(emaildelivery.ReasonRecipientUnavailable)
 	}
 	base := publicurl.RepositoryResource(recipient.RepositoryOwner, recipient.RepositoryName)
 	path := base.Web() + "/changes/" + url.PathEscape(snapshot.ChangeKey)

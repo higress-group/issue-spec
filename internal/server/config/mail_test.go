@@ -16,13 +16,15 @@ func TestParseMailSettingsOptionalAndRedacted(t *testing.T) {
 	const credential = "example-credential-value"
 	settings, err := ParseMailSettings(SecretFile{path: "/run/secrets/mail", value: []byte(`{
 		"host":"mail.example.test","port":2465,"username":"mailer@example.test",
-		"password":"` + credential + `","from_address":"notices@example.test"}`)})
+		"password":"` + credential + `","from_address":"notices@example.test",
+		"allowed_email_domain_suffixes":[" Example.Test ","example.test","corp.example"]}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !settings.Enabled() || settings.Host() != "mail.example.test" || settings.Port() != 2465 ||
 		settings.Username() != "mailer@example.test" || settings.Password() != credential ||
-		settings.FromAddress() != "notices@example.test" {
+		settings.FromAddress() != "notices@example.test" || !settings.AddressPolicy().Allows("person@team.example.test") ||
+		settings.AddressPolicy().Allows("person@evilexample.test") {
 		t.Fatalf("settings were not parsed: %v", settings)
 	}
 	for _, rendered := range []string{settings.String(), fmt.Sprintf("%v", settings), fmt.Sprintf("%+v", settings), fmt.Sprintf("%#v", settings)} {
@@ -43,6 +45,7 @@ func TestParseMailSettingsRejectsUnsafeInputsWithoutEchoingThem(t *testing.T) {
 		{name: "port", payload: `{"host":"mail.example.test","port":0,"username":"mailer","password":"secret","from_address":"notices@example.test"}`, field: "port"},
 		{name: "username", payload: `{"host":"mail.example.test","port":2465,"username":"bad user","password":"secret","from_address":"notices@example.test"}`, field: "username"},
 		{name: "from", payload: `{"host":"mail.example.test","port":2465,"username":"mailer","password":"secret","from_address":"Name <notices@example.test>"}`, field: "from_address"},
+		{name: "allowed suffix", payload: `{"host":"mail.example.test","port":2465,"username":"mailer","password":"secret","from_address":"notices@example.test","allowed_email_domain_suffixes":["*.example.test"]}`, field: "allowed_email_domain_suffixes"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

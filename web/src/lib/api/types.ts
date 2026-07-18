@@ -79,6 +79,7 @@ export const profileSchema = publicProfileSchema.extend({
   nickname: z.string().nullable(),
   representation_version: z.number().int().positive(),
   notification_email_available: z.boolean().optional().default(false),
+  allowed_email_domain_suffixes: z.array(z.string()).optional().default([]),
   onboarding_completed: z.boolean().optional().default(true),
   notification_email: z.string().email().nullable().optional().default(null),
   notification_email_verified_at: z.string().datetime({ offset: true }).nullable().optional().default(null),

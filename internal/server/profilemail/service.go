@@ -55,6 +55,7 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID) (Profile, error) {
 	}
 	var result Profile
 	result.UserID = userID
+	result.AllowedEmailDomainSuffixes = s.config.AddressPolicy.Suffixes()
 	var pendingID *uuid.UUID
 	var pendingEmail *string
 	var expiresAt, sentAt, pendingCreated *time.Time
@@ -90,6 +91,9 @@ func (s *Service) Set(ctx context.Context, input SetInput) (Verification, error)
 	address, err := normalizeAddress(input.Email)
 	if s == nil || input.UserID == uuid.Nil || input.ExpectedUserVersion < 1 || err != nil {
 		return Verification{}, ErrInvalid
+	}
+	if !s.config.AddressPolicy.Allows(address) {
+		return Verification{}, ErrEmailDomainNotAllowed
 	}
 	var result Verification
 	err = pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(tx pgx.Tx) error {
@@ -132,6 +136,9 @@ func (s *Service) Onboard(ctx context.Context, input OnboardingInput) (Verificat
 	address, addressErr := normalizeAddress(input.Email)
 	if s == nil || input.UserID == uuid.Nil || input.ExpectedUserVersion < 1 || nameErr != nil || addressErr != nil {
 		return Verification{}, ErrInvalid
+	}
+	if !s.config.AddressPolicy.Allows(address) {
+		return Verification{}, ErrEmailDomainNotAllowed
 	}
 	var result Verification
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(tx pgx.Tx) error {
@@ -191,6 +198,9 @@ func (s *Service) Resend(ctx context.Context, input ResendInput) (Verification, 
 		}
 		if err != nil {
 			return err
+		}
+		if !s.config.AddressPolicy.Allows(address) {
+			return ErrEmailDomainNotAllowed
 		}
 		if now.Before(created.Add(s.config.ResendInterval)) {
 			return ErrRateLimited
@@ -278,6 +288,9 @@ func (s *Service) Confirm(ctx context.Context, token string) (Confirmed, error) 
 		}
 		if userStatus != "active" {
 			return ErrAccountDisabled
+		}
+		if !s.config.AddressPolicy.Allows(result.NotificationEmail) {
+			return ErrEmailDomainNotAllowed
 		}
 		switch {
 		case consumed != nil:
@@ -512,7 +525,7 @@ func safeError(err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, known := range []error{ErrInvalid, ErrNotFound, ErrConflict, ErrEmailInUse, ErrExpired,
+	for _, known := range []error{ErrInvalid, ErrNotFound, ErrConflict, ErrEmailInUse, ErrEmailDomainNotAllowed, ErrExpired,
 		ErrConsumed, ErrSuperseded, ErrRateLimited, ErrAccountDisabled} {
 		if errors.Is(err, known) {
 			return known
