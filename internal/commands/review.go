@@ -15,6 +15,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
+	changegraph "github.com/higress-group/issue-spec/internal/change"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
@@ -267,13 +268,17 @@ type submittedReviewSpecSource struct {
 	ExactURLs map[string]bool
 }
 
-// loadSubmittedReviewSpecSources resolves only bounded authority supplied by
-// the caller or already recorded on the review PROCESS. It never searches the
-// repository for a matching typed id. Same-issue comments remain as the legacy
-// compatibility source when no proposal is explicit.
+// loadSubmittedReviewSpecSources resolves only a canonical proposal bound to
+// the submission's implement issue, or bounded authority already recorded on
+// the review PROCESS. It never searches the repository for a matching typed
+// id. Same-issue comments remain as the legacy compatibility source when no
+// proposal is explicit or inferred.
 func loadSubmittedReviewSpecSources(ctx context.Context, client github.Operations, repo string, proposalIssue,
 	implementIssue int, reviewProcess model.Artifact, implementComments []github.Comment) ([]submittedReviewSpecSource, error) {
 	if proposalIssue > 0 {
+		if _, err := locateSubmittedReviewProposal(ctx, client, repo, proposalIssue, implementIssue); err != nil {
+			return nil, fmt.Errorf("bind explicit proposal issue %d to review change: %w", proposalIssue, err)
+		}
 		comments, err := client.ListIssueComments(ctx, repo, proposalIssue)
 		if err != nil {
 			return nil, fmt.Errorf("list explicit proposal issue %d comments: %w", proposalIssue, err)
@@ -298,7 +303,16 @@ func loadSubmittedReviewSpecSources(ctx context.Context, client github.Operation
 		ordered = append(ordered, issue)
 	}
 	sort.Ints(ordered)
+	boundChange := ""
 	for _, issue := range ordered {
+		located, err := locateSubmittedReviewProposal(ctx, client, repo, issue, implementIssue)
+		if err != nil {
+			return nil, fmt.Errorf("bind inferred proposal issue %d to review change: %w", issue, err)
+		}
+		if boundChange != "" && located.Change != boundChange {
+			return nil, fmt.Errorf("inferred proposal issues resolve different change keys %q and %q", boundChange, located.Change)
+		}
+		boundChange = located.Change
 		comments, err := client.ListIssueComments(ctx, repo, issue)
 		if err != nil {
 			return nil, fmt.Errorf("list related issue %d comments: %w", issue, err)
@@ -306,6 +320,19 @@ func loadSubmittedReviewSpecSources(ctx context.Context, client github.Operation
 		sources = append(sources, submittedReviewSpecSource{Issue: issue, Comments: comments, ExactURLs: issues[issue]})
 	}
 	return sources, nil
+}
+
+func locateSubmittedReviewProposal(ctx context.Context, client github.Operations, repo string, proposalIssue,
+	implementIssue int) (changegraph.Located, error) {
+	located, err := changegraph.Locate(ctx, client, repo, proposalIssue)
+	if err != nil {
+		return changegraph.Located{}, err
+	}
+	if located.Implement.Number != implementIssue {
+		return changegraph.Located{}, fmt.Errorf("proposal change %q resolves implement issue %d, submission targets implement issue %d",
+			located.Change, located.Implement.Number, implementIssue)
+	}
+	return located, nil
 }
 
 func validateSubmittedReviewTargets(comments []github.Comment, issue int, specSources []submittedReviewSpecSource,

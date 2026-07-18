@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -145,6 +146,7 @@ func TestRunReviewSubmitNoFindingAndExactRevision(t *testing.T) {
 	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
 	receipt.SubjectRevision = strings.Repeat("b", 40)
 	sealedAssignment := testReviewAssignment(t, receipt.SubjectRevision)
+	sealedAssignment.Issue = 297
 	assignmentDigest, err := assignment.AssignmentDigest(sealedAssignment)
 	if err != nil {
 		t.Fatal(err)
@@ -189,10 +191,24 @@ func TestRunReviewSubmitNoFindingAndExactRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	comments := []github.Comment{
-		{ID: 2, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-2", Body: specBody},
-		{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody},
+		{ID: 2, HTMLURL: "https://github.com/o/r/issues/297#issuecomment-2", Body: specBody},
+		{ID: 10, HTMLURL: "https://github.com/o/r/issues/297#issuecomment-10", Body: processBody},
 	}
-	var proposalComments []github.Comment
+	proposalCommentsByIssue := map[int][]github.Comment{}
+	changeIssues := map[int]github.Issue{
+		295: {Number: 295, HTMLURL: "https://github.com/o/r/issues/295", Body: "<!-- issue-spec:issue=proposal change=review-change version=1 -->"},
+		296: {Number: 296, HTMLURL: "https://github.com/o/r/issues/296", Body: "<!-- issue-spec:issue=design change=review-change version=1 -->"},
+		297: {Number: 297, HTMLURL: "https://github.com/o/r/issues/297", Body: "<!-- issue-spec:issue=implement change=review-change version=1 -->"},
+		305: {Number: 305, HTMLURL: "https://github.com/o/r/issues/305", Body: "<!-- issue-spec:issue=proposal change=unrelated-change version=1 -->"},
+		306: {Number: 306, HTMLURL: "https://github.com/o/r/issues/306", Body: "<!-- issue-spec:issue=design change=unrelated-change version=1 -->"},
+		307: {Number: 307, HTMLURL: "https://github.com/o/r/issues/307", Body: "<!-- issue-spec:issue=implement change=unrelated-change version=1 -->"},
+	}
+	changeLinks := map[int][]github.Comment{
+		295: {{ID: 90, Body: "https://github.com/o/r/issues/296#issuecomment-90"}},
+		296: {{ID: 91, Body: "https://github.com/o/r/issues/297#issuecomment-91"}},
+		305: {{ID: 92, Body: "https://github.com/o/r/issues/306#issuecomment-92"}},
+		306: {{ID: 93, Body: "https://github.com/o/r/issues/307#issuecomment-93"}},
+	}
 	created := 0
 	head := receipt.SubjectRevision
 	reviewClient := &fakeReviewClient{}
@@ -201,28 +217,33 @@ func TestRunReviewSubmitNoFindingAndExactRevision(t *testing.T) {
 	app.selectGitHubBackend = ghSelection
 	app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
 		backend := fakeGitHubBackend{info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
-			listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
-				switch issue {
-				case 1:
-					return append([]github.Comment(nil), proposalComments...), nil
-				case 9:
-					return append([]github.Comment(nil), comments...), nil
-				default:
-					return nil, nil
+			getIssue: func(_ context.Context, _ string, issue int) (github.Issue, error) {
+				item, ok := changeIssues[issue]
+				if !ok {
+					return github.Issue{}, errors.New("unexpected issue lookup")
 				}
+				return item, nil
+			},
+			listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+				items := append([]github.Comment(nil), proposalCommentsByIssue[issue]...)
+				if issue == 297 {
+					items = append(items, comments...)
+				}
+				items = append(items, changeLinks[issue]...)
+				return items, nil
 			}, getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
 				pr := github.PullRequest{Number: 7, HTMLURL: "https://github.com/o/r/pull/7"}
 				pr.Head.SHA = head
 				return pr, nil
 			}, createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
 				created++
-				comment := github.Comment{ID: 11, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-11", Body: body}
+				comment := github.Comment{ID: 11, HTMLURL: "https://github.com/o/r/issues/297#issuecomment-11", Body: body}
 				comments = append(comments, comment)
 				return comment, nil
 			}}
 		return reviewSubmitCommandBackend{fakeGitHubBackend: backend, review: reviewClient}, nil
 	}
-	code := app.runReviewSubmit(t.Context(), []string{"--repo", "o/r", "--implement", "9", "--pr", "7",
+	code := app.runReviewSubmit(t.Context(), []string{"--repo", "o/r", "--implement", "297", "--pr", "7",
 		"--process", "PROCESS-101", "--id", "REVIEW-101", "--result-file", resultPath, "--assignment-file", assignmentPath})
 	if code != 0 || created != 1 || len(comments) != 3 {
 		t.Fatalf("exit=%d created=%d comments=%d out=%q err=%q", code, created, len(comments), out.String(), errOut.String())
@@ -231,13 +252,13 @@ func TestRunReviewSubmitNoFindingAndExactRevision(t *testing.T) {
 	if parsed.Agent != "Independent Reviewer" || parsed.SubjectRevision != receipt.SubjectRevision ||
 		!strings.Contains(comments[2].Body, "### Findings\n\n- None.") ||
 		!linksContainURL(parsed.Links["PR"], "https://github.com/o/r/pull/7") ||
-		!linksContainURL(parsed.Links["Related Comments"], "https://github.com/o/r/issues/9#issuecomment-2") {
+		!linksContainURL(parsed.Links["Related Comments"], "https://github.com/o/r/issues/297#issuecomment-2") {
 		t.Fatalf("submitted no-finding REVIEW=%+v body=%s", parsed, comments[2].Body)
 	}
 	head = strings.Repeat("c", 40)
 	out.Reset()
 	errOut.Reset()
-	if code := app.runReviewSubmit(t.Context(), []string{"--repo", "o/r", "--implement", "9", "--pr", "7",
+	if code := app.runReviewSubmit(t.Context(), []string{"--repo", "o/r", "--implement", "297", "--pr", "7",
 		"--process", "PROCESS-101", "--id", "REVIEW-101", "--result-file", resultPath, "--assignment-file", assignmentPath}); code != 1 ||
 		!strings.Contains(errOut.String(), "exact current PR revision") || created != 1 {
 		t.Fatalf("stale exit=%d created=%d err=%q", code, created, errOut.String())
@@ -275,11 +296,12 @@ func TestRunReviewSubmitNoFindingAndExactRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const proposalSpecURL = "https://github.com/o/r/issues/1#issuecomment-2"
-	proposalComments = []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: specBody}}
+	const proposalSpecURL = "https://github.com/o/r/issues/295#issuecomment-2"
+	proposalComments := []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: specBody}}
+	proposalCommentsByIssue = map[int][]github.Comment{295: proposalComments}
 	comments = []github.Comment{
-		{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody},
-		{ID: 12, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-12", Body: ownerBody},
+		{ID: 10, HTMLURL: "https://github.com/o/r/issues/297#issuecomment-10", Body: processBody},
+		{ID: 12, HTMLURL: "https://github.com/o/r/issues/297#issuecomment-12", Body: ownerBody},
 	}
 	implementComments := append([]github.Comment(nil), comments...)
 	reviewClient = &fakeReviewClient{files: []github.PullRequestFile{{Filename: finding.Path,
@@ -292,25 +314,33 @@ func TestRunReviewSubmitNoFindingAndExactRevision(t *testing.T) {
 		proposalComments []github.Comment
 		want             string
 	}{
-		{name: "wrong issue", proposal: "2", specURL: proposalSpecURL, proposalComments: proposalComments, want: "not one canonical"},
-		{name: "wrong spec", proposal: "1", specURL: proposalSpecURL,
+		{name: "wrong issue", proposal: "296", specURL: proposalSpecURL, proposalComments: proposalComments, want: "not a canonical proposal"},
+		{name: "self-consistent unrelated change with same SPEC", proposal: "305",
+			specURL:          "https://github.com/o/r/issues/305#issuecomment-2",
+			proposalComments: []github.Comment{{ID: 2, HTMLURL: "https://github.com/o/r/issues/305#issuecomment-2", Body: specBody}},
+			want:             "resolves implement issue 307, submission targets implement issue 297"},
+		{name: "wrong spec", proposal: "295", specURL: proposalSpecURL,
 			proposalComments: []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: strings.ReplaceAll(specBody, "SPEC-002", "SPEC-003")}}, want: "not one canonical"},
-		{name: "noncanonical", proposal: "1", specURL: proposalSpecURL,
+		{name: "noncanonical", proposal: "295", specURL: proposalSpecURL,
 			proposalComments: []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: strings.ReplaceAll(specBody, "### Scenario:", "### Example:")}}, want: "not one canonical"},
-		{name: "missing", proposal: "1", specURL: proposalSpecURL, want: "not one canonical"},
-		{name: "ambiguous", proposal: "1", specURL: proposalSpecURL,
+		{name: "missing", proposal: "295", specURL: proposalSpecURL, want: "not one canonical"},
+		{name: "ambiguous", proposal: "295", specURL: proposalSpecURL,
 			proposalComments: []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: specBody},
-				{ID: 3, HTMLURL: "https://github.com/o/r/issues/1#issuecomment-3", Body: specBody}}, want: "not one canonical"},
-		{name: "wrong explicit URL", proposal: "1", specURL: "https://github.com/o/r/issues/2#issuecomment-2",
+				{ID: 3, HTMLURL: "https://github.com/o/r/issues/295#issuecomment-3", Body: specBody}}, want: "not one canonical"},
+		{name: "wrong explicit URL", proposal: "295", specURL: "https://github.com/o/r/issues/296#issuecomment-2",
 			proposalComments: proposalComments, want: "--spec-url conflicts"},
 	} {
 		t.Run("finding target "+test.name, func(t *testing.T) {
 			comments = append([]github.Comment(nil), implementComments...)
-			proposalComments = append([]github.Comment(nil), test.proposalComments...)
+			proposalIssue, parseErr := strconv.Atoi(test.proposal)
+			if parseErr != nil {
+				t.Fatal(parseErr)
+			}
+			proposalCommentsByIssue = map[int][]github.Comment{proposalIssue: append([]github.Comment(nil), test.proposalComments...)}
 			reviewClient.comments = nil
 			out.Reset()
 			errOut.Reset()
-			args := []string{"--repo", "o/r", "--proposal", test.proposal, "--implement", "9", "--pr", "7",
+			args := []string{"--repo", "o/r", "--proposal", test.proposal, "--implement", "297", "--pr", "7",
 				"--process", "PROCESS-101", "--id", "REVIEW-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
 				"--spec", "SPEC-002", "--spec-url", test.specURL}
 			if code := app.runReviewSubmit(t.Context(), args); code == 0 || created != 1 || len(reviewClient.comments) != 0 ||
@@ -320,11 +350,11 @@ func TestRunReviewSubmitNoFindingAndExactRevision(t *testing.T) {
 		})
 	}
 	comments = append([]github.Comment(nil), implementComments...)
-	proposalComments = []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: specBody}}
+	proposalCommentsByIssue = map[int][]github.Comment{295: {{ID: 2, HTMLURL: proposalSpecURL, Body: specBody}}}
 	reviewClient.comments = nil
 	out.Reset()
 	errOut.Reset()
-	if code := app.runReviewSubmit(t.Context(), []string{"--repo", "o/r", "--proposal", "1", "--implement", "9", "--pr", "7",
+	if code := app.runReviewSubmit(t.Context(), []string{"--repo", "o/r", "--proposal", "295", "--implement", "297", "--pr", "7",
 		"--process", "PROCESS-101", "--id", "REVIEW-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
 		"--spec", "SPEC-002", "--spec-url", proposalSpecURL}); code != 0 ||
 		len(reviewClient.comments) != 1 || created != 2 {
@@ -337,7 +367,7 @@ func TestRunReviewSubmitNoFindingAndExactRevision(t *testing.T) {
 }
 
 func TestSubmittedReviewTargetsResolveExistingProposalRelationship(t *testing.T) {
-	const specURL = "https://github.com/o/r/issues/1#issuecomment-2"
+	const specURL = "https://github.com/o/r/issues/295#issuecomment-2"
 	specBody, err := templates.SpecComment(templates.SpecCommentOptions{
 		Common: templates.CommonOptions{ID: "SPEC-002", Status: "confirmed"},
 		Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{Title: "related review", Text: "Review routing MUST use authority."},
@@ -350,30 +380,67 @@ func TestSubmittedReviewTargetsResolveExistingProposalRelationship(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	process := model.Artifact{Issue: 9, CommentID: 10, URL: "https://github.com/o/r/issues/9#issuecomment-10",
+	process := model.Artifact{Issue: 297, CommentID: 10, URL: "https://github.com/o/r/issues/297#issuecomment-10",
 		Comment: model.ParseTypedComment(processBody)}
-	backend := fakeGitHubBackend{listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
-		if issue != 1 {
-			return nil, errors.New("unexpected issue lookup")
-		}
-		return []github.Comment{{ID: 2, HTMLURL: specURL, Body: specBody}}, nil
-	}}
-	sources, err := loadSubmittedReviewSpecSources(t.Context(), backend, "o/r", 0, 9, process, nil)
+	changeIssues := map[int]github.Issue{
+		295: {Number: 295, HTMLURL: "https://github.com/o/r/issues/295", Body: "<!-- issue-spec:issue=proposal change=role-receipts version=1 -->"},
+		296: {Number: 296, HTMLURL: "https://github.com/o/r/issues/296", Body: "<!-- issue-spec:issue=design change=role-receipts version=1 -->"},
+		297: {Number: 297, HTMLURL: "https://github.com/o/r/issues/297", Body: "<!-- issue-spec:issue=implement change=role-receipts version=1 -->"},
+		305: {Number: 305, HTMLURL: "https://github.com/o/r/issues/305", Body: "<!-- issue-spec:issue=proposal change=unrelated-review version=1 -->"},
+		306: {Number: 306, HTMLURL: "https://github.com/o/r/issues/306", Body: "<!-- issue-spec:issue=design change=unrelated-review version=1 -->"},
+		307: {Number: 307, HTMLURL: "https://github.com/o/r/issues/307", Body: "<!-- issue-spec:issue=implement change=unrelated-review version=1 -->"},
+	}
+	backend := fakeGitHubBackend{
+		getIssue: func(_ context.Context, _ string, issue int) (github.Issue, error) {
+			item, ok := changeIssues[issue]
+			if !ok {
+				return github.Issue{}, errors.New("unexpected issue lookup")
+			}
+			return item, nil
+		},
+		listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			switch issue {
+			case 295:
+				return []github.Comment{{ID: 2, HTMLURL: specURL, Body: specBody},
+					{ID: 20, Body: "https://github.com/o/r/issues/296#issuecomment-20"}}, nil
+			case 296:
+				return []github.Comment{{ID: 21, Body: "https://github.com/o/r/issues/297#issuecomment-21"}}, nil
+			case 297:
+				return nil, nil
+			case 305:
+				return []github.Comment{{ID: 2, HTMLURL: "https://github.com/o/r/issues/305#issuecomment-2", Body: specBody},
+					{ID: 30, Body: "https://github.com/o/r/issues/306#issuecomment-30"}}, nil
+			case 306:
+				return []github.Comment{{ID: 31, Body: "https://github.com/o/r/issues/307#issuecomment-31"}}, nil
+			case 307:
+				return nil, nil
+			default:
+				return nil, errors.New("unexpected issue lookup")
+			}
+		},
+	}
+	sources, err := loadSubmittedReviewSpecSources(t.Context(), backend, "o/r", 0, 297, process, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	artifact, err := findUniqueSubmittedReviewSpec(sources, "SPEC-002")
-	if err != nil || artifact.Issue != 1 || artifact.URL != specURL {
+	if err != nil || artifact.Issue != 295 || artifact.URL != specURL {
 		t.Fatalf("artifact=%+v err=%v", artifact, err)
 	}
 
-	process.Comment.Links["Related Comments"] = []string{"https://github.com/o/r/issues/1#issuecomment-99"}
-	sources, err = loadSubmittedReviewSpecSources(t.Context(), backend, "o/r", 0, 9, process, nil)
+	process.Comment.Links["Related Comments"] = []string{"https://github.com/o/r/issues/295#issuecomment-99"}
+	sources, err = loadSubmittedReviewSpecSources(t.Context(), backend, "o/r", 0, 297, process, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := findUniqueSubmittedReviewSpec(sources, "SPEC-002"); err == nil {
 		t.Fatal("unrelated SPEC comment was accepted without an exact PROCESS relationship")
+	}
+
+	process.Comment.Links["Related Comments"] = []string{"https://github.com/o/r/issues/305#issuecomment-2"}
+	if _, err := loadSubmittedReviewSpecSources(t.Context(), backend, "o/r", 0, 297, process, nil); err == nil ||
+		!strings.Contains(err.Error(), "resolves implement issue 307, submission targets implement issue 297") {
+		t.Fatalf("unrelated inferred proposal err=%v", err)
 	}
 }
 
