@@ -2,7 +2,14 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for this capability.
+Define the long-lived behavior contract for safely executing a PROCESS DAG from
+isolated Git workspaces. The coordinator retains one integration checkout;
+delegated change-bearing native children receive leased writable worktrees,
+inline independent nodes execute in that integration checkout, and review and
+verification use exact snapshots. The contract covers explicit revision
+binding, ownership-aware integration, crash-safe lifecycle reconciliation, and
+the runner boundary that keeps one coordinator session distinct from its child
+workspaces.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/175
