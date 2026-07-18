@@ -196,7 +196,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-BrWdNEx2.js",
+    "file": "assets/index-C4cCcb8a.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -229,7 +229,7 @@
       "src/features/search/search-page.tsx"
     ],
     "css": [
-      "assets/index-CgAbg5M6.css"
+      "assets/index-CL3waAtX.css"
     ]
   },
   "src/features/boards/board-page.tsx": {
@@ -281,7 +281,7 @@
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-CEQkJKkF.js",
+    "file": "assets/detail-page-6uBvUiO4.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
@@ -307,7 +307,7 @@
     ]
   },
   "src/features/issues/list-page.tsx": {
-    "file": "assets/list-page-C5gUHLsT.js",
+    "file": "assets/list-page-DIvhhHk3.js",
     "name": "list-page",
     "src": "src/features/issues/list-page.tsx",
     "isDynamicEntry": true,

@@ -245,7 +245,16 @@ describe("canonical issue read authority", () => {
     const { container } = renderIssueList(activeRepository(false, ["read"]));
     expect(await screen.findByRole("heading", { name: "Issues" })).toBeVisible();
     expect(container.querySelector(".issue-meta")).toHaveTextContent("#41 opened 8m ago by @alice");
-    expect(container.querySelector(".issue-meta time")).toHaveAttribute("datetime", "2026-07-10T10:00:00.000Z");
+    const time = container.querySelector<HTMLTimeElement>(".issue-meta time")!;
+    const issueLink = container.querySelector<HTMLAnchorElement>(".issue-list a")!;
+    expect(time).toHaveAttribute("datetime", "2026-07-10T10:00:00.000Z");
+    expect(time).not.toHaveAttribute("tabindex");
+    expect(container.querySelector(".precise-time-disclosure")).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    for (let tab = 0; tab < 10 && document.activeElement !== issueLink; tab += 1) await user.tab();
+    expect(issueLink).toHaveFocus();
+    expect(time).toHaveTextContent("8m ago");
+    expect(container.querySelector(".precise-time-disclosure")).toHaveTextContent(time.title);
   });
 
   it("shows authenticated mutations only when allowed_actions grants them", async () => {

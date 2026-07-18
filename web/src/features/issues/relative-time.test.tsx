@@ -1,5 +1,6 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import i18n from "../../i18n/i18n";
 import { formatPreciseTime, formatRelativeTime, isLaterTimestamp, PreciseRelativeTime, useSecondClock } from "./relative-time";
 
@@ -17,11 +18,13 @@ describe("precise relative issue timestamps", () => {
   it("formats compact past and future values across every supported unit", () => {
     expect(formatRelativeTime(before(30_000), now, "en")).toBe("30s ago");
     expect(formatRelativeTime(before(8 * 60_000), now, "en")).toBe("8m ago");
+    expect(formatRelativeTime(before(90_000), now, "en")).toBe("2m ago");
     expect(formatRelativeTime(before(3 * 60 * 60_000), now, "en")).toBe("3h ago");
     expect(formatRelativeTime(before(5 * 24 * 60 * 60_000), now, "en")).toBe("5d ago");
     expect(formatRelativeTime(before(60 * 24 * 60 * 60_000), now, "en")).toBe("2mo ago");
     expect(formatRelativeTime(before(2 * 365 * 24 * 60 * 60_000), now, "en")).toBe("2y ago");
     expect(formatRelativeTime(after(8 * 60_000), now, "en")).toBe("in 8m");
+    expect(formatRelativeTime(after(90_000), now, "en")).toBe("in 2m");
     expect(formatRelativeTime(before(8 * 60_000), now, "zh-CN")).toBe("8分钟前");
     expect(formatRelativeTime(after(8 * 60_000), now, "zh-CN")).toBe("8分钟后");
   });
@@ -42,6 +45,18 @@ describe("precise relative issue timestamps", () => {
     expect(time?.title).toMatch(/:\d{2}:\d{2}/);
     expect(time?.title).toMatch(/GMT|UTC/);
     expect(time?.getAttribute("aria-label")).toContain(time?.title ?? "missing-title");
+  });
+
+  it("reveals the precise value on keyboard focus without replacing the compact label", async () => {
+    const value = before(8 * 60_000);
+    const precise = formatPreciseTime(value, "en")!;
+    const { container } = render(<PreciseRelativeTime value={value} now={now} />);
+    const time = container.querySelector("time")!;
+    expect(screen.queryByText(`(${precise})`)).not.toBeInTheDocument();
+    await userEvent.setup().tab();
+    expect(time).toHaveFocus();
+    expect(time).toHaveTextContent("8m ago");
+    expect(screen.getByText(`(${precise})`)).toBeVisible();
   });
 
   it("uses localized Chinese relative text and a safe non-time fallback", async () => {

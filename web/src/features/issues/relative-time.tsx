@@ -25,7 +25,8 @@ export function formatRelativeTime(value: string, now: number | Date, locale: st
 
   const differenceInSeconds = (timestamp - nowTimestamp) / 1_000;
   const scale = relativeTimeScales.find(({ limit }) => Math.abs(differenceInSeconds) < limit) ?? relativeTimeScales.at(-1)!;
-  const amount = Math.trunc(differenceInSeconds / scale.seconds);
+  const scaledDifference = differenceInSeconds / scale.seconds;
+  const amount = Math.sign(scaledDifference) * Math.round(Math.abs(scaledDifference));
   try {
     return new Intl.RelativeTimeFormat(locale, { numeric: "always", style: "narrow" }).format(amount, scale.unit);
   } catch {
@@ -68,8 +69,9 @@ export function useSecondClock() {
   return now;
 }
 
-export function PreciseRelativeTime({ value, now }: { value: string; now: number | Date }) {
+export function PreciseRelativeTime({ value, now, focusable = true, disclosed = false }: { value: string; now: number | Date; focusable?: boolean; disclosed?: boolean }) {
   const { t, i18n } = useTranslation();
+  const [focused, setFocused] = useState(false);
   const locale = i18n.resolvedLanguage ?? i18n.language;
   const relative = formatRelativeTime(value, now, locale);
   const precise = formatPreciseTime(value, locale);
@@ -80,5 +82,5 @@ export function PreciseRelativeTime({ value, now }: { value: string; now: number
     return <span title={fallback}>{fallback}</span>;
   }
 
-  return <time dateTime={new Date(timestamp).toISOString()} title={precise} aria-label={t("issues.time.accessible", { relative, precise })}>{relative}</time>;
+  return <span className="precise-relative-time"><time dateTime={new Date(timestamp).toISOString()} title={precise} aria-label={t("issues.time.accessible", { relative, precise })} tabIndex={focusable ? 0 : undefined} onFocus={focusable ? () => setFocused(true) : undefined} onBlur={focusable ? () => setFocused(false) : undefined}>{relative}</time>{focused || disclosed ? <span className="precise-time-disclosure" aria-hidden="true">({precise})</span> : null}</span>;
 }
