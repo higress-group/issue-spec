@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,10 +115,29 @@ func TestAssemblyIsReproducibleAndComplete(t *testing.T) {
 	if diff := compareTrees(t, first, second); diff != "" {
 		t.Fatalf("same revision produced different bytes: %s", diff)
 	}
-	for _, notes := range []string{"immutable stable semantic-version release", testRevision, "./install.sh --asset-dir .", "./install.ps1 -AssetDir .", "issue-spec version --json", "requirements setup", "gh attestation verify"} {
+	for _, notes := range []string{
+		"immutable stable semantic-version release", testRevision,
+		"https://github.com/higress-group/issue-spec/releases/download/v1.2.3/install.sh", "./install.sh --tag v1.2.3",
+		"https://github.com/higress-group/issue-spec/releases/download/v1.2.3/install.ps1", ".\\install.ps1 -Tag v1.2.3",
+		`"$HOME/.local/bin/issue-spec" version --json`, `Join-Path $env:LOCALAPPDATA "issue-spec\bin\issue-spec.exe"`,
+		"requirements setup", "gh attestation verify", "do not pipe it into a shell",
+	} {
 		data, err := os.ReadFile(filepath.Join(first, "release-notes.md"))
 		if err != nil || !bytes.Contains(data, []byte(notes)) {
 			t.Fatalf("release notes missing %q: %v\n%s", notes, err, data)
+		}
+	}
+	rolling, err := PlanPublication("refs/heads/main", testRevision, 1710000000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollingNotes := releaseNotes(rolling)
+	for _, required := range []string{
+		"https://github.com/higress-group/issue-spec/releases/latest/download/install.sh", "./install.sh --latest",
+		"https://github.com/higress-group/issue-spec/releases/latest/download/install.ps1", ".\\install.ps1 -Latest",
+	} {
+		if !strings.Contains(rollingNotes, required) {
+			t.Errorf("rolling release notes missing %q", required)
 		}
 	}
 }
@@ -276,14 +297,118 @@ func TestShellInstallerIsIdempotentAndPreservesExistingBinaryOnCorruption(t *tes
 	}
 }
 
+func TestShellInstallerDownloadsTagAndLatestAndPreservesExistingBinaryOnFailure(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh unavailable")
+	}
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl unavailable")
+	}
+	root := t.TempDir()
+	plan, _ := PlanPublication("refs/tags/v1.2.3", testRevision, 1710000000)
+	fakeCLI := "#!/bin/sh\nif [ \"$1\" = version ] && [ \"$2\" = --json ]; then echo '{\"version\": \"v1.2.3\", \"revision\": \"" + testRevision + "\"}'; exit 0; fi\nexit 1\n"
+	if err := assemble(root, plan, fakeBinaries(fakeCLI)); err != nil {
+		t.Fatal(err)
+	}
+	publish := filepath.Join(root, "publish")
+	installer := filepath.Join(publish, "install.sh")
+	archiveName := "issue-spec_linux_amd64.tar.gz"
+
+	runRemote := func(t *testing.T, mode, expectedPrefix string, corrupt, missing bool) ([]byte, error) {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			name := filepath.Base(request.URL.Path)
+			if !strings.HasPrefix(request.URL.Path, expectedPrefix) || (missing && name == archiveName) {
+				http.NotFound(writer, request)
+				return
+			}
+			if corrupt && name == archiveName {
+				_, _ = writer.Write([]byte("corrupt archive"))
+				return
+			}
+			data, err := os.ReadFile(filepath.Join(publish, name))
+			if err != nil {
+				http.NotFound(writer, request)
+				return
+			}
+			_, _ = writer.Write(data)
+		}))
+		defer server.Close()
+		installDir := filepath.Join(root, "remote-"+strings.NewReplacer("-", "", ".", "").Replace(mode))
+		command := exec.Command("sh", installer, mode, "v1.2.3", "--base-url", server.URL+"/releases", "--install-dir", installDir, "--os", "linux", "--arch", "amd64")
+		if mode == "--latest" {
+			command = exec.Command("sh", installer, mode, "--base-url", server.URL+"/releases", "--install-dir", installDir, "--os", "linux", "--arch", "amd64")
+		}
+		output, err := command.CombinedOutput()
+		return append([]byte(installDir+"\n"), output...), err
+	}
+
+	for _, test := range []struct {
+		name   string
+		mode   string
+		prefix string
+	}{
+		{name: "immutable semantic tag", mode: "--tag", prefix: "/releases/download/v1.2.3/"},
+		{name: "rolling latest", mode: "--latest", prefix: "/releases/latest/download/"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			output, err := runRemote(t, test.mode, test.prefix, false, false)
+			if err != nil {
+				t.Fatalf("remote install: %v\n%s", err, output)
+			}
+			parts := bytes.SplitN(output, []byte("\n"), 2)
+			if _, err := os.Stat(filepath.Join(string(parts[0]), "issue-spec")); err != nil {
+				t.Fatalf("installed binary: %v", err)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name    string
+		corrupt bool
+		missing bool
+	}{
+		{name: "corrupt archive", corrupt: true},
+		{name: "404 archive", missing: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			installDir := filepath.Join(root, "remote-tag")
+			installed := filepath.Join(installDir, "issue-spec")
+			if err := os.MkdirAll(installDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(installed, []byte("keep existing\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			output, err := runRemote(t, "--tag", "/releases/download/v1.2.3/", test.corrupt, test.missing)
+			if err == nil {
+				t.Fatalf("failed remote install unexpectedly succeeded:\n%s", output)
+			}
+			if got, readErr := os.ReadFile(installed); readErr != nil || string(got) != "keep existing\n" {
+				t.Fatalf("existing binary changed: %q, %v\n%s", got, readErr, output)
+			}
+		})
+	}
+}
+
 func TestPowerShellInstallerHasEquivalentIntegrityAndAtomicGuards(t *testing.T) {
 	data, err := installerAssets.ReadFile("assets/install.ps1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"ConvertFrom-Json", "Get-FileHash", "manifest.json", "SHA256SUMS", "[System.IO.File]::Replace", "version --json", "finally"} {
+	for _, required := range []string{"ConvertFrom-Json", "Get-FileHash", "manifest.json", "SHA256SUMS", "[System.IO.File]::Replace", "version --json", "finally", "$env:LOCALAPPDATA", "issue-spec\\bin", "/download/$Tag", "/latest/download", "Invoke-WebRequest"} {
 		if !bytes.Contains(data, []byte(required)) {
 			t.Errorf("PowerShell installer missing %q", required)
+		}
+	}
+	if powerShell, err := exec.LookPath("pwsh"); err == nil {
+		path, pathErr := filepath.Abs(filepath.Join("assets", "install.ps1"))
+		if pathErr != nil {
+			t.Fatal(pathErr)
+		}
+		command := exec.Command(powerShell, "-NoProfile", "-NonInteractive", "-Command", "$null = [scriptblock]::Create((Get-Content -LiteralPath '"+strings.ReplaceAll(path, "'", "''")+"' -Raw))")
+		if output, parseErr := command.CombinedOutput(); parseErr != nil {
+			t.Fatalf("PowerShell installer does not parse: %v\n%s", parseErr, output)
 		}
 	}
 }
@@ -327,7 +452,7 @@ func TestRollingLatestDecision(t *testing.T) {
 		{name: "second rolling snapshot", candidate: second, main: second, latest: first, want: "advance"},
 		{name: "already current", candidate: second, main: second, latest: second, want: "current"},
 		{name: "older completion", candidate: first, main: second, latest: second, want: "noop"},
-		{name: "older than main and newer than latest", candidate: first, main: second, latest: "-", want: "noop"},
+		{name: "A succeeds after B reached main but failed", candidate: first, main: second, latest: "-", want: "advance"},
 		{name: "diverged latest", candidate: second, main: second, latest: diverged, wantError: true},
 		{name: "candidate not on main", candidate: diverged, main: second, latest: first, wantError: true},
 	}
@@ -370,6 +495,8 @@ func TestWorkflowKeepsPublicationAuthorityBehindCompleteTrustedBuild(t *testing.
 		`if [ "$rolling_count" = 0 ]; then`, "gh release create", "--draft",
 		"gh release upload", "gh release edit \"$RELEASE_TAG\" --draft=false --latest \\",
 		"gh release edit \"$RELEASE_TAG\" --draft=false --latest=false",
+		`binary="$HOME/.local/bin/issue-spec"`, `"$binary" requirements setup --help`,
+		`Join-Path $env:LOCALAPPDATA "issue-spec\bin\issue-spec.exe"`, `& $binary requirements setup --help`,
 	} {
 		if !strings.Contains(body, required) {
 			t.Errorf("release workflow missing %q", required)

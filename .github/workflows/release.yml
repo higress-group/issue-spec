@@ -108,22 +108,24 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x dist/release/publish/install.sh
-          install_dir="$RUNNER_TEMP/issue-spec-bin"
-          dist/release/publish/install.sh --asset-dir dist/release/publish --install-dir "$install_dir" --os "${{ matrix.os }}" --arch amd64
-          first_identity=$($install_dir/issue-spec version --json)
-          dist/release/publish/install.sh --asset-dir dist/release/publish --install-dir "$install_dir" --os "${{ matrix.os }}" --arch amd64
-          second_identity=$($install_dir/issue-spec version --json)
+          binary="$HOME/.local/bin/issue-spec"
+          dist/release/publish/install.sh --asset-dir dist/release/publish --os "${{ matrix.os }}" --arch amd64
+          first_identity=$("$binary" version --json)
+          "$binary" requirements setup --help >/dev/null
+          dist/release/publish/install.sh --asset-dir dist/release/publish --os "${{ matrix.os }}" --arch amd64
+          second_identity=$("$binary" version --json)
           test "$first_identity" = "$second_identity"
 
       - name: Install twice from manifest with PowerShell
         if: matrix.kind == 'powershell'
         shell: pwsh
         run: |
-          $installDir = Join-Path $env:RUNNER_TEMP "issue-spec-bin"
-          ./dist/release/publish/install.ps1 -AssetDir ./dist/release/publish -InstallDir $installDir -Architecture amd64
-          $firstIdentity = (& (Join-Path $installDir "issue-spec.exe") version --json | Out-String)
-          ./dist/release/publish/install.ps1 -AssetDir ./dist/release/publish -InstallDir $installDir -Architecture amd64
-          $secondIdentity = (& (Join-Path $installDir "issue-spec.exe") version --json | Out-String)
+          $binary = Join-Path $env:LOCALAPPDATA "issue-spec\bin\issue-spec.exe"
+          ./dist/release/publish/install.ps1 -AssetDir ./dist/release/publish -Architecture amd64
+          $firstIdentity = (& $binary version --json | Out-String)
+          & $binary requirements setup --help | Out-Null
+          ./dist/release/publish/install.ps1 -AssetDir ./dist/release/publish -Architecture amd64
+          $secondIdentity = (& $binary version --json | Out-String)
           if ($firstIdentity -ne $secondIdentity) { throw "repeated native installation changed build identity" }
 
   publish:

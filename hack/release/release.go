@@ -555,10 +555,16 @@ func publishAssetNames() []string {
 
 func releaseNotes(plan Plan) string {
 	channelDescription := "immutable stable semantic-version release"
+	downloadPath := "download/" + plan.Tag
+	shellMode := "--tag " + plan.Tag
+	powerShellMode := "-Tag " + plan.Tag
 	if plan.Channel == "prerelease" {
 		channelDescription = "immutable semantic-version prerelease"
 	} else if plan.Channel == "rolling" {
 		channelDescription = "rolling latest snapshot from main; the tagged snapshot remains immutable"
+		downloadPath = "latest/download"
+		shellMode = "--latest"
+		powerShellMode = "-Latest"
 	}
 	return fmt.Sprintf(`# issue-spec %s
 
@@ -566,27 +572,26 @@ Channel: **%s** (%s)
 
 Source revision: **%s**
 
-Download `+"`manifest.json`"+`, `+"`SHA256SUMS`"+`, the installer, and the archive for your operating system into one directory. Then run:
+Download the installer file first; do not pipe it into a shell. The installer downloads `+"`manifest.json`"+`, `+"`SHA256SUMS`"+`, and the archive for this release, verifies all three, then atomically replaces the binary.
 
 `+"```sh"+`
+curl -fL --output install.sh https://github.com/higress-group/issue-spec/releases/%s/install.sh
 chmod +x install.sh
-./install.sh --asset-dir .
-issue-spec version --json
+./install.sh %s
+"$HOME/.local/bin/issue-spec" version --json
+"$HOME/.local/bin/issue-spec" requirements setup --server https://issue-spec.example.com --repo owner/repository --agent codex
 `+"```"+`
 
 `+"```powershell"+`
-./install.ps1 -AssetDir .
-issue-spec.exe version --json
+Invoke-WebRequest -Uri "https://github.com/higress-group/issue-spec/releases/%s/install.ps1" -OutFile install.ps1
+.\install.ps1 %s
+$IssueSpec = Join-Path $env:LOCALAPPDATA "issue-spec\bin\issue-spec.exe"
+& $IssueSpec version --json
+& $IssueSpec requirements setup --server https://issue-spec.example.com --repo owner/repository --agent codex
 `+"```"+`
 
 Both installers verify the selected archive against `+"`manifest.json`"+` and `+"`SHA256SUMS`"+` before replacing an existing binary. GitHub artifact attestations cover every published asset; verify provenance with `+"`gh attestation verify <file> --repo higress-group/issue-spec`"+`.
-
-After installation, connect a self-hosted requirements workspace with:
-
-`+"```sh"+`
-issue-spec requirements setup --server https://issue-spec.example.com --repo owner/repository --agent codex
-`+"```"+`
-`, plan.Version, plan.Channel, channelDescription, plan.Revision)
+`, plan.Version, plan.Channel, channelDescription, plan.Revision, downloadPath, shellMode, downloadPath, powerShellMode)
 }
 
 func releaseEnvironmentFile(plan Plan) string {

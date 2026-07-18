@@ -1,12 +1,43 @@
 param(
-  [string]$AssetDir = $PSScriptRoot,
-  [string]$InstallDir = (Join-Path $HOME ".local/bin"),
+  [string]$AssetDir,
+  [string]$Tag,
+  [switch]$Latest,
+  [string]$BaseUrl = "https://github.com/higress-group/issue-spec/releases",
+  [string]$InstallDir,
   [ValidateSet("amd64", "arm64")]
   [string]$Architecture = $(if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq "Arm64") { "arm64" } else { "amd64" })
 )
 $ErrorActionPreference = "Stop"
 
+if (-not $InstallDir) {
+  if (-not $env:LOCALAPPDATA) { throw "LOCALAPPDATA is required when -InstallDir is not provided" }
+  $InstallDir = Join-Path $env:LOCALAPPDATA "issue-spec\bin"
+}
+$modeCount = @($AssetDir, $Tag, $(if ($Latest) { "latest" } else { $null })) | Where-Object { $_ } | Measure-Object | Select-Object -ExpandProperty Count
+if ($modeCount -ne 1) { throw "choose exactly one of -Tag, -Latest, or -AssetDir" }
+if ($Tag -and $Tag -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([-+][0-9A-Za-z.-]+)?$') {
+  throw "-Tag must be a semantic version tag such as v1.2.3"
+}
+
 $asset = "issue-spec_windows_$Architecture.zip"
+$downloadDir = $null
+if ($Tag -or $Latest) {
+  $downloadDir = Join-Path ([IO.Path]::GetTempPath()) ("issue-spec-download-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Path $downloadDir | Out-Null
+  $AssetDir = $downloadDir
+  $downloadUrl = if ($Tag) { $BaseUrl.TrimEnd('/') + "/download/$Tag" } else { $BaseUrl.TrimEnd('/') + "/latest/download" }
+  try {
+    foreach ($name in @("manifest.json", "SHA256SUMS", $asset)) {
+      Invoke-WebRequest -Uri "$downloadUrl/$name" -OutFile (Join-Path $AssetDir $name)
+    }
+  } catch {
+    Remove-Item -LiteralPath $downloadDir -Recurse -Force -ErrorAction SilentlyContinue
+    throw
+  }
+}
+$stage = $null
+$stagedBinary = $null
+try {
 $archive = Join-Path $AssetDir $asset
 $manifestPath = Join-Path $AssetDir "manifest.json"
 $checksumsPath = Join-Path $AssetDir "SHA256SUMS"
@@ -32,9 +63,7 @@ if ($actual -ne $expected) { throw "integrity verification failed for $asset" }
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $stage = Join-Path $InstallDir (".issue-spec-stage-" + [guid]::NewGuid().ToString("N"))
-$stagedBinary = $null
 New-Item -ItemType Directory -Path $stage | Out-Null
-try {
   Expand-Archive -LiteralPath $archive -DestinationPath $stage
   $candidate = Join-Path $stage "issue-spec.exe"
   if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw "verified archive does not contain issue-spec.exe" }
@@ -53,5 +82,6 @@ try {
   Write-Output "installed $destination from $asset"
 } finally {
   if ($null -ne $stagedBinary -and (Test-Path -LiteralPath $stagedBinary)) { Remove-Item -LiteralPath $stagedBinary -Force -ErrorAction SilentlyContinue }
-  Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+  if ($null -ne $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
+  if ($null -ne $downloadDir) { Remove-Item -LiteralPath $downloadDir -Recurse -Force -ErrorAction SilentlyContinue }
 }

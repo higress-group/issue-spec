@@ -1,19 +1,25 @@
 #!/bin/sh
 set -eu
 
-asset_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+asset_dir=
 install_dir=$HOME/.local/bin
 target_os=
 target_arch=
+release_tag=
+latest=false
+base_url=https://github.com/higress-group/issue-spec/releases
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --asset-dir) asset_dir=$2; shift 2 ;;
+    --tag) release_tag=$2; shift 2 ;;
+    --latest) latest=true; shift ;;
+    --base-url) base_url=$2; shift 2 ;;
     --install-dir) install_dir=$2; shift 2 ;;
     --os) target_os=$2; shift 2 ;;
     --arch) target_arch=$2; shift 2 ;;
     --help)
-      echo "usage: install.sh [--asset-dir DIR] [--install-dir DIR] [--os linux|darwin] [--arch amd64|arm64]"
+      echo "usage: install.sh (--tag vMAJOR.MINOR.PATCH | --latest | --asset-dir DIR) [--install-dir DIR] [--os linux|darwin] [--arch amd64|arm64]"
       exit 0
       ;;
     *) echo "install.sh: unknown argument: $1" >&2; exit 2 ;;
@@ -40,6 +46,44 @@ case "$target_os/$target_arch" in
 esac
 
 asset="issue-spec_"$target_os"_"$target_arch".tar.gz"
+download_dir=
+cleanup_download() {
+  if [ -n "$download_dir" ] && [ -d "$download_dir" ]; then rm -R "$download_dir"; fi
+}
+trap cleanup_download EXIT HUP INT TERM
+
+mode_count=0
+if [ -n "$asset_dir" ]; then mode_count=$((mode_count + 1)); fi
+if [ -n "$release_tag" ]; then mode_count=$((mode_count + 1)); fi
+if [ "$latest" = true ]; then mode_count=$((mode_count + 1)); fi
+if [ "$mode_count" -ne 1 ]; then
+  echo "install.sh: choose exactly one of --tag, --latest, or --asset-dir" >&2
+  exit 2
+fi
+if [ -n "$release_tag" ]; then
+  if ! printf '%s\n' "$release_tag" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([-+][0-9A-Za-z.-]+)?$'; then
+    echo "install.sh: --tag must be a semantic version tag such as v1.2.3" >&2
+    exit 2
+  fi
+  download_url=${base_url%/}/download/$release_tag
+elif [ "$latest" = true ]; then
+  download_url=${base_url%/}/latest/download
+fi
+if [ -n "$release_tag" ] || [ "$latest" = true ]; then
+  download_dir=$(mktemp -d "${TMPDIR:-/tmp}/issue-spec-download.XXXXXX")
+  asset_dir=$download_dir
+  for name in manifest.json SHA256SUMS "$asset"; do
+    if command -v curl >/dev/null 2>&1; then
+      curl -fL --retry 2 --output "$asset_dir/$name" "$download_url/$name"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -O "$asset_dir/$name" "$download_url/$name"
+    else
+      echo "install.sh: curl or wget is required for release downloads" >&2
+      exit 1
+    fi
+  done
+fi
+
 archive=$asset_dir/$asset
 manifest=$asset_dir/manifest.json
 checksums=$asset_dir/SHA256SUMS
@@ -111,6 +155,7 @@ staged_binary=
 cleanup() {
   if [ -d "$stage" ]; then rm -R "$stage"; fi
   if [ -n "$staged_binary" ] && [ -f "$staged_binary" ]; then rm -f "$staged_binary"; fi
+  cleanup_download
 }
 trap cleanup EXIT HUP INT TERM
 tar -xzf "$archive" -C "$stage"

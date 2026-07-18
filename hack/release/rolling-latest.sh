@@ -43,11 +43,6 @@ if [ "$current_latest" != '-' ] &&
   exit 1
 fi
 
-if [ "$candidate" != "$current_main" ]; then
-  echo noop
-  exit 0
-fi
-
 if [ "$current_latest" = '-' ]; then
   echo advance
 elif [ "$current_latest" = "$candidate" ]; then
