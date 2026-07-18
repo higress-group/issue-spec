@@ -463,6 +463,10 @@ func workspaceMarkerRef(lease LocalLease) string {
 	identity.Portable.State = ""
 	identity.Portable.ResultCommit = ""
 	identity.Portable.IntegrationSHA = ""
+	// Assignment is issued after the immutable reservation marker is created.
+	// Its portable binding is lifecycle evidence, not marker identity. Nil keeps
+	// the pre-assignment JSON representation byte-for-byte compatible.
+	identity.Portable.Assignment = nil
 	identity.Portable.CreatedAt = time.Time{}
 	identity.Portable.UpdatedAt = time.Time{}
 	identity.Portable.RetentionExpiresAt = time.Time{}
