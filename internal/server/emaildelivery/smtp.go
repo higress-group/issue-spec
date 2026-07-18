@@ -162,7 +162,7 @@ func (s *ImplicitTLSSender) Send(ctx context.Context, message Message) error {
 		return err
 	}
 	if err := client.Auth(auth); err != nil {
-		return Permanent(ReasonSMTPAuthentication)
+		return smtpAuthenticationError(ctx, err)
 	}
 	if err := client.Mail(s.from); err != nil {
 		return smtpCommandError(err)
@@ -329,6 +329,27 @@ func smtpCommandError(err error) error {
 		return Permanent(ReasonSMTPRejected)
 	}
 	return Retryable(ReasonSMTPUnavailable)
+}
+
+func smtpAuthenticationError(ctx context.Context, err error) error {
+	var response *textproto.Error
+	if errors.As(err, &response) {
+		if response.Code >= 400 && response.Code < 500 {
+			return Retryable(ReasonSMTPAuthentication)
+		}
+		return Permanent(ReasonSMTPAuthentication)
+	}
+	if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
+		return Retryable(ReasonSMTPTimeout)
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) {
+		return transportError(ctx, err)
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+		return Retryable(ReasonSMTPUnavailable)
+	}
+	return Permanent(ReasonSMTPAuthentication)
 }
 
 func transportError(ctx context.Context, err error) error {

@@ -104,6 +104,40 @@ func TestImplicitTLSSenderClassifiesRelayOutcomesWithoutRelayText(t *testing.T) 
 	}
 }
 
+func TestImplicitTLSSenderClassifiesAuthenticationOutcomes(t *testing.T) {
+	tests := []struct {
+		name      string
+		behavior  smtpBehavior
+		timeout   time.Duration
+		reason    ReasonCode
+		retryable bool
+	}{
+		{name: "temporary authentication rejection", behavior: smtpBehavior{authCode: 454}, reason: ReasonSMTPAuthentication, retryable: true},
+		{name: "terminal credential rejection", behavior: smtpBehavior{authCode: 535}, reason: ReasonSMTPAuthentication},
+		{name: "authentication timeout", behavior: smtpBehavior{authDelay: 250 * time.Millisecond}, timeout: 50 * time.Millisecond, reason: ReasonSMTPTimeout, retryable: true},
+		{name: "authentication connection loss", behavior: smtpBehavior{authClose: true}, reason: ReasonSMTPUnavailable, retryable: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newSMTPFixture(t, test.behavior)
+			timeout := test.timeout
+			if timeout == 0 {
+				timeout = 2 * time.Second
+			}
+			err := fixture.senderWithTimeout(t, timeout).Send(t.Context(), Message{DeliveryID: uuid.New(), To: "person@example.test",
+				Subject: "Notice", Body: "body", OccurredAt: time.Now()})
+			var outcome *OutcomeError
+			if !errors.As(err, &outcome) || outcome.Reason != test.reason || outcome.Retryable != test.retryable {
+				t.Fatalf("error = %#v", err)
+			}
+			if strings.Contains(err.Error(), "fixture authentication detail") {
+				t.Fatalf("relay text leaked: %v", err)
+			}
+			_ = fixture.wait(t)
+		})
+	}
+}
+
 func TestImplicitTLSSenderValidatesHostnameAndRefusesPlaintext(t *testing.T) {
 	fixture := newSMTPFixture(t, smtpBehavior{})
 	sender, err := NewImplicitTLSSender(SMTPConfig{Host: "localhost", Port: fixture.port,
@@ -157,6 +191,9 @@ func TestImplicitTLSSenderValidatesHostnameAndRefusesPlaintext(t *testing.T) {
 type smtpBehavior struct {
 	rcptCode      int
 	ambiguousData bool
+	authCode      int
+	authClose     bool
+	authDelay     time.Duration
 }
 
 type smtpResult struct {
@@ -191,10 +228,14 @@ func newSMTPFixture(t *testing.T, behavior smtpBehavior) *smtpFixture {
 }
 
 func (f *smtpFixture) sender(t *testing.T) *ImplicitTLSSender {
+	return f.senderWithTimeout(t, 2*time.Second)
+}
+
+func (f *smtpFixture) senderWithTimeout(t *testing.T, timeout time.Duration) *ImplicitTLSSender {
 	t.Helper()
 	sender, err := NewImplicitTLSSender(SMTPConfig{Host: "localhost", Port: f.port,
 		Username: "mailer@example.test", Password: "example-credential", FromAddress: "notices@example.test",
-		RootCAs: f.roots, Timeout: 2 * time.Second})
+		RootCAs: f.roots, Timeout: timeout})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,6 +283,20 @@ func (f *smtpFixture) serve(behavior smtpBehavior) {
 	_ = protocol.PrintfLine("250-fixture.example.test")
 	_ = protocol.PrintfLine("250 AUTH PLAIN LOGIN")
 	if _, ok := read(); !ok {
+		f.done <- result
+		return
+	}
+	if behavior.authClose {
+		f.done <- result
+		return
+	}
+	if behavior.authDelay > 0 {
+		time.Sleep(behavior.authDelay)
+		f.done <- result
+		return
+	}
+	if behavior.authCode != 0 {
+		_ = protocol.PrintfLine("%d fixture authentication detail", behavior.authCode)
 		f.done <- result
 		return
 	}
