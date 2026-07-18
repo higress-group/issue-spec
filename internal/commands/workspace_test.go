@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
@@ -39,6 +40,192 @@ func TestWorkspaceCommandRootsDefaultFromRunnerEnvAndExplicitFlagsOverride(t *te
 	}
 	if got, want := *flags.workspaceRoot, "/standalone/pool"; got != want {
 		t.Fatalf("explicit workspace root = %q, want %q", got, want)
+	}
+}
+
+func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *testing.T) {
+	repo, base := workspaceGitRepository(t)
+	write := func(name, value string) {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		workspaceGit(t, repo, "add", name)
+		workspaceGit(t, repo, "commit", "-s", "-m", "change "+name)
+	}
+	write("worker.go", "package worker\n")
+	subject := workspaceGitOutput(t, repo, "rev-parse", "HEAD")
+
+	processBody := func(class model.ProcessExecutionClass, input assignment.ProcessInput) string {
+		body, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: "PROCESS-006", Status: "in-progress"},
+			Input: templates.ProcessInput{Title: "assignment", ParentTask: "TASK-004", ExecutionClass: class, Scope: "assignment",
+				WriteOwnership: []string{"internal/commands/**"}, Assignment: &input, Covers: []string{"SPEC-001"}, Handoff: "ready"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	scenarios := []assignment.ScenarioRef{{SpecID: "SPEC-001", Scenario: "Worker receives a bounded assignment"}}
+	writable := processworkspace.LocalLease{Portable: processworkspace.PortableLease{SchemaVersion: 1, WorkspaceID: "ws-p006", Repository: "o/r", ProcessID: "PROCESS-006",
+		ExecutionClass: processworkspace.ExecutionChangeBearing, Mode: processworkspace.ModeWritable, BaseSHA: base, Branch: "worker",
+		WriteOwnership: []string{"internal/commands/**"}, RuntimeNamespace: "ws-p006", State: processworkspace.StatePrepared}, IntegrationRoot: repo}
+	implementation, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionChangeBearing,
+		processBody(model.ProcessExecutionChangeBearing, assignment.ProcessInput{Objective: "implement issuance", ScenarioSelectors: scenarios}), writable, "", "", scenarios, false)
+	if err != nil || implementation.Role != assignment.RoleImplementation || len(implementation.Implementation.FocusedTests) != 0 {
+		t.Fatalf("implementation=%+v err=%v", implementation, err)
+	}
+
+	snapshot := processworkspace.LocalLease{Portable: processworkspace.PortableLease{SchemaVersion: 1, WorkspaceID: "ws-review", Repository: "o/r", ProcessID: "PROCESS-006",
+		ExecutionClass: processworkspace.ExecutionReview, Mode: processworkspace.ModeSnapshot, BaseSHA: subject, DetachedRevision: subject,
+		RuntimeNamespace: "ws-review", State: processworkspace.StatePrepared}, IntegrationRoot: repo}
+	review, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
+		processBody(model.ProcessExecutionReview, assignment.ProcessInput{ScenarioSelectors: scenarios}), snapshot, "", base, scenarios, false)
+	if err != nil || review.Role != assignment.RoleReview || len(review.Review.Authors) != 1 || !reflect.DeepEqual(review.Review.Scope, []string{"worker.go"}) {
+		t.Fatalf("review=%+v err=%v", review, err)
+	}
+
+	verification, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionVerification,
+		processBody(model.ProcessExecutionVerification, assignment.ProcessInput{ScenarioSelectors: scenarios,
+			RequiredTests: []assignment.TestSelector{{ID: "unit", Command: "go test ./internal/commands"}}}), snapshot, "", "", scenarios, false)
+	if err != nil || verification.Role != assignment.RoleVerification || len(verification.Verification.RequiredTests) != 1 {
+		t.Fatalf("verification=%+v err=%v", verification, err)
+	}
+}
+
+func TestAssignmentPacketOutputIsPrivateAndOutsideWorktree(t *testing.T) {
+	root := t.TempDir()
+	worktree := filepath.Join(root, "worktree")
+	outDir := filepath.Join(root, "sidecar")
+	if err := os.MkdirAll(worktree, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	value := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "packet-1", Role: assignment.RoleImplementation,
+		Repository: "o/r", Issue: 297, ProcessID: "PROCESS-006", BaseRevision: strings.Repeat("a", 40),
+		Scenarios: []assignment.ScenarioRef{{SpecID: "SPEC-001", Scenario: "packet"}}, Policy: assignment.Policy{RequireExactRevision: true, MaxResultItems: 64},
+		ResultSchemaVersion: assignment.ReceiptSchemaVersion, Implementation: &assignment.ImplementationPayload{Objective: "packet", Branch: "worker",
+			WriteOwnership: []string{"internal/commands/**"}, Commit: assignment.CommitPolicy{RequireSingleCommit: true, RequireDCO: true}}}
+	digest, err := assignment.AssignmentDigest(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := assignment.Packet{Assignment: value, AssignmentDigest: digest, Generation: 1, Delivery: &assignment.DeliveryMetadata{WorktreePath: worktree}}
+	packet.Delivery.WorktreePath = filepath.Join(root, "different-local-path")
+	if got, err := assignment.AssignmentDigest(packet.Assignment); err != nil || got != digest {
+		t.Fatalf("local delivery path changed portable digest: got=%s err=%v", got, err)
+	}
+	packet.Delivery.WorktreePath = worktree
+	out := filepath.Join(outDir, "packet.json")
+	if err := writeAssignmentPacket(out, worktree, packet); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("packet mode=%v", info.Mode())
+	}
+	if err := writeAssignmentPacket(filepath.Join(worktree, "packet.json"), worktree, packet); err == nil {
+		t.Fatal("accepted packet output inside worktree")
+	}
+	if err := writeAssignmentPacket("-", worktree, packet); err == nil {
+		t.Fatal("accepted stdout alias as packet file")
+	}
+	symlinkParent := filepath.Join(root, "linked")
+	if err := os.Symlink(worktree, symlinkParent); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAssignmentPacket(filepath.Join(symlinkParent, "escape.json"), worktree, packet); err == nil {
+		t.Fatal("accepted symlink escape into worktree")
+	}
+}
+
+func TestLoadCoveredScenarioCatalogExpandsConfirmedSpecsAndRejectsUnknownSelection(t *testing.T) {
+	spec := func(id, status string, scenarios ...string) string {
+		inputs := make([]templates.SpecScenarioInput, 0, len(scenarios))
+		for _, title := range scenarios {
+			inputs = append(inputs, templates.SpecScenarioInput{Title: title, When: "requested", Then: "handled"})
+		}
+		body, err := templates.SpecComment(templates.SpecCommentOptions{Common: templates.CommonOptions{ID: id, Status: status},
+			Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{Title: "assignment", Text: "The CLI MUST issue assignments."}, Scenarios: inputs}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	backend := newWorkspaceCASBackend("")
+	backend.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+		return []github.Comment{{ID: 1, Body: spec("SPEC-001", "confirmed", "one", "two")}, {ID: 2, Body: spec("SPEC-002", "confirmed", "other")}}, nil
+	}
+	process, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: "PROCESS-006", Status: "in-progress"},
+		Input: templates.ProcessInput{Title: "catalog", ParentTask: "TASK-004", ExecutionClass: model.ProcessExecutionChangeBearing,
+			WriteOwnership: []string{"internal/commands/**"}, Covers: []string{"SPEC-001"}, Handoff: "ready"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := loadCoveredScenarioCatalog(t.Context(), backend, "o/r", 295, process)
+	if err != nil || !reflect.DeepEqual(catalog, []assignment.ScenarioRef{{SpecID: "SPEC-001", Scenario: "one"}, {SpecID: "SPEC-001", Scenario: "two"}}) {
+		t.Fatalf("catalog=%+v err=%v", catalog, err)
+	}
+	if err := validateAssignmentScenarios([]assignment.ScenarioRef{{SpecID: "SPEC-001", Scenario: "missing"}}, catalog); err == nil {
+		t.Fatal("accepted scenario not present in confirmed covered SPEC")
+	}
+}
+
+func TestWorkspacePreparePersistsAssignmentBeforePacketAndRedispatchesExplicitly(t *testing.T) {
+	repo, base := workspaceGitRepository(t)
+	specBody, err := templates.SpecComment(templates.SpecCommentOptions{Common: templates.CommonOptions{ID: "SPEC-001", Status: "confirmed"},
+		Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{Title: "assignment", Text: "The CLI MUST issue assignments."},
+			Scenarios: []templates.SpecScenarioInput{{Title: "packet", When: "prepared", Then: "issued"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	processBody, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: "PROCESS-004", Status: "in-progress"},
+		Input: templates.ProcessInput{Title: "workspace", ParentTask: "TASK-004", ExecutionClass: model.ProcessExecutionChangeBearing,
+			WriteOwnership: []string{"internal/commands/**"}, Covers: []string{"SPEC-001"}, Handoff: "ready",
+			Assignment: &assignment.ProcessInput{Objective: "issue a packet"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := newWorkspaceCASBackend(processBody)
+	backend.listIssueComments = func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+		if issue == 295 {
+			return []github.Comment{{ID: 91, Body: specBody}}, nil
+		}
+		return []github.Comment{{ID: 77, HTMLURL: "https://example.test/process/77", Body: backend.body}}, nil
+	}
+	root := filepath.Join(t.TempDir(), "managed")
+	packetPath := filepath.Join(t.TempDir(), "packet.json")
+	args := append(workspaceBaseArgs(repo, root, "owner-secret"), "--base", base, "--issue-assignment", "--proposal", "295", "--assignment-out", packetPath, "--json")
+	app, out, errOut := transitionAppWithError(backend)
+	if code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, args...)); code != 0 {
+		t.Fatalf("prepare assignment code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	first := decodeWorkspaceResult(t, out)
+	if first.Assignment == nil || first.Assignment.Generation != 1 || first.Assignment.Assignment.Scenarios[0].Scenario != "packet" {
+		t.Fatalf("first assignment=%+v", first.Assignment)
+	}
+	remote := model.ParseProcessWorkspace("PROCESS-004", "", backend.body)
+	if remote.Blocking() || remote.Workspace == nil || remote.Workspace.Assignment == nil || remote.Workspace.Assignment.Generation != 1 {
+		t.Fatalf("remote binding=%+v", remote)
+	}
+	manager := openWorkspaceManager(t, repo, root)
+	local, found, err := manager.Store.Get(t.Context(), first.WorkspaceID)
+	if err != nil || !found || local.Assignment == nil || local.Portable.Assignment == nil {
+		t.Fatalf("local assignment persisted found=%v lease=%+v err=%v", found, local, err)
+	}
+
+	app, out, errOut = transitionAppWithError(backend)
+	redispatchArgs := append([]string{}, args...)
+	redispatchArgs = append(redispatchArgs, "--redispatch-assignment", "--expected-assignment-generation", "1")
+	if code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, redispatchArgs...)); code != 0 {
+		t.Fatalf("redispatch code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	second := decodeWorkspaceResult(t, out)
+	if second.Assignment == nil || second.Assignment.Generation != 2 || second.Assignment.Assignment.ID == first.Assignment.Assignment.ID {
+		t.Fatalf("redispatch assignment=%+v", second.Assignment)
 	}
 }
 

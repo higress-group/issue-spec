@@ -97,7 +97,7 @@ func validateIntegrationConvergence(remote processworkspace.PortableLease, local
 		slices.Equal(remote.WriteOwnership, portable.WriteOwnership) && slices.Equal(remote.SharedTouchpoints, portable.SharedTouchpoints) &&
 		remote.IntegrationOwner == portable.IntegrationOwner && remote.RuntimeNamespace == portable.RuntimeNamespace &&
 		slices.Equal(remote.RuntimeResources, portable.RuntimeResources) && remote.CreatedAt.Equal(portable.CreatedAt) &&
-		remote.RetentionExpiresAt.Equal(portable.RetentionExpiresAt)
+		remote.RetentionExpiresAt.Equal(portable.RetentionExpiresAt) && samePortableAssignmentBinding(remote.Assignment, portable.Assignment)
 	if !immutableEqual || remote.ResultCommit == "" || remote.ResultCommit != portable.ResultCommit {
 		return fmt.Errorf("immutable reservation or result commit differs")
 	}
@@ -145,4 +145,11 @@ func validateIntegrationConvergence(remote processworkspace.PortableLease, local
 		return fmt.Errorf("remote lifecycle %s is not integration-ready", remote.State)
 	}
 	return fmt.Errorf("remote/local lifecycle convergence is unsafe: remote=%s local=%s", remote.State, portable.State)
+}
+
+func samePortableAssignmentBinding(left, right *processworkspace.AssignmentBinding) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/higress-group/issue-spec/internal/assignment"
 )
 
 const (
@@ -53,29 +55,43 @@ type RuntimeResource struct {
 	Exclusive bool   `json:"exclusive,omitempty"`
 }
 
+// AssignmentBinding is the durable, portable identity of the role packet
+// issued for a lease. The complete assignment is retained in LocalLease;
+// machine-local delivery metadata is never part of this projection or digest.
+type AssignmentBinding struct {
+	SchemaVersion   string          `json:"schema_version"`
+	AssignmentID    string          `json:"assignment_id"`
+	Digest          string          `json:"assignment_digest"`
+	Role            assignment.Role `json:"role"`
+	BaseRevision    string          `json:"base_revision,omitempty"`
+	SubjectRevision string          `json:"subject_revision,omitempty"`
+	Generation      uint64          `json:"generation"`
+}
+
 // PortableLease is safe to project into PROCESS metadata. It deliberately has
 // no absolute local path, PID, hostname, or lock token.
 type PortableLease struct {
-	SchemaVersion      int               `json:"schema_version"`
-	WorkspaceID        string            `json:"workspace_id"`
-	Repository         string            `json:"repository"`
-	ProcessID          string            `json:"process_id"`
-	ExecutionClass     ExecutionClass    `json:"execution_class"`
-	Mode               WorkspaceMode     `json:"mode"`
-	BaseSHA            string            `json:"base_sha,omitempty"`
-	Branch             string            `json:"branch,omitempty"`
-	DetachedRevision   string            `json:"detached_revision,omitempty"`
-	WriteOwnership     []string          `json:"write_ownership,omitempty"`
-	SharedTouchpoints  []string          `json:"shared_touchpoints,omitempty"`
-	IntegrationOwner   string            `json:"integration_owner,omitempty"`
-	RuntimeNamespace   string            `json:"runtime_namespace,omitempty"`
-	RuntimeResources   []RuntimeResource `json:"runtime_resources,omitempty"`
-	State              LifecycleState    `json:"state"`
-	ResultCommit       string            `json:"result_commit,omitempty"`
-	IntegrationSHA     string            `json:"integration_sha,omitempty"`
-	CreatedAt          time.Time         `json:"created_at"`
-	UpdatedAt          time.Time         `json:"updated_at"`
-	RetentionExpiresAt time.Time         `json:"retention_expires_at,omitempty"`
+	SchemaVersion      int                `json:"schema_version"`
+	WorkspaceID        string             `json:"workspace_id"`
+	Repository         string             `json:"repository"`
+	ProcessID          string             `json:"process_id"`
+	ExecutionClass     ExecutionClass     `json:"execution_class"`
+	Mode               WorkspaceMode      `json:"mode"`
+	BaseSHA            string             `json:"base_sha,omitempty"`
+	Branch             string             `json:"branch,omitempty"`
+	DetachedRevision   string             `json:"detached_revision,omitempty"`
+	WriteOwnership     []string           `json:"write_ownership,omitempty"`
+	SharedTouchpoints  []string           `json:"shared_touchpoints,omitempty"`
+	IntegrationOwner   string             `json:"integration_owner,omitempty"`
+	RuntimeNamespace   string             `json:"runtime_namespace,omitempty"`
+	RuntimeResources   []RuntimeResource  `json:"runtime_resources,omitempty"`
+	Assignment         *AssignmentBinding `json:"assignment,omitempty"`
+	State              LifecycleState     `json:"state"`
+	ResultCommit       string             `json:"result_commit,omitempty"`
+	IntegrationSHA     string             `json:"integration_sha,omitempty"`
+	CreatedAt          time.Time          `json:"created_at"`
+	UpdatedAt          time.Time          `json:"updated_at"`
+	RetentionExpiresAt time.Time          `json:"retention_expires_at,omitempty"`
 }
 
 type LeaseOwner struct {
@@ -106,13 +122,15 @@ type IntegrationState struct {
 // LocalLease is machine-local registry state. Absolute paths and ownership
 // credentials belong here and must never be copied into PortableLease.
 type LocalLease struct {
-	Portable        PortableLease       `json:"portable"`
-	IntegrationRoot string              `json:"integration_root"`
-	WorktreePath    string              `json:"worktree_path,omitempty"`
-	Owner           LeaseOwner          `json:"owner"`
-	Observation     WorktreeObservation `json:"observation,omitempty"`
-	Integration     IntegrationState    `json:"integration,omitempty"`
-	LocalRevision   uint64              `json:"local_revision"`
+	Portable          PortableLease          `json:"portable"`
+	IntegrationRoot   string                 `json:"integration_root"`
+	WorktreePath      string                 `json:"worktree_path,omitempty"`
+	Owner             LeaseOwner             `json:"owner"`
+	Observation       WorktreeObservation    `json:"observation,omitempty"`
+	Integration       IntegrationState       `json:"integration,omitempty"`
+	Assignment        *assignment.Assignment `json:"assignment,omitempty"`
+	AcceptedReceiptID string                 `json:"accepted_receipt_id,omitempty"`
+	LocalRevision     uint64                 `json:"local_revision"`
 }
 
 type Registry struct {
@@ -172,6 +190,9 @@ func (l PortableLease) Validate() error {
 		return fmt.Errorf("invalid runtime namespace %q", l.RuntimeNamespace)
 	}
 	if err := validateRuntimeResources(l.RuntimeResources); err != nil {
+		return err
+	}
+	if err := validateAssignmentBinding(l); err != nil {
 		return err
 	}
 	if l.CreatedAt.IsZero() || l.UpdatedAt.IsZero() || l.UpdatedAt.Before(l.CreatedAt) {
@@ -273,6 +294,86 @@ func (l LocalLease) Validate() error {
 	}
 	if l.LocalRevision == 0 {
 		return errors.New("local revision must be positive")
+	}
+	if err := validateLocalAssignment(l); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateAssignmentBinding(lease PortableLease) error {
+	binding := lease.Assignment
+	if binding == nil {
+		return nil
+	}
+	if binding.SchemaVersion != assignment.AssignmentSchemaVersion {
+		return fmt.Errorf("assignment binding has unsupported schema version %q", binding.SchemaVersion)
+	}
+	if !safeID.MatchString(binding.AssignmentID) {
+		return fmt.Errorf("invalid assignment id %q", binding.AssignmentID)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(binding.Digest) {
+		return errors.New("assignment binding digest must be a lowercase SHA-256 digest")
+	}
+	if binding.Generation == 0 {
+		return errors.New("assignment binding generation must be positive")
+	}
+	if binding.Role != assignment.RoleImplementation && binding.Role != assignment.RoleReview && binding.Role != assignment.RoleVerification {
+		return fmt.Errorf("unsupported assignment role %q", binding.Role)
+	}
+	for name, revision := range map[string]string{"base": binding.BaseRevision, "subject": binding.SubjectRevision} {
+		if revision != "" && !fullSHA.MatchString(revision) {
+			return fmt.Errorf("assignment %s revision must be a full Git object id", name)
+		}
+	}
+	switch lease.ExecutionClass {
+	case ExecutionChangeBearing:
+		if binding.Role != assignment.RoleImplementation || binding.BaseRevision != lease.BaseSHA || binding.SubjectRevision != "" {
+			return errors.New("change-bearing assignment binding must use implementation role and the lease base revision")
+		}
+	case ExecutionReview:
+		if binding.Role != assignment.RoleReview || binding.SubjectRevision != lease.DetachedRevision || binding.BaseRevision != "" {
+			return errors.New("review assignment binding must use review role and the lease subject revision")
+		}
+	case ExecutionVerification:
+		if binding.Role != assignment.RoleVerification || binding.SubjectRevision != lease.DetachedRevision || binding.BaseRevision != "" {
+			return errors.New("verification assignment binding must use verification role and the lease subject revision")
+		}
+	default:
+		return fmt.Errorf("execution class %s cannot carry an assignment binding", lease.ExecutionClass)
+	}
+	return nil
+}
+
+func validateLocalAssignment(lease LocalLease) error {
+	if lease.Portable.Assignment == nil && lease.Assignment == nil {
+		if lease.AcceptedReceiptID != "" {
+			return errors.New("accepted receipt requires an assignment binding")
+		}
+		return nil
+	}
+	if lease.Portable.Assignment != nil && lease.Assignment == nil {
+		// A remote-only binding may be recovered only through explicit issuance,
+		// which recompiles and proves the full assignment before delivery.
+		return nil
+	}
+	if lease.Portable.Assignment == nil {
+		return errors.New("local assignment requires a portable assignment binding")
+	}
+	if err := lease.Assignment.Validate(); err != nil {
+		return fmt.Errorf("local assignment: %w", err)
+	}
+	digest, err := assignment.AssignmentDigest(*lease.Assignment)
+	if err != nil {
+		return err
+	}
+	binding := lease.Portable.Assignment
+	if binding.SchemaVersion != lease.Assignment.SchemaVersion || binding.AssignmentID != lease.Assignment.ID || binding.Digest != digest ||
+		binding.Role != lease.Assignment.Role || binding.BaseRevision != lease.Assignment.BaseRevision || binding.SubjectRevision != lease.Assignment.SubjectRevision {
+		return errors.New("portable assignment binding differs from local assignment")
+	}
+	if lease.AcceptedReceiptID != "" && !safeID.MatchString(lease.AcceptedReceiptID) {
+		return fmt.Errorf("invalid accepted receipt id %q", lease.AcceptedReceiptID)
 	}
 	return nil
 }

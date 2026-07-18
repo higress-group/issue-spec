@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
 
@@ -70,6 +71,22 @@ func TestProcessWorkspaceCanonicalRoundTripByExecutionClass(t *testing.T) {
 				t.Fatalf("round trip mismatch\n got %s\nwant %s", got, want)
 			}
 		})
+	}
+}
+
+func TestProcessWorkspaceRoundTripsPortableAssignmentBindingOnly(t *testing.T) {
+	workspace := testProcessWorkspace("PROCESS-006", ProcessExecutionChangeBearing)
+	workspace.Assignment = &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion, AssignmentID: "assignment-006-1",
+		Digest: strings.Repeat("a", 64), Role: assignment.RoleImplementation, BaseRevision: workspace.BaseSHA, Generation: 1}
+	body := processBodyWithWorkspace("PROCESS-006", ProcessExecutionChangeBearing, workspace)
+	parsed := ParseProcessWorkspace("PROCESS-006", "", body)
+	if parsed.Blocking() || parsed.Workspace == nil || parsed.Workspace.Assignment == nil || parsed.Workspace.Assignment.AssignmentID != "assignment-006-1" {
+		t.Fatalf("assignment binding round trip=%+v", parsed)
+	}
+	for _, forbidden := range []string{"worktree_path", "owner-token", "integration_root"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("portable Workspace leaked %q: %s", forbidden, body)
+		}
 	}
 }
 
