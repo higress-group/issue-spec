@@ -55,10 +55,27 @@ type Desired struct {
 	CarrierAuthorizedBacklink bool `json:"carrier_authorized_backlink,omitempty"`
 }
 
+// RelationshipAuthority binds a production relationship target to the exact
+// provider observations from which the accepted carrier authorized its ID.
+// The representation digests make retries fail closed if that authority is
+// changed after resolution.
+type RelationshipAuthority struct {
+	CarrierURL                  string  `json:"carrier_url"`
+	CarrierBodyDigest           string  `json:"carrier_body_digest"`
+	PeerURL                     string  `json:"peer_url"`
+	AssignmentProcess           *Target `json:"assignment_process"`
+	AssignmentProcessURL        string  `json:"assignment_process_url"`
+	AssignmentProcessBodyDigest string  `json:"assignment_process_body_digest"`
+	AssignmentID                string  `json:"assignment_id"`
+	AssignmentDigest            string  `json:"assignment_digest"`
+	AssignmentGeneration        uint64  `json:"assignment_generation"`
+}
+
 type Precondition struct {
 	RepresentationVersion int64                           `json:"representation_version,omitempty"`
 	BodyDigest            string                          `json:"body_digest,omitempty"`
 	AcceptedReceipt       *model.AcceptedReceiptAuthority `json:"accepted_receipt,omitempty"`
+	RelationshipAuthority *RelationshipAuthority          `json:"relationship_authority,omitempty"`
 }
 
 type OperationResult struct {
@@ -150,6 +167,10 @@ func Validate(plan Plan) ([]Operation, string, error) {
 		if op.Desired.CarrierAuthorizedBacklink && op.Kind != "link" {
 			return nil, "", fmt.Errorf("operation %s: carrier-authorized backlink requires a link", op.ID)
 		}
+		if op.Precondition.RelationshipAuthority != nil &&
+			(op.Kind != "link" || !op.Desired.CarrierAuthorizedBacklink || op.Precondition.AcceptedReceipt == nil) {
+			return nil, "", fmt.Errorf("operation %s: resolved relationship authority requires an accepted receipt backlink", op.ID)
+		}
 		if op.Precondition.RepresentationVersion < 0 || (op.Precondition.RepresentationVersion > 0 && op.Precondition.BodyDigest != "") {
 			return nil, "", fmt.Errorf("operation %s: representation version and body digest preconditions are mutually exclusive", op.ID)
 		}
@@ -180,6 +201,23 @@ func Validate(plan Plan) ([]Operation, string, error) {
 				if sameProjectionTarget(op.Target, *op.Desired.Peer) ||
 					(!relationshipTargets[expected.Role]["coverage"][peerType] && !relationshipTargets[expected.Role]["current"][peerType]) {
 					return nil, "", fmt.Errorf("operation %s: accepted %s receipt cannot authorize a %s backlink target", op.ID, expected.Role, peerType)
+				}
+				if authority := op.Precondition.RelationshipAuthority; authority != nil {
+					if authority.AssignmentProcess == nil || strings.TrimSpace(authority.CarrierURL) == "" ||
+						strings.TrimSpace(authority.PeerURL) == "" || strings.TrimSpace(authority.AssignmentProcessURL) == "" ||
+						!projectionDigest.MatchString(authority.CarrierBodyDigest) ||
+						!projectionDigest.MatchString(authority.AssignmentProcessBodyDigest) ||
+						!projectionReceiptID.MatchString(authority.AssignmentID) ||
+						!projectionDigest.MatchString(authority.AssignmentDigest) || authority.AssignmentGeneration == 0 {
+						return nil, "", fmt.Errorf("operation %s: resolved relationship authority is invalid", op.ID)
+					}
+					if err := validateTarget(*authority.AssignmentProcess); err != nil {
+						return nil, "", fmt.Errorf("operation %s assignment process: %w", op.ID, err)
+					}
+					if expected.AssignmentID != "" && (expected.AssignmentID != authority.AssignmentID ||
+						expected.AssignmentDigest != authority.AssignmentDigest || expected.Generation != authority.AssignmentGeneration) {
+						return nil, "", fmt.Errorf("operation %s: accepted receipt and relationship assignment authority differ", op.ID)
+					}
 				}
 			default:
 				return nil, "", fmt.Errorf("operation %s: accepted receipt precondition requires a carrier assertion or carrier-authorized backlink", op.ID)

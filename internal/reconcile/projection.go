@@ -174,12 +174,19 @@ func normalizeReceiptProjection(receipt *AcceptedReceiptProjection, defaultIssue
 	return nil
 }
 
-func normalizeProjectionTarget(target Target, defaultIssue int) (Target, error) {
+func normalizeProjectionTarget(target Target, _ int) (Target, error) {
 	target.Role = strings.ToLower(strings.TrimSpace(target.Role))
 	target.Type = strings.ToUpper(strings.TrimSpace(target.Type))
 	target.ID = strings.TrimSpace(target.ID)
 	if target.Issue == 0 && target.Role == "" {
-		target.Issue = defaultIssue
+		switch target.Type {
+		case "SPEC":
+			target.Role = "proposal"
+		case "TASK":
+			target.Role = "design"
+		default:
+			target.Role = "implement"
+		}
 	}
 	if target.Role != "" && target.Role != "proposal" && target.Role != "design" && target.Role != "implement" {
 		return Target{}, fmt.Errorf("target role %q is not projection-safe", target.Role)

@@ -88,13 +88,17 @@ type BodyOptions struct {
 }
 
 // AcceptedReceiptAuthority is the immutable identity shared by compact
-// accepted-receipt carriers. Receipt content, provenance, assurance, and
-// subject revisions deliberately remain in the role-owned carrier body.
+// accepted-receipt carriers. Review and verification carriers also expose the
+// durable assignment identity used to locate their authoritative PROCESS.
+// Receipt content, provenance, assurance, and subject revisions deliberately
+// remain in the role-owned carrier body.
 type AcceptedReceiptAuthority struct {
-	Role       assignment.Role `json:"role"`
-	ReceiptID  string          `json:"receipt_id"`
-	Digest     string          `json:"receipt_digest"`
-	Generation uint64          `json:"generation"`
+	Role             assignment.Role `json:"role"`
+	ReceiptID        string          `json:"receipt_id"`
+	Digest           string          `json:"receipt_digest"`
+	Generation       uint64          `json:"generation"`
+	AssignmentID     string          `json:"assignment_id,omitempty"`
+	AssignmentDigest string          `json:"assignment_digest,omitempty"`
 }
 
 var acceptedReceiptMarkers = map[assignment.Role]struct{ start, end, token string }{
@@ -163,6 +167,22 @@ func ObserveAcceptedReceiptAuthority(body string, role assignment.Role) (Accepte
 	if !acceptedReceiptIDRe.MatchString(authority.ReceiptID) ||
 		!acceptedReceiptDigestRe.MatchString(authority.Digest) || authority.Generation == 0 {
 		return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt immutable identity is invalid")
+	}
+	if role == assignment.RoleReview || role == assignment.RoleVerification {
+		hasID, hasDigest := len(fields["assignment_id"]) != 0, len(fields["assignment_digest"]) != 0
+		if hasID != hasDigest {
+			return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt assignment identity is incomplete")
+		}
+		if hasID {
+			if err := json.Unmarshal(fields["assignment_id"], &authority.AssignmentID); err != nil ||
+				!acceptedReceiptIDRe.MatchString(authority.AssignmentID) {
+				return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt assignment_id is invalid")
+			}
+			if err := json.Unmarshal(fields["assignment_digest"], &authority.AssignmentDigest); err != nil ||
+				!acceptedReceiptDigestRe.MatchString(authority.AssignmentDigest) {
+				return AcceptedReceiptAuthority{}, true, errors.New("accepted receipt assignment_digest is invalid")
+			}
+		}
 	}
 	return authority, true, nil
 }

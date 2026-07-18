@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
@@ -138,7 +139,18 @@ func (e Engine) preflight(ctx context.Context, plan Plan, ordered []Operation) (
 				if err := checkAcceptedReceiptPrecondition(op.Precondition, carrier.Body); err != nil {
 					return nil, fmt.Errorf("operation %s: %w", op.ID, err)
 				}
-				if !peerFound || !hasRelatedCommentLink(carrier.Body, peer.Comment) {
+				if !peerFound {
+					return nil, fmt.Errorf("operation %s: relationship target %s has no provider identity", op.ID, projectionTargetKey(*op.Desired.Peer))
+				}
+				if authority := op.Precondition.RelationshipAuthority; authority != nil {
+					assignmentProcess, found := observations[targetKey(*authority.AssignmentProcess)]
+					if !found {
+						return nil, fmt.Errorf("operation %s: assignment PROCESS authority is absent", op.ID)
+					}
+					if err := checkRelationshipAuthority(op, carrier, peer, assignmentProcess); err != nil {
+						return nil, fmt.Errorf("operation %s: %w", op.ID, err)
+					}
+				} else if !hasRelatedCommentLink(carrier.Body, peer.Comment) {
 					return nil, fmt.Errorf("operation %s: relationship target %s is not explicitly authorized by the accepted receipt carrier", op.ID, projectionTargetKey(*op.Desired.Peer))
 				}
 				right, _, err := model.AddRelatedCommentLink(right, carrier.Comment.HTMLURL)
@@ -328,7 +340,18 @@ func (e Engine) applyCarrierAuthorizedBacklink(ctx context.Context, plan Plan, o
 	if err := checkAcceptedReceiptPrecondition(op.Precondition, carrier.Body); err != nil {
 		return conflictResult(op, err.Error())
 	}
-	if !hasRelatedCommentLink(carrier.Body, peer.Comment) {
+	if authority := op.Precondition.RelationshipAuthority; authority != nil {
+		assignmentProcess, found, observeErr := e.observe(ctx, plan.Repo, *authority.AssignmentProcess, true)
+		if observeErr != nil {
+			return failureResult(op, observeErr, !plan.AllowNonAtomic)
+		}
+		if !found {
+			return conflictResult(op, "assignment PROCESS authority is absent")
+		}
+		if err := checkRelationshipAuthority(op, carrier, peer, assignmentProcess); err != nil {
+			return conflictResult(op, err.Error())
+		}
+	} else if !hasRelatedCommentLink(carrier.Body, peer.Comment) {
 		return conflictResult(op, fmt.Sprintf("relationship target %s is not explicitly authorized by the accepted receipt carrier", projectionTargetKey(*op.Desired.Peer)))
 	}
 	peerBody, changed, err := model.AddRelatedCommentLink(peer.Body, carrier.Comment.HTMLURL)
@@ -444,9 +467,39 @@ func applyTransition(body string, op Operation) (model.TransitionResult, error) 
 
 func operationTargets(op Operation) []Target {
 	if op.Desired.Peer != nil {
-		return []Target{op.Target, *op.Desired.Peer}
+		result := []Target{op.Target, *op.Desired.Peer}
+		if authority := op.Precondition.RelationshipAuthority; authority != nil && authority.AssignmentProcess != nil {
+			result = append(result, *authority.AssignmentProcess)
+		}
+		return result
 	}
 	return []Target{op.Target}
+}
+
+func checkRelationshipAuthority(op Operation, carrier, peer, assignmentProcess observed) error {
+	authority := op.Precondition.RelationshipAuthority
+	if authority == nil || authority.AssignmentProcess == nil {
+		return errors.New("resolved relationship authority is missing")
+	}
+	if strings.TrimSpace(carrier.Comment.HTMLURL) != authority.CarrierURL ||
+		strings.TrimSpace(peer.Comment.HTMLURL) != authority.PeerURL ||
+		strings.TrimSpace(assignmentProcess.Comment.HTMLURL) != authority.AssignmentProcessURL {
+		return errors.New("resolved relationship provider URL does not match exact observation")
+	}
+	if model.RepresentationDigest(carrier.Body) != authority.CarrierBodyDigest ||
+		model.RepresentationDigest(assignmentProcess.Body) != authority.AssignmentProcessBodyDigest {
+		return errors.New("resolved relationship authority is stale")
+	}
+	workspace := model.ParseProcessWorkspace(authority.AssignmentProcess.ID, authority.AssignmentProcessURL, assignmentProcess.Body)
+	if !workspace.Explicit || workspace.Blocking() || workspace.Workspace == nil || workspace.Workspace.Assignment == nil {
+		return errors.New("resolved relationship assignment PROCESS is not canonical managed authority")
+	}
+	binding := workspace.Workspace.Assignment
+	if binding.AssignmentID != authority.AssignmentID || binding.Digest != authority.AssignmentDigest ||
+		binding.Generation != authority.AssignmentGeneration || binding.Role != op.Precondition.AcceptedReceipt.Role {
+		return errors.New("resolved relationship assignment authority does not match projection")
+	}
+	return nil
 }
 func artifactURL(repo string, target Target, commentID int64) string {
 	return fmt.Sprintf("https://github.com/%s/issues/%d#issuecomment-%d", repo, target.Issue, commentID)
@@ -506,6 +559,10 @@ func checkAcceptedReceiptPrecondition(precondition Precondition, body string) er
 	if observed.ReceiptID != expected.ReceiptID || observed.Digest != expected.Digest ||
 		observed.Generation != expected.Generation {
 		return fmt.Errorf("accepted %s receipt authority does not match projection", expected.Role)
+	}
+	if expected.Role != assignment.RoleImplementation && expected.AssignmentID != "" && (observed.AssignmentID != expected.AssignmentID ||
+		observed.AssignmentDigest != expected.AssignmentDigest) {
+		return fmt.Errorf("accepted %s receipt assignment authority does not match projection", expected.Role)
 	}
 	if status := model.ParseTypedComment(body).Status; status != "done" {
 		return fmt.Errorf("accepted %s receipt carrier must already have immutable done status, got %q", expected.Role, status)

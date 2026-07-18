@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
 
 type fakeBackend struct {
@@ -338,10 +340,10 @@ func TestReconcileAcceptedReceiptBackfillsOnlyCarrierAuthorizedRelationshipsWith
 
 	plan, err := CompileReceiptProjection(ReceiptProjection{Version: 1, Repo: "o/r", Hostname: "github.com", Proposal: 7, Issue: 9,
 		AcceptedReceipts: []AcceptedReceiptProjection{{Role: assignment.RoleVerification,
-			Carrier: Target{Type: "VERIFY", ID: "VERIFY-001"}, ReceiptID: receiptID, ReceiptDigest: digest, Generation: 3,
-			Lifecycle:       []ReceiptLifecycle{{Target: Target{Type: "VERIFY", ID: "VERIFY-001"}, Status: "done"}},
-			CoverageTargets: []Target{{Type: "SPEC", ID: "SPEC-001"}},
-			CurrentTargets:  []Target{{Type: "PROCESS", ID: "PROCESS-001"}}}}})
+			Carrier: Target{Issue: 9, Type: "VERIFY", ID: "VERIFY-001"}, ReceiptID: receiptID, ReceiptDigest: digest, Generation: 3,
+			Lifecycle:       []ReceiptLifecycle{{Target: Target{Issue: 9, Type: "VERIFY", ID: "VERIFY-001"}, Status: "done"}},
+			CoverageTargets: []Target{{Issue: 9, Type: "SPEC", ID: "SPEC-001"}},
+			CurrentTargets:  []Target{{Issue: 9, Type: "PROCESS", ID: "PROCESS-001"}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,16 +391,60 @@ func TestReconcileAcceptedReceiptRejectsWrongTypeValidRelationshipBeforeWrite(t 
 
 	plan, err := CompileReceiptProjection(ReceiptProjection{Version: 1, Repo: "o/r", Hostname: "github.com", Proposal: 7, Issue: 9,
 		AcceptedReceipts: []AcceptedReceiptProjection{{Role: assignment.RoleVerification,
-			Carrier: Target{Type: "VERIFY", ID: "VERIFY-001"}, ReceiptID: receiptID, ReceiptDigest: digest, Generation: 1,
-			Lifecycle:       []ReceiptLifecycle{{Target: Target{Type: "VERIFY", ID: "VERIFY-001"}, Status: "done"}},
-			CoverageTargets: []Target{{Type: "SPEC", ID: "SPEC-999"}},
-			CurrentTargets:  []Target{{Type: "PROCESS", ID: "PROCESS-001"}}}}})
+			Carrier: Target{Issue: 9, Type: "VERIFY", ID: "VERIFY-001"}, ReceiptID: receiptID, ReceiptDigest: digest, Generation: 1,
+			Lifecycle:       []ReceiptLifecycle{{Target: Target{Issue: 9, Type: "VERIFY", ID: "VERIFY-001"}, Status: "done"}},
+			CoverageTargets: []Target{{Issue: 9, Type: "SPEC", ID: "SPEC-999"}},
+			CurrentTargets:  []Target{{Issue: 9, Type: "PROCESS", ID: "PROCESS-001"}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := (Engine{Backend: f}).Run(context.Background(), plan, ""); err == nil ||
 		!strings.Contains(err.Error(), "not explicitly authorized") || f.writes != 0 {
 		t.Fatalf("err=%v writes=%d", err, f.writes)
+	}
+}
+
+func TestReconcileResolvedRelationshipAuthorityPreservesCarrierAndRejectsStaleRetry(t *testing.T) {
+	assignmentDigest, receiptDigest := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	processBody := resolvedAuthorityProcessBody(t, assignmentDigest)
+	carrier := typedBody(t, "VERIFY", "VERIFY-036", "done")
+	carrier = strings.TrimRight(carrier, "\n") + "\n\n<!-- issue-spec:accepted-verification-receipt version=1 -->\n" +
+		`{"receipt_id":"receipt-verification-036","receipt_digest":"` + receiptDigest +
+		`","assignment_id":"assignment-verification-036","assignment_digest":"` + assignmentDigest +
+		`","assignment_generation":1}` + "\n<!-- /issue-spec:accepted-verification-receipt -->\n"
+	f := newFake()
+	addComment(f, 9, 1, carrier)
+	addComment(f, 9, 2, processBody)
+	addComment(f, 7, 3, typedBody(t, "SPEC", "SPEC-005", "confirmed"))
+	immutableCarrier := f.comments[9][0].Body
+	carrierTarget := Target{Issue: 9, Type: "VERIFY", ID: "VERIFY-036"}
+	peerTarget := Target{Issue: 7, Type: "SPEC", ID: "SPEC-005"}
+	processTarget := Target{Issue: 9, Type: "PROCESS", ID: "PROCESS-036"}
+	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "relationship", Kind: "link",
+		Target: carrierTarget, Desired: Desired{Peer: &peerTarget, CarrierAuthorizedBacklink: true},
+		Precondition: Precondition{AcceptedReceipt: &model.AcceptedReceiptAuthority{Role: assignment.RoleVerification,
+			ReceiptID: "receipt-verification-036", Digest: receiptDigest, Generation: 1,
+			AssignmentID: "assignment-verification-036", AssignmentDigest: assignmentDigest},
+			RelationshipAuthority: &RelationshipAuthority{CarrierURL: f.comments[9][0].HTMLURL,
+				CarrierBodyDigest: model.RepresentationDigest(carrier), PeerURL: f.comments[7][0].HTMLURL,
+				AssignmentProcess: &processTarget, AssignmentProcessURL: f.comments[9][1].HTMLURL,
+				AssignmentProcessBodyDigest: model.RepresentationDigest(processBody), AssignmentID: "assignment-verification-036",
+				AssignmentDigest: assignmentDigest, AssignmentGeneration: 1}}}}}
+	cp := t.TempDir() + "/checkpoint.json"
+	result, err := (Engine{Backend: f}).Run(t.Context(), plan, cp)
+	if err != nil || !result.OK || result.Updated != 1 || f.writes != 1 || f.comments[9][0].Body != immutableCarrier {
+		t.Fatalf("result=%+v err=%v writes=%d carrier_changed=%t", result, err, f.writes, f.comments[9][0].Body != immutableCarrier)
+	}
+	originalPeerURL := f.comments[7][0].HTMLURL
+	f.comments[7][0].HTMLURL = "https://github.com/o/r/issues/7#issuecomment-999"
+	if _, err := (Engine{Backend: f}).Run(t.Context(), plan, cp); err == nil || !strings.Contains(err.Error(), "provider URL") || f.writes != 1 {
+		t.Fatalf("mismatched URL retry err=%v writes=%d", err, f.writes)
+	}
+	f.comments[7][0].HTMLURL = originalPeerURL
+	f.comments[9][1].Body += "\n"
+	if _, err := (Engine{Backend: f}).Run(t.Context(), plan, cp); err == nil || !strings.Contains(err.Error(), "authority is stale") ||
+		f.writes != 1 || f.comments[9][0].Body != immutableCarrier {
+		t.Fatalf("stale retry err=%v writes=%d carrier_changed=%t", err, f.writes, f.comments[9][0].Body != immutableCarrier)
 	}
 }
 
@@ -506,4 +552,28 @@ func acceptedReceiptBody(t *testing.T, kind, id, status string, role assignment.
 		receiptID, digest, generation)
 	return strings.TrimRight(body, "\n") + "\n\n<!-- issue-spec:accepted-" + name + "-receipt version=1 -->\n" +
 		payload + "\n<!-- /issue-spec:accepted-" + name + "-receipt -->\n"
+}
+
+func resolvedAuthorityProcessBody(t *testing.T, digest string) string {
+	t.Helper()
+	now := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
+	revision := strings.Repeat("c", 40)
+	workspace := processworkspace.PortableLease{SchemaVersion: processworkspace.LeaseSchemaVersion,
+		WorkspaceID: "assignment-verification-036", Repository: "o/r", ProcessID: "PROCESS-036",
+		ExecutionClass: processworkspace.ExecutionVerification, Mode: processworkspace.ModeSnapshot,
+		BaseSHA: revision, DetachedRevision: revision, RuntimeNamespace: "assignment-verification-036",
+		Assignment: &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+			AssignmentID: "assignment-verification-036", Digest: digest, Role: assignment.RoleVerification,
+			SubjectRevision: revision, Generation: 1}, State: processworkspace.StatePrepared, CreatedAt: now, UpdatedAt: now}
+	section, err := model.RenderProcessWorkspaceSection(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := model.EnsureTypedBody("PROCESS", "PROCESS-036",
+		"## Process: verification\n\n### Parent TASK\n\n- TASK-005\n\n### Execution Class\n\n- verification\n\n"+section+"\n\n### Handoff\n\nN/A",
+		model.BodyOptions{Status: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
 }

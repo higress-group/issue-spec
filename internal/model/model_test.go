@@ -42,6 +42,24 @@ func TestObserveAcceptedReceiptAuthorityAcrossRoleMarkers(t *testing.T) {
 	}
 }
 
+func TestObserveAcceptedReceiptAuthorityProjectsDurableAssignmentIdentity(t *testing.T) {
+	assignmentDigest := strings.Repeat("b", 64)
+	payload := `{"receipt_id":"receipt-review-1","receipt_digest":"` + strings.Repeat("a", 64) +
+		`","assignment_id":"review-assignment-1","assignment_digest":"` + assignmentDigest +
+		`","assignment_generation":2,"subject_revision":"not-projected","provenance":{"writer":"not-projected"}}`
+	body := "<!-- issue-spec:accepted-review-receipt version=1 -->\n" + payload +
+		"\n<!-- /issue-spec:accepted-review-receipt -->\n"
+	authority, found, err := ObserveAcceptedReceiptAuthority(body, assignment.RoleReview)
+	if err != nil || !found || authority.AssignmentID != "review-assignment-1" || authority.AssignmentDigest != assignmentDigest {
+		t.Fatalf("authority=%+v found=%t err=%v", authority, found, err)
+	}
+	incomplete := strings.Replace(body, `,"assignment_digest":"`+assignmentDigest+`"`, "", 1)
+	if _, found, err := ObserveAcceptedReceiptAuthority(incomplete, assignment.RoleReview); !found || err == nil ||
+		!strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("incomplete assignment identity found=%t err=%v", found, err)
+	}
+}
+
 func TestObserveAcceptedReceiptAuthorityFailsClosedOnMissingOrMalformedMarker(t *testing.T) {
 	if authority, found, err := ObserveAcceptedReceiptAuthority("typed PROCESS without receipt", assignment.RoleImplementation); err != nil || found || authority.ReceiptID != "" {
 		t.Fatalf("missing marker authority=%+v found=%t err=%v", authority, found, err)
