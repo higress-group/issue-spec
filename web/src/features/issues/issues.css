@@ -58,6 +58,10 @@
 .issue-list-main { display: flex; flex-direction: column; gap: .35rem; min-width: 0; }
 .issue-list-main > strong { font-size: .98rem; overflow-wrap: anywhere; }
 .issue-meta { color: var(--muted); font-size: .76rem; }
+.precise-relative-time { display: inline-flex; flex-wrap: wrap; gap: .25rem; }
+.precise-relative-time > time[tabindex="0"] { border-radius: .2rem; cursor: help; }
+.precise-relative-time > time[tabindex="0"]:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.precise-time-disclosure { color: var(--ink); font-variant-numeric: tabular-nums; }
 .comment-count { align-items: center; color: var(--muted); display: flex; font-size: .78rem; gap: .3rem; }
 .comment-count svg { height: 1rem; width: 1rem; }
 .pagination { align-items: center; display: flex; gap: .8rem; justify-content: center; margin-top: 1rem; }

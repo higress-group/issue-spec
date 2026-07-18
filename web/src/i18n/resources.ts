@@ -165,6 +165,23 @@ export const resources = {
       ...searchResources.en,
       ...mentionResources.en,
       ...repositoryNotificationResources.en.translation,
+      issues: {
+        ...workflowResources.en.issues,
+        time: {
+          accessible: "{{relative}}; exact time {{precise}}",
+          unknown: "Unknown time",
+        },
+        list: {
+          ...workflowResources.en.issues.list,
+          openedByRelative: "#{{number}} opened <time></time> by {{actor}}",
+        },
+        detail: {
+          ...workflowResources.en.issues.detail,
+          openedOnRelative: "{{actor}} opened this <time></time>",
+          commentedRelative: "commented <createdTime></createdTime>",
+          commentedAndEditedRelative: "commented <createdTime></createdTime> · edited <editedTime></editedTime>",
+        },
+      },
     },
   },
   "zh-CN": {
@@ -327,6 +344,23 @@ export const resources = {
       ...searchResources["zh-CN"],
       ...mentionResources["zh-CN"],
       ...repositoryNotificationResources["zh-CN"].translation,
+      issues: {
+        ...workflowResources["zh-CN"].issues,
+        time: {
+          accessible: "{{relative}}；精确时间 {{precise}}",
+          unknown: "时间未知",
+        },
+        list: {
+          ...workflowResources["zh-CN"].issues.list,
+          openedByRelative: "#{{number}} 由 {{actor}} 于 <time></time> 发起",
+        },
+        detail: {
+          ...workflowResources["zh-CN"].issues.detail,
+          openedOnRelative: "由 {{actor}} 于 <time></time> 发起",
+          commentedRelative: "评论于 <createdTime></createdTime>",
+          commentedAndEditedRelative: "评论于 <createdTime></createdTime> · 编辑于 <editedTime></editedTime>",
+        },
+      },
     },
   },
 } as const;
