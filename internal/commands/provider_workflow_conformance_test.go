@@ -270,6 +270,26 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 	}
 }
 
+func TestProviderBridgeContractRequiresStableCurrentHeadSnapshot(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/self-hosting/bridges/code-provider-v1.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := strings.Join(strings.Fields(string(raw)), " ")
+	for _, want := range []string{
+		"For every evidence snapshot request",
+		"MUST read the change's current HEAD",
+		"MUST read it again after fact collection",
+		"both observations equal the requested revision",
+		"`revision_mismatch` and no snapshot",
+		"no provider facts to persist",
+	} {
+		if !strings.Contains(contract, want) {
+			t.Fatalf("provider bridge contract missing %q:\n%s", want, contract)
+		}
+	}
+}
+
 func TestCheckedInCodexWorkflowSkillsMatchGenerator(t *testing.T) {
 	generatedRoot := t.TempDir()
 	if _, err := writeWorkflowArtifacts(generatedRoot, "higress-group/issue-spec", "codex", "skills"); err != nil {

@@ -12,12 +12,49 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/codereview"
+	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
+
+func TestSelfHostedStatusOnlyForcesProviderSyncForFinal(t *testing.T) {
+	now := time.Now().UTC()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	for _, test := range []struct {
+		target    gates.Target
+		wantSyncs int
+		wantCalls string
+	}{
+		{target: gates.TargetFinal, wantSyncs: 1, wantCalls: "operator,persist,ledger"},
+		{target: gates.TargetArchive, wantCalls: "ledger"},
+	} {
+		t.Run(string(test.target), func(t *testing.T) {
+			var calls []string
+			check := testEvidenceRecord("check-ledger", codereview.EvidenceCheck, "passed", "head-abc", now)
+			check.Name = "unit"
+			ledger := &commandEvidenceProvider{label: "ledger", calls: &calls, snapshot: codereview.Snapshot{
+				ProtocolVersion: codereview.ProtocolVersion, Reference: reference, SubjectRevision: "head-abc", CapturedAt: now,
+				Records: []codereview.EvidenceRecord{check}}}
+			native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7,
+				SubjectRevision: "head-abc", Provider: ledger}, calls: &calls}
+			app := newApp(strings.NewReader(""), nil, nil)
+			app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
+			app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) {
+				return &commandEvidenceProvider{label: "operator", calls: &calls, snapshot: codereview.Snapshot{
+					ProtocolVersion: codereview.ProtocolVersion, Reference: reference, SubjectRevision: "head-abc", CapturedAt: now}}, nil
+			}
+			collection := app.collectStatusGateFacts(t.Context(), fakeGitHubBackend{}, auth.Profile{Kind: auth.ProfileKindHosted},
+				"token", "acme/widgets", 3, test.target, nil)
+			if !collection.Remote.ProviderEvidence.Passed || native.syncs != test.wantSyncs || strings.Join(calls, ",") != test.wantCalls {
+				t.Fatalf("provider=%+v syncs=%d calls=%v", collection.Remote.ProviderEvidence, native.syncs, calls)
+			}
+		})
+	}
+}
 
 func TestSummarizeStatusBlocksOnBlockedQuestion(t *testing.T) {
 	specBody, err := model.EnsureTypedBody("SPEC", "SPEC-001", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y", model.BodyOptions{Status: "confirmed"})

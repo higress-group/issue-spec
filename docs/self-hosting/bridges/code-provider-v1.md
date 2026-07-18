@@ -166,6 +166,14 @@ observation time, validity window, payload digest, designated-writer identity,
 trust decision, and optional supersession link. Kinds are `change`, `review`,
 `check`, `merge`, and `archive`.
 
+For every evidence snapshot request, the bridge MUST read the change's current
+HEAD before collecting facts and MUST read it again after fact collection. It
+may return a successful snapshot only when both observations equal the
+requested revision. If the request names a historical revision, or HEAD moves
+while facts are collected, the bridge returns an error with the stable code
+`revision_mismatch` and no snapshot. Core therefore has no provider facts to
+persist from a failed current-HEAD assertion.
+
 Core rejects protocol/reference/revision mismatches, missing or malformed
 records, untrusted writers, expired/stale observations, open P0/P1 findings,
 pending/failed required checks, and non-merged merge/archive evidence. The

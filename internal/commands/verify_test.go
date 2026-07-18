@@ -405,6 +405,10 @@ func newSelfHostedVerifyApp(t *testing.T) (*app, *bytes.Buffer, *bytes.Buffer, *
 	app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) {
 		return native, nil
 	}
+	app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) {
+		return &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+			Reference: reference, SubjectRevision: revision, CapturedAt: now}}, nil
+	}
 	return app, out, errOut, updates
 }
 

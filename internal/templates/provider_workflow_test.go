@@ -20,7 +20,8 @@ func TestProviderWorkflowKeepsRunnerEvidenceSynchronizationOptIn(t *testing.T) {
 		"skill":  IssueSpecProviderSkill("owner/repo", provider).Content,
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, want := range []string{"before verification gates", "Runner dispatch synchronization remains an explicit `external_code.evidence.sync_before` project-policy opt-in"} {
+			for _, want := range []string{"before verification gates", "reads HEAD before and after fact collection",
+				"returns `revision_mismatch` without a snapshot", "Runner dispatch synchronization remains an explicit `external_code.evidence.sync_before` project-policy opt-in"} {
 				if !strings.Contains(content, want) {
 					t.Fatalf("provider workflow missing %q:\n%s", want, content)
 				}
