@@ -21,7 +21,7 @@ issue-spec MUST publish complete immutable semantic-version Releases and one mut
 #### Scenario: update the single rolling latest Release
 
 - **WHEN** a commit reaches main and its complete release matrix succeeds while it remains the newest successful main revision
-- **THEN** the workflow MUST move the fixed `rolling` tag to that revision, replace the assets and description of the single rolling Release, and mark it as GitHub latest without creating a per-revision rolling Release or modifying immutable semantic-version Releases
+- **THEN** the workflow MUST move the fixed `rolling` tag to that revision, replace the assets and description of the single rolling Release named `latest`, and mark it as GitHub latest without creating a per-revision rolling Release or modifying immutable semantic-version Releases
 
 #### Scenario: prevent stale or partial publication
 

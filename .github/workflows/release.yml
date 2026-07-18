@@ -236,13 +236,13 @@ jobs:
 
             if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
               gh release create "$RELEASE_TAG" --verify-tag \
-                --title "issue-spec $RELEASE_VERSION" --notes-file dist/release/release-notes.md \
+                --title "latest" --notes-file dist/release/release-notes.md \
                 --prerelease=false --latest=false
             fi
 
             gh release upload "$RELEASE_TAG" dist/release/publish/* --clobber
             verify_remote_assets
-            gh release edit "$RELEASE_TAG" --title "issue-spec $RELEASE_VERSION" \
+            gh release edit "$RELEASE_TAG" --title "latest" \
               --notes-file dist/release/release-notes.md \
               --draft=false --prerelease=false --latest
             guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"
