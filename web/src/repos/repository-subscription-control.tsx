@@ -40,12 +40,12 @@ export function RepositorySubscriptionControl({ orgId, repoId }: { orgId: string
   if (!enabled) return null;
   if (email.isLoading || subscription.isLoading) {
     return <button className="button secondary small repository-subscription-control" type="button" disabled>
-      <Bell size={15} aria-hidden="true" />{t("repositoryNotifications.loading", { defaultValue: "Loading subscription" })}
+      <Bell size={15} aria-hidden="true" />{t("repositoryNotifications.loading", { defaultValue: "Loading repository subscription" })}
     </button>;
   }
   if (!email.data?.notification_email) {
     return <Link className="button secondary small repository-subscription-control" to="/settings/account">
-      <MailWarning size={15} aria-hidden="true" />{t("repositoryNotifications.bindEmail", { defaultValue: "Set notification email" })}
+      <MailWarning size={15} aria-hidden="true" />{t("repositoryNotifications.bindEmail", { defaultValue: "Set email for repository notifications" })}
     </Link>;
   }
   if (!subscription.data) return null;
@@ -55,7 +55,7 @@ export function RepositorySubscriptionControl({ orgId, repoId }: { orgId: string
     onClick={() => mutation.mutate(!subscribed)}>
     {subscribed ? <BellRing size={15} aria-hidden="true" /> : <Bell size={15} aria-hidden="true" />}
     {t(subscribed ? "repositoryNotifications.subscribed" : "repositoryNotifications.subscribe", {
-      defaultValue: subscribed ? "Subscribed" : "Subscribe",
+      defaultValue: subscribed ? "Repository subscribed" : "Subscribe to repository",
     })}
   </button>;
 }

@@ -167,6 +167,12 @@ describe("canonical issue read authority", () => {
   });
 
   it("renders anonymous public issue content without any mutation controls", async () => {
+    let subscriptionRequests = 0;
+    server.use(
+      repositorySubscriptionMetaHandler(),
+      http.get("http://localhost/api/v1/profile/email", () => { subscriptionRequests += 1; return HttpResponse.json({ available: true, notification_email: "reader@example.test" }); }),
+      http.get("http://localhost/api/v1/orgs/:orgId/repos/:repoId/subscription", () => { subscriptionRequests += 1; return HttpResponse.json(repositorySubscriptionFixture()); }),
+    );
     installIssueDetailHandlers([relationshipFixture("github", "42")]);
     const { container } = renderIssueDetail(activeRepository(false, ["read"]));
     expect(await screen.findByRole("heading", { name: /Runner contract/ })).toBeVisible();
@@ -177,6 +183,9 @@ describe("canonical issue read authority", () => {
     expect(screen.queryByRole("button", { name: /reaction/i })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Read-only conversation" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
+    expect(screen.queryByRole("button", { name: "Subscribe to repository" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Set email for repository notifications" })).not.toBeInTheDocument();
+    expect(subscriptionRequests).toBe(0);
     const relationship = await screen.findByRole("link", { name: /Runner projection/ });
     expect(screen.getByText("Pull request")).toBeVisible();
     expect(relationship).toHaveAttribute("target", "_blank");
@@ -211,6 +220,31 @@ describe("canonical issue read authority", () => {
     expect(await screen.findByText("Merge request")).toBeVisible();
     expect(screen.getByText("Binding mismatch")).toBeVisible();
     expect(screen.queryByText("abc123")).not.toBeInTheDocument();
+  });
+
+  it("offers repository subscription to an authenticated reader without triage authority", async () => {
+    server.use(
+      repositorySubscriptionMetaHandler(),
+      http.get("http://localhost/api/v1/profile/email", () => HttpResponse.json({ available: true, notification_email: "reader@example.test" })),
+      http.get("http://localhost/api/v1/orgs/:orgId/repos/:repoId/subscription", () => HttpResponse.json(repositorySubscriptionFixture())),
+    );
+    installIssueDetailHandlers();
+    renderIssueDetail(activeRepository(true, ["read"]));
+    expect(await screen.findByRole("button", { name: "Subscribe to repository" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("button", { name: /^Edit$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the account-settings guide when an authenticated reader has no verified email", async () => {
+    server.use(
+      repositorySubscriptionMetaHandler(),
+      http.get("http://localhost/api/v1/profile/email", () => HttpResponse.json({ available: true, notification_email: null })),
+      http.get("http://localhost/api/v1/orgs/:orgId/repos/:repoId/subscription", () => HttpResponse.json(repositorySubscriptionFixture())),
+    );
+    installIssueDetailHandlers();
+    renderIssueDetail(activeRepository(true, ["read"]));
+    expect(await screen.findByRole("link", { name: "Set email for repository notifications" })).toHaveAttribute("href", "/settings/account");
+    expect(screen.queryByRole("button", { name: "Subscribe to repository" })).not.toBeInTheDocument();
   });
 });
 
@@ -296,6 +330,21 @@ function installIssueDetailHandlers(relationships: CodeChangeRelationship[] = []
     http.get("http://localhost/repos/acme/workflow/issues/comments/9/reactions", () => HttpResponse.json([reactionFixture()])),
     http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", () => HttpResponse.json({ relationships })),
   );
+}
+
+function repositorySubscriptionMetaHandler() {
+  return http.get("http://localhost/api/v1/meta", () => HttpResponse.json({
+    api_version: "v1",
+    features: {
+      bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: false,
+      webhooks: false, change_boards: false, runner: false, recovery_exchange: true,
+      email_notifications: true, repository_email_subscriptions: true,
+    },
+  }));
+}
+
+function repositorySubscriptionFixture() {
+  return { subscribed: false, ignored: false, reason: "", representation_version: 0, collection_version: 1 };
 }
 
 function relationshipFixture(provider = "github", externalId = "42", sourceBindingMatch: CodeChangeRelationship["source_binding_match"] = "matched", metadata?: Record<string, unknown>): CodeChangeRelationship {

@@ -57,10 +57,10 @@ export const router = createBrowserRouter([
 function RouteErrorPage() {
   const { t } = useTranslation();
   const error = useRouteError();
-  return <div className="public-narrow"><div className="empty-state"><span className="eyebrow coral-text">{t("route.errorEyebrow")}</span><h1>{t("route.errorTitle")}</h1><p>{error instanceof Error ? error.message : t("route.errorFallback")}</p><Link className="button primary" to="/">{t("route.returnOverview")}</Link></div></div>;
+  return <div className="public-narrow"><div className="empty-state"><span className="eyebrow coral-text">{t("route.errorEyebrow")}</span><h1>{t("route.errorTitle")}</h1><p>{error instanceof Error ? error.message : t("route.errorFallback")}</p><Link className="button primary" to="/">{t("route.returnRepositories")}</Link></div></div>;
 }
 
 function NotFoundPage() {
   const { t } = useTranslation();
-  return <div className="page"><div className="empty-state"><span className="eyebrow">{t("route.notFoundEyebrow")}</span><h1>{t("route.notFoundTitle")}</h1><p>{t("route.notFoundDescription")}</p><Link className="button primary" to="/">{t("route.returnOverview")}</Link></div></div>;
+  return <div className="page"><div className="empty-state"><span className="eyebrow">{t("route.notFoundEyebrow")}</span><h1>{t("route.notFoundTitle")}</h1><p>{t("route.notFoundDescription")}</p><Link className="button primary" to="/">{t("route.returnRepositories")}</Link></div></div>;
 }

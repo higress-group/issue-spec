@@ -106,13 +106,13 @@ describe("repository email subscription control", () => {
     );
     renderApp(<RepositoryHeader repository={repository} section="settings" title="Repository workspace" description="Repository administration" />, routes[0].route);
     const user = userEvent.setup();
-    const subscribe = await screen.findByRole("button", { name: "Subscribe" });
+    const subscribe = await screen.findByRole("button", { name: "Subscribe to repository" });
     expect(subscribe).toHaveAttribute("aria-pressed", "false");
     await user.click(subscribe);
-    const active = await screen.findByRole("button", { name: "Subscribed" });
+    const active = await screen.findByRole("button", { name: "Repository subscribed" });
     expect(active).toHaveAttribute("aria-pressed", "true");
     await user.click(active);
-    expect(await screen.findByRole("button", { name: "Subscribe" })).toHaveAttribute("aria-pressed", "false");
+    expect(await screen.findByRole("button", { name: "Subscribe to repository" })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("guides a user without a verified address to account settings", async () => {
@@ -132,7 +132,7 @@ describe("repository email subscription control", () => {
       })),
     );
     renderApp(<RepositoryHeader repository={repository} section="settings" title="Repository workspace" description="Repository administration" />, routes[0].route);
-    expect(await screen.findByRole("link", { name: "Set notification email" })).toHaveAttribute("href", "/settings/account");
-    expect(screen.queryByRole("button", { name: "Subscribe" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Set email for repository notifications" })).toHaveAttribute("href", "/settings/account");
+    expect(screen.queryByRole("button", { name: "Subscribe to repository" })).not.toBeInTheDocument();
   });
 });

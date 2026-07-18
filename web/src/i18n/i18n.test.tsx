@@ -24,6 +24,10 @@ describe("language configuration", () => {
   it("uses product-specific Chinese terminology across administration and repository surfaces", async () => {
     await i18n.changeLanguage("zh-CN");
     expect(i18n.t("navigation.repositories")).toBe("仓库");
+    expect(i18n.t("navigation.allOrganizations")).toBe("全部组织");
+    expect(i18n.t("dashboard.title")).toBe("仓库");
+    expect(i18n.t("dashboard.chooseOrganization")).toBe("选择组织");
+    expect(i18n.t("repositoryNotifications.subscribe")).toBe("订阅仓库");
     expect(i18n.t("navigation.administration")).toBe("管理后台");
     expect(i18n.t("members.title")).toBe("组织成员");
     expect(i18n.t("collaborators.title")).toBe("仓库协作者");

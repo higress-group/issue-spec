@@ -16,6 +16,8 @@ import type { IssueComment } from "./types";
 import { Avatar } from "../../app/avatar";
 import { useTranslation } from "react-i18next";
 import { copyText } from "../../lib/clipboard";
+import { RepositorySubscriptionControl } from "../../repos/repository-subscription-control";
+import "../../repos/repository-notifications.css";
 
 const commentAnchorPattern = /^#issuecomment-[1-9]\d*$/;
 
@@ -81,6 +83,7 @@ export function IssueDetail({ active }: { active: ActiveRepository }) {
   const repo = active.repository.repository.name;
   const canContribute = active.authenticated && active.repository.allowed_actions.includes("contribute");
   const canTriage = active.authenticated && active.repository.allowed_actions.includes("triage");
+  const canRead = active.authenticated && active.repository.allowed_actions.includes("read");
   const current = useCurrentContext(active.authenticated);
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
@@ -104,7 +107,7 @@ export function IssueDetail({ active }: { active: ActiveRepository }) {
   const status = typeof issue.error === "object" && issue.error && "status" in issue.error ? Number(issue.error.status) : 0;
   if (!issue.data) return <IssueStatus status={status === 403 ? 403 : 404} />;
   const item = issue.data;
-  return <div className="issue-page issue-detail-page"><header className="detail-header"><div className="detail-title"><Link className="issue-back" to={repositoryIssuePath(active)}>← {owner} / {repo}</Link><h1>{item.title} <span>#{item.number}</span></h1><div className="detail-state-row"><span className={`state-badge ${item.state}`}><CircleDot aria-hidden="true" />{t(item.state === "open" ? "issues.detail.stateOpen" : "issues.detail.stateClosed")}</span><span>{t("issues.detail.openedOn", { actor: displayActor(item.user), date: formatRelative(item.created_at) })}</span><span>{t("issues.detail.comments", { count: item.comments })}</span></div></div>{canTriage ? <div className="header-actions"><button className="issue-button" type="button" onClick={() => setEditing((value) => !value)}><Pencil aria-hidden="true" />{t(editing ? "issues.detail.cancelEdit" : "issues.detail.edit")}</button><button className="issue-button" type="button" disabled={updateState.isPending} onClick={() => updateState.mutate(item.state === "open" ? "closed" : "open")}><RotateCcw aria-hidden="true" />{t(item.state === "open" ? "issues.detail.close" : "issues.detail.reopen")}</button></div> : null}</header>
+  return <div className="issue-page issue-detail-page"><header className="detail-header"><div className="detail-title"><Link className="issue-back" to={repositoryIssuePath(active)}>← {owner} / {repo}</Link><h1>{item.title} <span>#{item.number}</span></h1><div className="detail-state-row"><span className={`state-badge ${item.state}`}><CircleDot aria-hidden="true" />{t(item.state === "open" ? "issues.detail.stateOpen" : "issues.detail.stateClosed")}</span><span>{t("issues.detail.openedOn", { actor: displayActor(item.user), date: formatRelative(item.created_at) })}</span><span>{t("issues.detail.comments", { count: item.comments })}</span></div></div>{canRead || canTriage ? <div className="header-actions">{canRead ? <RepositorySubscriptionControl orgId={active.organization.id} repoId={active.repository.repository.id} /> : null}{canTriage ? <><button className="issue-button" type="button" onClick={() => setEditing((value) => !value)}><Pencil aria-hidden="true" />{t(editing ? "issues.detail.cancelEdit" : "issues.detail.edit")}</button><button className="issue-button" type="button" disabled={updateState.isPending} onClick={() => updateState.mutate(item.state === "open" ? "closed" : "open")}><RotateCcw aria-hidden="true" />{t(item.state === "open" ? "issues.detail.close" : "issues.detail.reopen")}</button></> : null}</div> : null}</header>
     <MutationProblem error={updateState.error} />
     <div className="detail-grid"><div className="timeline"><article className="timeline-card issue-origin"><header><Avatar login={item.user.login} displayName={item.user.name} src={item.user.avatar_url} tone="coral" /><span><AuthorName user={item.user} /><small>{t("issues.detail.openingNote")}</small></span></header><div className="timeline-body">{editing ? <IssueEditor initial={{ title: item.title, body: item.body, labels: item.labels.map((label) => label.name) }} labels={labels.data ?? []} submitLabel={t("issues.detail.saveIssue")} pending={updateIssue.isPending} error={updateIssue.error} onCancel={() => setEditing(false)} onSubmit={(draft) => updateIssue.mutate(draft)} /> : item.body ? <MarkdownView source={item.body} /> : <p className="issue-empty-copy">{t("issues.detail.noDescription")}</p>}</div></article>
       {comments.isLoading ? <IssueLoading label={t("issues.detail.loadingConversation")} /> : comments.data?.map((comment) => <EditableComment key={comment.id} comment={comment} owner={owner} repo={repo} issuePath={repositoryIssuePath(active, item.number)} currentLogin={current.data?.user.login ?? ""} canContribute={canContribute} canTriage={canTriage} />)}
