@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
@@ -233,6 +234,47 @@ func TestProcessGeneratorRejectsWorkspaceIdentityOrClassMismatch(t *testing.T) {
 	}})
 	if err == nil || !strings.Contains(err.Error(), "execution class") {
 		t.Fatalf("expected workspace class mismatch, got %v", err)
+	}
+}
+
+func TestProcessGeneratorRendersMinimalPortableAssignmentInput(t *testing.T) {
+	body, err := ProcessComment(ProcessCommentOptions{
+		Common: CommonOptions{ID: "PROCESS-005", Status: "ready"},
+		Input: ProcessInput{
+			Title: "assignment schema", ParentTask: "TASK-003",
+			Scope: "pure schemas", Covers: []string{"SPEC-001", "SPEC-002", "SPEC-005"},
+			Assignment: &assignment.ProcessInput{
+				Objective:     "Define portable role packets",
+				RequiredTests: []assignment.TestSelector{{ID: "unit", Command: "go test ./internal/assignment"}},
+				CommitPolicy:  &assignment.CommitPolicy{RequireSingleCommit: true, RequireDCO: true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"### Assignment", `"objective": "Define portable role packets"`, `"required_tests"`, `"require_dco": true`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("generated PROCESS missing %q:\n%s", want, body)
+		}
+	}
+	for _, forbidden := range []string{"worktree_path", "owner_token", "closure_policy", "archive_policy"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("generated PROCESS contains delivery/workflow field %q:\n%s", forbidden, body)
+		}
+	}
+	parsed := model.ParseTypedComment(body)
+	if len(parsed.Errors) != 0 || parsed.Assignment == nil || parsed.Assignment.Objective != "Define portable role packets" {
+		t.Fatalf("parsed PROCESS = %+v", parsed)
+	}
+}
+
+func TestProcessGeneratorRejectsEmptyAssignmentInput(t *testing.T) {
+	_, err := ProcessComment(ProcessCommentOptions{Common: CommonOptions{ID: "PROCESS-005"}, Input: ProcessInput{
+		Title: "assignment schema", Assignment: &assignment.ProcessInput{},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "at least one structured field") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

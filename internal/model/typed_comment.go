@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/higress-group/issue-spec/internal/assignment"
 )
 
 // RepresentationDigest returns the lowercase SHA-256 digest of the exact
@@ -40,19 +42,20 @@ var AllowedStatuses = map[string]bool{
 }
 
 type TypedComment struct {
-	Marker             Marker              `json:"marker"`
-	Agent              string              `json:"agent"`
-	AgentSessionID     string              `json:"agent_session_id,omitempty"`
-	AgentSessionSource string              `json:"agent_session_source,omitempty"`
-	SubjectRevision    string              `json:"subject_revision,omitempty"`
-	Type               string              `json:"type"`
-	ID                 string              `json:"id"`
-	Status             string              `json:"status"`
-	Scope              string              `json:"scope"`
-	Links              map[string][]string `json:"links"`
-	Body               string              `json:"-"`
-	Errors             []string            `json:"errors,omitempty"`
-	HasHead            bool                `json:"has_header"`
+	Marker             Marker                   `json:"marker"`
+	Agent              string                   `json:"agent"`
+	AgentSessionID     string                   `json:"agent_session_id,omitempty"`
+	AgentSessionSource string                   `json:"agent_session_source,omitempty"`
+	SubjectRevision    string                   `json:"subject_revision,omitempty"`
+	Assignment         *assignment.ProcessInput `json:"assignment,omitempty"`
+	Type               string                   `json:"type"`
+	ID                 string                   `json:"id"`
+	Status             string                   `json:"status"`
+	Scope              string                   `json:"scope"`
+	Links              map[string][]string      `json:"links"`
+	Body               string                   `json:"-"`
+	Errors             []string                 `json:"errors,omitempty"`
+	HasHead            bool                     `json:"has_header"`
 }
 
 type BodyOptions struct {
@@ -159,6 +162,14 @@ func ParseTypedComment(body string) TypedComment {
 	if hasMarker && !tc.HasHead {
 		tc.Errors = append(tc.Errors, "typed comment is missing visible header")
 	}
+	if tc.Type == "PROCESS" {
+		input, explicit, err := parseProcessAssignment(body)
+		if err != nil {
+			tc.Errors = append(tc.Errors, err.Error())
+		} else if explicit {
+			tc.Assignment = &input
+		}
+	}
 	for _, field := range []struct {
 		name  string
 		value string
@@ -174,6 +185,29 @@ func ParseTypedComment(body string) TypedComment {
 		}
 	}
 	return tc
+}
+
+func parseProcessAssignment(body string) (assignment.ProcessInput, bool, error) {
+	sections := markdownSectionContents(LogicalBody(body), "### Assignment")
+	if len(sections) == 0 {
+		return assignment.ProcessInput{}, false, nil
+	}
+	if len(sections) != 1 {
+		return assignment.ProcessInput{}, true, errors.New("PROCESS has multiple `### Assignment` sections")
+	}
+	section := strings.TrimSpace(sections[0])
+	if !strings.HasPrefix(section, "```json\n") || !strings.HasSuffix(section, "\n```") {
+		return assignment.ProcessInput{}, true, errors.New("`### Assignment` must contain exactly one fenced `json` object")
+	}
+	payload := strings.TrimSuffix(strings.TrimPrefix(section, "```json\n"), "\n```")
+	if strings.TrimSpace(payload) == "" || strings.Contains(payload, "```") {
+		return assignment.ProcessInput{}, true, errors.New("`### Assignment` must contain exactly one fenced `json` object")
+	}
+	input, err := assignment.ParseProcessInputJSON([]byte(payload))
+	if err != nil {
+		return assignment.ProcessInput{}, true, err
+	}
+	return input, true, nil
 }
 
 func EnsureTypedBody(commentType, id, body string, opts BodyOptions) (string, error) {

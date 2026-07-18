@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
@@ -231,6 +232,7 @@ type ProcessInput struct {
 	Dependencies        []string                         `json:"dependencies"`
 	WriteOwnership      []string                         `json:"write_ownership"`
 	Workspace           *model.ProcessWorkspace          `json:"workspace,omitempty"`
+	Assignment          *assignment.ProcessInput         `json:"assignment,omitempty"`
 	Covers              []string                         `json:"covers"`
 	Handoff             string                           `json:"handoff"`
 	StatusNote          string                           `json:"status_note"`
@@ -279,6 +281,13 @@ func ProcessComment(opts ProcessCommentOptions) (string, error) {
 			return "", err
 		}
 		fmt.Fprintf(&b, "\n%s\n", workspace)
+	}
+	if opts.Input.Assignment != nil {
+		payload, err := assignment.ProcessInputJSON(*opts.Input.Assignment)
+		if err != nil {
+			return "", fmt.Errorf("invalid PROCESS Assignment input: %w", err)
+		}
+		fmt.Fprintf(&b, "\n### Assignment\n\n```json\n%s\n```\n", payload)
 	}
 	if scope := strings.TrimSpace(opts.Input.Scope); scope != "" {
 		fmt.Fprintf(&b, "\n### Scope\n\n%s\n", scope)

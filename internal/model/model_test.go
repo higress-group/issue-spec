@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/higress-group/issue-spec/internal/assignment"
 )
 
 func TestRepresentationDigestUsesExactMarkdownBytes(t *testing.T) {
@@ -68,6 +70,71 @@ func TestTypedCommentSessionMetadataRenderParseAndJSON(t *testing.T) {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("json missing %q: %s", want, data)
 		}
+	}
+}
+
+func TestTypedProcessAssignmentCarrierStrictlyParsesStructuredInput(t *testing.T) {
+	body, err := EnsureTypedBody("PROCESS", "PROCESS-005", `## Process: schema
+
+### Assignment
+
+`+"```json"+`
+{
+  "objective": "Define a portable schema",
+  "scenario_selectors": [
+    {"spec_id": "SPEC-001", "scenario": "bounded packet"}
+  ],
+  "required_tests": [
+    {"id": "unit", "command": "go test ./internal/assignment"}
+  ]
+}
+`+"```"+`
+`, BodyOptions{Status: "ready"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := ParseTypedComment(body)
+	if len(parsed.Errors) != 0 {
+		t.Fatalf("parse errors = %v", parsed.Errors)
+	}
+	if parsed.Assignment == nil || parsed.Assignment.Objective != "Define a portable schema" {
+		t.Fatalf("assignment = %+v", parsed.Assignment)
+	}
+	if len(parsed.Assignment.ScenarioSelectors) != 1 || parsed.Assignment.ScenarioSelectors[0].SpecID != "SPEC-001" {
+		t.Fatalf("scenario selectors = %+v", parsed.Assignment.ScenarioSelectors)
+	}
+	data, err := json.Marshal(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"assignment":{"objective":"Define a portable schema"`) {
+		t.Fatalf("typed JSON missing assignment: %s", data)
+	}
+
+	withoutSelector, err := assignment.ProcessInputJSON(assignment.ProcessInput{Objective: "All covered scenarios"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(withoutSelector), "scenario_selectors") {
+		t.Fatalf("empty selector must remain the all-covered-scenarios sentinel: %s", withoutSelector)
+	}
+}
+
+func TestTypedProcessAssignmentCarrierRejectsUnknownFields(t *testing.T) {
+	body, err := EnsureTypedBody("PROCESS", "PROCESS-005", `## Process: schema
+
+### Assignment
+
+`+"```json"+`
+{"objective":"schema","free_text_test_hint":"guess this"}
+`+"```"+`
+`, BodyOptions{Status: "ready"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := ParseTypedComment(body)
+	if len(parsed.Errors) == 0 || !strings.Contains(strings.Join(parsed.Errors, "; "), `unknown field "free_text_test_hint"`) {
+		t.Fatalf("errors = %v", parsed.Errors)
 	}
 }
 
