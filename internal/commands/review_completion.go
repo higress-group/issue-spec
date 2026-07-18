@@ -39,7 +39,8 @@ type acceptedReviewReceipt struct {
 	Provenance           assignment.Provenance    `json:"provenance"`
 }
 
-func validateReviewReceiptBinding(receipt assignment.Receipt, binding *processworkspace.AssignmentBinding) error {
+func validateReviewReceiptBinding(receipt assignment.Receipt, sealed assignment.Assignment,
+	binding *processworkspace.AssignmentBinding) error {
 	if err := receipt.ValidateForAcceptance(); err != nil {
 		return err
 	}
@@ -54,6 +55,14 @@ func validateReviewReceiptBinding(receipt assignment.Receipt, binding *processwo
 		receipt.AssignmentGeneration != binding.Generation {
 		return errors.New("review receipt does not match the authoritative assignment id, digest, and generation")
 	}
+	digest, err := assignment.AssignmentDigest(sealed)
+	if err != nil {
+		return fmt.Errorf("validate sealed review assignment: %w", err)
+	}
+	if sealed.Role != assignment.RoleReview || sealed.Review == nil || sealed.ID != binding.AssignmentID ||
+		digest != binding.Digest || sealed.SubjectRevision != binding.SubjectRevision || sealed.ProcessID == "" {
+		return errors.New("sealed review assignment does not exactly match the authoritative PROCESS binding")
+	}
 	if receipt.SubjectRevision != binding.SubjectRevision {
 		return errors.New("review receipt subject revision does not match the authoritative exact snapshot")
 	}
@@ -62,7 +71,29 @@ func validateReviewReceiptBinding(receipt assignment.Receipt, binding *processwo
 		strings.EqualFold(writer, "Coordinator") {
 		return errors.New("review receipt must be owned by one non-Coordinator reviewer identity")
 	}
+	if reviewerMatchesExactAuthors(writer, sealed.Review.Authors) {
+		return errors.New("declared review receipt writer and subject must not match any normalized exact-diff author from the sealed assignment")
+	}
 	return nil
+}
+
+func reviewerMatchesExactAuthors(reviewer string, authors []string) bool {
+	reviewer = normalizeReviewIdentity(reviewer)
+	for _, author := range authors {
+		if reviewer == normalizeReviewIdentity(author) {
+			return true
+		}
+		if open, close := strings.LastIndex(author, "<"), strings.LastIndex(author, ">"); open >= 0 && close > open {
+			if reviewer == normalizeReviewIdentity(author[:open]) || reviewer == normalizeReviewIdentity(author[open+1:close]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeReviewIdentity(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
 }
 
 func acceptedReviewReceiptFrom(receipt assignment.Receipt) acceptedReviewReceipt {

@@ -200,12 +200,14 @@ type ReviewResult struct {
 }
 
 type Finding struct {
-	ID       string `json:"id"`
-	Path     string `json:"path"`
-	Side     string `json:"side"`
-	Line     int    `json:"line"`
-	Severity string `json:"severity"`
-	Message  string `json:"message"`
+	ID             string `json:"id"`
+	SpecID         string `json:"spec_id"`
+	OwnerProcessID string `json:"owner_process_id"`
+	Path           string `json:"path"`
+	Side           string `json:"side"`
+	Line           int    `json:"line"`
+	Severity       string `json:"severity"`
+	Message        string `json:"message"`
 }
 
 type VerificationResult struct {

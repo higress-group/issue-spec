@@ -408,6 +408,12 @@ func validateFinding(index int, finding Finding) error {
 	if err := validateStableID(prefix+".id", finding.ID); err != nil {
 		return err
 	}
+	if !specIDPattern.MatchString(finding.SpecID) {
+		return fmt.Errorf("%s.spec_id: invalid value %q", prefix, finding.SpecID)
+	}
+	if !processIDPattern.MatchString(finding.OwnerProcessID) {
+		return fmt.Errorf("%s.owner_process_id: invalid value %q", prefix, finding.OwnerProcessID)
+	}
 	if err := validatePortablePath(prefix+".path", finding.Path); err != nil {
 		return err
 	}

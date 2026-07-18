@@ -227,8 +227,8 @@ func TestReceiptRejectsDuplicateIdentityKeys(t *testing.T) {
 		Role: RoleReview, ResultSchemaVersion: ReceiptSchemaVersion, SubjectRevision: subjectRevision,
 		Provenance: Provenance{Route: RouteRoleOwned, Assurance: AssuranceSelfReported, Writer: "Reviewer", Subject: "Reviewer", Source: "review-submit"},
 		Review: &ReviewResult{Verdict: ReviewChangesRequested, Findings: []Finding{
-			{ID: "FINDING-001", Path: "internal/assignment/types.go", Side: "RIGHT", Line: 10, Severity: "P2", Message: "first"},
-			{ID: "FINDING-001", Path: "internal/assignment/codec.go", Side: "RIGHT", Line: 20, Severity: "P1", Message: "conflicting duplicate"},
+			{ID: "FINDING-001", SpecID: "SPEC-001", OwnerProcessID: "PROCESS-002", Path: "internal/assignment/types.go", Side: "RIGHT", Line: 10, Severity: "P2", Message: "first"},
+			{ID: "FINDING-001", SpecID: "SPEC-001", OwnerProcessID: "PROCESS-002", Path: "internal/assignment/codec.go", Side: "RIGHT", Line: 20, Severity: "P1", Message: "conflicting duplicate"},
 		}},
 	}
 
@@ -255,6 +255,33 @@ func TestReceiptRejectsDuplicateIdentityKeys(t *testing.T) {
 			_, err := SealReceipt(test.value)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestReviewFindingRequiresSealedSpecAndOwnerProcessIdentity(t *testing.T) {
+	base := Receipt{SchemaVersion: ReceiptSchemaVersion, ID: "receipt-review-finding",
+		AssignmentID: "assignment-review-1", AssignmentDigest: validDigest, AssignmentGeneration: 1,
+		Role: RoleReview, ResultSchemaVersion: ReceiptSchemaVersion, SubjectRevision: subjectRevision,
+		Provenance: Provenance{Route: RouteRoleOwned, Assurance: AssuranceSelfReported,
+			Writer: "Reviewer", Subject: "Reviewer", Source: "review-submit"},
+		Review: &ReviewResult{Verdict: ReviewChangesRequested, Findings: []Finding{{ID: "FINDING-001",
+			SpecID: "SPEC-001", OwnerProcessID: "PROCESS-002", Path: "internal/x.go", Side: "RIGHT", Line: 10,
+			Severity: "P1", Message: "repair exact identity"}}}}
+	for name, mutate := range map[string]func(*Finding){
+		"missing spec":  func(f *Finding) { f.SpecID = "" },
+		"invalid spec":  func(f *Finding) { f.SpecID = "SPEC-one" },
+		"missing owner": func(f *Finding) { f.OwnerProcessID = "" },
+		"invalid owner": func(f *Finding) { f.OwnerProcessID = "PROCESS-one" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := base
+			candidate.Review = &ReviewResult{Verdict: base.Review.Verdict,
+				Findings: append([]Finding(nil), base.Review.Findings...)}
+			mutate(&candidate.Review.Findings[0])
+			if _, err := SealReceipt(candidate); err == nil {
+				t.Fatal("sealed finding identity omission was accepted")
 			}
 		})
 	}

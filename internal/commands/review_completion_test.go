@@ -15,10 +15,11 @@ import (
 
 func TestReviewReceiptBindingAndImmutableProjection(t *testing.T) {
 	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	sealed := testReviewAssignment(t, receipt.SubjectRevision)
 	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
 		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleReview,
 		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
-	if err := validateReviewReceiptBinding(receipt, binding); err != nil {
+	if err := validateReviewReceiptBinding(receipt, sealed, binding); err != nil {
 		t.Fatal(err)
 	}
 	body := "canonical REVIEW\n"
@@ -43,6 +44,7 @@ func TestReviewReceiptBindingAndImmutableProjection(t *testing.T) {
 
 func TestReviewReceiptBindingRejectsAuthorityDrift(t *testing.T) {
 	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	sealed := testReviewAssignment(t, receipt.SubjectRevision)
 	valid := processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
 		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleReview,
 		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
@@ -60,26 +62,78 @@ func TestReviewReceiptBindingRejectsAuthorityDrift(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			candidate, binding := receipt, valid
 			mutate(&candidate, &binding)
-			if err := validateReviewReceiptBinding(candidate, &binding); err == nil {
+			if err := validateReviewReceiptBinding(candidate, sealed, &binding); err == nil {
 				t.Fatal("authority drift was accepted")
 			}
 		})
 	}
 }
 
+func TestReviewReceiptBindingMatchesNormalizedExactDiffAuthors(t *testing.T) {
+	sealed := testReviewAssignment(t, "head-abc")
+	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleReview,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	for _, identity := range []string{"Independent Reviewer", "independent@example.com"} {
+		candidate := receipt
+		candidate.Provenance.Writer, candidate.Provenance.Subject = identity, identity
+		candidate.ReceiptDigest = ""
+		candidate, err := assignment.SealReceipt(candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateReviewReceiptBinding(candidate, sealed, binding); err != nil {
+			t.Fatalf("identity %q: %v", identity, err)
+		}
+	}
+	for _, identity := range []string{"CODE AUTHOR", "AUTHOR@EXAMPLE.COM", "Code Author <author@example.com>"} {
+		candidate := receipt
+		candidate.Provenance.Writer, candidate.Provenance.Subject = identity, identity
+		candidate.ReceiptDigest = ""
+		candidate, err := assignment.SealReceipt(candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateReviewReceiptBinding(candidate, sealed, binding); err == nil || !strings.Contains(err.Error(), "must not match") {
+			t.Fatalf("code-author identity %q error=%v", identity, err)
+		}
+	}
+}
+
 func testSealedReviewReceipt(t *testing.T, verdict assignment.ReviewVerdict, findings []assignment.Finding) assignment.Receipt {
 	t.Helper()
+	sealed := testReviewAssignment(t, "head-abc")
+	digest, err := assignment.AssignmentDigest(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
 	value := assignment.Receipt{SchemaVersion: assignment.ReceiptSchemaVersion, ID: "receipt-review-1",
-		AssignmentID: "assignment-review-1", AssignmentDigest: strings.Repeat("a", 64), AssignmentGeneration: 1,
+		AssignmentID: sealed.ID, AssignmentDigest: digest, AssignmentGeneration: 1,
 		Role: assignment.RoleReview, ResultSchemaVersion: assignment.ReceiptSchemaVersion, SubjectRevision: "head-abc",
 		Provenance: assignment.Provenance{Route: assignment.RouteRoleOwned, Assurance: assignment.AssuranceSelfReported,
 			Writer: "Independent Reviewer", Subject: "Independent Reviewer", Source: "review-submit"},
 		Review: &assignment.ReviewResult{Verdict: verdict, Findings: findings}}
-	sealed, err := assignment.SealReceipt(value)
+	result, err := assignment.SealReceipt(value)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return sealed
+	return result
+}
+
+func testReviewAssignment(t *testing.T, subject string) assignment.Assignment {
+	t.Helper()
+	value := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "assignment-review-1",
+		Role: assignment.RoleReview, Repository: "o/r", Issue: 9, ProcessID: "PROCESS-101", SubjectRevision: subject,
+		Scenarios:           []assignment.ScenarioRef{{SpecID: "SPEC-002", Scenario: "exact review"}},
+		Policy:              assignment.Policy{RequireExactRevision: true, MaxResultItems: 64},
+		ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		Review: &assignment.ReviewPayload{SnapshotRevision: subject, DiffBaseRevision: strings.Repeat("a", 40),
+			Authors: []string{"Code Author <author@example.com>"}, Scope: []string{"internal/**"}}}
+	if err := value.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return value
 }
 
 func TestValidateExternalReviewCompletionControlledTime(t *testing.T) {
