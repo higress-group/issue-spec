@@ -461,7 +461,7 @@ func TestWorkflowKeepsPublicationAuthorityBehindCompleteTrustedBuild(t *testing.
 		`if [ "$RELEASE_CHANNEL" = rolling ]; then`, `if [ "$current_main" != "$RELEASE_REVISION" ]; then`,
 		`git/ref/tags/$RELEASE_TAG`, `git/refs/tags/$RELEASE_TAG`, `-F force=true`, `-f ref="refs/tags/$RELEASE_TAG"`,
 		`gh release upload "$RELEASE_TAG" dist/release/publish/* --clobber`,
-		`gh release edit "$RELEASE_TAG" --title "issue-spec $RELEASE_VERSION"`,
+		`gh release edit "$RELEASE_TAG" --title "latest"`, `--title "issue-spec $RELEASE_VERSION"`,
 		`gh release create "$RELEASE_TAG" --draft --verify-tag`,
 		"gh release edit \"$RELEASE_TAG\" --draft=false --latest=false",
 		`binary="$HOME/.local/bin/issue-spec"`, `"$binary" requirements setup --help`,
@@ -490,9 +490,9 @@ func TestWorkflowKeepsPublicationAuthorityBehindCompleteTrustedBuild(t *testing.
 	createRolling := strings.Index(rollingBody, `gh release create "$RELEASE_TAG" --verify-tag`)
 	uploadRolling := strings.Index(rollingBody, `gh release upload "$RELEASE_TAG"`)
 	verifyRolling := strings.LastIndex(rollingBody, "verify_remote_assets")
-	publishRolling := strings.Index(rollingBody, `gh release edit "$RELEASE_TAG" --title`)
+	publishRolling := strings.Index(rollingBody, `gh release edit "$RELEASE_TAG" --title "latest"`)
 	guardRolling := strings.LastIndex(rollingBody, `guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"`)
-	if moveTag < 0 || createRolling < moveTag || uploadRolling < createRolling || verifyRolling < uploadRolling || publishRolling < verifyRolling || guardRolling < publishRolling {
+	if moveTag < 0 || createRolling < moveTag || uploadRolling < createRolling || verifyRolling < uploadRolling || publishRolling < verifyRolling || guardRolling < publishRolling || strings.Contains(rollingBody, `--title "issue-spec $RELEASE_VERSION"`) {
 		t.Fatalf("rolling update order is unsafe")
 	}
 
@@ -501,7 +501,7 @@ func TestWorkflowKeepsPublicationAuthorityBehindCompleteTrustedBuild(t *testing.
 	uploadSemantic := strings.Index(semanticBody, `gh release upload "$RELEASE_TAG"`)
 	verifySemantic := strings.LastIndex(semanticBody, "verify_remote_assets")
 	publishSemantic := strings.Index(semanticBody, `gh release edit "$RELEASE_TAG" --draft=false --latest=false`)
-	if createSemantic < 0 || uploadSemantic < createSemantic || verifySemantic < uploadSemantic || publishSemantic < verifySemantic {
+	if createSemantic < 0 || uploadSemantic < createSemantic || verifySemantic < uploadSemantic || publishSemantic < verifySemantic || !strings.Contains(semanticBody, `--title "issue-spec $RELEASE_VERSION"`) || strings.Contains(semanticBody, `--title "latest"`) {
 		t.Fatalf("semantic draft/upload/publish order is unsafe")
 	}
 }
