@@ -521,7 +521,8 @@ func TestWorkflowKeepsPublicationAuthorityBehindCompleteTrustedBuild(t *testing.
 		"cancel-in-progress: false", "go test ./...", "diff -r dist/release dist/release-repeat",
 		"actions/attest-build-provenance@v4", "gh attestation verify", "hack/release/rolling-latest.sh",
 		"repos/$GITHUB_REPOSITORY/releases/latest", `select(.draft == false and (.tag_name | startswith("rolling-")))`,
-		`if [ "$rolling_count" = 0 ]; then`, "gh release create", "--draft", ".target_commitish",
+		`--slurp |`, `if [ "$rolling_count" = 0 ]; then`, "gh release create", "--draft", ".target_commitish",
+		`gh release view "$1" --json databaseId --jq .databaseId`, `repos/$GITHUB_REPOSITORY/releases/$release_id`,
 		"gh release upload", "gh release edit \"$RELEASE_TAG\" --draft=false --latest \\",
 		"gh release edit \"$RELEASE_TAG\" --draft=false --latest=false",
 		`binary="$HOME/.local/bin/issue-spec"`, `"$binary" requirements setup --help`,
@@ -535,6 +536,9 @@ func TestWorkflowKeepsPublicationAuthorityBehindCompleteTrustedBuild(t *testing.
 		if strings.Contains(body, forbidden) {
 			t.Errorf("release workflow unexpectedly grants a trigger to %q", forbidden)
 		}
+	}
+	if strings.Contains(body, `releases/tags/$RELEASE_TAG`) {
+		t.Error("release workflow must resolve draft releases by database ID")
 	}
 	create := strings.Index(body, "gh release create")
 	upload := strings.Index(body, "gh release upload")

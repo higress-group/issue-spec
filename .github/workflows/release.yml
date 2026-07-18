@@ -202,6 +202,12 @@ jobs:
             test "$(git rev-parse "$1^{commit}")" = "$2"
           }
 
+          release_json_by_tag() {
+            release_id=$(gh release view "$1" --json databaseId --jq .databaseId)
+            test "$release_id" -gt 0
+            gh api "repos/$GITHUB_REPOSITORY/releases/$release_id"
+          }
+
           guard_candidate_source() {
             if [ "$RELEASE_CHANNEL" = rolling ]; then
               test "$GITHUB_REF" = "refs/heads/main"
@@ -228,8 +234,8 @@ jobs:
           }
 
           published_rolling_count() {
-            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --slurp \
-              --jq '[.[][] | select(.draft == false and (.tag_name | startswith("rolling-")))] | length'
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --slurp |
+              jq '[.[][] | select(.draft == false and (.tag_name | startswith("rolling-")))] | length'
           }
 
           read_latest_rolling_revision() {
@@ -273,7 +279,7 @@ jobs:
 
           guard_candidate_source
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+            release_json=$(release_json_by_tag "$RELEASE_TAG")
             draft=$(jq -r .draft <<<"$release_json")
             if [ "$RELEASE_CHANNEL" = rolling ]; then
               if [ "$draft" = false ]; then
@@ -305,7 +311,7 @@ jobs:
               gh release create "$RELEASE_TAG" --draft --target "$RELEASE_REVISION" \
                 --title "issue-spec $RELEASE_VERSION" --notes-file dist/release/release-notes.md \
                 --latest=false
-              release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+              release_json=$(release_json_by_tag "$RELEASE_TAG")
               test "$(jq -r .target_commitish <<<"$release_json")" = "$RELEASE_REVISION"
             else
               gh release create "$RELEASE_TAG" --draft --verify-tag \
@@ -315,7 +321,7 @@ jobs:
           fi
 
           gh release upload "$RELEASE_TAG" dist/release/publish/*
-          remote_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+          remote_json=$(release_json_by_tag "$RELEASE_TAG")
           local_names=$(find dist/release/publish -maxdepth 1 -type f -printf '%f\n' | sort)
           remote_names=$(jq -r '.assets[].name' <<<"$remote_json" | sort)
           test "$local_names" = "$remote_names"
