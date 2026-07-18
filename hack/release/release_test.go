@@ -404,10 +404,13 @@ func TestPowerShellInstallerHasEquivalentIntegrityAndAtomicGuards(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"ConvertFrom-Json", "Get-FileHash", "manifest.json", "SHA256SUMS", "[System.IO.File]::Replace", "version --json", "finally", "$env:LOCALAPPDATA", "issue-spec\\bin", "/download/$Tag", "/latest/download", "curl.exe"} {
+	for _, required := range []string{"ConvertFrom-Json", "Get-FileHash", "manifest.json", "SHA256SUMS", "[System.IO.File]::Replace($stagedBinary, $destination, $backupBinary", "version --json", "finally", "$env:LOCALAPPDATA", "issue-spec\\bin", "/download/$Tag", "/latest/download", "curl.exe"} {
 		if !bytes.Contains(data, []byte(required)) {
 			t.Errorf("PowerShell installer missing %q", required)
 		}
+	}
+	if bytes.Contains(data, []byte("[System.IO.File]::Replace($stagedBinary, $destination, $null")) {
+		t.Error("PowerShell installer must not pass a null backup path to File.Replace")
 	}
 	if bytes.Contains(data, []byte("Invoke-WebRequest")) {
 		t.Error("PowerShell installer must use curl.exe for release downloads")
