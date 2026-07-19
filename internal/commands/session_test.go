@@ -2,18 +2,10 @@ package commands
 
 import "testing"
 
-func TestResolveWriterSessionPrefersCodexThreadID(t *testing.T) {
-	t.Setenv(codexThreadIDEnv, "codex-session-123")
+func TestResolveWriterSessionIgnoresRuntimeAndDeprecatedFlag(t *testing.T) {
+	t.Setenv("CODEX_THREAD_ID", "codex-session-123")
 	session := resolveWriterSession("supplied-session-456")
-	if session.ID != "codex-session-123" || session.Source != codexThreadIDEnv {
-		t.Fatalf("session = %+v", session)
-	}
-}
-
-func TestResolveWriterSessionFallsBackToExplicitAgentSession(t *testing.T) {
-	t.Setenv(codexThreadIDEnv, "")
-	session := resolveWriterSession("supplied-session-456")
-	if session.ID != "supplied-session-456" || session.Source != agentSessionParamSource {
+	if session.ID != "" || session.Source != "" {
 		t.Fatalf("session = %+v", session)
 	}
 }

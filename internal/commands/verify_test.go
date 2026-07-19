@@ -455,7 +455,7 @@ func errorsContain(errs []string, substr string) bool {
 	return false
 }
 
-func TestBuildFinalVerifyReportReportsSessionDiagnosticsWithoutErrors(t *testing.T) {
+func TestBuildFinalVerifyReportDoesNotRequireSessionMetadata(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
 	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContentWithClass(model.ProcessExecutionVerification))
@@ -469,7 +469,7 @@ func TestBuildFinalVerifyReportReportsSessionDiagnosticsWithoutErrors(t *testing
 	if !report.OK {
 		t.Fatalf("metadata diagnostics should not fail verify: %+v", report.Errors)
 	}
-	if len(report.Diagnostics) != 4 {
+	if len(report.Diagnostics) != 0 {
 		t.Fatalf("diagnostics = %+v", report.Diagnostics)
 	}
 }
@@ -697,7 +697,7 @@ func TestBuildFinalVerifyReportAcceptsExactSelfHostedRationaleAndNativeLedgerRev
 		Process: "PROCESS-001", Spec: "SPEC-001", SpecURL: specURL, ProviderKey: "code.example",
 		ExternalRepository: "acme/widgets-code", ChangeID: "change-42", ReferenceVersion: 7,
 		SubjectRevision: revision, Agent: "Worker Agent A", AgentSessionID: "worker-session",
-		AgentSessionSource: codexThreadIDEnv,
+		AgentSessionSource: "CODEX_THREAD_ID",
 	}, "The implementation preserves the provider-neutral boundary.")
 	if err != nil {
 		t.Fatal(err)

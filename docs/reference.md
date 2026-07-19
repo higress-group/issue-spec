@@ -213,7 +213,6 @@ issue-spec --profile team review sync \
   --revision abc123 \
   --id REVIEW-001 \
   --agent reviewer \
-  --agent-session review-session \
   --json
 ```
 

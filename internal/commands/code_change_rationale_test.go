@@ -11,8 +11,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
-func TestCodeChangeRationaleHelpAndRequiresSession(t *testing.T) {
-	t.Setenv(codexThreadIDEnv, "")
+func TestCodeChangeRationaleHelpKeepsDeprecatedSessionFlag(t *testing.T) {
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
 	if code := app.runCodeChange(t.Context(), []string{"rationale", "--help"}); code != 0 {
@@ -23,15 +22,12 @@ func TestCodeChangeRationaleHelpAndRequiresSession(t *testing.T) {
 			t.Fatalf("help missing %s:\n%s", flag, out.String())
 		}
 	}
-	out.Reset()
-	if code := app.runCodeChange(t.Context(), codeChangeRationaleArgs("why")); code != 2 ||
-		!strings.Contains(errOut.String(), "CODEX_THREAD_ID or --agent-session") {
-		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
+	if !strings.Contains(out.String(), "deprecated compatibility flag; ignored") {
+		t.Fatalf("help does not mark --agent-session deprecated:\n%s", out.String())
 	}
 }
 
 func TestCodeChangeRationaleAppendOnlyExactRetryAndRefresh(t *testing.T) {
-	t.Setenv(codexThreadIDEnv, "worker-session")
 	backend := newFakeCodeChangeBackend()
 	canonical := "https://code.example/acme/widgets/changes/42"
 	backend.references = []github.NativeReference{codeChangeRationaleReference(canonical, "head-abc", 7)}
@@ -60,7 +56,7 @@ func TestCodeChangeRationaleAppendOnlyExactRetryAndRefresh(t *testing.T) {
 		t.Fatalf("result=%+v created=%d", result, created)
 	}
 	marker, found, err := model.FindCodeChangeRationaleMarker(comments[len(comments)-1].Body)
-	if err != nil || !found || marker.Agent != "PROCESS-007 worker" || marker.AgentSessionID != "worker-session" ||
+	if err != nil || !found || marker.Agent != "PROCESS-007 worker" || marker.AgentSessionID != "" ||
 		marker.ReferenceVersion != 7 || marker.SubjectRevision != "head-abc" {
 		t.Fatalf("marker=%+v found=%v err=%v", marker, found, err)
 	}
@@ -96,7 +92,6 @@ func TestCodeChangeRationaleAppendOnlyExactRetryAndRefresh(t *testing.T) {
 }
 
 func TestCodeChangeRationaleRejectsMissingProcessSpecAndChangeLinks(t *testing.T) {
-	t.Setenv(codexThreadIDEnv, "worker-session")
 	canonical := "https://code.example/acme/widgets/changes/42"
 	tests := map[string]struct {
 		body string

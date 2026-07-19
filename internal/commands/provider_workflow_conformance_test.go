@@ -208,7 +208,7 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 			"authoritative final sync by following issue-spec-review",
 			"After that sync, explicitly link the REVIEW to its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC",
 			"Follow issue-spec-workflow for the backend-appropriate rationale command",
-			"Each owning worker authors its own rationale under that worker's --agent and --agent-session"}},
+			"Each owning worker authors its own rationale under that worker's --agent"}},
 		{"verify", verifyCommand, []string{"backend-appropriate rationale and REVIEW completion evidence",
 			"Status forecast and final verify use the same authoritative validator",
 			"The validator owns exact identity, revision, freshness, and legacy compatibility"}},

@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for workflow identity, artifact writer provenance, session metadata, and runner resume handles in issue-spec workflows.
+Define the long-lived behavior contract for portable workflow identity and runner resume handles in issue-spec workflows.
 
-This durable spec is organized by stable capability surfaces rather than by the original proposal's individual SPEC comments. Future changes that extend workflow identity, agent provenance, generated workflow guidance, session diagnostics, or runner resume metadata should update the relevant module below instead of appending a one-to-one copy of new proposal requirements.
+This durable spec is organized by stable capability surfaces rather than by the original proposal's individual SPEC comments. Future changes that extend workflow identity, generated workflow guidance, or runner resume metadata should update the relevant module below instead of appending a one-to-one copy of new proposal requirements.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/20
@@ -13,113 +13,39 @@ Proposal Issues:
 
 ## Requirements
 
-### Requirement: artifact identity model separates logical role from writer provenance
+### Requirement: artifact identity is portable and runtime-session-free
 
-Issue-spec artifacts that record agent metadata MUST preserve the logical workflow role separately from artifact writer session provenance.
+`Agent` is the logical workflow role or assigned label used by issue-spec artifacts. Writer commands MUST NOT read coding-agent-specific runtime session variables, require a runtime session id, or emit new artifact writer session metadata. Correctness and role separation MUST depend on logical Agent, exact revision, typed links, and trusted provider evidence instead.
 
-`Agent` is the logical role or workflow-assigned label. `Agent Session ID` and `Agent Session Source` are artifact writer provenance fields. Implementations MUST NOT overload `Agent` with runtime session ids.
+Legacy `Agent Session ID` and `Agent Session Source` fields remain readable as inert compatibility data. They MUST NOT affect validation, diagnostics, gate decisions, or runner resume behavior. A deprecated `--agent-session` argument MAY remain accepted as a no-op so existing command invocations do not fail.
 
-Typed issue comments, typed comment JSON, PR rationale comments, review findings, finding replies, review sync artifacts, and verification artifacts MUST use a consistent metadata model for logical agent, artifact writer session id, and artifact writer session source.
+#### Scenario: new artifact uses portable logical identity
 
-#### Scenario: visible artifact metadata is distinct
+- **WHEN** any supported coding agent writes an issue-spec artifact with `--agent Review Agent`
+- **THEN** the artifact SHALL record `Agent: Review Agent`
+- **THEN** the writer SHALL NOT require or emit a runtime-specific session id or source
 
-- **WHEN** a writer renders an artifact with logical agent role `Review Agent`, artifact writer session id `codex-session-123`, and source `CODEX_THREAD_ID`
-- **THEN** the rendered metadata SHALL contain `Agent: Review Agent`
-- **THEN** the rendered metadata SHALL contain `Agent Session ID: codex-session-123`
-- **THEN** the rendered metadata SHALL contain `Agent Session Source: CODEX_THREAD_ID`
-- **THEN** the rendered metadata SHALL NOT place `codex-session-123` in the `Agent` field
+#### Scenario: coding-agent environment does not change output
 
-#### Scenario: machine-readable artifact metadata is compatible
+- **WHEN** `CODEX_THREAD_ID` or another coding-agent-specific session variable is present
+- **THEN** artifact rendering and gate decisions SHALL be identical to a process where that variable is absent
 
-- **WHEN** a typed issue comment or PR artifact contains `Agent Session ID` and `Agent Session Source`
-- **THEN** parsers and JSON output SHALL expose those values as additive optional fields
-- **THEN** the existing logical `agent` field SHALL remain the logical role
-- **THEN** existing artifacts without session provenance SHALL remain parseable and valid by default
+#### Scenario: legacy session metadata remains readable but inert
 
-#### Scenario: partial or future metadata is preserved
-
-- **WHEN** an artifact contains only one of `Agent Session ID` or `Agent Session Source`
-- **THEN** parsers SHALL preserve the present value for diagnostics
-- **THEN** tooling SHALL NOT silently invent the missing value
-- **WHEN** an artifact contains unknown future header fields
-- **THEN** those fields SHALL NOT prevent parsing of core type, id, status, scope, links, and known session provenance fields
+- **WHEN** an existing typed comment, rationale, finding, or reply contains legacy `Agent Session ID` or `Agent Session Source` fields
+- **THEN** the artifact SHALL remain parseable without a missing, partial, or invalid-session diagnostic
+- **THEN** those fields SHALL NOT satisfy, strengthen, or invalidate role identity or evidence requirements
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703592
 - https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795652
 - https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795602
 
-### Requirement: writer commands resolve artifact session provenance once and stamp artifacts consistently
-
-CLI commands that write issue-spec artifacts with agent metadata MUST resolve artifact writer session provenance once per command invocation and apply that resolved provenance consistently to newly rendered and pre-rendered artifact bodies.
-
-Writer commands SHOULD accept an explicit session parameter such as `--agent-session` for non-Codex and coordinator-dispatched workflows. The resolver MUST prefer Codex runtime identity, currently `CODEX_THREAD_ID`, when that environment source is present and non-empty. When no Codex source is available, the resolver SHALL use the explicit session parameter as the artifact writer session id when supplied.
-
-#### Scenario: Codex identity has precedence
-
-- **WHEN** `CODEX_THREAD_ID=codex-session-123` is present
-- **WHEN** a writer command receives `--agent-session supplied-session-456`
-- **THEN** the artifact SHALL record `codex-session-123` as the artifact writer session id
-- **THEN** the artifact SHALL record `CODEX_THREAD_ID` as the artifact writer session source
-- **THEN** the artifact SHALL NOT record `supplied-session-456` as the resolved artifact writer session id
-
-#### Scenario: explicit non-Codex fallback is visible
-
-- **WHEN** no Codex session source is present
-- **WHEN** a writer command receives `--agent-session supplied-session-456`
-- **THEN** the artifact SHALL record `supplied-session-456` as the artifact writer session id
-- **THEN** the artifact SHALL record the source as an explicit caller-provided parameter source
-
-#### Scenario: pre-rendered bodies cannot bypass writer-owned provenance
-
-- **WHEN** a writer command receives a body that already contains an issue-spec typed header
-- **THEN** the command SHALL stamp or reconcile the resolved artifact writer session id and source after body normalization
-- **THEN** conflicting pre-rendered session provenance SHALL be replaced by the resolved writer-owned provenance
-
-#### Scenario: missing session input remains non-strict by default
-
-- **WHEN** no Codex source is present
-- **WHEN** the caller does not supply an explicit artifact writer session id
-- **THEN** writer commands MAY omit session provenance or record an explicit missing state
-- **THEN** default non-Codex workflows SHALL NOT fail solely because `CODEX_THREAD_ID` is absent
-
-Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703553
-- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703562
-- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795623
-
-### Requirement: diagnostics report session provenance problems without breaking legacy workflows by default
-
-Artifact-reading commands SHOULD expose detectable missing, partial, invalid, or internally inconsistent artifact writer session provenance in both human-readable and JSON output.
-
-Diagnostics MUST be warning-oriented by default for legacy and non-Codex workflows. Strict failure behavior, if supported, SHALL be explicitly enabled. Diagnostics MUST NOT compare historical artifact session ids to the current process `CODEX_THREAD_ID`; artifacts from older sessions are valid.
-
-#### Scenario: issue artifact diagnostics
-
-- **WHEN** `status`, `verify`, or an equivalent artifact-reading command reads a typed issue artifact that has logical `Agent` metadata but lacks `Agent Session ID` or `Agent Session Source`
-- **THEN** the command SHOULD report a diagnostic for missing or partial artifact writer provenance
-- **THEN** JSON output SHALL include a machine-readable diagnostic entry when JSON output is requested
-
-#### Scenario: PR artifact diagnostics
-
-- **WHEN** `review sync`, `verify --pr`, or an equivalent PR-aware command reads PR rationale, review finding, or finding reply artifacts
-- **THEN** the command SHOULD parse and report logical agent, artifact writer session id, and artifact writer session source where available
-- **THEN** missing or partial PR artifact provenance SHOULD be reported without making legacy PR comments invalid by default
-
-#### Scenario: substantive review summaries ignore metadata
-
-- **WHEN** review finding summaries are extracted from PR review comments
-- **THEN** metadata lines such as `Agent`, `Agent Session ID`, and `Agent Session Source` SHALL NOT be selected as the substantive finding summary
-
-Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854703552
-- https://github.com/higress-group/issue-spec/issues/20#issuecomment-4854795688
-
 ### Requirement: change-bearing executor separation uses logical Agent identity
 
 For each agent-executed change-bearing PROCESS, the PROCESS header `Agent` identifies the coordinator and each carrier-valid PR rationale `Agent` identifies a code author. After carrier validation, implementations MUST trim surrounding whitespace and compare those logical names case-insensitively. If an author equals the coordinator, final evaluation MUST emit the blocking diagnostic `process.executor.coordinator_conflict`. If any valid rationale carrier conflicts, the PROCESS remains blocked even when other valid rationale carriers identify non-coordinator authors.
 
-Logical-name comparison is a fail-closed backstop and MUST NOT be presented as proof that a real native child executed the work. `Agent Session ID` and `Agent Session Source` remain diagnostic provenance fields and MUST NOT participate in executor-separation comparison. Other PROCESS execution classes remain unchanged.
+Logical-name comparison is a fail-closed backstop and MUST NOT be presented as proof that a real native child executed the work. Runtime session metadata MUST NOT participate in executor-separation comparison. Other PROCESS execution classes remain unchanged.
 
 #### Scenario: coordinator-authored change-bearing rationale is rejected
 
@@ -136,7 +62,7 @@ Logical-name comparison is a fail-closed backstop and MUST NOT be presented as p
 - **WHEN** valid rationale carriers include both coordinator and non-coordinator logical authors
 - **THEN** the PROCESS SHALL remain blocked by `process.executor.coordinator_conflict`
 
-#### Scenario: session metadata is absent or differs
+#### Scenario: runtime session metadata is irrelevant
 
 - **WHEN** logical coordinator and author identities differ but session provenance is missing, equal, or different
 - **THEN** executor-separation evaluation SHALL depend only on logical `Agent` identity
@@ -144,11 +70,9 @@ Logical-name comparison is a fail-closed backstop and MUST NOT be presented as p
 Source SPEC comment:
 - https://github.com/higress-group/issue-spec/issues/247
 
-### Requirement: generated workflow guidance teaches dispatch ids and artifact writer provenance
+### Requirement: generated workflow guidance stays coding-agent-neutral
 
-Generated skills, prompts, and workflow templates MUST teach coordinators and subagents how logical roles, assigned subagent ids, and artifact writer session provenance differ.
-
-Coordinators SHOULD assign each worker or review subagent an explicit subagent/session id when dispatching work. Subagents SHOULD pass that assigned id through supported issue-spec writer command parameters. Codex runtime identity may still override the supplied id as the resolved artifact writer session provenance.
+Generated skills, prompts, and workflow templates MUST teach coordinators and subagents to use logical Agent roles and bounded role contracts without collecting or passing coding-agent-specific runtime session ids.
 
 Generated guidance MUST require every agent-executed change-bearing PROCESS to run in a managed workspace through a real runtime-native child whose logical `Agent` differs from the coordinator. It MUST prohibit coordinator-inline implementation, use of `independent` as an inline escape, and logical-name fabrication. The same real worker MAY execute multiple compatible PROCESS nodes when each node keeps its own lifecycle, evidence, rationale, and handoff.
 
@@ -211,16 +135,16 @@ Review findings and worker fix replies are authored by distinct logical roles, a
 #### Scenario: review agent records a scoped finding
 
 - **WHEN** a review agent detects a problem while reviewing an implementation PR within its assigned review PROCESS scope
-- **THEN** the review agent SHALL create the PR line finding with `issue-spec review finding` using its own `--agent` and `--agent-session`
-- **THEN** the finding artifact SHALL preserve the review agent owner, review agent session, finding id, severity, PROCESS id, SPEC id, and SPEC URL
+- **THEN** the review agent SHALL create the PR line finding with `issue-spec review finding` using its own `--agent`
+- **THEN** the finding artifact SHALL preserve the review agent owner, finding id, severity, PROCESS id, SPEC id, and SPEC URL
 - **THEN** the coordinator SHALL NOT create the finding using coordinator ownership metadata on behalf of the review agent
 
 #### Scenario: blocking finding is routed to the owning worker
 
 - **WHEN** a P0 or P1 finding is associated with code or process scope owned by a worker PROCESS
 - **THEN** the coordinator SHALL dispatch that worker or an explicitly assigned fix worker rather than write the fix reply itself
-- **THEN** the worker SHALL make the required code or process change and reply to the original finding thread with `issue-spec review reply` using its own `--agent` and `--agent-session`
-- **THEN** the reply artifact SHALL preserve the worker owner, worker session, finding id, PROCESS id, fix evidence, and reply status
+- **THEN** the worker SHALL make the required code or process change and reply to the original finding thread with `issue-spec review reply` using its own `--agent`
+- **THEN** the reply artifact SHALL preserve the worker owner, finding id, PROCESS id, fix evidence, and reply status
 
 #### Scenario: worker ownership is not known
 
@@ -241,7 +165,7 @@ The review agent that owns a finding SHALL own the re-check after a worker reply
 - **WHEN** the owning worker replies that a finding has been fixed
 - **THEN** the original review agent SHALL re-check the current PR diff and relevant evidence
 - **THEN** if the fix satisfies the finding, the review agent SHALL record a resolved reply or resolve the corresponding GitHub review conversation using its own agent identity
-- **THEN** the resolved state SHALL preserve the review agent owner, review agent session, finding id, and resolution evidence
+- **THEN** the resolved state SHALL preserve the review agent owner, finding id, and resolution evidence
 - **THEN** review sync, status, and verify output SHALL distinguish the review-agent resolution owner from the worker fix-reply owner
 
 #### Scenario: worker reply does not satisfy the finding
@@ -281,7 +205,7 @@ Final PR rationale comments SHALL be generated only after review and fix converg
 
 - **WHEN** all review findings for the implementation PR are resolved or non-blocking by verified review-agent state
 - **THEN** the coordinator SHALL dispatch each relevant worker to write final PR rationale comments for owned key code blocks
-- **THEN** each worker SHALL use `issue-spec pr rationale` (or the successor rationale mechanism) with worker owner, worker session, PROCESS id, SPEC id, SPEC URL, file path, and line metadata
+- **THEN** each worker SHALL use `issue-spec pr rationale` (or the successor rationale mechanism) with worker owner, PROCESS id, SPEC id, SPEC URL, file path, and line metadata
 
 #### Scenario: implementation may still change during review
 
@@ -294,18 +218,18 @@ Source SPEC comments:
 
 ### Requirement: sync, status, and verify expose the logical owner for each review artifact
 
-`issue-spec review finding`, `issue-spec review reply`, and `issue-spec pr rationale` already accept and persist logical agent owner and agent session metadata; this behavior SHALL be preserved and remain idempotent on re-run. In addition, `issue-spec review sync`, `issue-spec status`, and `issue-spec verify` SHALL expose the logical agent owner for each finding, fix reply, resolution, and rationale, not only the writer session provenance.
+`issue-spec review finding`, `issue-spec review reply`, and `issue-spec pr rationale` accept and persist the logical agent owner and SHALL remain idempotent on re-run. In addition, `issue-spec review sync`, `issue-spec status`, and `issue-spec verify` SHALL expose the logical agent owner for each finding, fix reply, resolution, and rationale.
 
 #### Scenario: ownership metadata is preserved on write
 
-- **WHEN** `issue-spec review finding`, `issue-spec review reply`, or `issue-spec pr rationale` creates or updates an artifact with logical `--agent` owner and `--agent-session` metadata
-- **THEN** the logical owner and session metadata SHALL be stored with the artifact
+- **WHEN** `issue-spec review finding`, `issue-spec review reply`, or `issue-spec pr rationale` creates or updates an artifact with a logical `--agent` owner
+- **THEN** the logical owner SHALL be stored with the artifact
 - **THEN** re-running the same command SHALL remain idempotent without dropping or overwriting the recorded logical owner
 
 #### Scenario: ownership is recoverable from synced output
 
 - **WHEN** `issue-spec review sync`, `issue-spec comment list`, `issue-spec status`, or `issue-spec verify` reports on findings, fix replies, resolutions, and rationale
-- **THEN** the output SHALL expose the logical agent owner for each of them, not only the writer session provenance
+- **THEN** the output SHALL expose the logical agent owner for each of them
 - **THEN** a human or coordinator SHALL be able to recover which review agent owns each finding, which worker owns each fix reply, which review agent resolved it, and which worker owns each rationale
 
 Source SPEC comments:
@@ -315,7 +239,7 @@ Source SPEC comments:
 
 ### Requirement: runner public session id is the public resume handle
 
-In runner mode, `public_session_id` is the public, repository-scoped handle humans use with `/resume` to continue a coordinator session. Artifact writer provenance fields, Codex thread ids, raw acpx record ids, and provider session ids are not public runner resume handles.
+In runner mode, `public_session_id` is the public, repository-scoped handle humans use with `/resume` to continue a coordinator session. Raw acpx record ids and provider session ids are not public runner resume handles.
 
 Coordinator-authored proposal, design, implement, handoff, and update issue bodies or comments SHOULD disclose the available runner `public_session_id` and provide concrete `/resume <public-session-id> <answer or next instruction>` guidance when runner metadata is available.
 
@@ -326,10 +250,10 @@ Coordinator-authored proposal, design, implement, handoff, and update issue bodi
 - **THEN** the body SHALL include `s-abc123` as the public runner session id
 - **THEN** the body SHALL include `/resume s-abc123 <answer or next instruction>` or equivalent resume guidance
 
-#### Scenario: artifact writer provenance is not a resume handle
+#### Scenario: internal runtime ids are not resume handles
 
-- **WHEN** a coordinator-authored body or related typed artifact also contains `Agent Session ID`, `Agent Session Source`, `CODEX_THREAD_ID`, raw acpx record id, or provider session id metadata
-- **THEN** that metadata SHALL be treated as provenance or internal transport metadata
+- **WHEN** a coordinator-authored body or related typed artifact also contains a raw acpx record id or provider session id
+- **THEN** that metadata SHALL be treated as internal transport metadata
 - **THEN** the body MUST NOT instruct humans to use those identifiers as the runner `/resume` id
 
 #### Scenario: non-runner workflow omits public session metadata

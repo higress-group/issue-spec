@@ -296,7 +296,6 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		RationaleCoverage: map[string]bool{},
 		PR:                opts.PR,
 	}
-	report.Diagnostics = append(report.Diagnostics, typedSessionDiagnostics(artifacts)...)
 	var activeSpecs []model.Artifact
 	var activeProcesses []model.Artifact
 	var doneVerifyBodies []string

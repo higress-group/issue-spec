@@ -202,10 +202,6 @@ func (a *app) runCodeChangeRationale(ctx context.Context, args []string) int {
 		return 2
 	}
 	session := resolveWriterSession(*agentSession)
-	if session.ID == "" {
-		a.errorf("code-change rationale requires CODEX_THREAD_ID or --agent-session\n")
-		return 2
-	}
 	profile, _, err := auth.ResolveProfile(a.profileName, *host)
 	if err != nil {
 		return a.codeChangeRationaleError(*jsonOut, "profile_unavailable", "resolve issue backend profile", err)

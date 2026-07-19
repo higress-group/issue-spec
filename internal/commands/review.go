@@ -852,7 +852,6 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 				AgentSessionID:     rationale.AgentSessionID,
 				AgentSessionSource: rationale.AgentSessionSource,
 			})
-			report.Diagnostics = append(report.Diagnostics, artifactSessionDiagnostics("RATIONALE/"+rationale.Process, comment.HTMLURL, rationale.AgentSessionID, rationale.AgentSessionSource)...)
 			continue
 		}
 		if reply, ok, err := model.FindFindingReplyMarker(comment.Body); err == nil && ok {
@@ -866,7 +865,6 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 				AgentSessionID:     reply.AgentSessionID,
 				AgentSessionSource: reply.AgentSessionSource,
 			})
-			report.Diagnostics = append(report.Diagnostics, artifactSessionDiagnostics("FINDING_REPLY/"+reply.Finding, comment.HTMLURL, reply.AgentSessionID, reply.AgentSessionSource)...)
 			continue
 		}
 		if comment.InReplyToID != 0 {
@@ -889,7 +887,6 @@ func buildReviewSyncReport(pr github.PullRequest, reviewComments []github.PullRe
 				AgentSessionSource: finding.AgentSessionSource,
 				Summary:            firstFindingSummary(comment.Body),
 			}
-			report.Diagnostics = append(report.Diagnostics, artifactSessionDiagnostics("FINDING/"+finding.ID, comment.HTMLURL, finding.AgentSessionID, finding.AgentSessionSource)...)
 			if model.IsTerminalFindingStatus(item.Status) || resolvedByParent[comment.ID] {
 				item.Status = "resolved"
 				if resolver := resolutionAgentByParent[comment.ID]; resolver != "" {

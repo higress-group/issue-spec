@@ -17,7 +17,6 @@ import (
 
 func TestExternalReviewSyncIsForcedAndIdempotent(t *testing.T) {
 	app, native, comments, creates, updates, out, errOut := setupExternalReviewSyncCommand(t)
-	t.Setenv(codexThreadIDEnv, "")
 	args := []string{"--repo", "acme/widgets", "--hostname", "issues.test", "--implement", "9",
 		"--revision", "head-abc", "--id", "REVIEW-101", "--agent", "Review Agent", "--agent-session", "review-session-7"}
 	var firstCompletion externalReviewCompletion
@@ -49,8 +48,8 @@ func TestExternalReviewSyncIsForcedAndIdempotent(t *testing.T) {
 	}
 	parsed := model.ParseTypedComment((*comments)[0].Body)
 	if parsed.Type != "REVIEW" || parsed.ID != "REVIEW-101" || parsed.Status != "done" ||
-		parsed.Agent != "Review Agent" || parsed.AgentSessionID != "review-session-7" ||
-		parsed.AgentSessionSource != agentSessionParamSource || parsed.SubjectRevision != "head-abc" ||
+		parsed.Agent != "Review Agent" || parsed.AgentSessionID != "" ||
+		parsed.AgentSessionSource != "" || parsed.SubjectRevision != "head-abc" ||
 		strings.Count((*comments)[0].Body, externalReviewCompletionStart) != 1 ||
 		!linksContainURL(parsed.Links["Related Comments"], "https://issues.test/acme/widgets/issues/9#issuecomment-process") ||
 		!strings.Contains((*comments)[0].Body, `"subject_revision":"head-abc"`) {
@@ -254,7 +253,7 @@ func TestBuildReviewSyncReportClassifiesRationaleFindingsAndChecks(t *testing.T)
 	}
 }
 
-func TestBuildReviewSyncReportIncludesSessionMetadataDiagnostics(t *testing.T) {
+func TestBuildReviewSyncReportDoesNotRequireSessionMetadata(t *testing.T) {
 	finding, err := model.RenderFindingBody("Review", "FINDING-001", "P1", "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Fix this.", "open", "b.go", 20)
 	if err != nil {
 		t.Fatal(err)
@@ -262,11 +261,8 @@ func TestBuildReviewSyncReportIncludesSessionMetadataDiagnostics(t *testing.T) {
 	report := buildReviewSyncReport(github.PullRequest{Number: 4, HTMLURL: "https://github.com/o/r/pull/4"}, []github.PullRequestReviewComment{
 		{ID: 2, Body: finding, Path: "b.go", Line: 20, HTMLURL: "https://github.com/o/r/pull/4#discussion_r2"},
 	}, nil, github.CombinedStatus{}, nil)
-	if len(report.Diagnostics) != 1 {
+	if len(report.Diagnostics) != 0 {
 		t.Fatalf("diagnostics = %+v", report.Diagnostics)
-	}
-	if report.Diagnostics[0].Code != "missing_session_metadata" || report.Diagnostics[0].Artifact != "FINDING/FINDING-001" {
-		t.Fatalf("unexpected diagnostic: %+v", report.Diagnostics[0])
 	}
 }
 

@@ -355,17 +355,16 @@ func TestIssueSpecWorkflowSearchesRelatedSelfHostedDiscussionsForDirectAgents(t 
 	}
 }
 
-func TestIssueSpecSkillTemplatesDocumentSessionSourceSeparation(t *testing.T) {
+func TestIssueSpecSkillTemplatesAvoidRuntimeSessionMetadata(t *testing.T) {
 	skills := IssueSpecSkills("owner/repo")
 	workflow := skillContent(t, skills, "issue-spec-workflow")
 	for _, want := range []string{
 		"Agent as the logical role",
-		"Agent Session ID and Agent Session Source as artifact writer provenance",
-		"--agent-session",
-		"CODEX_THREAD_ID may override",
+		"Artifact writer session metadata is deprecated, ignored, and never required",
+		"do not collect runtime-specific session ids",
 		"When runner context supplies runner.public_session_id, it is the public /resume handle",
 		"/resume <public-session-id> <answer or next instruction>",
-		"Do not present Agent Session ID, CODEX_THREAD_ID, coordinator record ids, or provider session ids as /resume handles",
+		"Do not present coordinator record ids or provider session ids as /resume handles",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("workflow skill missing %q:\n%s", want, workflow)
@@ -375,12 +374,14 @@ func TestIssueSpecSkillTemplatesDocumentSessionSourceSeparation(t *testing.T) {
 	apply := skillContent(t, skills, "issue-spec-apply")
 	for _, want := range []string{
 		"Keep Agent as the logical role",
-		"--agent-session",
-		"Codex CODEX_THREAD_ID remains the artifact writer session source of truth",
+		"Do not collect or pass runtime-specific session ids",
 	} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply skill missing %q:\n%s", want, apply)
 		}
+	}
+	if strings.Contains(workflow+apply, "--agent-session") || strings.Contains(workflow+apply, "CODEX_THREAD_ID") {
+		t.Fatalf("generated skills still require runtime-specific artifact session metadata")
 	}
 }
 
@@ -481,7 +482,7 @@ func TestIssueSpecSkillTemplatesEnforceAgentOwnedReviewWorkflow(t *testing.T) {
 	for _, want := range []string{
 		"Add final rationale only after review/fix convergence and only for change-bearing PROCESS nodes",
 		"Follow issue-spec-workflow for the backend-appropriate rationale command",
-		"Each owning worker authors its own rationale under that worker's --agent and --agent-session",
+		"Each owning worker authors its own rationale under that worker's --agent",
 		"MUST NOT create worker rationale or relabel its identity on the worker's behalf",
 		"does not author implementation commits, review findings, worker fix replies, review resolutions, or rationale on another agent's behalf",
 	} {

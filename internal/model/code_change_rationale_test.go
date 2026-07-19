@@ -20,6 +20,23 @@ func TestCodeChangeRationaleRoundTrip(t *testing.T) {
 	if !IsLikelyCodeChangeRationale(body) || !strings.Contains(body, "### Rationale") {
 		t.Fatalf("rationale body is incomplete: %s", body)
 	}
+	if strings.Contains(body, "Agent Session") {
+		t.Fatalf("new rationale contains deprecated session metadata: %s", body)
+	}
+}
+
+func TestCodeChangeRationaleReadsLegacySessionMetadata(t *testing.T) {
+	marker := testCodeChangeRationaleMarker()
+	marker.AgentSessionID = "worker-session"
+	marker.AgentSessionSource = "CODEX_THREAD_ID"
+	body, err := RenderCodeChangeRationaleBody(marker, "legacy rationale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, found, err := FindCodeChangeRationaleMarker(body)
+	if err != nil || !found || parsed != marker {
+		t.Fatalf("parsed=%+v found=%v err=%v", parsed, found, err)
+	}
 }
 
 func TestCodeChangeRationaleStrictParserRejectsMutation(t *testing.T) {
@@ -32,7 +49,6 @@ func TestCodeChangeRationaleStrictParserRejectsMutation(t *testing.T) {
 		"unknown attribute": strings.Replace(body, " version=1", " extra=x version=1", 1),
 		"bad base64":        strings.Replace(body, "payload=", "payload=%", 1),
 		"visible agent":     strings.Replace(body, "Agent: Worker", "Agent: Coordinator", 1),
-		"visible session":   strings.Replace(body, "Agent Session ID: worker-session", "Agent Session ID: coordinator-session", 1),
 		"trailing payload":  strings.Replace(body, "payload=", "payload=eyJ4IjoxfQ", 1),
 	}
 	noncanonical := testCodeChangeRationaleMarker()
@@ -62,8 +78,7 @@ func TestCodeChangeRationaleRequiresCompleteIdentity(t *testing.T) {
 		"version":        func(marker *CodeChangeRationaleMarker) { marker.ReferenceVersion = 0 },
 		"revision":       func(marker *CodeChangeRationaleMarker) { marker.SubjectRevision = "" },
 		"agent":          func(marker *CodeChangeRationaleMarker) { marker.Agent = "" },
-		"session":        func(marker *CodeChangeRationaleMarker) { marker.AgentSessionID = "" },
-		"session source": func(marker *CodeChangeRationaleMarker) { marker.AgentSessionSource = "body" },
+		"legacy session": func(marker *CodeChangeRationaleMarker) { marker.AgentSessionSource = "body" },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -80,6 +95,5 @@ func testCodeChangeRationaleMarker() CodeChangeRationaleMarker {
 	return CodeChangeRationaleMarker{Process: "PROCESS-001", Spec: "SPEC-001",
 		SpecURL:     "https://issues.example.test/acme/widgets/issues/1#issuecomment-2",
 		ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change opaque/1",
-		ReferenceVersion: 7, SubjectRevision: "head-abc", Agent: "Worker", AgentSessionID: "worker-session",
-		AgentSessionSource: "CODEX_THREAD_ID"}
+		ReferenceVersion: 7, SubjectRevision: "head-abc", Agent: "Worker"}
 }

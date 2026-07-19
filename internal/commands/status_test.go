@@ -646,7 +646,7 @@ func statusHasCode(summary statusSummary, code string) bool {
 	return false
 }
 
-func TestSummarizeStatusReportsSessionMetadataDiagnosticsWithoutBlocking(t *testing.T) {
+func TestSummarizeStatusDoesNotRequireSessionMetadata(t *testing.T) {
 	specBody, err := model.EnsureTypedBody("SPEC", "SPEC-001", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y", model.BodyOptions{Status: "confirmed"})
 	if err != nil {
 		t.Fatal(err)
@@ -657,7 +657,7 @@ func TestSummarizeStatusReportsSessionMetadataDiagnosticsWithoutBlocking(t *test
 	if !summary.OK {
 		t.Fatalf("metadata diagnostics should not block status: %+v", summary.NextGates)
 	}
-	if len(summary.Diagnostics) != 1 || summary.Diagnostics[0].Code != "missing_session_metadata" {
+	if len(summary.Diagnostics) != 0 {
 		t.Fatalf("unexpected diagnostics: %+v", summary.Diagnostics)
 	}
 }
