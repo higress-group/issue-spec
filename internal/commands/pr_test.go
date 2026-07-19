@@ -75,7 +75,7 @@ func TestCreateRationaleWritesSessionMetadata(t *testing.T) {
 		pr: github.PullRequest{Number: 7},
 	}
 	client.pr.Head.SHA = "abc123"
-	_, err := createRationale(ctx, client, "o/r", 7, "internal/foo.go", 2, "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Worker Agent A", writerSession{ID: "codex-session-123", Source: codexThreadIDEnv}, "Explain why.")
+	_, err := createRationale(ctx, client, "o/r", 7, "internal/foo.go", 2, "PROCESS-001", "SPEC-001", "https://github.com/o/r/issues/1#issuecomment-1", "Worker Agent A", writerSession{}, "Explain why.")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestCreateRationaleWritesSessionMetadata(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("missing marker ok=%v err=%v", ok, err)
 	}
-	if marker.Agent != "Worker Agent A" || marker.AgentSessionID != "codex-session-123" || marker.AgentSessionSource != codexThreadIDEnv {
+	if marker.Agent != "Worker Agent A" || marker.AgentSessionID != "" || marker.AgentSessionSource != "" {
 		t.Fatalf("unexpected marker metadata: %+v\n%s", marker, client.comments[0].Body)
 	}
 }

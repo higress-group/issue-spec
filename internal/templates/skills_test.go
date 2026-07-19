@@ -81,7 +81,7 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 		{
 			name: "issue-spec-verify",
 			required: []string{"sealed verification assignment", "exact immutable subject revision", "required focused tests/checks",
-				"provider-owned check identity", "bounded VERIFY receipt", "optional audit metadata"},
+				"provider-owned check identity", "bounded VERIFY receipt", "Do not collect or pass runtime-specific session IDs"},
 			forbidden: []string{"workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
 		},
 	}
@@ -97,7 +97,7 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 				t.Fatalf("%s leaks coordinator policy %q:\n%s", tc.name, forbidden, content)
 			}
 		}
-		for _, stale := range []string{"CODEX_THREAD_ID may override", "session source of truth", "agent-session value is required"} {
+		for _, stale := range []string{"CODEX_THREAD_ID", "--agent-session", "session source of truth", "agent-session value is required"} {
 			if strings.Contains(content, stale) {
 				t.Fatalf("%s depends on runtime-specific session metadata %q", tc.name, stale)
 			}

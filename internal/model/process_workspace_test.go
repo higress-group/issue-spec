@@ -117,10 +117,12 @@ func TestProcessWorkspaceRendersOnlyCompactAcceptedImplementationReceiptAuthorit
 	workspace.AcceptedReceiptDigest = strings.Repeat("c", 64)
 	workspace.AcceptedReceiptGeneration = 3
 	workspace.AcceptedReceiptSubmission = &processworkspace.RoleOwnedSubmissionEvidence{Agent: "Worker Agent",
-		AgentSessionID: "worker-session", AgentSessionSource: processworkspace.AgentSessionSourceRuntimeNative,
 		Assurance: assignment.AssuranceSelfReported}
 	workspace.UpdatedAt = workspace.UpdatedAt.Add(time.Minute)
 	body := processBodyWithWorkspace("PROCESS-024", ProcessExecutionChangeBearing, workspace)
+	if strings.Contains(body, "agent_session_") {
+		t.Fatalf("new workspace projection contains deprecated session metadata:\n%s", body)
+	}
 	wantMarker := acceptedImplementationReceiptStart + "\n" +
 		`{"receipt_id":"receipt:implementation:024","receipt_digest":"` + strings.Repeat("c", 64) + `","assignment_generation":3}` + "\n" +
 		acceptedImplementationReceiptEnd
@@ -143,6 +145,18 @@ func TestProcessWorkspaceRendersOnlyCompactAcceptedImplementationReceiptAuthorit
 		*parsed.Workspace.AcceptedReceiptSubmission != *workspace.AcceptedReceiptSubmission {
 		t.Fatalf("accepted receipt round trip=%+v", parsed)
 	}
+	preUpgradeBody := strings.Replace(body, `"agent": "Worker Agent",`, `"agent": "Worker Agent",
+    "agent_session_id": "worker-session",
+    "agent_session_source": "CODEX_THREAD_ID",`, 1)
+	if preUpgradeBody == body {
+		t.Fatal("failed to construct pre-upgrade accepted receipt fixture")
+	}
+	legacyParsed := ParseProcessWorkspace("PROCESS-024", "", preUpgradeBody)
+	if legacyParsed.Blocking() || legacyParsed.Workspace == nil || legacyParsed.Workspace.AcceptedReceiptSubmission == nil ||
+		legacyParsed.Workspace.AcceptedReceiptSubmission.AgentSessionID != "worker-session" ||
+		legacyParsed.Workspace.AcceptedReceiptSubmission.AgentSessionSource != "CODEX_THREAD_ID" {
+		t.Fatalf("pre-upgrade accepted receipt did not remain readable: %+v", legacyParsed)
+	}
 
 	tampered := strings.Replace(body, workspace.AcceptedReceiptDigest, strings.Repeat("d", 64), 1)
 	if result := ParseProcessWorkspace("PROCESS-024", "", tampered); !result.Blocking() || result.Workspace != nil {
@@ -160,7 +174,6 @@ func TestProcessWorkspaceRendersOnlyCompactAcceptedImplementationReceiptAuthorit
 	}
 	coordinator := workspace
 	coordinator.AcceptedReceiptSubmission = &processworkspace.RoleOwnedSubmissionEvidence{Agent: "Coordinator",
-		AgentSessionID: "coordinator-session", AgentSessionSource: processworkspace.AgentSessionSourceRuntimeNative,
 		Assurance: assignment.AssuranceSelfReported}
 	if _, err := RenderProcessWorkspaceSection(coordinator); err == nil || !strings.Contains(err.Error(), "non-Coordinator") {
 		t.Fatalf("Coordinator submission rendered: %v", err)

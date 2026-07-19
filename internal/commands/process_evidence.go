@@ -745,7 +745,7 @@ func externalProcessEvidenceFor(processID string, activeSpecs map[string]string,
 func validCodeChangeRationaleAuthor(rationale gates.CodeChangeRationaleEvidence, process model.Artifact,
 	activeSpecs map[string]string, external []gates.ExternalProcessEvidence) bool {
 	want, active := activeSpecs[rationale.SpecID]
-	if !active || strings.TrimSpace(rationale.AuthorAgent) == "" || strings.TrimSpace(rationale.AuthorSessionID) == "" ||
+	if !active || strings.TrimSpace(rationale.AuthorAgent) == "" ||
 		model.NormalizeURL(rationale.SpecURL) != model.NormalizeURL(want) || !artifactReferencesSpec(process, rationale.SpecID, want) {
 		return false
 	}

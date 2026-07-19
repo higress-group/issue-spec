@@ -226,7 +226,7 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		}
 	}
 	report := model.VerifyTraceability(artifacts)
-	diagnostics := typedSessionDiagnostics(artifacts)
+	var diagnostics []metadataDiagnostic
 	workflowFacts := gates.WorkflowFacts{Required: true, Known: true, Valid: workflowErr == nil && !workflowPlan.HasErrors()}
 	if workflowErr != nil {
 		workflowFacts.Errors = append(workflowFacts.Errors, workflowErr.Error())

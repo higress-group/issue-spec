@@ -619,12 +619,6 @@ func renderSubmittedVerification(verifyID, processURL string, covers []string, r
 	if err != nil {
 		return "", err
 	}
-	if submission.AgentSessionID != "" {
-		body, err = model.StampTypedSessionMetadata(body, submission.AgentSessionID, submission.AgentSessionSource)
-		if err != nil {
-			return "", err
-		}
-	}
 	body, _, err = model.AddRelatedCommentLink(body, processURL)
 	if err != nil {
 		return "", err
@@ -911,7 +905,6 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		RationaleCoverage: map[string]bool{},
 		PR:                opts.PR,
 	}
-	report.Diagnostics = append(report.Diagnostics, typedSessionDiagnostics(artifacts)...)
 	var activeSpecs []model.Artifact
 	activeProcesses := activeProcessArtifacts(artifacts)
 	activeProcessSet := activeProcessIDs(artifacts)

@@ -207,7 +207,6 @@ issue-spec --profile team review sync \
   --revision abc123 \
   --id REVIEW-001 \
   --agent reviewer \
-  --agent-session review-session \
   --json
 ```
 
@@ -347,15 +346,15 @@ issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process P
 
 每个 implementation 或 review 角色 assignment 都必须携带 `design_context`，并将其纳入 portable assignment digest。该对象包含 canonical Design `source_url`、固定的 `read_mode: complete-issue-body`、固定的 `conflict_policy: design-authoritative-stop`，以及由 Coordinator 编写的 `invariant`、`applicable_decisions`、`implementation_direction`、`must_preserve`、`must_not` 与 `minimum_verification` 字段。workspace compiler 从当前 Implement issue 的 canonical predecessor chain 推导 Design URL；source 缺失、歧义或不匹配时 fail closed。结构化值在输出时不排序、不摘要，也不重新解释。
 
-修改或评审代码前，被分配的角色必须执行 `issue-spec read issue --repo owner/repo --issue <design_context.source_url>`，只读取完整 Design issue body，不扩展 comments、timeline、history 或 gate。若 Design 正文与结构化 projection 冲突，角色必须停止并报告冲突。`CODEX_THREAD_ID`、`--agent-session` 等 runtime session 值只是可选 audit metadata，不是 Design authority 或 correctness input。
+修改或评审代码前，被分配的角色必须执行 `issue-spec read issue --repo owner/repo --issue <design_context.source_url>`，只读取完整 Design issue body，不扩展 comments、timeline、history 或 gate。若 Design 正文与结构化 projection 冲突，角色必须停止并报告冲突。CLI 不收集或传递 runtime-specific session ID，也不把它作为 Design authority、audit metadata 或 correctness input。
 
 生成的 guidance 使用相同的有界读取模型。Coordinator guidance 使用 `status`/`verify --summary`、结构化 detail action、精确 `comment get`、显式过滤列表、sealed assignment 与 reconcile checkpoint；full output 仍是可发现的兼容与调试路径。implementation、review、verification 角色段只包含各自的 sealed assignment、权威 Design 读取、所拥有的不变量/工作、focused check 与 bounded result 职责；完整 proposal/Design 副本、全量 DAG、link matrix、closure/archive policy 和 provider-routing policy 不进入角色段。只有在已交付 command、validator、schema 或保留的显式 stop 替代后，才能删除重复规则。确定性回归预算统计 UTF-8 bytes、heading/field 与 instruction-array item，绝不使用模型 tokenizer，也不能用 size 目标为删除未覆盖的安全规则辩护。
 
 兼容性边界是显式且非对称的。已有 local registry 或 PROCESS workspace 中，D14 之前缺少 `design_context` 的 version-1 implementation/review assignment 仍可读取，使 inspect、cleanup 与 recovery 不会把整个 registry 判为 corrupt。该历史对象只是只读兼容证据：严格的 issuance/redispatch digest、assignment-file/packet 解析，以及新的 implementation/review 角色提交仍会拒绝它。CLI 绝不会合成缺失的 Design context。
 
-导入的 result file 不是身份或 provenance 信任根。其 writer、subject、逻辑 agent 名称、`CODEX_THREAD_ID`、`--agent-session`、credential 与 assurance label 都只是信息，不能创建 accepted implementation receipt authority，也不能满足非 Coordinator/独立性 gate。unverified import 与保留的 assurance 值可以通过结构校验，但得到的 PROCESS workspace 不包含 accepted-implementation-receipt marker。runtime-attested Coordinator import 明确推迟到存在真实 runtime attestation 信任根之后；本流程不引入 signer、secret 或由调用方命名的 attestor interface。
+导入的 result file 不是身份或 provenance 信任根。其 writer、subject、逻辑 agent 名称、credential 与 assurance label 都只是信息，不能创建 accepted implementation receipt authority，也不能满足非 Coordinator/独立性 gate。unverified import 与保留的 assurance 值可以通过结构校验，但得到的 PROCESS workspace 不包含 accepted-implementation-receipt marker。runtime-attested Coordinator import 明确推迟到存在真实 runtime attestation 信任根之后；本流程不引入 signer、secret 或由调用方命名的 attestor interface。
 
-现有的窄范围直接 role-owned publication 命令继续为 rationale、review 与 verification 提供兼容路径。例如 verification 角色针对精确 assignment 与 snapshot 调用 `verify submit --agent Verifier`。agent/session 字段始终是 `self-reported` metadata，不会因为来自 `CODEX_THREAD_ID` 或显式参数而变成更强的 evidence。`verify submit` 不包含 Coordinator 侧的 owner-token import。
+现有的窄范围直接 role-owned publication 命令继续为 rationale、review 与 verification 提供兼容路径。例如 verification 角色针对精确 assignment 与 snapshot 调用 `verify submit --agent Verifier`。逻辑 agent 字段仍是 `self-reported` metadata；CLI 不收集 runtime-specific session 字段。`verify submit` 不包含 Coordinator 侧的 owner-token import。
 
 `change-bearing` 使用可写的独占分支；`review` 与 `verification` 使用 detached immutable workflow snapshot，dirty 状态会 fail closed，但 CLI 不会为每个 child 创建 OS 强制的独立 sandbox；`orchestration` 只记录生命周期账本，不创建 checkout。`external` 使用 mode `none`；完成该 PROCESS 并通过 final gate 需要已消费的 provider-neutral exact-revision evidence。
 

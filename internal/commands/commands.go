@@ -233,7 +233,7 @@ Usage:
   issue-spec search issues --repo owner/repo --query TEXT [--state all|open|closed] [--source all|issue|comments|change] [--stage proposal|design|implement] [--limit 10]
   issue-spec code-change attach --repo owner/repo --implement N --change-id ID --revision REV [--refresh --expected-version N] [--json]
   issue-spec code-change link-process --repo owner/repo --implement N --process PROCESS-001 --expected-version N [--json]
-  issue-spec code-change rationale --repo owner/repo --implement N --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "why" --agent Worker [--agent-session ID] [--json]
+	issue-spec code-change rationale --repo owner/repo --implement N --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "why" --agent Worker [--json]
 	issue-spec finalize preview --repo owner/repo --proposal N --design N --implement N --pr N --intent-file file.json --plan-out /absolute/plan.json [--json]
 	issue-spec finalize apply --plan /absolute/plan.json --checkpoint /absolute/checkpoint.json [--allow-nonatomic] [--json]
 	issue-spec finalize detail --plan /absolute/plan.json [--json]

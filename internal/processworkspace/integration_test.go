@@ -16,7 +16,6 @@ import (
 )
 
 func TestCompleteValidatesImportedReceiptWithoutAcceptedRoleEvidence(t *testing.T) {
-	t.Setenv(AgentSessionSourceRuntimeNative, "coordinator-chosen-worker-session")
 	fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
 	contract := bindImplementationAssignment(t, fixture, []assignment.TestSelector{{ID: "focused", Command: "go test ./internal/processworkspace"}})
 	resultCommit := commitWorkerFile(t, fixture, "internal/receipt.go", "package internal\n", true)
@@ -190,7 +189,6 @@ func TestCompleteTreatsImportedReceiptProvenanceAsInformational(t *testing.T) {
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
-			t.Setenv(AgentSessionSourceRuntimeNative, "coordinator-arbitrary-session")
 			fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
 			contract := bindImplementationAssignment(t, fixture, []assignment.TestSelector{{ID: "focused", Command: "go test ./internal/processworkspace"}})
 			resultCommit := commitWorkerFile(t, fixture, "internal/informational.go", "package internal\n", true)

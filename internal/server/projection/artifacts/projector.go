@@ -103,7 +103,7 @@ func projectComment(ctx context.Context, repository store.RepoStore, snapshot mo
 	}
 	metadata, _ := json.Marshal(map[string]any{
 		"status": parsed.Status, "scope": parsed.Scope, "agent": parsed.Agent,
-		"agent_session_id": parsed.AgentSessionID, "links": parsed.Links, "marker_version": parsed.Marker.Version,
+		"links": parsed.Links, "marker_version": parsed.Marker.Version,
 	})
 	err := repository.ApplyTypedCommentProjection(ctx, store.TypedCommentProjectionInput{
 		IssueID: comment.IssueID, CommentID: comment.ID, Type: parsed.Type,

@@ -11,8 +11,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
-func TestCodeChangeRationaleHelpAndRequiresSession(t *testing.T) {
-	t.Setenv(codexThreadIDEnv, "")
+func TestCodeChangeRationaleHelpKeepsDeprecatedSessionFlag(t *testing.T) {
 	var out, errOut bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &errOut)
 	if code := app.runCodeChange(t.Context(), []string{"rationale", "--help"}); code != 0 {
@@ -23,15 +22,12 @@ func TestCodeChangeRationaleHelpAndRequiresSession(t *testing.T) {
 			t.Fatalf("help missing %s:\n%s", flag, out.String())
 		}
 	}
-	out.Reset()
-	if code := app.runCodeChange(t.Context(), codeChangeRationaleArgs("why")); code != 2 ||
-		!strings.Contains(errOut.String(), "CODEX_THREAD_ID or --agent-session") {
-		t.Fatalf("exit=%d stderr=%q", code, errOut.String())
+	if !strings.Contains(out.String(), "deprecated compatibility flag; ignored") {
+		t.Fatalf("help does not mark --agent-session deprecated:\n%s", out.String())
 	}
 }
 
 func TestCodeChangeRationaleAppendOnlyExactRetryAndRefresh(t *testing.T) {
-	t.Setenv(codexThreadIDEnv, "worker-session")
 	backend := newFakeCodeChangeBackend()
 	canonical := "https://code.example/acme/widgets/changes/42"
 	backend.references = []github.NativeReference{codeChangeRationaleReference(canonical, "head-abc", 7)}
@@ -60,7 +56,7 @@ func TestCodeChangeRationaleAppendOnlyExactRetryAndRefresh(t *testing.T) {
 		t.Fatalf("result=%+v created=%d", result, created)
 	}
 	marker, found, err := model.FindCodeChangeRationaleMarker(comments[len(comments)-1].Body)
-	if err != nil || !found || marker.Agent != "PROCESS-007 worker" || marker.AgentSessionID != "worker-session" ||
+	if err != nil || !found || marker.Agent != "PROCESS-007 worker" || marker.AgentSessionID != "" ||
 		marker.ReferenceVersion != 7 || marker.SubjectRevision != "head-abc" {
 		t.Fatalf("marker=%+v found=%v err=%v", marker, found, err)
 	}
@@ -95,8 +91,47 @@ func TestCodeChangeRationaleAppendOnlyExactRetryAndRefresh(t *testing.T) {
 	}
 }
 
+func TestCodeChangeRationalePreUpgradeRetryIgnoresLegacySessionMetadata(t *testing.T) {
+	backend := newFakeCodeChangeBackend()
+	canonical := "https://code.example/acme/widgets/changes/42"
+	backend.references = []github.NativeReference{codeChangeRationaleReference(canonical, "head-abc", 7)}
+	legacyMarker := model.CodeChangeRationaleMarker{Process: "PROCESS-001", Spec: "SPEC-001",
+		SpecURL: "https://issues.test/acme/widgets/issues/1#issuecomment-2", ProviderKey: "code.example",
+		ExternalRepository: "acme/widgets-code", ChangeID: "change-42", ReferenceVersion: 7,
+		SubjectRevision: "head-abc", Agent: "PROCESS-007 worker", AgentSessionID: "worker-session",
+		AgentSessionSource: "CODEX_THREAD_ID"}
+	legacyBody, err := model.RenderCodeChangeRationaleBody(legacyMarker, "first rationale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyBody = strings.Replace(legacyBody, "Agent Session Source: CODEX_THREAD_ID",
+		"Agent Session Source: stale-visible-source", 1)
+	comments := []github.Comment{
+		{ID: 17, Body: codeChangeRationaleProcessBody(t, canonical)},
+		{ID: 18, HTMLURL: "https://issues.test/acme/widgets/issues/9#issuecomment-18", Body: legacyBody},
+	}
+	created := 0
+	backend.issueBackend = fakeGitHubBackend{
+		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+			return append([]github.Comment(nil), comments...), nil
+		},
+		createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
+			created++
+			return github.Comment{ID: 19, Body: body}, nil
+		},
+	}
+	app, out, errOut := setupCodeChangeLinkApp(t, backend)
+	if code := app.runCodeChange(t.Context(), codeChangeRationaleArgs("first rationale")); code != 0 || created != 0 {
+		t.Fatalf("pre-upgrade retry exit=%d created=%d stdout=%q stderr=%q", code, created, out.String(), errOut.String())
+	}
+	var result codeChangeRationaleResult
+	decodeCommandJSON(t, out.Bytes(), &result)
+	if !result.OK || result.Created || result.CommentID != 18 {
+		t.Fatalf("pre-upgrade retry result=%+v", result)
+	}
+}
+
 func TestCodeChangeRationaleRejectsMissingProcessSpecAndChangeLinks(t *testing.T) {
-	t.Setenv(codexThreadIDEnv, "worker-session")
 	canonical := "https://code.example/acme/widgets/changes/42"
 	tests := map[string]struct {
 		body string
