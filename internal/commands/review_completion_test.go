@@ -139,6 +139,7 @@ func testReviewAssignment(t *testing.T, subject string) assignment.Assignment {
 	value := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "assignment-review-1",
 		Role: assignment.RoleReview, Repository: "o/r", Issue: 9, ProcessID: "PROCESS-101", SubjectRevision: subject,
 		Scenarios:           []assignment.ScenarioRef{{SpecID: "SPEC-002", Scenario: "exact review"}},
+		DesignContext:       workspaceDesignContext(),
 		Policy:              assignment.Policy{RequireExactRevision: true, MaxResultItems: 64},
 		ResultSchemaVersion: assignment.ReceiptSchemaVersion,
 		Review: &assignment.ReviewPayload{SnapshotRevision: subject, DiffBaseRevision: strings.Repeat("a", 40),

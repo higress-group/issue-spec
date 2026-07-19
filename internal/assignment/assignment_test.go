@@ -13,6 +13,20 @@ const (
 	validDigest     = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 )
 
+func assignmentDesignContext() *DesignContext {
+	return &DesignContext{
+		SourceURL:               "https://github.com/higress-group/issue-spec/issues/296",
+		ReadMode:                DesignReadModeCompleteIssueBody,
+		Invariant:               "Portable assignments preserve Design authority.",
+		ApplicableDecisions:     []string{"D14", "D6"},
+		ImplementationDirection: "Carry the coordinator-authored projection without reinterpretation.",
+		MustPreserve:            []string{"exact text", "list order"},
+		MustNot:                 []string{"summarize", "trust session metadata"},
+		MinimumVerification:     []string{"schema validation", "digest coverage"},
+		ConflictPolicy:          DesignConflictPolicyAuthoritativeStop,
+	}
+}
+
 func implementationAssignment() Assignment {
 	return Assignment{
 		SchemaVersion: AssignmentSchemaVersion,
@@ -21,7 +35,8 @@ func implementationAssignment() Assignment {
 		BaseRevision: baseRevision,
 		Scenarios:    []ScenarioRef{{SpecID: "SPEC-005", Scenario: "receipt"}, {SpecID: "SPEC-001", Scenario: "packet"}},
 		Dependencies: []string{"PROCESS-004", "PROCESS-003"}, Handoff: "stage 1 reviewed",
-		Policy: Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: ReceiptSchemaVersion,
+		DesignContext: assignmentDesignContext(),
+		Policy:        Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: ReceiptSchemaVersion,
 		Implementation: &ImplementationPayload{
 			Objective: "Define schemas", Branch: "codex/297-p005-assignment-schema",
 			WriteOwnership:    []string{"internal/model/typed_comment.go", "internal/assignment/**"},
@@ -40,6 +55,7 @@ func reviewAssignment() Assignment {
 		Repository: "higress-group/issue-spec", Issue: 297, ProcessID: "PROCESS-007",
 		SubjectRevision: subjectRevision,
 		Scenarios:       []ScenarioRef{{SpecID: "SPEC-002", Scenario: "independent review"}},
+		DesignContext:   assignmentDesignContext(),
 		Policy:          Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: ReceiptSchemaVersion,
 		Review: &ReviewPayload{SnapshotRevision: subjectRevision, DiffBaseRevision: baseRevision, Authors: []string{"Worker"}, Scope: []string{"internal/assignment/**"}, KnownTests: []KnownTestEvidence{{ID: "assignment", Command: "go test ./internal/assignment", Outcome: TestPassed}}},
 	}
@@ -88,7 +104,7 @@ func TestAssignmentCanonicalJSONAndDigestGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"schema_version":"issue-spec.assignment/v1","assignment_id":"asg-005-1","role":"implementation","repository":"higress-group/issue-spec","issue":297,"process_id":"PROCESS-005","base_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","scenarios":[{"spec_id":"SPEC-001","scenario":"packet"},{"spec_id":"SPEC-005","scenario":"receipt"}],"dependencies":["PROCESS-003","PROCESS-004"],"handoff":"stage 1 reviewed","policy":{"require_exact_revision":true,"max_result_items":64},"result_schema_version":"issue-spec.receipt/v1","implementation":{"objective":"Define schemas","branch":"codex/297-p005-assignment-schema","write_ownership":["internal/assignment/**","internal/model/typed_comment.go"],"shared_touchpoints":["internal/processworkspace"],"commit_policy":{"require_single_commit":true,"require_dco":true},"generators":[{"name":"types","command":"go generate ./internal/assignment","required_outputs":["internal/assignment/generated.go"]}],"focused_tests":[{"id":"assignment","command":"go test ./internal/assignment"}]}}`
+	want := `{"schema_version":"issue-spec.assignment/v1","assignment_id":"asg-005-1","role":"implementation","repository":"higress-group/issue-spec","issue":297,"process_id":"PROCESS-005","base_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","scenarios":[{"spec_id":"SPEC-001","scenario":"packet"},{"spec_id":"SPEC-005","scenario":"receipt"}],"dependencies":["PROCESS-003","PROCESS-004"],"handoff":"stage 1 reviewed","design_context":{"source_url":"https://github.com/higress-group/issue-spec/issues/296","read_mode":"complete-issue-body","invariant":"Portable assignments preserve Design authority.","applicable_decisions":["D14","D6"],"implementation_direction":"Carry the coordinator-authored projection without reinterpretation.","must_preserve":["exact text","list order"],"must_not":["summarize","trust session metadata"],"minimum_verification":["schema validation","digest coverage"],"conflict_policy":"design-authoritative-stop"},"policy":{"require_exact_revision":true,"max_result_items":64},"result_schema_version":"issue-spec.receipt/v1","implementation":{"objective":"Define schemas","branch":"codex/297-p005-assignment-schema","write_ownership":["internal/assignment/**","internal/model/typed_comment.go"],"shared_touchpoints":["internal/processworkspace"],"commit_policy":{"require_single_commit":true,"require_dco":true},"generators":[{"name":"types","command":"go generate ./internal/assignment","required_outputs":["internal/assignment/generated.go"]}],"focused_tests":[{"id":"assignment","command":"go test ./internal/assignment"}]}}`
 	if string(canonical) != want {
 		t.Fatalf("canonical JSON mismatch\n got: %s\nwant: %s", canonical, want)
 	}
@@ -96,7 +112,7 @@ func TestAssignmentCanonicalJSONAndDigestGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if digest != "4f9554765e9f45c6c17af72fc69060e01ddf49a58bc5f0268d5f9ff7db116c4a" {
+	if digest != "409667915538033f4d3da79d25e18e601404cc6933d059f3e5a58e1d3f860dd5" {
 		t.Fatalf("digest = %q", digest)
 	}
 
@@ -111,6 +127,87 @@ func TestAssignmentCanonicalJSONAndDigestGolden(t *testing.T) {
 	if reorderedDigest != digest {
 		t.Fatalf("reordered digest = %q, want %q", reorderedDigest, digest)
 	}
+
+	designReordered := implementationAssignment()
+	designReordered.DesignContext.MustPreserve[0], designReordered.DesignContext.MustPreserve[1] = designReordered.DesignContext.MustPreserve[1], designReordered.DesignContext.MustPreserve[0]
+	designDigest, err := AssignmentDigest(designReordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if designDigest == digest {
+		t.Fatal("design_context list order was not covered by the assignment digest")
+	}
+}
+
+func TestAssignmentDesignContextIsRequiredAndPreservedExactly(t *testing.T) {
+	missing := implementationAssignment()
+	missing.DesignContext = nil
+	if err := missing.Validate(); err == nil || !strings.Contains(err.Error(), "design_context") {
+		t.Fatalf("missing design context error = %v", err)
+	}
+	malformed := implementationAssignment()
+	malformed.DesignContext.SourceURL = "Design #296"
+	if err := malformed.Validate(); err == nil || !strings.Contains(err.Error(), "canonical HTTP(S) issue URL") {
+		t.Fatalf("malformed design source error = %v", err)
+	}
+
+	verification := verificationAssignment()
+	verification.DesignContext = assignmentDesignContext()
+	if err := verification.Validate(); err == nil || !strings.Contains(err.Error(), "must not carry") {
+		t.Fatalf("verification design context error = %v", err)
+	}
+
+	value := implementationAssignment()
+	payload, err := CanonicalAssignmentJSON(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseAssignmentJSON(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(mustJSON(t, value.DesignContext), mustJSON(t, parsed.DesignContext)) {
+		t.Fatalf("design context changed during round trip\n got: %s\nwant: %s", mustJSON(t, parsed.DesignContext), mustJSON(t, value.DesignContext))
+	}
+}
+
+func TestAssignmentDigestCoversEveryDesignContextProjectionField(t *testing.T) {
+	base := implementationAssignment()
+	want, err := AssignmentDigest(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutations := map[string]func(*DesignContext){
+		"source_url":               func(value *DesignContext) { value.SourceURL += "/changed" },
+		"invariant":                func(value *DesignContext) { value.Invariant += " Changed." },
+		"applicable_decisions":     func(value *DesignContext) { value.ApplicableDecisions[0] += "-changed" },
+		"implementation_direction": func(value *DesignContext) { value.ImplementationDirection += " Changed." },
+		"must_preserve":            func(value *DesignContext) { value.MustPreserve[0] += " changed" },
+		"must_not":                 func(value *DesignContext) { value.MustNot[0] += " changed" },
+		"minimum_verification":     func(value *DesignContext) { value.MinimumVerification[0] += " changed" },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			value := implementationAssignment()
+			mutate(value.DesignContext)
+			got, err := AssignmentDigest(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == want {
+				t.Fatalf("digest did not cover design_context.%s", name)
+			}
+		})
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	payload, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
 }
 
 func TestPacketDeliveryMetadataIsOutsideAssignmentDigest(t *testing.T) {

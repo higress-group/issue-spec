@@ -17,6 +17,7 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
+	changegraph "github.com/higress-group/issue-spec/internal/change"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
@@ -378,7 +379,7 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 		}
 		compileLease := local
 		compileLease.Portable = portable
-		value, compileErr := compileWorkspaceAssignment(ctx, repo, issue, processID, class.Class, target.body, compileLease, *assignmentFile, *assignmentDiffBase, scenarioCatalog, false)
+		value, compileErr := compileWorkspaceAssignment(ctx, target.client, repo, issue, processID, class.Class, target.body, compileLease, *assignmentFile, *assignmentDiffBase, scenarioCatalog, false)
 		if compileErr != nil {
 			return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: portable.WorkspaceID,
 				State: portable.State}, "assignment_recovery_mismatch", compileErr, *flags.jsonOut)
@@ -439,7 +440,7 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 			value = *preflightAssignment
 		} else {
 			var compileErr error
-			value, compileErr = compileWorkspaceAssignment(ctx, repo, issue, processID, class.Class, target.body, inspection.Lease, *assignmentFile, *assignmentDiffBase, scenarioCatalog, *redispatch)
+			value, compileErr = compileWorkspaceAssignment(ctx, target.client, repo, issue, processID, class.Class, target.body, inspection.Lease, *assignmentFile, *assignmentDiffBase, scenarioCatalog, *redispatch)
 			if compileErr != nil {
 				return a.workspaceLocalFailure(ctx, manager, inspection, repo, issue, processID, "assignment_invalid", compileErr, *flags.jsonOut)
 			}
@@ -473,7 +474,15 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 	return a.outputWorkspace(result, *flags.jsonOut)
 }
 
-func compileWorkspaceAssignment(ctx context.Context, repo string, issue int, processID string, class model.ProcessExecutionClass, body string, lease processworkspace.LocalLease, assignmentFile, diffBase string, scenarioCatalog []assignment.ScenarioRef, redispatch bool) (assignment.Assignment, error) {
+func compileWorkspaceAssignment(ctx context.Context, backend changegraph.Backend, repo string, issue int, processID string, class model.ProcessExecutionClass, body string, lease processworkspace.LocalLease, assignmentFile, diffBase string, scenarioCatalog []assignment.ScenarioRef, redispatch bool) (assignment.Assignment, error) {
+	typed := model.ParseTypedComment(body)
+	if len(typed.Errors) > 0 {
+		return assignment.Assignment{}, fmt.Errorf("PROCESS assignment input is invalid: %s", strings.Join(typed.Errors, "; "))
+	}
+	input := assignment.ProcessInput{}
+	if typed.Assignment != nil {
+		input = *typed.Assignment
+	}
 	if strings.TrimSpace(assignmentFile) != "" {
 		payload, err := os.ReadFile(assignmentFile)
 		if err != nil {
@@ -484,6 +493,12 @@ func compileWorkspaceAssignment(ctx context.Context, repo string, issue int, pro
 			return assignment.Assignment{}, err
 		}
 		if err := validateAssignmentForLease(value, repo, issue, processID, class, lease, redispatch); err != nil {
+			return assignment.Assignment{}, err
+		}
+		if input.DesignContext != nil && !reflect.DeepEqual(value.DesignContext, input.DesignContext) {
+			return assignment.Assignment{}, errors.New("assignment file and PROCESS design_context differ")
+		}
+		if err := bindCanonicalDesignContext(ctx, backend, repo, issue, value.Role, value.DesignContext); err != nil {
 			return assignment.Assignment{}, err
 		}
 		if value.Role == assignment.RoleReview {
@@ -499,14 +514,6 @@ func compileWorkspaceAssignment(ctx context.Context, repo string, issue int, pro
 			return assignment.Assignment{}, err
 		}
 		return value, nil
-	}
-	typed := model.ParseTypedComment(body)
-	if len(typed.Errors) > 0 {
-		return assignment.Assignment{}, fmt.Errorf("PROCESS assignment input is invalid: %s", strings.Join(typed.Errors, "; "))
-	}
-	input := assignment.ProcessInput{}
-	if typed.Assignment != nil {
-		input = *typed.Assignment
 	}
 	scenarios := append([]assignment.ScenarioRef(nil), input.ScenarioSelectors...)
 	if len(scenarios) == 0 {
@@ -534,7 +541,8 @@ func compileWorkspaceAssignment(ctx context.Context, repo string, issue int, pro
 		return assignment.Assignment{}, err
 	}
 	value := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: assignmentID, Repository: repo, Issue: int64(issue), ProcessID: processID,
-		Scenarios: scenarios, Dependencies: dependencies, Handoff: handoff, Policy: assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion}
+		Scenarios: scenarios, Dependencies: dependencies, Handoff: handoff, DesignContext: input.DesignContext,
+		Policy: assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion}
 	switch class {
 	case model.ProcessExecutionChangeBearing:
 		objective := strings.TrimSpace(input.Objective)
@@ -563,10 +571,39 @@ func compileWorkspaceAssignment(ctx context.Context, repo string, issue int, pro
 	default:
 		return assignment.Assignment{}, fmt.Errorf("execution class %s does not issue a role assignment", class)
 	}
+	if err := bindCanonicalDesignContext(ctx, backend, repo, issue, value.Role, value.DesignContext); err != nil {
+		return assignment.Assignment{}, err
+	}
 	if err := value.Validate(); err != nil {
 		return assignment.Assignment{}, err
 	}
 	return value, nil
+}
+
+func bindCanonicalDesignContext(ctx context.Context, backend changegraph.Backend, repo string, issue int, role assignment.Role, design *assignment.DesignContext) error {
+	if role == assignment.RoleVerification {
+		if design != nil {
+			return errors.New("verification assignment must not carry design_context")
+		}
+		return nil
+	}
+	if design == nil {
+		return errors.New("implementation and review assignments require design_context")
+	}
+	if backend == nil {
+		return errors.New("derive canonical Design source: issue backend is required")
+	}
+	located, err := changegraph.LocateFromImplement(ctx, backend, repo, issue)
+	if err != nil {
+		return fmt.Errorf("derive canonical Design source from Implement issue: %w", err)
+	}
+	if strings.TrimSpace(located.Design.URL) == "" {
+		return errors.New("canonical Design issue has no source URL")
+	}
+	if design.SourceURL != located.Design.URL {
+		return fmt.Errorf("design_context.source_url %q does not match canonical Design URL %q", design.SourceURL, located.Design.URL)
+	}
+	return nil
 }
 
 func validateCompiledAssignmentBinding(value assignment.Assignment, generation uint64, binding processworkspace.AssignmentBinding) error {

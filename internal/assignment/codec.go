@@ -157,6 +157,7 @@ func decodeStrict(data []byte, target any) error {
 
 func normalizeAssignment(value Assignment) Assignment {
 	clone := value
+	clone.DesignContext = cloneDesignContext(value.DesignContext)
 	clone.Scenarios = append([]ScenarioRef(nil), value.Scenarios...)
 	sort.Slice(clone.Scenarios, func(i, j int) bool {
 		if clone.Scenarios[i].SpecID == clone.Scenarios[j].SpecID {
@@ -199,6 +200,7 @@ func normalizeAssignment(value Assignment) Assignment {
 
 func normalizeProcessInput(value ProcessInput) ProcessInput {
 	clone := value
+	clone.DesignContext = cloneDesignContext(value.DesignContext)
 	clone.ScenarioSelectors = append([]ScenarioRef(nil), value.ScenarioSelectors...)
 	sort.Slice(clone.ScenarioSelectors, func(i, j int) bool {
 		if clone.ScenarioSelectors[i].SpecID == clone.ScenarioSelectors[j].SpecID {
@@ -216,6 +218,18 @@ func normalizeProcessInput(value ProcessInput) ProcessInput {
 	}
 	sort.Slice(clone.Generators, func(i, j int) bool { return clone.Generators[i].Name < clone.Generators[j].Name })
 	return clone
+}
+
+func cloneDesignContext(value *DesignContext) *DesignContext {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	clone.ApplicableDecisions = append([]string(nil), value.ApplicableDecisions...)
+	clone.MustPreserve = append([]string(nil), value.MustPreserve...)
+	clone.MustNot = append([]string(nil), value.MustNot...)
+	clone.MinimumVerification = append([]string(nil), value.MinimumVerification...)
+	return &clone
 }
 
 func normalizeReceipt(value Receipt) Receipt {

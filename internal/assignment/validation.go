@@ -3,6 +3,7 @@ package assignment
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"path"
 	"regexp"
 	"strings"
@@ -89,6 +90,9 @@ func (a Assignment) Validate() error {
 		if a.BaseRevision == "" || a.SubjectRevision != "" {
 			return errors.New("revision identity: implementation requires base_revision and forbids subject_revision")
 		}
+		if err := validateDesignContext(a.DesignContext); err != nil {
+			return err
+		}
 		return validateImplementation(*a.Implementation)
 	case RoleReview:
 		if a.Review == nil {
@@ -96,6 +100,9 @@ func (a Assignment) Validate() error {
 		}
 		if a.SubjectRevision == "" {
 			return errors.New("revision identity: review requires subject_revision")
+		}
+		if err := validateDesignContext(a.DesignContext); err != nil {
+			return err
 		}
 		return validateReview(*a.Review, a.SubjectRevision)
 	case RoleVerification:
@@ -105,10 +112,67 @@ func (a Assignment) Validate() error {
 		if a.SubjectRevision == "" {
 			return errors.New("revision identity: verification requires subject_revision")
 		}
+		if a.DesignContext != nil {
+			return errors.New("design_context: verification assignments must not carry implementation design authority")
+		}
 		return validateVerification(*a.Verification, a.SubjectRevision)
 	default:
 		panic("validated role was not handled")
 	}
+}
+
+func validateDesignContext(value *DesignContext) error {
+	if value == nil {
+		return errors.New("design_context: is required for implementation and review assignments")
+	}
+	if err := validateRequiredText("design_context.source_url", value.SourceURL, maxTextLength); err != nil {
+		return err
+	}
+	parsedSource, err := url.Parse(value.SourceURL)
+	if err != nil || (parsedSource.Scheme != "http" && parsedSource.Scheme != "https") || parsedSource.Host == "" ||
+		parsedSource.User != nil || parsedSource.RawQuery != "" || parsedSource.Fragment != "" {
+		return errors.New("design_context.source_url: must be an exact canonical HTTP(S) issue URL without credentials, query, or fragment")
+	}
+	if value.ReadMode != DesignReadModeCompleteIssueBody {
+		return fmt.Errorf("design_context.read_mode: must be %q", DesignReadModeCompleteIssueBody)
+	}
+	if err := validateRequiredText("design_context.invariant", value.Invariant, maxTextLength); err != nil {
+		return err
+	}
+	if err := validateDesignTextList("design_context.applicable_decisions", value.ApplicableDecisions); err != nil {
+		return err
+	}
+	if err := validateRequiredText("design_context.implementation_direction", value.ImplementationDirection, maxTextLength); err != nil {
+		return err
+	}
+	if err := validateDesignTextList("design_context.must_preserve", value.MustPreserve); err != nil {
+		return err
+	}
+	if err := validateDesignTextList("design_context.must_not", value.MustNot); err != nil {
+		return err
+	}
+	if err := validateDesignTextList("design_context.minimum_verification", value.MinimumVerification); err != nil {
+		return err
+	}
+	if value.ConflictPolicy != DesignConflictPolicyAuthoritativeStop {
+		return fmt.Errorf("design_context.conflict_policy: must be %q", DesignConflictPolicyAuthoritativeStop)
+	}
+	return nil
+}
+
+func validateDesignTextList(name string, values []string) error {
+	if len(values) == 0 {
+		return fmt.Errorf("%s: at least one item is required", name)
+	}
+	if len(values) > maxListItems {
+		return fmt.Errorf("%s: exceeds %d items", name, maxListItems)
+	}
+	for i, value := range values {
+		if err := validateRequiredText(fmt.Sprintf("%s[%d]", name, i), value, maxTextLength); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateImplementation(p ImplementationPayload) error {
@@ -195,6 +259,11 @@ func (p ProcessInput) Validate() error {
 			return err
 		}
 	}
+	if p.DesignContext != nil {
+		if err := validateDesignContext(p.DesignContext); err != nil {
+			return err
+		}
+	}
 	if err := validateScenarios("scenario_selectors", p.ScenarioSelectors, false); err != nil {
 		return err
 	}
@@ -208,7 +277,7 @@ func (p ProcessInput) Validate() error {
 }
 
 func (p ProcessInput) Empty() bool {
-	return strings.TrimSpace(p.Objective) == "" && len(p.ScenarioSelectors) == 0 && len(p.RequiredTests) == 0 && len(p.RequiredChecks) == 0 && len(p.Generators) == 0 && p.CommitPolicy == nil
+	return strings.TrimSpace(p.Objective) == "" && p.DesignContext == nil && len(p.ScenarioSelectors) == 0 && len(p.RequiredTests) == 0 && len(p.RequiredChecks) == 0 && len(p.Generators) == 0 && p.CommitPolicy == nil
 }
 
 func (r Receipt) Validate() error {

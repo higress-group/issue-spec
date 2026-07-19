@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,6 +87,7 @@ func TestWorkspaceResultFileParsingAndCompletionConvergence(t *testing.T) {
 
 func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *testing.T) {
 	repo, base := workspaceGitRepository(t)
+	backend := newWorkspaceCASBackend("")
 	write := func(name, value string) {
 		if err := os.WriteFile(filepath.Join(repo, name), []byte(value), 0o600); err != nil {
 			t.Fatal(err)
@@ -109,19 +111,51 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 	writable := processworkspace.LocalLease{Portable: processworkspace.PortableLease{SchemaVersion: 1, WorkspaceID: "ws-p006", Repository: "o/r", ProcessID: "PROCESS-006",
 		ExecutionClass: processworkspace.ExecutionChangeBearing, Mode: processworkspace.ModeWritable, BaseSHA: base, Branch: "worker",
 		WriteOwnership: []string{"internal/commands/**"}, RuntimeNamespace: "ws-p006", State: processworkspace.StatePrepared}, IntegrationRoot: repo}
-	implementation, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionChangeBearing,
-		processBody(model.ProcessExecutionChangeBearing, assignment.ProcessInput{Objective: "implement issuance", ScenarioSelectors: scenarios}), writable, "", "", scenarios, false)
+	implementation, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionChangeBearing,
+		processBody(model.ProcessExecutionChangeBearing, assignment.ProcessInput{Objective: "implement issuance", DesignContext: workspaceDesignContext(), ScenarioSelectors: scenarios}), writable, "", "", scenarios, false)
 	if err != nil || implementation.Role != assignment.RoleImplementation || len(implementation.Implementation.FocusedTests) != 0 {
 		t.Fatalf("implementation=%+v err=%v", implementation, err)
+	}
+	if !reflect.DeepEqual(implementation.DesignContext, workspaceDesignContext()) {
+		t.Fatalf("implementation design context changed: %+v", implementation.DesignContext)
+	}
+	missingDesign := processBody(model.ProcessExecutionChangeBearing, assignment.ProcessInput{Objective: "implement issuance", ScenarioSelectors: scenarios})
+	if _, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionChangeBearing,
+		missingDesign, writable, "", "", scenarios, false); err == nil || !strings.Contains(err.Error(), "require design_context") {
+		t.Fatalf("missing design context error = %v", err)
+	}
+	mismatched := workspaceDesignContext()
+	mismatched.SourceURL = "https://github.com/o/r/issues/999"
+	if _, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionChangeBearing,
+		processBody(model.ProcessExecutionChangeBearing, assignment.ProcessInput{Objective: "implement issuance", DesignContext: mismatched, ScenarioSelectors: scenarios}), writable, "", "", scenarios, false); err == nil || !strings.Contains(err.Error(), "does not match canonical Design URL") {
+		t.Fatalf("mismatched design source error = %v", err)
+	}
+	for name, implementBody := range map[string]string{
+		"missing":   "<!-- issue-spec:issue=implement change=portable-assignments version=1 -->",
+		"ambiguous": "<!-- issue-spec:issue=implement change=portable-assignments version=1 -->\n- Design Issue: 296\n- Design Issue: 296",
+	} {
+		t.Run("design-source-"+name, func(t *testing.T) {
+			invalidBackend := newWorkspaceCASBackend("")
+			invalidBackend.getIssue = func(_ context.Context, _ string, issue int) (github.Issue, error) {
+				return github.Issue{Number: issue, HTMLURL: fmt.Sprintf("https://github.com/o/r/issues/%d", issue), Body: implementBody}, nil
+			}
+			if _, err := compileWorkspaceAssignment(t.Context(), invalidBackend, "o/r", 297, "PROCESS-006", model.ProcessExecutionChangeBearing,
+				processBody(model.ProcessExecutionChangeBearing, assignment.ProcessInput{Objective: "implement issuance", DesignContext: workspaceDesignContext(), ScenarioSelectors: scenarios}), writable, "", "", scenarios, false); err == nil || !strings.Contains(err.Error(), "Design Issue") {
+				t.Fatalf("%s design source error = %v", name, err)
+			}
+		})
 	}
 
 	snapshot := processworkspace.LocalLease{Portable: processworkspace.PortableLease{SchemaVersion: 1, WorkspaceID: "ws-review", Repository: "o/r", ProcessID: "PROCESS-006",
 		ExecutionClass: processworkspace.ExecutionReview, Mode: processworkspace.ModeSnapshot, BaseSHA: subject, DetachedRevision: subject,
 		RuntimeNamespace: "ws-review", State: processworkspace.StatePrepared}, IntegrationRoot: repo}
-	review, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
-		processBody(model.ProcessExecutionReview, assignment.ProcessInput{ScenarioSelectors: scenarios}), snapshot, "", base, scenarios, false)
+	review, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
+		processBody(model.ProcessExecutionReview, assignment.ProcessInput{DesignContext: workspaceDesignContext(), ScenarioSelectors: scenarios}), snapshot, "", base, scenarios, false)
 	if err != nil || review.Role != assignment.RoleReview || len(review.Review.Authors) != 1 || !reflect.DeepEqual(review.Review.Scope, []string{"worker.go"}) {
 		t.Fatalf("review=%+v err=%v", review, err)
+	}
+	if !reflect.DeepEqual(review.DesignContext, workspaceDesignContext()) {
+		t.Fatalf("review design context changed: %+v", review.DesignContext)
 	}
 	reviewJSON, err := assignment.CanonicalAssignmentJSON(review)
 	if err != nil {
@@ -131,10 +165,16 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 	if err := os.WriteFile(reviewFile, reviewJSON, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fromFile, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
-		processBody(model.ProcessExecutionReview, assignment.ProcessInput{ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false)
+	fromFile, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
+		processBody(model.ProcessExecutionReview, assignment.ProcessInput{DesignContext: workspaceDesignContext(), ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false)
 	if err != nil || !reflect.DeepEqual(fromFile.Review, review.Review) {
 		t.Fatalf("review file=%+v err=%v", fromFile, err)
+	}
+	conflictingInput := workspaceDesignContext()
+	conflictingInput.Invariant = "different authority"
+	if _, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
+		processBody(model.ProcessExecutionReview, assignment.ProcessInput{DesignContext: conflictingInput, ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false); err == nil || !strings.Contains(err.Error(), "assignment file and PROCESS design_context differ") {
+		t.Fatalf("conflicting assignment authorities error = %v", err)
 	}
 	review.Review.Authors = []string{"Omitted Author <omitted@example.com>"}
 	reviewJSON, err = assignment.CanonicalAssignmentJSON(review)
@@ -144,8 +184,8 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 	if err := os.WriteFile(reviewFile, reviewJSON, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
-		processBody(model.ProcessExecutionReview, assignment.ProcessInput{ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false); err == nil || !strings.Contains(err.Error(), "compiler-derived") {
+	if _, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
+		processBody(model.ProcessExecutionReview, assignment.ProcessInput{DesignContext: workspaceDesignContext(), ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false); err == nil || !strings.Contains(err.Error(), "compiler-derived") {
 		t.Fatalf("review file bypassed Git-derived authors: %v", err)
 	}
 	omittedScope := fromFile
@@ -157,8 +197,8 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 	if err := os.WriteFile(reviewFile, reviewJSON, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
-		processBody(model.ProcessExecutionReview, assignment.ProcessInput{ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false); err == nil || !strings.Contains(err.Error(), "compiler-derived") {
+	if _, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
+		processBody(model.ProcessExecutionReview, assignment.ProcessInput{DesignContext: workspaceDesignContext(), ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false); err == nil || !strings.Contains(err.Error(), "compiler-derived") {
 		t.Fatalf("review file bypassed Git-derived scope: %v", err)
 	}
 	invalidBase := fromFile
@@ -170,12 +210,12 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 	if err := os.WriteFile(reviewFile, reviewJSON, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
-		processBody(model.ProcessExecutionReview, assignment.ProcessInput{ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false); err == nil || !strings.Contains(err.Error(), "ancestor") {
+	if _, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
+		processBody(model.ProcessExecutionReview, assignment.ProcessInput{DesignContext: workspaceDesignContext(), ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false); err == nil || !strings.Contains(err.Error(), "ancestor") {
 		t.Fatalf("review file accepted non-ancestor diff base: %v", err)
 	}
 
-	verification, err := compileWorkspaceAssignment(t.Context(), "o/r", 297, "PROCESS-006", model.ProcessExecutionVerification,
+	verification, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionVerification,
 		processBody(model.ProcessExecutionVerification, assignment.ProcessInput{ScenarioSelectors: scenarios,
 			RequiredTests: []assignment.TestSelector{{ID: "unit", Command: "go test ./internal/commands"}}}), snapshot, "", "", scenarios, false)
 	if err != nil || verification.Role != assignment.RoleVerification || len(verification.Verification.RequiredTests) != 1 {
@@ -206,7 +246,7 @@ func TestAssignmentPacketOutputIsPrivateAndOutsideWorktree(t *testing.T) {
 	}
 	value := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "packet-1", Role: assignment.RoleImplementation,
 		Repository: "o/r", Issue: 297, ProcessID: "PROCESS-006", BaseRevision: strings.Repeat("a", 40),
-		Scenarios: []assignment.ScenarioRef{{SpecID: "SPEC-001", Scenario: "packet"}}, Policy: assignment.Policy{RequireExactRevision: true, MaxResultItems: 64},
+		Scenarios: []assignment.ScenarioRef{{SpecID: "SPEC-001", Scenario: "packet"}}, DesignContext: workspaceDesignContext(), Policy: assignment.Policy{RequireExactRevision: true, MaxResultItems: 64},
 		ResultSchemaVersion: assignment.ReceiptSchemaVersion, Implementation: &assignment.ImplementationPayload{Objective: "packet", Branch: "worker",
 			WriteOwnership: []string{"internal/commands/**"}, Commit: assignment.CommitPolicy{RequireSingleCommit: true, RequireDCO: true}}}
 	digest, err := assignment.AssignmentDigest(value)
@@ -288,7 +328,7 @@ func TestWorkspacePreparePersistsAssignmentBeforePacketAndRedispatchesExplicitly
 	processBody, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: "PROCESS-004", Status: "in-progress"},
 		Input: templates.ProcessInput{Title: "workspace", ParentTask: "TASK-004", ExecutionClass: model.ProcessExecutionChangeBearing,
 			WriteOwnership: []string{"internal/commands/**"}, Covers: []string{"SPEC-001"}, Handoff: "ready",
-			Assignment: &assignment.ProcessInput{Objective: "issue a packet"}}})
+			Assignment: &assignment.ProcessInput{Objective: "issue a packet", DesignContext: workspaceDesignContext()}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +384,7 @@ func TestWorkspaceReceiptImportRemainsInformationalThroughRecoveryIntegrationAnd
 	processBody, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: "PROCESS-004", Status: "in-progress"},
 		Input: templates.ProcessInput{Title: "receipt import", ParentTask: "TASK-004", ExecutionClass: model.ProcessExecutionChangeBearing,
 			WriteOwnership: []string{"internal/commands/**"}, Covers: []string{"SPEC-001"}, Handoff: "ready",
-			Assignment: &assignment.ProcessInput{Objective: "validate an informational result file"}}})
+			Assignment: &assignment.ProcessInput{Objective: "validate an informational result file", DesignContext: workspaceDesignContext()}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +532,7 @@ func TestWorkspacePrepareRemoteOnlyAssignmentRecoveryProvesBindingBeforeMutation
 			processBody, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: "PROCESS-004", Status: "in-progress"},
 				Input: templates.ProcessInput{Title: "recovery", ParentTask: "TASK-004", ExecutionClass: model.ProcessExecutionChangeBearing,
 					WriteOwnership: []string{"internal/commands/**"}, Covers: []string{"SPEC-001"}, Handoff: "ready",
-					Assignment: &assignment.ProcessInput{Objective: "recover exact packet"}}})
+					Assignment: &assignment.ProcessInput{Objective: "recover exact packet", DesignContext: workspaceDesignContext()}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -516,7 +556,7 @@ func TestWorkspacePrepareRemoteOnlyAssignmentRecoveryProvesBindingBeforeMutation
 				t.Fatalf("legacy local lease=%+v found=%v err=%v", local, found, err)
 			}
 			catalog := []assignment.ScenarioRef{{SpecID: "SPEC-001", Scenario: "recover packet"}}
-			value, err := compileWorkspaceAssignment(t.Context(), "o/r", 177, "PROCESS-004", model.ProcessExecutionChangeBearing,
+			value, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 177, "PROCESS-004", model.ProcessExecutionChangeBearing,
 				backend.body, local, "", "", catalog, false)
 			if err != nil {
 				t.Fatal(err)
@@ -603,7 +643,27 @@ func newWorkspaceCASBackend(body string) *workspaceCASBackend {
 	backend.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
 		return []github.Comment{{ID: 77, HTMLURL: "https://example.test/process/77", Body: backend.body}}, nil
 	}
+	backend.getIssue = func(_ context.Context, _ string, issue int) (github.Issue, error) {
+		switch issue {
+		case 296:
+			return github.Issue{Number: 296, HTMLURL: "https://github.com/o/r/issues/296", Body: "<!-- issue-spec:issue=design change=portable-assignments version=1 -->\n- Proposal Issue: 295"}, nil
+		case 295:
+			return github.Issue{Number: 295, HTMLURL: "https://github.com/o/r/issues/295", Body: "<!-- issue-spec:issue=proposal change=portable-assignments version=1 -->"}, nil
+		default:
+			return github.Issue{Number: issue, HTMLURL: fmt.Sprintf("https://github.com/o/r/issues/%d", issue), Body: "<!-- issue-spec:issue=implement change=portable-assignments version=1 -->\n- Design Issue: 296"}, nil
+		}
+	}
 	return backend
+}
+
+func workspaceDesignContext() *assignment.DesignContext {
+	return &assignment.DesignContext{
+		SourceURL: "https://github.com/o/r/issues/296", ReadMode: assignment.DesignReadModeCompleteIssueBody,
+		Invariant: "The assignment follows the authoritative Design.", ApplicableDecisions: []string{"D14"},
+		ImplementationDirection: "Preserve the structured design projection exactly.", MustPreserve: []string{"portable authority"},
+		MustNot: []string{"reinterpret Design"}, MinimumVerification: []string{"focused tests"},
+		ConflictPolicy: assignment.DesignConflictPolicyAuthoritativeStop,
+	}
 }
 
 func (b *workspaceCASBackend) GetCommentRepresentation(context.Context, string, int64) (github.CommentRepresentation, error) {

@@ -345,6 +345,10 @@ issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process P
 
 被分配的 implementation worker 不执行 `complete` 或 `integrate`。它返回一个有界 handoff，其中包含精确 result commit、focused-test 结果，以及在使用时生成的 sealed result receipt。Coordinator 提供 owner token 并执行 `workspace complete --result-file`。该命令会校验精确的 assignment id、digest、generation、schema、base/result revision，以及单 commit、DCO、ownership、changed paths 和 required tests 的 Git 合约，然后记录 result commit 并推进 workspace lifecycle。
 
+每个 implementation 或 review 角色 assignment 都必须携带 `design_context`，并将其纳入 portable assignment digest。该对象包含 canonical Design `source_url`、固定的 `read_mode: complete-issue-body`、固定的 `conflict_policy: design-authoritative-stop`，以及由 Coordinator 编写的 `invariant`、`applicable_decisions`、`implementation_direction`、`must_preserve`、`must_not` 与 `minimum_verification` 字段。workspace compiler 从当前 Implement issue 的 canonical predecessor chain 推导 Design URL；source 缺失、歧义或不匹配时 fail closed。结构化值在输出时不排序、不摘要，也不重新解释。
+
+修改或评审代码前，被分配的角色必须执行 `issue-spec read issue --repo owner/repo --issue <design_context.source_url>`，只读取完整 Design issue body，不扩展 comments、timeline、history 或 gate。若 Design 正文与结构化 projection 冲突，角色必须停止并报告冲突。`CODEX_THREAD_ID`、`--agent-session` 等 runtime session 值只是可选 audit metadata，不是 Design authority 或 correctness input。
+
 导入的 result file 不是身份或 provenance 信任根。其 writer、subject、逻辑 agent 名称、`CODEX_THREAD_ID`、`--agent-session`、credential 与 assurance label 都只是信息，不能创建 accepted implementation receipt authority，也不能满足非 Coordinator/独立性 gate。unverified import 与保留的 assurance 值可以通过结构校验，但得到的 PROCESS workspace 不包含 accepted-implementation-receipt marker。runtime-attested Coordinator import 明确推迟到存在真实 runtime attestation 信任根之后；本流程不引入 signer、secret 或由调用方命名的 attestor interface。
 
 现有的窄范围直接 role-owned publication 命令继续为 rationale、review 与 verification 提供兼容路径。例如 verification 角色针对精确 assignment 与 snapshot 调用 `verify submit --agent Verifier`。agent/session 字段始终是 `self-reported` metadata，不会因为来自 `CODEX_THREAD_ID` 或显式参数而变成更强的 evidence。`verify submit` 不包含 Coordinator 侧的 owner-token import。

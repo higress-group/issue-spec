@@ -384,6 +384,25 @@ func TestIssueSpecSkillTemplatesDocumentSessionSourceSeparation(t *testing.T) {
 	}
 }
 
+func TestIssueSpecRoleSkillsRequireCompleteAuthoritativeDesignRead(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+	for _, name := range []string{"issue-spec-apply", "issue-spec-review"} {
+		content := skillContent(t, skills, name)
+		for _, want := range []string{
+			"design_context.source_url",
+			"issue-spec read issue --repo owner/repo --issue <design_context.source_url>",
+			"complete-issue-body",
+			"design-authoritative-stop",
+			"without comments, timeline, history, or gates",
+			"optional audit metadata",
+		} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s skill missing Design authority guidance %q:\n%s", name, want, content)
+			}
+		}
+	}
+}
+
 func TestIssueSpecSkillTemplatesDocumentDurableArchiveGuidance(t *testing.T) {
 	skills := IssueSpecSkills("owner/repo")
 	workflow := skillContent(t, skills, "issue-spec-workflow")

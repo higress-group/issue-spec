@@ -3,6 +3,9 @@ package assignment
 const (
 	AssignmentSchemaVersion = "issue-spec.assignment/v1"
 	ReceiptSchemaVersion    = "issue-spec.receipt/v1"
+
+	DesignReadModeCompleteIssueBody       = "complete-issue-body"
+	DesignConflictPolicyAuthoritativeStop = "design-authoritative-stop"
 )
 
 type Role string
@@ -27,11 +30,27 @@ type Assignment struct {
 	Scenarios           []ScenarioRef          `json:"scenarios"`
 	Dependencies        []string               `json:"dependencies,omitempty"`
 	Handoff             string                 `json:"handoff,omitempty"`
+	DesignContext       *DesignContext         `json:"design_context,omitempty"`
 	Policy              Policy                 `json:"policy"`
 	ResultSchemaVersion string                 `json:"result_schema_version"`
 	Implementation      *ImplementationPayload `json:"implementation,omitempty"`
 	Review              *ReviewPayload         `json:"review,omitempty"`
 	Verification        *VerificationPayload   `json:"verification,omitempty"`
+}
+
+// DesignContext is the portable, digest-covered projection of the Design
+// decisions applicable to one implementation or review assignment. Its text
+// and list order are authoritative and must not be normalized or reinterpreted.
+type DesignContext struct {
+	SourceURL               string   `json:"source_url"`
+	ReadMode                string   `json:"read_mode"`
+	Invariant               string   `json:"invariant"`
+	ApplicableDecisions     []string `json:"applicable_decisions"`
+	ImplementationDirection string   `json:"implementation_direction"`
+	MustPreserve            []string `json:"must_preserve"`
+	MustNot                 []string `json:"must_not"`
+	MinimumVerification     []string `json:"minimum_verification"`
+	ConflictPolicy          string   `json:"conflict_policy"`
 }
 
 type ScenarioRef struct {
@@ -114,6 +133,7 @@ type Packet struct {
 // fields that must never be guessed from prose.
 type ProcessInput struct {
 	Objective         string            `json:"objective,omitempty"`
+	DesignContext     *DesignContext    `json:"design_context,omitempty"`
 	ScenarioSelectors []ScenarioRef     `json:"scenario_selectors,omitempty"`
 	RequiredTests     []TestSelector    `json:"required_tests,omitempty"`
 	RequiredChecks    []CheckSelector   `json:"required_checks,omitempty"`
