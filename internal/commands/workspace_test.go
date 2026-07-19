@@ -257,6 +257,123 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 	}
 }
 
+func TestWorkspacePrepareEmitsProjectVerifierPolicyForGeneratedAndAssignmentFile(t *testing.T) {
+	scenario := assignment.ScenarioRef{SpecID: "SPEC-001", Scenario: "project verification is sealed"}
+	selectedTests := []assignment.TestSelector{{ID: "z-project-unit", Command: "go test ./project/..."}}
+	selectedChecks := []assignment.CheckSelector{
+		{Provider: "z.code.example", Name: "branch-policy"},
+		{Provider: "code.example", Name: "route-owner-policy"},
+	}
+
+	prepare := func(t *testing.T, fromFile bool, tests []assignment.TestSelector) assignment.Assignment {
+		t.Helper()
+		repo, _ := workspaceGitRepository(t)
+		base := installWorkspaceVerifierWorkflow(t, repo)
+		specBody, err := templates.SpecComment(templates.SpecCommentOptions{Common: templates.CommonOptions{ID: scenario.SpecID, Status: "confirmed"},
+			Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{Title: "project verification", Text: "The CLI MUST seal project verification policy."},
+				Scenarios: []templates.SpecScenarioInput{{Title: scenario.Scenario, When: "a verification assignment is emitted", Then: "project guidance and selectors are sealed"}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		processInput := (*assignment.ProcessInput)(nil)
+		if !fromFile {
+			processInput = &assignment.ProcessInput{RequiredTests: tests, RequiredChecks: selectedChecks}
+		}
+		processBody, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: "PROCESS-004", Status: "in-progress"},
+			Input: templates.ProcessInput{Title: "verify project policy", ParentTask: "TASK-002", ExecutionClass: model.ProcessExecutionVerification,
+				WriteOwnership: []string{"internal/commands/**"}, Covers: []string{scenario.SpecID}, Handoff: "verify", Assignment: processInput}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		backend := newWorkspaceCASBackend(processBody)
+		backend.listIssueComments = func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			if issue == 295 {
+				return []github.Comment{{ID: 91, Body: specBody}}, nil
+			}
+			return []github.Comment{{ID: 77, HTMLURL: "https://example.test/process/77", Body: backend.body}}, nil
+		}
+
+		root := filepath.Join(t.TempDir(), "managed")
+		packetPath := filepath.Join(t.TempDir(), "verification-packet.json")
+		args := append(workspaceBaseArgs(repo, root, "verify-owner"), "--base", base, "--issue-assignment", "--proposal", "295", "--assignment-out", packetPath, "--json")
+		if fromFile {
+			value := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "ws-process-004-assignment-1", Role: assignment.RoleVerification,
+				Repository: "o/r", Issue: 177, ProcessID: "PROCESS-004", SubjectRevision: base, Scenarios: []assignment.ScenarioRef{scenario},
+				Policy: assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+				Verification: &assignment.VerificationPayload{SubjectRevision: base, RequiredTests: tests, RequiredChecks: selectedChecks}}
+			payload, err := assignment.CanonicalAssignmentJSON(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assignmentPath := filepath.Join(t.TempDir(), "caller-assignment.json")
+			if err := os.WriteFile(assignmentPath, payload, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args = append(args, "--assignment-file", assignmentPath)
+		}
+		app, out, errOut := transitionAppWithError(backend)
+		if code := app.runWorkflowWorkspace(t.Context(), append([]string{"prepare"}, args...)); code != 0 {
+			t.Fatalf("prepare emitted verification assignment code=%d out=%s err=%s", code, out.String(), errOut.String())
+		}
+		raw, err := os.ReadFile(packetPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		packet, err := assignment.ParsePacketJSON(raw)
+		if err != nil {
+			t.Fatalf("parse emitted packet: %v\n%s", err, raw)
+		}
+		return packet.Assignment
+	}
+
+	generated := prepare(t, false, selectedTests)
+	fromFile := prepare(t, true, selectedTests)
+	if !reflect.DeepEqual(generated.Verification, fromFile.Verification) {
+		t.Fatalf("generated and assignment-file verifier policy differ:\ngenerated=%+v\nfrom-file=%+v", generated.Verification, fromFile.Verification)
+	}
+	verification := generated.Verification
+	if verification == nil || verification.Guidance == nil ||
+		!strings.Contains(string(verification.Guidance.Context), "public routes require an owner") ||
+		!strings.Contains(string(verification.Guidance.RulesVerify), "business decision") ||
+		strings.Contains(string(verification.Guidance.RulesVerify), "must not enter verifier guidance") ||
+		len(verification.Guidance.Instructions) != 1 || verification.Guidance.Instructions[0].ArtifactID != "verify" ||
+		!strings.Contains(verification.Guidance.Instructions[0].Text, "affected route scenarios") {
+		t.Fatalf("emitted project guidance=%+v", verification)
+	}
+	wantDurable := "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + generated.SubjectRevision + " --subject " + generated.SubjectRevision + " --root . --json"
+	wantTests := []assignment.TestSelector{
+		{ID: assignment.DurableSpecTestID, Command: wantDurable},
+		{ID: "z-project-unit", Command: "go test ./project/..."},
+	}
+	wantChecks := []assignment.CheckSelector{
+		{Provider: "code.example", Name: "route-owner-policy"},
+		{Provider: "z.code.example", Name: "branch-policy"},
+	}
+	if !reflect.DeepEqual(verification.RequiredTests, wantTests) || !reflect.DeepEqual(verification.RequiredChecks, wantChecks) {
+		t.Fatalf("emitted selector order tests=%+v checks=%+v", verification.RequiredTests, verification.RequiredChecks)
+	}
+
+	t.Run("durable selector conflict fails closed", func(t *testing.T) {
+		conflicting := []assignment.TestSelector{{ID: assignment.DurableSpecTestID, Command: "false"}}
+		repo, _ := workspaceGitRepository(t)
+		base := installWorkspaceVerifierWorkflow(t, repo)
+		lease := processworkspace.LocalLease{Portable: processworkspace.PortableLease{SchemaVersion: 1, WorkspaceID: "ws-conflict", Repository: "o/r", ProcessID: "PROCESS-004",
+			ExecutionClass: processworkspace.ExecutionVerification, Mode: processworkspace.ModeSnapshot, BaseSHA: base, DetachedRevision: base,
+			RuntimeNamespace: "ws-conflict", State: processworkspace.StatePrepared}, IntegrationRoot: repo}
+		body, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: "PROCESS-004", Status: "in-progress"},
+			Input: templates.ProcessInput{Title: "conflict", ParentTask: "TASK-002", ExecutionClass: model.ProcessExecutionVerification,
+				WriteOwnership: []string{"internal/commands/**"}, Covers: []string{scenario.SpecID}, Handoff: "verify",
+				Assignment: &assignment.ProcessInput{RequiredTests: conflicting}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := compileWorkspaceAssignment(t.Context(), newWorkspaceCASBackend(body), "o/r", 177, "PROCESS-004", model.ProcessExecutionVerification,
+			body, lease, "", "", []assignment.ScenarioRef{scenario}, false); err == nil || !strings.Contains(err.Error(), "conflicting commands") {
+			t.Fatalf("durable selector conflict error=%v", err)
+		}
+	})
+}
+
 func TestDeriveReviewAssignmentIncludesDeleteOnlyScope(t *testing.T) {
 	repo, base := workspaceGitRepository(t)
 	workspaceGit(t, repo, "rm", "README.md")
@@ -1364,6 +1481,49 @@ func workspaceGitRepository(t *testing.T) (string, string) {
 	workspaceGit(t, repo, "add", "README.md")
 	workspaceGit(t, repo, "commit", "-s", "-m", "base")
 	return repo, workspaceGitOutput(t, repo, "rev-parse", "HEAD")
+}
+
+func installWorkspaceVerifierWorkflow(t *testing.T, repo string) string {
+	t.Helper()
+	files := map[string]string{
+		"issue-spec/config.yaml": `
+schema: verifier-workflow
+context: |
+  Project: edge proxy
+  Business invariant: public routes require an owner
+rules:
+  verify:
+    instruction: Explain the business decision using role-owned evidence.
+  proposal:
+    instruction: This must not enter verifier guidance.
+external_code:
+  provider_key: code.example
+  evidence:
+    required_checks: [route-owner-policy]
+durable_specs:
+  mode: repository
+`,
+		"issue-spec/schemas/verifier-workflow/schema.yaml": `
+artifacts:
+  verify:
+    type: verify
+    template: verify.md
+    instructions: Verify the affected route scenarios and run only sealed selectors.
+`,
+		"issue-spec/schemas/verifier-workflow/templates/verify.md": "{{.DefaultLogicalBody}}\n",
+	}
+	for name, body := range files {
+		path := filepath.Join(repo, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	workspaceGit(t, repo, "add", "issue-spec/config.yaml", "issue-spec/schemas/verifier-workflow/schema.yaml", "issue-spec/schemas/verifier-workflow/templates/verify.md")
+	workspaceGit(t, repo, "commit", "-s", "-m", "add verifier workflow")
+	return workspaceGitOutput(t, repo, "rev-parse", "HEAD")
 }
 
 func workspaceGit(t *testing.T, dir string, args ...string) {

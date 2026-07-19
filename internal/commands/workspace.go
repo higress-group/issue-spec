@@ -510,7 +510,7 @@ func compileWorkspaceAssignment(ctx context.Context, backend changegraph.Backend
 		if err := validateAssignmentScenarios(value.Scenarios, scenarioCatalog); err != nil {
 			return assignment.Assignment{}, err
 		}
-		value, err = withWorkspaceDurableCheck(ctx, backend, repo, issue, lease, value)
+		value, err = withWorkspaceVerificationPolicy(ctx, backend, repo, issue, lease, value)
 		if err != nil {
 			return assignment.Assignment{}, err
 		}
@@ -575,7 +575,7 @@ func compileWorkspaceAssignment(ctx context.Context, backend changegraph.Backend
 	default:
 		return assignment.Assignment{}, fmt.Errorf("execution class %s does not issue a role assignment", class)
 	}
-	value, err = withWorkspaceDurableCheck(ctx, backend, repo, issue, lease, value)
+	value, err = withWorkspaceVerificationPolicy(ctx, backend, repo, issue, lease, value)
 	if err != nil {
 		return assignment.Assignment{}, err
 	}
@@ -588,15 +588,25 @@ func compileWorkspaceAssignment(ctx context.Context, backend changegraph.Backend
 	return value, nil
 }
 
-func withWorkspaceDurableCheck(ctx context.Context, backend changegraph.Backend, repo string, implement int,
+func withWorkspaceVerificationPolicy(ctx context.Context, backend changegraph.Backend, repo string, implement int,
 	lease processworkspace.LocalLease, value assignment.Assignment) (assignment.Assignment, error) {
 	if value.Role != assignment.RoleVerification || value.Verification == nil {
 		return value, nil
 	}
 	plan, err := workflow.Resolve(lease.IntegrationRoot)
 	if err != nil {
-		return assignment.Assignment{}, fmt.Errorf("resolve verification durable mode: %w", err)
+		return assignment.Assignment{}, fmt.Errorf("resolve verification workflow: %w", err)
 	}
+	packet, err := verifierPacketFromWorkflow(plan, value.Verification.RequiredSelectors())
+	if err != nil {
+		return assignment.Assignment{}, fmt.Errorf("resolve project verifier packet: %w", err)
+	}
+	payload, err := value.Verification.WithVerifierPacket(packet)
+	if err != nil {
+		return assignment.Assignment{}, fmt.Errorf("seal project verifier packet: %w", err)
+	}
+	value.Verification = &payload
+
 	mode := plan.DurableSpecsMode()
 	if mode == "none" {
 		return value, nil
@@ -608,7 +618,7 @@ func withWorkspaceDurableCheck(ctx context.Context, backend changegraph.Backend,
 	if err != nil {
 		return assignment.Assignment{}, fmt.Errorf("derive durable check proposal from Implement issue: %w", err)
 	}
-	payload, err := value.Verification.WithDurableCheck(mode, assignment.DurableCheckBinding{
+	payload, err = value.Verification.WithDurableCheck(mode, assignment.DurableCheckBinding{
 		Repository: repo, Proposal: located.Proposal.Number, BaselineRevision: lease.Portable.BaseSHA,
 		SubjectRevision: lease.Portable.DetachedRevision, RepositoryRoot: ".",
 	})
