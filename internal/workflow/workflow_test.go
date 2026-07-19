@@ -115,6 +115,66 @@ func TestResolveAcceptsLegacyScalarContext(t *testing.T) {
 	}
 }
 
+func TestOpenSpecStyleProjectProducesDeclarativeVerifierPacket(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "openspec", "config.yaml"), `
+schema: business-workflow
+context: |
+  Project: edge proxy
+  Business invariant: public routes require an owner
+rules:
+  verify:
+    - Review only the affected route scenarios.
+    - command: ./scripts/verify-route-owners.sh
+  proposal:
+    - Unrelated proposal-only guidance.
+external_code:
+  provider_key: code.example
+  evidence:
+    required_checks: [route-owner-policy]
+`)
+	writeFile(t, filepath.Join(root, "openspec", "schemas", "business-workflow", "schema.yaml"), `
+artifacts:
+  proposal:
+    type: proposal
+    template: proposal.md
+    instructions: Do not copy this into verifier guidance.
+  verify:
+    type: verify
+    template: verify.md
+    instructions: |
+      Explain the affected route decision.
+      Run only the exact sealed commands and checks.
+`)
+	writeFile(t, filepath.Join(root, "openspec", "schemas", "business-workflow", "templates", "proposal.md"), "# Proposal\n")
+	writeFile(t, filepath.Join(root, "openspec", "schemas", "business-workflow", "templates", "verify.md"), "{{.DefaultLogicalBody}}\n")
+
+	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+	if err != nil {
+		t.Fatalf("resolve OpenSpec-style fixture: %v diagnostics=%+v", err, plan.Diagnostics)
+	}
+	packet, err := plan.ProjectVerifierPacket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if packet.Guidance == nil || !strings.Contains(string(packet.Guidance.Context), "public routes require an owner") {
+		t.Fatalf("workflow context missing from verifier packet: %+v", packet.Guidance)
+	}
+	if !strings.Contains(string(packet.Guidance.RulesVerify), "verify-route-owners.sh") || strings.Contains(string(packet.Guidance.RulesVerify), "proposal-only") {
+		t.Fatalf("rules.verify projection is not bounded: %s", packet.Guidance.RulesVerify)
+	}
+	if len(packet.Guidance.Instructions) != 1 || packet.Guidance.Instructions[0].ArtifactID != "verify" ||
+		!strings.Contains(packet.Guidance.Instructions[0].Text, "exact sealed commands and checks") {
+		t.Fatalf("VERIFY instructions = %+v", packet.Guidance.Instructions)
+	}
+	if len(packet.RequiredTests) != 0 {
+		t.Fatalf("rules.verify prose became executable tests: %+v", packet.RequiredTests)
+	}
+	if len(packet.RequiredChecks) != 1 || packet.RequiredChecks[0].Provider != "code.example" || packet.RequiredChecks[0].Name != "route-owner-policy" {
+		t.Fatalf("provider check selectors = %+v", packet.RequiredChecks)
+	}
+}
+
 func TestWorkflowContextRejectsNonStringScalarsAndAcceptsNull(t *testing.T) {
 	for _, raw := range []string{"context: 42\n", "context: true\n"} {
 		var cfg Config

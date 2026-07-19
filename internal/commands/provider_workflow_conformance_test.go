@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
@@ -287,6 +288,96 @@ func TestProviderBridgeContractRequiresStableCurrentHeadSnapshot(t *testing.T) {
 		if !strings.Contains(contract, want) {
 			t.Fatalf("provider bridge contract missing %q:\n%s", want, contract)
 		}
+	}
+}
+
+func TestOpenSpecStyleVerifierPacketSealsGuidanceSelectorsAndReceipt(t *testing.T) {
+	root := t.TempDir()
+	writeWorkflowTestFile(t, filepath.Join(root, "openspec", "config.yaml"), `
+schema: route-workflow
+context: |
+  Project: OpenSpec-style proxy
+  Verify only changed route ownership.
+rules:
+  verify:
+    instruction: Explain the business decision and run ./scripts/route-owner.sh.
+  proposal:
+    instruction: This must not enter verifier packets.
+external_code:
+  provider_key: code.example
+  evidence:
+    required_checks: [route-owner-policy]
+`)
+	writeWorkflowTestFile(t, filepath.Join(root, "openspec", "schemas", "route-workflow", "schema.yaml"), `
+artifacts:
+  verify:
+    type: verify
+    template: verify.md
+    instructions: Verify the affected route scenarios and report a role-owned conclusion.
+`)
+	writeWorkflowTestFile(t, filepath.Join(root, "openspec", "schemas", "route-workflow", "templates", "verify.md"), "{{.DefaultLogicalBody}}\n")
+
+	plan, err := workflow.ResolveWithOptions(workflow.ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+	if err != nil {
+		t.Fatalf("resolve OpenSpec-style fixture: %v diagnostics=%+v", err, plan.Diagnostics)
+	}
+	packet, err := verifierPacketFromWorkflow(plan, assignment.RequiredSelectors{Tests: []assignment.TestSelector{
+		{ID: "route-owner", Command: "./scripts/route-owner.sh"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packet.RequiredTests) != 1 || len(packet.RequiredChecks) != 1 {
+		t.Fatalf("verifier packet selectors = tests=%+v checks=%+v", packet.RequiredTests, packet.RequiredChecks)
+	}
+	if packet.Guidance == nil || strings.Contains(string(packet.Guidance.RulesVerify), "proposal") ||
+		!strings.Contains(string(packet.Guidance.RulesVerify), "business decision") {
+		t.Fatalf("verifier guidance is not bounded to rules.verify: %+v", packet.Guidance)
+	}
+
+	const subject = "head-308"
+	verification, err := (assignment.VerificationPayload{SubjectRevision: subject}).WithVerifierPacket(packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealedAssignment := assignment.Assignment{
+		SchemaVersion:       assignment.AssignmentSchemaVersion,
+		ID:                  "route-verifier-1",
+		Role:                assignment.RoleVerification,
+		Repository:          "acme/proxy",
+		Issue:               313,
+		ProcessID:           "PROCESS-003",
+		SubjectRevision:     subject,
+		Scenarios:           []assignment.ScenarioRef{{SpecID: "SPEC-002", Scenario: "custom workflow defines business verification"}},
+		Policy:              assignment.Policy{RequireExactRevision: true, MaxResultItems: 64},
+		ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		Verification:        &verification,
+	}
+	canonical, err := assignment.CanonicalAssignmentJSON(sealedAssignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := assignment.ParseAssignmentJSON(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := assignment.AssignmentDigest(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := assignment.SealReceipt(assignment.Receipt{
+		SchemaVersion: assignment.ReceiptSchemaVersion,
+		ID:            "route-verifier-receipt-1", AssignmentID: parsed.ID, AssignmentDigest: digest, AssignmentGeneration: 1,
+		Role: assignment.RoleVerification, ResultSchemaVersion: assignment.ReceiptSchemaVersion, SubjectRevision: subject,
+		Tests:        []assignment.TestResult{{ID: "route-owner", Command: "./scripts/route-owner.sh", Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}},
+		Provenance:   assignment.Provenance{Route: assignment.RouteRoleOwned, Assurance: assignment.AssuranceSelfReported, Writer: "Verifier", Subject: "Verifier", Source: "fixture"},
+		Verification: &assignment.VerificationResult{Summary: "Route owner policy satisfied for affected scenarios.", CheckSelectors: []assignment.CheckSelector{{Provider: "code.example", Name: "route-owner-policy"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := assignment.ValidateVerificationReceiptCoverage(*parsed.Verification, receipt); err != nil {
+		t.Fatalf("validate sealed OpenSpec-style receipt: %v", err)
 	}
 }
 

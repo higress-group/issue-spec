@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	"gopkg.in/yaml.v3"
 )
@@ -264,6 +266,55 @@ func (p Plan) ArtifactForComment(commentType string) (Artifact, bool) {
 		}
 	}
 	return Artifact{}, false
+}
+
+// ProjectVerifierPacket projects only declarative verification policy from the
+// resolved workflow. rules.verify is carried as data and is never converted to
+// a test or provider-check selector.
+func (p Plan) ProjectVerifierPacket() (assignment.VerifierPacket, error) {
+	guidance := &assignment.VerifierGuidance{}
+	if len(p.Config.Context) > 0 {
+		contextJSON, err := json.Marshal(p.Config.Context)
+		if err != nil {
+			return assignment.VerifierPacket{}, fmt.Errorf("marshal verifier workflow context: %w", err)
+		}
+		guidance.Context = contextJSON
+	}
+	if verifyRule, ok := p.Config.Rules["verify"]; ok {
+		ruleJSON, err := json.Marshal(verifyRule)
+		if err != nil {
+			return assignment.VerifierPacket{}, fmt.Errorf("marshal rules.verify guidance: %w", err)
+		}
+		guidance.RulesVerify = ruleJSON
+	}
+	for _, artifact := range p.Artifacts {
+		if normalizeArtifactType(artifact.Type, artifact.ID, artifact.Generates) != "VERIFY" {
+			continue
+		}
+		if instructions := strings.TrimSpace(artifact.Instructions); instructions != "" {
+			guidance.Instructions = append(guidance.Instructions, assignment.VerifierInstruction{
+				ArtifactID: artifact.ID,
+				Text:       instructions,
+			})
+		}
+	}
+	if len(guidance.Context) == 0 && len(guidance.RulesVerify) == 0 && len(guidance.Instructions) == 0 {
+		guidance = nil
+	}
+
+	packet := assignment.VerifierPacket{Guidance: guidance}
+	if p.Config.ExternalCode != nil {
+		for _, name := range p.Config.ExternalCode.Evidence.RequiredChecks {
+			packet.RequiredChecks = append(packet.RequiredChecks, assignment.CheckSelector{
+				Provider: strings.TrimSpace(p.Config.ExternalCode.ProviderKey),
+				Name:     strings.TrimSpace(name),
+			})
+		}
+	}
+	if err := packet.Validate(); err != nil {
+		return assignment.VerifierPacket{}, fmt.Errorf("project verifier packet: %w", err)
+	}
+	return packet, nil
 }
 
 func RenderTemplate(path string, data any) (string, error) {

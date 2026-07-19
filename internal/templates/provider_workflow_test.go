@@ -63,3 +63,19 @@ func TestProviderWorkflowAttachesExistingChangeWithoutGitHubAssumptions(t *testi
 		}
 	}
 }
+
+func TestProviderWorkflowKeepsProjectVerificationDeclarative(t *testing.T) {
+	provider := workflow.ProviderPlan{ProviderKey: "code.example", DisplayName: "Example Code", CodeChangeLabel: "change", EvidenceSnapshot: true}
+	content := IssueSpecProviderSkill("acme/widgets", provider).Content
+	for _, want := range []string{
+		"sealed verifier assignment carries workflow context, `rules.verify`, VERIFY instructions, affected scenarios, and exact required test/check selectors",
+		"Core never executes rule prose",
+		"exact sealed selector identities at the exact subject revision",
+		"provider-check outcome and authority come only from the provider observation",
+		"Natural-language VERIFY conclusions remain role-owned evidence and never become provider-owned authority",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("provider workflow missing declarative verification boundary %q:\n%s", want, content)
+		}
+	}
+}

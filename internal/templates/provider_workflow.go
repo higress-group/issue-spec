@@ -42,6 +42,9 @@ func ProviderWorkflowNotice(provider workflow.ProviderPlan) string {
 	}
 	lines = append(lines,
 		"- Capabilities are policy and evidence contracts, not implied issue-spec CLI commands. Use only an approved operator-provided code-host skill or bridge for mutations.",
+		"- Project business verification remains declarative: the sealed verifier assignment carries workflow context, `rules.verify`, VERIFY instructions, affected scenarios, and exact required test/check selectors. Core never executes rule prose.",
+		"- Run and report the exact sealed selector identities at the exact subject revision. Local test evidence retains its accepted assurance, while provider-check outcome and authority come only from the provider observation.",
+		"- Natural-language VERIFY conclusions remain role-owned evidence and never become provider-owned authority.",
 		"- On a self-hosted profile, `code-change attach` validates and associates an existing provider change at an exact revision; it never creates that change or ingests evidence.",
 		"- After attach, `code-change link-process` links one PROCESS to the unique active code change with representation-version CAS.",
 		"- The independent reviewer runs `review sync --implement <issue> --revision <exact-head>` under its own agent identity. Successful sync persists and reloads provider facts, then upserts one stable done REVIEW completion even with zero findings; never fabricate findings or hand-author its stamp.",

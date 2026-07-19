@@ -1,5 +1,7 @@
 package assignment
 
+import "encoding/json"
+
 const (
 	AssignmentSchemaVersion = "issue-spec.assignment/v1"
 	ReceiptSchemaVersion    = "issue-spec.receipt/v1"
@@ -109,9 +111,41 @@ type KnownTestEvidence struct {
 }
 
 type VerificationPayload struct {
-	SubjectRevision string          `json:"subject_revision"`
-	RequiredTests   []TestSelector  `json:"required_tests,omitempty"`
-	RequiredChecks  []CheckSelector `json:"required_checks,omitempty"`
+	SubjectRevision string            `json:"subject_revision"`
+	Guidance        *VerifierGuidance `json:"guidance,omitempty"`
+	RequiredTests   []TestSelector    `json:"required_tests,omitempty"`
+	RequiredChecks  []CheckSelector   `json:"required_checks,omitempty"`
+}
+
+// VerifierGuidance is the bounded, declarative project context sealed into a
+// verification assignment. Context and rules.verify remain JSON data: core
+// validation preserves them but never interprets them as executable policy.
+type VerifierGuidance struct {
+	Context      json.RawMessage       `json:"context,omitempty"`
+	RulesVerify  json.RawMessage       `json:"rules_verify,omitempty"`
+	Instructions []VerifierInstruction `json:"instructions,omitempty"`
+}
+
+type VerifierInstruction struct {
+	ArtifactID string `json:"artifact_id"`
+	Text       string `json:"text"`
+}
+
+// RequiredSelectors is the stable mechanical extension point for project and
+// built-in verification requirements. Test identity includes the exact command;
+// provider-check identity is the exact provider/name pair.
+type RequiredSelectors struct {
+	Tests  []TestSelector  `json:"tests,omitempty"`
+	Checks []CheckSelector `json:"checks,omitempty"`
+}
+
+// VerifierPacket projects resolved project guidance and required selectors into
+// the portable assignment layer. Scenarios and the exact subject revision stay
+// on Assignment so the packet cannot broaden either scope.
+type VerifierPacket struct {
+	Guidance       *VerifierGuidance `json:"guidance,omitempty"`
+	RequiredTests  []TestSelector    `json:"required_tests,omitempty"`
+	RequiredChecks []CheckSelector   `json:"required_checks,omitempty"`
 }
 
 // DeliveryMetadata is deliberately outside Assignment and its digest. It may
