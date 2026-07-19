@@ -82,6 +82,9 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 		return Inspection{Lease: lease}, fmt.Errorf("%w: %v", ErrInvalidWorkerResult, err)
 	}
 	resultCommit := strings.TrimSpace(request.ResultCommit)
+	if err := validatePresentCompletionAssignmentBinding(lease); err != nil {
+		return Inspection{Lease: lease}, fmt.Errorf("%w: %v", ErrInvalidWorkerResult, err)
+	}
 	if request.Receipt != nil {
 		if resultCommit != "" && !strings.EqualFold(resultCommit, request.Receipt.ResultRevision) {
 			return Inspection{Lease: lease}, fmt.Errorf("%w: receipt result revision differs from requested result commit", ErrInvalidWorkerResult)
@@ -134,6 +137,28 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 	return inspection, nil
 }
 
+func validatePresentCompletionAssignmentBinding(lease LocalLease) error {
+	if lease.Portable.Assignment == nil && lease.Assignment == nil {
+		return nil
+	}
+	return validateStrictCompletionAssignmentBinding(lease)
+}
+
+func validateStrictCompletionAssignmentBinding(lease LocalLease) error {
+	binding := lease.Portable.Assignment
+	if binding == nil || lease.Assignment == nil {
+		return errors.New("completion requires the authoritative persisted assignment binding")
+	}
+	assignmentDigest, err := assignment.AssignmentDigest(*lease.Assignment)
+	if err != nil {
+		return fmt.Errorf("completion requires a strict current assignment: %w", err)
+	}
+	if assignmentDigest != binding.Digest {
+		return errors.New("completion assignment digest differs from the authoritative persisted binding")
+	}
+	return nil
+}
+
 func validateImplementationReceiptBinding(lease LocalLease, receipt assignment.Receipt, resultCommit string) error {
 	if err := receipt.Validate(); err != nil {
 		return err
@@ -145,12 +170,8 @@ func validateImplementationReceiptBinding(lease LocalLease, receipt assignment.R
 	if binding == nil || lease.Assignment == nil {
 		return errors.New("completion requires the authoritative persisted assignment binding")
 	}
-	assignmentDigest, err := assignment.AssignmentDigest(*lease.Assignment)
-	if err != nil {
-		return fmt.Errorf("completion requires a strict current assignment: %w", err)
-	}
-	if assignmentDigest != binding.Digest {
-		return errors.New("completion assignment digest differs from the authoritative persisted binding")
+	if err := validateStrictCompletionAssignmentBinding(lease); err != nil {
+		return err
 	}
 	if receipt.AssignmentID != binding.AssignmentID || receipt.AssignmentDigest != binding.Digest ||
 		receipt.AssignmentGeneration != binding.Generation || receipt.Role != binding.Role ||

@@ -94,6 +94,43 @@ func TestImplementationReceiptBindingRejectsPreD14StoredAssignment(t *testing.T)
 	}
 }
 
+func TestCompleteLegacyResultCommitRejectsPreD14StoredAssignment(t *testing.T) {
+	fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
+	legacy := assignmentForLease(fixture.lease, "ws-pre-d14-result-commit-assignment-1", "historical assignment")
+	legacy.DesignContext = nil
+	legacyDigest, err := assignment.AssignmentDigestForStorageRead(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.manager.Store.withLock(context.Background(), func() error {
+		registry, err := loadRegistry(fixture.manager.Store.RegistryPath())
+		if err != nil {
+			return err
+		}
+		stored := registry.Leases[fixture.lease.Portable.WorkspaceID]
+		stored.Portable.Assignment = &AssignmentBinding{SchemaVersion: legacy.SchemaVersion, AssignmentID: legacy.ID, Digest: legacyDigest,
+			Role: legacy.Role, BaseRevision: legacy.BaseRevision, Generation: 1}
+		stored.Assignment = &legacy
+		registry.Leases[stored.Portable.WorkspaceID] = stored
+		return writeRegistryAtomic(fixture.manager.Store.RegistryPath(), registry)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resultCommit := commitWorkerFile(t, fixture, "internal/legacy.go", "package internal\n", true)
+	_, err = fixture.manager.Complete(context.Background(), CompleteRequest{
+		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, ResultCommit: resultCommit,
+	})
+	if !errors.Is(err, ErrInvalidWorkerResult) || !strings.Contains(err.Error(), "design_context") {
+		t.Fatalf("legacy result-commit completion was accepted: %v", err)
+	}
+	stored, found, getErr := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
+	if getErr != nil || !found || stored.Assignment == nil || stored.Assignment.DesignContext != nil ||
+		stored.Portable.State != StatePrepared || stored.Portable.ResultCommit != "" {
+		t.Fatalf("rejected legacy completion mutated readable state: %+v found=%t err=%v", stored, found, getErr)
+	}
+}
+
 func TestCompleteRejectsInvalidImplementationReceiptWithoutPersistingEvidence(t *testing.T) {
 	tests := map[string]func(*assignment.Receipt){
 		"assignment digest": func(receipt *assignment.Receipt) {
