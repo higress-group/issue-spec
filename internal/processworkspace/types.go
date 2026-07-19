@@ -503,10 +503,10 @@ func validateLocalAssignment(lease LocalLease) error {
 	if lease.Portable.Assignment == nil {
 		return errors.New("local assignment requires a portable assignment binding")
 	}
-	if err := lease.Assignment.Validate(); err != nil {
+	if err := lease.Assignment.ValidateForStorageRead(); err != nil {
 		return fmt.Errorf("local assignment: %w", err)
 	}
-	digest, err := assignment.AssignmentDigest(*lease.Assignment)
+	digest, err := assignment.AssignmentDigestForStorageRead(*lease.Assignment)
 	if err != nil {
 		return err
 	}

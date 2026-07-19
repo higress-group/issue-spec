@@ -67,6 +67,33 @@ func TestCompleteValidatesImportedReceiptWithoutAcceptedRoleEvidence(t *testing.
 	assertNoAcceptedImplementationAuthority(t, recovered)
 }
 
+func TestImplementationReceiptBindingRejectsPreD14StoredAssignment(t *testing.T) {
+	fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
+	contract := bindImplementationAssignment(t, fixture, nil)
+	lease, found, err := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
+	if err != nil || !found {
+		t.Fatalf("load assignment lease found=%t err=%v", found, err)
+	}
+	legacy := contract
+	legacy.DesignContext = nil
+	legacyDigest, err := assignment.AssignmentDigestForStorageRead(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.Assignment = &legacy
+	lease.Portable.Assignment.Digest = legacyDigest
+	receipt := implementationReceiptForFixture(t, contract, resultSHA, []string{"internal/legacy.go"})
+	receipt.AssignmentDigest = legacyDigest
+	receipt.ReceiptDigest = ""
+	receipt, err = assignment.SealReceipt(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateImplementationReceiptBinding(lease, receipt, resultSHA); err == nil || !strings.Contains(err.Error(), "design_context") {
+		t.Fatalf("new implementation result accepted pre-D14 assignment: %v", err)
+	}
+}
+
 func TestCompleteRejectsInvalidImplementationReceiptWithoutPersistingEvidence(t *testing.T) {
 	tests := map[string]func(*assignment.Receipt){
 		"assignment digest": func(receipt *assignment.Receipt) {
@@ -747,8 +774,9 @@ func bindImplementationAssignment(t *testing.T, fixture integrationFixture, test
 	value := assignment.Assignment{
 		SchemaVersion: assignment.AssignmentSchemaVersion, ID: fixture.lease.Portable.WorkspaceID + "-assignment-1", Role: assignment.RoleImplementation,
 		Repository: fixture.lease.Portable.Repository, Issue: 297, ProcessID: fixture.lease.Portable.ProcessID, BaseRevision: fixture.base,
-		Scenarios: []assignment.ScenarioRef{{SpecID: "SPEC-001", Scenario: "implementation receipt"}},
-		Policy:    assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		Scenarios:     []assignment.ScenarioRef{{SpecID: "SPEC-001", Scenario: "implementation receipt"}},
+		DesignContext: assignmentDesignContext(),
+		Policy:        assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
 		Implementation: &assignment.ImplementationPayload{Objective: "complete the assigned implementation", Branch: fixture.lease.Portable.Branch,
 			WriteOwnership: append([]string(nil), fixture.lease.Portable.WriteOwnership...), SharedTouchpoints: append([]string(nil), fixture.lease.Portable.SharedTouchpoints...),
 			Commit: assignment.CommitPolicy{RequireSingleCommit: true, RequireDCO: true}, FocusedTests: append([]assignment.TestSelector(nil), tests...)},

@@ -26,6 +26,19 @@ var (
 )
 
 func (a Assignment) Validate() error {
+	return a.validate(true)
+}
+
+// ValidateForStorageRead preserves the structural validation of version-1
+// assignments while allowing only the one historical pre-D14 shape: an
+// implementation or review assignment whose design_context is absent. It is
+// intentionally not used by issuance, packet, assignment-file, or role-owned
+// submission paths.
+func (a Assignment) ValidateForStorageRead() error {
+	return a.validate(false)
+}
+
+func (a Assignment) validate(requireDesignContext bool) error {
 	if a.SchemaVersion != AssignmentSchemaVersion {
 		return fmt.Errorf("schema_version: unsupported value %q", a.SchemaVersion)
 	}
@@ -90,8 +103,10 @@ func (a Assignment) Validate() error {
 		if a.BaseRevision == "" || a.SubjectRevision != "" {
 			return errors.New("revision identity: implementation requires base_revision and forbids subject_revision")
 		}
-		if err := validateDesignContext(a.DesignContext); err != nil {
-			return err
+		if requireDesignContext || a.DesignContext != nil {
+			if err := validateDesignContext(a.DesignContext); err != nil {
+				return err
+			}
 		}
 		return validateImplementation(*a.Implementation)
 	case RoleReview:
@@ -101,8 +116,10 @@ func (a Assignment) Validate() error {
 		if a.SubjectRevision == "" {
 			return errors.New("revision identity: review requires subject_revision")
 		}
-		if err := validateDesignContext(a.DesignContext); err != nil {
-			return err
+		if requireDesignContext || a.DesignContext != nil {
+			if err := validateDesignContext(a.DesignContext); err != nil {
+				return err
+			}
 		}
 		return validateReview(*a.Review, a.SubjectRevision)
 	case RoleVerification:

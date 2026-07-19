@@ -40,6 +40,23 @@ func AssignmentDigest(value Assignment) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// AssignmentDigestForStorageRead computes the original portable digest for
+// persisted version-1 assignments, including the pre-D14 shape that omitted
+// design_context. Callers must not use it to issue, redispatch, accept an
+// assignment file, or validate a new role submission.
+func AssignmentDigestForStorageRead(value Assignment) (string, error) {
+	value = normalizeAssignment(value)
+	if err := value.ValidateForStorageRead(); err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func (p Packet) Validate() error {
 	digest, err := AssignmentDigest(p.Assignment)
 	if err != nil {

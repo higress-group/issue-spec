@@ -69,6 +69,18 @@ func TestReviewReceiptBindingRejectsAuthorityDrift(t *testing.T) {
 	}
 }
 
+func TestReviewReceiptBindingRejectsPreD14StoredAssignment(t *testing.T) {
+	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	legacy := testReviewAssignment(t, receipt.SubjectRevision)
+	legacy.DesignContext = nil
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleReview,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	if err := validateReviewReceiptBinding(receipt, legacy, binding); err == nil || !strings.Contains(err.Error(), "design_context") {
+		t.Fatalf("new role submission accepted pre-D14 assignment: %v", err)
+	}
+}
+
 func TestReviewReceiptBindingMatchesNormalizedExactDiffAuthors(t *testing.T) {
 	sealed := testReviewAssignment(t, "head-abc")
 	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)

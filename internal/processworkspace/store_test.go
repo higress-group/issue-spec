@@ -2,6 +2,7 @@ package processworkspace
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -16,11 +17,67 @@ import (
 func assignmentForLease(lease LocalLease, id, objective string) assignment.Assignment {
 	return assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: id, Role: assignment.RoleImplementation,
 		Repository: lease.Portable.Repository, Issue: 297, ProcessID: lease.Portable.ProcessID, BaseRevision: lease.Portable.BaseSHA,
-		Scenarios: []assignment.ScenarioRef{{SpecID: "SPEC-001", Scenario: "worker receives packet"}},
-		Policy:    assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		Scenarios:     []assignment.ScenarioRef{{SpecID: "SPEC-001", Scenario: "worker receives packet"}},
+		DesignContext: assignmentDesignContext(),
+		Policy:        assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
 		Implementation: &assignment.ImplementationPayload{Objective: objective, Branch: lease.Portable.Branch,
 			WriteOwnership: append([]string(nil), lease.Portable.WriteOwnership...), SharedTouchpoints: append([]string(nil), lease.Portable.SharedTouchpoints...),
 			Commit: assignment.CommitPolicy{RequireSingleCommit: true, RequireDCO: true}}}
+}
+
+func TestStoreLoadsAndCleansPreD14RegistryWithoutReissuingAssignment(t *testing.T) {
+	now := time.Unix(4400, 0).UTC()
+	common := t.TempDir()
+	store, err := OpenStore(common, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := localPreparedLease(t, t.TempDir(), "ws-pre-d14", "PROCESS-005", "legacy", "tree", []string{"internal/processworkspace/**"}, now)
+	legacy := assignmentForLease(lease, "ws-pre-d14-assignment-1", "historical assignment")
+	legacy.DesignContext = nil
+	digest, err := assignment.AssignmentDigestForStorageRead(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.Portable.Assignment = &AssignmentBinding{SchemaVersion: legacy.SchemaVersion, AssignmentID: legacy.ID, Digest: digest,
+		Role: legacy.Role, BaseRevision: legacy.BaseRevision, Generation: 1}
+	lease.Assignment = &legacy
+	registry := NewRegistry()
+	registry.Generation, registry.UpdatedAt = 1, now
+	registry.Leases[lease.Portable.WorkspaceID] = lease
+	payload, err := json.MarshalIndent(registry, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.RegistryPath(), append(payload, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, found, err := store.Get(context.Background(), lease.Portable.WorkspaceID)
+	if err != nil || !found || loaded.Assignment == nil || loaded.Assignment.DesignContext != nil {
+		t.Fatalf("legacy registry load found=%t lease=%+v err=%v", found, loaded, err)
+	}
+	if _, err := store.BindAssignment(context.Background(), lease.Portable.WorkspaceID, legacy, false, nil); err == nil || !strings.Contains(err.Error(), "design_context") {
+		t.Fatalf("legacy assignment was reissued: %v", err)
+	}
+	expectedGeneration := uint64(1)
+	if _, err := store.BindAssignment(context.Background(), lease.Portable.WorkspaceID, legacy, true, &expectedGeneration); err == nil || !strings.Contains(err.Error(), "design_context") {
+		t.Fatalf("legacy assignment was redispatched: %v", err)
+	}
+	pending, err := store.Update(context.Background(), lease.Portable.WorkspaceID, func(current *LocalLease) error {
+		current.Portable.State = StateCleanupPending
+		return nil
+	})
+	if err != nil || pending.Portable.State != StateCleanupPending {
+		t.Fatalf("legacy cleanup-pending lease=%+v err=%v", pending, err)
+	}
+	cleaned, err := store.Update(context.Background(), lease.Portable.WorkspaceID, func(current *LocalLease) error {
+		current.Portable.State = StateCleaned
+		return nil
+	})
+	if err != nil || cleaned.Portable.State != StateCleaned {
+		t.Fatalf("legacy cleaned lease=%+v err=%v", cleaned, err)
+	}
 }
 
 func TestStoreAssignmentIssuanceRetryRedispatchAndRecovery(t *testing.T) {

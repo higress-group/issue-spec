@@ -201,6 +201,47 @@ func TestAssignmentDigestCoversEveryDesignContextProjectionField(t *testing.T) {
 	}
 }
 
+func TestPreD14AssignmentIsStorageReadableButStrictPathsRejectIt(t *testing.T) {
+	for name, legacy := range map[string]Assignment{
+		"implementation": implementationAssignment(),
+		"review":         reviewAssignment(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			legacy.DesignContext = nil
+			if err := legacy.ValidateForStorageRead(); err != nil {
+				t.Fatalf("historical storage validation failed: %v", err)
+			}
+			if err := legacy.Validate(); err == nil || !strings.Contains(err.Error(), "design_context") {
+				t.Fatalf("strict validation accepted pre-D14 assignment: %v", err)
+			}
+			digest, err := AssignmentDigestForStorageRead(legacy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := AssignmentDigest(legacy); err == nil || !strings.Contains(err.Error(), "design_context") {
+				t.Fatalf("strict digest accepted pre-D14 assignment: %v", err)
+			}
+			payload, err := json.Marshal(legacy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ParseAssignmentJSON(payload); err == nil || !strings.Contains(err.Error(), "design_context") {
+				t.Fatalf("assignment-file parser accepted pre-D14 assignment: %v", err)
+			}
+			packet := Packet{Assignment: legacy, AssignmentDigest: digest, Generation: 1}
+			if err := packet.Validate(); err == nil || !strings.Contains(err.Error(), "design_context") {
+				t.Fatalf("packet issuance accepted pre-D14 assignment: %v", err)
+			}
+		})
+	}
+
+	incomplete := implementationAssignment()
+	incomplete.DesignContext.Invariant = ""
+	if err := incomplete.ValidateForStorageRead(); err == nil || !strings.Contains(err.Error(), "design_context.invariant") {
+		t.Fatalf("storage compatibility accepted incomplete present design_context: %v", err)
+	}
+}
+
 func mustJSON(t *testing.T, value any) []byte {
 	t.Helper()
 	payload, err := json.Marshal(value)

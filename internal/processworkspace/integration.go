@@ -145,6 +145,13 @@ func validateImplementationReceiptBinding(lease LocalLease, receipt assignment.R
 	if binding == nil || lease.Assignment == nil {
 		return errors.New("completion requires the authoritative persisted assignment binding")
 	}
+	assignmentDigest, err := assignment.AssignmentDigest(*lease.Assignment)
+	if err != nil {
+		return fmt.Errorf("completion requires a strict current assignment: %w", err)
+	}
+	if assignmentDigest != binding.Digest {
+		return errors.New("completion assignment digest differs from the authoritative persisted binding")
+	}
 	if receipt.AssignmentID != binding.AssignmentID || receipt.AssignmentDigest != binding.Digest ||
 		receipt.AssignmentGeneration != binding.Generation || receipt.Role != binding.Role ||
 		receipt.ResultSchemaVersion != lease.Assignment.ResultSchemaVersion {

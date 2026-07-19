@@ -170,6 +170,22 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 	if err != nil || !reflect.DeepEqual(fromFile.Review, review.Review) {
 		t.Fatalf("review file=%+v err=%v", fromFile, err)
 	}
+	legacyReview := review
+	legacyReview.DesignContext = nil
+	legacyJSON, err := json.Marshal(legacyReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reviewFile, legacyJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
+		processBody(model.ProcessExecutionReview, assignment.ProcessInput{DesignContext: workspaceDesignContext(), ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false); err == nil || !strings.Contains(err.Error(), "design_context") {
+		t.Fatalf("assignment file accepted pre-D14 review: %v", err)
+	}
+	if err := os.WriteFile(reviewFile, reviewJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	conflictingInput := workspaceDesignContext()
 	conflictingInput.Invariant = "different authority"
 	if _, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,

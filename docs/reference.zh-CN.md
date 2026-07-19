@@ -349,6 +349,8 @@ issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process P
 
 修改或评审代码前，被分配的角色必须执行 `issue-spec read issue --repo owner/repo --issue <design_context.source_url>`，只读取完整 Design issue body，不扩展 comments、timeline、history 或 gate。若 Design 正文与结构化 projection 冲突，角色必须停止并报告冲突。`CODEX_THREAD_ID`、`--agent-session` 等 runtime session 值只是可选 audit metadata，不是 Design authority 或 correctness input。
 
+兼容性边界是显式且非对称的。已有 local registry 或 PROCESS workspace 中，D14 之前缺少 `design_context` 的 version-1 implementation/review assignment 仍可读取，使 inspect、cleanup 与 recovery 不会把整个 registry 判为 corrupt。该历史对象只是只读兼容证据：严格的 issuance/redispatch digest、assignment-file/packet 解析，以及新的 implementation/review 角色提交仍会拒绝它。CLI 绝不会合成缺失的 Design context。
+
 导入的 result file 不是身份或 provenance 信任根。其 writer、subject、逻辑 agent 名称、`CODEX_THREAD_ID`、`--agent-session`、credential 与 assurance label 都只是信息，不能创建 accepted implementation receipt authority，也不能满足非 Coordinator/独立性 gate。unverified import 与保留的 assurance 值可以通过结构校验，但得到的 PROCESS workspace 不包含 accepted-implementation-receipt marker。runtime-attested Coordinator import 明确推迟到存在真实 runtime attestation 信任根之后；本流程不引入 signer、secret 或由调用方命名的 attestor interface。
 
 现有的窄范围直接 role-owned publication 命令继续为 rationale、review 与 verification 提供兼容路径。例如 verification 角色针对精确 assignment 与 snapshot 调用 `verify submit --agent Verifier`。agent/session 字段始终是 `self-reported` metadata，不会因为来自 `CODEX_THREAD_ID` 或显式参数而变成更强的 evidence。`verify submit` 不包含 Coordinator 侧的 owner-token import。

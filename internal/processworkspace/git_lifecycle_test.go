@@ -148,7 +148,7 @@ func markerAssignment(lease LocalLease) assignment.Assignment {
 	return assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: lease.Portable.WorkspaceID + "-assignment-1",
 		Role: assignment.RoleImplementation, Repository: lease.Portable.Repository, Issue: 297, ProcessID: lease.Portable.ProcessID,
 		BaseRevision: lease.Portable.BaseSHA, Scenarios: []assignment.ScenarioRef{{SpecID: "SPEC-001", Scenario: "marker remains stable"}},
-		Policy: assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		DesignContext: assignmentDesignContext(), Policy: assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
 		Implementation: &assignment.ImplementationPayload{Objective: "exercise marker ownership", Branch: lease.Portable.Branch,
 			WriteOwnership: append([]string(nil), lease.Portable.WriteOwnership...), SharedTouchpoints: append([]string(nil), lease.Portable.SharedTouchpoints...),
 			Commit: assignment.CommitPolicy{RequireSingleCommit: true, RequireDCO: true}}}
