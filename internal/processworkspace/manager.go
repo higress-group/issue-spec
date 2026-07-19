@@ -159,6 +159,17 @@ func OpenManager(ctx context.Context, integrationRoot, workspaceRoot string, opt
 	return manager, nil
 }
 
+// IntegrationRootPath returns the canonical integration root the manager was
+// opened against. It exposes the IntegrationRoot field through a method so the
+// command layer can depend on a narrow interface (workspaceService) rather than
+// the concrete *Manager type, keeping production behavior identical.
+func (m *Manager) IntegrationRootPath() string {
+	if m == nil {
+		return ""
+	}
+	return m.IntegrationRoot
+}
+
 func (m *Manager) Prepare(ctx context.Context, request PrepareRequest) (Inspection, error) {
 	if m == nil || m.Store == nil {
 		return Inspection{}, errors.New("process workspace manager is not open")

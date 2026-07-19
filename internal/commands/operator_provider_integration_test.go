@@ -223,6 +223,7 @@ func initOperatorGitRepository(t *testing.T) string {
 
 func runOperatorGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
+	skipWithoutRealGit(t)
 	command := exec.Command("git", args...)
 	command.Dir = dir
 	if output, err := command.CombinedOutput(); err != nil {

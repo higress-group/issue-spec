@@ -388,6 +388,12 @@ func TestWorkspacePreparePersistsAssignmentBeforePacketAndRedispatchesExplicitly
 	}
 }
 
+// TestWorkspaceReceiptImportRemainsInformationalThroughRecoveryIntegrationAndCleanup
+// is the designated command-to-real-workspace smoke path: it drives the full
+// prepare -> submit-result -> complete -> cleanup lifecycle through the
+// production defaultOpenWorkspace factory against a real Git repository (no
+// injected fake). It runs in the git-contract and full tiers and is skipped in
+// the fast tier via workspaceGitRepository's short guard.
 func TestWorkspaceReceiptImportRemainsInformationalThroughRecoveryIntegrationAndCleanup(t *testing.T) {
 	repo, base := workspaceGitRepository(t)
 	specBody, err := templates.SpecComment(templates.SpecCommentOptions{Common: templates.CommonOptions{ID: "SPEC-001", Status: "confirmed"},
@@ -1333,6 +1339,7 @@ func decodeWorkspaceResult(t *testing.T, out *bytes.Buffer) workspaceCommandResu
 
 func workspaceGitRepository(t *testing.T) (string, string) {
 	t.Helper()
+	skipWithoutRealGit(t)
 	repo := filepath.Join(t.TempDir(), "integration")
 	if err := os.MkdirAll(repo, 0o700); err != nil {
 		t.Fatal(err)
@@ -1350,6 +1357,7 @@ func workspaceGitRepository(t *testing.T) (string, string) {
 
 func workspaceGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
+	skipWithoutRealGit(t)
 	command := exec.Command("git", args...)
 	command.Dir = dir
 	if output, err := command.CombinedOutput(); err != nil {
@@ -1359,6 +1367,7 @@ func workspaceGit(t *testing.T, dir string, args ...string) {
 
 func workspaceGitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
+	skipWithoutRealGit(t)
 	command := exec.Command("git", args...)
 	command.Dir = dir
 	output, err := command.Output()
@@ -1370,6 +1379,7 @@ func workspaceGitOutput(t *testing.T, dir string, args ...string) string {
 
 func openWorkspaceManager(t *testing.T, repo, root string) *processworkspace.Manager {
 	t.Helper()
+	skipWithoutRealGit(t)
 	manager, err := processworkspace.OpenManager(t.Context(), repo, root, processworkspace.ManagerOptions{})
 	if err != nil {
 		t.Fatal(err)

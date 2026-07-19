@@ -667,6 +667,7 @@ func testLease(id, processID string, mode WorkspaceMode, branch, base string, ow
 
 func newGitRepository(t *testing.T) (string, string) {
 	t.Helper()
+	skipWithoutRealGit(t)
 	repo := filepath.Join(t.TempDir(), "integration")
 	if err := os.MkdirAll(repo, 0o700); err != nil {
 		t.Fatal(err)
@@ -684,6 +685,7 @@ func newGitRepository(t *testing.T) (string, string) {
 
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
+	skipWithoutRealGit(t)
 	command := exec.Command("git", args...)
 	command.Dir = dir
 	if output, err := command.CombinedOutput(); err != nil {
@@ -693,6 +695,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
+	skipWithoutRealGit(t)
 	command := exec.Command("git", args...)
 	command.Dir = dir
 	output, err := command.Output()

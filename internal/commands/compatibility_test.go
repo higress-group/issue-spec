@@ -453,6 +453,7 @@ func (c archiveCompatibilityClient) CreatePullRequest(ctx context.Context, repo 
 
 func runTestGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
+	skipWithoutRealGit(t)
 	cmd := exec.Command("git", args...)
 	if dir != "" {
 		cmd.Dir = dir

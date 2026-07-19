@@ -545,6 +545,7 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 
 func runInitTestGit(t *testing.T, args ...string) {
 	t.Helper()
+	skipWithoutRealGit(t)
 	command := exec.Command("git", args...)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, output)

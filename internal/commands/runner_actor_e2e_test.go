@@ -22,6 +22,7 @@ import (
 )
 
 func TestRunnerNativeProcessActorLifecycleUsesOneACPXCoordinator(t *testing.T) {
+	skipWithoutRealGit(t)
 	sessionClone, base := workspaceGitRepository(t)
 	canonicalSessionClone, err := filepath.EvalSymlinks(sessionClone)
 	if err != nil {
