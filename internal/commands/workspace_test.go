@@ -258,6 +258,8 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 }
 
 func TestWorkspacePrepareEmitsProjectVerifierPolicyForGeneratedAndAssignmentFile(t *testing.T) {
+	t.Setenv("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+	t.Setenv("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
 	scenario := assignment.ScenarioRef{SpecID: "SPEC-001", Scenario: "project verification is sealed"}
 	selectedTests := []assignment.TestSelector{{ID: "z-project-unit", Command: "go test ./project/..."}}
 	selectedChecks := []assignment.CheckSelector{
@@ -328,6 +330,20 @@ func TestWorkspacePrepareEmitsProjectVerifierPolicyForGeneratedAndAssignmentFile
 
 	generated := prepare(t, false, selectedTests)
 	fromFile := prepare(t, true, selectedTests)
+	for _, emitted := range []struct {
+		name  string
+		value assignment.Assignment
+	}{{name: "generated", value: generated}, {name: "assignment-file", value: fromFile}} {
+		verification := emitted.value.Verification
+		if verification == nil || verification.SubjectRevision != emitted.value.SubjectRevision || len(verification.RequiredTests) == 0 {
+			t.Fatalf("%s packet lost exact subject binding: %+v", emitted.name, emitted.value)
+		}
+		wantCommand := "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + emitted.value.SubjectRevision +
+			" --subject " + emitted.value.SubjectRevision + " --root . --json"
+		if got := verification.RequiredTests[0]; got.ID != assignment.DurableSpecTestID || got.Command != wantCommand {
+			t.Fatalf("%s durable selector=%+v want command %q", emitted.name, got, wantCommand)
+		}
+	}
 	if !reflect.DeepEqual(generated.Verification, fromFile.Verification) {
 		t.Fatalf("generated and assignment-file verifier policy differ:\ngenerated=%+v\nfrom-file=%+v", generated.Verification, fromFile.Verification)
 	}
