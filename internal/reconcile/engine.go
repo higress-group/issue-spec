@@ -284,12 +284,19 @@ func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) Operatio
 	if err != nil {
 		return observedConflictResult(op, err.Error(), left)
 	}
-	_, rightChanged, err := model.AddRelatedCommentLink(right.Body, left.Comment.HTMLURL)
+	rightBody, rightChanged, err := model.AddRelatedCommentLink(right.Body, left.Comment.HTMLURL)
 	if err != nil {
+		return observedConflictResult(op, err.Error(), right)
+	}
+	if err := checkLinkEndpointPrecondition(op, op.Target, left, leftBody, leftChanged); err != nil {
+		return observedConflictResult(op, err.Error(), left)
+	}
+	if err := checkLinkEndpointPrecondition(op, *op.Desired.Peer, right, rightBody, rightChanged); err != nil {
 		return observedConflictResult(op, err.Error(), right)
 	}
 	mutations := 0
 	atomic := true
+	var endpointResults []EndpointResult
 	if leftChanged {
 		r := e.mutate(ctx, plan, op, op.Target, left, leftBody)
 		if r.Status != "updated" && r.Status != "unchanged" {
@@ -298,6 +305,7 @@ func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) Operatio
 		if r.Status == "updated" {
 			mutations++
 			atomic = atomic && r.Atomic
+			endpointResults = append(endpointResults, endpointResult(op.Target, r))
 		}
 	}
 	if rightChanged {
@@ -309,7 +317,14 @@ func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) Operatio
 		}
 		rightBody, stillChanged, linkErr := model.AddRelatedCommentLink(right.Body, left.Comment.HTMLURL)
 		if linkErr != nil {
-			return conflictResult(op, linkErr.Error())
+			r := observedConflictResult(op, linkErr.Error(), right)
+			r.Endpoints = endpointResults
+			return r
+		}
+		if endpointErr := checkLinkEndpointPrecondition(op, *op.Desired.Peer, right, rightBody, stillChanged); endpointErr != nil {
+			r := observedConflictResult(op, endpointErr.Error(), right)
+			r.Endpoints = endpointResults
+			return r
 		}
 		if !stillChanged {
 			rightChanged = false
@@ -319,11 +334,13 @@ func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) Operatio
 				if mutations > 0 {
 					r.Atomic = false
 				}
+				r.Endpoints = append(endpointResults, r.Endpoints...)
 				return r
 			}
 			if r.Status == "updated" {
 				mutations++
 				atomic = atomic && r.Atomic
+				endpointResults = append(endpointResults, endpointResult(*op.Desired.Peer, r))
 			}
 		}
 	}
@@ -335,14 +352,19 @@ func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) Operatio
 	}
 	confirmed, found, err := e.observe(ctx, plan.Repo, op.Target, true)
 	if err != nil {
-		return observedFailureResult(op, fmt.Errorf("link succeeded but exact re-observation failed: %w", err), atomic, left)
+		r := observedFailureResult(op, fmt.Errorf("link succeeded but exact re-observation failed: %w", err), atomic, left)
+		r.Endpoints = endpointResults
+		return r
 	}
 	if !found || confirmed.Comment.ID != left.Comment.ID {
-		return observedConflictResult(op, "link succeeded but the exact result target could not be re-observed", left)
+		r := observedConflictResult(op, "link succeeded but the exact result target could not be re-observed", left)
+		r.Endpoints = endpointResults
+		return r
 	}
 	return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: atomic,
 		CommentID: confirmed.Comment.ID, URL: confirmed.Comment.HTMLURL,
-		BeforeDigest: model.RepresentationDigest(left.Body), AfterDigest: model.RepresentationDigest(confirmed.Body)}
+		BeforeDigest: model.RepresentationDigest(left.Body), AfterDigest: model.RepresentationDigest(confirmed.Body),
+		Endpoints: endpointResults}
 }
 
 func (e Engine) applyCarrierAuthorizedBacklink(ctx context.Context, plan Plan, op Operation) OperationResult {
@@ -378,14 +400,21 @@ func (e Engine) applyCarrierAuthorizedBacklink(ctx context.Context, plan Plan, o
 	if err != nil {
 		return observedConflictResult(op, err.Error(), peer)
 	}
+	if err := checkLinkEndpointPrecondition(op, *op.Desired.Peer, peer, peerBody, changed); err != nil {
+		return observedConflictResult(op, err.Error(), peer)
+	}
 	if !changed {
 		return unchangedResult(op, peer, !plan.AllowNonAtomic)
 	}
-	return e.mutate(ctx, plan, op, *op.Desired.Peer, peer, peerBody)
+	result := e.mutate(ctx, plan, op, *op.Desired.Peer, peer, peerBody)
+	if result.Status == "updated" {
+		result.Endpoints = []EndpointResult{endpointResult(*op.Desired.Peer, result)}
+	}
+	return result
 }
 
 func (e Engine) mutate(ctx context.Context, plan Plan, op Operation, target Target, item observed, body string) OperationResult {
-	if err := checkPrecondition(op.Precondition, item); err != nil {
+	if err := checkMutationPrecondition(op, target, item); err != nil {
 		return observedConflictResult(op, err.Error(), item)
 	}
 	conditional, ok := e.Backend.(github.ConditionalCommentBackend)
@@ -447,7 +476,7 @@ func (e Engine) mutate(ctx context.Context, plan Plan, op Operation, target Targ
 			Message: fmt.Sprintf("representation digest changed after initial observation: expected=%s current=%s",
 				model.RepresentationDigest(item.Body), model.RepresentationDigest(fresh.Body))}
 	}
-	if err := checkPrecondition(op.Precondition, fresh); err != nil {
+	if err := checkMutationPrecondition(op, target, fresh); err != nil {
 		return observedConflictResult(op, err.Error(), fresh)
 	}
 	_, err = e.Backend.UpdateComment(ctx, plan.Repo, item.Comment.ID, body)
@@ -575,12 +604,53 @@ func hasRelatedCommentLink(body string, comment github.Comment) bool {
 	}
 	return false
 }
-func checkPrecondition(p Precondition, item observed) error {
-	if p.RepresentationVersion > 0 && p.RepresentationVersion != item.Version {
-		return fmt.Errorf("representation conflict: expected=%d current=%d", p.RepresentationVersion, item.Version)
+func checkMutationPrecondition(op Operation, target Target, item observed) error {
+	if endpoint, found := linkEndpointPrecondition(op, target); found {
+		return checkRepresentationPrecondition(endpoint.RepresentationVersion, endpoint.BodyDigest, item)
 	}
-	if p.BodyDigest != "" && normalizeDigest(p.BodyDigest) != model.RepresentationDigest(item.Body) {
-		return fmt.Errorf("body digest conflict: expected=%s current=%s", normalizeDigest(p.BodyDigest), model.RepresentationDigest(item.Body))
+	if sameProjectionTarget(op.Target, target) {
+		return checkRepresentationPrecondition(op.Precondition.RepresentationVersion, op.Precondition.BodyDigest, item)
+	}
+	return nil
+}
+
+func checkLinkEndpointPrecondition(op Operation, target Target, item observed, desired string, changed bool) error {
+	endpoint, found := linkEndpointPrecondition(op, target)
+	if !found {
+		return nil
+	}
+	if !changed {
+		if current := model.RepresentationDigest(item.Body); current != normalizeDigest(endpoint.AfterDigest) {
+			return fmt.Errorf("satisfied endpoint digest conflict for %s: expected=%s current=%s",
+				projectionTargetKey(target), normalizeDigest(endpoint.AfterDigest), current)
+		}
+		return nil
+	}
+	if err := checkRepresentationPrecondition(endpoint.RepresentationVersion, endpoint.BodyDigest, item); err != nil {
+		return fmt.Errorf("endpoint %s: %w", projectionTargetKey(target), err)
+	}
+	if planned := model.RepresentationDigest(desired); planned != normalizeDigest(endpoint.AfterDigest) {
+		return fmt.Errorf("endpoint %s after digest conflict: expected=%s planned=%s",
+			projectionTargetKey(target), normalizeDigest(endpoint.AfterDigest), planned)
+	}
+	return nil
+}
+
+func linkEndpointPrecondition(op Operation, target Target) (EndpointPrecondition, bool) {
+	for _, endpoint := range op.Precondition.Endpoints {
+		if sameProjectionTarget(endpoint.Target, target) {
+			return endpoint, true
+		}
+	}
+	return EndpointPrecondition{}, false
+}
+
+func checkRepresentationPrecondition(version int64, digest string, item observed) error {
+	if version > 0 && version != item.Version {
+		return fmt.Errorf("representation conflict: expected=%d current=%d", version, item.Version)
+	}
+	if digest != "" && normalizeDigest(digest) != model.RepresentationDigest(item.Body) {
+		return fmt.Errorf("body digest conflict: expected=%s current=%s", normalizeDigest(digest), model.RepresentationDigest(item.Body))
 	}
 	return nil
 }
@@ -639,6 +709,10 @@ func observedPairFailureResult(op Operation, err error, atomic bool, before, aft
 	result.BeforeDigest = model.RepresentationDigest(before.Body)
 	result.AfterDigest = model.RepresentationDigest(after.Body)
 	return result
+}
+func endpointResult(target Target, result OperationResult) EndpointResult {
+	return EndpointResult{Target: target, CommentID: result.CommentID, URL: result.URL,
+		BeforeDigest: result.BeforeDigest, AfterDigest: result.AfterDigest}
 }
 func conflictResult(op Operation, message string) OperationResult {
 	return OperationResult{ID: op.ID, Kind: op.Kind, Status: "conflicted", Message: message}
