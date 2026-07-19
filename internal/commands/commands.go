@@ -52,6 +52,7 @@ type app struct {
 	resolveRequirementsToken       func(context.Context, auth.Profile) (auth.Token, error)
 	readRequirementsSecret         func(io.Reader, io.Writer) (string, error)
 	stdinIsTerminal                func(io.Reader) bool
+	resolveFinalizationBaseline    func(context.Context, string, string) (string, error)
 }
 
 type commandFunc func(context.Context, []string) int
@@ -110,6 +111,8 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return a.runRunner(ctx, args[1:])
 	case "requirements":
 		return a.runRequirements(ctx, args[1:])
+	case "finalize":
+		return a.runFinalize(ctx, args[1:])
 	default:
 		a.errorf("unknown command %q\n", args[0])
 		a.printUsage()
@@ -150,23 +153,24 @@ func extractGlobalProfile(args []string) (string, []string, error) {
 
 func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 	return &app{
-		in:                         in,
-		out:                        out,
-		err:                        errOut,
-		newRequirementsAPI:         defaultNewRequirementsAPI,
-		saveRequirementsProfile:    auth.SaveProfile,
-		storeRequirementsToken:     auth.StoreProfileToken,
-		resolveRequirementsToken:   auth.ResolveProfileToken,
-		readRequirementsSecret:     readHiddenRequirementsSecret,
-		stdinIsTerminal:            requirementsInputIsTerminal,
-		selectGitHubBackend:        defaultSelectGitHubBackend,
-		selectRunnerBackend:        defaultSelectRunnerBackend,
-		newGitHubBackend:           defaultNewGitHubBackend,
-		gitHubBackendToken:         defaultGitHubBackendToken,
-		newNativeEvidenceProvider:  defaultNewNativeEvidenceProvider,
-		newNativeSearchProvider:    defaultNewNativeSearchProvider,
-		newNativeCodeChangeBackend: defaultNewNativeCodeChangeBackend,
-		lookupOperatorProvider:     defaultResolveOperatorProvider,
+		in:                          in,
+		out:                         out,
+		err:                         errOut,
+		newRequirementsAPI:          defaultNewRequirementsAPI,
+		saveRequirementsProfile:     auth.SaveProfile,
+		storeRequirementsToken:      auth.StoreProfileToken,
+		resolveRequirementsToken:    auth.ResolveProfileToken,
+		readRequirementsSecret:      readHiddenRequirementsSecret,
+		stdinIsTerminal:             requirementsInputIsTerminal,
+		selectGitHubBackend:         defaultSelectGitHubBackend,
+		selectRunnerBackend:         defaultSelectRunnerBackend,
+		newGitHubBackend:            defaultNewGitHubBackend,
+		gitHubBackendToken:          defaultGitHubBackendToken,
+		newNativeEvidenceProvider:   defaultNewNativeEvidenceProvider,
+		newNativeSearchProvider:     defaultNewNativeSearchProvider,
+		newNativeCodeChangeBackend:  defaultNewNativeCodeChangeBackend,
+		lookupOperatorProvider:      defaultResolveOperatorProvider,
+		resolveFinalizationBaseline: defaultResolveFinalizationBaseline,
 	}
 }
 
@@ -230,6 +234,9 @@ Usage:
   issue-spec code-change attach --repo owner/repo --implement N --change-id ID --revision REV [--refresh --expected-version N] [--json]
   issue-spec code-change link-process --repo owner/repo --implement N --process PROCESS-001 --expected-version N [--json]
   issue-spec code-change rationale --repo owner/repo --implement N --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "why" --agent Worker [--agent-session ID] [--json]
+	issue-spec finalize preview --repo owner/repo --proposal N --design N --implement N --pr N --intent-file file.json --plan-out /absolute/plan.json [--json]
+	issue-spec finalize apply --plan /absolute/plan.json --checkpoint /absolute/checkpoint.json [--allow-nonatomic] [--json]
+	issue-spec finalize detail --plan /absolute/plan.json [--json]
   issue-spec requirements setup --server URL [--token-stdin] [--yes] [--json]
   issue-spec requirements status [--repo owner/repo] [--json]
   issue-spec runner poll --repo owner/repo --runner login --once --dry-run
