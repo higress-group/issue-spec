@@ -109,6 +109,35 @@ func TestCheckRejectsInvalidSubjectRevisionAndIsIndependentOfPlanSidecars(t *tes
 	}
 }
 
+func TestCheckModeNoneIsLightweightWorkflowBoundAndRevisionExact(t *testing.T) {
+	compile := baseCompileInput(planSource("SPEC-001", addedIntent("SPEC-001-OP-01", "cap", "New")))
+	compile.Workflow = WorkflowAuthority{ConfigPath: "<builtin>", ConfigDigest: strings.Repeat("a", 64), Mode: ModeNone}
+	input := CheckInput{CompileInput: compile, SubjectRevision: strings.Repeat("b", 40),
+		ChangedDurablePaths: []string{"issue-spec/specs/unowned/spec.md"}}
+	result, err := Check(input)
+	if err != nil || !result.OK || result.OperationCount != 0 || result.Workflow != compile.Workflow || len(result.Blockers) != 0 {
+		t.Fatalf("lightweight result=%+v err=%v", result, err)
+	}
+	compact := CompactCheckResult(result, "")
+	if compact.Workflow != compile.Workflow || compact.ResultDigest != result.ResultDigest {
+		t.Fatalf("compact authority=%+v result=%+v", compact, result)
+	}
+
+	drifted := input
+	drifted.Workflow.ConfigDigest = strings.Repeat("c", 64)
+	driftedResult, err := Check(drifted)
+	if err != nil || !driftedResult.OK || driftedResult.ResultDigest == result.ResultDigest {
+		t.Fatalf("workflow digest did not bind result identity: original=%+v drifted=%+v err=%v", result, driftedResult, err)
+	}
+
+	unrelated := input
+	unrelated.RevisionError = "baseline is not an ancestor of subject"
+	unrelatedResult, err := Check(unrelated)
+	if err != nil || unrelatedResult.OK || !hasCheckBlocker(unrelatedResult, BlockRevisionMismatch) {
+		t.Fatalf("mode none accepted unrelated revisions: result=%+v err=%v", unrelatedResult, err)
+	}
+}
+
 func TestCheckResultIsDeterministicBoundedAndStrictlyReadable(t *testing.T) {
 	compile := baseCompileInput(planSource("SPEC-001", Intent{Version: 1, Kind: IntentUnchanged}))
 	input := CheckInput{CompileInput: compile, SubjectRevision: strings.Repeat("b", 40)}

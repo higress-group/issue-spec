@@ -33,28 +33,30 @@ type CheckInput struct {
 }
 
 type CheckResult struct {
-	Version          int       `json:"version"`
-	ResultDigest     string    `json:"result_digest"`
-	OK               bool      `json:"ok"`
-	Repository       string    `json:"repository"`
-	Proposal         int       `json:"proposal"`
-	BaselineRevision string    `json:"baseline_revision"`
-	SubjectRevision  string    `json:"subject_revision"`
-	OperationCount   int       `json:"operation_count"`
-	Blockers         []Blocker `json:"blockers,omitempty"`
-	Findings         []Finding `json:"findings,omitempty"`
+	Version          int               `json:"version"`
+	ResultDigest     string            `json:"result_digest"`
+	OK               bool              `json:"ok"`
+	Repository       string            `json:"repository"`
+	Proposal         int               `json:"proposal"`
+	BaselineRevision string            `json:"baseline_revision"`
+	SubjectRevision  string            `json:"subject_revision"`
+	Workflow         WorkflowAuthority `json:"workflow"`
+	OperationCount   int               `json:"operation_count"`
+	Blockers         []Blocker         `json:"blockers,omitempty"`
+	Findings         []Finding         `json:"findings,omitempty"`
 }
 
 type CompactCheck struct {
-	Version          int              `json:"version"`
-	OK               bool             `json:"ok"`
-	ResultDigest     string           `json:"result_digest"`
-	ResultPath       string           `json:"result_path,omitempty"`
-	BaselineRevision string           `json:"baseline_revision"`
-	SubjectRevision  string           `json:"subject_revision"`
-	OperationCount   int              `json:"operation_count"`
-	BlockerCount     int              `json:"blocker_count"`
-	Blockers         []CompactBlocker `json:"blockers,omitempty"`
+	Version          int               `json:"version"`
+	OK               bool              `json:"ok"`
+	ResultDigest     string            `json:"result_digest"`
+	ResultPath       string            `json:"result_path,omitempty"`
+	BaselineRevision string            `json:"baseline_revision"`
+	SubjectRevision  string            `json:"subject_revision"`
+	Workflow         WorkflowAuthority `json:"workflow"`
+	OperationCount   int               `json:"operation_count"`
+	BlockerCount     int               `json:"blocker_count"`
+	Blockers         []CompactBlocker  `json:"blockers,omitempty"`
 }
 
 // Check independently recompiles the authorized projection and compares it
@@ -64,12 +66,23 @@ func Check(input CheckInput) (CheckResult, error) {
 		return CheckResult{}, errors.New("durable check requires an exact lowercase subject revision")
 	}
 	input.SubjectRevision = strings.TrimSpace(input.SubjectRevision)
+	if err := validateWorkflowAuthority(input.Workflow); err != nil {
+		return CheckResult{}, err
+	}
+	result := CheckResult{Version: CheckResultVersion, Repository: strings.TrimSpace(input.Repository), Proposal: input.Proposal,
+		BaselineRevision: strings.TrimSpace(input.BaselineRevision), SubjectRevision: input.SubjectRevision, Workflow: input.Workflow}
+	if input.Workflow.Mode == ModeNone {
+		if strings.TrimSpace(input.RevisionError) != "" {
+			result.Findings = append(result.Findings, Finding{Code: BlockRevisionMismatch, Message: strings.TrimSpace(input.RevisionError)})
+		}
+		return finalizeCheckResult(result)
+	}
 	plan, err := CompilePlan(input.CompileInput)
 	if err != nil {
 		return CheckResult{}, err
 	}
-	result := CheckResult{Version: CheckResultVersion, Repository: plan.Repository, Proposal: plan.Proposal,
-		BaselineRevision: plan.BaselineRevision, SubjectRevision: input.SubjectRevision,
+	result = CheckResult{Version: CheckResultVersion, Repository: plan.Repository, Proposal: plan.Proposal,
+		BaselineRevision: plan.BaselineRevision, SubjectRevision: input.SubjectRevision, Workflow: plan.Workflow,
 		OperationCount: len(plan.Operations), Findings: append([]Finding(nil), plan.Findings...)}
 	if strings.TrimSpace(input.RevisionError) != "" {
 		result.Findings = append(result.Findings, Finding{Code: BlockRevisionMismatch, Message: strings.TrimSpace(input.RevisionError)})
@@ -115,6 +128,10 @@ func Check(input CheckInput) (CheckResult, error) {
 			}
 		}
 	}
+	return finalizeCheckResult(result)
+}
+
+func finalizeCheckResult(result CheckResult) (CheckResult, error) {
 	sort.Slice(result.Findings, func(i, j int) bool { return findingKey(result.Findings[i]) < findingKey(result.Findings[j]) })
 	result.Blockers = summarizeFindings(result.Findings)
 	result.OK = len(result.Blockers) == 0
@@ -200,6 +217,9 @@ func ValidateCheckResult(result CheckResult) error {
 		!planRevision.MatchString(result.BaselineRevision) || !planRevision.MatchString(result.SubjectRevision) || result.OperationCount < 0 {
 		return errors.New("durable check result identity is incomplete")
 	}
+	if err := validateWorkflowAuthority(result.Workflow); err != nil {
+		return err
+	}
 	if result.OK != (len(result.Blockers) == 0) {
 		return errors.New("durable check result ok state differs from blockers")
 	}
@@ -228,7 +248,7 @@ func ValidateCheckResult(result CheckResult) error {
 func CompactCheckResult(result CheckResult, resultPath string) CompactCheck {
 	compact := CompactCheck{Version: CheckResultVersion, OK: result.OK, ResultDigest: result.ResultDigest,
 		ResultPath: resultPath, BaselineRevision: result.BaselineRevision, SubjectRevision: result.SubjectRevision,
-		OperationCount: result.OperationCount, BlockerCount: len(result.Blockers)}
+		Workflow: result.Workflow, OperationCount: result.OperationCount, BlockerCount: len(result.Blockers)}
 	for _, blocker := range result.Blockers {
 		compact.Blockers = append(compact.Blockers, CompactBlocker{Code: blocker.Code,
 			AffectedIDs: append([]string(nil), blocker.AffectedIDs...), TruncatedCount: blocker.TruncatedCount,

@@ -14,6 +14,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/durable"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/reconcile/filecas"
 )
 
 func TestDurableSpecPreviewDetailApplyKeepsSidecarOutsideWorktree(t *testing.T) {
@@ -188,6 +189,110 @@ func TestDurableSpecCheckReadsExactTreesAndSavedDetailWithoutWorktreeMutation(t 
 	}
 	if after := durableCommandGitOutput(t, root, "status", "--porcelain=v1"); after != before {
 		t.Fatalf("failed check changed worktree: before=%q after=%q", before, after)
+	}
+}
+
+func TestDurableSpecCheckUsesExactSubjectWorkflowAcrossConflictingCheckouts(t *testing.T) {
+	root, baseline := durableCommandRepository(t)
+	specBody := durableCommandSpec(t, `{"version":1,"intent":"OPERATIONS","operations":[{"id":"SPEC-001-OP-01","kind":"ADDED","capability":"cap","path":"issue-spec/specs/cap/spec.md","new_requirement":"Durable command","projection":{"source":"current-spec"}}]}`)
+	backend := durableCommandBackend(specBody)
+	planPath := filepath.Join(filepath.Dir(root), "cross-checkout-plan.json")
+	application, previewOut, previewErr := durableCommandApp(backend)
+	if code := application.runDurableSpec(context.Background(), []string{"preview", "--repo", "o/r", "--proposal", "9",
+		"--baseline", baseline, "--root", root, "--plan-out", planPath, "--json"}); code != 0 {
+		t.Fatalf("preview code=%d stdout=%q stderr=%q", code, previewOut.String(), previewErr.String())
+	}
+	var preview durable.CompactPlan
+	if err := json.Unmarshal(previewOut.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	application, applyOut, applyErr := durableCommandApp(backend)
+	if code := application.runDurableSpec(context.Background(), []string{"apply", "--plan", planPath,
+		"--expected-plan-digest", preview.PlanDigest, "--root", root, "--json"}); code != 0 {
+		t.Fatalf("apply code=%d stdout=%q stderr=%q", code, applyOut.String(), applyErr.String())
+	}
+	durableCommandGit(t, root, "add", "issue-spec/specs/cap/spec.md")
+	durableCommandGit(t, root, "commit", "-q", "-m", "materialize exact subject")
+	subject := durableCommandGitOutput(t, root, "rev-parse", "HEAD")
+
+	runCheck := func(t *testing.T, checkout string) durable.CompactCheck {
+		t.Helper()
+		application, out, errOut := durableCommandApp(backend)
+		if code := application.runDurableSpec(context.Background(), []string{"check", "--repo", "o/r", "--proposal", "9",
+			"--baseline", baseline, "--subject", subject, "--root", checkout, "--json"}); code != 0 {
+			t.Fatalf("check code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+		}
+		var compact durable.CompactCheck
+		if err := json.Unmarshal(out.Bytes(), &compact); err != nil {
+			t.Fatal(err)
+		}
+		return compact
+	}
+
+	wantConfig := []byte("schema: issue-spec\ndurable_specs:\n  mode: repository\n")
+	wantAuthority := durable.WorkflowAuthority{ConfigPath: "issue-spec/config.yaml", ConfigDigest: filecas.FileDigest(wantConfig), Mode: durable.ModeRepository}
+	canonical := runCheck(t, root)
+	if !canonical.OK || canonical.Workflow != wantAuthority {
+		t.Fatalf("canonical exact-subject authority=%+v want=%+v", canonical, wantAuthority)
+	}
+
+	other := filepath.Join(t.TempDir(), "conflicting-checkout")
+	durableCommandGit(t, filepath.Dir(other), "clone", "-q", root, other)
+	configPath := filepath.Join(other, "issue-spec", "config.yaml")
+	if err := os.WriteFile(configPath, []byte("schema: issue-spec\ndurable_specs:\n  mode: none\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := durableCommandGitOutput(t, other, "status", "--porcelain=v1")
+	conflicting := runCheck(t, other)
+	if after := durableCommandGitOutput(t, other, "status", "--porcelain=v1"); after != before {
+		t.Fatalf("conflicting-checkout check mutated worktree: before=%q after=%q", before, after)
+	}
+	if conflicting.Workflow != wantAuthority || conflicting.ResultDigest != canonical.ResultDigest {
+		t.Fatalf("conflicting local config changed exact result: canonical=%+v conflicting=%+v", canonical, conflicting)
+	}
+
+	if err := os.Remove(configPath); err != nil {
+		t.Fatal(err)
+	}
+	before = durableCommandGitOutput(t, other, "status", "--porcelain=v1")
+	absent := runCheck(t, other)
+	if after := durableCommandGitOutput(t, other, "status", "--porcelain=v1"); after != before {
+		t.Fatalf("absent-config check mutated worktree: before=%q after=%q", before, after)
+	}
+	if absent.Workflow != wantAuthority || absent.ResultDigest != canonical.ResultDigest {
+		t.Fatalf("absent local config changed exact result: canonical=%+v absent=%+v", canonical, absent)
+	}
+}
+
+func TestDurableSpecCheckSubjectWithoutOptInIgnoresIncidentalRepositoryMode(t *testing.T) {
+	root, baseline := durableCommandRepository(t)
+	durableCommandGit(t, root, "rm", "-q", "issue-spec/config.yaml")
+	durableCommandGit(t, root, "commit", "-q", "-m", "disable durable specs")
+	subject := durableCommandGitOutput(t, root, "rev-parse", "HEAD")
+	if err := os.MkdirAll(filepath.Join(root, "issue-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "issue-spec", "config.yaml"),
+		[]byte("schema: issue-spec\ndurable_specs:\n  mode: repository\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := durableCommandGitOutput(t, root, "status", "--porcelain=v1")
+	application, out, errOut := durableCommandApp(durableCommandBackend(durableCommandSpec(t, `{"version":1,"intent":"UNCHANGED"}`)))
+	if code := application.runDurableSpec(context.Background(), []string{"check", "--repo", "o/r", "--proposal", "9",
+		"--baseline", baseline, "--subject", subject, "--root", root, "--json"}); code != 0 {
+		t.Fatalf("mode-none check code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var compact durable.CompactCheck
+	if err := json.Unmarshal(out.Bytes(), &compact); err != nil {
+		t.Fatal(err)
+	}
+	wantAuthority := durable.WorkflowAuthority{ConfigPath: "<builtin>",
+		ConfigDigest: filecas.FileDigest([]byte("builtin:issue-spec\n")), Mode: durable.ModeNone}
+	if !compact.OK || compact.OperationCount != 0 || compact.Workflow != wantAuthority || compact.ResultPath != "" {
+		t.Fatalf("mode-none exact-subject result=%+v want authority=%+v", compact, wantAuthority)
+	}
+	if after := durableCommandGitOutput(t, root, "status", "--porcelain=v1"); after != before {
+		t.Fatalf("mode-none check mutated worktree: before=%q after=%q", before, after)
 	}
 }
 

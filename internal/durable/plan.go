@@ -164,9 +164,8 @@ func ValidatePlan(plan Plan) error {
 	if !planRepository.MatchString(plan.Repository) || plan.Proposal <= 0 || !planRevision.MatchString(plan.BaselineRevision) {
 		return errors.New("repository, proposal, and exact lowercase baseline revision are required")
 	}
-	mode, modeErr := NormalizeMode(plan.Workflow.Mode)
-	if modeErr != nil || mode != plan.Workflow.Mode || strings.TrimSpace(plan.Workflow.ConfigPath) == "" || !isPlanDigest(plan.Workflow.ConfigDigest) {
-		return errors.New("exact workflow config path, digest, and supported mode are required")
+	if err := validateWorkflowAuthority(plan.Workflow); err != nil {
+		return err
 	}
 	if !sort.SliceIsSorted(plan.Sources, func(i, j int) bool { return sourceAuthorityKey(plan.Sources[i]) < sourceAuthorityKey(plan.Sources[j]) }) {
 		return errors.New("source authorities are not in deterministic order")
@@ -209,6 +208,14 @@ func ValidatePlan(plan Plan) error {
 	}
 	if plan.PlanDigest != digest {
 		return fmt.Errorf("durable plan digest mismatch: declared=%s computed=%s", plan.PlanDigest, digest)
+	}
+	return nil
+}
+
+func validateWorkflowAuthority(authority WorkflowAuthority) error {
+	mode, modeErr := NormalizeMode(authority.Mode)
+	if modeErr != nil || mode != authority.Mode || strings.TrimSpace(authority.ConfigPath) == "" || !isPlanDigest(authority.ConfigDigest) {
+		return errors.New("exact workflow config path, digest, and supported mode are required")
 	}
 	return nil
 }

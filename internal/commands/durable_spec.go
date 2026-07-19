@@ -83,43 +83,48 @@ func (a *app) runDurableSpecCheck(ctx context.Context, args []string) int {
 		a.errorf("--subject: %v\n", err)
 		return 2
 	}
-	workflowAuthority, err := observeDurableWorkflow(root)
+	workflowAuthority, err := observeDurableWorkflowAtRevision(ctx, root, subject)
 	if err != nil {
-		a.errorf("observe durable workflow: %v\n", err)
-		return 1
-	}
-	client, _, err := a.clientFor(ctx, *host)
-	if err != nil {
-		a.errorf("durable-spec check backend: %v\n", err)
-		return 1
-	}
-	// Check path safety against the explicit baseline tree below, not against
-	// incidental working-tree durable files. Canonical SPEC grammar and intent
-	// remain strict while legacy existence is proven from baselineFiles.
-	sources, err := observeDurableSources(ctx, client, repo, proposal, "")
-	if err != nil {
-		a.errorf("observe confirmed source SPECs: %v\n", err)
-		return 1
-	}
-	baselineFiles, err := observeDurableBaselineFiles(ctx, root, baseline, sources)
-	if err != nil {
-		a.errorf("observe durable baseline: %v\n", err)
-		return 1
-	}
-	subjectFiles, err := observeDurableBaselineFiles(ctx, root, subject, sources)
-	if err != nil {
-		a.errorf("observe durable subject: %v\n", err)
-		return 1
-	}
-	changedPaths, err := changedDurablePaths(ctx, root, baseline, subject)
-	if err != nil {
-		a.errorf("observe durable tree changes: %v\n", err)
+		a.errorf("observe exact subject durable workflow: %v\n", err)
 		return 1
 	}
 	revisionError, err := durableRevisionError(ctx, root, baseline, subject)
 	if err != nil {
 		a.errorf("compare durable revisions: %v\n", err)
 		return 1
+	}
+	var sources []durable.SourceInput
+	var baselineFiles, subjectFiles map[string]durable.BaselineFile
+	var changedPaths []string
+	if workflowAuthority.Mode == durable.ModeRepository {
+		client, _, clientErr := a.clientFor(ctx, *host)
+		if clientErr != nil {
+			a.errorf("durable-spec check backend: %v\n", clientErr)
+			return 1
+		}
+		// Check path safety against the explicit baseline tree below, not against
+		// incidental working-tree durable files. Canonical SPEC grammar and intent
+		// remain strict while legacy existence is proven from baselineFiles.
+		sources, err = observeDurableSources(ctx, client, repo, proposal, "")
+		if err != nil {
+			a.errorf("observe confirmed source SPECs: %v\n", err)
+			return 1
+		}
+		baselineFiles, err = observeDurableBaselineFiles(ctx, root, baseline, sources)
+		if err != nil {
+			a.errorf("observe durable baseline: %v\n", err)
+			return 1
+		}
+		subjectFiles, err = observeDurableBaselineFiles(ctx, root, subject, sources)
+		if err != nil {
+			a.errorf("observe durable subject: %v\n", err)
+			return 1
+		}
+		changedPaths, err = changedDurablePaths(ctx, root, baseline, subject)
+		if err != nil {
+			a.errorf("observe durable tree changes: %v\n", err)
+			return 1
+		}
 	}
 	result, err := durable.Check(durable.CheckInput{CompileInput: durable.CompileInput{Repository: repo, Proposal: proposal,
 		ProposalURL: proposalURLForSources(sources, *host, repo, proposal), BaselineRevision: baseline,
@@ -265,15 +270,16 @@ type durableDetailResult struct {
 }
 
 type durableCheckDetailResult struct {
-	Version          int               `json:"version"`
-	ResultDigest     string            `json:"result_digest"`
-	Repository       string            `json:"repository"`
-	Proposal         int               `json:"proposal"`
-	BaselineRevision string            `json:"baseline_revision"`
-	SubjectRevision  string            `json:"subject_revision"`
-	OperationCount   int               `json:"operation_count"`
-	Blockers         []durable.Blocker `json:"blockers,omitempty"`
-	Findings         []durable.Finding `json:"findings,omitempty"`
+	Version          int                       `json:"version"`
+	ResultDigest     string                    `json:"result_digest"`
+	Repository       string                    `json:"repository"`
+	Proposal         int                       `json:"proposal"`
+	BaselineRevision string                    `json:"baseline_revision"`
+	SubjectRevision  string                    `json:"subject_revision"`
+	Workflow         durable.WorkflowAuthority `json:"workflow"`
+	OperationCount   int                       `json:"operation_count"`
+	Blockers         []durable.Blocker         `json:"blockers,omitempty"`
+	Findings         []durable.Finding         `json:"findings,omitempty"`
 }
 
 func (a *app) runDurableSpecDetail(args []string) int {
@@ -343,7 +349,7 @@ func (a *app) runDurableCheckDetail(resultPath, wantCode string, jsonOut bool) i
 	}
 	detail := durableCheckDetailResult{Version: result.Version, ResultDigest: result.ResultDigest,
 		Repository: result.Repository, Proposal: result.Proposal, BaselineRevision: result.BaselineRevision,
-		SubjectRevision: result.SubjectRevision, OperationCount: result.OperationCount}
+		SubjectRevision: result.SubjectRevision, Workflow: result.Workflow, OperationCount: result.OperationCount}
 	for _, blocker := range result.Blockers {
 		if wantCode == "" || blocker.Code == wantCode {
 			detail.Blockers = append(detail.Blockers, blocker)
@@ -537,6 +543,71 @@ func observeDurableWorkflow(root string) (durable.WorkflowAuthority, error) {
 		configPath = filepath.ToSlash(relative)
 	}
 	return durable.WorkflowAuthority{ConfigPath: configPath, ConfigDigest: filecas.FileDigest(data), Mode: resolved.DurableSpecsMode()}, nil
+}
+
+func observeDurableWorkflowAtRevision(ctx context.Context, root, revision string) (durable.WorkflowAuthority, error) {
+	for _, configPath := range []string{"issue-spec/config.yaml", "openspec/config.yaml"} {
+		data, found, err := readGitRegularFileAtRevision(ctx, root, revision, configPath)
+		if err != nil {
+			return durable.WorkflowAuthority{}, err
+		}
+		if !found {
+			continue
+		}
+		temporaryRoot, err := os.MkdirTemp("", "issue-spec-durable-workflow-*")
+		if err != nil {
+			return durable.WorkflowAuthority{}, err
+		}
+		defer os.RemoveAll(temporaryRoot)
+		temporaryConfig := filepath.Join(temporaryRoot, filepath.FromSlash(configPath))
+		if err := os.MkdirAll(filepath.Dir(temporaryConfig), 0o700); err != nil {
+			return durable.WorkflowAuthority{}, err
+		}
+		if err := os.WriteFile(temporaryConfig, data, 0o600); err != nil {
+			return durable.WorkflowAuthority{}, err
+		}
+		// The checker needs the selected config's durable declaration, not a
+		// checkout-local custom schema. A built-in schema override keeps config
+		// parsing and validation exact without reading any other working-tree file.
+		resolved, err := workflow.ResolveWithOptions(workflow.ResolveOptions{Root: temporaryRoot, Schema: workflow.BuiltinSchemaName})
+		if err != nil {
+			return durable.WorkflowAuthority{}, err
+		}
+		return durable.WorkflowAuthority{ConfigPath: configPath, ConfigDigest: filecas.FileDigest(data), Mode: resolved.DurableSpecsMode()}, nil
+	}
+	builtin := []byte("builtin:" + workflow.BuiltinSchemaName + "\n")
+	return durable.WorkflowAuthority{ConfigPath: "<builtin>", ConfigDigest: filecas.FileDigest(builtin), Mode: durable.ModeNone}, nil
+}
+
+func readGitRegularFileAtRevision(ctx context.Context, root, revision, path string) ([]byte, bool, error) {
+	list := exec.CommandContext(ctx, "git", "ls-tree", "--full-tree", "-z", revision, "--", path)
+	list.Dir = root
+	output, err := list.Output()
+	if err != nil {
+		return nil, false, fmt.Errorf("git ls-tree %s -- %s: %w", revision, path, err)
+	}
+	if len(output) == 0 {
+		return nil, false, nil
+	}
+	entries := strings.Split(strings.TrimSuffix(string(output), "\x00"), "\x00")
+	if len(entries) != 1 {
+		return nil, false, fmt.Errorf("exact subject workflow path %s is ambiguous", path)
+	}
+	metadata, observedPath, found := strings.Cut(entries[0], "\t")
+	fields := strings.Fields(metadata)
+	if !found || observedPath != path || len(fields) != 3 || fields[1] != "blob" {
+		return nil, false, fmt.Errorf("exact subject workflow path %s is not one Git blob", path)
+	}
+	if fields[0] != "100644" && fields[0] != "100755" {
+		return nil, false, fmt.Errorf("exact subject workflow path %s must be a regular file", path)
+	}
+	show := exec.CommandContext(ctx, "git", "cat-file", "blob", fields[2])
+	show.Dir = root
+	data, err := show.Output()
+	if err != nil {
+		return nil, false, fmt.Errorf("git cat-file workflow blob %s: %w", fields[2], err)
+	}
+	return data, true, nil
 }
 
 func observeDurableBaselineFiles(ctx context.Context, root, revision string, sources []durable.SourceInput) (map[string]durable.BaselineFile, error) {
