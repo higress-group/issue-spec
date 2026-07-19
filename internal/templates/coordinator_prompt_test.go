@@ -177,6 +177,40 @@ func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
 	}
 }
 
+func TestCoordinatorPromptPlansProcessNodesByDesignInvariant(t *testing.T) {
+	prompt, err := CoordinatorPrompt(coordinatorPromptBundle(t, runnercontext.CommandNew, ""), CoordinatorPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"each PROCESS own one independently verifiable Design invariant and its major entry points",
+		"balance end-to-end invariant cohesion against a bounded role-agent context and working set",
+		"Split only across a stable interface when every resulting node has independent acceptance criteria and can be reviewed correctly in isolation",
+		"File overlap, disjoint write ownership, potential parallelism, command entry points, and individual findings are secondary scheduling inputs, never semantic PROCESS boundaries",
+		"stop the Implement transition as blocked before dispatch",
+		"concrete competing boundary options and the acceptance consequences of each",
+		"request human direction",
+		"independent bounded review immediately after a cohesive high-risk invariant",
+		"A repair extends or replaces the PROCESS that owns the invariant",
+		"Neither the CLI nor this prompt may infer semantic decomposition from paths, prose, token/file/line formulas, or `CODEX_THREAD_ID`",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("coordinator prompt missing invariant-planning guidance %q:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{
+		"only when nodes have disjoint write ownership",
+		"Route findings to the owner PROCESS or a dedicated repair PROCESS",
+		"one PROCESS per command entry point",
+		"one repair PROCESS per finding",
+		"split when the token count",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("coordinator prompt contains mechanically shaped PROCESS guidance %q:\n%s", forbidden, prompt)
+		}
+	}
+}
+
 func TestCoordinatorPromptSeparatesStatusOrdinaryAndTypedCommentWrites(t *testing.T) {
 	prompt, err := CoordinatorPrompt(coordinatorPromptBundle(t, runnercontext.CommandNew, "s_ordinary"), CoordinatorPromptOptions{})
 	if err != nil {

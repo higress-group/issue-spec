@@ -233,6 +233,61 @@ func TestIssueSpecSkillsRequireNonCoordinatorChangeBearingWorkers(t *testing.T) 
 	}
 }
 
+func TestIssueSpecSkillsPlanProcessNodesByDesignInvariant(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+	workflow := skillContent(t, skills, "issue-spec-workflow")
+	apply := skillContent(t, skills, "issue-spec-apply")
+	propose := skillContent(t, skills, "issue-spec-propose")
+
+	for name, content := range map[string]string{"workflow": workflow, "apply": apply} {
+		for _, want := range []string{
+			"one independently verifiable Design invariant and its major entry points",
+			"end-to-end invariant cohesion against a bounded role-agent context and working set",
+			"stable interface",
+			"independent acceptance criteria",
+			"reviewed correctly in isolation",
+			"stop the Implement transition as blocked",
+			"concrete competing boundary options and their acceptance consequences",
+			"request human direction",
+			"independent bounded review immediately after",
+			"cohesive high-risk invariant",
+			"Repairs extend or replace the invariant-owning PROCESS",
+			"paths, prose, token/file/line formulas, or CODEX_THREAD_ID",
+		} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s guidance missing invariant-planning contract %q:\n%s", name, want, content)
+			}
+		}
+	}
+
+	for _, want := range []string{
+		"identify Design-invariant cohesion and major entry points",
+		"bounded role-context pressure",
+		"stable interfaces",
+		"acceptance consequences",
+		"not semantic PROCESS boundaries",
+	} {
+		if !strings.Contains(propose, want) {
+			t.Fatalf("propose guidance missing invariant-planning input %q:\n%s", want, propose)
+		}
+	}
+
+	for name, content := range map[string]string{"workflow": workflow, "apply": apply, "propose": propose} {
+		for _, forbidden := range []string{
+			"derive PROCESS nodes from it",
+			"split into parallel worker PROCESS nodes only when file/module write ownership is provably disjoint",
+			"Route findings to the owner PROCESS or a dedicated repair PROCESS",
+			"one PROCESS per command entry point",
+			"one repair PROCESS per finding",
+			"split when the token count",
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("%s guidance contains mechanically shaped PROCESS rule %q:\n%s", name, forbidden, content)
+			}
+		}
+	}
+}
+
 func TestIssueSpecSkillsPlaceFinalRationaleAfterIndependentReviewConvergence(t *testing.T) {
 	skills := IssueSpecSkills("owner/repo")
 	for _, name := range []string{"issue-spec-workflow", "issue-spec-apply"} {
