@@ -202,17 +202,21 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		}
 	}
 	counts := artifactStatusCounts(artifacts)
+	gateArtifacts := artifactsForImplementGate(artifacts, implement)
 	verify := map[string]string{}
 	blockingQuestions := 0
 	openReviews := 0
-	activeProcesses := activeProcessIDs(artifacts)
+	activeProcesses := activeProcessIDs(gateArtifacts)
 	var malformed []model.CanonicalDiagnostic
 	for _, artifact := range artifacts {
 		tc := artifact.Comment
 		if tc.Type == "" {
 			continue
 		}
-		if (tc.Type == "PROCESS" && activeProcesses[tc.ID]) || (tc.Type != "PROCESS" && tc.Status != "superseded") {
+		// Cross-issue PROCESS comments are not gate carriers, but their
+		// canonical diagnostics remain part of the complete read model.
+		if (tc.Type == "PROCESS" && ((implement > 0 && artifact.Issue != implement) || activeProcesses[tc.ID])) ||
+			(tc.Type != "PROCESS" && tc.Status != "superseded") {
 			malformed = append(malformed, model.ValidateArtifact(artifact)...)
 		}
 		if tc.Type == "QUESTION" && tc.Status == "blocked" {
@@ -242,13 +246,13 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 	}
 	processEvidence := collection.ProcessEvidence
 	if (target == gates.TargetFinal || target == gates.TargetArchive) && len(processEvidence) == 0 &&
-		(hasActiveChangeBearingProcess(artifacts) || hasExplicitProcessWorkspace(artifacts)) {
-		processEvidence = buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, nil)
+		(hasActiveChangeBearingProcess(gateArtifacts) || hasExplicitProcessWorkspace(gateArtifacts)) {
+		processEvidence = buildProcessEvidenceInputs(gateArtifacts, "", nil, reviewSyncReport{}, nil)
 	}
 	snapshot := gates.Snapshot{
 		Target:          target,
 		Mode:            mode,
-		Artifacts:       artifacts,
+		Artifacts:       gateArtifacts,
 		Canonical:       gates.CanonicalFacts{Observed: true, Diagnostics: malformed},
 		Traceability:    gates.TraceabilityFacts{Observed: true, Report: report},
 		Workflow:        workflowFacts,
@@ -282,6 +286,26 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		NextGates:         nextGates,
 		Gate:              gateReport,
 	}
+}
+
+// artifactsForImplementGate binds PROCESS selection and evidence authority to
+// the exact Implement issue supplied by the caller. Proposal and Design
+// artifacts remain visible so SPEC/TASK gates and full traceability keep their
+// existing semantics. A zero issue is reserved for already-scoped internal
+// callers and compatibility tests; it never attempts to infer authority from
+// PROCESS count or identity.
+func artifactsForImplementGate(artifacts []model.Artifact, implementIssue int) []model.Artifact {
+	if implementIssue <= 0 {
+		return append([]model.Artifact(nil), artifacts...)
+	}
+	projected := make([]model.Artifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type == "PROCESS" && artifact.Issue != implementIssue {
+			continue
+		}
+		projected = append(projected, artifact)
+	}
+	return projected
 }
 
 func resolveStatusGate(raw string, design, implement int) (gates.Target, error) {
@@ -340,6 +364,7 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 	if target != gates.TargetFinal && target != gates.TargetArchive {
 		return collection
 	}
+	artifacts = artifactsForImplementGate(artifacts, implementIssue)
 	if profile.Kind == auth.ProfileKindHosted {
 		collection.Remote.PRChecks = gates.Fact{}
 		collection.Remote.ReviewFindings = gates.Fact{}

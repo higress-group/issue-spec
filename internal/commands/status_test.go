@@ -769,6 +769,78 @@ func TestStatusAndVerifyUseSameActiveProcessSelection(t *testing.T) {
 	}
 }
 
+func TestStatusBindsPersistedProcessSelectionToExactImplementIssue(t *testing.T) {
+	artifacts, currentID, foreignID := persistedCrossIssueProcessReplacement(t)
+	summary := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetFinal, artifacts, workflow.Plan{}, nil)
+
+	var currentBlocked bool
+	for _, diagnostic := range summary.Gate.Diagnostics {
+		if diagnostic.Artifact.ID == foreignID && diagnostic.Code != gates.CodeArtifactNoncanonical &&
+			diagnostic.Code != gates.CodeTraceabilityInvalid {
+			t.Fatalf("foreign PROCESS became status gate authority: %+v", summary.Gate.Diagnostics)
+		}
+		if diagnostic.Code == gates.CodeProcessNotDone && diagnostic.Artifact.ID == currentID {
+			currentBlocked = true
+		}
+	}
+	if !currentBlocked {
+		t.Fatalf("cross-issue replacement removed the exact Implement PROCESS from status: %+v", summary.Gate.Diagnostics)
+	}
+	if statusHasCode(summary, gates.CodeSpecRequired) || statusHasCode(summary, gates.CodeTaskRequired) {
+		t.Fatalf("Proposal SPEC or Design TASK disappeared from status projection: %+v", summary.Gate.Diagnostics)
+	}
+	if !strings.Contains(strings.Join(summary.Traceability.Errors, "\n"), foreignID) {
+		t.Fatalf("full cross-issue traceability diagnostics were dropped: %+v", summary.Traceability)
+	}
+	if !canonicalDiagnosticsContain(summary.Malformed, foreignID) {
+		t.Fatalf("full cross-issue canonical diagnostics were dropped: %+v", summary.Malformed)
+	}
+}
+
+func persistedCrossIssueProcessReplacement(t *testing.T) ([]model.Artifact, string, string) {
+	t.Helper()
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	current := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContentWithClass(model.ProcessExecutionOrchestration))
+	foreign := typedArtifact(t, 1, "PROCESS", "PROCESS-900", "done", canonicalProcessContentWithClass(model.ProcessExecutionOrchestration))
+	spec.URL = "https://github.com/o/r/issues/1#issuecomment-spec"
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-task"
+	current.URL = "https://github.com/o/r/issues/3#issuecomment-current"
+	foreign.URL = "https://github.com/o/r/issues/1#issuecomment-foreign"
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &current)
+
+	body, err := model.EnsureTypedBody("PROCESS", current.Comment.ID, model.LogicalBody(current.Comment.Body),
+		model.BodyOptions{Status: "superseded", Links: current.Comment.Links})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _, err = model.StampSupersededBy(body, current.Comment.ID,
+		model.SupersededBy{ProcessID: foreign.Comment.ID, URL: foreign.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Comment = model.ParseTypedComment(body)
+	foreignBody, err := model.EnsureTypedBody("PROCESS", foreign.Comment.ID, "# hand-written foreign process",
+		model.BodyOptions{Status: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign.Comment = model.ParseTypedComment(foreignBody)
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+	verify.URL = "https://github.com/o/r/issues/3#issuecomment-verify"
+	return []model.Artifact{spec, task, current, foreign, verify}, current.Comment.ID, foreign.Comment.ID
+}
+
+func canonicalDiagnosticsContain(diagnostics []model.CanonicalDiagnostic, id string) bool {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func statusWorkspaceProcess(t *testing.T, class model.ProcessExecutionClass, revision string) model.Artifact {
 	t.Helper()
 	logical := "## Process: status workspace\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- " + string(class) +
