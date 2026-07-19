@@ -1863,6 +1863,41 @@ func TestBuildFinalVerifyReportTestEvidenceIgnoresSubstringMatch(t *testing.T) {
 	}
 }
 
+func TestFinalVerifyBindsPersistedProcessSelectionToExactImplementIssue(t *testing.T) {
+	artifacts, currentID, foreignID := persistedCrossIssueProcessReplacement(t)
+	report, err := buildFinalVerifyReport(artifacts, "https://github.com/o/r/issues/1", finalVerifyOptions{ImplementIssue: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var currentBlocked bool
+	for _, diagnostic := range report.Gate.Diagnostics {
+		if diagnostic.Artifact.ID == foreignID && diagnostic.Code != gates.CodeArtifactNoncanonical &&
+			diagnostic.Code != gates.CodeTraceabilityInvalid {
+			t.Fatalf("foreign PROCESS became final verify authority: %+v", report.Gate.Diagnostics)
+		}
+		if diagnostic.Code == gates.CodeProcessNotDone && diagnostic.Artifact.ID == currentID {
+			currentBlocked = true
+		}
+	}
+	if !currentBlocked {
+		t.Fatalf("cross-issue replacement removed the exact Implement PROCESS from final verify: %+v", report.Gate.Diagnostics)
+	}
+	for _, evidence := range report.ProcessEvidence {
+		if evidence.ProcessID == foreignID {
+			t.Fatalf("foreign PROCESS re-entered final verify evidence: %+v", report.ProcessEvidence)
+		}
+	}
+	if _, ok := report.SpecCoverage["SPEC-001"]; !ok {
+		t.Fatalf("Proposal SPEC disappeared from final verify projection: %+v", report.SpecCoverage)
+	}
+	if !strings.Contains(strings.Join(report.Traceability.Errors, "\n"), foreignID) {
+		t.Fatalf("full cross-issue traceability diagnostics were dropped: %+v", report.Traceability)
+	}
+	if !canonicalDiagnosticsContain(report.Noncanonical, foreignID) {
+		t.Fatalf("full cross-issue canonical diagnostics were dropped: %+v", report.Noncanonical)
+	}
+}
+
 func linkArtifacts(t *testing.T, from, to *model.Artifact) {
 	t.Helper()
 	fromBody, changed, err := model.AddRelatedCommentLink(from.Comment.Body, to.URL)

@@ -679,6 +679,112 @@ func TestCommentListExplicitActiveStatusAndHistoryModes(t *testing.T) {
 	}
 }
 
+func TestCommentListProcessActivityUsesExplicitReplacementSelection(t *testing.T) {
+	makeProcessBody := func(id, status, title string) string {
+		body, err := model.EnsureTypedBody("PROCESS", id,
+			"## Process: "+title+"\n\n### Parent TASK\n\n- TASK-001\n",
+			model.BodyOptions{Agent: "Compatibility Worker", Status: status, Scope: "manual role-owned evidence"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	const (
+		historicalURL = "https://example.test/issues/5#issuecomment-11"
+		currentURL    = "https://example.test/issues/5#issuecomment-12"
+		legacyURL     = "https://example.test/issues/5#issuecomment-13"
+	)
+	currentBody := makeProcessBody("PROCESS-002", "done", "current")
+	historicalBody := makeProcessBody("PROCESS-001", "superseded", "historical source")
+	var err error
+	historicalBody, _, err = model.StampSupersededBy(historicalBody, "PROCESS-001",
+		model.SupersededBy{ProcessID: "PROCESS-002", URL: currentURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyBody := makeProcessBody("PROCESS-003", "superseded", "legacy status-only")
+	comments := []github.Comment{
+		{ID: 11, HTMLURL: historicalURL, Body: historicalBody},
+		{ID: 12, HTMLURL: currentURL, Body: currentBody},
+		{ID: 13, HTMLURL: legacyURL, Body: legacyBody},
+	}
+	run := func(t *testing.T, args ...string) []commentReadArtifact {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.selectGitHubBackend = ghSelection
+		app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+			f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) { return comments, nil }
+		})
+		base := []string{"--repo", "o/r", "--issue", "5", "--type", "PROCESS", "--json"}
+		if code := app.runCommentList(t.Context(), append(base, args...)); code != 0 {
+			t.Fatalf("list exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+		}
+		var got struct {
+			Comments []commentReadArtifact `json:"comments"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Comments
+	}
+
+	active := run(t, "--active-only")
+	if len(active) != 2 || active[0].ID != "PROCESS-002" || active[1].ID != "PROCESS-003" {
+		t.Fatalf("active PROCESS comments = %+v", active)
+	}
+	if active[1].Status != "superseded" {
+		t.Fatalf("legacy status-only PROCESS was not retained as active: %+v", active[1])
+	}
+	for _, artifact := range active {
+		if artifact.Body != "" {
+			t.Fatalf("compact active read loaded body for %s", artifact.ID)
+		}
+	}
+
+	history := run(t, "--history", "--include-body")
+	if len(history) != 1 || history[0].ID != "PROCESS-001" || history[0].URL != historicalURL ||
+		!strings.Contains(history[0].Body, "historical source") {
+		t.Fatalf("historical PROCESS comments = %+v", history)
+	}
+}
+
+func TestCommentListInvalidProcessReplacementRemainsActive(t *testing.T) {
+	body, err := model.EnsureTypedBody("PROCESS", "PROCESS-001",
+		"## Process: invalid replacement\n\n### Parent TASK\n\n- TASK-001\n",
+		model.BodyOptions{Status: "superseded"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body += "\n<!-- issue-spec:superseded-by version=1 -->\nnot-json\n<!-- /issue-spec:superseded-by -->\n"
+	comments := []github.Comment{{ID: 11, HTMLURL: "https://example.test/issues/5#issuecomment-11", Body: body}}
+	run := func(t *testing.T, mode string) []commentReadArtifact {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.selectGitHubBackend = ghSelection
+		app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+			f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) { return comments, nil }
+		})
+		if code := app.runCommentList(t.Context(), []string{"--repo", "o/r", "--issue", "5", "--type", "PROCESS", "--json", mode}); code != 0 {
+			t.Fatalf("list exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+		}
+		var got struct {
+			Comments []commentReadArtifact `json:"comments"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Comments
+	}
+	if active := run(t, "--active-only"); len(active) != 1 || active[0].ID != "PROCESS-001" {
+		t.Fatalf("invalid replacement PROCESS was hidden from active view: %+v", active)
+	}
+	if history := run(t, "--history"); len(history) != 0 {
+		t.Fatalf("invalid replacement PROCESS became authoritative history: %+v", history)
+	}
+}
+
 func TestCommentListJSONEmptyResultsAreArrays(t *testing.T) {
 	for _, tt := range []struct {
 		name string

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
@@ -115,6 +116,90 @@ func TestSelfHostedStatusOnlyForcesProviderSyncForFinal(t *testing.T) {
 				t.Fatalf("provider=%+v syncs=%d calls=%v", collection.Remote.ProviderEvidence, native.syncs, calls)
 			}
 		})
+	}
+}
+
+func TestStatusAcceptedVerificationUsesExactGitHubHead(t *testing.T) {
+	revision := strings.Repeat("b", 40)
+	for _, target := range []gates.Target{gates.TargetFinal, gates.TargetArchive} {
+		t.Run(string(target), func(t *testing.T) {
+			artifacts := statusAcceptedVerificationArtifacts(t, revision, "https://github.com/o/r/pull/7")
+			pr := pullRequestAtHead(7, revision)
+			backend := &sequencedPullRequestCommitBackend{fakeGitHubBackend: fakeGitHubBackend{},
+				pulls: []github.PullRequest{pr, pr}, commits: []github.PullRequestCommit{{SHA: revision}}}
+			collection := (&app{}).collectStatusGateFacts(t.Context(), backend,
+				auth.Profile{Kind: auth.ProfileKindGitHub}, "", "o/r", 3, target, artifacts)
+			assertStatusAcceptedVerification(t, collection, revision)
+		})
+	}
+}
+
+func TestStatusAcceptedVerificationUsesExactSelfHostedRevision(t *testing.T) {
+	revision := strings.Repeat("b", 40)
+	now := time.Now().UTC()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	for _, target := range []gates.Target{gates.TargetFinal, gates.TargetArchive} {
+		t.Run(string(target), func(t *testing.T) {
+			check := testEvidenceRecord("check-ledger", codereview.EvidenceCheck, "passed", revision, now)
+			check.Name = "unit"
+			ledger := &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+				Reference: reference, SubjectRevision: revision, CapturedAt: now, Records: []codereview.EvidenceRecord{check}}}
+			native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7,
+				SubjectRevision: revision, Provider: ledger}}
+			app := newApp(strings.NewReader(""), nil, nil)
+			app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
+			app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) {
+				return &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+					Reference: reference, SubjectRevision: revision, CapturedAt: now}}, nil
+			}
+			collection := app.collectStatusGateFacts(t.Context(), fakeGitHubBackend{},
+				auth.Profile{Kind: auth.ProfileKindHosted}, "token", "acme/widgets", 3, target,
+				statusAcceptedVerificationArtifacts(t, revision, ""))
+			assertStatusAcceptedVerification(t, collection, revision)
+		})
+	}
+}
+
+func statusAcceptedVerificationArtifacts(t *testing.T, revision, prURL string) []model.Artifact {
+	t.Helper()
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	spec.URL = "https://github.com/o/r/issues/1#issuecomment-spec"
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-task"
+	process := statusWorkspaceProcess(t, model.ProcessExecutionChangeBearing, revision)
+	process.URL = "https://github.com/o/r/issues/3#issuecomment-process"
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &process)
+	linkArtifacts(t, &spec, &process)
+	if prURL != "" {
+		body, _, err := model.AddPRLink(process.Comment.Body, prURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		process.Comment = model.ParseTypedComment(body)
+	}
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/commands",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	verifyBody, err := renderSubmittedVerification("VERIFY-001", process.URL, []string{"SPEC-001"}, receipt, nil,
+		testVerificationSubmission("Verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify := model.Artifact{Issue: 3, CommentID: 4, URL: "https://github.com/o/r/issues/3#issuecomment-verify",
+		Comment: model.ParseTypedComment(verifyBody)}
+	return []model.Artifact{spec, task, process, verify}
+}
+
+func assertStatusAcceptedVerification(t *testing.T, collection statusGateCollection, revision string) {
+	t.Helper()
+	if len(collection.ProcessEvidence) != 1 || len(collection.ProcessEvidence[0].Verifications) != 1 {
+		t.Fatalf("status verification evidence missing: remote=%+v process=%+v", collection.Remote, collection.ProcessEvidence)
+	}
+	evidence := collection.ProcessEvidence[0].Verifications[0]
+	if !evidence.Trusted || evidence.SubjectRevision != revision || !evidence.StructuredTests ||
+		evidence.TestAssurance != string(assignment.AssuranceSelfReported) ||
+		evidence.Source != "accepted-verification-receipt:self-reported-tests" {
+		t.Fatalf("accepted verification was not projected at exact status revision: %+v", evidence)
 	}
 }
 
@@ -688,6 +773,157 @@ func TestExactStatusPullRequestRejectsAmbiguousLinks(t *testing.T) {
 	if _, _, ok := exactStatusPullRequest([]model.Artifact{process}, "o/r"); ok {
 		t.Fatal("ambiguous PR links were accepted")
 	}
+}
+
+func TestExactStatusPullRequestUsesSharedActiveSelection(t *testing.T) {
+	current := statusWorkspaceProcess(t, model.ProcessExecutionReview, strings.Repeat("a", 40))
+	current.URL = "https://github.com/o/r/issues/3#issuecomment-current"
+	body, _, err := model.AddPRLink(current.Comment.Body, "https://github.com/o/r/pull/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Comment = model.ParseTypedComment(body)
+	historical := statusWorkspaceProcess(t, model.ProcessExecutionReview, strings.Repeat("a", 40))
+	historical.URL = "https://github.com/o/r/issues/3#issuecomment-historical"
+	historicalBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-002", model.LogicalBody(historical.Comment.Body),
+		model.BodyOptions{Status: "superseded", Links: historical.Comment.Links})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical.Comment = model.ParseTypedComment(historicalBody)
+	historicalBody, _, err = model.AddPRLink(historical.Comment.Body, "https://github.com/o/r/pull/8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	historicalBody, _, err = model.StampSupersededBy(historicalBody, "PROCESS-002",
+		model.SupersededBy{ProcessID: current.Comment.ID, URL: current.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical.Comment = model.ParseTypedComment(historicalBody)
+	if number, _, ok := exactStatusPullRequest([]model.Artifact{current, historical}, "o/r"); !ok || number != 7 {
+		t.Fatalf("historical PR link affected active selection: number=%d ok=%v", number, ok)
+	}
+
+	legacyBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-002", model.LogicalBody(historical.Comment.Body),
+		model.BodyOptions{Status: "superseded", Links: historical.Comment.Links})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical.Comment = model.ParseTypedComment(legacyBody)
+	if _, _, ok := exactStatusPullRequest([]model.Artifact{current, historical}, "o/r"); ok {
+		t.Fatal("legacy status-only supersession incorrectly removed an ambiguous active PR carrier")
+	}
+}
+
+func TestStatusAndVerifyUseSameActiveProcessSelection(t *testing.T) {
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	current := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContentWithClass(model.ProcessExecutionOrchestration))
+	legacy := typedArtifact(t, 3, "PROCESS", "PROCESS-002", "superseded", canonicalProcessContentWithClass(model.ProcessExecutionOrchestration))
+	historical := typedArtifact(t, 3, "PROCESS", "PROCESS-003", "superseded", canonicalProcessContentWithClass(model.ProcessExecutionOrchestration))
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+	for _, process := range []*model.Artifact{&current, &legacy, &historical} {
+		linkArtifacts(t, &task, process)
+	}
+	body, _, err := model.StampSupersededBy(historical.Comment.Body, historical.Comment.ID,
+		model.SupersededBy{ProcessID: current.Comment.ID, URL: current.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical.Comment = model.ParseTypedComment(body)
+	artifacts := []model.Artifact{spec, task, current, legacy, historical, verify}
+	status := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetFinal, artifacts, workflow.Plan{}, nil)
+	final, err := buildFinalVerifyReport(artifacts, spec.URL, finalVerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, diagnostics := range map[string][]gates.Diagnostic{"status": status.Gate.Diagnostics, "verify": final.Gate.Diagnostics} {
+		var legacyBlocked bool
+		for _, diagnostic := range diagnostics {
+			if diagnostic.Artifact.ID == historical.Comment.ID {
+				t.Fatalf("%s evaluated explicitly historical PROCESS: %+v", name, diagnostics)
+			}
+			if diagnostic.Code == gates.CodeProcessNotDone && diagnostic.Artifact.ID == legacy.Comment.ID {
+				legacyBlocked = true
+			}
+		}
+		if !legacyBlocked {
+			t.Fatalf("%s did not block legacy status-only supersession: %+v", name, diagnostics)
+		}
+	}
+}
+
+func TestStatusBindsPersistedProcessSelectionToExactImplementIssue(t *testing.T) {
+	artifacts, currentID, foreignID := persistedCrossIssueProcessReplacement(t)
+	summary := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetFinal, artifacts, workflow.Plan{}, nil)
+
+	var currentBlocked bool
+	for _, diagnostic := range summary.Gate.Diagnostics {
+		if diagnostic.Artifact.ID == foreignID && diagnostic.Code != gates.CodeArtifactNoncanonical &&
+			diagnostic.Code != gates.CodeTraceabilityInvalid {
+			t.Fatalf("foreign PROCESS became status gate authority: %+v", summary.Gate.Diagnostics)
+		}
+		if diagnostic.Code == gates.CodeProcessNotDone && diagnostic.Artifact.ID == currentID {
+			currentBlocked = true
+		}
+	}
+	if !currentBlocked {
+		t.Fatalf("cross-issue replacement removed the exact Implement PROCESS from status: %+v", summary.Gate.Diagnostics)
+	}
+	if statusHasCode(summary, gates.CodeSpecRequired) || statusHasCode(summary, gates.CodeTaskRequired) {
+		t.Fatalf("Proposal SPEC or Design TASK disappeared from status projection: %+v", summary.Gate.Diagnostics)
+	}
+	if !strings.Contains(strings.Join(summary.Traceability.Errors, "\n"), foreignID) {
+		t.Fatalf("full cross-issue traceability diagnostics were dropped: %+v", summary.Traceability)
+	}
+	if !canonicalDiagnosticsContain(summary.Malformed, foreignID) {
+		t.Fatalf("full cross-issue canonical diagnostics were dropped: %+v", summary.Malformed)
+	}
+}
+
+func persistedCrossIssueProcessReplacement(t *testing.T) ([]model.Artifact, string, string) {
+	t.Helper()
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	current := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContentWithClass(model.ProcessExecutionOrchestration))
+	foreign := typedArtifact(t, 1, "PROCESS", "PROCESS-900", "done", canonicalProcessContentWithClass(model.ProcessExecutionOrchestration))
+	spec.URL = "https://github.com/o/r/issues/1#issuecomment-spec"
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-task"
+	current.URL = "https://github.com/o/r/issues/3#issuecomment-current"
+	foreign.URL = "https://github.com/o/r/issues/1#issuecomment-foreign"
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &current)
+
+	body, err := model.EnsureTypedBody("PROCESS", current.Comment.ID, model.LogicalBody(current.Comment.Body),
+		model.BodyOptions{Status: "superseded", Links: current.Comment.Links})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _, err = model.StampSupersededBy(body, current.Comment.ID,
+		model.SupersededBy{ProcessID: foreign.Comment.ID, URL: foreign.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Comment = model.ParseTypedComment(body)
+	foreignBody, err := model.EnsureTypedBody("PROCESS", foreign.Comment.ID, "# hand-written foreign process",
+		model.BodyOptions{Status: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign.Comment = model.ParseTypedComment(foreignBody)
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+	verify.URL = "https://github.com/o/r/issues/3#issuecomment-verify"
+	return []model.Artifact{spec, task, current, foreign, verify}, current.Comment.ID, foreign.Comment.ID
+}
+
+func canonicalDiagnosticsContain(diagnostics []model.CanonicalDiagnostic, id string) bool {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func statusWorkspaceProcess(t *testing.T, class model.ProcessExecutionClass, revision string) model.Artifact {

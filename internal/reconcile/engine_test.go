@@ -16,15 +16,17 @@ import (
 )
 
 type fakeBackend struct {
-	comments     map[int][]github.Comment
-	versions     map[int64]int64
-	nextID       int64
-	createLost   bool
-	updateLost   bool
-	failUpdateID int64
-	writes       int
-	listCalls    map[int]int
-	listHook     func(*fakeBackend, int, int)
+	comments                map[int][]github.Comment
+	versions                map[int64]int64
+	nextID                  int64
+	createLost              bool
+	updateLost              bool
+	failUpdateID            int64
+	writes                  int
+	listCalls               map[int]int
+	listHook                func(*fakeBackend, int, int)
+	conditionalResponseBody string
+	conditionalHook         func(*fakeBackend, int64)
 }
 
 type plainBackend struct{ github.IssueBackend }
@@ -89,10 +91,16 @@ func (f *fakeBackend) GetCommentRepresentation(_ context.Context, _ string, id i
 	return github.CommentRepresentation{}, errors.New("missing")
 }
 func (f *fakeBackend) UpdateCommentConditional(_ context.Context, _ string, id, expected int64, body string) (github.CommentRepresentation, error) {
+	if f.conditionalHook != nil {
+		f.conditionalHook(f, id)
+	}
 	if f.versions[id] != expected {
 		return github.CommentRepresentation{}, &github.CommentMutationConflictError{Expected: expected, Current: f.versions[id]}
 	}
 	c, err := f.update(id, body)
+	if err == nil && f.conditionalResponseBody != "" {
+		c.Body = f.conditionalResponseBody
+	}
 	return github.CommentRepresentation{Comment: c, RepresentationVersion: f.versions[id]}, err
 }
 func (f *fakeBackend) update(id int64, body string) (github.Comment, error) {
@@ -134,6 +142,9 @@ func TestReconcileLostCreateResponseResumesUnchanged(t *testing.T) {
 	if !second.OK || second.Unchanged != 1 || len(f.comments[1]) != 1 {
 		t.Fatalf("second=%+v", second)
 	}
+	if operation := second.Operations[0]; operation.BeforeDigest != model.RepresentationDigest(body) || operation.AfterDigest != operation.BeforeDigest {
+		t.Fatalf("unchanged operation digests=%+v", operation)
+	}
 }
 
 func TestReconcilePartialBacklinkRateLimitResumes(t *testing.T) {
@@ -159,6 +170,170 @@ func TestReconcilePartialBacklinkRateLimitResumes(t *testing.T) {
 	}
 }
 
+func TestValidateLinkEndpointPreconditionContract(t *testing.T) {
+	target := Target{Issue: 1, Type: "SPEC", ID: "SPEC-001"}
+	peer := Target{Issue: 2, Type: "TASK", ID: "TASK-001"}
+	digestA, digestB := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	valid := []EndpointPrecondition{
+		{Target: target, BodyDigest: digestA, AfterDigest: digestB},
+		{Target: peer, RepresentationVersion: 1, AfterDigest: digestA},
+	}
+	operation := func(endpoints []EndpointPrecondition) Operation {
+		return Operation{ID: "link", Kind: "link", Target: target, Desired: Desired{Peer: &peer},
+			Precondition: Precondition{Endpoints: endpoints}}
+	}
+	if _, _, err := Validate(Plan{Version: 1, Repo: "o/r", Operations: []Operation{operation(valid)}}); err != nil {
+		t.Fatalf("valid endpoint contract: %v", err)
+	}
+	for _, test := range []struct {
+		name string
+		op   Operation
+	}{
+		{name: "missing primary", op: operation(valid[1:])},
+		{name: "duplicate", op: operation([]EndpointPrecondition{valid[0], valid[0], valid[1]})},
+		{name: "foreign", op: operation([]EndpointPrecondition{valid[0], {Target: Target{Issue: 3, Type: "TASK", ID: "TASK-003"}, BodyDigest: digestA, AfterDigest: digestB}})},
+		{name: "ambiguous before", op: operation([]EndpointPrecondition{{Target: target, RepresentationVersion: 1, BodyDigest: digestA, AfterDigest: digestB}, valid[1]})},
+		{name: "missing before", op: operation([]EndpointPrecondition{{Target: target, AfterDigest: digestB}, valid[1]})},
+		{name: "missing after", op: operation([]EndpointPrecondition{{Target: target, BodyDigest: digestA}, valid[1]})},
+		{name: "legacy overlap", op: func() Operation {
+			op := operation(valid)
+			op.Precondition.BodyDigest = digestA
+			return op
+		}()},
+		{name: "same endpoint", op: func() Operation {
+			op := operation(valid[:1])
+			op.Desired.Peer = &target
+			return op
+		}()},
+		{name: "non-link", op: Operation{ID: "transition", Kind: "transition", Target: target,
+			Desired: Desired{Status: "done"}, Precondition: Precondition{Endpoints: valid}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, _, err := Validate(Plan{Version: 1, Repo: "o/r", Operations: []Operation{test.op}}); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
+func TestReconcileReciprocalLinkReportsEveryMutatedEndpoint(t *testing.T) {
+	for _, conditional := range []bool{true, false} {
+		t.Run(map[bool]string{true: "conditional", false: "non-atomic"}[conditional], func(t *testing.T) {
+			f := newFake()
+			if conditional {
+				f.conditionalResponseBody = "mutation response is not the exact provider re-observation"
+			}
+			leftBefore := typedBody(t, "SPEC", "SPEC-001", "confirmed")
+			rightBefore := typedBody(t, "TASK", "TASK-001", "confirmed")
+			addComment(f, 1, 1, leftBefore)
+			addComment(f, 2, 2, rightBefore)
+			leftTarget := Target{Issue: 1, Type: "SPEC", ID: "SPEC-001"}
+			rightTarget := Target{Issue: 2, Type: "TASK", ID: "TASK-001"}
+			leftAfter, _, _ := model.AddRelatedCommentLink(leftBefore, f.comments[2][0].HTMLURL)
+			rightAfter, _, _ := model.AddRelatedCommentLink(rightBefore, f.comments[1][0].HTMLURL)
+			endpoints := linkEndpointPreconditions(leftTarget, rightTarget, leftBefore, rightBefore, leftAfter, rightAfter, conditional)
+			plan := Plan{Version: 1, Repo: "o/r", AllowNonAtomic: !conditional, Operations: []Operation{{
+				ID: "link", Kind: "link", Target: leftTarget, Desired: Desired{Peer: &rightTarget},
+				Precondition: Precondition{Endpoints: endpoints},
+			}}}
+			var backend Backend = f
+			if !conditional {
+				backend = plainBackend{IssueBackend: f}
+			}
+
+			result, err := (Engine{Backend: backend}).Run(t.Context(), plan, "")
+			if err != nil || !result.OK || result.Updated != 1 || f.writes != 2 || len(result.Operations[0].Endpoints) != 2 {
+				t.Fatalf("result=%+v writes=%d err=%v", result, f.writes, err)
+			}
+			operation := result.Operations[0]
+			if operation.CommentID != f.comments[1][0].ID || operation.BeforeDigest != model.RepresentationDigest(leftBefore) ||
+				operation.AfterDigest != model.RepresentationDigest(leftAfter) {
+				t.Fatalf("primary compatibility result=%+v", operation)
+			}
+			assertEndpointResult(t, operation.Endpoints[0], leftTarget, leftBefore, leftAfter)
+			assertEndpointResult(t, operation.Endpoints[1], rightTarget, rightBefore, rightAfter)
+		})
+	}
+}
+
+func TestReconcileReciprocalLinkEndpointDriftStopsBeforeFirstWrite(t *testing.T) {
+	for _, conditional := range []bool{true, false} {
+		t.Run(map[bool]string{true: "conditional", false: "non-atomic"}[conditional], func(t *testing.T) {
+			f := newFake()
+			leftBefore := typedBody(t, "SPEC", "SPEC-001", "confirmed")
+			rightBefore := typedBody(t, "TASK", "TASK-001", "confirmed")
+			addComment(f, 1, 1, leftBefore)
+			addComment(f, 2, 2, rightBefore)
+			leftTarget := Target{Issue: 1, Type: "SPEC", ID: "SPEC-001"}
+			rightTarget := Target{Issue: 2, Type: "TASK", ID: "TASK-001"}
+			leftAfter, _, _ := model.AddRelatedCommentLink(leftBefore, f.comments[2][0].HTMLURL)
+			rightAfter, _, _ := model.AddRelatedCommentLink(rightBefore, f.comments[1][0].HTMLURL)
+			endpoints := linkEndpointPreconditions(leftTarget, rightTarget, leftBefore, rightBefore, leftAfter, rightAfter, conditional)
+			f.comments[2][0].Body += "\nPeer drift after preview."
+			f.versions[2]++
+			plan := Plan{Version: 1, Repo: "o/r", AllowNonAtomic: !conditional, Operations: []Operation{{
+				ID: "link", Kind: "link", Target: leftTarget, Desired: Desired{Peer: &rightTarget},
+				Precondition: Precondition{Endpoints: endpoints},
+			}}}
+			var backend Backend = f
+			if !conditional {
+				backend = plainBackend{IssueBackend: f}
+			}
+
+			result, err := (Engine{Backend: backend}).Run(t.Context(), plan, "")
+			if err != nil || result.Conflicted != 1 || f.writes != 0 ||
+				!strings.Contains(result.Operations[0].Message, "endpoint") {
+				t.Fatalf("result=%+v writes=%d err=%v", result, f.writes, err)
+			}
+		})
+	}
+}
+
+func TestReconcileReciprocalLinkEndpointContractResumesPartialWrite(t *testing.T) {
+	f := newFake()
+	leftBefore := typedBody(t, "SPEC", "SPEC-001", "confirmed")
+	rightBefore := typedBody(t, "TASK", "TASK-001", "confirmed")
+	addComment(f, 1, 1, leftBefore)
+	addComment(f, 2, 2, rightBefore)
+	leftTarget := Target{Issue: 1, Type: "SPEC", ID: "SPEC-001"}
+	rightTarget := Target{Issue: 2, Type: "TASK", ID: "TASK-001"}
+	leftAfter, _, _ := model.AddRelatedCommentLink(leftBefore, f.comments[2][0].HTMLURL)
+	rightAfter, _, _ := model.AddRelatedCommentLink(rightBefore, f.comments[1][0].HTMLURL)
+	f.failUpdateID = 2
+	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "link", Kind: "link", Target: leftTarget,
+		Desired: Desired{Peer: &rightTarget}, Precondition: Precondition{Endpoints: linkEndpointPreconditions(
+			leftTarget, rightTarget, leftBefore, rightBefore, leftAfter, rightAfter, true)}}}}
+	cp := t.TempDir() + "/checkpoint.json"
+
+	first, err := (Engine{Backend: f}).Run(t.Context(), plan, cp)
+	if err != nil || first.Pending != 1 || f.writes != 1 || len(first.Operations[0].Endpoints) != 1 {
+		t.Fatalf("first=%+v writes=%d err=%v", first, f.writes, err)
+	}
+	assertEndpointResult(t, first.Operations[0].Endpoints[0], leftTarget, leftBefore, leftAfter)
+	second, err := (Engine{Backend: f}).Run(t.Context(), plan, cp)
+	if err != nil || !second.OK || second.Updated != 1 || f.writes != 2 || len(second.Operations[0].Endpoints) != 1 {
+		t.Fatalf("second=%+v writes=%d err=%v", second, f.writes, err)
+	}
+	assertEndpointResult(t, second.Operations[0].Endpoints[0], rightTarget, rightBefore, rightAfter)
+}
+
+func TestReconcileLegacyPrimaryLinkPreconditionOnlyBindsPrimaryTarget(t *testing.T) {
+	f := newFake()
+	leftBefore := typedBody(t, "SPEC", "SPEC-001", "confirmed")
+	rightBefore := typedBody(t, "TASK", "TASK-001", "confirmed")
+	addComment(f, 1, 1, leftBefore)
+	addComment(f, 2, 2, rightBefore)
+	rightTarget := Target{Issue: 2, Type: "TASK", ID: "TASK-001"}
+	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "link", Kind: "link",
+		Target: Target{Issue: 1, Type: "SPEC", ID: "SPEC-001"}, Desired: Desired{Peer: &rightTarget},
+		Precondition: Precondition{BodyDigest: model.RepresentationDigest(leftBefore)}}}}
+
+	result, err := (Engine{Backend: f}).Run(t.Context(), plan, "")
+	if err != nil || !result.OK || result.Updated != 1 || f.writes != 2 || result.Operations[0].CommentID != 1 {
+		t.Fatalf("result=%+v writes=%d err=%v", result, f.writes, err)
+	}
+}
+
 func TestReconcileStrictCreateRequiresNonAtomicAcknowledgement(t *testing.T) {
 	f := newFake()
 	body := typedBody(t, "TASK", "TASK-001", "confirmed")
@@ -180,6 +355,9 @@ func TestReconcileStrictCreateRequiresNonAtomicAcknowledgement(t *testing.T) {
 	if !result.OK || result.Created != 1 || result.Atomic || result.Operations[0].Atomic || f.writes != 1 {
 		t.Fatalf("result=%+v writes=%d", result, f.writes)
 	}
+	if operation := result.Operations[0]; operation.BeforeDigest != "" || operation.AfterDigest != model.RepresentationDigest(body) {
+		t.Fatalf("created operation digests=%+v", operation)
+	}
 }
 
 func TestReconcileCreateReobservesDuplicateLogicalMarker(t *testing.T) {
@@ -198,6 +376,80 @@ func TestReconcileCreateReobservesDuplicateLogicalMarker(t *testing.T) {
 	}
 	if result.Conflicted != 1 || f.writes != 0 || !strings.Contains(result.Operations[0].Message, "appeared after initial observation") {
 		t.Fatalf("result=%+v writes=%d", result, f.writes)
+	}
+}
+
+func TestReconcileUpsertPreservesEveryTypedHeaderRelationship(t *testing.T) {
+	f := newFake()
+	existing := typedBodyWithLinks(t, "PROCESS", "PROCESS-002", "in-progress", map[string][]string{
+		"Proposal Issue":   {"https://example.test/issues/1"},
+		"Design Issue":     {"https://example.test/issues/2"},
+		"Implement Issue":  {"https://example.test/issues/3"},
+		"Related Comments": {"https://example.test/issues/3#issuecomment-4"},
+		"PR":               {"https://example.test/pulls/5"},
+	})
+	existing = strings.Replace(existing, "- PR: https://example.test/pulls/5",
+		"- PR: https://example.test/pulls/5\n- Future Relationship: https://example.test/future/6", 1)
+	addComment(f, 3, 2, existing)
+	desired := typedBodyWithLinks(t, "PROCESS", "PROCESS-002", "in-progress", map[string][]string{
+		"Related Comments": {"https://example.test/issues/3#issuecomment-7"},
+	})
+	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "upsert", Kind: "upsert",
+		Target: Target{Issue: 3, Type: "PROCESS", ID: "PROCESS-002"}, Desired: Desired{Body: desired}}}}
+
+	result, err := (Engine{Backend: f}).Run(t.Context(), plan, "")
+	if err != nil || !result.OK || result.Updated != 1 || f.writes != 1 {
+		t.Fatalf("result=%+v writes=%d err=%v", result, f.writes, err)
+	}
+	operation := result.Operations[0]
+	if operation.BeforeDigest != model.RepresentationDigest(existing) ||
+		operation.AfterDigest != model.RepresentationDigest(f.comments[3][0].Body) ||
+		operation.BeforeDigest == operation.AfterDigest {
+		t.Fatalf("operation digests=%+v", operation)
+	}
+	links := model.ParseTypedComment(f.comments[3][0].Body).Links
+	for name, value := range map[string]string{
+		"Proposal Issue": "https://example.test/issues/1", "Design Issue": "https://example.test/issues/2",
+		"Implement Issue": "https://example.test/issues/3", "PR": "https://example.test/pulls/5",
+		"Future Relationship": "https://example.test/future/6",
+	} {
+		if !containsLinkValue(links[name], value) {
+			t.Errorf("%s missing %s in %v", name, value, links[name])
+		}
+	}
+	for _, value := range []string{"https://example.test/issues/3#issuecomment-4", "https://example.test/issues/3#issuecomment-7"} {
+		if !containsLinkValue(links["Related Comments"], value) {
+			t.Errorf("Related Comments missing %s in %v", value, links["Related Comments"])
+		}
+	}
+}
+
+func TestReconcileLifecyclePreservesRelationshipsAndUsesExactReobservedDigests(t *testing.T) {
+	f := newFake()
+	before := typedBodyWithLinks(t, "PROCESS", "PROCESS-002", "in-progress", map[string][]string{
+		"Proposal Issue": {"https://example.test/issues/1"},
+		"PR":             {"https://example.test/pulls/5"},
+	})
+	addComment(f, 3, 2, before)
+	f.conditionalResponseBody = "provider response body must not define the result digest"
+	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "transition", Kind: "transition",
+		Target: Target{Issue: 3, Type: "PROCESS", ID: "PROCESS-002"}, Desired: Desired{Status: "done"},
+		Precondition: Precondition{BodyDigest: model.RepresentationDigest(before)}}}}
+
+	result, err := (Engine{Backend: f}).Run(t.Context(), plan, "")
+	if err != nil || !result.OK || result.Updated != 1 || f.writes != 1 {
+		t.Fatalf("result=%+v writes=%d err=%v", result, f.writes, err)
+	}
+	after := f.comments[3][0].Body
+	operation := result.Operations[0]
+	if operation.BeforeDigest != model.RepresentationDigest(before) || operation.AfterDigest != model.RepresentationDigest(after) ||
+		operation.AfterDigest == model.RepresentationDigest(f.conditionalResponseBody) {
+		t.Fatalf("operation=%+v response_digest=%s", operation, model.RepresentationDigest(f.conditionalResponseBody))
+	}
+	links := model.ParseTypedComment(after).Links
+	if !containsLinkValue(links["Proposal Issue"], "https://example.test/issues/1") ||
+		!containsLinkValue(links["PR"], "https://example.test/pulls/5") {
+		t.Fatalf("lifecycle dropped relationships: %v", links)
 	}
 }
 
@@ -377,6 +629,44 @@ func TestReconcileAcceptedReceiptBackfillsOnlyCarrierAuthorizedRelationshipsWith
 	}
 }
 
+func TestReconcileCarrierAuthorizedBacklinkUsesOnlyPeerEndpointContract(t *testing.T) {
+	const receiptID = "receipt-verification-1"
+	receiptDigest := strings.Repeat("d", 64)
+	f := newFake()
+	carrier := acceptedReceiptBody(t, "VERIFY", "VERIFY-001", "done",
+		assignment.RoleVerification, receiptID, receiptDigest, 1)
+	peerBefore := typedBody(t, "SPEC", "SPEC-001", "confirmed")
+	addComment(f, 9, 1, carrier)
+	addComment(f, 9, 2, peerBefore)
+	carrier, _, _ = model.AddRelatedCommentLink(carrier, f.comments[9][1].HTMLURL)
+	f.comments[9][0].Body = carrier
+	immutableCarrier := carrier
+	carrierTarget := Target{Issue: 9, Type: "VERIFY", ID: "VERIFY-001"}
+	peerTarget := Target{Issue: 9, Type: "SPEC", ID: "SPEC-001"}
+	peerAfter, _, _ := model.AddRelatedCommentLink(peerBefore, f.comments[9][0].HTMLURL)
+	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "backlink", Kind: "link",
+		Target: carrierTarget, Desired: Desired{Peer: &peerTarget, CarrierAuthorizedBacklink: true},
+		Precondition: Precondition{
+			AcceptedReceipt: &model.AcceptedReceiptAuthority{Role: assignment.RoleVerification,
+				ReceiptID: receiptID, Digest: receiptDigest, Generation: 1},
+			Endpoints: []EndpointPrecondition{{Target: peerTarget, RepresentationVersion: 1,
+				AfterDigest: model.RepresentationDigest(peerAfter)}},
+		},
+	}}}
+
+	result, err := (Engine{Backend: f}).Run(t.Context(), plan, "")
+	if err != nil || !result.OK || result.Updated != 1 || f.writes != 1 || f.comments[9][0].Body != immutableCarrier ||
+		len(result.Operations[0].Endpoints) != 1 {
+		t.Fatalf("result=%+v writes=%d carrier_changed=%t err=%v", result, f.writes,
+			f.comments[9][0].Body != immutableCarrier, err)
+	}
+	operation := result.Operations[0]
+	if operation.CommentID != f.comments[9][1].ID {
+		t.Fatalf("carrier backlink primary result changed: %+v", operation)
+	}
+	assertEndpointResult(t, operation.Endpoints[0], peerTarget, peerBefore, peerAfter)
+}
+
 func TestReconcileAcceptedReceiptRejectsWrongTypeValidRelationshipBeforeWrite(t *testing.T) {
 	const receiptID = "receipt-verification-1"
 	digest := strings.Repeat("e", 64)
@@ -490,6 +780,34 @@ func TestReconcileNonAtomicDigestGuardRejectsChangedFreshObservation(t *testing.
 		!strings.Contains(result.Operations[0].Message, "representation digest changed") {
 		t.Fatalf("result=%+v writes=%d body=%q", result, f.writes, f.comments[1][0].Body)
 	}
+	operation := result.Operations[0]
+	if operation.BeforeDigest != model.RepresentationDigest(typedBody(t, "TASK", "TASK-001", "confirmed")) ||
+		operation.AfterDigest != model.RepresentationDigest(f.comments[1][0].Body) || operation.BeforeDigest == operation.AfterDigest {
+		t.Fatalf("drift operation digests=%+v", operation)
+	}
+}
+
+func TestReconcileCASDriftFailsClosedWithExactObservedDigests(t *testing.T) {
+	f := newFake()
+	before := typedBody(t, "TASK", "TASK-001", "confirmed")
+	addComment(f, 1, 1, before)
+	f.conditionalHook = func(f *fakeBackend, id int64) {
+		f.conditionalHook = nil
+		f.comments[1][0].Body += "\nConcurrent provider change."
+		f.versions[id]++
+	}
+	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "transition", Kind: "transition",
+		Target: Target{Issue: 1, Type: "TASK", ID: "TASK-001"}, Desired: Desired{Status: "done"}}}}
+
+	result, err := (Engine{Backend: f}).Run(t.Context(), plan, "")
+	if err != nil || result.Conflicted != 1 || f.writes != 0 || model.ParseTypedComment(f.comments[1][0].Body).Status != "confirmed" {
+		t.Fatalf("result=%+v writes=%d err=%v", result, f.writes, err)
+	}
+	operation := result.Operations[0]
+	if operation.BeforeDigest != model.RepresentationDigest(before) ||
+		operation.AfterDigest != model.RepresentationDigest(f.comments[1][0].Body) || operation.BeforeDigest == operation.AfterDigest {
+		t.Fatalf("CAS drift operation digests=%+v", operation)
+	}
 }
 
 func TestReconcileNonAtomicLostUpdateResponseUsesExactRecovery(t *testing.T) {
@@ -540,6 +858,49 @@ func typedBody(t *testing.T, kind, id, status string) string {
 		t.Fatal(err)
 	}
 	return body
+}
+
+func typedBodyWithLinks(t *testing.T, kind, id, status string, links map[string][]string) string {
+	t.Helper()
+	body, err := model.EnsureTypedBody(kind, id, "## Work\n\ncontent", model.BodyOptions{
+		Agent: "Worker", Status: status, Scope: "test", Links: links,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func containsLinkValue(values []string, want string) bool {
+	for _, value := range values {
+		if model.NormalizeURL(value) == model.NormalizeURL(want) {
+			return true
+		}
+	}
+	return false
+}
+
+func linkEndpointPreconditions(left, right Target, leftBefore, rightBefore, leftAfter, rightAfter string,
+	conditional bool) []EndpointPrecondition {
+	result := []EndpointPrecondition{
+		{Target: left, BodyDigest: model.RepresentationDigest(leftBefore), AfterDigest: model.RepresentationDigest(leftAfter)},
+		{Target: right, BodyDigest: model.RepresentationDigest(rightBefore), AfterDigest: model.RepresentationDigest(rightAfter)},
+	}
+	if conditional {
+		for index := range result {
+			result[index].RepresentationVersion = 1
+			result[index].BodyDigest = ""
+		}
+	}
+	return result
+}
+
+func assertEndpointResult(t *testing.T, result EndpointResult, target Target, before, after string) {
+	t.Helper()
+	if !sameProjectionTarget(result.Target, target) || result.BeforeDigest != model.RepresentationDigest(before) ||
+		result.AfterDigest != model.RepresentationDigest(after) || result.CommentID == 0 || result.URL == "" {
+		t.Fatalf("endpoint result=%+v target=%+v", result, target)
+	}
 }
 
 func acceptedReceiptBody(t *testing.T, kind, id, status string, role assignment.Role,

@@ -96,6 +96,7 @@ type finalVerifyReport struct {
 }
 
 type finalVerifyOptions struct {
+	ImplementIssue    int
 	DurableSpecPath   string
 	PR                int
 	PRURL             string
@@ -703,7 +704,7 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 		a.errorf("verify external evidence: %v\n", externalGateErr)
 		return 1
 	}
-	if !selfHosted && *prFlag <= 0 && hasActiveChangeBearingProcess(artifacts) {
+	if !selfHosted && *prFlag <= 0 && hasActiveChangeBearingProcess(artifactsForImplementGate(artifacts, implementIssue)) {
 		a.errorf("--pr is required for GitHub verify when an active change-bearing PROCESS exists\n")
 		return 2
 	}
@@ -743,6 +744,7 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 		verifyRevision, finalVerify = collectVerifyRevisionFact(artifacts, expectedRevision, time.Now().UTC())
 	}
 	report, err := buildReport(artifacts, proposalIssueData.HTMLURL, finalVerifyOptions{
+		ImplementIssue:    implementIssue,
 		DurableSpecPath:   *durableSpec,
 		PR:                *prFlag,
 		PRURL:             prURL,
@@ -812,10 +814,7 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 }
 
 func hasActiveChangeBearingProcess(artifacts []model.Artifact) bool {
-	for _, artifact := range artifacts {
-		if artifact.Comment.Type != "PROCESS" || artifact.Comment.Status == "superseded" {
-			continue
-		}
+	for _, artifact := range activeProcessArtifacts(artifacts) {
 		if model.ParseProcessExecutionClass(artifact.Comment.ID, artifact.URL, artifact.Comment.Body).Class == model.ProcessExecutionChangeBearing {
 			return true
 		}
@@ -902,6 +901,7 @@ func stampConsumedEvidence(body string, consumption externalEvidenceConsumption)
 
 func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts finalVerifyOptions) (finalVerifyReport, error) {
 	traceability := model.VerifyTraceability(artifacts)
+	gateArtifacts := artifactsForImplementGate(artifacts, opts.ImplementIssue)
 	report := finalVerifyReport{
 		Traceability:      traceability,
 		SpecCoverage:      map[string]bool{},
@@ -909,7 +909,8 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		PR:                opts.PR,
 	}
 	var activeSpecs []model.Artifact
-	var activeProcesses []model.Artifact
+	activeProcesses := activeProcessArtifacts(gateArtifacts)
+	activeProcessSet := activeProcessIDs(gateArtifacts)
 	var doneVerifyBodies []string
 	var canonical []model.CanonicalDiagnostic
 	for _, artifact := range artifacts {
@@ -921,15 +922,13 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 				report.SpecCoverage[tc.ID] = false
 			}
 		case "PROCESS":
-			if tc.Status != "superseded" {
-				activeProcesses = append(activeProcesses, artifact)
-			}
 		case "VERIFY":
 			if tc.Status == "done" {
 				doneVerifyBodies = append(doneVerifyBodies, tc.Body)
 			}
 		}
-		if artifact.Comment.Status == "superseded" {
+		if (tc.Type == "PROCESS" && (opts.ImplementIssue <= 0 || artifact.Issue == opts.ImplementIssue) && !activeProcessSet[tc.ID]) ||
+			(tc.Type != "PROCESS" && artifact.Comment.Status == "superseded") {
 			continue
 		}
 		diags := model.ValidateArtifact(artifact)
@@ -977,21 +976,21 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		target = gates.TargetArchive
 	}
 	var processEvidence []gates.ProcessEvidenceInput
-	if opts.RationaleRequired || opts.ExternalEvidence != nil || hasExplicitProcessWorkspace(artifacts) || hasActiveChangeBearingProcess(artifacts) {
+	if opts.RationaleRequired || opts.ExternalEvidence != nil || hasExplicitProcessWorkspace(gateArtifacts) || hasActiveChangeBearingProcess(gateArtifacts) {
 		if opts.ExternalReview != nil {
 			validationNow := opts.ValidationNow
 			if validationNow.IsZero() {
 				validationNow = time.Now().UTC()
 			}
-			processEvidence = buildProcessEvidenceInputsWithExternalReview(artifacts, opts.PRURL, opts.RationaleComments,
+			processEvidence = buildProcessEvidenceInputsWithExternalReview(gateArtifacts, opts.PRURL, opts.RationaleComments,
 				reviewReport, opts.ExternalEvidence, opts.ExternalReview, validationNow)
 		} else {
-			processEvidence = buildProcessEvidenceInputs(artifacts, opts.PRURL, opts.RationaleComments, reviewReport, opts.ExternalEvidence)
+			processEvidence = buildProcessEvidenceInputs(gateArtifacts, opts.PRURL, opts.RationaleComments, reviewReport, opts.ExternalEvidence)
 		}
-		processEvidence = consumeAcceptedVerificationEvidence(processEvidence, artifacts, opts.ExpectedRevision)
+		processEvidence = consumeAcceptedVerificationEvidence(processEvidence, gateArtifacts, opts.ExpectedRevision)
 	}
 	gateReport, err := gates.Evaluate(gates.Snapshot{
-		Target: target, Mode: gates.ModeAuthoritative, Artifacts: artifacts,
+		Target: target, Mode: gates.ModeAuthoritative, Artifacts: gateArtifacts,
 		Canonical:       gates.CanonicalFacts{Observed: true, Diagnostics: canonical},
 		Traceability:    gates.TraceabilityFacts{Observed: true, Report: traceability},
 		Remote:          remote,
@@ -1001,9 +1000,9 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		return report, err
 	}
 	workspaceReport, err := gates.EvaluateWorkspaceEvidence(gates.WorkspaceEvaluationInput{
-		Target: target, Mode: gates.ModeAuthoritative, Artifacts: artifacts,
+		Target: target, Mode: gates.ModeAuthoritative, Artifacts: currentFinalizationArtifacts(gateArtifacts),
 		ExpectedRevision:    gates.Fact{Required: true, Known: strings.TrimSpace(opts.ExpectedRevision) != "", Passed: true, Expected: strings.TrimSpace(opts.ExpectedRevision)},
-		IntegrationAncestry: pullRequestIntegrationAncestry(artifacts, opts.PRCommits, opts.ExpectedRevision),
+		IntegrationAncestry: pullRequestIntegrationAncestry(gateArtifacts, opts.PRCommits, opts.ExpectedRevision),
 		ProcessEvidence:     gateReport.Processes,
 		CarrierRevisions:    mergeCarrierRevisionFacts(gates.ProcessCarrierRevisionFacts(gateReport.Processes), opts.CarrierRevisions),
 	})
@@ -1263,9 +1262,8 @@ func legacyVerifyGateError(diagnostic gates.Diagnostic) (string, bool) {
 }
 
 func hasExplicitProcessWorkspace(artifacts []model.Artifact) bool {
-	for _, artifact := range artifacts {
-		if artifact.Comment.Type == "PROCESS" && artifact.Comment.Status != "superseded" &&
-			model.ParseProcessWorkspace(artifact.Comment.ID, artifact.URL, artifact.Comment.Body).Explicit {
+	for _, artifact := range activeProcessArtifacts(artifacts) {
+		if model.ParseProcessWorkspace(artifact.Comment.ID, artifact.URL, artifact.Comment.Body).Explicit {
 			return true
 		}
 	}

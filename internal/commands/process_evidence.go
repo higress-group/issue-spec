@@ -12,12 +12,42 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
+	"github.com/higress-group/issue-spec/internal/finalization"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
 var processTestEvidencePattern = regexp.MustCompile(`(?i)\btest(s|ing|ed)?\b`)
+
+// activeProcessIDs is the command layer's only PROCESS activity projection.
+// Selection deliberately retains legacy Status: superseded carriers when no
+// explicit superseded-by authority exists, and fails closed by retaining all
+// unique PROCESS carriers when the replacement graph is invalid.
+func activeProcessIDs(artifacts []model.Artifact) map[string]bool {
+	selection := finalization.Select(artifacts)
+	active := make(map[string]bool, len(selection.ActiveProcessIDs))
+	for _, id := range selection.ActiveProcessIDs {
+		active[id] = true
+	}
+	return active
+}
+
+func activeProcessArtifacts(artifacts []model.Artifact) []model.Artifact {
+	selection := finalization.Select(artifacts)
+	return append([]model.Artifact(nil), selection.Active...)
+}
+
+func currentFinalizationArtifacts(artifacts []model.Artifact) []model.Artifact {
+	active := activeProcessIDs(artifacts)
+	current := make([]model.Artifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type != "PROCESS" || active[artifact.Comment.ID] {
+			current = append(current, artifact)
+		}
+	}
+	return current
+}
 
 func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, reviewComments []github.PullRequestReviewComment,
 	review reviewSyncReport, external *externalEvidenceConsumption) []gates.ProcessEvidenceInput {
@@ -37,18 +67,19 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 	activeSpecs := map[string]string{}
 	inactiveSpecURLs := map[string]bool{}
 	taskURLs := map[string]bool{}
-	var processes, reviews, verifications []model.Artifact
+	selection := finalization.Select(artifacts)
+	processes := append([]model.Artifact(nil), selection.Active...)
+	var reviews, verifications []model.Artifact
 	for _, artifact := range artifacts {
-		if artifact.Comment.Status == "superseded" {
-			continue
-		}
 		switch artifact.Comment.Type {
 		case "SPEC":
-			activeSpecs[artifact.Comment.ID] = artifact.URL
+			if artifact.Comment.Status != "superseded" {
+				activeSpecs[artifact.Comment.ID] = artifact.URL
+			}
 		case "TASK":
-			taskURLs[model.NormalizeURL(artifact.URL)] = true
-		case "PROCESS":
-			processes = append(processes, artifact)
+			if artifact.Comment.Status != "superseded" {
+				taskURLs[model.NormalizeURL(artifact.URL)] = true
+			}
 		case "REVIEW":
 			if artifact.Comment.Status == "done" {
 				reviews = append(reviews, artifact)
@@ -77,6 +108,7 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 		processByID[process.Comment.ID] = process
 	}
 	authorAgentsBySpec := map[string]map[string]bool{}
+	authorAgentsByProcessSpec := map[string]map[string]map[string]bool{}
 	for _, comment := range reviewComments {
 		marker, ok, err := model.FindRationaleMarker(comment.Body)
 		if err != nil || !ok {
@@ -117,6 +149,7 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 			authorAgentsBySpec[spec] = map[string]bool{}
 		}
 		authorAgentsBySpec[spec][agent] = true
+		addProcessSpecAgent(authorAgentsByProcessSpec, process.Comment.ID, spec, agent)
 	}
 	inputs := make([]gates.ProcessEvidenceInput, 0, len(processes))
 	for _, process := range processes {
@@ -157,6 +190,7 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 					authorAgentsBySpec[evidence.SpecID] = map[string]bool{}
 				}
 				authorAgentsBySpec[evidence.SpecID][agent] = true
+				addProcessSpecAgent(authorAgentsByProcessSpec, process.Comment.ID, evidence.SpecID, agent)
 			}
 		}
 		for _, artifact := range reviews {
@@ -221,7 +255,129 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 		}
 		inputs = append(inputs, input)
 	}
+	filterSharedVerificationIdentity(inputs, verifications, authorAgentsByProcessSpec, requiredRevision)
 	return inputs
+}
+
+func addProcessSpecAgent(values map[string]map[string]map[string]bool, processID, specID, agent string) {
+	processID, specID, agent = strings.TrimSpace(processID), strings.TrimSpace(specID), strings.ToLower(strings.TrimSpace(agent))
+	if processID == "" || specID == "" || agent == "" {
+		return
+	}
+	if values[processID] == nil {
+		values[processID] = map[string]map[string]bool{}
+	}
+	if values[processID][specID] == nil {
+		values[processID][specID] = map[string]bool{}
+	}
+	values[processID][specID][agent] = true
+}
+
+// filterSharedVerificationIdentity is a collector-side trust boundary, not a
+// second gate evaluator. Shared-carrier policy remains in gates.Evaluate; this
+// projection only retains a PROCESS/SPEC fact when the exact VERIFY carrier has
+// either stronger accepted-receipt authority or the explicitly preserved
+// legacy manual self-reported identity, and that identity is independent from
+// the exact PROCESS/SPEC code author set.
+//
+// Manual self-reported identity is not provider-authenticated. It is accepted
+// only from a canonical, done, exact-current VERIFY whose explicit Agent is a
+// real non-Coordinator role and whose collected pair already has exact PROCESS
+// and SPEC links plus test evidence. Single change-bearing carrier workflows
+// retain their existing legacy/manual compatibility behavior.
+func filterSharedVerificationIdentity(inputs []gates.ProcessEvidenceInput, carriers []model.Artifact,
+	authors map[string]map[string]map[string]bool, requiredRevision string) {
+	changeBearing := 0
+	for _, input := range inputs {
+		if model.ParseProcessExecutionClass(input.Process.Comment.ID, input.Process.URL, input.Process.Comment.Body).Class == model.ProcessExecutionChangeBearing {
+			changeBearing++
+		}
+	}
+	if changeBearing < 2 {
+		return
+	}
+	type carrierIdentity struct {
+		agent              string
+		manualSelfReported bool
+		carrier            model.Artifact
+	}
+	verifierByURL := make(map[string]carrierIdentity, len(carriers))
+	for _, carrier := range carriers {
+		if verifier, manual := validatedVerificationCarrierAgent(carrier, requiredRevision); verifier != "" {
+			verifierByURL[model.NormalizeURL(carrier.URL)] = carrierIdentity{
+				agent: verifier, manualSelfReported: manual, carrier: carrier,
+			}
+		}
+	}
+	for inputIndex := range inputs {
+		input := &inputs[inputIndex]
+		if model.ParseProcessExecutionClass(input.Process.Comment.ID, input.Process.URL, input.Process.Comment.Body).Class != model.ProcessExecutionChangeBearing {
+			continue
+		}
+		kept := input.Verifications[:0]
+		for _, evidence := range input.Verifications {
+			identity, found := verifierByURL[model.NormalizeURL(evidence.URL)]
+			pairAuthors := authors[input.Process.Comment.ID][evidence.SpecID]
+			if !found || len(pairAuthors) == 0 || pairAuthors[identity.agent] {
+				continue
+			}
+			if identity.manualSelfReported {
+				specURL := input.ActiveSpecs[evidence.SpecID]
+				if evidence.ProcessID != input.Process.Comment.ID || specURL == "" || !evidence.Done || !evidence.TestEvidence ||
+					!linksContainURL(identity.carrier.Comment.Links["Related Comments"], input.Process.URL) ||
+					!linksContainURL(identity.carrier.Comment.Links["Related Comments"], specURL) {
+					continue
+				}
+				evidence.SubjectRevision = strings.TrimSpace(requiredRevision)
+				evidence.Trusted = true
+				evidence.Source = "manual-self-reported-verify:exact-current"
+			}
+			kept = append(kept, evidence)
+		}
+		input.Verifications = kept
+	}
+}
+
+// validatedVerificationCarrierAgent returns the normalized verifier and
+// whether its authority is the legacy manual self-reported compatibility path.
+// A malformed or invalid accepted-receipt marker never falls back to manual.
+func validatedVerificationCarrierAgent(carrier model.Artifact, requiredRevision string) (string, bool) {
+	if carrier.Comment.Type != "VERIFY" || carrier.Comment.Status != "done" || len(carrier.Comment.Errors) != 0 {
+		return "", false
+	}
+	authority, found, err := parseAcceptedVerificationReceipt(carrier.Comment.Body)
+	if err != nil {
+		return "", false
+	}
+	expectedRevision := strings.TrimSpace(requiredRevision)
+	if found {
+		if expectedRevision == "" {
+			expectedRevision = strings.TrimSpace(carrier.Comment.SubjectRevision)
+		}
+		if expectedRevision == "" {
+			return "", false
+		}
+		if _, _, _, valid := exactAcceptedVerificationCarrier(carrier, expectedRevision); !valid {
+			return "", false
+		}
+		verifier := strings.ToLower(strings.TrimSpace(authority.Provenance.Writer))
+		if verifier == "" || !strings.EqualFold(verifier, strings.TrimSpace(carrier.Comment.Agent)) {
+			return "", false
+		}
+		return verifier, false
+	}
+
+	// The manual path deliberately carries only legacy self-reported assurance.
+	// Exact-current binding and a non-Coordinator visible Agent are therefore
+	// mandatory, and callers must still validate pair links and test evidence.
+	if expectedRevision == "" || !strings.EqualFold(strings.TrimSpace(carrier.Comment.SubjectRevision), expectedRevision) {
+		return "", false
+	}
+	verifier := strings.ToLower(strings.TrimSpace(carrier.Comment.Agent))
+	if verifier == "" || strings.EqualFold(verifier, "Coordinator") {
+		return "", false
+	}
+	return verifier, true
 }
 
 type explicitReviewCoverage struct {

@@ -202,16 +202,21 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		}
 	}
 	counts := artifactStatusCounts(artifacts)
+	gateArtifacts := artifactsForImplementGate(artifacts, implement)
 	verify := map[string]string{}
 	blockingQuestions := 0
 	openReviews := 0
+	activeProcesses := activeProcessIDs(gateArtifacts)
 	var malformed []model.CanonicalDiagnostic
 	for _, artifact := range artifacts {
 		tc := artifact.Comment
 		if tc.Type == "" {
 			continue
 		}
-		if tc.Status != "superseded" {
+		// Cross-issue PROCESS comments are not gate carriers, but their
+		// canonical diagnostics remain part of the complete read model.
+		if (tc.Type == "PROCESS" && ((implement > 0 && artifact.Issue != implement) || activeProcesses[tc.ID])) ||
+			(tc.Type != "PROCESS" && tc.Status != "superseded") {
 			malformed = append(malformed, model.ValidateArtifact(artifact)...)
 		}
 		if tc.Type == "QUESTION" && tc.Status == "blocked" {
@@ -241,13 +246,13 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 	}
 	processEvidence := collection.ProcessEvidence
 	if (target == gates.TargetFinal || target == gates.TargetArchive) && len(processEvidence) == 0 &&
-		(hasActiveChangeBearingProcess(artifacts) || hasExplicitProcessWorkspace(artifacts)) {
-		processEvidence = buildProcessEvidenceInputs(artifacts, "", nil, reviewSyncReport{}, nil)
+		(hasActiveChangeBearingProcess(gateArtifacts) || hasExplicitProcessWorkspace(gateArtifacts)) {
+		processEvidence = buildProcessEvidenceInputs(gateArtifacts, "", nil, reviewSyncReport{}, nil)
 	}
 	snapshot := gates.Snapshot{
 		Target:          target,
 		Mode:            mode,
-		Artifacts:       artifacts,
+		Artifacts:       gateArtifacts,
 		Canonical:       gates.CanonicalFacts{Observed: true, Diagnostics: malformed},
 		Traceability:    gates.TraceabilityFacts{Observed: true, Report: report},
 		Workflow:        workflowFacts,
@@ -281,6 +286,26 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		NextGates:         nextGates,
 		Gate:              gateReport,
 	}
+}
+
+// artifactsForImplementGate binds PROCESS selection and evidence authority to
+// the exact Implement issue supplied by the caller. Proposal and Design
+// artifacts remain visible so SPEC/TASK gates and full traceability keep their
+// existing semantics. A zero issue is reserved for already-scoped internal
+// callers and compatibility tests; it never attempts to infer authority from
+// PROCESS count or identity.
+func artifactsForImplementGate(artifacts []model.Artifact, implementIssue int) []model.Artifact {
+	if implementIssue <= 0 {
+		return append([]model.Artifact(nil), artifacts...)
+	}
+	projected := make([]model.Artifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type == "PROCESS" && artifact.Issue != implementIssue {
+			continue
+		}
+		projected = append(projected, artifact)
+	}
+	return projected
 }
 
 func resolveStatusGate(raw string, design, implement int) (gates.Target, error) {
@@ -339,6 +364,7 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 	if target != gates.TargetFinal && target != gates.TargetArchive {
 		return collection
 	}
+	artifacts = artifactsForImplementGate(artifacts, implementIssue)
 	if profile.Kind == auth.ProfileKindHosted {
 		collection.Remote.PRChecks = gates.Fact{}
 		collection.Remote.ReviewFindings = gates.Fact{}
@@ -369,6 +395,8 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 		collection.Remote.VerifyRevision, _ = collectVerifyRevisionFact(artifacts, gate.Target.SubjectRevision, time.Now().UTC())
 		collection.ProcessEvidence = buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
 			reviewSyncReport{}, nil, &gate, time.Now().UTC())
+		collection.ProcessEvidence = consumeAcceptedVerificationEvidence(collection.ProcessEvidence, artifacts,
+			gate.Target.SubjectRevision)
 		return collection
 	}
 
@@ -395,6 +423,7 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 	collection.Remote.ReviewFindings = gates.Fact{Required: true, Known: true, Passed: len(review.BlockingFindings) == 0,
 		Current: fmt.Sprintf("blocking=%d", len(review.BlockingFindings)), Expected: "blocking=0"}
 	collection.ProcessEvidence = buildProcessEvidenceInputs(artifacts, prURL, facts.ReviewComments, review, nil)
+	collection.ProcessEvidence = consumeAcceptedVerificationEvidence(collection.ProcessEvidence, artifacts, pr.Head.SHA)
 	return collection
 }
 
@@ -548,10 +577,7 @@ func pullRequestIntegrationAncestry(artifacts []model.Artifact, commits []github
 		return nil
 	}
 	ancestry := map[string]gates.Fact{}
-	for _, artifact := range artifacts {
-		if artifact.Comment.Type != "PROCESS" || artifact.Comment.Status == "superseded" {
-			continue
-		}
+	for _, artifact := range activeProcessArtifacts(artifacts) {
 		class := model.ParseProcessExecutionClass(artifact.Comment.ID, artifact.URL, artifact.Comment.Body)
 		if class.Blocking() || class.Class != model.ProcessExecutionChangeBearing {
 			continue
@@ -576,10 +602,7 @@ func pullRequestIntegrationAncestry(artifacts []model.Artifact, commits []github
 func exactStatusPullRequest(artifacts []model.Artifact, repo string) (int, string, bool) {
 	seen := map[string]bool{}
 	var selected string
-	for _, artifact := range artifacts {
-		if artifact.Comment.Type != "PROCESS" || artifact.Comment.Status == "superseded" {
-			continue
-		}
+	for _, artifact := range activeProcessArtifacts(artifacts) {
 		for _, raw := range artifact.Comment.Links["PR"] {
 			normalized := model.NormalizeURL(raw)
 			if normalized != "" {

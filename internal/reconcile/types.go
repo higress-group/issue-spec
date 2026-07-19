@@ -74,18 +74,43 @@ type RelationshipAuthority struct {
 type Precondition struct {
 	RepresentationVersion int64                           `json:"representation_version,omitempty"`
 	BodyDigest            string                          `json:"body_digest,omitempty"`
+	Endpoints             []EndpointPrecondition          `json:"endpoints,omitempty"`
 	AcceptedReceipt       *model.AcceptedReceiptAuthority `json:"accepted_receipt,omitempty"`
 	RelationshipAuthority *RelationshipAuthority          `json:"relationship_authority,omitempty"`
 }
 
+// EndpointPrecondition binds one link endpoint to both its exact planned
+// representation and its exact satisfied representation. AfterDigest lets a
+// retry distinguish its own completed half-link from unrelated drift.
+type EndpointPrecondition struct {
+	Target                Target `json:"target"`
+	RepresentationVersion int64  `json:"representation_version,omitempty"`
+	BodyDigest            string `json:"body_digest,omitempty"`
+	AfterDigest           string `json:"after_digest"`
+}
+
+// EndpointResult identifies one provider representation actually mutated by
+// a link operation. OperationResult's existing fields remain the compatible
+// primary result; Endpoints carries every successful endpoint write.
+type EndpointResult struct {
+	Target       Target `json:"target"`
+	CommentID    int64  `json:"comment_id"`
+	URL          string `json:"url,omitempty"`
+	BeforeDigest string `json:"before_digest"`
+	AfterDigest  string `json:"after_digest"`
+}
+
 type OperationResult struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Status    string `json:"status"`
-	Atomic    bool   `json:"atomic"`
-	CommentID int64  `json:"comment_id,omitempty"`
-	URL       string `json:"url,omitempty"`
-	Message   string `json:"message,omitempty"`
+	ID           string           `json:"id"`
+	Kind         string           `json:"kind"`
+	Status       string           `json:"status"`
+	Atomic       bool             `json:"atomic"`
+	CommentID    int64            `json:"comment_id,omitempty"`
+	URL          string           `json:"url,omitempty"`
+	BeforeDigest string           `json:"before_digest"`
+	AfterDigest  string           `json:"after_digest"`
+	Endpoints    []EndpointResult `json:"endpoints,omitempty"`
+	Message      string           `json:"message,omitempty"`
 }
 
 type Result struct {
@@ -173,6 +198,9 @@ func Validate(plan Plan) ([]Operation, string, error) {
 		}
 		if op.Precondition.RepresentationVersion < 0 || (op.Precondition.RepresentationVersion > 0 && op.Precondition.BodyDigest != "") {
 			return nil, "", fmt.Errorf("operation %s: representation version and body digest preconditions are mutually exclusive", op.ID)
+		}
+		if err := validateEndpointPreconditions(op); err != nil {
+			return nil, "", fmt.Errorf("operation %s: %w", op.ID, err)
 		}
 		if expected := op.Precondition.AcceptedReceipt; expected != nil {
 			if !validReceiptRole(expected.Role) || !projectionReceiptID.MatchString(expected.ReceiptID) ||
@@ -269,6 +297,54 @@ func Validate(plan Plan) ([]Operation, string, error) {
 
 func validReceiptRole(role assignment.Role) bool {
 	return role == assignment.RoleImplementation || role == assignment.RoleReview || role == assignment.RoleVerification
+}
+
+func validateEndpointPreconditions(op Operation) error {
+	if len(op.Precondition.Endpoints) == 0 {
+		return nil
+	}
+	if op.Kind != "link" || op.Desired.Peer == nil {
+		return fmt.Errorf("endpoint preconditions require a link operation")
+	}
+	if op.Precondition.RepresentationVersion > 0 || op.Precondition.BodyDigest != "" {
+		return fmt.Errorf("endpoint and legacy primary representation preconditions are mutually exclusive")
+	}
+	if sameProjectionTarget(op.Target, *op.Desired.Peer) {
+		return fmt.Errorf("endpoint preconditions require distinct link endpoints")
+	}
+	want := map[string]bool{projectionTargetKey(op.Target): !op.Desired.CarrierAuthorizedBacklink,
+		projectionTargetKey(*op.Desired.Peer): true}
+	seen := map[string]bool{}
+	for index, endpoint := range op.Precondition.Endpoints {
+		if err := validateTarget(endpoint.Target); err != nil {
+			return fmt.Errorf("endpoint preconditions[%d]: %w", index, err)
+		}
+		key := projectionTargetKey(endpoint.Target)
+		if !want[key] {
+			return fmt.Errorf("endpoint preconditions[%d] does not identify a mutable link endpoint", index)
+		}
+		if seen[key] {
+			return fmt.Errorf("duplicate endpoint precondition for %s", key)
+		}
+		seen[key] = true
+		if endpoint.RepresentationVersion < 0 ||
+			(endpoint.RepresentationVersion > 0 && endpoint.BodyDigest != "") ||
+			(endpoint.RepresentationVersion == 0 && endpoint.BodyDigest == "") {
+			return fmt.Errorf("endpoint preconditions[%d] requires exactly one representation version or body digest", index)
+		}
+		if endpoint.BodyDigest != "" && !projectionDigest.MatchString(normalizeDigest(endpoint.BodyDigest)) {
+			return fmt.Errorf("endpoint preconditions[%d] body digest is invalid", index)
+		}
+		if !projectionDigest.MatchString(normalizeDigest(endpoint.AfterDigest)) {
+			return fmt.Errorf("endpoint preconditions[%d] after digest is invalid", index)
+		}
+	}
+	for key, required := range want {
+		if required && !seen[key] {
+			return fmt.Errorf("endpoint precondition for %s is required", key)
+		}
+	}
+	return nil
 }
 
 func validateTarget(target Target) error {

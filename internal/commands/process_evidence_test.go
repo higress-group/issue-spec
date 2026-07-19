@@ -6,12 +6,168 @@ import (
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
+
+func TestFilterSharedVerificationIdentitySupportsAcceptedAndManualSelfReportedPerPair(t *testing.T) {
+	const specID = "SPEC-001"
+	revision := strings.Repeat("b", 40)
+	specURL := "https://example/spec-001"
+	one := processClassArtifact(t, "PROCESS-001", "change-bearing", specID, "done")
+	two := processClassArtifact(t, "PROCESS-002", "change-bearing", specID, "done")
+	manualCarrier := func(agent, subject string, links []string) model.Artifact {
+		t.Helper()
+		body, err := model.EnsureTypedBody("VERIFY", "VERIFY-002", "Verified both processes with tests.",
+			model.BodyOptions{Agent: agent, Status: "done", SubjectRevision: subject,
+				Links: map[string][]string{"Related Comments": links}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return model.Artifact{URL: "https://example/verify-manual", Comment: model.ParseTypedComment(body)}
+	}
+	manualLinks := []string{one.URL, two.URL, specURL}
+	manual := manualCarrier("Verifier", revision, manualLinks)
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	acceptedBody, err := renderSubmittedVerification("VERIFY-001", one.URL, []string{specID}, receipt, nil,
+		testVerificationSubmission("Verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := model.Artifact{URL: "https://example/verify-accepted", Comment: model.ParseTypedComment(acceptedBody)}
+
+	newInputs := func(url string) []gates.ProcessEvidenceInput {
+		return []gates.ProcessEvidenceInput{
+			{Process: one, RequiredRevision: revision, ActiveSpecs: map[string]string{specID: specURL},
+				Verifications: []gates.VerificationEvidence{{ProcessID: one.Comment.ID, SpecID: specID, URL: url, Done: true, TestEvidence: true}}},
+			{Process: two, RequiredRevision: revision, ActiveSpecs: map[string]string{specID: specURL},
+				Verifications: []gates.VerificationEvidence{{ProcessID: two.Comment.ID, SpecID: specID, URL: url, Done: true, TestEvidence: true}}},
+		}
+	}
+	independentAuthors := map[string]map[string]map[string]bool{
+		one.Comment.ID: {specID: {"worker one": true}},
+		two.Comment.ID: {specID: {"worker two": true}},
+	}
+
+	t.Run("independent accepted verifier is projected for each pair", func(t *testing.T) {
+		inputs := newInputs(accepted.URL)
+		filterSharedVerificationIdentity(inputs, []model.Artifact{accepted}, independentAuthors, revision)
+		if len(inputs[0].Verifications) != 1 || len(inputs[1].Verifications) != 1 {
+			t.Fatalf("independent verifier was not projected: %+v", inputs)
+		}
+	})
+
+	t.Run("exact-current manual self-reported verifier is projected for each explicit pair", func(t *testing.T) {
+		inputs := newInputs(manual.URL)
+		filterSharedVerificationIdentity(inputs, []model.Artifact{manual}, independentAuthors, revision)
+		for _, input := range inputs {
+			if len(input.Verifications) != 1 || !input.Verifications[0].Trusted ||
+				input.Verifications[0].SubjectRevision != revision ||
+				input.Verifications[0].Source != "manual-self-reported-verify:exact-current" {
+				t.Fatalf("manual self-reported verifier was not exactly projected: %+v", inputs)
+			}
+		}
+	})
+
+	t.Run("manual Coordinator is rejected", func(t *testing.T) {
+		coordinator := manualCarrier("Coordinator", revision, manualLinks)
+		inputs := newInputs(coordinator.URL)
+		filterSharedVerificationIdentity(inputs, []model.Artifact{coordinator}, independentAuthors, revision)
+		if len(inputs[0].Verifications) != 0 || len(inputs[1].Verifications) != 0 {
+			t.Fatalf("Coordinator established manual verifier identity: %+v", inputs)
+		}
+	})
+
+	t.Run("manual empty Agent is rejected as noncanonical", func(t *testing.T) {
+		empty := manual
+		empty.Comment = model.ParseTypedComment(strings.Replace(manual.Comment.Body, "Agent: Verifier", "Agent: ", 1))
+		inputs := newInputs(empty.URL)
+		filterSharedVerificationIdentity(inputs, []model.Artifact{empty}, independentAuthors, revision)
+		if len(inputs[0].Verifications) != 0 || len(inputs[1].Verifications) != 0 {
+			t.Fatalf("empty Agent established manual verifier identity: %+v", inputs)
+		}
+	})
+
+	t.Run("manual stale revision is rejected", func(t *testing.T) {
+		stale := manualCarrier("Verifier", strings.Repeat("c", 40), manualLinks)
+		inputs := newInputs(stale.URL)
+		filterSharedVerificationIdentity(inputs, []model.Artifact{stale}, independentAuthors, revision)
+		if len(inputs[0].Verifications) != 0 || len(inputs[1].Verifications) != 0 {
+			t.Fatalf("stale manual verifier identity was projected: %+v", inputs)
+		}
+	})
+
+	t.Run("manual missing test evidence rejects only that pair", func(t *testing.T) {
+		inputs := newInputs(manual.URL)
+		inputs[1].Verifications[0].TestEvidence = false
+		filterSharedVerificationIdentity(inputs, []model.Artifact{manual}, independentAuthors, revision)
+		if len(inputs[0].Verifications) != 1 || len(inputs[1].Verifications) != 0 {
+			t.Fatalf("missing manual test evidence did not fail closed per pair: %+v", inputs)
+		}
+	})
+
+	for _, test := range []struct {
+		name  string
+		links []string
+	}{
+		{name: "PROCESS link", links: []string{one.URL, specURL}},
+		{name: "SPEC link", links: []string{one.URL, two.URL}},
+	} {
+		t.Run("manual missing explicit "+test.name+" is rejected", func(t *testing.T) {
+			carrier := manualCarrier("Verifier", revision, test.links)
+			inputs := newInputs(carrier.URL)
+			filterSharedVerificationIdentity(inputs, []model.Artifact{carrier}, independentAuthors, revision)
+			if len(inputs[1].Verifications) != 0 {
+				t.Fatalf("missing manual %s did not fail closed: %+v", test.name, inputs)
+			}
+		})
+	}
+
+	t.Run("accepted writer and typed agent must agree", func(t *testing.T) {
+		tampered := accepted
+		tampered.Comment = model.ParseTypedComment(strings.Replace(accepted.Comment.Body, "Agent: Verifier", "Agent: Another Verifier", 1))
+		inputs := newInputs(tampered.URL)
+		filterSharedVerificationIdentity(inputs, []model.Artifact{tampered}, independentAuthors, revision)
+		if len(inputs[0].Verifications) != 0 || len(inputs[1].Verifications) != 0 {
+			t.Fatalf("mismatched typed agent established verifier identity: %+v", inputs)
+		}
+	})
+
+	t.Run("manual missing code author identity fails closed", func(t *testing.T) {
+		inputs := newInputs(manual.URL)
+		authors := map[string]map[string]map[string]bool{one.Comment.ID: {specID: {"worker one": true}}}
+		filterSharedVerificationIdentity(inputs, []model.Artifact{manual}, authors, revision)
+		if len(inputs[0].Verifications) != 1 || len(inputs[1].Verifications) != 0 {
+			t.Fatalf("missing pair author identity did not fail closed: %+v", inputs)
+		}
+	})
+
+	t.Run("manual verifier author conflict rejects only conflicting pair", func(t *testing.T) {
+		inputs := newInputs(manual.URL)
+		authors := map[string]map[string]map[string]bool{
+			one.Comment.ID: {specID: {"worker one": true, "verifier": true}},
+			two.Comment.ID: {specID: {"worker two": true}},
+		}
+		filterSharedVerificationIdentity(inputs, []model.Artifact{manual}, authors, revision)
+		if len(inputs[0].Verifications) != 0 || len(inputs[1].Verifications) != 1 {
+			t.Fatalf("verifier conflict was not scoped to its PROCESS/SPEC pair: %+v", inputs)
+		}
+	})
+
+	t.Run("single carrier preserves manual compatibility", func(t *testing.T) {
+		inputs := newInputs(manual.URL)[:1]
+		filterSharedVerificationIdentity(inputs, []model.Artifact{manual},
+			map[string]map[string]map[string]bool{one.Comment.ID: {specID: {"worker one": true}}}, revision)
+		if len(inputs[0].Verifications) != 1 {
+			t.Fatalf("single-carrier manual verification regressed: %+v", inputs)
+		}
+	})
+}
 
 func TestArtifactReferencesRejectIDPrefixCollisions(t *testing.T) {
 	process := model.Artifact{URL: "https://example/process-1", Comment: model.TypedComment{ID: "PROCESS-001"}}
@@ -88,12 +244,20 @@ func TestBuildProcessEvidenceRejectsMixedReplayAndUnknownBindings(t *testing.T) 
 
 func TestBuildProcessEvidenceValidatesAuthorRationaleBeforeCrediting(t *testing.T) {
 	const specURL = "https://example/proposal#issuecomment-spec"
+	current := processClassArtifact(t, "PROCESS-001", "change-bearing", "SPEC-001", "done")
+	historical := processClassArtifact(t, "PROCESS-004", "change-bearing", "SPEC-001", "superseded")
+	historicalBody, _, err := model.StampSupersededBy(historical.Comment.Body, historical.Comment.ID,
+		model.SupersededBy{ProcessID: current.Comment.ID, URL: current.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical.Comment = model.ParseTypedComment(historicalBody)
 	artifacts := []model.Artifact{
 		{URL: specURL, Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
-		processClassArtifact(t, "PROCESS-001", "change-bearing", "SPEC-001", "done"),       // genuine carrier
-		processClassArtifact(t, "PROCESS-002", "review", "SPEC-001", "done"),               // wrong class
-		processClassArtifact(t, "PROCESS-003", "change-bearing", "SPEC-999", "done"),       // does not cover SPEC-001
-		processClassArtifact(t, "PROCESS-004", "change-bearing", "SPEC-001", "superseded"), // inactive
+		current, // genuine carrier
+		processClassArtifact(t, "PROCESS-002", "review", "SPEC-001", "done"),         // wrong class
+		processClassArtifact(t, "PROCESS-003", "change-bearing", "SPEC-999", "done"), // does not cover SPEC-001
+		historical, // explicitly historical
 	}
 	mustRationale := func(agent, process, path string, line int) string {
 		body, err := model.RenderRationaleBody(agent, process, "SPEC-001", specURL, "rationale", path, line)
@@ -121,6 +285,14 @@ func TestBuildProcessEvidenceValidatesAuthorRationaleBeforeCrediting(t *testing.
 		if authors[bad] {
 			t.Fatalf("%q rationale must not credit an author: %+v", bad, authors)
 		}
+	}
+}
+
+func TestBuildProcessEvidenceKeepsLegacySupersededProcessActive(t *testing.T) {
+	legacy := processClassArtifact(t, "PROCESS-001", "change-bearing", "SPEC-001", "superseded")
+	inputs := buildProcessEvidenceInputs([]model.Artifact{legacy}, "", nil, reviewSyncReport{}, nil)
+	if len(inputs) != 1 || inputs[0].Process.Comment.ID != "PROCESS-001" {
+		t.Fatalf("legacy status-only supersession must remain active and blocking: %+v", inputs)
 	}
 }
 
