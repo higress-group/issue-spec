@@ -14,30 +14,25 @@ Proposal Issues:
 
 ### Requirement: workflow configuration discovery is deterministic
 
-The CLI MUST discover project workflow configuration from repository-local configuration before falling back to built-in defaults.
-
-`issue-spec/config.yaml` is the preferred project workflow config. When it exists, issue-spec SHALL parse it as the active project workflow config and SHALL use its selected schema, context, rules, and per-artifact guidance for workflow-aware commands.
-
-When `issue-spec/config.yaml` is absent and a compatible legacy OpenSpec workflow config exists at `openspec/config.yaml`, issue-spec SHALL be able to reuse that OpenSpec workflow definition as a legacy workflow source while keeping active workflow artifacts issue-native.
-
-When neither preferred nor compatible legacy config exists, issue-spec SHALL use a built-in workflow equivalent to the default issue-spec proposal, SPEC, QUESTION, design, TASK, PROCESS, review, verify, and archive behavior.
+The CLI MUST resolve repository-local issue-spec workflow configuration before compatible legacy OpenSpec configuration and built-in defaults. The selected workflow MAY explicitly set durable_specs.mode to repository; absence MUST remain mode none. The built-in fallback MUST include proposal, SPEC, QUESTION, design, TASK, PROCESS, REVIEW, and VERIFY behavior without an Archive artifact or readiness target.
 
 #### Scenario: preferred issue-spec config wins
 
-- **WHEN** both `issue-spec/config.yaml` and `openspec/config.yaml` exist
-- **THEN** issue-spec SHALL use `issue-spec/config.yaml`
-- **THEN** it SHALL emit diagnostics explaining that the legacy config was ignored.
+- **WHEN** both issue-spec/config.yaml and a compatible legacy OpenSpec config exist
+- **THEN** the CLI SHALL select issue-spec/config.yaml and report that the legacy source was shadowed
 
-#### Scenario: built-in workflow fallback
+#### Scenario: built-in workflow has no archive stage
 
-- **WHEN** neither `issue-spec/config.yaml` nor a compatible legacy workflow config exists
-- **THEN** issue-spec SHALL use the built-in issue-spec workflow
-- **THEN** workflow commands SHALL continue to work without repository setup.
+- **WHEN** no project or compatible legacy workflow config exists
+- **THEN** the CLI SHALL use the built-in issue-spec workflow without an Archive artifact or readiness target
+
+#### Scenario: durable repository policy is explicit
+
+- **WHEN** a repository requires same-PR durable contracts
+- **THEN** its selected workflow MUST opt in with durable_specs.mode repository; absence remains lightweight mode none
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861703801
-- https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861704151
-- https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861728628
+- https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452933
 
 ### Requirement: schema and template resolution is safe and explainable
 
@@ -74,27 +69,25 @@ Source SPEC comments:
 
 ### Requirement: active workflow artifacts remain issue-native
 
-Custom project workflows and reused OpenSpec workflows MUST NOT reintroduce repository-local active change artifact directories.
+Active proposal, design, implement, SPEC, QUESTION, TASK, PROCESS, REVIEW, VERIFY, rationale, finding, and link state MUST remain issue-native. A repository-mode durable materializer MAY update declared durable spec files on the implementation branch before review, but MUST NOT create repository-local active change directories or a post-merge Archive change. Merge publishes implementation and durable contract atomically.
 
-Active proposal, design, implement, SPEC, QUESTION, TASK, PROCESS, REVIEW, VERIFY, PR rationale, PR review finding, and issue-spec link state SHALL remain in GitHub issue bodies, typed comments, PR review comments, and issue-spec links. Schema outputs such as `proposal.md`, `specs/**/*.md`, `tasks.md`, `review.md`, or `verify.md` are storage hints that issue-spec maps to supported issue-native storage.
+#### Scenario: file-oriented active outputs remain issue-native
 
-Only durable archive output SHALL write repository spec files.
+- **WHEN** a project or compatible legacy schema declares proposal, task, review, verify, or change-oriented file outputs
+- **THEN** the CLI SHALL map active state to issue-native storage and MUST NOT create issue-spec/changes or openspec/changes directories
 
-#### Scenario: file-oriented active outputs become issue-native storage
+#### Scenario: durable files change only in implementation
 
-- **WHEN** a project or legacy schema artifact declares a file-oriented output such as `specs/**/*.md`, `proposal.md`, `tasks.md`, `review.md`, or `verify.md`
-- **THEN** issue-spec SHALL map that artifact to supported issue-native storage such as issue bodies, typed comments, PR rationale, PR review comments, or issue-spec links
-- **THEN** it SHALL NOT create or update `openspec/changes/<change>/...` or `issue-spec/changes/<change>/...` for active workflow state.
+- **WHEN** confirmed SPEC operations authorize repository durable changes
+- **THEN** the dedicated materializer SHALL update only declared durable spec paths on the implementation branch before final review
 
-#### Scenario: apply tracking maps to typed task and process state
+#### Scenario: merge needs no archive change
 
-- **WHEN** a legacy OpenSpec schema declares `apply.tracks: tasks.md`
-- **THEN** issue-spec SHALL interpret that tracking requirement as TASK, PROCESS, and issue-spec link state
-- **THEN** it SHALL NOT require or update a local `tasks.md` active artifact.
+- **WHEN** the implementation and exact durable projection pass final review and verification
+- **THEN** one merge SHALL publish both and no second Archive pull request is required
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861704293
-- https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861728628
+- https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452933
 
 ### Requirement: project templates cannot weaken issue-spec validation
 
@@ -178,51 +171,66 @@ Source issue:
 
 ### Requirement: workflow diagnostics expose resolution and compatibility decisions
 
-The CLI SHOULD provide diagnostics that explain workflow config, schema, template, artifact mapping, legacy compatibility, and archive path resolution decisions.
+Workflow validation and selection diagnostics MUST explain active config/schema/template resolution, issue-native storage mappings, durable_specs mode, canonical or legacy-existing durable path choices, and bounded compatibility decisions. Legacy Archive input MUST emit stable machine-readable deprecation and replacement guidance without adding an Archive readiness target or generated route.
 
-Human-readable and JSON output for workflow validation and selection commands SHALL identify the active workflow source, selected schema, resolved artifact storage mappings, validation errors, warnings, and compatibility-mode decisions.
+#### Scenario: workflow validation reports durable policy
 
-#### Scenario: user validates active workflow
+- **WHEN** a user validates a selected workflow
+- **THEN** JSON diagnostics SHALL identify the workflow source, schema, storage mappings, durable_specs mode, validation errors, and compatibility decisions
 
-- **WHEN** a user runs `issue-spec workflow validate --repo <repo> --json`
-- **THEN** issue-spec SHALL validate project config syntax, schema structure, artifact dependencies, template existence, supported artifact mappings, canonical safety, and archive path defaults
-- **THEN** JSON output SHALL include diagnostics with stable severity, code, message, and relevant path or artifact context.
+#### Scenario: legacy archive schema is deprecated only
 
-#### Scenario: user asks which workflow is active
+- **WHEN** a legacy custom schema still declares an archive artifact during the compatibility window
+- **THEN** the CLI SHALL report a stable deprecation and replacement command without restoring Archive readiness
 
-- **WHEN** a user runs `issue-spec workflow which --repo <repo>`
-- **THEN** issue-spec SHALL show whether the active schema came from project, legacy OpenSpec, user/global, or built-in sources
-- **THEN** it SHALL report shadowed schemas and legacy compatibility choices when applicable.
+#### Scenario: legacy durable path choice is visible
+
+- **WHEN** an already-existing openspec/specs target is selected
+- **THEN** the CLI SHALL report the exact compatibility path decision
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861703801
-- https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861703981
-- https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861704151
-- https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861704607
-- https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861705034
-- https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861728628
+- https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452933
 
 ### Requirement: durable archive paths prefer issue-spec/specs while preserving legacy compatibility
 
-The CLI SHALL default new durable archive output to `issue-spec/specs/<capability>/spec.md`.
+Repository durable-spec operations MUST target issue-spec/specs/<capability>/spec.md by default. An already-existing openspec/specs/<capability>/spec.md target MAY remain updateable as explicit compatibility, but new legacy paths MUST NOT be created. The durable-spec preview/apply/check protocol MUST use exact declared paths and MUST NOT rely on post-merge Archive path inference.
 
-Repositories that already store durable specs under `openspec/specs/<capability>/spec.md` remain compatible. When a matching legacy durable spec exists, issue-spec MAY select that legacy path for update and SHALL report that compatibility choice. Explicit user-supplied legacy durable paths under `openspec/specs/<capability>/spec.md` SHALL remain valid when they pass normal repository path validation.
+#### Scenario: new durable target uses issue-spec specs
 
-New durable specs in repositories without matching legacy durable specs SHALL be created under `issue-spec/specs`.
+- **WHEN** an authorized ADDED operation targets a capability without an existing legacy durable file
+- **THEN** the operation MUST use issue-spec/specs/<capability>/spec.md
 
-#### Scenario: new durable spec uses issue-spec/specs
+#### Scenario: existing legacy durable target remains explicit
 
-- **WHEN** `issue-spec archive durable-spec --repo <repo> --proposal <n> --capability <capability>` creates a durable spec and no matching legacy durable spec exists
-- **THEN** the default output path SHALL be `issue-spec/specs/<capability>/spec.md`
-- **THEN** generated PR descriptions, command output, and verification examples SHALL reference that path.
+- **WHEN** openspec/specs/<capability>/spec.md already exists and the confirmed operation names that exact path
+- **THEN** preview MAY accept it and SHALL report the compatibility choice
 
-#### Scenario: existing legacy durable spec remains updateable
+#### Scenario: archive path inference is absent
 
-- **WHEN** archive runs for a capability and `openspec/specs/<capability>/spec.md` already exists
-- **THEN** issue-spec SHALL support updating that legacy durable spec
-- **THEN** it SHALL report that legacy compatibility selected the archive path.
+- **WHEN** durable materialization runs for an implementation change
+- **THEN** the CLI MUST consume exact confirmed operation paths and MUST NOT create or select a post-merge Archive target
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861704749
-- https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861704910
-- https://github.com/higress-group/issue-spec/issues/23#issuecomment-4861728628
+- https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452933
+
+### Requirement: project-defined business verification remains declarative
+
+Projects MUST define business verification through workflow context, rules.verify, verifier artifact instructions and templates, exact required tests, and provider-owned required checks. The core CLI MUST preserve selector identity, exact subject revision, outcome, and assurance without executing project prose, adding a project plugin runtime, or upgrading natural-language conclusions into provider authority.
+
+#### Scenario: custom verification guidance is sealed
+
+- **WHEN** a project declares business verification rules in its selected workflow
+- **THEN** the verifier assignment SHALL carry bounded applicable guidance and exact affected scenarios without adding binary semantics
+
+#### Scenario: deterministic rules use required evidence
+
+- **WHEN** a business rule needs mechanical enforcement
+- **THEN** the project MUST express it as an exact required test or provider-owned check whose identity, revision, and outcome are validated
+
+#### Scenario: prose retains role-owned assurance
+
+- **WHEN** a verifier records a natural-language project conclusion
+- **THEN** the conclusion MUST retain its ordinary role-owned assurance and MUST NOT impersonate provider-owned evidence
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452732

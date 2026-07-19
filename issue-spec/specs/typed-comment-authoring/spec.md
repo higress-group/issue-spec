@@ -43,19 +43,25 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/12#issue
 
 ### Requirement: catch malformed typed comments before archive
 
-Issue-spec validation, status, verify, and archive-readiness checks MUST detect malformed typed comments before durable archive work proceeds.
+Typed-comment generation, upsert, workflow validation, and phase status MUST reject or report malformed typed artifacts before their owning lifecycle command consumes them. Final verification MUST validate malformed identity and representation data only when that data is part of the minimal exact-current evidence snapshot, and MUST NOT reconstruct broad Archive-readiness linting. Legacy Archive compatibility MAY diagnose malformed historical input but MUST NOT restore Archive as a readiness gate.
 
-#### Scenario: status reports malformed typed comments
+#### Scenario: authoring rejects malformed canonical artifacts
 
-- **WHEN** a proposal, design, implement issue, or linked PR contains a typed comment whose marker is parseable but whose required body structure is malformed
-- **THEN** `issue-spec status` SHALL report the malformed typed comment with its type, logical ID, URL, and actionable validation errors.
+- **WHEN** a caller creates or updates a malformed SPEC, TASK, PROCESS, REVIEW, or VERIFY artifact
+- **THEN** the owning authoring or phase-status command MUST fail with actionable canonical diagnostics
 
-#### Scenario: verify blocks archive readiness
+#### Scenario: final verification stays minimal
 
-- **WHEN** `issue-spec verify` evaluates a change that contains malformed SPEC, TASK, PROCESS, REVIEW, or VERIFY typed comments required for final archive readiness
-- **THEN** verification MUST fail before archive creation and SHALL identify the malformed comments that must be fixed or explicitly migrated.
+- **WHEN** a malformed historical or unrelated typed comment is outside the active exact-current evidence set
+- **THEN** final verification MUST NOT add a broad Archive-style history audit
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/12#issuecomment-4850689982
+#### Scenario: legacy archive input remains diagnostic only
+
+- **WHEN** already-started legacy Archive work reads malformed historical input during the compatibility window
+- **THEN** the CLI SHALL report deprecation and focused validation without creating an Archive readiness target
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452507
 
 ### Requirement: provide an explicit noncanonical migration escape hatch
 

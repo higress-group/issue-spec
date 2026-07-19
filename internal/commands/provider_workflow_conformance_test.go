@@ -194,7 +194,15 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 	applyCommand := readTestFile(t, root+"/.claude/commands/issue-spec/apply.md")
 	reviewCommand := readTestFile(t, root+"/.claude/commands/issue-spec/review.md")
 	verifyCommand := readTestFile(t, root+"/.claude/commands/issue-spec/verify.md")
-	archiveCommand := readTestFile(t, root+"/.claude/commands/issue-spec/archive.md")
+	for _, relative := range []string{
+		".agents/skills/issue-spec-archive/SKILL.md",
+		".claude/skills/issue-spec-archive/SKILL.md",
+		".claude/commands/issue-spec/archive.md",
+	} {
+		if _, err := os.Stat(filepath.Join(root, relative)); !os.IsNotExist(err) {
+			t.Fatalf("generated removed Archive asset %q: %v", relative, err)
+		}
+	}
 	checks := []struct {
 		name    string
 		content string
@@ -213,8 +221,6 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 		{"verify", verifyCommand, []string{"backend-appropriate rationale and REVIEW completion evidence",
 			"Status forecast and final verify use the same authoritative validator",
 			"The validator owns exact identity, revision, freshness, and legacy compatibility"}},
-		{"archive", archiveCommand, []string{"Archive may read an existing required REVIEW completion when implementation merge policy requires it",
-			"Archive never creates, updates, or refreshes REVIEW or adds archive-specific review state"}},
 	}
 	for _, check := range checks {
 		for _, want := range check.wants {
@@ -226,11 +232,28 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 			t.Fatalf("generated %s workflow retained GitHub-only storage footer:\n%s", check.name, check.content)
 		}
 	}
+	activeAssets := map[string]string{
+		"workflow": workflowSkill,
+		"review":   reviewCommand,
+		"apply":    applyCommand,
+		"verify":   verifyCommand,
+	}
+	for name, content := range activeAssets {
+		for _, forbidden := range []string{
+			"Issue Spec Archive",
+			"issue-spec-archive",
+			"issue-spec archive durable-spec",
+			"separate durable-spec archive PR",
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("generated %s workflow retains removed Archive route %q:\n%s", name, forbidden, content)
+			}
+		}
+	}
 	for name, content := range map[string]string{
-		"review":  reviewCommand,
-		"apply":   applyCommand,
-		"verify":  verifyCommand,
-		"archive": archiveCommand,
+		"review": reviewCommand,
+		"apply":  applyCommand,
+		"verify": verifyCommand,
 	} {
 		for _, forbidden := range []string{
 			"provider facts",
@@ -383,14 +406,26 @@ artifacts:
 
 func TestCheckedInCodexWorkflowSkillsMatchGenerator(t *testing.T) {
 	generatedRoot := t.TempDir()
-	if _, err := writeWorkflowArtifacts(generatedRoot, "higress-group/issue-spec", "codex", "skills"); err != nil {
-		t.Fatal(err)
-	}
 	projectRoot, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, skill := range []string{"apply", "archive", "github", "propose", "review", "verify", "workflow"} {
+	config, err := os.ReadFile(filepath.Join(projectRoot, "issue-spec", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	generatedConfigDir := filepath.Join(generatedRoot, "issue-spec")
+	if err := os.MkdirAll(generatedConfigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generatedConfigDir, "config.yaml"), config, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(generatedRoot)
+	if _, err := writeWorkflowArtifacts(".", "higress-group/issue-spec", "codex", "skills"); err != nil {
+		t.Fatal(err)
+	}
+	for _, skill := range []string{"apply", "github", "propose", "review", "verify", "workflow"} {
 		relative := filepath.Join(".agents", "skills", "issue-spec-"+skill, "SKILL.md")
 		generated, err := os.ReadFile(filepath.Join(generatedRoot, relative))
 		if err != nil {
@@ -402,6 +437,12 @@ func TestCheckedInCodexWorkflowSkillsMatchGenerator(t *testing.T) {
 		}
 		if !bytes.Equal(generated, checkedIn) {
 			t.Fatalf("checked-in Codex workflow skill is stale: %s", relative)
+		}
+	}
+	archiveRelative := filepath.Join(".agents", "skills", "issue-spec-archive", "SKILL.md")
+	for name, root := range map[string]string{"generated": generatedRoot, "checked-in": projectRoot} {
+		if _, err := os.Stat(filepath.Join(root, archiveRelative)); !os.IsNotExist(err) {
+			t.Fatalf("%s removed Archive skill exists: %v", name, err)
 		}
 	}
 }

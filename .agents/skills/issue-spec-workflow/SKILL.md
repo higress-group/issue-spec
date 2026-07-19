@@ -11,7 +11,7 @@ metadata:
 
 # Issue Spec Workflow
 
-Use this coordinator protocol for issue-native proposal, design, implementation, review, verification, and archive work. The CLI and sealed packets carry mechanical contracts; keep only decisions and stops in agent context.
+Use this coordinator protocol for issue-native proposal, design, implementation, review, verification, durable projection, and closure work. The CLI and sealed packets carry mechanical contracts; keep only decisions and stops in agent context.
 
 ## Read and Route
 
@@ -42,9 +42,10 @@ Use this coordinator protocol for issue-native proposal, design, implementation,
 
 - Use comment transition for one artifact. On non-CAS backends require both --allow-nonatomic and the observed --expected-digest. Use workflow reconcile with the same plan digest and checkpoint for dependency-ordered retries; re-observation handles lost responses and partial backlinks.
 - On restart, inspect/reconcile the exact lease from the unchanged Coordinator checkout. Cleanup is explicit, owner-token-authorized, and destructive; retain uncertain or unintegrated work. Runner mode supplies trusted workspace roots but does not change this CLI contract or create a nested coordinator session.
-- GitHub-backed workflows keep the existing `pr link-process`, review, rationale, closure, and archive path. Self-hosted routing uses exact-revision `code-change attach` and `code-change link-process` from the Source Binding; attach does not create a PR/MR or ingest evidence. Its `review sync` persists and reloads provider facts and writes an exact-current completion stamp even with zero findings; `code-change rationale` requires a fresh REVIEW completion, with an existing finding-backed consumed binding retained only for legacy compatibility. Do not call a GitHub PR endpoint for a self-hosted change, and never guess among conflicting active changes.
+- GitHub-backed workflows keep the existing `pr link-process`, review, rationale, and native closing-link path. Self-hosted routing uses exact-revision `code-change attach` and `code-change link-process` from the Source Binding; attach does not create a PR/MR or ingest evidence. Its `review sync` persists and reloads provider facts and writes an exact-current completion stamp even with zero findings; `code-change rationale` requires a fresh REVIEW completion, with an existing finding-backed consumed binding retained only for legacy compatibility. Do not call a GitHub PR endpoint for a self-hosted change, and never guess among conflicting active changes.
 - Use issue-spec verify --summary --json for compact final blockers, then run authoritative full final verify before merge. Compact and full views share the same decision and exit status; full/detail remain discoverable compatibility paths.
-- On GitHub, pr link-issues is the final PR-body write and pr verify-closure gates merge. After implementation merge, create/review the separate durable-spec archive PR; archive never recreates implementation review evidence.
+- In repository durable mode, materialize the durable projection on the implementation branch with issue-spec durable-spec preview/apply and satisfy the sealed issue-spec/durable-spec check before merge. This is an ordinary exact-revision verification test, not a final gate.
+- On GitHub, pr link-issues is the final PR-body write and pr verify-closure gates merge; native closing links close the issue set. On self-hosted backends, run issue-spec issue close-change only after exact merged code_change evidence is authoritative.
 
 ## PROCESS Write Ownership
 
@@ -56,6 +57,6 @@ Use this coordinator protocol for issue-native proposal, design, implementation,
 
 - Workflow Source: `builtin`
 - Workflow Schema: `issue-spec`
-- Workflow Diagnostics:
+- Workflow Config: `issue-spec/config.yaml`
 
-Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in the selected issue backend's issue-native storage; durable specs are repository files created during archive.
+Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in the selected issue backend's issue-native storage; repository-mode durable specs are materialized and checked on the implementation branch.

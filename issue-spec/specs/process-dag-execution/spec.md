@@ -174,30 +174,25 @@ Source change: https://github.com/higress-group/issue-spec/pull/232
 
 ### Requirement: final verify audits execution-planning evidence
 
-Final verification SHALL validate that execution planning artifacts are complete enough to audit the agent workflow.
+Final verification MUST evaluate one bounded exact-current evidence snapshot containing authoritative subject identity, unambiguous active PROCESS selection, the canonical TASK-owned SPEC planning chain, accepted independent REVIEW and VERIFY coverage, resolved blocking findings, and every sealed required test and provider-check result. Shared evidence MUST be validated once and indexed in memory without PROCESS fan-out writes. Generic backlinks, historical PROCESS reconstruction, lifecycle and workspace state, closure state, workflow prose, durable-file semantics, and Archive state MUST remain outside the final decision.
 
-For non-trivial changes, VERIFY evidence SHALL cover TASK completion, class-specific PROCESS evidence, resolved findings, and SPEC coverage. Change-bearing PROCESS nodes SHALL use matching inline PR rationale, while review, verification, orchestration, and external PROCESS nodes SHALL use their native REVIEW, VERIFY, check, handoff, or immutable external-revision carriers.
+#### Scenario: minimal exact-current snapshot passes
 
-The workflow SHOULD fail final verification when done PROCESS nodes lack their required class-specific carrier, TASK links, active SPEC coverage, or required handoff/review evidence.
+- **WHEN** the current immutable subject has complete independent REVIEW and VERIFY coverage and all sealed tests and checks pass
+- **THEN** status forecast and authoritative verify SHALL return the same successful decision from the same evaluator
 
-#### Scenario: traceable SPEC to PROCESS chain
+#### Scenario: missing or stale canonical evidence blocks
 
-- **WHEN** a done PROCESS belongs to a parent TASK
-- **THEN** final verification SHALL be able to trace SPEC -> TASK -> PROCESS -> its required PR rationale, REVIEW, VERIFY, check, handoff, or immutable external evidence
+- **WHEN** any active carrier, assigned SPEC, blocking finding, required test, or provider check lacks valid exact-current evidence
+- **THEN** final verification MUST fail closed with bounded stable blockers and an exact detail action
 
-#### Scenario: serial chain proves handoff
+#### Scenario: unrelated lifecycle history is ignored
 
-- **WHEN** a serial PROCESS chain was used
-- **THEN** final verification SHALL confirm that handoff evidence exists or that the coordinator recorded why it was unnecessary
-
-#### Scenario: done VERIFY summarizes evidence
-
-- **WHEN** a non-trivial change reaches final verify
-- **THEN** at least one done VERIFY comment SHALL summarize tests, review state, traceability, and SPEC coverage
+- **WHEN** authoring links, historical PROCESS bodies, TASK lifecycle status, workspace state, closure state, project prose, or Archive history changes without changing accepted current evidence
+- **THEN** the final verification decision MUST remain unchanged
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/32#issuecomment-4877853419
-- https://github.com/higress-group/issue-spec/issues/166#issuecomment-4951036789
+- https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452507
 
 ### Requirement: Agent-executed change-bearing PROCESS nodes require non-coordinator workers
 
