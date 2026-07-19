@@ -451,9 +451,10 @@ func archiveCloseIssuePlanRefs(refs []model.IssueClosureRef) []archiveCloseIssue
 }
 
 func processArtifactsLinkPullRequest(artifacts []model.Artifact, prURL string) bool {
+	activity := selectProcessActivity(artifacts)
 	for _, artifact := range artifacts {
 		tc := artifact.Comment
-		if tc.Type != "PROCESS" || tc.Status == "superseded" {
+		if tc.Type != "PROCESS" || !activity.active[tc.ID] {
 			continue
 		}
 		if linkValuesContain(tc.Links["PR"], prURL) {

@@ -179,6 +179,48 @@ func TestArchiveDurableSpecRequiresClosingLinksBeforeClosingIssues(t *testing.T)
 	}
 }
 
+func TestArchiveLinkedProcessUsesSharedActiveSelection(t *testing.T) {
+	const prURL = "https://github.com/o/r/pull/7"
+	process := func(id, status, url string, links map[string][]string) model.Artifact {
+		t.Helper()
+		body := archiveTestTypedBody(t, "PROCESS", id, status, "manual role-owned evidence", links)
+		return model.Artifact{Issue: 3, CommentID: int64(len(id)), URL: url,
+			Comment: model.ParseTypedComment(body)}
+	}
+	const (
+		historicalURL = "https://github.com/o/r/issues/3#issuecomment-301"
+		currentURL    = "https://github.com/o/r/issues/3#issuecomment-302"
+		legacyURL     = "https://github.com/o/r/issues/3#issuecomment-303"
+	)
+	historical := process("PROCESS-001", "superseded", historicalURL, map[string][]string{"PR": {prURL}})
+	current := process("PROCESS-002", "done", currentURL, nil)
+	stamped, _, err := model.StampSupersededBy(historical.Comment.Body, historical.Comment.ID,
+		model.SupersededBy{ProcessID: current.Comment.ID, URL: current.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical.Comment = model.ParseTypedComment(stamped)
+	if processArtifactsLinkPullRequest([]model.Artifact{historical, current}, prURL) {
+		t.Fatal("historical PROCESS supplied the active archive PR link")
+	}
+
+	current = process("PROCESS-002", "done", currentURL, map[string][]string{"PR": {prURL}})
+	if !processArtifactsLinkPullRequest([]model.Artifact{historical, current}, prURL) {
+		t.Fatal("active successor PROCESS did not supply the archive PR link")
+	}
+
+	legacy := process("PROCESS-003", "superseded", legacyURL, map[string][]string{"PR": {prURL}})
+	if !processArtifactsLinkPullRequest([]model.Artifact{legacy}, prURL) {
+		t.Fatal("legacy status-only PROCESS was excluded from archive selection")
+	}
+
+	manual := process("PROCESS-004", "done", "https://github.com/o/r/issues/3#issuecomment-304",
+		map[string][]string{"PR": {prURL}})
+	if !processArtifactsLinkPullRequest([]model.Artifact{manual}, prURL) {
+		t.Fatal("independently complete manual PROCESS evidence was excluded from archive selection")
+	}
+}
+
 func TestArchiveReadsOnlyImplementationReviewCompletion(t *testing.T) {
 	now := time.Date(2026, 7, 18, 1, 0, 0, 0, time.UTC)
 	artifacts, implementationGate := externalReviewCompletionFixture(t, now, "Independent Reviewer")

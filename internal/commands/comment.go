@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/finalization"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/templates"
@@ -76,6 +77,29 @@ type commentLinkRelation struct {
 	Count          int                    `json:"count"`
 	Items          []commentLinkReference `json:"items"`
 	TruncatedCount int                    `json:"truncated_count"`
+}
+
+// processActivitySelection is the command layer's narrow read adapter over the
+// shared finalization selection. It intentionally projects only membership:
+// graph validation and fail-closed behavior remain owned by finalization.
+type processActivitySelection struct {
+	active     map[string]bool
+	historical map[string]bool
+}
+
+func selectProcessActivity(artifacts []model.Artifact) processActivitySelection {
+	selection := finalization.Select(artifacts)
+	result := processActivitySelection{
+		active:     make(map[string]bool, len(selection.ActiveProcessIDs)),
+		historical: make(map[string]bool, len(selection.Historical)),
+	}
+	for _, id := range selection.ActiveProcessIDs {
+		result.active[id] = true
+	}
+	for _, historical := range selection.Historical {
+		result.historical[historical.ProcessID] = true
+	}
+	return result
 }
 
 // commentReadArtifact is deliberately separate from model.Artifact. Existing
@@ -492,8 +516,8 @@ func (a *app) runCommentList(ctx context.Context, args []string) int {
 	issueFlag := fs.String("issue", "", "issue number or URL")
 	commentType := fs.String("type", "", "filter by typed comment type")
 	status := fs.String("status", "", "filter by comma-separated typed comment statuses")
-	activeOnly := fs.Bool("active-only", false, "return current non-superseded canonical artifacts")
-	history := fs.Bool("history", false, "return superseded historical artifacts")
+	activeOnly := fs.Bool("active-only", false, "return current artifacts using explicit PROCESS replacement authority")
+	history := fs.Bool("history", false, "return explicitly replaced PROCESS and legacy non-PROCESS history")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	includeBody := fs.Bool("include-body", false, "include original backend Markdown in JSON output (requires --json)")
 	includeAllLinks := fs.Bool("include-all-links", false, "return every link instead of at most 10 per relation (requires --json)")
@@ -539,6 +563,13 @@ func (a *app) runCommentList(ctx context.Context, args []string) int {
 		a.errorf("list issue comments: %v\n", err)
 		return 1
 	}
+	allArtifacts := make([]model.Artifact, 0, len(comments))
+	for _, comment := range comments {
+		if model.IsLikelyTyped(comment.Body) {
+			allArtifacts = append(allArtifacts, artifactFromComment(issueNumber, comment))
+		}
+	}
+	processActivity := selectProcessActivity(allArtifacts)
 	artifacts := make([]model.Artifact, 0)
 	artifactsWithBody := make([]commentListArtifactWithBody, 0)
 	compactArtifacts := make([]commentReadArtifact, 0)
@@ -553,11 +584,20 @@ func (a *app) runCommentList(ctx context.Context, args []string) int {
 			continue
 		}
 		artifact := artifactFromComment(issueNumber, comment)
-		if *activeOnly && (tc.Status == "superseded" || len(tc.Errors) > 0 || len(artifact.Canonical) > 0) {
-			continue
-		}
-		if *history && tc.Status != "superseded" {
-			continue
+		if tc.Type == "PROCESS" {
+			if *activeOnly && !processActivity.active[tc.ID] {
+				continue
+			}
+			if *history && !processActivity.historical[tc.ID] {
+				continue
+			}
+		} else {
+			if *activeOnly && (tc.Status == "superseded" || len(tc.Errors) > 0 || len(artifact.Canonical) > 0) {
+				continue
+			}
+			if *history && tc.Status != "superseded" {
+				continue
+			}
 		}
 		if len(statuses) > 0 && !statuses[tc.Status] {
 			continue
