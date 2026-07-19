@@ -66,8 +66,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run unit tests
-        run: go test ./...
+      - name: Run fast test tier (Git-free, budgeted)
+        run: make test-fast
+
+      - name: Run full test tier
+        run: make test-full
 
       - name: Run PAT and authorization PostgreSQL integration tests
         env:
@@ -79,3 +82,35 @@ jobs:
           ./internal/server/auth/delegation
           ./internal/server/authz
           ./internal/server/evidence
+
+  linux-bwrap-contract:
+    name: Linux bubblewrap contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+
+      - name: Allow unprivileged user namespaces
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+
+      - name: Run real bubblewrap contract (a skip is treated as failure)
+        run: |
+          set -euo pipefail
+          go test -v -count=1 -run '^TestLinuxRealBubblewrapContract$' ./internal/sandbox/ | tee bwrap-contract.out
+          if ! grep -q '^--- PASS: TestLinuxRealBubblewrapContract' bwrap-contract.out; then
+            echo "::error::real bubblewrap contract did not PASS (absent, skipped, or unsuccessful) — no all-platform false green allowed"
+            exit 1
+          fi

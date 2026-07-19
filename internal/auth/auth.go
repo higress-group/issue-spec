@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	keyring "github.com/zalando/go-keyring"
@@ -15,6 +16,7 @@ import (
 const (
 	serviceName            = "issue-spec"
 	ConfigDirEnv           = "ISSUE_SPEC_CONFIG_DIR"
+	CacheDirEnv            = "ISSUE_SPEC_CACHE_DIR"
 	GitHubBackendEnv       = "ISSUE_SPEC_GITHUB_BACKEND"
 	GitHubBackendAPIURLEnv = "ISSUE_SPEC_API_URL"
 	GitHubBackendNameREST  = "rest"
@@ -476,15 +478,142 @@ func NormalizeHost(host string) string {
 	return host
 }
 
+// EnvLookup resolves an environment variable, reporting whether it was present.
+// It mirrors os.LookupEnv so callers can inject a hermetic environment in tests
+// and production code can pass os.LookupEnv for the real process environment.
+type EnvLookup func(string) (string, bool)
+
+// ErrHomeUnset indicates the HOME variable was not present in the environment.
+// It is distinct from ErrHomeInvalid so callers (and tests) can tell an unset
+// HOME apart from an empty or non-absolute HOME.
+var ErrHomeUnset = errors.New("HOME is not set")
+
+// ErrHomeInvalid indicates HOME was present but empty or not an absolute path.
+// An invalid HOME must never silently resolve to a wrong path.
+var ErrHomeInvalid = errors.New("HOME is empty or not an absolute path")
+
+// ConfigDir returns the issue-spec configuration directory using the platform
+// resolution order: the ISSUE_SPEC_CONFIG_DIR override, then XDG_CONFIG_HOME,
+// then the native OS default. It reads the real process environment.
 func ConfigDir() (string, error) {
-	if dir := strings.TrimSpace(os.Getenv(ConfigDirEnv)); dir != "" {
-		return dir, nil
+	return resolveConfigDir(os.LookupEnv)
+}
+
+// CacheDir returns the issue-spec cache directory using the platform resolution
+// order: the ISSUE_SPEC_CACHE_DIR override, then XDG_CACHE_HOME, then the native
+// OS default. It reads the real process environment.
+func CacheDir() (string, error) {
+	return resolveCacheDir(os.LookupEnv)
+}
+
+func resolveConfigDir(env EnvLookup) (string, error) {
+	return resolveConfigDirFor(env, runtime.GOOS)
+}
+
+func resolveCacheDir(env EnvLookup) (string, error) {
+	return resolveCacheDirFor(env, runtime.GOOS)
+}
+
+func resolveConfigDirFor(env EnvLookup, goos string) (string, error) {
+	return resolveDir(env, goos, ConfigDirEnv, "XDG_CONFIG_HOME", nativeConfigDir)
+}
+
+func resolveCacheDirFor(env EnvLookup, goos string) (string, error) {
+	return resolveDir(env, goos, CacheDirEnv, "XDG_CACHE_HOME", nativeCacheDir)
+}
+
+// resolveDir applies the shared override -> XDG -> native default order on every
+// platform. The override, when set to a non-empty value, is returned verbatim
+// (matching the historical ISSUE_SPEC_CONFIG_DIR behavior). An XDG variable is
+// honored only when it is set to an absolute path; a relative or empty XDG value
+// is ignored so it cannot resolve outside the user's home tree. os.UserConfigDir
+// ignores XDG on macOS, so honoring it here explicitly closes that gap.
+func resolveDir(env EnvLookup, goos, overrideEnv, xdgEnv string, native func(EnvLookup, string) (string, error)) (string, error) {
+	if env == nil {
+		env = os.LookupEnv
 	}
-	base, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
+	if value, ok := env(overrideEnv); ok {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed, nil
+		}
 	}
-	return filepath.Join(base, "issue-spec"), nil
+	if value, ok := env(xdgEnv); ok {
+		if trimmed := strings.TrimSpace(value); trimmed != "" && filepath.IsAbs(trimmed) {
+			return filepath.Join(trimmed, "issue-spec"), nil
+		}
+	}
+	return native(env, goos)
+}
+
+// nativeConfigDir mirrors os.UserConfigDir's native default per platform (with
+// XDG handled by resolveDir) so paths are byte-for-byte identical to today when
+// no override or XDG variable is set.
+func nativeConfigDir(env EnvLookup, goos string) (string, error) {
+	switch goos {
+	case "windows":
+		return nativeWindowsDir(env, "AppData")
+	case "darwin", "ios":
+		home, err := resolveHome(env)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, "Library", "Application Support", "issue-spec"), nil
+	default:
+		home, err := resolveHome(env)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, ".config", "issue-spec"), nil
+	}
+}
+
+// nativeCacheDir mirrors os.UserCacheDir's native default per platform.
+func nativeCacheDir(env EnvLookup, goos string) (string, error) {
+	switch goos {
+	case "windows":
+		return nativeWindowsDir(env, "LocalAppData")
+	case "darwin", "ios":
+		home, err := resolveHome(env)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, "Library", "Caches", "issue-spec"), nil
+	default:
+		home, err := resolveHome(env)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, ".cache", "issue-spec"), nil
+	}
+}
+
+func nativeWindowsDir(env EnvLookup, key string) (string, error) {
+	value, ok := env(key)
+	if !ok {
+		return "", fmt.Errorf("%%%s%% is not set", key)
+	}
+	if strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("%%%s%% is empty", key)
+	}
+	return filepath.Join(value, "issue-spec"), nil
+}
+
+// resolveHome returns the HOME directory, distinguishing an unset HOME
+// (ErrHomeUnset) from an empty or non-absolute HOME (ErrHomeInvalid) so an
+// invalid value never silently resolves to a wrong path. It never falls back to
+// reading the host account through any other channel.
+func resolveHome(env EnvLookup) (string, error) {
+	value, ok := env("HOME")
+	if !ok {
+		return "", ErrHomeUnset
+	}
+	if strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("%w: HOME is empty", ErrHomeInvalid)
+	}
+	if !filepath.IsAbs(value) {
+		return "", fmt.Errorf("%w: HOME=%q is not absolute", ErrHomeInvalid, value)
+	}
+	return value, nil
 }
 
 func credentialPath() (string, error) {
