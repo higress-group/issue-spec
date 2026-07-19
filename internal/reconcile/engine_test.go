@@ -16,15 +16,17 @@ import (
 )
 
 type fakeBackend struct {
-	comments     map[int][]github.Comment
-	versions     map[int64]int64
-	nextID       int64
-	createLost   bool
-	updateLost   bool
-	failUpdateID int64
-	writes       int
-	listCalls    map[int]int
-	listHook     func(*fakeBackend, int, int)
+	comments                map[int][]github.Comment
+	versions                map[int64]int64
+	nextID                  int64
+	createLost              bool
+	updateLost              bool
+	failUpdateID            int64
+	writes                  int
+	listCalls               map[int]int
+	listHook                func(*fakeBackend, int, int)
+	conditionalResponseBody string
+	conditionalHook         func(*fakeBackend, int64)
 }
 
 type plainBackend struct{ github.IssueBackend }
@@ -89,10 +91,16 @@ func (f *fakeBackend) GetCommentRepresentation(_ context.Context, _ string, id i
 	return github.CommentRepresentation{}, errors.New("missing")
 }
 func (f *fakeBackend) UpdateCommentConditional(_ context.Context, _ string, id, expected int64, body string) (github.CommentRepresentation, error) {
+	if f.conditionalHook != nil {
+		f.conditionalHook(f, id)
+	}
 	if f.versions[id] != expected {
 		return github.CommentRepresentation{}, &github.CommentMutationConflictError{Expected: expected, Current: f.versions[id]}
 	}
 	c, err := f.update(id, body)
+	if err == nil && f.conditionalResponseBody != "" {
+		c.Body = f.conditionalResponseBody
+	}
 	return github.CommentRepresentation{Comment: c, RepresentationVersion: f.versions[id]}, err
 }
 func (f *fakeBackend) update(id int64, body string) (github.Comment, error) {
@@ -133,6 +141,9 @@ func TestReconcileLostCreateResponseResumesUnchanged(t *testing.T) {
 	}
 	if !second.OK || second.Unchanged != 1 || len(f.comments[1]) != 1 {
 		t.Fatalf("second=%+v", second)
+	}
+	if operation := second.Operations[0]; operation.BeforeDigest != model.RepresentationDigest(body) || operation.AfterDigest != operation.BeforeDigest {
+		t.Fatalf("unchanged operation digests=%+v", operation)
 	}
 }
 
@@ -180,6 +191,9 @@ func TestReconcileStrictCreateRequiresNonAtomicAcknowledgement(t *testing.T) {
 	if !result.OK || result.Created != 1 || result.Atomic || result.Operations[0].Atomic || f.writes != 1 {
 		t.Fatalf("result=%+v writes=%d", result, f.writes)
 	}
+	if operation := result.Operations[0]; operation.BeforeDigest != "" || operation.AfterDigest != model.RepresentationDigest(body) {
+		t.Fatalf("created operation digests=%+v", operation)
+	}
 }
 
 func TestReconcileCreateReobservesDuplicateLogicalMarker(t *testing.T) {
@@ -198,6 +212,80 @@ func TestReconcileCreateReobservesDuplicateLogicalMarker(t *testing.T) {
 	}
 	if result.Conflicted != 1 || f.writes != 0 || !strings.Contains(result.Operations[0].Message, "appeared after initial observation") {
 		t.Fatalf("result=%+v writes=%d", result, f.writes)
+	}
+}
+
+func TestReconcileUpsertPreservesEveryTypedHeaderRelationship(t *testing.T) {
+	f := newFake()
+	existing := typedBodyWithLinks(t, "PROCESS", "PROCESS-002", "in-progress", map[string][]string{
+		"Proposal Issue":   {"https://example.test/issues/1"},
+		"Design Issue":     {"https://example.test/issues/2"},
+		"Implement Issue":  {"https://example.test/issues/3"},
+		"Related Comments": {"https://example.test/issues/3#issuecomment-4"},
+		"PR":               {"https://example.test/pulls/5"},
+	})
+	existing = strings.Replace(existing, "- PR: https://example.test/pulls/5",
+		"- PR: https://example.test/pulls/5\n- Future Relationship: https://example.test/future/6", 1)
+	addComment(f, 3, 2, existing)
+	desired := typedBodyWithLinks(t, "PROCESS", "PROCESS-002", "in-progress", map[string][]string{
+		"Related Comments": {"https://example.test/issues/3#issuecomment-7"},
+	})
+	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "upsert", Kind: "upsert",
+		Target: Target{Issue: 3, Type: "PROCESS", ID: "PROCESS-002"}, Desired: Desired{Body: desired}}}}
+
+	result, err := (Engine{Backend: f}).Run(t.Context(), plan, "")
+	if err != nil || !result.OK || result.Updated != 1 || f.writes != 1 {
+		t.Fatalf("result=%+v writes=%d err=%v", result, f.writes, err)
+	}
+	operation := result.Operations[0]
+	if operation.BeforeDigest != model.RepresentationDigest(existing) ||
+		operation.AfterDigest != model.RepresentationDigest(f.comments[3][0].Body) ||
+		operation.BeforeDigest == operation.AfterDigest {
+		t.Fatalf("operation digests=%+v", operation)
+	}
+	links := model.ParseTypedComment(f.comments[3][0].Body).Links
+	for name, value := range map[string]string{
+		"Proposal Issue": "https://example.test/issues/1", "Design Issue": "https://example.test/issues/2",
+		"Implement Issue": "https://example.test/issues/3", "PR": "https://example.test/pulls/5",
+		"Future Relationship": "https://example.test/future/6",
+	} {
+		if !containsLinkValue(links[name], value) {
+			t.Errorf("%s missing %s in %v", name, value, links[name])
+		}
+	}
+	for _, value := range []string{"https://example.test/issues/3#issuecomment-4", "https://example.test/issues/3#issuecomment-7"} {
+		if !containsLinkValue(links["Related Comments"], value) {
+			t.Errorf("Related Comments missing %s in %v", value, links["Related Comments"])
+		}
+	}
+}
+
+func TestReconcileLifecyclePreservesRelationshipsAndUsesExactReobservedDigests(t *testing.T) {
+	f := newFake()
+	before := typedBodyWithLinks(t, "PROCESS", "PROCESS-002", "in-progress", map[string][]string{
+		"Proposal Issue": {"https://example.test/issues/1"},
+		"PR":             {"https://example.test/pulls/5"},
+	})
+	addComment(f, 3, 2, before)
+	f.conditionalResponseBody = "provider response body must not define the result digest"
+	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "transition", Kind: "transition",
+		Target: Target{Issue: 3, Type: "PROCESS", ID: "PROCESS-002"}, Desired: Desired{Status: "done"},
+		Precondition: Precondition{BodyDigest: model.RepresentationDigest(before)}}}}
+
+	result, err := (Engine{Backend: f}).Run(t.Context(), plan, "")
+	if err != nil || !result.OK || result.Updated != 1 || f.writes != 1 {
+		t.Fatalf("result=%+v writes=%d err=%v", result, f.writes, err)
+	}
+	after := f.comments[3][0].Body
+	operation := result.Operations[0]
+	if operation.BeforeDigest != model.RepresentationDigest(before) || operation.AfterDigest != model.RepresentationDigest(after) ||
+		operation.AfterDigest == model.RepresentationDigest(f.conditionalResponseBody) {
+		t.Fatalf("operation=%+v response_digest=%s", operation, model.RepresentationDigest(f.conditionalResponseBody))
+	}
+	links := model.ParseTypedComment(after).Links
+	if !containsLinkValue(links["Proposal Issue"], "https://example.test/issues/1") ||
+		!containsLinkValue(links["PR"], "https://example.test/pulls/5") {
+		t.Fatalf("lifecycle dropped relationships: %v", links)
 	}
 }
 
@@ -490,6 +578,34 @@ func TestReconcileNonAtomicDigestGuardRejectsChangedFreshObservation(t *testing.
 		!strings.Contains(result.Operations[0].Message, "representation digest changed") {
 		t.Fatalf("result=%+v writes=%d body=%q", result, f.writes, f.comments[1][0].Body)
 	}
+	operation := result.Operations[0]
+	if operation.BeforeDigest != model.RepresentationDigest(typedBody(t, "TASK", "TASK-001", "confirmed")) ||
+		operation.AfterDigest != model.RepresentationDigest(f.comments[1][0].Body) || operation.BeforeDigest == operation.AfterDigest {
+		t.Fatalf("drift operation digests=%+v", operation)
+	}
+}
+
+func TestReconcileCASDriftFailsClosedWithExactObservedDigests(t *testing.T) {
+	f := newFake()
+	before := typedBody(t, "TASK", "TASK-001", "confirmed")
+	addComment(f, 1, 1, before)
+	f.conditionalHook = func(f *fakeBackend, id int64) {
+		f.conditionalHook = nil
+		f.comments[1][0].Body += "\nConcurrent provider change."
+		f.versions[id]++
+	}
+	plan := Plan{Version: 1, Repo: "o/r", Operations: []Operation{{ID: "transition", Kind: "transition",
+		Target: Target{Issue: 1, Type: "TASK", ID: "TASK-001"}, Desired: Desired{Status: "done"}}}}
+
+	result, err := (Engine{Backend: f}).Run(t.Context(), plan, "")
+	if err != nil || result.Conflicted != 1 || f.writes != 0 || model.ParseTypedComment(f.comments[1][0].Body).Status != "confirmed" {
+		t.Fatalf("result=%+v writes=%d err=%v", result, f.writes, err)
+	}
+	operation := result.Operations[0]
+	if operation.BeforeDigest != model.RepresentationDigest(before) ||
+		operation.AfterDigest != model.RepresentationDigest(f.comments[1][0].Body) || operation.BeforeDigest == operation.AfterDigest {
+		t.Fatalf("CAS drift operation digests=%+v", operation)
+	}
 }
 
 func TestReconcileNonAtomicLostUpdateResponseUsesExactRecovery(t *testing.T) {
@@ -540,6 +656,26 @@ func typedBody(t *testing.T, kind, id, status string) string {
 		t.Fatal(err)
 	}
 	return body
+}
+
+func typedBodyWithLinks(t *testing.T, kind, id, status string, links map[string][]string) string {
+	t.Helper()
+	body, err := model.EnsureTypedBody(kind, id, "## Work\n\ncontent", model.BodyOptions{
+		Agent: "Worker", Status: status, Scope: "test", Links: links,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func containsLinkValue(values []string, want string) bool {
+	for _, value := range values {
+		if model.NormalizeURL(value) == model.NormalizeURL(want) {
+			return true
+		}
+	}
+	return false
 }
 
 func acceptedReceiptBody(t *testing.T, kind, id, status string, role assignment.Role,

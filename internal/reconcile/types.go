@@ -79,13 +79,15 @@ type Precondition struct {
 }
 
 type OperationResult struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Status    string `json:"status"`
-	Atomic    bool   `json:"atomic"`
-	CommentID int64  `json:"comment_id,omitempty"`
-	URL       string `json:"url,omitempty"`
-	Message   string `json:"message,omitempty"`
+	ID           string `json:"id"`
+	Kind         string `json:"kind"`
+	Status       string `json:"status"`
+	Atomic       bool   `json:"atomic"`
+	CommentID    int64  `json:"comment_id,omitempty"`
+	URL          string `json:"url,omitempty"`
+	BeforeDigest string `json:"before_digest"`
+	AfterDigest  string `json:"after_digest"`
+	Message      string `json:"message,omitempty"`
 }
 
 type Result struct {

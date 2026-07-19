@@ -2,8 +2,6 @@ package reconcile
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -114,7 +112,15 @@ func (e Engine) preflight(ctx context.Context, plan Plan, ordered []Operation) (
 			if !model.HasTypedMarker(op.Desired.Body) || tc.Type != strings.ToUpper(op.Target.Type) || tc.ID != op.Target.ID {
 				return nil, fmt.Errorf("operation %s desired body marker/type/id does not match target", op.ID)
 			}
-			state[targetKey(op.Target)] = mergeRelated(state[targetKey(op.Target)], op.Desired.Body)
+			merged := op.Desired.Body
+			if current := state[targetKey(op.Target)]; current != "" {
+				var mergeErr error
+				merged, _, mergeErr = model.MergeTypedHeaderRelationships(current, op.Desired.Body)
+				if mergeErr != nil {
+					return nil, fmt.Errorf("operation %s: %w", op.ID, mergeErr)
+				}
+			}
+			state[targetKey(op.Target)] = merged
 		case "transition":
 			body := state[targetKey(op.Target)]
 			if body == "" {
@@ -195,7 +201,10 @@ func (e Engine) applyUpsert(ctx context.Context, plan Plan, op Operation) Operat
 	}
 	desired := op.Desired.Body
 	if found {
-		desired = mergeRelated(item.Body, desired)
+		desired, _, err = model.MergeTypedHeaderRelationships(item.Body, desired)
+		if err != nil {
+			return observedConflictResult(op, err.Error(), item)
+		}
 	}
 	if found && item.Body == desired {
 		return unchangedResult(op, item, !plan.AllowNonAtomic)
@@ -228,7 +237,9 @@ func (e Engine) applyUpsert(ctx context.Context, plan Plan, op Operation) Operat
 		if !createdFound || observedCreated.Body != desired {
 			return conflictResult(op, "create succeeded but exact re-observation did not match the planned comment")
 		}
-		return OperationResult{ID: op.ID, Kind: op.Kind, Status: "created", Atomic: false, CommentID: observedCreated.Comment.ID, URL: observedCreated.Comment.HTMLURL}
+		return OperationResult{ID: op.ID, Kind: op.Kind, Status: "created", Atomic: false,
+			CommentID: observedCreated.Comment.ID, URL: observedCreated.Comment.HTMLURL,
+			AfterDigest: model.RepresentationDigest(observedCreated.Body)}
 	}
 	return e.mutate(ctx, plan, op, op.Target, item, desired)
 }
@@ -242,11 +253,11 @@ func (e Engine) applyTransition(ctx context.Context, plan Plan, op Operation) Op
 		return conflictResult(op, "transition target is absent")
 	}
 	if err := checkAcceptedReceiptPrecondition(op.Precondition, item.Body); err != nil {
-		return conflictResult(op, err.Error())
+		return observedConflictResult(op, err.Error(), item)
 	}
 	tr, err := applyTransition(item.Body, op)
 	if err != nil {
-		return conflictResult(op, err.Error())
+		return observedConflictResult(op, err.Error(), item)
 	}
 	if !tr.Changed {
 		return unchangedResult(op, item, !plan.AllowNonAtomic)
@@ -271,11 +282,11 @@ func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) Operatio
 	}
 	leftBody, leftChanged, err := model.AddRelatedCommentLink(left.Body, right.Comment.HTMLURL)
 	if err != nil {
-		return conflictResult(op, err.Error())
+		return observedConflictResult(op, err.Error(), left)
 	}
 	_, rightChanged, err := model.AddRelatedCommentLink(right.Body, left.Comment.HTMLURL)
 	if err != nil {
-		return conflictResult(op, err.Error())
+		return observedConflictResult(op, err.Error(), right)
 	}
 	mutations := 0
 	atomic := true
@@ -322,7 +333,16 @@ func (e Engine) applyLink(ctx context.Context, plan Plan, op Operation) Operatio
 	if mutations > 1 {
 		atomic = false
 	}
-	return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: atomic, CommentID: left.Comment.ID, URL: left.Comment.HTMLURL}
+	confirmed, found, err := e.observe(ctx, plan.Repo, op.Target, true)
+	if err != nil {
+		return observedFailureResult(op, fmt.Errorf("link succeeded but exact re-observation failed: %w", err), atomic, left)
+	}
+	if !found || confirmed.Comment.ID != left.Comment.ID {
+		return observedConflictResult(op, "link succeeded but the exact result target could not be re-observed", left)
+	}
+	return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: atomic,
+		CommentID: confirmed.Comment.ID, URL: confirmed.Comment.HTMLURL,
+		BeforeDigest: model.RepresentationDigest(left.Body), AfterDigest: model.RepresentationDigest(confirmed.Body)}
 }
 
 func (e Engine) applyCarrierAuthorizedBacklink(ctx context.Context, plan Plan, op Operation) OperationResult {
@@ -338,7 +358,7 @@ func (e Engine) applyCarrierAuthorizedBacklink(ctx context.Context, plan Plan, o
 		return conflictResult(op, "carrier-authorized backlink target is absent")
 	}
 	if err := checkAcceptedReceiptPrecondition(op.Precondition, carrier.Body); err != nil {
-		return conflictResult(op, err.Error())
+		return observedConflictResult(op, err.Error(), carrier)
 	}
 	if authority := op.Precondition.RelationshipAuthority; authority != nil {
 		assignmentProcess, found, observeErr := e.observe(ctx, plan.Repo, *authority.AssignmentProcess, true)
@@ -356,7 +376,7 @@ func (e Engine) applyCarrierAuthorizedBacklink(ctx context.Context, plan Plan, o
 	}
 	peerBody, changed, err := model.AddRelatedCommentLink(peer.Body, carrier.Comment.HTMLURL)
 	if err != nil {
-		return conflictResult(op, err.Error())
+		return observedConflictResult(op, err.Error(), peer)
 	}
 	if !changed {
 		return unchangedResult(op, peer, !plan.AllowNonAtomic)
@@ -366,61 +386,94 @@ func (e Engine) applyCarrierAuthorizedBacklink(ctx context.Context, plan Plan, o
 
 func (e Engine) mutate(ctx context.Context, plan Plan, op Operation, target Target, item observed, body string) OperationResult {
 	if err := checkPrecondition(op.Precondition, item); err != nil {
-		return conflictResult(op, err.Error())
+		return observedConflictResult(op, err.Error(), item)
 	}
 	conditional, ok := e.Backend.(github.ConditionalCommentBackend)
 	if ok && item.Version > 0 {
-		updated, err := conditional.UpdateCommentConditional(ctx, plan.Repo, item.Comment.ID, item.Version, body)
+		_, err := conditional.UpdateCommentConditional(ctx, plan.Repo, item.Comment.ID, item.Version, body)
 		if err == nil {
-			return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: true, CommentID: updated.Comment.ID, URL: updated.Comment.HTMLURL}
+			confirmed, found, observeErr := e.observe(ctx, plan.Repo, target, true)
+			if observeErr != nil {
+				return observedFailureResult(op, fmt.Errorf("conditional update succeeded but exact re-observation failed: %w", observeErr), true, item)
+			}
+			if !found || confirmed.Comment.ID != item.Comment.ID {
+				return observedConflictResult(op, "conditional update succeeded but the exact target could not be re-observed", item)
+			}
+			if confirmed.Body != body {
+				return OperationResult{ID: op.ID, Kind: op.Kind, Status: "conflicted", Atomic: true,
+					CommentID: confirmed.Comment.ID, URL: confirmed.Comment.HTMLURL,
+					BeforeDigest: model.RepresentationDigest(item.Body), AfterDigest: model.RepresentationDigest(confirmed.Body),
+					Message: fmt.Sprintf("conditional update returned but exact representation digest did not match: expected=%s current=%s",
+						model.RepresentationDigest(body), model.RepresentationDigest(confirmed.Body))}
+			}
+			return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: true,
+				CommentID: confirmed.Comment.ID, URL: confirmed.Comment.HTMLURL,
+				BeforeDigest: model.RepresentationDigest(item.Body), AfterDigest: model.RepresentationDigest(confirmed.Body)}
 		}
 		if !errors.Is(err, github.ErrConditionalCommentMutationUnsupported) {
-			return failureResult(op, err, true)
+			var conflict *github.CommentMutationConflictError
+			if errors.As(err, &conflict) {
+				current, found, observeErr := e.observe(ctx, plan.Repo, target, true)
+				if observeErr != nil {
+					return observedFailureResult(op, fmt.Errorf("conditional conflict exact re-observation failed: %w", observeErr), true, item)
+				}
+				if found && current.Comment.ID == item.Comment.ID {
+					return observedPairFailureResult(op, err, true, item, current)
+				}
+			}
+			return observedFailureResult(op, err, true, item)
 		}
 	}
 	if !plan.AllowNonAtomic {
-		return conflictResult(op, "conditional mutation unsupported; plan allow_nonatomic is false")
+		return observedConflictResult(op, "conditional mutation unsupported; plan allow_nonatomic is false", item)
 	}
 	if op.Precondition.RepresentationVersion > 0 {
-		return conflictResult(op, "representation version requires conditional mutation")
+		return observedConflictResult(op, "representation version requires conditional mutation", item)
 	}
 	// A non-conditional provider cannot close the final compare-and-swap race,
 	// but it must still use the freshest exact representation as a digest guard
 	// and checkpoint only an exactly re-observed write.
 	fresh, found, err := e.observe(ctx, plan.Repo, target, true)
 	if err != nil {
-		return failureResult(op, fmt.Errorf("pre-update exact observation: %w", err), false)
+		return observedFailureResult(op, fmt.Errorf("pre-update exact observation: %w", err), false, item)
 	}
 	if !found || fresh.Comment.ID != item.Comment.ID {
-		return conflictResult(op, "mutation target changed after initial observation")
+		return observedConflictResult(op, "mutation target changed after initial observation", item)
 	}
-	if bodyDigest(fresh.Body) != bodyDigest(item.Body) {
-		return conflictResult(op, fmt.Sprintf("representation digest changed after initial observation: expected=%s current=%s",
-			bodyDigest(item.Body), bodyDigest(fresh.Body)))
+	if model.RepresentationDigest(fresh.Body) != model.RepresentationDigest(item.Body) {
+		return OperationResult{ID: op.ID, Kind: op.Kind, Status: "conflicted", Atomic: false,
+			CommentID: fresh.Comment.ID, URL: fresh.Comment.HTMLURL,
+			BeforeDigest: model.RepresentationDigest(item.Body), AfterDigest: model.RepresentationDigest(fresh.Body),
+			Message: fmt.Sprintf("representation digest changed after initial observation: expected=%s current=%s",
+				model.RepresentationDigest(item.Body), model.RepresentationDigest(fresh.Body))}
 	}
 	if err := checkPrecondition(op.Precondition, fresh); err != nil {
-		return conflictResult(op, err.Error())
+		return observedConflictResult(op, err.Error(), fresh)
 	}
 	_, err = e.Backend.UpdateComment(ctx, plan.Repo, item.Comment.ID, body)
 	confirmed, confirmedFound, observeErr := e.observe(ctx, plan.Repo, target, true)
 	if observeErr != nil {
 		if err != nil {
-			return failureResult(op, fmt.Errorf("update outcome uncertain: %v; exact re-observation: %w", err, observeErr), false)
+			return observedFailureResult(op, fmt.Errorf("update outcome uncertain: %v; exact re-observation: %w", err, observeErr), false, item)
 		}
-		return failureResult(op, fmt.Errorf("update succeeded but exact re-observation failed: %w", observeErr), false)
+		return observedFailureResult(op, fmt.Errorf("update succeeded but exact re-observation failed: %w", observeErr), false, item)
 	}
 	if confirmedFound && confirmed.Comment.ID == item.Comment.ID && confirmed.Body == body {
 		return OperationResult{ID: op.ID, Kind: op.Kind, Status: "updated", Atomic: false,
-			CommentID: confirmed.Comment.ID, URL: confirmed.Comment.HTMLURL}
+			CommentID: confirmed.Comment.ID, URL: confirmed.Comment.HTMLURL,
+			BeforeDigest: model.RepresentationDigest(item.Body), AfterDigest: model.RepresentationDigest(confirmed.Body)}
 	}
 	if err != nil {
-		return failureResult(op, err, false)
+		if confirmedFound && confirmed.Comment.ID == item.Comment.ID {
+			return observedPairFailureResult(op, err, false, item, confirmed)
+		}
+		return observedFailureResult(op, err, false, item)
 	}
 	if !confirmedFound || confirmed.Comment.ID != item.Comment.ID {
-		return conflictResult(op, "update returned but the exact target could not be re-observed")
+		return observedConflictResult(op, "update returned but the exact target could not be re-observed", item)
 	}
-	return conflictResult(op, fmt.Sprintf("update returned but exact representation digest did not match: expected=%s current=%s",
-		bodyDigest(body), bodyDigest(confirmed.Body)))
+	return observedPairConflictResult(op, fmt.Sprintf("update returned but exact representation digest did not match: expected=%s current=%s",
+		model.RepresentationDigest(body), model.RepresentationDigest(confirmed.Body)), item, confirmed)
 }
 
 func (e Engine) observe(ctx context.Context, repo string, target Target, exact bool) (observed, bool, error) {
@@ -504,18 +557,6 @@ func checkRelationshipAuthority(op Operation, carrier, peer, assignmentProcess o
 func artifactURL(repo string, target Target, commentID int64) string {
 	return fmt.Sprintf("https://github.com/%s/issues/%d#issuecomment-%d", repo, target.Issue, commentID)
 }
-func mergeRelated(before, desired string) string {
-	if before == "" {
-		return desired
-	}
-	for _, url := range model.RelatedCommentURLs(model.ParseTypedComment(before)) {
-		if next, _, err := model.AddRelatedCommentLink(desired, url); err == nil {
-			desired = next
-		}
-	}
-	return desired
-}
-
 func hasRelatedCommentLink(body string, comment github.Comment) bool {
 	typed := model.ParseTypedComment(body)
 	if len(typed.Errors) != 0 {
@@ -538,8 +579,8 @@ func checkPrecondition(p Precondition, item observed) error {
 	if p.RepresentationVersion > 0 && p.RepresentationVersion != item.Version {
 		return fmt.Errorf("representation conflict: expected=%d current=%d", p.RepresentationVersion, item.Version)
 	}
-	if p.BodyDigest != "" && normalizeDigest(p.BodyDigest) != bodyDigest(item.Body) {
-		return fmt.Errorf("body digest conflict: expected=%s current=%s", normalizeDigest(p.BodyDigest), bodyDigest(item.Body))
+	if p.BodyDigest != "" && normalizeDigest(p.BodyDigest) != model.RepresentationDigest(item.Body) {
+		return fmt.Errorf("body digest conflict: expected=%s current=%s", normalizeDigest(p.BodyDigest), model.RepresentationDigest(item.Body))
 	}
 	return nil
 }
@@ -569,12 +610,35 @@ func checkAcceptedReceiptPrecondition(precondition Precondition, body string) er
 	}
 	return nil
 }
-func bodyDigest(body string) string {
-	sum := sha256.Sum256([]byte(body))
-	return hex.EncodeToString(sum[:])
-}
 func unchangedResult(op Operation, item observed, atomic bool) OperationResult {
-	return OperationResult{ID: op.ID, Kind: op.Kind, Status: "unchanged", Atomic: atomic, CommentID: item.Comment.ID, URL: item.Comment.HTMLURL}
+	digest := model.RepresentationDigest(item.Body)
+	return OperationResult{ID: op.ID, Kind: op.Kind, Status: "unchanged", Atomic: atomic,
+		CommentID: item.Comment.ID, URL: item.Comment.HTMLURL, BeforeDigest: digest, AfterDigest: digest}
+}
+func observedConflictResult(op Operation, message string, item observed) OperationResult {
+	digest := model.RepresentationDigest(item.Body)
+	return OperationResult{ID: op.ID, Kind: op.Kind, Status: "conflicted", Atomic: item.Version > 0,
+		CommentID: item.Comment.ID, URL: item.Comment.HTMLURL, BeforeDigest: digest, AfterDigest: digest, Message: message}
+}
+func observedFailureResult(op Operation, err error, atomic bool, item observed) OperationResult {
+	result := failureResult(op, err, atomic)
+	result.CommentID = item.Comment.ID
+	result.URL = item.Comment.HTMLURL
+	result.BeforeDigest = model.RepresentationDigest(item.Body)
+	return result
+}
+func observedPairConflictResult(op Operation, message string, before, after observed) OperationResult {
+	return OperationResult{ID: op.ID, Kind: op.Kind, Status: "conflicted", Atomic: after.Version > 0,
+		CommentID: after.Comment.ID, URL: after.Comment.HTMLURL,
+		BeforeDigest: model.RepresentationDigest(before.Body), AfterDigest: model.RepresentationDigest(after.Body), Message: message}
+}
+func observedPairFailureResult(op Operation, err error, atomic bool, before, after observed) OperationResult {
+	result := failureResult(op, err, atomic)
+	result.CommentID = after.Comment.ID
+	result.URL = after.Comment.HTMLURL
+	result.BeforeDigest = model.RepresentationDigest(before.Body)
+	result.AfterDigest = model.RepresentationDigest(after.Body)
+	return result
 }
 func conflictResult(op Operation, message string) OperationResult {
 	return OperationResult{ID: op.ID, Kind: op.Kind, Status: "conflicted", Message: message}
