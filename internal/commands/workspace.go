@@ -21,6 +21,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
+	"github.com/higress-group/issue-spec/internal/workflow"
 	runnerworkspace "github.com/higress-group/issue-spec/internal/workspace"
 )
 
@@ -509,6 +510,13 @@ func compileWorkspaceAssignment(ctx context.Context, backend changegraph.Backend
 		if err := validateAssignmentScenarios(value.Scenarios, scenarioCatalog); err != nil {
 			return assignment.Assignment{}, err
 		}
+		value, err = withWorkspaceDurableCheck(ctx, backend, repo, issue, lease, value)
+		if err != nil {
+			return assignment.Assignment{}, err
+		}
+		if err := value.Validate(); err != nil {
+			return assignment.Assignment{}, err
+		}
 		return value, nil
 	}
 	scenarios := append([]assignment.ScenarioRef(nil), input.ScenarioSelectors...)
@@ -567,12 +575,47 @@ func compileWorkspaceAssignment(ctx context.Context, backend changegraph.Backend
 	default:
 		return assignment.Assignment{}, fmt.Errorf("execution class %s does not issue a role assignment", class)
 	}
+	value, err = withWorkspaceDurableCheck(ctx, backend, repo, issue, lease, value)
+	if err != nil {
+		return assignment.Assignment{}, err
+	}
 	if err := bindCanonicalDesignContext(ctx, backend, repo, issue, value.Role, value.DesignContext); err != nil {
 		return assignment.Assignment{}, err
 	}
 	if err := value.Validate(); err != nil {
 		return assignment.Assignment{}, err
 	}
+	return value, nil
+}
+
+func withWorkspaceDurableCheck(ctx context.Context, backend changegraph.Backend, repo string, implement int,
+	lease processworkspace.LocalLease, value assignment.Assignment) (assignment.Assignment, error) {
+	if value.Role != assignment.RoleVerification || value.Verification == nil {
+		return value, nil
+	}
+	plan, err := workflow.Resolve(lease.IntegrationRoot)
+	if err != nil {
+		return assignment.Assignment{}, fmt.Errorf("resolve verification durable mode: %w", err)
+	}
+	mode := plan.DurableSpecsMode()
+	if mode == "none" {
+		return value, nil
+	}
+	if backend == nil {
+		return assignment.Assignment{}, errors.New("derive durable check proposal: issue backend is required")
+	}
+	located, err := changegraph.LocateFromImplement(ctx, backend, repo, implement)
+	if err != nil {
+		return assignment.Assignment{}, fmt.Errorf("derive durable check proposal from Implement issue: %w", err)
+	}
+	payload, err := value.Verification.WithDurableCheck(mode, assignment.DurableCheckBinding{
+		Repository: repo, Proposal: located.Proposal.Number, BaselineRevision: lease.Portable.BaseSHA,
+		SubjectRevision: lease.Portable.DetachedRevision, RepositoryRoot: ".",
+	})
+	if err != nil {
+		return assignment.Assignment{}, fmt.Errorf("seal verification durable check: %w", err)
+	}
+	value.Verification = &payload
 	return value, nil
 }
 

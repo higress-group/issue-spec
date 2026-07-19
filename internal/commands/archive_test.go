@@ -68,6 +68,116 @@ func TestArchiveDurableSpecClosesIssuesAfterMergedLinkedPR(t *testing.T) {
 	}
 }
 
+func TestIssueCloseChangeUsesOnlyExactMergedBindingAndIsIdempotent(t *testing.T) {
+	clearCommandAuthEnv(t)
+	profile := auth.Profile{Name: "close-change-test", Kind: auth.ProfileKindHosted, Hostname: "issues.example",
+		APIURL: "https://issues.example/api/v3", NativeAPIURL: "https://issues.example/api/v1",
+		WebURL: "https://issues.example", ServerInstanceID: "instance-close-change"}
+	if err := auth.SaveProfile(profile, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.StoreProfileToken(t.Context(), profile, "realm-token", true); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	merge := testEvidenceRecord("merge-1", codereview.EvidenceMerge, "merged", "head-abc", now)
+	merge.MergeRevision = "merge-abc"
+	openReview := testEvidenceRecord("review-1", codereview.EvidenceReview, "open", "head-abc", now)
+	openReview.Severity = "P1"
+	failedCheck := testEvidenceRecord("check-1", codereview.EvidenceCheck, "failed", "head-abc", now)
+	failedCheck.Name = "unit"
+	ledger := &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+		Reference: reference, SubjectRevision: "head-abc", CapturedAt: now,
+		Records: []codereview.EvidenceRecord{merge, openReview, failedCheck}}}
+	native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7,
+		SubjectRevision: "head-abc", CanonicalURL: "https://code.example/acme/widgets/changes/42", Provider: ledger}}
+	states := map[int]string{1: "open", 2: "closed", 3: "open"}
+	var updates []int
+	backend := fakeGitHubBackend{info: github.BackendInfo{Name: "rest", Kind: "rest", Host: "issues.example"},
+		getIssue: func(_ context.Context, repo string, number int) (github.Issue, error) {
+			bodies := map[int]string{
+				1: "<!-- issue-spec:issue=proposal change=close-change version=1 -->",
+				2: "<!-- issue-spec:issue=design change=close-change version=1 -->\n- Proposal Issue: https://issues.example/o/r/issues/1",
+				3: "<!-- issue-spec:issue=implement change=close-change version=1 -->\n- Design Issue: https://issues.example/o/r/issues/2",
+			}
+			return github.Issue{Number: number, HTMLURL: fmt.Sprintf("https://issues.example/o/r/issues/%d", number), State: states[number], Body: bodies[number]}, nil
+		},
+		updateIssue: func(_ context.Context, _ string, number int, options github.UpdateIssueOptions) (github.Issue, error) {
+			updates = append(updates, number)
+			states[number] = *options.State
+			return github.Issue{Number: number, HTMLURL: fmt.Sprintf("https://issues.example/o/r/issues/%d", number), State: states[number]}, nil
+		}}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.profileName = profile.Name
+	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
+	app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
+	app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) {
+		mergeFact := codereview.ProviderFact{ID: "merge-1", ExternalID: "merge-1", Kind: codereview.EvidenceMerge,
+			State: "merged", SubjectRevision: "head-abc", MergeRevision: "merge-abc", ObservedAt: now,
+			PayloadDigest: "sha256:" + strings.Repeat("a", 64)}
+		return &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+			Reference: reference, SubjectRevision: "head-abc", CapturedAt: now, Facts: []codereview.ProviderFact{mergeFact}}}, nil
+	}
+	args := []string{"--hostname", "issues.example", "--repo", "o/r", "--proposal", "1", "--design", "2",
+		"--implement", "3", "--revision", "head-abc", "--json"}
+	if code := app.runIssueCloseChange(t.Context(), args); code != 0 {
+		t.Fatalf("close-change code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if !reflect.DeepEqual(updates, []int{1, 3}) {
+		t.Fatalf("updates=%v, want only initially open issues", updates)
+	}
+	var result closeChangeResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil || !result.OK ||
+		!reflect.DeepEqual(result.MergeEvidence.EvidenceIDs, []string{"merge-1"}) || len(result.ClosedIssues) != 3 {
+		t.Fatalf("result=%+v decode=%v", result, err)
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := app.runIssueCloseChange(t.Context(), args); code != 0 || len(updates) != 2 {
+		t.Fatalf("idempotent retry code=%d updates=%v stdout=%q stderr=%q", code, updates, out.String(), errOut.String())
+	}
+}
+
+func TestArchiveDurableSpecEmitsBoundedDeprecationWarning(t *testing.T) {
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	if code := app.runArchive(t.Context(), []string{"durable-spec", "--help"}); code != 0 {
+		t.Fatalf("help code=%d stderr=%q", code, errOut.String())
+	}
+	warning := errOut.String()
+	for _, want := range []string{`"code":"archive.durable_spec.deprecated"`, `"replacement":"issue-spec durable-spec preview|apply|check|detail"`, `"removal":"next-breaking-release"`} {
+		if !strings.Contains(warning, want) {
+			t.Fatalf("deprecation warning missing %q: %s", want, warning)
+		}
+	}
+}
+
+func TestCloseChangeRejectsActiveBindingDriftDuringMergeSynchronization(t *testing.T) {
+	now := time.Now().UTC()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	target := coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7, SubjectRevision: "head-abc",
+		Provider: &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+			Reference: reference, SubjectRevision: "head-abc", CapturedAt: now}}}
+	drifted := target
+	drifted.ReferenceVersion = 8
+	native := &commandNativeEvidence{targets: []coreevidence.NativeTarget{target, drifted}}
+	mergeFact := codereview.ProviderFact{ID: "merge-1", ExternalID: "merge-1", Kind: codereview.EvidenceMerge,
+		State: "merged", SubjectRevision: "head-abc", MergeRevision: "merge-abc", ObservedAt: now,
+		PayloadDigest: "sha256:" + strings.Repeat("a", 64)}
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
+	app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) {
+		return &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+			Reference: reference, SubjectRevision: "head-abc", CapturedAt: now, Facts: []codereview.ProviderFact{mergeFact}}}, nil
+	}
+	if _, err := app.closeChangeMergeEvidence(t.Context(), auth.Profile{Kind: auth.ProfileKindHosted}, "token",
+		"acme/widgets", 3, "head-abc"); err == nil || !strings.Contains(err.Error(), "version moved") {
+		t.Fatalf("active binding drift error=%v", err)
+	}
+}
+
 func TestArchiveDurableSpecDoesNotCloseIssuesForUnmergedPR(t *testing.T) {
 	t.Chdir(t.TempDir())
 	const prURL = "https://github.com/o/r/pull/7"

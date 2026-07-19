@@ -740,6 +740,10 @@ func validateArtifacts(templateDir string, artifacts []Artifact, source SourceKi
 		if !supportedArtifactType(artifact.Type) {
 			diagnostics = append(diagnostics, Diagnostic{Severity: "error", Code: "unsupported_artifact_type", Artifact: artifact.ID, Message: fmt.Sprintf("artifact %s has unsupported type %q", artifact.ID, artifact.Type)})
 		}
+		if artifact.Type == "archive" {
+			diagnostics = append(diagnostics, Diagnostic{Severity: "warning", Code: "legacy_archive_artifact_deprecated",
+				Artifact: artifact.ID, Message: "legacy archive artifacts are deprecated; use durable-spec preview, apply, check, and detail"})
+		}
 		for _, field := range artifact.UnknownFields {
 			severity := "warning"
 			code := "unknown_artifact_field"
@@ -920,6 +924,11 @@ func supportedArtifactType(typ string) bool {
 }
 
 func storageMappings(artifact Artifact) []string {
+	if artifact.Type == "archive" {
+		// The type remains recognizable for one compatibility window, but it no
+		// longer participates in normal issue-native or repository storage routes.
+		return nil
+	}
 	seen := map[string]bool{}
 	add := func(value string) {
 		if value != "" {
@@ -950,8 +959,6 @@ func storageMappings(artifact Artifact) []string {
 		add("pr-rationale-comment")
 	case "finding":
 		add("pr-review-comment")
-	case "archive":
-		add("durable-archive-output")
 	}
 	for _, output := range artifact.Generates {
 		lower := strings.ToLower(output)
@@ -971,7 +978,6 @@ func storageMappings(artifact Artifact) []string {
 			add("VERIFY-typed-comment")
 		case strings.Contains(lower, "spec"):
 			add("SPEC-typed-comment")
-			add("durable-archive-output")
 		}
 	}
 	if artifact.ApplyTracks != "" {
@@ -997,7 +1003,6 @@ func builtinArtifacts() []Artifact {
 		{ID: "process", Type: "PROCESS", Storage: []string{"PROCESS-typed-comment"}},
 		{ID: "review", Type: "REVIEW", Storage: []string{"REVIEW-typed-comment", "pr-review-comment"}},
 		{ID: "verify", Type: "VERIFY", Storage: []string{"VERIFY-typed-comment"}},
-		{ID: "archive", Type: "archive", Storage: []string{"durable-archive-output"}},
 	}
 	return artifacts
 }

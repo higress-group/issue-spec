@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	changegraph "github.com/higress-group/issue-spec/internal/change"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
@@ -27,6 +29,7 @@ func (a *app) runArchive(ctx context.Context, args []string) int {
 	}
 	switch args[0] {
 	case "durable-spec":
+		fmt.Fprintln(a.err, `{"warning":{"code":"archive.durable_spec.deprecated","replacement":"issue-spec durable-spec preview|apply|check|detail","removal":"next-breaking-release"}}`)
 		return a.runArchiveDurableSpec(ctx, args[1:])
 	default:
 		a.errorf("unknown archive command %q\n", args[0])
@@ -316,7 +319,7 @@ func validateArchiveImplementationReviewCompletion(artifacts []model.Artifact, i
 			input.Process.Comment.Body).Class != model.ProcessExecutionReview {
 			continue
 		}
-		report := gates.EvaluateProcessEvidence(input, gates.TargetArchive, gates.ModeAuthoritative)
+		report := gates.EvaluateProcessEvidence(input, gates.TargetFinal, gates.ModeAuthoritative)
 		if report.CarrierRevision.Trusted && report.CarrierRevision.Revision == implementationGate.Target.SubjectRevision {
 			for _, satisfied := range report.Satisfied {
 				if satisfied == "review evidence" {
@@ -368,6 +371,206 @@ type closedArchiveIssue struct {
 	Number int    `json:"number"`
 	URL    string `json:"url,omitempty"`
 	State  string `json:"state,omitempty"`
+}
+
+type closeChangeResult struct {
+	OK            bool                        `json:"ok"`
+	Revision      string                      `json:"revision"`
+	ChangeURL     string                      `json:"change_url,omitempty"`
+	MergeEvidence externalEvidenceConsumption `json:"merge_evidence"`
+	ClosedIssues  []closedArchiveIssue        `json:"closed_issues"`
+}
+
+// runIssueCloseChange is the self-hosted post-merge closure path. It consumes
+// only the active code_change binding and exact merged evidence, then closes
+// precisely the caller-supplied Proposal, Design, and Implement issues.
+func (a *app) runIssueCloseChange(ctx context.Context, args []string) int {
+	fs := newFlagSet("issue close-change", a.err)
+	repoFlag := fs.String("repo", "", "repository owner/name")
+	host := fs.String("hostname", "github.com", "issue backend hostname")
+	proposalFlag := fs.String("proposal", "", "proposal issue number or URL")
+	designFlag := fs.String("design", "", "design issue number or URL")
+	implementFlag := fs.String("implement", "", "implement issue number or URL")
+	revision := fs.String("revision", "", "exact merged code_change subject revision")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	repo, ok := a.validateRepo(*repoFlag)
+	if !ok {
+		return 2
+	}
+	proposal, err := parseIssueFlag(*proposalFlag, "proposal")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	design, err := parseIssueFlag(*designFlag, "design")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	implement, err := parseIssueFlag(*implementFlag, "implement")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	expectedRevision := strings.TrimSpace(*revision)
+	if expectedRevision == "" {
+		a.errorf("--revision is required\n")
+		return 2
+	}
+	if proposal == design || proposal == implement || design == implement {
+		a.errorf("--proposal, --design, and --implement must identify three distinct issues\n")
+		return 2
+	}
+	profile, _, err := auth.ResolveProfile(a.profileName, *host)
+	if err != nil {
+		a.errorf("resolve close-change profile: %v\n", err)
+		return 1
+	}
+	if profile.Kind != auth.ProfileKindHosted {
+		a.errorf("issue close-change is available only for self-hosted profiles; GitHub uses native closing links\n")
+		return 2
+	}
+	client, token, err := a.clientFor(ctx, *host)
+	if err != nil {
+		a.errorf("auth required for issue close-change on %s: %v\n", auth.NormalizeHost(*host), err)
+		return 1
+	}
+	gate, err := a.closeChangeMergeEvidence(ctx, profile, token.Value, repo, implement, expectedRevision)
+	if err != nil {
+		a.errorf("implementation merge evidence: %v\n", err)
+		return 1
+	}
+	located, err := changegraph.LocateFromImplement(ctx, client, repo, implement)
+	if err != nil {
+		a.errorf("resolve exact change issue set: %v\n", err)
+		return 1
+	}
+	if located.Proposal.Number != proposal || located.Design.Number != design || located.Implement.Number != implement {
+		a.errorf("supplied issue set does not match the canonical Proposal #%d, Design #%d, and Implement #%d chain\n",
+			located.Proposal.Number, located.Design.Number, located.Implement.Number)
+		return 1
+	}
+	refs := []archiveCloseIssueRef{{Kind: "proposal", Number: proposal}, {Kind: "design", Number: design}, {Kind: "implement", Number: implement}}
+	issues := make([]github.Issue, len(refs))
+	for i, ref := range refs {
+		issue, readErr := client.GetIssue(ctx, repo, ref.Number)
+		if readErr != nil {
+			a.errorf("read %s issue #%d: %v\n", ref.Kind, ref.Number, readErr)
+			return 1
+		}
+		issues[i] = issue
+	}
+	closed := make([]closedArchiveIssue, 0, len(refs))
+	state := "closed"
+	for i, ref := range refs {
+		issue := issues[i]
+		if !strings.EqualFold(strings.TrimSpace(issue.State), state) {
+			issue, err = client.UpdateIssue(ctx, repo, ref.Number, github.UpdateIssueOptions{State: &state})
+			if err != nil {
+				a.errorf("close %s issue #%d: %v\n", ref.Kind, ref.Number, err)
+				return 1
+			}
+		}
+		closed = append(closed, closedArchiveIssue{Kind: ref.Kind, Number: ref.Number, URL: issue.HTMLURL, State: state})
+	}
+	result := closeChangeResult{OK: true, Revision: gate.Target.SubjectRevision, ChangeURL: gate.Target.CanonicalURL,
+		MergeEvidence: gate.Consumption, ClosedIssues: closed}
+	if *jsonOut {
+		return a.outputJSON(result)
+	}
+	fmt.Fprintf(a.out, "closed proposal #%d, design #%d, and implement #%d after merged change %s\n",
+		proposal, design, implement, gate.Target.CanonicalURL)
+	return 0
+}
+
+func (a *app) closeChangeMergeEvidence(ctx context.Context, profile auth.Profile, token, repo string, implement int,
+	expectedRevision string) (externalGateResult, error) {
+	if a.newNativeEvidenceProvider == nil {
+		return externalGateResult{}, errors.New("self-hosted native evidence provider is unavailable")
+	}
+	native, err := a.newNativeEvidenceProvider(profile, token)
+	if err != nil {
+		return externalGateResult{}, err
+	}
+	target, err := native.ResolveTarget(ctx, repo, implement, "code_change")
+	if err != nil {
+		return externalGateResult{}, err
+	}
+	if target.SubjectRevision != expectedRevision {
+		return externalGateResult{}, fmt.Errorf("external code_change revision mismatch: reference is %s, command requested %s",
+			target.SubjectRevision, expectedRevision)
+	}
+	plan, err := workflow.Resolve(".")
+	if err != nil {
+		return externalGateResult{}, fmt.Errorf("resolve workflow provider selection: %w", err)
+	}
+	if plan.Config.ExternalCode != nil && strings.TrimSpace(plan.Config.ExternalCode.ProviderKey) != target.Reference.ProviderKey {
+		return externalGateResult{}, fmt.Errorf("external code provider mismatch: workflow selects %s, active reference uses %s",
+			plan.Config.ExternalCode.ProviderKey, target.Reference.ProviderKey)
+	}
+	provider, err := a.resolveOperatorProvider(ctx, profile, target.Reference.ProviderKey)
+	if err != nil {
+		return externalGateResult{}, fmt.Errorf("resolve operator evidence provider: %w", err)
+	}
+	request := codereview.SnapshotRequest{Reference: target.Reference, SubjectRevision: target.SubjectRevision}
+	providerSnapshot, err := codereview.FetchSnapshot(ctx, provider, request)
+	if err != nil {
+		return externalGateResult{}, fmt.Errorf("fetch external provider facts: %w", err)
+	}
+	mergeProviderSnapshot := providerSnapshot
+	mergeProviderSnapshot.Facts = nil
+	for _, fact := range providerSnapshot.Facts {
+		if fact.Kind == codereview.EvidenceMerge {
+			mergeProviderSnapshot.Facts = append(mergeProviderSnapshot.Facts, fact)
+		}
+	}
+	if len(mergeProviderSnapshot.Facts) == 0 {
+		return externalGateResult{}, errors.New("external provider snapshot contains no exact merge evidence")
+	}
+	if err := validateExactProviderSnapshot(mergeProviderSnapshot, target); err != nil {
+		return externalGateResult{}, fmt.Errorf("validate external provider facts: %w", err)
+	}
+	if err := native.SynchronizeSnapshot(ctx, target, mergeProviderSnapshot); err != nil {
+		return externalGateResult{}, fmt.Errorf("persist external provider facts: %w", err)
+	}
+	reloaded, err := native.ResolveTarget(ctx, repo, implement, "code_change")
+	if err != nil {
+		return externalGateResult{}, fmt.Errorf("reload authoritative external reference: %w", err)
+	}
+	if err := validateUnchangedNativeTarget(target, reloaded); err != nil {
+		return externalGateResult{}, fmt.Errorf("reload authoritative external reference: %w", err)
+	}
+	target = reloaded
+	request = codereview.SnapshotRequest{Reference: target.Reference, SubjectRevision: target.SubjectRevision}
+	ledger, err := codereview.FetchSnapshot(ctx, target.Provider, request)
+	if err != nil {
+		return externalGateResult{}, fmt.Errorf("reload authoritative external evidence ledger: %w", err)
+	}
+	if err := validateExactSnapshotIdentity(ledger, target); err != nil {
+		return externalGateResult{}, fmt.Errorf("reload authoritative external evidence ledger: %w", err)
+	}
+	mergeOnly := ledger
+	mergeOnly.Facts = nil
+	mergeOnly.Records = nil
+	for _, record := range ledger.Records {
+		if record.Kind == codereview.EvidenceMerge {
+			mergeOnly.Records = append(mergeOnly.Records, record)
+		}
+	}
+	evaluation := coreevidence.Evaluate(mergeOnly, coreevidence.Policy{}, coreevidence.Target{Gate: coreevidence.GateMerge,
+		Reference: target.Reference, SubjectRevision: target.SubjectRevision, Now: time.Now().UTC()})
+	result := externalGateResult{Evaluation: evaluation, Snapshot: mergeOnly, Target: target, Native: native,
+		Consumption: externalEvidenceConsumption{ProviderKey: target.Reference.ProviderKey,
+			ExternalRepository: target.Reference.ExternalRepository, ChangeID: target.Reference.ChangeID,
+			ReferenceVersion: target.ReferenceVersion, SubjectRevision: target.SubjectRevision,
+			EvidenceIDs: append([]string(nil), evaluation.EvidenceIDs...)}}
+	if !evaluation.Passed {
+		return result, externalGateFailure("code_change", evaluation)
+	}
+	return result, nil
 }
 
 func parseArchiveCloseIssueSet(enabled bool, proposalIssue int, designFlag, implementFlag string, prNumber int) (archiveCloseIssueSet, error) {

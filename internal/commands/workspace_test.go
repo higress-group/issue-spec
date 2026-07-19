@@ -237,6 +237,24 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 	if err != nil || verification.Role != assignment.RoleVerification || len(verification.Verification.RequiredTests) != 1 {
 		t.Fatalf("verification=%+v err=%v", verification, err)
 	}
+	if err := os.MkdirAll(filepath.Join(repo, "issue-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "issue-spec", "config.yaml"), []byte("durable_specs:\n  mode: repository\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	durableSnapshot := snapshot
+	durableSnapshot.Portable.BaseSHA = base
+	verification, err = compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionVerification,
+		processBody(model.ProcessExecutionVerification, assignment.ProcessInput{ScenarioSelectors: scenarios,
+			RequiredTests: []assignment.TestSelector{{ID: "unit", Command: "go test ./internal/commands"}}}), durableSnapshot, "", "", scenarios, false)
+	if err != nil || len(verification.Verification.RequiredTests) != 2 {
+		t.Fatalf("repository durable verification=%+v err=%v", verification, err)
+	}
+	wantDurable := "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + base + " --subject " + subject + " --root . --json"
+	if got := verification.Verification.RequiredTests[0]; got.ID != assignment.DurableSpecTestID || got.Command != wantDurable {
+		t.Fatalf("durable selector=%+v want command %q", got, wantDurable)
+	}
 }
 
 func TestDeriveReviewAssignmentIncludesDeleteOnlyScope(t *testing.T) {

@@ -353,20 +353,6 @@ func TestEvaluateVerifyRevisionFactHasStableActionableDiagnostic(t *testing.T) {
 	}
 }
 
-func TestEvaluateArchiveRequiresDurableSpec(t *testing.T) {
-	spec, task, process, verify := readyChain(t)
-	snapshot := Snapshot{Target: TargetArchive, Mode: ModeAuthoritative, Artifacts: []model.Artifact{spec, task, process, verify}}
-	snapshot.Remote.DurableSpec = Fact{Required: true}
-	report := evaluate(t, snapshot)
-	if !containsCode(report, CodeDurableSpecUnknown) || report.Ready {
-		t.Fatalf("archive unknown durable spec = %+v", report)
-	}
-	snapshot.Remote.DurableSpec = Fact{Required: true, Known: true, Passed: true}
-	if report = evaluate(t, snapshot); !report.Ready {
-		t.Fatalf("valid durable spec should pass: %+v", report.Diagnostics)
-	}
-}
-
 func TestEvaluateRegistersWorkspaceGateAfterProcessEvidence(t *testing.T) {
 	process := workspaceGateProcess(t, model.ProcessExecutionReview, true, workspaceGateRevision)
 	input := ProcessEvidenceInput{Process: process, ActiveSpecs: map[string]string{"SPEC-001": "https://example.test/spec"},

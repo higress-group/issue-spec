@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -88,8 +87,6 @@ type finalVerifyReport struct {
 	FailedChecks          []reviewCheck                 `json:"failed_checks,omitempty"`
 	PendingChecks         []reviewCheck                 `json:"pending_checks,omitempty"`
 	PR                    int                           `json:"pr,omitempty"`
-	DurableSpecPath       string                        `json:"durable_spec_path,omitempty"`
-	DurableSpecCheck      map[string]bool               `json:"durable_spec_check,omitempty"`
 	ExternalEvidence      *externalEvidenceConsumption  `json:"external_evidence,omitempty"`
 	Gate                  gates.Report                  `json:"gate"`
 	ProcessEvidence       []gates.ProcessEvidenceReport `json:"process_evidence,omitempty"`
@@ -97,7 +94,6 @@ type finalVerifyReport struct {
 
 type finalVerifyOptions struct {
 	ImplementIssue        int
-	DurableSpecPath       string
 	PR                    int
 	PRURL                 string
 	ExpectedRevision      string
@@ -605,7 +601,6 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 	implementFlag := fs.String("implement", "", "implement issue number or URL")
 	prFlag := fs.Int("pr", 0, "pull request number for rationale-comment verification")
 	revision := fs.String("revision", "", "expected external code head revision for self-hosted evidence")
-	durableSpec := fs.String("durable-spec", "", "durable spec file to verify")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	summaryOut := fs.Bool("summary", false, "write compact versioned JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
@@ -712,7 +707,6 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 	}
 	report, err := buildReport(artifacts, proposalIssueData.HTMLURL, finalVerifyOptions{
 		ImplementIssue:        implementIssue,
-		DurableSpecPath:       *durableSpec,
 		PR:                    *prFlag,
 		PRURL:                 prURL,
 		ExpectedRevision:      expectedRevision,
@@ -867,8 +861,8 @@ func stampConsumedEvidence(body string, consumption externalEvidenceConsumption)
 	return updated, updated != body, nil
 }
 
-func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts finalVerifyOptions) (finalVerifyReport, error) {
-	useMinimalFinal := opts.FinalEvidenceObserved && strings.TrimSpace(opts.DurableSpecPath) == ""
+func buildFinalVerifyReport(artifacts []model.Artifact, _ string, opts finalVerifyOptions) (finalVerifyReport, error) {
+	useMinimalFinal := opts.FinalEvidenceObserved
 	traceability := model.VerifyReport{OK: true}
 	if !useMinimalFinal {
 		traceability = model.VerifyTraceability(artifacts)
@@ -938,23 +932,6 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	}
 
 	target := gates.TargetFinal
-	if strings.TrimSpace(opts.DurableSpecPath) != "" {
-		check, err := verifyDurableSpecFile(opts.DurableSpecPath, proposalURL, activeSpecs)
-		if err != nil {
-			return report, err
-		}
-		report.DurableSpecPath = opts.DurableSpecPath
-		report.DurableSpecCheck = check
-		durableOK := true
-		for _, ok := range check {
-			if !ok {
-				durableOK = false
-			}
-		}
-		remote.DurableSpec = gates.Fact{Required: true, Known: true, Passed: durableOK,
-			Current: fmt.Sprintf("valid=%v", durableOK), Expected: "valid=true"}
-		target = gates.TargetArchive
-	}
 	var processEvidence []gates.ProcessEvidenceInput
 	if opts.RationaleRequired || opts.ExternalEvidence != nil || hasExplicitProcessWorkspace(gateArtifacts) || hasActiveChangeBearingProcess(gateArtifacts) {
 		if opts.ExternalReview != nil {
@@ -989,13 +966,13 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		Remote:                   remote,
 		ProcessEvidence:          processEvidence,
 		FinalEvidence:            finalEvidence,
-		LegacyFinalCompatibility: target == gates.TargetFinal && !useMinimalFinal,
+		LegacyFinalCompatibility: !useMinimalFinal,
 	})
 	if err != nil {
 		return report, err
 	}
 	var workspaceGateDiagnostics []gates.Diagnostic
-	if target != gates.TargetFinal || !useMinimalFinal {
+	if !useMinimalFinal {
 		workspaceReport, workspaceErr := gates.EvaluateWorkspaceEvidence(gates.WorkspaceEvaluationInput{
 			Target: target, Mode: gates.ModeAuthoritative, Artifacts: currentFinalizationArtifacts(gateArtifacts),
 			ExpectedRevision:    gates.Fact{Required: true, Known: strings.TrimSpace(opts.ExpectedRevision) != "", Passed: true, Expected: strings.TrimSpace(opts.ExpectedRevision)},
@@ -1066,14 +1043,6 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	}
 	if !opts.RationaleRequired {
 		report.RationaleCoverage = nil
-	}
-	if report.DurableSpecCheck != nil {
-		check := report.DurableSpecCheck
-		for key, ok := range check {
-			if !ok {
-				report.Errors = append(report.Errors, fmt.Sprintf("durable spec missing %s", key))
-			}
-		}
 	}
 	sort.Strings(report.Errors)
 	sort.Strings(report.Warnings)
@@ -1561,38 +1530,6 @@ func rationaleCoverage(comments []github.PullRequestReviewComment, activeSpecIDs
 	return covered
 }
 
-func verifyDurableSpecFile(path, proposalURL string, specs []model.Artifact) (map[string]bool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	body := string(data)
-	check := map[string]bool{
-		"final title":          strings.HasPrefix(strings.TrimSpace(body), "# "),
-		"Purpose section":      strings.Contains(body, "\n## Purpose\n"),
-		"Requirements section": strings.Contains(body, "\n## Requirements\n"),
-		"proposal issue URL":   proposalURL != "" && strings.Contains(body, proposalURL),
-		"no delta headings":    !containsDeltaHeading(body),
-	}
-	for _, spec := range specs {
-		if spec.URL != "" {
-			check["source "+spec.Comment.ID+" URL"] = strings.Contains(body, spec.URL)
-		}
-	}
-	return check, nil
-}
-
-func containsDeltaHeading(body string) bool {
-	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		switch trimmed {
-		case "## ADDED Requirements", "## MODIFIED Requirements", "## REMOVED Requirements", "## RENAMED Requirements":
-			return true
-		}
-	}
-	return false
-}
-
 func printFinalVerify(out interface{ Write([]byte) (int, error) }, report finalVerifyReport) {
 	if report.OK {
 		fmt.Fprintln(out, "final verify OK")
@@ -1608,9 +1545,6 @@ func printFinalVerify(out interface{ Write([]byte) (int, error) }, report finalV
 	}
 	for _, process := range report.ProcessEvidence {
 		fmt.Fprintf(out, "process evidence: %s\n", process.Summary())
-	}
-	if report.DurableSpecPath != "" {
-		fmt.Fprintf(out, "durable spec: %s\n", report.DurableSpecPath)
 	}
 	for _, err := range report.Errors {
 		fmt.Fprintf(out, "- %s\n", err)

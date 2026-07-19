@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -94,7 +92,6 @@ func TestSelfHostedStatusOnlyForcesProviderSyncForFinal(t *testing.T) {
 		wantCalls string
 	}{
 		{target: gates.TargetFinal, wantSyncs: 1, wantCalls: "operator,persist,ledger"},
-		{target: gates.TargetArchive, wantCalls: "ledger"},
 	} {
 		t.Run(string(test.target), func(t *testing.T) {
 			var calls []string
@@ -122,7 +119,7 @@ func TestSelfHostedStatusOnlyForcesProviderSyncForFinal(t *testing.T) {
 
 func TestStatusAcceptedVerificationUsesExactGitHubHead(t *testing.T) {
 	revision := strings.Repeat("b", 40)
-	for _, target := range []gates.Target{gates.TargetFinal, gates.TargetArchive} {
+	for _, target := range []gates.Target{gates.TargetFinal} {
 		t.Run(string(target), func(t *testing.T) {
 			artifacts := statusAcceptedVerificationArtifacts(t, revision, "https://github.com/o/r/pull/7")
 			pr := pullRequestAtHead(7, revision)
@@ -139,7 +136,7 @@ func TestStatusAcceptedVerificationUsesExactSelfHostedRevision(t *testing.T) {
 	revision := strings.Repeat("b", 40)
 	now := time.Now().UTC()
 	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
-	for _, target := range []gates.Target{gates.TargetFinal, gates.TargetArchive} {
+	for _, target := range []gates.Target{gates.TargetFinal} {
 		t.Run(string(target), func(t *testing.T) {
 			check := testEvidenceRecord("check-ledger", codereview.EvidenceCheck, "passed", revision, now)
 			check.Name = "unit"
@@ -278,7 +275,7 @@ func TestResolveStatusGate(t *testing.T) {
 		{design: 2, want: gates.TargetDesign},
 		{design: 2, implement: 3, want: gates.TargetImplement},
 		{raw: "final", design: 2, implement: 3, want: gates.TargetFinal},
-		{raw: "archive", design: 2, implement: 3, want: gates.TargetArchive},
+		{raw: "archive", design: 2, implement: 3, wantErr: true},
 		{raw: "final", design: 2, wantErr: true},
 		{raw: "unknown", wantErr: true},
 	}
@@ -350,16 +347,6 @@ func TestStatusAndVerifyLocallyKnowableCodesStayInParity(t *testing.T) {
 			t.Fatalf("final status without PR authority omitted local fail-closed code %s: %+v", code, status.Gate.Diagnostics)
 		}
 	}
-	archive := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetArchive, artifacts, workflow.Plan{}, nil)
-	for _, code := range []string{
-		gates.CodeProcessCarrierMissing,
-		gates.CodeProcessPRLinkMissing,
-		gates.CodeProcessSpecLinkMissing,
-	} {
-		if !statusHasCode(archive, code) {
-			t.Fatalf("archive status without PR authority omitted local fail-closed code %s: %+v", code, archive.Gate.Diagnostics)
-		}
-	}
 }
 
 func TestStatusIncludesCollectedExactRevisionFailure(t *testing.T) {
@@ -389,7 +376,7 @@ func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *te
 		model.ProcessExecutionExternal,
 	}
 	for _, class := range classes {
-		for _, target := range []gates.Target{gates.TargetFinal, gates.TargetArchive} {
+		for _, target := range []gates.Target{gates.TargetFinal} {
 			t.Run(string(class)+"/"+string(target), func(t *testing.T) {
 				spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 				spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
@@ -403,11 +390,7 @@ func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *te
 				linkArtifacts(t, &spec, &process)
 				artifacts := []model.Artifact{spec, task, process, verify}
 
-				verifyOptions := finalVerifyOptions{}
-				if target == gates.TargetArchive {
-					verifyOptions.DurableSpecPath = statusValidDurableSpec(t, "https://github.com/o/r/issues/1", spec.URL)
-				}
-				verifyReport, err := buildFinalVerifyReport(artifacts, "https://github.com/o/r/issues/1", verifyOptions)
+				verifyReport, err := buildFinalVerifyReport(artifacts, "https://github.com/o/r/issues/1", finalVerifyOptions{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -431,17 +414,6 @@ func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *te
 			})
 		}
 	}
-}
-
-func statusValidDurableSpec(t *testing.T, proposalURL, specURL string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "spec.md")
-	body := "# issue-spec-cli\n\n## Purpose\n\nPurpose.\n\nProposal Issues:\n- " + proposalURL +
-		"\n\n## Requirements\n\n### Requirement: X\n\nX MUST work.\n\nSource SPEC comment: " + specURL + "\n"
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
 }
 
 func TestStatusDefaultProcessEvidenceDoesNotOverrideCollectedEvidence(t *testing.T) {

@@ -19,7 +19,6 @@ const (
 	TargetDesign    Target = "design"
 	TargetImplement Target = "implement"
 	TargetFinal     Target = "final"
-	TargetArchive   Target = "archive"
 )
 
 // Mode controls whether a report is a point-in-time forecast or an
@@ -119,7 +118,6 @@ type RemoteFacts struct {
 	ReviewFindings   Fact                  `json:"review_findings"`
 	ProviderEvidence Fact                  `json:"provider_evidence"`
 	VerifyRevision   ScopedFact            `json:"verify_revision"`
-	DurableSpec      Fact                  `json:"durable_spec"`
 	Processes        []ProcessEvidenceFact `json:"processes,omitempty"`
 	Workspace        WorkspaceFacts        `json:"workspace"`
 }
@@ -236,7 +234,7 @@ type Report struct {
 
 func (t Target) validate() error {
 	switch t {
-	case TargetProposal, TargetDesign, TargetImplement, TargetFinal, TargetArchive:
+	case TargetProposal, TargetDesign, TargetImplement, TargetFinal:
 		return nil
 	default:
 		return fmt.Errorf("unsupported gate target %q", t)

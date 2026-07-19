@@ -32,6 +32,7 @@ type workflowGenerationResult struct {
 	Tools               []string `json:"tools"`
 	SkillFiles          []string `json:"skillFiles,omitempty"`
 	CommandFiles        []string `json:"commandFiles,omitempty"`
+	PrunedFiles         []string `json:"prunedFiles,omitempty"`
 	CommandsSkipped     []string `json:"commandsSkipped,omitempty"`
 	GlobalPromptFiles   []string `json:"globalPromptFiles,omitempty"`
 	GlobalPromptsDryRun bool     `json:"globalPromptsDryRun,omitempty"`
@@ -105,6 +106,11 @@ func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, too
 	if len(tools) == 0 {
 		return result, nil
 	}
+	pruned, err := pruneManagedArchiveWorkflowAssets(root, delivery, tools)
+	if err != nil {
+		return result, err
+	}
+	result.PrunedFiles = pruned
 
 	if delivery != workflowDeliveryCommands {
 		for _, tool := range tools {
@@ -144,6 +150,44 @@ func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, too
 	}
 
 	return result, nil
+}
+
+func pruneManagedArchiveWorkflowAssets(root, delivery string, tools []workflowTool) ([]string, error) {
+	var candidates []string
+	if delivery != workflowDeliveryCommands {
+		for _, tool := range tools {
+			candidates = append(candidates, filepath.Join(root, tool.SkillsDir, "skills", "issue-spec-archive", "SKILL.md"))
+		}
+	}
+	if delivery != workflowDeliverySkills {
+		for _, tool := range tools {
+			if tool.ID == "claude" {
+				candidates = append(candidates, filepath.Join(root, ".claude", "commands", "issue-spec", "archive.md"))
+			}
+		}
+	}
+	var pruned []string
+	for _, path := range candidates {
+		body, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect managed archive workflow asset %s: %w", path, err)
+		}
+		content := string(body)
+		managedSkill := strings.Contains(content, `generatedBy: "issue-spec"`) && strings.Contains(content, "name: issue-spec-archive\n")
+		managedCommand := strings.Contains(content, `name: "Issue Spec: Archive"`) &&
+			strings.Contains(content, `category: "Workflow"`) && strings.Contains(content, "# Issue Spec Archive\n")
+		if !managedSkill && !managedCommand {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			return nil, fmt.Errorf("prune managed archive workflow asset %s: %w", path, err)
+		}
+		pruned = append(pruned, cleanGeneratedPath(path))
+	}
+	return pruned, nil
 }
 
 func installGlobalCodexPrompts(root, repo string, provider *workflow.ProviderPlan, options globalPromptInstallOptions, result *workflowGenerationResult) error {

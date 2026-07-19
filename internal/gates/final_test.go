@@ -117,7 +117,6 @@ func TestMinimalFinalIgnoresUnrelatedLifecycleAndArchiveBookkeeping(t *testing.T
 	snapshot.Workflow = WorkflowFacts{Required: true, Known: true, Valid: false, Errors: []string{"project prose invalid"}}
 	snapshot.Remote.PRChecks = Fact{Required: true, Known: true, Passed: false, Current: "unassigned provider check"}
 	snapshot.Remote.ProviderEvidence = Fact{Required: true, Known: true, Passed: false, Current: "unrelated provider fact"}
-	snapshot.Remote.DurableSpec = Fact{Required: true, Known: true, Passed: false, Current: "archive not ready"}
 	snapshot.Remote.Workspace = WorkspaceFacts{Observed: true, ExpectedRevision: Fact{Required: true, Known: true, Passed: false}}
 	historicalBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-099",
 		"## Process: historical\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- change-bearing", model.BodyOptions{Status: "superseded"})

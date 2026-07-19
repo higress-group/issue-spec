@@ -1080,6 +1080,20 @@ func TestRunVerifySelfHostedPreservesBlockingGateAndSkipsEvidenceConsumption(t *
 	}
 }
 
+func TestRunVerifyRejectsRemovedDurableSpecGateFlag(t *testing.T) {
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	called := false
+	code := app.runVerifyWithReportBuilder(t.Context(), []string{"--durable-spec", "spec.md"},
+		func([]model.Artifact, string, finalVerifyOptions) (finalVerifyReport, error) {
+			called = true
+			return finalVerifyReport{}, nil
+		})
+	if code != 2 || called || !strings.Contains(errOut.String(), "flag provided but not defined: -durable-spec") {
+		t.Fatalf("removed durable gate flag code=%d called=%t stdout=%q stderr=%q", code, called, out.String(), errOut.String())
+	}
+}
+
 func TestRunVerifySelfHostedRevisionFailureIsAuthoritativeDiagnostic(t *testing.T) {
 	app, out, errOut, updates := newSelfHostedVerifyAppAtRevision(t, "stale-head")
 	code := app.runVerify(t.Context(), []string{
@@ -1331,46 +1345,6 @@ func TestBuildFinalVerifyReportDoesNotRequireSessionMetadata(t *testing.T) {
 	}
 	if len(report.Diagnostics) != 0 {
 		t.Fatalf("diagnostics = %+v", report.Diagnostics)
-	}
-}
-
-func TestBuildFinalVerifyReportChecksDurableSpecForNonChangeBearingWorkflow(t *testing.T) {
-	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
-	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
-	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
-	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContentWithClass(model.ProcessExecutionVerification))
-	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
-	review := typedArtifact(t, 3, "REVIEW", "REVIEW-001", "done", "## Review\n\nnone")
-	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
-	linkArtifacts(t, &spec, &task)
-	linkArtifacts(t, &task, &process)
-	specPath := filepath.Join(t.TempDir(), "spec.md")
-	if err := os.WriteFile(specPath, []byte(`# issue-spec-cli
-
-## Purpose
-
-Purpose.
-
-Proposal Issues:
-- https://github.com/o/r/issues/1
-
-## Requirements
-
-### Requirement: X
-
-X MUST work.
-
-Source SPEC comment: https://github.com/o/r/issues/1#issuecomment-1
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{DurableSpecPath: specPath})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !report.OK {
-		t.Fatalf("expected final verify OK: %+v", report.Errors)
 	}
 }
 

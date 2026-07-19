@@ -74,8 +74,8 @@ artifacts:
 	if !ok {
 		t.Fatalf("SPEC artifact not resolved: %+v", plan.Artifacts)
 	}
-	if !contains(spec.Storage, "SPEC-typed-comment") || !contains(spec.Storage, "durable-archive-output") {
-		t.Fatalf("SPEC storage mapping missing active/durable destinations: %+v", spec.Storage)
+	if !contains(spec.Storage, "SPEC-typed-comment") || contains(spec.Storage, "durable-archive-output") {
+		t.Fatalf("SPEC storage mapping must remain issue-native: %+v", spec.Storage)
 	}
 	task := artifactByID(plan.Artifacts, "tasks")
 	if !contains(task.Storage, "PROCESS-typed-comment") || !contains(task.Storage, "issue-spec-links") {
@@ -101,6 +101,9 @@ func TestResolveBuiltInFallbackWhenNoConfigExists(t *testing.T) {
 	}
 	if len(plan.Artifacts) == 0 {
 		t.Fatal("builtin plan should include artifacts")
+	}
+	if archive := artifactByID(plan.Artifacts, "archive"); archive.ID != "" {
+		t.Fatalf("builtin plan still exposes archive artifact: %+v", archive)
 	}
 	if plan.DurableSpecsMode() != durable.ModeNone {
 		t.Fatalf("default durable mode = %q, want none", plan.DurableSpecsMode())
@@ -270,6 +273,25 @@ artifacts:
 	specs := artifactByID(plan.Artifacts, "specs")
 	if len(specs.Dependencies) != 1 || specs.Dependencies[0] != "proposal" {
 		t.Fatalf("requires should map to dependencies: %+v", specs)
+	}
+}
+
+func TestResolveRecognizesLegacyArchiveArtifactWithoutStorageRoute(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), "schema: custom\n")
+	writeFile(t, filepath.Join(root, "issue-spec", "schemas", "custom", "schema.yaml"), `
+artifacts:
+  archive:
+    type: archive
+    generates: issue-spec/specs/example/spec.md
+`)
+	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+	if err != nil {
+		t.Fatalf("legacy archive artifact must remain readable for the compatibility window: %v", err)
+	}
+	archive := artifactByID(plan.Artifacts, "archive")
+	if !hasDiagnostic(plan.Diagnostics, "legacy_archive_artifact_deprecated") || len(archive.Storage) != 0 {
+		t.Fatalf("legacy archive compatibility is not bounded: artifact=%+v diagnostics=%+v", archive, plan.Diagnostics)
 	}
 }
 

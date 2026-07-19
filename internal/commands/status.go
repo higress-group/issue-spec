@@ -41,7 +41,7 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 	proposalFlag := fs.String("proposal", "", "proposal issue number or URL")
 	designFlag := fs.String("design", "", "design issue number or URL")
 	implementFlag := fs.String("implement", "", "implement issue number or URL")
-	gateFlag := fs.String("gate", "", "readiness gate: proposal, design, implement, final, or archive (default inferred from supplied issues)")
+	gateFlag := fs.String("gate", "", "readiness gate: proposal, design, implement, or final (default inferred from supplied issues)")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	summaryOut := fs.Bool("summary", false, "write compact versioned JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
@@ -266,11 +266,8 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		}
 	}
 	mode := gates.ModeForecast
-	if target == gates.TargetArchive {
-		mode = gates.ModeAuthoritative
-	}
 	processEvidence := collection.ProcessEvidence
-	if (target == gates.TargetFinal || target == gates.TargetArchive) && len(processEvidence) == 0 &&
+	if target == gates.TargetFinal && len(processEvidence) == 0 &&
 		(hasActiveChangeBearingProcess(gateArtifacts) || hasExplicitProcessWorkspace(gateArtifacts)) {
 		processEvidence = buildProcessEvidenceInputs(gateArtifacts, "", nil, reviewSyncReport{}, nil)
 	}
@@ -356,25 +353,22 @@ func resolveStatusGate(raw string, design, implement int) (gates.Target, error) 
 			return "", fmt.Errorf("design gate requires --design")
 		}
 		return target, nil
-	case gates.TargetImplement, gates.TargetFinal, gates.TargetArchive:
+	case gates.TargetImplement, gates.TargetFinal:
 		if design == 0 || implement == 0 {
 			return "", fmt.Errorf("%s gate requires --design and --implement", target)
 		}
 		return target, nil
 	default:
-		return "", fmt.Errorf("unsupported value %q (want proposal, design, implement, final, or archive)", raw)
+		return "", fmt.Errorf("unsupported value %q (want proposal, design, implement, or final)", raw)
 	}
 }
 
 func statusForecastRemoteFacts(target gates.Target) gates.RemoteFacts {
 	facts := gates.RemoteFacts{Workspace: gates.WorkspaceFacts{Observed: true}}
-	if target == gates.TargetFinal || target == gates.TargetArchive {
+	if target == gates.TargetFinal {
 		facts.PRChecks = gates.Fact{Required: true, Expected: "all required checks passed"}
 		facts.ReviewFindings = gates.Fact{Required: true, Expected: "no blocking findings"}
 		facts.Workspace.ExpectedRevision = gates.Fact{Required: true, Expected: "exact PR or external subject revision"}
-	}
-	if target == gates.TargetArchive {
-		facts.DurableSpec = gates.Fact{Required: true, Expected: "durable spec valid"}
 	}
 	return facts
 }
@@ -389,7 +383,7 @@ type statusGateCollection struct {
 func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend, profile auth.Profile, token, repo string,
 	implementIssue int, target gates.Target, artifacts []model.Artifact) statusGateCollection {
 	collection := statusGateCollection{Remote: statusForecastRemoteFacts(target)}
-	if target != gates.TargetFinal && target != gates.TargetArchive {
+	if target != gates.TargetFinal {
 		return collection
 	}
 	artifacts = artifactsForImplementGate(artifacts, implementIssue)
