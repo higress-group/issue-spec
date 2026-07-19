@@ -292,41 +292,7 @@ func validateVerificationReceiptBinding(receipt assignment.Receipt, sealed assig
 	if err := processworkspace.ValidateRoleOwnedReceiptSubmission(receipt, submission); err != nil {
 		return fmt.Errorf("verification receipt provenance: %w", err)
 	}
-	for _, test := range receipt.Tests {
-		if test.Outcome != assignment.TestPassed {
-			return fmt.Errorf("verification test %s must pass before VERIFY completion", test.ID)
-		}
-	}
-	return validateVerificationRequirementCoverage(receipt, *sealed.Verification)
-}
-
-func validateVerificationRequirementCoverage(receipt assignment.Receipt, required assignment.VerificationPayload) error {
-	if len(receipt.Tests) != len(required.RequiredTests) {
-		return fmt.Errorf("verification receipt tests must exactly cover all %d assigned required tests", len(required.RequiredTests))
-	}
-	tests := make(map[string]string, len(receipt.Tests))
-	for _, test := range receipt.Tests {
-		tests[test.ID] = test.Command
-	}
-	for _, expected := range required.RequiredTests {
-		if command, ok := tests[expected.ID]; !ok || command != expected.Command {
-			return fmt.Errorf("verification receipt is missing exact assigned test %s command %q", expected.ID, expected.Command)
-		}
-	}
-	actualChecks := receipt.Verification.CheckSelectors
-	if len(actualChecks) != len(required.RequiredChecks) {
-		return fmt.Errorf("verification receipt checks must exactly cover all %d assigned required checks", len(required.RequiredChecks))
-	}
-	checks := make(map[string]bool, len(actualChecks))
-	for _, check := range actualChecks {
-		checks[check.Provider+"\x00"+check.Name] = true
-	}
-	for _, expected := range required.RequiredChecks {
-		if !checks[expected.Provider+"\x00"+expected.Name] {
-			return fmt.Errorf("verification receipt is missing exact assigned check %s/%s", expected.Provider, expected.Name)
-		}
-	}
-	return nil
+	return assignment.ValidateVerificationReceiptCoverage(*sealed.Verification, receipt)
 }
 
 func observeGitHubVerificationChecks(ctx context.Context, client github.Backend, repo string, prNumber int,

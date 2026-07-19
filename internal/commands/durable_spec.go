@@ -22,7 +22,7 @@ var exactGitRevision = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func (a *app) runDurableSpec(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec durable-spec preview|apply|detail ...\n")
+		a.errorf("usage: issue-spec durable-spec preview|apply|check|detail ...\n")
 		return 2
 	}
 	switch args[0] {
@@ -30,12 +30,141 @@ func (a *app) runDurableSpec(ctx context.Context, args []string) int {
 		return a.runDurableSpecPreview(ctx, args[1:])
 	case "apply":
 		return a.runDurableSpecApply(ctx, args[1:])
+	case "check":
+		return a.runDurableSpecCheck(ctx, args[1:])
 	case "detail":
 		return a.runDurableSpecDetail(args[1:])
 	default:
 		a.errorf("unknown durable-spec command %q\n", args[0])
 		return 2
 	}
+}
+
+func (a *app) runDurableSpecCheck(ctx context.Context, args []string) int {
+	fs := newFlagSet("durable-spec check", a.err)
+	repoFlag := fs.String("repo", "", "repository owner/name")
+	proposalFlag := fs.String("proposal", "", "Proposal Issue number or URL")
+	baselineFlag := fs.String("baseline", "", "exact 40-character baseline Git revision")
+	subjectFlag := fs.String("subject", "", "exact 40-character subject Git revision")
+	rootFlag := fs.String("root", ".", "repository worktree root")
+	host := fs.String("hostname", "github.com", "issue backend hostname")
+	resultPathFlag := fs.String("result-out", "", "optional absolute saved result path outside the worktree")
+	jsonOut := fs.Bool("json", false, "write compact JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	repo, ok := a.validateRepo(*repoFlag)
+	if !ok {
+		return 2
+	}
+	proposal, err := parseIssueFlag(*proposalFlag, "proposal")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	root, err := canonicalRepositoryRoot(*rootFlag)
+	if err != nil {
+		a.errorf("--root: %v\n", err)
+		return 2
+	}
+	if strings.TrimSpace(*resultPathFlag) != "" {
+		if err := validateDurableSidecarPath(*resultPathFlag, root); err != nil {
+			a.errorf("--result-out: %v\n", err)
+			return 2
+		}
+	}
+	baseline, err := resolveExactGitRevision(ctx, root, *baselineFlag)
+	if err != nil {
+		a.errorf("--baseline: %v\n", err)
+		return 2
+	}
+	subject, err := resolveExactGitRevision(ctx, root, *subjectFlag)
+	if err != nil {
+		a.errorf("--subject: %v\n", err)
+		return 2
+	}
+	workflowAuthority, err := observeDurableWorkflow(root)
+	if err != nil {
+		a.errorf("observe durable workflow: %v\n", err)
+		return 1
+	}
+	client, _, err := a.clientFor(ctx, *host)
+	if err != nil {
+		a.errorf("durable-spec check backend: %v\n", err)
+		return 1
+	}
+	// Check path safety against the explicit baseline tree below, not against
+	// incidental working-tree durable files. Canonical SPEC grammar and intent
+	// remain strict while legacy existence is proven from baselineFiles.
+	sources, err := observeDurableSources(ctx, client, repo, proposal, "")
+	if err != nil {
+		a.errorf("observe confirmed source SPECs: %v\n", err)
+		return 1
+	}
+	baselineFiles, err := observeDurableBaselineFiles(ctx, root, baseline, sources)
+	if err != nil {
+		a.errorf("observe durable baseline: %v\n", err)
+		return 1
+	}
+	subjectFiles, err := observeDurableBaselineFiles(ctx, root, subject, sources)
+	if err != nil {
+		a.errorf("observe durable subject: %v\n", err)
+		return 1
+	}
+	changedPaths, err := changedDurablePaths(ctx, root, baseline, subject)
+	if err != nil {
+		a.errorf("observe durable tree changes: %v\n", err)
+		return 1
+	}
+	revisionError, err := durableRevisionError(ctx, root, baseline, subject)
+	if err != nil {
+		a.errorf("compare durable revisions: %v\n", err)
+		return 1
+	}
+	result, err := durable.Check(durable.CheckInput{CompileInput: durable.CompileInput{Repository: repo, Proposal: proposal,
+		ProposalURL: proposalURLForSources(sources, *host, repo, proposal), BaselineRevision: baseline,
+		Workflow: workflowAuthority, Sources: sources, BaselineFiles: baselineFiles}, SubjectRevision: subject,
+		SubjectFiles: subjectFiles, ChangedDurablePaths: changedPaths, RevisionError: revisionError})
+	if err != nil {
+		a.errorf("check durable projection: %v\n", err)
+		return 1
+	}
+	resultPath := strings.TrimSpace(*resultPathFlag)
+	if resultPath == "" && !result.OK {
+		resultPath, err = temporaryDurableCheckPath(root)
+		if err != nil {
+			a.errorf("allocate durable check result: %v\n", err)
+			return 1
+		}
+	}
+	if resultPath != "" {
+		data, encodeErr := durable.CanonicalCheckResultJSON(result)
+		if encodeErr != nil {
+			a.errorf("encode durable check result: %v\n", encodeErr)
+			return 1
+		}
+		if writeErr := writeDurableSidecar(resultPath, data); writeErr != nil {
+			a.errorf("write durable check result: %v\n", writeErr)
+			return 1
+		}
+	}
+	compact := durable.CompactCheckResult(result, resultPath)
+	if *jsonOut {
+		if code := a.outputJSON(compact); code != 0 {
+			return code
+		}
+	} else {
+		fmt.Fprintf(a.out, "durable-spec check %s: operations=%d blockers=%d baseline=%s subject=%s\n",
+			result.ResultDigest, result.OperationCount, len(result.Blockers), baseline, subject)
+		for _, blocker := range compact.Blockers {
+			fmt.Fprintf(a.out, "- %s affected=%s truncated=%d detail=%s\n", blocker.Code,
+				strings.Join(blocker.AffectedIDs, ","), blocker.TruncatedCount, blocker.DetailAction)
+		}
+	}
+	if !result.OK {
+		return 1
+	}
+	return 0
 }
 
 func (a *app) runDurableSpecPreview(ctx context.Context, args []string) int {
@@ -135,13 +264,33 @@ type durableDetailResult struct {
 	Findings         []durable.Finding          `json:"findings,omitempty"`
 }
 
+type durableCheckDetailResult struct {
+	Version          int               `json:"version"`
+	ResultDigest     string            `json:"result_digest"`
+	Repository       string            `json:"repository"`
+	Proposal         int               `json:"proposal"`
+	BaselineRevision string            `json:"baseline_revision"`
+	SubjectRevision  string            `json:"subject_revision"`
+	OperationCount   int               `json:"operation_count"`
+	Blockers         []durable.Blocker `json:"blockers,omitempty"`
+	Findings         []durable.Finding `json:"findings,omitempty"`
+}
+
 func (a *app) runDurableSpecDetail(args []string) int {
 	fs := newFlagSet("durable-spec detail", a.err)
 	planPath := fs.String("plan", "", "absolute frozen durable plan path")
+	resultPath := fs.String("result", "", "absolute saved durable check result path")
 	codeFlag := fs.String("code", "", "stable blocker code to expand")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
+	}
+	if (*planPath == "") == (*resultPath == "") {
+		a.errorf("exactly one of --plan or --result is required\n")
+		return 2
+	}
+	if *resultPath != "" {
+		return a.runDurableCheckDetail(*resultPath, strings.TrimSpace(*codeFlag), *jsonOut)
 	}
 	if !filepath.IsAbs(*planPath) {
 		a.errorf("--plan: path must be absolute\n")
@@ -176,6 +325,45 @@ func (a *app) runDurableSpecDetail(args []string) int {
 	fmt.Fprintf(a.out, "durable-spec plan %s repository=%s proposal=%d baseline=%s\n",
 		plan.PlanDigest, plan.Repository, plan.Proposal, plan.BaselineRevision)
 	for _, finding := range result.Findings {
+		fmt.Fprintf(a.out, "- %s operation=%s source=%s path=%s: %s\n", finding.Code,
+			finding.OperationID, finding.SourceSpecID, finding.Path, finding.Message)
+	}
+	return 0
+}
+
+func (a *app) runDurableCheckDetail(resultPath, wantCode string, jsonOut bool) int {
+	if !filepath.IsAbs(resultPath) {
+		a.errorf("--result: path must be absolute\n")
+		return 2
+	}
+	result, err := readDurableCheckResult(resultPath)
+	if err != nil {
+		a.errorf("read durable check result: %v\n", err)
+		return 2
+	}
+	detail := durableCheckDetailResult{Version: result.Version, ResultDigest: result.ResultDigest,
+		Repository: result.Repository, Proposal: result.Proposal, BaselineRevision: result.BaselineRevision,
+		SubjectRevision: result.SubjectRevision, OperationCount: result.OperationCount}
+	for _, blocker := range result.Blockers {
+		if wantCode == "" || blocker.Code == wantCode {
+			detail.Blockers = append(detail.Blockers, blocker)
+		}
+	}
+	for _, finding := range result.Findings {
+		if wantCode == "" || finding.Code == wantCode {
+			detail.Findings = append(detail.Findings, finding)
+		}
+	}
+	if wantCode != "" && len(detail.Blockers) == 0 {
+		a.errorf("durable check result has no blocker code %q\n", wantCode)
+		return 2
+	}
+	if jsonOut {
+		return a.outputJSON(detail)
+	}
+	fmt.Fprintf(a.out, "durable-spec check result %s repository=%s proposal=%d baseline=%s subject=%s\n",
+		result.ResultDigest, result.Repository, result.Proposal, result.BaselineRevision, result.SubjectRevision)
+	for _, finding := range detail.Findings {
 		fmt.Fprintf(a.out, "- %s operation=%s source=%s path=%s: %s\n", finding.Code,
 			finding.OperationID, finding.SourceSpecID, finding.Path, finding.Message)
 	}
@@ -496,6 +684,71 @@ func readDurablePlan(path string) (durable.Plan, error) {
 	}
 	defer file.Close()
 	return durable.ReadPlan(file)
+}
+
+func readDurableCheckResult(path string) (durable.CheckResult, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return durable.CheckResult{}, err
+	}
+	defer file.Close()
+	return durable.ReadCheckResult(file)
+}
+
+func changedDurablePaths(ctx context.Context, root, baseline, subject string) ([]string, error) {
+	command := exec.CommandContext(ctx, "git", "diff", "--no-renames", "--name-only", "-z", baseline, subject, "--",
+		"issue-spec/specs", "openspec/specs")
+	command.Dir = root
+	output, err := command.Output()
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, value := range strings.Split(string(output), "\x00") {
+		if value = strings.TrimSpace(value); value != "" {
+			paths = append(paths, filepath.ToSlash(value))
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func durableRevisionError(ctx context.Context, root, baseline, subject string) (string, error) {
+	command := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", baseline, subject)
+	command.Dir = root
+	err := command.Run()
+	if err == nil {
+		return "", nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return fmt.Sprintf("baseline revision %s is not an ancestor of subject revision %s", baseline, subject), nil
+	}
+	return "", err
+}
+
+func temporaryDurableCheckPath(root string) (string, error) {
+	seen := map[string]bool{}
+	for _, directory := range []string{os.TempDir(), filepath.Dir(root)} {
+		if directory == "" || seen[directory] {
+			continue
+		}
+		seen[directory] = true
+		file, err := os.CreateTemp(directory, "issue-spec-durable-check-*.json")
+		if err != nil {
+			continue
+		}
+		path := file.Name()
+		if closeErr := file.Close(); closeErr != nil {
+			_ = os.Remove(path)
+			continue
+		}
+		_ = os.Remove(path)
+		if err := validateDurableSidecarPath(path, root); err == nil {
+			return path, nil
+		}
+	}
+	return "", errors.New("no writable temporary result location exists outside the repository worktree")
 }
 
 func proposalURLForSources(sources []durable.SourceInput, hostname, repo string, proposal int) string {

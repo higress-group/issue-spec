@@ -15,6 +15,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
+	"github.com/higress-group/issue-spec/internal/durable"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
@@ -231,6 +232,71 @@ func TestVerificationReceiptRequiresExactAssignedTestsAndChecks(t *testing.T) {
 				testVerificationSubmission("Verifier")); err == nil ||
 				!strings.Contains(err.Error(), "assigned") {
 				t.Fatalf("coverage substitution error=%v", err)
+			}
+		})
+	}
+}
+
+func TestVerificationReceiptBindingTreatsDurableCheckAsOrdinaryExactEvidence(t *testing.T) {
+	baseline, subject := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	payload := assignment.VerificationPayload{SubjectRevision: subject,
+		RequiredTests: []assignment.TestSelector{{ID: "unit", Command: "go test ./..."}}}
+	payload, err := payload.WithDurableCheck(durable.ModeRepository, assignment.DurableCheckBinding{
+		Repository: "o/r", Proposal: 308, BaselineRevision: baseline, SubjectRevision: subject, RepositoryRoot: "."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "assignment-durable-verification-1",
+		Role: assignment.RoleVerification, Repository: "o/r", Issue: 9, ProcessID: "PROCESS-101", SubjectRevision: subject,
+		Scenarios: []assignment.ScenarioRef{{SpecID: "SPEC-003", Scenario: "durable projection is an ordinary exact-revision check"}},
+		Policy:    assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		Verification: &payload}
+	if err := sealed.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	tests := make([]assignment.TestResult, 0, len(payload.RequiredTests))
+	for _, selector := range payload.RequiredTests {
+		tests = append(tests, assignment.TestResult{ID: selector.ID, Command: selector.Command,
+			Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported})
+	}
+	receipt := testSealedVerificationReceiptForAssignment(t, sealed, tests, nil)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
+		SubjectRevision: subject, Generation: receipt.AssignmentGeneration}
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, testVerificationSubmission("Verifier")); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		mutate func(*assignment.Receipt)
+	}{
+		{name: "missing", mutate: func(value *assignment.Receipt) { value.Tests = value.Tests[1:] }},
+		{name: "failed", mutate: func(value *assignment.Receipt) { value.Tests[0].Outcome = assignment.TestFailed }},
+		{name: "stale", mutate: func(value *assignment.Receipt) { value.SubjectRevision = baseline }},
+		{name: "mismatched", mutate: func(value *assignment.Receipt) { value.Tests[0].Command += " --forged" }},
+		{name: "forged prose", mutate: func(value *assignment.Receipt) {
+			value.Tests = value.Tests[1:]
+			value.Verification.Summary = "durable check passed according to prose"
+		}},
+		{name: "forged assurance", mutate: func(value *assignment.Receipt) {
+			value.Tests[0].Assurance = assignment.AssuranceRuntimeAttested
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := receipt
+			candidate.Tests = append([]assignment.TestResult(nil), receipt.Tests...)
+			verification := *receipt.Verification
+			candidate.Verification = &verification
+			test.mutate(&candidate)
+			candidate.ReceiptDigest = ""
+			candidate, err = assignment.SealReceipt(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := validateVerificationReceiptBinding(candidate, sealed, binding,
+				testVerificationSubmission("Verifier")); err == nil {
+				t.Fatal("invalid durable evidence was accepted")
 			}
 		})
 	}

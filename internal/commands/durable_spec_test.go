@@ -109,6 +109,108 @@ func TestDurableSpecPreviewEmitsBoundedExecutableBlockerDetail(t *testing.T) {
 	}
 }
 
+func TestDurableSpecCheckReadsExactTreesAndSavedDetailWithoutWorktreeMutation(t *testing.T) {
+	root, baseline := durableCommandRepository(t)
+	specBody := durableCommandSpec(t, `{"version":1,"intent":"OPERATIONS","operations":[{"id":"SPEC-001-OP-01","kind":"ADDED","capability":"cap","path":"issue-spec/specs/cap/spec.md","new_requirement":"Durable command","projection":{"source":"current-spec"}}]}`)
+	backend := durableCommandBackend(specBody)
+	planPath := filepath.Join(filepath.Dir(root), "check-materialization-plan.json")
+	application, previewOut, previewErr := durableCommandApp(backend)
+	if code := application.runDurableSpec(context.Background(), []string{"preview", "--repo", "o/r", "--proposal", "9",
+		"--baseline", baseline, "--root", root, "--plan-out", planPath, "--json"}); code != 0 {
+		t.Fatalf("preview code=%d stdout=%q stderr=%q", code, previewOut.String(), previewErr.String())
+	}
+	var preview durable.CompactPlan
+	if err := json.Unmarshal(previewOut.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	application, applyOut, applyErr := durableCommandApp(backend)
+	if code := application.runDurableSpec(context.Background(), []string{"apply", "--plan", planPath,
+		"--expected-plan-digest", preview.PlanDigest, "--root", root, "--json"}); code != 0 {
+		t.Fatalf("apply code=%d stdout=%q stderr=%q", code, applyOut.String(), applyErr.String())
+	}
+	durableCommandGit(t, root, "add", "issue-spec/specs/cap/spec.md")
+	durableCommandGit(t, root, "commit", "-q", "-m", "materialize durable contract")
+	subject := durableCommandGitOutput(t, root, "rev-parse", "HEAD")
+	before := durableCommandGitOutput(t, root, "status", "--porcelain=v1")
+
+	application, checkOut, checkErr := durableCommandApp(backend)
+	if code := application.runDurableSpec(context.Background(), []string{"check", "--repo", "o/r", "--proposal", "9",
+		"--baseline", baseline, "--subject", subject, "--root", root, "--json"}); code != 0 {
+		t.Fatalf("check code=%d stdout=%q stderr=%q", code, checkOut.String(), checkErr.String())
+	}
+	var passing durable.CompactCheck
+	if err := json.Unmarshal(checkOut.Bytes(), &passing); err != nil {
+		t.Fatal(err)
+	}
+	if !passing.OK || passing.SubjectRevision != subject || passing.BaselineRevision != baseline || passing.ResultPath != "" {
+		t.Fatalf("passing=%+v", passing)
+	}
+	if after := durableCommandGitOutput(t, root, "status", "--porcelain=v1"); after != before {
+		t.Fatalf("read-only check changed worktree: before=%q after=%q", before, after)
+	}
+
+	unauthorized := filepath.Join(root, "issue-spec", "specs", "unowned", "spec.md")
+	if err := os.MkdirAll(filepath.Dir(unauthorized), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unauthorized, []byte("# unowned\n\n## Purpose\n\nUnauthorized.\n\n## Requirements\n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	durableCommandGit(t, root, "add", "issue-spec/specs/unowned/spec.md")
+	durableCommandGit(t, root, "commit", "-q", "-m", "unauthorized durable change")
+	unauthorizedSubject := durableCommandGitOutput(t, root, "rev-parse", "HEAD")
+	before = durableCommandGitOutput(t, root, "status", "--porcelain=v1")
+	application, blockedOut, blockedErr := durableCommandApp(backend)
+	if code := application.runDurableSpec(context.Background(), []string{"check", "--repo", "o/r", "--proposal", "9",
+		"--baseline", baseline, "--subject", unauthorizedSubject, "--root", root, "--json"}); code != 1 {
+		t.Fatalf("blocked code=%d stdout=%q stderr=%q", code, blockedOut.String(), blockedErr.String())
+	}
+	var blocked durable.CompactCheck
+	if err := json.Unmarshal(blockedOut.Bytes(), &blocked); err != nil {
+		t.Fatal(err)
+	}
+	if blocked.OK || blocked.ResultPath == "" || !filepath.IsAbs(blocked.ResultPath) ||
+		len(blocked.Blockers) != 1 || blocked.Blockers[0].Code != durable.BlockUnauthorizedChange ||
+		!strings.Contains(blocked.Blockers[0].DetailAction, "--result") {
+		t.Fatalf("blocked=%+v", blocked)
+	}
+	t.Cleanup(func() { _ = os.Remove(blocked.ResultPath) })
+	if relative, err := filepath.Rel(root, blocked.ResultPath); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		t.Fatalf("check result was written inside worktree: %s", blocked.ResultPath)
+	}
+	application, detailOut, detailErr := durableCommandApp(backend)
+	if code := application.runDurableSpec(context.Background(), []string{"detail", "--result", blocked.ResultPath,
+		"--code", durable.BlockUnauthorizedChange, "--json"}); code != 0 {
+		t.Fatalf("detail code=%d stdout=%q stderr=%q", code, detailOut.String(), detailErr.String())
+	}
+	if !strings.Contains(detailOut.String(), "issue-spec/specs/unowned/spec.md") || strings.Contains(detailOut.String(), `"content"`) {
+		t.Fatalf("detail=%s", detailOut.String())
+	}
+	if after := durableCommandGitOutput(t, root, "status", "--porcelain=v1"); after != before {
+		t.Fatalf("failed check changed worktree: before=%q after=%q", before, after)
+	}
+}
+
+func TestDurableSpecCheckRejectsUnrelatedExactRevision(t *testing.T) {
+	root, baseline := durableCommandRepository(t)
+	specBody := durableCommandSpec(t, `{"version":1,"intent":"UNCHANGED"}`)
+	backend := durableCommandBackend(specBody)
+	tree := durableCommandGitOutput(t, root, "rev-parse", baseline+"^{tree}")
+	orphan := durableCommandGitOutput(t, root, "commit-tree", tree, "-m", "unrelated")
+	application, out, errOut := durableCommandApp(backend)
+	if code := application.runDurableSpec(context.Background(), []string{"check", "--repo", "o/r", "--proposal", "9",
+		"--baseline", baseline, "--subject", orphan, "--root", root, "--json"}); code != 1 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var compact durable.CompactCheck
+	if err := json.Unmarshal(out.Bytes(), &compact); err != nil {
+		t.Fatal(err)
+	}
+	if compact.OK || len(compact.Blockers) != 1 || compact.Blockers[0].Code != durable.BlockRevisionMismatch {
+		t.Fatalf("compact=%+v", compact)
+	}
+}
+
 func durableCommandRepository(t *testing.T) (string, string) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "repo")

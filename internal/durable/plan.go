@@ -276,6 +276,9 @@ func summarizeFindings(findings []Finding) []Blocker {
 			if id == "" {
 				id = item.SourceSpecID
 			}
+			if id == "" {
+				id = item.Path
+			}
 			if id != "" && !idSet[id] {
 				idSet[id] = true
 				ids = append(ids, id)
