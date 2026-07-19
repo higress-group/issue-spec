@@ -9,13 +9,6 @@ server is `https://issues.example.test`; no displayed value is a credential.
 <!-- requirements-step:release -->
 ## 1. Install a verified release
 
-`https://github.com/higress-group/issue-spec/releases/latest/download` follows
-the latest GitHub Release from the most recent complete successful publication.
-In the current release design, that is the single mutable Release named
-`latest`, backed by the fixed `rolling` tag. Each complete publication replaces
-its assets and moves the tag to the source revision recorded in the manifest
-and release description.
-
 Do not pipe a remote script into a shell. Use `curl` to download the installer,
 manifest, checksums, and matching platform archive, then verify before executing:
 

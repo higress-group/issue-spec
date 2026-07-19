@@ -142,6 +142,7 @@ func TestAssemblyIsReproducibleAndComplete(t *testing.T) {
 	rollingNotes := releaseNotes(rolling)
 	for _, required := range []string{
 		"mutable rolling release from main",
+		"refreshing the published time",
 		"https://github.com/higress-group/issue-spec/releases/latest/download/install.sh", "./install.sh --latest",
 		"https://github.com/higress-group/issue-spec/releases/latest/download/install.ps1", ".\\install.ps1 -Latest",
 		"https://github.com/higress-group/issue-spec/releases/latest/download/issue-spec-requirements.zip",
@@ -460,8 +461,12 @@ func TestWorkflowKeepsPublicationAuthorityBehindCompleteTrustedBuild(t *testing.
 		"actions/attest-build-provenance@v4", "gh attestation verify",
 		`if [ "$RELEASE_CHANNEL" = rolling ]; then`, `if [ "$current_main" != "$RELEASE_REVISION" ]; then`,
 		`git/ref/tags/$RELEASE_TAG`, `git/refs/tags/$RELEASE_TAG`, `-F force=true`, `-f ref="refs/tags/$RELEASE_TAG"`,
-		`gh release upload "$RELEASE_TAG" dist/release/publish/* --clobber`,
-		`gh release edit "$RELEASE_TAG" --title "latest"`, `--title "issue-spec $RELEASE_VERSION"`,
+		`replacement_tag="${RELEASE_TAG}-staged"`, `gh release create "$replacement_tag" --draft --target "$RELEASE_REVISION"`,
+		`gh release upload "$replacement_tag" dist/release/publish/* --clobber`, `verify_remote_assets "$replacement_tag"`,
+		`gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$previous_release_id"`,
+		`gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$replacement_id" --input -`,
+		`previous_published_at=$(jq -r '.published_at // empty'`, `[[ "$published_at" > "$previous_published_at" ]]`,
+		`--rawfile body dist/release/release-notes.md`, `make_latest: "true"`, `--title "issue-spec $RELEASE_VERSION"`,
 		`gh release create "$RELEASE_TAG" --draft --verify-tag`,
 		"gh release edit \"$RELEASE_TAG\" --draft=false --latest=false",
 		`binary="$HOME/.local/bin/issue-spec"`, `"$binary" requirements setup --help`,
@@ -473,7 +478,7 @@ func TestWorkflowKeepsPublicationAuthorityBehindCompleteTrustedBuild(t *testing.
 	}
 	for _, forbidden := range []string{
 		"pull_request:", "workflow_dispatch:", "hack/release/rolling-latest.sh", "rolling_latest_decision",
-		"published_rolling_count", "read_latest_rolling_revision", "releases/latest", "rolling-", ".target_commitish",
+		"published_rolling_count", "read_latest_rolling_revision", "releases/latest",
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("release workflow unexpectedly contains %q", forbidden)
@@ -487,12 +492,14 @@ func TestWorkflowKeepsPublicationAuthorityBehindCompleteTrustedBuild(t *testing.
 	}
 	rollingBody := body[rollingStart:semanticStart]
 	moveTag := strings.Index(rollingBody, `git/refs/tags/$RELEASE_TAG`)
-	createRolling := strings.Index(rollingBody, `gh release create "$RELEASE_TAG" --verify-tag`)
-	uploadRolling := strings.Index(rollingBody, `gh release upload "$RELEASE_TAG"`)
-	verifyRolling := strings.LastIndex(rollingBody, "verify_remote_assets")
-	publishRolling := strings.Index(rollingBody, `gh release edit "$RELEASE_TAG" --title "latest"`)
+	createRolling := strings.Index(rollingBody, `gh release create "$replacement_tag" --draft`)
+	uploadRolling := strings.Index(rollingBody, `gh release upload "$replacement_tag"`)
+	verifyDraft := strings.Index(rollingBody, `verify_remote_assets "$replacement_tag"`)
+	deletePrevious := strings.Index(rollingBody, `releases/$previous_release_id`)
+	publishRolling := strings.Index(rollingBody, `releases/$replacement_id" --input -`)
+	verifyPublished := strings.LastIndex(rollingBody, `verify_remote_assets "$RELEASE_TAG"`)
 	guardRolling := strings.LastIndex(rollingBody, `guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"`)
-	if moveTag < 0 || createRolling < moveTag || uploadRolling < createRolling || verifyRolling < uploadRolling || publishRolling < verifyRolling || guardRolling < publishRolling || strings.Contains(rollingBody, `--title "issue-spec $RELEASE_VERSION"`) {
+	if createRolling < 0 || uploadRolling < createRolling || verifyDraft < uploadRolling || moveTag < verifyDraft || deletePrevious < moveTag || publishRolling < deletePrevious || verifyPublished < publishRolling || guardRolling < verifyPublished || strings.Contains(rollingBody, `--title "issue-spec $RELEASE_VERSION"`) {
 		t.Fatalf("rolling update order is unsafe")
 	}
 
