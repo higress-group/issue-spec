@@ -145,6 +145,91 @@ func TestEvaluateRequiresIndependentReviewPresenceForChangeBearingSpec(t *testin
 	}
 }
 
+func TestEvaluateSharedCarriersRequireEveryActiveProcessSpecPair(t *testing.T) {
+	spec := artifact(t, "SPEC", "SPEC-001", "confirmed", specLogical)
+	task := artifact(t, "TASK", "TASK-001", "done", taskLogical)
+	processInput := func(id string, class model.ProcessExecutionClass) ProcessEvidenceInput {
+		logical := "## Process: carrier\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- " + string(class) +
+			"\n\n### Covers\n\n- SPEC-001\n\n### Handoff\n\ncomplete"
+		process := artifact(t, "PROCESS", id, "done", logical)
+		link(t, &task, &process)
+		input := ProcessEvidenceInput{Process: process, ActiveSpecs: map[string]string{"SPEC-001": spec.URL},
+			TaskURLs: map[string]bool{model.NormalizeURL(task.URL): true}}
+		if class == model.ProcessExecutionChangeBearing {
+			input.Rationales = []RationaleEvidence{{ProcessID: id, SpecID: "SPEC-001", SpecURL: spec.URL,
+				MarkerPath: id + ".go", MarkerLine: 1, CommentPath: id + ".go", CommentLine: 1, AuthorAgent: "Worker " + id}}
+			input.AuthorAgentsBySpec = map[string]map[string]bool{"SPEC-001": {strings.ToLower("Worker " + id): true}}
+		}
+		return input
+	}
+	one := processInput("PROCESS-001", model.ProcessExecutionChangeBearing)
+	two := processInput("PROCESS-002", model.ProcessExecutionChangeBearing)
+	reviewer := processInput("PROCESS-003", model.ProcessExecutionReview)
+	review := artifact(t, "REVIEW", "REVIEW-001", "done", "## Review\n\nIndependent review complete.")
+	review.Comment.Agent = "Independent Reviewer"
+	verify := artifact(t, "VERIFY", "VERIFY-001", "done", "## Verification Summary\n\nSPEC-001 covered by go test ./internal/gates.")
+	for _, target := range []*model.Artifact{&one.Process, &reviewer.Process, &spec} {
+		link(t, &review, target)
+	}
+	for _, target := range []*model.Artifact{&one.Process, &spec} {
+		link(t, &verify, target)
+	}
+	reviewer.Reviews = []ReviewEvidence{{ProcessID: reviewer.Process.Comment.ID, SpecID: "SPEC-001", URL: review.URL,
+		Done: true, ReviewerAgent: "Independent Reviewer"}}
+	one.Reviews = []ReviewEvidence{{ProcessID: one.Process.Comment.ID, SpecID: "SPEC-001", URL: review.URL,
+		Done: true, ReviewerAgent: "Independent Reviewer"}}
+	one.Verifications = []VerificationEvidence{{ProcessID: one.Process.Comment.ID, SpecID: "SPEC-001", URL: verify.URL,
+		Done: true, TestEvidence: true}}
+
+	artifacts := []model.Artifact{spec, task, one.Process, two.Process, reviewer.Process, review, verify}
+	partial := evaluate(t, Snapshot{Target: TargetFinal, Mode: ModeAuthoritative, Artifacts: artifacts,
+		ProcessEvidence: []ProcessEvidenceInput{one, two, reviewer}})
+	reviewDiagnostic := findDiagnostic(t, partial, CodeProcessReviewRequired)
+	verifyDiagnostic := findDiagnostic(t, partial, CodeVerifySpecCoverageMissing)
+	if reviewDiagnostic.Artifact.ID != "PROCESS-002" || verifyDiagnostic.Artifact.ID != "PROCESS-002" {
+		t.Fatalf("SPEC-only coverage rescued an uncovered carrier: review=%+v verify=%+v", reviewDiagnostic, verifyDiagnostic)
+	}
+
+	link(t, &review, &two.Process)
+	link(t, &verify, &two.Process)
+	two.Reviews = []ReviewEvidence{{ProcessID: two.Process.Comment.ID, SpecID: "SPEC-001", URL: review.URL,
+		Done: true, ReviewerAgent: "Independent Reviewer"}}
+	two.Verifications = []VerificationEvidence{{ProcessID: two.Process.Comment.ID, SpecID: "SPEC-001", URL: verify.URL,
+		Done: true, TestEvidence: true}}
+	artifacts = []model.Artifact{spec, task, one.Process, two.Process, reviewer.Process, review, verify}
+	complete := evaluate(t, Snapshot{Target: TargetFinal, Mode: ModeAuthoritative, Artifacts: artifacts,
+		ProcessEvidence: []ProcessEvidenceInput{one, two, reviewer}})
+	if containsCode(complete, CodeProcessReviewRequired) || containsCode(complete, CodeVerifySpecCoverageMissing) {
+		t.Fatalf("fully enumerated shared carriers remained blocked: %+v", complete.Diagnostics)
+	}
+}
+
+func TestEvaluateSelectionRequiresExplicitSupersessionAuthority(t *testing.T) {
+	spec, task, current, verify := readyChain(t)
+	legacy := artifact(t, "PROCESS", "PROCESS-002", "superseded", processLogical("N/A", "N/A"))
+	link(t, &task, &legacy)
+	legacyReport := evaluate(t, Snapshot{Target: TargetFinal, Mode: ModeAuthoritative,
+		Artifacts: []model.Artifact{spec, task, current, legacy, verify}})
+	legacyDiagnostic := findDiagnostic(t, legacyReport, CodeProcessNotDone)
+	if legacyDiagnostic.Artifact.ID != legacy.Comment.ID {
+		t.Fatalf("legacy superseded PROCESS did not remain active: %+v", legacyReport.Diagnostics)
+	}
+
+	body, _, err := model.StampSupersededBy(legacy.Comment.Body, legacy.Comment.ID,
+		model.SupersededBy{ProcessID: current.Comment.ID, URL: current.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.Comment = model.ParseTypedComment(body)
+	explicit := evaluate(t, Snapshot{Target: TargetFinal, Mode: ModeAuthoritative,
+		Artifacts: []model.Artifact{spec, task, current, legacy, verify}})
+	for _, diagnostic := range explicit.Diagnostics {
+		if diagnostic.Artifact.ID == legacy.Comment.ID {
+			t.Fatalf("explicitly historical PROCESS remained in current gates: %+v", explicit.Diagnostics)
+		}
+	}
+}
+
 func TestEvaluateSpecCoverageRequiresExactArtifactID(t *testing.T) {
 	spec := artifact(t, "SPEC", "SPEC-001", "confirmed", specLogical)
 	task := artifact(t, "TASK", "TASK-001", "done", taskLogical)

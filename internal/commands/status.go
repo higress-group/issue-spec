@@ -205,13 +205,14 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 	verify := map[string]string{}
 	blockingQuestions := 0
 	openReviews := 0
+	activeProcesses := activeProcessIDs(artifacts)
 	var malformed []model.CanonicalDiagnostic
 	for _, artifact := range artifacts {
 		tc := artifact.Comment
 		if tc.Type == "" {
 			continue
 		}
-		if tc.Status != "superseded" {
+		if (tc.Type == "PROCESS" && activeProcesses[tc.ID]) || (tc.Type != "PROCESS" && tc.Status != "superseded") {
 			malformed = append(malformed, model.ValidateArtifact(artifact)...)
 		}
 		if tc.Type == "QUESTION" && tc.Status == "blocked" {
@@ -548,10 +549,7 @@ func pullRequestIntegrationAncestry(artifacts []model.Artifact, commits []github
 		return nil
 	}
 	ancestry := map[string]gates.Fact{}
-	for _, artifact := range artifacts {
-		if artifact.Comment.Type != "PROCESS" || artifact.Comment.Status == "superseded" {
-			continue
-		}
+	for _, artifact := range activeProcessArtifacts(artifacts) {
 		class := model.ParseProcessExecutionClass(artifact.Comment.ID, artifact.URL, artifact.Comment.Body)
 		if class.Blocking() || class.Class != model.ProcessExecutionChangeBearing {
 			continue
@@ -576,10 +574,7 @@ func pullRequestIntegrationAncestry(artifacts []model.Artifact, commits []github
 func exactStatusPullRequest(artifacts []model.Artifact, repo string) (int, string, bool) {
 	seen := map[string]bool{}
 	var selected string
-	for _, artifact := range artifacts {
-		if artifact.Comment.Type != "PROCESS" || artifact.Comment.Status == "superseded" {
-			continue
-		}
+	for _, artifact := range activeProcessArtifacts(artifacts) {
 		for _, raw := range artifact.Comment.Links["PR"] {
 			normalized := model.NormalizeURL(raw)
 			if normalized != "" {

@@ -690,6 +690,85 @@ func TestExactStatusPullRequestRejectsAmbiguousLinks(t *testing.T) {
 	}
 }
 
+func TestExactStatusPullRequestUsesSharedActiveSelection(t *testing.T) {
+	current := statusWorkspaceProcess(t, model.ProcessExecutionReview, strings.Repeat("a", 40))
+	current.URL = "https://github.com/o/r/issues/3#issuecomment-current"
+	body, _, err := model.AddPRLink(current.Comment.Body, "https://github.com/o/r/pull/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Comment = model.ParseTypedComment(body)
+	historical := statusWorkspaceProcess(t, model.ProcessExecutionReview, strings.Repeat("a", 40))
+	historical.URL = "https://github.com/o/r/issues/3#issuecomment-historical"
+	historicalBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-002", model.LogicalBody(historical.Comment.Body),
+		model.BodyOptions{Status: "superseded", Links: historical.Comment.Links})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical.Comment = model.ParseTypedComment(historicalBody)
+	historicalBody, _, err = model.AddPRLink(historical.Comment.Body, "https://github.com/o/r/pull/8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	historicalBody, _, err = model.StampSupersededBy(historicalBody, "PROCESS-002",
+		model.SupersededBy{ProcessID: current.Comment.ID, URL: current.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical.Comment = model.ParseTypedComment(historicalBody)
+	if number, _, ok := exactStatusPullRequest([]model.Artifact{current, historical}, "o/r"); !ok || number != 7 {
+		t.Fatalf("historical PR link affected active selection: number=%d ok=%v", number, ok)
+	}
+
+	legacyBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-002", model.LogicalBody(historical.Comment.Body),
+		model.BodyOptions{Status: "superseded", Links: historical.Comment.Links})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical.Comment = model.ParseTypedComment(legacyBody)
+	if _, _, ok := exactStatusPullRequest([]model.Artifact{current, historical}, "o/r"); ok {
+		t.Fatal("legacy status-only supersession incorrectly removed an ambiguous active PR carrier")
+	}
+}
+
+func TestStatusAndVerifyUseSameActiveProcessSelection(t *testing.T) {
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	current := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContentWithClass(model.ProcessExecutionOrchestration))
+	legacy := typedArtifact(t, 3, "PROCESS", "PROCESS-002", "superseded", canonicalProcessContentWithClass(model.ProcessExecutionOrchestration))
+	historical := typedArtifact(t, 3, "PROCESS", "PROCESS-003", "superseded", canonicalProcessContentWithClass(model.ProcessExecutionOrchestration))
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+	for _, process := range []*model.Artifact{&current, &legacy, &historical} {
+		linkArtifacts(t, &task, process)
+	}
+	body, _, err := model.StampSupersededBy(historical.Comment.Body, historical.Comment.ID,
+		model.SupersededBy{ProcessID: current.Comment.ID, URL: current.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical.Comment = model.ParseTypedComment(body)
+	artifacts := []model.Artifact{spec, task, current, legacy, historical, verify}
+	status := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetFinal, artifacts, workflow.Plan{}, nil)
+	final, err := buildFinalVerifyReport(artifacts, spec.URL, finalVerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, diagnostics := range map[string][]gates.Diagnostic{"status": status.Gate.Diagnostics, "verify": final.Gate.Diagnostics} {
+		var legacyBlocked bool
+		for _, diagnostic := range diagnostics {
+			if diagnostic.Artifact.ID == historical.Comment.ID {
+				t.Fatalf("%s evaluated explicitly historical PROCESS: %+v", name, diagnostics)
+			}
+			if diagnostic.Code == gates.CodeProcessNotDone && diagnostic.Artifact.ID == legacy.Comment.ID {
+				legacyBlocked = true
+			}
+		}
+		if !legacyBlocked {
+			t.Fatalf("%s did not block legacy status-only supersession: %+v", name, diagnostics)
+		}
+	}
+}
+
 func statusWorkspaceProcess(t *testing.T, class model.ProcessExecutionClass, revision string) model.Artifact {
 	t.Helper()
 	logical := "## Process: status workspace\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- " + string(class) +

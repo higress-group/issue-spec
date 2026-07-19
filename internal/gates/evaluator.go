@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/higress-group/issue-spec/internal/finalization"
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
@@ -58,7 +59,18 @@ func Evaluate(snapshot Snapshot) (Report, error) {
 		return Report{}, err
 	}
 
-	e := evaluator{snapshot: snapshot}
+	selection := finalization.Select(snapshot.Artifacts)
+	e := evaluator{snapshot: snapshot, selection: selection, activeProcesses: map[string]bool{}}
+	for _, id := range selection.ActiveProcessIDs {
+		e.activeProcesses[id] = true
+	}
+	for _, artifact := range snapshot.Artifacts {
+		if artifact.Comment.Type == "PROCESS" {
+			e.processSelectionObserved = true
+			break
+		}
+	}
+	e.evaluateSelection()
 	e.evaluateArtifacts()
 	e.evaluateCanonical()
 	e.evaluateTraceability()
@@ -85,9 +97,33 @@ func Evaluate(snapshot Snapshot) (Report, error) {
 }
 
 type evaluator struct {
-	snapshot    Snapshot
-	diagnostics []Diagnostic
-	processes   []ProcessEvidenceReport
+	snapshot                 Snapshot
+	selection                finalization.Selection
+	activeProcesses          map[string]bool
+	processSelectionObserved bool
+	diagnostics              []Diagnostic
+	processes                []ProcessEvidenceReport
+}
+
+func (e *evaluator) evaluateSelection() {
+	for _, diagnostic := range e.selection.Diagnostics {
+		e.add(CodeTraceabilityInvalid, fmt.Sprintf("PROCESS selection %s: %s", diagnostic.Code, diagnostic.Message),
+			ArtifactRef{Type: "PROCESS", ID: diagnostic.ProcessID, URL: diagnostic.URL}, "invalid", "valid explicit supersession graph", "finalize detail")
+	}
+}
+
+func (e *evaluator) processIsActive(id string) bool {
+	return !e.processSelectionObserved || e.activeProcesses[id]
+}
+
+func (e *evaluator) currentArtifacts() []model.Artifact {
+	current := make([]model.Artifact, 0, len(e.snapshot.Artifacts))
+	for _, artifact := range e.snapshot.Artifacts {
+		if artifact.Comment.Type != "PROCESS" || e.processIsActive(artifact.Comment.ID) {
+			current = append(current, artifact)
+		}
+	}
+	return current
 }
 
 func (e *evaluator) evaluateProcessEvidence() {
@@ -95,12 +131,16 @@ func (e *evaluator) evaluateProcessEvidence() {
 		return
 	}
 	for _, input := range e.snapshot.ProcessEvidence {
+		if !e.processIsActive(input.Process.Comment.ID) {
+			continue
+		}
 		report := EvaluateProcessEvidence(input, e.snapshot.Target, e.snapshot.Mode)
 		e.processes = append(e.processes, report)
 		e.diagnostics = append(e.diagnostics, report.Diagnostics...)
 	}
 	sort.Slice(e.processes, func(i, j int) bool { return e.processes[i].ProcessID < e.processes[j].ProcessID })
 	e.requireIndependentReviewPresence()
+	e.requireCarrierCompleteVerification()
 }
 
 // requireIndependentReviewPresence fails closed when a SPEC has satisfied
@@ -110,7 +150,8 @@ func (e *evaluator) evaluateProcessEvidence() {
 // bypass independent review entirely by never creating the review node.
 func (e *evaluator) requireIndependentReviewPresence() {
 	reviewed := map[string]bool{}
-	changeBearing := map[string]ArtifactRef{}
+	changeBearing := map[string][]ProcessEvidenceReport{}
+	changeBearingIDs := map[string]bool{}
 	for _, report := range e.processes {
 		switch report.ExecutionClass {
 		case model.ProcessExecutionReview:
@@ -118,10 +159,9 @@ func (e *evaluator) requireIndependentReviewPresence() {
 				reviewed[spec] = true
 			}
 		case model.ProcessExecutionChangeBearing:
+			changeBearingIDs[report.ProcessID] = true
 			for _, spec := range report.SatisfiedSpecs {
-				if _, seen := changeBearing[spec]; !seen {
-					changeBearing[spec] = ArtifactRef{Type: "SPEC", ID: spec}
-				}
+				changeBearing[spec] = append(changeBearing[spec], report)
 			}
 		}
 	}
@@ -131,12 +171,172 @@ func (e *evaluator) requireIndependentReviewPresence() {
 	}
 	sort.Strings(specs)
 	for _, spec := range specs {
-		if reviewed[spec] {
+		if len(changeBearingIDs) == 1 {
+			if reviewed[spec] {
+				continue
+			}
+			e.add(CodeProcessReviewRequired, fmt.Sprintf("%s has change-bearing code but no independent review PROCESS covering it", spec),
+				ArtifactRef{Type: "SPEC", ID: spec}, "missing independent review", "review PROCESS by an agent other than the code author", "comment generate", "--type", "PROCESS")
 			continue
 		}
-		e.add(CodeProcessReviewRequired, fmt.Sprintf("%s has change-bearing code but no independent review PROCESS covering it", spec),
-			changeBearing[spec], "missing independent review", "review PROCESS by an agent other than the code author", "comment generate", "--type", "PROCESS")
+		for _, process := range changeBearing[spec] {
+			// Existing single-carrier workflows retain their original SPEC-level
+			// presence rule. Once a carrier is shared across an active set, each
+			// PROCESS/SPEC pair must be enumerated by exact links; coverage of the
+			// same SPEC through a sibling PROCESS cannot rescue this carrier.
+			if reviewed[spec] && e.reviewPairCovered(process.ProcessID, spec) {
+				continue
+			}
+			e.add(CodeProcessReviewRequired, fmt.Sprintf("%s/%s has change-bearing code but no independent REVIEW carrier enumerating that PROCESS/SPEC pair", process.ProcessID, spec),
+				ArtifactRef{Type: "PROCESS", ID: process.ProcessID, URL: process.ProcessURL}, "missing independent review", "review PROCESS and REVIEW linked to the active PROCESS and SPEC", "comment upsert", "--type", "REVIEW")
+		}
 	}
+}
+
+func (e *evaluator) requireCarrierCompleteVerification() {
+	bySpec := map[string][]ProcessEvidenceReport{}
+	changeBearingIDs := map[string]bool{}
+	for _, report := range e.processes {
+		if report.ExecutionClass != model.ProcessExecutionChangeBearing {
+			continue
+		}
+		changeBearingIDs[report.ProcessID] = true
+		for _, spec := range report.SatisfiedSpecs {
+			bySpec[spec] = append(bySpec[spec], report)
+		}
+	}
+	if len(changeBearingIDs) < 2 {
+		return
+	}
+	for _, spec := range sortedReportKeys(bySpec) {
+		for _, process := range bySpec[spec] {
+			if e.verificationPairCovered(process.ProcessID, spec) {
+				continue
+			}
+			e.add(CodeVerifySpecCoverageMissing, fmt.Sprintf("%s/%s is not enumerated by a done VERIFY carrier", process.ProcessID, spec),
+				ArtifactRef{Type: "PROCESS", ID: process.ProcessID, URL: process.ProcessURL}, "uncovered PROCESS/SPEC pair", "covered by done VERIFY", "comment upsert", "--type", "VERIFY")
+		}
+	}
+}
+
+func sortedReportKeys(values map[string][]ProcessEvidenceReport) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (e *evaluator) processEvidenceInput(processID string) *ProcessEvidenceInput {
+	for index := range e.snapshot.ProcessEvidence {
+		if e.snapshot.ProcessEvidence[index].Process.Comment.ID == processID {
+			return &e.snapshot.ProcessEvidence[index]
+		}
+	}
+	return nil
+}
+
+func (e *evaluator) carrierArtifact(rawURL, artifactType string) *model.Artifact {
+	want := model.NormalizeURL(rawURL)
+	if want == "" {
+		return nil
+	}
+	for index := range e.snapshot.Artifacts {
+		artifact := &e.snapshot.Artifacts[index]
+		if artifact.Comment.Type == artifactType && artifact.Comment.Status == "done" && model.NormalizeURL(artifact.URL) == want {
+			return artifact
+		}
+	}
+	return nil
+}
+
+func exactRelatedLink(artifact model.Artifact, rawURL string) bool {
+	want := model.NormalizeURL(rawURL)
+	if want == "" {
+		return false
+	}
+	for _, related := range artifact.Comment.Links["Related Comments"] {
+		if model.NormalizeURL(related) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func validReviewPairEvidence(input ProcessEvidenceInput, evidence ReviewEvidence) bool {
+	if evidence.ProcessID != input.Process.Comment.ID || !(evidence.Done || evidence.FindingResolved) {
+		return false
+	}
+	reviewer := strings.ToLower(strings.TrimSpace(evidence.ReviewerAgent))
+	if reviewer != "" && input.AuthorAgentsBySpec[evidence.SpecID][reviewer] {
+		return false
+	}
+	required := strings.TrimSpace(input.RequiredRevision)
+	return required == "" || (evidence.Trusted && strings.EqualFold(strings.TrimSpace(evidence.SubjectRevision), required))
+}
+
+func (e *evaluator) reviewPairCovered(processID, specID string) bool {
+	change := e.processEvidenceInput(processID)
+	if change == nil {
+		return false
+	}
+	specURL := change.ActiveSpecs[specID]
+	for _, evidence := range change.Reviews {
+		if evidence.SpecID != specID || !validReviewPairEvidence(*change, evidence) {
+			continue
+		}
+		carrier := e.carrierArtifact(evidence.URL, "REVIEW")
+		if carrier == nil || !exactRelatedLink(*carrier, change.Process.URL) || !exactRelatedLink(*carrier, specURL) {
+			continue
+		}
+		for _, report := range e.processes {
+			if report.ExecutionClass != model.ProcessExecutionReview || !stringIn(report.SatisfiedSpecs, specID) {
+				continue
+			}
+			review := e.processEvidenceInput(report.ProcessID)
+			if review == nil || !exactRelatedLink(*carrier, review.Process.URL) {
+				continue
+			}
+			for _, reviewEvidence := range review.Reviews {
+				if reviewEvidence.SpecID == specID && model.NormalizeURL(reviewEvidence.URL) == model.NormalizeURL(evidence.URL) &&
+					validReviewPairEvidence(*review, reviewEvidence) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (e *evaluator) verificationPairCovered(processID, specID string) bool {
+	input := e.processEvidenceInput(processID)
+	if input == nil {
+		return false
+	}
+	for _, evidence := range input.Verifications {
+		if evidence.ProcessID != processID || evidence.SpecID != specID || !evidence.Done || !evidence.TestEvidence {
+			continue
+		}
+		required := strings.TrimSpace(input.RequiredRevision)
+		if required != "" && (!evidence.Trusted || !strings.EqualFold(strings.TrimSpace(evidence.SubjectRevision), required)) {
+			continue
+		}
+		carrier := e.carrierArtifact(evidence.URL, "VERIFY")
+		if carrier != nil && exactRelatedLink(*carrier, input.Process.URL) && exactRelatedLink(*carrier, input.ActiveSpecs[specID]) {
+			return true
+		}
+	}
+	return false
+}
+
+func stringIn(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *evaluator) evaluateWorkspaceEvidence() error {
@@ -149,7 +349,7 @@ func (e *evaluator) evaluateWorkspaceEvidence() error {
 		carriers[processID] = fact
 	}
 	report, err := EvaluateWorkspaceEvidence(WorkspaceEvaluationInput{
-		Target: e.snapshot.Target, Mode: e.snapshot.Mode, Artifacts: e.snapshot.Artifacts,
+		Target: e.snapshot.Target, Mode: e.snapshot.Mode, Artifacts: e.currentArtifacts(),
 		ExpectedRevision: workspace.ExpectedRevision, IntegrationAncestry: workspace.IntegrationAncestry,
 		ProcessEvidence: e.processes, CarrierRevisions: carriers,
 	})
@@ -173,7 +373,8 @@ func (e *evaluator) evaluateArtifacts() {
 	var doneVerifyBodies []string
 	for _, artifact := range e.snapshot.Artifacts {
 		comment := artifact.Comment
-		if comment.Status == "superseded" || comment.Type == "" {
+		if comment.Type == "" || (comment.Type == "PROCESS" && !e.processIsActive(comment.ID)) ||
+			(comment.Type != "PROCESS" && comment.Status == "superseded") {
 			continue
 		}
 		switch comment.Type {
@@ -262,7 +463,8 @@ func (e *evaluator) evaluateCanonical() {
 	if !e.snapshot.Canonical.Observed {
 		diagnostics = nil
 		for _, artifact := range e.snapshot.Artifacts {
-			if artifact.Comment.Status != "superseded" {
+			if (artifact.Comment.Type == "PROCESS" && e.processIsActive(artifact.Comment.ID)) ||
+				(artifact.Comment.Type != "PROCESS" && artifact.Comment.Status != "superseded") {
 				diagnostics = append(diagnostics, model.ValidateArtifact(artifact)...)
 			}
 		}

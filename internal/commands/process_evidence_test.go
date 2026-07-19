@@ -88,12 +88,20 @@ func TestBuildProcessEvidenceRejectsMixedReplayAndUnknownBindings(t *testing.T) 
 
 func TestBuildProcessEvidenceValidatesAuthorRationaleBeforeCrediting(t *testing.T) {
 	const specURL = "https://example/proposal#issuecomment-spec"
+	current := processClassArtifact(t, "PROCESS-001", "change-bearing", "SPEC-001", "done")
+	historical := processClassArtifact(t, "PROCESS-004", "change-bearing", "SPEC-001", "superseded")
+	historicalBody, _, err := model.StampSupersededBy(historical.Comment.Body, historical.Comment.ID,
+		model.SupersededBy{ProcessID: current.Comment.ID, URL: current.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical.Comment = model.ParseTypedComment(historicalBody)
 	artifacts := []model.Artifact{
 		{URL: specURL, Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "proposed"}},
-		processClassArtifact(t, "PROCESS-001", "change-bearing", "SPEC-001", "done"),       // genuine carrier
-		processClassArtifact(t, "PROCESS-002", "review", "SPEC-001", "done"),               // wrong class
-		processClassArtifact(t, "PROCESS-003", "change-bearing", "SPEC-999", "done"),       // does not cover SPEC-001
-		processClassArtifact(t, "PROCESS-004", "change-bearing", "SPEC-001", "superseded"), // inactive
+		current, // genuine carrier
+		processClassArtifact(t, "PROCESS-002", "review", "SPEC-001", "done"),         // wrong class
+		processClassArtifact(t, "PROCESS-003", "change-bearing", "SPEC-999", "done"), // does not cover SPEC-001
+		historical, // explicitly historical
 	}
 	mustRationale := func(agent, process, path string, line int) string {
 		body, err := model.RenderRationaleBody(agent, process, "SPEC-001", specURL, "rationale", path, line)
@@ -121,6 +129,14 @@ func TestBuildProcessEvidenceValidatesAuthorRationaleBeforeCrediting(t *testing.
 		if authors[bad] {
 			t.Fatalf("%q rationale must not credit an author: %+v", bad, authors)
 		}
+	}
+}
+
+func TestBuildProcessEvidenceKeepsLegacySupersededProcessActive(t *testing.T) {
+	legacy := processClassArtifact(t, "PROCESS-001", "change-bearing", "SPEC-001", "superseded")
+	inputs := buildProcessEvidenceInputs([]model.Artifact{legacy}, "", nil, reviewSyncReport{}, nil)
+	if len(inputs) != 1 || inputs[0].Process.Comment.ID != "PROCESS-001" {
+		t.Fatalf("legacy status-only supersession must remain active and blocking: %+v", inputs)
 	}
 }
 

@@ -12,12 +12,42 @@ import (
 
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
+	"github.com/higress-group/issue-spec/internal/finalization"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
 var processTestEvidencePattern = regexp.MustCompile(`(?i)\btest(s|ing|ed)?\b`)
+
+// activeProcessIDs is the command layer's only PROCESS activity projection.
+// Selection deliberately retains legacy Status: superseded carriers when no
+// explicit superseded-by authority exists, and fails closed by retaining all
+// unique PROCESS carriers when the replacement graph is invalid.
+func activeProcessIDs(artifacts []model.Artifact) map[string]bool {
+	selection := finalization.Select(artifacts)
+	active := make(map[string]bool, len(selection.ActiveProcessIDs))
+	for _, id := range selection.ActiveProcessIDs {
+		active[id] = true
+	}
+	return active
+}
+
+func activeProcessArtifacts(artifacts []model.Artifact) []model.Artifact {
+	selection := finalization.Select(artifacts)
+	return append([]model.Artifact(nil), selection.Active...)
+}
+
+func currentFinalizationArtifacts(artifacts []model.Artifact) []model.Artifact {
+	active := activeProcessIDs(artifacts)
+	current := make([]model.Artifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type != "PROCESS" || active[artifact.Comment.ID] {
+			current = append(current, artifact)
+		}
+	}
+	return current
+}
 
 func buildProcessEvidenceInputs(artifacts []model.Artifact, prURL string, reviewComments []github.PullRequestReviewComment,
 	review reviewSyncReport, external *externalEvidenceConsumption) []gates.ProcessEvidenceInput {
@@ -37,18 +67,19 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 	activeSpecs := map[string]string{}
 	inactiveSpecURLs := map[string]bool{}
 	taskURLs := map[string]bool{}
-	var processes, reviews, verifications []model.Artifact
+	selection := finalization.Select(artifacts)
+	processes := append([]model.Artifact(nil), selection.Active...)
+	var reviews, verifications []model.Artifact
 	for _, artifact := range artifacts {
-		if artifact.Comment.Status == "superseded" {
-			continue
-		}
 		switch artifact.Comment.Type {
 		case "SPEC":
-			activeSpecs[artifact.Comment.ID] = artifact.URL
+			if artifact.Comment.Status != "superseded" {
+				activeSpecs[artifact.Comment.ID] = artifact.URL
+			}
 		case "TASK":
-			taskURLs[model.NormalizeURL(artifact.URL)] = true
-		case "PROCESS":
-			processes = append(processes, artifact)
+			if artifact.Comment.Status != "superseded" {
+				taskURLs[model.NormalizeURL(artifact.URL)] = true
+			}
 		case "REVIEW":
 			if artifact.Comment.Status == "done" {
 				reviews = append(reviews, artifact)

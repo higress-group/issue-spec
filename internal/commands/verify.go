@@ -818,10 +818,7 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 }
 
 func hasActiveChangeBearingProcess(artifacts []model.Artifact) bool {
-	for _, artifact := range artifacts {
-		if artifact.Comment.Type != "PROCESS" || artifact.Comment.Status == "superseded" {
-			continue
-		}
+	for _, artifact := range activeProcessArtifacts(artifacts) {
 		if model.ParseProcessExecutionClass(artifact.Comment.ID, artifact.URL, artifact.Comment.Body).Class == model.ProcessExecutionChangeBearing {
 			return true
 		}
@@ -916,7 +913,8 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	}
 	report.Diagnostics = append(report.Diagnostics, typedSessionDiagnostics(artifacts)...)
 	var activeSpecs []model.Artifact
-	var activeProcesses []model.Artifact
+	activeProcesses := activeProcessArtifacts(artifacts)
+	activeProcessSet := activeProcessIDs(artifacts)
 	var doneVerifyBodies []string
 	var canonical []model.CanonicalDiagnostic
 	for _, artifact := range artifacts {
@@ -928,15 +926,13 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 				report.SpecCoverage[tc.ID] = false
 			}
 		case "PROCESS":
-			if tc.Status != "superseded" {
-				activeProcesses = append(activeProcesses, artifact)
-			}
 		case "VERIFY":
 			if tc.Status == "done" {
 				doneVerifyBodies = append(doneVerifyBodies, tc.Body)
 			}
 		}
-		if artifact.Comment.Status == "superseded" {
+		if (tc.Type == "PROCESS" && !activeProcessSet[tc.ID]) ||
+			(tc.Type != "PROCESS" && artifact.Comment.Status == "superseded") {
 			continue
 		}
 		diags := model.ValidateArtifact(artifact)
@@ -1008,7 +1004,7 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		return report, err
 	}
 	workspaceReport, err := gates.EvaluateWorkspaceEvidence(gates.WorkspaceEvaluationInput{
-		Target: target, Mode: gates.ModeAuthoritative, Artifacts: artifacts,
+		Target: target, Mode: gates.ModeAuthoritative, Artifacts: currentFinalizationArtifacts(artifacts),
 		ExpectedRevision:    gates.Fact{Required: true, Known: strings.TrimSpace(opts.ExpectedRevision) != "", Passed: true, Expected: strings.TrimSpace(opts.ExpectedRevision)},
 		IntegrationAncestry: pullRequestIntegrationAncestry(artifacts, opts.PRCommits, opts.ExpectedRevision),
 		ProcessEvidence:     gateReport.Processes,
@@ -1270,9 +1266,8 @@ func legacyVerifyGateError(diagnostic gates.Diagnostic) (string, bool) {
 }
 
 func hasExplicitProcessWorkspace(artifacts []model.Artifact) bool {
-	for _, artifact := range artifacts {
-		if artifact.Comment.Type == "PROCESS" && artifact.Comment.Status != "superseded" &&
-			model.ParseProcessWorkspace(artifact.Comment.ID, artifact.URL, artifact.Comment.Body).Explicit {
+	for _, artifact := range activeProcessArtifacts(artifacts) {
+		if model.ParseProcessWorkspace(artifact.Comment.ID, artifact.URL, artifact.Comment.Body).Explicit {
 			return true
 		}
 	}
