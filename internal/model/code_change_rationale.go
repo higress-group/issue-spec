@@ -123,8 +123,7 @@ func FindCodeChangeRationaleMarker(body string) (CodeChangeRationaleMarker, bool
 		return CodeChangeRationaleMarker{}, true, err
 	}
 	metadata := visibleMetadata(body)
-	if metadata["Agent"] != marker.Agent || metadata["Agent Session ID"] != marker.AgentSessionID ||
-		metadata["Agent Session Source"] != marker.AgentSessionSource || metadata["Subject Revision"] != marker.SubjectRevision {
+	if metadata["Agent"] != marker.Agent || metadata["Subject Revision"] != marker.SubjectRevision {
 		return CodeChangeRationaleMarker{}, true, errors.New("code-change rationale visible metadata does not match marker payload")
 	}
 	return marker, true, nil
@@ -162,8 +161,6 @@ func normalizeCodeChangeRationaleMarker(marker CodeChangeRationaleMarker) CodeCh
 	marker.ChangeID = strings.TrimSpace(marker.ChangeID)
 	marker.SubjectRevision = strings.TrimSpace(marker.SubjectRevision)
 	marker.Agent = strings.TrimSpace(marker.Agent)
-	marker.AgentSessionID = strings.TrimSpace(marker.AgentSessionID)
-	marker.AgentSessionSource = strings.TrimSpace(marker.AgentSessionSource)
 	return marker
 }
 
@@ -182,21 +179,14 @@ func validateCodeChangeRationaleMarker(marker CodeChangeRationaleMarker) error {
 	}
 	if len(marker.ProviderKey) > 128 || len(marker.ExternalRepository) > 512 || len(marker.ChangeID) > 256 ||
 		len(marker.SubjectRevision) > 512 || len(marker.SpecURL) > 4096 || len(marker.Agent) > 256 ||
-		len(marker.AgentSessionID) > 512 || strings.ContainsAny(marker.ProviderKey, " \t\r\n") ||
+		strings.ContainsAny(marker.ProviderKey, " \t\r\n") ||
 		strings.ContainsAny(marker.ExternalRepository, "\r\n") || strings.ContainsAny(marker.ChangeID, "\r\n") ||
 		strings.ContainsAny(marker.SubjectRevision, " \t\r\n") || strings.ContainsAny(marker.SpecURL, "\r\n") ||
-		strings.ContainsAny(marker.Agent, "\r\n") || strings.ContainsAny(marker.AgentSessionID, " \t\r\n") {
+		strings.ContainsAny(marker.Agent, "\r\n") {
 		return errors.New("code-change rationale code-change identity is invalid")
 	}
 	if marker.Agent == "" {
 		return errors.New("code-change rationale requires an agent")
-	}
-	if marker.AgentSessionID == "" && marker.AgentSessionSource == "" {
-		return nil
-	}
-	if marker.AgentSessionID == "" ||
-		(marker.AgentSessionSource != "CODEX_THREAD_ID" && marker.AgentSessionSource != "agent-session-parameter") {
-		return errors.New("legacy code-change rationale session metadata is incomplete")
 	}
 	return nil
 }

@@ -271,7 +271,7 @@ func (a *app) runCodeChangeRationale(ctx context.Context, args []string) int {
 		if parseErr != nil {
 			return a.codeChangeRationaleError(*jsonOut, "rationale_marker_invalid", "read existing rationale marker", parseErr)
 		}
-		if found && existing == marker && comment.Body == rendered {
+		if found && exactCodeChangeRationaleRetry(existing, marker, comment.Body, body) {
 			return a.outputCodeChangeRationale(codeChangeRationaleResult{OK: true, Repo: repository, Implement: implement,
 				CommentID: comment.ID, CommentURL: comment.HTMLURL, Process: marker.Process, Spec: marker.Spec,
 				ProviderKey: marker.ProviderKey, ExternalRepository: marker.ExternalRepository, ChangeID: marker.ChangeID,
@@ -289,6 +289,36 @@ func (a *app) runCodeChangeRationale(ctx context.Context, args []string) int {
 		CommentID: created.ID, CommentURL: created.HTMLURL, Process: marker.Process, Spec: marker.Spec,
 		ProviderKey: marker.ProviderKey, ExternalRepository: marker.ExternalRepository, ChangeID: marker.ChangeID,
 		SubjectRevision: marker.SubjectRevision, RepresentationVersion: marker.ReferenceVersion}, *jsonOut)
+}
+
+func exactCodeChangeRationaleRetry(existing, desired model.CodeChangeRationaleMarker, existingBody, rationale string) bool {
+	legacy := existing
+	existing.AgentSessionID, existing.AgentSessionSource = "", ""
+	desired.AgentSessionID, desired.AgentSessionSource = "", ""
+	if existing != desired {
+		return false
+	}
+	expected, err := model.RenderCodeChangeRationaleBody(legacy, rationale)
+	if err != nil {
+		return false
+	}
+	return stripLegacyRationaleSessionLines(existingBody) == stripLegacyRationaleSessionLines(expected)
+}
+
+func stripLegacyRationaleSessionLines(body string) string {
+	lines := strings.Split(body, "\n")
+	filtered := lines[:0]
+	inRationale := false
+	for _, line := range lines {
+		if line == "### Rationale" {
+			inRationale = true
+		}
+		if !inRationale && (strings.HasPrefix(line, "Agent Session ID:") || strings.HasPrefix(line, "Agent Session Source:")) {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	return strings.Join(filtered, "\n")
 }
 
 func (a *app) outputCodeChangeRationale(result codeChangeRationaleResult, jsonOut bool) int {

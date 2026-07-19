@@ -120,6 +120,9 @@ func TestProcessWorkspaceRendersOnlyCompactAcceptedImplementationReceiptAuthorit
 		Assurance: assignment.AssuranceSelfReported}
 	workspace.UpdatedAt = workspace.UpdatedAt.Add(time.Minute)
 	body := processBodyWithWorkspace("PROCESS-024", ProcessExecutionChangeBearing, workspace)
+	if strings.Contains(body, "agent_session_") {
+		t.Fatalf("new workspace projection contains deprecated session metadata:\n%s", body)
+	}
 	wantMarker := acceptedImplementationReceiptStart + "\n" +
 		`{"receipt_id":"receipt:implementation:024","receipt_digest":"` + strings.Repeat("c", 64) + `","assignment_generation":3}` + "\n" +
 		acceptedImplementationReceiptEnd
@@ -141,6 +144,18 @@ func TestProcessWorkspaceRendersOnlyCompactAcceptedImplementationReceiptAuthorit
 		parsed.Workspace.AcceptedReceiptSubmission == nil ||
 		*parsed.Workspace.AcceptedReceiptSubmission != *workspace.AcceptedReceiptSubmission {
 		t.Fatalf("accepted receipt round trip=%+v", parsed)
+	}
+	preUpgradeBody := strings.Replace(body, `"agent": "Worker Agent",`, `"agent": "Worker Agent",
+    "agent_session_id": "worker-session",
+    "agent_session_source": "CODEX_THREAD_ID",`, 1)
+	if preUpgradeBody == body {
+		t.Fatal("failed to construct pre-upgrade accepted receipt fixture")
+	}
+	legacyParsed := ParseProcessWorkspace("PROCESS-024", "", preUpgradeBody)
+	if legacyParsed.Blocking() || legacyParsed.Workspace == nil || legacyParsed.Workspace.AcceptedReceiptSubmission == nil ||
+		legacyParsed.Workspace.AcceptedReceiptSubmission.AgentSessionID != "worker-session" ||
+		legacyParsed.Workspace.AcceptedReceiptSubmission.AgentSessionSource != "CODEX_THREAD_ID" {
+		t.Fatalf("pre-upgrade accepted receipt did not remain readable: %+v", legacyParsed)
 	}
 
 	tampered := strings.Replace(body, workspace.AcceptedReceiptDigest, strings.Repeat("d", 64), 1)

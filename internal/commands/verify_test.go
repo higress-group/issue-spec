@@ -213,6 +213,34 @@ func TestPublishAcceptedVerificationIsAppendOnlyUnderConcurrentReceipt(t *testin
 	}
 }
 
+func TestAcceptedVerificationReceiptReadsPreUpgradeSessionFields(t *testing.T) {
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	body, err := renderSubmittedVerification("VERIFY-101", "https://github.com/o/r/issues/9#issuecomment-10",
+		[]string{"SPEC-005"}, receipt, nil, testVerificationSubmission("Verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, "agent_session_") {
+		t.Fatalf("new VERIFY contains deprecated session metadata:\n%s", body)
+	}
+	legacyBody := strings.Replace(body, `"submission":{"agent":"Verifier","assurance":"self-reported"}`,
+		`"submission":{"agent":"Verifier","agent_session_id":"verifier-session","agent_session_source":"CODEX_THREAD_ID","assurance":"self-reported"}`, 1)
+	if legacyBody == body {
+		t.Fatal("failed to construct pre-upgrade VERIFY fixture")
+	}
+	authority, found, err := parseAcceptedVerificationReceipt(legacyBody)
+	if err != nil || !found || authority.Submission == nil || authority.Submission.AgentSessionID != "verifier-session" ||
+		authority.Submission.AgentSessionSource != "CODEX_THREAD_ID" {
+		t.Fatalf("pre-upgrade VERIFY authority=%+v found=%v err=%v", authority, found, err)
+	}
+	artifact := model.Artifact{Comment: model.ParseTypedComment(legacyBody)}
+	if source, trusted, _, ok := exactAcceptedVerificationCarrier(artifact, receipt.SubjectRevision); !ok || !trusted ||
+		source != "accepted-verification-receipt:self-reported-tests" {
+		t.Fatalf("pre-upgrade VERIFY carrier source=%q trusted=%v ok=%v", source, trusted, ok)
+	}
+}
+
 func TestObserveGitHubVerificationChecksRequiresStableExactSnapshot(t *testing.T) {
 	receipt := testSealedVerificationReceipt(t, nil,
 		[]assignment.CheckSelector{{Provider: "github", Name: "unit"}})

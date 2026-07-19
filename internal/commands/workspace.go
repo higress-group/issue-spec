@@ -1129,7 +1129,7 @@ func sameAcceptedReceiptSubmission(left, right *processworkspace.RoleOwnedSubmis
 	if left == nil || right == nil {
 		return left == nil && right == nil
 	}
-	return *left == *right
+	return left.Agent == right.Agent && left.Assurance == right.Assurance
 }
 
 func readWorkspaceResultFile(path string) (assignment.Receipt, error) {

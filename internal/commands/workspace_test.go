@@ -522,6 +522,19 @@ func assertNoLocalAcceptedImplementationAuthority(t *testing.T, lease processwor
 	}
 }
 
+func TestAcceptedReceiptSubmissionComparisonIgnoresLegacySessionMetadata(t *testing.T) {
+	current := &processworkspace.RoleOwnedSubmissionEvidence{Agent: "Worker", Assurance: assignment.AssuranceSelfReported}
+	legacy := &processworkspace.RoleOwnedSubmissionEvidence{Agent: "Worker", AgentSessionID: "worker-session",
+		AgentSessionSource: "CODEX_THREAD_ID", Assurance: assignment.AssuranceSelfReported}
+	if !sameAcceptedReceiptSubmission(current, legacy) {
+		t.Fatal("legacy session metadata changed accepted receipt authority identity")
+	}
+	legacy.Agent = "Other Worker"
+	if sameAcceptedReceiptSubmission(current, legacy) {
+		t.Fatal("logical agent change was ignored")
+	}
+}
+
 func assertRemoteHasNoImplementationReceiptAuthority(t *testing.T, body string, state processworkspace.LifecycleState) {
 	t.Helper()
 	if authority, found, err := model.ObserveAcceptedReceiptAuthority(body, assignment.RoleImplementation); err != nil || found {

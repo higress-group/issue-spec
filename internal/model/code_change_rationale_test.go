@@ -26,16 +26,28 @@ func TestCodeChangeRationaleRoundTrip(t *testing.T) {
 }
 
 func TestCodeChangeRationaleReadsLegacySessionMetadata(t *testing.T) {
-	marker := testCodeChangeRationaleMarker()
-	marker.AgentSessionID = "worker-session"
-	marker.AgentSessionSource = "CODEX_THREAD_ID"
-	body, err := RenderCodeChangeRationaleBody(marker, "legacy rationale")
-	if err != nil {
-		t.Fatal(err)
+	tests := map[string]CodeChangeRationaleMarker{
+		"complete":       {AgentSessionID: "worker-session", AgentSessionSource: "CODEX_THREAD_ID"},
+		"id only":        {AgentSessionID: "worker-session"},
+		"source only":    {AgentSessionSource: "unknown-runtime"},
+		"unknown source": {AgentSessionID: "worker-session", AgentSessionSource: "unknown-runtime"},
 	}
-	parsed, found, err := FindCodeChangeRationaleMarker(body)
-	if err != nil || !found || parsed != marker {
-		t.Fatalf("parsed=%+v found=%v err=%v", parsed, found, err)
+	for name, session := range tests {
+		t.Run(name, func(t *testing.T) {
+			marker := testCodeChangeRationaleMarker()
+			marker.AgentSessionID, marker.AgentSessionSource = session.AgentSessionID, session.AgentSessionSource
+			body, err := RenderCodeChangeRationaleBody(marker, "legacy rationale")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name == "complete" {
+				body = strings.Replace(body, "Agent Session ID: worker-session", "Agent Session ID: mismatched-visible-session", 1)
+			}
+			parsed, found, err := FindCodeChangeRationaleMarker(body)
+			if err != nil || !found || parsed != marker {
+				t.Fatalf("parsed=%+v found=%v err=%v body=%s", parsed, found, err, body)
+			}
+		})
 	}
 }
 
@@ -71,14 +83,13 @@ func TestCodeChangeRationaleStrictParserRejectsMutation(t *testing.T) {
 
 func TestCodeChangeRationaleRequiresCompleteIdentity(t *testing.T) {
 	tests := map[string]func(*CodeChangeRationaleMarker){
-		"process":        func(marker *CodeChangeRationaleMarker) { marker.Process = "PROCESS-x" },
-		"spec":           func(marker *CodeChangeRationaleMarker) { marker.Spec = "SPEC-x" },
-		"spec url":       func(marker *CodeChangeRationaleMarker) { marker.SpecURL = "relative" },
-		"provider":       func(marker *CodeChangeRationaleMarker) { marker.ProviderKey = "" },
-		"version":        func(marker *CodeChangeRationaleMarker) { marker.ReferenceVersion = 0 },
-		"revision":       func(marker *CodeChangeRationaleMarker) { marker.SubjectRevision = "" },
-		"agent":          func(marker *CodeChangeRationaleMarker) { marker.Agent = "" },
-		"legacy session": func(marker *CodeChangeRationaleMarker) { marker.AgentSessionSource = "body" },
+		"process":  func(marker *CodeChangeRationaleMarker) { marker.Process = "PROCESS-x" },
+		"spec":     func(marker *CodeChangeRationaleMarker) { marker.Spec = "SPEC-x" },
+		"spec url": func(marker *CodeChangeRationaleMarker) { marker.SpecURL = "relative" },
+		"provider": func(marker *CodeChangeRationaleMarker) { marker.ProviderKey = "" },
+		"version":  func(marker *CodeChangeRationaleMarker) { marker.ReferenceVersion = 0 },
+		"revision": func(marker *CodeChangeRationaleMarker) { marker.SubjectRevision = "" },
+		"agent":    func(marker *CodeChangeRationaleMarker) { marker.Agent = "" },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {

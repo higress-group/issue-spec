@@ -91,6 +91,46 @@ func TestCodeChangeRationaleAppendOnlyExactRetryAndRefresh(t *testing.T) {
 	}
 }
 
+func TestCodeChangeRationalePreUpgradeRetryIgnoresLegacySessionMetadata(t *testing.T) {
+	backend := newFakeCodeChangeBackend()
+	canonical := "https://code.example/acme/widgets/changes/42"
+	backend.references = []github.NativeReference{codeChangeRationaleReference(canonical, "head-abc", 7)}
+	legacyMarker := model.CodeChangeRationaleMarker{Process: "PROCESS-001", Spec: "SPEC-001",
+		SpecURL: "https://issues.test/acme/widgets/issues/1#issuecomment-2", ProviderKey: "code.example",
+		ExternalRepository: "acme/widgets-code", ChangeID: "change-42", ReferenceVersion: 7,
+		SubjectRevision: "head-abc", Agent: "PROCESS-007 worker", AgentSessionID: "worker-session",
+		AgentSessionSource: "CODEX_THREAD_ID"}
+	legacyBody, err := model.RenderCodeChangeRationaleBody(legacyMarker, "first rationale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyBody = strings.Replace(legacyBody, "Agent Session Source: CODEX_THREAD_ID",
+		"Agent Session Source: stale-visible-source", 1)
+	comments := []github.Comment{
+		{ID: 17, Body: codeChangeRationaleProcessBody(t, canonical)},
+		{ID: 18, HTMLURL: "https://issues.test/acme/widgets/issues/9#issuecomment-18", Body: legacyBody},
+	}
+	created := 0
+	backend.issueBackend = fakeGitHubBackend{
+		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+			return append([]github.Comment(nil), comments...), nil
+		},
+		createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
+			created++
+			return github.Comment{ID: 19, Body: body}, nil
+		},
+	}
+	app, out, errOut := setupCodeChangeLinkApp(t, backend)
+	if code := app.runCodeChange(t.Context(), codeChangeRationaleArgs("first rationale")); code != 0 || created != 0 {
+		t.Fatalf("pre-upgrade retry exit=%d created=%d stdout=%q stderr=%q", code, created, out.String(), errOut.String())
+	}
+	var result codeChangeRationaleResult
+	decodeCommandJSON(t, out.Bytes(), &result)
+	if !result.OK || result.Created || result.CommentID != 18 {
+		t.Fatalf("pre-upgrade retry result=%+v", result)
+	}
+}
+
 func TestCodeChangeRationaleRejectsMissingProcessSpecAndChangeLinks(t *testing.T) {
 	canonical := "https://code.example/acme/widgets/changes/42"
 	tests := map[string]struct {

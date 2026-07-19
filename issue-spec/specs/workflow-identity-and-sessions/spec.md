@@ -81,16 +81,16 @@ Generated guidance MUST preserve per-SPEC independent review as the blocking rul
 #### Scenario: coordinator dispatch instructions
 
 - **WHEN** generated issue-spec workflow instructions dispatch a worker or review subagent
-- **THEN** the coordinator instruction SHALL include an assigned subagent/session id
-- **THEN** the instruction SHALL say that the subagent passes that id to supported writer commands
-- **THEN** the instruction SHALL distinguish the assigned id from the visible `Agent` logical role
+- **THEN** the coordinator instruction SHALL include the sealed assignment identity, exact revision, and logical `Agent` role
+- **THEN** the instruction SHALL bind the role result to the assignment and receipt identity
+- **THEN** the instruction SHALL NOT require or pass a runtime-specific session id to writer commands
 
 #### Scenario: subagent writer instructions
 
 - **WHEN** generated worker or review-agent instructions tell a subagent to write issue-spec artifacts
-- **THEN** those instructions SHALL tell the subagent to pass its assigned session or subagent id through the supported CLI parameter
-- **THEN** those instructions SHALL explain that Codex runtime identity may override the supplied id as artifact writer provenance
-- **THEN** those instructions SHALL preserve default non-strict behavior when neither Codex identity nor explicit session id is available
+- **THEN** those instructions SHALL use the logical `Agent` role and sealed assignment/receipt identity
+- **THEN** those instructions SHALL NOT collect, pass, or prioritize coding-agent-specific runtime session ids
+- **THEN** artifact correctness SHALL remain independent of which supported coding agent executes the role
 
 #### Scenario: generated change-bearing instructions require a real child
 

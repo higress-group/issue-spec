@@ -84,8 +84,10 @@ type AcceptedReceiptBinding struct {
 // compatibility; it is not an independent provenance trust root or runtime
 // attestation.
 type RoleOwnedSubmissionEvidence struct {
-	Agent     string               `json:"agent"`
-	Assurance assignment.Assurance `json:"assurance"`
+	Agent              string               `json:"agent"`
+	AgentSessionID     string               `json:"agent_session_id,omitempty"`
+	AgentSessionSource string               `json:"agent_session_source,omitempty"`
+	Assurance          assignment.Assurance `json:"assurance"`
 }
 
 func (e RoleOwnedSubmissionEvidence) Validate() error {
