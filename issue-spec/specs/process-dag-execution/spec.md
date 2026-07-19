@@ -2,13 +2,14 @@
 
 ## Purpose
 
-Define the long-lived behavior contract for how the implement phase plans and executes the PROCESS DAG: capturing execution-planning metadata on TASK comments, requiring agent-executed change-bearing nodes to run in real non-coordinator native workers, allowing one worker to execute multiple compatible nodes while preserving per-PROCESS boundaries and bounded handoff, gating parallel dispatch on proven decoupling, treating review and repair as first-class PROCESS nodes with mandatory independent review for change-bearing work, guiding reviewer coverage for every distinct change-bearing author, and auditing execution-planning evidence at final verify. It also defines whether a PROCESS uses the coordinator-managed workspace lifecycle or a genuinely external or human-owned independently managed workspace.
+Define the long-lived behavior contract for how the implement phase plans and executes the PROCESS DAG through bounded role assignments, compact targeted reads, exact-revision results, independent review and verification, issue-native evidence projection, and generated guidance while preserving real non-coordinator execution, bounded context, invariant-shaped planning, resumable coordinator-managed workspaces, genuinely external or human-owned independent workspaces, and auditable final gates.
 
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/144
 - https://github.com/higress-group/issue-spec/issues/196
-- https://github.com/higress-group/issue-spec/issues/32
 - https://github.com/higress-group/issue-spec/issues/247
+- https://github.com/higress-group/issue-spec/issues/295
+- https://github.com/higress-group/issue-spec/issues/32
 
 ## Requirements
 
@@ -333,3 +334,189 @@ A done PROCESS genuinely declared `independent` for external or human-owned self
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/196#issuecomment-4964218213
 - https://github.com/higress-group/issue-spec/issues/247#issuecomment-4992293971
+
+### Requirement: Role-bounded implementation with validated worker results
+
+For agent-executed change-bearing work, the issue-spec workflow MUST keep the main agent as coordinator, MUST dispatch a real non-coordinator worker, and MUST let that worker implement and test from a digest-covered bounded assignment while lifecycle bookkeeping and Git-result validation remain coordinator-owned. A Coordinator-imported result MAY be used to validate the assignment and Git result, but caller-provided identity and provenance fields MUST remain informational and MUST NOT create accepted implementation-receipt authority.
+
+#### Scenario: Worker receives a bounded assignment
+
+- **WHEN** the coordinator dispatches a ready change-bearing PROCESS
+- **THEN** the worker receives only the correlation id, objective, relevant acceptance scenarios, exact worktree and base revision, write ownership, dependencies, predecessor handoff, commit and generator requirements, focused tests, and result schema
+
+#### Scenario: Implementation assignment carries authoritative design context
+
+- **WHEN** the coordinator issues a change-bearing implementation assignment
+- **THEN** the digest-covered packet includes the exact canonical Design Issue URL, a targeted complete-body read instruction, and the coordinator-authored PROCESS design covering one named invariant, applicable decisions, implementation direction, must-preserve constraints, must-not constraints, and minimum verification; the CLI preserves those values without interpreting Design prose, and the worker stops if the PROCESS design conflicts with the authoritative Design
+
+#### Scenario: Legacy stored assignment remains readable but cannot be reissued
+
+- **WHEN** the CLI opens registry or PROCESS workspace state created before design_context became required
+- **THEN** historical inspection and recovery can read the legacy assignment without declaring the registry corrupt, while any new issuance, redispatch, assignment-file acceptance, or role submission still requires a complete canonical design_context
+
+#### Scenario: Assignment stays outside the code result
+
+- **WHEN** the CLI emits or persists an implementation assignment
+- **THEN** it returns the packet on stdout or stores it in coordinator-managed sidecar state outside the Git worktree so it cannot become part of the worker commit
+
+#### Scenario: Coordinator validates a worker result before integration
+
+- **WHEN** a worker returns a structured result bound to its assignment
+- **THEN** the CLI validates assignment id, digest and generation, active workspace, base and result revisions, changed paths, single-commit and DCO policy, write ownership, required generated outputs, and required tests before integration, while imported writer, subject, session, route, and assurance labels remain informational and create no accepted implementation-receipt marker
+
+#### Scenario: Coordinator cannot substitute for a worker
+
+- **WHEN** a coordinator imports a result file, changes an agent or session label, or supplies equivalent prose
+- **THEN** the CLI MUST NOT represent that input as runtime-attested or accepted implementation-receipt authority, and the existing managed-worker, rationale, executor-separation, exact-revision, and final-verification gates remain authoritative
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/295#issuecomment-5010953633
+
+### Requirement: Minimal independent-review context with honest provenance
+
+The issue-spec workflow MUST give an independent reviewer a bounded exact-revision assignment and MUST let that reviewer publish findings or a verdict through a narrow role-specific submit path before the coordinator finalizes links or lifecycle bookkeeping. Version-1 reviewer provenance is self-reported compatibility evidence, not runtime attestation, and the CLI MUST NOT present an agent name or session label as proof of the executing process.
+
+#### Scenario: Reviewer inspects a bounded exact-revision packet
+
+- **WHEN** integrated code becomes ready for independent review
+- **THEN** a reviewer different from every covered code author receives only the immutable revision or diff, affected SPEC scenarios, review scope, author identity, relevant tests, and finding or verdict schema
+
+#### Scenario: Review assignment carries authoritative design context
+
+- **WHEN** the coordinator issues an independent review assignment
+- **THEN** the digest-covered packet includes the exact canonical Design Issue URL, a targeted complete-body read instruction, and the same PROCESS design invariant, applicable decisions, direction, constraints, and minimum verification that governed implementation; the reviewer stops and reports any conflict with the authoritative Design
+
+#### Scenario: Review result is bound to the reviewer and revision
+
+- **WHEN** the reviewer returns findings or an explicit no-finding verdict
+- **THEN** the role-specific submit path validates assignment identity, exact reviewed revision, non-Coordinator ownership, and independence from exact-diff authors, then persists immutable receipt identity and self-reported provenance before the coordinator projects deterministic links or other lifecycle state
+
+#### Scenario: Unattested migration path remains honest
+
+- **WHEN** the runtime cannot validate an imported reviewer receipt with equivalent assurance
+- **THEN** the compatible reviewer-owned narrow submit path remains available, its provenance stays explicitly self-reported, runtime-attested coordinator import remains unavailable, and the caller cannot select a stronger assurance label
+
+#### Scenario: Stale or self-authored review remains blocked
+
+- **WHEN** review evidence targets another revision or the reviewer authored covered code
+- **THEN** the existing exact-revision and independent-review gates reject it
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/295#issuecomment-5010953748
+
+### Requirement: Compact status and verification with unchanged gates
+
+The issue-spec CLI MUST offer additive compact status and verification views that group repeated diagnostics and bound affected identifiers while using the same authoritative evaluator, snapshot, decision, and exit status as full detail.
+
+#### Scenario: Repeated diagnostics are grouped
+
+- **WHEN** many PROCESS nodes fail the same gate diagnostic
+- **THEN** compact output reports the stable diagnostic code once with a count, bounded affected ids, truncation state, and a recommended next action for that blocker group
+
+#### Scenario: Successful output remains bounded
+
+- **WHEN** a requested gate passes
+- **THEN** compact output returns the decision, target, authoritative revision or evidence identity, and checked categories without expanding satisfied evidence for every PROCESS
+
+#### Scenario: Exact detail remains addressable
+
+- **WHEN** a blocker requires diagnosis
+- **THEN** compact output provides an explicit detail command that retrieves the relevant complete evidence without forcing unrelated artifact bodies into context
+
+#### Scenario: Compatibility output remains available
+
+- **WHEN** a human or existing automation requests the current full report
+- **THEN** the CLI returns complete per-PROCESS evidence and the compact and full decisions and exit statuses are identical for the same snapshot
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/295#issuecomment-5010953893
+
+### Requirement: Precise active-artifact reads with explicit history
+
+The issue-spec CLI MUST provide precise single-artifact and filtered active/history reads, including a CLI-computed exact representation digest, so callers and agents receive current state without unrelated or superseded bodies while full audit history remains explicitly available. Provider adapters MAY use direct lookup, cache, or an internal timeline scan according to backend capability; the bounded contract applies to returned caller context rather than requiring every provider to support server-side artifact-id filtering.
+
+#### Scenario: One artifact can be read directly
+
+- **WHEN** an agent requests a typed artifact by issue and stable id
+- **THEN** the CLI returns its identity, status, URL, exact representation digest, relevant links, and revision or workspace binding without returning every comment body to the caller
+
+#### Scenario: Active machine reads omit superseded bodies
+
+- **WHEN** an agent requests the current typed artifacts for a phase
+- **THEN** superseded artifacts are represented only by bounded metadata such as id, status, URL, digest, and superseded-by unless body or history detail is explicitly requested
+
+#### Scenario: Existing reads are not silently broken
+
+- **WHEN** precise and active read modes are introduced
+- **THEN** existing full-list behavior remains available through a documented compatibility or detail path and canonicalization is owned by the CLI rather than caller-side text pipelines
+
+#### Scenario: Human-readable artifacts remain intact
+
+- **WHEN** agent-facing reads are compacted
+- **THEN** Proposal, Design, durable SPEC/TASK content, and explicit audit history remain readable to humans
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/295#issuecomment-5010954045
+
+### Requirement: Deterministic coordinator projection with compact durable evidence
+
+The issue-spec CLI MUST compile lifecycle state, deterministic issue relationships, and compact durable evidence from explicit already-accepted role receipt identities through retry-safe operations, without accepting receipt payloads through projection, inferring authority from prose, or persisting duplicated and immediately stale evaluator forecasts.
+
+#### Scenario: Accepted carriers project deterministic issue relationships
+
+- **WHEN** an already-accepted PROCESS, REVIEW, or VERIFY carrier explicitly identifies immutable receipt identity, generation, coverage, and current targets
+- **THEN** the CLI idempotently projects only authorized typed lifecycle, current-pointer, and issue-link relationships, reports the applied mutation plan, and leaves provider rationale, findings, and checks on their existing role-owned commands and carriers
+
+#### Scenario: Implementation projection requires accepted issue-native authority
+
+- **WHEN** workspace completion validated a Coordinator-imported implementation result but the PROCESS contains no accepted implementation-receipt marker
+- **THEN** implementation projection fails closed and MUST NOT treat workspace assignment, result commit, caller JSON, or imported provenance labels as a substitute for accepted issue-native authority
+
+#### Scenario: Role-level retry preserves the state machine
+
+- **WHEN** projection is retried after a partial or non-atomic provider mutation
+- **THEN** the CLI observes current state, resumes from a stable checkpoint, applies existing transition and concurrency checks, and returns fresh final state
+
+#### Scenario: Invalid relationship types fail early
+
+- **WHEN** a caller supplies a provider discussion or other URL that is not valid for the requested typed relationship
+- **THEN** the write is rejected with a structured diagnostic instead of storing a link that only fails final verification
+
+#### Scenario: Typed evidence stores only durable authority
+
+- **WHEN** PROCESS, REVIEW, or VERIFY evidence is projected
+- **THEN** it records authoritative state, subject and result revisions, provenance, structured tests or checks, findings or verdict, and handoff without duplicating a second status field or a recomputable full PROCESS gate forecast
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/295#issuecomment-5011082197
+
+### Requirement: Generated role instructions shrink after CLI enforcement
+
+Generated workflow instructions MUST remain role-bounded and concise by relying on executable CLI validation and the addressable instruction contract rather than repeating the complete workflow protocol in every agent context.
+
+#### Scenario: Worker and reviewer packets exclude coordinator policy
+
+- **WHEN** the coordinator prepares an implementation or review assignment
+- **THEN** the packet excludes phase bodies, full PROCESS graphs, link matrices, closure and archive policy, provider routing, and typed-comment authoring instructions
+
+#### Scenario: Coordinator plans PROCESS nodes by design invariant
+
+- **WHEN** the coordinator derives a PROCESS DAG from confirmed TASK execution planning
+- **THEN** each PROCESS completely owns one independently verifiable Design invariant and its major entry points, and it is split only when the resulting nodes have independent acceptance criteria and can be reviewed correctly in isolation; file overlap and parallelism remain secondary to invariant cohesion
+
+#### Scenario: Ambiguous PROCESS boundaries block for human direction
+
+- **WHEN** preserving an end-to-end invariant conflicts with keeping one role agent's context and working set bounded and the coordinator cannot establish a stable independently testable split
+- **THEN** Implement planning stops as blocked with the competing boundary options and their acceptance consequences, and requires human direction instead of silently choosing an oversized or fragmented PROCESS
+
+#### Scenario: Coordinator instructions focus on actions and stops
+
+- **WHEN** workflow and phase skills are generated
+- **THEN** they contain concise role actions, recovery entry points, and mandatory stop conditions while detailed stable rules are enforced by CLI validators or requested through the instruction API
+
+#### Scenario: Compaction follows enforceability
+
+- **WHEN** a rule has not yet been moved into an executable validator or bounded contract
+- **THEN** instruction shortening does not remove that safety boundary merely to meet a token target
+
+#### Scenario: Size regressions are bounded
+
+- **WHEN** generated coordinator skills, assignments, results, or compact reports change
+- **THEN** regression tests enforce explicit size budgets while preserving all authoritative gate outcomes
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/295#issuecomment-5011082327
