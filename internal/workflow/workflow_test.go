@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/higress-group/issue-spec/internal/durable"
 	"gopkg.in/yaml.v3"
 )
 
@@ -100,6 +101,54 @@ func TestResolveBuiltInFallbackWhenNoConfigExists(t *testing.T) {
 	}
 	if len(plan.Artifacts) == 0 {
 		t.Fatal("builtin plan should include artifacts")
+	}
+	if plan.DurableSpecsMode() != durable.ModeNone {
+		t.Fatalf("default durable mode = %q, want none", plan.DurableSpecsMode())
+	}
+}
+
+func TestResolveDurableSpecsModes(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+		want durable.Mode
+	}{
+		{name: "explicit none", raw: "durable_specs:\n  mode: none\n", want: durable.ModeNone},
+		{name: "repository", raw: "durable_specs:\n  mode: repository\n", want: durable.ModeRepository},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), test.raw)
+			plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+			if err != nil {
+				t.Fatalf("resolve durable mode: %v diagnostics=%+v", err, plan.Diagnostics)
+			}
+			if plan.DurableSpecsMode() != test.want || plan.Config.DurableSpecs == nil || plan.Config.DurableSpecs.Mode != test.want {
+				t.Fatalf("durable config = %+v mode=%q", plan.Config.DurableSpecs, plan.DurableSpecsMode())
+			}
+		})
+	}
+}
+
+func TestResolveRejectsInvalidDurableSpecsConfig(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "invalid mode", raw: "durable_specs:\n  mode: plugin\n"},
+		{name: "noncanonical mode", raw: "durable_specs:\n  mode: REPOSITORY\n"},
+		{name: "missing mode", raw: "durable_specs: {}\n"},
+		{name: "unknown field", raw: "durable_specs:\n  mode: repository\n  executable: ./verify\n"},
+		{name: "not mapping", raw: "durable_specs: repository\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), test.raw)
+			plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+			if err == nil || !hasDiagnostic(plan.Diagnostics, "invalid_config") {
+				t.Fatalf("invalid durable config resolved: plan=%+v err=%v", plan, err)
+			}
+		})
 	}
 }
 

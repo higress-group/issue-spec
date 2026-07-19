@@ -15,6 +15,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
 type observingFakeBackend struct {
@@ -211,6 +212,109 @@ func TestCommentGenerateSpecProducesUpsertReadyBody(t *testing.T) {
 	}
 	if diags := model.ValidateCanonicalBody("SPEC", "SPEC-001", "", prepared); len(diags) != 0 {
 		t.Fatalf("generated body not canonical: %+v", diags)
+	}
+}
+
+func TestCommentGenerateSpecRendersStrictDurableIntent(t *testing.T) {
+	input := strings.TrimSuffix(specInputJSON, "\n}") + `,
+  "durable": {
+    "version": 1,
+    "intent": "OPERATIONS",
+    "operations": [
+      {
+        "id": "SPEC-001-OP-01",
+        "kind": "MODIFIED",
+        "capability": "canonical-comments",
+        "path": "issue-spec/specs/canonical-comments/spec.md",
+        "current_requirement": "canonical SPEC comments",
+        "projection": {"source": "current-spec"}
+      }
+    ]
+  }
+}`
+	inPath := writeTempInput(t, input)
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	code := app.runCommentGenerate(context.Background(), []string{
+		"--type", "SPEC", "--id", "SPEC-001", "--status", "confirmed", "--input-file", inPath,
+	})
+	if code != 0 || !strings.Contains(out.String(), "## Durable Intent") || !strings.Contains(out.String(), `"source": "current-spec"`) {
+		t.Fatalf("generate durable SPEC exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if _, found, err := model.ParseSpecDurableIntent("SPEC-001", out.String(), "."); err != nil || !found {
+		t.Fatalf("generated durable intent found=%t err=%v", found, err)
+	}
+}
+
+func TestCommentGenerateRejectsUnknownDurableFieldsAndMissingLegacyTarget(t *testing.T) {
+	unknown := strings.TrimSuffix(specInputJSON, "\n}") + `,
+  "durable": {"version":1,"intent":"UNCHANGED","plugin":"execute"}
+}`
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	if code := app.runCommentGenerate(context.Background(), []string{"--type", "SPEC", "--id", "SPEC-001", "--input-file", writeTempInput(t, unknown)}); code == 0 || !strings.Contains(errOut.String(), "unknown field") {
+		t.Fatalf("unknown durable field exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+
+	legacy := strings.TrimSuffix(specInputJSON, "\n}") + `,
+  "durable": {"version":1,"intent":"OPERATIONS","operations":[{
+    "id":"SPEC-001-OP-01","kind":"REMOVED","capability":"definitely-missing",
+    "path":"openspec/specs/definitely-missing/spec.md","current_requirement":"legacy"
+  }]}
+}`
+	out.Reset()
+	errOut.Reset()
+	if code := app.runCommentGenerate(context.Background(), []string{"--type", "SPEC", "--id", "SPEC-001", "--input-file", writeTempInput(t, legacy)}); code == 0 || !strings.Contains(errOut.String(), "does not already exist") {
+		t.Fatalf("missing legacy target exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestCommentGenerateRequiresDurableIntentOnlyForConfirmedRepositoryMode(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "issue-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "issue-spec", "config.yaml"), []byte("durable_specs:\n  mode: repository\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	args := []string{"--type", "SPEC", "--id", "SPEC-001", "--status", "confirmed", "--input-file", writeTempInput(t, specInputJSON)}
+	if code := app.runCommentGenerate(context.Background(), args); code == 0 || !strings.Contains(errOut.String(), "requires durable input") {
+		t.Fatalf("confirmed repository SPEC exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	args[5] = "draft"
+	if code := app.runCommentGenerate(context.Background(), args); code != 0 {
+		t.Fatalf("draft repository SPEC exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	args[5] = "confirmed"
+	unchanged := strings.TrimSuffix(specInputJSON, "\n}") + `,
+  "durable": {"version":1,"intent":"UNCHANGED"}
+}`
+	args[7] = writeTempInput(t, unchanged)
+	if code := app.runCommentGenerate(context.Background(), args); code != 0 || !strings.Contains(out.String(), "## Durable Intent") {
+		t.Fatalf("confirmed durable SPEC exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestWorkflowSpecTemplateCannotInventDurableAuthority(t *testing.T) {
+	body, err := model.EnsureTypedBody("SPEC", "SPEC-001",
+		"## Requirement: canonical SPEC comments\n\nThe CLI MUST render comments.\n\n### Scenario: render\n\n- **WHEN** input exists\n- **THEN** output exists\n\n## Durable Intent\n\n```json\n{\"version\":1,\"intent\":\"UNCHANGED\"}\n```",
+		model.BodyOptions{Status: "draft"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateGeneratedSpecDurablePolicy(workflow.Plan{}, "SPEC-001", "draft", specInputJSON, body); err == nil ||
+		!strings.Contains(err.Error(), "introduced Durable Intent") {
+		t.Fatalf("workflow template authority error = %v", err)
 	}
 }
 

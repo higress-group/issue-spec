@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/durable"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
@@ -227,7 +228,17 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 			// canonical diagnostics remain part of the complete compatibility read model.
 			if (tc.Type == "PROCESS" && ((implement > 0 && artifact.Issue != implement) || activeProcesses[tc.ID])) ||
 				(tc.Type != "PROCESS" && tc.Status != "superseded") {
-				malformed = append(malformed, model.ValidateArtifact(artifact)...)
+				malformed = append(malformed, model.ValidateArtifactAtRoot(artifact, ".")...)
+				if workflowPlan.DurableSpecsMode() == durable.ModeRepository && tc.Type == "SPEC" && strings.EqualFold(tc.Status, "confirmed") &&
+					(proposal <= 0 || artifact.Issue == proposal) {
+					if _, found, _ := model.ParseSpecDurableIntent(tc.ID, tc.Body, "."); !found {
+						malformed = append(malformed, model.CanonicalDiagnostic{
+							Severity: "error", Type: "SPEC", ID: tc.ID, URL: artifact.URL,
+							Element: "durable-intent-required",
+							Message: "confirmed SPEC requires exactly one Durable Intent under durable_specs.mode repository",
+						})
+					}
+				}
 			}
 		}
 		if tc.Type == "QUESTION" && tc.Status == "blocked" {

@@ -16,6 +16,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
+	"github.com/higress-group/issue-spec/internal/durable"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
@@ -221,6 +222,48 @@ func TestSummarizeStatusBlocksOnBlockedQuestion(t *testing.T) {
 	}
 	if summary.BlockingQuestions != 1 {
 		t.Fatalf("blocking questions = %d", summary.BlockingQuestions)
+	}
+}
+
+func TestProposalStatusRequiresDurableIntentOnlyForConfirmedRepositorySpecs(t *testing.T) {
+	logical := "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y"
+	repositoryPlan := workflow.Plan{Config: workflow.Config{DurableSpecs: &workflow.DurableSpecsConfig{Mode: durable.ModeRepository}}}
+	nonePlan := workflow.Plan{}
+
+	confirmed := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", logical)
+	if summary := summarizeStatusForGate("o/r", 1, 0, 0, gates.TargetProposal, []model.Artifact{confirmed}, nonePlan, nil); !summary.OK {
+		t.Fatalf("default opt-out required durable intent: malformed=%+v gate=%+v", summary.Malformed, summary.Gate.Diagnostics)
+	}
+	draft := typedArtifact(t, 1, "SPEC", "SPEC-001", "draft", logical)
+	if summary := summarizeStatusForGate("o/r", 1, 0, 0, gates.TargetProposal, []model.Artifact{draft}, repositoryPlan, nil); !summary.OK {
+		t.Fatalf("draft SPEC required durable intent: malformed=%+v gate=%+v", summary.Malformed, summary.Gate.Diagnostics)
+	}
+
+	missing := summarizeStatusForGate("o/r", 1, 0, 0, gates.TargetProposal, []model.Artifact{confirmed}, repositoryPlan, nil)
+	if missing.OK || !canonicalDiagnosticsContain(missing.Malformed, "SPEC-001") || !statusHasCode(missing, gates.CodeArtifactNoncanonical) {
+		t.Fatalf("confirmed repository SPEC without intent passed: malformed=%+v gate=%+v", missing.Malformed, missing.Gate.Diagnostics)
+	}
+	foundRequired := false
+	for _, diagnostic := range missing.Malformed {
+		if diagnostic.ID == "SPEC-001" && diagnostic.Element == "durable-intent-required" {
+			foundRequired = true
+		}
+	}
+	if !foundRequired {
+		t.Fatalf("missing intent diagnostic = %+v", missing.Malformed)
+	}
+
+	withIntent := logical + "\n\n## Durable Intent\n\n```json\n{\"version\":1,\"intent\":\"UNCHANGED\"}\n```"
+	valid := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", withIntent)
+	if summary := summarizeStatusForGate("o/r", 1, 0, 0, gates.TargetProposal, []model.Artifact{valid}, repositoryPlan, nil); !summary.OK {
+		t.Fatalf("confirmed repository SPEC with intent failed: malformed=%+v gate=%+v", summary.Malformed, summary.Gate.Diagnostics)
+	}
+
+	invalidIntent := logical + "\n\n## Durable Intent\n\n```json\n{\"version\":1,\"intent\":\"OPERATIONS\",\"operations\":[]}\n```"
+	invalid := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", invalidIntent)
+	if summary := summarizeStatusForGate("o/r", 1, 0, 0, gates.TargetProposal, []model.Artifact{invalid}, repositoryPlan, nil); summary.OK ||
+		!canonicalDiagnosticsContain(summary.Malformed, "SPEC-001") {
+		t.Fatalf("invalid durable intent passed: malformed=%+v gate=%+v", summary.Malformed, summary.Gate.Diagnostics)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/durable"
 	"github.com/higress-group/issue-spec/internal/finalization"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
@@ -317,11 +318,43 @@ func (a *app) runCommentGenerate(_ context.Context, args []string) int {
 	} else if used {
 		body = rendered
 	}
+	if strings.EqualFold(*commentType, "SPEC") {
+		if err := validateGeneratedSpecDurablePolicy(workflowPlan, *id, *status, raw, body); err != nil {
+			a.errorf("generate typed comment: %v\n", err)
+			return 2
+		}
+	}
 	if !strings.HasSuffix(body, "\n") {
 		body += "\n"
 	}
 	fmt.Fprint(a.out, body)
 	return 0
+}
+
+func validateGeneratedSpecDurablePolicy(plan workflow.Plan, id, status, raw, body string) error {
+	var input templates.SpecInput
+	if err := decodeGeneratorInput(raw, &input); err != nil {
+		return err
+	}
+	observed, found, err := model.ParseSpecDurableIntent(id, body, ".")
+	if err != nil {
+		return err
+	}
+	if input.Durable != nil {
+		if !found {
+			return fmt.Errorf("workflow SPEC template omitted the structured Durable Intent")
+		}
+		options := durable.ValidationOptions{RepositoryRoot: ".", SpecID: id, SpecRequirement: strings.TrimSpace(input.Requirement.Title)}
+		if !durable.CanonicalEqual(*input.Durable, observed, options) {
+			return fmt.Errorf("workflow SPEC template changed the structured Durable Intent")
+		}
+	} else if found {
+		return fmt.Errorf("workflow SPEC template introduced Durable Intent without structured durable input")
+	}
+	if plan.DurableSpecsMode() == durable.ModeRepository && strings.EqualFold(strings.TrimSpace(status), "confirmed") && !found {
+		return fmt.Errorf("confirmed SPEC requires durable input under durable_specs.mode repository")
+	}
+	return nil
 }
 
 func generateTypedBody(commentType, id, agent, status, scope, raw string) (string, error) {
@@ -332,7 +365,7 @@ func generateTypedBody(commentType, id, agent, status, scope, raw string) (strin
 		if err := decodeGeneratorInput(raw, &input); err != nil {
 			return "", err
 		}
-		return templates.SpecComment(templates.SpecCommentOptions{Common: common, Input: input})
+		return templates.SpecComment(templates.SpecCommentOptions{Common: common, Input: input, RepositoryRoot: "."})
 	case "TASK":
 		var input templates.TaskInput
 		if err := decodeGeneratorInput(raw, &input); err != nil {
@@ -417,7 +450,20 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 
 	// Recompute canonical validity from the prepared body. SPEC, TASK, and
 	// PROCESS are strict blocking types; other types return no diagnostics.
-	diags := model.ValidateCanonicalBody(*commentType, *id, "", body)
+	diags := model.ValidateCanonicalBodyAtRoot(*commentType, *id, "", body, ".")
+	if strings.EqualFold(*commentType, "SPEC") && strings.EqualFold(strings.TrimSpace(*status), "confirmed") {
+		plan, resolveErr := workflow.Resolve(".")
+		if resolveErr != nil {
+			a.errorf("workflow validation failed: %v\n", resolveErr)
+			return 1
+		}
+		if plan.DurableSpecsMode() == durable.ModeRepository {
+			if _, found, _ := model.ParseSpecDurableIntent(*id, body, "."); !found {
+				diags = append(diags, model.CanonicalDiagnostic{Severity: "error", Type: "SPEC", ID: *id,
+					Element: "durable-intent-required", Message: "confirmed SPEC requires durable input under durable_specs.mode repository"})
+			}
+		}
+	}
 	noncanonical := false
 	if len(diags) > 0 {
 		if !*allowNoncanonical {
