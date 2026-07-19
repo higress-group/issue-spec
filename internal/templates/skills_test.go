@@ -73,7 +73,9 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 			name: "issue-spec-review",
 			required: []string{"sealed review assignment", "exact subject revision", "immutable snapshot/diff",
 				"design_context.read_mode=complete-issue-body", "read the complete Design", "Stop on conflict",
-				"actionable findings", "explicit no-finding verdict", "bounded review receipt/sync result"},
+				"actionable findings", "explicit no-finding verdict", "bounded review receipt/sync result",
+				"issue-spec link --repo owner/repo --from REVIEW-<n> --from-issue <implement-issue> --to PROCESS-<n> --to-issue <implement-issue>",
+				"issue-spec link --repo owner/repo --from REVIEW-<n> --from-issue <implement-issue> --to SPEC-<n> --to-issue <proposal-issue>"},
 			forbidden: []string{"workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
 		},
 		{
