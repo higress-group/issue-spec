@@ -9,6 +9,7 @@ Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/196
 - https://github.com/higress-group/issue-spec/issues/247
 - https://github.com/higress-group/issue-spec/issues/295
+- https://github.com/higress-group/issue-spec/issues/299
 - https://github.com/higress-group/issue-spec/issues/32
 
 ## Requirements
@@ -520,3 +521,116 @@ Generated workflow instructions MUST remain role-bounded and concise by relying 
 - **THEN** regression tests enforce explicit size budgets while preserving all authoritative gate outcomes
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/295#issuecomment-5011082327
+
+### Requirement: Final gates use unique active PROCESS carriers
+
+The CLI MUST derive final PROCESS authority from explicit directional superseded-by relationships that resolve each historical PROCESS to one unique active sink, MUST evaluate exact-current evidence only on the resulting active change-bearing carriers, and MUST fail closed when relationships, evidence ownership, per-SPEC review, or verification coverage cannot be validated.
+
+#### Scenario: Historical PROCESS resolves to one active sink
+
+- **WHEN** an acyclic superseded-by chain connects a historical PROCESS to exactly one non-superseded current PROCESS in the same change
+- **THEN** final gates evaluate current rationale and evidence on that active sink and do not require duplicate exact-current rationale on the historical PROCESS
+
+#### Scenario: Invalid replacement graph fails closed
+
+- **WHEN** a superseded-by relationship is missing its target, has multiple direct successors, crosses the change boundary, forms a cycle, or does not resolve to one active sink
+- **THEN** the CLI keeps the affected PROCESS blocking and reports the exact relationship diagnostic without inferring a replacement
+
+#### Scenario: Active carrier still requires exact-current evidence
+
+- **WHEN** an active change-bearing PROCESS lacks current rationale for a claimed SPEC or its subject revision does not match the authoritative code change
+- **THEN** final verification remains blocked even when every historical predecessor is validly superseded
+
+#### Scenario: One independent review covers an active set
+
+- **WHEN** one exact-current REVIEW explicitly enumerates multiple active PROCESS carriers and independently validates each carrier's current rationale and per-SPEC coverage with no unresolved finding or author conflict
+- **THEN** the evaluator accepts only the enumerated carriers and keeps any uncovered active carrier blocking even when another carrier for the same SPEC is reviewed
+
+#### Scenario: One verification carrier covers an active set
+
+- **WHEN** one exact-current VERIFY covers every active SPEC, proves verifier independence with no author conflict, and carries the required passing tests and trusted provider checks for the authoritative subject revision
+- **THEN** the evaluator accepts that VERIFY for the active set without copying verification evidence to superseded PROCESS comments
+
+#### Scenario: Missing original role evidence remains blocked
+
+- **WHEN** an active carrier lacks publishable current rationale from the original executor or another carrier accepted by the existing role-owned evidence rules
+- **THEN** final verification fails closed and the finalizer does not synthesize, inherit, re-anchor, or strengthen execution ownership or role evidence
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/299#issuecomment-5014561689
+
+### Requirement: Finalization uses one frozen preview and retry-safe apply plan
+
+The CLI MUST compile deterministic finalization from the shared evaluator into a write-free plan bound to the exact subject revision, actual change baseline, active-carrier selection, complete typed-relationship delta, comment representation digests, ordered mutations, and remaining blockers; apply MUST consume that same plan, preserve unplanned valid relationships, fail closed on drift, checkpoint confirmed writes, and never fabricate semantic or role-owned evidence.
+
+#### Scenario: Preview is deterministic and write-free
+
+- **WHEN** a coordinator requests finalization preview twice for the same provider snapshot
+- **THEN** the CLI performs no writes and returns the same ordered mutations, blockers, snapshot identity, and plan digest
+
+#### Scenario: Preview freezes the actual change baseline
+
+- **WHEN** the base branch HEAD has advanced beyond the code change while the code change still has an older Git merge-base or provider-defined baseline
+- **THEN** the plan records the actual merge-base or provider baseline and does not substitute the moving base-branch HEAD
+
+#### Scenario: Apply preserves link and lifecycle invariants
+
+- **WHEN** a valid plan contains the complete relationship delta and an artifact has valid existing relationships that are not explicitly planned for removal
+- **THEN** body upsert and lifecycle transition preserve those relationships, apply performs only planned additions and removals, and each required link postcondition passes before its dependent terminal transition
+
+#### Scenario: Representation digest has one meaning
+
+- **WHEN** preview records a representation digest and apply supplies an expected digest and mutation-result before digest for the same provider comment
+- **THEN** all three digests identify the exact same provider comment representation using the same algorithm and any mismatch is treated as drift
+
+#### Scenario: Representation drift fails closed
+
+- **WHEN** the subject revision, active selection, relationship graph, or any planned comment representation digest differs at apply time
+- **THEN** apply stops before the affected write on both CAS and explicitly allowed non-CAS backends and reports a fresh-preview remediation
+
+#### Scenario: Partial apply resumes from checkpoints
+
+- **WHEN** a provider accepts a prefix of the ordered mutation plan and the client loses the response or a later write fails
+- **THEN** a retry re-observes confirmed mutations, resumes from the checkpoint, and neither duplicates backlinks nor accepts an unplanned state
+
+#### Scenario: Missing role evidence remains a plan blocker
+
+- **WHEN** rationale, review, verification, provenance, tests, checks, or an explicit superseded-by relationship is absent or ambiguous
+- **THEN** preview reports the non-automatable blocker and apply does not create, infer, or rewrite that evidence
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/299#issuecomment-5014561830
+
+### Requirement: Active-carrier finalization preserves history and compatible workflows
+
+The CLI MUST preserve superseded PROCESS bodies and their original revision-bound evidence, MUST require an explicit valid superseded-by relationship before legacy superseded status excludes a PROCESS from active evidence evaluation, MUST continue accepting existing independently complete and manual role-owned workflows, and MUST derive compact and detailed final reads from the same active-carrier evaluation so historical auditability remains available without duplicate current blockers.
+
+#### Scenario: Superseded PROCESS history remains auditable
+
+- **WHEN** a historical PROCESS reaches terminal superseded state through a valid superseded-by chain
+- **THEN** its original body, receipt, revision, findings, replies, rationale, and relationship chain to the active sink remain directly readable
+
+#### Scenario: Superseded history does not duplicate current blockers
+
+- **WHEN** the active sink has complete exact-current evidence and its historical predecessor chain is valid
+- **THEN** final status and verify omit rationale, review, verification, and lifecycle blockers that exist only because the superseded PROCESS does not describe the current revision
+
+#### Scenario: Independently complete workflows remain valid
+
+- **WHEN** a workflow keeps every PROCESS independently terminal and does not adopt superseded-by relationships
+- **THEN** the existing workflow remains accepted without migration or automatic finalization
+
+#### Scenario: Legacy superseded status does not imply replacement
+
+- **WHEN** a legacy PROCESS has Status: superseded but no explicit valid superseded-by relationship
+- **THEN** the artifact remains readable but is not excluded from active evidence evaluation and the CLI does not infer a replacement from legacy links or prose
+
+#### Scenario: Manual role-owned submission remains valid
+
+- **WHEN** a supported provider or coding agent uses the existing manual worker, reviewer, or verifier publication path without runtime-specific session metadata
+- **THEN** the evidence remains eligible under the same provenance and exact-revision rules
+
+#### Scenario: Compact output scales with current blockers
+
+- **WHEN** many historical PROCESS comments resolve to a semantically complete active set
+- **THEN** compact final output groups blockers by active carrier and code while a bounded detail command returns the historical chains and original artifacts
+
+Source SPEC comment: https://github.com/higress-group/issue-spec/issues/299#issuecomment-5014561982
