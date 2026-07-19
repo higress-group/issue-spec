@@ -84,9 +84,17 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 		a.errorf("collect artifacts: %v\n", err)
 		return 1
 	}
-	workflowPlan, workflowErr := workflow.Resolve(".")
+	var workflowPlan workflow.Plan
+	var workflowErr error
+	if target != gates.TargetFinal {
+		workflowPlan, workflowErr = workflow.Resolve(".")
+	}
 	profile, _, profileErr := auth.ResolveProfile(a.profileName, *host)
 	collection := statusGateCollection{Remote: statusForecastRemoteFacts(target)}
+	if target == gates.TargetFinal {
+		collection.FinalEvidence = buildMinimalFinalEvidence(artifactsForImplementGate(artifacts, implementIssue), nil,
+			gates.FinalSubject{Required: true})
+	}
 	if profileErr == nil {
 		collection = a.collectStatusGateFacts(ctx, client, profile, token.Value, repo, implementIssue, target, artifacts)
 	}
@@ -203,6 +211,7 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 	}
 	counts := artifactStatusCounts(artifacts)
 	gateArtifacts := artifactsForImplementGate(artifacts, implement)
+	useMinimalFinal := target == gates.TargetFinal && collection.FinalEvidence.Observed
 	verify := map[string]string{}
 	blockingQuestions := 0
 	openReviews := 0
@@ -213,11 +222,13 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		if tc.Type == "" {
 			continue
 		}
-		// Cross-issue PROCESS comments are not gate carriers, but their
-		// canonical diagnostics remain part of the complete read model.
-		if (tc.Type == "PROCESS" && ((implement > 0 && artifact.Issue != implement) || activeProcesses[tc.ID])) ||
-			(tc.Type != "PROCESS" && tc.Status != "superseded") {
-			malformed = append(malformed, model.ValidateArtifact(artifact)...)
+		if !useMinimalFinal {
+			// Cross-issue PROCESS comments are not gate carriers, but their
+			// canonical diagnostics remain part of the complete compatibility read model.
+			if (tc.Type == "PROCESS" && ((implement > 0 && artifact.Issue != implement) || activeProcesses[tc.ID])) ||
+				(tc.Type != "PROCESS" && tc.Status != "superseded") {
+				malformed = append(malformed, model.ValidateArtifact(artifact)...)
+			}
 		}
 		if tc.Type == "QUESTION" && tc.Status == "blocked" {
 			blockingQuestions++
@@ -229,7 +240,10 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 			verify[tc.ID] = tc.Status
 		}
 	}
-	report := model.VerifyTraceability(artifacts)
+	report := model.VerifyReport{OK: true}
+	if !useMinimalFinal {
+		report = model.VerifyTraceability(artifacts)
+	}
 	var diagnostics []metadataDiagnostic
 	workflowFacts := gates.WorkflowFacts{Required: true, Known: true, Valid: workflowErr == nil && !workflowPlan.HasErrors()}
 	if workflowErr != nil {
@@ -241,7 +255,7 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		}
 	}
 	mode := gates.ModeForecast
-	if target == gates.TargetFinal || target == gates.TargetArchive {
+	if target == gates.TargetArchive {
 		mode = gates.ModeAuthoritative
 	}
 	processEvidence := collection.ProcessEvidence
@@ -250,14 +264,16 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		processEvidence = buildProcessEvidenceInputs(gateArtifacts, "", nil, reviewSyncReport{}, nil)
 	}
 	snapshot := gates.Snapshot{
-		Target:          target,
-		Mode:            mode,
-		Artifacts:       gateArtifacts,
-		Canonical:       gates.CanonicalFacts{Observed: true, Diagnostics: malformed},
-		Traceability:    gates.TraceabilityFacts{Observed: true, Report: report},
-		Workflow:        workflowFacts,
-		Remote:          collection.Remote,
-		ProcessEvidence: processEvidence,
+		Target:                   target,
+		Mode:                     mode,
+		Artifacts:                gateArtifacts,
+		Canonical:                gates.CanonicalFacts{Observed: true, Diagnostics: malformed},
+		Traceability:             gates.TraceabilityFacts{Observed: true, Report: report},
+		Workflow:                 workflowFacts,
+		Remote:                   collection.Remote,
+		ProcessEvidence:          processEvidence,
+		FinalEvidence:            collection.FinalEvidence,
+		LegacyFinalCompatibility: target == gates.TargetFinal && !useMinimalFinal,
 	}
 	gateReport, gateErr := gates.Evaluate(snapshot)
 	if gateErr != nil {
@@ -356,6 +372,7 @@ type statusGateCollection struct {
 	Remote          gates.RemoteFacts
 	ProcessEvidence []gates.ProcessEvidenceInput
 	Subject         *gates.CompactSubject
+	FinalEvidence   gates.FinalEvidenceSnapshot
 }
 
 func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend, profile auth.Profile, token, repo string,
@@ -365,6 +382,9 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 		return collection
 	}
 	artifacts = artifactsForImplementGate(artifacts, implementIssue)
+	if target == gates.TargetFinal {
+		collection.FinalEvidence = buildMinimalFinalEvidence(artifacts, nil, gates.FinalSubject{Required: true})
+	}
 	if profile.Kind == auth.ProfileKindHosted {
 		collection.Remote.PRChecks = gates.Fact{}
 		collection.Remote.ReviewFindings = gates.Fact{}
@@ -390,13 +410,27 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 			Expected: "trusted exact-revision provider evidence"}
 		if gateErr != nil {
 			collection.Remote.ProviderEvidence.Current = gateErr.Error()
+			if target == gates.TargetFinal {
+				collection.FinalEvidence = buildMinimalFinalEvidence(artifacts, nil, gates.FinalSubject{Required: true,
+					Known: strings.TrimSpace(gate.Target.SubjectRevision) != "", Trusted: false, Kind: "code_change",
+					URL: gate.Target.CanonicalURL, Revision: strings.TrimSpace(gate.Target.SubjectRevision),
+					Source: "native-authoritative-ledger:code-subject"})
+			}
 			return collection
 		}
+		collection.Remote.ReviewFindings = gates.Fact{Required: true, Known: true, Passed: true,
+			Current: "blocking=0", Expected: "blocking=0"}
 		collection.Remote.VerifyRevision, _ = collectVerifyRevisionFact(artifacts, gate.Target.SubjectRevision, time.Now().UTC())
 		collection.ProcessEvidence = buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
 			reviewSyncReport{}, nil, &gate, time.Now().UTC())
 		collection.ProcessEvidence = consumeAcceptedVerificationEvidence(collection.ProcessEvidence, artifacts,
 			gate.Target.SubjectRevision)
+		if target == gates.TargetFinal {
+			collection.FinalEvidence = buildMinimalFinalEvidence(artifacts, collection.ProcessEvidence, gates.FinalSubject{
+				Required: true, Known: strings.TrimSpace(gate.Target.SubjectRevision) != "", Trusted: true,
+				Kind: "code_change", URL: gate.Target.CanonicalURL, Revision: strings.TrimSpace(gate.Target.SubjectRevision),
+				Source: "native-authoritative-ledger:code-subject"})
+		}
 		return collection
 	}
 
@@ -424,6 +458,11 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 		Current: fmt.Sprintf("blocking=%d", len(review.BlockingFindings)), Expected: "blocking=0"}
 	collection.ProcessEvidence = buildProcessEvidenceInputs(artifacts, prURL, facts.ReviewComments, review, nil)
 	collection.ProcessEvidence = consumeAcceptedVerificationEvidence(collection.ProcessEvidence, artifacts, pr.Head.SHA)
+	if target == gates.TargetFinal {
+		collection.FinalEvidence = buildMinimalFinalEvidence(artifacts, collection.ProcessEvidence, gates.FinalSubject{
+			Required: true, Known: strings.TrimSpace(pr.Head.SHA) != "", Trusted: true, Kind: "pull_request",
+			URL: prURL, Revision: strings.TrimSpace(pr.Head.SHA), Source: fmt.Sprintf("github-pull-request-head:%d", prNumber)})
+	}
 	return collection
 }
 

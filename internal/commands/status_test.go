@@ -255,8 +255,8 @@ func TestStatusFinalReportsDogfoodBlockersAndForecastUnknowns(t *testing.T) {
 	linkArtifacts(t, &task, &process)
 	summary := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetFinal,
 		[]model.Artifact{spec, task, process}, workflow.Plan{}, nil)
-	if summary.OK || summary.Gate.Ready || summary.Gate.PointInTime || summary.Gate.Mode != gates.ModeAuthoritative {
-		t.Fatalf("final status must be authoritative and non-ready: %+v", summary.Gate)
+	if summary.OK || summary.Gate.Ready || !summary.Gate.PointInTime || summary.Gate.Mode != gates.ModeForecast {
+		t.Fatalf("final status must be a forecast and non-ready: %+v", summary.Gate)
 	}
 	want := []string{
 		gates.CodePRChecksUnknown,

@@ -543,6 +543,9 @@ func link(t *testing.T, left, right *model.Artifact) {
 
 func evaluate(t *testing.T, snapshot Snapshot) Report {
 	t.Helper()
+	if snapshot.Target == TargetFinal && !snapshot.FinalEvidence.Observed {
+		snapshot.LegacyFinalCompatibility = true
+	}
 	report, err := Evaluate(snapshot)
 	if err != nil {
 		t.Fatal(err)

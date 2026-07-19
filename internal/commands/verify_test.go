@@ -63,6 +63,80 @@ func TestVerificationReceiptBindingAndImmutableProjection(t *testing.T) {
 	}
 }
 
+func TestBuildMinimalFinalEvidenceIndexesAcceptedRecordsWithoutProcessWrites(t *testing.T) {
+	const (
+		revision = "head-abc"
+		specID   = "SPEC-001"
+		specURL  = "https://github.com/o/r/issues/9#issuecomment-spec"
+		prURL    = "https://github.com/o/r/pull/7"
+	)
+	processBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-101",
+		"## Process: implementation\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- change-bearing\n\n### Covers\n\n- "+specID,
+		model.BodyOptions{Status: "in-progress", Links: map[string][]string{"PR": {prURL}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := model.Artifact{URL: "https://github.com/o/r/issues/9#issuecomment-process", Comment: model.ParseTypedComment(processBody)}
+	processBodyBefore := process.Comment.Body
+
+	reviewReceipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	reviewBody, err := renderSubmittedReview("REVIEW-101", process.Comment.ID, process.URL, prURL, []string{specURL}, reviewReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := model.Artifact{URL: "https://github.com/o/r/issues/9#issuecomment-review", Comment: model.ParseTypedComment(reviewBody)}
+
+	tests := []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates", Outcome: assignment.TestPassed,
+		Assurance: assignment.AssuranceSelfReported}}
+	selectors := []assignment.CheckSelector{{Provider: "github", Name: "unit"}}
+	sealed := testVerificationAssignment(t, revision, tests, selectors)
+	verificationReceipt := testSealedVerificationReceiptForAssignment(t, sealed, tests, selectors)
+	checks := []observedVerificationCheck{{Provider: "github", Name: "unit", EvidenceID: "42", State: "success",
+		SubjectRevision: revision, Source: "github-check-run:42"}}
+	verifyBody, err := renderSubmittedVerification("VERIFY-101", process.URL, []string{specID}, verificationReceipt,
+		checks, testVerificationSubmission("Verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify := model.Artifact{URL: "https://github.com/o/r/issues/9#issuecomment-verify", Comment: model.ParseTypedComment(verifyBody)}
+
+	input := gates.ProcessEvidenceInput{Process: process, ActiveSpecs: map[string]string{specID: specURL},
+		AuthorAgentsBySpec: map[string]map[string]bool{specID: {"implementation worker": true}},
+		Reviews: []gates.ReviewEvidence{{ProcessID: process.Comment.ID, SpecID: specID, URL: review.URL, Done: true,
+			ReviewerAgent: "Independent Reviewer", SubjectRevision: revision, Trusted: true, Source: "accepted-review-receipt:self-reported"}},
+		Verifications: []gates.VerificationEvidence{{ProcessID: process.Comment.ID, SpecID: specID, URL: verify.URL, Done: true,
+			TestEvidence: true, SubjectRevision: revision, Trusted: true,
+			Source: "accepted-verification-receipt:mixed-self-reported-tests-and-provider-checks"}},
+	}
+	snapshot := buildMinimalFinalEvidence([]model.Artifact{process, review, verify}, []gates.ProcessEvidenceInput{input},
+		gates.FinalSubject{Required: true, Known: true, Trusted: true, Kind: "pull_request", URL: prURL,
+			Revision: revision, Source: "github-pull-request-head:7"})
+	if !snapshot.Index.Passed || len(snapshot.Records) != 4 {
+		t.Fatalf("accepted canonical records were not indexed: index=%+v records=%+v", snapshot.Index, snapshot.Records)
+	}
+	wantKinds := map[gates.FinalEvidenceKind]bool{gates.FinalEvidenceReview: true, gates.FinalEvidenceVerification: true,
+		gates.FinalEvidenceTest: true, gates.FinalEvidenceCheck: true}
+	for _, record := range snapshot.Records {
+		delete(wantKinds, record.Kind)
+		if record.ProcessID != process.Comment.ID || record.SpecID != specID || record.SubjectRevision != revision {
+			t.Fatalf("record escaped exact PROCESS/SPEC/revision scope: %+v", record)
+		}
+	}
+	if len(wantKinds) != 0 {
+		t.Fatalf("missing canonical evidence kinds: %v", wantKinds)
+	}
+	if process.Comment.Body != processBodyBefore {
+		t.Fatal("in-memory evidence indexing mutated PROCESS")
+	}
+
+	stale := buildMinimalFinalEvidence([]model.Artifact{process, review, verify}, []gates.ProcessEvidenceInput{input},
+		gates.FinalSubject{Required: true, Known: true, Trusted: true, Kind: "pull_request", URL: prURL,
+			Revision: "head-new", Source: "github-pull-request-head:7"})
+	if !stale.Index.Passed || len(stale.Records) != 0 {
+		t.Fatalf("stale accepted evidence entered the exact-current index: %+v", stale)
+	}
+}
+
 func TestVerificationReceiptBindingRejectsUntrustedLocalCompletion(t *testing.T) {
 	valid := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./...",
 		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)

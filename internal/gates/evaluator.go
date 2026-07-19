@@ -58,6 +58,11 @@ func Evaluate(snapshot Snapshot) (Report, error) {
 	if err := snapshot.Mode.validate(); err != nil {
 		return Report{}, err
 	}
+	// TargetFinal has one current policy. The explicit, non-serializable bridge
+	// keeps pre-snapshot in-process callers working for one compatibility window.
+	if snapshot.Target == TargetFinal && !snapshot.LegacyFinalCompatibility {
+		return evaluateMinimalFinal(snapshot), nil
+	}
 
 	selection := finalization.Select(snapshot.Artifacts)
 	e := evaluator{snapshot: snapshot, selection: selection, activeProcesses: map[string]bool{}}

@@ -142,6 +142,52 @@ type WorkflowFacts struct {
 	Errors   []string `json:"errors,omitempty"`
 }
 
+type FinalEvidenceKind string
+
+const (
+	FinalEvidenceReview       FinalEvidenceKind = "review"
+	FinalEvidenceVerification FinalEvidenceKind = "verification"
+	FinalEvidenceTest         FinalEvidenceKind = "test"
+	FinalEvidenceCheck        FinalEvidenceKind = "check"
+)
+
+// FinalSubject is the one provider-authoritative code subject evaluated by
+// TargetFinal. URL is the provider-neutral PROCESS code-subject binding;
+// Revision is the exact immutable head observed for this evaluation.
+type FinalSubject struct {
+	Required bool   `json:"required"`
+	Known    bool   `json:"known"`
+	Trusted  bool   `json:"trusted"`
+	Kind     string `json:"kind,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Revision string `json:"revision,omitempty"`
+	Source   string `json:"source,omitempty"`
+}
+
+// FinalEvidenceRecord is the bounded projection of one record already
+// accepted by the commands-layer canonical evidence index. The final evaluator
+// never reparses prose or writes evidence back to PROCESS.
+type FinalEvidenceRecord struct {
+	ProcessID       string            `json:"process_id"`
+	SpecID          string            `json:"spec_id"`
+	Kind            FinalEvidenceKind `json:"kind"`
+	EvidenceID      string            `json:"evidence_id"`
+	Name            string            `json:"name,omitempty"`
+	SubjectRevision string            `json:"subject_revision"`
+	Source          string            `json:"source"`
+	Independent     bool              `json:"independent,omitempty"`
+}
+
+// FinalEvidenceSnapshot contains only exact-current facts consumed by
+// TargetFinal. Index is the result of the pure commands-layer canonical index;
+// a missing, invalid, stale, or conflicting index fails closed.
+type FinalEvidenceSnapshot struct {
+	Observed bool                  `json:"observed"`
+	Subject  FinalSubject          `json:"subject"`
+	Index    Fact                  `json:"index"`
+	Records  []FinalEvidenceRecord `json:"records,omitempty"`
+}
+
 // CanonicalFacts lets callers reuse diagnostics from an existing artifact
 // collection pass. When Observed is false Evaluate recomputes them.
 type CanonicalFacts struct {
@@ -170,6 +216,11 @@ type Snapshot struct {
 	Workflow        WorkflowFacts          `json:"workflow"`
 	Remote          RemoteFacts            `json:"remote"`
 	ProcessEvidence []ProcessEvidenceInput `json:"process_evidence,omitempty"`
+	FinalEvidence   FinalEvidenceSnapshot  `json:"final_evidence"`
+	// LegacyFinalCompatibility is a one-release in-process bridge for callers
+	// that cannot yet collect FinalEvidence. It is never decoded from input and
+	// must not be used by current status/verify snapshots.
+	LegacyFinalCompatibility bool `json:"-"`
 }
 
 // Report is the single readiness result consumed by status, preflight, and
