@@ -268,71 +268,24 @@ type submittedReviewSpecSource struct {
 	ExactURLs map[string]bool
 }
 
-// loadSubmittedReviewSpecSources resolves only a canonical proposal bound to
-// the submission's implement issue, or bounded authority already recorded on
-// the review PROCESS. It never searches the repository for a matching typed
-// id. Same-issue comments remain as the legacy compatibility source when no
-// proposal is explicit or inferred.
+// loadSubmittedReviewSpecSources derives the one canonical proposal backward
+// from the current implementation issue. A caller proposal is only an exact
+// equality assertion; it is never a root from which authority is searched.
 func loadSubmittedReviewSpecSources(ctx context.Context, client github.Operations, repo string, proposalIssue,
-	implementIssue int, reviewProcess model.Artifact, implementComments []github.Comment) ([]submittedReviewSpecSource, error) {
-	if proposalIssue > 0 {
-		if _, err := locateSubmittedReviewProposal(ctx, client, repo, proposalIssue, implementIssue); err != nil {
-			return nil, fmt.Errorf("bind explicit proposal issue %d to review change: %w", proposalIssue, err)
-		}
-		comments, err := client.ListIssueComments(ctx, repo, proposalIssue)
-		if err != nil {
-			return nil, fmt.Errorf("list explicit proposal issue %d comments: %w", proposalIssue, err)
-		}
-		return []submittedReviewSpecSource{{Issue: proposalIssue, Comments: comments}}, nil
-	}
-
-	sources := []submittedReviewSpecSource{{Issue: implementIssue, Comments: implementComments}}
-	issues := map[int]map[string]bool{}
-	for _, raw := range model.RelatedCommentURLs(reviewProcess.Comment) {
-		issue, err := github.ParseIssueNumber(raw)
-		if err != nil || issue == implementIssue {
-			continue
-		}
-		if issues[issue] == nil {
-			issues[issue] = map[string]bool{}
-		}
-		issues[issue][model.NormalizeURL(raw)] = true
-	}
-	var ordered []int
-	for issue := range issues {
-		ordered = append(ordered, issue)
-	}
-	sort.Ints(ordered)
-	boundChange := ""
-	for _, issue := range ordered {
-		located, err := locateSubmittedReviewProposal(ctx, client, repo, issue, implementIssue)
-		if err != nil {
-			return nil, fmt.Errorf("bind inferred proposal issue %d to review change: %w", issue, err)
-		}
-		if boundChange != "" && located.Change != boundChange {
-			return nil, fmt.Errorf("inferred proposal issues resolve different change keys %q and %q", boundChange, located.Change)
-		}
-		boundChange = located.Change
-		comments, err := client.ListIssueComments(ctx, repo, issue)
-		if err != nil {
-			return nil, fmt.Errorf("list related issue %d comments: %w", issue, err)
-		}
-		sources = append(sources, submittedReviewSpecSource{Issue: issue, Comments: comments, ExactURLs: issues[issue]})
-	}
-	return sources, nil
-}
-
-func locateSubmittedReviewProposal(ctx context.Context, client github.Operations, repo string, proposalIssue,
-	implementIssue int) (changegraph.Located, error) {
-	located, err := changegraph.Locate(ctx, client, repo, proposalIssue)
+	implementIssue int, _ model.Artifact, _ []github.Comment) ([]submittedReviewSpecSource, error) {
+	located, err := changegraph.LocateFromImplement(ctx, client, repo, implementIssue)
 	if err != nil {
-		return changegraph.Located{}, err
+		return nil, fmt.Errorf("derive review proposal from implement issue %d: %w", implementIssue, err)
 	}
-	if located.Implement.Number != implementIssue {
-		return changegraph.Located{}, fmt.Errorf("proposal change %q resolves implement issue %d, submission targets implement issue %d",
-			located.Change, located.Implement.Number, implementIssue)
+	if proposalIssue > 0 && proposalIssue != located.Proposal.Number {
+		return nil, fmt.Errorf("explicit proposal issue %d differs from canonical proposal issue %d derived from implement issue %d",
+			proposalIssue, located.Proposal.Number, implementIssue)
 	}
-	return located, nil
+	comments, err := client.ListIssueComments(ctx, repo, located.Proposal.Number)
+	if err != nil {
+		return nil, fmt.Errorf("list canonical proposal issue %d comments: %w", located.Proposal.Number, err)
+	}
+	return []submittedReviewSpecSource{{Issue: located.Proposal.Number, Comments: comments}}, nil
 }
 
 func validateSubmittedReviewTargets(comments []github.Comment, issue int, specSources []submittedReviewSpecSource,

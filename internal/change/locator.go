@@ -3,6 +3,7 @@ package change
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -12,8 +13,10 @@ import (
 )
 
 var (
-	issueMarker = regexp.MustCompile(`(?m)^<!--\s*issue-spec:issue=(proposal|design|implement)\s+change=([^\s>]+)\s+version=([0-9]+)\s*-->$`)
-	issueURL    = regexp.MustCompile(`/issues/([0-9]+)(?:#issuecomment-[0-9]+)?`)
+	issueMarker   = regexp.MustCompile(`(?m)^<!--\s*issue-spec:issue=(proposal|design|implement)\s+change=([^\s>]+)\s+version=([0-9]+)\s*-->$`)
+	issueURL      = regexp.MustCompile(`/issues/([0-9]+)(?:#issuecomment-[0-9]+)?`)
+	designIssue   = regexp.MustCompile(`(?m)^[ \t]*-[ \t]+Design Issue:[ \t]*(.+?)[ \t]*$`)
+	proposalIssue = regexp.MustCompile(`(?m)^[ \t]*-[ \t]+Proposal Issue:[ \t]*(.+?)[ \t]*$`)
 )
 
 type Backend interface {
@@ -33,6 +36,54 @@ type Located struct {
 	Implement IssueRef `json:"implement"`
 }
 
+// LocateFromImplement derives the canonical change root only from the direct
+// predecessor metadata stored in the current implementation and design issue
+// bodies. It never searches forward from a caller-selected proposal.
+func LocateFromImplement(ctx context.Context, backend Backend, repo string, implement int) (Located, error) {
+	if implement <= 0 {
+		return Located{}, fmt.Errorf("implement issue must be positive")
+	}
+	implementation, err := exactIssue(ctx, backend, repo, implement, "implement")
+	if err != nil {
+		return Located{}, err
+	}
+	kind, key, err := parseMarker(implementation.Body)
+	if err != nil || kind != "implement" {
+		return Located{}, markerMismatch(implement, "implement", kind, err)
+	}
+	designNumber, err := exactPredecessor(implementation.Body, designIssue, "Design Issue")
+	if err != nil {
+		return Located{}, fmt.Errorf("implement issue %d: %w", implement, err)
+	}
+	if designNumber == implement {
+		return Located{}, fmt.Errorf("implement issue %d references itself as Design Issue", implement)
+	}
+	design, err := exactIssue(ctx, backend, repo, designNumber, "design")
+	if err != nil {
+		return Located{}, err
+	}
+	designKind, designKey, err := parseMarker(design.Body)
+	if err != nil || designKind != "design" || designKey != key {
+		return Located{}, markerMismatch(designNumber, "design for change "+key, designKind+" for change "+designKey, err)
+	}
+	proposalNumber, err := exactPredecessor(design.Body, proposalIssue, "Proposal Issue")
+	if err != nil {
+		return Located{}, fmt.Errorf("design issue %d: %w", designNumber, err)
+	}
+	if proposalNumber == designNumber || proposalNumber == implement {
+		return Located{}, fmt.Errorf("design issue %d has cyclic Proposal Issue %d", designNumber, proposalNumber)
+	}
+	proposal, err := exactIssue(ctx, backend, repo, proposalNumber, "proposal")
+	if err != nil {
+		return Located{}, err
+	}
+	proposalKind, proposalKey, err := parseMarker(proposal.Body)
+	if err != nil || proposalKind != "proposal" || proposalKey != key {
+		return Located{}, markerMismatch(proposalNumber, "proposal for change "+key, proposalKind+" for change "+proposalKey, err)
+	}
+	return Located{Change: key, Proposal: ref(proposal), Design: ref(design), Implement: ref(implementation)}, nil
+}
+
 // Locate follows canonical issue/comment URLs from a proposal and verifies the
 // marker kind and change key of every peer. It never guesses from titles.
 func Locate(ctx context.Context, backend Backend, repo string, proposal int) (Located, error) {
@@ -41,8 +92,11 @@ func Locate(ctx context.Context, backend Backend, repo string, proposal int) (Lo
 		return Located{}, fmt.Errorf("read proposal: %w", err)
 	}
 	kind, key, err := parseMarker(root.Body)
-	if err != nil || kind != "proposal" {
+	if err != nil {
 		return Located{}, fmt.Errorf("issue %d is not a canonical proposal: %w", proposal, err)
+	}
+	if kind != "proposal" {
+		return Located{}, fmt.Errorf("issue %d marker is %q, want proposal", proposal, kind)
 	}
 	result := Located{Change: key, Proposal: ref(root)}
 	seen := map[int]bool{proposal: true}
@@ -96,14 +150,63 @@ func Locate(ctx context.Context, backend Backend, repo string, proposal int) (Lo
 }
 
 func parseMarker(body string) (string, string, error) {
-	match := issueMarker.FindStringSubmatch(body)
-	if len(match) == 0 {
+	matches := issueMarker.FindAllStringSubmatch(body, -1)
+	if len(matches) == 0 {
 		return "", "", fmt.Errorf("canonical issue marker missing")
 	}
+	if len(matches) != 1 {
+		return "", "", fmt.Errorf("canonical issue marker must appear exactly once, got %d", len(matches))
+	}
+	match := matches[0]
 	if strings.TrimSpace(match[2]) == "" || match[3] != "1" {
 		return "", "", fmt.Errorf("unsupported issue marker")
 	}
 	return match[1], match[2], nil
+}
+
+func exactIssue(ctx context.Context, backend Backend, repo string, number int, kind string) (github.Issue, error) {
+	issue, err := backend.GetIssue(ctx, repo, number)
+	if err != nil {
+		return github.Issue{}, fmt.Errorf("read %s issue %d: %w", kind, number, err)
+	}
+	if issue.Number != number {
+		return github.Issue{}, fmt.Errorf("read %s issue %d returned issue %d", kind, number, issue.Number)
+	}
+	return issue, nil
+}
+
+func exactPredecessor(body string, pattern *regexp.Regexp, label string) (int, error) {
+	matches := pattern.FindAllStringSubmatch(body, -1)
+	if len(matches) != 1 {
+		return 0, fmt.Errorf("canonical %s reference must appear exactly once, got %d", label, len(matches))
+	}
+	value := strings.TrimSpace(matches[0][1])
+	if len(strings.Fields(value)) != 1 {
+		return 0, fmt.Errorf("canonical %s reference %q is ambiguous", label, value)
+	}
+	if strings.HasPrefix(value, "#") {
+		value = strings.TrimPrefix(value, "#")
+	}
+	if number, err := strconv.Atoi(value); err == nil && number > 0 {
+		return number, nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return 0, fmt.Errorf("canonical %s reference %q is not an exact issue number or URL", label, value)
+	}
+	number, err := github.ParseIssueNumber(value)
+	if err != nil {
+		return 0, fmt.Errorf("canonical %s reference %q: %w", label, value, err)
+	}
+	return number, nil
+}
+
+func markerMismatch(number int, want, got string, err error) error {
+	if err != nil {
+		return fmt.Errorf("issue %d is not canonical %s authority: %w", number, want, err)
+	}
+	return fmt.Errorf("issue %d marker is %q, want %q", number, got, want)
 }
 
 func ref(issue github.Issue) IssueRef { return IssueRef{Number: issue.Number, URL: issue.HTMLURL} }

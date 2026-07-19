@@ -75,33 +75,36 @@ func (a *app) runWorkflowReconcile(ctx context.Context, args []string) int {
 		return 1
 	}
 	var located changegraph.Located
-	if plan.Proposal > 0 {
-		located, err = changegraph.Locate(ctx, client, plan.Repo, plan.Proposal)
+	if projection != nil {
+		located, err = locateReceiptProjectionChange(ctx, client, plan.Repo, *projection)
 		if err != nil {
-			a.errorf("locate change: %v\n", err)
+			a.errorf("locate receipt projection change: %v\n", err)
 			return 1
-		}
-		if projection != nil && projection.Issue != located.Implement.Number {
-			a.errorf("resolve receipt projection: proposal change %q resolves implement issue %d, projection targets issue %d\n",
-				located.Change, located.Implement.Number, projection.Issue)
-			return 2
 		}
 		if err := resolvePlanRoles(&plan, located); err != nil {
 			a.errorf("resolve plan target: %v\n", err)
 			return 2
 		}
-		if projectionProvided {
-			if err := resolveReceiptRelationshipAuthority(ctx, client, &plan, located); err != nil {
-				a.errorf("resolve receipt relationship authority: %v\n", err)
-				return 2
-			}
-			plan.PlanDigest = ""
-			if _, digest, validateErr := reconcile.Validate(plan); validateErr != nil {
-				a.errorf("validate resolved receipt projection: %v\n", validateErr)
-				return 2
-			} else {
-				plan.PlanDigest = digest
-			}
+		if err := resolveReceiptRelationshipAuthority(ctx, client, &plan, located); err != nil {
+			a.errorf("resolve receipt relationship authority: %v\n", err)
+			return 2
+		}
+		plan.PlanDigest = ""
+		if _, digest, validateErr := reconcile.Validate(plan); validateErr != nil {
+			a.errorf("validate resolved receipt projection: %v\n", validateErr)
+			return 2
+		} else {
+			plan.PlanDigest = digest
+		}
+	} else if plan.Proposal > 0 {
+		located, err = changegraph.Locate(ctx, client, plan.Repo, plan.Proposal)
+		if err != nil {
+			a.errorf("locate change: %v\n", err)
+			return 1
+		}
+		if err := resolvePlanRoles(&plan, located); err != nil {
+			a.errorf("resolve plan target: %v\n", err)
+			return 2
 		}
 	} else if hasPlanRoles(plan) {
 		a.errorf("plan targets use roles but proposal is absent\n")
@@ -126,6 +129,19 @@ func (a *app) runWorkflowReconcile(ctx context.Context, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func locateReceiptProjectionChange(ctx context.Context, backend github.IssueBackend, repo string,
+	projection reconcile.ReceiptProjection) (changegraph.Located, error) {
+	located, err := changegraph.LocateFromImplement(ctx, backend, repo, projection.Issue)
+	if err != nil {
+		return changegraph.Located{}, fmt.Errorf("derive canonical proposal from implement issue %d: %w", projection.Issue, err)
+	}
+	if projection.Proposal != located.Proposal.Number {
+		return changegraph.Located{}, fmt.Errorf("projection proposal issue %d differs from canonical proposal issue %d derived from implement issue %d",
+			projection.Proposal, located.Proposal.Number, projection.Issue)
+	}
+	return located, nil
 }
 
 func readReceiptProjection(path string, stdin io.Reader) (reconcile.ReceiptProjection, error) {

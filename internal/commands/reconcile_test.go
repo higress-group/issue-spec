@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/assignment"
-	changegraph "github.com/higress-group/issue-spec/internal/change"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
@@ -122,9 +121,14 @@ func TestResolveReceiptRelationshipAuthorityUsesBoundChangeAndImmutableAssignmen
 	baseComments := map[int][]github.Comment{
 		295: {comment(295, 1, specBody), comment(295, 2, wrongSpecBody)},
 		297: {comment(297, 3, processBody), comment(297, 4, verifyBody), comment(297, 5, ownerBody)},
+		305: {comment(305, 6, specBody), {ID: 7, Body: "https://github.com/o/r/issues/296#issuecomment-7 https://github.com/o/r/issues/297#issuecomment-8"}},
 	}
-	located := changegraph.Located{Change: "change-295", Proposal: changegraph.IssueRef{Number: 295},
-		Design: changegraph.IssueRef{Number: 296}, Implement: changegraph.IssueRef{Number: 297}}
+	changeIssues := map[int]github.Issue{
+		295: {Number: 295, HTMLURL: "https://github.com/o/r/issues/295", Body: "<!-- issue-spec:issue=proposal change=change-295 version=1 -->"},
+		296: {Number: 296, HTMLURL: "https://github.com/o/r/issues/296", Body: "<!-- issue-spec:issue=design change=change-295 version=1 -->\n- Proposal Issue: 295"},
+		297: {Number: 297, HTMLURL: "https://github.com/o/r/issues/297", Body: "<!-- issue-spec:issue=implement change=change-295 version=1 -->\n- Design Issue: 296"},
+		305: {Number: 305, HTMLURL: "https://github.com/o/r/issues/305", Body: "<!-- issue-spec:issue=proposal change=change-295 version=1 -->"},
+	}
 	projection := reconcile.ReceiptProjection{Version: 1, Repo: "o/r", Hostname: "github.com", Proposal: 295, Issue: 297,
 		AcceptedReceipts: []reconcile.AcceptedReceiptProjection{{Role: assignment.RoleVerification,
 			Carrier: reconcile.Target{Type: "VERIFY", ID: "VERIFY-036"}, ReceiptID: receiptID, ReceiptDigest: receiptDigest, Generation: 1,
@@ -136,12 +140,17 @@ func TestResolveReceiptRelationshipAuthorityUsesBoundChangeAndImmutableAssignmen
 		if err != nil {
 			return plan, err
 		}
+		backend := fakeGitHubBackend{
+			getIssue:          func(_ context.Context, _ string, issue int) (github.Issue, error) { return changeIssues[issue], nil },
+			listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) { return comments[issue], nil },
+		}
+		located, err := locateReceiptProjectionChange(t.Context(), backend, plan.Repo, value)
+		if err != nil {
+			return plan, err
+		}
 		if err := resolvePlanRoles(&plan, located); err != nil {
 			return plan, err
 		}
-		backend := fakeGitHubBackend{listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
-			return comments[issue], nil
-		}}
 		return plan, resolveReceiptRelationshipAuthority(t.Context(), backend, &plan, located)
 	}
 	plan, err := resolve(projection, baseComments)
@@ -176,6 +185,11 @@ func TestResolveReceiptRelationshipAuthorityUsesBoundChangeAndImmutableAssignmen
 	wrongIssue.AcceptedReceipts[0].CoverageTargets = []reconcile.Target{{Issue: 297, Type: "SPEC", ID: "SPEC-005"}}
 	if _, err := resolve(wrongIssue, baseComments); err == nil || !strings.Contains(err.Error(), "outside canonical change issue 295") {
 		t.Fatalf("wrong change issue err=%v", err)
+	}
+	wrongProposal := projection
+	wrongProposal.Proposal = 305
+	if _, err := resolve(wrongProposal, baseComments); err == nil || !strings.Contains(err.Error(), "differs from canonical proposal issue 295") {
+		t.Fatalf("duplicate same-key proposal root err=%v", err)
 	}
 }
 
