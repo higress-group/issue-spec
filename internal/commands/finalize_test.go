@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	finalizeTestHead     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	finalizeTestBaseline = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	finalizeTestHead         = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	finalizeTestBaseline     = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	finalizeTestProviderBase = "dddddddddddddddddddddddddddddddddddddddd"
 )
 
 type finalizeCommandBackend struct {
@@ -76,7 +77,14 @@ func TestFinalizePreviewIsWriteFreeDeterministicAndDetailOmitsBodies(t *testing.
 	application := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	application.selectGitHubBackend = ghSelection
 	application.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
-	application.resolveFinalizationBaseline = func(context.Context, string, string) (string, error) { return finalizeTestBaseline, nil }
+	var resolvedProviderBases []string
+	application.resolveFinalizationBaseline = func(_ context.Context, subject, providerBase string) (string, error) {
+		if subject != finalizeTestHead {
+			t.Fatalf("baseline subject=%s", subject)
+		}
+		resolvedProviderBases = append(resolvedProviderBases, providerBase)
+		return finalizeTestBaseline, nil
+	}
 	directory := t.TempDir()
 	intentPath := filepath.Join(directory, "intent.json")
 	if err := os.WriteFile(intentPath, []byte(`{"version":1,"baseline_revision":"`+finalizeTestBaseline+`","superseded_by":[{"from":"PROCESS-001","to":"PROCESS-002"}]}`), 0o600); err != nil {
@@ -105,8 +113,12 @@ func TestFinalizePreviewIsWriteFreeDeterministicAndDetailOmitsBodies(t *testing.
 	if backend.writes != 0 {
 		t.Fatalf("preview provider writes=%d", backend.writes)
 	}
-	if first.PlanDigest != second.PlanDigest || first.Subject.BaselineRevision != finalizeTestBaseline {
+	if first.PlanDigest != second.PlanDigest || first.Subject.BaselineRevision != finalizeTestBaseline ||
+		first.Subject.ProviderBaseRevision != finalizeTestProviderBase {
 		t.Fatalf("plans differ or baseline drifted: first=%+v second=%+v", first.Subject, second.Subject)
+	}
+	if len(resolvedProviderBases) != 2 || resolvedProviderBases[0] != finalizeTestProviderBase || resolvedProviderBases[1] != finalizeTestProviderBase {
+		t.Fatalf("baseline resolver inputs=%v", resolvedProviderBases)
 	}
 	application.out, application.err = &bytes.Buffer{}, &bytes.Buffer{}
 	if code := application.runFinalizeDetail([]string{"--plan", filepath.Join(directory, "plan-1.json"), "--json"}); code != 0 {
@@ -137,6 +149,29 @@ func TestFinalizeApplyRejectsSubjectDriftBeforeWrite(t *testing.T) {
 	application.out, application.err = &bytes.Buffer{}, &bytes.Buffer{}
 	code := application.runFinalizeApply(t.Context(), []string{"--plan", planPath, "--checkpoint", filepath.Join(directory, "checkpoint.json"), "--allow-nonatomic"})
 	if code != 1 || backend.writes != 0 || !strings.Contains(application.err.(*bytes.Buffer).String(), "subject identity differs") {
+		t.Fatalf("apply code=%d writes=%d stderr=%s", code, backend.writes, application.err.(*bytes.Buffer).String())
+	}
+}
+
+func TestFinalizeApplyRejectsProviderBaseDriftBeforeWrite(t *testing.T) {
+	backend := finalizePreviewFixture()
+	application := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	application.selectGitHubBackend = ghSelection
+	application.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
+	application.resolveFinalizationBaseline = func(context.Context, string, string) (string, error) { return finalizeTestBaseline, nil }
+	directory := t.TempDir()
+	intentPath, planPath := filepath.Join(directory, "intent.json"), filepath.Join(directory, "plan.json")
+	if err := os.WriteFile(intentPath, []byte(`{"version":1,"baseline_revision":"`+finalizeTestBaseline+`","superseded_by":[{"from":"PROCESS-001","to":"PROCESS-002"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := application.runFinalizePreview(t.Context(), []string{"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--pr", "9",
+		"--intent-file", intentPath, "--plan-out", planPath}); code != 0 {
+		t.Fatalf("preview code=%d", code)
+	}
+	backend.pr.Base.SHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	application.out, application.err = &bytes.Buffer{}, &bytes.Buffer{}
+	code := application.runFinalizeApply(t.Context(), []string{"--plan", planPath, "--checkpoint", filepath.Join(directory, "checkpoint.json"), "--allow-nonatomic"})
+	if code != 1 || backend.writes != 0 || !strings.Contains(application.err.(*bytes.Buffer).String(), "provider base revision differs") {
 		t.Fatalf("apply code=%d writes=%d stderr=%s", code, backend.writes, application.err.(*bytes.Buffer).String())
 	}
 }
@@ -192,6 +227,41 @@ func TestRunRemainingFinalizationOperationsResumesCheckpoint(t *testing.T) {
 	}
 }
 
+func TestValidateFinalizationRepresentationsAcceptsOnlyPlannedHalfLink(t *testing.T) {
+	leftURL := "https://github.com/o/r/issues/3#issuecomment-1"
+	rightURL := "https://github.com/o/r/issues/3#issuecomment-2"
+	leftBefore := finalizeTypedBody("PROCESS", "PROCESS-001", "in-progress", nil, "left")
+	rightBefore := finalizeTypedBody("PROCESS", "PROCESS-002", "in-progress", nil, "right")
+	leftAfter, changed, err := model.AddRelatedCommentLink(leftBefore, rightURL)
+	if err != nil || !changed {
+		t.Fatalf("plan half-link: changed=%v err=%v", changed, err)
+	}
+	comments := []github.Comment{
+		{ID: 1, HTMLURL: leftURL, URL: "https://api.github.com/comments/1", Body: leftAfter},
+		{ID: 2, HTMLURL: rightURL, URL: "https://api.github.com/comments/2", Body: rightBefore},
+	}
+	backend := fakeGitHubBackend{listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+		return append([]github.Comment(nil), comments...), nil
+	}}
+	leftTarget := reconcile.Target{Issue: 3, Type: "PROCESS", ID: "PROCESS-001"}
+	rightTarget := reconcile.Target{Issue: 3, Type: "PROCESS", ID: "PROCESS-002"}
+	plan := finalization.Plan{Repository: "o/r", Representations: []finalization.Representation{
+		{Issue: 3, CommentID: 1, URL: leftURL, APIURL: comments[0].URL, Type: "PROCESS", ID: "PROCESS-001", RepresentationDigest: model.RepresentationDigest(leftBefore)},
+		{Issue: 3, CommentID: 2, URL: rightURL, APIURL: comments[1].URL, Type: "PROCESS", ID: "PROCESS-002", RepresentationDigest: model.RepresentationDigest(rightBefore)},
+	}, Reconcile: reconcile.Plan{Operations: []reconcile.Operation{{ID: "link", Kind: "link", Target: leftTarget,
+		Desired: reconcile.Desired{Peer: &rightTarget}, Precondition: reconcile.Precondition{Endpoints: []reconcile.EndpointPrecondition{
+			{Target: leftTarget, BodyDigest: model.RepresentationDigest(leftBefore), AfterDigest: model.RepresentationDigest(leftAfter)},
+			{Target: rightTarget, BodyDigest: model.RepresentationDigest(rightBefore), AfterDigest: model.RepresentationDigest(rightBefore)},
+		}}}}}}
+	if _, err := validateFinalizationRepresentations(t.Context(), backend, plan, map[string]string{}); err != nil {
+		t.Fatalf("planned half-link was not resumable: %v", err)
+	}
+	comments[0].Body = leftAfter + "unplanned drift\n"
+	if _, err := validateFinalizationRepresentations(t.Context(), backend, plan, map[string]string{}); err == nil {
+		t.Fatal("unplanned half-link representation drift was accepted")
+	}
+}
+
 func finalizePreviewFixture() *finalizeCommandBackend {
 	taskURL := "https://github.com/o/r/issues/1#issuecomment-10"
 	p1URL := "https://github.com/o/r/issues/3#issuecomment-11"
@@ -203,7 +273,8 @@ func finalizePreviewFixture() *finalizeCommandBackend {
 	backend.issues[2] = github.Issue{Number: 2, HTMLURL: "https://github.com/o/r/issues/2", Body: "<!-- issue-spec:issue=design change=x version=1 -->\n- Proposal Issue: 1\n"}
 	backend.issues[3] = github.Issue{Number: 3, HTMLURL: "https://github.com/o/r/issues/3", Body: "<!-- issue-spec:issue=implement change=x version=1 -->\n- Design Issue: 2\n"}
 	backend.pr = github.PullRequest{Number: 9, HTMLURL: prURL}
-	backend.pr.Head.SHA, backend.pr.Head.Ref, backend.pr.Base.Ref = finalizeTestHead, "feature", "main"
+	backend.pr.Head.SHA, backend.pr.Head.Ref = finalizeTestHead, "feature"
+	backend.pr.Base.SHA, backend.pr.Base.Ref = finalizeTestProviderBase, "main"
 	backend.comments[1] = []github.Comment{{ID: 10, HTMLURL: taskURL, URL: "https://api.github.com/comments/10",
 		Body: finalizeTypedBody("TASK", "TASK-001", "confirmed", map[string][]string{"Related Comments": {p1URL, p2URL}}, "task")}}
 	backend.comments[3] = []github.Comment{

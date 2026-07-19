@@ -9,15 +9,16 @@ import (
 )
 
 const (
-	testSubject  = "1111111111111111111111111111111111111111"
-	testBaseline = "2222222222222222222222222222222222222222"
-	testEvidence = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	testSubject      = "1111111111111111111111111111111111111111"
+	testProviderBase = "4444444444444444444444444444444444444444"
+	testBaseline     = "2222222222222222222222222222222222222222"
+	testEvidence     = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 )
 
 func TestCompileDeterministicFrozenPlanAndOrdering(t *testing.T) {
 	observations := planFixture(t)
 	input := CompileInput{Repository: "o/r", Hostname: "github.com", Proposal: 1, Design: 2, Implement: 3,
-		Subject:      Subject{PullRequest: 9, URL: "https://github.com/o/r/pull/9", SubjectRevision: testSubject, BaselineRevision: testBaseline, ProviderEvidenceDigest: testEvidence},
+		Subject:      Subject{PullRequest: 9, URL: "https://github.com/o/r/pull/9", SubjectRevision: testSubject, ProviderBaseRevision: testProviderBase, BaselineRevision: testBaseline, ProviderEvidenceDigest: testEvidence},
 		Intent:       Intent{Version: 1, BaselineRevision: testBaseline, SupersededBy: []IntentEdge{{From: "PROCESS-001", To: "PROCESS-002"}}},
 		Observations: observations, LifecycleReady: true}
 	first, err := Compile(input)
@@ -44,6 +45,24 @@ func TestCompileDeterministicFrozenPlanAndOrdering(t *testing.T) {
 			t.Fatalf("operation[%d]=%s, want prefix %s", i, first.Reconcile.Operations[i].ID, prefix)
 		}
 	}
+	link := first.Reconcile.Operations[1]
+	if len(link.Precondition.Endpoints) != 2 || link.Precondition.RepresentationVersion != 0 || link.Precondition.BodyDigest != "" {
+		t.Fatalf("link endpoint contract=%+v", link.Precondition)
+	}
+	for _, endpoint := range link.Precondition.Endpoints {
+		if endpoint.AfterDigest == "" || (endpoint.RepresentationVersion == 0 && endpoint.BodyDigest == "") {
+			t.Fatalf("incomplete endpoint contract=%+v", endpoint)
+		}
+	}
+	for _, transition := range first.Reconcile.Operations[2:4] {
+		if transition.Precondition.BodyDigest == "" {
+			t.Fatalf("transition %s did not bind its planned predecessor representation: %+v", transition.ID, transition.Precondition)
+		}
+	}
+	task := first.Reconcile.Operations[len(first.Reconcile.Operations)-1]
+	if len(task.DependsOn) != len(first.Reconcile.Operations)-1 {
+		t.Fatalf("TASK dependency barrier=%v, want every predecessor", task.DependsOn)
+	}
 	if first.Representations[0].RepresentationDigest == "" || first.Representations[0].RepresentationVersion != 7 {
 		t.Fatalf("frozen representation=%+v", first.Representations[0])
 	}
@@ -52,9 +71,19 @@ func TestCompileDeterministicFrozenPlanAndOrdering(t *testing.T) {
 	}
 }
 
+func TestProjectIntentRejectsCrossImplementProcessEndpoint(t *testing.T) {
+	observations := planFixture(t)
+	observations[2].Issue = 2
+	_, _, err := ProjectIntentForImplement(Intent{Version: 1, BaselineRevision: testBaseline,
+		SupersededBy: []IntentEdge{{From: "PROCESS-001", To: "PROCESS-002"}}}, 3, observations)
+	if err == nil || !strings.Contains(err.Error(), "both PROCESS identities on the Implement issue") {
+		t.Fatalf("cross-Implement edge error=%v", err)
+	}
+}
+
 func TestCompileBlockerOnlyPlanFailsClosedOnCycle(t *testing.T) {
 	input := CompileInput{Repository: "o/r", Proposal: 1, Design: 2, Implement: 3,
-		Subject: Subject{PullRequest: 9, URL: "https://github.com/o/r/pull/9", SubjectRevision: testSubject, BaselineRevision: testBaseline, ProviderEvidenceDigest: testEvidence},
+		Subject: Subject{PullRequest: 9, URL: "https://github.com/o/r/pull/9", SubjectRevision: testSubject, ProviderBaseRevision: testProviderBase, BaselineRevision: testBaseline, ProviderEvidenceDigest: testEvidence},
 		Intent: Intent{Version: 1, BaselineRevision: testBaseline, SupersededBy: []IntentEdge{
 			{From: "PROCESS-001", To: "PROCESS-002"}, {From: "PROCESS-002", To: "PROCESS-001"},
 		}}, Observations: planFixture(t)}
@@ -73,7 +102,7 @@ func TestCompileBlockerOnlyPlanFailsClosedOnCycle(t *testing.T) {
 func TestCompileRejectsActualBaselineMismatch(t *testing.T) {
 	_, err := Compile(CompileInput{Repository: "o/r", Proposal: 1, Design: 2, Implement: 3,
 		Subject: Subject{PullRequest: 9, URL: "https://github.com/o/r/pull/9", SubjectRevision: testSubject,
-			BaselineRevision: "3333333333333333333333333333333333333333", ProviderEvidenceDigest: testEvidence},
+			ProviderBaseRevision: testProviderBase, BaselineRevision: "3333333333333333333333333333333333333333", ProviderEvidenceDigest: testEvidence},
 		Intent: Intent{Version: 1, BaselineRevision: testBaseline}, Observations: planFixture(t)})
 	if err == nil || !strings.Contains(err.Error(), "differs from actual baseline") {
 		t.Fatalf("error=%v", err)

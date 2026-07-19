@@ -119,7 +119,12 @@ func (a *app) runFinalizePreview(ctx context.Context, args []string) int {
 		a.errorf("observe pull request authority: %v\n", err)
 		return 1
 	}
-	baseline, err := a.finalizationBaseline(ctx, facts.PullRequest.Head.SHA, facts.PullRequest.Base.Ref)
+	providerBase := strings.TrimSpace(facts.PullRequest.Base.SHA)
+	if providerBase == "" {
+		a.errorf("resolve exact pull request baseline: provider base revision is missing\n")
+		return 1
+	}
+	baseline, err := a.finalizationBaseline(ctx, facts.PullRequest.Head.SHA, providerBase)
 	if err != nil {
 		a.errorf("resolve exact pull request baseline: %v\n", err)
 		return 1
@@ -134,7 +139,7 @@ func (a *app) runFinalizePreview(ctx context.Context, args []string) int {
 		a.errorf("observe finalization snapshot: %v\n", err)
 		return 1
 	}
-	projected, selection, err := finalization.ProjectIntent(intent, observations)
+	projected, selection, err := finalization.ProjectIntentForImplement(intent, implement, observations)
 	if err != nil {
 		a.errorf("compile explicit finalization intent: %v\n", err)
 		return 2
@@ -156,7 +161,7 @@ func (a *app) runFinalizePreview(ctx context.Context, args []string) int {
 	plan, err := finalization.Compile(finalization.CompileInput{Repository: repo, Hostname: *host,
 		Proposal: proposal, Design: design, Implement: implement,
 		Subject: finalization.Subject{PullRequest: pr, URL: facts.PullRequest.HTMLURL, SubjectRevision: strings.TrimSpace(facts.PullRequest.Head.SHA),
-			BaselineRevision: baseline, ProviderEvidenceDigest: evidenceDigest},
+			ProviderBaseRevision: providerBase, BaselineRevision: baseline, ProviderEvidenceDigest: evidenceDigest},
 		Intent: intent, Observations: observations, LifecycleReady: len(blockers) == 0, LifecycleBlocks: blockers})
 	if err != nil {
 		a.errorf("compile finalization plan: %v\n", err)
@@ -259,23 +264,22 @@ func observeExactFinalizationComment(ctx context.Context, backend github.Backend
 	return listed, 0, nil
 }
 
-func (a *app) finalizationBaseline(ctx context.Context, subject, baseRef string) (string, error) {
+func (a *app) finalizationBaseline(ctx context.Context, subject, providerBase string) (string, error) {
 	resolver := a.resolveFinalizationBaseline
 	if resolver == nil {
 		resolver = defaultResolveFinalizationBaseline
 	}
-	return resolver(ctx, strings.TrimSpace(subject), strings.TrimSpace(baseRef))
+	return resolver(ctx, strings.TrimSpace(subject), strings.TrimSpace(providerBase))
 }
 
-func defaultResolveFinalizationBaseline(ctx context.Context, subject, baseRef string) (string, error) {
-	if subject == "" || baseRef == "" || strings.ContainsAny(baseRef, "\r\n\x00") {
-		return "", errors.New("pull request subject and base ref are required")
+func defaultResolveFinalizationBaseline(ctx context.Context, subject, providerBase string) (string, error) {
+	if subject == "" || providerBase == "" || strings.ContainsAny(subject+providerBase, " \t\r\n\x00") {
+		return "", errors.New("pull request subject and exact provider base revisions are required")
 	}
-	remoteBase := "refs/remotes/origin/" + baseRef
-	command := exec.CommandContext(ctx, "git", "merge-base", subject, remoteBase)
+	command := exec.CommandContext(ctx, "git", "merge-base", subject, providerBase)
 	output, err := command.Output()
 	if err != nil {
-		return "", fmt.Errorf("git merge-base %s %s: %w", subject, remoteBase, err)
+		return "", fmt.Errorf("git merge-base %s %s: %w", subject, providerBase, err)
 	}
 	baseline := strings.ToLower(strings.TrimSpace(string(output)))
 	if baseline == "" || strings.ContainsAny(baseline, " \t\r\n") {
@@ -463,6 +467,7 @@ type finalizeApplyResult struct {
 	Checkpoint     string                        `json:"checkpoint"`
 	Reconcile      reconcile.Result              `json:"reconcile"`
 	FinalSelection finalization.SelectionSummary `json:"final_selection"`
+	FinalGateReady bool                          `json:"final_gate_ready"`
 	Blockers       []finalization.Blocker        `json:"blockers,omitempty"`
 }
 
@@ -533,7 +538,23 @@ func (a *app) runFinalizeApply(ctx context.Context, args []string) int {
 			return 1
 		}
 	}
-	if err := a.validateFinalizationAuthority(ctx, client, plan, true); err != nil {
+	if len(runtimePlan.Operations) != 0 {
+		checkpoint, err = reconcile.LoadCheckpoint(*checkpointPath, runtimePlan.PlanDigest)
+		if err != nil {
+			a.errorf("reload finalization checkpoint: %v\n", err)
+			return 1
+		}
+	}
+	if _, err := validateFinalizationRepresentations(ctx, client, plan, checkpoint.Completed); err != nil {
+		a.errorf("finalization final representation drift: %v\n", err)
+		return 1
+	}
+	finalFacts, err := collectPullRequestGateFacts(ctx, client, plan.Repository, plan.Subject.PullRequest)
+	if err != nil {
+		a.errorf("final provider evidence observation: %v\n", err)
+		return 1
+	}
+	if err := a.validateFinalizationFacts(ctx, plan, finalFacts, true); err != nil {
 		a.errorf("finalization authority changed during apply: %v\n", err)
 		return 1
 	}
@@ -543,7 +564,7 @@ func (a *app) runFinalizeApply(ctx context.Context, args []string) int {
 		return 1
 	}
 	finalArtifacts := artifactsFromFinalizationObservations(finalObservations)
-	finalSelection, graphDigest, diagnostics, err := finalization.SummarizeArtifacts(finalArtifacts)
+	finalSelection, graphDigest, diagnostics, err := finalization.SummarizeArtifactsForImplement(finalArtifacts, plan.Implement)
 	if err != nil {
 		a.errorf("evaluate final finalization selection: %v\n", err)
 		return 1
@@ -552,9 +573,28 @@ func (a *app) runFinalizeApply(ctx context.Context, args []string) int {
 		a.errorf("finalization graph drift: expected=%s current=%s diagnostics=%v\n", plan.GraphDigest, graphDigest, diagnostics)
 		return 1
 	}
-	result := finalizeApplyResult{OK: reconcileResult.OK && len(plan.Blockers) == 0, PlanDigest: plan.PlanDigest,
+	located, err := changegraph.LocateFromImplement(ctx, client, plan.Repository, plan.Implement)
+	if err != nil {
+		a.errorf("locate final finalization change: %v\n", err)
+		return 1
+	}
+	if located.Proposal.Number != plan.Proposal || located.Design.Number != plan.Design || located.Implement.Number != plan.Implement {
+		a.errorf("finalization issue identities changed during apply\n")
+		return 1
+	}
+	finalReport, err := buildFinalVerifyReport(finalArtifacts, located.Proposal.URL, finalVerifyOptions{
+		PR: plan.Subject.PullRequest, PRURL: finalFacts.PullRequest.HTMLURL, ExpectedRevision: plan.Subject.SubjectRevision,
+		RationaleRequired: true, RationaleComments: finalFacts.ReviewComments, PRStatus: finalFacts.Status,
+		PRCheckRuns: finalFacts.CheckRuns, PRCommits: finalFacts.Commits,
+	})
+	if err != nil {
+		a.errorf("evaluate final shared verification gates: %v\n", err)
+		return 1
+	}
+	result := finalizeApplyResult{OK: reconcileResult.OK && len(plan.Blockers) == 0 && finalReport.OK, PlanDigest: plan.PlanDigest,
 		Checkpoint: *checkpointPath, Reconcile: reconcileResult, FinalSelection: finalSelection,
-		Blockers: append([]finalization.Blocker(nil), plan.Blockers...)}
+		FinalGateReady: finalReport.OK,
+		Blockers:       append([]finalization.Blocker(nil), plan.Blockers...)}
 	if *jsonOut {
 		if code := a.outputJSON(result); code != 0 {
 			return code
@@ -570,14 +610,30 @@ func (a *app) runFinalizeApply(ctx context.Context, args []string) int {
 }
 
 func (a *app) validateFinalizationAuthority(ctx context.Context, backend github.Backend, plan finalization.Plan, includeEvidence bool) error {
+	if includeEvidence {
+		facts, err := collectPullRequestGateFacts(ctx, backend, plan.Repository, plan.Subject.PullRequest)
+		if err != nil {
+			return err
+		}
+		return a.validateFinalizationFacts(ctx, plan, facts, true)
+	}
 	pr, err := backend.GetPullRequest(ctx, plan.Repository, plan.Subject.PullRequest)
 	if err != nil {
 		return err
 	}
+	return a.validateFinalizationFacts(ctx, plan, pullRequestGateFacts{PullRequest: pr}, false)
+}
+
+func (a *app) validateFinalizationFacts(ctx context.Context, plan finalization.Plan, facts pullRequestGateFacts, includeEvidence bool) error {
+	pr := facts.PullRequest
 	if pr.Number != plan.Subject.PullRequest || pr.HTMLURL != plan.Subject.URL || strings.TrimSpace(pr.Head.SHA) != plan.Subject.SubjectRevision {
 		return errors.New("pull request subject identity differs from the frozen plan")
 	}
-	baseline, err := a.finalizationBaseline(ctx, pr.Head.SHA, pr.Base.Ref)
+	providerBase := strings.TrimSpace(pr.Base.SHA)
+	if providerBase == "" || providerBase != plan.Subject.ProviderBaseRevision {
+		return fmt.Errorf("provider base revision differs: expected=%s current=%s", plan.Subject.ProviderBaseRevision, providerBase)
+	}
+	baseline, err := a.finalizationBaseline(ctx, pr.Head.SHA, providerBase)
 	if err != nil {
 		return err
 	}
@@ -585,10 +641,6 @@ func (a *app) validateFinalizationAuthority(ctx context.Context, backend github.
 		return fmt.Errorf("baseline revision differs: expected=%s current=%s", plan.Subject.BaselineRevision, baseline)
 	}
 	if includeEvidence {
-		facts, err := collectPullRequestGateFacts(ctx, backend, plan.Repository, plan.Subject.PullRequest)
-		if err != nil {
-			return err
-		}
 		digest, err := finalizationEvidenceDigest(facts)
 		if err != nil {
 			return err
@@ -646,6 +698,7 @@ func validateFinalizationRepresentations(ctx context.Context, backend github.Bac
 		byIssue[representation.Issue] = append(byIssue[representation.Issue], representation)
 	}
 	changedTargets := completedFinalizationTargets(plan.Reconcile.Operations, completed)
+	partialEndpointDigests := resumableFinalizationEndpointDigests(plan.Reconcile.Operations, completed)
 	for issue, representations := range byIssue {
 		comments, err := backend.ListIssueComments(ctx, plan.Repository, issue)
 		if err != nil {
@@ -673,8 +726,11 @@ func validateFinalizationRepresentations(ctx context.Context, backend github.Bac
 			}
 			logicalKey := fmt.Sprintf("%d/%s/%s", representation.Issue, representation.Type, representation.ID)
 			if !changedTargets[logicalKey] {
-				if model.RepresentationDigest(exact.Body) != representation.RepresentationDigest ||
-					(representation.RepresentationVersion > 0 && version != representation.RepresentationVersion) {
+				currentDigest := model.RepresentationDigest(exact.Body)
+				_, resumableEndpoint := partialEndpointDigests[logicalKey][currentDigest]
+				resumableEndpoint = resumableEndpoint && currentDigest != representation.RepresentationDigest
+				if (currentDigest != representation.RepresentationDigest ||
+					(representation.RepresentationVersion > 0 && version != representation.RepresentationVersion)) && !resumableEndpoint {
 					return nil, fmt.Errorf("frozen comment %d representation differs", representation.CommentID)
 				}
 			}
@@ -687,6 +743,33 @@ func validateFinalizationRepresentations(ctx context.Context, backend github.Bac
 	return current, nil
 }
 
+func resumableFinalizationEndpointDigests(operations []reconcile.Operation, completed map[string]string) map[string]map[string]struct{} {
+	result := map[string]map[string]struct{}{}
+	for _, operation := range operations {
+		if operation.Kind != "link" || len(operation.Precondition.Endpoints) == 0 {
+			continue
+		}
+		dependenciesComplete := true
+		for _, dependency := range operation.DependsOn {
+			if _, ok := completed[dependency]; !ok {
+				dependenciesComplete = false
+				break
+			}
+		}
+		if !dependenciesComplete {
+			continue
+		}
+		for _, endpoint := range operation.Precondition.Endpoints {
+			key := fmt.Sprintf("%d/%s/%s", endpoint.Target.Issue, strings.ToUpper(endpoint.Target.Type), endpoint.Target.ID)
+			if result[key] == nil {
+				result[key] = map[string]struct{}{}
+			}
+			result[key][endpoint.AfterDigest] = struct{}{}
+		}
+	}
+	return result
+}
+
 func completedFinalizationTargets(operations []reconcile.Operation, completed map[string]string) map[string]bool {
 	result := map[string]bool{}
 	mark := func(target reconcile.Target) {
@@ -694,6 +777,12 @@ func completedFinalizationTargets(operations []reconcile.Operation, completed ma
 	}
 	for _, operation := range operations {
 		if _, done := completed[operation.ID]; !done {
+			continue
+		}
+		if operation.Kind == "link" && len(operation.Precondition.Endpoints) != 0 {
+			for _, endpoint := range operation.Precondition.Endpoints {
+				mark(endpoint.Target)
+			}
 			continue
 		}
 		mark(operation.Target)
@@ -730,6 +819,29 @@ func validateCompletedFinalizationPostconditions(operations []reconcile.Operatio
 			comment, ok = byTarget[strings.ToUpper(target.Type)+"/"+target.ID]
 		}
 		return comment, ok
+	}
+	lastCompletedMutation := map[string]string{}
+	resumableEndpointDigests := resumableFinalizationEndpointDigests(operations, completed)
+	targetKey := func(target reconcile.Target) string {
+		return fmt.Sprintf("%d/%s/%s", target.Issue, strings.ToUpper(target.Type), target.ID)
+	}
+	for _, operation := range operations {
+		if _, done := completed[operation.ID]; !done {
+			continue
+		}
+		if operation.Kind == "link" && len(operation.Precondition.Endpoints) != 0 {
+			for _, endpoint := range operation.Precondition.Endpoints {
+				lastCompletedMutation[targetKey(endpoint.Target)] = operation.ID
+			}
+			continue
+		}
+		lastCompletedMutation[targetKey(operation.Target)] = operation.ID
+		if operation.Kind == "link" && operation.Desired.Peer != nil {
+			if !operation.Desired.CarrierAuthorizedBacklink {
+				lastCompletedMutation[targetKey(operation.Target)] = operation.ID
+			}
+			lastCompletedMutation[targetKey(*operation.Desired.Peer)] = operation.ID
+		}
 	}
 	for _, operation := range operations {
 		if _, done := completed[operation.ID]; !done {
@@ -771,6 +883,17 @@ func validateCompletedFinalizationPostconditions(operations []reconcile.Operatio
 				}
 			} else if !finalizationCommentLinks(target, peer) || !finalizationCommentLinks(peer, target) {
 				return fmt.Errorf("checkpointed operation %s reciprocal link postcondition drifted", operation.ID)
+			}
+			for _, endpoint := range operation.Precondition.Endpoints {
+				if lastCompletedMutation[targetKey(endpoint.Target)] != operation.ID {
+					continue
+				}
+				comment, ok := lookup(endpoint.Target)
+				currentDigest := model.RepresentationDigest(comment.Body)
+				_, plannedLaterState := resumableEndpointDigests[targetKey(endpoint.Target)][currentDigest]
+				if !ok || (currentDigest != endpoint.AfterDigest && !plannedLaterState) {
+					return fmt.Errorf("checkpointed operation %s endpoint representation drifted", operation.ID)
+				}
 			}
 		}
 	}
