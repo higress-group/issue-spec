@@ -561,7 +561,7 @@ func releaseNotes(plan Plan) string {
 	if plan.Channel == "prerelease" {
 		channelDescription = "immutable semantic-version prerelease"
 	} else if plan.Channel == "rolling" {
-		channelDescription = "mutable rolling release from main; every complete publication replaces its assets"
+		channelDescription = "mutable rolling release from main; every complete publication replaces the visible Release and its assets, refreshing the published time"
 		downloadPath = "latest/download"
 		shellMode = "--latest"
 		powerShellMode = "-Latest"

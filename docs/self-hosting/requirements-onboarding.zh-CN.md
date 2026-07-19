@@ -10,8 +10,9 @@
 
 `https://github.com/higress-group/issue-spec/releases/latest/download` 跟随最近一次完整成功
 发布所生成的 GitHub latest Release；在当前发布设计中，它是唯一且可更新、名称固定为
-`latest` 的 Release，底层使用固定的 `rolling` Tag。每次完整发布都会替换其中的制品，
-并把该 Tag 移动到 Manifest 和 Release 描述所记录的源码 Revision。
+`latest` 的 Release，底层使用固定的 `rolling` Tag。每次完整发布都会先暂存并校验一个
+Draft，再替换可见 Release，并把该 Tag 移动到 Manifest 和 Release 描述所记录的源码
+Revision；替换 Release 也会刷新 GitHub 所展示的发布时间。
 
 不要把远程脚本通过管道直接交给 Shell。只用 `curl` 把安装器、Manifest、Checksum
 和对应平台制品下载到同一目录，再校验执行：
