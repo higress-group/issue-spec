@@ -189,6 +189,9 @@ func TestEvaluateSharedCarriersRequireEveryActiveProcessSpecPair(t *testing.T) {
 	if reviewDiagnostic.Artifact.ID != "PROCESS-002" || verifyDiagnostic.Artifact.ID != "PROCESS-002" {
 		t.Fatalf("SPEC-only coverage rescued an uncovered carrier: review=%+v verify=%+v", reviewDiagnostic, verifyDiagnostic)
 	}
+	if !strings.Contains(verifyDiagnostic.Message, "validated independent verifier identity") {
+		t.Fatalf("shared VERIFY blocker did not expose the verifier-independence repair: %+v", verifyDiagnostic)
+	}
 
 	link(t, &review, &two.Process)
 	link(t, &verify, &two.Process)

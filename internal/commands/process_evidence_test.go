@@ -6,12 +6,101 @@ import (
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
+
+func TestFilterSharedVerificationIdentityRequiresIndependentAcceptedReceiptPerPair(t *testing.T) {
+	const specID = "SPEC-001"
+	revision := strings.Repeat("b", 40)
+	one := processClassArtifact(t, "PROCESS-001", "change-bearing", specID, "done")
+	two := processClassArtifact(t, "PROCESS-002", "change-bearing", specID, "done")
+	manualBody, err := model.EnsureTypedBody("VERIFY", "VERIFY-002", "Verified both processes with tests.",
+		model.BodyOptions{Agent: "Verifier", Status: "done", SubjectRevision: revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manual := model.Artifact{URL: "https://example/verify-manual", Comment: model.ParseTypedComment(manualBody)}
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	acceptedBody, err := renderSubmittedVerification("VERIFY-001", one.URL, []string{specID}, receipt, nil,
+		testVerificationSubmission("Verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := model.Artifact{URL: "https://example/verify-accepted", Comment: model.ParseTypedComment(acceptedBody)}
+
+	newInputs := func(url string) []gates.ProcessEvidenceInput {
+		return []gates.ProcessEvidenceInput{
+			{Process: one, Verifications: []gates.VerificationEvidence{{ProcessID: one.Comment.ID, SpecID: specID, URL: url, Done: true, TestEvidence: true}}},
+			{Process: two, Verifications: []gates.VerificationEvidence{{ProcessID: two.Comment.ID, SpecID: specID, URL: url, Done: true, TestEvidence: true}}},
+		}
+	}
+	independentAuthors := map[string]map[string]map[string]bool{
+		one.Comment.ID: {specID: {"worker one": true}},
+		two.Comment.ID: {specID: {"worker two": true}},
+	}
+
+	t.Run("independent accepted verifier is projected for each pair", func(t *testing.T) {
+		inputs := newInputs(accepted.URL)
+		filterSharedVerificationIdentity(inputs, []model.Artifact{accepted}, independentAuthors, revision)
+		if len(inputs[0].Verifications) != 1 || len(inputs[1].Verifications) != 1 {
+			t.Fatalf("independent verifier was not projected: %+v", inputs)
+		}
+	})
+
+	t.Run("typed agent without accepted authority is not identity", func(t *testing.T) {
+		inputs := newInputs(manual.URL)
+		filterSharedVerificationIdentity(inputs, []model.Artifact{manual}, independentAuthors, revision)
+		if len(inputs[0].Verifications) != 0 || len(inputs[1].Verifications) != 0 {
+			t.Fatalf("manual Agent metadata established shared verifier identity: %+v", inputs)
+		}
+	})
+
+	t.Run("accepted writer and typed agent must agree", func(t *testing.T) {
+		tampered := accepted
+		tampered.Comment = model.ParseTypedComment(strings.Replace(accepted.Comment.Body, "Agent: Verifier", "Agent: Another Verifier", 1))
+		inputs := newInputs(tampered.URL)
+		filterSharedVerificationIdentity(inputs, []model.Artifact{tampered}, independentAuthors, revision)
+		if len(inputs[0].Verifications) != 0 || len(inputs[1].Verifications) != 0 {
+			t.Fatalf("mismatched typed agent established verifier identity: %+v", inputs)
+		}
+	})
+
+	t.Run("missing code author identity fails closed", func(t *testing.T) {
+		inputs := newInputs(accepted.URL)
+		authors := map[string]map[string]map[string]bool{one.Comment.ID: {specID: {"worker one": true}}}
+		filterSharedVerificationIdentity(inputs, []model.Artifact{accepted}, authors, revision)
+		if len(inputs[0].Verifications) != 1 || len(inputs[1].Verifications) != 0 {
+			t.Fatalf("missing pair author identity did not fail closed: %+v", inputs)
+		}
+	})
+
+	t.Run("verifier author conflict rejects only conflicting pair", func(t *testing.T) {
+		inputs := newInputs(accepted.URL)
+		authors := map[string]map[string]map[string]bool{
+			one.Comment.ID: {specID: {"worker one": true, "verifier": true}},
+			two.Comment.ID: {specID: {"worker two": true}},
+		}
+		filterSharedVerificationIdentity(inputs, []model.Artifact{accepted}, authors, revision)
+		if len(inputs[0].Verifications) != 0 || len(inputs[1].Verifications) != 1 {
+			t.Fatalf("verifier conflict was not scoped to its PROCESS/SPEC pair: %+v", inputs)
+		}
+	})
+
+	t.Run("single carrier preserves manual compatibility", func(t *testing.T) {
+		inputs := newInputs(manual.URL)[:1]
+		filterSharedVerificationIdentity(inputs, []model.Artifact{manual},
+			map[string]map[string]map[string]bool{one.Comment.ID: {specID: {"worker one": true}}}, revision)
+		if len(inputs[0].Verifications) != 1 {
+			t.Fatalf("single-carrier manual verification regressed: %+v", inputs)
+		}
+	})
+}
 
 func TestArtifactReferencesRejectIDPrefixCollisions(t *testing.T) {
 	process := model.Artifact{URL: "https://example/process-1", Comment: model.TypedComment{ID: "PROCESS-001"}}

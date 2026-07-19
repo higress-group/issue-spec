@@ -213,8 +213,8 @@ func (e *evaluator) requireCarrierCompleteVerification() {
 			if e.verificationPairCovered(process.ProcessID, spec) {
 				continue
 			}
-			e.add(CodeVerifySpecCoverageMissing, fmt.Sprintf("%s/%s is not enumerated by a done VERIFY carrier", process.ProcessID, spec),
-				ArtifactRef{Type: "PROCESS", ID: process.ProcessID, URL: process.ProcessURL}, "uncovered PROCESS/SPEC pair", "covered by done VERIFY", "comment upsert", "--type", "VERIFY")
+			e.add(CodeVerifySpecCoverageMissing, fmt.Sprintf("%s/%s is not enumerated by a done VERIFY carrier with validated independent verifier identity", process.ProcessID, spec),
+				ArtifactRef{Type: "PROCESS", ID: process.ProcessID, URL: process.ProcessURL}, "uncovered PROCESS/SPEC pair", "covered by done VERIFY with an independent accepted verifier", "comment upsert", "--type", "VERIFY")
 		}
 	}
 }

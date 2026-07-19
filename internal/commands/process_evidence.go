@@ -108,6 +108,7 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 		processByID[process.Comment.ID] = process
 	}
 	authorAgentsBySpec := map[string]map[string]bool{}
+	authorAgentsByProcessSpec := map[string]map[string]map[string]bool{}
 	for _, comment := range reviewComments {
 		marker, ok, err := model.FindRationaleMarker(comment.Body)
 		if err != nil || !ok {
@@ -148,6 +149,7 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 			authorAgentsBySpec[spec] = map[string]bool{}
 		}
 		authorAgentsBySpec[spec][agent] = true
+		addProcessSpecAgent(authorAgentsByProcessSpec, process.Comment.ID, spec, agent)
 	}
 	inputs := make([]gates.ProcessEvidenceInput, 0, len(processes))
 	for _, process := range processes {
@@ -188,6 +190,7 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 					authorAgentsBySpec[evidence.SpecID] = map[string]bool{}
 				}
 				authorAgentsBySpec[evidence.SpecID][agent] = true
+				addProcessSpecAgent(authorAgentsByProcessSpec, process.Comment.ID, evidence.SpecID, agent)
 			}
 		}
 		for _, artifact := range reviews {
@@ -252,7 +255,92 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 		}
 		inputs = append(inputs, input)
 	}
+	filterSharedVerificationIdentity(inputs, verifications, authorAgentsByProcessSpec, requiredRevision)
 	return inputs
+}
+
+func addProcessSpecAgent(values map[string]map[string]map[string]bool, processID, specID, agent string) {
+	processID, specID, agent = strings.TrimSpace(processID), strings.TrimSpace(specID), strings.ToLower(strings.TrimSpace(agent))
+	if processID == "" || specID == "" || agent == "" {
+		return
+	}
+	if values[processID] == nil {
+		values[processID] = map[string]map[string]bool{}
+	}
+	if values[processID][specID] == nil {
+		values[processID][specID] = map[string]bool{}
+	}
+	values[processID][specID][agent] = true
+}
+
+// filterSharedVerificationIdentity is a collector-side trust boundary, not a
+// second gate evaluator. Shared-carrier policy remains in gates.Evaluate; this
+// projection only withholds a PROCESS/SPEC fact when its verifier identity is
+// not established by an already accepted role-owned receipt, or when that
+// identity is not independent from the exact PROCESS/SPEC code author set.
+//
+// Typed Agent metadata alone is deliberately insufficient here. It is used
+// only to cross-check the writer already validated by the immutable accepted
+// receipt. Single change-bearing carrier workflows retain their legacy/manual
+// compatibility behavior.
+func filterSharedVerificationIdentity(inputs []gates.ProcessEvidenceInput, carriers []model.Artifact,
+	authors map[string]map[string]map[string]bool, requiredRevision string) {
+	changeBearing := 0
+	for _, input := range inputs {
+		if model.ParseProcessExecutionClass(input.Process.Comment.ID, input.Process.URL, input.Process.Comment.Body).Class == model.ProcessExecutionChangeBearing {
+			changeBearing++
+		}
+	}
+	if changeBearing < 2 {
+		return
+	}
+	verifierByURL := make(map[string]string, len(carriers))
+	for _, carrier := range carriers {
+		if verifier := validatedVerificationCarrierAgent(carrier, requiredRevision); verifier != "" {
+			verifierByURL[model.NormalizeURL(carrier.URL)] = verifier
+		}
+	}
+	for inputIndex := range inputs {
+		input := &inputs[inputIndex]
+		if model.ParseProcessExecutionClass(input.Process.Comment.ID, input.Process.URL, input.Process.Comment.Body).Class != model.ProcessExecutionChangeBearing {
+			continue
+		}
+		kept := input.Verifications[:0]
+		for _, evidence := range input.Verifications {
+			verifier := verifierByURL[model.NormalizeURL(evidence.URL)]
+			pairAuthors := authors[input.Process.Comment.ID][evidence.SpecID]
+			if verifier == "" || len(pairAuthors) == 0 || pairAuthors[verifier] {
+				continue
+			}
+			kept = append(kept, evidence)
+		}
+		input.Verifications = kept
+	}
+}
+
+func validatedVerificationCarrierAgent(carrier model.Artifact, requiredRevision string) string {
+	if carrier.Comment.Type != "VERIFY" || carrier.Comment.Status != "done" || len(carrier.Comment.Errors) != 0 {
+		return ""
+	}
+	authority, found, err := parseAcceptedVerificationReceipt(carrier.Comment.Body)
+	if err != nil || !found {
+		return ""
+	}
+	expectedRevision := strings.TrimSpace(requiredRevision)
+	if expectedRevision == "" {
+		expectedRevision = strings.TrimSpace(carrier.Comment.SubjectRevision)
+	}
+	if expectedRevision == "" {
+		return ""
+	}
+	if _, _, _, valid := exactAcceptedVerificationCarrier(carrier, expectedRevision); !valid {
+		return ""
+	}
+	verifier := strings.ToLower(strings.TrimSpace(authority.Provenance.Writer))
+	if verifier == "" || !strings.EqualFold(verifier, strings.TrimSpace(carrier.Comment.Agent)) {
+		return ""
+	}
+	return verifier
 }
 
 type explicitReviewCoverage struct {
