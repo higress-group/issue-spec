@@ -12,10 +12,9 @@ server is `https://issues.example.test`; no displayed value is a credential.
 `https://github.com/higress-group/issue-spec/releases/latest/download` follows
 the latest GitHub Release from the most recent complete successful publication.
 In the current release design, that is the single mutable Release named
-`latest`, backed by the fixed `rolling` tag. Each complete publication stages
-and verifies a draft, then replaces the visible Release and moves the tag to the
-source revision recorded in the manifest and release description. Replacing the
-Release also refreshes GitHub's displayed publication time.
+`latest`, backed by the fixed `rolling` tag. Each complete publication replaces
+its assets and moves the tag to the source revision recorded in the manifest
+and release description.
 
 Do not pipe a remote script into a shell. Use `curl` to download the installer,
 manifest, checksums, and matching platform archive, then verify before executing:
