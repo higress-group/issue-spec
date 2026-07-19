@@ -275,14 +275,16 @@ func addProcessSpecAgent(values map[string]map[string]map[string]bool, processID
 
 // filterSharedVerificationIdentity is a collector-side trust boundary, not a
 // second gate evaluator. Shared-carrier policy remains in gates.Evaluate; this
-// projection only withholds a PROCESS/SPEC fact when its verifier identity is
-// not established by an already accepted role-owned receipt, or when that
-// identity is not independent from the exact PROCESS/SPEC code author set.
+// projection only retains a PROCESS/SPEC fact when the exact VERIFY carrier has
+// either stronger accepted-receipt authority or the explicitly preserved
+// legacy manual self-reported identity, and that identity is independent from
+// the exact PROCESS/SPEC code author set.
 //
-// Typed Agent metadata alone is deliberately insufficient here. It is used
-// only to cross-check the writer already validated by the immutable accepted
-// receipt. Single change-bearing carrier workflows retain their legacy/manual
-// compatibility behavior.
+// Manual self-reported identity is not provider-authenticated. It is accepted
+// only from a canonical, done, exact-current VERIFY whose explicit Agent is a
+// real non-Coordinator role and whose collected pair already has exact PROCESS
+// and SPEC links plus test evidence. Single change-bearing carrier workflows
+// retain their existing legacy/manual compatibility behavior.
 func filterSharedVerificationIdentity(inputs []gates.ProcessEvidenceInput, carriers []model.Artifact,
 	authors map[string]map[string]map[string]bool, requiredRevision string) {
 	changeBearing := 0
@@ -294,10 +296,17 @@ func filterSharedVerificationIdentity(inputs []gates.ProcessEvidenceInput, carri
 	if changeBearing < 2 {
 		return
 	}
-	verifierByURL := make(map[string]string, len(carriers))
+	type carrierIdentity struct {
+		agent              string
+		manualSelfReported bool
+		carrier            model.Artifact
+	}
+	verifierByURL := make(map[string]carrierIdentity, len(carriers))
 	for _, carrier := range carriers {
-		if verifier := validatedVerificationCarrierAgent(carrier, requiredRevision); verifier != "" {
-			verifierByURL[model.NormalizeURL(carrier.URL)] = verifier
+		if verifier, manual := validatedVerificationCarrierAgent(carrier, requiredRevision); verifier != "" {
+			verifierByURL[model.NormalizeURL(carrier.URL)] = carrierIdentity{
+				agent: verifier, manualSelfReported: manual, carrier: carrier,
+			}
 		}
 	}
 	for inputIndex := range inputs {
@@ -307,10 +316,21 @@ func filterSharedVerificationIdentity(inputs []gates.ProcessEvidenceInput, carri
 		}
 		kept := input.Verifications[:0]
 		for _, evidence := range input.Verifications {
-			verifier := verifierByURL[model.NormalizeURL(evidence.URL)]
+			identity, found := verifierByURL[model.NormalizeURL(evidence.URL)]
 			pairAuthors := authors[input.Process.Comment.ID][evidence.SpecID]
-			if verifier == "" || len(pairAuthors) == 0 || pairAuthors[verifier] {
+			if !found || len(pairAuthors) == 0 || pairAuthors[identity.agent] {
 				continue
+			}
+			if identity.manualSelfReported {
+				specURL := input.ActiveSpecs[evidence.SpecID]
+				if evidence.ProcessID != input.Process.Comment.ID || specURL == "" || !evidence.Done || !evidence.TestEvidence ||
+					!linksContainURL(identity.carrier.Comment.Links["Related Comments"], input.Process.URL) ||
+					!linksContainURL(identity.carrier.Comment.Links["Related Comments"], specURL) {
+					continue
+				}
+				evidence.SubjectRevision = strings.TrimSpace(requiredRevision)
+				evidence.Trusted = true
+				evidence.Source = "manual-self-reported-verify:exact-current"
 			}
 			kept = append(kept, evidence)
 		}
@@ -318,29 +338,46 @@ func filterSharedVerificationIdentity(inputs []gates.ProcessEvidenceInput, carri
 	}
 }
 
-func validatedVerificationCarrierAgent(carrier model.Artifact, requiredRevision string) string {
+// validatedVerificationCarrierAgent returns the normalized verifier and
+// whether its authority is the legacy manual self-reported compatibility path.
+// A malformed or invalid accepted-receipt marker never falls back to manual.
+func validatedVerificationCarrierAgent(carrier model.Artifact, requiredRevision string) (string, bool) {
 	if carrier.Comment.Type != "VERIFY" || carrier.Comment.Status != "done" || len(carrier.Comment.Errors) != 0 {
-		return ""
+		return "", false
 	}
 	authority, found, err := parseAcceptedVerificationReceipt(carrier.Comment.Body)
-	if err != nil || !found {
-		return ""
+	if err != nil {
+		return "", false
 	}
 	expectedRevision := strings.TrimSpace(requiredRevision)
-	if expectedRevision == "" {
-		expectedRevision = strings.TrimSpace(carrier.Comment.SubjectRevision)
+	if found {
+		if expectedRevision == "" {
+			expectedRevision = strings.TrimSpace(carrier.Comment.SubjectRevision)
+		}
+		if expectedRevision == "" {
+			return "", false
+		}
+		if _, _, _, valid := exactAcceptedVerificationCarrier(carrier, expectedRevision); !valid {
+			return "", false
+		}
+		verifier := strings.ToLower(strings.TrimSpace(authority.Provenance.Writer))
+		if verifier == "" || !strings.EqualFold(verifier, strings.TrimSpace(carrier.Comment.Agent)) {
+			return "", false
+		}
+		return verifier, false
 	}
-	if expectedRevision == "" {
-		return ""
+
+	// The manual path deliberately carries only legacy self-reported assurance.
+	// Exact-current binding and a non-Coordinator visible Agent are therefore
+	// mandatory, and callers must still validate pair links and test evidence.
+	if expectedRevision == "" || !strings.EqualFold(strings.TrimSpace(carrier.Comment.SubjectRevision), expectedRevision) {
+		return "", false
 	}
-	if _, _, _, valid := exactAcceptedVerificationCarrier(carrier, expectedRevision); !valid {
-		return ""
+	verifier := strings.ToLower(strings.TrimSpace(carrier.Comment.Agent))
+	if verifier == "" || strings.EqualFold(verifier, "Coordinator") {
+		return "", false
 	}
-	verifier := strings.ToLower(strings.TrimSpace(authority.Provenance.Writer))
-	if verifier == "" || !strings.EqualFold(verifier, strings.TrimSpace(carrier.Comment.Agent)) {
-		return ""
-	}
-	return verifier
+	return verifier, true
 }
 
 type explicitReviewCoverage struct {
