@@ -14,7 +14,7 @@ func TestCollectArtifactsKeepsCodeChangeRationaleAsUntypedEvidence(t *testing.T)
 		Process: "PROCESS-001", Spec: "SPEC-001", SpecURL: "https://issues.test/acme/widgets/issues/1#issuecomment-2",
 		ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42",
 		ReferenceVersion: 7, SubjectRevision: "head-abc", Agent: "Worker", AgentSessionID: "worker-session",
-		AgentSessionSource: codexThreadIDEnv,
+		AgentSessionSource: "CODEX_THREAD_ID",
 	}, "why")
 	if err != nil {
 		t.Fatal(err)

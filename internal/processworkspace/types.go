@@ -79,20 +79,14 @@ type AcceptedReceiptBinding struct {
 	Submission           *RoleOwnedSubmissionEvidence `json:"submission,omitempty"`
 }
 
-const (
-	AgentSessionSourceRuntimeNative = "CODEX_THREAD_ID"
-	AgentSessionSourceParameter     = "agent-session-parameter"
-	AgentSessionSourceCompatibility = "role-owned-compatibility"
-)
-
 // RoleOwnedSubmissionEvidence records self-reported metadata from a bounded
-// role-owned command. Agent and session strings identify the publication
-// route for compatibility; none of them is an independent provenance trust
-// root or runtime attestation.
+// role-owned command. The logical agent identifies the publication route for
+// compatibility; it is not an independent provenance trust root or runtime
+// attestation.
 type RoleOwnedSubmissionEvidence struct {
 	Agent              string               `json:"agent"`
 	AgentSessionID     string               `json:"agent_session_id,omitempty"`
-	AgentSessionSource string               `json:"agent_session_source"`
+	AgentSessionSource string               `json:"agent_session_source,omitempty"`
 	Assurance          assignment.Assurance `json:"assurance"`
 }
 
@@ -104,28 +98,12 @@ func (e RoleOwnedSubmissionEvidence) Validate() error {
 	if e.Assurance != assignment.AssuranceSelfReported {
 		return errors.New("role-owned submission evidence must remain self-reported")
 	}
-	sessionID := strings.TrimSpace(e.AgentSessionID)
-	if sessionID != e.AgentSessionID {
-		return errors.New("role-owned submission session id must be trimmed")
-	}
-	switch e.AgentSessionSource {
-	case AgentSessionSourceRuntimeNative, AgentSessionSourceParameter:
-		if sessionID == "" {
-			return errors.New("role-owned submission session source requires a session id")
-		}
-	case AgentSessionSourceCompatibility:
-		if sessionID != "" {
-			return errors.New("no-runtime role-owned compatibility cannot claim a session id")
-		}
-	default:
-		return fmt.Errorf("unsupported role-owned submission session source %q", e.AgentSessionSource)
-	}
 	return nil
 }
 
 // ValidateRoleOwnedReceiptSubmission validates the existing direct role-owned
-// publication compatibility route. The agent/session fields remain
-// self-reported metadata and this helper must never authorize Coordinator
+// publication compatibility route. The agent field remains self-reported
+// metadata and this helper must never authorize Coordinator
 // import of caller-supplied receipt JSON.
 func ValidateRoleOwnedReceiptSubmission(receipt assignment.Receipt, submission RoleOwnedSubmissionEvidence) error {
 	if err := submission.Validate(); err != nil {

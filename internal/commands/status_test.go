@@ -735,7 +735,7 @@ func statusGateDiagnostic(summary statusSummary, code string) *gates.Diagnostic 
 	return nil
 }
 
-func TestSummarizeStatusReportsSessionMetadataDiagnosticsWithoutBlocking(t *testing.T) {
+func TestSummarizeStatusDoesNotRequireSessionMetadata(t *testing.T) {
 	specBody, err := model.EnsureTypedBody("SPEC", "SPEC-001", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y", model.BodyOptions{Status: "confirmed"})
 	if err != nil {
 		t.Fatal(err)
@@ -744,9 +744,9 @@ func TestSummarizeStatusReportsSessionMetadataDiagnosticsWithoutBlocking(t *test
 		{Issue: 1, URL: "https://github.com/o/r/issues/1#issuecomment-1", Comment: model.ParseTypedComment(specBody)},
 	})
 	if !summary.OK {
-		t.Fatalf("metadata diagnostics should not block status: %+v", summary.NextGates)
+		t.Fatalf("status should remain OK: %+v", summary.NextGates)
 	}
-	if len(summary.Diagnostics) != 1 || summary.Diagnostics[0].Code != "missing_session_metadata" {
-		t.Fatalf("unexpected diagnostics: %+v", summary.Diagnostics)
+	if len(summary.Diagnostics) != 0 {
+		t.Fatalf("status should not report session metadata diagnostics: %+v", summary.Diagnostics)
 	}
 }

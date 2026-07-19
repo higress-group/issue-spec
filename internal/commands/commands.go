@@ -229,7 +229,7 @@ Usage:
   issue-spec search issues --repo owner/repo --query TEXT [--state all|open|closed] [--source all|issue|comments|change] [--stage proposal|design|implement] [--limit 10]
   issue-spec code-change attach --repo owner/repo --implement N --change-id ID --revision REV [--refresh --expected-version N] [--json]
   issue-spec code-change link-process --repo owner/repo --implement N --process PROCESS-001 --expected-version N [--json]
-  issue-spec code-change rationale --repo owner/repo --implement N --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "why" --agent Worker [--agent-session ID] [--json]
+  issue-spec code-change rationale --repo owner/repo --implement N --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "why" --agent Worker [--json]
   issue-spec requirements setup --server URL [--token-stdin] [--yes] [--json]
   issue-spec requirements status [--repo owner/repo] [--json]
   issue-spec runner poll --repo owner/repo --runner login --once --dry-run

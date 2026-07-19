@@ -32,8 +32,8 @@ type CodeChangeRationaleMarker struct {
 	ReferenceVersion   int64  `json:"reference_version"`
 	SubjectRevision    string `json:"subject_revision"`
 	Agent              string `json:"agent"`
-	AgentSessionID     string `json:"agent_session_id"`
-	AgentSessionSource string `json:"agent_session_source"`
+	AgentSessionID     string `json:"agent_session_id,omitempty"`
+	AgentSessionSource string `json:"agent_session_source,omitempty"`
 }
 
 // RenderCodeChangeRationaleBody renders a deterministic base64url-encoded JSON
@@ -53,11 +53,16 @@ func RenderCodeChangeRationaleBody(marker CodeChangeRationaleMarker, rationale s
 		return "", fmt.Errorf("encode code-change rationale marker: %w", err)
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	var legacySessionLines strings.Builder
+	if marker.AgentSessionID != "" {
+		fmt.Fprintf(&legacySessionLines, "Agent Session ID: %s\n", marker.AgentSessionID)
+	}
+	if marker.AgentSessionSource != "" {
+		fmt.Fprintf(&legacySessionLines, "Agent Session Source: %s\n", marker.AgentSessionSource)
+	}
 	return fmt.Sprintf(`<!-- issue-spec:code-change-rationale payload=%s version=%d -->
 Agent: %s
-Agent Session ID: %s
-Agent Session Source: %s
-Subject Revision: %s
+%sSubject Revision: %s
 Process: %s
 Spec: %s
 Spec Comment: %s
@@ -69,8 +74,8 @@ Reference Version: %d
 ### Rationale
 
 %s
-`, encoded, codeChangeRationaleVersion, marker.Agent, marker.AgentSessionID, marker.AgentSessionSource,
-		marker.SubjectRevision, marker.Process, marker.Spec, marker.SpecURL, marker.ProviderKey,
+`, encoded, codeChangeRationaleVersion, marker.Agent, legacySessionLines.String(), marker.SubjectRevision,
+		marker.Process, marker.Spec, marker.SpecURL, marker.ProviderKey,
 		marker.ExternalRepository, marker.ChangeID, marker.ReferenceVersion, rationale), nil
 }
 
@@ -118,9 +123,8 @@ func FindCodeChangeRationaleMarker(body string) (CodeChangeRationaleMarker, bool
 		return CodeChangeRationaleMarker{}, true, err
 	}
 	metadata := visibleMetadata(body)
-	if metadata["Agent"] != marker.Agent || metadata["Agent Session ID"] != marker.AgentSessionID ||
-		metadata["Agent Session Source"] != marker.AgentSessionSource || metadata["Subject Revision"] != marker.SubjectRevision {
-		return CodeChangeRationaleMarker{}, true, errors.New("code-change rationale visible agent, session, or revision does not match marker payload")
+	if metadata["Agent"] != marker.Agent || metadata["Subject Revision"] != marker.SubjectRevision {
+		return CodeChangeRationaleMarker{}, true, errors.New("code-change rationale visible metadata does not match marker payload")
 	}
 	return marker, true, nil
 }
@@ -157,8 +161,6 @@ func normalizeCodeChangeRationaleMarker(marker CodeChangeRationaleMarker) CodeCh
 	marker.ChangeID = strings.TrimSpace(marker.ChangeID)
 	marker.SubjectRevision = strings.TrimSpace(marker.SubjectRevision)
 	marker.Agent = strings.TrimSpace(marker.Agent)
-	marker.AgentSessionID = strings.TrimSpace(marker.AgentSessionID)
-	marker.AgentSessionSource = strings.TrimSpace(marker.AgentSessionSource)
 	return marker
 }
 
@@ -177,15 +179,14 @@ func validateCodeChangeRationaleMarker(marker CodeChangeRationaleMarker) error {
 	}
 	if len(marker.ProviderKey) > 128 || len(marker.ExternalRepository) > 512 || len(marker.ChangeID) > 256 ||
 		len(marker.SubjectRevision) > 512 || len(marker.SpecURL) > 4096 || len(marker.Agent) > 256 ||
-		len(marker.AgentSessionID) > 512 || strings.ContainsAny(marker.ProviderKey, " \t\r\n") ||
+		strings.ContainsAny(marker.ProviderKey, " \t\r\n") ||
 		strings.ContainsAny(marker.ExternalRepository, "\r\n") || strings.ContainsAny(marker.ChangeID, "\r\n") ||
 		strings.ContainsAny(marker.SubjectRevision, " \t\r\n") || strings.ContainsAny(marker.SpecURL, "\r\n") ||
-		strings.ContainsAny(marker.Agent, "\r\n") || strings.ContainsAny(marker.AgentSessionID, " \t\r\n") {
+		strings.ContainsAny(marker.Agent, "\r\n") {
 		return errors.New("code-change rationale code-change identity is invalid")
 	}
-	if marker.Agent == "" || marker.AgentSessionID == "" ||
-		(marker.AgentSessionSource != "CODEX_THREAD_ID" && marker.AgentSessionSource != "agent-session-parameter") {
-		return errors.New("code-change rationale requires agent and trusted agent session metadata")
+	if marker.Agent == "" {
+		return errors.New("code-change rationale requires an agent")
 	}
 	return nil
 }

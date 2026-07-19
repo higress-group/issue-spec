@@ -73,19 +73,24 @@ func TestCoordinatorPromptSeparatesOrdinaryAndTypedWrites(t *testing.T) {
 	}
 }
 
-func TestCoordinatorPromptUsesRuntimeNeutralSessionMetadata(t *testing.T) {
+func TestCoordinatorPromptDoesNotRequireArtifactSessionMetadata(t *testing.T) {
 	prompt, err := CoordinatorPrompt(coordinatorPromptBundle(t, runnercontext.CommandResume, "s_123"), CoordinatorPromptOptions{IssueSpecBinary: "go run ./cmd/issue-spec"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
 		"runner-selected /resume command", `"public_session_id": "s_123"`,
-		"CODEX_THREAD_ID, --agent-session, and provider session values are optional audit metadata only",
+		"Artifact writer session metadata is deprecated, ignored, and never required",
 		"runner.public_session_id alone is the /resume handle",
 		"go run ./cmd/issue-spec status", "go run ./cmd/issue-spec comment create", `"name":"go run ./cmd/issue-spec comment upsert"`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("resume prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{"CODEX_THREAD_ID", "--agent-session"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("resume prompt depends on runtime-specific artifact metadata %q:\n%s", forbidden, prompt)
 		}
 	}
 }

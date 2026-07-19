@@ -389,7 +389,6 @@ func TestWorkspacePreparePersistsAssignmentBeforePacketAndRedispatchesExplicitly
 }
 
 func TestWorkspaceReceiptImportRemainsInformationalThroughRecoveryIntegrationAndCleanup(t *testing.T) {
-	t.Setenv(codexThreadIDEnv, "coordinator-chosen-worker-session")
 	repo, base := workspaceGitRepository(t)
 	specBody, err := templates.SpecComment(templates.SpecCommentOptions{Common: templates.CommonOptions{ID: "SPEC-001", Status: "confirmed"},
 		Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{Title: "receipt import", Text: "The CLI MUST keep Coordinator-imported receipt identity informational."},
@@ -404,7 +403,7 @@ func TestWorkspaceReceiptImportRemainsInformationalThroughRecoveryIntegrationAnd
 	if err != nil {
 		t.Fatal(err)
 	}
-	processBody, err = model.StampTypedSessionMetadata(processBody, "coordinator-session", codexThreadIDEnv)
+	processBody, err = model.StampTypedSessionMetadata(processBody, "coordinator-session", "CODEX_THREAD_ID")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,6 +519,19 @@ func assertNoLocalAcceptedImplementationAuthority(t *testing.T, lease processwor
 		lease.Portable.AcceptedReceiptDigest != "" || lease.Portable.AcceptedReceiptGeneration != 0 ||
 		lease.Portable.AcceptedReceiptSubmission != nil {
 		t.Fatalf("Coordinator import created accepted role evidence: %+v", lease)
+	}
+}
+
+func TestAcceptedReceiptSubmissionComparisonIgnoresLegacySessionMetadata(t *testing.T) {
+	current := &processworkspace.RoleOwnedSubmissionEvidence{Agent: "Worker", Assurance: assignment.AssuranceSelfReported}
+	legacy := &processworkspace.RoleOwnedSubmissionEvidence{Agent: "Worker", AgentSessionID: "worker-session",
+		AgentSessionSource: "CODEX_THREAD_ID", Assurance: assignment.AssuranceSelfReported}
+	if !sameAcceptedReceiptSubmission(current, legacy) {
+		t.Fatal("legacy session metadata changed accepted receipt authority identity")
+	}
+	legacy.Agent = "Other Worker"
+	if sameAcceptedReceiptSubmission(current, legacy) {
+		t.Fatal("logical agent change was ignored")
 	}
 }
 

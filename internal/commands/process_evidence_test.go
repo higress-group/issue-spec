@@ -133,7 +133,7 @@ func TestBuildProcessEvidenceBindsIssueRationaleToExactExternalCarrier(t *testin
 		body, err := model.RenderCodeChangeRationaleBody(model.CodeChangeRationaleMarker{
 			Process: processID, Spec: specID, SpecURL: specURL, ProviderKey: "code.example",
 			ExternalRepository: "acme/widgets-code", ChangeID: "change-1", ReferenceVersion: version,
-			SubjectRevision: revision, Agent: "Worker", AgentSessionID: "worker-session", AgentSessionSource: codexThreadIDEnv,
+			SubjectRevision: revision, Agent: "Worker",
 		}, "why")
 		if err != nil {
 			t.Fatal(err)
@@ -423,7 +423,7 @@ func externalReviewCompletionFixture(t *testing.T, now time.Time, reviewer strin
 	reviewProcess := processClassArtifact(t, "PROCESS-002", "review", "SPEC-001", "done")
 	reviewProcess.Issue, reviewProcess.URL = 9, "https://issues.example/process-2"
 	body, err := renderExternalReviewSyncCommentAt("REVIEW-001", reviewer,
-		writerSession{ID: "review-session", Source: agentSessionParamSource}, "external review", gate, now.Add(-15*time.Minute))
+		writerSession{}, "external review", gate, now.Add(-15*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +444,7 @@ func externalCodeRationaleArtifact(t *testing.T, process model.Artifact, agent s
 		Process: process.Comment.ID, Spec: specID, SpecURL: specURL, ProviderKey: target.Reference.ProviderKey,
 		ExternalRepository: target.Reference.ExternalRepository, ChangeID: target.Reference.ChangeID,
 		ReferenceVersion: target.ReferenceVersion, SubjectRevision: target.SubjectRevision, Agent: agent,
-		AgentSessionID: "worker-session", AgentSessionSource: agentSessionParamSource,
+		AgentSessionID: "", AgentSessionSource: "",
 	}, "implementation rationale")
 	if err != nil {
 		t.Fatal(err)

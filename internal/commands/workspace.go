@@ -335,12 +335,8 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: portable.WorkspaceID}, "manager_open_failed", err, *flags.jsonOut)
 	}
-	coordinatorSessionID := strings.TrimSpace(target.artifact.Comment.AgentSessionID)
-	if coordinatorSessionID == "" {
-		coordinatorSessionID = resolveWriterSession("").ID
-	}
 	local := processworkspace.LocalLease{Portable: portable, IntegrationRoot: manager.IntegrationRoot,
-		Owner: processworkspace.LeaseOwner{CoordinatorID: strings.TrimSpace(*coordinator), AgentSession: coordinatorSessionID,
+		Owner: processworkspace.LeaseOwner{CoordinatorID: strings.TrimSpace(*coordinator),
 			Token: strings.TrimSpace(*flags.ownerToken), PID: os.Getpid(), AcquiredAt: time.Now().UTC()}, LocalRevision: 1}
 	existingLocal, localFound, err := manager.Store.Get(ctx, portable.WorkspaceID)
 	if err != nil {
@@ -1125,20 +1121,15 @@ func (a *app) runWorkspaceComplete(ctx context.Context, args []string) int {
 	})
 }
 
-func roleOwnedSubmissionEvidence(agent string, session writerSession) processworkspace.RoleOwnedSubmissionEvidence {
-	source := session.Source
-	if source == "" {
-		source = processworkspace.AgentSessionSourceCompatibility
-	}
-	return processworkspace.RoleOwnedSubmissionEvidence{Agent: strings.TrimSpace(agent), AgentSessionID: session.ID,
-		AgentSessionSource: source, Assurance: assignment.AssuranceSelfReported}
+func roleOwnedSubmissionEvidence(agent string, _ writerSession) processworkspace.RoleOwnedSubmissionEvidence {
+	return processworkspace.RoleOwnedSubmissionEvidence{Agent: strings.TrimSpace(agent), Assurance: assignment.AssuranceSelfReported}
 }
 
 func sameAcceptedReceiptSubmission(left, right *processworkspace.RoleOwnedSubmissionEvidence) bool {
 	if left == nil || right == nil {
 		return left == nil && right == nil
 	}
-	return *left == *right
+	return left.Agent == right.Agent && left.Assurance == right.Assurance
 }
 
 func readWorkspaceResultFile(path string) (assignment.Receipt, error) {

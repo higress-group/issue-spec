@@ -108,29 +108,19 @@ func TestVerificationReceiptBindingRejectsUntrustedLocalCompletion(t *testing.T)
 	}
 }
 
-func TestVerificationReceiptBindingTreatsSessionAsCompatibilityMetadata(t *testing.T) {
+func TestVerificationReceiptBindingUsesLogicalAgentWithoutSessionMetadata(t *testing.T) {
 	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./...",
 		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
 	sealed := testVerificationAssignment(t, receipt.SubjectRevision, receipt.Tests, nil)
 	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
 		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
 		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
-	native := processworkspace.RoleOwnedSubmissionEvidence{Agent: "Verifier", AgentSessionID: "verifier-session",
-		AgentSessionSource: processworkspace.AgentSessionSourceRuntimeNative, Assurance: assignment.AssuranceSelfReported}
-	if err := validateVerificationReceiptBinding(receipt, sealed, binding, native); err != nil {
-		t.Fatalf("runtime-labelled compatibility metadata rejected: %v", err)
+	submission := testVerificationSubmission("Verifier")
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, submission); err != nil {
+		t.Fatalf("logical role-owned submission rejected: %v", err)
 	}
-	coordinatorChosen := native
-	coordinatorChosen.AgentSessionID = "coordinator-chosen-worker-session"
-	if err := validateVerificationReceiptBinding(receipt, sealed, binding, coordinatorChosen); err != nil {
-		t.Fatalf("session metadata incorrectly treated as a trust decision: %v", err)
-	}
-	if coordinatorChosen.Assurance != assignment.AssuranceSelfReported {
-		t.Fatalf("session metadata upgraded assurance: %+v", coordinatorChosen)
-	}
-	compatibility := testVerificationSubmission("Verifier")
-	if err := validateVerificationReceiptBinding(receipt, sealed, binding, compatibility); err != nil {
-		t.Fatalf("explicit no-runtime compatibility rejected: %v", err)
+	if submission.Assurance != assignment.AssuranceSelfReported {
+		t.Fatalf("logical agent metadata upgraded assurance: %+v", submission)
 	}
 }
 
@@ -223,6 +213,34 @@ func TestPublishAcceptedVerificationIsAppendOnlyUnderConcurrentReceipt(t *testin
 	}
 }
 
+func TestAcceptedVerificationReceiptReadsPreUpgradeSessionFields(t *testing.T) {
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	body, err := renderSubmittedVerification("VERIFY-101", "https://github.com/o/r/issues/9#issuecomment-10",
+		[]string{"SPEC-005"}, receipt, nil, testVerificationSubmission("Verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, "agent_session_") {
+		t.Fatalf("new VERIFY contains deprecated session metadata:\n%s", body)
+	}
+	legacyBody := strings.Replace(body, `"submission":{"agent":"Verifier","assurance":"self-reported"}`,
+		`"submission":{"agent":"Verifier","agent_session_id":"verifier-session","agent_session_source":"CODEX_THREAD_ID","assurance":"self-reported"}`, 1)
+	if legacyBody == body {
+		t.Fatal("failed to construct pre-upgrade VERIFY fixture")
+	}
+	authority, found, err := parseAcceptedVerificationReceipt(legacyBody)
+	if err != nil || !found || authority.Submission == nil || authority.Submission.AgentSessionID != "verifier-session" ||
+		authority.Submission.AgentSessionSource != "CODEX_THREAD_ID" {
+		t.Fatalf("pre-upgrade VERIFY authority=%+v found=%v err=%v", authority, found, err)
+	}
+	artifact := model.Artifact{Comment: model.ParseTypedComment(legacyBody)}
+	if source, trusted, _, ok := exactAcceptedVerificationCarrier(artifact, receipt.SubjectRevision); !ok || !trusted ||
+		source != "accepted-verification-receipt:self-reported-tests" {
+		t.Fatalf("pre-upgrade VERIFY carrier source=%q trusted=%v ok=%v", source, trusted, ok)
+	}
+}
+
 func TestObserveGitHubVerificationChecksRequiresStableExactSnapshot(t *testing.T) {
 	receipt := testSealedVerificationReceipt(t, nil,
 		[]assignment.CheckSelector{{Provider: "github", Name: "unit"}})
@@ -275,7 +293,6 @@ func TestObserveNativeVerificationChecksUsesTrustedExactRevision(t *testing.T) {
 }
 
 func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T) {
-	t.Setenv(codexThreadIDEnv, "")
 	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
 		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}},
 		[]assignment.CheckSelector{{Provider: "github", Name: "unit"}})
@@ -355,8 +372,8 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 	authority, found, err := parseAcceptedVerificationReceipt(comments[1].Body)
 	if err != nil || !found || parsed.Agent != "Verifier" || parsed.SubjectRevision != receipt.SubjectRevision ||
 		parsed.Status != "done" || len(authority.Tests) != 1 || len(authority.Checks) != 1 ||
-		authority.Submission == nil || authority.Submission.AgentSessionSource != processworkspace.AgentSessionSourceCompatibility ||
-		authority.Submission.AgentSessionID != "" || authority.Submission.Assurance != assignment.AssuranceSelfReported ||
+		authority.Submission == nil || authority.Submission.Agent != "Verifier" ||
+		authority.Submission.Assurance != assignment.AssuranceSelfReported ||
 		!strings.Contains(comments[1].Body, "### Local Tests") || !strings.Contains(comments[1].Body, "### Provider Checks") ||
 		strings.Contains(comments[1].Body, "### Evidence") {
 		t.Fatalf("VERIFY=%+v authority=%+v found=%t err=%v body=%s", parsed, authority, found, err, comments[1].Body)
@@ -385,7 +402,7 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	processBody, err = model.StampTypedSessionMetadata(processBody, "coordinator-session", codexThreadIDEnv)
+	processBody, err = model.StampTypedSessionMetadata(processBody, "coordinator-session", "CODEX_THREAD_ID")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +464,6 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 	args := []string{"submit", "--repo", "o/r", "--implement", "9", "--pr", "7", "--process", "PROCESS-101",
 		"--id", "VERIFY-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
 		"--agent", "Verifier"}
-	t.Setenv(codexThreadIDEnv, "coordinator-chosen-worker-session")
 	legacyImport := append(append([]string(nil), args...), "--owner-token", "coordinator-owner-token")
 	if code := app.runVerify(t.Context(), legacyImport); code != 2 || providerReads != 0 || creates != 0 || len(comments) != 1 ||
 		!strings.Contains(errOut.String(), "flag provided but not defined") {
@@ -456,7 +472,6 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 	}
 	out.Reset()
 	errOut.Reset()
-	t.Setenv(codexThreadIDEnv, "")
 	directArgs := append(append([]string(nil), args...), "--agent-session", "verifier-session")
 	if code := app.runVerify(t.Context(), directArgs); code != 0 || len(comments) != 2 || providerReads != 2 || creates != 1 {
 		t.Fatalf("submit exit=%d comments=%d providerReads=%d creates=%d out=%q err=%q",
@@ -480,10 +495,8 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 		Comment: model.ParseTypedComment(comments[1].Body)}
 	authority, found, err := parseAcceptedVerificationReceipt(comments[1].Body)
 	if err != nil || !found || authority.Submission == nil || authority.Submission.Agent != "Verifier" ||
-		authority.Submission.AgentSessionID != "verifier-session" ||
-		authority.Submission.AgentSessionSource != agentSessionParamSource ||
 		authority.Submission.Assurance != assignment.AssuranceSelfReported ||
-		verify.Comment.AgentSessionID != "verifier-session" {
+		verify.Comment.AgentSessionID != "" || verify.Comment.AgentSessionSource != "" {
 		t.Fatalf("persisted verification submission=%+v found=%t err=%v typed=%+v", authority.Submission, found, err, verify.Comment)
 	}
 	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, finalProcess, verify}, spec.URL,
@@ -543,9 +556,7 @@ type verifySubmitCommandBackend struct {
 }
 
 func testVerificationSubmission(agent string) processworkspace.RoleOwnedSubmissionEvidence {
-	return processworkspace.RoleOwnedSubmissionEvidence{Agent: agent,
-		AgentSessionSource: processworkspace.AgentSessionSourceCompatibility,
-		Assurance:          assignment.AssuranceSelfReported}
+	return processworkspace.RoleOwnedSubmissionEvidence{Agent: agent, Assurance: assignment.AssuranceSelfReported}
 }
 
 func (b verifySubmitCommandBackend) ListCheckRuns(context.Context, string, string) ([]github.CheckRun, error) {
@@ -1164,7 +1175,7 @@ func errorsContain(errs []string, substr string) bool {
 	return false
 }
 
-func TestBuildFinalVerifyReportReportsSessionDiagnosticsWithoutErrors(t *testing.T) {
+func TestBuildFinalVerifyReportDoesNotRequireSessionMetadata(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
 	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContentWithClass(model.ProcessExecutionVerification))
@@ -1178,7 +1189,7 @@ func TestBuildFinalVerifyReportReportsSessionDiagnosticsWithoutErrors(t *testing
 	if !report.OK {
 		t.Fatalf("metadata diagnostics should not fail verify: %+v", report.Errors)
 	}
-	if len(report.Diagnostics) != 4 {
+	if len(report.Diagnostics) != 0 {
 		t.Fatalf("diagnostics = %+v", report.Diagnostics)
 	}
 }
@@ -1406,7 +1417,7 @@ func TestBuildFinalVerifyReportAcceptsExactSelfHostedRationaleAndNativeLedgerRev
 		Process: "PROCESS-001", Spec: "SPEC-001", SpecURL: specURL, ProviderKey: "code.example",
 		ExternalRepository: "acme/widgets-code", ChangeID: "change-42", ReferenceVersion: 7,
 		SubjectRevision: revision, Agent: "Worker Agent A", AgentSessionID: "worker-session",
-		AgentSessionSource: codexThreadIDEnv,
+		AgentSessionSource: "CODEX_THREAD_ID",
 	}, "The implementation preserves the provider-neutral boundary.")
 	if err != nil {
 		t.Fatal(err)

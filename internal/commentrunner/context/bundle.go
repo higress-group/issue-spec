@@ -427,12 +427,6 @@ func typedCommentMetadata(tc model.TypedComment) string {
 	if tc.Agent != "" {
 		lines = append(lines, "Agent: "+tc.Agent)
 	}
-	if tc.AgentSessionID != "" {
-		lines = append(lines, "Agent Session ID: "+tc.AgentSessionID)
-	}
-	if tc.AgentSessionSource != "" {
-		lines = append(lines, "Agent Session Source: "+tc.AgentSessionSource)
-	}
 	lines = append(lines,
 		"Type: "+tc.Type,
 		"ID: "+tc.ID,
