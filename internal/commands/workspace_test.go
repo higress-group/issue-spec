@@ -244,16 +244,36 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 		t.Fatal(err)
 	}
 	durableSnapshot := snapshot
-	durableSnapshot.Portable.BaseSHA = base
 	verification, err = compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionVerification,
 		processBody(model.ProcessExecutionVerification, assignment.ProcessInput{ScenarioSelectors: scenarios,
-			RequiredTests: []assignment.TestSelector{{ID: "unit", Command: "go test ./internal/commands"}}}), durableSnapshot, "", "", scenarios, false)
+			RequiredTests: []assignment.TestSelector{{ID: "unit", Command: "go test ./internal/commands"}}}), durableSnapshot, "", base, scenarios, false)
 	if err != nil || len(verification.Verification.RequiredTests) != 2 {
 		t.Fatalf("repository durable verification=%+v err=%v", verification, err)
 	}
 	wantDurable := "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + base + " --subject " + subject + " --root . --json"
 	if got := verification.Verification.RequiredTests[0]; got.ID != assignment.DurableSpecTestID || got.Command != wantDurable {
 		t.Fatalf("durable selector=%+v want command %q", got, wantDurable)
+	}
+	tree := workspaceGitOutput(t, repo, "rev-parse", base+"^{tree}")
+	unrelated := workspaceGitOutput(t, repo, "commit-tree", tree, "-m", "unrelated")
+	for _, test := range []struct {
+		name     string
+		diffBase string
+		want     string
+	}{
+		{name: "missing", want: "full Git object id"},
+		{name: "non-full", diffBase: base[:12], want: "full Git object id"},
+		{name: "non-ancestor", diffBase: unrelated, want: "ancestor"},
+		{name: "subject-equal", diffBase: subject, want: "must differ"},
+	} {
+		t.Run("repository durable diff base "+test.name, func(t *testing.T) {
+			_, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionVerification,
+				processBody(model.ProcessExecutionVerification, assignment.ProcessInput{ScenarioSelectors: scenarios,
+					RequiredTests: []assignment.TestSelector{{ID: "unit", Command: "go test ./internal/commands"}}}), durableSnapshot, "", test.diffBase, scenarios, false)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("repository durable diff base %q error=%v, want containing %q", test.diffBase, err, test.want)
+			}
+		})
 	}
 }
 
@@ -267,10 +287,11 @@ func TestWorkspacePrepareEmitsProjectVerifierPolicyForGeneratedAndAssignmentFile
 		{Provider: "code.example", Name: "route-owner-policy"},
 	}
 
-	prepare := func(t *testing.T, fromFile bool, tests []assignment.TestSelector) assignment.Assignment {
+	prepare := func(t *testing.T, fromFile bool, tests []assignment.TestSelector) (assignment.Assignment, string) {
 		t.Helper()
 		repo, _ := workspaceGitRepository(t)
-		base := installWorkspaceVerifierWorkflow(t, repo)
+		baseline := installWorkspaceVerifierWorkflow(t, repo)
+		subject := commitWorkspaceVerificationSubject(t, repo)
 		specBody, err := templates.SpecComment(templates.SpecCommentOptions{Common: templates.CommonOptions{ID: scenario.SpecID, Status: "confirmed"},
 			Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{Title: "project verification", Text: "The CLI MUST seal project verification policy."},
 				Scenarios: []templates.SpecScenarioInput{{Title: scenario.Scenario, When: "a verification assignment is emitted", Then: "project guidance and selectors are sealed"}}}})
@@ -297,12 +318,13 @@ func TestWorkspacePrepareEmitsProjectVerifierPolicyForGeneratedAndAssignmentFile
 
 		root := filepath.Join(t.TempDir(), "managed")
 		packetPath := filepath.Join(t.TempDir(), "verification-packet.json")
-		args := append(workspaceBaseArgs(repo, root, "verify-owner"), "--base", base, "--issue-assignment", "--proposal", "295", "--assignment-out", packetPath, "--json")
+		args := append(workspaceBaseArgs(repo, root, "verify-owner"), "--base", subject, "--issue-assignment", "--proposal", "295",
+			"--assignment-diff-base", baseline, "--assignment-out", packetPath, "--json")
 		if fromFile {
 			value := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "ws-process-004-assignment-1", Role: assignment.RoleVerification,
-				Repository: "o/r", Issue: 177, ProcessID: "PROCESS-004", SubjectRevision: base, Scenarios: []assignment.ScenarioRef{scenario},
+				Repository: "o/r", Issue: 177, ProcessID: "PROCESS-004", SubjectRevision: subject, Scenarios: []assignment.ScenarioRef{scenario},
 				Policy: assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
-				Verification: &assignment.VerificationPayload{SubjectRevision: base, RequiredTests: tests, RequiredChecks: selectedChecks}}
+				Verification: &assignment.VerificationPayload{SubjectRevision: subject, RequiredTests: tests, RequiredChecks: selectedChecks}}
 			payload, err := assignment.CanonicalAssignmentJSON(value)
 			if err != nil {
 				t.Fatal(err)
@@ -325,20 +347,24 @@ func TestWorkspacePrepareEmitsProjectVerifierPolicyForGeneratedAndAssignmentFile
 		if err != nil {
 			t.Fatalf("parse emitted packet: %v\n%s", err, raw)
 		}
-		return packet.Assignment
+		return packet.Assignment, baseline
 	}
 
-	generated := prepare(t, false, selectedTests)
-	fromFile := prepare(t, true, selectedTests)
+	generated, generatedBaseline := prepare(t, false, selectedTests)
+	fromFile, fromFileBaseline := prepare(t, true, selectedTests)
 	for _, emitted := range []struct {
-		name  string
-		value assignment.Assignment
-	}{{name: "generated", value: generated}, {name: "assignment-file", value: fromFile}} {
+		name     string
+		value    assignment.Assignment
+		baseline string
+	}{{name: "generated", value: generated, baseline: generatedBaseline}, {name: "assignment-file", value: fromFile, baseline: fromFileBaseline}} {
 		verification := emitted.value.Verification
 		if verification == nil || verification.SubjectRevision != emitted.value.SubjectRevision || len(verification.RequiredTests) == 0 {
 			t.Fatalf("%s packet lost exact subject binding: %+v", emitted.name, emitted.value)
 		}
-		wantCommand := "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + emitted.value.SubjectRevision +
+		if emitted.baseline == emitted.value.SubjectRevision {
+			t.Fatalf("%s packet aliased durable baseline to subject %s", emitted.name, emitted.value.SubjectRevision)
+		}
+		wantCommand := "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + emitted.baseline +
 			" --subject " + emitted.value.SubjectRevision + " --root . --json"
 		if got := verification.RequiredTests[0]; got.ID != assignment.DurableSpecTestID || got.Command != wantCommand {
 			t.Fatalf("%s durable selector=%+v want command %q", emitted.name, got, wantCommand)
@@ -356,7 +382,7 @@ func TestWorkspacePrepareEmitsProjectVerifierPolicyForGeneratedAndAssignmentFile
 		!strings.Contains(verification.Guidance.Instructions[0].Text, "affected route scenarios") {
 		t.Fatalf("emitted project guidance=%+v", verification)
 	}
-	wantDurable := "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + generated.SubjectRevision + " --subject " + generated.SubjectRevision + " --root . --json"
+	wantDurable := "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + generatedBaseline + " --subject " + generated.SubjectRevision + " --root . --json"
 	wantTests := []assignment.TestSelector{
 		{ID: assignment.DurableSpecTestID, Command: wantDurable},
 		{ID: "z-project-unit", Command: "go test ./project/..."},
@@ -373,8 +399,9 @@ func TestWorkspacePrepareEmitsProjectVerifierPolicyForGeneratedAndAssignmentFile
 		conflicting := []assignment.TestSelector{{ID: assignment.DurableSpecTestID, Command: "false"}}
 		repo, _ := workspaceGitRepository(t)
 		base := installWorkspaceVerifierWorkflow(t, repo)
+		subject := commitWorkspaceVerificationSubject(t, repo)
 		lease := processworkspace.LocalLease{Portable: processworkspace.PortableLease{SchemaVersion: 1, WorkspaceID: "ws-conflict", Repository: "o/r", ProcessID: "PROCESS-004",
-			ExecutionClass: processworkspace.ExecutionVerification, Mode: processworkspace.ModeSnapshot, BaseSHA: base, DetachedRevision: base,
+			ExecutionClass: processworkspace.ExecutionVerification, Mode: processworkspace.ModeSnapshot, BaseSHA: subject, DetachedRevision: subject,
 			RuntimeNamespace: "ws-conflict", State: processworkspace.StatePrepared}, IntegrationRoot: repo}
 		body, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: "PROCESS-004", Status: "in-progress"},
 			Input: templates.ProcessInput{Title: "conflict", ParentTask: "TASK-002", ExecutionClass: model.ProcessExecutionVerification,
@@ -384,7 +411,7 @@ func TestWorkspacePrepareEmitsProjectVerifierPolicyForGeneratedAndAssignmentFile
 			t.Fatal(err)
 		}
 		if _, err := compileWorkspaceAssignment(t.Context(), newWorkspaceCASBackend(body), "o/r", 177, "PROCESS-004", model.ProcessExecutionVerification,
-			body, lease, "", "", []assignment.ScenarioRef{scenario}, false); err == nil || !strings.Contains(err.Error(), "conflicting commands") {
+			body, lease, "", base, []assignment.ScenarioRef{scenario}, false); err == nil || !strings.Contains(err.Error(), "conflicting commands") {
 			t.Fatalf("durable selector conflict error=%v", err)
 		}
 	})
@@ -1539,6 +1566,16 @@ artifacts:
 	}
 	workspaceGit(t, repo, "add", "issue-spec/config.yaml", "issue-spec/schemas/verifier-workflow/schema.yaml", "issue-spec/schemas/verifier-workflow/templates/verify.md")
 	workspaceGit(t, repo, "commit", "-s", "-m", "add verifier workflow")
+	return workspaceGitOutput(t, repo, "rev-parse", "HEAD")
+}
+
+func commitWorkspaceVerificationSubject(t *testing.T, repo string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, "subject.go"), []byte("package subject\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspaceGit(t, repo, "add", "subject.go")
+	workspaceGit(t, repo, "commit", "-s", "-m", "add verification subject")
 	return workspaceGitOutput(t, repo, "rev-parse", "HEAD")
 }
 
