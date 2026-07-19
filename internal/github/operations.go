@@ -35,6 +35,18 @@ type CommentRepresentation struct {
 	Guarantee             CommentMutationGuarantee `json:"guarantee"`
 }
 
+// IssueCommentObservation is an additive, read-only provider capability for
+// resolving one comment locator without enumerating an issue timeline.
+// RepresentationVersion is zero when the backend does not expose one.
+type IssueCommentObservation struct {
+	Comment               Comment `json:"comment"`
+	RepresentationVersion int64   `json:"representation_version,omitempty"`
+}
+
+type IssueCommentObserver interface {
+	ObserveIssueComment(context.Context, string, int64) (IssueCommentObservation, error)
+}
+
 type ConditionalCommentBackend interface {
 	GetCommentRepresentation(context.Context, string, int64) (CommentRepresentation, error)
 	UpdateCommentConditional(context.Context, string, int64, int64, string) (CommentRepresentation, error)

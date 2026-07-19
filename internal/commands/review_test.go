@@ -3,17 +3,453 @@ package commands
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
+	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/processworkspace"
+	"github.com/higress-group/issue-spec/internal/templates"
 )
+
+func TestReceiptReviewFindingUsesStableReceiptIdentityOnRetry(t *testing.T) {
+	finding := assignment.Finding{ID: "FINDING-101", SpecID: "SPEC-002", OwnerProcessID: "PROCESS-102", Path: "internal/foo.go", Side: "RIGHT", Line: 2,
+		Severity: "P1", Message: "Fix exact-revision behavior."}
+	receipt := testSealedReviewReceipt(t, assignment.ReviewChangesRequested, []assignment.Finding{finding})
+	client := &fakeReviewClient{files: []github.PullRequestFile{{Filename: finding.Path, Patch: "@@ -1,2 +1,3 @@\n package foo\n+var X = 1\n"}}}
+	for run := 0; run < 2; run++ {
+		result, err := createReceiptReviewFinding(t.Context(), client, "o/r", 7, receipt.SubjectRevision, finding,
+			"https://github.com/o/r/issues/1#issuecomment-2", receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Created != (run == 0) {
+			t.Fatalf("run=%d result=%+v", run, result)
+		}
+	}
+	if len(client.comments) != 1 || !strings.Contains(client.comments[0].Body, "Receipt Digest: "+receipt.ReceiptDigest) ||
+		!strings.Contains(client.comments[0].Body, "Review Side: RIGHT") {
+		t.Fatalf("stable finding carrier=%+v", client.comments)
+	}
+}
+
+func TestSubmittedReviewCarriesOnlyCompactAcceptedReceiptAuthority(t *testing.T) {
+	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	body, err := renderSubmittedReview("REVIEW-101", "PROCESS-101", "https://github.com/o/r/issues/9#issuecomment-10",
+		"https://github.com/o/r/pull/7", []string{"https://github.com/o/r/issues/9#issuecomment-2"}, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := model.ParseTypedComment(body)
+	authority, found, err := parseAcceptedReviewReceipt(body)
+	if err != nil || !found || parsed.Agent != receipt.Provenance.Writer || parsed.SubjectRevision != receipt.SubjectRevision ||
+		parsed.Status != "done" || authority.ReceiptDigest != receipt.ReceiptDigest || len(authority.FindingIDs) != 0 {
+		t.Fatalf("review=%+v authority=%+v found=%t err=%v", parsed, authority, found, err)
+	}
+	for _, forbidden := range []string{"runtime-attested", "evaluation", "gate_forecast", "coordinator"} {
+		if strings.Contains(strings.ToLower(body), forbidden) {
+			t.Fatalf("submitted REVIEW leaked %q authority: %s", forbidden, body)
+		}
+	}
+}
+
+func TestAcceptedNoFindingReviewProvidesExactCurrentFinalEvidence(t *testing.T) {
+	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	prURL := "https://github.com/o/r/pull/7"
+	body, err := renderSubmittedReview("REVIEW-101", "PROCESS-101", "https://github.com/o/r/issues/9#issuecomment-10",
+		prURL, []string{"https://github.com/o/r/issues/9#issuecomment-2"}, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := model.Artifact{Comment: model.ParseTypedComment(body)}
+	revision, trusted, source := reviewArtifactRevision(artifact, prURL, reviewSyncReport{PRURL: prURL,
+		SubjectRevision: receipt.SubjectRevision, RevisionSource: "github-pr-head"}, nil, "PROCESS-101", "SPEC-002")
+	if !trusted || revision != receipt.SubjectRevision || source != "github-pr-head" {
+		t.Fatalf("exact no-finding evidence revision=%q trusted=%t source=%q", revision, trusted, source)
+	}
+	body, err = renderSubmittedReview("REVIEW-101", "PROCESS-101", "https://github.com/o/r/issues/9#issuecomment-10",
+		"", []string{"https://github.com/o/r/issues/9#issuecomment-2"}, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact.Comment = model.ParseTypedComment(body)
+	if _, trusted, _ := reviewArtifactRevision(artifact, prURL, reviewSyncReport{PRURL: prURL,
+		SubjectRevision: receipt.SubjectRevision, RevisionSource: "github-pr-head"}, nil, "PROCESS-101", "SPEC-002"); trusted {
+		t.Fatal("accepted no-finding REVIEW without exact PR relationship was trusted")
+	}
+}
+
+func TestPublishAcceptedReviewIsAppendOnlyUnderConcurrentReceipt(t *testing.T) {
+	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	body, err := renderSubmittedReview("REVIEW-101", "PROCESS-101", "https://github.com/o/r/issues/9#issuecomment-10",
+		"https://github.com/o/r/pull/7", []string{"https://github.com/o/r/issues/9#issuecomment-2"}, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := receipt
+	other.ID = "receipt-review-concurrent"
+	other.ReceiptDigest = ""
+	other, err = assignment.SealReceipt(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherBody, err := renderSubmittedReview("REVIEW-102", "PROCESS-101", "https://github.com/o/r/issues/9#issuecomment-10",
+		"https://github.com/o/r/pull/7", []string{"https://github.com/o/r/issues/9#issuecomment-2"}, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	comments := []github.Comment{}
+	creates := 0
+	backend := fakeGitHubBackend{
+		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+			return append([]github.Comment(nil), comments...), nil
+		},
+		createComment: func(_ context.Context, _ string, _ int, submitted string) (github.Comment, error) {
+			creates++
+			created := github.Comment{ID: 11, Body: submitted}
+			comments = append(comments, created, github.Comment{ID: 12, Body: otherBody})
+			return created, nil
+		},
+	}
+	if err := validateExistingReviewReceipt(nil, "REVIEW-101", receipt); err != nil {
+		t.Fatal(err)
+	}
+	comments = []github.Comment{{ID: 12, Body: otherBody}}
+	if _, _, err := publishAcceptedReview(t.Context(), backend, "o/r", 9, "REVIEW-101", body, receipt); err == nil ||
+		!strings.Contains(err.Error(), "different receipt") || creates != 0 {
+		t.Fatalf("fresh competing observation creates=%d err=%v", creates, err)
+	}
+	comments = nil
+	if _, _, err := publishAcceptedReview(t.Context(), backend, "o/r", 9, "REVIEW-101", body, receipt); err == nil ||
+		!strings.Contains(err.Error(), "conflicted") || creates != 1 {
+		t.Fatalf("concurrent publish creates=%d err=%v", creates, err)
+	}
+	comments = []github.Comment{{ID: 11, Body: body}}
+	creates = 0
+	action, existing, err := publishAcceptedReview(t.Context(), backend, "o/r", 9, "REVIEW-101", body, receipt)
+	if err != nil || action != "unchanged" || existing.ID != 11 || creates != 0 {
+		t.Fatalf("exact replay action=%q existing=%+v creates=%d err=%v", action, existing, creates, err)
+	}
+}
+
+func TestRunReviewSubmitNoFindingAndExactRevision(t *testing.T) {
+	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	receipt.SubjectRevision = strings.Repeat("b", 40)
+	sealedAssignment := testReviewAssignment(t, receipt.SubjectRevision)
+	sealedAssignment.Issue = 297
+	assignmentDigest, err := assignment.AssignmentDigest(sealedAssignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.AssignmentDigest = assignmentDigest
+	receipt.ReceiptDigest = ""
+	receipt, err = assignment.SealReceipt(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleReview,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	now := time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC)
+	workspace := model.ProcessWorkspace{SchemaVersion: processworkspace.LeaseSchemaVersion, WorkspaceID: "review-process-101",
+		Repository: "o/r", ProcessID: "PROCESS-101", ExecutionClass: processworkspace.ExecutionReview,
+		Mode: processworkspace.ModeSnapshot, BaseSHA: receipt.SubjectRevision, DetachedRevision: receipt.SubjectRevision,
+		RuntimeNamespace: "review-process-101", Assignment: binding, State: processworkspace.StatePrepared,
+		CreatedAt: now, UpdatedAt: now}
+	processBody, err := templates.ProcessComment(templates.ProcessCommentOptions{
+		Common: templates.CommonOptions{ID: "PROCESS-101", Status: "in-progress"}, Input: templates.ProcessInput{
+			Title: "review exact receipt", Owner: "Independent Reviewer", ParentTask: "TASK-006",
+			ExecutionClass: model.ProcessExecutionReview, WorkspaceManagement: model.ProcessWorkspaceManaged,
+			Workspace: &workspace, Covers: []string{"SPEC-002"}, Handoff: "N/A"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(receipt)
+	resultPath := filepath.Join(t.TempDir(), "review-receipt.json")
+	if err := os.WriteFile(resultPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assignmentPayload, _ := json.Marshal(sealedAssignment)
+	assignmentPath := filepath.Join(t.TempDir(), "review-assignment.json")
+	if err := os.WriteFile(assignmentPath, assignmentPayload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	specBody, err := templates.SpecComment(templates.SpecCommentOptions{Common: templates.CommonOptions{ID: "SPEC-002", Status: "confirmed"},
+		Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{Title: "exact review", Text: "Review evidence MUST be exact."},
+			Scenarios: []templates.SpecScenarioInput{{Title: "current PR", When: "reviewed", Then: "evidence is exact"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const proposalSpecURL = "https://github.com/o/r/issues/295#issuecomment-2"
+	comments := []github.Comment{
+		{ID: 10, HTMLURL: "https://github.com/o/r/issues/297#issuecomment-10", Body: processBody},
+	}
+	proposalCommentsByIssue := map[int][]github.Comment{295: {{ID: 2, HTMLURL: proposalSpecURL, Body: specBody}}}
+	changeIssues := map[int]github.Issue{
+		295: {Number: 295, HTMLURL: "https://github.com/o/r/issues/295", Body: "<!-- issue-spec:issue=proposal change=review-change version=1 -->"},
+		296: {Number: 296, HTMLURL: "https://github.com/o/r/issues/296", Body: "<!-- issue-spec:issue=design change=review-change version=1 -->\n- Proposal Issue: 295"},
+		297: {Number: 297, HTMLURL: "https://github.com/o/r/issues/297", Body: "<!-- issue-spec:issue=implement change=review-change version=1 -->\n- Design Issue: 296"},
+		305: {Number: 305, HTMLURL: "https://github.com/o/r/issues/305", Body: "<!-- issue-spec:issue=proposal change=review-change version=1 -->"},
+		306: {Number: 306, HTMLURL: "https://github.com/o/r/issues/306", Body: "<!-- issue-spec:issue=design change=unrelated-change version=1 -->"},
+		307: {Number: 307, HTMLURL: "https://github.com/o/r/issues/307", Body: "<!-- issue-spec:issue=implement change=unrelated-change version=1 -->"},
+	}
+	changeLinks := map[int][]github.Comment{
+		295: {{ID: 90, Body: "https://github.com/o/r/issues/296#issuecomment-90"}},
+		296: {{ID: 91, Body: "https://github.com/o/r/issues/297#issuecomment-91"}},
+		305: {{ID: 92, Body: "https://github.com/o/r/issues/296#issuecomment-92 https://github.com/o/r/issues/297#issuecomment-93"}},
+		306: {{ID: 93, Body: "https://github.com/o/r/issues/307#issuecomment-93"}},
+	}
+	created := 0
+	head := receipt.SubjectRevision
+	reviewClient := &fakeReviewClient{}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
+		backend := fakeGitHubBackend{info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host},
+			getIssue: func(_ context.Context, _ string, issue int) (github.Issue, error) {
+				item, ok := changeIssues[issue]
+				if !ok {
+					return github.Issue{}, errors.New("unexpected issue lookup")
+				}
+				return item, nil
+			},
+			listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+				items := append([]github.Comment(nil), proposalCommentsByIssue[issue]...)
+				if issue == 297 {
+					items = append(items, comments...)
+				}
+				items = append(items, changeLinks[issue]...)
+				return items, nil
+			}, getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
+				pr := github.PullRequest{Number: 7, HTMLURL: "https://github.com/o/r/pull/7"}
+				pr.Head.SHA = head
+				return pr, nil
+			}, createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
+				created++
+				comment := github.Comment{ID: 11, HTMLURL: "https://github.com/o/r/issues/297#issuecomment-11", Body: body}
+				comments = append(comments, comment)
+				return comment, nil
+			}}
+		return reviewSubmitCommandBackend{fakeGitHubBackend: backend, review: reviewClient}, nil
+	}
+	code := app.runReviewSubmit(t.Context(), []string{"--repo", "o/r", "--implement", "297", "--pr", "7",
+		"--process", "PROCESS-101", "--id", "REVIEW-101", "--result-file", resultPath, "--assignment-file", assignmentPath})
+	if code != 0 || created != 1 || len(comments) != 2 {
+		t.Fatalf("exit=%d created=%d comments=%d out=%q err=%q", code, created, len(comments), out.String(), errOut.String())
+	}
+	parsed := model.ParseTypedComment(comments[1].Body)
+	if parsed.Agent != "Independent Reviewer" || parsed.SubjectRevision != receipt.SubjectRevision ||
+		!strings.Contains(comments[1].Body, "### Findings\n\n- None.") ||
+		!linksContainURL(parsed.Links["PR"], "https://github.com/o/r/pull/7") ||
+		!linksContainURL(parsed.Links["Related Comments"], proposalSpecURL) {
+		t.Fatalf("submitted no-finding REVIEW=%+v body=%s", parsed, comments[1].Body)
+	}
+	head = strings.Repeat("c", 40)
+	out.Reset()
+	errOut.Reset()
+	if code := app.runReviewSubmit(t.Context(), []string{"--repo", "o/r", "--implement", "297", "--pr", "7",
+		"--process", "PROCESS-101", "--id", "REVIEW-101", "--result-file", resultPath, "--assignment-file", assignmentPath}); code != 1 ||
+		!strings.Contains(errOut.String(), "exact current PR revision") || created != 1 {
+		t.Fatalf("stale exit=%d created=%d err=%q", code, created, errOut.String())
+	}
+
+	finding := assignment.Finding{ID: "FINDING-101", SpecID: "SPEC-002", OwnerProcessID: "PROCESS-102", Path: "internal/foo.go", Side: "RIGHT", Line: 2,
+		Severity: "P1", Message: "Fix exact-revision behavior."}
+	findingReceipt := testSealedReviewReceipt(t, assignment.ReviewChangesRequested, []assignment.Finding{finding})
+	findingReceipt.SubjectRevision = receipt.SubjectRevision
+	findingReceipt.AssignmentDigest = assignmentDigest
+	findingReceipt.ReceiptDigest = ""
+	findingReceipt, err = assignment.SealReceipt(findingReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace.Assignment = &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: findingReceipt.AssignmentID, Digest: findingReceipt.AssignmentDigest, Role: assignment.RoleReview,
+		SubjectRevision: findingReceipt.SubjectRevision, Generation: findingReceipt.AssignmentGeneration}
+	processBody, err = templates.ProcessComment(templates.ProcessCommentOptions{
+		Common: templates.CommonOptions{ID: "PROCESS-101", Status: "in-progress"}, Input: templates.ProcessInput{
+			Title: "review exact receipt", Owner: "Independent Reviewer", ParentTask: "TASK-006",
+			ExecutionClass: model.ProcessExecutionReview, WorkspaceManagement: model.ProcessWorkspaceManaged,
+			Workspace: &workspace, Covers: []string{"SPEC-002"}, Handoff: "N/A"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ = json.Marshal(findingReceipt)
+	if err := os.WriteFile(resultPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ownerBody, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: "PROCESS-102", Status: "in-progress"},
+		Input: templates.ProcessInput{Title: "repair finding", Owner: "Worker", ParentTask: "TASK-006",
+			ExecutionClass: model.ProcessExecutionChangeBearing, WriteOwnership: []string{"internal/foo.go"},
+			Covers: []string{"SPEC-002"}, Handoff: "repair review finding"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposalComments := []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: specBody}}
+	proposalCommentsByIssue = map[int][]github.Comment{295: proposalComments}
+	comments = []github.Comment{
+		{ID: 10, HTMLURL: "https://github.com/o/r/issues/297#issuecomment-10", Body: processBody},
+		{ID: 12, HTMLURL: "https://github.com/o/r/issues/297#issuecomment-12", Body: ownerBody},
+	}
+	implementComments := append([]github.Comment(nil), comments...)
+	reviewClient = &fakeReviewClient{files: []github.PullRequestFile{{Filename: finding.Path,
+		Patch: "@@ -1,2 +1,3 @@\n package foo\n+var X = 1\n"}}}
+	head = findingReceipt.SubjectRevision
+	for _, test := range []struct {
+		name             string
+		proposal         string
+		specURL          string
+		proposalComments []github.Comment
+		want             string
+	}{
+		{name: "wrong issue", proposal: "296", specURL: proposalSpecURL, proposalComments: proposalComments, want: "differs from canonical proposal issue 295"},
+		{name: "duplicate same-key proposal with same SPEC", proposal: "305",
+			specURL:          "https://github.com/o/r/issues/305#issuecomment-2",
+			proposalComments: []github.Comment{{ID: 2, HTMLURL: "https://github.com/o/r/issues/305#issuecomment-2", Body: specBody}},
+			want:             "differs from canonical proposal issue 295"},
+		{name: "wrong spec", proposal: "295", specURL: proposalSpecURL,
+			proposalComments: []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: strings.ReplaceAll(specBody, "SPEC-002", "SPEC-003")}}, want: "not one canonical"},
+		{name: "noncanonical", proposal: "295", specURL: proposalSpecURL,
+			proposalComments: []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: strings.ReplaceAll(specBody, "### Scenario:", "### Example:")}}, want: "not one canonical"},
+		{name: "missing", proposal: "295", specURL: proposalSpecURL, want: "not one canonical"},
+		{name: "ambiguous", proposal: "295", specURL: proposalSpecURL,
+			proposalComments: []github.Comment{{ID: 2, HTMLURL: proposalSpecURL, Body: specBody},
+				{ID: 3, HTMLURL: "https://github.com/o/r/issues/295#issuecomment-3", Body: specBody}}, want: "not one canonical"},
+		{name: "wrong explicit URL", proposal: "295", specURL: "https://github.com/o/r/issues/296#issuecomment-2",
+			proposalComments: proposalComments, want: "--spec-url conflicts"},
+	} {
+		t.Run("finding target "+test.name, func(t *testing.T) {
+			comments = append([]github.Comment(nil), implementComments...)
+			proposalIssue, parseErr := strconv.Atoi(test.proposal)
+			if parseErr != nil {
+				t.Fatal(parseErr)
+			}
+			proposalCommentsByIssue = map[int][]github.Comment{proposalIssue: append([]github.Comment(nil), test.proposalComments...)}
+			reviewClient.comments = nil
+			out.Reset()
+			errOut.Reset()
+			args := []string{"--repo", "o/r", "--proposal", test.proposal, "--implement", "297", "--pr", "7",
+				"--process", "PROCESS-101", "--id", "REVIEW-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
+				"--spec", "SPEC-002", "--spec-url", test.specURL}
+			if code := app.runReviewSubmit(t.Context(), args); code == 0 || created != 1 || len(reviewClient.comments) != 0 ||
+				!strings.Contains(errOut.String(), test.want) {
+				t.Fatalf("exit=%d created=%d findings=%d err=%q", code, created, len(reviewClient.comments), errOut.String())
+			}
+		})
+	}
+	comments = append([]github.Comment(nil), implementComments...)
+	proposalCommentsByIssue = map[int][]github.Comment{295: {{ID: 2, HTMLURL: proposalSpecURL, Body: specBody}}}
+	reviewClient.comments = nil
+	out.Reset()
+	errOut.Reset()
+	if code := app.runReviewSubmit(t.Context(), []string{"--repo", "o/r", "--proposal", "295", "--implement", "297", "--pr", "7",
+		"--process", "PROCESS-101", "--id", "REVIEW-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
+		"--spec", "SPEC-002", "--spec-url", proposalSpecURL}); code != 0 ||
+		len(reviewClient.comments) != 1 || created != 2 {
+		t.Fatalf("finding exit=%d created=%d findings=%d err=%q", code, created, len(reviewClient.comments), errOut.String())
+	}
+	marker, found, err := model.FindFindingMarker(reviewClient.comments[0].Body)
+	if err != nil || !found || marker.Process != finding.OwnerProcessID || marker.Spec != finding.SpecID {
+		t.Fatalf("sealed finding routing marker=%+v found=%t err=%v", marker, found, err)
+	}
+}
+
+func TestSubmittedReviewTargetsResolveCanonicalProposalBackwardFromImplement(t *testing.T) {
+	const specURL = "https://github.com/o/r/issues/295#issuecomment-2"
+	specBody, err := templates.SpecComment(templates.SpecCommentOptions{
+		Common: templates.CommonOptions{ID: "SPEC-002", Status: "confirmed"},
+		Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{Title: "related review", Text: "Review routing MUST use authority."},
+			Scenarios: []templates.SpecScenarioInput{{Title: "related proposal", When: "a review is submitted", Then: "the SPEC is resolved exactly"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	processBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-101", "## Process: related review", model.BodyOptions{
+		Status: "in-progress", Links: map[string][]string{"Related Comments": {"https://github.com/o/r/issues/305#issuecomment-2"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := model.Artifact{Issue: 297, CommentID: 10, URL: "https://github.com/o/r/issues/297#issuecomment-10",
+		Comment: model.ParseTypedComment(processBody)}
+	changeIssues := map[int]github.Issue{
+		295: {Number: 295, HTMLURL: "https://github.com/o/r/issues/295", Body: "<!-- issue-spec:issue=proposal change=role-receipts version=1 -->"},
+		296: {Number: 296, HTMLURL: "https://github.com/o/r/issues/296", Body: "<!-- issue-spec:issue=design change=role-receipts version=1 -->\n- Proposal Issue: 295"},
+		297: {Number: 297, HTMLURL: "https://github.com/o/r/issues/297", Body: "<!-- issue-spec:issue=implement change=role-receipts version=1 -->\n- Design Issue: 296"},
+		305: {Number: 305, HTMLURL: "https://github.com/o/r/issues/305", Body: "<!-- issue-spec:issue=proposal change=role-receipts version=1 -->"},
+	}
+	backend := fakeGitHubBackend{
+		getIssue: func(_ context.Context, _ string, issue int) (github.Issue, error) {
+			item, ok := changeIssues[issue]
+			if !ok {
+				return github.Issue{}, errors.New("unexpected issue lookup")
+			}
+			return item, nil
+		},
+		listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			switch issue {
+			case 295:
+				return []github.Comment{{ID: 2, HTMLURL: specURL, Body: specBody}}, nil
+			case 305:
+				return []github.Comment{{ID: 2, HTMLURL: "https://github.com/o/r/issues/305#issuecomment-2", Body: specBody},
+					{ID: 30, Body: "https://github.com/o/r/issues/296#issuecomment-30 https://github.com/o/r/issues/297#issuecomment-31"}}, nil
+			default:
+				return nil, nil
+			}
+		},
+	}
+	sources, err := loadSubmittedReviewSpecSources(t.Context(), backend, "o/r", 0, 297, process, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := findUniqueSubmittedReviewSpec(sources, "SPEC-002")
+	if err != nil || artifact.Issue != 295 || artifact.URL != specURL {
+		t.Fatalf("artifact=%+v err=%v", artifact, err)
+	}
+
+	process.Comment.Links["Related Comments"] = []string{"https://github.com/o/r/issues/305#issuecomment-2"}
+	sources, err = loadSubmittedReviewSpecSources(t.Context(), backend, "o/r", 0, 297, process, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err = findUniqueSubmittedReviewSpec(sources, "SPEC-002")
+	if err != nil || artifact.Issue != 295 || artifact.URL != specURL {
+		t.Fatalf("process-carried duplicate proposal changed root artifact=%+v err=%v", artifact, err)
+	}
+
+	if _, err := loadSubmittedReviewSpecSources(t.Context(), backend, "o/r", 305, 297, process, nil); err == nil ||
+		!strings.Contains(err.Error(), "differs from canonical proposal issue 295") {
+		t.Fatalf("duplicate same-key proposal err=%v", err)
+	}
+}
+
+type reviewSubmitCommandBackend struct {
+	fakeGitHubBackend
+	review *fakeReviewClient
+}
+
+func (b reviewSubmitCommandBackend) ListPullRequestFiles(ctx context.Context, repo string, pr int) ([]github.PullRequestFile, error) {
+	return b.review.ListPullRequestFiles(ctx, repo, pr)
+}
+
+func (b reviewSubmitCommandBackend) ListPullRequestReviewComments(ctx context.Context, repo string, pr int) ([]github.PullRequestReviewComment, error) {
+	return b.review.ListPullRequestReviewComments(ctx, repo, pr)
+}
+
+func (b reviewSubmitCommandBackend) CreatePullRequestReviewComment(ctx context.Context, repo string, pr int,
+	body, revision, path string, line int, side string) (github.PullRequestReviewComment, error) {
+	return b.review.CreatePullRequestReviewComment(ctx, repo, pr, body, revision, path, line, side)
+}
 
 func TestExternalReviewSyncIsForcedAndIdempotent(t *testing.T) {
 	app, native, comments, creates, updates, out, errOut := setupExternalReviewSyncCommand(t)
@@ -474,14 +910,22 @@ func TestRenderReviewSyncComment(t *testing.T) {
 		SubjectRevision:   head,
 		RevisionSource:    "github-pull-request-head:4",
 		RationaleComments: 2,
-		PassedChecks:      []reviewCheck{{Name: "DCO", State: "completed", Conclusion: "success"}},
+		PassedChecks: []reviewCheck{{Name: "DCO", State: "completed", Conclusion: "success", URL: "https://github.com/o/r/checks/42",
+			SubjectRevision: head, Trusted: true, Source: "github-check-run:42"}},
+		ProcessEvidence: []gates.ProcessEvidenceReport{{ProcessID: "PROCESS-001", Missing: []string{"recomputable forecast"}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Type: REVIEW", "ID: REVIEW-001", "Status: done", "Review sync passed", "DCO", "PROCESS Evidence Observation", "MUST NOT be treated as final readiness"} {
+	for _, want := range []string{"Type: REVIEW", "ID: REVIEW-001", "Status: done", "Subject Revision: " + head,
+		"Review sync passed", "DCO", "subject_revision=" + head, "trusted=true", "source=github-check-run:42"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in:\n%s", want, body)
+		}
+	}
+	for _, forbidden := range []string{"PROCESS Evidence Observation", "MUST NOT be treated as final readiness", "recomputable forecast"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("durable REVIEW retained %q:\n%s", forbidden, body)
 		}
 	}
 	parsed := model.ParseTypedComment(body)
@@ -620,7 +1064,7 @@ func (f *fakeReviewClient) CreatePullRequestReviewComment(_ context.Context, _ s
 		panic("invalid create review comment args")
 	}
 	marker, ok, err := model.FindFindingMarker(body)
-	if err != nil || !ok || marker.ID != "FINDING-001" || marker.Severity != "P1" {
+	if err != nil || !ok || marker.ID == "" || marker.Severity != "P1" {
 		panic("missing finding marker")
 	}
 	comment := github.PullRequestReviewComment{

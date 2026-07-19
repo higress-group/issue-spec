@@ -7,20 +7,13 @@ tags: ["workflow", "issue-spec"]
 
 # Issue Spec Archive
 
-Use when the user asks for /issue-spec:archive, issue-spec archive, or creating the post-merge durable spec PR.
+Use only after implementation merge and authoritative final verification.
 
-## Steps
-
-1. Confirm the implementation change is merged and required closing links were present. Archive may read an existing required REVIEW completion when implementation merge policy requires it. Archive never creates, updates, or refreshes REVIEW or adds archive-specific review state.
-2. Choose the --capability value as a stable long-lived capability or domain directory, not the original change/proposal name. Treat it as an umbrella capability: a single spec that accumulates related current and future changes. Prefer names that can host related future durable specs, for example workflow-identity-and-sessions instead of agent-session-source-of-truth.
-3. Inspect existing durable specs before creating or finalizing the archive PR. Read `issue-spec/specs/<capability>/spec.md` when it exists, and scan related `issue-spec/specs/*/spec.md` files when the new behavior may belong with an existing capability. If `openspec/specs/<capability>/spec.md` already exists, issue-spec may select that legacy path for update and report the compatibility choice. Decide whether to update, merge, or reorganize existing durable requirements instead of adding a duplicate or narrowly named spec.
-4. Create the durable spec PR and idempotently close any still-open PR-associated active issues:
-
-       issue-spec archive durable-spec --repo higress-group/issue-spec --proposal <proposal-issue> --design <design-issue> --implement <implement-issue> --pr <implementation-pr> --capability <capability> --create-pr --branch issue-spec/durable-spec-<capability> --close-issues --json
-
-5. Review and edit the generated durable spec draft before handoff or merge. When re-archiving into an existing umbrella capability, archive now accumulates the new proposal's requirements into the existing spec by requirement title (newest wins) rather than overwriting prior requirements, so verify the merged result. Reconcile it with any existing related durable specs, regroup related source SPEC content into durable capability modules instead of preserving one-to-one source SPEC sections, and keep Source SPEC links for traceability.
-6. Keep only long-lived behavior. Do not copy process records, review findings, or verification logs into durable specs.
-7. Keep the closed proposal/design/implement issues as audit history.
+1. Confirm the implementation change merged and required closing links existed. Archive may read an existing required REVIEW completion when implementation merge policy requires it. Archive never creates, updates, or refreshes REVIEW or adds archive-specific review state.
+2. Choose --capability as a stable long-lived domain, not the change name. Inspect issue-spec/specs/<capability>/spec.md and related issue-spec/specs/*/spec.md; reuse an existing openspec/specs/<capability>/spec.md only through the documented compatibility path.
+3. Create the separate durable-spec PR with issue-spec archive durable-spec, passing proposal, Design, Implement, implementation change, --create-pr, and --close-issues.
+4. Review the generated draft. Merge related requirements into coherent capability modules, preserve prior requirements and Source SPEC links, and keep only long-lived behavior. Do not copy PROCESS, review-finding, or verification-log history.
+5. Keep closed change issues as audit history.
 
 ## Project Workflow
 

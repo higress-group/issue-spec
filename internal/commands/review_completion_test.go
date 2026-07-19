@@ -6,10 +6,161 @@ import (
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
+
+func TestReviewReceiptBindingAndImmutableProjection(t *testing.T) {
+	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	sealed := testReviewAssignment(t, receipt.SubjectRevision)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleReview,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	if err := validateReviewReceiptBinding(receipt, sealed, binding); err != nil {
+		t.Fatal(err)
+	}
+	body := "canonical REVIEW\n"
+	projected := acceptedReviewReceiptFrom(receipt)
+	stamped, changed, err := stampAcceptedReviewReceipt(body, projected)
+	if err != nil || !changed {
+		t.Fatalf("changed=%t err=%v", changed, err)
+	}
+	parsed, found, err := parseAcceptedReviewReceipt(stamped)
+	if err != nil || !found || parsed.ReceiptDigest != receipt.ReceiptDigest || parsed.Verdict != assignment.ReviewApprove {
+		t.Fatalf("parsed=%+v found=%t err=%v", parsed, found, err)
+	}
+	if retry, changed, err := stampAcceptedReviewReceipt(stamped, projected); err != nil || changed || retry != stamped {
+		t.Fatalf("retry changed=%t err=%v", changed, err)
+	}
+	other := projected
+	other.ReceiptID = "receipt-review-other"
+	if _, _, err := stampAcceptedReviewReceipt(stamped, other); err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("conflicting accepted receipt error=%v", err)
+	}
+}
+
+func TestReviewReceiptBindingRejectsAuthorityDrift(t *testing.T) {
+	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	sealed := testReviewAssignment(t, receipt.SubjectRevision)
+	valid := processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleReview,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	tests := map[string]func(*assignment.Receipt, *processworkspace.AssignmentBinding){
+		"generation": func(_ *assignment.Receipt, b *processworkspace.AssignmentBinding) { b.Generation++ },
+		"revision":   func(_ *assignment.Receipt, b *processworkspace.AssignmentBinding) { b.SubjectRevision = "head-old" },
+		"coordinator": func(r *assignment.Receipt, _ *processworkspace.AssignmentBinding) {
+			r.Provenance.Writer, r.Provenance.Subject = "Coordinator", "Coordinator"
+		},
+		"impersonated": func(r *assignment.Receipt, _ *processworkspace.AssignmentBinding) {
+			r.Provenance.Subject = "Another Reviewer"
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate, binding := receipt, valid
+			mutate(&candidate, &binding)
+			if err := validateReviewReceiptBinding(candidate, sealed, &binding); err == nil {
+				t.Fatal("authority drift was accepted")
+			}
+		})
+	}
+}
+
+func TestReviewReceiptBindingRejectsPreD14StoredAssignment(t *testing.T) {
+	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	legacy := testReviewAssignment(t, receipt.SubjectRevision)
+	legacy.DesignContext = nil
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleReview,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	if err := validateReviewReceiptBinding(receipt, legacy, binding); err == nil || !strings.Contains(err.Error(), "design_context") {
+		t.Fatalf("new role submission accepted pre-D14 assignment: %v", err)
+	}
+}
+
+func TestReviewReceiptBindingMatchesNormalizedExactDiffAuthors(t *testing.T) {
+	sealed := testReviewAssignment(t, "head-abc")
+	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleReview,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	for _, identity := range []string{"Independent Reviewer", "independent@example.com"} {
+		candidate := receipt
+		candidate.Provenance.Writer, candidate.Provenance.Subject = identity, identity
+		candidate.ReceiptDigest = ""
+		candidate, err := assignment.SealReceipt(candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateReviewReceiptBinding(candidate, sealed, binding); err != nil {
+			t.Fatalf("identity %q: %v", identity, err)
+		}
+	}
+	for _, identity := range []string{"CODE AUTHOR", "AUTHOR@EXAMPLE.COM", "Code Author <author@example.com>"} {
+		candidate := receipt
+		candidate.Provenance.Writer, candidate.Provenance.Subject = identity, identity
+		candidate.ReceiptDigest = ""
+		candidate, err := assignment.SealReceipt(candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateReviewReceiptBinding(candidate, sealed, binding); err == nil || !strings.Contains(err.Error(), "must not match") {
+			t.Fatalf("code-author identity %q error=%v", identity, err)
+		}
+	}
+}
+
+func TestReviewReceiptBindingRejectsFindingOutsideSealedSpecs(t *testing.T) {
+	finding := assignment.Finding{ID: "FINDING-101", SpecID: "SPEC-003", OwnerProcessID: "PROCESS-102",
+		Path: "internal/foo.go", Side: "RIGHT", Line: 2, Severity: "P1", Message: "Wrong sealed SPEC."}
+	receipt := testSealedReviewReceipt(t, assignment.ReviewChangesRequested, []assignment.Finding{finding})
+	sealed := testReviewAssignment(t, receipt.SubjectRevision)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleReview,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	if err := validateReviewReceiptBinding(receipt, sealed, binding); err == nil || !strings.Contains(err.Error(), "sealed assignment scenarios") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func testSealedReviewReceipt(t *testing.T, verdict assignment.ReviewVerdict, findings []assignment.Finding) assignment.Receipt {
+	t.Helper()
+	sealed := testReviewAssignment(t, "head-abc")
+	digest, err := assignment.AssignmentDigest(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := assignment.Receipt{SchemaVersion: assignment.ReceiptSchemaVersion, ID: "receipt-review-1",
+		AssignmentID: sealed.ID, AssignmentDigest: digest, AssignmentGeneration: 1,
+		Role: assignment.RoleReview, ResultSchemaVersion: assignment.ReceiptSchemaVersion, SubjectRevision: "head-abc",
+		Provenance: assignment.Provenance{Route: assignment.RouteRoleOwned, Assurance: assignment.AssuranceSelfReported,
+			Writer: "Independent Reviewer", Subject: "Independent Reviewer", Source: "review-submit"},
+		Review: &assignment.ReviewResult{Verdict: verdict, Findings: findings}}
+	result, err := assignment.SealReceipt(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func testReviewAssignment(t *testing.T, subject string) assignment.Assignment {
+	t.Helper()
+	value := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "assignment-review-1",
+		Role: assignment.RoleReview, Repository: "o/r", Issue: 9, ProcessID: "PROCESS-101", SubjectRevision: subject,
+		Scenarios:           []assignment.ScenarioRef{{SpecID: "SPEC-002", Scenario: "exact review"}},
+		DesignContext:       workspaceDesignContext(),
+		Policy:              assignment.Policy{RequireExactRevision: true, MaxResultItems: 64},
+		ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		Review: &assignment.ReviewPayload{SnapshotRevision: subject, DiffBaseRevision: strings.Repeat("a", 40),
+			Authors: []string{"Code Author <author@example.com>"}, Scope: []string{"internal/**"}}}
+	if err := value.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
 
 func TestValidateExternalReviewCompletionControlledTime(t *testing.T) {
 	now := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)

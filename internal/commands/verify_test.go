@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
@@ -19,6 +20,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
+	"github.com/higress-group/issue-spec/internal/templates"
 )
 
 const (
@@ -27,6 +29,665 @@ const (
 	canonicalReviewProcess  = "## Process: review\n\n### Owner\n\n- Reviewer\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- review\n\n### Write Ownership\n\n- N/A\n\n### Dependencies\n\n- N/A\n\n### Covers\n\n- TASK-001\n\n### Handoff\n\nN/A"
 	canonicalVerifyContent  = "## Verification Summary: final\n\nTests, review, and traceability confirmed.\n\n### Evidence\n\n- go test ./...\n\n### Covered SPECs\n\n- SPEC-001"
 )
+
+func TestVerificationReceiptBindingAndImmutableProjection(t *testing.T) {
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}},
+		[]assignment.CheckSelector{{Provider: "github", Name: "unit"}})
+	sealed := testVerificationAssignment(t, receipt.SubjectRevision, receipt.Tests, receipt.Verification.CheckSelectors)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	submission := testVerificationSubmission("Verifier")
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, submission); err != nil {
+		t.Fatal(err)
+	}
+	checks := []observedVerificationCheck{{Provider: "github", Name: "unit", EvidenceID: "42", State: "success",
+		SubjectRevision: receipt.SubjectRevision, Source: "github-check-run:42"}}
+	projected := acceptedVerificationReceiptFrom(receipt, checks, submission)
+	body, changed, err := stampAcceptedVerificationReceipt("canonical VERIFY\n", projected)
+	if err != nil || !changed {
+		t.Fatalf("changed=%t err=%v", changed, err)
+	}
+	parsed, found, err := parseAcceptedVerificationReceipt(body)
+	if err != nil || !found || parsed.ReceiptDigest != receipt.ReceiptDigest || len(parsed.Tests) != 1 || len(parsed.Checks) != 1 {
+		t.Fatalf("parsed=%+v found=%t err=%v", parsed, found, err)
+	}
+	if retry, changed, err := stampAcceptedVerificationReceipt(body, projected); err != nil || changed || retry != body {
+		t.Fatalf("retry changed=%t err=%v", changed, err)
+	}
+	other := projected
+	other.ReceiptID = "receipt-verification-other"
+	if _, _, err := stampAcceptedVerificationReceipt(body, other); err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("conflicting accepted receipt error=%v", err)
+	}
+}
+
+func TestVerificationReceiptBindingRejectsUntrustedLocalCompletion(t *testing.T) {
+	valid := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./...",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	sealed := testVerificationAssignment(t, valid.SubjectRevision, valid.Tests, valid.Verification.CheckSelectors)
+	binding := processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: valid.AssignmentID, Digest: valid.AssignmentDigest, Role: assignment.RoleVerification,
+		SubjectRevision: valid.SubjectRevision, Generation: valid.AssignmentGeneration}
+	tests := map[string]func(*assignment.Receipt, *processworkspace.AssignmentBinding){
+		"generation": func(_ *assignment.Receipt, b *processworkspace.AssignmentBinding) { b.Generation++ },
+		"revision":   func(_ *assignment.Receipt, b *processworkspace.AssignmentBinding) { b.SubjectRevision = "head-old" },
+		"impersonated": func(r *assignment.Receipt, _ *processworkspace.AssignmentBinding) {
+			r.Provenance.Subject = "Another Verifier"
+		},
+		"provider-owned local result": func(r *assignment.Receipt, _ *processworkspace.AssignmentBinding) {
+			r.Tests[0].Assurance = assignment.AssuranceProviderOwned
+		},
+		"failed local result": func(r *assignment.Receipt, _ *processworkspace.AssignmentBinding) {
+			r.Tests[0].Outcome = assignment.TestFailed
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			receipt, candidateBinding := valid, binding
+			receipt.Tests = append([]assignment.TestResult(nil), valid.Tests...)
+			mutate(&receipt, &candidateBinding)
+			if err := validateVerificationReceiptBinding(receipt, sealed, &candidateBinding,
+				testVerificationSubmission("Verifier")); err == nil {
+				t.Fatal("invalid verification authority was accepted")
+			}
+		})
+	}
+	coordinator := valid
+	coordinator.Provenance.Writer, coordinator.Provenance.Subject = "Coordinator", "Coordinator"
+	coordinator.ReceiptDigest = ""
+	coordinator, err := assignment.SealReceipt(coordinator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateVerificationReceiptBinding(coordinator, sealed, &binding,
+		testVerificationSubmission("Coordinator")); err == nil ||
+		!strings.Contains(err.Error(), "non-Coordinator") {
+		t.Fatalf("coordinator verifier error=%v", err)
+	}
+}
+
+func TestVerificationReceiptBindingTreatsSessionAsCompatibilityMetadata(t *testing.T) {
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./...",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	sealed := testVerificationAssignment(t, receipt.SubjectRevision, receipt.Tests, nil)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	native := processworkspace.RoleOwnedSubmissionEvidence{Agent: "Verifier", AgentSessionID: "verifier-session",
+		AgentSessionSource: processworkspace.AgentSessionSourceRuntimeNative, Assurance: assignment.AssuranceSelfReported}
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, native); err != nil {
+		t.Fatalf("runtime-labelled compatibility metadata rejected: %v", err)
+	}
+	coordinatorChosen := native
+	coordinatorChosen.AgentSessionID = "coordinator-chosen-worker-session"
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, coordinatorChosen); err != nil {
+		t.Fatalf("session metadata incorrectly treated as a trust decision: %v", err)
+	}
+	if coordinatorChosen.Assurance != assignment.AssuranceSelfReported {
+		t.Fatalf("session metadata upgraded assurance: %+v", coordinatorChosen)
+	}
+	compatibility := testVerificationSubmission("Verifier")
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, compatibility); err != nil {
+		t.Fatalf("explicit no-runtime compatibility rejected: %v", err)
+	}
+}
+
+func TestVerificationReceiptRequiresExactAssignedTestsAndChecks(t *testing.T) {
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}},
+		[]assignment.CheckSelector{{Provider: "github", Name: "unit"}})
+	sealed := testVerificationAssignment(t, receipt.SubjectRevision, receipt.Tests, receipt.Verification.CheckSelectors)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	tests := map[string]func(*assignment.Receipt){
+		"omitted test": func(r *assignment.Receipt) { r.Tests = nil },
+		"renamed test": func(r *assignment.Receipt) { r.Tests[0].ID = "alternative" },
+		"substituted command": func(r *assignment.Receipt) {
+			r.Tests[0].Command = "go test ./internal/commands"
+		},
+		"omitted check": func(r *assignment.Receipt) { r.Verification.CheckSelectors = nil },
+		"renamed check": func(r *assignment.Receipt) { r.Verification.CheckSelectors[0].Name = "alternative" },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := receipt
+			candidate.Tests = append([]assignment.TestResult(nil), receipt.Tests...)
+			candidate.Verification = &assignment.VerificationResult{Summary: receipt.Verification.Summary,
+				CheckSelectors: append([]assignment.CheckSelector(nil), receipt.Verification.CheckSelectors...)}
+			mutate(&candidate)
+			candidate.ReceiptDigest = ""
+			candidate, err := assignment.SealReceipt(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := validateVerificationReceiptBinding(candidate, sealed, binding,
+				testVerificationSubmission("Verifier")); err == nil ||
+				!strings.Contains(err.Error(), "assigned") {
+				t.Fatalf("coverage substitution error=%v", err)
+			}
+		})
+	}
+}
+
+func TestPublishAcceptedVerificationIsAppendOnlyUnderConcurrentReceipt(t *testing.T) {
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	body, err := renderSubmittedVerification("VERIFY-101", "https://github.com/o/r/issues/9#issuecomment-10",
+		[]string{"SPEC-005"}, receipt, nil, testVerificationSubmission("Verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := receipt
+	other.ID = "receipt-verification-concurrent"
+	other.ReceiptDigest = ""
+	other, err = assignment.SealReceipt(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherBody, err := renderSubmittedVerification("VERIFY-102", "https://github.com/o/r/issues/9#issuecomment-10",
+		[]string{"SPEC-005"}, other, nil, testVerificationSubmission("Verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	comments := []github.Comment{}
+	creates := 0
+	backend := fakeGitHubBackend{listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+		return append([]github.Comment(nil), comments...), nil
+	}, createComment: func(_ context.Context, _ string, _ int, submitted string) (github.Comment, error) {
+		creates++
+		created := github.Comment{ID: 11, Body: submitted}
+		comments = append(comments, created, github.Comment{ID: 12, Body: otherBody})
+		return created, nil
+	}}
+	if err := validateExistingVerificationReceipt(nil, "VERIFY-101", receipt); err != nil {
+		t.Fatal(err)
+	}
+	comments = []github.Comment{{ID: 12, Body: otherBody}}
+	if _, _, err := publishAcceptedVerification(t.Context(), backend, "o/r", 9, "VERIFY-101", body, receipt); err == nil ||
+		!strings.Contains(err.Error(), "different receipt") || creates != 0 {
+		t.Fatalf("fresh competing observation creates=%d err=%v", creates, err)
+	}
+	comments = nil
+	if _, _, err := publishAcceptedVerification(t.Context(), backend, "o/r", 9, "VERIFY-101", body, receipt); err == nil ||
+		!strings.Contains(err.Error(), "conflicted") || creates != 1 {
+		t.Fatalf("concurrent create creates=%d err=%v", creates, err)
+	}
+	comments = []github.Comment{{ID: 11, Body: body}}
+	creates = 0
+	action, existing, err := publishAcceptedVerification(t.Context(), backend, "o/r", 9, "VERIFY-101", body, receipt)
+	if err != nil || action != "unchanged" || existing.ID != 11 || creates != 0 {
+		t.Fatalf("exact replay action=%q existing=%+v creates=%d err=%v", action, existing, creates, err)
+	}
+}
+
+func TestObserveGitHubVerificationChecksRequiresStableExactSnapshot(t *testing.T) {
+	receipt := testSealedVerificationReceipt(t, nil,
+		[]assignment.CheckSelector{{Provider: "github", Name: "unit"}})
+	head := receipt.SubjectRevision
+	prReads := 0
+	backend := verifySubmitCommandBackend{fakeGitHubBackend: fakeGitHubBackend{
+		getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
+			prReads++
+			pr := github.PullRequest{Number: 7}
+			pr.Head.SHA = head
+			if prReads == 2 {
+				pr.Head.SHA = strings.Repeat("c", 40)
+			}
+			return pr, nil
+		}}, checkRuns: []github.CheckRun{{ID: 42, Name: "unit", HeadSHA: head, Status: "completed", Conclusion: "success"}}}
+	if _, err := observeGitHubVerificationChecks(t.Context(), backend, "o/r", 7, receipt); err == nil ||
+		!strings.Contains(err.Error(), "changed while observing") {
+		t.Fatalf("unstable snapshot error=%v", err)
+	}
+	prReads = 0
+	backend.fakeGitHubBackend.getPullRequest = func(context.Context, string, int) (github.PullRequest, error) {
+		prReads++
+		pr := github.PullRequest{Number: 7}
+		pr.Head.SHA = head
+		return pr, nil
+	}
+	checks, err := observeGitHubVerificationChecks(t.Context(), backend, "o/r", 7, receipt)
+	if err != nil || len(checks) != 1 || checks[0].SubjectRevision != head || checks[0].Source != "github-check-run:42" {
+		t.Fatalf("checks=%+v err=%v", checks, err)
+	}
+}
+
+func TestObserveNativeVerificationChecksUsesTrustedExactRevision(t *testing.T) {
+	now := time.Now().UTC()
+	external := externalGateResult{Target: coreevidence.NativeTarget{Reference: codereview.Reference{ProviderKey: "code.example"},
+		SubjectRevision: "head-abc"}, Snapshot: codereview.Snapshot{Records: []codereview.EvidenceRecord{
+		{ID: "stale", Kind: codereview.EvidenceCheck, Name: "unit", State: "passed", SubjectRevision: "head-old",
+			Trusted: true, ObservedAt: now.Add(time.Minute)},
+		{ID: "current", Kind: codereview.EvidenceCheck, Name: "unit", State: "passed", SubjectRevision: "head-abc",
+			Trusted: true, ObservedAt: now},
+	}}}
+	checks, err := observeNativeVerificationChecks([]assignment.CheckSelector{{Provider: "code.example", Name: "unit"}}, external)
+	if err != nil || len(checks) != 1 || checks[0].EvidenceID != "current" || checks[0].Source != "native-evidence:current" {
+		t.Fatalf("checks=%+v err=%v", checks, err)
+	}
+	external.Snapshot.Records[1].Trusted = false
+	if _, err := observeNativeVerificationChecks([]assignment.CheckSelector{{Provider: "code.example", Name: "unit"}}, external); err == nil {
+		t.Fatal("untrusted native check was accepted")
+	}
+}
+
+func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T) {
+	t.Setenv(codexThreadIDEnv, "")
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}},
+		[]assignment.CheckSelector{{Provider: "github", Name: "unit"}})
+	sealedAssignment := testVerificationAssignment(t, receipt.SubjectRevision, receipt.Tests, receipt.Verification.CheckSelectors)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	now := time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC)
+	workspace := model.ProcessWorkspace{SchemaVersion: processworkspace.LeaseSchemaVersion,
+		WorkspaceID: "verification-process-101", Repository: "o/r", ProcessID: "PROCESS-101",
+		ExecutionClass: processworkspace.ExecutionVerification, Mode: processworkspace.ModeSnapshot,
+		BaseSHA: receipt.SubjectRevision, DetachedRevision: receipt.SubjectRevision,
+		RuntimeNamespace: "verification-process-101", Assignment: binding, State: processworkspace.StatePrepared,
+		CreatedAt: now, UpdatedAt: now}
+	processBody, err := templates.ProcessComment(templates.ProcessCommentOptions{
+		Common: templates.CommonOptions{ID: "PROCESS-101", Status: "in-progress"}, Input: templates.ProcessInput{
+			Title: "verify exact receipt", Owner: "Verifier", ParentTask: "TASK-006",
+			ExecutionClass: model.ProcessExecutionVerification, WorkspaceManagement: model.ProcessWorkspaceManaged,
+			Workspace: &workspace, Covers: []string{"SPEC-005"}, Handoff: "N/A"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(receipt)
+	resultPath := filepath.Join(t.TempDir(), "verification-receipt.json")
+	if err := os.WriteFile(resultPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assignmentPayload, _ := json.Marshal(sealedAssignment)
+	assignmentPath := filepath.Join(t.TempDir(), "verification-assignment.json")
+	if err := os.WriteFile(assignmentPath, assignmentPayload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	comments := []github.Comment{{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody}}
+	created, updated := 0, 0
+	backend := verifySubmitCommandBackend{checkRuns: []github.CheckRun{{ID: 42, Name: "unit",
+		HeadSHA: receipt.SubjectRevision, Status: "completed", Conclusion: "success"}}}
+	backend.fakeGitHubBackend = fakeGitHubBackend{info: github.BackendInfo{Name: "gh", Kind: "external-cli", Host: "github.com"},
+		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+			return append([]github.Comment(nil), comments...), nil
+		}, getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
+			pr := github.PullRequest{Number: 7}
+			pr.Head.SHA = receipt.SubjectRevision
+			return pr, nil
+		}, createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
+			created++
+			comment := github.Comment{ID: 11, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-11", Body: body}
+			comments = append(comments, comment)
+			return comment, nil
+		}, updateComment: func(_ context.Context, _ string, id int64, body string) (github.Comment, error) {
+			updated++
+			for index := range comments {
+				if comments[index].ID == id {
+					comments[index].Body = body
+					return comments[index], nil
+				}
+			}
+			return github.Comment{}, errors.New("missing comment")
+		}}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
+	args := []string{"submit", "--repo", "o/r", "--implement", "9", "--pr", "7", "--process", "PROCESS-101",
+		"--id", "VERIFY-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
+		"--agent", "Verifier"}
+	for run := 0; run < 2; run++ {
+		out.Reset()
+		errOut.Reset()
+		if code := app.runVerify(t.Context(), args); code != 0 {
+			t.Fatalf("run=%d exit=%d out=%q err=%q", run, code, out.String(), errOut.String())
+		}
+	}
+	if created != 1 || updated != 0 || len(comments) != 2 {
+		t.Fatalf("created=%d updated=%d comments=%d", created, updated, len(comments))
+	}
+	parsed := model.ParseTypedComment(comments[1].Body)
+	authority, found, err := parseAcceptedVerificationReceipt(comments[1].Body)
+	if err != nil || !found || parsed.Agent != "Verifier" || parsed.SubjectRevision != receipt.SubjectRevision ||
+		parsed.Status != "done" || len(authority.Tests) != 1 || len(authority.Checks) != 1 ||
+		authority.Submission == nil || authority.Submission.AgentSessionSource != processworkspace.AgentSessionSourceCompatibility ||
+		authority.Submission.AgentSessionID != "" || authority.Submission.Assurance != assignment.AssuranceSelfReported ||
+		!strings.Contains(comments[1].Body, "### Local Tests") || !strings.Contains(comments[1].Body, "### Provider Checks") ||
+		strings.Contains(comments[1].Body, "### Evidence") {
+		t.Fatalf("VERIFY=%+v authority=%+v found=%t err=%v body=%s", parsed, authority, found, err, comments[1].Body)
+	}
+}
+
+func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	sealedAssignment := testVerificationAssignment(t, receipt.SubjectRevision, receipt.Tests, nil)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	now := time.Date(2026, 7, 19, 2, 0, 0, 0, time.UTC)
+	workspace := model.ProcessWorkspace{SchemaVersion: processworkspace.LeaseSchemaVersion,
+		WorkspaceID: "verification-process-101", Repository: "o/r", ProcessID: "PROCESS-101",
+		ExecutionClass: processworkspace.ExecutionVerification, Mode: processworkspace.ModeSnapshot,
+		BaseSHA: receipt.SubjectRevision, DetachedRevision: receipt.SubjectRevision,
+		RuntimeNamespace: "verification-process-101", Assignment: binding, State: processworkspace.StatePrepared,
+		CreatedAt: now, UpdatedAt: now}
+	processBody, err := templates.ProcessComment(templates.ProcessCommentOptions{
+		Common: templates.CommonOptions{ID: "PROCESS-101", Status: "in-progress"}, Input: templates.ProcessInput{
+			Title: "verify exact local receipt", Owner: "Verifier", ParentTask: "TASK-006",
+			ExecutionClass: model.ProcessExecutionVerification, WorkspaceManagement: model.ProcessWorkspaceManaged,
+			Workspace: &workspace, Covers: []string{"SPEC-005"}, Handoff: "N/A"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	processBody, err = model.StampTypedSessionMetadata(processBody, "coordinator-session", codexThreadIDEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	resultPath, assignmentPath := filepath.Join(dir, "receipt.json"), filepath.Join(dir, "assignment.json")
+	payload, _ := json.Marshal(receipt)
+	if err := os.WriteFile(resultPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ = json.Marshal(sealedAssignment)
+	if err := os.WriteFile(assignmentPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	coordinator := receipt
+	coordinator.Provenance.Writer, coordinator.Provenance.Subject = "Coordinator", "Coordinator"
+	coordinator.ReceiptDigest = ""
+	coordinator, err = assignment.SealReceipt(coordinator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinatorPath := filepath.Join(dir, "coordinator-receipt.json")
+	payload, _ = json.Marshal(coordinator)
+	if err := os.WriteFile(coordinatorPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	comments := []github.Comment{{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody}}
+	providerReads, creates := 0, 0
+	backend := verifySubmitCommandBackend{fakeGitHubBackend: fakeGitHubBackend{
+		info: github.BackendInfo{Name: "gh", Kind: "external-cli", Host: "github.com"},
+		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+			return append([]github.Comment(nil), comments...), nil
+		},
+		getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
+			providerReads++
+			pr := github.PullRequest{Number: 7, HTMLURL: "https://github.com/o/r/pull/7"}
+			pr.Head.SHA = receipt.SubjectRevision
+			return pr, nil
+		},
+		createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
+			creates++
+			comment := github.Comment{ID: 11, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-11", Body: body}
+			comments = append(comments, comment)
+			return comment, nil
+		}}, checkRuns: nil}
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
+	coordinatorArgs := []string{"submit", "--repo", "o/r", "--implement", "9", "--pr", "7", "--process", "PROCESS-101",
+		"--id", "VERIFY-COORDINATOR", "--result-file", coordinatorPath, "--assignment-file", assignmentPath,
+		"--agent", "Coordinator"}
+	if code := app.runVerify(t.Context(), coordinatorArgs); code != 1 || providerReads != 0 || creates != 0 ||
+		len(comments) != 1 || !strings.Contains(errOut.String(), "non-Coordinator") {
+		t.Fatalf("coordinator exit=%d providerReads=%d creates=%d comments=%d err=%q",
+			code, providerReads, creates, len(comments), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	args := []string{"submit", "--repo", "o/r", "--implement", "9", "--pr", "7", "--process", "PROCESS-101",
+		"--id", "VERIFY-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
+		"--agent", "Verifier"}
+	t.Setenv(codexThreadIDEnv, "coordinator-chosen-worker-session")
+	legacyImport := append(append([]string(nil), args...), "--owner-token", "coordinator-owner-token")
+	if code := app.runVerify(t.Context(), legacyImport); code != 2 || providerReads != 0 || creates != 0 || len(comments) != 1 ||
+		!strings.Contains(errOut.String(), "flag provided but not defined") {
+		t.Fatalf("legacy import exit=%d providerReads=%d creates=%d comments=%d err=%q",
+			code, providerReads, creates, len(comments), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	t.Setenv(codexThreadIDEnv, "")
+	directArgs := append(append([]string(nil), args...), "--agent-session", "verifier-session")
+	if code := app.runVerify(t.Context(), directArgs); code != 0 || len(comments) != 2 || providerReads != 2 || creates != 1 {
+		t.Fatalf("submit exit=%d comments=%d providerReads=%d creates=%d out=%q err=%q",
+			code, len(comments), providerReads, creates, out.String(), errOut.String())
+	}
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-005", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
+	task := typedArtifact(t, 2, "TASK", "TASK-006", "done", strings.ReplaceAll(canonicalTaskContent, "TASK-001", "TASK-006"))
+	task.Comment = model.ParseTypedComment(strings.ReplaceAll(task.Comment.Body, "SPEC-001", "SPEC-005"))
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
+	finalProcess := typedArtifact(t, 9, "PROCESS", "PROCESS-101", "done", "## Process: verify\n\n### Parent TASK\n\n- TASK-006\n\n### Execution Class\n\n- verification\n\n### Covers\n\n- SPEC-005\n\n### Handoff\n\nN/A")
+	finalProcess.URL = comments[0].HTMLURL
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &finalProcess)
+	linkedProcess, _, err := model.AddPRLink(finalProcess.Comment.Body, "https://github.com/o/r/pull/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalProcess.Comment = model.ParseTypedComment(linkedProcess)
+	verify := model.Artifact{Issue: 9, CommentID: comments[1].ID, URL: comments[1].HTMLURL,
+		Comment: model.ParseTypedComment(comments[1].Body)}
+	authority, found, err := parseAcceptedVerificationReceipt(comments[1].Body)
+	if err != nil || !found || authority.Submission == nil || authority.Submission.Agent != "Verifier" ||
+		authority.Submission.AgentSessionID != "verifier-session" ||
+		authority.Submission.AgentSessionSource != agentSessionParamSource ||
+		authority.Submission.Assurance != assignment.AssuranceSelfReported ||
+		verify.Comment.AgentSessionID != "verifier-session" {
+		t.Fatalf("persisted verification submission=%+v found=%t err=%v typed=%+v", authority.Submission, found, err, verify.Comment)
+	}
+	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, finalProcess, verify}, spec.URL,
+		finalVerifyOptions{PR: 7, PRURL: "https://github.com/o/r/pull/7", ExpectedRevision: receipt.SubjectRevision, RationaleRequired: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.OK || len(report.ProcessEvidence) != 1 || !report.ProcessEvidence[0].CarrierRevision.Trusted ||
+		report.ProcessEvidence[0].CarrierRevision.Source != "accepted-verification-receipt:self-reported-tests" {
+		t.Fatalf("submit-to-final local receipt errors=%v evidence=%+v", report.Errors, report.ProcessEvidence)
+	}
+}
+
+func TestBuildFinalVerifyReportConsumesExactAcceptedLocalTestReceipt(t *testing.T) {
+	const current = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
+	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", "## Process: verify\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- verification\n\n### Covers\n\n- SPEC-001\n\n### Handoff\n\nN/A")
+	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &process)
+	processBody, _, err := model.AddPRLink(process.Comment.Body, "https://github.com/o/r/pull/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.Comment = model.ParseTypedComment(processBody)
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	verifyBody, err := renderSubmittedVerification("VERIFY-001", process.URL, []string{"SPEC-001"}, receipt, nil,
+		testVerificationSubmission("Verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify := model.Artifact{Issue: 3, CommentID: 4, URL: "https://github.com/o/r/issues/3#issuecomment-4",
+		Comment: model.ParseTypedComment(verifyBody)}
+	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, verify}, "https://github.com/o/r/issues/1",
+		finalVerifyOptions{PR: 7, PRURL: "https://github.com/o/r/pull/7", ExpectedRevision: current, RationaleRequired: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.OK || len(report.ProcessEvidence) != 1 || !report.ProcessEvidence[0].CarrierRevision.Trusted ||
+		report.ProcessEvidence[0].CarrierRevision.Revision != current ||
+		report.ProcessEvidence[0].CarrierRevision.Source != "accepted-verification-receipt:self-reported-tests" {
+		t.Fatalf("accepted local-test receipt final evidence errors=%v evidence=%+v", report.Errors, report.ProcessEvidence)
+	}
+	tampered := strings.Replace(verifyBody, `"assurance":"self-reported"`, `"assurance":"provider-owned"`, 1)
+	if _, _, _, ok := exactAcceptedVerificationCarrier(model.Artifact{Comment: model.ParseTypedComment(tampered)}, current); ok {
+		t.Fatal("self-reported local test was upgraded to provider-owned final evidence")
+	}
+}
+
+type verifySubmitCommandBackend struct {
+	fakeGitHubBackend
+	checkRuns []github.CheckRun
+}
+
+func testVerificationSubmission(agent string) processworkspace.RoleOwnedSubmissionEvidence {
+	return processworkspace.RoleOwnedSubmissionEvidence{Agent: agent,
+		AgentSessionSource: processworkspace.AgentSessionSourceCompatibility,
+		Assurance:          assignment.AssuranceSelfReported}
+}
+
+func (b verifySubmitCommandBackend) ListCheckRuns(context.Context, string, string) ([]github.CheckRun, error) {
+	return append([]github.CheckRun(nil), b.checkRuns...), nil
+}
+
+func testSealedVerificationReceipt(t *testing.T, tests []assignment.TestResult,
+	selectors []assignment.CheckSelector) assignment.Receipt {
+	t.Helper()
+	sealedAssignment := testVerificationAssignment(t, strings.Repeat("b", 40), tests, selectors)
+	return testSealedVerificationReceiptForAssignment(t, sealedAssignment, tests, selectors)
+}
+
+func testSealedVerificationReceiptForAssignment(t *testing.T, sealedAssignment assignment.Assignment,
+	tests []assignment.TestResult, selectors []assignment.CheckSelector) assignment.Receipt {
+	t.Helper()
+	digest, err := assignment.AssignmentDigest(sealedAssignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := assignment.Receipt{SchemaVersion: assignment.ReceiptSchemaVersion, ID: "receipt-verification-1",
+		AssignmentID: sealedAssignment.ID, AssignmentDigest: digest, AssignmentGeneration: 1,
+		Role: assignment.RoleVerification, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		SubjectRevision: sealedAssignment.SubjectRevision, Tests: tests,
+		Provenance: assignment.Provenance{Route: assignment.RouteRoleOwned, Assurance: assignment.AssuranceSelfReported,
+			Writer: "Verifier", Subject: "Verifier", Source: "verify-submit"},
+		Verification: &assignment.VerificationResult{Summary: "Exact revision verified.", CheckSelectors: selectors}}
+	sealed, err := assignment.SealReceipt(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
+
+func testVerificationAssignment(t *testing.T, subject string, tests []assignment.TestResult,
+	selectors []assignment.CheckSelector) assignment.Assignment {
+	t.Helper()
+	requiredTests := make([]assignment.TestSelector, 0, len(tests))
+	for _, test := range tests {
+		requiredTests = append(requiredTests, assignment.TestSelector{ID: test.ID, Command: test.Command})
+	}
+	value := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "assignment-verification-1",
+		Role: assignment.RoleVerification, Repository: "o/r", Issue: 9, ProcessID: "PROCESS-101", SubjectRevision: subject,
+		Scenarios:           []assignment.ScenarioRef{{SpecID: "SPEC-005", Scenario: "exact verification"}},
+		Policy:              assignment.Policy{RequireExactRevision: true, MaxResultItems: 64},
+		ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		Verification: &assignment.VerificationPayload{SubjectRevision: subject, RequiredTests: requiredTests,
+			RequiredChecks: append([]assignment.CheckSelector(nil), selectors...)}}
+	if err := value.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func TestRunVerifySummaryRequiresJSON(t *testing.T) {
+	var errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &errOut)
+	if code := app.runVerify(t.Context(), []string{"--summary"}); code != 2 || !strings.Contains(errOut.String(), "--summary requires --json") {
+		t.Fatalf("verify exit=%d stderr=%q", code, errOut.String())
+	}
+}
+
+func TestRunVerifySummaryIsAdditiveAndExitEquivalent(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		processClass model.ProcessExecutionClass
+		wantCode     int
+	}{
+		{name: "success", processClass: model.ProcessExecutionVerification, wantCode: 0},
+		{name: "blocked", processClass: model.ProcessExecutionExternal, wantCode: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := []string{"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--json"}
+			process := canonicalProcessContentWithClass(test.processClass)
+			fullApp, fullOut, fullErr := newGitHubVerifyWithoutPRApp(t, process)
+			fullCode := fullApp.runVerify(t.Context(), args)
+			if fullErr.Len() != 0 {
+				t.Fatalf("full verify stderr=%q", fullErr.String())
+			}
+			var full finalVerifyReport
+			if err := json.Unmarshal(fullOut.Bytes(), &full); err != nil {
+				t.Fatalf("decode full verify: %v\n%s", err, fullOut.String())
+			}
+			if strings.Contains(fullOut.String(), `"schema_version"`) || !strings.Contains(fullOut.String(), `"traceability"`) {
+				t.Fatalf("existing full JSON contract changed: %s", fullOut.String())
+			}
+
+			compactApp, compactOut, compactErr := newGitHubVerifyWithoutPRApp(t, process)
+			compactCode := compactApp.runVerify(t.Context(), append(append([]string(nil), args...), "--summary"))
+			if compactErr.Len() != 0 {
+				t.Fatalf("compact verify stderr=%q", compactErr.String())
+			}
+			var compact gates.CompactSummary
+			if err := json.Unmarshal(compactOut.Bytes(), &compact); err != nil {
+				t.Fatalf("decode compact verify: %v\n%s", err, compactOut.String())
+			}
+			if fullCode != test.wantCode || compactCode != fullCode || compact.OK != full.OK || compact.OK != full.Gate.Ready ||
+				compact.Gate.Target != full.Gate.Target || compact.Gate.Mode != full.Gate.Mode {
+				t.Fatalf("decision drift: fullCode=%d compactCode=%d full=%+v compact=%+v", fullCode, compactCode, full.Gate, compact.Gate)
+			}
+			if compact.SchemaVersion != 1 || compact.Counts["PROCESS"]["done"] != 1 {
+				t.Fatalf("compact routing data missing: %+v", compact)
+			}
+			if test.wantCode == 0 && len(compact.Blockers) != 0 {
+				t.Fatalf("successful summary contains blockers: %+v", compact.Blockers)
+			}
+			for _, blocker := range compact.Blockers {
+				if blocker.Detail.CommandFamily != "verify" || containsArgument(blocker.Detail.Arguments, "--summary") ||
+					!containsArgument(blocker.Detail.Arguments, "--json") {
+					t.Fatalf("invalid structured detail action: %+v", blocker.Detail)
+				}
+			}
+			for _, forbidden := range []string{`"errors"`, `"traceability"`, `"process_evidence"`, `"external_evidence"`, `"evaluation_digest"`} {
+				if strings.Contains(compactOut.String(), forbidden) {
+					t.Fatalf("compact verify contains %s: %s", forbidden, compactOut.String())
+				}
+			}
+		})
+	}
+}
+
+func TestRunVerifySummaryCarriesExternalSubjectIdentity(t *testing.T) {
+	app, out, _, updates := newSelfHostedVerifyAppAtRevision(t, "head-abc")
+	code := app.runVerify(t.Context(), []string{
+		"--repo", "acme/widgets", "--proposal", "1", "--design", "2", "--implement", "3", "--json", "--summary",
+	})
+	if code != 1 {
+		t.Fatalf("verify exit=%d stdout=%q", code, out.String())
+	}
+	var summary gates.CompactSummary
+	if err := json.Unmarshal(out.Bytes(), &summary); err != nil {
+		t.Fatalf("decode compact verify: %v\n%s", err, out.String())
+	}
+	if summary.Subject == nil || summary.Subject.Revision != "head-abc" || summary.Subject.Evidence == nil ||
+		summary.Subject.Evidence.Kind != "code_change" || summary.Subject.Evidence.Provider != "code.example" ||
+		summary.Subject.Evidence.Repository != "acme/widgets-code" || summary.Subject.Evidence.ID != "change-42" {
+		t.Fatalf("external subject identity = %+v", summary.Subject)
+	}
+	if *updates != 0 {
+		t.Fatalf("blocked summary consumed evidence with %d updates", *updates)
+	}
+}
 
 func TestBuildFinalVerifyReportRequiresDoneTasksAndCoverage(t *testing.T) {
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
@@ -268,6 +929,31 @@ func TestRunVerifySelfHostedPreservesBlockingGateAndSkipsEvidenceConsumption(t *
 	}
 }
 
+func TestRunVerifySelfHostedRevisionFailureIsAuthoritativeDiagnostic(t *testing.T) {
+	app, out, errOut, updates := newSelfHostedVerifyAppAtRevision(t, "stale-head")
+	code := app.runVerify(t.Context(), []string{
+		"--repo", "acme/widgets", "--proposal", "1", "--design", "2", "--implement", "3", "--json",
+	})
+	if code != 1 {
+		t.Fatalf("self-hosted verify exit=%d, want 1; stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var report finalVerifyReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode verify report: %v\n%s", err, out.String())
+	}
+	diagnostic := finalReportGateDiagnostic(report, gates.CodeVerifyRevisionInvalid)
+	if report.OK || diagnostic == nil || diagnostic.Artifact.ID != "VERIFY-001" ||
+		diagnostic.Expected != "head-abc" || diagnostic.Remediation.CommandFamily != "comment upsert" {
+		t.Fatalf("exact-revision failure missing authoritative diagnostic: %+v", report.Gate)
+	}
+	if !errorsContain(report.Errors, "exact external head revision head-abc") {
+		t.Fatalf("legacy exact-revision error projection changed: %+v", report.Errors)
+	}
+	if *updates != 0 {
+		t.Fatalf("revision mismatch consumed external evidence with %d comment updates", *updates)
+	}
+}
+
 func TestRunVerifySelfHostedRejectsAnyExplicitPR(t *testing.T) {
 	const externalEvidenceError = "external evidence fixture failed"
 	failures := []struct {
@@ -330,6 +1016,16 @@ func TestRunVerifySelfHostedRejectsAnyExplicitPR(t *testing.T) {
 					if !argument.rejected && (!strings.Contains(stderr, "verify external evidence:") || !strings.Contains(stderr, externalEvidenceError)) {
 						t.Fatalf("omitted --pr did not report external evidence failure: %q", stderr)
 					}
+					if !argument.rejected {
+						var report finalVerifyReport
+						if decodeErr := json.Unmarshal(out.Bytes(), &report); decodeErr != nil {
+							t.Fatalf("provider failure did not return final decision JSON: %v\nstdout=%q", decodeErr, out.String())
+						}
+						diagnostic := finalReportGateDiagnostic(report, gates.CodeProviderEvidenceMissing)
+						if report.OK || diagnostic == nil || diagnostic.Remediation.CommandFamily != "evidence explain" {
+							t.Fatalf("provider failure missing actionable gate diagnostic: %+v", report.Gate)
+						}
+					}
 					if *updates != 0 {
 						t.Fatalf("self-hosted verify unexpectedly consumed evidence with %d comment updates", *updates)
 					}
@@ -349,6 +1045,10 @@ func (e *failingResolveNativeEvidence) ResolveTarget(context.Context, string, in
 }
 
 func newSelfHostedVerifyApp(t *testing.T) (*app, *bytes.Buffer, *bytes.Buffer, *int) {
+	return newSelfHostedVerifyAppAtRevision(t, "head-abc")
+}
+
+func newSelfHostedVerifyAppAtRevision(t *testing.T, verifyRevision string) (*app, *bytes.Buffer, *bytes.Buffer, *int) {
 	t.Helper()
 	clearCommandAuthEnv(t)
 	revision := "head-abc"
@@ -376,7 +1076,7 @@ func newSelfHostedVerifyApp(t *testing.T) (*app, *bytes.Buffer, *bytes.Buffer, *
 		IssueID: uuid.New(), OrgID: uuid.New(), RepoID: uuid.New(),
 	}}
 	verify := typedCommentWithLinks(t, "VERIFY", "VERIFY-001", "done",
-		canonicalVerifyContent+"\n\n### Revision\n\n`"+revision+"`", 4,
+		canonicalVerifyContent+"\n\n### Revision\n\n`"+verifyRevision+"`", 4,
 		"https://issues.example/acme/widgets/issues/3#issuecomment-4")
 
 	updates := new(int)
@@ -444,6 +1144,15 @@ func finalReportHasGateCode(report finalVerifyReport, code string) bool {
 		}
 	}
 	return false
+}
+
+func finalReportGateDiagnostic(report finalVerifyReport, code string) *gates.Diagnostic {
+	for index := range report.Gate.Diagnostics {
+		if report.Gate.Diagnostics[index].Code == code {
+			return &report.Gate.Diagnostics[index]
+		}
+	}
+	return nil
 }
 
 func errorsContain(errs []string, substr string) bool {

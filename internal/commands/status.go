@@ -42,8 +42,13 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 	implementFlag := fs.String("implement", "", "implement issue number or URL")
 	gateFlag := fs.String("gate", "", "readiness gate: proposal, design, implement, final, or archive (default inferred from supplied issues)")
 	jsonOut := fs.Bool("json", false, "write JSON output")
+	summaryOut := fs.Bool("summary", false, "write compact versioned JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
+	}
+	if *summaryOut && !*jsonOut {
+		a.errorf("--summary requires --json\n")
+		return 2
 	}
 	repo, ok := a.validateRepo(*repoFlag)
 	if !ok {
@@ -95,7 +100,12 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 		}
 	}
 	if *jsonOut {
-		if code := a.outputJSON(summary); code != 0 {
+		var output any = summary
+		if *summaryOut {
+			output = gates.ProjectCompactSummary(summary.Gate, summary.Counts, collection.Subject,
+				gates.Remediation{CommandFamily: "status", Arguments: compactDetailArguments(args)})
+		}
+		if code := a.outputJSON(output); code != 0 {
 			return code
 		}
 		if !summary.OK {
@@ -191,7 +201,7 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 			collection = collected
 		}
 	}
-	counts := map[string]map[string]int{}
+	counts := artifactStatusCounts(artifacts)
 	verify := map[string]string{}
 	blockingQuestions := 0
 	openReviews := 0
@@ -204,14 +214,6 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		if tc.Status != "superseded" {
 			malformed = append(malformed, model.ValidateArtifact(artifact)...)
 		}
-		if counts[tc.Type] == nil {
-			counts[tc.Type] = map[string]int{}
-		}
-		status := tc.Status
-		if status == "" {
-			status = "unknown"
-		}
-		counts[tc.Type][status]++
 		if tc.Type == "QUESTION" && tc.Status == "blocked" {
 			blockingQuestions++
 		}
@@ -328,6 +330,7 @@ func statusForecastRemoteFacts(target gates.Target) gates.RemoteFacts {
 type statusGateCollection struct {
 	Remote          gates.RemoteFacts
 	ProcessEvidence []gates.ProcessEvidenceInput
+	Subject         *gates.CompactSubject
 }
 
 func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend, profile auth.Profile, token, repo string,
@@ -345,6 +348,7 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 		}
 		gate, _, gateErr := a.externalGateWithProfile(ctx, profile, token, repo, implementIssue, "code_change", "",
 			coreevidence.GateVerify, ".", syncStage)
+		collection.Subject = compactExternalSubject(gate)
 		if revision := strings.TrimSpace(gate.Target.SubjectRevision); revision != "" {
 			collection.Remote.Workspace.ExpectedRevision = gates.Fact{Required: true, Known: true, Passed: true,
 				Expected: revision, Current: revision}
@@ -359,9 +363,10 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 		collection.Remote.ProviderEvidence = gates.Fact{Required: true, Known: true, Passed: gateErr == nil,
 			Expected: "trusted exact-revision provider evidence"}
 		if gateErr != nil {
-			collection.Remote.ProviderEvidence.Current = "unavailable"
+			collection.Remote.ProviderEvidence.Current = gateErr.Error()
 			return collection
 		}
+		collection.Remote.VerifyRevision, _ = collectVerifyRevisionFact(artifacts, gate.Target.SubjectRevision, time.Now().UTC())
 		collection.ProcessEvidence = buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
 			reviewSyncReport{}, nil, &gate, time.Now().UTC())
 		return collection
@@ -381,6 +386,7 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 	}
 	collection.Remote.Workspace.ExpectedRevision = gates.Fact{Required: true, Known: true, Passed: true,
 		Expected: pr.Head.SHA, Current: pr.Head.SHA}
+	collection.Subject = compactPullRequestSubject(prNumber, prURL, pr.Head.SHA)
 	collection.Remote.Workspace.IntegrationAncestry = pullRequestIntegrationAncestry(artifacts, facts.Commits, pr.Head.SHA)
 	review := buildReviewSyncReport(pr, facts.ReviewComments, nil, facts.Status, facts.CheckRuns)
 	collection.Remote.PRChecks = gates.Fact{Required: true, Known: true,
@@ -390,6 +396,63 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 		Current: fmt.Sprintf("blocking=%d", len(review.BlockingFindings)), Expected: "blocking=0"}
 	collection.ProcessEvidence = buildProcessEvidenceInputs(artifacts, prURL, facts.ReviewComments, review, nil)
 	return collection
+}
+
+func artifactStatusCounts(artifacts []model.Artifact) map[string]map[string]int {
+	counts := map[string]map[string]int{}
+	for _, artifact := range artifacts {
+		comment := artifact.Comment
+		if comment.Type == "" {
+			continue
+		}
+		if counts[comment.Type] == nil {
+			counts[comment.Type] = map[string]int{}
+		}
+		status := comment.Status
+		if status == "" {
+			status = "unknown"
+		}
+		counts[comment.Type][status]++
+	}
+	return counts
+}
+
+func compactDetailArguments(args []string) []string {
+	detail := make([]string, 0, len(args))
+	for _, argument := range args {
+		name := strings.TrimLeft(argument, "-")
+		if name == "summary" || strings.HasPrefix(name, "summary=") {
+			continue
+		}
+		detail = append(detail, argument)
+	}
+	return detail
+}
+
+func compactPullRequestSubject(number int, rawURL, revision string) *gates.CompactSubject {
+	revision = strings.TrimSpace(revision)
+	rawURL = strings.TrimSpace(rawURL)
+	if number <= 0 && rawURL == "" && revision == "" {
+		return nil
+	}
+	evidence := &gates.CompactEvidenceIdentity{Kind: "pull_request", URL: rawURL}
+	if number > 0 {
+		evidence.ID = strconv.Itoa(number)
+	}
+	return &gates.CompactSubject{Revision: revision, Evidence: evidence}
+}
+
+func compactExternalSubject(gate externalGateResult) *gates.CompactSubject {
+	reference := gate.Target.Reference
+	revision := strings.TrimSpace(gate.Target.SubjectRevision)
+	if revision == "" && strings.TrimSpace(reference.ProviderKey) == "" &&
+		strings.TrimSpace(reference.ExternalRepository) == "" && strings.TrimSpace(reference.ChangeID) == "" {
+		return nil
+	}
+	return &gates.CompactSubject{Revision: revision, Evidence: &gates.CompactEvidenceIdentity{
+		Kind: "code_change", ID: strings.TrimSpace(reference.ChangeID), Provider: strings.TrimSpace(reference.ProviderKey),
+		Repository: strings.TrimSpace(reference.ExternalRepository),
+	}}
 }
 
 type pullRequestGateFacts struct {

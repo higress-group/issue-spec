@@ -196,6 +196,36 @@ func TestGHBackendListIssueCommentsUsesPaginationHostAndNormalizesPages(t *testi
 	}
 }
 
+func TestGHBackendObserveIssueCommentUsesDirectEndpointWithoutPagination(t *testing.T) {
+	runner := &recordingCLIRunner{result: ExternalCLIResult{Stdout: includedHTTP(http.StatusOK,
+		map[string]string{HeaderRepresentationVersion: "17"},
+		`{"id":77,"html_url":"https://ghe.example.com/o/r/issues/9#issuecomment-77","url":"https://ghe.example.com/api/v3/repos/o/r/issues/comments/77","issue_url":"https://ghe.example.com/api/v3/repos/o/r/issues/9","body":"exact body\n"}`)}}
+	backend := newTestGHBackend(t, "ghe.example.com", runner)
+	var _ IssueCommentObserver = backend
+
+	observed, err := backend.ObserveIssueComment(t.Context(), "o/r", 77)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Comment.ID != 77 || observed.Comment.IssueNumber != 9 || observed.Comment.Body != "exact body\n" || observed.RepresentationVersion != 17 {
+		t.Fatalf("observation = %+v", observed)
+	}
+	wantArgs := []string{
+		"api",
+		"--method", http.MethodGet,
+		"--header", githubAPIVersion,
+		"--hostname", "ghe.example.com",
+		"--include",
+		"/repos/o/r/issues/comments/77",
+	}
+	if !reflect.DeepEqual(runner.command.Args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", runner.command.Args, wantArgs)
+	}
+	if slices.Contains(runner.command.Args, "--paginate") || strings.Contains(strings.Join(runner.command.Args, " "), "/issues/9/comments") {
+		t.Fatalf("direct observation used timeline pagination: %#v", runner.command.Args)
+	}
+}
+
 func TestGHBackendListIssuesUsesPaginationStateAndNormalizesPages(t *testing.T) {
 	runner := &recordingCLIRunner{
 		result: ExternalCLIResult{Stdout: []byte(`[{"number":1,"body":"one","state":"open"}]

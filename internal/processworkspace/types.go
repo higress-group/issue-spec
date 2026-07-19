@@ -1,6 +1,7 @@
 package processworkspace
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -9,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/higress-group/issue-spec/internal/assignment"
 )
 
 const (
@@ -53,29 +56,146 @@ type RuntimeResource struct {
 	Exclusive bool   `json:"exclusive,omitempty"`
 }
 
+// AssignmentBinding is the durable, portable identity of the role packet
+// issued for a lease. The complete assignment is retained in LocalLease;
+// machine-local delivery metadata is never part of this projection or digest.
+type AssignmentBinding struct {
+	SchemaVersion   string          `json:"schema_version"`
+	AssignmentID    string          `json:"assignment_id"`
+	Digest          string          `json:"assignment_digest"`
+	Role            assignment.Role `json:"role"`
+	BaseRevision    string          `json:"base_revision,omitempty"`
+	SubjectRevision string          `json:"subject_revision,omitempty"`
+	Generation      uint64          `json:"generation"`
+}
+
+// AcceptedReceiptBinding is the append-only portable authority retained after
+// an implementation receipt has been validated. The full receipt is
+// intentionally absent: only its immutable identity is projected to PROCESS.
+type AcceptedReceiptBinding struct {
+	ReceiptID            string                       `json:"receipt_id"`
+	ReceiptDigest        string                       `json:"receipt_digest"`
+	AssignmentGeneration uint64                       `json:"assignment_generation"`
+	Submission           *RoleOwnedSubmissionEvidence `json:"submission,omitempty"`
+}
+
+const (
+	AgentSessionSourceRuntimeNative = "CODEX_THREAD_ID"
+	AgentSessionSourceParameter     = "agent-session-parameter"
+	AgentSessionSourceCompatibility = "role-owned-compatibility"
+)
+
+// RoleOwnedSubmissionEvidence records self-reported metadata from a bounded
+// role-owned command. Agent and session strings identify the publication
+// route for compatibility; none of them is an independent provenance trust
+// root or runtime attestation.
+type RoleOwnedSubmissionEvidence struct {
+	Agent              string               `json:"agent"`
+	AgentSessionID     string               `json:"agent_session_id,omitempty"`
+	AgentSessionSource string               `json:"agent_session_source"`
+	Assurance          assignment.Assurance `json:"assurance"`
+}
+
+func (e RoleOwnedSubmissionEvidence) Validate() error {
+	agent := strings.TrimSpace(e.Agent)
+	if agent == "" || agent != e.Agent || strings.EqualFold(agent, "Coordinator") {
+		return errors.New("role-owned submission requires one trimmed non-Coordinator agent")
+	}
+	if e.Assurance != assignment.AssuranceSelfReported {
+		return errors.New("role-owned submission evidence must remain self-reported")
+	}
+	sessionID := strings.TrimSpace(e.AgentSessionID)
+	if sessionID != e.AgentSessionID {
+		return errors.New("role-owned submission session id must be trimmed")
+	}
+	switch e.AgentSessionSource {
+	case AgentSessionSourceRuntimeNative, AgentSessionSourceParameter:
+		if sessionID == "" {
+			return errors.New("role-owned submission session source requires a session id")
+		}
+	case AgentSessionSourceCompatibility:
+		if sessionID != "" {
+			return errors.New("no-runtime role-owned compatibility cannot claim a session id")
+		}
+	default:
+		return fmt.Errorf("unsupported role-owned submission session source %q", e.AgentSessionSource)
+	}
+	return nil
+}
+
+// ValidateRoleOwnedReceiptSubmission validates the existing direct role-owned
+// publication compatibility route. The agent/session fields remain
+// self-reported metadata and this helper must never authorize Coordinator
+// import of caller-supplied receipt JSON.
+func ValidateRoleOwnedReceiptSubmission(receipt assignment.Receipt, submission RoleOwnedSubmissionEvidence) error {
+	if err := submission.Validate(); err != nil {
+		return err
+	}
+	writer := strings.TrimSpace(receipt.Provenance.Writer)
+	subject := strings.TrimSpace(receipt.Provenance.Subject)
+	if writer == "" || subject == "" || !strings.EqualFold(writer, subject) ||
+		!strings.EqualFold(writer, submission.Agent) {
+		return errors.New("receipt writer and subject must match the role-owned submitting agent")
+	}
+	if strings.EqualFold(writer, "Coordinator") {
+		return errors.New("receipt submission must be owned by a non-Coordinator role agent")
+	}
+	if receipt.Provenance.Route != assignment.RouteRoleOwned ||
+		receipt.Provenance.Assurance != assignment.AssuranceSelfReported {
+		return errors.New("version-1 role-owned receipt submission must remain self-reported")
+	}
+	for _, test := range receipt.Tests {
+		if test.Assurance != assignment.AssuranceSelfReported {
+			return fmt.Errorf("receipt test %s must remain self-reported", test.ID)
+		}
+	}
+	return nil
+}
+
 // PortableLease is safe to project into PROCESS metadata. It deliberately has
 // no absolute local path, PID, hostname, or lock token.
 type PortableLease struct {
-	SchemaVersion      int               `json:"schema_version"`
-	WorkspaceID        string            `json:"workspace_id"`
-	Repository         string            `json:"repository"`
-	ProcessID          string            `json:"process_id"`
-	ExecutionClass     ExecutionClass    `json:"execution_class"`
-	Mode               WorkspaceMode     `json:"mode"`
-	BaseSHA            string            `json:"base_sha,omitempty"`
-	Branch             string            `json:"branch,omitempty"`
-	DetachedRevision   string            `json:"detached_revision,omitempty"`
-	WriteOwnership     []string          `json:"write_ownership,omitempty"`
-	SharedTouchpoints  []string          `json:"shared_touchpoints,omitempty"`
-	IntegrationOwner   string            `json:"integration_owner,omitempty"`
-	RuntimeNamespace   string            `json:"runtime_namespace,omitempty"`
-	RuntimeResources   []RuntimeResource `json:"runtime_resources,omitempty"`
-	State              LifecycleState    `json:"state"`
-	ResultCommit       string            `json:"result_commit,omitempty"`
-	IntegrationSHA     string            `json:"integration_sha,omitempty"`
-	CreatedAt          time.Time         `json:"created_at"`
-	UpdatedAt          time.Time         `json:"updated_at"`
-	RetentionExpiresAt time.Time         `json:"retention_expires_at,omitempty"`
+	SchemaVersion             int                          `json:"schema_version"`
+	WorkspaceID               string                       `json:"workspace_id"`
+	Repository                string                       `json:"repository"`
+	ProcessID                 string                       `json:"process_id"`
+	ExecutionClass            ExecutionClass               `json:"execution_class"`
+	Mode                      WorkspaceMode                `json:"mode"`
+	BaseSHA                   string                       `json:"base_sha,omitempty"`
+	Branch                    string                       `json:"branch,omitempty"`
+	DetachedRevision          string                       `json:"detached_revision,omitempty"`
+	WriteOwnership            []string                     `json:"write_ownership,omitempty"`
+	SharedTouchpoints         []string                     `json:"shared_touchpoints,omitempty"`
+	IntegrationOwner          string                       `json:"integration_owner,omitempty"`
+	RuntimeNamespace          string                       `json:"runtime_namespace,omitempty"`
+	RuntimeResources          []RuntimeResource            `json:"runtime_resources,omitempty"`
+	Assignment                *AssignmentBinding           `json:"assignment,omitempty"`
+	AcceptedReceiptID         string                       `json:"accepted_receipt_id,omitempty"`
+	AcceptedReceiptDigest     string                       `json:"accepted_receipt_digest,omitempty"`
+	AcceptedReceiptGeneration uint64                       `json:"accepted_receipt_generation,omitempty"`
+	AcceptedReceiptSubmission *RoleOwnedSubmissionEvidence `json:"accepted_receipt_submission,omitempty"`
+	State                     LifecycleState               `json:"state"`
+	ResultCommit              string                       `json:"result_commit,omitempty"`
+	IntegrationSHA            string                       `json:"integration_sha,omitempty"`
+	CreatedAt                 time.Time                    `json:"created_at"`
+	UpdatedAt                 time.Time                    `json:"updated_at"`
+	RetentionExpiresAt        time.Time                    `json:"retention_expires_at,omitempty"`
+}
+
+// MarshalJSON keeps the ownership marker's historical identity stable. The
+// marker code deliberately clears State before hashing; accepted receipt
+// authority is lifecycle evidence and is omitted only from that synthetic
+// representation, never from a valid portable lease projection.
+func (l PortableLease) MarshalJSON() ([]byte, error) {
+	type portableLeaseJSON PortableLease
+	projection := portableLeaseJSON(l)
+	if l.State == "" {
+		projection.AcceptedReceiptID = ""
+		projection.AcceptedReceiptDigest = ""
+		projection.AcceptedReceiptGeneration = 0
+		projection.AcceptedReceiptSubmission = nil
+	}
+	return json.Marshal(projection)
 }
 
 type LeaseOwner struct {
@@ -106,13 +226,15 @@ type IntegrationState struct {
 // LocalLease is machine-local registry state. Absolute paths and ownership
 // credentials belong here and must never be copied into PortableLease.
 type LocalLease struct {
-	Portable        PortableLease       `json:"portable"`
-	IntegrationRoot string              `json:"integration_root"`
-	WorktreePath    string              `json:"worktree_path,omitempty"`
-	Owner           LeaseOwner          `json:"owner"`
-	Observation     WorktreeObservation `json:"observation,omitempty"`
-	Integration     IntegrationState    `json:"integration,omitempty"`
-	LocalRevision   uint64              `json:"local_revision"`
+	Portable          PortableLease          `json:"portable"`
+	IntegrationRoot   string                 `json:"integration_root"`
+	WorktreePath      string                 `json:"worktree_path,omitempty"`
+	Owner             LeaseOwner             `json:"owner"`
+	Observation       WorktreeObservation    `json:"observation,omitempty"`
+	Integration       IntegrationState       `json:"integration,omitempty"`
+	Assignment        *assignment.Assignment `json:"assignment,omitempty"`
+	AcceptedReceiptID string                 `json:"accepted_receipt_id,omitempty"`
+	LocalRevision     uint64                 `json:"local_revision"`
 }
 
 type Registry struct {
@@ -124,6 +246,8 @@ type Registry struct {
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 var fullSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
+var acceptedReceiptID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+var lowerSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func NewRegistry() Registry {
 	return Registry{SchemaVersion: RegistrySchemaVersion, Leases: map[string]LocalLease{}}
@@ -172,6 +296,12 @@ func (l PortableLease) Validate() error {
 		return fmt.Errorf("invalid runtime namespace %q", l.RuntimeNamespace)
 	}
 	if err := validateRuntimeResources(l.RuntimeResources); err != nil {
+		return err
+	}
+	if err := validateAssignmentBinding(l); err != nil {
+		return err
+	}
+	if err := validateAcceptedReceiptBinding(l); err != nil {
 		return err
 	}
 	if l.CreatedAt.IsZero() || l.UpdatedAt.IsZero() || l.UpdatedAt.Before(l.CreatedAt) {
@@ -273,6 +403,124 @@ func (l LocalLease) Validate() error {
 	}
 	if l.LocalRevision == 0 {
 		return errors.New("local revision must be positive")
+	}
+	if err := validateLocalAssignment(l); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateAssignmentBinding(lease PortableLease) error {
+	binding := lease.Assignment
+	if binding == nil {
+		return nil
+	}
+	if binding.SchemaVersion != assignment.AssignmentSchemaVersion {
+		return fmt.Errorf("assignment binding has unsupported schema version %q", binding.SchemaVersion)
+	}
+	if !safeID.MatchString(binding.AssignmentID) {
+		return fmt.Errorf("invalid assignment id %q", binding.AssignmentID)
+	}
+	if !lowerSHA256.MatchString(binding.Digest) {
+		return errors.New("assignment binding digest must be a lowercase SHA-256 digest")
+	}
+	if binding.Generation == 0 {
+		return errors.New("assignment binding generation must be positive")
+	}
+	if binding.Role != assignment.RoleImplementation && binding.Role != assignment.RoleReview && binding.Role != assignment.RoleVerification {
+		return fmt.Errorf("unsupported assignment role %q", binding.Role)
+	}
+	for name, revision := range map[string]string{"base": binding.BaseRevision, "subject": binding.SubjectRevision} {
+		if revision != "" && !fullSHA.MatchString(revision) {
+			return fmt.Errorf("assignment %s revision must be a full Git object id", name)
+		}
+	}
+	switch lease.ExecutionClass {
+	case ExecutionChangeBearing:
+		if binding.Role != assignment.RoleImplementation || binding.BaseRevision != lease.BaseSHA || binding.SubjectRevision != "" {
+			return errors.New("change-bearing assignment binding must use implementation role and the lease base revision")
+		}
+	case ExecutionReview:
+		if binding.Role != assignment.RoleReview || binding.SubjectRevision != lease.DetachedRevision || binding.BaseRevision != "" {
+			return errors.New("review assignment binding must use review role and the lease subject revision")
+		}
+	case ExecutionVerification:
+		if binding.Role != assignment.RoleVerification || binding.SubjectRevision != lease.DetachedRevision || binding.BaseRevision != "" {
+			return errors.New("verification assignment binding must use verification role and the lease subject revision")
+		}
+	default:
+		return fmt.Errorf("execution class %s cannot carry an assignment binding", lease.ExecutionClass)
+	}
+	return nil
+}
+
+func validateAcceptedReceiptBinding(lease PortableLease) error {
+	if lease.AcceptedReceiptID == "" && lease.AcceptedReceiptDigest == "" && lease.AcceptedReceiptGeneration == 0 {
+		if lease.AcceptedReceiptSubmission != nil {
+			return errors.New("accepted receipt submission evidence requires accepted receipt authority")
+		}
+		return nil
+	}
+	if !acceptedReceiptID.MatchString(lease.AcceptedReceiptID) {
+		return fmt.Errorf("invalid accepted receipt id %q", lease.AcceptedReceiptID)
+	}
+	if !lowerSHA256.MatchString(lease.AcceptedReceiptDigest) {
+		return errors.New("accepted receipt digest must be a lowercase SHA-256 digest")
+	}
+	if lease.AcceptedReceiptGeneration == 0 {
+		return errors.New("accepted receipt assignment generation must be positive")
+	}
+	if lease.Assignment == nil || lease.ExecutionClass != ExecutionChangeBearing || lease.Assignment.Role != assignment.RoleImplementation ||
+		lease.AcceptedReceiptGeneration != lease.Assignment.Generation {
+		return errors.New("accepted receipt must match the implementation assignment generation")
+	}
+	if lease.ResultCommit == "" {
+		return errors.New("accepted receipt requires result commit evidence")
+	}
+	// A nil submission remains readable for already-persisted legacy receipt
+	// authority. Every newly accepted receipt records non-nil evidence, and the
+	// append-only binding prevents a later assurance upgrade.
+	if lease.AcceptedReceiptSubmission != nil {
+		if err := lease.AcceptedReceiptSubmission.Validate(); err != nil {
+			return fmt.Errorf("accepted receipt submission: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateLocalAssignment(lease LocalLease) error {
+	if lease.Portable.Assignment == nil && lease.Assignment == nil {
+		if lease.AcceptedReceiptID != "" {
+			return errors.New("accepted receipt requires an assignment binding")
+		}
+		return nil
+	}
+	if lease.Portable.Assignment != nil && lease.Assignment == nil {
+		// A remote-only binding may be recovered only through explicit issuance,
+		// which recompiles and proves the full assignment before delivery.
+		return nil
+	}
+	if lease.Portable.Assignment == nil {
+		return errors.New("local assignment requires a portable assignment binding")
+	}
+	if err := lease.Assignment.ValidateForStorageRead(); err != nil {
+		return fmt.Errorf("local assignment: %w", err)
+	}
+	digest, err := assignment.AssignmentDigestForStorageRead(*lease.Assignment)
+	if err != nil {
+		return err
+	}
+	binding := lease.Portable.Assignment
+	if binding.SchemaVersion != lease.Assignment.SchemaVersion || binding.AssignmentID != lease.Assignment.ID || binding.Digest != digest ||
+		binding.Role != lease.Assignment.Role || binding.BaseRevision != lease.Assignment.BaseRevision || binding.SubjectRevision != lease.Assignment.SubjectRevision {
+		return errors.New("portable assignment binding differs from local assignment")
+	}
+	if lease.AcceptedReceiptID != "" && !acceptedReceiptID.MatchString(lease.AcceptedReceiptID) {
+		return fmt.Errorf("invalid accepted receipt id %q", lease.AcceptedReceiptID)
+	}
+	if lease.Portable.AcceptedReceiptID != "" && lease.AcceptedReceiptID != "" &&
+		lease.AcceptedReceiptID != lease.Portable.AcceptedReceiptID {
+		return errors.New("legacy accepted receipt id differs from portable accepted receipt authority")
 	}
 	return nil
 }

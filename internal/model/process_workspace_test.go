@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
 
@@ -70,6 +71,99 @@ func TestProcessWorkspaceCanonicalRoundTripByExecutionClass(t *testing.T) {
 				t.Fatalf("round trip mismatch\n got %s\nwant %s", got, want)
 			}
 		})
+	}
+}
+
+func TestProcessWorkspaceRoundTripsPortableAssignmentBindingOnly(t *testing.T) {
+	workspace := testProcessWorkspace("PROCESS-006", ProcessExecutionChangeBearing)
+	workspace.Assignment = &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion, AssignmentID: "assignment-006-1",
+		Digest: strings.Repeat("a", 64), Role: assignment.RoleImplementation, BaseRevision: workspace.BaseSHA, Generation: 1}
+	body := processBodyWithWorkspace("PROCESS-006", ProcessExecutionChangeBearing, workspace)
+	parsed := ParseProcessWorkspace("PROCESS-006", "", body)
+	if parsed.Blocking() || parsed.Workspace == nil || parsed.Workspace.Assignment == nil || parsed.Workspace.Assignment.AssignmentID != "assignment-006-1" {
+		t.Fatalf("assignment binding round trip=%+v", parsed)
+	}
+	for _, forbidden := range []string{"worktree_path", "owner-token", "integration_root"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("portable Workspace leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestProcessWorkspaceRoundTripsAuthoritativeResultAndIntegrationRevisions(t *testing.T) {
+	workspace := testProcessWorkspace("PROCESS-008", ProcessExecutionChangeBearing)
+	workspace.Assignment = &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion, AssignmentID: "assignment-008-1",
+		Digest: strings.Repeat("a", 64), Role: assignment.RoleImplementation, BaseRevision: workspace.BaseSHA, Generation: 1}
+	workspace.State = processworkspace.StateIntegrated
+	workspace.ResultCommit = strings.Repeat("b", 40)
+	workspace.IntegrationSHA = strings.Repeat("c", 40)
+	workspace.UpdatedAt = workspace.UpdatedAt.Add(time.Minute)
+	body := processBodyWithWorkspace("PROCESS-008", ProcessExecutionChangeBearing, workspace)
+	parsed := ParseProcessWorkspace("PROCESS-008", "", body)
+	if parsed.Blocking() || parsed.Workspace == nil || parsed.Workspace.Assignment == nil ||
+		parsed.Workspace.Assignment.AssignmentID != workspace.Assignment.AssignmentID ||
+		parsed.Workspace.ResultCommit != workspace.ResultCommit || parsed.Workspace.IntegrationSHA != workspace.IntegrationSHA {
+		t.Fatalf("durable completion evidence round trip=%+v", parsed)
+	}
+}
+
+func TestProcessWorkspaceRendersOnlyCompactAcceptedImplementationReceiptAuthority(t *testing.T) {
+	workspace := testProcessWorkspace("PROCESS-024", ProcessExecutionChangeBearing)
+	workspace.Assignment = &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion, AssignmentID: "assignment-024-1",
+		Digest: strings.Repeat("a", 64), Role: assignment.RoleImplementation, BaseRevision: workspace.BaseSHA, Generation: 3}
+	workspace.State = processworkspace.StateWorkerComplete
+	workspace.ResultCommit = strings.Repeat("b", 40)
+	workspace.AcceptedReceiptID = "receipt:implementation:024"
+	workspace.AcceptedReceiptDigest = strings.Repeat("c", 64)
+	workspace.AcceptedReceiptGeneration = 3
+	workspace.AcceptedReceiptSubmission = &processworkspace.RoleOwnedSubmissionEvidence{Agent: "Worker Agent",
+		AgentSessionID: "worker-session", AgentSessionSource: processworkspace.AgentSessionSourceRuntimeNative,
+		Assurance: assignment.AssuranceSelfReported}
+	workspace.UpdatedAt = workspace.UpdatedAt.Add(time.Minute)
+	body := processBodyWithWorkspace("PROCESS-024", ProcessExecutionChangeBearing, workspace)
+	wantMarker := acceptedImplementationReceiptStart + "\n" +
+		`{"receipt_id":"receipt:implementation:024","receipt_digest":"` + strings.Repeat("c", 64) + `","assignment_generation":3}` + "\n" +
+		acceptedImplementationReceiptEnd
+	if strings.Count(body, wantMarker) != 1 {
+		t.Fatalf("accepted receipt marker is not strict and singular:\n%s", body)
+	}
+	for _, forbidden := range []string{`"provenance"`, `"tests"`, `"changed_paths"`, `"rationale_draft"`, `"content"`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("portable receipt authority leaked %q:\n%s", forbidden, body)
+		}
+	}
+	authority, found, err := ObserveAcceptedReceiptAuthority(body, assignment.RoleImplementation)
+	if err != nil || !found || authority.ReceiptID != workspace.AcceptedReceiptID || authority.Digest != workspace.AcceptedReceiptDigest ||
+		authority.Generation != workspace.AcceptedReceiptGeneration {
+		t.Fatalf("authority=%+v found=%v err=%v", authority, found, err)
+	}
+	parsed := ParseProcessWorkspace("PROCESS-024", "", body)
+	if parsed.Blocking() || parsed.Workspace == nil || parsed.Workspace.AcceptedReceiptDigest != workspace.AcceptedReceiptDigest ||
+		parsed.Workspace.AcceptedReceiptSubmission == nil ||
+		*parsed.Workspace.AcceptedReceiptSubmission != *workspace.AcceptedReceiptSubmission {
+		t.Fatalf("accepted receipt round trip=%+v", parsed)
+	}
+
+	tampered := strings.Replace(body, workspace.AcceptedReceiptDigest, strings.Repeat("d", 64), 1)
+	if result := ParseProcessWorkspace("PROCESS-024", "", tampered); !result.Blocking() || result.Workspace != nil {
+		t.Fatalf("marker mismatch accepted: %+v", result)
+	}
+	legacy := workspace
+	legacy.AcceptedReceiptID, legacy.AcceptedReceiptDigest, legacy.AcceptedReceiptGeneration = "", "", 0
+	legacy.AcceptedReceiptSubmission = nil
+	legacyBody := processBodyWithWorkspace("PROCESS-024", ProcessExecutionChangeBearing, legacy)
+	if strings.Contains(legacyBody, "accepted-implementation-receipt") {
+		t.Fatalf("legacy result-commit acquired receipt marker:\n%s", legacyBody)
+	}
+	if result := ParseProcessWorkspace("PROCESS-024", "", legacyBody); result.Blocking() || result.Workspace == nil {
+		t.Fatalf("legacy result-commit did not remain compatible: %+v", result)
+	}
+	coordinator := workspace
+	coordinator.AcceptedReceiptSubmission = &processworkspace.RoleOwnedSubmissionEvidence{Agent: "Coordinator",
+		AgentSessionID: "coordinator-session", AgentSessionSource: processworkspace.AgentSessionSourceRuntimeNative,
+		Assurance: assignment.AssuranceSelfReported}
+	if _, err := RenderProcessWorkspaceSection(coordinator); err == nil || !strings.Contains(err.Error(), "non-Coordinator") {
+		t.Fatalf("Coordinator submission rendered: %v", err)
 	}
 }
 

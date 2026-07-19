@@ -14,6 +14,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/higress-group/issue-spec/internal/assignment"
 )
 
 var (
@@ -266,6 +268,93 @@ func (s *Store) Update(ctx context.Context, workspaceID string, mutate func(*Loc
 
 func (s *Store) UpdateAtGeneration(ctx context.Context, expected uint64, workspaceID string, mutate func(*LocalLease) error) (LocalLease, error) {
 	return s.update(ctx, &expected, workspaceID, mutate)
+}
+
+// BindAssignment atomically persists the complete assignment and its portable
+// identity before any caller can publish or deliver a packet. A normal retry
+// reuses the same binding; advancing generation is an explicit CAS operation.
+func (s *Store) BindAssignment(ctx context.Context, workspaceID string, value assignment.Assignment, redispatch bool, expectedAssignmentGeneration *uint64) (LocalLease, error) {
+	digest, err := assignment.AssignmentDigest(value)
+	if err != nil {
+		return LocalLease{}, err
+	}
+	var result LocalLease
+	err = s.withLock(ctx, func() error {
+		registry, err := loadRegistry(s.path)
+		if err != nil {
+			return err
+		}
+		original, exists := registry.Leases[workspaceID]
+		if !exists {
+			return fmt.Errorf("%s: %w", workspaceID, ErrLeaseNotFound)
+		}
+		if original.Portable.State != StatePrepared {
+			return fmt.Errorf("assignment issuance requires prepared lease, current state is %s", original.Portable.State)
+		}
+		binding := &AssignmentBinding{SchemaVersion: value.SchemaVersion, AssignmentID: value.ID, Digest: digest, Role: value.Role,
+			BaseRevision: value.BaseRevision, SubjectRevision: value.SubjectRevision, Generation: 1}
+		current := original.Portable.Assignment
+		if current != nil {
+			binding.Generation = current.Generation
+			if !redispatch {
+				if sameAssignmentBinding(*current, *binding) {
+					if original.Assignment == nil {
+						original.Assignment = &value
+					} else if !sameAssignment(*original.Assignment, value) {
+						return errors.New("assignment binding conflict: local assignment differs; inspect and reconcile the lease")
+					} else {
+						result = cloneLocalLease(original)
+						return nil
+					}
+				} else {
+					return errors.New("assignment binding conflict: requested assignment differs; use explicit redispatch with the current generation")
+				}
+			} else {
+				if expectedAssignmentGeneration == nil || *expectedAssignmentGeneration != current.Generation {
+					return fmt.Errorf("assignment redispatch generation conflict: expected current generation %d", current.Generation)
+				}
+				if original.AcceptedReceiptID != "" || original.Portable.ResultCommit != "" || original.Portable.IntegrationSHA != "" {
+					return errors.New("assignment redispatch is forbidden after receipt acceptance, worker completion, or integration")
+				}
+				binding.Generation = current.Generation + 1
+				if binding.AssignmentID == current.AssignmentID || binding.Digest == current.Digest {
+					return errors.New("assignment redispatch must issue a distinct assignment id and digest")
+				}
+			}
+		} else if redispatch {
+			return errors.New("assignment redispatch requires an existing assignment binding")
+		}
+		updated := cloneLocalLease(original)
+		updated.Portable.Assignment = binding
+		updated.Assignment = &value
+		updated.Portable.UpdatedAt = s.now().UTC()
+		updated.LocalRevision++
+		if err := updated.Validate(); err != nil {
+			return err
+		}
+		registry.Leases[workspaceID] = updated
+		registry.Generation++
+		registry.UpdatedAt = updated.Portable.UpdatedAt
+		if err := registry.Validate(); err != nil {
+			return err
+		}
+		if err := writeRegistryAtomic(s.path, registry); err != nil {
+			return err
+		}
+		result = cloneLocalLease(updated)
+		return nil
+	})
+	return result, err
+}
+
+func sameAssignmentBinding(left, right AssignmentBinding) bool {
+	return left == right
+}
+
+func sameAssignment(left, right assignment.Assignment) bool {
+	leftJSON, leftErr := assignment.CanonicalAssignmentJSON(left)
+	rightJSON, rightErr := assignment.CanonicalAssignmentJSON(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
 func (s *Store) update(ctx context.Context, expected *uint64, workspaceID string, mutate func(*LocalLease) error) (LocalLease, error) {
@@ -660,13 +749,20 @@ func validateImmutableLease(before, after PortableLease) error {
 		before.BaseSHA != after.BaseSHA || before.Branch != after.Branch || before.DetachedRevision != after.DetachedRevision ||
 		before.IntegrationOwner != after.IntegrationOwner || before.RuntimeNamespace != after.RuntimeNamespace ||
 		!equalStrings(before.WriteOwnership, after.WriteOwnership) || !equalStrings(before.SharedTouchpoints, after.SharedTouchpoints) ||
-		before.CreatedAt != after.CreatedAt {
+		before.CreatedAt != after.CreatedAt || !equalAssignmentBinding(before.Assignment, after.Assignment) {
 		return errors.New("lease identity, base, ownership, namespace, and creation time are immutable")
 	}
 	if !equalRuntimeResources(before.RuntimeResources, after.RuntimeResources) {
 		return errors.New("lease runtime resources are immutable")
 	}
 	return nil
+}
+
+func equalAssignmentBinding(left, right *AssignmentBinding) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func validateWorktreePathMutation(before, after LocalLease) error {
@@ -718,6 +814,18 @@ func cloneLocalLease(lease LocalLease) LocalLease {
 	result.Portable.WriteOwnership = append([]string(nil), lease.Portable.WriteOwnership...)
 	result.Portable.SharedTouchpoints = append([]string(nil), lease.Portable.SharedTouchpoints...)
 	result.Portable.RuntimeResources = append([]RuntimeResource(nil), lease.Portable.RuntimeResources...)
+	if lease.Portable.Assignment != nil {
+		binding := *lease.Portable.Assignment
+		result.Portable.Assignment = &binding
+	}
+	if lease.Assignment != nil {
+		value := *lease.Assignment
+		result.Assignment = &value
+	}
+	if lease.Portable.AcceptedReceiptSubmission != nil {
+		value := *lease.Portable.AcceptedReceiptSubmission
+		result.Portable.AcceptedReceiptSubmission = &value
+	}
 	return result
 }
 

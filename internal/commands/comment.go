@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/templates"
 	"github.com/higress-group/issue-spec/internal/workflow"
@@ -39,7 +42,7 @@ func parseCoversSectionIDs(body string) []string {
 
 func (a *app) runComment(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec comment create|generate|upsert|transition|list ...\n")
+		a.errorf("usage: issue-spec comment create|generate|upsert|transition|get|list ...\n")
 		return 2
 	}
 	switch args[0] {
@@ -51,12 +54,114 @@ func (a *app) runComment(ctx context.Context, args []string) int {
 		return a.runCommentUpsert(ctx, args[1:])
 	case "transition":
 		return a.runCommentTransition(ctx, args[1:])
+	case "get":
+		return a.runCommentGet(ctx, args[1:])
 	case "list":
 		return a.runCommentList(ctx, args[1:])
 	default:
 		a.errorf("unknown comment command %q\n", args[0])
 		return 2
 	}
+}
+
+const defaultCommentLinkLimit = 10
+
+type commentLinkReference struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+	URL  string `json:"url"`
+}
+
+type commentLinkRelation struct {
+	Count          int                    `json:"count"`
+	Items          []commentLinkReference `json:"items"`
+	TruncatedCount int                    `json:"truncated_count"`
+}
+
+// commentReadArtifact is deliberately separate from model.Artifact. Existing
+// comment list callers retain the exact legacy JSON contract; only targeted or
+// explicitly filtered reads opt into this bounded projection.
+type commentReadArtifact struct {
+	Issue                 int                            `json:"issue"`
+	CommentID             int64                          `json:"comment_id"`
+	URL                   string                         `json:"url"`
+	APIURL                string                         `json:"api_url,omitempty"`
+	Type                  string                         `json:"type"`
+	ID                    string                         `json:"id"`
+	Status                string                         `json:"status"`
+	Scope                 string                         `json:"scope,omitempty"`
+	SubjectRevision       string                         `json:"subject_revision,omitempty"`
+	RepresentationVersion int64                          `json:"representation_version,omitempty"`
+	RepresentationDigest  string                         `json:"representation_digest"`
+	Links                 map[string]commentLinkRelation `json:"links"`
+	Canonical             []model.CanonicalDiagnostic    `json:"canonical,omitempty"`
+	Errors                []string                       `json:"errors,omitempty"`
+	Body                  string                         `json:"body,omitempty"`
+}
+
+func (a *app) runCommentGet(ctx context.Context, args []string) int {
+	fs := newFlagSet("comment get", a.err)
+	repoFlag := fs.String("repo", "", "repository owner/name")
+	host := fs.String("hostname", "github.com", "GitHub hostname")
+	issueFlag := fs.String("issue", "", "issue number or URL")
+	id := fs.String("id", "", "stable typed comment id")
+	commentType := fs.String("type", "", "expected typed comment type")
+	commentID := fs.Int64("comment-id", 0, "provider comment id from a prior read")
+	includeBody := fs.Bool("include-body", false, "include exact remote Markdown (requires --json)")
+	includeAllLinks := fs.Bool("include-all-links", false, "return every link instead of at most 10 per relation (requires --json)")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	if strings.TrimSpace(*id) == "" {
+		a.errorf("--id is required\n")
+		return 2
+	}
+	requestedType, ok := validateCommentReadType(*commentType)
+	if !ok {
+		a.errorf("unsupported --type %q\n", strings.ToUpper(strings.TrimSpace(*commentType)))
+		return 2
+	}
+	if *commentID < 0 {
+		a.errorf("--comment-id must be positive\n")
+		return 2
+	}
+	if *includeBody && !*jsonOut {
+		a.errorf("--include-body requires --json\n")
+		return 2
+	}
+	if *includeAllLinks && !*jsonOut {
+		a.errorf("--include-all-links requires --json\n")
+		return 2
+	}
+	repo, valid := a.validateRepo(*repoFlag)
+	if !valid {
+		return 2
+	}
+	issueNumber, err := parseIssueFlag(*issueFlag, "issue")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	client, _, err := a.clientFor(ctx, *host)
+	if err != nil {
+		a.errorf("auth required for comment get on %s: %v\n", auth.NormalizeHost(*host), err)
+		return 1
+	}
+
+	comment, observed, version, err := getTypedComment(ctx, client, repo, issueNumber, strings.TrimSpace(*id), requestedType, *commentID)
+	if err != nil {
+		a.errorf("get typed comment: %v\n", err)
+		return 1
+	}
+	artifact := artifactFromComment(issueNumber, comment)
+	index := linkIdentityIndex(observed)
+	result := compactCommentArtifact(artifact, comment.Body, index, *includeBody, *includeAllLinks, version)
+	if *jsonOut {
+		return a.outputJSON(map[string]any{"ok": true, "issue": issueNumber, "comment": result})
+	}
+	fmt.Fprintf(a.out, "%s %s %s %s %s\n", result.Type, result.ID, result.Status, result.URL, result.RepresentationDigest)
+	return 0
 }
 
 func (a *app) runCommentCreate(ctx context.Context, args []string) int {
@@ -386,13 +491,33 @@ func (a *app) runCommentList(ctx context.Context, args []string) int {
 	host := fs.String("hostname", "github.com", "GitHub hostname")
 	issueFlag := fs.String("issue", "", "issue number or URL")
 	commentType := fs.String("type", "", "filter by typed comment type")
+	status := fs.String("status", "", "filter by comma-separated typed comment statuses")
+	activeOnly := fs.Bool("active-only", false, "return current non-superseded canonical artifacts")
+	history := fs.Bool("history", false, "return superseded historical artifacts")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	includeBody := fs.Bool("include-body", false, "include original backend Markdown in JSON output (requires --json)")
+	includeAllLinks := fs.Bool("include-all-links", false, "return every link instead of at most 10 per relation (requires --json)")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
 	if *includeBody && !*jsonOut {
 		a.errorf("--include-body requires --json\n")
+		return 2
+	}
+	if *includeAllLinks && !*jsonOut {
+		a.errorf("--include-all-links requires --json\n")
+		return 2
+	}
+	if *activeOnly && *history {
+		a.errorf("--active-only and --history are mutually exclusive\n")
+		return 2
+	}
+	// Preserve the legacy list behavior for arbitrary type filters: an unknown
+	// value simply produces no matches rather than becoming a new usage error.
+	requestedType := strings.ToUpper(strings.TrimSpace(*commentType))
+	statuses, err := parseCommentStatuses(*status)
+	if err != nil {
+		a.errorf("%v\n", err)
 		return 2
 	}
 	repo, ok := a.validateRepo(*repoFlag)
@@ -416,22 +541,39 @@ func (a *app) runCommentList(ctx context.Context, args []string) int {
 	}
 	artifacts := make([]model.Artifact, 0)
 	artifactsWithBody := make([]commentListArtifactWithBody, 0)
+	compactArtifacts := make([]commentReadArtifact, 0)
+	advancedRead := *activeOnly || *history || len(statuses) > 0 || *includeAllLinks
+	identityIndex := linkIdentityIndex(comments)
 	for _, comment := range comments {
 		if !model.IsLikelyTyped(comment.Body) {
 			continue
 		}
 		tc := model.ParseTypedComment(comment.Body)
-		if *commentType != "" && tc.Type != strings.ToUpper(*commentType) {
+		if requestedType != "" && tc.Type != requestedType {
 			continue
 		}
-		artifact := model.Artifact{Issue: issueNumber, CommentID: comment.ID, URL: comment.HTMLURL, APIURL: comment.URL, Comment: tc}
-		artifact.Canonical = model.ValidateArtifact(artifact)
+		artifact := artifactFromComment(issueNumber, comment)
+		if *activeOnly && (tc.Status == "superseded" || len(tc.Errors) > 0 || len(artifact.Canonical) > 0) {
+			continue
+		}
+		if *history && tc.Status != "superseded" {
+			continue
+		}
+		if len(statuses) > 0 && !statuses[tc.Status] {
+			continue
+		}
 		artifacts = append(artifacts, artifact)
 		if *includeBody {
 			artifactsWithBody = append(artifactsWithBody, commentListArtifactWithBody{Artifact: artifact, Body: comment.Body})
 		}
+		if advancedRead {
+			compactArtifacts = append(compactArtifacts, compactCommentArtifact(artifact, comment.Body, identityIndex, *includeBody, *includeAllLinks, 0))
+		}
 	}
 	if *jsonOut {
+		if advancedRead {
+			return a.outputJSON(map[string]any{"ok": true, "issue": issueNumber, "comments": compactArtifacts})
+		}
 		if *includeBody {
 			return a.outputJSON(map[string]any{"ok": true, "issue": issueNumber, "comments": artifactsWithBody})
 		}
@@ -458,4 +600,203 @@ func (a *app) runCommentList(ctx context.Context, args []string) int {
 type commentListArtifactWithBody struct {
 	model.Artifact
 	Body string `json:"body"`
+}
+
+func validateCommentReadType(raw string) (string, bool) {
+	t := strings.ToUpper(strings.TrimSpace(raw))
+	return t, t == "" || model.AllowedTypes[t]
+}
+
+func parseCommentStatuses(raw string) (map[string]bool, error) {
+	statuses := map[string]bool{}
+	for _, value := range strings.Split(raw, ",") {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if !model.AllowedStatuses[value] {
+			return nil, fmt.Errorf("unsupported --status %q", value)
+		}
+		statuses[value] = true
+	}
+	return statuses, nil
+}
+
+func artifactFromComment(issue int, comment github.Comment) model.Artifact {
+	artifact := model.Artifact{
+		Issue: issue, CommentID: comment.ID, URL: comment.HTMLURL, APIURL: comment.URL,
+		Comment: model.ParseTypedComment(comment.Body),
+	}
+	artifact.Canonical = model.ValidateArtifact(artifact)
+	return artifact
+}
+
+func compactCommentArtifact(artifact model.Artifact, body string, identities map[string]commentLinkReference, includeBody, includeAllLinks bool, version int64) commentReadArtifact {
+	tc := artifact.Comment
+	result := commentReadArtifact{
+		Issue: artifact.Issue, CommentID: artifact.CommentID, URL: artifact.URL, APIURL: artifact.APIURL,
+		Type: tc.Type, ID: tc.ID, Status: tc.Status, Scope: tc.Scope, SubjectRevision: tc.SubjectRevision,
+		RepresentationVersion: version, RepresentationDigest: model.RepresentationDigest(body),
+		Links: boundedCommentLinks(tc, identities, includeAllLinks), Canonical: artifact.Canonical, Errors: tc.Errors,
+	}
+	if includeBody {
+		result.Body = body
+	}
+	return result
+}
+
+func linkIdentityIndex(comments []github.Comment) map[string]commentLinkReference {
+	index := map[string]commentLinkReference{}
+	for _, comment := range comments {
+		if !model.IsLikelyTyped(comment.Body) {
+			continue
+		}
+		tc := model.ParseTypedComment(comment.Body)
+		ref := commentLinkReference{Type: tc.Type, ID: tc.ID, URL: comment.HTMLURL}
+		for _, value := range []string{comment.HTMLURL, comment.URL} {
+			if normalized := model.NormalizeURL(value); normalized != "" {
+				copy := ref
+				copy.URL = value
+				index[normalized] = copy
+			}
+		}
+	}
+	return index
+}
+
+func boundedCommentLinks(tc model.TypedComment, identities map[string]commentLinkReference, includeAll bool) map[string]commentLinkRelation {
+	relations := map[string]commentLinkRelation{}
+	for name, values := range tc.Links {
+		seen := map[string]bool{}
+		refs := make([]commentLinkReference, 0, len(values))
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			normalized := model.NormalizeURL(value)
+			if value == "" || strings.EqualFold(value, "N/A") || seen[normalized] {
+				continue
+			}
+			seen[normalized] = true
+			ref, found := identities[normalized]
+			if !found {
+				ref = commentLinkReference{URL: value}
+			} else if ref.URL == "" {
+				ref.URL = value
+			}
+			refs = append(refs, ref)
+		}
+		if len(refs) == 0 {
+			continue
+		}
+		sort.Slice(refs, func(i, j int) bool {
+			left := refs[i].Type + "\x00" + refs[i].ID + "\x00" + refs[i].URL
+			right := refs[j].Type + "\x00" + refs[j].ID + "\x00" + refs[j].URL
+			return left < right
+		})
+		count := len(refs)
+		if !includeAll && len(refs) > defaultCommentLinkLimit {
+			refs = refs[:defaultCommentLinkLimit]
+		}
+		relations[name] = commentLinkRelation{Count: count, Items: refs, TruncatedCount: count - len(refs)}
+	}
+	return relations
+}
+
+func getTypedComment(ctx context.Context, client github.Backend, repo string, issue int, id, requestedType string, commentID int64) (github.Comment, []github.Comment, int64, error) {
+	if commentID > 0 {
+		if observer, ok := client.(github.IssueCommentObserver); ok {
+			observed, err := observer.ObserveIssueComment(ctx, repo, commentID)
+			if err != nil {
+				return github.Comment{}, nil, 0, fmt.Errorf("observe provider comment %d: %w", commentID, err)
+			}
+			if observed.Comment.ID != commentID {
+				return github.Comment{}, nil, 0, fmt.Errorf("provider locator %d returned comment %d", commentID, observed.Comment.ID)
+			}
+			if observedIssue, known := issueNumberFromComment(observed.Comment); known {
+				if observedIssue != issue {
+					return github.Comment{}, nil, 0, fmt.Errorf("provider comment %d belongs to issue #%d, not #%d", commentID, observedIssue, issue)
+				}
+				if err := validateTypedCommentTarget(observed.Comment.Body, id, requestedType, true); err != nil {
+					return github.Comment{}, nil, 0, err
+				}
+				return observed.Comment, []github.Comment{observed.Comment}, observed.RepresentationVersion, nil
+			}
+			// A direct response without issue identity cannot prove the requested
+			// issue binding. Fall through to the issue-scoped scan.
+		}
+	}
+
+	comments, err := client.ListIssueComments(ctx, repo, issue)
+	if err != nil {
+		return github.Comment{}, nil, 0, fmt.Errorf("list issue comments: %w", err)
+	}
+	candidates := make([]github.Comment, 0, 1)
+	for _, comment := range comments {
+		if commentID > 0 && comment.ID != commentID {
+			continue
+		}
+		if commentID > 0 {
+			candidates = append(candidates, comment)
+			continue
+		}
+		if !model.IsLikelyTyped(comment.Body) {
+			continue
+		}
+		tc := model.ParseTypedComment(comment.Body)
+		if tc.ID == id || tc.Marker.ID == id {
+			candidates = append(candidates, comment)
+		}
+	}
+	if len(candidates) == 0 {
+		if commentID > 0 {
+			return github.Comment{}, comments, 0, fmt.Errorf("provider comment %d was not found on issue #%d", commentID, issue)
+		}
+		return github.Comment{}, comments, 0, fmt.Errorf("typed comment %s was not found on issue #%d", id, issue)
+	}
+	if len(candidates) > 1 {
+		return github.Comment{}, comments, 0, fmt.Errorf("duplicate typed comment id %s on issue #%d", id, issue)
+	}
+	if err := validateTypedCommentTarget(candidates[0].Body, id, requestedType, false); err != nil {
+		return github.Comment{}, comments, 0, err
+	}
+	return candidates[0], comments, 0, nil
+}
+
+func validateTypedCommentTarget(body, id, requestedType string, requireMarker bool) error {
+	if !model.IsLikelyTyped(body) {
+		return fmt.Errorf("provider comment is not a typed artifact")
+	}
+	tc := model.ParseTypedComment(body)
+	if requireMarker && (tc.Marker.ID == "" || tc.Marker.Type == "") {
+		return fmt.Errorf("provider comment is missing its typed marker")
+	}
+	if len(tc.Errors) > 0 {
+		return fmt.Errorf("typed marker/header mismatch: %s", strings.Join(tc.Errors, "; "))
+	}
+	if tc.ID != id || (tc.Marker.ID != "" && tc.Marker.ID != id) {
+		return fmt.Errorf("provider comment id mismatch: requested %s, observed %s", id, tc.ID)
+	}
+	if requestedType != "" && (tc.Type != requestedType || (tc.Marker.Type != "" && tc.Marker.Type != requestedType)) {
+		return fmt.Errorf("provider comment type mismatch: requested %s, observed %s", requestedType, tc.Type)
+	}
+	return nil
+}
+
+func issueNumberFromComment(comment github.Comment) (int, bool) {
+	for _, raw := range []string{comment.IssueURL, comment.HTMLURL} {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		for i := 0; i+1 < len(parts); i++ {
+			if parts[i] != "issues" {
+				continue
+			}
+			n, err := strconv.Atoi(parts[i+1])
+			if err == nil && n > 0 {
+				return n, true
+			}
+		}
+	}
+	return 0, false
 }
