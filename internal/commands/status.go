@@ -395,6 +395,8 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 		collection.Remote.VerifyRevision, _ = collectVerifyRevisionFact(artifacts, gate.Target.SubjectRevision, time.Now().UTC())
 		collection.ProcessEvidence = buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
 			reviewSyncReport{}, nil, &gate, time.Now().UTC())
+		collection.ProcessEvidence = consumeAcceptedVerificationEvidence(collection.ProcessEvidence, artifacts,
+			gate.Target.SubjectRevision)
 		return collection
 	}
 
@@ -421,6 +423,7 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 	collection.Remote.ReviewFindings = gates.Fact{Required: true, Known: true, Passed: len(review.BlockingFindings) == 0,
 		Current: fmt.Sprintf("blocking=%d", len(review.BlockingFindings)), Expected: "blocking=0"}
 	collection.ProcessEvidence = buildProcessEvidenceInputs(artifacts, prURL, facts.ReviewComments, review, nil)
+	collection.ProcessEvidence = consumeAcceptedVerificationEvidence(collection.ProcessEvidence, artifacts, pr.Head.SHA)
 	return collection
 }
 

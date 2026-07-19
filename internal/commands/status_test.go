@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
@@ -115,6 +116,90 @@ func TestSelfHostedStatusOnlyForcesProviderSyncForFinal(t *testing.T) {
 				t.Fatalf("provider=%+v syncs=%d calls=%v", collection.Remote.ProviderEvidence, native.syncs, calls)
 			}
 		})
+	}
+}
+
+func TestStatusAcceptedVerificationUsesExactGitHubHead(t *testing.T) {
+	revision := strings.Repeat("b", 40)
+	for _, target := range []gates.Target{gates.TargetFinal, gates.TargetArchive} {
+		t.Run(string(target), func(t *testing.T) {
+			artifacts := statusAcceptedVerificationArtifacts(t, revision, "https://github.com/o/r/pull/7")
+			pr := pullRequestAtHead(7, revision)
+			backend := &sequencedPullRequestCommitBackend{fakeGitHubBackend: fakeGitHubBackend{},
+				pulls: []github.PullRequest{pr, pr}, commits: []github.PullRequestCommit{{SHA: revision}}}
+			collection := (&app{}).collectStatusGateFacts(t.Context(), backend,
+				auth.Profile{Kind: auth.ProfileKindGitHub}, "", "o/r", 3, target, artifacts)
+			assertStatusAcceptedVerification(t, collection, revision)
+		})
+	}
+}
+
+func TestStatusAcceptedVerificationUsesExactSelfHostedRevision(t *testing.T) {
+	revision := strings.Repeat("b", 40)
+	now := time.Now().UTC()
+	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
+	for _, target := range []gates.Target{gates.TargetFinal, gates.TargetArchive} {
+		t.Run(string(target), func(t *testing.T) {
+			check := testEvidenceRecord("check-ledger", codereview.EvidenceCheck, "passed", revision, now)
+			check.Name = "unit"
+			ledger := &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+				Reference: reference, SubjectRevision: revision, CapturedAt: now, Records: []codereview.EvidenceRecord{check}}}
+			native := &commandNativeEvidence{target: coreevidence.NativeTarget{Reference: reference, ReferenceVersion: 7,
+				SubjectRevision: revision, Provider: ledger}}
+			app := newApp(strings.NewReader(""), nil, nil)
+			app.newNativeEvidenceProvider = func(auth.Profile, string) (nativeEvidenceProvider, error) { return native, nil }
+			app.lookupOperatorProvider = func(context.Context, auth.Profile, string) (codereview.Provider, error) {
+				return &commandEvidenceProvider{snapshot: codereview.Snapshot{ProtocolVersion: codereview.ProtocolVersion,
+					Reference: reference, SubjectRevision: revision, CapturedAt: now}}, nil
+			}
+			collection := app.collectStatusGateFacts(t.Context(), fakeGitHubBackend{},
+				auth.Profile{Kind: auth.ProfileKindHosted}, "token", "acme/widgets", 3, target,
+				statusAcceptedVerificationArtifacts(t, revision, ""))
+			assertStatusAcceptedVerification(t, collection, revision)
+		})
+	}
+}
+
+func statusAcceptedVerificationArtifacts(t *testing.T, revision, prURL string) []model.Artifact {
+	t.Helper()
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	spec.URL = "https://github.com/o/r/issues/1#issuecomment-spec"
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	task.URL = "https://github.com/o/r/issues/2#issuecomment-task"
+	process := statusWorkspaceProcess(t, model.ProcessExecutionChangeBearing, revision)
+	process.URL = "https://github.com/o/r/issues/3#issuecomment-process"
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &process)
+	linkArtifacts(t, &spec, &process)
+	if prURL != "" {
+		body, _, err := model.AddPRLink(process.Comment.Body, prURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		process.Comment = model.ParseTypedComment(body)
+	}
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/commands",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	verifyBody, err := renderSubmittedVerification("VERIFY-001", process.URL, []string{"SPEC-001"}, receipt, nil,
+		testVerificationSubmission("Verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify := model.Artifact{Issue: 3, CommentID: 4, URL: "https://github.com/o/r/issues/3#issuecomment-verify",
+		Comment: model.ParseTypedComment(verifyBody)}
+	return []model.Artifact{spec, task, process, verify}
+}
+
+func assertStatusAcceptedVerification(t *testing.T, collection statusGateCollection, revision string) {
+	t.Helper()
+	if len(collection.ProcessEvidence) != 1 || len(collection.ProcessEvidence[0].Verifications) != 1 {
+		t.Fatalf("status verification evidence missing: remote=%+v process=%+v", collection.Remote, collection.ProcessEvidence)
+	}
+	evidence := collection.ProcessEvidence[0].Verifications[0]
+	if !evidence.Trusted || evidence.SubjectRevision != revision || !evidence.StructuredTests ||
+		evidence.TestAssurance != string(assignment.AssuranceSelfReported) ||
+		evidence.Source != "accepted-verification-receipt:self-reported-tests" {
+		t.Fatalf("accepted verification was not projected at exact status revision: %+v", evidence)
 	}
 }
 
