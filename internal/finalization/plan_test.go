@@ -2,6 +2,7 @@ package finalization
 
 import (
 	"bytes"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -96,6 +97,81 @@ func TestCompileBlockerOnlyPlanFailsClosedOnCycle(t *testing.T) {
 	}
 	if len(plan.Reconcile.Operations) != 0 {
 		t.Fatalf("invalid graph emitted mutations: %+v", plan.Reconcile.Operations)
+	}
+}
+
+func TestCompileBlockerFreePlanJSONRoundTrip(t *testing.T) {
+	plan, err := Compile(CompileInput{Repository: "o/r", Hostname: "github.com", Proposal: 1, Design: 2, Implement: 3,
+		Subject:      Subject{PullRequest: 9, URL: "https://github.com/o/r/pull/9", SubjectRevision: testSubject, ProviderBaseRevision: testProviderBase, BaselineRevision: testBaseline, ProviderEvidenceDigest: testEvidence},
+		Intent:       Intent{Version: 1, BaselineRevision: testBaseline, SupersededBy: []IntentEdge{{From: "PROCESS-001", To: "PROCESS-002"}}},
+		Observations: planFixture(t), LifecycleReady: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Blockers != nil {
+		t.Fatalf("blocker-free plan must use canonical nil blockers, got %#v", plan.Blockers)
+	}
+
+	data, err := CanonicalJSON(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(`"blockers"`)) {
+		t.Fatalf("blocker-free plan unexpectedly serialized blockers: %s", data)
+	}
+	roundTrip, err := ReadPlan(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("read blocker-free compiled plan: %v", err)
+	}
+	if roundTrip.Blockers != nil || roundTrip.PlanDigest != plan.PlanDigest {
+		t.Fatalf("round-trip changed blocker representation or digest: blockers=%#v digest=%s want=%s", roundTrip.Blockers, roundTrip.PlanDigest, plan.PlanDigest)
+	}
+}
+
+func TestCompileNonemptyBlockersRemainCanonicalAndStrict(t *testing.T) {
+	plan, err := Compile(CompileInput{Repository: "o/r", Hostname: "github.com", Proposal: 1, Design: 2, Implement: 3,
+		Subject:      Subject{PullRequest: 9, URL: "https://github.com/o/r/pull/9", SubjectRevision: testSubject, ProviderBaseRevision: testProviderBase, BaselineRevision: testBaseline, ProviderEvidenceDigest: testEvidence},
+		Intent:       Intent{Version: 1, BaselineRevision: testBaseline, SupersededBy: []IntentEdge{{From: "PROCESS-001", To: "PROCESS-002"}}},
+		Observations: planFixture(t), LifecycleBlocks: []Blocker{
+			{Code: "z-code", ArtifactID: " PROCESS-002 ", Message: " last "},
+			{Code: "a-code", ArtifactID: "PROCESS-001", Message: "first"},
+			{Code: "a-code", ArtifactID: " PROCESS-001 ", Message: " first "},
+			{Code: "", Message: "ignored"},
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Blocker{
+		{Code: "a-code", ArtifactID: "PROCESS-001", Message: "first"},
+		{Code: "z-code", ArtifactID: "PROCESS-002", Message: "last"},
+	}
+	if !reflect.DeepEqual(plan.Blockers, want) {
+		t.Fatalf("canonical blockers=%#v, want %#v", plan.Blockers, want)
+	}
+	data, err := CanonicalJSON(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadPlan(bytes.NewReader(data)); err != nil {
+		t.Fatalf("read nonempty canonical blockers: %v", err)
+	}
+
+	reordered := plan
+	reordered.Blockers = append([]Blocker(nil), plan.Blockers...)
+	reordered.Blockers[0], reordered.Blockers[1] = reordered.Blockers[1], reordered.Blockers[0]
+	if err := ValidatePlan(reordered); err == nil || !strings.Contains(err.Error(), "blockers are not in canonical order") {
+		t.Fatalf("reordered blockers error=%v", err)
+	}
+	tampered := plan
+	tampered.Blockers = append([]Blocker(nil), plan.Blockers...)
+	tampered.Blockers[0].Message = "changed"
+	if err := ValidatePlan(tampered); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+		t.Fatalf("tampered blocker digest error=%v", err)
+	}
+
+	withUnknown := bytes.Replace(data, []byte("\n}\n"), []byte(",\n  \"unexpected\": true\n}\n"), 1)
+	if _, err := ReadPlan(bytes.NewReader(withUnknown)); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("unknown plan field error=%v", err)
 	}
 }
 

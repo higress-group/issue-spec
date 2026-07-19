@@ -797,6 +797,9 @@ func normalizeBlockers(values []Blocker) []Blocker {
 		}
 		return result[i].Message < result[j].Message
 	})
+	if len(result) == 0 {
+		return nil
+	}
 	return result
 }
 
