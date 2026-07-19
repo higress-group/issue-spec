@@ -96,7 +96,8 @@ func TestNonSpecTemplatesProduceParseableTypedBodies(t *testing.T) {
 	}
 	verify, err := VerifyComment(VerifyCommentOptions{
 		Common: CommonOptions{ID: "VERIFY-001", Status: "done"},
-		Input:  VerifyInput{Title: "final", Summary: "s", Evidence: []string{"go test ./..."}, SpecRefs: []string{"SPEC-001"}},
+		Input: VerifyInput{Title: "final", Summary: "s", Tests: []VerifyTestEvidence{{ID: "unit",
+			Command: "go test ./...", Outcome: "passed", Assurance: "self-reported"}}, SpecRefs: []string{"SPEC-001"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -134,6 +135,24 @@ func TestNonSpecTemplatesProduceParseableTypedBodies(t *testing.T) {
 		if strings.Contains(body, IssueSpecProjectURL) {
 			t.Fatalf("typed comment should not include issue-spec promotion footer:\n%s", body)
 		}
+	}
+}
+
+func TestProcessGeneratorOmitsDuplicateFreeTextStatus(t *testing.T) {
+	body, err := ProcessComment(ProcessCommentOptions{
+		Common: CommonOptions{ID: "PROCESS-009", Status: "in-progress"},
+		Input: ProcessInput{Title: "compact status", ParentTask: "TASK-001", Handoff: "N/A",
+			StatusNote: "This legacy duplicate must not be rendered."},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "Status: in-progress") || strings.Contains(body, "### Status") ||
+		strings.Contains(body, "legacy duplicate") {
+		t.Fatalf("generated PROCESS did not retain only canonical Status:\n%s", body)
+	}
+	if parsed := model.ParseTypedComment(body); len(parsed.Errors) != 0 || parsed.Status != "in-progress" {
+		t.Fatalf("parsed PROCESS=%+v", parsed)
 	}
 }
 
@@ -325,7 +344,7 @@ func TestVerifyCommentRendersStructuredRevisionBoundEvidenceAdditively(t *testin
 	body, err := VerifyComment(VerifyCommentOptions{Common: CommonOptions{ID: "VERIFY-101", Agent: "Verifier",
 		SubjectRevision: "head-abc", Status: "done", Scope: "role-owned verification submission"}, Input: VerifyInput{
 		Title: "role-owned receipt", Summary: "Exact revision verified.", SubjectRevision: "head-abc",
-		Evidence: []string{"Test unit: passed"}, Tests: []VerifyTestEvidence{{ID: "unit",
+		Evidence: []string{"PROCESS-999 readiness forecast must not persist."}, Tests: []VerifyTestEvidence{{ID: "unit",
 			Command: "go test ./internal/gates", Outcome: "passed", Assurance: "self-reported"}},
 		Checks: []VerifyCheckEvidence{{Provider: "github", Name: "unit", State: "success",
 			SubjectRevision: "head-abc", Source: "github-check-run:42"}}, SpecRefs: []string{"SPEC-005"}}})
@@ -337,6 +356,9 @@ func TestVerifyCommentRendersStructuredRevisionBoundEvidenceAdditively(t *testin
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in:\n%s", want, body)
 		}
+	}
+	if strings.Contains(body, "### Evidence") || strings.Contains(body, "PROCESS-999") || strings.Contains(body, "readiness forecast") {
+		t.Fatalf("generated VERIFY retained recomputable readiness prose:\n%s", body)
 	}
 	parsed := model.ParseTypedComment(body)
 	if len(parsed.Errors) != 0 || parsed.SubjectRevision != "head-abc" || parsed.Status != "done" {

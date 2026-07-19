@@ -597,16 +597,13 @@ func publishAcceptedVerification(ctx context.Context, client github.Operations, 
 
 func renderSubmittedVerification(verifyID, processURL string, covers []string, receipt assignment.Receipt,
 	checks []observedVerificationCheck, submission processworkspace.RoleOwnedSubmissionEvidence) (string, error) {
-	evidence := make([]string, 0, len(receipt.Tests)+len(checks))
 	tests := make([]templates.VerifyTestEvidence, 0, len(receipt.Tests))
 	for _, test := range receipt.Tests {
-		evidence = append(evidence, fmt.Sprintf("Test %s: %s", test.ID, test.Outcome))
 		tests = append(tests, templates.VerifyTestEvidence{ID: test.ID, Command: test.Command,
 			Outcome: string(test.Outcome), Assurance: string(test.Assurance)})
 	}
 	providerChecks := make([]templates.VerifyCheckEvidence, 0, len(checks))
 	for _, check := range checks {
-		evidence = append(evidence, fmt.Sprintf("Provider check %s/%s: %s", check.Provider, check.Name, check.State))
 		providerChecks = append(providerChecks, templates.VerifyCheckEvidence{Provider: check.Provider, Name: check.Name,
 			State: check.State, SubjectRevision: check.SubjectRevision, Source: check.Source})
 	}
@@ -618,7 +615,7 @@ func renderSubmittedVerification(verifyID, processURL string, covers []string, r
 		ID: verifyID, Agent: submission.Agent, SubjectRevision: receipt.SubjectRevision,
 		Status: "done", Scope: "role-owned verification submission"}, Input: templates.VerifyInput{
 		Title: "role-owned receipt", Summary: summary, SubjectRevision: receipt.SubjectRevision,
-		Evidence: evidence, Tests: tests, Checks: providerChecks, SpecRefs: covers}})
+		Tests: tests, Checks: providerChecks, SpecRefs: covers}})
 	if err != nil {
 		return "", err
 	}

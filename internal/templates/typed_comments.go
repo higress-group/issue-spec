@@ -236,7 +236,9 @@ type ProcessInput struct {
 	Assignment          *assignment.ProcessInput         `json:"assignment,omitempty"`
 	Covers              []string                         `json:"covers"`
 	Handoff             string                           `json:"handoff"`
-	StatusNote          string                           `json:"status_note"`
+	// StatusNote remains accepted as a legacy generator input, but new PROCESS
+	// bodies use only the canonical typed-comment Status header.
+	StatusNote string `json:"status_note"`
 }
 
 type ProcessCommentOptions struct {
@@ -300,9 +302,6 @@ func ProcessComment(opts ProcessCommentOptions) (string, error) {
 	b.WriteString("\n### Covers\n\n")
 	writeBulletRefs(&b, opts.Input.Covers)
 	fmt.Fprintf(&b, "\n### Handoff\n\n%s\n", valueOr(strings.TrimSpace(opts.Input.Handoff), "N/A"))
-	if note := strings.TrimSpace(opts.Input.StatusNote); note != "" {
-		fmt.Fprintf(&b, "\n### Status\n\n%s\n", note)
-	}
 	return model.EnsureTypedBody("PROCESS", opts.Common.ID, b.String(), opts.Common.bodyOptions())
 }
 
@@ -339,13 +338,15 @@ func ReviewComment(opts ReviewCommentOptions) (string, error) {
 
 // VerifyInput is the structured input for generated VERIFY bodies.
 type VerifyInput struct {
-	Title           string                `json:"title"`
-	Summary         string                `json:"summary"`
-	SubjectRevision string                `json:"subject_revision,omitempty"`
-	Evidence        []string              `json:"evidence"`
-	Tests           []VerifyTestEvidence  `json:"tests,omitempty"`
-	Checks          []VerifyCheckEvidence `json:"checks,omitempty"`
-	SpecRefs        []string              `json:"spec_refs"`
+	Title           string `json:"title"`
+	Summary         string `json:"summary"`
+	SubjectRevision string `json:"subject_revision,omitempty"`
+	// Evidence remains accepted as a legacy generator input. New VERIFY bodies
+	// render only the short summary and structured revision-bound evidence.
+	Evidence []string              `json:"evidence"`
+	Tests    []VerifyTestEvidence  `json:"tests,omitempty"`
+	Checks   []VerifyCheckEvidence `json:"checks,omitempty"`
+	SpecRefs []string              `json:"spec_refs"`
 }
 
 // VerifyTestEvidence is a role-owned local test result. Assurance remains
@@ -381,8 +382,6 @@ func VerifyComment(opts VerifyCommentOptions) (string, error) {
 	if summary := strings.TrimSpace(opts.Input.Summary); summary != "" {
 		fmt.Fprintf(&b, "\n%s\n", summary)
 	}
-	b.WriteString("\n### Evidence\n\n")
-	writeBulletRefs(&b, opts.Input.Evidence)
 	if revision := strings.TrimSpace(opts.Input.SubjectRevision); revision != "" {
 		fmt.Fprintf(&b, "\n### Revision\n\n`%s`\n", revision)
 	}

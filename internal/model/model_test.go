@@ -230,6 +230,47 @@ Links:
 	}
 }
 
+func TestLegacyCompactedArtifactSectionsRemainReadable(t *testing.T) {
+	const revision = "0123456789abcdef0123456789abcdef01234567"
+	tests := []struct {
+		name, typ, id, agent, body string
+	}{
+		{name: "PROCESS duplicate status", typ: "PROCESS", id: "PROCESS-001", agent: "Worker", body: `## Process: legacy
+
+### Status
+
+Historical free-text lifecycle note.`},
+		{name: "REVIEW process forecast", typ: "REVIEW", id: "REVIEW-001", agent: "Reviewer", body: `## Review Sync Summary
+
+Historical review value.
+
+## PROCESS Evidence Observation
+
+- PROCESS-001 satisfied a recomputable forecast.`},
+		{name: "VERIFY evidence prose", typ: "VERIFY", id: "VERIFY-001", agent: "Verifier", body: `## Verification Summary: legacy
+
+Historical summary.
+
+### Evidence
+
+- Tests passed for PROCESS-001.`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body, err := EnsureTypedBody(test.typ, test.id, test.body, BodyOptions{Agent: test.agent,
+				SubjectRevision: revision, Status: "done", Scope: "legacy durable artifact"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed := ParseTypedComment(body)
+			if len(parsed.Errors) != 0 || parsed.Type != test.typ || parsed.ID != test.id || parsed.Status != "done" ||
+				parsed.Agent != test.agent || parsed.SubjectRevision != revision {
+				t.Fatalf("legacy parsed=%+v\n%s", parsed, body)
+			}
+		})
+	}
+}
+
 func TestStampTypedSessionMetadataOverridesPreRenderedHeaders(t *testing.T) {
 	body := `<!-- issue-spec:type=PROCESS id=PROCESS-001 version=1 -->
 Agent: Worker A

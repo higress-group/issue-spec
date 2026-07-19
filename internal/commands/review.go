@@ -1642,15 +1642,6 @@ func renderReviewSyncComment(id, agent string, session writerSession, scope, prU
 	writeReviewChecks(&b, "Failed", report.FailedChecks)
 	writeReviewChecks(&b, "Pending", report.PendingChecks)
 	writeReviewChecks(&b, "Passed", report.PassedChecks)
-	b.WriteString("\n## PROCESS Evidence Observation\n\n")
-	b.WriteString("This review-sync projection is observational and MUST NOT be treated as final readiness; final verify re-collects active SPEC and authoritative evidence.\n\n")
-	if len(report.ProcessEvidence) == 0 {
-		b.WriteString("- None.\n")
-	} else {
-		for _, process := range report.ProcessEvidence {
-			fmt.Fprintf(&b, "- %s\n", process.Summary())
-		}
-	}
 	b.WriteString("\n## Verdict\n\n")
 	if report.OK {
 		b.WriteString("Review sync passed.\n")
@@ -1674,7 +1665,9 @@ func writeReviewChecks(b *strings.Builder, label string, checks []reviewCheck) {
 		return
 	}
 	for _, check := range checks {
-		fmt.Fprintf(b, "- %s state=%s conclusion=%s %s\n", check.Name, check.State, check.Conclusion, check.URL)
+		fmt.Fprintf(b, "- %s state=%s conclusion=%s subject_revision=%s trusted=%t source=%s %s\n",
+			check.Name, check.State, check.Conclusion, firstNonEmpty(check.SubjectRevision, "N/A"), check.Trusted,
+			firstNonEmpty(check.Source, "unknown"), check.URL)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
+	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
@@ -909,14 +910,22 @@ func TestRenderReviewSyncComment(t *testing.T) {
 		SubjectRevision:   head,
 		RevisionSource:    "github-pull-request-head:4",
 		RationaleComments: 2,
-		PassedChecks:      []reviewCheck{{Name: "DCO", State: "completed", Conclusion: "success"}},
+		PassedChecks: []reviewCheck{{Name: "DCO", State: "completed", Conclusion: "success", URL: "https://github.com/o/r/checks/42",
+			SubjectRevision: head, Trusted: true, Source: "github-check-run:42"}},
+		ProcessEvidence: []gates.ProcessEvidenceReport{{ProcessID: "PROCESS-001", Missing: []string{"recomputable forecast"}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Type: REVIEW", "ID: REVIEW-001", "Status: done", "Review sync passed", "DCO", "PROCESS Evidence Observation", "MUST NOT be treated as final readiness"} {
+	for _, want := range []string{"Type: REVIEW", "ID: REVIEW-001", "Status: done", "Subject Revision: " + head,
+		"Review sync passed", "DCO", "subject_revision=" + head, "trusted=true", "source=github-check-run:42"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in:\n%s", want, body)
+		}
+	}
+	for _, forbidden := range []string{"PROCESS Evidence Observation", "MUST NOT be treated as final readiness", "recomputable forecast"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("durable REVIEW retained %q:\n%s", forbidden, body)
 		}
 	}
 	parsed := model.ParseTypedComment(body)

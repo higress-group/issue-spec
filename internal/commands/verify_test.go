@@ -357,7 +357,8 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 		parsed.Status != "done" || len(authority.Tests) != 1 || len(authority.Checks) != 1 ||
 		authority.Submission == nil || authority.Submission.AgentSessionSource != processworkspace.AgentSessionSourceCompatibility ||
 		authority.Submission.AgentSessionID != "" || authority.Submission.Assurance != assignment.AssuranceSelfReported ||
-		!strings.Contains(comments[1].Body, "### Local Tests") || !strings.Contains(comments[1].Body, "### Provider Checks") {
+		!strings.Contains(comments[1].Body, "### Local Tests") || !strings.Contains(comments[1].Body, "### Provider Checks") ||
+		strings.Contains(comments[1].Body, "### Evidence") {
 		t.Fatalf("VERIFY=%+v authority=%+v found=%t err=%v body=%s", parsed, authority, found, err, comments[1].Body)
 	}
 }
