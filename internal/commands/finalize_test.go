@@ -3,7 +3,9 @@ package commands
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,6 +129,76 @@ func TestFinalizePreviewIsWriteFreeDeterministicAndDetailOmitsBodies(t *testing.
 	detail := application.out.(*bytes.Buffer).String()
 	if strings.Contains(detail, "issue-spec:superseded-by") || strings.Contains(detail, `"desired"`) {
 		t.Fatalf("detail leaked mutation bodies: %s", detail)
+	}
+}
+
+func TestFinalizePreviewAndApplyBindSharedGateToExactImplementIssue(t *testing.T) {
+	backend := finalizeImplementBoundaryFixture(t)
+	application := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	application.selectGitHubBackend = ghSelection
+	application.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
+	application.resolveFinalizationBaseline = func(context.Context, string, string) (string, error) { return finalizeTestBaseline, nil }
+	directory := t.TempDir()
+	intentPath, planPath := filepath.Join(directory, "intent.json"), filepath.Join(directory, "plan.json")
+	if err := os.WriteFile(intentPath, []byte(`{"version":1,"baseline_revision":"`+finalizeTestBaseline+`","superseded_by":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := application.runFinalizePreview(t.Context(), []string{"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--pr", "9",
+		"--intent-file", intentPath, "--plan-out", planPath}); code != 0 {
+		t.Fatalf("preview code=%d stderr=%s", code, application.err.(*bytes.Buffer).String())
+	}
+	data, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan finalization.Plan
+	if err := json.Unmarshal(data, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Blockers) != 0 {
+		t.Fatalf("persisted Proposal/Design PROCESS comments became preview gate carriers: %+v", plan.Blockers)
+	}
+	if len(plan.Selection.ActiveProcessIDs) != 1 || plan.Selection.ActiveProcessIDs[0] != "PROCESS-001" {
+		t.Fatalf("preview active PROCESS selection=%v", plan.Selection.ActiveProcessIDs)
+	}
+	if len(plan.Reconcile.Operations) != 0 {
+		t.Fatalf("already-final lifecycle unexpectedly produced mutations: %+v", plan.Reconcile.Operations)
+	}
+	// Keep one frozen, non-gate blocker so the persisted plan has a non-empty
+	// blocker representation. Apply must still publish the independent final
+	// shared-gate observation, which is the boundary under test here.
+	plan.Blockers = []finalization.Blocker{{Code: "manual-approval", Message: "manual approval remains pending"}}
+	plan.PlanDigest = ""
+	plan.PlanDigest, err = finalization.DigestPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err = finalization.CanonicalJSON(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	application.out, application.err = &bytes.Buffer{}, &bytes.Buffer{}
+	code := application.runFinalizeApply(t.Context(), []string{"--plan", planPath,
+		"--checkpoint", filepath.Join(directory, "checkpoint.json"), "--allow-nonatomic", "--json"})
+	if code != 1 {
+		t.Fatalf("apply code=%d stderr=%s stdout=%s", code, application.err.(*bytes.Buffer).String(), application.out.(*bytes.Buffer).String())
+	}
+	var result finalizeApplyResult
+	if err := json.Unmarshal(application.out.(*bytes.Buffer).Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.FinalGateReady {
+		t.Fatalf("persisted Proposal/Design PROCESS comments became apply final-gate carriers: %+v", result)
+	}
+	if len(result.FinalSelection.ActiveProcessIDs) != 1 || result.FinalSelection.ActiveProcessIDs[0] != "PROCESS-001" {
+		t.Fatalf("apply final PROCESS selection=%v", result.FinalSelection.ActiveProcessIDs)
+	}
+	if backend.writes != 0 {
+		t.Fatalf("already-final apply provider writes=%d", backend.writes)
 	}
 }
 
@@ -282,6 +354,49 @@ func finalizePreviewFixture() *finalizeCommandBackend {
 			map[string][]string{"Related Comments": {taskURL}, "PR": {prURL}}, "### Execution Class\n\nchange-bearing")},
 		{ID: 12, HTMLURL: p2URL, URL: "https://api.github.com/comments/12", Body: finalizeTypedBody("PROCESS", "PROCESS-002", "in-progress",
 			map[string][]string{"Related Comments": {taskURL}, "PR": {prURL}}, "### Execution Class\n\nchange-bearing")},
+	}
+	return backend
+}
+
+func finalizeImplementBoundaryFixture(t *testing.T) *finalizeCommandBackend {
+	t.Helper()
+	backend := finalizePreviewFixture()
+	prURL := backend.pr.HTMLURL
+	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
+	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
+	currentContent := strings.Replace(canonicalProcessContentWithClass(model.ProcessExecutionOrchestration),
+		"### Handoff\n\nN/A", "### Handoff\n\nCoordinates the exact final lifecycle without changing code.", 1)
+	currentContent = strings.Replace(currentContent, "### Covers\n\n- TASK-001", "### Covers\n\n- TASK-001\n- SPEC-001", 1)
+	current := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", currentContent)
+	foreignProposal := typedArtifact(t, 1, "PROCESS", "PROCESS-901", "done", canonicalProcessContentWithClass(model.ProcessExecutionChangeBearing))
+	foreignDesign := typedArtifact(t, 2, "PROCESS", "PROCESS-902", "done", canonicalProcessContentWithClass(model.ProcessExecutionChangeBearing))
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
+	artifacts := []*model.Artifact{&spec, &task, &current, &foreignProposal, &foreignDesign, &verify}
+	for index, artifact := range artifacts {
+		artifact.URL = fmt.Sprintf("https://github.com/o/r/issues/%d#issuecomment-%d", artifact.Issue, 100+index)
+		artifact.APIURL = fmt.Sprintf("https://api.github.com/comments/%d", 100+index)
+	}
+	linkArtifacts(t, &spec, &task)
+	linkArtifacts(t, &task, &current)
+	linkArtifacts(t, &spec, &current)
+	linkArtifacts(t, &task, &foreignProposal)
+	linkArtifacts(t, &task, &foreignDesign)
+	currentLinks := make(map[string][]string, len(current.Comment.Links)+1)
+	for name, urls := range current.Comment.Links {
+		currentLinks[name] = append([]string(nil), urls...)
+	}
+	currentLinks["PR"] = []string{prURL}
+	currentBody, err := model.EnsureTypedBody("PROCESS", current.Comment.ID, model.LogicalBody(current.Comment.Body),
+		model.BodyOptions{Status: current.Comment.Status, Links: currentLinks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Comment = model.ParseTypedComment(currentBody)
+	backend.comments = map[int][]github.Comment{}
+	for index, artifact := range artifacts {
+		backend.comments[artifact.Issue] = append(backend.comments[artifact.Issue], github.Comment{
+			ID: int64(100 + index), HTMLURL: artifact.URL, URL: artifact.APIURL, Body: artifact.Comment.Body,
+		})
 	}
 	return backend
 }

@@ -150,7 +150,8 @@ func (a *app) runFinalizePreview(ctx context.Context, args []string) int {
 		return 1
 	}
 	report, err := buildFinalVerifyReport(projected, located.Proposal.URL, finalVerifyOptions{
-		PR: pr, PRURL: facts.PullRequest.HTMLURL, ExpectedRevision: facts.PullRequest.Head.SHA, RationaleRequired: true,
+		ImplementIssue: implement,
+		PR:             pr, PRURL: facts.PullRequest.HTMLURL, ExpectedRevision: facts.PullRequest.Head.SHA, RationaleRequired: true,
 		RationaleComments: facts.ReviewComments, PRStatus: facts.Status, PRCheckRuns: facts.CheckRuns, PRCommits: facts.Commits,
 	})
 	if err != nil {
@@ -583,7 +584,8 @@ func (a *app) runFinalizeApply(ctx context.Context, args []string) int {
 		return 1
 	}
 	finalReport, err := buildFinalVerifyReport(finalArtifacts, located.Proposal.URL, finalVerifyOptions{
-		PR: plan.Subject.PullRequest, PRURL: finalFacts.PullRequest.HTMLURL, ExpectedRevision: plan.Subject.SubjectRevision,
+		ImplementIssue: plan.Implement,
+		PR:             plan.Subject.PullRequest, PRURL: finalFacts.PullRequest.HTMLURL, ExpectedRevision: plan.Subject.SubjectRevision,
 		RationaleRequired: true, RationaleComments: finalFacts.ReviewComments, PRStatus: finalFacts.Status,
 		PRCheckRuns: finalFacts.CheckRuns, PRCommits: finalFacts.Commits,
 	})
