@@ -85,8 +85,13 @@ issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --jso
 issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
+issue-spec comment get --repo owner/repo --issue 1 --id SPEC-001 --type SPEC --json
+issue-spec comment get --repo owner/repo --issue 1 --id SPEC-001 --comment-id 123 --include-body --json
 issue-spec comment list --repo owner/repo --issue 1 --json
 issue-spec comment list --repo owner/repo --issue 1 --type SPEC --json --include-body
+issue-spec comment list --repo owner/repo --issue 1 --active-only --json
+issue-spec comment list --repo owner/repo --issue 1 --status ready,in-progress,done --json
+issue-spec comment list --repo owner/repo --issue 1 --history --include-body --json
 
 issue-spec question create --repo owner/repo --issue 1 --id QUESTION-001 --blocking --question "What must be decided?"
 issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-001 --resolution-file resolution.md
@@ -234,6 +239,26 @@ comment ID、URL 等有界的创建元数据。该命令不会添加 typed marke
 下的类型过滤与 canonical diagnostics 都保持不变；没有匹配项时编码为 `[]`，而
 不是 `null`。
 
+`comment get --issue N --id PROCESS-001 --json` 只返回一个有界的 typed
+artifact，而不是整条 issue 时间线。可选的 `--type` 用来断言类型。当
+`--comment-id` 提供了先前读取到的 provider locator 且 backend 支持直接观察时，
+CLI 会直接读取该评论，并校验 issue、marker、type 和 stable ID；否则可以在内部
+扫描，但绝不会向调用者返回无关正文。重复 stable ID 或 locator 不匹配都会
+fail closed。`--include-body` 只包含目标 artifact 的精确 Markdown。
+
+定向读取和显式过滤后的 list 结果包含 `representation_digest`：它是远端 Markdown
+精确字节的 lowercase SHA-256，不会规范化换行或空白。Backend 提供时还会返回
+`representation_version`。链接按 header relation 分组，默认包含 `count`、最多 10
+个排序后的 `{type,id,url}` item 和 `truncated_count`；无法在当前 issue 内解析的
+外部引用仍会保留 URL。`--include-all-links` 返回全部 item，且必须与 `--json`
+一起使用。
+
+`comment list --active-only --json` 选择所有未 superseded 的 canonical artifact，
+其中包括 `done` 和 `confirmed`。`--status` 接受逗号分隔的精确状态集合。
+`--history` 选择 superseded artifact，可配合 `--include-body` 显式读取审计详情。
+`--active-only` 与 `--history` 互斥。不使用这些新 filter（且不使用
+`--include-all-links`）时，原有 list JSON contract 保持不变。
+
 ## Canonical 类型化评论
 
 类型化评论在协调器交接之间承载需求、任务、process 所有权、review 与验证证据。与其手写原始 Markdown，不如使用 `issue-spec comment generate` 从结构化 JSON 渲染 canonical 正文，然后把输出直接管道给 `comment upsert`：
@@ -306,7 +331,7 @@ PROCESS 正文记录其父 TASK，并且对于串行链，还记录传给下一�
 
 ## PROCESS workspace
 
-coordinator 从 typed DAG 选择的精确 PROCESS id 是唯一 workspace selector；prompt 文本和 runner 命令语法都不是 selector。六个生命周期命令必须复用同一组仓库、issue、PROCESS、integration root、workspace root 与 owner token：
+coordinator 从 typed DAG 选择的精确 PROCESS id 是唯一 workspace selector；prompt 文本和 runner 命令语法都不是 selector。六个由 Coordinator 拥有的生命周期命令必须复用同一组仓库、issue、PROCESS、integration root、workspace root 与 owner token：
 
 ```bash
 issue-spec workflow workspace prepare   --repo owner/repo --issue 12 --process PROCESS-001 ...
@@ -317,15 +342,78 @@ issue-spec workflow workspace reconcile --repo owner/repo --issue 12 --process P
 issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process PROCESS-001 ...
 ```
 
+被分配的 implementation worker 不执行 `complete` 或 `integrate`。它返回一个有界 handoff，其中包含精确 result commit、focused-test 结果，以及在使用时生成的 sealed result receipt。Coordinator 提供 owner token 并执行 `workspace complete --result-file`。该命令会校验精确的 assignment id、digest、generation、schema、base/result revision，以及单 commit、DCO、ownership、changed paths 和 required tests 的 Git 合约，然后记录 result commit 并推进 workspace lifecycle。
+
+每个 implementation 或 review 角色 assignment 都必须携带 `design_context`，并将其纳入 portable assignment digest。该对象包含 canonical Design `source_url`、固定的 `read_mode: complete-issue-body`、固定的 `conflict_policy: design-authoritative-stop`，以及由 Coordinator 编写的 `invariant`、`applicable_decisions`、`implementation_direction`、`must_preserve`、`must_not` 与 `minimum_verification` 字段。workspace compiler 从当前 Implement issue 的 canonical predecessor chain 推导 Design URL；source 缺失、歧义或不匹配时 fail closed。结构化值在输出时不排序、不摘要，也不重新解释。
+
+修改或评审代码前，被分配的角色必须执行 `issue-spec read issue --repo owner/repo --issue <design_context.source_url>`，只读取完整 Design issue body，不扩展 comments、timeline、history 或 gate。若 Design 正文与结构化 projection 冲突，角色必须停止并报告冲突。CLI 不收集或传递 runtime-specific session ID，也不把它作为 Design authority、audit metadata 或 correctness input。
+
+生成的 guidance 使用相同的有界读取模型。Coordinator guidance 使用 `status`/`verify --summary`、结构化 detail action、精确 `comment get`、显式过滤列表、sealed assignment 与 reconcile checkpoint；full output 仍是可发现的兼容与调试路径。implementation、review、verification 角色段只包含各自的 sealed assignment、权威 Design 读取、所拥有的不变量/工作、focused check 与 bounded result 职责；完整 proposal/Design 副本、全量 DAG、link matrix、closure/archive policy 和 provider-routing policy 不进入角色段。只有在已交付 command、validator、schema 或保留的显式 stop 替代后，才能删除重复规则。确定性回归预算统计 UTF-8 bytes、heading/field 与 instruction-array item，绝不使用模型 tokenizer，也不能用 size 目标为删除未覆盖的安全规则辩护。
+
+兼容性边界是显式且非对称的。已有 local registry 或 PROCESS workspace 中，D14 之前缺少 `design_context` 的 version-1 implementation/review assignment 仍可读取，使 inspect、cleanup 与 recovery 不会把整个 registry 判为 corrupt。该历史对象只是只读兼容证据：严格的 issuance/redispatch digest、assignment-file/packet 解析，以及新的 implementation/review 角色提交仍会拒绝它。CLI 绝不会合成缺失的 Design context。
+
+导入的 result file 不是身份或 provenance 信任根。其 writer、subject、逻辑 agent 名称、credential 与 assurance label 都只是信息，不能创建 accepted implementation receipt authority，也不能满足非 Coordinator/独立性 gate。unverified import 与保留的 assurance 值可以通过结构校验，但得到的 PROCESS workspace 不包含 accepted-implementation-receipt marker。runtime-attested Coordinator import 明确推迟到存在真实 runtime attestation 信任根之后；本流程不引入 signer、secret 或由调用方命名的 attestor interface。
+
+现有的窄范围直接 role-owned publication 命令继续为 rationale、review 与 verification 提供兼容路径。例如 verification 角色针对精确 assignment 与 snapshot 调用 `verify submit --agent Verifier`。逻辑 agent 字段仍是 `self-reported` metadata；CLI 不收集 runtime-specific session 字段。`verify submit` 不包含 Coordinator 侧的 owner-token import。
+
 `change-bearing` 使用可写的独占分支；`review` 与 `verification` 使用 detached immutable workflow snapshot，dirty 状态会 fail closed，但 CLI 不会为每个 child 创建 OS 强制的独立 sandbox；`orchestration` 只记录生命周期账本，不创建 checkout。`external` 使用 mode `none`；完成该 PROCESS 并通过 final gate 需要已消费的 provider-neutral exact-revision evidence。
 
 runner 命令不携带 PROCESS selector。runner 只启动一个 ACPX coordinator，并让它的 cwd 与主 sandbox workspace 始终保持在 public session clone。coordinator 从 typed DAG 选择 ready PROCESS，再调用 workspace CLI。runner 模式通过 `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` 和 `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT` 提供可信的 session-local 默认值；standalone coordinator 则显式传入 roots。
 
-`prepare` 完成后，coordinator 使用当前 agent runtime 的原生 child/subagent 机制分发工作，并传入精确 worktree 路径作为 cwd，同时传入 branch、write ownership、PROCESS id、parent TASK 与前序 handoff。该 child 不是另一个 ACPX session；它共享 coordinator 的 runner 外层 sandbox，自行生成 result commit、执行 focused tests，并返回有界的 handoff evidence。coordinator 校验结果后，从未改变的 session clone 执行 `complete` 与 `integrate`，再同步状态并 cleanup。
+`prepare` 完成后，coordinator 使用当前 agent runtime 的原生 child/subagent 机制分发工作，并传入精确 worktree 路径作为 cwd，同时传入 branch、write ownership、PROCESS id、parent TASK 与前序 handoff。该 child 不是另一个 ACPX session；它共享 coordinator 的 runner 外层 sandbox，自行生成 result commit、执行 focused tests、seal 可选 receipt，并返回这个有界 handoff。coordinator 从未改变的 session clone 执行 `complete` 与 `integrate` 时重新校验精确 Git 结果，再同步状态并 cleanup；导入 receipt 并不能证明是谁生成了它。verification 保留直接 role-owned `verify submit` 兼容路径，在发布 accepted VERIFY 评论前校验精确 snapshot 与 required evidence，不再使用 Coordinator-owned sidecar import。
 
 runner resume 或 restart 后，top-level runner 只恢复 ACPX/session job。PROCESS 生命周期由 coordinator 所有：它从未改变的 session clone 对精确 lease 执行 `inspect` 或 `reconcile`，再执行 `complete` 与 `integrate`，并且只在显式完成 integration 或 retention 决策后调用 owner-token cleanup。top-level runner 的 session-clone retention 会调用 `git worktree list`；当 runner metadata 为 dirty 或 uncertain、存在 linked worktree，或 git worktree inspection 失败时都会 fail closed 并保留 clone。它不拥有、持久化或重试 child PROCESS cleanup。
 
 `workflow workspace cleanup` 始终是显式的 owner-token 授权破坏性操作。它可能删除尚未集成的 change-bearing 工作，也不会替调用者判断或强制执行 integration/retention eligibility，因此只能在调用者完成该决策后使用。
+
+## 已接受 receipt 的投影
+
+`workflow reconcile --projection` 会把已经由角色命令接受的 receipt 引用编译成现有的确定性 transition/link plan，并复用原有 checkpoint engine：
+
+```bash
+issue-spec workflow reconcile \
+  --projection receipt-projection.json \
+  --allow-nonatomic \
+  --checkpoint .issue-spec/reconcile/receipt-projection.json \
+  --json
+```
+
+版本 1 的 projection 只承载身份，不接受 receipt 内容、subject revision、provenance、assurance、任意正文或 provider mutation：
+
+```json
+{
+  "version": 1,
+  "repo": "owner/repo",
+  "hostname": "github.com",
+  "proposal": 101,
+  "issue": 103,
+  "accepted_receipts": [
+    {
+      "role": "review",
+      "carrier": {"type": "REVIEW", "id": "REVIEW-001"},
+      "receipt_id": "receipt-review-1",
+      "receipt_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "generation": 1,
+      "lifecycle": [
+        {"target": {"type": "REVIEW", "id": "REVIEW-001"}, "status": "done"}
+      ],
+      "coverage_targets": [
+        {"type": "PROCESS", "id": "PROCESS-002"},
+        {"type": "SPEC", "id": "SPEC-001"}
+      ],
+      "current_targets": [
+        {"type": "PROCESS", "id": "PROCESS-002"}
+      ]
+    }
+  ]
+}
+```
+
+任何写入发生前，reconcile 都会观察 carrier 上紧凑且不可变的 accepted-receipt marker，并要求 role、receipt id、digest、assignment generation 以及 carrier 现有的 `done` 状态完全匹配。因此唯一的 lifecycle 条目是断言，而不是转换 carrier 的授权：projection 不能完成、supersede、降级或重新打开 carrier，也不能这样修改相关 `PROCESS`/`TASK`。review carrier 必须是 `REVIEW`，verification carrier 必须是 `VERIFY`，implementation carrier 必须是 `PROCESS`。在 PROCESS 尚未包含 issue-native accepted-implementation-receipt marker 时，implementation projection 会 fail closed；workspace assignment/result 状态不能替代该 marker。
+
+关系类型是固定的：implementation 的 coverage target 为 `TASK`/`SPEC`，current target 为 `TASK`；review 与 verification 的 coverage target 为 `PROCESS`/`SPEC`，current target 为 `PROCESS`。版本 1 不接受调用方提供的 provider evidence URL；rationale、finding 与 check 只能留在角色自有 carrier 或 provider 权威观察中。生产 reconcile 会把声明的 proposal 绑定到规范的 proposal/design/implementation issue，从 accepted carrier 的不可变身份、SpecRef 与受管 assignment coverage 推导获得授权的精确 target ID，并在对应的绑定 issue 上为每个 ID 解析唯一的 provider comment URL。carrier 缺失或重复、change/issue 错误、同类型但未获授权的 ID、URL 不匹配都会在任何写入前 fail closed。解析后的 plan 会记录精确的 authority 表示摘要、assignment 身份和 provider URL，因此 authority 过期时重试也会 fail closed。reconcile 只在可变 target 上补齐缺失的反向链接；它绝不改写 accepted carrier 字节，carrier 也不需要预先写入 target URL。
+
+非原子 provider fallback 默认关闭。GitHub projection 写入必须通过 `--allow-nonatomic`（或 projection 顶层的 `"allow_nonatomic": true`）显式选择。编译后的 plan 会把该策略纳入 digest。每次 fallback mutation 都会重新进行一次精确观察，将当前 representation digest 与计算 mutation 所依据的正文比较，并且只有在写后精确观察完全匹配时才写入 checkpoint。因此复用相同的已编译 plan 与 checkpoint 仍沿用原有的 digest 绑定重试路径；由于不支持 conditional mutation 的 backend 无法消除最后的写入竞态，结果仍会标记为 non-atomic。
 
 ### 默认的 canonical 校验
 

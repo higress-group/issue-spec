@@ -303,6 +303,24 @@ func (c *Client) ListIssueComments(ctx context.Context, repo string, issueNumber
 	return all, nil
 }
 
+// ObserveIssueComment resolves one provider comment id. Unlike the
+// conditional-mutation observation surface, this read remains available when
+// a backend does not advertise CAS; the representation version is simply
+// omitted in that case.
+func (c *Client) ObserveIssueComment(ctx context.Context, repo string, commentID int64) (IssueCommentObservation, error) {
+	if commentID <= 0 {
+		return IssueCommentObservation{}, fmt.Errorf("comment id must be positive")
+	}
+	var comment Comment
+	meta, err := c.doRunnerJSON(ctx, http.MethodGet,
+		fmt.Sprintf("/repos/%s/issues/comments/%d", repo, commentID), nil, nil, ConditionalRequest{}, false, &comment)
+	if err != nil {
+		return IssueCommentObservation{}, err
+	}
+	version, _ := parseHeaderInt64(meta.Headers, HeaderRepresentationVersion)
+	return IssueCommentObservation{Comment: comment, RepresentationVersion: version}, nil
+}
+
 func (c *Client) CreateComment(ctx context.Context, repo string, issueNumber int, body string) (Comment, error) {
 	var comment Comment
 	err := c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, issueNumber), map[string]string{"body": body}, &comment)

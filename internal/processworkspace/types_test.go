@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/higress-group/issue-spec/internal/assignment"
 )
 
 const (
@@ -13,6 +15,16 @@ const (
 	resultSHA      = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	integrationSHA = "cccccccccccccccccccccccccccccccccccccccc"
 )
+
+func assignmentDesignContext() *assignment.DesignContext {
+	return &assignment.DesignContext{
+		SourceURL: "https://github.com/higress-group/issue-spec/issues/296", ReadMode: assignment.DesignReadModeCompleteIssueBody,
+		Invariant: "Stored role assignments preserve authoritative Design context.", ApplicableDecisions: []string{"D14"},
+		ImplementationDirection: "Keep issuance strict while preserving historical storage readability.",
+		MustPreserve:            []string{"canonical assignment authority"}, MustNot: []string{"synthesize design context"},
+		MinimumVerification: []string{"focused processworkspace tests"}, ConflictPolicy: assignment.DesignConflictPolicyAuthoritativeStop,
+	}
+}
 
 func TestPortableLeaseValidationAndLifecycle(t *testing.T) {
 	now := time.Unix(1000, 0).UTC()

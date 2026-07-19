@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
@@ -95,7 +96,8 @@ func TestNonSpecTemplatesProduceParseableTypedBodies(t *testing.T) {
 	}
 	verify, err := VerifyComment(VerifyCommentOptions{
 		Common: CommonOptions{ID: "VERIFY-001", Status: "done"},
-		Input:  VerifyInput{Title: "final", Summary: "s", Evidence: []string{"go test ./..."}, SpecRefs: []string{"SPEC-001"}},
+		Input: VerifyInput{Title: "final", Summary: "s", Tests: []VerifyTestEvidence{{ID: "unit",
+			Command: "go test ./...", Outcome: "passed", Assurance: "self-reported"}}, SpecRefs: []string{"SPEC-001"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -133,6 +135,24 @@ func TestNonSpecTemplatesProduceParseableTypedBodies(t *testing.T) {
 		if strings.Contains(body, IssueSpecProjectURL) {
 			t.Fatalf("typed comment should not include issue-spec promotion footer:\n%s", body)
 		}
+	}
+}
+
+func TestProcessGeneratorOmitsDuplicateFreeTextStatus(t *testing.T) {
+	body, err := ProcessComment(ProcessCommentOptions{
+		Common: CommonOptions{ID: "PROCESS-009", Status: "in-progress"},
+		Input: ProcessInput{Title: "compact status", ParentTask: "TASK-001", Handoff: "N/A",
+			StatusNote: "This legacy duplicate must not be rendered."},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "Status: in-progress") || strings.Contains(body, "### Status") ||
+		strings.Contains(body, "legacy duplicate") {
+		t.Fatalf("generated PROCESS did not retain only canonical Status:\n%s", body)
+	}
+	if parsed := model.ParseTypedComment(body); len(parsed.Errors) != 0 || parsed.Status != "in-progress" {
+		t.Fatalf("parsed PROCESS=%+v", parsed)
 	}
 }
 
@@ -226,6 +246,30 @@ func TestProcessGeneratorRendersPortableWorkspace(t *testing.T) {
 	}
 }
 
+func TestProcessGeneratorCarriesBoundCompletionRevisions(t *testing.T) {
+	now := time.Unix(100, 0).UTC()
+	base, result, integrated := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	workspace := model.ProcessWorkspace{
+		SchemaVersion: processworkspace.LeaseSchemaVersion, WorkspaceID: "ws-process-008", Repository: "o/r", ProcessID: "PROCESS-008",
+		ExecutionClass: processworkspace.ExecutionChangeBearing, Mode: processworkspace.ModeWritable, BaseSHA: base, Branch: "worker",
+		WriteOwnership: []string{"internal/**"}, RuntimeNamespace: "ws-process-008", State: processworkspace.StateIntegrated,
+		Assignment: &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion, AssignmentID: "assignment-008-1",
+			Digest: strings.Repeat("d", 64), Role: assignment.RoleImplementation, BaseRevision: base, Generation: 1},
+		ResultCommit: result, IntegrationSHA: integrated, CreatedAt: now, UpdatedAt: now,
+	}
+	body, err := ProcessComment(ProcessCommentOptions{Common: CommonOptions{ID: "PROCESS-008"}, Input: ProcessInput{
+		Title: "receipt completion", ParentTask: "TASK-005", ExecutionClass: model.ProcessExecutionChangeBearing,
+		WriteOwnership: []string{"internal/**"}, Workspace: &workspace, Handoff: "receipt accepted",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := model.ParseProcessWorkspace("PROCESS-008", "", body)
+	if parsed.Workspace == nil || parsed.Workspace.Assignment == nil || parsed.Workspace.ResultCommit != result || parsed.Workspace.IntegrationSHA != integrated {
+		t.Fatalf("generated completion carrier=%+v\n%s", parsed, body)
+	}
+}
+
 func TestProcessGeneratorRejectsWorkspaceIdentityOrClassMismatch(t *testing.T) {
 	workspace := model.ProcessWorkspace{ProcessID: "PROCESS-OTHER", ExecutionClass: processworkspace.ExecutionReview}
 	_, err := ProcessComment(ProcessCommentOptions{Common: CommonOptions{ID: "PROCESS-005"}, Input: ProcessInput{
@@ -233,6 +277,47 @@ func TestProcessGeneratorRejectsWorkspaceIdentityOrClassMismatch(t *testing.T) {
 	}})
 	if err == nil || !strings.Contains(err.Error(), "execution class") {
 		t.Fatalf("expected workspace class mismatch, got %v", err)
+	}
+}
+
+func TestProcessGeneratorRendersMinimalPortableAssignmentInput(t *testing.T) {
+	body, err := ProcessComment(ProcessCommentOptions{
+		Common: CommonOptions{ID: "PROCESS-005", Status: "ready"},
+		Input: ProcessInput{
+			Title: "assignment schema", ParentTask: "TASK-003",
+			Scope: "pure schemas", Covers: []string{"SPEC-001", "SPEC-002", "SPEC-005"},
+			Assignment: &assignment.ProcessInput{
+				Objective:     "Define portable role packets",
+				RequiredTests: []assignment.TestSelector{{ID: "unit", Command: "go test ./internal/assignment"}},
+				CommitPolicy:  &assignment.CommitPolicy{RequireSingleCommit: true, RequireDCO: true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"### Assignment", `"objective": "Define portable role packets"`, `"required_tests"`, `"require_dco": true`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("generated PROCESS missing %q:\n%s", want, body)
+		}
+	}
+	for _, forbidden := range []string{"worktree_path", "owner_token", "closure_policy", "archive_policy"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("generated PROCESS contains delivery/workflow field %q:\n%s", forbidden, body)
+		}
+	}
+	parsed := model.ParseTypedComment(body)
+	if len(parsed.Errors) != 0 || parsed.Assignment == nil || parsed.Assignment.Objective != "Define portable role packets" {
+		t.Fatalf("parsed PROCESS = %+v", parsed)
+	}
+}
+
+func TestProcessGeneratorRejectsEmptyAssignmentInput(t *testing.T) {
+	_, err := ProcessComment(ProcessCommentOptions{Common: CommonOptions{ID: "PROCESS-005"}, Input: ProcessInput{
+		Title: "assignment schema", Assignment: &assignment.ProcessInput{},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "at least one structured field") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -252,5 +337,31 @@ func TestReviewCommentDoesNotUseReviewSyncSummaryShape(t *testing.T) {
 	}
 	if tc := model.ParseTypedComment(body); len(tc.Errors) != 0 {
 		t.Fatalf("review body has parse errors: %v", tc.Errors)
+	}
+}
+
+func TestVerifyCommentRendersStructuredRevisionBoundEvidenceAdditively(t *testing.T) {
+	body, err := VerifyComment(VerifyCommentOptions{Common: CommonOptions{ID: "VERIFY-101", Agent: "Verifier",
+		SubjectRevision: "head-abc", Status: "done", Scope: "role-owned verification submission"}, Input: VerifyInput{
+		Title: "role-owned receipt", Summary: "Exact revision verified.", SubjectRevision: "head-abc",
+		Evidence: []string{"PROCESS-999 readiness forecast must not persist."}, Tests: []VerifyTestEvidence{{ID: "unit",
+			Command: "go test ./internal/gates", Outcome: "passed", Assurance: "self-reported"}},
+		Checks: []VerifyCheckEvidence{{Provider: "github", Name: "unit", State: "success",
+			SubjectRevision: "head-abc", Source: "github-check-run:42"}}, SpecRefs: []string{"SPEC-005"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Subject Revision: head-abc", "### Revision\n\n`head-abc`", "### Local Tests",
+		"go test ./internal/gates", "self-reported", "### Provider Checks", "github-check-run:42", "SPEC-005"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q in:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "### Evidence") || strings.Contains(body, "PROCESS-999") || strings.Contains(body, "readiness forecast") {
+		t.Fatalf("generated VERIFY retained recomputable readiness prose:\n%s", body)
+	}
+	parsed := model.ParseTypedComment(body)
+	if len(parsed.Errors) != 0 || parsed.SubjectRevision != "head-abc" || parsed.Status != "done" {
+		t.Fatalf("parsed VERIFY=%+v", parsed)
 	}
 }

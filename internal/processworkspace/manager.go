@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/higress-group/issue-spec/internal/assignment"
 )
 
 var (
@@ -57,6 +59,42 @@ type Inspection struct {
 	Head       string     `json:"head,omitempty"`
 	Branch     string     `json:"branch,omitempty"`
 	Problems   []string   `json:"problems,omitempty"`
+}
+
+type AssignmentRequest struct {
+	WorkspaceID                  string
+	Assignment                   assignment.Assignment
+	Redispatch                   bool
+	ExpectedAssignmentGeneration *uint64
+}
+
+// IssueAssignment persists the binding first and only then constructs the
+// delivery packet returned to the caller. This ordering makes retries safe
+// across process restarts and remote publication failures.
+func (m *Manager) IssueAssignment(ctx context.Context, request AssignmentRequest) (Inspection, assignment.Packet, error) {
+	if m == nil || m.Store == nil {
+		return Inspection{}, assignment.Packet{}, errors.New("process workspace manager is not open")
+	}
+	updated, err := m.Store.BindAssignment(ctx, request.WorkspaceID, request.Assignment, request.Redispatch, request.ExpectedAssignmentGeneration)
+	if err != nil {
+		return Inspection{Lease: updated}, assignment.Packet{}, err
+	}
+	inspection, err := m.inspectLease(ctx, updated)
+	if err != nil {
+		return inspection, assignment.Packet{}, err
+	}
+	digest, err := assignment.AssignmentDigest(request.Assignment)
+	if err != nil {
+		return inspection, assignment.Packet{}, err
+	}
+	packet := assignment.Packet{Assignment: request.Assignment, AssignmentDigest: digest, Generation: updated.Portable.Assignment.Generation}
+	if updated.WorktreePath != "" {
+		packet.Delivery = &assignment.DeliveryMetadata{WorktreePath: updated.WorktreePath}
+	}
+	if err := packet.Validate(); err != nil {
+		return inspection, assignment.Packet{}, err
+	}
+	return inspection, packet, nil
 }
 
 func OpenManager(ctx context.Context, integrationRoot, workspaceRoot string, options ManagerOptions) (*Manager, error) {
@@ -425,6 +463,10 @@ func workspaceMarkerRef(lease LocalLease) string {
 	identity.Portable.State = ""
 	identity.Portable.ResultCommit = ""
 	identity.Portable.IntegrationSHA = ""
+	// Assignment is issued after the immutable reservation marker is created.
+	// Its portable binding is lifecycle evidence, not marker identity. Nil keeps
+	// the pre-assignment JSON representation byte-for-byte compatible.
+	identity.Portable.Assignment = nil
 	identity.Portable.CreatedAt = time.Time{}
 	identity.Portable.UpdatedAt = time.Time{}
 	identity.Portable.RetentionExpiresAt = time.Time{}
@@ -586,6 +628,10 @@ func sameReservation(left, right LocalLease) bool {
 		left.Portable.DetachedRevision == right.Portable.DetachedRevision && equalStrings(left.Portable.WriteOwnership, right.Portable.WriteOwnership) &&
 		equalStrings(left.Portable.SharedTouchpoints, right.Portable.SharedTouchpoints) &&
 		left.Portable.IntegrationOwner == right.Portable.IntegrationOwner && left.Portable.RuntimeNamespace == right.Portable.RuntimeNamespace &&
-		equalRuntimeResources(left.Portable.RuntimeResources, right.Portable.RuntimeResources) && left.IntegrationRoot == right.IntegrationRoot &&
+		equalRuntimeResources(left.Portable.RuntimeResources, right.Portable.RuntimeResources) && compatibleAssignmentReservation(left.Portable.Assignment, right.Portable.Assignment) && left.IntegrationRoot == right.IntegrationRoot &&
 		left.Owner.Token == right.Owner.Token
+}
+
+func compatibleAssignmentReservation(left, right *AssignmentBinding) bool {
+	return left == nil || right == nil || *left == *right
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
@@ -64,15 +65,16 @@ func QuestionComment(opts QuestionOptions) (string, error) {
 // CommonOptions carries the shared typed-comment header fields for generated
 // bodies across every typed comment family.
 type CommonOptions struct {
-	ID     string
-	Agent  string
-	Status string
-	Scope  string
-	Links  map[string][]string
+	ID              string
+	Agent           string
+	SubjectRevision string
+	Status          string
+	Scope           string
+	Links           map[string][]string
 }
 
 func (c CommonOptions) bodyOptions() model.BodyOptions {
-	return model.BodyOptions{Agent: c.Agent, Status: c.Status, Scope: c.Scope, Links: c.Links}
+	return model.BodyOptions{Agent: c.Agent, SubjectRevision: c.SubjectRevision, Status: c.Status, Scope: c.Scope, Links: c.Links}
 }
 
 // SpecRequirementInput and SpecScenarioInput mirror the pinned SPEC generator
@@ -231,9 +233,12 @@ type ProcessInput struct {
 	Dependencies        []string                         `json:"dependencies"`
 	WriteOwnership      []string                         `json:"write_ownership"`
 	Workspace           *model.ProcessWorkspace          `json:"workspace,omitempty"`
+	Assignment          *assignment.ProcessInput         `json:"assignment,omitempty"`
 	Covers              []string                         `json:"covers"`
 	Handoff             string                           `json:"handoff"`
-	StatusNote          string                           `json:"status_note"`
+	// StatusNote remains accepted as a legacy generator input, but new PROCESS
+	// bodies use only the canonical typed-comment Status header.
+	StatusNote string `json:"status_note"`
 }
 
 type ProcessCommentOptions struct {
@@ -280,6 +285,13 @@ func ProcessComment(opts ProcessCommentOptions) (string, error) {
 		}
 		fmt.Fprintf(&b, "\n%s\n", workspace)
 	}
+	if opts.Input.Assignment != nil {
+		payload, err := assignment.ProcessInputJSON(*opts.Input.Assignment)
+		if err != nil {
+			return "", fmt.Errorf("invalid PROCESS Assignment input: %w", err)
+		}
+		fmt.Fprintf(&b, "\n### Assignment\n\n```json\n%s\n```\n", payload)
+	}
 	if scope := strings.TrimSpace(opts.Input.Scope); scope != "" {
 		fmt.Fprintf(&b, "\n### Scope\n\n%s\n", scope)
 	}
@@ -290,9 +302,6 @@ func ProcessComment(opts ProcessCommentOptions) (string, error) {
 	b.WriteString("\n### Covers\n\n")
 	writeBulletRefs(&b, opts.Input.Covers)
 	fmt.Fprintf(&b, "\n### Handoff\n\n%s\n", valueOr(strings.TrimSpace(opts.Input.Handoff), "N/A"))
-	if note := strings.TrimSpace(opts.Input.StatusNote); note != "" {
-		fmt.Fprintf(&b, "\n### Status\n\n%s\n", note)
-	}
 	return model.EnsureTypedBody("PROCESS", opts.Common.ID, b.String(), opts.Common.bodyOptions())
 }
 
@@ -329,10 +338,33 @@ func ReviewComment(opts ReviewCommentOptions) (string, error) {
 
 // VerifyInput is the structured input for generated VERIFY bodies.
 type VerifyInput struct {
-	Title    string   `json:"title"`
-	Summary  string   `json:"summary"`
-	Evidence []string `json:"evidence"`
-	SpecRefs []string `json:"spec_refs"`
+	Title           string `json:"title"`
+	Summary         string `json:"summary"`
+	SubjectRevision string `json:"subject_revision,omitempty"`
+	// Evidence remains accepted as a legacy generator input. New VERIFY bodies
+	// render only the short summary and structured revision-bound evidence.
+	Evidence []string              `json:"evidence"`
+	Tests    []VerifyTestEvidence  `json:"tests,omitempty"`
+	Checks   []VerifyCheckEvidence `json:"checks,omitempty"`
+	SpecRefs []string              `json:"spec_refs"`
+}
+
+// VerifyTestEvidence is a role-owned local test result. Assurance remains
+// explicit so generated evidence never implies coordinator or runtime trust.
+type VerifyTestEvidence struct {
+	ID        string `json:"id"`
+	Command   string `json:"command"`
+	Outcome   string `json:"outcome"`
+	Assurance string `json:"assurance"`
+}
+
+// VerifyCheckEvidence is a provider-owned observation at an exact revision.
+type VerifyCheckEvidence struct {
+	Provider        string `json:"provider"`
+	Name            string `json:"name"`
+	State           string `json:"state"`
+	SubjectRevision string `json:"subject_revision"`
+	Source          string `json:"source"`
 }
 
 type VerifyCommentOptions struct {
@@ -350,11 +382,30 @@ func VerifyComment(opts VerifyCommentOptions) (string, error) {
 	if summary := strings.TrimSpace(opts.Input.Summary); summary != "" {
 		fmt.Fprintf(&b, "\n%s\n", summary)
 	}
-	b.WriteString("\n### Evidence\n\n")
-	writeBulletRefs(&b, opts.Input.Evidence)
+	if revision := strings.TrimSpace(opts.Input.SubjectRevision); revision != "" {
+		fmt.Fprintf(&b, "\n### Revision\n\n`%s`\n", revision)
+	}
+	if len(opts.Input.Tests) > 0 {
+		b.WriteString("\n### Local Tests\n\n")
+		for _, test := range opts.Input.Tests {
+			fmt.Fprintf(&b, "- %s: %s (%s) — %s\n", inlineValue(test.ID), inlineValue(test.Outcome),
+				inlineValue(test.Assurance), inlineValue(test.Command))
+		}
+	}
+	if len(opts.Input.Checks) > 0 {
+		b.WriteString("\n### Provider Checks\n\n")
+		for _, check := range opts.Input.Checks {
+			fmt.Fprintf(&b, "- %s/%s: %s at `%s` (%s)\n", inlineValue(check.Provider), inlineValue(check.Name),
+				inlineValue(check.State), strings.TrimSpace(check.SubjectRevision), inlineValue(check.Source))
+		}
+	}
 	b.WriteString("\n### Covered SPECs\n\n")
 	writeBulletRefs(&b, opts.Input.SpecRefs)
 	return model.EnsureTypedBody("VERIFY", opts.Common.ID, b.String(), opts.Common.bodyOptions())
+}
+
+func inlineValue(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 }
 
 func writeChecklist(b *strings.Builder, items []string) {

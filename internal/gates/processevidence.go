@@ -43,14 +43,17 @@ type ReviewEvidence struct {
 }
 
 type VerificationEvidence struct {
-	ProcessID       string `json:"process_id"`
-	SpecID          string `json:"spec_id"`
-	URL             string `json:"url,omitempty"`
-	Done            bool   `json:"done"`
-	TestEvidence    bool   `json:"test_evidence"`
-	SubjectRevision string `json:"subject_revision,omitempty"`
-	Trusted         bool   `json:"trusted"`
-	Source          string `json:"source,omitempty"`
+	ProcessID        string `json:"process_id"`
+	SpecID           string `json:"spec_id"`
+	URL              string `json:"url,omitempty"`
+	Done             bool   `json:"done"`
+	TestEvidence     bool   `json:"test_evidence"`
+	StructuredTests  bool   `json:"structured_tests,omitempty"`
+	TestAssurance    string `json:"test_assurance,omitempty"`
+	StructuredChecks bool   `json:"structured_checks,omitempty"`
+	SubjectRevision  string `json:"subject_revision,omitempty"`
+	Trusted          bool   `json:"trusted"`
+	Source           string `json:"source,omitempty"`
 }
 
 type CheckEvidence struct {
@@ -430,24 +433,49 @@ func EvaluateProcessEvidence(input ProcessEvidenceInput, target Target, mode Mod
 	case model.ProcessExecutionVerification:
 		report.Required = append(report.Required, "linked done VERIFY or required passing check with test evidence")
 		carrier := false
+		requiredRevision := strings.TrimSpace(input.RequiredRevision)
 		var revisions []CarrierRevisionFact
 		for _, evidence := range input.Verifications {
-			if evidence.ProcessID == report.ProcessID && activeSpec(evidence.SpecID) && evidence.Done && evidence.TestEvidence {
-				carrier, specSatisfied = true, true
-				revisions = append(revisions, CarrierRevisionFact{Known: strings.TrimSpace(evidence.SubjectRevision) != "",
-					Revision: strings.TrimSpace(evidence.SubjectRevision), Trusted: evidence.Trusted, Source: evidence.Source})
+			if evidence.ProcessID != report.ProcessID || !activeSpec(evidence.SpecID) || !evidence.Done || !evidence.TestEvidence {
+				continue
 			}
+			if strings.HasPrefix(evidence.Source, "accepted-verification-receipt:") &&
+				((!evidence.StructuredTests && !evidence.StructuredChecks) ||
+					(evidence.StructuredTests && evidence.TestAssurance != "self-reported")) {
+				continue
+			}
+			revision := strings.TrimSpace(evidence.SubjectRevision)
+			// Revisionless typed VERIFY comments remain semantic compatibility
+			// evidence; the snapshot workspace gate separately requires a trusted
+			// exact carrier before readiness. Once a VERIFY claims a revision here,
+			// it must itself be trusted and exact-current.
+			if requiredRevision != "" && revision != "" && (!evidence.Trusted || !strings.EqualFold(revision, requiredRevision)) {
+				continue
+			}
+			carrier, specSatisfied = true, true
+			revisions = append(revisions, CarrierRevisionFact{Known: revision != "", Revision: revision,
+				Trusted: evidence.Trusted, Source: evidence.Source})
 		}
 		for _, evidence := range input.Checks {
-			if evidence.ProcessID == report.ProcessID && activeSpec(evidence.SpecID) && evidence.Required && evidence.Passed && evidence.TestEvidence {
-				carrier, specSatisfied = true, true
-				revisions = append(revisions, CarrierRevisionFact{Known: strings.TrimSpace(evidence.SubjectRevision) != "",
-					Revision: strings.TrimSpace(evidence.SubjectRevision), Trusted: evidence.Trusted, Source: evidence.Source})
+			if evidence.ProcessID != report.ProcessID || !activeSpec(evidence.SpecID) || !evidence.Required || !evidence.Passed || !evidence.TestEvidence {
+				continue
 			}
+			revision := strings.TrimSpace(evidence.SubjectRevision)
+			if requiredRevision != "" && (!evidence.Trusted || revision == "" || !strings.EqualFold(revision, requiredRevision)) {
+				continue
+			}
+			carrier, specSatisfied = true, true
+			revisions = append(revisions, CarrierRevisionFact{Known: revision != "", Revision: revision,
+				Trusted: evidence.Trusted, Source: evidence.Source})
 		}
 		report.CarrierRevision = aggregateCarrierRevisions(revisions)
 		if carrier {
 			report.Satisfied = append(report.Satisfied, "verification evidence")
+		} else if requiredRevision != "" {
+			report.Missing = append(report.Missing, "exact-current verification evidence")
+			add(CodeProcessCarrierMissing, SeverityError, true,
+				"verification PROCESS lacks linked done VERIFY or a required passing check with trusted test evidence at the exact current revision",
+				"missing, stale, or untrusted", requiredRevision, "verify submit")
 		} else {
 			report.Missing = append(report.Missing, "verification evidence")
 			add(CodeProcessCarrierMissing, SeverityError, true, "verification PROCESS lacks linked done VERIFY or a required passing check with test evidence for an active SPEC", "missing", "verification evidence", "comment upsert")

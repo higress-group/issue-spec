@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,6 +22,66 @@ import (
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
+
+func TestRunStatusSummaryRequiresJSON(t *testing.T) {
+	var errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &bytes.Buffer{}, &errOut)
+	if code := app.runStatus(t.Context(), []string{"--summary"}); code != 2 || !strings.Contains(errOut.String(), "--summary requires --json") {
+		t.Fatalf("status exit=%d stderr=%q", code, errOut.String())
+	}
+}
+
+func TestRunStatusSummaryIsAdditiveAndExitEquivalent(t *testing.T) {
+	args := []string{"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--gate", "final", "--json"}
+	fullApp, fullOut, fullErr := newGitHubVerifyWithoutPRApp(t, canonicalProcessContentWithClass(model.ProcessExecutionVerification))
+	fullCode := fullApp.runStatus(t.Context(), args)
+	if fullErr.Len() != 0 {
+		t.Fatalf("full status stderr=%q", fullErr.String())
+	}
+	var full statusSummary
+	if err := json.Unmarshal(fullOut.Bytes(), &full); err != nil {
+		t.Fatalf("decode full status: %v\n%s", err, fullOut.String())
+	}
+	if strings.Contains(fullOut.String(), `"schema_version"`) || !strings.Contains(fullOut.String(), `"traceability"`) {
+		t.Fatalf("existing full JSON contract changed: %s", fullOut.String())
+	}
+
+	compactApp, compactOut, compactErr := newGitHubVerifyWithoutPRApp(t, canonicalProcessContentWithClass(model.ProcessExecutionVerification))
+	compactCode := compactApp.runStatus(t.Context(), append(append([]string(nil), args...), "--summary"))
+	if compactErr.Len() != 0 {
+		t.Fatalf("compact status stderr=%q", compactErr.String())
+	}
+	var compact gates.CompactSummary
+	if err := json.Unmarshal(compactOut.Bytes(), &compact); err != nil {
+		t.Fatalf("decode compact status: %v\n%s", err, compactOut.String())
+	}
+	if compactCode != fullCode || compact.OK != full.OK || compact.Gate.Target != full.Gate.Target || compact.Gate.Mode != full.Gate.Mode {
+		t.Fatalf("decision drift: fullCode=%d compactCode=%d full=%+v compact=%+v", fullCode, compactCode, full.Gate, compact.Gate)
+	}
+	if compact.SchemaVersion != 1 || len(compact.Blockers) == 0 || compact.Counts["PROCESS"]["done"] != 1 {
+		t.Fatalf("compact routing data missing: %+v", compact)
+	}
+	for _, blocker := range compact.Blockers {
+		if blocker.Detail.CommandFamily != "status" || containsArgument(blocker.Detail.Arguments, "--summary") ||
+			!containsArgument(blocker.Detail.Arguments, "--json") {
+			t.Fatalf("invalid structured detail action: %+v", blocker.Detail)
+		}
+	}
+	for _, forbidden := range []string{`"traceability"`, `"next_gates"`, `"processes"`, `"evaluation_digest"`} {
+		if strings.Contains(compactOut.String(), forbidden) {
+			t.Fatalf("compact status contains %s: %s", forbidden, compactOut.String())
+		}
+	}
+}
+
+func containsArgument(arguments []string, want string) bool {
+	for _, argument := range arguments {
+		if argument == want {
+			return true
+		}
+	}
+	return false
+}
 
 func TestSelfHostedStatusOnlyForcesProviderSyncForFinal(t *testing.T) {
 	now := time.Now().UTC()
@@ -169,6 +231,24 @@ func TestStatusAndVerifyLocallyKnowableCodesStayInParity(t *testing.T) {
 		if !statusHasCode(archive, code) {
 			t.Fatalf("archive status without PR authority omitted local fail-closed code %s: %+v", code, archive.Gate.Diagnostics)
 		}
+	}
+}
+
+func TestStatusIncludesCollectedExactRevisionFailure(t *testing.T) {
+	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done",
+		canonicalVerifyContent+"\n\n### Revision\n\n`stale-head`")
+	verify.URL = "https://issues.example/acme/widgets/issues/3#issuecomment-3"
+	collection := statusGateCollection{Remote: statusForecastRemoteFacts(gates.TargetFinal)}
+	collection.Remote.ProviderEvidence = gates.Fact{Required: true, Known: true, Passed: true}
+	collection.Remote.VerifyRevision, _ = collectVerifyRevisionFact([]model.Artifact{verify}, "head-abc",
+		time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC))
+
+	summary := summarizeStatusForGate("acme/widgets", 1, 2, 3, gates.TargetFinal,
+		[]model.Artifact{verify}, workflow.Plan{}, nil, collection)
+	diagnostic := statusGateDiagnostic(summary, gates.CodeVerifyRevisionInvalid)
+	if summary.OK || diagnostic == nil || diagnostic.Artifact.ID != "VERIFY-001" ||
+		diagnostic.Expected != "head-abc" || diagnostic.Remediation.CommandFamily != "comment upsert" {
+		t.Fatalf("status exact-revision diagnostic = %+v gate=%+v", diagnostic, summary.Gate)
 	}
 }
 
@@ -646,6 +726,15 @@ func statusHasCode(summary statusSummary, code string) bool {
 	return false
 }
 
+func statusGateDiagnostic(summary statusSummary, code string) *gates.Diagnostic {
+	for index := range summary.Gate.Diagnostics {
+		if summary.Gate.Diagnostics[index].Code == code {
+			return &summary.Gate.Diagnostics[index]
+		}
+	}
+	return nil
+}
+
 func TestSummarizeStatusDoesNotRequireSessionMetadata(t *testing.T) {
 	specBody, err := model.EnsureTypedBody("SPEC", "SPEC-001", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y", model.BodyOptions{Status: "confirmed"})
 	if err != nil {
@@ -655,9 +744,9 @@ func TestSummarizeStatusDoesNotRequireSessionMetadata(t *testing.T) {
 		{Issue: 1, URL: "https://github.com/o/r/issues/1#issuecomment-1", Comment: model.ParseTypedComment(specBody)},
 	})
 	if !summary.OK {
-		t.Fatalf("metadata diagnostics should not block status: %+v", summary.NextGates)
+		t.Fatalf("status should remain OK: %+v", summary.NextGates)
 	}
 	if len(summary.Diagnostics) != 0 {
-		t.Fatalf("unexpected diagnostics: %+v", summary.Diagnostics)
+		t.Fatalf("status should not report session metadata diagnostics: %+v", summary.Diagnostics)
 	}
 }

@@ -52,6 +52,47 @@ func TestClientCreatesAndListsComments(t *testing.T) {
 	}
 }
 
+func TestClientObservesOneIssueCommentWithOptionalRepresentationVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/o/r/issues/comments/77" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+		w.Header().Set(HeaderRepresentationVersion, "9")
+		_ = json.NewEncoder(w).Encode(Comment{
+			ID:       77,
+			HTMLURL:  "https://github.com/o/r/issues/4#issuecomment-77",
+			IssueURL: serverURL(r) + "/repos/o/r/issues/4",
+			Body:     "exact body\n",
+		})
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL("github.com", server.URL, "token", server.Client())
+	observed, err := client.ObserveIssueComment(context.Background(), "o/r", 77)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Comment.ID != 77 || observed.Comment.Body != "exact body\n" || observed.RepresentationVersion != 9 {
+		t.Fatalf("observation = %+v", observed)
+	}
+}
+
+func TestClientObservesOneIssueCommentWithoutRepresentationVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(Comment{ID: 78, Body: "body"})
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL("github.com", server.URL, "token", server.Client())
+	observed, err := client.ObserveIssueComment(context.Background(), "o/r", 78)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Comment.ID != 78 || observed.RepresentationVersion != 0 {
+		t.Fatalf("observation = %+v", observed)
+	}
+}
+
 func TestClientListCheckRunsParsesHeadSHA(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/o/r/commits/head/check-runs" {

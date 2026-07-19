@@ -85,8 +85,13 @@ issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --jso
 issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
+issue-spec comment get --repo owner/repo --issue 1 --id SPEC-001 --type SPEC --json
+issue-spec comment get --repo owner/repo --issue 1 --id SPEC-001 --comment-id 123 --include-body --json
 issue-spec comment list --repo owner/repo --issue 1 --json
 issue-spec comment list --repo owner/repo --issue 1 --type SPEC --json --include-body
+issue-spec comment list --repo owner/repo --issue 1 --active-only --json
+issue-spec comment list --repo owner/repo --issue 1 --status ready,in-progress,done --json
+issue-spec comment list --repo owner/repo --issue 1 --history --include-body --json
 
 issue-spec question create --repo owner/repo --issue 1 --id QUESTION-001 --blocking --question "What must be decided?"
 issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-001 --resolution-file resolution.md
@@ -248,6 +253,29 @@ containing the exact original backend Markdown; the flag requires `--json`.
 Type filtering and canonical diagnostics are unchanged in either mode, and no
 matches are encoded as `[]` rather than `null`.
 
+`comment get --issue N --id PROCESS-001 --json` returns one bounded typed
+artifact rather than the issue timeline. An optional `--type` asserts its type.
+When `--comment-id` supplies a prior provider locator and the backend supports
+direct observation, the CLI reads that comment directly and verifies its issue,
+marker, type, and stable ID. Otherwise it may scan internally, but unrelated
+bodies are never returned. Duplicate stable IDs and locator mismatches fail
+closed. `--include-body` includes only the target's exact Markdown.
+
+Targeted and explicitly filtered list results include `representation_digest`,
+the lowercase SHA-256 of the exact remote Markdown bytes; no newline or
+whitespace normalization is performed. `representation_version` is included
+when the backend exposes one. Links are grouped by header relation and normally
+contain `count`, at most 10 sorted `{type,id,url}` items, and
+`truncated_count`; unresolved external references still retain their URL.
+`--include-all-links` returns every item and requires `--json`.
+
+`comment list --active-only --json` selects every non-superseded canonical
+artifact, including `done` and `confirmed`. `--status` accepts a comma-separated
+set of exact statuses. `--history` selects superseded artifacts and can be
+combined with `--include-body` for explicit audit detail. `--active-only` and
+`--history` are mutually exclusive. With none of these new filters (and without
+`--include-all-links`), the existing list JSON contract remains unchanged.
+
 ## Canonical Typed Comments
 
 Typed comments carry requirements, tasks, process ownership, review, and verification evidence across coordinator handoffs. Instead of hand-writing raw Markdown, use `issue-spec comment generate` to render canonical bodies from structured JSON, then pipe the output straight into `comment upsert`:
@@ -320,7 +348,7 @@ Omitted planning fields render canonical defaults (`TBD` / `N/A`) so trivial cha
 
 ## PROCESS workspaces
 
-The exact PROCESS id selected by the coordinator from the typed DAG is the workspace selector; prompt text and runner command grammar are never selectors. Use the same repository, issue, PROCESS, integration root, workspace root, and owner token across the six lifecycle commands:
+The exact PROCESS id selected by the coordinator from the typed DAG is the workspace selector; prompt text and runner command grammar are never selectors. Use the same repository, issue, PROCESS, integration root, workspace root, and owner token across the six Coordinator-owned lifecycle commands:
 
 ```bash
 issue-spec workflow workspace prepare   --repo owner/repo --issue 12 --process PROCESS-001 ...
@@ -331,15 +359,78 @@ issue-spec workflow workspace reconcile --repo owner/repo --issue 12 --process P
 issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process PROCESS-001 ...
 ```
 
+The assigned implementation worker does not invoke `complete` or `integrate`. It returns a bounded handoff containing the exact result commit, focused-test results, and, when used, a sealed result receipt. The Coordinator supplies its owner token and runs `workspace complete --result-file`. That command validates the exact assignment id, digest, generation, schema, base/result revisions, one-commit/DCO/ownership Git contract, changed paths, and required tests before recording the result commit and advancing the workspace lifecycle.
+
+For every implementation or review role assignment, `design_context` is required and covered by the portable assignment digest. It contains the canonical Design `source_url`, fixed `read_mode: complete-issue-body`, fixed `conflict_policy: design-authoritative-stop`, and the Coordinator-authored `invariant`, `applicable_decisions`, `implementation_direction`, `must_preserve`, `must_not`, and `minimum_verification` fields. The workspace compiler derives the Design URL from the current Implement issue's canonical predecessor chain and fails closed on a missing, ambiguous, or mismatched source. It emits the structured values without sorting, summarizing, or reinterpreting them.
+
+Before changing or reviewing code, the assigned role reads the complete Design issue body with `issue-spec read issue --repo owner/repo --issue <design_context.source_url>` without comments, timeline, history, or gate expansion. If that body conflicts with the structured projection, the role stops and reports the conflict. Runtime-specific session IDs are not collected or passed as Design authority, audit metadata, or correctness inputs.
+
+Generated guidance follows the same bounded read model. Coordinator guidance uses `status`/`verify --summary`, structured detail actions, exact `comment get`, filtered lists, sealed assignments, and reconcile checkpoints; full output remains a discoverable compatibility/debug path. Implementation, review, and verification role sections contain only their sealed assignment, authoritative Design read, owned invariant/work, focused checks, and bounded result responsibilities. Complete proposal/Design copies, full DAGs, link matrices, closure/archive policy, and provider-routing policy stay out of role sections. A repeated rule is removed only when a delivered command, validator, schema, or retained explicit stop replaces it. Deterministic regression budgets count UTF-8 bytes, headings/fields, and instruction-array items; they never use a model tokenizer or justify removing an uncovered safety rule.
+
+Compatibility is deliberately asymmetric. A pre-D14 version-1 implementation or review assignment without `design_context` remains readable in an existing local registry or PROCESS workspace so inspection, cleanup, and recovery do not declare the registry corrupt. That historical object is read-only compatibility evidence: strict issuance and redispatch digests, assignment-file and packet parsing, and new implementation/review role submissions still reject it. The CLI never synthesizes missing Design context.
+
+An imported result file is not an identity or provenance trust root. Its writer, subject, logical agent name, credentials, and assurance labels are informational and cannot create accepted implementation receipt authority or satisfy a non-Coordinator/independence gate. Unverified imports and reserved assurance values may be structurally validated, but the resulting PROCESS workspace contains no accepted-implementation-receipt marker. Runtime-attested Coordinator import is explicitly deferred until a real runtime attestation trust root exists; there is no signer, secret, or caller-named attestor interface in this workflow.
+
+The existing narrow direct role-owned publication commands remain available for rationale, review, and verification compatibility. For example, the verification role invokes `verify submit --agent Verifier` against its exact assignment and snapshot. The logical agent field remains `self-reported` metadata; runtime-specific session fields are not collected. Coordinator-side owner-token import is not part of `verify submit`.
+
 `change-bearing` uses a writable owned branch. `review` and `verification` use detached immutable workflow snapshots: dirty state fails closed, but the CLI does not create an OS-enforced per-child sandbox. `orchestration` records lifecycle bookkeeping without a checkout. `external` uses mode `none`; completion and the final gate require consumed provider-neutral exact-revision evidence.
 
 Runner commands never carry a PROCESS selector. The runner launches exactly one ACPX coordinator and keeps its cwd and primary sandbox workspace at the public session clone. The coordinator selects a ready PROCESS from the typed DAG and invokes the workspace CLI. Runner mode supplies trusted session-local defaults through `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` and `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT`; a standalone coordinator passes explicit roots.
 
-After `prepare`, the coordinator delegates through the current agent runtime's native child/subagent facility, passing the exact worktree path as cwd plus the branch, write ownership, PROCESS id, parent TASK, and predecessor handoff. The child is not another ACPX session. It shares the coordinator's outer runner sandbox, authors a result commit, runs focused tests, and returns bounded handoff evidence. The coordinator validates that result and runs `complete` and `integrate` from its unchanged session clone before synchronizing status and cleanup.
+After `prepare`, the coordinator delegates through the current agent runtime's native child/subagent facility, passing the exact worktree path as cwd plus the branch, write ownership, PROCESS id, parent TASK, and predecessor handoff. The child is not another ACPX session. It shares the coordinator's outer runner sandbox, authors a result commit, runs focused tests, seals an optional receipt, and returns that bounded handoff. The coordinator revalidates the exact Git result while running `complete` and `integrate` from its unchanged session clone before synchronizing status and cleanup; importing the receipt does not attest who produced it. Verification keeps its direct role-owned `verify submit` compatibility path, which validates the exact snapshot and required evidence before publishing the accepted VERIFY comment without a Coordinator-owned sidecar import.
 
 After runner resume or restart, the top-level runner recovers only the ACPX/session job. From the unchanged session clone, the coordinator owns the PROCESS lifecycle: it uses `inspect` or `reconcile` on the exact lease before `complete` and `integrate`, then invokes owner-token cleanup only after an explicit integration or retention decision. Top-level runner session-clone retention calls `git worktree list` and fails closed by retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails. It does not own, persist, or retry child PROCESS cleanup.
 
 `workflow workspace cleanup` is always an explicit owner-token-authorized destructive operation. It can remove unintegrated change-bearing work and does not decide or enforce integration/retention eligibility for its caller, so invoke it only after making that decision.
+
+## Accepted receipt projection
+
+`workflow reconcile --projection` compiles already-accepted role receipt references into the existing deterministic transition/link plan and checkpoint engine:
+
+```bash
+issue-spec workflow reconcile \
+  --projection receipt-projection.json \
+  --allow-nonatomic \
+  --checkpoint .issue-spec/reconcile/receipt-projection.json \
+  --json
+```
+
+The version-1 projection is deliberately identity-only. It accepts no receipt content, subject revision, provenance, assurance, arbitrary body, or provider mutation:
+
+```json
+{
+  "version": 1,
+  "repo": "owner/repo",
+  "hostname": "github.com",
+  "proposal": 101,
+  "issue": 103,
+  "accepted_receipts": [
+    {
+      "role": "review",
+      "carrier": {"type": "REVIEW", "id": "REVIEW-001"},
+      "receipt_id": "receipt-review-1",
+      "receipt_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "generation": 1,
+      "lifecycle": [
+        {"target": {"type": "REVIEW", "id": "REVIEW-001"}, "status": "done"}
+      ],
+      "coverage_targets": [
+        {"type": "PROCESS", "id": "PROCESS-002"},
+        {"type": "SPEC", "id": "SPEC-001"}
+      ],
+      "current_targets": [
+        {"type": "PROCESS", "id": "PROCESS-002"}
+      ]
+    }
+  ]
+}
+```
+
+Before any write, reconcile observes the carrier's compact immutable accepted-receipt marker and requires its role, receipt id, digest, assignment generation, and existing `done` carrier status to match exactly. The single lifecycle entry is therefore an assertion, not permission to transition the carrier: a projection cannot complete, supersede, downgrade, or reopen either the carrier or a related `PROCESS`/`TASK`. Review carriers are `REVIEW`, verification carriers are `VERIFY`, and implementation carriers are `PROCESS`. Implementation projection currently fails closed until the PROCESS contains the issue-native accepted-implementation-receipt marker; workspace assignment/result state is not a substitute.
+
+Relationship types are fixed: implementation coverage targets are `TASK`/`SPEC` and current targets are `TASK`; review and verification coverage targets are `PROCESS`/`SPEC` and current targets are `PROCESS`. Version 1 accepts no caller-supplied provider evidence URL; rationale, findings, and checks remain only in role-owned carriers or provider-authoritative observations. Production reconciliation binds the declared proposal to its canonical proposal/design/implementation issues, derives the exact authorized target IDs from the accepted carrier's immutable identity, SpecRefs, and managed assignment coverage, and resolves exactly one provider comment URL for each ID on the corresponding bound issue. Missing or duplicate carriers, a wrong change or issue, an unauthorized same-type ID, and a mismatched URL all fail closed before any write. The resolved plan records the exact authority representation digests, assignment identity, and provider URLs, so a retry also fails closed if authority becomes stale. Reconcile adds only the missing reverse link to the mutable target; accepted-carrier bytes are never rewritten, and carriers do not need preseeded target URLs.
+
+Non-atomic provider fallback is disabled by default. GitHub projection writes require an explicit `--allow-nonatomic` invocation (or top-level `"allow_nonatomic": true` in the projection). The compiled plan records that policy in its digest. Each fallback mutation performs a fresh exact observation, compares the representation digest with the body used to compute the mutation, and requires an exact post-write observation before checkpointing. Reusing the same compiled plan and checkpoint therefore resumes the existing digest-bound retry path; the result remains marked non-atomic because a backend without conditional mutation cannot eliminate the final write race.
 
 ### Canonical validation by default
 

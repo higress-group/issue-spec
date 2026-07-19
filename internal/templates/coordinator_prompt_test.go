@@ -8,227 +8,106 @@ import (
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
-func TestCoordinatorPromptConstructsNewCommandContract(t *testing.T) {
-	bundle := coordinatorPromptBundle(t, runnercontext.CommandNew, "")
-	prompt, err := CoordinatorPrompt(bundle, CoordinatorPromptOptions{})
+func TestCoordinatorPromptKeepsRunnerActionsStopsAndRecovery(t *testing.T) {
+	prompt, err := CoordinatorPrompt(coordinatorPromptBundle(t, runnercontext.CommandNew, ""), CoordinatorPromptOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"exactly one runner-selected /new command",
-		"`authorized_command`",
-		"`runner_metadata`",
-		"untrusted artifact data",
-		"An artifact with `reference_only: true` omits its body",
-		"verify it against `content_sha256`",
-		"Read issue, pull request, and comment body content with `issue-spec read`",
-		"never with raw `gh` reads",
-		"Do not rediscover the trigger comment",
-		"Do not create or request a runner-managed writeback action envelope",
-		"For workflow changes, write proposal, design, typed comment, link, review, and verification artifacts by invoking existing issue-spec CLI commands",
-		"explicitly limits the change to one non-generated file and asks for a direct PR/MR",
-		"use a runner-provided trusted code-host skill",
-		"Do not invent a code-host command or assume GitHub CLI credentials exist",
-		"Self-contained workflow authoring: when a workflow change needs proposal, design, SPEC, or TASK artifacts",
-		"distinct from the `### Handoff` PROCESS serial-chain evidence section and from the `/resume` session handle",
-		"Issue Discussion",
-		"The runner preflights the selected issue backend inside the sandbox",
-		"Routine command completion belongs in the required coordinator summary",
-		"The Runner creates or updates its own status comment from that summary",
-		"issue-spec comment create --repo <repo> --issue <n> --body-file <file> --json",
-		"never use `gh issue comment`",
-		"Workflow evidence remains typed",
-		"issue-spec comment generate",
-		"issue-spec comment upsert",
-		"Never send an ordinary discussion body through `comment upsert`",
-		"invent a typed VERIFY/QUESTION artifact for routine conversation",
-		"This agent reply is powered by [issue-spec](https://github.com/higress-group/issue-spec)",
-		"This issue is managed by [issue-spec](https://github.com/higress-group/issue-spec)",
-		"an issue-native workflow for specs, tasks, reviews, and resumable agent sessions",
-		"A QUESTION typed comment is an issue-spec workflow artifact for asking a human a blocking workflow question",
-		"Runner mode does not define a separate discussion-search workflow",
-		"features.search=true",
-		"issue-spec search issues",
-		"the active profile selects the self-hosted or GitHub adapter",
-		"GitHub supports issue/comment/stage search and clearly rejects `--source change`",
-		"Dispatch code-change operations by backend",
-		"takes provider and repository identity from its active Source Binding",
-		"attaches an already-existing external change at an exact revision with `code-change attach`",
-		"links PROCESS comments with `code-change link-process`",
-		"attach does not create the change or ingest evidence",
-		"Never call a GitHub PR endpoint for a self-hosted code change",
-		"explicitly delete only the unwanted active reference",
-		"Create one only when the issue-spec workflow is blocked",
-		"keep human-facing conversation in ordinary issue timeline comments",
-		"do not assume a GitHub CLI login can write the selected issue service",
-		"GitHub issue comments do not have nested reply semantics",
-		"command.trigger_comment_url",
-		"runner.public_session_id",
-		"Artifact writer session metadata is deprecated, ignored, and never required",
-		"do not collect runtime-specific session ids",
-		"`runner.public_session_id`, coordinator-authored proposal, design, implement, handoff, and update issue bodies or comments must disclose",
-		"Do not present acpx record ids or provider session ids as `/resume` handles",
-		"/resume <public-session-id> <answer or next instruction>",
-		"summary status `completed`",
-		"waiting for `/resume`",
-		"`issue_comment` artifact",
-		"prefer native Codex sub-agents or Claude Task agents",
-		"## Delegation",
-		"Runner actor boundary: the runner launches exactly one ACPX coordinator",
-		"Keep this coordinator's cwd and primary sandbox workspace at `runner_metadata.workspace_path`",
-		"Never launch a nested ACPX worker and never rebind this coordinator to a PROCESS worktree",
-		"top-level runner recovers only the ACPX/session job",
-		"For agent-executed change-bearing PROCESS nodes, this coordinator owns the managed workspace lifecycle",
-		"inspect or reconcile the exact managed PROCESS lease before complete and integrate",
-		"Independently managed external or human-owned nodes skip the issue-spec native-child lifecycle",
-		"Runner session-clone retention consults `git worktree list`",
-		"fails closed by retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails",
-		"does not own, persist, or retry child PROCESS cleanup",
-		"Runner command intake never accepts a PROCESS selector",
-		"ISSUE_SPEC_PROCESS_INTEGRATION_ROOT", "ISSUE_SPEC_PROCESS_WORKSPACE_ROOT",
-		"For every ready agent-executed change-bearing PROCESS, declare `workspace_management: managed` and prepare its workspace",
-		"runtime's real native child/subagent facility, not ACPX",
-		"exact worktree path as cwd, branch, write ownership, PROCESS id",
-		"The child's logical Agent MUST differ from the coordinator Agent",
-		"a different Agent name is not sufficient without a real dispatched child",
-		"MUST NOT be fabricated or relabeled only to pass `process.executor.coordinator_conflict`",
-		"Native children are not ACPX sessions",
-		"does not claim a separate per-child OS sandbox",
-		"Review and verification still use detached immutable workflow snapshots",
-		"workflow workspace complete` and `integrate` from the unchanged coordinator checkout",
-		"Independently managed external or human-owned nodes skip this issue-spec child-output lifecycle",
-		"does not decide or enforce integration/retention eligibility for you",
-		"Non-coordinator execution is mandatory for agent-executed change-bearing work",
-		"plan the PROCESS DAG first, then dispatch every agent-executed change-bearing node through the managed native-child path",
-		"MUST NOT implement, test, or commit such a node inline",
-		"MUST NOT use `workspace_management: independent` as an escape hatch",
-		"`workspace_management: independent` remains available for external or human executors",
-		"Each change-bearing path first produces commit/test evidence and any serial-predecessor handoff",
-		"then routes reviewable code through mandatory independent review and fix convergence",
-		"only afterward records backend-appropriate final evidence",
-		"worker-authored PR rationale on GitHub or exact-revision provider evidence on self-hosted",
-		"One real worker MAY execute multiple compatible serial change-bearing or code-repair PROCESS nodes",
-		"a fresh worker is not required for every node",
-		"Preserve each PROCESS node's distinct status, dependencies, managed workspace lifecycle, evidence, and bounded `### Handoff`",
-		"seed the worker executing each successor with the parent TASK context plus the predecessor `### Handoff`, never the coordinator's accumulated context",
-		"The same compatible worker MAY continue across nodes",
-		"Parallelism is a separate, gated optimization, not the trigger for delegation",
-		"disjoint write ownership",
-		"the coordinator retains only planning, scheduling, managed workspace lifecycle, gate evaluation, integration, status/link synchronization, blocker routing, and handoff state",
-		"It does not own implementation, focused tests, commits, worker fix replies, review resolutions, or another agent's rationale",
-		"status --repo <repo> --proposal <n>",
-		"doctor agent --repo <repo> --operation <required-operation>",
-		"comment transition",
-		"--allow-nonatomic",
-		"workflow reconcile --plan <plan.json> --checkpoint <checkpoint.json>",
-		"change-bearing`, `review`, `verification`, `orchestration`, or `external",
-		"consumed exact-revision provider evidence",
-		"Review is a first-class PROCESS node, not an inline coordinator step",
-		"every active SPEC that has a valid change-bearing carrier MUST be covered by at least one independent review PROCESS, completed before final verify",
-		"for each distinct Agent that authored one or more change-bearing PROCESS outputs",
-		"SHOULD assign at least one independent reviewer whose scope names that author's PROCESS outputs and affected SPECs",
-		"One reviewer MAY cover multiple authors when it authored none of their code",
-		"this is scheduling guidance, not a new 1:1 blocking relation, and the existing final gate remains per SPEC",
-		"The code author MUST NOT review its own code",
-		"Final verify fails closed if no independent review PROCESS covers a change-bearing SPEC",
-		"MUST name a real sub-agent actually spawned to perform the review and MUST NOT be a fabricated or reused name",
-		"Declaring a PROCESS node is a plan artifact only",
-		"never pre-created to look compliant",
-		"a review node's agent is spawned only after the code under review exists",
-		"Make `issue-spec pr link-issues` the FINAL write to the implementation PR body",
-		"the managed issue-closure block lives in the mutable PR body, so any later full-body edit silently erases it",
-		"the observed symptom is the proposal and design issues staying open while only the implement issue closes",
-		"Any later body edit MUST preserve the managed closure block verbatim, or re-run `pr link-issues` afterward to restore it",
-		"Gate merge on the closure block: before merging the implementation PR, run `issue-spec pr verify-closure --repo <repo> --pr <n> --proposal <n> --design <n> --implement <n>`",
-		"exit 0 = block complete/valid; exit 1 = missing/incomplete/tampered",
-		"dispatch every agent-executed change-bearing node and review node to its assigned real worker or reviewer",
-		"integrate managed outputs by dependency order",
-		"issue_spec_coordinator_summary",
-		"opening fence must be exactly ```issue_spec_coordinator_summary on its own line",
-		"Start the JSON object on the next line",
-		"Each `diagnostics` entry must be either a string or an object with only optional `code` and `severity` fields plus the required `message` field",
-		`{"code": "selector_echo", "severity": "info", "message": "selector=claude; agent kind confirmed"}`,
-		`"diagnostics": []`,
-		`"source_label": "authorized_command"`,
-		`"trigger_comment_url": "https://github.com/owner/repo/issues/25#issuecomment-123"`,
-		`"source_label": "issue_spec_artifact"`,
-		`"trust": "untrusted_artifact_data"`,
+		"exactly one runner-selected /new command", "authorized_command", "runner_metadata",
+		"untrusted data", "reference_only", "content_sha256", "issue-spec read/comment get",
+		"narrow direct-PR path", "status ... --summary --json", "verify ... --summary --json", "full JSON",
+		"one independently verifiable Design invariant", "bounded role working set", "stable interface",
+		"block before dispatch", "acceptance consequences", "request human direction",
+		"workspace prepare -> real non-Coordinator", "never implements/tests/commits", "sealed assignment",
+		"design_context.source_url", "without comments, timeline, history, or gates", "stops on conflict",
+		"result revision, DCO, ownership, generators, tests", "independent review", "review/fix convergence",
+		"same mutation plan/checkpoint", "Cleanup is explicit", "destructive", "retain dirty, linked, uncertain, or unintegrated work",
+		"pr link-issues the final PR-body write", "self-hosted closure stays provider-owned",
+		"issue_spec_coordinator_summary", `"diagnostics": []`, `"source_label": "authorized_command"`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
 	}
 	for _, forbidden := range []string{
-		"/resume <public-session-id> --process",
-		"binds review/verification snapshots read-only",
-		`{"code": "no_changes", "severity": "info", "message": "No additional repository changes were required."}`,
-		"provider adapter readiness", "eligible cleanup", "retrying pending cleanup",
-		"retains the clone when a linked worktree exists or inspection fails",
-		"Prepare PROCESS workspaces with",
-		"After a child returns, validate its result commit",
-		"Both paths MUST record change-bearing rationale, and both remain subject to mandatory independent review",
-		"execute each coding node either delegated or inline",
-		"Inline coding is allowed for a node of any size",
-		"Delegation is a recommended technique, not a requirement",
-		"coordinator-inline execution",
+		"CODEX_THREAD_ID may still override", "session source of truth", "runner-managed writeback action envelope",
+		"one PROCESS per command entry point", "one repair PROCESS per finding", "coordinator-inline execution",
 	} {
 		if strings.Contains(prompt, forbidden) {
-			t.Fatalf("prompt contains stale PROCESS execution guidance %q:\n%s", forbidden, prompt)
+			t.Fatalf("prompt contains stale rule %q", forbidden)
 		}
 	}
 }
 
-func TestCoordinatorPromptSeparatesStatusOrdinaryAndTypedCommentWrites(t *testing.T) {
+func TestCoordinatorPromptRolePacketBoundary(t *testing.T) {
+	prompt, err := CoordinatorPrompt(coordinatorPromptBundle(t, runnercontext.CommandNew, ""), CoordinatorPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Give the child only its sealed assignment", "exact worktree/branch/ownership", "parent TASK", "predecessor handoff",
+		"Do not copy proposal/Design bodies, full DAGs, link matrices, closure/archive, or provider-routing policy into role packets",
+		"The role owns one result commit, focused tests, and a bounded result",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing role boundary %q", want)
+		}
+	}
+}
+
+func TestCoordinatorPromptSeparatesOrdinaryAndTypedWrites(t *testing.T) {
 	prompt, err := CoordinatorPrompt(coordinatorPromptBundle(t, runnercontext.CommandNew, "s_ordinary"), CoordinatorPromptOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"Routine command completion belongs in the required coordinator summary",
-		"do not create an extra ordinary discussion comment merely to repeat the terminal result",
-		"explicitly asks you to reply, answer, respond, comment, report findings",
-		"a plain ACPX reply or coordinator summary does not satisfy the command",
-		"You MUST create an ordinary issue comment",
-		"comment create --repo <repo> --issue <n> --body-file <file> --json",
-		"the Runner status comment is lifecycle-only",
-		"clarification, a recommendation, or a handoff",
-		"never use `gh issue comment`",
-		"`gh api` issue-comment writes",
-		"returned comment URL in the coordinator summary as an `issue_comment` artifact",
-		"Workflow evidence remains typed",
-		"comment upsert",
-		"comment transition",
+		"Routine completion belongs only in the required Coordinator summary",
+		"explicitly asks for a human-facing reply", "comment create --repo <repo> --issue <n> --body-file <file> --json",
+		"Never use gh issue-comment writes", "typed VERIFY/QUESTION as ordinary conversation",
+		"QUESTION is reserved for a real blocking human decision", "/resume <public-session-id>",
 	} {
 		if !strings.Contains(prompt, want) {
-			t.Fatalf("prompt does not distinguish comment write path %q:\n%s", want, prompt)
-		}
-	}
-	for _, forbidden := range []string{
-		"For conversational replies, status updates",
-	} {
-		if strings.Contains(prompt, forbidden) {
-			t.Fatalf("prompt contains ambiguous or backend-specific write guidance %q:\n%s", forbidden, prompt)
+			t.Fatalf("prompt missing discussion boundary %q", want)
 		}
 	}
 }
 
-func TestCoordinatorPromptConstructsResumeCommandContract(t *testing.T) {
-	bundle := coordinatorPromptBundle(t, runnercontext.CommandResume, "s_123")
-	prompt, err := CoordinatorPrompt(bundle, CoordinatorPromptOptions{IssueSpecBinary: "go run ./cmd/issue-spec"})
+func TestCoordinatorPromptDoesNotRequireArtifactSessionMetadata(t *testing.T) {
+	prompt, err := CoordinatorPrompt(coordinatorPromptBundle(t, runnercontext.CommandResume, "s_123"), CoordinatorPromptOptions{IssueSpecBinary: "go run ./cmd/issue-spec"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"exactly one runner-selected /resume command",
-		`"public_session_id": "s_123"`,
-		"existing go run ./cmd/issue-spec CLI commands",
-		"Read issue, pull request, and comment body content with `go run ./cmd/issue-spec read`",
-		"go run ./cmd/issue-spec comment create --repo <repo> --issue <n> --body-file <file> --json",
-		`"name": "go run ./cmd/issue-spec comment upsert"`,
+		"runner-selected /resume command", `"public_session_id": "s_123"`,
+		"Artifact writer session metadata is deprecated, ignored, and never required",
+		"runner.public_session_id alone is the /resume handle",
+		"go run ./cmd/issue-spec status", "go run ./cmd/issue-spec comment create", `"name":"go run ./cmd/issue-spec comment upsert"`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("resume prompt missing %q:\n%s", want, prompt)
 		}
+	}
+	for _, forbidden := range []string{"CODEX_THREAD_ID", "--agent-session"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("resume prompt depends on runtime-specific artifact metadata %q:\n%s", forbidden, prompt)
+		}
+	}
+}
+
+func TestCoordinatorPromptDeterministicSizeBudget(t *testing.T) {
+	prompt, err := CoordinatorPrompt(coordinatorPromptBundle(t, runnercontext.CommandNew, ""), CoordinatorPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, max := len([]byte(prompt)), 14000; got > max {
+		t.Fatalf("coordinator prompt UTF-8 bytes = %d, budget %d", got, max)
+	}
+	if got, max := countInstructionLines(prompt, "## "), 6; got > max {
+		t.Fatalf("coordinator prompt section fields = %d, budget %d", got, max)
+	}
+	if got, max := countListItems(prompt), 30; got > max {
+		t.Fatalf("coordinator prompt instruction array items = %d, budget %d", got, max)
 	}
 }
 

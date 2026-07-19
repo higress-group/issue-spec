@@ -41,6 +41,8 @@ const (
 	CodeReviewFindingsUnknown     = "review.findings.unknown"
 	CodeProviderEvidenceMissing   = "provider.evidence.missing"
 	CodeProviderEvidenceUnknown   = "provider.evidence.unknown"
+	CodeVerifyRevisionInvalid     = "verify.revision.invalid"
+	CodeVerifyRevisionUnknown     = "verify.revision.unknown"
 	CodeDurableSpecInvalid        = "durable_spec.invalid"
 	CodeDurableSpecUnknown        = "durable_spec.unknown"
 	CodeProcessReviewRequired     = "process.review.required"
@@ -308,6 +310,9 @@ func (e *evaluator) evaluateRemoteFacts() {
 	e.evaluateFact(e.snapshot.Remote.PRChecks, CodePRChecksUnknown, CodePRChecksFailed, "pull request checks are unknown", "pull request checks failed", "checks.read", ArtifactRef{})
 	e.evaluateFact(e.snapshot.Remote.ReviewFindings, CodeReviewFindingsUnknown, CodeReviewFindingsOpen, "review findings are unknown", "blocking review findings remain open", "review sync", ArtifactRef{})
 	e.evaluateFact(e.snapshot.Remote.ProviderEvidence, CodeProviderEvidenceUnknown, CodeProviderEvidenceMissing, "provider evidence is unknown", "required provider evidence is missing", "evidence explain", ArtifactRef{})
+	e.evaluateFact(e.snapshot.Remote.VerifyRevision.Fact, CodeVerifyRevisionUnknown, CodeVerifyRevisionInvalid,
+		"VERIFY exact-revision state is unknown", "VERIFY is not bound to the exact external subject revision",
+		"comment upsert", e.snapshot.Remote.VerifyRevision.Artifact, "--type", "VERIFY")
 	for _, process := range e.snapshot.Remote.Processes {
 		ref := ArtifactRef{Type: "PROCESS", ID: process.ProcessID, URL: process.ProcessURL}
 		e.evaluateFact(process.PRLink, CodeProcessPRLinkUnknown, CodeProcessPRLinkMissing, "PROCESS PR link is unknown", "PROCESS does not link the required PR", "pr link-process", ref)
@@ -318,12 +323,12 @@ func (e *evaluator) evaluateRemoteFacts() {
 	}
 }
 
-func (e *evaluator) evaluateFact(fact Fact, unknownCode, failedCode, unknownMessage, failedMessage, command string, artifact ArtifactRef) {
+func (e *evaluator) evaluateFact(fact Fact, unknownCode, failedCode, unknownMessage, failedMessage, command string, artifact ArtifactRef, args ...string) {
 	if !fact.Required {
 		return
 	}
 	if !fact.Known {
-		e.add(unknownCode, unknownMessage, artifact, "unknown", expectedOr(fact.Expected, "passed"), command)
+		e.add(unknownCode, unknownMessage, artifact, "unknown", expectedOr(fact.Expected, "passed"), command, args...)
 		diagnostic := &e.diagnostics[len(e.diagnostics)-1]
 		diagnostic.Freshness = FreshnessUnknown
 		return
@@ -331,7 +336,7 @@ func (e *evaluator) evaluateFact(fact Fact, unknownCode, failedCode, unknownMess
 	if fact.Passed {
 		return
 	}
-	e.add(failedCode, failedMessage, artifact, expectedOr(fact.Current, "failed"), expectedOr(fact.Expected, "passed"), command)
+	e.add(failedCode, failedMessage, artifact, expectedOr(fact.Current, "failed"), expectedOr(fact.Expected, "passed"), command, args...)
 	diagnostic := &e.diagnostics[len(e.diagnostics)-1]
 	diagnostic.Freshness = FreshnessPointInTime
 	diagnostic.ObservedAt = fact.ObservedAt

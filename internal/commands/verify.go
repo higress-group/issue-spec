@@ -1,22 +1,79 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/processworkspace"
+	"github.com/higress-group/issue-spec/internal/templates"
 )
+
+const (
+	acceptedVerificationReceiptStart = "<!-- issue-spec:accepted-verification-receipt version=1 -->"
+	acceptedVerificationReceiptEnd   = "<!-- /issue-spec:accepted-verification-receipt -->"
+)
+
+// acceptedVerificationReceipt is the compact durable projection of one
+// validated direct role-owned receipt plus provider-owned checks observed
+// during publication. It contains no evaluator forecast or runtime attestation.
+type acceptedVerificationReceipt struct {
+	ReceiptID            string                                        `json:"receipt_id"`
+	ReceiptDigest        string                                        `json:"receipt_digest"`
+	AssignmentID         string                                        `json:"assignment_id"`
+	AssignmentDigest     string                                        `json:"assignment_digest"`
+	AssignmentGeneration uint64                                        `json:"assignment_generation"`
+	SubjectRevision      string                                        `json:"subject_revision"`
+	Tests                []acceptedVerificationTest                    `json:"tests,omitempty"`
+	Checks               []observedVerificationCheck                   `json:"checks,omitempty"`
+	Provenance           assignment.Provenance                         `json:"provenance"`
+	Submission           *processworkspace.RoleOwnedSubmissionEvidence `json:"submission,omitempty"`
+}
+
+type acceptedVerificationTest struct {
+	ID        string                 `json:"id"`
+	Command   string                 `json:"command"`
+	Outcome   assignment.TestOutcome `json:"outcome"`
+	Assurance assignment.Assurance   `json:"assurance"`
+}
+
+type observedVerificationCheck struct {
+	Provider        string `json:"provider"`
+	Name            string `json:"name"`
+	EvidenceID      string `json:"evidence_id"`
+	State           string `json:"state"`
+	SubjectRevision string `json:"subject_revision"`
+	Source          string `json:"source"`
+}
+
+type verificationSubmitResult struct {
+	OK              bool                                          `json:"ok"`
+	Action          string                                        `json:"action"`
+	VerificationID  string                                        `json:"verification_id"`
+	ReceiptID       string                                        `json:"receipt_id"`
+	ReceiptDigest   string                                        `json:"receipt_digest"`
+	SubjectRevision string                                        `json:"subject_revision"`
+	Tests           []acceptedVerificationTest                    `json:"tests,omitempty"`
+	Checks          []observedVerificationCheck                   `json:"checks,omitempty"`
+	Submission      *processworkspace.RoleOwnedSubmissionEvidence `json:"submission,omitempty"`
+	CommentID       int64                                         `json:"comment_id"`
+	URL             string                                        `json:"url"`
+}
 
 type finalVerifyReport struct {
 	OK                    bool                          `json:"ok"`
@@ -50,12 +107,524 @@ type finalVerifyOptions struct {
 	PRCommits         []github.PullRequestCommit
 	ExternalEvidence  *externalEvidenceConsumption
 	ExternalReview    *externalGateResult
+	ProviderEvidence  gates.Fact
+	VerifyRevision    gates.ScopedFact
 	ValidationNow     time.Time
 	CarrierRevisions  map[string]gates.CarrierRevisionFact
 }
 
 func (a *app) runVerify(ctx context.Context, args []string) int {
+	if len(args) > 0 && args[0] == "submit" {
+		return a.runVerifySubmit(ctx, args[1:])
+	}
 	return a.runVerifyWithReportBuilder(ctx, args, buildFinalVerifyReport)
+}
+
+func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
+	fs := newFlagSet("verify submit", a.err)
+	repoFlag := fs.String("repo", "", "repository owner/name")
+	host := fs.String("hostname", "github.com", "GitHub hostname")
+	implementFlag := fs.String("implement", "", "implement issue containing the verification PROCESS")
+	prFlag := fs.Int("pr", 0, "GitHub pull request number")
+	processID := fs.String("process", "", "verification PROCESS id")
+	verifyID := fs.String("id", "", "VERIFY id to upsert")
+	resultFile := fs.String("result-file", "", "absolute path to a sealed verification receipt")
+	assignmentFile := fs.String("assignment-file", "", "absolute path to the sealed verification assignment or packet")
+	agent := fs.String("agent", "", "logical verification role publishing its receipt")
+	agentSession := addAgentSessionFlag(fs)
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	repo, ok := a.validateRepo(*repoFlag)
+	if !ok {
+		return 2
+	}
+	implementIssue, err := parseIssueFlag(*implementFlag, "implement")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	if strings.TrimSpace(*processID) == "" || strings.TrimSpace(*verifyID) == "" {
+		a.errorf("--process and --id are required\n")
+		return 2
+	}
+	if strings.TrimSpace(*agent) == "" {
+		a.errorf("--agent is required\n")
+		return 2
+	}
+	receipt, err := readReviewResultFile(*resultFile)
+	if err != nil {
+		a.errorf("read verification result: %v\n", err)
+		return 2
+	}
+	sealedAssignment, err := readReviewAssignmentFile(*assignmentFile)
+	if err != nil {
+		a.errorf("read verification assignment: %v\n", err)
+		return 2
+	}
+	client, token, err := a.clientFor(ctx, *host)
+	if err != nil {
+		a.errorf("auth required for verify submit on %s: %v\n", auth.NormalizeHost(*host), err)
+		return 1
+	}
+	process, processBody, err := findArtifactByID(ctx, client, repo, implementIssue, strings.TrimSpace(*processID))
+	if err != nil {
+		a.errorf("load verification PROCESS: %v\n", err)
+		return 1
+	}
+	workspace := model.ParseProcessWorkspace(*processID, process.URL, processBody)
+	class := model.ParseProcessExecutionClass(*processID, process.URL, processBody)
+	if process.Comment.Type != "PROCESS" || process.Comment.ID != *processID || len(process.Comment.Errors) != 0 ||
+		class.Blocking() || class.Class != model.ProcessExecutionVerification || !workspace.Explicit || workspace.Blocking() ||
+		workspace.Workspace == nil || workspace.Workspace.Mode != processworkspace.ModeSnapshot {
+		a.errorf("verification PROCESS must be one canonical managed snapshot assignment\n")
+		return 1
+	}
+	submission := roleOwnedSubmissionEvidence(*agent, resolveWriterSession(*agentSession))
+	if err := validateVerificationReceiptBinding(receipt, sealedAssignment, workspace.Workspace.Assignment, submission); err != nil {
+		a.errorf("validate verification receipt: %v\n", err)
+		return 1
+	}
+	if sealedAssignment.Repository != repo || sealedAssignment.Issue != int64(implementIssue) ||
+		sealedAssignment.ProcessID != strings.TrimSpace(*processID) {
+		a.errorf("validate verification receipt: sealed assignment repository, issue, or PROCESS identity does not match submission target\n")
+		return 1
+	}
+	covers, err := processSectionList(processBody, "### Covers")
+	if err != nil {
+		a.errorf("validate verification coverage: %v\n", err)
+		return 1
+	}
+	comments, err := client.ListIssueComments(ctx, repo, implementIssue)
+	if err != nil {
+		a.errorf("observe submitted VERIFY: %v\n", err)
+		return 1
+	}
+	if err := validateExistingVerificationReceipt(comments, *verifyID, receipt); err != nil {
+		a.errorf("validate submitted VERIFY replay: %v\n", err)
+		return 1
+	}
+	profile, _, err := auth.ResolveProfile(a.profileName, *host)
+	if err != nil {
+		a.errorf("resolve verification profile: %v\n", err)
+		return 1
+	}
+	var checks []observedVerificationCheck
+	if profile.Kind == auth.ProfileKindHosted {
+		if *prFlag > 0 {
+			a.errorf("--pr is not a self-hosted code authority\n")
+			return 2
+		}
+		external, selfHosted, gateErr := a.externalGate(ctx, *host, token.Value, repo, implementIssue,
+			"code_change", receipt.SubjectRevision, coreevidence.GateVerify)
+		if !selfHosted {
+			a.errorf("self-hosted verification authority is unavailable\n")
+			return 1
+		}
+		if gateErr != nil {
+			a.errorf("observe provider verification snapshot: %v\n", gateErr)
+			return 1
+		}
+		checks, err = observeNativeVerificationChecks(receipt.Verification.CheckSelectors, external)
+	} else {
+		if *prFlag <= 0 {
+			a.errorf("--pr must be a positive pull request number\n")
+			return 2
+		}
+		checks, err = observeGitHubVerificationChecks(ctx, client, repo, *prFlag, receipt)
+	}
+	if err != nil {
+		a.errorf("observe provider verification checks: %v\n", err)
+		return 1
+	}
+	body, err := renderSubmittedVerification(*verifyID, process.URL, covers, receipt, checks, submission)
+	if err != nil {
+		a.errorf("render submitted VERIFY: %v\n", err)
+		return 1
+	}
+	action, comment, err := publishAcceptedVerification(ctx, client, repo, implementIssue, *verifyID, body, receipt)
+	if err != nil {
+		a.errorf("publish submitted VERIFY: %v\n", err)
+		return 1
+	}
+	authority := acceptedVerificationReceiptFrom(receipt, checks, submission)
+	result := verificationSubmitResult{OK: true, Action: action, VerificationID: *verifyID,
+		ReceiptID: receipt.ID, ReceiptDigest: receipt.ReceiptDigest, SubjectRevision: receipt.SubjectRevision,
+		Tests: authority.Tests, Checks: authority.Checks, Submission: authority.Submission, CommentID: comment.ID, URL: comment.HTMLURL}
+	if *jsonOut {
+		return a.outputJSON(result)
+	}
+	fmt.Fprintf(a.out, "%s VERIFY %s from receipt %s at %s: %s\n", action, *verifyID, receipt.ID,
+		receipt.SubjectRevision, comment.HTMLURL)
+	return 0
+}
+
+func validateVerificationReceiptBinding(receipt assignment.Receipt, sealed assignment.Assignment,
+	binding *processworkspace.AssignmentBinding, submission processworkspace.RoleOwnedSubmissionEvidence) error {
+	if err := receipt.ValidateForAcceptance(); err != nil {
+		return err
+	}
+	if receipt.Role != assignment.RoleVerification || receipt.Verification == nil {
+		return errors.New("--result-file must contain a verification receipt")
+	}
+	if binding == nil || binding.SchemaVersion != assignment.AssignmentSchemaVersion ||
+		binding.Role != assignment.RoleVerification || binding.BaseRevision != "" || binding.SubjectRevision == "" {
+		return errors.New("PROCESS does not contain an authoritative verification assignment binding")
+	}
+	if receipt.AssignmentID != binding.AssignmentID || receipt.AssignmentDigest != binding.Digest ||
+		receipt.AssignmentGeneration != binding.Generation {
+		return errors.New("verification receipt does not match the authoritative assignment id, digest, and generation")
+	}
+	digest, err := assignment.AssignmentDigest(sealed)
+	if err != nil {
+		return fmt.Errorf("validate sealed verification assignment: %w", err)
+	}
+	if sealed.Role != assignment.RoleVerification || sealed.Verification == nil || sealed.ID != binding.AssignmentID ||
+		digest != binding.Digest || sealed.SubjectRevision != binding.SubjectRevision || sealed.ProcessID == "" {
+		return errors.New("sealed verification assignment does not exactly match the authoritative PROCESS binding")
+	}
+	if receipt.SubjectRevision != binding.SubjectRevision {
+		return errors.New("verification receipt subject revision does not match the authoritative exact snapshot")
+	}
+	if err := processworkspace.ValidateRoleOwnedReceiptSubmission(receipt, submission); err != nil {
+		return fmt.Errorf("verification receipt provenance: %w", err)
+	}
+	for _, test := range receipt.Tests {
+		if test.Outcome != assignment.TestPassed {
+			return fmt.Errorf("verification test %s must pass before VERIFY completion", test.ID)
+		}
+	}
+	return validateVerificationRequirementCoverage(receipt, *sealed.Verification)
+}
+
+func validateVerificationRequirementCoverage(receipt assignment.Receipt, required assignment.VerificationPayload) error {
+	if len(receipt.Tests) != len(required.RequiredTests) {
+		return fmt.Errorf("verification receipt tests must exactly cover all %d assigned required tests", len(required.RequiredTests))
+	}
+	tests := make(map[string]string, len(receipt.Tests))
+	for _, test := range receipt.Tests {
+		tests[test.ID] = test.Command
+	}
+	for _, expected := range required.RequiredTests {
+		if command, ok := tests[expected.ID]; !ok || command != expected.Command {
+			return fmt.Errorf("verification receipt is missing exact assigned test %s command %q", expected.ID, expected.Command)
+		}
+	}
+	actualChecks := receipt.Verification.CheckSelectors
+	if len(actualChecks) != len(required.RequiredChecks) {
+		return fmt.Errorf("verification receipt checks must exactly cover all %d assigned required checks", len(required.RequiredChecks))
+	}
+	checks := make(map[string]bool, len(actualChecks))
+	for _, check := range actualChecks {
+		checks[check.Provider+"\x00"+check.Name] = true
+	}
+	for _, expected := range required.RequiredChecks {
+		if !checks[expected.Provider+"\x00"+expected.Name] {
+			return fmt.Errorf("verification receipt is missing exact assigned check %s/%s", expected.Provider, expected.Name)
+		}
+	}
+	return nil
+}
+
+func observeGitHubVerificationChecks(ctx context.Context, client github.Backend, repo string, prNumber int,
+	receipt assignment.Receipt) ([]observedVerificationCheck, error) {
+	initial, err := client.GetPullRequest(ctx, repo, prNumber)
+	if err != nil {
+		return nil, err
+	}
+	initialHead := strings.TrimSpace(initial.Head.SHA)
+	if initialHead == "" || initialHead != receipt.SubjectRevision {
+		return nil, errors.New("verification receipt does not target the exact current PR revision")
+	}
+	runs, err := client.ListCheckRuns(ctx, repo, initialHead)
+	if err != nil {
+		return nil, err
+	}
+	refreshed, err := client.GetPullRequest(ctx, repo, prNumber)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(refreshed.Head.SHA) != initialHead {
+		return nil, errors.New("pull request changed while observing verification checks; retry the submission")
+	}
+	result := make([]observedVerificationCheck, 0, len(receipt.Verification.CheckSelectors))
+	for _, selector := range receipt.Verification.CheckSelectors {
+		if !strings.EqualFold(strings.TrimSpace(selector.Provider), "github") {
+			return nil, fmt.Errorf("check %s names unsupported GitHub provider %q", selector.Name, selector.Provider)
+		}
+		var selected *github.CheckRun
+		for index := range runs {
+			run := &runs[index]
+			if run.Name != selector.Name || strings.TrimSpace(run.HeadSHA) != initialHead {
+				continue
+			}
+			if selected == nil || run.ID > selected.ID {
+				selected = run
+			}
+		}
+		if selected == nil {
+			return nil, fmt.Errorf("provider-owned check %s is missing at revision %s", selector.Name, initialHead)
+		}
+		if selected.Status != "completed" {
+			return nil, fmt.Errorf("provider-owned check %s is %s", selector.Name, selected.Status)
+		}
+		switch selected.Conclusion {
+		case "success", "neutral", "skipped":
+		default:
+			return nil, fmt.Errorf("provider-owned check %s concluded %s", selector.Name, selected.Conclusion)
+		}
+		result = append(result, observedVerificationCheck{Provider: "github", Name: selector.Name,
+			EvidenceID: fmt.Sprintf("%d", selected.ID), State: selected.Conclusion, SubjectRevision: initialHead,
+			Source: fmt.Sprintf("github-check-run:%d", selected.ID)})
+	}
+	sortObservedVerificationChecks(result)
+	return result, nil
+}
+
+func observeNativeVerificationChecks(selectors []assignment.CheckSelector,
+	external externalGateResult) ([]observedVerificationCheck, error) {
+	provider := strings.TrimSpace(external.Target.Reference.ProviderKey)
+	revision := strings.TrimSpace(external.Target.SubjectRevision)
+	superseded := map[string]bool{}
+	for _, record := range external.Snapshot.Records {
+		if id := strings.TrimSpace(record.SupersedesID); id != "" {
+			superseded[id] = true
+		}
+	}
+	result := make([]observedVerificationCheck, 0, len(selectors))
+	for _, selector := range selectors {
+		if strings.TrimSpace(selector.Provider) != provider {
+			return nil, fmt.Errorf("check %s belongs to provider %q, not authoritative provider %q",
+				selector.Name, selector.Provider, provider)
+		}
+		var selected *codereview.EvidenceRecord
+		for index := range external.Snapshot.Records {
+			record := &external.Snapshot.Records[index]
+			if superseded[record.ID] || record.Kind != codereview.EvidenceCheck || record.Name != selector.Name || !record.Trusted ||
+				strings.TrimSpace(record.SubjectRevision) != revision {
+				continue
+			}
+			if selected == nil || record.ObservedAt.After(selected.ObservedAt) ||
+				(record.ObservedAt.Equal(selected.ObservedAt) && record.ID > selected.ID) {
+				selected = record
+			}
+		}
+		if selected == nil {
+			return nil, fmt.Errorf("provider-owned check %s is missing at revision %s", selector.Name, revision)
+		}
+		switch strings.ToLower(strings.TrimSpace(selected.State)) {
+		case "passed", "success", "successful":
+		default:
+			return nil, fmt.Errorf("provider-owned check %s is %s", selector.Name, selected.State)
+		}
+		result = append(result, observedVerificationCheck{Provider: provider, Name: selector.Name,
+			EvidenceID: selected.ID, State: selected.State, SubjectRevision: revision,
+			Source: "native-evidence:" + selected.ID})
+	}
+	sortObservedVerificationChecks(result)
+	return result, nil
+}
+
+func sortObservedVerificationChecks(checks []observedVerificationCheck) {
+	sort.Slice(checks, func(i, j int) bool {
+		if checks[i].Provider != checks[j].Provider {
+			return checks[i].Provider < checks[j].Provider
+		}
+		if checks[i].Name != checks[j].Name {
+			return checks[i].Name < checks[j].Name
+		}
+		return checks[i].EvidenceID < checks[j].EvidenceID
+	})
+}
+
+func acceptedVerificationReceiptFrom(receipt assignment.Receipt,
+	checks []observedVerificationCheck, submission processworkspace.RoleOwnedSubmissionEvidence) acceptedVerificationReceipt {
+	evidence := submission
+	result := acceptedVerificationReceipt{ReceiptID: receipt.ID, ReceiptDigest: receipt.ReceiptDigest,
+		AssignmentID: receipt.AssignmentID, AssignmentDigest: receipt.AssignmentDigest,
+		AssignmentGeneration: receipt.AssignmentGeneration, SubjectRevision: receipt.SubjectRevision,
+		Checks: append([]observedVerificationCheck(nil), checks...), Provenance: receipt.Provenance, Submission: &evidence}
+	for _, test := range receipt.Tests {
+		result.Tests = append(result.Tests, acceptedVerificationTest{ID: test.ID, Command: test.Command,
+			Outcome: test.Outcome, Assurance: test.Assurance})
+	}
+	sort.Slice(result.Tests, func(i, j int) bool { return result.Tests[i].ID < result.Tests[j].ID })
+	sortObservedVerificationChecks(result.Checks)
+	return result
+}
+
+func stampAcceptedVerificationReceipt(body string, receipt acceptedVerificationReceipt) (string, bool, error) {
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		return "", false, err
+	}
+	block := acceptedVerificationReceiptStart + "\n" + string(raw) + "\n" + acceptedVerificationReceiptEnd
+	startCount, endCount := strings.Count(body, acceptedVerificationReceiptStart), strings.Count(body, acceptedVerificationReceiptEnd)
+	if startCount != endCount || startCount > 1 ||
+		strings.Count(body, "issue-spec:accepted-verification-receipt") != startCount+endCount {
+		return "", false, errors.New("existing accepted verification receipt block is malformed")
+	}
+	if startCount == 0 {
+		return strings.TrimRight(body, "\n") + "\n\n" + block + "\n", true, nil
+	}
+	start, end := strings.Index(body, acceptedVerificationReceiptStart), strings.Index(body, acceptedVerificationReceiptEnd)
+	if end < start+len(acceptedVerificationReceiptStart) {
+		return "", false, errors.New("existing accepted verification receipt block is malformed")
+	}
+	end += len(acceptedVerificationReceiptEnd)
+	if body[start:end] != block {
+		return "", false, errors.New("accepted verification receipt authority is immutable")
+	}
+	return body, false, nil
+}
+
+func parseAcceptedVerificationReceipt(body string) (acceptedVerificationReceipt, bool, error) {
+	if !strings.Contains(body, "issue-spec:accepted-verification-receipt") {
+		return acceptedVerificationReceipt{}, false, nil
+	}
+	if strings.Count(body, acceptedVerificationReceiptStart) != 1 ||
+		strings.Count(body, acceptedVerificationReceiptEnd) != 1 ||
+		strings.Count(body, "issue-spec:accepted-verification-receipt") != 2 {
+		return acceptedVerificationReceipt{}, true, errors.New("accepted verification receipt must contain exactly one version-1 marker pair")
+	}
+	start, end := strings.Index(body, acceptedVerificationReceiptStart), strings.Index(body, acceptedVerificationReceiptEnd)
+	if end <= start {
+		return acceptedVerificationReceipt{}, true, errors.New("accepted verification receipt marker order is invalid")
+	}
+	rawBlock := body[start+len(acceptedVerificationReceiptStart) : end]
+	if len(rawBlock) < 3 || rawBlock[0] != '\n' || rawBlock[len(rawBlock)-1] != '\n' {
+		return acceptedVerificationReceipt{}, true, errors.New("accepted verification receipt payload framing is invalid")
+	}
+	raw := []byte(rawBlock[1 : len(rawBlock)-1])
+	var result acceptedVerificationReceipt
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&result); err != nil {
+		return acceptedVerificationReceipt{}, true, fmt.Errorf("decode accepted verification receipt: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return acceptedVerificationReceipt{}, true, errors.New("accepted verification receipt has trailing JSON")
+	}
+	canonical, _ := json.Marshal(result)
+	if !bytes.Equal(raw, canonical) {
+		return acceptedVerificationReceipt{}, true, errors.New("accepted verification receipt payload is not canonical JSON")
+	}
+	return result, true, nil
+}
+
+func validateExistingVerificationReceipt(comments []github.Comment, verifyID string, receipt assignment.Receipt) error {
+	_, _, err := observeAcceptedVerificationReceipt(comments, verifyID, receipt)
+	return err
+}
+
+func observeAcceptedVerificationReceipt(comments []github.Comment, verifyID string,
+	receipt assignment.Receipt) (github.Comment, bool, error) {
+	var exact github.Comment
+	exactCount := 0
+	for _, comment := range comments {
+		parsed := model.ParseTypedComment(comment.Body)
+		if parsed.Type != "VERIFY" {
+			continue
+		}
+		existing, found, err := parseAcceptedVerificationReceipt(comment.Body)
+		if err != nil {
+			return github.Comment{}, false, fmt.Errorf("VERIFY %s: %w", parsed.ID, err)
+		}
+		if !found {
+			if parsed.ID == verifyID {
+				return github.Comment{}, false, fmt.Errorf("VERIFY %s already exists without accepted receipt authority", verifyID)
+			}
+			continue
+		}
+		sameGeneration := existing.AssignmentID == receipt.AssignmentID &&
+			existing.AssignmentDigest == receipt.AssignmentDigest && existing.AssignmentGeneration == receipt.AssignmentGeneration
+		if sameGeneration && existing.ReceiptDigest != receipt.ReceiptDigest {
+			return github.Comment{}, false, fmt.Errorf("assignment generation already accepted different receipt %s", existing.ReceiptID)
+		}
+		if existing.ReceiptID == receipt.ID && existing.ReceiptDigest != receipt.ReceiptDigest {
+			return github.Comment{}, false, fmt.Errorf("receipt id %s already exists with different digest", receipt.ID)
+		}
+		if existing.ReceiptDigest == receipt.ReceiptDigest && parsed.ID != verifyID {
+			return github.Comment{}, false, fmt.Errorf("receipt %s is already projected by VERIFY %s", receipt.ID, parsed.ID)
+		}
+		if parsed.ID == verifyID && existing.ReceiptDigest != receipt.ReceiptDigest {
+			return github.Comment{}, false, fmt.Errorf("VERIFY %s already carries different receipt authority", verifyID)
+		}
+		if parsed.ID == verifyID && existing.ReceiptDigest == receipt.ReceiptDigest {
+			exact, exactCount = comment, exactCount+1
+		}
+	}
+	if exactCount > 1 {
+		return github.Comment{}, false, fmt.Errorf("VERIFY %s has duplicate accepted receipt authority", verifyID)
+	}
+	return exact, exactCount == 1, nil
+}
+
+func publishAcceptedVerification(ctx context.Context, client github.Operations, repo string, issue int,
+	verifyID, body string, receipt assignment.Receipt) (string, github.Comment, error) {
+	comments, err := client.ListIssueComments(ctx, repo, issue)
+	if err != nil {
+		return "", github.Comment{}, err
+	}
+	existing, found, err := observeAcceptedVerificationReceipt(comments, verifyID, receipt)
+	if err != nil {
+		return "", github.Comment{}, err
+	}
+	if found {
+		if existing.Body != body {
+			return "", github.Comment{}, fmt.Errorf("VERIFY %s accepted authority exists with a different immutable body", verifyID)
+		}
+		return "unchanged", existing, nil
+	}
+	created, err := client.CreateComment(ctx, repo, issue, body)
+	if err != nil {
+		return "", github.Comment{}, err
+	}
+	comments, err = client.ListIssueComments(ctx, repo, issue)
+	if err != nil {
+		return "", github.Comment{}, fmt.Errorf("re-observe accepted VERIFY after create: %w", err)
+	}
+	observed, found, err := observeAcceptedVerificationReceipt(comments, verifyID, receipt)
+	if err != nil {
+		return "", github.Comment{}, fmt.Errorf("accepted VERIFY publication conflicted: %w", err)
+	}
+	if !found || observed.ID != created.ID {
+		return "", github.Comment{}, errors.New("accepted VERIFY publication was not observed as one unique append-only authority")
+	}
+	return "created", created, nil
+}
+
+func renderSubmittedVerification(verifyID, processURL string, covers []string, receipt assignment.Receipt,
+	checks []observedVerificationCheck, submission processworkspace.RoleOwnedSubmissionEvidence) (string, error) {
+	tests := make([]templates.VerifyTestEvidence, 0, len(receipt.Tests))
+	for _, test := range receipt.Tests {
+		tests = append(tests, templates.VerifyTestEvidence{ID: test.ID, Command: test.Command,
+			Outcome: string(test.Outcome), Assurance: string(test.Assurance)})
+	}
+	providerChecks := make([]templates.VerifyCheckEvidence, 0, len(checks))
+	for _, check := range checks {
+		providerChecks = append(providerChecks, templates.VerifyCheckEvidence{Provider: check.Provider, Name: check.Name,
+			State: check.State, SubjectRevision: check.SubjectRevision, Source: check.Source})
+	}
+	summary := strings.TrimSpace(receipt.Verification.Summary)
+	if summary == "" {
+		summary = "Role-owned verification completed for the exact assigned revision."
+	}
+	body, err := templates.VerifyComment(templates.VerifyCommentOptions{Common: templates.CommonOptions{
+		ID: verifyID, Agent: submission.Agent, SubjectRevision: receipt.SubjectRevision,
+		Status: "done", Scope: "role-owned verification submission"}, Input: templates.VerifyInput{
+		Title: "role-owned receipt", Summary: summary, SubjectRevision: receipt.SubjectRevision,
+		Tests: tests, Checks: providerChecks, SpecRefs: covers}})
+	if err != nil {
+		return "", err
+	}
+	body, _, err = model.AddRelatedCommentLink(body, processURL)
+	if err != nil {
+		return "", err
+	}
+	body, _, err = stampAcceptedVerificationReceipt(body, acceptedVerificationReceiptFrom(receipt, checks, submission))
+	return body, err
 }
 
 func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
@@ -70,8 +639,13 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 	revision := fs.String("revision", "", "expected external code head revision for self-hosted evidence")
 	durableSpec := fs.String("durable-spec", "", "durable spec file to verify")
 	jsonOut := fs.Bool("json", false, "write JSON output")
+	summaryOut := fs.Bool("summary", false, "write compact versioned JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
+	}
+	if *summaryOut && !*jsonOut {
+		a.errorf("--summary requires --json\n")
+		return 2
 	}
 	prProvided := false
 	fs.Visit(func(current *flag.Flag) {
@@ -119,14 +693,14 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 	var prCommits []github.PullRequestCommit
 	var prURL string
 	var expectedRevision string
-	externalGate, selfHosted, err := a.externalGate(ctx, *host, token.Value, repo, implementIssue,
+	externalGate, selfHosted, externalGateErr := a.externalGate(ctx, *host, token.Value, repo, implementIssue,
 		"code_change", *revision, coreevidence.GateVerify)
 	if selfHosted && prProvided {
 		a.errorf("--pr is not a self-hosted code authority; omit it and use the active code_change reference\n")
 		return 2
 	}
-	if err != nil {
-		a.errorf("verify external evidence: %v\n", err)
+	if externalGateErr != nil && !selfHosted {
+		a.errorf("verify external evidence: %v\n", externalGateErr)
 		return 1
 	}
 	if !selfHosted && *prFlag <= 0 && hasActiveChangeBearingProcess(artifacts) {
@@ -149,10 +723,24 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 	}
 	var processExternalEvidence *externalEvidenceConsumption
 	var processExternalReview *externalGateResult
-	if selfHosted {
+	var providerEvidence gates.Fact
+	var verifyRevision gates.ScopedFact
+	var finalVerify *model.Artifact
+	if selfHosted && externalGateErr != nil {
+		// Preserve the legacy stderr detail while also carrying this provider
+		// failure into the authoritative evaluator result used by JSON/summary
+		// consumers and the final exit decision.
+		a.errorf("verify external evidence: %v\n", externalGateErr)
+		providerEvidence = gates.Fact{Required: true, Known: true, Passed: false,
+			Current: externalGateErr.Error(), Expected: "trusted exact-revision provider evidence"}
+	}
+	if selfHosted && externalGateErr == nil {
 		processExternalEvidence = &externalGate.Consumption
 		processExternalReview = &externalGate
 		expectedRevision = externalGate.Target.SubjectRevision
+		providerEvidence = gates.Fact{Required: true, Known: true, Passed: true,
+			Current: expectedRevision, Expected: "trusted exact-revision provider evidence"}
+		verifyRevision, finalVerify = collectVerifyRevisionFact(artifacts, expectedRevision, time.Now().UTC())
 	}
 	report, err := buildReport(artifacts, proposalIssueData.HTMLURL, finalVerifyOptions{
 		DurableSpecPath:   *durableSpec,
@@ -166,26 +754,16 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 		PRCommits:         prCommits,
 		ExternalEvidence:  processExternalEvidence,
 		ExternalReview:    processExternalReview,
+		ProviderEvidence:  providerEvidence,
+		VerifyRevision:    verifyRevision,
 		ValidationNow:     time.Now().UTC(),
 	})
 	if err != nil {
 		a.errorf("verify: %v\n", err)
 		return 1
 	}
-	var finalVerify *model.Artifact
-	if selfHosted {
-		candidate, revisionErr := exactRevisionBoundVerify(artifacts, externalGate.Target.SubjectRevision)
-		if revisionErr != nil {
-			report.Errors = append(report.Errors, revisionErr.Error())
-		} else {
-			finalVerify = candidate
-			report.ExternalEvidence = &externalGate.Consumption
-		}
-		// Exact-revision validation may add another error, but it must never
-		// replace the fail-closed gate decision made by buildReport. Otherwise a
-		// blocking diagnostic without a legacy Errors projection can be reset to
-		// OK here and self-hosted evidence would be consumed despite the blocker.
-		report.OK = report.OK && len(report.Errors) == 0
+	if selfHosted && externalGateErr == nil && finalVerify != nil {
+		report.ExternalEvidence = &externalGate.Consumption
 	}
 	report.Diagnostics = append(report.Diagnostics, authoringCompletenessDiagnostics("proposal", proposalIssueData.HTMLURL, proposalIssueData.Body)...)
 	if designIssue > 0 {
@@ -193,7 +771,7 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 			report.Diagnostics = append(report.Diagnostics, authoringCompletenessDiagnostics("design", designIssueData.HTMLURL, designIssueData.Body)...)
 		}
 	}
-	if selfHosted && report.OK && finalVerify != nil && len(externalGate.Consumption.Bindings) > 0 {
+	if selfHosted && externalGateErr == nil && report.OK && finalVerify != nil && len(externalGate.Consumption.Bindings) > 0 {
 		updated, changed, stampErr := stampConsumedEvidence(finalVerify.Comment.Body, externalGate.Consumption)
 		if stampErr != nil {
 			a.errorf("record consumed external evidence: %v\n", stampErr)
@@ -207,7 +785,18 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 		}
 	}
 	if *jsonOut {
-		if code := a.outputJSON(report); code != 0 {
+		var output any = report
+		if *summaryOut {
+			var subject *gates.CompactSubject
+			if selfHosted {
+				subject = compactExternalSubject(externalGate)
+			} else {
+				subject = compactPullRequestSubject(*prFlag, prURL, expectedRevision)
+			}
+			output = gates.ProjectCompactSummary(report.Gate, artifactStatusCounts(artifacts), subject,
+				gates.Remediation{CommandFamily: "verify", Arguments: compactDetailArguments(args)})
+		}
+		if code := a.outputJSON(output); code != 0 {
 			return code
 		}
 		if !report.OK {
@@ -252,9 +841,32 @@ func exactRevisionBoundVerify(artifacts []model.Artifact, revision string) (*mod
 	raw := strings.TrimSpace(sectionContent(candidates[0].Comment.Body, "### Revision"))
 	raw = strings.Trim(raw, "`")
 	if fields := strings.Fields(raw); len(fields) != 1 || fields[0] != revision {
-		return nil, fmt.Errorf("%s must contain `### Revision` with exact external head revision %s", candidates[0].Comment.ID, revision)
+		return candidates[0], fmt.Errorf("%s must contain `### Revision` with exact external head revision %s", candidates[0].Comment.ID, revision)
 	}
 	return candidates[0], nil
+}
+
+func collectVerifyRevisionFact(artifacts []model.Artifact, revision string, observedAt time.Time) (gates.ScopedFact, *model.Artifact) {
+	revision = strings.TrimSpace(revision)
+	fact := gates.ScopedFact{Fact: gates.Fact{Required: true, Known: revision != "", Expected: revision}}
+	if !observedAt.IsZero() {
+		observedAt = observedAt.UTC()
+		fact.Fact.ObservedAt = &observedAt
+	}
+	if revision == "" {
+		return fact, nil
+	}
+	candidate, err := exactRevisionBoundVerify(artifacts, revision)
+	if candidate != nil {
+		fact.Artifact = gates.ArtifactRef{Type: candidate.Comment.Type, ID: candidate.Comment.ID, URL: candidate.URL}
+	}
+	fact.Fact.Passed = err == nil
+	if err != nil {
+		fact.Fact.Current = err.Error()
+		return fact, nil
+	}
+	fact.Fact.Current = revision
+	return fact, candidate
 }
 
 func stampConsumedEvidence(body string, consumption externalEvidenceConsumption) (string, bool, error) {
@@ -332,7 +944,7 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	}
 
 	var reviewReport reviewSyncReport
-	remote := gates.RemoteFacts{}
+	remote := gates.RemoteFacts{ProviderEvidence: opts.ProviderEvidence, VerifyRevision: opts.VerifyRevision}
 	if opts.RationaleRequired {
 		pr := github.PullRequest{Number: opts.PR, HTMLURL: opts.PRURL}
 		pr.Head.SHA = strings.TrimSpace(opts.ExpectedRevision)
@@ -376,6 +988,7 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		} else {
 			processEvidence = buildProcessEvidenceInputs(artifacts, opts.PRURL, opts.RationaleComments, reviewReport, opts.ExternalEvidence)
 		}
+		processEvidence = consumeAcceptedVerificationEvidence(processEvidence, artifacts, opts.ExpectedRevision)
 	}
 	gateReport, err := gates.Evaluate(gates.Snapshot{
 		Target: target, Mode: gates.ModeAuthoritative, Artifacts: artifacts,
@@ -466,12 +1079,111 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	}
 	sort.Strings(report.Errors)
 	sort.Strings(report.Warnings)
-	// gateReport.Ready reflects every blocking diagnostic (including workspace
-	// blockers folded in above). Anchoring OK to it means a future blocking gate
-	// code that legacyVerifyGateError does not yet project cannot silently pass
-	// final verify; it fails closed even without a bespoke legacy error string.
-	report.OK = gateReport.Ready && len(report.Errors) == 0
+	// Errors is now only a compatibility projection for the full report. Every
+	// blocker represented there is collected into gateReport first, so the shared
+	// authoritative decision is the sole source of OK and the exit status.
+	report.OK = gateReport.Ready
 	return report, nil
+}
+
+func consumeAcceptedVerificationEvidence(inputs []gates.ProcessEvidenceInput, artifacts []model.Artifact,
+	expectedRevision string) []gates.ProcessEvidenceInput {
+	expectedRevision = strings.TrimSpace(expectedRevision)
+	if expectedRevision == "" {
+		return inputs
+	}
+	byURL := map[string]model.Artifact{}
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type == "VERIFY" && artifact.Comment.Status == "done" {
+			byURL[model.NormalizeURL(artifact.URL)] = artifact
+		}
+	}
+	for inputIndex := range inputs {
+		for evidenceIndex := range inputs[inputIndex].Verifications {
+			evidence := &inputs[inputIndex].Verifications[evidenceIndex]
+			artifact, ok := byURL[model.NormalizeURL(evidence.URL)]
+			if !ok {
+				continue
+			}
+			source, hasTests, hasChecks, ok := exactAcceptedVerificationCarrier(artifact, expectedRevision)
+			if !ok {
+				continue
+			}
+			evidence.SubjectRevision = expectedRevision
+			evidence.Trusted = true
+			evidence.TestEvidence = true
+			evidence.StructuredTests = hasTests
+			evidence.StructuredChecks = hasChecks
+			if hasTests {
+				evidence.TestAssurance = string(assignment.AssuranceSelfReported)
+			}
+			evidence.Source = source
+		}
+	}
+	return inputs
+}
+
+func exactAcceptedVerificationCarrier(artifact model.Artifact, expectedRevision string) (string, bool, bool, bool) {
+	if artifact.Comment.Type != "VERIFY" || artifact.Comment.Status != "done" || len(artifact.Comment.Errors) != 0 ||
+		!strings.EqualFold(strings.TrimSpace(artifact.Comment.SubjectRevision), strings.TrimSpace(expectedRevision)) {
+		return "", false, false, false
+	}
+	authority, found, err := parseAcceptedVerificationReceipt(artifact.Comment.Body)
+	if err != nil || !found || !strings.EqualFold(strings.TrimSpace(authority.SubjectRevision), strings.TrimSpace(expectedRevision)) {
+		return "", false, false, false
+	}
+	identity, found, err := model.ObserveAcceptedReceiptAuthority(artifact.Comment.Body, assignment.RoleVerification)
+	if err != nil || !found || identity.ReceiptID != authority.ReceiptID || identity.Digest != authority.ReceiptDigest ||
+		identity.Generation != authority.AssignmentGeneration {
+		return "", false, false, false
+	}
+	writer := strings.TrimSpace(authority.Provenance.Writer)
+	if authority.Provenance.Route != assignment.RouteRoleOwned ||
+		authority.Provenance.Assurance != assignment.AssuranceSelfReported || writer == "" ||
+		!strings.EqualFold(writer, strings.TrimSpace(authority.Provenance.Subject)) || strings.EqualFold(writer, "Coordinator") {
+		return "", false, false, false
+	}
+	if authority.Submission == nil || authority.Submission.Validate() != nil ||
+		!strings.EqualFold(writer, authority.Submission.Agent) {
+		return "", false, false, false
+	}
+	if len(authority.Tests) == 0 && len(authority.Checks) == 0 {
+		return "", false, false, false
+	}
+	seenTests := map[string]bool{}
+	for _, test := range authority.Tests {
+		if strings.TrimSpace(test.ID) == "" || strings.TrimSpace(test.Command) == "" || seenTests[test.ID] ||
+			test.Outcome != assignment.TestPassed || test.Assurance != assignment.AssuranceSelfReported {
+			return "", false, false, false
+		}
+		seenTests[test.ID] = true
+	}
+	seenChecks := map[string]bool{}
+	for _, check := range authority.Checks {
+		key := check.Provider + "\x00" + check.Name
+		state := strings.ToLower(strings.TrimSpace(check.State))
+		if strings.TrimSpace(check.Provider) == "" || strings.TrimSpace(check.Name) == "" ||
+			strings.TrimSpace(check.EvidenceID) == "" || strings.TrimSpace(check.State) == "" || seenChecks[key] ||
+			!strings.EqualFold(strings.TrimSpace(check.SubjectRevision), strings.TrimSpace(expectedRevision)) ||
+			(!strings.HasPrefix(check.Source, "github-check-run:") && !strings.HasPrefix(check.Source, "native-evidence:")) {
+			return "", false, false, false
+		}
+		if state != "success" && state != "neutral" && state != "skipped" && state != "passed" && state != "successful" {
+			return "", false, false, false
+		}
+		if strings.HasPrefix(check.Source, "github-check-run:") && !strings.EqualFold(strings.TrimSpace(check.Provider), "github") {
+			return "", false, false, false
+		}
+		seenChecks[key] = true
+	}
+	switch {
+	case len(authority.Tests) > 0 && len(authority.Checks) > 0:
+		return "accepted-verification-receipt:mixed-self-reported-tests-and-provider-checks", true, true, true
+	case len(authority.Tests) > 0:
+		return "accepted-verification-receipt:self-reported-tests", true, false, true
+	default:
+		return "accepted-verification-receipt:provider-checks", false, true, true
+	}
 }
 
 func mergeCarrierRevisionFacts(collected, supplied map[string]gates.CarrierRevisionFact) map[string]gates.CarrierRevisionFact {
@@ -519,6 +1231,20 @@ func legacyVerifyGateError(diagnostic gates.Diagnostic) (string, bool) {
 		}
 		return fmt.Sprintf("%s %s (%s) is noncanonical: %s", diagnostic.Artifact.Type, id, url, diagnostic.Message), true
 	case gates.CodeTraceabilityInvalid:
+		return diagnostic.Message, true
+	case gates.CodeProviderEvidenceMissing:
+		if current := strings.TrimSpace(diagnostic.Current); current != "" && current != "failed" {
+			return "verify external evidence: " + current, true
+		}
+		return diagnostic.Message, true
+	case gates.CodeProviderEvidenceUnknown:
+		return diagnostic.Message, true
+	case gates.CodeVerifyRevisionInvalid:
+		if current := strings.TrimSpace(diagnostic.Current); current != "" && current != "failed" {
+			return current, true
+		}
+		return diagnostic.Message, true
+	case gates.CodeVerifyRevisionUnknown:
 		return diagnostic.Message, true
 	case gates.CodeProcessExecutionClassInvalid, gates.CodeProcessTaskLinkMissing,
 		gates.CodeProcessSpecLinkMissing, gates.CodeProcessPRLinkMissing, gates.CodeProcessCarrierMissing,

@@ -236,6 +236,35 @@ func TestEvaluateRemoteFactsDistinguishesUnknownAndPointInTimeFailure(t *testing
 	}
 }
 
+func TestEvaluateVerifyRevisionFactHasStableActionableDiagnostic(t *testing.T) {
+	spec, task, process, verify := readyChain(t)
+	observed := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	snapshot := Snapshot{Target: TargetFinal, Mode: ModeAuthoritative,
+		Artifacts: []model.Artifact{spec, task, process, verify}}
+	snapshot.Remote.VerifyRevision = ScopedFact{
+		Fact: Fact{Required: true, Known: true, Passed: false,
+			Current: "VERIFY-001 names stale revision", Expected: "head-abc", ObservedAt: &observed},
+		Artifact: ArtifactRef{Type: "VERIFY", ID: "VERIFY-001", URL: verify.URL},
+	}
+
+	report := evaluate(t, snapshot)
+	diagnostic := findDiagnostic(t, report, CodeVerifyRevisionInvalid)
+	if report.Ready || diagnostic.Artifact.ID != "VERIFY-001" || diagnostic.Freshness != FreshnessPointInTime ||
+		diagnostic.ObservedAt == nil || !diagnostic.ObservedAt.Equal(observed) {
+		t.Fatalf("exact-revision diagnostic = %+v report=%+v", diagnostic, report)
+	}
+	if diagnostic.Remediation.CommandFamily != "comment upsert" ||
+		!reflect.DeepEqual(diagnostic.Remediation.Arguments, []string{"--type", "VERIFY"}) {
+		t.Fatalf("exact-revision remediation = %+v", diagnostic.Remediation)
+	}
+
+	snapshot.Remote.VerifyRevision = ScopedFact{Fact: Fact{Required: true, Expected: "head-abc"}}
+	unknown := evaluate(t, snapshot)
+	if diagnostic := findDiagnostic(t, unknown, CodeVerifyRevisionUnknown); diagnostic.Freshness != FreshnessUnknown {
+		t.Fatalf("unknown exact-revision diagnostic = %+v", diagnostic)
+	}
+}
+
 func TestEvaluateArchiveRequiresDurableSpec(t *testing.T) {
 	spec, task, process, verify := readyChain(t)
 	snapshot := Snapshot{Target: TargetArchive, Mode: ModeAuthoritative, Artifacts: []model.Artifact{spec, task, process, verify}}

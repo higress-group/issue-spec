@@ -8,10 +8,19 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
 
-const processWorkspaceHeading = "### Workspace"
+const (
+	processWorkspaceHeading              = "### Workspace"
+	acceptedImplementationReceiptHeading = "### Accepted Implementation Receipt"
+)
+
+const (
+	acceptedImplementationReceiptStart = "<!-- issue-spec:accepted-implementation-receipt version=1 -->"
+	acceptedImplementationReceiptEnd   = "<!-- /issue-spec:accepted-implementation-receipt -->"
+)
 
 // ProcessWorkspace is the portable PROCESS projection shared with the local
 // workspace lease store. PortableLease intentionally excludes machine-local
@@ -40,11 +49,17 @@ func (r ProcessWorkspaceResult) Blocking() bool {
 // PROCESS body. Unknown JSON fields are rejected so a local-only path or lease
 // credential cannot be smuggled into the durable remote section.
 func ParseProcessWorkspace(id, url, body string) ProcessWorkspaceResult {
-	sections := markdownSectionContents(LogicalBody(body), processWorkspaceHeading)
-	result := ProcessWorkspaceResult{Explicit: len(sections) > 0}
+	result := ProcessWorkspaceResult{}
 	diagnostic := func(severity, element, message string) CanonicalDiagnostic {
 		return CanonicalDiagnostic{Severity: severity, Type: "PROCESS", ID: id, URL: url, Element: element, Message: message}
 	}
+	authority, found, authorityErr := ObserveAcceptedReceiptAuthority(body, assignment.RoleImplementation)
+	if authorityErr != nil {
+		result.Diagnostics = []CanonicalDiagnostic{diagnostic("error", "workspace-receipt-invalid", authorityErr.Error())}
+		return result
+	}
+	sections := markdownSectionContents(LogicalBody(body), processWorkspaceHeading)
+	result.Explicit = len(sections) > 0
 	if len(sections) == 0 {
 		result.Diagnostics = []CanonicalDiagnostic{diagnostic("warning", "workspace-missing",
 			"legacy or not-yet-managed PROCESS is missing `### Workspace`; managed execution must prepare portable metadata before dispatch")}
@@ -86,6 +101,24 @@ func ParseProcessWorkspace(id, url, body string) ProcessWorkspaceResult {
 			element = "workspace-schema-unsupported"
 		}
 		result.Diagnostics = []CanonicalDiagnostic{diagnostic("error", element, fmt.Sprintf("invalid Workspace metadata: %v", err))}
+		return result
+	}
+	hasPortableAuthority := workspace.AcceptedReceiptID != "" || workspace.AcceptedReceiptDigest != "" || workspace.AcceptedReceiptGeneration != 0
+	if hasPortableAuthority {
+		if !found {
+			result.Diagnostics = []CanonicalDiagnostic{diagnostic("error", "workspace-receipt-missing",
+				"portable accepted receipt authority requires one compact implementation receipt marker")}
+			return result
+		}
+		if authority.ReceiptID != workspace.AcceptedReceiptID || authority.Digest != workspace.AcceptedReceiptDigest ||
+			authority.Generation != workspace.AcceptedReceiptGeneration {
+			result.Diagnostics = []CanonicalDiagnostic{diagnostic("error", "workspace-receipt-mismatch",
+				"compact implementation receipt marker differs from portable Workspace authority")}
+			return result
+		}
+	} else if found {
+		result.Diagnostics = []CanonicalDiagnostic{diagnostic("error", "workspace-receipt-orphan",
+			"compact implementation receipt marker lacks portable Workspace authority")}
 		return result
 	}
 	if id != "" && workspace.ProcessID != id {
@@ -182,7 +215,20 @@ func RenderProcessWorkspaceSection(workspace ProcessWorkspace) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("render PROCESS Workspace metadata: %w", err)
 	}
-	return processWorkspaceHeading + "\n\n```json\n" + string(payload) + "\n```", nil
+	section := processWorkspaceHeading + "\n\n```json\n" + string(payload) + "\n```"
+	if workspace.AcceptedReceiptID == "" {
+		return section, nil
+	}
+	identity, err := json.Marshal(struct {
+		ReceiptID            string `json:"receipt_id"`
+		ReceiptDigest        string `json:"receipt_digest"`
+		AssignmentGeneration uint64 `json:"assignment_generation"`
+	}{workspace.AcceptedReceiptID, workspace.AcceptedReceiptDigest, workspace.AcceptedReceiptGeneration})
+	if err != nil {
+		return "", fmt.Errorf("render accepted implementation receipt authority: %w", err)
+	}
+	return section + "\n\n" + acceptedImplementationReceiptHeading + "\n\n" + acceptedImplementationReceiptStart + "\n" +
+		string(identity) + "\n" + acceptedImplementationReceiptEnd, nil
 }
 
 func validatePortableProcessWorkspace(workspace ProcessWorkspace) error {
@@ -296,9 +342,17 @@ func markdownSectionRanges(body, heading string) []markdownSection {
 
 func workspaceSectionBounds(body string) [][2]int {
 	sections := markdownSectionRanges(body, processWorkspaceHeading)
+	receipts := markdownSectionRanges(body, acceptedImplementationReceiptHeading)
 	bounds := make([][2]int, 0, len(sections))
 	for _, section := range sections {
-		bounds = append(bounds, [2]int{section.Start, section.End})
+		end := section.End
+		for _, receipt := range receipts {
+			if receipt.Start == section.End {
+				end = receipt.End
+				break
+			}
+		}
+		bounds = append(bounds, [2]int{section.Start, end})
 	}
 	return bounds
 }

@@ -94,6 +94,14 @@ type Fact struct {
 	ObservedAt *time.Time `json:"observed_at,omitempty"`
 }
 
+// ScopedFact attaches an optional artifact identity to a provider-neutral fact.
+// It is used when collection happens outside the evaluator but remediation must
+// still point callers at the exact typed artifact that needs repair.
+type ScopedFact struct {
+	Fact     Fact        `json:"fact"`
+	Artifact ArtifactRef `json:"artifact,omitempty"`
+}
+
 // ProcessEvidenceFact is the collector-owned projection of PR/evidence state
 // for one PROCESS. Later execution-class policy can select which of these
 // provider-neutral facts is required without changing the evaluator boundary.
@@ -110,6 +118,7 @@ type RemoteFacts struct {
 	PRChecks         Fact                  `json:"pr_checks"`
 	ReviewFindings   Fact                  `json:"review_findings"`
 	ProviderEvidence Fact                  `json:"provider_evidence"`
+	VerifyRevision   ScopedFact            `json:"verify_revision"`
 	DurableSpec      Fact                  `json:"durable_spec"`
 	Processes        []ProcessEvidenceFact `json:"processes,omitempty"`
 	Workspace        WorkspaceFacts        `json:"workspace"`

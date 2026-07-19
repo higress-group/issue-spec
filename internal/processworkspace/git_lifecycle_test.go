@@ -2,6 +2,9 @@ package processworkspace
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/higress-group/issue-spec/internal/assignment"
 )
 
 func TestManagerPreparesParallelWritableAndDetachedSnapshot(t *testing.T) {
@@ -45,6 +50,124 @@ func TestManagerPreparesParallelWritableAndDetachedSnapshot(t *testing.T) {
 	if got := gitOutput(t, repo, "rev-parse", "HEAD"); got != base {
 		t.Fatalf("integration HEAD changed: %s", got)
 	}
+}
+
+func TestWorkspaceMarkerRemainsStableAcrossAssignmentCompletionAndCleanup(t *testing.T) {
+	repo, base := newGitRepository(t)
+	manager := openTestManager(t, repo)
+	lease := testLease("ws-assignment-marker", "PROCESS-022", ModeWritable, "assignment-marker", base, []string{"internal/**"})
+	prepared, err := manager.Prepare(context.Background(), PrepareRequest{Lease: lease})
+	if err != nil {
+		t.Fatal(err)
+	}
+	markerBefore := workspaceMarkerRef(prepared.Lease)
+	value := markerAssignment(prepared.Lease)
+	bound, err := manager.Store.BindAssignment(context.Background(), lease.Portable.WorkspaceID, value, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if markerAfter := workspaceMarkerRef(bound); markerAfter != markerBefore {
+		t.Fatalf("assignment changed marker ref: before=%s after=%s", markerBefore, markerAfter)
+	}
+	inspection, err := manager.Inspect(context.Background(), lease.Portable.WorkspaceID)
+	if err != nil || len(inspection.Problems) != 0 || !inspection.Registered || !inspection.Present {
+		t.Fatalf("Inspect after assignment=%+v err=%v", inspection, err)
+	}
+	internalDir := filepath.Join(bound.WorktreePath, "internal")
+	if err := os.MkdirAll(internalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(internalDir, "marker.go"), []byte("package internal\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, bound.WorktreePath, "add", "internal/marker.go")
+	runGit(t, bound.WorktreePath, "commit", "-s", "-m", "add marker result")
+	result := gitOutput(t, bound.WorktreePath, "rev-parse", "HEAD")
+	completed, err := manager.Complete(context.Background(), CompleteRequest{WorkspaceID: lease.Portable.WorkspaceID, OwnerToken: lease.Owner.Token, ResultCommit: result})
+	if err != nil || completed.Lease.Portable.State != StateWorkerComplete {
+		t.Fatalf("Complete after assignment=%+v err=%v", completed, err)
+	}
+	cleaned, err := manager.Cleanup(context.Background(), lease.Portable.WorkspaceID, lease.Owner.Token)
+	if err != nil || cleaned.Lease.Portable.State != StateCleaned {
+		t.Fatalf("Cleanup after assignment=%+v err=%v", cleaned, err)
+	}
+	if markers := gitOutput(t, repo, "for-each-ref", "--format=%(refname)", "refs/issue-spec/process-workspaces/ws-assignment-marker/"); markers != "" {
+		t.Fatalf("cleanup left assignment-era marker %q", markers)
+	}
+}
+
+func TestWorkspaceMarkerIdentityCompatibilityAndIsolation(t *testing.T) {
+	_, base := newGitRepository(t)
+	lease := testLease("ws-marker-identity", "PROCESS-023", ModeWritable, "marker-identity", base, []string{"internal/**"})
+	legacy := legacyWorkspaceMarkerRef(lease)
+	if current := workspaceMarkerRef(lease); current != legacy {
+		t.Fatalf("immutable marker changed legacy JSON hash: legacy=%s current=%s", legacy, current)
+	}
+	original := workspaceMarkerRef(lease)
+	value := markerAssignment(lease)
+	digest, err := assignment.AssignmentDigest(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.Portable.Assignment = &AssignmentBinding{SchemaVersion: value.SchemaVersion, AssignmentID: value.ID, Digest: digest,
+		Role: value.Role, BaseRevision: value.BaseRevision, Generation: 1}
+	lease.Assignment = &value
+	lease.AcceptedReceiptID = "receipt-023"
+	lease.Portable.State = StateIntegrated
+	lease.Portable.ResultCommit = strings.Repeat("b", 40)
+	lease.Portable.AcceptedReceiptID = "receipt-023"
+	lease.Portable.AcceptedReceiptDigest = strings.Repeat("e", 64)
+	lease.Portable.AcceptedReceiptGeneration = 1
+	lease.Portable.IntegrationSHA = strings.Repeat("c", 40)
+	lease.Portable.CreatedAt = lease.Portable.CreatedAt.Add(-time.Hour)
+	lease.Portable.UpdatedAt = lease.Portable.UpdatedAt.Add(time.Hour)
+	lease.Portable.RetentionExpiresAt = lease.Portable.UpdatedAt.Add(time.Hour)
+	lease.Integration = IntegrationState{ExpectedHead: base, ObservedHead: strings.Repeat("c", 40), StartedAt: time.Now().UTC()}
+	if changed := workspaceMarkerRef(lease); changed != original {
+		t.Fatalf("post-reservation lifecycle evidence changed marker: before=%s after=%s", original, changed)
+	}
+	for name, mutate := range map[string]func(*LocalLease){
+		"repository": func(value *LocalLease) { value.Portable.Repository = "other/repo" },
+		"process":    func(value *LocalLease) { value.Portable.ProcessID = "PROCESS-999" },
+		"base":       func(value *LocalLease) { value.Portable.BaseSHA = strings.Repeat("d", 40) },
+		"branch":     func(value *LocalLease) { value.Portable.Branch = "different-branch" },
+		"ownership":  func(value *LocalLease) { value.Portable.WriteOwnership = []string{"pkg/**"} },
+		"token":      func(value *LocalLease) { value.Owner.Token = "different-token" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := lease
+			mutate(&candidate)
+			if workspaceMarkerRef(candidate) == original {
+				t.Fatalf("immutable reservation change %s reused marker", name)
+			}
+		})
+	}
+}
+
+func markerAssignment(lease LocalLease) assignment.Assignment {
+	return assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: lease.Portable.WorkspaceID + "-assignment-1",
+		Role: assignment.RoleImplementation, Repository: lease.Portable.Repository, Issue: 297, ProcessID: lease.Portable.ProcessID,
+		BaseRevision: lease.Portable.BaseSHA, Scenarios: []assignment.ScenarioRef{{SpecID: "SPEC-001", Scenario: "marker remains stable"}},
+		DesignContext: assignmentDesignContext(), Policy: assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		Implementation: &assignment.ImplementationPayload{Objective: "exercise marker ownership", Branch: lease.Portable.Branch,
+			WriteOwnership: append([]string(nil), lease.Portable.WriteOwnership...), SharedTouchpoints: append([]string(nil), lease.Portable.SharedTouchpoints...),
+			Commit: assignment.CommitPolicy{RequireSingleCommit: true, RequireDCO: true}}}
+}
+
+func legacyWorkspaceMarkerRef(lease LocalLease) string {
+	identity := struct {
+		Portable PortableLease `json:"portable"`
+		Token    string        `json:"token"`
+	}{Portable: lease.Portable, Token: lease.Owner.Token}
+	identity.Portable.State = ""
+	identity.Portable.ResultCommit = ""
+	identity.Portable.IntegrationSHA = ""
+	identity.Portable.CreatedAt = time.Time{}
+	identity.Portable.UpdatedAt = time.Time{}
+	identity.Portable.RetentionExpiresAt = time.Time{}
+	payload, _ := json.Marshal(identity)
+	digest := sha256.Sum256(payload)
+	return "refs/issue-spec/process-workspaces/" + lease.Portable.WorkspaceID + "/" + hex.EncodeToString(digest[:])
 }
 
 func TestReconcileRecoversReservationAndPostAddCrashWindows(t *testing.T) {
