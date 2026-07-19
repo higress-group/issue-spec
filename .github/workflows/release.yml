@@ -202,10 +202,17 @@ jobs:
             test "$(git rev-parse "$1^{commit}")" = "$2"
           }
 
+          release_json_by_tag() {
+            release_id=$(gh release view "$1" --json databaseId --jq .databaseId)
+            test "$release_id" -gt 0
+            gh api "repos/$GITHUB_REPOSITORY/releases/$release_id"
+          }
+
           verify_remote_assets() {
+            release_tag=${1:-$RELEASE_TAG}
             remote_dir=$(mktemp -d)
             trap 'rm -rf "$remote_dir"' RETURN
-            gh release download "$RELEASE_TAG" --dir "$remote_dir"
+            gh release download "$release_tag" --dir "$remote_dir"
             local_names=$(find dist/release/publish -maxdepth 1 -type f -printf '%f\n' | sort)
             remote_names=$(find "$remote_dir" -maxdepth 1 -type f -printf '%f\n' | sort)
             test "$local_names" = "$remote_names"
@@ -225,6 +232,37 @@ jobs:
               exit 0
             fi
 
+            # GitHub keeps published_at unchanged when an existing Release is
+            # edited. Stage the complete replacement as a draft, then swap the
+            # Release record so the repository sidebar reflects this publish.
+            replacement_tag="${RELEASE_TAG}-staged"
+            if gh release view "$replacement_tag" >/dev/null 2>&1; then
+              stale_replacement=$(release_json_by_tag "$replacement_tag")
+              test "$(jq -r .draft <<<"$stale_replacement")" = true
+              stale_replacement_id=$(jq -r .id <<<"$stale_replacement")
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$stale_replacement_id"
+            fi
+
+            gh release create "$replacement_tag" --draft --target "$RELEASE_REVISION" \
+              --title "latest" --notes-file dist/release/release-notes.md \
+              --prerelease=false --latest=false
+            replacement=$(release_json_by_tag "$replacement_tag")
+            replacement_id=$(jq -r .id <<<"$replacement")
+            test "$(jq -r .draft <<<"$replacement")" = true
+            test "$(jq -r .target_commitish <<<"$replacement")" = "$RELEASE_REVISION"
+            gh release upload "$replacement_tag" dist/release/publish/* --clobber
+            verify_remote_assets "$replacement_tag"
+
+            # The build and draft upload are deliberately long. Recheck main
+            # immediately before replacing the currently published Release.
+            git fetch --no-tags origin main
+            current_main=$(git rev-parse origin/main)
+            if [ "$current_main" != "$RELEASE_REVISION" ]; then
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$replacement_id"
+              echo "skip stale rolling candidate $RELEASE_REVISION; current main is $current_main"
+              exit 0
+            fi
+
             if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
               gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" \
                 -f sha="$RELEASE_REVISION" -F force=true >/dev/null
@@ -234,17 +272,34 @@ jobs:
             fi
             guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"
 
-            if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-              gh release create "$RELEASE_TAG" --verify-tag \
-                --title "latest" --notes-file dist/release/release-notes.md \
-                --prerelease=false --latest=false
+            previous_release_id=
+            previous_published_at=
+            if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+              previous_release=$(release_json_by_tag "$RELEASE_TAG")
+              previous_release_id=$(jq -r .id <<<"$previous_release")
+              previous_published_at=$(jq -r '.published_at // empty' <<<"$previous_release")
+              test "$previous_release_id" != "$replacement_id"
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$previous_release_id"
             fi
 
-            gh release upload "$RELEASE_TAG" dist/release/publish/* --clobber
-            verify_remote_assets
-            gh release edit "$RELEASE_TAG" --title "latest" \
-              --notes-file dist/release/release-notes.md \
-              --draft=false --prerelease=false --latest
+            published=$(
+              jq -n \
+                --arg tag "$RELEASE_TAG" \
+                --arg target "$RELEASE_REVISION" \
+                --rawfile body dist/release/release-notes.md \
+                '{tag_name: $tag, target_commitish: $target, name: "latest", body: $body, draft: false, prerelease: false, make_latest: "true"}' |
+                gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$replacement_id" --input -
+            )
+            test "$(jq -r .id <<<"$published")" = "$replacement_id"
+            test "$(jq -r .tag_name <<<"$published")" = "$RELEASE_TAG"
+            test "$(jq -r .draft <<<"$published")" = false
+            published_at=$(jq -r '.published_at // empty' <<<"$published")
+            test -n "$published_at"
+            if [ -n "$previous_published_at" ]; then
+              [[ "$published_at" > "$previous_published_at" ]]
+            fi
+
+            verify_remote_assets "$RELEASE_TAG"
             guard_tag_revision "$RELEASE_TAG" "$RELEASE_REVISION"
             exit 0
           fi
