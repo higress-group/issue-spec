@@ -80,7 +80,6 @@ type workspaceCommandResult struct {
 	AcceptedReceiptDigest     string                                        `json:"accepted_receipt_digest,omitempty"`
 	AcceptedReceiptGeneration uint64                                        `json:"accepted_receipt_generation,omitempty"`
 	AcceptedReceiptSubmission *processworkspace.RoleOwnedSubmissionEvidence `json:"accepted_receipt_submission,omitempty"`
-	ResultAttestation         *processworkspace.RoleOwnedResultAttestation  `json:"result_attestation,omitempty"`
 	RuntimeNamespace          string                                        `json:"runtime_namespace,omitempty"`
 	WorktreePath              string                                        `json:"worktree_path,omitempty"`
 	Registered                bool                                          `json:"registered"`
@@ -96,7 +95,7 @@ type workspaceCommandResult struct {
 
 func (a *app) runWorkflowWorkspace(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec workflow workspace prepare|inspect|submit-result|complete|integrate|reconcile|cleanup ...\n")
+		a.errorf("usage: issue-spec workflow workspace prepare|inspect|complete|integrate|reconcile|cleanup ...\n")
 		return 2
 	}
 	switch args[0] {
@@ -104,8 +103,6 @@ func (a *app) runWorkflowWorkspace(ctx context.Context, args []string) int {
 		return a.runWorkspacePrepare(ctx, args[1:])
 	case "inspect":
 		return a.runWorkspaceInspect(ctx, args[1:])
-	case "submit-result":
-		return a.runWorkspaceSubmitResult(ctx, args[1:])
 	case "complete":
 		return a.runWorkspaceComplete(ctx, args[1:])
 	case "reconcile":
@@ -1091,49 +1088,6 @@ func (a *app) runWorkspaceComplete(ctx context.Context, args []string) int {
 	})
 }
 
-func (a *app) runWorkspaceSubmitResult(ctx context.Context, args []string) int {
-	fs := newFlagSet("workflow workspace submit-result", a.err)
-	integrationRoot := strings.TrimSpace(os.Getenv(runnerworkspace.ProcessIntegrationRootEnv))
-	if integrationRoot == "" {
-		integrationRoot = "."
-	}
-	workspaceRootDefault := strings.TrimSpace(os.Getenv(runnerworkspace.ProcessWorkspaceRootEnv))
-	integrationRootFlag := fs.String("integration-root", integrationRoot, "Git integration root")
-	workspaceRoot := fs.String("workspace-root", workspaceRootDefault, "managed linked-worktree root")
-	workspaceID := fs.String("workspace-id", "", "stable portable workspace id")
-	resultFile := fs.String("result-file", "", "absolute path to a sealed implementation or verification receipt")
-	agent := fs.String("agent", "", "logical role worker submitting its receipt")
-	agentSession := addAgentSessionFlag(fs)
-	jsonOut := fs.Bool("json", false, "write JSON output")
-	if ok, code := a.parseFlagSet(fs, args); !ok {
-		return code
-	}
-	if strings.TrimSpace(*workspaceID) == "" || strings.TrimSpace(*resultFile) == "" || strings.TrimSpace(*agent) == "" {
-		a.errorf("--workspace-id, --result-file, and --agent are required\n")
-		return 2
-	}
-	receipt, err := readReviewResultFile(*resultFile)
-	if err != nil {
-		a.errorf("read role-owned result: %v\n", err)
-		return 2
-	}
-	manager, err := processworkspace.OpenManager(ctx, *integrationRootFlag, *workspaceRoot, processworkspace.ManagerOptions{})
-	if err != nil {
-		a.errorf("open process workspace manager: %v\n", err)
-		return 1
-	}
-	inspection, err := manager.SubmitResult(ctx, processworkspace.SubmitResultRequest{WorkspaceID: strings.TrimSpace(*workspaceID),
-		Receipt: receipt, Submission: roleOwnedSubmissionEvidence(*agent, resolveWriterSession(*agentSession))})
-	if err != nil {
-		result := workspaceResult(ctx, manager, inspection, inspection.Lease.Portable.Repository, 0,
-			inspection.Lease.Portable.ProcessID, "failed", workspaceRemoteResult{})
-		return a.workspaceError(result, "submit_result_failed", err, *jsonOut)
-	}
-	result := workspaceResult(ctx, manager, inspection, inspection.Lease.Portable.Repository, 0,
-		inspection.Lease.Portable.ProcessID, "submitted-result", workspaceRemoteResult{})
-	return a.outputWorkspace(result, *jsonOut)
-}
-
 func roleOwnedSubmissionEvidence(agent string, session writerSession) processworkspace.RoleOwnedSubmissionEvidence {
 	source := session.Source
 	if source == "" {
@@ -1389,8 +1343,7 @@ func workspaceResult(ctx context.Context, manager *processworkspace.Manager, ins
 		AcceptedReceiptID: acceptedReceiptIDForResult(lease), AcceptedReceiptDigest: lease.Portable.AcceptedReceiptDigest,
 		AcceptedReceiptGeneration: lease.Portable.AcceptedReceiptGeneration,
 		AcceptedReceiptSubmission: lease.Portable.AcceptedReceiptSubmission, RuntimeNamespace: lease.Portable.RuntimeNamespace,
-		ResultAttestation: lease.ResultAttestation,
-		WorktreePath:      lease.WorktreePath, Registered: inspection.Registered, Present: inspection.Present, Dirty: inspection.Dirty,
+		WorktreePath: lease.WorktreePath, Registered: inspection.Registered, Present: inspection.Present, Dirty: inspection.Dirty,
 		Head: inspection.Head, GitBranch: inspection.Branch, Problems: append([]string(nil), inspection.Problems...), Remote: remote}
 }
 

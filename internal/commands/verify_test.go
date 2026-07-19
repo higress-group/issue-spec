@@ -39,7 +39,7 @@ func TestVerificationReceiptBindingAndImmutableProjection(t *testing.T) {
 		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
 		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
 	submission := testVerificationSubmission("Verifier")
-	if err := validateVerificationReceiptBinding(receipt, sealed, binding, submission, ""); err != nil {
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, submission); err != nil {
 		t.Fatal(err)
 	}
 	checks := []observedVerificationCheck{{Provider: "github", Name: "unit", EvidenceID: "42", State: "success",
@@ -89,7 +89,7 @@ func TestVerificationReceiptBindingRejectsUntrustedLocalCompletion(t *testing.T)
 			receipt.Tests = append([]assignment.TestResult(nil), valid.Tests...)
 			mutate(&receipt, &candidateBinding)
 			if err := validateVerificationReceiptBinding(receipt, sealed, &candidateBinding,
-				testVerificationSubmission("Verifier"), ""); err == nil {
+				testVerificationSubmission("Verifier")); err == nil {
 				t.Fatal("invalid verification authority was accepted")
 			}
 		})
@@ -102,13 +102,13 @@ func TestVerificationReceiptBindingRejectsUntrustedLocalCompletion(t *testing.T)
 		t.Fatal(err)
 	}
 	if err := validateVerificationReceiptBinding(coordinator, sealed, &binding,
-		testVerificationSubmission("Coordinator"), ""); err == nil ||
+		testVerificationSubmission("Coordinator")); err == nil ||
 		!strings.Contains(err.Error(), "non-Coordinator") {
 		t.Fatalf("coordinator verifier error=%v", err)
 	}
 }
 
-func TestVerificationReceiptBindingUsesRuntimeSessionAndExplicitCompatibilityEvidence(t *testing.T) {
+func TestVerificationReceiptBindingTreatsSessionAsCompatibilityMetadata(t *testing.T) {
 	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./...",
 		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
 	sealed := testVerificationAssignment(t, receipt.SubjectRevision, receipt.Tests, nil)
@@ -117,17 +117,19 @@ func TestVerificationReceiptBindingUsesRuntimeSessionAndExplicitCompatibilityEvi
 		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
 	native := processworkspace.RoleOwnedSubmissionEvidence{Agent: "Verifier", AgentSessionID: "verifier-session",
 		AgentSessionSource: processworkspace.AgentSessionSourceRuntimeNative, Assurance: assignment.AssuranceSelfReported}
-	if err := validateVerificationReceiptBinding(receipt, sealed, binding, native, "coordinator-session"); err != nil {
-		t.Fatalf("valid runtime verifier rejected: %v", err)
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, native); err != nil {
+		t.Fatalf("runtime-labelled compatibility metadata rejected: %v", err)
 	}
-	forged := native
-	forged.AgentSessionID = "coordinator-session"
-	if err := validateVerificationReceiptBinding(receipt, sealed, binding, forged, "coordinator-session"); err == nil ||
-		!strings.Contains(err.Error(), "Coordinator session") {
-		t.Fatalf("forged verifier label under Coordinator session error=%v", err)
+	coordinatorChosen := native
+	coordinatorChosen.AgentSessionID = "coordinator-chosen-worker-session"
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, coordinatorChosen); err != nil {
+		t.Fatalf("session metadata incorrectly treated as a trust decision: %v", err)
+	}
+	if coordinatorChosen.Assurance != assignment.AssuranceSelfReported {
+		t.Fatalf("session metadata upgraded assurance: %+v", coordinatorChosen)
 	}
 	compatibility := testVerificationSubmission("Verifier")
-	if err := validateVerificationReceiptBinding(receipt, sealed, binding, compatibility, ""); err != nil {
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, compatibility); err != nil {
 		t.Fatalf("explicit no-runtime compatibility rejected: %v", err)
 	}
 }
@@ -162,7 +164,7 @@ func TestVerificationReceiptRequiresExactAssignedTestsAndChecks(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := validateVerificationReceiptBinding(candidate, sealed, binding,
-				testVerificationSubmission("Verifier"), ""); err == nil ||
+				testVerificationSubmission("Verifier")); err == nil ||
 				!strings.Contains(err.Error(), "assigned") {
 				t.Fatalf("coverage substitution error=%v", err)
 			}
@@ -273,24 +275,26 @@ func TestObserveNativeVerificationChecksUsesTrustedExactRevision(t *testing.T) {
 }
 
 func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T) {
-	receipt, sealedAssignment, manager, repoPath, workspaceRoot, ownerToken := prepareVerificationCommandWorkspace(t,
-		[]assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
-			Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}},
+	t.Setenv(codexThreadIDEnv, "")
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}},
 		[]assignment.CheckSelector{{Provider: "github", Name: "unit"}})
-	local, found, err := manager.Store.Get(t.Context(), "verification-process-101")
-	if err != nil || !found {
-		t.Fatalf("load verification fixture: found=%v err=%v", found, err)
-	}
-	workspace := model.ProcessWorkspace(local.Portable)
+	sealedAssignment := testVerificationAssignment(t, receipt.SubjectRevision, receipt.Tests, receipt.Verification.CheckSelectors)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	now := time.Date(2026, 7, 19, 1, 0, 0, 0, time.UTC)
+	workspace := model.ProcessWorkspace{SchemaVersion: processworkspace.LeaseSchemaVersion,
+		WorkspaceID: "verification-process-101", Repository: "o/r", ProcessID: "PROCESS-101",
+		ExecutionClass: processworkspace.ExecutionVerification, Mode: processworkspace.ModeSnapshot,
+		BaseSHA: receipt.SubjectRevision, DetachedRevision: receipt.SubjectRevision,
+		RuntimeNamespace: "verification-process-101", Assignment: binding, State: processworkspace.StatePrepared,
+		CreatedAt: now, UpdatedAt: now}
 	processBody, err := templates.ProcessComment(templates.ProcessCommentOptions{
 		Common: templates.CommonOptions{ID: "PROCESS-101", Status: "in-progress"}, Input: templates.ProcessInput{
 			Title: "verify exact receipt", Owner: "Verifier", ParentTask: "TASK-006",
 			ExecutionClass: model.ProcessExecutionVerification, WorkspaceManagement: model.ProcessWorkspaceManaged,
 			Workspace: &workspace, Covers: []string{"SPEC-005"}, Handoff: "N/A"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	processBody, err = model.StampTypedSessionMetadata(processBody, "coordinator-session", codexThreadIDEnv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +340,7 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
 	args := []string{"submit", "--repo", "o/r", "--implement", "9", "--pr", "7", "--process", "PROCESS-101",
 		"--id", "VERIFY-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
-		"--integration-root", repoPath, "--workspace-root", workspaceRoot, "--owner-token", ownerToken}
+		"--agent", "Verifier"}
 	for run := 0; run < 2; run++ {
 		out.Reset()
 		errOut.Reset()
@@ -351,22 +355,27 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 	authority, found, err := parseAcceptedVerificationReceipt(comments[1].Body)
 	if err != nil || !found || parsed.Agent != "Verifier" || parsed.SubjectRevision != receipt.SubjectRevision ||
 		parsed.Status != "done" || len(authority.Tests) != 1 || len(authority.Checks) != 1 ||
-		authority.Submission == nil || authority.Submission.AgentSessionSource != processworkspace.AgentSessionSourceRuntimeNative ||
-		authority.Submission.AgentSessionID != "verifier-session" || authority.Submission.Assurance != assignment.AssuranceSelfReported ||
+		authority.Submission == nil || authority.Submission.AgentSessionSource != processworkspace.AgentSessionSourceCompatibility ||
+		authority.Submission.AgentSessionID != "" || authority.Submission.Assurance != assignment.AssuranceSelfReported ||
 		!strings.Contains(comments[1].Body, "### Local Tests") || !strings.Contains(comments[1].Body, "### Provider Checks") {
 		t.Fatalf("VERIFY=%+v authority=%+v found=%t err=%v body=%s", parsed, authority, found, err, comments[1].Body)
 	}
 }
 
 func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
-	receipt, sealedAssignment, manager, repoPath, workspaceRoot, ownerToken := prepareVerificationCommandWorkspace(t,
-		[]assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
-			Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
-	local, found, err := manager.Store.Get(t.Context(), "verification-process-101")
-	if err != nil || !found {
-		t.Fatalf("load verification fixture: found=%v err=%v", found, err)
-	}
-	workspace := model.ProcessWorkspace(local.Portable)
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	sealedAssignment := testVerificationAssignment(t, receipt.SubjectRevision, receipt.Tests, nil)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
+		SubjectRevision: receipt.SubjectRevision, Generation: receipt.AssignmentGeneration}
+	now := time.Date(2026, 7, 19, 2, 0, 0, 0, time.UTC)
+	workspace := model.ProcessWorkspace{SchemaVersion: processworkspace.LeaseSchemaVersion,
+		WorkspaceID: "verification-process-101", Repository: "o/r", ProcessID: "PROCESS-101",
+		ExecutionClass: processworkspace.ExecutionVerification, Mode: processworkspace.ModeSnapshot,
+		BaseSHA: receipt.SubjectRevision, DetachedRevision: receipt.SubjectRevision,
+		RuntimeNamespace: "verification-process-101", Assignment: binding, State: processworkspace.StatePrepared,
+		CreatedAt: now, UpdatedAt: now}
 	processBody, err := templates.ProcessComment(templates.ProcessCommentOptions{
 		Common: templates.CommonOptions{ID: "PROCESS-101", Status: "in-progress"}, Input: templates.ProcessInput{
 			Title: "verify exact local receipt", Owner: "Verifier", ParentTask: "TASK-006",
@@ -426,9 +435,9 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) { return backend, nil }
 	coordinatorArgs := []string{"submit", "--repo", "o/r", "--implement", "9", "--pr", "7", "--process", "PROCESS-101",
 		"--id", "VERIFY-COORDINATOR", "--result-file", coordinatorPath, "--assignment-file", assignmentPath,
-		"--integration-root", repoPath, "--workspace-root", workspaceRoot, "--owner-token", ownerToken}
+		"--agent", "Coordinator"}
 	if code := app.runVerify(t.Context(), coordinatorArgs); code != 1 || providerReads != 0 || creates != 0 ||
-		len(comments) != 1 || !strings.Contains(errOut.String(), "match the role-owned") {
+		len(comments) != 1 || !strings.Contains(errOut.String(), "non-Coordinator") {
 		t.Fatalf("coordinator exit=%d providerReads=%d creates=%d comments=%d err=%q",
 			code, providerReads, creates, len(comments), errOut.String())
 	}
@@ -436,17 +445,19 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 	errOut.Reset()
 	args := []string{"submit", "--repo", "o/r", "--implement", "9", "--pr", "7", "--process", "PROCESS-101",
 		"--id", "VERIFY-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
-		"--integration-root", repoPath, "--workspace-root", workspaceRoot, "--owner-token", ownerToken}
-	spoofed := append(append([]string(nil), args...), "--agent-session", "forged-verifier-session")
-	if code := app.runVerify(t.Context(), spoofed); code != 2 || providerReads != 0 || creates != 0 || len(comments) != 1 ||
+		"--agent", "Verifier"}
+	t.Setenv(codexThreadIDEnv, "coordinator-chosen-worker-session")
+	legacyImport := append(append([]string(nil), args...), "--owner-token", "coordinator-owner-token")
+	if code := app.runVerify(t.Context(), legacyImport); code != 2 || providerReads != 0 || creates != 0 || len(comments) != 1 ||
 		!strings.Contains(errOut.String(), "flag provided but not defined") {
-		t.Fatalf("parameter spoof exit=%d providerReads=%d creates=%d comments=%d err=%q",
+		t.Fatalf("legacy import exit=%d providerReads=%d creates=%d comments=%d err=%q",
 			code, providerReads, creates, len(comments), errOut.String())
 	}
 	out.Reset()
 	errOut.Reset()
 	t.Setenv(codexThreadIDEnv, "")
-	if code := app.runVerify(t.Context(), args); code != 0 || len(comments) != 2 || providerReads != 2 || creates != 1 {
+	directArgs := append(append([]string(nil), args...), "--agent-session", "verifier-session")
+	if code := app.runVerify(t.Context(), directArgs); code != 0 || len(comments) != 2 || providerReads != 2 || creates != 1 {
 		t.Fatalf("submit exit=%d comments=%d providerReads=%d creates=%d out=%q err=%q",
 			code, len(comments), providerReads, creates, out.String(), errOut.String())
 	}
@@ -469,7 +480,9 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 	authority, found, err := parseAcceptedVerificationReceipt(comments[1].Body)
 	if err != nil || !found || authority.Submission == nil || authority.Submission.Agent != "Verifier" ||
 		authority.Submission.AgentSessionID != "verifier-session" ||
-		authority.Submission.AgentSessionSource != codexThreadIDEnv || verify.Comment.AgentSessionID != "verifier-session" {
+		authority.Submission.AgentSessionSource != agentSessionParamSource ||
+		authority.Submission.Assurance != assignment.AssuranceSelfReported ||
+		verify.Comment.AgentSessionID != "verifier-session" {
 		t.Fatalf("persisted verification submission=%+v found=%t err=%v typed=%+v", authority.Submission, found, err, verify.Comment)
 	}
 	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, finalProcess, verify}, spec.URL,
@@ -564,42 +577,6 @@ func testSealedVerificationReceiptForAssignment(t *testing.T, sealedAssignment a
 		t.Fatal(err)
 	}
 	return sealed
-}
-
-func prepareVerificationCommandWorkspace(t *testing.T, tests []assignment.TestResult,
-	selectors []assignment.CheckSelector) (assignment.Receipt, assignment.Assignment, *processworkspace.Manager, string, string, string) {
-	t.Helper()
-	repoPath, subject := workspaceGitRepository(t)
-	workspaceRoot := filepath.Join(t.TempDir(), "verification-workspaces")
-	sealedAssignment := testVerificationAssignment(t, subject, tests, selectors)
-	receipt := testSealedVerificationReceiptForAssignment(t, sealedAssignment, tests, selectors)
-	manager := openWorkspaceManager(t, repoPath, workspaceRoot)
-	now := time.Now().UTC()
-	const ownerToken = "verification-owner-token"
-	prepared, err := manager.Prepare(t.Context(), processworkspace.PrepareRequest{Lease: processworkspace.LocalLease{
-		Portable: processworkspace.PortableLease{SchemaVersion: processworkspace.LeaseSchemaVersion,
-			WorkspaceID: "verification-process-101", Repository: "o/r", ProcessID: "PROCESS-101",
-			ExecutionClass: processworkspace.ExecutionVerification, Mode: processworkspace.ModeSnapshot,
-			BaseSHA: subject, DetachedRevision: subject, RuntimeNamespace: "verification-process-101",
-			State: processworkspace.StatePreparing, CreatedAt: now, UpdatedAt: now},
-		Owner: processworkspace.LeaseOwner{CoordinatorID: "Coordinator", AgentSession: "coordinator-session",
-			Token: ownerToken, AcquiredAt: now}, LocalRevision: 1}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	issued, _, err := manager.IssueAssignment(t.Context(), processworkspace.AssignmentRequest{
-		WorkspaceID: prepared.Lease.Portable.WorkspaceID, Assignment: sealedAssignment})
-	if err != nil {
-		t.Fatal(err)
-	}
-	submission := processworkspace.RoleOwnedSubmissionEvidence{Agent: "Verifier", AgentSessionID: "verifier-session",
-		AgentSessionSource: processworkspace.AgentSessionSourceRuntimeNative, Assurance: assignment.AssuranceSelfReported}
-	t.Setenv(codexThreadIDEnv, "verifier-session")
-	if _, err := manager.SubmitResult(t.Context(), processworkspace.SubmitResultRequest{WorkspaceID: issued.Lease.Portable.WorkspaceID,
-		Receipt: receipt, Submission: submission}); err != nil {
-		t.Fatal(err)
-	}
-	return receipt, sealedAssignment, manager, repoPath, workspaceRoot, ownerToken
 }
 
 func testVerificationAssignment(t *testing.T, subject string, tests []assignment.TestResult,

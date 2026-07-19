@@ -15,169 +15,92 @@ import (
 	"github.com/higress-group/issue-spec/internal/assignment"
 )
 
-func TestCompleteAcceptsBoundImplementationReceiptAndRetainsEvidenceThroughIntegration(t *testing.T) {
-	t.Setenv(AgentSessionSourceRuntimeNative, "worker-session")
+func TestCompleteValidatesImportedReceiptWithoutAcceptedRoleEvidence(t *testing.T) {
+	t.Setenv(AgentSessionSourceRuntimeNative, "coordinator-chosen-worker-session")
 	fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
 	contract := bindImplementationAssignment(t, fixture, []assignment.TestSelector{{ID: "focused", Command: "go test ./internal/processworkspace"}})
 	resultCommit := commitWorkerFile(t, fixture, "internal/receipt.go", "package internal\n", true)
 	receipt := implementationReceiptForFixture(t, contract, resultCommit, []string{"internal/receipt.go"})
-	receipt.Provenance.Writer = "Worker Agent"
-	receipt.Provenance.Subject = "worker agent"
-	receipt.Tests = []assignment.TestResult{{ID: "focused", Command: "go test ./internal/processworkspace", Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}
+	receipt.Provenance.Writer, receipt.Provenance.Subject = "Worker", "Worker"
+	receipt.Tests = []assignment.TestResult{{ID: "focused", Command: "go test ./internal/processworkspace",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}
 	receipt = sealImplementationReceipt(t, receipt)
-	submission := RoleOwnedSubmissionEvidence{Agent: "worker agent", AgentSessionID: "worker-session",
-		AgentSessionSource: AgentSessionSourceRuntimeNative, Assurance: assignment.AssuranceSelfReported}
-	beforeSubmission, found, err := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
-	if err != nil || !found {
-		t.Fatalf("load pre-submission lease: found=%v err=%v", found, err)
-	}
 
-	submitted, err := fixture.manager.SubmitResult(context.Background(), SubmitResultRequest{
-		WorkspaceID: fixture.lease.Portable.WorkspaceID, Receipt: receipt, Submission: submission,
-	})
-	if err != nil || submitted.Lease.Portable.State != StatePrepared || submitted.Lease.Portable.ResultCommit != "" ||
-		submitted.Lease.ResultAttestation == nil || submitted.Lease.Portable.AcceptedReceiptID != "" ||
-		!submitted.Lease.Portable.UpdatedAt.Equal(beforeSubmission.Portable.UpdatedAt) {
-		t.Fatalf("receipt submission=%+v err=%v", submitted.Lease, err)
-	}
-	retrySubmission, err := fixture.manager.SubmitResult(context.Background(), SubmitResultRequest{
-		WorkspaceID: fixture.lease.Portable.WorkspaceID, Receipt: receipt, Submission: submission,
-	})
-	if err != nil || retrySubmission.Lease.LocalRevision != submitted.Lease.LocalRevision ||
-		retrySubmission.Lease.ResultAttestation == nil || *retrySubmission.Lease.ResultAttestation != *submitted.Lease.ResultAttestation {
-		t.Fatalf("receipt submission retry=%+v err=%v", retrySubmission.Lease, err)
-	}
-	t.Setenv(AgentSessionSourceRuntimeNative, "replacement-worker-session")
-	replacementSubmission := submission
-	replacementSubmission.AgentSessionID = "replacement-worker-session"
-	if _, err := fixture.manager.SubmitResult(context.Background(), SubmitResultRequest{WorkspaceID: fixture.lease.Portable.WorkspaceID,
-		Receipt: receipt, Submission: replacementSubmission}); err == nil || !strings.Contains(err.Error(), "append-only") {
-		t.Fatalf("replacement submission err=%v", err)
-	}
-	if _, err := fixture.manager.Store.Update(context.Background(), fixture.lease.Portable.WorkspaceID, func(current *LocalLease) error {
-		current.ResultAttestation = nil
-		return nil
-	}); err == nil || !strings.Contains(err.Error(), "append-only") {
-		t.Fatalf("generic attestation removal err=%v", err)
-	}
-	t.Setenv(AgentSessionSourceRuntimeNative, "worker-session")
 	completed, err := fixture.manager.Complete(context.Background(), CompleteRequest{
 		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt,
 	})
-	if err != nil || completed.Lease.Portable.State != StateWorkerComplete || completed.Lease.Portable.ResultCommit != resultCommit ||
-		completed.Lease.AcceptedReceiptID != receipt.ID || completed.Lease.Portable.AcceptedReceiptID != receipt.ID ||
-		completed.Lease.Portable.AcceptedReceiptDigest != receipt.ReceiptDigest ||
-		completed.Lease.Portable.AcceptedReceiptGeneration != receipt.AssignmentGeneration ||
-		completed.Lease.Portable.AcceptedReceiptSubmission == nil ||
-		*completed.Lease.Portable.AcceptedReceiptSubmission != submission {
+	if err != nil || completed.Lease.Portable.State != StateWorkerComplete ||
+		completed.Lease.Portable.ResultCommit != resultCommit {
 		t.Fatalf("receipt completion=%+v err=%v", completed.Lease, err)
 	}
+	assertNoAcceptedImplementationAuthority(t, completed.Lease)
+
+	replacement := receipt
+	replacement.ID = "receipt-implementation-informational-retry"
+	replacement = sealImplementationReceipt(t, replacement)
 	retry, err := fixture.manager.Complete(context.Background(), CompleteRequest{
-		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt,
+		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &replacement,
 	})
-	if err != nil || retry.Lease.AcceptedReceiptID != receipt.ID || retry.Lease.Portable.ResultCommit != resultCommit ||
-		retry.Lease.Portable.AcceptedReceiptDigest != receipt.ReceiptDigest {
+	if err != nil || retry.Lease.Portable.ResultCommit != resultCommit {
 		t.Fatalf("receipt retry=%+v err=%v", retry.Lease, err)
 	}
-	replacement := receipt
-	replacement.ID = "receipt-implementation-replacement"
-	replacement = sealImplementationReceipt(t, replacement)
-	if _, err := fixture.manager.Complete(context.Background(), CompleteRequest{
-		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &replacement,
-	}); !errors.Is(err, ErrInvalidWorkerResult) || !strings.Contains(err.Error(), "does not exactly match") {
-		t.Fatalf("replacement receipt err=%v", err)
-	}
+	assertNoAcceptedImplementationAuthority(t, retry.Lease)
+
 	integrated, err := fixture.manager.Integrate(context.Background(), IntegrateRequest{
 		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, ExpectedHead: fixture.base,
 	})
-	if err != nil || integrated.Lease.Portable.IntegrationSHA == "" || integrated.Lease.AcceptedReceiptID != receipt.ID ||
-		integrated.Lease.Portable.ResultCommit != resultCommit || integrated.Lease.Portable.AcceptedReceiptID != receipt.ID ||
-		integrated.Lease.Portable.AcceptedReceiptDigest != receipt.ReceiptDigest {
+	if err != nil || integrated.Lease.Portable.IntegrationSHA == "" ||
+		integrated.Lease.Portable.ResultCommit != resultCommit {
 		t.Fatalf("receipt integration=%+v err=%v", integrated.Lease, err)
 	}
+	assertNoAcceptedImplementationAuthority(t, integrated.Lease)
+
 	cleaned, err := fixture.manager.Cleanup(context.Background(), fixture.lease.Portable.WorkspaceID, fixture.lease.Owner.Token)
-	if err != nil || cleaned.Lease.Portable.State != StateCleaned || cleaned.Lease.Portable.AcceptedReceiptID != receipt.ID ||
-		cleaned.Lease.Portable.AcceptedReceiptDigest != receipt.ReceiptDigest ||
-		cleaned.Lease.Portable.AcceptedReceiptGeneration != receipt.AssignmentGeneration {
+	if err != nil || cleaned.Lease.Portable.State != StateCleaned {
 		t.Fatalf("receipt cleanup=%+v err=%v", cleaned.Lease, err)
 	}
+	assertNoAcceptedImplementationAuthority(t, cleaned.Lease)
 	recovered, found, err := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
-	if err != nil || !found || recovered.Portable.AcceptedReceiptID != receipt.ID ||
-		recovered.Portable.AcceptedReceiptDigest != receipt.ReceiptDigest || recovered.Portable.AcceptedReceiptGeneration != receipt.AssignmentGeneration ||
-		recovered.Portable.AcceptedReceiptSubmission == nil || *recovered.Portable.AcceptedReceiptSubmission != submission {
+	if err != nil || !found {
 		t.Fatalf("receipt recovery=%+v found=%v err=%v", recovered, found, err)
 	}
+	assertNoAcceptedImplementationAuthority(t, recovered)
 }
 
 func TestCompleteRejectsInvalidImplementationReceiptWithoutPersistingEvidence(t *testing.T) {
-	type invalidReceipt struct {
-		mutateReceipt    func(*assignment.Receipt)
-		mutateSubmission func(*RoleOwnedSubmissionEvidence)
-	}
-	tests := map[string]invalidReceipt{
-		"assignment digest": {mutateReceipt: func(receipt *assignment.Receipt) {
+	tests := map[string]func(*assignment.Receipt){
+		"assignment digest": func(receipt *assignment.Receipt) {
 			receipt.AssignmentDigest = strings.Repeat("f", 64)
-		}},
-		"runtime assurance": {mutateReceipt: func(receipt *assignment.Receipt) {
-			receipt.Provenance.Assurance = assignment.AssuranceRuntimeAttested
-		}},
-		"provider assurance upgrade": {mutateReceipt: func(receipt *assignment.Receipt) {
-			receipt.Provenance.Assurance = assignment.AssuranceProviderOwned
-		}},
-		"changed paths": {mutateReceipt: func(receipt *assignment.Receipt) {
+		},
+		"changed paths": func(receipt *assignment.Receipt) {
 			receipt.Implementation.ChangedPaths = []string{"internal/other.go"}
-		}},
-		"required test": {mutateReceipt: func(receipt *assignment.Receipt) {
+		},
+		"required test": func(receipt *assignment.Receipt) {
 			receipt.Tests[0].Outcome = assignment.TestFailed
-		}},
-		"writer and subject differ": {mutateReceipt: func(receipt *assignment.Receipt) {
-			receipt.Provenance.Subject = "Different Worker"
-		}},
-		"coordinator identity": {mutateReceipt: func(receipt *assignment.Receipt) {
-			receipt.Provenance.Writer = "Coordinator"
-			receipt.Provenance.Subject = "Coordinator"
-		}},
-		"case variant coordinator identity": {mutateReceipt: func(receipt *assignment.Receipt) {
-			receipt.Provenance.Writer = "cOoRdInAtOr"
-			receipt.Provenance.Subject = "CoOrDiNaToR"
-		}},
-		"forged worker label from coordinator session": {mutateSubmission: func(submission *RoleOwnedSubmissionEvidence) {
-			submission.AgentSessionID = "coordinator-session"
-		}},
-		"coordinator submitting agent": {mutateSubmission: func(submission *RoleOwnedSubmissionEvidence) {
-			submission.Agent = "Coordinator"
-		}},
+		},
 	}
-	for name, test := range tests {
+	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
-			t.Setenv(AgentSessionSourceRuntimeNative, "worker-session")
 			fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
 			contract := bindImplementationAssignment(t, fixture, []assignment.TestSelector{{ID: "focused", Command: "go test ./internal/processworkspace"}})
 			resultCommit := commitWorkerFile(t, fixture, "internal/receipt.go", "package internal\n", true)
 			receipt := implementationReceiptForFixture(t, contract, resultCommit, []string{"internal/receipt.go"})
-			receipt.Tests = []assignment.TestResult{{ID: "focused", Command: "go test ./internal/processworkspace", Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}
-			if test.mutateReceipt != nil {
-				test.mutateReceipt(&receipt)
-			}
+			receipt.Tests = []assignment.TestResult{{ID: "focused", Command: "go test ./internal/processworkspace",
+				Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}
+			mutate(&receipt)
 			receipt = sealImplementationReceipt(t, receipt)
-			submission := RoleOwnedSubmissionEvidence{Agent: "Worker", AgentSessionID: "worker-session",
-				AgentSessionSource: AgentSessionSourceRuntimeNative, Assurance: assignment.AssuranceSelfReported}
-			if test.mutateSubmission != nil {
-				test.mutateSubmission(&submission)
-			}
-			_, err := fixture.manager.SubmitResult(context.Background(), SubmitResultRequest{
-				WorkspaceID: fixture.lease.Portable.WorkspaceID, Receipt: receipt, Submission: submission,
+			_, err := fixture.manager.Complete(context.Background(), CompleteRequest{
+				WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt,
 			})
 			if !errors.Is(err, ErrInvalidWorkerResult) {
 				t.Fatalf("invalid receipt accepted: %v", err)
 			}
 			stored, found, getErr := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
 			if getErr != nil || !found || stored.Portable.State != StatePrepared || stored.Portable.ResultCommit != "" ||
-				stored.Portable.IntegrationSHA != "" || stored.AcceptedReceiptID != "" || stored.Portable.AcceptedReceiptID != "" ||
-				stored.Portable.AcceptedReceiptDigest != "" || stored.Portable.AcceptedReceiptGeneration != 0 ||
-				stored.Portable.AcceptedReceiptSubmission != nil || stored.ResultAttestation != nil {
+				stored.Portable.IntegrationSHA != "" {
 				t.Fatalf("invalid receipt mutated lease=%+v found=%v err=%v", stored, found, getErr)
 			}
+			assertNoAcceptedImplementationAuthority(t, stored)
 			if got := gitOutput(t, fixture.repo, "rev-parse", "HEAD"); got != fixture.base {
 				t.Fatalf("invalid receipt mutated integration HEAD=%s base=%s", got, fixture.base)
 			}
@@ -185,42 +108,53 @@ func TestCompleteRejectsInvalidImplementationReceiptWithoutPersistingEvidence(t 
 	}
 }
 
-func TestSubmitResultRequiresEnvironmentOwnedNonCoordinatorSession(t *testing.T) {
-	fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
-	contract := bindImplementationAssignment(t, fixture, nil)
-	resultCommit := commitWorkerFile(t, fixture, "internal/compatibility.go", "package internal\n", true)
-	receipt := sealImplementationReceipt(t, implementationReceiptForFixture(t, contract, resultCommit,
-		[]string{"internal/compatibility.go"}))
-	if _, err := fixture.manager.Complete(context.Background(), CompleteRequest{WorkspaceID: fixture.lease.Portable.WorkspaceID,
-		OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt}); !errors.Is(err, ErrInvalidWorkerResult) ||
-		!strings.Contains(err.Error(), "attestation is missing") {
-		t.Fatalf("completion without attestation err=%v", err)
+func TestCompleteTreatsImportedReceiptProvenanceAsInformational(t *testing.T) {
+	tests := map[string]func(*assignment.Receipt){
+		"Coordinator labels": func(receipt *assignment.Receipt) {
+			receipt.Provenance.Writer, receipt.Provenance.Subject = "Coordinator", "Coordinator"
+		},
+		"mismatched labels": func(receipt *assignment.Receipt) {
+			receipt.Provenance.Subject = "Caller Named Subject"
+		},
+		"reserved runtime assurance": func(receipt *assignment.Receipt) {
+			receipt.Provenance.Assurance = assignment.AssuranceRuntimeAttested
+			receipt.Tests[0].Assurance = assignment.AssuranceRuntimeAttested
+		},
+		"unverified import": func(receipt *assignment.Receipt) {
+			receipt.Provenance.Route = assignment.RouteUnverifiedImport
+		},
 	}
-	for name, test := range map[string]struct {
-		environment string
-		submission  RoleOwnedSubmissionEvidence
-	}{
-		"unset compatibility": {submission: RoleOwnedSubmissionEvidence{Agent: "Worker", AgentSessionSource: AgentSessionSourceCompatibility,
-			Assurance: assignment.AssuranceSelfReported}},
-		"parameter spoof": {submission: RoleOwnedSubmissionEvidence{Agent: "Worker", AgentSessionID: "forged-worker-session", AgentSessionSource: AgentSessionSourceParameter,
-			Assurance: assignment.AssuranceSelfReported}},
-		"forged native source": {submission: RoleOwnedSubmissionEvidence{Agent: "Worker", AgentSessionID: "forged-worker-session", AgentSessionSource: AgentSessionSourceRuntimeNative,
-			Assurance: assignment.AssuranceSelfReported}},
-		"Coordinator native session": {environment: "coordinator-session", submission: RoleOwnedSubmissionEvidence{Agent: "Worker", AgentSessionID: "coordinator-session", AgentSessionSource: AgentSessionSourceRuntimeNative,
-			Assurance: assignment.AssuranceSelfReported}},
-	} {
+	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
-			t.Setenv(AgentSessionSourceRuntimeNative, test.environment)
-			completed, err := fixture.manager.SubmitResult(context.Background(), SubmitResultRequest{WorkspaceID: fixture.lease.Portable.WorkspaceID,
-				Receipt: receipt, Submission: test.submission})
-			if !errors.Is(err, ErrInvalidWorkerResult) || completed.Lease.ResultAttestation != nil ||
-				completed.Lease.Portable.State != StatePrepared {
-				t.Fatalf("submission=%+v err=%v", completed.Lease, err)
+			t.Setenv(AgentSessionSourceRuntimeNative, "coordinator-arbitrary-session")
+			fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
+			contract := bindImplementationAssignment(t, fixture, []assignment.TestSelector{{ID: "focused", Command: "go test ./internal/processworkspace"}})
+			resultCommit := commitWorkerFile(t, fixture, "internal/informational.go", "package internal\n", true)
+			receipt := implementationReceiptForFixture(t, contract, resultCommit, []string{"internal/informational.go"})
+			receipt.Tests = []assignment.TestResult{{ID: "focused", Command: "go test ./internal/processworkspace",
+				Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}
+			mutate(&receipt)
+			receipt = sealImplementationReceipt(t, receipt)
+			completed, err := fixture.manager.Complete(context.Background(), CompleteRequest{
+				WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt,
+			})
+			if err != nil || completed.Lease.Portable.State != StateWorkerComplete ||
+				completed.Lease.Portable.ResultCommit != resultCommit {
+				t.Fatalf("informational import completion=%+v err=%v", completed.Lease, err)
 			}
+			assertNoAcceptedImplementationAuthority(t, completed.Lease)
 		})
 	}
 }
 
+func assertNoAcceptedImplementationAuthority(t *testing.T, lease LocalLease) {
+	t.Helper()
+	if lease.AcceptedReceiptID != "" || lease.Portable.AcceptedReceiptID != "" ||
+		lease.Portable.AcceptedReceiptDigest != "" || lease.Portable.AcceptedReceiptGeneration != 0 ||
+		lease.Portable.AcceptedReceiptSubmission != nil {
+		t.Fatalf("Coordinator import created accepted role evidence: %+v", lease)
+	}
+}
 func TestCompleteLegacyResultCommitDoesNotRequireReceiptProvenance(t *testing.T) {
 	fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
 	resultCommit := commitWorkerFile(t, fixture, "internal/legacy.go", "package internal\n", true)

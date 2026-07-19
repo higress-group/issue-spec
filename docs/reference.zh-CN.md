@@ -343,24 +343,17 @@ issue-spec workflow workspace reconcile --repo owner/repo --issue 12 --process P
 issue-spec workflow workspace cleanup   --repo owner/repo --issue 12 --process PROCESS-001 ...
 ```
 
-被分配的 implementation 或 verification worker 不执行 `complete`、`integrate` 或 `verify submit`。返回 handoff 前，它通过角色自有命令校验 sealed result receipt，并把 receipt 追加到现有的 machine-local workspace registry：
+被分配的 implementation worker 不执行 `complete` 或 `integrate`。它返回一个有界 handoff，其中包含精确 result commit、focused-test 结果，以及在使用时生成的 sealed result receipt。Coordinator 提供 owner token 并执行 `workspace complete --result-file`。该命令会校验精确的 assignment id、digest、generation、schema、base/result revision，以及单 commit、DCO、ownership、changed paths 和 required tests 的 Git 合约，然后记录 result commit 并推进 workspace lifecycle。
 
-```bash
-issue-spec workflow workspace submit-result \
-  --integration-root /absolute/integration \
-  --workspace-root /absolute/workspaces \
-  --workspace-id ws-PROCESS-001 \
-  --result-file /absolute/receipt.json \
-  --agent "Implementation Receipt Worker"
-```
+导入的 result file 不是身份或 provenance 信任根。其 writer、subject、逻辑 agent 名称、`CODEX_THREAD_ID`、`--agent-session`、credential 与 assurance label 都只是信息，不能创建 accepted implementation receipt authority，也不能满足非 Coordinator/独立性 gate。unverified import 与保留的 assurance 值可以通过结构校验，但得到的 PROCESS workspace 不包含 accepted-implementation-receipt marker。runtime-attested Coordinator import 明确推迟到存在真实 runtime attestation 信任根之后；本流程不引入 signer、secret 或由调用方命名的 attestor interface。
 
-`submit-result` 没有 owner token 或远程 issue 权限，也不改变 portable workspace lifecycle state。它只接受命令环境原生 `CODEX_THREAD_ID` 提供的 session evidence；显式 `--agent-session` 参数或未设置 runtime session 都不能创建 attestation。assignment/receipt/revision/session 的 append-only binding 不能被替换。之后 Coordinator 提供 owner token 和同一个精确 receipt，执行 `workspace complete --result-file` 或 `verify submit`；如果 local attestation 缺失或不一致，这些命令会在 lifecycle、provider 或评论 mutation 前失败。持久化 receipt 与 test assurance 始终为 `self-reported`，不会因 runtime session evidence 被升级。
+现有的窄范围直接 role-owned publication 命令继续为 rationale、review 与 verification 提供兼容路径。例如 verification 角色针对精确 assignment 与 snapshot 调用 `verify submit --agent Verifier`。agent/session 字段始终是 `self-reported` metadata，不会因为来自 `CODEX_THREAD_ID` 或显式参数而变成更强的 evidence。`verify submit` 不包含 Coordinator 侧的 owner-token import。
 
 `change-bearing` 使用可写的独占分支；`review` 与 `verification` 使用 detached immutable workflow snapshot，dirty 状态会 fail closed，但 CLI 不会为每个 child 创建 OS 强制的独立 sandbox；`orchestration` 只记录生命周期账本，不创建 checkout。`external` 使用 mode `none`；完成该 PROCESS 并通过 final gate 需要已消费的 provider-neutral exact-revision evidence。
 
 runner 命令不携带 PROCESS selector。runner 只启动一个 ACPX coordinator，并让它的 cwd 与主 sandbox workspace 始终保持在 public session clone。coordinator 从 typed DAG 选择 ready PROCESS，再调用 workspace CLI。runner 模式通过 `ISSUE_SPEC_PROCESS_INTEGRATION_ROOT` 和 `ISSUE_SPEC_PROCESS_WORKSPACE_ROOT` 提供可信的 session-local 默认值；standalone coordinator 则显式传入 roots。
 
-`prepare` 完成后，coordinator 使用当前 agent runtime 的原生 child/subagent 机制分发工作，并传入精确 worktree 路径作为 cwd，同时传入 branch、write ownership、PROCESS id、parent TASK 与前序 handoff。该 child 不是另一个 ACPX session；它共享 coordinator 的 runner 外层 sandbox，自行生成 result commit、执行 focused tests、seal receipt，并在其原生角色 session 下调用 `submit-result`。coordinator 从未改变的 session clone 执行 `complete` 与 `integrate` 时消费并重新校验该精确 local handoff，再同步状态并 cleanup。verification 使用同一个 worker `submit-result` 边界；只有 Coordinator 才能调用带 `--integration-root`、`--workspace-root` 与 `--owner-token` 的 `verify submit`，随后才观察 provider checks 并发布 accepted VERIFY 评论。
+`prepare` 完成后，coordinator 使用当前 agent runtime 的原生 child/subagent 机制分发工作，并传入精确 worktree 路径作为 cwd，同时传入 branch、write ownership、PROCESS id、parent TASK 与前序 handoff。该 child 不是另一个 ACPX session；它共享 coordinator 的 runner 外层 sandbox，自行生成 result commit、执行 focused tests、seal 可选 receipt，并返回这个有界 handoff。coordinator 从未改变的 session clone 执行 `complete` 与 `integrate` 时重新校验精确 Git 结果，再同步状态并 cleanup；导入 receipt 并不能证明是谁生成了它。verification 保留直接 role-owned `verify submit` 兼容路径，在发布 accepted VERIFY 评论前校验精确 snapshot 与 required evidence，不再使用 Coordinator-owned sidecar import。
 
 runner resume 或 restart 后，top-level runner 只恢复 ACPX/session job。PROCESS 生命周期由 coordinator 所有：它从未改变的 session clone 对精确 lease 执行 `inspect` 或 `reconcile`，再执行 `complete` 与 `integrate`，并且只在显式完成 integration 或 retention 决策后调用 owner-token cleanup。top-level runner 的 session-clone retention 会调用 `git worktree list`；当 runner metadata 为 dirty 或 uncertain、存在 linked worktree，或 git worktree inspection 失败时都会 fail closed 并保留 clone。它不拥有、持久化或重试 child PROCESS cleanup。
 

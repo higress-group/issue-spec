@@ -332,19 +332,19 @@ func TestWorkspacePreparePersistsAssignmentBeforePacketAndRedispatchesExplicitly
 	}
 }
 
-func TestWorkspaceResultFileAuthoritySurvivesRemoteRecoveryIntegrationAndCleanup(t *testing.T) {
-	t.Setenv(codexThreadIDEnv, "worker-session")
+func TestWorkspaceReceiptImportRemainsInformationalThroughRecoveryIntegrationAndCleanup(t *testing.T) {
+	t.Setenv(codexThreadIDEnv, "coordinator-chosen-worker-session")
 	repo, base := workspaceGitRepository(t)
 	specBody, err := templates.SpecComment(templates.SpecCommentOptions{Common: templates.CommonOptions{ID: "SPEC-001", Status: "confirmed"},
-		Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{Title: "receipt authority", Text: "The CLI MUST retain accepted implementation receipt authority."},
-			Scenarios: []templates.SpecScenarioInput{{Title: "remote marker", When: "a result file is completed", Then: "its authority remains portable"}}}})
+		Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{Title: "receipt import", Text: "The CLI MUST keep Coordinator-imported receipt identity informational."},
+			Scenarios: []templates.SpecScenarioInput{{Title: "honest fallback", When: "a result file is completed", Then: "the Git lifecycle advances without accepted role authority"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	processBody, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: "PROCESS-004", Status: "in-progress"},
-		Input: templates.ProcessInput{Title: "receipt authority", ParentTask: "TASK-004", ExecutionClass: model.ProcessExecutionChangeBearing,
+		Input: templates.ProcessInput{Title: "receipt import", ParentTask: "TASK-004", ExecutionClass: model.ProcessExecutionChangeBearing,
 			WriteOwnership: []string{"internal/commands/**"}, Covers: []string{"SPEC-001"}, Handoff: "ready",
-			Assignment: &assignment.ProcessInput{Objective: "persist accepted receipt authority"}}})
+			Assignment: &assignment.ProcessInput{Objective: "validate an informational result file"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,19 +369,19 @@ func TestWorkspaceResultFileAuthoritySurvivesRemoteRecoveryIntegrationAndCleanup
 	if prepared.Assignment == nil {
 		t.Fatal("prepare omitted assignment packet")
 	}
-	resultPath := "internal/commands/receipt-authority.txt"
+	resultPath := "internal/commands/receipt-import.txt"
 	absoluteResult := filepath.Join(prepared.WorktreePath, filepath.FromSlash(resultPath))
 	if err := os.MkdirAll(filepath.Dir(absoluteResult), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(absoluteResult, []byte("authority\n"), 0o600); err != nil {
+	if err := os.WriteFile(absoluteResult, []byte("informational\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	workspaceGit(t, prepared.WorktreePath, "add", "--", resultPath)
-	workspaceGit(t, prepared.WorktreePath, "commit", "-s", "-m", "persist receipt authority")
+	workspaceGit(t, prepared.WorktreePath, "commit", "-s", "-m", "validate receipt import")
 	resultCommit := workspaceGitOutput(t, prepared.WorktreePath, "rev-parse", "HEAD")
 	receipt, err := assignment.SealReceipt(assignment.Receipt{
-		SchemaVersion: assignment.ReceiptSchemaVersion, ID: "receipt-process-004-authority-1",
+		SchemaVersion: assignment.ReceiptSchemaVersion, ID: "receipt-process-004-informational-1",
 		AssignmentID: prepared.Assignment.Assignment.ID, AssignmentDigest: prepared.Assignment.AssignmentDigest,
 		AssignmentGeneration: prepared.Assignment.Generation, Role: assignment.RoleImplementation,
 		ResultSchemaVersion: prepared.Assignment.Assignment.ResultSchemaVersion, BaseRevision: base, ResultRevision: resultCommit,
@@ -400,48 +400,35 @@ func TestWorkspaceResultFileAuthoritySurvivesRemoteRecoveryIntegrationAndCleanup
 	if err := os.WriteFile(receiptPath, receiptPayload, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	submitArgs := []string{"submit-result", "--integration-root", repo, "--workspace-root", root,
-		"--workspace-id", prepared.WorkspaceID, "--result-file", receiptPath, "--agent", "Worker", "--json"}
-	completeArgs := append([]string{"complete"}, workspaceBaseArgs(repo, root, "receipt-owner")...)
-	completeArgs = append(completeArgs, "--result-file", receiptPath, "--json")
 
-	t.Setenv(codexThreadIDEnv, "coordinator-session")
 	app, out, errOut = transitionAppWithError(backend)
-	if code := app.runWorkflowWorkspace(t.Context(), submitArgs); code != 1 ||
-		!strings.Contains(out.String(), "Coordinator session") {
-		t.Fatalf("forged worker submit code=%d out=%s err=%s", code, out.String(), errOut.String())
+	if code := app.runWorkflowWorkspace(t.Context(), []string{"submit-result"}); code != 2 ||
+		!strings.Contains(errOut.String(), "unknown workflow workspace command") {
+		t.Fatalf("disabled submit-result code=%d out=%s err=%s", code, out.String(), errOut.String())
 	}
 	manager := openWorkspaceManager(t, repo, root)
-	rejected, found, err := manager.Store.Get(t.Context(), prepared.WorkspaceID)
-	if err != nil || !found || rejected.Portable.State != processworkspace.StatePrepared || rejected.Portable.ResultCommit != "" ||
-		rejected.Portable.AcceptedReceiptID != "" || rejected.Portable.AcceptedReceiptSubmission != nil {
-		t.Fatalf("forged worker mutated lease=%+v found=%v err=%v", rejected.Portable, found, err)
+	unchanged, found, err := manager.Store.Get(t.Context(), prepared.WorkspaceID)
+	if err != nil || !found || unchanged.Portable.State != processworkspace.StatePrepared ||
+		unchanged.Portable.ResultCommit != "" {
+		t.Fatalf("disabled route mutated lease=%+v found=%v err=%v", unchanged.Portable, found, err)
 	}
-	if _, found, observeErr := model.ObserveAcceptedReceiptAuthority(backend.body, assignment.RoleImplementation); observeErr != nil || found {
-		t.Fatalf("forged worker changed remote marker: found=%v err=%v", found, observeErr)
-	}
-	t.Setenv(codexThreadIDEnv, "worker-session")
-	app, out, errOut = transitionAppWithError(backend)
-	if code := app.runWorkflowWorkspace(t.Context(), submitArgs); code != 0 {
-		t.Fatalf("worker submit code=%d out=%s err=%s", code, out.String(), errOut.String())
-	}
-	submitted := decodeWorkspaceResult(t, out)
-	if submitted.State != processworkspace.StatePrepared || submitted.ResultCommit != "" || submitted.ResultAttestation == nil ||
-		submitted.AcceptedReceiptID != "" {
-		t.Fatalf("worker submission mutated lifecycle=%+v", submitted)
-	}
-	t.Setenv(codexThreadIDEnv, "coordinator-session")
+	assertNoLocalAcceptedImplementationAuthority(t, unchanged)
+
+	completeArgs := append([]string{"complete"}, workspaceBaseArgs(repo, root, "receipt-owner")...)
+	completeArgs = append(completeArgs, "--result-file", receiptPath, "--json")
 	backend.updateErr = errWorkspaceRemoteUnavailable
 	app, out, _ = transitionAppWithError(backend)
 	if code := app.runWorkflowWorkspace(t.Context(), completeArgs); code != 1 {
 		t.Fatalf("partial complete code=%d out=%s", code, out.String())
 	}
 	partial := decodeWorkspaceResult(t, out)
-	if partial.Code != "remote_workspace_update_failed" || !partial.ReconcileRequired || partial.AcceptedReceiptID != receipt.ID {
+	if partial.Code != "remote_workspace_update_failed" || !partial.ReconcileRequired ||
+		partial.State != processworkspace.StateWorkerComplete || partial.ResultCommit != resultCommit ||
+		partial.AcceptedReceiptID != "" || partial.AcceptedReceiptSubmission != nil {
 		t.Fatalf("partial complete=%+v", partial)
 	}
 	if _, found, observeErr := model.ObserveAcceptedReceiptAuthority(backend.body, assignment.RoleImplementation); observeErr != nil || found {
-		t.Fatalf("failed publication changed remote marker: found=%v err=%v", found, observeErr)
+		t.Fatalf("failed publication changed remote authority: found=%v err=%v", found, observeErr)
 	}
 
 	backend.updateErr = nil
@@ -449,13 +436,13 @@ func TestWorkspaceResultFileAuthoritySurvivesRemoteRecoveryIntegrationAndCleanup
 	if code := app.runWorkflowWorkspace(t.Context(), completeArgs); code != 0 {
 		t.Fatalf("complete recovery code=%d out=%s err=%s", code, out.String(), errOut.String())
 	}
-	assertRemoteImplementationReceiptAuthority(t, backend.body, receipt, processworkspace.StateWorkerComplete)
+	assertRemoteHasNoImplementationReceiptAuthority(t, backend.body, processworkspace.StateWorkerComplete)
 
 	app, out, errOut = transitionAppWithError(backend)
 	if code := app.runWorkspaceIntegrate(t.Context(), workspaceIntegrateArgs(repo, root, "receipt-owner", base)); code != 0 {
 		t.Fatalf("integrate code=%d out=%s err=%s", code, out.String(), errOut.String())
 	}
-	assertRemoteImplementationReceiptAuthority(t, backend.body, receipt, processworkspace.StateIntegrated)
+	assertRemoteHasNoImplementationReceiptAuthority(t, backend.body, processworkspace.StateIntegrated)
 
 	cleanupArgs := append([]string{"cleanup"}, workspaceBaseArgs(repo, root, "receipt-owner")...)
 	cleanupArgs = append(cleanupArgs, "--json")
@@ -463,34 +450,35 @@ func TestWorkspaceResultFileAuthoritySurvivesRemoteRecoveryIntegrationAndCleanup
 	if code := app.runWorkflowWorkspace(t.Context(), cleanupArgs); code != 0 {
 		t.Fatalf("cleanup code=%d out=%s err=%s", code, out.String(), errOut.String())
 	}
-	assertRemoteImplementationReceiptAuthority(t, backend.body, receipt, processworkspace.StateCleaned)
+	assertRemoteHasNoImplementationReceiptAuthority(t, backend.body, processworkspace.StateCleaned)
 	recovered, found, err := manager.Store.Get(t.Context(), prepared.WorkspaceID)
-	if err != nil || !found || recovered.Portable.AcceptedReceiptID != receipt.ID ||
-		recovered.Portable.AcceptedReceiptDigest != receipt.ReceiptDigest || recovered.Portable.AcceptedReceiptGeneration != receipt.AssignmentGeneration ||
-		recovered.Portable.AcceptedReceiptSubmission == nil || recovered.Portable.AcceptedReceiptSubmission.Agent != "Worker" ||
-		recovered.Portable.AcceptedReceiptSubmission.AgentSessionID != "worker-session" ||
-		recovered.Portable.AcceptedReceiptSubmission.AgentSessionSource != codexThreadIDEnv {
+	if err != nil || !found {
 		t.Fatalf("recovered lease=%+v found=%v err=%v", recovered.Portable, found, err)
+	}
+	assertNoLocalAcceptedImplementationAuthority(t, recovered)
+}
+
+func assertNoLocalAcceptedImplementationAuthority(t *testing.T, lease processworkspace.LocalLease) {
+	t.Helper()
+	if lease.AcceptedReceiptID != "" || lease.Portable.AcceptedReceiptID != "" ||
+		lease.Portable.AcceptedReceiptDigest != "" || lease.Portable.AcceptedReceiptGeneration != 0 ||
+		lease.Portable.AcceptedReceiptSubmission != nil {
+		t.Fatalf("Coordinator import created accepted role evidence: %+v", lease)
 	}
 }
 
-func assertRemoteImplementationReceiptAuthority(t *testing.T, body string, receipt assignment.Receipt, state processworkspace.LifecycleState) {
+func assertRemoteHasNoImplementationReceiptAuthority(t *testing.T, body string, state processworkspace.LifecycleState) {
 	t.Helper()
-	authority, found, err := model.ObserveAcceptedReceiptAuthority(body, assignment.RoleImplementation)
-	if err != nil || !found || authority.ReceiptID != receipt.ID || authority.Digest != receipt.ReceiptDigest ||
-		authority.Generation != receipt.AssignmentGeneration {
+	if authority, found, err := model.ObserveAcceptedReceiptAuthority(body, assignment.RoleImplementation); err != nil || found {
 		t.Fatalf("remote authority=%+v found=%v err=%v", authority, found, err)
 	}
 	parsed := model.ParseProcessWorkspace("PROCESS-004", "", body)
 	if parsed.Blocking() || parsed.Workspace == nil || parsed.Workspace.State != state ||
-		parsed.Workspace.AcceptedReceiptID != receipt.ID || parsed.Workspace.AcceptedReceiptDigest != receipt.ReceiptDigest ||
-		parsed.Workspace.AcceptedReceiptGeneration != receipt.AssignmentGeneration ||
-		parsed.Workspace.AcceptedReceiptSubmission == nil || parsed.Workspace.AcceptedReceiptSubmission.Agent != "Worker" ||
-		parsed.Workspace.AcceptedReceiptSubmission.AgentSessionID != "worker-session" {
+		parsed.Workspace.AcceptedReceiptID != "" || parsed.Workspace.AcceptedReceiptDigest != "" ||
+		parsed.Workspace.AcceptedReceiptGeneration != 0 || parsed.Workspace.AcceptedReceiptSubmission != nil {
 		t.Fatalf("remote workspace=%+v", parsed)
 	}
 }
-
 func TestWorkspacePrepareRemoteOnlyAssignmentRecoveryProvesBindingBeforeMutation(t *testing.T) {
 	for _, name := range []string{"match", "mismatch", "generation-mismatch", "local-only"} {
 		t.Run(name, func(t *testing.T) {
