@@ -953,16 +953,15 @@ func TestParseCoversSectionIDs(t *testing.T) {
 	}
 }
 
-func TestCommentUpsertCoversIssueCreatesDurableBidirectionalLinks(t *testing.T) {
-	// SPEC-002: a single generate | upsert --covers-issue links the TASK to its
-	// covered SPEC in both directions, with no separate `issue-spec link` call.
+func TestCommentUpsertCoversIssueWritesOnlyTaskOwnedForwardLinks(t *testing.T) {
 	taskBody := generateTaskBody(t, "TASK-001", taskCoversInput(`"SPEC-001"`))
 	bodyPath := writeTempInput(t, taskBody)
 	specBody := generateCanonicalSpecBody(t)
 	specURL := "https://github.com/o/r/issues/100#issuecomment-501"
 	taskURL := "https://github.com/o/r/issues/5#issuecomment-9"
 
-	var createdTask, specUpdated string
+	var createdTask string
+	specUpdateCalls := 0
 	var out bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &bytes.Buffer{})
 	app.selectGitHubBackend = ghSelection
@@ -979,7 +978,7 @@ func TestCommentUpsertCoversIssueCreatesDurableBidirectionalLinks(t *testing.T) 
 		}
 		f.updateComment = func(_ context.Context, _ string, id int64, body string) (github.Comment, error) {
 			if id == 501 {
-				specUpdated = body
+				specUpdateCalls++
 			}
 			return github.Comment{ID: id}, nil
 		}
@@ -991,12 +990,12 @@ func TestCommentUpsertCoversIssueCreatesDurableBidirectionalLinks(t *testing.T) 
 	if !strings.Contains(createdTask, specURL) {
 		t.Fatalf("forward link (SPEC URL on TASK) missing:\n%s", createdTask)
 	}
-	if !strings.Contains(specUpdated, taskURL) {
-		t.Fatalf("backlink (TASK URL on SPEC) missing:\n%s", specUpdated)
+	if specUpdateCalls != 0 {
+		t.Fatalf("TASK coverage must cause zero SPEC fan-out writes, got %d", specUpdateCalls)
 	}
 	arts := []model.Artifact{
 		{Issue: 5, CommentID: 9, URL: taskURL, Comment: model.ParseTypedComment(createdTask)},
-		{Issue: 100, CommentID: 501, URL: specURL, Comment: model.ParseTypedComment(specUpdated)},
+		{Issue: 100, CommentID: 501, URL: specURL, Comment: model.ParseTypedComment(specBody)},
 	}
 	if rep := model.VerifyTraceability(arts); !rep.OK {
 		t.Fatalf("traceability must be OK after covers linking: %v", rep.Errors)

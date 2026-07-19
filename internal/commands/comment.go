@@ -384,7 +384,7 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	status := fs.String("status", "draft", "typed comment status")
 	scope := fs.String("scope", "N/A", "typed comment scope")
 	allowNoncanonical := fs.Bool("allow-noncanonical", false, "write-time migration bypass for noncanonical SPEC/TASK/PROCESS bodies; does not create durable approval")
-	coversIssue := fs.String("covers-issue", "", "for a TASK, the issue holding the SPEC comments named in ### Covers; resolves them to durable Related Comments links (forward + backlink)")
+	coversIssue := fs.String("covers-issue", "", "for a TASK, the issue holding the SPEC comments named in ### Covers; resolves canonical TASK-owned forward links")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -437,12 +437,9 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	// Durable covers (SPEC-002): for a TASK with --covers-issue, resolve the SPEC
-	// IDs listed in ### Covers to peer comment URLs, splice them into this TASK's
-	// Related Comments (forward link) before writing, and backlink each SPEC to the
-	// TASK afterwards. A resolution failure is non-fatal so the upsert still lands.
-	var coveredSpecs []model.Artifact
-	var coveredSpecBodies []string
+	// A TASK is the sole writer of its SPEC coverage edge. Resolve the visible
+	// Covers IDs to forward navigation URLs before writing the TASK, but never
+	// fan the derived reverse edge back out across SPEC comments.
 	if strings.TrimSpace(*coversIssue) != "" {
 		coversIssueNumber, err := parseIssueFlag(*coversIssue, "covers-issue")
 		if err != nil {
@@ -455,7 +452,7 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 			return 1
 		}
 		for _, specID := range parseCoversSectionIDs(body) {
-			artifact, specBody, err := findArtifactByIDIn(coversComments, coversIssueNumber, specID)
+			artifact, _, err := findArtifactByIDIn(coversComments, coversIssueNumber, specID)
 			if err != nil {
 				a.errorf("warning: covers %s not resolved on issue #%d: %v; skipping durable link\n", specID, coversIssueNumber, err)
 				continue
@@ -466,8 +463,6 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 				continue
 			}
 			body = merged
-			coveredSpecs = append(coveredSpecs, artifact)
-			coveredSpecBodies = append(coveredSpecBodies, specBody)
 		}
 	}
 
@@ -475,18 +470,6 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	if err != nil {
 		a.errorf("upsert comment: %v\n", err)
 		return 1
-	}
-	for i, spec := range coveredSpecs {
-		newSpecBody, changed, err := model.AddRelatedCommentLink(coveredSpecBodies[i], comment.HTMLURL)
-		if err != nil {
-			a.errorf("warning: backlink %s -> %s: %v\n", spec.Comment.ID, *id, err)
-			continue
-		}
-		if changed {
-			if _, err := client.UpdateComment(ctx, repo, spec.CommentID, newSpecBody); err != nil {
-				a.errorf("warning: patch backlink on %s: %v\n", spec.Comment.ID, err)
-			}
-		}
 	}
 	result := map[string]any{"ok": true, "action": action, "issue": issueNumber, "comment_id": comment.ID, "url": comment.HTMLURL, "api_url": comment.URL, "type": strings.ToUpper(*commentType), "id": *id}
 	if noncanonical {

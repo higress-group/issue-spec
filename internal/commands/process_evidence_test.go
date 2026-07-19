@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -938,4 +939,107 @@ func TestArtifactReferencesAcceptExactIDsAndCanonicalLinks(t *testing.T) {
 	if !artifactReferencesProcess(linked, process) || !artifactReferencesSpec(linked, "SPEC-001", "https://example/spec-1") {
 		t.Fatal("canonical related links should be accepted")
 	}
+}
+
+func TestCanonicalEvidenceIndexMapsSharedReceiptWithoutMutatingInputs(t *testing.T) {
+	for _, kind := range []CanonicalEvidenceKind{CanonicalEvidenceReview, CanonicalEvidenceVerification} {
+		t.Run(string(kind), func(t *testing.T) {
+			records := []CanonicalEvidenceRecord{
+				canonicalRoleEvidence("PROCESS-001", "SPEC-001", "receipt-shared", kind),
+				canonicalRoleEvidence("PROCESS-002", "SPEC-001", "receipt-shared", kind),
+			}
+			before := append([]CanonicalEvidenceRecord(nil), records...)
+			index, err := BuildCanonicalEvidenceIndex(records, "head-current")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if index.Len() != 2 || len(index.Records("PROCESS-001", "SPEC-001", kind)) != 1 ||
+				len(index.Records("PROCESS-002", "SPEC-001", kind)) != 1 {
+				t.Fatalf("shared receipt did not map to both active pairs: %+v", index)
+			}
+			if !reflect.DeepEqual(records, before) {
+				t.Fatalf("index builder mutated caller records: before=%+v after=%+v", before, records)
+			}
+			copyOfRecords := index.Records("PROCESS-001", "SPEC-001", kind)
+			copyOfRecords[0].EvidenceID = "mutated"
+			if got := index.Records("PROCESS-001", "SPEC-001", kind)[0].EvidenceID; got != "receipt-shared" {
+				t.Fatalf("Records exposed mutable index state: %q", got)
+			}
+		})
+	}
+}
+
+func TestCanonicalEvidenceIndexRejectsStaleConflictingAndForgedEvidence(t *testing.T) {
+	valid := canonicalRoleEvidence("PROCESS-001", "SPEC-001", "receipt-1", CanonicalEvidenceReview)
+	tests := map[string]CanonicalEvidenceRecord{
+		"stale revision": func() CanonicalEvidenceRecord {
+			record := valid
+			record.SubjectRevision = "head-old"
+			return record
+		}(),
+		"digest mismatch": func() CanonicalEvidenceRecord {
+			record := valid
+			record.ReceiptDigest = "not-a-digest"
+			return record
+		}(),
+		"forged prose": func() CanonicalEvidenceRecord {
+			record := valid
+			record.Source = "typed-body-prose"
+			return record
+		}(),
+	}
+	for name, record := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := BuildCanonicalEvidenceIndex([]CanonicalEvidenceRecord{record}, "head-current"); err == nil {
+				t.Fatal("invalid evidence entered the canonical index")
+			}
+		})
+	}
+	conflict := valid
+	conflict.ReceiptDigest = strings.Repeat("c", 64)
+	if _, err := BuildCanonicalEvidenceIndex([]CanonicalEvidenceRecord{valid, conflict}, "head-current"); err == nil ||
+		!strings.Contains(err.Error(), "conflicting receipt identity or digest") {
+		t.Fatalf("digest conflict did not fail closed: %v", err)
+	}
+}
+
+func TestCanonicalEvidenceIndexAcceptsGitHubAndSelfHostedProviderSubjects(t *testing.T) {
+	provider := func(id, source string) CanonicalEvidenceRecord {
+		return CanonicalEvidenceRecord{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: CanonicalEvidenceCheck,
+			Authority: CanonicalEvidenceProviderOwned, EvidenceID: id, SubjectRevision: "head-current",
+			Source: source, Trusted: true}
+	}
+	index, err := BuildCanonicalEvidenceIndex([]CanonicalEvidenceRecord{
+		provider("github-check-1", "github-check-run:101"),
+		provider("native-check-1", "native-evidence:check-1"),
+	}, "head-current")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := index.Records("PROCESS-001", "SPEC-001", CanonicalEvidenceCheck); len(got) != 2 ||
+		got[0].EvidenceID != "github-check-1" || got[1].EvidenceID != "native-check-1" {
+		t.Fatalf("provider-neutral subjects = %+v", got)
+	}
+}
+
+func TestCanonicalEvidenceIndexHasFixedUpperBound(t *testing.T) {
+	records := []CanonicalEvidenceRecord{
+		canonicalRoleEvidence("PROCESS-001", "SPEC-001", "receipt-1", CanonicalEvidenceReview),
+		canonicalRoleEvidence("PROCESS-002", "SPEC-001", "receipt-2", CanonicalEvidenceReview),
+	}
+	if _, err := buildCanonicalEvidenceIndex(records, "head-current", 1); err == nil || !strings.Contains(err.Error(), "bounded limit 1") {
+		t.Fatalf("bounded index accepted excess entries: %v", err)
+	}
+}
+
+func canonicalRoleEvidence(processID, specID, receiptID string, kind CanonicalEvidenceKind) CanonicalEvidenceRecord {
+	source := "accepted-verification-receipt:self-reported-tests"
+	if kind == CanonicalEvidenceReview {
+		source = "accepted-review-receipt:self-reported"
+	}
+	return CanonicalEvidenceRecord{ProcessID: processID, SpecID: specID, Kind: kind,
+		Authority: CanonicalEvidenceRoleOwned, EvidenceID: receiptID, ReceiptID: receiptID,
+		ReceiptDigest: strings.Repeat("a", 64), AssignmentID: "assignment-1",
+		AssignmentDigest: strings.Repeat("b", 64), SubjectRevision: "head-current",
+		URL: "https://example/evidence/" + receiptID, Source: source, Trusted: true}
 }

@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 type Artifact struct {
@@ -23,7 +24,6 @@ type VerifyReport struct {
 func VerifyTraceability(artifacts []Artifact) VerifyReport {
 	report := VerifyReport{OK: true}
 	byID := map[string]Artifact{}
-	byURL := map[string]Artifact{}
 	for _, artifact := range artifacts {
 		tc := artifact.Comment
 		if tc.ID == "" {
@@ -36,12 +36,6 @@ func VerifyTraceability(artifacts []Artifact) VerifyReport {
 			report.Errors = append(report.Errors, fmt.Sprintf("duplicate logical id %s on %s and %s", tc.ID, previous.URL, artifact.URL))
 		}
 		byID[tc.ID] = artifact
-		if artifact.URL != "" {
-			byURL[NormalizeURL(artifact.URL)] = artifact
-		}
-		if artifact.APIURL != "" {
-			byURL[NormalizeURL(artifact.APIURL)] = artifact
-		}
 	}
 
 	for _, artifact := range artifacts {
@@ -49,32 +43,11 @@ func VerifyTraceability(artifacts []Artifact) VerifyReport {
 		if tc.ID == "" {
 			continue
 		}
-		for _, link := range RelatedCommentURLs(tc) {
-			if _, ok := byURL[NormalizeURL(link)]; !ok {
-				report.Errors = append(report.Errors, fmt.Sprintf("%s links unknown related comment %s", displayID(tc), link))
-			}
-		}
 		switch tc.Type {
 		case "TASK":
-			specs := linkedArtifactsOfType(tc, byURL, "SPEC")
-			if len(specs) == 0 {
-				report.Errors = append(report.Errors, fmt.Sprintf("%s must link at least one SPEC comment", displayID(tc)))
-			}
-			for _, spec := range specs {
-				if !hasRelatedBacklink(spec.Comment, artifact.URL, artifact.APIURL) {
-					report.Errors = append(report.Errors, fmt.Sprintf("%s must backlink %s", displayID(spec.Comment), displayID(tc)))
-				}
-			}
+			verifyTaskCoverage(&report, tc, byID)
 		case "PROCESS":
-			tasks := linkedArtifactsOfType(tc, byURL, "TASK")
-			if len(tasks) == 0 {
-				report.Errors = append(report.Errors, fmt.Sprintf("%s must link at least one TASK comment", displayID(tc)))
-			}
-			for _, task := range tasks {
-				if !hasRelatedBacklink(task.Comment, artifact.URL, artifact.APIURL) {
-					report.Errors = append(report.Errors, fmt.Sprintf("%s must backlink %s", displayID(task.Comment), displayID(tc)))
-				}
-			}
+			verifyProcessPlanning(&report, tc, byID)
 		}
 	}
 
@@ -84,37 +57,78 @@ func VerifyTraceability(artifacts []Artifact) VerifyReport {
 	return report
 }
 
-func linkedArtifactsOfType(tc TypedComment, byURL map[string]Artifact, want string) []Artifact {
-	var out []Artifact
-	seen := map[string]bool{}
-	for _, link := range RelatedCommentURLs(tc) {
-		artifact, ok := byURL[NormalizeURL(link)]
-		if !ok || artifact.Comment.Type != want {
-			continue
-		}
-		key := artifact.Comment.ID + artifact.URL
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, artifact)
+func verifyTaskCoverage(report *VerifyReport, task TypedComment, byID map[string]Artifact) {
+	covers := TypedSectionList(task.Body, "### Covers")
+	if len(covers) == 0 {
+		report.Errors = append(report.Errors, fmt.Sprintf("%s must cover at least one SPEC", displayID(task)))
+		return
 	}
-	return out
+	seen := map[string]bool{}
+	for _, specID := range covers {
+		if seen[specID] {
+			report.Errors = append(report.Errors, fmt.Sprintf("%s covers duplicate SPEC %s", displayID(task), specID))
+			continue
+		}
+		seen[specID] = true
+		spec, ok := byID[specID]
+		if !ok || spec.Comment.Type != "SPEC" {
+			report.Errors = append(report.Errors, fmt.Sprintf("%s covers unknown SPEC %s", displayID(task), specID))
+			continue
+		}
+		if !hasArtifactURL(task.Links["Related Comments"], spec) {
+			report.Errors = append(report.Errors, fmt.Sprintf("%s coverage for %s is missing its canonical SPEC URL", displayID(task), specID))
+		}
+	}
 }
 
-func hasRelatedBacklink(tc TypedComment, urls ...string) bool {
+func hasArtifactURL(values []string, artifact Artifact) bool {
 	want := map[string]bool{}
-	for _, url := range urls {
-		if url != "" {
-			want[NormalizeURL(url)] = true
+	for _, value := range []string{artifact.URL, artifact.APIURL} {
+		if normalized := NormalizeURL(value); normalized != "" {
+			want[normalized] = true
 		}
 	}
-	for _, link := range RelatedCommentURLs(tc) {
-		if want[NormalizeURL(link)] {
+	for _, value := range values {
+		if want[NormalizeURL(value)] {
 			return true
 		}
 	}
 	return false
+}
+
+func verifyProcessPlanning(report *VerifyReport, process TypedComment, byID map[string]Artifact) {
+	parents := TypedSectionList(process.Body, "### Parent TASK")
+	if len(parents) != 1 {
+		report.Errors = append(report.Errors, fmt.Sprintf("%s must name exactly one Parent TASK", displayID(process)))
+		return
+	}
+	parent, ok := byID[parents[0]]
+	if !ok || parent.Comment.Type != "TASK" {
+		report.Errors = append(report.Errors, fmt.Sprintf("%s names unknown Parent TASK %s", displayID(process), parents[0]))
+		return
+	}
+	taskSpecs := map[string]bool{}
+	for _, specID := range TypedSectionList(parent.Comment.Body, "### Covers") {
+		taskSpecs[specID] = true
+	}
+	selectors := map[string]bool{}
+	for _, coveredID := range TypedSectionList(process.Body, "### Covers") {
+		// Legacy PROCESS bodies used the parent TASK ID as their Covers value.
+		// It remains readable, but only SPEC IDs are selector authority.
+		if strings.HasPrefix(coveredID, "SPEC-") {
+			selectors[coveredID] = true
+		}
+	}
+	if process.Assignment != nil {
+		for _, selector := range process.Assignment.ScenarioSelectors {
+			selectors[strings.TrimSpace(selector.SpecID)] = true
+		}
+	}
+	for specID := range selectors {
+		if specID == "" || !taskSpecs[specID] {
+			report.Errors = append(report.Errors, fmt.Sprintf("%s selector %s is outside Parent TASK %s coverage", displayID(process), specID, parent.Comment.ID))
+		}
+	}
 }
 
 func displayID(tc TypedComment) string {
