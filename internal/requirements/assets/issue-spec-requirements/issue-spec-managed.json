@@ -1,7 +1,7 @@
 {
   "schema": "issue-spec.requirements-skill/v1",
   "name": "issue-spec-requirements",
-  "content_id": "sha256:102fb777cdaf6489d79fa8b3c5d35cf50b1e36bac1d64dcd56fad71a787de413",
+  "content_id": "sha256:428d97c177f061b8eda343e5b08761323d9dd9b8d3007bcddc2dbc35732db41a",
   "minimum_cli_version": "0.1.0",
   "channel": "development",
   "source_revision": "",
@@ -9,8 +9,8 @@
   "files": [
     {
       "path": "SKILL.md",
-      "sha256": "5dd4bd2b97c14dfbe57b22a984b0169fa610ccb54088c74442ecdd524e1a8a36",
-      "size": 7157,
+      "sha256": "d45da90cb8a8fce7353deb1e0ccbeddaaf93a38fa8d22647518a9cfed35fb5a0",
+      "size": 7857,
       "mode": 420
     }
   ]
