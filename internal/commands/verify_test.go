@@ -15,6 +15,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
+	"github.com/higress-group/issue-spec/internal/durable"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
@@ -60,6 +61,80 @@ func TestVerificationReceiptBindingAndImmutableProjection(t *testing.T) {
 	other.ReceiptID = "receipt-verification-other"
 	if _, _, err := stampAcceptedVerificationReceipt(body, other); err == nil || !strings.Contains(err.Error(), "immutable") {
 		t.Fatalf("conflicting accepted receipt error=%v", err)
+	}
+}
+
+func TestBuildMinimalFinalEvidenceIndexesAcceptedRecordsWithoutProcessWrites(t *testing.T) {
+	const (
+		revision = "head-abc"
+		specID   = "SPEC-001"
+		specURL  = "https://github.com/o/r/issues/9#issuecomment-spec"
+		prURL    = "https://github.com/o/r/pull/7"
+	)
+	processBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-101",
+		"## Process: implementation\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- change-bearing\n\n### Covers\n\n- "+specID,
+		model.BodyOptions{Status: "in-progress", Links: map[string][]string{"PR": {prURL}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := model.Artifact{URL: "https://github.com/o/r/issues/9#issuecomment-process", Comment: model.ParseTypedComment(processBody)}
+	processBodyBefore := process.Comment.Body
+
+	reviewReceipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	reviewBody, err := renderSubmittedReview("REVIEW-101", process.Comment.ID, process.URL, prURL, []string{specURL}, reviewReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := model.Artifact{URL: "https://github.com/o/r/issues/9#issuecomment-review", Comment: model.ParseTypedComment(reviewBody)}
+
+	tests := []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates", Outcome: assignment.TestPassed,
+		Assurance: assignment.AssuranceSelfReported}}
+	selectors := []assignment.CheckSelector{{Provider: "github", Name: "unit"}}
+	sealed := testVerificationAssignment(t, revision, tests, selectors)
+	verificationReceipt := testSealedVerificationReceiptForAssignment(t, sealed, tests, selectors)
+	checks := []observedVerificationCheck{{Provider: "github", Name: "unit", EvidenceID: "42", State: "success",
+		SubjectRevision: revision, Source: "github-check-run:42"}}
+	verifyBody, err := renderSubmittedVerification("VERIFY-101", process.URL, []string{specID}, verificationReceipt,
+		checks, testVerificationSubmission("Verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify := model.Artifact{URL: "https://github.com/o/r/issues/9#issuecomment-verify", Comment: model.ParseTypedComment(verifyBody)}
+
+	input := gates.ProcessEvidenceInput{Process: process, ActiveSpecs: map[string]string{specID: specURL},
+		AuthorAgentsBySpec: map[string]map[string]bool{specID: {"implementation worker": true}},
+		Reviews: []gates.ReviewEvidence{{ProcessID: process.Comment.ID, SpecID: specID, URL: review.URL, Done: true,
+			ReviewerAgent: "Independent Reviewer", SubjectRevision: revision, Trusted: true, Source: "accepted-review-receipt:self-reported"}},
+		Verifications: []gates.VerificationEvidence{{ProcessID: process.Comment.ID, SpecID: specID, URL: verify.URL, Done: true,
+			TestEvidence: true, SubjectRevision: revision, Trusted: true,
+			Source: "accepted-verification-receipt:mixed-self-reported-tests-and-provider-checks"}},
+	}
+	snapshot := buildMinimalFinalEvidence([]model.Artifact{process, review, verify}, []gates.ProcessEvidenceInput{input},
+		gates.FinalSubject{Required: true, Known: true, Trusted: true, Kind: "pull_request", URL: prURL,
+			Revision: revision, Source: "github-pull-request-head:7"})
+	if !snapshot.Index.Passed || len(snapshot.Records) != 4 {
+		t.Fatalf("accepted canonical records were not indexed: index=%+v records=%+v", snapshot.Index, snapshot.Records)
+	}
+	wantKinds := map[gates.FinalEvidenceKind]bool{gates.FinalEvidenceReview: true, gates.FinalEvidenceVerification: true,
+		gates.FinalEvidenceTest: true, gates.FinalEvidenceCheck: true}
+	for _, record := range snapshot.Records {
+		delete(wantKinds, record.Kind)
+		if record.ProcessID != process.Comment.ID || record.SpecID != specID || record.SubjectRevision != revision {
+			t.Fatalf("record escaped exact PROCESS/SPEC/revision scope: %+v", record)
+		}
+	}
+	if len(wantKinds) != 0 {
+		t.Fatalf("missing canonical evidence kinds: %v", wantKinds)
+	}
+	if process.Comment.Body != processBodyBefore {
+		t.Fatal("in-memory evidence indexing mutated PROCESS")
+	}
+
+	stale := buildMinimalFinalEvidence([]model.Artifact{process, review, verify}, []gates.ProcessEvidenceInput{input},
+		gates.FinalSubject{Required: true, Known: true, Trusted: true, Kind: "pull_request", URL: prURL,
+			Revision: "head-new", Source: "github-pull-request-head:7"})
+	if !stale.Index.Passed || len(stale.Records) != 0 {
+		t.Fatalf("stale accepted evidence entered the exact-current index: %+v", stale)
 	}
 }
 
@@ -157,6 +232,71 @@ func TestVerificationReceiptRequiresExactAssignedTestsAndChecks(t *testing.T) {
 				testVerificationSubmission("Verifier")); err == nil ||
 				!strings.Contains(err.Error(), "assigned") {
 				t.Fatalf("coverage substitution error=%v", err)
+			}
+		})
+	}
+}
+
+func TestVerificationReceiptBindingTreatsDurableCheckAsOrdinaryExactEvidence(t *testing.T) {
+	baseline, subject := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	payload := assignment.VerificationPayload{SubjectRevision: subject,
+		RequiredTests: []assignment.TestSelector{{ID: "unit", Command: "go test ./..."}}}
+	payload, err := payload.WithDurableCheck(durable.ModeRepository, assignment.DurableCheckBinding{
+		Repository: "o/r", Proposal: 308, BaselineRevision: baseline, SubjectRevision: subject, RepositoryRoot: "."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "assignment-durable-verification-1",
+		Role: assignment.RoleVerification, Repository: "o/r", Issue: 9, ProcessID: "PROCESS-101", SubjectRevision: subject,
+		Scenarios: []assignment.ScenarioRef{{SpecID: "SPEC-003", Scenario: "durable projection is an ordinary exact-revision check"}},
+		Policy:    assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		Verification: &payload}
+	if err := sealed.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	tests := make([]assignment.TestResult, 0, len(payload.RequiredTests))
+	for _, selector := range payload.RequiredTests {
+		tests = append(tests, assignment.TestResult{ID: selector.ID, Command: selector.Command,
+			Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported})
+	}
+	receipt := testSealedVerificationReceiptForAssignment(t, sealed, tests, nil)
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleVerification,
+		SubjectRevision: subject, Generation: receipt.AssignmentGeneration}
+	if err := validateVerificationReceiptBinding(receipt, sealed, binding, testVerificationSubmission("Verifier")); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		mutate func(*assignment.Receipt)
+	}{
+		{name: "missing", mutate: func(value *assignment.Receipt) { value.Tests = value.Tests[1:] }},
+		{name: "failed", mutate: func(value *assignment.Receipt) { value.Tests[0].Outcome = assignment.TestFailed }},
+		{name: "stale", mutate: func(value *assignment.Receipt) { value.SubjectRevision = baseline }},
+		{name: "mismatched", mutate: func(value *assignment.Receipt) { value.Tests[0].Command += " --forged" }},
+		{name: "forged prose", mutate: func(value *assignment.Receipt) {
+			value.Tests = value.Tests[1:]
+			value.Verification.Summary = "durable check passed according to prose"
+		}},
+		{name: "forged assurance", mutate: func(value *assignment.Receipt) {
+			value.Tests[0].Assurance = assignment.AssuranceRuntimeAttested
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := receipt
+			candidate.Tests = append([]assignment.TestResult(nil), receipt.Tests...)
+			verification := *receipt.Verification
+			candidate.Verification = &verification
+			test.mutate(&candidate)
+			candidate.ReceiptDigest = ""
+			candidate, err = assignment.SealReceipt(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := validateVerificationReceiptBinding(candidate, sealed, binding,
+				testVerificationSubmission("Verifier")); err == nil {
+				t.Fatal("invalid durable evidence was accepted")
 			}
 		})
 	}
@@ -940,6 +1080,20 @@ func TestRunVerifySelfHostedPreservesBlockingGateAndSkipsEvidenceConsumption(t *
 	}
 }
 
+func TestRunVerifyRejectsRemovedDurableSpecGateFlag(t *testing.T) {
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &errOut)
+	called := false
+	code := app.runVerifyWithReportBuilder(t.Context(), []string{"--durable-spec", "spec.md"},
+		func([]model.Artifact, string, finalVerifyOptions) (finalVerifyReport, error) {
+			called = true
+			return finalVerifyReport{}, nil
+		})
+	if code != 2 || called || !strings.Contains(errOut.String(), "flag provided but not defined: -durable-spec") {
+		t.Fatalf("removed durable gate flag code=%d called=%t stdout=%q stderr=%q", code, called, out.String(), errOut.String())
+	}
+}
+
 func TestRunVerifySelfHostedRevisionFailureIsAuthoritativeDiagnostic(t *testing.T) {
 	app, out, errOut, updates := newSelfHostedVerifyAppAtRevision(t, "stale-head")
 	code := app.runVerify(t.Context(), []string{
@@ -1191,46 +1345,6 @@ func TestBuildFinalVerifyReportDoesNotRequireSessionMetadata(t *testing.T) {
 	}
 	if len(report.Diagnostics) != 0 {
 		t.Fatalf("diagnostics = %+v", report.Diagnostics)
-	}
-}
-
-func TestBuildFinalVerifyReportChecksDurableSpecForNonChangeBearingWorkflow(t *testing.T) {
-	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
-	spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
-	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
-	process := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContentWithClass(model.ProcessExecutionVerification))
-	process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
-	review := typedArtifact(t, 3, "REVIEW", "REVIEW-001", "done", "## Review\n\nnone")
-	verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
-	linkArtifacts(t, &spec, &task)
-	linkArtifacts(t, &task, &process)
-	specPath := filepath.Join(t.TempDir(), "spec.md")
-	if err := os.WriteFile(specPath, []byte(`# issue-spec-cli
-
-## Purpose
-
-Purpose.
-
-Proposal Issues:
-- https://github.com/o/r/issues/1
-
-## Requirements
-
-### Requirement: X
-
-X MUST work.
-
-Source SPEC comment: https://github.com/o/r/issues/1#issuecomment-1
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	report, err := buildFinalVerifyReport([]model.Artifact{spec, task, process, review, verify}, "https://github.com/o/r/issues/1", finalVerifyOptions{DurableSpecPath: specPath})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !report.OK {
-		t.Fatalf("expected final verify OK: %+v", report.Errors)
 	}
 }
 

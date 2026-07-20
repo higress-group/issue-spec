@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -16,6 +14,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
+	"github.com/higress-group/issue-spec/internal/durable"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
@@ -93,7 +92,6 @@ func TestSelfHostedStatusOnlyForcesProviderSyncForFinal(t *testing.T) {
 		wantCalls string
 	}{
 		{target: gates.TargetFinal, wantSyncs: 1, wantCalls: "operator,persist,ledger"},
-		{target: gates.TargetArchive, wantCalls: "ledger"},
 	} {
 		t.Run(string(test.target), func(t *testing.T) {
 			var calls []string
@@ -121,7 +119,7 @@ func TestSelfHostedStatusOnlyForcesProviderSyncForFinal(t *testing.T) {
 
 func TestStatusAcceptedVerificationUsesExactGitHubHead(t *testing.T) {
 	revision := strings.Repeat("b", 40)
-	for _, target := range []gates.Target{gates.TargetFinal, gates.TargetArchive} {
+	for _, target := range []gates.Target{gates.TargetFinal} {
 		t.Run(string(target), func(t *testing.T) {
 			artifacts := statusAcceptedVerificationArtifacts(t, revision, "https://github.com/o/r/pull/7")
 			pr := pullRequestAtHead(7, revision)
@@ -138,7 +136,7 @@ func TestStatusAcceptedVerificationUsesExactSelfHostedRevision(t *testing.T) {
 	revision := strings.Repeat("b", 40)
 	now := time.Now().UTC()
 	reference := codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code", ChangeID: "change-42"}
-	for _, target := range []gates.Target{gates.TargetFinal, gates.TargetArchive} {
+	for _, target := range []gates.Target{gates.TargetFinal} {
 		t.Run(string(target), func(t *testing.T) {
 			check := testEvidenceRecord("check-ledger", codereview.EvidenceCheck, "passed", revision, now)
 			check.Name = "unit"
@@ -224,6 +222,48 @@ func TestSummarizeStatusBlocksOnBlockedQuestion(t *testing.T) {
 	}
 }
 
+func TestProposalStatusRequiresDurableIntentOnlyForConfirmedRepositorySpecs(t *testing.T) {
+	logical := "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y"
+	repositoryPlan := workflow.Plan{Config: workflow.Config{DurableSpecs: &workflow.DurableSpecsConfig{Mode: durable.ModeRepository}}}
+	nonePlan := workflow.Plan{}
+
+	confirmed := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", logical)
+	if summary := summarizeStatusForGate("o/r", 1, 0, 0, gates.TargetProposal, []model.Artifact{confirmed}, nonePlan, nil); !summary.OK {
+		t.Fatalf("default opt-out required durable intent: malformed=%+v gate=%+v", summary.Malformed, summary.Gate.Diagnostics)
+	}
+	draft := typedArtifact(t, 1, "SPEC", "SPEC-001", "draft", logical)
+	if summary := summarizeStatusForGate("o/r", 1, 0, 0, gates.TargetProposal, []model.Artifact{draft}, repositoryPlan, nil); !summary.OK {
+		t.Fatalf("draft SPEC required durable intent: malformed=%+v gate=%+v", summary.Malformed, summary.Gate.Diagnostics)
+	}
+
+	missing := summarizeStatusForGate("o/r", 1, 0, 0, gates.TargetProposal, []model.Artifact{confirmed}, repositoryPlan, nil)
+	if missing.OK || !canonicalDiagnosticsContain(missing.Malformed, "SPEC-001") || !statusHasCode(missing, gates.CodeArtifactNoncanonical) {
+		t.Fatalf("confirmed repository SPEC without intent passed: malformed=%+v gate=%+v", missing.Malformed, missing.Gate.Diagnostics)
+	}
+	foundRequired := false
+	for _, diagnostic := range missing.Malformed {
+		if diagnostic.ID == "SPEC-001" && diagnostic.Element == "durable-intent-required" {
+			foundRequired = true
+		}
+	}
+	if !foundRequired {
+		t.Fatalf("missing intent diagnostic = %+v", missing.Malformed)
+	}
+
+	withIntent := logical + "\n\n## Durable Intent\n\n```json\n{\"version\":1,\"intent\":\"UNCHANGED\"}\n```"
+	valid := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", withIntent)
+	if summary := summarizeStatusForGate("o/r", 1, 0, 0, gates.TargetProposal, []model.Artifact{valid}, repositoryPlan, nil); !summary.OK {
+		t.Fatalf("confirmed repository SPEC with intent failed: malformed=%+v gate=%+v", summary.Malformed, summary.Gate.Diagnostics)
+	}
+
+	invalidIntent := logical + "\n\n## Durable Intent\n\n```json\n{\"version\":1,\"intent\":\"OPERATIONS\",\"operations\":[]}\n```"
+	invalid := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", invalidIntent)
+	if summary := summarizeStatusForGate("o/r", 1, 0, 0, gates.TargetProposal, []model.Artifact{invalid}, repositoryPlan, nil); summary.OK ||
+		!canonicalDiagnosticsContain(summary.Malformed, "SPEC-001") {
+		t.Fatalf("invalid durable intent passed: malformed=%+v gate=%+v", summary.Malformed, summary.Gate.Diagnostics)
+	}
+}
+
 func TestResolveStatusGate(t *testing.T) {
 	tests := []struct {
 		raw               string
@@ -235,7 +275,7 @@ func TestResolveStatusGate(t *testing.T) {
 		{design: 2, want: gates.TargetDesign},
 		{design: 2, implement: 3, want: gates.TargetImplement},
 		{raw: "final", design: 2, implement: 3, want: gates.TargetFinal},
-		{raw: "archive", design: 2, implement: 3, want: gates.TargetArchive},
+		{raw: "archive", design: 2, implement: 3, wantErr: true},
 		{raw: "final", design: 2, wantErr: true},
 		{raw: "unknown", wantErr: true},
 	}
@@ -255,8 +295,8 @@ func TestStatusFinalReportsDogfoodBlockersAndForecastUnknowns(t *testing.T) {
 	linkArtifacts(t, &task, &process)
 	summary := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetFinal,
 		[]model.Artifact{spec, task, process}, workflow.Plan{}, nil)
-	if summary.OK || summary.Gate.Ready || summary.Gate.PointInTime || summary.Gate.Mode != gates.ModeAuthoritative {
-		t.Fatalf("final status must be authoritative and non-ready: %+v", summary.Gate)
+	if summary.OK || summary.Gate.Ready || !summary.Gate.PointInTime || summary.Gate.Mode != gates.ModeForecast {
+		t.Fatalf("final status must be a forecast and non-ready: %+v", summary.Gate)
 	}
 	want := []string{
 		gates.CodePRChecksUnknown,
@@ -307,16 +347,6 @@ func TestStatusAndVerifyLocallyKnowableCodesStayInParity(t *testing.T) {
 			t.Fatalf("final status without PR authority omitted local fail-closed code %s: %+v", code, status.Gate.Diagnostics)
 		}
 	}
-	archive := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetArchive, artifacts, workflow.Plan{}, nil)
-	for _, code := range []string{
-		gates.CodeProcessCarrierMissing,
-		gates.CodeProcessPRLinkMissing,
-		gates.CodeProcessSpecLinkMissing,
-	} {
-		if !statusHasCode(archive, code) {
-			t.Fatalf("archive status without PR authority omitted local fail-closed code %s: %+v", code, archive.Gate.Diagnostics)
-		}
-	}
 }
 
 func TestStatusIncludesCollectedExactRevisionFailure(t *testing.T) {
@@ -346,7 +376,7 @@ func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *te
 		model.ProcessExecutionExternal,
 	}
 	for _, class := range classes {
-		for _, target := range []gates.Target{gates.TargetFinal, gates.TargetArchive} {
+		for _, target := range []gates.Target{gates.TargetFinal} {
 			t.Run(string(class)+"/"+string(target), func(t *testing.T) {
 				spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 				spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
@@ -360,11 +390,7 @@ func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *te
 				linkArtifacts(t, &spec, &process)
 				artifacts := []model.Artifact{spec, task, process, verify}
 
-				verifyOptions := finalVerifyOptions{}
-				if target == gates.TargetArchive {
-					verifyOptions.DurableSpecPath = statusValidDurableSpec(t, "https://github.com/o/r/issues/1", spec.URL)
-				}
-				verifyReport, err := buildFinalVerifyReport(artifacts, "https://github.com/o/r/issues/1", verifyOptions)
+				verifyReport, err := buildFinalVerifyReport(artifacts, "https://github.com/o/r/issues/1", finalVerifyOptions{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -388,17 +414,6 @@ func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *te
 			})
 		}
 	}
-}
-
-func statusValidDurableSpec(t *testing.T, proposalURL, specURL string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "spec.md")
-	body := "# issue-spec-cli\n\n## Purpose\n\nPurpose.\n\nProposal Issues:\n- " + proposalURL +
-		"\n\n## Requirements\n\n### Requirement: X\n\nX MUST work.\n\nSource SPEC comment: " + specURL + "\n"
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
 }
 
 func TestStatusDefaultProcessEvidenceDoesNotOverrideCollectedEvidence(t *testing.T) {

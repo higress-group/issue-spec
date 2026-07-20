@@ -335,11 +335,14 @@ func TestSelfHostedInitEnsuresRepositoryBindingAndResumesIdempotently(t *testing
 			if !strings.Contains(out.String(), test.marker) || strings.Contains(out.String(), "local-source/local-checkout") {
 				t.Fatalf("plan did not report the resolved global prompt preview: %s", out.String())
 			}
-			for _, command := range []string{"propose", "apply", "review", "verify", "archive"} {
+			for _, command := range []string{"propose", "apply", "review", "verify"} {
 				path := filepath.Join(previewDir, "issue-spec-"+command+".md")
 				if !strings.Contains(out.String(), path) {
 					t.Fatalf("plan output missing absolute global prompt path %q: %s", path, out.String())
 				}
+			}
+			if path := filepath.Join(previewDir, "issue-spec-archive.md"); strings.Contains(out.String(), path) {
+				t.Fatalf("plan output unexpectedly includes removed Archive prompt path %q: %s", path, out.String())
 			}
 			for _, path := range []string{
 				filepath.Join(root, ".issue-spec"), filepath.Join(root, "issue-spec"),

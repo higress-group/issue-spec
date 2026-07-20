@@ -78,7 +78,7 @@ func issueSpecWorkflows(repo string) []WorkflowTemplate {
 			SkillOnly:   processWriteOwnershipGuidance,
 			Body: `# Issue Spec Workflow
 
-Use this coordinator protocol for issue-native proposal, design, implementation, review, verification, and archive work. The CLI and sealed packets carry mechanical contracts; keep only decisions and stops in agent context.
+Use this coordinator protocol for issue-native proposal, design, implementation, review, verification, durable projection, and closure work. The CLI and sealed packets carry mechanical contracts; keep only decisions and stops in agent context.
 
 ## Read and Route
 
@@ -109,9 +109,10 @@ Use this coordinator protocol for issue-native proposal, design, implementation,
 
 - Use comment transition for one artifact. On non-CAS backends require both --allow-nonatomic and the observed --expected-digest. Use workflow reconcile with the same plan digest and checkpoint for dependency-ordered retries; re-observation handles lost responses and partial backlinks.
 - On restart, inspect/reconcile the exact lease from the unchanged Coordinator checkout. Cleanup is explicit, owner-token-authorized, and destructive; retain uncertain or unintegrated work. Runner mode supplies trusted workspace roots but does not change this CLI contract or create a nested coordinator session.
-- GitHub-backed workflows keep the existing ` + "`pr link-process`" + `, review, rationale, closure, and archive path. Self-hosted routing uses exact-revision ` + "`code-change attach`" + ` and ` + "`code-change link-process`" + ` from the Source Binding; attach does not create a PR/MR or ingest evidence. Its ` + "`review sync`" + ` persists and reloads provider facts and writes an exact-current completion stamp even with zero findings; ` + "`code-change rationale`" + ` requires a fresh REVIEW completion, with an existing finding-backed consumed binding retained only for legacy compatibility. Do not call a GitHub PR endpoint for a self-hosted change, and never guess among conflicting active changes.
+- GitHub-backed workflows keep the existing ` + "`pr link-process`" + `, review, rationale, and native closing-link path. Self-hosted routing uses exact-revision ` + "`code-change attach`" + ` and ` + "`code-change link-process`" + ` from the Source Binding; attach does not create a PR/MR or ingest evidence. Its ` + "`review sync`" + ` persists and reloads provider facts and writes an exact-current completion stamp even with zero findings; ` + "`code-change rationale`" + ` requires a fresh REVIEW completion, with an existing finding-backed consumed binding retained only for legacy compatibility. Do not call a GitHub PR endpoint for a self-hosted change, and never guess among conflicting active changes.
 - Use issue-spec verify --summary --json for compact final blockers, then run authoritative full final verify before merge. Compact and full views share the same decision and exit status; full/detail remain discoverable compatibility paths.
-- On GitHub, pr link-issues is the final PR-body write and pr verify-closure gates merge. After implementation merge, create/review the separate durable-spec archive PR; archive never recreates implementation review evidence.
+- In repository durable mode, materialize the durable projection on the implementation branch with issue-spec durable-spec preview/apply and satisfy the sealed issue-spec/durable-spec check before merge. This is an ordinary exact-revision verification test, not a final gate.
+- On GitHub, pr link-issues is the final PR-body write and pr verify-closure gates merge; native closing links close the issue set. On self-hosted backends, run issue-spec issue close-change only after exact merged code_change evidence is authoritative.
 `,
 		},
 		{
@@ -144,7 +145,7 @@ Coordinator: complete DAG planning, workspace lifecycle, integration, links, rev
 
 ## Implementation Role Packet
 
-1. Accept only the sealed implementation assignment for the exact PROCESS, base revision, worktree, write ownership, focused tests, generators, result schema, and design_context. Do not load proposal bodies, the complete DAG, link matrices, closure/archive policy, provider routing, or unrelated artifacts.
+1. Accept only the sealed implementation assignment for the exact PROCESS, base revision, worktree, write ownership, focused tests, generators, result schema, and design_context. Do not load proposal bodies, the complete DAG, link matrices, post-merge policy, provider routing, or unrelated artifacts.
 2. Before code changes, require design_context.read_mode=complete-issue-body and conflict_policy=design-authoritative-stop. Read the complete Design with issue-spec read issue --repo {{repo}} --issue <design_context.source_url> without comments, timeline, history, or gates. Stop and report any conflict; do not reinterpret or summarize the packet.
 3. Work only in the assigned worktree and owned paths. Preserve the named invariant, decisions, must_preserve, must_not, and minimum_verification exactly. Do not collect or pass runtime-specific session IDs.
 4. Implement the owned invariant, run the assigned generators exactly, and run focused verification. If the assignment cannot fit a bounded end-to-end working set, stop with the concrete stable-interface split options and acceptance consequences; do not split by path, command, finding, or token formula.
@@ -164,42 +165,26 @@ Coordinator: follow issue-spec-workflow to prepare the immutable review snapshot
 
 1. Accept only the sealed review assignment for the exact subject revision, immutable snapshot/diff, code authors, owned invariant, affected scenarios, review scope, focused checks, result schema, and design_context.
 2. Require design_context.read_mode=complete-issue-body and conflict_policy=design-authoritative-stop. Before inspecting code, read the complete Design with issue-spec read issue --repo {{repo}} --issue <design_context.source_url> without comments, timeline, history, or gates. Stop on conflict; do not collect or pass runtime-specific session IDs.
-3. Review the invariant end to end at the exact revision. Verify required actions, stops, compatibility, tests, and major entry points. Do not expand into unrelated proposal history, DAGs, links, closure/archive, or provider routing.
+3. Review the invariant end to end at the exact revision. Verify required actions, stops, compatibility, tests, and major entry points. Do not expand into unrelated proposal history, DAGs, links, post-merge policy, or provider routing.
 4. Under the real review agent identity, report actionable findings with severity, exact file/line, affected SPEC/scenario, owner PROCESS, and suggested fix, or an explicit no-finding verdict. Never fabricate evidence or let the Coordinator author findings for you.
 5. After a fix, re-check the exact current revision and own the resolved reply/conversation resolution. Submit only the bounded review receipt/sync result and focused verification evidence. P0/P1 findings remain blocking until reviewer-owned resolution; the author cannot review its own work.
 `,
 		},
 		{
 			Name:        "issue-spec-verify",
-			Description: "Run final issue-spec verification across traceability, questions, review findings, PR rationale, PR checks, and durable spec draft.",
+			Description: "Run final issue-spec verification across exact-current review, test, check, rationale, and traceability evidence.",
 			CommandID:   "verify",
 			CommandName: "Issue Spec: Verify",
 			Body: `# Issue Spec Verify
 
-Coordinator: use issue-spec-workflow for final routing. Forecast with status --gate final --summary --json, resolve its detail actions, render the durable spec draft, then run authoritative issue-spec verify --summary --json and full --json before merge. Change-bearing nodes require backend-appropriate rationale and REVIEW completion evidence. Status forecast and final verify use the same authoritative validator. The validator owns exact identity, revision, freshness, and legacy compatibility.
+Coordinator: use issue-spec-workflow for final routing. In repository durable mode, materialize the projection on the implementation branch before dispatch and seal the built-in issue-spec/durable-spec check into the verification assignment. Forecast with status --gate final --summary --json, resolve its detail actions, then run authoritative issue-spec verify --summary --json and full --json before merge. Change-bearing nodes require backend-appropriate rationale and REVIEW completion evidence. Status forecast and final verify use the same authoritative validator. The validator owns exact identity, revision, freshness, and legacy compatibility.
 
 ## Verification Role Packet
 
-1. Accept only the sealed verification assignment for the exact immutable subject revision, affected scenarios, required test commands/check selectors, and result schema. Do not load proposal/Design bodies, the complete DAG, link matrices, closure/archive policy, or provider routing.
+1. Accept only the sealed verification assignment for the exact immutable subject revision, affected scenarios, required test commands/check selectors, and result schema. Do not load proposal/Design bodies, the complete DAG, link matrices, post-merge policy, or provider routing.
 2. Run only the required focused tests/checks against the exact revision. Keep local self-reported test evidence distinct from provider-owned check identity and conclusion; never invent externally observed check evidence.
 3. Generate/submit the bounded VERIFY receipt under the real verifier identity. Record command/check identity, revision, result, and failures. Do not collect or pass runtime-specific session IDs.
 4. A failed, pending, stale, or mismatched check is a blocker with a focused refresh/remediation result. Verification does not create or refresh REVIEW, infer links from prose, or replace independent review.
-`,
-		},
-		{
-			Name:        "issue-spec-archive",
-			Description: "Create the post-merge durable spec archive PR for an issue-spec change.",
-			CommandID:   "archive",
-			CommandName: "Issue Spec: Archive",
-			Body: `# Issue Spec Archive
-
-Use only after implementation merge and authoritative final verification.
-
-1. Confirm the implementation change merged and required closing links existed. Archive may read an existing required REVIEW completion when implementation merge policy requires it. Archive never creates, updates, or refreshes REVIEW or adds archive-specific review state.
-2. Choose --capability as a stable long-lived domain, not the change name. Inspect issue-spec/specs/<capability>/spec.md and related issue-spec/specs/*/spec.md; reuse an existing openspec/specs/<capability>/spec.md only through the documented compatibility path.
-3. Create the separate durable-spec PR with issue-spec archive durable-spec, passing proposal, Design, Implement, implementation change, --create-pr, and --close-issues.
-4. Review the generated draft. Merge related requirements into coherent capability modules, preserve prior requirements and Source SPEC links, and keep only long-lived behavior. Do not copy PROCESS, review-finding, or verification-log history.
-5. Keep closed change issues as audit history.
 `,
 		},
 	}
@@ -241,7 +226,7 @@ Use the gh CLI only for GitHub operations outside issue-spec's workflow and disc
 - Inspect PR status, reviews, mergeability, CI, workflow runs, releases, labels, and repository metadata.
 - Use structured --json/--jq output. Use git directly for local repository operations.
 - Ordinary issue discussion writes: write a body file and run issue-spec comment create --repo owner/repo --issue 42 --body-file reply.md --json. The selected issue backend owns the write. Never use GitHub CLI or a raw issue-comment API write.
-- issue-spec owns the proposal, design, implement, typed comments, review, verify, and archive workflow. Do not use GitHub endpoints for non-GitHub providers.
+- issue-spec owns the proposal, design, implement, typed comments, review, verify, durable projection, and closure workflow. Do not use GitHub endpoints for non-GitHub providers.
 
 ## Setup and examples
 

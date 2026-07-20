@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
@@ -25,6 +26,26 @@ type workflowTemplateData struct {
 	DefaultLogicalBody string
 	Workflow           workflow.Plan
 	Artifact           workflow.Artifact
+}
+
+// verifierPacketFromWorkflow is the assignment-compilation seam for project
+// verification. Selected PROCESS requirements and repository policy are merged
+// mechanically; workflow prose remains guidance and never creates selectors.
+func verifierPacketFromWorkflow(plan workflow.Plan, selected assignment.RequiredSelectors) (assignment.VerifierPacket, error) {
+	project, err := plan.ProjectVerifierPacket()
+	if err != nil {
+		return assignment.VerifierPacket{}, err
+	}
+	merged, err := assignment.MergeRequiredSelectors(selected, assignment.RequiredSelectors{
+		Tests:  project.RequiredTests,
+		Checks: project.RequiredChecks,
+	})
+	if err != nil {
+		return assignment.VerifierPacket{}, fmt.Errorf("merge verifier selectors: %w", err)
+	}
+	project.RequiredTests = merged.Tests
+	project.RequiredChecks = merged.Checks
+	return project, nil
 }
 
 func renderIssueBodyFromWorkflow(plan workflow.Plan, repo, kind, change, proposal, design, defaultBody string) (string, bool, error) {
@@ -129,7 +150,7 @@ func workflowNotice(plan workflow.Plan) string {
 			fmt.Fprintf(&b, "  - `%s/%s`: %s\n", diagnostic.Severity, diagnostic.Code, diagnostic.Message)
 		}
 	}
-	b.WriteString("\nProject workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in the selected issue backend's issue-native storage; durable specs are repository files created during archive.\n")
+	b.WriteString("\nProject workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in the selected issue backend's issue-native storage; repository-mode durable specs are materialized and checked on the implementation branch.\n")
 	return b.String()
 }
 

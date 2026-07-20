@@ -82,6 +82,9 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 	case "init":
 		return a.runInit(ctx, args[1:])
 	case "issue":
+		if len(args) > 1 && args[1] == "close-change" {
+			return a.runIssueCloseChange(ctx, args[2:])
+		}
 		return a.runIssue(ctx, args[1:])
 	case "comment":
 		return a.runComment(ctx, args[1:])
@@ -93,6 +96,8 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return a.runPR(ctx, args[1:])
 	case "archive":
 		return a.runArchive(ctx, args[1:])
+	case "durable-spec":
+		return a.runDurableSpec(ctx, args[1:])
 	case "workflow":
 		return a.runWorkflow(ctx, args[1:])
 	case "link":
@@ -209,6 +214,7 @@ Usage:
   issue-spec issue update --repo owner/repo --issue N [--title title] [--body-file file.md] [--summary "what changed"]
   issue-spec issue list --repo owner/repo [--state open|closed|all] --json
   issue-spec issue close|reopen --repo owner/repo --issue N [--json]
+  issue-spec issue close-change --repo owner/repo --proposal N --design N --implement N --revision REV [--json]
   issue-spec comment create --repo owner/repo --issue N --body-file reply.md [--json]
   issue-spec comment generate --type SPEC --id SPEC-001 --input-file spec.json [--status confirmed] [--scope "..."]
   issue-spec comment upsert --repo owner/repo --issue N --type SPEC --id SPEC-001 --body-file file.md [--allow-noncanonical]
@@ -223,13 +229,13 @@ Usage:
   issue-spec review finding --repo owner/repo --pr N --path file.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "what to fix"
   issue-spec review reply --repo owner/repo --pr N --comment-id COMMENT_ID --finding FINDING-001 --process PROCESS-001 --status resolved --body "fixed"
   issue-spec review sync --repo owner/repo --pr N --implement N --id REVIEW-001
-  issue-spec archive durable-spec --repo owner/repo --proposal N --design N --implement N --pr N --capability my-capability --close-issues
+  issue-spec durable-spec preview|apply|check|detail --repo owner/repo --proposal N [options]
   issue-spec workflow validate --repo owner/repo [--json]
   issue-spec workflow which --repo owner/repo [--schema name] [--json]
   issue-spec workflow workspace prepare|inspect|complete|integrate|reconcile|cleanup --repo owner/repo --issue N --process PROCESS-001
   issue-spec link --repo owner/repo --from SPEC-001 --from-issue N --to TASK-001 --to-issue M
   issue-spec status --repo owner/repo --proposal N [--design N] [--implement N]
-  issue-spec verify --repo owner/repo --proposal N --design N --implement N [--durable-spec path]
+  issue-spec verify --repo owner/repo --proposal N --design N --implement N
   issue-spec verify-links --repo owner/repo --proposal N --design N --implement N
   issue-spec read issue --repo owner/repo --issue N [--comments] [--typed-only]
   issue-spec read pr --repo owner/repo --pr N [--comments] [--typed-only]

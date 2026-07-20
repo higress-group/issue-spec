@@ -21,6 +21,6 @@ Use when the user asks for /issue-spec:propose, proposal, Design, SPEC, QUESTION
 
 - Workflow Source: `builtin`
 - Workflow Schema: `issue-spec`
-- Workflow Diagnostics:
+- Workflow Config: `issue-spec/config.yaml`
 
-Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in the selected issue backend's issue-native storage; durable specs are repository files created during archive.
+Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in the selected issue backend's issue-native storage; repository-mode durable specs are materialized and checked on the implementation branch.

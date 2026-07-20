@@ -21,6 +21,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
+	"github.com/higress-group/issue-spec/internal/workflow"
 	runnerworkspace "github.com/higress-group/issue-spec/internal/workspace"
 )
 
@@ -274,7 +275,7 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 	coordinator := fs.String("coordinator", "workspace-cli", "machine-local coordinator identity")
 	issueAssignment := fs.Bool("issue-assignment", false, "compile and persist a role assignment before returning")
 	assignmentFile := fs.String("assignment-file", "", "validated portable assignment JSON (required when PROCESS fields cannot fully express the role packet)")
-	assignmentDiffBase := fs.String("assignment-diff-base", "", "exact review diff base used to derive code authors and changed paths")
+	assignmentDiffBase := fs.String("assignment-diff-base", "", "exact assignment diff base used for review scope and durable verification")
 	proposalFlag := fs.String("proposal", "", "proposal issue number or URL used to resolve confirmed covered SPEC scenarios")
 	assignmentOut := fs.String("assignment-out", "", "write the assignment packet atomically to an absolute path outside the worktree")
 	redispatch := fs.Bool("redispatch-assignment", false, "explicitly advance an existing assignment generation")
@@ -509,6 +510,13 @@ func compileWorkspaceAssignment(ctx context.Context, backend changegraph.Backend
 		if err := validateAssignmentScenarios(value.Scenarios, scenarioCatalog); err != nil {
 			return assignment.Assignment{}, err
 		}
+		value, err = withWorkspaceVerificationPolicy(ctx, backend, repo, issue, lease, value, diffBase)
+		if err != nil {
+			return assignment.Assignment{}, err
+		}
+		if err := value.Validate(); err != nil {
+			return assignment.Assignment{}, err
+		}
 		return value, nil
 	}
 	scenarios := append([]assignment.ScenarioRef(nil), input.ScenarioSelectors...)
@@ -567,12 +575,64 @@ func compileWorkspaceAssignment(ctx context.Context, backend changegraph.Backend
 	default:
 		return assignment.Assignment{}, fmt.Errorf("execution class %s does not issue a role assignment", class)
 	}
+	value, err = withWorkspaceVerificationPolicy(ctx, backend, repo, issue, lease, value, diffBase)
+	if err != nil {
+		return assignment.Assignment{}, err
+	}
 	if err := bindCanonicalDesignContext(ctx, backend, repo, issue, value.Role, value.DesignContext); err != nil {
 		return assignment.Assignment{}, err
 	}
 	if err := value.Validate(); err != nil {
 		return assignment.Assignment{}, err
 	}
+	return value, nil
+}
+
+func withWorkspaceVerificationPolicy(ctx context.Context, backend changegraph.Backend, repo string, implement int,
+	lease processworkspace.LocalLease, value assignment.Assignment, diffBase string) (assignment.Assignment, error) {
+	if value.Role != assignment.RoleVerification || value.Verification == nil {
+		return value, nil
+	}
+	plan, err := workflow.Resolve(lease.IntegrationRoot)
+	if err != nil {
+		return assignment.Assignment{}, fmt.Errorf("resolve verification workflow: %w", err)
+	}
+	packet, err := verifierPacketFromWorkflow(plan, value.Verification.RequiredSelectors())
+	if err != nil {
+		return assignment.Assignment{}, fmt.Errorf("resolve project verifier packet: %w", err)
+	}
+	payload, err := value.Verification.WithVerifierPacket(packet)
+	if err != nil {
+		return assignment.Assignment{}, fmt.Errorf("seal project verifier packet: %w", err)
+	}
+	value.Verification = &payload
+
+	mode := plan.DurableSpecsMode()
+	if mode == "none" {
+		return value, nil
+	}
+	baseline, err := validateAssignmentDiffBase(ctx, lease.IntegrationRoot, diffBase, lease.Portable.DetachedRevision, "repository-mode verification")
+	if err != nil {
+		return assignment.Assignment{}, err
+	}
+	if baseline == lease.Portable.DetachedRevision {
+		return assignment.Assignment{}, errors.New("repository-mode verification assignment diff base must differ from the exact subject revision")
+	}
+	if backend == nil {
+		return assignment.Assignment{}, errors.New("derive durable check proposal: issue backend is required")
+	}
+	located, err := changegraph.LocateFromImplement(ctx, backend, repo, implement)
+	if err != nil {
+		return assignment.Assignment{}, fmt.Errorf("derive durable check proposal from Implement issue: %w", err)
+	}
+	payload, err = value.Verification.WithDurableCheck(mode, assignment.DurableCheckBinding{
+		Repository: repo, Proposal: located.Proposal.Number, BaselineRevision: baseline,
+		SubjectRevision: lease.Portable.DetachedRevision, RepositoryRoot: ".",
+	})
+	if err != nil {
+		return assignment.Assignment{}, fmt.Errorf("seal verification durable check: %w", err)
+	}
+	value.Verification = &payload
 	return value, nil
 }
 
@@ -718,12 +778,9 @@ func validateAssignmentScenarios(selected, catalog []assignment.ScenarioRef) err
 }
 
 func deriveReviewAssignment(ctx context.Context, integrationRoot, diffBase, subject string) ([]string, []string, error) {
-	diffBase = strings.TrimSpace(diffBase)
-	if !fullRevision(diffBase) {
-		return nil, nil, errors.New("review assignment requires --assignment-diff-base with a full Git object id")
-	}
-	if err := exec.CommandContext(ctx, "git", "-C", integrationRoot, "merge-base", "--is-ancestor", diffBase, subject).Run(); err != nil {
-		return nil, nil, errors.New("review assignment diff base must be an ancestor of the exact subject revision")
+	diffBase, err := validateAssignmentDiffBase(ctx, integrationRoot, diffBase, subject, "review")
+	if err != nil {
+		return nil, nil, err
 	}
 	rangeSpec := diffBase + ".." + subject
 	authorOutput, err := exec.CommandContext(ctx, "git", "-C", integrationRoot, "log", "--format=%an <%ae>", rangeSpec).Output()
@@ -740,6 +797,17 @@ func deriveReviewAssignment(ctx context.Context, integrationRoot, diffBase, subj
 		return nil, nil, errors.New("review revision range must contain at least one commit author and changed path")
 	}
 	return authors, scope, nil
+}
+
+func validateAssignmentDiffBase(ctx context.Context, integrationRoot, diffBase, subject, purpose string) (string, error) {
+	diffBase = strings.TrimSpace(diffBase)
+	if !fullRevision(diffBase) {
+		return "", fmt.Errorf("%s assignment requires --assignment-diff-base with a full Git object id", purpose)
+	}
+	if err := exec.CommandContext(ctx, "git", "-C", integrationRoot, "merge-base", "--is-ancestor", diffBase, subject).Run(); err != nil {
+		return "", fmt.Errorf("%s assignment diff base must be an ancestor of the exact subject revision", purpose)
+	}
+	return diffBase, nil
 }
 
 func uniqueNonEmptyLines(value string) []string {

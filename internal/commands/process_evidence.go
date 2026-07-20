@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -19,6 +20,190 @@ import (
 )
 
 var processTestEvidencePattern = regexp.MustCompile(`(?i)\btest(s|ing|ed)?\b`)
+
+const MaxCanonicalEvidenceIndexEntries = 4096
+
+var canonicalEvidenceDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+type CanonicalEvidenceKind string
+
+const (
+	CanonicalEvidenceReview       CanonicalEvidenceKind = "review"
+	CanonicalEvidenceVerification CanonicalEvidenceKind = "verification"
+	CanonicalEvidenceTest         CanonicalEvidenceKind = "test"
+	CanonicalEvidenceCheck        CanonicalEvidenceKind = "check"
+)
+
+type CanonicalEvidenceAuthority string
+
+const (
+	CanonicalEvidenceRoleOwned     CanonicalEvidenceAuthority = "role-owned"
+	CanonicalEvidenceProviderOwned CanonicalEvidenceAuthority = "provider-owned"
+)
+
+// CanonicalEvidenceRecord is one already-validated canonical evidence fact
+// bound to an active PROCESS/SPEC pair. Role-owned facts carry their immutable
+// receipt and assignment identities; provider-owned facts carry a stable
+// evidence ID and source. Trusted is explicit so prose-derived candidates
+// cannot accidentally enter the final index.
+type CanonicalEvidenceRecord struct {
+	ProcessID        string
+	SpecID           string
+	Kind             CanonicalEvidenceKind
+	Authority        CanonicalEvidenceAuthority
+	EvidenceID       string
+	ReceiptID        string
+	ReceiptDigest    string
+	AssignmentID     string
+	AssignmentDigest string
+	SubjectRevision  string
+	URL              string
+	Source           string
+	Trusted          bool
+}
+
+type CanonicalEvidenceKey struct {
+	ProcessID string
+	SpecID    string
+	Kind      CanonicalEvidenceKind
+}
+
+// CanonicalEvidenceIndex is a pure bounded read model. Its map and slices are
+// private, and Records always returns a copy, so indexing shared REVIEW/VERIFY
+// evidence cannot become a backdoor mutation of a PROCESS or caller input.
+type CanonicalEvidenceIndex struct {
+	entries map[CanonicalEvidenceKey][]CanonicalEvidenceRecord
+	count   int
+}
+
+// BuildCanonicalEvidenceIndex validates exact-current identity and builds at
+// most MaxCanonicalEvidenceIndexEntries unique evidence records.
+func BuildCanonicalEvidenceIndex(records []CanonicalEvidenceRecord, expectedRevision string) (CanonicalEvidenceIndex, error) {
+	return buildCanonicalEvidenceIndex(records, expectedRevision, MaxCanonicalEvidenceIndexEntries)
+}
+
+func buildCanonicalEvidenceIndex(records []CanonicalEvidenceRecord, expectedRevision string, limit int) (CanonicalEvidenceIndex, error) {
+	expectedRevision = strings.TrimSpace(expectedRevision)
+	if expectedRevision == "" {
+		return CanonicalEvidenceIndex{}, errors.New("canonical evidence index requires an exact subject revision")
+	}
+	if limit <= 0 || limit > MaxCanonicalEvidenceIndexEntries {
+		return CanonicalEvidenceIndex{}, fmt.Errorf("canonical evidence index limit must be between 1 and %d", MaxCanonicalEvidenceIndexEntries)
+	}
+	index := CanonicalEvidenceIndex{entries: map[CanonicalEvidenceKey][]CanonicalEvidenceRecord{}}
+	receiptIdentityByID := map[string]string{}
+	assignmentIdentityByID := map[string]string{}
+	providerIdentityByID := map[string]string{}
+	seenEntry := map[string]bool{}
+	for _, record := range records {
+		if err := validateCanonicalEvidenceRecord(record, expectedRevision); err != nil {
+			return CanonicalEvidenceIndex{}, err
+		}
+		identity := canonicalEvidenceIdentity(record)
+		if record.Authority == CanonicalEvidenceRoleOwned {
+			receiptIdentity := strings.Join([]string{record.ReceiptDigest, record.AssignmentID,
+				record.AssignmentDigest, strings.ToLower(strings.TrimSpace(record.SubjectRevision))}, "\x00")
+			if previous, exists := receiptIdentityByID[record.ReceiptID]; exists && previous != receiptIdentity {
+				return CanonicalEvidenceIndex{}, fmt.Errorf("canonical evidence %q has conflicting receipt identity or digest", record.EvidenceID)
+			}
+			receiptIdentityByID[record.ReceiptID] = receiptIdentity
+			assignmentIdentity := record.AssignmentDigest + "\x00" + strings.ToLower(strings.TrimSpace(record.SubjectRevision))
+			if previous, exists := assignmentIdentityByID[record.AssignmentID]; exists && previous != assignmentIdentity {
+				return CanonicalEvidenceIndex{}, fmt.Errorf("canonical evidence %q has conflicting assignment identity or digest", record.EvidenceID)
+			}
+			assignmentIdentityByID[record.AssignmentID] = assignmentIdentity
+		} else {
+			providerKey := record.Source + "\x00" + record.EvidenceID
+			if previous, exists := providerIdentityByID[providerKey]; exists && previous != identity {
+				return CanonicalEvidenceIndex{}, fmt.Errorf("canonical evidence %q has conflicting provider identity", record.EvidenceID)
+			}
+			providerIdentityByID[providerKey] = identity
+		}
+		key := CanonicalEvidenceKey{ProcessID: record.ProcessID, SpecID: record.SpecID, Kind: record.Kind}
+		entryIdentity := record.ProcessID + "\x00" + record.SpecID + "\x00" + identity
+		if seenEntry[entryIdentity] {
+			continue
+		}
+		if index.count == limit {
+			return CanonicalEvidenceIndex{}, fmt.Errorf("canonical evidence index exceeds bounded limit %d", limit)
+		}
+		seenEntry[entryIdentity] = true
+		index.entries[key] = append(index.entries[key], record)
+		index.count++
+	}
+	for key := range index.entries {
+		sort.Slice(index.entries[key], func(i, j int) bool {
+			return index.entries[key][i].EvidenceID < index.entries[key][j].EvidenceID
+		})
+	}
+	return index, nil
+}
+
+func validateCanonicalEvidenceRecord(record CanonicalEvidenceRecord, expectedRevision string) error {
+	if !record.Trusted {
+		return fmt.Errorf("canonical evidence %q is not validated and trusted", record.EvidenceID)
+	}
+	if !externalProcessIDPattern.MatchString(record.ProcessID) || !externalSpecIDPattern.MatchString(record.SpecID) {
+		return fmt.Errorf("canonical evidence %q has invalid PROCESS/SPEC identity", record.EvidenceID)
+	}
+	switch record.Kind {
+	case CanonicalEvidenceReview, CanonicalEvidenceVerification, CanonicalEvidenceTest, CanonicalEvidenceCheck:
+	default:
+		return fmt.Errorf("canonical evidence %q has unsupported kind %q", record.EvidenceID, record.Kind)
+	}
+	if strings.TrimSpace(record.EvidenceID) == "" || record.EvidenceID != strings.TrimSpace(record.EvidenceID) ||
+		strings.TrimSpace(record.SubjectRevision) == "" || record.SubjectRevision != expectedRevision ||
+		strings.TrimSpace(record.Source) == "" || record.Source != strings.TrimSpace(record.Source) {
+		return fmt.Errorf("canonical evidence %q is missing exact-current canonical identity", record.EvidenceID)
+	}
+	switch record.Authority {
+	case CanonicalEvidenceRoleOwned:
+		if strings.TrimSpace(record.ReceiptID) == "" || record.ReceiptID != strings.TrimSpace(record.ReceiptID) ||
+			strings.TrimSpace(record.AssignmentID) == "" || record.AssignmentID != strings.TrimSpace(record.AssignmentID) ||
+			!canonicalEvidenceDigestPattern.MatchString(record.ReceiptDigest) ||
+			!canonicalEvidenceDigestPattern.MatchString(record.AssignmentDigest) {
+			return fmt.Errorf("canonical evidence %q has invalid role-owned receipt identity", record.EvidenceID)
+		}
+		validSource := (record.Kind == CanonicalEvidenceReview && strings.HasPrefix(record.Source, "accepted-review-receipt:")) ||
+			(record.Kind != CanonicalEvidenceReview && strings.HasPrefix(record.Source, "accepted-verification-receipt:"))
+		if !validSource {
+			return fmt.Errorf("canonical evidence %q is not sourced from an accepted role-owned receipt", record.EvidenceID)
+		}
+	case CanonicalEvidenceProviderOwned:
+		if record.ReceiptID != "" || record.ReceiptDigest != "" || record.AssignmentID != "" || record.AssignmentDigest != "" {
+			return fmt.Errorf("canonical evidence %q mixes provider and role-owned identity", record.EvidenceID)
+		}
+		if !canonicalProviderEvidenceSource(record.Source) {
+			return fmt.Errorf("canonical evidence %q is not sourced from a provider-owned record", record.EvidenceID)
+		}
+	default:
+		return fmt.Errorf("canonical evidence %q has no canonical authority", record.EvidenceID)
+	}
+	return nil
+}
+
+func canonicalProviderEvidenceSource(source string) bool {
+	for _, prefix := range []string{"github-check-run:", "github-pull-request-head:", "github-pr-review-comment:",
+		"native-evidence:", "native-authoritative-ledger:", "external-review-completion:"} {
+		if strings.HasPrefix(source, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalEvidenceIdentity(record CanonicalEvidenceRecord) string {
+	return strings.Join([]string{string(record.Kind), string(record.Authority), record.EvidenceID,
+		record.ReceiptID, record.ReceiptDigest, record.AssignmentID, record.AssignmentDigest,
+		strings.ToLower(strings.TrimSpace(record.SubjectRevision)), record.URL, record.Source}, "\x00")
+}
+
+func (index CanonicalEvidenceIndex) Len() int { return index.count }
+
+func (index CanonicalEvidenceIndex) Records(processID, specID string, kind CanonicalEvidenceKind) []CanonicalEvidenceRecord {
+	key := CanonicalEvidenceKey{ProcessID: processID, SpecID: specID, Kind: kind}
+	return append([]CanonicalEvidenceRecord(nil), index.entries[key]...)
+}
 
 // activeProcessIDs is the command layer's only PROCESS activity projection.
 // Selection deliberately retains legacy Status: superseded carriers when no

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/assignment"
+	"github.com/higress-group/issue-spec/internal/durable"
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
@@ -93,11 +94,13 @@ type SpecScenarioInput struct {
 type SpecInput struct {
 	Requirement SpecRequirementInput `json:"requirement"`
 	Scenarios   []SpecScenarioInput  `json:"scenarios"`
+	Durable     *durable.Intent      `json:"durable,omitempty"`
 }
 
 type SpecCommentOptions struct {
-	Common CommonOptions
-	Input  SpecInput
+	Common         CommonOptions
+	Input          SpecInput
+	RepositoryRoot string
 }
 
 // SpecComment renders a canonical SPEC typed comment body from structured input.
@@ -132,6 +135,17 @@ func SpecComment(opts SpecCommentOptions) (string, error) {
 			return "", fmt.Errorf("scenarios[%d].then is required", i)
 		}
 		fmt.Fprintf(&b, "\n### Scenario: %s\n\n- **WHEN** %s\n- **THEN** %s\n", scTitle, when, then)
+	}
+	if opts.Input.Durable != nil {
+		payload, err := durable.CanonicalJSON(*opts.Input.Durable, durable.ValidationOptions{
+			RepositoryRoot:  opts.RepositoryRoot,
+			SpecID:          strings.TrimSpace(opts.Common.ID),
+			SpecRequirement: title,
+		})
+		if err != nil {
+			return "", fmt.Errorf("durable intent: %w", err)
+		}
+		fmt.Fprintf(&b, "\n## Durable Intent\n\n```json\n%s\n```\n", payload)
 	}
 
 	logical := b.String()

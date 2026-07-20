@@ -13,7 +13,7 @@ Coordinator: follow issue-spec-workflow to prepare the immutable review snapshot
 
 1. Accept only the sealed review assignment for the exact subject revision, immutable snapshot/diff, code authors, owned invariant, affected scenarios, review scope, focused checks, result schema, and design_context.
 2. Require design_context.read_mode=complete-issue-body and conflict_policy=design-authoritative-stop. Before inspecting code, read the complete Design with issue-spec read issue --repo higress-group/issue-spec --issue <design_context.source_url> without comments, timeline, history, or gates. Stop on conflict; do not collect or pass runtime-specific session IDs.
-3. Review the invariant end to end at the exact revision. Verify required actions, stops, compatibility, tests, and major entry points. Do not expand into unrelated proposal history, DAGs, links, closure/archive, or provider routing.
+3. Review the invariant end to end at the exact revision. Verify required actions, stops, compatibility, tests, and major entry points. Do not expand into unrelated proposal history, DAGs, links, post-merge policy, or provider routing.
 4. Under the real review agent identity, report actionable findings with severity, exact file/line, affected SPEC/scenario, owner PROCESS, and suggested fix, or an explicit no-finding verdict. Never fabricate evidence or let the Coordinator author findings for you.
 5. After a fix, re-check the exact current revision and own the resolved reply/conversation resolution. Submit only the bounded review receipt/sync result and focused verification evidence. P0/P1 findings remain blocking until reviewer-owned resolution; the author cannot review its own work.
 
@@ -21,6 +21,6 @@ Coordinator: follow issue-spec-workflow to prepare the immutable review snapshot
 
 - Workflow Source: `builtin`
 - Workflow Schema: `issue-spec`
-- Workflow Diagnostics:
+- Workflow Config: `issue-spec/config.yaml`
 
-Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in the selected issue backend's issue-native storage; durable specs are repository files created during archive.
+Project workflow templates are declarative only. Active proposal, design, implement, SPEC, TASK, PROCESS, QUESTION, REVIEW, and VERIFY artifacts remain in the selected issue backend's issue-native storage; repository-mode durable specs are materialized and checked on the implementation branch.

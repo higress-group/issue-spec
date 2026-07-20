@@ -1,0 +1,348 @@
+package gates
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/higress-group/issue-spec/internal/finalization"
+	"github.com/higress-group/issue-spec/internal/model"
+)
+
+const (
+	CodeFinalSubjectUnknown       = "final.subject.unknown"
+	CodeFinalSubjectInvalid       = "final.subject.invalid"
+	CodeFinalSelectionInvalid     = "final.selection.invalid"
+	CodeFinalPlanningInvalid      = "final.planning.invalid"
+	CodeFinalEvidenceInvalid      = "final.evidence.invalid"
+	CodeFinalVerificationRequired = "final.verification.required"
+	CodeFinalRequiredTestMissing  = "final.test.missing_or_failed"
+	CodeFinalRequiredCheckMissing = "final.check.missing_or_failed"
+)
+
+type finalPlanning struct {
+	specs        map[string]model.Artifact
+	tasks        map[string]model.Artifact
+	processes    map[string]model.Artifact
+	processSpecs map[string][]string
+}
+
+func evaluateMinimalFinal(snapshot Snapshot) Report {
+	selection := finalization.Select(snapshot.Artifacts)
+	e := evaluator{snapshot: snapshot, selection: selection, activeProcesses: map[string]bool{}}
+	for _, id := range selection.ActiveProcessIDs {
+		e.activeProcesses[id] = true
+	}
+	for _, artifact := range snapshot.Artifacts {
+		if artifact.Comment.Type == "PROCESS" {
+			e.processSelectionObserved = true
+			break
+		}
+	}
+	for _, diagnostic := range selection.Diagnostics {
+		e.add(CodeFinalSelectionInvalid, fmt.Sprintf("PROCESS selection %s: %s", diagnostic.Code, diagnostic.Message),
+			ArtifactRef{Type: "PROCESS", ID: diagnostic.ProcessID, URL: diagnostic.URL}, "invalid", "one unambiguous active-carrier set", "finalize detail")
+	}
+	planning := e.evaluateFinalPlanning()
+	e.evaluateFinalSubject(planning)
+	e.evaluateFinalEvidence(planning)
+	e.sort()
+	ready := true
+	for _, diagnostic := range e.diagnostics {
+		if diagnostic.Blocking {
+			ready = false
+			break
+		}
+	}
+	return Report{Ready: ready, Target: TargetFinal, Mode: snapshot.Mode, PointInTime: snapshot.Mode == ModeForecast,
+		Diagnostics: e.diagnostics, Processes: e.processes}
+}
+
+func (e *evaluator) evaluateFinalPlanning() finalPlanning {
+	result := finalPlanning{specs: map[string]model.Artifact{}, tasks: map[string]model.Artifact{},
+		processes: map[string]model.Artifact{}, processSpecs: map[string][]string{}}
+	seen := map[string]model.Artifact{}
+	for _, artifact := range e.snapshot.Artifacts {
+		tc := artifact.Comment
+		if tc.Type != "SPEC" && tc.Type != "TASK" && tc.Type != "PROCESS" {
+			continue
+		}
+		if tc.ID == "" || (tc.Type == "PROCESS" && !e.processIsActive(tc.ID)) ||
+			(tc.Type != "PROCESS" && tc.Status == "superseded") {
+			continue
+		}
+		if previous, duplicate := seen[tc.ID]; duplicate {
+			e.add(CodeFinalPlanningInvalid, fmt.Sprintf("duplicate logical id %s on %s and %s", tc.ID, previous.URL, artifact.URL),
+				ArtifactRef{Type: tc.Type, ID: tc.ID, URL: artifact.URL}, "duplicate", "unique typed identity", "comment get", "--id", tc.ID)
+		}
+		seen[tc.ID] = artifact
+		if err := model.ValidateTypedIdentity(tc.Type, tc.ID); err != nil {
+			e.add(CodeArtifactNoncanonical, err.Error(), artifactRef(artifact), tc.ID, "canonical typed identity",
+				"comment generate", "--type", tc.Type, "--id", tc.ID)
+		}
+		for _, parseError := range tc.Errors {
+			e.add(CodeArtifactNoncanonical, parseError, artifactRef(artifact), "parse error", "canonical typed artifact",
+				"comment generate", "--type", tc.Type, "--id", tc.ID)
+		}
+		for _, diagnostic := range model.ValidateArtifact(artifact) {
+			e.add(CodeArtifactNoncanonical, diagnostic.Message,
+				ArtifactRef{Type: diagnostic.Type, ID: diagnostic.ID, URL: diagnostic.URL}, diagnostic.Element, "canonical", "comment generate", "--type", diagnostic.Type, "--id", diagnostic.ID)
+		}
+		switch tc.Type {
+		case "SPEC":
+			result.specs[tc.ID] = artifact
+		case "TASK":
+			result.tasks[tc.ID] = artifact
+		case "PROCESS":
+			result.processes[tc.ID] = artifact
+		}
+	}
+	if len(result.specs) == 0 {
+		e.add(CodeSpecRequired, "at least one active SPEC is required", ArtifactRef{}, "0", ">=1", "comment generate", "--type", "SPEC")
+	}
+	if len(result.tasks) == 0 {
+		e.add(CodeTaskRequired, "at least one active TASK is required", ArtifactRef{}, "0", ">=1", "comment generate", "--type", "TASK")
+	}
+	if len(result.processes) == 0 {
+		e.add(CodeProcessRequired, "at least one active PROCESS is required", ArtifactRef{}, "0", ">=1", "comment generate", "--type", "PROCESS")
+	}
+	taskSpecs := map[string]map[string]bool{}
+	for taskID, task := range result.tasks {
+		covered := model.TypedSectionList(task.Comment.Body, "### Covers")
+		if len(covered) == 0 {
+			e.add(CodeFinalPlanningInvalid, fmt.Sprintf("%s must cover at least one active SPEC", taskID), artifactRef(task), "empty Covers", ">=1 active SPEC", "comment generate", "--type", "TASK", "--id", taskID)
+			continue
+		}
+		taskSpecs[taskID] = map[string]bool{}
+		for _, specID := range covered {
+			spec, ok := result.specs[specID]
+			if !ok || taskSpecs[taskID][specID] {
+				e.add(CodeFinalPlanningInvalid, fmt.Sprintf("%s has invalid or duplicate SPEC coverage %s", taskID, specID), artifactRef(task), specID, "one active SPEC", "comment generate", "--type", "TASK", "--id", taskID)
+				continue
+			}
+			if !linksIdentifyArtifact(task.Comment.Links["Related Comments"], spec) {
+				e.add(CodeFinalPlanningInvalid, fmt.Sprintf("%s coverage for %s lacks its exact SPEC URL", taskID, specID),
+					artifactRef(task), "missing", spec.URL, "comment upsert", "--type", "TASK", "--id", taskID)
+				continue
+			}
+			taskSpecs[taskID][specID] = true
+		}
+	}
+	for processID, process := range result.processes {
+		parents := model.TypedSectionList(process.Comment.Body, "### Parent TASK")
+		if len(parents) != 1 || result.tasks[parents[0]].Comment.ID == "" {
+			e.add(CodeFinalPlanningInvalid, fmt.Sprintf("%s must name exactly one active Parent TASK", processID), artifactRef(process), strings.Join(parents, ","), "one active TASK", "comment generate", "--type", "PROCESS", "--id", processID)
+			continue
+		}
+		parentID := parents[0]
+		if !linksIdentifyArtifact(process.Comment.Links["Related Comments"], result.tasks[parentID]) {
+			e.add(CodeFinalPlanningInvalid, fmt.Sprintf("%s Parent TASK %s lacks its exact TASK URL", processID, parentID),
+				artifactRef(process), "missing", result.tasks[parentID].URL, "comment upsert", "--type", "PROCESS", "--id", processID)
+			continue
+		}
+		selectors := map[string]bool{}
+		for _, id := range model.TypedSectionList(process.Comment.Body, "### Covers") {
+			if strings.HasPrefix(id, "SPEC-") {
+				selectors[id] = true
+			}
+		}
+		if process.Comment.Assignment != nil {
+			for _, selector := range process.Comment.Assignment.ScenarioSelectors {
+				selectors[strings.TrimSpace(selector.SpecID)] = true
+			}
+		}
+		if len(selectors) == 0 {
+			for specID := range taskSpecs[parentID] {
+				selectors[specID] = true
+			}
+		}
+		for specID := range selectors {
+			if !taskSpecs[parentID][specID] {
+				e.add(CodeFinalPlanningInvalid, fmt.Sprintf("%s selector %s is outside Parent TASK %s coverage", processID, specID, parentID), artifactRef(process), specID, "selector contained by Parent TASK", "comment generate", "--type", "PROCESS", "--id", processID)
+				continue
+			}
+			result.processSpecs[processID] = append(result.processSpecs[processID], specID)
+		}
+		sort.Strings(result.processSpecs[processID])
+	}
+	return result
+}
+
+func (e *evaluator) evaluateFinalSubject(planning finalPlanning) {
+	subject := e.snapshot.FinalEvidence.Subject
+	if !e.snapshot.FinalEvidence.Observed || !subject.Required || !subject.Known {
+		e.add(CodeFinalSubjectUnknown, "current code subject identity and revision were not collected", ArtifactRef{}, "unknown", "one authoritative exact-current subject", "verify")
+		e.diagnostics[len(e.diagnostics)-1].Freshness = FreshnessUnknown
+		return
+	}
+	kind := strings.TrimSpace(subject.Kind)
+	validSource := (kind == "pull_request" && strings.HasPrefix(subject.Source, "github-pull-request-head:")) ||
+		(kind == "code_change" && strings.HasPrefix(subject.Source, "native-authoritative-ledger:"))
+	if !subject.Trusted || (kind != "pull_request" && kind != "code_change") || !validSource || strings.TrimSpace(subject.URL) == "" ||
+		strings.TrimSpace(subject.Revision) == "" || strings.TrimSpace(subject.Source) == "" {
+		e.add(CodeFinalSubjectInvalid, "current code subject identity or revision is incomplete or untrusted", ArtifactRef{}, "invalid", "authoritative exact-current subject", "verify")
+		return
+	}
+	for processID, process := range planning.processes {
+		values := nonEmptyLinks(process.Comment.Links["PR"])
+		if len(values) != 1 || model.NormalizeURL(values[0]) != model.NormalizeURL(subject.URL) {
+			e.add(CodeProcessPRLinkMissing, fmt.Sprintf("%s does not carry the exact current code subject", processID), artifactRef(process), strings.Join(values, ","), subject.URL, "pr link-process", "--process", processID)
+		}
+	}
+}
+
+func (e *evaluator) evaluateFinalEvidence(planning finalPlanning) {
+	facts := e.snapshot.FinalEvidence
+	if !facts.Observed || !facts.Index.Required || !facts.Index.Known {
+		e.add(CodeFinalEvidenceInvalid, "canonical evidence index was not collected", ArtifactRef{}, "unknown", "validated bounded exact-current index", "verify")
+		e.diagnostics[len(e.diagnostics)-1].Freshness = FreshnessUnknown
+		return
+	}
+	if !facts.Index.Passed {
+		e.add(CodeFinalEvidenceInvalid, "canonical evidence index is invalid: "+expectedOr(facts.Index.Current, "validation failed"), ArtifactRef{}, expectedOr(facts.Index.Current, "invalid"), "valid exact-current index", "verify")
+		return
+	}
+	revision := strings.TrimSpace(facts.Subject.Revision)
+	type evidenceKey struct {
+		process, spec string
+		kind          FinalEvidenceKind
+	}
+	indexed := map[evidenceKey][]FinalEvidenceRecord{}
+	for _, record := range facts.Records {
+		validKind := record.Kind == FinalEvidenceReview || record.Kind == FinalEvidenceVerification ||
+			record.Kind == FinalEvidenceTest || record.Kind == FinalEvidenceCheck
+		if planning.processes[record.ProcessID].Comment.ID == "" || planning.specs[record.SpecID].Comment.ID == "" ||
+			!validKind || record.EvidenceID == "" || record.Source == "" || record.SubjectRevision != revision {
+			e.add(CodeFinalEvidenceInvalid, fmt.Sprintf("evidence %s has stale, unknown, or conflicting identity", record.EvidenceID),
+				ArtifactRef{Type: "PROCESS", ID: record.ProcessID}, record.SubjectRevision, revision, "verify")
+			continue
+		}
+		key := evidenceKey{record.ProcessID, record.SpecID, record.Kind}
+		indexed[key] = append(indexed[key], record)
+	}
+
+	inputs := map[string]ProcessEvidenceInput{}
+	for _, input := range e.snapshot.ProcessEvidence {
+		if planning.processes[input.Process.Comment.ID].Comment.ID == "" {
+			continue
+		}
+		inputs[input.Process.Comment.ID] = input
+		report := EvaluateProcessEvidence(input, TargetFinal, e.snapshot.Mode)
+		e.processes = append(e.processes, report)
+	}
+	sort.Slice(e.processes, func(i, j int) bool { return e.processes[i].ProcessID < e.processes[j].ProcessID })
+
+	changePairs := map[string][]string{}
+	for processID, process := range planning.processes {
+		class := model.ParseProcessExecutionClass(process.Comment.ID, process.URL, process.Comment.Body)
+		if class.Blocking() {
+			e.add(CodeProcessExecutionClassInvalid, fmt.Sprintf("%s has invalid execution class", processID), artifactRef(process), "invalid", "known class", "comment generate", "--type", "PROCESS", "--id", processID)
+			continue
+		}
+		if class.Class != model.ProcessExecutionChangeBearing && class.Class != model.ProcessExecutionExternal {
+			continue
+		}
+		report := processReport(e.processes, processID)
+		for _, specID := range planning.processSpecs[processID] {
+			if report == nil || !stringIn(report.SatisfiedSpecs, specID) {
+				e.add(CodeProcessCarrierMissing, fmt.Sprintf("%s lacks exact-current code evidence for %s", processID, specID), artifactRef(process), "missing or stale", revision, "pr rationale")
+				continue
+			}
+			changePairs[processID] = append(changePairs[processID], specID)
+		}
+	}
+	for processID, specs := range changePairs {
+		process := planning.processes[processID]
+		for _, specID := range specs {
+			reviews := independentEvidence(indexed[evidenceKey{processID, specID, FinalEvidenceReview}])
+			if len(reviews) == 0 {
+				e.add(CodeProcessReviewRequired, fmt.Sprintf("%s/%s lacks exact-current independent REVIEW evidence", processID, specID), artifactRef(process), "missing or stale", revision, "review sync")
+			}
+			verifications := independentEvidence(indexed[evidenceKey{processID, specID, FinalEvidenceVerification}])
+			if len(verifications) == 0 {
+				e.add(CodeFinalVerificationRequired, fmt.Sprintf("%s/%s lacks exact-current independent VERIFY evidence", processID, specID), artifactRef(process), "missing or stale", revision, "verify submit")
+			}
+		}
+	}
+	for processID, process := range planning.processes {
+		if process.Comment.Assignment == nil {
+			continue
+		}
+		for _, specID := range planning.processSpecs[processID] {
+			for _, required := range process.Comment.Assignment.RequiredTests {
+				if !evidenceNamed(indexed[evidenceKey{processID, specID, FinalEvidenceTest}], required.ID) {
+					e.add(CodeFinalRequiredTestMissing, fmt.Sprintf("%s/%s is missing successful assigned test %s", processID, specID, required.ID), artifactRef(process), "missing or failed", required.ID, "verify submit")
+				}
+			}
+			for _, required := range process.Comment.Assignment.RequiredChecks {
+				name := required.Provider + "\x00" + required.Name
+				if !evidenceNamed(indexed[evidenceKey{processID, specID, FinalEvidenceCheck}], name) {
+					e.add(CodeFinalRequiredCheckMissing, fmt.Sprintf("%s/%s is missing successful assigned check %s/%s", processID, specID, required.Provider, required.Name), artifactRef(process), "missing or failed", required.Provider+"/"+required.Name, "verify submit")
+				}
+			}
+		}
+	}
+	e.evaluateFact(e.snapshot.Remote.ReviewFindings, CodeReviewFindingsUnknown, CodeReviewFindingsOpen,
+		"blocking review findings are unknown", "blocking review findings remain open", "review sync", ArtifactRef{})
+	// Self-hosted subjects expose the canonical VERIFY carrier revision as a
+	// scoped fact. It is part of exact-current verification identity, not a
+	// lifecycle/status requirement, and remains optional for provider adapters
+	// whose accepted receipt already supplies the immutable revision.
+	e.evaluateFact(e.snapshot.Remote.VerifyRevision.Fact, CodeVerifyRevisionUnknown, CodeVerifyRevisionInvalid,
+		"verification subject revision is unknown", "verification subject revision does not match the current code subject",
+		"comment upsert", e.snapshot.Remote.VerifyRevision.Artifact, "--type", "VERIFY")
+}
+
+func processReport(reports []ProcessEvidenceReport, processID string) *ProcessEvidenceReport {
+	for index := range reports {
+		if reports[index].ProcessID == processID {
+			return &reports[index]
+		}
+	}
+	return nil
+}
+
+func independentEvidence(records []FinalEvidenceRecord) []FinalEvidenceRecord {
+	var result []FinalEvidenceRecord
+	for _, record := range records {
+		if record.Independent {
+			result = append(result, record)
+		}
+	}
+	return result
+}
+
+func evidenceNamed(records []FinalEvidenceRecord, name string) bool {
+	for _, record := range records {
+		if record.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func nonEmptyLinks(values []string) []string {
+	var result []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" && !strings.EqualFold(value, "N/A") {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func linksIdentifyArtifact(values []string, artifact model.Artifact) bool {
+	want := map[string]bool{}
+	for _, value := range []string{artifact.URL, artifact.APIURL} {
+		if normalized := model.NormalizeURL(value); normalized != "" {
+			want[normalized] = true
+		}
+	}
+	for _, value := range values {
+		if want[model.NormalizeURL(value)] {
+			return true
+		}
+	}
+	return false
+}

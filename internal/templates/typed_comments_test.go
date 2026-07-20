@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/assignment"
+	"github.com/higress-group/issue-spec/internal/durable"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
@@ -48,6 +49,80 @@ func TestSpecCommentRendersCanonicalBodyAcceptedByValidator(t *testing.T) {
 	}
 	if strings.Contains(body, IssueSpecProjectURL) {
 		t.Fatalf("typed comment should not include issue-spec promotion footer:\n%s", body)
+	}
+}
+
+func TestSpecCommentRendersVisibleStrictDurableIntent(t *testing.T) {
+	body, err := SpecComment(SpecCommentOptions{
+		Common: CommonOptions{ID: "SPEC-003", Status: "confirmed"},
+		Input: SpecInput{
+			Requirement: SpecRequirementInput{Title: "route ownership", Text: "Every public route MUST name an owner."},
+			Scenarios:   []SpecScenarioInput{{Title: "owned route", When: "a route is public", Then: "it names an owner"}},
+			Durable:     &durable.Intent{Version: 1, Kind: durable.IntentUnchanged},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"## Durable Intent", "```json", `"version": 1`, `"intent": "UNCHANGED"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("generated SPEC missing %q:\n%s", want, body)
+		}
+	}
+	intent, found, err := model.ParseSpecDurableIntent("SPEC-003", body, "")
+	if err != nil || !found || intent.Kind != durable.IntentUnchanged {
+		t.Fatalf("parsed intent=%+v found=%t err=%v", intent, found, err)
+	}
+	if diags := model.ValidateCanonicalBodyAtRoot("SPEC", "SPEC-003", "", body, ""); len(diags) != 0 {
+		t.Fatalf("durable SPEC is not canonical: %+v", diags)
+	}
+}
+
+func TestSpecCommentRendersCurrentSpecAndInlineOperations(t *testing.T) {
+	body, err := SpecComment(SpecCommentOptions{
+		Common: CommonOptions{ID: "SPEC-003", Status: "confirmed"},
+		Input: SpecInput{
+			Requirement: SpecRequirementInput{Title: "route ownership", Text: "Every public route MUST name an owner."},
+			Scenarios:   []SpecScenarioInput{{Title: "owned route", When: "a route is public", Then: "it names an owner"}},
+			Durable: &durable.Intent{Version: 1, Kind: durable.IntentOperations, Operations: []durable.Operation{
+				{ID: "SPEC-003-OP-04", Kind: durable.OperationRenamed, Capability: "route-policy", Path: "issue-spec/specs/route-policy/spec.md",
+					CurrentRequirement: "old audit", NewRequirement: "renamed audit"},
+				{ID: "SPEC-003-OP-03", Kind: durable.OperationRemoved, Capability: "route-policy", Path: "issue-spec/specs/route-policy/spec.md",
+					CurrentRequirement: "obsolete audit"},
+				{ID: "SPEC-003-OP-02", Kind: durable.OperationAdded, Capability: "route-policy", Path: "issue-spec/specs/route-policy/spec.md",
+					NewRequirement: "inline audit", Projection: &durable.Projection{Source: durable.ProjectionInline,
+						Requirement: &durable.RequirementInput{Title: "inline audit", Text: "The audit MUST retain owner identity."},
+						Scenarios:   []durable.ScenarioInput{{Title: "audit", When: "ownership is checked", Then: "the owner is retained"}}}},
+				{ID: "SPEC-003-OP-01", Kind: durable.OperationModified, Capability: "route-policy", Path: "issue-spec/specs/route-policy/spec.md",
+					CurrentRequirement: "route ownership", Projection: &durable.Projection{Source: durable.ProjectionCurrentSpec}},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, second := strings.Index(body, "SPEC-003-OP-01"), strings.Index(body, "SPEC-003-OP-02")
+	if first < 0 || second <= first || !strings.Contains(body, `"source": "inline"`) || !strings.Contains(body, `"source": "current-spec"`) ||
+		!strings.Contains(body, `"kind": "REMOVED"`) || !strings.Contains(body, `"kind": "RENAMED"`) {
+		t.Fatalf("durable operations were not canonicalized:\n%s", body)
+	}
+}
+
+func TestSpecCommentRejectsInvalidDurableIntent(t *testing.T) {
+	_, err := SpecComment(SpecCommentOptions{
+		Common: CommonOptions{ID: "SPEC-003"},
+		Input: SpecInput{
+			Requirement: SpecRequirementInput{Title: "route ownership", Text: "Routes MUST have owners."},
+			Scenarios:   []SpecScenarioInput{{Title: "owner", When: "a route exists", Then: "it has an owner"}},
+			Durable: &durable.Intent{Version: 1, Kind: durable.IntentOperations, Operations: []durable.Operation{{
+				ID: "SPEC-003-OP-01", Kind: durable.OperationModified, Capability: "route-policy",
+				Path: "../route-policy/spec.md", CurrentRequirement: "route ownership",
+				Projection: &durable.Projection{Source: durable.ProjectionCurrentSpec},
+			}}},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "repository-relative") {
+		t.Fatalf("invalid durable intent error = %v", err)
 	}
 }
 

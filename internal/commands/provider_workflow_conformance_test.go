@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
@@ -193,7 +194,15 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 	applyCommand := readTestFile(t, root+"/.claude/commands/issue-spec/apply.md")
 	reviewCommand := readTestFile(t, root+"/.claude/commands/issue-spec/review.md")
 	verifyCommand := readTestFile(t, root+"/.claude/commands/issue-spec/verify.md")
-	archiveCommand := readTestFile(t, root+"/.claude/commands/issue-spec/archive.md")
+	for _, relative := range []string{
+		".agents/skills/issue-spec-archive/SKILL.md",
+		".claude/skills/issue-spec-archive/SKILL.md",
+		".claude/commands/issue-spec/archive.md",
+	} {
+		if _, err := os.Stat(filepath.Join(root, relative)); !os.IsNotExist(err) {
+			t.Fatalf("generated removed Archive asset %q: %v", relative, err)
+		}
+	}
 	checks := []struct {
 		name    string
 		content string
@@ -212,8 +221,6 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 		{"verify", verifyCommand, []string{"backend-appropriate rationale and REVIEW completion evidence",
 			"Status forecast and final verify use the same authoritative validator",
 			"The validator owns exact identity, revision, freshness, and legacy compatibility"}},
-		{"archive", archiveCommand, []string{"Archive may read an existing required REVIEW completion when implementation merge policy requires it",
-			"Archive never creates, updates, or refreshes REVIEW or adds archive-specific review state"}},
 	}
 	for _, check := range checks {
 		for _, want := range check.wants {
@@ -225,11 +232,28 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 			t.Fatalf("generated %s workflow retained GitHub-only storage footer:\n%s", check.name, check.content)
 		}
 	}
+	activeAssets := map[string]string{
+		"workflow": workflowSkill,
+		"review":   reviewCommand,
+		"apply":    applyCommand,
+		"verify":   verifyCommand,
+	}
+	for name, content := range activeAssets {
+		for _, forbidden := range []string{
+			"Issue Spec Archive",
+			"issue-spec-archive",
+			"issue-spec archive durable-spec",
+			"separate durable-spec archive PR",
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("generated %s workflow retains removed Archive route %q:\n%s", name, forbidden, content)
+			}
+		}
+	}
 	for name, content := range map[string]string{
-		"review":  reviewCommand,
-		"apply":   applyCommand,
-		"verify":  verifyCommand,
-		"archive": archiveCommand,
+		"review": reviewCommand,
+		"apply":  applyCommand,
+		"verify": verifyCommand,
 	} {
 		for _, forbidden := range []string{
 			"provider facts",
@@ -290,16 +314,118 @@ func TestProviderBridgeContractRequiresStableCurrentHeadSnapshot(t *testing.T) {
 	}
 }
 
-func TestCheckedInCodexWorkflowSkillsMatchGenerator(t *testing.T) {
-	generatedRoot := t.TempDir()
-	if _, err := writeWorkflowArtifacts(generatedRoot, "higress-group/issue-spec", "codex", "skills"); err != nil {
+func TestOpenSpecStyleVerifierPacketSealsGuidanceSelectorsAndReceipt(t *testing.T) {
+	root := t.TempDir()
+	writeWorkflowTestFile(t, filepath.Join(root, "openspec", "config.yaml"), `
+schema: route-workflow
+context: |
+  Project: OpenSpec-style proxy
+  Verify only changed route ownership.
+rules:
+  verify:
+    instruction: Explain the business decision and run ./scripts/route-owner.sh.
+  proposal:
+    instruction: This must not enter verifier packets.
+external_code:
+  provider_key: code.example
+  evidence:
+    required_checks: [route-owner-policy]
+`)
+	writeWorkflowTestFile(t, filepath.Join(root, "openspec", "schemas", "route-workflow", "schema.yaml"), `
+artifacts:
+  verify:
+    type: verify
+    template: verify.md
+    instructions: Verify the affected route scenarios and report a role-owned conclusion.
+`)
+	writeWorkflowTestFile(t, filepath.Join(root, "openspec", "schemas", "route-workflow", "templates", "verify.md"), "{{.DefaultLogicalBody}}\n")
+
+	plan, err := workflow.ResolveWithOptions(workflow.ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+	if err != nil {
+		t.Fatalf("resolve OpenSpec-style fixture: %v diagnostics=%+v", err, plan.Diagnostics)
+	}
+	packet, err := verifierPacketFromWorkflow(plan, assignment.RequiredSelectors{Tests: []assignment.TestSelector{
+		{ID: "route-owner", Command: "./scripts/route-owner.sh"},
+	}})
+	if err != nil {
 		t.Fatal(err)
 	}
+	if len(packet.RequiredTests) != 1 || len(packet.RequiredChecks) != 1 {
+		t.Fatalf("verifier packet selectors = tests=%+v checks=%+v", packet.RequiredTests, packet.RequiredChecks)
+	}
+	if packet.Guidance == nil || strings.Contains(string(packet.Guidance.RulesVerify), "proposal") ||
+		!strings.Contains(string(packet.Guidance.RulesVerify), "business decision") {
+		t.Fatalf("verifier guidance is not bounded to rules.verify: %+v", packet.Guidance)
+	}
+
+	const subject = "head-308"
+	verification, err := (assignment.VerificationPayload{SubjectRevision: subject}).WithVerifierPacket(packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealedAssignment := assignment.Assignment{
+		SchemaVersion:       assignment.AssignmentSchemaVersion,
+		ID:                  "route-verifier-1",
+		Role:                assignment.RoleVerification,
+		Repository:          "acme/proxy",
+		Issue:               313,
+		ProcessID:           "PROCESS-003",
+		SubjectRevision:     subject,
+		Scenarios:           []assignment.ScenarioRef{{SpecID: "SPEC-002", Scenario: "custom workflow defines business verification"}},
+		Policy:              assignment.Policy{RequireExactRevision: true, MaxResultItems: 64},
+		ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		Verification:        &verification,
+	}
+	canonical, err := assignment.CanonicalAssignmentJSON(sealedAssignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := assignment.ParseAssignmentJSON(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := assignment.AssignmentDigest(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := assignment.SealReceipt(assignment.Receipt{
+		SchemaVersion: assignment.ReceiptSchemaVersion,
+		ID:            "route-verifier-receipt-1", AssignmentID: parsed.ID, AssignmentDigest: digest, AssignmentGeneration: 1,
+		Role: assignment.RoleVerification, ResultSchemaVersion: assignment.ReceiptSchemaVersion, SubjectRevision: subject,
+		Tests:        []assignment.TestResult{{ID: "route-owner", Command: "./scripts/route-owner.sh", Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}},
+		Provenance:   assignment.Provenance{Route: assignment.RouteRoleOwned, Assurance: assignment.AssuranceSelfReported, Writer: "Verifier", Subject: "Verifier", Source: "fixture"},
+		Verification: &assignment.VerificationResult{Summary: "Route owner policy satisfied for affected scenarios.", CheckSelectors: []assignment.CheckSelector{{Provider: "code.example", Name: "route-owner-policy"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := assignment.ValidateVerificationReceiptCoverage(*parsed.Verification, receipt); err != nil {
+		t.Fatalf("validate sealed OpenSpec-style receipt: %v", err)
+	}
+}
+
+func TestCheckedInCodexWorkflowSkillsMatchGenerator(t *testing.T) {
+	generatedRoot := t.TempDir()
 	projectRoot, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, skill := range []string{"apply", "archive", "github", "propose", "review", "verify", "workflow"} {
+	config, err := os.ReadFile(filepath.Join(projectRoot, "issue-spec", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	generatedConfigDir := filepath.Join(generatedRoot, "issue-spec")
+	if err := os.MkdirAll(generatedConfigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generatedConfigDir, "config.yaml"), config, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(generatedRoot)
+	if _, err := writeWorkflowArtifacts(".", "higress-group/issue-spec", "codex", "skills"); err != nil {
+		t.Fatal(err)
+	}
+	for _, skill := range []string{"apply", "github", "propose", "review", "verify", "workflow"} {
 		relative := filepath.Join(".agents", "skills", "issue-spec-"+skill, "SKILL.md")
 		generated, err := os.ReadFile(filepath.Join(generatedRoot, relative))
 		if err != nil {
@@ -311,6 +437,12 @@ func TestCheckedInCodexWorkflowSkillsMatchGenerator(t *testing.T) {
 		}
 		if !bytes.Equal(generated, checkedIn) {
 			t.Fatalf("checked-in Codex workflow skill is stale: %s", relative)
+		}
+	}
+	archiveRelative := filepath.Join(".agents", "skills", "issue-spec-archive", "SKILL.md")
+	for name, root := range map[string]string{"generated": generatedRoot, "checked-in": projectRoot} {
+		if _, err := os.Stat(filepath.Join(root, archiveRelative)); !os.IsNotExist(err) {
+			t.Fatalf("%s removed Archive skill exists: %v", name, err)
 		}
 	}
 }

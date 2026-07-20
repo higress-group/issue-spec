@@ -1,8 +1,12 @@
 package model
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/higress-group/issue-spec/internal/durable"
 )
 
 const canonicalSpecLogical = `## Requirement: canonical SPEC comments
@@ -128,4 +132,56 @@ func TestValidateArtifactUsesRemoteBody(t *testing.T) {
 	if diags := ValidateArtifact(art); len(diags) == 0 {
 		t.Fatal("expected ValidateArtifact to detect malformed SPEC from remote body")
 	}
+}
+
+func TestValidateCanonicalBodyParsesStrictDurableIntentWhenPresent(t *testing.T) {
+	logical := canonicalSpecLogical + "\n\n## Durable Intent\n\n```json\n" +
+		`{"version":1,"intent":"OPERATIONS","operations":[{"id":"SPEC-001-OP-01","kind":"MODIFIED","capability":"canonical-comments","path":"issue-spec/specs/canonical-comments/spec.md","current_requirement":"canonical SPEC comments","projection":{"source":"current-spec"}}]}` +
+		"\n````\n"
+	if diags := ValidateCanonicalBody("SPEC", "SPEC-001", "", logical); len(diags) != 0 {
+		t.Fatalf("core canonical validation interpreted durable policy: %+v", diags)
+	}
+	if diags := ValidateCanonicalBodyAtRoot("SPEC", "SPEC-001", "", logical, ""); !diagnosticsContainElement(diags, "durable-intent") {
+		t.Fatalf("malformed Durable Intent was accepted: %+v", diags)
+	}
+	logical = strings.Replace(logical, "````", "```", 1)
+	intent, found, err := ParseSpecDurableIntent("SPEC-001", logical, "")
+	if err != nil || !found || intent.Kind != durable.IntentOperations || len(intent.Operations) != 1 {
+		t.Fatalf("intent=%+v found=%t err=%v", intent, found, err)
+	}
+	if diags := ValidateCanonicalBodyAtRoot("SPEC", "SPEC-001", "", logical, ""); len(diags) != 0 {
+		t.Fatalf("valid Durable Intent diagnostics = %+v", diags)
+	}
+	if diags := ValidateCanonicalBody("SPEC", "SPEC-001", "", canonicalSpecLogical); len(diags) != 0 {
+		t.Fatalf("missing optional Durable Intent became universally invalid: %+v", diags)
+	}
+}
+
+func TestValidateCanonicalBodyAtRootRequiresLegacyTargetToExist(t *testing.T) {
+	root := t.TempDir()
+	logical := canonicalSpecLogical + "\n\n## Durable Intent\n\n```json\n" +
+		`{"version":1,"intent":"OPERATIONS","operations":[{"id":"SPEC-001-OP-01","kind":"REMOVED","capability":"canonical-comments","path":"openspec/specs/canonical-comments/spec.md","current_requirement":"legacy comment"}]}` +
+		"\n```\n"
+	if diags := ValidateCanonicalBodyAtRoot("SPEC", "SPEC-001", "", logical, root); !diagnosticsContainElement(diags, "durable-intent") {
+		t.Fatalf("missing legacy target diagnostics = %+v", diags)
+	}
+	target := filepath.Join(root, "openspec", "specs", "canonical-comments", "spec.md")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("# Legacy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if diags := ValidateCanonicalBodyAtRoot("SPEC", "SPEC-001", "", logical, root); len(diags) != 0 {
+		t.Fatalf("existing legacy target diagnostics = %+v", diags)
+	}
+}
+
+func diagnosticsContainElement(diagnostics []CanonicalDiagnostic, element string) bool {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Element == element {
+			return true
+		}
+	}
+	return false
 }
