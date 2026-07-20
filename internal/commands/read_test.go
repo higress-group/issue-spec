@@ -72,6 +72,116 @@ func TestReadIssueLabelsFencesAndCoversComments(t *testing.T) {
 	}
 }
 
+func TestReadIssueSingleCommentByFlagAndURLAnchor(t *testing.T) {
+	newAppForComments := func() (*bytes.Buffer, *app) {
+		out := &bytes.Buffer{}
+		application := newApp(strings.NewReader(""), out, &bytes.Buffer{})
+		application.selectGitHubBackend = ghSelection
+		application.gitHubBackendToken = ghTokenFunc("")
+		application.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+			f.getIssue = func(context.Context, string, int) (github.Issue, error) {
+				return github.Issue{Number: 19, HTMLURL: "http://11.164.3.16:18080/o/r/issues/19", State: "open", Title: "issue title", Body: "full issue body text"}, nil
+			}
+			f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+				return []github.Comment{
+					{ID: 111, HTMLURL: "http://11.164.3.16:18080/o/r/issues/19#issuecomment-111", Body: "first comment", User: &github.User{Login: "alice"}},
+					{ID: 222, HTMLURL: "http://11.164.3.16:18080/o/r/issues/19#issuecomment-222", Body: "second comment", User: &github.User{Login: "bob"}},
+				}, nil
+			}
+		})
+		return out, application
+	}
+
+	assertSingle := func(t *testing.T, s string) {
+		t.Helper()
+		if !strings.Contains(s, "issue: #19") {
+			t.Fatalf("missing issue identity header:\n%s", s)
+		}
+		if !strings.Contains(s, "comment: 222") || !strings.Contains(s, "second comment") {
+			t.Fatalf("targeted comment not rendered:\n%s", s)
+		}
+		if strings.Contains(s, "comment: 111") || strings.Contains(s, "first comment") {
+			t.Fatalf("non-targeted comment must be omitted:\n%s", s)
+		}
+		if strings.Contains(s, "full issue body text") {
+			t.Fatalf("single-comment read must skip the issue body:\n%s", s)
+		}
+	}
+
+	// By explicit --comment flag.
+	out, application := newAppForComments()
+	if code := application.runRead(context.Background(), []string{"issue", "--repo", "o/r", "--issue", "19", "--comment", "222"}); code != 0 {
+		t.Fatalf("read issue --comment exit=%d out=%q", code, out.String())
+	}
+	assertSingle(t, out.String())
+
+	// By #issuecomment-<id> anchor on the issue URL (no --comment flag).
+	out, application = newAppForComments()
+	if code := application.runRead(context.Background(), []string{"issue", "--repo", "o/r", "--issue", "http://11.164.3.16:18080/o/r/issues/19#issuecomment-222"}); code != 0 {
+		t.Fatalf("read issue URL anchor exit=%d out=%q", code, out.String())
+	}
+	assertSingle(t, out.String())
+}
+
+func TestReadIssueSingleCommentNotFound(t *testing.T) {
+	var out bytes.Buffer
+	errOut := &bytes.Buffer{}
+	app := newApp(strings.NewReader(""), &out, errOut)
+	app.selectGitHubBackend = ghSelection
+	app.gitHubBackendToken = ghTokenFunc("")
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.getIssue = func(context.Context, string, int) (github.Issue, error) {
+			return github.Issue{Number: 19, HTMLURL: "u", State: "open", Title: "t", Body: "b"}, nil
+		}
+		f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+			return []github.Comment{{ID: 111, HTMLURL: "u1", Body: "only comment", User: &github.User{Login: "alice"}}}, nil
+		}
+	})
+
+	code := app.runRead(context.Background(), []string{"issue", "--repo", "o/r", "--issue", "19", "--comment", "999"})
+	if code != 1 {
+		t.Fatalf("missing comment should exit 1, got %d (out=%q)", code, out.String())
+	}
+	if !strings.Contains(errOut.String(), "comment 999 not found") {
+		t.Fatalf("expected not-found diagnostic, got %q", errOut.String())
+	}
+}
+
+func TestResolveTargetComment(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		flag       string
+		issueValue string
+		want       int64
+		wantErr    bool
+	}{
+		{name: "none", flag: "", issueValue: "19", want: 0},
+		{name: "flag only", flag: "222", issueValue: "19", want: 222},
+		{name: "anchor only", flag: "", issueValue: "http://h/o/r/issues/19#issuecomment-222", want: 222},
+		{name: "flag and matching anchor", flag: "222", issueValue: "http://h/o/r/issues/19#issuecomment-222", want: 222},
+		{name: "flag and conflicting anchor", flag: "222", issueValue: "http://h/o/r/issues/19#issuecomment-333", wantErr: true},
+		{name: "invalid flag", flag: "0", issueValue: "19", wantErr: true},
+		{name: "non-numeric flag", flag: "abc", issueValue: "19", wantErr: true},
+		{name: "unrelated fragment ignored", flag: "", issueValue: "http://h/o/r/issues/19#top", want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveTargetComment(tc.flag, tc.issueValue)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got id=%d", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("id=%d want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReadIssueTypedOnlyOmitsHumanComments(t *testing.T) {
 	var out bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &bytes.Buffer{})
