@@ -38,6 +38,12 @@ type Policy struct {
 	// internally routed ranges that netip.Addr.IsPrivate does not classify as
 	// RFC 1918 or RFC 4193 space.
 	AllowedPrivate []netip.Prefix
+	// AllowAnyPrivate treats every private (RFC 1918 / RFC 4193) destination as
+	// allowed without an AllowedPrivate entry, for trusted internal deployments
+	// that do not want to maintain a CIDR allowlist. It only relaxes the private
+	// allowlist requirement: loopback, link-local, multicast, and cloud metadata
+	// addresses remain denied.
+	AllowAnyPrivate bool
 }
 
 type Preflight struct {
@@ -90,7 +96,7 @@ func (p Policy) CheckAddress(address netip.Addr) error {
 		return ErrAddressDenied
 	}
 	if address.IsPrivate() {
-		if p.isExplicitlyAllowed(address) {
+		if p.destinationAllowed(address) {
 			return nil
 		}
 		return ErrAddressDenied
@@ -106,10 +112,17 @@ func (p Policy) checkAddressForScheme(scheme string, address netip.Addr) error {
 	if err := p.CheckAddress(address); err != nil {
 		return err
 	}
-	if scheme == "http" && p.Production && !p.isExplicitlyAllowed(address) {
+	if scheme == "http" && p.Production && !p.destinationAllowed(address) {
 		return ErrAddressDenied
 	}
 	return nil
+}
+
+func (p Policy) destinationAllowed(address netip.Addr) bool {
+	if p.isExplicitlyAllowed(address) {
+		return true
+	}
+	return p.AllowAnyPrivate && address.Unmap().IsPrivate()
 }
 
 func (p Policy) isExplicitlyAllowed(address netip.Addr) bool {
