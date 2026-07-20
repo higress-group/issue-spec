@@ -10,7 +10,7 @@ tags: ["workflow", "issue-spec"]
 Use when the user asks for /issue-spec:propose, proposal, Design, SPEC, QUESTION, or TASK authoring. Use issue-spec-workflow for shared reads, provider routing, and recovery.
 
 1. Validate workflow config, search related issues, and open only selected discussions. If the issue is already in a later phase, continue that phase rather than duplicating it.
-2. Create phase issues with concrete body files, beginning with issue-spec issue create proposal --repo higress-group/issue-spec --body-file <file>. Use the standardized Proposal:, Design:, and Implement: title family. Use --title only for an explicitly requested custom title; do not perform style-only title rewrites.
+2. Create phase issues with concrete body files, beginning with issue-spec issue create proposal --repo higress-group/issue-spec --body-file <file>. Follow the workflow `rules.language` and `rules.language_instructions` for every Issue title. When those rules require a localized or non-English title, pass an explicit `--title` for Proposal, Design, and Implement; do not rely on the derived title because it retains an English stage prefix. Otherwise use the standardized Proposal:, Design:, and Implement: title family. Do not perform style-only title rewrites after creation.
 3. Generate canonical SPEC comments with issue-spec comment generate --type SPEC. Requirements must be testable and include WHEN/THEN scenarios. --allow-noncanonical is a migration bypass, not normal authoring.
 4. Resolve blocking QUESTION comments before Design/TASK work or record the accepted assumption.
 5. Write the Design with implementation locations, decisions, rejected alternatives, risks, tests, rollout, and rollback. Keep it authoritative and self-contained.
