@@ -347,26 +347,39 @@ func TestAddPRLinkIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestVerifyTraceabilityRequiresBacklinks(t *testing.T) {
+func TestVerifyTraceabilityUsesSingleSidedPlanningChain(t *testing.T) {
 	specBody, _ := EnsureTypedBody("SPEC", "SPEC-001", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y", BodyOptions{})
-	taskBody, _ := EnsureTypedBody("TASK", "TASK-001", "## Task\n\n- [ ] 1. Test", BodyOptions{})
+	taskBody, _ := EnsureTypedBody("TASK", "TASK-001", "## Task: work\n\n### Execution Planning\n\n- Coupling class: low\n\n### Covers\n\n- SPEC-001", BodyOptions{})
 	taskBody, _, _ = AddRelatedCommentLink(taskBody, "https://github.com/o/r/issues/1#issuecomment-1")
+	processBody, _ := EnsureTypedBody("PROCESS", "PROCESS-001", "## Process: work\n\n### Parent TASK\n\n- TASK-001\n\n### Assignment\n\n```json\n{\"scenario_selectors\":[{\"spec_id\":\"SPEC-001\",\"scenario\":\"ok\"}]}\n```\n\n### Covers\n\n- SPEC-001", BodyOptions{})
+	// Legacy backlinks and unrelated navigation links remain readable, but are
+	// deliberately outside planning readiness authority.
+	specBody, _, _ = AddRelatedCommentLink(specBody, "https://example.invalid/unrelated")
 
 	report := VerifyTraceability([]Artifact{
 		{URL: "https://github.com/o/r/issues/1#issuecomment-1", Comment: ParseTypedComment(specBody)},
 		{URL: "https://github.com/o/r/issues/2#issuecomment-2", Comment: ParseTypedComment(taskBody)},
+		{URL: "https://github.com/o/r/issues/3#issuecomment-3", Comment: ParseTypedComment(processBody)},
 	})
-	if report.OK {
-		t.Fatal("expected missing SPEC backlink to fail")
+	if !report.OK {
+		t.Fatalf("single-sided planning chain should be sufficient without backlinks: %v", report.Errors)
 	}
 
-	specBody, _, _ = AddRelatedCommentLink(specBody, "https://github.com/o/r/issues/2#issuecomment-2")
+	outsideBody := strings.Replace(processBody, "- SPEC-001", "- SPEC-999", 1)
 	report = VerifyTraceability([]Artifact{
 		{URL: "https://github.com/o/r/issues/1#issuecomment-1", Comment: ParseTypedComment(specBody)},
 		{URL: "https://github.com/o/r/issues/2#issuecomment-2", Comment: ParseTypedComment(taskBody)},
+		{URL: "https://github.com/o/r/issues/3#issuecomment-3", Comment: ParseTypedComment(outsideBody)},
 	})
-	if !report.OK {
-		t.Fatalf("expected traceability OK, got %v", report.Errors)
+	if report.OK || !strings.Contains(strings.Join(report.Errors, "; "), "outside Parent TASK") {
+		t.Fatalf("out-of-task selector should fail closed, got %v", report.Errors)
+	}
+}
+
+func TestTypedSectionListReadsOnlyExactVisibleSection(t *testing.T) {
+	body := "### Covers\n\n- SPEC-001\n- N/A\n\n### Dependencies\n\n- PROCESS-999\n"
+	if got := TypedSectionList(body, "Covers"); len(got) != 1 || got[0] != "SPEC-001" {
+		t.Fatalf("TypedSectionList = %v", got)
 	}
 }
 

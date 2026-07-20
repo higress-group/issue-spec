@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/auth"
+	"github.com/higress-group/issue-spec/internal/durable"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
@@ -40,7 +41,7 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 	proposalFlag := fs.String("proposal", "", "proposal issue number or URL")
 	designFlag := fs.String("design", "", "design issue number or URL")
 	implementFlag := fs.String("implement", "", "implement issue number or URL")
-	gateFlag := fs.String("gate", "", "readiness gate: proposal, design, implement, final, or archive (default inferred from supplied issues)")
+	gateFlag := fs.String("gate", "", "readiness gate: proposal, design, implement, or final (default inferred from supplied issues)")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	summaryOut := fs.Bool("summary", false, "write compact versioned JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
@@ -84,9 +85,17 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 		a.errorf("collect artifacts: %v\n", err)
 		return 1
 	}
-	workflowPlan, workflowErr := workflow.Resolve(".")
+	var workflowPlan workflow.Plan
+	var workflowErr error
+	if target != gates.TargetFinal {
+		workflowPlan, workflowErr = workflow.Resolve(".")
+	}
 	profile, _, profileErr := auth.ResolveProfile(a.profileName, *host)
 	collection := statusGateCollection{Remote: statusForecastRemoteFacts(target)}
+	if target == gates.TargetFinal {
+		collection.FinalEvidence = buildMinimalFinalEvidence(artifactsForImplementGate(artifacts, implementIssue), nil,
+			gates.FinalSubject{Required: true})
+	}
 	if profileErr == nil {
 		collection = a.collectStatusGateFacts(ctx, client, profile, token.Value, repo, implementIssue, target, artifacts)
 	}
@@ -203,6 +212,7 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 	}
 	counts := artifactStatusCounts(artifacts)
 	gateArtifacts := artifactsForImplementGate(artifacts, implement)
+	useMinimalFinal := target == gates.TargetFinal && collection.FinalEvidence.Observed
 	verify := map[string]string{}
 	blockingQuestions := 0
 	openReviews := 0
@@ -213,11 +223,23 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		if tc.Type == "" {
 			continue
 		}
-		// Cross-issue PROCESS comments are not gate carriers, but their
-		// canonical diagnostics remain part of the complete read model.
-		if (tc.Type == "PROCESS" && ((implement > 0 && artifact.Issue != implement) || activeProcesses[tc.ID])) ||
-			(tc.Type != "PROCESS" && tc.Status != "superseded") {
-			malformed = append(malformed, model.ValidateArtifact(artifact)...)
+		if !useMinimalFinal {
+			// Cross-issue PROCESS comments are not gate carriers, but their
+			// canonical diagnostics remain part of the complete compatibility read model.
+			if (tc.Type == "PROCESS" && ((implement > 0 && artifact.Issue != implement) || activeProcesses[tc.ID])) ||
+				(tc.Type != "PROCESS" && tc.Status != "superseded") {
+				malformed = append(malformed, model.ValidateArtifactAtRoot(artifact, ".")...)
+				if workflowPlan.DurableSpecsMode() == durable.ModeRepository && tc.Type == "SPEC" && strings.EqualFold(tc.Status, "confirmed") &&
+					(proposal <= 0 || artifact.Issue == proposal) {
+					if _, found, _ := model.ParseSpecDurableIntent(tc.ID, tc.Body, "."); !found {
+						malformed = append(malformed, model.CanonicalDiagnostic{
+							Severity: "error", Type: "SPEC", ID: tc.ID, URL: artifact.URL,
+							Element: "durable-intent-required",
+							Message: "confirmed SPEC requires exactly one Durable Intent under durable_specs.mode repository",
+						})
+					}
+				}
+			}
 		}
 		if tc.Type == "QUESTION" && tc.Status == "blocked" {
 			blockingQuestions++
@@ -229,7 +251,10 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 			verify[tc.ID] = tc.Status
 		}
 	}
-	report := model.VerifyTraceability(artifacts)
+	report := model.VerifyReport{OK: true}
+	if !useMinimalFinal {
+		report = model.VerifyTraceability(artifacts)
+	}
 	var diagnostics []metadataDiagnostic
 	workflowFacts := gates.WorkflowFacts{Required: true, Known: true, Valid: workflowErr == nil && !workflowPlan.HasErrors()}
 	if workflowErr != nil {
@@ -241,23 +266,22 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		}
 	}
 	mode := gates.ModeForecast
-	if target == gates.TargetFinal || target == gates.TargetArchive {
-		mode = gates.ModeAuthoritative
-	}
 	processEvidence := collection.ProcessEvidence
-	if (target == gates.TargetFinal || target == gates.TargetArchive) && len(processEvidence) == 0 &&
+	if target == gates.TargetFinal && len(processEvidence) == 0 &&
 		(hasActiveChangeBearingProcess(gateArtifacts) || hasExplicitProcessWorkspace(gateArtifacts)) {
 		processEvidence = buildProcessEvidenceInputs(gateArtifacts, "", nil, reviewSyncReport{}, nil)
 	}
 	snapshot := gates.Snapshot{
-		Target:          target,
-		Mode:            mode,
-		Artifacts:       gateArtifacts,
-		Canonical:       gates.CanonicalFacts{Observed: true, Diagnostics: malformed},
-		Traceability:    gates.TraceabilityFacts{Observed: true, Report: report},
-		Workflow:        workflowFacts,
-		Remote:          collection.Remote,
-		ProcessEvidence: processEvidence,
+		Target:                   target,
+		Mode:                     mode,
+		Artifacts:                gateArtifacts,
+		Canonical:                gates.CanonicalFacts{Observed: true, Diagnostics: malformed},
+		Traceability:             gates.TraceabilityFacts{Observed: true, Report: report},
+		Workflow:                 workflowFacts,
+		Remote:                   collection.Remote,
+		ProcessEvidence:          processEvidence,
+		FinalEvidence:            collection.FinalEvidence,
+		LegacyFinalCompatibility: target == gates.TargetFinal && !useMinimalFinal,
 	}
 	gateReport, gateErr := gates.Evaluate(snapshot)
 	if gateErr != nil {
@@ -329,25 +353,22 @@ func resolveStatusGate(raw string, design, implement int) (gates.Target, error) 
 			return "", fmt.Errorf("design gate requires --design")
 		}
 		return target, nil
-	case gates.TargetImplement, gates.TargetFinal, gates.TargetArchive:
+	case gates.TargetImplement, gates.TargetFinal:
 		if design == 0 || implement == 0 {
 			return "", fmt.Errorf("%s gate requires --design and --implement", target)
 		}
 		return target, nil
 	default:
-		return "", fmt.Errorf("unsupported value %q (want proposal, design, implement, final, or archive)", raw)
+		return "", fmt.Errorf("unsupported value %q (want proposal, design, implement, or final)", raw)
 	}
 }
 
 func statusForecastRemoteFacts(target gates.Target) gates.RemoteFacts {
 	facts := gates.RemoteFacts{Workspace: gates.WorkspaceFacts{Observed: true}}
-	if target == gates.TargetFinal || target == gates.TargetArchive {
+	if target == gates.TargetFinal {
 		facts.PRChecks = gates.Fact{Required: true, Expected: "all required checks passed"}
 		facts.ReviewFindings = gates.Fact{Required: true, Expected: "no blocking findings"}
 		facts.Workspace.ExpectedRevision = gates.Fact{Required: true, Expected: "exact PR or external subject revision"}
-	}
-	if target == gates.TargetArchive {
-		facts.DurableSpec = gates.Fact{Required: true, Expected: "durable spec valid"}
 	}
 	return facts
 }
@@ -356,15 +377,19 @@ type statusGateCollection struct {
 	Remote          gates.RemoteFacts
 	ProcessEvidence []gates.ProcessEvidenceInput
 	Subject         *gates.CompactSubject
+	FinalEvidence   gates.FinalEvidenceSnapshot
 }
 
 func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend, profile auth.Profile, token, repo string,
 	implementIssue int, target gates.Target, artifacts []model.Artifact) statusGateCollection {
 	collection := statusGateCollection{Remote: statusForecastRemoteFacts(target)}
-	if target != gates.TargetFinal && target != gates.TargetArchive {
+	if target != gates.TargetFinal {
 		return collection
 	}
 	artifacts = artifactsForImplementGate(artifacts, implementIssue)
+	if target == gates.TargetFinal {
+		collection.FinalEvidence = buildMinimalFinalEvidence(artifacts, nil, gates.FinalSubject{Required: true})
+	}
 	if profile.Kind == auth.ProfileKindHosted {
 		collection.Remote.PRChecks = gates.Fact{}
 		collection.Remote.ReviewFindings = gates.Fact{}
@@ -390,13 +415,27 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 			Expected: "trusted exact-revision provider evidence"}
 		if gateErr != nil {
 			collection.Remote.ProviderEvidence.Current = gateErr.Error()
+			if target == gates.TargetFinal {
+				collection.FinalEvidence = buildMinimalFinalEvidence(artifacts, nil, gates.FinalSubject{Required: true,
+					Known: strings.TrimSpace(gate.Target.SubjectRevision) != "", Trusted: false, Kind: "code_change",
+					URL: gate.Target.CanonicalURL, Revision: strings.TrimSpace(gate.Target.SubjectRevision),
+					Source: "native-authoritative-ledger:code-subject"})
+			}
 			return collection
 		}
+		collection.Remote.ReviewFindings = gates.Fact{Required: true, Known: true, Passed: true,
+			Current: "blocking=0", Expected: "blocking=0"}
 		collection.Remote.VerifyRevision, _ = collectVerifyRevisionFact(artifacts, gate.Target.SubjectRevision, time.Now().UTC())
 		collection.ProcessEvidence = buildProcessEvidenceInputsWithExternalReview(artifacts, "", nil,
 			reviewSyncReport{}, nil, &gate, time.Now().UTC())
 		collection.ProcessEvidence = consumeAcceptedVerificationEvidence(collection.ProcessEvidence, artifacts,
 			gate.Target.SubjectRevision)
+		if target == gates.TargetFinal {
+			collection.FinalEvidence = buildMinimalFinalEvidence(artifacts, collection.ProcessEvidence, gates.FinalSubject{
+				Required: true, Known: strings.TrimSpace(gate.Target.SubjectRevision) != "", Trusted: true,
+				Kind: "code_change", URL: gate.Target.CanonicalURL, Revision: strings.TrimSpace(gate.Target.SubjectRevision),
+				Source: "native-authoritative-ledger:code-subject"})
+		}
 		return collection
 	}
 
@@ -424,6 +463,11 @@ func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend,
 		Current: fmt.Sprintf("blocking=%d", len(review.BlockingFindings)), Expected: "blocking=0"}
 	collection.ProcessEvidence = buildProcessEvidenceInputs(artifacts, prURL, facts.ReviewComments, review, nil)
 	collection.ProcessEvidence = consumeAcceptedVerificationEvidence(collection.ProcessEvidence, artifacts, pr.Head.SHA)
+	if target == gates.TargetFinal {
+		collection.FinalEvidence = buildMinimalFinalEvidence(artifacts, collection.ProcessEvidence, gates.FinalSubject{
+			Required: true, Known: strings.TrimSpace(pr.Head.SHA) != "", Trusted: true, Kind: "pull_request",
+			URL: prURL, Revision: strings.TrimSpace(pr.Head.SHA), Source: fmt.Sprintf("github-pull-request-head:%d", prNumber)})
+	}
 	return collection
 }
 

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/higress-group/issue-spec/internal/durable"
 )
 
 // CanonicalDiagnostic describes a single canonical-discipline problem found in a
@@ -161,12 +163,29 @@ func SpecBodyErrors(logical string) []string {
 // bodies and already-wrapped bodies behave consistently. SPEC, TASK, and PROCESS
 // have strict blocking rules; REVIEW, VERIFY, and QUESTION return no diagnostics.
 func ValidateCanonicalBody(commentType, id, url, body string) []CanonicalDiagnostic {
+	return validateCanonicalBody(commentType, id, url, body, "", false)
+}
+
+// ValidateCanonicalBodyAtRoot additionally enforces the legacy-existing durable
+// target rule when repositoryRoot is non-empty. Missing Durable Intent remains
+// mode-dependent proposal policy and is intentionally not a universal canonical
+// error.
+func ValidateCanonicalBodyAtRoot(commentType, id, url, body, repositoryRoot string) []CanonicalDiagnostic {
+	return validateCanonicalBody(commentType, id, url, body, repositoryRoot, true)
+}
+
+func validateCanonicalBody(commentType, id, url, body, repositoryRoot string, validateDurable bool) []CanonicalDiagnostic {
 	commentType = strings.ToUpper(strings.TrimSpace(commentType))
 	logical := LogicalBody(body)
 	var elements []specElement
 	switch commentType {
 	case "SPEC":
 		elements = specCanonicalElements(logical)
+		if validateDurable {
+			if _, found, err := durable.ParseSpecIntent(logical, durable.ValidationOptions{RepositoryRoot: repositoryRoot, SpecID: id}); found && err != nil {
+				elements = append(elements, specElement{"durable-intent", err.Error()})
+			}
+		}
 	case "TASK":
 		elements = taskCanonicalElements(logical)
 	case "PROCESS":
@@ -203,11 +222,21 @@ func ValidateCanonicalBody(commentType, id, url, body string) []CanonicalDiagnos
 	return diags
 }
 
+// ParseSpecDurableIntent exposes the strict normalized intent model for status
+// and later durable planning without making prose or changed files authoritative.
+func ParseSpecDurableIntent(id, body, repositoryRoot string) (durable.Intent, bool, error) {
+	return durable.ParseSpecIntent(LogicalBody(body), durable.ValidationOptions{RepositoryRoot: repositoryRoot, SpecID: id})
+}
+
 // ValidateArtifact recomputes canonical validity for a parsed typed comment from
 // its remote body. Every workflow gate (list/status/verify/archive) uses this so
 // a write-time --allow-noncanonical bypass never durably silences diagnostics.
 func ValidateArtifact(a Artifact) []CanonicalDiagnostic {
 	return ValidateCanonicalBody(a.Comment.Type, a.Comment.ID, a.URL, a.Comment.Body)
+}
+
+func ValidateArtifactAtRoot(a Artifact, repositoryRoot string) []CanonicalDiagnostic {
+	return ValidateCanonicalBodyAtRoot(a.Comment.Type, a.Comment.ID, a.URL, a.Comment.Body, repositoryRoot)
 }
 
 // CanonicalDiagnosticStrings formats diagnostics as actionable one-line strings

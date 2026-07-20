@@ -129,6 +129,42 @@ func sameLinkValues(left, right []string) bool {
 	return true
 }
 
+// TypedSectionList returns the non-empty bullet values in one exact level-three
+// section of a typed artifact body. N/A is the canonical empty sentinel. The
+// function deliberately ignores relationship headers: planning authority lives
+// in the visible TASK/PROCESS sections, while legacy Links remain navigation.
+func TypedSectionList(body, heading string) []string {
+	heading = strings.TrimSpace(heading)
+	if heading == "" {
+		return nil
+	}
+	if !strings.HasPrefix(heading, "### ") {
+		heading = "### " + heading
+	}
+	var values []string
+	inSection := false
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "### ") {
+			inSection = strings.EqualFold(trimmed, heading)
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") {
+			inSection = false
+			continue
+		}
+		if !inSection || !strings.HasPrefix(trimmed, "- ") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+		if value == "" || strings.EqualFold(value, "N/A") {
+			continue
+		}
+		values = append(values, value)
+	}
+	return values
+}
+
 func AddRelatedCommentLink(body, url string) (string, bool, error) {
 	url = strings.TrimSpace(url)
 	if url == "" {

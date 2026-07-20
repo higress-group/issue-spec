@@ -691,6 +691,42 @@ func TestCommandNativeEvidenceClientUsesExactReferenceCAS(t *testing.T) {
 	}
 }
 
+func TestCommandNativeEvidenceClientReportsBoundedProblem(t *testing.T) {
+	detail := "Idempotency key reused with different content\n" + strings.Repeat("x", nativeEvidenceProblemDetailLimit)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.Header().Set("X-Request-ID", "sync-conflict")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": "idempotency_mismatch", "detail": detail, "title": "Do not expose this title",
+			"meta": map[string]any{"secret": "do-not-expose"},
+		})
+	}))
+	defer server.Close()
+	api, err := github.NewClientWithOptions(github.ClientOptions{Host: "sync.example", BaseURL: server.URL, Token: "realm-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = (&commandNativeEvidenceClient{api: api}).request(t.Context(), http.MethodPost, "/evidence/snapshots", nil, nil)
+	if err == nil {
+		t.Fatal("request unexpectedly succeeded")
+	}
+	message := err.Error()
+	for _, expected := range []string{"HTTP 409", "request_id sync-conflict", "code idempotency_mismatch", "detail \"Idempotency key reused with different content "} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("error %q missing %q", message, expected)
+		}
+	}
+	for _, unexpected := range []string{"Do not expose this title", "do-not-expose", "\n"} {
+		if strings.Contains(message, unexpected) {
+			t.Fatalf("error unexpectedly contains %q: %q", unexpected, message)
+		}
+	}
+	if !strings.Contains(message, "...") || strings.Contains(message, detail) {
+		t.Fatalf("problem detail was not bounded: %q", message)
+	}
+}
+
 func TestConsumedEvidenceStampAndRevisionBindingAreExactAndIdempotent(t *testing.T) {
 	body := "<!-- issue-spec:type=VERIFY id=VERIFY-100 status=done -->\n### Revision\n\n`head-abc`\n"
 	artifact := model.Artifact{Comment: model.TypedComment{Type: "VERIFY", ID: "VERIFY-100", Status: "done", Body: body}}

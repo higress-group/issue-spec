@@ -18,7 +18,7 @@ Use the gh CLI only for GitHub operations outside issue-spec's workflow and disc
 - Inspect PR status, reviews, mergeability, CI, workflow runs, releases, labels, and repository metadata.
 - Use structured --json/--jq output. Use git directly for local repository operations.
 - Ordinary issue discussion writes: write a body file and run issue-spec comment create --repo owner/repo --issue 42 --body-file reply.md --json. The selected issue backend owns the write. Never use GitHub CLI or a raw issue-comment API write.
-- issue-spec owns the proposal, design, implement, typed comments, review, verify, and archive workflow. Do not use GitHub endpoints for non-GitHub providers.
+- issue-spec owns the proposal, design, implement, typed comments, review, verify, durable projection, and closure workflow. Do not use GitHub endpoints for non-GitHub providers.
 
 ## Setup and examples
 

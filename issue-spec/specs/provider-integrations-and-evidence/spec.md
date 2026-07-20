@@ -69,29 +69,30 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issu
 
 ### Requirement: Core review, verify and archive validate neutral external evidence fail closed
 
-For a self-hosted issue profile whose code change lives externally, issue-spec MUST evaluate trusted structured evidence for the exact code revision, review findings, required checks, merge state and archive state, MUST compute the gate result itself, and MUST fail closed rather than accepting an arbitrary approval flag or unverified VERIFY text.
+For externally hosted code changes, issue-spec MUST validate trusted structured evidence for the exact active subject revision, independent review findings, sealed required tests and provider checks, and authoritative merge state. Final verification MUST fail closed on missing, stale, untrusted, conflicting, or revision-mismatched evidence. Durable projection MUST appear only as an ordinary required test/check result, and post-merge issue closure MUST require exact merged evidence and active binding without restoring Archive review or verification semantics.
 
-#### Scenario: verify passes only for the verified revision
+#### Scenario: verify passes only for exact trusted evidence
 
-- **WHEN** trusted evidence for the active code-change reference reports the current head revision, no open P0/P1 findings and all required checks passed and a done VERIFY records that revision
-- **THEN** core verify MAY pass its external-code gate and MUST record the evidence identifiers and revision used
+- **WHEN** the active external subject has exact-current accepted review and verification, no unresolved blocking findings, and every sealed test/check passes
+- **THEN** core final verification MAY pass and MUST retain the evidence identities and revision used
 
-#### Scenario: missing or stale evidence blocks
+#### Scenario: stale or untrusted evidence blocks
 
-- **WHEN** evidence is absent, expired, written by an untrusted identity, tied to another provider/change/revision, has pending or failed checks, or has open blocking review
-- **THEN** review or verify MUST fail with an actionable reason and MUST NOT be bypassed by omitting a PR flag
+- **WHEN** external evidence is absent, expired, untrusted, conflicting, pending, failed, or bound to another subject revision
+- **THEN** review or verification MUST fail closed and MUST NOT accept free-form approval prose
 
-#### Scenario: archive validates implementation merge and durable-spec merge
+#### Scenario: durable result stays ordinary evidence
 
-- **WHEN** an external bridge reports implementation or durable-spec change state
-- **THEN** archive MUST require trusted merged evidence for the expected revision and change reference before closing proposal/design/implement issues, while GitHub mode retains its existing closure-block path
+- **WHEN** repository durable checking is required
+- **THEN** the exact checker outcome MUST be recorded through the ordinary required test/check contract and core final MUST NOT parse durable files or intent
 
-#### Scenario: line-level discussions remain externally linked but summarized canonically
+#### Scenario: post-merge closure uses merged binding only
 
-- **WHEN** a bridge reports external review threads
-- **THEN** issue-spec MUST preserve canonical PROCESS/SPEC/finding linkage and blocking severity/state in neutral evidence while the external platform remains the owner of line-level discussion content
+- **WHEN** a self-hosted implementation change has authoritative merged evidence for the exact active binding
+- **THEN** idempotent closure MAY close only the bound lifecycle issues without re-running review, verification, or durable checks
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4927054247
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452933
 
 ### Requirement: Provider-neutral evidence synchronization before workflow gates
 

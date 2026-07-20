@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
@@ -25,7 +26,11 @@ import (
 	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
-const nativeEvidenceSyncResponseLimit = int64(4 << 20)
+const (
+	nativeEvidenceSyncResponseLimit  = int64(4 << 20)
+	nativeEvidenceProblemCodeLimit   = 64
+	nativeEvidenceProblemDetailLimit = 256
+)
 
 type nativeEvidenceProvider interface {
 	ResolveTarget(context.Context, string, int, string) (coreevidence.NativeTarget, error)
@@ -554,6 +559,11 @@ func (c *commandNativeEvidenceClient) request(ctx context.Context, method, path 
 		return fmt.Errorf("%w: native evidence response exceeds 4 MiB", coreevidence.ErrNativeEvidence)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		problem := nativeEvidenceProblemSummary(response.Header.Get("Content-Type"), raw)
+		if problem != "" {
+			return fmt.Errorf("%w: native evidence request returned HTTP %d (request_id %s; %s)", coreevidence.ErrNativeEvidence,
+				response.StatusCode, response.Header.Get("X-Request-ID"), problem)
+		}
 		return fmt.Errorf("%w: native evidence request returned HTTP %d (request_id %s)", coreevidence.ErrNativeEvidence,
 			response.StatusCode, response.Header.Get("X-Request-ID"))
 	}
@@ -573,6 +583,50 @@ func (c *commandNativeEvidenceClient) request(ctx context.Context, method, path 
 		return fmt.Errorf("%w: decode native evidence response: %v", coreevidence.ErrNativeEvidence, err)
 	}
 	return nil
+}
+
+func nativeEvidenceProblemSummary(contentType string, raw []byte) string {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || mediaType != "application/problem+json" {
+		return ""
+	}
+	var problem struct {
+		Code   string `json:"code"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(raw, &problem); err != nil {
+		return ""
+	}
+	code := nativeEvidenceProblemText(problem.Code, nativeEvidenceProblemCodeLimit)
+	detail := nativeEvidenceProblemText(problem.Detail, nativeEvidenceProblemDetailLimit)
+	switch {
+	case code != "" && detail != "":
+		return fmt.Sprintf("code %s; detail %q", code, detail)
+	case code != "":
+		return fmt.Sprintf("code %s", code)
+	case detail != "":
+		return fmt.Sprintf("detail %q", detail)
+	default:
+		return ""
+	}
+}
+
+func nativeEvidenceProblemText(value string, limit int) string {
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, value)
+	value = strings.Join(strings.Fields(value), " ")
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) > limit {
+		return string(runes[:limit]) + "..."
+	}
+	return value
 }
 
 func evidenceSyncNoStore(value string) bool {

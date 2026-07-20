@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/higress-group/issue-spec/internal/durable"
 	"gopkg.in/yaml.v3"
 )
 
@@ -73,8 +74,8 @@ artifacts:
 	if !ok {
 		t.Fatalf("SPEC artifact not resolved: %+v", plan.Artifacts)
 	}
-	if !contains(spec.Storage, "SPEC-typed-comment") || !contains(spec.Storage, "durable-archive-output") {
-		t.Fatalf("SPEC storage mapping missing active/durable destinations: %+v", spec.Storage)
+	if !contains(spec.Storage, "SPEC-typed-comment") || contains(spec.Storage, "durable-archive-output") {
+		t.Fatalf("SPEC storage mapping must remain issue-native: %+v", spec.Storage)
 	}
 	task := artifactByID(plan.Artifacts, "tasks")
 	if !contains(task.Storage, "PROCESS-typed-comment") || !contains(task.Storage, "issue-spec-links") {
@@ -101,6 +102,57 @@ func TestResolveBuiltInFallbackWhenNoConfigExists(t *testing.T) {
 	if len(plan.Artifacts) == 0 {
 		t.Fatal("builtin plan should include artifacts")
 	}
+	if archive := artifactByID(plan.Artifacts, "archive"); archive.ID != "" {
+		t.Fatalf("builtin plan still exposes archive artifact: %+v", archive)
+	}
+	if plan.DurableSpecsMode() != durable.ModeNone {
+		t.Fatalf("default durable mode = %q, want none", plan.DurableSpecsMode())
+	}
+}
+
+func TestResolveDurableSpecsModes(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+		want durable.Mode
+	}{
+		{name: "explicit none", raw: "durable_specs:\n  mode: none\n", want: durable.ModeNone},
+		{name: "repository", raw: "durable_specs:\n  mode: repository\n", want: durable.ModeRepository},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), test.raw)
+			plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+			if err != nil {
+				t.Fatalf("resolve durable mode: %v diagnostics=%+v", err, plan.Diagnostics)
+			}
+			if plan.DurableSpecsMode() != test.want || plan.Config.DurableSpecs == nil || plan.Config.DurableSpecs.Mode != test.want {
+				t.Fatalf("durable config = %+v mode=%q", plan.Config.DurableSpecs, plan.DurableSpecsMode())
+			}
+		})
+	}
+}
+
+func TestResolveRejectsInvalidDurableSpecsConfig(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "invalid mode", raw: "durable_specs:\n  mode: plugin\n"},
+		{name: "noncanonical mode", raw: "durable_specs:\n  mode: REPOSITORY\n"},
+		{name: "missing mode", raw: "durable_specs: {}\n"},
+		{name: "unknown field", raw: "durable_specs:\n  mode: repository\n  executable: ./verify\n"},
+		{name: "not mapping", raw: "durable_specs: repository\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), test.raw)
+			plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+			if err == nil || !hasDiagnostic(plan.Diagnostics, "invalid_config") {
+				t.Fatalf("invalid durable config resolved: plan=%+v err=%v", plan, err)
+			}
+		})
+	}
 }
 
 func TestResolveAcceptsLegacyScalarContext(t *testing.T) {
@@ -112,6 +164,66 @@ func TestResolveAcceptsLegacyScalarContext(t *testing.T) {
 	}
 	if plan.Config.Context["text"] != "Project: existing repository\n" {
 		t.Fatalf("context=%#v", plan.Config.Context)
+	}
+}
+
+func TestOpenSpecStyleProjectProducesDeclarativeVerifierPacket(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "openspec", "config.yaml"), `
+schema: business-workflow
+context: |
+  Project: edge proxy
+  Business invariant: public routes require an owner
+rules:
+  verify:
+    - Review only the affected route scenarios.
+    - command: ./scripts/verify-route-owners.sh
+  proposal:
+    - Unrelated proposal-only guidance.
+external_code:
+  provider_key: code.example
+  evidence:
+    required_checks: [route-owner-policy]
+`)
+	writeFile(t, filepath.Join(root, "openspec", "schemas", "business-workflow", "schema.yaml"), `
+artifacts:
+  proposal:
+    type: proposal
+    template: proposal.md
+    instructions: Do not copy this into verifier guidance.
+  verify:
+    type: verify
+    template: verify.md
+    instructions: |
+      Explain the affected route decision.
+      Run only the exact sealed commands and checks.
+`)
+	writeFile(t, filepath.Join(root, "openspec", "schemas", "business-workflow", "templates", "proposal.md"), "# Proposal\n")
+	writeFile(t, filepath.Join(root, "openspec", "schemas", "business-workflow", "templates", "verify.md"), "{{.DefaultLogicalBody}}\n")
+
+	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+	if err != nil {
+		t.Fatalf("resolve OpenSpec-style fixture: %v diagnostics=%+v", err, plan.Diagnostics)
+	}
+	packet, err := plan.ProjectVerifierPacket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if packet.Guidance == nil || !strings.Contains(string(packet.Guidance.Context), "public routes require an owner") {
+		t.Fatalf("workflow context missing from verifier packet: %+v", packet.Guidance)
+	}
+	if !strings.Contains(string(packet.Guidance.RulesVerify), "verify-route-owners.sh") || strings.Contains(string(packet.Guidance.RulesVerify), "proposal-only") {
+		t.Fatalf("rules.verify projection is not bounded: %s", packet.Guidance.RulesVerify)
+	}
+	if len(packet.Guidance.Instructions) != 1 || packet.Guidance.Instructions[0].ArtifactID != "verify" ||
+		!strings.Contains(packet.Guidance.Instructions[0].Text, "exact sealed commands and checks") {
+		t.Fatalf("VERIFY instructions = %+v", packet.Guidance.Instructions)
+	}
+	if len(packet.RequiredTests) != 0 {
+		t.Fatalf("rules.verify prose became executable tests: %+v", packet.RequiredTests)
+	}
+	if len(packet.RequiredChecks) != 1 || packet.RequiredChecks[0].Provider != "code.example" || packet.RequiredChecks[0].Name != "route-owner-policy" {
+		t.Fatalf("provider check selectors = %+v", packet.RequiredChecks)
 	}
 }
 
@@ -161,6 +273,25 @@ artifacts:
 	specs := artifactByID(plan.Artifacts, "specs")
 	if len(specs.Dependencies) != 1 || specs.Dependencies[0] != "proposal" {
 		t.Fatalf("requires should map to dependencies: %+v", specs)
+	}
+}
+
+func TestResolveRecognizesLegacyArchiveArtifactWithoutStorageRoute(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), "schema: custom\n")
+	writeFile(t, filepath.Join(root, "issue-spec", "schemas", "custom", "schema.yaml"), `
+artifacts:
+  archive:
+    type: archive
+    generates: issue-spec/specs/example/spec.md
+`)
+	plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+	if err != nil {
+		t.Fatalf("legacy archive artifact must remain readable for the compatibility window: %v", err)
+	}
+	archive := artifactByID(plan.Artifacts, "archive")
+	if !hasDiagnostic(plan.Diagnostics, "legacy_archive_artifact_deprecated") || len(archive.Storage) != 0 {
+		t.Fatalf("legacy archive compatibility is not bounded: artifact=%+v diagnostics=%+v", archive, plan.Diagnostics)
 	}
 }
 

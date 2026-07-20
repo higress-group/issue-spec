@@ -206,6 +206,7 @@ func normalizeAssignment(value Assignment) Assignment {
 	}
 	if value.Verification != nil {
 		payload := *value.Verification
+		payload.Guidance = cloneVerifierGuidance(value.Verification.Guidance)
 		payload.RequiredTests = append([]TestSelector(nil), payload.RequiredTests...)
 		sort.Slice(payload.RequiredTests, func(i, j int) bool { return testSelectorLess(payload.RequiredTests[i], payload.RequiredTests[j]) })
 		payload.RequiredChecks = append([]CheckSelector(nil), payload.RequiredChecks...)
@@ -247,6 +248,41 @@ func cloneDesignContext(value *DesignContext) *DesignContext {
 	clone.MustNot = append([]string(nil), value.MustNot...)
 	clone.MinimumVerification = append([]string(nil), value.MinimumVerification...)
 	return &clone
+}
+
+func cloneVerifierGuidance(value *VerifierGuidance) *VerifierGuidance {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	clone.Context = normalizeRawJSON(value.Context)
+	clone.RulesVerify = normalizeRawJSON(value.RulesVerify)
+	clone.Instructions = append([]VerifierInstruction(nil), value.Instructions...)
+	sort.Slice(clone.Instructions, func(i, j int) bool {
+		return clone.Instructions[i].ArtifactID < clone.Instructions[j].ArtifactID
+	})
+	return &clone
+}
+
+func normalizeRawJSON(value json.RawMessage) json.RawMessage {
+	if len(value) == 0 {
+		return nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return append(json.RawMessage(nil), value...)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return append(json.RawMessage(nil), value...)
+	}
+	normalized, err := json.Marshal(decoded)
+	if err != nil {
+		return append(json.RawMessage(nil), value...)
+	}
+	return normalized
 }
 
 func normalizeReceipt(value Receipt) Receipt {

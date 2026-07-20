@@ -465,6 +465,148 @@ func TestDifferentIdentityKeysKeepOrderIndependentDigests(t *testing.T) {
 	}
 }
 
+func TestVerifierPacketSealsCanonicalGuidanceAndMergesExactSelectors(t *testing.T) {
+	value := verificationAssignment()
+	packet := VerifierPacket{
+		Guidance: &VerifierGuidance{
+			Context:     json.RawMessage(`{ "language": "Go", "project": "proxy" }`),
+			RulesVerify: json.RawMessage(`{"business":["run fixture command"],"mode":"strict"}`),
+			Instructions: []VerifierInstruction{
+				{ArtifactID: "verify-z", Text: "Check the affected route."},
+				{ArtifactID: "verify-a", Text: "Run the exact assigned commands."},
+			},
+		},
+		RequiredTests: []TestSelector{
+			{ID: "business", Command: "./scripts/verify-business.sh"},
+			{ID: "unit", Command: "go test ./..."},
+		},
+		RequiredChecks: []CheckSelector{
+			{Provider: "code.example", Name: "policy"},
+			{Provider: "github", Name: "test"},
+		},
+	}
+	merged, err := value.Verification.WithVerifierPacket(packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value.Verification = &merged
+	if len(merged.RequiredTests) != 2 || merged.RequiredTests[0].ID != "business" || merged.RequiredTests[1].ID != "unit" {
+		t.Fatalf("required tests = %+v", merged.RequiredTests)
+	}
+	if len(merged.RequiredChecks) != 2 || merged.RequiredChecks[0].Provider != "code.example" || merged.RequiredChecks[1].Provider != "github" {
+		t.Fatalf("required checks = %+v", merged.RequiredChecks)
+	}
+	if got := string(merged.Guidance.Context); got != `{"language":"Go","project":"proxy"}` {
+		t.Fatalf("canonical context = %s", got)
+	}
+	if merged.Guidance.Instructions[0].ArtifactID != "verify-a" {
+		t.Fatalf("instructions are not stable: %+v", merged.Guidance.Instructions)
+	}
+
+	canonical, err := CanonicalAssignmentJSON(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseAssignmentJSON(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(parsed.Verification.Guidance.RulesVerify); got != `{"business":["run fixture command"],"mode":"strict"}` {
+		t.Fatalf("rules.verify changed during sealing: %s", got)
+	}
+	firstDigest, err := AssignmentDigest(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idempotent, err := parsed.Verification.WithVerifierPacket(packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed.Verification = &idempotent
+	secondDigest, err := AssignmentDigest(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest != secondDigest {
+		t.Fatalf("idempotent verifier packet changed digest: %s != %s", firstDigest, secondDigest)
+	}
+}
+
+func TestVerifierPacketRejectsSelectorAndGuidanceConflicts(t *testing.T) {
+	payload := *verificationAssignment().Verification
+	if _, err := payload.WithVerifierPacket(VerifierPacket{RequiredTests: []TestSelector{
+		{ID: "unit", Command: "go test ./internal/workflow"},
+	}}); err == nil || !strings.Contains(err.Error(), "conflicting commands") {
+		t.Fatalf("selector conflict error = %v", err)
+	}
+
+	withGuidance, err := payload.WithVerifierPacket(VerifierPacket{Guidance: &VerifierGuidance{
+		Context: json.RawMessage(`{"project":"one"}`),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := withGuidance.WithVerifierPacket(VerifierPacket{Guidance: &VerifierGuidance{
+		Context: json.RawMessage(`{"project":"two"}`),
+	}}); err == nil || !strings.Contains(err.Error(), "guidance conflicts") {
+		t.Fatalf("guidance conflict error = %v", err)
+	}
+}
+
+func TestVerificationReceiptCoveragePreservesSelectorIdentityRevisionAndAssurance(t *testing.T) {
+	required := VerificationPayload{
+		SubjectRevision: subjectRevision,
+		RequiredTests:   []TestSelector{{ID: "business", Command: "./scripts/verify-business.sh"}},
+		RequiredChecks:  []CheckSelector{{Provider: "code.example", Name: "policy"}},
+	}
+	receipt := Receipt{
+		SchemaVersion: ReceiptSchemaVersion, ID: "receipt-business-1",
+		AssignmentID: "asg-business-1", AssignmentDigest: validDigest, AssignmentGeneration: 1,
+		Role: RoleVerification, ResultSchemaVersion: ReceiptSchemaVersion, SubjectRevision: subjectRevision,
+		Tests:        []TestResult{{ID: "business", Command: "./scripts/verify-business.sh", Outcome: TestPassed, Assurance: AssuranceSelfReported}},
+		Provenance:   Provenance{Route: RouteRoleOwned, Assurance: AssuranceSelfReported, Writer: "Verifier", Subject: "Verifier", Source: "verify-submit"},
+		Verification: &VerificationResult{Summary: "Business policy passed.", CheckSelectors: []CheckSelector{{Provider: "code.example", Name: "policy"}}},
+	}
+	sealed, err := SealReceipt(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateVerificationReceiptCoverage(required, sealed); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseReceiptJSON(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Tests[0].Assurance != AssuranceSelfReported || parsed.SubjectRevision != subjectRevision {
+		t.Fatalf("receipt assurance/revision changed: %+v", parsed)
+	}
+
+	proseOnly := sealed
+	proseOnly.Verification = &VerificationResult{Summary: "Provider policy passed."}
+	proseOnly, err = SealReceipt(proseOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateVerificationReceiptCoverage(required, proseOnly); err == nil || !strings.Contains(err.Error(), "exactly cover") {
+		t.Fatalf("natural-language provider conclusion became authority: %v", err)
+	}
+
+	stale := sealed
+	stale.SubjectRevision = baseRevision
+	stale, err = SealReceipt(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateVerificationReceiptCoverage(required, stale); err == nil || !strings.Contains(err.Error(), "exact assigned revision") {
+		t.Fatalf("stale revision error = %v", err)
+	}
+}
+
 func TestProcessInputStrictParsingAndNoSelectorMeansAllScenarios(t *testing.T) {
 	input := ProcessInput{Objective: "Implement the typed schema"}
 	payload, err := ProcessInputJSON(input)

@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -88,30 +87,28 @@ type finalVerifyReport struct {
 	FailedChecks          []reviewCheck                 `json:"failed_checks,omitempty"`
 	PendingChecks         []reviewCheck                 `json:"pending_checks,omitempty"`
 	PR                    int                           `json:"pr,omitempty"`
-	DurableSpecPath       string                        `json:"durable_spec_path,omitempty"`
-	DurableSpecCheck      map[string]bool               `json:"durable_spec_check,omitempty"`
 	ExternalEvidence      *externalEvidenceConsumption  `json:"external_evidence,omitempty"`
 	Gate                  gates.Report                  `json:"gate"`
 	ProcessEvidence       []gates.ProcessEvidenceReport `json:"process_evidence,omitempty"`
 }
 
 type finalVerifyOptions struct {
-	ImplementIssue    int
-	DurableSpecPath   string
-	PR                int
-	PRURL             string
-	ExpectedRevision  string
-	RationaleRequired bool
-	RationaleComments []github.PullRequestReviewComment
-	PRStatus          github.CombinedStatus
-	PRCheckRuns       []github.CheckRun
-	PRCommits         []github.PullRequestCommit
-	ExternalEvidence  *externalEvidenceConsumption
-	ExternalReview    *externalGateResult
-	ProviderEvidence  gates.Fact
-	VerifyRevision    gates.ScopedFact
-	ValidationNow     time.Time
-	CarrierRevisions  map[string]gates.CarrierRevisionFact
+	ImplementIssue        int
+	PR                    int
+	PRURL                 string
+	ExpectedRevision      string
+	RationaleRequired     bool
+	RationaleComments     []github.PullRequestReviewComment
+	PRStatus              github.CombinedStatus
+	PRCheckRuns           []github.CheckRun
+	PRCommits             []github.PullRequestCommit
+	ExternalEvidence      *externalEvidenceConsumption
+	ExternalReview        *externalGateResult
+	ProviderEvidence      gates.Fact
+	VerifyRevision        gates.ScopedFact
+	ValidationNow         time.Time
+	CarrierRevisions      map[string]gates.CarrierRevisionFact
+	FinalEvidenceObserved bool
 }
 
 func (a *app) runVerify(ctx context.Context, args []string) int {
@@ -291,41 +288,7 @@ func validateVerificationReceiptBinding(receipt assignment.Receipt, sealed assig
 	if err := processworkspace.ValidateRoleOwnedReceiptSubmission(receipt, submission); err != nil {
 		return fmt.Errorf("verification receipt provenance: %w", err)
 	}
-	for _, test := range receipt.Tests {
-		if test.Outcome != assignment.TestPassed {
-			return fmt.Errorf("verification test %s must pass before VERIFY completion", test.ID)
-		}
-	}
-	return validateVerificationRequirementCoverage(receipt, *sealed.Verification)
-}
-
-func validateVerificationRequirementCoverage(receipt assignment.Receipt, required assignment.VerificationPayload) error {
-	if len(receipt.Tests) != len(required.RequiredTests) {
-		return fmt.Errorf("verification receipt tests must exactly cover all %d assigned required tests", len(required.RequiredTests))
-	}
-	tests := make(map[string]string, len(receipt.Tests))
-	for _, test := range receipt.Tests {
-		tests[test.ID] = test.Command
-	}
-	for _, expected := range required.RequiredTests {
-		if command, ok := tests[expected.ID]; !ok || command != expected.Command {
-			return fmt.Errorf("verification receipt is missing exact assigned test %s command %q", expected.ID, expected.Command)
-		}
-	}
-	actualChecks := receipt.Verification.CheckSelectors
-	if len(actualChecks) != len(required.RequiredChecks) {
-		return fmt.Errorf("verification receipt checks must exactly cover all %d assigned required checks", len(required.RequiredChecks))
-	}
-	checks := make(map[string]bool, len(actualChecks))
-	for _, check := range actualChecks {
-		checks[check.Provider+"\x00"+check.Name] = true
-	}
-	for _, expected := range required.RequiredChecks {
-		if !checks[expected.Provider+"\x00"+expected.Name] {
-			return fmt.Errorf("verification receipt is missing exact assigned check %s/%s", expected.Provider, expected.Name)
-		}
-	}
-	return nil
+	return assignment.ValidateVerificationReceiptCoverage(*sealed.Verification, receipt)
 }
 
 func observeGitHubVerificationChecks(ctx context.Context, client github.Backend, repo string, prNumber int,
@@ -638,7 +601,6 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 	implementFlag := fs.String("implement", "", "implement issue number or URL")
 	prFlag := fs.Int("pr", 0, "pull request number for rationale-comment verification")
 	revision := fs.String("revision", "", "expected external code head revision for self-hosted evidence")
-	durableSpec := fs.String("durable-spec", "", "durable spec file to verify")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	summaryOut := fs.Bool("summary", false, "write compact versioned JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
@@ -744,21 +706,21 @@ func (a *app) runVerifyWithReportBuilder(ctx context.Context, args []string,
 		verifyRevision, finalVerify = collectVerifyRevisionFact(artifacts, expectedRevision, time.Now().UTC())
 	}
 	report, err := buildReport(artifacts, proposalIssueData.HTMLURL, finalVerifyOptions{
-		ImplementIssue:    implementIssue,
-		DurableSpecPath:   *durableSpec,
-		PR:                *prFlag,
-		PRURL:             prURL,
-		ExpectedRevision:  expectedRevision,
-		RationaleRequired: *prFlag > 0,
-		RationaleComments: rationaleComments,
-		PRStatus:          prStatus,
-		PRCheckRuns:       prCheckRuns,
-		PRCommits:         prCommits,
-		ExternalEvidence:  processExternalEvidence,
-		ExternalReview:    processExternalReview,
-		ProviderEvidence:  providerEvidence,
-		VerifyRevision:    verifyRevision,
-		ValidationNow:     time.Now().UTC(),
+		ImplementIssue:        implementIssue,
+		PR:                    *prFlag,
+		PRURL:                 prURL,
+		ExpectedRevision:      expectedRevision,
+		RationaleRequired:     *prFlag > 0,
+		RationaleComments:     rationaleComments,
+		PRStatus:              prStatus,
+		PRCheckRuns:           prCheckRuns,
+		PRCommits:             prCommits,
+		ExternalEvidence:      processExternalEvidence,
+		ExternalReview:        processExternalReview,
+		ProviderEvidence:      providerEvidence,
+		VerifyRevision:        verifyRevision,
+		ValidationNow:         time.Now().UTC(),
+		FinalEvidenceObserved: strings.TrimSpace(expectedRevision) != "" && (*prFlag > 0 || processExternalReview != nil),
 	})
 	if err != nil {
 		a.errorf("verify: %v\n", err)
@@ -899,8 +861,12 @@ func stampConsumedEvidence(body string, consumption externalEvidenceConsumption)
 	return updated, updated != body, nil
 }
 
-func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts finalVerifyOptions) (finalVerifyReport, error) {
-	traceability := model.VerifyTraceability(artifacts)
+func buildFinalVerifyReport(artifacts []model.Artifact, _ string, opts finalVerifyOptions) (finalVerifyReport, error) {
+	useMinimalFinal := opts.FinalEvidenceObserved
+	traceability := model.VerifyReport{OK: true}
+	if !useMinimalFinal {
+		traceability = model.VerifyTraceability(artifacts)
+	}
 	gateArtifacts := artifactsForImplementGate(artifacts, opts.ImplementIssue)
 	report := finalVerifyReport{
 		Traceability:      traceability,
@@ -931,14 +897,18 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 			(tc.Type != "PROCESS" && artifact.Comment.Status == "superseded") {
 			continue
 		}
-		diags := model.ValidateArtifact(artifact)
-		canonical = append(canonical, diags...)
-		report.Noncanonical = append(report.Noncanonical, diags...)
+		if !useMinimalFinal {
+			diags := model.ValidateArtifact(artifact)
+			canonical = append(canonical, diags...)
+			report.Noncanonical = append(report.Noncanonical, diags...)
+		}
 	}
-	verifyText := strings.Join(doneVerifyBodies, "\n")
-	for _, spec := range activeSpecs {
-		if strings.Contains(verifyText, spec.Comment.ID) {
-			report.SpecCoverage[spec.Comment.ID] = true
+	if !useMinimalFinal {
+		verifyText := strings.Join(doneVerifyBodies, "\n")
+		for _, spec := range activeSpecs {
+			if strings.Contains(verifyText, spec.Comment.ID) {
+				report.SpecCoverage[spec.Comment.ID] = true
+			}
 		}
 	}
 
@@ -956,25 +926,12 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 			Passed:  len(reviewReport.BlockingFindings) == 0,
 			Current: fmt.Sprintf("blocking=%d", len(reviewReport.BlockingFindings)), Expected: "blocking=0"}
 	}
+	if opts.ExternalReview != nil {
+		remote.ReviewFindings = gates.Fact{Required: true, Known: true, Passed: true,
+			Current: "blocking=0", Expected: "blocking=0"}
+	}
 
 	target := gates.TargetFinal
-	if strings.TrimSpace(opts.DurableSpecPath) != "" {
-		check, err := verifyDurableSpecFile(opts.DurableSpecPath, proposalURL, activeSpecs)
-		if err != nil {
-			return report, err
-		}
-		report.DurableSpecPath = opts.DurableSpecPath
-		report.DurableSpecCheck = check
-		durableOK := true
-		for _, ok := range check {
-			if !ok {
-				durableOK = false
-			}
-		}
-		remote.DurableSpec = gates.Fact{Required: true, Known: true, Passed: durableOK,
-			Current: fmt.Sprintf("valid=%v", durableOK), Expected: "valid=true"}
-		target = gates.TargetArchive
-	}
 	var processEvidence []gates.ProcessEvidenceInput
 	if opts.RationaleRequired || opts.ExternalEvidence != nil || hasExplicitProcessWorkspace(gateArtifacts) || hasActiveChangeBearingProcess(gateArtifacts) {
 		if opts.ExternalReview != nil {
@@ -989,33 +946,50 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		}
 		processEvidence = consumeAcceptedVerificationEvidence(processEvidence, gateArtifacts, opts.ExpectedRevision)
 	}
+	subjectKind, subjectURL, subjectSource, subjectTrusted := "pull_request", opts.PRURL,
+		fmt.Sprintf("github-pull-request-head:%d", opts.PR), opts.PR > 0 && strings.TrimSpace(opts.ExpectedRevision) != ""
+	if opts.ExternalReview != nil {
+		subjectKind, subjectURL, subjectSource = "code_change", opts.ExternalReview.Target.CanonicalURL, "native-authoritative-ledger:code-subject"
+		subjectTrusted = opts.ProviderEvidence.Known && opts.ProviderEvidence.Passed
+	}
+	var finalEvidence gates.FinalEvidenceSnapshot
+	if useMinimalFinal {
+		finalEvidence = buildMinimalFinalEvidence(gateArtifacts, processEvidence, gates.FinalSubject{
+			Required: true, Known: strings.TrimSpace(opts.ExpectedRevision) != "", Trusted: subjectTrusted,
+			Kind: subjectKind, URL: subjectURL, Revision: strings.TrimSpace(opts.ExpectedRevision), Source: subjectSource,
+		})
+	}
 	gateReport, err := gates.Evaluate(gates.Snapshot{
 		Target: target, Mode: gates.ModeAuthoritative, Artifacts: gateArtifacts,
-		Canonical:       gates.CanonicalFacts{Observed: true, Diagnostics: canonical},
-		Traceability:    gates.TraceabilityFacts{Observed: true, Report: traceability},
-		Remote:          remote,
-		ProcessEvidence: processEvidence,
-	})
-	if err != nil {
-		return report, err
-	}
-	workspaceReport, err := gates.EvaluateWorkspaceEvidence(gates.WorkspaceEvaluationInput{
-		Target: target, Mode: gates.ModeAuthoritative, Artifacts: currentFinalizationArtifacts(gateArtifacts),
-		ExpectedRevision:    gates.Fact{Required: true, Known: strings.TrimSpace(opts.ExpectedRevision) != "", Passed: true, Expected: strings.TrimSpace(opts.ExpectedRevision)},
-		IntegrationAncestry: pullRequestIntegrationAncestry(gateArtifacts, opts.PRCommits, opts.ExpectedRevision),
-		ProcessEvidence:     gateReport.Processes,
-		CarrierRevisions:    mergeCarrierRevisionFacts(gates.ProcessCarrierRevisionFacts(gateReport.Processes), opts.CarrierRevisions),
+		Canonical:                gates.CanonicalFacts{Observed: true, Diagnostics: canonical},
+		Traceability:             gates.TraceabilityFacts{Observed: true, Report: traceability},
+		Remote:                   remote,
+		ProcessEvidence:          processEvidence,
+		FinalEvidence:            finalEvidence,
+		LegacyFinalCompatibility: !useMinimalFinal,
 	})
 	if err != nil {
 		return report, err
 	}
 	var workspaceGateDiagnostics []gates.Diagnostic
-	for _, diagnostic := range workspaceReport.Diagnostics {
-		if !diagnostic.Blocking && diagnostic.Severity == gates.SeverityWarning {
-			report.Warnings = append(report.Warnings, diagnostic.Message)
-			continue
+	if !useMinimalFinal {
+		workspaceReport, workspaceErr := gates.EvaluateWorkspaceEvidence(gates.WorkspaceEvaluationInput{
+			Target: target, Mode: gates.ModeAuthoritative, Artifacts: currentFinalizationArtifacts(gateArtifacts),
+			ExpectedRevision:    gates.Fact{Required: true, Known: strings.TrimSpace(opts.ExpectedRevision) != "", Passed: true, Expected: strings.TrimSpace(opts.ExpectedRevision)},
+			IntegrationAncestry: pullRequestIntegrationAncestry(gateArtifacts, opts.PRCommits, opts.ExpectedRevision),
+			ProcessEvidence:     gateReport.Processes,
+			CarrierRevisions:    mergeCarrierRevisionFacts(gates.ProcessCarrierRevisionFacts(gateReport.Processes), opts.CarrierRevisions),
+		})
+		if workspaceErr != nil {
+			return report, workspaceErr
 		}
-		workspaceGateDiagnostics = append(workspaceGateDiagnostics, diagnostic)
+		for _, diagnostic := range workspaceReport.Diagnostics {
+			if !diagnostic.Blocking && diagnostic.Severity == gates.SeverityWarning {
+				report.Warnings = append(report.Warnings, diagnostic.Message)
+				continue
+			}
+			workspaceGateDiagnostics = append(workspaceGateDiagnostics, diagnostic)
+		}
 	}
 	gateReport.Diagnostics = append(gateReport.Diagnostics, workspaceGateDiagnostics...)
 	sort.SliceStable(gateReport.Diagnostics, func(i, j int) bool {
@@ -1056,25 +1030,19 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 		for _, finding := range report.ReviewFindingBlockers {
 			report.Errors = append(report.Errors, fmt.Sprintf("open %s review finding %s on %s:%d", finding.Severity, finding.ID, finding.Path, finding.Line))
 		}
-		report.FailedChecks = reviewReport.FailedChecks
-		report.PendingChecks = reviewReport.PendingChecks
-		for _, check := range report.FailedChecks {
-			report.Errors = append(report.Errors, fmt.Sprintf("PR check %s failed state=%s conclusion=%s", check.Name, check.State, check.Conclusion))
-		}
-		for _, check := range report.PendingChecks {
-			report.Errors = append(report.Errors, fmt.Sprintf("PR check %s is pending state=%s conclusion=%s", check.Name, check.State, check.Conclusion))
+		if !useMinimalFinal {
+			report.FailedChecks = reviewReport.FailedChecks
+			report.PendingChecks = reviewReport.PendingChecks
+			for _, check := range report.FailedChecks {
+				report.Errors = append(report.Errors, fmt.Sprintf("PR check %s failed state=%s conclusion=%s", check.Name, check.State, check.Conclusion))
+			}
+			for _, check := range report.PendingChecks {
+				report.Errors = append(report.Errors, fmt.Sprintf("PR check %s is pending state=%s conclusion=%s", check.Name, check.State, check.Conclusion))
+			}
 		}
 	}
 	if !opts.RationaleRequired {
 		report.RationaleCoverage = nil
-	}
-	if report.DurableSpecCheck != nil {
-		check := report.DurableSpecCheck
-		for key, ok := range check {
-			if !ok {
-				report.Errors = append(report.Errors, fmt.Sprintf("durable spec missing %s", key))
-			}
-		}
 	}
 	sort.Strings(report.Errors)
 	sort.Strings(report.Warnings)
@@ -1083,6 +1051,241 @@ func buildFinalVerifyReport(artifacts []model.Artifact, proposalURL string, opts
 	// authoritative decision is the sole source of OK and the exit status.
 	report.OK = gateReport.Ready
 	return report, nil
+}
+
+type finalEvidenceMetadata struct {
+	name        string
+	independent bool
+}
+
+func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.ProcessEvidenceInput,
+	subject gates.FinalSubject) gates.FinalEvidenceSnapshot {
+	result := gates.FinalEvidenceSnapshot{Observed: true, Subject: subject,
+		Index: gates.Fact{Required: true, Known: true, Expected: "validated bounded exact-current index"}}
+	revision := strings.TrimSpace(subject.Revision)
+	byURL := map[string]model.Artifact{}
+	for _, artifact := range artifacts {
+		if artifact.URL != "" {
+			byURL[model.NormalizeURL(artifact.URL)] = artifact
+		}
+	}
+	var records []CanonicalEvidenceRecord
+	metadata := map[string]finalEvidenceMetadata{}
+	add := func(record CanonicalEvidenceRecord, name string, independent bool) {
+		records = append(records, record)
+		metadata[finalEvidenceMetadataKey(record)] = finalEvidenceMetadata{name: name, independent: independent}
+	}
+	for _, input := range inputs {
+		processID := input.Process.Comment.ID
+		addCovered := func(record CanonicalEvidenceRecord, name string, independent bool) {
+			for _, targetProcessID := range finalEvidenceProcessTargets(artifacts, input, record.SpecID) {
+				projected := record
+				projected.ProcessID = targetProcessID
+				add(projected, name, independent)
+			}
+		}
+		for _, evidence := range input.Reviews {
+			if evidence.ProcessID != processID || evidence.SpecID == "" || !evidence.Trusted ||
+				evidence.SubjectRevision != revision || !(evidence.Done || evidence.FindingResolved) {
+				continue
+			}
+			independent := evidence.ReviewerAgent != "" &&
+				!input.AuthorAgentsBySpec[evidence.SpecID][strings.ToLower(strings.TrimSpace(evidence.ReviewerAgent))]
+			artifact := byURL[model.NormalizeURL(evidence.URL)]
+			if authority, ok := exactAcceptedReviewCarrier(artifact, revision); ok {
+				writer := strings.ToLower(strings.TrimSpace(authority.Provenance.Writer))
+				independent = writer != "" && !input.AuthorAgentsBySpec[evidence.SpecID][writer]
+				addCovered(CanonicalEvidenceRecord{ProcessID: processID, SpecID: evidence.SpecID, Kind: CanonicalEvidenceReview,
+					Authority: CanonicalEvidenceRoleOwned, EvidenceID: authority.ReceiptID, ReceiptID: authority.ReceiptID,
+					ReceiptDigest: authority.ReceiptDigest, AssignmentID: authority.AssignmentID,
+					AssignmentDigest: authority.AssignmentDigest, SubjectRevision: revision, URL: artifact.URL,
+					Source: "accepted-review-receipt:self-reported", Trusted: true}, "", independent)
+				continue
+			}
+			source := canonicalFinalProviderSource(evidence.Source, artifact.Comment.ID)
+			if source == "" {
+				continue
+			}
+			addCovered(CanonicalEvidenceRecord{ProcessID: processID, SpecID: evidence.SpecID, Kind: CanonicalEvidenceReview,
+				Authority: CanonicalEvidenceProviderOwned, EvidenceID: source + ":" + model.NormalizeURL(evidence.URL),
+				SubjectRevision: revision, URL: evidence.URL, Source: source, Trusted: true}, "", independent)
+		}
+		for _, evidence := range input.Verifications {
+			if evidence.ProcessID != processID || evidence.SpecID == "" || !evidence.Done || !evidence.Trusted ||
+				evidence.SubjectRevision != revision || !strings.HasPrefix(evidence.Source, "accepted-verification-receipt:") {
+				continue
+			}
+			artifact := byURL[model.NormalizeURL(evidence.URL)]
+			authority, found, err := parseAcceptedVerificationReceipt(artifact.Comment.Body)
+			if err != nil || !found {
+				continue
+			}
+			if _, _, _, valid := exactAcceptedVerificationCarrier(artifact, revision); !valid {
+				continue
+			}
+			writer := strings.ToLower(strings.TrimSpace(authority.Provenance.Writer))
+			independent := writer != "" && !input.AuthorAgentsBySpec[evidence.SpecID][writer]
+			base := CanonicalEvidenceRecord{ProcessID: processID, SpecID: evidence.SpecID,
+				Authority: CanonicalEvidenceRoleOwned, ReceiptID: authority.ReceiptID,
+				ReceiptDigest: authority.ReceiptDigest, AssignmentID: authority.AssignmentID,
+				AssignmentDigest: authority.AssignmentDigest, SubjectRevision: revision, URL: artifact.URL,
+				Source: evidence.Source, Trusted: true}
+			verification := base
+			verification.Kind, verification.EvidenceID = CanonicalEvidenceVerification, authority.ReceiptID
+			addCovered(verification, "", independent)
+			for _, test := range authority.Tests {
+				record := base
+				record.Kind, record.EvidenceID = CanonicalEvidenceTest, authority.ReceiptID+":test:"+test.ID
+				addCovered(record, test.ID, independent)
+			}
+			for _, check := range authority.Checks {
+				record := base
+				record.Kind, record.EvidenceID = CanonicalEvidenceCheck,
+					authority.ReceiptID+":check:"+check.Provider+":"+check.Name
+				addCovered(record, check.Provider+"\x00"+check.Name, independent)
+			}
+		}
+		for _, evidence := range input.Checks {
+			if evidence.ProcessID != processID || evidence.SpecID == "" || !evidence.Required || !evidence.Passed ||
+				!evidence.Trusted || evidence.SubjectRevision != revision {
+				continue
+			}
+			source := canonicalFinalProviderSource(evidence.Source, evidence.Name)
+			if source == "" {
+				continue
+			}
+			addCovered(CanonicalEvidenceRecord{ProcessID: processID, SpecID: evidence.SpecID, Kind: CanonicalEvidenceCheck,
+				Authority: CanonicalEvidenceProviderOwned, EvidenceID: source + ":" + evidence.Name,
+				SubjectRevision: revision, Source: source, Trusted: true}, evidence.Name, true)
+		}
+		for _, evidence := range input.External {
+			if evidence.ProcessID != processID || evidence.SpecID == "" || !evidence.Consumed || !evidence.Trusted ||
+				evidence.SubjectRevision != revision || evidence.EvidenceRevision != revision {
+				continue
+			}
+			kind := CanonicalEvidenceKind("")
+			switch evidence.EvidenceKind {
+			case string(codereview.EvidenceReview), "review_completion":
+				kind = CanonicalEvidenceReview
+			case string(codereview.EvidenceCheck):
+				kind = CanonicalEvidenceCheck
+			}
+			if kind == "" {
+				continue
+			}
+			for _, id := range evidence.EvidenceIDs {
+				add(CanonicalEvidenceRecord{ProcessID: processID, SpecID: evidence.SpecID, Kind: kind,
+					Authority: CanonicalEvidenceProviderOwned, EvidenceID: id, SubjectRevision: revision,
+					Source: evidence.Source, Trusted: true}, id, true)
+			}
+		}
+	}
+	index, err := BuildCanonicalEvidenceIndex(records, revision)
+	result.Index.Passed = err == nil
+	if err != nil {
+		result.Index.Current = err.Error()
+		return result
+	}
+	type indexKey struct {
+		processID, specID string
+		kind              CanonicalEvidenceKind
+	}
+	keys := map[indexKey]bool{}
+	for _, record := range records {
+		keys[indexKey{record.ProcessID, record.SpecID, record.Kind}] = true
+	}
+	for key := range keys {
+		for _, record := range index.Records(key.processID, key.specID, key.kind) {
+			meta := metadata[finalEvidenceMetadataKey(record)]
+			result.Records = append(result.Records, gates.FinalEvidenceRecord{ProcessID: record.ProcessID,
+				SpecID: record.SpecID, Kind: gates.FinalEvidenceKind(record.Kind), EvidenceID: record.EvidenceID,
+				Name: meta.name, SubjectRevision: record.SubjectRevision, Source: record.Source,
+				Independent: meta.independent})
+		}
+	}
+	sort.Slice(result.Records, func(i, j int) bool {
+		left, right := result.Records[i], result.Records[j]
+		if left.ProcessID != right.ProcessID {
+			return left.ProcessID < right.ProcessID
+		}
+		if left.SpecID != right.SpecID {
+			return left.SpecID < right.SpecID
+		}
+		if left.Kind != right.Kind {
+			return left.Kind < right.Kind
+		}
+		return left.EvidenceID < right.EvidenceID
+	})
+	return result
+}
+
+// finalEvidenceProcessTargets keeps evidence attached to its canonical carrier
+// and, only when the planning graph identifies one unambiguous code carrier for
+// the same SPEC, projects a review/verification carrier's result onto that pair.
+// Multi-carrier work therefore still requires explicit per-carrier evidence.
+func finalEvidenceProcessTargets(artifacts []model.Artifact, input gates.ProcessEvidenceInput, specID string) []string {
+	processID := input.Process.Comment.ID
+	result := []string{processID}
+	class := model.ParseProcessExecutionClass(processID, input.Process.URL, input.Process.Comment.Body).Class
+	if class != model.ProcessExecutionReview && class != model.ProcessExecutionVerification {
+		return result
+	}
+	specURL := input.ActiveSpecs[specID]
+	var candidates []string
+	for _, process := range activeProcessArtifacts(artifacts) {
+		candidateClass := model.ParseProcessExecutionClass(process.Comment.ID, process.URL, process.Comment.Body).Class
+		if candidateClass != model.ProcessExecutionChangeBearing && candidateClass != model.ProcessExecutionExternal {
+			continue
+		}
+		if artifactReferencesSpec(process, specID, specURL) {
+			candidates = append(candidates, process.Comment.ID)
+		}
+	}
+	if len(candidates) == 1 && candidates[0] != processID {
+		result = append(result, candidates[0])
+	}
+	sort.Strings(result)
+	return result
+}
+
+func finalEvidenceMetadataKey(record CanonicalEvidenceRecord) string {
+	return record.ProcessID + "\x00" + record.SpecID + "\x00" + string(record.Kind) + "\x00" + record.EvidenceID
+}
+
+func canonicalFinalProviderSource(source, fallback string) string {
+	source = strings.TrimSpace(source)
+	if strings.HasPrefix(source, "external-review-completion") {
+		return "external-review-completion:" + strings.TrimSpace(fallback)
+	}
+	if canonicalProviderEvidenceSource(source) {
+		return source
+	}
+	return ""
+}
+
+func exactAcceptedReviewCarrier(artifact model.Artifact, expectedRevision string) (acceptedReviewReceipt, bool) {
+	if artifact.Comment.Type != "REVIEW" || artifact.Comment.Status != "done" || len(artifact.Comment.Errors) != 0 ||
+		artifact.Comment.SubjectRevision != expectedRevision {
+		return acceptedReviewReceipt{}, false
+	}
+	authority, found, err := parseAcceptedReviewReceipt(artifact.Comment.Body)
+	if err != nil || !found || authority.SubjectRevision != expectedRevision || authority.Verdict != assignment.ReviewApprove {
+		return acceptedReviewReceipt{}, false
+	}
+	identity, found, err := model.ObserveAcceptedReceiptAuthority(artifact.Comment.Body, assignment.RoleReview)
+	if err != nil || !found || identity.ReceiptID != authority.ReceiptID || identity.Digest != authority.ReceiptDigest ||
+		identity.Generation != authority.AssignmentGeneration || identity.AssignmentID != authority.AssignmentID ||
+		identity.AssignmentDigest != authority.AssignmentDigest {
+		return acceptedReviewReceipt{}, false
+	}
+	writer := strings.TrimSpace(authority.Provenance.Writer)
+	if authority.Provenance.Route != assignment.RouteRoleOwned ||
+		authority.Provenance.Assurance != assignment.AssuranceSelfReported || writer == "" ||
+		!strings.EqualFold(writer, strings.TrimSpace(authority.Provenance.Subject)) ||
+		!strings.EqualFold(writer, strings.TrimSpace(artifact.Comment.Agent)) || strings.EqualFold(writer, "Coordinator") {
+		return acceptedReviewReceipt{}, false
+	}
+	return authority, true
 }
 
 func consumeAcceptedVerificationEvidence(inputs []gates.ProcessEvidenceInput, artifacts []model.Artifact,
@@ -1327,38 +1530,6 @@ func rationaleCoverage(comments []github.PullRequestReviewComment, activeSpecIDs
 	return covered
 }
 
-func verifyDurableSpecFile(path, proposalURL string, specs []model.Artifact) (map[string]bool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	body := string(data)
-	check := map[string]bool{
-		"final title":          strings.HasPrefix(strings.TrimSpace(body), "# "),
-		"Purpose section":      strings.Contains(body, "\n## Purpose\n"),
-		"Requirements section": strings.Contains(body, "\n## Requirements\n"),
-		"proposal issue URL":   proposalURL != "" && strings.Contains(body, proposalURL),
-		"no delta headings":    !containsDeltaHeading(body),
-	}
-	for _, spec := range specs {
-		if spec.URL != "" {
-			check["source "+spec.Comment.ID+" URL"] = strings.Contains(body, spec.URL)
-		}
-	}
-	return check, nil
-}
-
-func containsDeltaHeading(body string) bool {
-	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		switch trimmed {
-		case "## ADDED Requirements", "## MODIFIED Requirements", "## REMOVED Requirements", "## RENAMED Requirements":
-			return true
-		}
-	}
-	return false
-}
-
 func printFinalVerify(out interface{ Write([]byte) (int, error) }, report finalVerifyReport) {
 	if report.OK {
 		fmt.Fprintln(out, "final verify OK")
@@ -1374,9 +1545,6 @@ func printFinalVerify(out interface{ Write([]byte) (int, error) }, report finalV
 	}
 	for _, process := range report.ProcessEvidence {
 		fmt.Fprintf(out, "process evidence: %s\n", process.Summary())
-	}
-	if report.DurableSpecPath != "" {
-		fmt.Fprintf(out, "durable spec: %s\n", report.DurableSpecPath)
 	}
 	for _, err := range report.Errors {
 		fmt.Fprintf(out, "- %s\n", err)

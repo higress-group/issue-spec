@@ -54,24 +54,30 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/155#issu
 
 ### Requirement: A CLI check verifies the PR closure block against the expected issue set
 
-issue-spec MUST expose a CLI verification check that reads an implementation PR body and validates its managed issue-closure block against the declared set of expected issues (one or more of proposal/design/implement), exiting non-zero when the block is missing, incomplete, tampered, or does not exactly match the declared set, and exiting zero when it matches. The check MUST accept the same optional-flag (at least one required) semantics that `pr link-issues` uses to write the block, so a subset block written for a change lacking an artifact can still be verified. The check MUST reuse the existing closure-block verification logic (the same routine used by the post-merge archive path) so pre-merge and post-merge verdicts stay consistent, and it MUST be exercisable both by an agent during the workflow and by a repository CI gate.
+The CLI MUST verify an implementation PR's managed closing-link block against the exact declared proposal, design, and implement issue set before merge, and MUST fail on missing, incomplete, tampered, or unexpected links. This closure check MAY be selected as a project required test/check but MUST remain outside the minimal core final-verification contract. GitHub native merge closes linked issues, while self-hosted issue close-change MUST use authoritative exact merged evidence and active binding idempotently without creating an artifact, gate, code revision, or pull request.
 
-#### Scenario: check passes on a complete block
+#### Scenario: closure block passes for the exact issue set
 
-- **WHEN** the check runs against a PR whose body holds the managed block covering all expected issues
-- **THEN** it SHALL exit zero and report the block as complete
+- **WHEN** the implementation PR body contains the managed closing links for every declared lifecycle issue and no unexpected issue
+- **THEN** pr verify-closure SHALL exit successfully
 
-#### Scenario: check fails non-zero on a missing or incomplete block
+#### Scenario: missing or tampered closure block fails
 
-- **WHEN** the check runs against a PR whose body is missing the block or covers only a subset of the expected issues
-- **THEN** it SHALL exit non-zero and name the missing or unexpected closure links
+- **WHEN** the managed block is absent, incomplete, malformed, tampered, or contains an unexpected lifecycle issue
+- **THEN** pr verify-closure MUST fail non-zero with the exact missing or unexpected links
 
-#### Scenario: check is wired into a pre-merge gate
+#### Scenario: closure policy remains project-selected
 
-- **WHEN** the workflow reaches the point where an implementation PR is ready to merge
-- **THEN** the closure check SHALL be part of the pre-merge verification surface so the gate runs without a separate manual step
+- **WHEN** a project requires mechanical pre-merge closure validation
+- **THEN** the workflow MAY seal pr verify-closure as a required test/check while core final MUST NOT hard-code closure state
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/155#issuecomment-4905760523
+#### Scenario: self-hosted closure is bounded bookkeeping
+
+- **WHEN** the exact active external implementation is authoritatively merged
+- **THEN** issue close-change SHALL close only the bound proposal, design, and implement issues idempotently without Archive or evidence revalidation
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452933
 
 ### Requirement: Workflow guidance makes link-issues the final PR-body write
 

@@ -32,11 +32,14 @@ func TestInitGlobalPromptsDryRunPrintsAbsolutePathsWithoutWriting(t *testing.T) 
 	if !strings.Contains(out.String(), "user-global prompt dry-run:") {
 		t.Fatalf("stdout does not distinguish the global dry-run:\n%s", out.String())
 	}
-	for _, command := range []string{"propose", "apply", "review", "verify", "archive"} {
+	for _, command := range []string{"propose", "apply", "review", "verify"} {
 		path := filepath.Join(target, "issue-spec-"+command+".md")
 		if !strings.Contains(out.String(), path) {
 			t.Fatalf("stdout missing complete global prompt path %q:\n%s", path, out.String())
 		}
+	}
+	if path := filepath.Join(target, "issue-spec-archive.md"); strings.Contains(out.String(), path) {
+		t.Fatalf("stdout unexpectedly includes removed Archive prompt path %q:\n%s", path, out.String())
 	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatalf("global prompt dry-run wrote target directory, err=%v", err)

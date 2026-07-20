@@ -1,6 +1,8 @@
 package assignment
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -258,6 +260,9 @@ func validateVerification(p VerificationPayload, subject string) error {
 	if p.SubjectRevision != subject {
 		return errors.New("verification.subject_revision: must equal subject_revision")
 	}
+	if err := validateVerifierGuidance(p.Guidance); err != nil {
+		return err
+	}
 	if len(p.RequiredTests) == 0 && len(p.RequiredChecks) == 0 {
 		return errors.New("verification: at least one required test or provider check is required")
 	}
@@ -265,6 +270,58 @@ func validateVerification(p VerificationPayload, subject string) error {
 		return err
 	}
 	return validateCheckSelectors("verification.required_checks", p.RequiredChecks)
+}
+
+func validateVerifierGuidance(value *VerifierGuidance) error {
+	if value == nil {
+		return nil
+	}
+	if len(value.Context) == 0 && len(value.RulesVerify) == 0 && len(value.Instructions) == 0 {
+		return errors.New("verifier guidance: at least one declarative field is required")
+	}
+	if err := validateGuidanceJSON("verifier guidance context", value.Context, true); err != nil {
+		return err
+	}
+	if err := validateGuidanceJSON("verifier guidance rules_verify", value.RulesVerify, false); err != nil {
+		return err
+	}
+	if len(value.Instructions) > maxListItems {
+		return fmt.Errorf("verifier guidance instructions: exceeds %d items", maxListItems)
+	}
+	seen := map[string]int{}
+	for i, instruction := range value.Instructions {
+		if err := validateRequiredText(fmt.Sprintf("verifier guidance instructions[%d].artifact_id", i), instruction.ArtifactID, maxIDLength); err != nil {
+			return err
+		}
+		if err := validateRequiredText(fmt.Sprintf("verifier guidance instructions[%d].text", i), instruction.Text, maxTextLength); err != nil {
+			return err
+		}
+		if err := recordIdentityKey(seen, "verifier guidance instructions", i, instruction.ArtifactID, instruction.ArtifactID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateGuidanceJSON(name string, value json.RawMessage, requireObject bool) error {
+	if len(value) == 0 {
+		return nil
+	}
+	if len(value) > maxTextLength {
+		return fmt.Errorf("%s: exceeds %d bytes", name, maxTextLength)
+	}
+	if !json.Valid(value) {
+		return fmt.Errorf("%s: must be one valid JSON value", name)
+	}
+	if requireObject {
+		decoder := json.NewDecoder(bytes.NewReader(value))
+		decoder.UseNumber()
+		var decoded map[string]any
+		if err := decoder.Decode(&decoded); err != nil || decoded == nil {
+			return fmt.Errorf("%s: must be a JSON object", name)
+		}
+	}
+	return nil
 }
 
 func (p ProcessInput) Validate() error {

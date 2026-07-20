@@ -44,8 +44,6 @@ const (
 	CodeProviderEvidenceUnknown   = "provider.evidence.unknown"
 	CodeVerifyRevisionInvalid     = "verify.revision.invalid"
 	CodeVerifyRevisionUnknown     = "verify.revision.unknown"
-	CodeDurableSpecInvalid        = "durable_spec.invalid"
-	CodeDurableSpecUnknown        = "durable_spec.unknown"
 	CodeProcessReviewRequired     = "process.review.required"
 )
 
@@ -57,6 +55,11 @@ func Evaluate(snapshot Snapshot) (Report, error) {
 	}
 	if err := snapshot.Mode.validate(); err != nil {
 		return Report{}, err
+	}
+	// TargetFinal has one current policy. The explicit, non-serializable bridge
+	// keeps pre-snapshot in-process callers working for one compatibility window.
+	if snapshot.Target == TargetFinal && !snapshot.LegacyFinalCompatibility {
+		return evaluateMinimalFinal(snapshot), nil
 	}
 
 	selection := finalization.Select(snapshot.Artifacts)
@@ -520,9 +523,6 @@ func (e *evaluator) evaluateRemoteFacts() {
 		e.evaluateFact(process.PRLink, CodeProcessPRLinkUnknown, CodeProcessPRLinkMissing, "PROCESS PR link is unknown", "PROCESS does not link the required PR", "pr link-process", ref)
 		e.evaluateFact(process.Evidence, CodeProcessEvidenceUnknown, CodeProcessEvidenceMissing, "PROCESS evidence is unknown", "PROCESS evidence is missing", "pr rationale", ref)
 	}
-	if e.snapshot.Target == TargetArchive {
-		e.evaluateFact(e.snapshot.Remote.DurableSpec, CodeDurableSpecUnknown, CodeDurableSpecInvalid, "durable spec state is unknown", "durable spec is missing or invalid", "archive durable-spec", ArtifactRef{})
-	}
 }
 
 func (e *evaluator) evaluateFact(fact Fact, unknownCode, failedCode, unknownMessage, failedMessage, command string, artifact ArtifactRef, args ...string) {
@@ -599,7 +599,7 @@ func diagnosticSemanticKey(diagnostic Diagnostic) string {
 }
 
 func atLeast(actual, threshold Target) bool {
-	order := map[Target]int{TargetProposal: 0, TargetDesign: 1, TargetImplement: 2, TargetFinal: 3, TargetArchive: 4}
+	order := map[Target]int{TargetProposal: 0, TargetDesign: 1, TargetImplement: 2, TargetFinal: 3}
 	return order[actual] >= order[threshold]
 }
 
