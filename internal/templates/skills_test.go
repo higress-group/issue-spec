@@ -33,6 +33,17 @@ func TestIssueSpecSkillAndCommandTemplates(t *testing.T) {
 			t.Fatalf("normal generated commands still expose Archive: %s", command.ID)
 		}
 	}
+	propose := skillContent(t, skills, "issue-spec-propose")
+	for _, want := range []string{
+		"rules.language",
+		"rules.language_instructions",
+		"pass an explicit `--title` for Proposal, Design, and Implement",
+		"retains an English stage prefix",
+	} {
+		if !strings.Contains(propose, want) {
+			t.Fatalf("issue-spec-propose missing title guidance %q", want)
+		}
+	}
 }
 
 func TestCoordinatorGuidanceKeepsActionsStopsAndRecovery(t *testing.T) {
