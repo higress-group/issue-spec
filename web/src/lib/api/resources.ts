@@ -86,8 +86,9 @@ export const api = {
   createManagedPAT: (orgId: string, userId: string, body: unknown) => apiRequest(`/api/v1/orgs/${orgId}/users/${userId}/pats`, { method: "POST", body, schema: createdSecretSchema }),
   rotateManagedPAT: (orgId: string, tokenId: string) => apiRequest(`/api/v1/orgs/${orgId}/pats/${tokenId}/rotate`, { method: "POST", schema: createdSecretSchema }),
   revokeManagedPAT: (orgId: string, tokenId: string) => apiRequest<void>(`/api/v1/orgs/${orgId}/pats/${tokenId}`, { method: "DELETE" }),
-  userCandidates: (orgId: string, purpose: string, query = "", match = "prefix", signal?: AbortSignal) => {
+  userCandidates: (orgId: string, purpose: string, query = "", match = "prefix", signal?: AbortSignal, limit?: number) => {
     const params = new URLSearchParams({ purpose, query, match });
+    if (limit !== undefined) params.set("limit", String(limit));
     return apiRequest<{ users: UserCandidate[] }>(`/api/v1/orgs/${orgId}/user-candidates?${params}`, { signal });
   },
   activeSourceBinding: async (orgId: string, repoId: string, signal?: AbortSignal) => {

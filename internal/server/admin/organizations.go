@@ -230,8 +230,8 @@ func (s *Service) InviteMembership(ctx context.Context, actor Actor, orgID uuid.
 		}
 		var err error
 		if existingErr == nil {
-			err = tx.QueryRow(ctx, `UPDATE org_memberships SET role = $3, state = 'invited',
-				invited_by_user_id = $4, invited_at = $5, activated_at = NULL, archived_at = NULL,
+			err = tx.QueryRow(ctx, `UPDATE org_memberships SET role = $3, state = 'active',
+				invited_by_user_id = $4, invited_at = $5, activated_at = $5, archived_at = NULL,
 				updated_at = $5, representation_version = representation_version + 1
 				WHERE organization_id = $1 AND id = $2
 				RETURNING id, organization_id, user_id, role, state, invited_by_user_id,
@@ -244,7 +244,7 @@ func (s *Service) InviteMembership(ctx context.Context, actor Actor, orgID uuid.
 			err = tx.QueryRow(ctx, `INSERT INTO org_memberships
 			(id, organization_id, user_id, role, state, invited_by_user_id, invited_at,
 			 activated_at, archived_at, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, 'invited', $5, $6, NULL, NULL, $6, $6)
+			VALUES ($1, $2, $3, $4, 'active', $5, $6, $6, NULL, $6, $6)
 			RETURNING id, organization_id, user_id, role, state, invited_by_user_id,
 			invited_at, activated_at, archived_at, representation_version, created_at, updated_at`,
 				membershipID, orgID, input.UserID, input.Role, actor.UserID, now).

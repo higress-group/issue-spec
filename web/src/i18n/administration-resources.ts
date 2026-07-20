@@ -6,7 +6,7 @@ export const administrationResources = {
       serviceAccounts: "Service accounts", managedTokens: "Managed access tokens", name: "Name", displayName: "Display name",
       description: "Description", defaultBranch: "Default branch", visibility: "Visibility", role: "Role", localLogin: "Local login",
       invited: "invited", active: "active", suspended: "suspended", disabled: "disabled", restricted: "restricted", notMounted: "not mounted", unknownUser: "Unknown local user",
-      resolvedLogin: "Resolved @{{login}}", resolveLogin: "Resolve login", removeUser: "Remove {{login}}", noDescription: "No description has been written yet.",
+      resolvedLogin: "Resolved @{{login}}", resolvedUser: "Selected {{name}} (@{{login}})", resolveLogin: "Resolve login", removeUser: "Remove {{login}}", noDescription: "No description has been written yet.",
       representation: "Representation v{{version}}", save: "Save", loading: "Loading", notReported: "Not reported",
       permission: { none: "None", read: "Read", reader: "Reader", triage: "Triage", write: "Write", member: "Member", maintain: "Maintain", maintainer: "Maintainer", admin: "Admin", owner: "Owner" },
       visibilityValue: { private: "Private", internal: "Internal", public: "Public" },
@@ -41,9 +41,9 @@ export const administrationResources = {
       settingsSaved: "Organization settings saved.", baseRepositoryPermission: "Base repository permission", saveSettings: "Save settings",
     },
     members: {
-      eyebrow: "Organization / access", title: "Members", description: "Resolve immutable local logins without exposing a global user directory.",
-      inviteTitle: "Invite by exact login", inviteDescription: "Prefix suggestions stay tenant-scoped; an external account is resolved only by exact login.",
-      loginRequired: "Login is required", resolveFirstError: "Resolve a login first", resolveBeforeInvite: "Resolve before inviting", invite: "Invite member",
+      eyebrow: "Organization / access", title: "Members", description: "Search active users by local login and add members without browsing a global user directory.",
+      inviteTitle: "Find and add a member", inviteDescription: "Search active users by local login, then add the selected person directly to the organization.",
+      loginRequired: "Login is required", resolveFirstError: "Choose a user first", resolveBeforeInvite: "Search for and choose a user before adding.", invite: "Add member", suggestions: "User suggestions",
       current: "Current membership", roleFor: "Role for {{login}}", remove: "Remove {{login}}",
     },
     serviceAccounts: {
@@ -137,7 +137,7 @@ export const administrationResources = {
       source: "源仓库", webhooks: "Webhook", members: "成员", serviceAccounts: "服务账号", managedTokens: "托管访问令牌",
       name: "名称", displayName: "显示名称", description: "说明", defaultBranch: "默认分支", visibility: "可见范围", role: "角色", localLogin: "本地登录名",
       invited: "待接受", active: "正常", suspended: "已暂停", disabled: "已停用", restricted: "权限不足", notMounted: "未启用", unknownUser: "未知本地用户",
-      resolvedLogin: "已确认 @{{login}}", resolveLogin: "确认登录名", removeUser: "移除 {{login}}", noDescription: "尚未填写说明。",
+      resolvedLogin: "已确认 @{{login}}", resolvedUser: "已选择 {{name}}（@{{login}}）", resolveLogin: "确认登录名", removeUser: "移除 {{login}}", noDescription: "尚未填写说明。",
       representation: "版本 v{{version}}", save: "保存", loading: "正在加载", notReported: "未提供",
       permission: { none: "无权限", read: "只读", reader: "阅读者", triage: "分类", write: "写入", member: "成员", maintain: "维护", maintainer: "维护者", admin: "管理", owner: "所有者" },
       visibilityValue: { private: "私有", internal: "内部可见", public: "公开" },
@@ -171,9 +171,9 @@ export const administrationResources = {
       baseRepositoryPermission: "仓库默认权限", saveSettings: "保存设置",
     },
     members: {
-      eyebrow: "组织 / 访问控制", title: "组织成员", description: "通过准确的本地登录名添加成员，不会暴露全站用户目录。",
-      inviteTitle: "按登录名邀请", inviteDescription: "前缀建议仅限当前组织；组织外用户只有在登录名完全匹配时才会被确认。",
-      loginRequired: "请填写登录名", resolveFirstError: "请先确认登录名", resolveBeforeInvite: "请先确认用户，再发送邀请", invite: "邀请成员",
+      eyebrow: "组织 / 访问控制", title: "组织成员", description: "按本地登录名前缀搜索活跃用户并添加成员，不能浏览全站用户目录。",
+      inviteTitle: "查找并添加成员", inviteDescription: "按本地登录名前缀搜索活跃用户，选中后将直接加入组织。",
+      loginRequired: "请填写登录名", resolveFirstError: "请先选择用户", resolveBeforeInvite: "请先搜索并选择用户，再添加成员。", invite: "添加成员", suggestions: "用户建议",
       current: "当前成员", roleFor: "{{login}} 的角色", remove: "移除 {{login}}",
     },
     serviceAccounts: {

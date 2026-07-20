@@ -169,6 +169,12 @@ p { line-height: 1.65; color: var(--muted); }
 .input-action { display: grid; grid-template-columns: 1fr auto; gap: .35rem; }
 .input-action .icon-button { border-color: #bfc1ba; background: var(--surface-strong); }
 .resolve-state { align-self: center; min-width: 150px; color: var(--muted); font-size: .78rem; }
+.user-autocomplete { position: relative; }
+.user-candidate-suggestions { background: var(--surface); border: 1px solid var(--line); border-radius: .55rem; box-shadow: var(--shadow); left: 0; list-style: none; margin: .3rem 0 0; max-height: 18rem; overflow-y: auto; padding: .3rem; position: absolute; right: 0; top: 100%; z-index: 8; }
+.user-candidate-suggestions li { align-items: center; border-radius: .4rem; cursor: pointer; display: flex; gap: .6rem; padding: .45rem .55rem; }
+.user-candidate-suggestions li[aria-selected="true"] { background: rgba(15,111,111,.1); }
+.user-candidate-suggestions strong, .user-candidate-suggestions small { display: block; }
+.user-candidate-suggestions small { color: var(--muted); font-size: .75rem; margin-top: .1rem; }
 
 .resource-list { display: grid; }
 .resource-row { display: grid; grid-template-columns: minmax(180px, 1.4fr) minmax(150px, 1fr) auto; align-items: center; gap: 1rem; min-height: 4.4rem; padding: .85rem .25rem; border-bottom: 1px solid var(--line); }
