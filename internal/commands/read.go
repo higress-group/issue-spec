@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/auth"
@@ -20,7 +22,7 @@ const (
 
 func (a *app) runRead(ctx context.Context, args []string) int {
 	if len(args) < 1 {
-		a.errorf("usage: issue-spec read issue --repo owner/repo --issue N [--comments] [--typed-only]\n")
+		a.errorf("usage: issue-spec read issue --repo owner/repo --issue N [--comments] [--typed-only] [--comment ID]\n")
 		a.errorf("       issue-spec read pr --repo owner/repo --pr N [--comments] [--typed-only]\n")
 		return 2
 	}
@@ -42,6 +44,7 @@ func (a *app) runReadIssue(ctx context.Context, args []string) int {
 	issueFlag := fs.String("issue", "", "issue number or URL")
 	comments := fs.Bool("comments", false, "include comments")
 	typedOnly := fs.Bool("typed-only", false, "restrict comments to issue-spec typed comments")
+	commentFlag := fs.String("comment", "", "read only the comment with this ID; an issue URL with a #issuecomment-<id> anchor sets it automatically")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
 	}
@@ -50,6 +53,11 @@ func (a *app) runReadIssue(ctx context.Context, args []string) int {
 		return 2
 	}
 	issueNumber, err := parseIssueFlag(*issueFlag, "issue")
+	if err != nil {
+		a.errorf("%v\n", err)
+		return 2
+	}
+	targetComment, err := resolveTargetComment(*commentFlag, *issueFlag)
 	if err != nil {
 		a.errorf("%v\n", err)
 		return 2
@@ -76,6 +84,28 @@ func (a *app) runReadIssue(ctx context.Context, args []string) int {
 	fmt.Fprintf(&b, "\nissue: #%d\n", issue.Number)
 	writeTrustedField(&b, redactor, "url", issue.HTMLURL)
 	writeTrustedField(&b, redactor, "state", issue.State)
+
+	// A targeted comment ID locks the read onto that single comment: emit only the
+	// issue identity header plus the matching comment, skipping the issue body and
+	// the --comments/--typed-only listing. Filtering client-side over
+	// ListIssueComments keeps this portable across GitHub and self-hosted backends.
+	if targetComment != 0 {
+		list, err := client.ListIssueComments(ctx, repo, issueNumber)
+		if err != nil {
+			a.errorf("read issue #%d comments: %v\n", issueNumber, err)
+			return 1
+		}
+		for i := range list {
+			if list[i].ID == targetComment {
+				writeIssueComment(&b, nonce, redactor, list[i])
+				fmt.Fprint(a.out, b.String())
+				return 0
+			}
+		}
+		a.errorf("read issue #%d: comment %d not found\n", issueNumber, targetComment)
+		return 1
+	}
+
 	writeUntrustedField(&b, nonce, redactor, "title", issue.Title)
 	writeUntrustedField(&b, nonce, redactor, "body", issue.Body)
 
@@ -86,20 +116,65 @@ func (a *app) runReadIssue(ctx context.Context, args []string) int {
 			return 1
 		}
 		for _, c := range list {
-			typed := model.IsLikelyTyped(c.Body)
-			if *typedOnly && !typed {
+			if *typedOnly && !model.IsLikelyTyped(c.Body) {
 				continue
 			}
-			fmt.Fprintf(&b, "\ncomment: %d\n", c.ID)
-			writeTrustedField(&b, redactor, "url", c.HTMLURL)
-			writeTrustedField(&b, redactor, "author", commentAuthor(c.User))
-			fmt.Fprintf(&b, "typed: %t\n", typed)
-			writeUntrustedField(&b, nonce, redactor, "comment_body", c.Body)
+			writeIssueComment(&b, nonce, redactor, c)
 		}
 	}
 
 	fmt.Fprint(a.out, b.String())
 	return 0
+}
+
+// resolveTargetComment resolves the comment the read should lock onto, from an
+// explicit --comment ID or a #issuecomment-<id> anchor on the issue URL. It
+// returns 0 when neither selects a comment, and errors when both are present but
+// disagree.
+func resolveTargetComment(commentFlag, issueValue string) (int64, error) {
+	anchor, hasAnchor := commentAnchorID(issueValue)
+	if strings.TrimSpace(commentFlag) != "" {
+		id, err := strconv.ParseInt(strings.TrimSpace(commentFlag), 10, 64)
+		if err != nil || id <= 0 {
+			return 0, fmt.Errorf("--comment must be a positive comment ID")
+		}
+		if hasAnchor && anchor != id {
+			return 0, fmt.Errorf("--comment %d conflicts with the issue URL anchor #issuecomment-%d", id, anchor)
+		}
+		return id, nil
+	}
+	if hasAnchor {
+		return anchor, nil
+	}
+	return 0, nil
+}
+
+// commentAnchorID extracts the comment ID from a #issuecomment-<id> URL fragment,
+// the anchor form used by both GitHub and the self-hosted Server web UI.
+func commentAnchorID(issueValue string) (int64, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(issueValue))
+	if err != nil {
+		return 0, false
+	}
+	const prefix = "issuecomment-"
+	if !strings.HasPrefix(parsed.Fragment, prefix) {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(strings.TrimPrefix(parsed.Fragment, prefix), 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
+
+// writeIssueComment renders one issue comment block: trusted metadata plus the
+// nonce-fenced untrusted body.
+func writeIssueComment(b *strings.Builder, nonce string, redactor github.ExternalCLIRedactor, c github.Comment) {
+	fmt.Fprintf(b, "\ncomment: %d\n", c.ID)
+	writeTrustedField(b, redactor, "url", c.HTMLURL)
+	writeTrustedField(b, redactor, "author", commentAuthor(c.User))
+	fmt.Fprintf(b, "typed: %t\n", model.IsLikelyTyped(c.Body))
+	writeUntrustedField(b, nonce, redactor, "comment_body", c.Body)
 }
 
 func (a *app) runReadPR(ctx context.Context, args []string) int {
