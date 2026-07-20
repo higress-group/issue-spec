@@ -49,12 +49,12 @@ func (a *app) runWorkspaceIntegrate(ctx context.Context, args []string) int {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: requestedWorkspaceID}, "reservation_identity_mismatch",
 			fmt.Errorf("requested workspace id %q differs from remote reservation %q", requestedWorkspaceID, remoteLease.WorkspaceID), *flags.jsonOut)
 	}
-	manager, err := processworkspace.OpenManager(ctx, *flags.integration, *flags.workspaceRoot, processworkspace.ManagerOptions{})
+	manager, err := a.openWorkspace(ctx, *flags.integration, *flags.workspaceRoot, processworkspace.ManagerOptions{})
 	if err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "manager_open_failed", err, *flags.jsonOut)
 	}
 	workspaceID := remoteLease.WorkspaceID
-	localLease, found, err := manager.Store.Get(ctx, workspaceID)
+	localLease, found, err := manager.Store().Get(ctx, workspaceID)
 	if err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: workspaceID}, "reservation_observation_failed", err, *flags.jsonOut)
 	}

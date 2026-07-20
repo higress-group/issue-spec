@@ -3,7 +3,26 @@ NPM ?= npm
 DIST_DIR ?= dist
 IMAGE ?= issue-spec-server:dev
 
-.PHONY: generate-web verify-generated verify-docs verify-requirements-acceptance docs-self-hosted-screenshots build-server test-server release-server release-cli verify-release docker-server backup-smoke
+.PHONY: generate-web verify-generated verify-docs verify-requirements-acceptance docs-self-hosted-screenshots build-server test-server release-server release-cli verify-release docker-server backup-smoke test-fast test-git-contract test-full test-baseline
+
+# test-fast runs the deterministic, Git-free command orchestration tier and
+# asserts its wall time against testdata/test-baseline.json.
+test-fast:
+	./scripts/test-tier.sh fast
+
+# test-git-contract runs the bounded real-Git contract tier (real
+# worktree/recovery/integration coverage plus the command-to-real-workspace
+# smoke path).
+test-git-contract:
+	./scripts/test-tier.sh git-contract
+
+# test-full runs the whole-module test suite.
+test-full:
+	./scripts/test-tier.sh full
+
+# test-baseline records a fresh same-host cold-cache baseline.
+test-baseline:
+	./scripts/test-tier.sh baseline
 
 generate-web:
 	cd web && $(NPM) ci && $(NPM) run build

@@ -1486,6 +1486,7 @@ func TestRunnerPollAsyncRunsPeriodicReconcileWhenDispatchIdle(t *testing.T) {
 }
 
 func TestRunnerPollAsyncDispatchCleansWorkspacesAfterStartup(t *testing.T) {
+	skipWithoutRealGit(t)
 	clearCommandAuthEnv(t)
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	workspaceRoot := t.TempDir()

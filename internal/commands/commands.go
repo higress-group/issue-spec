@@ -21,6 +21,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/commentrunner/jobs"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
 
 type app struct {
@@ -53,6 +54,7 @@ type app struct {
 	readRequirementsSecret         func(io.Reader, io.Writer) (string, error)
 	stdinIsTerminal                func(io.Reader) bool
 	resolveFinalizationBaseline    func(context.Context, string, string) (string, error)
+	openWorkspace                  func(context.Context, string, string, processworkspace.ManagerOptions) (workspaceService, error)
 }
 
 type commandFunc func(context.Context, []string) int
@@ -176,6 +178,7 @@ func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 		newNativeCodeChangeBackend:  defaultNewNativeCodeChangeBackend,
 		lookupOperatorProvider:      defaultResolveOperatorProvider,
 		resolveFinalizationBaseline: defaultResolveFinalizationBaseline,
+		openWorkspace:               defaultOpenWorkspace,
 	}
 }
 

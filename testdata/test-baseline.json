@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "description": "Same-host cold-cache baseline for the command orchestration test tier. baseline_ms is the full-tier (real-Git) execution wall time reported by the internal/testsupport reporter (TEST-TIER-SUMMARY duration_ms) for the internal/commands package, measured with a cold Go test cache (go clean -testcache) so it reflects the cost a developer pays running the full suite on a fresh checkout. The fast tier (go test -short) is asserted against this baseline by scripts/test-tier.sh.",
+  "package": "github.com/higress-group/issue-spec/internal/commands",
+  "baseline_ms": 8427,
+  "budget": {
+    "max_ratio": 0.25,
+    "max_ms": 30000,
+    "rule": "fast tier passes when duration_ms <= max(max_ratio * baseline_ms, max_ms)"
+  },
+  "method": "go clean -testcache && go test -v ./internal/commands/ (parse TEST-TIER-SUMMARY duration_ms)",
+  "recorded_on": "2026-07-20",
+  "notes": "The fast tier retains the full non-Git orchestration suite and only excludes real-Git contract tests, so its wall time is dominated by non-Git test work and host parallelism rather than Git spawning; the absolute 30s bound is the governing budget on high-core hosts."
+}

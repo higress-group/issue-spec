@@ -332,14 +332,14 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 	if err := processworkspace.ValidateManagedOwnership(portable.WriteOwnership, portable.SharedTouchpoints); err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: portable.WorkspaceID}, "reservation_invalid", err, *flags.jsonOut)
 	}
-	manager, err := processworkspace.OpenManager(ctx, *flags.integration, *flags.workspaceRoot, processworkspace.ManagerOptions{})
+	manager, err := a.openWorkspace(ctx, *flags.integration, *flags.workspaceRoot, processworkspace.ManagerOptions{})
 	if err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: portable.WorkspaceID}, "manager_open_failed", err, *flags.jsonOut)
 	}
-	local := processworkspace.LocalLease{Portable: portable, IntegrationRoot: manager.IntegrationRoot,
+	local := processworkspace.LocalLease{Portable: portable, IntegrationRoot: manager.IntegrationRootPath(),
 		Owner: processworkspace.LeaseOwner{CoordinatorID: strings.TrimSpace(*coordinator),
 			Token: strings.TrimSpace(*flags.ownerToken), PID: os.Getpid(), AcquiredAt: time.Now().UTC()}, LocalRevision: 1}
-	existingLocal, localFound, err := manager.Store.Get(ctx, portable.WorkspaceID)
+	existingLocal, localFound, err := manager.Store().Get(ctx, portable.WorkspaceID)
 	if err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: portable.WorkspaceID}, "reservation_observation_failed", err, *flags.jsonOut)
 	}
@@ -1075,11 +1075,11 @@ func markdownFence(line string) (byte, int, string, bool) {
 	return marker, end - indent, line[end:], true
 }
 
-func prepareNoCheckout(ctx context.Context, manager *processworkspace.Manager, lease processworkspace.LocalLease) (processworkspace.Inspection, error) {
+func prepareNoCheckout(ctx context.Context, manager workspaceService, lease processworkspace.LocalLease) (processworkspace.Inspection, error) {
 	lease.Portable.State = processworkspace.StatePrepared
-	created, err := manager.Store.Create(ctx, lease)
+	created, err := manager.Store().Create(ctx, lease)
 	if errors.Is(err, processworkspace.ErrLeaseExists) {
-		existing, found, getErr := manager.Store.Get(ctx, lease.Portable.WorkspaceID)
+		existing, found, getErr := manager.Store().Get(ctx, lease.Portable.WorkspaceID)
 		if getErr != nil || !found {
 			return processworkspace.Inspection{}, errors.Join(err, getErr)
 		}
@@ -1116,7 +1116,7 @@ func (a *app) runWorkspaceInspect(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "process_observation_failed", err, *flags.jsonOut)
 	}
-	manager, err := processworkspace.OpenManager(ctx, *flags.integration, *flags.workspaceRoot, processworkspace.ManagerOptions{})
+	manager, err := a.openWorkspace(ctx, *flags.integration, *flags.workspaceRoot, processworkspace.ManagerOptions{})
 	if err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "manager_open_failed", err, *flags.jsonOut)
 	}
@@ -1131,8 +1131,8 @@ func (a *app) runWorkspaceInspect(ctx context.Context, args []string) int {
 	return a.outputWorkspace(result, *flags.jsonOut)
 }
 
-func inspectWorkspace(ctx context.Context, manager *processworkspace.Manager, workspaceID string) (processworkspace.Inspection, error) {
-	lease, found, err := manager.Store.Get(ctx, workspaceID)
+func inspectWorkspace(ctx context.Context, manager workspaceService, workspaceID string) (processworkspace.Inspection, error) {
+	lease, found, err := manager.Store().Get(ctx, workspaceID)
 	if err != nil || !found {
 		if err == nil {
 			err = processworkspace.ErrLeaseNotFound
@@ -1169,8 +1169,8 @@ func (a *app) runWorkspaceComplete(ctx context.Context, args []string) int {
 		}
 		receipt = &value
 	}
-	return a.runWorkspaceLocalRemoteMutation(ctx, flags, repo, issue, processID, "complete", func(ctx context.Context, manager *processworkspace.Manager, target workspaceRemoteTarget, workspaceID string) (processworkspace.Inspection, error) {
-		local, found, err := manager.Store.Get(ctx, workspaceID)
+	return a.runWorkspaceLocalRemoteMutation(ctx, flags, repo, issue, processID, "complete", func(ctx context.Context, manager workspaceService, target workspaceRemoteTarget, workspaceID string) (processworkspace.Inspection, error) {
+		local, found, err := manager.Store().Get(ctx, workspaceID)
 		if err != nil || !found {
 			if err == nil {
 				err = processworkspace.ErrLeaseNotFound
@@ -1261,7 +1261,7 @@ func validateCompletionConvergence(remote processworkspace.PortableLease, local 
 	return nil
 }
 
-type workspaceMutation func(context.Context, *processworkspace.Manager, workspaceRemoteTarget, string) (processworkspace.Inspection, error)
+type workspaceMutation func(context.Context, workspaceService, workspaceRemoteTarget, string) (processworkspace.Inspection, error)
 
 func (a *app) runWorkspaceLocalRemoteMutation(ctx context.Context, flags workspaceCommandFlags, repo string, issue int, processID, action string, mutate workspaceMutation) int {
 	target, err := a.loadWorkspaceRemote(ctx, flags, repo, issue, processID)
@@ -1274,7 +1274,7 @@ func (a *app) runWorkspaceLocalRemoteMutation(ctx context.Context, flags workspa
 	if code, managementErr := managedWorkspaceLifecycleProblem(target, processID); managementErr != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, code, managementErr, *flags.jsonOut)
 	}
-	manager, err := processworkspace.OpenManager(ctx, *flags.integration, *flags.workspaceRoot, processworkspace.ManagerOptions{})
+	manager, err := a.openWorkspace(ctx, *flags.integration, *flags.workspaceRoot, processworkspace.ManagerOptions{})
 	if err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "manager_open_failed", err, *flags.jsonOut)
 	}
@@ -1317,7 +1317,7 @@ func (a *app) runWorkspaceReconcile(ctx context.Context, args []string) int {
 	if !ok {
 		return 2
 	}
-	return a.runWorkspaceLocalRemoteMutation(ctx, flags, repo, issue, processID, "reconciled", func(ctx context.Context, manager *processworkspace.Manager, _ workspaceRemoteTarget, workspaceID string) (processworkspace.Inspection, error) {
+	return a.runWorkspaceLocalRemoteMutation(ctx, flags, repo, issue, processID, "reconciled", func(ctx context.Context, manager workspaceService, _ workspaceRemoteTarget, workspaceID string) (processworkspace.Inspection, error) {
 		lease, err := ownedWorkspaceLease(ctx, manager, workspaceID, *flags.ownerToken)
 		if err != nil {
 			return processworkspace.Inspection{Lease: lease}, err
@@ -1346,7 +1346,7 @@ func (a *app) runWorkspaceCleanup(ctx context.Context, args []string) int {
 	if err := validateWorkspaceWriteBoundary(target, flags); err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "remote_precondition_failed", err, *flags.jsonOut)
 	}
-	manager, err := processworkspace.OpenManager(ctx, *flags.integration, *flags.workspaceRoot, processworkspace.ManagerOptions{})
+	manager, err := a.openWorkspace(ctx, *flags.integration, *flags.workspaceRoot, processworkspace.ManagerOptions{})
 	if err != nil {
 		return a.workspaceError(workspaceCommandResult{Repo: repo, Issue: issue, ProcessID: processID}, "manager_open_failed", err, *flags.jsonOut)
 	}
@@ -1357,7 +1357,7 @@ func (a *app) runWorkspaceCleanup(ctx context.Context, args []string) int {
 	}
 	if lease.Portable.State != processworkspace.StateCleaned {
 		if lease.Portable.State != processworkspace.StateCleanupPending {
-			lease, err = manager.Store.Update(ctx, workspaceID, func(current *processworkspace.LocalLease) error {
+			lease, err = manager.Store().Update(ctx, workspaceID, func(current *processworkspace.LocalLease) error {
 				if current.Owner.Token != strings.TrimSpace(*flags.ownerToken) {
 					return errors.New("lease owner token changed during cleanup")
 				}
@@ -1389,8 +1389,8 @@ func (a *app) runWorkspaceCleanup(ctx context.Context, args []string) int {
 	return a.outputWorkspace(workspaceResult(ctx, manager, inspection, repo, issue, processID, "cleaned", remoteResult), *flags.jsonOut)
 }
 
-func ownedWorkspaceLease(ctx context.Context, manager *processworkspace.Manager, workspaceID, ownerToken string) (processworkspace.LocalLease, error) {
-	lease, found, err := manager.Store.Get(ctx, workspaceID)
+func ownedWorkspaceLease(ctx context.Context, manager workspaceService, workspaceID, ownerToken string) (processworkspace.LocalLease, error) {
+	lease, found, err := manager.Store().Get(ctx, workspaceID)
 	if err != nil {
 		return lease, err
 	}
@@ -1429,8 +1429,8 @@ func appendRemoteWorkspaceProblems(result *workspaceCommandResult, body string, 
 	}
 }
 
-func workspaceResult(ctx context.Context, manager *processworkspace.Manager, inspection processworkspace.Inspection, repo string, issue int, processID, action string, remote workspaceRemoteResult) workspaceCommandResult {
-	registry, _ := manager.Store.Load(ctx)
+func workspaceResult(ctx context.Context, manager workspaceService, inspection processworkspace.Inspection, repo string, issue int, processID, action string, remote workspaceRemoteResult) workspaceCommandResult {
+	registry, _ := manager.Store().Load(ctx)
 	lease := inspection.Lease
 	return workspaceCommandResult{OK: true, Action: action, Repo: repo, Issue: issue, ProcessID: processID, WorkspaceID: lease.Portable.WorkspaceID,
 		Generation: registry.Generation, LocalRevision: lease.LocalRevision, State: lease.Portable.State, ExecutionClass: lease.Portable.ExecutionClass,
@@ -1450,9 +1450,9 @@ func acceptedReceiptIDForResult(lease processworkspace.LocalLease) string {
 	return lease.AcceptedReceiptID
 }
 
-func (a *app) workspaceLocalFailure(ctx context.Context, manager *processworkspace.Manager, inspection processworkspace.Inspection, repo string, issue int, processID, code string, err error, jsonOut bool) int {
+func (a *app) workspaceLocalFailure(ctx context.Context, manager workspaceService, inspection processworkspace.Inspection, repo string, issue int, processID, code string, err error, jsonOut bool) int {
 	if inspection.Lease.Portable.WorkspaceID != "" {
-		if current, found, getErr := manager.Store.Get(ctx, inspection.Lease.Portable.WorkspaceID); getErr == nil && found {
+		if current, found, getErr := manager.Store().Get(ctx, inspection.Lease.Portable.WorkspaceID); getErr == nil && found {
 			inspection.Lease = current
 		}
 	}
