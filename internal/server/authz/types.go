@@ -168,7 +168,7 @@ func permissionFromRole(role string) Permission {
 		return PermissionAdmin
 	case "maintainer", "maintain":
 		return PermissionMaintain
-	case "write":
+	case "member", "write":
 		return PermissionWrite
 	case "triage":
 		return PermissionTriage
