@@ -294,15 +294,25 @@ func TestTenantLifecycleSoftArchiveCASAndCrossOrgIsolation(t *testing.T) {
 	actor.RequestID = "invite-member"
 	membership, err := service.InviteMembership(t.Context(), actor, orgA.ID,
 		adminservice.InviteMembershipInput{UserID: memberID, Role: "member"})
-	if err != nil || membership.State != models.MembershipInvited {
+	if err != nil || membership.State != models.MembershipActive || membership.ActivatedAt == nil {
 		t.Fatalf("InviteMembership = %+v, %v", membership, err)
 	}
-	actor.RequestID = "activate-member"
+	actor.RequestID = "change-member-role"
 	membership, err = service.UpdateMembership(t.Context(), actor, orgA.ID, membership.ID,
-		adminservice.UpdateMembershipInput{Role: "member", State: models.MembershipActive,
+		adminservice.UpdateMembershipInput{Role: "maintainer", State: models.MembershipActive,
 			ExpectedVersion: membership.RepresentationVersion})
+	if err != nil || membership.Role != "maintainer" || membership.State != models.MembershipActive || membership.ActivatedAt == nil {
+		t.Fatalf("UpdateMembership = %+v, %v", membership, err)
+	}
+	actor.RequestID = "archive-member"
+	if err := service.ArchiveMembership(t.Context(), actor, orgA.ID, membership.ID, membership.RepresentationVersion); err != nil {
+		t.Fatalf("ArchiveMembership = %v", err)
+	}
+	actor.RequestID = "readd-member"
+	membership, err = service.InviteMembership(t.Context(), actor, orgA.ID,
+		adminservice.InviteMembershipInput{UserID: memberID, Role: "member"})
 	if err != nil || membership.State != models.MembershipActive || membership.ActivatedAt == nil {
-		t.Fatalf("ActivateMembership = %+v, %v", membership, err)
+		t.Fatalf("ReaddMembership = %+v, %v", membership, err)
 	}
 	ownerMembership := findMembership(t, service, orgA.ID, adminUser.ID)
 	actor.RequestID = "reinvite-owner-as-reader"

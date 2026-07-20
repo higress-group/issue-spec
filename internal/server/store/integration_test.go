@@ -73,7 +73,7 @@ func TestRunMigrationsConcurrentAndIdempotent(t *testing.T) {
 	}
 	// Keep the forward-only migration-set assertion synchronized with the
 	// latest embedded file.
-	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0018_verified_email_mentions.sql" {
+	if count != int(LatestSchemaVersion) || version != LatestSchemaVersion || name != "0019_activate_invited_memberships.sql" {
 		t.Fatalf("migration metadata = count %d, version %d, name %q", count, version, name)
 	}
 	identity := New(pool)
@@ -92,6 +92,68 @@ func TestRunMigrationsConcurrentAndIdempotent(t *testing.T) {
 	fresh, err := New(freshPool).ServerInstanceID(t.Context())
 	if err != nil || fresh == first {
 		t.Fatalf("fresh database identity = %q, first=%q err=%v", fresh, first, err)
+	}
+}
+
+func TestDirectMembershipMigrationActivatesInvitedMemberships(t *testing.T) {
+	pool := newIntegrationPool(t)
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `CREATE TABLE schema_migrations (
+		version bigint PRIMARY KEY, name text NOT NULL, checksum bytea NOT NULL,
+		applied_at timestamptz NOT NULL DEFAULT clock_timestamp())`); err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range migrations[:18] {
+		if _, err := pool.Exec(t.Context(), migration.sql); err != nil {
+			t.Fatalf("apply pre-v19 %s: %v", migration.Name, err)
+		}
+		if _, err := pool.Exec(t.Context(), `INSERT INTO schema_migrations (version, name, checksum)
+			VALUES ($1, $2, $3)`, migration.Version, migration.Name, migration.checksum); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	inviterID, memberID, orgID := uuid.New(), uuid.New(), uuid.New()
+	invitedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	for _, user := range []struct {
+		id    uuid.UUID
+		login string
+	}{{inviterID, "membership-inviter"}, {memberID, "membership-invitee"}} {
+		if _, err := pool.Exec(t.Context(), `INSERT INTO users (id, login, display_name) VALUES ($1, $2, $2)`, user.id, user.login); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO orgs (id, name, display_name) VALUES ($1, 'membership-migration', 'membership-migration')`, orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO org_memberships
+		(id, organization_id, user_id, role, state, invited_by_user_id, invited_at, created_at, updated_at)
+		VALUES ($1, $2, $3, 'member', 'invited', $4, $5, $5, $5)`, uuid.New(), orgID, memberID, inviterID, invitedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RunMigrations(t.Context(), pool); err != nil {
+		t.Fatalf("RunMigrations() error = %v", err)
+	}
+	var state string
+	var activatedAt time.Time
+	var membershipVersion, collectionVersion int64
+	if err := pool.QueryRow(t.Context(), `SELECT state, activated_at, representation_version
+		FROM org_memberships WHERE organization_id = $1 AND user_id = $2`, orgID, memberID).
+		Scan(&state, &activatedAt, &membershipVersion); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" || !activatedAt.Equal(invitedAt) || membershipVersion != 2 {
+		t.Fatalf("migrated membership = state %q, activated_at %s, version %d", state, activatedAt, membershipVersion)
+	}
+	if err := pool.QueryRow(t.Context(), `SELECT members_collection_version FROM orgs WHERE id = $1`, orgID).Scan(&collectionVersion); err != nil {
+		t.Fatal(err)
+	}
+	if collectionVersion != 2 {
+		t.Fatalf("members collection version = %d, want 2", collectionVersion)
 	}
 }
 

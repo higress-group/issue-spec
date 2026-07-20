@@ -45,6 +45,9 @@ func TestRepositoryAuthorizationMatrix(t *testing.T) {
 	member.IdentityActive = true
 	member.OrganizationMember = true
 	member.BasePermission = models.BasePermissionTriage
+	memberRole := member
+	memberRole.BasePermission = models.BasePermissionRead
+	memberRole.OrganizationRole = "member"
 	owner := member
 	owner.OrganizationRole = "owner"
 
@@ -66,6 +69,7 @@ func TestRepositoryAuthorizationMatrix(t *testing.T) {
 		{"private outsider concealed", active(serverauth.CredentialSession), RepositoryRequest{Scope: scope, Operation: OperationRead}, authorityFacts{Exists: true, IdentityActive: true, Visibility: models.VisibilityPrivate}, false, false, ReasonInvisible, PermissionNone, false},
 		{"base permission grants triage", active(serverauth.CredentialSession), RepositoryRequest{Scope: scope, Operation: OperationTriage}, member, true, true, ReasonAllowed, PermissionTriage, false},
 		{"base permission caps write", active(serverauth.CredentialSession), RepositoryRequest{Scope: scope, Operation: OperationWrite}, member, false, true, ReasonInsufficientPermission, PermissionTriage, false},
+		{"member role grants write across organization repositories", active(serverauth.CredentialSession), RepositoryRequest{Scope: scope, Operation: OperationWrite}, memberRole, true, true, ReasonAllowed, PermissionWrite, false},
 		{"owner grants admin", active(serverauth.CredentialSession), RepositoryRequest{Scope: scope, Operation: OperationAdminRepository}, owner, true, true, ReasonAllowed, PermissionAdmin, false},
 		{"collaborator raises permission", active(serverauth.CredentialSession), RepositoryRequest{Scope: scope, Operation: OperationWrite}, authorityFacts{Exists: true, IdentityActive: true, Visibility: models.VisibilityPrivate, CollaboratorRole: "write"}, true, true, ReasonAllowed, PermissionWrite, false},
 		{"pat repository cap fails closed", patFor([]string{"repo"}, otherRepoID), RepositoryRequest{Scope: scope, Operation: OperationRead}, owner, false, false, ReasonRepositoryCap, PermissionNone, false},

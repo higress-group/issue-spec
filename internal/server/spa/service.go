@@ -255,7 +255,7 @@ func (s *Service) UserCandidates(ctx context.Context, principal serverauth.Princ
 		return UserCandidates{}, ErrInvalidInput
 	}
 	query = strings.TrimSpace(query)
-	if match == MatchExact && query == "" {
+	if (match == MatchExact || purpose == PurposeMembership) && query == "" {
 		return UserCandidates{}, ErrInvalidInput
 	}
 	if limit <= 0 {
@@ -279,20 +279,37 @@ func (s *Service) UserCandidates(ctx context.Context, principal serverauth.Princ
 			AND rc.archived_at IS NULL AND r.archived_at IS NULL))`
 	visibility := associated
 	args := []any{orgID}
-	if match == MatchExact && (purpose == PurposeMembership || purpose == PurposeCollaborator) {
-		args = append(args, strings.ToLower(query))
-		visibility = `(` + associated + ` OR (u.login_key = $2 AND u.status = 'active' AND NOT EXISTS (
+	externalMatch := ""
+	if purpose == PurposeMembership || (purpose == PurposeCollaborator && match == MatchExact) {
+		queryArgument := strings.ToLower(query)
+		if match == MatchPrefix {
+			queryArgument = likePrefix(queryArgument)
+		}
+		args = append(args, queryArgument)
+		if purpose == PurposeMembership && match == MatchPrefix {
+			externalMatch = fmt.Sprintf(`(u.login_key LIKE $%[1]d ESCAPE '\' OR lower(COALESCE(u.nickname, u.display_name)) LIKE $%[1]d ESCAPE '\')`, len(args))
+		} else if match == MatchPrefix {
+			externalMatch = fmt.Sprintf(`u.login_key LIKE $%d ESCAPE '\'`, len(args))
+		} else {
+			externalMatch = fmt.Sprintf("u.login_key = $%d", len(args))
+		}
+		visibility = `(` + associated + ` OR (` + externalMatch + ` AND u.status = 'active' AND NOT EXISTS (
 			SELECT 1 FROM service_accounts any_sa WHERE any_sa.user_id = u.id)))`
 	}
 	filters := []string{visibility}
-	if match == MatchPrefix && query != "" {
-		args = append(args, strings.ToLower(query)+"%")
-		filters = append(filters, fmt.Sprintf("u.login_key LIKE $%d", len(args)))
+	if externalMatch != "" {
+		filters = append(filters, externalMatch)
+	} else if match == MatchPrefix && query != "" {
+		args = append(args, likePrefix(query))
+		filters = append(filters, fmt.Sprintf(`u.login_key LIKE $%d ESCAPE '\'`, len(args)))
 	} else if match == MatchExact {
 		if len(args) == 1 {
 			args = append(args, strings.ToLower(query))
 		}
 		filters = append(filters, fmt.Sprintf("u.login_key = $%d", len(args)))
+	}
+	if purpose == PurposeMembership {
+		filters = append(filters, "u.status = 'active'", "NOT EXISTS (SELECT 1 FROM service_accounts any_sa WHERE any_sa.user_id = u.id)")
 	}
 	if purpose == PurposeManagedPAT {
 		filters = append(filters, "u.status = 'active'", "((m.id IS NOT NULL AND m.state = 'active') OR (sa.id IS NOT NULL AND sa.disabled_at IS NULL))")
@@ -337,6 +354,10 @@ func (s *Service) UserCandidates(ctx context.Context, principal serverauth.Princ
 		return UserCandidates{}, fmt.Errorf("spa: iterate user candidates: %w", err)
 	}
 	return result, nil
+}
+
+func likePrefix(query string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(strings.ToLower(query)) + "%"
 }
 
 func (s *Service) avatarURL(login string) string {

@@ -58,6 +58,22 @@ func TestUserNicknameMigrationKeepsProviderNameSeparate(t *testing.T) {
 	}
 }
 
+func TestDirectMembershipMigrationMetadata(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directMembership := migrations[18]
+	if directMembership.Version != 19 || directMembership.Name != "0019_activate_invited_memberships.sql" {
+		t.Fatalf("direct membership migration = %+v", directMembership.MigrationInfo)
+	}
+	for _, contract := range []string{"UPDATE org_memberships", "state = 'active'", "representation_version = representation_version + 1", "members_collection_version = members_collection_version + 1"} {
+		if !containsSQL(directMembership.sql, contract) {
+			t.Errorf("direct membership migration is missing %q", contract)
+		}
+	}
+}
+
 func TestLoadMigrationsIncludesCompleteInitialSchema(t *testing.T) {
 	migrations, err := loadMigrations()
 	if err != nil {

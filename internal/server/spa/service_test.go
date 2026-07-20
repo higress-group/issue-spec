@@ -32,6 +32,7 @@ func TestCurrentContextAndTenantSafeCandidates(t *testing.T) {
 	memberID := insertSPAUser(t, pool, "member")
 	collaboratorID := insertSPAUser(t, pool, "collaborator")
 	outsiderID := insertSPAUser(t, pool, "outsider")
+	nicknameID := insertSPAUser(t, pool, "unrelated-login")
 	otherTenantID := insertSPAUser(t, pool, "other-tenant")
 	serviceUserID := insertSPAUser(t, pool, "svc-bot")
 	orgID := insertSPAOrg(t, pool, "alpha")
@@ -135,12 +136,45 @@ func TestCurrentContextAndTenantSafeCandidates(t *testing.T) {
 	if len(exact.Users) != 1 || exact.Users[0].ID != outsiderID {
 		t.Fatalf("exact candidate = %+v", exact.Users)
 	}
+	prefix, err := service.UserCandidates(t.Context(), principal, orgID, PurposeMembership, MatchPrefix, "out", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefix.Users) != 1 || prefix.Users[0].ID != outsiderID {
+		t.Fatalf("prefix membership candidate = %+v", prefix.Users)
+	}
+	if _, err := pool.Exec(t.Context(), `UPDATE users SET nickname = 'Alicia' WHERE id = $1`, nicknameID); err != nil {
+		t.Fatal(err)
+	}
+	nicknamePrefix, err := service.UserCandidates(t.Context(), principal, orgID, PurposeMembership, MatchPrefix, "ali", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nicknamePrefix.Users) != 1 || nicknamePrefix.Users[0].ID != nicknameID || nicknamePrefix.Users[0].DisplayName != "Alicia" {
+		t.Fatalf("nickname prefix membership candidate = %+v", nicknamePrefix.Users)
+	}
+	if _, err := service.UserCandidates(t.Context(), principal, orgID, PurposeMembership, MatchPrefix, "", 10); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("empty membership prefix error = %v", err)
+	}
+	serviceAccounts, err := service.UserCandidates(t.Context(), principal, orgID, PurposeMembership, MatchPrefix, "svc", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(serviceAccounts.Users) != 0 {
+		t.Fatalf("membership candidates include service accounts = %+v", serviceAccounts.Users)
+	}
 	managed, err := service.UserCandidates(t.Context(), principal, orgID, PurposeManagedPAT, MatchExact, "outsider", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(managed.Users) != 0 {
 		t.Fatalf("unassociated managed PAT candidates = %+v", managed.Users)
+	}
+}
+
+func TestLikePrefixEscapesSQLWildcards(t *testing.T) {
+	if got, want := likePrefix(`A_%\\name`), `a\_\%\\\\name%`; got != want {
+		t.Fatalf("likePrefix() = %q, want %q", got, want)
 	}
 }
 
