@@ -100,8 +100,6 @@ func TestServerBindPolicyAppliesToConfiguredAndInjectedListeners(t *testing.T) {
 		name   string
 		config Config
 	}{
-		{"wildcard", Config{ListenAddress: "0.0.0.0:8080"}},
-		{"plaintext non-loopback", Config{ListenAddress: "192.0.2.10:8080"}},
 		{"production without TLS", Config{ListenAddress: "192.0.2.10:8443", Production: true}},
 		{"production loopback", Config{ListenAddress: "127.0.0.1:8443", Production: true, TLSCertFile: "cert", TLSKeyFile: "key"}},
 	} {
@@ -121,6 +119,12 @@ func TestServerBindPolicyAppliesToConfiguredAndInjectedListeners(t *testing.T) {
 	}
 	if _, err := New(Config{ListenAddress: "127.0.0.1:0"}, handler); err != nil {
 		t.Fatalf("loopback development bind denied: %v", err)
+	}
+	if _, err := New(Config{ListenAddress: "192.0.2.10:8080"}, handler); err != nil {
+		t.Fatalf("plaintext non-loopback bind denied: %v", err)
+	}
+	if _, err := New(Config{ListenAddress: "0.0.0.0:8080"}, handler); err != nil {
+		t.Fatalf("wildcard bind denied: %v", err)
 	}
 }
 

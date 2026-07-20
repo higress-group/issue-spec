@@ -59,7 +59,7 @@ func New(config Config, handler *webhook.Handler) (*Service, error) {
 	if config.Listener != nil {
 		bindAddress = config.Listener.Addr().String()
 	}
-	if err := validateBind(bindAddress, config.TLSCertFile != "", config.Production); err != nil {
+	if err := validateBind(bindAddress, config.Production); err != nil {
 		return nil, err
 	}
 	if config.Production && config.TLSCertFile == "" {
@@ -177,20 +177,18 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 }
 
-func validateBind(address string, tlsEnabled, production bool) error {
+// validateBind intentionally imposes no plaintext or wildcard restriction: the
+// runner webhook server may bind any address (including 0.0.0.0) over plaintext
+// on trusted internal networks. Production still requires an explicit
+// non-loopback address; the separate TLS requirement is enforced in New.
+func validateBind(address string, production bool) error {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(address))
 	if err != nil {
 		return fmt.Errorf("runner webhook server: listen address must be host:port: %w", err)
 	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		return errors.New("runner webhook server: wildcard listen addresses are not allowed")
-	}
 	loopback := strings.EqualFold(host, "localhost")
 	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
 		loopback = ip.IsLoopback()
-	}
-	if !tlsEnabled && !loopback {
-		return errors.New("runner webhook server: plaintext listeners are restricted to loopback")
 	}
 	if production && loopback {
 		return errors.New("runner webhook server: production listener must use an explicit non-loopback address")

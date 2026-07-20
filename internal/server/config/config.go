@@ -37,6 +37,7 @@ const (
 	HealthWriteTimeoutEnv      = "HEALTH_WRITE_TIMEOUT"
 	StaticDirectoryEnv         = "STATIC_DIRECTORY"
 	WebhookAllowedPrivateEnv   = "WEBHOOK_ALLOWED_PRIVATE_CIDRS"
+	WebhookAllowAnyPrivateEnv  = "WEBHOOK_ALLOW_ANY_PRIVATE_DESTINATION"
 	DeliveryConcurrencyEnv     = "DELIVERY_CONCURRENCY"
 	DeliveryLeaseDurationEnv   = "DELIVERY_LEASE_DURATION"
 	DeliveryPollIntervalEnv    = "DELIVERY_POLL_INTERVAL"
@@ -142,6 +143,7 @@ type Config struct {
 	HealthWriteTimeout      time.Duration    `json:"health_write_timeout"`
 	StaticDirectory         string           `json:"static_directory,omitempty"`
 	WebhookAllowedPrivate   []netip.Prefix   `json:"webhook_allowed_private_cidrs,omitempty"`
+	WebhookAllowAnyPrivate  bool             `json:"webhook_allow_any_private_destination,omitempty"`
 	DeliveryConcurrency     int              `json:"delivery_concurrency"`
 	DeliveryLeaseDuration   time.Duration    `json:"delivery_lease_duration"`
 	DeliveryPollInterval    time.Duration    `json:"delivery_poll_interval"`
@@ -213,6 +215,11 @@ func Load() (Config, error) {
 	}
 	if cfg.WebhookAllowedPrivate, err = parsePrefixes(WebhookAllowedPrivateEnv, env(WebhookAllowedPrivateEnv)); err != nil {
 		return Config{}, err
+	}
+	if value := env(WebhookAllowAnyPrivateEnv); value != "" {
+		if cfg.WebhookAllowAnyPrivate, err = strconv.ParseBool(value); err != nil {
+			return Config{}, fmt.Errorf("%s: %w", WebhookAllowAnyPrivateEnv, err)
+		}
 	}
 	if cfg.GracefulShutdownTimeout, err = parseDuration(GracefulShutdownTimeoutEnv, cfg.GracefulShutdownTimeout); err != nil {
 		return Config{}, err

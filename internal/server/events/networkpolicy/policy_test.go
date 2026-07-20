@@ -51,6 +51,24 @@ func TestPolicyBlocksSpecialAddressesAndRequiresExplicitPrivateAllowance(t *test
 	}
 }
 
+func TestPolicyAllowAnyPrivateBypassesCIDRAllowlistButKeepsSpecialDenials(t *testing.T) {
+	policy := Policy{Production: true, AllowAnyPrivate: true}
+	for _, raw := range []string{"10.0.0.1", "172.16.0.1", "192.168.1.1", "fc00::1"} {
+		if err := policy.CheckAddress(netip.MustParseAddr(raw)); err != nil {
+			t.Fatalf("private address %s denied without allowlist: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{"127.0.0.1", "169.254.1.1", "169.254.169.254",
+		"100.100.100.200", "fd00:ec2::254", "0.0.0.0", "224.0.0.1", "::1", "fe80::1", "ff02::1"} {
+		if err := policy.CheckAddress(netip.MustParseAddr(raw)); !errors.Is(err, ErrAddressDenied) {
+			t.Fatalf("unsafe address %s allowed under AllowAnyPrivate: %v", raw, err)
+		}
+	}
+	if err := policy.CheckAddress(netip.MustParseAddr("93.184.216.34")); err != nil {
+		t.Fatalf("public address denied: %v", err)
+	}
+}
+
 func TestPolicyAllowsHTTPForTrustedInternalProduction(t *testing.T) {
 	if _, err := (Policy{Production: true, AllowHTTP: true}).ValidateURL("http://runner.intra.example/api/v1/runner/webhooks"); err != nil {
 		t.Fatalf("trusted internal HTTP receiver rejected: %v", err)

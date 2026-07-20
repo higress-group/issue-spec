@@ -322,7 +322,8 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) 
 		return 2
 	}
 	service, err := runnerserver.New(runnerserver.Config{ListenAddress: *listen, TLSCertFile: *tlsCert,
-		TLSKeyFile: *tlsKey, Production: *production, ReadHeaderTimeout: *readHeaderTimeout,
+		TLSKeyFile: *tlsKey, Production: *production,
+		ReadHeaderTimeout: *readHeaderTimeout,
 		ReadTimeout: *readTimeout, WriteTimeout: *writeTimeout, IdleTimeout: *idleTimeout,
 		ShutdownTimeout: *shutdownTimeout, MaxHeaderBytes: *maxHeader, MaxConnections: *maxConnections}, handler)
 	if err != nil {
