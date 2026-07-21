@@ -68,6 +68,15 @@ func TestInitLanguageWritesWorkflowConfigWithGeneratedTools(t *testing.T) {
 		!strings.Contains(cfg.Rules["language_instructions"], "**WHEN**") {
 		t.Fatalf("language_instructions missing canonical token guidance: %q", cfg.Rules["language_instructions"])
 	}
+	for _, want := range []string{
+		"keep the English stage prefix",
+		"`Proposal: <change-name>`",
+		"do not rewrite these staged titles into Simplified Chinese (简体中文)",
+	} {
+		if !strings.Contains(cfg.Rules["language_instructions"], want) {
+			t.Fatalf("language_instructions missing staged-title guidance %q: %q", want, cfg.Rules["language_instructions"])
+		}
+	}
 	if !strings.Contains(out.String(), "workflow language: Simplified Chinese") {
 		t.Fatalf("stdout missing language line: %q", out.String())
 	}

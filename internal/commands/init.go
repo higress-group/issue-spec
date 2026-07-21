@@ -254,7 +254,7 @@ func writeWorkflowLanguageConfig(root, language string) (string, error) {
 		rules = map[string]any{}
 	}
 	rules["language"] = display
-	rules["language_instructions"] = fmt.Sprintf("Write all natural-language content (issue titles, descriptions, rationale, design notes, and QUESTION/REVIEW/VERIFY/scenario prose) in %s. Keep canonical structural tokens in English so validation passes: the `## Requirement:` and `### Scenario:` headings, the `**WHEN**`/`**THEN**` scenario bullets, the MUST/SHALL normative keywords, and typed comment headers.", display)
+	rules["language_instructions"] = fmt.Sprintf("Write natural-language body content (descriptions, rationale, design notes, questions, decisions, findings, task descriptions, verification summaries, and QUESTION/REVIEW/VERIFY/scenario prose) in %[1]s. For Proposal, Design, and Implement issue titles, keep the English stage prefix plus the kebab-case change name to match the standardized title family: `Proposal: <change-name>`, `Design: <change-name>`, `Implement: <change-name>`; either omit --title to use the CLI-derived title or pass --title in exactly that `Stage: <change-name>` shape, and do not rewrite these staged titles into %[1]s. Ordinary (non-staged) issue titles use a descriptive %[1]s title. Keep canonical structural tokens in English so validation passes: the `## Requirement:` and `### Scenario:` headings, the `**WHEN**`/`**THEN**` scenario bullets, the MUST/SHALL normative keywords, and typed comment headers.", display)
 	cfg["rules"] = rules
 
 	out, err := yaml.Marshal(cfg)
