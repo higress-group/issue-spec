@@ -609,6 +609,7 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	allowCancel := fs.Bool("allow-cancel", defaults.CancellationEnabled, "allow authorized cancellation commands")
 	codexFullAccess := fs.Bool("codex-agent-full-access", defaults.Agent.CodexAgentFullAccess, "require Codex agent-full-access policy for workflow CLI/shell work")
 	claudeFullAccess := fs.Bool("claude-agent-full-access", defaults.Agent.ClaudeAgentFullAccess, "require Claude agent-full-access policy for workflow CLI/shell work")
+	qoderFullAccess := fs.Bool("qoder-agent-full-access", defaults.Agent.QoderAgentFullAccess, "require Qoder agent-full-access policy for workflow CLI/shell work")
 	claudeIncludeSettings := fs.Bool("claude-include-user-settings", defaults.Agent.ClaudeIncludeUserSettings, "set ACPX_CLAUDE_INCLUDE_USER_SETTINGS for Claude Code")
 	// Logging flags
 	logDir := fs.String("log-dir", defaults.LogDir, "directory for persistent diagnostic logs; default is a sibling 'logs/' directory beside the state file")
@@ -771,6 +772,9 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	}
 	if seen["claude-agent-full-access"] {
 		cfg.Agent.ClaudeAgentFullAccess = *claudeFullAccess
+	}
+	if seen["qoder-agent-full-access"] {
+		cfg.Agent.QoderAgentFullAccess = *qoderFullAccess
 	}
 	if seen["claude-include-user-settings"] {
 		cfg.Agent.ClaudeIncludeUserSettings = *claudeIncludeSettings

@@ -75,6 +75,7 @@ type AgentConfig struct {
 	ClaudeAgentFullAccess     bool     `json:"claude_agent_full_access"`
 	ClaudeIncludeUserSettings bool     `json:"claude_include_user_settings"`
 	ClaudeAllowedTools        []string `json:"claude_allowed_tools,omitempty"`
+	QoderAgentFullAccess      bool     `json:"qoder_agent_full_access"`
 }
 
 func NewDuration(value time.Duration) Duration {

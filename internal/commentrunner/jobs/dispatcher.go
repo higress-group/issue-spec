@@ -2705,6 +2705,9 @@ func AcpxConfigForKind(cfg commentrunner.Config, kind string) acpx.Config {
 	if kind == commentrunner.AgentClaude && cfg.Agent.ClaudeAgentFullAccess {
 		permissions = acpx.PermissionApproveAll
 	}
+	if kind == commentrunner.AgentQoder && cfg.Agent.QoderAgentFullAccess {
+		permissions = acpx.PermissionApproveAll
+	}
 	model := ""
 	if kind == cfg.Agent.Kind {
 		model = cfg.Agent.Model

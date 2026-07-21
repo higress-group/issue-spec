@@ -2249,6 +2249,57 @@ func TestAcpxConfigForKindDerivesPerAgentBehavior(t *testing.T) {
 	}
 }
 
+func TestAcpxConfigForKindDerivesQoderBehavior(t *testing.T) {
+	cfg := commentrunner.Config{
+		AcpxPath: "acpx",
+		Agent: commentrunner.AgentConfig{
+			Kind:                      commentrunner.AgentQoder,
+			Model:                     "ultimate",
+			ClaudeAgentFullAccess:     true,
+			ClaudeIncludeUserSettings: true,
+			ClaudeAllowedTools:        []string{"Task", "Bash"},
+		},
+	}
+
+	defaultCfg := AcpxConfigForKind(cfg, commentrunner.AgentQoder)
+	if defaultCfg.Agent != commentrunner.AgentQoder {
+		t.Fatalf("default agent = %q, want qoder", defaultCfg.Agent)
+	}
+	if defaultCfg.MaxPermissions != acpx.PermissionApproveReads {
+		t.Fatalf("default permissions = %v, want approve-reads", defaultCfg.MaxPermissions)
+	}
+	if defaultCfg.Mode != "" {
+		t.Fatalf("default mode = %q, want empty", defaultCfg.Mode)
+	}
+	if defaultCfg.Model != "ultimate" {
+		t.Fatalf("default model = %q, want operator model", defaultCfg.Model)
+	}
+	if defaultCfg.ClaudeIncludeUserSettings || defaultCfg.ClaudeAllowedTools != nil {
+		t.Fatalf("qoder config leaked claude settings: %+v", defaultCfg)
+	}
+
+	cfg.Agent.QoderAgentFullAccess = true
+	fullAccess := AcpxConfigForKind(cfg, commentrunner.AgentQoder)
+	if fullAccess.MaxPermissions != acpx.PermissionApproveAll {
+		t.Fatalf("full-access permissions = %v, want approve-all", fullAccess.MaxPermissions)
+	}
+	if fullAccess.Mode != "" {
+		t.Fatalf("full-access mode = %q, want empty (qoder has no acpx mode)", fullAccess.Mode)
+	}
+
+	cfg.Agent.Kind = commentrunner.AgentCodex
+	secondary := AcpxConfigForKind(cfg, commentrunner.AgentQoder)
+	if secondary.Model != "" {
+		t.Fatalf("secondary model = %q, want empty (own default)", secondary.Model)
+	}
+	if secondary.MaxPermissions != acpx.PermissionApproveAll {
+		t.Fatalf("secondary permissions = %v, want approve-all from qoder full access", secondary.MaxPermissions)
+	}
+	if secondary.ClaudeIncludeUserSettings || secondary.ClaudeAllowedTools != nil {
+		t.Fatalf("secondary qoder config leaked claude settings: %+v", secondary)
+	}
+}
+
 func TestAcpxAdapterFactoryOverridesConfigForCoordinatorKind(t *testing.T) {
 	factory := AcpxAdapterFactory{
 		Config: acpx.Config{Binary: "acpx", Agent: commentrunner.AgentCodex},
