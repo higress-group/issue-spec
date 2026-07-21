@@ -1786,6 +1786,9 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 	if err := mirrorHostClaudeConfig(&cfg); err != nil {
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
+	if err := mirrorHostQoderConfig(&cfg); err != nil {
+		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
+	}
 	return cfg, resolvedAcpxBinary, ghAuthMirror, nil
 }
 
@@ -2573,6 +2576,99 @@ func copyLimitedFiles(source, dest string, names []string) error {
 		if err := os.Chmod(targetPath, mode); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+var qoderRuntimeDirFiles = []string{"settings.json"}
+
+// mirrorHostQoderConfig mirrors the operator's qodercli configuration into the
+// sandbox temporary HOME: settings.json (model, reasoning effort, context
+// window) plus the regular files inside .auth/ (credentials). qodercli
+// resolves configuration from $HOME/.qoder and the sandbox already points HOME
+// at TempHome, so no dedicated environment variable is required. A missing
+// host configuration is not an error.
+func mirrorHostQoderConfig(cfg *sandbox.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("sandbox config is required")
+	}
+	sourceHome := hostHomeDir(cfg.HostEnv)
+	if sourceHome == "" || strings.TrimSpace(cfg.TempHome) == "" {
+		return nil
+	}
+	sourceHome = filepath.Clean(sourceHome)
+	tempHome := filepath.Clean(cfg.TempHome)
+	if sameCleanPath(sourceHome, tempHome) {
+		return nil
+	}
+	if err := copyLimitedFiles(filepath.Join(sourceHome, ".qoder"), filepath.Join(tempHome, ".qoder"), qoderRuntimeDirFiles); err != nil {
+		return fmt.Errorf("materialize host qoder config from %s to %s: %w", filepath.Join(sourceHome, ".qoder"), filepath.Join(tempHome, ".qoder"), err)
+	}
+	if err := copyLimitedDir(filepath.Join(sourceHome, ".qoder", ".auth"), filepath.Join(tempHome, ".qoder", ".auth")); err != nil {
+		return fmt.Errorf("materialize host qoder auth from %s to %s: %w", filepath.Join(sourceHome, ".qoder", ".auth"), filepath.Join(tempHome, ".qoder", ".auth"), err)
+	}
+	return nil
+}
+
+// copyLimitedDir mirrors the regular files directly inside source into dest
+// without recursing. Symlinks, subdirectories, and other non-regular entries
+// are skipped, and mirrored files that no longer exist as regular files on the
+// host are removed from dest. A missing source directory mirrors nothing.
+func copyLimitedDir(source, dest string) error {
+	regular := map[string]bool{}
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		entries = nil
+	}
+	for _, entry := range entries {
+		sourcePath := filepath.Join(source, entry.Name())
+		targetPath := filepath.Join(dest, entry.Name())
+		info, err := os.Lstat(sourcePath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				_ = os.Remove(targetPath)
+				continue
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || info.IsDir() || !info.Mode().IsRegular() {
+			_ = os.Remove(targetPath)
+			continue
+		}
+		regular[entry.Name()] = true
+		data, err := os.ReadFile(sourcePath)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(dest, 0o700); err != nil {
+			return err
+		}
+		mode := info.Mode().Perm()
+		if mode == 0 {
+			mode = 0o600
+		}
+		if err := os.WriteFile(targetPath, data, mode); err != nil {
+			return err
+		}
+		if err := os.Chmod(targetPath, mode); err != nil {
+			return err
+		}
+	}
+	destEntries, err := os.ReadDir(dest)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range destEntries {
+		if regular[entry.Name()] || entry.IsDir() {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dest, entry.Name()))
 	}
 	return nil
 }

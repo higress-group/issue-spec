@@ -2488,6 +2488,74 @@ func writeFileWithMode(t *testing.T, path string, data []byte, mode os.FileMode)
 	}
 }
 
+func TestMirrorHostQoderConfigCopiesSettingsAndAuth(t *testing.T) {
+	hostHome := t.TempDir()
+	tempHome := t.TempDir()
+	settings := `{"model":{"name":"ultimate","reasoningEffort":"max","contextWindow":400000}}`
+	writeFileWithMode(t, filepath.Join(hostHome, ".qoder", "settings.json"), []byte(settings), 0o600)
+	writeFileWithMode(t, filepath.Join(hostHome, ".qoder", ".auth", "id"), []byte("token-id"), 0o600)
+	writeFileWithMode(t, filepath.Join(hostHome, ".qoder", ".auth", "user"), []byte("user-info"), 0o640)
+	if err := os.MkdirAll(filepath.Join(hostHome, ".qoder", ".auth", "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(hostHome, ".qoder", "settings.json"), filepath.Join(hostHome, ".qoder", ".auth", "linked")); err != nil {
+		t.Fatal(err)
+	}
+	writeFileWithMode(t, filepath.Join(hostHome, ".qoder", "qoder.log"), []byte("log"), 0o600)
+
+	cfg := sandbox.Config{HostEnv: []string{"HOME=" + hostHome}, TempHome: tempHome}
+	if err := mirrorHostQoderConfig(&cfg); err != nil {
+		t.Fatalf("mirrorHostQoderConfig returned error: %v", err)
+	}
+
+	assertFileContentAndMode(t, filepath.Join(tempHome, ".qoder", "settings.json"), settings, 0o600)
+	assertFileContentAndMode(t, filepath.Join(tempHome, ".qoder", ".auth", "id"), "token-id", 0o600)
+	assertFileContentAndMode(t, filepath.Join(tempHome, ".qoder", ".auth", "user"), "user-info", 0o640)
+	for _, absent := range []string{
+		filepath.Join(tempHome, ".qoder", ".auth", "nested"),
+		filepath.Join(tempHome, ".qoder", ".auth", "linked"),
+		filepath.Join(tempHome, ".qoder", "qoder.log"),
+	} {
+		if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s exists after mirror: %v", absent, err)
+		}
+	}
+}
+
+func TestMirrorHostQoderConfigMissingHostConfigIsNoop(t *testing.T) {
+	tempHome := t.TempDir()
+	cfg := sandbox.Config{HostEnv: []string{"HOME=" + t.TempDir()}, TempHome: tempHome}
+	if err := mirrorHostQoderConfig(&cfg); err != nil {
+		t.Fatalf("mirrorHostQoderConfig returned error: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(tempHome, ".qoder")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sandbox .qoder exists after noop mirror: %v", err)
+	}
+}
+
+func TestMirrorHostQoderConfigPrunesStaleMirroredFiles(t *testing.T) {
+	hostHome := t.TempDir()
+	tempHome := t.TempDir()
+	writeFileWithMode(t, filepath.Join(hostHome, ".qoder", ".auth", "id"), []byte("token-id"), 0o600)
+	writeFileWithMode(t, filepath.Join(tempHome, ".qoder", "settings.json"), []byte("stale"), 0o600)
+	writeFileWithMode(t, filepath.Join(tempHome, ".qoder", ".auth", "stale-token"), []byte("stale"), 0o600)
+
+	cfg := sandbox.Config{HostEnv: []string{"HOME=" + hostHome}, TempHome: tempHome}
+	if err := mirrorHostQoderConfig(&cfg); err != nil {
+		t.Fatalf("mirrorHostQoderConfig returned error: %v", err)
+	}
+
+	assertFileContentAndMode(t, filepath.Join(tempHome, ".qoder", ".auth", "id"), "token-id", 0o600)
+	for _, absent := range []string{
+		filepath.Join(tempHome, ".qoder", "settings.json"),
+		filepath.Join(tempHome, ".qoder", ".auth", "stale-token"),
+	} {
+		if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale %s exists after mirror: %v", absent, err)
+		}
+	}
+}
+
 func assertFileContentAndMode(t *testing.T, path, wantContent string, wantMode os.FileMode) {
 	t.Helper()
 	data, err := os.ReadFile(path)
