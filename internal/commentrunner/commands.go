@@ -177,11 +177,12 @@ func accepted(comment TriggerComment, verb CommandVerb, sessionID, prompt, agent
 
 // splitAgentSelector consumes an optional leading agent selector token from a
 // `/new` command tail. The token is matched case-insensitively against the
-// fixed {codex, claude} allow-list and normalized to lower case. When the first
-// token is not an allow-listed agent (including a quoted prompt that literally
-// begins with "codex"/"claude"), no agent is consumed and the entire tail is
-// returned as the prompt. The comment cannot inject any agent outside the
-// allow-list, and readiness of the selected agent is a dispatch concern.
+// fixed {codex, claude, qoder} allow-list and normalized to lower case. When the
+// first token is not an allow-listed agent (including a quoted prompt that
+// literally begins with "codex"/"claude"/"qoder"), no agent is consumed and the
+// entire tail is returned as the prompt. The comment cannot inject any agent
+// outside the allow-list, and readiness of the selected agent is a dispatch
+// concern.
 func splitAgentSelector(tail string) (agent, prompt string) {
 	token, rest := splitToken(tail)
 	switch strings.ToLower(token) {
@@ -189,6 +190,8 @@ func splitAgentSelector(tail string) (agent, prompt string) {
 		return AgentCodex, rest
 	case AgentClaude:
 		return AgentClaude, rest
+	case AgentQoder:
+		return AgentQoder, rest
 	default:
 		return "", tail
 	}

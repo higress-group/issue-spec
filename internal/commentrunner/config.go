@@ -20,6 +20,7 @@ import (
 const (
 	AgentCodex  = "codex"
 	AgentClaude = "claude"
+	AgentQoder  = "qoder"
 
 	DefaultNotificationTokenEnv    = "ISSUE_SPEC_NOTIFICATION_TOKEN"
 	DefaultFallbackInitialLookback = 30 * 24 * time.Hour
@@ -253,9 +254,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("--max-concurrency must be positive")
 	}
 	switch c.Agent.Kind {
-	case AgentCodex, AgentClaude:
+	case AgentCodex, AgentClaude, AgentQoder:
 	default:
-		return fmt.Errorf("invalid --agent %q; valid values: codex, claude", c.Agent.Kind)
+		return fmt.Errorf("invalid --agent %q; valid values: codex, claude, qoder", c.Agent.Kind)
 	}
 	if len(c.OperatorSkillDirs) > 0 && c.Agent.Kind != AgentCodex {
 		return fmt.Errorf("--operator-skill-dir is supported only with --agent codex")

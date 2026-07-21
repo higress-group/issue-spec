@@ -853,6 +853,19 @@ func TestReconcileTurnMarksAmbiguousWhenTerminalCannotBeProven(t *testing.T) {
 	}
 }
 
+func TestValidateConfigAcceptsQoderAgent(t *testing.T) {
+	if _, err := NewAdapter(Config{CWD: "/workspace", Agent: AgentQoder}, &fakeRunner{}); err != nil {
+		t.Fatalf("NewAdapter with qoder agent returned error: %v", err)
+	}
+}
+
+func TestValidateConfigRejectsUnknownAgent(t *testing.T) {
+	_, err := NewAdapter(Config{CWD: "/workspace", Agent: "gemini"}, &fakeRunner{})
+	if err == nil || !strings.Contains(err.Error(), `unsupported agent "gemini"`) {
+		t.Fatalf("NewAdapter with unknown agent error = %v", err)
+	}
+}
+
 func newTestAdapter(t *testing.T, cfg Config, runner CommandRunner) *Adapter {
 	t.Helper()
 	adapter, err := NewAdapter(cfg, runner)

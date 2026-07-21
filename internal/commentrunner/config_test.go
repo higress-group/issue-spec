@@ -345,6 +345,43 @@ func TestConfigValidateRequiresCompleteSafeGitAuthor(t *testing.T) {
 	}
 }
 
+func TestConfigValidateAcceptsQoderAgent(t *testing.T) {
+	cfg := Config{
+		Repositories:       []string{"o/r"},
+		RunnerIdentity:     "bot",
+		StatePath:          filepath.Join(t.TempDir(), "state.json"),
+		WorkspaceRoot:      t.TempDir(),
+		PollInterval:       NewDuration(time.Minute),
+		FallbackInterval:   NewDuration(time.Hour),
+		WorkspaceRetention: NewDuration(24 * time.Hour),
+		MaxConcurrentJobs:  1,
+		Agent:              DefaultAgentConfig(),
+	}
+	cfg.Agent.Kind = AgentQoder
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate with qoder agent returned error: %v", err)
+	}
+}
+
+func TestConfigValidateRejectsUnknownAgentListingQoder(t *testing.T) {
+	cfg := Config{
+		Repositories:       []string{"o/r"},
+		RunnerIdentity:     "bot",
+		StatePath:          filepath.Join(t.TempDir(), "state.json"),
+		WorkspaceRoot:      t.TempDir(),
+		PollInterval:       NewDuration(time.Minute),
+		FallbackInterval:   NewDuration(time.Hour),
+		WorkspaceRetention: NewDuration(24 * time.Hour),
+		MaxConcurrentJobs:  1,
+		Agent:              DefaultAgentConfig(),
+	}
+	cfg.Agent.Kind = "gemini"
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), `invalid --agent "gemini"; valid values: codex, claude, qoder`) {
+		t.Fatalf("Validate error = %v", err)
+	}
+}
+
 func TestConfigValidateRejectsOperatorSkillsForClaude(t *testing.T) {
 	cfg := Config{
 		Repositories:       []string{"o/r"},

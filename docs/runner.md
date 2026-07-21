@@ -161,7 +161,7 @@ Useful runner options:
 - `--allowed-user <login>` allows a human maintainer to trigger `/new`, `/resume`, and `/cancel`; repeat it or comma-separate logins. If omitted, only the authenticated runner identity is accepted. Allowed users must still have write-equivalent repository permission.
 - `--notification-runner <login>` enables a notification-only polling identity. When set without `--notification-token-env`, the runner reads the token from `ISSUE_SPEC_NOTIFICATION_TOKEN`.
 - `--notification-token-env <name>` selects the environment variable that contains the notification-only token. It can be used with or without `--notification-runner`; when the runner login is provided, preflight verifies the token authenticates as that login.
-- `--agent codex|claude` selects the coordinator agent through acpx. `--model <name>` passes the configured model/profile to acpx.
+- `--agent codex|claude|qoder` selects the coordinator agent through acpx. `--model <name>` passes the configured model/profile to acpx.
 - `--gh-config-dir <path>` selects the host GitHub CLI config directory mirrored into the sandbox. By default the runner derives it from the host GitHub CLI environment.
 - `--allow-cancel=false` disables `/cancel` intake.
 

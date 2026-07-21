@@ -38,6 +38,13 @@ func TestParseCommandCommentAcceptsNormalizedCommands(t *testing.T) {
 			wantAgent:  "claude",
 		},
 		{
+			name:       "new selects qoder agent",
+			body:       "/new qoder fix the issue",
+			wantVerb:   VerbNew,
+			wantPrompt: "fix the issue",
+			wantAgent:  "qoder",
+		},
+		{
 			name:       "new agent selector is case insensitive",
 			body:       "/new CLAUDE fix the issue",
 			wantVerb:   VerbNew,

@@ -596,7 +596,7 @@ func (a *app) parseRunnerOptions(args []string, includePollFlags bool) (commentr
 	fallbackInitialLookback := fs.Duration("fallback-initial-lookback", defaults.FallbackInitialLookback.Duration, "initial repository comments fallback lookback; 0 scans all historical comments")
 	maxConcurrency := fs.Int("max-concurrency", defaults.MaxConcurrentJobs, "maximum concurrent runner jobs")
 	acpxPath := fs.String("acpx-path", defaults.AcpxPath, "acpx binary path")
-	agent := fs.String("agent", defaults.Agent.Kind, "coordinator code agent: codex or claude")
+	agent := fs.String("agent", defaults.Agent.Kind, "coordinator code agent: codex, claude, or qoder")
 	model := fs.String("model", defaults.Agent.Model, "coordinator model/profile name")
 	workspaceRoot := fs.String("workspace-root", "", "managed workspace root; default is beside the repository/runner-scoped state path")
 	workspaceRetention := fs.Duration("workspace-retention", defaults.WorkspaceRetention.Duration, "managed workspace retention duration for expired inactive workspaces")

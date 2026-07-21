@@ -146,7 +146,7 @@ issue-spec runner poll \
 - `--allowed-user <login>` 允许某位人类维护者触发 `/new`、`/resume` 与 `/cancel`；可重复该参数或用逗号分隔多个 login。若省略，则只接受已认证的 runner 身份。被允许的用户仍必须具备等同于 write 的仓库权限。
 - `--notification-runner <login>` 启用一个「仅通知」的轮询身份。当设置了它但未设置 `--notification-token-env` 时，runner 从 `ISSUE_SPEC_NOTIFICATION_TOKEN` 读取 token。
 - `--notification-token-env <name>` 选择包含「仅通知」token 的环境变量。它可以与 `--notification-runner` 一起使用，也可以单独使用；当提供了 runner login 时，preflight 会校验该 token 认证为该 login。
-- `--agent codex|claude` 通过 acpx 选择协调 agent。`--model <name>` 把所配置的 model/profile 传给 acpx。
+- `--agent codex|claude|qoder` 通过 acpx 选择协调 agent。`--model <name>` 把所配置的 model/profile 传给 acpx。
 - `--gh-config-dir <path>` 选择要镜像进沙箱的宿主 GitHub CLI 配置目录。默认情况下 runner 会从宿主 GitHub CLI 环境推导。
 - `--allow-cancel=false` 关闭 `/cancel` intake。
 
