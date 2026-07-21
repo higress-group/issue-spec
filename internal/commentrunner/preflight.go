@@ -535,7 +535,7 @@ func unsafeSandboxDetail(cfg Config) string {
 
 func addAgentChecks(report *PreflightReport, cfg Config, deps PreflightDependencies) {
 	report.add(PreflightCheck{Name: "configured-agent", Status: CheckOK, Detail: configuredAgentDetail(cfg)})
-	// Both codex and claude are selectable per `/new <agent>`, so preflight
+	// Codex, claude, and qoder are selectable per `/new <agent>`, so preflight
 	// reports readiness for each. The configured default agent's failures block
 	// startup as before; a secondary (selectable but non-default) agent's
 	// failures are non-blocking here and instead fail only the specific
@@ -547,15 +547,19 @@ func addAgentChecks(report *PreflightReport, cfg Config, deps PreflightDependenc
 	report.add(claudeUserSettingsCheck(cfg))
 	report.add(claudeAuthCheck())
 	report.add(claudeAllowedToolsCheck(cfg))
+	report.add(qoderAccessCheck(cfg))
+	report.add(qoderCLICheck(deps))
+	report.add(qoderAuthCheck())
 	demoteSecondaryAgentChecks(report, cfg.Agent.Kind)
 }
 
 // secondaryAgentCheckNames maps the runner's default agent kind to the check
-// names that belong to the other, non-default agent. Those checks are reported
+// names that belong to the other, non-default agents. Those checks are reported
 // for readiness but must never block runner startup.
 var secondaryAgentCheckNames = map[string][]string{
-	AgentCodex:  {"claude-agent-full-access", "claude-user-settings", "claude-auth", "claude-allowed-tools"},
-	AgentClaude: {"codex-agent-full-access", "codex-acp", "codex-auth"},
+	AgentCodex:  {"claude-agent-full-access", "claude-user-settings", "claude-auth", "claude-allowed-tools", "qoder-agent-full-access", "qoder-cli", "qoder-auth"},
+	AgentClaude: {"codex-agent-full-access", "codex-acp", "codex-auth", "qoder-agent-full-access", "qoder-cli", "qoder-auth"},
+	AgentQoder:  {"codex-agent-full-access", "codex-acp", "codex-auth", "claude-agent-full-access", "claude-user-settings", "claude-auth", "claude-allowed-tools"},
 }
 
 // demoteSecondaryAgentChecks downgrades any CheckError produced by the non-default
@@ -598,6 +602,55 @@ func claudeAgentFullAccessCheck(cfg Config) PreflightCheck {
 		return PreflightCheck{Name: "claude-agent-full-access", Status: CheckOK, Detail: "enabled"}
 	}
 	return PreflightCheck{Name: "claude-agent-full-access", Status: CheckWarning, Detail: "disabled; Claude child CLI/shell workflow work may fail"}
+}
+
+func qoderAccessCheck(cfg Config) PreflightCheck {
+	if cfg.Agent.QoderAgentFullAccess {
+		return PreflightCheck{Name: "qoder-agent-full-access", Status: CheckOK, Detail: "enabled"}
+	}
+	return PreflightCheck{Name: "qoder-agent-full-access", Status: CheckWarning, Detail: "disabled; Qoder child CLI/shell workflow work may fail"}
+}
+
+func qoderCLICheck(deps PreflightDependencies) PreflightCheck {
+	path, err := deps.LookPath("qodercli")
+	if err != nil {
+		return PreflightCheck{
+			Name:   "qoder-cli",
+			Status: CheckError,
+			Detail: "qodercli not found on PATH; the qoder agent spawns `qodercli --acp` through acpx",
+			Hint:   "Install qodercli and confirm `qodercli --version` works for the runner service user before starting the runner.",
+		}
+	}
+	return PreflightCheck{Name: "qoder-cli", Status: CheckOK, Detail: "qodercli=" + path}
+}
+
+// qoderAuthCheck accepts the two auth sources that genuinely reach a sandboxed
+// qodercli: the mirrored ~/.qoder/.auth directory and the
+// QODER_PERSONAL_ACCESS_TOKEN environment variable, which the sandbox env
+// allowlist passes through. Other host state is scrubbed by the sandbox and
+// must not satisfy this check.
+func qoderAuthCheck() PreflightCheck {
+	if value := strings.TrimSpace(os.Getenv("QODER_PERSONAL_ACCESS_TOKEN")); value != "" {
+		return PreflightCheck{Name: "qoder-auth", Status: CheckOK, Detail: "host qoder auth source: QODER_PERSONAL_ACCESS_TOKEN"}
+	}
+	home := hostHomeDir()
+	if strings.TrimSpace(home) != "" {
+		authDir := filepath.Join(home, ".qoder", ".auth")
+		if entries, err := os.ReadDir(authDir); err == nil {
+			for _, entry := range entries {
+				info, err := os.Lstat(filepath.Join(authDir, entry.Name()))
+				if err == nil && info.Mode().IsRegular() {
+					return PreflightCheck{Name: "qoder-auth", Status: CheckOK, Detail: "host qoder auth source: " + authDir}
+				}
+			}
+		}
+	}
+	return PreflightCheck{
+		Name:   "qoder-auth",
+		Status: CheckError,
+		Detail: "qodercli auth unavailable: no regular files in ~/.qoder/.auth and QODER_PERSONAL_ACCESS_TOKEN is not set",
+		Hint:   "Run qodercli once interactively to populate ~/.qoder/.auth, or export QODER_PERSONAL_ACCESS_TOKEN before starting the runner.",
+	}
 }
 
 func codexACPCheck(deps PreflightDependencies) PreflightCheck {
