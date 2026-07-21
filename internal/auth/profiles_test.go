@@ -26,6 +26,15 @@ func TestHostedProfileOnboardingAndHandshake(t *testing.T) {
 	if err := ValidateServerHandshake(profile, ServerHandshake{ServerInstanceID: bad.ServerInstanceID, APIURL: profile.APIURL, NativeAPIURL: profile.NativeAPIURL, WebURL: profile.WebURL}); err == nil {
 		t.Fatal("mismatched immutable server identity accepted")
 	}
+	// The realm is the instance id alone; the same server reached through or
+	// advertising a different address must still validate.
+	if err := ValidateServerHandshake(profile, ServerHandshake{ServerInstanceID: "issue-spec:test", APIURL: "http://11.164.3.16:18080", NativeAPIURL: "http://11.164.3.16:18080/api/v1", WebURL: "http://11.164.3.16:18080"}); err != nil {
+		t.Fatalf("endpoint drift with matching instance id rejected: %v", err)
+	}
+	// Malformed advertised endpoints are still rejected.
+	if err := ValidateServerHandshake(profile, ServerHandshake{ServerInstanceID: "issue-spec:test", APIURL: "not-a-url", NativeAPIURL: profile.NativeAPIURL, WebURL: profile.WebURL}); err == nil {
+		t.Fatal("invalid handshake endpoint accepted")
+	}
 }
 
 func hostedProfile(name, instance, api string) Profile {
