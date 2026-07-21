@@ -138,7 +138,11 @@ func (p Profile) Normalized() (Profile, error) {
 }
 
 // ServerHandshake is the credential-free identity returned by /api/v1/meta.
-// A saved profile must never silently follow a different self-hosted server.
+// A saved profile's realm is its immutable server_instance_id; a matching
+// instance id is the same server even when it is reached through, or advertises,
+// a different address (for example a locally hosted server served both on
+// 127.0.0.1 and its LAN address). Advertised endpoint URLs are validated for
+// form only and may drift without repointing the profile.
 type ServerHandshake struct {
 	ServerInstanceID string `json:"server_instance_id"`
 	APIURL           string `json:"api_url"`
@@ -155,14 +159,14 @@ func ValidateServerHandshake(profile Profile, handshake ServerHandshake) error {
 		return fmt.Errorf("profile %q does not use the self-hosted handshake", profile.Name)
 	}
 	handshake.ServerInstanceID = strings.TrimSpace(handshake.ServerInstanceID)
-	apiURL, apiErr := canonicalEndpoint(handshake.APIURL)
-	nativeURL, nativeErr := canonicalEndpoint(handshake.NativeAPIURL)
-	webURL, webErr := canonicalEndpoint(handshake.WebURL)
+	_, apiErr := canonicalEndpoint(handshake.APIURL)
+	_, nativeErr := canonicalEndpoint(handshake.NativeAPIURL)
+	_, webErr := canonicalEndpoint(handshake.WebURL)
 	if apiErr != nil || nativeErr != nil || webErr != nil {
 		return fmt.Errorf("profile %q server handshake contains invalid public endpoints", profile.Name)
 	}
-	if handshake.ServerInstanceID != profile.ServerInstanceID || apiURL != profile.APIURL || nativeURL != profile.NativeAPIURL || webURL != profile.WebURL {
-		return fmt.Errorf("profile %q server handshake does not match the saved immutable server realm", profile.Name)
+	if handshake.ServerInstanceID != profile.ServerInstanceID {
+		return fmt.Errorf("profile %q server handshake instance id does not match the saved server realm", profile.Name)
 	}
 	return nil
 }
