@@ -39,6 +39,8 @@ func TestIssueSpecSkillAndCommandTemplates(t *testing.T) {
 		"rules.language_instructions",
 		"pass an explicit `--title` for Proposal, Design, and Implement",
 		"retains an English stage prefix",
+		"issue create simple",
+		"never promote an investigation issue into the proposal or attach SPEC/Design to it",
 	} {
 		if !strings.Contains(propose, want) {
 			t.Fatalf("issue-spec-propose missing title guidance %q", want)
