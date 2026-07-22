@@ -234,7 +234,7 @@ func TestRunnerServeHelpDocumentsSecurityAndCapacityControls(t *testing.T) {
 		"--max-header-bytes", "--max-queue-deliveries", "--max-queue-bytes", "--shutdown-timeout",
 		"--workspace-root", "--max-concurrent-jobs", "--reconcile-workers", "--git-credential-command",
 		"--allow-host-ssh", "--git-author-name", "--git-author-email", "--operator-skill-dir",
-		"--log-dir", "--log-max-size", "--log-max-files", "--log-retention", "--log-raw-capture"} {
+		"--qoder-agent-full-access", "--log-dir", "--log-max-size", "--log-max-files", "--log-retention", "--log-raw-capture"} {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("help missing %s:\n%s", required, stdout.String())
 		}
@@ -243,6 +243,48 @@ func TestRunnerServeHelpDocumentsSecurityAndCapacityControls(t *testing.T) {
 		if strings.Contains(stdout.String(), removed) {
 			t.Fatalf("help still advertises unused %s:\n%s", removed, stdout.String())
 		}
+	}
+}
+
+func TestRunnerServeQoderFullAccessFlagPropagation(t *testing.T) {
+	t.Setenv("ISSUE_SPEC_CONFIG_DIR", t.TempDir())
+	profile := auth.Profile{Name: "runner-qoder-access", Kind: auth.ProfileKindHosted,
+		APIURL: "https://issues.example.test/api/v3", NativeAPIURL: "https://issues.example.test/api/v1",
+		WebURL: "https://issues.example.test", ServerInstanceID: "runner-instance"}
+	if err := auth.SaveProfile(profile, false); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "omitted", want: false},
+		{name: "present", args: []string{"--qoder-agent-full-access"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RUNNER_QODER_ACCESS_SECRET", strings.Repeat("q", 32))
+			var stdout, stderr bytes.Buffer
+			app := newApp(strings.NewReader(""), &stdout, &stderr)
+			app.profileName = profile.Name
+			preflightCalled := false
+			app.runnerPreflight = func(_ context.Context, cfg commentrunner.Config) commentrunner.PreflightReport {
+				preflightCalled = true
+				if cfg.Agent.Kind != commentrunner.AgentQoder || cfg.Agent.QoderAgentFullAccess != tc.want {
+					t.Fatalf("agent config=%+v want kind=%q qoder full access=%v", cfg.Agent, commentrunner.AgentQoder, tc.want)
+				}
+				return commentrunner.PreflightReport{Config: cfg}
+			}
+			args := []string{"serve", "--repo", "o/r", "--runner", "runner-bot", "--agent", "qoder",
+				"--state", filepath.Join(t.TempDir(), "state.json"), "--subscription-id", uuid.NewString(),
+				"--secret-env", "RUNNER_QODER_ACCESS_SECRET", "--git-credential-command", "/usr/bin/true"}
+			args = append(args, tc.args...)
+			if code := app.runRunner(context.Background(), args); code != 1 || !preflightCalled ||
+				!strings.Contains(stderr.String(), "runner serve preflight failed") {
+				t.Fatalf("code=%d preflight=%v stdout=%q stderr=%q", code, preflightCalled, stdout.String(), stderr.String())
+			}
+		})
 	}
 }
 
