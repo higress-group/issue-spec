@@ -861,7 +861,7 @@ func TestValidateConfigAcceptsQoderAgent(t *testing.T) {
 
 func TestValidateConfigRejectsUnknownAgent(t *testing.T) {
 	_, err := NewAdapter(Config{CWD: "/workspace", Agent: "gemini"}, &fakeRunner{})
-	if err == nil || !strings.Contains(err.Error(), `unsupported agent "gemini"`) {
+	if err == nil || !strings.Contains(err.Error(), `unsupported agent "gemini" (valid values: codex, claude, qoder)`) {
 		t.Fatalf("NewAdapter with unknown agent error = %v", err)
 	}
 }

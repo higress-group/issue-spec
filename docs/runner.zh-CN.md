@@ -99,10 +99,12 @@ issue-spec runner poll \
 支持的命令评论：
 
 ```text
-/new <prompt>
+/new [<agent>] <prompt>
 /resume <public-session-id> <prompt>
 /cancel <public-session-id>
 ```
+
+`/new` 接受第一个 token 作为可选的 agent selector：`/new codex <prompt>`、`/new claude <prompt>` 或 `/new qoder <prompt>` 会为该 session 选择 coordinator agent。selector 会以大小写不敏感的方式与固定的 `codex`/`claude`/`qoder` allow-list 匹配；其他任何第一个 token 都会被当作 prompt 文本，因此 `/new <prompt>` 仍使用 runner 配置的默认 agent。如果 prompt 需要以 `codex`、`claude` 或 `qoder` 开头，请用引号包裹（例如 `/new "qoder should ..."`）。评论不能注入 allow-list 之外的 agent，也不能注入命令、model、flag 或 permission mode。所选 agent 会绑定到新 session，并由之后的每次 `/resume` 复用；除非它是 runner 配置的默认 agent 并使用 `--model`，否则它使用自己的默认 model。如果宿主机上的所选 agent 未就绪，只有该 `/new` job 会快速失败——runner 会继续服务其默认 agent。每个 job 的状态评论都会标明 coordinator agent。
 
 runner 命令语法有意不提供 PROCESS selector。`/new` 与 `/resume` 只定位 public coordinator session。runner 为该 session 只启动一个 ACPX coordinator，并在 new、resume、cancel 与 restart reconcile 的整个生命周期中，让它的 cwd 与主 sandbox workspace 始终保持在受管 session clone。runner 不会启动嵌套 ACPX worker，也不会把 coordinator 重绑定到 PROCESS worktree。
 
