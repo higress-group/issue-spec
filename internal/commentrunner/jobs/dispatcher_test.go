@@ -2556,6 +2556,61 @@ func TestMirrorHostQoderConfigPrunesStaleMirroredFiles(t *testing.T) {
 	}
 }
 
+func TestMirrorHostQoderConfigRejectsDestinationDirectorySymlink(t *testing.T) {
+	hostHome := t.TempDir()
+	tempHome := t.TempDir()
+	outside := t.TempDir()
+	writeFileWithMode(t, filepath.Join(hostHome, ".qoder", ".auth", "id"), []byte("new-token"), 0o600)
+	writeFileWithMode(t, filepath.Join(outside, "id"), []byte("outside-sentinel"), 0o600)
+	if err := os.MkdirAll(filepath.Join(tempHome, ".qoder"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(tempHome, ".qoder", ".auth")); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := sandbox.Config{HostEnv: []string{"HOME=" + hostHome}, TempHome: tempHome}
+	if err := mirrorHostQoderConfig(&cfg); err == nil {
+		t.Fatal("mirrorHostQoderConfig accepted a destination directory symlink")
+	}
+	assertFileContentAndMode(t, filepath.Join(outside, "id"), "outside-sentinel", 0o600)
+	info, err := os.Lstat(filepath.Join(tempHome, ".qoder", ".auth"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("destination directory entry mode = %v, want symlink left unfollowed", info.Mode())
+	}
+}
+
+func TestMirrorHostQoderConfigReplacesDestinationFileSymlink(t *testing.T) {
+	hostHome := t.TempDir()
+	tempHome := t.TempDir()
+	outside := t.TempDir()
+	writeFileWithMode(t, filepath.Join(hostHome, ".qoder", ".auth", "id"), []byte("new-token"), 0o600)
+	writeFileWithMode(t, filepath.Join(outside, "sentinel"), []byte("outside-sentinel"), 0o600)
+	if err := os.MkdirAll(filepath.Join(tempHome, ".qoder", ".auth"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "sentinel"), filepath.Join(tempHome, ".qoder", ".auth", "id")); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := sandbox.Config{HostEnv: []string{"HOME=" + hostHome}, TempHome: tempHome}
+	if err := mirrorHostQoderConfig(&cfg); err != nil {
+		t.Fatalf("mirrorHostQoderConfig returned error: %v", err)
+	}
+	assertFileContentAndMode(t, filepath.Join(outside, "sentinel"), "outside-sentinel", 0o600)
+	assertFileContentAndMode(t, filepath.Join(tempHome, ".qoder", ".auth", "id"), "new-token", 0o600)
+	info, err := os.Lstat(filepath.Join(tempHome, ".qoder", ".auth", "id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("destination credential mode = %v, want regular file", info.Mode())
+	}
+}
+
 func assertFileContentAndMode(t *testing.T, path, wantContent string, wantMode os.FileMode) {
 	t.Helper()
 	data, err := os.ReadFile(path)
