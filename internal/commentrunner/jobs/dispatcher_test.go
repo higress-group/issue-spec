@@ -2145,6 +2145,95 @@ func TestSandboxRunnerBwrapBindsResolvedNVMStyleAcpxInstall(t *testing.T) {
 	assertCommandArgSequenceMissing(t, cmd.Args, "--ro-bind", acpxPath, acpxPath)
 }
 
+func TestSandboxRunnerConfigBindsResolvedNVMStyleQoderInstall(t *testing.T) {
+	temp := t.TempDir()
+	hostHome := filepath.Join(temp, "host-home")
+	hostGH := filepath.Join(hostHome, ".config", "gh")
+	workspacePath := filepath.Join(temp, "workspace")
+	runtimeRoot := filepath.Join(temp, ".sessions", "runtime")
+	acpxPath := filepath.Join(temp, "tools", "acpx")
+	nodePrefix := filepath.Join(temp, "user-local", "nvm", "versions", "node", "v24.18.0")
+	binDir := filepath.Join(nodePrefix, "bin")
+	qoderPackageDir := filepath.Join(nodePrefix, "lib", "node_modules", "@qoder-ai", "qodercli")
+	qoderPackageBinDir := filepath.Join(qoderPackageDir, "bin")
+	qoderPath := filepath.Join(binDir, "qodercli")
+	for _, dir := range []string{hostGH, workspacePath, filepath.Dir(acpxPath), binDir, qoderPackageBinDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFileWithMode(t, filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: test\n"), 0o600)
+	writeFileWithMode(t, acpxPath, []byte("#!/bin/sh\n"), 0o700)
+	writeFileWithMode(t, filepath.Join(binDir, "node"), []byte("#!/bin/sh\n"), 0o700)
+	writeFileWithMode(t, filepath.Join(qoderPackageBinDir, "qodercli"), []byte("#!/usr/bin/env node\n"), 0o700)
+	if err := os.Symlink("../lib/node_modules/@qoder-ai/qodercli/bin/qodercli", qoderPath); err != nil {
+		t.Fatal(err)
+	}
+	resolvedBinDir := mustEvalSymlinks(t, binDir)
+	resolvedQoderPackageDir := mustEvalSymlinks(t, qoderPackageDir)
+
+	cfg, resolvedAcpx, _, err := (SandboxRunner{Config: sandbox.Config{
+		HostGHConfigDir: hostGH,
+		HostEnv:         []string{"HOME=" + hostHome, "PATH=/usr/bin"},
+	}, Deps: sandbox.Dependencies{
+		LookPath: func(name string) (string, error) {
+			switch name {
+			case acpxPath:
+				return acpxPath, nil
+			case "qodercli":
+				return qoderPath, nil
+			default:
+				return "", os.ErrNotExist
+			}
+		},
+	}}).config(SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           acpxPath,
+		AcpxAgent:            acpx.AgentQoder,
+		RuntimeHome:          filepath.Join(runtimeRoot, "home"),
+		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
+		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
+		RuntimeCodexHome:     filepath.Join(runtimeRoot, "codex"),
+	})
+	if err != nil {
+		t.Fatalf("config returned error: %v", err)
+	}
+	if resolvedAcpx != acpxPath {
+		t.Fatalf("resolved acpx = %q, want %q", resolvedAcpx, acpxPath)
+	}
+	for _, want := range []string{resolvedBinDir, resolvedQoderPackageDir} {
+		if !containsCleanPath(cfg.ReadOnlyBinds, want) {
+			t.Fatalf("ReadOnlyBinds = %#v, want qoder runtime root %s", cfg.ReadOnlyBinds, want)
+		}
+	}
+	if got, want := cfg.ExtraEnv["PATH"], resolvedBinDir+string(os.PathListSeparator)+"/usr/bin"; got != want {
+		t.Fatalf("sandbox PATH = %q, want %q", got, want)
+	}
+}
+
+func TestRequestReadOnlyBindsNonQoderDoesNotResolveQoderCLI(t *testing.T) {
+	temp := t.TempDir()
+	acpxPath := filepath.Join(temp, "acpx")
+	writeFileWithMode(t, acpxPath, []byte("#!/bin/sh\n"), 0o700)
+	qoderLookups := 0
+	_, _, _, err := requestReadOnlyBinds(SandboxRequest{AcpxAgent: acpx.AgentCodex}, acpxPath, func(name string) (string, error) {
+		if name == "qodercli" {
+			qoderLookups++
+		}
+		if name == acpxPath {
+			return acpxPath, nil
+		}
+		return "", os.ErrNotExist
+	})
+	if err != nil {
+		t.Fatalf("requestReadOnlyBinds returned error: %v", err)
+	}
+	if qoderLookups != 0 {
+		t.Fatalf("qodercli lookups = %d, want 0 for a non-qoder job", qoderLookups)
+	}
+}
+
 func TestNodeGlobalBinPackageRootsIncludesStandaloneNpxPackage(t *testing.T) {
 	prefix := t.TempDir()
 	binDir := filepath.Join(prefix, "bin")

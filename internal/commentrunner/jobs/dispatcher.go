@@ -1908,6 +1908,14 @@ func requestReadOnlyBinds(req SandboxRequest, acpxBinary string, lookPath func(s
 		return nil, nil, "", err
 	}
 	out = append(out, issueSpecBinds...)
+	if req.AcpxAgent == acpx.AgentQoder {
+		qoderBinds, qoderPathPrefixes, err := qoderExecutableReadOnlyBinds(lookPath)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		out = append(out, qoderBinds...)
+		pathPrefixes = append(pathPrefixes, qoderPathPrefixes...)
+	}
 	return appendUniqueCleanAbsPaths(nil, out...), appendUniqueCleanAbsPaths(nil, pathPrefixes...), resolvedAcpxBinary, nil
 }
 
@@ -1927,6 +1935,17 @@ func acpxExecutableReadOnlyBinds(binary string, lookPath func(string) (string, e
 		return roots, []string{binDir}, target, nil
 	}
 	return []string{path}, nil, path, nil
+}
+
+func qoderExecutableReadOnlyBinds(lookPath func(string) (string, error)) ([]string, []string, error) {
+	path, err := resolveExecutablePath("qodercli", lookPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if roots, binDir, _ := nodeGlobalPackageReadOnlyBinds(path, "@qoder-ai/qodercli"); len(roots) > 0 {
+		return roots, []string{binDir}, nil
+	}
+	return []string{path}, []string{filepath.Dir(path)}, nil
 }
 
 func executableFileReadOnlyBind(binary string, lookPath func(string) (string, error)) ([]string, error) {
@@ -1977,7 +1996,11 @@ func nodeGlobalPackageReadOnlyBinds(path, packageName string) ([]string, string,
 	if !ok {
 		return nil, "", ""
 	}
-	prefix := filepath.Dir(filepath.Dir(filepath.Dir(pkgRoot)))
+	packageParts := nodePackagePathParts(packageName)
+	prefix := pkgRoot
+	for range len(packageParts) + 2 { // package path, node_modules, lib
+		prefix = filepath.Dir(prefix)
+	}
 	binDir := filepath.Join(prefix, "bin")
 	if !pathExists(filepath.Join(binDir, "node")) {
 		return nil, "", ""
@@ -1995,18 +2018,47 @@ func nodeGlobalPackageReadOnlyBinds(path, packageName string) ([]string, string,
 
 func nodeGlobalPackageRoot(realPath, packageName string) (string, bool) {
 	realPath = filepath.Clean(strings.TrimSpace(realPath))
+	packageParts := nodePackagePathParts(packageName)
+	if len(packageParts) == 0 {
+		return "", false
+	}
 	parts := strings.Split(realPath, string(os.PathSeparator))
-	for i := 0; i+3 < len(parts); i++ {
-		if parts[i] == "lib" && parts[i+1] == "node_modules" && parts[i+2] == packageName {
-			rootParts := append([]string(nil), parts[:i+3]...)
-			root := strings.Join(rootParts, string(os.PathSeparator))
-			if filepath.IsAbs(realPath) && !strings.HasPrefix(root, string(os.PathSeparator)) {
-				root = string(os.PathSeparator) + root
-			}
-			return filepath.Clean(root), true
+	for i := 0; i+2+len(packageParts) < len(parts); i++ {
+		if parts[i] != "lib" || parts[i+1] != "node_modules" {
+			continue
 		}
+		matched := true
+		for offset, part := range packageParts {
+			if parts[i+2+offset] != part {
+				matched = false
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		rootParts := append([]string(nil), parts[:i+2+len(packageParts)]...)
+		root := strings.Join(rootParts, string(os.PathSeparator))
+		if filepath.IsAbs(realPath) && !strings.HasPrefix(root, string(os.PathSeparator)) {
+			root = string(os.PathSeparator) + root
+		}
+		return filepath.Clean(root), true
 	}
 	return "", false
+}
+
+func nodePackagePathParts(packageName string) []string {
+	packagePath := filepath.Clean(filepath.FromSlash(strings.TrimSpace(packageName)))
+	if packagePath == "." || filepath.IsAbs(packagePath) || packagePath == ".." || strings.HasPrefix(packagePath, ".."+string(os.PathSeparator)) {
+		return nil
+	}
+	parts := strings.Split(packagePath, string(os.PathSeparator))
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return nil
+		}
+	}
+	return parts
 }
 
 func nodeGlobalBinPackageRoots(binDir string, names ...string) []string {
