@@ -14,7 +14,7 @@ Use when the user asks for /issue-spec:propose, proposal, Design, SPEC, QUESTION
 3. Generate canonical SPEC comments with issue-spec comment generate --type SPEC. Requirements must be testable and include WHEN/THEN scenarios. --allow-noncanonical is a migration bypass, not normal authoring.
 4. Resolve blocking QUESTION comments before Design/TASK work or record the accepted assumption.
 5. Write the Design with implementation locations, decisions, rejected alternatives, risks, tests, rollout, and rollback. Keep it authoritative and self-contained.
-6. Generate TASK comments with issue-spec comment generate --type TASK. Execution Planning must identify Design-invariant cohesion and major entry points, bounded role-context pressure, stable interfaces, owned areas, shared touchpoints, dependencies, coupling, and acceptance consequences. File ownership and parallelism are scheduling context, not semantic PROCESS boundaries.
+6. Generate TASK comments with issue-spec comment generate --type TASK. Execution Planning must identify Design-invariant cohesion and major entry points, bounded role-context pressure, stable interfaces, owned areas, shared touchpoints, dependencies, coupling, and acceptance consequences. File ownership and parallelism are scheduling context, not semantic PROCESS boundaries. Execution modes such as coordinator-owned describe scheduling only; they never authorize coordinator-inline implementation of an agent-executed change-bearing PROCESS.
 7. Link SPEC <-> TASK, verify links, and run status --gate proposal/design/implement --summary --json as appropriate. Do not enter Implement while a semantic boundary decision is unresolved; block and ask a human.
 
 ## Project Workflow
