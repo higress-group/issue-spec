@@ -31,6 +31,50 @@ func TestDesignTemplateUsesSentinelNotBareTBD(t *testing.T) {
 	}
 }
 
+func TestIssueTemplatesScaffoldProjectionTimingAndAuthority(t *testing.T) {
+	_, proposal, _ := ProposalIssue("demo-change")
+	_, design, _ := DesignIssue("demo-change", "21")
+	_, implement, _ := ImplementIssue("demo-change", "22")
+	tests := []struct {
+		name      string
+		body      string
+		nextChild string
+		content   []string
+	}{
+		{
+			name: "proposal", body: proposal, nextChild: "SPEC",
+			content: []string{"latest effective ANSWER remain authoritative", "projection HTML source is excluded from default Agent context"},
+		},
+		{
+			name: "design", body: design, nextChild: "TASK",
+			content: []string{"latest effective ANSWER remain authoritative", "data, flow, alternatives, and correctness constraints"},
+		},
+		{
+			name: "implement", body: implement, nextChild: "PROCESS",
+			content: []string{"latest effective ANSWER remain authoritative", "correctness complexity", "independent review/verify obligations", "estimates do not define workflow semantics"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			section := sectionOf(t, tc.body, "## Human Review Projection")
+			for _, want := range []string{
+				"after the first QUESTION discovery/create pass",
+				"before complete " + tc.nextChild,
+				"ordinary and statusless",
+			} {
+				if !strings.Contains(section, want) {
+					t.Fatalf("%s projection section missing %q:\n%s", tc.name, want, section)
+				}
+			}
+			for _, want := range tc.content {
+				if !strings.Contains(section, want) {
+					t.Fatalf("%s projection section missing %q:\n%s", tc.name, want, section)
+				}
+			}
+		})
+	}
+}
+
 func sectionOf(t *testing.T, body, heading string) string {
 	t.Helper()
 	idx := strings.Index(body, heading+"\n")

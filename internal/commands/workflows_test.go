@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -193,6 +194,62 @@ func TestWorkflowNoticeIsBackendNeutralAndOwnedArtifactsAreCurrent(t *testing.T)
 		generated := readTestFile(t, filepath.Join(root, relative))
 		if !strings.Contains(generated, neutralFooter) || strings.Contains(generated, "remain in GitHub issue-native storage") {
 			t.Fatalf("generated workflow footer is not backend-neutral: %s", relative)
+		}
+	}
+}
+
+func TestCheckedInWorkflowArtifactsExactlyMatchGenerator(t *testing.T) {
+	generatedRoot := t.TempDir()
+	projectRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(filepath.Join(projectRoot, "issue-spec", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(generatedRoot, "issue-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generatedRoot, "issue-spec", "config.yaml"), config, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(generatedRoot)
+	if _, err := writeWorkflowArtifacts(".", "higress-group/issue-spec", "codex,claude", "both"); err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range append(
+		[]string{
+			filepath.Join(".agents", "skills", "issue-spec-apply", "SKILL.md"),
+			filepath.Join(".agents", "skills", "issue-spec-github", "SKILL.md"),
+			filepath.Join(".agents", "skills", "issue-spec-propose", "SKILL.md"),
+			filepath.Join(".agents", "skills", "issue-spec-review", "SKILL.md"),
+			filepath.Join(".agents", "skills", "issue-spec-verify", "SKILL.md"),
+			filepath.Join(".agents", "skills", "issue-spec-workflow", "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-apply", "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-github", "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-propose", "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-review", "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-verify", "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-workflow", "SKILL.md"),
+		},
+		[]string{
+			filepath.Join(".claude", "commands", "issue-spec", "apply.md"),
+			filepath.Join(".claude", "commands", "issue-spec", "propose.md"),
+			filepath.Join(".claude", "commands", "issue-spec", "review.md"),
+			filepath.Join(".claude", "commands", "issue-spec", "verify.md"),
+		}...,
+	) {
+		generated, err := os.ReadFile(filepath.Join(generatedRoot, relative))
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkedIn, err := os.ReadFile(filepath.Join(projectRoot, relative))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(generated, checkedIn) {
+			t.Fatalf("checked-in workflow artifact is stale: %s", relative)
 		}
 	}
 }

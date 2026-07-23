@@ -90,6 +90,8 @@ func Execute(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return a.runComment(ctx, args[1:])
 	case "question":
 		return a.runQuestion(ctx, args[1:])
+	case "projection":
+		return a.runProjection(ctx, args[1:])
 	case "review":
 		return a.runReview(ctx, args[1:])
 	case "pr":
@@ -222,6 +224,7 @@ Usage:
   issue-spec comment list --repo owner/repo --issue N [--type SPEC] [--json]
   issue-spec question create --repo owner/repo --issue N --id QUESTION-001 --question "..."
   issue-spec question resolve --repo owner/repo --issue N --id QUESTION-001 --resolution-file file.md
+  issue-spec projection upsert --repo owner/repo --issue N --phase proposal-choice-brief --source-digest SHA256 --body-file file.md [--allow-nonatomic --expected-digest SHA256]
   issue-spec pr rationale --repo owner/repo --pr N --path file.go --line 42 --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "why"
   issue-spec pr link-process --repo owner/repo --issue N --process PROCESS-001 --pr N
   issue-spec pr link-issues --repo owner/repo --pr N --proposal N --design N --implement N

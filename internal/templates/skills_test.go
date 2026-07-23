@@ -159,6 +159,74 @@ func TestGeneratedGuidanceDeterministicSizeBudgets(t *testing.T) {
 	}
 }
 
+func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing.T) {
+	skills := IssueSpecSkills("owner/repo")
+	workflow := skillContent(t, skills, "issue-spec-workflow")
+	for _, want := range []string{
+		"persist the phase issue body, perform the first QUESTION discovery/create pass, upsert the human review projection",
+		"SPEC for Proposal, TASK for Design, PROCESS for Implement",
+		"one source-digest-bound logical comment",
+		"issue-spec projection upsert --repo owner/repo --issue <phase-issue>",
+		"--phase <proposal-choice-brief|design-explainer|implement-execution-brief> --source-digest <sha256>",
+		"ordinary statusless synthesis, not gate or Agent authority",
+		"no typed marker, status, or transition",
+		"only the latest effective ANSWER remain authoritative",
+		"Keep projection HTML source out of default Agent context",
+		"--allow-nonatomic --expected-digest <observed-sha256>",
+		"verifies the exact post-write representation",
+		"GitHub stores source only and never executes the preview or interactive answer intent",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("workflow guidance missing %q:\n%s", want, workflow)
+		}
+	}
+
+	propose := skillContent(t, skills, "issue-spec-propose")
+	assertTextOrder(t, propose,
+		"Perform the Proposal's first QUESTION discovery/create pass",
+		"Upsert `proposal-choice-brief` after that pass",
+		"Generate canonical SPEC comments")
+	assertTextOrder(t, propose,
+		"Persist the authoritative self-contained Design",
+		"perform its first QUESTION discovery/create pass",
+		"upsert `design-explainer` before complete TASK planning",
+		"Generate TASK comments")
+	for _, want := range []string{
+		"Do not manufacture a question or reopen a settled choice",
+		"keep unresolved decisions distinct from evidence-dependent items",
+		"settled, needs-evidence, and needs-decision",
+		"grounded recommendations, alternatives, tradeoffs, and source links",
+		"current choice model and latest effective ANSWER",
+		"purposeful interaction to explain data, flow, alternatives, and correctness constraints",
+	} {
+		if !strings.Contains(propose, want) {
+			t.Fatalf("propose guidance missing %q:\n%s", want, propose)
+		}
+	}
+
+	apply := skillContent(t, skills, "issue-spec-apply")
+	assertTextOrder(t, apply,
+		"persist the Implement issue",
+		"perform its first QUESTION discovery/create pass",
+		"upsert the ordinary statusless `implement-execution-brief`",
+		"before completing PROCESS planning")
+	for _, want := range []string{
+		"invariant-based PROCESS candidates or the current DAG",
+		"critical path, safe parallelism, Agent allocation",
+		"code-volume estimates with confidence",
+		"correctness complexity",
+		"shared touchpoints, blockers, and independent review/verify obligations",
+		"Correctness complexity is distinct from size",
+		"estimates never define workflow semantics",
+		"only the latest effective ANSWER",
+		"projection source stays outside default Agent context",
+	} {
+		if !strings.Contains(apply, want) {
+			t.Fatalf("apply guidance missing %q:\n%s", want, apply)
+		}
+	}
+}
+
 func TestCheckedInCodexClaudeGuidanceMatchesTemplates(t *testing.T) {
 	root := filepath.Join("..", "..")
 	for _, skill := range IssueSpecSkills("higress-group/issue-spec") {
@@ -182,6 +250,18 @@ func TestCheckedInCodexClaudeGuidanceMatchesTemplates(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = got // PROCESS-008 refreshes managed generated assets from these templates.
+	}
+}
+
+func assertTextOrder(t *testing.T, content string, values ...string) {
+	t.Helper()
+	offset := 0
+	for _, value := range values {
+		index := strings.Index(content[offset:], value)
+		if index < 0 {
+			t.Fatalf("content missing ordered value %q after byte %d:\n%s", value, offset, content)
+		}
+		offset += index + len(value)
 	}
 }
 
