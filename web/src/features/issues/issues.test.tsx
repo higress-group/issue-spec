@@ -1,6 +1,6 @@
 import axe from "axe-core";
 import { http, HttpResponse } from "msw";
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { MarkdownView } from "../../components/markdown/markdown-view";
@@ -8,7 +8,7 @@ import { stripIssueSpecMarkersForRender } from "../../components/markdown/issue-
 import { LabelSelector } from "../../components/labels/label-chips";
 import { ReactionPicker } from "../../components/reactions/reaction-picker";
 import { renderApp } from "../../../tests/render";
-import { server } from "../../../tests/server";
+import { fixtureMeta, server } from "../../../tests/server";
 import { Route, Routes } from "react-router-dom";
 import { issueApi, IssueApiError } from "./api";
 import { CommentEditor, IssueEditor } from "./issue-editor";
@@ -270,6 +270,112 @@ describe("canonical issue read authority", () => {
     expect(screen.getByText("Binding mismatch")).toBeVisible();
     expect(screen.queryByText("abc123")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Subscribe to repository" })).not.toBeInTheDocument();
+  });
+
+  it("confirms current single/custom answers outside the iframe, appends every answer, and preserves the running frame", async () => {
+    const body = "```html-preview id=answer-review version=1 title=\"answer-review\" height=480\n<!doctype html><button>Answer</button>\n```";
+    const digest = "a".repeat(64);
+    const question = {
+      id: "QUESTION-007",
+      question: "Which release posture should we use?",
+      blocking: true,
+      default_assumption: "Use Safe.",
+      issue_url: "https://example.test/acme/workflow/issues/41",
+      source_url: "https://example.test/acme/workflow/issues/41#issuecomment-20",
+      choice_model: {
+        version: 1,
+        mode: "single",
+        options: [
+          { id: "safe", label: "Safe", description: "Conservative", tradeoff: "Slower" },
+          { id: "fast", label: "Fast", description: "Rapid", tradeoff: "Riskier" },
+        ],
+        allow_custom: true,
+      },
+    } as const;
+    let comments = [commentFixture()];
+    const submitted: unknown[] = [];
+    server.use(
+      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, html_preview_execution: true, interactive_question_answers: true } })),
+      http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture({ body }))),
+      http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json(comments)),
+      http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
+      http.get("http://localhost/repos/acme/workflow/issues/comments/:commentId/reactions", () => HttpResponse.json([])),
+      http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", () => HttpResponse.json({ relationships: [] })),
+      http.get("http://localhost/api/v1/repos/acme/workflow/issues/41/questions/QUESTION-007", () => HttpResponse.json({ question, representation_version: 1, body_digest: digest })),
+      http.post("http://localhost/api/v1/repos/acme/workflow/issues/41/answers", async ({ request }) => {
+        submitted.push(await request.json());
+        const created = commentFixture({ id: 9 + submitted.length, body: `ANSWER timeline ${submitted.length}`, reactions: { ...reactions, total_count: 0, "+1": 0 } });
+        comments = [...comments, created];
+        return HttpResponse.json({
+          comment: created,
+          question,
+          question_representation_version: 1,
+          question_body_digest: digest,
+        }, { status: 201 });
+      }),
+    );
+    renderIssueDetail(activeRepository(true, ["read", "contribute"]));
+    expect(await screen.findByRole("button", { name: /answer-review/ })).toBeVisible();
+    await userEvent.setup().click(screen.getByRole("button", { name: /answer-review/ }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Run" }));
+    const iframe = await screen.findByTitle("answer-review") as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    fireEvent.load(iframe);
+    const nonce = (postMessage.mock.calls.at(-1)?.[0] as { nonce: string }).nonce;
+    const send = (optionIds: string[], custom = "") => fireEvent(window, new MessageEvent("message", {
+      origin: "null",
+      source: iframe.contentWindow,
+      data: { version: 1, nonce, question_id: "QUESTION-007", mode: "single", option_ids: optionIds, custom },
+    }));
+
+    send(["safe"]);
+    expect(await screen.findByRole("heading", { name: "Confirm this answer" })).toBeVisible();
+    expect(await screen.findByText("Which release posture should we use?")).toBeVisible();
+    expect(await screen.findByText("Safe")).toBeVisible();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
+    expect(await screen.findByText("ANSWER timeline 1")).toBeVisible();
+    expect(screen.getByTitle("answer-review")).toBe(iframe);
+
+    send(["fast"]);
+    expect(await screen.findByText("Fast")).toBeVisible();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
+    expect(await screen.findByText("ANSWER timeline 2")).toBeVisible();
+    expect(screen.getByTitle("answer-review")).toBe(iframe);
+
+    send([], "Use a staged rollout.");
+    expect(await screen.findByText("Use a staged rollout.")).toBeVisible();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
+    expect(await screen.findByText("ANSWER timeline 3")).toBeVisible();
+    expect(submitted).toEqual([
+      { question_id: "QUESTION-007", question_digest: digest, option_ids: ["safe"], custom: "" },
+      { question_id: "QUESTION-007", question_digest: digest, option_ids: ["fast"], custom: "" },
+      { question_id: "QUESTION-007", question_digest: digest, option_ids: [], custom: "Use a staged rollout." },
+    ]);
+  });
+
+  it("runs read-only previews without exposing a trusted answer confirmation", async () => {
+    const body = "```html-preview id=read-only version=1\n<!doctype html><button>False submit</button>\n```";
+    server.use(
+      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, html_preview_execution: true, interactive_question_answers: true } })),
+      http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture({ body }))),
+    );
+    installIssueDetailHandlers();
+    server.use(http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture({ body }))));
+    renderIssueDetail(activeRepository(false, ["read"]));
+    await userEvent.setup().click(await screen.findByRole("button", { name: /read-only/ }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Run" }));
+    const iframe = await screen.findByTitle("Interactive preview · read-only") as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    fireEvent.load(iframe);
+    const init = postMessage.mock.calls.at(-1)?.[0] as { nonce: string; interactive_question_answers: boolean };
+    expect(init.interactive_question_answers).toBe(false);
+    fireEvent(window, new MessageEvent("message", {
+      origin: "null",
+      source: iframe.contentWindow,
+      data: { version: 1, nonce: init.nonce, question_id: "QUESTION-007", mode: "single", option_ids: ["safe"], custom: "" },
+    }));
+    expect(screen.queryByRole("heading", { name: "Confirm this answer" })).not.toBeInTheDocument();
+    expect(screen.getByText(/interactive answers are unavailable/i)).toBeVisible();
   });
 
   it("offers repository subscription on the issue list to a reader without triage authority", async () => {

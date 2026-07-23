@@ -1,7 +1,7 @@
 import { z, type ZodType } from "zod";
 import { cookieValue } from "../../lib/api/client";
 import { issueRelationshipsSchema } from "../../lib/api/relationships";
-import { commentSchema, issueSchema, labelSchema, reactionSchema, type ReactionContent } from "./types";
+import { answerResponseSchema, commentSchema, issueSchema, labelSchema, questionAuthoritySchema, reactionSchema, type ReactionContent } from "./types";
 
 type Method = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 type Options<T> = { method?: Method; body?: unknown; schema?: ZodType<T>; signal?: AbortSignal };
@@ -59,6 +59,10 @@ function base(owner: string, repo: string) {
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 }
 
+function nativeBase(owner: string, repo: string) {
+  return `/api/v1/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+}
+
 const issueListSchema = z.array(issueSchema);
 const commentListSchema = z.array(commentSchema);
 const labelListSchema = z.array(labelSchema);
@@ -94,6 +98,27 @@ export const issueApi = {
     const query = new URLSearchParams({ q: prefix });
     return request(`/api/v1/mentions/candidates?${query}`, { schema: z.array(mentionCandidateSchema).max(10), signal });
   },
+  previewDocumentURL: (owner: string, repo: string, number: number, preview: string, digest: string,
+    source: { kind: "issue" } | { kind: "comment"; commentId: number }) => {
+    const query = new URLSearchParams({ source: source.kind, digest });
+    if (source.kind === "comment") query.set("comment_id", String(source.commentId));
+    return `${nativeBase(owner, repo)}/issues/${number}/previews/${encodeURIComponent(preview)}?${query}`;
+  },
+  getQuestion: (owner: string, repo: string, number: number, questionId: string, signal?: AbortSignal) =>
+    request(`${nativeBase(owner, repo)}/issues/${number}/questions/${encodeURIComponent(questionId)}`, {
+      schema: questionAuthoritySchema,
+      signal,
+    }),
+  createAnswer: (owner: string, repo: string, number: number, body: {
+    question_id: string;
+    question_digest: string;
+    option_ids: string[];
+    custom: string;
+  }) => request(`${nativeBase(owner, repo)}/issues/${number}/answers`, {
+    method: "POST",
+    body,
+    schema: answerResponseSchema,
+  }),
 };
 
 export function isIssueApiError(error: unknown, status?: number): error is IssueApiError {
