@@ -24,6 +24,11 @@ The server MUST ship an embedded React SPA that uses the authenticated APIs for 
 - **WHEN** an issue or comment contains GitHub-Flavored Markdown, fenced code, raw HTML, unsafe URL schemes or event-handler attributes
 - **THEN** the SPA MUST render supported GFM and syntax highlighting while sanitizing active content under a restrictive content security policy
 
+#### Scenario: Mermaid fences become safe diagrams
+
+- **WHEN** an issue or comment contains a valid `mermaid` fenced code block
+- **THEN** the SPA MUST render a responsive, non-interactive diagram without relaxing Markdown sanitization or content security policy, and MUST fall back to the original fenced source when diagram parsing fails
+
 #### Scenario: typed markers are hidden visually and preserved raw
 
 - **WHEN** a body includes an issue-spec issue or typed-comment HTML marker

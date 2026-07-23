@@ -10,6 +10,11 @@
 .markdown-view code { background: rgba(34, 38, 44, .07); border-radius: .3rem; font: .9em/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; padding: .12rem .3rem; }
 .markdown-view pre { background: #20242a; border-radius: .65rem; color: #f5f1e8; max-width: 100%; overflow: auto; padding: 1rem; }
 .markdown-view pre code { background: transparent; color: inherit; padding: 0; }
+.markdown-view .mermaid-diagram { background: #fff; border: 1px solid var(--line); border-radius: .65rem; max-width: 100%; overflow: auto; padding: 1rem; text-align: center; }
+.markdown-view .mermaid-diagram img { display: block; height: auto; margin: auto; max-height: 42rem; max-width: 100%; object-fit: contain; }
+.markdown-view .mermaid-diagram-loading { color: var(--muted); min-height: 4rem; }
+.markdown-view .mermaid-diagram-fallback > p { color: var(--muted); margin-bottom: .5rem; }
+.markdown-view .mermaid-diagram-fallback pre { margin-top: 0; }
 .markdown-view table { border-collapse: collapse; display: block; max-width: 100%; overflow-x: auto; width: max-content; }
 .markdown-view th, .markdown-view td { border: 1px solid var(--line); min-width: 7rem; padding: .55rem .7rem; text-align: left; }
 .markdown-view th { background: rgba(15, 111, 111, .08); }
