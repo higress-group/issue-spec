@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/higress-group/issue-spec/internal/preview"
 )
 
 type CommandVerb string
@@ -86,7 +88,7 @@ var (
 )
 
 func ParseCommandComment(comment TriggerComment) ParseResult {
-	body := strings.TrimLeftFunc(comment.Body, unicode.IsSpace)
+	body := strings.TrimLeftFunc(preview.SemanticView(comment.Body), unicode.IsSpace)
 	if body == "" || !strings.HasPrefix(body, "/") {
 		return ParseResult{Status: ParseStatusIgnored}
 	}
