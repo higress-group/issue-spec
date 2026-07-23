@@ -852,6 +852,148 @@ func TestPreflightLabelsLegacyGHAndFailsClosedWhenStrict(t *testing.T) {
 	}
 }
 
+func TestPreflightQoderChecksPassWithCLIAndAuthDir(t *testing.T) {
+	home := t.TempDir()
+	authDir := filepath.Join(home, ".qoder", ".auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(authDir, "id"), []byte("token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	cfg := testPreflightConfigWithoutAuth()
+	cfg.Agent.Kind = AgentQoder
+	cfg.UnsafeNoSandbox = true
+
+	report := RunPreflight(context.Background(), cfg, qoderPassingPreflightDependencies(t))
+	if !report.OK {
+		t.Fatalf("preflight should pass for qoder agent with qodercli and auth dir: %+v", report)
+	}
+	if check := findCheck(t, report, "qoder-cli"); check.Status != CheckOK {
+		t.Fatalf("qoder-cli check = %+v", check)
+	}
+	if check := findCheck(t, report, "qoder-auth"); check.Status != CheckOK || !strings.Contains(check.Detail, ".auth") {
+		t.Fatalf("qoder-auth check = %+v", check)
+	}
+	if check := findCheck(t, report, "qoder-agent-full-access"); check.Status != CheckWarning {
+		t.Fatalf("qoder-agent-full-access check = %+v", check)
+	}
+}
+
+func TestPreflightQoderAuthViaPersonalAccessToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("QODER_PERSONAL_ACCESS_TOKEN", "token")
+	cfg := testPreflightConfigWithoutAuth()
+	cfg.Agent.Kind = AgentQoder
+	cfg.UnsafeNoSandbox = true
+
+	report := RunPreflight(context.Background(), cfg, qoderPassingPreflightDependencies(t))
+	if check := findCheck(t, report, "qoder-auth"); check.Status != CheckOK || !strings.Contains(check.Detail, "QODER_PERSONAL_ACCESS_TOKEN") {
+		t.Fatalf("qoder-auth check = %+v", check)
+	}
+}
+
+func TestPreflightQoderFailsWhenCLIMissing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := testPreflightConfigWithoutAuth()
+	cfg.Agent.Kind = AgentQoder
+	cfg.UnsafeNoSandbox = true
+
+	report := RunPreflight(context.Background(), cfg, passingPreflightDependencies(t))
+	if report.OK {
+		t.Fatalf("preflight unexpectedly OK without qodercli: %+v", report)
+	}
+	check := findCheck(t, report, "qoder-cli")
+	if check.Status != CheckError || !strings.Contains(check.Detail, "qodercli not found") {
+		t.Fatalf("qoder-cli check = %+v", check)
+	}
+}
+
+func TestPreflightQoderFailsWhenAuthMissing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := testPreflightConfigWithoutAuth()
+	cfg.Agent.Kind = AgentQoder
+	cfg.UnsafeNoSandbox = true
+
+	report := RunPreflight(context.Background(), cfg, qoderPassingPreflightDependencies(t))
+	if report.OK {
+		t.Fatalf("preflight unexpectedly OK without qoder auth: %+v", report)
+	}
+	check := findCheck(t, report, "qoder-auth")
+	if check.Status != CheckError || !strings.Contains(check.Detail, "qodercli auth unavailable") || !strings.Contains(check.Hint, "QODER_PERSONAL_ACCESS_TOKEN") {
+		t.Fatalf("qoder-auth check = %+v", check)
+	}
+}
+
+func TestPreflightDemotesQoderChecksForCodexDefault(t *testing.T) {
+	home := t.TempDir()
+	codexHome := filepath.Join(home, "codex")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "auth.json"), []byte(`{"token":"codex"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", codexHome)
+	cfg := testPreflightConfigWithoutAuth()
+	cfg.UnsafeNoSandbox = true
+
+	report := RunPreflight(context.Background(), cfg, passingPreflightDependencies(t))
+	if !report.OK {
+		t.Fatalf("preflight should stay OK for codex default without qoder prerequisites: %+v", report)
+	}
+	for _, name := range []string{"qoder-cli", "qoder-auth"} {
+		check := findCheck(t, report, name)
+		if check.Status != CheckWarning || !strings.Contains(check.Detail, "secondary agent (non-blocking)") {
+			t.Fatalf("%s check should be demoted for codex default: %+v", name, check)
+		}
+	}
+}
+
+func TestPreflightDemotesCodexAndClaudeChecksForQoderDefault(t *testing.T) {
+	home := t.TempDir()
+	authDir := filepath.Join(home, ".qoder", ".auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(authDir, "id"), []byte("token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, "missing-codex"))
+	cfg := testPreflightConfigWithoutAuth()
+	cfg.Agent.Kind = AgentQoder
+	cfg.UnsafeNoSandbox = true
+
+	report := RunPreflight(context.Background(), cfg, qoderPassingPreflightDependencies(t))
+	if !report.OK {
+		t.Fatalf("preflight should stay OK for qoder default without codex/claude prerequisites: %+v", report)
+	}
+	codex := findCheck(t, report, "codex-auth")
+	if codex.Status != CheckWarning || !strings.Contains(codex.Detail, "secondary agent (non-blocking)") {
+		t.Fatalf("codex-auth check should be demoted for qoder default: %+v", codex)
+	}
+	claude := findCheck(t, report, "claude-auth")
+	if claude.Status != CheckWarning || !strings.Contains(claude.Detail, "secondary agent (non-blocking)") {
+		t.Fatalf("claude-auth check should be demoted for qoder default: %+v", claude)
+	}
+}
+
+func qoderPassingPreflightDependencies(t *testing.T) PreflightDependencies {
+	t.Helper()
+	deps := passingPreflightDependencies(t)
+	lookPath := deps.LookPath
+	deps.LookPath = func(name string) (string, error) {
+		if name == "qodercli" {
+			return "/test/bin/qodercli", nil
+		}
+		return lookPath(name)
+	}
+	return deps
+}
+
 func testPreflightConfigWithoutAuth() Config {
 	return Config{
 		Hostname:            "github.com",

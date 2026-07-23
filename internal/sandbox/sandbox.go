@@ -49,6 +49,7 @@ var defaultEnvAllowlist = []string{
 	"GIT_SSL_CAINFO",
 	"CURL_CA_BUNDLE",
 	"CLAUDE_CODE_EFFORT_LEVEL",
+	"QODER_PERSONAL_ACCESS_TOKEN",
 }
 var proxyEnvNames = []string{"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY"}
 var defaultSystemReadOnlyBindPaths = []string{
@@ -709,6 +710,11 @@ func sortedUnique(values []string) []string {
 
 func isTokenEnv(name string) bool {
 	upper := strings.ToUpper(name)
+	// QODER_PERSONAL_ACCESS_TOKEN is an explicit qodercli credential source that
+	// the runner allowlists into the sandbox for qoder agent jobs.
+	if upper == "QODER_PERSONAL_ACCESS_TOKEN" {
+		return false
+	}
 	if upper == "GH_TOKEN" || upper == "GITHUB_TOKEN" || upper == "ISSUE_SPEC_TOKEN" {
 		return true
 	}

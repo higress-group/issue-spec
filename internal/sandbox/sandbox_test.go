@@ -152,6 +152,33 @@ func TestPreparePreservesClaudeEffortEnvByDefault(t *testing.T) {
 	}
 }
 
+func TestPreparePreservesQoderPersonalAccessTokenEnv(t *testing.T) {
+	cfg := Config{
+		UnsafeNoSandbox:   true,
+		WorkspacePath:     testAbsPath("workspace"),
+		TempHome:          testAbsPath("home"),
+		TempGHConfigDir:   testAbsPath("gh"),
+		TempXDGConfigHome: testAbsPath("xdg"),
+		HostEnv: []string{
+			"PATH=/usr/bin",
+			"QODER_PERSONAL_ACCESS_TOKEN=qoder-token",
+			"GH_TOKEN=secret",
+		},
+	}
+
+	prepared, err := Prepare(context.Background(), cfg, Command{Binary: "acpx"}, Dependencies{})
+	if err != nil {
+		t.Fatalf("Prepare returned error: %v", err)
+	}
+	env := envMap(prepared.Command.Env)
+	if got := env["QODER_PERSONAL_ACCESS_TOKEN"]; got != "qoder-token" {
+		t.Fatalf("QODER_PERSONAL_ACCESS_TOKEN = %q, want qoder-token in env %v", got, prepared.Command.Env)
+	}
+	if _, ok := env["GH_TOKEN"]; ok {
+		t.Fatalf("GH_TOKEN should be scrubbed: %v", prepared.Command.Env)
+	}
+}
+
 func TestPrepareUnsafeLeavesAbsoluteBinaryPathUnchanged(t *testing.T) {
 	workspacePath := testAbsPath("workspace")
 	binaryPath := testAbsPath("tmp/issue-spec-runner-e2e-001/bin/issue-spec")

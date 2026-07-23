@@ -21,6 +21,7 @@ const (
 
 	AgentCodex  = "codex"
 	AgentClaude = "claude"
+	AgentQoder  = "qoder"
 
 	PermissionApproveAll   = "approve-all"
 	PermissionApproveReads = "approve-reads"
@@ -1424,9 +1425,9 @@ func normalizeConfig(cfg Config) Config {
 
 func validateConfig(cfg Config) error {
 	switch cfg.Agent {
-	case AgentCodex, AgentClaude:
+	case AgentCodex, AgentClaude, AgentQoder:
 	default:
-		return fmt.Errorf("%w: unsupported agent %q", ErrInvalidConfig, cfg.Agent)
+		return fmt.Errorf("%w: unsupported agent %q (valid values: codex, claude, qoder)", ErrInvalidConfig, cfg.Agent)
 	}
 	switch cfg.MaxPermissions {
 	case PermissionApproveAll, PermissionApproveReads, PermissionDenyAll:

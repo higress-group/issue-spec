@@ -2145,6 +2145,95 @@ func TestSandboxRunnerBwrapBindsResolvedNVMStyleAcpxInstall(t *testing.T) {
 	assertCommandArgSequenceMissing(t, cmd.Args, "--ro-bind", acpxPath, acpxPath)
 }
 
+func TestSandboxRunnerConfigBindsResolvedNVMStyleQoderInstall(t *testing.T) {
+	temp := t.TempDir()
+	hostHome := filepath.Join(temp, "host-home")
+	hostGH := filepath.Join(hostHome, ".config", "gh")
+	workspacePath := filepath.Join(temp, "workspace")
+	runtimeRoot := filepath.Join(temp, ".sessions", "runtime")
+	acpxPath := filepath.Join(temp, "tools", "acpx")
+	nodePrefix := filepath.Join(temp, "user-local", "nvm", "versions", "node", "v24.18.0")
+	binDir := filepath.Join(nodePrefix, "bin")
+	qoderPackageDir := filepath.Join(nodePrefix, "lib", "node_modules", "@qoder-ai", "qodercli")
+	qoderPackageBinDir := filepath.Join(qoderPackageDir, "bin")
+	qoderPath := filepath.Join(binDir, "qodercli")
+	for _, dir := range []string{hostGH, workspacePath, filepath.Dir(acpxPath), binDir, qoderPackageBinDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFileWithMode(t, filepath.Join(hostGH, "hosts.yml"), []byte("github.com:\n  oauth_token: test\n"), 0o600)
+	writeFileWithMode(t, acpxPath, []byte("#!/bin/sh\n"), 0o700)
+	writeFileWithMode(t, filepath.Join(binDir, "node"), []byte("#!/bin/sh\n"), 0o700)
+	writeFileWithMode(t, filepath.Join(qoderPackageBinDir, "qodercli"), []byte("#!/usr/bin/env node\n"), 0o700)
+	if err := os.Symlink("../lib/node_modules/@qoder-ai/qodercli/bin/qodercli", qoderPath); err != nil {
+		t.Fatal(err)
+	}
+	resolvedBinDir := mustEvalSymlinks(t, binDir)
+	resolvedQoderPackageDir := mustEvalSymlinks(t, qoderPackageDir)
+
+	cfg, resolvedAcpx, _, err := (SandboxRunner{Config: sandbox.Config{
+		HostGHConfigDir: hostGH,
+		HostEnv:         []string{"HOME=" + hostHome, "PATH=/usr/bin"},
+	}, Deps: sandbox.Dependencies{
+		LookPath: func(name string) (string, error) {
+			switch name {
+			case acpxPath:
+				return acpxPath, nil
+			case "qodercli":
+				return qoderPath, nil
+			default:
+				return "", os.ErrNotExist
+			}
+		},
+	}}).config(SandboxRequest{
+		WorkspacePath:        workspacePath,
+		AcpxWorkingDirectory: workspacePath,
+		AcpxBinary:           acpxPath,
+		AcpxAgent:            acpx.AgentQoder,
+		RuntimeHome:          filepath.Join(runtimeRoot, "home"),
+		RuntimeGHConfigDir:   filepath.Join(runtimeRoot, "gh"),
+		RuntimeXDGConfigHome: filepath.Join(runtimeRoot, "xdg"),
+		RuntimeCodexHome:     filepath.Join(runtimeRoot, "codex"),
+	})
+	if err != nil {
+		t.Fatalf("config returned error: %v", err)
+	}
+	if resolvedAcpx != acpxPath {
+		t.Fatalf("resolved acpx = %q, want %q", resolvedAcpx, acpxPath)
+	}
+	for _, want := range []string{resolvedBinDir, resolvedQoderPackageDir} {
+		if !containsCleanPath(cfg.ReadOnlyBinds, want) {
+			t.Fatalf("ReadOnlyBinds = %#v, want qoder runtime root %s", cfg.ReadOnlyBinds, want)
+		}
+	}
+	if got, want := cfg.ExtraEnv["PATH"], resolvedBinDir+string(os.PathListSeparator)+"/usr/bin"; got != want {
+		t.Fatalf("sandbox PATH = %q, want %q", got, want)
+	}
+}
+
+func TestRequestReadOnlyBindsNonQoderDoesNotResolveQoderCLI(t *testing.T) {
+	temp := t.TempDir()
+	acpxPath := filepath.Join(temp, "acpx")
+	writeFileWithMode(t, acpxPath, []byte("#!/bin/sh\n"), 0o700)
+	qoderLookups := 0
+	_, _, _, err := requestReadOnlyBinds(SandboxRequest{AcpxAgent: acpx.AgentCodex}, acpxPath, func(name string) (string, error) {
+		if name == "qodercli" {
+			qoderLookups++
+		}
+		if name == acpxPath {
+			return acpxPath, nil
+		}
+		return "", os.ErrNotExist
+	})
+	if err != nil {
+		t.Fatalf("requestReadOnlyBinds returned error: %v", err)
+	}
+	if qoderLookups != 0 {
+		t.Fatalf("qodercli lookups = %d, want 0 for a non-qoder job", qoderLookups)
+	}
+}
+
 func TestNodeGlobalBinPackageRootsIncludesStandaloneNpxPackage(t *testing.T) {
 	prefix := t.TempDir()
 	binDir := filepath.Join(prefix, "bin")
@@ -2246,6 +2335,57 @@ func TestAcpxConfigForKindDerivesPerAgentBehavior(t *testing.T) {
 	}
 	if len(secondary.ClaudeAllowedTools) != 2 {
 		t.Fatalf("secondary claude allowed tools = %v, want configured tools", secondary.ClaudeAllowedTools)
+	}
+}
+
+func TestAcpxConfigForKindDerivesQoderBehavior(t *testing.T) {
+	cfg := commentrunner.Config{
+		AcpxPath: "acpx",
+		Agent: commentrunner.AgentConfig{
+			Kind:                      commentrunner.AgentQoder,
+			Model:                     "ultimate",
+			ClaudeAgentFullAccess:     true,
+			ClaudeIncludeUserSettings: true,
+			ClaudeAllowedTools:        []string{"Task", "Bash"},
+		},
+	}
+
+	defaultCfg := AcpxConfigForKind(cfg, commentrunner.AgentQoder)
+	if defaultCfg.Agent != commentrunner.AgentQoder {
+		t.Fatalf("default agent = %q, want qoder", defaultCfg.Agent)
+	}
+	if defaultCfg.MaxPermissions != acpx.PermissionApproveReads {
+		t.Fatalf("default permissions = %v, want approve-reads", defaultCfg.MaxPermissions)
+	}
+	if defaultCfg.Mode != "" {
+		t.Fatalf("default mode = %q, want empty", defaultCfg.Mode)
+	}
+	if defaultCfg.Model != "ultimate" {
+		t.Fatalf("default model = %q, want operator model", defaultCfg.Model)
+	}
+	if defaultCfg.ClaudeIncludeUserSettings || defaultCfg.ClaudeAllowedTools != nil {
+		t.Fatalf("qoder config leaked claude settings: %+v", defaultCfg)
+	}
+
+	cfg.Agent.QoderAgentFullAccess = true
+	fullAccess := AcpxConfigForKind(cfg, commentrunner.AgentQoder)
+	if fullAccess.MaxPermissions != acpx.PermissionApproveAll {
+		t.Fatalf("full-access permissions = %v, want approve-all", fullAccess.MaxPermissions)
+	}
+	if fullAccess.Mode != "" {
+		t.Fatalf("full-access mode = %q, want empty (qoder has no acpx mode)", fullAccess.Mode)
+	}
+
+	cfg.Agent.Kind = commentrunner.AgentCodex
+	secondary := AcpxConfigForKind(cfg, commentrunner.AgentQoder)
+	if secondary.Model != "" {
+		t.Fatalf("secondary model = %q, want empty (own default)", secondary.Model)
+	}
+	if secondary.MaxPermissions != acpx.PermissionApproveAll {
+		t.Fatalf("secondary permissions = %v, want approve-all from qoder full access", secondary.MaxPermissions)
+	}
+	if secondary.ClaudeIncludeUserSettings || secondary.ClaudeAllowedTools != nil {
+		t.Fatalf("secondary qoder config leaked claude settings: %+v", secondary)
 	}
 }
 
@@ -2434,6 +2574,129 @@ func writeFileWithMode(t *testing.T, path string, data []byte, mode os.FileMode)
 	}
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMirrorHostQoderConfigCopiesSettingsAndAuth(t *testing.T) {
+	hostHome := t.TempDir()
+	tempHome := t.TempDir()
+	settings := `{"model":{"name":"ultimate","reasoningEffort":"max","contextWindow":400000}}`
+	writeFileWithMode(t, filepath.Join(hostHome, ".qoder", "settings.json"), []byte(settings), 0o600)
+	writeFileWithMode(t, filepath.Join(hostHome, ".qoder", ".auth", "id"), []byte("token-id"), 0o600)
+	writeFileWithMode(t, filepath.Join(hostHome, ".qoder", ".auth", "user"), []byte("user-info"), 0o640)
+	if err := os.MkdirAll(filepath.Join(hostHome, ".qoder", ".auth", "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(hostHome, ".qoder", "settings.json"), filepath.Join(hostHome, ".qoder", ".auth", "linked")); err != nil {
+		t.Fatal(err)
+	}
+	writeFileWithMode(t, filepath.Join(hostHome, ".qoder", "qoder.log"), []byte("log"), 0o600)
+
+	cfg := sandbox.Config{HostEnv: []string{"HOME=" + hostHome}, TempHome: tempHome}
+	if err := mirrorHostQoderConfig(&cfg); err != nil {
+		t.Fatalf("mirrorHostQoderConfig returned error: %v", err)
+	}
+
+	assertFileContentAndMode(t, filepath.Join(tempHome, ".qoder", "settings.json"), settings, 0o600)
+	assertFileContentAndMode(t, filepath.Join(tempHome, ".qoder", ".auth", "id"), "token-id", 0o600)
+	assertFileContentAndMode(t, filepath.Join(tempHome, ".qoder", ".auth", "user"), "user-info", 0o640)
+	for _, absent := range []string{
+		filepath.Join(tempHome, ".qoder", ".auth", "nested"),
+		filepath.Join(tempHome, ".qoder", ".auth", "linked"),
+		filepath.Join(tempHome, ".qoder", "qoder.log"),
+	} {
+		if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s exists after mirror: %v", absent, err)
+		}
+	}
+}
+
+func TestMirrorHostQoderConfigMissingHostConfigIsNoop(t *testing.T) {
+	tempHome := t.TempDir()
+	cfg := sandbox.Config{HostEnv: []string{"HOME=" + t.TempDir()}, TempHome: tempHome}
+	if err := mirrorHostQoderConfig(&cfg); err != nil {
+		t.Fatalf("mirrorHostQoderConfig returned error: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(tempHome, ".qoder")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sandbox .qoder exists after noop mirror: %v", err)
+	}
+}
+
+func TestMirrorHostQoderConfigPrunesStaleMirroredFiles(t *testing.T) {
+	hostHome := t.TempDir()
+	tempHome := t.TempDir()
+	writeFileWithMode(t, filepath.Join(hostHome, ".qoder", ".auth", "id"), []byte("token-id"), 0o600)
+	writeFileWithMode(t, filepath.Join(tempHome, ".qoder", "settings.json"), []byte("stale"), 0o600)
+	writeFileWithMode(t, filepath.Join(tempHome, ".qoder", ".auth", "stale-token"), []byte("stale"), 0o600)
+
+	cfg := sandbox.Config{HostEnv: []string{"HOME=" + hostHome}, TempHome: tempHome}
+	if err := mirrorHostQoderConfig(&cfg); err != nil {
+		t.Fatalf("mirrorHostQoderConfig returned error: %v", err)
+	}
+
+	assertFileContentAndMode(t, filepath.Join(tempHome, ".qoder", ".auth", "id"), "token-id", 0o600)
+	for _, absent := range []string{
+		filepath.Join(tempHome, ".qoder", "settings.json"),
+		filepath.Join(tempHome, ".qoder", ".auth", "stale-token"),
+	} {
+		if _, err := os.Lstat(absent); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale %s exists after mirror: %v", absent, err)
+		}
+	}
+}
+
+func TestMirrorHostQoderConfigRejectsDestinationDirectorySymlink(t *testing.T) {
+	hostHome := t.TempDir()
+	tempHome := t.TempDir()
+	outside := t.TempDir()
+	writeFileWithMode(t, filepath.Join(hostHome, ".qoder", ".auth", "id"), []byte("new-token"), 0o600)
+	writeFileWithMode(t, filepath.Join(outside, "id"), []byte("outside-sentinel"), 0o600)
+	if err := os.MkdirAll(filepath.Join(tempHome, ".qoder"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(tempHome, ".qoder", ".auth")); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := sandbox.Config{HostEnv: []string{"HOME=" + hostHome}, TempHome: tempHome}
+	if err := mirrorHostQoderConfig(&cfg); err == nil {
+		t.Fatal("mirrorHostQoderConfig accepted a destination directory symlink")
+	}
+	assertFileContentAndMode(t, filepath.Join(outside, "id"), "outside-sentinel", 0o600)
+	info, err := os.Lstat(filepath.Join(tempHome, ".qoder", ".auth"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("destination directory entry mode = %v, want symlink left unfollowed", info.Mode())
+	}
+}
+
+func TestMirrorHostQoderConfigReplacesDestinationFileSymlink(t *testing.T) {
+	hostHome := t.TempDir()
+	tempHome := t.TempDir()
+	outside := t.TempDir()
+	writeFileWithMode(t, filepath.Join(hostHome, ".qoder", ".auth", "id"), []byte("new-token"), 0o600)
+	writeFileWithMode(t, filepath.Join(outside, "sentinel"), []byte("outside-sentinel"), 0o600)
+	if err := os.MkdirAll(filepath.Join(tempHome, ".qoder", ".auth"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "sentinel"), filepath.Join(tempHome, ".qoder", ".auth", "id")); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := sandbox.Config{HostEnv: []string{"HOME=" + hostHome}, TempHome: tempHome}
+	if err := mirrorHostQoderConfig(&cfg); err != nil {
+		t.Fatalf("mirrorHostQoderConfig returned error: %v", err)
+	}
+	assertFileContentAndMode(t, filepath.Join(outside, "sentinel"), "outside-sentinel", 0o600)
+	assertFileContentAndMode(t, filepath.Join(tempHome, ".qoder", ".auth", "id"), "new-token", 0o600)
+	info, err := os.Lstat(filepath.Join(tempHome, ".qoder", ".auth", "id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("destination credential mode = %v, want regular file", info.Mode())
 	}
 }
 

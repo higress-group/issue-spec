@@ -31,8 +31,9 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) 
 	workspaceRoot := fs.String("workspace-root", "", "runner workspace root")
 	workspaceRetention := fs.Duration("workspace-retention", 7*24*time.Hour, "non-active workspace retention")
 	acpxPath := fs.String("acpx", "acpx", "acpx executable path")
-	agentKind := fs.String("agent", commentrunner.AgentCodex, "coordinator agent: codex or claude")
+	agentKind := fs.String("agent", commentrunner.AgentCodex, "coordinator agent: codex, claude, or qoder")
 	model := fs.String("model", "", "optional coordinator model")
+	qoderFullAccess := fs.Bool("qoder-agent-full-access", false, "require Qoder agent-full-access policy for workflow CLI/shell work")
 	unsafeNoSandbox := fs.Bool("unsafe-no-sandbox", false, "explicitly disable the filesystem sandbox")
 	bwrapPath := fs.String("bwrap", "", "bubblewrap executable path")
 	cancellationEnabled := fs.Bool("cancellation-enabled", true, "allow /cancel commands")
@@ -225,6 +226,9 @@ func (a *app) runRunnerServe(ctx context.Context, args []string) (exitCode int) 
 	runnerConfig.AllowedUsers, runnerConfig.StatePath, runnerConfig.WorkspaceRoot = allowedUsers.Values(), strings.TrimSpace(*statePath), strings.TrimSpace(*workspaceRoot)
 	runnerConfig.MaxConcurrentJobs, runnerConfig.AcpxPath = *maxConcurrentJobs, strings.TrimSpace(*acpxPath)
 	runnerConfig.Agent.Kind, runnerConfig.Agent.Model = strings.TrimSpace(*agentKind), strings.TrimSpace(*model)
+	if seen["qoder-agent-full-access"] {
+		runnerConfig.Agent.QoderAgentFullAccess = *qoderFullAccess
+	}
 	runnerConfig.WorkspaceRetention = commentrunner.NewDuration(*workspaceRetention)
 	runnerConfig.UnsafeNoSandbox, runnerConfig.BwrapPath = *unsafeNoSandbox, strings.TrimSpace(*bwrapPath)
 	runnerConfig.AllowHostSSH = *allowHostSSH

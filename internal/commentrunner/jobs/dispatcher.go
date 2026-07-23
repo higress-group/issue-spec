@@ -1786,6 +1786,9 @@ func (p SandboxRunner) config(req SandboxRequest) (sandbox.Config, string, ghAut
 	if err := mirrorHostClaudeConfig(&cfg); err != nil {
 		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
 	}
+	if err := mirrorHostQoderConfig(&cfg); err != nil {
+		return sandbox.Config{}, "", ghAuthMirrorResult{}, err
+	}
 	return cfg, resolvedAcpxBinary, ghAuthMirror, nil
 }
 
@@ -1905,6 +1908,14 @@ func requestReadOnlyBinds(req SandboxRequest, acpxBinary string, lookPath func(s
 		return nil, nil, "", err
 	}
 	out = append(out, issueSpecBinds...)
+	if req.AcpxAgent == acpx.AgentQoder {
+		qoderBinds, qoderPathPrefixes, err := qoderExecutableReadOnlyBinds(lookPath)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		out = append(out, qoderBinds...)
+		pathPrefixes = append(pathPrefixes, qoderPathPrefixes...)
+	}
 	return appendUniqueCleanAbsPaths(nil, out...), appendUniqueCleanAbsPaths(nil, pathPrefixes...), resolvedAcpxBinary, nil
 }
 
@@ -1924,6 +1935,17 @@ func acpxExecutableReadOnlyBinds(binary string, lookPath func(string) (string, e
 		return roots, []string{binDir}, target, nil
 	}
 	return []string{path}, nil, path, nil
+}
+
+func qoderExecutableReadOnlyBinds(lookPath func(string) (string, error)) ([]string, []string, error) {
+	path, err := resolveExecutablePath("qodercli", lookPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if roots, binDir, _ := nodeGlobalPackageReadOnlyBinds(path, "@qoder-ai/qodercli"); len(roots) > 0 {
+		return roots, []string{binDir}, nil
+	}
+	return []string{path}, []string{filepath.Dir(path)}, nil
 }
 
 func executableFileReadOnlyBind(binary string, lookPath func(string) (string, error)) ([]string, error) {
@@ -1974,7 +1996,11 @@ func nodeGlobalPackageReadOnlyBinds(path, packageName string) ([]string, string,
 	if !ok {
 		return nil, "", ""
 	}
-	prefix := filepath.Dir(filepath.Dir(filepath.Dir(pkgRoot)))
+	packageParts := nodePackagePathParts(packageName)
+	prefix := pkgRoot
+	for range len(packageParts) + 2 { // package path, node_modules, lib
+		prefix = filepath.Dir(prefix)
+	}
 	binDir := filepath.Join(prefix, "bin")
 	if !pathExists(filepath.Join(binDir, "node")) {
 		return nil, "", ""
@@ -1992,18 +2018,47 @@ func nodeGlobalPackageReadOnlyBinds(path, packageName string) ([]string, string,
 
 func nodeGlobalPackageRoot(realPath, packageName string) (string, bool) {
 	realPath = filepath.Clean(strings.TrimSpace(realPath))
+	packageParts := nodePackagePathParts(packageName)
+	if len(packageParts) == 0 {
+		return "", false
+	}
 	parts := strings.Split(realPath, string(os.PathSeparator))
-	for i := 0; i+3 < len(parts); i++ {
-		if parts[i] == "lib" && parts[i+1] == "node_modules" && parts[i+2] == packageName {
-			rootParts := append([]string(nil), parts[:i+3]...)
-			root := strings.Join(rootParts, string(os.PathSeparator))
-			if filepath.IsAbs(realPath) && !strings.HasPrefix(root, string(os.PathSeparator)) {
-				root = string(os.PathSeparator) + root
-			}
-			return filepath.Clean(root), true
+	for i := 0; i+2+len(packageParts) < len(parts); i++ {
+		if parts[i] != "lib" || parts[i+1] != "node_modules" {
+			continue
 		}
+		matched := true
+		for offset, part := range packageParts {
+			if parts[i+2+offset] != part {
+				matched = false
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		rootParts := append([]string(nil), parts[:i+2+len(packageParts)]...)
+		root := strings.Join(rootParts, string(os.PathSeparator))
+		if filepath.IsAbs(realPath) && !strings.HasPrefix(root, string(os.PathSeparator)) {
+			root = string(os.PathSeparator) + root
+		}
+		return filepath.Clean(root), true
 	}
 	return "", false
+}
+
+func nodePackagePathParts(packageName string) []string {
+	packagePath := filepath.Clean(filepath.FromSlash(strings.TrimSpace(packageName)))
+	if packagePath == "." || filepath.IsAbs(packagePath) || packagePath == ".." || strings.HasPrefix(packagePath, ".."+string(os.PathSeparator)) {
+		return nil
+	}
+	parts := strings.Split(packagePath, string(os.PathSeparator))
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return nil
+		}
+	}
+	return parts
 }
 
 func nodeGlobalBinPackageRoots(binDir string, names ...string) []string {
@@ -2577,6 +2632,269 @@ func copyLimitedFiles(source, dest string, names []string) error {
 	return nil
 }
 
+var qoderRuntimeDirFiles = []string{"settings.json"}
+
+// mirrorHostQoderConfig mirrors the operator's qodercli configuration into the
+// sandbox temporary HOME: settings.json (model, reasoning effort, context
+// window) plus the regular files inside .auth/ (credentials). qodercli
+// resolves configuration from $HOME/.qoder and the sandbox already points HOME
+// at TempHome, so no dedicated environment variable is required. A missing
+// host configuration is not an error.
+func mirrorHostQoderConfig(cfg *sandbox.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("sandbox config is required")
+	}
+	sourceHome := hostHomeDir(cfg.HostEnv)
+	if sourceHome == "" || strings.TrimSpace(cfg.TempHome) == "" {
+		return nil
+	}
+	sourceHome = filepath.Clean(sourceHome)
+	tempHome := filepath.Clean(cfg.TempHome)
+	if sameCleanPath(sourceHome, tempHome) {
+		return nil
+	}
+	tempHomeInfo, err := os.Lstat(tempHome)
+	if err != nil {
+		return fmt.Errorf("validate sandbox temporary HOME %s: %w", tempHome, err)
+	}
+	if tempHomeInfo.Mode()&os.ModeSymlink != 0 || !tempHomeInfo.IsDir() {
+		return fmt.Errorf("sandbox temporary HOME must be a non-symlink directory: %s", tempHome)
+	}
+	tempHomeRoot, err := os.OpenRoot(tempHome)
+	if err != nil {
+		return fmt.Errorf("open sandbox temporary HOME %s: %w", tempHome, err)
+	}
+	defer tempHomeRoot.Close()
+	openedInfo, err := tempHomeRoot.Stat(".")
+	if err != nil {
+		return fmt.Errorf("inspect opened sandbox temporary HOME %s: %w", tempHome, err)
+	}
+	currentInfo, err := os.Lstat(tempHome)
+	if err != nil || currentInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, currentInfo) {
+		if err != nil {
+			return fmt.Errorf("revalidate sandbox temporary HOME %s: %w", tempHome, err)
+		}
+		return fmt.Errorf("sandbox temporary HOME changed while opening: %s", tempHome)
+	}
+	if err := copyLimitedFilesToRoot(filepath.Join(sourceHome, ".qoder"), tempHomeRoot, ".qoder", qoderRuntimeDirFiles); err != nil {
+		return fmt.Errorf("materialize host qoder config from %s to %s: %w", filepath.Join(sourceHome, ".qoder"), filepath.Join(tempHome, ".qoder"), err)
+	}
+	if err := copyLimitedDir(filepath.Join(sourceHome, ".qoder", ".auth"), tempHomeRoot, filepath.Join(".qoder", ".auth")); err != nil {
+		return fmt.Errorf("materialize host qoder auth from %s to %s: %w", filepath.Join(sourceHome, ".qoder", ".auth"), filepath.Join(tempHome, ".qoder", ".auth"), err)
+	}
+	return nil
+}
+
+type limitedFile struct {
+	data []byte
+	mode os.FileMode
+}
+
+func copyLimitedFilesToRoot(source string, root *os.Root, dest string, names []string) error {
+	regular := make(map[string]limitedFile, len(names))
+	for _, name := range names {
+		sourcePath := filepath.Join(source, name)
+		info, err := os.Lstat(sourcePath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || info.IsDir() || !info.Mode().IsRegular() {
+			continue
+		}
+		data, err := os.ReadFile(sourcePath)
+		if err != nil {
+			return err
+		}
+		mode := info.Mode().Perm()
+		if mode == 0 {
+			mode = 0o600
+		}
+		regular[name] = limitedFile{data: data, mode: mode}
+	}
+	destRoot, exists, err := openLimitedDestinationDir(root, dest, len(regular) > 0)
+	if err != nil || !exists {
+		return err
+	}
+	defer destRoot.Close()
+	for _, name := range names {
+		file, ok := regular[name]
+		if !ok {
+			_ = destRoot.Remove(name)
+			continue
+		}
+		if err := writeLimitedFileAtomically(destRoot, name, file); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// copyLimitedDir mirrors the regular files directly inside source into dest
+// without recursing. Symlinks, subdirectories, and other non-regular entries
+// are skipped, and mirrored files that no longer exist as regular files on the
+// host are removed from dest. A missing source directory mirrors nothing. The
+// destination is resolved beneath root without following link-like directory
+// entries, and each file is installed with an atomic rename over the old entry.
+func copyLimitedDir(source string, root *os.Root, dest string) error {
+	regular := map[string]limitedFile{}
+	sourceInfo, err := os.Lstat(source)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err == nil && (sourceInfo.Mode()&os.ModeSymlink != 0 || !sourceInfo.IsDir()) {
+		sourceInfo = nil
+	}
+	var entries []os.DirEntry
+	if sourceInfo != nil {
+		entries, err = os.ReadDir(source)
+		if err != nil {
+			return err
+		}
+	}
+	for _, entry := range entries {
+		sourcePath := filepath.Join(source, entry.Name())
+		info, err := os.Lstat(sourcePath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || info.IsDir() || !info.Mode().IsRegular() {
+			continue
+		}
+		data, err := os.ReadFile(sourcePath)
+		if err != nil {
+			return err
+		}
+		mode := info.Mode().Perm()
+		if mode == 0 {
+			mode = 0o600
+		}
+		regular[entry.Name()] = limitedFile{data: data, mode: mode}
+	}
+	destRoot, exists, err := openLimitedDestinationDir(root, dest, len(regular) > 0)
+	if err != nil || !exists {
+		return err
+	}
+	defer destRoot.Close()
+	for name, file := range regular {
+		if err := writeLimitedFileAtomically(destRoot, name, file); err != nil {
+			return err
+		}
+	}
+	destDir, err := destRoot.Open(".")
+	if err != nil {
+		return err
+	}
+	destEntries, err := destDir.ReadDir(-1)
+	closeErr := destDir.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	for _, entry := range destEntries {
+		if _, ok := regular[entry.Name()]; ok || entry.IsDir() {
+			continue
+		}
+		_ = destRoot.Remove(entry.Name())
+	}
+	return nil
+}
+
+func openLimitedDestinationDir(root *os.Root, name string, create bool) (*os.Root, bool, error) {
+	clean := filepath.Clean(name)
+	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return nil, false, fmt.Errorf("destination must be a relative child directory: %s", name)
+	}
+	current := ""
+	for _, component := range strings.Split(clean, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err := root.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			if !create {
+				return nil, false, nil
+			}
+			if err := root.Mkdir(current, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+				return nil, false, err
+			}
+			info, err = root.Lstat(current)
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, false, fmt.Errorf("destination path component must be a non-symlink directory: %s", current)
+		}
+	}
+	destRoot, err := root.OpenRoot(clean)
+	if err != nil {
+		return nil, false, err
+	}
+	openedInfo, err := destRoot.Stat(".")
+	if err != nil {
+		destRoot.Close()
+		return nil, false, err
+	}
+	currentInfo, err := root.Lstat(clean)
+	if err != nil || currentInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, currentInfo) {
+		destRoot.Close()
+		if err != nil {
+			return nil, false, err
+		}
+		return nil, false, fmt.Errorf("destination directory changed while opening: %s", clean)
+	}
+	return destRoot, true, nil
+}
+
+func writeLimitedFileAtomically(destRoot *os.Root, name string, file limitedFile) error {
+	for attempt := 0; attempt < 16; attempt++ {
+		token, err := randomHex(8)
+		if err != nil {
+			return err
+		}
+		tempName := ".issue-spec-qoder-" + token
+		temp, err := destRoot.OpenFile(tempName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		cleanup := func() {
+			_ = temp.Close()
+			_ = destRoot.Remove(tempName)
+		}
+		if err := temp.Chmod(file.mode); err != nil {
+			cleanup()
+			return err
+		}
+		written, err := temp.Write(file.data)
+		if err != nil || written != len(file.data) {
+			cleanup()
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("short write for %s: wrote %d of %d bytes", name, written, len(file.data))
+		}
+		if err := temp.Close(); err != nil {
+			_ = destRoot.Remove(tempName)
+			return err
+		}
+		if err := destRoot.Rename(tempName, name); err != nil {
+			_ = destRoot.Remove(tempName)
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("could not allocate a temporary file for %s", name)
+}
+
 func envValue(entries []string, name string) string {
 	prefix := name + "="
 	for _, entry := range entries {
@@ -2703,6 +3021,9 @@ func AcpxConfigForKind(cfg commentrunner.Config, kind string) acpx.Config {
 		mode = "agent-full-access"
 	}
 	if kind == commentrunner.AgentClaude && cfg.Agent.ClaudeAgentFullAccess {
+		permissions = acpx.PermissionApproveAll
+	}
+	if kind == commentrunner.AgentQoder && cfg.Agent.QoderAgentFullAccess {
 		permissions = acpx.PermissionApproveAll
 	}
 	model := ""
