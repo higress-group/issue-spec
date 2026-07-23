@@ -1,6 +1,6 @@
 export const workflowResources = {
   en: {
-    markdown: { completedTask: "Completed task", incompleteTask: "Incomplete task", codeBlock: "Code block", highlightedCode: "Highlighted code" },
+    markdown: { completedTask: "Completed task", incompleteTask: "Incomplete task", codeBlock: "Code block", highlightedCode: "Highlighted code", mermaidDiagram: "Mermaid diagram", mermaidLoading: "Rendering Mermaid diagram…", mermaidError: "This Mermaid diagram could not be rendered. The source is shown instead." },
     issues: {
       openingDesk: "Opening issue desk…",
       workspace: {
@@ -275,7 +275,7 @@ export const workflowResources = {
     },
   },
   "zh-CN": {
-    markdown: { completedTask: "已完成任务", incompleteTask: "未完成任务", codeBlock: "代码块", highlightedCode: "高亮代码" },
+    markdown: { completedTask: "已完成任务", incompleteTask: "未完成任务", codeBlock: "代码块", highlightedCode: "高亮代码", mermaidDiagram: "Mermaid 图表", mermaidLoading: "正在渲染 Mermaid 图表…", mermaidError: "无法渲染此 Mermaid 图表，已改为显示源码。" },
     issues: {
       openingDesk: "正在打开议题工作台…",
       workspace: {

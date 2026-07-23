@@ -130,6 +130,50 @@ test("issue detail is polished, accessible and preserves raw workflow text", asy
   }
 });
 
+test("issue comments render Mermaid flow and sequence diagrams", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "issues-desktop-1440");
+  comments = [commentFixture(9, `The cleanup lifecycle uses two background actions.
+
+\`\`\`mermaid
+flowchart LR
+  A["Task builder<br/>DB only"] --> B["Cleanup task"]
+  B --> C["Worker"]
+\`\`\`
+
+\`\`\`mermaid
+sequenceDiagram
+  participant U as User
+  participant G as Gateway
+  participant W as Worker
+  U->>G: DeleteGateway
+  G-->>W: Schedule cleanup
+\`\`\``)];
+
+  await page.goto("/acme/workflow/issues/41#issuecomment-9");
+  const diagrams = page.getByRole("img", { name: documentationText("Mermaid diagram", "Mermaid 图表") });
+  await expect(diagrams).toHaveCount(2);
+  await expect(diagrams.nth(0)).toHaveAttribute("src", /^data:image\/svg\+xml;charset=utf-8,/);
+  await expect(diagrams.nth(1)).toHaveAttribute("src", /^data:image\/svg\+xml;charset=utf-8,/);
+  const flowchartSource = decodeURIComponent((await diagrams.nth(0).getAttribute("src"))?.split(",", 2)[1] ?? "");
+  expect(flowchartSource).toContain("Task");
+  expect(flowchartSource).toContain("builder");
+  expect(flowchartSource).toContain("DB");
+  expect(flowchartSource).toContain("only");
+  expect(flowchartSource).not.toContain("<foreignObject");
+  expect(await diagrams.nth(0).evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+  expect(await diagrams.nth(1).evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+  expect(await diagrams.nth(0).evaluate(async (image: HTMLImageElement) => {
+    const source = image.src;
+    await new Promise((resolve) => window.setTimeout(resolve, 1_200));
+    return image.isConnected && image.src === source;
+  })).toBe(true);
+  await expect(page.locator("#issuecomment-9 code.language-mermaid")).toHaveCount(0);
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(1);
+  const accessibility = await new AxeBuilder({ page }).analyze();
+  expect(accessibility.violations).toEqual([]);
+});
+
 test("issue list presents the repository subscription entry", async ({ page }, testInfo) => {
   await page.goto("/acme/workflow/issues");
   await expect(page.getByRole("heading", { name: documentationText("Issues", "议题") })).toBeVisible();
