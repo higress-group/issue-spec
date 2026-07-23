@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/preview"
 	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	commentapi "github.com/higress-group/issue-spec/internal/server/api/github/comments"
 	issueapi "github.com/higress-group/issue-spec/internal/server/api/github/issues"
@@ -29,6 +32,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/projection/artifacts"
 	"github.com/higress-group/issue-spec/internal/server/publicurl"
 	"github.com/higress-group/issue-spec/internal/server/store"
+	"github.com/higress-group/issue-spec/internal/templates"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -250,6 +254,240 @@ func TestIssueCommentHTTPCompatibilityMarkerAndAuthorization(t *testing.T) {
 	if response.Code != http.StatusInternalServerError || countRows(t, environment.pool, "issues") != before {
 		t.Fatalf("hook rollback status=%d before=%d after=%d", response.Code, before, countRows(t, environment.pool, "issues"))
 	}
+}
+
+func TestTrustedPreviewServiceRevalidatesExactCurrentStoredSource(t *testing.T) {
+	environment := newEnvironment(t, models.VisibilityPublic)
+	subject := authz.Authenticated(environment.owner)
+	issueBody := "before\n```html-preview id=review version=1\n<!doctype html><p>issue source</p>\n```\nafter\n"
+	_, issue, err := environment.service.CreateIssue(t.Context(), "acme", "widgets", subject,
+		models.NewIssue{Title: "preview", Body: issueBody})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issueSelection, err := preview.Select(issueBody, "review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := environment.service.PreviewDocument(t.Context(), "acme", "widgets", issue.Issue.Number,
+		authz.Anonymous(), issueapi.PreviewSource{Kind: issueapi.PreviewSourceIssue}, "review",
+		issueSelection.Descriptor.Digest)
+	if err != nil || document != issueSelection.Source {
+		t.Fatalf("public exact issue preview=%q err=%v", document, err)
+	}
+
+	commentBody := "```html-preview id=comment-review version=1\n<script>document.body.textContent='comment'</script>\n```\n"
+	_, comment, err := environment.service.CreateComment(t.Context(), "acme", "widgets", issue.Issue.Number,
+		subject, commentBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commentSelection, err := preview.Select(commentBody, "comment-review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commentID := codec.StableNumericID(comment.Comment.ID.String())
+	document, err = environment.service.PreviewDocument(t.Context(), "acme", "widgets", issue.Issue.Number,
+		authz.Anonymous(), issueapi.PreviewSource{Kind: issueapi.PreviewSourceComment, CommentID: commentID},
+		"comment-review", commentSelection.Descriptor.Digest)
+	if err != nil || document != commentSelection.Source {
+		t.Fatalf("public exact comment preview=%q err=%v", document, err)
+	}
+	if _, err := environment.service.PreviewDocument(t.Context(), "acme", "widgets", issue.Issue.Number,
+		authz.Anonymous(), issueapi.PreviewSource{Kind: issueapi.PreviewSourceComment, CommentID: commentID},
+		"comment-review", strings.Repeat("0", 64)); !errors.Is(err, issueapi.ErrPreviewDigestMismatch) {
+		t.Fatalf("stale digest error=%v", err)
+	}
+
+	duplicate := "```html-preview id=dup version=1\none\n```\n```html-preview id=dup version=1\ntwo\n```\n"
+	_, duplicateIssue, err := environment.service.CreateIssue(t.Context(), "acme", "widgets", subject,
+		models.NewIssue{Title: "duplicate", Body: duplicate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicateDigest := preview.Parse(duplicate).Descriptors[0].Digest
+	if _, err := environment.service.PreviewDocument(t.Context(), "acme", "widgets",
+		duplicateIssue.Issue.Number, authz.Anonymous(), issueapi.PreviewSource{Kind: issueapi.PreviewSourceIssue},
+		"dup", duplicateDigest); !errors.Is(err, issueapi.ErrInvalidPreviewRequest) {
+		t.Fatalf("duplicate source error=%v", err)
+	}
+	for _, invalid := range []struct {
+		title string
+		body  string
+		id    string
+	}{
+		{title: "malformed", body: "```html-preview id=bad\nmalformed\n```\n", id: "bad"},
+		{title: "oversized", body: "```html-preview id=huge version=1\n" +
+			strings.Repeat("x", preview.MaxSourceSize+1) + "\n```\n", id: "huge"},
+	} {
+		_, invalidIssue, err := environment.service.CreateIssue(t.Context(), "acme", "widgets", subject,
+			models.NewIssue{Title: invalid.title, Body: invalid.body})
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := preview.Parse(invalid.body).Descriptors[0].Digest
+		if _, err := environment.service.PreviewDocument(t.Context(), "acme", "widgets",
+			invalidIssue.Issue.Number, authz.Anonymous(),
+			issueapi.PreviewSource{Kind: issueapi.PreviewSourceIssue}, invalid.id, digest); !errors.Is(err, issueapi.ErrInvalidPreviewRequest) {
+			t.Fatalf("%s source error=%v", invalid.title, err)
+		}
+	}
+
+	updatedBody := strings.Replace(issueBody, "issue source", "changed source", 1)
+	if _, _, err := environment.service.UpdateIssue(t.Context(), "acme", "widgets", issue.Issue.Number,
+		subject, func(current models.Issue) (models.IssueUpdate, error) {
+			return models.IssueUpdate{Title: current.Title, Body: updatedBody, State: current.State}, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := environment.service.PreviewDocument(t.Context(), "acme", "widgets", issue.Issue.Number,
+		authz.Anonymous(), issueapi.PreviewSource{Kind: issueapi.PreviewSourceIssue}, "review",
+		issueSelection.Descriptor.Digest); !errors.Is(err, issueapi.ErrPreviewDigestMismatch) {
+		t.Fatalf("updated source stale digest error=%v", err)
+	}
+
+	privateEnvironment := newEnvironment(t, models.VisibilityPrivate)
+	_, privateIssue, err := privateEnvironment.service.CreateIssue(t.Context(), "acme", "widgets",
+		authz.Authenticated(privateEnvironment.owner), models.NewIssue{Title: "private", Body: issueBody})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = privateEnvironment.service.PreviewDocument(t.Context(), "acme", "widgets",
+		privateIssue.Issue.Number, authz.Anonymous(), issueapi.PreviewSource{Kind: issueapi.PreviewSourceIssue},
+		"review", issueSelection.Descriptor.Digest)
+	var denied *issueapi.DecisionError
+	if !errors.As(err, &denied) || denied.Decision.Visible {
+		t.Fatalf("anonymous private preview error=%v", err)
+	}
+}
+
+func TestTrustedAnswerServiceAppendsCanonicalImmutableAnswersAtomically(t *testing.T) {
+	environment := newEnvironment(t, models.VisibilityPrivate)
+	subject := authz.Authenticated(environment.owner)
+	_, issue, err := environment.service.CreateIssue(t.Context(), "acme", "widgets", subject,
+		models.NewIssue{Title: "answer", Body: "authoritative issue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	questionBody := trustedQuestionBody(t, "QUESTION-007", "Choose one?",
+		[]model.ChoiceOption{{ID: "safe", Label: "Safe"}, {ID: "fast", Label: "Fast"}})
+	_, questionComment, err := environment.service.CreateComment(t.Context(), "acme", "widgets",
+		issue.Issue.Number, subject, questionBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	question, err := func() (issueapi.QuestionAuthority, error) {
+		_, value, err := environment.service.GetQuestion(t.Context(), "acme", "widgets",
+			issue.Issue.Number, subject, "https://web.example.test", "QUESTION-007")
+		return value, err
+	}()
+	if err != nil || question.Snapshot.Question != "Choose one?" ||
+		question.RepresentationVersion != questionComment.Comment.RepresentationVersion ||
+		question.BodyDigest != model.RepresentationDigest(questionBody) ||
+		!strings.Contains(question.Snapshot.SourceURL, "#issuecomment-") {
+		t.Fatalf("question authority=%+v err=%v", question, err)
+	}
+
+	var answers []models.CommentSnapshot
+	for range 2 {
+		_, answer, usedQuestion, err := environment.service.CreateAnswer(t.Context(), "acme", "widgets",
+			issue.Issue.Number, subject, "https://web.example.test",
+			issueapi.AnswerIntent{QuestionID: "QUESTION-007", QuestionDigest: question.BodyDigest,
+				OptionIDs: []string{"safe"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, err := model.ParseAnswerPayload(answer.Comment.Body)
+		parsed := model.ParseTypedComment(answer.Comment.Body)
+		if err != nil || !reflect.DeepEqual(payload.Question, usedQuestion.Snapshot) || payload.Selection.Options[0].ID != "safe" ||
+			parsed.Type != "ANSWER" || parsed.Status != "done" || parsed.Agent != environment.owner.User.Login ||
+			parsed.AgentSessionID != "" || answer.Comment.AuthorID == nil ||
+			*answer.Comment.AuthorID != environment.owner.User.ID ||
+			answer.Comment.CreatedAt.IsZero() || answer.Comment.UpdatedAt.Before(answer.Comment.CreatedAt) ||
+			answer.Comment.RepresentationVersion != 1 {
+			t.Fatalf("answer=%+v parsed=%+v payload=%+v err=%v", answer, parsed, payload, err)
+		}
+		answers = append(answers, answer)
+	}
+	if answers[0].Comment.ID == answers[1].Comment.ID ||
+		model.ParseTypedComment(answers[0].Comment.Body).ID == model.ParseTypedComment(answers[1].Comment.Body).ID {
+		t.Fatalf("repeated submission was not append-only: %+v", answers)
+	}
+	if _, _, err := environment.service.CreateComment(t.Context(), "acme", "widgets", issue.Issue.Number,
+		subject, answers[0].Comment.Body); !errors.Is(err, issueapi.ErrTrustedAnswerRequired) {
+		t.Fatalf("generic ANSWER create error=%v", err)
+	}
+	if _, _, err := environment.service.UpdateComment(t.Context(), "acme", "widgets",
+		codec.StableNumericID(answers[0].Comment.ID.String()), subject, "rewritten"); !errors.Is(err, issueapi.ErrAnswerImmutable) {
+		t.Fatalf("ANSWER patch error=%v", err)
+	}
+
+	changedQuestion := trustedQuestionBody(t, "QUESTION-007", "Choose again?",
+		[]model.ChoiceOption{{ID: "fast", Label: "Fast"}})
+	if _, _, err := environment.service.UpdateComment(t.Context(), "acme", "widgets",
+		codec.StableNumericID(questionComment.Comment.ID.String()), subject, changedQuestion); err != nil {
+		t.Fatal(err)
+	}
+	beforeComments := countRows(t, environment.pool, "comments")
+	if _, _, _, err := environment.service.CreateAnswer(t.Context(), "acme", "widgets",
+		issue.Issue.Number, subject, "https://web.example.test",
+		issueapi.AnswerIntent{QuestionID: "QUESTION-007", QuestionDigest: question.BodyDigest,
+			OptionIDs: []string{"safe"}}); !errors.Is(err, issueapi.ErrQuestionChanged) || countRows(t, environment.pool, "comments") != beforeComments {
+		t.Fatalf("stale intent error=%v comments=%d/%d", err, beforeComments, countRows(t, environment.pool, "comments"))
+	}
+	changedDigest := model.RepresentationDigest(changedQuestion)
+
+	beforeTyped := countRows(t, environment.pool, "issue_spec_typed_comments")
+	beforeOutbox := countRows(t, environment.pool, "event_outbox")
+	var issueCommentVersion int64
+	if err := environment.pool.QueryRow(t.Context(), `SELECT comments_collection_version FROM issues
+		WHERE organization_id = $1 AND repository_id = $2 AND number = $3`,
+		environment.scope.OrgID, environment.scope.RepoID, issue.Issue.Number).Scan(&issueCommentVersion); err != nil {
+		t.Fatal(err)
+	}
+	environment.hook.fail.Store(true)
+	_, _, _, failed := environment.service.CreateAnswer(t.Context(), "acme", "widgets",
+		issue.Issue.Number, subject, "https://web.example.test",
+		issueapi.AnswerIntent{QuestionID: "QUESTION-007", QuestionDigest: changedDigest,
+			OptionIDs: []string{"fast"}})
+	environment.hook.fail.Store(false)
+	var currentCommentVersion int64
+	if err := environment.pool.QueryRow(t.Context(), `SELECT comments_collection_version FROM issues
+		WHERE organization_id = $1 AND repository_id = $2 AND number = $3`,
+		environment.scope.OrgID, environment.scope.RepoID, issue.Issue.Number).Scan(&currentCommentVersion); err != nil {
+		t.Fatal(err)
+	}
+	if failed == nil || countRows(t, environment.pool, "comments") != beforeComments ||
+		countRows(t, environment.pool, "issue_spec_typed_comments") != beforeTyped ||
+		countRows(t, environment.pool, "event_outbox") != beforeOutbox ||
+		currentCommentVersion != issueCommentVersion {
+		t.Fatalf("failed answer was not atomic: err=%v comments=%d/%d typed=%d/%d outbox=%d/%d version=%d/%d",
+			failed, beforeComments, countRows(t, environment.pool, "comments"), beforeTyped,
+			countRows(t, environment.pool, "issue_spec_typed_comments"), beforeOutbox,
+			countRows(t, environment.pool, "event_outbox"), issueCommentVersion, currentCommentVersion)
+	}
+
+	outsider := environment.addOutsider(t, "outsider")
+	if _, _, _, err := environment.service.CreateAnswer(t.Context(), "acme", "widgets",
+		issue.Issue.Number, authz.Authenticated(outsider), "https://web.example.test",
+		issueapi.AnswerIntent{QuestionID: "QUESTION-007", QuestionDigest: changedDigest,
+			OptionIDs: []string{"fast"}}); err == nil {
+		t.Fatal("private repository outsider created ANSWER")
+	}
+}
+
+func trustedQuestionBody(t *testing.T, id, question string, options []model.ChoiceOption) string {
+	t.Helper()
+	choice := model.ChoiceModel{Version: model.ChoiceModelVersion, Mode: model.ChoiceModeSingle,
+		AllowCustom: true, Options: options}
+	body, err := templates.QuestionComment(templates.QuestionOptions{
+		ID: id, Agent: "Coordinator", Status: "blocked", Scope: "trusted answer integration",
+		Blocking: true, Question: question, Assumption: "Use safe.", ChoiceModel: &choice,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
 }
 
 func TestPublicContributorIssueCompatibility(t *testing.T) {

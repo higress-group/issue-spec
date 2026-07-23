@@ -1,0 +1,280 @@
+package answers
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
+	githubissues "github.com/higress-group/issue-spec/internal/server/api/github/issues"
+	adminapi "github.com/higress-group/issue-spec/internal/server/api/native/admin"
+	"github.com/higress-group/issue-spec/internal/server/api/routeset"
+	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
+	"github.com/higress-group/issue-spec/internal/server/authz"
+	"github.com/higress-group/issue-spec/internal/server/models"
+	"github.com/higress-group/issue-spec/internal/server/publicurl"
+)
+
+type answerCall struct {
+	owner, repo, webOrigin string
+	issue                  int64
+	subject                authz.Subject
+	intent                 githubissues.AnswerIntent
+}
+
+type fakeAnswerService struct {
+	createCalls []answerCall
+	getCalls    []answerCall
+	createErr   error
+	getErr      error
+	principal   serverauth.Principal
+}
+
+func (s *fakeAnswerService) GetQuestion(_ context.Context, owner, repo string, issue int64,
+	subject authz.Subject, webOrigin, questionID string) (models.RepositoryResource,
+	githubissues.QuestionAuthority, error) {
+	s.getCalls = append(s.getCalls, answerCall{owner: owner, repo: repo, issue: issue,
+		subject: subject, webOrigin: webOrigin, intent: githubissues.AnswerIntent{QuestionID: questionID}})
+	return testResource(), testQuestion(), s.getErr
+}
+
+func (s *fakeAnswerService) CreateAnswer(_ context.Context, owner, repo string, issue int64,
+	subject authz.Subject, webOrigin string, intent githubissues.AnswerIntent) (models.RepositoryResource,
+	models.CommentSnapshot, githubissues.QuestionAuthority, error) {
+	s.createCalls = append(s.createCalls, answerCall{owner: owner, repo: repo, issue: issue,
+		subject: subject, webOrigin: webOrigin, intent: intent})
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	commentID := uuid.MustParse("11111111-1111-4111-8111-111111111111")
+	return testResource(), models.CommentSnapshot{
+		Comment: models.Comment{
+			ID: commentID, AuthorID: &s.principal.User.ID, Body: "canonical server ANSWER",
+			RepresentationVersion: 1, CreatedAt: now, UpdatedAt: now,
+		},
+		IssueNumber: 7, AuthorLogin: s.principal.User.Login, AuthorDisplayName: "Alice",
+	}, testQuestion(), s.createErr
+}
+
+func TestAnswerCreateRequiresBrowserSessionOriginAndCSRF(t *testing.T) {
+	principal := testPrincipal(serverauth.CredentialSession)
+	service := &fakeAnswerService{principal: principal}
+	handler := answerMux(t, service, principal)
+	body := answerIntentJSON()
+	tests := []struct {
+		name       string
+		cookie     bool
+		origin     string
+		csrf       string
+		bearer     bool
+		wantStatus int
+	}{
+		{name: "no credential", origin: "https://web.example.test", csrf: "valid-csrf", wantStatus: http.StatusUnauthorized},
+		{name: "missing origin", cookie: true, csrf: "valid-csrf", wantStatus: http.StatusForbidden},
+		{name: "wrong origin", cookie: true, origin: "https://evil.example", csrf: "valid-csrf", wantStatus: http.StatusForbidden},
+		{name: "missing csrf", cookie: true, origin: "https://web.example.test", wantStatus: http.StatusForbidden},
+		{name: "bearer is not browser session", bearer: true, wantStatus: http.StatusForbidden},
+		{name: "trusted browser", cookie: true, origin: "https://web.example.test", csrf: "valid-csrf", wantStatus: http.StatusCreated},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost,
+				"/api/v1/repos/acme/widgets/issues/7/answers", strings.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			if test.cookie {
+				request.AddCookie(&http.Cookie{Name: "session", Value: "valid-session"})
+			}
+			if test.bearer {
+				request.Header.Set("Authorization", "Bearer valid-bearer")
+			}
+			if test.origin != "" {
+				request.Header.Set("Origin", test.origin)
+			}
+			if test.csrf != "" {
+				request.Header.Set("X-CSRF-Token", test.csrf)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+	if len(service.createCalls) != 1 {
+		t.Fatalf("untrusted requests reached service: %+v", service.createCalls)
+	}
+	call := service.createCalls[0]
+	if call.owner != "acme" || call.repo != "widgets" || call.issue != 7 ||
+		call.webOrigin != "https://web.example.test" || call.intent.QuestionID != "QUESTION-007" ||
+		call.intent.QuestionDigest != strings.Repeat("a", 64) ||
+		len(call.intent.OptionIDs) != 1 || call.intent.OptionIDs[0] != "safe" ||
+		call.subject.Principal == nil || call.subject.Principal.User.ID != principal.User.ID {
+		t.Fatalf("trusted call=%+v", call)
+	}
+}
+
+func TestAnswerCreateIsAppendOnlyForRepeatedIntentAndBoundsClientInput(t *testing.T) {
+	principal := testPrincipal(serverauth.CredentialSession)
+	service := &fakeAnswerService{principal: principal}
+	handler := answerMux(t, service, principal)
+	body := answerIntentJSON()
+	for range 2 {
+		response := trustedAnswerRequest(handler, body)
+		if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"canonical server ANSWER"`) ||
+			response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("response=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+		}
+	}
+	if len(service.createCalls) != 2 {
+		t.Fatalf("identical submissions were collapsed: calls=%d", len(service.createCalls))
+	}
+	before := len(service.createCalls)
+	oversized := `{"question_id":"QUESTION-007","question_digest":"` + strings.Repeat("a", 64) +
+		`","custom":"` + strings.Repeat("x", maxAnswerIntentBytes) + `"}`
+	response := trustedAnswerRequest(handler, oversized)
+	if response.Code != http.StatusBadRequest || len(service.createCalls) != before {
+		t.Fatalf("oversized response=%d calls=%d/%d body=%s", response.Code,
+			before, len(service.createCalls), response.Body.String())
+	}
+	response = trustedAnswerRequest(handler, `{"question_id":"QUESTION-007","question_digest":"`+
+		strings.Repeat("a", 64)+`","body":"forged typed markdown"}`)
+	if response.Code != http.StatusBadRequest || len(service.createCalls) != before {
+		t.Fatalf("client Markdown response=%d calls=%d/%d body=%s", response.Code,
+			before, len(service.createCalls), response.Body.String())
+	}
+}
+
+func TestQuestionConfirmationReloadAndAnswerErrorsFailClosed(t *testing.T) {
+	principal := testPrincipal(serverauth.CredentialSession)
+	service := &fakeAnswerService{principal: principal}
+	handler := answerMux(t, service, principal)
+	request := httptest.NewRequest(http.MethodGet,
+		"/api/v1/repos/acme/widgets/issues/7/questions/QUESTION-007", nil)
+	request.AddCookie(&http.Cookie{Name: "session", Value: "valid-session"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"id":"QUESTION-007"`) ||
+		len(service.getCalls) != 1 {
+		t.Fatalf("question response=%d body=%s calls=%+v", response.Code, response.Body.String(), service.getCalls)
+	}
+
+	for _, test := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{err: githubissues.ErrInvalidAnswerIntent, status: http.StatusUnprocessableEntity, code: "invalid_answer_intent"},
+		{err: githubissues.ErrInvalidQuestionAuthority, status: http.StatusConflict, code: "question_invalid"},
+		{err: githubissues.ErrQuestionChanged, status: http.StatusConflict, code: "question_changed"},
+		{err: &githubissues.DecisionError{Decision: authz.Decision{Visible: true}}, status: http.StatusForbidden, code: "forbidden"},
+		{err: errors.New("failed"), status: http.StatusInternalServerError, code: "internal_error"},
+	} {
+		service.createErr = test.err
+		response := trustedAnswerRequest(handler, answerIntentJSON())
+		if response.Code != test.status || !strings.Contains(response.Body.String(), test.code) ||
+			strings.Contains(response.Body.String(), "canonical server ANSWER") {
+			t.Fatalf("err=%v response=%d body=%s", test.err, response.Code, response.Body.String())
+		}
+	}
+}
+
+func answerIntentJSON() string {
+	return `{"question_id":"QUESTION-007","question_digest":"` + strings.Repeat("a", 64) +
+		`","option_ids":["safe"],"custom":""}`
+}
+
+func trustedAnswerRequest(handler http.Handler, body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost,
+		"/api/v1/repos/acme/widgets/issues/7/answers", bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "https://web.example.test")
+	request.Header.Set("X-CSRF-Token", "valid-csrf")
+	request.AddCookie(&http.Cookie{Name: "session", Value: "valid-session"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func answerMux(t *testing.T, service Service, principal serverauth.Principal) http.Handler {
+	t.Helper()
+	origins, err := publicurl.New("https://api.example.test", "https://web.example.test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware := serverauth.Middleware{
+		SessionCookieName: "session",
+		AllowedOrigins:    map[string]struct{}{"https://web.example.test": {}},
+		Sessions:          answerSessions{principal: principal},
+		Bearer:            answerBearer{principal: testPrincipal(serverauth.CredentialPAT)},
+	}
+	set, err := NewRouteSet(Dependencies{
+		Service: service, Presenter: codec.Presenter{Origins: origins},
+		Authenticate: adminapi.NativeAuthenticate(middleware), WebOrigin: "https://web.example.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux, err := routeset.NewMux(routeset.SelfHostedPolicy(), set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mux
+}
+
+type answerSessions struct{ principal serverauth.Principal }
+
+func (s answerSessions) Authenticate(_ context.Context, token string) (serverauth.Principal, error) {
+	if token != "valid-session" {
+		return serverauth.Principal{}, serverauth.ErrInvalidCredential
+	}
+	return s.principal, nil
+}
+
+func (answerSessions) ValidateCSRF(_ serverauth.Principal, token string) error {
+	if token != "valid-csrf" {
+		return serverauth.ErrInvalidCSRF
+	}
+	return nil
+}
+
+type answerBearer struct{ principal serverauth.Principal }
+
+func (b answerBearer) AuthenticateBearer(_ context.Context, token string) (serverauth.Principal, error) {
+	if token != "valid-bearer" {
+		return serverauth.Principal{}, serverauth.ErrInvalidCredential
+	}
+	return b.principal, nil
+}
+
+func testPrincipal(kind serverauth.CredentialKind) serverauth.Principal {
+	return serverauth.Principal{
+		User: serverauth.User{
+			ID: uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), Login: "alice", Status: "active",
+		},
+		Kind: kind, CredentialID: uuid.MustParse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+	}
+}
+
+func testResource() models.RepositoryResource {
+	return models.RepositoryResource{Owner: "acme", Name: "widgets"}
+}
+
+func testQuestion() githubissues.QuestionAuthority {
+	return githubissues.QuestionAuthority{
+		Snapshot: model.QuestionSnapshot{
+			ID: "QUESTION-007", Question: "Choose?", Blocking: true,
+			DefaultAssumption: "Safe", IssueURL: "https://web.example.test/acme/widgets/issues/7",
+			SourceURL: "https://web.example.test/acme/widgets/issues/7#issuecomment-42",
+			ChoiceModel: model.ChoiceModel{
+				Version: 1, Mode: model.ChoiceModeSingle,
+				Options: []model.ChoiceOption{{ID: "safe", Label: "Safe"}},
+			},
+		},
+		RepresentationVersion: 1, BodyDigest: strings.Repeat("a", 64),
+	}
+}

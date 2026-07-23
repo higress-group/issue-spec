@@ -63,6 +63,16 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 	switch {
+	case errors.Is(err, ErrTrustedAnswerRequired):
+		apierrors.WriteGitHub(w, apierrors.Validation(RequestID(r), []codec.Violation{{
+			Resource: "IssueComment", Field: "body", Code: "invalid",
+			Message: "ANSWER comments must be created through the trusted answer endpoint",
+		}}))
+	case errors.Is(err, ErrAnswerImmutable):
+		apierrors.WriteGitHub(w, apierrors.GitHubError{Status: http.StatusConflict,
+			RequestID: RequestID(r), Envelope: apierrors.Envelope{
+				Message: "ANSWER comments are immutable", DocumentationURL: "https://docs.github.com/rest",
+			}})
 	case errors.Is(err, store.ErrLabelAlreadyExists):
 		apierrors.WriteGitHub(w, apierrors.Validation(RequestID(r), []codec.Violation{{Resource: "Label", Field: "name", Code: "already_exists", Message: "already exists"}}))
 	case errors.Is(err, store.ErrLabelNotFound):
