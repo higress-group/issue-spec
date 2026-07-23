@@ -208,6 +208,9 @@ type Snapshot struct {
 	Mode   Mode   `json:"mode"`
 
 	Artifacts []model.Artifact `json:"artifacts"`
+	// Answers is the provider-ordered decision authority collected from the same
+	// issue/comment snapshot as Artifacts.
+	Answers model.AnswerResolution `json:"answers"`
 
 	Canonical       CanonicalFacts         `json:"canonical"`
 	Traceability    TraceabilityFacts      `json:"traceability"`

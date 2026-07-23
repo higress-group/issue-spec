@@ -239,7 +239,12 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 			a.errorf("design gate blocked: proposal issue %d has no SPEC comments\n", proposalIssue)
 			return 1
 		}
-		if hasBlockedQuestion(artifacts) {
+		answers, err := collectAnswerResolution(ctx, client, repo, proposalIssue)
+		if err != nil {
+			a.errorf("read proposal ANSWER authority: %v\n", err)
+			return 1
+		}
+		if hasUnsatisfiedQuestion(artifacts, answers) {
 			a.errorf("design gate blocked: proposal issue %d has open blocking QUESTION comments\n", proposalIssue)
 			return 1
 		}
@@ -263,7 +268,12 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 			a.errorf("implement gate blocked: design issue %d has no TASK comments\n", designIssue)
 			return 1
 		}
-		if hasBlockedQuestion(artifacts) {
+		answers, err := collectAnswerResolution(ctx, client, repo, designIssue)
+		if err != nil {
+			a.errorf("read design ANSWER authority: %v\n", err)
+			return 1
+		}
+		if hasUnsatisfiedQuestion(artifacts, answers) {
 			a.errorf("implement gate blocked: design issue %d has open blocking QUESTION comments\n", designIssue)
 			return 1
 		}
@@ -349,6 +359,30 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 	}
 	fmt.Fprintf(a.out, "created %s issue #%d: %s\n", kind, issue.Number, issue.HTMLURL)
 	return 0
+}
+
+func collectAnswerResolution(ctx context.Context, client github.Operations, repo string, issueNumbers ...int) (model.AnswerResolution, error) {
+	var observations []model.AnswerObservation
+	for _, issueNumber := range issueNumbers {
+		if issueNumber <= 0 {
+			continue
+		}
+		comments, err := client.ListIssueComments(ctx, repo, issueNumber)
+		if err != nil {
+			return model.AnswerResolution{}, err
+		}
+		observations = append(observations, answerObservationsFromComments(comments)...)
+	}
+	return model.ResolveEffectiveAnswers(observations), nil
+}
+
+func hasUnsatisfiedQuestion(artifacts []model.Artifact, answers model.AnswerResolution) bool {
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type == "QUESTION" && !model.QuestionIsSatisfied(artifact.Comment, answers) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *app) runIssueCreateSimple(ctx context.Context, args []string) int {

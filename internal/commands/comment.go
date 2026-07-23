@@ -216,6 +216,10 @@ func (a *app) runCommentCreate(ctx context.Context, args []string) int {
 		a.errorf("--body-file must not be empty\n")
 		return 2
 	}
+	if model.ParseTypedComment(body).Type == "ANSWER" {
+		a.errorf("ANSWER comments are creation-only; use `issue-spec question answer`\n")
+		return 2
+	}
 	client, _, err := a.clientFor(ctx, *host)
 	if err != nil {
 		a.errorf("auth required for comment create on %s: %v\n", auth.NormalizeHost(*host), err)
@@ -360,6 +364,8 @@ func validateGeneratedSpecDurablePolicy(plan workflow.Plan, id, status, raw, bod
 func generateTypedBody(commentType, id, agent, status, scope, raw string) (string, error) {
 	common := templates.CommonOptions{ID: id, Agent: agent, Status: status, Scope: scope}
 	switch strings.ToUpper(strings.TrimSpace(commentType)) {
+	case "ANSWER":
+		return "", fmt.Errorf("ANSWER is creation-only; use `issue-spec question answer`")
 	case "SPEC":
 		var input templates.SpecInput
 		if err := decodeGeneratorInput(raw, &input); err != nil {
@@ -433,6 +439,10 @@ func (a *app) runCommentUpsert(ctx context.Context, args []string) int {
 	}
 	rawBody, ok := a.readBodyFile(*bodyFile)
 	if !ok {
+		return 2
+	}
+	if strings.EqualFold(strings.TrimSpace(*commentType), "ANSWER") {
+		a.errorf("ANSWER comments cannot be upserted; use `issue-spec question answer` to append a new immutable ANSWER\n")
 		return 2
 	}
 	// Validate the --covers-issue flag combination before any auth/network so a
@@ -599,6 +609,11 @@ func (a *app) runCommentList(ctx context.Context, args []string) int {
 		}
 	}
 	processActivity := selectProcessActivity(allArtifacts)
+	answerResolution := model.ResolveEffectiveAnswers(answerObservationsFromComments(comments))
+	effectiveAnswerProviders := map[string]bool{}
+	for _, answer := range answerResolution.Effective {
+		effectiveAnswerProviders[answer.ProviderID] = true
+	}
 	artifacts := make([]model.Artifact, 0)
 	artifactsWithBody := make([]commentListArtifactWithBody, 0)
 	compactArtifacts := make([]commentReadArtifact, 0)
@@ -621,10 +636,19 @@ func (a *app) runCommentList(ctx context.Context, args []string) int {
 				continue
 			}
 		} else {
+			if tc.Type == "ANSWER" {
+				providerID := strconv.FormatInt(comment.ID, 10)
+				if *activeOnly && !effectiveAnswerProviders[providerID] {
+					continue
+				}
+				if *history && effectiveAnswerProviders[providerID] {
+					continue
+				}
+			}
 			if *activeOnly && (tc.Status == "superseded" || len(tc.Errors) > 0 || len(artifact.Canonical) > 0) {
 				continue
 			}
-			if *history && tc.Status != "superseded" {
+			if *history && tc.Type != "ANSWER" && tc.Status != "superseded" {
 				continue
 			}
 		}

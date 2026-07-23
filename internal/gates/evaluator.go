@@ -387,8 +387,12 @@ func (e *evaluator) evaluateArtifacts() {
 				e.add(CodeSpecStatusInvalid, fmt.Sprintf("%s must be confirmed or done", comment.ID), artifactRef(artifact), comment.Status, "confirmed|done", "comment transition", "--id", comment.ID, "--to", "confirmed")
 			}
 		case "QUESTION":
-			if comment.Status == "blocked" {
-				e.add(CodeQuestionBlocked, fmt.Sprintf("%s is still blocked", comment.ID), artifactRef(artifact), comment.Status, "confirmed|done|superseded", "question resolve", "--id", comment.ID)
+			if !model.QuestionIsSatisfied(comment, e.snapshot.Answers) {
+				if _, choice, _ := model.ParseChoiceModel(comment.Body); choice {
+					e.add(CodeQuestionBlocked, fmt.Sprintf("%s has no effective ANSWER", comment.ID), artifactRef(artifact), comment.Status, "effective append-only ANSWER", "question answer", "--question-id", comment.ID)
+				} else {
+					e.add(CodeQuestionBlocked, fmt.Sprintf("%s is still blocked", comment.ID), artifactRef(artifact), comment.Status, "confirmed|done|superseded", "question resolve", "--id", comment.ID)
+				}
 			}
 		case "TASK":
 			activeTasks = append(activeTasks, artifact)

@@ -64,6 +64,11 @@ func (e *evaluator) evaluateFinalPlanning() finalPlanning {
 	seen := map[string]model.Artifact{}
 	for _, artifact := range e.snapshot.Artifacts {
 		tc := artifact.Comment
+		if _, choice, _ := model.ParseChoiceModel(tc.Body); tc.Type == "QUESTION" && choice &&
+			tc.Status != "superseded" && !model.QuestionIsSatisfied(tc, e.snapshot.Answers) {
+			e.add(CodeQuestionBlocked, fmt.Sprintf("%s has no effective ANSWER", tc.ID), artifactRef(artifact),
+				tc.Status, "effective append-only ANSWER", "question answer", "--question-id", tc.ID)
+		}
 		if tc.Type != "SPEC" && tc.Type != "TASK" && tc.Type != "PROCESS" {
 			continue
 		}

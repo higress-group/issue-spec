@@ -33,6 +33,7 @@ var AllowedTypes = map[string]bool{
 	"TASK":     true,
 	"PROCESS":  true,
 	"QUESTION": true,
+	"ANSWER":   true,
 	"REVIEW":   true,
 	"VERIFY":   true,
 }
