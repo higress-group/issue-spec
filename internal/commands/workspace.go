@@ -546,7 +546,7 @@ func compileWorkspaceAssignment(ctx context.Context, backend changegraph.Backend
 	}
 	value := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: assignmentID, Repository: repo, Issue: int64(issue), ProcessID: processID,
 		Scenarios: scenarios, Dependencies: dependencies, Handoff: handoff, DesignContext: input.DesignContext,
-		Policy: assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion}
+		Policy: assignment.Policy{RequireExactRevision: true}, ResultSchemaVersion: assignment.ReceiptSchemaVersion}
 	switch class {
 	case model.ProcessExecutionChangeBearing:
 		objective := strings.TrimSpace(input.Objective)

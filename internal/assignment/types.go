@@ -62,7 +62,10 @@ type ScenarioRef struct {
 
 type Policy struct {
 	RequireExactRevision bool `json:"require_exact_revision"`
-	MaxResultItems       int  `json:"max_result_items"`
+	// MaxResultItems is retained only so stored version-1 assignments keep
+	// their original canonical digest. New assignments omit it and receipt
+	// acceptance does not enforce it.
+	MaxResultItems int `json:"max_result_items,omitempty"`
 }
 
 type ImplementationPayload struct {

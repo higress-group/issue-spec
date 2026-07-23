@@ -66,6 +66,25 @@ func TestCompleteValidatesImportedReceiptWithoutAcceptedRoleEvidence(t *testing.
 	assertNoAcceptedImplementationAuthority(t, recovered)
 }
 
+func TestImplementationReceiptContractHasNoAggregateItemLimit(t *testing.T) {
+	fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
+	contract := bindImplementationAssignment(t, fixture, nil)
+	lease, found, err := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
+	if err != nil || !found {
+		t.Fatalf("load assignment lease found=%t err=%v", found, err)
+	}
+	changed := make([]string, 80)
+	for i := range changed {
+		changed[i] = fmt.Sprintf("internal/generated-%03d.go", i)
+	}
+	receipt := implementationReceiptForFixture(t, contract, fixture.base, changed)
+	receipt.Implementation.Decisions = []string{"keep the exact Git result"}
+	receipt.Implementation.Risks = []string{"generated output is large"}
+	if err := fixture.manager.validateImplementationReceiptContract(context.Background(), lease, receipt, fixture.base, changed); err != nil {
+		t.Fatalf("large exact receipt rejected: %v", err)
+	}
+}
+
 func TestImplementationReceiptBindingRejectsPreD14StoredAssignment(t *testing.T) {
 	fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
 	contract := bindImplementationAssignment(t, fixture, nil)
