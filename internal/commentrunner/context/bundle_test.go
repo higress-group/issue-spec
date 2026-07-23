@@ -159,6 +159,50 @@ func TestBuildBundleReferenceOnlyOmitsBodiesButKeepsProvenance(t *testing.T) {
 	}
 }
 
+func TestBuildBundleFoldsPreviewSourceBeforeNewAndResumeSerialization(t *testing.T) {
+	artifactSource := "## Scope\n\nvisible\n```html-preview id=artifact-preview version=1\nARTIFACT_HOSTILE\n```\n"
+	artifact := typedArtifact(t, 24, 201, "SPEC", "SPEC-002", "confirmed", "preview-folding", artifactSource)
+	command := newCommand()
+	command.Prompt = "continue\n```html-preview id=prompt-preview version=1\nPROMPT_HOSTILE\n```\n"
+
+	inlined, err := BuildBundle(BuildOptions{
+		Command:   command,
+		Runner:    newRunner(),
+		Artifacts: []model.Artifact{artifact},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(inlined.Command.Prompt, "PROMPT_HOSTILE") ||
+		strings.Contains(inlined.Artifacts[0].Content, "ARTIFACT_HOSTILE") {
+		t.Fatalf("new bundle leaked preview source: command=%q artifact=%q", inlined.Command.Prompt, inlined.Artifacts[0].Content)
+	}
+	if !strings.Contains(inlined.Command.Prompt, `"id":"prompt-preview"`) ||
+		!strings.Contains(inlined.Artifacts[0].Content, `"id":"artifact-preview"`) {
+		t.Fatalf("new bundle omission was not explicit: command=%q artifact=%q", inlined.Command.Prompt, inlined.Artifacts[0].Content)
+	}
+	if inlined.Artifacts[0].ContentSHA256 != sha256String(artifact.Comment.Body) ||
+		inlined.Artifacts[0].ContentBytes != len([]byte(artifact.Comment.Body)) {
+		t.Fatalf("original artifact provenance was not retained: %+v", inlined.Artifacts[0])
+	}
+
+	command.Verb = CommandResume
+	command.PublicSessionID = "public-resume"
+	resumed, err := BuildBundle(BuildOptions{
+		Command:                command,
+		Runner:                 newRunner(),
+		Artifacts:              []model.Artifact{artifact},
+		ReferenceOnlyArtifacts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(resumed.Command.Prompt, "PROMPT_HOSTILE") || resumed.Artifacts[0].Content != "" ||
+		!resumed.Artifacts[0].ReferenceOnly {
+		t.Fatalf("resume bundle accumulated rich source: command=%q artifact=%+v", resumed.Command.Prompt, resumed.Artifacts[0])
+	}
+}
+
 func newCommand() CommandCandidate {
 	return CommandCandidate{
 		Authorized:        true,

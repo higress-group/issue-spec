@@ -8,9 +8,11 @@ import (
 	"strconv"
 	"strings"
 
+	runnercontext "github.com/higress-group/issue-spec/internal/commentrunner/context"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/preview"
 )
 
 const defaultArtifactIssueLimit = 8
@@ -79,7 +81,7 @@ func (p *IssueSpecArtifactProvider) ArtifactsForJob(ctx context.Context, job sta
 		if issue.Number == 0 {
 			issue.Number = issueNumber
 		}
-		addArtifact(issueContextArtifact(issue))
+		addArtifact(issueContextArtifact(repo, issue))
 		for _, ref := range issueReferencesFromText(issue.Body) {
 			enqueue(ref)
 		}
@@ -131,12 +133,14 @@ func (p *IssueSpecArtifactProvider) issueComments(ctx context.Context, repo stri
 	}
 }
 
-func issueContextArtifact(issue github.Issue) model.Artifact {
+func issueContextArtifact(repo string, issue github.Issue) model.Artifact {
 	number := issue.Number
 	body := strings.TrimSpace(issue.Body)
 	content := fmt.Sprintf("Issue: #%d\nTitle: %s\nState: %s\nURL: %s", number, issue.Title, issue.State, issue.HTMLURL)
 	if body != "" {
-		content += "\n\n" + body
+		expansionBase := runnercontext.IssueReadExpansionBase(repo, number, 0, issue.HTMLURL)
+		folded, _ := runnercontext.FoldPreviews(body, issue.HTMLURL, expansionBase)
+		content += "\n\n" + folded
 	}
 	return model.Artifact{
 		Issue:  number,
@@ -166,6 +170,7 @@ func issueReferencesFromTypedComment(tc model.TypedComment) []int {
 }
 
 func issueReferencesFromText(text string) []int {
+	text = previewOpaqueView(text)
 	var refs []int
 	for _, match := range issueURLReferenceRe.FindAllStringSubmatch(text, -1) {
 		if len(match) < 2 {
@@ -184,6 +189,22 @@ func issueReferencesFromText(text string) []int {
 		}
 	}
 	return uniqueIssueNumbers(refs)
+}
+
+func previewOpaqueView(text string) string {
+	parsed := preview.Parse(text)
+	if len(parsed.Descriptors) == 0 {
+		return text
+	}
+	out := []byte(text)
+	for _, descriptor := range parsed.Descriptors {
+		for i := descriptor.Range.Start; i < descriptor.Range.End; i++ {
+			if out[i] != '\r' && out[i] != '\n' {
+				out[i] = ' '
+			}
+		}
+	}
+	return string(out)
 }
 
 func issueNumberFromReference(raw string) (int, bool) {

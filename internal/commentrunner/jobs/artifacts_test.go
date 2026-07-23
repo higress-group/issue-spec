@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
@@ -33,7 +34,7 @@ func TestIssueSpecArtifactProviderCollectsLinkedIssueContextAndTypedDAG(t *testi
 		issues: map[int]github.Issue{
 			24: {Number: 24, HTMLURL: "https://github.com/o/r/issues/24", URL: "https://api.github.com/repos/o/r/issues/24", Title: "proposal", State: "open", Body: "Proposal body"},
 			25: {Number: 25, HTMLURL: "https://github.com/o/r/issues/25", URL: "https://api.github.com/repos/o/r/issues/25", Title: "design", State: "open", Body: "Proposal Issue: #24"},
-			30: {Number: 30, HTMLURL: "https://github.com/o/r/issues/30", URL: "https://api.github.com/repos/o/r/issues/30", Title: "implement", State: "open", Body: "Design Issue: https://github.com/o/r/issues/25"},
+			30: {Number: 30, HTMLURL: "https://github.com/o/r/issues/30", URL: "https://api.github.com/repos/o/r/issues/30", Title: "implement", State: "open", Body: "Design Issue: https://github.com/o/r/issues/25\n\n```html-preview id=hostile version=1 title=\"#998\"\nHOSTILE_CONTEXT #999\n```\n"},
 		},
 		comments: map[int][]github.Comment{
 			24: {{ID: 2401, HTMLURL: "https://github.com/o/r/issues/24#issuecomment-2401", URL: "https://api.github.com/repos/o/r/issues/comments/2401", IssueNumber: 24, Body: specBody}},
@@ -58,6 +59,14 @@ func TestIssueSpecArtifactProviderCollectsLinkedIssueContextAndTypedDAG(t *testi
 	}
 	if len(backend.issueContextCalls) != 3 {
 		t.Fatalf("issue context calls = %v", backend.issueContextCalls)
+	}
+	for _, artifact := range artifacts {
+		if artifact.Comment.ID == "ISSUE-030" {
+			if strings.Contains(artifact.Comment.Body, "HOSTILE_CONTEXT") ||
+				!strings.Contains(artifact.Comment.Body, `"id":"hostile"`) {
+				t.Fatalf("issue context preview was not folded explicitly: %q", artifact.Comment.Body)
+			}
+		}
 	}
 }
 

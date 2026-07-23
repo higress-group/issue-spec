@@ -156,7 +156,7 @@ func BuildBundle(opts BuildOptions) (Bundle, error) {
 	runner, runnerRedactions := normalizeRunner(opts.Runner, command, opts.RedactionValues)
 	redactions = append(redactions, runnerRedactions...)
 
-	artifacts, artifactTruncations, artifactRedactions, err := normalizeArtifacts(opts.Artifacts, bounds, opts.RedactionValues, opts.ReferenceOnlyArtifacts)
+	artifacts, artifactTruncations, artifactRedactions, err := normalizeArtifacts(opts.Artifacts, bounds, opts.RedactionValues, opts.ReferenceOnlyArtifacts, command.Repo)
 	if err != nil {
 		return Bundle{}, err
 	}
@@ -234,7 +234,9 @@ func normalizeCommand(command CommandCandidate, bounds Bounds, redactionValues [
 	if strings.TrimSpace(command.FirstObservedBodySHA256) == "" {
 		command.FirstObservedBodySHA256 = command.PromptSHA256
 	}
-	redactedPrompt, count := redactString(originalPrompt, redactionValues)
+	expansionBase := IssueReadExpansionBase(command.Repo, command.Issue, command.TriggerCommentID, command.TriggerCommentURL)
+	foldedPrompt, _ := FoldPreviews(originalPrompt, command.TriggerCommentURL, expansionBase)
+	redactedPrompt, count := redactString(foldedPrompt, redactionValues)
 	if count > 0 {
 		command.PromptRedacted = true
 	}
@@ -288,7 +290,7 @@ func normalizeRunner(runner RunnerMetadata, command CommandCandidate, redactionV
 	return runner, redactions
 }
 
-func normalizeArtifacts(input []model.Artifact, bounds Bounds, redactionValues []string, referenceOnly bool) ([]BundleArtifact, []TruncationRecord, []RedactionRecord, error) {
+func normalizeArtifacts(input []model.Artifact, bounds Bounds, redactionValues []string, referenceOnly bool, repo string) ([]BundleArtifact, []TruncationRecord, []RedactionRecord, error) {
 	artifacts := append([]model.Artifact{}, input...)
 	sort.SliceStable(artifacts, func(i, j int) bool {
 		return artifactLess(artifacts[i], artifacts[j])
@@ -333,7 +335,9 @@ func normalizeArtifacts(input []model.Artifact, bounds Bounds, redactionValues [
 			})
 			continue
 		}
-		redactedContent, redactionCount := redactString(content, redactionValues)
+		expansionBase := IssueReadExpansionBase(repo, artifact.Issue, artifact.CommentID, artifact.URL)
+		foldedContent, _ := FoldPreviews(content, artifact.URL, expansionBase)
+		redactedContent, redactionCount := redactString(foldedContent, redactionValues)
 		included, truncated := truncateBytes(redactedContent, bounds.MaxArtifactBytes)
 		item := BundleArtifact{
 			SourceLabel:       SourceIssueSpecArtifact,
