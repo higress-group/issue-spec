@@ -163,20 +163,21 @@ function randomNonce(sourceBinding: string) {
 export const HtmlPreview = memo(function HtmlPreview({
   descriptor,
   context,
-  defaultExpanded = false,
+  defaultRunning = false,
 }: {
   descriptor: HtmlPreviewDescriptor;
   context: HtmlPreviewContext;
-  defaultExpanded?: boolean;
+  defaultRunning?: boolean;
 }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(defaultExpanded);
-  const [state, setState] = useState<State>("stopped");
+  const [expanded, setExpanded] = useState(defaultRunning);
+  const [state, setState] = useState<State>(defaultRunning ? "preparing" : "stopped");
   const [failure, setFailure] = useState<Failure | null>(null);
   const [mount, setMount] = useState<{ digest: string; nonce: string; generation: number } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const previousSource = useRef(descriptor.source);
   const disclosureTouched = useRef(false);
+  const autoRunSource = useRef("");
   const alive = useRef(true);
   const runSerial = useRef(0);
   const lifetime = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -236,6 +237,7 @@ export const HtmlPreview = memo(function HtmlPreview({
     return () => {
       alive.current = false;
       runSerial.current += 1;
+      autoRunSource.current = "";
       clearLifetime();
       activity.release(key);
     };
@@ -248,8 +250,11 @@ export const HtmlPreview = memo(function HtmlPreview({
   }, [descriptor.source, stop]);
 
   useEffect(() => {
-    if (defaultExpanded && !disclosureTouched.current) setExpanded(true);
-  }, [defaultExpanded]);
+    if (!defaultRunning || disclosureTouched.current || autoRunSource.current === descriptor.source) return;
+    autoRunSource.current = descriptor.source;
+    setExpanded(true);
+    void run(false);
+  }, [defaultRunning, descriptor.source, run]);
 
   useEffect(() => {
     if (!mount || !answersEnabled || !onAnswerIntent) return;

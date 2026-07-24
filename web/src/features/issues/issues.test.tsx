@@ -296,7 +296,6 @@ describe("canonical issue read authority", () => {
     const view = renderIssueDetail(activeRepository(false, ["read"]));
     const disclosure = await screen.findByRole("button", { name: /comment-review/ });
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
-    await userEvent.setup().click(screen.getByRole("button", { name: "Run" }));
     const iframe = await screen.findByTitle("comment-review") as HTMLIFrameElement;
     const selectedOption = iframe.contentDocument?.createElement("input");
     expect(selectedOption).toBeDefined();
@@ -321,10 +320,10 @@ describe("canonical issue read authority", () => {
       ["issues", "acme", "workflow", 41, "comments"],
       [commentFixture({ body: secondBody, updated_at: "2026-07-10T11:09:00Z" })],
     ));
-    await waitFor(() => expect(screen.queryByTitle("comment-review")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTitle("comment-review")).not.toBe(iframe));
     const revisedDisclosure = screen.getByRole("button", { name: /comment-review/ });
     expect(revisedDisclosure).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: "Run" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeVisible();
   });
 
   it("confirms current single/custom answers outside the iframe, appends every answer, and preserves the running frame", async () => {
@@ -371,7 +370,6 @@ describe("canonical issue read authority", () => {
     );
     renderIssueDetail(activeRepository(true, ["read", "contribute"]));
     expect(await screen.findByRole("button", { name: /answer-review/ })).toHaveAttribute("aria-expanded", "true");
-    await userEvent.setup().click(screen.getByRole("button", { name: "Run" }));
     const iframe = await screen.findByTitle("answer-review") as HTMLIFrameElement;
     const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
     fireEvent.load(iframe);
@@ -476,7 +474,6 @@ describe("canonical issue read authority", () => {
     );
     const view = renderIssueDetail(activeRepository(true, ["read", "contribute"]));
     expect(await screen.findByRole("button", { name: /fresh-authority/ })).toHaveAttribute("aria-expanded", "true");
-    await userEvent.setup().click(screen.getByRole("button", { name: "Run" }));
     const iframe = await screen.findByTitle("fresh-authority") as HTMLIFrameElement;
     const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
     fireEvent.load(iframe);
@@ -530,7 +527,6 @@ describe("canonical issue read authority", () => {
     server.use(http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture({ body }))));
     renderIssueDetail(activeRepository(false, ["read"]));
     expect(await screen.findByRole("button", { name: /read-only/ })).toHaveAttribute("aria-expanded", "true");
-    await userEvent.setup().click(screen.getByRole("button", { name: "Run" }));
     const iframe = await screen.findByTitle("Interactive preview · read-only") as HTMLIFrameElement;
     const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
     fireEvent.load(iframe);

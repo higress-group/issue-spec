@@ -170,13 +170,14 @@ test.beforeEach(async ({ page }) => {
     if (url.pathname === "/repos/acme/workflow/issues/comments/9/reactions") return route.fulfill({ json: [{ id: 7, user: user, content: "+1", created_at: "2026-07-10T12:00:00Z" }] });
     if (/^\/repos\/acme\/workflow\/issues\/comments\/\d+\/reactions$/.test(url.pathname)) return route.fulfill({ json: [] });
     if (url.pathname === "/api/v1/context/repos/acme/workflow/issues/41/relationships") return route.fulfill({ json: { relationships: externalContributor ? [] : relationships } });
-    if (/^\/api\/v1\/repos\/acme\/workflow\/issues\/41\/previews\/(?:review-lab|comment-lab)$/.test(url.pathname)) {
+    if (/^\/api\/v1\/repos\/acme\/workflow\/issues\/41\/previews\/(?:review-lab|comment-lab|issue-first|anchored-first)$/.test(url.pathname)) {
       previewRequests += 1;
-      const commentPreview = url.pathname.endsWith("/comment-lab");
+      const commentPreview = url.pathname.endsWith("/comment-lab") || url.pathname.endsWith("/anchored-first");
       expect(url.searchParams.get("source")).toBe(commentPreview ? "comment" : "issue");
       expect(url.searchParams.get("comment_id")).toBe(commentPreview ? "9" : null);
       expect(url.searchParams.get("digest")).toMatch(/^[0-9a-f]{64}$/);
-      return route.fulfill({ status: 200, body: previewDocument, headers: { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": previewCSP, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Permissions-Policy": "camera=(), microphone=(), geolocation=()" } });
+      const document = url.pathname.endsWith("/anchored-first") ? "<!doctype html><p>comment</p>" : previewDocument;
+      return route.fulfill({ status: 200, body: document, headers: { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": previewCSP, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Permissions-Policy": "camera=(), microphone=(), geolocation=()" } });
     }
     if (/^\/api\/v1\/repos\/acme\/workflow\/issues\/41\/questions\/QUESTION-00[78]$/.test(url.pathname)) {
       const id = url.pathname.endsWith("8") ? "QUESTION-008" : "QUESTION-007";
@@ -305,7 +306,7 @@ sequenceDiagram
   expect(accessibility.violations).toEqual([]);
 });
 
-test("sandboxed review preview runs explicitly, blocks authority, and appends trusted answers without flashing", async ({ page }, testInfo) => {
+test("sandboxed review preview renders the selected first surface, blocks authority, and appends trusted answers without flashing", async ({ page }, testInfo) => {
   activeIssue = {
     ...issue,
     body: `## Review lab
@@ -332,15 +333,13 @@ ${previewDocument}
   await page.goto("/acme/workflow/issues/41");
   await expect(page.getByRole("button", { name: /Review lab/ })).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByRole("button", { name: /Comment lab/ })).toHaveAttribute("aria-expanded", "false");
-  await expect(page.locator('iframe[title="Review lab"]')).toHaveCount(0);
-  expect(previewRequests).toBe(0);
+  const iframe = page.locator('iframe[title="Review lab"]');
+  await expect(iframe).toHaveCount(1);
+  expect(previewRequests).toBe(1);
   const mermaid = page.getByRole("img", { name: documentationText("Mermaid diagram", "Mermaid 图表") });
   await expect(mermaid).toBeVisible();
   const mermaidSource = await mermaid.getAttribute("src");
 
-  await page.getByRole("button", { name: documentationText("Run", "运行") }).click();
-  const iframe = page.locator('iframe[title="Review lab"]');
-  await expect(iframe).toHaveCount(1);
   await expect(iframe).toHaveAttribute("height", "720");
   await expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
   await expect(iframe).toHaveAttribute("referrerpolicy", "no-referrer");
@@ -410,7 +409,7 @@ ${previewDocument}
   ]);
 });
 
-test("a comment anchor prioritizes that comment's first preview for default disclosure", async ({ page }, testInfo) => {
+test("a comment anchor prioritizes that comment's first preview for default rendering", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "issues-desktop-1440");
   activeIssue = {
     ...issue,
@@ -425,8 +424,10 @@ test("a comment anchor prioritizes that comment's first preview for default disc
   await page.goto("/acme/workflow/issues/41#issuecomment-9");
   await expect(page.getByRole("button", { name: /Issue first/ })).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByRole("button", { name: /Anchored first/ })).toHaveAttribute("aria-expanded", "true");
-  await expect(page.locator("iframe")).toHaveCount(0);
-  expect(previewRequests).toBe(0);
+  await expect(page.locator('iframe[title="Anchored first"]')).toHaveCount(1);
+  await expect(page.locator('iframe[title="Issue first"]')).toHaveCount(0);
+  await expect(page.frameLocator('iframe[title="Anchored first"]').getByText("comment", { exact: true })).toBeVisible();
+  expect(previewRequests).toBe(1);
 });
 
 test("issue list presents the repository subscription entry", async ({ page }, testInfo) => {

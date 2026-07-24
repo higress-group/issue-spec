@@ -216,19 +216,19 @@ type MarkdownViewProps = {
   source: string;
   className?: string;
   previewContext?: HtmlPreviewContext;
-  expandFirstPreview?: boolean;
+  renderFirstPreview?: boolean;
 };
 
 export const MarkdownView = memo(function MarkdownView({
   source,
   className = "",
   previewContext,
-  expandFirstPreview = false,
+  renderFirstPreview = false,
 }: MarkdownViewProps) {
   const { t } = useTranslation();
   const renderedSource = useMemo(() => stripIssueSpecMarkersForRender(source), [source]);
   const htmlPreviews = useMemo(() => parseHtmlPreviews(renderedSource), [renderedSource]);
-  const firstPreviewOffset = expandFirstPreview ? htmlPreviews.keys().next().value : undefined;
+  const firstPreviewOffset = renderFirstPreview ? htmlPreviews.keys().next().value : undefined;
   const components = useMemo(() => ({
     a: ({ href, children, node, ...props }: React.ComponentProps<"a"> & { node?: unknown }) => {
       void node;
@@ -249,7 +249,7 @@ export const MarkdownView = memo(function MarkdownView({
       if (preview && previewContext) return <HtmlPreview
         descriptor={preview}
         context={previewContext}
-        defaultExpanded={offset === firstPreviewOffset}
+        defaultRunning={offset === firstPreviewOffset}
       />;
       const diagram = mermaidSource(children);
       return diagram === null

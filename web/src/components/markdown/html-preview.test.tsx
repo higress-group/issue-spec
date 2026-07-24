@@ -105,27 +105,31 @@ describe("sandboxed HTML preview", () => {
     expect(screen.queryByTitle("design-review")).not.toBeInTheDocument();
   });
 
-  it("can disclose only the first preview by default without executing it or overriding a manual collapse", async () => {
+  it("renders only the first preview by default without overriding a manual collapse", async () => {
     const { context, previewURL } = previewContext();
     const source = [previewSource("first"), previewSource("second")].join("\n\n");
-    const view = renderApp(<MarkdownView source={source} previewContext={context} expandFirstPreview={false} />);
+    const view = renderApp(<MarkdownView source={source} previewContext={context} renderFirstPreview={false} />);
     const first = screen.getByRole("button", { name: /first/ });
     const second = screen.getByRole("button", { name: /second/ });
     expect(first).toHaveAttribute("aria-expanded", "false");
     expect(second).toHaveAttribute("aria-expanded", "false");
 
-    view.rerender(<MarkdownView source={source} previewContext={context} expandFirstPreview />);
+    view.rerender(<MarkdownView source={source} previewContext={context} renderFirstPreview />);
     const expandedFirst = screen.getByRole("button", { name: /first/ });
     await waitFor(() => expect(expandedFirst).toHaveAttribute("aria-expanded", "true"));
     expect(screen.getByRole("button", { name: /second/ })).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("button", { name: "Run" })).toBeVisible();
-    expect(screen.queryByTitle("first")).not.toBeInTheDocument();
-    expect(previewURL).not.toHaveBeenCalled();
+    expect(await screen.findByTitle("first")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeVisible();
+    expect(previewURL).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTitle("second")).not.toBeInTheDocument();
 
     await userEvent.setup().click(expandedFirst);
     expect(expandedFirst).toHaveAttribute("aria-expanded", "false");
-    view.rerender(<MarkdownView source={source} previewContext={context} expandFirstPreview />);
+    expect(screen.queryByTitle("first")).not.toBeInTheDocument();
+    view.rerender(<MarkdownView source={source} previewContext={context} renderFirstPreview />);
     expect(screen.getByRole("button", { name: /first/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTitle("first")).not.toBeInTheDocument();
+    expect(previewURL).toHaveBeenCalledTimes(1);
   });
 
   it("allows only two active frames and releases a slot on stop", async () => {
