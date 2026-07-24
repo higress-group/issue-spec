@@ -1,6 +1,6 @@
 import axe from "axe-core";
 import { http, HttpResponse } from "msw";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { MarkdownView } from "../../components/markdown/markdown-view";
@@ -270,6 +270,56 @@ describe("canonical issue read authority", () => {
     expect(screen.getByText("Binding mismatch")).toBeVisible();
     expect(screen.queryByText("abc123")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Subscribe to repository" })).not.toBeInTheDocument();
+  });
+
+  it("preserves a comment preview across issue clock ticks and tears it down when the source changes", async () => {
+    const firstBody = "```html-preview id=comment-review version=1 title=\"comment-review\"\n<!doctype html><input type=\"radio\" checked>\n```";
+    const secondBody = firstBody.replace("checked", "data-revised");
+    const now = Date.parse("2026-07-10T11:08:00Z");
+    let currentTime = now;
+    vi.spyOn(Date, "now").mockImplementation(() => currentTime);
+    const clockIntervals = vi.spyOn(window, "setInterval");
+    server.use(
+      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, html_preview_execution: true } })),
+      http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture())),
+      http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json([commentFixture({ body: firstBody })])),
+      http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
+      http.get("http://localhost/repos/acme/workflow/issues/comments/9/reactions", () => HttpResponse.json([])),
+      http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", () => HttpResponse.json({ relationships: [] })),
+    );
+    const view = renderIssueDetail(activeRepository(false, ["read"]));
+    const disclosure = await screen.findByRole("button", { name: /comment-review/ });
+    await userEvent.setup().click(disclosure);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Run" }));
+    const iframe = await screen.findByTitle("comment-review") as HTMLIFrameElement;
+    const selectedOption = iframe.contentDocument?.createElement("input");
+    expect(selectedOption).toBeDefined();
+    selectedOption!.type = "radio";
+    selectedOption!.checked = true;
+    iframe.append(selectedOption!);
+    expect(iframe.src).toContain("source=comment");
+    expect(iframe.src).toContain("comment_id=9");
+
+    const clock = clockIntervals.mock.calls.find(([, delay]) => delay === 1_000)?.[0];
+    expect(clock).toBeTypeOf("function");
+    currentTime += 1_000;
+    act(() => (clock as () => void)());
+
+    expect(screen.getByTitle("comment-review")).toBe(iframe);
+    expect(iframe.contains(selectedOption!)).toBe(true);
+    expect(selectedOption!.checked).toBe(true);
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Reload" })).toBeVisible();
+
+    act(() => view.client.setQueryData(
+      ["issues", "acme", "workflow", 41, "comments"],
+      [commentFixture({ body: secondBody, updated_at: "2026-07-10T11:09:00Z" })],
+    ));
+    await waitFor(() => expect(screen.queryByTitle("comment-review")).not.toBeInTheDocument());
+    const revisedDisclosure = screen.getByRole("button", { name: /comment-review/ });
+    expect(revisedDisclosure).toHaveAttribute("aria-expanded", "false");
+    await userEvent.setup().click(revisedDisclosure);
+    expect(screen.getByRole("button", { name: "Run" })).toBeVisible();
   });
 
   it("confirms current single/custom answers outside the iframe, appends every answer, and preserves the running frame", async () => {

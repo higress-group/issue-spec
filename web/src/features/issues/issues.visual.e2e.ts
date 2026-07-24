@@ -170,9 +170,11 @@ test.beforeEach(async ({ page }) => {
     if (url.pathname === "/repos/acme/workflow/issues/comments/9/reactions") return route.fulfill({ json: [{ id: 7, user: user, content: "+1", created_at: "2026-07-10T12:00:00Z" }] });
     if (/^\/repos\/acme\/workflow\/issues\/comments\/\d+\/reactions$/.test(url.pathname)) return route.fulfill({ json: [] });
     if (url.pathname === "/api/v1/context/repos/acme/workflow/issues/41/relationships") return route.fulfill({ json: { relationships: externalContributor ? [] : relationships } });
-    if (url.pathname === "/api/v1/repos/acme/workflow/issues/41/previews/review-lab") {
+    if (/^\/api\/v1\/repos\/acme\/workflow\/issues\/41\/previews\/(?:review-lab|comment-lab)$/.test(url.pathname)) {
       previewRequests += 1;
-      expect(url.searchParams.get("source")).toBe("issue");
+      const commentPreview = url.pathname.endsWith("/comment-lab");
+      expect(url.searchParams.get("source")).toBe(commentPreview ? "comment" : "issue");
+      expect(url.searchParams.get("comment_id")).toBe(commentPreview ? "9" : null);
       expect(url.searchParams.get("digest")).toMatch(/^[0-9a-f]{64}$/);
       return route.fulfill({ status: 200, body: previewDocument, headers: { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": previewCSP, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Permissions-Policy": "camera=(), microphone=(), geolocation=()" } });
     }
@@ -317,6 +319,11 @@ flowchart LR
   Review --> Confirm
 \`\`\``,
   };
+  comments = [commentFixture(9, `Comment review
+
+\`\`\`html-preview id=comment-lab version=1 title="Comment lab" height=480
+${previewDocument}
+\`\`\``)];
   await page.goto("/acme/workflow/issues/41");
   await expect(page.getByRole("button", { name: /Review lab/ })).toHaveAttribute("aria-expanded", "false");
   await expect(page.locator('iframe[title="Review lab"]')).toHaveCount(0);
@@ -355,6 +362,23 @@ flowchart LR
   expect((await mermaid.getAttribute("src"))).toBe(mermaidSource);
   const accessibility = await new AxeBuilder({ page }).analyze();
   expect(accessibility.violations).toEqual([]);
+
+  const commentDisclosure = page.getByRole("button", { name: /Comment lab/ });
+  await commentDisclosure.click();
+  await page.getByRole("button", { name: documentationText("Run", "运行") }).click();
+  const commentIframe = page.locator('iframe[title="Comment lab"]');
+  const commentFrame = page.frameLocator('iframe[title="Comment lab"]');
+  await expect(commentIframe).toHaveCount(1);
+  await commentIframe.evaluate((element) => { element.setAttribute("data-stability-probe", "comment-original"); });
+  await expect(commentFrame.locator("#capability")).toHaveText("answers-enabled");
+  await commentFrame.getByRole("button", { name: "Increment" }).click();
+  await expect(commentFrame.locator("#count")).toHaveText("1");
+  await page.waitForTimeout(1_100);
+  await expect(commentIframe).toHaveAttribute("data-stability-probe", "comment-original");
+  await expect(commentDisclosure).toHaveAttribute("aria-expanded", "true");
+  await expect(commentFrame.locator("#count")).toHaveText("1");
+  await expect(commentFrame.locator("#mount-count")).toHaveText("1");
+  expect(previewRequests).toBe(2);
 
   if (testInfo.project.name !== "issues-desktop-1440") return;
   const submit = async (button: string, visibleAnswer: string, timeline: number) => {

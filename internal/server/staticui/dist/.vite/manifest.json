@@ -710,7 +710,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-DFN4pEcY.js",
+    "file": "assets/index-BynGR-A4.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -1721,7 +1721,7 @@
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-JvvFWQIO.js",
+    "file": "assets/detail-page-CrJq4WJ4.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,

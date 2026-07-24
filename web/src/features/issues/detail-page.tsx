@@ -24,6 +24,8 @@ import type { QuestionAuthority } from "./types";
 
 const commentAnchorPattern = /^#issuecomment-[1-9]\d*$/;
 const htmlPreviewFencePattern = /^ {0,3}(?:`{3,}|~{3,})html-preview(?:[ \t]|$)/m;
+type PreviewSource = { kind: "issue" } | { kind: "comment"; commentId: number };
+type PreviewContextFactory = (source: PreviewSource) => HtmlPreviewContext | undefined;
 
 function hasHtmlPreview(source: string) {
   return htmlPreviewFencePattern.test(source);
@@ -126,11 +128,15 @@ function AnswerConfirmation({ owner, repo, number, intent, onClose }: {
   </section>;
 }
 
-function EditableComment({ comment, owner, repo, issuePath, currentLogin, canContribute, canTriage, now, previewContext }: { comment: IssueComment; owner: string; repo: string; issuePath: string; currentLogin: string; canContribute: boolean; canTriage: boolean; now: number; previewContext?: HtmlPreviewContext }) {
+function EditableComment({ comment, owner, repo, issuePath, currentLogin, canContribute, canTriage, now, createPreviewContext }: { comment: IssueComment; owner: string; repo: string; issuePath: string; currentLogin: string; canContribute: boolean; canTriage: boolean; now: number; createPreviewContext: PreviewContextFactory }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const queryClient = useQueryClient();
+  const previewContext = useMemo(
+    () => hasHtmlPreview(comment.body) ? createPreviewContext({ kind: "comment", commentId: comment.id }) : undefined,
+    [comment.body, comment.id, createPreviewContext],
+  );
   const mutation = useMutation({ mutationFn: (body: string) => issueApi.updateComment(owner, repo, comment.id, body), onSuccess: async () => { setEditing(false); await queryClient.invalidateQueries({ queryKey: ["issues", owner, repo] }); } });
   const canEdit = canTriage || (canContribute && comment.user.login === currentLogin);
   const copyLink = async () => {
@@ -166,7 +172,7 @@ export function IssueDetail({ active }: { active: ActiveRepository }) {
   const previewExecution = Boolean(meta.data?.features.html_preview_execution);
   const answerExecution = Boolean(meta.data?.features.interactive_question_answers && canContribute);
   const onAnswerIntent = useCallback((intent: PreviewAnswerIntent) => setPendingAnswer(intent), []);
-  const previewContext = useCallback((source: { kind: "issue" } | { kind: "comment"; commentId: number }): HtmlPreviewContext | undefined => {
+  const createPreviewContext = useCallback((source: PreviewSource): HtmlPreviewContext | undefined => {
     if (!previewExecution) return undefined;
     return {
       sourceKey: source.kind === "issue" ? `issue:${number}` : `comment:${source.commentId}`,
@@ -176,7 +182,7 @@ export function IssueDetail({ active }: { active: ActiveRepository }) {
       previewURL: (id, digest) => issueApi.previewDocumentURL(owner, repo, number, id, digest, source),
     };
   }, [answerExecution, number, onAnswerIntent, owner, previewActivity, previewExecution, repo]);
-  const issuePreviewContext = useMemo(() => previewContext({ kind: "issue" }), [previewContext]);
+  const issuePreviewContext = useMemo(() => createPreviewContext({ kind: "issue" }), [createPreviewContext]);
   const issue = useQuery({ queryKey: ["issues", owner, repo, number], queryFn: ({ signal }) => issueApi.getIssue(owner, repo, number, signal), enabled: Number.isInteger(number) && number > 0 });
   const relationships = useQuery({ queryKey: ["issues", owner, repo, number, "relationships"], queryFn: ({ signal }) => issueApi.getRelationships(owner, repo, number, signal), enabled: issue.isSuccess });
   const comments = useQuery({ queryKey: ["issues", owner, repo, number, "comments"], queryFn: ({ signal }) => issueApi.listComments(owner, repo, number, signal), enabled: issue.isSuccess });
@@ -201,7 +207,7 @@ export function IssueDetail({ active }: { active: ActiveRepository }) {
     <MutationProblem error={updateState.error} />
     {pendingAnswer ? <AnswerConfirmation key={`${pendingAnswer.questionId}:${pendingAnswer.optionIds.join(",")}:${pendingAnswer.custom}`} owner={owner} repo={repo} number={number} intent={pendingAnswer} onClose={() => setPendingAnswer(null)} /> : null}
     <div className="detail-grid"><div className="timeline"><article className="timeline-card issue-origin"><header><Avatar login={item.user.login} displayName={item.user.name} src={item.user.avatar_url} tone="coral" /><span><AuthorName user={item.user} /><small>{t("issues.detail.openingNote")}</small></span></header><div className="timeline-body">{editing ? <IssueEditor initial={{ title: item.title, body: item.body, labels: item.labels.map((label) => label.name) }} labels={labels.data ?? []} submitLabel={t("issues.detail.saveIssue")} pending={updateIssue.isPending} error={updateIssue.error} onCancel={() => setEditing(false)} onSubmit={(draft) => updateIssue.mutate(draft)} /> : item.body ? <MarkdownView source={item.body} previewContext={hasHtmlPreview(item.body) ? issuePreviewContext : undefined} /> : <p className="issue-empty-copy">{t("issues.detail.noDescription")}</p>}</div></article>
-      {comments.isLoading ? <IssueLoading label={t("issues.detail.loadingConversation")} /> : comments.data?.map((comment) => <EditableComment key={comment.id} comment={comment} owner={owner} repo={repo} issuePath={repositoryIssuePath(active, item.number)} currentLogin={current.data?.user.login ?? ""} canContribute={canContribute} canTriage={canTriage} now={now} previewContext={hasHtmlPreview(comment.body) ? previewContext({ kind: "comment", commentId: comment.id }) : undefined} />)}
+      {comments.isLoading ? <IssueLoading label={t("issues.detail.loadingConversation")} /> : comments.data?.map((comment) => <EditableComment key={comment.id} comment={comment} owner={owner} repo={repo} issuePath={repositoryIssuePath(active, item.number)} currentLogin={current.data?.user.login ?? ""} canContribute={canContribute} canTriage={canTriage} now={now} createPreviewContext={createPreviewContext} />)}
       {canContribute ? <section className="new-comment" aria-labelledby="new-comment-heading"><h2 id="new-comment-heading">{t("issues.detail.continueConversation")}</h2><CommentEditor key={comments.data?.length ?? 0} pending={createComment.isPending} error={createComment.error} onSubmit={(body) => createComment.mutate(body)} /></section> : <section className="new-comment read-only-note" aria-label={t("issues.detail.readOnlyAccess")}><h2>{t("issues.detail.readOnlyConversation")}</h2><p>{t(active.authenticated ? "issues.detail.noCommentPermission" : "issues.detail.signInToComment")}</p>{active.authenticated ? null : <Link className="issue-button" to="/login" state={{ returnTo: repositoryIssuePath(active, item.number) }}>{t("issues.detail.signIn")}</Link>}</section>}</div>
       <aside className="issue-sidebar" aria-label={t("issues.detail.metadata")}><section><span className="issue-kicker purple">{t("issues.detail.labels")}</span><LabelChips labels={item.labels} />{canTriage ? <details><summary>{t("issues.detail.manageLabels")}</summary><LabelSelector labels={labels.data ?? []} selected={item.labels.map((label) => label.name)} disabled={replaceLabels.isPending} onChange={(names) => replaceLabels.mutate(names)} /></details> : null}<MutationProblem error={replaceLabels.error} /></section><section className="issue-relationships" aria-labelledby="issue-relationships-heading"><span className="issue-kicker coral" id="issue-relationships-heading">{t("issues.detail.codeChanges")}</span>{relationships.isLoading ? <p className="relationship-status" role="status">{t("issues.detail.loadingDelivery")}</p> : relationships.error ? <p className="relationship-status relationship-error" role="alert">{t("issues.detail.deliveryUnavailable")}</p> : <CodeChangeList relationships={relationships.data?.relationships ?? []} />}</section><section><span className="issue-kicker">{t("issues.detail.authority")}</span><p><LockKeyhole aria-hidden="true" />{t(`common.permission.${active.repository.effective_permission}`)}</p><small>{t(active.authenticated ? "issues.detail.serverChecks" : "issues.detail.publicRead")}</small></section></aside></div>
   </div>;
