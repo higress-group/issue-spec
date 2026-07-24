@@ -225,14 +225,55 @@ func (m *Manager) validateImplementationReceiptContract(ctx context.Context, lea
 			return fmt.Errorf("required focused test %q lacks an exact passing result", required.ID)
 		}
 	}
+	var resultTreeFiles []string
+	resultTreeLoaded := false
 	for _, generator := range contract.Generators {
 		for _, output := range generator.RequiredOutputs {
+			if assignment.RequiredOutputPatternHasMeta(output) {
+				// Preserve exact-path behavior for repositories that contain
+				// names with glob metacharacters.
+				if _, err := m.git(ctx, "validate exact required generator output", lease.WorktreePath,
+					"cat-file", "-e", resultCommit+":"+output); err == nil {
+					continue
+				}
+				if !resultTreeLoaded {
+					var err error
+					resultTreeFiles, err = m.resultTreeFiles(ctx, lease.WorktreePath, resultCommit)
+					if err != nil {
+						return err
+					}
+					resultTreeLoaded = true
+				}
+				matched, err := assignment.MatchAnyRequiredOutputPattern(output, resultTreeFiles)
+				if err != nil {
+					return fmt.Errorf("validate required generator output glob %q: %w", output, err)
+				}
+				if !matched {
+					return fmt.Errorf("required generator output glob %q matched no files at the result revision", output)
+				}
+				continue
+			}
 			if _, err := m.git(ctx, "validate required generator output", lease.WorktreePath, "cat-file", "-e", resultCommit+":"+output); err != nil {
 				return fmt.Errorf("required generator output %q is absent at the result revision: %w", output, err)
 			}
 		}
 	}
 	return nil
+}
+
+func (m *Manager) resultTreeFiles(ctx context.Context, directory, revision string) ([]string, error) {
+	result, err := m.git(ctx, "list result tree files for generator outputs", directory,
+		"ls-tree", "-r", "--name-only", "-z", revision, "--")
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, value := range bytes.Split(result.Stdout, []byte{0}) {
+		if len(value) > 0 {
+			files = append(files, string(value))
+		}
+	}
+	return files, nil
 }
 
 // Integrate cherry-picks exactly one validated worker commit while holding the

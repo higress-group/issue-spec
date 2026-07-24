@@ -611,6 +611,11 @@ func validateGenerators(name string, values []GeneratorPolicy) error {
 		if err := validateStringList(fmt.Sprintf("%s[%d].required_outputs", name, i), generator.RequiredOutputs, maxShortTextLength, true, true); err != nil {
 			return err
 		}
+		for outputIndex, output := range generator.RequiredOutputs {
+			if err := ValidateRequiredOutputPattern(output); err != nil {
+				return fmt.Errorf("%s[%d].required_outputs[%d]: %w", name, i, outputIndex, err)
+			}
+		}
 		if err := recordIdentityKey(seen, name, i, generator.Name, generator.Name); err != nil {
 			return err
 		}

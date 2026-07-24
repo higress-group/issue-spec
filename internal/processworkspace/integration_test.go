@@ -66,6 +66,64 @@ func TestCompleteValidatesImportedReceiptWithoutAcceptedRoleEvidence(t *testing.
 	assertNoAcceptedImplementationAuthority(t, recovered)
 }
 
+func TestCompleteValidatesRequiredGeneratorOutputGlobs(t *testing.T) {
+	tests := []struct {
+		name, requiredOutput, changedPath string
+		wantError                         string
+	}{
+		{
+			name:           "glob matches generated descendant",
+			requiredOutput: "generated/**",
+			changedPath:    "generated/assets/app.js",
+		},
+		{
+			name:           "globstar spans generated directories",
+			requiredOutput: "generated/**/*.js",
+			changedPath:    "generated/assets/chunks/app.js",
+		},
+		{
+			name:           "glob matches no result file",
+			requiredOutput: "generated/**/*.css",
+			changedPath:    "generated/assets/app.js",
+			wantError:      `required generator output glob "generated/**/*.css" matched no files`,
+		},
+		{
+			name:           "exact output remains supported",
+			requiredOutput: "generated/output.js",
+			changedPath:    "generated/output.js",
+		},
+		{
+			name:           "exact output containing glob syntax remains supported",
+			requiredOutput: "generated/output[1].js",
+			changedPath:    "generated/output[1].js",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newIntegrationFixture(t, []string{"generated/**"}, nil)
+			contract := bindImplementationAssignmentWithGenerators(t, fixture, nil, []assignment.GeneratorPolicy{{
+				Name: "assets", Command: "generate assets", RequiredOutputs: []string{test.requiredOutput},
+			}})
+			resultCommit := commitWorkerFile(t, fixture, test.changedPath, "generated\n", true)
+			receipt := implementationReceiptForFixture(t, contract, resultCommit, []string{test.changedPath})
+			receipt = sealImplementationReceipt(t, receipt)
+
+			completed, err := fixture.manager.Complete(context.Background(), CompleteRequest{
+				WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt,
+			})
+			if test.wantError != "" {
+				if !errors.Is(err, ErrInvalidWorkerResult) || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("completion error = %v, want %q", err, test.wantError)
+				}
+				return
+			}
+			if err != nil || completed.Lease.Portable.State != StateWorkerComplete {
+				t.Fatalf("completion=%+v err=%v", completed.Lease, err)
+			}
+		})
+	}
+}
+
 func TestImplementationReceiptBindingRejectsPreD14StoredAssignment(t *testing.T) {
 	fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
 	contract := bindImplementationAssignment(t, fixture, nil)
@@ -805,6 +863,10 @@ type integrationFixture struct {
 }
 
 func bindImplementationAssignment(t *testing.T, fixture integrationFixture, tests []assignment.TestSelector) assignment.Assignment {
+	return bindImplementationAssignmentWithGenerators(t, fixture, tests, nil)
+}
+
+func bindImplementationAssignmentWithGenerators(t *testing.T, fixture integrationFixture, tests []assignment.TestSelector, generators []assignment.GeneratorPolicy) assignment.Assignment {
 	t.Helper()
 	value := assignment.Assignment{
 		SchemaVersion: assignment.AssignmentSchemaVersion, ID: fixture.lease.Portable.WorkspaceID + "-assignment-1", Role: assignment.RoleImplementation,
@@ -814,7 +876,8 @@ func bindImplementationAssignment(t *testing.T, fixture integrationFixture, test
 		Policy:        assignment.Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
 		Implementation: &assignment.ImplementationPayload{Objective: "complete the assigned implementation", Branch: fixture.lease.Portable.Branch,
 			WriteOwnership: append([]string(nil), fixture.lease.Portable.WriteOwnership...), SharedTouchpoints: append([]string(nil), fixture.lease.Portable.SharedTouchpoints...),
-			Commit: assignment.CommitPolicy{RequireSingleCommit: true, RequireDCO: true}, FocusedTests: append([]assignment.TestSelector(nil), tests...)},
+			Commit: assignment.CommitPolicy{RequireSingleCommit: true, RequireDCO: true}, Generators: append([]assignment.GeneratorPolicy(nil), generators...),
+			FocusedTests: append([]assignment.TestSelector(nil), tests...)},
 	}
 	bound, err := fixture.manager.Store.BindAssignment(context.Background(), fixture.lease.Portable.WorkspaceID, value, false, nil)
 	if err != nil {
