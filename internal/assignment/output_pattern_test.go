@@ -5,6 +5,28 @@ import (
 	"testing"
 )
 
+func TestRequiredOutputPatternHasMeta(t *testing.T) {
+	tests := []struct {
+		name, pattern string
+		want          bool
+	}{
+		{name: "exact", pattern: "generated/output.go"},
+		{name: "component star", pattern: "assets/*.js", want: true},
+		{name: "question", pattern: "assets/app?.js", want: true},
+		{name: "character class", pattern: "assets/*.[jt]s", want: true},
+		{name: "globstar", pattern: "generated/**", want: true},
+		{name: "unmatched bracket literal", pattern: "generated/output[.js"},
+		{name: "unmatched bracket makes entire path literal", pattern: "generated/*/output[.js"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := RequiredOutputPatternHasMeta(test.pattern); got != test.want {
+				t.Fatalf("RequiredOutputPatternHasMeta(%q) = %t, want %t", test.pattern, got, test.want)
+			}
+		})
+	}
+}
+
 func TestMatchRequiredOutputPattern(t *testing.T) {
 	tests := []struct {
 		name, pattern, path string
@@ -19,6 +41,8 @@ func TestMatchRequiredOutputPattern(t *testing.T) {
 		{name: "middle globstar spans directories", pattern: "web/**/app.js", path: "web/assets/chunks/app.js", want: true},
 		{name: "character class", pattern: "assets/*.[jt]s", path: "assets/app.ts", want: true},
 		{name: "question", pattern: "assets/app?.js", path: "assets/app1.js", want: true},
+		{name: "unmatched bracket literal", pattern: "generated/output[.js", path: "generated/output[.js", want: true},
+		{name: "unmatched bracket prevents glob matching", pattern: "generated/*/output[.js", path: "generated/v1/output[.js"},
 		{name: "different extension", pattern: "assets/*.js", path: "assets/app.css"},
 	}
 	for _, test := range tests {
@@ -34,8 +58,16 @@ func TestMatchRequiredOutputPattern(t *testing.T) {
 	}
 }
 
+func TestAssignmentAcceptsLiteralRequiredOutputWithUnmatchedBracket(t *testing.T) {
+	value := implementationAssignment()
+	value.Implementation.Generators[0].RequiredOutputs = []string{"generated/output[.js"}
+	if err := value.Validate(); err != nil {
+		t.Fatalf("literal required output with unmatched bracket rejected: %v", err)
+	}
+}
+
 func TestAssignmentRejectsUnsafeRequiredOutputPatterns(t *testing.T) {
-	for _, pattern := range []string{"/absolute/**", "../outside/**", "dir\\file", "dir/**suffix", "dir/[bad"} {
+	for _, pattern := range []string{"/absolute/**", "../outside/**", "dir\\file", "dir/**suffix"} {
 		t.Run(pattern, func(t *testing.T) {
 			value := implementationAssignment()
 			value.Implementation.Generators[0].RequiredOutputs = []string{pattern}

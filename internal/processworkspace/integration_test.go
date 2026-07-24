@@ -97,6 +97,17 @@ func TestCompleteValidatesRequiredGeneratorOutputGlobs(t *testing.T) {
 			requiredOutput: "generated/output[1].js",
 			changedPath:    "generated/output[1].js",
 		},
+		{
+			name:           "literal output with unmatched bracket remains supported",
+			requiredOutput: "generated/output[.js",
+			changedPath:    "generated/output[.js",
+		},
+		{
+			name:           "absent literal output with unmatched bracket uses exact path error",
+			requiredOutput: "generated/output[.js",
+			changedPath:    "generated/other.js",
+			wantError:      `required generator output "generated/output[.js" is absent at the result revision`,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
