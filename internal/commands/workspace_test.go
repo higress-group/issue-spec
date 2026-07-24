@@ -119,6 +119,13 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 	if !reflect.DeepEqual(implementation.DesignContext, workspaceDesignContext()) {
 		t.Fatalf("implementation design context changed: %+v", implementation.DesignContext)
 	}
+	implementationJSON, err := assignment.CanonicalAssignmentJSON(implementation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(implementationJSON, []byte(`"max_result_items"`)) {
+		t.Fatalf("new assignment contains deprecated result limit: %s", implementationJSON)
+	}
 	missingDesign := processBody(model.ProcessExecutionChangeBearing, assignment.ProcessInput{Objective: "implement issuance", ScenarioSelectors: scenarios})
 	if _, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionChangeBearing,
 		missingDesign, writable, "", "", scenarios, false); err == nil || !strings.Contains(err.Error(), "require design_context") {
