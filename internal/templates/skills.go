@@ -17,7 +17,13 @@ type WorkflowTemplate struct {
 }
 
 type RenderedSkill struct {
-	Name    string
+	Name      string
+	Content   string
+	Resources []RenderedSkillResource
+}
+
+type RenderedSkillResource struct {
+	Path    string
 	Content string
 }
 
@@ -38,7 +44,14 @@ func IssueSpecSkills(repo string) []RenderedSkill {
 		if strings.TrimSpace(tmpl.SkillOnly) != "" {
 			body = strings.TrimRight(body, "\n") + "\n\n" + strings.TrimSpace(tmpl.SkillOnly) + "\n"
 		}
-		out = append(out, RenderedSkill{Name: tmpl.Name, Content: renderSkill(tmpl.Name, tmpl.Description, body)})
+		skill := RenderedSkill{Name: tmpl.Name, Content: renderSkill(tmpl.Name, tmpl.Description, body)}
+		if tmpl.Name == "issue-spec-workflow" {
+			skill.Resources = []RenderedSkillResource{{
+				Path:    "references/human-review-projections.md",
+				Content: humanReviewProjectionsReference,
+			}}
+		}
+		out = append(out, skill)
 	}
 	out = append(out, githubCLISkill())
 	return out
@@ -75,7 +88,11 @@ func issueSpecWorkflows(repo string) []WorkflowTemplate {
 		{
 			Name:        "issue-spec-workflow",
 			Description: "Use issue-spec to run an issue-native OpenSpec-style workflow across GitHub or self-hosted issue backends and provider-owned code changes.",
-			SkillOnly:   processWriteOwnershipGuidance,
+			SkillOnly: processWriteOwnershipGuidance + `
+
+## Human Review Projections
+
+Before generating or updating any phase projection, read [Human Review Projection Generation](references/human-review-projections.md) completely. Use it to build the Markdown fallback, the single ` + "`html-preview`" + ` review surface, QUESTION controls, source digest, and validation checks before running ` + "`projection upsert`" + `.`,
 			Body: `# Issue Spec Workflow
 
 Use this coordinator protocol for issue-native proposal, design, implementation, review, verification, durable projection, and closure work. The CLI and sealed packets carry mechanical contracts; keep only decisions and stops in agent context.
@@ -121,6 +138,9 @@ Use this coordinator protocol for issue-native proposal, design, implementation,
 			Description: "Create or continue proposal, SPEC, QUESTION, design, and TASK artifacts for an issue-spec change.",
 			CommandID:   "propose",
 			CommandName: "Issue Spec: Propose",
+			SkillOnly: `## Human Review Projections
+
+Before generating or updating ` + "`proposal-choice-brief`" + ` or ` + "`design-explainer`" + `, read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely and apply the matching phase recipe. Generate the complete ` + "`projection.md`" + ` from authoritative inputs before running ` + "`projection upsert`" + `.`,
 			Body: `# Issue Spec Propose
 
 Use when the user asks for /issue-spec:propose, proposal, Design, SPEC, QUESTION, or TASK authoring. Use issue-spec-workflow for shared reads, provider routing, and recovery.
@@ -140,7 +160,11 @@ Use when the user asks for /issue-spec:propose, proposal, Design, SPEC, QUESTION
 			Description: "Implement PROCESS comments for an issue-spec change and keep implementation-change traceability synchronized.",
 			CommandID:   "apply",
 			CommandName: "Issue Spec: Apply",
-			SkillOnly:   processWriteOwnershipGuidance,
+			SkillOnly: processWriteOwnershipGuidance + `
+
+## Human Review Projections
+
+Before generating or updating ` + "`implement-execution-brief`" + `, read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely and apply the Implement recipe. Generate the complete ` + "`projection.md`" + ` from authoritative inputs before running ` + "`projection upsert`" + `.`,
 			Body: `# Issue Spec Apply
 
 Coordinator: persist the Implement issue, perform its first QUESTION discovery/create pass, then upsert the ordinary statusless ` + "`implement-execution-brief`" + ` before completing PROCESS planning. The brief explains invariant-based PROCESS candidates or the current DAG, critical path, safe parallelism, Agent allocation, code-volume estimates with confidence, correctness complexity, shared touchpoints, blockers, and independent review/verify obligations. Correctness complexity is distinct from size, and estimates never define workflow semantics. Use current typed QUESTION data and only the latest effective ANSWER; issue bodies and typed artifacts remain authoritative and projection source stays outside default Agent context.

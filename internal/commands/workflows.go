@@ -31,6 +31,7 @@ type workflowGenerationResult struct {
 	Delivery            string   `json:"delivery"`
 	Tools               []string `json:"tools"`
 	SkillFiles          []string `json:"skillFiles,omitempty"`
+	SkillResourceFiles  []string `json:"skillResourceFiles,omitempty"`
 	CommandFiles        []string `json:"commandFiles,omitempty"`
 	PrunedFiles         []string `json:"prunedFiles,omitempty"`
 	CommandsSkipped     []string `json:"commandsSkipped,omitempty"`
@@ -116,11 +117,22 @@ func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, too
 		for _, tool := range tools {
 			skillsDir := filepath.Join(root, tool.SkillsDir, "skills")
 			for _, skill := range workflowSkillsWithProvider(repo, plan, provider) {
-				path := filepath.Join(skillsDir, skill.Name, "SKILL.md")
+				skillDir := filepath.Join(skillsDir, skill.Name)
+				path := filepath.Join(skillDir, "SKILL.md")
 				if err := writeTextFile(path, skill.Content); err != nil {
 					return result, err
 				}
 				result.SkillFiles = append(result.SkillFiles, cleanGeneratedPath(path))
+				for _, resource := range skill.Resources {
+					resourcePath, err := skillResourcePath(skillDir, resource.Path)
+					if err != nil {
+						return result, fmt.Errorf("render skill %s resource: %w", skill.Name, err)
+					}
+					if err := writeTextFile(resourcePath, resource.Content); err != nil {
+						return result, err
+					}
+					result.SkillResourceFiles = append(result.SkillResourceFiles, cleanGeneratedPath(resourcePath))
+				}
 			}
 		}
 	}
@@ -150,6 +162,14 @@ func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, too
 	}
 
 	return result, nil
+}
+
+func skillResourcePath(skillDir, relative string) (string, error) {
+	relative = filepath.FromSlash(strings.TrimSpace(relative))
+	if relative == "" || filepath.IsAbs(relative) || !filepath.IsLocal(relative) {
+		return "", fmt.Errorf("resource path %q must stay inside the skill directory", relative)
+	}
+	return filepath.Join(skillDir, relative), nil
 }
 
 func pruneManagedArchiveWorkflowAssets(root, delivery string, tools []workflowTool) ([]string, error) {

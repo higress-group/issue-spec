@@ -22,6 +22,10 @@ Use when the user asks for /issue-spec:propose, proposal, Design, SPEC, QUESTION
 7. Generate TASK comments with issue-spec comment generate --type TASK. Execution Planning must identify Design-invariant cohesion and major entry points, bounded role-context pressure, stable interfaces, owned areas, shared touchpoints, dependencies, coupling, and acceptance consequences. File ownership and parallelism are scheduling context, not semantic PROCESS boundaries. Execution modes such as coordinator-owned describe scheduling only; they never authorize coordinator-inline implementation of an agent-executed change-bearing PROCESS.
 8. Link SPEC <-> TASK, verify links, and run status --gate proposal/design/implement --summary --json as appropriate. Do not enter Implement while a semantic boundary decision is unresolved; block and ask a human.
 
+## Human Review Projections
+
+Before generating or updating `proposal-choice-brief` or `design-explainer`, read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely and apply the matching phase recipe. Generate the complete `projection.md` from authoritative inputs before running `projection upsert`.
+
 ## Project Workflow
 
 - Workflow Source: `builtin`

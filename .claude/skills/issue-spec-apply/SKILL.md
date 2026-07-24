@@ -31,6 +31,10 @@ This packet is addressed to the dispatched worker subagent. Relay it verbatim wi
 - A directory subtree requires an explicit trailing /** declaration, for example internal/templates/**.
 - Legacy bare directory declarations remain readable, but workspace prepare may reject them; correct the PROCESS or pass an explicit recursive ownership value before allocation.
 
+## Human Review Projections
+
+Before generating or updating `implement-execution-brief`, read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely and apply the Implement recipe. Generate the complete `projection.md` from authoritative inputs before running `projection upsert`.
+
 ## Project Workflow
 
 - Workflow Source: `builtin`

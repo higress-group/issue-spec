@@ -182,6 +182,8 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"exact post-write re-observation guards the digest-bound update",
 		"absence and digest preconditions are mutually exclusive",
 		"GitHub stores source only and never executes the preview or interactive answer intent",
+		"read [Human Review Projection Generation](references/human-review-projections.md) completely",
+		"build the Markdown fallback, the single `html-preview` review surface, QUESTION controls, source digest, and validation checks",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("workflow guidance missing %q:\n%s", want, workflow)
@@ -214,6 +216,8 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"grounded recommendations, alternatives, tradeoffs, and source links",
 		"current choice model and latest effective ANSWER",
 		"purposeful interaction to explain data, flow, alternatives, and correctness constraints",
+		"read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely",
+		"Generate the complete `projection.md` from authoritative inputs",
 	} {
 		if !strings.Contains(propose, want) {
 			t.Fatalf("propose guidance missing %q:\n%s", want, propose)
@@ -236,9 +240,51 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"estimates never define workflow semantics",
 		"only the latest effective ANSWER",
 		"projection source stays outside default Agent context",
+		"read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely",
+		"Generate the complete `projection.md` from authoritative inputs",
 	} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply guidance missing %q:\n%s", want, apply)
+		}
+	}
+}
+
+func TestHumanReviewProjectionReferenceIsActionableAndBounded(t *testing.T) {
+	reference := skillResourceContent(t, IssueSpecSkills("owner/repo"), "issue-spec-workflow", "references/human-review-projections.md")
+	for _, want := range []string{
+		"issue bodies and typed artifacts as authoritative",
+		"latest effective typed ANSWER",
+		"GitHub displays the fenced HTML source and does not execute",
+		"proposal-choice-brief",
+		"design-explainer",
+		"implement-execution-brief",
+		"Candidate planning",
+		"correctness complexity",
+		"planning aids only",
+		"single",
+		"multiple",
+		"allow_custom",
+		"issue-spec-preview-init",
+		"event.source !== parent",
+		"question_id",
+		"option_ids",
+		"```html-preview id=implement-execution-review version=1",
+		"sandbox=\"allow-scripts\"",
+		"prefers-reduced-motion",
+		"--source-digest",
+		"projection upsert",
+	} {
+		if !strings.Contains(reference, want) {
+			t.Fatalf("human review projection reference missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"projection is authoritative",
+		"estimate defines PROCESS",
+		"call the issue API from the iframe",
+	} {
+		if strings.Contains(reference, forbidden) {
+			t.Fatalf("human review projection reference contains forbidden guidance %q", forbidden)
 		}
 	}
 }
@@ -278,6 +324,23 @@ func TestCheckedInCodexClaudeGuidanceMatchesTemplates(t *testing.T) {
 				if !bytes.HasPrefix(variant, wantPrefix) {
 					t.Fatalf("checked-in workflow skill variant %d differs from the authoritative template before its generated Project Workflow notice", index)
 				}
+			}
+		}
+		for _, resource := range skill.Resources {
+			var resourceVariants [][]byte
+			for _, base := range []string{filepath.Join(".agents", "skills"), filepath.Join(".claude", "skills")} {
+				path := filepath.Join(root, base, skill.Name, filepath.FromSlash(resource.Path))
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resourceVariants = append(resourceVariants, got)
+				if !bytes.Equal(got, []byte(resource.Content)) {
+					t.Fatalf("checked-in skill resource differs from authoritative template: %s", path)
+				}
+			}
+			if !bytes.Equal(resourceVariants[0], resourceVariants[1]) {
+				t.Fatalf("Codex/Claude skill resources differ: %s/%s", skill.Name, resource.Path)
 			}
 		}
 	}
@@ -355,5 +418,22 @@ func skillContent(t *testing.T, skills []RenderedSkill, name string) string {
 		}
 	}
 	t.Fatalf("skill %q not found", name)
+	return ""
+}
+
+func skillResourceContent(t *testing.T, skills []RenderedSkill, skillName, path string) string {
+	t.Helper()
+	for _, skill := range skills {
+		if skill.Name != skillName {
+			continue
+		}
+		for _, resource := range skill.Resources {
+			if resource.Path == path {
+				return resource.Content
+			}
+		}
+		t.Fatalf("resource %q not found in skill %q", path, skillName)
+	}
+	t.Fatalf("skill %q not found", skillName)
 	return ""
 }

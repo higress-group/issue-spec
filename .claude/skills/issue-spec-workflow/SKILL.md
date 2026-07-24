@@ -54,6 +54,10 @@ Use this coordinator protocol for issue-native proposal, design, implementation,
 - A directory subtree requires an explicit trailing /** declaration, for example internal/templates/**.
 - Legacy bare directory declarations remain readable, but workspace prepare may reject them; correct the PROCESS or pass an explicit recursive ownership value before allocation.
 
+## Human Review Projections
+
+Before generating or updating any phase projection, read [Human Review Projection Generation](references/human-review-projections.md) completely. Use it to build the Markdown fallback, the single `html-preview` review surface, QUESTION controls, source digest, and validation checks before running `projection upsert`.
+
 ## Project Workflow
 
 - Workflow Source: `builtin`
