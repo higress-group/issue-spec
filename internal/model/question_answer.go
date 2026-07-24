@@ -226,8 +226,9 @@ func (p AnswerPayload) Validate() error {
 
 func validateSourceURL(value string) error {
 	parsed, err := url.Parse(strings.TrimSpace(value))
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
-		return errors.New("question source_url must be an absolute https URL")
+	if err != nil || !parsed.IsAbs() || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.Host == "" || parsed.User != nil {
+		return errors.New("question source_url must be an absolute http or https URL without userinfo")
 	}
 	return nil
 }

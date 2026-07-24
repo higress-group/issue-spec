@@ -183,16 +183,67 @@ func TestQuestionConfirmationReloadAndAnswerErrorsFailClosed(t *testing.T) {
 	}
 }
 
+func TestHTTPWebOriginReachesTrustedQuestionAndAnswerService(t *testing.T) {
+	principal := testPrincipal(serverauth.CredentialSession)
+	service := &fakeAnswerService{principal: principal}
+	const webOrigin = "http://web.example.test"
+	handler := answerMuxWithOrigin(t, service, principal, webOrigin)
+
+	questionRequest := httptest.NewRequest(http.MethodGet,
+		"/api/v1/repos/acme/widgets/issues/7/questions/QUESTION-007", nil)
+	questionRequest.Header.Set("Origin", webOrigin)
+	questionRequest.AddCookie(&http.Cookie{Name: "session", Value: "valid-session"})
+	questionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(questionResponse, questionRequest)
+	if questionResponse.Code != http.StatusOK || len(service.getCalls) != 1 ||
+		service.getCalls[0].webOrigin != webOrigin {
+		t.Fatalf("HTTP question response=%d calls=%+v body=%s",
+			questionResponse.Code, service.getCalls, questionResponse.Body.String())
+	}
+
+	answerResponse := trustedAnswerRequestAtOrigin(handler, answerIntentJSON(), webOrigin)
+	if answerResponse.Code != http.StatusCreated || len(service.createCalls) != 1 ||
+		service.createCalls[0].webOrigin != webOrigin {
+		t.Fatalf("HTTP answer response=%d calls=%+v body=%s",
+			answerResponse.Code, service.createCalls, answerResponse.Body.String())
+	}
+}
+
+func TestAnswerRoutesRejectNonHTTPAbsoluteOrCredentialBearingWebOrigins(t *testing.T) {
+	service := &fakeAnswerService{}
+	authenticate := func(next http.Handler) http.Handler { return next }
+	for _, webOrigin := range []string{
+		"",
+		"/relative",
+		"web.example.test",
+		"javascript:alert(1)",
+		"data:text/html,hostile",
+		"file:///tmp/question",
+		"http:///empty-host",
+		"https://alice:secret@web.example.test",
+	} {
+		if _, err := NewRouteSet(Dependencies{
+			Service: service, Authenticate: authenticate, WebOrigin: webOrigin,
+		}); err == nil {
+			t.Fatalf("invalid Web origin %q accepted", webOrigin)
+		}
+	}
+}
+
 func answerIntentJSON() string {
 	return `{"question_id":"QUESTION-007","question_digest":"` + strings.Repeat("a", 64) +
 		`","option_ids":["safe"],"custom":""}`
 }
 
 func trustedAnswerRequest(handler http.Handler, body string) *httptest.ResponseRecorder {
+	return trustedAnswerRequestAtOrigin(handler, body, "https://web.example.test")
+}
+
+func trustedAnswerRequestAtOrigin(handler http.Handler, body, origin string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(http.MethodPost,
 		"/api/v1/repos/acme/widgets/issues/7/answers", bytes.NewBufferString(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Origin", "https://web.example.test")
+	request.Header.Set("Origin", origin)
 	request.Header.Set("X-CSRF-Token", "valid-csrf")
 	request.AddCookie(&http.Cookie{Name: "session", Value: "valid-session"})
 	response := httptest.NewRecorder()
@@ -202,19 +253,25 @@ func trustedAnswerRequest(handler http.Handler, body string) *httptest.ResponseR
 
 func answerMux(t *testing.T, service Service, principal serverauth.Principal) http.Handler {
 	t.Helper()
-	origins, err := publicurl.New("https://api.example.test", "https://web.example.test", nil)
+	return answerMuxWithOrigin(t, service, principal, "https://web.example.test")
+}
+
+func answerMuxWithOrigin(t *testing.T, service Service, principal serverauth.Principal, webOrigin string) http.Handler {
+	t.Helper()
+	apiOrigin := strings.Replace(webOrigin, "web.", "api.", 1)
+	origins, err := publicurl.New(apiOrigin, webOrigin, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	middleware := serverauth.Middleware{
 		SessionCookieName: "session",
-		AllowedOrigins:    map[string]struct{}{"https://web.example.test": {}},
+		AllowedOrigins:    map[string]struct{}{webOrigin: {}},
 		Sessions:          answerSessions{principal: principal},
 		Bearer:            answerBearer{principal: testPrincipal(serverauth.CredentialPAT)},
 	}
 	set, err := NewRouteSet(Dependencies{
 		Service: service, Presenter: codec.Presenter{Origins: origins},
-		Authenticate: adminapi.NativeAuthenticate(middleware), WebOrigin: "https://web.example.test",
+		Authenticate: adminapi.NativeAuthenticate(middleware), WebOrigin: webOrigin,
 	})
 	if err != nil {
 		t.Fatal(err)

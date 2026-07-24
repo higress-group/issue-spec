@@ -96,6 +96,40 @@ func TestChoiceAndAnswerValidationCoversSingleMultipleCustomAndHostileText(t *te
 	}
 }
 
+func TestQuestionSourceURLValidationAcceptsHTTPAndHTTPSOnly(t *testing.T) {
+	for _, sourceURL := range []string{
+		"http://web.example.test/acme/widgets/issues/7#issuecomment-42",
+		"https://github.com/acme/widgets/issues/7#issuecomment-42",
+	} {
+		if err := validateSourceURL(sourceURL); err != nil {
+			t.Fatalf("valid source URL %q rejected: %v", sourceURL, err)
+		}
+		snapshot, err := SnapshotQuestion(
+			testQuestionBody(t, "QUESTION-003", "Choose.", testChoiceModel(ChoiceModeSingle, false)),
+			sourceURL,
+		)
+		if err != nil || snapshot.SourceURL != sourceURL ||
+			snapshot.IssueURL != strings.Split(sourceURL, "#")[0] {
+			t.Fatalf("source URL %q snapshot=%+v err=%v", sourceURL, snapshot, err)
+		}
+	}
+
+	for _, sourceURL := range []string{
+		"",
+		"/acme/widgets/issues/7#issuecomment-42",
+		"web.example.test/acme/widgets/issues/7",
+		"javascript:alert(1)",
+		"data:text/html,hostile",
+		"file:///tmp/question",
+		"http:///acme/widgets/issues/7",
+		"https://alice:secret@web.example.test/acme/widgets/issues/7#issuecomment-42",
+	} {
+		if err := validateSourceURL(sourceURL); err == nil {
+			t.Fatalf("invalid source URL %q accepted", sourceURL)
+		}
+	}
+}
+
 func TestResolveEffectiveAnswersPreservesHistoryAndUsesProviderOrder(t *testing.T) {
 	questionV1 := testQuestionBody(t, "QUESTION-010", "Original question.", testChoiceModel(ChoiceModeSingle, true))
 	snapshotV1, err := SnapshotQuestion(questionV1, "https://example.test/issues/1#issuecomment-20")

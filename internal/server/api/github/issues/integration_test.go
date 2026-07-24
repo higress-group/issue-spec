@@ -364,6 +364,7 @@ func TestTrustedPreviewServiceRevalidatesExactCurrentStoredSource(t *testing.T) 
 func TestTrustedAnswerServiceAppendsCanonicalImmutableAnswersAtomically(t *testing.T) {
 	environment := newEnvironment(t, models.VisibilityPrivate)
 	subject := authz.Authenticated(environment.owner)
+	const webOrigin = "http://web.example.test"
 	_, issue, err := environment.service.CreateIssue(t.Context(), "acme", "widgets", subject,
 		models.NewIssue{Title: "answer", Body: "authoritative issue"})
 	if err != nil {
@@ -378,12 +379,13 @@ func TestTrustedAnswerServiceAppendsCanonicalImmutableAnswersAtomically(t *testi
 	}
 	question, err := func() (issueapi.QuestionAuthority, error) {
 		_, value, err := environment.service.GetQuestion(t.Context(), "acme", "widgets",
-			issue.Issue.Number, subject, "https://web.example.test", "QUESTION-007")
+			issue.Issue.Number, subject, webOrigin, "QUESTION-007")
 		return value, err
 	}()
 	if err != nil || question.Snapshot.Question != "Choose one?" ||
 		question.RepresentationVersion != questionComment.Comment.RepresentationVersion ||
 		question.BodyDigest != model.RepresentationDigest(questionBody) ||
+		!strings.HasPrefix(question.Snapshot.SourceURL, webOrigin+"/") ||
 		!strings.Contains(question.Snapshot.SourceURL, "#issuecomment-") {
 		t.Fatalf("question authority=%+v err=%v", question, err)
 	}
@@ -391,7 +393,7 @@ func TestTrustedAnswerServiceAppendsCanonicalImmutableAnswersAtomically(t *testi
 	var answers []models.CommentSnapshot
 	for range 2 {
 		_, answer, usedQuestion, err := environment.service.CreateAnswer(t.Context(), "acme", "widgets",
-			issue.Issue.Number, subject, "https://web.example.test",
+			issue.Issue.Number, subject, webOrigin,
 			issueapi.AnswerIntent{QuestionID: "QUESTION-007", QuestionDigest: question.BodyDigest,
 				OptionIDs: []string{"safe"}})
 		if err != nil {
@@ -430,7 +432,7 @@ func TestTrustedAnswerServiceAppendsCanonicalImmutableAnswersAtomically(t *testi
 	}
 	beforeComments := countRows(t, environment.pool, "comments")
 	if _, _, _, err := environment.service.CreateAnswer(t.Context(), "acme", "widgets",
-		issue.Issue.Number, subject, "https://web.example.test",
+		issue.Issue.Number, subject, webOrigin,
 		issueapi.AnswerIntent{QuestionID: "QUESTION-007", QuestionDigest: question.BodyDigest,
 			OptionIDs: []string{"safe"}}); !errors.Is(err, issueapi.ErrQuestionChanged) || countRows(t, environment.pool, "comments") != beforeComments {
 		t.Fatalf("stale intent error=%v comments=%d/%d", err, beforeComments, countRows(t, environment.pool, "comments"))
@@ -447,7 +449,7 @@ func TestTrustedAnswerServiceAppendsCanonicalImmutableAnswersAtomically(t *testi
 	}
 	environment.hook.fail.Store(true)
 	_, _, _, failed := environment.service.CreateAnswer(t.Context(), "acme", "widgets",
-		issue.Issue.Number, subject, "https://web.example.test",
+		issue.Issue.Number, subject, webOrigin,
 		issueapi.AnswerIntent{QuestionID: "QUESTION-007", QuestionDigest: changedDigest,
 			OptionIDs: []string{"fast"}})
 	environment.hook.fail.Store(false)
@@ -469,7 +471,7 @@ func TestTrustedAnswerServiceAppendsCanonicalImmutableAnswersAtomically(t *testi
 
 	outsider := environment.addOutsider(t, "outsider")
 	if _, _, _, err := environment.service.CreateAnswer(t.Context(), "acme", "widgets",
-		issue.Issue.Number, authz.Authenticated(outsider), "https://web.example.test",
+		issue.Issue.Number, authz.Authenticated(outsider), webOrigin,
 		issueapi.AnswerIntent{QuestionID: "QUESTION-007", QuestionDigest: changedDigest,
 			OptionIDs: []string{"fast"}}); err == nil {
 		t.Fatal("private repository outsider created ANSWER")
