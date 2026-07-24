@@ -291,7 +291,10 @@ func normalizeRunner(runner RunnerMetadata, command CommandCandidate, redactionV
 }
 
 func normalizeArtifacts(input []model.Artifact, bounds Bounds, redactionValues []string, referenceOnly bool, repo string) ([]BundleArtifact, []TruncationRecord, []RedactionRecord, error) {
-	artifacts := append([]model.Artifact{}, input...)
+	artifacts, err := selectAgentContextArtifacts(input)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	sort.SliceStable(artifacts, func(i, j int) bool {
 		return artifactLess(artifacts[i], artifacts[j])
 	})
@@ -376,6 +379,52 @@ func normalizeArtifacts(input []model.Artifact, bounds Bounds, redactionValues [
 	return out, truncations, redactions, nil
 }
 
+func selectAgentContextArtifacts(input []model.Artifact) ([]model.Artifact, error) {
+	questions := make([]model.Artifact, 0)
+	for _, artifact := range input {
+		if artifact.Comment.Type != "QUESTION" || len(artifact.Comment.Errors) > 0 {
+			continue
+		}
+		if _, found, err := model.ParseChoiceModel(artifact.Comment.Body); err == nil && found {
+			questions = append(questions, artifact)
+		}
+	}
+
+	selected := make([]model.Artifact, 0, len(input))
+	answersByQuestion := map[string][]model.Artifact{}
+	for _, artifact := range input {
+		if artifact.Comment.Type != "ANSWER" {
+			selected = append(selected, artifact)
+			continue
+		}
+		payload, err := model.ParseAnswerPayload(artifact.Comment.Body)
+		if err != nil {
+			continue
+		}
+		matches := 0
+		for _, question := range questions {
+			if artifact.Issue == question.Issue &&
+				artifact.Comment.Scope == payload.Question.ID &&
+				payload.Question.ID == question.Comment.ID &&
+				model.NormalizeURL(payload.Question.SourceURL) == model.NormalizeURL(question.URL) &&
+				model.NormalizeURL(payload.Question.IssueURL) == model.NormalizeURL(strings.SplitN(question.URL, "#", 2)[0]) {
+				matches++
+			}
+		}
+		if matches != 1 {
+			continue
+		}
+		answersByQuestion[payload.Question.ID] = append(answersByQuestion[payload.Question.ID], artifact)
+	}
+	for questionID, answers := range answersByQuestion {
+		if len(answers) > 1 {
+			return nil, fmt.Errorf("multiple ANSWER artifacts for %s lack provider effective-answer selection", questionID)
+		}
+		selected = append(selected, answers[0])
+	}
+	return selected, nil
+}
+
 func normalizeBounds(bounds Bounds) Bounds {
 	defaults := DefaultBounds()
 	if bounds.MaxCommandPromptBytes <= 0 {
@@ -417,10 +466,12 @@ func typeRank(commentType string) int {
 		return 2
 	case "QUESTION":
 		return 3
-	case "REVIEW":
+	case "ANSWER":
 		return 4
-	case "VERIFY":
+	case "REVIEW":
 		return 5
+	case "VERIFY":
+		return 6
 	default:
 		return 99
 	}

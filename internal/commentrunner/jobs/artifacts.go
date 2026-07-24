@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -27,6 +28,11 @@ type IssueSpecArtifactProvider struct {
 	MaxIssues int
 }
 
+type answerArtifactCandidate struct {
+	artifact    model.Artifact
+	observation model.AnswerObservation
+}
+
 func (p *IssueSpecArtifactProvider) ArtifactsForJob(ctx context.Context, job state.Job) ([]model.Artifact, error) {
 	if p == nil || p.GitHub == nil {
 		return nil, fmt.Errorf("issue-spec artifact provider GitHub backend is required")
@@ -48,6 +54,7 @@ func (p *IssueSpecArtifactProvider) ArtifactsForJob(ctx context.Context, job sta
 	visited := map[int]bool{}
 	seenArtifacts := map[string]bool{}
 	var artifacts []model.Artifact
+	var answerCandidates []answerArtifactCandidate
 
 	enqueue := func(issue int) {
 		if issue <= 0 || queued[issue] || len(queued) >= maxIssues {
@@ -98,23 +105,118 @@ func (p *IssueSpecArtifactProvider) ArtifactsForJob(ctx context.Context, job sta
 			if comment.IssueNumber == 0 {
 				comment.IssueNumber = issueNumber
 			}
-			addArtifact(model.Artifact{
+			artifact := model.Artifact{
 				Issue:     comment.IssueNumber,
 				CommentID: comment.ID,
 				URL:       comment.HTMLURL,
 				APIURL:    comment.URL,
 				Comment:   tc,
-			})
+			}
+			if tc.Type == "ANSWER" {
+				actor := ""
+				if comment.User != nil {
+					actor = comment.User.Login
+				}
+				answerCandidates = append(answerCandidates, answerArtifactCandidate{
+					artifact: artifact,
+					observation: model.AnswerObservation{
+						ProviderID: strconv.FormatInt(comment.ID, 10),
+						Actor:      actor,
+						CreatedAt:  comment.CreatedAt,
+						UpdatedAt:  comment.UpdatedAt,
+						Body:       comment.Body,
+						URL:        comment.HTMLURL,
+					},
+				})
+				// ANSWER history is not graph-discovery authority. Only the
+				// effective ANSWER for an already selected QUESTION enters
+				// Agent context below.
+				continue
+			}
+			addArtifact(artifact)
 			for _, ref := range issueReferencesFromTypedComment(tc) {
 				enqueue(ref)
 			}
 		}
 	}
 
+	for _, answer := range selectEffectiveAnswerArtifacts(artifacts, answerCandidates) {
+		addArtifact(answer)
+	}
 	sort.SliceStable(artifacts, func(i, j int) bool {
 		return artifactKey(artifacts[i]) < artifactKey(artifacts[j])
 	})
 	return artifacts, nil
+}
+
+func selectEffectiveAnswerArtifacts(artifacts []model.Artifact, candidates []answerArtifactCandidate) []model.Artifact {
+	questions := make([]model.Artifact, 0)
+	for _, artifact := range artifacts {
+		if artifact.Comment.Type != "QUESTION" || len(artifact.Comment.Errors) > 0 {
+			continue
+		}
+		if _, found, err := model.ParseChoiceModel(artifact.Comment.Body); err == nil && found {
+			questions = append(questions, artifact)
+		}
+	}
+
+	type eligibleAnswer struct {
+		candidate  answerArtifactCandidate
+		questionID string
+	}
+	eligible := make([]eligibleAnswer, 0, len(candidates))
+	observations := make([]model.AnswerObservation, 0, len(candidates))
+	for _, candidate := range candidates {
+		payload, err := model.ParseAnswerPayload(candidate.observation.Body)
+		if err != nil {
+			continue
+		}
+		matches := 0
+		for _, question := range questions {
+			if answerMatchesQuestion(candidate.artifact, payload, question) {
+				matches++
+			}
+		}
+		if matches != 1 {
+			continue
+		}
+		eligible = append(eligible, eligibleAnswer{candidate: candidate, questionID: payload.Question.ID})
+		observations = append(observations, candidate.observation)
+	}
+
+	resolution := model.ResolveEffectiveAnswers(observations)
+	selected := make([]model.Artifact, 0, len(resolution.Effective))
+	for _, answer := range eligible {
+		effective, ok := resolution.Effective[answer.questionID]
+		if !ok ||
+			effective.ProviderID != answer.candidate.observation.ProviderID ||
+			effective.BodyDigest != model.RepresentationDigest(answer.candidate.observation.Body) {
+			continue
+		}
+		selected = append(selected, answer.candidate.artifact)
+	}
+	return selected
+}
+
+func answerMatchesQuestion(answer model.Artifact, payload model.AnswerPayload, question model.Artifact) bool {
+	if answer.Issue != question.Issue ||
+		answer.Comment.Scope != payload.Question.ID ||
+		payload.Question.ID != question.Comment.ID {
+		return false
+	}
+	if model.NormalizeURL(payload.Question.SourceURL) != model.NormalizeURL(question.URL) {
+		return false
+	}
+	return model.NormalizeURL(payload.Question.IssueURL) == issueURLForArtifact(question.URL)
+}
+
+func issueURLForArtifact(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || !parsed.IsAbs() {
+		return ""
+	}
+	parsed.Fragment = ""
+	return model.NormalizeURL(parsed.String())
 }
 
 func (p *IssueSpecArtifactProvider) issueComments(ctx context.Context, repo string, issueNumber int) ([]github.Comment, error) {

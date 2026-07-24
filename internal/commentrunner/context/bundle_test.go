@@ -203,6 +203,144 @@ func TestBuildBundleFoldsPreviewSourceBeforeNewAndResumeSerialization(t *testing
 	}
 }
 
+func TestBuildBundleIncludesOnlyProviderSelectedEffectiveAnswerForNewAndResume(t *testing.T) {
+	question := choiceQuestionArtifact(t, 24, 201, "QUESTION-001")
+	snapshot, err := model.SnapshotQuestion(question.Comment.Body, question.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := choiceAnswerArtifact(t, 24, 203, "ANSWER-002", snapshot, "new")
+	malformedBody, err := model.EnsureTypedBody("ANSWER", "ANSWER-003", "## Answer\n\n```json\n{bad-json}\n```\n",
+		model.BodyOptions{Status: "done", Scope: "QUESTION-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	malformed := model.Artifact{
+		Issue: 24, CommentID: 204,
+		URL:     "https://github.com/owner/repo/issues/24#issuecomment-204",
+		Comment: model.ParseTypedComment(malformedBody),
+	}
+	wrongSnapshot := snapshot
+	wrongSnapshot.SourceURL = "https://github.com/owner/repo/issues/24#issuecomment-999"
+	wrongSource := choiceAnswerArtifact(t, 24, 205, "ANSWER-004", wrongSnapshot, "old")
+	wrongQuestionScope := choiceAnswerArtifactWithScope(t, 24, 206, "ANSWER-005", snapshot, "old", "QUESTION-999")
+	unrelatedSnapshot := snapshot
+	unrelatedSnapshot.ID = "QUESTION-999"
+	unrelatedSnapshot.SourceURL = "https://github.com/owner/repo/issues/24#issuecomment-998"
+	unrelated := choiceAnswerArtifact(t, 24, 207, "ANSWER-006", unrelatedSnapshot, "old")
+
+	command := newCommand()
+	for _, test := range []struct {
+		name          string
+		command       CommandCandidate
+		referenceOnly bool
+	}{
+		{name: "new", command: command},
+		{name: "resume", command: func() CommandCandidate {
+			resume := command
+			resume.Verb = CommandResume
+			resume.PublicSessionID = "public-resume"
+			return resume
+		}(), referenceOnly: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bundle, err := BuildBundle(BuildOptions{
+				Command:                test.command,
+				Runner:                 newRunner(),
+				Artifacts:              []model.Artifact{unrelated, malformed, effective, question, wrongSource, wrongQuestionScope},
+				ReferenceOnlyArtifacts: test.referenceOnly,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(bundle.Artifacts) != 2 ||
+				bundle.Artifacts[0].ID != "QUESTION-001" ||
+				bundle.Artifacts[1].ID != "ANSWER-002" {
+				t.Fatalf("Agent context artifacts = %+v", bundle.Artifacts)
+			}
+			if test.referenceOnly {
+				if bundle.Artifacts[0].Content != "" || bundle.Artifacts[1].Content != "" {
+					t.Fatalf("resume inlined artifacts: %+v", bundle.Artifacts)
+				}
+			} else if !strings.Contains(bundle.Artifacts[1].Content, `"id":"new"`) {
+				t.Fatalf("new context omitted effective selection: %q", bundle.Artifacts[1].Content)
+			}
+		})
+	}
+}
+
+func TestBuildBundleRefusesToChooseBetweenUnresolvedValidAnswerHistory(t *testing.T) {
+	question := choiceQuestionArtifact(t, 24, 201, "QUESTION-001")
+	snapshot, err := model.SnapshotQuestion(question.Comment.Body, question.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := choiceAnswerArtifact(t, 24, 202, "ANSWER-001", snapshot, "old")
+	newer := choiceAnswerArtifact(t, 24, 203, "ANSWER-002", snapshot, "new")
+
+	_, err = BuildBundle(BuildOptions{
+		Command:   newCommand(),
+		Runner:    newRunner(),
+		Artifacts: []model.Artifact{question, newer, older},
+	})
+	if err == nil || !strings.Contains(err.Error(), "lack provider effective-answer selection") {
+		t.Fatalf("ambiguous ANSWER history error = %v", err)
+	}
+}
+
+func choiceQuestionArtifact(t *testing.T, issue int, commentID int64, id string) model.Artifact {
+	t.Helper()
+	choice := model.ChoiceModel{
+		Version: model.ChoiceModelVersion,
+		Mode:    model.ChoiceModeSingle,
+		Options: []model.ChoiceOption{
+			{ID: "old", Label: "Older choice"},
+			{ID: "new", Label: "Newer choice"},
+		},
+	}
+	raw, err := model.CanonicalJSON(choice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := model.EnsureTypedBody("QUESTION", id, "## Question\n\nChoose one.\n\n## Blocking\n\ntrue\n\n## Default Assumption\n\nOlder choice\n\n## Choice Model\n\n```json\n"+raw+"\n```\n",
+		model.BodyOptions{Status: "blocked"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model.Artifact{
+		Issue: issue, CommentID: commentID,
+		URL:     "https://github.com/owner/repo/issues/24#issuecomment-201",
+		Comment: model.ParseTypedComment(body),
+	}
+}
+
+func choiceAnswerArtifact(t *testing.T, issue int, commentID int64, id string, snapshot model.QuestionSnapshot, optionID string) model.Artifact {
+	t.Helper()
+	return choiceAnswerArtifactWithScope(t, issue, commentID, id, snapshot, optionID, snapshot.ID)
+}
+
+func choiceAnswerArtifactWithScope(t *testing.T, issue int, commentID int64, id string, snapshot model.QuestionSnapshot, optionID, scope string) model.Artifact {
+	t.Helper()
+	payload, err := model.BuildAnswerPayload(snapshot, []string{optionID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := model.CanonicalJSON(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := model.EnsureTypedBody("ANSWER", id, "## Answer\n\n```json\n"+raw+"\n```\n",
+		model.BodyOptions{Status: "done", Scope: scope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model.Artifact{
+		Issue: issue, CommentID: commentID,
+		URL:     "https://github.com/owner/repo/issues/24#issuecomment-" + id,
+		Comment: model.ParseTypedComment(body),
+	}
+}
+
 func newCommand() CommandCandidate {
 	return CommandCandidate{
 		Authorized:        true,
