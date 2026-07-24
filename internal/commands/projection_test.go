@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/higress-group/issue-spec/internal/auth"
@@ -12,7 +13,40 @@ import (
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
-func TestProjectionUpsertCreatesOrdinaryStatuslessCommentAndObservesIt(t *testing.T) {
+type conditionalProjectionCreateTestBackend struct {
+	fakeGitHubBackend
+	createProjection func(context.Context, string, int, string, int, string) (github.CommentRepresentation, error)
+}
+
+func (b conditionalProjectionCreateTestBackend) CreateProjectionCommentIfAbsent(ctx context.Context, repo string, issue int, phase string, owner int, body string) (github.CommentRepresentation, error) {
+	return b.createProjection(ctx, repo, issue, phase, owner, body)
+}
+
+func TestProjectionUpsertNonAtomicCreateRequiresExpectedAbsenceAcknowledgement(t *testing.T) {
+	const sourceDigest = "abababababababababababababababababababababababababababababababab"
+	creates := 0
+	backend := fakeGitHubBackend{
+		info: github.BackendInfo{Name: "gh", Kind: "gh", Host: "github.com"},
+		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+			return nil, nil
+		},
+		createComment: func(context.Context, string, int, string) (github.Comment, error) {
+			creates++
+			return github.Comment{}, nil
+		},
+	}
+	app, out, errOut := projectionTestApp(backend)
+	bodyFile := writeTempInput(t, "Human review synthesis.")
+	code := app.runProjection(t.Context(), []string{"upsert", "--repo", "o/r", "--issue", "17",
+		"--phase", "proposal-choice-brief", "--source-digest", sourceDigest, "--body-file", bodyFile,
+		"--allow-nonatomic", "--json"})
+	if code != 1 || creates != 0 || out.Len() != 0 ||
+		!strings.Contains(errOut.String(), "--allow-nonatomic and --expected-absence") {
+		t.Fatalf("exit=%d creates=%d stdout=%q stderr=%q", code, creates, out.String(), errOut.String())
+	}
+}
+
+func TestProjectionUpsertCreatesOrdinaryStatuslessCommentWithObservedNonAtomicFallback(t *testing.T) {
 	const sourceDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	var comments []github.Comment
 	backend := fakeGitHubBackend{
@@ -32,7 +66,8 @@ func TestProjectionUpsertCreatesOrdinaryStatuslessCommentAndObservesIt(t *testin
 	app, out, errOut := projectionTestApp(backend)
 	bodyFile := writeTempInput(t, "Human review synthesis.\n\n```html-preview id=proposal-review version=1\n<p>Review</p>\n```\n")
 	code := app.runProjection(t.Context(), []string{"upsert", "--repo", "o/r", "--issue", "17",
-		"--phase", "proposal-choice-brief", "--source-digest", sourceDigest, "--body-file", bodyFile, "--json"})
+		"--phase", "proposal-choice-brief", "--source-digest", sourceDigest, "--body-file", bodyFile,
+		"--allow-nonatomic", "--expected-absence", "--json"})
 	if code != 0 || errOut.Len() != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
@@ -43,18 +78,146 @@ func TestProjectionUpsertCreatesOrdinaryStatuslessCommentAndObservesIt(t *testin
 	if marker, found, err := model.FindMarker(comments[0].Body); err != nil || found {
 		t.Fatalf("projection became typed: marker=%+v found=%v err=%v", marker, found, err)
 	}
-	var result map[string]any
+	var result projectionUpsertResult
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result["action"] != "created" || result["phase"] != "proposal-choice-brief" ||
-		result["owner"] != float64(17) || result["source_digest"] != sourceDigest {
-		t.Fatalf("result=%v", result)
+	if result.Action != "created" || result.Phase != "proposal-choice-brief" ||
+		result.Owner != 17 || result.SourceDigest != sourceDigest || result.Atomic ||
+		result.Guarantee != github.CommentMutationNonAtomicSingleWriter {
+		t.Fatalf("result=%+v", result)
+	}
+	var rawResult map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rawResult); err != nil {
+		t.Fatal(err)
 	}
 	for _, forbidden := range []string{"status", "type", "id", "body"} {
-		if _, found := result[forbidden]; found {
-			t.Fatalf("projection result exposed authoritative field %q: %v", forbidden, result)
+		if _, found := rawResult[forbidden]; found {
+			t.Fatalf("projection result exposed authoritative field %q: %v", forbidden, rawResult)
 		}
+	}
+}
+
+func TestProjectionUpsertUsesAtomicConditionalCreateWhenSupported(t *testing.T) {
+	const sourceDigest = "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"
+	fallbackCreates := 0
+	base := fakeGitHubBackend{
+		info: github.BackendInfo{Name: "rest", Kind: "rest", Host: "issues.example.test"},
+		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+			return nil, nil
+		},
+		createComment: func(context.Context, string, int, string) (github.Comment, error) {
+			fallbackCreates++
+			return github.Comment{}, nil
+		},
+	}
+	conditionalCreates := 0
+	backend := conditionalProjectionCreateTestBackend{
+		fakeGitHubBackend: base,
+		createProjection: func(_ context.Context, repo string, issue int, phase string, owner int, body string) (github.CommentRepresentation, error) {
+			conditionalCreates++
+			if repo != "o/r" || issue != 19 || phase != "design-explainer" || owner != 19 {
+				t.Fatalf("conditional create repo=%q issue=%d phase=%q owner=%d", repo, issue, phase, owner)
+			}
+			return github.CommentRepresentation{
+				Comment:               github.Comment{ID: 190, Body: body},
+				RepresentationVersion: 1,
+				Guarantee:             github.CommentMutationStrictConditional,
+			}, nil
+		},
+	}
+	app, out, errOut := projectionTestApp(backend)
+	bodyFile := writeTempInput(t, "Atomic explainer.")
+	code := app.runProjection(t.Context(), []string{"upsert", "--repo", "o/r", "--hostname", "issues.example.test",
+		"--issue", "19", "--phase", "design-explainer", "--source-digest", sourceDigest,
+		"--body-file", bodyFile, "--json"})
+	if code != 0 || errOut.Len() != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var result projectionUpsertResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != "created" || !result.Atomic ||
+		result.Guarantee != github.CommentMutationStrictConditional ||
+		result.RepresentationVersion != 1 || conditionalCreates != 1 || fallbackCreates != 0 {
+		t.Fatalf("result=%+v conditional=%d fallback=%d", result, conditionalCreates, fallbackCreates)
+	}
+}
+
+func TestProjectionUpsertConcurrentNonAtomicFirstCreateFailsClosedOnAmbiguity(t *testing.T) {
+	const sourceDigest = "adadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadad"
+	var (
+		mu       sync.Mutex
+		comments []github.Comment
+		lists    int
+		creates  int
+	)
+	initialListsReady := make(chan struct{})
+	createsReady := make(chan struct{})
+	backend := fakeGitHubBackend{
+		info: github.BackendInfo{Name: "gh", Kind: "gh", Host: "github.com"},
+		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
+			mu.Lock()
+			lists++
+			call := lists
+			if call == 2 {
+				close(initialListsReady)
+			}
+			snapshot := append([]github.Comment(nil), comments...)
+			mu.Unlock()
+			if call <= 2 {
+				<-initialListsReady
+				return nil, nil
+			}
+			return snapshot, nil
+		},
+		createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
+			mu.Lock()
+			creates++
+			comment := github.Comment{ID: int64(creates), Body: body}
+			comments = append(comments, comment)
+			if creates == 2 {
+				close(createsReady)
+			}
+			mu.Unlock()
+			<-createsReady
+			return comment, nil
+		},
+	}
+	bodyFile := writeTempInput(t, "Concurrent execution brief.")
+	type callResult struct {
+		code int
+		out  string
+		err  string
+	}
+	results := make(chan callResult, 2)
+	for range 2 {
+		go func() {
+			app, out, errOut := projectionTestApp(backend)
+			code := app.runProjection(t.Context(), []string{"upsert", "--repo", "o/r", "--issue", "23",
+				"--phase", "implement-execution-brief", "--source-digest", sourceDigest,
+				"--body-file", bodyFile, "--allow-nonatomic", "--expected-absence", "--json"})
+			results <- callResult{code: code, out: out.String(), err: errOut.String()}
+		}()
+	}
+	for range 2 {
+		result := <-results
+		if result.code != 1 || result.err != "" {
+			t.Fatalf("result=%+v", result)
+		}
+		var failure map[string]any
+		if err := json.Unmarshal([]byte(result.out), &failure); err != nil {
+			t.Fatalf("decode result %q: %v", result.out, err)
+		}
+		if failure["code"] != "projection_post_write_ambiguous" {
+			t.Fatalf("failure=%v", failure)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if creates != 2 || len(comments) != 2 {
+		t.Fatalf("creates=%d comments=%d", creates, len(comments))
 	}
 }
 

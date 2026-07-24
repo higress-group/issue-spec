@@ -38,6 +38,14 @@ type projectionMatch struct {
 	Marker  projectionMarker
 }
 
+// conditionalProjectionCreateBackend is an optional backend capability whose
+// implementation must atomically create at most one ordinary projection for
+// the phase and owner identity. Backends that cannot enforce that uniqueness
+// must not implement it; they use the explicit non-atomic fallback instead.
+type conditionalProjectionCreateBackend interface {
+	CreateProjectionCommentIfAbsent(context.Context, string, int, string, int, string) (github.CommentRepresentation, error)
+}
+
 type projectionUpsertResult struct {
 	OK                    bool                            `json:"ok"`
 	Action                string                          `json:"action"`
@@ -79,6 +87,7 @@ func (a *app) runProjectionUpsert(ctx context.Context, args []string) int {
 	bodyFile := fs.String("body-file", "", "human-facing projection Markdown, or - for stdin; the command adds the projection marker")
 	expectedDigestFlag := fs.String("expected-digest", "", "caller-observed SHA-256 digest of the existing projection body")
 	allowNonAtomic := fs.Bool("allow-nonatomic", false, "explicitly permit a digest-guarded non-atomic GitHub-compatible update when CAS is unavailable")
+	expectedAbsence := fs.Bool("expected-absence", false, "caller-observed that no projection exists; required with --allow-nonatomic before non-atomic creation")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -106,6 +115,10 @@ func (a *app) runProjectionUpsert(ctx context.Context, args []string) int {
 	expectedDigest, err := parseProjectionDigest(*expectedDigestFlag, "expected-digest", false)
 	if err != nil {
 		a.errorf("%v\n", err)
+		return 2
+	}
+	if *expectedAbsence && expectedDigest != "" {
+		a.errorf("--expected-absence and --expected-digest are mutually exclusive\n")
 		return 2
 	}
 	rawBody, ok := a.readBodyFile(*bodyFile)
@@ -140,7 +153,16 @@ func (a *app) runProjectionUpsert(ctx context.Context, args []string) int {
 		return 1
 	}
 	if !found {
-		return a.createProjection(ctx, client, repo, issue, body, phase, sourceDigest, *jsonOut)
+		if expectedDigest != "" {
+			a.errorf("projection expected an existing body with digest %s, but no matching projection was found; no write performed\n", expectedDigest)
+			return 1
+		}
+		return a.createProjection(ctx, client, repo, issue, body, phase, sourceDigest,
+			*allowNonAtomic, *expectedAbsence, *jsonOut)
+	}
+	if *expectedAbsence {
+		a.errorf("projection expected absence, but matching comment %d exists; no write performed\n", match.Comment.ID)
+		return 1
 	}
 
 	conditional, capabilityErr := github.RequireConditionalCommentBackend(client)
@@ -170,24 +192,61 @@ func (a *app) runProjectionUpsert(ctx context.Context, args []string) int {
 	return a.upsertProjectionNonAtomic(ctx, client, repo, issue, match.Comment, body, phase, sourceDigest, expectedDigest, *jsonOut)
 }
 
-func (a *app) createProjection(ctx context.Context, client github.Backend, repo string, issue int, body, phase, sourceDigest string, jsonOut bool) int {
+func (a *app) createProjection(ctx context.Context, client github.Backend, repo string, issue int, body, phase, sourceDigest string, allowNonAtomic, expectedAbsence, jsonOut bool) int {
+	if conditional, ok := any(client).(conditionalProjectionCreateBackend); ok {
+		created, err := conditional.CreateProjectionCommentIfAbsent(ctx, repo, issue, phase, issue, body)
+		if err == nil {
+			if created.Comment.Body != body {
+				return a.nonAtomicPostWriteFailure("projection_post_write_mismatch", body, created.Comment.Body,
+					"conditional projection create did not return the exact planned representation", jsonOut)
+			}
+			if err := validateObservedProjection(created.Comment, phase, issue); err != nil {
+				a.errorf("conditional projection creation is invalid: %v\n", err)
+				return 1
+			}
+			return a.outputProjection(projectionResult("created", issue, created.Comment, phase, sourceDigest,
+				github.CommentMutationStrictConditional, true, created.RepresentationVersion, "", body), jsonOut)
+		}
+		if !errors.Is(err, github.ErrConditionalCommentMutationUnsupported) {
+			a.errorf("conditional projection create: %v\n", err)
+			return 1
+		}
+	}
+	if !allowNonAtomic || !expectedAbsence {
+		a.errorf("conditional projection create unsupported; no write performed (pass --allow-nonatomic and --expected-absence to acknowledge GitHub-compatible expected-absence single-writer risk)\n")
+		return 1
+	}
 	created, err := client.CreateComment(ctx, repo, issue, body)
 	if err != nil {
 		a.errorf("create projection: %v\n", err)
 		return 1
 	}
-	observed, err := observeProjectionComment(ctx, client, repo, issue, created.ID)
+	comments, err := client.ListIssueComments(ctx, repo, issue)
 	if err != nil {
 		return a.nonAtomicPostWriteFailure("projection_post_write_observation_failed", body, "", fmt.Sprintf("re-observe projection after create: %v", err), jsonOut)
 	}
-	if observed.Body != body {
-		return a.nonAtomicPostWriteFailure("projection_post_write_mismatch", body, observed.Body, "created projection did not persist exactly", jsonOut)
+	match, found, err := findUniqueProjection(comments, phase, issue)
+	if err != nil {
+		return a.nonAtomicPostWriteFailure("projection_post_write_ambiguous", body, "",
+			fmt.Sprintf("re-observe projection after create: %v", err), jsonOut)
 	}
-	if err := validateObservedProjection(observed, phase, issue); err != nil {
-		a.errorf("created projection observation is invalid: %v\n", err)
-		return 1
+	if !found {
+		return a.nonAtomicPostWriteFailure("projection_post_write_observation_failed", body, "",
+			"re-observe projection after create: expected projection marker is absent", jsonOut)
 	}
-	return a.outputProjection(projectionResult("created", issue, observed, phase, sourceDigest, "", true, 0, "", body), jsonOut)
+	if match.Comment.ID != created.ID {
+		return a.nonAtomicPostWriteFailure("projection_post_write_identity_mismatch", body, match.Comment.Body,
+			fmt.Sprintf("created projection id %d, observed matching id %d", created.ID, match.Comment.ID), jsonOut)
+	}
+	if match.Comment.Body != body {
+		return a.nonAtomicPostWriteFailure("projection_post_write_mismatch", body, match.Comment.Body,
+			"created projection did not persist exactly", jsonOut)
+	}
+	if match.Comment.HTMLURL == "" {
+		match.Comment.HTMLURL = created.HTMLURL
+	}
+	return a.outputProjection(projectionResult("created", issue, match.Comment, phase, sourceDigest,
+		github.CommentMutationNonAtomicSingleWriter, false, 0, "", body), jsonOut)
 }
 
 func (a *app) upsertProjectionStrict(ctx context.Context, backend github.ConditionalCommentBackend, repo string, issue int, commentID int64, observed github.CommentRepresentation, desired, phase, sourceDigest, expectedDigest string, jsonOut bool) int {
