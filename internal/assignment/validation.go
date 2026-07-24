@@ -604,8 +604,22 @@ func validateGenerators(name string, values []GeneratorPolicy) error {
 		if err := validateRequiredText(fmt.Sprintf("%s[%d].command", name, i), generator.Command, maxCommandLength); err != nil {
 			return err
 		}
-		if err := validateStringList(fmt.Sprintf("%s[%d].required_outputs", name, i), generator.RequiredOutputs, maxShortTextLength, true, true); err != nil {
+		if len(generator.RequiredOutputs)+len(generator.RequiredOutputGlobs) == 0 {
+			return fmt.Errorf("%s[%d]: at least one required output or required output glob is required", name, i)
+		}
+		if len(generator.RequiredOutputs)+len(generator.RequiredOutputGlobs) > maxListItems {
+			return fmt.Errorf("%s[%d]: exceeds %d combined required output items", name, i, maxListItems)
+		}
+		if err := validateStringList(fmt.Sprintf("%s[%d].required_outputs", name, i), generator.RequiredOutputs, maxShortTextLength, false, true); err != nil {
 			return err
+		}
+		if err := validateStringList(fmt.Sprintf("%s[%d].required_output_globs", name, i), generator.RequiredOutputGlobs, maxShortTextLength, false, false); err != nil {
+			return err
+		}
+		for outputIndex, output := range generator.RequiredOutputGlobs {
+			if err := ValidateRequiredOutputPattern(output); err != nil {
+				return fmt.Errorf("%s[%d].required_output_globs[%d]: %w", name, i, outputIndex, err)
+			}
 		}
 		if err := recordIdentityKey(seen, name, i, generator.Name, generator.Name); err != nil {
 			return err

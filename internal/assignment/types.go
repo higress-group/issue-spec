@@ -84,9 +84,10 @@ type CommitPolicy struct {
 }
 
 type GeneratorPolicy struct {
-	Name            string   `json:"name"`
-	Command         string   `json:"command"`
-	RequiredOutputs []string `json:"required_outputs"`
+	Name                string   `json:"name"`
+	Command             string   `json:"command"`
+	RequiredOutputs     []string `json:"required_outputs,omitempty"`
+	RequiredOutputGlobs []string `json:"required_output_globs,omitempty"`
 }
 
 type TestSelector struct {
