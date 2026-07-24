@@ -33,6 +33,13 @@ type answerArtifactCandidate struct {
 	observation model.AnswerObservation
 }
 
+type answerQuestionIdentity struct {
+	issue      int
+	sourceURL  string
+	questionID string
+	scope      string
+}
+
 func (p *IssueSpecArtifactProvider) ArtifactsForJob(ctx context.Context, job state.Job) ([]model.Artifact, error) {
 	if p == nil || p.GitHub == nil {
 		return nil, fmt.Errorf("issue-spec artifact provider GitHub backend is required")
@@ -161,33 +168,46 @@ func selectEffectiveAnswerArtifacts(artifacts []model.Artifact, candidates []ans
 	}
 
 	type eligibleAnswer struct {
-		candidate  answerArtifactCandidate
-		questionID string
+		candidate answerArtifactCandidate
+		identity  answerQuestionIdentity
 	}
 	eligible := make([]eligibleAnswer, 0, len(candidates))
-	observations := make([]model.AnswerObservation, 0, len(candidates))
+	observationsByQuestion := map[answerQuestionIdentity][]model.AnswerObservation{}
 	for _, candidate := range candidates {
 		payload, err := model.ParseAnswerPayload(candidate.observation.Body)
 		if err != nil {
 			continue
 		}
 		matches := 0
+		var identity answerQuestionIdentity
 		for _, question := range questions {
 			if answerMatchesQuestion(candidate.artifact, payload, question) {
 				matches++
+				identity = answerQuestionIdentity{
+					issue:      question.Issue,
+					sourceURL:  model.NormalizeURL(question.URL),
+					questionID: question.Comment.ID,
+					scope:      candidate.artifact.Comment.Scope,
+				}
 			}
 		}
 		if matches != 1 {
 			continue
 		}
-		eligible = append(eligible, eligibleAnswer{candidate: candidate, questionID: payload.Question.ID})
-		observations = append(observations, candidate.observation)
+		eligible = append(eligible, eligibleAnswer{candidate: candidate, identity: identity})
+		observationsByQuestion[identity] = append(observationsByQuestion[identity], candidate.observation)
 	}
 
-	resolution := model.ResolveEffectiveAnswers(observations)
-	selected := make([]model.Artifact, 0, len(resolution.Effective))
+	effectiveByQuestion := make(map[answerQuestionIdentity]model.ResolvedAnswer, len(observationsByQuestion))
+	for identity, observations := range observationsByQuestion {
+		resolution := model.ResolveEffectiveAnswers(observations)
+		if effective, ok := resolution.Effective[identity.questionID]; ok {
+			effectiveByQuestion[identity] = effective
+		}
+	}
+	selected := make([]model.Artifact, 0, len(effectiveByQuestion))
 	for _, answer := range eligible {
-		effective, ok := resolution.Effective[answer.questionID]
+		effective, ok := effectiveByQuestion[answer.identity]
 		if !ok ||
 			effective.ProviderID != answer.candidate.observation.ProviderID ||
 			effective.BodyDigest != model.RepresentationDigest(answer.candidate.observation.Body) {

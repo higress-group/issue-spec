@@ -146,6 +146,71 @@ func TestIssueSpecArtifactProviderSelectsOnlyLatestValidEffectiveAnswer(t *testi
 	}
 }
 
+func TestIssueSpecArtifactProviderKeepsSameQuestionIDIndependentAcrossLinkedIssues(t *testing.T) {
+	question30URL := "https://github.com/o/r/issues/30#issuecomment-3001"
+	question31URL := "https://github.com/o/r/issues/31#issuecomment-3101"
+	question30 := choiceQuestionBody(t, "QUESTION-001")
+	question31 := choiceQuestionBody(t, "QUESTION-001")
+	snapshot30, err := model.SnapshotQuestion(question30, question30URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot31, err := model.SnapshotQuestion(question31, question31URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer30 := answerBody(t, "ANSWER-001", snapshot30, "old")
+	answer31 := answerBody(t, "ANSWER-002", snapshot31, "new")
+	base := time.Date(2026, time.July, 24, 10, 0, 0, 0, time.UTC)
+	actor := &github.User{Login: "reviewer"}
+	backend := &artifactBackend{
+		issues: map[int]github.Issue{
+			30: {
+				Number: 30, HTMLURL: "https://github.com/o/r/issues/30",
+				URL: "https://api.github.com/repos/o/r/issues/30", Title: "first source", State: "open",
+				Body: "Related source: #31",
+			},
+			31: {
+				Number: 31, HTMLURL: "https://github.com/o/r/issues/31",
+				URL: "https://api.github.com/repos/o/r/issues/31", Title: "second source", State: "open",
+			},
+		},
+		comments: map[int][]github.Comment{
+			30: {
+				{ID: 3001, HTMLURL: question30URL, IssueNumber: 30, Body: question30},
+				{ID: 3010, HTMLURL: "https://github.com/o/r/issues/30#issuecomment-3010", IssueNumber: 30, Body: answer30, User: actor, CreatedAt: base, UpdatedAt: base},
+			},
+			31: {
+				{ID: 3101, HTMLURL: question31URL, IssueNumber: 31, Body: question31},
+				{ID: 3110, HTMLURL: "https://github.com/o/r/issues/31#issuecomment-3110", IssueNumber: 31, Body: answer31, User: actor, CreatedAt: base.Add(time.Minute), UpdatedAt: base.Add(time.Minute)},
+			},
+		},
+	}
+
+	artifacts, err := (&IssueSpecArtifactProvider{GitHub: backend}).ArtifactsForJob(
+		context.Background(), state.Job{Repo: "o/r", IssueNumber: 30},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answerByIssue := map[int]string{}
+	questionCountByIssue := map[int]int{}
+	for _, artifact := range artifacts {
+		switch artifact.Comment.Type {
+		case "ANSWER":
+			answerByIssue[artifact.Issue] = artifact.Comment.ID
+		case "QUESTION":
+			questionCountByIssue[artifact.Issue]++
+		}
+	}
+	if answerByIssue[30] != "ANSWER-001" || answerByIssue[31] != "ANSWER-002" {
+		t.Fatalf("effective answers by source issue = %v", answerByIssue)
+	}
+	if questionCountByIssue[30] != 1 || questionCountByIssue[31] != 1 {
+		t.Fatalf("QUESTION context by source issue = %v", questionCountByIssue)
+	}
+}
+
 func choiceQuestionBody(t *testing.T, id string) string {
 	t.Helper()
 	choice := model.ChoiceModel{
