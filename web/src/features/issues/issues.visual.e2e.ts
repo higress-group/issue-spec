@@ -330,14 +330,14 @@ flowchart LR
 ${previewDocument}
 \`\`\``)];
   await page.goto("/acme/workflow/issues/41");
-  await expect(page.getByRole("button", { name: /Review lab/ })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("button", { name: /Review lab/ })).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByRole("button", { name: /Comment lab/ })).toHaveAttribute("aria-expanded", "false");
   await expect(page.locator('iframe[title="Review lab"]')).toHaveCount(0);
   expect(previewRequests).toBe(0);
   const mermaid = page.getByRole("img", { name: documentationText("Mermaid diagram", "Mermaid 图表") });
   await expect(mermaid).toBeVisible();
   const mermaidSource = await mermaid.getAttribute("src");
 
-  await page.getByRole("button", { name: /Review lab/ }).click();
   await page.getByRole("button", { name: documentationText("Run", "运行") }).click();
   const iframe = page.locator('iframe[title="Review lab"]');
   await expect(iframe).toHaveCount(1);
@@ -408,6 +408,25 @@ ${previewDocument}
     { question_id: "QUESTION-007", question_digest: "a".repeat(64), option_ids: [], custom: "Use a staged rollout." },
     { question_id: "QUESTION-007", question_digest: "a".repeat(64), option_ids: ["fast"], custom: "" },
   ]);
+});
+
+test("a comment anchor prioritizes that comment's first preview for default disclosure", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "issues-desktop-1440");
+  activeIssue = {
+    ...issue,
+    body: `\`\`\`html-preview id=issue-first version=1 title="Issue first"
+<!doctype html><p>issue</p>
+\`\`\``,
+  };
+  comments = [commentFixture(9, `\`\`\`html-preview id=anchored-first version=1 title="Anchored first"
+<!doctype html><p>comment</p>
+\`\`\``)];
+
+  await page.goto("/acme/workflow/issues/41#issuecomment-9");
+  await expect(page.getByRole("button", { name: /Issue first/ })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("button", { name: /Anchored first/ })).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator("iframe")).toHaveCount(0);
+  expect(previewRequests).toBe(0);
 });
 
 test("issue list presents the repository subscription entry", async ({ page }, testInfo) => {

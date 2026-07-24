@@ -163,17 +163,20 @@ function randomNonce(sourceBinding: string) {
 export const HtmlPreview = memo(function HtmlPreview({
   descriptor,
   context,
+  defaultExpanded = false,
 }: {
   descriptor: HtmlPreviewDescriptor;
   context: HtmlPreviewContext;
+  defaultExpanded?: boolean;
 }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [state, setState] = useState<State>("stopped");
   const [failure, setFailure] = useState<Failure | null>(null);
   const [mount, setMount] = useState<{ digest: string; nonce: string; generation: number } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const previousSource = useRef(descriptor.source);
+  const disclosureTouched = useRef(false);
   const alive = useRef(true);
   const runSerial = useRef(0);
   const lifetime = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -245,6 +248,10 @@ export const HtmlPreview = memo(function HtmlPreview({
   }, [descriptor.source, stop]);
 
   useEffect(() => {
+    if (defaultExpanded && !disclosureTouched.current) setExpanded(true);
+  }, [defaultExpanded]);
+
+  useEffect(() => {
     if (!mount || !answersEnabled || !onAnswerIntent) return;
     const receive = (event: MessageEvent) => {
       const intent = parsePreviewAnswerMessage(event, iframeRef.current?.contentWindow ?? null, mount.nonce);
@@ -257,6 +264,7 @@ export const HtmlPreview = memo(function HtmlPreview({
   }, [answersEnabled, armLifetime, mount, onAnswerIntent]);
 
   const toggle = () => {
+    disclosureTouched.current = true;
     if (expanded) stop();
     setExpanded((value) => !value);
   };

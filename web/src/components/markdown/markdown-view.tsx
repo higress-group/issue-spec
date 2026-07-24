@@ -208,12 +208,27 @@ function parseHtmlPreviews(source: string) {
   return new Map(previews.filter((preview) => preview.diagnostics.length === 0).map((preview) => [preview.start, preview]));
 }
 
-type MarkdownViewProps = { source: string; className?: string; previewContext?: HtmlPreviewContext };
+export function hasExecutableHtmlPreview(source: string) {
+  return parseHtmlPreviews(stripIssueSpecMarkersForRender(source)).size > 0;
+}
 
-export const MarkdownView = memo(function MarkdownView({ source, className = "", previewContext }: MarkdownViewProps) {
+type MarkdownViewProps = {
+  source: string;
+  className?: string;
+  previewContext?: HtmlPreviewContext;
+  expandFirstPreview?: boolean;
+};
+
+export const MarkdownView = memo(function MarkdownView({
+  source,
+  className = "",
+  previewContext,
+  expandFirstPreview = false,
+}: MarkdownViewProps) {
   const { t } = useTranslation();
   const renderedSource = useMemo(() => stripIssueSpecMarkersForRender(source), [source]);
   const htmlPreviews = useMemo(() => parseHtmlPreviews(renderedSource), [renderedSource]);
+  const firstPreviewOffset = expandFirstPreview ? htmlPreviews.keys().next().value : undefined;
   const components = useMemo(() => ({
     a: ({ href, children, node, ...props }: React.ComponentProps<"a"> & { node?: unknown }) => {
       void node;
@@ -229,8 +244,13 @@ export const MarkdownView = memo(function MarkdownView({ source, className = "",
       return <input {...props} aria-label={t(props.checked ? "markdown.completedTask" : "markdown.incompleteTask")} />;
     },
     pre: ({ node, children, ...props }: React.ComponentProps<"pre"> & { node?: { position?: { start?: { offset?: number } } } }) => {
-      const preview = htmlPreviews.get(node?.position?.start?.offset ?? -1);
-      if (preview && previewContext) return <HtmlPreview descriptor={preview} context={previewContext} />;
+      const offset = node?.position?.start?.offset ?? -1;
+      const preview = htmlPreviews.get(offset);
+      if (preview && previewContext) return <HtmlPreview
+        descriptor={preview}
+        context={previewContext}
+        defaultExpanded={offset === firstPreviewOffset}
+      />;
       const diagram = mermaidSource(children);
       return diagram === null
         ? <pre {...props} tabIndex={0} aria-label={t("markdown.codeBlock")}>{children}</pre>
@@ -241,7 +261,7 @@ export const MarkdownView = memo(function MarkdownView({ source, className = "",
       const block = codeClassName?.includes("language-") || codeClassName?.includes("hljs");
       return <code {...props} className={codeClassName} tabIndex={block ? 0 : undefined} aria-label={block ? t("markdown.highlightedCode") : undefined} />;
     },
-  }), [htmlPreviews, previewContext, t]);
+  }), [firstPreviewOffset, htmlPreviews, previewContext, t]);
   return <div className={`markdown-view ${className}`.trim()} data-testid="rendered-markdown">
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMentions]}
