@@ -16,7 +16,7 @@ func TestCanonicalContentIdentityAndManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bundle.Manifest.ContentID != "sha256:428d97c177f061b8eda343e5b08761323d9dd9b8d3007bcddc2dbc35732db41a" {
+	if bundle.Manifest.ContentID != "sha256:35e55ba3b52b377acbd36ca4305cd958e3bd593008d576a7a82c9b06ab862ed1" {
 		t.Fatalf("content ID = %q", bundle.Manifest.ContentID)
 	}
 	if got, err := ContentID(); err != nil || got != bundle.Manifest.ContentID {
