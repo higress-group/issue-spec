@@ -161,7 +161,8 @@ func SpecBodyErrors(logical string) []string {
 // ValidateCanonicalBody validates a full (possibly wrapped) typed comment body
 // for canonical discipline. It extracts the logical body first so raw generated
 // bodies and already-wrapped bodies behave consistently. SPEC, TASK, and PROCESS
-// have strict blocking rules; REVIEW, VERIFY, and QUESTION return no diagnostics.
+// have strict blocking rules. Choice-enabled QUESTION and ANSWER canonical JSON
+// are also validated so malformed decision data never becomes authority.
 func ValidateCanonicalBody(commentType, id, url, body string) []CanonicalDiagnostic {
 	return validateCanonicalBody(commentType, id, url, body, "", false)
 }
@@ -190,6 +191,10 @@ func validateCanonicalBody(commentType, id, url, body, repositoryRoot string, va
 		elements = taskCanonicalElements(logical)
 	case "PROCESS":
 		elements = processCanonicalElements(logical)
+	case "QUESTION":
+		if _, found, err := ParseChoiceModel(body); found && err != nil {
+			elements = append(elements, specElement{"choice-model", err.Error()})
+		}
 	default:
 		return nil
 	}

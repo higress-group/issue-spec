@@ -209,6 +209,9 @@ func (a *app) printWorkflowGeneration(workflows workflowGenerationResult) {
 	if len(workflows.SkillFiles) > 0 {
 		fmt.Fprintf(a.out, "repository skills: %d\n", len(workflows.SkillFiles))
 	}
+	if len(workflows.SkillResourceFiles) > 0 {
+		fmt.Fprintf(a.out, "repository skill resources: %d\n", len(workflows.SkillResourceFiles))
+	}
 	if len(workflows.CommandFiles) > 0 {
 		fmt.Fprintf(a.out, "repository commands: %d\n", len(workflows.CommandFiles))
 	}

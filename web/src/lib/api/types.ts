@@ -13,6 +13,9 @@ export const featuresSchema = z.object({
   email_notifications: z.boolean().optional().default(false),
   mention_candidates: z.boolean().optional().default(false),
   repository_email_subscriptions: z.boolean().optional().default(false),
+  requirements_onboarding: z.boolean().optional().default(false),
+  html_preview_execution: z.boolean().optional().default(false),
+  interactive_question_answers: z.boolean().optional().default(false),
 });
 
 export const metaSchema = z.object({

@@ -23,6 +23,7 @@ import (
 	githubreactions "github.com/higress-group/issue-spec/internal/server/api/github/reactions"
 	githubsubscription "github.com/higress-group/issue-spec/internal/server/api/github/subscription"
 	adminapi "github.com/higress-group/issue-spec/internal/server/api/native/admin"
+	answersapi "github.com/higress-group/issue-spec/internal/server/api/native/answers"
 	nativeauth "github.com/higress-group/issue-spec/internal/server/api/native/auth"
 	bindingsapi "github.com/higress-group/issue-spec/internal/server/api/native/bindings"
 	boardsapi "github.com/higress-group/issue-spec/internal/server/api/native/boards"
@@ -34,6 +35,7 @@ import (
 	mentionsapi "github.com/higress-group/issue-spec/internal/server/api/native/mentions"
 	metaapi "github.com/higress-group/issue-spec/internal/server/api/native/meta"
 	orgsapi "github.com/higress-group/issue-spec/internal/server/api/native/orgs"
+	previewsapi "github.com/higress-group/issue-spec/internal/server/api/native/previews"
 	profilemailapi "github.com/higress-group/issue-spec/internal/server/api/native/profilemail"
 	referencesapi "github.com/higress-group/issue-spec/internal/server/api/native/references"
 	reposapi "github.com/higress-group/issue-spec/internal/server/api/native/repos"
@@ -175,6 +177,17 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			return metaapi.NewRouteSet(metaapi.Dependencies{Features: features, Metadata: serverMetadata})
 		},
 		func() (routeset.RouteSet, error) {
+			return previewsapi.NewRouteSet(previewsapi.Dependencies{
+				Service: deps.Issues, AuthenticateOptional: nativeAuthenticateOptional,
+			})
+		},
+		func() (routeset.RouteSet, error) {
+			return answersapi.NewRouteSet(answersapi.Dependencies{
+				Service: deps.Issues, Presenter: deps.Presenter,
+				Authenticate: nativeAuthenticate, WebOrigin: deps.WebOrigin,
+			})
+		},
+		func() (routeset.RouteSet, error) {
 			return bindingsapi.NewRouteSet(bindingsapi.Dependencies{Service: deps.Bindings, Authenticate: nativeAuthenticate})
 		},
 		func() (routeset.RouteSet, error) {
@@ -273,7 +286,8 @@ func composeMentionCandidateRoutes(deps Dependencies, features metaapi.Features,
 func mountedFeatures(search bool) metaapi.Features {
 	return metaapi.Features{Bootstrap: true, PersonalAccessTokens: true, Organizations: true,
 		SourceBindings: true, Webhooks: true, ChangeBoards: true, Runner: true, RecoveryExchange: true,
-		Search: search, RequirementsOnboarding: true}
+		Search: search, RequirementsOnboarding: true, HTMLPreviewExecution: true,
+		InteractiveQuestionAnswers: true}
 }
 
 func validateDependencies(deps Dependencies) error {

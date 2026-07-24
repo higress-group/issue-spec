@@ -85,19 +85,25 @@ func (a *app) runStatus(ctx context.Context, args []string) int {
 		a.errorf("collect artifacts: %v\n", err)
 		return 1
 	}
+	answers, err := collectAnswerResolution(ctx, client, repo, proposalIssue, designIssue, implementIssue)
+	if err != nil {
+		a.errorf("collect ANSWER authority: %v\n", err)
+		return 1
+	}
 	var workflowPlan workflow.Plan
 	var workflowErr error
 	if target != gates.TargetFinal {
 		workflowPlan, workflowErr = workflow.Resolve(".")
 	}
 	profile, _, profileErr := auth.ResolveProfile(a.profileName, *host)
-	collection := statusGateCollection{Remote: statusForecastRemoteFacts(target)}
+	collection := statusGateCollection{Remote: statusForecastRemoteFacts(target), Answers: answers}
 	if target == gates.TargetFinal {
 		collection.FinalEvidence = buildMinimalFinalEvidence(artifactsForImplementGate(artifacts, implementIssue), nil,
 			gates.FinalSubject{Required: true})
 	}
 	if profileErr == nil {
 		collection = a.collectStatusGateFacts(ctx, client, profile, token.Value, repo, implementIssue, target, artifacts)
+		collection.Answers = answers
 	}
 	summary := summarizeStatusForGate(*repoFlag, proposalIssue, designIssue, implementIssue, target, artifacts, workflowPlan, workflowErr, collection)
 	if proposalIssueData, perr := client.GetIssue(ctx, repo, proposalIssue); perr == nil {
@@ -241,7 +247,7 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 				}
 			}
 		}
-		if tc.Type == "QUESTION" && tc.Status == "blocked" {
+		if tc.Type == "QUESTION" && !model.QuestionIsSatisfied(tc, collection.Answers) {
 			blockingQuestions++
 		}
 		if tc.Type == "REVIEW" && tc.Status != "done" && tc.Status != "superseded" {
@@ -275,6 +281,7 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		Target:                   target,
 		Mode:                     mode,
 		Artifacts:                gateArtifacts,
+		Answers:                  collection.Answers,
 		Canonical:                gates.CanonicalFacts{Observed: true, Diagnostics: malformed},
 		Traceability:             gates.TraceabilityFacts{Observed: true, Report: report},
 		Workflow:                 workflowFacts,
@@ -378,6 +385,7 @@ type statusGateCollection struct {
 	ProcessEvidence []gates.ProcessEvidenceInput
 	Subject         *gates.CompactSubject
 	FinalEvidence   gates.FinalEvidenceSnapshot
+	Answers         model.AnswerResolution
 }
 
 func (a *app) collectStatusGateFacts(ctx context.Context, client github.Backend, profile auth.Profile, token, repo string,

@@ -11,7 +11,9 @@ metadata:
 
 # Issue Spec Apply
 
-Coordinator: complete DAG planning, workspace lifecycle, integration, links, review, recovery, and final evidence by following the backend-appropriate routing in issue-spec-workflow. For every agent-executed change-bearing PROCESS, seal the implementation assignment and dispatch a real non-Coordinator implementation worker with the Implementation Role Packet below; this is required regardless of node size, file count, or serial versus parallel scheduling, and the coordinator never implements, tests, or commits that PROCESS inline or uses workspace_management: independent as an escape hatch. A compatible real worker may execute successive serial or repair nodes; for each assignment give that worker only the parent TASK context plus the predecessor handoff, never the coordinator's accumulated context. Non-change-bearing orchestration and the narrow direct one-file PR path without a PROCESS DAG retain their existing policies. Run the authoritative final sync by following issue-spec-review. After that sync, explicitly link the REVIEW to its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC. Follow issue-spec-workflow for the backend-appropriate rationale command. Each owning worker authors its own rationale under that worker's --agent. Do not copy that policy into a worker packet.
+Coordinator: persist the Implement issue, perform its first QUESTION discovery/create pass, then upsert the ordinary statusless `implement-execution-brief` before completing PROCESS planning. The brief explains invariant-based PROCESS candidates or the current DAG, critical path, safe parallelism, Agent allocation, code-volume estimates with confidence, correctness complexity, shared touchpoints, blockers, and independent review/verify obligations. Correctness complexity is distinct from size, and estimates never define workflow semantics. Use current typed QUESTION data and only the latest effective ANSWER; issue bodies and typed artifacts remain authoritative and projection source stays outside default Agent context.
+
+Complete DAG planning, workspace lifecycle, integration, links, review, recovery, and final evidence by following the backend-appropriate routing in issue-spec-workflow. For every agent-executed change-bearing PROCESS, seal the implementation assignment and dispatch a real non-Coordinator implementation worker with the Implementation Role Packet below; this is required regardless of node size, file count, or serial versus parallel scheduling, and the coordinator never implements, tests, or commits that PROCESS inline or uses workspace_management: independent as an escape hatch. A compatible real worker may execute successive serial or repair nodes; for each assignment give that worker only the parent TASK context plus the predecessor handoff, never the coordinator's accumulated context. Non-change-bearing orchestration and the narrow direct one-file PR path without a PROCESS DAG retain their existing policies. Run the authoritative final sync by following issue-spec-review. After that sync, explicitly link the REVIEW to its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC. Follow issue-spec-workflow for the backend-appropriate rationale command. Each owning worker authors its own rationale under that worker's --agent. Do not copy that policy into a worker packet.
 
 ## Implementation Role Packet
 
@@ -28,6 +30,10 @@ This packet is addressed to the dispatched worker subagent. Relay it verbatim wi
 - A bare repository-relative ownership path is one exact file.
 - A directory subtree requires an explicit trailing /** declaration, for example internal/templates/**.
 - Legacy bare directory declarations remain readable, but workspace prepare may reject them; correct the PROCESS or pass an explicit recursive ownership value before allocation.
+
+## Human Review Projections
+
+Before generating or updating `implement-execution-brief`, read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely and apply the Implement recipe. Generate the complete `projection.md` from authoritative inputs before running `projection upsert`.
 
 ## Project Workflow
 

@@ -19,6 +19,7 @@ type QuestionOptions struct {
 	Blocking           bool
 	Question           string
 	Assumption         string
+	ChoiceModel        *model.ChoiceModel
 	Links              map[string][]string
 }
 
@@ -41,6 +42,17 @@ func QuestionComment(opts QuestionOptions) (string, error) {
 		Scope:              opts.Scope,
 		Links:              opts.Links,
 	})
+	choiceSection := ""
+	if opts.ChoiceModel != nil {
+		if err := opts.ChoiceModel.Validate(); err != nil {
+			return "", fmt.Errorf("choice model: %w", err)
+		}
+		payload, err := model.CanonicalJSON(opts.ChoiceModel)
+		if err != nil {
+			return "", fmt.Errorf("choice model: %w", err)
+		}
+		choiceSection = "\n## Choice Model\n\n```json\n" + payload + "\n```\n"
+	}
 	body := fmt.Sprintf(`%s
 %s
 
@@ -55,12 +67,38 @@ func QuestionComment(opts QuestionOptions) (string, error) {
 ## Default Assumption
 
 %s
+%s
 
 ## Resolution Log
 
 - Pending.
-`, model.RenderMarker("QUESTION", opts.ID, 1), header, strings.TrimSpace(opts.Question), opts.Blocking, strings.TrimSpace(opts.Assumption))
+`, model.RenderMarker("QUESTION", opts.ID, 1), header, strings.TrimSpace(opts.Question), opts.Blocking, strings.TrimSpace(opts.Assumption), strings.TrimRight(choiceSection, "\n"))
 	return model.EnsureTypedBody("QUESTION", opts.ID, body, model.BodyOptions{Agent: opts.Agent, AgentSessionID: opts.AgentSessionID, AgentSessionSource: opts.AgentSessionSource, Status: opts.Status, Scope: opts.Scope, Links: opts.Links})
+}
+
+type AnswerOptions struct {
+	ID      string
+	Agent   string
+	Scope   string
+	Links   map[string][]string
+	Payload model.AnswerPayload
+}
+
+// AnswerComment renders a creation-only typed ANSWER. It intentionally has no
+// session metadata or transition fields: provider comment metadata supplies
+// actor, creation time, edit state, and stable ordering authority.
+func AnswerComment(opts AnswerOptions) (string, error) {
+	if err := opts.Payload.Validate(); err != nil {
+		return "", err
+	}
+	payload, err := model.CanonicalJSON(opts.Payload)
+	if err != nil {
+		return "", err
+	}
+	logical := "## Answer\n\n```json\n" + payload + "\n```\n"
+	return model.EnsureTypedBody("ANSWER", opts.ID, logical, model.BodyOptions{
+		Agent: opts.Agent, Status: "done", Scope: opts.Scope, Links: opts.Links,
+	})
 }
 
 // CommonOptions carries the shared typed-comment header fields for generated

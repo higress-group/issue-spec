@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/higress-group/issue-spec/internal/preview"
 )
 
 var markerRe = regexp.MustCompile(`(?s)<!--\s*issue-spec:([^>]*)-->`)
@@ -23,7 +25,11 @@ func RenderMarker(commentType, id string, version int) string {
 }
 
 func FindMarker(body string) (Marker, bool, error) {
-	matches := markerRe.FindAllStringSubmatch(body, -1)
+	return findMarker(preview.SemanticView(body))
+}
+
+func findMarker(semanticBody string) (Marker, bool, error) {
+	matches := markerRe.FindAllStringSubmatch(semanticBody, -1)
 	for _, match := range matches {
 		attrs := parseMarkerAttrs(match[1])
 		if attrs["type"] == "" && attrs["id"] == "" {

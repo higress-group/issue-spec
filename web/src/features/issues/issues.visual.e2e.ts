@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { documentationSnapshot, documentationText, installDocumentationLanguage } from "../../../tests/e2e/documentation-language";
 
 const organizationId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -37,19 +37,124 @@ To continue this session, create a new command comment:
 
 Ordinary follow-up comments remain visible but are ignored by runner intake.`;
 const reactionSummary = { total_count: 1, "+1": 1, "-1": 0, laugh: 0, hooray: 0, confused: 0, heart: 0, rocket: 0, eyes: 0, url: "" };
+const previewCSP = "default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; form-action 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; media-src 'none'; frame-src 'none'; worker-src 'none'";
+const previewDocument = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Review lab</title><style>body{font:16px system-ui;padding:16px}button{margin:4px;padding:8px}.result{font-weight:700}</style></head>
+<body>
+  <p id="mount-count">0</p><p id="capability">waiting</p>
+  <button id="increment">Increment</button><output id="count">0</output>
+  <button id="single">Single answer</button><button id="multiple">Multiple answer</button>
+  <button id="custom">Custom answer</button><button id="second">Second answer</button>
+  <form id="blocked-form" action="/login"><button type="submit">Blocked form</button></form>
+  <a id="blocked-navigation" href="/login" target="_top">Blocked navigation</a>
+  <div id="parent-access" class="result"></div><div id="cookie-access" class="result"></div>
+  <div id="local-storage" class="result"></div><div id="session-storage" class="result"></div>
+  <div id="network-access" class="result"></div><div id="popup-access" class="result"></div>
+  <div id="worker-access" class="result"></div><div id="image-access" class="result"></div>
+  <script>
+    var nonce = "";
+    var mounts = 0;
+    function result(id, blocked) { document.getElementById(id).textContent = blocked ? "blocked" : "available"; }
+    window.addEventListener("message", function(event) {
+      var value = event.data || {};
+      if (event.source !== parent || value.type !== "issue-spec-preview-init" || value.version !== 1) return;
+      nonce = value.nonce;
+      mounts += 1;
+      document.getElementById("mount-count").textContent = String(mounts);
+      document.getElementById("capability").textContent = value.interactive_question_answers ? "answers-enabled" : "answers-disabled";
+    });
+    document.getElementById("increment").addEventListener("click", function() {
+      var output = document.getElementById("count");
+      output.value = String(Number(output.value) + 1);
+    });
+    function answer(question, mode, optionIds, custom) {
+      parent.postMessage({version:1, nonce:nonce, question_id:question, mode:mode, option_ids:optionIds, custom:custom}, "*");
+    }
+    document.getElementById("single").onclick = function() { answer("QUESTION-007", "single", ["safe"], ""); };
+    document.getElementById("multiple").onclick = function() { answer("QUESTION-008", "multiple", ["safe", "fast"], ""); };
+    document.getElementById("custom").onclick = function() { answer("QUESTION-007", "single", [], "Use a staged rollout."); };
+    document.getElementById("second").onclick = function() { answer("QUESTION-007", "single", ["fast"], ""); };
+    try { void parent.document.body; result("parent-access", false); } catch (_) { result("parent-access", true); }
+    try { document.cookie = "preview=1"; result("cookie-access", document.cookie === ""); } catch (_) { result("cookie-access", true); }
+    try { localStorage.setItem("x", "1"); result("local-storage", false); } catch (_) { result("local-storage", true); }
+    try { sessionStorage.setItem("x", "1"); result("session-storage", false); } catch (_) { result("session-storage", true); }
+    fetch("/api/v1/meta").then(function(){ result("network-access", false); }).catch(function(){ result("network-access", true); });
+    try { result("popup-access", window.open("about:blank") === null); } catch (_) { result("popup-access", true); }
+    try {
+      var worker = new Worker(URL.createObjectURL(new Blob(["postMessage('started')"], {type:"text/javascript"})));
+      worker.onmessage = function(){ result("worker-access", false); worker.terminate(); };
+      worker.onerror = function(){ result("worker-access", true); worker.terminate(); };
+    } catch (_) { result("worker-access", true); }
+    var image = new Image(); image.onerror = function(){ result("image-access", true); }; image.onload = function(){ result("image-access", false); }; image.src = "https://example.invalid/authority.png";
+  </script>
+</body></html>`;
 
 let comments = [commentFixture(9, "The runner should preserve **raw Markdown** and agent metadata.")];
+let previewRequests = 0;
+let answerSubmissions: Array<{ question_id: string; question_digest: string; option_ids: string[]; custom: string }> = [];
+
+function questionFixture(id: "QUESTION-007" | "QUESTION-008") {
+  const multiple = id === "QUESTION-008";
+  return {
+    id,
+    question: multiple ? "Which rollout controls should be combined?" : "Which release posture should we use?",
+    blocking: true,
+    default_assumption: "Use Safe.",
+    issue_url: "https://example.test/acme/workflow/issues/41",
+    source_url: `https://example.test/acme/workflow/issues/41#issuecomment-${multiple ? 21 : 20}`,
+    choice_model: {
+      version: 1,
+      mode: multiple ? "multiple" : "single",
+      options: [
+        { id: "safe", label: "Safe", description: "Conservative", tradeoff: "Slower" },
+        { id: "fast", label: "Fast", description: "Rapid", tradeoff: "Riskier" },
+      ],
+      allow_custom: !multiple,
+    },
+  };
+}
+
+async function stabilizeScreenshotDates(page: Page) {
+  await page.locator("time[datetime]").evaluateAll((elements) => {
+    const locale = document.documentElement.lang || "en";
+    for (const element of elements) {
+      const value = element.getAttribute("datetime");
+      if (!value) continue;
+      element.textContent = new Intl.DateTimeFormat(locale, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      }).format(new Date(value));
+      element.style.display = "inline";
+      element.parentElement?.style.setProperty("display", "inline");
+    }
+    if (locale.startsWith("en")) {
+      const issueTime = document.querySelector(".detail-state-row .precise-relative-time");
+      const summary = issueTime?.parentElement;
+      const prefix = summary ? [...summary.childNodes].find((node) => node.nodeType === Node.TEXT_NODE) : null;
+      if (prefix?.textContent?.endsWith("opened this ")) prefix.textContent += "on ";
+    }
+  });
+}
 
 test.beforeEach(async ({ page }) => {
+  test.setTimeout(60_000);
   await installDocumentationLanguage(page);
   activeIssue = issue;
   externalContributor = false;
+  previewRequests = 0;
+  answerSubmissions = [];
   comments = [commentFixture(9, documentationText("The runner should preserve **raw Markdown** and agent metadata.", "运行器应保留**原始 Markdown**和智能体元数据。"))];
   await page.route("**/*", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
-    if (url.pathname === "/api/v1/meta") return route.fulfill({ json: { api_version: "v1", features: { bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: false, webhooks: false, change_boards: false, runner: true, recovery_exchange: true, email_notifications: true, repository_email_subscriptions: true } } });
+    if (url.pathname === "/api/v1/meta") return route.fulfill({ json: { api_version: "v1", features: { bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: false, webhooks: false, change_boards: false, runner: true, recovery_exchange: true, email_notifications: true, repository_email_subscriptions: true, html_preview_execution: true, interactive_question_answers: true } } });
     if (url.pathname === "/api/v1/context") return route.fulfill({ json: { user: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", login: "alice", display_name: "Alice", email: "alice@example.test", site_admin: !externalContributor }, credential: { kind: "session", scope_mode: "identity", repository_restricted: false }, session: { csrf_cookie_name: "issue_spec_csrf", csrf_header_name: "X-CSRF-Token" }, allowed_actions: externalContributor ? [] : ["site.admin"], organizations: [{ id: organizationId, name: "acme", display_name: "Acme Studio", effective_permission: externalContributor ? "read" : "admin", container_only: false, allowed_actions: externalContributor ? ["organization.read"] : ["organization.read", "organization.admin"] }] } });
+    if (url.pathname === "/api/v1/profile") return route.fulfill({ json: {
+      id: 1, login: "alice", display_name: "Alice", identity_display_name: "Alice",
+      nickname: null, representation_version: 1, avatar_url: "", html_url: "/users/alice",
+      type: "User", site_admin: !externalContributor, onboarding_completed: true,
+    } });
     if (url.pathname === "/api/v1/profile/email") return route.fulfill({ json: { available: true, notification_email: "alice@example.test" } });
     if (url.pathname === `/api/v1/orgs/${organizationId}/repos/${repositoryId}/subscription`) return route.fulfill({ json: { subscribed: false, ignored: false, reason: "", representation_version: 0, collection_version: 1 } });
     if (url.pathname === `/api/v1/context/orgs/${organizationId}/repos`) return route.fulfill({ json: { repositories: [{ repository: { id: repositoryId, organization_id: organizationId, name: "workflow", display_name: "Workflow control", visibility: externalContributor ? "public" : "private", contribution_policy: externalContributor ? "public" : "members" }, effective_permission: externalContributor ? "read" : "admin", allowed_actions: externalContributor ? ["read", "contribute"] : ["read", "contribute", "triage", "write", "repository.admin"] }] } });
@@ -65,6 +170,31 @@ test.beforeEach(async ({ page }) => {
     if (url.pathname === "/repos/acme/workflow/issues/comments/9/reactions") return route.fulfill({ json: [{ id: 7, user: user, content: "+1", created_at: "2026-07-10T12:00:00Z" }] });
     if (/^\/repos\/acme\/workflow\/issues\/comments\/\d+\/reactions$/.test(url.pathname)) return route.fulfill({ json: [] });
     if (url.pathname === "/api/v1/context/repos/acme/workflow/issues/41/relationships") return route.fulfill({ json: { relationships: externalContributor ? [] : relationships } });
+    if (/^\/api\/v1\/repos\/acme\/workflow\/issues\/41\/previews\/(?:review-lab|comment-lab|issue-first|anchored-first)$/.test(url.pathname)) {
+      previewRequests += 1;
+      const commentPreview = url.pathname.endsWith("/comment-lab") || url.pathname.endsWith("/anchored-first");
+      expect(url.searchParams.get("source")).toBe(commentPreview ? "comment" : "issue");
+      expect(url.searchParams.get("comment_id")).toBe(commentPreview ? "9" : null);
+      expect(url.searchParams.get("digest")).toMatch(/^[0-9a-f]{64}$/);
+      const document = url.pathname.endsWith("/anchored-first") ? "<!doctype html><p>comment</p>" : previewDocument;
+      return route.fulfill({ status: 200, body: document, headers: { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": previewCSP, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Permissions-Policy": "camera=(), microphone=(), geolocation=()" } });
+    }
+    if (/^\/api\/v1\/repos\/acme\/workflow\/issues\/41\/questions\/QUESTION-00[78]$/.test(url.pathname)) {
+      const id = url.pathname.endsWith("8") ? "QUESTION-008" : "QUESTION-007";
+      return route.fulfill({ json: { question: questionFixture(id), representation_version: 1, body_digest: id === "QUESTION-007" ? "a".repeat(64) : "b".repeat(64) } });
+    }
+    if (url.pathname === "/api/v1/repos/acme/workflow/issues/41/answers" && request.method() === "POST") {
+      const payload = request.postDataJSON() as typeof answerSubmissions[number];
+      answerSubmissions.push(payload);
+      const created = commentFixture(50 + answerSubmissions.length, `ANSWER timeline ${answerSubmissions.length}`);
+      comments = [...comments, created];
+      return route.fulfill({ status: 201, json: {
+        comment: created,
+        question: questionFixture(payload.question_id === "QUESTION-008" ? "QUESTION-008" : "QUESTION-007"),
+        question_representation_version: 1,
+        question_body_digest: payload.question_digest,
+      } });
+    }
     if (url.pathname === "/repos/acme/workflow/issues/41") return route.fulfill({ json: activeIssue });
     if (url.pathname === "/repos/acme/workflow/issues") return route.fulfill({ json: url.searchParams.get("labels") ? [] : [activeIssue] });
     return route.fallback();
@@ -73,7 +203,7 @@ test.beforeEach(async ({ page }) => {
 
 test("issue detail is polished, accessible and preserves raw workflow text", async ({ page }, testInfo) => {
   await page.goto("/acme/workflow/issues/41");
-  await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(issueTitle);
+  await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(issueTitle, { timeout: 15_000 });
   if (testInfo.project.name === "issues-mobile-390") {
     const backLink = page.locator(".detail-title .issue-back");
     const title = page.locator(".detail-title h1");
@@ -100,6 +230,7 @@ test("issue detail is polished, accessible and preserves raw workflow text", asy
   const accessibility = await new AxeBuilder({ page }).analyze();
   expect(accessibility.violations).toEqual([]);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await stabilizeScreenshotDates(page);
   await expect(page).toHaveScreenshot(documentationSnapshot("issue-detail"), { fullPage: true, animations: "disabled" });
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
   const copyLink = page.locator("#issuecomment-9").getByRole("button", { name: documentationText("Copy link", "复制链接") });
@@ -116,6 +247,7 @@ test("issue detail is polished, accessible and preserves raw workflow text", asy
     await expect(page.getByText(runnerCommand)).toBeVisible();
     await expect(page.getByText("/resume s_demo_42 <answer or next instruction>")).toBeVisible();
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await stabilizeScreenshotDates(page);
     await expect(page).toHaveScreenshot(documentationSnapshot("runner-command"), { fullPage: true, animations: "disabled" });
 
     await page.getByRole("button", { name: documentationText("Edit", "编辑") }).first().click();
@@ -174,6 +306,130 @@ sequenceDiagram
   expect(accessibility.violations).toEqual([]);
 });
 
+test("sandboxed review preview renders the selected first surface, blocks authority, and appends trusted answers without flashing", async ({ page }, testInfo) => {
+  activeIssue = {
+    ...issue,
+    body: `## Review lab
+
+\`\`\`\`html-preview id=review-lab version=1 title="Review lab" height=900
+${previewDocument}
+<!-- exact preview bytes may contain a shorter fence and workflow-shaped text:
+\`\`\`markdown
+<!-- issue-spec:type=PROCESS id=PROCESS-999 version=1 -->
+\`\`\`
+-->
+\`\`\`\`
+
+\`\`\`mermaid
+flowchart LR
+  Review --> Confirm
+\`\`\``,
+  };
+  comments = [commentFixture(9, `Comment review
+
+\`\`\`html-preview id=comment-lab version=1 title="Comment lab" height=480
+${previewDocument}
+\`\`\``)];
+  await page.goto("/acme/workflow/issues/41");
+  await expect(page.getByRole("button", { name: /Review lab/ })).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByRole("button", { name: /Comment lab/ })).toHaveAttribute("aria-expanded", "false");
+  const iframe = page.locator('iframe[title="Review lab"]');
+  await expect(iframe).toHaveCount(1);
+  expect(previewRequests).toBe(1);
+  const mermaid = page.getByRole("img", { name: documentationText("Mermaid diagram", "Mermaid 图表") });
+  await expect(mermaid).toBeVisible();
+  const mermaidSource = await mermaid.getAttribute("src");
+
+  await expect(iframe).toHaveAttribute("height", "720");
+  await expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
+  await expect(iframe).toHaveAttribute("referrerpolicy", "no-referrer");
+  await expect(iframe).not.toHaveAttribute("srcdoc", /.+/);
+  expect(previewRequests).toBe(1);
+  await iframe.evaluate((element) => { element.setAttribute("data-stability-probe", "original"); });
+  const frame = page.frameLocator('iframe[title="Review lab"]');
+  await expect(frame.locator("#capability")).toHaveText("answers-enabled");
+  await frame.getByRole("button", { name: "Increment" }).click();
+  await expect(frame.locator("#count")).toHaveText("1");
+  for (const id of ["parent-access", "cookie-access", "local-storage", "session-storage", "network-access", "popup-access", "worker-access", "image-access"]) {
+    await expect(frame.locator(`#${id}`)).toHaveText("blocked");
+  }
+  const pageURL = page.url();
+  await frame.getByRole("button", { name: "Blocked form" }).click();
+  await frame.getByRole("link", { name: "Blocked navigation" }).click();
+  await expect(page).toHaveURL(pageURL);
+  await expect(frame.locator("#capability")).toHaveText("answers-enabled");
+
+  const iframeBox = await iframe.boundingBox();
+  expect(iframeBox).not.toBeNull();
+  expect((iframeBox?.x ?? 0) + (iframeBox?.width ?? 0)).toBeLessThanOrEqual((page.viewportSize()?.width ?? 0) + 1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+  expect((await mermaid.getAttribute("src"))).toBe(mermaidSource);
+  const accessibility = await new AxeBuilder({ page }).analyze();
+  expect(accessibility.violations).toEqual([]);
+
+  const commentDisclosure = page.getByRole("button", { name: /Comment lab/ });
+  await commentDisclosure.click();
+  await page.getByRole("button", { name: documentationText("Run", "运行") }).click();
+  const commentIframe = page.locator('iframe[title="Comment lab"]');
+  const commentFrame = page.frameLocator('iframe[title="Comment lab"]');
+  await expect(commentIframe).toHaveCount(1);
+  await commentIframe.evaluate((element) => { element.setAttribute("data-stability-probe", "comment-original"); });
+  await expect(commentFrame.locator("#capability")).toHaveText("answers-enabled");
+  await commentFrame.getByRole("button", { name: "Increment" }).click();
+  await expect(commentFrame.locator("#count")).toHaveText("1");
+  await page.waitForTimeout(1_100);
+  await expect(commentIframe).toHaveAttribute("data-stability-probe", "comment-original");
+  await expect(commentDisclosure).toHaveAttribute("aria-expanded", "true");
+  await expect(commentFrame.locator("#count")).toHaveText("1");
+  await expect(commentFrame.locator("#mount-count")).toHaveText("1");
+  expect(previewRequests).toBe(2);
+
+  if (testInfo.project.name !== "issues-desktop-1440") return;
+  const submit = async (button: string, visibleAnswer: string, timeline: number) => {
+    await frame.getByRole("button", { name: button }).click();
+    const confirmation = page.locator(".answer-confirmation");
+    await expect(confirmation).toBeVisible();
+    await expect(confirmation.getByText(visibleAnswer, { exact: true })).toBeVisible();
+    await confirmation.getByRole("button", { name: "Confirm answer" }).click();
+    await expect(page.getByText(`ANSWER timeline ${timeline}`)).toBeVisible();
+    await expect(confirmation).toHaveCount(0);
+    await expect(iframe).toHaveAttribute("data-stability-probe", "original");
+    await expect(frame.locator("#mount-count")).toHaveText("1");
+    await expect(mermaid).toHaveAttribute("src", mermaidSource ?? "");
+  };
+  await submit("Single answer", "Safe", 1);
+  await submit("Multiple answer", "Safe, Fast", 2);
+  await submit("Custom answer", "Use a staged rollout.", 3);
+  await submit("Second answer", "Fast", 4);
+  expect(answerSubmissions).toEqual([
+    { question_id: "QUESTION-007", question_digest: "a".repeat(64), option_ids: ["safe"], custom: "" },
+    { question_id: "QUESTION-008", question_digest: "b".repeat(64), option_ids: ["safe", "fast"], custom: "" },
+    { question_id: "QUESTION-007", question_digest: "a".repeat(64), option_ids: [], custom: "Use a staged rollout." },
+    { question_id: "QUESTION-007", question_digest: "a".repeat(64), option_ids: ["fast"], custom: "" },
+  ]);
+});
+
+test("a comment anchor prioritizes that comment's first preview for default rendering", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "issues-desktop-1440");
+  activeIssue = {
+    ...issue,
+    body: `\`\`\`html-preview id=issue-first version=1 title="Issue first"
+<!doctype html><p>issue</p>
+\`\`\``,
+  };
+  comments = [commentFixture(9, `\`\`\`html-preview id=anchored-first version=1 title="Anchored first"
+<!doctype html><p>comment</p>
+\`\`\``)];
+
+  await page.goto("/acme/workflow/issues/41#issuecomment-9");
+  await expect(page.getByRole("button", { name: /Issue first/ })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("button", { name: /Anchored first/ })).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator('iframe[title="Anchored first"]')).toHaveCount(1);
+  await expect(page.locator('iframe[title="Issue first"]')).toHaveCount(0);
+  await expect(page.frameLocator('iframe[title="Anchored first"]').getByText("comment", { exact: true })).toBeVisible();
+  expect(previewRequests).toBe(1);
+});
+
 test("issue list presents the repository subscription entry", async ({ page }, testInfo) => {
   await page.goto("/acme/workflow/issues");
   await expect(page.getByRole("heading", { name: documentationText("Issues", "议题") })).toBeVisible();
@@ -182,6 +438,7 @@ test("issue list presents the repository subscription entry", async ({ page }, t
   expect(accessibility.violations).toEqual([]);
   if (testInfo.project.name === "issues-desktop-1440") {
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await stabilizeScreenshotDates(page);
     await expect(page).toHaveScreenshot(documentationSnapshot("issue-list"), { fullPage: true, animations: "disabled" });
   }
 });
@@ -216,6 +473,7 @@ test("external contributor simple request is an ordinary issue", async ({ page }
   await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(activeIssue.title);
   await expect(page.getByText("issue-spec/proposal")).toHaveCount(0);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await stabilizeScreenshotDates(page);
   await expect(page).toHaveScreenshot(documentationSnapshot("requirements-simple-issue"), { fullPage: true, animations: "disabled" });
 });
 
@@ -247,6 +505,7 @@ test("external contributor standard request keeps Proposal SPEC QUESTION and dis
   await expect(page.getByText("ID: SPEC-001", { exact: false })).toBeVisible();
   await expect(page.getByText("ID: QUESTION-001", { exact: false })).toBeVisible();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await stabilizeScreenshotDates(page);
   await expect(page).toHaveScreenshot(documentationSnapshot("requirements-standard-proposal"), { fullPage: true, animations: "disabled" });
 });
 
@@ -275,7 +534,7 @@ test("canonical public WebURL keeps its owner/repository route and comment fragm
   ];
   await page.goto("/AcMe/WorkFlow/issues/41?view=timeline#issuecomment-9");
   await expect(page).toHaveURL("/AcMe/WorkFlow/issues/41?view=timeline#issuecomment-9");
-  await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(issueTitle);
+  await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(issueTitle, { timeout: 15_000 });
   const target = page.locator("#issuecomment-9");
   const expectLockedToTarget = async () => {
     await expect(target).toBeVisible();

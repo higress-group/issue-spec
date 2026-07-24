@@ -5,11 +5,15 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/preview"
+	"github.com/higress-group/issue-spec/internal/server/api/github/codec"
 	serverauth "github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/emaildelivery"
@@ -17,6 +21,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/projection/artifacts"
 	"github.com/higress-group/issue-spec/internal/server/projection/mentions"
 	"github.com/higress-group/issue-spec/internal/server/store"
+	"github.com/higress-group/issue-spec/internal/templates"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -114,6 +119,39 @@ type DecisionError struct{ Decision authz.Decision }
 
 func (e *DecisionError) Error() string { return "github issues: authorization denied" }
 
+var (
+	ErrInvalidPreviewRequest    = errors.New("github issues: invalid preview request")
+	ErrPreviewDigestMismatch    = errors.New("github issues: preview digest does not match current source")
+	ErrTrustedAnswerRequired    = errors.New("github issues: ANSWER creation requires the trusted answer endpoint")
+	ErrAnswerImmutable          = errors.New("github issues: ANSWER comments are immutable")
+	ErrInvalidAnswerIntent      = errors.New("github issues: invalid answer intent")
+	ErrInvalidQuestionAuthority = errors.New("github issues: invalid QUESTION authority")
+	ErrQuestionChanged          = errors.New("github issues: QUESTION changed after confirmation")
+)
+
+type PreviewSource struct {
+	Kind      string
+	CommentID int64
+}
+
+const (
+	PreviewSourceIssue   = "issue"
+	PreviewSourceComment = "comment"
+)
+
+type AnswerIntent struct {
+	QuestionID     string
+	QuestionDigest string
+	OptionIDs      []string
+	Custom         string
+}
+
+type QuestionAuthority struct {
+	Snapshot              model.QuestionSnapshot `json:"question"`
+	RepresentationVersion int64                  `json:"representation_version"`
+	BodyDigest            string                 `json:"body_digest"`
+}
+
 func (s *Service) resolveRead(ctx context.Context, owner, repository string, subject authz.Subject) (models.RepositoryResource, error) {
 	resource, err := s.store.ResolveRepository(ctx, owner, repository)
 	if err != nil {
@@ -130,6 +168,58 @@ func (s *Service) resolveRead(ctx context.Context, owner, repository string, sub
 	}
 	return resource, nil
 }
+
+// PreviewDocument re-reads one exact issue body or comment through the normal
+// repository read authorization boundary, then selects one executable preview
+// and verifies the caller-observed digest against current stored bytes.
+func (s *Service) PreviewDocument(ctx context.Context, owner, repository string, issueNumber int64,
+	subject authz.Subject, source PreviewSource, previewID, digest string) (string, error) {
+	if issueNumber <= 0 || strings.TrimSpace(previewID) == "" || !digestPattern.MatchString(digest) ||
+		(source.Kind != PreviewSourceIssue && source.Kind != PreviewSourceComment) ||
+		(source.Kind == PreviewSourceIssue && source.CommentID != 0) ||
+		(source.Kind == PreviewSourceComment && source.CommentID <= 0) {
+		return "", ErrInvalidPreviewRequest
+	}
+	resource, err := s.resolveRead(ctx, owner, repository, subject)
+	if err != nil {
+		return "", err
+	}
+	var body string
+	err = s.store.WithTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx *store.Tx) error {
+		repositoryStore := tx.ScopedRepo(resource.Scope)
+		switch source.Kind {
+		case PreviewSourceIssue:
+			issue, err := repositoryStore.IssueByNumber(ctx, issueNumber)
+			if err != nil {
+				return err
+			}
+			body = issue.Body
+		case PreviewSourceComment:
+			comment, err := repositoryStore.CommentByCompatibilityID(ctx, source.CommentID)
+			if err != nil {
+				return err
+			}
+			if comment.IssueNumber != issueNumber {
+				return store.ErrNotFound
+			}
+			body = comment.Comment.Body
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	selected, err := preview.Select(body, previewID)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidPreviewRequest, err)
+	}
+	if selected.Descriptor.Digest != digest {
+		return "", ErrPreviewDigestMismatch
+	}
+	return selected.Source, nil
+}
+
+var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func (s *Service) ListIssues(ctx context.Context, owner, repository string, subject authz.Subject, options models.IssueListOptions) (models.RepositoryResource, models.IssuePage, error) {
 	resource, err := s.resolveRead(ctx, owner, repository, subject)
@@ -362,6 +452,100 @@ func (s *Service) GetComment(ctx context.Context, owner, repository string, comp
 	return resource, comment, err
 }
 
+// GetQuestion re-reads one projected QUESTION through a bounded keyed lookup.
+// The projection is only an index: SnapshotQuestion validates the exact current
+// stored comment body before anything is returned as confirmation authority.
+func (s *Service) GetQuestion(ctx context.Context, owner, repository string, issueNumber int64,
+	subject authz.Subject, webOrigin, questionID string) (models.RepositoryResource, QuestionAuthority, error) {
+	if issueNumber <= 0 || model.ValidateTypedIdentity("QUESTION", questionID) != nil {
+		return models.RepositoryResource{}, QuestionAuthority{}, ErrInvalidAnswerIntent
+	}
+	resource, err := s.resolveRead(ctx, owner, repository, subject)
+	if err != nil {
+		return models.RepositoryResource{}, QuestionAuthority{}, err
+	}
+	var result QuestionAuthority
+	err = s.store.WithTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx *store.Tx) error {
+		authority, err := tx.ScopedRepo(resource.Scope).TypedCommentAuthorityByKey(
+			ctx, issueNumber, questionID, "QUESTION", false)
+		if err != nil {
+			return err
+		}
+		result, err = questionAuthority(authority, webOrigin, resource)
+		return err
+	})
+	return resource, result, err
+}
+
+// CreateAnswer is the sole self-hosted ANSWER creation path. It locks and
+// revalidates the exact current QUESTION, builds canonical typed Markdown from
+// a bounded intent, and then uses the normal comment transaction so projection,
+// collection versions, notifications and mutation events remain atomic.
+func (s *Service) CreateAnswer(ctx context.Context, owner, repository string, issueNumber int64,
+	subject authz.Subject, webOrigin string, intent AnswerIntent) (models.RepositoryResource,
+	models.CommentSnapshot, QuestionAuthority, error) {
+	actor, ok := authenticatedActor(subject)
+	if !ok {
+		return models.RepositoryResource{}, models.CommentSnapshot{}, QuestionAuthority{},
+			&DecisionError{Decision: authz.Decision{Exists: true, Visible: true}}
+	}
+	if issueNumber <= 0 || model.ValidateTypedIdentity("QUESTION", intent.QuestionID) != nil ||
+		!digestPattern.MatchString(intent.QuestionDigest) || len(intent.OptionIDs) > 20 {
+		return models.RepositoryResource{}, models.CommentSnapshot{}, QuestionAuthority{}, ErrInvalidAnswerIntent
+	}
+	var resource models.RepositoryResource
+	var snapshot models.CommentSnapshot
+	var question QuestionAuthority
+	err := s.store.WithinTx(ctx, func(tx *store.Tx) error {
+		var err error
+		resource, err = tx.ResolveRepository(ctx, owner, repository)
+		if err != nil {
+			return err
+		}
+		decision, err := s.authorizer.EvaluateRepositoryTx(ctx, tx.PGX(), subject, authz.RepositoryRequest{
+			Scope: resource.Scope, Operation: authz.OperationContribute,
+		})
+		if err != nil {
+			return err
+		}
+		if !decision.Allowed {
+			return &DecisionError{Decision: decision}
+		}
+		repositoryStore := tx.ScopedRepo(resource.Scope)
+		issue, err := repositoryStore.IssueByNumber(ctx, issueNumber)
+		if err != nil {
+			return err
+		}
+		authority, err := repositoryStore.TypedCommentAuthorityByKey(
+			ctx, issueNumber, intent.QuestionID, "QUESTION", true)
+		if err != nil {
+			return err
+		}
+		question, err = questionAuthority(authority, webOrigin, resource)
+		if err != nil {
+			return err
+		}
+		if question.BodyDigest != intent.QuestionDigest {
+			return ErrQuestionChanged
+		}
+		payload, err := model.BuildAnswerPayload(question.Snapshot, intent.OptionIDs, intent.Custom)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidAnswerIntent, err)
+		}
+		commentID := uuid.New()
+		answerID := fmt.Sprintf("ANSWER-%d", codec.StableNumericID(commentID.String()))
+		body, err := templates.AnswerComment(templates.AnswerOptions{
+			ID: answerID, Agent: actor.User.Login, Scope: intent.QuestionID, Payload: payload,
+		})
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidAnswerIntent, err)
+		}
+		snapshot, err = s.createCommentInTx(ctx, tx, repositoryStore, resource, issue, actor, commentID, body)
+		return err
+	})
+	return resource, snapshot, question, err
+}
+
 func (s *Service) CreateComment(ctx context.Context, owner, repository string, issueNumber int64, subject authz.Subject, body string) (models.RepositoryResource, models.CommentSnapshot, error) {
 	actor, ok := authenticatedActor(subject)
 	if !ok {
@@ -384,41 +568,16 @@ func (s *Service) CreateComment(ctx context.Context, owner, repository string, i
 		if !decision.Allowed {
 			return &DecisionError{Decision: decision}
 		}
+		if answerShapedBody(body) {
+			return ErrTrustedAnswerRequired
+		}
 		repositoryStore := tx.ScopedRepo(resource.Scope)
 		issue, err := repositoryStore.IssueByNumber(ctx, issueNumber)
 		if err != nil {
 			return err
 		}
-		before, err := s.captureLifecycle(ctx, tx, resource.Scope, issue.ID)
-		if err != nil {
-			return err
-		}
-		snapshot, err = repositoryStore.CreateComment(ctx, models.NewComment{ID: uuid.New(), IssueNumber: issueNumber, AuthorID: &actor.User.ID, Body: body})
-		if err != nil {
-			return err
-		}
-		if err := s.projector.ProjectComment(ctx, repositoryStore, snapshot); err != nil {
-			return err
-		}
-		after, err := s.captureLifecycle(ctx, tx, resource.Scope, issue.ID)
-		if err != nil {
-			return err
-		}
-		if err := s.projectCompletedNotifications(ctx, tx, repositoryStore, resource, issue, &snapshot,
-			actor.User.ID, before, after); err != nil {
-			return err
-		}
-		if err := s.projectCommentNotifications(ctx, tx, repositoryStore, actor.User.ID, snapshot); err != nil {
-			return err
-		}
-		snapshot.Reactions, err = repositoryStore.ReactionSummary(ctx, snapshot.Comment.ID)
-		if err != nil {
-			return err
-		}
-		return s.events.Emit(ctx, repositoryStore, MutationEvent{Key: mutationKey(snapshot.Comment.ID, snapshot.Comment.RepresentationVersion, "issue_comment.created"), Type: "issue_comment.created", Scope: resource.Scope,
-			Issue:   commentEventIssue(issue),
-			Comment: &snapshot, RawBody: body, BodyHash: sha256.Sum256([]byte(body)),
-			ActorUserID: actor.User.ID, ActorCredentialKind: actor.Kind, RepresentationVersion: snapshot.Comment.RepresentationVersion})
+		snapshot, err = s.createCommentInTx(ctx, tx, repositoryStore, resource, issue, actor, uuid.New(), body)
+		return err
 	})
 	return resource, snapshot, err
 }
@@ -467,6 +626,9 @@ func (s *Service) updateComment(ctx context.Context, owner, repository string, c
 		if !decision.Allowed {
 			return &DecisionError{Decision: decision}
 		}
+		if answerShapedBody(current.Comment.Body) || answerShapedBody(body) {
+			return ErrAnswerImmutable
+		}
 		issue, err := repositoryStore.IssueByNumber(ctx, current.IssueNumber)
 		if err != nil {
 			return err
@@ -507,6 +669,83 @@ func (s *Service) updateComment(ctx context.Context, owner, repository string, c
 			ActorUserID: actor.User.ID, ActorCredentialKind: actor.Kind, RepresentationVersion: snapshot.Comment.RepresentationVersion})
 	})
 	return resource, snapshot, err
+}
+
+func (s *Service) createCommentInTx(ctx context.Context, tx *store.Tx, repositoryStore store.RepoStore,
+	resource models.RepositoryResource, issue models.Issue, actor serverauth.Principal, commentID uuid.UUID,
+	body string) (models.CommentSnapshot, error) {
+	before, err := s.captureLifecycle(ctx, tx, resource.Scope, issue.ID)
+	if err != nil {
+		return models.CommentSnapshot{}, err
+	}
+	snapshot, err := repositoryStore.CreateComment(ctx, models.NewComment{
+		ID: commentID, IssueNumber: issue.Number, AuthorID: &actor.User.ID, Body: body,
+	})
+	if err != nil {
+		return models.CommentSnapshot{}, err
+	}
+	if err := s.projector.ProjectComment(ctx, repositoryStore, snapshot); err != nil {
+		return models.CommentSnapshot{}, err
+	}
+	after, err := s.captureLifecycle(ctx, tx, resource.Scope, issue.ID)
+	if err != nil {
+		return models.CommentSnapshot{}, err
+	}
+	if err := s.projectCompletedNotifications(ctx, tx, repositoryStore, resource, issue, &snapshot,
+		actor.User.ID, before, after); err != nil {
+		return models.CommentSnapshot{}, err
+	}
+	if err := s.projectCommentNotifications(ctx, tx, repositoryStore, actor.User.ID, snapshot); err != nil {
+		return models.CommentSnapshot{}, err
+	}
+	snapshot.Reactions, err = repositoryStore.ReactionSummary(ctx, snapshot.Comment.ID)
+	if err != nil {
+		return models.CommentSnapshot{}, err
+	}
+	err = s.events.Emit(ctx, repositoryStore, MutationEvent{
+		Key:  mutationKey(snapshot.Comment.ID, snapshot.Comment.RepresentationVersion, "issue_comment.created"),
+		Type: "issue_comment.created", Scope: resource.Scope, Issue: commentEventIssue(issue),
+		Comment: &snapshot, RawBody: body, BodyHash: sha256.Sum256([]byte(body)),
+		ActorUserID: actor.User.ID, ActorCredentialKind: actor.Kind,
+		RepresentationVersion: snapshot.Comment.RepresentationVersion,
+	})
+	if err != nil {
+		return models.CommentSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func questionAuthority(authority store.TypedCommentAuthority, webOrigin string,
+	resource models.RepositoryResource) (QuestionAuthority, error) {
+	sourceURL, err := typedCommentSourceURL(webOrigin, resource.Owner, resource.Name,
+		authority.IssueNumber, authority.CompatibilityID)
+	if err != nil {
+		return QuestionAuthority{}, fmt.Errorf("%w: %v", ErrInvalidQuestionAuthority, err)
+	}
+	snapshot, err := model.SnapshotQuestion(authority.Body, sourceURL)
+	if err != nil {
+		return QuestionAuthority{}, fmt.Errorf("%w: %v", ErrInvalidQuestionAuthority, err)
+	}
+	return QuestionAuthority{
+		Snapshot: snapshot, RepresentationVersion: authority.RepresentationVersion,
+		BodyDigest: model.RepresentationDigest(authority.Body),
+	}, nil
+}
+
+func typedCommentSourceURL(webOrigin, owner, repository string, issueNumber, commentID int64) (string, error) {
+	base, err := url.Parse(strings.TrimRight(strings.TrimSpace(webOrigin), "/"))
+	if err != nil || base.Scheme == "" || base.Host == "" || base.User != nil ||
+		(base.Scheme != "http" && base.Scheme != "https") || issueNumber <= 0 || commentID <= 0 {
+		return "", errors.New("invalid Web origin or comment identity")
+	}
+	base = base.JoinPath(owner, repository, "issues", strconv.FormatInt(issueNumber, 10))
+	base.RawQuery, base.Fragment = "", "issuecomment-"+strconv.FormatInt(commentID, 10)
+	return base.String(), nil
+}
+
+func answerShapedBody(body string) bool {
+	parsed := model.ParseTypedComment(body)
+	return parsed.Type == "ANSWER" || strings.HasPrefix(parsed.ID, "ANSWER-")
 }
 
 func (s *Service) captureLifecycle(ctx context.Context, tx *store.Tx, scope models.RepoScope,

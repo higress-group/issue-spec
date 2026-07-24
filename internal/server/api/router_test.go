@@ -136,13 +136,15 @@ func TestRequestObserverPreservesResponseControllerCapabilities(t *testing.T) {
 	}
 }
 
-func TestMountedFeaturesAdvertiseRequirementsOnboarding(t *testing.T) {
+func TestMountedFeaturesAdvertiseTrustedPreviewAndAnswerServicesSeparately(t *testing.T) {
 	withoutSearch := mountedFeatures(false)
-	if !withoutSearch.RequirementsOnboarding || withoutSearch.Search {
+	if !withoutSearch.RequirementsOnboarding || !withoutSearch.HTMLPreviewExecution ||
+		!withoutSearch.InteractiveQuestionAnswers || withoutSearch.Search {
 		t.Fatalf("features without search=%+v", withoutSearch)
 	}
 	withSearch := mountedFeatures(true)
-	if !withSearch.RequirementsOnboarding || !withSearch.Search {
+	if !withSearch.RequirementsOnboarding || !withSearch.HTMLPreviewExecution ||
+		!withSearch.InteractiveQuestionAnswers || !withSearch.Search {
 		t.Fatalf("features with search=%+v", withSearch)
 	}
 }

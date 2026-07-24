@@ -60,6 +60,43 @@ export const commentSchema = z.object({
   reactions: reactionsSchema,
 });
 
+export const choiceOptionSchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+  label: z.string(),
+  description: z.string().optional().default(""),
+  tradeoff: z.string().optional().default(""),
+}).strict();
+
+export const choiceModelSchema = z.object({
+  version: z.literal(1),
+  mode: z.enum(["single", "multiple"]),
+  options: z.array(choiceOptionSchema).max(20),
+  allow_custom: z.boolean(),
+}).strict();
+
+export const questionSnapshotSchema = z.object({
+  id: z.string().regex(/^QUESTION-[0-9]{3,}$/),
+  question: z.string(),
+  blocking: z.boolean(),
+  default_assumption: z.string(),
+  issue_url: z.string(),
+  source_url: z.string(),
+  choice_model: choiceModelSchema,
+}).strict();
+
+export const questionAuthoritySchema = z.object({
+  question: questionSnapshotSchema,
+  representation_version: z.number().int().positive(),
+  body_digest: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict();
+
+export const answerResponseSchema = z.object({
+  comment: commentSchema,
+  question: questionSnapshotSchema,
+  question_representation_version: z.number().int().positive(),
+  question_body_digest: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict();
+
 export const reactionContentSchema = z.enum(["+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"]);
 export const reactionSchema = z.object({
   id: z.number(),
@@ -74,3 +111,5 @@ export type Label = z.infer<typeof labelSchema>;
 export type Reactions = z.infer<typeof reactionsSchema>;
 export type Reaction = z.infer<typeof reactionSchema>;
 export type ReactionContent = z.infer<typeof reactionContentSchema>;
+export type QuestionAuthority = z.infer<typeof questionAuthoritySchema>;
+export type QuestionSnapshot = z.infer<typeof questionSnapshotSchema>;

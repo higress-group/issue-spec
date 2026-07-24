@@ -81,13 +81,18 @@ func loadArtifacts(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, repoIDs []uu
 }
 
 func loadTypedArtifacts(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, repoIDs []uuid.UUID) ([]typedArtifact, error) {
-	rows, err := tx.Query(ctx, `SELECT repository_id, issue_id, comment_type, comment_key,
-		COALESCE(metadata->>'status', ''),
-		COALESCE(metadata->'links'->'PR', '[]'::jsonb),
-		updated_at
-		FROM issue_spec_typed_comments
-		WHERE organization_id = $1 AND repository_id = ANY($2::uuid[])
-		ORDER BY repository_id, comment_key`, orgID, repoIDs)
+	rows, err := tx.Query(ctx, `SELECT typed.repository_id, typed.issue_id, typed.comment_type, typed.comment_key,
+		COALESCE(typed.metadata->>'status', ''),
+		COALESCE(typed.metadata->'links'->'PR', '[]'::jsonb),
+		typed.body, COALESCE(source_comment.id::text, ''), COALESCE(source_comment.author_id::text, ''),
+		COALESCE(source_comment.created_at, typed.created_at), COALESCE(source_comment.updated_at, typed.updated_at),
+		COALESCE(source_comment.representation_version, 0)
+		FROM issue_spec_typed_comments typed
+		LEFT JOIN comments source_comment ON source_comment.organization_id = typed.organization_id
+			AND source_comment.repository_id = typed.repository_id AND source_comment.issue_id = typed.issue_id
+			AND source_comment.id = typed.comment_id
+		WHERE typed.organization_id = $1 AND typed.repository_id = ANY($2::uuid[])
+		ORDER BY typed.repository_id, typed.comment_key`, orgID, repoIDs)
 	if err != nil {
 		return nil, fmt.Errorf("changes: load typed artifact snapshot: %w", err)
 	}
@@ -96,7 +101,8 @@ func loadTypedArtifacts(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, repoIDs
 	for rows.Next() {
 		var item typedArtifact
 		var rawLinks json.RawMessage
-		if err := rows.Scan(&item.repositoryID, &item.issueID, &item.typ, &item.key, &item.status, &rawLinks, &item.updatedAt); err != nil {
+		if err := rows.Scan(&item.repositoryID, &item.issueID, &item.typ, &item.key, &item.status, &rawLinks,
+			&item.body, &item.providerID, &item.actor, &item.createdAt, &item.updatedAt, &item.version); err != nil {
 			return nil, fmt.Errorf("changes: scan typed artifact: %w", err)
 		}
 		item.typ = strings.ToUpper(strings.TrimSpace(item.typ))
