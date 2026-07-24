@@ -391,7 +391,7 @@ func selectAgentContextArtifacts(input []model.Artifact) ([]model.Artifact, erro
 	}
 
 	selected := make([]model.Artifact, 0, len(input))
-	answersByQuestion := map[string][]model.Artifact{}
+	answersByQuestion := map[qualifiedQuestionIdentity][]model.Artifact{}
 	for _, artifact := range input {
 		if artifact.Comment.Type != "ANSWER" {
 			selected = append(selected, artifact)
@@ -401,28 +401,75 @@ func selectAgentContextArtifacts(input []model.Artifact) ([]model.Artifact, erro
 		if err != nil {
 			continue
 		}
+		answerIdentity := qualifiedQuestionIdentity{
+			issue:      artifact.Issue,
+			sourceURL:  model.NormalizeURL(payload.Question.SourceURL),
+			questionID: payload.Question.ID,
+			scope:      artifact.Comment.Scope,
+		}
 		matches := 0
+		var matchedIdentity qualifiedQuestionIdentity
 		for _, question := range questions {
-			if artifact.Issue == question.Issue &&
-				artifact.Comment.Scope == payload.Question.ID &&
-				payload.Question.ID == question.Comment.ID &&
-				model.NormalizeURL(payload.Question.SourceURL) == model.NormalizeURL(question.URL) &&
-				model.NormalizeURL(payload.Question.IssueURL) == model.NormalizeURL(strings.SplitN(question.URL, "#", 2)[0]) {
-				matches++
+			questionIdentity := qualifiedQuestionIdentityForQuestion(question)
+			if answerIdentity != questionIdentity ||
+				model.NormalizeURL(payload.Question.IssueURL) != model.NormalizeURL(strings.SplitN(question.URL, "#", 2)[0]) {
+				continue
 			}
+			matches++
+			matchedIdentity = questionIdentity
 		}
 		if matches != 1 {
 			continue
 		}
-		answersByQuestion[payload.Question.ID] = append(answersByQuestion[payload.Question.ID], artifact)
+		answersByQuestion[matchedIdentity] = append(answersByQuestion[matchedIdentity], artifact)
 	}
-	for questionID, answers := range answersByQuestion {
+	for identity, answers := range answersByQuestion {
 		if len(answers) > 1 {
-			return nil, fmt.Errorf("multiple ANSWER artifacts for %s lack provider effective-answer selection", questionID)
+			return nil, fmt.Errorf("multiple ANSWER artifacts for %s on issue %d source %s lack provider effective-answer selection",
+				identity.questionID, identity.issue, identity.sourceURL)
 		}
 		selected = append(selected, answers[0])
 	}
 	return selected, nil
+}
+
+type qualifiedQuestionIdentity struct {
+	issue      int
+	sourceURL  string
+	questionID string
+	scope      string
+}
+
+func qualifiedQuestionIdentityForQuestion(question model.Artifact) qualifiedQuestionIdentity {
+	return qualifiedQuestionIdentity{
+		issue:      question.Issue,
+		sourceURL:  model.NormalizeURL(question.URL),
+		questionID: question.Comment.ID,
+		scope:      question.Comment.ID,
+	}
+}
+
+func qualifiedQuestionIdentityForArtifact(artifact model.Artifact) (qualifiedQuestionIdentity, bool) {
+	switch artifact.Comment.Type {
+	case "QUESTION":
+		if artifact.Comment.ID == "" {
+			return qualifiedQuestionIdentity{}, false
+		}
+		return qualifiedQuestionIdentityForQuestion(artifact), true
+	case "ANSWER":
+		payload, err := model.ParseAnswerPayload(artifact.Comment.Body)
+		if err != nil {
+			return qualifiedQuestionIdentity{}, false
+		}
+		return qualifiedQuestionIdentity{
+			issue:      artifact.Issue,
+			sourceURL:  model.NormalizeURL(payload.Question.SourceURL),
+			questionID: payload.Question.ID,
+			scope:      artifact.Comment.Scope,
+		}, true
+	default:
+		return qualifiedQuestionIdentity{}, false
+	}
 }
 
 func normalizeBounds(bounds Bounds) Bounds {
@@ -444,6 +491,18 @@ func artifactLess(a, b model.Artifact) bool {
 	if ar != br {
 		return ar < br
 	}
+	if ar == typeRank("QUESTION") {
+		aIdentity, aOK := qualifiedQuestionIdentityForArtifact(a)
+		bIdentity, bOK := qualifiedQuestionIdentityForArtifact(b)
+		if aOK && bOK {
+			if comparison := compareQualifiedQuestionIdentity(aIdentity, bIdentity); comparison != 0 {
+				return comparison < 0
+			}
+			if a.Comment.Type != b.Comment.Type {
+				return a.Comment.Type == "QUESTION"
+			}
+		}
+	}
 	if a.Comment.ID != b.Comment.ID {
 		return a.Comment.ID < b.Comment.ID
 	}
@@ -454,6 +513,22 @@ func artifactLess(a, b model.Artifact) bool {
 		return a.CommentID < b.CommentID
 	}
 	return a.URL < b.URL
+}
+
+func compareQualifiedQuestionIdentity(a, b qualifiedQuestionIdentity) int {
+	if a.questionID != b.questionID {
+		return strings.Compare(a.questionID, b.questionID)
+	}
+	if a.issue != b.issue {
+		if a.issue < b.issue {
+			return -1
+		}
+		return 1
+	}
+	if a.sourceURL != b.sourceURL {
+		return strings.Compare(a.sourceURL, b.sourceURL)
+	}
+	return strings.Compare(a.scope, b.scope)
 }
 
 func typeRank(commentType string) int {
@@ -467,7 +542,7 @@ func typeRank(commentType string) int {
 	case "QUESTION":
 		return 3
 	case "ANSWER":
-		return 4
+		return 3
 	case "REVIEW":
 		return 5
 	case "VERIFY":

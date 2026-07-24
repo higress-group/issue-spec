@@ -1,6 +1,7 @@
 package contextbundle
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -269,6 +270,76 @@ func TestBuildBundleIncludesOnlyProviderSelectedEffectiveAnswerForNewAndResume(t
 	}
 }
 
+func TestBuildBundleKeepsSameQuestionIDIndependentAcrossIssuesForNewAndResume(t *testing.T) {
+	question24 := choiceQuestionArtifact(t, 24, 201, "QUESTION-001")
+	question25 := choiceQuestionArtifact(t, 25, 301, "QUESTION-001")
+	snapshot24, err := model.SnapshotQuestion(question24.Comment.Body, question24.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot25, err := model.SnapshotQuestion(question25.Comment.Body, question25.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer24 := choiceAnswerArtifact(t, 24, 202, "ANSWER-001", snapshot24, "old")
+	answer25 := choiceAnswerArtifact(t, 25, 302, "ANSWER-002", snapshot25, "new")
+
+	command := newCommand()
+	for _, test := range []struct {
+		name          string
+		command       CommandCandidate
+		referenceOnly bool
+	}{
+		{name: "new", command: command},
+		{name: "resume", command: func() CommandCandidate {
+			resume := command
+			resume.Verb = CommandResume
+			resume.PublicSessionID = "public-resume"
+			return resume
+		}(), referenceOnly: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bundle, err := BuildBundle(BuildOptions{
+				Command:                test.command,
+				Runner:                 newRunner(),
+				Artifacts:              []model.Artifact{answer25, question24, answer24, question25},
+				ReferenceOnlyArtifacts: test.referenceOnly,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(bundle.Artifacts) != 4 {
+				t.Fatalf("Agent context artifacts = %+v", bundle.Artifacts)
+			}
+			want := []struct {
+				issue        int
+				artifactType string
+				id           string
+			}{
+				{issue: 24, artifactType: "QUESTION", id: "QUESTION-001"},
+				{issue: 24, artifactType: "ANSWER", id: "ANSWER-001"},
+				{issue: 25, artifactType: "QUESTION", id: "QUESTION-001"},
+				{issue: 25, artifactType: "ANSWER", id: "ANSWER-002"},
+			}
+			for index, expected := range want {
+				got := bundle.Artifacts[index]
+				if got.Issue != expected.issue || got.Type != expected.artifactType || got.ID != expected.id {
+					t.Fatalf("artifact[%d] = %+v, want issue=%d type=%s id=%s",
+						index, got, expected.issue, expected.artifactType, expected.id)
+				}
+				if test.referenceOnly && (!got.ReferenceOnly || got.Content != "") {
+					t.Fatalf("resume artifact[%d] inlined content: %+v", index, got)
+				}
+			}
+			if !test.referenceOnly &&
+				(!strings.Contains(bundle.Artifacts[1].Content, `"id":"old"`) ||
+					!strings.Contains(bundle.Artifacts[3].Content, `"id":"new"`)) {
+				t.Fatalf("new context mixed source-qualified answers: %+v", bundle.Artifacts)
+			}
+		})
+	}
+}
+
 func TestBuildBundleRefusesToChooseBetweenUnresolvedValidAnswerHistory(t *testing.T) {
 	question := choiceQuestionArtifact(t, 24, 201, "QUESTION-001")
 	snapshot, err := model.SnapshotQuestion(question.Comment.Body, question.URL)
@@ -309,7 +380,7 @@ func choiceQuestionArtifact(t *testing.T, issue int, commentID int64, id string)
 	}
 	return model.Artifact{
 		Issue: issue, CommentID: commentID,
-		URL:     "https://github.com/owner/repo/issues/24#issuecomment-201",
+		URL:     fmt.Sprintf("https://github.com/owner/repo/issues/%d#issuecomment-%d", issue, commentID),
 		Comment: model.ParseTypedComment(body),
 	}
 }
@@ -336,7 +407,7 @@ func choiceAnswerArtifactWithScope(t *testing.T, issue int, commentID int64, id 
 	}
 	return model.Artifact{
 		Issue: issue, CommentID: commentID,
-		URL:     "https://github.com/owner/repo/issues/24#issuecomment-" + id,
+		URL:     fmt.Sprintf("https://github.com/owner/repo/issues/%d#issuecomment-%d", issue, commentID),
 		Comment: model.ParseTypedComment(body),
 	}
 }

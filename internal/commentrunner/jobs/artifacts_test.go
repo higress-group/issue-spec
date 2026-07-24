@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	runnercontext "github.com/higress-group/issue-spec/internal/commentrunner/context"
 	"github.com/higress-group/issue-spec/internal/commentrunner/state"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
@@ -208,6 +209,74 @@ func TestIssueSpecArtifactProviderKeepsSameQuestionIDIndependentAcrossLinkedIssu
 	}
 	if questionCountByIssue[30] != 1 || questionCountByIssue[31] != 1 {
 		t.Fatalf("QUESTION context by source issue = %v", questionCountByIssue)
+	}
+
+	command := runnercontext.CommandCandidate{
+		Authorized:       true,
+		Verb:             runnercontext.CommandNew,
+		Repo:             "o/r",
+		Issue:            30,
+		TriggerCommentID: 3999,
+		Commenter:        "reviewer",
+		Prompt:           "continue the linked issue workflow",
+	}
+	for _, test := range []struct {
+		name          string
+		command       runnercontext.CommandCandidate
+		referenceOnly bool
+	}{
+		{name: "new", command: command},
+		{name: "resume", command: func() runnercontext.CommandCandidate {
+			resume := command
+			resume.Verb = runnercontext.CommandResume
+			resume.PublicSessionID = "public-resume"
+			return resume
+		}(), referenceOnly: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bundle, err := runnercontext.BuildBundle(runnercontext.BuildOptions{
+				Command:                test.command,
+				Artifacts:              artifacts,
+				ReferenceOnlyArtifacts: test.referenceOnly,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decisions []runnercontext.BundleArtifact
+			for _, artifact := range bundle.Artifacts {
+				if artifact.Type == "QUESTION" || artifact.Type == "ANSWER" {
+					decisions = append(decisions, artifact)
+				}
+			}
+			want := []struct {
+				issue        int
+				artifactType string
+				id           string
+			}{
+				{issue: 30, artifactType: "QUESTION", id: "QUESTION-001"},
+				{issue: 30, artifactType: "ANSWER", id: "ANSWER-001"},
+				{issue: 31, artifactType: "QUESTION", id: "QUESTION-001"},
+				{issue: 31, artifactType: "ANSWER", id: "ANSWER-002"},
+			}
+			if len(decisions) != len(want) {
+				t.Fatalf("provider-to-bundle decisions = %+v", decisions)
+			}
+			for index, expected := range want {
+				got := decisions[index]
+				if got.Issue != expected.issue || got.Type != expected.artifactType || got.ID != expected.id {
+					t.Fatalf("decision[%d] = %+v, want issue=%d type=%s id=%s",
+						index, got, expected.issue, expected.artifactType, expected.id)
+				}
+				if test.referenceOnly && (!got.ReferenceOnly || got.Content != "") {
+					t.Fatalf("resume decision[%d] inlined content: %+v", index, got)
+				}
+			}
+			if !test.referenceOnly &&
+				(!strings.Contains(decisions[1].Content, `"id":"old"`) ||
+					!strings.Contains(decisions[3].Content, `"id":"new"`)) {
+				t.Fatalf("provider-to-bundle answers crossed source issues: %+v", decisions)
+			}
+		})
 	}
 }
 
