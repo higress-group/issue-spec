@@ -190,6 +190,7 @@ func normalizeAssignment(value Assignment) Assignment {
 		payload.Generators = append([]GeneratorPolicy(nil), payload.Generators...)
 		for i := range payload.Generators {
 			payload.Generators[i].RequiredOutputs = sortedCopy(payload.Generators[i].RequiredOutputs)
+			payload.Generators[i].RequiredOutputGlobs = sortedCopy(payload.Generators[i].RequiredOutputGlobs)
 		}
 		sort.Slice(payload.Generators, func(i, j int) bool { return payload.Generators[i].Name < payload.Generators[j].Name })
 		payload.FocusedTests = append([]TestSelector(nil), payload.FocusedTests...)
@@ -233,6 +234,7 @@ func normalizeProcessInput(value ProcessInput) ProcessInput {
 	clone.Generators = append([]GeneratorPolicy(nil), value.Generators...)
 	for i := range clone.Generators {
 		clone.Generators[i].RequiredOutputs = sortedCopy(clone.Generators[i].RequiredOutputs)
+		clone.Generators[i].RequiredOutputGlobs = sortedCopy(clone.Generators[i].RequiredOutputGlobs)
 	}
 	sort.Slice(clone.Generators, func(i, j int) bool { return clone.Generators[i].Name < clone.Generators[j].Name })
 	return clone

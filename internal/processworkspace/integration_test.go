@@ -66,76 +66,90 @@ func TestCompleteValidatesImportedReceiptWithoutAcceptedRoleEvidence(t *testing.
 	assertNoAcceptedImplementationAuthority(t, recovered)
 }
 
-func TestCompleteValidatesRequiredGeneratorOutputGlobs(t *testing.T) {
+func TestCompleteValidatesRequiredGeneratorOutputs(t *testing.T) {
 	tests := []struct {
-		name, requiredOutput, changedPath string
-		wantError                         string
+		name, exactOutput, globOutput, changedPath string
+		wantError                                  string
 	}{
 		{
-			name:           "glob matches generated descendant",
-			requiredOutput: "generated/**",
-			changedPath:    "generated/assets/app.js",
+			name:        "explicit glob matches generated descendant",
+			globOutput:  "generated/**",
+			changedPath: "generated/assets/app.js",
 		},
 		{
-			name:           "globstar spans generated directories",
-			requiredOutput: "generated/**/*.js",
-			changedPath:    "generated/assets/chunks/app.js",
+			name:        "explicit globstar spans generated directories",
+			globOutput:  "generated/**/*.js",
+			changedPath: "generated/assets/chunks/app.js",
 		},
 		{
-			name:           "glob matches no result file",
-			requiredOutput: "generated/**/*.css",
-			changedPath:    "generated/assets/app.js",
-			wantError:      `required generator output glob "generated/**/*.css" matched no files`,
+			name:        "explicit glob matches no result path",
+			globOutput:  "generated/**/*.css",
+			changedPath: "generated/assets/app.js",
+			wantError:   `required_output_globs pattern "generated/**/*.css" matched no files`,
 		},
 		{
-			name:           "exact output remains supported",
-			requiredOutput: "generated/output.js",
-			changedPath:    "generated/output.js",
+			name:        "exact output remains supported",
+			exactOutput: "generated/output.js",
+			changedPath: "generated/output.js",
 		},
 		{
-			name:           "exact output containing glob syntax remains supported",
-			requiredOutput: "generated/output[1].js",
-			changedPath:    "generated/output[1].js",
+			name:        "exact output containing valid character class syntax remains literal",
+			exactOutput: "generated/output[1].js",
+			changedPath: "generated/output[1].js",
 		},
 		{
-			name:           "literal output with unmatched bracket remains supported",
-			requiredOutput: "generated/output[.js",
-			changedPath:    "generated/output[.js",
+			name:        "exact output containing valid star syntax remains literal",
+			exactOutput: "generated/*.js",
+			changedPath: "generated/*.js",
 		},
 		{
-			name:           "absent literal output with unmatched bracket uses exact path error",
-			requiredOutput: "generated/output[.js",
-			changedPath:    "generated/other.js",
-			wantError:      `required generator output "generated/output[.js" is absent at the result revision`,
+			name:        "valid-looking exact glob does not match another path",
+			exactOutput: "generated/*.js",
+			changedPath: "generated/app.js",
+			wantError:   `required generator output "generated/*.js" is absent at the result revision`,
 		},
 		{
-			name:           "literal output with embedded globstar remains supported",
-			requiredOutput: "generated/foo**bar.js",
-			changedPath:    "generated/foo**bar.js",
+			name:        "exact output with unmatched bracket remains supported",
+			exactOutput: "generated/output[.js",
+			changedPath: "generated/output[.js",
 		},
 		{
-			name:           "absent literal output with embedded globstar uses exact path error",
-			requiredOutput: "generated/foo**bar.js",
-			changedPath:    "generated/other.js",
-			wantError:      `required generator output "generated/foo**bar.js" is absent at the result revision`,
+			name:        "absent exact output with unmatched bracket uses exact path error",
+			exactOutput: "generated/output[.js",
+			changedPath: "generated/other.js",
+			wantError:   `required generator output "generated/output[.js" is absent at the result revision`,
 		},
 		{
-			name:           "literal output with globstar suffix remains supported",
-			requiredOutput: "generated/**suffix",
-			changedPath:    "generated/**suffix",
+			name:        "exact output with embedded globstar remains supported",
+			exactOutput: "generated/foo**bar.js",
+			changedPath: "generated/foo**bar.js",
 		},
 		{
-			name:           "absent literal output with globstar suffix uses exact path error",
-			requiredOutput: "generated/**suffix",
-			changedPath:    "generated/other.js",
-			wantError:      `required generator output "generated/**suffix" is absent at the result revision`,
+			name:        "absent exact output with embedded globstar uses exact path error",
+			exactOutput: "generated/foo**bar.js",
+			changedPath: "generated/other.js",
+			wantError:   `required generator output "generated/foo**bar.js" is absent at the result revision`,
+		},
+		{
+			name:        "exact output with globstar suffix remains supported",
+			exactOutput: "generated/**suffix",
+			changedPath: "generated/**suffix",
+		},
+		{
+			name:        "absent exact output with globstar suffix uses exact path error",
+			exactOutput: "generated/**suffix",
+			changedPath: "generated/other.js",
+			wantError:   `required generator output "generated/**suffix" is absent at the result revision`,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newIntegrationFixture(t, []string{"generated/**"}, nil)
 			contract := bindImplementationAssignmentWithGenerators(t, fixture, nil, []assignment.GeneratorPolicy{{
-				Name: "assets", Command: "generate assets", RequiredOutputs: []string{test.requiredOutput},
+				Name:                "assets",
+				Command:             "generate assets",
+				RequiredOutputs:     compactOutput(test.exactOutput),
+				RequiredOutputGlobs: compactOutput(test.globOutput),
 			}})
 			resultCommit := commitWorkerFile(t, fixture, test.changedPath, "generated\n", true)
 			receipt := implementationReceiptForFixture(t, contract, resultCommit, []string{test.changedPath})
@@ -155,6 +169,13 @@ func TestCompleteValidatesRequiredGeneratorOutputGlobs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func compactOutput(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return []string{value}
 }
 
 func TestImplementationReceiptBindingRejectsPreD14StoredAssignment(t *testing.T) {

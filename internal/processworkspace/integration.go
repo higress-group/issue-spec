@@ -229,32 +229,25 @@ func (m *Manager) validateImplementationReceiptContract(ctx context.Context, lea
 	resultTreeLoaded := false
 	for _, generator := range contract.Generators {
 		for _, output := range generator.RequiredOutputs {
-			if assignment.RequiredOutputPatternHasMeta(output) {
-				// Preserve exact-path behavior for repositories that contain
-				// names with glob metacharacters.
-				if _, err := m.git(ctx, "validate exact required generator output", lease.WorktreePath,
-					"cat-file", "-e", resultCommit+":"+output); err == nil {
-					continue
-				}
-				if !resultTreeLoaded {
-					var err error
-					resultTreeFiles, err = m.resultTreeFiles(ctx, lease.WorktreePath, resultCommit)
-					if err != nil {
-						return err
-					}
-					resultTreeLoaded = true
-				}
-				matched, err := assignment.MatchAnyRequiredOutputPattern(output, resultTreeFiles)
-				if err != nil {
-					return fmt.Errorf("validate required generator output glob %q: %w", output, err)
-				}
-				if !matched {
-					return fmt.Errorf("required generator output glob %q matched no files at the result revision", output)
-				}
-				continue
-			}
 			if _, err := m.git(ctx, "validate required generator output", lease.WorktreePath, "cat-file", "-e", resultCommit+":"+output); err != nil {
 				return fmt.Errorf("required generator output %q is absent at the result revision: %w", output, err)
+			}
+		}
+		for _, pattern := range generator.RequiredOutputGlobs {
+			if !resultTreeLoaded {
+				var err error
+				resultTreeFiles, err = m.resultTreeFiles(ctx, lease.WorktreePath, resultCommit)
+				if err != nil {
+					return err
+				}
+				resultTreeLoaded = true
+			}
+			matched, err := assignment.MatchAnyRequiredOutputPattern(pattern, resultTreeFiles)
+			if err != nil {
+				return fmt.Errorf("validate required_output_globs pattern %q: %w", pattern, err)
+			}
+			if !matched {
+				return fmt.Errorf("required_output_globs pattern %q matched no files at the result revision", pattern)
 			}
 		}
 	}

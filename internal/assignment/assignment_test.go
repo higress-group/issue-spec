@@ -139,6 +139,50 @@ func TestAssignmentCanonicalJSONAndDigestGolden(t *testing.T) {
 	}
 }
 
+func TestAssignmentCanonicalizesRequiredOutputGlobs(t *testing.T) {
+	value := implementationAssignment()
+	value.Implementation.Generators[0].RequiredOutputs = nil
+	value.Implementation.Generators[0].RequiredOutputGlobs = []string{"generated/**/*.js", "generated/**"}
+
+	canonical, err := CanonicalAssignmentJSON(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(canonical, []byte(`"required_outputs"`)) {
+		t.Fatalf("glob-only generator serialized empty required_outputs: %s", canonical)
+	}
+	if !bytes.Contains(canonical, []byte(`"required_output_globs":["generated/**","generated/**/*.js"]`)) {
+		t.Fatalf("required_output_globs were not canonically sorted: %s", canonical)
+	}
+	if value.Implementation.Generators[0].RequiredOutputGlobs[0] != "generated/**/*.js" {
+		t.Fatal("canonicalization mutated the input assignment")
+	}
+
+	reordered := implementationAssignment()
+	reordered.Implementation.Generators[0].RequiredOutputs = nil
+	reordered.Implementation.Generators[0].RequiredOutputGlobs = []string{"generated/**", "generated/**/*.js"}
+	firstDigest, err := AssignmentDigest(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := AssignmentDigest(reordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest != secondDigest {
+		t.Fatalf("glob order changed digest: %q != %q", firstDigest, secondDigest)
+	}
+
+	parsed, err := ParseAssignmentJSON(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Implementation.Generators[0].RequiredOutputGlobs; len(got) != 2 ||
+		got[0] != "generated/**" || got[1] != "generated/**/*.js" {
+		t.Fatalf("parsed required_output_globs = %#v", got)
+	}
+}
+
 func TestAssignmentDesignContextIsRequiredAndPreservedExactly(t *testing.T) {
 	missing := implementationAssignment()
 	missing.DesignContext = nil

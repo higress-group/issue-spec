@@ -6,37 +6,9 @@ import (
 	"strings"
 )
 
-// RequiredOutputPatternHasMeta reports whether a required generator output
-// uses the supported repository-path glob grammar.
-func RequiredOutputPatternHasMeta(value string) bool {
-	hasMeta := false
-	for _, component := range strings.Split(value, "/") {
-		if component != "**" && strings.Contains(component, "**") {
-			// Only a complete component enables globstar. Preserve legacy
-			// exact-path handling for file names containing adjacent stars.
-			return false
-		}
-		if component == "**" {
-			hasMeta = true
-			continue
-		}
-		if !strings.ContainsAny(component, "*?[") {
-			continue
-		}
-		if _, err := path.Match(component, "candidate"); err != nil {
-			// Git permits '[' in file names. Preserve legacy exact-path
-			// handling when bracket syntax does not form a valid glob.
-			return false
-		}
-		hasMeta = true
-	}
-	return hasMeta
-}
-
 // ValidateRequiredOutputPattern validates a repository-relative required
-// generator output. Syntactically valid patterns may use path.Match syntax
-// within one component and ** as a complete component spanning directories;
-// otherwise glob metacharacters remain literal file-name syntax.
+// generator output glob. Patterns may use path.Match syntax within one
+// component and ** as a complete component spanning directories.
 func ValidateRequiredOutputPattern(value string) error {
 	if value == "" || value != strings.TrimSpace(value) || strings.HasPrefix(value, "/") ||
 		strings.HasPrefix(value, "~") || strings.Contains(value, "\\") ||
@@ -46,6 +18,15 @@ func ValidateRequiredOutputPattern(value string) error {
 	for _, component := range strings.Split(value, "/") {
 		if component == "" || component == "." || component == ".." {
 			return fmt.Errorf("unsafe repository-relative output pattern %q", value)
+		}
+		if component == "**" {
+			continue
+		}
+		if strings.Contains(component, "**") {
+			return fmt.Errorf("globstar must be a complete path component in %q", value)
+		}
+		if _, err := path.Match(component, "candidate"); err != nil {
+			return fmt.Errorf("invalid repository-relative output pattern %q: %w", value, err)
 		}
 	}
 	return nil
@@ -65,20 +46,10 @@ func MatchAnyRequiredOutputPattern(pattern string, repositoryPaths []string) (bo
 	if err := ValidateRequiredOutputPattern(pattern); err != nil {
 		return false, err
 	}
-	hasMeta := RequiredOutputPatternHasMeta(pattern)
-	var patternParts []string
-	if hasMeta {
-		patternParts = strings.Split(pattern, "/")
-	}
+	patternParts := strings.Split(pattern, "/")
 	for _, repositoryPath := range repositoryPaths {
 		if err := validateRequiredOutputPath(repositoryPath); err != nil {
 			return false, err
-		}
-		if !hasMeta {
-			if pattern == repositoryPath {
-				return true, nil
-			}
-			continue
 		}
 		if matchRequiredOutputParts(patternParts, strings.Split(repositoryPath, "/")) {
 			return true, nil
