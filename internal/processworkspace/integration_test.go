@@ -66,9 +66,12 @@ func TestCompleteValidatesImportedReceiptWithoutAcceptedRoleEvidence(t *testing.
 	assertNoAcceptedImplementationAuthority(t, recovered)
 }
 
-func TestImplementationReceiptContractHasNoAggregateItemLimit(t *testing.T) {
+func TestImplementationReceiptContractIgnoresDeprecatedAggregateItemLimit(t *testing.T) {
 	fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
 	contract := bindImplementationAssignment(t, fixture, nil)
+	if got := contract.Policy.MaxResultItems; got != 64 {
+		t.Fatalf("assignment max_result_items = %d, want deprecated limit 64", got)
+	}
 	lease, found, err := fixture.manager.Store.Get(context.Background(), fixture.lease.Portable.WorkspaceID)
 	if err != nil || !found {
 		t.Fatalf("load assignment lease found=%t err=%v", found, err)
@@ -80,6 +83,11 @@ func TestImplementationReceiptContractHasNoAggregateItemLimit(t *testing.T) {
 	receipt := implementationReceiptForFixture(t, contract, fixture.base, changed)
 	receipt.Implementation.Decisions = []string{"keep the exact Git result"}
 	receipt.Implementation.Risks = []string{"generated output is large"}
+	itemCount := len(receipt.Tests) + len(receipt.Implementation.ChangedPaths) +
+		len(receipt.Implementation.Decisions) + len(receipt.Implementation.Risks)
+	if itemCount <= contract.Policy.MaxResultItems {
+		t.Fatalf("receipt item count = %d, want more than deprecated limit %d", itemCount, contract.Policy.MaxResultItems)
+	}
 	if err := fixture.manager.validateImplementationReceiptContract(context.Background(), lease, receipt, fixture.base, changed); err != nil {
 		t.Fatalf("large exact receipt rejected: %v", err)
 	}
