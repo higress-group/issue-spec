@@ -17,6 +17,8 @@ func TestRequiredOutputPatternHasMeta(t *testing.T) {
 		{name: "globstar", pattern: "generated/**", want: true},
 		{name: "unmatched bracket literal", pattern: "generated/output[.js"},
 		{name: "unmatched bracket makes entire path literal", pattern: "generated/*/output[.js"},
+		{name: "embedded globstar literal", pattern: "dir/foo**bar"},
+		{name: "globstar suffix literal", pattern: "dir/**suffix"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -43,6 +45,10 @@ func TestMatchRequiredOutputPattern(t *testing.T) {
 		{name: "question", pattern: "assets/app?.js", path: "assets/app1.js", want: true},
 		{name: "unmatched bracket literal", pattern: "generated/output[.js", path: "generated/output[.js", want: true},
 		{name: "unmatched bracket prevents glob matching", pattern: "generated/*/output[.js", path: "generated/v1/output[.js"},
+		{name: "embedded globstar literal", pattern: "dir/foo**bar", path: "dir/foo**bar", want: true},
+		{name: "embedded globstar does not match", pattern: "dir/foo**bar", path: "dir/foobazbar"},
+		{name: "globstar suffix literal", pattern: "dir/**suffix", path: "dir/**suffix", want: true},
+		{name: "globstar suffix does not match", pattern: "dir/**suffix", path: "dir/valuesuffix"},
 		{name: "different extension", pattern: "assets/*.js", path: "assets/app.css"},
 	}
 	for _, test := range tests {
@@ -66,8 +72,16 @@ func TestAssignmentAcceptsLiteralRequiredOutputWithUnmatchedBracket(t *testing.T
 	}
 }
 
+func TestAssignmentAcceptsLiteralRequiredOutputsWithEmbeddedGlobstar(t *testing.T) {
+	value := implementationAssignment()
+	value.Implementation.Generators[0].RequiredOutputs = []string{"dir/foo**bar", "dir/**suffix"}
+	if err := value.Validate(); err != nil {
+		t.Fatalf("literal required outputs with embedded globstar rejected: %v", err)
+	}
+}
+
 func TestAssignmentRejectsUnsafeRequiredOutputPatterns(t *testing.T) {
-	for _, pattern := range []string{"/absolute/**", "../outside/**", "dir\\file", "dir/**suffix"} {
+	for _, pattern := range []string{"/absolute/**", "../outside/**", "dir\\file"} {
 		t.Run(pattern, func(t *testing.T) {
 			value := implementationAssignment()
 			value.Implementation.Generators[0].RequiredOutputs = []string{pattern}

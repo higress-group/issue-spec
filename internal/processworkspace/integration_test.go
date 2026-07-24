@@ -108,6 +108,28 @@ func TestCompleteValidatesRequiredGeneratorOutputGlobs(t *testing.T) {
 			changedPath:    "generated/other.js",
 			wantError:      `required generator output "generated/output[.js" is absent at the result revision`,
 		},
+		{
+			name:           "literal output with embedded globstar remains supported",
+			requiredOutput: "generated/foo**bar.js",
+			changedPath:    "generated/foo**bar.js",
+		},
+		{
+			name:           "absent literal output with embedded globstar uses exact path error",
+			requiredOutput: "generated/foo**bar.js",
+			changedPath:    "generated/other.js",
+			wantError:      `required generator output "generated/foo**bar.js" is absent at the result revision`,
+		},
+		{
+			name:           "literal output with globstar suffix remains supported",
+			requiredOutput: "generated/**suffix",
+			changedPath:    "generated/**suffix",
+		},
+		{
+			name:           "absent literal output with globstar suffix uses exact path error",
+			requiredOutput: "generated/**suffix",
+			changedPath:    "generated/other.js",
+			wantError:      `required generator output "generated/**suffix" is absent at the result revision`,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -11,6 +11,11 @@ import (
 func RequiredOutputPatternHasMeta(value string) bool {
 	hasMeta := false
 	for _, component := range strings.Split(value, "/") {
+		if component != "**" && strings.Contains(component, "**") {
+			// Only a complete component enables globstar. Preserve legacy
+			// exact-path handling for file names containing adjacent stars.
+			return false
+		}
 		if component == "**" {
 			hasMeta = true
 			continue
@@ -29,8 +34,9 @@ func RequiredOutputPatternHasMeta(value string) bool {
 }
 
 // ValidateRequiredOutputPattern validates a repository-relative required
-// generator output. A pattern may use path.Match syntax within one path
-// component and ** as a complete component spanning directory boundaries.
+// generator output. Syntactically valid patterns may use path.Match syntax
+// within one component and ** as a complete component spanning directories;
+// otherwise glob metacharacters remain literal file-name syntax.
 func ValidateRequiredOutputPattern(value string) error {
 	if value == "" || value != strings.TrimSpace(value) || strings.HasPrefix(value, "/") ||
 		strings.HasPrefix(value, "~") || strings.Contains(value, "\\") ||
@@ -40,12 +46,6 @@ func ValidateRequiredOutputPattern(value string) error {
 	for _, component := range strings.Split(value, "/") {
 		if component == "" || component == "." || component == ".." {
 			return fmt.Errorf("unsafe repository-relative output pattern %q", value)
-		}
-		if component == "**" {
-			continue
-		}
-		if strings.Contains(component, "**") {
-			return fmt.Errorf("globstar must be a complete path component in %q", value)
 		}
 	}
 	return nil
