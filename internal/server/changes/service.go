@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/codereview"
+	"github.com/higress-group/issue-spec/internal/model"
 	adminservice "github.com/higress-group/issue-spec/internal/server/admin"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/models"
@@ -468,6 +469,7 @@ func buildCard(orgID uuid.UUID, repository Repository, changeKey string, items [
 	blocked := false
 	verified := false
 	closureLinked := false
+	answers := resolveTypedAnswers(typed)
 	for _, item := range typed {
 		if item.updatedAt.After(card.UpdatedAt) {
 			card.UpdatedAt = item.updatedAt
@@ -478,7 +480,8 @@ func buildCard(orgID uuid.UUID, repository Repository, changeKey string, items [
 		case "PROCESS":
 			addProgress(&card.Processes, item.status)
 		case "QUESTION":
-			blocked = blocked || item.status == "blocked"
+			question := model.TypedComment{Type: "QUESTION", ID: item.key, Status: item.status, Body: item.body}
+			blocked = blocked || !model.QuestionIsSatisfied(question, answers)
 		case "VERIFY":
 			verified = verified || item.status == "done"
 			closureLinked = closureLinked || (item.status == "done" && item.closureLink)

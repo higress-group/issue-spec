@@ -33,6 +33,7 @@ func CoordinatorPrompt(bundle runnercontext.Bundle, opts CoordinatorPromptOption
 	b.WriteString("- Write workflow state through issue-spec CLI commands, not a runner writeback envelope. A request explicitly limited to one non-generated file and a direct PR/MR may use the narrow direct-PR path; otherwise use proposal/Design/SPEC/TASK/PROCESS.\n")
 	fmt.Fprintf(&b, "- Prefer `%s status ... --summary --json`, `%s verify ... --summary --json`, and `%s comment get`/filtered lists. Follow a structured detail action for blockers; full JSON remains available for compatibility and human debugging.\n", issueSpec, issueSpec, issueSpec)
 	b.WriteString("- Search related work before a related change and open only selected discussions. Use the active Source Binding for self-hosted code changes and GitHub PR commands only for GitHub. Never guess among conflicting active changes.\n")
+	b.WriteString("- Phase projections are ordinary statusless human synthesis. Persist the phase body, perform the first QUESTION pass, upsert the projection, then author SPEC/TASK/PROCESS. Issue bodies, typed artifacts, and only the latest effective ANSWER drive gates and Agents; never place projection HTML source in default Agent context.\n")
 	b.WriteString("- Agent is a logical role. Artifact writer session metadata is deprecated, ignored, and never required. runner.public_session_id alone is the /resume handle.\n")
 	b.WriteString("- Return a bounded provenance summary: artifact ids/URLs, command names and exit codes, child/PROCESS ids, focused evidence, and diagnostics.\n\n")
 

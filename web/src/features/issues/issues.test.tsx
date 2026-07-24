@@ -1,6 +1,6 @@
 import axe from "axe-core";
 import { http, HttpResponse } from "msw";
-import { screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { MarkdownView } from "../../components/markdown/markdown-view";
@@ -8,7 +8,7 @@ import { stripIssueSpecMarkersForRender } from "../../components/markdown/issue-
 import { LabelSelector } from "../../components/labels/label-chips";
 import { ReactionPicker } from "../../components/reactions/reaction-picker";
 import { renderApp } from "../../../tests/render";
-import { server } from "../../../tests/server";
+import { fixtureMeta, server } from "../../../tests/server";
 import { Route, Routes } from "react-router-dom";
 import { issueApi, IssueApiError } from "./api";
 import { CommentEditor, IssueEditor } from "./issue-editor";
@@ -27,6 +27,12 @@ describe("secure issue markdown", () => {
     const exact = "<!-- issue-spec:type=PROCESS id=PROCESS-010 version=1 -->";
     const source = `Visible\n${exact}\nInline ${exact}\n\`\`\`md\n${exact}\n\`\`\``;
     expect(stripIssueSpecMarkersForRender(source)).toBe(`Visible\nInline ${exact}\n\`\`\`md\n${exact}\n\`\`\``);
+  });
+
+  it("does not treat a shorter same-character fence as the active fence closer", () => {
+    const exact = "<!-- issue-spec:type=PROCESS id=PROCESS-010 version=1 -->";
+    const source = ["````html-preview id=review version=1", "```markdown", exact, "```", "````", exact].join("\n");
+    expect(stripIssueSpecMarkersForRender(source)).toBe(["````html-preview id=review version=1", "```markdown", exact, "```", "````"].join("\n"));
   });
 
   it("renders GFM but strips scripts, event handlers, active URLs, SVG, iframe and style", async () => {
@@ -270,6 +276,269 @@ describe("canonical issue read authority", () => {
     expect(screen.getByText("Binding mismatch")).toBeVisible();
     expect(screen.queryByText("abc123")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Subscribe to repository" })).not.toBeInTheDocument();
+  });
+
+  it("preserves a comment preview across issue clock ticks and tears it down when the source changes", async () => {
+    const firstBody = "```html-preview id=comment-review version=1 title=\"comment-review\"\n<!doctype html><input type=\"radio\" checked>\n```";
+    const secondBody = firstBody.replace("checked", "data-revised");
+    const now = Date.parse("2026-07-10T11:08:00Z");
+    let currentTime = now;
+    vi.spyOn(Date, "now").mockImplementation(() => currentTime);
+    const clockIntervals = vi.spyOn(window, "setInterval");
+    server.use(
+      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, html_preview_execution: true } })),
+      http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture())),
+      http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json([commentFixture({ body: firstBody })])),
+      http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
+      http.get("http://localhost/repos/acme/workflow/issues/comments/9/reactions", () => HttpResponse.json([])),
+      http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", () => HttpResponse.json({ relationships: [] })),
+    );
+    const view = renderIssueDetail(activeRepository(false, ["read"]));
+    const disclosure = await screen.findByRole("button", { name: /comment-review/ });
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    const iframe = await screen.findByTitle("comment-review") as HTMLIFrameElement;
+    const selectedOption = iframe.contentDocument?.createElement("input");
+    expect(selectedOption).toBeDefined();
+    selectedOption!.type = "radio";
+    selectedOption!.checked = true;
+    iframe.append(selectedOption!);
+    expect(iframe.src).toContain("source=comment");
+    expect(iframe.src).toContain("comment_id=9");
+
+    const clock = clockIntervals.mock.calls.find(([, delay]) => delay === 1_000)?.[0];
+    expect(clock).toBeTypeOf("function");
+    currentTime += 1_000;
+    act(() => (clock as () => void)());
+
+    expect(screen.getByTitle("comment-review")).toBe(iframe);
+    expect(iframe.contains(selectedOption!)).toBe(true);
+    expect(selectedOption!.checked).toBe(true);
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Reload" })).toBeVisible();
+
+    act(() => view.client.setQueryData(
+      ["issues", "acme", "workflow", 41, "comments"],
+      [commentFixture({ body: secondBody, updated_at: "2026-07-10T11:09:00Z" })],
+    ));
+    await waitFor(() => expect(screen.getByTitle("comment-review")).not.toBe(iframe));
+    const revisedDisclosure = screen.getByRole("button", { name: /comment-review/ });
+    expect(revisedDisclosure).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Reload" })).toBeVisible();
+  });
+
+  it("confirms current single/custom answers outside the iframe, appends every answer, and preserves the running frame", async () => {
+    const body = "```html-preview id=answer-review version=1 title=\"answer-review\" height=480\n<!doctype html><button>Answer</button>\n```";
+    const digest = "a".repeat(64);
+    const question = {
+      id: "QUESTION-007",
+      question: "Which release posture should we use?",
+      blocking: true,
+      default_assumption: "Use Safe.",
+      issue_url: "https://example.test/acme/workflow/issues/41",
+      source_url: "https://example.test/acme/workflow/issues/41#issuecomment-20",
+      choice_model: {
+        version: 1,
+        mode: "single",
+        options: [
+          { id: "safe", label: "Safe", description: "Conservative", tradeoff: "Slower" },
+          { id: "fast", label: "Fast", description: "Rapid", tradeoff: "Riskier" },
+        ],
+        allow_custom: true,
+      },
+    } as const;
+    let comments = [commentFixture()];
+    const submitted: unknown[] = [];
+    server.use(
+      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, html_preview_execution: true, interactive_question_answers: true } })),
+      http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture({ body }))),
+      http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json(comments)),
+      http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
+      http.get("http://localhost/repos/acme/workflow/issues/comments/:commentId/reactions", () => HttpResponse.json([])),
+      http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", () => HttpResponse.json({ relationships: [] })),
+      http.get("http://localhost/api/v1/repos/acme/workflow/issues/41/questions/QUESTION-007", () => HttpResponse.json({ question, representation_version: 1, body_digest: digest })),
+      http.post("http://localhost/api/v1/repos/acme/workflow/issues/41/answers", async ({ request }) => {
+        submitted.push(await request.json());
+        const created = commentFixture({ id: 9 + submitted.length, body: `ANSWER timeline ${submitted.length}`, reactions: { ...reactions, total_count: 0, "+1": 0 } });
+        comments = [...comments, created];
+        return HttpResponse.json({
+          comment: created,
+          question,
+          question_representation_version: 1,
+          question_body_digest: digest,
+        }, { status: 201 });
+      }),
+    );
+    renderIssueDetail(activeRepository(true, ["read", "contribute"]));
+    expect(await screen.findByRole("button", { name: /answer-review/ })).toHaveAttribute("aria-expanded", "true");
+    const iframe = await screen.findByTitle("answer-review") as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    fireEvent.load(iframe);
+    const nonce = (postMessage.mock.calls.at(-1)?.[0] as { nonce: string }).nonce;
+    const send = (optionIds: string[], custom = "") => fireEvent(window, new MessageEvent("message", {
+      origin: "null",
+      source: iframe.contentWindow,
+      data: { version: 1, nonce, question_id: "QUESTION-007", mode: "single", option_ids: optionIds, custom },
+    }));
+
+    send(["safe"]);
+    expect(await screen.findByRole("heading", { name: "Confirm this answer" })).toBeVisible();
+    expect(await screen.findByText("Which release posture should we use?")).toBeVisible();
+    expect(await screen.findByText("Safe")).toBeVisible();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
+    expect(await screen.findByText("ANSWER timeline 1")).toBeVisible();
+    expect(screen.getByTitle("answer-review")).toBe(iframe);
+
+    send(["fast"]);
+    expect(await screen.findByText("Fast")).toBeVisible();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
+    expect(await screen.findByText("ANSWER timeline 2")).toBeVisible();
+    expect(screen.getByTitle("answer-review")).toBe(iframe);
+
+    send([], "Use a staged rollout.");
+    expect(await screen.findByText("Use a staged rollout.")).toBeVisible();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
+    expect(await screen.findByText("ANSWER timeline 3")).toBeVisible();
+    expect(submitted.slice(0, 3)).toEqual([
+      { question_id: "QUESTION-007", question_digest: digest, option_ids: ["safe"], custom: "" },
+      { question_id: "QUESTION-007", question_digest: digest, option_ids: ["fast"], custom: "" },
+      { question_id: "QUESTION-007", question_digest: digest, option_ids: [], custom: "Use a staged rollout." },
+    ]);
+
+    const acceptedCustom = "\0".repeat(2_706) + "x".repeat(5);
+    send([], acceptedCustom);
+    expect(await screen.findByRole("heading", { name: "Confirm this answer" })).toBeVisible();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
+    expect(await screen.findByText("ANSWER timeline 4")).toBeVisible();
+    expect(new TextEncoder().encode(JSON.stringify(submitted[3])).byteLength).toBe(16 * 1_024);
+
+    send([], acceptedCustom + "x");
+    expect(screen.queryByRole("heading", { name: "Confirm this answer" })).not.toBeInTheDocument();
+    expect(submitted).toHaveLength(4);
+  });
+
+  it("awaits fresh QUESTION authority and rejects cached changes or removal before submission", async () => {
+    const body = "```html-preview id=fresh-authority version=1 title=\"fresh-authority\"\n<!doctype html><button>Answer</button>\n```";
+    const question = (text: string, options: Array<{ id: string; label: string }>) => ({
+      id: "QUESTION-007",
+      question: text,
+      blocking: true,
+      default_assumption: "Use Safe.",
+      issue_url: "https://example.test/acme/workflow/issues/41",
+      source_url: "https://example.test/acme/workflow/issues/41#issuecomment-20",
+      choice_model: {
+        version: 1,
+        mode: "single",
+        options: options.map((option) => ({ ...option, description: "", tradeoff: "" })),
+        allow_custom: true,
+      },
+    } as const);
+    const cachedQuestion = question("Cached QUESTION must not be shown.", [{ id: "safe", label: "Safe" }]);
+    const changedQuestion = question("Changed QUESTION", [{ id: "fast", label: "Fast" }]);
+    const freshQuestion = question("Fresh QUESTION", [{ id: "safe", label: "Safe" }]);
+    let authorityState: "changed" | "removed" | "fresh" = "changed";
+    let releaseFirstFetch: () => void = () => undefined;
+    const firstFetch = new Promise<void>((resolve) => { releaseFirstFetch = resolve; });
+    let holdFirstFetch = true;
+    let questionReads = 0;
+    let answerPosts = 0;
+    let comments = [commentFixture()];
+    server.use(
+      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, html_preview_execution: true, interactive_question_answers: true } })),
+      http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture({ body }))),
+      http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json(comments)),
+      http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
+      http.get("http://localhost/repos/acme/workflow/issues/comments/:commentId/reactions", () => HttpResponse.json([])),
+      http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", () => HttpResponse.json({ relationships: [] })),
+      http.get("http://localhost/api/v1/repos/acme/workflow/issues/41/questions/QUESTION-007", async () => {
+        questionReads += 1;
+        if (holdFirstFetch) {
+          holdFirstFetch = false;
+          await firstFetch;
+        }
+        if (authorityState === "removed") return HttpResponse.json({ message: "Not found" }, { status: 404 });
+        const current = authorityState === "changed" ? changedQuestion : freshQuestion;
+        return HttpResponse.json({ question: current, representation_version: 1, body_digest: authorityState === "changed" ? "b".repeat(64) : "c".repeat(64) });
+      }),
+      http.post("http://localhost/api/v1/repos/acme/workflow/issues/41/answers", async ({ request }) => {
+        answerPosts += 1;
+        const payload = await request.json() as { question_digest: string };
+        const created = commentFixture({ id: 10, body: "ANSWER timeline fresh", reactions: { ...reactions, total_count: 0, "+1": 0 } });
+        comments = [...comments, created];
+        return HttpResponse.json({
+          comment: created,
+          question: freshQuestion,
+          question_representation_version: 1,
+          question_body_digest: payload.question_digest,
+        }, { status: 201 });
+      }),
+    );
+    const view = renderIssueDetail(activeRepository(true, ["read", "contribute"]));
+    expect(await screen.findByRole("button", { name: /fresh-authority/ })).toHaveAttribute("aria-expanded", "true");
+    const iframe = await screen.findByTitle("fresh-authority") as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    fireEvent.load(iframe);
+    const nonce = (postMessage.mock.calls.at(-1)?.[0] as { nonce: string }).nonce;
+    const send = () => fireEvent(window, new MessageEvent("message", {
+      origin: "null",
+      source: iframe.contentWindow,
+      data: { version: 1, nonce, question_id: "QUESTION-007", mode: "single", option_ids: ["safe"], custom: "" },
+    }));
+    view.client.setQueryData(
+      ["issues", "acme", "workflow", 41, "question", "QUESTION-007"],
+      { question: cachedQuestion, representation_version: 1, body_digest: "a".repeat(64) },
+    );
+
+    send();
+    expect(await screen.findByRole("status")).toHaveTextContent("Reloading the current QUESTION");
+    expect(screen.queryByText("Cached QUESTION must not be shown.")).not.toBeInTheDocument();
+    releaseFirstFetch();
+    expect(await screen.findByText("This preview intent does not match the current QUESTION.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Confirm answer" })).toBeDisabled();
+    expect(answerPosts).toBe(0);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Cancel" }));
+    authorityState = "fresh";
+    send();
+    expect(await screen.findByText("Fresh QUESTION")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Confirm answer" })).toBeEnabled();
+    authorityState = "removed";
+    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
+    expect(await screen.findByText("The current QUESTION could not be loaded.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Confirm answer" })).toBeDisabled();
+    expect(answerPosts).toBe(0);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Cancel" }));
+    authorityState = "fresh";
+    send();
+    expect(await screen.findByText("Fresh QUESTION")).toBeVisible();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
+    expect(await screen.findByText("ANSWER timeline fresh")).toBeVisible();
+    expect(questionReads).toBe(5);
+    expect(answerPosts).toBe(1);
+  });
+
+  it("runs read-only previews without exposing a trusted answer confirmation", async () => {
+    const body = "```html-preview id=read-only version=1\n<!doctype html><button>False submit</button>\n```";
+    server.use(
+      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, html_preview_execution: true, interactive_question_answers: true } })),
+      http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture({ body }))),
+    );
+    installIssueDetailHandlers();
+    server.use(http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture({ body }))));
+    renderIssueDetail(activeRepository(false, ["read"]));
+    expect(await screen.findByRole("button", { name: /read-only/ })).toHaveAttribute("aria-expanded", "true");
+    const iframe = await screen.findByTitle("Interactive preview · read-only") as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    fireEvent.load(iframe);
+    const init = postMessage.mock.calls.at(-1)?.[0] as { nonce: string; interactive_question_answers: boolean };
+    expect(init.interactive_question_answers).toBe(false);
+    fireEvent(window, new MessageEvent("message", {
+      origin: "null",
+      source: iframe.contentWindow,
+      data: { version: 1, nonce: init.nonce, question_id: "QUESTION-007", mode: "single", option_ids: ["safe"], custom: "" },
+    }));
+    expect(screen.queryByRole("heading", { name: "Confirm this answer" })).not.toBeInTheDocument();
+    expect(screen.getByText(/interactive answers are unavailable/i)).toBeVisible();
   });
 
   it("offers repository subscription on the issue list to a reader without triage authority", async () => {

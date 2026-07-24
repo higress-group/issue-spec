@@ -201,10 +201,6 @@ func (m *Manager) validateImplementationReceiptContract(ctx context.Context, lea
 	if contract == nil {
 		return errors.New("authoritative assignment lacks an implementation contract")
 	}
-	itemCount := len(receipt.Tests) + len(receipt.Implementation.ChangedPaths) + len(receipt.Implementation.Decisions) + len(receipt.Implementation.Risks)
-	if itemCount > lease.Assignment.Policy.MaxResultItems {
-		return fmt.Errorf("receipt has %d result items, assignment permits %d", itemCount, lease.Assignment.Policy.MaxResultItems)
-	}
 	actualPaths := append([]string(nil), changed...)
 	reportedPaths := append([]string(nil), receipt.Implementation.ChangedPaths...)
 	sort.Strings(actualPaths)

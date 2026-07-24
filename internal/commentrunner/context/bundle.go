@@ -156,7 +156,7 @@ func BuildBundle(opts BuildOptions) (Bundle, error) {
 	runner, runnerRedactions := normalizeRunner(opts.Runner, command, opts.RedactionValues)
 	redactions = append(redactions, runnerRedactions...)
 
-	artifacts, artifactTruncations, artifactRedactions, err := normalizeArtifacts(opts.Artifacts, bounds, opts.RedactionValues, opts.ReferenceOnlyArtifacts)
+	artifacts, artifactTruncations, artifactRedactions, err := normalizeArtifacts(opts.Artifacts, bounds, opts.RedactionValues, opts.ReferenceOnlyArtifacts, command.Repo)
 	if err != nil {
 		return Bundle{}, err
 	}
@@ -234,7 +234,9 @@ func normalizeCommand(command CommandCandidate, bounds Bounds, redactionValues [
 	if strings.TrimSpace(command.FirstObservedBodySHA256) == "" {
 		command.FirstObservedBodySHA256 = command.PromptSHA256
 	}
-	redactedPrompt, count := redactString(originalPrompt, redactionValues)
+	expansionBase := IssueReadExpansionBase(command.Repo, command.Issue, command.TriggerCommentID, command.TriggerCommentURL)
+	foldedPrompt, _ := FoldPreviews(originalPrompt, command.TriggerCommentURL, expansionBase)
+	redactedPrompt, count := redactString(foldedPrompt, redactionValues)
 	if count > 0 {
 		command.PromptRedacted = true
 	}
@@ -288,8 +290,11 @@ func normalizeRunner(runner RunnerMetadata, command CommandCandidate, redactionV
 	return runner, redactions
 }
 
-func normalizeArtifacts(input []model.Artifact, bounds Bounds, redactionValues []string, referenceOnly bool) ([]BundleArtifact, []TruncationRecord, []RedactionRecord, error) {
-	artifacts := append([]model.Artifact{}, input...)
+func normalizeArtifacts(input []model.Artifact, bounds Bounds, redactionValues []string, referenceOnly bool, repo string) ([]BundleArtifact, []TruncationRecord, []RedactionRecord, error) {
+	artifacts, err := selectAgentContextArtifacts(input)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	sort.SliceStable(artifacts, func(i, j int) bool {
 		return artifactLess(artifacts[i], artifacts[j])
 	})
@@ -333,7 +338,9 @@ func normalizeArtifacts(input []model.Artifact, bounds Bounds, redactionValues [
 			})
 			continue
 		}
-		redactedContent, redactionCount := redactString(content, redactionValues)
+		expansionBase := IssueReadExpansionBase(repo, artifact.Issue, artifact.CommentID, artifact.URL)
+		foldedContent, _ := FoldPreviews(content, artifact.URL, expansionBase)
+		redactedContent, redactionCount := redactString(foldedContent, redactionValues)
 		included, truncated := truncateBytes(redactedContent, bounds.MaxArtifactBytes)
 		item := BundleArtifact{
 			SourceLabel:       SourceIssueSpecArtifact,
@@ -372,6 +379,99 @@ func normalizeArtifacts(input []model.Artifact, bounds Bounds, redactionValues [
 	return out, truncations, redactions, nil
 }
 
+func selectAgentContextArtifacts(input []model.Artifact) ([]model.Artifact, error) {
+	questions := make([]model.Artifact, 0)
+	for _, artifact := range input {
+		if artifact.Comment.Type != "QUESTION" || len(artifact.Comment.Errors) > 0 {
+			continue
+		}
+		if _, found, err := model.ParseChoiceModel(artifact.Comment.Body); err == nil && found {
+			questions = append(questions, artifact)
+		}
+	}
+
+	selected := make([]model.Artifact, 0, len(input))
+	answersByQuestion := map[qualifiedQuestionIdentity][]model.Artifact{}
+	for _, artifact := range input {
+		if artifact.Comment.Type != "ANSWER" {
+			selected = append(selected, artifact)
+			continue
+		}
+		payload, err := model.ParseAnswerPayload(artifact.Comment.Body)
+		if err != nil {
+			continue
+		}
+		answerIdentity := qualifiedQuestionIdentity{
+			issue:      artifact.Issue,
+			sourceURL:  model.NormalizeURL(payload.Question.SourceURL),
+			questionID: payload.Question.ID,
+			scope:      artifact.Comment.Scope,
+		}
+		matches := 0
+		var matchedIdentity qualifiedQuestionIdentity
+		for _, question := range questions {
+			questionIdentity := qualifiedQuestionIdentityForQuestion(question)
+			if answerIdentity != questionIdentity ||
+				model.NormalizeURL(payload.Question.IssueURL) != model.NormalizeURL(strings.SplitN(question.URL, "#", 2)[0]) {
+				continue
+			}
+			matches++
+			matchedIdentity = questionIdentity
+		}
+		if matches != 1 {
+			continue
+		}
+		answersByQuestion[matchedIdentity] = append(answersByQuestion[matchedIdentity], artifact)
+	}
+	for identity, answers := range answersByQuestion {
+		if len(answers) > 1 {
+			return nil, fmt.Errorf("multiple ANSWER artifacts for %s on issue %d source %s lack provider effective-answer selection",
+				identity.questionID, identity.issue, identity.sourceURL)
+		}
+		selected = append(selected, answers[0])
+	}
+	return selected, nil
+}
+
+type qualifiedQuestionIdentity struct {
+	issue      int
+	sourceURL  string
+	questionID string
+	scope      string
+}
+
+func qualifiedQuestionIdentityForQuestion(question model.Artifact) qualifiedQuestionIdentity {
+	return qualifiedQuestionIdentity{
+		issue:      question.Issue,
+		sourceURL:  model.NormalizeURL(question.URL),
+		questionID: question.Comment.ID,
+		scope:      question.Comment.ID,
+	}
+}
+
+func qualifiedQuestionIdentityForArtifact(artifact model.Artifact) (qualifiedQuestionIdentity, bool) {
+	switch artifact.Comment.Type {
+	case "QUESTION":
+		if artifact.Comment.ID == "" {
+			return qualifiedQuestionIdentity{}, false
+		}
+		return qualifiedQuestionIdentityForQuestion(artifact), true
+	case "ANSWER":
+		payload, err := model.ParseAnswerPayload(artifact.Comment.Body)
+		if err != nil {
+			return qualifiedQuestionIdentity{}, false
+		}
+		return qualifiedQuestionIdentity{
+			issue:      artifact.Issue,
+			sourceURL:  model.NormalizeURL(payload.Question.SourceURL),
+			questionID: payload.Question.ID,
+			scope:      artifact.Comment.Scope,
+		}, true
+	default:
+		return qualifiedQuestionIdentity{}, false
+	}
+}
+
 func normalizeBounds(bounds Bounds) Bounds {
 	defaults := DefaultBounds()
 	if bounds.MaxCommandPromptBytes <= 0 {
@@ -391,6 +491,18 @@ func artifactLess(a, b model.Artifact) bool {
 	if ar != br {
 		return ar < br
 	}
+	if ar == typeRank("QUESTION") {
+		aIdentity, aOK := qualifiedQuestionIdentityForArtifact(a)
+		bIdentity, bOK := qualifiedQuestionIdentityForArtifact(b)
+		if aOK && bOK {
+			if comparison := compareQualifiedQuestionIdentity(aIdentity, bIdentity); comparison != 0 {
+				return comparison < 0
+			}
+			if a.Comment.Type != b.Comment.Type {
+				return a.Comment.Type == "QUESTION"
+			}
+		}
+	}
 	if a.Comment.ID != b.Comment.ID {
 		return a.Comment.ID < b.Comment.ID
 	}
@@ -403,6 +515,22 @@ func artifactLess(a, b model.Artifact) bool {
 	return a.URL < b.URL
 }
 
+func compareQualifiedQuestionIdentity(a, b qualifiedQuestionIdentity) int {
+	if a.questionID != b.questionID {
+		return strings.Compare(a.questionID, b.questionID)
+	}
+	if a.issue != b.issue {
+		if a.issue < b.issue {
+			return -1
+		}
+		return 1
+	}
+	if a.sourceURL != b.sourceURL {
+		return strings.Compare(a.sourceURL, b.sourceURL)
+	}
+	return strings.Compare(a.scope, b.scope)
+}
+
 func typeRank(commentType string) int {
 	switch commentType {
 	case "SPEC":
@@ -413,10 +541,12 @@ func typeRank(commentType string) int {
 		return 2
 	case "QUESTION":
 		return 3
+	case "ANSWER":
+		return 3
 	case "REVIEW":
-		return 4
-	case "VERIFY":
 		return 5
+	case "VERIFY":
+		return 6
 	default:
 		return 99
 	}

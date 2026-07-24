@@ -53,6 +53,9 @@ func ApplyTypedTransition(body string, request TransitionRequest) (TransitionRes
 	if len(before.Errors) > 0 {
 		return TransitionResult{}, errors.New(strings.Join(before.Errors, "; "))
 	}
+	if before.Type == "ANSWER" {
+		return TransitionResult{}, errors.New("ANSWER comments are immutable; append a new ANSWER instead")
+	}
 	if expected := strings.ToUpper(strings.TrimSpace(request.ExpectedType)); expected != "" && before.Type != expected {
 		return TransitionResult{}, fmt.Errorf("typed comment type is %s, expected %s", before.Type, expected)
 	}
@@ -163,6 +166,7 @@ var transitionEdges = map[string]map[string][]string{
 		"draft": {"blocked", "confirmed", "done", "superseded"}, "blocked": {"confirmed", "done", "superseded"},
 		"confirmed": {"done", "superseded"}, "done": {"superseded"},
 	},
+	"ANSWER": {},
 	"REVIEW": {
 		"draft": {"blocked", "confirmed", "ready", "in-progress", "done", "superseded"}, "blocked": {"confirmed", "ready", "in-progress", "done", "superseded"},
 		"confirmed": {"ready", "in-progress", "done", "superseded"}, "ready": {"in-progress", "done", "superseded"},

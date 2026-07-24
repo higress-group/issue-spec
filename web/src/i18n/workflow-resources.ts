@@ -1,6 +1,18 @@
 export const workflowResources = {
   en: {
-    markdown: { completedTask: "Completed task", incompleteTask: "Incomplete task", codeBlock: "Code block", highlightedCode: "Highlighted code", mermaidDiagram: "Mermaid diagram", mermaidLoading: "Rendering Mermaid diagram…", mermaidError: "This Mermaid diagram could not be rendered. The source is shown instead." },
+    markdown: {
+      completedTask: "Completed task", incompleteTask: "Incomplete task", codeBlock: "Code block", highlightedCode: "Highlighted code", mermaidDiagram: "Mermaid diagram", mermaidLoading: "Rendering Mermaid diagram…", mermaidError: "This Mermaid diagram could not be rendered. The source is shown instead.",
+      preview: {
+        defaultTitle: "Interactive preview · {{id}}",
+        reviewSurface: "Sandboxed review surface",
+        state: { stopped: "Stopped", preparing: "Preparing", running: "Running", error: "Unavailable" },
+        securityAndAnswers: "The selected first preview starts automatically; other previews run on demand. Network and application authority stay blocked; answer requests are confirmed by this page.",
+        securityOnly: "The selected first preview starts automatically; other previews run on demand. Network and application authority stay blocked; interactive answers are unavailable.",
+        run: "Run", reload: "Reload", stop: "Stop",
+        activeLimit: "Two previews are already active. Stop one before running another.",
+        startupFailure: "Preview could not start. Try again or ask an administrator to check this deployment.",
+      },
+    },
     issues: {
       openingDesk: "Opening issue desk…",
       workspace: {
@@ -94,6 +106,20 @@ export const workflowResources = {
         authority: "Authority",
         serverChecks: "Changes are checked again by the server.",
         publicRead: "Public read access · mutations require sign in.",
+      },
+      answer: {
+        trustedConfirmation: "Trusted issue service",
+        title: "Confirm this answer",
+        loading: "Reloading the current QUESTION…",
+        unavailable: "The current QUESTION could not be loaded.",
+        custom: "Custom answer",
+        selection: "Selected option",
+        authority: "The server will revalidate the current QUESTION, repository permission, and selection before appending an immutable ANSWER.",
+        invalid: "This preview intent does not match the current QUESTION.",
+        failed: "The answer was not appended. Reload the QUESTION and try again.",
+        cancel: "Cancel",
+        confirm: "Confirm answer",
+        submitting: "Submitting…",
       },
       gate: {
         openingRepository: "Opening repository desk",
@@ -275,7 +301,19 @@ export const workflowResources = {
     },
   },
   "zh-CN": {
-    markdown: { completedTask: "已完成任务", incompleteTask: "未完成任务", codeBlock: "代码块", highlightedCode: "高亮代码", mermaidDiagram: "Mermaid 图表", mermaidLoading: "正在渲染 Mermaid 图表…", mermaidError: "无法渲染此 Mermaid 图表，已改为显示源码。" },
+    markdown: {
+      completedTask: "已完成任务", incompleteTask: "未完成任务", codeBlock: "代码块", highlightedCode: "高亮代码", mermaidDiagram: "Mermaid 图表", mermaidLoading: "正在渲染 Mermaid 图表…", mermaidError: "无法渲染此 Mermaid 图表，已改为显示源码。",
+      preview: {
+        defaultTitle: "交互式预览 · {{id}}",
+        reviewSurface: "沙箱评审界面",
+        state: { stopped: "已停止", preparing: "准备中", running: "运行中", error: "不可用" },
+        securityAndAnswers: "选中的首个预览会自动启动，其他预览按需运行。网络和应用权限始终受限；回答请求会由当前页面再次确认。",
+        securityOnly: "选中的首个预览会自动启动，其他预览按需运行。网络和应用权限始终受限；交互式回答当前不可用。",
+        run: "运行", reload: "重新加载", stop: "停止",
+        activeLimit: "已有两个预览正在运行。请先停止其中一个。",
+        startupFailure: "预览无法启动。请重试，或联系管理员检查当前部署。",
+      },
+    },
     issues: {
       openingDesk: "正在打开议题工作台…",
       workspace: {
@@ -367,6 +405,20 @@ export const workflowResources = {
         authority: "权限",
         serverChecks: "服务端会再次校验变更权限。",
         publicRead: "可公开读取 · 修改操作需要登录。",
+      },
+      answer: {
+        trustedConfirmation: "受信任议题服务",
+        title: "确认此回答",
+        loading: "正在重新读取当前 QUESTION…",
+        unavailable: "无法加载当前 QUESTION。",
+        custom: "自定义回答",
+        selection: "已选选项",
+        authority: "服务端会重新校验当前 QUESTION、仓库权限和选项，然后追加一条不可变 ANSWER。",
+        invalid: "此预览意图与当前 QUESTION 不匹配。",
+        failed: "未能追加回答。请重新加载 QUESTION 后重试。",
+        cancel: "取消",
+        confirm: "确认回答",
+        submitting: "正在提交…",
       },
       gate: {
         openingRepository: "正在打开仓库工作台",

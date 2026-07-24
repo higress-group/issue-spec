@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/assignment"
+	"github.com/higress-group/issue-spec/internal/preview"
 )
 
 // RepresentationDigest returns the lowercase SHA-256 digest of the exact
@@ -32,6 +33,7 @@ var AllowedTypes = map[string]bool{
 	"TASK":     true,
 	"PROCESS":  true,
 	"QUESTION": true,
+	"ANSWER":   true,
 	"REVIEW":   true,
 	"VERIFY":   true,
 }
@@ -128,6 +130,7 @@ func ObserveAcceptedReceiptAuthority(body string, role assignment.Role) (Accepte
 	if !ok {
 		return AcceptedReceiptAuthority{}, false, fmt.Errorf("unsupported accepted receipt role %q", role)
 	}
+	body = preview.SemanticView(body)
 	if !strings.Contains(body, marker.token) {
 		return AcceptedReceiptAuthority{}, false, nil
 	}
@@ -228,7 +231,8 @@ func decodeAcceptedReceiptIdentity(raw []byte) (map[string]json.RawMessage, erro
 
 func ParseTypedComment(body string) TypedComment {
 	tc := TypedComment{Links: map[string][]string{}, Body: body}
-	marker, hasMarker, err := FindMarker(body)
+	semanticBody := preview.SemanticView(body)
+	marker, hasMarker, err := findMarker(semanticBody)
 	if err != nil {
 		tc.Errors = append(tc.Errors, err.Error())
 	}
@@ -238,7 +242,7 @@ func ParseTypedComment(body string) TypedComment {
 		tc.ID = marker.ID
 	}
 
-	lines := strings.Split(body, "\n")
+	lines := strings.Split(semanticBody, "\n")
 	inLinks := false
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -321,7 +325,7 @@ func ParseTypedComment(body string) TypedComment {
 		tc.Errors = append(tc.Errors, "typed comment is missing visible header")
 	}
 	if tc.Type == "PROCESS" {
-		input, explicit, err := parseProcessAssignment(body)
+		input, explicit, err := parseProcessAssignment(semanticBody)
 		if err != nil {
 			tc.Errors = append(tc.Errors, err.Error())
 		} else if explicit {
@@ -463,10 +467,11 @@ func StampTypedSessionMetadata(body, sessionID, sessionSource string) (string, e
 		return "", errors.New(strings.Join(tc.Errors, "; "))
 	}
 	lines := strings.Split(body, "\n")
+	semanticLines := strings.Split(preview.SemanticView(body), "\n")
 	agentIndex := -1
 	sessionIDIndex := -1
 	sessionSourceIndex := -1
-	for i, line := range lines {
+	for i, line := range semanticLines {
 		trimmed := strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(trimmed, "Agent:"):
@@ -514,7 +519,8 @@ func upsertHeaderLine(lines []string, index *int, afterIndex, fallbackIndex int,
 }
 
 func IsLikelyTyped(body string) bool {
-	return HasTypedMarker(body) || (strings.Contains(body, "Type:") && strings.Contains(body, "ID:") && strings.Contains(body, "Status:"))
+	semanticBody := preview.SemanticView(body)
+	return HasTypedMarker(semanticBody) || (strings.Contains(semanticBody, "Type:") && strings.Contains(semanticBody, "ID:") && strings.Contains(semanticBody, "Status:"))
 }
 
 func NormalizeURL(value string) string {
@@ -582,6 +588,7 @@ func defaultLinks(in map[string][]string) map[string][]string {
 }
 
 func visibleMetadata(body string) map[string]string {
+	body = preview.SemanticView(body)
 	out := map[string]string{}
 	started := false
 	for _, line := range strings.Split(body, "\n") {

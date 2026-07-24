@@ -29,6 +29,8 @@ type Features struct {
 	MentionCandidates            bool `json:"mention_candidates"`
 	RepositoryEmailSubscriptions bool `json:"repository_email_subscriptions"`
 	RequirementsOnboarding       bool `json:"requirements_onboarding"`
+	HTMLPreviewExecution         bool `json:"html_preview_execution"`
+	InteractiveQuestionAnswers   bool `json:"interactive_question_answers"`
 }
 
 type Transport struct {

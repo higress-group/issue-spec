@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"regexp"
 	"strings"
 	"testing"
@@ -209,6 +210,159 @@ func TestReadIssueTypedOnlyOmitsHumanComments(t *testing.T) {
 	}
 	if !strings.Contains(s, "typed: true") || strings.Contains(s, "typed: false") {
 		t.Fatalf("--typed-only should keep only typed comments:\n%s", s)
+	}
+}
+
+func TestReadIssueFoldsPreviewsByDefaultAndExpandsExactOrAll(t *testing.T) {
+	body := "before\n```html-preview id=one version=1 title=\"First\"\nHOSTILE_ONE\n```\n" +
+		"middle\n```html-preview id=two version=1\nHOSTILE_TWO\n```\nafter"
+	run := func(t *testing.T, extra ...string) (string, string, int) {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.selectGitHubBackend = ghSelection
+		app.gitHubBackendToken = ghTokenFunc("")
+		app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+			f.getIssue = func(context.Context, string, int) (github.Issue, error) {
+				return github.Issue{Number: 7, HTMLURL: "https://github.com/o/r/issues/7", State: "open", Title: "t", Body: body}, nil
+			}
+		})
+		args := append([]string{"issue", "--repo", "o/r", "--issue", "7"}, extra...)
+		code := app.runRead(context.Background(), args)
+		return out.String(), errOut.String(), code
+	}
+
+	folded, errOut, code := run(t)
+	if code != 0 {
+		t.Fatalf("default exit=%d stderr=%q", code, errOut)
+	}
+	if strings.Contains(folded, "HOSTILE_ONE") || strings.Contains(folded, "HOSTILE_TWO") {
+		t.Fatalf("default output leaked preview source:\n%s", folded)
+	}
+	for _, want := range []string{
+		"issue-spec-html-preview-descriptor",
+		`"id":"one"`,
+		`"omitted":true`,
+		"issue-spec read issue --repo o/r --issue 7 --expand-preview one",
+	} {
+		if !strings.Contains(folded, want) {
+			t.Fatalf("default output missing %q:\n%s", want, folded)
+		}
+	}
+
+	exact, errOut, code := run(t, "--expand-preview", "one")
+	if code != 0 {
+		t.Fatalf("exact exit=%d stderr=%q", code, errOut)
+	}
+	if !strings.Contains(exact, "HOSTILE_ONE") || strings.Contains(exact, "HOSTILE_TWO") {
+		t.Fatalf("exact expansion selected the wrong source:\n%s", exact)
+	}
+
+	all, errOut, code := run(t, "--expand-all-previews")
+	if code != 0 {
+		t.Fatalf("all exit=%d stderr=%q", code, errOut)
+	}
+	if !strings.Contains(all, "HOSTILE_ONE") || !strings.Contains(all, "HOSTILE_TWO") {
+		t.Fatalf("all expansion did not expose both previews:\n%s", all)
+	}
+}
+
+func TestReadIssueRawIsExactAndJSONMarksOmission(t *testing.T) {
+	body := "prefix\r\n```html-preview id=one version=1\r\n<p>exact</p>\r\n```\r\nsuffix"
+	run := func(t *testing.T, extra ...string) (string, string, int) {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.selectGitHubBackend = ghSelection
+		app.gitHubBackendToken = ghTokenFunc("")
+		app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+			f.getIssue = func(context.Context, string, int) (github.Issue, error) {
+				return github.Issue{Number: 7, HTMLURL: "https://github.com/o/r/issues/7", State: "open", Title: "t", Body: body}, nil
+			}
+		})
+		args := append([]string{"issue", "--repo", "o/r", "--issue", "7"}, extra...)
+		code := app.runRead(context.Background(), args)
+		return out.String(), errOut.String(), code
+	}
+
+	raw, errOut, code := run(t, "--raw")
+	if code != 0 || raw != body {
+		t.Fatalf("raw exit=%d stderr=%q body=%q want exact %q", code, errOut, raw, body)
+	}
+
+	output, errOut, code := run(t, "--json")
+	if code != 0 {
+		t.Fatalf("json exit=%d stderr=%q", code, errOut)
+	}
+	var result readIssueJSON
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Issue.Body == nil || strings.Contains(*result.Issue.Body, "<p>exact</p>") {
+		t.Fatalf("JSON body did not fold preview: %+v", result.Issue)
+	}
+	if len(result.Issue.Previews) != 1 || !result.Issue.Previews[0].Omitted ||
+		result.Issue.Previews[0].ID != "one" || result.Issue.Previews[0].Digest == "" {
+		t.Fatalf("JSON omission metadata = %+v", result.Issue.Previews)
+	}
+
+	_, errOut, code = run(t, "--raw", "--json")
+	if code != 2 || !strings.Contains(errOut, "--raw conflicts") {
+		t.Fatalf("raw/json conflict exit=%d stderr=%q", code, errOut)
+	}
+}
+
+func TestReadIssuePreviewSelectionFailsUnknownAndAmbiguous(t *testing.T) {
+	body := "```html-preview id=dup version=1\none\n```\n```html-preview id=dup version=1\ntwo\n```\n"
+	run := func(id string) (int, string) {
+		var out, errOut bytes.Buffer
+		app := newApp(strings.NewReader(""), &out, &errOut)
+		app.selectGitHubBackend = ghSelection
+		app.gitHubBackendToken = ghTokenFunc("")
+		app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+			f.getIssue = func(context.Context, string, int) (github.Issue, error) {
+				return github.Issue{Number: 7, HTMLURL: "u", State: "open", Title: "t", Body: body}, nil
+			}
+		})
+		code := app.runRead(context.Background(), []string{"issue", "--repo", "o/r", "--issue", "7", "--expand-preview", id})
+		return code, errOut.String()
+	}
+	if code, errOut := run("missing"); code != 1 || !strings.Contains(errOut, "was not found") {
+		t.Fatalf("unknown selection exit=%d stderr=%q", code, errOut)
+	}
+	if code, errOut := run("dup"); code != 1 || !strings.Contains(errOut, "ambiguous") {
+		t.Fatalf("ambiguous selection exit=%d stderr=%q", code, errOut)
+	}
+}
+
+func TestReadIssueTypedOnlyFoldsSelectedTypedBody(t *testing.T) {
+	typedWithPreview := typedCommentBody + "\n\n```html-preview id=typed version=1\nTYPED_HOSTILE\n```\n"
+	humanProjection := "ordinary projection\n```html-preview id=human version=1\nHUMAN_HOSTILE\n```\n"
+	var out bytes.Buffer
+	app := newApp(strings.NewReader(""), &out, &bytes.Buffer{})
+	app.selectGitHubBackend = ghSelection
+	app.gitHubBackendToken = ghTokenFunc("")
+	app.newGitHubBackend = newFakeBackend(func(f *fakeGitHubBackend) {
+		f.getIssue = func(context.Context, string, int) (github.Issue, error) {
+			return github.Issue{Number: 7, HTMLURL: "u", State: "open", Title: "t", Body: "issue body"}, nil
+		}
+		f.listIssueComments = func(context.Context, string, int) ([]github.Comment, error) {
+			return []github.Comment{
+				{ID: 1, HTMLURL: "u1", Body: typedWithPreview, User: &github.User{Login: "alice"}},
+				{ID: 2, HTMLURL: "u2", Body: humanProjection, User: &github.User{Login: "bob"}},
+			}, nil
+		}
+	})
+	code := app.runRead(context.Background(), []string{"issue", "--repo", "o/r", "--issue", "7", "--comments", "--typed-only"})
+	if code != 0 {
+		t.Fatalf("exit=%d output=%q", code, out.String())
+	}
+	if strings.Contains(out.String(), "TYPED_HOSTILE") || strings.Contains(out.String(), "HUMAN_HOSTILE") ||
+		strings.Contains(out.String(), "ordinary projection") {
+		t.Fatalf("typed-only disclosure leaked selected or ordinary preview source:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), `"id":"typed"`) {
+		t.Fatalf("typed preview descriptor missing:\n%s", out.String())
 	}
 }
 

@@ -240,11 +240,35 @@ func TestParseCommandCommentIgnoresNonCommandComments(t *testing.T) {
 		"",
 		"ordinary discussion",
 		"ordinary discussion\n/new should not be parsed",
+		"```html-preview id=hostile version=1\n/new should not be parsed\n```\n",
+		"~~~html-preview id=hostile version=9\n/resume session escaped\n~~~\n",
+		"```html-preview id=hostile version=1 bad=value\n/cancel session\n```\n",
+		"```html-preview id=hostile version=1\n/new unclosed",
 	} {
 		result := ParseCommandComment(TriggerComment{Body: body})
 		if result.Status != ParseStatusIgnored {
 			t.Fatalf("body %q status = %s, want ignored", body, result.Status)
 		}
+	}
+}
+
+func TestParseCommandCommentKeepsPreviewSourceOpaqueInsidePrompt(t *testing.T) {
+	result := ParseCommandComment(TriggerComment{
+		Repo:      "o/r",
+		Issue:     1,
+		CommentID: 2,
+		Commenter: "alice",
+		Body: "/new explain this\n```html-preview id=hostile version=1\n" +
+			"/cancel escaped-session\n```\n",
+	})
+	if result.Status != ParseStatusAccepted {
+		t.Fatalf("result = %+v", result)
+	}
+	if strings.Contains(result.Candidate.Prompt, "/cancel escaped-session") {
+		t.Fatalf("preview command leaked into prompt interpretation: %q", result.Candidate.Prompt)
+	}
+	if result.Candidate.FirstObservedBodyHash != BodyHash("/new explain this\n```html-preview id=hostile version=1\n/cancel escaped-session\n```\n") {
+		t.Fatal("raw provider body hash changed")
 	}
 }
 

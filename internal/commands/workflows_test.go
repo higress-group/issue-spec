@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,9 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 	}
 	if got, want := len(result.SkillFiles), 12; got != want {
 		t.Fatalf("skill file count = %d, want %d", got, want)
+	}
+	if got, want := len(result.SkillResourceFiles), 2; got != want {
+		t.Fatalf("skill resource file count = %d, want %d", got, want)
 	}
 	if got, want := len(result.CommandFiles), 4; got != want {
 		t.Fatalf("command file count = %d, want %d", got, want)
@@ -60,6 +64,21 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 		if !strings.Contains(workflowSkill, want) {
 			t.Fatalf("workflow skill missing %q:\n%s", want, workflowSkill)
 		}
+	}
+	projectionReference := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-workflow", "references", "human-review-projections.md"))
+	for _, want := range []string{
+		"# Human Review Projection Generation",
+		"implement-execution-brief",
+		"issue-spec-preview-init",
+		"GitHub displays the fenced HTML source and does not execute",
+	} {
+		if !strings.Contains(projectionReference, want) {
+			t.Fatalf("projection reference missing %q:\n%s", want, projectionReference)
+		}
+	}
+	claudeProjectionReference := readTestFile(t, filepath.Join(root, ".claude", "skills", "issue-spec-workflow", "references", "human-review-projections.md"))
+	if projectionReference != claudeProjectionReference {
+		t.Fatal("Codex and Claude projection references differ")
 	}
 
 	githubSkill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-github", "SKILL.md"))
@@ -197,6 +216,64 @@ func TestWorkflowNoticeIsBackendNeutralAndOwnedArtifactsAreCurrent(t *testing.T)
 	}
 }
 
+func TestCheckedInWorkflowArtifactsExactlyMatchGenerator(t *testing.T) {
+	generatedRoot := t.TempDir()
+	projectRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(filepath.Join(projectRoot, "issue-spec", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(generatedRoot, "issue-spec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generatedRoot, "issue-spec", "config.yaml"), config, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(generatedRoot)
+	if _, err := writeWorkflowArtifacts(".", "higress-group/issue-spec", "codex,claude", "both"); err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range append(
+		[]string{
+			filepath.Join(".agents", "skills", "issue-spec-apply", "SKILL.md"),
+			filepath.Join(".agents", "skills", "issue-spec-github", "SKILL.md"),
+			filepath.Join(".agents", "skills", "issue-spec-propose", "SKILL.md"),
+			filepath.Join(".agents", "skills", "issue-spec-review", "SKILL.md"),
+			filepath.Join(".agents", "skills", "issue-spec-verify", "SKILL.md"),
+			filepath.Join(".agents", "skills", "issue-spec-workflow", "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-apply", "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-github", "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-propose", "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-review", "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-verify", "SKILL.md"),
+			filepath.Join(".claude", "skills", "issue-spec-workflow", "SKILL.md"),
+			filepath.Join(".agents", "skills", "issue-spec-workflow", "references", "human-review-projections.md"),
+			filepath.Join(".claude", "skills", "issue-spec-workflow", "references", "human-review-projections.md"),
+		},
+		[]string{
+			filepath.Join(".claude", "commands", "issue-spec", "apply.md"),
+			filepath.Join(".claude", "commands", "issue-spec", "propose.md"),
+			filepath.Join(".claude", "commands", "issue-spec", "review.md"),
+			filepath.Join(".claude", "commands", "issue-spec", "verify.md"),
+		}...,
+	) {
+		generated, err := os.ReadFile(filepath.Join(generatedRoot, relative))
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkedIn, err := os.ReadFile(filepath.Join(projectRoot, relative))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(generated, checkedIn) {
+			t.Fatalf("checked-in workflow artifact is stale: %s", relative)
+		}
+	}
+}
+
 func TestWriteWorkflowArtifactsCommandsOnly(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CODEX_HOME", filepath.Join(root, "codex-home"))
@@ -207,6 +284,9 @@ func TestWriteWorkflowArtifactsCommandsOnly(t *testing.T) {
 	}
 	if len(result.SkillFiles) != 0 {
 		t.Fatalf("skills generated in commands-only mode: %v", result.SkillFiles)
+	}
+	if len(result.SkillResourceFiles) != 0 {
+		t.Fatalf("skill resources generated in commands-only mode: %v", result.SkillResourceFiles)
 	}
 	if got, want := len(result.CommandFiles), 0; got != want {
 		t.Fatalf("command file count = %d, want %d", got, want)

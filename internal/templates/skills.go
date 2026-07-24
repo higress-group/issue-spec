@@ -17,7 +17,13 @@ type WorkflowTemplate struct {
 }
 
 type RenderedSkill struct {
-	Name    string
+	Name      string
+	Content   string
+	Resources []RenderedSkillResource
+}
+
+type RenderedSkillResource struct {
+	Path    string
 	Content string
 }
 
@@ -38,7 +44,14 @@ func IssueSpecSkills(repo string) []RenderedSkill {
 		if strings.TrimSpace(tmpl.SkillOnly) != "" {
 			body = strings.TrimRight(body, "\n") + "\n\n" + strings.TrimSpace(tmpl.SkillOnly) + "\n"
 		}
-		out = append(out, RenderedSkill{Name: tmpl.Name, Content: renderSkill(tmpl.Name, tmpl.Description, body)})
+		skill := RenderedSkill{Name: tmpl.Name, Content: renderSkill(tmpl.Name, tmpl.Description, body)}
+		if tmpl.Name == "issue-spec-workflow" {
+			skill.Resources = []RenderedSkillResource{{
+				Path:    "references/human-review-projections.md",
+				Content: humanReviewProjectionsReference,
+			}}
+		}
+		out = append(out, skill)
 	}
 	out = append(out, githubCLISkill())
 	return out
@@ -75,7 +88,11 @@ func issueSpecWorkflows(repo string) []WorkflowTemplate {
 		{
 			Name:        "issue-spec-workflow",
 			Description: "Use issue-spec to run an issue-native OpenSpec-style workflow across GitHub or self-hosted issue backends and provider-owned code changes.",
-			SkillOnly:   processWriteOwnershipGuidance,
+			SkillOnly: processWriteOwnershipGuidance + `
+
+## Human Review Projections
+
+Before generating or updating any phase projection, read [Human Review Projection Generation](references/human-review-projections.md) completely. Use it to build the Markdown fallback, the single ` + "`html-preview`" + ` review surface, QUESTION controls, source digest, and validation checks before running ` + "`projection upsert`" + `.`,
 			Body: `# Issue Spec Workflow
 
 Use this coordinator protocol for issue-native proposal, design, implementation, review, verification, durable projection, and closure work. The CLI and sealed packets carry mechanical contracts; keep only decisions and stops in agent context.
@@ -92,6 +109,7 @@ Use this coordinator protocol for issue-native proposal, design, implementation,
 ## Author and Plan
 
 - Create/update proposal, Design, and Implement issues with concrete body files. Generate SPEC, TASK, PROCESS, REVIEW, and VERIFY bodies from structured input; transition existing artifacts instead of regenerating them.
+- In every phase use this order: persist the phase issue body, perform the first QUESTION discovery/create pass, upsert the human review projection, then author the next typed child set (SPEC for Proposal, TASK for Design, PROCESS for Implement). Maintain one source-digest-bound logical comment with ` + "`issue-spec projection upsert --repo {{repo}} --issue <phase-issue> --phase <proposal-choice-brief|design-explainer|implement-execution-brief> --source-digest <sha256> --body-file <projection.md> --json`" + `. A projection is ordinary statusless synthesis, not gate or Agent authority; it has no typed marker, status, or transition. Issue bodies, typed artifacts, and only the latest effective ANSWER remain authoritative. Keep projection HTML source out of default Agent context. For a backend without atomic conditional projection creation, a first create after observing no matching projection requires ` + "`--allow-nonatomic --expected-absence`" + `; it remains non-atomic and succeeds only when full post-create re-observation proves exactly one matching logical projection with the planned body. For a backend without CAS, replacement after observing the unique current body requires ` + "`--allow-nonatomic --expected-digest <observed-sha256>`" + `; exact post-write re-observation guards the digest-bound update. These absence and digest preconditions are mutually exclusive. GitHub stores source only and never executes the preview or interactive answer intent.
 - Keep proposal, Design, SPEC, and TASK self-contained. Resolve blocking QUESTION artifacts before advancing. Link SPEC <-> TASK and TASK <-> PROCESS; CLI validators own canonical shape and traceability checks.
 - Each PROCESS owns one independently verifiable Design invariant and its major entry points. Balance end-to-end invariant cohesion against the role agent's bounded context and working set. Split only at a stable interface when each side has independent acceptance criteria and can be reviewed in isolation. Paths, file overlap, parallelism, commands, findings, token counts, and runtime session IDs are not semantic boundaries.
 - If neither a bounded cohesive PROCESS nor a defensible split exists, stop the Implement transition as blocked. Present concrete boundary options and acceptance consequences and request human direction. Put an independent review immediately after a high-risk invariant; repairs normally extend or replace its owning PROCESS.
@@ -120,17 +138,21 @@ Use this coordinator protocol for issue-native proposal, design, implementation,
 			Description: "Create or continue proposal, SPEC, QUESTION, design, and TASK artifacts for an issue-spec change.",
 			CommandID:   "propose",
 			CommandName: "Issue Spec: Propose",
+			SkillOnly: `## Human Review Projections
+
+Before generating or updating ` + "`proposal-choice-brief`" + ` or ` + "`design-explainer`" + `, read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely and apply the matching phase recipe. Generate the complete ` + "`projection.md`" + ` from authoritative inputs before running ` + "`projection upsert`" + `.`,
 			Body: `# Issue Spec Propose
 
 Use when the user asks for /issue-spec:propose, proposal, Design, SPEC, QUESTION, or TASK authoring. Use issue-spec-workflow for shared reads, provider routing, and recovery.
 
 1. Validate workflow config, search related issues, and open only selected discussions. If the issue is already in a later phase, continue that phase rather than duplicating it.
 2. Keep unconfirmed investigation, reproduction, or triage notes in a simple issue with issue-spec issue create simple; a proposal states the confirmed problem and the intended change, so never promote an investigation issue into the proposal or attach SPEC/Design to it. Create phase issues with concrete body files, beginning with issue-spec issue create proposal --repo {{repo}} --body-file <file>. Follow the workflow ` + "`rules.language`" + ` and ` + "`rules.language_instructions`" + ` for every Issue title. When those rules require a localized or non-English title, pass an explicit ` + "`--title`" + ` for Proposal, Design, and Implement; do not rely on the derived title because it retains an English stage prefix. Otherwise use the standardized Proposal:, Design:, and Implement: title family. Do not perform style-only title rewrites after creation.
-3. Generate canonical SPEC comments with issue-spec comment generate --type SPEC. Requirements must be testable and include WHEN/THEN scenarios. --allow-noncanonical is a migration bypass, not normal authoring.
-4. Resolve blocking QUESTION comments before Design/TASK work or record the accepted assumption.
-5. Write the Design with implementation locations, decisions, rejected alternatives, risks, tests, rollout, and rollback. Keep it authoritative and self-contained.
-6. Generate TASK comments with issue-spec comment generate --type TASK. Execution Planning must identify Design-invariant cohesion and major entry points, bounded role-context pressure, stable interfaces, owned areas, shared touchpoints, dependencies, coupling, and acceptance consequences. File ownership and parallelism are scheduling context, not semantic PROCESS boundaries. Execution modes such as coordinator-owned describe scheduling only; they never authorize coordinator-inline implementation of an agent-executed change-bearing PROCESS.
-7. Link SPEC <-> TASK, verify links, and run status --gate proposal/design/implement --summary --json as appropriate. Do not enter Implement while a semantic boundary decision is unresolved; block and ask a human.
+3. Perform the Proposal's first QUESTION discovery/create pass. Do not manufacture a question or reopen a settled choice; keep unresolved decisions distinct from evidence-dependent items.
+4. Upsert ` + "`proposal-choice-brief`" + ` after that pass and before complete SPEC authoring. It distinguishes settled, needs-evidence, and needs-decision items, with grounded recommendations, alternatives, tradeoffs, and source links. If a QUESTION exists, show its current choice model and latest effective ANSWER; earlier answers are optional history. The projection is ordinary and statusless.
+5. Generate canonical SPEC comments with issue-spec comment generate --type SPEC. Requirements must be testable and include WHEN/THEN scenarios. --allow-noncanonical is a migration bypass, not normal authoring.
+6. Persist the authoritative self-contained Design, perform its first QUESTION discovery/create pass, then upsert ` + "`design-explainer`" + ` before complete TASK planning. Use purposeful interaction to explain data, flow, alternatives, and correctness constraints; use only the latest effective ANSWER as decision authority.
+7. Generate TASK comments with issue-spec comment generate --type TASK. Execution Planning must identify Design-invariant cohesion and major entry points, bounded role-context pressure, stable interfaces, owned areas, shared touchpoints, dependencies, coupling, and acceptance consequences. File ownership and parallelism are scheduling context, not semantic PROCESS boundaries. Execution modes such as coordinator-owned describe scheduling only; they never authorize coordinator-inline implementation of an agent-executed change-bearing PROCESS.
+8. Link SPEC <-> TASK, verify links, and run status --gate proposal/design/implement --summary --json as appropriate. Do not enter Implement while a semantic boundary decision is unresolved; block and ask a human.
 `,
 		},
 		{
@@ -138,10 +160,16 @@ Use when the user asks for /issue-spec:propose, proposal, Design, SPEC, QUESTION
 			Description: "Implement PROCESS comments for an issue-spec change and keep implementation-change traceability synchronized.",
 			CommandID:   "apply",
 			CommandName: "Issue Spec: Apply",
-			SkillOnly:   processWriteOwnershipGuidance,
+			SkillOnly: processWriteOwnershipGuidance + `
+
+## Human Review Projections
+
+Before generating or updating ` + "`implement-execution-brief`" + `, read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely and apply the Implement recipe. Generate the complete ` + "`projection.md`" + ` from authoritative inputs before running ` + "`projection upsert`" + `.`,
 			Body: `# Issue Spec Apply
 
-Coordinator: complete DAG planning, workspace lifecycle, integration, links, review, recovery, and final evidence by following the backend-appropriate routing in issue-spec-workflow. For every agent-executed change-bearing PROCESS, seal the implementation assignment and dispatch a real non-Coordinator implementation worker with the Implementation Role Packet below; this is required regardless of node size, file count, or serial versus parallel scheduling, and the coordinator never implements, tests, or commits that PROCESS inline or uses workspace_management: independent as an escape hatch. A compatible real worker may execute successive serial or repair nodes; for each assignment give that worker only the parent TASK context plus the predecessor handoff, never the coordinator's accumulated context. Non-change-bearing orchestration and the narrow direct one-file PR path without a PROCESS DAG retain their existing policies. Run the authoritative final sync by following issue-spec-review. After that sync, explicitly link the REVIEW to its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC. Follow issue-spec-workflow for the backend-appropriate rationale command. Each owning worker authors its own rationale under that worker's --agent. Do not copy that policy into a worker packet.
+Coordinator: persist the Implement issue, perform its first QUESTION discovery/create pass, then upsert the ordinary statusless ` + "`implement-execution-brief`" + ` before completing PROCESS planning. The brief explains invariant-based PROCESS candidates or the current DAG, critical path, safe parallelism, Agent allocation, code-volume estimates with confidence, correctness complexity, shared touchpoints, blockers, and independent review/verify obligations. Correctness complexity is distinct from size, and estimates never define workflow semantics. Use current typed QUESTION data and only the latest effective ANSWER; issue bodies and typed artifacts remain authoritative and projection source stays outside default Agent context.
+
+Complete DAG planning, workspace lifecycle, integration, links, review, recovery, and final evidence by following the backend-appropriate routing in issue-spec-workflow. For every agent-executed change-bearing PROCESS, seal the implementation assignment and dispatch a real non-Coordinator implementation worker with the Implementation Role Packet below; this is required regardless of node size, file count, or serial versus parallel scheduling, and the coordinator never implements, tests, or commits that PROCESS inline or uses workspace_management: independent as an escape hatch. A compatible real worker may execute successive serial or repair nodes; for each assignment give that worker only the parent TASK context plus the predecessor handoff, never the coordinator's accumulated context. Non-change-bearing orchestration and the narrow direct one-file PR path without a PROCESS DAG retain their existing policies. Run the authoritative final sync by following issue-spec-review. After that sync, explicitly link the REVIEW to its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC. Follow issue-spec-workflow for the backend-appropriate rationale command. Each owning worker authors its own rationale under that worker's --agent. Do not copy that policy into a worker packet.
 
 ## Implementation Role Packet
 

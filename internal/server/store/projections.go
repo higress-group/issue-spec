@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/server/models"
@@ -30,6 +32,21 @@ type TypedCommentProjectionInput struct {
 	Body      string
 	Metadata  json.RawMessage
 	UserID    *uuid.UUID
+}
+
+// TypedCommentAuthority is the bounded, transaction-authoritative join used by
+// trusted typed-comment services. It deliberately exposes only the stored
+// comment and projection identity needed to revalidate one exact typed key.
+type TypedCommentAuthority struct {
+	CommentID             uuid.UUID
+	CompatibilityID       int64
+	IssueNumber           int64
+	Type                  string
+	Key                   string
+	Body                  string
+	RepresentationVersion int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 type ProjectionAnomalyInput struct {
@@ -201,6 +218,39 @@ func (s RepoStore) ApplyTypedCommentProjection(ctx context.Context, input TypedC
 		s.scope.OrgID, s.scope.RepoID, id, input.IssueID, input.Type, input.Body,
 		string(input.Metadata), input.UserID, input.CommentID)
 	return err
+}
+
+// TypedCommentAuthorityByKey resolves one projected typed comment by its
+// repository-unique key without scanning the ordinary comment timeline. A
+// locking read must run inside the caller's mutation transaction so validation
+// and any dependent write share the same authoritative snapshot.
+func (s RepoStore) TypedCommentAuthorityByKey(ctx context.Context, issueNumber int64,
+	key, commentType string, lock bool) (TypedCommentAuthority, error) {
+	key, commentType = strings.TrimSpace(key), strings.ToUpper(strings.TrimSpace(commentType))
+	if err := s.validate(); err != nil || issueNumber <= 0 || key == "" || commentType == "" ||
+		(lock && !s.inTx) {
+		return TypedCommentAuthority{}, ErrInvalidInput
+	}
+	query := `SELECT c.id, c.compatibility_id, i.number, typed.comment_type,
+		typed.comment_key, c.body, c.representation_version, c.created_at, c.updated_at
+		FROM issue_spec_typed_comments typed
+		JOIN comments c ON c.organization_id = typed.organization_id
+			AND c.repository_id = typed.repository_id AND c.id = typed.comment_id
+		JOIN issues i ON i.organization_id = c.organization_id
+			AND i.repository_id = c.repository_id AND i.id = c.issue_id
+		WHERE typed.organization_id = $1 AND typed.repository_id = $2
+			AND i.number = $3 AND typed.comment_key = $4 AND typed.comment_type = $5`
+	if lock {
+		query += ` FOR UPDATE OF typed, c`
+	}
+	var result TypedCommentAuthority
+	err := s.db.QueryRow(ctx, query, s.scope.OrgID, s.scope.RepoID, issueNumber, key, commentType).
+		Scan(&result.CommentID, &result.CompatibilityID, &result.IssueNumber, &result.Type,
+			&result.Key, &result.Body, &result.RepresentationVersion, &result.CreatedAt, &result.UpdatedAt)
+	if err != nil {
+		return TypedCommentAuthority{}, fmt.Errorf("load typed comment authority: %w", mapError(err))
+	}
+	return result, nil
 }
 
 func (s RepoStore) ClearTypedCommentProjection(ctx context.Context, commentID uuid.UUID) error {

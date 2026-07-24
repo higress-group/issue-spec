@@ -36,7 +36,7 @@ func implementationAssignment() Assignment {
 		Scenarios:    []ScenarioRef{{SpecID: "SPEC-005", Scenario: "receipt"}, {SpecID: "SPEC-001", Scenario: "packet"}},
 		Dependencies: []string{"PROCESS-004", "PROCESS-003"}, Handoff: "stage 1 reviewed",
 		DesignContext: assignmentDesignContext(),
-		Policy:        Policy{RequireExactRevision: true, MaxResultItems: 64}, ResultSchemaVersion: ReceiptSchemaVersion,
+		Policy:        Policy{RequireExactRevision: true}, ResultSchemaVersion: ReceiptSchemaVersion,
 		Implementation: &ImplementationPayload{
 			Objective: "Define schemas", Branch: "codex/297-p005-assignment-schema",
 			WriteOwnership:    []string{"internal/model/typed_comment.go", "internal/assignment/**"},
@@ -104,7 +104,7 @@ func TestAssignmentCanonicalJSONAndDigestGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"schema_version":"issue-spec.assignment/v1","assignment_id":"asg-005-1","role":"implementation","repository":"higress-group/issue-spec","issue":297,"process_id":"PROCESS-005","base_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","scenarios":[{"spec_id":"SPEC-001","scenario":"packet"},{"spec_id":"SPEC-005","scenario":"receipt"}],"dependencies":["PROCESS-003","PROCESS-004"],"handoff":"stage 1 reviewed","design_context":{"source_url":"https://github.com/higress-group/issue-spec/issues/296","read_mode":"complete-issue-body","invariant":"Portable assignments preserve Design authority.","applicable_decisions":["D14","D6"],"implementation_direction":"Carry the coordinator-authored projection without reinterpretation.","must_preserve":["exact text","list order"],"must_not":["summarize","trust session metadata"],"minimum_verification":["schema validation","digest coverage"],"conflict_policy":"design-authoritative-stop"},"policy":{"require_exact_revision":true,"max_result_items":64},"result_schema_version":"issue-spec.receipt/v1","implementation":{"objective":"Define schemas","branch":"codex/297-p005-assignment-schema","write_ownership":["internal/assignment/**","internal/model/typed_comment.go"],"shared_touchpoints":["internal/processworkspace"],"commit_policy":{"require_single_commit":true,"require_dco":true},"generators":[{"name":"types","command":"go generate ./internal/assignment","required_outputs":["internal/assignment/generated.go"]}],"focused_tests":[{"id":"assignment","command":"go test ./internal/assignment"}]}}`
+	want := `{"schema_version":"issue-spec.assignment/v1","assignment_id":"asg-005-1","role":"implementation","repository":"higress-group/issue-spec","issue":297,"process_id":"PROCESS-005","base_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","scenarios":[{"spec_id":"SPEC-001","scenario":"packet"},{"spec_id":"SPEC-005","scenario":"receipt"}],"dependencies":["PROCESS-003","PROCESS-004"],"handoff":"stage 1 reviewed","design_context":{"source_url":"https://github.com/higress-group/issue-spec/issues/296","read_mode":"complete-issue-body","invariant":"Portable assignments preserve Design authority.","applicable_decisions":["D14","D6"],"implementation_direction":"Carry the coordinator-authored projection without reinterpretation.","must_preserve":["exact text","list order"],"must_not":["summarize","trust session metadata"],"minimum_verification":["schema validation","digest coverage"],"conflict_policy":"design-authoritative-stop"},"policy":{"require_exact_revision":true},"result_schema_version":"issue-spec.receipt/v1","implementation":{"objective":"Define schemas","branch":"codex/297-p005-assignment-schema","write_ownership":["internal/assignment/**","internal/model/typed_comment.go"],"shared_touchpoints":["internal/processworkspace"],"commit_policy":{"require_single_commit":true,"require_dco":true},"generators":[{"name":"types","command":"go generate ./internal/assignment","required_outputs":["internal/assignment/generated.go"]}],"focused_tests":[{"id":"assignment","command":"go test ./internal/assignment"}]}}`
 	if string(canonical) != want {
 		t.Fatalf("canonical JSON mismatch\n got: %s\nwant: %s", canonical, want)
 	}
@@ -112,7 +112,7 @@ func TestAssignmentCanonicalJSONAndDigestGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if digest != "409667915538033f4d3da79d25e18e601404cc6933d059f3e5a58e1d3f860dd5" {
+	if digest != "bf036dac8cbbaa268e882ddf04b1b3743f4951167189b70acc49d926d6a6303e" {
 		t.Fatalf("digest = %q", digest)
 	}
 
@@ -180,6 +180,25 @@ func TestAssignmentCanonicalizesRequiredOutputGlobs(t *testing.T) {
 	if got := parsed.Implementation.Generators[0].RequiredOutputGlobs; len(got) != 2 ||
 		got[0] != "generated/**" || got[1] != "generated/**/*.js" {
 		t.Fatalf("parsed required_output_globs = %#v", got)
+	}
+}
+
+func TestDeprecatedMaxResultItemsRemainsReadable(t *testing.T) {
+	value := implementationAssignment()
+	value.Policy.MaxResultItems = 64
+	encoded, err := CanonicalAssignmentJSON(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"max_result_items":64`)) {
+		t.Fatalf("legacy max_result_items missing from canonical assignment: %s", encoded)
+	}
+	parsed, err := ParseAssignmentJSON(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Policy.MaxResultItems != 64 {
+		t.Fatalf("max_result_items = %d, want 64", parsed.Policy.MaxResultItems)
 	}
 }
 

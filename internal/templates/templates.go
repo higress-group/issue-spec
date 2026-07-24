@@ -39,6 +39,7 @@ func ProposalIssue(change string) (string, string, []string) {
 	b.WriteString(fillSection("Related Specs Analysis", "Summarize the existing SPECs or durable specs this interacts with and how, so a reader need not rediscover them."))
 	b.WriteString(fillSection("Existing Assumptions Impact", "Record the assumptions in force and how this change affects or depends on them."))
 	b.WriteString(plainSection("Open Questions", "- No blocking QUESTION is currently recorded."))
+	b.WriteString(plainSection("Human Review Projection", "- Timing: after the first QUESTION discovery/create pass and before complete SPEC authoring.\n- Authority: ordinary and statusless; this issue body, typed artifacts, and the latest effective ANSWER remain authoritative.\n- Context: projection HTML source is excluded from default Agent context."))
 	b.WriteString(fillSection("Capabilities", "List the capability areas this change introduces or modifies."))
 	b.WriteString(fillSection("Impact", "Describe the expected impact on users, agents, and the workflow."))
 	body := strings.TrimRight(b.String(), "\n") + "\n"
@@ -51,6 +52,7 @@ func DesignIssue(change, proposalRef string) (string, string, []string) {
 	fmt.Fprintf(&b, "<!-- issue-spec:issue=design change=%s version=1 -->\n", change)
 	fmt.Fprintf(&b, "# Design: %s\n\n", change)
 	b.WriteString(plainSection("Question Convergence Check", fmt.Sprintf("- Proposal Issue: %s\n- Blocking QUESTION status: confirmed or explicitly accepted as assumptions.", valueOr(proposalRef, "N/A"))))
+	b.WriteString(plainSection("Human Review Projection", "- Timing: after the first QUESTION discovery/create pass and before complete TASK planning.\n- Authority: ordinary and statusless; this issue body, typed artifacts, and the latest effective ANSWER remain authoritative.\n- Content: explain data, flow, alternatives, and correctness constraints; keep projection HTML source outside default Agent context."))
 	b.WriteString(fillSection("Current Implementation Locations", "Name the concrete files/symbols that implement the affected behavior today, so a reader with no shared context can find them without rediscovery."))
 	b.WriteString(fillSection("Involved Modules", "List the modules this change touches and their role."))
 	b.WriteString(fillSection("Impact Scope", "Describe what behavior changes and which SPECs each part realizes."))
@@ -75,6 +77,13 @@ func ImplementIssue(change, designRef string) (string, string, []string) {
 ## PR Mode Decision
 
 TBD
+
+## Human Review Projection
+
+- Timing: after the first QUESTION discovery/create pass and before complete PROCESS planning.
+- Authority: ordinary and statusless; this issue body, typed artifacts, and the latest effective ANSWER remain authoritative.
+- Content: explain the invariant DAG, estimates and confidence, correctness complexity, blockers, and independent review/verify obligations; estimates do not define workflow semantics.
+- Context: projection HTML source is excluded from default Agent context.
 
 ## DAG Nodes and Dependencies
 

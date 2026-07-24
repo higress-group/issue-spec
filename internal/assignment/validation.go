@@ -17,7 +17,6 @@ const (
 	maxTextLength      = 4096
 	maxCommandLength   = 2048
 	maxListItems       = 128
-	maxResultItems     = 512
 )
 
 var (
@@ -76,9 +75,6 @@ func (a Assignment) validate(requireDesignContext bool) error {
 	}
 	if !a.Policy.RequireExactRevision {
 		return errors.New("policy.require_exact_revision: must be true in version 1")
-	}
-	if a.Policy.MaxResultItems < 1 || a.Policy.MaxResultItems > maxResultItems {
-		return fmt.Errorf("policy.max_result_items: must be between 1 and %d", maxResultItems)
 	}
 	if a.ResultSchemaVersion != ReceiptSchemaVersion {
 		return fmt.Errorf("result_schema_version: unsupported value %q", a.ResultSchemaVersion)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/higress-group/issue-spec/internal/model"
 )
 
 var rawIssueMarker = regexp.MustCompile(`(?s)<!--\s*issue-spec:issue=([^\s>]+)\s+change=([^\s>]+)\s+version=([^\s>]+)\s*-->`)
@@ -36,7 +37,12 @@ type typedArtifact struct {
 	key          string
 	status       string
 	closureLink  bool
+	body         string
+	providerID   string
+	actor        string
+	createdAt    time.Time
 	updatedAt    time.Time
+	version      int64
 }
 
 func parseRawArtifact(row rawArtifact) (rawArtifact, bool) {
@@ -146,4 +152,18 @@ func dedupeSorted(values []string) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func resolveTypedAnswers(items []typedArtifact) model.AnswerResolution {
+	observations := make([]model.AnswerObservation, 0)
+	for _, item := range items {
+		if item.typ != "ANSWER" {
+			continue
+		}
+		observations = append(observations, model.AnswerObservation{
+			ProviderID: item.providerID, Actor: item.actor, CreatedAt: item.createdAt,
+			UpdatedAt: item.updatedAt, RepresentationVersion: item.version, Body: item.body,
+		})
+	}
+	return model.ResolveEffectiveAnswers(observations)
 }

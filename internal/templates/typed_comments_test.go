@@ -11,6 +11,43 @@ import (
 	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
 
+func TestQuestionAndAnswerCommentsRenderCanonicalDecisionData(t *testing.T) {
+	choice := model.ChoiceModel{
+		Version: 1, Mode: model.ChoiceModeSingle, AllowCustom: true,
+		Options: []model.ChoiceOption{{ID: "keep", Label: "Keep", Description: "Keep behavior", Tradeoff: "No migration"}},
+	}
+	question, err := QuestionComment(QuestionOptions{
+		ID: "QUESTION-700", Agent: "Coordinator", Blocking: true, Question: "Which path?",
+		Assumption: "Keep.", ChoiceModel: &choice,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := model.SnapshotQuestion(question, "https://example.test/issues/7#issuecomment-70")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := model.BuildAnswerPayload(snapshot, []string{"keep"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer, err := AnswerComment(AnswerOptions{ID: "ANSWER-700", Agent: "Human", Scope: "QUESTION-700", Payload: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := model.ParseAnswerPayload(answer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Question.ID != "QUESTION-700" || parsed.Selection.Options[0].Label != "Keep" ||
+		model.ParseTypedComment(answer).Status != "done" {
+		t.Fatalf("parsed ANSWER = %+v\n%s", parsed, answer)
+	}
+	if strings.Contains(answer, "Agent Session ID") || strings.Contains(answer, "Resolution Log") {
+		t.Fatalf("ANSWER carried mutable/session protocol fields:\n%s", answer)
+	}
+}
+
 func TestSpecCommentRendersCanonicalBodyAcceptedByValidator(t *testing.T) {
 	body, err := SpecComment(SpecCommentOptions{
 		Common: CommonOptions{ID: "SPEC-001", Status: "confirmed", Scope: "canonical SPEC generation"},
