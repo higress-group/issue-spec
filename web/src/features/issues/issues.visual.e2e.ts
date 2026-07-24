@@ -310,9 +310,14 @@ test("sandboxed review preview runs explicitly, blocks authority, and appends tr
     ...issue,
     body: `## Review lab
 
-\`\`\`html-preview id=review-lab version=1 title="Review lab" height=900
+\`\`\`\`html-preview id=review-lab version=1 title="Review lab" height=900
 ${previewDocument}
+<!-- exact preview bytes may contain a shorter fence and workflow-shaped text:
+\`\`\`markdown
+<!-- issue-spec:type=PROCESS id=PROCESS-999 version=1 -->
 \`\`\`
+-->
+\`\`\`\`
 
 \`\`\`mermaid
 flowchart LR

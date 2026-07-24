@@ -460,8 +460,12 @@
     "file": "assets/init-D6jRqBbL.js",
     "name": "init"
   },
-  "_issue-editor-BY-PbtKv.js": {
-    "file": "assets/issue-editor-BY-PbtKv.js",
+  "_issue-editor-C-kzuhll.css": {
+    "file": "assets/issue-editor-C-kzuhll.css",
+    "src": "_issue-editor-C-kzuhll.css"
+  },
+  "_issue-editor-CR_n5DFv.js": {
+    "file": "assets/issue-editor-CR_n5DFv.js",
     "name": "issue-editor",
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
@@ -479,10 +483,6 @@
     "css": [
       "assets/issue-editor-C-kzuhll.css"
     ]
-  },
-  "_issue-editor-C-kzuhll.css": {
-    "file": "assets/issue-editor-C-kzuhll.css",
-    "src": "_issue-editor-C-kzuhll.css"
   },
   "_label-chips-DMPnSd3b.css": {
     "file": "assets/label-chips-DMPnSd3b.css",
@@ -710,7 +710,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-BynGR-A4.js",
+    "file": "assets/index-Bp5ZBjfq.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -1707,7 +1707,7 @@
     ]
   },
   "src/features/issues/create-page.tsx": {
-    "file": "assets/create-page-j7j1xOn3.js",
+    "file": "assets/create-page-Ow2oSQly.js",
     "name": "create-page",
     "src": "src/features/issues/create-page.tsx",
     "isDynamicEntry": true,
@@ -1715,13 +1715,13 @@
       "_rolldown-runtime-QTnfLwEv.js",
       "_session-DBWpYMYY.js",
       "_useMutation-DRV622_Y.js",
-      "_issue-editor-BY-PbtKv.js",
+      "_issue-editor-CR_n5DFv.js",
       "_repository-context-DO6G70wP.js",
       "_label-chips-kpIO8HZn.js"
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-CrJq4WJ4.js",
+    "file": "assets/detail-page-C7U8wXGl.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
@@ -1730,7 +1730,7 @@
       "_session-DBWpYMYY.js",
       "_useMutation-DRV622_Y.js",
       "_shield-alert-CNCyRhof.js",
-      "_issue-editor-BY-PbtKv.js",
+      "_issue-editor-CR_n5DFv.js",
       "_circle-dot-ByhnaIxK.js",
       "_relationships-D51AoD0l.js",
       "_lock-keyhole-DWGUNdys.js",

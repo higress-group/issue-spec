@@ -9,9 +9,20 @@ const questionIDPattern = /^QUESTION-[0-9]{3,}$/;
 const optionIDPattern = /^[a-z][a-z0-9-]{0,63}$/;
 const messageKeys = ["custom", "mode", "nonce", "option_ids", "question_id", "version"];
 const encoder = new TextEncoder();
+const maxAnswerRequestBytes = 16 * 1_024;
+const digestBudget = "0".repeat(64);
 
 function scalarLength(value: string) {
   return [...value].length;
+}
+
+export function previewAnswerRequest(intent: PreviewAnswerIntent, questionDigest: string) {
+  return {
+    question_id: intent.questionId,
+    question_digest: questionDigest,
+    option_ids: intent.optionIds,
+    custom: intent.custom,
+  };
 }
 
 export function parsePreviewAnswerMessage(
@@ -27,8 +38,7 @@ export function parsePreviewAnswerMessage(
   if (typeof value.question_id !== "string" || !questionIDPattern.test(value.question_id)) return null;
   if (value.mode !== "single" && value.mode !== "multiple") return null;
   if (!Array.isArray(value.option_ids) || value.option_ids.length > 20) return null;
-  if (typeof value.custom !== "string" || scalarLength(value.custom) > 4_096 ||
-      encoder.encode(value.custom).byteLength > 16 * 1_024) return null;
+  if (typeof value.custom !== "string" || scalarLength(value.custom) > 4_096) return null;
 
   const optionIds: string[] = [];
   const seen = new Set<string>();
@@ -42,10 +52,12 @@ export function parsePreviewAnswerMessage(
   if (!hasCustom && optionIds.length === 0) return null;
   if (value.mode === "single" && optionIds.length > 1) return null;
 
-  return {
+  const intent: PreviewAnswerIntent = {
     questionId: value.question_id,
     mode: value.mode,
     optionIds,
     custom: value.custom,
   };
+  if (encoder.encode(JSON.stringify(previewAnswerRequest(intent, digestBudget))).byteLength > maxAnswerRequestBytes) return null;
+  return intent;
 }

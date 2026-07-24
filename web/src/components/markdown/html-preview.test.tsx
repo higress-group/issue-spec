@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderApp } from "../../../tests/render";
-import { parsePreviewAnswerMessage } from "./html-preview-message";
+import { parsePreviewAnswerMessage, previewAnswerRequest } from "./html-preview-message";
 import { createHtmlPreviewActivity, iframeAllow, type HtmlPreviewContext } from "./html-preview";
 import { MarkdownView } from "./markdown-view";
 
@@ -58,6 +58,20 @@ describe("sandboxed HTML preview", () => {
     />);
     expect(screen.getByRole("button", { name: /typed-review/ })).toBeInTheDocument();
     expect(screen.queryByText("<!doctype html><button>Interactive</button>")).not.toBeInTheDocument();
+  });
+
+  it("preserves exact preview bytes and digest across shorter inner backtick fences", async () => {
+    const marker = "<!-- issue-spec:type=PROCESS id=PROCESS-999 version=1 -->";
+    const body = ["<!doctype html>", "```markdown", marker, "```", "<p>exact bytes</p>"].join("\n");
+    const source = [`\`\`\`\`html-preview id=fence-review version=1 title="fence-review"`, body, "````"].join("\n");
+    const { context, previewURL } = previewContext();
+    renderApp(<MarkdownView source={source} previewContext={context} />);
+
+    await openAndRun("fence-review");
+    expect(previewURL).toHaveBeenCalledWith(
+      "fence-review",
+      "67409d850ebef6543b8bbba8523603e756e82e087fe5623559949d5be29a8fcb",
+    );
   });
 
   it("is inert by default and uses the exact iframe boundary through Run, Reload, Stop, and collapse", async () => {
@@ -222,6 +236,22 @@ describe("preview answer message validation", () => {
       optionIds: ["safe", "fast"],
       custom: "",
     });
+  });
+
+  it("budgets the complete escaped native request at the 16 KiB boundary", () => {
+    const acceptedCustom = "\0".repeat(2_706) + "x".repeat(5);
+    const accepted = parsePreviewAnswerMessage(event({ ...valid, option_ids: [], custom: acceptedCustom }), source, nonce);
+    expect(accepted).not.toBeNull();
+    expect(new TextEncoder().encode(JSON.stringify(previewAnswerRequest(accepted!, "0".repeat(64)))).byteLength).toBe(16 * 1_024);
+
+    const rejectedCustom = acceptedCustom + "x";
+    expect(parsePreviewAnswerMessage(event({ ...valid, option_ids: [], custom: rejectedCustom }), source, nonce)).toBeNull();
+    expect(new TextEncoder().encode(JSON.stringify(previewAnswerRequest({
+      questionId: "QUESTION-007",
+      mode: "multiple",
+      optionIds: [],
+      custom: rejectedCustom,
+    }, "0".repeat(64)))).byteLength).toBe(16 * 1_024 + 1);
   });
 
   it.each([

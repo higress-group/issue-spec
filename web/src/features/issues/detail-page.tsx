@@ -19,7 +19,7 @@ import { copyText } from "../../lib/clipboard";
 import { isLaterTimestamp, PreciseRelativeTime, useSecondClock } from "./relative-time";
 import { useMeta } from "../../auth/session";
 import { createHtmlPreviewActivity, type HtmlPreviewContext } from "../../components/markdown/html-preview";
-import type { PreviewAnswerIntent } from "../../components/markdown/html-preview-message";
+import { previewAnswerRequest, type PreviewAnswerIntent } from "../../components/markdown/html-preview-message";
 import type { QuestionAuthority } from "./types";
 
 const commentAnchorPattern = /^#issuecomment-[1-9]\d*$/;
@@ -87,20 +87,24 @@ function AnswerConfirmation({ owner, repo, number, intent, onClose }: {
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const questionQueryKey = ["issues", owner, repo, number, "question", intent.questionId] as const;
   const question = useQuery({
-    queryKey: ["issues", owner, repo, number, "question", intent.questionId],
+    queryKey: questionQueryKey,
     queryFn: ({ signal }) => issueApi.getQuestion(owner, repo, number, intent.questionId, signal),
+    staleTime: 0,
+    refetchOnMount: "always",
   });
-  const selection = question.data ? answerSelection(question.data, intent) : null;
+  const authority = question.isFetching || question.error ? undefined : question.data;
+  const selection = authority ? answerSelection(authority, intent) : null;
   const mutation = useMutation({
-    mutationFn: () => {
-      if (!question.data || !selection) throw new Error("Invalid answer intent");
-      return issueApi.createAnswer(owner, repo, number, {
-        question_id: intent.questionId,
-        question_digest: question.data.body_digest,
-        option_ids: intent.optionIds,
-        custom: intent.custom,
-      });
+    mutationFn: async () => {
+      if (!authority || !selection) throw new Error("Invalid answer intent");
+      const confirmedDigest = authority.body_digest;
+      const latest = await question.refetch({ throwOnError: true });
+      if (!latest.data || latest.data.body_digest !== confirmedDigest ||
+          latest.data.representation_version !== authority.representation_version ||
+          !answerSelection(latest.data, intent)) throw new Error("QUESTION authority changed");
+      return issueApi.createAnswer(owner, repo, number, previewAnswerRequest(intent, latest.data.body_digest));
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["issues", owner, repo, number, "comments"] });
@@ -112,8 +116,8 @@ function AnswerConfirmation({ owner, repo, number, intent, onClose }: {
       <span className="issue-kicker purple">{t("issues.answer.trustedConfirmation")}</span>
       <h2 id="answer-confirmation-heading">{t("issues.answer.title")}</h2>
     </div>
-    {question.isLoading ? <p role="status">{t("issues.answer.loading")}</p> : question.error ? <p role="alert">{t("issues.answer.unavailable")}</p> : question.data && selection ? <>
-      <p className="answer-question">{question.data.question.question}</p>
+    {question.isFetching ? <p role="status">{t("issues.answer.loading")}</p> : question.error ? <p role="alert">{t("issues.answer.unavailable")}</p> : authority && selection ? <>
+      <p className="answer-question">{authority.question.question}</p>
       {selection.custom ? <dl><dt>{t("issues.answer.custom")}</dt><dd>{selection.custom}</dd></dl> :
         <dl><dt>{t("issues.answer.selection")}</dt><dd>{selection.labels.join(", ")}</dd></dl>}
       <p className="answer-authority">{t("issues.answer.authority")}</p>
@@ -121,7 +125,7 @@ function AnswerConfirmation({ owner, repo, number, intent, onClose }: {
     {mutation.error ? <p role="alert">{t("issues.answer.failed")}</p> : null}
     <div className="answer-confirmation-actions">
       <button className="issue-button" type="button" onClick={onClose}>{t("issues.answer.cancel")}</button>
-      <button className="issue-button primary" type="button" disabled={!selection || mutation.isPending} onClick={() => mutation.mutate()}>
+      <button className="issue-button primary" type="button" disabled={!selection || question.isFetching || mutation.isPending} onClick={() => mutation.mutate()}>
         {t(mutation.isPending ? "issues.answer.submitting" : "issues.answer.confirm")}
       </button>
     </div>
