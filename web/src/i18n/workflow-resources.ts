@@ -10,6 +10,7 @@ export const workflowResources = {
         securityOnly: "Runs only after you choose Run. Network and application authority stay blocked; interactive answers are unavailable.",
         run: "Run", reload: "Reload", stop: "Stop",
         activeLimit: "Two previews are already active. Stop one before running another.",
+        startupFailure: "Preview could not start. Try again or ask an administrator to check this deployment.",
       },
     },
     issues: {
@@ -310,6 +311,7 @@ export const workflowResources = {
         securityOnly: "仅在你选择运行后启动。网络和应用权限始终受限；交互式回答当前不可用。",
         run: "运行", reload: "重新加载", stop: "停止",
         activeLimit: "已有两个预览正在运行。请先停止其中一个。",
+        startupFailure: "预览无法启动。请重试，或联系管理员检查当前部署。",
       },
     },
     issues: {

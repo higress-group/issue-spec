@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderApp } from "../../../tests/render";
 import { parsePreviewAnswerMessage } from "./html-preview-message";
 import { createHtmlPreviewActivity, iframeAllow, type HtmlPreviewContext } from "./html-preview";
@@ -9,6 +9,14 @@ import { MarkdownView } from "./markdown-view";
 
 const previewSource = (id = "design-review", body = "<!doctype html><button>Interactive</button>", metadata = "") =>
   `\`\`\`html-preview id=${id} version=1 title="${id}" height=999 ${metadata}\n${body}\n\`\`\``;
+const expectedPreviewDigest = "81f1af6fe33563d5441441fd0867264c382ca4d0d966ad386e03d97f3d120e59";
+const unicodePreviewBody = "<!doctype html><p>沙箱评审确保脚本隔离；这是一个跨越 SHA-256 分块边界的中文回归负载。安全边界保持不变。</p>";
+const expectedUnicodePreviewDigest = "55d412f209a3588a1b33c0d0970bccb23a9e48a0e0c157a54f4d588df5c6aef0";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 function previewContext(activity = createHtmlPreviewActivity(), answersEnabled = true) {
   const previewURL = vi.fn((id: string, digest: string) => `/api/v1/preview/${id}?digest=${digest}`);
@@ -61,7 +69,7 @@ describe("sandboxed HTML preview", () => {
     const iframe = await openAndRun("design-review");
     expect(previewURL).toHaveBeenCalledTimes(1);
     expect(previewURL.mock.calls[0][0]).toBe("design-review");
-    expect(previewURL.mock.calls[0][1]).toMatch(/^[0-9a-f]{64}$/);
+    expect(previewURL.mock.calls[0][1]).toBe(expectedPreviewDigest);
     expect(iframe).toHaveAttribute("height", "720");
     expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
     expect(iframe).toHaveAttribute("referrerpolicy", "no-referrer");
@@ -93,12 +101,67 @@ describe("sandboxed HTML preview", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: /third/ }));
     await userEvent.setup().click(screen.getAllByRole("button", { name: "Run" }).at(-1)!);
     expect(await screen.findByRole("alert")).toHaveTextContent("Two previews are already active");
+    expect(screen.getByRole("alert")).not.toHaveTextContent("could not start");
     expect(screen.queryByTitle("third")).not.toBeInTheDocument();
 
     const first = screen.getByTitle("first").closest(".html-preview")!;
     await userEvent.setup().click(first.querySelector("button")!);
     await userEvent.setup().click(screen.getByRole("button", { name: "Run" }));
     expect(await screen.findByTitle("third")).toBeInTheDocument();
+  });
+
+  it("uses exact SHA-256 and unique per-run correlation when browser crypto is unavailable", async () => {
+    vi.stubGlobal("crypto", undefined);
+    const { context, previewURL } = previewContext();
+    expect(new TextEncoder().encode(`${unicodePreviewBody}\n`)).toHaveLength(146);
+    renderApp(<MarkdownView source={previewSource("http-review", unicodePreviewBody)} previewContext={context} />);
+
+    const iframe = await openAndRun("http-review") as HTMLIFrameElement;
+    expect(previewURL).toHaveBeenLastCalledWith("http-review", expectedUnicodePreviewDigest);
+    const firstPostMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    fireEvent.load(iframe);
+    const firstNonce = (firstPostMessage.mock.calls.at(-1)?.[0] as { nonce: string }).nonce;
+    expect(firstNonce).toMatch(/^[0-9a-f]{48}$/);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Reload" }));
+    const reloaded = await screen.findByTitle("http-review") as HTMLIFrameElement;
+    expect(reloaded).not.toBe(iframe);
+    const secondPostMessage = vi.spyOn(reloaded.contentWindow!, "postMessage");
+    fireEvent.load(reloaded);
+    const secondNonce = (secondPostMessage.mock.calls.at(-1)?.[0] as { nonce: string }).nonce;
+    expect(secondNonce).toMatch(/^[0-9a-f]{48}$/);
+    expect(secondNonce).not.toBe(firstNonce);
+  });
+
+  it("releases a claimed slot if preview startup fails after the claim", async () => {
+    vi.stubGlobal("crypto", undefined);
+    const activity = { claim: vi.fn(() => true), release: vi.fn() };
+    const { context } = previewContext(activity);
+    const originalSetTimeout = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation((handler, timeout, ...args) => {
+      if (timeout === 10 * 60 * 1_000) throw new Error("timer unavailable");
+      return originalSetTimeout(handler, timeout, ...args);
+    });
+    renderApp(<MarkdownView source={previewSource("timer-failure")} previewContext={context} />);
+    await userEvent.setup().click(screen.getByRole("button", { name: /timer-failure/ }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Run" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Preview could not start");
+    expect(activity.claim).toHaveBeenCalledWith("issue:41:timer-failure");
+    expect(activity.release).toHaveBeenCalledWith("issue:41:timer-failure");
+    expect(screen.queryByTitle("timer-failure")).not.toBeInTheDocument();
+  });
+
+  it("reports startup failure separately from the active-preview limit", async () => {
+    const { context } = previewContext();
+    renderApp(<MarkdownView source={previewSource("startup")} previewContext={context} />);
+    await userEvent.setup().click(screen.getByRole("button", { name: /startup/ }));
+    vi.stubGlobal("TextEncoder", undefined);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Run" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Preview could not start");
+    expect(screen.getByRole("alert")).not.toHaveTextContent("Two previews are already active");
+    expect(screen.queryByTitle("startup")).not.toBeInTheDocument();
   });
 
   it("does not remount an unchanged running frame on parent rerender and tears down changed source", async () => {

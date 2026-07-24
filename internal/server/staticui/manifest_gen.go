@@ -4,7 +4,7 @@ package staticui
 
 func init() {
 	manifest = map[string]Asset{
-		".vite/manifest.json":                             {ContentType: "application/json", SHA256: "935dc236b2a252cf1491437aeb4cce5fa7720ce5d2e6e81abe2740e6cad25295", Immutable: false},
+		".vite/manifest.json":                             {ContentType: "application/json", SHA256: "1e12d0f8d0f34f7bbfb5834189cf448303f21250fd84da3a3fa24129f56b8ca0", Immutable: false},
 		"assets/abnfDiagram-VRR7QNED-BqmZpAB8.js":         {ContentType: "text/javascript; charset=utf-8", SHA256: "ed767cab7eb8d86df302da56bb148630b6a3d1d3b8d949c87f59fa84d1c8356b", Immutable: true},
 		"assets/arc-BjSQqbzd.js":                          {ContentType: "text/javascript; charset=utf-8", SHA256: "1a6f1860f0fef16eb6c08e7c3b9b29c054a91f2b22be3c146a72863ad8b14a42", Immutable: true},
 		"assets/architecture-TIHT7OUA-BWqzHezU.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "c97ab3b4e90eff4478f5ca8f6c6b9a9e2e81561edeee171098bb8f5e715e69e3", Immutable: true},
@@ -63,7 +63,7 @@ func init() {
 		"assets/classDiagram-v2-EOCWNBFH-Bfjj_EAK.js":     {ContentType: "text/javascript; charset=utf-8", SHA256: "1a7054bbf7c3de4ed0093207c85fab5eb46dc8da891869fb9df508b8870ba1cc", Immutable: true},
 		"assets/clipboard-D_yI8EK_.js":                    {ContentType: "text/javascript; charset=utf-8", SHA256: "242697e578c162644a13ca58892247ec42a76f38140e0573344194daf9f6699d", Immutable: true},
 		"assets/cose-bilkent-JH36ORCC-jfFAOGFt.js":        {ContentType: "text/javascript; charset=utf-8", SHA256: "b3bf8897720453ebf5149a732d07cae60c475f5ec27f4c9abc9821e8afd47a36", Immutable: true},
-		"assets/create-page-zKLuomS1.js":                  {ContentType: "text/javascript; charset=utf-8", SHA256: "db5f497ae6091631645916602525d1792e4d2ffa6ddf8191482982736f7021e1", Immutable: true},
+		"assets/create-page-j7j1xOn3.js":                  {ContentType: "text/javascript; charset=utf-8", SHA256: "f75eb3e5f94e8671d00d4498d10612ae4b9a68e97cc2b935b62bb435a7630bfd", Immutable: true},
 		"assets/cynefin-VYW2F7L2-4m18BxUG.js":             {ContentType: "text/javascript; charset=utf-8", SHA256: "6555d8fdf4233a7562816b066eab8eaf5e52b6fab812b29d59d058cd2bbf9752", Immutable: true},
 		"assets/cynefinDiagram-TSTJHNR4-BChe5ULq.js":      {ContentType: "text/javascript; charset=utf-8", SHA256: "690891f3ceb19f336ff1f20929ce75b01f8fa974dd9105707ceb84f3ee5454e5", Immutable: true},
 		"assets/cytoscape.esm-CQFVGiJu.js":                {ContentType: "text/javascript; charset=utf-8", SHA256: "d25d2f6cddaea18525a1ea90cc093bb559b034fe5b0f2f9abde404e3dc171ced", Immutable: true},
@@ -71,8 +71,8 @@ func init() {
 		"assets/dagre-dpRSp0QF.js":                        {ContentType: "text/javascript; charset=utf-8", SHA256: "b59fd98947b9536c21b549ed3478494d11f92780b60593199eb99dd2ff963af8", Immutable: true},
 		"assets/defaultLocale-C8Fc0cco.js":                {ContentType: "text/javascript; charset=utf-8", SHA256: "ad2f8eaadf848ecc3f28751230c7ddb7729314f606773de661e44e757aef37c9", Immutable: true},
 		"assets/detail-page-BkVKKMmE.css":                 {ContentType: "text/css; charset=utf-8", SHA256: "7c28931d34a683f50e7a4bd5f4d1e014eebe8931f81d8eec54a6e38b429d5b11", Immutable: true},
-		"assets/detail-page-CXx-D8y2.js":                  {ContentType: "text/javascript; charset=utf-8", SHA256: "7309a3d5a0cb559f79ff4c821574ea7631b9353fbb021af1f751d214b540979b", Immutable: true},
 		"assets/detail-page-CfVOfHFy.js":                  {ContentType: "text/javascript; charset=utf-8", SHA256: "12d894ee444e21133fd0f52486382f9c134b55558f866ac14d4c482654c33a09", Immutable: true},
+		"assets/detail-page-JvvFWQIO.js":                  {ContentType: "text/javascript; charset=utf-8", SHA256: "76e1bfb815660db206a90558d2594303f0fe6da627c16cac51d87dd34c1abfd0", Immutable: true},
 		"assets/diagram-FQU43EPY-D7I9Pmsp.js":             {ContentType: "text/javascript; charset=utf-8", SHA256: "7efdc399a60e029bf5dae9a5823267a20f1147dd4bd6befea28ddf568d26172e", Immutable: true},
 		"assets/diagram-G47NLZAW-DGSiTGmD.js":             {ContentType: "text/javascript; charset=utf-8", SHA256: "46fcb9884de87e98546dd509f392a7adaeea098d403d02299097aea21d8f9118", Immutable: true},
 		"assets/diagram-NH7WQ7WH-D4OrWjwR.js":             {ContentType: "text/javascript; charset=utf-8", SHA256: "c0ed729accfc581110f376dc02ca5eca258dde4f930ed9058dd4c83100959010", Immutable: true},
@@ -88,13 +88,13 @@ func init() {
 		"assets/gitGraph-TEB2WS4Q-Do0SQOtM.js":            {ContentType: "text/javascript; charset=utf-8", SHA256: "0d6bbca1c27356875240d4aa4b315659d8bc3e007871ce4e416467102a92c348", Immutable: true},
 		"assets/gitGraphDiagram-IHSO6WYX-B-rRBdEd.js":     {ContentType: "text/javascript; charset=utf-8", SHA256: "b99eab114b18878f98b7d3b5c3524b14a037cdc1314136c9b6b77a65e863be50", Immutable: true},
 		"assets/graphlib-DS17s2tU.js":                     {ContentType: "text/javascript; charset=utf-8", SHA256: "6afce81d54f184820fad5ed0c9fa2dc42acc6e0cd0fd8fbcb0568dafc2cc7ab7", Immutable: true},
-		"assets/index-BE8hQjSD.js":                        {ContentType: "text/javascript; charset=utf-8", SHA256: "84e6fb98aa78d9b3810e974c8b7aeb6f1a6122ccf6c321594e6555722f584f22", Immutable: true},
+		"assets/index-DFN4pEcY.js":                        {ContentType: "text/javascript; charset=utf-8", SHA256: "2916ee5642825e7b65cbd6e62ff696516f1f77b2cee396e89ff7aecc58b9f664", Immutable: true},
 		"assets/index-oK8bF2VM.css":                       {ContentType: "text/css; charset=utf-8", SHA256: "8008a1066d071d54fdd5b8e2ac7cbef0b2f742ce6f9ddacc27623b441bed7c8e", Immutable: true},
 		"assets/info-DKCQHKI2-DIc7uC4I.js":                {ContentType: "text/javascript; charset=utf-8", SHA256: "40fd4df74f06b3b38bf9e4c0a2c5292c8989730b07b3b8b05631b5890a8aadf4", Immutable: true},
 		"assets/infoDiagram-FWYZ7A6U-CvJULMA0.js":         {ContentType: "text/javascript; charset=utf-8", SHA256: "df8aede743ad7a116d86cf7e6cfe36c7240a82cbf123208dadef4503f9e3a2a6", Immutable: true},
 		"assets/init-D6jRqBbL.js":                         {ContentType: "text/javascript; charset=utf-8", SHA256: "b222c9e0d3a621c44983344965c7a99464019dbbcf2492843c49c611f31b5091", Immutable: true},
 		"assets/ishikawaDiagram-FXEZZL3T-CAu693wp.js":     {ContentType: "text/javascript; charset=utf-8", SHA256: "3a7702512f33d61f659a2250cda3c06254c02ce874ca6b13d4abe3feafde5501", Immutable: true},
-		"assets/issue-editor-BrAqzgzJ.js":                 {ContentType: "text/javascript; charset=utf-8", SHA256: "7aedbb78700faf5b7835c2f2559d7505a5f29c6cefc47e16010f2eb0018976d1", Immutable: true},
+		"assets/issue-editor-BY-PbtKv.js":                 {ContentType: "text/javascript; charset=utf-8", SHA256: "0ed13e362930c2578772e497891e741b6b08cf1f4077c9945f649a8be178407d", Immutable: true},
 		"assets/issue-editor-C-kzuhll.css":                {ContentType: "text/css; charset=utf-8", SHA256: "9f7ccc7f32ede2feb07a536e8de6d6c88d35a64ed1160a9d1884550e48b0fc74", Immutable: true},
 		"assets/journeyDiagram-5HDEW3XC-DpBcLLO4.js":      {ContentType: "text/javascript; charset=utf-8", SHA256: "ec5920df0804a421b5fbbe3b8bac3729ff032387e4892be642c0180c992f41aa", Immutable: true},
 		"assets/kanban-definition-HUTT4EX6-CwGlafFs.js":   {ContentType: "text/javascript; charset=utf-8", SHA256: "030c5b1bc8e1d1a84fa5ceb24186cefb7f2c3a8d8a9dcfc184954e928fd275ae", Immutable: true},
@@ -159,6 +159,6 @@ func init() {
 		"assets/workspace-page-DcDILaE6.js":               {ContentType: "text/javascript; charset=utf-8", SHA256: "b24811acca0be6a1ef4cee18a6084536999a3e0e4c523f2f92b4ed426b97a6e9", Immutable: true},
 		"assets/xychartDiagram-FW5EYKEG-CT3BVkPO.js":      {ContentType: "text/javascript; charset=utf-8", SHA256: "72bc2f17e48b6d8df6d69561512fa4af95d792a4482a8f14417ebbea1e2ad8fc", Immutable: true},
 		"favicon.svg": {ContentType: "image/svg+xml", SHA256: "eb7ac46eb3c97babd15fefaa58f745f2d4d33e12483ec88a541f1bf051e56646", Immutable: false},
-		"index.html":  {ContentType: "text/html; charset=utf-8", SHA256: "62c23e92fb83f3573ab51a00927f92e1bcacadcb3a0c7a07295a5df5e5394bf4", Immutable: false},
+		"index.html":  {ContentType: "text/html; charset=utf-8", SHA256: "48fc90e5658f4953b97eb20b4592c0ae177ec5566671f36eef688aa333bf345c", Immutable: false},
 	}
 }

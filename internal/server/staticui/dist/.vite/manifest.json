@@ -460,8 +460,8 @@
     "file": "assets/init-D6jRqBbL.js",
     "name": "init"
   },
-  "_issue-editor-BrAqzgzJ.js": {
-    "file": "assets/issue-editor-BrAqzgzJ.js",
+  "_issue-editor-BY-PbtKv.js": {
+    "file": "assets/issue-editor-BY-PbtKv.js",
     "name": "issue-editor",
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
@@ -710,7 +710,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-BE8hQjSD.js",
+    "file": "assets/index-DFN4pEcY.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -1707,7 +1707,7 @@
     ]
   },
   "src/features/issues/create-page.tsx": {
-    "file": "assets/create-page-zKLuomS1.js",
+    "file": "assets/create-page-j7j1xOn3.js",
     "name": "create-page",
     "src": "src/features/issues/create-page.tsx",
     "isDynamicEntry": true,
@@ -1715,13 +1715,13 @@
       "_rolldown-runtime-QTnfLwEv.js",
       "_session-DBWpYMYY.js",
       "_useMutation-DRV622_Y.js",
-      "_issue-editor-BrAqzgzJ.js",
+      "_issue-editor-BY-PbtKv.js",
       "_repository-context-DO6G70wP.js",
       "_label-chips-kpIO8HZn.js"
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-CXx-D8y2.js",
+    "file": "assets/detail-page-JvvFWQIO.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
@@ -1730,7 +1730,7 @@
       "_session-DBWpYMYY.js",
       "_useMutation-DRV622_Y.js",
       "_shield-alert-CNCyRhof.js",
-      "_issue-editor-BrAqzgzJ.js",
+      "_issue-editor-BY-PbtKv.js",
       "_circle-dot-ByhnaIxK.js",
       "_relationships-D51AoD0l.js",
       "_lock-keyhole-DWGUNdys.js",
