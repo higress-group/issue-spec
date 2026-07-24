@@ -224,7 +224,8 @@ Usage:
   issue-spec comment list --repo owner/repo --issue N [--type SPEC] [--json]
   issue-spec question create --repo owner/repo --issue N --id QUESTION-001 --question "..."
   issue-spec question resolve --repo owner/repo --issue N --id QUESTION-001 --resolution-file file.md
-  issue-spec projection upsert --repo owner/repo --issue N --phase proposal-choice-brief --source-digest SHA256 --body-file file.md [--allow-nonatomic --expected-digest SHA256]
+  issue-spec projection upsert --repo owner/repo --issue N --phase proposal-choice-brief --source-digest SHA256 --body-file file.md [--allow-nonatomic --expected-absence|--allow-nonatomic --expected-digest SHA256]
+    non-atomic first create uses --expected-absence; replacement uses the observed-body --expected-digest SHA256
   issue-spec pr rationale --repo owner/repo --pr N --path file.go --line 42 --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "why"
   issue-spec pr link-process --repo owner/repo --issue N --process PROCESS-001 --pr N
   issue-spec pr link-issues --repo owner/repo --pr N --proposal N --design N --implement N

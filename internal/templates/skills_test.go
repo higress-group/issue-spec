@@ -172,13 +172,29 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"no typed marker, status, or transition",
 		"only the latest effective ANSWER remain authoritative",
 		"Keep projection HTML source out of default Agent context",
+		"without atomic conditional projection creation",
+		"first create after observing no matching projection",
+		"--allow-nonatomic --expected-absence",
+		"remains non-atomic",
+		"full post-create re-observation proves exactly one matching logical projection with the planned body",
+		"without CAS, replacement after observing the unique current body",
 		"--allow-nonatomic --expected-digest <observed-sha256>",
-		"verifies the exact post-write representation",
+		"exact post-write re-observation guards the digest-bound update",
+		"absence and digest preconditions are mutually exclusive",
 		"GitHub stores source only and never executes the preview or interactive answer intent",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("workflow guidance missing %q:\n%s", want, workflow)
 		}
+	}
+	assertTextOrder(t, workflow,
+		"first create after observing no matching projection",
+		"--allow-nonatomic --expected-absence",
+		"replacement after observing the unique current body",
+		"--allow-nonatomic --expected-digest <observed-sha256>",
+		"absence and digest preconditions are mutually exclusive")
+	if strings.Contains(workflow, "On a backend without CAS, add explicit `--allow-nonatomic --expected-digest") {
+		t.Fatalf("workflow guidance still collapses create and replacement preconditions:\n%s", workflow)
 	}
 
 	propose := skillContent(t, skills, "issue-spec-propose")
@@ -227,6 +243,20 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 	}
 }
 
+func TestTopLevelProjectionUsageDistinguishesCreateAndReplacementFallbacks(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "commands", "commands.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := string(body)
+	assertTextOrder(t, usage,
+		"issue-spec projection upsert",
+		"--allow-nonatomic --expected-absence",
+		"--allow-nonatomic --expected-digest SHA256",
+		"non-atomic first create uses --expected-absence",
+		"replacement uses the observed-body --expected-digest SHA256")
+}
+
 func TestCheckedInCodexClaudeGuidanceMatchesTemplates(t *testing.T) {
 	root := filepath.Join("..", "..")
 	for _, skill := range IssueSpecSkills("higress-group/issue-spec") {
@@ -241,6 +271,14 @@ func TestCheckedInCodexClaudeGuidanceMatchesTemplates(t *testing.T) {
 		}
 		if !bytes.Equal(variants[0], variants[1]) {
 			t.Fatalf("Codex/Claude skill variants differ: %s", skill.Name)
+		}
+		if skill.Name == "issue-spec-workflow" {
+			wantPrefix := []byte(strings.TrimRight(skill.Content, "\n") + "\n\n## Project Workflow\n")
+			for index, variant := range variants {
+				if !bytes.HasPrefix(variant, wantPrefix) {
+					t.Fatalf("checked-in workflow skill variant %d differs from the authoritative template before its generated Project Workflow notice", index)
+				}
+			}
 		}
 	}
 	for _, command := range IssueSpecCommandContents("higress-group/issue-spec") {
