@@ -440,7 +440,7 @@ ${previewDocument}
     const confirmation = page.locator(".answer-confirmation");
     await expect(confirmation).toBeVisible();
     await expect(confirmation.getByText(visibleAnswer, { exact: true })).toBeVisible();
-    await confirmation.getByRole("button", { name: "Confirm answer" }).click();
+    await confirmation.getByRole("button", { name: documentationText("Confirm answer", "确认回答") }).click();
     await expect(page.getByText(`ANSWER timeline ${timeline}`)).toBeVisible();
     await expect(confirmation).toHaveCount(0);
     await expect(iframe).toHaveAttribute("data-stability-probe", "original");
