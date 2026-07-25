@@ -101,6 +101,14 @@ function AnswerConfirmation({ owner, repo, number, intent, onClose }: {
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog || dialog.open) return;
+    // jsdom 等环境未实现 showModal 时退化为非模态 open，保持内容可见。
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.open = true;
+  }, []);
   const questionQueryKey = ["issues", owner, repo, number, "question", intent.questionId] as const;
   const question = useQuery({
     queryKey: questionQueryKey,
@@ -125,7 +133,14 @@ function AnswerConfirmation({ owner, repo, number, intent, onClose }: {
       onClose();
     },
   });
-  return <section className="answer-confirmation" aria-labelledby="answer-confirmation-heading">
+  return <dialog
+    ref={dialogRef}
+    className="answer-confirmation-dialog"
+    aria-labelledby="answer-confirmation-heading"
+    onCancel={onClose}
+    onClick={(event) => { if (event.target === dialogRef.current) onClose(); }}
+  >
+    <section className="answer-confirmation">
     <div>
       <span className="issue-kicker purple">{t("issues.answer.trustedConfirmation")}</span>
       <h2 id="answer-confirmation-heading">{t("issues.answer.title")}</h2>
@@ -143,7 +158,8 @@ function AnswerConfirmation({ owner, repo, number, intent, onClose }: {
         {t(mutation.isPending ? "issues.answer.submitting" : "issues.answer.confirm")}
       </button>
     </div>
-  </section>;
+    </section>
+  </dialog>;
 }
 
 function EditableComment({ comment, owner, repo, issuePath, currentLogin, canContribute, canTriage, now, createPreviewContext, renderFirstPreview }: { comment: IssueComment; owner: string; repo: string; issuePath: string; currentLogin: string; canContribute: boolean; canTriage: boolean; now: number; createPreviewContext: PreviewContextFactory; renderFirstPreview: boolean }) {
