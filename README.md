@@ -80,6 +80,30 @@ request and an internal merge request can sit under the same change.
 
 [![Change board](docs/self-hosting/assets/self-hosted-change-board.png)](docs/self-hosting/README.md)
 
+### Issues and code live on separate authorities
+
+Self-hosting separates issue state from code state on purpose: the server is
+authoritative for issues and typed workflow artifacts, while the code host
+your team already uses stays authoritative for source, branches, PRs/MRs,
+reviews, CI, and merges. You connect the two with an operator-registered
+**code-provider bridge** that reports normalized, revision-bound code evidence
+(and performs only explicitly requested external mutations); the server still
+evaluates every gate itself, and one change can link providers side by side —
+a GitHub pull request and an internal merge request under the same change.
+
+```yaml
+# issue-spec/config.yaml — repository side selects the operator-registered bridge
+external_code:
+  provider_key: code.example
+  evidence:
+    required: [review, check, merge]
+    freshness: { review: 24h, check: 1h }
+```
+
+- [Integrate company code and work platforms](docs/self-hosting/enterprise-provider-integration.md) — provider inventory, source bindings, work trackers
+- [Code provider bridge protocol v1](docs/self-hosting/bridges/code-provider-v1.md) — trust boundaries, evidence ingestion
+- [Runner Git credential command v1](docs/self-hosting/bridges/git-credential-v1.md) — clone/push credentials for runners
+
 **[Self-hosted server: architecture, access model, deployment, operations →](docs/self-hosting/README.md)**
 
 ## One shared context for humans and agents

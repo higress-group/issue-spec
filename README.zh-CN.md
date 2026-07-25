@@ -54,6 +54,27 @@ Proposal、design、implement issue 的正文承载当前产物，时间线承�
 
 [![变更看板](docs/self-hosting/assets/self-hosted-change-board.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
 
+### Issue 与代码分属两个权威
+
+自托管有意把 issue 状态与代码状态分开：Server 是 issue 与类型化工作流产物的权威，
+而团队已有的代码托管平台仍是源代码、分支、PR/MR、Review、CI 与合并的权威。
+两者通过运维注册的 **code-provider bridge** 连接：bridge 上报规范化、绑定修订版本的代码证据
+（并且只执行显式请求的外部变更）；关卡仍由 Server 自己评估。一个变更可以并排关联多个
+平台——同一个 Change 下同时挂一个 GitHub pull request 和一个内部 merge request。
+
+```yaml
+# issue-spec/config.yaml — 仓库侧选择运维注册的 bridge
+external_code:
+  provider_key: code.example
+  evidence:
+    required: [review, check, merge]
+    freshness: { review: 24h, check: 1h }
+```
+
+- [对接公司代码与工作平台](docs/self-hosting/enterprise-provider-integration.md) —— 平台盘点、Source Binding、工作单跟踪
+- [Code provider bridge 协议 v1](docs/self-hosting/bridges/code-provider-v1.md) —— 信任边界、证据写入
+- [Runner Git 凭据命令 v1](docs/self-hosting/bridges/git-credential-v1.md) —— Runner 的 clone/push 凭据
+
 **[自托管 Server：架构、权限模型、部署与运维 →](docs/self-hosting/README.zh-CN.md)**
 
 ## 人与 agent 共享同一份上下文
