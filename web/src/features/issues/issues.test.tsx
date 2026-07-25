@@ -1,6 +1,6 @@
 import axe from "axe-core";
 import { http, HttpResponse } from "msw";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { MarkdownView } from "../../components/markdown/markdown-view";
@@ -416,6 +416,115 @@ describe("canonical issue read authority", () => {
     expect(submitted).toHaveLength(4);
   });
 
+  it("renders native answer controls under a typed QUESTION comment by default and surfaces the effective answer", async () => {
+    const marker = "<!-- issue-spec:type=QUESTION id=QUESTION-007 version=1 -->";
+    const digest = "a".repeat(64);
+    const question = {
+      id: "QUESTION-007",
+      question: "Which release posture should we use?",
+      blocking: true,
+      default_assumption: "Use Safe.",
+      issue_url: "https://example.test/acme/workflow/issues/41",
+      source_url: "https://example.test/acme/workflow/issues/41#issuecomment-9",
+      choice_model: {
+        version: 1,
+        mode: "single",
+        options: [
+          { id: "safe", label: "Safe", description: "Conservative", tradeoff: "Slower" },
+          { id: "fast", label: "Fast", description: "Rapid", tradeoff: "Riskier" },
+        ],
+        allow_custom: true,
+      },
+    } as const;
+    let effectiveAnswer: Record<string, unknown> | null = null;
+    let comments = [commentFixture({ body: `Which release posture should we use?\n\n${marker}` })];
+    const submitted: unknown[] = [];
+    server.use(
+      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, interactive_question_answers: true } })),
+      http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture())),
+      http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json(comments)),
+      http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
+      http.get("http://localhost/repos/acme/workflow/issues/comments/:commentId/reactions", () => HttpResponse.json([])),
+      http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", () => HttpResponse.json({ relationships: [] })),
+      http.get("http://localhost/api/v1/repos/acme/workflow/issues/41/questions/QUESTION-007", () => HttpResponse.json({ question, representation_version: 1, body_digest: digest, effective_answer: effectiveAnswer })),
+      http.post("http://localhost/api/v1/repos/acme/workflow/issues/41/answers", async ({ request }) => {
+        submitted.push(await request.json());
+        const created = commentFixture({ id: 10, body: "ANSWER timeline 1", reactions: { ...reactions, total_count: 0, "+1": 0 } });
+        comments = [...comments, created];
+        effectiveAnswer = {
+          id: "ANSWER-001",
+          comment_id: 10,
+          actor: "alice",
+          created_at: "2026-07-10T12:00:00Z",
+          selection: { options: [{ id: "safe", label: "Safe" }], custom: "" },
+          source_url: "https://example.test/acme/workflow/issues/41#issuecomment-10",
+        };
+        return HttpResponse.json({ comment: created, question, question_representation_version: 1, question_body_digest: digest }, { status: 201 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderIssueDetail(activeRepository(true, ["read", "contribute"]));
+
+    // The panel renders by default, without any disclosure click.
+    const panel = await screen.findByRole("region", { name: "Answer QUESTION-007" });
+    expect(within(panel).getByText("Blocking")).toBeVisible();
+    expect(within(panel).getByText("Choose an answer")).toBeVisible();
+    expect(screen.queryByText("Current effective answer")).not.toBeInTheDocument();
+
+    await user.click(within(panel).getByRole("radio", { name: /Safe/ }));
+    await user.click(within(panel).getByRole("button", { name: "Submit answer" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "Confirm this answer" })).toBeVisible();
+    expect(await within(dialog).findByText("Safe")).toBeVisible();
+    await user.click(within(dialog).getByRole("button", { name: "Confirm answer" }));
+
+    expect(await screen.findByText("ANSWER timeline 1")).toBeVisible();
+    expect(submitted).toEqual([{ question_id: "QUESTION-007", question_digest: digest, option_ids: ["safe"], custom: "" }]);
+    expect(await screen.findByText("Current effective answer")).toBeVisible();
+    expect(screen.getByText(/ANSWER-001 by alice/)).toBeVisible();
+    expect(screen.getByText("Submit a new answer (the latest valid ANSWER becomes effective)")).toBeVisible();
+
+    // Custom text clears the previously selected option.
+    await user.type(screen.getByRole("textbox", { name: /Custom answer/ }), "Staged rollout");
+    expect(screen.getByRole("radio", { name: /Safe/ })).not.toBeChecked();
+  });
+
+  it("keeps the QUESTION panel read-only without contribute and hides it for legacy QUESTIONs", async () => {
+    const digest = "a".repeat(64);
+    const question = {
+      id: "QUESTION-007",
+      question: "Which release posture should we use?",
+      blocking: false,
+      default_assumption: "",
+      issue_url: "https://example.test/acme/workflow/issues/41",
+      source_url: "https://example.test/acme/workflow/issues/41#issuecomment-9",
+      choice_model: { version: 1, mode: "multiple", options: [{ id: "safe", label: "Safe", description: "", tradeoff: "" }], allow_custom: false },
+    } as const;
+    server.use(
+      http.get("http://localhost/api/v1/meta", () => HttpResponse.json({ ...fixtureMeta, features: { ...fixtureMeta.features, interactive_question_answers: true } })),
+      http.get("http://localhost/repos/acme/workflow/issues/41", () => HttpResponse.json(issueFixture())),
+      http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => HttpResponse.json([
+        commentFixture({ body: "Typed\n\n<!-- issue-spec:type=QUESTION id=QUESTION-007 version=1 -->" }),
+        commentFixture({ id: 10, body: "Legacy\n\n<!-- issue-spec:type=QUESTION id=QUESTION-009 version=1 -->" }),
+      ])),
+      http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
+      http.get("http://localhost/repos/acme/workflow/issues/comments/:commentId/reactions", () => HttpResponse.json([])),
+      http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", () => HttpResponse.json({ relationships: [] })),
+      http.get("http://localhost/api/v1/repos/acme/workflow/issues/41/questions/QUESTION-007", () => HttpResponse.json({ question, representation_version: 1, body_digest: digest })),
+      http.get("http://localhost/api/v1/repos/acme/workflow/issues/41/questions/QUESTION-009", () => HttpResponse.json({ message: "Not found" }, { status: 404 })),
+    );
+    renderIssueDetail(activeRepository(true, ["read"]));
+
+    const panel = await screen.findByRole("region", { name: "Answer QUESTION-007" });
+    expect(within(panel).getByRole("checkbox", { name: /Safe/ })).toBeDisabled();
+    expect(within(panel).getByRole("button", { name: "Submit answer" })).toBeDisabled();
+    expect(within(panel).getByText("Your current repository permission cannot answer this QUESTION.")).toBeVisible();
+
+    // The legacy QUESTION keeps the plain comment as the only surface.
+    await waitFor(() => expect(screen.queryByText("Loading answer options…")).not.toBeInTheDocument());
+    expect(screen.queryByRole("region", { name: "Answer QUESTION-009" })).not.toBeInTheDocument();
+  });
+
   it("awaits fresh QUESTION authority and rejects cached changes or removal before submission", async () => {
     const body = "```html-preview id=fresh-authority version=1 title=\"fresh-authority\"\n<!doctype html><button>Answer</button>\n```";
     const question = (text: string, options: Array<{ id: string; label: string }>) => ({
@@ -513,7 +622,8 @@ describe("canonical issue read authority", () => {
     expect(await screen.findByText("Fresh QUESTION")).toBeVisible();
     await userEvent.setup().click(screen.getByRole("button", { name: "Confirm answer" }));
     expect(await screen.findByText("ANSWER timeline fresh")).toBeVisible();
-    expect(questionReads).toBe(5);
+    // 4 confirmation reads + 1 pre-submit revalidation + 1 post-success invalidation refetch.
+    expect(questionReads).toBe(6);
     expect(answerPosts).toBe(1);
   });
 

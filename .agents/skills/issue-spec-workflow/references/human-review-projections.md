@@ -8,7 +8,6 @@ Use this guide to generate the ordinary Markdown comment passed to `issue-spec p
 - [Generation procedure](#generation-procedure)
 - [Shared information design](#shared-information-design)
 - [Phase recipes](#phase-recipes)
-- [QUESTION interaction](#question-interaction)
 - [Markdown and HTML skeleton](#markdown-and-html-skeleton)
 - [Sandbox and accessibility](#sandbox-and-accessibility)
 - [Update and acceptance checklist](#update-and-acceptance-checklist)
@@ -19,17 +18,17 @@ Read only the authoritative records needed for the phase. Do not expand or reuse
 
 | Phase | Required authoritative inputs | Optional inputs |
 |---|---|---|
-| `proposal-choice-brief` | Proposal body; active Proposal QUESTIONs; the latest effective ANSWER for each QUESTION | Confirmed SPEC facts already available; linked evidence |
-| `design-explainer` | Design body; confirmed SPEC facts; active Design QUESTIONs; latest effective ANSWERs | Existing TASK facts when regenerating; linked evidence |
-| `implement-execution-brief` | Implement body; Design invariants and decisions; TASK; current PROCESS records, dependencies, links, statuses, and handoffs; active Implement QUESTIONs; latest effective ANSWERs | Exact-current code-change, review, verification, or check evidence |
+| `proposal-choice-brief` | Proposal body | Confirmed SPEC facts already available; linked evidence |
+| `design-explainer` | Design body; confirmed SPEC facts | Existing TASK facts when regenerating; linked evidence |
+| `implement-execution-brief` | Implement body; Design invariants and decisions; TASK; current PROCESS records, dependencies, links, statuses, and handoffs | Exact-current code-change, review, verification, or check evidence |
 
 Apply these authority rules:
 
-- Treat issue bodies and typed artifacts as authoritative. For each active QUESTION, use only the backend-selected latest effective typed ANSWER as the current decision; show earlier ANSWERs only as optional history.
+- Treat issue bodies and typed artifacts as authoritative.
 - Label every recommendation, comparison, candidate PROCESS, estimate, confidence value, and inferred relationship as synthesis. Never let synthesis override an authoritative record.
 - Do not infer workflow readiness, PROCESS boundaries, gates, or status from an estimate, visual state, HTML control, or projection text. In Implement, invariant cohesion and typed dependencies define semantics; file count, line count, complexity, Agent count, and parallelism are planning aids only.
 - Link claims to their source issue or typed comment. If evidence is absent, say that it is absent instead of filling the gap.
-- Keep the projection self-explanatory as ordinary Markdown because GitHub displays the fenced HTML source and does not execute the preview or its answer bridge.
+- Keep the projection self-explanatory as ordinary Markdown because GitHub displays the fenced HTML source and does not execute the preview.
 
 ## Generation procedure
 
@@ -37,13 +36,13 @@ Apply these authority rules:
 2. Build a fact ledger before writing UI:
    - confirmed facts and constraints, each with a source link;
    - unresolved evidence gaps;
-   - active QUESTIONs with exact ID, question text, choice model, and latest effective ANSWER;
+   - open decisions a human must make, each with the credible options;
    - phase-specific derived synthesis, clearly labeled.
 3. Resolve contradictions in favor of authoritative data. Stop generation if two authoritative inputs conflict or a required record cannot be identified uniquely.
-4. Write a concise Markdown fallback first. It must expose the recommendation, required human decisions, effective answers, critical constraints, and source links without running HTML.
+4. Write a concise Markdown fallback first. It must expose the recommendation, required human decisions, critical constraints, and source links without running HTML.
 5. Add one valid `html-preview` fence containing a complete, standalone document. Prefer one preview per projection so the intended review surface is the first preview.
-6. Serialize a deterministic source manifest containing the selected source identities, body digests or exact revisions, typed statuses and links, and effective ANSWER comment identities. Hash that manifest for `--source-digest`; do not hash only `projection.md`, and exclude the projection itself.
-7. Validate the Markdown, preview metadata, keyboard flow, narrow layout, QUESTION intent, and GitHub fallback.
+6. Serialize a deterministic source manifest containing the selected source identities, body digests or exact revisions, and typed statuses and links. Hash that manifest for `--source-digest`; do not hash only `projection.md`, and exclude the projection itself.
+7. Validate the Markdown, preview metadata, keyboard flow, narrow layout, and GitHub fallback.
 8. Upsert the one logical phase comment. The CLI appends the projection marker; do not add a typed marker or projection marker inside the body.
 
 Example write:
@@ -97,8 +96,7 @@ Help a reviewer turn scene, goal, and proposed scope into decisions before compl
 1. State the user/problem scene, desired outcome, success signal, and proposed boundary.
 2. Separate settled choices, evidence-dependent items, and genuine decisions.
 3. For each genuine decision, show the recommended option, premises, alternatives, benefits, costs, reversibility, and affected goals.
-4. Show active QUESTION controls and the latest effective ANSWER. Do not manufacture a QUESTION or reopen a settled choice.
-5. Summarize the expected SPEC coverage and explicitly call out what remains intentionally out of scope.
+4. Summarize the expected SPEC coverage and explicitly call out what remains intentionally out of scope.
 
 ### Design explainer
 
@@ -107,8 +105,7 @@ Help a reviewer understand correctness and alternatives before complete TASK pla
 1. Start with the selected architecture and the invariants the implementation must preserve.
 2. Present the end-to-end data or control flow as numbered steps, with failure and trust boundaries visible.
 3. Compare rejected or conditional alternatives only where they clarify a real decision.
-4. Surface each Design QUESTION with its impact on invariants, interfaces, or failure handling and its latest effective ANSWER.
-5. Provide drill-down for interfaces, state transitions, compatibility, rollout, and verification strategy.
+4. Provide drill-down for interfaces, state transitions, compatibility, rollout, and verification strategy.
 
 Use interaction to explore layers or branches; do not add animation merely to make the page feel active.
 
@@ -122,7 +119,7 @@ The top level must show:
 - counts for planned/ready/active/blocked/completed work, without inventing statuses;
 - the critical path and safe parallel groups;
 - suggested Agent allocation and the reason for each distinct role;
-- actual typed blockers and unresolved QUESTIONs;
+- actual typed blockers;
 - shared touchpoints and independent review/verify obligations.
 
 Before PROCESS records exist, label work packages and dependencies `Candidate planning`. After they exist, replace candidates with the current typed PROCESS records and links; never leave a conflicting candidate DAG looking authoritative.
@@ -141,51 +138,6 @@ For each work package or PROCESS drill-down, show:
 
 Explain correctness complexity as the reasoning difficulty of preserving the invariant across states, failures, concurrency, compatibility, or trust boundaries. It is not a synonym for lines changed.
 
-## QUESTION interaction
-
-Render controls only from the current typed QUESTION choice model. Support:
-
-- `single`: radio controls and exactly one predefined option, or one custom answer;
-- `multiple`: checkbox controls and one or more unique predefined options, or one custom answer;
-- custom input only when `allow_custom` is true. Choosing custom clears predefined options; choosing a predefined option clears custom text.
-
-Each option must preserve its stable option ID, label, description, and tradeoff. Show the current latest effective ANSWER with actor/time when available, but allow another submission; the host appends a new immutable ANSWER and the latest valid one becomes effective.
-
-The sandbox must not call issue APIs. It emits only an intent after the host initializes it:
-
-```js
-let bridge = { nonce: "", enabled: false };
-
-addEventListener("message", (event) => {
-  if (event.source !== parent) return;
-  const data = event.data;
-  if (data?.version !== 1 || data?.type !== "issue-spec-preview-init") return;
-  bridge = {
-    nonce: typeof data.nonce === "string" ? data.nonce : "",
-    enabled: data.interactive_question_answers === true,
-  };
-  document.querySelectorAll("[data-answer-submit]").forEach((button) => {
-    button.disabled = !bridge.enabled;
-  });
-});
-
-function submitAnswer(questionId, mode, optionIds, custom) {
-  if (!bridge.enabled || !bridge.nonce) return;
-  parent.postMessage({
-    version: 1,
-    nonce: bridge.nonce,
-    question_id: questionId,
-    mode,
-    option_ids: optionIds,
-    custom,
-  }, "*");
-}
-```
-
-Use exactly those six intent keys. QUESTION IDs match `QUESTION-[0-9]{3,}`; option IDs match `[a-z][a-z0-9-]{0,63}`. Send at most 20 unique option IDs. `custom` is at most 4096 Unicode scalar values and is mutually exclusive with `option_ids`; a single answer contains at most one option. Keep the serialized request below 16 KiB.
-
-Disable submission until the trusted host enables the bridge. Validate locally, give the button a clear label, and prevent rapid duplicate clicks while the host confirmation is open. Do not claim success inside the iframe: the parent reloads the QUESTION, validates permissions and the choice model, asks for confirmation, and appends the ANSWER. On GitHub or another unsupported surface, the Markdown fallback must list the QUESTION and options without promising a working submit action.
-
 ## Markdown and HTML skeleton
 
 Generate `projection.md` in this shape:
@@ -193,7 +145,7 @@ Generate `projection.md` in this shape:
 ````markdown
 # Implement execution review
 
-> Human-review projection. Implement, Design, TASK, PROCESS, QUESTION, and the latest effective ANSWER remain authoritative.
+> Human-review projection. The phase issue bodies and typed artifacts remain authoritative.
 
 ## Review summary
 
@@ -203,7 +155,7 @@ Generate `projection.md` in this shape:
 
 ## Decisions and evidence
 
-- **QUESTION-001 — Decision needed:** ... ([source](...))
+- **Decision needed:** ... ([source](...))
 - **Confirmed:** ... ([source](...))
 - **Planning estimate:** ...; confidence: medium; basis: ...
 
@@ -253,10 +205,10 @@ Generate `projection.md` in this shape:
         <article class="card estimate"><h3>Planning estimate</h3><p>...</p></article>
       </div>
     </section>
-    <!-- Add the phase model, QUESTION forms, drill-down, and source links. -->
+    <!-- Add the phase model, drill-down, and source links. -->
   </main>
   <script>
-    // Add only local presentation state and the bounded QUESTION bridge above.
+    // Add only local presentation state (filters, tabs, accordions, DAG focus).
   </script>
 </body>
 </html>
@@ -269,7 +221,7 @@ Use a stable preview ID for the logical phase view. Metadata accepts only `id`, 
 
 - Produce a complete inline document. Inline CSS and JavaScript; do not depend on CDNs, remote fonts, images, APIs, modules, storage, cookies, popups, navigation, forms, downloads, media, or same-origin access.
 - Assume an opaque origin and `sandbox="allow-scripts"`. Never request credentials, CSRF values, repository tokens, or issue data from the host.
-- Use JavaScript only for review-relevant filtering, tabs, accordions, DAG focus, comparisons, and the bounded QUESTION intent. Keep core content available without animation.
+- Use JavaScript only for review-relevant filtering, tabs, accordions, DAG focus, and comparisons. Keep core content available without animation.
 - Use semantic landmarks, heading order, native buttons/inputs, explicit labels, fieldsets and legends for choices, status text, table headers, and meaningful link text.
 - Support keyboard-only operation, visible focus, 200% zoom, narrow/mobile layouts, long localized strings, and `prefers-reduced-motion`.
 - Avoid horizontal page scrolling. Wrap long IDs and URLs, make wide tables scroll within a labeled region, and never fix heights for content cards.
@@ -280,12 +232,10 @@ Use a stable preview ID for the logical phase view. Metadata accepts only `id`, 
 Before upsert:
 
 - [ ] Every displayed fact has an authoritative source or is labeled synthesis.
-- [ ] Only the latest effective ANSWER drives the current choice; history is optional and clearly historical.
-- [ ] The Markdown fallback communicates recommendations, decisions, effective answers, constraints, and links without HTML execution.
+- [ ] The Markdown fallback communicates recommendations, decisions, constraints, and links without HTML execution.
 - [ ] Settled, evidence-needed, decision-needed, blocker, and estimate states are visually and textually distinct.
 - [ ] Implement estimates and Agent/parallelism suggestions do not define PROCESS semantics, readiness, or gates.
 - [ ] The preview uses one stable ID, valid metadata, inline assets, no network dependencies, and no manually authored projection/typed marker.
-- [ ] QUESTION controls match the authoritative choice model and emit the exact bounded intent only after host initialization.
 - [ ] The page works with keyboard, visible focus, narrow width, 200% zoom, reduced motion, and long text.
 - [ ] Source size and preview-count limits are respected.
 - [ ] `--source-digest` covers the authoritative input manifest, not the generated projection.
@@ -293,6 +243,6 @@ Before upsert:
 After upsert:
 
 - [ ] Re-read the unique phase projection descriptor without expanding its source and confirm phase, owner, source digest, and one logical comment.
-- [ ] On self-host, run the first preview and verify layout, console, interaction, host confirmation, and appended ANSWER behavior when QUESTION controls exist.
-- [ ] On GitHub, verify the ordinary Markdown remains sufficient and make no claim that the fenced HTML or submit action executes.
+- [ ] On self-host, run the first preview and verify layout, console, and interaction.
+- [ ] On GitHub, verify the ordinary Markdown remains sufficient and make no claim that the fenced HTML executes.
 - [ ] When authoritative inputs change, regenerate from them and update the same logical projection; never edit the projection as a substitute for updating typed data.

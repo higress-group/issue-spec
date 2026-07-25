@@ -84,10 +84,23 @@ export const questionSnapshotSchema = z.object({
   choice_model: choiceModelSchema,
 }).strict();
 
+export const effectiveAnswerSchema = z.object({
+  id: z.string(),
+  comment_id: z.number().int().positive(),
+  actor: z.string(),
+  created_at: z.string(),
+  selection: z.object({
+    options: z.array(z.object({ id: z.string(), label: z.string() }).strict()).optional().default([]),
+    custom: z.string().optional().default(""),
+  }).strict(),
+  source_url: z.string(),
+}).strict();
+
 export const questionAuthoritySchema = z.object({
   question: questionSnapshotSchema,
   representation_version: z.number().int().positive(),
   body_digest: z.string().regex(/^[0-9a-f]{64}$/),
+  effective_answer: effectiveAnswerSchema.nullable().optional(),
 }).strict();
 
 export const answerResponseSchema = z.object({
@@ -113,3 +126,4 @@ export type Reaction = z.infer<typeof reactionSchema>;
 export type ReactionContent = z.infer<typeof reactionContentSchema>;
 export type QuestionAuthority = z.infer<typeof questionAuthoritySchema>;
 export type QuestionSnapshot = z.infer<typeof questionSnapshotSchema>;
+export type EffectiveAnswer = z.infer<typeof effectiveAnswerSchema>;

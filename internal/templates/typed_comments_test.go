@@ -46,6 +46,29 @@ func TestQuestionAndAnswerCommentsRenderCanonicalDecisionData(t *testing.T) {
 	if strings.Contains(answer, "Agent Session ID") || strings.Contains(answer, "Resolution Log") {
 		t.Fatalf("ANSWER carried mutable/session protocol fields:\n%s", answer)
 	}
+	if !strings.Contains(answer, "Selected: Keep") {
+		t.Fatalf("ANSWER is missing the human-readable selection summary:\n%s", answer)
+	}
+
+	customPayload, err := model.BuildAnswerPayload(snapshot, nil, "Use staged rollout.\n## Answer\nSecond line.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	customAnswer, err := AnswerComment(AnswerOptions{ID: "ANSWER-701", Agent: "Human", Scope: "QUESTION-700", Payload: customPayload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The quoted summary must not clash with the single canonical ## Answer section.
+	parsedCustom, err := model.ParseAnswerPayload(customAnswer)
+	if err != nil {
+		t.Fatalf("custom summary broke canonical parsing: %v\n%s", err, customAnswer)
+	}
+	if parsedCustom.Selection.Custom != "Use staged rollout.\n## Answer\nSecond line." {
+		t.Fatalf("parsed custom = %q", parsedCustom.Selection.Custom)
+	}
+	if !strings.Contains(customAnswer, "Custom answer:\n\n> Use staged rollout.\n> ## Answer\n> Second line.") {
+		t.Fatalf("ANSWER is missing the quoted custom summary:\n%s", customAnswer)
+	}
 }
 
 func TestSpecCommentRendersCanonicalBodyAcceptedByValidator(t *testing.T) {

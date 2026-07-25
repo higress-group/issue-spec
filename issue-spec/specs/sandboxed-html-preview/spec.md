@@ -105,29 +105,24 @@ issue-spec MUST treat HTML preview contents as opaque non-typed data for marker 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/331#issuecomment-5058655974
 
-### Requirement: dual-audience Design authoring with QUESTION and ANSWER history
+### Requirement: dual-audience Design authoring explainer
 
-When the selected repository profile advertises Interactive Design Explainer support, issue-spec Design authoring guidance MUST maintain one ordinary human-facing explainer comment after the persisted Design has completed its first QUESTION discovery pass. The explainer MAY precede TASK planning, MUST surface each current Design-phase QUESTION with its latest typed ANSWER and optional answer history, MUST have no independent persisted lifecycle status, and MUST remain non-authoritative and outside typed workflow gates and default Agent context.
+When the selected repository profile advertises Interactive Design Explainer support, issue-spec Design authoring guidance MUST maintain one ordinary human-facing explainer comment after the persisted Design has completed its first QUESTION discovery pass. The explainer MAY precede TASK planning, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST have no independent persisted lifecycle status, and MUST remain non-authoritative and outside typed workflow gates and default Agent context.
 
 #### Scenario: Design projection follows first QUESTION discovery and precedes TASK planning
 
 - **WHEN** a Design body has been persisted, its first QUESTION discovery pass has created all currently identified QUESTION artifacts, and TASK planning is not complete
-- **THEN** the authoring flow may create the one logical explainer from the Design, confirmed SPEC facts, current QUESTION set, and any linked ANSWER comments without waiting for TASK artifacts
+- **THEN** the authoring flow may create the one logical explainer from the Design and confirmed SPEC facts without waiting for TASK artifacts
 
-#### Scenario: unanswered Design questions receive human decision treatment
+#### Scenario: Design questions live on their typed comments, not in the explainer
 
-- **WHEN** the Design has an active QUESTION with no valid ANSWER
-- **THEN** the explainer presents the question, grounded options or evidence, and exact requested decision prominently instead of treating questions as Proposal-only content
+- **WHEN** the Design has an active QUESTION, answered or not
+- **THEN** the typed QUESTION comment's native answer panel presents the options and the latest effective ANSWER while the explainer explains data, flow, alternatives, and correctness constraints without duplicating the QUESTION or embedding answer controls
 
-#### Scenario: answered Design questions show the latest choice
+#### Scenario: Design and SPEC changes update one logical explainer
 
-- **WHEN** an active Design QUESTION has one or more valid typed ANSWER comments
-- **THEN** the explainer shows the latest ANSWER as effective with actor and time and allows earlier ANSWER comments to be inspected as decision history
-
-#### Scenario: QUESTION and ANSWER changes update one logical explainer
-
-- **WHEN** a Design-phase QUESTION or ANSWER is created or the QUESTION is updated or the Design or confirmed SPEC set changes
-- **THEN** regeneration binds the current aggregate inputs and updates the same logical explainer comment instead of appending a duplicate active explainer
+- **WHEN** the Design body or confirmed SPEC set changes
+- **THEN** regeneration binds the current aggregate inputs and updates the same logical explainer comment instead of appending a duplicate active explainer, while QUESTION and ANSWER changes refresh the native panel without requiring explainer regeneration
 
 #### Scenario: the explainer has no independent status
 
@@ -151,25 +146,21 @@ When the selected repository profile advertises Interactive Design Explainer sup
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/331#issuecomment-5060253266
+- https://github.com/higress-group/issue-spec/pull/338
 
-### Requirement: dual-audience Proposal choice briefs with QUESTION and ANSWER history
+### Requirement: dual-audience Proposal choice briefs
 
-When the selected repository profile advertises Proposal Choice Brief support, issue-spec Proposal authoring guidance MUST maintain one ordinary human-facing Choice Brief after the persisted Proposal has completed its first QUESTION discovery pass. The brief MAY precede complete SPEC authoring, MUST surface each current Proposal-phase QUESTION with its latest typed ANSWER and optional answer history, MUST have no independent persisted lifecycle status, and MUST remain non-authoritative and outside workflow gates and default Agent context.
+When the selected repository profile advertises Proposal Choice Brief support, issue-spec Proposal authoring guidance MUST maintain one ordinary human-facing Choice Brief after the persisted Proposal has completed its first QUESTION discovery pass. The brief MAY precede complete SPEC authoring, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST have no independent persisted lifecycle status, and MUST remain non-authoritative and outside workflow gates and default Agent context.
 
 #### Scenario: Proposal projection follows first QUESTION discovery and precedes complete SPEC authoring
 
 - **WHEN** a Proposal body has been persisted, its first QUESTION discovery pass has created all currently identified QUESTION artifacts, and SPEC authoring is not complete
-- **THEN** the authoring flow may create the one logical Choice Brief from current Proposal, QUESTION, ANSWER, and SPEC facts without waiting for the full SPEC set
+- **THEN** the authoring flow may create the one logical Choice Brief from current Proposal and SPEC facts without waiting for the full SPEC set
 
-#### Scenario: unanswered Proposal questions request human judgment
+#### Scenario: Proposal questions live on their typed comments, not in the brief
 
-- **WHEN** the Proposal has an active QUESTION with no valid ANSWER
-- **THEN** the Choice Brief presents the question, grounded options or evidence gaps, and exact requested decision prominently before the Proposal advances
-
-#### Scenario: answered Proposal questions use the latest choice
-
-- **WHEN** an active Proposal QUESTION has one or more valid typed ANSWER comments
-- **THEN** the Choice Brief presents the latest ANSWER as the effective decision with actor and time and allows earlier answers to be inspected as history
+- **WHEN** the Proposal has an active QUESTION, answered or not
+- **THEN** the typed QUESTION comment's native answer panel presents the options and the latest effective ANSWER while the Choice Brief presents the underlying decision context without duplicating the QUESTION or embedding answer controls
 
 #### Scenario: settled choices are not presented as open decisions
 
@@ -181,10 +172,10 @@ When the selected repository profile advertises Proposal Choice Brief support, i
 - **WHEN** a choice has an unanswered active QUESTION, is delegated to a later stage, or depends on unavailable evidence
 - **THEN** the brief separates it from settled choices, labels recommendations as recommendations, compares credible options, shows evidence gaps, and states the decision still required
 
-#### Scenario: QUESTION and ANSWER changes update one logical brief
+#### Scenario: QUESTION and ANSWER changes stay on the native panel
 
-- **WHEN** a Proposal-phase QUESTION or ANSWER is created or the QUESTION is updated or the Proposal body, active SPEC set, or relevant evidence changes
-- **THEN** regeneration updates the same logical Choice Brief comment instead of appending a duplicate active brief
+- **WHEN** a Proposal-phase QUESTION or ANSWER is created or the QUESTION is updated
+- **THEN** the typed QUESTION comment's native panel reflects the change, while the same logical Choice Brief is regenerated only when the Proposal body, active SPEC set, or relevant evidence changes
 
 #### Scenario: decision state remains content semantics
 
@@ -208,30 +199,21 @@ When the selected repository profile advertises Proposal Choice Brief support, i
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/331#issuecomment-5060518492
+- https://github.com/higress-group/issue-spec/pull/338
 
-### Requirement: dual-audience Implement execution briefs with QUESTION and ANSWER history
+### Requirement: dual-audience Implement execution briefs
 
-When the selected repository profile advertises Implementation Execution Brief support, issue-spec Implement authoring guidance MUST maintain one ordinary human-facing Execution Brief after the persisted Implement issue has completed its first QUESTION discovery pass. The brief MAY precede complete PROCESS planning, MUST surface each current Implement-phase QUESTION with its latest typed ANSWER and optional answer history, MUST derive execution data from Design invariants, TASK, PROCESS, and evidence records, and MUST remain non-authoritative and outside workflow gates and default Agent context.
+When the selected repository profile advertises Implementation Execution Brief support, issue-spec Implement authoring guidance MUST maintain one ordinary human-facing Execution Brief after the persisted Implement issue has completed its first QUESTION discovery pass. The brief MAY precede complete PROCESS planning, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST derive execution data from Design invariants, TASK, PROCESS, and evidence records, and MUST remain non-authoritative and outside workflow gates and default Agent context.
 
 #### Scenario: Implement projection follows first QUESTION discovery and precedes complete PROCESS planning
 
 - **WHEN** an Implement issue has been persisted, its first QUESTION discovery pass has created all currently identified QUESTION artifacts, and PROCESS planning is not complete
-- **THEN** the authoring flow may create the one logical Execution Brief from current QUESTION and ANSWER data with candidate PROCESS boundaries and Agent allocation labeled as synthesis
+- **THEN** the authoring flow may create the one logical Execution Brief with candidate PROCESS boundaries and Agent allocation labeled as synthesis
 
-#### Scenario: unanswered Implement questions block affected decisions
+#### Scenario: Implement questions live on their typed comments, not in the brief
 
-- **WHEN** implementation planning exposes an active QUESTION with no valid ANSWER
-- **THEN** the Execution Brief presents the question, its DAG or acceptance impact, grounded options, and exact requested decision prominently before affected work is dispatched
-
-#### Scenario: answered Implement questions use the latest choice
-
-- **WHEN** an active Implement QUESTION has one or more valid typed ANSWER comments
-- **THEN** the Execution Brief uses the latest ANSWER as the effective planning decision and makes earlier answers available as history
-
-#### Scenario: QUESTION and ANSWER changes update execution planning
-
-- **WHEN** an Implement-phase QUESTION or ANSWER is created or the QUESTION is updated
-- **THEN** regeneration updates the same logical Execution Brief and recalculates blocked, ready, and decision-dependent presentation from authoritative workflow data
+- **WHEN** implementation planning exposes an active QUESTION, answered or not
+- **THEN** the typed QUESTION comment's native answer panel presents the options and the latest effective ANSWER while the Execution Brief presents actual typed blockers and execution context without duplicating the QUESTION or embedding answer controls
 
 #### Scenario: persisted PROCESS data replaces candidate planning
 
@@ -241,7 +223,7 @@ When the selected repository profile advertises Implementation Execution Brief s
 #### Scenario: top-level execution review directs attention
 
 - **WHEN** a human opens the Execution Brief
-- **THEN** the view presents unanswered questions, effective answers, completed, active, blocked, next, conditional, safely parallel, and independent-check work with structural blockers and shared-touchpoint warnings
+- **THEN** the view presents completed, active, blocked, next, conditional, safely parallel, and independent-check work with structural blockers and shared-touchpoint warnings
 
 #### Scenario: PROCESS drill-down explains review obligations
 
@@ -270,20 +252,21 @@ When the selected repository profile advertises Implementation Execution Brief s
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/331#issuecomment-5060801079
+- https://github.com/higress-group/issue-spec/pull/338
 
 ### Requirement: self-host interactive QUESTION answering with append-only typed ANSWER comments
 
-When a capable self-host Web surface renders a phase projection containing active typed QUESTION artifacts, issue-spec MUST support bounded single-choice, multiple-choice, and optional custom-answer controls. Each confirmed submission MUST create one new immutable typed ANSWER comment containing the QUESTION snapshot and human choice. For an active QUESTION the latest valid ANSWER by provider-authoritative comment order MUST be the effective decision consumed by later Agents and gates.
+When a capable self-host Web surface shows a typed QUESTION comment carrying a choice model, issue-spec MUST render a native, default-visible answer panel under that comment with bounded single-choice, multiple-choice, and optional custom-answer controls, and MUST show the latest effective ANSWER when one exists. A legacy projection that still embeds answer controls remains supported through the sandbox intent bridge. Each confirmed submission MUST create one new immutable typed ANSWER comment containing the QUESTION snapshot and human choice. For an active QUESTION the latest valid ANSWER by provider-authoritative comment order MUST be the effective decision consumed by later Agents and gates.
 
 #### Scenario: QUESTION choice metadata supports single and multiple selection
 
 - **WHEN** a typed QUESTION declares stable options and answer mode single or multiple
-- **THEN** the projection renders radio controls requiring exactly one option for single mode or checkbox controls requiring one or more unique options for multiple mode while preserving option ID, label, description, and tradeoff
+- **THEN** the native answer panel renders radio controls requiring exactly one option for single mode or checkbox controls requiring one or more unique options for multiple mode while preserving option ID, label, description, and tradeoff
 
 #### Scenario: custom input replaces unsatisfactory predefined options
 
 - **WHEN** a QUESTION allows a custom answer and the user chooses the custom path because no predefined option is satisfactory
-- **THEN** the projection clears predefined selections, requires non-empty custom text, and records the answer as custom without inventing an option ID
+- **THEN** the answer surface clears predefined selections, requires non-empty custom text, and records the answer as custom without inventing an option ID
 
 #### Scenario: QUESTION updates do not rewrite answer history
 
@@ -293,17 +276,17 @@ When a capable self-host Web surface renders a phase projection containing activ
 #### Scenario: QUESTIONS work in every authoring phase
 
 - **WHEN** an active typed QUESTION belongs to a Proposal, Design, or Implement issue
-- **THEN** the corresponding human-facing projection can present the same selection and submission behavior without changing phase authority
+- **THEN** the native answer panel presents the same selection and submission behavior on the QUESTION comment without changing phase authority
 
 #### Scenario: sandbox emits only a structured answer intent
 
-- **WHEN** the user submits a valid selection inside the preview iframe
+- **WHEN** the user submits a valid selection inside a legacy preview iframe with embedded controls
 - **THEN** the iframe sends a versioned message containing issue binding, QUESTION ID, answer mode, selected option IDs, and custom text and receives no credentials, CSRF token, same-origin privilege, or direct issue API access
 
 #### Scenario: trusted host confirms and authorizes the answer
 
-- **WHEN** the parent page receives a QUESTION answer intent
-- **THEN** it validates message source and schema, reloads the active QUESTION by ID, verifies permission and CSRF protection, validates the option model, shows the user a confirmation, and only then creates a typed ANSWER through a same-origin endpoint
+- **WHEN** the trusted host receives a QUESTION answer intent from the native panel or a legacy preview bridge
+- **THEN** it validates the intent source and schema, reloads the active QUESTION by ID, verifies permission and CSRF protection, validates the option model, shows the user a modal confirmation, and only then creates a typed ANSWER through a same-origin endpoint
 
 #### Scenario: ANSWER captures the complete decision snapshot
 
@@ -318,7 +301,7 @@ When a capable self-host Web surface renders a phase projection containing activ
 #### Scenario: repeated identical submissions are semantically harmless
 
 - **WHEN** an accidental retry or repeated click creates another identical ANSWER
-- **THEN** the latest-answer rule yields the same effective decision and the client disables the submit control after success to reduce duplicate timeline noise without requiring an idempotency protocol
+- **THEN** the latest-answer rule yields the same effective decision and the trusted confirmation step gates every submission to reduce duplicate timeline noise without requiring an idempotency protocol
 
 #### Scenario: active blocking QUESTION is satisfied by an ANSWER
 
@@ -337,8 +320,9 @@ When a capable self-host Web surface renders a phase projection containing activ
 
 #### Scenario: unsupported surfaces do not expose a false submit action
 
-- **WHEN** the projection is viewed on GitHub or another surface without a trusted ANSWER bridge
+- **WHEN** a QUESTION or projection is viewed on GitHub or another surface without the trusted answer surface
 - **THEN** QUESTION and ANSWER source remains readable as Markdown, no functional submit control is promised, and answers may be created through a supported provider workflow
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/331#issuecomment-5060936620
+- https://github.com/higress-group/issue-spec/pull/338

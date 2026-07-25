@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/model"
@@ -150,6 +151,21 @@ type QuestionAuthority struct {
 	Snapshot              model.QuestionSnapshot `json:"question"`
 	RepresentationVersion int64                  `json:"representation_version"`
 	BodyDigest            string                 `json:"body_digest"`
+	// EffectiveAnswer is the backend-selected latest effective ANSWER for this
+	// QUESTION, or null when no valid ANSWER exists yet. It is display context
+	// for answer surfaces; ANSWER comments remain the stored authority.
+	EffectiveAnswer *EffectiveAnswer `json:"effective_answer,omitempty"`
+}
+
+// EffectiveAnswer is the bounded view of one resolved ANSWER exposed to the
+// Web UI next to QUESTION authority.
+type EffectiveAnswer struct {
+	ID        string                `json:"id"`
+	CommentID int64                 `json:"comment_id"`
+	Actor     string                `json:"actor"`
+	CreatedAt time.Time             `json:"created_at"`
+	Selection model.AnswerSelection `json:"selection"`
+	SourceURL string                `json:"source_url"`
 }
 
 func (s *Service) resolveRead(ctx context.Context, owner, repository string, subject authz.Subject) (models.RepositoryResource, error) {
@@ -466,15 +482,56 @@ func (s *Service) GetQuestion(ctx context.Context, owner, repository string, iss
 	}
 	var result QuestionAuthority
 	err = s.store.WithTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx *store.Tx) error {
-		authority, err := tx.ScopedRepo(resource.Scope).TypedCommentAuthorityByKey(
+		repositoryStore := tx.ScopedRepo(resource.Scope)
+		authority, err := repositoryStore.TypedCommentAuthorityByKey(
 			ctx, issueNumber, questionID, "QUESTION", false)
 		if err != nil {
 			return err
 		}
 		result, err = questionAuthority(authority, webOrigin, resource)
-		return err
+		if err != nil {
+			return err
+		}
+		observations, err := repositoryStore.TypedAnswerObservationsByIssue(ctx, issueNumber)
+		if err != nil {
+			return err
+		}
+		result.EffectiveAnswer = effectiveAnswerView(observations, questionID, webOrigin, resource, issueNumber)
+		return nil
 	})
 	return resource, result, err
+}
+
+// effectiveAnswerView runs canonical effective-answer resolution over the
+// issue's projected ANSWER comments and returns the bounded view for one
+// QUESTION, or nil when no valid ANSWER exists.
+func effectiveAnswerView(observations []store.TypedAnswerObservation, questionID, webOrigin string,
+	resource models.RepositoryResource, issueNumber int64) *EffectiveAnswer {
+	modelObservations := make([]model.AnswerObservation, 0, len(observations))
+	for _, observation := range observations {
+		modelObservations = append(modelObservations, model.AnswerObservation{
+			ProviderID: strconv.FormatInt(observation.CompatibilityID, 10),
+			Actor:      observation.ActorLogin, CreatedAt: observation.CreatedAt,
+			UpdatedAt: observation.UpdatedAt, RepresentationVersion: observation.RepresentationVersion,
+			Body: observation.Body,
+		})
+	}
+	resolved, ok := model.ResolveEffectiveAnswers(modelObservations).Effective[questionID]
+	if !ok {
+		return nil
+	}
+	commentID, err := strconv.ParseInt(resolved.ProviderID, 10, 64)
+	if err != nil || commentID <= 0 {
+		return nil
+	}
+	sourceURL, err := typedCommentSourceURL(webOrigin, resource.Owner, resource.Name, issueNumber, commentID)
+	if err != nil {
+		sourceURL = ""
+	}
+	return &EffectiveAnswer{
+		ID: resolved.ID, CommentID: commentID, Actor: resolved.Actor,
+		CreatedAt: resolved.CreatedAt, Selection: resolved.Payload.Selection, SourceURL: sourceURL,
+	}
 }
 
 // CreateAnswer is the sole self-hosted ANSWER creation path. It locks and

@@ -460,12 +460,12 @@
     "file": "assets/init-D6jRqBbL.js",
     "name": "init"
   },
-  "_issue-editor-C-kzuhll.css": {
-    "file": "assets/issue-editor-C-kzuhll.css",
-    "src": "_issue-editor-C-kzuhll.css"
+  "_issue-editor-CPOF0oPf.css": {
+    "file": "assets/issue-editor-CPOF0oPf.css",
+    "src": "_issue-editor-CPOF0oPf.css"
   },
-  "_issue-editor-D3dn0X98.js": {
-    "file": "assets/issue-editor-D3dn0X98.js",
+  "_issue-editor-CuAjzv9N.js": {
+    "file": "assets/issue-editor-CuAjzv9N.js",
     "name": "issue-editor",
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
@@ -475,21 +475,17 @@
       "_avatar-CnC9Exwz.js",
       "_repository-context-DO6G70wP.js",
       "_purify.es-sLXpNpJ5.js",
-      "_label-chips-kpIO8HZn.js"
+      "_label-chips-Cstsr_KM.js"
     ],
     "dynamicImports": [
       "node_modules/mermaid/dist/mermaid.core.mjs"
     ],
     "css": [
-      "assets/issue-editor-C-kzuhll.css"
+      "assets/issue-editor-CPOF0oPf.css"
     ]
   },
-  "_label-chips-DMPnSd3b.css": {
-    "file": "assets/label-chips-DMPnSd3b.css",
-    "src": "_label-chips-DMPnSd3b.css"
-  },
-  "_label-chips-kpIO8HZn.js": {
-    "file": "assets/label-chips-kpIO8HZn.js",
+  "_label-chips-Cstsr_KM.js": {
+    "file": "assets/label-chips-Cstsr_KM.js",
     "name": "label-chips",
     "imports": [
       "_session-DBWpYMYY.js",
@@ -498,6 +494,10 @@
     "css": [
       "assets/label-chips-DMPnSd3b.css"
     ]
+  },
+  "_label-chips-DMPnSd3b.css": {
+    "file": "assets/label-chips-DMPnSd3b.css",
+    "src": "_label-chips-DMPnSd3b.css"
   },
   "_line-BwrtyVNH.js": {
     "file": "assets/line-BwrtyVNH.js",
@@ -710,7 +710,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-BLG50yTz.js",
+    "file": "assets/index-CuOY2Lt7.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -743,7 +743,7 @@
       "src/features/search/search-page.tsx"
     ],
     "css": [
-      "assets/index-oK8bF2VM.css"
+      "assets/index-DKPw0AnR.css"
     ]
   },
   "node_modules/@mermaid-js/parser/dist/chunks/mermaid-parser.core/architecture-TIHT7OUA.mjs": {
@@ -1707,7 +1707,7 @@
     ]
   },
   "src/features/issues/create-page.tsx": {
-    "file": "assets/create-page-TEuykNUN.js",
+    "file": "assets/create-page-COn2SemF.js",
     "name": "create-page",
     "src": "src/features/issues/create-page.tsx",
     "isDynamicEntry": true,
@@ -1715,13 +1715,13 @@
       "_rolldown-runtime-QTnfLwEv.js",
       "_session-DBWpYMYY.js",
       "_useMutation-DRV622_Y.js",
-      "_issue-editor-D3dn0X98.js",
+      "_issue-editor-CuAjzv9N.js",
       "_repository-context-DO6G70wP.js",
-      "_label-chips-kpIO8HZn.js"
+      "_label-chips-Cstsr_KM.js"
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-DVcYKgzs.js",
+    "file": "assets/detail-page-D2yT1_-H.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
@@ -1730,7 +1730,7 @@
       "_session-DBWpYMYY.js",
       "_useMutation-DRV622_Y.js",
       "_shield-alert-CNCyRhof.js",
-      "_issue-editor-D3dn0X98.js",
+      "_issue-editor-CuAjzv9N.js",
       "_circle-dot-ByhnaIxK.js",
       "_relationships-D51AoD0l.js",
       "_lock-keyhole-DWGUNdys.js",
@@ -1738,7 +1738,7 @@
       "_rotate-ccw-CYQdbwDE.js",
       "_clipboard-D_yI8EK_.js",
       "_repository-context-DO6G70wP.js",
-      "_label-chips-kpIO8HZn.js",
+      "_label-chips-Cstsr_KM.js",
       "src/features/issues/list-page.tsx"
     ],
     "css": [
@@ -1746,7 +1746,7 @@
     ]
   },
   "src/features/issues/list-page.tsx": {
-    "file": "assets/list-page-D_erEl7U.js",
+    "file": "assets/list-page-sSgu8Kma.js",
     "name": "list-page",
     "src": "src/features/issues/list-page.tsx",
     "isDynamicEntry": true,
@@ -1758,7 +1758,7 @@
       "_message-square-text-B3Guj26-.js",
       "_search-BEPm00hA.js",
       "_repository-context-DO6G70wP.js",
-      "_label-chips-kpIO8HZn.js"
+      "_label-chips-Cstsr_KM.js"
     ]
   },
   "src/features/issues/workspace-page.tsx": {
