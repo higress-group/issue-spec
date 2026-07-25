@@ -95,10 +95,28 @@ func AnswerComment(opts AnswerOptions) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	logical := "## Answer\n\n```json\n" + payload + "\n```\n"
+	logical := answerSelectionSummary(opts.Payload.Selection) + "\n\n## Answer\n\n```json\n" + payload + "\n```\n"
 	return model.EnsureTypedBody("ANSWER", opts.ID, logical, model.BodyOptions{
 		Agent: opts.Agent, Status: "done", Scope: opts.Scope, Links: opts.Links,
 	})
+}
+
+// answerSelectionSummary is the short human-readable line rendered before the
+// canonical JSON. Readers (humans and agents) get the decision at a glance;
+// the fenced JSON under ## Answer stays the only parsed authority.
+func answerSelectionSummary(selection model.AnswerSelection) string {
+	if strings.TrimSpace(selection.Custom) != "" {
+		lines := strings.Split(strings.TrimRight(selection.Custom, "\n"), "\n")
+		for i, line := range lines {
+			lines[i] = "> " + line
+		}
+		return "Custom answer:\n\n" + strings.Join(lines, "\n")
+	}
+	labels := make([]string, 0, len(selection.Options))
+	for _, option := range selection.Options {
+		labels = append(labels, option.Label)
+	}
+	return "Selected: " + strings.Join(labels, ", ")
 }
 
 // CommonOptions carries the shared typed-comment header fields for generated
