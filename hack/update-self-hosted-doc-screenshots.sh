@@ -12,12 +12,14 @@ npm run build
 npx playwright test --config playwright.config.ts --project=desktop-1440 tests/e2e/shell.spec.ts --update-snapshots
 npx playwright test --config playwright.config.ts --project=desktop-1440 tests/e2e/requirements-onboarding.spec.ts --update-snapshots
 npx playwright test --config src/features/issues/playwright.issues.config.ts --project=issues-desktop-1440 --update-snapshots
+npx playwright test --config src/features/search/playwright.search.config.ts --update-snapshots
 npx playwright test --config src/features/boards/playwright.boards.config.ts --project=boards-desktop-1440 --update-snapshots
 npx playwright test --config src/repos/playwright.integrations.config.ts --project=integrations-desktop --update-snapshots
 
 ISSUE_SPEC_E2E_LANGUAGE=zh-CN npx playwright test --config playwright.config.ts --project=desktop-1440 tests/e2e/shell.spec.ts --update-snapshots
 ISSUE_SPEC_E2E_LANGUAGE=zh-CN npx playwright test --config playwright.config.ts --project=desktop-1440 tests/e2e/requirements-onboarding.spec.ts --update-snapshots
 ISSUE_SPEC_E2E_LANGUAGE=zh-CN npx playwright test --config src/features/issues/playwright.issues.config.ts --project=issues-desktop-1440 --update-snapshots
+ISSUE_SPEC_E2E_LANGUAGE=zh-CN npx playwright test --config src/features/search/playwright.search.config.ts --update-snapshots
 ISSUE_SPEC_E2E_LANGUAGE=zh-CN npx playwright test --config src/features/boards/playwright.boards.config.ts --project=boards-desktop-1440 --update-snapshots
 ISSUE_SPEC_E2E_LANGUAGE=zh-CN npx playwright test --config src/repos/playwright.integrations.config.ts --project=integrations-desktop --update-snapshots
 
@@ -25,6 +27,10 @@ mkdir -p "$assets"
 cp "src/features/issues/issues.visual.e2e.ts-snapshots/issue-list-issues-desktop-1440-$platform.png" "$assets/self-hosted-dashboard.png"
 cp "tests/e2e/shell.spec.ts-snapshots/runner-service-account-desktop-1440-$platform.png" "$assets/self-hosted-runner-service-account.png"
 cp "src/features/issues/issues.visual.e2e.ts-snapshots/issue-detail-issues-desktop-1440-$platform.png" "$assets/self-hosted-issue-detail.png"
+cp "src/features/issues/issues.visual.e2e.ts-snapshots/review-projection-proposal-issues-desktop-1440-$platform.png" "$assets/self-hosted-review-proposal.png"
+cp "src/features/issues/issues.visual.e2e.ts-snapshots/review-projection-design-issues-desktop-1440-$platform.png" "$assets/self-hosted-review-design.png"
+cp "src/features/issues/issues.visual.e2e.ts-snapshots/review-projection-implement-issues-desktop-1440-$platform.png" "$assets/self-hosted-review-implement.png"
+cp "src/features/search/search.visual.e2e.ts-snapshots/search-related-changes-search-desktop-1440-$platform.png" "$assets/self-hosted-search.png"
 cp "src/features/boards/boards.visual.e2e.ts-snapshots/change-board-boards-desktop-1440-$platform.png" "$assets/self-hosted-change-board.png"
 cp "src/features/boards/boards.visual.e2e.ts-snapshots/change-detail-boards-desktop-1440-$platform.png" "$assets/self-hosted-change-detail.png"
 cp "src/repos/integrations.e2e.ts-snapshots/webhook-integrations-integrations-desktop-$platform.png" "$assets/self-hosted-webhook-integrations.png"
@@ -38,6 +44,10 @@ cp "src/features/issues/issues.visual.e2e.ts-snapshots/requirements-standard-pro
 cp "src/features/issues/issues.visual.e2e.ts-snapshots/issue-list-zh-CN-issues-desktop-1440-$platform.png" "$assets/self-hosted-dashboard.zh-CN.png"
 cp "tests/e2e/shell.spec.ts-snapshots/runner-service-account-zh-CN-desktop-1440-$platform.png" "$assets/self-hosted-runner-service-account.zh-CN.png"
 cp "src/features/issues/issues.visual.e2e.ts-snapshots/issue-detail-zh-CN-issues-desktop-1440-$platform.png" "$assets/self-hosted-issue-detail.zh-CN.png"
+cp "src/features/issues/issues.visual.e2e.ts-snapshots/review-projection-proposal-zh-CN-issues-desktop-1440-$platform.png" "$assets/self-hosted-review-proposal.zh-CN.png"
+cp "src/features/issues/issues.visual.e2e.ts-snapshots/review-projection-design-zh-CN-issues-desktop-1440-$platform.png" "$assets/self-hosted-review-design.zh-CN.png"
+cp "src/features/issues/issues.visual.e2e.ts-snapshots/review-projection-implement-zh-CN-issues-desktop-1440-$platform.png" "$assets/self-hosted-review-implement.zh-CN.png"
+cp "src/features/search/search.visual.e2e.ts-snapshots/search-related-changes-zh-CN-search-desktop-1440-$platform.png" "$assets/self-hosted-search.zh-CN.png"
 cp "src/features/boards/boards.visual.e2e.ts-snapshots/change-board-zh-CN-boards-desktop-1440-$platform.png" "$assets/self-hosted-change-board.zh-CN.png"
 cp "src/features/boards/boards.visual.e2e.ts-snapshots/change-detail-zh-CN-boards-desktop-1440-$platform.png" "$assets/self-hosted-change-detail.zh-CN.png"
 cp "src/repos/integrations.e2e.ts-snapshots/webhook-integrations-zh-CN-integrations-desktop-$platform.png" "$assets/self-hosted-webhook-integrations.zh-CN.png"

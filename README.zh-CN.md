@@ -2,99 +2,74 @@
 
 **[English](README.md) | 简体中文**
 
-`issue-spec` 是一个 Issue-native、采用 OpenSpec 风格工作流的命令行工具，面向 Agent 驱动的软件开发，并支持 GitHub 与 self-hosted Issue Backend。
-
-它保留了 OpenSpec 的习惯：proposal -> specs -> design -> tasks -> review -> verify -> archive，但把进行中的变更状态从代码仓库移到所选 Issue Backend；代码变更、Review 与 CI 仍留在所选 Code Provider。
-
-我们的理念：
+`issue-spec` 是一套 issue 原生、可自托管的 spec 工作流，面向 agent 驱动的软件开发：在进入编码之前，先强化对需求（Proposal）与设计（Design）的人工评审；再把实现（Implement）编排成小任务，让每个任务分配给合适的 agent 处理。
 
 ```text
--> 沿用 OpenSpec 习惯，状态原生落在 Issue Backend
--> 进行中的变更放在 issue 里，长期留存的 spec 放在仓库里
--> 人的决策发生在评论线程中，而非隐藏的本地文件里
--> 使用小而聚焦的 agent DAG，而非巨大的一次性实现 prompt
--> 行级 review 发现（finding）会回链到对应的 spec
+-> 先评审需求与设计，再写代码
+-> 进行中的变更放在 issue 与类型化评论里，长期 spec 留在仓库里
+-> 人类评审以富 HTML 呈现，人类决策以结构化答案记录
+-> 实现是一张 agent DAG，每个 PROCESS 由最合适的 agent 负责
+-> agent 通过精简的 CLI 读取同一份状态，不背 HTML 的包袱
 ```
 
-## 为团队自托管 issue-spec
+每个实质性变更经过三个 issue —— **Proposal**（做什么、为什么）、**Design**（怎么做、如何验收）、**Implement**（执行 DAG）——由类型化的 `SPEC`、`QUESTION`、`TASK`、`PROCESS`、`REVIEW`、`VERIFY` 评论把可追溯性从需求一直保持到合入的每一行代码。
 
-在自己的基础设施中运行由团队掌控的 issue-spec 工作台。自托管 Server
-将组织与仓库权限、Issue 和 Change 页面、Service Account、Provider-neutral
-代码证据、Runner、通知 Webhook 与持久化 PostgreSQL 状态整合在一起。
+## 为团队自托管一个工作台
 
-[![自托管仓库议题列表](docs/self-hosting/assets/self-hosted-dashboard.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
+在自己的基础设施上运行由团队掌控的 issue-spec Server：浏览器工作台、GitHub 兼容 issue API、组织与仓库权限、Service Account、Provider-neutral 代码证据、Runner、Webhook 与持久化 PostgreSQL 状态——而源代码、PR/MR、Review 和 CI 继续留在团队已有的代码托管平台上。
 
-它支持私网部署以及 GitHub OAuth 或 OIDC 登录，同时让源代码、PR/MR、
-Review 和 CI 继续留在团队已有的代码托管平台中。
+### 为人类决策而生的评审界面
 
-显式启用 PostgreSQL 检索后，Web 工作台和直接连接的 Agent CLI 可以在新改动前
-找回相关 Issue 正文、评论与历史 Change 讨论。生成的 Codex/Claude 工作流会直接
-使用这一能力；Runner Session 复用相同流程，不再拥有一条独立的检索路径。
+Agent 会把每个阶段发布为一份沙箱化的 `html-preview` 评审投影：一份渲染出来的简报，讲清楚改了什么、哪些已定、哪些还需要拍板。开放决策是类型化的 `QUESTION` 评论，直接在 issue 页面上用原生控件作答；每次确认的选择都会成为一条不可变的 `ANSWER` 记录，供后续 agent 与工作流关卡消费。
 
-**[查看自托管 Server、架构、权限模型、部署与运维详情 →](docs/self-hosting/README.zh-CN.md)**
+**Proposal** 决策简报把已确认的边界与仍需人类拍板的决策分开，原生答题面板就在简报下方：
 
-**[安全对接企业代码平台与工作项平台 →](docs/self-hosting/enterprise-provider-integration.zh-CN.md)**
+[![提案决策简报与原生答题面板](docs/self-hosting/assets/self-hosted-review-proposal.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
 
-### 从透明 Change Spec 到可交接的 Agent 执行
+**Design** 评审简报渲染数据流、不变量、已否决方案与验收检查：
 
-Change Spec 的 Proposal、Design、TASK、PROCESS、Review 和验证证据原本就公开保存在
-Issue 时间线中。Runner 在此基础上再向前一步：被授权的维护者通过普通 Issue 评论
-触发 Agent，执行状态、Public Session、结果和继续方式仍写回同一条时间线。
+[![带数据流与不变量的设计评审简报](docs/self-hosting/assets/self-hosted-review-design.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
 
-```text
-Alice: /new 按当前 Design 完成实现、测试并创建 PR
-Runner: started · public session s_demo_42
-        ...状态、PROCESS 与代码证据持续写回 Issue...
-Bob:   /resume s_demo_42 根据 Review 结论修改错误处理
-```
+**Implement** 执行简报展示 PROCESS DAG：哪些可并行、哪些被阻塞、每个节点由哪个 agent 负责：
 
-Public Session 属于仓库中被授权的维护者，而不是某个人的私有对话。另一位维护者可以
-从 Issue 中看到完整上下文，并用 `/resume` 接手同一个 Agent Session 和 Workspace；
-handoff 不需要复制本地聊天记录，也不会脱离 Change Spec、Review 和验证轨迹。
+[![带 PROCESS DAG 的执行简报](docs/self-hosting/assets/self-hosted-review-implement.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
 
-[![Issue 评论触发 Agent 并由其他维护者继续](docs/self-hosting/assets/self-hosted-runner-command.zh-CN.png)](docs/self-hosting/runner.zh-CN.md)
+这些 HTML 不会进入 agent 上下文：agent 通过 `issue-spec` CLI 读取 proposal、design、question 与生效答案，CLI 返回的是精简的 canonical 产物而非渲染后的评审界面——人类看得舒服，agent 读得省 token。
 
-**[查看自托管 Runner、评论触发、多人 handoff 与部署指南 →](docs/self-hosting/runner.zh-CN.md)**
+### Issue、检索与变更管理
 
-## 实际效果一览
+Proposal、design、implement issue 的正文承载当前产物，时间线承载完整决策历史。列表、过滤器与标签让进行中的变更跨仓库可检索。
 
-```text
-You: /issue-spec:propose add-dark-mode
-AI:  Created proposal issue #101
-     Added SPEC comments for theme behavior and persistence
-     Added QUESTION comments for unresolved UX decisions
+[![带检索与过滤的 issue 工作台](docs/self-hosting/assets/self-hosted-dashboard.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
 
-Human: Keep system preference as the default, but allow manual override.
-AI:    Resolved QUESTION-001 and updated the relevant SPEC comments.
+全文检索会把命中的 issue 与评论按其关联变更分组：一次查询就能找到新变更应该参考的历史 proposal、design、implement 轨迹：
 
-You: /issue-spec:apply
-AI:  Created design issue #102 and implement issue #103
-     Split work into PROCESS nodes:
-     - PROCESS-001: theme state and storage
-     - PROCESS-002: UI toggle
-     - PROCESS-003: tests and verification
-     Linked SPEC <-> TASK <-> PROCESS
+[![按关联变更分组的检索结果](docs/self-hosting/assets/self-hosted-search.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
 
-Worker: opens PR #120
-AI:     Added PR rationale comments on changed lines, each linked to SPEC and PROCESS.
+同样的能力也是 CLI 原生的——agent 可以用
+`issue-spec search issues --repo owner/repo --query "..." --source change --stage design`
+在提新变更之前先找到历史关联变更及其决策。
 
-You: /issue-spec:review
-AI:  Synced PR review comments, checks, and findings into REVIEW comments.
-     P1 finding assigned to PROCESS-002.
+变更看板把三个阶段 issue 聚合为一个变更，展示生命周期、TASK/PROCESS 进度与关联代码变更——一个 GitHub pull request 和一个内部 merge request 可以挂在同一个变更下。
 
-Worker: fixes the finding
-AI:     Replied to the original PR review thread and marked the finding resolved.
+[![变更看板](docs/self-hosting/assets/self-hosted-change-board.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
 
-You: /issue-spec:verify
-AI:  Traceability OK
-     Blocking questions: 0
-     P0/P1 findings: 0
-     PR checks: passing
-     Durable spec draft covers all SPEC comments
+**[自托管 Server：架构、权限模型、部署与运维 →](docs/self-hosting/README.zh-CN.md)**
 
-You: /issue-spec:archive
-AI:  After implementation merge, opened a separate durable-spec PR.
-```
+## 人与 agent 共享同一份上下文
+
+`issue-spec` CLI 让 agent 参与到人类在浏览器里评审的同一套工作流中：
+
+- agent 以校验、安全变更与工作流关卡为约束，编写并读取类型化产物（`SPEC`、`TASK`、`PROCESS` 等）
+- 协调器把实现拆成 PROCESS 节点，分派给最合适的 agent——worker、reviewer、verifier 各自保持在窄而有效的上下文窗口内
+- 团队成员和他们的 agent 可以中途接手任何变更，因为全部状态——决策、阻塞、review 发现、证据——都在 issue 里，而不在某个人的本地文件里
+- `issue-spec runner` 在受管工作区内执行经过授权的评论命令（`/new`、`/resume`），直接从 issue 触发工作
+
+PR 行级发现、rationale 与检查会同步回 `REVIEW` 评论；`verify` 在归档前以未解决的阻塞问题、可追溯性与 P0/P1 发现为关卡。
+
+## 兼容对接 GitHub
+
+同一套工作流可以直接用你的 `gh` 登录对着 github.com 或 GitHub Enterprise 运行——issue、类型化评论、PR review 线程与长期 spec 归档 PR 全部可用。只有两个能力是自托管特有的便利：渲染出的 `html-preview` 评审界面与交互式 QUESTION 答题面板；在 GitHub 上它们退化为可读的普通 Markdown 源码，答案改由 CLI 记录。
 
 ## 快速开始
 
@@ -104,23 +79,14 @@ AI:  After implementation merge, opened a separate durable-spec PR.
 go install github.com/higress-group/issue-spec/cmd/issue-spec@latest
 ```
 
-在当前机器上通过 GitHub CLI 完成认证。`issue-spec` 会复用该 `gh` 会话来执行 GitHub 操作：
+认证（GitHub 模式复用你的 `gh` 会话）并初始化仓库：
 
 ```bash
 gh auth login
-gh auth status
-issue-spec auth status --json
+issue-spec init --repo owner/repo --create-labels --tools codex,claude --delivery both
 ```
 
-初始化一个仓库：
-
-```bash
-issue-spec init --repo owner/repo --tools codex,claude --delivery both
-```
-
-初始化默认会确保 issue-spec 工作流标签存在。只有在仓库标签由其他系统单独管理时，才使用 `--skip-labels` 跳过。
-
-然后就可以在你的 agent 里使用生成的 skills 或 slash 命令风格的工作流：
+然后在你的 agent 里通过生成的 skills 或 slash 命令驱动工作流：
 
 ```text
 /issue-spec:propose "your idea"
@@ -130,188 +96,27 @@ issue-spec init --repo owner/repo --tools codex,claude --delivery both
 /issue-spec:archive
 ```
 
-## GitHub 认证
+要为团队自托管 Server，请从**[自托管指南](docs/self-hosting/README.zh-CN.md)**开始。
 
-`issue-spec` 要求本机已安装并认证 GitHub CLI。它使用 `gh auth status` 所报告的同一账号与 host：
+## 了解更多
 
-```bash
-gh auth status
-issue-spec auth status --json
-```
-
-对于 GitHub Enterprise，先用 GitHub CLI 登录，然后把相同的 host 传给 issue-spec 命令：
-
-```bash
-gh auth login --hostname ghe.example.com
-issue-spec auth status --hostname ghe.example.com --json
-```
-
-`issue-spec auth status`、`init` 以及常规工作流命令都不会打印 token 值。只有在显式请求时，`issue-spec auth token --plain` 才会打印当前的 `gh` token。
-
-`archive durable-spec --create-pr` 仍然使用本地 `git` 来进行 fetch、worktree、commit 与 push。GitHub API 的读取和 PR 创建则使用同一个已认证的 `gh` 账号。
-
-## Runner：评论触发的工作流
-
-`issue-spec runner` 监听经过授权的 issue 命令评论，并通过 acpx 在受管仓库工作区中
-调度 Codex 或 Claude。`/new` 创建公共 Session，任意被授权且具有仓库写权限的维护者
-都可以使用 `/resume <public-session-id> ...` 继续同一 Session，实现跨人的 Agent handoff。
-
-```bash
-issue-spec runner preflight --repo owner/repo --runner "$(gh api user --jq .login)"
-issue-spec runner poll --repo owner/repo --runner "$(gh api user --jq .login)" --agent codex
-```
-
-命令接入、权限校验、通知账号、沙箱、并发、工作区、恢复和全部运行参数见
-**[GitHub Runner 运维指南](docs/runner.zh-CN.md)**。自托管 Server 使用 Webhook 驱动的
-`runner serve`，参见 **[自托管 Runner 接入指南](docs/self-hosting/runner.zh-CN.md)**。
-
-## 为什么选择 issue-spec
-
-### 进行中的 spec 不留在代码仓库里
-
-OpenSpec 的进行中变更通常是位于 `openspec/changes/<change>/...` 下的仓库文件。这对本地的 spec 驱动开发很好用，但也意味着草稿、被取代或被放弃的变更 spec 会被 `grep`、`rg`、代码搜索，或之后读取仓库的 agent 找到。
-
-`issue-spec` 转而把进行中的变更产物存放在 GitHub issue 里：
-
-- proposal issue：proposal 正文，加上 `SPEC` 与 `QUESTION` 评论
-- design issue：design 正文，加上 `TASK` 与 `QUESTION` 评论
-- implement issue：实现 DAG，加上 `PROCESS`、`REVIEW` 与 `VERIFY` 评论
-
-issue 正文是当前可编辑的 proposal/design/implementation 产物，而非占位空壳。创建时使用 `--body-file`，当讨论改变了正文时使用 `issue-spec issue update --body-file --summary`，这样人们就能在同一个 GitHub issue 里审阅最新内容与审计轨迹。
-
-生成的 issue 标题使用人类可读的 `Proposal: <subject>`、`Design: <subject>` 与 `Implement: <subject>` 家族。使用 `--body-file` 时，subject 会尽可能从第一个 Markdown H1 派生，同时变更名仍保留在 issue marker 与元数据中。仅在用户明确要求自定义标题时才使用 `issue create --title`。旧的、标题为 `issue-spec proposal: <change>`、`issue-spec design: <change>` 或 `issue-spec implement: <change>` 的 issue 仍是有效的工作流产物，无需重命名。
-
-这让仓库聚焦于当前代码与长期留存的 spec。草稿变更历史仍可在 GitHub 中审阅，包含评论线程、编辑、链接与人工审批点。
-
-人在环（human-in-the-loop）决策是一等公民：
-
-- 阻塞性问题是 `QUESTION` 评论
-- 被接受的假设记录在 issue 历史中
-- review 发现是带 owner 与关联 spec 的 PR 行评论
-- 验证证据存储在 `VERIFY` 评论中
-
-### 原生的多 agent DAG 协调
-
-`issue-spec` 把实现与 review 当作原生的多 agent 工作流来处理。工作被拆分为小的 `TASK` 与 `PROCESS` 单元，并回链到相关的 `SPEC` 评论、PR 工作与 review 证据。
-
-目标是让每次 model 调用都保持在其有效的推理区间内：范围窄、上下文清晰、所有权明确、测试聚焦、review 面小。
-
-implement issue 记录该 DAG：
-
-- worker owner 与 review agent owner
-- branch/worktree 或 PR 节点
-- 依赖
-- 拥有的文件与范围
-- 关联的 TASK/SPEC 评论
-- 状态、阻塞项与验证证据
-
-每个由 agent 执行的 change-bearing PROCESS 都必须交给真实的 runtime-native child/sub-agent，其逻辑 `Agent` 必须不同于协调器。这类节点使用 `workspace_management: managed`，并遵循 prepare -> child -> complete -> integrate；协调器负责 DAG 规划、workspace 生命周期、集成、链接/状态同步、阻塞项路由和 gate 评估，但不得 inline 实现、测试或提交该节点。`workspace_management: independent` 仍适用于真正自管 workspace 的外部或人工执行者，不能作为 coordinator-inline 的逃生口。同一个真实 worker 可以串行执行多个兼容的 change-bearing 或修复 PROCESS，但每个节点仍须保留自己的状态、依赖、workspace 生命周期、证据与有界 handoff。最终验证会用 `process.executor.coordinator_conflict` 拒绝有效的协调器作者 rationale；逻辑名称比较只是可移植的兜底检查，不能替代真实 child 分发，也不会比较 session 元数据。
-
-对任何 change-bearing 工作，review 仍是 MUST，且必须由不同于代码作者的 agent 执行：DAG 必须包含专门的 review PROCESS 节点，若 reviewer `--agent` 与同一 SPEC 的代码作者相同，将在最终 gate 失败（`process.review.author_conflict`）。对于每个不同的 change-bearing 作者 Agent，协调器都应至少分配一个独立 reviewer，其范围覆盖该作者的 PROCESS 输出和受影响 SPEC；只要 reviewer 没有编写这些代码，同一个 reviewer 可以覆盖多个作者。这是调度指导，阻塞 gate 仍按 SPEC 判断，不新增 1:1 的作者/reviewer 映射要求。只有当 review 范围彼此独立时才可并行运行多个 review agent。只有在独立 review 与所有修复收敛后，代码作者才添加最终 PR rationale。
-
-协调器执行遵循一个「就绪节点」循环：
-
-- 选择那些依赖已完成、且写/审范围互不重叠的 PROCESS 节点
-- 为每个已就绪、由 agent 执行的 change-bearing 节点准备 managed workspace，并分发给真实的非协调器 worker
-- 允许同一个兼容 worker 串行执行多个节点，同时保留每个 PROCESS 的边界与 handoff
-- 按依赖顺序验证并集成 managed worker 输出；每个节点都先记录 commit、测试及适用的 handoff 证据
-- 仅在代码可 review 后分发独立 review agent
-- 为每个不同的 change-bearing 作者提供 review 覆盖，并允许一个独立 reviewer 覆盖多个作者
-- 把 P0/P1 review 发现路由回其 owner PROCESS，并让所有修复收敛
-- 只有在 review/fix 收敛后，才由各代码作者为自己改动的行添加最终 PR rationale
-- 仅在 review 证据已记录且阻塞性发现已解决后，才把 review PROCESS 节点标记为 done
-
-CLI 不充当自动拉起 agent 的调度器。它提供共享状态、链接与关卡（gate），让协调器能够安全地把工作拆分到多个 agent 之间，而不丢失可追溯性。
-
-### GitHub PR 原生的 Review 流程
-
-对于 GitHub Profile，`issue-spec` 把 OpenSpec 的 Review 与 Verify 纪律直接连接到 GitHub PR Review 评论：
-
-- `pr rationale` 记录 worker 为何改动某条具体 PR diff 行，并把它链接到某个 `SPEC` 与 `PROCESS`
-- `review finding` 创建可操作的 PR 行发现，带严重级别、owner process 与关联的 spec 上下文
-- `review reply` 让 worker 在修复后关闭原始 review 线程
-- `review sync` 把 rationale 评论、发现、已解决发现、PR 检查与 review 状态汇总回 `REVIEW` 评论
-
-这给了人更好的 review 体验：发现被附在确切的代码行上，而 issue 评论则保留了分配、工作流状态与 spec 上下文。
-
-最终验证会在 archive 之前检查：未解决的阻塞性问题、可追溯性、P0/P1 发现、PR rationale 覆盖、PR 检查以及长期 spec 覆盖。
-
-### 安全工作流关卡与分级证据
-
-使用 `status --gate proposal|design|implement|final|archive --json` 预判下一关；使用带已观察 version 或 digest 的 `comment transition` 安全修改单个产物；使用 `workflow reconcile --plan ... --checkpoint ... --json` 执行可恢复、按依赖排序的批处理。在分配 delegated workspace 或 worker 之前，先运行 `doctor agent --operation ... --json`。PROCESS 现在显式声明五种 execution class，让 change-bearing、review、verification、orchestration 与 external 工作分别使用真实的证据载体，而不是一律伪造行级 rationale。
-
-Delegated workspace 由精确 PROCESS id 选择，并通过 `workflow workspace prepare|inspect|complete|integrate|reconcile|cleanup` 管理。runner 命令只定位 public session，不定位 PROCESS：runner 始终让唯一一个 ACPX coordinator 留在 session clone，coordinator 从 typed DAG 选择 ready PROCESS，再把精确 worktree 交给当前 agent runtime 的原生 child 执行，不会嵌套启动 ACPX。PROCESS 生命周期由 coordinator 所有；它校验 child 返回的 commit、测试与 handoff，并从未改变的 session clone 执行 complete 或 integrate。resume 或 restart 后，top-level runner 只恢复 ACPX/session job，coordinator 负责 inspect 或 reconcile 精确 PROCESS lease。session-clone retention 会查询 `git worktree list`；当 runner metadata 为 dirty 或 uncertain、存在 linked worktree，或 git worktree inspection 失败时都会 fail closed 并保留 clone，而不会清理 child PROCESS workspace。review 与 verification 使用 detached workflow snapshot 并在 dirty 时拒绝继续，但原生 child 共享 coordinator 的外层 sandbox，不具备独立的 OS sandbox。workspace cleanup 是 owner-token 授权的破坏性命令，不会替调用者判断 integration 或 retention eligibility。详见[参考文档](docs/reference.zh-CN.md#process-workspace)与 [runner 指南](docs/runner.zh-CN.md)。
-
-命令、原子性边界、严格凭据策略、恢复行为与完整证据矩阵见 [Workflow safety, reconciliation, and PROCESS evidence](docs/workflow-safety.md)。
-
-## 工作流模型
-
-每个实质性的变更使用三种 issue 类别。
-
-| Issue | 用途 | 类型化评论 |
-| --- | --- | --- |
-| Proposal | 做什么与为什么 | `SPEC`、`QUESTION` |
-| Design | 怎么做与验收策略 | `TASK`、`QUESTION` |
-| Implement | 多 agent 执行、review、verify | `PROCESS`、`QUESTION`、`REVIEW`、`VERIFY` |
-
-可追溯性是双向的：
-
-```text
-SPEC <-> TASK <-> PROCESS <-> implementation change (PR/MR)
-                   |
-                   +-> REVIEW findings and replies
-                   +-> VERIFY evidence
-```
-
-GitHub 继续使用现有的 `pr link-process`、PR Review、Closing Link 与 Durable Archive 路径。对于 self-hosted Profile，`code-change attach` 按精确 Revision 校验并关联已经存在的 Provider Change，`code-change link-process` 再把 PROCESS Comment 链接到唯一 Active Change。Provider 与仓库身份来自 Source Binding；Attach 不会创建 PR/MR，也不会导入证据。self-hosted 的 Review、Merge 与关闭留在所选 Code Provider，不会改走 GitHub PR Endpoint。详见 [CLI 参考](docs/reference.zh-CN.md#关联-self-hosted-代码变更)。
-
-使用 `--capability` 作为稳定的能力（capability）目录，而不是原始变更名。在最终确定 archive PR 之前，检查现有的相关长期 spec，并把生成的长期 spec 当作草稿来合并、修订，或按长期功能模块重新分组，同时保留 Source SPEC 链接以维持可追溯性。
-
-## Agent Skills 与 Slash 命令
-
-`issue-spec init` 可以为一个项目生成 OpenSpec 风格的 agent 工作流产物：
-
-```bash
-issue-spec init --repo owner/repo --tools codex,claude --delivery both
-```
-
-- Codex skills 写入 `.agents/skills/issue-spec-*`，即当前的 Codex 仓库 skill 位置。
-- Claude skills 写入 `.claude/skills/issue-spec-*`。
-- 两套 skill 还都包含一个生成的 `.*/skills/issue-spec-github/SKILL.md` 支持 skill，用于处理 issue-spec 未直接封装的相邻 GitHub CLI 操作。
-- Claude slash 命令写入 `.claude/commands/issue-spec/*.md`，以 `/issue-spec:propose` 的方式调用。
-- 默认不会修改用户全局 Codex prompt。只有显式传入 `--install-global-prompts` 才会把兼容 prompt 安装到 `${CODEX_HOME:-~/.codex}/prompts`；可用 `--global-prompts-dir <dir>` 指定隔离目录，并用 `--global-prompts-dry-run` 在不写文件的情况下预览全部绝对目标路径。当前 Codex 文档已弃用 Codex 自定义 prompt；对于共享工作流，优先使用 skills。
-- `--delivery skills` 只写 skills；`--delivery commands` 只写 slash 命令。
-
-若省略 `--tools`，init 会检测已存在的 `.agents` 或 `.claude` 目录并刷新这些工作流。使用 `--tools none` 只初始化 `.issue-spec/config.json` 与可选的标签（labels）。
-
-## 配置与参考
-
-README 聚焦产品介绍和第一次跑通工作流；详细的编写规则与命令契约放在参考文档中：
-
-- **[项目工作流配置](docs/reference.zh-CN.md#项目工作流配置)**
-- **[首选自然语言](docs/reference.zh-CN.md#首选自然语言)**
-- **[完整 CLI 参考](docs/reference.zh-CN.md#cli-参考)**
-- **[Canonical 类型化评论与校验](docs/reference.zh-CN.md#canonical-类型化评论)**
+- **[工作流指南](docs/workflow.zh-CN.md)** —— 完整演示、工作流模型、多 agent 协调、review 流程、GitHub 模式配置
+- **[CLI 参考](docs/reference.zh-CN.md)** —— 配置、命令契约、canonical 类型化评论
+- **[Runner 运维](docs/runner.zh-CN.md)** —— 命令接入、授权、沙箱、并发、恢复
+- **[工作流安全](docs/workflow-safety.md)** —— 关卡、reconcile、PROCESS 证据
+- **[自托管](docs/self-hosting/README.zh-CN.md)** —— 架构、认证、Bridge、运维
 
 ## 开发
 
+本地构建与测试使用 [`go.mod`](go.mod) 中声明的 Go 工具链：
+
 ```bash
-go test ./...
 go build ./cmd/issue-spec
-```
-
-### 在本地运行单元测试
-
-本地单元测试要求 [`go.mod`](go.mod) 中声明的 Go 工具链版本（当前为 `go 1.25`），它是所需 Go 版本的唯一真实来源。
-
-在仓库根目录运行：
-
-```bash
 go test ./...
 ```
 
-这与 CI 检查所运行的单元测试命令相同（参见 [`.github/workflows/unit-tests.yml`](.github/workflows/unit-tests.yml)），因此一次干净的本地运行能复现那些为 pull request 及推送到 `main` 把关的检查。
+`go test ./...` 与 CI 运行的单元测试命令一致（参见 [`.github/workflows/unit-tests.yml`](.github/workflows/unit-tests.yml)）。
 
 ## 致谢
 
-`issue-spec` 受 [OpenSpec](https://github.com/Fission-AI/OpenSpec) 启发，旨在保留其 spec 优先、对 agent 友好的工作流习惯，同时把进行中的变更状态、人工 review 与多 agent 协调适配到 GitHub issue 与 pull request 上。
+`issue-spec` 受 [OpenSpec](https://github.com/Fission-AI/OpenSpec) 启发，保留其 spec 优先的工作流习惯，并把进行中的变更状态、人工评审与多 agent 协调适配到 issue 与 pull request 上。两者的关系详见[工作流指南](docs/workflow.zh-CN.md#与-openspec-的关系)。
