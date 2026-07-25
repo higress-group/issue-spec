@@ -92,7 +92,7 @@ func issueSpecWorkflows(repo string) []WorkflowTemplate {
 
 ## Human Review Projections
 
-Before generating or updating any phase projection, read [Human Review Projection Generation](references/human-review-projections.md) completely. Use it to build the Markdown fallback, the single ` + "`html-preview`" + ` review surface, QUESTION controls, source digest, and validation checks before running ` + "`projection upsert`" + `.`,
+Before generating or updating any phase projection, read [Human Review Projection Generation](references/human-review-projections.md) completely. Use it to build the Markdown fallback, the single ` + "`html-preview`" + ` review surface, read-only QUESTION summaries, source digest, and validation checks before running ` + "`projection upsert`" + `. Reviewers answer on the typed QUESTION comment's native panel; do not embed answer controls in the projection.`,
 			Body: `# Issue Spec Workflow
 
 Use this coordinator protocol for issue-native proposal, design, implementation, review, verification, durable projection, and closure work. The CLI and sealed packets carry mechanical contracts; keep only decisions and stops in agent context.

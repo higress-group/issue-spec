@@ -69,7 +69,7 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 	for _, want := range []string{
 		"# Human Review Projection Generation",
 		"implement-execution-brief",
-		"issue-spec-preview-init",
+		"native, default-visible answer panel",
 		"GitHub displays the fenced HTML source and does not execute",
 	} {
 		if !strings.Contains(projectionReference, want) {

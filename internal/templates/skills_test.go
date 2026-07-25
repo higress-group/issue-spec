@@ -183,7 +183,8 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"absence and digest preconditions are mutually exclusive",
 		"GitHub stores source only and never executes the preview or interactive answer intent",
 		"read [Human Review Projection Generation](references/human-review-projections.md) completely",
-		"build the Markdown fallback, the single `html-preview` review surface, QUESTION controls, source digest, and validation checks",
+		"build the Markdown fallback, the single `html-preview` review surface, read-only QUESTION summaries, source digest, and validation checks",
+		"Reviewers answer on the typed QUESTION comment's native panel; do not embed answer controls in the projection.",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("workflow guidance missing %q:\n%s", want, workflow)
@@ -264,10 +265,9 @@ func TestHumanReviewProjectionReferenceIsActionableAndBounded(t *testing.T) {
 		"single",
 		"multiple",
 		"allow_custom",
-		"issue-spec-preview-init",
-		"event.source !== parent",
-		"question_id",
-		"option_ids",
+		"native, default-visible answer panel",
+		"Do not embed answer selectors",
+		"link to the typed QUESTION comment",
 		"```html-preview id=implement-execution-review version=1",
 		"sandbox=\"allow-scripts\"",
 		"prefers-reduced-motion",
@@ -282,6 +282,8 @@ func TestHumanReviewProjectionReferenceIsActionableAndBounded(t *testing.T) {
 		"projection is authoritative",
 		"estimate defines PROCESS",
 		"call the issue API from the iframe",
+		"issue-spec-preview-init",
+		"submitAnswer(",
 	} {
 		if strings.Contains(reference, forbidden) {
 			t.Fatalf("human review projection reference contains forbidden guidance %q", forbidden)
