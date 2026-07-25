@@ -184,6 +184,8 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"GitHub stores source only and never executes the preview or interactive answer intent",
 		"read [Human Review Projection Generation](references/human-review-projections.md) completely",
 		"build the Markdown fallback, the single `html-preview` review surface, source digest, and validation checks",
+		"Record every genuine unresolved decision as a blocking typed QUESTION before the phase projection upsert",
+		"issue-body or projection prose never carries an open decision",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("workflow guidance missing %q:\n%s", want, workflow)
@@ -211,6 +213,8 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"Generate TASK comments")
 	for _, want := range []string{
 		"Do not manufacture a question or reopen a settled choice",
+		"Record each genuine unresolved decision as a blocking typed QUESTION with issue-spec question create",
+		"never leave an open decision as body or projection prose",
 		"keep unresolved decisions distinct from evidence-dependent items",
 		"settled, needs-evidence, and needs-decision",
 		"grounded recommendations, alternatives, tradeoffs, and source links",
