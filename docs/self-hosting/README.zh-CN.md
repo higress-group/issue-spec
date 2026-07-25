@@ -49,11 +49,20 @@ PROCESS、REVIEW 和 VERIFY 以类型化评论出现在同一时间线。普通�
 
 ### 评审投影为人渲染，问题原生作答
 
-Agent 会为每个阶段发布沙箱化的 `html-preview` 评审投影；每条类型化 QUESTION
-评论都自带原生答题面板。确认的选择会成为不可变的类型化 ANSWER 评论，供后续
-Agent 与工作流关卡消费。
+Agent 会为每个阶段发布沙箱化的 `html-preview` 评审投影——提案决策简报、
+设计评审简报与执行简报；每条类型化 QUESTION 评论都自带原生答题面板。
+确认的选择会成为不可变的类型化 ANSWER 评论，供后续 Agent 与工作流关卡消费。
 
-![HTML 评审投影与原生答题面板](assets/self-hosted-review-projection.zh-CN.png)
+![设计评审简报投影](assets/self-hosted-review-design.zh-CN.png)
+
+### 检索按关联变更分组
+
+全文检索覆盖 issue 正文与评论，并按关联变更与阶段分组展示命中结果，
+评审者和 Agent 都能顺着关键词找到背后的历史 proposal、design、implement
+轨迹。同样的查询也可在 CLI 中执行：`issue-spec search issues --source change
+--stage <stage>`。
+
+![按关联变更分组的检索结果](assets/self-hosted-search.zh-CN.png)
 
 ### Change Board 展示工作流状态，而不只是 Issue 数量
 

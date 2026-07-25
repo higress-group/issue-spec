@@ -135,6 +135,17 @@ review 与 verify 直接连接到 PR review 评论：
 
 命令、原子性边界、严格凭据策略、恢复行为与完整证据矩阵见 [Workflow safety, reconciliation, and PROCESS evidence](workflow-safety.md)。
 
+## 查找关联变更
+
+在提出新变更之前，先检索 issue 后端里它应该参考的历史轨迹：
+
+```bash
+issue-spec search issues --repo owner/repo --query "schema allowlist" \
+  --source change --stage design --state all --limit 10
+```
+
+`--source change` 会把命中结果按关联变更分组（自托管后端），`--stage proposal|design|implement` 可把结果收窄到某一阶段。在自托管 Web UI 上，同样的检索会把 issue 与评论命中归组到各自的关联变更下。
+
 ## Agent Skills 与 Slash 命令
 
 `issue-spec init` 可以为一个项目生成 agent 工作流产物：

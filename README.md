@@ -36,7 +36,20 @@ decision. Open decisions are typed `QUESTION` comments, answered right on the
 issue page with native controls; every confirmed choice becomes an immutable
 `ANSWER` record that later agents and workflow gates consume.
 
-[![HTML review projection with native question answering](docs/self-hosting/assets/self-hosted-review-projection.png)](docs/self-hosting/README.md)
+The **Proposal** choice brief separates settled boundaries from the decisions a
+human still owns, with the native answer panel right below it:
+
+[![Proposal choice brief with native question answering](docs/self-hosting/assets/self-hosted-review-proposal.png)](docs/self-hosting/README.md)
+
+The **Design** explainer renders the data flow, invariants, rejected
+alternatives, and acceptance checks:
+
+[![Design explainer with data flow and invariants](docs/self-hosting/assets/self-hosted-review-design.png)](docs/self-hosting/README.md)
+
+The **Implement** execution brief shows the PROCESS DAG: what runs in parallel,
+what is blocked, and which agent owns each node:
+
+[![Implement execution brief with the PROCESS DAG](docs/self-hosting/assets/self-hosted-review-implement.png)](docs/self-hosting/README.md)
 
 The HTML stays out of agent context: agents read proposals, designs, questions,
 and effective answers through the `issue-spec` CLI, which returns the compact
@@ -50,6 +63,16 @@ and the full decision history in the timeline. Lists, filters, and labels keep
 in-flight changes findable across repositories.
 
 [![Issue workspace with search and filters](docs/self-hosting/assets/self-hosted-dashboard.png)](docs/self-hosting/README.md)
+
+Full-text search groups matching issues and comments by their related change,
+so one query surfaces the historical proposal, design, and implement trail a
+new change should build on:
+
+[![Search results grouped by related change](docs/self-hosting/assets/self-hosted-search.png)](docs/self-hosting/README.md)
+
+The same capability is CLI-native — agents run
+`issue-spec search issues --repo owner/repo --query "..." --source change --stage design`
+to find prior related changes and their decisions before proposing a new one.
 
 Change boards group the three phase issues into one change and expose
 lifecycle, TASK/PROCESS progress, and linked code changes — a GitHub pull

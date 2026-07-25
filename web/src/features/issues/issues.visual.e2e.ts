@@ -117,26 +117,25 @@ function questionFixture(id: "QUESTION-007" | "QUESTION-008") {
 const documentationQuestion = {
   id: "QUESTION-009",
   question: documentationText(
-    "Which release posture should the first compact-export rollout use?",
-    "compact-export 首次发布应采用哪种发布姿态？",
+    "Should attachments be included in the first compact-export version?",
+    "紧凑导出第一版是否包含附件？",
   ),
   blocking: true,
-  default_assumption: documentationText("Use the staged rollout.", "默认采用分阶段灰度。"),
+  default_assumption: documentationText("Defer attachments to a later version.", "默认推迟附件到后续版本。"),
   issue_url: "https://example.test/acme/workflow/issues/41",
   source_url: "https://example.test/acme/workflow/issues/41#issuecomment-20",
   choice_model: {
     version: 1,
     mode: "single",
     options: [
-      { id: "staged", label: documentationText("Staged rollout", "分阶段灰度"), description: documentationText("Enable per organization first", "先按组织逐步开启"), tradeoff: documentationText("Slower feedback", "反馈更慢") },
-      { id: "fast", label: documentationText("Fast release", "快速全量"), description: documentationText("Ship to every tenant at once", "一次性发布到所有租户"), tradeoff: documentationText("Riskier rollback", "回滚风险更高") },
+      { id: "defer", label: documentationText("Defer attachments", "推迟附件"), description: documentationText("Ship v1 two weeks earlier", "v1 提前两周交付"), tradeoff: documentationText("A second migration later", "后续需一次追加迁移") },
+      { id: "include", label: documentationText("Include attachments", "包含附件"), description: documentationText("One complete format", "一次性完整格式"), tradeoff: documentationText("Size limits and scrubbing rules now", "现在就要定体积上限与脱敏规则") },
     ],
     allow_custom: true,
   },
 };
 
-const documentationPreviewDocument = `<!doctype html>
-<html lang="${documentationText("en", "zh-CN")}"><head><meta charset="utf-8"><title>${documentationText("Design brief", "设计评审简报")}</title><style>
+const documentationPreviewStyles = `
 body{font:15px/1.6 system-ui;margin:0;padding:24px;color:#1f2933;background:#f8fafc}
 h1{font-size:20px;margin:0 0 4px}
 p.lead{margin:0 0 16px;color:#52606d}
@@ -144,24 +143,72 @@ p.lead{margin:0 0 16px;color:#52606d}
 .card{background:#fff;border:1px solid #d9e2ec;border-radius:10px;padding:14px}
 .card h2{font-size:13px;letter-spacing:.04em;margin:0 0 8px;color:#486581}
 .card ul{margin:0;padding-left:18px}
+.card p{margin:8px 0 0;font-size:13px;color:#52606d}
 .pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
 .pill.settled{background:#e3f9e5;color:#207227}
 .pill.open{background:#fff3c4;color:#8d6708}
-table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #d9e2ec}
+.pill.ready{background:#e1f0ff;color:#1259a7}
+.pill.blocked{background:#ffe3e3;color:#a61b1b}
+.pill.done{background:#e3f9e5;color:#207227}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #d9e2ec;margin-bottom:16px}
 th,td{padding:8px 12px;text-align:left;border-top:1px solid #e4ebf1;font-size:14px}
 th{border-top:none;color:#486581;font-size:12px}
-</style></head><body>
-<h1>${documentationText("Design review: compact export", "设计评审：紧凑导出")}</h1>
-<p class="lead">${documentationText("What changes, why it is safe, and the one decision still open.", "改了什么、为什么安全，以及尚待拍板的一个决策。")}</p>
-<div class="grid">
-<div class="card"><h2>${documentationText("Settled", "已确认")} <span class="pill settled">${documentationText("confirmed", "confirmed")}</span></h2><ul><li>${documentationText("Exports never include credentials.", "导出永不包含凭据。")}</li><li>${documentationText("The field allowlist lives in one schema module.", "字段白名单集中在一个 schema 模块。")}</li></ul></div>
-<div class="card"><h2>${documentationText("Needs a decision", "待决策")} <span class="pill open">${documentationText("open", "open")}</span></h2><ul><li>${documentationText("Release posture: staged rollout or fast release.", "发布姿态：分阶段灰度还是快速全量。")}</li><li>${documentationText("Rollback drill owner for the first tenant wave.", "首批租户的回滚演练归属。")}</li></ul></div>
+figure{margin:0 0 16px;background:#fff;border:1px solid #d9e2ec;border-radius:10px;padding:14px}
+figcaption{font-size:12px;color:#486581;margin-bottom:8px}
+`;
+
+function documentationBrief(title: string, lead: string, body: string) {
+  return `<!doctype html>\n<html lang="${documentationText("en", "zh-CN")}"><head><meta charset="utf-8"><title>${title}</title><style>${documentationPreviewStyles}</style></head><body>\n<h1>${title}</h1>\n<p class="lead">${lead}</p>\n${body}\n</body></html>`;
+}
+
+const proposalBriefDocument = documentationBrief(
+  documentationText("Proposal choice brief: compact export", "提案决策简报：紧凑导出"),
+  documentationText("Every choice grounded in the proposal, split into settled boundaries and the decisions a human still owns.", "每个选择都锚定在提案上，分为已确认的边界与仍需人类拍板的决策。"),
+  `<div class="grid">
+<div class="card"><h2>${documentationText("Settled", "已确认")} <span class="pill settled">confirmed</span></h2><ul><li>${documentationText("Exports never include credentials or tokens.", "导出永不包含凭据或令牌。")}</li><li>${documentationText("One portable file per support request.", "每个支持请求对应一个可携文件。")}</li></ul><p>${documentationText("Verify the boundary; no need to re-decide.", "只需校验边界，无需重新决策。")}</p></div>
+<div class="card"><h2>${documentationText("Needs your decision", "需要你拍板")} <span class="pill open">open</span></h2><ul><li>${documentationText("Include attachments in v1, or defer?", "v1 是否包含附件，还是推迟？")}</li><li>${documentationText("Answer on the QUESTION comment below.", "请在下方 QUESTION 评论上作答。")}</li></ul><p>${documentationText("Recommendation: defer — smaller surface, faster review.", "建议：推迟——面更小，review 更快。")}</p></div>
 </div>
-<table><tr><th>${documentationText("Task", "任务")}</th><th>${documentationText("Owner agent", "负责智能体")}</th><th>${documentationText("State", "状态")}</th></tr>
-<tr><td>${documentationText("Schema allowlist", "Schema 白名单")}</td><td>worker-1</td><td>${documentationText("ready", "就绪")}</td></tr>
-<tr><td>${documentationText("Export endpoint", "导出接口")}</td><td>worker-2</td><td>${documentationText("blocked by decision", "等待决策")}</td></tr>
-<tr><td>${documentationText("Review and tests", "评审与测试")}</td><td>reviewer</td><td>${documentationText("queued", "排队中")}</td></tr></table>
-</body></html>`;
+<table><tr><th>${documentationText("Option", "选项")}</th><th>${documentationText("Benefit", "收益")}</th><th>${documentationText("Cost", "代价")}</th></tr>
+<tr><td>${documentationText("Defer attachments", "推迟附件")}</td><td>${documentationText("Ship v1 two weeks earlier", "v1 提前两周交付")}</td><td>${documentationText("A second migration later", "后续需一次追加迁移")}</td></tr>
+<tr><td>${documentationText("Include attachments", "包含附件")}</td><td>${documentationText("One complete format", "一次性完整格式")}</td><td>${documentationText("Size limits and scrubbing rules now", "现在就要定体积上限与脱敏规则")}</td></tr></table>`,
+);
+
+const designBriefDocument = documentationBrief(
+  documentationText("Design review: compact export", "设计评审：紧凑导出"),
+  documentationText("How the data flows, which invariants hold, and which alternatives were rejected.", "数据如何流动、哪些不变量必须成立，以及否决了哪些方案。"),
+  `<figure><figcaption>${documentationText("Export data flow", "导出数据流")}</figcaption>
+<svg viewBox="0 0 640 96" width="100%" height="96" role="img">
+<g font-family="system-ui" font-size="13" text-anchor="middle">
+<rect x="8" y="28" width="140" height="40" rx="8" fill="#e1f0ff" stroke="#1259a7"/><text x="78" y="52" fill="#1259a7">${documentationText("Report store", "报告存储")}</text>
+<rect x="196" y="28" width="150" height="40" rx="8" fill="#fff" stroke="#486581"/><text x="271" y="52" fill="#334e68">${documentationText("Schema allowlist", "Schema 白名单")}</text>
+<rect x="394" y="28" width="110" height="40" rx="8" fill="#fff" stroke="#486581"/><text x="449" y="52" fill="#334e68">${documentationText("Scrubber", "脱敏器")}</text>
+<rect x="552" y="28" width="80" height="40" rx="8" fill="#e3f9e5" stroke="#207227"/><text x="592" y="52" fill="#207227">${documentationText("Export", "导出件")}</text>
+<g stroke="#829ab1" marker-end="none"><line x1="148" y1="48" x2="196" y2="48"/><line x1="346" y1="48" x2="394" y2="48"/><line x1="504" y1="48" x2="552" y2="48"/></g>
+<g fill="#829ab1"><polygon points="196,48 188,44 188,52"/><polygon points="394,48 386,44 386,52"/><polygon points="552,48 544,44 544,52"/></g>
+</g></svg></figure>
+<div class="grid">
+<div class="card"><h2>${documentationText("Invariants", "不变量")} <span class="pill settled">${documentationText("hold", "hold")}</span></h2><ul><li>${documentationText("Every exported field passes the allowlist.", "每个导出字段都经过白名单。")}</li><li>${documentationText("Scrubbing runs before serialization, not after.", "脱敏发生在序列化之前，而非之后。")}</li><li>${documentationText("Export failures never leave partial files.", "导出失败不留下半成品文件。")}</li></ul></div>
+<div class="card"><h2>${documentationText("Alternatives rejected", "已否决方案")} <span class="pill open">${documentationText("context", "context")}</span></h2><ul><li>${documentationText("Denylist filtering — new fields leak by default.", "黑名单过滤——新字段默认泄漏。")}</li><li>${documentationText("Client-side scrubbing — cannot be audited server-side.", "客户端脱敏——服务端无法审计。")}</li></ul></div>
+</div>
+<table><tr><th>${documentationText("Acceptance check", "验收检查")}</th><th>${documentationText("Verified by", "验证方式")}</th></tr>
+<tr><td>${documentationText("Credential-shaped strings never serialize", "凭据形态字符串永不序列化")}</td><td>${documentationText("Property test on the scrubber", "脱敏器性质测试")}</td></tr>
+<tr><td>${documentationText("Allowlist stays the single source", "白名单保持唯一来源")}</td><td>${documentationText("Schema module round-trip test", "Schema 模块双向测试")}</td></tr></table>`,
+);
+
+const implementBriefDocument = documentationBrief(
+  documentationText("Execution brief: compact export", "执行简报：紧凑导出"),
+  documentationText("The PROCESS DAG at a glance: what runs in parallel, what is blocked, and who owns each node.", "一眼看清 PROCESS DAG：哪些可并行、哪些被阻塞、每个节点由谁负责。"),
+  `<div class="grid">
+<div class="card"><h2>${documentationText("Safely parallel now", "现在可安全并行")} <span class="pill ready">2 ${documentationText("ready", "就绪")}</span></h2><ul><li>PROCESS-001 · ${documentationText("schema allowlist module", "schema 白名单模块")}</li><li>PROCESS-004 · ${documentationText("scrubber property tests", "脱敏器性质测试")}</li></ul><p>${documentationText("Disjoint files, no shared touchpoints.", "文件不相交，无共享触点。")}</p></div>
+<div class="card"><h2>${documentationText("Blocked", "被阻塞")} <span class="pill blocked">1 ${documentationText("waiting", "等待中")}</span></h2><ul><li>PROCESS-002 · ${documentationText("export endpoint — waits on PROCESS-001", "导出接口——等待 PROCESS-001")}</li></ul><p>${documentationText("Shared touchpoint: the schema module API.", "共享触点：schema 模块 API。")}</p></div>
+</div>
+<table><tr><th>PROCESS</th><th>${documentationText("Scope", "范围")}</th><th>${documentationText("Worker", "实现方")}</th><th>${documentationText("Reviewer", "评审方")}</th><th>${documentationText("Depends on", "依赖")}</th><th>${documentationText("State", "状态")}</th></tr>
+<tr><td>PROCESS-001</td><td>${documentationText("Schema allowlist", "Schema 白名单")}</td><td>codex-worker</td><td>claude-reviewer</td><td>—</td><td><span class="pill ready">${documentationText("active", "进行中")}</span></td></tr>
+<tr><td>PROCESS-002</td><td>${documentationText("Export endpoint", "导出接口")}</td><td>codex-worker</td><td>claude-reviewer</td><td>PROCESS-001</td><td><span class="pill blocked">${documentationText("blocked", "阻塞")}</span></td></tr>
+<tr><td>PROCESS-003</td><td>${documentationText("CLI surface", "CLI 入口")}</td><td>qoder-worker</td><td>codex-reviewer</td><td>PROCESS-002</td><td><span class="pill open">${documentationText("queued", "排队中")}</span></td></tr>
+<tr><td>PROCESS-004</td><td>${documentationText("Scrubber tests", "脱敏测试")}</td><td>claude-worker</td><td>codex-reviewer</td><td>—</td><td><span class="pill done">${documentationText("done", "完成")}</span></td></tr></table>
+<p class="lead">${documentationText("Estimates and lane suggestions are planning aids; typed PROCESS comments stay authoritative.", "估算与并行建议仅供规划参考；类型化 PROCESS 评论仍是权威数据。")}</p>`,
+);
 
 async function stabilizeScreenshotDates(page: Page) {
   await page.locator("time[datetime]").evaluateAll((elements) => {
@@ -219,13 +266,15 @@ test.beforeEach(async ({ page }) => {
     if (url.pathname === "/repos/acme/workflow/issues/comments/9/reactions") return route.fulfill({ json: [{ id: 7, user: user, content: "+1", created_at: "2026-07-10T12:00:00Z" }] });
     if (/^\/repos\/acme\/workflow\/issues\/comments\/\d+\/reactions$/.test(url.pathname)) return route.fulfill({ json: [] });
     if (url.pathname === "/api/v1/context/repos/acme/workflow/issues/41/relationships") return route.fulfill({ json: { relationships: externalContributor ? [] : relationships } });
-    if (/^\/api\/v1\/repos\/acme\/workflow\/issues\/41\/previews\/(?:review-lab|comment-lab|issue-first|anchored-first|design-brief)$/.test(url.pathname)) {
+    if (/^\/api\/v1\/repos\/acme\/workflow\/issues\/41\/previews\/(?:review-lab|comment-lab|issue-first|anchored-first|proposal-brief|design-brief|implement-brief)$/.test(url.pathname)) {
       previewRequests += 1;
       const commentPreview = url.pathname.endsWith("/comment-lab") || url.pathname.endsWith("/anchored-first");
       expect(url.searchParams.get("source")).toBe(commentPreview ? "comment" : "issue");
       expect(url.searchParams.get("comment_id")).toBe(commentPreview ? "9" : null);
       expect(url.searchParams.get("digest")).toMatch(/^[0-9a-f]{64}$/);
-      const document = url.pathname.endsWith("/anchored-first") ? "<!doctype html><p>comment</p>" : url.pathname.endsWith("/design-brief") ? documentationPreviewDocument : previewDocument;
+      const briefDocuments: Record<string, string> = { "proposal-brief": proposalBriefDocument, "design-brief": designBriefDocument, "implement-brief": implementBriefDocument };
+      const briefId = url.pathname.split("/").pop() ?? "";
+      const document = url.pathname.endsWith("/anchored-first") ? "<!doctype html><p>comment</p>" : briefDocuments[briefId] ?? previewDocument;
       return route.fulfill({ status: 200, body: document, headers: { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": previewCSP, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Permissions-Policy": "camera=(), microphone=(), geolocation=()" } });
     }
     if (/^\/api\/v1\/repos\/acme\/workflow\/issues\/41\/questions\/QUESTION-00[789]$/.test(url.pathname)) {
@@ -480,34 +529,84 @@ test("a comment anchor prioritizes that comment's first preview for default rend
   expect(previewRequests).toBe(1);
 });
 
-test("review projection and native question answering documentation screenshot", async ({ page }, testInfo) => {
+test("proposal choice brief documentation screenshot", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "issues-desktop-1440");
-  const briefTitle = documentationText("Design brief", "设计评审简报");
+  const briefTitle = documentationText("Proposal choice brief", "提案决策简报");
+  activeIssue = {
+    ...issue,
+    title: documentationText("Proposal: compact-export", "Proposal：compact-export"),
+    labels: [{ id: 3, name: "issue-spec/proposal", color: "0969da", default: false, description: "Proposal", url: "" }],
+    body: documentationText(
+      `## Proposal: compact export\n\nSupport requests need a small, portable export. The brief below is the human review surface; the proposal body and typed comments stay authoritative.`,
+      `## 提案：紧凑导出\n\n支持请求需要小巧可携的导出件。下方简报是人类评审界面；提案正文与类型化评论仍是权威数据。`,
+    ) + `\n\n\`\`\`html-preview id=proposal-brief version=1 title="${briefTitle}" height=560\n${proposalBriefDocument}\n\`\`\``,
+  };
+  comments = [commentFixture(20, documentationText(
+    `<!-- issue-spec:type=QUESTION id=QUESTION-009 version=1 -->\nAgent: Requirements\nType: QUESTION\nID: QUESTION-009\nStatus: open\nScope: export scope\nLinks: SPEC-001\n\n## Question\nShould attachments be included in the first compact-export version?`,
+    `<!-- issue-spec:type=QUESTION id=QUESTION-009 version=1 -->\nAgent: Requirements\nType: QUESTION\nID: QUESTION-009\nStatus: open\nScope: 导出范围\nLinks: SPEC-001\n\n## Question\n紧凑导出第一版是否包含附件？`,
+  ))];
+
+  await page.goto("/acme/workflow/issues/41");
+  await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(activeIssue.title);
+  await expect(page.frameLocator(`iframe[title="${briefTitle}"]`).getByText(documentationText("Proposal choice brief: compact export", "提案决策简报：紧凑导出"))).toBeVisible();
+  const panel = page.getByRole("region", { name: /QUESTION-009/ });
+  await expect(panel.getByRole("radio", { name: new RegExp(documentationText("Defer attachments", "推迟附件")) })).toBeVisible();
+  await expect(panel.getByRole("radio", { name: new RegExp(documentationText("Include attachments", "包含附件")) })).toBeVisible();
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await stabilizeScreenshotDates(page);
+  await expect(page).toHaveScreenshot(documentationSnapshot("review-projection-proposal"), { fullPage: true, animations: "disabled" });
+});
+
+test("design explainer documentation screenshot", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "issues-desktop-1440");
+  const briefTitle = documentationText("Design explainer", "设计评审简报");
   activeIssue = {
     ...issue,
     title: documentationText("Design: compact-export", "Design：compact-export"),
     labels: [labels[0]],
     body: documentationText(
-      `## Design: compact export\n\nThe export ships behind one schema allowlist module. The brief below is the human review surface; issue bodies and typed comments stay authoritative.`,
-      `## 设计：紧凑导出\n\n导出能力收敛在一个 schema 白名单模块之后。下方简报是人类评审界面；issue 正文与类型化评论仍是权威数据。`,
-    ) + `\n\n\`\`\`html-preview id=design-brief version=1 title="${briefTitle}" height=620\n${documentationPreviewDocument}\n\`\`\``,
+      `## Design: compact export\n\nThe export ships behind one schema allowlist module. The explainer below is the human review surface; the design body and typed comments stay authoritative.`,
+      `## 设计：紧凑导出\n\n导出能力收敛在一个 schema 白名单模块之后。下方简报是人类评审界面；设计正文与类型化评论仍是权威数据。`,
+    ) + `\n\n\`\`\`html-preview id=design-brief version=1 title="${briefTitle}" height=700\n${designBriefDocument}\n\`\`\``,
   };
-  comments = [commentFixture(20, documentationText(
-    `<!-- issue-spec:type=QUESTION id=QUESTION-009 version=1 -->\nAgent: Design\nType: QUESTION\nID: QUESTION-009\nStatus: open\nScope: release posture\nLinks: SPEC-001\n\n## Question\nWhich release posture should the first compact-export rollout use?`,
-    `<!-- issue-spec:type=QUESTION id=QUESTION-009 version=1 -->\nAgent: Design\nType: QUESTION\nID: QUESTION-009\nStatus: open\nScope: 发布姿态\nLinks: SPEC-001\n\n## Question\ncompact-export 首次发布应采用哪种发布姿态？`,
+  comments = [commentFixture(21, documentationText(
+    "The denylist alternative is documented in the explainer; the allowlist stays the single source.",
+    "黑名单方案已在简报中记录；白名单保持唯一来源。",
   ))];
 
   await page.goto("/acme/workflow/issues/41");
   await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(activeIssue.title);
-  const iframe = page.locator(`iframe[title="${briefTitle}"]`);
-  await expect(iframe).toHaveCount(1);
   await expect(page.frameLocator(`iframe[title="${briefTitle}"]`).getByText(documentationText("Design review: compact export", "设计评审：紧凑导出"))).toBeVisible();
-  const panel = page.getByRole("region", { name: /QUESTION-009/ });
-  await expect(panel.getByRole("radio", { name: new RegExp(documentationText("Staged rollout", "分阶段灰度")) })).toBeVisible();
-  await expect(panel.getByRole("radio", { name: new RegExp(documentationText("Fast release", "快速全量")) })).toBeVisible();
+  await expect(page.frameLocator(`iframe[title="${briefTitle}"]`).getByRole("heading", { name: new RegExp(documentationText("Invariants", "不变量")) })).toBeVisible();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await stabilizeScreenshotDates(page);
-  await expect(page).toHaveScreenshot(documentationSnapshot("review-projection"), { fullPage: true, animations: "disabled" });
+  await expect(page).toHaveScreenshot(documentationSnapshot("review-projection-design"), { fullPage: true, animations: "disabled" });
+});
+
+test("implement execution brief documentation screenshot", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "issues-desktop-1440");
+  const briefTitle = documentationText("Execution brief", "执行简报");
+  activeIssue = {
+    ...issue,
+    title: documentationText("Implement: compact-export", "Implement：compact-export"),
+    labels: [{ id: 4, name: "issue-spec/implement", color: "1a7f37", default: false, description: "Implement", url: "" }],
+    body: documentationText(
+      `## Implement: compact export\n\nFour PROCESS nodes, two safely parallel. The brief below is the human review surface; typed PROCESS comments stay authoritative.`,
+      `## 实现：紧凑导出\n\n四个 PROCESS 节点，两个可安全并行。下方简报是人类评审界面；类型化 PROCESS 评论仍是权威数据。`,
+    ) + `\n\n\`\`\`html-preview id=implement-brief version=1 title="${briefTitle}" height=720\n${implementBriefDocument}\n\`\`\``,
+  };
+  comments = [commentFixture(22, documentationText(
+    `<!-- issue-spec:type=PROCESS id=PROCESS-001 version=2 -->\nAgent: Coordinator\nType: PROCESS\nID: PROCESS-001\nStatus: active\nScope: schema allowlist module\nLinks: TASK-001, SPEC-001\n\n## Work\nOwn the schema allowlist module and its round-trip test.`,
+    `<!-- issue-spec:type=PROCESS id=PROCESS-001 version=2 -->\nAgent: Coordinator\nType: PROCESS\nID: PROCESS-001\nStatus: active\nScope: schema 白名单模块\nLinks: TASK-001, SPEC-001\n\n## Work\n负责 schema 白名单模块及其双向测试。`,
+  ))];
+
+  await page.goto("/acme/workflow/issues/41");
+  await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(activeIssue.title);
+  await expect(page.frameLocator(`iframe[title="${briefTitle}"]`).getByText(documentationText("Execution brief: compact export", "执行简报：紧凑导出"))).toBeVisible();
+  await expect(page.frameLocator(`iframe[title="${briefTitle}"]`).getByText("PROCESS-002").first()).toBeVisible();
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await stabilizeScreenshotDates(page);
+  await expect(page).toHaveScreenshot(documentationSnapshot("review-projection-implement"), { fullPage: true, animations: "disabled" });
 });
 
 test("issue list presents the repository subscription entry", async ({ page }, testInfo) => {

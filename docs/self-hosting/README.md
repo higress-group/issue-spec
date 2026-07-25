@@ -56,11 +56,22 @@ discussion and notifications.
 
 ### Review projections render for humans, questions get native answers
 
-Agents publish sandboxed `html-preview` review projections for each phase, and
-every typed QUESTION comment carries a native answer panel. Confirmed choices
-become immutable typed ANSWER comments that later agents and gates consume.
+Agents publish sandboxed `html-preview` review projections for each phase — a
+proposal choice brief, a design explainer, and an implement execution brief —
+and every typed QUESTION comment carries a native answer panel. Confirmed
+choices become immutable typed ANSWER comments that later agents and gates
+consume.
 
-![HTML review projection with native question answering](assets/self-hosted-review-projection.png)
+![Design explainer review projection](assets/self-hosted-review-design.png)
+
+### Search groups matches by related change
+
+Full-text search covers issue bodies and comments and groups matches by their
+related change and stage, so reviewers and agents can trace the historical
+proposal, design, and implement trail behind any keyword. The same query runs
+from the CLI with `issue-spec search issues --source change --stage <stage>`.
+
+![Search results grouped by related change](assets/self-hosted-search.png)
 
 ### Change boards show workflow state, not just issue counts
 

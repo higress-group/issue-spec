@@ -22,7 +22,17 @@
 
 Agent 会把每个阶段发布为一份沙箱化的 `html-preview` 评审投影：一份渲染出来的简报，讲清楚改了什么、哪些已定、哪些还需要拍板。开放决策是类型化的 `QUESTION` 评论，直接在 issue 页面上用原生控件作答；每次确认的选择都会成为一条不可变的 `ANSWER` 记录，供后续 agent 与工作流关卡消费。
 
-[![HTML 评审投影与原生答题面板](docs/self-hosting/assets/self-hosted-review-projection.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
+**Proposal** 决策简报把已确认的边界与仍需人类拍板的决策分开，原生答题面板就在简报下方：
+
+[![提案决策简报与原生答题面板](docs/self-hosting/assets/self-hosted-review-proposal.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
+
+**Design** 评审简报渲染数据流、不变量、已否决方案与验收检查：
+
+[![带数据流与不变量的设计评审简报](docs/self-hosting/assets/self-hosted-review-design.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
+
+**Implement** 执行简报展示 PROCESS DAG：哪些可并行、哪些被阻塞、每个节点由哪个 agent 负责：
+
+[![带 PROCESS DAG 的执行简报](docs/self-hosting/assets/self-hosted-review-implement.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
 
 这些 HTML 不会进入 agent 上下文：agent 通过 `issue-spec` CLI 读取 proposal、design、question 与生效答案，CLI 返回的是精简的 canonical 产物而非渲染后的评审界面——人类看得舒服，agent 读得省 token。
 
@@ -31,6 +41,14 @@ Agent 会把每个阶段发布为一份沙箱化的 `html-preview` 评审投影�
 Proposal、design、implement issue 的正文承载当前产物，时间线承载完整决策历史。列表、过滤器与标签让进行中的变更跨仓库可检索。
 
 [![带检索与过滤的 issue 工作台](docs/self-hosting/assets/self-hosted-dashboard.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
+
+全文检索会把命中的 issue 与评论按其关联变更分组：一次查询就能找到新变更应该参考的历史 proposal、design、implement 轨迹：
+
+[![按关联变更分组的检索结果](docs/self-hosting/assets/self-hosted-search.zh-CN.png)](docs/self-hosting/README.zh-CN.md)
+
+同样的能力也是 CLI 原生的——agent 可以用
+`issue-spec search issues --repo owner/repo --query "..." --source change --stage design`
+在提新变更之前先找到历史关联变更及其决策。
 
 变更看板把三个阶段 issue 聚合为一个变更，展示生命周期、TASK/PROCESS 进度与关联代码变更——一个 GitHub pull request 和一个内部 merge request 可以挂在同一个变更下。
 

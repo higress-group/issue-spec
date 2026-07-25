@@ -183,6 +183,21 @@ See [Workflow safety, reconciliation, and PROCESS evidence](workflow-safety.md)
 for the commands, atomicity boundary, strict credential policy, resume
 behavior, and complete evidence matrix.
 
+## Finding related changes
+
+Before proposing a change, search the issue backend for the historical trail
+it should build on:
+
+```bash
+issue-spec search issues --repo owner/repo --query "schema allowlist" \
+  --source change --stage design --state all --limit 10
+```
+
+`--source change` groups matches by their related change (self-hosted backend),
+and `--stage proposal|design|implement` narrows results to one phase. On the
+self-hosted Web UI the same search groups issue and comment matches under each
+related change.
+
 ## Agent skills and slash commands
 
 `issue-spec init` generates agent workflow artifacts for a project:
