@@ -183,8 +183,7 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"absence and digest preconditions are mutually exclusive",
 		"GitHub stores source only and never executes the preview or interactive answer intent",
 		"read [Human Review Projection Generation](references/human-review-projections.md) completely",
-		"build the Markdown fallback, the single `html-preview` review surface, read-only QUESTION summaries, source digest, and validation checks",
-		"Reviewers answer on the typed QUESTION comment's native panel; do not embed answer controls in the projection.",
+		"build the Markdown fallback, the single `html-preview` review surface, source digest, and validation checks",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("workflow guidance missing %q:\n%s", want, workflow)
@@ -215,7 +214,6 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"keep unresolved decisions distinct from evidence-dependent items",
 		"settled, needs-evidence, and needs-decision",
 		"grounded recommendations, alternatives, tradeoffs, and source links",
-		"current choice model and latest effective ANSWER",
 		"purposeful interaction to explain data, flow, alternatives, and correctness constraints",
 		"read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely",
 		"Generate the complete `projection.md` from authoritative inputs",
@@ -239,7 +237,7 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"shared touchpoints, blockers, and independent review/verify obligations",
 		"Correctness complexity is distinct from size",
 		"estimates never define workflow semantics",
-		"only the latest effective ANSWER",
+		"Issue bodies and typed artifacts remain authoritative",
 		"projection source stays outside default Agent context",
 		"read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely",
 		"Generate the complete `projection.md` from authoritative inputs",
@@ -254,7 +252,6 @@ func TestHumanReviewProjectionReferenceIsActionableAndBounded(t *testing.T) {
 	reference := skillResourceContent(t, IssueSpecSkills("owner/repo"), "issue-spec-workflow", "references/human-review-projections.md")
 	for _, want := range []string{
 		"issue bodies and typed artifacts as authoritative",
-		"latest effective typed ANSWER",
 		"GitHub displays the fenced HTML source and does not execute",
 		"proposal-choice-brief",
 		"design-explainer",
@@ -262,12 +259,8 @@ func TestHumanReviewProjectionReferenceIsActionableAndBounded(t *testing.T) {
 		"Candidate planning",
 		"correctness complexity",
 		"planning aids only",
-		"single",
-		"multiple",
-		"allow_custom",
-		"native, default-visible answer panel",
-		"Do not embed answer selectors",
-		"link to the typed QUESTION comment",
+		"open decisions a human must make",
+		"Decision needed",
 		"```html-preview id=implement-execution-review version=1",
 		"sandbox=\"allow-scripts\"",
 		"prefers-reduced-motion",
@@ -284,6 +277,8 @@ func TestHumanReviewProjectionReferenceIsActionableAndBounded(t *testing.T) {
 		"call the issue API from the iframe",
 		"issue-spec-preview-init",
 		"submitAnswer(",
+		"QUESTION",
+		"ANSWER",
 	} {
 		if strings.Contains(reference, forbidden) {
 			t.Fatalf("human review projection reference contains forbidden guidance %q", forbidden)
