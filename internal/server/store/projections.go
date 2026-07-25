@@ -49,6 +49,18 @@ type TypedCommentAuthority struct {
 	UpdatedAt             time.Time
 }
 
+// TypedAnswerObservation carries one projected ANSWER comment with the
+// provider facts effective-answer resolution needs. ActorLogin is display
+// identity only; ordering and validity come from the other fields.
+type TypedAnswerObservation struct {
+	CompatibilityID       int64
+	ActorLogin            string
+	Body                  string
+	RepresentationVersion int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
 type ProjectionAnomalyInput struct {
 	SourceType string
 	SourceID   uuid.UUID
@@ -251,6 +263,40 @@ func (s RepoStore) TypedCommentAuthorityByKey(ctx context.Context, issueNumber i
 		return TypedCommentAuthority{}, fmt.Errorf("load typed comment authority: %w", mapError(err))
 	}
 	return result, nil
+}
+
+// TypedAnswerObservationsByIssue lists every projected ANSWER comment on one
+// issue so the caller can run canonical effective-answer resolution. Rows are
+// ordered deterministically; validity filtering stays in the model layer.
+func (s RepoStore) TypedAnswerObservationsByIssue(ctx context.Context, issueNumber int64) ([]TypedAnswerObservation, error) {
+	if err := s.validate(); err != nil || issueNumber <= 0 {
+		return nil, ErrInvalidInput
+	}
+	rows, err := s.db.Query(ctx, `SELECT c.compatibility_id, COALESCE(u.login, 'ghost'),
+		c.body, c.representation_version, c.created_at, c.updated_at
+		FROM issue_spec_typed_comments typed
+		JOIN comments c ON c.organization_id = typed.organization_id
+			AND c.repository_id = typed.repository_id AND c.id = typed.comment_id
+		JOIN issues i ON i.organization_id = c.organization_id
+			AND i.repository_id = c.repository_id AND i.id = c.issue_id
+		LEFT JOIN users u ON u.id = c.author_id
+		WHERE typed.organization_id = $1 AND typed.repository_id = $2
+			AND i.number = $3 AND typed.comment_type = 'ANSWER'
+		ORDER BY c.created_at, c.compatibility_id`, s.scope.OrgID, s.scope.RepoID, issueNumber)
+	if err != nil {
+		return nil, fmt.Errorf("load typed answer observations: %w", mapError(err))
+	}
+	defer rows.Close()
+	result := make([]TypedAnswerObservation, 0)
+	for rows.Next() {
+		var item TypedAnswerObservation
+		if err := rows.Scan(&item.CompatibilityID, &item.ActorLogin, &item.Body,
+			&item.RepresentationVersion, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan typed answer observation: %w", mapError(err))
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
 }
 
 func (s RepoStore) ClearTypedCommentProjection(ctx context.Context, commentID uuid.UUID) error {
