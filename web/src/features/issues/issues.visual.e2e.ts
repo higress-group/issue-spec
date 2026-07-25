@@ -114,6 +114,55 @@ function questionFixture(id: "QUESTION-007" | "QUESTION-008") {
   };
 }
 
+const documentationQuestion = {
+  id: "QUESTION-009",
+  question: documentationText(
+    "Which release posture should the first compact-export rollout use?",
+    "compact-export 首次发布应采用哪种发布姿态？",
+  ),
+  blocking: true,
+  default_assumption: documentationText("Use the staged rollout.", "默认采用分阶段灰度。"),
+  issue_url: "https://example.test/acme/workflow/issues/41",
+  source_url: "https://example.test/acme/workflow/issues/41#issuecomment-20",
+  choice_model: {
+    version: 1,
+    mode: "single",
+    options: [
+      { id: "staged", label: documentationText("Staged rollout", "分阶段灰度"), description: documentationText("Enable per organization first", "先按组织逐步开启"), tradeoff: documentationText("Slower feedback", "反馈更慢") },
+      { id: "fast", label: documentationText("Fast release", "快速全量"), description: documentationText("Ship to every tenant at once", "一次性发布到所有租户"), tradeoff: documentationText("Riskier rollback", "回滚风险更高") },
+    ],
+    allow_custom: true,
+  },
+};
+
+const documentationPreviewDocument = `<!doctype html>
+<html lang="${documentationText("en", "zh-CN")}"><head><meta charset="utf-8"><title>${documentationText("Design brief", "设计评审简报")}</title><style>
+body{font:15px/1.6 system-ui;margin:0;padding:24px;color:#1f2933;background:#f8fafc}
+h1{font-size:20px;margin:0 0 4px}
+p.lead{margin:0 0 16px;color:#52606d}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+.card{background:#fff;border:1px solid #d9e2ec;border-radius:10px;padding:14px}
+.card h2{font-size:13px;letter-spacing:.04em;margin:0 0 8px;color:#486581}
+.card ul{margin:0;padding-left:18px}
+.pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
+.pill.settled{background:#e3f9e5;color:#207227}
+.pill.open{background:#fff3c4;color:#8d6708}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #d9e2ec}
+th,td{padding:8px 12px;text-align:left;border-top:1px solid #e4ebf1;font-size:14px}
+th{border-top:none;color:#486581;font-size:12px}
+</style></head><body>
+<h1>${documentationText("Design review: compact export", "设计评审：紧凑导出")}</h1>
+<p class="lead">${documentationText("What changes, why it is safe, and the one decision still open.", "改了什么、为什么安全，以及尚待拍板的一个决策。")}</p>
+<div class="grid">
+<div class="card"><h2>${documentationText("Settled", "已确认")} <span class="pill settled">${documentationText("confirmed", "confirmed")}</span></h2><ul><li>${documentationText("Exports never include credentials.", "导出永不包含凭据。")}</li><li>${documentationText("The field allowlist lives in one schema module.", "字段白名单集中在一个 schema 模块。")}</li></ul></div>
+<div class="card"><h2>${documentationText("Needs a decision", "待决策")} <span class="pill open">${documentationText("open", "open")}</span></h2><ul><li>${documentationText("Release posture: staged rollout or fast release.", "发布姿态：分阶段灰度还是快速全量。")}</li><li>${documentationText("Rollback drill owner for the first tenant wave.", "首批租户的回滚演练归属。")}</li></ul></div>
+</div>
+<table><tr><th>${documentationText("Task", "任务")}</th><th>${documentationText("Owner agent", "负责智能体")}</th><th>${documentationText("State", "状态")}</th></tr>
+<tr><td>${documentationText("Schema allowlist", "Schema 白名单")}</td><td>worker-1</td><td>${documentationText("ready", "就绪")}</td></tr>
+<tr><td>${documentationText("Export endpoint", "导出接口")}</td><td>worker-2</td><td>${documentationText("blocked by decision", "等待决策")}</td></tr>
+<tr><td>${documentationText("Review and tests", "评审与测试")}</td><td>reviewer</td><td>${documentationText("queued", "排队中")}</td></tr></table>
+</body></html>`;
+
 async function stabilizeScreenshotDates(page: Page) {
   await page.locator("time[datetime]").evaluateAll((elements) => {
     const locale = document.documentElement.lang || "en";
@@ -170,16 +219,17 @@ test.beforeEach(async ({ page }) => {
     if (url.pathname === "/repos/acme/workflow/issues/comments/9/reactions") return route.fulfill({ json: [{ id: 7, user: user, content: "+1", created_at: "2026-07-10T12:00:00Z" }] });
     if (/^\/repos\/acme\/workflow\/issues\/comments\/\d+\/reactions$/.test(url.pathname)) return route.fulfill({ json: [] });
     if (url.pathname === "/api/v1/context/repos/acme/workflow/issues/41/relationships") return route.fulfill({ json: { relationships: externalContributor ? [] : relationships } });
-    if (/^\/api\/v1\/repos\/acme\/workflow\/issues\/41\/previews\/(?:review-lab|comment-lab|issue-first|anchored-first)$/.test(url.pathname)) {
+    if (/^\/api\/v1\/repos\/acme\/workflow\/issues\/41\/previews\/(?:review-lab|comment-lab|issue-first|anchored-first|design-brief)$/.test(url.pathname)) {
       previewRequests += 1;
       const commentPreview = url.pathname.endsWith("/comment-lab") || url.pathname.endsWith("/anchored-first");
       expect(url.searchParams.get("source")).toBe(commentPreview ? "comment" : "issue");
       expect(url.searchParams.get("comment_id")).toBe(commentPreview ? "9" : null);
       expect(url.searchParams.get("digest")).toMatch(/^[0-9a-f]{64}$/);
-      const document = url.pathname.endsWith("/anchored-first") ? "<!doctype html><p>comment</p>" : previewDocument;
+      const document = url.pathname.endsWith("/anchored-first") ? "<!doctype html><p>comment</p>" : url.pathname.endsWith("/design-brief") ? documentationPreviewDocument : previewDocument;
       return route.fulfill({ status: 200, body: document, headers: { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": previewCSP, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Permissions-Policy": "camera=(), microphone=(), geolocation=()" } });
     }
-    if (/^\/api\/v1\/repos\/acme\/workflow\/issues\/41\/questions\/QUESTION-00[78]$/.test(url.pathname)) {
+    if (/^\/api\/v1\/repos\/acme\/workflow\/issues\/41\/questions\/QUESTION-00[789]$/.test(url.pathname)) {
+      if (url.pathname.endsWith("9")) return route.fulfill({ json: { question: documentationQuestion, representation_version: 1, body_digest: "c".repeat(64) } });
       const id = url.pathname.endsWith("8") ? "QUESTION-008" : "QUESTION-007";
       return route.fulfill({ json: { question: questionFixture(id), representation_version: 1, body_digest: id === "QUESTION-007" ? "a".repeat(64) : "b".repeat(64) } });
     }
@@ -428,6 +478,36 @@ test("a comment anchor prioritizes that comment's first preview for default rend
   await expect(page.locator('iframe[title="Issue first"]')).toHaveCount(0);
   await expect(page.frameLocator('iframe[title="Anchored first"]').getByText("comment", { exact: true })).toBeVisible();
   expect(previewRequests).toBe(1);
+});
+
+test("review projection and native question answering documentation screenshot", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "issues-desktop-1440");
+  const briefTitle = documentationText("Design brief", "设计评审简报");
+  activeIssue = {
+    ...issue,
+    title: documentationText("Design: compact-export", "Design：compact-export"),
+    labels: [labels[0]],
+    body: documentationText(
+      `## Design: compact export\n\nThe export ships behind one schema allowlist module. The brief below is the human review surface; issue bodies and typed comments stay authoritative.`,
+      `## 设计：紧凑导出\n\n导出能力收敛在一个 schema 白名单模块之后。下方简报是人类评审界面；issue 正文与类型化评论仍是权威数据。`,
+    ) + `\n\n\`\`\`html-preview id=design-brief version=1 title="${briefTitle}" height=620\n${documentationPreviewDocument}\n\`\`\``,
+  };
+  comments = [commentFixture(20, documentationText(
+    `<!-- issue-spec:type=QUESTION id=QUESTION-009 version=1 -->\nAgent: Design\nType: QUESTION\nID: QUESTION-009\nStatus: open\nScope: release posture\nLinks: SPEC-001\n\n## Question\nWhich release posture should the first compact-export rollout use?`,
+    `<!-- issue-spec:type=QUESTION id=QUESTION-009 version=1 -->\nAgent: Design\nType: QUESTION\nID: QUESTION-009\nStatus: open\nScope: 发布姿态\nLinks: SPEC-001\n\n## Question\ncompact-export 首次发布应采用哪种发布姿态？`,
+  ))];
+
+  await page.goto("/acme/workflow/issues/41");
+  await expect(page.getByRole("heading", { level: 1 }).first()).toContainText(activeIssue.title);
+  const iframe = page.locator(`iframe[title="${briefTitle}"]`);
+  await expect(iframe).toHaveCount(1);
+  await expect(page.frameLocator(`iframe[title="${briefTitle}"]`).getByText(documentationText("Design review: compact export", "设计评审：紧凑导出"))).toBeVisible();
+  const panel = page.getByRole("region", { name: /QUESTION-009/ });
+  await expect(panel.getByRole("radio", { name: new RegExp(documentationText("Staged rollout", "分阶段灰度")) })).toBeVisible();
+  await expect(panel.getByRole("radio", { name: new RegExp(documentationText("Fast release", "快速全量")) })).toBeVisible();
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await stabilizeScreenshotDates(page);
+  await expect(page).toHaveScreenshot(documentationSnapshot("review-projection"), { fullPage: true, animations: "disabled" });
 });
 
 test("issue list presents the repository subscription entry", async ({ page }, testInfo) => {

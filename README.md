@@ -2,109 +2,93 @@
 
 **English | [简体中文](README.zh-CN.md)**
 
-`issue-spec` is an issue-native, OpenSpec-style workflow CLI for agentic software development, with GitHub and self-hosted issue backends.
-
-It keeps the OpenSpec habit of proposal -> specs -> design -> tasks -> review -> verify -> archive, but moves active change state out of the code repository and into the selected issue backend while code changes, review, and CI remain on the selected code provider.
-
-Our philosophy:
-
-```text
--> OpenSpec habits, issue-native state
--> active changes in issues, durable specs in the repo
--> human decisions in comment threads, not hidden local files
--> small agent DAGs, not giant implementation prompts
--> line-level review findings linked back to specs
-```
-
-## Self-host issue-spec for your team
-
-Run an operator-controlled issue-spec workspace on your own infrastructure.
-The self-hosted server combines organization and repository authorization,
-Issue and Change views, service accounts, provider-neutral code evidence,
-runners, and notification webhooks with durable PostgreSQL state.
-
-[![Self-hosted repository issue list](docs/self-hosting/assets/self-hosted-dashboard.png)](docs/self-hosting/README.md)
-
-It supports private-network deployment and GitHub OAuth or OIDC sign-in, while
-keeping source code, pull requests or merge requests, reviews, and CI on the
-code provider your team already uses.
-
-With explicit PostgreSQL search enabled, the workspace and direct agent CLI
-can recover relevant issue bodies, comments, and prior change discussions
-before a new modification. Generated Codex and Claude workflows use this
-capability directly; runner sessions reuse the same workflow rather than
-owning a separate search path.
-
-**[Explore the self-hosted server, architecture, access model, deployment, and operations →](docs/self-hosting/README.md)**
-
-**[Connect private code hosts and work trackers safely →](docs/self-hosting/enterprise-provider-integration.md)**
-
-### From transparent change specs to handoff-ready agent execution
-
-Proposal, design, TASK, PROCESS, review, and verification evidence already live
-transparently in the issue timeline. Runner takes the next step: an authorized
-maintainer triggers an agent with an ordinary issue comment, while status,
-public session, results, and continuation instructions stay in that same
-timeline.
+`issue-spec` is an issue-native, self-hostable spec workflow for agentic
+software development: strengthen human review of the proposal and the design
+*before* code gets written, then orchestrate the implementation as small tasks
+that each go to the right agent.
 
 ```text
-Alice:  /new Implement the current design, test it, and open a PR
-Runner: started · public session s_demo_42
-        ...status, PROCESS, and code evidence continue in the issue...
-Bob:    /resume s_demo_42 Apply the review decision to error handling
+-> review requirements and design first, code second
+-> active changes in issues and typed comments, durable specs in the repo
+-> human review rendered as rich HTML, human decisions as structured answers
+-> implementation as an agent DAG, each PROCESS owned by the right agent
+-> agents read the same state through a lean CLI, without the HTML weight
 ```
 
-A public session belongs to authorized repository maintainers, not to one
-person's private conversation. Another maintainer can read the complete issue
-context and use `/resume` to take over the same agent session and workspace.
-The handoff requires no copied local chat and remains connected to the change
-spec, review, and verification trail.
+Every substantial change moves through three issues — **Proposal** (what and
+why), **Design** (how and acceptance), **Implement** (execution DAG) — with
+typed `SPEC`, `QUESTION`, `TASK`, `PROCESS`, `REVIEW`, and `VERIFY` comments
+keeping traceability from requirement to merged line.
 
-[![Trigger an agent from an issue comment and continue it as another maintainer](docs/self-hosting/assets/self-hosted-runner-command.png)](docs/self-hosting/runner.md)
+## A self-hosted workspace for your team
 
-**[Explore self-hosted Runner setup, comment triggers, multi-maintainer handoff, and operations →](docs/self-hosting/runner.md)**
+Run an operator-controlled issue-spec server on your own infrastructure:
+browser workspace, GitHub-compatible issue API, organization and repository
+authorization, service accounts, provider-neutral code evidence, runners,
+webhooks, and durable PostgreSQL state — while source code, PRs/MRs, reviews,
+and CI stay on the code host your team already uses.
 
-## See it in action
+### Review surfaces built for human decisions
 
-```text
-You: /issue-spec:propose add-dark-mode
-AI:  Created proposal issue #101
-     Added SPEC comments for theme behavior and persistence
-     Added QUESTION comments for unresolved UX decisions
+Agents publish each phase as a sandboxed `html-preview` review projection: a
+rendered brief that shows what changed, what is settled, and what still needs a
+decision. Open decisions are typed `QUESTION` comments, answered right on the
+issue page with native controls; every confirmed choice becomes an immutable
+`ANSWER` record that later agents and workflow gates consume.
 
-Human: Keep system preference as the default, but allow manual override.
-AI:    Resolved QUESTION-001 and updated the relevant SPEC comments.
+[![HTML review projection with native question answering](docs/self-hosting/assets/self-hosted-review-projection.png)](docs/self-hosting/README.md)
 
-You: /issue-spec:apply
-AI:  Created design issue #102 and implement issue #103
-     Split work into PROCESS nodes:
-     - PROCESS-001: theme state and storage
-     - PROCESS-002: UI toggle
-     - PROCESS-003: tests and verification
-     Linked SPEC <-> TASK <-> PROCESS
+The HTML stays out of agent context: agents read proposals, designs, questions,
+and effective answers through the `issue-spec` CLI, which returns the compact
+canonical artifacts instead of the rendered review surfaces — human-friendly
+review without token-heavy agent reads.
 
-Worker: opens PR #120
-AI:     Added PR rationale comments on changed lines, each linked to SPEC and PROCESS.
+### Issues, search, and change management
 
-You: /issue-spec:review
-AI:  Synced PR review comments, checks, and findings into REVIEW comments.
-     P1 finding assigned to PROCESS-002.
+Proposal, design, and implement issues keep the current artifact in the body
+and the full decision history in the timeline. Lists, filters, and labels keep
+in-flight changes findable across repositories.
 
-Worker: fixes the finding
-AI:     Replied to the original PR review thread and marked the finding resolved.
+[![Issue workspace with search and filters](docs/self-hosting/assets/self-hosted-dashboard.png)](docs/self-hosting/README.md)
 
-You: /issue-spec:verify
-AI:  Traceability OK
-     Blocking questions: 0
-     P0/P1 findings: 0
-     PR checks: passing
-     Durable spec draft covers all SPEC comments
+Change boards group the three phase issues into one change and expose
+lifecycle, TASK/PROCESS progress, and linked code changes — a GitHub pull
+request and an internal merge request can sit under the same change.
 
-You: /issue-spec:archive
-AI:  After implementation merge, opened a separate durable-spec PR.
-```
+[![Change board](docs/self-hosting/assets/self-hosted-change-board.png)](docs/self-hosting/README.md)
 
-## Quick Start
+**[Self-hosted server: architecture, access model, deployment, operations →](docs/self-hosting/README.md)**
+
+## One shared context for humans and agents
+
+The `issue-spec` CLI is how agents participate in the same workflow humans
+review in the browser:
+
+- agents author and read the typed artifacts (`SPEC`, `TASK`, `PROCESS`, ...)
+  with validation, safe transitions, and workflow gates
+- a coordinator splits implementation into PROCESS nodes and dispatches each to
+  the agent that fits it — workers, reviewers, and verifiers stay in narrow,
+  effective context windows
+- teammates and their agents pick up any change mid-flight, because the entire
+  state — decisions, blockers, review findings, evidence — lives in the issues,
+  not in someone's local files
+- `issue-spec runner` executes authorized comment commands (`/new`, `/resume`)
+  in managed workspaces, so work can be triggered straight from an issue
+
+Line-level PR findings, rationale, and checks sync back into `REVIEW` comments,
+and `verify` gates the change on unresolved blocking questions, traceability,
+and P0/P1 findings before archive.
+
+## Works with GitHub too
+
+The same workflow runs directly against github.com or GitHub Enterprise using
+your `gh` login — issues, typed comments, PR review threads, and durable spec
+archive PRs. The only self-host-specific conveniences are the rendered
+`html-preview` review surfaces and the interactive QUESTION answer panel:
+GitHub shows their source as plain readable Markdown instead, and answers are
+recorded through the CLI.
+
+## Quick start
 
 Install the CLI:
 
@@ -112,23 +96,16 @@ Install the CLI:
 go install github.com/higress-group/issue-spec/cmd/issue-spec@latest
 ```
 
-Authenticate with GitHub CLI on the current machine. `issue-spec` reuses that `gh` session for GitHub operations:
+Authenticate (GitHub mode reuses your `gh` session) and initialize a
+repository:
 
 ```bash
 gh auth login
-gh auth status
-issue-spec auth status --json
+issue-spec init --repo owner/repo --create-labels --tools codex,claude --delivery both
 ```
 
-Initialize a repository:
-
-```bash
-issue-spec init --repo owner/repo --tools codex,claude --delivery both
-```
-
-Initialization ensures the issue-spec workflow labels by default. Use `--skip-labels` only when the repository labels are managed separately.
-
-Then use the generated skills or slash-command style workflows from your agent:
+Then drive the workflow from your agent with the generated skills or slash
+commands:
 
 ```text
 /issue-spec:propose "your idea"
@@ -138,196 +115,33 @@ Then use the generated skills or slash-command style workflows from your agent:
 /issue-spec:archive
 ```
 
-## GitHub Authentication
+To self-host the server for your team, start from the
+**[self-hosting guide](docs/self-hosting/README.md)**.
 
-`issue-spec` expects GitHub CLI to be installed and authenticated on the current machine. It uses the same account and host that `gh auth status` reports:
+## Learn more
 
-```bash
-gh auth status
-issue-spec auth status --json
-```
-
-For GitHub Enterprise, log in with GitHub CLI first, then pass the same host to issue-spec commands:
-
-```bash
-gh auth login --hostname ghe.example.com
-issue-spec auth status --hostname ghe.example.com --json
-```
-
-`issue-spec auth status`, `init`, and normal workflow commands do not print token values. `issue-spec auth token --plain` prints the current `gh` token only when explicitly requested.
-
-`archive durable-spec --create-pr` still uses local `git` for fetch, worktree, commit, and push. GitHub API reads and PR creation use the same authenticated `gh` account.
-
-## Runner: Comment-Triggered Workflows
-
-`issue-spec runner` watches authorized issue command comments and dispatches
-Codex or Claude through acpx in managed repository workspaces. `/new` creates a
-public session, and any authorized maintainer with repository write permission
-can continue it with `/resume <public-session-id> ...`, enabling agent handoff
-across people.
-
-```bash
-issue-spec runner preflight --repo owner/repo --runner "$(gh api user --jq .login)"
-issue-spec runner poll --repo owner/repo --runner "$(gh api user --jq .login)" --agent codex
-```
-
-See the **[GitHub runner operations guide](docs/runner.md)** for command intake,
-authorization, notification identities, sandboxing, concurrency, workspaces,
-recovery, and all runner options. A self-hosted server uses webhook-driven
-`runner serve`; see the **[self-hosted Runner guide](docs/self-hosting/runner.md)**.
-
-## Why issue-spec
-
-### Active specs stay out of the code repository
-
-OpenSpec active changes are usually repository files under `openspec/changes/<change>/...`. That works well for local spec-driven development, but it also means draft, superseded, or abandoned change specs can be found by `grep`, `rg`, code search, or an agent reading the repository later.
-
-`issue-spec` keeps active change artifacts in GitHub issues instead:
-
-- proposal issue: proposal body plus `SPEC` and `QUESTION` comments
-- design issue: design body plus `TASK` and `QUESTION` comments
-- implement issue: implementation DAG plus `PROCESS`, `REVIEW`, and `VERIFY` comments
-
-Issue bodies are the current editable proposal/design/implementation artifacts, not placeholder shells. Use `--body-file` when creating them and `issue-spec issue update --body-file --summary` when discussion changes the body, so humans can review the latest content and the audit trail in the same GitHub issue.
-
-Generated issue titles use the human-readable `Proposal: <subject>`, `Design: <subject>`, and `Implement: <subject>` family. With `--body-file`, the subject is derived from the first Markdown H1 when possible, while the change name remains preserved in the issue marker and metadata. Use `issue create --title` only for an explicit user-requested custom title. Older issues titled `issue-spec proposal: <change>`, `issue-spec design: <change>`, or `issue-spec implement: <change>` remain valid workflow artifacts and do not need retitling.
-
-This keeps the repository focused on current code and durable specs. Draft change history remains reviewable in GitHub, with comment threads, edits, links, and human approval points.
-
-Human-in-the-loop decisions are first-class:
-
-- blocking questions are `QUESTION` comments
-- accepted assumptions are recorded in issue history
-- review findings are PR line comments with owners and linked specs
-- verification evidence is stored in `VERIFY` comments
-
-### Native multi-agent DAG coordination
-
-`issue-spec` treats implementation and review as a native multi-agent workflow. Work is split into small `TASK` and `PROCESS` units, linked back to the relevant `SPEC` comments, PR work, and review evidence.
-
-The goal is to keep each model invocation inside its effective reasoning zone: narrow scope, clear context, explicit ownership, focused tests, and small review surfaces.
-
-The implement issue records the DAG:
-
-- worker owner and review agent owner
-- branch/worktree or PR node
-- dependencies
-- owned files and scope
-- linked TASK/SPEC comments
-- status, blockers, and verification evidence
-
-Every agent-executed change-bearing PROCESS must run in a real runtime-native child/sub-agent whose logical `Agent` differs from the coordinator. These nodes use `workspace_management: managed` and follow prepare -> child -> complete -> integrate; the coordinator plans the DAG, owns workspace lifecycle and integration, synchronizes links/status, routes blockers, and evaluates gates, but does not implement, test, or commit the node inline. `workspace_management: independent` remains available for genuinely self-managed external or human execution, not as a coordinator-inline escape hatch. One real worker may execute multiple compatible serial change-bearing or repair PROCESS nodes, while each node retains its own status, dependencies, workspace lifecycle, evidence, and bounded handoff. Final verification rejects valid coordinator-authored rationale with `process.executor.coordinator_conflict`; the logical-name comparison is a portable backstop, not a substitute for actually dispatching a child, and session metadata is not compared.
-
-Review remains a MUST for any change-bearing work and must be performed by a different agent than the code author: the DAG includes dedicated review PROCESS nodes, and a reviewer `--agent` matching a code author of the same SPEC fails the final gate (`process.review.author_conflict`). For every distinct change-bearing author Agent, the coordinator should assign at least one independent reviewer whose scope covers that author's PROCESS outputs and affected SPECs. One reviewer may cover multiple authors when it authored none of their code; this is scheduling guidance, while the blocking gate remains per SPEC rather than enforcing a 1:1 author/reviewer mapping. Multiple review agents may run in parallel only when their review scopes are independent. Final PR rationale is written by the code author only after independent review and all fixes converge.
-
-Coordinator execution follows a ready-node loop:
-
-- select PROCESS nodes whose dependencies are done and whose write/review scopes do not overlap
-- prepare and dispatch every ready agent-executed change-bearing node to its assigned real non-coordinator worker
-- allow one compatible worker to execute multiple serial nodes while preserving each PROCESS boundary and handoff
-- validate and integrate managed worker outputs by dependency order; collect commit, test, and applicable handoff evidence for every node
-- dispatch independent review agents only after the code is reviewable
-- provide review coverage for every distinct change-bearing author, allowing one independent reviewer to cover multiple authors
-- route P0/P1 review findings back to the owner PROCESS and converge all fixes
-- only after review/fix convergence, have each code author add final PR rationale for its changed lines
-- mark review PROCESS nodes done only after their review evidence is recorded and blocking findings are resolved
-
-The CLI does not act as a scheduler that launches agents automatically. It provides the shared state, links, and gates that let a coordinator safely split work across multiple agents without losing traceability.
-
-### GitHub PR-native review flow
-
-For GitHub profiles, `issue-spec` connects OpenSpec review and verification directly to GitHub PR review comments:
-
-- `pr rationale` records why a worker changed a specific PR diff line and links it to a `SPEC` and `PROCESS`
-- `review finding` creates actionable PR line findings with severity, owner process, and linked spec context
-- `review reply` lets the worker close the original review thread after a fix
-- `review sync` summarizes rationale comments, findings, resolved findings, PR checks, and review status back into `REVIEW` comments
-
-This gives humans a better review experience: findings are attached to the exact code line, while issue comments preserve assignment, workflow state, and spec context.
-
-Final verification checks unresolved blocking questions, traceability, P0/P1 findings, PR rationale coverage, PR checks, and durable spec coverage before archive.
-
-### Safe workflow gates and proportional evidence
-
-Use `status --gate proposal|design|implement|final|archive --json` to forecast the next boundary, `comment transition` with an observed version or digest for a single safe mutation, and `workflow reconcile --plan ... --checkpoint ... --json` for resumable dependency-ordered batches. Run `doctor agent --operation ... --json` before delegated workspace or worker allocation. PROCESS nodes now declare one of five execution classes so change-bearing, review, verification, orchestration, and external work use truthful evidence carriers instead of all requiring arbitrary line rationale.
-
-Delegated workspaces are selected by an exact PROCESS id and managed with `workflow workspace prepare|inspect|complete|integrate|reconcile|cleanup`. Runner commands address a public session, not a PROCESS: the runner keeps exactly one ACPX coordinator in the session clone, the coordinator selects a ready PROCESS from the typed DAG, and a runtime-native child works in the exact prepared worktree without starting nested ACPX. The coordinator owns the PROCESS lifecycle, validates the child's commit, tests, and handoff, and completes or integrates from the unchanged session clone. After resume or restart the top-level runner recovers only the ACPX/session job; the coordinator inspects or reconciles the exact PROCESS lease. Session-clone retention consults `git worktree list` and fails closed by retaining the clone when runner metadata is dirty or uncertain, a linked worktree exists, or git worktree inspection fails; it does not clean child PROCESS workspaces. Review and verification use detached workflow snapshots with dirty-state rejection, but native children share the coordinator's outer sandbox rather than receiving a separate OS sandbox. Workspace cleanup is an owner-token-authorized destructive command that does not decide integration or retention eligibility for its caller. See the [reference](docs/reference.md#process-workspaces) and [runner guide](docs/runner.md).
-
-See [Workflow safety, reconciliation, and PROCESS evidence](docs/workflow-safety.md) for the commands, atomicity boundary, strict credential policy, resume behavior, and complete evidence matrix.
-
-## Workflow Model
-
-Each substantial change uses three issue classes.
-
-| Issue | Purpose | Typed comments |
-| --- | --- | --- |
-| Proposal | what and why | `SPEC`, `QUESTION` |
-| Design | how and acceptance strategy | `TASK`, `QUESTION` |
-| Implement | multi-agent execution, review, verify | `PROCESS`, `QUESTION`, `REVIEW`, `VERIFY` |
-
-Traceability is bidirectional:
-
-```text
-SPEC <-> TASK <-> PROCESS <-> implementation change (PR/MR)
-                   |
-                   +-> REVIEW findings and replies
-                   +-> VERIFY evidence
-```
-
-GitHub keeps the existing `pr link-process`, PR review, closing-link, and durable archive path. For self-hosted profiles, `code-change attach` validates and associates an already-existing provider change at an exact revision, and `code-change link-process` links PROCESS comments to the unique active change. Source Binding chooses provider/repository identity; attach does not create a PR/MR or ingest evidence. Self-hosted review, merge, and closure stay on the selected code provider rather than using GitHub PR endpoints. See the [CLI reference](docs/reference.md#associate-a-self-hosted-code-change).
-
-Use `--capability` as a stable capability directory rather than the original change name. Before finalizing the archive PR, inspect existing related durable specs and treat the generated durable spec as a draft to merge, revise, or regroup by durable functional modules while preserving Source SPEC links for traceability.
-
-## Agent Skills And Slash Commands
-
-`issue-spec init` can generate OpenSpec-style agent workflow artifacts for a project:
-
-```bash
-issue-spec init --repo owner/repo --tools codex,claude --delivery both
-```
-
-- Codex skills are written to `.agents/skills/issue-spec-*`, the current Codex repo skill location.
-- Claude skills are written to `.claude/skills/issue-spec-*`.
-- Both skill sets also include a generated `.*/skills/issue-spec-github/SKILL.md` support skill for adjacent GitHub CLI operations that issue-spec does not wrap directly.
-- Claude slash commands are written to `.claude/commands/issue-spec/*.md`, invoked like `/issue-spec:propose`.
-- User-global Codex prompts are not modified by default. Use `--install-global-prompts` to explicitly install compatibility prompts under `${CODEX_HOME:-~/.codex}/prompts`; use `--global-prompts-dir <dir>` for an isolated destination and `--global-prompts-dry-run` to preview every absolute target path without writing. Codex custom prompts are deprecated by current Codex docs; prefer skills for shared workflows.
-- `--delivery skills` writes only skills; `--delivery commands` writes only slash commands.
-
-If `--tools` is omitted, init detects existing `.agents` or `.claude` directories and refreshes those workflows. Use `--tools none` to initialize only `.issue-spec/config.json` and optional labels.
-
-## Configuration and reference
-
-Keep the README focused on the product and first successful workflow. Detailed
-authoring and command contracts live in the reference guide:
-
-- **[Project workflow configuration](docs/reference.md#project-workflow-configuration)**
-- **[Preferred natural language](docs/reference.md#preferred-natural-language)**
-- **[Complete CLI reference](docs/reference.md#cli-reference)**
-- **[Canonical typed comments and validation](docs/reference.md#canonical-typed-comments)**
+- **[Workflow guide](docs/workflow.md)** — full walkthrough, workflow model, multi-agent coordination, review flow, GitHub-mode setup
+- **[CLI reference](docs/reference.md)** — configuration, command contracts, canonical typed comments
+- **[Runner operations](docs/runner.md)** — comment intake, authorization, sandboxing, concurrency, recovery
+- **[Workflow safety](docs/workflow-safety.md)** — gates, reconciliation, PROCESS evidence
+- **[Self-hosting](docs/self-hosting/README.md)** — architecture, authentication, bridges, operations
 
 ## Development
 
+Local builds and tests use the Go toolchain declared in [`go.mod`](go.mod):
+
 ```bash
-go test ./...
 go build ./cmd/issue-spec
-```
-
-### Running unit tests locally
-
-Local unit tests require the Go toolchain version declared in [`go.mod`](go.mod)
-(currently `go 1.25`), which is the source of truth for the required Go version.
-
-From the repository root, run:
-
-```bash
 go test ./...
 ```
 
-This is the same unit test command the CI check runs
-(see [`.github/workflows/unit-tests.yml`](.github/workflows/unit-tests.yml)),
-so a clean local run reproduces the checks that gate pull requests and pushes to
-`main`.
+`go test ./...` is the same unit test command CI runs
+(see [`.github/workflows/unit-tests.yml`](.github/workflows/unit-tests.yml)).
 
 ## Acknowledgements
 
-`issue-spec` is inspired by [OpenSpec](https://github.com/Fission-AI/OpenSpec) and is designed to preserve its spec-first, agent-friendly workflow habits while adapting active change state, human review, and multi-agent coordination to GitHub issues and pull requests.
+`issue-spec` is inspired by [OpenSpec](https://github.com/Fission-AI/OpenSpec)
+and preserves its spec-first workflow habits while adapting active change
+state, human review, and multi-agent coordination to issues and pull requests.
+See [the workflow guide](docs/workflow.md#relationship-to-openspec) for how the
+two relate.

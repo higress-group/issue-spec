@@ -47,6 +47,14 @@ PROCESS、REVIEW 和 VERIFY 以类型化评论出现在同一时间线。普通�
 
 ![包含类型化工作流评论的 Issue 详情](assets/self-hosted-issue-detail.zh-CN.png)
 
+### 评审投影为人渲染，问题原生作答
+
+Agent 会为每个阶段发布沙箱化的 `html-preview` 评审投影；每条类型化 QUESTION
+评论都自带原生答题面板。确认的选择会成为不可变的类型化 ANSWER 评论，供后续
+Agent 与工作流关卡消费。
+
+![HTML 评审投影与原生答题面板](assets/self-hosted-review-projection.zh-CN.png)
+
 ### Change Board 展示工作流状态，而不只是 Issue 数量
 
 Change Board 把 Proposal、Design 和 Implement Issue 聚合成一个 Change，并展示

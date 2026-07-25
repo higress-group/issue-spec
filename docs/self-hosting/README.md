@@ -54,6 +54,14 @@ discussion and notifications.
 
 ![Issue detail with typed workflow comments](assets/self-hosted-issue-detail.png)
 
+### Review projections render for humans, questions get native answers
+
+Agents publish sandboxed `html-preview` review projections for each phase, and
+every typed QUESTION comment carries a native answer panel. Confirmed choices
+become immutable typed ANSWER comments that later agents and gates consume.
+
+![HTML review projection with native question answering](assets/self-hosted-review-projection.png)
+
 ### Change boards show workflow state, not just issue counts
 
 The change board groups proposal, design, and implementation issues into one
