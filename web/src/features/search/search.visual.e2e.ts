@@ -3,6 +3,7 @@ import { documentationSnapshot, documentationText, installDocumentationLanguage 
 
 const organizationId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const repositoryId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const repositoryDisplayName = "acme/workflow";
 const changeKey = "compact-export";
 
 function searchIssue(id: string, number: number, title: string, stage: "proposal" | "design" | "implement", matches: Array<{ source: "issue" | "comment"; excerpt: string }>) {
@@ -64,7 +65,7 @@ test.beforeEach(async ({ page }) => {
     const url = new URL(request.url());
     if (url.pathname === "/api/v1/meta") return route.fulfill({ json: { api_version: "v1", features: { bootstrap: true, personal_access_tokens: true, organizations: true, source_bindings: false, webhooks: false, change_boards: true, runner: true, recovery_exchange: true, search: true } } });
     if (url.pathname === "/api/v1/context") return route.fulfill({ json: { user: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", login: "alice", display_name: "Alice", email: "alice@example.test", site_admin: true }, credential: { kind: "session", scope_mode: "identity", repository_restricted: false }, session: { csrf_cookie_name: "issue_spec_csrf", csrf_header_name: "X-CSRF-Token" }, allowed_actions: ["site.admin"], organizations: [{ id: organizationId, name: "acme", display_name: "Acme Studio", effective_permission: "admin", container_only: false, allowed_actions: ["organization.read", "organization.admin"] }] } });
-    if (url.pathname === `/api/v1/context/orgs/${organizationId}/repos`) return route.fulfill({ json: { repositories: [{ repository: { id: repositoryId, organization_id: organizationId, name: "workflow", display_name: "Workflow control", visibility: "private", contribution_policy: "members" }, effective_permission: "admin", allowed_actions: ["read", "contribute", "triage", "write", "repository.admin"] }] } });
+    if (url.pathname === `/api/v1/context/orgs/${organizationId}/repos`) return route.fulfill({ json: { repositories: [{ repository: { id: repositoryId, organization_id: organizationId, name: "workflow", display_name: repositoryDisplayName, visibility: "private", contribution_policy: "members" }, effective_permission: "admin", allowed_actions: ["read", "contribute", "triage", "write", "repository.admin"] }] } });
     if (url.pathname === `/api/v1/orgs/${organizationId}/repos/${repositoryId}/search/issues`) {
       expect(url.searchParams.get("q")).toBe(documentationText("schema allowlist", "白名单"));
       return route.fulfill({ json: searchResults });
@@ -76,7 +77,7 @@ test.beforeEach(async ({ page }) => {
 test("repository search groups matches by related change documentation screenshot", async ({ page }) => {
   const query = documentationText("schema allowlist", "白名单");
   await page.goto(`/search/${organizationId}/repos/${repositoryId}?q=${encodeURIComponent(query)}`);
-  await expect(page.getByRole("heading", { name: documentationText("Workflow control", "Workflow control") }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: repositoryDisplayName }).first()).toBeVisible();
   const relatedChange = page.getByRole("link", { name: new RegExp(changeKey) }).first();
   await expect(relatedChange).toBeVisible();
   await expect(page.getByRole("link", { name: documentationText("Design: compact-export", "Design：compact-export") })).toBeVisible();
