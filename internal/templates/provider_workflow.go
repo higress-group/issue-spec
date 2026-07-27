@@ -65,6 +65,8 @@ func providerWorkflowBody(repo string, provider workflow.ProviderPlan) string {
 		"",
 		"## Flow",
 		"",
+		"Generate every new typed ID as `<TYPE>-<issue><three-digit sequence>` according to `issue-spec-workflow`; preserve legacy IDs and never renumber referenced artifacts.",
+		"",
 		"1. Read the active Source Binding and code-change references from issue-spec; the binding supplies provider and external repository identity. Do not infer provider authority from the issue server hostname.",
 	}
 	if provider.ChangeCreate {
@@ -73,7 +75,7 @@ func providerWorkflowBody(repo string, provider workflow.ProviderPlan) string {
 		steps = append(steps, "2. Create the external change outside issue-spec; `change.create` is not available.")
 	}
 	steps = append(steps, "3. Validate and attach that existing change at its exact provider revision with `issue-spec --profile <self-hosted-profile> code-change attach --repo "+repo+" --implement <issue> --change-id <id> --revision <revision>`. Attach does not create the change or ingest review/CI evidence. Refresh only the same active change and provide `--refresh --expected-version <version>` together.")
-	steps = append(steps, "4. Link each PROCESS with `issue-spec --profile <self-hosted-profile> code-change link-process --repo "+repo+" --implement <issue> --process PROCESS-001 --expected-version <comment-version>`. The command requires exactly one active `code_change`; the same URL is a no-op and a different URL conflicts.")
+	steps = append(steps, "4. Link each PROCESS with `issue-spec --profile <self-hosted-profile> code-change link-process --repo "+repo+" --implement <issue> --process <process-id> --expected-version <comment-version>`. The command requires exactly one active `code_change`; the same URL is a no-op and a different URL conflicts.")
 	steps = append(steps, "5. If active references are ambiguous, inspect the Implement Issue references, explicitly delete only the unwanted active reference through the self-hosted native references API or UI, then retry. Never guess or silently overwrite.")
 	if provider.ChangeComment {
 		steps = append(steps, "6. Use neutral `change.comment` for supported finding/reply write-back, preserving canonical FINDING/PROCESS/SPEC linkage.")
@@ -85,8 +87,8 @@ func providerWorkflowBody(repo string, provider workflow.ProviderPlan) string {
 	} else {
 		steps = append(steps, "7. Verify only against already-authoritative server evidence; automatic provider snapshot synchronization is unavailable.")
 	}
-	steps = append(steps, "8. The independent reviewer runs `issue-spec --profile <self-hosted-profile> review sync --repo "+repo+" --implement <issue> --revision <revision> --id REVIEW-001 --agent <review-agent> --json`. After the final sync, explicitly link that REVIEW to its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC.")
-	steps = append(steps, "9. After independent review/fix convergence, each change-bearing code author runs `issue-spec --profile <self-hosted-profile> code-change rationale --repo "+repo+" --implement <issue> --process PROCESS-001 --spec SPEC-001 --spec-url <url> --body <why> --agent <worker>`. The append-only Issue Backend comment is not a GitHub PR call and passes final gates with the fresh exact-current REVIEW completion, or a valid existing finding-backed consumed binding for legacy compatibility.")
+	steps = append(steps, "8. The independent reviewer runs `issue-spec --profile <self-hosted-profile> review sync --repo "+repo+" --implement <issue> --revision <revision> --id <review-id> --agent <review-agent> --json`. After the final sync, explicitly link that REVIEW to its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC.")
+	steps = append(steps, "9. After independent review/fix convergence, each change-bearing code author runs `issue-spec --profile <self-hosted-profile> code-change rationale --repo "+repo+" --implement <issue> --process <process-id> --spec <spec-id> --spec-url <url> --body <why> --agent <worker>`. The append-only Issue Backend comment is not a GitHub PR call and passes final gates with the fresh exact-current REVIEW completion, or a valid existing finding-backed consumed binding for legacy compatibility.")
 	steps = append(steps, "10. Keep review, merge, and closure on the selected code provider; do not substitute GitHub PR endpoints for a self-hosted workflow. Archive reads implementation REVIEW completion only for implementation code_change merge policy and never applies it to archive_change or mutates REVIEW.")
 	steps = append(steps, "11. Configure a project/work-item tracker only through a separate explicit provider selection; this code-provider workflow grants no tracker authority.")
 	return strings.Join(steps, "\n") + "\n"

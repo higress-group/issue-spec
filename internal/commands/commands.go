@@ -218,21 +218,22 @@ Usage:
   issue-spec issue close|reopen --repo owner/repo --issue N [--json]
   issue-spec issue close-change --repo owner/repo --proposal N --design N --implement N --revision REV [--json]
   issue-spec comment create --repo owner/repo --issue N --body-file reply.md [--json]
-  issue-spec comment generate --type SPEC --id SPEC-001 --input-file spec.json [--status confirmed] [--scope "..."]
-  issue-spec comment upsert --repo owner/repo --issue N --type SPEC --id SPEC-001 --body-file file.md [--allow-noncanonical]
-  issue-spec comment transition --repo owner/repo --issue N --id TASK-001 --to done [--expected-version N|--expected-digest SHA256]
+  issue-spec comment generate --type SPEC --id SPEC-1001 --input-file spec.json [--status confirmed] [--scope "..."]
+  issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file file.md [--allow-noncanonical]
+  issue-spec comment transition --repo owner/repo --issue 2 --id TASK-2001 --to done [--expected-version N|--expected-digest SHA256]
   issue-spec comment list --repo owner/repo --issue N [--type SPEC] [--json]
-  issue-spec question create --repo owner/repo --issue N --id QUESTION-001 --question "..."
-  issue-spec question resolve --repo owner/repo --issue N --id QUESTION-001 --resolution-file file.md
+  issue-spec question create --repo owner/repo --issue 1 --id QUESTION-1001 --question "..."
+  issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-1001 --resolution-file file.md
+    new typed IDs use <TYPE>-<issue><three-digit sequence>; allocate the sequence within that Issue and type
   issue-spec projection upsert --repo owner/repo --issue N --phase proposal-choice-brief --source-digest SHA256 --body-file file.md [--allow-nonatomic --expected-absence|--allow-nonatomic --expected-digest SHA256]
     non-atomic first create uses --expected-absence; replacement uses the observed-body --expected-digest SHA256
-  issue-spec pr rationale --repo owner/repo --pr N --path file.go --line 42 --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "why"
-  issue-spec pr link-process --repo owner/repo --issue N --process PROCESS-001 --pr N
+  issue-spec pr rationale --repo owner/repo --pr 4 --path file.go --line 42 --process PROCESS-3001 --spec SPEC-1001 --spec-url URL --body "why"
+  issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-3001 --pr 4
   issue-spec pr link-issues --repo owner/repo --pr N --proposal N --design N --implement N
   issue-spec pr verify-closure --repo owner/repo --pr N --proposal N --design N --implement N [--json]
-  issue-spec review finding --repo owner/repo --pr N --path file.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-001 --spec SPEC-001 --spec-url URL --body "what to fix"
-  issue-spec review reply --repo owner/repo --pr N --comment-id COMMENT_ID --finding FINDING-001 --process PROCESS-001 --status resolved --body "fixed"
-  issue-spec review sync --repo owner/repo --pr N --implement N --id REVIEW-001
+  issue-spec review finding --repo owner/repo --pr 4 --path file.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-3001 --spec SPEC-1001 --spec-url URL --body "what to fix"
+  issue-spec review reply --repo owner/repo --pr 4 --comment-id COMMENT_ID --finding FINDING-001 --process PROCESS-3001 --status resolved --body "fixed"
+  issue-spec review sync --repo owner/repo --pr 4 --implement 3 --id REVIEW-3001
   issue-spec durable-spec preview|apply|check|detail --repo owner/repo --proposal N [options]
   issue-spec workflow validate --repo owner/repo [--json]
   issue-spec workflow which --repo owner/repo [--schema name] [--json]

@@ -12,15 +12,15 @@ AI:  Created proposal issue #101
      Added SPEC comments for theme behavior and persistence
      Added QUESTION comments for unresolved UX decisions
 
-Human: 在 issue 页面上直接回答 QUESTION-001（或以评论回复）。
+Human: 在 Issue #101 页面上直接回答 QUESTION-101001（或以评论回复）。
 AI:    记录 ANSWER 并更新相关 SPEC 评论。
 
 You: /issue-spec:apply
 AI:  Created design issue #102 and implement issue #103
      Split work into PROCESS nodes:
-     - PROCESS-001: theme state and storage
-     - PROCESS-002: UI toggle
-     - PROCESS-003: tests and verification
+     - PROCESS-103001: theme state and storage
+     - PROCESS-103002: UI toggle
+     - PROCESS-103003: tests and verification
      Linked SPEC <-> TASK <-> PROCESS
 
 Worker: opens PR #120
@@ -28,7 +28,7 @@ AI:     Added PR rationale comments on changed lines, each linked to SPEC and PR
 
 You: /issue-spec:review
 AI:  Synced PR review comments, checks, and findings into REVIEW comments.
-     P1 finding assigned to PROCESS-002.
+     P1 finding assigned to PROCESS-103002.
 
 Worker: fixes the finding
 AI:     Replied to the original PR review thread and marked the finding resolved.

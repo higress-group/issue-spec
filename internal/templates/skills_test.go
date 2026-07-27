@@ -53,6 +53,8 @@ func TestCoordinatorGuidanceKeepsActionsStopsAndRecovery(t *testing.T) {
 	wants := []string{
 		"status --repo owner/repo", "--summary --json", "structured detail action", "full --json",
 		"comment get", "active/status/history filters", "narrow direct-PR fast path",
+		"<TYPE>-<issue><three-digit sequence>", "QUESTION-1001", "QUESTION-44001",
+		"do not add another type digit or search the whole repository", "never renumber a legacy ID",
 		"one independently verifiable Design invariant", "bounded context and working set", "stable interface",
 		"stop the Implement transition as blocked", "acceptance consequences", "request human direction",
 		"workspace prepare -> real non-Coordinator", "never implements/tests/commits", "sealed assignment",
