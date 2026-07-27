@@ -122,7 +122,7 @@ confirmation. After confirmation it uses the equivalent of:
 ```bash
 issue-spec --profile team issue create simple --repo acme/widgets --title "..." --body-file ./issue.md --json
 issue-spec --profile team issue create proposal --repo acme/widgets --change compact-export --title "..." --body-file ./proposal.md --json
-issue-spec --profile team comment upsert --repo acme/widgets --issue 42 --type SPEC --id SPEC-001 --body-file ./spec.md --json
+issue-spec --profile team comment upsert --repo acme/widgets --issue 42 --type SPEC --id SPEC-42001 --body-file ./spec.md --json
 ```
 
 It returns browser URLs for every created issue and comment. Without

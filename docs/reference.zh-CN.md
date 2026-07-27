@@ -82,21 +82,21 @@ issue-spec issue close --repo owner/repo --issue 1 --json
 issue-spec issue reopen --repo owner/repo --issue 1 --json
 
 issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --json
-issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
-issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
-issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
-issue-spec comment get --repo owner/repo --issue 1 --id SPEC-001 --type SPEC --json
-issue-spec comment get --repo owner/repo --issue 1 --id SPEC-001 --comment-id 123 --include-body --json
+issue-spec comment generate --type SPEC --id SPEC-1001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
+issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file spec.md
+issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file legacy.md --allow-noncanonical
+issue-spec comment get --repo owner/repo --issue 1 --id SPEC-1001 --type SPEC --json
+issue-spec comment get --repo owner/repo --issue 1 --id SPEC-1001 --comment-id 123 --include-body --json
 issue-spec comment list --repo owner/repo --issue 1 --json
 issue-spec comment list --repo owner/repo --issue 1 --type SPEC --json --include-body
 issue-spec comment list --repo owner/repo --issue 1 --active-only --json
 issue-spec comment list --repo owner/repo --issue 1 --status ready,in-progress,done --json
 issue-spec comment list --repo owner/repo --issue 1 --history --include-body --json
 
-issue-spec question create --repo owner/repo --issue 1 --id QUESTION-001 --blocking --question "What must be decided?"
-issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-001 --resolution-file resolution.md
+issue-spec question create --repo owner/repo --issue 1 --id QUESTION-1001 --blocking --question "What must be decided?"
+issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-1001 --resolution-file resolution.md
 
-issue-spec link --repo owner/repo --from SPEC-001 --from-issue 1 --to TASK-001 --to-issue 2
+issue-spec link --repo owner/repo --from SPEC-1001 --from-issue 1 --to TASK-2001 --to-issue 2
 issue-spec status --repo owner/repo --proposal 1 --design 2 --implement 3
 issue-spec verify-links --repo owner/repo --proposal 1 --design 2 --implement 3
 
@@ -104,17 +104,26 @@ issue-spec workflow validate --repo owner/repo --json
 issue-spec workflow which --repo owner/repo --schema custom-workflow --json
 
 issue-spec search issues --repo owner/repo --query "错误或代码符号" --state all --source all --limit 10
+```
+
+新建 typed ID 在仓库内唯一，格式为 `<TYPE>-<issue><三位序号>`。最后三位是在
+当前 Issue、当前类型内分配的序号，前面的数字是仓库内唯一的 Issue 号。例如，
+Issue 44 的第一个 QUESTION 是 `QUESTION-44001`。类型前缀已经隔离不同产物类型，
+不需要扫描整个仓库，也不需要额外编码类型数字。旧 ID 必须保持不变，因为 links、
+ANSWER scope 和历史记录可能已经引用它。
+
+```bash
 
 issue-spec --profile team code-change attach --repo acme/widgets --implement 3 --change-id 42 --revision abc123 [--refresh --expected-version 7] [--json]
-issue-spec --profile team code-change link-process --repo acme/widgets --implement 3 --process PROCESS-001 --expected-version 5 [--json]
+issue-spec --profile team code-change link-process --repo acme/widgets --implement 3 --process PROCESS-3001 --expected-version 5 [--json]
 
-issue-spec pr rationale --repo owner/repo --pr 4 --path internal/foo.go --line 42 --process PROCESS-001 --spec SPEC-001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "Why this line changes."
-issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-001 --pr 4
+issue-spec pr rationale --repo owner/repo --pr 4 --path internal/foo.go --line 42 --process PROCESS-3001 --spec SPEC-1001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "Why this line changes."
+issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-3001 --pr 4
 issue-spec pr link-issues --repo owner/repo --pr 4 --proposal 1 --design 2 --implement 3
 
-issue-spec review sync --repo owner/repo --pr 4 --implement 3 --id REVIEW-001
-issue-spec review finding --repo owner/repo --pr 4 --path internal/foo.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-001 --spec SPEC-001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "What must be fixed."
-issue-spec review reply --repo owner/repo --pr 4 --comment-id 123456 --finding FINDING-001 --process PROCESS-001 --status resolved --body "Fixed in the latest patch."
+issue-spec review sync --repo owner/repo --pr 4 --implement 3 --id REVIEW-3001
+issue-spec review finding --repo owner/repo --pr 4 --path internal/foo.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-3001 --spec SPEC-1001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "What must be fixed."
+issue-spec review reply --repo owner/repo --pr 4 --comment-id 123456 --finding FINDING-001 --process PROCESS-3001 --status resolved --body "Fixed in the latest patch."
 
 issue-spec verify --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --durable-spec issue-spec/specs/issue-spec-cli/spec.md
 
@@ -185,7 +194,7 @@ issue-spec --profile team code-change attach \
 issue-spec --profile team code-change link-process \
   --repo acme/widgets \
   --implement 3 \
-  --process PROCESS-001 \
+  --process PROCESS-3001 \
   --expected-version 5 \
   --json
 ```
@@ -205,7 +214,7 @@ issue-spec --profile team review sync \
   --repo acme/widgets \
   --implement 3 \
   --revision abc123 \
-  --id REVIEW-001 \
+  --id REVIEW-3001 \
   --agent reviewer \
   --json
 ```
@@ -264,8 +273,8 @@ fail closed。`--include-body` 只包含目标 artifact 的精确 Markdown。
 类型化评论在协调器交接之间承载需求、任务、process 所有权、review 与验证证据。与其手写原始 Markdown，不如使用 `issue-spec comment generate` 从结构化 JSON 渲染 canonical 正文，然后把输出直接管道给 `comment upsert`：
 
 ```bash
-issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json \
-  | issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file -
+issue-spec comment generate --type SPEC --id SPEC-1001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json \
+  | issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file -
 ```
 
 `comment generate` 会把一个完整的类型化评论 Markdown 正文（marker + 可见头 + canonical 内容）写到 stdout，且从不触网。同一命令家族用类型专属的 JSON 形态渲染 `TASK`、`PROCESS`、`REVIEW` 与 `VERIFY` 正文。

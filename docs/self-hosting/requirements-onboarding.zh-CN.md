@@ -108,7 +108,7 @@ Skill 先在本地起草。每次远程写入前，它会显示准确的仓库�
 ```bash
 issue-spec --profile team issue create simple --repo acme/widgets --title "..." --body-file ./issue.md --json
 issue-spec --profile team issue create proposal --repo acme/widgets --change compact-export --title "..." --body-file ./proposal.md --json
-issue-spec --profile team comment upsert --repo acme/widgets --issue 42 --type SPEC --id SPEC-001 --body-file ./spec.md --json
+issue-spec --profile team comment upsert --repo acme/widgets --issue 42 --type SPEC --id SPEC-42001 --body-file ./spec.md --json
 ```
 
 每个新建 Issue 和评论都会返回浏览器 URL。没有 `contribute` 时只保留本地草稿，Skill

@@ -82,21 +82,21 @@ issue-spec issue close --repo owner/repo --issue 1 --json
 issue-spec issue reopen --repo owner/repo --issue 1 --json
 
 issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --json
-issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
-issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file spec.md
-issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file legacy.md --allow-noncanonical
-issue-spec comment get --repo owner/repo --issue 1 --id SPEC-001 --type SPEC --json
-issue-spec comment get --repo owner/repo --issue 1 --id SPEC-001 --comment-id 123 --include-body --json
+issue-spec comment generate --type SPEC --id SPEC-1001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
+issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file spec.md
+issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file legacy.md --allow-noncanonical
+issue-spec comment get --repo owner/repo --issue 1 --id SPEC-1001 --type SPEC --json
+issue-spec comment get --repo owner/repo --issue 1 --id SPEC-1001 --comment-id 123 --include-body --json
 issue-spec comment list --repo owner/repo --issue 1 --json
 issue-spec comment list --repo owner/repo --issue 1 --type SPEC --json --include-body
 issue-spec comment list --repo owner/repo --issue 1 --active-only --json
 issue-spec comment list --repo owner/repo --issue 1 --status ready,in-progress,done --json
 issue-spec comment list --repo owner/repo --issue 1 --history --include-body --json
 
-issue-spec question create --repo owner/repo --issue 1 --id QUESTION-001 --blocking --question "What must be decided?"
-issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-001 --resolution-file resolution.md
+issue-spec question create --repo owner/repo --issue 1 --id QUESTION-1001 --blocking --question "What must be decided?"
+issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-1001 --resolution-file resolution.md
 
-issue-spec link --repo owner/repo --from SPEC-001 --from-issue 1 --to TASK-001 --to-issue 2
+issue-spec link --repo owner/repo --from SPEC-1001 --from-issue 1 --to TASK-2001 --to-issue 2
 issue-spec status --repo owner/repo --proposal 1 --design 2 --implement 3
 issue-spec verify-links --repo owner/repo --proposal 1 --design 2 --implement 3
 
@@ -104,17 +104,27 @@ issue-spec workflow validate --repo owner/repo --json
 issue-spec workflow which --repo owner/repo --schema custom-workflow --json
 
 issue-spec search issues --repo owner/repo --query "error or symbol" --state all --source all --limit 10
+```
+
+New typed IDs are repository-unique and use `<TYPE>-<issue><three-digit sequence>`.
+The final three digits are a sequence allocated within one Issue and type; all preceding
+digits are the repository-unique Issue number. For example, the first QUESTION on Issue 44
+is `QUESTION-44001`. The type prefix already separates artifact types, so no repository-wide
+availability search or additional type digit is needed. Preserve legacy IDs because links,
+ANSWER scope, and history may already reference them.
+
+```bash
 
 issue-spec --profile team code-change attach --repo acme/widgets --implement 3 --change-id 42 --revision abc123 [--refresh --expected-version 7] [--json]
-issue-spec --profile team code-change link-process --repo acme/widgets --implement 3 --process PROCESS-001 --expected-version 5 [--json]
+issue-spec --profile team code-change link-process --repo acme/widgets --implement 3 --process PROCESS-3001 --expected-version 5 [--json]
 
-issue-spec pr rationale --repo owner/repo --pr 4 --path internal/foo.go --line 42 --process PROCESS-001 --spec SPEC-001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "Why this line changes."
-issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-001 --pr 4
+issue-spec pr rationale --repo owner/repo --pr 4 --path internal/foo.go --line 42 --process PROCESS-3001 --spec SPEC-1001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "Why this line changes."
+issue-spec pr link-process --repo owner/repo --issue 3 --process PROCESS-3001 --pr 4
 issue-spec pr link-issues --repo owner/repo --pr 4 --proposal 1 --design 2 --implement 3
 
-issue-spec review sync --repo owner/repo --pr 4 --implement 3 --id REVIEW-001
-issue-spec review finding --repo owner/repo --pr 4 --path internal/foo.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-001 --spec SPEC-001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "What must be fixed."
-issue-spec review reply --repo owner/repo --pr 4 --comment-id 123456 --finding FINDING-001 --process PROCESS-001 --status resolved --body "Fixed in the latest patch."
+issue-spec review sync --repo owner/repo --pr 4 --implement 3 --id REVIEW-3001
+issue-spec review finding --repo owner/repo --pr 4 --path internal/foo.go --line 42 --id FINDING-001 --severity P1 --process PROCESS-3001 --spec SPEC-1001 --spec-url https://github.com/owner/repo/issues/1#issuecomment-1 --body "What must be fixed."
+issue-spec review reply --repo owner/repo --pr 4 --comment-id 123456 --finding FINDING-001 --process PROCESS-3001 --status resolved --body "Fixed in the latest patch."
 
 issue-spec verify --repo owner/repo --proposal 1 --design 2 --implement 3 --pr 4 --durable-spec issue-spec/specs/issue-spec-cli/spec.md
 
@@ -194,7 +204,7 @@ comment using its observed representation version:
 issue-spec --profile team code-change link-process \
   --repo acme/widgets \
   --implement 3 \
-  --process PROCESS-001 \
+  --process PROCESS-3001 \
   --expected-version 5 \
   --json
 ```
@@ -216,7 +226,7 @@ issue-spec --profile team review sync \
   --repo acme/widgets \
   --implement 3 \
   --revision abc123 \
-  --id REVIEW-001 \
+  --id REVIEW-3001 \
   --agent reviewer \
   --json
 ```
@@ -281,8 +291,8 @@ combined with `--include-body` for explicit audit detail. `--active-only` and
 Typed comments carry requirements, tasks, process ownership, review, and verification evidence across coordinator handoffs. Instead of hand-writing raw Markdown, use `issue-spec comment generate` to render canonical bodies from structured JSON, then pipe the output straight into `comment upsert`:
 
 ```bash
-issue-spec comment generate --type SPEC --id SPEC-001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json \
-  | issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-001 --body-file -
+issue-spec comment generate --type SPEC --id SPEC-1001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json \
+  | issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file -
 ```
 
 `comment generate` writes a complete typed-comment Markdown body (marker + visible header + canonical content) to stdout and never touches the network. The same command family renders `TASK`, `PROCESS`, `REVIEW`, and `VERIFY` bodies with type-specific JSON shapes.
