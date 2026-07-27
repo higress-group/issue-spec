@@ -478,110 +478,6 @@ func TestTrustedAnswerServiceAppendsCanonicalImmutableAnswersAtomically(t *testi
 	}
 }
 
-func TestTypedCommentProjectionConflictRollsBackCommentMutation(t *testing.T) {
-	environment := newEnvironment(t, models.VisibilityPrivate)
-	subject := authz.Authenticated(environment.owner)
-	_, firstIssue, err := environment.service.CreateIssue(t.Context(), "acme", "widgets", subject,
-		models.NewIssue{Title: "first", Body: "first issue"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, secondIssue, err := environment.service.CreateIssue(t.Context(), "acme", "widgets", subject,
-		models.NewIssue{Title: "second", Body: "second issue"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	const duplicateID = "QUESTION-1001"
-	firstBody := trustedQuestionBody(t, duplicateID, "First issue question?",
-		[]model.ChoiceOption{{ID: "yes", Label: "Yes"}})
-	if _, _, err := environment.service.CreateComment(t.Context(), "acme", "widgets",
-		firstIssue.Issue.Number, subject, firstBody); err != nil {
-		t.Fatal(err)
-	}
-
-	beforeComments := countRows(t, environment.pool, "comments")
-	beforeTyped := countRows(t, environment.pool, "issue_spec_typed_comments")
-	beforeAnomalies := countRows(t, environment.pool, "projection_anomalies")
-	beforeOutbox := countRows(t, environment.pool, "event_outbox")
-	var beforeSecondVersion int64
-	if err := environment.pool.QueryRow(t.Context(), `SELECT comments_collection_version FROM issues
-		WHERE organization_id = $1 AND repository_id = $2 AND id = $3`,
-		environment.scope.OrgID, environment.scope.RepoID, secondIssue.Issue.ID).Scan(&beforeSecondVersion); err != nil {
-		t.Fatal(err)
-	}
-
-	mux := environment.mux(t)
-	duplicateBody := trustedQuestionBody(t, duplicateID, "Conflicting second issue question?",
-		[]model.ChoiceOption{{ID: "no", Label: "No"}})
-	response := request(t, mux, http.MethodPost,
-		fmt.Sprintf("/repos/acme/widgets/issues/%d/comments", secondIssue.Issue.Number),
-		jsonBody(map[string]any{"body": duplicateBody}), "owner")
-	if response.Code != http.StatusConflict ||
-		!strings.Contains(response.Body.String(), "retry with QUESTION-2001") ||
-		!strings.Contains(response.Body.String(), `"code":"typed_id_already_exists"`) {
-		t.Fatalf("duplicate typed ID status=%d body=%s", response.Code, response.Body.String())
-	}
-
-	var afterSecondVersion int64
-	if err := environment.pool.QueryRow(t.Context(), `SELECT comments_collection_version FROM issues
-		WHERE organization_id = $1 AND repository_id = $2 AND id = $3`,
-		environment.scope.OrgID, environment.scope.RepoID, secondIssue.Issue.ID).Scan(&afterSecondVersion); err != nil {
-		t.Fatal(err)
-	}
-	if countRows(t, environment.pool, "comments") != beforeComments ||
-		countRows(t, environment.pool, "issue_spec_typed_comments") != beforeTyped ||
-		countRows(t, environment.pool, "projection_anomalies") != beforeAnomalies ||
-		countRows(t, environment.pool, "event_outbox") != beforeOutbox ||
-		afterSecondVersion != beforeSecondVersion {
-		t.Fatalf("duplicate create was not atomic: comments=%d/%d typed=%d/%d anomalies=%d/%d outbox=%d/%d version=%d/%d",
-			beforeComments, countRows(t, environment.pool, "comments"),
-			beforeTyped, countRows(t, environment.pool, "issue_spec_typed_comments"),
-			beforeAnomalies, countRows(t, environment.pool, "projection_anomalies"),
-			beforeOutbox, countRows(t, environment.pool, "event_outbox"),
-			beforeSecondVersion, afterSecondVersion)
-	}
-
-	const originalID = "QUESTION-2001"
-	originalBody := trustedQuestionBody(t, originalID, "Second issue question?",
-		[]model.ChoiceOption{{ID: "keep", Label: "Keep"}})
-	_, originalComment, err := environment.service.CreateComment(t.Context(), "acme", "widgets",
-		secondIssue.Issue.Number, subject, originalBody)
-	if err != nil {
-		t.Fatal(err)
-	}
-	beforeComments = countRows(t, environment.pool, "comments")
-	beforeTyped = countRows(t, environment.pool, "issue_spec_typed_comments")
-	beforeAnomalies = countRows(t, environment.pool, "projection_anomalies")
-	beforeOutbox = countRows(t, environment.pool, "event_outbox")
-	compatibilityID := codec.StableNumericID(originalComment.Comment.ID.String())
-	if _, _, err := environment.service.UpdateComment(t.Context(), "acme", "widgets",
-		compatibilityID, subject, duplicateBody); !errors.Is(err, store.ErrProjectionConflict) ||
-		!strings.Contains(err.Error(), "suggested ID "+originalID) {
-		t.Fatalf("duplicate typed ID update error=%v", err)
-	}
-	_, current, err := environment.service.GetComment(t.Context(), "acme", "widgets", compatibilityID, subject)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current.Comment.Body != originalBody ||
-		countRows(t, environment.pool, "comments") != beforeComments ||
-		countRows(t, environment.pool, "issue_spec_typed_comments") != beforeTyped ||
-		countRows(t, environment.pool, "projection_anomalies") != beforeAnomalies ||
-		countRows(t, environment.pool, "event_outbox") != beforeOutbox {
-		t.Fatalf("duplicate update was not atomic: body_changed=%t comments=%d/%d typed=%d/%d anomalies=%d/%d outbox=%d/%d",
-			current.Comment.Body != originalBody,
-			beforeComments, countRows(t, environment.pool, "comments"),
-			beforeTyped, countRows(t, environment.pool, "issue_spec_typed_comments"),
-			beforeAnomalies, countRows(t, environment.pool, "projection_anomalies"),
-			beforeOutbox, countRows(t, environment.pool, "event_outbox"))
-	}
-	if _, _, err := environment.service.GetQuestion(t.Context(), "acme", "widgets",
-		secondIssue.Issue.Number, subject, "https://web.example.test", originalID); err != nil {
-		t.Fatalf("original typed projection was not restored after rollback: %v", err)
-	}
-}
-
 func trustedQuestionBody(t *testing.T, id, question string, options []model.ChoiceOption) string {
 	t.Helper()
 	choice := model.ChoiceModel{Version: model.ChoiceModelVersion, Mode: model.ChoiceModeSingle,
@@ -979,8 +875,7 @@ func TestConcurrentIssueCommentVersionsCASAndProjectionRollback(t *testing.T) {
 	}
 
 	blocking := newBlockingHook()
-	linearized, err := issueapi.NewService(store.New(environment.pool), environment.authorizer,
-		artifacts.MarkerProjector{}, blocking)
+	linearized, err := issueapi.NewService(store.New(environment.pool), environment.authorizer, artifacts.MarkerProjector{}, blocking)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1117,8 +1012,7 @@ func newEnvironment(t *testing.T, visibility models.Visibility) *environment {
 		t.Fatal(err)
 	}
 	hook := &outboxHook{}
-	service, err := issueapi.NewService(store.New(pool), authorizer,
-		artifacts.MarkerProjector{}, hook)
+	service, err := issueapi.NewService(store.New(pool), authorizer, artifacts.MarkerProjector{}, hook)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,7 +12,6 @@ import (
 	"github.com/higress-group/issue-spec/internal/server/auth"
 	"github.com/higress-group/issue-spec/internal/server/authz"
 	"github.com/higress-group/issue-spec/internal/server/models"
-	"github.com/higress-group/issue-spec/internal/server/projection/artifacts"
 	"github.com/higress-group/issue-spec/internal/server/store"
 )
 
@@ -63,7 +62,6 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 		apierrors.WriteGitHub(w, problem)
 		return
 	}
-	var typedConflict *artifacts.TypedCommentConflictError
 	switch {
 	case errors.Is(err, ErrTrustedAnswerRequired):
 		apierrors.WriteGitHub(w, apierrors.Validation(RequestID(r), []codec.Violation{{
@@ -81,28 +79,6 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 		apierrors.WriteGitHub(w, apierrors.Validation(RequestID(r), []codec.Violation{{Resource: "Issue", Field: "labels", Code: "invalid", Message: "contains an unknown label"}}))
 	case errors.Is(err, store.ErrNotFound):
 		apierrors.WriteGitHub(w, apierrors.NotFound(RequestID(r)))
-	case errors.As(err, &typedConflict):
-		message := "Typed comment ID " + typedConflict.ID + " already exists in this repository"
-		fieldMessage := "choose another repository-unique typed comment ID"
-		if typedConflict.SuggestedID != "" {
-			message += "; retry with " + typedConflict.SuggestedID
-			fieldMessage = "retry with " + typedConflict.SuggestedID
-		}
-		apierrors.WriteGitHub(w, apierrors.GitHubError{Status: http.StatusConflict,
-			RequestID: RequestID(r), Envelope: apierrors.Envelope{
-				Message: message,
-				Errors: []apierrors.Field{{
-					Resource: "IssueComment", Field: "body",
-					Code: "typed_id_already_exists", Message: fieldMessage,
-				}},
-				DocumentationURL: "https://docs.github.com/rest",
-			}})
-	case errors.Is(err, store.ErrProjectionConflict):
-		apierrors.WriteGitHub(w, apierrors.GitHubError{Status: http.StatusConflict,
-			RequestID: RequestID(r), Envelope: apierrors.Envelope{
-				Message:          "Typed comment ID already exists in this repository",
-				DocumentationURL: "https://docs.github.com/rest",
-			}})
 	case errors.Is(err, store.ErrVersionConflict), errors.Is(err, store.ErrConflict):
 		apierrors.WriteGitHub(w, apierrors.GitHubError{Status: http.StatusConflict,
 			RequestID: RequestID(r), Envelope: apierrors.Envelope{Message: "Conflict", DocumentationURL: "https://docs.github.com/rest"}})

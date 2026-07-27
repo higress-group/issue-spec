@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,29 +22,7 @@ type Projector interface {
 	ProjectComment(context.Context, store.RepoStore, models.CommentSnapshot) error
 }
 
-// MarkerProjector is strict for typed-comment conflicts. Synchronous comment
-// mutations already run in one database transaction, so a duplicate typed ID
-// rolls back both the raw comment and every projection-side effect.
 type MarkerProjector struct{}
-
-// TolerantMarkerProjector is reserved for projection rebuilds over raw comments
-// that already exist. It records duplicate typed IDs as anomalies instead of
-// requiring the caller to roll back the source comment.
-type TolerantMarkerProjector struct{ MarkerProjector }
-
-type TypedCommentConflictError struct {
-	ID          string
-	SuggestedID string
-}
-
-func (e *TypedCommentConflictError) Error() string {
-	if e.SuggestedID != "" {
-		return fmt.Sprintf("typed comment ID %s already exists; suggested ID %s", e.ID, e.SuggestedID)
-	}
-	return fmt.Sprintf("typed comment ID %s already exists", e.ID)
-}
-
-func (e *TypedCommentConflictError) Unwrap() error { return store.ErrProjectionConflict }
 
 func (MarkerProjector) ProjectIssue(ctx context.Context, repository store.RepoStore, issue models.Issue) error {
 	if err := projectIssue(ctx, repository, issue); err != nil {
@@ -99,25 +76,14 @@ func projectIssue(ctx context.Context, repository store.RepoStore, issue models.
 }
 
 func (MarkerProjector) ProjectComment(ctx context.Context, repository store.RepoStore, snapshot models.CommentSnapshot) error {
-	return projectCommentAndIncrement(ctx, repository, snapshot, true)
-}
-
-func (TolerantMarkerProjector) ProjectComment(ctx context.Context, repository store.RepoStore,
-	snapshot models.CommentSnapshot) error {
-	return projectCommentAndIncrement(ctx, repository, snapshot, false)
-}
-
-func projectCommentAndIncrement(ctx context.Context, repository store.RepoStore,
-	snapshot models.CommentSnapshot, rejectTypedCommentConflicts bool) error {
-	if err := projectComment(ctx, repository, snapshot, rejectTypedCommentConflicts); err != nil {
+	if err := projectComment(ctx, repository, snapshot); err != nil {
 		return err
 	}
 	_, err := repository.IncrementCollectionVersions(ctx, store.RepoCollectionArtifacts)
 	return err
 }
 
-func projectComment(ctx context.Context, repository store.RepoStore, snapshot models.CommentSnapshot,
-	rejectTypedCommentConflicts bool) error {
+func projectComment(ctx context.Context, repository store.RepoStore, snapshot models.CommentSnapshot) error {
 	comment := snapshot.Comment
 	parsed := model.ParseTypedComment(comment.Body)
 	if parsed.Marker.Type == "" && parsed.Marker.ID == "" && len(parsed.Errors) == 0 {
@@ -144,10 +110,6 @@ func projectComment(ctx context.Context, repository store.RepoStore, snapshot mo
 		Key: parsed.ID, Body: comment.Body, Metadata: metadata, UserID: comment.AuthorID,
 	})
 	if errors.Is(err, store.ErrProjectionConflict) {
-		if rejectTypedCommentConflicts {
-			suggestedID, _ := suggestTypedCommentID(ctx, repository, snapshot.IssueNumber, parsed.Type)
-			return &TypedCommentConflictError{ID: parsed.ID, SuggestedID: suggestedID}
-		}
 		if clearErr := repository.ClearTypedCommentProjection(ctx, comment.ID); clearErr != nil {
 			return clearErr
 		}
@@ -160,50 +122,4 @@ func projectComment(ctx context.Context, repository store.RepoStore, snapshot mo
 		return err
 	}
 	return repository.ResolveProjectionAnomalies(ctx, "comment", comment.ID)
-}
-
-func suggestTypedCommentID(ctx context.Context, repository store.RepoStore, issueNumber int64,
-	commentType string) (string, error) {
-	const pageSize = 100
-	var ids []string
-	for pageNumber := 1; ; pageNumber++ {
-		page, err := repository.ListComments(ctx, models.CommentListOptions{
-			IssueNumber: &issueNumber, Page: pageNumber, PerPage: pageSize,
-		})
-		if err != nil {
-			return "", err
-		}
-		for _, item := range page.Items {
-			parsed := model.ParseTypedComment(item.Comment.Body)
-			if parsed.Type == commentType {
-				ids = append(ids, parsed.ID)
-			}
-		}
-		if pageNumber*pageSize >= page.Total {
-			break
-		}
-	}
-	return nextIssueScopedTypedCommentID(commentType, issueNumber, ids), nil
-}
-
-func nextIssueScopedTypedCommentID(commentType string, issueNumber int64, ids []string) string {
-	prefix := commentType + "-" + strconv.FormatInt(issueNumber, 10)
-	maxSequence := 0
-	for _, id := range ids {
-		if !strings.HasPrefix(id, prefix) {
-			continue
-		}
-		sequenceText := strings.TrimPrefix(id, prefix)
-		if len(sequenceText) != 3 {
-			continue
-		}
-		sequence, err := strconv.Atoi(sequenceText)
-		if err == nil && sequence > maxSequence {
-			maxSequence = sequence
-		}
-	}
-	if maxSequence >= 999 {
-		return ""
-	}
-	return fmt.Sprintf("%s-%d%03d", commentType, issueNumber, maxSequence+1)
 }

@@ -64,6 +64,27 @@ func TestProviderWorkflowAttachesExistingChangeWithoutGitHubAssumptions(t *testi
 	}
 }
 
+func TestProviderWorkflowUsesIssueScopedTypedIDGuidance(t *testing.T) {
+	provider := workflow.ProviderPlan{ProviderKey: "code.example", DisplayName: "Example Code", CodeChangeLabel: "change"}
+	content := IssueSpecProviderSkill("acme/widgets", provider).Content
+	for _, want := range []string{
+		"<TYPE>-<issue><three-digit sequence>",
+		"--process <process-id>",
+		"--id <review-id>",
+		"--spec <spec-id>",
+		"preserve legacy IDs",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("provider workflow missing typed ID guidance %q:\n%s", want, content)
+		}
+	}
+	for _, legacyExample := range []string{"PROCESS-001", "REVIEW-001", "SPEC-001"} {
+		if strings.Contains(content, legacyExample) {
+			t.Fatalf("provider workflow still contains legacy new-ID example %q:\n%s", legacyExample, content)
+		}
+	}
+}
+
 func TestProviderWorkflowKeepsProjectVerificationDeclarative(t *testing.T) {
 	provider := workflow.ProviderPlan{ProviderKey: "code.example", DisplayName: "Example Code", CodeChangeLabel: "change", EvidenceSnapshot: true}
 	content := IssueSpecProviderSkill("acme/widgets", provider).Content
