@@ -112,8 +112,8 @@ func (s *Service) SetEvidencePolicy(ctx context.Context, subject authz.Subject, 
 	return result, mapError(err)
 }
 
-// IsDesignatedWriter is the durable writer-assignment contract consumed by
-// ingestion and future bridge adapters.
+// IsDesignatedWriter reads legacy writer-assignment state retained for
+// compatibility administration. The result has no publication authority.
 func (s *Service) IsDesignatedWriter(ctx context.Context, scope models.RepoScope, userID uuid.UUID) (bool, error) {
 	if err := scope.Validate(); err != nil || userID == uuid.Nil {
 		return false, adminservice.ErrInvalidInput
@@ -125,10 +125,9 @@ func (s *Service) IsDesignatedWriter(ctx context.Context, scope models.RepoScope
 	return designated, err
 }
 
-// DesignatedWriterStatus exposes the authenticated identity's own assignment
-// after the same repository-read authorization used by other native reads.
-// The result is intentionally independent of evidence:write: a token scope is
-// neither evidence-writer designation nor permission to manage one.
+// DesignatedWriterStatus exposes the authenticated identity's own legacy
+// assignment after the same repository-read authorization used by other native
+// reads. The result is compatibility data only and has no publication authority.
 func (s *Service) DesignatedWriterStatus(ctx context.Context, subject authz.Subject, scope models.RepoScope) (WriterStatus, error) {
 	if subject.Principal == nil || subject.Principal.User.ID == uuid.Nil {
 		return WriterStatus{}, adminservice.ErrForbidden
@@ -211,10 +210,10 @@ func (s *Service) SetDesignatedWriter(ctx context.Context, subject authz.Subject
 	return result, mapError(err)
 }
 
-// AppendEvidence enforces four independent gates: durable writer assignment,
-// evidence:write scope, live repository identity permission, and PAT repository
-// access that includes the target. Denials are audited after the protected
-// transaction rolls back, without copying payload, provenance or credential material.
+// AppendEvidence requires explicit evidence:write scope, live repository
+// identity permission, and credential access that includes the exact target.
+// Denials are audited after the protected transaction rolls back, without
+// copying payload, provenance or credential material.
 func (s *Service) AppendEvidence(ctx context.Context, subject authz.Subject, actor adminservice.Actor, scope models.RepoScope, input AppendInput) (Evidence, error) {
 	input = normalizeAppendInput(input)
 	payload, payloadErr := canonicalObject(input.Payload)
@@ -227,12 +226,8 @@ func (s *Service) AppendEvidence(ctx context.Context, subject authz.Subject, act
 	var denial string
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		principal := *subject.Principal
-		designated, err := designatedWriterForUpdate(ctx, tx, scope, principal.User.ID)
-		if err != nil {
-			return err
-		}
 		decision, err := s.authz.EvaluateRepositoryTx(ctx, tx, subject, authz.RepositoryRequest{
-			Scope: scope, Operation: authz.OperationPublishEvidence, DesignatedEvidenceWriter: designated,
+			Scope: scope, Operation: authz.OperationPublishEvidence,
 		})
 		if err != nil {
 			return err
@@ -330,12 +325,8 @@ func (s *Service) IngestProviderSnapshot(ctx context.Context, subject authz.Subj
 	var denial string
 	err = pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		principal := *subject.Principal
-		designated, err := designatedWriterForUpdate(ctx, tx, scope, principal.User.ID)
-		if err != nil {
-			return err
-		}
 		decision, err := s.authz.EvaluateRepositoryTx(ctx, tx, subject, authz.RepositoryRequest{
-			Scope: scope, Operation: authz.OperationPublishEvidence, DesignatedEvidenceWriter: designated,
+			Scope: scope, Operation: authz.OperationPublishEvidence,
 		})
 		if err != nil {
 			return err
@@ -778,17 +769,6 @@ func requirementNames(items []Requirement) []string {
 		names[i] = items[i].EvidenceType
 	}
 	return names
-}
-
-func designatedWriterForUpdate(ctx context.Context, tx pgx.Tx, scope models.RepoScope, userID uuid.UUID) (bool, error) {
-	var active bool
-	err := tx.QueryRow(ctx, `SELECT active FROM repository_evidence_writers
-		WHERE organization_id = $1 AND repository_id = $2 AND user_id = $3 FOR SHARE`,
-		scope.OrgID, scope.RepoID, userID).Scan(&active)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	return active, err
 }
 
 func validateSupersedes(ctx context.Context, tx pgx.Tx, scope models.RepoScope, input AppendInput) error {

@@ -109,8 +109,6 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 5. 确认 Scope 至少包含 `read:user`、`issues:read`、`issues:write` 和
    `evidence:write`；
 6. 创建并保存只显示一次的 Managed PAT。
-7. 由仓库 Owner 或运维身份把该 Service Account 显式指定为目标仓库的有效
-   **Evidence Writer**。
 
 ![为独立服务账号签发 Runner Managed PAT](assets/self-hosted-runner-service-account.zh-CN.png)
 
@@ -127,9 +125,7 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 2. 在 **访问令牌** 页面选择 **运行器预设**，再选择 **全站全部仓库**，或选中该 Runner
    进程要服务的所有仓库；
 3. 保存只显示一次的个人 PAT；
-4. 由仓库 Owner 或运维身份把自己的账号显式指定为目标仓库的有效
-   **Evidence Writer**；
-5. 启动时把自己的准确 Login 传给 `--runner`。
+4. 启动时把自己的准确 Login 传给 `--runner`。
 
 个人 PAT 至少需要相同的四个 Scope，可以覆盖全站全部仓库或指定的多个仓库；全站访问
 始终跟随账号的实时权限，本身不会授予仓库权限。默认只有
@@ -137,13 +133,17 @@ Runner 从 Source Binding 获取代码平台、外部仓库身份、HTTPS Clone 
 这种方式配置更少，但 Runner 写入、凭据轮换和账号停用都与个人身份绑定，不适合作为
 团队长期运行或多人共用的生产自动化。不要用浏览器 Session Cookie 或登录会话替代 PAT。
 
-Evidence Writer 是 Server 按用户身份保存的持久授权，不是 PAT Scope，也不是创建 Token
-时的选项；`evidence:write` 不会让 Token 持有人自动成为 Evidence Writer。Runner PAT
-通过运行器预设可快速选择上述四个最低必需 Scope；多余 Scope 不再阻止启动，但仍建议
-取消自动化不需要的权限。使用独立的仓库管理 Session 或短期、准确限定到该仓库的
-`admin:repo` PAT 管理指定，绝不能把 `admin:repo` 加到 Runner PAT。为同一身份轮换 PAT
-不会改变指定；停用该身份或把 Runner 迁移到其他账号时，应同时停用原指定。Native API
-操作和撤销示例见[指定 Evidence Writer](bridges/code-provider-v1.md#assign-an-evidence-writer)。
+证据发布权限由 Server 在写入时决定：有效 PAT 必须显式包含 `evidence:write`，允许访问
+准确的目标仓库，并且认证到的有效身份仍具有实时 `write` 或更高仓库权限。仓库角色以及
+`repo`、`admin:repo`、`issues:write` 都不能替代 `evidence:write`；`evidence:write`
+也不能替代仓库权限。Runner PAT 通过运行器预设可快速选择上述四个最低必需 Scope；
+多余 Scope 不再阻止启动，但仍建议取消自动化不需要的权限。
+
+旧版 Evidence Writer 指定和 Native 指定接口仅在一个版本窗口内作为已弃用、无授权效力的
+兼容数据保留，以支持混合版本升级和回滚。新版 Runner 不再查询这些接口。应先升级 Runner，
+或与 Server 同时升级；旧版 Runner 仍会执行客户端指定预检，因此在全部 Runner 升级前需保留
+旧数据。回滚到旧版 Server 会恢复原指定门禁。接口说明见
+[旧版 Evidence Writer 兼容接口](bridges/code-provider-v1.md#deprecated-evidence-writer-compatibility-api)。
 
 从 Server 的 `/api/v1/meta` 读取公开地址和 Instance ID，然后在 Runner 系统用户下
 创建与 Origin 绑定的 Profile：
@@ -313,11 +313,11 @@ issue-spec --profile team runner serve \
 
 先用 self-hosted Profile 检查仓库权限、Agent、acpx 和沙箱：
 
-对 self-hosted Profile，preflight 还会通过 Native API 对每个准确的 `--repo` 执行只读
-查询：确认 PAT 的登录身份与 `--runner` 完全一致，并确认该身份当前是有效的 Evidence
-Writer。`evidence:write` Scope 或 capability 结果不能替代这项独立指定。指定缺失、已停用、
-身份不匹配或无法验证时，preflight 会在 Runner dispatch 前失败；实际发布证据时仍会再次
-执行全部授权门禁。
+对 self-hosted Profile，preflight 保留现有的 Origin 绑定 Profile、最低 Scope、已配置仓库、
+Agent、acpx 和沙箱检查，但不再调用旧版 `/evidence/writers/me` 接口，也不会输出
+`evidence-writer-backend` 或 `evidence-writer:<repo>` 检查。Preflight 不在本地推断发布权限；
+实际写入证据时，Server 会重新校验显式 `evidence:write`、准确仓库范围、有效身份、租户
+可见性以及实时 `write` 或更高权限。
 
 ```bash
 issue-spec --profile team runner preflight \
@@ -486,8 +486,9 @@ workspace 标识定位，再只读取对应的 job/session 文件。`--log-max-s
 5. 当 code-provider bridge 广告 `change.create` 时，确认 Agent 通过该 provider 创建 PR/MR，
    并把变更 URL 回写到 Issue。未提供该能力时，把推送证据作为终点，在沙箱外创建变更；不要
    为此向 bubblewrap 挂载任意宿主 CLI；
-6. 对变更的准确当前 Revision 同步一次 `evidence.snapshot`，确认 Server 接受由已指定
-   Runner 身份写入的证据；
+6. 对变更的准确当前 Revision 同步一次 `evidence.snapshot`，确认 Server 在校验显式
+   `evidence:write`、准确仓库范围和实时 `write` 或更高权限后，把证据归因到已认证的
+   Runner 身份；
 7. 让另一位被授权维护者执行 `/resume`，然后撤销测试凭据并删除测试 Workspace。
 
 | 现象 | 优先检查 |
@@ -496,7 +497,7 @@ workspace 标识定位，再只读取对应的 job/session 文件。`--log-max-s
 | Webhook 无法连接 | Receiver URL、DNS、防火墙、反向代理和 TLS |
 | 评论被忽略 | 命令是否位于开头、作者是否在允许列表、是否具有 Write 权限 |
 | Profile PAT 认证失败 | 与 Origin 绑定的 Profile 是否仍解析到预期 Runner 身份，以及 PAT 是否包含 `read:user`、`issues:read`、`issues:write`、`evidence:write` |
-| `evidence-writer:<repo>` 失败 | Runner PAT 的 Login 是否与 `--runner` 完全一致，以及该身份是否为当前仓库的有效 Evidence Writer；只有 `evidence:write` 并不构成指定 |
+| 证据发布返回 `403` | 有效 PAT 是否显式包含 `evidence:write`、允许访问准确仓库，且认证身份仍具有实时 `write` 或更高权限；`repo`、`admin:repo`、`issues:write`、站点管理员或仓库角色都不能替代证据 Scope |
 | 找不到源码或 Clone 失败 | Source Binding 是否 Active；短期凭据模式检查 HTTPS URL 与 Command 回显，宿主 SSH 模式检查 Runner 用户的 Key、Agent、`known_hosts` 和仓库权限 |
 | 提交时报作者身份未知 | 同时配置 `--git-author-name` 与 `--git-author-email`，并使用代码平台认可的值；不要恢复宿主全局 Git 配置 |
 | Preflight 报沙箱失败 | Linux 上安装 `bubblewrap` 或显式配置 `--bwrap` |

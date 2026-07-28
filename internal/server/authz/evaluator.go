@@ -73,10 +73,6 @@ func evaluateRepository(subject Subject, request RepositoryRequest, facts author
 		decision.Reason = ReasonContributionPolicy
 		return decision
 	}
-	if request.Operation == OperationPublishEvidence && !request.DesignatedEvidenceWriter {
-		decision.Reason = ReasonEvidenceWriterRequired
-		return decision
-	}
 
 	decision.Allowed = true
 	decision.Reason = ReasonAllowed

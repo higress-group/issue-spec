@@ -133,23 +133,59 @@ func TestEvidenceAuthorizationMatrixAllowsBroadCapsAndRejectsMissingGates(t *tes
 	if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner), env.actor(env.owner, "writer"), env.scope, env.writer.User.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	for _, principal := range []serverauth.Principal{env.undesignated, env.missingScope, env.readerEvidence, env.unrestricted} {
-		if principal.User.ID != env.undesignated.User.ID {
-			if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner), env.actor(env.owner, "designate-"+principal.User.ID.String()), env.scope, principal.User.ID, true); err != nil {
-				t.Fatal(err)
-			}
+	if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner), env.actor(env.owner, "inactive-writer"), env.scope, env.unrestricted.User.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, principal := range []serverauth.Principal{env.missingScope, env.readerEvidence} {
+		if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner), env.actor(env.owner, "designate-"+principal.User.ID.String()), env.scope, principal.User.ID, true); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(env.unrestricted), env.actor(env.unrestricted, "unrestricted"), env.scope,
-		env.appendInput("unrestricted", "allowed", VisibilityRepository)); err != nil {
-		t.Fatalf("unrestricted PAT evidence error = %v", err)
+	for _, test := range []struct {
+		name          string
+		principal     serverauth.Principal
+		assignmentRow string
+	}{
+		{name: "absent", principal: env.undesignated, assignmentRow: "absent"},
+		{name: "active", principal: env.writer, assignmentRow: "active"},
+		{name: "inactive", principal: env.unrestricted, assignmentRow: "inactive"},
+	} {
+		t.Run("legacy assignment "+test.name, func(t *testing.T) {
+			var assignmentRow string
+			if err := env.pool.QueryRow(t.Context(), `SELECT COALESCE((
+				SELECT CASE WHEN active THEN 'active' ELSE 'inactive' END
+				FROM repository_evidence_writers
+				WHERE organization_id = $1 AND repository_id = $2 AND user_id = $3
+			), 'absent')`, env.scope.OrgID, env.scope.RepoID, test.principal.User.ID).Scan(&assignmentRow); err != nil {
+				t.Fatal(err)
+			}
+			if assignmentRow != test.assignmentRow {
+				t.Fatalf("legacy assignment row = %q, want %q", assignmentRow, test.assignmentRow)
+			}
+			actor := env.actor(test.principal, "legacy-"+test.name)
+			item, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(test.principal), actor, env.scope,
+				env.appendInput("legacy-"+test.name, "allowed", VisibilityRepository))
+			if err != nil {
+				t.Fatalf("AppendEvidence() with %s legacy assignment = %v", test.name, err)
+			}
+			if item.WriterUserID != test.principal.User.ID || item.WriterIdentityKey != actor.IdentityKey {
+				t.Fatalf("writer provenance = %s/%q, want %s/%q",
+					item.WriterUserID, item.WriterIdentityKey, test.principal.User.ID, actor.IdentityKey)
+			}
+		})
 	}
 	otherRepoID := evidenceRepo(t, env.pool, env.scope.OrgID, "multi-cap-repo")
 	multiRepository, multiToken := authenticatedEvidencePAT(t, env.pool, env.writer.User.ID,
 		[]string{"evidence:write", "issues:read"}, []models.RepoScope{env.scope, {OrgID: env.scope.OrgID, RepoID: otherRepoID}})
-	if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(multiRepository), env.actor(multiRepository, "multi-repository"), env.scope,
-		env.appendInput("multi-repository", "allowed", VisibilityRepository)); err != nil {
+	multiActor := env.actor(multiRepository, "multi-repository")
+	multiItem, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(multiRepository), multiActor, env.scope,
+		env.appendInput("multi-repository", "allowed", VisibilityRepository))
+	if err != nil {
 		t.Fatalf("multi-repository PAT evidence error = %v", err)
+	}
+	if multiItem.WriterUserID != multiRepository.User.ID || multiItem.WriterIdentityKey != multiActor.IdentityKey {
+		t.Fatalf("multi-repository writer provenance = %s/%q, want %s/%q",
+			multiItem.WriterUserID, multiItem.WriterIdentityKey, multiRepository.User.ID, multiActor.IdentityKey)
 	}
 	if _, err := env.pool.Exec(t.Context(), `DELETE FROM pat_repositories
 		WHERE personal_access_token_id = $1 AND organization_id = $2 AND repository_id = $3`,
@@ -160,23 +196,41 @@ func TestEvidenceAuthorizationMatrixAllowsBroadCapsAndRejectsMissingGates(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(withoutTarget), env.actor(withoutTarget, "target-cap-removed"), env.scope,
+	type rejectedAttempt struct {
+		actor  adminservice.Actor
+		scope  models.RepoScope
+		reason string
+	}
+	rejectedAttempts := make([]rejectedAttempt, 0, 4)
+	targetCapActor := env.actor(withoutTarget, "target-cap-removed")
+	if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(withoutTarget), targetCapActor, env.scope,
 		env.appendInput("target-cap-removed", "denied", VisibilityRepository)); !errors.Is(err, adminservice.ErrNotFound) {
 		t.Fatalf("removed target cap evidence error = %v", err)
 	}
+	rejectedAttempts = append(rejectedAttempts, rejectedAttempt{actor: targetCapActor, scope: env.scope, reason: string(authz.ReasonRepositoryCap)})
 	beforeIssue, beforeRepo := env.evidenceVersions(t)
-	principals := []serverauth.Principal{env.undesignated, env.missingScope, env.readerEvidence}
+	principals := []struct {
+		principal serverauth.Principal
+		reason    authz.Reason
+	}{
+		{principal: env.missingScope, reason: authz.ReasonCredentialScope},
+		{principal: env.readerEvidence, reason: authz.ReasonInsufficientPermission},
+	}
 	for i, principal := range principals {
 		input := env.appendInput(fmt.Sprintf("denied:%d", i), "denied", VisibilityRepository)
-		if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(principal), env.actor(principal, fmt.Sprintf("deny-%d", i)), env.scope, input); !errors.Is(err, adminservice.ErrForbidden) {
+		actor := env.actor(principal.principal, fmt.Sprintf("deny-%d", i))
+		if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(principal.principal), actor, env.scope, input); !errors.Is(err, adminservice.ErrForbidden) {
 			t.Errorf("gate %d error = %v, want forbidden", i, err)
 		}
+		rejectedAttempts = append(rejectedAttempts, rejectedAttempt{actor: actor, scope: env.scope, reason: string(principal.reason)})
 	}
 	wrongScope := models.RepoScope{OrgID: env.otherOrgID, RepoID: env.scope.RepoID}
-	if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(env.writer), env.actor(env.writer, "cross-org"), wrongScope,
+	crossOrgActor := env.actor(env.writer, "cross-org")
+	if _, err := env.service.AppendEvidence(t.Context(), authz.Authenticated(env.writer), crossOrgActor, wrongScope,
 		env.appendInput("cross-org", "denied", VisibilityRepository)); !errors.Is(err, adminservice.ErrNotFound) {
 		t.Fatalf("cross-org AppendEvidence() error = %v, want not found", err)
 	}
+	rejectedAttempts = append(rejectedAttempts, rejectedAttempt{actor: crossOrgActor, scope: wrongScope, reason: string(authz.ReasonRepositoryCap)})
 	afterIssue, afterRepo := env.evidenceVersions(t)
 	if beforeIssue != afterIssue || beforeRepo != afterRepo {
 		t.Fatalf("rejected writes changed collections issue %d/%d repo %d/%d", beforeIssue, afterIssue, beforeRepo, afterRepo)
@@ -190,11 +244,30 @@ func TestEvidenceAuthorizationMatrixAllowsBroadCapsAndRejectsMissingGates(t *tes
 	AND metadata - 'reason' - 'operation' - 'target_organization_id' - 'target_repository_id' = '{}'::jsonb`).Scan(&rejected, &unsafe); err != nil {
 		t.Fatal(err)
 	}
-	if rejected != 5 || unsafe != 0 {
-		t.Fatalf("rejected audits=%d unsafe=%d, want 5/0", rejected, unsafe)
+	if rejected != len(rejectedAttempts) || unsafe != 0 {
+		t.Fatalf("rejected audits=%d unsafe=%d, want %d/0", rejected, unsafe, len(rejectedAttempts))
+	}
+	for _, attempt := range rejectedAttempts {
+		var actorUserID uuid.UUID
+		var actorIdentityKey, reason, operation, targetOrgID, targetRepoID string
+		if err := env.pool.QueryRow(t.Context(), `SELECT actor_user_id, actor_identity_key,
+			metadata->>'reason', metadata->>'operation', metadata->>'target_organization_id',
+			metadata->>'target_repository_id' FROM audit_events
+			WHERE action = 'external_evidence.publish_rejected' AND request_id = $1`,
+			attempt.actor.RequestID).Scan(&actorUserID, &actorIdentityKey, &reason, &operation, &targetOrgID, &targetRepoID); err != nil {
+			t.Fatal(err)
+		}
+		if actorUserID != attempt.actor.UserID || actorIdentityKey != attempt.actor.IdentityKey ||
+			reason != attempt.reason || operation != "evidence.publish" ||
+			targetOrgID != attempt.scope.OrgID.String() || targetRepoID != attempt.scope.RepoID.String() {
+			t.Fatalf("rejected audit = %s/%q reason=%q operation=%q target=%s/%s, want %s/%q reason=%q operation=%q target=%s/%s",
+				actorUserID, actorIdentityKey, reason, operation, targetOrgID, targetRepoID,
+				attempt.actor.UserID, attempt.actor.IdentityKey, attempt.reason, "evidence.publish",
+				attempt.scope.OrgID, attempt.scope.RepoID)
+		}
 	}
 	var evidenceRows int
-	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM external_evidence`).Scan(&evidenceRows); err != nil || evidenceRows != 2 {
+	if err := env.pool.QueryRow(t.Context(), `SELECT count(*) FROM external_evidence`).Scan(&evidenceRows); err != nil || evidenceRows != 4 {
 		t.Fatalf("evidence rows=%d, %v", evidenceRows, err)
 	}
 }
@@ -225,9 +298,6 @@ func TestDesignatedWriterStatusTracksActivationAndRevocation(t *testing.T) {
 
 func TestConcurrentEvidenceRetryCreatesExactlyOneRow(t *testing.T) {
 	env := newEvidenceEnvironment(t)
-	if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner), env.actor(env.owner, "writer"), env.scope, env.writer.User.ID, true); err != nil {
-		t.Fatal(err)
-	}
 	input := env.appendInput("concurrent", "abc", VisibilityRepository)
 	const workers = 12
 	ids := make(chan uuid.UUID, workers)
@@ -269,10 +339,6 @@ func TestConcurrentEvidenceRetryCreatesExactlyOneRow(t *testing.T) {
 
 func TestProviderSnapshotBatchCASIdempotencyAtomicityAndSupersession(t *testing.T) {
 	env := newEvidenceEnvironment(t)
-	if _, err := env.service.SetDesignatedWriter(t.Context(), authz.Authenticated(env.owner),
-		env.actor(env.owner, "writer"), env.scope, env.writer.User.ID, true); err != nil {
-		t.Fatal(err)
-	}
 	otherRepoID := evidenceRepo(t, env.pool, env.scope.OrgID, "snapshot-multi-cap-repo")
 	multiWriter, _ := authenticatedEvidencePAT(t, env.pool, env.writer.User.ID,
 		[]string{"evidence:write", "issues:read"}, []models.RepoScope{env.scope, {OrgID: env.scope.OrgID, RepoID: otherRepoID}})

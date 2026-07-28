@@ -141,10 +141,10 @@ The runner MUST invoke acpx as an external coordinator backend using argv arrays
 - **WHEN** preflight runs on a runner where both `codex` and `claude` are selectable per `/new`
 - **THEN** preflight SHALL report readiness for each selectable agent, and an unready non-default agent SHALL NOT block runner startup even under strict agent capabilities; instead the specific `/new <that-agent>` job SHALL fail fast at dispatch while the configured default agent keeps serving.
 
-#### Scenario: self-hosted evidence-writer preflight
+#### Scenario: Runner preflight uses the same authorization model
 
 - **WHEN** a self-hosted Runner preflights one or more configured repositories
-- **THEN** it SHALL use the native read-only evidence authority to verify that the PAT authenticates as the configured Runner login and that this identity has an active Evidence Writer assignment for every exact repository before dispatch, without treating `evidence:write` scope or a capability result as the assignment
+- **THEN** it SHALL authenticate the origin-bound profile, verify the required credential scopes and configured repository access through the existing backend checks, SHALL NOT open a designation backend or emit per-repository designation checks, and SHALL leave publication authority to the append-time Server predicate so successful preflight never bypasses live authorization
 
 #### Scenario: native child workers
 
@@ -152,7 +152,7 @@ The runner MUST invoke acpx as an external coordinator backend using argv arrays
 - **THEN** the runner SHALL treat acpx as the top-level headless coordinator transport and persist bounded child provenance reported by the coordinator without needing direct access to the native worker runtime.
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/24#issuecomment-4865331603
+- https://github.com/higress-group/issue-spec/issues/343#issuecomment-5099614411
 
 ### Requirement: durable job state and recovery
 

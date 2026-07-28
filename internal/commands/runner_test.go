@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/acpx"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/commentrunner"
@@ -848,9 +847,6 @@ func TestRunnerPreflightSelfHostedSkipsNotificationAndWatchCalls(t *testing.T) {
 	app.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) {
 		return backend, nil
 	}
-	app.newRunnerEvidenceWriterBackend = func(context.Context, auth.GitHubBackendSelection) (commentrunner.PreflightEvidenceWriterBackend, error) {
-		return backend, nil
-	}
 	app.newRunnerNotificationBackend = func(context.Context, commentrunner.Config) (runnerNotificationBackend, error) {
 		t.Fatal("self-hosted preflight called notification backend")
 		return nil, nil
@@ -874,8 +870,10 @@ func TestRunnerPreflightSelfHostedSkipsNotificationAndWatchCalls(t *testing.T) {
 	if check := runnerPreflightCheck(t, report, "command-intake-transport"); check.Status != commentrunner.CheckOK || !strings.Contains(check.Detail, "runner serve") {
 		t.Fatalf("unexpected transport check: %+v", check)
 	}
-	if check := runnerPreflightCheck(t, report, "evidence-writer:o/r"); check.Status != commentrunner.CheckOK || !strings.Contains(check.Detail, "active Evidence Writer") {
-		t.Fatalf("unexpected Evidence Writer check: %+v", check)
+	for _, check := range report.Checks {
+		if strings.HasPrefix(check.Name, "evidence-writer:") || check.Name == "evidence-writer-backend" {
+			t.Fatalf("self-hosted preflight emitted designation check: %+v", check)
+		}
 	}
 }
 
@@ -1710,10 +1708,6 @@ func (b *runnerPhaseBackend) PollNotifications(_ context.Context, opts github.No
 func (b *runnerPhaseBackend) GetRepositorySubscription(context.Context, string) (github.RepositorySubscriptionResult, error) {
 	b.repositorySubscriptionCalls++
 	return github.RepositorySubscriptionResult{Subscription: github.RepositorySubscription{Subscribed: true, Reason: "subscribed"}}, nil
-}
-
-func (b *runnerPhaseBackend) GetNativeEvidenceWriterStatus(context.Context, string) (github.NativeEvidenceWriterStatus, error) {
-	return github.NativeEvidenceWriterStatus{UserID: uuid.NewString(), Login: "runner-bot", Active: true}, nil
 }
 
 func runnerPreflightCheck(t *testing.T, report commentrunner.PreflightReport, name string) commentrunner.PreflightCheck {

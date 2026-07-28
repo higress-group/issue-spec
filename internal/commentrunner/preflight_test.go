@@ -3,14 +3,12 @@ package commentrunner
 import (
 	"context"
 	"errors"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/higress-group/issue-spec/internal/auth"
 	"github.com/higress-group/issue-spec/internal/github"
 )
@@ -352,11 +350,6 @@ func TestPreflightServeTransportSkipsPollOnlyChecks(t *testing.T) {
 				watchCalls:   &watchCalls,
 			}, nil
 		},
-		OpenEvidenceWriterBackend: func(context.Context, auth.GitHubBackendSelection) (PreflightEvidenceWriterBackend, error) {
-			return fakeEvidenceWriterPreflightBackend{status: github.NativeEvidenceWriterStatus{
-				UserID: uuid.NewString(), Login: cfg.RunnerIdentity, Active: true,
-			}}, nil
-		},
 		OpenNotificationBackend: func(context.Context, Config) (PreflightNotificationBackend, error) {
 			t.Fatal("serve preflight must not open a notification backend")
 			return nil, nil
@@ -385,40 +378,11 @@ func TestPreflightServeTransportSkipsPollOnlyChecks(t *testing.T) {
 		t.Fatalf("unexpected notification check: %+v", check)
 	}
 	for _, check := range report.Checks {
-		if strings.HasPrefix(check.Name, "repository-watch:") || strings.HasPrefix(check.Name, "notification-watch:") || check.Name == "notification-identity" {
-			t.Fatalf("serve preflight emitted poll-only check: %+v", check)
+		if strings.HasPrefix(check.Name, "repository-watch:") || strings.HasPrefix(check.Name, "notification-watch:") ||
+			strings.HasPrefix(check.Name, "evidence-writer:") || check.Name == "notification-identity" ||
+			check.Name == "evidence-writer-backend" {
+			t.Fatalf("serve preflight emitted inapplicable check: %+v", check)
 		}
-	}
-}
-
-func TestPreflightServeFailsClosedOnEvidenceWriterDesignation(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		status     github.NativeEvidenceWriterStatus
-		err        error
-		wantDetail string
-	}{
-		{name: "inactive", status: github.NativeEvidenceWriterStatus{UserID: uuid.NewString(), Login: "issue-spec-bot"}, wantDetail: "not an active Evidence Writer"},
-		{name: "wrong identity", status: github.NativeEvidenceWriterStatus{UserID: uuid.NewString(), Login: "other-runner", Active: true}, wantDetail: "--runner"},
-		{name: "lookup failure", err: &github.APIError{StatusCode: http.StatusForbidden}, wantDetail: "HTTP 403"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := testPreflightConfig(t)
-			cfg.UnsafeNoSandbox = true
-			deps := passingPreflightDependencies(t)
-			deps.SelectBackend = func(context.Context, string) (auth.GitHubBackendSelection, error) {
-				return auth.GitHubBackendSelection{Name: auth.GitHubBackendNameREST, Kind: auth.GitHubBackendKindREST,
-					Host: "issues.example.test", SelectionSource: "test"}, nil
-			}
-			deps.OpenEvidenceWriterBackend = func(context.Context, auth.GitHubBackendSelection) (PreflightEvidenceWriterBackend, error) {
-				return fakeEvidenceWriterPreflightBackend{status: tc.status, err: tc.err}, nil
-			}
-			report := RunPreflightForTransport(t.Context(), cfg, PreflightTransportServe, deps)
-			check := findCheck(t, report, "evidence-writer:o/r")
-			if report.OK || check.Status != CheckError || !strings.Contains(check.Detail, tc.wantDetail) {
-				t.Fatalf("report=%+v check=%+v", report, check)
-			}
-		})
 	}
 }
 
@@ -1085,13 +1049,4 @@ type fakeNotificationPreflightBackend struct {
 
 func (f fakeNotificationPreflightBackend) GetUser(context.Context) (github.User, []string, error) {
 	return f.user, nil, nil
-}
-
-type fakeEvidenceWriterPreflightBackend struct {
-	status github.NativeEvidenceWriterStatus
-	err    error
-}
-
-func (f fakeEvidenceWriterPreflightBackend) GetNativeEvidenceWriterStatus(context.Context, string) (github.NativeEvidenceWriterStatus, error) {
-	return f.status, f.err
 }
