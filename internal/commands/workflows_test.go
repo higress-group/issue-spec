@@ -27,11 +27,14 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := len(result.SkillFiles), 12; got != want {
+	if got, want := len(result.SkillFiles), 6; got != want {
 		t.Fatalf("skill file count = %d, want %d", got, want)
 	}
-	if got, want := len(result.SkillResourceFiles), 2; got != want {
+	if got, want := len(result.SkillResourceFiles), 1; got != want {
 		t.Fatalf("skill resource file count = %d, want %d", got, want)
+	}
+	if got, want := strings.Join(result.SkillLinks, ","), ".claude/skills -> ../.agents/skills"; got != want {
+		t.Fatalf("skill links = %q, want %q", got, want)
 	}
 	if got, want := len(result.CommandFiles), 4; got != want {
 		t.Fatalf("command file count = %d, want %d", got, want)
@@ -79,6 +82,13 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 	claudeProjectionReference := readTestFile(t, filepath.Join(root, ".claude", "skills", "issue-spec-workflow", "references", "human-review-projections.md"))
 	if projectionReference != claudeProjectionReference {
 		t.Fatal("Codex and Claude projection references differ")
+	}
+	claudeSkills := filepath.Join(root, ".claude", "skills")
+	if info, err := os.Lstat(claudeSkills); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("Claude skills path is not a symlink: mode=%v err=%v", info, err)
+	}
+	if target, err := os.Readlink(claudeSkills); err != nil || target != filepath.Join("..", ".agents", "skills") {
+		t.Fatalf("Claude skills link target = %q, err=%v", target, err)
 	}
 
 	githubSkill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-github", "SKILL.md"))
@@ -157,11 +167,9 @@ func TestWriteWorkflowArtifactsPrunesOnlyRecognizedManagedArchiveAssets(t *testi
 	root := t.TempDir()
 	managedSkill := filepath.Join(root, ".agents", "skills", "issue-spec-archive", "SKILL.md")
 	managedCommand := filepath.Join(root, ".claude", "commands", "issue-spec", "archive.md")
-	userSkill := filepath.Join(root, ".claude", "skills", "issue-spec-archive", "SKILL.md")
 	for path, body := range map[string]string{
 		managedSkill:   "---\nname: issue-spec-archive\nmetadata:\n  generatedBy: \"issue-spec\"\n---\n# Issue Spec Archive\n",
 		managedCommand: "---\nname: \"Issue Spec: Archive\"\ncategory: \"Workflow\"\n---\n# Issue Spec Archive\n",
-		userSkill:      "# User-owned archive notes\n",
 	} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -182,8 +190,93 @@ func TestWriteWorkflowArtifactsPrunesOnlyRecognizedManagedArchiveAssets(t *testi
 			t.Fatalf("managed archive asset was not pruned: %s err=%v", path, err)
 		}
 	}
-	if got := readTestFile(t, userSkill); got != "# User-owned archive notes\n" {
-		t.Fatalf("user-owned archive asset changed: %q", got)
+}
+
+func TestWriteWorkflowArtifactsMigratesManagedClaudeSkillsToSharedLink(t *testing.T) {
+	root := t.TempDir()
+	staleSkill := filepath.Join(root, ".claude", "skills", "issue-spec-propose", "SKILL.md")
+	staleResource := filepath.Join(root, ".claude", "skills", "issue-spec-propose", "references", "stale.md")
+	for path, body := range map[string]string{
+		staleSkill:    "---\nname: issue-spec-propose\nmetadata:\n  generatedBy: \"issue-spec\"\n---\nstale\n",
+		staleResource: "stale generated resource\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := writeWorkflowArtifacts(root, "owner/repo", "claude", "skills")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(result.SkillLinks, ","), ".claude/skills -> ../.agents/skills"; got != want {
+		t.Fatalf("skill links = %q, want %q", got, want)
+	}
+	claudeSkills := filepath.Join(root, ".claude", "skills")
+	if info, err := os.Lstat(claudeSkills); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("managed Claude skills directory was not replaced with a symlink: mode=%v err=%v", info, err)
+	}
+	generated := readTestFile(t, staleSkill)
+	if strings.Contains(generated, "stale") || !strings.Contains(generated, "name: issue-spec-propose") {
+		t.Fatalf("Claude link does not resolve to current canonical skill:\n%s", generated)
+	}
+	if _, err := os.Stat(staleResource); !os.IsNotExist(err) {
+		t.Fatalf("stale managed resource survived migration: %v", err)
+	}
+	second, err := writeWorkflowArtifacts(root, "owner/repo", "claude", "skills")
+	if err != nil {
+		t.Fatalf("refresh through existing shared skills link: %v", err)
+	}
+	if got, want := strings.Join(second.SkillLinks, ","), ".claude/skills -> ../.agents/skills"; got != want {
+		t.Fatalf("refreshed skill links = %q, want %q", got, want)
+	}
+}
+
+func TestWriteWorkflowArtifactsRejectsConflictingClaudeSkillsDirectory(t *testing.T) {
+	root := t.TempDir()
+	customSkill := filepath.Join(root, ".claude", "skills", "custom-review", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(customSkill), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(customSkill, []byte("# User-owned Claude skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := writeWorkflowArtifacts(root, "owner/repo", "claude", "skills")
+	if err == nil || !strings.Contains(err.Error(), "reconcile it manually") {
+		t.Fatalf("conflicting Claude skill error = %v", err)
+	}
+	if got := readTestFile(t, customSkill); got != "# User-owned Claude skill\n" {
+		t.Fatalf("conflicting Claude skill changed after rejected migration: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".agents")); !os.IsNotExist(err) {
+		t.Fatalf("rejected migration wrote canonical skills before validation: %v", err)
+	}
+}
+
+func TestWriteWorkflowArtifactsRejectsUnexpectedClaudeSkillsLink(t *testing.T) {
+	root := t.TempDir()
+	claudeDir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claudeSkills := filepath.Join(claudeDir, "skills")
+	if err := os.Symlink(filepath.Join("..", "custom-skills"), claudeSkills); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := writeWorkflowArtifacts(root, "owner/repo", "claude", "skills")
+	if err == nil || !strings.Contains(err.Error(), "expected ../.agents/skills") {
+		t.Fatalf("unexpected Claude skills link error = %v", err)
+	}
+	if target, readErr := os.Readlink(claudeSkills); readErr != nil || target != filepath.Join("..", "custom-skills") {
+		t.Fatalf("unexpected Claude skills link changed: target=%q err=%v", target, readErr)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".agents")); !os.IsNotExist(err) {
+		t.Fatalf("rejected link migration wrote canonical skills before validation: %v", err)
 	}
 }
 
@@ -235,6 +328,17 @@ func TestCheckedInWorkflowArtifactsExactlyMatchGenerator(t *testing.T) {
 	t.Chdir(generatedRoot)
 	if _, err := writeWorkflowArtifacts(".", "higress-group/issue-spec", "codex,claude", "both"); err != nil {
 		t.Fatal(err)
+	}
+	for name, root := range map[string]string{"generated": generatedRoot, "checked-in": projectRoot} {
+		path := filepath.Join(root, ".claude", "skills")
+		info, err := os.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s Claude skills path is not a symlink: mode=%v err=%v", name, info, err)
+		}
+		target, err := os.Readlink(path)
+		if err != nil || target != filepath.Join("..", ".agents", "skills") {
+			t.Fatalf("%s Claude skills target = %q, err=%v", name, target, err)
+		}
 	}
 	for _, relative := range append(
 		[]string{

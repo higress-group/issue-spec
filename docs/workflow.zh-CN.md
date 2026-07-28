@@ -154,9 +154,9 @@ issue-spec search issues --repo owner/repo --query "schema allowlist" \
 issue-spec init --repo owner/repo --tools codex,claude --delivery both
 ```
 
-- Codex skills 写入 `.agents/skills/issue-spec-*`，即当前的 Codex 仓库 skill 位置。
-- Claude skills 写入 `.claude/skills/issue-spec-*`。
-- 两套 skill 还都包含一个生成的 `.*/skills/issue-spec-github/SKILL.md` 支持 skill，用于处理 issue-spec 未直接封装的相邻 GitHub CLI 操作。
+- Skills 只写入一次 `.agents/skills/issue-spec-*`，其中也包含用于处理 issue-spec 未直接封装的相邻 GitHub CLI 操作的 `issue-spec-github` 支持 skill。
+- 选择 Claude 时，`.claude/skills` 会成为指向 `../.agents/skills` 的相对软链，让 Codex 与 Claude 使用同一份仓库 skill 文件。
+- 只有当已有 `.claude/skills` 仅包含 issue-spec 管理的 skill 或与 canonical skill 字节一致的副本时，init 才会安全迁移；遇到用户自定义冲突会停止而不替换。
 - Claude slash 命令写入 `.claude/commands/issue-spec/*.md`，以 `/issue-spec:propose` 的方式调用。
 - Codex slash prompts 写入 `${CODEX_HOME:-~/.codex}/prompts/issue-spec-*.md`，以兼容 Codex 自定义 prompt。当前 Codex 文档已弃用 Codex 自定义 prompt；对于共享工作流，优先使用 skills。
 - `--delivery skills` 只写 skills；`--delivery commands` 只写 slash 命令。
