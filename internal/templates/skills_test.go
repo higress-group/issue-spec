@@ -221,19 +221,29 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"never leave an open decision as body or projection prose",
 		"keep unresolved decisions distinct from evidence-dependent items",
 		"settled, needs-evidence, and needs-decision",
-		"grounded recommendations, alternatives, tradeoffs, and source links",
 		"read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely",
 		"generate a coverage-complete `projection.md` from current authoritative inputs",
 		"never rely on the reviewer already knowing omitted design information",
+		"Lead with a representative human or operator scene and a concrete before/after case",
+		"show how options change the case",
 		"With no open decision, keep the other review dimensions visible",
-		"architecture, every invariant, end-to-end flow, failure and trust boundaries",
-		"compatibility, rollout, rollback, risks, verification, and active SPEC traceability",
+		"Lead with a concrete request or operator case and observable outcome",
+		"trace its normal and failure paths through architecture",
+		"compatibility, rollout, risks, verification, and active SPEC traceability",
 		"purposeful interaction to make the complete review surface easier to navigate",
 	} {
 		if !strings.Contains(propose, want) {
 			t.Fatalf("propose guidance missing %q:\n%s", want, propose)
 		}
 	}
+	assertTextOrder(t, propose,
+		"representative human or operator scene",
+		"problem, outcome, success signal",
+		"expected SPEC coverage")
+	assertTextOrder(t, propose,
+		"concrete request or operator case",
+		"trace its normal and failure paths",
+		"architecture")
 
 	apply := skillContent(t, skills, "issue-spec-apply")
 	assertTextOrder(t, apply,
@@ -242,27 +252,28 @@ func TestGeneratedGuidanceDefinesThreeStatuslessProjectionCheckpoints(t *testing
 		"upsert the ordinary statusless `implement-execution-brief`",
 		"before completing PROCESS planning")
 	for _, want := range []string{
-		"invariant-based PROCESS candidates or the current DAG",
-		"critical path, safe parallelism, Agent allocation",
-		"code-volume estimates with confidence",
-		"correctness complexity",
+		"opens with a concrete acceptance case",
+		"human-visible outcome",
+		"PROCESS sequence carries it from trigger to verification",
+		"current DAG, state counts, critical path, safe parallelism",
+		"roles, per-node SPEC/scenario coverage",
 		"shared touchpoints, blockers, tests, generators",
-		"Correctness complexity is distinct from size",
-		"estimates never define workflow semantics",
+		"Estimates never define workflow semantics",
 		"Issue bodies and typed artifacts remain authoritative",
 		"projection source stays outside default Agent context",
 		"read [Human Review Projection Generation](../issue-spec-workflow/references/human-review-projections.md) completely",
 		"generate a coverage-complete `projection.md` from current authoritative inputs",
 		"never emit only the increment since the Design",
-		"coverage-complete current execution review, not an incremental planning note",
-		"state counts, critical path, safe parallelism",
-		"per-node SPEC and scenario coverage",
 		"tests, generators, and independent review/verify obligations",
 	} {
 		if !strings.Contains(apply, want) {
 			t.Fatalf("apply guidance missing %q:\n%s", want, apply)
 		}
 	}
+	assertTextOrder(t, apply,
+		"concrete acceptance case",
+		"PROCESS sequence",
+		"current DAG")
 }
 
 func TestHumanReviewProjectionReferenceIsActionableAndBounded(t *testing.T) {
@@ -278,8 +289,15 @@ func TestHumanReviewProjectionReferenceIsActionableAndBounded(t *testing.T) {
 		"planning aids only",
 		"open decisions a human must make",
 		"coverage-complete review surface",
-		"not as a delta, changelog, or executive summary",
+		"not as a delta, changelog, executive summary, or component inventory",
+		"human or operator scene and a concrete case",
 		"Build a coverage ledger before writing UI",
+		"Concrete case walkthrough",
+		"What the person sees",
+		"What the system does",
+		"What the reviewer should verify",
+		"first viewport must make sense without repository-specific acronyms",
+		"meaningful failure path",
 		"explicit not-applicable rationale",
 		"no open decision must still expose settled premises",
 		"traceability to every active SPEC",
