@@ -45,20 +45,30 @@ The server MUST store mutable provider-namespaced external references separately
 - **WHEN** a bridge records a work item, source repository, code change, build or archive link
 - **THEN** the server MUST require provider key, relation kind, external repository/object identity and canonical URL and MUST upsert idempotently without NULL-based uniqueness gaps
 
-#### Scenario: evidence is immutable and revision bound
+#### Scenario: Scoped repository writer publishes without designation
 
-- **WHEN** a designated writer reports review, check, merge or archive state
-- **THEN** the server MUST append an immutable row containing normalized state, subject revision, observed time, payload digest, provenance and writer identity, using a superseding row for later observations
+- **WHEN** an active supported credential explicitly carries `evidence:write`, allows the exact repository, and its authenticated identity has live `write`-or-higher repository permission
+- **THEN** the server MUST accept valid review, check, merge or archive evidence without consulting writer designation state and MUST attribute immutable writer provenance to the authenticated identity
 
-#### Scenario: untrusted writers cannot publish gate evidence
+#### Scenario: Repository write does not replace evidence credential scope
 
-- **WHEN** a caller without repository evidence-writer authorization or evidence:write scope submits evidence
-- **THEN** the server MUST reject the write and audit the attempt while ordinary authorized users MAY still manage non-authoritative external references according to repository policy
+- **WHEN** a repository writer, organization owner, site administrator, session, recovery credential, or token carrying `repo`, `admin:repo`, or `issues:write` submits evidence without explicit `evidence:write`
+- **THEN** the server MUST reject and audit the write without treating identity or repository authority as evidence credential scope
 
-#### Scenario: authenticated writers can inspect only their own designation
+#### Scenario: Evidence scope does not replace repository authority
 
-- **WHEN** an authenticated repository reader queries its Evidence Writer status through the native evidence API
-- **THEN** the server SHALL return only that identity's active assignment for the exact repository, SHALL NOT grant or mutate an assignment, and SHALL keep the result independent from PAT scopes while evidence publication continues to re-evaluate all authorization gates
+- **WHEN** a credential carries `evidence:write` but is inactive, unsupported, excluded from the exact repository, outside tenant visibility, or backed by less than live `write` repository permission
+- **THEN** the server MUST reject and audit the write without treating evidence scope as repository authority
+
+#### Scenario: Legacy assignments are non-authoritative
+
+- **WHEN** a legacy repository evidence-writer assignment is absent, active, or inactive
+- **THEN** that row MUST NOT grant, deny, or change publication, capability reporting, review synchronization, or authenticated writer provenance, while its compatibility API MAY retain the existing response shape during the deprecation window
+
+#### Scenario: Evidence trust properties remain unchanged
+
+- **WHEN** the server accepts evidence under the scope-and-live-permission predicate
+- **THEN** it MUST append an immutable row containing normalized state, subject revision, observed time, payload digest, authenticated provenance and writer identity, MUST preserve visibility and audit semantics, and MUST use a superseding row for later observations
 
 #### Scenario: reads respect tenant and field visibility
 
@@ -116,7 +126,7 @@ The issue-spec CLI and runner MUST provide a provider-neutral evidence synchroni
 #### Scenario: Evidence persistence is trusted and idempotent
 
 - **WHEN** the synchronization stage writes a validated snapshot to the self-hosted server
-- **THEN** the server requires an active designated evidence writer with exact repository authority, derives immutable writer provenance, uses deterministic ingest identity to make replay idempotent, preserves supersession history, and rejects untrusted approval booleans or identity changes
+- **THEN** the server requires an active supported credential with explicit `evidence:write`, exact repository access, and live `write`-or-higher permission, derives immutable writer provenance from the authenticated identity, uses deterministic ingest identity to make replay idempotent, preserves supersession history, and rejects untrusted approval booleans or identity changes
 
 #### Scenario: Revision movement during synchronization fails closed
 

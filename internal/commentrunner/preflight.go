@@ -80,14 +80,13 @@ const (
 )
 
 type PreflightDependencies struct {
-	SelectBackend             func(context.Context, string) (auth.GitHubBackendSelection, error)
-	OpenBackend               func(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error)
-	OpenEvidenceWriterBackend func(context.Context, auth.GitHubBackendSelection) (PreflightEvidenceWriterBackend, error)
-	OpenNotificationBackend   func(context.Context, Config) (PreflightNotificationBackend, error)
-	LookPath                  func(string) (string, error)
-	RunCommand                func(context.Context, string, ...string) ([]byte, error)
-	RunAgentCommand           func(context.Context, string, ...string) ([]byte, error)
-	AgentRuntimeHome          func() (string, error)
+	SelectBackend           func(context.Context, string) (auth.GitHubBackendSelection, error)
+	OpenBackend             func(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error)
+	OpenNotificationBackend func(context.Context, Config) (PreflightNotificationBackend, error)
+	LookPath                func(string) (string, error)
+	RunCommand              func(context.Context, string, ...string) ([]byte, error)
+	RunAgentCommand         func(context.Context, string, ...string) ([]byte, error)
+	AgentRuntimeHome        func() (string, error)
 }
 
 // PreflightOptions controls opt-in checks that contact an external runtime.
@@ -105,12 +104,6 @@ type PreflightRunnerBackend interface {
 type PreflightNotificationBackend interface {
 	PreflightRunnerBackend
 	GetUser(context.Context) (github.User, []string, error)
-}
-
-// PreflightEvidenceWriterBackend is intentionally read-only and native-only.
-// PAT scopes and capability probes cannot implement this designation check.
-type PreflightEvidenceWriterBackend interface {
-	GetNativeEvidenceWriterStatus(context.Context, string) (github.NativeEvidenceWriterStatus, error)
 }
 
 func RunPreflight(ctx context.Context, cfg Config, deps PreflightDependencies) PreflightReport {
@@ -183,27 +176,6 @@ func RunPreflightForTransportWithOptions(ctx context.Context, cfg Config, transp
 	if transport == PreflightTransportServe {
 		report.add(PreflightCheck{Name: "command-intake-transport", Status: CheckOK, Detail: "self-hosted webhook intake via runner serve"})
 		report.add(PreflightCheck{Name: "notification-backend", Status: CheckSkipped, Detail: "self-hosted profiles use runner serve; notification polling and repository watches are not applicable"})
-		var evidenceBackend PreflightEvidenceWriterBackend
-		var evidenceBackendErr error
-		if backendErr != nil {
-			evidenceBackendErr = backendErr
-		} else {
-			evidenceBackend, evidenceBackendErr = deps.OpenEvidenceWriterBackend(ctx, selection)
-			if evidenceBackendErr == nil && evidenceBackend == nil {
-				evidenceBackendErr = errors.New("native Evidence Writer backend was not configured")
-			}
-		}
-		if evidenceBackendErr != nil {
-			report.add(PreflightCheck{Name: "evidence-writer-backend", Status: CheckError,
-				Detail: "cannot verify repository Evidence Writer designation",
-				Hint:   "Use the origin-bound self-hosted profile and Runner PAT so preflight can query the native evidence authority."})
-		} else {
-			report.add(PreflightCheck{Name: "evidence-writer-backend", Status: CheckOK,
-				Detail: "native read-only Evidence Writer designation lookup is available"})
-		}
-		for _, repo := range cfg.Repositories {
-			report.add(evidenceWriterCheck(ctx, cfg, repo, evidenceBackend, evidenceBackendErr))
-		}
 	} else {
 		watchBackend := runnerBackend
 		watchErr := backendErr
@@ -278,9 +250,6 @@ func (d PreflightDependencies) withDefaults() PreflightDependencies {
 	if d.OpenBackend == nil {
 		d.OpenBackend = defaultPreflightRunnerBackend
 	}
-	if d.OpenEvidenceWriterBackend == nil {
-		d.OpenEvidenceWriterBackend = defaultPreflightEvidenceWriterBackend
-	}
 	if d.OpenNotificationBackend == nil {
 		d.OpenNotificationBackend = defaultPreflightNotificationBackend
 	}
@@ -314,18 +283,6 @@ func defaultPreflightRunnerBackend(_ context.Context, selection auth.GitHubBacke
 	default:
 		return nil, fmt.Errorf("unsupported GitHub backend %q", selection.Name)
 	}
-}
-
-func defaultPreflightEvidenceWriterBackend(_ context.Context, selection auth.GitHubBackendSelection) (PreflightEvidenceWriterBackend, error) {
-	profile, err := selection.Profile.Normalized()
-	if err != nil || profile.Kind != auth.ProfileKindHosted || strings.TrimSpace(profile.NativeAPIURL) == "" {
-		return nil, errors.New("self-hosted profile native API is unavailable")
-	}
-	if strings.TrimSpace(selection.Token.Value) == "" {
-		return nil, errors.New("self-hosted Runner PAT is unavailable")
-	}
-	return github.NewClientWithOptions(github.ClientOptions{Host: profile.Hostname, BaseURL: profile.NativeAPIURL,
-		Token: selection.Token.Value, CAFile: profile.CAFile})
 }
 
 func defaultPreflightNotificationBackend(_ context.Context, cfg Config) (PreflightNotificationBackend, error) {
@@ -367,42 +324,6 @@ func notificationIdentityCheck(ctx context.Context, cfg Config, backend Prefligh
 	}
 	check.Status = CheckOK
 	check.Detail = "notification token authenticates as " + login
-	return check
-}
-
-func evidenceWriterCheck(ctx context.Context, cfg Config, repo string, backend PreflightEvidenceWriterBackend, backendErr error) PreflightCheck {
-	check := PreflightCheck{Name: "evidence-writer:" + repo}
-	if backendErr != nil || backend == nil {
-		check.Status = CheckError
-		check.Detail = "Evidence Writer designation was not verified"
-		check.Hint = "Configure the native self-hosted profile and explicitly designate the Runner identity for this repository."
-		return check
-	}
-	status, err := backend.GetNativeEvidenceWriterStatus(ctx, repo)
-	if err != nil {
-		check.Status = CheckError
-		check.Detail = "Evidence Writer designation lookup failed"
-		var apiErr *github.APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode > 0 {
-			check.Detail += fmt.Sprintf(" (HTTP %d)", apiErr.StatusCode)
-		}
-		check.Hint = "Confirm the Runner PAT can read this exact repository and the profile native API is reachable."
-		return check
-	}
-	if !strings.EqualFold(strings.TrimSpace(status.Login), cfg.RunnerIdentity) {
-		check.Status = CheckError
-		check.Detail = fmt.Sprintf("Runner PAT authenticates as %q, but --runner is %q", status.Login, cfg.RunnerIdentity)
-		check.Hint = "Use the PAT for the configured Runner identity; Evidence Writer designation belongs to the authenticated identity, not the token scope."
-		return check
-	}
-	if !status.Active {
-		check.Status = CheckError
-		check.Detail = "authenticated Runner identity is not an active Evidence Writer for this repository"
-		check.Hint = "Using a separate repository operator credential, activate this identity as an Evidence Writer before dispatch."
-		return check
-	}
-	check.Status = CheckOK
-	check.Detail = "authenticated Runner identity is an active Evidence Writer for this repository"
 	return check
 }
 

@@ -193,7 +193,7 @@ func (a *app) runReviewSubmit(ctx context.Context, args []string) int {
 		writer, err := github.NewClientWithOptions(github.ClientOptions{Host: profile.Hostname,
 			BaseURL: profile.NativeAPIURL, Token: token.Value, CAFile: profile.CAFile})
 		if err != nil {
-			a.errorf("open native review evidence writer: %v\n", err)
+			a.errorf("open native review evidence client: %v\n", err)
 			return 1
 		}
 		body, err = renderSubmittedReview(*reviewID, *processID, process.URL, "", coveredSpecURLs, receipt)

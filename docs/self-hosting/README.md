@@ -22,7 +22,7 @@ Browser and issue-spec CLI
           v
  issue-spec-server  <---->  GitHub OAuth or OIDC
     |       |
-    |       +------------>  code-provider bridge / evidence writer
+    |       +------------>  code-provider bridge / evidence ledger
     |       +------------>  GitHub-compatible or runner webhooks
     v
  PostgreSQL
@@ -34,7 +34,7 @@ The server is authoritative for:
 - issues, comments, labels, reactions, typed workflow projections, and change
   boards;
 - personal and managed access tokens, service accounts, optional token delegation,
-  source bindings, and evidence-writer designation;
+  source bindings, evidence policies, and immutable evidence;
 - webhook subscriptions, filtering, encrypted credentials, delivery attempts,
   retries, replay, and audit records.
 
@@ -144,7 +144,9 @@ who may create issues or comments.
 
 Anonymous mutation is always denied. Signing in through GitHub OAuth or OIDC
 creates an external identity; it does not implicitly grant an organization
-role, repository permission, runner authority, or evidence-writer status.
+role, repository permission, runner authority, or evidence publication
+authority. Evidence publication additionally requires explicit credential scope
+and live repository permission.
 
 ## Deployment path
 

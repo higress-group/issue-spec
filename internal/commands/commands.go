@@ -30,31 +30,30 @@ type app struct {
 	err         io.Writer
 	profileName string
 
-	selectGitHubBackend            func(context.Context, string) (auth.GitHubBackendSelection, error)
-	selectRunnerBackend            func(context.Context, string, auth.GitHubBackendMode) (auth.GitHubBackendSelection, error)
-	newGitHubBackend               func(context.Context, auth.GitHubBackendSelection) (github.Backend, error)
-	gitHubBackendToken             func(context.Context, auth.GitHubBackendSelection) (string, error)
-	runnerPreflight                func(context.Context, commentrunner.Config) commentrunner.PreflightReport
-	newRunnerEvidenceWriterBackend func(context.Context, auth.GitHubBackendSelection) (commentrunner.PreflightEvidenceWriterBackend, error)
-	runnerIntake                   func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error)
-	newRunnerNotificationBackend   func(context.Context, commentrunner.Config) (runnerNotificationBackend, error)
-	runnerReconcile                func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error)
-	runnerDispatch                 func(context.Context, commentrunner.Config) (jobs.Result, error)
-	runnerCancellationDrain        func(context.Context, commentrunner.Config) (jobs.Result, error)
-	runnerDiagnostics              *runnerLogger
-	newNativeEvidenceProvider      func(auth.Profile, string) (nativeEvidenceProvider, error)
-	newNativeSearchProvider        func(auth.Profile, string) (nativeSearchProvider, error)
-	newNativeCodeChangeBackend     func(auth.Profile, string) (nativeCodeChangeBackend, error)
-	lookupOperatorProvider         func(context.Context, auth.Profile, string) (codereview.Provider, error)
-	doctorAgentProbe               func(context.Context, capability.Request) (capability.Report, error)
-	newRequirementsAPI             func(auth.Profile, string) (requirementsAPI, error)
-	saveRequirementsProfile        func(auth.Profile, bool) error
-	storeRequirementsToken         func(context.Context, auth.Profile, string, bool) (string, error)
-	resolveRequirementsToken       func(context.Context, auth.Profile) (auth.Token, error)
-	readRequirementsSecret         func(io.Reader, io.Writer) (string, error)
-	stdinIsTerminal                func(io.Reader) bool
-	resolveFinalizationBaseline    func(context.Context, string, string) (string, error)
-	openWorkspace                  func(context.Context, string, string, processworkspace.ManagerOptions) (workspaceService, error)
+	selectGitHubBackend          func(context.Context, string) (auth.GitHubBackendSelection, error)
+	selectRunnerBackend          func(context.Context, string, auth.GitHubBackendMode) (auth.GitHubBackendSelection, error)
+	newGitHubBackend             func(context.Context, auth.GitHubBackendSelection) (github.Backend, error)
+	gitHubBackendToken           func(context.Context, auth.GitHubBackendSelection) (string, error)
+	runnerPreflight              func(context.Context, commentrunner.Config) commentrunner.PreflightReport
+	runnerIntake                 func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error)
+	newRunnerNotificationBackend func(context.Context, commentrunner.Config) (runnerNotificationBackend, error)
+	runnerReconcile              func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error)
+	runnerDispatch               func(context.Context, commentrunner.Config) (jobs.Result, error)
+	runnerCancellationDrain      func(context.Context, commentrunner.Config) (jobs.Result, error)
+	runnerDiagnostics            *runnerLogger
+	newNativeEvidenceProvider    func(auth.Profile, string) (nativeEvidenceProvider, error)
+	newNativeSearchProvider      func(auth.Profile, string) (nativeSearchProvider, error)
+	newNativeCodeChangeBackend   func(auth.Profile, string) (nativeCodeChangeBackend, error)
+	lookupOperatorProvider       func(context.Context, auth.Profile, string) (codereview.Provider, error)
+	doctorAgentProbe             func(context.Context, capability.Request) (capability.Report, error)
+	newRequirementsAPI           func(auth.Profile, string) (requirementsAPI, error)
+	saveRequirementsProfile      func(auth.Profile, bool) error
+	storeRequirementsToken       func(context.Context, auth.Profile, string, bool) (string, error)
+	resolveRequirementsToken     func(context.Context, auth.Profile) (auth.Token, error)
+	readRequirementsSecret       func(io.Reader, io.Writer) (string, error)
+	stdinIsTerminal              func(io.Reader) bool
+	resolveFinalizationBaseline  func(context.Context, string, string) (string, error)
+	openWorkspace                func(context.Context, string, string, processworkspace.ManagerOptions) (workspaceService, error)
 }
 
 type commandFunc func(context.Context, []string) int

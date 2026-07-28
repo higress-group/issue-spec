@@ -30,48 +30,30 @@ external_code:
 
 Repository configuration containing an executable, arguments, environment, or
 credential source is rejected. Provider keys do not grant authority: evidence
-ingestion still requires a designated repository writer, `evidence:write`, a
-PAT repository cap that covers the target when one is configured, and live
-repository permission.
+ingestion still requires an active supported credential with explicit
+`evidence:write`, access to the exact repository, and an authenticated active
+identity with live `write`-or-higher repository permission. Repository roles
+and `repo`, `admin:repo`, or `issues:write` scopes do not replace the evidence
+scope, and the evidence scope does not replace repository permission.
 
-### Assign an evidence writer
+### Deprecated Evidence Writer compatibility API
 
-The assignment belongs to a Server user, not to a PAT. Personal Runner accounts
-and service accounts use the same flow. Resolve the Runner user with its own PAT,
-then use a separate repository-operator credential to activate the assignment:
+The native assignment routes and `repository_evidence_writers` rows remain
+available for one release window so mixed-version deployments can upgrade and
+roll back safely:
 
-```bash
-SERVER_URL=https://issues.example.test
-ORG_ID=00000000-0000-4000-8000-000000000001
-REPO_ID=00000000-0000-4000-8000-000000000002
-
-read -rsp "Runner PAT: " RUNNER_PAT
-printf '\n'
-RUNNER_USER_ID="$(
-  curl -fsS \
-    -H "Authorization: Bearer ${RUNNER_PAT}" \
-    "${SERVER_URL}/api/v1/context" | jq -er '.user.id'
-)"
-
-read -rsp "Repository operator PAT: " OPERATOR_PAT
-printf '\n'
-curl -fsS --request PUT \
-  -H "Authorization: Bearer ${OPERATOR_PAT}" \
-  -H 'Content-Type: application/json' \
-  --data '{"active":true}' \
-  "${SERVER_URL}/api/v1/orgs/${ORG_ID}/repos/${REPO_ID}/evidence/writers/${RUNNER_USER_ID}"
-
-unset RUNNER_PAT OPERATOR_PAT
+```text
+GET /api/v1/orgs/{org}/repos/{repo}/evidence/writers/me
+PUT /api/v1/orgs/{org}/repos/{repo}/evidence/writers/{user}
 ```
 
-The operator credential must belong to an identity allowed to manage repository
-integrations. A short-lived, exact-repository `admin:repo` PAT is sufficient
-when that identity has the required repository authority. Do not add
-`admin:repo` to the Runner PAT. To retire the writer, repeat the `PUT` with
-`{"active":false}`. PAT rotation for the same user preserves the assignment;
-changing Runner identity requires a new assignment and deactivating the old one.
-Runner preflight reads only the authenticated identity's own active status and
-cannot create or change an assignment.
+These routes are deprecated and their state is non-authoritative: active rows do
+not grant evidence publication, while inactive or absent rows do not deny it.
+New Runner versions do not call them. Upgrade Runner before or with Server; an
+older Runner still checks the legacy row during client-side preflight, so retain
+rows until all Runners are upgraded. Rolling back to an older Server binary
+restores the former assignment gate, and any rows removed after upgrade must be
+recreated before rollback.
 
 For the CLI, command bridges are registered by pointing
 `ISSUE_SPEC_CODE_PROVIDERS_FILE` at a clean absolute private regular file
@@ -162,7 +144,7 @@ fails before any workflow comment, evidence, or external mutation is written.
 A snapshot request contains a provider-namespaced repository/change reference
 and the exact expected revision. The response repeats both and returns
 immutable normalized records. Each record has its own state, revision,
-observation time, validity window, payload digest, designated-writer identity,
+observation time, validity window, payload digest, authenticated-writer identity,
 trust decision, and optional supersession link. Kinds are `change`, `review`,
 `check`, `merge`, and `archive`.
 

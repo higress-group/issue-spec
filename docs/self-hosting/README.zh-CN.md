@@ -19,7 +19,7 @@ provider-neutral 代码证据、Webhook、Runner，以及由 PostgreSQL 持久�
           v
  issue-spec-server  <---->  GitHub OAuth 或 OIDC
     |       |
-    |       +------------>  code-provider bridge / evidence writer
+    |       +------------>  code-provider bridge / evidence ledger
     |       +------------>  GitHub 兼容或 Runner Webhook
     v
  PostgreSQL
@@ -29,8 +29,8 @@ Server 是以下数据的权威来源：
 
 - 组织、仓库、成员关系、Collaborator 与可见性；
 - Issue、评论、Label、Reaction、类型化工作流投影和 Change Board；
-- 个人与托管 PAT、Service Account、Runner 委托、Source Binding 和
-  Evidence Writer 指定；
+- 个人与托管 PAT、Service Account、Runner 委托、Source Binding、Evidence Policy
+  和不可变证据；
 - Webhook 订阅、过滤策略、加密凭据、投递尝试、重试、重放与审计记录。
 
 外部代码平台仍然负责源码、分支、Commit、PR/MR、Review 和 CI。Source Binding
@@ -124,7 +124,8 @@ Issue 动作、Change 类型、普通/类型化评论，以及真人/自动化 A
 | `public` | 仓库为 Public 时，任意有效的已登录身份 |
 
 匿名写入始终被拒绝。通过 GitHub OAuth 或 OIDC 登录只会建立外部身份，不会自动
-获得组织角色、仓库权限、Runner 权限或 Evidence Writer 身份。
+获得组织角色、仓库权限、Runner 权限或证据发布权限。发布证据还必须同时满足显式凭据
+Scope 与实时仓库权限。
 
 ## 部署路径
 
