@@ -52,8 +52,8 @@ export function IntegrationsPage({ kind }: { kind: IntegrationKind }) {
   }
   const repositoryAccess = access.data?.repositories.find((item) => item.repository.id === repoId);
   const canManage = repositoryAccess?.allowed_actions.includes("integrations.manage") ?? false;
-  if (!canManage) return <div className="page integrations-page"><IntegrationHeader kind={kind} repository={repository.data} /><Panel><EmptyState title={t("integrations.requiredTitle")} description={t("integrations.requiredDescription")} action={<StatusBadge tone="coral">{t("common.restricted")}</StatusBadge>} /></Panel></div>;
-  return <div className="page integrations-page"><IntegrationHeader kind={kind} repository={repository.data} />{kind === "source" ? <SourceWorkspace orgId={orgId} repoId={repoId} /> : <WebhookWorkspace orgId={orgId} repoId={repoId} />}</div>;
+  if (kind === "webhooks" && !canManage) return <div className="page integrations-page"><IntegrationHeader kind={kind} repository={repository.data} /><Panel><EmptyState title={t("integrations.requiredTitle")} description={t("integrations.requiredDescription")} action={<StatusBadge tone="coral">{t("common.restricted")}</StatusBadge>} /></Panel></div>;
+  return <div className="page integrations-page"><IntegrationHeader kind={kind} repository={repository.data} />{kind === "source" ? <SourceWorkspace orgId={orgId} repoId={repoId} canManage={canManage} /> : <WebhookWorkspace orgId={orgId} repoId={repoId} />}</div>;
 }
 
 function IntegrationHeader({ kind, repository }: { kind: IntegrationKind; repository: AdminRepository }) {
@@ -61,7 +61,7 @@ function IntegrationHeader({ kind, repository }: { kind: IntegrationKind; reposi
   return <RepositoryHeader repository={repository} section={kind} title={kind === "source" ? t("integrations.sourceTitle") : t("integrations.webhooksTitle")} description={kind === "source" ? t("integrations.sourceDescription") : t("integrations.webhooksDescription")} />;
 }
 
-function SourceWorkspace({ orgId, repoId }: { orgId: string; repoId: string }) {
+function SourceWorkspace({ orgId, repoId, canManage }: { orgId: string; repoId: string; canManage: boolean }) {
   const { t, i18n } = useTranslation();
   const inspector = useInspector();
   const client = useQueryClient();
@@ -85,11 +85,11 @@ function SourceWorkspace({ orgId, repoId }: { orgId: string; repoId: string }) {
     {binding.error ? <ErrorNotice error={binding.error} /> : null}
     <section className="integration-hero" aria-label={t("integrations.bindingStatus")}>
       <div className="integration-hero-mark"><GitBranch aria-hidden="true" /></div>
-      <div><span className="eyebrow">{t("integrations.credentialFree")}</span><h2>{binding.data ? binding.data.external_repository_id : t("integrations.noSource")}</h2><p>{binding.data ? t("integrations.bindingVersion", { provider: binding.data.provider_key, branch: binding.data.default_branch, version: binding.data.version }) : t("integrations.connectHelp")}</p></div>
+      <div><span className="eyebrow">{t("integrations.credentialFree")}</span><h2>{binding.data ? binding.data.external_repository_id : t("integrations.noSource")}</h2><p>{binding.data ? t("integrations.bindingVersion", { provider: binding.data.provider_key, branch: binding.data.default_branch, version: binding.data.version }) : canManage ? t("integrations.connectHelp") : t("integrations.readOnlyDescription")}</p></div>
       <StatusBadge tone={binding.data ? "teal" : "neutral"}>{binding.data ? t("common.active") : t("integrations.unbound")}</StatusBadge>
     </section>
     {binding.data ? <Panel className="binding-summary"><div className="binding-route"><span className="route-node"><Cable size={17} />{t("integrations.localRepository")}</span><span className="route-line" aria-hidden="true" /><a className="route-node external" href={binding.data.web_url} target="_blank" rel="noopener noreferrer"><ExternalLink size={17} />{binding.data.provider_key}</a></div><dl className="integration-facts"><div><dt>{t("integrations.externalRepository")}</dt><dd>{binding.data.external_repository_id}</dd></div><div><dt>{t("integrations.cloneUrl")}</dt><dd className="mono break-word">{binding.data.clone_url}</dd></div><div><dt>{t("common.defaultBranch")}</dt><dd>{binding.data.default_branch}</dd></div><div><dt>{t("integrations.updated")}</dt><dd>{formatDate(binding.data.updated_at, i18n.resolvedLanguage)}</dd></div></dl></Panel> : null}
-    <Panel title={binding.data ? t("integrations.publishBinding") : t("integrations.connectSourceIdentity")} description={t("integrations.bindingDescription")}>
+    {canManage ? <Panel title={binding.data ? t("integrations.publishBinding") : t("integrations.connectSourceIdentity")} description={t("integrations.bindingDescription")}>
       <form className="integration-form" onSubmit={handleSubmit((draft) => publish.mutate(draft))}>
         <Field label={t("integrations.providerKey")} hint={t("integrations.providerHint")} error={errors.provider_key?.message}><TextInput autoComplete="off" {...register("provider_key", { required: t("integrations.providerRequired") })} /></Field>
         <Field label={t("integrations.externalRepositoryId")} hint={t("integrations.externalRepositoryHint")} error={errors.external_repository_id?.message}><TextInput autoComplete="off" {...register("external_repository_id", { required: t("integrations.repositoryIdentityRequired") })} /></Field>
@@ -98,7 +98,7 @@ function SourceWorkspace({ orgId, repoId }: { orgId: string; repoId: string }) {
         <Field label={t("common.defaultBranch")} error={errors.default_branch?.message}><TextInput autoComplete="off" {...register("default_branch", { required: t("integrations.defaultBranchRequired") })} /></Field>
         <div className="integration-form-actions"><button className="button primary" type="submit" disabled={publish.isPending}><GitBranch size={16} />{publish.isPending ? t("integrations.publishing") : binding.data ? t("integrations.publishNewVersion") : t("integrations.connectSource")}</button>{binding.data ? <button className="button danger" type="button" disabled={deactivate.isPending} onClick={() => confirmDeactivate ? deactivate.mutate(undefined) : setConfirmDeactivate(true)}><Trash2 size={16} />{confirmDeactivate ? t("integrations.confirmDeactivation") : t("integrations.deactivate")}</button> : null}{confirmDeactivate ? <button className="button secondary" type="button" onClick={() => setConfirmDeactivate(false)}>{t("integrations.keepActive")}</button> : null}</div>
       </form>
-    </Panel>
+    </Panel> : <Panel><div className="trust-note"><ShieldCheck size={20} /><div><strong>{t("integrations.readOnlyTitle")}</strong><p>{t("integrations.readOnlyDescription")}</p></div></div></Panel>}
     <div className="trust-note"><ShieldCheck size={20} /><div><strong>{t("integrations.noCredentialTitle")}</strong><p>{t("integrations.noCredentialHelp")}</p></div></div>
   </>;
 }

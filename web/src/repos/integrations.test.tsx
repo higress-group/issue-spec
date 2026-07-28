@@ -36,6 +36,51 @@ describe("repository integrations workspace", () => {
     expect((await axe.run(container)).violations).toEqual([]);
   });
 
+  it("lets a repository reader inspect an active source binding without mutation controls", async () => {
+    let bindingReads = 0;
+    server.use(
+      metaHandler(),
+      http.get(sourcePath("/active"), () => {
+        bindingReads += 1;
+        return HttpResponse.json(bindingFixture());
+      }),
+    );
+    const { container } = renderIntegration("source", ["read"]);
+
+    expect(await screen.findByText("Source binding is read-only")).toBeVisible();
+    await waitFor(() => expect(bindingReads).toBe(1));
+    expect((await screen.findAllByText("higress-group/issue-spec"))[0]).toBeVisible();
+    expect(screen.getByText("https://github.com/higress-group/issue-spec.git")).toBeVisible();
+    expect(screen.getByText("main")).toBeVisible();
+    const external = screen.getByRole("link", { name: "github" });
+    expect(external).toHaveAttribute("href", "https://github.com/higress-group/issue-spec");
+    expect(external).toHaveAttribute("target", "_blank");
+    expect(external).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.queryByRole("button", { name: /Publish new version|Deactivate|Connect source/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /Provider key|External repository ID|Clone URL|Web URL|Default branch/ })).not.toBeInTheDocument();
+    expect((await axe.run(container)).violations).toEqual([]);
+  });
+
+  it("shows an explicit unbound state to a repository reader without a connect form", async () => {
+    server.use(
+      metaHandler(),
+      http.get(sourcePath("/active"), () => HttpResponse.json({
+        type: "https://issue-spec.dev/problems/not_found",
+        title: "Source binding not found",
+        status: 404,
+        code: "not_found",
+        request_id: "request-source-unbound",
+      }, { status: 404 })),
+    );
+    renderIntegration("source", ["read"]);
+
+    expect(await screen.findByRole("heading", { name: "No source connected" })).toBeVisible();
+    expect(screen.getByText("unbound")).toBeVisible();
+    expect(screen.getByText("Source binding is read-only")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Publish new version|Deactivate|Connect source/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /Provider key|External repository ID|Clone URL|Web URL|Default branch/ })).not.toBeInTheDocument();
+  });
+
   it("creates a repository-scoped webhook and exposes its secret once", async () => {
     let created: unknown;
     server.use(
