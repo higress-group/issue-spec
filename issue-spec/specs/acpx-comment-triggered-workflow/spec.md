@@ -152,7 +152,7 @@ The runner MUST invoke acpx as an external coordinator backend using argv arrays
 - **THEN** the runner SHALL treat acpx as the top-level headless coordinator transport and persist bounded child provenance reported by the coordinator without needing direct access to the native worker runtime.
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/24#issuecomment-4865331603
+- https://github.com/higress-group/issue-spec/issues/343#issuecomment-5099614411
 
 ### Requirement: durable job state and recovery
 

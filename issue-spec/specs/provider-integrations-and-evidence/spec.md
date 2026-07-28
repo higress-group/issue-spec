@@ -38,7 +38,7 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issu
 
 ### Requirement: External links and trusted evidence have separate lifecycle and provenance
 
-The server MUST store mutable provider-namespaced external references separately from immutable revision-bound evidence, MUST authorize and audit their writers, and MUST provide idempotent retrieval and ingestion semantics that prevent URL-only records from being treated as proof.
+The Server MUST store mutable provider-namespaced external references separately from immutable revision-bound evidence; for trusted evidence publication, the self-hosted Server MUST require an active supported credential carrying explicit `evidence:write`, its applicable repository cap, and the authenticated identity's live `write`-or-higher permission for the exact repository, MUST NOT require, infer, or consult a separate Evidence Writer assignment, and MUST preserve immutable authenticated writer provenance, audit, tenant isolation, idempotency, visibility, and exact-revision validation.
 
 #### Scenario: external references use a non-null provider identity
 
@@ -47,35 +47,41 @@ The server MUST store mutable provider-namespaced external references separately
 
 #### Scenario: Scoped repository writer publishes without designation
 
-- **WHEN** an active supported credential explicitly carries `evidence:write`, allows the exact repository, and its authenticated identity has live `write`-or-higher repository permission
-- **THEN** the server MUST accept valid review, check, merge or archive evidence without consulting writer designation state and MUST attribute immutable writer provenance to the authenticated identity
+- **WHEN** an active PAT carries `evidence:write`, allows the exact repository, and authenticates an active identity with live repository `write` permission, but no Active Evidence Writer assignment exists
+- **THEN** the Server accepts an otherwise valid evidence append and records the authenticated writer identity without consulting designation state
 
 #### Scenario: Repository write does not replace evidence credential scope
 
-- **WHEN** a repository writer, organization owner, site administrator, session, recovery credential, or token carrying `repo`, `admin:repo`, or `issues:write` submits evidence without explicit `evidence:write`
-- **THEN** the server MUST reject and audit the write without treating identity or repository authority as evidence credential scope
+- **WHEN** an owner, administrator, maintainer, or writer has live repository write authority but the active credential lacks `evidence:write`
+- **THEN** the Server rejects evidence publication with the credential-scope reason and audits the denial
 
 #### Scenario: Evidence scope does not replace repository authority
 
-- **WHEN** a credential carries `evidence:write` but is inactive, unsupported, excluded from the exact repository, outside tenant visibility, or backed by less than live `write` repository permission
-- **THEN** the server MUST reject and audit the write without treating evidence scope as repository authority
+- **WHEN** a credential carries `evidence:write` but its repository cap excludes the target, its identity is inactive, or its live repository permission is below `write`
+- **THEN** the Server rejects publication with the precise repository-cap, identity, or permission reason and audits the denial
 
 #### Scenario: Legacy assignments are non-authoritative
 
-- **WHEN** a legacy repository evidence-writer assignment is absent, active, or inactive
-- **THEN** that row MUST NOT grant, deny, or change publication, capability reporting, review synchronization, or authenticated writer provenance, while its compatibility API MAY retain the existing response shape during the deprecation window
+- **WHEN** an existing Evidence Writer assignment is active or inactive during the compatibility window
+- **THEN** the assignment neither grants publication to an otherwise unauthorized caller nor denies an otherwise authorized caller
+
+#### Scenario: Runner preflight uses the same authorization model
+
+- **WHEN** Runner preflight validates a self-hosted profile and repository
+- **THEN** it validates credential identity, required scopes, repository cap and live permission without calling or reporting an Evidence Writer designation check
 
 #### Scenario: Evidence trust properties remain unchanged
 
-- **WHEN** the server accepts evidence under the scope-and-live-permission predicate
-- **THEN** it MUST append an immutable row containing normalized state, subject revision, observed time, payload digest, authenticated provenance and writer identity, MUST preserve visibility and audit semantics, and MUST use a superseding row for later observations
+- **WHEN** an authorized caller publishes a provider observation
+- **THEN** the Server still enforces normalized evidence kind and state, exact subject revision, deterministic ingest identity, immutable provenance, visibility, supersession, idempotency and audit requirements
 
 #### Scenario: reads respect tenant and field visibility
 
 - **WHEN** the SPA, board or CLI lists references or evidence
 - **THEN** the server MUST filter by repository visibility, caller permission and record visibility, return the normalized payload and provenance of a repository-visible evidence row to repository readers, omit a maintainers-visible row in full from non-maintainers, and MUST not leak credentials or hidden provider URLs or metadata
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4926919280
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/343#issuecomment-5099614411
 
 ### Requirement: Core review, verify and archive validate neutral external evidence fail closed
 
@@ -148,7 +154,8 @@ The issue-spec CLI and runner MUST provide a provider-neutral evidence synchroni
 - **WHEN** evidence synchronization is triggered interactively, by runner polling, or by a trusted webhook-driven runner job
 - **THEN** all modes use the same provider-neutral snapshot validation, exact-revision persistence, idempotency, authorization, audit, and gate-evaluation semantics and produce equivalent evidence identities
 
-Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issuecomment-4949554236
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/343#issuecomment-5099614411
 
 ### Requirement: Authoritative final gates assert the current code-change revision
 
