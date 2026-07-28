@@ -38,7 +38,7 @@ Source SPEC comment: https://github.com/higress-group/issue-spec/issues/160#issu
 
 ### Requirement: External links and trusted evidence have separate lifecycle and provenance
 
-The Server MUST store mutable provider-namespaced external references separately from immutable revision-bound evidence; for trusted evidence publication, the self-hosted Server MUST require an active supported credential carrying explicit `evidence:write`, its applicable repository cap, and the authenticated identity's live `write`-or-higher permission for the exact repository, MUST NOT require, infer, or consult a separate Evidence Writer assignment, and MUST preserve immutable authenticated writer provenance, audit, tenant isolation, idempotency, visibility, and exact-revision validation.
+The Server MUST store mutable provider-namespaced external references separately from immutable revision-bound evidence, MUST authorize and audit external-reference writers, and MUST provide idempotent retrieval and ingestion semantics that prevent URL-only records from being treated as proof; for trusted evidence publication, the self-hosted Server MUST require an active supported credential carrying explicit `evidence:write`, its applicable repository cap, and the authenticated identity's live `write`-or-higher permission for the exact repository, MUST NOT require, infer, or consult a separate Evidence Writer assignment, and MUST preserve immutable authenticated writer provenance, audit, tenant isolation, idempotency, visibility, and exact-revision validation.
 
 #### Scenario: external references use a non-null provider identity
 
