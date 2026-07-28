@@ -291,6 +291,13 @@ func TestHumanReviewProjectionReferenceIsActionableAndBounded(t *testing.T) {
 		"coverage-complete review surface",
 		"not as a delta, changelog, executive summary, or component inventory",
 		"human or operator scene and a concrete case",
+		"Treat decision integrity as the non-negotiable constraint",
+		"least cognitive effort needed to build the correct mental model and make the right decision",
+		"Never make a projection easier to consume by omitting a material fact",
+		"Preserve decision sufficiency",
+		"what would make a choice wrong",
+		"move supporting detail behind drill-down instead of deleting it",
+		"not for decorative animation, novelty, or information density",
 		"Build a coverage ledger before writing UI",
 		"Concrete case walkthrough",
 		"What the person sees",
@@ -312,6 +319,14 @@ func TestHumanReviewProjectionReferenceIsActionableAndBounded(t *testing.T) {
 			t.Fatalf("human review projection reference missing %q", want)
 		}
 	}
+	assertTextOrder(t, reference,
+		"Treat decision integrity as the non-negotiable constraint",
+		"Within that constraint",
+		"least cognitive effort needed to build the correct mental model and make the right decision")
+	assertTextOrder(t, reference,
+		"Preserve fidelity to authoritative facts",
+		"Preserve decision sufficiency",
+		"Then maximize comprehension")
 	for _, forbidden := range []string{
 		"projection is authoritative",
 		"estimate defines PROCESS",

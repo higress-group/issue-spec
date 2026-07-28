@@ -5,6 +5,7 @@ Use this guide to generate the ordinary Markdown comment passed to `issue-spec p
 ## Contents
 
 - [Authority and inputs](#authority-and-inputs)
+- [Decision integrity and comprehension](#decision-integrity-and-comprehension)
 - [Generation procedure](#generation-procedure)
 - [Shared information design](#shared-information-design)
 - [Phase recipes](#phase-recipes)
@@ -30,6 +31,18 @@ Apply these authority rules:
 - Do not infer workflow readiness, PROCESS boundaries, gates, or status from an estimate, visual state, HTML control, or projection text. In Implement, invariant cohesion and typed dependencies define semantics; file count, line count, complexity, Agent count, and parallelism are planning aids only.
 - Link claims to their source issue or typed comment. If evidence is absent, say that it is absent instead of filling the gap.
 - Keep the projection self-explanatory as ordinary Markdown because GitHub displays the fenced HTML source and does not execute the preview.
+
+## Decision integrity and comprehension
+
+Treat decision integrity as the non-negotiable constraint. Never make a projection easier to consume by omitting a material fact, hiding uncertainty or tradeoffs, weakening a boundary, or framing credible options unevenly.
+
+Within that constraint, optimize every choice of content, wording, order, interaction, and visual form for the least cognitive effort needed to build the correct mental model and make the right decision. Prefer the form that removes unstated premises, acronym decoding, context switching, and unnecessary inference: scene before mechanism, concrete case before abstraction, comparison table for repeated criteria, flow for sequence, and progressive disclosure for detail.
+
+Use this precedence when goals conflict:
+
+1. Preserve fidelity to authoritative facts, uncertainty, risks, alternatives, and decision consequences.
+2. Preserve decision sufficiency: the reviewer can identify what matters, compare credible options, and understand what would make a choice wrong.
+3. Then maximize comprehension by simplifying language and presentation. If complexity is decision-relevant, explain it through the case and move supporting detail behind drill-down instead of deleting it.
 
 ## Generation procedure
 
@@ -62,7 +75,7 @@ issue-spec projection upsert \
 
 ## Shared information design
 
-Optimize for a reviewer deciding where to spend attention, not for decorative animation.
+Optimize for the reviewer reaching a correct understanding and decision with the least avoidable cognitive effort, not for decorative animation, novelty, or information density.
 
 Use this hierarchy:
 
@@ -248,6 +261,8 @@ Use a stable preview ID for the logical phase view. Metadata accepts only `id`, 
 
 Before upsert:
 
+- [ ] No simplification hides a material fact, uncertainty, tradeoff, boundary, risk, alternative, or decision consequence.
+- [ ] Content order and presentation minimize acronym decoding, context switching, and unstated inference while preserving everything needed for a correct decision.
 - [ ] The first viewport identifies an affected person or operator, their goal, a concrete trigger-to-outcome case, and why the change matters before introducing component names or artifact IDs.
 - [ ] The case walkthrough covers the normal path and one meaningful failure or boundary, mapping human-visible effects to system behavior and review obligations.
 - [ ] Repository-specific terms and illustrative values are translated or labeled; the projection does not invent facts to make the story concrete.
