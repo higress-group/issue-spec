@@ -43,15 +43,15 @@ func TestIssueTemplatesScaffoldProjectionTimingAndAuthority(t *testing.T) {
 	}{
 		{
 			name: "proposal", body: proposal, nextChild: "SPEC",
-			content: []string{"latest effective ANSWER remain authoritative", "projection HTML source is excluded from default Agent context"},
+			content: []string{"latest effective ANSWER remain authoritative", "build a coverage ledger", "complete current problem", "do not emit only a delta or executive summary", "projection HTML source is excluded from default Agent context"},
 		},
 		{
 			name: "design", body: design, nextChild: "TASK",
-			content: []string{"latest effective ANSWER remain authoritative", "data, flow, alternatives, and correctness constraints"},
+			content: []string{"latest effective ANSWER remain authoritative", "build a coverage ledger", "complete current architecture", "state, alternatives, compatibility", "do not assume the reviewer already knows omitted design information"},
 		},
 		{
 			name: "implement", body: implement, nextChild: "PROCESS",
-			content: []string{"latest effective ANSWER remain authoritative", "correctness complexity", "independent review/verify obligations", "estimates do not define workflow semantics"},
+			content: []string{"latest effective ANSWER remain authoritative", "build a coverage ledger", "complete current invariant DAG", "SPEC/scenario coverage", "independent review/verify obligations", "do not emit only the increment since Design", "estimates and complexity do not define workflow semantics"},
 		},
 	}
 	for _, tc := range tests {

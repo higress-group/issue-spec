@@ -212,6 +212,12 @@ func (a *app) printWorkflowGeneration(workflows workflowGenerationResult) {
 	if len(workflows.SkillResourceFiles) > 0 {
 		fmt.Fprintf(a.out, "repository skill resources: %d\n", len(workflows.SkillResourceFiles))
 	}
+	if len(workflows.SkillLinks) > 0 {
+		fmt.Fprintf(a.out, "repository skill links:\n")
+		for _, link := range workflows.SkillLinks {
+			fmt.Fprintf(a.out, "  %s\n", link)
+		}
+	}
 	if len(workflows.CommandFiles) > 0 {
 		fmt.Fprintf(a.out, "repository commands: %d\n", len(workflows.CommandFiles))
 	}
