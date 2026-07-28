@@ -5,6 +5,7 @@ Use this guide to generate the ordinary Markdown comment passed to `issue-spec p
 ## Contents
 
 - [Authority and inputs](#authority-and-inputs)
+- [Decision integrity and comprehension](#decision-integrity-and-comprehension)
 - [Generation procedure](#generation-procedure)
 - [Shared information design](#shared-information-design)
 - [Phase recipes](#phase-recipes)
@@ -25,23 +26,36 @@ Read only the authoritative records needed for the phase. Do not expand or reuse
 Apply these authority rules:
 
 - Treat issue bodies and typed artifacts as authoritative.
-- Treat the projection as a coverage-complete review surface over the current phase inputs, not as a delta, changelog, or executive summary. Synthesis may compress wording and move detail behind progressive disclosure, but it must not omit an applicable review dimension; source links support verification and drill-down, not discovery of omitted concerns.
+- Treat the projection as a coverage-complete review surface over the current phase inputs, not as a delta, changelog, executive summary, or component inventory. Lead from a human or operator scene and a concrete case into the technical model. Synthesis may compress wording and move detail behind progressive disclosure, but it must not omit an applicable review dimension; source links support verification and drill-down, not discovery of omitted concerns.
 - Label every recommendation, comparison, candidate PROCESS, estimate, confidence value, and inferred relationship as synthesis. Never let synthesis override an authoritative record.
 - Do not infer workflow readiness, PROCESS boundaries, gates, or status from an estimate, visual state, HTML control, or projection text. In Implement, invariant cohesion and typed dependencies define semantics; file count, line count, complexity, Agent count, and parallelism are planning aids only.
 - Link claims to their source issue or typed comment. If evidence is absent, say that it is absent instead of filling the gap.
 - Keep the projection self-explanatory as ordinary Markdown because GitHub displays the fenced HTML source and does not execute the preview.
+
+## Decision integrity and comprehension
+
+Treat decision integrity as the non-negotiable constraint. Never make a projection easier to consume by omitting a material fact, hiding uncertainty or tradeoffs, weakening a boundary, or framing credible options unevenly.
+
+Within that constraint, optimize every choice of content, wording, order, interaction, and visual form for the least cognitive effort needed to build the correct mental model and make the right decision. Prefer the form that removes unstated premises, acronym decoding, context switching, and unnecessary inference: scene before mechanism, concrete case before abstraction, comparison table for repeated criteria, flow for sequence, and progressive disclosure for detail.
+
+Use this precedence when goals conflict:
+
+1. Preserve fidelity to authoritative facts, uncertainty, risks, alternatives, and decision consequences.
+2. Preserve decision sufficiency: the reviewer can identify what matters, compare credible options, and understand what would make a choice wrong.
+3. Then maximize comprehension by simplifying language and presentation. If complexity is decision-relevant, explain it through the case and move supporting detail behind drill-down instead of deleting it.
 
 ## Generation procedure
 
 1. Select the phase inputs above with bounded issue-spec reads. Do not request `--expand-preview` or `--expand-all-previews`.
 2. Build a coverage ledger before writing UI:
    - enumerate the phase-specific review dimensions below and map every applicable authoritative input to top-level attention, progressive drill-down, or an explicit not-applicable rationale;
+   - identify the affected person or operator, their goal, the situation that triggers the change, and one representative case that can be traced end to end;
    - confirmed facts and constraints, each with a source link;
    - unresolved evidence gaps;
    - open decisions a human must make, each with the credible options;
    - phase-specific derived synthesis, clearly labeled.
 3. Resolve contradictions in favor of authoritative data. Stop generation if two authoritative inputs conflict or a required record cannot be identified uniquely.
-4. Write a compact Markdown fallback first. It must expose the phase goal, every applicable review dimension, required human decisions, critical constraints, and source links without running HTML.
+4. Write a compact Markdown fallback first. Open with the scene, why it matters, and a concrete before/after or request-to-outcome case; then expose every applicable review dimension, required human decisions, critical constraints, and source links without running HTML.
 5. Add one valid `html-preview` fence containing a complete, standalone document. Prefer one preview per projection so the intended review surface is the first preview.
 6. Serialize a deterministic source manifest containing the selected source identities, body digests or exact revisions, and typed statuses and links. Hash that manifest for `--source-digest`; do not hash only `projection.md`, and exclude the projection itself.
 7. Audit coverage before validating presentation: every applicable ledger entry must be discoverable, and a phase with no open decision must still expose settled premises, evidence gaps, alternatives, boundaries, risks, and verification obligations. Then validate the Markdown, preview metadata, keyboard flow, narrow layout, and GitHub fallback.
@@ -61,15 +75,17 @@ issue-spec projection upsert \
 
 ## Shared information design
 
-Optimize for a reviewer deciding where to spend attention, not for decorative animation.
+Optimize for the reviewer reaching a correct understanding and decision with the least avoidable cognitive effort, not for decorative animation, novelty, or information density.
 
 Use this hierarchy:
 
-1. **Review summary:** one sentence on the phase goal and proposed direction, the exact request to the reviewer, and up to three high-signal counts.
-2. **Attention queue:** unresolved human decisions first, evidence gaps second, then settled choices needing constraint verification. When there is no open decision, say so without collapsing the rest of the review surface.
-3. **Recommendation and comparison:** state the recommendation, premises, benefits, costs, credible alternatives, and what changes if the recommendation is rejected.
-4. **Phase model:** show every applicable phase dimension through the relevant journey, data flow, dependency graph, or execution plan.
-5. **Drill-down and sources:** place details, history, estimates, and source links behind tabs, accordions, or `details`.
+1. **Scene and outcome:** identify who is affected, what they are trying to accomplish, what happens today, and what becomes observably better.
+2. **Concrete case walkthrough:** trace one realistic case from trigger to outcome, including one meaningful failure or boundary. Pair each step with `What the person sees`, `What the system does`, and `What the reviewer should verify`.
+3. **Review request and attention queue:** state the exact request, then unresolved decisions, evidence gaps, and settled choices needing constraint verification. When there is no open decision, say so without collapsing the rest of the review surface.
+4. **Recommendation and technical model:** connect the case to premises, benefits, costs, alternatives, invariants, data flow, dependency graph, or execution plan.
+5. **Drill-down and sources:** place component-level detail, history, estimates, and source links behind tabs, accordions, or `details`.
+
+The first viewport must make sense without repository-specific acronyms or prior design context. Translate IDs and technical nouns into their role in the case before using them as navigation labels. When authoritative inputs do not contain safe example values, use clearly labeled illustrative values without inventing facts or presenting them as evidence.
 
 Use a calm, consistent visual language:
 
@@ -95,17 +111,17 @@ Do not use color alone. Pair it with text and, when useful, a simple icon. Avoid
 
 Help a reviewer turn scene, goal, and proposed scope into decisions before complete SPEC authoring:
 
-1. State the user/problem scene, desired outcome, success signal, and proposed boundary.
-2. Separate settled choices, evidence-dependent items, and genuine decisions.
-3. For each genuine decision, show the recommended option, premises, alternatives, benefits, costs, reversibility, and affected goals.
-4. Cover risks, assumptions, expected SPEC coverage, non-goals, and what remains intentionally out of scope.
+1. Lead with one representative person or operator, their current friction, and a concrete before/after journey.
+2. State the desired outcome, success signal, and proposed boundary in terms visible in that journey.
+3. Separate settled choices, evidence-dependent items, and genuine decisions; show how each option changes the case.
+4. Cover risks, assumptions, alternatives, reversibility, expected SPEC coverage, non-goals, and what remains intentionally out of scope.
 
 ### Design explainer
 
 Help a reviewer understand correctness and alternatives before complete TASK planning:
 
-1. Start with the selected architecture and every invariant the implementation must preserve.
-2. Present the end-to-end data or control flow as numbered steps, with failure and trust boundaries visible.
+1. Lead with a concrete request, event, or operator action and its expected observable outcome; then name the selected architecture and every invariant it must preserve.
+2. Trace that case through the end-to-end data or control flow as numbered steps, with a meaningful failure path and trust boundaries visible.
 3. Cover interfaces, shared state, cache or persistence behavior, state transitions, and downstream consumers where applicable.
 4. Compare rejected or conditional alternatives and the premises that made the selected design preferable.
 5. Cover compatibility, migration, rollout, rollback, risks, verification strategy, and traceability to every active SPEC.
@@ -116,8 +132,11 @@ Use interaction to explore layers or branches; do not add animation merely to ma
 
 Help a reviewer validate the execution strategy before complete PROCESS planning and monitor it after PROCESS records exist.
 
+Open with one concrete acceptance case and show how the candidate or current PROCESS sequence carries it from trigger to verified outcome. Keep the DAG as the technical explanation of that case, not the first concept a reviewer must decode.
+
 The top level must show:
 
+- the representative acceptance case and its observable outcome;
 - the invariant-based work packages or current typed PROCESS DAG;
 - counts for planned/ready/active/blocked/completed work, without inventing statuses;
 - the critical path and safe parallel groups;
@@ -198,7 +217,15 @@ Generate `projection.md` in this shape:
   <main>
     <section class="summary" aria-labelledby="summary-title">
       <h1 id="summary-title">Implement execution review</h1>
-      <p>Recommendation and exact review request.</p>
+      <p>Who is affected, the situation they are in, and the observable outcome this plan must deliver.</p>
+    </section>
+    <section aria-labelledby="case-title">
+      <h2 id="case-title">Concrete case walkthrough</h2>
+      <div class="grid">
+        <article class="card"><h3>What the person sees</h3><p>...</p></article>
+        <article class="card"><h3>What the system does</h3><p>...</p></article>
+      </div>
+      <p><strong>Reviewer verifies:</strong> ...</p>
     </section>
     <section aria-labelledby="attention-title">
       <h2 id="attention-title">Needs your attention</h2>
@@ -234,6 +261,11 @@ Use a stable preview ID for the logical phase view. Metadata accepts only `id`, 
 
 Before upsert:
 
+- [ ] No simplification hides a material fact, uncertainty, tradeoff, boundary, risk, alternative, or decision consequence.
+- [ ] Content order and presentation minimize acronym decoding, context switching, and unstated inference while preserving everything needed for a correct decision.
+- [ ] The first viewport identifies an affected person or operator, their goal, a concrete trigger-to-outcome case, and why the change matters before introducing component names or artifact IDs.
+- [ ] The case walkthrough covers the normal path and one meaningful failure or boundary, mapping human-visible effects to system behavior and review obligations.
+- [ ] Repository-specific terms and illustrative values are translated or labeled; the projection does not invent facts to make the story concrete.
 - [ ] A coverage ledger maps every applicable authoritative input and phase review dimension to top-level attention, progressive drill-down, or an explicit not-applicable rationale.
 - [ ] The projection is understandable as a complete current review surface rather than a delta from design information the reviewer is presumed to know.
 - [ ] If there is no open decision, settled premises, evidence gaps, alternatives, boundaries, risks, and verification obligations remain discoverable.
