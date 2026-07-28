@@ -1,5 +1,5 @@
-// Package evidence owns repository evidence policies, designated writers and
-// immutable revision-bound external evidence.
+// Package evidence owns repository evidence policies, legacy writer
+// assignments, and immutable revision-bound external evidence.
 package evidence
 
 import (
@@ -50,8 +50,8 @@ type WriterAssignment struct {
 	UpdatedAt             time.Time        `json:"updated_at"`
 }
 
-// WriterStatus reports only the authenticated identity's current repository
-// designation. It deliberately carries no mutation authority or credential
+// WriterStatus reports only the authenticated identity's legacy repository
+// assignment. It deliberately carries no publication authority or credential
 // scope inference.
 type WriterStatus struct {
 	UserID uuid.UUID `json:"user_id"`
@@ -105,7 +105,7 @@ type AppendInput struct {
 
 // SnapshotIngestInput pins one operator snapshot to an exact active reference
 // representation. Facts carry no trust or writer fields; the service derives
-// those authority properties from the authenticated designated writer.
+// those authority properties from the authenticated principal.
 type SnapshotIngestInput struct {
 	IssueID                  uuid.UUID           `json:"issue_id"`
 	ReferenceID              uuid.UUID           `json:"reference_id"`

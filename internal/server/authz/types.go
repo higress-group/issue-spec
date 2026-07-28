@@ -73,12 +73,10 @@ func Authenticated(principal serverauth.Principal) Subject {
 	return Subject{Principal: &principal}
 }
 
-// RepositoryRequest contains the complete tenant scope and any operation-
-// specific fact that the generic role model cannot derive.
+// RepositoryRequest contains the complete tenant scope and operation.
 type RepositoryRequest struct {
-	Scope                    models.RepoScope
-	Operation                Operation
-	DesignatedEvidenceWriter bool
+	Scope     models.RepoScope
+	Operation Operation
 }
 
 // Reason is safe for metrics and tests. It must not be written directly to a
@@ -94,7 +92,6 @@ const (
 	ReasonCredentialScope        Reason = "credential_scope"
 	ReasonRepositoryCap          Reason = "repository_cap"
 	ReasonContributionPolicy     Reason = "contribution_policy"
-	ReasonEvidenceWriterRequired Reason = "evidence_writer_required"
 	ReasonUnsupportedOperation   Reason = "unsupported_operation"
 )
 
