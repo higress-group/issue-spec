@@ -140,3 +140,40 @@ The authenticated application navigation and public project documentation MUST p
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/268#issuecomment-5009979689
 - https://github.com/higress-group/issue-spec/issues/268#issuecomment-5010424793
+
+### Requirement: Repository readers can inspect credential-free source bindings
+
+The authenticated SPA MUST allow every caller with repository read permission to inspect that repository's active credential-free source binding while reserving source-binding mutations and all sensitive Webhook configuration for callers with integration-management permission.
+
+#### Scenario: repository reader locates the active external source repository
+
+- **WHEN** a caller can read a repository, lacks `integrations.manage`, and the repository has an active source binding
+- **THEN** the source-connection page MUST fetch and display the provider key, external repository identity, server-validated web link, credential-free clone URL, default branch, binding version, and update time
+
+#### Scenario: read-only source view exposes no mutation interaction
+
+- **WHEN** a caller can read a repository but lacks `integrations.manage`
+- **THEN** the source-connection page MUST NOT render controls that publish, connect, replace, deactivate, or confirm deactivation of a source binding and MUST explain that changes require an integration manager
+
+#### Scenario: unbound repository remains explicit to a reader
+
+- **WHEN** a repository reader without `integrations.manage` opens the source-connection page and no active binding exists
+- **THEN** the SPA MUST display an unbound state without offering source-binding mutation controls
+
+#### Scenario: integration manager retains source-binding management
+
+- **WHEN** a caller has `integrations.manage` for the repository
+- **THEN** the source-connection page MUST retain the existing publish and deactivate interactions in addition to the binding summary
+
+#### Scenario: Webhook configuration remains management-only
+
+- **WHEN** a caller without `integrations.manage` opens the repository Webhook route
+- **THEN** the SPA MUST retain the permission-denied surface and MUST NOT fetch or reveal Webhook destinations, filters, secret state, suppressions, delivery history, or replay controls
+
+#### Scenario: repository visibility remains authoritative
+
+- **WHEN** a caller cannot read the repository or the repository is outside the caller's tenant and token scope
+- **THEN** the existing repository and source-binding APIs MUST conceal the resource and the read-only UI MUST NOT create an alternate discovery path
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/351#issuecomment-5102035206
