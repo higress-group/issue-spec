@@ -25,6 +25,7 @@ Read only the authoritative records needed for the phase. Do not expand or reuse
 Apply these authority rules:
 
 - Treat issue bodies and typed artifacts as authoritative.
+- Treat the projection as a coverage-complete review surface over the current phase inputs, not as a delta, changelog, or executive summary. Synthesis may compress wording and move detail behind progressive disclosure, but it must not omit an applicable review dimension; source links support verification and drill-down, not discovery of omitted concerns.
 - Label every recommendation, comparison, candidate PROCESS, estimate, confidence value, and inferred relationship as synthesis. Never let synthesis override an authoritative record.
 - Do not infer workflow readiness, PROCESS boundaries, gates, or status from an estimate, visual state, HTML control, or projection text. In Implement, invariant cohesion and typed dependencies define semantics; file count, line count, complexity, Agent count, and parallelism are planning aids only.
 - Link claims to their source issue or typed comment. If evidence is absent, say that it is absent instead of filling the gap.
@@ -33,16 +34,17 @@ Apply these authority rules:
 ## Generation procedure
 
 1. Select the phase inputs above with bounded issue-spec reads. Do not request `--expand-preview` or `--expand-all-previews`.
-2. Build a fact ledger before writing UI:
+2. Build a coverage ledger before writing UI:
+   - enumerate the phase-specific review dimensions below and map every applicable authoritative input to top-level attention, progressive drill-down, or an explicit not-applicable rationale;
    - confirmed facts and constraints, each with a source link;
    - unresolved evidence gaps;
    - open decisions a human must make, each with the credible options;
    - phase-specific derived synthesis, clearly labeled.
 3. Resolve contradictions in favor of authoritative data. Stop generation if two authoritative inputs conflict or a required record cannot be identified uniquely.
-4. Write a concise Markdown fallback first. It must expose the recommendation, required human decisions, critical constraints, and source links without running HTML.
+4. Write a compact Markdown fallback first. It must expose the phase goal, every applicable review dimension, required human decisions, critical constraints, and source links without running HTML.
 5. Add one valid `html-preview` fence containing a complete, standalone document. Prefer one preview per projection so the intended review surface is the first preview.
 6. Serialize a deterministic source manifest containing the selected source identities, body digests or exact revisions, and typed statuses and links. Hash that manifest for `--source-digest`; do not hash only `projection.md`, and exclude the projection itself.
-7. Validate the Markdown, preview metadata, keyboard flow, narrow layout, and GitHub fallback.
+7. Audit coverage before validating presentation: every applicable ledger entry must be discoverable, and a phase with no open decision must still expose settled premises, evidence gaps, alternatives, boundaries, risks, and verification obligations. Then validate the Markdown, preview metadata, keyboard flow, narrow layout, and GitHub fallback.
 8. Upsert the one logical phase comment. The CLI appends the projection marker; do not add a typed marker or projection marker inside the body.
 
 Example write:
@@ -63,10 +65,10 @@ Optimize for a reviewer deciding where to spend attention, not for decorative an
 
 Use this hierarchy:
 
-1. **Review summary:** one sentence on the proposed direction, the exact request to the reviewer, and up to three high-signal counts.
-2. **Attention queue:** unresolved human decisions first, evidence gaps second, then settled choices needing constraint verification.
+1. **Review summary:** one sentence on the phase goal and proposed direction, the exact request to the reviewer, and up to three high-signal counts.
+2. **Attention queue:** unresolved human decisions first, evidence gaps second, then settled choices needing constraint verification. When there is no open decision, say so without collapsing the rest of the review surface.
 3. **Recommendation and comparison:** state the recommendation, premises, benefits, costs, credible alternatives, and what changes if the recommendation is rejected.
-4. **Phase model:** show the relevant journey, data flow, dependency graph, or execution plan.
+4. **Phase model:** show every applicable phase dimension through the relevant journey, data flow, dependency graph, or execution plan.
 5. **Drill-down and sources:** place details, history, estimates, and source links behind tabs, accordions, or `details`.
 
 Use a calm, consistent visual language:
@@ -96,16 +98,17 @@ Help a reviewer turn scene, goal, and proposed scope into decisions before compl
 1. State the user/problem scene, desired outcome, success signal, and proposed boundary.
 2. Separate settled choices, evidence-dependent items, and genuine decisions.
 3. For each genuine decision, show the recommended option, premises, alternatives, benefits, costs, reversibility, and affected goals.
-4. Summarize the expected SPEC coverage and explicitly call out what remains intentionally out of scope.
+4. Cover risks, assumptions, expected SPEC coverage, non-goals, and what remains intentionally out of scope.
 
 ### Design explainer
 
 Help a reviewer understand correctness and alternatives before complete TASK planning:
 
-1. Start with the selected architecture and the invariants the implementation must preserve.
+1. Start with the selected architecture and every invariant the implementation must preserve.
 2. Present the end-to-end data or control flow as numbered steps, with failure and trust boundaries visible.
-3. Compare rejected or conditional alternatives only where they clarify a real decision.
-4. Provide drill-down for interfaces, state transitions, compatibility, rollout, and verification strategy.
+3. Cover interfaces, shared state, cache or persistence behavior, state transitions, and downstream consumers where applicable.
+4. Compare rejected or conditional alternatives and the premises that made the selected design preferable.
+5. Cover compatibility, migration, rollout, rollback, risks, verification strategy, and traceability to every active SPEC.
 
 Use interaction to explore layers or branches; do not add animation merely to make the page feel active.
 
@@ -231,6 +234,9 @@ Use a stable preview ID for the logical phase view. Metadata accepts only `id`, 
 
 Before upsert:
 
+- [ ] A coverage ledger maps every applicable authoritative input and phase review dimension to top-level attention, progressive drill-down, or an explicit not-applicable rationale.
+- [ ] The projection is understandable as a complete current review surface rather than a delta from design information the reviewer is presumed to know.
+- [ ] If there is no open decision, settled premises, evidence gaps, alternatives, boundaries, risks, and verification obligations remain discoverable.
 - [ ] Every displayed fact has an authoritative source or is labeled synthesis.
 - [ ] The Markdown fallback communicates recommendations, decisions, constraints, and links without HTML execution.
 - [ ] Settled, evidence-needed, decision-needed, blocker, and estimate states are visually and textually distinct.

@@ -57,7 +57,7 @@ Use this coordinator protocol for issue-native proposal, design, implementation,
 
 ## Human Review Projections
 
-Before generating or updating any phase projection, read [Human Review Projection Generation](references/human-review-projections.md) completely. Use it to build the Markdown fallback, the single `html-preview` review surface, source digest, and validation checks before running `projection upsert`.
+Before generating or updating any phase projection, read [Human Review Projection Generation](references/human-review-projections.md) completely. Build a coverage ledger from authoritative inputs, then produce a coverage-complete review surface rather than a delta, changelog, or executive summary. Use the reference to build the Markdown fallback, the single `html-preview` review surface, source digest, coverage audit, and validation checks before running `projection upsert`.
 
 ## Project Workflow
 
