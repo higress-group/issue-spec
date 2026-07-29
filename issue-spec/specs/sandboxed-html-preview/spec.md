@@ -326,3 +326,30 @@ When a capable self-host Web surface shows a typed QUESTION comment carrying a c
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/331#issuecomment-5060936620
 - https://github.com/higress-group/issue-spec/pull/338
+
+### Requirement: trusted self-hosted CLI QUESTION answers
+
+For a self-hosted profile, issue-spec CLI QUESTION answering MUST confirm the current QUESTION through the profile's validated native API origin, MUST submit only the current QUESTION identity and unchanged body digest plus bounded selected-option or custom intent, and MUST report the canonical ANSWER identity returned in the created server comment. It MUST NOT send caller-chosen ANSWER identity, locally rendered ANSWER Markdown, actor, or timestamp through the native route, and MUST NOT fall back to a compatibility comment write. GitHub-backed QUESTION answering MUST preserve its existing append-only typed-comment behavior.
+
+#### Scenario: self-hosted selected option is appended canonically
+
+- **WHEN** a caller uses a self-hosted profile to answer a current choice-enabled QUESTION with one or more valid stable option IDs
+- **THEN** the CLI passes the native GET digest unchanged into a bounded native POST, appends no compatibility comment, and reports the actual server-generated ANSWER ID from the returned canonical comment
+
+#### Scenario: self-hosted custom answer is appended canonically
+
+- **WHEN** a caller uses a self-hosted profile to answer a current QUESTION with allowed non-empty custom text instead of predefined options
+- **THEN** the CLI sends the custom intent without typed ANSWER Markdown or caller ANSWER authority, appends no compatibility comment, and reports the actual server-generated ANSWER ID
+
+#### Scenario: GitHub-backed behavior remains compatible
+
+- **WHEN** a caller uses a GitHub-backed profile to answer a choice-enabled QUESTION
+- **THEN** duplicate caller ANSWER IDs are rejected and a valid answer retains the existing snapshot, rendering, compatibility `CreateComment`, caller ID, and output behavior
+
+#### Scenario: choice-enabled QUESTION rewrite remains forbidden
+
+- **WHEN** a caller tries to resolve and rewrite a choice-enabled QUESTION or generically upsert an ANSWER
+- **THEN** issue-spec fails closed and directs the caller to append a new answer with `question answer`
+
+Source Design:
+- https://github.com/higress-group/issue-spec/issues/362

@@ -30,30 +30,31 @@ type app struct {
 	err         io.Writer
 	profileName string
 
-	selectGitHubBackend          func(context.Context, string) (auth.GitHubBackendSelection, error)
-	selectRunnerBackend          func(context.Context, string, auth.GitHubBackendMode) (auth.GitHubBackendSelection, error)
-	newGitHubBackend             func(context.Context, auth.GitHubBackendSelection) (github.Backend, error)
-	gitHubBackendToken           func(context.Context, auth.GitHubBackendSelection) (string, error)
-	runnerPreflight              func(context.Context, commentrunner.Config) commentrunner.PreflightReport
-	runnerIntake                 func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error)
-	newRunnerNotificationBackend func(context.Context, commentrunner.Config) (runnerNotificationBackend, error)
-	runnerReconcile              func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error)
-	runnerDispatch               func(context.Context, commentrunner.Config) (jobs.Result, error)
-	runnerCancellationDrain      func(context.Context, commentrunner.Config) (jobs.Result, error)
-	runnerDiagnostics            *runnerLogger
-	newNativeEvidenceProvider    func(auth.Profile, string) (nativeEvidenceProvider, error)
-	newNativeSearchProvider      func(auth.Profile, string) (nativeSearchProvider, error)
-	newNativeCodeChangeBackend   func(auth.Profile, string) (nativeCodeChangeBackend, error)
-	lookupOperatorProvider       func(context.Context, auth.Profile, string) (codereview.Provider, error)
-	doctorAgentProbe             func(context.Context, capability.Request) (capability.Report, error)
-	newRequirementsAPI           func(auth.Profile, string) (requirementsAPI, error)
-	saveRequirementsProfile      func(auth.Profile, bool) error
-	storeRequirementsToken       func(context.Context, auth.Profile, string, bool) (string, error)
-	resolveRequirementsToken     func(context.Context, auth.Profile) (auth.Token, error)
-	readRequirementsSecret       func(io.Reader, io.Writer) (string, error)
-	stdinIsTerminal              func(io.Reader) bool
-	resolveFinalizationBaseline  func(context.Context, string, string) (string, error)
-	openWorkspace                func(context.Context, string, string, processworkspace.ManagerOptions) (workspaceService, error)
+	selectGitHubBackend             func(context.Context, string) (auth.GitHubBackendSelection, error)
+	selectRunnerBackend             func(context.Context, string, auth.GitHubBackendMode) (auth.GitHubBackendSelection, error)
+	newGitHubBackend                func(context.Context, auth.GitHubBackendSelection) (github.Backend, error)
+	gitHubBackendToken              func(context.Context, auth.GitHubBackendSelection) (string, error)
+	runnerPreflight                 func(context.Context, commentrunner.Config) commentrunner.PreflightReport
+	runnerIntake                    func(context.Context, commentrunner.Config, intake.Options) (intake.Result, error)
+	newRunnerNotificationBackend    func(context.Context, commentrunner.Config) (runnerNotificationBackend, error)
+	runnerReconcile                 func(context.Context, commentrunner.Config) (jobs.ReconcileResult, error)
+	runnerDispatch                  func(context.Context, commentrunner.Config) (jobs.Result, error)
+	runnerCancellationDrain         func(context.Context, commentrunner.Config) (jobs.Result, error)
+	runnerDiagnostics               *runnerLogger
+	newNativeEvidenceProvider       func(auth.Profile, string) (nativeEvidenceProvider, error)
+	newNativeSearchProvider         func(auth.Profile, string) (nativeSearchProvider, error)
+	newNativeQuestionAnswerProvider func(auth.Profile, string) (github.NativeQuestionAnswerOperations, error)
+	newNativeCodeChangeBackend      func(auth.Profile, string) (nativeCodeChangeBackend, error)
+	lookupOperatorProvider          func(context.Context, auth.Profile, string) (codereview.Provider, error)
+	doctorAgentProbe                func(context.Context, capability.Request) (capability.Report, error)
+	newRequirementsAPI              func(auth.Profile, string) (requirementsAPI, error)
+	saveRequirementsProfile         func(auth.Profile, bool) error
+	storeRequirementsToken          func(context.Context, auth.Profile, string, bool) (string, error)
+	resolveRequirementsToken        func(context.Context, auth.Profile) (auth.Token, error)
+	readRequirementsSecret          func(io.Reader, io.Writer) (string, error)
+	stdinIsTerminal                 func(io.Reader) bool
+	resolveFinalizationBaseline     func(context.Context, string, string) (string, error)
+	openWorkspace                   func(context.Context, string, string, processworkspace.ManagerOptions) (workspaceService, error)
 }
 
 type commandFunc func(context.Context, []string) int
@@ -161,25 +162,26 @@ func extractGlobalProfile(args []string) (string, []string, error) {
 
 func newApp(in io.Reader, out io.Writer, errOut io.Writer) *app {
 	return &app{
-		in:                          in,
-		out:                         out,
-		err:                         errOut,
-		newRequirementsAPI:          defaultNewRequirementsAPI,
-		saveRequirementsProfile:     auth.SaveProfile,
-		storeRequirementsToken:      auth.StoreProfileToken,
-		resolveRequirementsToken:    auth.ResolveProfileToken,
-		readRequirementsSecret:      readHiddenRequirementsSecret,
-		stdinIsTerminal:             requirementsInputIsTerminal,
-		selectGitHubBackend:         defaultSelectGitHubBackend,
-		selectRunnerBackend:         defaultSelectRunnerBackend,
-		newGitHubBackend:            defaultNewGitHubBackend,
-		gitHubBackendToken:          defaultGitHubBackendToken,
-		newNativeEvidenceProvider:   defaultNewNativeEvidenceProvider,
-		newNativeSearchProvider:     defaultNewNativeSearchProvider,
-		newNativeCodeChangeBackend:  defaultNewNativeCodeChangeBackend,
-		lookupOperatorProvider:      defaultResolveOperatorProvider,
-		resolveFinalizationBaseline: defaultResolveFinalizationBaseline,
-		openWorkspace:               defaultOpenWorkspace,
+		in:                              in,
+		out:                             out,
+		err:                             errOut,
+		newRequirementsAPI:              defaultNewRequirementsAPI,
+		saveRequirementsProfile:         auth.SaveProfile,
+		storeRequirementsToken:          auth.StoreProfileToken,
+		resolveRequirementsToken:        auth.ResolveProfileToken,
+		readRequirementsSecret:          readHiddenRequirementsSecret,
+		stdinIsTerminal:                 requirementsInputIsTerminal,
+		selectGitHubBackend:             defaultSelectGitHubBackend,
+		selectRunnerBackend:             defaultSelectRunnerBackend,
+		newGitHubBackend:                defaultNewGitHubBackend,
+		gitHubBackendToken:              defaultGitHubBackendToken,
+		newNativeEvidenceProvider:       defaultNewNativeEvidenceProvider,
+		newNativeSearchProvider:         defaultNewNativeSearchProvider,
+		newNativeQuestionAnswerProvider: defaultNewNativeQuestionAnswerProvider,
+		newNativeCodeChangeBackend:      defaultNewNativeCodeChangeBackend,
+		lookupOperatorProvider:          defaultResolveOperatorProvider,
+		resolveFinalizationBaseline:     defaultResolveFinalizationBaseline,
+		openWorkspace:                   defaultOpenWorkspace,
 	}
 }
 
@@ -222,6 +224,7 @@ Usage:
   issue-spec comment transition --repo owner/repo --issue 2 --id TASK-2001 --to done [--expected-version N|--expected-digest SHA256]
   issue-spec comment list --repo owner/repo --issue N [--type SPEC] [--json]
   issue-spec question create --repo owner/repo --issue 1 --id QUESTION-1001 --question "..."
+  issue-spec question answer --repo owner/repo --issue 1 --id ANSWER-1001 --question-id QUESTION-1001 (--select option-id|--custom "answer")
   issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-1001 --resolution-file file.md
     new typed IDs use <TYPE>-<issue><three-digit sequence>; allocate the sequence within that Issue and type
   issue-spec projection upsert --repo owner/repo --issue N --phase proposal-choice-brief --source-digest SHA256 --body-file file.md [--allow-nonatomic --expected-absence|--allow-nonatomic --expected-digest SHA256]
