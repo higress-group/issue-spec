@@ -14,7 +14,7 @@ func TestRouteSetRequiresServiceAndUsesOneUnambiguousTailPerMethod(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(set.Routes) != 3 {
-		t.Fatalf("routes = %d, want one GET/POST/PATCH tail dispatcher", len(set.Routes))
+	if len(set.Routes) != 4 {
+		t.Fatalf("routes = %d, want one GET/POST/PATCH/DELETE tail dispatcher", len(set.Routes))
 	}
 }

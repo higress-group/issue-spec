@@ -11,6 +11,7 @@ var (
 	// a backend cannot prove caller-version CAS support.
 	ErrConditionalCommentMutationUnsupported = errors.New("conditional comment mutation is unsupported")
 	ErrCommentMutationConflict               = errors.New("comment representation conflict")
+	ErrIssueCommentDeleteUnsupported         = errors.New("issue comment deletion is unsupported by the selected backend")
 )
 
 const (
@@ -47,6 +48,13 @@ type IssueCommentObserver interface {
 	ObserveIssueComment(context.Context, string, int64) (IssueCommentObservation, error)
 }
 
+// IssueCommentDeleteBackend is an optional destructive capability. Keeping it
+// separate from IssueBackend preserves source compatibility for issue
+// providers and fakes that do not support comment deletion.
+type IssueCommentDeleteBackend interface {
+	DeleteComment(context.Context, string, int64) error
+}
+
 type ConditionalCommentBackend interface {
 	GetCommentRepresentation(context.Context, string, int64) (CommentRepresentation, error)
 	UpdateCommentConditional(context.Context, string, int64, int64, string) (CommentRepresentation, error)
@@ -69,6 +77,14 @@ func RequireConditionalCommentBackend(backend IssueBackend) (ConditionalCommentB
 		return nil, ErrConditionalCommentMutationUnsupported
 	}
 	return conditional, nil
+}
+
+func RequireIssueCommentDeleteBackend(backend IssueBackend) (IssueCommentDeleteBackend, error) {
+	deleter, ok := backend.(IssueCommentDeleteBackend)
+	if !ok {
+		return nil, ErrIssueCommentDeleteUnsupported
+	}
+	return deleter, nil
 }
 
 // IssueBackend is the issue-native surface. Self-hosted profiles implement

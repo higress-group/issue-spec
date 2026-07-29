@@ -263,6 +263,12 @@ test.beforeEach(async ({ page }) => {
       comments = [...comments, created];
       return route.fulfill({ status: 201, json: created });
     }
+    if (/^\/repos\/acme\/workflow\/issues\/comments\/\d+$/.test(url.pathname) && request.method() === "DELETE") {
+      const commentId = Number(url.pathname.split("/").pop());
+      comments = comments.filter((comment) => comment.id !== commentId);
+      activeIssue = { ...activeIssue, comments: comments.length };
+      return route.fulfill({ status: 204 });
+    }
     if (url.pathname === "/repos/acme/workflow/issues/comments/9/reactions") return route.fulfill({ json: [{ id: 7, user: user, content: "+1", created_at: "2026-07-10T12:00:00Z" }] });
     if (/^\/repos\/acme\/workflow\/issues\/comments\/\d+\/reactions$/.test(url.pathname)) return route.fulfill({ json: [] });
     if (url.pathname === "/api/v1/context/repos/acme/workflow/issues/41/relationships") return route.fulfill({ json: { relationships: externalContributor ? [] : relationships } });
@@ -359,6 +365,32 @@ test("issue detail is polished, accessible and preserves raw workflow text", asy
     await expect(comment).toHaveValue("");
     await expect(page.getByText(newComment)).toBeVisible();
   }
+});
+
+test("comment deletion requires trusted confirmation and converges after success", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "issues-desktop-1440");
+  const body = documentationText(
+    "The runner should preserve **raw Markdown** and agent metadata.",
+    "运行器应保留**原始 Markdown**和智能体元数据。",
+  );
+  await page.goto("/acme/workflow/issues/41");
+  const comment = page.locator("#issuecomment-9");
+  await expect(comment).toContainText(documentationText("The runner should preserve", "运行器应保留"));
+
+  await comment.getByRole("button", { name: documentationText("Delete", "删除") }).click();
+  const confirmation = page.getByRole("dialog", { name: documentationText("Delete this comment?", "删除这条评论？") });
+  await expect(confirmation).toBeVisible();
+  await expect(confirmation).not.toContainText(body);
+  await confirmation.getByRole("button", { name: documentationText("Cancel", "取消") }).click();
+  await expect(confirmation).toHaveCount(0);
+  await expect(comment).toBeVisible();
+
+  await comment.getByRole("button", { name: documentationText("Delete", "删除") }).click();
+  await confirmation.getByRole("button", { name: documentationText("Delete comment", "删除评论") }).click();
+  await expect(comment).toHaveCount(0);
+  await expect(page.getByText(documentationText("0 comments", "0 条评论"))).toBeVisible();
+  const accessibility = await new AxeBuilder({ page }).analyze();
+  expect(accessibility.violations).toEqual([]);
 });
 
 test("issue comments render Mermaid flow and sequence diagrams", async ({ page }, testInfo) => {

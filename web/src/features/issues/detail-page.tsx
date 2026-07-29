@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, CircleDot, Link2, LockKeyhole, Pencil, RotateCcw } from "lucide-react";
+import { Check, CircleDot, Link2, LockKeyhole, Pencil, RotateCcw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { LabelChips, LabelSelector } from "../../components/labels/label-chips";
@@ -164,9 +164,69 @@ function AnswerConfirmation({ owner, repo, number, intent, onClose }: {
   </dialog>;
 }
 
+function CommentDeleteConfirmation({ owner, repo, number, commentId, onClose }: {
+  owner: string;
+  repo: string;
+  number: number;
+  commentId: number;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog || dialog.open) return;
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.open = true;
+  }, []);
+  const mutation = useMutation({
+    mutationFn: () => issueApi.deleteComment(owner, repo, commentId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["issues", owner, repo, number], exact: true }),
+        queryClient.invalidateQueries({ queryKey: ["issues", owner, repo, number, "comments"], exact: true }),
+      ]);
+      onClose();
+    },
+  });
+  const heading = `delete-comment-heading-${commentId}`;
+  return <dialog
+    ref={dialogRef}
+    className="comment-delete-dialog"
+    aria-labelledby={heading}
+    onCancel={(event) => {
+      if (mutation.isPending) event.preventDefault();
+      else onClose();
+    }}
+    onClick={(event) => {
+      if (event.target === dialogRef.current && !mutation.isPending) onClose();
+    }}
+  >
+    <section className="comment-delete-confirmation">
+      <div>
+        <span className="issue-kicker coral">{t("issues.detail.deleteCommentKicker")}</span>
+        <h2 id={heading}>{t("issues.detail.deleteCommentTitle")}</h2>
+      </div>
+      <p>{t("issues.detail.deleteCommentWarning")}</p>
+      {mutation.error ? <p className="issue-inline-error" role="alert">{t("issues.detail.deleteCommentFailed")}</p> : null}
+      <div className="comment-delete-actions">
+        <button className="issue-button" type="button" disabled={mutation.isPending} onClick={onClose}>
+          {t("issues.detail.cancelDeleteComment")}
+        </button>
+        <button className="issue-button danger" type="button" disabled={mutation.isPending} onClick={() => mutation.mutate()}>
+          <Trash2 aria-hidden="true" />
+          {t(mutation.isPending ? "issues.detail.deletingComment" : "issues.detail.confirmDeleteComment")}
+        </button>
+      </div>
+    </section>
+  </dialog>;
+}
+
 function EditableComment({ comment, owner, repo, number, issuePath, currentLogin, canContribute, canTriage, now, createPreviewContext, renderFirstPreview, questionPanel }: { comment: IssueComment; owner: string; repo: string; number: number; issuePath: string; currentLogin: string; canContribute: boolean; canTriage: boolean; now: number; createPreviewContext: PreviewContextFactory; renderFirstPreview: boolean; questionPanel?: { canAnswer: boolean; onAnswerIntent: (intent: PreviewAnswerIntent) => void } }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const queryClient = useQueryClient();
   const previewContext = useMemo(
@@ -187,7 +247,11 @@ function EditableComment({ comment, owner, repo, number, issuePath, currentLogin
   const copyLabel = t(copyStatus === "copied" ? "issues.detail.linkCopied" : copyStatus === "failed" ? "issues.detail.copyLinkFailed" : "issues.detail.copyLink");
   const wasEdited = isLaterTimestamp(comment.updated_at, comment.created_at);
   const questionId = questionPanel ? questionCommentId(comment.body) : null;
-  return <article className="timeline-card" id={`issuecomment-${comment.id}`} tabIndex={-1}><header><Avatar login={comment.user.login} displayName={comment.user.name} src={comment.user.avatar_url} /><span><AuthorName user={comment.user} /><small><Trans i18nKey={wasEdited ? "issues.detail.commentedAndEditedRelative" : "issues.detail.commentedRelative"} components={{ createdTime: <PreciseRelativeTime value={comment.created_at} now={now} />, editedTime: <PreciseRelativeTime value={comment.updated_at} now={now} /> }} /></small></span><div className="comment-actions"><button className="quiet-action" type="button" onClick={copyLink} aria-live="polite">{copyStatus === "copied" ? <Check aria-hidden="true" /> : <Link2 aria-hidden="true" />}{copyLabel}</button>{canEdit && !editing ? <button className="quiet-action" type="button" onClick={() => setEditing(true)}><Pencil aria-hidden="true" />{t("issues.detail.edit")}</button> : null}</div></header><div className="timeline-body">{editing ? <CommentEditor initial={comment.body} submitLabel={t("issues.detail.saveComment")} pending={mutation.isPending} error={mutation.error} onCancel={() => setEditing(false)} onSubmit={(body) => mutation.mutate(body)} /> : <MarkdownView source={comment.body} previewContext={hasHtmlPreview(comment.body) ? previewContext : undefined} renderFirstPreview={renderFirstPreview} />}</div>{!editing && questionPanel && questionId ? <QuestionAnswerPanel owner={owner} repo={repo} number={number} questionId={questionId} now={now} canAnswer={questionPanel.canAnswer} onAnswerIntent={questionPanel.onAnswerIntent} /> : null}{!editing ? <ReactionPicker owner={owner} repo={repo} commentId={comment.id} summary={comment.reactions} currentLogin={currentLogin} readOnly={!canContribute} /> : null}</article>;
+  return <article className="timeline-card" id={`issuecomment-${comment.id}`} tabIndex={-1}>
+    {confirmingDelete ? <CommentDeleteConfirmation owner={owner} repo={repo} number={number} commentId={comment.id} onClose={() => setConfirmingDelete(false)} /> : null}
+    <header><Avatar login={comment.user.login} displayName={comment.user.name} src={comment.user.avatar_url} /><span><AuthorName user={comment.user} /><small><Trans i18nKey={wasEdited ? "issues.detail.commentedAndEditedRelative" : "issues.detail.commentedRelative"} components={{ createdTime: <PreciseRelativeTime value={comment.created_at} now={now} />, editedTime: <PreciseRelativeTime value={comment.updated_at} now={now} /> }} /></small></span><div className="comment-actions"><button className="quiet-action" type="button" onClick={copyLink} aria-live="polite">{copyStatus === "copied" ? <Check aria-hidden="true" /> : <Link2 aria-hidden="true" />}{copyLabel}</button>{canEdit && !editing ? <><button className="quiet-action" type="button" onClick={() => setEditing(true)}><Pencil aria-hidden="true" />{t("issues.detail.edit")}</button><button className="quiet-action danger-text" type="button" onClick={() => setConfirmingDelete(true)}><Trash2 aria-hidden="true" />{t("issues.detail.deleteComment")}</button></> : null}</div></header>
+    <div className="timeline-body">{editing ? <CommentEditor initial={comment.body} submitLabel={t("issues.detail.saveComment")} pending={mutation.isPending} error={mutation.error} onCancel={() => setEditing(false)} onSubmit={(body) => mutation.mutate(body)} /> : <MarkdownView source={comment.body} previewContext={hasHtmlPreview(comment.body) ? previewContext : undefined} renderFirstPreview={renderFirstPreview} />}</div>{!editing && questionPanel && questionId ? <QuestionAnswerPanel owner={owner} repo={repo} number={number} questionId={questionId} now={now} canAnswer={questionPanel.canAnswer} onAnswerIntent={questionPanel.onAnswerIntent} /> : null}{!editing ? <ReactionPicker owner={owner} repo={repo} commentId={comment.id} summary={comment.reactions} currentLogin={currentLogin} readOnly={!canContribute} /> : null}
+  </article>;
 }
 
 export function IssueDetail({ active }: { active: ActiveRepository }) {

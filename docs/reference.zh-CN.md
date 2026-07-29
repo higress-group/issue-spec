@@ -82,6 +82,8 @@ issue-spec issue close --repo owner/repo --issue 1 --json
 issue-spec issue reopen --repo owner/repo --issue 1 --json
 
 issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --json
+issue-spec comment edit --repo owner/repo --comment-id 123 --body-file reply.md --json
+issue-spec comment delete --repo owner/repo --comment-id 123 --json
 issue-spec comment generate --type SPEC --id SPEC-1001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file spec.md
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file legacy.md --allow-noncanonical
@@ -241,6 +243,13 @@ Archive 路径。self-hosted 的 Review、Merge 与代码变更关闭仍由所�
 issue 时间线评论。它支持 `--body-file -` 从 stdin 读取，并可通过 `--json` 仅返回
 comment ID、URL 等有界的创建元数据。该命令不会添加 typed marker，也不会把正文
 当作工作流 artifact 校验。
+
+`comment edit` 与 `comment delete` 通过仓库和正数 provider comment ID 精确定位一条
+评论。edit 要求非空 `--body-file`，并使用所选 backend 现有的 PATCH 操作；delete
+要求所选 backend 显式支持评论删除并发送 DELETE 请求，且操作不可撤销。两个命令
+都会在选择 backend 前校验输入，只返回 action、repository 与 comment ID 等有界
+元数据，绝不输出评论正文或凭据。self-hosted profile 只使用配置的 REST origin，
+不会探测 `gh`。
 
 `comment list --json` 默认保持现有的解析后 artifact schema 不变。加上
 `--include-body` 后，每条返回的 artifact 会新增顶层 `body` 字段，其中包含后端

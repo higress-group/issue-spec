@@ -110,6 +110,18 @@ func TestGHBackendIssueOperationsCommandConstructionAndDecoding(t *testing.T) {
 			},
 		},
 		{
+			name: "delete comment",
+			call: func(b *GHBackend) (any, error) {
+				return nil, b.DeleteComment(context.Background(), "o/r", 101)
+			},
+			wantArgs: []string{"api", "--method", http.MethodDelete, "--header", githubAPIVersion, "/repos/o/r/issues/comments/101"},
+			assertion: func(t *testing.T, got any) {
+				if got != nil {
+					t.Fatalf("delete result = %#v, want nil", got)
+				}
+			},
+		},
+		{
 			name:   "create label",
 			stdout: `{"name":"issue-spec/proposal"}`,
 			call: func(b *GHBackend) (any, error) {

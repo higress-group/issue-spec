@@ -82,6 +82,8 @@ issue-spec issue close --repo owner/repo --issue 1 --json
 issue-spec issue reopen --repo owner/repo --issue 1 --json
 
 issue-spec comment create --repo owner/repo --issue 1 --body-file reply.md --json
+issue-spec comment edit --repo owner/repo --comment-id 123 --body-file reply.md --json
+issue-spec comment delete --repo owner/repo --comment-id 123 --json
 issue-spec comment generate --type SPEC --id SPEC-1001 --status confirmed --scope "canonical SPEC generation" --input-file spec.json
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file spec.md
 issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file legacy.md --allow-noncanonical
@@ -256,6 +258,15 @@ hosted GitHub or self-hosted REST issue backend. It accepts `--body-file -` for
 stdin pipelines and, with `--json`, returns only bounded creation metadata such
 as the comment ID and URL. It does not add a typed marker or validate the body
 as a workflow artifact.
+
+`comment edit` and `comment delete` locate exactly one comment by repository and
+positive provider comment ID. Edit requires a non-empty `--body-file` and uses
+the selected backend's existing PATCH operation. Delete requires the selected
+backend to advertise comment deletion and sends a DELETE request; it is
+irreversible. Both commands validate their inputs before backend selection and
+return only bounded action, repository, and comment-ID metadata, never the
+comment body or credential. A self-hosted profile uses only its configured REST
+origin and never probes `gh`.
 
 `comment list --json` keeps its existing parsed-artifact schema by default.
 Adding `--include-body` gives each returned artifact a top-level `body` field

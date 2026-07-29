@@ -278,6 +278,97 @@ describe("canonical issue read authority", () => {
     expect(screen.queryByRole("button", { name: "Subscribe to repository" })).not.toBeInTheDocument();
   });
 
+  it("confirms one comment deletion, prevents duplicate submission, and refreshes issue and comments", async () => {
+    let commentPresent = true;
+    let deleteRequests = 0;
+    let issueReads = 0;
+    let commentReads = 0;
+    let finishDelete: (() => void) | undefined;
+    const deleteGate = new Promise<void>((resolve) => { finishDelete = resolve; });
+    server.use(
+      http.get("http://localhost/repos/acme/workflow/issues/41", () => {
+        issueReads += 1;
+        return HttpResponse.json(issueFixture({ comments: commentPresent ? 1 : 0 }));
+      }),
+      http.get("http://localhost/repos/acme/workflow/issues/41/comments", () => {
+        commentReads += 1;
+        return HttpResponse.json(commentPresent ? [commentFixture({ body: "Sensitive comment body" })] : []);
+      }),
+      http.get("http://localhost/repos/acme/workflow/labels", () => HttpResponse.json([label])),
+      http.get("http://localhost/repos/acme/workflow/issues/comments/9/reactions", () => HttpResponse.json([])),
+      http.get("http://localhost/api/v1/context/repos/acme/workflow/issues/41/relationships", () => HttpResponse.json({ relationships: [] })),
+      http.delete("http://localhost/repos/acme/workflow/issues/comments/9", async () => {
+        deleteRequests += 1;
+        await deleteGate;
+        commentPresent = false;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderIssueDetail(activeRepository(true, ["read", "contribute"]));
+    const user = userEvent.setup();
+    expect(await screen.findByText("Sensitive comment body")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    let dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "Delete this comment?" })).toBeVisible();
+    expect(within(dialog).queryByText("Sensitive comment body")).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(deleteRequests).toBe(0);
+    expect(screen.getByText("Sensitive comment body")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    dialog = screen.getByRole("dialog");
+    const confirm = within(dialog).getByRole("button", { name: "Delete comment" });
+    await user.click(confirm);
+    expect(within(dialog).getByRole("button", { name: "Deleting…" })).toBeDisabled();
+    expect(screen.getByText("Sensitive comment body")).toBeVisible();
+    await user.click(within(dialog).getByRole("button", { name: "Deleting…" }));
+    expect(deleteRequests).toBe(1);
+
+    finishDelete?.();
+    await waitFor(() => expect(screen.queryByText("Sensitive comment body")).not.toBeInTheDocument());
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(issueReads).toBeGreaterThan(1);
+    expect(commentReads).toBeGreaterThan(1);
+  });
+
+  it("keeps a failed comment deletion visible with an accessible retry error", async () => {
+    installIssueDetailHandlers();
+    server.use(http.delete("http://localhost/repos/acme/workflow/issues/comments/9",
+      () => HttpResponse.json({ message: "Delete failed" }, { status: 500 })));
+    renderIssueDetail(activeRepository(true, ["read", "contribute", "triage"]));
+    const user = userEvent.setup();
+    expect(await screen.findByText("Comment", { selector: ".markdown-view p" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = screen.getByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Delete comment" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("comment was not deleted");
+    expect(screen.getByText("Comment", { selector: ".markdown-view p" })).toBeVisible();
+    expect(screen.getByRole("dialog")).toBeVisible();
+  });
+
+  it("matches comment delete visibility to author-or-triager authority", async () => {
+    installIssueDetailHandlers();
+    const authorView = renderIssueDetail(activeRepository(true, ["read", "contribute"]));
+    expect(await screen.findByRole("button", { name: "Delete" })).toBeVisible();
+    authorView.unmount();
+
+    installIssueDetailHandlers();
+    server.use(http.get("http://localhost/repos/acme/workflow/issues/41/comments",
+      () => HttpResponse.json([commentFixture({ user: { ...userFixture(), login: "bob" } })])));
+    const otherView = renderIssueDetail(activeRepository(true, ["read", "contribute"]));
+    expect(await screen.findByText("Comment", { selector: ".markdown-view p" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    otherView.unmount();
+
+    installIssueDetailHandlers();
+    server.use(http.get("http://localhost/repos/acme/workflow/issues/41/comments",
+      () => HttpResponse.json([commentFixture({ user: { ...userFixture(), login: "bob" } })])));
+    renderIssueDetail(activeRepository(true, ["read", "contribute", "triage"]));
+    expect(await screen.findByRole("button", { name: "Delete" })).toBeVisible();
+  });
+
   it("preserves a comment preview across issue clock ticks and tears it down when the source changes", async () => {
     const firstBody = "```html-preview id=comment-review version=1 title=\"comment-review\"\n<!doctype html><input type=\"radio\" checked>\n```";
     const secondBody = firstBody.replace("checked", "data-revised");
@@ -711,6 +802,7 @@ describe("GitHub-compatible issue API", () => {
       http.patch("http://localhost/repos/acme/workflow/issues/41", ({ request }) => { methods.push(request.method); return HttpResponse.json(issueFixture({ state: "closed" })); }),
       http.post("http://localhost/repos/acme/workflow/issues/41/comments", ({ request }) => { methods.push(request.method); return HttpResponse.json(commentFixture(), { status: 201 }); }),
       http.patch("http://localhost/repos/acme/workflow/issues/comments/9", ({ request }) => { methods.push(request.method); return HttpResponse.json(commentFixture({ body: "edited" })); }),
+      http.delete("http://localhost/repos/acme/workflow/issues/comments/9", ({ request }) => { methods.push(request.method); return new HttpResponse(null, { status: 204 }); }),
       http.put("http://localhost/repos/acme/workflow/issues/41/labels", ({ request }) => { methods.push(request.method); return HttpResponse.json([label]); }),
       http.post("http://localhost/repos/acme/workflow/issues/comments/9/reactions", ({ request }) => { methods.push(request.method); return HttpResponse.json(reactionFixture(), { status: 201 }); }),
       http.delete("http://localhost/repos/acme/workflow/issues/comments/9/reactions/7", ({ request }) => { methods.push(request.method); return new HttpResponse(null, { status: 204 }); }),
@@ -719,10 +811,11 @@ describe("GitHub-compatible issue API", () => {
     await issueApi.updateIssue("acme", "workflow", 41, { state: "closed" });
     await issueApi.createComment("acme", "workflow", 41, "hello");
     await issueApi.updateComment("acme", "workflow", 9, "edited");
+    await issueApi.deleteComment("acme", "workflow", 9);
     await issueApi.replaceLabels("acme", "workflow", 41, [label.name]);
     await issueApi.createReaction("acme", "workflow", 9, "+1");
     await issueApi.deleteReaction("acme", "workflow", 9, 7);
-    expect(methods).toEqual(["PATCH", "POST", "PATCH", "PUT", "POST", "DELETE"]);
+    expect(methods).toEqual(["PATCH", "POST", "PATCH", "DELETE", "PUT", "POST", "DELETE"]);
     await expect(issueApi.updateIssue("acme", "workflow", 99, { title: "conflict" })).rejects.toMatchObject({ status: 409, requestId: "conflict-request" });
   });
 

@@ -25,6 +25,12 @@ type CommentVersionConflictError struct {
 	Current  int64
 }
 
+type DeletedComment struct {
+	Snapshot               models.CommentSnapshot
+	HadTypedProjection     bool
+	HadProjectionAnomalies bool
+}
+
 func (e *CommentVersionConflictError) Error() string {
 	return fmt.Sprintf("store: comment representation version conflict expected=%d current=%d", e.Expected, e.Current)
 }
@@ -84,22 +90,98 @@ func (s RepoStore) CreateComment(ctx context.Context, input models.NewComment) (
 }
 
 func (s RepoStore) CommentByCompatibilityID(ctx context.Context, compatibilityID int64) (models.CommentSnapshot, error) {
+	return s.commentByCompatibilityID(ctx, compatibilityID, false)
+}
+
+func (s RepoStore) CommentByCompatibilityIDForUpdate(ctx context.Context, compatibilityID int64) (models.CommentSnapshot, error) {
+	if err := s.requireMutationTx(); err != nil {
+		return models.CommentSnapshot{}, err
+	}
+	return s.commentByCompatibilityID(ctx, compatibilityID, true)
+}
+
+func (s RepoStore) commentByCompatibilityID(ctx context.Context, compatibilityID int64, forUpdate bool) (models.CommentSnapshot, error) {
 	if err := s.validate(); err != nil || compatibilityID <= 0 {
 		return models.CommentSnapshot{}, ErrInvalidInput
 	}
-	row := s.db.QueryRow(ctx, `SELECT `+qualifiedCommentColumns+`, i.number, COALESCE(u.login, 'ghost'),
+	query := `SELECT ` + qualifiedCommentColumns + `, i.number, COALESCE(u.login, 'ghost'),
 		COALESCE(u.nickname, u.display_name, u.login, 'ghost'), COALESCE(u.representation_version, 0),
 		COALESCE(u.updated_at, to_timestamp(0))
 		FROM comments c JOIN issues i ON i.organization_id = c.organization_id
 		AND i.repository_id = c.repository_id AND i.id = c.issue_id
 		LEFT JOIN users u ON u.id = c.author_id
-		WHERE c.organization_id = $1 AND c.repository_id = $2 AND c.compatibility_id = $3`,
-		s.scope.OrgID, s.scope.RepoID, compatibilityID)
+		WHERE c.organization_id = $1 AND c.repository_id = $2 AND c.compatibility_id = $3`
+	if forUpdate {
+		query += ` FOR UPDATE OF c`
+	}
+	row := s.db.QueryRow(ctx, query, s.scope.OrgID, s.scope.RepoID, compatibilityID)
 	result, err := scanCommentSnapshot(row)
 	if err != nil {
 		return models.CommentSnapshot{}, fmt.Errorf("get comment: %w", mapError(err))
 	}
 	return result, nil
+}
+
+// DeleteComment hard-deletes one repository-scoped compatibility comment and
+// every foreign-key dependent row in the caller's transaction. Projection
+// anomalies are not foreign-keyed to source rows, so they are removed
+// explicitly before the comment is deleted.
+func (s RepoStore) DeleteComment(ctx context.Context, compatibilityID int64) (DeletedComment, error) {
+	if err := s.requireMutationTx(); err != nil || compatibilityID <= 0 {
+		return DeletedComment{}, ErrInvalidInput
+	}
+	snapshot, err := s.CommentByCompatibilityIDForUpdate(ctx, compatibilityID)
+	if err != nil {
+		return DeletedComment{}, err
+	}
+	var typedCount, anomalyCount int
+	if err := s.db.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM issue_spec_typed_comments
+			WHERE organization_id = $1 AND repository_id = $2 AND comment_id = $3),
+		(SELECT count(*) FROM projection_anomalies
+			WHERE organization_id = $1 AND repository_id = $2
+			AND source_type = 'comment' AND source_id = $3)`,
+		s.scope.OrgID, s.scope.RepoID, snapshot.Comment.ID).Scan(&typedCount, &anomalyCount); err != nil {
+		return DeletedComment{}, fmt.Errorf("load comment projection state: %w", mapError(err))
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM projection_anomalies
+		WHERE organization_id = $1 AND repository_id = $2
+		AND source_type = 'comment' AND source_id = $3`,
+		s.scope.OrgID, s.scope.RepoID, snapshot.Comment.ID); err != nil {
+		return DeletedComment{}, fmt.Errorf("delete comment projection anomalies: %w", mapError(err))
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM issue_spec_typed_comments
+		WHERE organization_id = $1 AND repository_id = $2 AND comment_id = $3`,
+		s.scope.OrgID, s.scope.RepoID, snapshot.Comment.ID); err != nil {
+		return DeletedComment{}, fmt.Errorf("delete typed comment projection: %w", mapError(err))
+	}
+	tag, err := s.db.Exec(ctx, `DELETE FROM comments
+		WHERE organization_id = $1 AND repository_id = $2 AND id = $3`,
+		s.scope.OrgID, s.scope.RepoID, snapshot.Comment.ID)
+	if err != nil {
+		return DeletedComment{}, fmt.Errorf("delete comment: %w", mapError(err))
+	}
+	if tag.RowsAffected() != 1 {
+		return DeletedComment{}, ErrNotFound
+	}
+	tag, err = s.db.Exec(ctx, `UPDATE issues SET
+		comments_collection_version = comments_collection_version + 1,
+		updated_at = clock_timestamp()
+		WHERE organization_id = $1 AND repository_id = $2 AND id = $3`,
+		s.scope.OrgID, s.scope.RepoID, snapshot.Comment.IssueID)
+	if err != nil {
+		return DeletedComment{}, fmt.Errorf("bump deleted comment issue version: %w", mapError(err))
+	}
+	if tag.RowsAffected() != 1 {
+		return DeletedComment{}, ErrNotFound
+	}
+	if _, err := s.IncrementCollectionVersions(ctx,
+		RepoCollectionIssues, RepoCollectionComments, RepoCollectionArtifacts); err != nil {
+		return DeletedComment{}, err
+	}
+	return DeletedComment{
+		Snapshot: snapshot, HadTypedProjection: typedCount > 0, HadProjectionAnomalies: anomalyCount > 0,
+	}, nil
 }
 
 func (s RepoStore) UpdateCommentCAS(ctx context.Context, compatibilityID, expected int64, body string) (models.CommentSnapshot, error) {
