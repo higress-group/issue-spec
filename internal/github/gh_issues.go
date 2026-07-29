@@ -139,6 +139,17 @@ func (b *GHBackend) UpdateComment(ctx context.Context, repo string, commentID in
 	return comment, err
 }
 
+func (b *GHBackend) DeleteComment(ctx context.Context, repo string, commentID int64) error {
+	if commentID <= 0 {
+		return fmt.Errorf("comment id must be positive")
+	}
+	return b.runJSON(ctx, ExternalCLIAPIRequest{
+		Operation: "DeleteComment",
+		Method:    http.MethodDelete,
+		Endpoint:  fmt.Sprintf("/repos/%s/issues/comments/%d", repo, commentID),
+	}, nil)
+}
+
 func (b *GHBackend) CreateLabel(ctx context.Context, repo, name, color, description string) (LabelResult, error) {
 	var out struct {
 		Name string `json:"name"`

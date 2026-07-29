@@ -44,12 +44,16 @@ func parseCoversSectionIDs(body string) []string {
 
 func (a *app) runComment(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		a.errorf("usage: issue-spec comment create|generate|upsert|transition|get|list ...\n")
+		a.errorf("usage: issue-spec comment create|edit|delete|generate|upsert|transition|get|list ...\n")
 		return 2
 	}
 	switch args[0] {
 	case "create":
 		return a.runCommentCreate(ctx, args[1:])
+	case "edit":
+		return a.runCommentEdit(ctx, args[1:])
+	case "delete":
+		return a.runCommentDelete(ctx, args[1:])
 	case "generate":
 		return a.runCommentGenerate(ctx, args[1:])
 	case "upsert":
@@ -246,6 +250,88 @@ func (a *app) runCommentCreate(ctx context.Context, args []string) int {
 		return a.outputJSON(result)
 	}
 	fmt.Fprintf(a.out, "created ordinary comment %d on issue #%d: %s\n", comment.ID, issueNumber, comment.HTMLURL)
+	return 0
+}
+
+func (a *app) runCommentEdit(ctx context.Context, args []string) int {
+	fs := newFlagSet("comment edit", a.err)
+	repoFlag := fs.String("repo", "", "repository owner/name")
+	host := fs.String("hostname", "github.com", "issue backend hostname")
+	commentID := fs.Int64("comment-id", 0, "positive provider comment id")
+	bodyFile := fs.String("body-file", "", "replacement comment body file, or - for stdin")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	repo, ok := a.validateRepo(*repoFlag)
+	if !ok {
+		return 2
+	}
+	if *commentID <= 0 {
+		a.errorf("--comment-id must be positive\n")
+		return 2
+	}
+	body, ok := a.readBodyFile(*bodyFile)
+	if !ok {
+		return 2
+	}
+	if strings.TrimSpace(body) == "" {
+		a.errorf("--body-file must not be empty\n")
+		return 2
+	}
+	client, _, err := a.clientFor(ctx, *host)
+	if err != nil {
+		a.errorf("auth required for comment edit on %s: %v\n", auth.NormalizeHost(*host), err)
+		return 1
+	}
+	if _, err := client.UpdateComment(ctx, repo, *commentID, body); err != nil {
+		a.errorf("edit comment: %v\n", err)
+		return 1
+	}
+	result := map[string]any{"ok": true, "action": "edited", "repository": repo, "comment_id": *commentID}
+	if *jsonOut {
+		return a.outputJSON(result)
+	}
+	fmt.Fprintf(a.out, "edited comment %d in %s\n", *commentID, repo)
+	return 0
+}
+
+func (a *app) runCommentDelete(ctx context.Context, args []string) int {
+	fs := newFlagSet("comment delete", a.err)
+	repoFlag := fs.String("repo", "", "repository owner/name")
+	host := fs.String("hostname", "github.com", "issue backend hostname")
+	commentID := fs.Int64("comment-id", 0, "positive provider comment id")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if ok, code := a.parseFlagSet(fs, args); !ok {
+		return code
+	}
+	repo, ok := a.validateRepo(*repoFlag)
+	if !ok {
+		return 2
+	}
+	if *commentID <= 0 {
+		a.errorf("--comment-id must be positive\n")
+		return 2
+	}
+	client, _, err := a.clientFor(ctx, *host)
+	if err != nil {
+		a.errorf("auth required for comment delete on %s: %v\n", auth.NormalizeHost(*host), err)
+		return 1
+	}
+	deleter, err := github.RequireIssueCommentDeleteBackend(client)
+	if err != nil {
+		a.errorf("delete comment: %v\n", err)
+		return 1
+	}
+	if err := deleter.DeleteComment(ctx, repo, *commentID); err != nil {
+		a.errorf("delete comment: %v\n", err)
+		return 1
+	}
+	result := map[string]any{"ok": true, "action": "deleted", "repository": repo, "comment_id": *commentID}
+	if *jsonOut {
+		return a.outputJSON(result)
+	}
+	fmt.Fprintf(a.out, "deleted comment %d from %s\n", *commentID, repo)
 	return 0
 }
 

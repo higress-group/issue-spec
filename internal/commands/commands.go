@@ -217,6 +217,8 @@ Usage:
   issue-spec issue close|reopen --repo owner/repo --issue N [--json]
   issue-spec issue close-change --repo owner/repo --proposal N --design N --implement N --revision REV [--json]
   issue-spec comment create --repo owner/repo --issue N --body-file reply.md [--json]
+  issue-spec comment edit --repo owner/repo --comment-id N --body-file reply.md [--json]
+  issue-spec comment delete --repo owner/repo --comment-id N [--json]
   issue-spec comment generate --type SPEC --id SPEC-1001 --input-file spec.json [--status confirmed] [--scope "..."]
   issue-spec comment upsert --repo owner/repo --issue 1 --type SPEC --id SPEC-1001 --body-file file.md [--allow-noncanonical]
   issue-spec comment transition --repo owner/repo --issue 2 --id TASK-2001 --to done [--expected-version N|--expected-digest SHA256]

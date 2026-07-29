@@ -256,6 +256,99 @@ func TestIssueCommentHTTPCompatibilityMarkerAndAuthorization(t *testing.T) {
 	}
 }
 
+func TestIssueCommentDeleteAuthorizationProjectionAndReadConvergence(t *testing.T) {
+	environment := newEnvironment(t, models.VisibilityPublic)
+	mux := environment.mux(t)
+	subject := authz.Authenticated(environment.owner)
+	_, issue, err := environment.service.CreateIssue(t.Context(), "acme", "widgets", subject,
+		models.NewIssue{Title: "comment deletion", Body: "body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	author := environment.addMember(t, "comment-author", "reader")
+	other := environment.addMember(t, "comment-other", "reader")
+	typed := "<!-- issue-spec:type=SPEC id=SPEC-777 version=1 -->\nAgent: Worker\nType: SPEC\nID: SPEC-777\nStatus: confirmed\nScope: delete\nLinks:\n\n## Requirement:\nDelete safely.\n"
+	_, comment, err := environment.service.CreateComment(t.Context(), "acme", "widgets",
+		issue.Issue.Number, authz.Authenticated(author), typed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commentID := codec.StableNumericID(comment.Comment.ID.String())
+	path := fmt.Sprintf("/repos/acme/widgets/issues/comments/%d", commentID)
+	assertProjectionCounts(t, environment.pool, 1, 0)
+
+	type versions struct {
+		issues, comments, artifacts, issueComments int64
+	}
+	readVersions := func() versions {
+		t.Helper()
+		var result versions
+		if err := environment.pool.QueryRow(t.Context(), `SELECT r.issues_collection_version,
+			r.comments_collection_version, r.artifacts_collection_version,
+			i.comments_collection_version
+			FROM repos r JOIN issues i ON i.organization_id = r.organization_id
+				AND i.repository_id = r.id
+			WHERE r.organization_id = $1 AND r.id = $2 AND i.id = $3`,
+			environment.scope.OrgID, environment.scope.RepoID, issue.Issue.ID).
+			Scan(&result.issues, &result.comments, &result.artifacts, &result.issueComments); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	beforeDenied := readVersions()
+	denied := request(t, mux, http.MethodDelete, path, "", other.User.Login)
+	if denied.Code != http.StatusForbidden || countRows(t, environment.pool, "comments") != 1 ||
+		readVersions() != beforeDenied {
+		t.Fatalf("denied delete status=%d body=%s versions=%+v/%+v comments=%d",
+			denied.Code, denied.Body.String(), beforeDenied, readVersions(),
+			countRows(t, environment.pool, "comments"))
+	}
+	if invalid := request(t, mux, http.MethodDelete,
+		"/repos/acme/widgets/issues/comments/0", "", author.User.Login); invalid.Code != http.StatusNotFound {
+		t.Fatalf("invalid delete status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+
+	success := request(t, mux, http.MethodDelete, path, "", author.User.Login)
+	if success.Code != http.StatusNoContent || success.Body.Len() != 0 {
+		t.Fatalf("author delete status=%d body=%q", success.Code, success.Body.String())
+	}
+	after := readVersions()
+	if after.issues != beforeDenied.issues+1 || after.comments != beforeDenied.comments+1 ||
+		after.artifacts != beforeDenied.artifacts+1 || after.issueComments != beforeDenied.issueComments+1 {
+		t.Fatalf("delete versions before=%+v after=%+v", beforeDenied, after)
+	}
+	assertProjectionCounts(t, environment.pool, 0, 0)
+	if direct := request(t, mux, http.MethodGet, path, "", ""); direct.Code != http.StatusNotFound {
+		t.Fatalf("deleted direct read status=%d body=%s", direct.Code, direct.Body.String())
+	}
+	list := request(t, mux, http.MethodGet,
+		fmt.Sprintf("/repos/acme/widgets/issues/%d/comments?per_page=100", issue.Issue.Number), "", "")
+	var comments []codec.Comment
+	decode(t, list, &comments)
+	if list.Code != http.StatusOK || len(comments) != 0 {
+		t.Fatalf("deleted comment list status=%d comments=%+v", list.Code, comments)
+	}
+	issueRead := request(t, mux, http.MethodGet,
+		fmt.Sprintf("/repos/acme/widgets/issues/%d", issue.Issue.Number), "", "")
+	var issueDTO codec.Issue
+	decode(t, issueRead, &issueDTO)
+	if issueRead.Code != http.StatusOK || issueDTO.Comments != 0 {
+		t.Fatalf("issue after delete status=%d issue=%+v", issueRead.Code, issueDTO)
+	}
+
+	_, triageTarget, err := environment.service.CreateComment(t.Context(), "acme", "widgets",
+		issue.Issue.Number, authz.Authenticated(author), "triager may delete this")
+	if err != nil {
+		t.Fatal(err)
+	}
+	triageDelete := request(t, mux, http.MethodDelete,
+		fmt.Sprintf("/repos/acme/widgets/issues/comments/%d",
+			codec.StableNumericID(triageTarget.Comment.ID.String())), "", "owner")
+	if triageDelete.Code != http.StatusNoContent {
+		t.Fatalf("triager delete status=%d body=%s", triageDelete.Code, triageDelete.Body.String())
+	}
+}
+
 func TestTrustedPreviewServiceRevalidatesExactCurrentStoredSource(t *testing.T) {
 	environment := newEnvironment(t, models.VisibilityPublic)
 	subject := authz.Authenticated(environment.owner)

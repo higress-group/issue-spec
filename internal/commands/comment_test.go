@@ -23,6 +23,15 @@ type observingFakeBackend struct {
 	observeIssueComment func(context.Context, string, int64) (github.IssueCommentObservation, error)
 }
 
+type deletingFakeBackend struct {
+	fakeGitHubBackend
+	deleteComment func(context.Context, string, int64) error
+}
+
+func (f deletingFakeBackend) DeleteComment(ctx context.Context, repo string, commentID int64) error {
+	return f.deleteComment(ctx, repo, commentID)
+}
+
 func (f observingFakeBackend) ObserveIssueComment(ctx context.Context, repo string, commentID int64) (github.IssueCommentObservation, error) {
 	return f.observeIssueComment(ctx, repo, commentID)
 }
@@ -190,6 +199,171 @@ func TestCommentCreateRejectsEmptyBodyBeforeBackendSelection(t *testing.T) {
 	if code := app.runCommentCreate(t.Context(), []string{"--repo", "o/r", "--issue", "1", "--body-file", "-"}); code != 2 ||
 		!strings.Contains(errOut.String(), "--body-file must not be empty") {
 		t.Fatalf("empty body exit/result unexpected: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+}
+
+func TestCommentEditAndDeleteUseBoundedSelectedBackendContracts(t *testing.T) {
+	const body = "Replacement body that must not appear in command output.\n"
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader(body), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(func(fake *fakeGitHubBackend) {
+		fake.updateComment = func(_ context.Context, repo string, commentID int64, gotBody string) (github.Comment, error) {
+			if repo != "o/r" || commentID != 71 || gotBody != body {
+				t.Fatalf("UpdateComment repo=%q comment=%d body=%q", repo, commentID, gotBody)
+			}
+			return github.Comment{ID: commentID, Body: gotBody}, nil
+		}
+	})
+	if code := app.runComment(t.Context(), []string{"edit", "--repo", "o/r", "--comment-id", "71", "--body-file", "-", "--json"}); code != 0 {
+		t.Fatalf("comment edit exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var edited map[string]any
+	if err := json.Unmarshal(out.Bytes(), &edited); err != nil {
+		t.Fatal(err)
+	}
+	if len(edited) != 4 || edited["ok"] != true || edited["action"] != "edited" ||
+		edited["repository"] != "o/r" || edited["comment_id"] != float64(71) ||
+		strings.Contains(out.String()+errOut.String(), body) {
+		t.Fatalf("bounded edit output=%#v stderr=%q", edited, errOut.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	app = newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = func(_ context.Context, selection auth.GitHubBackendSelection) (github.Backend, error) {
+		return deletingFakeBackend{
+			fakeGitHubBackend: fakeGitHubBackend{info: github.BackendInfo{Name: selection.Name, Kind: selection.Kind, Host: selection.Host}},
+			deleteComment: func(_ context.Context, repo string, commentID int64) error {
+				if repo != "o/r" || commentID != 71 {
+					t.Fatalf("DeleteComment repo=%q comment=%d", repo, commentID)
+				}
+				return nil
+			},
+		}, nil
+	}
+	if code := app.runComment(t.Context(), []string{"delete", "--repo", "o/r", "--comment-id", "71", "--json"}); code != 0 {
+		t.Fatalf("comment delete exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var deleted map[string]any
+	if err := json.Unmarshal(out.Bytes(), &deleted); err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 4 || deleted["ok"] != true || deleted["action"] != "deleted" ||
+		deleted["repository"] != "o/r" || deleted["comment_id"] != float64(71) {
+		t.Fatalf("bounded delete output=%#v", deleted)
+	}
+}
+
+func TestCommentEditDeleteValidateBeforeBackendSelectionAndRejectUnsupportedDelete(t *testing.T) {
+	var out, errOut bytes.Buffer
+	app := newApp(strings.NewReader("body"), &out, &errOut)
+	app.selectGitHubBackend = func(context.Context, string) (auth.GitHubBackendSelection, error) {
+		t.Fatal("invalid comment mutation selected a backend")
+		return auth.GitHubBackendSelection{}, nil
+	}
+	if code := app.runComment(t.Context(), []string{"edit", "--repo", "o/r", "--comment-id", "0", "--body-file", "-"}); code != 2 ||
+		!strings.Contains(errOut.String(), "--comment-id must be positive") {
+		t.Fatalf("invalid edit exit=%d stderr=%q", code, errOut.String())
+	}
+	errOut.Reset()
+	if code := app.runComment(t.Context(), []string{"delete", "--repo", "o/r", "--comment-id", "-1"}); code != 2 ||
+		!strings.Contains(errOut.String(), "--comment-id must be positive") {
+		t.Fatalf("invalid delete exit=%d stderr=%q", code, errOut.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	app = newApp(strings.NewReader(" \n"), &out, &errOut)
+	app.selectGitHubBackend = func(context.Context, string) (auth.GitHubBackendSelection, error) {
+		t.Fatal("empty edit selected a backend")
+		return auth.GitHubBackendSelection{}, nil
+	}
+	if code := app.runComment(t.Context(), []string{"edit", "--repo", "o/r", "--comment-id", "1", "--body-file", "-"}); code != 2 ||
+		!strings.Contains(errOut.String(), "--body-file must not be empty") {
+		t.Fatalf("empty edit exit=%d stderr=%q", code, errOut.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	app = newApp(strings.NewReader(""), &out, &errOut)
+	app.selectGitHubBackend = ghSelection
+	app.newGitHubBackend = newFakeBackend(nil)
+	if code := app.runComment(t.Context(), []string{"delete", "--repo", "o/r", "--comment-id", "1"}); code != 1 ||
+		!strings.Contains(errOut.String(), github.ErrIssueCommentDeleteUnsupported.Error()) {
+		t.Fatalf("unsupported delete exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestExecuteCommentEditDeleteUseSelfHostedRESTWithoutGH(t *testing.T) {
+	clearCommandAuthEnv(t)
+	const (
+		body  = "Self-hosted replacement body.\n"
+		token = "self-hosted-mutation-secret"
+	)
+	var methods []string
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/repos/acme/widgets/issues/comments/2301" {
+			t.Fatalf("request path = %s", r.URL.String())
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+token {
+			t.Fatalf("authorization = %q", got)
+		}
+		methods = append(methods, r.Method)
+		switch r.Method {
+		case http.MethodPatch:
+			var input map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			if input["body"] != body {
+				t.Fatalf("edit body = %q", input["body"])
+			}
+			_ = json.NewEncoder(w).Encode(github.Comment{ID: 2301, Body: input["body"]})
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("request method = %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	profile := auth.Profile{Name: "comment-mutations", Kind: auth.ProfileKindHosted,
+		APIURL: server.URL + "/api/v3", NativeAPIURL: server.URL + "/api/v1", WebURL: server.URL,
+		ServerInstanceID: "comment-mutations-instance"}
+	if err := auth.SaveProfile(profile, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.StoreProfileToken(t.Context(), profile, token, true); err != nil {
+		t.Fatal(err)
+	}
+	oldGHAuthenticated := ghAuthenticated
+	t.Cleanup(func() { ghAuthenticated = oldGHAuthenticated })
+	ghAuthenticated = func(context.Context, string) error {
+		t.Fatal("self-hosted comment mutation probed gh authentication")
+		return nil
+	}
+
+	var out, errOut bytes.Buffer
+	if code := Execute([]string{"--profile", profile.Name, "comment", "edit", "--repo", "acme/widgets",
+		"--comment-id", "2301", "--body-file", "-", "--json"}, strings.NewReader(body), &out, &errOut); code != 0 {
+		t.Fatalf("self-hosted edit exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if strings.Contains(out.String()+errOut.String(), body) || strings.Contains(out.String()+errOut.String(), token) {
+		t.Fatalf("edit leaked body or token stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := Execute([]string{"--profile", profile.Name, "comment", "delete", "--repo", "acme/widgets",
+		"--comment-id", "2301", "--json"}, strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatalf("self-hosted delete exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if strings.Contains(out.String()+errOut.String(), body) || strings.Contains(out.String()+errOut.String(), token) {
+		t.Fatalf("delete leaked body or token stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	if fmt.Sprint(methods) != fmt.Sprint([]string{http.MethodPatch, http.MethodDelete}) {
+		t.Fatalf("methods = %#v", methods)
 	}
 }
 

@@ -37,6 +37,7 @@ func NewRouteSet(deps Dependencies) (routeset.RouteSet, error) {
 		{Name: "github.comments.get_routes", Method: http.MethodGet, Pattern: "/repos/{owner}/{repo}/issues/{rest...}", Handler: issues.WithRequestID(authentication.AuthenticateOptional(http.HandlerFunc(h.dispatchGet)))},
 		{Name: "github.comments.create", Method: http.MethodPost, Pattern: "/repos/{owner}/{repo}/issues/{rest...}", Handler: issues.WithRequestID(authentication.Authenticate(http.HandlerFunc(h.dispatchCreate)))},
 		{Name: "github.comments.update", Method: http.MethodPatch, Pattern: "/repos/{owner}/{repo}/issues/{rest...}", Handler: issues.WithRequestID(authentication.Authenticate(http.HandlerFunc(h.dispatchUpdate)))},
+		{Name: "github.comments.delete", Method: http.MethodDelete, Pattern: "/repos/{owner}/{repo}/issues/{rest...}", Handler: issues.WithRequestID(authentication.Authenticate(http.HandlerFunc(h.dispatchDelete)))},
 	}}
 	return set, set.Validate()
 }
@@ -81,6 +82,16 @@ func (h handlers) dispatchUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	r.SetPathValue("comment", parts[1])
 	h.update(w, r)
+}
+
+func (h handlers) dispatchDelete(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(r.PathValue("rest"), "/"), "/")
+	if len(parts) != 2 || parts[0] != "comments" {
+		apierrors.WriteGitHub(w, apierrors.NotFound(issues.RequestID(r)))
+		return
+	}
+	r.SetPathValue("comment", parts[1])
+	h.delete(w, r)
 }
 
 func (h handlers) listIssue(w http.ResponseWriter, r *http.Request) {
@@ -217,6 +228,19 @@ func (h handlers) update(w http.ResponseWriter, r *http.Request) {
 	}
 	h.setCommentConditional(w, item)
 	issues.WriteJSON(w, http.StatusOK, issues.PresentComment(h.presenter, resource, item))
+}
+
+func (h handlers) delete(w http.ResponseWriter, r *http.Request) {
+	id, ok := positivePath(w, r, "comment")
+	if !ok {
+		return
+	}
+	if _, _, err := h.service.DeleteComment(r.Context(), r.PathValue("owner"), r.PathValue("repo"),
+		id, issues.Subject(r)); err != nil {
+		issues.WriteError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func positivePath(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {

@@ -89,6 +89,7 @@ export const issueApi = {
   listComments: (owner: string, repo: string, number: number, signal?: AbortSignal) => request(`${base(owner, repo)}/issues/${number}/comments?per_page=100`, { schema: commentListSchema, signal }),
   createComment: (owner: string, repo: string, number: number, body: string) => request(`${base(owner, repo)}/issues/${number}/comments`, { method: "POST", body: { body }, schema: commentSchema }),
   updateComment: (owner: string, repo: string, id: number, body: string) => request(`${base(owner, repo)}/issues/comments/${id}`, { method: "PATCH", body: { body }, schema: commentSchema }),
+  deleteComment: (owner: string, repo: string, id: number) => request<void>(`${base(owner, repo)}/issues/comments/${id}`, { method: "DELETE" }),
   listLabels: (owner: string, repo: string, signal?: AbortSignal) => request(`${base(owner, repo)}/labels?per_page=100`, { schema: labelListSchema, signal }),
   replaceLabels: (owner: string, repo: string, number: number, labels: string[]) => request(`${base(owner, repo)}/issues/${number}/labels`, { method: "PUT", body: { labels }, schema: labelListSchema }),
   listReactions: (owner: string, repo: string, commentId: number, signal?: AbortSignal) => request(`${base(owner, repo)}/issues/comments/${commentId}/reactions?per_page=100`, { schema: reactionListSchema, signal }),

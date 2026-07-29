@@ -652,6 +652,45 @@ func (s *Service) UpdateCommentConditional(ctx context.Context, owner, repositor
 	return s.updateComment(ctx, owner, repository, compatibilityID, subject, body, &expected)
 }
 
+func (s *Service) DeleteComment(ctx context.Context, owner, repository string, compatibilityID int64,
+	subject authz.Subject) (models.RepositoryResource, store.DeletedComment, error) {
+	actor, ok := authenticatedActor(subject)
+	if !ok {
+		return models.RepositoryResource{}, store.DeletedComment{},
+			&DecisionError{Decision: authz.Decision{Exists: true, Visible: true}}
+	}
+	var resource models.RepositoryResource
+	var deleted store.DeletedComment
+	err := s.store.WithinTx(ctx, func(tx *store.Tx) error {
+		var err error
+		resource, err = tx.ResolveRepository(ctx, owner, repository)
+		if err != nil {
+			return err
+		}
+		repositoryStore := tx.ScopedRepo(resource.Scope)
+		current, err := repositoryStore.CommentByCompatibilityIDForUpdate(ctx, compatibilityID)
+		if err != nil {
+			return err
+		}
+		operation := authz.OperationTriage
+		if current.Comment.AuthorID != nil && *current.Comment.AuthorID == actor.User.ID {
+			operation = authz.OperationContribute
+		}
+		decision, err := s.authorizer.EvaluateRepositoryTx(ctx, tx.PGX(), subject, authz.RepositoryRequest{
+			Scope: resource.Scope, Operation: operation,
+		})
+		if err != nil {
+			return err
+		}
+		if !decision.Allowed {
+			return &DecisionError{Decision: decision}
+		}
+		deleted, err = repositoryStore.DeleteComment(ctx, compatibilityID)
+		return err
+	})
+	return resource, deleted, err
+}
+
 func (s *Service) updateComment(ctx context.Context, owner, repository string, compatibilityID int64, subject authz.Subject, body string, expected *int64) (models.RepositoryResource, models.CommentSnapshot, error) {
 	actor, ok := authenticatedActor(subject)
 	if !ok {

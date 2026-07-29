@@ -334,6 +334,13 @@ func (c *Client) UpdateComment(ctx context.Context, repo string, commentID int64
 	return comment, err
 }
 
+func (c *Client) DeleteComment(ctx context.Context, repo string, commentID int64) error {
+	if commentID <= 0 {
+		return fmt.Errorf("comment id must be positive")
+	}
+	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/issues/comments/%d", repo, commentID), nil, nil)
+}
+
 func (c *Client) CreateLabel(ctx context.Context, repo, name, color, description string) (LabelResult, error) {
 	var out struct {
 		Name string `json:"name"`

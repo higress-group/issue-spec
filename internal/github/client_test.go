@@ -93,6 +93,27 @@ func TestClientObservesOneIssueCommentWithoutRepresentationVersion(t *testing.T)
 	}
 }
 
+func TestClientDeletesIssueCommentWithBodylessNoContentResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/repos/o/r/issues/comments/77" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token" {
+			t.Fatalf("authorization header = %q", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL("github.com", server.URL, "token", server.Client())
+	if err := client.DeleteComment(t.Context(), "o/r", 77); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.DeleteComment(t.Context(), "o/r", 0); err == nil {
+		t.Fatal("non-positive comment id was accepted")
+	}
+}
+
 func TestClientListCheckRunsParsesHeadSHA(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/o/r/commits/head/check-runs" {

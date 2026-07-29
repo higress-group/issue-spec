@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"sort"
@@ -382,6 +383,165 @@ func TestIncrementCollectionVersionsMapsEveryRepositoryCollection(t *testing.T) 
 	if _, err := New(pool).Repo(orgID, repoID).IncrementCollectionVersions(t.Context(),
 		RepoCollectionIssues, RepoCollectionIssues); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("duplicate collection error = %v", err)
+	}
+}
+
+func TestDeleteCommentCascadesDependentsBumpsVersionsAndRollsBackAtomically(t *testing.T) {
+	pool := migratedIntegrationPool(t)
+	orgID := insertOrg(t, pool, "comment-delete-org")
+	repoID := insertRepo(t, pool, orgID, "repo")
+	userID := uuid.New()
+	if _, err := pool.Exec(t.Context(), `INSERT INTO users (id, login, display_name)
+		VALUES ($1, 'comment-delete-user', 'comment-delete-user')`, userID); err != nil {
+		t.Fatal(err)
+	}
+	repository := New(pool).Repo(orgID, repoID)
+	issue, err := repository.CreateIssue(t.Context(), models.NewIssue{
+		ID: uuid.New(), AuthorID: &userID, Title: "delete comment",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "<!-- issue-spec:type=SPEC id=SPEC-DELETE version=1 -->\nAgent: Worker\nType: SPEC\nID: SPEC-DELETE\nStatus: confirmed\nScope: delete\nLinks:\n\n## Requirement:\nDelete safely.\n"
+	comment, err := repository.CreateComment(t.Context(), models.NewComment{
+		ID: uuid.New(), IssueNumber: issue.Number, AuthorID: &userID, Body: body,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	milestoneID := uuid.New()
+	if err := New(pool).WithinTx(t.Context(), func(tx *Tx) error {
+		scoped := tx.ScopedRepo(models.RepoScope{OrgID: orgID, RepoID: repoID})
+		if err := scoped.ApplyTypedCommentProjection(t.Context(), TypedCommentProjectionInput{
+			IssueID: issue.ID, CommentID: comment.Comment.ID, Type: "SPEC", Key: "SPEC-DELETE",
+			Body: body, Metadata: json.RawMessage(`{"status":"confirmed"}`), UserID: &userID,
+		}); err != nil {
+			return err
+		}
+		if err := scoped.RecordProjectionAnomaly(t.Context(), ProjectionAnomalyInput{
+			SourceType: "comment", SourceID: comment.Comment.ID, Key: "delete_test",
+			Details: json.RawMessage(`{"reason":"cascade test"}`),
+		}); err != nil {
+			return err
+		}
+		if _, err := scoped.AddCommentReaction(t.Context(),
+			codec.StableNumericID(comment.Comment.ID.String()), userID, "eyes"); err != nil {
+			return err
+		}
+		if _, err := scoped.SyncCommentMentions(t.Context(), MentionSyncInput{
+			IssueID: issue.ID, CommentID: comment.Comment.ID,
+			RepresentationVersion: comment.Comment.RepresentationVersion, MentionedUserIDs: []uuid.UUID{userID},
+		}); err != nil {
+			return err
+		}
+		_, _, err := scoped.InsertNotificationMilestone(t.Context(), NotificationMilestoneInput{
+			ID: milestoneID, ChangeKey: "delete-test", Milestone: NotificationMilestoneCompleted,
+			TriggeringIssueID: issue.ID, TriggeringCommentID: &comment.Comment.ID,
+			ActorUserID: userID, OccurredAt: time.Now().UTC().Add(-time.Second),
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.PGX().Exec(t.Context(), `INSERT INTO email_deliveries
+			(id, kind, idempotency_key, recipient_user_id, organization_id, repository_id,
+			 comment_id, render_snapshot)
+			VALUES ($1, 'mention', 'delete-comment-mention', $2, $3, $4, $5, '{}'::jsonb)`,
+			uuid.New(), userID, orgID, repoID, comment.Comment.ID); err != nil {
+			return err
+		}
+		_, err = tx.PGX().Exec(t.Context(), `INSERT INTO email_deliveries
+			(id, kind, idempotency_key, recipient_user_id, organization_id, repository_id,
+			 milestone_id, render_snapshot)
+			VALUES ($1, 'change_milestone', 'delete-comment-milestone', $2, $3, $4, $5, '{}'::jsonb)`,
+			uuid.New(), userID, orgID, repoID, milestoneID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	type versions struct {
+		issues, comments, artifacts, issueComments int64
+	}
+	readVersions := func() versions {
+		t.Helper()
+		var value versions
+		if err := pool.QueryRow(t.Context(), `SELECT r.issues_collection_version,
+			r.comments_collection_version, r.artifacts_collection_version,
+			i.comments_collection_version
+			FROM repos r JOIN issues i ON i.organization_id = r.organization_id
+				AND i.repository_id = r.id
+			WHERE r.organization_id = $1 AND r.id = $2 AND i.id = $3`,
+			orgID, repoID, issue.ID).Scan(&value.issues, &value.comments,
+			&value.artifacts, &value.issueComments); err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	countTableRows := func(table string) int {
+		t.Helper()
+		var count int
+		if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM `+pgx.Identifier{table}.Sanitize()).
+			Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	before := readVersions()
+	var deleted DeletedComment
+	if err := New(pool).WithinTx(t.Context(), func(tx *Tx) error {
+		var err error
+		deleted, err = tx.ScopedRepo(models.RepoScope{OrgID: orgID, RepoID: repoID}).
+			DeleteComment(t.Context(), codec.StableNumericID(comment.Comment.ID.String()))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if deleted.Snapshot.Comment.ID != comment.Comment.ID || !deleted.HadTypedProjection ||
+		!deleted.HadProjectionAnomalies {
+		t.Fatalf("deleted fact = %+v", deleted)
+	}
+	after := readVersions()
+	if after.issues != before.issues+1 || after.comments != before.comments+1 ||
+		after.artifacts != before.artifacts+1 || after.issueComments != before.issueComments+1 {
+		t.Fatalf("versions before=%+v after=%+v", before, after)
+	}
+	for _, table := range []string{
+		"comments", "comment_reactions", "comment_mentions", "issue_spec_typed_comments",
+		"projection_anomalies", "change_notification_milestones", "email_deliveries",
+	} {
+		if rows := countTableRows(table); rows != 0 {
+			t.Fatalf("%s rows after delete = %d", table, rows)
+		}
+	}
+	if _, err := repository.CommentByCompatibilityID(t.Context(),
+		codec.StableNumericID(comment.Comment.ID.String())); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted comment read error = %v", err)
+	}
+
+	rollbackComment, err := repository.CreateComment(t.Context(), models.NewComment{
+		ID: uuid.New(), IssueNumber: issue.Number, AuthorID: &userID, Body: "rollback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackBefore := readVersions()
+	injected := errors.New("injected rollback")
+	err = New(pool).WithinTx(t.Context(), func(tx *Tx) error {
+		if _, err := tx.ScopedRepo(models.RepoScope{OrgID: orgID, RepoID: repoID}).
+			DeleteComment(t.Context(), codec.StableNumericID(rollbackComment.Comment.ID.String())); err != nil {
+			return err
+		}
+		return injected
+	})
+	if !errors.Is(err, injected) {
+		t.Fatalf("rollback error = %v", err)
+	}
+	if rollbackAfter := readVersions(); rollbackAfter != rollbackBefore {
+		t.Fatalf("rollback versions before=%+v after=%+v", rollbackBefore, rollbackAfter)
+	}
+	if _, err := repository.CommentByCompatibilityID(t.Context(),
+		codec.StableNumericID(rollbackComment.Comment.ID.String())); err != nil {
+		t.Fatalf("rolled back comment missing: %v", err)
 	}
 }
 
