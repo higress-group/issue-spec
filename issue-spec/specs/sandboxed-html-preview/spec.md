@@ -329,27 +329,42 @@ Source SPEC comments:
 
 ### Requirement: trusted self-hosted CLI QUESTION answers
 
-For a self-hosted profile, issue-spec CLI QUESTION answering MUST confirm the current QUESTION through the profile's validated native API origin, MUST submit only the current QUESTION identity and unchanged body digest plus bounded selected-option or custom intent, and MUST report the canonical ANSWER identity returned in the created server comment. It MUST NOT send caller-chosen ANSWER identity, locally rendered ANSWER Markdown, actor, or timestamp through the native route, and MUST NOT fall back to a compatibility comment write. GitHub-backed QUESTION answering MUST preserve its existing append-only typed-comment behavior.
+The system MUST route self-hosted CLI QUESTION answers through the native trusted answer service using a bounded current-QUESTION intent, MUST authorize PATs by live scope and repository authority without weakening browser session protections, and MUST preserve existing GitHub-backed ANSWER behavior.
 
 #### Scenario: self-hosted selected option is appended canonically
 
-- **WHEN** a caller uses a self-hosted profile to answer a current choice-enabled QUESTION with one or more valid stable option IDs
-- **THEN** the CLI passes the native GET digest unchanged into a bounded native POST, appends no compatibility comment, and reports the actual server-generated ANSWER ID from the returned canonical comment
+- **WHEN** a repository-authorized self-hosted PAT with sufficient issue scopes runs question answer with valid selected option IDs
+- **THEN** the CLI confirms the current QUESTION through the native API and the server atomically appends an ANSWER whose identity, actor, body, timestamp, and ordering are server-generated
 
 #### Scenario: self-hosted custom answer is appended canonically
 
-- **WHEN** a caller uses a self-hosted profile to answer a current QUESTION with allowed non-empty custom text instead of predefined options
-- **THEN** the CLI sends the custom intent without typed ANSWER Markdown or caller ANSWER authority, appends no compatibility comment, and reports the actual server-generated ANSWER ID
+- **WHEN** the current QUESTION permits custom input and an authorized self-hosted CLI submits valid non-empty custom text
+- **THEN** the same native service validates the current choice model and appends a canonical ANSWER without accepting typed ANSWER Markdown from the client
+
+#### Scenario: changed or malformed QUESTION intent fails closed
+
+- **WHEN** the submitted QUESTION digest is stale or the option IDs or custom answer violate the current QUESTION choice model
+- **THEN** the native service rejects the request and appends no ANSWER
+
+#### Scenario: PAT scope and repository boundaries are enforced
+
+- **WHEN** a PAT lacks required issue scope, is capped away from the repository, cannot see the repository, or lacks contribution authority
+- **THEN** the native QUESTION read or ANSWER write is denied without disclosing concealed repository data or accepting a compatibility-comment fallback
+
+#### Scenario: browser answer protections remain intact
+
+- **WHEN** a browser session submits an ANSWER through the native endpoint
+- **THEN** the request still requires the configured Web Origin and a valid CSRF token and reaches the same canonical trusted service
 
 #### Scenario: GitHub-backed behavior remains compatible
 
-- **WHEN** a caller uses a GitHub-backed profile to answer a choice-enabled QUESTION
-- **THEN** duplicate caller ANSWER IDs are rejected and a valid answer retains the existing snapshot, rendering, compatibility `CreateComment`, caller ID, and output behavior
+- **WHEN** question answer runs with a GitHub or GitHub Enterprise profile
+- **THEN** the CLI continues to render and append the caller-identified ANSWER through the existing provider comment path
 
 #### Scenario: choice-enabled QUESTION rewrite remains forbidden
 
-- **WHEN** a caller tries to resolve and rewrite a choice-enabled QUESTION or generically upsert an ANSWER
-- **THEN** issue-spec fails closed and directs the caller to append a new answer with `question answer`
+- **WHEN** a caller attempts question resolve for a choice-enabled QUESTION
+- **THEN** the CLI continues to reject the rewrite and directs the caller to the append-only answer command
 
-Source Design:
-- https://github.com/higress-group/issue-spec/issues/362
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/361#issuecomment-5118701687
