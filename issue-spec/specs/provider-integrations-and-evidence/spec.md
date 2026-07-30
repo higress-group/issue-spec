@@ -207,3 +207,60 @@ At authoritative final gates, issue-spec MUST resolve the current code-change re
 - **THEN** non-terminal work does not require a live Provider round trip, final output identifies the asserted revision for immediate comparison with the code host, and issue-spec does not execute or proxy merge
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/271#issuecomment-5009746561
+
+### Requirement: Self-hosted rationale publication is external, exact, and recoverable
+
+For a self-hosted Implement Issue, issue-spec MUST retain one strict Issue Backend rationale carrier as workflow authority, MUST publish a validated general comment to the exact active external code change when the selected Provider advertises change.comment, MUST bind both surfaces to one deterministic logical rationale identity, MUST converge exact retries without duplicating either surface across partial failures, MUST fail closed on identity or revision movement, and MUST report an explicit issue-only compatibility result when change.comment is unavailable.
+
+#### Scenario: capable provider receives an exact rationale projection
+
+- **WHEN** a reviewed change-bearing PROCESS and active SPEC are linked to one active self-hosted code change, the Provider advertises change.comment, and the active reference and Provider HEAD match the requested revision
+- **THEN** core creates or observes one authoritative Issue carrier, sends one general comment mutation carrying the stable rationale identity and exact revision, validates the returned reference, external ID, and canonical URL, and records the completed external publication state
+
+#### Scenario: complete exact retry is a no-op
+
+- **WHEN** the same provider, repository, change, reference version, revision, PROCESS, SPEC, logical author, and normalized rationale body are submitted after both carrier and external projection completed
+- **THEN** core returns the existing Issue and external comment identities without creating or mutating another comment
+
+#### Scenario: lost provider acknowledgement converges
+
+- **WHEN** the Provider created the external rationale but its successful response was lost and the command is retried from the pending Issue carrier
+- **THEN** the Provider treats the same rationale identity and content as an idempotent replay, returns the original external comment, and core completes the existing carrier without duplication
+
+#### Scenario: failed carrier completion converges
+
+- **WHEN** the Provider returned a valid external comment but the Issue Backend failed to persist the completed publication state
+- **THEN** an exact retry reuses the pending carrier and stable Provider identity, obtains the same external receipt, and conditionally completes that carrier without creating another Issue or external comment
+
+#### Scenario: provider failure remains recoverable and non-successful
+
+- **WHEN** all workflow preflight succeeds but the advertised change.comment mutation fails
+- **THEN** the command returns non-success, retains at most one recoverable pending carrier, records no false external receipt, and an unchanged retry continues from the same logical rationale identity
+
+#### Scenario: reference or HEAD movement fails closed
+
+- **WHEN** the active change identity, reference version, subject revision, or Provider HEAD moves before mutation or before carrier completion
+- **THEN** publication is rejected as stale, the old carrier cannot become externally completed for the new head, and the operator must explicitly refresh and repeat review and rationale for the new exact revision
+
+#### Scenario: missing comment capability uses explicit fallback
+
+- **WHEN** the selected Provider is valid but does not advertise change.comment
+- **THEN** core creates or reuses the canonical Issue carrier with an explicit external-unavailable compatibility state, performs no Provider mutation, reports the reduced visibility in bounded output, and preserves existing final-gate authority
+
+#### Scenario: identity conflicts and malformed state are rejected
+
+- **WHEN** a rationale identity is reused with different bound content, duplicate or malformed carriers exist, returned Provider identity differs, or the advertised Provider cannot implement mutations
+- **THEN** core fails closed without overwriting the carrier, accepting the receipt, or silently falling back
+
+#### Scenario: legacy carriers remain bounded compatibility evidence
+
+- **WHEN** an exact version-1 Issue-only rationale carrier predating external publication is observed
+- **THEN** existing gate parsing remains compatible, core reports its legacy issue-only state, and does not guess that an external comment exists or silently republish it
+
+#### Scenario: guidance and conformance match the destination
+
+- **WHEN** provider bridge documentation, generated provider workflows, generated agent skills, CLI help or result fields, and provider-neutral fake-provider tests describe code-change rationale
+- **THEN** they consistently identify the Issue carrier as authority, the external change comment as the capable-provider projection, the stable replay identity and recovery behavior, the exact-head requirement, and the explicit missing-capability result
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/366#issuecomment-5125664390
