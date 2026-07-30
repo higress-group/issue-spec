@@ -73,6 +73,23 @@ func TestCodeChangeRationaleLegacyParserIgnoresNonAuthoritativeVisibleMetadata(t
 	}
 }
 
+func TestCodeChangeRationaleLegacyParserAllowsMissingRationaleProse(t *testing.T) {
+	marker := testCodeChangeRationaleMarker()
+	body, err := RenderCodeChangeRationaleBody(marker, "legacy rationale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	delimiter := strings.Index(body, "\n### Rationale\n\n")
+	if delimiter < 0 {
+		t.Fatalf("rendered legacy carrier has no rationale delimiter:\n%s", body)
+	}
+	body = body[:delimiter] + "\n"
+	parsed, found, err := FindCodeChangeRationaleMarker(body)
+	if err != nil || !found || parsed != marker {
+		t.Fatalf("parsed=%+v found=%v err=%v body=%s", parsed, found, err, body)
+	}
+}
+
 func TestCodeChangeRationaleStrictParserRejectsMutation(t *testing.T) {
 	body, err := RenderCodeChangeRationaleBody(testCodeChangeRationaleMarker(), "why")
 	if err != nil {
@@ -258,6 +275,7 @@ func TestCodeChangeRationaleVersion2RejectsMalformedStateAndBody(t *testing.T) {
 		"changed body":         strings.Replace(body, "\nwhy\n", "\nother\n", 1),
 		"changed rationale id": strings.Replace(body, "Rationale ID: "+pending.RationaleID, "Rationale ID: issue-spec-rationale-sha256:"+strings.Repeat("0", 64), 1),
 		"changed process":      strings.Replace(body, "Process: PROCESS-001", "Process: PROCESS-999", 1),
+		"missing rationale":    strings.Replace(body, "\n### Rationale\n\nwhy\n", "\n", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, found, err := FindCodeChangeRationaleMarker(candidate); !found || err == nil {

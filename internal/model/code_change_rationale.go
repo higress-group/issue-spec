@@ -269,9 +269,12 @@ func FindCodeChangeRationaleMarker(body string) (CodeChangeRationaleMarker, bool
 	if codeChangeRationaleMarkerVersion(marker) != version {
 		return CodeChangeRationaleMarker{}, true, errors.New("code-change rationale marker version does not match payload")
 	}
-	rationale, err := codeChangeRationaleText(body)
-	if err != nil {
-		return CodeChangeRationaleMarker{}, true, err
+	rationale := ""
+	if version == codeChangeRationaleVersionCurrent {
+		rationale, err = codeChangeRationaleText(body)
+		if err != nil {
+			return CodeChangeRationaleMarker{}, true, err
+		}
 	}
 	if err := validateCodeChangeRationaleMarker(marker, version, rationale); err != nil {
 		return CodeChangeRationaleMarker{}, true, err
