@@ -52,6 +52,27 @@ func TestCodeChangeRationaleReadsLegacySessionMetadata(t *testing.T) {
 	}
 }
 
+func TestCodeChangeRationaleLegacyParserIgnoresNonAuthoritativeVisibleMetadata(t *testing.T) {
+	marker := testCodeChangeRationaleMarker()
+	body, err := RenderCodeChangeRationaleBody(marker, "legacy rationale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = strings.NewReplacer(
+		"Process: PROCESS-001", "Process: PROCESS-999",
+		"Spec: SPEC-001", "Spec: SPEC-999",
+		"Spec Comment: https://issues.example.test/acme/widgets/issues/1#issuecomment-2", "Spec Comment: altered-visible-value",
+		"Provider: code.example", "Provider: altered.example",
+		"External Repository: acme/widgets-code", "External Repository: altered/repository",
+		"Change: change opaque/1", "Change: altered-change",
+		"Reference Version: 7", "Reference Version: 99",
+	).Replace(body)
+	parsed, found, err := FindCodeChangeRationaleMarker(body)
+	if err != nil || !found || parsed != marker {
+		t.Fatalf("parsed=%+v found=%v err=%v body=%s", parsed, found, err, body)
+	}
+}
+
 func TestCodeChangeRationaleStrictParserRejectsMutation(t *testing.T) {
 	body, err := RenderCodeChangeRationaleBody(testCodeChangeRationaleMarker(), "why")
 	if err != nil {
@@ -62,6 +83,7 @@ func TestCodeChangeRationaleStrictParserRejectsMutation(t *testing.T) {
 		"unknown attribute":    strings.Replace(body, " version=1", " extra=x version=1", 1),
 		"bad base64":           strings.Replace(body, "payload=", "payload=%", 1),
 		"visible agent":        strings.Replace(body, "Agent: Worker", "Agent: Coordinator", 1),
+		"visible revision":     strings.Replace(body, "Subject Revision: head-abc", "Subject Revision: head-other", 1),
 		"trailing payload":     strings.Replace(body, "payload=", "payload=eyJ4IjoxfQ", 1),
 		"noncanonical version": strings.Replace(body, "version=1", "version=01", 1),
 	}
@@ -235,6 +257,7 @@ func TestCodeChangeRationaleVersion2RejectsMalformedStateAndBody(t *testing.T) {
 	for name, candidate := range map[string]string{
 		"changed body":         strings.Replace(body, "\nwhy\n", "\nother\n", 1),
 		"changed rationale id": strings.Replace(body, "Rationale ID: "+pending.RationaleID, "Rationale ID: issue-spec-rationale-sha256:"+strings.Repeat("0", 64), 1),
+		"changed process":      strings.Replace(body, "Process: PROCESS-001", "Process: PROCESS-999", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, found, err := FindCodeChangeRationaleMarker(candidate); !found || err == nil {

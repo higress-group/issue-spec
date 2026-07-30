@@ -277,29 +277,30 @@ func FindCodeChangeRationaleMarker(body string) (CodeChangeRationaleMarker, bool
 		return CodeChangeRationaleMarker{}, true, err
 	}
 	metadata := visibleMetadata(body)
-	expectedMetadata := map[string]string{
-		"Agent": marker.Agent, "Subject Revision": marker.SubjectRevision, "Process": marker.Process,
-		"Spec": marker.Spec, "Spec Comment": marker.SpecURL, "Provider": marker.ProviderKey,
-		"External Repository": marker.ExternalRepository, "Change": marker.ChangeID,
-		"Reference Version": strconv.FormatInt(marker.ReferenceVersion, 10),
+	if metadata["Agent"] != marker.Agent || metadata["Subject Revision"] != marker.SubjectRevision {
+		return CodeChangeRationaleMarker{}, true, errors.New("code-change rationale visible metadata does not match marker payload")
 	}
 	if version == codeChangeRationaleVersionCurrent {
-		expectedMetadata["Rationale ID"] = marker.RationaleID
-		expectedMetadata["Publication State"] = marker.Publication.State
+		expectedMetadata := map[string]string{
+			"Agent": marker.Agent, "Subject Revision": marker.SubjectRevision, "Process": marker.Process,
+			"Spec": marker.Spec, "Spec Comment": marker.SpecURL, "Provider": marker.ProviderKey,
+			"External Repository": marker.ExternalRepository, "Change": marker.ChangeID,
+			"Reference Version": strconv.FormatInt(marker.ReferenceVersion, 10),
+			"Rationale ID":      marker.RationaleID, "Publication State": marker.Publication.State,
+		}
 		if marker.Publication.State == CodeChangeRationalePublishedExternal {
 			expectedMetadata["External Comment ID"] = marker.Publication.ExternalID
 			expectedMetadata["External Comment URL"] = marker.Publication.ExternalURL
 		}
-	}
-	for key, value := range expectedMetadata {
-		if metadata[key] != value {
+		for key, value := range expectedMetadata {
+			if metadata[key] != value {
+				return CodeChangeRationaleMarker{}, true, errors.New("code-change rationale visible metadata does not match marker payload")
+			}
+		}
+		if marker.Publication.State != CodeChangeRationalePublishedExternal &&
+			(metadata["External Comment ID"] != "" || metadata["External Comment URL"] != "") {
 			return CodeChangeRationaleMarker{}, true, errors.New("code-change rationale visible metadata does not match marker payload")
 		}
-	}
-	if version == codeChangeRationaleVersionCurrent &&
-		marker.Publication.State != CodeChangeRationalePublishedExternal &&
-		(metadata["External Comment ID"] != "" || metadata["External Comment URL"] != "") {
-		return CodeChangeRationaleMarker{}, true, errors.New("code-change rationale visible metadata does not match marker payload")
 	}
 	return marker, true, nil
 }

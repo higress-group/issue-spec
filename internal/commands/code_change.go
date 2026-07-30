@@ -325,6 +325,12 @@ func (a *app) runCodeChangeRationale(ctx context.Context, args []string) int {
 	if err := capabilities.Validate(); err != nil {
 		return a.codeChangeRationaleError(*jsonOut, "provider_capability_invalid", "validate operator code provider capabilities", err)
 	}
+	if len(exact) == 0 {
+		if err := requireExactCodeChangeRationaleTarget(ctx, backend, scope, issueID, reference, revision); err != nil {
+			return a.codeChangeRationaleError(*jsonOut, "active_code_change_moved",
+				"revalidate external code-change target before carrier creation", err)
+		}
+	}
 	if !capabilities.Has(codereview.CapabilityChangeComment) {
 		if len(exact) == 1 {
 			return a.codeChangeRationaleError(*jsonOut, "rationale_state_conflict", "complete code-change rationale",

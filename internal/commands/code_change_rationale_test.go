@@ -241,6 +241,24 @@ func TestCodeChangeRationaleCapabilityFallbackAndBrokenAdvertisedMutation(t *tes
 				code, harness.creates, harness.out.String(), harness.errOut.String())
 		}
 	})
+
+	t.Run("missing capability target moves during discovery", func(t *testing.T) {
+		provider := &fakeRationaleMutationProvider{
+			capabilities: []codereview.Capability{codereview.CapabilityEvidenceSnapshot},
+		}
+		harness := newRationaleHarness(t, provider)
+		provider.capabilitiesHook = func() {
+			harness.backend.references = []github.NativeReference{codeChangeRationaleReference(
+				"https://code.example/acme/widgets/changes/42", "head-moved", 8)}
+		}
+		if code := harness.run(t, "fallback must remain exact"); code != 1 ||
+			harness.creates != 0 || harness.updates != 0 || len(provider.requests) != 0 ||
+			!strings.Contains(harness.out.String(), "before carrier creation") {
+			t.Fatalf("exit=%d creates=%d updates=%d requests=%d stdout=%q stderr=%q",
+				code, harness.creates, harness.updates, len(provider.requests),
+				harness.out.String(), harness.errOut.String())
+		}
+	})
 }
 
 func TestCodeChangeRationaleProviderAndCarrierFailuresConverge(t *testing.T) {
@@ -498,12 +516,16 @@ func (h *rationaleHarness) reset() {
 }
 
 type fakeRationaleMutationProvider struct {
-	capabilities []codereview.Capability
-	requests     []codereview.MutationRequest
-	mutate       func(codereview.MutationRequest) (codereview.MutationResult, error)
+	capabilities     []codereview.Capability
+	capabilitiesHook func()
+	requests         []codereview.MutationRequest
+	mutate           func(codereview.MutationRequest) (codereview.MutationResult, error)
 }
 
 func (p *fakeRationaleMutationProvider) Capabilities(context.Context) (codereview.Capabilities, error) {
+	if p.capabilitiesHook != nil {
+		p.capabilitiesHook()
+	}
 	values := p.capabilities
 	if values == nil {
 		values = []codereview.Capability{codereview.CapabilityChangeComment}
