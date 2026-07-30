@@ -96,6 +96,8 @@ issue-spec comment list --repo owner/repo --issue 1 --status ready,in-progress,d
 issue-spec comment list --repo owner/repo --issue 1 --history --include-body --json
 
 issue-spec question create --repo owner/repo --issue 1 --id QUESTION-1001 --blocking --question "What must be decided?"
+issue-spec question answer --repo owner/repo --issue 1 --id ANSWER-1001 --question-id QUESTION-1001 --select option-id --json
+issue-spec question answer --repo owner/repo --issue 1 --id ANSWER-1002 --question-id QUESTION-1001 --custom "A different answer" --json
 issue-spec question resolve --repo owner/repo --issue 1 --id QUESTION-1001 --resolution-file resolution.md
 
 issue-spec link --repo owner/repo --from SPEC-1001 --from-issue 1 --to TASK-2001 --to-issue 2
@@ -114,6 +116,13 @@ digits are the repository-unique Issue number. For example, the first QUESTION o
 is `QUESTION-44001`. The type prefix already separates artifact types, so no repository-wide
 availability search or additional type digit is needed. Preserve legacy IDs because links,
 ANSWER scope, and history may already reference them.
+
+For a self-hosted profile, `question answer` confirms the current QUESTION through that
+profile's validated native API and submits only its current digest plus the selected option
+IDs or custom text. The server creates the canonical ANSWER; JSON output reports that
+server-generated `id` and includes the caller's distinct `--id` as `requested_id`.
+GitHub-backed profiles retain the existing append-only typed-comment behavior and use the
+caller-provided `--id` as the ANSWER identity.
 
 ```bash
 

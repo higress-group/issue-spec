@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -192,9 +193,97 @@ func (a *app) runQuestionAnswer(ctx context.Context, args []string) int {
 		a.errorf("--custom is exclusive with --select\n")
 		return 2
 	}
-	client, _, err := a.clientFor(ctx, *host)
+	profile, _, err := auth.ResolveProfile(a.profileName, *host)
 	if err != nil {
-		a.errorf("auth required for question answer on %s: %v\n", auth.NormalizeHost(*host), err)
+		a.errorf("resolve issue backend profile: %v\n", err)
+		return 1
+	}
+	if profile.Kind == auth.ProfileKindHosted {
+		return a.runNativeQuestionAnswer(ctx, profile, strings.TrimSpace(*repoFlag), issueNumber, *id,
+			*questionID, selectedIDs, customText, *jsonOut)
+	}
+	return a.runGitHubQuestionAnswer(ctx, *host, repo, issueNumber, *id, *questionID, selectedIDs,
+		customText, *agent, *jsonOut)
+}
+
+func defaultNewNativeQuestionAnswerProvider(profile auth.Profile, token string) (github.NativeQuestionAnswerOperations, error) {
+	return github.NewClientWithOptions(github.ClientOptions{
+		Host: profile.Hostname, BaseURL: profile.NativeAPIURL, Token: token, CAFile: profile.CAFile,
+	})
+}
+
+func (a *app) runNativeQuestionAnswer(ctx context.Context, profile auth.Profile, repo string, issueNumber int,
+	requestedID, questionID string, selectedIDs []string, customText string, jsonOut bool) int {
+	token, err := auth.ResolveProfileToken(ctx, profile)
+	if err != nil {
+		a.errorf("auth required for question answer on %s: %v\n", profile.Hostname, err)
+		return 1
+	}
+	if a.newNativeQuestionAnswerProvider == nil {
+		a.errorf("self-hosted question answer client is unavailable\n")
+		return 1
+	}
+	provider, err := a.newNativeQuestionAnswerProvider(profile, token.Value)
+	if err != nil {
+		a.errorf("configure self-hosted question answer client: native client configuration failed\n")
+		return 1
+	}
+	question, err := provider.GetNativeQuestion(ctx, repo, issueNumber, questionID)
+	if err != nil {
+		a.errorf("read self-hosted QUESTION %s: %s\n", questionID, boundedNativeQuestionAnswerError(err))
+		return 1
+	}
+	if _, err := model.BuildAnswerPayload(question.Question, selectedIDs, customText); err != nil {
+		a.errorf("validate answer: selection or custom input is invalid for the current QUESTION\n")
+		return 2
+	}
+	created, err := provider.CreateNativeAnswer(ctx, repo, issueNumber, github.NativeAnswerIntent{
+		QuestionID: questionID, QuestionDigest: question.BodyDigest, OptionIDs: selectedIDs, Custom: customText,
+	})
+	if err != nil {
+		a.errorf("append self-hosted ANSWER: %s\n", boundedNativeQuestionAnswerError(err))
+		return 1
+	}
+	canonical := model.ParseTypedComment(created.Comment.Body)
+	payload, payloadErr := model.ParseAnswerPayload(created.Comment.Body)
+	if payloadErr != nil || canonical.Type != "ANSWER" || canonical.ID == "" || payload.Question.ID != questionID {
+		a.errorf("append self-hosted ANSWER: server returned an invalid canonical ANSWER\n")
+		return 1
+	}
+	result := map[string]any{
+		"ok": true, "action": "created", "issue": issueNumber, "comment_id": created.Comment.ID,
+		"url": created.Comment.HTMLURL, "api_url": created.Comment.URL, "type": "ANSWER", "id": canonical.ID,
+		"question_id": questionID, "status": "done",
+	}
+	if canonical.ID != requestedID {
+		result["requested_id"] = requestedID
+	}
+	if jsonOut {
+		return a.outputJSON(result)
+	}
+	if canonical.ID != requestedID {
+		fmt.Fprintf(a.out, "created ANSWER %s (requested %s) for QUESTION %s on issue #%d: %s\n",
+			canonical.ID, requestedID, questionID, issueNumber, created.Comment.HTMLURL)
+		return 0
+	}
+	fmt.Fprintf(a.out, "created ANSWER %s for QUESTION %s on issue #%d: %s\n",
+		canonical.ID, questionID, issueNumber, created.Comment.HTMLURL)
+	return 0
+}
+
+func boundedNativeQuestionAnswerError(err error) string {
+	var apiErr *github.APIError
+	if errors.As(err, &apiErr) {
+		return fmt.Sprintf("native API returned HTTP %d", apiErr.StatusCode)
+	}
+	return "native request failed"
+}
+
+func (a *app) runGitHubQuestionAnswer(ctx context.Context, host, repo string, issueNumber int, id, questionID string,
+	selectedIDs []string, customText, agent string, jsonOut bool) int {
+	client, _, err := a.clientFor(ctx, host)
+	if err != nil {
+		a.errorf("auth required for question answer on %s: %v\n", auth.NormalizeHost(host), err)
 		return 1
 	}
 	comments, err := client.ListIssueComments(ctx, repo, issueNumber)
@@ -205,25 +294,25 @@ func (a *app) runQuestionAnswer(ctx context.Context, args []string) int {
 	var question *github.Comment
 	for i := range comments {
 		tc := model.ParseTypedComment(comments[i].Body)
-		if tc.ID == *id {
-			a.errorf("ANSWER %s already exists; every submission requires a unique ANSWER id\n", *id)
+		if tc.ID == id {
+			a.errorf("ANSWER %s already exists; every submission requires a unique ANSWER id\n", id)
 			return 1
 		}
-		if tc.ID == *questionID {
+		if tc.ID == questionID {
 			if question != nil {
-				a.errorf("QUESTION %s is ambiguous; no ANSWER appended\n", *questionID)
+				a.errorf("QUESTION %s is ambiguous; no ANSWER appended\n", questionID)
 				return 1
 			}
 			question = &comments[i]
 		}
 	}
 	if question == nil {
-		a.errorf("QUESTION %s not found on issue %d\n", *questionID, issueNumber)
+		a.errorf("QUESTION %s not found on issue %d\n", questionID, issueNumber)
 		return 1
 	}
 	snapshot, err := model.SnapshotQuestion(question.Body, question.HTMLURL)
 	if err != nil {
-		a.errorf("snapshot QUESTION %s: %v\n", *questionID, err)
+		a.errorf("snapshot QUESTION %s: %v\n", questionID, err)
 		return 1
 	}
 	payload, err := model.BuildAnswerPayload(snapshot, selectedIDs, customText)
@@ -232,7 +321,7 @@ func (a *app) runQuestionAnswer(ctx context.Context, args []string) int {
 		return 2
 	}
 	body, err := templates.AnswerComment(templates.AnswerOptions{
-		ID: *id, Agent: *agent, Scope: *questionID,
+		ID: id, Agent: agent, Scope: questionID,
 		Links:   map[string][]string{"Related Comments": {question.HTMLURL}},
 		Payload: payload,
 	})
@@ -242,18 +331,18 @@ func (a *app) runQuestionAnswer(ctx context.Context, args []string) int {
 	}
 	comment, err := client.CreateComment(ctx, repo, issueNumber, body)
 	if err != nil {
-		a.errorf("append ANSWER %s: %v\n", *id, err)
+		a.errorf("append ANSWER %s: %v\n", id, err)
 		return 1
 	}
 	result := map[string]any{
 		"ok": true, "action": "created", "issue": issueNumber, "comment_id": comment.ID,
-		"url": comment.HTMLURL, "api_url": comment.URL, "type": "ANSWER", "id": *id,
-		"question_id": *questionID, "status": "done",
+		"url": comment.HTMLURL, "api_url": comment.URL, "type": "ANSWER", "id": id,
+		"question_id": questionID, "status": "done",
 	}
-	if *jsonOut {
+	if jsonOut {
 		return a.outputJSON(result)
 	}
-	fmt.Fprintf(a.out, "created ANSWER %s for QUESTION %s on issue #%d: %s\n", *id, *questionID, issueNumber, comment.HTMLURL)
+	fmt.Fprintf(a.out, "created ANSWER %s for QUESTION %s on issue #%d: %s\n", id, questionID, issueNumber, comment.HTMLURL)
 	return 0
 }
 
