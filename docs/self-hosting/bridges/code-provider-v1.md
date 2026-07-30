@@ -192,9 +192,28 @@ Mutation actions are `create_change` and `comment`. Requests and responses use
 the same neutral `provider_key`, `external_repository`, and `change_id`
 reference. A `comment` response must repeat the entire request reference;
 `create_change` alone may introduce a new `change_id`. Capability discovery
-runs first. A returned canonical URL and
-external ID are navigation/traceability values and must subsequently be backed
-by trusted evidence before verify or archive can pass.
+runs first. Every comment request has a non-empty `head_revision`. Before
+writing a rationale comment, the bridge MUST require that the change's current
+HEAD equals that exact revision and return a stable `revision_mismatch` failure
+without writing when it does not. A returned canonical URL and external ID are
+navigation/traceability values; they are not trusted workflow evidence.
+
+Code-author rationale uses the existing `comment` mutation with
+`metadata.kind=rationale`. Its metadata contains the stable `rationale_id`,
+canonical `process`, `spec`, `reference_version`, `subject_revision`, and
+logical `agent`. The body is a stable human-readable projection and does not
+contain Issue comment identity, publication state, external receipts,
+credentials, or runtime session identity.
+
+For rationale, exact replay of the same `rationale_id`, body, entire reference,
+and `head_revision` MUST return the original external ID and canonical URL
+without creating another comment. Reuse of a `rationale_id` with a conflicting
+body, reference, or head MUST fail. This is an idempotency rule of the existing
+`change.comment` capability, not a new protocol field, capability, mutation
+kind, or evidence kind. Core durably records a pending Issue carrier before the
+first call and may replay after a lost provider or Issue acknowledgement.
+Bridges that advertise `change.comment` must implement this contract; providers
+without that capability use issue-spec's explicit issue-only rationale fallback.
 
 ## Versioning and compatibility
 

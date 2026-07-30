@@ -436,6 +436,9 @@ func RequiredCapability(kind MutationKind) (Capability, error) {
 // Callers should finish every other preflight before this function; the helper
 // guarantees that an unsupported operation never reaches the mutation method.
 func Mutate(ctx context.Context, provider MutationProvider, request MutationRequest) (MutationResult, error) {
+	if err := validateMutationRequest(request); err != nil {
+		return MutationResult{}, err
+	}
 	capability, err := RequiredCapability(request.Kind)
 	if err != nil {
 		return MutationResult{}, err
@@ -443,7 +446,20 @@ func Mutate(ctx context.Context, provider MutationProvider, request MutationRequ
 	if _, err := RequireCapabilities(ctx, provider, capability); err != nil {
 		return MutationResult{}, err
 	}
-	return provider.Mutate(ctx, request)
+	result, err := provider.Mutate(ctx, request)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	if result.Reference.ProviderKey != request.Reference.ProviderKey ||
+		result.Reference.ExternalRepository != request.Reference.ExternalRepository ||
+		result.Reference.Validate() != nil || strings.TrimSpace(result.ExternalID) == "" ||
+		!safeCanonicalURL(result.CanonicalURL) {
+		return MutationResult{}, fmt.Errorf("%w: mutation response shape", ErrInvalidProviderData)
+	}
+	if request.Kind == MutationComment && result.Reference != request.Reference {
+		return MutationResult{}, fmt.Errorf("%w: mutation response change identity mismatch", ErrInvalidProviderData)
+	}
+	return result, nil
 }
 
 var providerKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`)

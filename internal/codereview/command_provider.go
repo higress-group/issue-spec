@@ -190,8 +190,9 @@ func validateMutationRequest(request MutationRequest) error {
 			return fmt.Errorf("%w: create change requires title and head revision but no existing change id", ErrInvalidProviderData)
 		}
 	case MutationComment:
-		if err := request.Reference.Validate(); err != nil || strings.TrimSpace(request.Body) == "" {
-			return fmt.Errorf("%w: comment requires a complete change reference and body", ErrInvalidProviderData)
+		if err := request.Reference.Validate(); err != nil || strings.TrimSpace(request.Body) == "" ||
+			strings.TrimSpace(request.HeadRevision) == "" {
+			return fmt.Errorf("%w: comment requires a complete change reference, body, and head revision", ErrInvalidProviderData)
 		}
 	default:
 		return fmt.Errorf("%w: unsupported mutation %q", ErrInvalidProviderData, request.Kind)

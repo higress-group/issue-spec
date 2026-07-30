@@ -208,9 +208,12 @@ func TestGeneratedWorkflowAssetsDescribeSameBackendSplit(t *testing.T) {
 		content string
 		wants   []string
 	}{
-		{"workflow", workflowSkill, []string{"search issues", "GitHub-backed workflows keep the existing `pr link-process`",
-			"code-change attach", "code-change link-process", "review sync", "zero findings", "code-change rationale", "fresh REVIEW completion", "Do not call a GitHub PR endpoint",
-			"persists and reloads provider facts", "exact-current completion stamp", "finding-backed consumed binding retained only for legacy compatibility"}},
+		{"workflow", workflowSkill, []string{"search issues", "GitHub keeps `pr link-process`",
+			"code-change attach", "code-change link-process", "review sync", "zero findings", "code-change rationale", "Do not call a GitHub PR endpoint",
+			"exact-current completion", "authoritative versioned Issue carrier",
+			"stable projection and exact replay recovers pending", "missing capability records issue-only fallback",
+			"Pending is not gate-eligible", "receipts are navigation only",
+			"v1 carriers stay compatible without republishing"}},
 		{"review", reviewCommand, []string{"On GitHub add --pr <number>; on a self-hosted profile omit --pr and add --revision <exact-head>",
 			"Sync authoritatively captures current rationale", "one stable done REVIEW completion even with zero findings"}},
 		{"apply", applyCommand, []string{"following the backend-appropriate routing in issue-spec-workflow",
@@ -307,6 +310,12 @@ func TestProviderBridgeContractRequiresStableCurrentHeadSnapshot(t *testing.T) {
 		"both observations equal the requested revision",
 		"`revision_mismatch` and no snapshot",
 		"no provider facts to persist",
+		"Every comment request has a non-empty `head_revision`",
+		"`metadata.kind=rationale`",
+		"same `rationale_id`, body, entire reference, and `head_revision`",
+		"return the original external ID and canonical URL",
+		"without creating another comment",
+		"canonical URL and external ID are navigation/traceability values; they are not trusted workflow evidence",
 	} {
 		if !strings.Contains(contract, want) {
 			t.Fatalf("provider bridge contract missing %q:\n%s", want, contract)

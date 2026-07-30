@@ -45,8 +45,11 @@ func TestProviderWorkflowAttachesExistingChangeWithoutGitHubAssumptions(t *testi
 		"requires exactly one active `code_change`",
 		"explicitly delete only the unwanted active reference",
 		"code-change rationale --repo acme/widgets",
-		"append-only Issue Backend comment",
-		"fresh REVIEW completion",
+		"strict versioned Issue carrier is authoritative",
+		"explicit gate-eligible issue-only fallback",
+		"Published external IDs/URLs are navigation metadata, not trusted evidence",
+		"Legacy version-1 carriers remain bounded gate-compatible and are never silently republished",
+		"fresh exact-current REVIEW completion",
 		"finding-backed consumed native-ledger evidence retained only for legacy compatibility",
 		"evidence-writer identity is never treated as the code author",
 		"review sync --repo acme/widgets --implement <issue> --revision <revision>",
@@ -60,6 +63,23 @@ func TestProviderWorkflowAttachesExistingChangeWithoutGitHubAssumptions(t *testi
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("provider workflow missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestProviderWorkflowDocumentsRecoverableRationalePublication(t *testing.T) {
+	capable := workflow.ProviderPlan{ProviderKey: "code.example", DisplayName: "Example Code",
+		CodeChangeLabel: "change", ChangeComment: true}
+	content := IssueSpecProviderSkill("acme/widgets", capable).Content
+	for _, want := range []string{
+		"stable external projection",
+		"exact replay recovers lost provider or Issue acknowledgements",
+		"pending never passes final gates",
+		"original external comment for exact `rationale_id` replay",
+		"reject conflicting reuse",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("capable provider workflow missing %q:\n%s", want, content)
 		}
 	}
 }
