@@ -806,8 +806,8 @@ func TestExternalArchiveMutationFailureNeverWritesReference(t *testing.T) {
 	native := &commandNativeEvidence{}
 	provider := &commandEvidenceProvider{capabilities: []codereview.Capability{codereview.CapabilityChangeCreate}, mutateErr: errors.New("provider unavailable")}
 	request := codereview.MutationRequest{Kind: codereview.MutationCreateChange,
-		Reference:    codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code"},
-		HeadRevision: "archive-head", BaseRevision: "archive-base"}
+		Reference: codereview.Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets-code"},
+		Title:     "Archive change", HeadRevision: "archive-head", BaseRevision: "archive-base"}
 	if _, err := createExternalArchiveChange(t.Context(), provider, native, target, request); err == nil {
 		t.Fatal("mutation failure unexpectedly succeeded")
 	}
@@ -816,7 +816,8 @@ func TestExternalArchiveMutationFailureNeverWritesReference(t *testing.T) {
 	}
 	provider.mutateErr = nil
 	provider.mutation = codereview.MutationResult{Reference: codereview.Reference{ProviderKey: "code.example",
-		ExternalRepository: "acme/widgets-code", ChangeID: "archive-7"}, CanonicalURL: "https://code.example/archive/7"}
+		ExternalRepository: "acme/widgets-code", ChangeID: "archive-7"}, ExternalID: "archive-7",
+		CanonicalURL: "https://code.example/archive/7"}
 	if _, err := createExternalArchiveChange(t.Context(), provider, native, target, request); err != nil {
 		t.Fatal(err)
 	}

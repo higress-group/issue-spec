@@ -46,7 +46,7 @@ func TestCommandProviderProtocol(t *testing.T) {
 		snapshot.Facts[0].SpecID != "SPEC-010" {
 		t.Fatalf("snapshot = %+v, %v", snapshot, err)
 	}
-	result, err := Mutate(t.Context(), provider, MutationRequest{Kind: MutationComment, Reference: reference, Body: "status"})
+	result, err := Mutate(t.Context(), provider, MutationRequest{Kind: MutationComment, Reference: reference, Body: "status", HeadRevision: "abc123"})
 	if err != nil || result.ExternalID != "comment-1" {
 		t.Fatalf("mutation = %+v, %v", result, err)
 	}
@@ -73,7 +73,7 @@ func TestCommandProviderSnapshotCannotForgeEvidenceAuthority(t *testing.T) {
 func TestCommandProviderRejectsCommentMutationForDifferentChange(t *testing.T) {
 	provider := commandTestProvider(t, "wrong-comment-change", 1<<20, 10*time.Second)
 	reference := Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets", ChangeID: "42"}
-	if _, err := provider.Mutate(t.Context(), MutationRequest{Kind: MutationComment, Reference: reference, Body: "status"}); err == nil || !strings.Contains(err.Error(), "change identity mismatch") {
+	if _, err := provider.Mutate(t.Context(), MutationRequest{Kind: MutationComment, Reference: reference, Body: "status", HeadRevision: "abc123"}); err == nil || !strings.Contains(err.Error(), "change identity mismatch") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -81,8 +81,26 @@ func TestCommandProviderRejectsCommentMutationForDifferentChange(t *testing.T) {
 func TestCommandProviderRejectsCredentialBearingMutationURL(t *testing.T) {
 	provider := commandTestProvider(t, "mutation-query-url", 1<<20, 10*time.Second)
 	reference := Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets", ChangeID: "42"}
-	if _, err := provider.Mutate(t.Context(), MutationRequest{Kind: MutationComment, Reference: reference, Body: "status"}); err == nil || !strings.Contains(err.Error(), "mutation response shape") {
+	if _, err := provider.Mutate(t.Context(), MutationRequest{Kind: MutationComment, Reference: reference, Body: "status", HeadRevision: "abc123"}); err == nil || !strings.Contains(err.Error(), "mutation response shape") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestCommentMutationRequiresExactHeadAndValidReceipt(t *testing.T) {
+	reference := Reference{ProviderKey: "code.example", ExternalRepository: "acme/widgets", ChangeID: "42"}
+	provider := commandTestProvider(t, "normal", 1<<20, 10*time.Second)
+	if _, err := provider.Mutate(t.Context(), MutationRequest{
+		Kind: MutationComment, Reference: reference, Body: "status",
+	}); err == nil || !strings.Contains(err.Error(), "head revision") {
+		t.Fatalf("missing head error = %v", err)
+	}
+
+	fake := &fakeProvider{capabilities: Capabilities{ProtocolVersion: ProtocolVersion,
+		Values: []Capability{CapabilityChangeComment}}}
+	if _, err := Mutate(t.Context(), fake, MutationRequest{
+		Kind: MutationComment, Reference: reference, Body: "status", HeadRevision: "abc123",
+	}); err == nil || !strings.Contains(err.Error(), "mutation response shape") {
+		t.Fatalf("malformed in-process receipt error = %v", err)
 	}
 }
 

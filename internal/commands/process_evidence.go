@@ -294,6 +294,16 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 	}
 	authorAgentsBySpec := map[string]map[string]bool{}
 	authorAgentsByProcessSpec := map[string]map[string]map[string]bool{}
+	rationaleIdentityCounts := map[string]int{}
+	for _, artifact := range artifacts {
+		if !model.IsLikelyCodeChangeRationale(artifact.Comment.Body) {
+			continue
+		}
+		marker, found, err := model.FindCodeChangeRationaleMarker(artifact.Comment.Body)
+		if err == nil && found && marker.RationaleID != "" {
+			rationaleIdentityCounts[marker.RationaleID]++
+		}
+	}
 	for _, comment := range reviewComments {
 		marker, ok, err := model.FindRationaleMarker(comment.Body)
 		if err != nil || !ok {
@@ -362,6 +372,10 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 			}
 			marker, found, err := model.FindCodeChangeRationaleMarker(artifact.Comment.Body)
 			if err != nil || !found || marker.Process != process.Comment.ID {
+				continue
+			}
+			if !model.CodeChangeRationaleGateEligible(marker) ||
+				(marker.RationaleID != "" && rationaleIdentityCounts[marker.RationaleID] != 1) {
 				continue
 			}
 			evidence := gates.CodeChangeRationaleEvidence{ProcessID: marker.Process, SpecID: marker.Spec,

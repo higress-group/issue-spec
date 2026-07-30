@@ -31,9 +31,9 @@ func ProviderWorkflowNotice(provider workflow.ProviderPlan) string {
 		lines = append(lines, "- `change.create`: unavailable; associate a pre-existing external change before implementation gates.")
 	}
 	if provider.ChangeComment {
-		lines = append(lines, "- `change.comment`: available; external finding and reply write-back may use the neutral comment operation.")
+		lines = append(lines, "- `change.comment`: available; external finding/reply write-back and code-author rationale publication use the neutral comment operation. Rationale uses a stable identity and exact replay so pending Issue carriers recover without duplicate external comments.")
 	} else {
-		lines = append(lines, "- `change.comment`: unavailable; keep external discussion on the provider and synchronize only supported evidence.")
+		lines = append(lines, "- `change.comment`: unavailable; code-author rationale records an explicit issue-only fallback, while other external discussion stays on the provider and only supported evidence is synchronized.")
 	}
 	if provider.EvidenceSnapshot {
 		lines = append(lines, "- `evidence.snapshot`: available; synchronize exact-current-HEAD evidence before verification gates. The bridge reads HEAD before and after fact collection and returns `revision_mismatch` without a snapshot if either observation differs from the requested revision. Runner dispatch synchronization remains an explicit `external_code.evidence.sync_before` project-policy opt-in.")
@@ -49,7 +49,7 @@ func ProviderWorkflowNotice(provider workflow.ProviderPlan) string {
 		"- After attach, `code-change link-process` links one PROCESS to the unique active code change with representation-version CAS.",
 		"- The independent reviewer runs `review sync --implement <issue> --revision <exact-head>` under its own agent identity. Successful sync persists and reloads provider facts, then upserts one stable done REVIEW completion even with zero findings; never fabricate findings or hand-author its stamp.",
 		"- After final sync, explicitly link the REVIEW to its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC. Prose IDs, automatic inference, and generic approval frameworks are not carriers.",
-		"- After independent review converges, the real code author uses `code-change rationale` to append an Implement Issue comment bound to the exact active reference version and revision. Final gates accept the fresh REVIEW completion, with valid existing finding-backed consumed native-ledger evidence retained only for legacy compatibility; evidence-writer identity is never treated as the code author.",
+		"- After independent review converges, the real code author uses `code-change rationale`. The strict versioned Implement Issue carrier is the only rationale authority: capable providers publish its stable external projection, missing `change.comment` records an explicit issue-only fallback, and recoverable pending publication never passes final gates. Exact retries converge without duplicate external comments. Final gates accept the fresh exact-current REVIEW completion, with valid existing finding-backed consumed native-ledger evidence retained only for legacy compatibility; evidence-writer identity is never treated as the code author.",
 		"- Provider executables, arguments, environment, and credentials are operator-owned and must never be read from repository files.",
 		"- Project/work-item tracker authority is independent and is not enabled by this code-provider selection.")
 	return strings.Join(lines, "\n")
@@ -78,9 +78,9 @@ func providerWorkflowBody(repo string, provider workflow.ProviderPlan) string {
 	steps = append(steps, "4. Link each PROCESS with `issue-spec --profile <self-hosted-profile> code-change link-process --repo "+repo+" --implement <issue> --process <process-id> --expected-version <comment-version>`. The command requires exactly one active `code_change`; the same URL is a no-op and a different URL conflicts.")
 	steps = append(steps, "5. If active references are ambiguous, inspect the Implement Issue references, explicitly delete only the unwanted active reference through the self-hosted native references API or UI, then retry. Never guess or silently overwrite.")
 	if provider.ChangeComment {
-		steps = append(steps, "6. Use neutral `change.comment` for supported finding/reply write-back, preserving canonical FINDING/PROCESS/SPEC linkage.")
+		steps = append(steps, "6. Use neutral `change.comment` for supported finding/reply write-back and stable code-author rationale projection, preserving canonical FINDING/PROCESS/SPEC linkage. A rationale bridge must return the original external comment for exact `rationale_id` replay and reject conflicting reuse.")
 	} else {
-		steps = append(steps, "6. Do not request external finding/reply write-back because `change.comment` is not available.")
+		steps = append(steps, "6. Do not request external finding/reply write-back because `change.comment` is not available. `code-change rationale` records an explicit gate-eligible issue-only fallback instead of pretending external publication succeeded.")
 	}
 	if provider.EvidenceSnapshot {
 		steps = append(steps, "7. Before verification gates, always synchronize a provider snapshot for the exact active head revision, then evaluate only server-accepted evidence IDs. The bridge reads HEAD before and after fact collection and returns `revision_mismatch` without a snapshot when either observation differs from the requested revision. Add `runner` to `external_code.evidence.sync_before` only when every dispatch is expected to have an active external change.")
@@ -88,7 +88,7 @@ func providerWorkflowBody(repo string, provider workflow.ProviderPlan) string {
 		steps = append(steps, "7. Verify only against already-authoritative server evidence; automatic provider snapshot synchronization is unavailable.")
 	}
 	steps = append(steps, "8. The independent reviewer runs `issue-spec --profile <self-hosted-profile> review sync --repo "+repo+" --implement <issue> --revision <revision> --id <review-id> --agent <review-agent> --json`. After the final sync, explicitly link that REVIEW to its review PROCESS, every covered change-bearing PROCESS, and every covered active SPEC.")
-	steps = append(steps, "9. After independent review/fix convergence, each change-bearing code author runs `issue-spec --profile <self-hosted-profile> code-change rationale --repo "+repo+" --implement <issue> --process <process-id> --spec <spec-id> --spec-url <url> --body <why> --agent <worker>`. The append-only Issue Backend comment is not a GitHub PR call and passes final gates with the fresh exact-current REVIEW completion, or a valid existing finding-backed consumed binding for legacy compatibility.")
+	steps = append(steps, "9. After independent review/fix convergence, each change-bearing code author runs `issue-spec --profile <self-hosted-profile> code-change rationale --repo "+repo+" --implement <issue> --process <process-id> --spec <spec-id> --spec-url <url> --body <why> --agent <worker>`. The strict versioned Issue carrier is authoritative. With `change.comment`, the command durably records pending state before sending a stable external projection and exact replay recovers lost provider or Issue acknowledgements; pending never passes final gates. Without the capability it records an explicit gate-eligible issue-only fallback. Published external IDs/URLs are navigation metadata, not trusted evidence. Legacy version-1 carriers remain bounded gate-compatible and are never silently republished.")
 	steps = append(steps, "10. Keep review, merge, and closure on the selected code provider; do not substitute GitHub PR endpoints for a self-hosted workflow. Archive reads implementation REVIEW completion only for implementation code_change merge policy and never applies it to archive_change or mutates REVIEW.")
 	steps = append(steps, "11. Configure a project/work-item tracker only through a separate explicit provider selection; this code-provider workflow grants no tracker authority.")
 	return strings.Join(steps, "\n") + "\n"

@@ -349,6 +349,55 @@ func TestBuildProcessEvidenceBindsIssueRationaleToExactExternalCarrier(t *testin
 	}
 }
 
+func TestBuildProcessEvidenceFiltersPendingAndDuplicateVersion2Rationales(t *testing.T) {
+	const specURL = "https://issues.example/acme/widgets/issues/1#issuecomment-2"
+	process := processClassArtifact(t, "PROCESS-001", "change-bearing", "SPEC-001", "done")
+	process.Issue = 3
+	base := model.CodeChangeRationaleMarker{
+		Process: "PROCESS-001", Spec: "SPEC-001", SpecURL: specURL, ProviderKey: "code.example",
+		ExternalRepository: "acme/widgets-code", ChangeID: "change-1", ReferenceVersion: 7,
+		SubjectRevision: "head-current", Agent: "Worker",
+	}
+	artifact := func(state, externalID, externalURL string, id int64) model.Artifact {
+		marker, err := model.PrepareCodeChangeRationaleMarker(base, "why", state, externalID, externalURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := model.RenderCodeChangeRationaleBody(marker, "why")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return model.Artifact{Issue: 3, URL: fmt.Sprintf("https://issues.example/rationale-%d", id),
+			Comment: model.ParseTypedComment(body)}
+	}
+	workflowArtifacts := []model.Artifact{
+		{Issue: 1, URL: specURL, Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "confirmed"}},
+		process,
+	}
+	pending := artifact(model.CodeChangeRationalePendingExternal, "", "", 1)
+	inputs := buildProcessEvidenceInputs(append(workflowArtifacts, pending), "", nil, reviewSyncReport{}, nil)
+	if len(inputs) != 1 || len(inputs[0].CodeChangeRationales) != 0 ||
+		inputs[0].AuthorAgentsBySpec["SPEC-001"]["worker"] {
+		t.Fatalf("pending rationale was gate-eligible: %+v", inputs)
+	}
+	published := artifact(model.CodeChangeRationalePublishedExternal, "comment-1",
+		"https://code.example/comments/1", 2)
+	inputs = buildProcessEvidenceInputs(append(workflowArtifacts, published), "", nil, reviewSyncReport{}, nil)
+	if len(inputs) != 1 || len(inputs[0].CodeChangeRationales) != 1 {
+		t.Fatalf("published rationale was not gate-eligible: %+v", inputs)
+	}
+	unavailable := artifact(model.CodeChangeRationaleExternalUnavailable, "", "", 3)
+	inputs = buildProcessEvidenceInputs(append(workflowArtifacts, unavailable), "", nil, reviewSyncReport{}, nil)
+	if len(inputs) != 1 || len(inputs[0].CodeChangeRationales) != 1 {
+		t.Fatalf("explicit fallback rationale was not gate-eligible: %+v", inputs)
+	}
+	duplicate := append(append([]model.Artifact(nil), workflowArtifacts...), published, published)
+	inputs = buildProcessEvidenceInputs(duplicate, "", nil, reviewSyncReport{}, nil)
+	if len(inputs) != 1 || len(inputs[0].CodeChangeRationales) != 0 {
+		t.Fatalf("duplicate rationale identity was gate-eligible: %+v", inputs)
+	}
+}
+
 func TestBuildProcessEvidenceBindsSelfHostedReviewToCurrentNativeLedgerReview(t *testing.T) {
 	const specURL = "https://issues.example/acme/widgets/issues/1#issuecomment-2"
 	reviewProcess := processClassArtifact(t, "PROCESS-002", "review", "SPEC-001", "done")

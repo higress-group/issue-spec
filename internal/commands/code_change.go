@@ -17,6 +17,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/server/models"
+	"github.com/higress-group/issue-spec/internal/workflow"
 )
 
 type nativeCodeChangeBackend interface {
@@ -146,6 +147,7 @@ func (a *app) runCodeChange(ctx context.Context, args []string) int {
 type codeChangeRationaleResult struct {
 	OK                    bool   `json:"ok"`
 	Created               bool   `json:"created"`
+	Already               bool   `json:"already"`
 	Repo                  string `json:"repo"`
 	Implement             int    `json:"implement"`
 	CommentID             int64  `json:"comment_id,omitempty"`
@@ -157,6 +159,11 @@ type codeChangeRationaleResult struct {
 	ChangeID              string `json:"change_id"`
 	SubjectRevision       string `json:"subject_revision"`
 	RepresentationVersion int64  `json:"representation_version"`
+	PublicationState      string `json:"publication_state"`
+	RationaleID           string `json:"rationale_id,omitempty"`
+	ExternalCommentID     string `json:"external_comment_id,omitempty"`
+	ExternalCommentURL    string `json:"external_comment_url,omitempty"`
+	ExternalCapability    string `json:"external_capability,omitempty"`
 }
 
 func (a *app) runCodeChangeRationale(ctx context.Context, args []string) int {
@@ -170,7 +177,7 @@ func (a *app) runCodeChangeRationale(ctx context.Context, args []string) int {
 	bodyFile := fs.String("body-file", "", "rationale body file, or - for stdin")
 	bodyText := fs.String("body", "", "rationale body text")
 	agent := fs.String("agent", "Worker Agent", "logical code-author agent identity")
-	agentSession := addAgentSessionFlag(fs)
+	_ = addAgentSessionFlag(fs)
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if ok, code := a.parseFlagSet(fs, args); !ok {
 		return code
@@ -201,7 +208,6 @@ func (a *app) runCodeChangeRationale(ctx context.Context, args []string) int {
 		a.errorf("--body or --body-file is required\n")
 		return 2
 	}
-	session := resolveWriterSession(*agentSession)
 	profile, _, err := auth.ResolveProfile(a.profileName, *host)
 	if err != nil {
 		return a.codeChangeRationaleError(*jsonOut, "profile_unavailable", "resolve issue backend profile", err)
@@ -251,18 +257,19 @@ func (a *app) runCodeChangeRationale(ctx context.Context, args []string) int {
 	if !linksContainURL(process.Comment.Links["PR"], reference.CanonicalURL) {
 		return a.codeChangeRationaleError(*jsonOut, "code_change_link_missing", "validate PROCESS code-change linkage", fmt.Errorf("%s does not link the active code change", *processID))
 	}
-	marker := model.CodeChangeRationaleMarker{Process: *processID, Spec: *specID, SpecURL: *specURL,
+	baseMarker := model.CodeChangeRationaleMarker{Process: *processID, Spec: *specID, SpecURL: *specURL,
 		ProviderKey: reference.ProviderKey, ExternalRepository: reference.ExternalRepositoryID, ChangeID: reference.ExternalID,
-		ReferenceVersion: reference.RepresentationVersion, SubjectRevision: revision, Agent: *agent,
-		AgentSessionID: session.ID, AgentSessionSource: session.Source}
-	rendered, err := model.RenderCodeChangeRationaleBody(marker, body)
+		ReferenceVersion: reference.RepresentationVersion, SubjectRevision: revision, Agent: *agent}
+	pendingMarker, err := model.PrepareCodeChangeRationaleMarker(baseMarker, body,
+		model.CodeChangeRationalePendingExternal, "", "")
 	if err != nil {
-		return a.codeChangeRationaleError(*jsonOut, "rationale_invalid", "render code-change rationale", err)
+		return a.codeChangeRationaleError(*jsonOut, "rationale_invalid", "prepare code-change rationale", err)
 	}
 	comments, err := issueBackend.ListIssueComments(ctx, repository, implement)
 	if err != nil {
 		return a.codeChangeRationaleError(*jsonOut, "comment_read_failed", "read existing rationale comments", err)
 	}
+	var exact []codeChangeRationaleCarrier
 	for _, comment := range comments {
 		if !model.IsLikelyCodeChangeRationale(comment.Body) {
 			continue
@@ -271,24 +278,266 @@ func (a *app) runCodeChangeRationale(ctx context.Context, args []string) int {
 		if parseErr != nil {
 			return a.codeChangeRationaleError(*jsonOut, "rationale_marker_invalid", "read existing rationale marker", parseErr)
 		}
-		if found && exactCodeChangeRationaleRetry(existing, marker, comment.Body, body) {
-			return a.outputCodeChangeRationale(codeChangeRationaleResult{OK: true, Repo: repository, Implement: implement,
-				CommentID: comment.ID, CommentURL: comment.HTMLURL, Process: marker.Process, Spec: marker.Spec,
-				ProviderKey: marker.ProviderKey, ExternalRepository: marker.ExternalRepository, ChangeID: marker.ChangeID,
-				SubjectRevision: marker.SubjectRevision, RepresentationVersion: marker.ReferenceVersion}, *jsonOut)
+		if !found {
+			continue
+		}
+		if model.CodeChangeRationaleVersion(existing) == 1 &&
+			exactCodeChangeRationaleRetry(existing, baseMarker, comment.Body, body) {
+			return a.outputCodeChangeRationale(codeChangeRationaleResultFor(repository, implement, comment,
+				existing, false, true, "legacy_issue_only", ""), *jsonOut)
+		}
+		if existing.RationaleID == pendingMarker.RationaleID {
+			exact = append(exact, codeChangeRationaleCarrier{Comment: comment, Marker: existing})
 		}
 	}
-	created, err := issueBackend.CreateComment(ctx, repository, implement, rendered)
+	if len(exact) > 1 {
+		return a.codeChangeRationaleError(*jsonOut, "rationale_carrier_duplicate", "read existing rationale carrier",
+			fmt.Errorf("rationale identity %s has %d carriers", pendingMarker.RationaleID, len(exact)))
+	}
+	var pending codeChangeRationaleCarrier
+	if len(exact) == 1 {
+		pending = exact[0]
+		switch pending.Marker.Publication.State {
+		case model.CodeChangeRationalePublishedExternal:
+			return a.outputCodeChangeRationale(codeChangeRationaleResultFor(repository, implement, pending.Comment,
+				pending.Marker, false, true, model.CodeChangeRationalePublishedExternal, "available"), *jsonOut)
+		case model.CodeChangeRationaleExternalUnavailable:
+			return a.outputCodeChangeRationale(codeChangeRationaleResultFor(repository, implement, pending.Comment,
+				pending.Marker, false, true, model.CodeChangeRationaleExternalUnavailable, "unavailable"), *jsonOut)
+		case model.CodeChangeRationalePendingExternal:
+		default:
+			return a.codeChangeRationaleError(*jsonOut, "rationale_state_invalid", "read existing rationale carrier",
+				errors.New("unsupported publication state"))
+		}
+	}
+
+	if err := validateCodeChangeRationaleProviderSelection(reference.ProviderKey); err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "provider_selection_invalid", "validate selected operator code provider", err)
+	}
+	provider, err := a.resolveOperatorProvider(ctx, profile, reference.ProviderKey)
 	if err != nil {
-		return a.codeChangeRationaleError(*jsonOut, "comment_create_failed", "create append-only code-change rationale", err)
+		return a.codeChangeRationaleError(*jsonOut, "provider_unavailable", "resolve operator code provider", err)
 	}
-	if created.ID <= 0 || created.Body != rendered {
-		return a.codeChangeRationaleError(*jsonOut, "comment_create_invalid", "create append-only code-change rationale", errors.New("response identity or body is incomplete or mismatched"))
+	capabilities, err := provider.Capabilities(ctx)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "provider_capability_failed", "read operator code provider capabilities", err)
 	}
-	return a.outputCodeChangeRationale(codeChangeRationaleResult{OK: true, Created: true, Repo: repository, Implement: implement,
-		CommentID: created.ID, CommentURL: created.HTMLURL, Process: marker.Process, Spec: marker.Spec,
+	if err := capabilities.Validate(); err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "provider_capability_invalid", "validate operator code provider capabilities", err)
+	}
+	if len(exact) == 0 {
+		if err := requireExactCodeChangeRationaleTarget(ctx, backend, scope, issueID, reference, revision); err != nil {
+			return a.codeChangeRationaleError(*jsonOut, "active_code_change_moved",
+				"revalidate external code-change target before carrier creation", err)
+		}
+	}
+	if !capabilities.Has(codereview.CapabilityChangeComment) {
+		if len(exact) == 1 {
+			return a.codeChangeRationaleError(*jsonOut, "rationale_state_conflict", "complete code-change rationale",
+				errors.New("pending carrier exists but change.comment is no longer advertised"))
+		}
+		unavailableMarker, prepareErr := model.PrepareCodeChangeRationaleMarker(baseMarker, body,
+			model.CodeChangeRationaleExternalUnavailable, "", "")
+		if prepareErr != nil {
+			return a.codeChangeRationaleError(*jsonOut, "rationale_invalid", "prepare issue-only code-change rationale", prepareErr)
+		}
+		rendered, renderErr := model.RenderCodeChangeRationaleBody(unavailableMarker, body)
+		if renderErr != nil {
+			return a.codeChangeRationaleError(*jsonOut, "rationale_invalid", "render issue-only code-change rationale", renderErr)
+		}
+		created, createErr := issueBackend.CreateComment(ctx, repository, implement, rendered)
+		if createErr != nil {
+			return a.codeChangeRationaleError(*jsonOut, "comment_create_failed", "create issue-only code-change rationale", createErr)
+		}
+		if created.ID <= 0 || created.Body != rendered {
+			return a.codeChangeRationaleError(*jsonOut, "comment_create_invalid", "create issue-only code-change rationale",
+				errors.New("response identity or body is incomplete or mismatched"))
+		}
+		observed, observeErr := observeExactCodeChangeRationaleCarrier(ctx, issueBackend, repository, implement,
+			created.ID, rendered, rendered, unavailableMarker.RationaleID)
+		if observeErr != nil {
+			return a.codeChangeRationaleError(*jsonOut, "comment_create_unconfirmed",
+				"confirm issue-only code-change rationale", observeErr)
+		}
+		return a.outputCodeChangeRationale(codeChangeRationaleResultFor(repository, implement, observed,
+			unavailableMarker, true, false, model.CodeChangeRationaleExternalUnavailable, "unavailable"), *jsonOut)
+	}
+	mutationProvider, ok := provider.(codereview.MutationProvider)
+	if !ok {
+		return a.codeChangeRationaleError(*jsonOut, "provider_mutation_unavailable", "resolve operator code provider mutation",
+			errors.New("change.comment is advertised but mutations are not implemented"))
+	}
+
+	pendingBody, err := model.RenderCodeChangeRationaleBody(pendingMarker, body)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "rationale_invalid", "render pending code-change rationale", err)
+	}
+	createdPending := false
+	if len(exact) == 0 {
+		created, createErr := issueBackend.CreateComment(ctx, repository, implement, pendingBody)
+		if createErr != nil {
+			return a.codeChangeRationaleError(*jsonOut, "comment_create_failed", "create pending code-change rationale", createErr)
+		}
+		if created.ID <= 0 || created.Body != pendingBody {
+			return a.codeChangeRationaleError(*jsonOut, "comment_create_invalid", "create pending code-change rationale",
+				errors.New("response identity or body is incomplete or mismatched"))
+		}
+		pending = codeChangeRationaleCarrier{Comment: created, Marker: pendingMarker}
+		createdPending = true
+	} else if pending.Comment.Body != pendingBody {
+		return a.codeChangeRationaleError(*jsonOut, "rationale_state_conflict", "resume pending code-change rationale",
+			errors.New("pending carrier body does not match the exact desired representation"))
+	}
+
+	if err := requireExactCodeChangeRationaleTarget(ctx, backend, scope, issueID, reference, revision); err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "active_code_change_moved", "revalidate external code-change target before publication", err)
+	}
+	projection, err := model.RenderCodeChangeRationaleExternalProjection(pendingMarker, body)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "rationale_projection_invalid", "render external rationale projection", err)
+	}
+	mutation, err := codereview.Mutate(ctx, mutationProvider, codereview.MutationRequest{
+		Kind: codereview.MutationComment,
+		Reference: codereview.Reference{ProviderKey: pendingMarker.ProviderKey,
+			ExternalRepository: pendingMarker.ExternalRepository, ChangeID: pendingMarker.ChangeID},
+		HeadRevision: pendingMarker.SubjectRevision,
+		Body:         projection,
+		Metadata: map[string]any{
+			"kind": "rationale", "rationale_id": pendingMarker.RationaleID, "process": pendingMarker.Process,
+			"spec": pendingMarker.Spec, "reference_version": pendingMarker.ReferenceVersion,
+			"subject_revision": pendingMarker.SubjectRevision, "agent": pendingMarker.Agent,
+		},
+	})
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "provider_mutation_failed", "publish external code-change rationale", err)
+	}
+	publishedMarker, err := model.PrepareCodeChangeRationaleMarker(baseMarker, body,
+		model.CodeChangeRationalePublishedExternal, mutation.ExternalID, mutation.CanonicalURL)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "provider_response_invalid", "validate external rationale receipt", err)
+	}
+	publishedBody, err := model.RenderCodeChangeRationaleBody(publishedMarker, body)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "rationale_invalid", "render published code-change rationale", err)
+	}
+	if err := requireExactCodeChangeRationaleTarget(ctx, backend, scope, issueID, reference, revision); err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "active_code_change_moved", "revalidate external code-change target after publication", err)
+	}
+	observed, err := observeExactCodeChangeRationaleCarrier(ctx, issueBackend, repository, implement,
+		pending.Comment.ID, pendingBody, publishedBody, pendingMarker.RationaleID)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "rationale_reobserve_failed", "reobserve pending code-change rationale", err)
+	}
+	if observed.Body == publishedBody {
+		return a.outputCodeChangeRationale(codeChangeRationaleResultFor(repository, implement, observed,
+			publishedMarker, createdPending, true, model.CodeChangeRationalePublishedExternal, "available"), *jsonOut)
+	}
+	updated, err := issueBackend.UpdateComment(ctx, repository, pending.Comment.ID, publishedBody)
+	if err != nil {
+		return a.codeChangeRationaleError(*jsonOut, "comment_update_failed", "complete published code-change rationale", err)
+	}
+	if updated.ID != pending.Comment.ID || updated.Body != publishedBody {
+		return a.codeChangeRationaleError(*jsonOut, "comment_update_invalid", "complete published code-change rationale",
+			errors.New("response identity or body is incomplete or mismatched"))
+	}
+	completed, err := observeExactCodeChangeRationaleCarrier(ctx, issueBackend, repository, implement,
+		pending.Comment.ID, publishedBody, publishedBody, pendingMarker.RationaleID)
+	if err != nil || completed.Body != publishedBody {
+		if err == nil {
+			err = errors.New("completed carrier body was not observed")
+		}
+		return a.codeChangeRationaleError(*jsonOut, "comment_completion_unconfirmed", "confirm published code-change rationale", err)
+	}
+	return a.outputCodeChangeRationale(codeChangeRationaleResultFor(repository, implement, completed,
+		publishedMarker, createdPending, false, model.CodeChangeRationalePublishedExternal, "available"), *jsonOut)
+}
+
+type codeChangeRationaleCarrier struct {
+	Comment github.Comment
+	Marker  model.CodeChangeRationaleMarker
+}
+
+func codeChangeRationaleResultFor(repository string, implement int, comment github.Comment,
+	marker model.CodeChangeRationaleMarker, created, already bool, state, capability string) codeChangeRationaleResult {
+	result := codeChangeRationaleResult{
+		OK: true, Created: created, Already: already, Repo: repository, Implement: implement,
+		CommentID: comment.ID, CommentURL: comment.HTMLURL, Process: marker.Process, Spec: marker.Spec,
 		ProviderKey: marker.ProviderKey, ExternalRepository: marker.ExternalRepository, ChangeID: marker.ChangeID,
-		SubjectRevision: marker.SubjectRevision, RepresentationVersion: marker.ReferenceVersion}, *jsonOut)
+		SubjectRevision: marker.SubjectRevision, RepresentationVersion: marker.ReferenceVersion,
+		PublicationState: state, RationaleID: marker.RationaleID, ExternalCapability: capability,
+	}
+	if marker.Publication != nil && marker.Publication.State == model.CodeChangeRationalePublishedExternal {
+		result.ExternalCommentID = marker.Publication.ExternalID
+		result.ExternalCommentURL = marker.Publication.ExternalURL
+	}
+	return result
+}
+
+func validateCodeChangeRationaleProviderSelection(providerKey string) error {
+	plan, err := workflow.Resolve(".")
+	if err != nil {
+		return err
+	}
+	if plan.Config.ExternalCode != nil &&
+		strings.TrimSpace(plan.Config.ExternalCode.ProviderKey) != strings.TrimSpace(providerKey) {
+		return fmt.Errorf("workflow selects %s, active reference uses %s",
+			plan.Config.ExternalCode.ProviderKey, providerKey)
+	}
+	return nil
+}
+
+func requireExactCodeChangeRationaleTarget(ctx context.Context, backend nativeCodeChangeBackend, scope models.RepoScope,
+	issueID uuid.UUID, expected github.NativeReference, expectedRevision string) error {
+	references, err := backend.ListNativeReferences(ctx, scope, issueID)
+	if err != nil {
+		return err
+	}
+	current, revision, err := uniqueActiveCodeChangeIdentity(references)
+	if err != nil {
+		return err
+	}
+	if current.ProviderKey != expected.ProviderKey ||
+		current.ExternalRepositoryID != expected.ExternalRepositoryID ||
+		current.ExternalID != expected.ExternalID ||
+		current.RepresentationVersion != expected.RepresentationVersion ||
+		revision != expectedRevision {
+		return errors.New("active code-change provider, repository, change, reference version, or revision moved")
+	}
+	return nil
+}
+
+func observeExactCodeChangeRationaleCarrier(ctx context.Context, backend github.IssueBackend, repository string,
+	implement int, commentID int64, expected, completed, rationaleID string) (github.Comment, error) {
+	comments, err := backend.ListIssueComments(ctx, repository, implement)
+	if err != nil {
+		return github.Comment{}, err
+	}
+	matches := make([]github.Comment, 0, 1)
+	identityCount := 0
+	for _, comment := range comments {
+		if model.IsLikelyCodeChangeRationale(comment.Body) {
+			marker, found, parseErr := model.FindCodeChangeRationaleMarker(comment.Body)
+			if parseErr != nil {
+				return github.Comment{}, parseErr
+			}
+			if found && marker.RationaleID == rationaleID {
+				identityCount++
+			}
+		}
+		if comment.ID == commentID {
+			matches = append(matches, comment)
+		}
+	}
+	if identityCount != 1 {
+		return github.Comment{}, fmt.Errorf("rationale identity has %d carriers", identityCount)
+	}
+	if len(matches) != 1 {
+		return github.Comment{}, errors.New("rationale carrier is missing or duplicated")
+	}
+	if matches[0].Body != expected && matches[0].Body != completed {
+		return github.Comment{}, errors.New("rationale carrier changed concurrently")
+	}
+	return matches[0], nil
 }
 
 func exactCodeChangeRationaleRetry(existing, desired model.CodeChangeRationaleMarker, existingBody, rationale string) bool {
@@ -325,11 +574,26 @@ func (a *app) outputCodeChangeRationale(result codeChangeRationaleResult, jsonOu
 	if jsonOut {
 		return a.outputJSON(result)
 	}
-	action := "already exists"
-	if result.Created {
-		action = "created"
+	action := ""
+	switch result.PublicationState {
+	case model.CodeChangeRationalePublishedExternal:
+		if result.Already {
+			action = "already published externally"
+		} else {
+			action = "published externally"
+		}
+	case model.CodeChangeRationaleExternalUnavailable:
+		if result.Already {
+			action = "already recorded issue-only because change.comment is unavailable"
+		} else {
+			action = "recorded issue-only because change.comment is unavailable"
+		}
+	case "legacy_issue_only":
+		action = "legacy issue-only rationale already exists"
+	default:
+		action = result.PublicationState
 	}
-	fmt.Fprintf(a.out, "%s code-change rationale for %s/%s at %s (reference version %d): %s\n",
+	fmt.Fprintf(a.out, "%s for %s/%s at %s (reference version %d): %s\n",
 		action, result.Process, result.Spec, result.SubjectRevision, result.RepresentationVersion, result.CommentURL)
 	return 0
 }
