@@ -571,6 +571,165 @@ func TestTrustedAnswerServiceAppendsCanonicalImmutableAnswersAtomically(t *testi
 	}
 }
 
+func TestTrustedAnswerServiceRevalidatesPATScopeRepositoryAndIntentAtomically(t *testing.T) {
+	environment := newEnvironment(t, models.VisibilityPrivate)
+	sessionSubject := authz.Authenticated(environment.owner)
+	const webOrigin = "http://web.example.test"
+	_, issue, err := environment.service.CreateIssue(t.Context(), "acme", "widgets", sessionSubject,
+		models.NewIssue{Title: "PAT answer", Body: "authoritative issue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	questionBody := trustedQuestionBody(t, "QUESTION-007", "Choose one?",
+		[]model.ChoiceOption{{ID: "safe", Label: "Safe"}, {ID: "fast", Label: "Fast"}})
+	if _, _, err := environment.service.CreateComment(t.Context(), "acme", "widgets",
+		issue.Issue.Number, sessionSubject, questionBody); err != nil {
+		t.Fatal(err)
+	}
+
+	writePAT := insertPAT(t, environment.pool, environment.owner, "answer-write",
+		[]string{"issues:write"}, []models.RepoScope{environment.scope})
+	readPAT := insertPAT(t, environment.pool, environment.owner, "answer-read",
+		[]string{"issues:read"}, []models.RepoScope{environment.scope})
+	noScopePAT := insertPAT(t, environment.pool, environment.owner, "answer-no-scope",
+		nil, []models.RepoScope{environment.scope})
+	_, question, err := environment.service.GetQuestion(t.Context(), "acme", "widgets",
+		issue.Issue.Number, authz.Authenticated(readPAT), webOrigin, "QUESTION-007")
+	if err != nil || question.BodyDigest != model.RepresentationDigest(questionBody) {
+		t.Fatalf("read-scoped PAT question=%+v err=%v", question, err)
+	}
+	if _, _, err := environment.service.GetQuestion(t.Context(), "acme", "widgets",
+		issue.Issue.Number, authz.Authenticated(noScopePAT), webOrigin, "QUESTION-007"); err == nil {
+		t.Fatal("scope-less PAT read QUESTION")
+	}
+
+	_, selected, _, err := environment.service.CreateAnswer(t.Context(), "acme", "widgets",
+		issue.Issue.Number, authz.Authenticated(writePAT), webOrigin,
+		issueapi.AnswerIntent{QuestionID: "QUESTION-007", QuestionDigest: question.BodyDigest,
+			OptionIDs: []string{"safe"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectedPayload, err := model.ParseAnswerPayload(selected.Comment.Body)
+	selectedTyped := model.ParseTypedComment(selected.Comment.Body)
+	if err != nil || len(selectedPayload.Selection.Options) != 1 ||
+		selectedPayload.Selection.Options[0].ID != "safe" || selectedTyped.Type != "ANSWER" ||
+		selectedTyped.Agent != environment.owner.User.Login || selectedTyped.AgentSessionID != "" ||
+		selected.Comment.AuthorID == nil || *selected.Comment.AuthorID != environment.owner.User.ID {
+		t.Fatalf("selected PAT answer=%+v typed=%+v payload=%+v err=%v",
+			selected, selectedTyped, selectedPayload, err)
+	}
+
+	_, custom, _, err := environment.service.CreateAnswer(t.Context(), "acme", "widgets",
+		issue.Issue.Number, authz.Authenticated(writePAT), webOrigin,
+		issueapi.AnswerIntent{QuestionID: "QUESTION-007", QuestionDigest: question.BodyDigest,
+			Custom: "Use the audited alternative."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	customPayload, err := model.ParseAnswerPayload(custom.Comment.Body)
+	customTyped := model.ParseTypedComment(custom.Comment.Body)
+	if err != nil || customPayload.Selection.Custom != "Use the audited alternative." ||
+		len(customPayload.Selection.Options) != 0 || customTyped.Type != "ANSWER" ||
+		customTyped.Agent != environment.owner.User.Login || customTyped.AgentSessionID != "" ||
+		custom.Comment.ID == selected.Comment.ID || customTyped.ID == selectedTyped.ID {
+		t.Fatalf("custom PAT answer=%+v typed=%+v payload=%+v err=%v",
+			custom, customTyped, customPayload, err)
+	}
+
+	assertNoAppend := func(name string, call func() error, match func(error) bool) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			before := countRows(t, environment.pool, "comments")
+			err := call()
+			if !match(err) || countRows(t, environment.pool, "comments") != before {
+				t.Fatalf("error=%v comments=%d/%d", err, before,
+					countRows(t, environment.pool, "comments"))
+			}
+		})
+	}
+	isInvalidIntent := func(err error) bool { return errors.Is(err, issueapi.ErrInvalidAnswerIntent) }
+	isChanged := func(err error) bool { return errors.Is(err, issueapi.ErrQuestionChanged) }
+	deniedWithVisibility := func(visible bool) func(error) bool {
+		return func(err error) bool {
+			var denied *issueapi.DecisionError
+			return errors.As(err, &denied) && denied.Decision.Visible == visible
+		}
+	}
+	create := func(principal serverauth.Principal, intent issueapi.AnswerIntent) func() error {
+		return func() error {
+			_, _, _, err := environment.service.CreateAnswer(t.Context(), "acme", "widgets",
+				issue.Issue.Number, authz.Authenticated(principal), webOrigin, intent)
+			return err
+		}
+	}
+	validIntent := issueapi.AnswerIntent{QuestionID: "QUESTION-007",
+		QuestionDigest: question.BodyDigest, OptionIDs: []string{"safe"}}
+
+	assertNoAppend("read scope cannot write", create(readPAT, validIntent), deniedWithVisibility(true))
+	assertNoAppend("stale digest", create(writePAT, issueapi.AnswerIntent{
+		QuestionID: "QUESTION-007", QuestionDigest: strings.Repeat("b", 64),
+		OptionIDs: []string{"safe"},
+	}), isChanged)
+	assertNoAppend("malformed digest", create(writePAT, issueapi.AnswerIntent{
+		QuestionID: "QUESTION-007", QuestionDigest: "not-a-digest", OptionIDs: []string{"safe"},
+	}), isInvalidIntent)
+	assertNoAppend("unknown option", create(writePAT, issueapi.AnswerIntent{
+		QuestionID: "QUESTION-007", QuestionDigest: question.BodyDigest,
+		OptionIDs: []string{"unknown"},
+	}), isInvalidIntent)
+	assertNoAppend("invalid custom input", create(writePAT, issueapi.AnswerIntent{
+		QuestionID: "QUESTION-007", QuestionDigest: question.BodyDigest,
+		Custom: strings.Repeat("x", 4*1024+1),
+	}), isInvalidIntent)
+
+	otherRepoID := uuid.New()
+	if _, err := environment.pool.Exec(t.Context(), `INSERT INTO repos
+		(id, organization_id, name, display_name, visibility, contribution_policy)
+		VALUES ($1, $2, 'other-cap', 'other-cap', 'private', 'members')`,
+		otherRepoID, environment.scope.OrgID); err != nil {
+		t.Fatal(err)
+	}
+	wrongCapPAT := insertPAT(t, environment.pool, environment.owner, "answer-wrong-cap",
+		[]string{"issues:write"},
+		[]models.RepoScope{{OrgID: environment.scope.OrgID, RepoID: otherRepoID}})
+	assertNoAppend("repository cap conceals target", create(wrongCapPAT, validIntent),
+		deniedWithVisibility(false))
+
+	outsider := environment.addOutsider(t, "pat-outsider")
+	outsiderPAT := insertPAT(t, environment.pool, outsider, "answer-outsider",
+		[]string{"issues:write"}, []models.RepoScope{environment.scope})
+	assertNoAppend("private repository is invisible", create(outsiderPAT, validIntent),
+		deniedWithVisibility(false))
+	if _, err := environment.pool.Exec(t.Context(), `UPDATE repos SET visibility = 'public'
+		WHERE organization_id = $1 AND id = $2`, environment.scope.OrgID, environment.scope.RepoID); err != nil {
+		t.Fatal(err)
+	}
+	assertNoAppend("visible repository still requires contribution authority",
+		create(outsiderPAT, validIntent), deniedWithVisibility(true))
+
+	if _, err := environment.pool.Exec(t.Context(), `DELETE FROM pat_scopes
+		WHERE personal_access_token_id = $1`, writePAT.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	assertNoAppend("live scope removal invalidates authenticated PAT",
+		create(writePAT, validIntent), deniedWithVisibility(true))
+
+	liveCapPAT := insertPAT(t, environment.pool, environment.owner, "answer-live-cap",
+		[]string{"issues:write"}, []models.RepoScope{environment.scope})
+	if _, err := environment.pool.Exec(t.Context(), `DELETE FROM pat_repositories
+		WHERE personal_access_token_id = $1`, liveCapPAT.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := environment.pool.Exec(t.Context(), `INSERT INTO pat_repositories
+		(personal_access_token_id, organization_id, repository_id) VALUES ($1, $2, $3)`,
+		liveCapPAT.CredentialID, environment.scope.OrgID, otherRepoID); err != nil {
+		t.Fatal(err)
+	}
+	assertNoAppend("live repository cap change invalidates authenticated PAT",
+		create(liveCapPAT, validIntent), deniedWithVisibility(false))
+}
+
 func trustedQuestionBody(t *testing.T, id, question string, options []model.ChoiceOption) string {
 	t.Helper()
 	choice := model.ChoiceModel{Version: model.ChoiceModelVersion, Mode: model.ChoiceModeSingle,
@@ -1363,24 +1522,41 @@ func insertLabel(t *testing.T, pool *pgxpool.Pool, scope models.RepoScope, name 
 
 func insertRestrictedPAT(t *testing.T, pool *pgxpool.Pool, owner serverauth.Principal, orgID, repoID uuid.UUID) serverauth.Principal {
 	t.Helper()
+	return insertPAT(t, pool, owner, "restricted", []string{"issues:write"},
+		[]models.RepoScope{{OrgID: orgID, RepoID: repoID}})
+}
+
+func insertPAT(t *testing.T, pool *pgxpool.Pool, owner serverauth.Principal, name string,
+	scopes []string, repositories []models.RepoScope) serverauth.Principal {
+	t.Helper()
 	id := uuid.New()
 	if _, err := pool.Exec(t.Context(), `INSERT INTO personal_access_tokens
 		(id, user_id, name, token_prefix, token_hash, expires_at)
-		VALUES ($1, $2, 'restricted', $3, $4, clock_timestamp() + interval '1 hour')`,
-		id, owner.User.ID, "pat-"+id.String(), []byte(id.String())); err != nil {
+		VALUES ($1, $2, $3, $4, $5, clock_timestamp() + interval '1 hour')`,
+		id, owner.User.ID, name, "pat-"+id.String(), []byte(id.String())); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(t.Context(), `INSERT INTO pat_scopes
-		(id, personal_access_token_id, scope) VALUES ($1, $2, 'issues:write')`, uuid.New(), id); err != nil {
-		t.Fatal(err)
+	for _, scope := range scopes {
+		if _, err := pool.Exec(t.Context(), `INSERT INTO pat_scopes
+			(id, personal_access_token_id, scope) VALUES ($1, $2, $3)`,
+			uuid.New(), id, scope); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := pool.Exec(t.Context(), `INSERT INTO pat_repositories
-		(personal_access_token_id, organization_id, repository_id) VALUES ($1, $2, $3)`, id, orgID, repoID); err != nil {
-		t.Fatal(err)
+	caps := make([]serverauth.RepositoryCap, 0, len(repositories))
+	for _, repository := range repositories {
+		if _, err := pool.Exec(t.Context(), `INSERT INTO pat_repositories
+			(personal_access_token_id, organization_id, repository_id) VALUES ($1, $2, $3)`,
+			id, repository.OrgID, repository.RepoID); err != nil {
+			t.Fatal(err)
+		}
+		caps = append(caps, serverauth.RepositoryCap{
+			OrgID: repository.OrgID, RepoID: repository.RepoID,
+		})
 	}
 	return serverauth.Principal{User: owner.User, Kind: serverauth.CredentialPAT, CredentialID: id,
-		Scopes: []string{"issues:write"}, RepoRestricted: true,
-		RepositoryCaps: []serverauth.RepositoryCap{{OrgID: orgID, RepoID: repoID}}}
+		Scopes: append([]string(nil), scopes...), RepoRestricted: len(repositories) > 0,
+		RepositoryCaps: caps}
 }
 
 func insertDelegated(t *testing.T, pool *pgxpool.Pool, owner serverauth.Principal, orgID, repoID uuid.UUID) serverauth.Principal {

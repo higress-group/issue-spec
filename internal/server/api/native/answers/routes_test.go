@@ -61,7 +61,7 @@ func (s *fakeAnswerService) CreateAnswer(_ context.Context, owner, repo string, 
 	}, testQuestion(), s.createErr
 }
 
-func TestAnswerCreateRequiresBrowserSessionOriginAndCSRF(t *testing.T) {
+func TestAnswerCreateAdmitsSessionAndPATWhilePreservingBrowserProtections(t *testing.T) {
 	principal := testPrincipal(serverauth.CredentialSession)
 	service := &fakeAnswerService{principal: principal}
 	handler := answerMux(t, service, principal)
@@ -71,15 +71,17 @@ func TestAnswerCreateRequiresBrowserSessionOriginAndCSRF(t *testing.T) {
 		cookie     bool
 		origin     string
 		csrf       string
-		bearer     bool
+		bearer     string
 		wantStatus int
 	}{
 		{name: "no credential", origin: "https://web.example.test", csrf: "valid-csrf", wantStatus: http.StatusUnauthorized},
+		{name: "invalid bearer", bearer: "invalid-bearer", wantStatus: http.StatusUnauthorized},
 		{name: "missing origin", cookie: true, csrf: "valid-csrf", wantStatus: http.StatusForbidden},
 		{name: "wrong origin", cookie: true, origin: "https://evil.example", csrf: "valid-csrf", wantStatus: http.StatusForbidden},
 		{name: "missing csrf", cookie: true, origin: "https://web.example.test", wantStatus: http.StatusForbidden},
-		{name: "bearer is not browser session", bearer: true, wantStatus: http.StatusForbidden},
 		{name: "trusted browser", cookie: true, origin: "https://web.example.test", csrf: "valid-csrf", wantStatus: http.StatusCreated},
+		{name: "trusted PAT ignores browser state", cookie: true, origin: "https://evil.example",
+			csrf: "invalid-csrf", bearer: "valid-bearer", wantStatus: http.StatusCreated},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -89,8 +91,8 @@ func TestAnswerCreateRequiresBrowserSessionOriginAndCSRF(t *testing.T) {
 			if test.cookie {
 				request.AddCookie(&http.Cookie{Name: "session", Value: "valid-session"})
 			}
-			if test.bearer {
-				request.Header.Set("Authorization", "Bearer valid-bearer")
+			if test.bearer != "" {
+				request.Header.Set("Authorization", "Bearer "+test.bearer)
 			}
 			if test.origin != "" {
 				request.Header.Set("Origin", test.origin)
@@ -105,16 +107,76 @@ func TestAnswerCreateRequiresBrowserSessionOriginAndCSRF(t *testing.T) {
 			}
 		})
 	}
-	if len(service.createCalls) != 1 {
+	if len(service.createCalls) != 2 {
 		t.Fatalf("untrusted requests reached service: %+v", service.createCalls)
 	}
-	call := service.createCalls[0]
-	if call.owner != "acme" || call.repo != "widgets" || call.issue != 7 ||
-		call.webOrigin != "https://web.example.test" || call.intent.QuestionID != "QUESTION-007" ||
-		call.intent.QuestionDigest != strings.Repeat("a", 64) ||
-		len(call.intent.OptionIDs) != 1 || call.intent.OptionIDs[0] != "safe" ||
-		call.subject.Principal == nil || call.subject.Principal.User.ID != principal.User.ID {
-		t.Fatalf("trusted call=%+v", call)
+	for index, kind := range []serverauth.CredentialKind{
+		serverauth.CredentialSession, serverauth.CredentialPAT,
+	} {
+		call := service.createCalls[index]
+		if call.owner != "acme" || call.repo != "widgets" || call.issue != 7 ||
+			call.webOrigin != "https://web.example.test" || call.intent.QuestionID != "QUESTION-007" ||
+			call.intent.QuestionDigest != strings.Repeat("a", 64) ||
+			len(call.intent.OptionIDs) != 1 || call.intent.OptionIDs[0] != "safe" ||
+			call.subject.Principal == nil || call.subject.Principal.User.ID != principal.User.ID ||
+			call.subject.Principal.Kind != kind {
+			t.Fatalf("trusted %s call=%+v", kind, call)
+		}
+	}
+}
+
+func TestQuestionConfirmationAdmitsPATWithoutBrowserState(t *testing.T) {
+	session := testPrincipal(serverauth.CredentialSession)
+	service := &fakeAnswerService{principal: session}
+	handler := answerMux(t, service, session)
+	request := httptest.NewRequest(http.MethodGet,
+		"/api/v1/repos/acme/widgets/issues/7/questions/QUESTION-007", nil)
+	request.Header.Set("Authorization", "Bearer valid-bearer")
+	request.Header.Set("Origin", "https://evil.example")
+	request.Header.Set("X-CSRF-Token", "invalid-csrf")
+	request.AddCookie(&http.Cookie{Name: "session", Value: "invalid-session"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || len(service.getCalls) != 1 ||
+		service.getCalls[0].subject.Principal == nil ||
+		service.getCalls[0].subject.Principal.Kind != serverauth.CredentialPAT {
+		t.Fatalf("PAT question response=%d calls=%+v body=%s",
+			response.Code, service.getCalls, response.Body.String())
+	}
+}
+
+func TestAnswerRoutesRejectDelegatedAndRecoveryCredentials(t *testing.T) {
+	session := testPrincipal(serverauth.CredentialSession)
+	for _, kind := range []serverauth.CredentialKind{
+		serverauth.CredentialDelegated, serverauth.CredentialRecovery,
+	} {
+		t.Run(string(kind), func(t *testing.T) {
+			service := &fakeAnswerService{principal: session}
+			handler := answerMuxWithPrincipals(t, service, session, testPrincipal(kind),
+				"https://web.example.test")
+			for _, request := range []*http.Request{
+				httptest.NewRequest(http.MethodGet,
+					"/api/v1/repos/acme/widgets/issues/7/questions/QUESTION-007", nil),
+				httptest.NewRequest(http.MethodPost,
+					"/api/v1/repos/acme/widgets/issues/7/answers", strings.NewReader(answerIntentJSON())),
+			} {
+				request.Header.Set("Authorization", "Bearer valid-bearer")
+				if request.Method == http.MethodPost {
+					request.Header.Set("Content-Type", "application/json")
+				}
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, request)
+				if response.Code != http.StatusForbidden ||
+					!strings.Contains(response.Body.String(), "trusted_answer_credential_required") {
+					t.Fatalf("%s %s response=%d body=%s",
+						kind, request.Method, response.Code, response.Body.String())
+				}
+			}
+			if len(service.getCalls) != 0 || len(service.createCalls) != 0 {
+				t.Fatalf("%s reached service: get=%+v create=%+v",
+					kind, service.getCalls, service.createCalls)
+			}
+		})
 	}
 }
 
@@ -258,6 +320,12 @@ func answerMux(t *testing.T, service Service, principal serverauth.Principal) ht
 
 func answerMuxWithOrigin(t *testing.T, service Service, principal serverauth.Principal, webOrigin string) http.Handler {
 	t.Helper()
+	return answerMuxWithPrincipals(t, service, principal, testPrincipal(serverauth.CredentialPAT), webOrigin)
+}
+
+func answerMuxWithPrincipals(t *testing.T, service Service, session, bearer serverauth.Principal,
+	webOrigin string) http.Handler {
+	t.Helper()
 	apiOrigin := strings.Replace(webOrigin, "web.", "api.", 1)
 	origins, err := publicurl.New(apiOrigin, webOrigin, nil)
 	if err != nil {
@@ -266,8 +334,8 @@ func answerMuxWithOrigin(t *testing.T, service Service, principal serverauth.Pri
 	middleware := serverauth.Middleware{
 		SessionCookieName: "session",
 		AllowedOrigins:    map[string]struct{}{webOrigin: {}},
-		Sessions:          answerSessions{principal: principal},
-		Bearer:            answerBearer{principal: testPrincipal(serverauth.CredentialPAT)},
+		Sessions:          answerSessions{principal: session},
+		Bearer:            answerBearer{principal: bearer},
 	}
 	set, err := NewRouteSet(Dependencies{
 		Service: service, Presenter: codec.Presenter{Origins: origins},

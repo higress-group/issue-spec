@@ -326,3 +326,45 @@ When a capable self-host Web surface shows a typed QUESTION comment carrying a c
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/331#issuecomment-5060936620
 - https://github.com/higress-group/issue-spec/pull/338
+
+### Requirement: trusted self-hosted CLI QUESTION answers
+
+The system MUST route self-hosted CLI QUESTION answers through the native trusted answer service using a bounded current-QUESTION intent, MUST authorize PATs by live scope and repository authority without weakening browser session protections, and MUST preserve existing GitHub-backed ANSWER behavior.
+
+#### Scenario: self-hosted selected option is appended canonically
+
+- **WHEN** a repository-authorized self-hosted PAT with sufficient issue scopes runs question answer with valid selected option IDs
+- **THEN** the CLI confirms the current QUESTION through the native API and the server atomically appends an ANSWER whose identity, actor, body, timestamp, and ordering are server-generated
+
+#### Scenario: self-hosted custom answer is appended canonically
+
+- **WHEN** the current QUESTION permits custom input and an authorized self-hosted CLI submits valid non-empty custom text
+- **THEN** the same native service validates the current choice model and appends a canonical ANSWER without accepting typed ANSWER Markdown from the client
+
+#### Scenario: changed or malformed QUESTION intent fails closed
+
+- **WHEN** the submitted QUESTION digest is stale or the option IDs or custom answer violate the current QUESTION choice model
+- **THEN** the native service rejects the request and appends no ANSWER
+
+#### Scenario: PAT scope and repository boundaries are enforced
+
+- **WHEN** a PAT lacks required issue scope, is capped away from the repository, cannot see the repository, or lacks contribution authority
+- **THEN** the native QUESTION read or ANSWER write is denied without disclosing concealed repository data or accepting a compatibility-comment fallback
+
+#### Scenario: browser answer protections remain intact
+
+- **WHEN** a browser session submits an ANSWER through the native endpoint
+- **THEN** the request still requires the configured Web Origin and a valid CSRF token and reaches the same canonical trusted service
+
+#### Scenario: GitHub-backed behavior remains compatible
+
+- **WHEN** question answer runs with a GitHub or GitHub Enterprise profile
+- **THEN** the CLI continues to render and append the caller-identified ANSWER through the existing provider comment path
+
+#### Scenario: choice-enabled QUESTION rewrite remains forbidden
+
+- **WHEN** a caller attempts question resolve for a choice-enabled QUESTION
+- **THEN** the CLI continues to reject the rewrite and directs the caller to the append-only answer command
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/361#issuecomment-5118701687

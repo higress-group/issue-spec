@@ -1,4 +1,4 @@
-// Package answers exposes the trusted browser boundary for current QUESTION
+// Package answers exposes the trusted native boundary for current QUESTION
 // confirmation and append-only canonical ANSWER creation.
 package answers
 
@@ -71,7 +71,7 @@ type handlers struct {
 }
 
 func (h handlers) question(w http.ResponseWriter, r *http.Request) {
-	principal, ok := browserPrincipal(w, r)
+	principal, ok := trustedAnswerPrincipal(w, r)
 	if !ok {
 		return
 	}
@@ -89,7 +89,7 @@ func (h handlers) question(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h handlers) create(w http.ResponseWriter, r *http.Request) {
-	principal, ok := browserPrincipal(w, r)
+	principal, ok := trustedAnswerPrincipal(w, r)
 	if !ok {
 		return
 	}
@@ -124,14 +124,15 @@ func (h handlers) create(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func browserPrincipal(w http.ResponseWriter, r *http.Request) (serverauth.Principal, bool) {
+func trustedAnswerPrincipal(w http.ResponseWriter, r *http.Request) (serverauth.Principal, bool) {
 	principal := adminapi.Principal(r)
 	if principal.User.ID == uuid.Nil {
 		adminapi.WriteProblem(w, http.StatusUnauthorized, "authentication_required", "Authentication required")
 		return serverauth.Principal{}, false
 	}
-	if principal.Kind != serverauth.CredentialSession {
-		adminapi.WriteProblem(w, http.StatusForbidden, "browser_session_required", "Browser session required")
+	if principal.Kind != serverauth.CredentialSession && principal.Kind != serverauth.CredentialPAT {
+		adminapi.WriteProblem(w, http.StatusForbidden, "trusted_answer_credential_required",
+			"Session or PAT credential required")
 		return serverauth.Principal{}, false
 	}
 	return principal, true
