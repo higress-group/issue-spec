@@ -5,7 +5,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { stripIssueSpecMarkersForRender } from "./issue-markers";
-import "highlight.js/styles/github.css";
+import "highlight.js/styles/github-dark.css";
 import "./markdown.css";
 import { useTranslation } from "react-i18next";
 import { remarkMentions } from "./mentions";

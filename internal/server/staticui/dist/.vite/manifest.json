@@ -463,12 +463,12 @@
     "file": "assets/init-D6jRqBbL.js",
     "name": "init"
   },
-  "_issue-editor-CPOF0oPf.css": {
-    "file": "assets/issue-editor-CPOF0oPf.css",
-    "src": "_issue-editor-CPOF0oPf.css"
+  "_issue-editor-BE9l4yTz.css": {
+    "file": "assets/issue-editor-BE9l4yTz.css",
+    "src": "_issue-editor-BE9l4yTz.css"
   },
-  "_issue-editor-Czqf4C2R.js": {
-    "file": "assets/issue-editor-Czqf4C2R.js",
+  "_issue-editor-Cn1oFO7V.js": {
+    "file": "assets/issue-editor-Cn1oFO7V.js",
     "name": "issue-editor",
     "imports": [
       "_rolldown-runtime-QTnfLwEv.js",
@@ -484,7 +484,7 @@
       "node_modules/mermaid/dist/mermaid.core.mjs"
     ],
     "css": [
-      "assets/issue-editor-CPOF0oPf.css"
+      "assets/issue-editor-BE9l4yTz.css"
     ]
   },
   "_label-chips-BcpJx2-o.js": {
@@ -713,7 +713,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-CzorW-Zi.js",
+    "file": "assets/index-BY_1YRp5.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -1710,7 +1710,7 @@
     ]
   },
   "src/features/issues/create-page.tsx": {
-    "file": "assets/create-page-sWbiinHh.js",
+    "file": "assets/create-page-D9PIA5SC.js",
     "name": "create-page",
     "src": "src/features/issues/create-page.tsx",
     "isDynamicEntry": true,
@@ -1718,13 +1718,13 @@
       "_rolldown-runtime-QTnfLwEv.js",
       "_session-DBWpYMYY.js",
       "_useMutation-DRV622_Y.js",
-      "_issue-editor-Czqf4C2R.js",
+      "_issue-editor-Cn1oFO7V.js",
       "_repository-context-DO6G70wP.js",
       "_label-chips-BcpJx2-o.js"
     ]
   },
   "src/features/issues/detail-page.tsx": {
-    "file": "assets/detail-page-D50nulcP.js",
+    "file": "assets/detail-page-D2hBzHs2.js",
     "name": "detail-page",
     "src": "src/features/issues/detail-page.tsx",
     "isDynamicEntry": true,
@@ -1733,7 +1733,7 @@
       "_session-DBWpYMYY.js",
       "_useMutation-DRV622_Y.js",
       "_shield-alert-CNCyRhof.js",
-      "_issue-editor-Czqf4C2R.js",
+      "_issue-editor-Cn1oFO7V.js",
       "_circle-dot-ByhnaIxK.js",
       "_relationships-D51AoD0l.js",
       "_lock-keyhole-DWGUNdys.js",

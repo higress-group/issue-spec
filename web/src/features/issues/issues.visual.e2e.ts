@@ -367,6 +367,50 @@ test("issue detail is polished, accessible and preserves raw workflow text", asy
   }
 });
 
+test("highlighted JSON keeps readable contrast on its code block", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "issues-desktop-1440");
+  activeIssue = {
+    ...issue,
+    body: `## Representative error
+
+\`\`\`json
+{
+  "error": {
+    "message": "The requested model does not exist",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "model_not_found"
+  }
+}
+\`\`\``,
+  };
+
+  await page.goto("/acme/workflow/issues/41");
+  const code = page.locator("code.language-json");
+  await expect(code).toBeVisible();
+  const contrast = await code.evaluate((element) => {
+    const parseColor = (value: string) => (value.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+    const luminance = (value: string) => {
+      const [red, green, blue] = parseColor(value).map((channel) => {
+        const normalized = channel / 255;
+        return normalized <= .04045 ? normalized / 12.92 : ((normalized + .055) / 1.055) ** 2.4;
+      });
+      return .2126 * red + .7152 * green + .0722 * blue;
+    };
+    const background = getComputedStyle(element.closest("pre")!).backgroundColor;
+    const backgroundLuminance = luminance(background);
+    return [element, ...element.querySelectorAll(".hljs-attr, .hljs-string, .hljs-literal")]
+      .map((token) => {
+        const tokenLuminance = luminance(getComputedStyle(token).color);
+        const lighter = Math.max(backgroundLuminance, tokenLuminance);
+        const darker = Math.min(backgroundLuminance, tokenLuminance);
+        return (lighter + .05) / (darker + .05);
+      })
+      .reduce((lowest, value) => Math.min(lowest, value), Number.POSITIVE_INFINITY);
+  });
+  expect(contrast).toBeGreaterThanOrEqual(4.5);
+});
+
 test("comment deletion requires trusted confirmation and converges after success", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "issues-desktop-1440");
   const body = documentationText(
