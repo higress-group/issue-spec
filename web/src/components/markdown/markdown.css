@@ -8,8 +8,10 @@
 .markdown-view a { color: #075f61; font-weight: 700; text-underline-offset: .18em; }
 .markdown-view blockquote { border-left: 4px solid var(--purple); color: var(--muted); margin-left: 0; padding: .15rem 1rem; }
 .markdown-view code { background: rgba(34, 38, 44, .07); border-radius: .3rem; font: .9em/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; padding: .12rem .3rem; }
-.markdown-view pre { background: #20242a; border-radius: .65rem; color: #f5f1e8; max-width: 100%; overflow: auto; padding: 1rem; }
-.markdown-view pre code { background: transparent; color: inherit; padding: 0; }
+.markdown-view pre { background: #161b22; border: 1px solid #30363d; border-radius: .65rem; color: #e6edf3; line-height: 1.6; max-width: 100%; overflow: auto; padding: 1rem 1.1rem; scrollbar-color: #6e7681 #161b22; tab-size: 2; }
+.markdown-view pre:focus-visible { outline: 3px solid rgba(9, 105, 218, .4); outline-offset: 2px; }
+.markdown-view pre code { background: transparent; color: inherit; font-size: .9rem; padding: 0; }
+.markdown-view pre code.hljs { overflow: visible; }
 .markdown-view .mermaid-diagram { background: #fff; border: 1px solid var(--line); border-radius: .65rem; max-width: 100%; overflow: auto; padding: 1rem; text-align: center; }
 .markdown-view .mermaid-diagram img { display: block; height: auto; margin: auto; max-height: 42rem; max-width: 100%; object-fit: contain; }
 .markdown-view .mermaid-diagram-loading { color: var(--muted); min-height: 4rem; }
