@@ -36,8 +36,16 @@ type CommandContent struct {
 	Body        string
 }
 
+type WorkflowAuthoringOptions struct {
+	HTMLReviewEnabled bool
+}
+
 func IssueSpecSkills(repo string) []RenderedSkill {
-	workflows := issueSpecWorkflows(repo)
+	return IssueSpecSkillsWithOptions(repo, WorkflowAuthoringOptions{HTMLReviewEnabled: true})
+}
+
+func IssueSpecSkillsWithOptions(repo string, options WorkflowAuthoringOptions) []RenderedSkill {
+	workflows := issueSpecWorkflows(repo, options)
 	out := make([]RenderedSkill, 0, len(workflows)+1)
 	for _, tmpl := range workflows {
 		body := tmpl.Body
@@ -45,7 +53,7 @@ func IssueSpecSkills(repo string) []RenderedSkill {
 			body = strings.TrimRight(body, "\n") + "\n\n" + strings.TrimSpace(tmpl.SkillOnly) + "\n"
 		}
 		skill := RenderedSkill{Name: tmpl.Name, Content: renderSkill(tmpl.Name, tmpl.Description, body)}
-		if tmpl.Name == "issue-spec-workflow" {
+		if tmpl.Name == "issue-spec-workflow" && options.HTMLReviewEnabled {
 			skill.Resources = []RenderedSkillResource{{
 				Path:    "references/human-review-projections.md",
 				Content: humanReviewProjectionsReference,
@@ -58,7 +66,11 @@ func IssueSpecSkills(repo string) []RenderedSkill {
 }
 
 func IssueSpecCommandContents(repo string) []CommandContent {
-	workflows := issueSpecWorkflows(repo)
+	return IssueSpecCommandContentsWithOptions(repo, WorkflowAuthoringOptions{HTMLReviewEnabled: true})
+}
+
+func IssueSpecCommandContentsWithOptions(repo string, options WorkflowAuthoringOptions) []CommandContent {
+	workflows := issueSpecWorkflows(repo, options)
 	out := make([]CommandContent, 0, len(workflows))
 	for _, tmpl := range workflows {
 		if strings.TrimSpace(tmpl.CommandID) == "" {
@@ -76,7 +88,7 @@ func IssueSpecCommandContents(repo string) []CommandContent {
 	return out
 }
 
-func issueSpecWorkflows(repo string) []WorkflowTemplate {
+func issueSpecWorkflows(repo string, options WorkflowAuthoringOptions) []WorkflowTemplate {
 	repo = valueOr(strings.TrimSpace(repo), "owner/repo")
 	const processWriteOwnershipGuidance = `## PROCESS Write Ownership
 
@@ -219,11 +231,44 @@ Coordinator: use issue-spec-workflow for final routing. In repository durable mo
 `,
 		},
 	}
+	if !options.HTMLReviewEnabled {
+		for index := range workflows {
+			switch workflows[index].Name {
+			case "issue-spec-workflow":
+				workflows[index].SkillOnly = processWriteOwnershipGuidance
+				workflows[index].Body = disableWorkflowHTMLReviewGuidance(workflows[index].Body)
+			case "issue-spec-propose":
+				workflows[index].SkillOnly = ""
+				workflows[index].Body = disableProposeHTMLReviewGuidance(workflows[index].Body)
+			case "issue-spec-apply":
+				workflows[index].SkillOnly = processWriteOwnershipGuidance
+				workflows[index].Body = disableApplyHTMLReviewGuidance(workflows[index].Body)
+			}
+		}
+	}
 
 	for i := range workflows {
 		workflows[i].Body = strings.ReplaceAll(workflows[i].Body, "{{repo}}", repo)
 	}
 	return workflows
+}
+
+func disableWorkflowHTMLReviewGuidance(body string) string {
+	const enabledFlow = "- In every phase use this order: persist the phase issue body, perform the first QUESTION discovery/create pass, upsert the human review projection, then author the next typed child set (SPEC for Proposal, TASK for Design, PROCESS for Implement). Maintain one source-digest-bound logical comment with `issue-spec projection upsert --repo {{repo}} --issue <phase-issue> --phase <proposal-choice-brief|design-explainer|implement-execution-brief> --source-digest <sha256> --body-file <projection.md> --json`. A projection is ordinary statusless synthesis, not gate or Agent authority; it has no typed marker, status, or transition. Issue bodies, typed artifacts, and only the latest effective ANSWER remain authoritative. Keep projection HTML source out of default Agent context. For a backend without atomic conditional projection creation, a first create after observing no matching projection requires `--allow-nonatomic --expected-absence`; it remains non-atomic and succeeds only when full post-create re-observation proves exactly one matching logical projection with the planned body. For a backend without CAS, replacement after observing the unique current body requires `--allow-nonatomic --expected-digest <observed-sha256>`; exact post-write re-observation guards the digest-bound update. These absence and digest preconditions are mutually exclusive. GitHub stores source only and never executes the preview or interactive answer intent.\n- Keep proposal, Design, SPEC, and TASK self-contained. Record every genuine unresolved decision as a blocking typed QUESTION before the phase projection upsert; issue-body or projection prose never carries an open decision. Resolve blocking QUESTION artifacts before advancing. Link SPEC <-> TASK and TASK <-> PROCESS; CLI validators own canonical shape and traceability checks."
+	const disabledFlow = "- In every phase use this order: persist the phase issue body, perform the first QUESTION discovery/create pass, then author the next typed child set (SPEC for Proposal, TASK for Design, PROCESS for Implement).\n- Keep proposal, Design, SPEC, and TASK self-contained. Record every genuine unresolved decision as a blocking typed QUESTION before authoring the next typed child set; issue-body prose never carries an open decision. Resolve blocking QUESTION artifacts before advancing. Link SPEC <-> TASK and TASK <-> PROCESS; CLI validators own canonical shape and traceability checks."
+	return strings.Replace(body, enabledFlow, disabledFlow, 1)
+}
+
+func disableProposeHTMLReviewGuidance(body string) string {
+	const enabledSteps = "3. Perform the Proposal's first QUESTION discovery/create pass. Record each genuine unresolved decision as a blocking typed QUESTION with issue-spec question create, attaching a choice model when credible options exist; never leave an open decision as body or projection prose. Do not manufacture a question or reopen a settled choice; keep unresolved decisions distinct from evidence-dependent items.\n4. Upsert `proposal-choice-brief` after that pass and before complete SPEC authoring. Lead with a representative human or operator scene and a concrete before/after case, then cover the problem, outcome, success signal, boundaries, non-goals, assumptions, risks, decisions, alternatives, and expected SPEC coverage. Distinguish settled, needs-evidence, and needs-decision items; show how options change the case. With no open decision, keep the other review dimensions visible. The projection is ordinary and statusless.\n5. Generate canonical SPEC comments with issue-spec comment generate --type SPEC. Requirements must be testable and include WHEN/THEN scenarios. --allow-noncanonical is a migration bypass, not normal authoring.\n6. Persist the authoritative self-contained Design, perform its first QUESTION discovery/create pass, then upsert `design-explainer` before complete TASK planning. Lead with a concrete request or operator case and observable outcome, then trace its normal and failure paths through architecture, invariants, interfaces, state, alternatives, compatibility, rollout, risks, verification, and active SPEC traceability. Use purposeful interaction to make the complete review surface easier to navigate.\n7. Generate TASK comments with issue-spec comment generate --type TASK. Execution Planning must identify Design-invariant cohesion and major entry points, bounded role-context pressure, stable interfaces, owned areas, shared touchpoints, dependencies, coupling, and acceptance consequences. File ownership and parallelism are scheduling context, not semantic PROCESS boundaries. Execution modes such as coordinator-owned describe scheduling only; they never authorize coordinator-inline implementation of an agent-executed change-bearing PROCESS.\n8. Link SPEC <-> TASK, verify links, and run status --gate proposal/design/implement --summary --json as appropriate. Do not enter Implement while a semantic boundary decision is unresolved; block and ask a human."
+	const disabledSteps = "3. Perform the Proposal's first QUESTION discovery/create pass. Record each genuine unresolved decision as a blocking typed QUESTION with issue-spec question create, attaching a choice model when credible options exist; never leave an open decision as issue-body prose. Do not manufacture a question or reopen a settled choice; keep unresolved decisions distinct from evidence-dependent items.\n4. Generate canonical SPEC comments with issue-spec comment generate --type SPEC. Requirements must be testable and include WHEN/THEN scenarios. --allow-noncanonical is a migration bypass, not normal authoring.\n5. Persist the authoritative self-contained Design, perform its first QUESTION discovery/create pass, then complete TASK planning.\n6. Generate TASK comments with issue-spec comment generate --type TASK. Execution Planning must identify Design-invariant cohesion and major entry points, bounded role-context pressure, stable interfaces, owned areas, shared touchpoints, dependencies, coupling, and acceptance consequences. File ownership and parallelism are scheduling context, not semantic PROCESS boundaries. Execution modes such as coordinator-owned describe scheduling only; they never authorize coordinator-inline implementation of an agent-executed change-bearing PROCESS.\n7. Link SPEC <-> TASK, verify links, and run status --gate proposal/design/implement --summary --json as appropriate. Do not enter Implement while a semantic boundary decision is unresolved; block and ask a human."
+	return strings.Replace(body, enabledSteps, disabledSteps, 1)
+}
+
+func disableApplyHTMLReviewGuidance(body string) string {
+	const enabledIntroduction = "Coordinator: persist the Implement issue, perform its first QUESTION discovery/create pass, then upsert the ordinary statusless `implement-execution-brief` before completing PROCESS planning. The brief opens with a concrete acceptance case, its human-visible outcome, and how the PROCESS sequence carries it from trigger to verification. It then explains the current DAG, state counts, critical path, safe parallelism, roles, per-node SPEC/scenario coverage, estimates, complexity, shared touchpoints, blockers, tests, generators, and independent review/verify obligations. Estimates never define workflow semantics. Issue bodies and typed artifacts remain authoritative, and projection source stays outside default Agent context."
+	const disabledIntroduction = "Coordinator: persist the Implement issue, perform its first QUESTION discovery/create pass, then complete PROCESS planning. Issue bodies and typed artifacts remain authoritative."
+	return strings.Replace(body, enabledIntroduction, disabledIntroduction, 1)
 }
 
 func renderSkill(name, description, body string) string {

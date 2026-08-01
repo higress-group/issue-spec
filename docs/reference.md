@@ -25,6 +25,22 @@ issue-spec workflow which --repo owner/repo --json
 
 New durable specs default to `issue-spec/specs/<capability>/spec.md`. If `openspec/specs/<capability>/spec.md` already exists, archive can update that legacy durable spec and reports the compatibility path selection.
 
+### HTML review authoring
+
+HTML review authoring is enabled by default. To keep Proposal, Design, and Implement authoring on the typed Markdown workflow without loading or generating human-review projection instructions, configure the required boolean explicitly:
+
+```yaml
+# issue-spec/config.yaml
+html_review:
+  enabled: false
+```
+
+When `html_review` is absent, `enabled` resolves to `true` for backward compatibility. If the mapping is present, `enabled` is required and must be a boolean; scalar values, missing `enabled`, non-boolean values, and unknown fields fail workflow validation before generation or issue creation mutates anything.
+
+With `enabled: false`, `issue-spec init` omits the projection checkpoints from generated skills, slash commands, and prompts, does not emit the embedded `human-review-projections.md` resource, and removes only that exact managed stale resource from an earlier enabled generation. Built-in Proposal, Design, and Implement issue bodies omit their Human Review Projection sections. Custom workflow templates and explicit `--body-file` content remain authoritative.
+
+This setting controls repository authoring guidance only. Typed SPEC, TASK, PROCESS, QUESTION, ANSWER, REVIEW, and VERIFY artifacts, independent implementation review, final verification, stored historical projection comments, HTML preview parsing/storage, and Web preview execution are unchanged.
+
 ### Preferred natural language
 
 Agents author generated artifacts in English by default. To make issue bodies, typed comments, design notes, and rationale come out in another language, add a `rules.language` entry to `issue-spec/config.yaml`. The value is embedded into every generated skill, slash command, and prompt as a workflow rule, so the coordinator follows it.

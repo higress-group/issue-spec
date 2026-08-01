@@ -217,9 +217,10 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 
 	var title, body string
 	var labels []string
+	authoringOptions := templates.WorkflowAuthoringOptions{HTMLReviewEnabled: workflowPlan.HTMLReviewEnabled()}
 	switch kind {
 	case "proposal":
-		title, body, labels = templates.ProposalIssue(*change)
+		title, body, labels = templates.ProposalIssueWithOptions(*change, authoringOptions)
 	case "design":
 		if *proposal == "" {
 			a.errorf("--proposal is required for design issues\n")
@@ -248,7 +249,7 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 			a.errorf("design gate blocked: proposal issue %d has open blocking QUESTION comments\n", proposalIssue)
 			return 1
 		}
-		title, body, labels = templates.DesignIssue(*change, *proposal)
+		title, body, labels = templates.DesignIssueWithOptions(*change, *proposal, authoringOptions)
 	case "implement":
 		if *design == "" {
 			a.errorf("--design is required for implement issues\n")
@@ -304,7 +305,7 @@ func (a *app) runIssueCreate(ctx context.Context, kind string, args []string) in
 				}
 			}
 		}
-		title, body, labels = templates.ImplementIssue(*change, *design)
+		title, body, labels = templates.ImplementIssueWithOptions(*change, *design, authoringOptions)
 	default:
 		a.errorf("unknown issue class %q\n", kind)
 		return 2

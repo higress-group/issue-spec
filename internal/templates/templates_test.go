@@ -75,6 +75,33 @@ func TestIssueTemplatesScaffoldProjectionTimingAndAuthority(t *testing.T) {
 	}
 }
 
+func TestIssueTemplatesOmitHTMLReviewSectionsWhenDisabled(t *testing.T) {
+	options := WorkflowAuthoringOptions{HTMLReviewEnabled: false}
+	_, proposal, _ := ProposalIssueWithOptions("demo-change", options)
+	_, design, _ := DesignIssueWithOptions("demo-change", "21", options)
+	_, implement, _ := ImplementIssueWithOptions("demo-change", "22", options)
+	for _, test := range []struct {
+		name     string
+		body     string
+		required []string
+	}{
+		{name: "proposal", body: proposal, required: []string{"## Open Questions", "## Capabilities"}},
+		{name: "design", body: design, required: []string{"## Question Convergence Check", "## Current Implementation Locations", "## Confirmation Checklist"}},
+		{name: "implement", body: implement, required: []string{"## PR Mode Decision", "## DAG Nodes and Dependencies", "## Global Review / Verify Status"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if strings.Contains(test.body, "## Human Review Projection") {
+				t.Fatalf("disabled %s issue body retains HTML review section:\n%s", test.name, test.body)
+			}
+			for _, want := range test.required {
+				if !strings.Contains(test.body, want) {
+					t.Fatalf("disabled %s issue body lost %q:\n%s", test.name, want, test.body)
+				}
+			}
+		})
+	}
+}
+
 func sectionOf(t *testing.T, body, heading string) string {
 	t.Helper()
 	idx := strings.Index(body, heading+"\n")

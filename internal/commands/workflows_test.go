@@ -163,6 +163,54 @@ func TestWriteWorkflowArtifactsUsesCurrentCodexSkillPathWithoutGlobalWrites(t *t
 	}
 }
 
+func TestWriteWorkflowArtifactsDisabledHTMLReviewPrunesExactManagedReferenceIdempotently(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "issue-spec", "config.yaml")
+	writeWorkflowTestFile(t, configPath, "html_review:\n  enabled: true\n")
+	if _, err := writeWorkflowArtifacts(root, "owner/repo", "codex,claude", "both"); err != nil {
+		t.Fatal(err)
+	}
+	reference := filepath.Join(root, ".agents", "skills", "issue-spec-workflow", "references", "human-review-projections.md")
+	if _, err := os.Stat(reference); err != nil {
+		t.Fatalf("enabled generation did not create projection reference: %v", err)
+	}
+	sibling := filepath.Join(filepath.Dir(reference), "operator-notes.md")
+	writeWorkflowTestFile(t, sibling, "operator owned\n")
+
+	writeWorkflowTestFile(t, configPath, "html_review:\n  enabled: false\n")
+	result, err := writeWorkflowArtifacts(root, "owner/repo", "codex,claude", "both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPruned := cleanGeneratedPath(reference)
+	if got := strings.Join(result.PrunedFiles, ","); got != wantPruned {
+		t.Fatalf("pruned files = %q, want %q", got, wantPruned)
+	}
+	if _, err := os.Stat(reference); !os.IsNotExist(err) {
+		t.Fatalf("disabled generation retained managed projection reference, err=%v", err)
+	}
+	if got := readTestFile(t, sibling); got != "operator owned\n" {
+		t.Fatalf("disabled generation changed sibling resource: %q", got)
+	}
+	workflowSkill := readTestFile(t, filepath.Join(root, ".agents", "skills", "issue-spec-workflow", "SKILL.md"))
+	proposeCommand := readTestFile(t, filepath.Join(root, ".claude", "commands", "issue-spec", "propose.md"))
+	for name, body := range map[string]string{"workflow skill": workflowSkill, "propose command": proposeCommand} {
+		for _, forbidden := range []string{"human-review-projections.md", "proposal-choice-brief", "design-explainer", "implement-execution-brief", "projection upsert"} {
+			if strings.Contains(body, forbidden) {
+				t.Fatalf("%s retains disabled HTML review guidance %q:\n%s", name, forbidden, body)
+			}
+		}
+	}
+
+	again, err := writeWorkflowArtifacts(root, "owner/repo", "codex,claude", "both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.PrunedFiles) != 0 {
+		t.Fatalf("repeated disabled generation was not idempotent: %+v", again.PrunedFiles)
+	}
+}
+
 func TestWriteWorkflowArtifactsPrunesOnlyRecognizedManagedArchiveAssets(t *testing.T) {
 	root := t.TempDir()
 	managedSkill := filepath.Join(root, ".agents", "skills", "issue-spec-archive", "SKILL.md")
@@ -354,8 +402,6 @@ func TestCheckedInWorkflowArtifactsExactlyMatchGenerator(t *testing.T) {
 			filepath.Join(".claude", "skills", "issue-spec-review", "SKILL.md"),
 			filepath.Join(".claude", "skills", "issue-spec-verify", "SKILL.md"),
 			filepath.Join(".claude", "skills", "issue-spec-workflow", "SKILL.md"),
-			filepath.Join(".agents", "skills", "issue-spec-workflow", "references", "human-review-projections.md"),
-			filepath.Join(".claude", "skills", "issue-spec-workflow", "references", "human-review-projections.md"),
 		},
 		[]string{
 			filepath.Join(".claude", "commands", "issue-spec", "apply.md"),
@@ -374,6 +420,12 @@ func TestCheckedInWorkflowArtifactsExactlyMatchGenerator(t *testing.T) {
 		}
 		if !bytes.Equal(generated, checkedIn) {
 			t.Fatalf("checked-in workflow artifact is stale: %s", relative)
+		}
+	}
+	for name, root := range map[string]string{"generated": generatedRoot, "checked-in": projectRoot} {
+		path := filepath.Join(root, ".agents", "skills", "issue-spec-workflow", "references", "human-review-projections.md")
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s disabled workflow retains projection reference, err=%v", name, err)
 		}
 	}
 }

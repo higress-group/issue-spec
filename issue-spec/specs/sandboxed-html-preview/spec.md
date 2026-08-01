@@ -107,7 +107,17 @@ Source SPEC comments:
 
 ### Requirement: dual-audience Design authoring explainer
 
-When the selected repository profile advertises Interactive Design Explainer support, issue-spec Design authoring guidance MUST maintain one ordinary human-facing explainer comment after the persisted Design has completed its first QUESTION discovery pass. The explainer MAY precede TASK planning, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST have no independent persisted lifecycle status, and MUST remain non-authoritative and outside typed workflow gates and default Agent context.
+When repository HTML review authoring is enabled and the selected repository profile advertises Interactive Design Explainer support, issue-spec Design authoring guidance MUST maintain one ordinary human-facing explainer comment after the persisted Design has completed its first QUESTION discovery pass. The explainer MAY precede TASK planning, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST have no independent persisted lifecycle status, and MUST remain non-authoritative and outside typed workflow gates and default Agent context.
+
+#### Scenario: disabled Design review skips projection loading
+
+- **WHEN** repository configuration sets `html_review.enabled: false`
+- **THEN** generated Design authoring guidance and the built-in Design issue body SHALL omit the projection checkpoint and reference loading while QUESTION discovery proceeds directly to TASK planning
+
+#### Scenario: enabled Design review keeps the current checkpoint
+
+- **WHEN** `html_review` is absent or explicitly enabled and the selected profile supports the Design explainer
+- **THEN** Design authoring SHALL keep the projection checkpoint after its first QUESTION discovery pass and before complete TASK planning
 
 #### Scenario: Design projection follows first QUESTION discovery and precedes TASK planning
 
@@ -150,7 +160,17 @@ Source SPEC comments:
 
 ### Requirement: dual-audience Proposal choice briefs
 
-When the selected repository profile advertises Proposal Choice Brief support, issue-spec Proposal authoring guidance MUST maintain one ordinary human-facing Choice Brief after the persisted Proposal has completed its first QUESTION discovery pass. The brief MAY precede complete SPEC authoring, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST have no independent persisted lifecycle status, and MUST remain non-authoritative and outside workflow gates and default Agent context.
+When repository HTML review authoring is enabled and the selected repository profile advertises Proposal Choice Brief support, issue-spec Proposal authoring guidance MUST maintain one ordinary human-facing Choice Brief after the persisted Proposal has completed its first QUESTION discovery pass. The brief MAY precede complete SPEC authoring, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST have no independent persisted lifecycle status, and MUST remain non-authoritative and outside workflow gates and default Agent context.
+
+#### Scenario: disabled Proposal review skips projection loading
+
+- **WHEN** repository configuration sets `html_review.enabled: false`
+- **THEN** generated Proposal authoring guidance and the built-in Proposal issue body SHALL omit the projection checkpoint and reference loading while QUESTION discovery proceeds directly to SPEC authoring
+
+#### Scenario: enabled Proposal review keeps the current checkpoint
+
+- **WHEN** `html_review` is absent or explicitly enabled and the selected profile supports the Proposal Choice Brief
+- **THEN** Proposal authoring SHALL keep the projection checkpoint after its first QUESTION discovery pass and before complete SPEC authoring
 
 #### Scenario: Proposal projection follows first QUESTION discovery and precedes complete SPEC authoring
 
@@ -203,7 +223,17 @@ Source SPEC comments:
 
 ### Requirement: dual-audience Implement execution briefs
 
-When the selected repository profile advertises Implementation Execution Brief support, issue-spec Implement authoring guidance MUST maintain one ordinary human-facing Execution Brief after the persisted Implement issue has completed its first QUESTION discovery pass. The brief MAY precede complete PROCESS planning, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST derive execution data from Design invariants, TASK, PROCESS, and evidence records, and MUST remain non-authoritative and outside workflow gates and default Agent context.
+When repository HTML review authoring is enabled and the selected repository profile advertises Implementation Execution Brief support, issue-spec Implement authoring guidance MUST maintain one ordinary human-facing Execution Brief after the persisted Implement issue has completed its first QUESTION discovery pass. The brief MAY precede complete PROCESS planning, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST derive execution data from Design invariants, TASK, PROCESS, and evidence records, and MUST remain non-authoritative and outside workflow gates and default Agent context.
+
+#### Scenario: disabled Implement review skips projection loading
+
+- **WHEN** repository configuration sets `html_review.enabled: false`
+- **THEN** generated Implement authoring guidance and the built-in Implement issue body SHALL omit the projection checkpoint and reference loading while QUESTION discovery proceeds directly to PROCESS planning and independent code review remains mandatory
+
+#### Scenario: enabled Implement review keeps the current checkpoint
+
+- **WHEN** `html_review` is absent or explicitly enabled and the selected profile supports the Implementation Execution Brief
+- **THEN** Implement authoring SHALL keep the projection checkpoint after its first QUESTION discovery pass and before complete PROCESS planning
 
 #### Scenario: Implement projection follows first QUESTION discovery and precedes complete PROCESS planning
 

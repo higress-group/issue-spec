@@ -118,6 +118,11 @@ func writeWorkflowArtifactsResolvedWithProvider(root, repo, delivery string, too
 		return result, err
 	}
 	result.PrunedFiles = pruned
+	htmlReviewPruned, err := pruneManagedHTMLReviewReference(root, delivery, plan.HTMLReviewEnabled())
+	if err != nil {
+		return result, err
+	}
+	result.PrunedFiles = append(result.PrunedFiles, htmlReviewPruned...)
 
 	if delivery != workflowDeliveryCommands {
 		skillsDir := filepath.Join(root, ".agents", "skills")
@@ -404,6 +409,26 @@ func pruneManagedArchiveWorkflowAssets(root, delivery string, tools []workflowTo
 	return pruned, nil
 }
 
+func pruneManagedHTMLReviewReference(root, delivery string, enabled bool) ([]string, error) {
+	if enabled || delivery == workflowDeliveryCommands {
+		return nil, nil
+	}
+	skillDir := filepath.Join(root, ".agents", "skills", "issue-spec-workflow")
+	path := filepath.Join(skillDir, "references", "human-review-projections.md")
+	if !managedIssueSpecSkillDirectory(skillDir) {
+		return nil, nil
+	}
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("inspect managed HTML review reference %s: %w", path, err)
+	}
+	if err := os.Remove(path); err != nil {
+		return nil, fmt.Errorf("prune managed HTML review reference %s: %w", path, err)
+	}
+	return []string{cleanGeneratedPath(path)}, nil
+}
+
 func installGlobalCodexPrompts(root, repo string, provider *workflow.ProviderPlan, options globalPromptInstallOptions, result *workflowGenerationResult) error {
 	if !options.Enabled {
 		return nil
@@ -469,7 +494,8 @@ func workflowSkills(repo string, plan workflow.Plan) []templates.RenderedSkill {
 }
 
 func workflowSkillsWithProvider(repo string, plan workflow.Plan, provider *workflow.ProviderPlan) []templates.RenderedSkill {
-	skills := templates.IssueSpecSkills(repo)
+	options := templates.WorkflowAuthoringOptions{HTMLReviewEnabled: plan.HTMLReviewEnabled()}
+	skills := templates.IssueSpecSkillsWithOptions(repo, options)
 	notice := workflowNotice(plan)
 	for i := range skills {
 		if skills[i].Name == "issue-spec-github" {
@@ -495,7 +521,8 @@ func workflowCommandContents(repo string, plan workflow.Plan) []templates.Comman
 }
 
 func workflowCommandContentsWithProvider(repo string, plan workflow.Plan, provider *workflow.ProviderPlan) []templates.CommandContent {
-	commands := templates.IssueSpecCommandContents(repo)
+	options := templates.WorkflowAuthoringOptions{HTMLReviewEnabled: plan.HTMLReviewEnabled()}
+	commands := templates.IssueSpecCommandContentsWithOptions(repo, options)
 	notice := workflowNotice(plan)
 	for i := range commands {
 		commands[i].Body = strings.TrimRight(commands[i].Body, "\n") + "\n\n" + strings.TrimRight(notice, "\n") + "\n"

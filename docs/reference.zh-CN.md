@@ -25,6 +25,22 @@ issue-spec workflow which --repo owner/repo --json
 
 新的长期 spec 默认写入 `issue-spec/specs/<capability>/spec.md`。若 `openspec/specs/<capability>/spec.md` 已存在，archive 可以更新那个遗留的长期 spec，并报告所选的兼容路径。
 
+### HTML review 创作指引
+
+HTML review 创作指引默认启用。若要让 Proposal、Design 与 Implement 创作只使用类型化 Markdown 工作流，而不加载或生成面向人工 review 的 projection 指令，请显式配置这个必填布尔值：
+
+```yaml
+# issue-spec/config.yaml
+html_review:
+  enabled: false
+```
+
+缺少 `html_review` 时，`enabled` 会解析为 `true`，以保持向后兼容。若映射存在，`enabled` 必须存在且必须是布尔值；标量、缺少 `enabled`、非布尔值及未知字段都会让工作流校验失败，并且失败发生在生成或 issue 创建产生任何变更之前。
+
+使用 `enabled: false` 时，`issue-spec init` 会从生成的 skills、slash commands 与 prompts 中省略 projection 检查点，不生成内嵌的 `human-review-projections.md` 资源，并且只移除先前启用生成所留下的这个精确托管资源。内置 Proposal、Design 与 Implement issue 正文也会省略 Human Review Projection 章节。自定义工作流模板和显式 `--body-file` 内容仍具有权威性。
+
+该设置只控制仓库的创作指引。类型化 SPEC、TASK、PROCESS、QUESTION、ANSWER、REVIEW 与 VERIFY 产物、独立实现 review、最终验证、已存储的历史 projection 评论、HTML preview 解析与存储，以及 Web preview 执行均保持不变。
+
 ### 偏好的自然语言
 
 默认情况下，agent 使用英文来撰写生成的产物。要让 issue 正文、类型化评论、design 说明与 rationale 以另一种语言输出，请在 `issue-spec/config.yaml` 中添加一个 `rules.language` 条目。该值会被嵌入到每一个生成的 skill、slash 命令与 prompt 中，作为一条工作流规则，从而让协调器遵循它。
