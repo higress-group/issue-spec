@@ -9,7 +9,6 @@ This durable spec is organized by stable workflow capability surfaces rather tha
 Proposal Issues:
 - https://github.com/higress-group/issue-spec/issues/23
 - https://github.com/higress-group/issue-spec/issues/241
-- https://github.com/higress-group/issue-spec/issues/384
 
 ## Requirements
 
@@ -34,35 +33,6 @@ The CLI MUST resolve repository-local issue-spec workflow configuration before c
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452933
-
-### Requirement: repository HTML review authoring policy is strict and default-enabled
-
-The selected workflow configuration MAY contain a top-level `html_review` mapping with the single required boolean `enabled`. The CLI MUST resolve an absent mapping as enabled for backward compatibility, MUST require explicit `false` to opt out, and MUST reject malformed or unknown configuration before writing workflow assets or creating an issue.
-
-When disabled, generated skills, commands, prompts, embedded resources, and built-in Proposal, Design, and Implement issue bodies MUST omit Human Review Projection authoring dependencies while preserving QUESTION discovery and all typed artifact, independent review, traceability, and final verification obligations. Generation MUST remove only the exact known managed `human-review-projections.md` resource left by an earlier enabled generation and MUST be idempotent. Custom workflow schemas and explicit issue body files remain authoritative.
-
-#### Scenario: missing HTML review setting preserves compatibility
-
-- **WHEN** the selected workflow configuration omits `html_review`
-- **THEN** workflow generation and built-in issue bodies SHALL retain the enabled HTML review authoring checkpoints and reference resource
-
-#### Scenario: disabled HTML review omits authoring load
-
-- **WHEN** the selected workflow configures `html_review.enabled: false`
-- **THEN** generated authoring surfaces and built-in phase bodies SHALL omit Human Review Projection checkpoints and resources while retaining typed workflow review obligations
-
-#### Scenario: invalid HTML review configuration fails closed
-
-- **WHEN** `html_review` is a scalar, omits `enabled`, gives `enabled` a non-boolean value, or contains an unknown field
-- **THEN** workflow resolution SHALL report `invalid_config` before generated local assets or remote issues are mutated
-
-#### Scenario: disabled regeneration prunes only the managed reference
-
-- **WHEN** generation switches an enabled repository to disabled
-- **THEN** it SHALL remove and report only the exact managed human-review projection reference, preserve sibling user-owned files, and make repeated disabled generation a no-op
-
-Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/384
 
 ### Requirement: schema and template resolution is safe and explainable
 
@@ -264,3 +234,25 @@ Projects MUST define business verification through workflow context, rules.verif
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452732
+
+### Requirement: repository HTML review authoring policy is strict and default-enabled
+
+The selected workflow configuration MAY contain a top-level html_review mapping with the single required boolean enabled. The CLI MUST resolve an absent mapping as enabled for backward compatibility, MUST require explicit false to opt out, and MUST reject malformed or unknown configuration before writing workflow assets or creating an issue. The resolved policy MUST control generated workflow skills, commands, prompts, the managed human-review reference resource, and built-in Proposal, Design, and Implement issue-body guidance. Disabling HTML review MUST NOT weaken typed artifact authoring, QUESTION discovery, PROCESS planning, independent code review, final verification, or the HTML preview runtime itself.
+
+#### Scenario: missing HTML review setting preserves compatibility
+
+- **WHEN** the selected workflow configuration omits html_review
+- **THEN** workflow generation and built-in issue bodies retain the enabled HTML review authoring checkpoints and reference resource
+
+#### Scenario: disabled HTML review omits authoring load
+
+- **WHEN** the selected workflow configures html_review.enabled to false
+- **THEN** generated workflow assets and built-in phase bodies omit HTML review projection instructions, references, and sections, while stale exact managed reference files are pruned and typed workflow review obligations remain
+
+#### Scenario: invalid HTML review configuration fails closed
+
+- **WHEN** html_review is a scalar, omits enabled, gives enabled a non-boolean value, or contains an unknown field
+- **THEN** workflow resolution reports invalid_config and does not write generated assets or create a phase issue
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/384#issuecomment-5151712448
