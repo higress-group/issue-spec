@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -44,6 +45,58 @@ func TestIssueSpecSkillAndCommandTemplates(t *testing.T) {
 	} {
 		if !strings.Contains(propose, want) {
 			t.Fatalf("issue-spec-propose missing title guidance %q", want)
+		}
+	}
+}
+
+func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidance(t *testing.T) {
+	enabled := WorkflowAuthoringOptions{HTMLReviewEnabled: true}
+	if got, want := IssueSpecSkillsWithOptions("owner/repo", enabled), IssueSpecSkills("owner/repo"); !reflect.DeepEqual(got, want) {
+		t.Fatal("explicitly enabled skills differ from backward-compatible defaults")
+	}
+	if got, want := IssueSpecCommandContentsWithOptions("owner/repo", enabled), IssueSpecCommandContents("owner/repo"); !reflect.DeepEqual(got, want) {
+		t.Fatal("explicitly enabled commands differ from backward-compatible defaults")
+	}
+
+	disabled := WorkflowAuthoringOptions{HTMLReviewEnabled: false}
+	skills := IssueSpecSkillsWithOptions("owner/repo", disabled)
+	for _, skill := range skills {
+		if len(skill.Resources) != 0 {
+			t.Fatalf("disabled HTML review emitted resources for %s: %+v", skill.Name, skill.Resources)
+		}
+		for _, forbidden := range []string{
+			"Human Review Projection", "human-review-projections.md", "proposal-choice-brief",
+			"design-explainer", "implement-execution-brief", "projection upsert",
+		} {
+			if strings.Contains(skill.Content, forbidden) {
+				t.Fatalf("disabled skill %s retains HTML review authoring guidance %q:\n%s", skill.Name, forbidden, skill.Content)
+			}
+		}
+	}
+	workflow := skillContent(t, skills, "issue-spec-workflow")
+	for _, want := range []string{"first QUESTION discovery/create pass, then author the next typed child set", "SPEC for Proposal, TASK for Design, PROCESS for Implement", "independent review"} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("disabled workflow lost typed obligation %q:\n%s", want, workflow)
+		}
+	}
+	propose := skillContent(t, skills, "issue-spec-propose")
+	for _, want := range []string{"Generate canonical SPEC comments", "Generate TASK comments", "Link SPEC <-> TASK"} {
+		if !strings.Contains(propose, want) {
+			t.Fatalf("disabled propose skill lost typed obligation %q:\n%s", want, propose)
+		}
+	}
+	apply := skillContent(t, skills, "issue-spec-apply")
+	for _, want := range []string{"complete PROCESS planning", "real non-Coordinator implementation worker", "independent review"} {
+		if !strings.Contains(apply, want) {
+			t.Fatalf("disabled apply skill lost implementation obligation %q:\n%s", want, apply)
+		}
+	}
+
+	for _, command := range IssueSpecCommandContentsWithOptions("owner/repo", disabled) {
+		for _, forbidden := range []string{"Human Review Projection", "proposal-choice-brief", "design-explainer", "implement-execution-brief", "projection upsert"} {
+			if strings.Contains(command.Body, forbidden) {
+				t.Fatalf("disabled command %s retains HTML review authoring guidance %q:\n%s", command.ID, forbidden, command.Body)
+			}
 		}
 	}
 }
@@ -358,7 +411,8 @@ func TestTopLevelProjectionUsageDistinguishesCreateAndReplacementFallbacks(t *te
 
 func TestCheckedInCodexClaudeGuidanceMatchesTemplates(t *testing.T) {
 	root := filepath.Join("..", "..")
-	for _, skill := range IssueSpecSkills("higress-group/issue-spec") {
+	options := WorkflowAuthoringOptions{HTMLReviewEnabled: false}
+	for _, skill := range IssueSpecSkillsWithOptions("higress-group/issue-spec", options) {
 		var variants [][]byte
 		for _, base := range []string{filepath.Join(".agents", "skills"), filepath.Join(".claude", "skills")} {
 			path := filepath.Join(root, base, skill.Name, "SKILL.md")
@@ -397,13 +451,19 @@ func TestCheckedInCodexClaudeGuidanceMatchesTemplates(t *testing.T) {
 			}
 		}
 	}
-	for _, command := range IssueSpecCommandContents("higress-group/issue-spec") {
+	for _, command := range IssueSpecCommandContentsWithOptions("higress-group/issue-spec", options) {
 		path := filepath.Join(root, ".claude", "commands", "issue-spec", command.ID+".md")
 		got, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		_ = got // PROCESS-008 refreshes managed generated assets from these templates.
+	}
+	for _, base := range []string{filepath.Join(".agents", "skills"), filepath.Join(".claude", "skills")} {
+		path := filepath.Join(root, base, "issue-spec-workflow", "references", "human-review-projections.md")
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("disabled checked-in workflow retains projection reference %s, err=%v", path, err)
+		}
 	}
 }
 

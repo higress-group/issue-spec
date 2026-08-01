@@ -27,6 +27,10 @@ func plainSection(title, content string) string {
 }
 
 func ProposalIssue(change string) (string, string, []string) {
+	return ProposalIssueWithOptions(change, WorkflowAuthoringOptions{HTMLReviewEnabled: true})
+}
+
+func ProposalIssueWithOptions(change string, options WorkflowAuthoringOptions) (string, string, []string) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "<!-- issue-spec:issue=proposal change=%s version=1 -->\n", change)
 	fmt.Fprintf(&b, "# Proposal: %s\n\n", change)
@@ -39,7 +43,9 @@ func ProposalIssue(change string) (string, string, []string) {
 	b.WriteString(fillSection("Related Specs Analysis", "Summarize the existing SPECs or durable specs this interacts with and how, so a reader need not rediscover them."))
 	b.WriteString(fillSection("Existing Assumptions Impact", "Record the assumptions in force and how this change affects or depends on them."))
 	b.WriteString(plainSection("Open Questions", "- No blocking QUESTION is currently recorded."))
-	b.WriteString(plainSection("Human Review Projection", "- Timing: after the first QUESTION discovery/create pass and before complete SPEC authoring.\n- Authority: ordinary and statusless; this issue body, typed artifacts, and the latest effective ANSWER remain authoritative.\n- Presentation: lead with an affected person or operator and one concrete before/after case before introducing technical structure.\n- Coverage: build a coverage ledger and present the complete current problem, outcome, boundaries, non-goals, assumptions, risks, decisions, alternatives, and expected SPEC coverage; do not emit only a delta or executive summary.\n- Context: projection HTML source is excluded from default Agent context."))
+	if options.HTMLReviewEnabled {
+		b.WriteString(plainSection("Human Review Projection", "- Timing: after the first QUESTION discovery/create pass and before complete SPEC authoring.\n- Authority: ordinary and statusless; this issue body, typed artifacts, and the latest effective ANSWER remain authoritative.\n- Presentation: lead with an affected person or operator and one concrete before/after case before introducing technical structure.\n- Coverage: build a coverage ledger and present the complete current problem, outcome, boundaries, non-goals, assumptions, risks, decisions, alternatives, and expected SPEC coverage; do not emit only a delta or executive summary.\n- Context: projection HTML source is excluded from default Agent context."))
+	}
 	b.WriteString(fillSection("Capabilities", "List the capability areas this change introduces or modifies."))
 	b.WriteString(fillSection("Impact", "Describe the expected impact on users, agents, and the workflow."))
 	body := strings.TrimRight(b.String(), "\n") + "\n"
@@ -48,11 +54,17 @@ func ProposalIssue(change string) (string, string, []string) {
 }
 
 func DesignIssue(change, proposalRef string) (string, string, []string) {
+	return DesignIssueWithOptions(change, proposalRef, WorkflowAuthoringOptions{HTMLReviewEnabled: true})
+}
+
+func DesignIssueWithOptions(change, proposalRef string, options WorkflowAuthoringOptions) (string, string, []string) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "<!-- issue-spec:issue=design change=%s version=1 -->\n", change)
 	fmt.Fprintf(&b, "# Design: %s\n\n", change)
 	b.WriteString(plainSection("Question Convergence Check", fmt.Sprintf("- Proposal Issue: %s\n- Blocking QUESTION status: confirmed or explicitly accepted as assumptions.", valueOr(proposalRef, "N/A"))))
-	b.WriteString(plainSection("Human Review Projection", "- Timing: after the first QUESTION discovery/create pass and before complete TASK planning.\n- Authority: ordinary and statusless; this issue body, typed artifacts, and the latest effective ANSWER remain authoritative.\n- Presentation: lead with a concrete request or operator case, observable outcome, and meaningful failure path before introducing components.\n- Coverage: build a coverage ledger and present the complete current architecture, invariants, flow, boundaries, interfaces and state, alternatives, compatibility, rollout/rollback, risks, verification, and SPEC traceability; do not assume the reviewer already knows omitted design information.\n- Context: keep projection HTML source outside default Agent context."))
+	if options.HTMLReviewEnabled {
+		b.WriteString(plainSection("Human Review Projection", "- Timing: after the first QUESTION discovery/create pass and before complete TASK planning.\n- Authority: ordinary and statusless; this issue body, typed artifacts, and the latest effective ANSWER remain authoritative.\n- Presentation: lead with a concrete request or operator case, observable outcome, and meaningful failure path before introducing components.\n- Coverage: build a coverage ledger and present the complete current architecture, invariants, flow, boundaries, interfaces and state, alternatives, compatibility, rollout/rollback, risks, verification, and SPEC traceability; do not assume the reviewer already knows omitted design information.\n- Context: keep projection HTML source outside default Agent context."))
+	}
 	b.WriteString(fillSection("Current Implementation Locations", "Name the concrete files/symbols that implement the affected behavior today, so a reader with no shared context can find them without rediscovery."))
 	b.WriteString(fillSection("Involved Modules", "List the modules this change touches and their role."))
 	b.WriteString(fillSection("Impact Scope", "Describe what behavior changes and which SPECs each part realizes."))
@@ -71,13 +83,13 @@ func DesignIssue(change, proposalRef string) (string, string, []string) {
 }
 
 func ImplementIssue(change, designRef string) (string, string, []string) {
-	body := fmt.Sprintf(`<!-- issue-spec:issue=implement change=%s version=1 -->
-# Implement DAG: %s
+	return ImplementIssueWithOptions(change, designRef, WorkflowAuthoringOptions{HTMLReviewEnabled: true})
+}
 
-## PR Mode Decision
-
-TBD
-
+func ImplementIssueWithOptions(change, designRef string, options WorkflowAuthoringOptions) (string, string, []string) {
+	projection := ""
+	if options.HTMLReviewEnabled {
+		projection = `
 ## Human Review Projection
 
 - Timing: after the first QUESTION discovery/create pass and before complete PROCESS planning.
@@ -86,6 +98,15 @@ TBD
 - Coverage: build a coverage ledger and present the complete current invariant DAG, state counts, critical path, safe parallelism, roles, blockers, shared touchpoints, SPEC/scenario coverage, tests, generators, estimates, and independent review/verify obligations; do not emit only the increment since Design.
 - Semantics: estimates and complexity do not define workflow semantics.
 - Context: projection HTML source is excluded from default Agent context.
+`
+	}
+	body := fmt.Sprintf(`<!-- issue-spec:issue=implement change=%s version=1 -->
+# Implement DAG: %s
+
+## PR Mode Decision
+
+TBD
+%s
 
 ## DAG Nodes and Dependencies
 
@@ -107,7 +128,7 @@ TBD
 
 - Design Issue: %s
 - Status: draft
-`, change, change, valueOr(designRef, "N/A"))
+`, change, change, projection, valueOr(designRef, "N/A"))
 	title := IssueTitle("implement", change, body, "")
 	return title, body, []string{"issue-spec/implement"}
 }

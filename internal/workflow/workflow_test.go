@@ -108,6 +108,57 @@ func TestResolveBuiltInFallbackWhenNoConfigExists(t *testing.T) {
 	if plan.DurableSpecsMode() != durable.ModeNone {
 		t.Fatalf("default durable mode = %q, want none", plan.DurableSpecsMode())
 	}
+	if !plan.HTMLReviewEnabled() {
+		t.Fatal("HTML review must default to enabled when configuration is absent")
+	}
+}
+
+func TestResolveHTMLReviewPolicy(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "absent", raw: "schema: issue-spec\n", want: true},
+		{name: "enabled", raw: "html_review:\n  enabled: true\n", want: true},
+		{name: "disabled", raw: "html_review:\n  enabled: false\n", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), test.raw)
+			plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+			if err != nil {
+				t.Fatalf("resolve HTML review policy: %v diagnostics=%+v", err, plan.Diagnostics)
+			}
+			if got := plan.HTMLReviewEnabled(); got != test.want {
+				t.Fatalf("HTMLReviewEnabled() = %t, want %t", got, test.want)
+			}
+			if test.name == "absent" && plan.Config.HTMLReview != nil {
+				t.Fatalf("absent HTML review policy became explicit: %+v", plan.Config.HTMLReview)
+			}
+		})
+	}
+}
+
+func TestResolveRejectsInvalidHTMLReviewConfig(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "scalar", raw: "html_review: false\n"},
+		{name: "missing enabled", raw: "html_review: {}\n"},
+		{name: "non boolean", raw: "html_review:\n  enabled: disabled\n"},
+		{name: "unknown field", raw: "html_review:\n  enabled: true\n  renderer: web\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "issue-spec", "config.yaml"), test.raw)
+			plan, err := ResolveWithOptions(ResolveOptions{Root: root, UserConfigDir: filepath.Join(root, "user")})
+			if err == nil || !hasDiagnostic(plan.Diagnostics, "invalid_config") {
+				t.Fatalf("invalid HTML review config resolved: plan=%+v err=%v", plan, err)
+			}
+		})
+	}
 }
 
 func TestResolveDurableSpecsModes(t *testing.T) {

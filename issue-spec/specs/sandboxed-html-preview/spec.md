@@ -107,7 +107,17 @@ Source SPEC comments:
 
 ### Requirement: dual-audience Design authoring explainer
 
-When the selected repository profile advertises Interactive Design Explainer support, issue-spec Design authoring guidance MUST maintain one ordinary human-facing explainer comment after the persisted Design has completed its first QUESTION discovery pass. The explainer MAY precede TASK planning, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST have no independent persisted lifecycle status, and MUST remain non-authoritative and outside typed workflow gates and default Agent context.
+When repository HTML review authoring is enabled and the selected repository profile advertises Interactive Design Explainer support, issue-spec Design authoring guidance MUST maintain one ordinary human-facing explainer comment after the persisted Design has completed its first QUESTION discovery pass. The explainer MAY precede TASK planning, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST have no independent persisted lifecycle status, and MUST remain non-authoritative and outside typed workflow gates and default Agent context.
+
+#### Scenario: disabled Design review skips projection loading
+
+- **WHEN** repository configuration sets html_review.enabled to false
+- **THEN** generated Design authoring guidance and the built-in Design issue body omit the projection checkpoint and reference loading while QUESTION discovery proceeds directly to TASK planning
+
+#### Scenario: enabled Design review keeps the current checkpoint
+
+- **WHEN** html_review is absent or explicitly enabled and the selected profile supports the Design explainer
+- **THEN** Design authoring keeps the projection checkpoint after its first QUESTION discovery pass and before complete TASK planning
 
 #### Scenario: Design projection follows first QUESTION discovery and precedes TASK planning
 
@@ -145,12 +155,21 @@ When the selected repository profile advertises Interactive Design Explainer sup
 - **THEN** the canonical Design, QUESTION, and ANSWER comments remain complete and reviewable as Markdown and the workflow does not claim that an executable explainer is available
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/331#issuecomment-5060253266
-- https://github.com/higress-group/issue-spec/pull/338
+- https://github.com/higress-group/issue-spec/issues/384#issuecomment-5151712537
 
 ### Requirement: dual-audience Proposal choice briefs
 
-When the selected repository profile advertises Proposal Choice Brief support, issue-spec Proposal authoring guidance MUST maintain one ordinary human-facing Choice Brief after the persisted Proposal has completed its first QUESTION discovery pass. The brief MAY precede complete SPEC authoring, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST have no independent persisted lifecycle status, and MUST remain non-authoritative and outside workflow gates and default Agent context.
+When repository HTML review authoring is enabled and the selected repository profile advertises Proposal Choice Brief support, issue-spec Proposal authoring guidance MUST maintain one ordinary human-facing Choice Brief after the persisted Proposal has completed its first QUESTION discovery pass. The brief MAY precede complete SPEC authoring, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST have no independent persisted lifecycle status, and MUST remain non-authoritative and outside workflow gates and default Agent context.
+
+#### Scenario: disabled Proposal review skips projection loading
+
+- **WHEN** repository configuration sets html_review.enabled to false
+- **THEN** generated Proposal authoring guidance and the built-in Proposal issue body omit the projection checkpoint and reference loading while QUESTION discovery proceeds directly to SPEC authoring
+
+#### Scenario: enabled Proposal review keeps the current checkpoint
+
+- **WHEN** html_review is absent or explicitly enabled and the selected profile supports the Proposal Choice Brief
+- **THEN** Proposal authoring keeps the projection checkpoint after its first QUESTION discovery pass and before complete SPEC authoring
 
 #### Scenario: Proposal projection follows first QUESTION discovery and precedes complete SPEC authoring
 
@@ -198,12 +217,21 @@ When the selected repository profile advertises Proposal Choice Brief support, i
 - **THEN** the canonical Proposal, SPEC, QUESTION, and ANSWER comments remain complete and reviewable without claiming an executable Choice Brief
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/331#issuecomment-5060518492
-- https://github.com/higress-group/issue-spec/pull/338
+- https://github.com/higress-group/issue-spec/issues/384#issuecomment-5151712622
 
 ### Requirement: dual-audience Implement execution briefs
 
-When the selected repository profile advertises Implementation Execution Brief support, issue-spec Implement authoring guidance MUST maintain one ordinary human-facing Execution Brief after the persisted Implement issue has completed its first QUESTION discovery pass. The brief MAY precede complete PROCESS planning, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST derive execution data from Design invariants, TASK, PROCESS, and evidence records, and MUST remain non-authoritative and outside workflow gates and default Agent context.
+When repository HTML review authoring is enabled and the selected repository profile advertises Implementation Execution Brief support, issue-spec Implement authoring guidance MUST maintain one ordinary human-facing Execution Brief after the persisted Implement issue has completed its first QUESTION discovery pass. The brief MAY precede complete PROCESS planning, MUST stay QUESTION-free because each typed QUESTION comment owns its presentation and answering through the native answer panel, MUST derive execution data from Design invariants, TASK, PROCESS, and evidence records, and MUST remain non-authoritative and outside workflow gates and default Agent context.
+
+#### Scenario: disabled Implement review skips projection loading
+
+- **WHEN** repository configuration sets html_review.enabled to false
+- **THEN** generated Implement authoring guidance and the built-in Implement issue body omit the projection checkpoint and reference loading while QUESTION discovery proceeds directly to PROCESS planning and independent code review remains mandatory
+
+#### Scenario: enabled Implement review keeps the current checkpoint
+
+- **WHEN** html_review is absent or explicitly enabled and the selected profile supports the Implementation Execution Brief
+- **THEN** Implement authoring keeps the projection checkpoint after its first QUESTION discovery pass and before complete PROCESS planning
 
 #### Scenario: Implement projection follows first QUESTION discovery and precedes complete PROCESS planning
 
@@ -251,8 +279,7 @@ When the selected repository profile advertises Implementation Execution Brief s
 - **THEN** the canonical Implement, TASK, PROCESS, QUESTION, and ANSWER comments remain complete and reviewable without claiming an interactive execution view
 
 Source SPEC comments:
-- https://github.com/higress-group/issue-spec/issues/331#issuecomment-5060801079
-- https://github.com/higress-group/issue-spec/pull/338
+- https://github.com/higress-group/issue-spec/issues/384#issuecomment-5151712710
 
 ### Requirement: self-host interactive QUESTION answering with append-only typed ANSWER comments
 

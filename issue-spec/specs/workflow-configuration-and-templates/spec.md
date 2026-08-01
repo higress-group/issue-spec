@@ -234,3 +234,25 @@ Projects MUST define business verification through workflow context, rules.verif
 
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/308#issuecomment-5016452732
+
+### Requirement: repository HTML review authoring policy is strict and default-enabled
+
+The selected workflow configuration MAY contain a top-level html_review mapping with the single required boolean enabled. The CLI MUST resolve an absent mapping as enabled for backward compatibility, MUST require explicit false to opt out, and MUST reject malformed or unknown configuration before writing workflow assets or creating an issue. The resolved policy MUST control generated workflow skills, commands, prompts, the managed human-review reference resource, and built-in Proposal, Design, and Implement issue-body guidance. Disabling HTML review MUST NOT weaken typed artifact authoring, QUESTION discovery, PROCESS planning, independent code review, final verification, or the HTML preview runtime itself.
+
+#### Scenario: missing HTML review setting preserves compatibility
+
+- **WHEN** the selected workflow configuration omits html_review
+- **THEN** workflow generation and built-in issue bodies retain the enabled HTML review authoring checkpoints and reference resource
+
+#### Scenario: disabled HTML review omits authoring load
+
+- **WHEN** the selected workflow configures html_review.enabled to false
+- **THEN** generated workflow assets and built-in phase bodies omit HTML review projection instructions, references, and sections, while stale exact managed reference files are pruned and typed workflow review obligations remain
+
+#### Scenario: invalid HTML review configuration fails closed
+
+- **WHEN** html_review is a scalar, omits enabled, gives enabled a non-boolean value, or contains an unknown field
+- **THEN** workflow resolution reports invalid_config and does not write generated assets or create a phase issue
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/384#issuecomment-5151712448
