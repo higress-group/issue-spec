@@ -33,7 +33,7 @@ verify-generated: generate-web
 	git diff --exit-code -- internal/server/staticui
 
 verify-docs:
-	$(GO) test ./cmd/issue-spec-server -run '^TestExternalAuthDocumentation'
+	$(GO) test ./cmd/issue-spec-server -run 'Documentation'
 	./hack/requirements-acceptance/verify.sh
 
 verify-requirements-acceptance:

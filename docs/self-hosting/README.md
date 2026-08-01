@@ -177,8 +177,10 @@ capabilities disabled without affecting issue or webhook operation.
 7. Back up PostgreSQL together with the token pepper and encryption keyring;
    see [backup, restore, upgrade, and recovery](operations/backup-restore.md).
 
-The `deployments/dev` fixture is for local development. Do not copy its
-credentials or development posture into production.
+The `deployments/dev` fixture is for local development. Follow the
+[local Server development guide](local-development.md) to run the complete
+Compose stack or a host-built binary against its PostgreSQL service. Do not
+copy its credentials or development posture into production.
 
 ## Connect a local repository
 
@@ -299,6 +301,7 @@ setup, see [Self-hosted runner: trigger agents from issue comments](runner.md).
 
 ## Operations index
 
+- [Local Server development](local-development.md)
 - [Requirements onboarding](requirements-onboarding.md)
 - [Authentication guide](authentication/README.md)
 - [Deployment and hardening](operations/deployment.md)

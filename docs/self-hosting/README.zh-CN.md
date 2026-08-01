@@ -172,7 +172,9 @@ SMTP 密钥文件用于启用已验证通知邮箱、Mention 和显式仓库邮�
 7. PostgreSQL 必须与 Token Pepper、Encryption Keyring 一起备份；参见
    [备份、恢复、升级与应急处理](operations/backup-restore.md)。
 
-`deployments/dev` 仅用于本地开发，不要把其中的凭据或开发模式复制到生产环境。
+`deployments/dev` 仅用于本地开发。按照[本地 Server 开发指南](local-development.zh-CN.md)
+可以运行完整 Compose 环境，或让宿主机二进制连接其中的 PostgreSQL。不要把 fixture 中的
+凭据或开发模式复制到生产环境。
 
 ## 接入本地仓库
 
@@ -278,6 +280,7 @@ Service Account 与 PAT 的操作会被标记为 Automation，Webhook 策略和�
 
 ## 运维文档索引
 
+- [本地 Server 开发](local-development.zh-CN.md)
 - [需求接入指南](requirements-onboarding.zh-CN.md)
 - [认证指南](authentication/README.md)
 - [部署与加固](operations/deployment.md)
