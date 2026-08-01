@@ -206,6 +206,32 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 		a.errorf("validate submitted VERIFY replay: %v\n", err)
 		return 1
 	}
+	specSources, err := loadSubmittedReviewSpecSources(ctx, client, repo, 0, implementIssue, process, comments)
+	if err != nil {
+		a.errorf("resolve submitted VERIFY SPEC authority: %v\n", err)
+		return 1
+	}
+	var specURLs []string
+	for _, id := range covers {
+		if !strings.HasPrefix(id, "SPEC-") {
+			continue
+		}
+		spec, resolveErr := findUniqueSubmittedReviewSpec(specSources, id)
+		if resolveErr != nil {
+			a.errorf("resolve submitted VERIFY coverage %s: %v\n", id, resolveErr)
+			return 1
+		}
+		specURLs = append(specURLs, spec.URL)
+	}
+	if len(specURLs) == 0 {
+		a.errorf("resolve submitted VERIFY coverage: verification PROCESS must cover at least one canonical SPEC\n")
+		return 1
+	}
+	if 1+len(specURLs) > relationships.DefaultMutationTargetLimit {
+		a.errorf("resolve submitted VERIFY coverage: %v: targets=%d limit=%d\n", relationships.ErrBound,
+			1+len(specURLs), relationships.DefaultMutationTargetLimit)
+		return 1
+	}
 	profile, _, err := auth.ResolveProfile(a.profileName, *host)
 	if err != nil {
 		a.errorf("resolve verification profile: %v\n", err)
@@ -239,7 +265,7 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 		a.errorf("observe provider verification checks: %v\n", err)
 		return 1
 	}
-	body, err := renderSubmittedVerification(*verifyID, process.URL, covers, receipt, checks, submission)
+	body, err := renderSubmittedVerification(*verifyID, process.URL, covers, receipt, checks, submission, specURLs...)
 	if err != nil {
 		a.errorf("render submitted VERIFY: %v\n", err)
 		return 1
@@ -577,7 +603,7 @@ func publishAcceptedVerification(ctx context.Context, client github.Operations, 
 }
 
 func renderSubmittedVerification(verifyID, processURL string, covers []string, receipt assignment.Receipt,
-	checks []observedVerificationCheck, submission processworkspace.RoleOwnedSubmissionEvidence) (string, error) {
+	checks []observedVerificationCheck, submission processworkspace.RoleOwnedSubmissionEvidence, specURLs ...string) (string, error) {
 	tests := make([]templates.VerifyTestEvidence, 0, len(receipt.Tests))
 	for _, test := range receipt.Tests {
 		tests = append(tests, templates.VerifyTestEvidence{ID: test.ID, Command: test.Command,
@@ -603,6 +629,12 @@ func renderSubmittedVerification(verifyID, processURL string, covers []string, r
 	body, _, err = model.AddRelatedCommentLink(body, processURL)
 	if err != nil {
 		return "", err
+	}
+	for _, specURL := range specURLs {
+		body, _, err = model.AddRelatedCommentLink(body, specURL)
+		if err != nil {
+			return "", err
+		}
 	}
 	body, _, err = stampAcceptedVerificationReceipt(body, acceptedVerificationReceiptFrom(receipt, checks, submission))
 	return body, err

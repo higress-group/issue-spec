@@ -1109,13 +1109,21 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 	if err := os.WriteFile(assignmentPath, assignmentPayload, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	specBody := verificationCoverageSpecBody(t, "SPEC-005")
 	comments := []github.Comment{{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody}}
 	created, updated := 0, 0
 	backend := verifySubmitCommandBackend{checkRuns: []github.CheckRun{{ID: 42, Name: "unit",
 		HeadSHA: receipt.SubjectRevision, Status: "completed", Conclusion: "success"}}}
 	backend.fakeGitHubBackend = fakeGitHubBackend{info: github.BackendInfo{Name: "gh", Kind: "external-cli", Host: "github.com"},
-		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
-			return append([]github.Comment(nil), comments...), nil
+		getIssue: verificationCoverageIssue,
+		listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			if issue == 1 {
+				return []github.Comment{{ID: 1, HTMLURL: "https://github.com/o/r/issues/1#issuecomment-1", Body: specBody}}, nil
+			}
+			if issue == 9 {
+				return append([]github.Comment(nil), comments...), nil
+			}
+			return nil, nil
 		}, getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
 			pr := github.PullRequest{Number: 7}
 			pr.Head.SHA = receipt.SubjectRevision
@@ -1158,6 +1166,8 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 		parsed.Status != "done" || len(authority.Tests) != 1 || len(authority.Checks) != 1 ||
 		authority.Submission == nil || authority.Submission.Agent != "Verifier" ||
 		authority.Submission.Assurance != assignment.AssuranceSelfReported ||
+		!linksContainURL(parsed.Links["Related Comments"], "https://github.com/o/r/issues/1#issuecomment-1") ||
+		!linksContainURL(parsed.Links["Related Comments"], "https://github.com/o/r/issues/9#issuecomment-10") ||
 		!strings.Contains(comments[1].Body, "### Local Tests") || !strings.Contains(comments[1].Body, "### Provider Checks") ||
 		strings.Contains(comments[1].Body, "### Evidence") {
 		t.Fatalf("VERIFY=%+v authority=%+v found=%t err=%v body=%s", parsed, authority, found, err, comments[1].Body)
@@ -1212,12 +1222,20 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 	if err := os.WriteFile(coordinatorPath, payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	specBody := verificationCoverageSpecBody(t, "SPEC-005")
 	comments := []github.Comment{{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody}}
 	providerReads, creates := 0, 0
 	backend := verifySubmitCommandBackend{fakeGitHubBackend: fakeGitHubBackend{
-		info: github.BackendInfo{Name: "gh", Kind: "external-cli", Host: "github.com"},
-		listIssueComments: func(context.Context, string, int) ([]github.Comment, error) {
-			return append([]github.Comment(nil), comments...), nil
+		info:     github.BackendInfo{Name: "gh", Kind: "external-cli", Host: "github.com"},
+		getIssue: verificationCoverageIssue,
+		listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			if issue == 1 {
+				return []github.Comment{{ID: 1, HTMLURL: "https://github.com/o/r/issues/1#issuecomment-1", Body: specBody}}, nil
+			}
+			if issue == 9 {
+				return append([]github.Comment(nil), comments...), nil
+			}
+			return nil, nil
 		},
 		getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
 			providerReads++
@@ -1292,6 +1310,31 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 		report.ProcessEvidence[0].CarrierRevision.Source != "accepted-verification-receipt:self-reported-tests" {
 		t.Fatalf("submit-to-final local receipt errors=%v evidence=%+v", report.Errors, report.ProcessEvidence)
 	}
+}
+
+func verificationCoverageSpecBody(t *testing.T, id string) string {
+	t.Helper()
+	body, err := templates.SpecComment(templates.SpecCommentOptions{Common: templates.CommonOptions{ID: id, Status: "confirmed"},
+		Input: templates.SpecInput{Requirement: templates.SpecRequirementInput{Title: "verification coverage",
+			Text: "Verification publication MUST include canonical SPEC coverage."}, Scenarios: []templates.SpecScenarioInput{{
+			Title: "complete owner", When: "verification completes", Then: "the owner includes the SPEC"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func verificationCoverageIssue(_ context.Context, _ string, issue int) (github.Issue, error) {
+	items := map[int]github.Issue{
+		1: {Number: 1, HTMLURL: "https://github.com/o/r/issues/1", Body: "<!-- issue-spec:issue=proposal change=verify-coverage version=1 -->"},
+		2: {Number: 2, HTMLURL: "https://github.com/o/r/issues/2", Body: "<!-- issue-spec:issue=design change=verify-coverage version=1 -->\n- Proposal Issue: 1"},
+		9: {Number: 9, HTMLURL: "https://github.com/o/r/issues/9", Body: "<!-- issue-spec:issue=implement change=verify-coverage version=1 -->\n- Design Issue: 2"},
+	}
+	item, ok := items[issue]
+	if !ok {
+		return github.Issue{}, errors.New("unexpected issue")
+	}
+	return item, nil
 }
 
 func TestBuildFinalVerifyReportConsumesExactAcceptedLocalTestReceipt(t *testing.T) {

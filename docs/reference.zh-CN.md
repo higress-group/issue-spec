@@ -240,6 +240,7 @@ issue-spec --profile team review sync \
   --repo acme/widgets \
   --implement 3 \
   --revision abc123 \
+  --process PROCESS-3002 \
   --id REVIEW-3001 \
   --agent reviewer \
   --json
@@ -247,9 +248,9 @@ issue-spec --profile team review sync \
 
 self-hosted Sync 成功时会先持久化并重新读取 Provider Fact，再写入一个稳定的 Done
 REVIEW Completion；即使 Provider 返回零 Finding，该 Completion 仍然有效。最终 Sync
-后，使用 `issue-spec link` 把 REVIEW 显式链接到它的 Review PROCESS、每个覆盖到的
-Change-bearing PROCESS 以及每个覆盖到的 Active SPEC。禁止伪造 Finding、手工编辑
-Completion Stamp、从正文中的 ID 推断链接，或用通用 Approval Framework 替代证据。
+本身会在 REVIEW 所有者评论上发布完整关系集：它的 Review PROCESS、每个覆盖到的
+Change-bearing PROCESS 以及每个覆盖到的 Active SPEC。不要随后修改对端。禁止伪造
+Finding、手工编辑 Completion Stamp、从正文中的 ID 推断链接，或用通用 Approval Framework 替代证据。
 `status` 与最终 `verify` 使用同一个 Validator 检查精确的 Provider、Repository、
 Change、Reference Version、Revision、Freshness、链接和 Reviewer Independence，且都不
 刷新 REVIEW。

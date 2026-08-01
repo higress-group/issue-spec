@@ -22,6 +22,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/relationships"
 )
 
 func (a *app) runReview(ctx context.Context, args []string) int {
@@ -152,7 +153,7 @@ func (a *app) runReviewSubmit(ctx context.Context, args []string) int {
 		a.errorf("resolve submitted review SPEC authority: %v\n", err)
 		return 1
 	}
-	findingTargets, coveredSpecURLs, err := validateSubmittedReviewTargets(comments, implementIssue, specSources, process, covers, receipt)
+	findingTargets, coverage, err := validateSubmittedReviewTargets(comments, implementIssue, specSources, process, covers, receipt)
 	if err != nil {
 		a.errorf("validate submitted review routing: %v\n", err)
 		return 1
@@ -197,7 +198,7 @@ func (a *app) runReviewSubmit(ctx context.Context, args []string) int {
 			a.errorf("open native review evidence client: %v\n", err)
 			return 1
 		}
-		body, err = renderSubmittedReview(*reviewID, *processID, process.URL, "", coveredSpecURLs, receipt)
+		body, err = renderSubmittedReviewWithCoverage(*reviewID, *processID, "", coverage, receipt)
 		if err != nil {
 			a.errorf("render submitted REVIEW: %v\n", err)
 			return 1
@@ -230,7 +231,7 @@ func (a *app) runReviewSubmit(ctx context.Context, args []string) int {
 			a.errorf("review receipt does not target the exact current PR revision\n")
 			return 1
 		}
-		body, err = renderSubmittedReview(*reviewID, *processID, process.URL, pr.HTMLURL, coveredSpecURLs, receipt)
+		body, err = renderSubmittedReviewWithCoverage(*reviewID, *processID, pr.HTMLURL, coverage, receipt)
 		if err != nil {
 			a.errorf("render submitted REVIEW: %v\n", err)
 			return 1
@@ -264,6 +265,11 @@ type submittedFindingTarget struct {
 	SpecURL string
 }
 
+type reviewOwnerCoverage struct {
+	Processes []model.Artifact
+	Specs     []model.Artifact
+}
+
 type submittedReviewSpecSource struct {
 	Issue     int
 	Comments  []github.Comment
@@ -292,42 +298,91 @@ func loadSubmittedReviewSpecSources(ctx context.Context, client github.Operation
 
 func validateSubmittedReviewTargets(comments []github.Comment, issue int, specSources []submittedReviewSpecSource,
 	reviewProcess model.Artifact, covers []string,
-	receipt assignment.Receipt) (map[string]submittedFindingTarget, []string, error) {
+	receipt assignment.Receipt) (map[string]submittedFindingTarget, reviewOwnerCoverage, error) {
 	covered := map[string]string{}
-	var specURLs []string
+	var coveredSpecs []model.Artifact
 	for _, id := range covers {
 		if !strings.HasPrefix(id, "SPEC-") {
 			continue
 		}
 		spec, err := findUniqueSubmittedReviewSpec(specSources, id)
 		if err != nil {
-			return nil, nil, fmt.Errorf("review PROCESS covered SPEC %s is not one canonical typed artifact: %w", id, err)
+			return nil, reviewOwnerCoverage{}, fmt.Errorf("review PROCESS covered SPEC %s is not one canonical typed artifact: %w", id, err)
 		}
 		covered[id] = spec.URL
-		specURLs = append(specURLs, spec.URL)
+		coveredSpecs = append(coveredSpecs, spec)
 	}
 	if len(covered) == 0 {
-		return nil, nil, errors.New("review PROCESS must cover at least one canonical SPEC")
+		return nil, reviewOwnerCoverage{}, errors.New("review PROCESS must cover at least one canonical SPEC")
+	}
+	coveredProcesses, err := resolveSubmittedReviewProcesses(comments, issue, reviewProcess, covered)
+	if err != nil {
+		return nil, reviewOwnerCoverage{}, err
 	}
 	targets := map[string]submittedFindingTarget{}
 	for _, finding := range receipt.Review.Findings {
 		specURL, ok := covered[finding.SpecID]
 		if !ok {
-			return nil, nil, fmt.Errorf("finding %s spec_id %s is not covered by the review PROCESS", finding.ID, finding.SpecID)
+			return nil, reviewOwnerCoverage{}, fmt.Errorf("finding %s spec_id %s is not covered by the review PROCESS", finding.ID, finding.SpecID)
 		}
 		owner, ownerBody, err := findUniqueSubmittedReviewArtifact(comments, issue, finding.OwnerProcessID, "PROCESS")
 		if err != nil || owner.Comment.ID == reviewProcess.Comment.ID {
-			return nil, nil, fmt.Errorf("finding %s owner_process_id %s is not a distinct canonical PROCESS", finding.ID, finding.OwnerProcessID)
+			return nil, reviewOwnerCoverage{}, fmt.Errorf("finding %s owner_process_id %s is not a distinct canonical PROCESS", finding.ID, finding.OwnerProcessID)
 		}
 		class := model.ParseProcessExecutionClass(owner.Comment.ID, owner.URL, ownerBody)
 		ownerCovers, coversErr := processSectionList(ownerBody, "### Covers")
 		if coversErr != nil || class.Blocking() || class.Class != model.ProcessExecutionChangeBearing ||
 			!stringSliceContains(ownerCovers, finding.SpecID) {
-			return nil, nil, fmt.Errorf("finding %s owner PROCESS must be change-bearing and cover %s", finding.ID, finding.SpecID)
+			return nil, reviewOwnerCoverage{}, fmt.Errorf("finding %s owner PROCESS must be change-bearing and cover %s", finding.ID, finding.SpecID)
 		}
 		targets[finding.ID] = submittedFindingTarget{SpecURL: specURL}
 	}
-	return targets, specURLs, nil
+	return targets, reviewOwnerCoverage{Processes: coveredProcesses, Specs: coveredSpecs}, nil
+}
+
+func resolveSubmittedReviewProcesses(comments []github.Comment, issue int, reviewProcess model.Artifact,
+	coveredSpecs map[string]string) ([]model.Artifact, error) {
+	artifacts := make([]model.Artifact, 0, len(comments))
+	seenIDs := map[string]bool{}
+	for _, comment := range comments {
+		parsed := model.ParseTypedComment(comment.Body)
+		if parsed.Type != "PROCESS" || parsed.ID == "" || len(parsed.Errors) != 0 {
+			continue
+		}
+		if seenIDs[parsed.ID] {
+			return nil, fmt.Errorf("%w: PROCESS %s has multiple canonical candidates", relationships.ErrAmbiguous, parsed.ID)
+		}
+		seenIDs[parsed.ID] = true
+		artifacts = append(artifacts, model.Artifact{Issue: issue, CommentID: comment.ID,
+			URL: comment.HTMLURL, APIURL: comment.URL, Comment: parsed})
+	}
+	result := []model.Artifact{reviewProcess}
+	seen := map[string]bool{reviewProcess.Comment.ID: true}
+	for _, process := range activeProcessArtifacts(artifacts) {
+		if seen[process.Comment.ID] {
+			continue
+		}
+		class := model.ParseProcessExecutionClass(process.Comment.ID, process.URL, process.Comment.Body)
+		if class.Blocking() || (class.Class != model.ProcessExecutionChangeBearing && class.Class != model.ProcessExecutionExternal) {
+			continue
+		}
+		for _, specID := range model.TypedSectionList(process.Comment.Body, "### Covers") {
+			if _, ok := coveredSpecs[specID]; ok {
+				result = append(result, process)
+				seen[process.Comment.ID] = true
+				break
+			}
+		}
+	}
+	if len(result) == 1 {
+		return nil, errors.New("review PROCESS coverage has no active change-bearing or external PROCESS target")
+	}
+	if len(result)+len(coveredSpecs) > relationships.DefaultMutationTargetLimit {
+		return nil, fmt.Errorf("%w: review relationship targets=%d limit=%d", relationships.ErrBound,
+			len(result)+len(coveredSpecs), relationships.DefaultMutationTargetLimit)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Comment.ID < result[j].Comment.ID })
+	return result, nil
 }
 
 func findUniqueSubmittedReviewSpec(sources []submittedReviewSpecSource, id string) (model.Artifact, error) {
@@ -765,6 +820,7 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 	prFlag := fs.Int("pr", 0, "pull request number")
 	revision := fs.String("revision", "", "expected external code head revision for self-hosted evidence")
 	implementFlag := fs.String("implement", "", "implement issue number or URL")
+	processID := fs.String("process", "", "review PROCESS id; inferred only when one active review PROCESS exists")
 	id := fs.String("id", "", "REVIEW id to upsert")
 	agent := fs.String("agent", "Coordinator", "logical agent identity")
 	agentSession := addAgentSessionFlag(fs)
@@ -804,6 +860,21 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 		a.errorf("--pr must be a positive pull request number\n")
 		return 2
 	}
+	implementComments, err := client.ListIssueComments(ctx, repo, implementIssue)
+	if err != nil {
+		a.errorf("collect REVIEW owner PROCESSes: %v\n", err)
+		return 1
+	}
+	specSources, err := loadSubmittedReviewSpecSources(ctx, client, repo, 0, implementIssue, model.Artifact{}, implementComments)
+	if err != nil {
+		a.errorf("collect REVIEW owner SPECs: %v\n", err)
+		return 1
+	}
+	coverage, err := resolveReviewSyncCoverage(implementComments, implementIssue, specSources, *processID)
+	if err != nil {
+		a.errorf("resolve REVIEW owner coverage: %v\n", err)
+		return 1
+	}
 	externalGate, selfHosted, err := a.externalGateWithProfile(ctx, profile, token.Value, repo, implementIssue,
 		"code_change", *revision, coreevidence.GateReview, ".", string(coreevidence.GateReview))
 	if err != nil {
@@ -813,7 +884,7 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 	if selfHosted {
 		session := resolveWriterSession(*agentSession)
 		action, comment, err := upsertExternalReviewSyncCommentAt(ctx, client, repo, implementIssue,
-			*id, *agent, session, *scope, externalGate, time.Now().UTC())
+			*id, *agent, session, *scope, externalGate, time.Now().UTC(), coverage)
 		if err != nil {
 			a.errorf("upsert REVIEW %s: %v\n", *id, err)
 			return 1
@@ -867,6 +938,11 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 		a.errorf("render review sync comment: %v\n", err)
 		return 1
 	}
+	body, err = addReviewOwnerCoverage(body, coverage)
+	if err != nil {
+		a.errorf("render REVIEW owner coverage: %v\n", err)
+		return 1
+	}
 	action, comment, _, err := upsertTypedComment(ctx, client, repo, implementIssue, "REVIEW", *id, body)
 	if err != nil {
 		a.errorf("upsert REVIEW %s: %v\n", *id, err)
@@ -887,6 +963,58 @@ func (a *app) runReviewSync(ctx context.Context, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func resolveReviewSyncCoverage(comments []github.Comment, issue int, specSources []submittedReviewSpecSource,
+	requestedProcessID string) (reviewOwnerCoverage, error) {
+	var processArtifacts []model.Artifact
+	for _, comment := range comments {
+		parsed := model.ParseTypedComment(comment.Body)
+		if parsed.Type == "PROCESS" && parsed.ID != "" && len(parsed.Errors) == 0 {
+			processArtifacts = append(processArtifacts, model.Artifact{Issue: issue, CommentID: comment.ID,
+				URL: comment.HTMLURL, APIURL: comment.URL, Comment: parsed})
+		}
+	}
+	var candidates []model.Artifact
+	for _, process := range activeProcessArtifacts(processArtifacts) {
+		class := model.ParseProcessExecutionClass(process.Comment.ID, process.URL, process.Comment.Body)
+		if class.Blocking() || class.Class != model.ProcessExecutionReview {
+			continue
+		}
+		if strings.TrimSpace(requestedProcessID) == "" || process.Comment.ID == strings.TrimSpace(requestedProcessID) {
+			candidates = append(candidates, process)
+		}
+	}
+	if len(candidates) != 1 {
+		return reviewOwnerCoverage{}, fmt.Errorf("review PROCESS selection resolved %d active candidates; pass --process when needed", len(candidates))
+	}
+	reviewProcess := candidates[0]
+	covers, err := processSectionList(reviewProcess.Comment.Body, "### Covers")
+	if err != nil {
+		return reviewOwnerCoverage{}, err
+	}
+	covered := map[string]string{}
+	var specs []model.Artifact
+	for _, id := range covers {
+		if !strings.HasPrefix(id, "SPEC-") {
+			continue
+		}
+		spec, resolveErr := findUniqueSubmittedReviewSpec(specSources, id)
+		if resolveErr != nil {
+			return reviewOwnerCoverage{}, fmt.Errorf("covered SPEC %s: %w", id, resolveErr)
+		}
+		covered[id] = spec.URL
+		specs = append(specs, spec)
+	}
+	if len(specs) == 0 {
+		return reviewOwnerCoverage{}, errors.New("review PROCESS must cover at least one canonical SPEC")
+	}
+	processes, err := resolveSubmittedReviewProcesses(comments, issue, reviewProcess, covered)
+	if err != nil {
+		return reviewOwnerCoverage{}, err
+	}
+	sort.Slice(specs, func(i, j int) bool { return specs[i].Comment.ID < specs[j].Comment.ID })
+	return reviewOwnerCoverage{Processes: processes, Specs: specs}, nil
 }
 
 func renderExternalReviewSyncComment(id, agent string, session writerSession, scope string, gate externalGateResult) (string, error) {
@@ -976,7 +1104,8 @@ func stampExternalReviewCompletion(body string, completion externalReviewComplet
 // local validation before the create/update call and advances a pre-existing
 // completion timestamp even when the injected/current clock has not moved.
 func upsertExternalReviewSyncCommentAt(ctx context.Context, client github.Operations, repo string, issueNumber int,
-	id, agent string, session writerSession, scope string, gate externalGateResult, synchronizationNow time.Time) (string, github.Comment, error) {
+	id, agent string, session writerSession, scope string, gate externalGateResult, synchronizationNow time.Time,
+	coverages ...reviewOwnerCoverage) (string, github.Comment, error) {
 	comments, err := client.ListIssueComments(ctx, repo, issueNumber)
 	if err != nil {
 		return "", github.Comment{}, err
@@ -1010,15 +1139,18 @@ func upsertExternalReviewSyncCommentAt(ctx context.Context, client github.Operat
 	if err != nil {
 		return "", github.Comment{}, err
 	}
-	if existing == nil {
-		created, createErr := client.CreateComment(ctx, repo, issueNumber, body)
-		return "created", created, createErr
+	if len(coverages) > 1 {
+		return "", github.Comment{}, errors.New("at most one REVIEW owner coverage value is allowed")
 	}
-	for _, url := range model.RelatedCommentURLs(model.ParseTypedComment(existing.Body)) {
-		body, _, err = model.AddRelatedCommentLink(body, url)
+	if len(coverages) == 1 {
+		body, err = addReviewOwnerCoverage(body, coverages[0])
 		if err != nil {
 			return "", github.Comment{}, err
 		}
+	}
+	if existing == nil {
+		created, createErr := client.CreateComment(ctx, repo, issueNumber, body)
+		return "created", created, createErr
 	}
 	policy := gate.ReviewCompletionPolicy
 	policy.Required = true
@@ -1255,7 +1387,7 @@ func lineExistsOnReviewSide(path, side string, line int, files []github.PullRequ
 	return false
 }
 
-func renderSubmittedReview(reviewID, processID, processURL, prURL string, specURLs []string,
+func renderSubmittedReviewWithCoverage(reviewID, processID, prURL string, coverage reviewOwnerCoverage,
 	receipt assignment.Receipt) (string, error) {
 	var logical strings.Builder
 	fmt.Fprintf(&logical, "## Review Summary: role-owned receipt\n\nReviewed exact revision `%s`.\n\n### Findings\n\n", receipt.SubjectRevision)
@@ -1264,6 +1396,43 @@ func renderSubmittedReview(reviewID, processID, processURL, prURL string, specUR
 	} else {
 		for _, finding := range receipt.Review.Findings {
 			fmt.Fprintf(&logical, "- %s %s `%s:%d`\n", finding.ID, finding.Severity, finding.Path, finding.Line)
+		}
+	}
+	fmt.Fprintf(&logical, "\n### Verdict\n\n%s\n", receipt.Review.Verdict)
+	writeReviewCoverageSections(&logical, coverage)
+	body, err := model.EnsureTypedBody("REVIEW", reviewID, logical.String(), model.BodyOptions{
+		Agent: receipt.Provenance.Writer, SubjectRevision: receipt.SubjectRevision, Status: "done", Scope: "role-owned review submission"})
+	if err != nil {
+		return "", err
+	}
+	for _, artifact := range append(append([]model.Artifact(nil), coverage.Processes...), coverage.Specs...) {
+		body, _, err = model.AddRelatedCommentLink(body, artifact.URL)
+		if err != nil {
+			return "", err
+		}
+	}
+	if strings.TrimSpace(prURL) != "" {
+		body, _, err = model.AddPRLink(body, prURL)
+		if err != nil {
+			return "", err
+		}
+	}
+	body, _, err = stampAcceptedReviewReceipt(body, acceptedReviewReceiptFrom(receipt, processID))
+	return body, err
+}
+
+// renderSubmittedReview retains the narrow rendering seam used by carrier
+// compatibility tests. Production submission uses
+// renderSubmittedReviewWithCoverage after resolving the complete owner set.
+func renderSubmittedReview(reviewID, processID, processURL, prURL string, specURLs []string,
+	receipt assignment.Receipt) (string, error) {
+	var logical strings.Builder
+	fmt.Fprintf(&logical, "## Review Summary: role-owned receipt\n\nReviewed exact revision `%s`.\n\n### Findings\n\n", receipt.SubjectRevision)
+	if len(receipt.Review.Findings) == 0 {
+		logical.WriteString("- N/A\n")
+	} else {
+		for _, finding := range receipt.Review.Findings {
+			fmt.Fprintf(&logical, "- %s [%s] %s (`%s`, %s:%d)\n", finding.ID, finding.Severity, finding.Message, finding.Path, finding.Side, finding.Line)
 		}
 	}
 	fmt.Fprintf(&logical, "\n### Verdict\n\n%s\n", receipt.Review.Verdict)
@@ -1282,7 +1451,7 @@ func renderSubmittedReview(reviewID, processID, processURL, prURL string, specUR
 			return "", err
 		}
 	}
-	if strings.TrimSpace(prURL) != "" {
+	if prURL != "" {
 		body, _, err = model.AddPRLink(body, prURL)
 		if err != nil {
 			return "", err
@@ -1290,6 +1459,38 @@ func renderSubmittedReview(reviewID, processID, processURL, prURL string, specUR
 	}
 	body, _, err = stampAcceptedReviewReceipt(body, acceptedReviewReceiptFrom(receipt, processID))
 	return body, err
+}
+
+func writeReviewCoverageSections(builder *strings.Builder, coverage reviewOwnerCoverage) {
+	builder.WriteString("\n### Covered PROCESSes\n\n")
+	for _, artifact := range coverage.Processes {
+		fmt.Fprintf(builder, "- %s\n", artifact.Comment.ID)
+	}
+	builder.WriteString("\n### Covered SPECs\n\n")
+	for _, artifact := range coverage.Specs {
+		fmt.Fprintf(builder, "- %s\n", artifact.Comment.ID)
+	}
+}
+
+func addReviewOwnerCoverage(body string, coverage reviewOwnerCoverage) (string, error) {
+	if len(coverage.Processes) == 0 || len(coverage.Specs) == 0 {
+		return "", fmt.Errorf("%w: incomplete REVIEW owner coverage", relationships.ErrInvalid)
+	}
+	if len(coverage.Processes)+len(coverage.Specs) > relationships.DefaultMutationTargetLimit {
+		return "", fmt.Errorf("%w: REVIEW owner targets=%d limit=%d", relationships.ErrBound,
+			len(coverage.Processes)+len(coverage.Specs), relationships.DefaultMutationTargetLimit)
+	}
+	var sections strings.Builder
+	writeReviewCoverageSections(&sections, coverage)
+	body = strings.TrimRight(body, "\n") + "\n" + sections.String()
+	var err error
+	for _, artifact := range append(append([]model.Artifact(nil), coverage.Processes...), coverage.Specs...) {
+		body, _, err = model.AddRelatedCommentLink(body, artifact.URL)
+		if err != nil {
+			return "", err
+		}
+	}
+	return body, nil
 }
 
 func replyReviewFinding(ctx context.Context, client interface {

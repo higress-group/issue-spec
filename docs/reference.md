@@ -253,6 +253,7 @@ issue-spec --profile team review sync \
   --repo acme/widgets \
   --implement 3 \
   --revision abc123 \
+  --process PROCESS-3002 \
   --id REVIEW-3001 \
   --agent reviewer \
   --json
@@ -260,10 +261,11 @@ issue-spec --profile team review sync \
 
 A successful self-hosted sync persists and reloads provider facts, then writes
 one stable done REVIEW completion even when the provider reports zero findings.
-After the final sync, use `issue-spec link` to link that REVIEW explicitly to
+The final sync itself publishes the REVIEW owner's complete relationship set:
 its review PROCESS, every covered change-bearing PROCESS, and every covered
-active SPEC. Do not fabricate findings, hand-edit the completion stamp, infer
-links from IDs in prose, or substitute a generic approval framework. `status`
+active SPEC. Do not follow it with peer mutations, fabricate findings,
+hand-edit the completion stamp, infer links from IDs in prose, or substitute a
+generic approval framework. `status`
 and final `verify` validate the same exact provider/repository/change,
 reference-version, revision, freshness, links, and reviewer-independence
 carrier without refreshing REVIEW.

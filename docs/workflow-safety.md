@@ -45,7 +45,7 @@ Accepted compatibility results report `atomic: false`, the
 
 ## Reconcile a dependency-ordered plan
 
-Use a version-1 JSON plan for create/upsert, transition, and bidirectional link
+Use a version-1 JSON plan for create/upsert, transition, and owner relationship
 operations. Validate and retain one checkpoint beside the plan:
 
 ```bash
@@ -57,7 +57,7 @@ The engine validates the complete schema, logical IDs, transition legality,
 dependencies, DAG, and plan digest before the first write. It atomically saves
 the checkpoint after each successful operation and always re-observes remote
 state on resume. A rerun therefore recognizes a lost create response, repairs
-only a missing backlink direction, and leaves rate-limited dependent work
+only an incomplete owner publication, and leaves rate-limited dependent work
 pending. Duplicate logical markers and checkpoint/plan digest mismatches fail
 closed. Conditional mutation is the default; non-atomic operations require the
 plan-level `allow_nonatomic` acknowledgement.

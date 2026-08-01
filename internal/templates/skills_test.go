@@ -80,7 +80,7 @@ func TestHTMLReviewAuthoringOptionsPreserveEnabledDefaultsAndOmitDisabledGuidanc
 		}
 	}
 	propose := skillContent(t, skills, "issue-spec-propose")
-	for _, want := range []string{"Generate canonical SPEC comments", "Generate TASK comments", "Link SPEC <-> TASK"} {
+	for _, want := range []string{"Generate canonical SPEC comments", "Generate TASK comments", "--covers-issue"} {
 		if !strings.Contains(propose, want) {
 			t.Fatalf("disabled propose skill lost typed obligation %q:\n%s", want, propose)
 		}
@@ -156,8 +156,7 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 				"design_context.read_mode=complete-issue-body", "read the complete Design", "Stop on conflict",
 				"subject-revision-bound required test", "assigned_selector plus resolved_revision", "Preserve literal selectors byte-for-byte",
 				"actionable findings", "explicit no-finding verdict", "bounded review receipt/sync result",
-				"issue-spec link --repo owner/repo --from REVIEW-<n> --from-issue <implement-issue> --to PROCESS-<n> --to-issue <implement-issue>",
-				"issue-spec link --repo owner/repo --from REVIEW-<n> --from-issue <implement-issue> --to SPEC-<n> --to-issue <proposal-issue>"},
+				"single REVIEW owner comment", "Do not run peer mutation commands after publication"},
 			forbidden: []string{"workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
 		},
 		{
