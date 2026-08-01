@@ -138,7 +138,12 @@ func TestWritebackParsesCoordinatorReplyBody(t *testing.T) {
   "status": "completed",
   "artifacts": [{"kind": "typed_comment", "id": "PROCESS-001", "url": "https://github.com/o/r/issues/30#issuecomment-1", "action": "updated"}],
   "commands": [{"name": "issue-spec comment upsert", "exit_code": 0, "artifact_id": "PROCESS-001"}],
-  "children": [{"id": "child-1", "role": "worker", "process_id": "PROCESS-001", "status": "done"}]
+  "children": [{"id": "child-1", "role": "worker", "process_id": "PROCESS-001", "status": "done"}],
+  "smoke_test_evidence": {
+    "repository_full_name": "o/r",
+    "external_repository_id": 12345,
+    "checks": [{"name": "binding", "passed": true}]
+  }
 }` + "\n```"
 
 	result, err := service.Write(ctx, Request{Job: job, Status: state.StatusCompleted, CoordinatorReplyBody: reply})

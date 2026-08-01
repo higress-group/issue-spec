@@ -28,6 +28,43 @@ func TestParseCoordinatorSummaryAcceptsProvenanceOnlySchema(t *testing.T) {
 	}
 }
 
+func TestParseCoordinatorSummaryIgnoresAdditiveTopLevelFields(t *testing.T) {
+	summary, err := ParseCoordinatorSummary([]byte(`{
+  "status": "completed",
+  "artifacts": [
+    {"kind": "typed_comment", "id": "PROCESS-001", "action": "updated"}
+  ],
+  "commands": [
+    {"name": "issue-spec comment upsert", "exit_code": 0, "artifact_id": "PROCESS-001", "stdout_summary": "updated"}
+  ],
+  "smoke_test_evidence": {
+    "repository_full_name": "owner/repo",
+    "external_repository_id": 12345,
+    "checks": [{"name": "binding", "passed": true}]
+  }
+}`), SummaryBounds{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Status != "completed" || len(summary.Artifacts) != 1 || summary.Artifacts[0].ID != "PROCESS-001" {
+		t.Fatalf("recognized summary fields were not preserved: %+v", summary)
+	}
+	if len(summary.Commands) != 1 || summary.Commands[0].StdoutSummary != "updated" {
+		t.Fatalf("recognized command fields were not preserved: %+v", summary.Commands)
+	}
+}
+
+func TestParseCoordinatorSummaryRejectsInvalidRecognizedFieldType(t *testing.T) {
+	_, err := ParseCoordinatorSummary([]byte(`{
+  "status": "completed",
+  "commands": "not-an-array",
+  "future_field": {"ignored": true}
+}`), SummaryBounds{})
+	if err == nil || !strings.Contains(err.Error(), "cannot unmarshal string") {
+		t.Fatalf("expected invalid recognized field type failure, got %v", err)
+	}
+}
+
 func TestParseCoordinatorSummaryAcceptsE2EStringDiagnosticsAndNullCommandRefs(t *testing.T) {
 	summary, err := ParseCoordinatorSummary([]byte(`{
   "status": "completed",
@@ -122,7 +159,12 @@ func TestDiagnosticSummaryUnmarshalJSONResetsReusedReceiver(t *testing.T) {
 }
 
 func TestParseCoordinatorSummaryRejectsMalformedOrOversizedOutput(t *testing.T) {
-	_, err := ParseCoordinatorSummary([]byte(`{"status":"queued"}`), SummaryBounds{})
+	_, err := ParseCoordinatorSummary([]byte(`{"status":"completed"`), SummaryBounds{})
+	if err == nil {
+		t.Fatal("expected malformed JSON to fail")
+	}
+
+	_, err = ParseCoordinatorSummary([]byte(`{"status":"queued"}`), SummaryBounds{})
 	if err == nil {
 		t.Fatal("expected unsupported status to fail")
 	}
