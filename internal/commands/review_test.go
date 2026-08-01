@@ -122,22 +122,29 @@ func TestPublishAcceptedReviewIsAppendOnlyUnderConcurrentReceipt(t *testing.T) {
 			return created, nil
 		},
 	}
-	if err := validateExistingReviewReceipt(nil, "REVIEW-101", receipt); err != nil {
+	if err := validateExistingReviewReceipt(nil, "REVIEW-101", "PROCESS-101", receipt); err != nil {
 		t.Fatal(err)
 	}
+	tamperedBody := strings.Replace(body, `"assignment_process_id":"PROCESS-101"`,
+		`"assignment_process_id":"PROCESS-999"`, 1)
+	comments = []github.Comment{{ID: 10, Body: tamperedBody}}
+	if _, _, err := publishAcceptedReview(t.Context(), backend, "o/r", 9, "REVIEW-101", "PROCESS-101", body, receipt); err == nil ||
+		!strings.Contains(err.Error(), "immutable") || creates != 0 {
+		t.Fatalf("tampered exact retry creates=%d err=%v", creates, err)
+	}
 	comments = []github.Comment{{ID: 12, Body: otherBody}}
-	if _, _, err := publishAcceptedReview(t.Context(), backend, "o/r", 9, "REVIEW-101", body, receipt); err == nil ||
+	if _, _, err := publishAcceptedReview(t.Context(), backend, "o/r", 9, "REVIEW-101", "PROCESS-101", body, receipt); err == nil ||
 		!strings.Contains(err.Error(), "different receipt") || creates != 0 {
 		t.Fatalf("fresh competing observation creates=%d err=%v", creates, err)
 	}
 	comments = nil
-	if _, _, err := publishAcceptedReview(t.Context(), backend, "o/r", 9, "REVIEW-101", body, receipt); err == nil ||
+	if _, _, err := publishAcceptedReview(t.Context(), backend, "o/r", 9, "REVIEW-101", "PROCESS-101", body, receipt); err == nil ||
 		!strings.Contains(err.Error(), "conflicted") || creates != 1 {
 		t.Fatalf("concurrent publish creates=%d err=%v", creates, err)
 	}
 	comments = []github.Comment{{ID: 11, Body: body}}
 	creates = 0
-	action, existing, err := publishAcceptedReview(t.Context(), backend, "o/r", 9, "REVIEW-101", body, receipt)
+	action, existing, err := publishAcceptedReview(t.Context(), backend, "o/r", 9, "REVIEW-101", "PROCESS-101", body, receipt)
 	if err != nil || action != "unchanged" || existing.ID != 11 || creates != 0 {
 		t.Fatalf("exact replay action=%q existing=%+v creates=%d err=%v", action, existing, creates, err)
 	}

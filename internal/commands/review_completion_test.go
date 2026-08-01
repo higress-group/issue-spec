@@ -23,14 +23,16 @@ func TestReviewReceiptBindingAndImmutableProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := "canonical REVIEW\n"
-	projected := acceptedReviewReceiptFrom(receipt)
+	projected := acceptedReviewReceiptFrom(receipt, sealed.ProcessID)
 	stamped, changed, err := stampAcceptedReviewReceipt(body, projected)
 	if err != nil || !changed {
 		t.Fatalf("changed=%t err=%v", changed, err)
 	}
 	parsed, found, err := parseAcceptedReviewReceipt(stamped)
 	if err != nil || !found || parsed.ReceiptDigest != receipt.ReceiptDigest || parsed.Verdict != assignment.ReviewApprove ||
-		len(parsed.Tests) != 0 {
+		parsed.AssignmentProcessID != sealed.ProcessID || parsed.CarrierVersion != 2 || !parsed.TestsAvailable ||
+		len(parsed.Tests) != 0 || !strings.Contains(stamped, acceptedReviewReceiptStart) ||
+		!strings.Contains(stamped, `"tests":[]`) {
 		t.Fatalf("parsed=%+v found=%t err=%v", parsed, found, err)
 	}
 	if retry, changed, err := stampAcceptedReviewReceipt(stamped, projected); err != nil || changed || retry != stamped {
@@ -40,6 +42,139 @@ func TestReviewReceiptBindingAndImmutableProjection(t *testing.T) {
 	other.ReceiptID = "receipt-review-other"
 	if _, _, err := stampAcceptedReviewReceipt(stamped, other); err == nil || !strings.Contains(err.Error(), "immutable") {
 		t.Fatalf("conflicting accepted receipt error=%v", err)
+	}
+}
+
+func TestAcceptedReviewReceiptDualVersionCompatibility(t *testing.T) {
+	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	v1 := acceptedReviewReceiptV1{ReceiptID: receipt.ID, ReceiptDigest: receipt.ReceiptDigest,
+		AssignmentID: receipt.AssignmentID, AssignmentDigest: receipt.AssignmentDigest,
+		AssignmentGeneration: receipt.AssignmentGeneration, SubjectRevision: receipt.SubjectRevision,
+		Verdict: receipt.Review.Verdict, Provenance: receipt.Provenance}
+	raw, err := json.Marshal(v1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "canonical REVIEW\n\n" + acceptedReviewReceiptV1Start + "\n" + string(raw) + "\n" + acceptedReviewReceiptEnd + "\n"
+	parsed, found, err := parseAcceptedReviewReceipt(body)
+	if err != nil || !found || parsed.CarrierVersion != 1 || parsed.TestsAvailable ||
+		parsed.AssignmentProcessID != "" || parsed.Tests != nil || parsed.ReceiptDigest != receipt.ReceiptDigest {
+		t.Fatalf("historical authority=%+v found=%t err=%v", parsed, found, err)
+	}
+	if _, _, err := stampAcceptedReviewReceipt(body, acceptedReviewReceiptFrom(receipt, "PROCESS-101")); err == nil ||
+		!strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("historical carrier was upgraded in place: %v", err)
+	}
+
+	withTests := strings.Replace(string(raw), `,"provenance"`, `,"tests":[],"provenance"`, 1)
+	if _, found, err := parseAcceptedReviewReceipt(acceptedReviewReceiptV1Start + "\n" + withTests + "\n" + acceptedReviewReceiptEnd); !found || err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("version 1 fabricated tests: found=%t err=%v", found, err)
+	}
+}
+
+func TestAcceptedReviewReceiptParserRejectsVersionAndFramingDrift(t *testing.T) {
+	receipt := testSealedReviewReceipt(t, assignment.ReviewApprove, nil)
+	projected := acceptedReviewReceiptFrom(receipt, "PROCESS-101")
+	body, _, err := stampAcceptedReviewReceipt("canonical REVIEW\n", projected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(acceptedReviewReceiptV2From(projected))
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := acceptedReviewReceiptStart + "\n" + string(raw) + "\n" + acceptedReviewReceiptEnd
+	v1Raw, err := json.Marshal(acceptedReviewReceiptV1{ReceiptID: receipt.ID, ReceiptDigest: receipt.ReceiptDigest,
+		AssignmentID: receipt.AssignmentID, AssignmentDigest: receipt.AssignmentDigest,
+		AssignmentGeneration: receipt.AssignmentGeneration, SubjectRevision: receipt.SubjectRevision,
+		Verdict: receipt.Review.Verdict, Provenance: receipt.Provenance})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1Block := acceptedReviewReceiptV1Start + "\n" + string(v1Raw) + "\n" + acceptedReviewReceiptEnd
+	for name, malformed := range map[string]string{
+		"unknown version":  strings.Replace(body, "version=2", "version=3", 1),
+		"mixed versions":   body + "\n" + v1Block,
+		"duplicate marker": body + "\n" + block,
+		"unknown field": strings.Replace(body, `,"provenance"`,
+			`,"unvalidated":true,"provenance"`, 1),
+		"trailing json": strings.Replace(body, "\n"+acceptedReviewReceiptEnd,
+			"{}\n"+acceptedReviewReceiptEnd, 1),
+		"noncanonical json": strings.Replace(body, `,"receipt_digest"`, `, "receipt_digest"`, 1),
+		"missing tests":     strings.Replace(body, `,"tests":[]`, "", 1),
+		"null tests":        strings.Replace(body, `"tests":[]`, `"tests":null`, 1),
+		"start framing":     strings.Replace(body, acceptedReviewReceiptStart+"\n", acceptedReviewReceiptStart, 1),
+		"inline marker":     strings.Replace(body, "\n\n"+acceptedReviewReceiptStart, " inline "+acceptedReviewReceiptStart, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, found, parseErr := parseAcceptedReviewReceipt(malformed); !found || parseErr == nil {
+				t.Fatalf("found=%t error=%v\n%s", found, parseErr, malformed)
+			}
+		})
+	}
+}
+
+func TestAcceptedReviewReceiptRejectsTamperedTestAndProvenance(t *testing.T) {
+	subject := strings.Repeat("b", 40)
+	bound := assignment.TestSelector{ID: "durable", Command: "issue-spec durable-spec check --repo o/r --proposal 9 --root . --json",
+		RevisionBinding: &assignment.RevisionBinding{Source: assignment.RevisionBindingSourceSubjectRevision,
+			Argument: assignment.RevisionBindingArgumentSubject}}
+	literal := assignment.TestSelector{ID: "unit", Command: "go test ./internal/commands"}
+	sealed := testReviewAssignment(t, subject)
+	sealed.Review.RequiredTests = []assignment.TestSelector{bound, literal}
+	receipt := testSealedReviewReceiptForAssignment(t, sealed, []assignment.TestResult{
+		resolvedCommandTestResult(t, bound, subject),
+		{ID: literal.ID, Command: literal.Command, Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported},
+	})
+	base := acceptedReviewReceiptFrom(receipt, sealed.ProcessID)
+	for name, mutate := range map[string]func(*acceptedReviewReceipt){
+		"receipt id":     func(value *acceptedReviewReceipt) { value.ReceiptID = "bad id" },
+		"receipt digest": func(value *acceptedReviewReceipt) { value.ReceiptDigest = strings.Repeat("A", 64) },
+		"process id":     func(value *acceptedReviewReceipt) { value.AssignmentProcessID = "PROCESS-other" },
+		"assignment id":  func(value *acceptedReviewReceipt) { value.AssignmentID = "bad id" },
+		"assignment digest": func(value *acceptedReviewReceipt) {
+			value.AssignmentDigest = strings.Repeat("g", 64)
+		},
+		"subject framing": func(value *acceptedReviewReceipt) { value.SubjectRevision += " " },
+		"verdict findings": func(value *acceptedReviewReceipt) {
+			value.FindingIDs = []string{"FINDING-101"}
+		},
+		"failed":  func(value *acceptedReviewReceipt) { value.Tests[0].Outcome = assignment.TestFailed },
+		"skipped": func(value *acceptedReviewReceipt) { value.Tests[0].Outcome = assignment.TestSkipped },
+		"assurance": func(value *acceptedReviewReceipt) {
+			value.Tests[0].Assurance = assignment.AssuranceProviderOwned
+		},
+		"selector": func(value *acceptedReviewReceipt) { value.Tests[0].AssignedSelector.Command += " --tampered" },
+		"revision": func(value *acceptedReviewReceipt) { value.Tests[0].ResolvedRevision = strings.Repeat("c", 40) },
+		"command":  func(value *acceptedReviewReceipt) { value.Tests[0].Command += " --tampered" },
+		"duplicate": func(value *acceptedReviewReceipt) {
+			value.Tests = append(value.Tests, value.Tests[0])
+		},
+		"unsorted": func(value *acceptedReviewReceipt) { value.Tests[0], value.Tests[1] = value.Tests[1], value.Tests[0] },
+		"provenance route": func(value *acceptedReviewReceipt) {
+			value.Provenance.Route = assignment.RouteUnverifiedImport
+		},
+		"provenance identity": func(value *acceptedReviewReceipt) { value.Provenance.Subject = "Another Reviewer" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := base
+			candidate.Tests = append([]acceptedReviewTest(nil), base.Tests...)
+			for index := range candidate.Tests {
+				if candidate.Tests[index].AssignedSelector != nil {
+					selector := cloneFinalTestSelector(*candidate.Tests[index].AssignedSelector)
+					candidate.Tests[index].AssignedSelector = &selector
+				}
+			}
+			mutate(&candidate)
+			raw, marshalErr := json.Marshal(acceptedReviewReceiptV2From(candidate))
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			carrier := acceptedReviewReceiptStart + "\n" + string(raw) + "\n" + acceptedReviewReceiptEnd
+			if _, found, parseErr := parseAcceptedReviewReceipt(carrier); !found || parseErr == nil {
+				t.Fatalf("tampered carrier was accepted: found=%t error=%v", found, parseErr)
+			}
+		})
 	}
 }
 
@@ -56,12 +191,13 @@ func TestAcceptedReviewReceiptProjectionPreservesExactTests(t *testing.T) {
 		resolvedCommandTestResult(t, bound, subject),
 	})
 
-	projected := acceptedReviewReceiptFrom(receipt)
+	projected := acceptedReviewReceiptFrom(receipt, sealed.ProcessID)
 	resolved, err := assignment.ResolveTestSelector(bound, subject)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(projected.Tests) != 2 || projected.Tests[0].ID != bound.ID || projected.Tests[1].ID != literal.ID ||
+		projected.AssignmentProcessID != sealed.ProcessID || projected.CarrierVersion != 2 || !projected.TestsAvailable ||
 		projected.Tests[0].AssignedSelector == nil || projected.Tests[0].ResolvedRevision != subject ||
 		projected.Tests[0].Command != resolved.Command || projected.Tests[0].Outcome != assignment.TestPassed ||
 		projected.Tests[0].Assurance != assignment.AssuranceSelfReported {
@@ -194,6 +330,17 @@ func TestReviewReceiptBindingRequiresExactLiteralAndSubjectBoundTests(t *testing
 	for name, mutate := range map[string]func(*assignment.Receipt){
 		"missing": func(value *assignment.Receipt) { value.Tests = value.Tests[1:] },
 		"failed":  func(value *assignment.Receipt) { value.Tests[0].Outcome = assignment.TestFailed },
+		"skipped": func(value *assignment.Receipt) { value.Tests[0].Outcome = assignment.TestSkipped },
+		"duplicate": func(value *assignment.Receipt) {
+			value.Tests = []assignment.TestResult{value.Tests[0], value.Tests[0]}
+		},
+		"changed command": func(value *assignment.Receipt) { value.Tests[0].Command += " --tampered" },
+		"changed revision": func(value *assignment.Receipt) {
+			value.Tests[0].ResolvedRevision = strings.Repeat("c", 40)
+		},
+		"changed assurance": func(value *assignment.Receipt) {
+			value.Tests[0].Assurance = assignment.AssuranceProviderOwned
+		},
 		"changed selector": func(value *assignment.Receipt) {
 			changed := bound
 			changed.Command += " --changed"
@@ -203,17 +350,21 @@ func TestReviewReceiptBindingRequiresExactLiteralAndSubjectBoundTests(t *testing
 			value.Tests = append(value.Tests, assignment.TestResult{ID: "extra", Command: "go test ./extra",
 				Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported})
 		},
+		"provenance": func(value *assignment.Receipt) { value.Provenance.Subject = "Another Reviewer" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := receipt
 			candidate.Tests = append([]assignment.TestResult(nil), receipt.Tests...)
+			for index := range candidate.Tests {
+				if candidate.Tests[index].AssignedSelector != nil {
+					selector := cloneFinalTestSelector(*candidate.Tests[index].AssignedSelector)
+					candidate.Tests[index].AssignedSelector = &selector
+				}
+			}
 			mutate(&candidate)
 			candidate.ReceiptDigest = ""
-			candidate, err := assignment.SealReceipt(candidate)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := validateReviewReceiptBinding(candidate, sealed, binding); err == nil {
+			candidate, sealErr := assignment.SealReceipt(candidate)
+			if sealErr == nil && validateReviewReceiptBinding(candidate, sealed, binding) == nil {
 				t.Fatal("accepted mismatched review test coverage")
 			}
 		})

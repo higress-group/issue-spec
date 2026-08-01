@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -142,7 +143,7 @@ func (a *app) runReviewSubmit(ctx context.Context, args []string) int {
 		a.errorf("observe submitted REVIEW: %v\n", err)
 		return 1
 	}
-	if err := validateExistingReviewReceipt(comments, *reviewID, receipt); err != nil {
+	if err := validateExistingReviewReceipt(comments, *reviewID, sealedAssignment.ProcessID, receipt); err != nil {
 		a.errorf("validate submitted REVIEW replay: %v\n", err)
 		return 1
 	}
@@ -245,7 +246,8 @@ func (a *app) runReviewSubmit(ctx context.Context, args []string) int {
 			result.Findings = append(result.Findings, item)
 		}
 	}
-	action, comment, err := publishAcceptedReview(ctx, client, repo, implementIssue, *reviewID, body, receipt)
+	action, comment, err := publishAcceptedReview(ctx, client, repo, implementIssue, *reviewID,
+		sealedAssignment.ProcessID, body, receipt)
 	if err != nil {
 		a.errorf("publish submitted REVIEW: %v\n", err)
 		return 1
@@ -442,13 +444,19 @@ func reviewFindingIngestKey(receipt assignment.Receipt, finding assignment.Findi
 	return "review-submit:" + receipt.ReceiptDigest + ":" + finding.ID
 }
 
-func validateExistingReviewReceipt(comments []github.Comment, reviewID string, receipt assignment.Receipt) error {
-	_, _, err := observeAcceptedReviewReceipt(comments, reviewID, receipt)
+func validateExistingReviewReceipt(comments []github.Comment, reviewID, assignmentProcessID string,
+	receipt assignment.Receipt) error {
+	_, _, err := observeAcceptedReviewReceipt(comments, reviewID, assignmentProcessID, receipt)
 	return err
 }
 
-func observeAcceptedReviewReceipt(comments []github.Comment, reviewID string,
+func observeAcceptedReviewReceipt(comments []github.Comment, reviewID, assignmentProcessID string,
 	receipt assignment.Receipt) (github.Comment, bool, error) {
+	expected := acceptedReviewReceiptFrom(receipt, assignmentProcessID)
+	expectedRaw, err := json.Marshal(expected)
+	if err != nil {
+		return github.Comment{}, false, fmt.Errorf("encode expected accepted review receipt: %w", err)
+	}
 	var exact github.Comment
 	exactCount := 0
 	for _, comment := range comments {
@@ -481,6 +489,10 @@ func observeAcceptedReviewReceipt(comments []github.Comment, reviewID string,
 			return github.Comment{}, false, fmt.Errorf("REVIEW %s already carries different receipt authority", reviewID)
 		}
 		if parsed.ID == reviewID && existing.ReceiptDigest == receipt.ReceiptDigest {
+			existingRaw, marshalErr := json.Marshal(existing)
+			if marshalErr != nil || existing.CarrierVersion != 2 || !bytes.Equal(existingRaw, expectedRaw) {
+				return github.Comment{}, false, fmt.Errorf("REVIEW %s accepted receipt payload is immutable", reviewID)
+			}
 			exact, exactCount = comment, exactCount+1
 		}
 	}
@@ -490,13 +502,13 @@ func observeAcceptedReviewReceipt(comments []github.Comment, reviewID string,
 	return exact, exactCount == 1, nil
 }
 
-func publishAcceptedReview(ctx context.Context, client github.Operations, repo string, issue int, reviewID, body string,
-	receipt assignment.Receipt) (string, github.Comment, error) {
+func publishAcceptedReview(ctx context.Context, client github.Operations, repo string, issue int, reviewID,
+	assignmentProcessID, body string, receipt assignment.Receipt) (string, github.Comment, error) {
 	comments, err := client.ListIssueComments(ctx, repo, issue)
 	if err != nil {
 		return "", github.Comment{}, err
 	}
-	existing, found, err := observeAcceptedReviewReceipt(comments, reviewID, receipt)
+	existing, found, err := observeAcceptedReviewReceipt(comments, reviewID, assignmentProcessID, receipt)
 	if err != nil {
 		return "", github.Comment{}, err
 	}
@@ -514,7 +526,7 @@ func publishAcceptedReview(ctx context.Context, client github.Operations, repo s
 	if err != nil {
 		return "", github.Comment{}, fmt.Errorf("re-observe accepted REVIEW after create: %w", err)
 	}
-	observed, found, err := observeAcceptedReviewReceipt(comments, reviewID, receipt)
+	observed, found, err := observeAcceptedReviewReceipt(comments, reviewID, assignmentProcessID, receipt)
 	if err != nil {
 		return "", github.Comment{}, fmt.Errorf("accepted REVIEW publication conflicted: %w", err)
 	}
@@ -1276,7 +1288,7 @@ func renderSubmittedReview(reviewID, processID, processURL, prURL string, specUR
 			return "", err
 		}
 	}
-	body, _, err = stampAcceptedReviewReceipt(body, acceptedReviewReceiptFrom(receipt))
+	body, _, err = stampAcceptedReviewReceipt(body, acceptedReviewReceiptFrom(receipt, processID))
 	return body, err
 }
 

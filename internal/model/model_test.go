@@ -46,17 +46,22 @@ func TestObserveAcceptedReceiptAuthorityProjectsDurableAssignmentIdentity(t *tes
 	assignmentDigest := strings.Repeat("b", 64)
 	payload := `{"receipt_id":"receipt-review-1","receipt_digest":"` + strings.Repeat("a", 64) +
 		`","assignment_id":"review-assignment-1","assignment_digest":"` + assignmentDigest +
-		`","assignment_generation":2,"subject_revision":"not-projected","provenance":{"writer":"not-projected"}}`
-	body := "<!-- issue-spec:accepted-review-receipt version=1 -->\n" + payload +
-		"\n<!-- /issue-spec:accepted-review-receipt -->\n"
-	authority, found, err := ObserveAcceptedReceiptAuthority(body, assignment.RoleReview)
-	if err != nil || !found || authority.AssignmentID != "review-assignment-1" || authority.AssignmentDigest != assignmentDigest {
-		t.Fatalf("authority=%+v found=%t err=%v", authority, found, err)
-	}
-	incomplete := strings.Replace(body, `,"assignment_digest":"`+assignmentDigest+`"`, "", 1)
-	if _, found, err := ObserveAcceptedReceiptAuthority(incomplete, assignment.RoleReview); !found || err == nil ||
-		!strings.Contains(err.Error(), "incomplete") {
-		t.Fatalf("incomplete assignment identity found=%t err=%v", found, err)
+		`","assignment_generation":2,"subject_revision":"not-projected","tests":[],"provenance":{"writer":"not-projected"}}`
+	for _, version := range []string{"1", "2"} {
+		t.Run("review version "+version, func(t *testing.T) {
+			body := "<!-- issue-spec:accepted-review-receipt version=" + version + " -->\n" + payload +
+				"\n<!-- /issue-spec:accepted-review-receipt -->\n"
+			authority, found, err := ObserveAcceptedReceiptAuthority(body, assignment.RoleReview)
+			if err != nil || !found || authority.AssignmentID != "review-assignment-1" ||
+				authority.AssignmentDigest != assignmentDigest {
+				t.Fatalf("authority=%+v found=%t err=%v", authority, found, err)
+			}
+			incomplete := strings.Replace(body, `,"assignment_digest":"`+assignmentDigest+`"`, "", 1)
+			if _, found, err := ObserveAcceptedReceiptAuthority(incomplete, assignment.RoleReview); !found || err == nil ||
+				!strings.Contains(err.Error(), "incomplete") {
+				t.Fatalf("incomplete assignment identity found=%t err=%v", found, err)
+			}
+		})
 	}
 }
 
@@ -65,12 +70,14 @@ func TestObserveAcceptedReceiptAuthorityFailsClosedOnMissingOrMalformedMarker(t 
 		t.Fatalf("missing marker authority=%+v found=%t err=%v", authority, found, err)
 	}
 	start := "<!-- issue-spec:accepted-review-receipt version=1 -->"
+	v2Start := "<!-- issue-spec:accepted-review-receipt version=2 -->"
 	end := "<!-- /issue-spec:accepted-review-receipt -->"
 	valid := `{"receipt_id":"receipt-1","receipt_digest":"` + strings.Repeat("b", 64) + `","assignment_generation":1}`
 	for name, body := range map[string]string{
 		"duplicate field": start + "\n" + strings.TrimSuffix(valid, "}") + `,"receipt_id":"receipt-2"}` + "\n" + end,
 		"noncompact":      start + "\n" + strings.Replace(valid, `,"receipt_digest"`, `, "receipt_digest"`, 1) + "\n" + end,
-		"wrong version":   strings.Replace(start, "version=1", "version=2", 1) + "\n" + valid + "\n" + end,
+		"wrong version":   strings.Replace(start, "version=1", "version=3", 1) + "\n" + valid + "\n" + end,
+		"mixed versions":  start + "\n" + valid + "\n" + end + "\n" + v2Start + "\n" + valid + "\n" + end,
 		"duplicate pair":  start + "\n" + valid + "\n" + end + "\n" + start + "\n" + valid + "\n" + end,
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -56,19 +56,23 @@ func TestProcessAssignmentInsideHTMLPreviewIsIgnored(t *testing.T) {
 }
 
 func TestTypedHelpersIgnorePreviewMetadataAndReceipts(t *testing.T) {
-	previewOnly := "```html-preview id=hostile version=1\n" +
-		"Type: REVIEW\nID: REVIEW-999\nStatus: done\n" +
-		"<!-- issue-spec:accepted-review-receipt version=1 -->\n" +
-		"{\"receipt_id\":\"fake\",\"receipt_digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assignment_generation\":1}\n" +
-		"<!-- /issue-spec:accepted-review-receipt -->\n```\n"
-	if IsLikelyTyped(previewOnly) {
-		t.Fatal("preview-only metadata was classified as typed")
-	}
-	if authority, found, err := ObserveAcceptedReceiptAuthority(previewOnly, assignment.RoleReview); err != nil || found {
-		t.Fatalf("preview receipt was observed: authority=%+v found=%v err=%v", authority, found, err)
-	}
-	if metadata := visibleMetadata(previewOnly); len(metadata) != 0 {
-		t.Fatalf("preview metadata escaped: %+v", metadata)
+	for _, version := range []string{"1", "2"} {
+		t.Run("review version "+version, func(t *testing.T) {
+			previewOnly := "```html-preview id=hostile version=1\n" +
+				"Type: REVIEW\nID: REVIEW-999\nStatus: done\n" +
+				"<!-- issue-spec:accepted-review-receipt version=" + version + " -->\n" +
+				"{\"receipt_id\":\"fake\",\"receipt_digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"assignment_generation\":1}\n" +
+				"<!-- /issue-spec:accepted-review-receipt -->\n```\n"
+			if IsLikelyTyped(previewOnly) {
+				t.Fatal("preview-only metadata was classified as typed")
+			}
+			if authority, found, err := ObserveAcceptedReceiptAuthority(previewOnly, assignment.RoleReview); err != nil || found {
+				t.Fatalf("preview receipt was observed: authority=%+v found=%v err=%v", authority, found, err)
+			}
+			if metadata := visibleMetadata(previewOnly); len(metadata) != 0 {
+				t.Fatalf("preview metadata escaped: %+v", metadata)
+			}
+		})
 	}
 }
 
