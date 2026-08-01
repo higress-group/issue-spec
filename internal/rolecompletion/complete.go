@@ -134,6 +134,7 @@ func (s *Service) Complete(ctx context.Context, request Request) (Result, error)
 	}
 
 	var testResults []assignment.TestResult
+	postTests := observed
 	for _, selector := range observed.tests {
 		result := assignment.TestResult{ID: selector.ID, Command: selector.Command, Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}
 		if selector.RevisionBinding != nil {
@@ -149,15 +150,14 @@ func (s *Service) Complete(ctx context.Context, request Request) (Result, error)
 		if runErr != nil {
 			return Result{}, testFailure(selector.ID, result.Command, execution, runErr)
 		}
+		postTests, err = s.observeRole(ctx, worktree, packet.Assignment)
+		if err != nil {
+			return Result{}, fmt.Errorf("post-test Git observation after sealed test %q: %w", selector.ID, err)
+		}
+		if !reflect.DeepEqual(postTests, observed) {
+			return Result{}, fmt.Errorf("post-test Git observation after sealed test %q differs from the exact pre-test role facts", selector.ID)
+		}
 		testResults = append(testResults, result)
-	}
-
-	postTests, err := s.observeRole(ctx, worktree, packet.Assignment)
-	if err != nil {
-		return Result{}, fmt.Errorf("post-test Git observation: %w", err)
-	}
-	if !reflect.DeepEqual(postTests, observed) {
-		return Result{}, errors.New("post-test Git observation differs from the exact pre-test role facts")
 	}
 
 	receipt.BaseRevision = postTests.base

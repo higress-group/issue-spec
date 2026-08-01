@@ -109,6 +109,38 @@ func TestPassingSealedTestThatDirtiesTreeCannotPublish(t *testing.T) {
 	}
 }
 
+func TestPerTestGitObservationStopsBeforeLaterSelectorCanRestore(t *testing.T) {
+	fixture := newGitFixture(t)
+	driftPath := filepath.Join(fixture.repo, "transient-role-test-drift.txt")
+	runner := &scriptedTestRunner{steps: []func() error{
+		func() error { return os.WriteFile(driftPath, []byte("drift\n"), 0o600) },
+		func() error { return os.Remove(driftPath) },
+	}}
+	packet := fixture.implementationPacket(t, []assignment.TestSelector{
+		{ID: "01-drift", Command: "introduce transient drift"},
+		{ID: "02-restore", Command: "restore transient drift"},
+	})
+	output := filepath.Join(fixture.root, "transient-drift-receipt.json")
+	service := New()
+	service.Tests = runner
+	if _, err := service.Complete(context.Background(), Request{
+		AssignmentFile: fixture.writeJSON(t, "transient-drift-packet.json", packet),
+		DecisionFile:   fixture.writeRaw(t, "transient-drift-decision.json", []byte(`{}`)),
+		Output:         output, Agent: "Worker", WorkingDirectory: fixture.repo,
+	}); err == nil || !strings.Contains(err.Error(), `post-test Git observation after sealed test "01-drift"`) {
+		t.Fatalf("transient drift was accepted: %v", err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0] != "introduce transient drift" {
+		t.Fatalf("test runner calls=%v, want only the drift selector", runner.calls)
+	}
+	if _, err := os.Stat(driftPath); err != nil {
+		t.Fatalf("completion ran the restore selector or repaired drift: %v", err)
+	}
+	if _, err := os.Lstat(output); !os.IsNotExist(err) {
+		t.Fatalf("transient drift published output: %v", err)
+	}
+}
+
 func TestPassingSealedTestThatChangesDetachedSubjectCannotPublish(t *testing.T) {
 	fixture := newGitFixture(t)
 	runGit(t, fixture.repo, "checkout", "--detach", fixture.head)
@@ -362,4 +394,18 @@ type countingTestRunner struct{ calls int }
 func (r *countingTestRunner) Run(context.Context, string, string) (CommandResult, error) {
 	r.calls++
 	return CommandResult{}, nil
+}
+
+type scriptedTestRunner struct {
+	calls []string
+	steps []func() error
+}
+
+func (r *scriptedTestRunner) Run(_ context.Context, _ string, command string) (CommandResult, error) {
+	r.calls = append(r.calls, command)
+	step := len(r.calls) - 1
+	if step >= len(r.steps) {
+		return CommandResult{}, nil
+	}
+	return CommandResult{}, r.steps[step]()
 }
