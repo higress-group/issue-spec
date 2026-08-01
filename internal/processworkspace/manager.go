@@ -66,6 +66,7 @@ type AssignmentRequest struct {
 	Assignment                   assignment.Assignment
 	Redispatch                   bool
 	ExpectedAssignmentGeneration *uint64
+	RecoveryBinding              *AssignmentBinding
 }
 
 // IssueAssignment persists the binding first and only then constructs the
@@ -75,7 +76,16 @@ func (m *Manager) IssueAssignment(ctx context.Context, request AssignmentRequest
 	if m == nil || m.Store == nil {
 		return Inspection{}, assignment.Packet{}, errors.New("process workspace manager is not open")
 	}
-	updated, err := m.Store.BindAssignment(ctx, request.WorkspaceID, request.Assignment, request.Redispatch, request.ExpectedAssignmentGeneration)
+	var updated LocalLease
+	var err error
+	if request.RecoveryBinding != nil {
+		if request.Redispatch || request.ExpectedAssignmentGeneration != nil {
+			return Inspection{}, assignment.Packet{}, errors.New("assignment recovery cannot redispatch")
+		}
+		updated, err = m.Store.recoverAssignment(ctx, request.WorkspaceID, request.Assignment, *request.RecoveryBinding)
+	} else {
+		updated, err = m.Store.BindAssignment(ctx, request.WorkspaceID, request.Assignment, request.Redispatch, request.ExpectedAssignmentGeneration)
+	}
 	if err != nil {
 		return Inspection{Lease: updated}, assignment.Packet{}, err
 	}
@@ -644,5 +654,5 @@ func sameReservation(left, right LocalLease) bool {
 }
 
 func compatibleAssignmentReservation(left, right *AssignmentBinding) bool {
-	return left == nil || right == nil || *left == *right
+	return left == nil || right == nil || AssignmentBindingEqual(left, right)
 }

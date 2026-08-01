@@ -51,9 +51,10 @@ func DurableCheckSelector(mode durable.Mode, binding DurableCheckBinding) (*Test
 	command := "issue-spec durable-spec check --repo " + binding.Repository +
 		" --proposal " + strconv.Itoa(binding.Proposal) +
 		" --baseline " + binding.BaselineRevision +
-		" --subject " + binding.SubjectRevision +
 		" --root . --json"
-	return &TestSelector{ID: DurableSpecTestID, Command: command}, nil
+	return &TestSelector{ID: DurableSpecTestID, Command: command, RevisionBinding: &RevisionBinding{
+		Source: RevisionBindingSourceSubjectRevision, Argument: RevisionBindingArgumentSubject,
+	}}, nil
 }
 
 // WithDurableCheck deterministically merges the built-in durable selector into

@@ -92,11 +92,14 @@ func TestStoreAssignmentIssuanceRetryRedispatchAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstValue := assignmentForLease(lease, "ws-assignment-1", "issue packet")
+	firstValue.Implementation.FocusedTests = []assignment.TestSelector{{ID: "unit", Command: "go test ./internal/processworkspace"}}
 	first, err := store.BindAssignment(context.Background(), lease.Portable.WorkspaceID, firstValue, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Portable.Assignment == nil || first.Portable.Assignment.Generation != 1 || first.Assignment == nil {
+	if first.Portable.Assignment == nil || first.Portable.Assignment.Generation != 1 || first.Assignment == nil ||
+		first.Portable.Assignment.SelectorAuthority == nil || len(first.Portable.Assignment.SelectorAuthority.Tests) != 1 ||
+		first.Portable.Assignment.SelectorAuthority.Tests[0].Command != "go test ./internal/processworkspace" {
 		t.Fatalf("first binding=%+v", first)
 	}
 	registry, _ := store.Load(context.Background())
@@ -114,8 +117,20 @@ func TestStoreAssignmentIssuanceRetryRedispatchAndRecovery(t *testing.T) {
 	if registry.Generation != generation {
 		t.Fatalf("retry advanced registry generation %d -> %d", generation, registry.Generation)
 	}
+	retry.Portable.Assignment.SelectorAuthority.Tests[0].Command = "go test ./tampered"
+	stored, found, err := reopened.Get(context.Background(), lease.Portable.WorkspaceID)
+	if err != nil || !found || stored.Portable.Assignment.SelectorAuthority.Tests[0].Command != "go test ./internal/processworkspace" {
+		t.Fatalf("returned binding mutation escaped clone boundary: found=%v lease=%+v err=%v", found, stored, err)
+	}
+	if _, err := reopened.Update(context.Background(), lease.Portable.WorkspaceID, func(current *LocalLease) error {
+		current.Portable.Assignment.SelectorAuthority.Tests[0].Command = "go test ./tampered"
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("selector authority mutation was accepted: %v", err)
+	}
 
 	conflict := assignmentForLease(lease, "ws-assignment-conflict", "different")
+	conflict.Implementation.FocusedTests = []assignment.TestSelector{{ID: "redispatched", Command: "go test ./internal/model"}}
 	if _, err := reopened.BindAssignment(context.Background(), lease.Portable.WorkspaceID, conflict, false, nil); err == nil || !strings.Contains(err.Error(), "explicit redispatch") {
 		t.Fatalf("normal retry accepted conflict: %v", err)
 	}
@@ -125,7 +140,8 @@ func TestStoreAssignmentIssuanceRetryRedispatchAndRecovery(t *testing.T) {
 	}
 	expected := uint64(1)
 	second, err := reopened.BindAssignment(context.Background(), lease.Portable.WorkspaceID, conflict, true, &expected)
-	if err != nil || second.Portable.Assignment.Generation != 2 {
+	if err != nil || second.Portable.Assignment.Generation != 2 || second.Portable.Assignment.SelectorAuthority == nil ||
+		len(second.Portable.Assignment.SelectorAuthority.Tests) != 1 || second.Portable.Assignment.SelectorAuthority.Tests[0].ID != "redispatched" {
 		t.Fatalf("redispatch=%+v err=%v", second, err)
 	}
 	if _, err := reopened.Update(context.Background(), lease.Portable.WorkspaceID, func(current *LocalLease) error {
@@ -152,8 +168,14 @@ func TestStoreAssignmentIssuanceRetryRedispatchAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	recovered, err := reopened.BindAssignment(context.Background(), legacy.Portable.WorkspaceID, legacyValue, false, nil)
-	if err != nil || recovered.Assignment == nil || recovered.Portable.Assignment.Generation != 1 {
+	if err != nil || recovered.Assignment == nil || recovered.Portable.Assignment.Generation != 1 || recovered.Portable.Assignment.SelectorAuthority != nil {
 		t.Fatalf("remote-only recovery=%+v err=%v", recovered, err)
+	}
+	driftedRecovery := *recovered.Portable.Assignment
+	driftedRecovery.Generation++
+	if _, err := reopened.recoverAssignment(context.Background(), legacy.Portable.WorkspaceID, legacyValue, driftedRecovery); err == nil ||
+		!strings.Contains(err.Error(), "persisted local binding") {
+		t.Fatalf("recovery ignored durable/local generation disagreement: %v", err)
 	}
 }
 

@@ -60,13 +60,169 @@ type RuntimeResource struct {
 // issued for a lease. The complete assignment is retained in LocalLease;
 // machine-local delivery metadata is never part of this projection or digest.
 type AssignmentBinding struct {
-	SchemaVersion   string          `json:"schema_version"`
-	AssignmentID    string          `json:"assignment_id"`
-	Digest          string          `json:"assignment_digest"`
-	Role            assignment.Role `json:"role"`
-	BaseRevision    string          `json:"base_revision,omitempty"`
-	SubjectRevision string          `json:"subject_revision,omitempty"`
-	Generation      uint64          `json:"generation"`
+	SchemaVersion     string                       `json:"schema_version"`
+	AssignmentID      string                       `json:"assignment_id"`
+	Digest            string                       `json:"assignment_digest"`
+	Role              assignment.Role              `json:"role"`
+	BaseRevision      string                       `json:"base_revision,omitempty"`
+	SubjectRevision   string                       `json:"subject_revision,omitempty"`
+	Generation        uint64                       `json:"generation"`
+	SelectorAuthority *AssignmentSelectorAuthority `json:"selector_authority,omitempty"`
+}
+
+// AssignmentSelectorAuthority is the complete canonical selector set compiled
+// into the assignment identified by its enclosing binding. A non-nil empty
+// object is authoritative: newly issued assignments bind an empty set rather
+// than looking through to PROCESS prose or mutable workflow configuration.
+// Nil is reserved for historical bindings and conveys no selector authority.
+type AssignmentSelectorAuthority struct {
+	Tests  []assignment.TestSelector  `json:"tests,omitempty"`
+	Checks []assignment.CheckSelector `json:"checks,omitempty"`
+}
+
+// NewAssignmentBinding projects a complete compiled assignment into the one
+// portable immutable binding persisted locally and in PROCESS Workspace JSON.
+// Selector authority supplements, but never changes, AssignmentDigest.
+func NewAssignmentBinding(value assignment.Assignment, generation uint64) (AssignmentBinding, error) {
+	if generation == 0 {
+		return AssignmentBinding{}, errors.New("assignment binding generation must be positive")
+	}
+	digest, err := assignment.AssignmentDigest(value)
+	if err != nil {
+		return AssignmentBinding{}, err
+	}
+	authority, err := selectorAuthorityFromAssignment(value)
+	if err != nil {
+		return AssignmentBinding{}, err
+	}
+	return AssignmentBinding{SchemaVersion: value.SchemaVersion, AssignmentID: value.ID, Digest: digest,
+		Role: value.Role, BaseRevision: value.BaseRevision, SubjectRevision: value.SubjectRevision,
+		Generation: generation, SelectorAuthority: authority}, nil
+}
+
+// ValidateAssignmentBindingMatchesAssignment proves local or recompiled full
+// assignment agreement with its durable binding. Historical bindings without
+// selector authority may prove their original digest identity for recovery,
+// but this function never synthesizes or attaches the missing authority.
+func ValidateAssignmentBindingMatchesAssignment(binding AssignmentBinding, value assignment.Assignment, generation uint64) error {
+	expected, err := NewAssignmentBinding(value, generation)
+	if err != nil {
+		return err
+	}
+	if !assignmentBindingCoreEqual(binding, expected) {
+		return errors.New("assignment binding identity differs from the compiled assignment")
+	}
+	if binding.SelectorAuthority != nil && !assignmentSelectorAuthorityEqual(binding.SelectorAuthority, expected.SelectorAuthority) {
+		return errors.New("assignment binding selector authority differs from the compiled assignment")
+	}
+	return nil
+}
+
+// AssignmentBindingEqual compares immutable binding identity structurally.
+// Slice-backed selector authority is compared by value, never pointer address.
+func AssignmentBindingEqual(left, right *AssignmentBinding) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return assignmentBindingCoreEqual(*left, *right) &&
+		assignmentSelectorAuthorityEqual(left.SelectorAuthority, right.SelectorAuthority)
+}
+
+func assignmentBindingCoreEqual(left, right AssignmentBinding) bool {
+	return left.SchemaVersion == right.SchemaVersion && left.AssignmentID == right.AssignmentID &&
+		left.Digest == right.Digest && left.Role == right.Role && left.BaseRevision == right.BaseRevision &&
+		left.SubjectRevision == right.SubjectRevision && left.Generation == right.Generation
+}
+
+func assignmentSelectorAuthorityEqual(left, right *AssignmentSelectorAuthority) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	if len(left.Tests) != len(right.Tests) || len(left.Checks) != len(right.Checks) {
+		return false
+	}
+	for index := range left.Tests {
+		if !assignment.TestSelectorIdentityEqual(left.Tests[index], right.Tests[index]) {
+			return false
+		}
+	}
+	for index := range left.Checks {
+		if left.Checks[index] != right.Checks[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func selectorAuthorityFromAssignment(value assignment.Assignment) (*AssignmentSelectorAuthority, error) {
+	selectors := assignment.RequiredSelectors{}
+	switch value.Role {
+	case assignment.RoleImplementation:
+		if value.Implementation == nil {
+			return nil, errors.New("implementation assignment is missing its role payload")
+		}
+		selectors.Tests = value.Implementation.FocusedTests
+	case assignment.RoleReview:
+		if value.Review == nil {
+			return nil, errors.New("review assignment is missing its role payload")
+		}
+		selectors.Tests = value.Review.RequiredTests
+	case assignment.RoleVerification:
+		if value.Verification == nil {
+			return nil, errors.New("verification assignment is missing its role payload")
+		}
+		selectors = value.Verification.RequiredSelectors()
+	default:
+		return nil, fmt.Errorf("unsupported assignment role %q", value.Role)
+	}
+	return canonicalSelectorAuthority(value.Role, value.SubjectRevision, selectors)
+}
+
+func canonicalSelectorAuthority(role assignment.Role, subjectRevision string,
+	selectors assignment.RequiredSelectors) (*AssignmentSelectorAuthority, error) {
+	if role != assignment.RoleVerification && len(selectors.Checks) != 0 {
+		return nil, fmt.Errorf("%s assignment selector authority cannot contain provider checks", role)
+	}
+	merged, err := assignment.MergeRequiredSelectors(selectors)
+	if err != nil {
+		return nil, err
+	}
+	if len(merged.Tests) != len(selectors.Tests) || len(merged.Checks) != len(selectors.Checks) {
+		return nil, errors.New("assignment selector authority contains duplicate selectors")
+	}
+	if role == assignment.RoleVerification && len(merged.Tests) == 0 && len(merged.Checks) == 0 {
+		return nil, errors.New("verification assignment selector authority cannot be empty")
+	}
+	authoritativeRevision := subjectRevision
+	if role == assignment.RoleImplementation {
+		authoritativeRevision = ""
+	}
+	for _, selector := range merged.Tests {
+		if err := assignment.ValidateTestSelectorRevisionContract(role, authoritativeRevision, selector); err != nil {
+			return nil, err
+		}
+	}
+	return &AssignmentSelectorAuthority{Tests: merged.Tests, Checks: merged.Checks}, nil
+}
+
+func cloneAssignmentBinding(value *AssignmentBinding) *AssignmentBinding {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	if value.SelectorAuthority != nil {
+		authority := &AssignmentSelectorAuthority{Checks: append([]assignment.CheckSelector(nil), value.SelectorAuthority.Checks...)}
+		for _, selector := range value.SelectorAuthority.Tests {
+			copyOfSelector := selector
+			if selector.RevisionBinding != nil {
+				binding := *selector.RevisionBinding
+				copyOfSelector.RevisionBinding = &binding
+			}
+			authority.Tests = append(authority.Tests, copyOfSelector)
+		}
+		clone.SelectorAuthority = authority
+	}
+	return &clone
 }
 
 // AcceptedReceiptBinding is the append-only portable authority retained after
@@ -408,6 +564,16 @@ func validateAssignmentBinding(lease PortableLease) error {
 	if binding.Role != assignment.RoleImplementation && binding.Role != assignment.RoleReview && binding.Role != assignment.RoleVerification {
 		return fmt.Errorf("unsupported assignment role %q", binding.Role)
 	}
+	if binding.SelectorAuthority != nil {
+		canonical, err := canonicalSelectorAuthority(binding.Role, binding.SubjectRevision, assignment.RequiredSelectors{
+			Tests: binding.SelectorAuthority.Tests, Checks: binding.SelectorAuthority.Checks})
+		if err != nil {
+			return fmt.Errorf("assignment binding selector authority: %w", err)
+		}
+		if !assignmentSelectorAuthorityEqual(binding.SelectorAuthority, canonical) {
+			return errors.New("assignment binding selector authority must be canonical and sorted")
+		}
+	}
 	for name, revision := range map[string]string{"base": binding.BaseRevision, "subject": binding.SubjectRevision} {
 		if revision != "" && !fullSHA.MatchString(revision) {
 			return fmt.Errorf("assignment %s revision must be a full Git object id", name)
@@ -492,6 +658,11 @@ func validateLocalAssignment(lease LocalLease) error {
 	if binding.SchemaVersion != lease.Assignment.SchemaVersion || binding.AssignmentID != lease.Assignment.ID || binding.Digest != digest ||
 		binding.Role != lease.Assignment.Role || binding.BaseRevision != lease.Assignment.BaseRevision || binding.SubjectRevision != lease.Assignment.SubjectRevision {
 		return errors.New("portable assignment binding differs from local assignment")
+	}
+	if binding.SelectorAuthority != nil {
+		if err := ValidateAssignmentBindingMatchesAssignment(*binding, *lease.Assignment, binding.Generation); err != nil {
+			return fmt.Errorf("portable assignment selector authority differs from local assignment: %w", err)
+		}
 	}
 	if lease.AcceptedReceiptID != "" && !acceptedReceiptID.MatchString(lease.AcceptedReceiptID) {
 		return fmt.Errorf("invalid accepted receipt id %q", lease.AcceptedReceiptID)

@@ -91,8 +91,36 @@ type GeneratorPolicy struct {
 }
 
 type TestSelector struct {
-	ID      string `json:"id"`
-	Command string `json:"command"`
+	ID              string           `json:"id"`
+	Command         string           `json:"command"`
+	RevisionBinding *RevisionBinding `json:"revision_binding,omitempty"`
+}
+
+type RevisionBindingSource string
+
+const RevisionBindingSourceResultRevision RevisionBindingSource = "result-revision"
+
+const RevisionBindingSourceSubjectRevision RevisionBindingSource = "subject-revision"
+
+type RevisionBindingArgument string
+
+const RevisionBindingArgumentSubject RevisionBindingArgument = "--subject"
+
+// RevisionBinding declares one of the closed version-1 revision authorities.
+// It is part of selector identity and is therefore covered by assignment and
+// receipt digests.
+type RevisionBinding struct {
+	Source   RevisionBindingSource   `json:"source"`
+	Argument RevisionBindingArgument `json:"argument"`
+}
+
+// ResolvedTestIdentity pairs the digest-covered declarative selector with the
+// exact authoritative revision and executed command identity. Managed
+// completion can compare each field without interpreting shell text.
+type ResolvedTestIdentity struct {
+	AssignedSelector TestSelector
+	ResolvedRevision string
+	Command          string
 }
 
 type CheckSelector struct {
@@ -106,6 +134,7 @@ type ReviewPayload struct {
 	Authors          []string            `json:"authors"`
 	Scope            []string            `json:"scope"`
 	KnownTests       []KnownTestEvidence `json:"known_tests,omitempty"`
+	RequiredTests    []TestSelector      `json:"required_tests,omitempty"`
 }
 
 type KnownTestEvidence struct {
@@ -136,8 +165,9 @@ type VerifierInstruction struct {
 }
 
 // RequiredSelectors is the stable mechanical extension point for project and
-// built-in verification requirements. Test identity includes the exact command;
-// provider-check identity is the exact provider/name pair.
+// built-in verification requirements. Test identity includes the exact command
+// and optional revision binding; provider-check identity is the exact
+// provider/name pair.
 type RequiredSelectors struct {
 	Tests  []TestSelector  `json:"tests,omitempty"`
 	Checks []CheckSelector `json:"checks,omitempty"`
@@ -211,10 +241,12 @@ const (
 )
 
 type TestResult struct {
-	ID        string      `json:"id"`
-	Command   string      `json:"command"`
-	Outcome   TestOutcome `json:"outcome"`
-	Assurance Assurance   `json:"assurance"`
+	ID               string        `json:"id"`
+	Command          string        `json:"command"`
+	AssignedSelector *TestSelector `json:"assigned_selector,omitempty"`
+	ResolvedRevision string        `json:"resolved_revision,omitempty"`
+	Outcome          TestOutcome   `json:"outcome"`
+	Assurance        Assurance     `json:"assurance"`
 }
 
 // Receipt is revision-bound role evidence. ReceiptDigest is computed from the

@@ -177,6 +177,99 @@ func TestMinimalFinalCompactProjectionIsDeterministicAndBounded(t *testing.T) {
 	}
 }
 
+func TestFinalEvidenceAssignmentJoinReproducesActiveBoundTest(t *testing.T) {
+	revision := strings.Repeat("b", 40)
+	selector := assignment.TestSelector{ID: "durable", Command: "issue-spec durable-spec check --repo o/r --proposal 381 --root . --json",
+		RevisionBinding: &assignment.RevisionBinding{Source: assignment.RevisionBindingSourceSubjectRevision,
+			Argument: assignment.RevisionBindingArgumentSubject}}
+	resolved, err := assignment.ResolveTestSelector(selector, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := &ActiveAssignmentEvidence{ProcessID: "PROCESS-009", AssignmentID: "assignment-2",
+		AssignmentDigest: strings.Repeat("d", 64), Generation: 2, Role: assignment.RoleVerification,
+		SubjectRevision: revision, RequiredTests: []assignment.TestSelector{selector}}
+	assigned := resolved.AssignedSelector
+	record := FinalEvidenceRecord{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceTest,
+		EvidenceID: "receipt-2:test:durable", Name: selector.ID, SubjectRevision: revision,
+		Source: "accepted-verification-receipt:self-reported-tests", AssignmentProcessID: active.ProcessID,
+		ReceiptID: "receipt-2", ReceiptDigest: strings.Repeat("a", 64), AssignmentID: active.AssignmentID,
+		AssignmentDigest: active.AssignmentDigest, AssignmentGeneration: active.Generation,
+		TestAuthorityRole: assignment.RoleVerification,
+		AssignedSelector:  &assigned, ResolvedRevision: revision, ExecutedCommand: resolved.Command}
+	inputs := map[string]ProcessEvidenceInput{active.ProcessID: {ActiveAssignment: active}}
+	if err := validateFinalEvidenceAssignment(record, inputs, revision, map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	reviewActive := *active
+	reviewActive.ProcessID, reviewActive.AssignmentID = "PROCESS-010", "assignment-review-2"
+	reviewActive.Role = assignment.RoleReview
+	reviewRecord := record
+	reviewRecord.AssignmentProcessID, reviewRecord.AssignmentID = reviewActive.ProcessID, reviewActive.AssignmentID
+	reviewRecord.TestAuthorityRole = assignment.RoleReview
+	reviewRecord.Source = "accepted-review-receipt:self-reported"
+	if err := validateFinalEvidenceAssignment(reviewRecord,
+		map[string]ProcessEvidenceInput{reviewActive.ProcessID: {ActiveAssignment: &reviewActive}},
+		revision, map[string]string{}); err != nil {
+		t.Fatalf("review-backed final test was rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*FinalEvidenceRecord){
+		"wrong generation": func(value *FinalEvidenceRecord) { value.AssignmentGeneration-- },
+		"wrong digest":     func(value *FinalEvidenceRecord) { value.AssignmentDigest = strings.Repeat("e", 64) },
+		"wrong selector": func(value *FinalEvidenceRecord) {
+			changed := *value.AssignedSelector
+			changed.Command += " --changed"
+			value.AssignedSelector = &changed
+		},
+		"wrong expanded command": func(value *FinalEvidenceRecord) { value.ExecutedCommand += " --forged" },
+		"wrong test role":        func(value *FinalEvidenceRecord) { value.TestAuthorityRole = assignment.RoleReview },
+		"wrong receipt source":   func(value *FinalEvidenceRecord) { value.Source = "accepted-review-receipt:self-reported" },
+		"unassigned extra": func(value *FinalEvidenceRecord) {
+			value.Name, value.EvidenceID = "extra", "receipt-2:test:extra"
+			value.AssignedSelector, value.ResolvedRevision, value.ExecutedCommand = nil, "", "go test ./extra"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := record
+			mutate(&candidate)
+			if err := validateFinalEvidenceAssignment(candidate, inputs, revision, map[string]string{}); err == nil {
+				t.Fatal("final evaluator accepted mismatched assignment-bound evidence")
+			}
+		})
+	}
+	activeReceipts := map[string]string{}
+	if err := validateFinalEvidenceAssignment(record, inputs, revision, activeReceipts); err != nil {
+		t.Fatal(err)
+	}
+	duplicate := record
+	duplicate.ReceiptID, duplicate.ReceiptDigest = "receipt-other", strings.Repeat("f", 64)
+	if err := validateFinalEvidenceAssignment(duplicate, inputs, revision, activeReceipts); err == nil ||
+		!strings.Contains(err.Error(), "duplicate active assignment generation") {
+		t.Fatalf("duplicate active receipt error=%v", err)
+	}
+	checkSelector := assignment.CheckSelector{Provider: "github", Name: "test"}
+	check := FinalEvidenceRecord{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceCheck,
+		EvidenceID: "receipt-2:check:github:test", Name: "github\x00test", SubjectRevision: revision,
+		Source: "accepted-verification-receipt:provider-checks", AssignmentProcessID: active.ProcessID,
+		ReceiptID: record.ReceiptID, ReceiptDigest: record.ReceiptDigest, AssignmentID: active.AssignmentID,
+		AssignmentDigest: active.AssignmentDigest, AssignmentGeneration: active.Generation, CheckSelector: &checkSelector}
+	if err := validateFinalEvidenceAssignment(check, inputs, revision, map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*FinalEvidenceRecord){
+		"missing check selector": func(value *FinalEvidenceRecord) { value.CheckSelector = nil },
+		"wrong check name":       func(value *FinalEvidenceRecord) { value.Name = "github\x00other" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := check
+			mutate(&candidate)
+			if err := validateFinalEvidenceAssignment(candidate, inputs, revision, map[string]string{}); err == nil {
+				t.Fatal("final evaluator accepted mismatched assignment-bound check evidence")
+			}
+		})
+	}
+}
+
 func minimalFinalSnapshot(t *testing.T, mode Mode) Snapshot {
 	t.Helper()
 	spec := artifact(t, "SPEC", "SPEC-001", "confirmed", specLogical)
@@ -223,7 +316,7 @@ func minimalFinalSnapshot(t *testing.T, mode Mode) Snapshot {
 			Records: []FinalEvidenceRecord{
 				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceReview, EvidenceID: "review-1", SubjectRevision: minimalFinalRevision, Source: "accepted-review-receipt:review-1", Independent: true},
 				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceVerification, EvidenceID: "verify-1", SubjectRevision: minimalFinalRevision, Source: "accepted-verification-receipt:verify-1", Independent: true},
-				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceTest, EvidenceID: "verify-1:test:unit", Name: "unit", SubjectRevision: minimalFinalRevision, Source: "accepted-verification-receipt:verify-1", Independent: true},
+				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceTest, EvidenceID: "verify-1:test:unit", Name: "unit", SubjectRevision: minimalFinalRevision, Source: "accepted-verification-receipt:verify-1", Independent: true, TestAuthorityRole: assignment.RoleVerification},
 				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceCheck, EvidenceID: "verify-1:check:github:test", Name: "github\x00test", SubjectRevision: minimalFinalRevision, Source: "accepted-verification-receipt:verify-1", Independent: true},
 			},
 		},

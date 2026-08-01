@@ -193,7 +193,7 @@ func normalizeAssignment(value Assignment) Assignment {
 			payload.Generators[i].RequiredOutputGlobs = sortedCopy(payload.Generators[i].RequiredOutputGlobs)
 		}
 		sort.Slice(payload.Generators, func(i, j int) bool { return payload.Generators[i].Name < payload.Generators[j].Name })
-		payload.FocusedTests = append([]TestSelector(nil), payload.FocusedTests...)
+		payload.FocusedTests = cloneTestSelectors(payload.FocusedTests)
 		sort.Slice(payload.FocusedTests, func(i, j int) bool { return testSelectorLess(payload.FocusedTests[i], payload.FocusedTests[j]) })
 		clone.Implementation = &payload
 	}
@@ -203,12 +203,14 @@ func normalizeAssignment(value Assignment) Assignment {
 		payload.Scope = sortedCopy(payload.Scope)
 		payload.KnownTests = append([]KnownTestEvidence(nil), payload.KnownTests...)
 		sort.Slice(payload.KnownTests, func(i, j int) bool { return payload.KnownTests[i].ID < payload.KnownTests[j].ID })
+		payload.RequiredTests = cloneTestSelectors(payload.RequiredTests)
+		sort.Slice(payload.RequiredTests, func(i, j int) bool { return testSelectorLess(payload.RequiredTests[i], payload.RequiredTests[j]) })
 		clone.Review = &payload
 	}
 	if value.Verification != nil {
 		payload := *value.Verification
 		payload.Guidance = cloneVerifierGuidance(value.Verification.Guidance)
-		payload.RequiredTests = append([]TestSelector(nil), payload.RequiredTests...)
+		payload.RequiredTests = cloneTestSelectors(payload.RequiredTests)
 		sort.Slice(payload.RequiredTests, func(i, j int) bool { return testSelectorLess(payload.RequiredTests[i], payload.RequiredTests[j]) })
 		payload.RequiredChecks = append([]CheckSelector(nil), payload.RequiredChecks...)
 		sort.Slice(payload.RequiredChecks, func(i, j int) bool { return checkSelectorLess(payload.RequiredChecks[i], payload.RequiredChecks[j]) })
@@ -227,7 +229,7 @@ func normalizeProcessInput(value ProcessInput) ProcessInput {
 		}
 		return clone.ScenarioSelectors[i].SpecID < clone.ScenarioSelectors[j].SpecID
 	})
-	clone.RequiredTests = append([]TestSelector(nil), value.RequiredTests...)
+	clone.RequiredTests = cloneTestSelectors(value.RequiredTests)
 	sort.Slice(clone.RequiredTests, func(i, j int) bool { return testSelectorLess(clone.RequiredTests[i], clone.RequiredTests[j]) })
 	clone.RequiredChecks = append([]CheckSelector(nil), value.RequiredChecks...)
 	sort.Slice(clone.RequiredChecks, func(i, j int) bool { return checkSelectorLess(clone.RequiredChecks[i], clone.RequiredChecks[j]) })
@@ -290,6 +292,12 @@ func normalizeRawJSON(value json.RawMessage) json.RawMessage {
 func normalizeReceipt(value Receipt) Receipt {
 	clone := value
 	clone.Tests = append([]TestResult(nil), value.Tests...)
+	for i := range clone.Tests {
+		if value.Tests[i].AssignedSelector != nil {
+			selector := cloneTestSelector(*value.Tests[i].AssignedSelector)
+			clone.Tests[i].AssignedSelector = &selector
+		}
+	}
 	sort.Slice(clone.Tests, func(i, j int) bool {
 		if clone.Tests[i].ID == clone.Tests[j].ID {
 			return clone.Tests[i].Command < clone.Tests[j].Command

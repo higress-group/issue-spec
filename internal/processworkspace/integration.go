@@ -90,9 +90,6 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 			return Inspection{Lease: lease}, fmt.Errorf("%w: receipt result revision differs from requested result commit", ErrInvalidWorkerResult)
 		}
 		resultCommit = strings.TrimSpace(request.Receipt.ResultRevision)
-		if err := validateImplementationReceiptBinding(lease, *request.Receipt, resultCommit); err != nil {
-			return Inspection{Lease: lease}, fmt.Errorf("%w: %v", ErrInvalidWorkerResult, err)
-		}
 	}
 	if lease.Portable.Mode != ModeWritable {
 		return Inspection{Lease: lease}, fmt.Errorf("%w: completion requires writable mode", ErrInvalidWorkerResult)
@@ -109,6 +106,9 @@ func (m *Manager) completeLocked(ctx context.Context, request CompleteRequest) (
 		return inspection, err
 	}
 	if request.Receipt != nil {
+		if err := validateImplementationReceiptBinding(lease, *request.Receipt, resultCommit); err != nil {
+			return inspection, fmt.Errorf("%w: %v", ErrInvalidWorkerResult, err)
+		}
 		changed, err := m.changedPaths(ctx, lease.WorktreePath, lease.Portable.BaseSHA, resultCommit)
 		if err != nil {
 			return inspection, err
@@ -149,12 +149,8 @@ func validateStrictCompletionAssignmentBinding(lease LocalLease) error {
 	if binding == nil || lease.Assignment == nil {
 		return errors.New("completion requires the authoritative persisted assignment binding")
 	}
-	assignmentDigest, err := assignment.AssignmentDigest(*lease.Assignment)
-	if err != nil {
+	if err := ValidateAssignmentBindingMatchesAssignment(*binding, *lease.Assignment, binding.Generation); err != nil {
 		return fmt.Errorf("completion requires a strict current assignment: %w", err)
-	}
-	if assignmentDigest != binding.Digest {
-		return errors.New("completion assignment digest differs from the authoritative persisted binding")
 	}
 	return nil
 }
@@ -208,6 +204,9 @@ func (m *Manager) validateImplementationReceiptContract(ctx context.Context, lea
 	if !slices.Equal(actualPaths, reportedPaths) {
 		return errors.New("receipt changed_paths differ from the exact Git result")
 	}
+	if len(receipt.Tests) != len(contract.FocusedTests) {
+		return fmt.Errorf("implementation receipt tests must exactly cover all %d assigned focused tests", len(contract.FocusedTests))
+	}
 	tests := make(map[string]assignment.TestResult, len(receipt.Tests))
 	for _, result := range receipt.Tests {
 		if result.Outcome != assignment.TestPassed {
@@ -217,8 +216,22 @@ func (m *Manager) validateImplementationReceiptContract(ctx context.Context, lea
 	}
 	for _, required := range contract.FocusedTests {
 		result, ok := tests[required.ID]
-		if !ok || result.Command != required.Command || result.Outcome != assignment.TestPassed {
+		if !ok {
 			return fmt.Errorf("required focused test %q lacks an exact passing result", required.ID)
+		}
+		if required.RevisionBinding == nil {
+			if result.AssignedSelector != nil || result.ResolvedRevision != "" || result.Command != required.Command {
+				return fmt.Errorf("required focused test %q lacks an exact literal passing result", required.ID)
+			}
+			continue
+		}
+		resolved, err := assignment.ResolveTestSelector(required, resultCommit)
+		if err != nil {
+			return fmt.Errorf("resolve required focused test %q: %w", required.ID, err)
+		}
+		if result.AssignedSelector == nil || !assignment.TestSelectorIdentityEqual(*result.AssignedSelector, required) ||
+			result.ResolvedRevision != resolved.ResolvedRevision || result.Command != resolved.Command {
+			return fmt.Errorf("required focused test %q lacks exact assigned selector and resolved result-revision evidence", required.ID)
 		}
 	}
 	var resultTreeFiles []string

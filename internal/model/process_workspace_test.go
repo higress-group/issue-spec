@@ -77,16 +77,32 @@ func TestProcessWorkspaceCanonicalRoundTripByExecutionClass(t *testing.T) {
 func TestProcessWorkspaceRoundTripsPortableAssignmentBindingOnly(t *testing.T) {
 	workspace := testProcessWorkspace("PROCESS-006", ProcessExecutionChangeBearing)
 	workspace.Assignment = &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion, AssignmentID: "assignment-006-1",
-		Digest: strings.Repeat("a", 64), Role: assignment.RoleImplementation, BaseRevision: workspace.BaseSHA, Generation: 1}
+		Digest: strings.Repeat("a", 64), Role: assignment.RoleImplementation, BaseRevision: workspace.BaseSHA, Generation: 1,
+		SelectorAuthority: &processworkspace.AssignmentSelectorAuthority{Tests: []assignment.TestSelector{
+			{ID: "unit", Command: "go test ./internal/model"}}}}
 	body := processBodyWithWorkspace("PROCESS-006", ProcessExecutionChangeBearing, workspace)
 	parsed := ParseProcessWorkspace("PROCESS-006", "", body)
-	if parsed.Blocking() || parsed.Workspace == nil || parsed.Workspace.Assignment == nil || parsed.Workspace.Assignment.AssignmentID != "assignment-006-1" {
+	if parsed.Blocking() || parsed.Workspace == nil || parsed.Workspace.Assignment == nil ||
+		!processworkspace.AssignmentBindingEqual(parsed.Workspace.Assignment, workspace.Assignment) {
 		t.Fatalf("assignment binding round trip=%+v", parsed)
+	}
+	if !strings.Contains(body, `"selector_authority"`) || !strings.Contains(body, `"go test ./internal/model"`) {
+		t.Fatalf("portable Workspace omitted selector authority: %s", body)
 	}
 	for _, forbidden := range []string{"worktree_path", "owner-token", "integration_root"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("portable Workspace leaked %q: %s", forbidden, body)
 		}
+	}
+
+	historical := workspace
+	historical.Assignment = &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion, AssignmentID: "assignment-006-legacy",
+		Digest: strings.Repeat("b", 64), Role: assignment.RoleImplementation, BaseRevision: workspace.BaseSHA, Generation: 1}
+	historicalBody := processBodyWithWorkspace("PROCESS-006", ProcessExecutionChangeBearing, historical)
+	historicalParsed := ParseProcessWorkspace("PROCESS-006", "", historicalBody)
+	if historicalParsed.Blocking() || historicalParsed.Workspace == nil || historicalParsed.Workspace.Assignment == nil ||
+		historicalParsed.Workspace.Assignment.SelectorAuthority != nil || strings.Contains(historicalBody, `"selector_authority"`) {
+		t.Fatalf("historical missing selector projection did not remain readable and missing: %+v\n%s", historicalParsed, historicalBody)
 	}
 }
 

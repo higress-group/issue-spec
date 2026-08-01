@@ -347,7 +347,7 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 	var preflightAssignment *assignment.Assignment
 	if localFound {
 		remoteBinding, localBinding := portable.Assignment, existingLocal.Portable.Assignment
-		if remoteBinding != nil && localBinding != nil && !reflect.DeepEqual(remoteBinding, localBinding) {
+		if remoteBinding != nil && localBinding != nil && !processworkspace.AssignmentBindingEqual(remoteBinding, localBinding) {
 			return a.workspaceError(workspaceResult(ctx, manager, processworkspace.Inspection{Lease: existingLocal}, repo, issue, processID, "prepare", workspaceRemoteResult{}),
 				"assignment_binding_conflict", errors.New("remote and local assignment bindings differ; inspect both reservations and reconcile explicitly"), *flags.jsonOut)
 		}
@@ -446,8 +446,12 @@ func (a *app) runWorkspacePrepare(ctx context.Context, args []string) int {
 		if *redispatch {
 			expected = expectedAssignmentGeneration
 		}
+		var recoveryBinding *processworkspace.AssignmentBinding
+		if preflightAssignment != nil {
+			recoveryBinding = portable.Assignment
+		}
 		issued, valuePacket, issueErr := manager.IssueAssignment(ctx, processworkspace.AssignmentRequest{WorkspaceID: portable.WorkspaceID,
-			Assignment: value, Redispatch: *redispatch, ExpectedAssignmentGeneration: expected})
+			Assignment: value, Redispatch: *redispatch, ExpectedAssignmentGeneration: expected, RecoveryBinding: recoveryBinding})
 		if issueErr != nil {
 			return a.workspaceLocalFailure(ctx, manager, issued, repo, issue, processID, "assignment_issuance_failed", issueErr, *flags.jsonOut)
 		}
@@ -567,7 +571,8 @@ func compileWorkspaceAssignment(ctx context.Context, backend changegraph.Backend
 			return assignment.Assignment{}, err
 		}
 		value.Role, value.SubjectRevision = assignment.RoleReview, lease.Portable.DetachedRevision
-		value.Review = &assignment.ReviewPayload{SnapshotRevision: lease.Portable.DetachedRevision, DiffBaseRevision: strings.TrimSpace(diffBase), Authors: authors, Scope: scope}
+		value.Review = &assignment.ReviewPayload{SnapshotRevision: lease.Portable.DetachedRevision, DiffBaseRevision: strings.TrimSpace(diffBase),
+			Authors: authors, Scope: scope, RequiredTests: append([]assignment.TestSelector(nil), input.RequiredTests...)}
 	case model.ProcessExecutionVerification:
 		value.Role, value.SubjectRevision = assignment.RoleVerification, lease.Portable.DetachedRevision
 		value.Verification = &assignment.VerificationPayload{SubjectRevision: lease.Portable.DetachedRevision,
@@ -663,12 +668,7 @@ func bindCanonicalDesignContext(ctx context.Context, backend changegraph.Backend
 }
 
 func validateCompiledAssignmentBinding(value assignment.Assignment, generation uint64, binding processworkspace.AssignmentBinding) error {
-	digest, err := assignment.AssignmentDigest(value)
-	if err != nil {
-		return err
-	}
-	if binding.SchemaVersion != value.SchemaVersion || binding.AssignmentID != value.ID || binding.Digest != digest ||
-		binding.Role != value.Role || binding.BaseRevision != value.BaseRevision || binding.SubjectRevision != value.SubjectRevision || binding.Generation != generation || generation == 0 {
+	if err := processworkspace.ValidateAssignmentBindingMatchesAssignment(binding, value, generation); err != nil {
 		return errors.New("compiled assignment does not exactly match the authoritative remote binding")
 	}
 	return nil

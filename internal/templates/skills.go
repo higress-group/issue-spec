@@ -192,7 +192,8 @@ This packet is addressed to the dispatched worker subagent. Relay it verbatim wi
 2. Before code changes, require design_context.read_mode=complete-issue-body and conflict_policy=design-authoritative-stop. Read the complete Design with issue-spec read issue --repo {{repo}} --issue <design_context.source_url> without comments, timeline, history, or gates. Stop and report any conflict; do not reinterpret or summarize the packet.
 3. Work only in the assigned worktree and owned paths. Preserve the named invariant, decisions, must_preserve, must_not, and minimum_verification exactly. Do not collect or pass runtime-specific session IDs.
 4. Implement the owned invariant, run the assigned generators exactly, and run focused verification. If the assignment cannot fit a bounded end-to-end working set, stop with the concrete stable-interface split options and acceptance consequences; do not split by path, command, finding, or token formula.
-5. Produce exactly one DCO commit when required. Return only the result commit, changed paths, generator outputs, focused test results, decisions, risks, and bounded handoff/result receipt. Do not integrate, clean up, publish Coordinator artifacts, review your own code, or create final rationale before independent review converges.
+5. For each focused test with a result-revision binding, first produce the exact final DCO result commit, resolve the sealed declarative selector against that commit, run the resulting command, and record both assigned_selector and resolved_revision with the executed command and outcome. Any amendment changes the result revision, invalidates the earlier test evidence, and requires resolution and execution again. Literal selectors retain their exact command identity.
+6. Produce exactly one DCO commit when required. Return only the result commit, changed paths, generator outputs, focused test results, decisions, risks, and bounded handoff/result receipt. Do not integrate, clean up, publish Coordinator artifacts, review your own code, or create final rationale before independent review converges.
 `,
 		},
 		{
@@ -208,9 +209,10 @@ Coordinator: follow issue-spec-workflow to prepare the immutable review snapshot
 
 1. Accept only the sealed review assignment for the exact subject revision, immutable snapshot/diff, code authors, owned invariant, affected scenarios, review scope, focused checks, result schema, and design_context.
 2. Require design_context.read_mode=complete-issue-body and conflict_policy=design-authoritative-stop. Before inspecting code, read the complete Design with issue-spec read issue --repo {{repo}} --issue <design_context.source_url> without comments, timeline, history, or gates. Stop on conflict; do not collect or pass runtime-specific session IDs.
-3. Review the invariant end to end at the exact revision. Verify required actions, stops, compatibility, tests, and major entry points. Do not expand into unrelated proposal history, DAGs, links, post-merge policy, or provider routing.
-4. Under the real review agent identity, report actionable findings with severity, exact file/line, affected SPEC/scenario, owner PROCESS, and suggested fix, or an explicit no-finding verdict. Never fabricate evidence or let the Coordinator author findings for you.
-5. After a fix, re-check the exact current revision and own the resolved reply/conversation resolution. Submit only the bounded review receipt/sync result and focused verification evidence. P0/P1 findings remain blocking until reviewer-owned resolution; the author cannot review its own work.
+3. Resolve every subject-revision-bound required test against the sealed subject revision, run the resulting command, and record assigned_selector plus resolved_revision alongside the executed command and outcome. Preserve literal selectors byte-for-byte. Missing, extra, failed, stale, or substituted test evidence blocks completion.
+4. Review the invariant end to end at the exact revision. Verify required actions, stops, compatibility, tests, and major entry points. Do not expand into unrelated proposal history, DAGs, links, post-merge policy, or provider routing.
+5. Under the real review agent identity, report actionable findings with severity, exact file/line, affected SPEC/scenario, owner PROCESS, and suggested fix, or an explicit no-finding verdict. Never fabricate evidence or let the Coordinator author findings for you.
+6. After a fix, re-check the exact current revision and own the resolved reply/conversation resolution. Submit only the bounded review receipt/sync result and focused verification evidence. P0/P1 findings remain blocking until reviewer-owned resolution; the author cannot review its own work.
 `,
 		},
 		{
@@ -225,9 +227,10 @@ Coordinator: use issue-spec-workflow for final routing. In repository durable mo
 ## Verification Role Packet
 
 1. Accept only the sealed verification assignment for the exact immutable subject revision, affected scenarios, required test commands/check selectors, and result schema. Do not load proposal/Design bodies, the complete DAG, link matrices, post-merge policy, or provider routing.
-2. Run only the required focused tests/checks against the exact revision. Keep local self-reported test evidence distinct from provider-owned check identity and conclusion; never invent externally observed check evidence.
-3. Generate/submit the bounded VERIFY receipt under the real verifier identity. Record command/check identity, revision, result, and failures. Do not collect or pass runtime-specific session IDs.
-4. A failed, pending, stale, or mismatched check is a blocker with a focused refresh/remediation result. Verification does not create or refresh REVIEW, infer links from prose, or replace independent review.
+2. Resolve every subject-revision-bound required test against the sealed subject revision, run the resulting command, and record assigned_selector plus resolved_revision alongside the executed command and outcome. Preserve literal selectors byte-for-byte. Missing, extra, failed, stale, or substituted test evidence blocks completion.
+3. Run only the required focused tests/checks against the exact revision. Keep local self-reported test evidence distinct from provider-owned check identity and conclusion; never invent externally observed check evidence.
+4. Generate/submit the bounded VERIFY receipt under the real verifier identity. Record command/check identity, revision, result, and failures. Do not collect or pass runtime-specific session IDs.
+5. A failed, pending, stale, or mismatched check is a blocker with a focused refresh/remediation result. Verification does not create or refresh REVIEW, infer links from prose, or replace independent review.
 `,
 		},
 	}

@@ -11,42 +11,50 @@ func (p VerifierPacket) Validate() error {
 	if err := validateVerifierGuidance(p.Guidance); err != nil {
 		return err
 	}
-	if err := validateTestSelectors("verifier_packet.required_tests", p.RequiredTests); err != nil {
+	if err := validateTestSelectors("verifier_packet.required_tests", p.RequiredTests, "", ""); err != nil {
 		return err
+	}
+	for i, selector := range p.RequiredTests {
+		if selector.RevisionBinding != nil && selector.RevisionBinding.Source != RevisionBindingSourceSubjectRevision {
+			return fmt.Errorf("verifier_packet.required_tests[%d].revision_binding.source: %q is not supported for verification tests", i, selector.RevisionBinding.Source)
+		}
 	}
 	return validateCheckSelectors("verifier_packet.required_checks", p.RequiredChecks)
 }
 
 func (p VerificationPayload) RequiredSelectors() RequiredSelectors {
 	return RequiredSelectors{
-		Tests:  append([]TestSelector(nil), p.RequiredTests...),
+		Tests:  cloneTestSelectors(p.RequiredTests),
 		Checks: append([]CheckSelector(nil), p.RequiredChecks...),
 	}
 }
 
 // MergeRequiredSelectors combines independently resolved requirements without
 // changing identity. Exact repeats are idempotent; reusing a test ID for a
-// different command fails closed.
+// different command or revision binding fails closed.
 func MergeRequiredSelectors(groups ...RequiredSelectors) (RequiredSelectors, error) {
 	merged := RequiredSelectors{}
-	tests := map[string]string{}
+	tests := map[string]TestSelector{}
 	checks := map[string]struct{}{}
 	for groupIndex, group := range groups {
-		if err := validateTestSelectors(fmt.Sprintf("required_selector_groups[%d].tests", groupIndex), group.Tests); err != nil {
+		if err := validateTestSelectors(fmt.Sprintf("required_selector_groups[%d].tests", groupIndex), group.Tests, "", ""); err != nil {
 			return RequiredSelectors{}, err
 		}
 		if err := validateCheckSelectors(fmt.Sprintf("required_selector_groups[%d].checks", groupIndex), group.Checks); err != nil {
 			return RequiredSelectors{}, err
 		}
 		for _, test := range group.Tests {
-			if command, ok := tests[test.ID]; ok {
-				if command != test.Command {
-					return RequiredSelectors{}, fmt.Errorf("required test selector %q has conflicting commands %q and %q", test.ID, command, test.Command)
+			if existing, ok := tests[test.ID]; ok {
+				if existing.Command != test.Command {
+					return RequiredSelectors{}, fmt.Errorf("required test selector %q has conflicting commands %q and %q", test.ID, existing.Command, test.Command)
+				}
+				if !TestSelectorIdentityEqual(existing, test) {
+					return RequiredSelectors{}, fmt.Errorf("required test selector %q has conflicting revision bindings", test.ID)
 				}
 				continue
 			}
-			tests[test.ID] = test.Command
-			merged.Tests = append(merged.Tests, test)
+			tests[test.ID] = cloneTestSelector(test)
+			merged.Tests = append(merged.Tests, cloneTestSelector(test))
 		}
 		for _, check := range group.Checks {
 			key := check.Provider + "\x00" + check.Name
@@ -127,21 +135,8 @@ func ValidateVerificationReceiptCoverage(required VerificationPayload, receipt R
 	if receipt.SubjectRevision != required.SubjectRevision {
 		return errors.New("verification receipt subject revision does not match the exact assigned revision")
 	}
-	if len(receipt.Tests) != len(required.RequiredTests) {
-		return fmt.Errorf("verification receipt tests must exactly cover all %d assigned required tests", len(required.RequiredTests))
-	}
-	tests := make(map[string]TestResult, len(receipt.Tests))
-	for _, result := range receipt.Tests {
-		tests[result.ID] = result
-	}
-	for _, expected := range required.RequiredTests {
-		result, ok := tests[expected.ID]
-		if !ok || result.Command != expected.Command {
-			return fmt.Errorf("verification receipt is missing exact assigned test %s command %q", expected.ID, expected.Command)
-		}
-		if result.Outcome != TestPassed {
-			return fmt.Errorf("verification test %s must pass before VERIFY completion", result.ID)
-		}
+	if err := validateExactTestCoverage("verification", required.RequiredTests, receipt.Tests, required.SubjectRevision); err != nil {
+		return err
 	}
 	actualChecks := receipt.Verification.CheckSelectors
 	if len(actualChecks) != len(required.RequiredChecks) {

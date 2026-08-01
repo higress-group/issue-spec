@@ -1,10 +1,12 @@
 package gates
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/finalization"
 	"github.com/higress-group/issue-spec/internal/model"
 )
@@ -208,24 +210,6 @@ func (e *evaluator) evaluateFinalEvidence(planning finalPlanning) {
 		return
 	}
 	revision := strings.TrimSpace(facts.Subject.Revision)
-	type evidenceKey struct {
-		process, spec string
-		kind          FinalEvidenceKind
-	}
-	indexed := map[evidenceKey][]FinalEvidenceRecord{}
-	for _, record := range facts.Records {
-		validKind := record.Kind == FinalEvidenceReview || record.Kind == FinalEvidenceVerification ||
-			record.Kind == FinalEvidenceTest || record.Kind == FinalEvidenceCheck
-		if planning.processes[record.ProcessID].Comment.ID == "" || planning.specs[record.SpecID].Comment.ID == "" ||
-			!validKind || record.EvidenceID == "" || record.Source == "" || record.SubjectRevision != revision {
-			e.add(CodeFinalEvidenceInvalid, fmt.Sprintf("evidence %s has stale, unknown, or conflicting identity", record.EvidenceID),
-				ArtifactRef{Type: "PROCESS", ID: record.ProcessID}, record.SubjectRevision, revision, "verify")
-			continue
-		}
-		key := evidenceKey{record.ProcessID, record.SpecID, record.Kind}
-		indexed[key] = append(indexed[key], record)
-	}
-
 	inputs := map[string]ProcessEvidenceInput{}
 	for _, input := range e.snapshot.ProcessEvidence {
 		if planning.processes[input.Process.Comment.ID].Comment.ID == "" {
@@ -236,6 +220,29 @@ func (e *evaluator) evaluateFinalEvidence(planning finalPlanning) {
 		e.processes = append(e.processes, report)
 	}
 	sort.Slice(e.processes, func(i, j int) bool { return e.processes[i].ProcessID < e.processes[j].ProcessID })
+	type evidenceKey struct {
+		process, spec string
+		kind          FinalEvidenceKind
+	}
+	indexed := map[evidenceKey][]FinalEvidenceRecord{}
+	activeReceipts := map[string]string{}
+	for _, record := range facts.Records {
+		validKind := record.Kind == FinalEvidenceReview || record.Kind == FinalEvidenceVerification ||
+			record.Kind == FinalEvidenceTest || record.Kind == FinalEvidenceCheck
+		if planning.processes[record.ProcessID].Comment.ID == "" || planning.specs[record.SpecID].Comment.ID == "" ||
+			!validKind || record.EvidenceID == "" || record.Source == "" || record.SubjectRevision != revision {
+			e.add(CodeFinalEvidenceInvalid, fmt.Sprintf("evidence %s has stale, unknown, or conflicting identity", record.EvidenceID),
+				ArtifactRef{Type: "PROCESS", ID: record.ProcessID}, record.SubjectRevision, revision, "verify")
+			continue
+		}
+		if err := validateFinalEvidenceAssignment(record, inputs, revision, activeReceipts); err != nil {
+			e.add(CodeFinalEvidenceInvalid, fmt.Sprintf("evidence %s has invalid active assignment identity: %v", record.EvidenceID, err),
+				ArtifactRef{Type: "PROCESS", ID: record.ProcessID}, err.Error(), "active exact assignment generation", "verify")
+			continue
+		}
+		key := evidenceKey{record.ProcessID, record.SpecID, record.Kind}
+		indexed[key] = append(indexed[key], record)
+	}
 
 	changePairs := map[string][]string{}
 	for processID, process := range planning.processes {
@@ -296,6 +303,117 @@ func (e *evaluator) evaluateFinalEvidence(planning finalPlanning) {
 	e.evaluateFact(e.snapshot.Remote.VerifyRevision.Fact, CodeVerifyRevisionUnknown, CodeVerifyRevisionInvalid,
 		"verification subject revision is unknown", "verification subject revision does not match the current code subject",
 		"comment upsert", e.snapshot.Remote.VerifyRevision.Artifact, "--type", "VERIFY")
+}
+
+func validateFinalEvidenceAssignment(record FinalEvidenceRecord, inputs map[string]ProcessEvidenceInput,
+	expectedRevision string, activeReceipts map[string]string) error {
+	if record.Kind == FinalEvidenceTest {
+		if record.TestAuthorityRole != assignment.RoleReview && record.TestAuthorityRole != assignment.RoleVerification {
+			return fmt.Errorf("test evidence has invalid authority role %q", record.TestAuthorityRole)
+		}
+		prefix := "accepted-verification-receipt:"
+		if record.TestAuthorityRole == assignment.RoleReview {
+			prefix = "accepted-review-receipt:"
+		}
+		if !strings.HasPrefix(record.Source, prefix) {
+			return fmt.Errorf("%s test evidence has incompatible source %q", record.TestAuthorityRole, record.Source)
+		}
+	} else if record.TestAuthorityRole != "" {
+		return errors.New("non-test evidence carries test authority role")
+	}
+	hasAssignment := record.AssignmentProcessID != "" || record.ReceiptID != "" || record.ReceiptDigest != "" ||
+		record.AssignmentID != "" || record.AssignmentDigest != "" || record.AssignmentGeneration != 0
+	if !hasAssignment {
+		if record.AssignedSelector != nil || record.ResolvedRevision != "" || record.ExecutedCommand != "" ||
+			record.CheckSelector != nil {
+			return errors.New("selector execution identity lacks accepted assignment authority")
+		}
+		return nil
+	}
+	if record.AssignmentProcessID == "" || record.ReceiptID == "" || record.ReceiptDigest == "" ||
+		record.AssignmentID == "" || record.AssignmentDigest == "" || record.AssignmentGeneration == 0 {
+		return errors.New("accepted assignment or receipt identity is incomplete")
+	}
+	input, found := inputs[record.AssignmentProcessID]
+	if !found || input.ActiveAssignment == nil {
+		return errors.New("source PROCESS has no active assignment authority")
+	}
+	active := input.ActiveAssignment
+	if active.ProcessID != record.AssignmentProcessID || active.AssignmentID != record.AssignmentID ||
+		active.AssignmentDigest != record.AssignmentDigest || active.Generation != record.AssignmentGeneration ||
+		active.SubjectRevision != record.SubjectRevision || record.SubjectRevision != expectedRevision {
+		return errors.New("receipt does not join to the active assignment id, digest, generation, and subject")
+	}
+	wantRole := assignment.RoleVerification
+	if record.Kind == FinalEvidenceReview {
+		wantRole = assignment.RoleReview
+	} else if record.Kind == FinalEvidenceTest {
+		wantRole = record.TestAuthorityRole
+	}
+	if active.Role != wantRole {
+		return fmt.Errorf("%s evidence cannot use %s assignment", record.Kind, active.Role)
+	}
+	slot := strings.Join([]string{record.AssignmentProcessID, record.AssignmentID, record.AssignmentDigest,
+		fmt.Sprint(record.AssignmentGeneration)}, "\x00")
+	receipt := record.ReceiptID + "\x00" + record.ReceiptDigest
+	if previous, exists := activeReceipts[slot]; exists && previous != receipt {
+		return errors.New("duplicate active assignment generation has conflicting receipt identities")
+	}
+	activeReceipts[slot] = receipt
+	if record.Kind != FinalEvidenceCheck && record.CheckSelector != nil {
+		return errors.New("non-check evidence carries check selector identity")
+	}
+	if record.Kind != FinalEvidenceTest {
+		if record.AssignedSelector != nil || record.ResolvedRevision != "" || record.ExecutedCommand != "" {
+			return errors.New("non-test evidence carries test execution identity")
+		}
+		if record.Kind == FinalEvidenceCheck {
+			if record.CheckSelector == nil || strings.TrimSpace(record.CheckSelector.Provider) == "" ||
+				strings.TrimSpace(record.CheckSelector.Name) == "" ||
+				record.Name != record.CheckSelector.Provider+"\x00"+record.CheckSelector.Name {
+				return errors.New("check evidence does not preserve its exact accepted selector identity")
+			}
+		}
+		return nil
+	}
+	selector := assignment.TestSelector{ID: record.Name, Command: record.ExecutedCommand}
+	if record.AssignedSelector != nil {
+		selector = *record.AssignedSelector
+		if selector.ID != record.Name {
+			return errors.New("assigned selector id differs from evidence name")
+		}
+		if record.ResolvedRevision == "" {
+			return errors.New("bound selector lacks resolved revision")
+		}
+		if err := assignment.ValidateTestSelectorRevisionContract(record.TestAuthorityRole, expectedRevision, selector); err != nil {
+			return err
+		}
+		resolved, err := assignment.ResolveTestSelector(selector, record.ResolvedRevision)
+		if err != nil || record.ResolvedRevision != expectedRevision || record.ExecutedCommand != resolved.Command {
+			return errors.New("bound selector does not reproduce the exact executed command")
+		}
+	} else {
+		if record.ResolvedRevision != "" {
+			return errors.New("literal selector carries resolved revision")
+		}
+		if err := assignment.ValidateTestSelectorRevisionContract(record.TestAuthorityRole, expectedRevision, selector); err != nil {
+			return err
+		}
+	}
+	assigned := false
+	for _, required := range active.RequiredTests {
+		if required.ID != selector.ID {
+			continue
+		}
+		assigned = true
+		if !assignment.TestSelectorIdentityEqual(required, selector) {
+			return errors.New("stable selector differs from the active assignment")
+		}
+	}
+	if !assigned {
+		return errors.New("test selector is not required by the active assignment")
+	}
+	return nil
 }
 
 func processReport(reports []ProcessEvidenceReport, processID string) *ProcessEvidenceReport {
