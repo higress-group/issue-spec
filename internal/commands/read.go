@@ -140,14 +140,14 @@ func (a *app) runReadIssue(ctx context.Context, args []string) int {
 		documents = append(documents, newReadIssueDocument(
 			issue.Body,
 			readIssueSourceLocator(issue.HTMLURL, issue.Number, 0),
-			readIssueExpansionBase(repo, *host, issue.Number, 0),
+			a.readIssueExpansionBase(repo, *host, issue.Number, 0),
 		))
 	}
 	for _, comment := range selectedComments {
 		documents = append(documents, newReadIssueDocument(
 			comment.Body,
 			readIssueSourceLocator(comment.HTMLURL, issue.Number, comment.ID),
-			readIssueExpansionBase(repo, *host, issue.Number, comment.ID),
+			a.readIssueExpansionBase(repo, *host, issue.Number, comment.ID),
 		))
 	}
 	if err := selectReadIssuePreviews(documents, expandIDs, *expandAllPreviews); err != nil {
@@ -311,8 +311,12 @@ func readIssueSourceLocator(htmlURL string, issue int, commentID int64) string {
 	return fmt.Sprintf("issue:%d#body", issue)
 }
 
-func readIssueExpansionBase(repo, host string, issue int, commentID int64) string {
-	base := fmt.Sprintf("issue-spec read issue --repo %s --issue %d", repo, issue)
+func (a *app) readIssueExpansionBase(repo, host string, issue int, commentID int64) string {
+	base := "issue-spec"
+	if profile := strings.TrimSpace(a.profileName); profile != "" {
+		base += " --profile " + profile
+	}
+	base += fmt.Sprintf(" read issue --repo %s --issue %d", repo, issue)
 	host = auth.NormalizeHost(host)
 	if host != "github.com" {
 		base += " --hostname " + host
