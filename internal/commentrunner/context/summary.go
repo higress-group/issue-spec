@@ -116,8 +116,8 @@ type CoordinatorSummaryBlock struct {
 
 func ParseCoordinatorSummary(data []byte, bounds SummaryBounds) (CoordinatorSummary, error) {
 	bounds = normalizeSummaryBounds(bounds)
+	// Coordinators may be newer than the runner, so additive fields must remain compatible.
 	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
 	var summary CoordinatorSummary
 	if err := dec.Decode(&summary); err != nil {
 		return CoordinatorSummary{}, err
