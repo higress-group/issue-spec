@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +86,7 @@ func TestBuildMinimalFinalEvidenceIndexesAcceptedRecordsWithoutProcessWrites(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	reviewBody = downgradeAcceptedReviewBodyToV1(t, reviewBody)
 	review := model.Artifact{URL: "https://github.com/o/r/issues/9#issuecomment-review", Comment: model.ParseTypedComment(reviewBody)}
 
 	tests := []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates", Outcome: assignment.TestPassed,
@@ -366,6 +368,56 @@ func TestBuildMinimalFinalEvidenceUsesV2IssuingProcessWithoutReviewBacklink(t *t
 	}
 }
 
+func TestBuildMinimalFinalEvidenceV2ReviewAssignmentCandidatesRequireActiveAuthority(t *testing.T) {
+	t.Run("unrelated unmanaged process preserves valid index", func(t *testing.T) {
+		fixture := newMultiCarrierRoleEvidenceFixture(t)
+		want := fixture.snapshot()
+		if !want.Index.Passed {
+			t.Fatalf("fixture does not start with a valid index: %+v", want.Index)
+		}
+
+		unmanaged := finalEvidenceRoleProcess(t, "PROCESS-915", assignment.RoleImplementation, fixture.specID)
+		fixture.artifacts = append(fixture.artifacts, unmanaged)
+		fixture.inputs = append(fixture.inputs, gates.ProcessEvidenceInput{Process: unmanaged,
+			ActiveSpecs: map[string]string{fixture.specID: fixture.specURL}})
+
+		got := fixture.snapshot()
+		if !got.Index.Passed {
+			t.Fatalf("unrelated unmanaged PROCESS changed valid v2 REVIEW authority: %+v", got.Index)
+		}
+		if !reflect.DeepEqual(got.Records, want.Records) {
+			t.Fatalf("unrelated unmanaged PROCESS changed valid v2 REVIEW records:\nwant=%+v\n got=%+v", want.Records, got.Records)
+		}
+	})
+
+	t.Run("zero real review authority fails closed", func(t *testing.T) {
+		fixture := newMultiCarrierRoleEvidenceFixture(t)
+		fixture.roleInput(assignment.RoleReview).ActiveAssignment = nil
+		snapshot := fixture.snapshot()
+		if snapshot.Index.Passed || !strings.Contains(snapshot.Index.Current, "no active assignment authority") {
+			t.Fatalf("v2 REVIEW without a real active assignment index=%+v records=%+v", snapshot.Index, snapshot.Records)
+		}
+	})
+
+	t.Run("duplicate real review authority fails closed", func(t *testing.T) {
+		fixture := newMultiCarrierRoleEvidenceFixture(t)
+		original := fixture.roleInput(assignment.RoleReview)
+		duplicate := *original
+		duplicate.Process = finalEvidenceRoleProcess(t, "PROCESS-915", assignment.RoleReview, fixture.specID)
+		active := *original.ActiveAssignment
+		active.ProcessID = duplicate.Process.Comment.ID
+		duplicate.ActiveAssignment = &active
+		duplicate.Reviews = nil
+		fixture.artifacts = append(fixture.artifacts, duplicate.Process)
+		fixture.inputs = append(fixture.inputs, duplicate)
+
+		snapshot := fixture.snapshot()
+		if snapshot.Index.Passed || !strings.Contains(snapshot.Index.Current, "duplicate active assignment authority") {
+			t.Fatalf("duplicate real v2 REVIEW authority index=%+v records=%+v", snapshot.Index, snapshot.Records)
+		}
+	})
+}
+
 func mutateReviewCarrier(t *testing.T, fixture *multiCarrierRoleEvidenceFixture,
 	mutate func(*acceptedReviewReceipt)) {
 	t.Helper()
@@ -399,25 +451,30 @@ func downgradeReviewCarrierToV1(t *testing.T, fixture *multiCarrierRoleEvidenceF
 		if artifact.Comment.Type != "REVIEW" {
 			continue
 		}
-		authority, found, err := parseAcceptedReviewReceipt(artifact.Comment.Body)
-		if err != nil || !found || authority.CarrierVersion != 2 {
-			t.Fatalf("parse version-2 review carrier: authority=%+v found=%t err=%v", authority, found, err)
-		}
-		v1 := acceptedReviewReceiptV1{ReceiptID: authority.ReceiptID, ReceiptDigest: authority.ReceiptDigest,
-			AssignmentID: authority.AssignmentID, AssignmentDigest: authority.AssignmentDigest,
-			AssignmentGeneration: authority.AssignmentGeneration, SubjectRevision: authority.SubjectRevision,
-			Verdict: authority.Verdict, FindingIDs: authority.FindingIDs, Provenance: authority.Provenance}
-		raw, err := json.Marshal(v1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		start := strings.Index(artifact.Comment.Body, acceptedReviewReceiptStart)
-		end := strings.Index(artifact.Comment.Body, acceptedReviewReceiptEnd) + len(acceptedReviewReceiptEnd)
-		block := acceptedReviewReceiptV1Start + "\n" + string(raw) + "\n" + acceptedReviewReceiptEnd
-		artifact.Comment = model.ParseTypedComment(artifact.Comment.Body[:start] + block + artifact.Comment.Body[end:])
+		artifact.Comment = model.ParseTypedComment(downgradeAcceptedReviewBodyToV1(t, artifact.Comment.Body))
 		return
 	}
 	t.Fatal("fixture lacks accepted REVIEW carrier")
+}
+
+func downgradeAcceptedReviewBodyToV1(t *testing.T, body string) string {
+	t.Helper()
+	authority, found, err := parseAcceptedReviewReceipt(body)
+	if err != nil || !found || authority.CarrierVersion != 2 {
+		t.Fatalf("parse version-2 review carrier: authority=%+v found=%t err=%v", authority, found, err)
+	}
+	v1 := acceptedReviewReceiptV1{ReceiptID: authority.ReceiptID, ReceiptDigest: authority.ReceiptDigest,
+		AssignmentID: authority.AssignmentID, AssignmentDigest: authority.AssignmentDigest,
+		AssignmentGeneration: authority.AssignmentGeneration, SubjectRevision: authority.SubjectRevision,
+		Verdict: authority.Verdict, FindingIDs: authority.FindingIDs, Provenance: authority.Provenance}
+	raw, err := json.Marshal(v1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(body, acceptedReviewReceiptStart)
+	end := strings.Index(body, acceptedReviewReceiptEnd) + len(acceptedReviewReceiptEnd)
+	block := acceptedReviewReceiptV1Start + "\n" + string(raw) + "\n" + acceptedReviewReceiptEnd
+	return body[:start] + block + body[end:]
 }
 
 func TestBuildMinimalFinalEvidenceRoleAuthorityMismatchFailsClosedForReviewAndVerify(t *testing.T) {

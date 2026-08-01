@@ -1328,12 +1328,15 @@ func acceptedRoleAssignmentProcess(inputs []gates.ProcessEvidenceInput, fallback
 	role assignment.Role, assignmentID, digest string, generation uint64, subject, declaredProcessID string) (string, error) {
 	if declaredProcessID != "" {
 		matches, exact := 0, 0
+		declaredAuthority := false
 		for _, input := range inputs {
 			if input.Process.Comment.ID == declaredProcessID {
 				matches++
 			}
-			if acceptedAssignmentMatchesActive(input.ActiveAssignment, role, assignmentID, digest, generation, subject) {
+			if input.ActiveAssignment != nil &&
+				acceptedAssignmentMatchesActive(input.ActiveAssignment, role, assignmentID, digest, generation, subject) {
 				exact++
+				declaredAuthority = declaredAuthority || input.Process.Comment.ID == declaredProcessID
 			}
 		}
 		if matches != 1 {
@@ -1341,6 +1344,9 @@ func acceptedRoleAssignmentProcess(inputs []gates.ProcessEvidenceInput, fallback
 		}
 		if exact > 1 {
 			return "", fmt.Errorf("accepted %s receipt has duplicate active assignment authority", role)
+		}
+		if !declaredAuthority {
+			return "", fmt.Errorf("accepted %s receipt issuing PROCESS %s has no active assignment authority", role, declaredProcessID)
 		}
 		return declaredProcessID, nil
 	}
