@@ -218,7 +218,7 @@ func (h *handlers) callback(w http.ResponseWriter, r *http.Request) {
 		identity, returnTo, err = adapter.Complete(ctx, r.URL.Query().Get("state"), r.URL.Query().Get("code"), binding.Value)
 	}
 	if err != nil {
-		h.observeAdmissionFailure(r, err)
+		h.observeAuthenticationFailure(r, adapter.Kind(), err)
 		writeError(w, http.StatusUnauthorized, "Authentication failed")
 		return
 	}
@@ -256,13 +256,23 @@ func (h *handlers) callback(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"user": user, "csrf_token": created.CSRFToken})
 }
 
-func (h *handlers) observeAdmissionFailure(r *http.Request, err error) {
-	class, ok := githuboauth.AdmissionFailure(err)
-	if !ok || h.deps.Diagnostics == nil {
+func (h *handlers) observeAuthenticationFailure(r *http.Request, adapterKind string, err error) {
+	if h.deps.Diagnostics == nil {
+		return
+	}
+	reasonCode := ""
+	if class, ok := githuboauth.AdmissionFailure(err); ok {
+		reasonCode = string(class)
+	} else if adapterKind == "github-oauth" {
+		if class, ok := githuboauth.CallbackFailure(err); ok {
+			reasonCode = string(class)
+		}
+	}
+	if reasonCode == "" {
 		return
 	}
 	h.deps.Diagnostics.ObserveAuthenticationDiagnostic(r.Context(), AuthenticationDiagnostic{
-		RequestID: adminapi.RequestID(r), Provider: r.PathValue("provider"), ReasonCode: string(class),
+		RequestID: adminapi.RequestID(r), Provider: r.PathValue("provider"), ReasonCode: reasonCode,
 	})
 }
 

@@ -1,6 +1,7 @@
 package githuboauth
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,45 @@ import (
 
 	"golang.org/x/oauth2"
 )
+
+func TestCallbackFailureClassifiesTokenExchangeWithoutExposingProviderText(t *testing.T) {
+	tests := []struct {
+		name, providerCode string
+		want               CallbackFailureClass
+	}{
+		{name: "incorrect credentials", providerCode: "incorrect_client_credentials", want: CallbackTokenIncorrectClientCredentials},
+		{name: "standard invalid client", providerCode: "invalid_client", want: CallbackTokenIncorrectClientCredentials},
+		{name: "redirect mismatch", providerCode: "redirect_uri_mismatch", want: CallbackTokenRedirectURIMismatch},
+		{name: "bad code", providerCode: "bad_verification_code", want: CallbackTokenBadVerificationCode},
+		{name: "standard invalid grant", providerCode: "invalid_grant", want: CallbackTokenBadVerificationCode},
+		{name: "unverified email", providerCode: "unverified_user_email", want: CallbackTokenUnverifiedUserEmail},
+		{name: "unknown provider code", providerCode: "secret-provider-detail", want: CallbackTokenExchangeFailed},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := &tokenExchangeError{cause: &oauth2.RetrieveError{
+				ErrorCode: test.providerCode, ErrorDescription: "authorization-code-and-secret-must-not-appear",
+			}}
+			got, ok := CallbackFailure(err)
+			if !ok || got != test.want {
+				t.Fatalf("CallbackFailure() = %q, %v; want %q, true", got, ok, test.want)
+			}
+			if strings.Contains(string(got), "secret-provider-detail") ||
+				strings.Contains(err.Error(), "authorization-code") {
+				t.Fatalf("callback diagnostic leaked provider text: class=%q error=%q", got, err)
+			}
+		})
+	}
+
+	networkErr := &tokenExchangeError{cause: errors.New("network response with sensitive detail")}
+	if got, ok := CallbackFailure(networkErr); !ok || got != CallbackTokenExchangeFailed ||
+		strings.Contains(networkErr.Error(), "sensitive") {
+		t.Fatalf("generic token failure = %q, %v, %q", got, ok, networkErr)
+	}
+	if _, ok := CallbackFailure(errors.New("unrelated callback error")); ok {
+		t.Fatal("unrelated callback error was classified")
+	}
+}
 
 func TestNormalizeUserURLBindsExpectedProductionOrigin(t *testing.T) {
 	tests := []struct {
