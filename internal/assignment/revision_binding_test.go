@@ -137,6 +137,97 @@ func TestRecognizedDurableLiteralRequiresOneExactSubjectContract(t *testing.T) {
 	}
 }
 
+func TestHistoricalRegistryDurableLiteralIsStorageReadableOnly(t *testing.T) {
+	const historicalDigest = "bb46efdc2bcfc8bade5f9c03f9034f5e476b1ca76aead055cf09fc711e6368e2"
+	const historicalJSON = `{
+  "schema_version": "issue-spec.assignment/v1",
+  "assignment_id": "issue-353-process-003-verification-assignment-1",
+  "role": "verification",
+  "repository": "higress-group/issue-spec",
+  "issue": 353,
+  "process_id": "PROCESS-353003",
+  "subject_revision": "62303a684e8b951c923f03f169e846a5dcf8ee3a",
+  "scenarios": [
+    {"spec_id":"SPEC-351001","scenario":"Webhook configuration remains management-only"},
+    {"spec_id":"SPEC-351001","scenario":"integration manager retains source-binding management"},
+    {"spec_id":"SPEC-351001","scenario":"read-only source view exposes no mutation interaction"},
+    {"spec_id":"SPEC-351001","scenario":"repository reader locates the active external source repository"},
+    {"spec_id":"SPEC-351001","scenario":"repository visibility remains authoritative"},
+    {"spec_id":"SPEC-351001","scenario":"unbound repository remains explicit to a reader"}
+  ],
+  "dependencies": ["PROCESS-353002"],
+  "handoff": "N/A",
+  "policy": {"require_exact_revision":true},
+  "result_schema_version": "issue-spec.receipt/v1",
+  "verification": {
+    "subject_revision": "62303a684e8b951c923f03f169e846a5dcf8ee3a",
+    "required_tests": [
+      {"id":"durable-spec","command":"issue-spec durable-spec check --repo higress-group/issue-spec --proposal 351 --root . --baseline \"$(git merge-base origin/main HEAD)\" --subject \"$(git rev-parse HEAD)\" --json"},
+      {"id":"issue-spec/durable-spec","command":"issue-spec durable-spec check --repo higress-group/issue-spec --proposal 351 --baseline 2c6330c6c4ae2ec459d378673cb9416f914192a2 --subject 62303a684e8b951c923f03f169e846a5dcf8ee3a --root . --json"},
+      {"id":"web-integrations","command":"cd web && npm test -- src/repos/integrations.test.tsx"},
+      {"id":"web-typecheck","command":"cd web && npm run typecheck"}
+    ]
+  }
+}`
+	var historical Assignment
+	if err := json.Unmarshal([]byte(historicalJSON), &historical); err != nil {
+		t.Fatal(err)
+	}
+	if err := historical.ValidateForStorageRead(); err != nil {
+		t.Fatalf("historical registry assignment is not storage-readable: %v", err)
+	}
+	digest, err := AssignmentDigestForStorageRead(historical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest != historicalDigest {
+		t.Fatalf("historical digest changed: got %s want %s", digest, historicalDigest)
+	}
+	assertStrictHistoricalAssignmentRejected(t, historical, digest)
+
+	for name, binding := range map[string]RevisionBinding{
+		"shell grammar": {Source: RevisionBindingSourceSubjectRevision, Argument: RevisionBindingArgumentSubject},
+		"role source":   {Source: RevisionBindingSourceResultRevision, Argument: RevisionBindingArgumentSubject},
+		"argument":      {Source: RevisionBindingSourceSubjectRevision, Argument: "--revision"},
+	} {
+		t.Run("typed binding "+name, func(t *testing.T) {
+			candidate := historical
+			candidate.Verification = cloneVerificationPayload(historical.Verification)
+			candidate.Verification.RequiredTests[0].RevisionBinding = &binding
+			if err := candidate.ValidateForStorageRead(); err == nil {
+				t.Fatal("storage compatibility weakened typed binding validation")
+			}
+		})
+	}
+}
+
+func assertStrictHistoricalAssignmentRejected(t *testing.T, historical Assignment, storageDigest string) {
+	t.Helper()
+	if err := historical.Validate(); err == nil {
+		t.Fatal("ordinary validation accepted a historical shell-expanded durable selector")
+	}
+	if _, err := AssignmentDigest(historical); err == nil {
+		t.Fatal("ordinary assignment digest accepted a historical shell-expanded durable selector")
+	}
+	if err := (Packet{Assignment: historical, AssignmentDigest: storageDigest, Generation: 1}).Validate(); err == nil {
+		t.Fatal("packet issuance accepted a historical shell-expanded durable selector")
+	}
+	payload, err := json.Marshal(historical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseAssignmentJSON(payload); err == nil {
+		t.Fatal("assignment-file parser accepted a historical shell-expanded durable selector")
+	}
+}
+
+func cloneVerificationPayload(value *VerificationPayload) *VerificationPayload {
+	clone := *value
+	clone.RequiredTests = cloneTestSelectors(value.RequiredTests)
+	clone.RequiredChecks = append([]CheckSelector(nil), value.RequiredChecks...)
+	return &clone
+}
+
 func TestAssignmentsRoundTripAndDigestBothBindingSources(t *testing.T) {
 	implementation := implementationAssignment()
 	literalDigest, err := AssignmentDigest(implementation)

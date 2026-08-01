@@ -27,19 +27,26 @@ var (
 )
 
 func (a Assignment) Validate() error {
-	return a.validate(true)
+	return a.validate(assignmentValidationStrict)
 }
 
 // ValidateForStorageRead preserves the structural validation of version-1
-// assignments while allowing only the one historical pre-D14 shape: an
-// implementation or review assignment whose design_context is absent. It is
-// intentionally not used by issuance, packet, assignment-file, or role-owned
-// submission paths.
+// assignments while allowing historical shapes that predate design_context or
+// strict literal revision-contract interpretation. Typed revision bindings
+// remain fully structural and role-validated. This path is intentionally not
+// used by issuance, packet, assignment-file, or role-owned submission paths.
 func (a Assignment) ValidateForStorageRead() error {
-	return a.validate(false)
+	return a.validate(assignmentValidationStorageRead)
 }
 
-func (a Assignment) validate(requireDesignContext bool) error {
+type assignmentValidationMode uint8
+
+const (
+	assignmentValidationStrict assignmentValidationMode = iota
+	assignmentValidationStorageRead
+)
+
+func (a Assignment) validate(mode assignmentValidationMode) error {
 	if a.SchemaVersion != AssignmentSchemaVersion {
 		return fmt.Errorf("schema_version: unsupported value %q", a.SchemaVersion)
 	}
@@ -101,12 +108,12 @@ func (a Assignment) validate(requireDesignContext bool) error {
 		if a.BaseRevision == "" || a.SubjectRevision != "" {
 			return errors.New("revision identity: implementation requires base_revision and forbids subject_revision")
 		}
-		if requireDesignContext || a.DesignContext != nil {
+		if mode == assignmentValidationStrict || a.DesignContext != nil {
 			if err := validateDesignContext(a.DesignContext); err != nil {
 				return err
 			}
 		}
-		return validateImplementation(*a.Implementation)
+		return validateImplementationForMode(*a.Implementation, mode)
 	case RoleReview:
 		if a.Review == nil {
 			return errors.New("role payload: review role requires review")
@@ -114,12 +121,12 @@ func (a Assignment) validate(requireDesignContext bool) error {
 		if a.SubjectRevision == "" {
 			return errors.New("revision identity: review requires subject_revision")
 		}
-		if requireDesignContext || a.DesignContext != nil {
+		if mode == assignmentValidationStrict || a.DesignContext != nil {
 			if err := validateDesignContext(a.DesignContext); err != nil {
 				return err
 			}
 		}
-		return validateReview(*a.Review, a.SubjectRevision)
+		return validateReviewForMode(*a.Review, a.SubjectRevision, mode)
 	case RoleVerification:
 		if a.Verification == nil {
 			return errors.New("role payload: verification role requires verification")
@@ -130,7 +137,7 @@ func (a Assignment) validate(requireDesignContext bool) error {
 		if a.DesignContext != nil {
 			return errors.New("design_context: verification assignments must not carry implementation design authority")
 		}
-		return validateVerification(*a.Verification, a.SubjectRevision)
+		return validateVerificationForMode(*a.Verification, a.SubjectRevision, mode)
 	default:
 		panic("validated role was not handled")
 	}
@@ -191,6 +198,10 @@ func validateDesignTextList(name string, values []string) error {
 }
 
 func validateImplementation(p ImplementationPayload) error {
+	return validateImplementationForMode(p, assignmentValidationStrict)
+}
+
+func validateImplementationForMode(p ImplementationPayload, mode assignmentValidationMode) error {
 	if err := validateRequiredText("implementation.objective", p.Objective, maxTextLength); err != nil {
 		return err
 	}
@@ -212,10 +223,14 @@ func validateImplementation(p ImplementationPayload) error {
 	if err := validateGenerators("implementation.generators", p.Generators); err != nil {
 		return err
 	}
-	return validateTestSelectors("implementation.focused_tests", p.FocusedTests, RoleImplementation, "")
+	return validateTestSelectorsForMode("implementation.focused_tests", p.FocusedTests, RoleImplementation, "", mode)
 }
 
 func validateReview(p ReviewPayload, subject string) error {
+	return validateReviewForMode(p, subject, assignmentValidationStrict)
+}
+
+func validateReviewForMode(p ReviewPayload, subject string, mode assignmentValidationMode) error {
 	if p.SnapshotRevision != subject {
 		return errors.New("review.snapshot_revision: must equal subject_revision")
 	}
@@ -249,10 +264,14 @@ func validateReview(p ReviewPayload, subject string) error {
 			return err
 		}
 	}
-	return validateTestSelectors("review.required_tests", p.RequiredTests, RoleReview, subject)
+	return validateTestSelectorsForMode("review.required_tests", p.RequiredTests, RoleReview, subject, mode)
 }
 
 func validateVerification(p VerificationPayload, subject string) error {
+	return validateVerificationForMode(p, subject, assignmentValidationStrict)
+}
+
+func validateVerificationForMode(p VerificationPayload, subject string, mode assignmentValidationMode) error {
 	if p.SubjectRevision != subject {
 		return errors.New("verification.subject_revision: must equal subject_revision")
 	}
@@ -262,7 +281,7 @@ func validateVerification(p VerificationPayload, subject string) error {
 	if len(p.RequiredTests) == 0 && len(p.RequiredChecks) == 0 {
 		return errors.New("verification: at least one required test or provider check is required")
 	}
-	if err := validateTestSelectors("verification.required_tests", p.RequiredTests, RoleVerification, subject); err != nil {
+	if err := validateTestSelectorsForMode("verification.required_tests", p.RequiredTests, RoleVerification, subject, mode); err != nil {
 		return err
 	}
 	return validateCheckSelectors("verification.required_checks", p.RequiredChecks)
@@ -636,6 +655,11 @@ func validateGenerators(name string, values []GeneratorPolicy) error {
 }
 
 func validateTestSelectors(name string, values []TestSelector, role Role, authoritativeRevision string) error {
+	return validateTestSelectorsForMode(name, values, role, authoritativeRevision, assignmentValidationStrict)
+}
+
+func validateTestSelectorsForMode(name string, values []TestSelector, role Role, authoritativeRevision string,
+	mode assignmentValidationMode) error {
 	if len(values) > maxListItems {
 		return fmt.Errorf("%s: exceeds %d items", name, maxListItems)
 	}
@@ -652,7 +676,11 @@ func validateTestSelectors(name string, values []TestSelector, role Role, author
 				return err
 			}
 		}
-		if role != "" {
+		// Storage reads must reproduce historical version-1 assignment bytes and
+		// digests without retroactively interpreting unbound literal commands.
+		// Any typed binding is new structured identity and stays on the complete
+		// strict contract path, including role/source and command grammar checks.
+		if role != "" && (mode == assignmentValidationStrict || value.RevisionBinding != nil) {
 			if err := ValidateTestSelectorRevisionContract(role, authoritativeRevision, value); err != nil {
 				return fmt.Errorf("%s[%d]: %w", name, i, err)
 			}
