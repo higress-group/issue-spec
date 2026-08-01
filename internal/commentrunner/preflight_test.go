@@ -327,6 +327,62 @@ func TestPreflightFailsWhenRepositoryWatchCannotBeConfirmed(t *testing.T) {
 	}
 }
 
+func TestPreflightValidatesEachConfiguredRepositoryBinding(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.Repositories = []string{"o/one", "o/two"}
+	cfg.UnsafeNoSandbox = true
+	metadataCalls := 0
+	deps := passingPreflightDependencies(t)
+	deps.OpenBackend = func(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error) {
+		return fakePreflightBackend{subscription: github.RepositorySubscription{Subscribed: true}, metadataCalls: &metadataCalls}, nil
+	}
+
+	report := RunPreflight(t.Context(), cfg, deps)
+	if !report.OK {
+		t.Fatalf("preflight unexpectedly failed: %+v", report)
+	}
+	if metadataCalls != 2 {
+		t.Fatalf("repository metadata calls = %d, want 2", metadataCalls)
+	}
+	for _, repo := range cfg.Repositories {
+		check := findCheck(t, report, "repository-binding:"+repo)
+		if check.Status != CheckOK || !strings.Contains(check.Detail, "authenticated GitHub repository binding ready") {
+			t.Fatalf("unexpected binding check for %s: %+v", repo, check)
+		}
+	}
+}
+
+func TestPreflightRepositoryBindingFailsClosedWithoutMetadataCapability(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	deps := passingPreflightDependencies(t)
+	deps.OpenBackend = func(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error) {
+		return preflightBackendWithoutMetadata{subscription: github.RepositorySubscription{Subscribed: true}}, nil
+	}
+
+	report := RunPreflight(t.Context(), cfg, deps)
+	check := findCheck(t, report, "repository-binding:o/r")
+	if report.OK || check.Status != CheckError || !strings.Contains(check.Detail, "does not support authenticated repository metadata") {
+		t.Fatalf("unexpected missing metadata result: report=%+v check=%+v", report, check)
+	}
+}
+
+func TestPreflightRepositoryBindingRejectsInvalidAuthenticatedMetadata(t *testing.T) {
+	cfg := testPreflightConfig(t)
+	cfg.UnsafeNoSandbox = true
+	invalid := validPreflightRepository("attacker/other")
+	deps := passingPreflightDependencies(t)
+	deps.OpenBackend = func(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error) {
+		return fakePreflightBackend{subscription: github.RepositorySubscription{Subscribed: true}, repository: &invalid}, nil
+	}
+
+	report := RunPreflight(t.Context(), cfg, deps)
+	check := findCheck(t, report, "repository-binding:o/r")
+	if report.OK || check.Status != CheckError || !strings.Contains(check.Detail, "does not match configured repository") {
+		t.Fatalf("unexpected invalid metadata result: report=%+v check=%+v", report, check)
+	}
+}
+
 func TestPreflightServeTransportSkipsPollOnlyChecks(t *testing.T) {
 	cfg := testPreflightConfig(t)
 	cfg.UnsafeNoSandbox = true
@@ -334,6 +390,7 @@ func TestPreflightServeTransportSkipsPollOnlyChecks(t *testing.T) {
 	cfg.NotificationIdentity = "notify-bot"
 	cfg.NotificationTokenEnv = "BOT_TOKEN"
 	watchCalls := 0
+	metadataCalls := 0
 	report := RunPreflightForTransport(context.Background(), cfg, PreflightTransportServe, PreflightDependencies{
 		SelectBackend: func(context.Context, string) (auth.GitHubBackendSelection, error) {
 			return auth.GitHubBackendSelection{
@@ -346,8 +403,9 @@ func TestPreflightServeTransportSkipsPollOnlyChecks(t *testing.T) {
 		},
 		OpenBackend: func(context.Context, auth.GitHubBackendSelection) (PreflightRunnerBackend, error) {
 			return fakePreflightBackend{
-				subscription: github.RepositorySubscription{Subscribed: false},
-				watchCalls:   &watchCalls,
+				subscription:  github.RepositorySubscription{Subscribed: false},
+				watchCalls:    &watchCalls,
+				metadataCalls: &metadataCalls,
 			}, nil
 		},
 		OpenNotificationBackend: func(context.Context, Config) (PreflightNotificationBackend, error) {
@@ -371,6 +429,9 @@ func TestPreflightServeTransportSkipsPollOnlyChecks(t *testing.T) {
 	if watchCalls != 0 {
 		t.Fatalf("repository subscription calls = %d, want 0", watchCalls)
 	}
+	if metadataCalls != 0 {
+		t.Fatalf("repository metadata calls = %d, want 0", metadataCalls)
+	}
 	if check := findCheck(t, report, "command-intake-transport"); check.Status != CheckOK || !strings.Contains(check.Detail, "runner serve") {
 		t.Fatalf("unexpected serve transport check: %+v", check)
 	}
@@ -378,7 +439,7 @@ func TestPreflightServeTransportSkipsPollOnlyChecks(t *testing.T) {
 		t.Fatalf("unexpected notification check: %+v", check)
 	}
 	for _, check := range report.Checks {
-		if strings.HasPrefix(check.Name, "repository-watch:") || strings.HasPrefix(check.Name, "notification-watch:") ||
+		if strings.HasPrefix(check.Name, "repository-watch:") || strings.HasPrefix(check.Name, "repository-binding:") || strings.HasPrefix(check.Name, "notification-watch:") ||
 			strings.HasPrefix(check.Name, "evidence-writer:") || check.Name == "notification-identity" ||
 			check.Name == "evidence-writer-backend" {
 			t.Fatalf("serve preflight emitted inapplicable check: %+v", check)
@@ -1026,9 +1087,12 @@ func watchedPreflightBackend(context.Context, auth.GitHubBackendSelection) (Pref
 }
 
 type fakePreflightBackend struct {
-	subscription github.RepositorySubscription
-	err          error
-	watchCalls   *int
+	subscription  github.RepositorySubscription
+	err           error
+	watchCalls    *int
+	repository    *github.Repository
+	metadataErr   error
+	metadataCalls *int
 }
 
 func (f fakePreflightBackend) BackendInfo() github.BackendInfo {
@@ -1040,6 +1104,37 @@ func (f fakePreflightBackend) GetRepositorySubscription(context.Context, string)
 		*f.watchCalls = *f.watchCalls + 1
 	}
 	return github.RepositorySubscriptionResult{Subscription: f.subscription}, f.err
+}
+
+func (f fakePreflightBackend) GetRepository(_ context.Context, repository string) (github.RepositoryResult, error) {
+	if f.metadataCalls != nil {
+		*f.metadataCalls = *f.metadataCalls + 1
+	}
+	if f.metadataErr != nil {
+		return github.RepositoryResult{}, f.metadataErr
+	}
+	metadata := validPreflightRepository(repository)
+	if f.repository != nil {
+		metadata = *f.repository
+	}
+	return github.RepositoryResult{Repository: metadata}, nil
+}
+
+type preflightBackendWithoutMetadata struct {
+	subscription github.RepositorySubscription
+}
+
+func (f preflightBackendWithoutMetadata) BackendInfo() github.BackendInfo {
+	return github.BackendInfo{Name: "fake", Host: "github.com"}
+}
+
+func (f preflightBackendWithoutMetadata) GetRepositorySubscription(context.Context, string) (github.RepositorySubscriptionResult, error) {
+	return github.RepositorySubscriptionResult{Subscription: f.subscription}, nil
+}
+
+func validPreflightRepository(fullName string) github.Repository {
+	return github.Repository{ID: 7301, FullName: fullName, CloneURL: "https://github.com/" + fullName + ".git",
+		HTMLURL: "https://github.com/" + fullName, DefaultBranch: "main"}
 }
 
 type fakeNotificationPreflightBackend struct {

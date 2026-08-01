@@ -151,6 +151,20 @@ func (b *GHBackend) GetRepositorySubscription(ctx context.Context, repo string) 
 	return RepositorySubscriptionResult{Subscription: subscription, Metadata: metadata}, err
 }
 
+func (b *GHBackend) GetRepository(ctx context.Context, repo string) (RepositoryResult, error) {
+	parsed, err := ParseRepo(repo)
+	if err != nil {
+		return RepositoryResult{}, err
+	}
+	var repository Repository
+	metadata, err := b.runRunnerJSON(ctx, ExternalCLIAPIRequest{
+		Operation: "GetRepository",
+		Method:    http.MethodGet,
+		Endpoint:  "/repos/" + parsed,
+	}, &repository)
+	return RepositoryResult{Repository: repository, Metadata: metadata}, err
+}
+
 func (b *GHBackend) ListRepositoryIssueCommentsPage(ctx context.Context, repo string, opts CommentListOptions) (IssueCommentsResult, error) {
 	endpoint := opts.Page.CursorURL
 	query := url.Values{}

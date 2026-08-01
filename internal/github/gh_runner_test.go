@@ -234,6 +234,29 @@ func TestGHRunnerIssueContextPermissionAndPreflight(t *testing.T) {
 	}
 }
 
+func TestGHRunnerGetRepositoryUsesIncludedAuthenticatedAPI(t *testing.T) {
+	runner := &sequenceCLIRunner{results: []ExternalCLIResult{{
+		Stdout: includedHTTP(http.StatusOK, map[string]string{"X-RateLimit-Remaining": "39"},
+			`{"id":7301,"full_name":"Acme/Widgets","clone_url":"https://github.com/Acme/Widgets.git","html_url":"https://github.com/Acme/Widgets","default_branch":"main"}`),
+	}}}
+	backend := newTestGHBackend(t, "github.com", runner)
+
+	result, err := backend.GetRepository(t.Context(), "Acme/Widgets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Repository.ID != 7301 || result.Repository.FullName != "Acme/Widgets" ||
+		result.Repository.CloneURL != "https://github.com/Acme/Widgets.git" ||
+		result.Repository.HTMLURL != "https://github.com/Acme/Widgets" || result.Repository.DefaultBranch != "main" ||
+		result.Metadata.RateLimit.Remaining != 39 {
+		t.Fatalf("repository result = %+v", result)
+	}
+	wantArgs := []string{"api", "--method", http.MethodGet, "--header", githubAPIVersion, "--include", "/repos/Acme/Widgets"}
+	if !reflect.DeepEqual(runner.commands[0].Args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", runner.commands[0].Args, wantArgs)
+	}
+}
+
 func TestGHRunnerErrorClassificationAndRedaction(t *testing.T) {
 	t.Run("missing gh", func(t *testing.T) {
 		runner := &recordingCLIRunner{
