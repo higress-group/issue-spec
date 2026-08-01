@@ -629,3 +629,60 @@ The CLI MUST preserve superseded PROCESS bodies and their original revision-boun
 - **THEN** compact final output groups blockers by active carrier and code while a bounded detail command returns the historical chains and original artifacts
 
 Source SPEC comment: https://github.com/higress-group/issue-spec/issues/299#issuecomment-5014561982
+
+### Requirement: Implementation checks bind future result revisions declaratively
+
+For every revision-sensitive required test or check, the issue-spec workflow MUST preserve one stable declarative selector and MUST require either an exact literal revision that agrees with the assignment's authoritative revision or a closed typed binding whose source is the eventual implementation result revision or the already-known review or verification subject revision. The workflow MUST resolve the binding at the earliest authoritative point, execute and receipt the deterministic expanded command, and accept final evidence only when the selector, resolved revision, expanded command, outcome, assignment identity, active generation, and accepted subject agree. Built-in and generated revision-sensitive selectors MUST carry this requirement structurally so stale PROCESS command text cannot remove it, and the workflow MUST NOT accept free-form placeholders, arbitrary revision sources, or claims of semantic command equivalence.
+
+#### Scenario: result-bound check completes in one assignment generation
+
+- **WHEN** an implementation assignment seals a required selector with a supported result-revision binding and the worker creates its single DCO result commit
+- **THEN** the runtime expands the selector with that exact commit, runs the exact expanded command, and may seal one receipt without coordinator redispatch solely to substitute the commit SHA
+
+#### Scenario: known-subject packet binds its immutable revision
+
+- **WHEN** a review or verification assignment seals a revision-sensitive selector after its immutable subject revision is known
+- **THEN** packet generation resolves a supported subject-revision binding to that exact assignment subject and emits or executes the deterministic exact command without relying on inherited PROCESS command text to contain the SHA
+
+#### Scenario: packet sealing rejects a missing revision contract
+
+- **WHEN** a revision-sensitive required selector contains neither an exact literal revision that agrees with the assignment nor a supported typed revision binding
+- **THEN** assignment sealing fails with an actionable diagnostic before a worker, reviewer, or verifier is dispatched
+
+#### Scenario: legacy command text cannot erase a structured requirement
+
+- **WHEN** a legacy PROCESS carries a raw revision-sensitive command that omits its subject while the built-in or generated selector contract requires an exact revision
+- **THEN** the structured requirement remains authoritative and packet generation rejects or deterministically completes the selector instead of dispatching the malformed raw command
+
+#### Scenario: receipt preserves declarative and executed identities
+
+- **WHEN** a result-bound or subject-bound test or check finishes
+- **THEN** the receipt records the stable assigned selector, binding source, resolved revision, exact expanded command, outcome, assurance, assignment digest, and assignment generation so acceptance can reproduce the expansion
+
+#### Scenario: final verification selects current-generation evidence
+
+- **WHEN** an assignment is resealed and the active generation has passing evidence for a stable selector while superseded generations retain failed or differently expanded receipts
+- **THEN** the final evaluator matches the stable selector to the authoritative subject and active assignment generation, preserves older receipts as audit history, and neither accepts them as current evidence nor lets them shadow the active passing result
+
+#### Scenario: mismatched or tampered revision evidence is rejected
+
+- **WHEN** the resolved revision differs from the accepted result or subject commit, the expanded command differs from deterministic expansion, or the receipt omits or changes either selector identity
+- **THEN** workspace completion or final verification rejects the evidence and does not represent the test or check as accepted
+
+#### Scenario: unsupported and conflicting bindings fail closed
+
+- **WHEN** an assignment uses an unsupported binding source or argument, a general command placeholder, or a command that already contains a duplicate or conflicting bound argument
+- **THEN** assignment issuance or result acceptance fails with an actionable diagnostic instead of choosing a value or normalizing the command semantically
+
+#### Scenario: exact literal selectors remain compatible
+
+- **WHEN** a revision-sensitive assignment contains an exact literal revision that agrees with its authoritative assignment revision, or a non-revision-sensitive assignment needs no binding
+- **THEN** its command and receipt continue to use the current exact identity behavior without requiring a typed late binding
+
+#### Scenario: real assignment changes still require redispatch
+
+- **WHEN** the coordinator changes scope, tests, policy, command semantics, or any assignment field other than deterministic resolution of a sealed revision binding
+- **THEN** the workflow requires a new assignment generation under the existing redispatch rules
+
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/381#issuecomment-5151641246

@@ -92,13 +92,16 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 			name: "issue-spec-apply",
 			required: []string{"sealed implementation assignment", "design_context.read_mode=complete-issue-body",
 				"issue-spec read issue --repo owner/repo", "Stop and report any conflict", "assigned worktree and owned paths",
-				"assigned generators", "focused verification", "exactly one DCO commit", "bounded handoff/result receipt"},
+				"assigned generators", "focused verification", "exactly one DCO commit", "bounded handoff/result receipt",
+				"result-revision binding", "assigned_selector and resolved_revision", "Any amendment changes the result revision",
+				"Literal selectors retain their exact command identity"},
 			forbidden: []string{"workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
 		},
 		{
 			name: "issue-spec-review",
 			required: []string{"sealed review assignment", "exact subject revision", "immutable snapshot/diff",
 				"design_context.read_mode=complete-issue-body", "read the complete Design", "Stop on conflict",
+				"subject-revision-bound required test", "assigned_selector plus resolved_revision", "Preserve literal selectors byte-for-byte",
 				"actionable findings", "explicit no-finding verdict", "bounded review receipt/sync result",
 				"issue-spec link --repo owner/repo --from REVIEW-<n> --from-issue <implement-issue> --to PROCESS-<n> --to-issue <implement-issue>",
 				"issue-spec link --repo owner/repo --from REVIEW-<n> --from-issue <implement-issue> --to SPEC-<n> --to-issue <proposal-issue>"},
@@ -107,6 +110,7 @@ func TestRoleGuidanceIsBoundedAndRuntimeNeutral(t *testing.T) {
 		{
 			name: "issue-spec-verify",
 			required: []string{"sealed verification assignment", "exact immutable subject revision", "required focused tests/checks",
+				"subject-revision-bound required test", "assigned_selector plus resolved_revision", "Preserve literal selectors byte-for-byte",
 				"provider-owned check identity", "bounded VERIFY receipt", "Do not collect or pass runtime-specific session IDs"},
 			forbidden: []string{"workflow workspace prepare", "workflow reconcile", "pr link-issues", "code-change attach", "archive durable-spec", "SPEC <-> TASK"},
 		},
@@ -140,7 +144,7 @@ func TestGeneratedGuidanceDeterministicSizeBudgets(t *testing.T) {
 	budgets := map[string]budget{
 		"issue-spec-workflow": {maxBytes: 10000, maxHeadings: 8, maxItems: 40},
 		"issue-spec-propose":  {maxBytes: 5000, maxHeadings: 4, maxItems: 16},
-		"issue-spec-apply":    {maxBytes: 5000, maxHeadings: 5, maxItems: 12},
+		"issue-spec-apply":    {maxBytes: 5500, maxHeadings: 5, maxItems: 12},
 		"issue-spec-review":   {maxBytes: 5000, maxHeadings: 5, maxItems: 12},
 		"issue-spec-verify":   {maxBytes: 4000, maxHeadings: 5, maxItems: 10},
 	}

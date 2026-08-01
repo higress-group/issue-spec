@@ -126,16 +126,77 @@ func TestReviewReceiptBindingRejectsFindingOutsideSealedSpecs(t *testing.T) {
 	}
 }
 
+func TestReviewReceiptBindingRequiresExactLiteralAndSubjectBoundTests(t *testing.T) {
+	subject := strings.Repeat("b", 40)
+	bound := assignment.TestSelector{ID: "durable", Command: "issue-spec durable-spec check --repo o/r --proposal 9 --root . --json",
+		RevisionBinding: &assignment.RevisionBinding{Source: assignment.RevisionBindingSourceSubjectRevision, Argument: assignment.RevisionBindingArgumentSubject}}
+	literal := assignment.TestSelector{ID: "unit", Command: "go test ./internal/commands"}
+	sealed := testReviewAssignment(t, subject)
+	sealed.Review.RequiredTests = []assignment.TestSelector{bound, literal}
+	if err := sealed.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	receipt := testSealedReviewReceiptForAssignment(t, sealed, []assignment.TestResult{
+		resolvedCommandTestResult(t, bound, subject),
+		{ID: literal.ID, Command: literal.Command, Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported},
+	})
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: receipt.AssignmentID, Digest: receipt.AssignmentDigest, Role: assignment.RoleReview,
+		SubjectRevision: subject, Generation: receipt.AssignmentGeneration}
+	if err := validateReviewReceiptBinding(receipt, sealed, binding); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, mutate := range map[string]func(*assignment.Receipt){
+		"missing": func(value *assignment.Receipt) { value.Tests = value.Tests[1:] },
+		"failed":  func(value *assignment.Receipt) { value.Tests[0].Outcome = assignment.TestFailed },
+		"changed selector": func(value *assignment.Receipt) {
+			changed := bound
+			changed.Command += " --changed"
+			value.Tests[0] = resolvedCommandTestResult(t, changed, subject)
+		},
+		"extra": func(value *assignment.Receipt) {
+			value.Tests = append(value.Tests, assignment.TestResult{ID: "extra", Command: "go test ./extra",
+				Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := receipt
+			candidate.Tests = append([]assignment.TestResult(nil), receipt.Tests...)
+			mutate(&candidate)
+			candidate.ReceiptDigest = ""
+			candidate, err := assignment.SealReceipt(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := validateReviewReceiptBinding(candidate, sealed, binding); err == nil {
+				t.Fatal("accepted mismatched review test coverage")
+			}
+		})
+	}
+}
+
 func testSealedReviewReceipt(t *testing.T, verdict assignment.ReviewVerdict, findings []assignment.Finding) assignment.Receipt {
 	t.Helper()
 	sealed := testReviewAssignment(t, "head-abc")
+	return sealReviewReceiptForAssignment(t, sealed, verdict, findings, nil)
+}
+
+func testSealedReviewReceiptForAssignment(t *testing.T, sealed assignment.Assignment, tests []assignment.TestResult) assignment.Receipt {
+	t.Helper()
+	return sealReviewReceiptForAssignment(t, sealed, assignment.ReviewApprove, nil, tests)
+}
+
+func sealReviewReceiptForAssignment(t *testing.T, sealed assignment.Assignment, verdict assignment.ReviewVerdict,
+	findings []assignment.Finding, tests []assignment.TestResult) assignment.Receipt {
+	t.Helper()
 	digest, err := assignment.AssignmentDigest(sealed)
 	if err != nil {
 		t.Fatal(err)
 	}
 	value := assignment.Receipt{SchemaVersion: assignment.ReceiptSchemaVersion, ID: "receipt-review-1",
 		AssignmentID: sealed.ID, AssignmentDigest: digest, AssignmentGeneration: 1,
-		Role: assignment.RoleReview, ResultSchemaVersion: assignment.ReceiptSchemaVersion, SubjectRevision: "head-abc",
+		Role: assignment.RoleReview, ResultSchemaVersion: assignment.ReceiptSchemaVersion, SubjectRevision: sealed.SubjectRevision, Tests: tests,
 		Provenance: assignment.Provenance{Route: assignment.RouteRoleOwned, Assurance: assignment.AssuranceSelfReported,
 			Writer: "Independent Reviewer", Subject: "Independent Reviewer", Source: "review-submit"},
 		Review: &assignment.ReviewResult{Verdict: verdict, Findings: findings}}
@@ -144,6 +205,17 @@ func testSealedReviewReceipt(t *testing.T, verdict assignment.ReviewVerdict, fin
 		t.Fatal(err)
 	}
 	return result
+}
+
+func resolvedCommandTestResult(t *testing.T, selector assignment.TestSelector, revision string) assignment.TestResult {
+	t.Helper()
+	resolved, err := assignment.ResolveTestSelector(selector, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assigned := resolved.AssignedSelector
+	return assignment.TestResult{ID: selector.ID, Command: resolved.Command, AssignedSelector: &assigned,
+		ResolvedRevision: resolved.ResolvedRevision, Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}
 }
 
 func testReviewAssignment(t *testing.T, subject string) assignment.Assignment {

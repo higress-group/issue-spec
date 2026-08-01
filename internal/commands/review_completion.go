@@ -66,6 +66,9 @@ func validateReviewReceiptBinding(receipt assignment.Receipt, sealed assignment.
 	if receipt.SubjectRevision != binding.SubjectRevision {
 		return errors.New("review receipt subject revision does not match the authoritative exact snapshot")
 	}
+	if err := assignment.ValidateReviewReceiptCoverage(*sealed.Review, receipt); err != nil {
+		return err
+	}
 	sealedSpecs := map[string]bool{}
 	for _, scenario := range sealed.Scenarios {
 		sealedSpecs[scenario.SpecID] = true

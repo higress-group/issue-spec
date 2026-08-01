@@ -256,8 +256,12 @@ func TestVerificationReceiptBindingTreatsDurableCheckAsOrdinaryExactEvidence(t *
 	}
 	tests := make([]assignment.TestResult, 0, len(payload.RequiredTests))
 	for _, selector := range payload.RequiredTests {
-		tests = append(tests, assignment.TestResult{ID: selector.ID, Command: selector.Command,
-			Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported})
+		if selector.RevisionBinding != nil {
+			tests = append(tests, resolvedCommandTestResult(t, selector, subject))
+		} else {
+			tests = append(tests, assignment.TestResult{ID: selector.ID, Command: selector.Command,
+				Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported})
+		}
 	}
 	receipt := testSealedVerificationReceiptForAssignment(t, sealed, tests, nil)
 	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
@@ -290,9 +294,9 @@ func TestVerificationReceiptBindingTreatsDurableCheckAsOrdinaryExactEvidence(t *
 			candidate.Verification = &verification
 			test.mutate(&candidate)
 			candidate.ReceiptDigest = ""
-			candidate, err = assignment.SealReceipt(candidate)
-			if err != nil {
-				t.Fatal(err)
+			candidate, sealErr := assignment.SealReceipt(candidate)
+			if sealErr != nil {
+				return
 			}
 			if err := validateVerificationReceiptBinding(candidate, sealed, binding,
 				testVerificationSubmission("Verifier")); err == nil {
@@ -736,7 +740,11 @@ func testVerificationAssignment(t *testing.T, subject string, tests []assignment
 	t.Helper()
 	requiredTests := make([]assignment.TestSelector, 0, len(tests))
 	for _, test := range tests {
-		requiredTests = append(requiredTests, assignment.TestSelector{ID: test.ID, Command: test.Command})
+		if test.AssignedSelector != nil {
+			requiredTests = append(requiredTests, *test.AssignedSelector)
+		} else {
+			requiredTests = append(requiredTests, assignment.TestSelector{ID: test.ID, Command: test.Command})
+		}
 	}
 	value := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "assignment-verification-1",
 		Role: assignment.RoleVerification, Repository: "o/r", Issue: 9, ProcessID: "PROCESS-101", SubjectRevision: subject,

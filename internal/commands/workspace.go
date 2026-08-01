@@ -567,7 +567,8 @@ func compileWorkspaceAssignment(ctx context.Context, backend changegraph.Backend
 			return assignment.Assignment{}, err
 		}
 		value.Role, value.SubjectRevision = assignment.RoleReview, lease.Portable.DetachedRevision
-		value.Review = &assignment.ReviewPayload{SnapshotRevision: lease.Portable.DetachedRevision, DiffBaseRevision: strings.TrimSpace(diffBase), Authors: authors, Scope: scope}
+		value.Review = &assignment.ReviewPayload{SnapshotRevision: lease.Portable.DetachedRevision, DiffBaseRevision: strings.TrimSpace(diffBase),
+			Authors: authors, Scope: scope, RequiredTests: append([]assignment.TestSelector(nil), input.RequiredTests...)}
 	case model.ProcessExecutionVerification:
 		value.Role, value.SubjectRevision = assignment.RoleVerification, lease.Portable.DetachedRevision
 		value.Verification = &assignment.VerificationPayload{SubjectRevision: lease.Portable.DetachedRevision,

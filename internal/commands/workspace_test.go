@@ -156,10 +156,19 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 	snapshot := processworkspace.LocalLease{Portable: processworkspace.PortableLease{SchemaVersion: 1, WorkspaceID: "ws-review", Repository: "o/r", ProcessID: "PROCESS-006",
 		ExecutionClass: processworkspace.ExecutionReview, Mode: processworkspace.ModeSnapshot, BaseSHA: subject, DetachedRevision: subject,
 		RuntimeNamespace: "ws-review", State: processworkspace.StatePrepared}, IntegrationRoot: repo}
+	reviewRequired := []assignment.TestSelector{
+		{ID: "literal", Command: "go test ./internal/templates"},
+		{ID: "subject-bound", Command: "go test ./internal/commands", RevisionBinding: &assignment.RevisionBinding{
+			Source: assignment.RevisionBindingSourceSubjectRevision, Argument: assignment.RevisionBindingArgumentSubject}},
+	}
+	reviewInput := assignment.ProcessInput{DesignContext: workspaceDesignContext(), ScenarioSelectors: scenarios, RequiredTests: reviewRequired}
 	review, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
-		processBody(model.ProcessExecutionReview, assignment.ProcessInput{DesignContext: workspaceDesignContext(), ScenarioSelectors: scenarios}), snapshot, "", base, scenarios, false)
+		processBody(model.ProcessExecutionReview, reviewInput), snapshot, "", base, scenarios, false)
 	if err != nil || review.Role != assignment.RoleReview || len(review.Review.Authors) != 1 || !reflect.DeepEqual(review.Review.Scope, []string{"worker.go"}) {
 		t.Fatalf("review=%+v err=%v", review, err)
+	}
+	if !reflect.DeepEqual(review.Review.RequiredTests, reviewRequired) {
+		t.Fatalf("review required tests changed: %+v", review.Review.RequiredTests)
 	}
 	if !reflect.DeepEqual(review.DesignContext, workspaceDesignContext()) {
 		t.Fatalf("review design context changed: %+v", review.DesignContext)
@@ -173,8 +182,9 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 		t.Fatal(err)
 	}
 	fromFile, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionReview,
-		processBody(model.ProcessExecutionReview, assignment.ProcessInput{DesignContext: workspaceDesignContext(), ScenarioSelectors: scenarios}), snapshot, reviewFile, "", scenarios, false)
-	if err != nil || !reflect.DeepEqual(fromFile.Review, review.Review) {
+		processBody(model.ProcessExecutionReview, reviewInput), snapshot, reviewFile, "", scenarios, false)
+	fromFileJSON, jsonErr := assignment.CanonicalAssignmentJSON(fromFile)
+	if err != nil || jsonErr != nil || !bytes.Equal(fromFileJSON, reviewJSON) {
 		t.Fatalf("review file=%+v err=%v", fromFile, err)
 	}
 	legacyReview := review
@@ -257,10 +267,22 @@ func TestCompileWorkspaceAssignmentSupportsWritableReviewAndVerification(t *test
 	if err != nil || len(verification.Verification.RequiredTests) != 2 {
 		t.Fatalf("repository durable verification=%+v err=%v", verification, err)
 	}
-	wantDurable := "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + base + " --subject " + subject + " --root . --json"
-	if got := verification.Verification.RequiredTests[0]; got.ID != assignment.DurableSpecTestID || got.Command != wantDurable {
+	wantDurable := "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + base + " --root . --json"
+	if got := verification.Verification.RequiredTests[0]; got.ID != assignment.DurableSpecTestID || got.Command != wantDurable ||
+		got.RevisionBinding == nil || got.RevisionBinding.Source != assignment.RevisionBindingSourceSubjectRevision ||
+		got.RevisionBinding.Argument != assignment.RevisionBindingArgumentSubject {
 		t.Fatalf("durable selector=%+v want command %q", got, wantDurable)
 	}
+	t.Run("recognized direct durable check requires revision contract regardless of id", func(t *testing.T) {
+		input := assignment.ProcessInput{ScenarioSelectors: scenarios, RequiredTests: []assignment.TestSelector{{
+			ID: "caller-chosen-id", Command: "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + base + " --root . --json",
+		}}}
+		_, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 297, "PROCESS-006", model.ProcessExecutionVerification,
+			processBody(model.ProcessExecutionVerification, input), durableSnapshot, "", base, scenarios, false)
+		if err == nil || !strings.Contains(err.Error(), "requires an exact --subject revision or typed binding") {
+			t.Fatalf("unbound direct durable command error=%v", err)
+		}
+	})
 	tree := workspaceGitOutput(t, repo, "rev-parse", base+"^{tree}")
 	unrelated := workspaceGitOutput(t, repo, "commit-tree", tree, "-m", "unrelated")
 	for _, test := range []struct {
@@ -371,9 +393,10 @@ func TestWorkspacePrepareEmitsProjectVerifierPolicyForGeneratedAndAssignmentFile
 		if emitted.baseline == emitted.value.SubjectRevision {
 			t.Fatalf("%s packet aliased durable baseline to subject %s", emitted.name, emitted.value.SubjectRevision)
 		}
-		wantCommand := "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + emitted.baseline +
-			" --subject " + emitted.value.SubjectRevision + " --root . --json"
-		if got := verification.RequiredTests[0]; got.ID != assignment.DurableSpecTestID || got.Command != wantCommand {
+		wantCommand := "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + emitted.baseline + " --root . --json"
+		if got := verification.RequiredTests[0]; got.ID != assignment.DurableSpecTestID || got.Command != wantCommand ||
+			got.RevisionBinding == nil || got.RevisionBinding.Source != assignment.RevisionBindingSourceSubjectRevision ||
+			got.RevisionBinding.Argument != assignment.RevisionBindingArgumentSubject {
 			t.Fatalf("%s durable selector=%+v want command %q", emitted.name, got, wantCommand)
 		}
 	}
@@ -389,9 +412,10 @@ func TestWorkspacePrepareEmitsProjectVerifierPolicyForGeneratedAndAssignmentFile
 		!strings.Contains(verification.Guidance.Instructions[0].Text, "affected route scenarios") {
 		t.Fatalf("emitted project guidance=%+v", verification)
 	}
-	wantDurable := "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + generatedBaseline + " --subject " + generated.SubjectRevision + " --root . --json"
+	wantDurable := "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + generatedBaseline + " --root . --json"
 	wantTests := []assignment.TestSelector{
-		{ID: assignment.DurableSpecTestID, Command: wantDurable},
+		{ID: assignment.DurableSpecTestID, Command: wantDurable, RevisionBinding: &assignment.RevisionBinding{
+			Source: assignment.RevisionBindingSourceSubjectRevision, Argument: assignment.RevisionBindingArgumentSubject}},
 		{ID: "z-project-unit", Command: "go test ./project/..."},
 	}
 	wantChecks := []assignment.CheckSelector{
@@ -403,10 +427,12 @@ func TestWorkspacePrepareEmitsProjectVerifierPolicyForGeneratedAndAssignmentFile
 	}
 
 	t.Run("durable selector conflict fails closed", func(t *testing.T) {
-		conflicting := []assignment.TestSelector{{ID: assignment.DurableSpecTestID, Command: "false"}}
 		repo, _ := workspaceGitRepository(t)
 		base := installWorkspaceVerifierWorkflow(t, repo)
 		subject := commitWorkspaceVerificationSubject(t, repo)
+		conflicting := []assignment.TestSelector{{ID: assignment.DurableSpecTestID,
+			Command: "issue-spec durable-spec check --repo o/r --proposal 295 --baseline " + strings.Repeat("f", 40) +
+				" --subject " + subject + " --root . --json"}}
 		lease := processworkspace.LocalLease{Portable: processworkspace.PortableLease{SchemaVersion: 1, WorkspaceID: "ws-conflict", Repository: "o/r", ProcessID: "PROCESS-004",
 			ExecutionClass: processworkspace.ExecutionVerification, Mode: processworkspace.ModeSnapshot, BaseSHA: subject, DetachedRevision: subject,
 			RuntimeNamespace: "ws-conflict", State: processworkspace.StatePrepared}, IntegrationRoot: repo}

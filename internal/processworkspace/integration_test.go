@@ -66,6 +66,96 @@ func TestCompleteValidatesImportedReceiptWithoutAcceptedRoleEvidence(t *testing.
 	assertNoAcceptedImplementationAuthority(t, recovered)
 }
 
+func TestCompleteResolvesFocusedTestsAgainstProvenManagedResult(t *testing.T) {
+	selector := assignment.TestSelector{ID: "result-bound", Command: "go test ./internal/processworkspace",
+		RevisionBinding: &assignment.RevisionBinding{Source: assignment.RevisionBindingSourceResultRevision,
+			Argument: assignment.RevisionBindingArgumentSubject}}
+	fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
+	contract := bindImplementationAssignment(t, fixture, []assignment.TestSelector{selector})
+	resultCommit := commitWorkerFile(t, fixture, "internal/result_bound.go", "package internal\n", true)
+	receipt := implementationReceiptForFixture(t, contract, resultCommit, []string{"internal/result_bound.go"})
+	receipt.Tests = []assignment.TestResult{resolvedImplementationTestResult(t, selector, resultCommit)}
+	receipt = sealImplementationReceipt(t, receipt)
+
+	completed, err := fixture.manager.Complete(context.Background(), CompleteRequest{
+		WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt,
+	})
+	if err != nil || completed.Lease.Portable.State != StateWorkerComplete || completed.Lease.Portable.ResultCommit != resultCommit {
+		t.Fatalf("result-bound completion=%+v err=%v", completed.Lease, err)
+	}
+}
+
+func TestCompleteRejectsFocusedTestIdentitySubstitutionAndUnprovenRevision(t *testing.T) {
+	selector := assignment.TestSelector{ID: "result-bound", Command: "go test ./internal/processworkspace",
+		RevisionBinding: &assignment.RevisionBinding{Source: assignment.RevisionBindingSourceResultRevision,
+			Argument: assignment.RevisionBindingArgumentSubject}}
+	for name, prepare := range map[string]func(*testing.T, integrationFixture, assignment.Assignment, string) assignment.Receipt{
+		"changed selector": func(t *testing.T, _ integrationFixture, contract assignment.Assignment, resultCommit string) assignment.Receipt {
+			changed := selector
+			changed.Command = "go test ./internal/processworkspace/..."
+			receipt := implementationReceiptForFixture(t, contract, resultCommit, []string{"internal/result_bound.go"})
+			receipt.Tests = []assignment.TestResult{resolvedImplementationTestResult(t, changed, resultCommit)}
+			return sealImplementationReceipt(t, receipt)
+		},
+		"extra result": func(t *testing.T, _ integrationFixture, contract assignment.Assignment, resultCommit string) assignment.Receipt {
+			receipt := implementationReceiptForFixture(t, contract, resultCommit, []string{"internal/result_bound.go"})
+			receipt.Tests = []assignment.TestResult{
+				resolvedImplementationTestResult(t, selector, resultCommit),
+				{ID: "unassigned", Command: "go test ./unassigned", Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported},
+			}
+			return sealImplementationReceipt(t, receipt)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
+			contract := bindImplementationAssignment(t, fixture, []assignment.TestSelector{selector})
+			resultCommit := commitWorkerFile(t, fixture, "internal/result_bound.go", "package internal\n", true)
+			receipt := prepare(t, fixture, contract, resultCommit)
+			_, err := fixture.manager.Complete(context.Background(), CompleteRequest{
+				WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt,
+			})
+			if !errors.Is(err, ErrInvalidWorkerResult) {
+				t.Fatalf("mismatched result-bound receipt accepted: %v", err)
+			}
+		})
+	}
+
+	t.Run("unproven result revision is rejected before receipt recomputation", func(t *testing.T) {
+		fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
+		contract := bindImplementationAssignment(t, fixture, []assignment.TestSelector{selector})
+		unproven := strings.Repeat("c", 40)
+		receipt := implementationReceiptForFixture(t, contract, unproven, []string{"internal/result_bound.go"})
+		receipt.Tests = []assignment.TestResult{resolvedImplementationTestResult(t, selector, unproven)}
+		receipt = sealImplementationReceipt(t, receipt)
+		_, err := fixture.manager.Complete(context.Background(), CompleteRequest{
+			WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt,
+		})
+		if !errors.Is(err, ErrInvalidWorkerResult) || !strings.Contains(err.Error(), "result does not resolve to the exact commit") {
+			t.Fatalf("unproven result did not fail at managed Git proof: %v", err)
+		}
+	})
+
+	t.Run("amendment invalidates prior result-bound evidence", func(t *testing.T) {
+		fixture := newIntegrationFixture(t, []string{"internal/**"}, nil)
+		contract := bindImplementationAssignment(t, fixture, []assignment.TestSelector{selector})
+		original := commitWorkerFile(t, fixture, "internal/result_bound.go", "package internal\n", true)
+		receipt := implementationReceiptForFixture(t, contract, original, []string{"internal/result_bound.go"})
+		receipt.Tests = []assignment.TestResult{resolvedImplementationTestResult(t, selector, original)}
+		receipt = sealImplementationReceipt(t, receipt)
+		runGit(t, fixture.worktree, "commit", "--amend", "-s", "-m", "amended worker change")
+		amended := gitOutput(t, fixture.worktree, "rev-parse", "HEAD")
+		if amended == original {
+			t.Fatal("amendment did not change result revision")
+		}
+		_, err := fixture.manager.Complete(context.Background(), CompleteRequest{
+			WorkspaceID: fixture.lease.Portable.WorkspaceID, OwnerToken: fixture.lease.Owner.Token, Receipt: &receipt,
+		})
+		if !errors.Is(err, ErrInvalidWorkerResult) || !strings.Contains(err.Error(), "at result commit") {
+			t.Fatalf("pre-amendment evidence survived result revision change: %v", err)
+		}
+	})
+}
+
 func TestCompleteValidatesRequiredGeneratorOutputs(t *testing.T) {
 	tests := []struct {
 		name, exactOutput, globOutput, changedPath string
@@ -1003,6 +1093,17 @@ func sealImplementationReceipt(t *testing.T, value assignment.Receipt) assignmen
 		t.Fatal(err)
 	}
 	return sealed
+}
+
+func resolvedImplementationTestResult(t *testing.T, selector assignment.TestSelector, revision string) assignment.TestResult {
+	t.Helper()
+	resolved, err := assignment.ResolveTestSelector(selector, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assigned := resolved.AssignedSelector
+	return assignment.TestResult{ID: selector.ID, Command: resolved.Command, AssignedSelector: &assigned,
+		ResolvedRevision: resolved.ResolvedRevision, Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}
 }
 
 func newIntegrationFixture(t *testing.T, ownership, shared []string) integrationFixture {
