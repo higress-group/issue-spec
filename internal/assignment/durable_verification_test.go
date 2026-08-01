@@ -18,12 +18,15 @@ func TestWithDurableCheckAddsExactlyOneStableRevisionBoundSelector(t *testing.T)
 		t.Fatal(err)
 	}
 	wantCommand := "issue-spec durable-spec check --repo o/r --proposal 308 --baseline " + baseline +
-		" --subject " + subject + " --root . --json"
-	if len(merged.RequiredTests) != 2 || merged.RequiredTests[0] != (TestSelector{ID: DurableSpecTestID, Command: wantCommand}) {
+		" --root . --json"
+	want := TestSelector{ID: DurableSpecTestID, Command: wantCommand, RevisionBinding: &RevisionBinding{
+		Source: RevisionBindingSourceSubjectRevision, Argument: RevisionBindingArgumentSubject,
+	}}
+	if len(merged.RequiredTests) != 2 || !TestSelectorIdentityEqual(merged.RequiredTests[0], want) {
 		t.Fatalf("required tests=%+v", merged.RequiredTests)
 	}
 	idempotent, err := merged.WithDurableCheck(durable.ModeRepository, binding)
-	if err != nil || len(idempotent.RequiredTests) != 2 || idempotent.RequiredTests[0] != merged.RequiredTests[0] {
+	if err != nil || len(idempotent.RequiredTests) != 2 || !TestSelectorIdentityEqual(idempotent.RequiredTests[0], merged.RequiredTests[0]) {
 		t.Fatalf("idempotent=%+v err=%v", idempotent, err)
 	}
 	none, err := payload.WithDurableCheck(durable.ModeNone, DurableCheckBinding{})
@@ -77,7 +80,7 @@ func TestDurableVerificationReceiptCoverageRejectsMissingFailedStaleMismatchedAn
 		t.Fatal(err)
 	}
 	tests := []TestResult{
-		{ID: DurableSpecTestID, Command: payload.RequiredTests[0].Command, Outcome: TestPassed, Assurance: AssuranceSelfReported},
+		resolvedTestResult(t, payload.RequiredTests[0], subject),
 		{ID: "unit", Command: "go test ./...", Outcome: TestPassed, Assurance: AssuranceSelfReported},
 	}
 	valid := durableVerificationReceipt(t, subject, tests, "durable projection passed")
@@ -91,8 +94,8 @@ func TestDurableVerificationReceiptCoverageRejectsMissingFailedStaleMismatchedAn
 	}{
 		{name: "missing", want: "exactly cover", mutate: func(value *Receipt) { value.Tests = value.Tests[1:] }},
 		{name: "failed", want: "must pass", mutate: func(value *Receipt) { value.Tests[0].Outcome = TestFailed }},
-		{name: "stale", want: "exact assigned revision", mutate: func(value *Receipt) { value.SubjectRevision = baseline }},
-		{name: "mismatched command", want: "missing exact assigned test", mutate: func(value *Receipt) { value.Tests[0].Command += " --forged" }},
+		{name: "stale", want: "authoritative verification revision", mutate: func(value *Receipt) { value.SubjectRevision = baseline }},
+		{name: "mismatched command", want: "deterministic resolved command", mutate: func(value *Receipt) { value.Tests[0].Command += " --forged" }},
 		{name: "forged prose", want: "exactly cover", mutate: func(value *Receipt) {
 			value.Tests = value.Tests[1:]
 			value.Verification.Summary = "issue-spec/durable-spec passed according to prose"
@@ -102,7 +105,7 @@ func TestDurableVerificationReceiptCoverageRejectsMissingFailedStaleMismatchedAn
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := valid
-			candidate.Tests = append([]TestResult(nil), valid.Tests...)
+			candidate.Tests = cloneTestResults(valid.Tests)
 			verification := *valid.Verification
 			candidate.Verification = &verification
 			test.mutate(&candidate)

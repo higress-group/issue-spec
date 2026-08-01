@@ -212,7 +212,7 @@ func validateImplementation(p ImplementationPayload) error {
 	if err := validateGenerators("implementation.generators", p.Generators); err != nil {
 		return err
 	}
-	return validateTestSelectors("implementation.focused_tests", p.FocusedTests)
+	return validateTestSelectors("implementation.focused_tests", p.FocusedTests, RoleImplementation, "")
 }
 
 func validateReview(p ReviewPayload, subject string) error {
@@ -249,7 +249,7 @@ func validateReview(p ReviewPayload, subject string) error {
 			return err
 		}
 	}
-	return nil
+	return validateTestSelectors("review.required_tests", p.RequiredTests, RoleReview, subject)
 }
 
 func validateVerification(p VerificationPayload, subject string) error {
@@ -262,7 +262,7 @@ func validateVerification(p VerificationPayload, subject string) error {
 	if len(p.RequiredTests) == 0 && len(p.RequiredChecks) == 0 {
 		return errors.New("verification: at least one required test or provider check is required")
 	}
-	if err := validateTestSelectors("verification.required_tests", p.RequiredTests); err != nil {
+	if err := validateTestSelectors("verification.required_tests", p.RequiredTests, RoleVerification, subject); err != nil {
 		return err
 	}
 	return validateCheckSelectors("verification.required_checks", p.RequiredChecks)
@@ -337,7 +337,7 @@ func (p ProcessInput) Validate() error {
 	if err := validateScenarios("scenario_selectors", p.ScenarioSelectors, false); err != nil {
 		return err
 	}
-	if err := validateTestSelectors("required_tests", p.RequiredTests); err != nil {
+	if err := validateTestSelectors("required_tests", p.RequiredTests, "", ""); err != nil {
 		return err
 	}
 	if err := validateCheckSelectors("required_checks", p.RequiredChecks); err != nil {
@@ -438,6 +438,13 @@ func validateReceipt(r Receipt, requireDigest bool) error {
 		}
 		if !validAssurance(result.Assurance) {
 			return fmt.Errorf("tests[%d].assurance: unsupported value %q", i, result.Assurance)
+		}
+		authoritativeRevision := r.SubjectRevision
+		if r.Role == RoleImplementation {
+			authoritativeRevision = r.ResultRevision
+		}
+		if err := validateTestResultIdentity(r.Role, authoritativeRevision, i, result); err != nil {
+			return err
 		}
 		if err := recordIdentityKey(seenTests, "tests", i, result.ID, result.ID); err != nil {
 			return err
@@ -628,7 +635,7 @@ func validateGenerators(name string, values []GeneratorPolicy) error {
 	return nil
 }
 
-func validateTestSelectors(name string, values []TestSelector) error {
+func validateTestSelectors(name string, values []TestSelector, role Role, authoritativeRevision string) error {
 	if len(values) > maxListItems {
 		return fmt.Errorf("%s: exceeds %d items", name, maxListItems)
 	}
@@ -640,9 +647,48 @@ func validateTestSelectors(name string, values []TestSelector) error {
 		if err := validateRequiredText(fmt.Sprintf("%s[%d].command", name, i), value.Command, maxCommandLength); err != nil {
 			return err
 		}
+		if value.RevisionBinding != nil {
+			if err := validateBoundTestSelector(fmt.Sprintf("%s[%d]", name, i), value); err != nil {
+				return err
+			}
+		}
+		if role != "" {
+			if err := ValidateTestSelectorRevisionContract(role, authoritativeRevision, value); err != nil {
+				return fmt.Errorf("%s[%d]: %w", name, i, err)
+			}
+		}
 		if err := recordIdentityKey(seen, name, i, value.ID, value.ID); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateTestResultIdentity(role Role, authoritativeRevision string, index int, result TestResult) error {
+	prefix := fmt.Sprintf("tests[%d]", index)
+	hasSelector := result.AssignedSelector != nil
+	hasRevision := result.ResolvedRevision != ""
+	if hasSelector != hasRevision {
+		return fmt.Errorf("%s: assigned_selector and resolved_revision must appear together", prefix)
+	}
+	if !hasSelector {
+		return nil
+	}
+	if result.AssignedSelector.ID != result.ID {
+		return fmt.Errorf("%s.assigned_selector.id: must equal test result id %q", prefix, result.ID)
+	}
+	resolved, err := ResolveTestSelector(*result.AssignedSelector, result.ResolvedRevision)
+	if err != nil {
+		return fmt.Errorf("%s.assigned_selector: %w", prefix, err)
+	}
+	if result.ResolvedRevision != authoritativeRevision {
+		return fmt.Errorf("%s.resolved_revision: must equal the authoritative %s revision", prefix, role)
+	}
+	if err := ValidateTestSelectorRevisionContract(role, authoritativeRevision, *result.AssignedSelector); err != nil {
+		return fmt.Errorf("%s.assigned_selector: %w", prefix, err)
+	}
+	if result.Command != resolved.Command {
+		return fmt.Errorf("%s.command: must equal the deterministic resolved command", prefix)
 	}
 	return nil
 }
