@@ -1,4 +1,9 @@
-# Local PostgreSQL fixture
+# Local PostgreSQL and Server fixture
+
+For prerequisites, a complete Compose path, a host-built Server path, port
+overrides, migrations, testing, and cleanup, see the
+[local Server development guide](../../docs/self-hosting/local-development.md)
+or its [Simplified Chinese version](../../docs/self-hosting/local-development.zh-CN.md).
 
 Start PostgreSQL 17 from the repository root:
 
@@ -9,8 +14,9 @@ go test ./internal/server/store
 ```
 
 Set `ISSUE_SPEC_POSTGRES_PORT` before `docker compose up` if port 5432 is
-already in use. Tests create and remove an isolated PostgreSQL schema; they
-skip cleanly when `TEST_DATABASE_URL` is unset.
+already in use, and use the same port in the host-side `TEST_DATABASE_URL`.
+Tests create and remove an isolated PostgreSQL schema; they skip cleanly when
+`TEST_DATABASE_URL` is unset.
 
 To run the complete server image, create development-only secret files and
 enable the optional `server` profile:
@@ -24,6 +30,9 @@ openssl rand -hex 32 > deployments/dev/secrets/encryption-key
 docker compose -f deployments/dev/compose.yaml --profile server up -d --build --wait
 curl -fsS http://127.0.0.1:8080/readyz
 ```
+
+When changing `ISSUE_SPEC_SERVER_PORT`, also set `ISSUE_SPEC_PUBLIC_URL` to the
+matching browser origin. The detailed guide includes a complete example.
 
 These files are local fixtures, not production secret management. Remove the
 directory when the fixture is no longer needed.

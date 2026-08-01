@@ -134,7 +134,12 @@ func TestExternalAuthDocumentationPlaceholdersAreSecretSafe(t *testing.T) {
 func TestExternalAuthDocumentationLocalLinksResolve(t *testing.T) {
 	root := repoRoot(t)
 	linkPattern := regexp.MustCompile(`\[[^]]+\]\(([^)]+)\)`)
-	paths := []string{"README.md", "README.zh-CN.md", "deployments/dev/README.md", "docs/self-hosting/operations/deployment.md"}
+	paths := []string{
+		"README.md", "README.zh-CN.md", "deployments/dev/README.md",
+		"docs/self-hosting/README.md", "docs/self-hosting/README.zh-CN.md",
+		"docs/self-hosting/local-development.md", "docs/self-hosting/local-development.zh-CN.md",
+		"docs/self-hosting/operations/deployment.md",
+	}
 	err := filepath.WalkDir(filepath.Join(root, "docs/self-hosting/authentication"), func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr

@@ -179,11 +179,14 @@ Local builds and tests use the Go toolchain declared in [`go.mod`](go.mod):
 
 ```bash
 go build ./cmd/issue-spec
+make build-server
 go test ./...
 ```
 
 `go test ./...` is the same unit test command CI runs
 (see [`.github/workflows/unit-tests.yml`](.github/workflows/unit-tests.yml)).
+To start the Server with PostgreSQL, follow the
+[local Server development guide](docs/self-hosting/local-development.md).
 
 ## Acknowledgements
 

@@ -133,10 +133,13 @@ issue-spec init --repo owner/repo --create-labels --tools codex,claude --deliver
 
 ```bash
 go build ./cmd/issue-spec
+make build-server
 go test ./...
 ```
 
 `go test ./...` 与 CI 运行的单元测试命令一致（参见 [`.github/workflows/unit-tests.yml`](.github/workflows/unit-tests.yml)）。
+要连接 PostgreSQL 启动 Server，请阅读
+[本地 Server 开发指南](docs/self-hosting/local-development.zh-CN.md)。
 
 ## 致谢
 
