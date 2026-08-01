@@ -125,21 +125,15 @@ func (s *Service) Complete(ctx context.Context, request Request) (Result, error)
 	if err := applyDecision(&receipt, decisionData); err != nil {
 		return Result{}, err
 	}
+	if err := validateDecisionSemantics(receipt); err != nil {
+		return Result{}, err
+	}
 	observed, err := s.observeRole(ctx, worktree, packet.Assignment)
 	if err != nil {
 		return Result{}, err
 	}
-	receipt.BaseRevision = observed.base
-	if receipt.Role == assignment.RoleImplementation {
-		receipt.ResultRevision = observed.revision
-		receipt.Implementation.ChangedPaths = append([]string(nil), observed.changedPaths...)
-	} else {
-		receipt.SubjectRevision = observed.revision
-		if receipt.Role == assignment.RoleVerification {
-			receipt.Verification.CheckSelectors = append([]assignment.CheckSelector(nil), observed.checks...)
-		}
-	}
 
+	var testResults []assignment.TestResult
 	for _, selector := range observed.tests {
 		result := assignment.TestResult{ID: selector.ID, Command: selector.Command, Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}
 		if selector.RevisionBinding != nil {
@@ -155,7 +149,27 @@ func (s *Service) Complete(ctx context.Context, request Request) (Result, error)
 		if runErr != nil {
 			return Result{}, testFailure(selector.ID, result.Command, execution, runErr)
 		}
-		receipt.Tests = append(receipt.Tests, result)
+		testResults = append(testResults, result)
+	}
+
+	postTests, err := s.observeRole(ctx, worktree, packet.Assignment)
+	if err != nil {
+		return Result{}, fmt.Errorf("post-test Git observation: %w", err)
+	}
+	if !reflect.DeepEqual(postTests, observed) {
+		return Result{}, errors.New("post-test Git observation differs from the exact pre-test role facts")
+	}
+
+	receipt.BaseRevision = postTests.base
+	receipt.Tests = testResults
+	if receipt.Role == assignment.RoleImplementation {
+		receipt.ResultRevision = postTests.revision
+		receipt.Implementation.ChangedPaths = append([]string(nil), postTests.changedPaths...)
+	} else {
+		receipt.SubjectRevision = postTests.revision
+		if receipt.Role == assignment.RoleVerification {
+			receipt.Verification.CheckSelectors = append([]assignment.CheckSelector(nil), postTests.checks...)
+		}
 	}
 
 	sealed, err := assignment.SealReceipt(receipt)
@@ -178,11 +192,11 @@ func (s *Service) Complete(ctx context.Context, request Request) (Result, error)
 		return Result{}, fmt.Errorf("self-validate published receipt: %w", err)
 	}
 	if !reflect.DeepEqual(parsed, sealed) || parsed.ID != sealed.ID || parsed.ReceiptDigest != sealed.ReceiptDigest ||
-		parsed.AssignmentGeneration != packet.Generation || parsed.Role != packet.Assignment.Role || authoritativeRevision(parsed) != observed.revision {
+		parsed.AssignmentGeneration != packet.Generation || parsed.Role != packet.Assignment.Role || authoritativeRevision(parsed) != postTests.revision {
 		return Result{}, errors.New("self-validate published receipt: final logical identity differs from the sealed result")
 	}
 	result := Result{ReceiptPath: output, ReceiptID: parsed.ID, ReceiptDigest: parsed.ReceiptDigest,
-		Role: parsed.Role, Revision: observed.revision}
+		Role: parsed.Role, Revision: postTests.revision}
 	for _, test := range parsed.Tests {
 		result.Tests = append(result.Tests, TestSummary{ID: test.ID, Command: test.Command, Outcome: test.Outcome})
 	}
@@ -215,6 +229,39 @@ func applyDecision(receipt *assignment.Receipt, data []byte) error {
 		receipt.Verification = &assignment.VerificationResult{Summary: value.Summary}
 	default:
 		return fmt.Errorf("unsupported assignment role %q", receipt.Role)
+	}
+	return nil
+}
+
+// validateDecisionSemantics delegates the closed role judgment to the shared
+// receipt model before any sealed command can have side effects. Placeholder
+// mechanical facts satisfy only the fields that role completion derives later;
+// the caller's semantic payload is preserved exactly for validation.
+func validateDecisionSemantics(receipt assignment.Receipt) error {
+	candidate := receipt
+	candidate.BaseRevision = ""
+	candidate.ResultRevision = ""
+	candidate.SubjectRevision = ""
+	candidate.Tests = nil
+	switch candidate.Role {
+	case assignment.RoleImplementation:
+		implementation := *candidate.Implementation
+		candidate.Implementation = &implementation
+		candidate.BaseRevision = strings.Repeat("a", 40)
+		candidate.ResultRevision = strings.Repeat("b", 40)
+		candidate.Implementation.ChangedPaths = []string{"decision-validation-placeholder"}
+	case assignment.RoleReview:
+		candidate.SubjectRevision = strings.Repeat("a", 40)
+	case assignment.RoleVerification:
+		verification := *candidate.Verification
+		candidate.Verification = &verification
+		candidate.SubjectRevision = strings.Repeat("a", 40)
+		candidate.Verification.CheckSelectors = []assignment.CheckSelector{{Provider: "decision-validation", Name: "placeholder"}}
+	default:
+		return fmt.Errorf("unsupported assignment role %q", candidate.Role)
+	}
+	if _, err := assignment.SealReceipt(candidate); err != nil {
+		return fmt.Errorf("validate %s decision semantics: %w", candidate.Role, err)
 	}
 	return nil
 }

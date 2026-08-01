@@ -86,6 +86,101 @@ func TestPublicationFailureReturnsNoNewReceipt(t *testing.T) {
 	}
 }
 
+func TestPassingSealedTestThatDirtiesTreeCannotPublish(t *testing.T) {
+	fixture := newGitFixture(t)
+	command := "printf drift > role-test-drift.txt"
+	if runtime.GOOS == "windows" {
+		command = "echo drift>role-test-drift.txt"
+	}
+	packet := fixture.implementationPacket(t, []assignment.TestSelector{{ID: "dirty-pass", Command: command}})
+	output := filepath.Join(fixture.root, "dirty-receipt.json")
+	if _, err := Complete(context.Background(), Request{
+		AssignmentFile: fixture.writeJSON(t, "dirty-packet.json", packet),
+		DecisionFile:   fixture.writeRaw(t, "dirty-decision.json", []byte(`{}`)),
+		Output:         output, Agent: "Worker", WorkingDirectory: fixture.repo,
+	}); err == nil || !strings.Contains(err.Error(), "post-test Git observation") {
+		t.Fatalf("passing dirty test was accepted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.repo, "role-test-drift.txt")); err != nil {
+		t.Fatalf("completion repaired test-created drift: %v", err)
+	}
+	if _, err := os.Lstat(output); !os.IsNotExist(err) {
+		t.Fatalf("dirty post-test state published output: %v", err)
+	}
+}
+
+func TestPassingSealedTestThatChangesDetachedSubjectCannotPublish(t *testing.T) {
+	fixture := newGitFixture(t)
+	runGit(t, fixture.repo, "checkout", "--detach", fixture.head)
+	value := fixture.reviewAssignment([]assignment.TestSelector{{ID: "switch-pass", Command: "git checkout --detach " + fixture.base}})
+	packet := fixture.packet(t, value, 2)
+	output := filepath.Join(fixture.root, "switched-receipt.json")
+	if _, err := Complete(context.Background(), Request{
+		AssignmentFile: fixture.writeJSON(t, "switched-packet.json", packet),
+		DecisionFile:   fixture.writeRaw(t, "switched-decision.json", []byte(`{"verdict":"approve"}`)),
+		Output:         output, Agent: "Reviewer", WorkingDirectory: fixture.repo,
+	}); err == nil || !strings.Contains(err.Error(), "post-test Git observation") {
+		t.Fatalf("passing subject switch was accepted: %v", err)
+	}
+	if head := gitOutput(t, fixture.repo, "rev-parse", "HEAD"); head != fixture.base {
+		t.Fatalf("completion repaired switched subject to %s", head)
+	}
+	if _, err := os.Lstat(output); !os.IsNotExist(err) {
+		t.Fatalf("switched post-test subject published output: %v", err)
+	}
+}
+
+func TestInvalidRoleDecisionsFailBeforeTestRunnerInvocation(t *testing.T) {
+	longText := strings.Repeat("x", 4097)
+	tests := []struct {
+		name     string
+		prepare  func(*testing.T, gitFixture) assignment.Assignment
+		decision func() []byte
+	}{
+		{name: "implementation", prepare: func(t *testing.T, fixture gitFixture) assignment.Assignment {
+			return fixture.implementationPacket(t, []assignment.TestSelector{{ID: "must-not-run", Command: "ignored"}}).Assignment
+		}, decision: func() []byte {
+			data, _ := json.Marshal(implementationDecision{RationaleDraft: longText})
+			return data
+		}},
+		{name: "review", prepare: func(t *testing.T, fixture gitFixture) assignment.Assignment {
+			runGit(t, fixture.repo, "checkout", "--detach", fixture.head)
+			return fixture.reviewAssignment([]assignment.TestSelector{{ID: "must-not-run", Command: "ignored"}})
+		}, decision: func() []byte { return []byte(`{"verdict":"invalid"}`) }},
+		{name: "verification", prepare: func(t *testing.T, fixture gitFixture) assignment.Assignment {
+			runGit(t, fixture.repo, "checkout", "--detach", fixture.head)
+			return fixture.verificationAssignment([]assignment.TestSelector{{ID: "must-not-run", Command: "ignored"}})
+		}, decision: func() []byte {
+			data, _ := json.Marshal(verificationDecision{Summary: longText})
+			return data
+		}},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			value := test.prepare(t, fixture)
+			packet := fixture.packet(t, value, uint64(index+1))
+			runner := &countingTestRunner{}
+			service := New()
+			service.Tests = runner
+			output := filepath.Join(fixture.root, "invalid-decision-receipt.json")
+			if _, err := service.Complete(context.Background(), Request{
+				AssignmentFile: fixture.writeJSON(t, "invalid-packet.json", packet),
+				DecisionFile:   fixture.writeRaw(t, "invalid-decision.json", test.decision()),
+				Output:         output, Agent: "Role", WorkingDirectory: fixture.repo,
+			}); err == nil || !strings.Contains(err.Error(), "decision semantics") {
+				t.Fatalf("invalid decision error=%v", err)
+			}
+			if runner.calls != 0 {
+				t.Fatalf("invalid decision invoked test runner %d times", runner.calls)
+			}
+			if _, err := os.Lstat(output); !os.IsNotExist(err) {
+				t.Fatalf("invalid decision published output: %v", err)
+			}
+		})
+	}
+}
+
 func TestReviewAndVerificationPreserveDecisionsAtDetachedSubject(t *testing.T) {
 	fixture := newGitFixture(t)
 	runGit(t, fixture.repo, "checkout", "--detach", fixture.head)
@@ -178,6 +273,25 @@ func (f gitFixture) implementationPacket(t *testing.T, tests []assignment.TestSe
 	return f.packet(t, value, 1)
 }
 
+func (f gitFixture) reviewAssignment(tests []assignment.TestSelector) assignment.Assignment {
+	design := f.designContext()
+	return assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "review-assignment", Role: assignment.RoleReview,
+		Repository: "acme/repo", Issue: 1, ProcessID: "PROCESS-1002", SubjectRevision: f.head,
+		Scenarios: []assignment.ScenarioRef{{SpecID: "SPEC-1001", Scenario: "review"}}, DesignContext: &design,
+		Policy: assignment.Policy{RequireExactRevision: true}, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		Review: &assignment.ReviewPayload{SnapshotRevision: f.head, DiffBaseRevision: f.base, Authors: []string{"Worker"},
+			Scope: []string{"marker.txt"}, RequiredTests: tests}}
+}
+
+func (f gitFixture) verificationAssignment(tests []assignment.TestSelector) assignment.Assignment {
+	return assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "verification-assignment", Role: assignment.RoleVerification,
+		Repository: "acme/repo", Issue: 1, ProcessID: "PROCESS-1003", SubjectRevision: f.head,
+		Scenarios: []assignment.ScenarioRef{{SpecID: "SPEC-1001", Scenario: "verify"}},
+		Policy:    assignment.Policy{RequireExactRevision: true}, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
+		Verification: &assignment.VerificationPayload{SubjectRevision: f.head, RequiredTests: tests,
+			RequiredChecks: []assignment.CheckSelector{{Provider: "github", Name: "tests"}}}}
+}
+
 func (f gitFixture) packet(t *testing.T, value assignment.Assignment, generation uint64) assignment.Packet {
 	t.Helper()
 	digest, err := assignment.AssignmentDigest(value)
@@ -241,4 +355,11 @@ func gitOutput(t *testing.T, directory string, args ...string) string {
 		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+type countingTestRunner struct{ calls int }
+
+func (r *countingTestRunner) Run(context.Context, string, string) (CommandResult, error) {
+	r.calls++
+	return CommandResult{}, nil
 }
