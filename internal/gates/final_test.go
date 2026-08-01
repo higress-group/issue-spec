@@ -195,23 +195,45 @@ func TestFinalEvidenceAssignmentJoinReproducesActiveBoundTest(t *testing.T) {
 		Source: "accepted-verification-receipt:self-reported-tests", AssignmentProcessID: active.ProcessID,
 		ReceiptID: "receipt-2", ReceiptDigest: strings.Repeat("a", 64), AssignmentID: active.AssignmentID,
 		AssignmentDigest: active.AssignmentDigest, AssignmentGeneration: active.Generation,
-		TestAuthorityRole: assignment.RoleVerification,
-		AssignedSelector:  &assigned, ResolvedRevision: revision, ExecutedCommand: resolved.Command}
+		AssignmentRole:   assignment.RoleVerification,
+		AssignedSelector: &assigned, ResolvedRevision: revision, ExecutedCommand: resolved.Command}
 	inputs := map[string]ProcessEvidenceInput{active.ProcessID: {ActiveAssignment: active}}
 	if err := validateFinalEvidenceAssignment(record, inputs, revision, map[string]string{}); err != nil {
 		t.Fatal(err)
+	}
+	if matched, _ := matchingRequiredTestEvidence([]FinalEvidenceRecord{record}, selector, revision); !matched {
+		t.Fatal("exact bound selector did not satisfy the target requirement")
+	}
+	changedRequirement := selector
+	changedRequirement.Command += " --changed"
+	if matched, sameID := matchingRequiredTestEvidence([]FinalEvidenceRecord{record}, changedRequirement, revision); matched || !sameID {
+		t.Fatalf("same-named different selector matched=%t same_id=%t", matched, sameID)
 	}
 	reviewActive := *active
 	reviewActive.ProcessID, reviewActive.AssignmentID = "PROCESS-010", "assignment-review-2"
 	reviewActive.Role = assignment.RoleReview
 	reviewRecord := record
 	reviewRecord.AssignmentProcessID, reviewRecord.AssignmentID = reviewActive.ProcessID, reviewActive.AssignmentID
-	reviewRecord.TestAuthorityRole = assignment.RoleReview
+	reviewRecord.AssignmentRole = assignment.RoleReview
 	reviewRecord.Source = "accepted-review-receipt:self-reported"
 	if err := validateFinalEvidenceAssignment(reviewRecord,
 		map[string]ProcessEvidenceInput{reviewActive.ProcessID: {ActiveAssignment: &reviewActive}},
 		revision, map[string]string{}); err != nil {
 		t.Fatalf("review-backed final test was rejected: %v", err)
+	}
+	verificationCompletion := record
+	verificationCompletion.Kind, verificationCompletion.EvidenceID, verificationCompletion.Name = FinalEvidenceVerification, "receipt-2", ""
+	verificationCompletion.AssignedSelector, verificationCompletion.ResolvedRevision, verificationCompletion.ExecutedCommand = nil, "", ""
+	if err := validateFinalEvidenceAssignment(verificationCompletion, inputs, revision, map[string]string{}); err != nil {
+		t.Fatalf("explicit verification completion role was rejected: %v", err)
+	}
+	reviewCompletion := reviewRecord
+	reviewCompletion.Kind, reviewCompletion.EvidenceID, reviewCompletion.Name = FinalEvidenceReview, "receipt-review-2", ""
+	reviewCompletion.AssignedSelector, reviewCompletion.ResolvedRevision, reviewCompletion.ExecutedCommand = nil, "", ""
+	if err := validateFinalEvidenceAssignment(reviewCompletion,
+		map[string]ProcessEvidenceInput{reviewActive.ProcessID: {ActiveAssignment: &reviewActive}},
+		revision, map[string]string{}); err != nil {
+		t.Fatalf("explicit review completion role was rejected: %v", err)
 	}
 	for name, mutate := range map[string]func(*FinalEvidenceRecord){
 		"wrong generation": func(value *FinalEvidenceRecord) { value.AssignmentGeneration-- },
@@ -222,7 +244,7 @@ func TestFinalEvidenceAssignmentJoinReproducesActiveBoundTest(t *testing.T) {
 			value.AssignedSelector = &changed
 		},
 		"wrong expanded command": func(value *FinalEvidenceRecord) { value.ExecutedCommand += " --forged" },
-		"wrong test role":        func(value *FinalEvidenceRecord) { value.TestAuthorityRole = assignment.RoleReview },
+		"wrong test role":        func(value *FinalEvidenceRecord) { value.AssignmentRole = assignment.RoleReview },
 		"wrong receipt source":   func(value *FinalEvidenceRecord) { value.Source = "accepted-review-receipt:self-reported" },
 		"unassigned extra": func(value *FinalEvidenceRecord) {
 			value.Name, value.EvidenceID = "extra", "receipt-2:test:extra"
@@ -252,7 +274,8 @@ func TestFinalEvidenceAssignmentJoinReproducesActiveBoundTest(t *testing.T) {
 		EvidenceID: "receipt-2:check:github:test", Name: "github\x00test", SubjectRevision: revision,
 		Source: "accepted-verification-receipt:provider-checks", AssignmentProcessID: active.ProcessID,
 		ReceiptID: record.ReceiptID, ReceiptDigest: record.ReceiptDigest, AssignmentID: active.AssignmentID,
-		AssignmentDigest: active.AssignmentDigest, AssignmentGeneration: active.Generation, CheckSelector: &checkSelector}
+		AssignmentDigest: active.AssignmentDigest, AssignmentGeneration: active.Generation,
+		AssignmentRole: assignment.RoleVerification, CheckSelector: &checkSelector}
 	if err := validateFinalEvidenceAssignment(check, inputs, revision, map[string]string{}); err != nil {
 		t.Fatal(err)
 	}
@@ -304,6 +327,29 @@ func minimalFinalSnapshot(t *testing.T, mode Mode) Snapshot {
 			MarkerPath: "internal/gates/final.go", MarkerLine: 1, CommentPath: "internal/gates/final.go", CommentLine: 1, AuthorAgent: "Implementation Worker"}},
 		AuthorAgentsBySpec: map[string]map[string]bool{"SPEC-001": {"implementation worker": true}},
 	}
+	active := &ActiveAssignmentEvidence{ProcessID: "PROCESS-001", AssignmentID: "assignment-verify-1",
+		AssignmentDigest: strings.Repeat("d", 64), Generation: 1, Role: assignment.RoleVerification,
+		SubjectRevision: minimalFinalRevision,
+		RequiredTests:   []assignment.TestSelector{{ID: "unit", Command: "go test ./internal/gates"}},
+		RequiredChecks:  []assignment.CheckSelector{{Provider: "github", Name: "test"}}}
+	input.ActiveAssignment = active
+	verificationIdentity := FinalEvidenceRecord{AssignmentProcessID: active.ProcessID,
+		ReceiptID: "receipt-verify-1", ReceiptDigest: strings.Repeat("a", 64), AssignmentID: active.AssignmentID,
+		AssignmentDigest: active.AssignmentDigest, AssignmentGeneration: active.Generation,
+		AssignmentRole: assignment.RoleVerification}
+	verification := verificationIdentity
+	verification.ProcessID, verification.SpecID, verification.Kind = "PROCESS-001", "SPEC-001", FinalEvidenceVerification
+	verification.EvidenceID, verification.SubjectRevision = "verify-1", minimalFinalRevision
+	verification.Source, verification.Independent = "accepted-verification-receipt:self-reported-tests", true
+	test := verificationIdentity
+	test.ProcessID, test.SpecID, test.Kind = "PROCESS-001", "SPEC-001", FinalEvidenceTest
+	test.EvidenceID, test.Name, test.SubjectRevision = "verify-1:test:unit", "unit", minimalFinalRevision
+	test.Source, test.ExecutedCommand, test.Independent = "accepted-verification-receipt:self-reported-tests", "go test ./internal/gates", true
+	checkSelector := assignment.CheckSelector{Provider: "github", Name: "test"}
+	check := verificationIdentity
+	check.ProcessID, check.SpecID, check.Kind = "PROCESS-001", "SPEC-001", FinalEvidenceCheck
+	check.EvidenceID, check.Name, check.SubjectRevision = "verify-1:check:github:test", "github\x00test", minimalFinalRevision
+	check.Source, check.CheckSelector, check.Independent = "accepted-verification-receipt:self-reported-tests", &checkSelector, true
 	return Snapshot{
 		Target: TargetFinal, Mode: mode, Artifacts: []model.Artifact{spec, task, process},
 		ProcessEvidence: []ProcessEvidenceInput{input},
@@ -314,10 +360,10 @@ func minimalFinalSnapshot(t *testing.T, mode Mode) Snapshot {
 				Revision: minimalFinalRevision, Source: "github-pull-request-head:7"},
 			Index: Fact{Required: true, Known: true, Passed: true, Current: "4 records", Expected: "validated bounded exact-current index"},
 			Records: []FinalEvidenceRecord{
-				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceReview, EvidenceID: "review-1", SubjectRevision: minimalFinalRevision, Source: "accepted-review-receipt:review-1", Independent: true},
-				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceVerification, EvidenceID: "verify-1", SubjectRevision: minimalFinalRevision, Source: "accepted-verification-receipt:verify-1", Independent: true},
-				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceTest, EvidenceID: "verify-1:test:unit", Name: "unit", SubjectRevision: minimalFinalRevision, Source: "accepted-verification-receipt:verify-1", Independent: true, TestAuthorityRole: assignment.RoleVerification},
-				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceCheck, EvidenceID: "verify-1:check:github:test", Name: "github\x00test", SubjectRevision: minimalFinalRevision, Source: "accepted-verification-receipt:verify-1", Independent: true},
+				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceReview, EvidenceID: "review-1", SubjectRevision: minimalFinalRevision, Source: "github-pr-review-comment:review-1", Independent: true},
+				verification,
+				test,
+				check,
 			},
 		},
 	}

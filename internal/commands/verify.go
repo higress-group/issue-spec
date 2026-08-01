@@ -1088,6 +1088,7 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 	var records []CanonicalEvidenceRecord
 	metadata := map[string]finalEvidenceMetadata{}
 	activeAssignments := map[string]gates.ActiveAssignmentEvidence{}
+	processedRoleEvidence := map[string]bool{}
 	for _, input := range inputs {
 		if input.ActiveAssignment != nil {
 			activeAssignments[input.ActiveAssignment.ProcessID] = *input.ActiveAssignment
@@ -1119,31 +1120,46 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 			if authority, ok := exactAcceptedReviewCarrier(artifact, revision); ok {
 				assignmentProcessID, err := acceptedRoleAssignmentProcess(inputs, processID, evidence.URL, evidence.SpecID,
 					assignment.RoleReview, authority.AssignmentID, authority.AssignmentDigest,
-					authority.AssignmentGeneration, authority.SubjectRevision)
+					authority.AssignmentGeneration, authority.SubjectRevision, authority.AssignmentProcessID)
 				if err != nil {
 					result.Index.Current = err.Error()
 					return result
 				}
-				if assignmentProcessID != processID {
+				carrierKey := strings.Join([]string{string(assignment.RoleReview), model.NormalizeURL(evidence.URL),
+					evidence.SpecID, authority.ReceiptID, authority.ReceiptDigest}, "\x00")
+				if processedRoleEvidence[carrierKey] {
 					continue
 				}
+				processedRoleEvidence[carrierKey] = true
+				sourceInput, found := processEvidenceInputByID(inputs, assignmentProcessID)
+				if !found {
+					result.Index.Current = fmt.Sprintf("accepted review receipt source PROCESS %s is unavailable", assignmentProcessID)
+					return result
+				}
 				writer := strings.ToLower(strings.TrimSpace(authority.Provenance.Writer))
-				independent = writer != "" && !input.AuthorAgentsBySpec[evidence.SpecID][writer]
+				independent = writer != "" && !sourceInput.AuthorAgentsBySpec[evidence.SpecID][writer]
 				base := CanonicalEvidenceRecord{ProcessID: processID, SpecID: evidence.SpecID,
 					Authority: CanonicalEvidenceRoleOwned, EvidenceID: authority.ReceiptID, ReceiptID: authority.ReceiptID,
 					ReceiptDigest: authority.ReceiptDigest, AssignmentProcessID: assignmentProcessID, AssignmentID: authority.AssignmentID,
 					AssignmentDigest: authority.AssignmentDigest, AssignmentGeneration: authority.AssignmentGeneration,
+					AssignmentRole:  assignment.RoleReview,
 					SubjectRevision: revision, URL: artifact.URL,
 					Source: "accepted-review-receipt:self-reported", Trusted: true}
+				if authority.CarrierVersion == 1 {
+					base.Source = "accepted-review-receipt:v1-completion"
+				}
 				targets := roleOwnedEvidenceTargets(inputs, assignmentProcessID, evidence.URL, evidence.SpecID,
 					assignment.RoleReview)
 				review := base
 				review.Kind, review.EvidenceID = CanonicalEvidenceReview, authority.ReceiptID
 				addTargets(review, targets, "", independent)
+				if !authority.TestsAvailable {
+					continue
+				}
 				for _, test := range authority.Tests {
 					record := base
 					record.Kind, record.EvidenceID = CanonicalEvidenceTest, authority.ReceiptID+":test:"+test.ID
-					record.TestID, record.TestAuthorityRole = test.ID, assignment.RoleReview
+					record.TestID = test.ID
 					record.ResolvedRevision, record.ExecutedCommand = test.ResolvedRevision, test.Command
 					if test.AssignedSelector != nil {
 						selector := cloneFinalTestSelector(*test.AssignedSelector)
@@ -1179,20 +1195,29 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 			}
 			assignmentProcessID, err := acceptedRoleAssignmentProcess(inputs, processID, evidence.URL, evidence.SpecID,
 				assignment.RoleVerification, authority.AssignmentID, authority.AssignmentDigest,
-				authority.AssignmentGeneration, authority.SubjectRevision)
+				authority.AssignmentGeneration, authority.SubjectRevision, "")
 			if err != nil {
 				result.Index.Current = err.Error()
 				return result
 			}
-			if assignmentProcessID != processID {
+			carrierKey := strings.Join([]string{string(assignment.RoleVerification), model.NormalizeURL(evidence.URL),
+				evidence.SpecID, authority.ReceiptID, authority.ReceiptDigest}, "\x00")
+			if processedRoleEvidence[carrierKey] {
 				continue
 			}
+			processedRoleEvidence[carrierKey] = true
+			sourceInput, found := processEvidenceInputByID(inputs, assignmentProcessID)
+			if !found {
+				result.Index.Current = fmt.Sprintf("accepted verification receipt source PROCESS %s is unavailable", assignmentProcessID)
+				return result
+			}
 			writer := strings.ToLower(strings.TrimSpace(authority.Provenance.Writer))
-			independent := writer != "" && !input.AuthorAgentsBySpec[evidence.SpecID][writer]
+			independent := writer != "" && !sourceInput.AuthorAgentsBySpec[evidence.SpecID][writer]
 			base := CanonicalEvidenceRecord{ProcessID: processID, SpecID: evidence.SpecID,
 				Authority: CanonicalEvidenceRoleOwned, ReceiptID: authority.ReceiptID,
 				ReceiptDigest: authority.ReceiptDigest, AssignmentProcessID: assignmentProcessID, AssignmentID: authority.AssignmentID,
 				AssignmentDigest: authority.AssignmentDigest, AssignmentGeneration: authority.AssignmentGeneration,
+				AssignmentRole:  assignment.RoleVerification,
 				SubjectRevision: revision, URL: artifact.URL,
 				Source: source, Trusted: true}
 			targets := roleOwnedEvidenceTargets(inputs, assignmentProcessID, evidence.URL, evidence.SpecID,
@@ -1203,7 +1228,7 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 			for _, test := range authority.Tests {
 				record := base
 				record.Kind, record.EvidenceID = CanonicalEvidenceTest, authority.ReceiptID+":test:"+test.ID
-				record.TestID, record.TestAuthorityRole = test.ID, assignment.RoleVerification
+				record.TestID = test.ID
 				record.ResolvedRevision, record.ExecutedCommand = test.ResolvedRevision, test.Command
 				if test.AssignedSelector != nil {
 					selector := cloneFinalTestSelector(*test.AssignedSelector)
@@ -1278,8 +1303,8 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 				Independent: meta.independent, AssignmentProcessID: record.AssignmentProcessID,
 				ReceiptID: record.ReceiptID, ReceiptDigest: record.ReceiptDigest, AssignmentID: record.AssignmentID,
 				AssignmentDigest: record.AssignmentDigest, AssignmentGeneration: record.AssignmentGeneration,
-				TestAuthorityRole: record.TestAuthorityRole,
-				AssignedSelector:  record.AssignedSelector, ResolvedRevision: record.ResolvedRevision,
+				AssignmentRole:   record.AssignmentRole,
+				AssignedSelector: record.AssignedSelector, ResolvedRevision: record.ResolvedRevision,
 				ExecutedCommand: record.ExecutedCommand, CheckSelector: record.CheckSelector})
 		}
 	}
@@ -1300,7 +1325,25 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 }
 
 func acceptedRoleAssignmentProcess(inputs []gates.ProcessEvidenceInput, fallbackProcessID, evidenceURL, specID string,
-	role assignment.Role, assignmentID, digest string, generation uint64, subject string) (string, error) {
+	role assignment.Role, assignmentID, digest string, generation uint64, subject, declaredProcessID string) (string, error) {
+	if declaredProcessID != "" {
+		matches, exact := 0, 0
+		for _, input := range inputs {
+			if input.Process.Comment.ID == declaredProcessID {
+				matches++
+			}
+			if acceptedAssignmentMatchesActive(input.ActiveAssignment, role, assignmentID, digest, generation, subject) {
+				exact++
+			}
+		}
+		if matches != 1 {
+			return "", fmt.Errorf("accepted %s receipt declares unavailable or duplicate issuing PROCESS %s", role, declaredProcessID)
+		}
+		if exact > 1 {
+			return "", fmt.Errorf("accepted %s receipt has duplicate active assignment authority", role)
+		}
+		return declaredProcessID, nil
+	}
 	var candidates, exact []string
 	hasManagedAssignment := false
 	for _, input := range inputs {
@@ -1350,6 +1393,15 @@ func acceptedRoleAssignmentProcess(inputs []gates.ProcessEvidenceInput, fallback
 		return fallbackProcessID, nil
 	}
 	return "", fmt.Errorf("accepted %s receipt has no issuing role PROCESS with active assignment authority", role)
+}
+
+func processEvidenceInputByID(inputs []gates.ProcessEvidenceInput, processID string) (gates.ProcessEvidenceInput, bool) {
+	for _, input := range inputs {
+		if input.Process.Comment.ID == processID {
+			return input, true
+		}
+	}
+	return gates.ProcessEvidenceInput{}, false
 }
 
 func roleOwnedEvidenceTargets(inputs []gates.ProcessEvidenceInput, assignmentProcessID, evidenceURL, specID string,
@@ -1528,7 +1580,7 @@ func consumeAcceptedVerificationEvidence(inputs []gates.ProcessEvidenceInput, ar
 			}
 			assignmentProcessID, err := acceptedRoleAssignmentProcess(inputs, inputs[inputIndex].Process.Comment.ID,
 				evidence.URL, evidence.SpecID, assignment.RoleVerification, authority.AssignmentID,
-				authority.AssignmentDigest, authority.AssignmentGeneration, authority.SubjectRevision)
+				authority.AssignmentDigest, authority.AssignmentGeneration, authority.SubjectRevision, "")
 			if err != nil || assignmentProcessID != inputs[inputIndex].Process.Comment.ID ||
 				!acceptedAssignmentMatchesActive(inputs[inputIndex].ActiveAssignment,
 					assignment.RoleVerification, authority.AssignmentID, authority.AssignmentDigest,
