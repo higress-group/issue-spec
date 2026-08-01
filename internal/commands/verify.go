@@ -202,34 +202,36 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 		a.errorf("observe submitted VERIFY: %v\n", err)
 		return 1
 	}
-	if err := validateExistingVerificationReceipt(comments, *verifyID, receipt); err != nil {
+	existing, replay, err := observeAcceptedVerificationReceipt(comments, *verifyID, receipt)
+	if err != nil {
 		a.errorf("validate submitted VERIFY replay: %v\n", err)
 		return 1
+	}
+	if replay {
+		authority, found, parseErr := parseAcceptedVerificationReceipt(existing.Body)
+		if parseErr != nil || !found {
+			a.errorf("validate submitted VERIFY replay: accepted receipt authority is unavailable: %v\n", parseErr)
+			return 1
+		}
+		result := verificationSubmitResult{OK: true, Action: "unchanged", VerificationID: *verifyID,
+			ReceiptID: authority.ReceiptID, ReceiptDigest: authority.ReceiptDigest,
+			SubjectRevision: authority.SubjectRevision, Tests: authority.Tests, Checks: authority.Checks,
+			Submission: authority.Submission, CommentID: existing.ID, URL: existing.HTMLURL}
+		if *jsonOut {
+			return a.outputJSON(result)
+		}
+		fmt.Fprintf(a.out, "unchanged VERIFY %s from receipt %s at %s: %s\n", *verifyID,
+			authority.ReceiptID, authority.SubjectRevision, existing.HTMLURL)
+		return 0
 	}
 	specSources, err := loadSubmittedReviewSpecSources(ctx, client, repo, 0, implementIssue, process, comments)
 	if err != nil {
 		a.errorf("resolve submitted VERIFY SPEC authority: %v\n", err)
 		return 1
 	}
-	var specURLs []string
-	for _, id := range covers {
-		if !strings.HasPrefix(id, "SPEC-") {
-			continue
-		}
-		spec, resolveErr := findUniqueSubmittedReviewSpec(specSources, id)
-		if resolveErr != nil {
-			a.errorf("resolve submitted VERIFY coverage %s: %v\n", id, resolveErr)
-			return 1
-		}
-		specURLs = append(specURLs, spec.URL)
-	}
-	if len(specURLs) == 0 {
-		a.errorf("resolve submitted VERIFY coverage: verification PROCESS must cover at least one canonical SPEC\n")
-		return 1
-	}
-	if 1+len(specURLs) > relationships.DefaultMutationTargetLimit {
-		a.errorf("resolve submitted VERIFY coverage: %v: targets=%d limit=%d\n", relationships.ErrBound,
-			1+len(specURLs), relationships.DefaultMutationTargetLimit)
+	coverage, err := resolveSubmittedVerificationCoverage(comments, implementIssue, specSources, process, covers)
+	if err != nil {
+		a.errorf("resolve submitted VERIFY coverage: %v\n", err)
 		return 1
 	}
 	profile, _, err := auth.ResolveProfile(a.profileName, *host)
@@ -265,7 +267,7 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 		a.errorf("observe provider verification checks: %v\n", err)
 		return 1
 	}
-	body, err := renderSubmittedVerification(*verifyID, process.URL, covers, receipt, checks, submission, specURLs...)
+	body, err := renderSubmittedVerificationWithCoverage(*verifyID, coverage, receipt, checks, submission)
 	if err != nil {
 		a.errorf("render submitted VERIFY: %v\n", err)
 		return 1
@@ -285,6 +287,36 @@ func (a *app) runVerifySubmit(ctx context.Context, args []string) int {
 	fmt.Fprintf(a.out, "%s VERIFY %s from receipt %s at %s: %s\n", action, *verifyID, receipt.ID,
 		receipt.SubjectRevision, comment.HTMLURL)
 	return 0
+}
+
+// resolveSubmittedVerificationCoverage mirrors review submit's owner
+// resolution: the append-only VERIFY owns its verification PROCESS, every
+// active change-bearing or external PROCESS intersecting its canonical SPEC
+// coverage, and those canonical SPECs themselves.
+func resolveSubmittedVerificationCoverage(comments []github.Comment, issue int,
+	specSources []submittedReviewSpecSource, verificationProcess model.Artifact,
+	covers []string) (reviewOwnerCoverage, error) {
+	covered := map[string]string{}
+	var coveredSpecs []model.Artifact
+	for _, id := range covers {
+		if !strings.HasPrefix(id, "SPEC-") {
+			continue
+		}
+		spec, err := findUniqueSubmittedReviewSpec(specSources, id)
+		if err != nil {
+			return reviewOwnerCoverage{}, fmt.Errorf("verification PROCESS covered SPEC %s is not one canonical typed artifact: %w", id, err)
+		}
+		covered[id] = spec.URL
+		coveredSpecs = append(coveredSpecs, spec)
+	}
+	if len(covered) == 0 {
+		return reviewOwnerCoverage{}, errors.New("verification PROCESS must cover at least one canonical SPEC")
+	}
+	coveredProcesses, err := resolveSubmittedReviewProcesses(comments, issue, verificationProcess, covered)
+	if err != nil {
+		return reviewOwnerCoverage{}, fmt.Errorf("verification PROCESS owner coverage: %w", err)
+	}
+	return reviewOwnerCoverage{Processes: coveredProcesses, Specs: coveredSpecs}, nil
 }
 
 func validateVerificationReceiptBinding(receipt assignment.Receipt, sealed assignment.Assignment,
@@ -579,9 +611,6 @@ func publishAcceptedVerification(ctx context.Context, client github.Operations, 
 		return "", github.Comment{}, err
 	}
 	if found {
-		if existing.Body != body {
-			return "", github.Comment{}, fmt.Errorf("VERIFY %s accepted authority exists with a different immutable body", verifyID)
-		}
 		return "unchanged", existing, nil
 	}
 	created, err := client.CreateComment(ctx, repo, issue, body)
@@ -604,6 +633,67 @@ func publishAcceptedVerification(ctx context.Context, client github.Operations, 
 
 func renderSubmittedVerification(verifyID, processURL string, covers []string, receipt assignment.Receipt,
 	checks []observedVerificationCheck, submission processworkspace.RoleOwnedSubmissionEvidence, specURLs ...string) (string, error) {
+	body, err := renderSubmittedVerificationBody(verifyID, covers, receipt, checks, submission)
+	if err != nil {
+		return "", err
+	}
+	body, _, err = model.AddRelatedCommentLink(body, processURL)
+	if err != nil {
+		return "", err
+	}
+	for _, specURL := range specURLs {
+		body, _, err = model.AddRelatedCommentLink(body, specURL)
+		if err != nil {
+			return "", err
+		}
+	}
+	body, _, err = stampAcceptedVerificationReceipt(body, acceptedVerificationReceiptFrom(receipt, checks, submission))
+	return body, err
+}
+
+// renderSubmittedVerificationWithCoverage is the production rendering path.
+// The complete relationship set is embedded in one immutable carrier body;
+// no covered PROCESS or SPEC is mutated as a peer.
+func renderSubmittedVerificationWithCoverage(verifyID string, coverage reviewOwnerCoverage,
+	receipt assignment.Receipt, checks []observedVerificationCheck,
+	submission processworkspace.RoleOwnedSubmissionEvidence) (string, error) {
+	if len(coverage.Processes) == 0 || len(coverage.Specs) == 0 {
+		return "", fmt.Errorf("%w: incomplete VERIFY owner coverage", relationships.ErrInvalid)
+	}
+	if len(coverage.Processes)+len(coverage.Specs) > relationships.DefaultMutationTargetLimit {
+		return "", fmt.Errorf("%w: VERIFY owner targets=%d limit=%d", relationships.ErrBound,
+			len(coverage.Processes)+len(coverage.Specs), relationships.DefaultMutationTargetLimit)
+	}
+	specIDs := make([]string, 0, len(coverage.Specs))
+	for _, spec := range coverage.Specs {
+		specIDs = append(specIDs, spec.Comment.ID)
+	}
+	body, err := renderSubmittedVerificationBody(verifyID, specIDs, receipt, checks, submission)
+	if err != nil {
+		return "", err
+	}
+	const coveredSpecsHeading = "\n### Covered SPECs\n\n"
+	if strings.Count(body, coveredSpecsHeading) != 1 {
+		return "", fmt.Errorf("%w: generated VERIFY has invalid SPEC coverage section", relationships.ErrInvalid)
+	}
+	var processSection strings.Builder
+	processSection.WriteString("\n### Covered PROCESSes\n\n")
+	for _, process := range coverage.Processes {
+		fmt.Fprintf(&processSection, "- %s\n", process.Comment.ID)
+	}
+	body = strings.Replace(body, coveredSpecsHeading, processSection.String()+coveredSpecsHeading, 1)
+	for _, artifact := range append(append([]model.Artifact(nil), coverage.Processes...), coverage.Specs...) {
+		body, _, err = model.AddRelatedCommentLink(body, artifact.URL)
+		if err != nil {
+			return "", err
+		}
+	}
+	body, _, err = stampAcceptedVerificationReceipt(body, acceptedVerificationReceiptFrom(receipt, checks, submission))
+	return body, err
+}
+
+func renderSubmittedVerificationBody(verifyID string, specIDs []string, receipt assignment.Receipt,
+	checks []observedVerificationCheck, submission processworkspace.RoleOwnedSubmissionEvidence) (string, error) {
 	tests := make([]templates.VerifyTestEvidence, 0, len(receipt.Tests))
 	for _, test := range receipt.Tests {
 		tests = append(tests, templates.VerifyTestEvidence{ID: test.ID, Command: test.Command,
@@ -622,21 +712,7 @@ func renderSubmittedVerification(verifyID, processURL string, covers []string, r
 		ID: verifyID, Agent: submission.Agent, SubjectRevision: receipt.SubjectRevision,
 		Status: "done", Scope: "role-owned verification submission"}, Input: templates.VerifyInput{
 		Title: "role-owned receipt", Summary: summary, SubjectRevision: receipt.SubjectRevision,
-		Tests: tests, Checks: providerChecks, SpecRefs: covers}})
-	if err != nil {
-		return "", err
-	}
-	body, _, err = model.AddRelatedCommentLink(body, processURL)
-	if err != nil {
-		return "", err
-	}
-	for _, specURL := range specURLs {
-		body, _, err = model.AddRelatedCommentLink(body, specURL)
-		if err != nil {
-			return "", err
-		}
-	}
-	body, _, err = stampAcceptedVerificationReceipt(body, acceptedVerificationReceiptFrom(receipt, checks, submission))
+		Tests: tests, Checks: providerChecks, SpecRefs: specIDs}})
 	return body, err
 }
 

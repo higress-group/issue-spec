@@ -68,6 +68,103 @@ func TestVerificationReceiptBindingAndImmutableProjection(t *testing.T) {
 	}
 }
 
+func TestSubmittedVerificationCarriesCompleteOwnerCoverage(t *testing.T) {
+	receipt := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./internal/gates",
+		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
+	coverage := reviewOwnerCoverage{Processes: []model.Artifact{
+		{URL: "https://github.com/o/r/issues/9#issuecomment-10", Comment: model.TypedComment{Type: "PROCESS", ID: "PROCESS-101"}},
+		{URL: "https://github.com/o/r/issues/9#issuecomment-11", Comment: model.TypedComment{Type: "PROCESS", ID: "PROCESS-102"}},
+	}, Specs: []model.Artifact{{URL: "https://github.com/o/r/issues/1#issuecomment-1",
+		Comment: model.TypedComment{Type: "SPEC", ID: "SPEC-005"}}}}
+	body, err := renderSubmittedVerificationWithCoverage("VERIFY-101", coverage, receipt, nil,
+		testVerificationSubmission("Verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := model.ParseTypedComment(body)
+	authority, found, err := parseAcceptedVerificationReceipt(body)
+	if err != nil || !found || len(parsed.Errors) != 0 || authority.ReceiptDigest != receipt.ReceiptDigest ||
+		!strings.Contains(body, "### Covered PROCESSes\n\n- PROCESS-101\n- PROCESS-102") ||
+		!strings.Contains(body, "### Covered SPECs\n\n- SPEC-005") {
+		t.Fatalf("VERIFY=%+v authority=%+v found=%t err=%v body=%s", parsed, authority, found, err, body)
+	}
+	for _, url := range []string{coverage.Processes[0].URL, coverage.Processes[1].URL, coverage.Specs[0].URL} {
+		if !linksContainURL(parsed.Links[relationships.RelatedCommentsField], url) {
+			t.Fatalf("VERIFY omitted owner relationship %s: %s", url, body)
+		}
+	}
+}
+
+func TestResolveSubmittedVerificationCoverageSelectsActiveChangeOwners(t *testing.T) {
+	verify := verificationCoverageProcessComment(t, 10, "PROCESS-101", model.ProcessExecutionVerification,
+		"in-progress", "SPEC-005")
+	current := verificationCoverageProcessComment(t, 11, "PROCESS-102", model.ProcessExecutionChangeBearing,
+		"done", "SPEC-005")
+	historical := verificationCoverageProcessComment(t, 12, "PROCESS-103", model.ProcessExecutionChangeBearing,
+		"superseded", "SPEC-005")
+	historical.Body, _, _ = model.StampSupersededBy(historical.Body, "PROCESS-103",
+		model.SupersededBy{ProcessID: "PROCESS-102", URL: current.HTMLURL})
+	external := verificationCoverageProcessComment(t, 13, "PROCESS-104", model.ProcessExecutionExternal,
+		"done", "SPEC-005")
+	orchestration := verificationCoverageProcessComment(t, 14, "PROCESS-105", model.ProcessExecutionOrchestration,
+		"done", "SPEC-005")
+	wrongSpec := verificationCoverageProcessComment(t, 15, "PROCESS-106", model.ProcessExecutionChangeBearing,
+		"done", "SPEC-999")
+	comments := []github.Comment{verify, current, historical, external, orchestration, wrongSpec}
+	verifyArtifact := model.Artifact{Issue: 9, CommentID: verify.ID, URL: verify.HTMLURL,
+		APIURL: verify.URL, Comment: model.ParseTypedComment(verify.Body)}
+	sources := []submittedReviewSpecSource{{Issue: 1, Comments: []github.Comment{{ID: 1,
+		HTMLURL: "https://github.com/o/r/issues/1#issuecomment-1", Body: verificationCoverageSpecBody(t, "SPEC-005")}}}}
+	coverage, err := resolveSubmittedVerificationCoverage(comments, 9, sources, verifyArtifact, []string{"SPEC-005"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var processIDs []string
+	for _, process := range coverage.Processes {
+		processIDs = append(processIDs, process.Comment.ID)
+	}
+	if want := []string{"PROCESS-101", "PROCESS-102", "PROCESS-104"}; !reflect.DeepEqual(processIDs, want) {
+		t.Fatalf("active owner PROCESSes=%v want=%v", processIDs, want)
+	}
+	if len(coverage.Specs) != 1 || coverage.Specs[0].Comment.ID != "SPEC-005" {
+		t.Fatalf("canonical owner SPECs=%+v", coverage.Specs)
+	}
+}
+
+func TestResolveSubmittedVerificationCoverageRejectsAmbiguityAndOverflow(t *testing.T) {
+	verify := verificationCoverageProcessComment(t, 10, "PROCESS-101", model.ProcessExecutionVerification,
+		"in-progress", "SPEC-005")
+	verifyArtifact := model.Artifact{Issue: 9, CommentID: verify.ID, URL: verify.HTMLURL,
+		APIURL: verify.URL, Comment: model.ParseTypedComment(verify.Body)}
+	spec := github.Comment{ID: 1, HTMLURL: "https://github.com/o/r/issues/1#issuecomment-1",
+		Body: verificationCoverageSpecBody(t, "SPEC-005")}
+	sources := []submittedReviewSpecSource{{Issue: 1, Comments: []github.Comment{spec}}}
+	duplicate := verificationCoverageProcessComment(t, 11, "PROCESS-102", model.ProcessExecutionChangeBearing,
+		"done", "SPEC-005")
+	duplicateOther := duplicate
+	duplicateOther.ID, duplicateOther.HTMLURL = 12, "https://github.com/o/r/issues/9#issuecomment-12"
+	if _, err := resolveSubmittedVerificationCoverage([]github.Comment{verify, duplicate, duplicateOther}, 9,
+		sources, verifyArtifact, []string{"SPEC-005"}); !errors.Is(err, relationships.ErrAmbiguous) {
+		t.Fatalf("duplicate PROCESS identity error=%v", err)
+	}
+	specOther := spec
+	specOther.ID, specOther.HTMLURL = 2, "https://github.com/o/r/issues/1#issuecomment-2"
+	if _, err := resolveSubmittedVerificationCoverage([]github.Comment{verify, duplicate}, 9,
+		[]submittedReviewSpecSource{{Issue: 1, Comments: []github.Comment{spec, specOther}}}, verifyArtifact,
+		[]string{"SPEC-005"}); err == nil || !strings.Contains(err.Error(), "2 authoritative carriers") {
+		t.Fatalf("ambiguous SPEC authority error=%v", err)
+	}
+	comments := []github.Comment{verify}
+	for index := 0; index < relationships.DefaultMutationTargetLimit-1; index++ {
+		comments = append(comments, verificationCoverageProcessComment(t, int64(20+index),
+			fmt.Sprintf("PROCESS-%03d", 200+index), model.ProcessExecutionChangeBearing, "done", "SPEC-005"))
+	}
+	if _, err := resolveSubmittedVerificationCoverage(comments, 9, sources, verifyArtifact,
+		[]string{"SPEC-005"}); !errors.Is(err, relationships.ErrBound) {
+		t.Fatalf("combined owner overflow error=%v", err)
+	}
+}
+
 func TestBuildMinimalFinalEvidenceIndexesAcceptedRecordsWithoutProcessWrites(t *testing.T) {
 	const (
 		revision = "head-abc"
@@ -996,6 +1093,11 @@ func TestPublishAcceptedVerificationIsAppendOnlyUnderConcurrentReceipt(t *testin
 	if err != nil || action != "unchanged" || existing.ID != 11 || creates != 0 {
 		t.Fatalf("exact replay action=%q existing=%+v creates=%d err=%v", action, existing, creates, err)
 	}
+	action, existing, err = publishAcceptedVerification(t.Context(), backend, "o/r", 9, "VERIFY-101",
+		body+"\nnew renderer output", receipt)
+	if err != nil || action != "unchanged" || existing.Body != body || creates != 0 {
+		t.Fatalf("immutable replay action=%q existing=%+v creates=%d err=%v", action, existing, creates, err)
+	}
 }
 
 func TestAcceptedVerificationReceiptReadsPreUpgradeSessionFields(t *testing.T) {
@@ -1111,8 +1213,10 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 		t.Fatal(err)
 	}
 	specBody := verificationCoverageSpecBody(t, "SPEC-005")
-	comments := []github.Comment{{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody}}
-	created, updated := 0, 0
+	implementation := verificationCoverageProcessComment(t, 11, "PROCESS-102", model.ProcessExecutionChangeBearing,
+		"done", "SPEC-005")
+	comments := []github.Comment{{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody}, implementation}
+	created, updated, providerReads := 0, 0, 0
 	backend := verifySubmitCommandBackend{checkRuns: []github.CheckRun{{ID: 42, Name: "unit",
 		HeadSHA: receipt.SubjectRevision, Status: "completed", Conclusion: "success"}}}
 	backend.fakeGitHubBackend = fakeGitHubBackend{info: github.BackendInfo{Name: "gh", Kind: "external-cli", Host: "github.com"},
@@ -1126,12 +1230,13 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 			}
 			return nil, nil
 		}, getPullRequest: func(context.Context, string, int) (github.PullRequest, error) {
+			providerReads++
 			pr := github.PullRequest{Number: 7}
 			pr.Head.SHA = receipt.SubjectRevision
 			return pr, nil
 		}, createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
 			created++
-			comment := github.Comment{ID: 11, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-11", Body: body}
+			comment := github.Comment{ID: 12, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-12", Body: body}
 			comments = append(comments, comment)
 			return comment, nil
 		}, updateComment: func(_ context.Context, _ string, id int64, body string) (github.Comment, error) {
@@ -1151,6 +1256,15 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 	args := []string{"submit", "--repo", "o/r", "--implement", "9", "--pr", "7", "--process", "PROCESS-101",
 		"--id", "VERIFY-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
 		"--agent", "Verifier"}
+	conflicting := implementation
+	conflicting.ID, conflicting.HTMLURL = 13, "https://github.com/o/r/issues/9#issuecomment-13"
+	comments = append(comments, conflicting)
+	if code := app.runVerify(t.Context(), args); code != 1 || created != 0 || providerReads != 0 ||
+		!strings.Contains(errOut.String(), "multiple canonical candidates") {
+		t.Fatalf("ambiguous coverage exit=%d created=%d providerReads=%d err=%q",
+			code, created, providerReads, errOut.String())
+	}
+	comments = comments[:2]
 	for run := 0; run < 2; run++ {
 		out.Reset()
 		errOut.Reset()
@@ -1158,20 +1272,22 @@ func TestRunVerifySubmitProjectsStructuredEvidenceAndRecoversRetry(t *testing.T)
 			t.Fatalf("run=%d exit=%d out=%q err=%q", run, code, out.String(), errOut.String())
 		}
 	}
-	if created != 1 || updated != 0 || len(comments) != 2 {
-		t.Fatalf("created=%d updated=%d comments=%d", created, updated, len(comments))
+	if created != 1 || updated != 0 || providerReads != 2 || len(comments) != 3 {
+		t.Fatalf("created=%d updated=%d providerReads=%d comments=%d", created, updated, providerReads, len(comments))
 	}
-	parsed := model.ParseTypedComment(comments[1].Body)
-	authority, found, err := parseAcceptedVerificationReceipt(comments[1].Body)
+	parsed := model.ParseTypedComment(comments[2].Body)
+	authority, found, err := parseAcceptedVerificationReceipt(comments[2].Body)
 	if err != nil || !found || parsed.Agent != "Verifier" || parsed.SubjectRevision != receipt.SubjectRevision ||
 		parsed.Status != "done" || len(authority.Tests) != 1 || len(authority.Checks) != 1 ||
 		authority.Submission == nil || authority.Submission.Agent != "Verifier" ||
 		authority.Submission.Assurance != assignment.AssuranceSelfReported ||
 		!linksContainURL(parsed.Links["Related Comments"], "https://github.com/o/r/issues/1#issuecomment-1") ||
 		!linksContainURL(parsed.Links["Related Comments"], "https://github.com/o/r/issues/9#issuecomment-10") ||
-		!strings.Contains(comments[1].Body, "### Local Tests") || !strings.Contains(comments[1].Body, "### Provider Checks") ||
-		strings.Contains(comments[1].Body, "### Evidence") {
-		t.Fatalf("VERIFY=%+v authority=%+v found=%t err=%v body=%s", parsed, authority, found, err, comments[1].Body)
+		!linksContainURL(parsed.Links["Related Comments"], implementation.HTMLURL) ||
+		!strings.Contains(comments[2].Body, "### Covered PROCESSes\n\n- PROCESS-101\n- PROCESS-102") ||
+		!strings.Contains(comments[2].Body, "### Local Tests") || !strings.Contains(comments[2].Body, "### Provider Checks") ||
+		strings.Contains(comments[2].Body, "### Evidence") {
+		t.Fatalf("VERIFY=%+v authority=%+v found=%t err=%v body=%s", parsed, authority, found, err, comments[2].Body)
 	}
 }
 
@@ -1224,7 +1340,9 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	specBody := verificationCoverageSpecBody(t, "SPEC-005")
-	comments := []github.Comment{{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody}}
+	implementation := verificationCoverageProcessComment(t, 11, "PROCESS-102", model.ProcessExecutionChangeBearing,
+		"done", "SPEC-005")
+	comments := []github.Comment{{ID: 10, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-10", Body: processBody}, implementation}
 	providerReads, creates := 0, 0
 	backend := verifySubmitCommandBackend{fakeGitHubBackend: fakeGitHubBackend{
 		info:     github.BackendInfo{Name: "gh", Kind: "external-cli", Host: "github.com"},
@@ -1246,7 +1364,7 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 		},
 		createComment: func(_ context.Context, _ string, _ int, body string) (github.Comment, error) {
 			creates++
-			comment := github.Comment{ID: 11, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-11", Body: body}
+			comment := github.Comment{ID: 12, HTMLURL: "https://github.com/o/r/issues/9#issuecomment-12", Body: body}
 			comments = append(comments, comment)
 			return comment, nil
 		}}, checkRuns: nil}
@@ -1258,7 +1376,7 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 		"--id", "VERIFY-COORDINATOR", "--result-file", coordinatorPath, "--assignment-file", assignmentPath,
 		"--agent", "Coordinator"}
 	if code := app.runVerify(t.Context(), coordinatorArgs); code != 1 || providerReads != 0 || creates != 0 ||
-		len(comments) != 1 || !strings.Contains(errOut.String(), "non-Coordinator") {
+		len(comments) != 2 || !strings.Contains(errOut.String(), "non-Coordinator") {
 		t.Fatalf("coordinator exit=%d providerReads=%d creates=%d comments=%d err=%q",
 			code, providerReads, creates, len(comments), errOut.String())
 	}
@@ -1268,7 +1386,7 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 		"--id", "VERIFY-101", "--result-file", resultPath, "--assignment-file", assignmentPath,
 		"--agent", "Verifier"}
 	legacyImport := append(append([]string(nil), args...), "--owner-token", "coordinator-owner-token")
-	if code := app.runVerify(t.Context(), legacyImport); code != 2 || providerReads != 0 || creates != 0 || len(comments) != 1 ||
+	if code := app.runVerify(t.Context(), legacyImport); code != 2 || providerReads != 0 || creates != 0 || len(comments) != 2 ||
 		!strings.Contains(errOut.String(), "flag provided but not defined") {
 		t.Fatalf("legacy import exit=%d providerReads=%d creates=%d comments=%d err=%q",
 			code, providerReads, creates, len(comments), errOut.String())
@@ -1276,7 +1394,7 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 	out.Reset()
 	errOut.Reset()
 	directArgs := append(append([]string(nil), args...), "--agent-session", "verifier-session")
-	if code := app.runVerify(t.Context(), directArgs); code != 0 || len(comments) != 2 || providerReads != 2 || creates != 1 {
+	if code := app.runVerify(t.Context(), directArgs); code != 0 || len(comments) != 3 || providerReads != 2 || creates != 1 {
 		t.Fatalf("submit exit=%d comments=%d providerReads=%d creates=%d out=%q err=%q",
 			code, len(comments), providerReads, creates, out.String(), errOut.String())
 	}
@@ -1294,10 +1412,10 @@ func TestRunVerifySubmitLocalTestReceiptFeedsExactFinalEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	finalProcess.Comment = model.ParseTypedComment(linkedProcess)
-	verify := model.Artifact{Issue: 9, CommentID: comments[1].ID, URL: comments[1].HTMLURL,
-		Comment: model.ParseTypedComment(comments[1].Body)}
+	verify := model.Artifact{Issue: 9, CommentID: comments[2].ID, URL: comments[2].HTMLURL,
+		Comment: model.ParseTypedComment(comments[2].Body)}
 	canonicalizeVerificationFixture(t, &verify, finalProcess, spec)
-	authority, found, err := parseAcceptedVerificationReceipt(comments[1].Body)
+	authority, found, err := parseAcceptedVerificationReceipt(comments[2].Body)
 	if err != nil || !found || authority.Submission == nil || authority.Submission.Agent != "Verifier" ||
 		authority.Submission.Assurance != assignment.AssuranceSelfReported ||
 		verify.Comment.AgentSessionID != "" || verify.Comment.AgentSessionSource != "" {
@@ -1324,6 +1442,19 @@ func verificationCoverageSpecBody(t *testing.T, id string) string {
 		t.Fatal(err)
 	}
 	return body
+}
+
+func verificationCoverageProcessComment(t *testing.T, commentID int64, id string,
+	class model.ProcessExecutionClass, status, covers string) github.Comment {
+	t.Helper()
+	logical := fmt.Sprintf("## Process: verification coverage\n\n### Parent TASK\n\n- TASK-006\n\n### Execution Class\n\n- %s\n\n### Covers\n\n- %s\n\n### Handoff\n\nN/A", class, covers)
+	body, err := model.EnsureTypedBody("PROCESS", id, logical, model.BodyOptions{Status: status})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return github.Comment{ID: commentID,
+		HTMLURL: fmt.Sprintf("https://github.com/o/r/issues/9#issuecomment-%d", commentID),
+		URL:     fmt.Sprintf("https://api.github.com/repos/o/r/issues/comments/%d", commentID), Body: body}
 }
 
 func verificationCoverageIssue(_ context.Context, _ string, issue int) (github.Issue, error) {
