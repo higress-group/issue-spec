@@ -11,7 +11,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
-const ReceiptProjectionVersion = 1
+const ReceiptProjectionVersion = 2
 
 // ReceiptProjection is a declarative request to project references that were
 // already accepted by the role-specific receipt commands. It carries identity
@@ -69,8 +69,8 @@ var relationshipTargets = map[assignment.Role]map[string]map[string]bool{
 }
 
 // CompileReceiptProjection validates an accepted-receipt projection and
-// lowers it to the existing reconcile transition/link plan. The returned plan
-// is fully digested and contains no upsert or provider mutation operation.
+// lowers it to reconcile-v2 immutable lifecycle and owner-only relationship
+// assertions. The returned plan contains no peer/backlink operation.
 func CompileReceiptProjection(input ReceiptProjection) (Plan, error) {
 	if input.Version != ReceiptProjectionVersion {
 		return Plan{}, fmt.Errorf("unsupported receipt projection version %d", input.Version)
@@ -94,7 +94,7 @@ func CompileReceiptProjection(input ReceiptProjection) (Plan, error) {
 	sort.Slice(receipts, func(i, j int) bool { return receiptProjectionKey(receipts[i]) < receiptProjectionKey(receipts[j]) })
 
 	seenID, seenDigest := map[string]bool{}, map[string]bool{}
-	plan := Plan{Version: PlanVersion, Repo: input.Repo, Hostname: input.Hostname, Proposal: input.Proposal,
+	plan := Plan{Version: PlanVersion2, Repo: input.Repo, Hostname: input.Hostname, Proposal: input.Proposal,
 		AllowNonAtomic: input.AllowNonAtomic}
 	for _, receipt := range receipts {
 		idKey := strings.ToLower(receipt.ReceiptID)
@@ -251,29 +251,33 @@ func compileAcceptedReceipt(receipt AcceptedReceiptProjection) ([]Operation, err
 		}
 	}
 	linked := map[string]bool{}
+	var relationshipAdds []RelationshipTarget
 	for _, group := range []struct {
-		name    string
 		targets []Target
-	}{{"coverage", receipt.CoverageTargets}, {"current", receipt.CurrentTargets}} {
-		for index, target := range group.targets {
+	}{{receipt.CoverageTargets}, {receipt.CurrentTargets}} {
+		for _, target := range group.targets {
 			key := projectionTargetKey(target)
 			if linked[key] {
 				continue
 			}
 			linked[key] = true
-			authority := &model.AcceptedReceiptAuthority{Role: receipt.Role, ReceiptID: receipt.ReceiptID,
-				Digest: receipt.ReceiptDigest, Generation: receipt.Generation}
-			operations = append(operations, Operation{
-				ID:        fmt.Sprintf("%s-%s-%03d", prefix, group.name, index+1),
-				Kind:      "link",
-				DependsOn: append([]string(nil), lifecycleIDs...),
-				Target:    receipt.Carrier,
-				Desired: Desired{Peer: cloneTarget(target),
-					CarrierAuthorizedBacklink: true},
-				Precondition: Precondition{AcceptedReceipt: authority},
-			})
+			relationshipAdds = append(relationshipAdds, RelationshipTarget{Target: target})
 		}
 	}
+	sort.Slice(relationshipAdds, func(i, j int) bool {
+		return projectionTargetKey(relationshipAdds[i].Target) < projectionTargetKey(relationshipAdds[j].Target)
+	})
+	authority := &model.AcceptedReceiptAuthority{Role: receipt.Role, ReceiptID: receipt.ReceiptID,
+		Digest: receipt.ReceiptDigest, Generation: receipt.Generation}
+	operations = append(operations, Operation{
+		ID:        prefix + "-relationships-001",
+		Kind:      "relationship-update",
+		DependsOn: append([]string(nil), lifecycleIDs...),
+		Target:    receipt.Carrier,
+		Desired: Desired{RelationshipUpdate: &RelationshipUpdate{Version: RelationshipUpdateVersion,
+			Add: relationshipAdds}},
+		Precondition: Precondition{AcceptedReceipt: authority},
+	})
 	return operations, nil
 }
 

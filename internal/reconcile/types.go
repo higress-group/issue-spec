@@ -9,10 +9,18 @@ import (
 	"strings"
 
 	"github.com/higress-group/issue-spec/internal/assignment"
+	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
-const PlanVersion = 1
+const (
+	LegacyPlanVersion = 1
+	// PlanVersion remains the source-compatible v1 constant for callers that
+	// still compile upsert/transition plans. New relationship plans use
+	// PlanVersion2 explicitly.
+	PlanVersion  = LegacyPlanVersion
+	PlanVersion2 = 2
+)
 
 type Plan struct {
 	Version        int         `json:"version"`
@@ -49,10 +57,26 @@ type Desired struct {
 	PRLinks       []string `json:"pr_links,omitempty"`
 	RelatedLinks  []string `json:"related_links,omitempty"`
 	Peer          *Target  `json:"peer,omitempty"`
+	// RelationshipUpdate is a v2 owner-only relationship mutation. Every
+	// target is read-only; the operation's Target is the sole write endpoint.
+	RelationshipUpdate *RelationshipUpdate `json:"relationship_update,omitempty"`
 	// CarrierAuthorizedBacklink requires Target to be an immutable accepted
 	// receipt carrier that already links the exact Peer. Reconcile may mutate
 	// only Peer to add the missing reverse link.
 	CarrierAuthorizedBacklink bool `json:"carrier_authorized_backlink,omitempty"`
+}
+
+const RelationshipUpdateVersion = 1
+
+type RelationshipUpdate struct {
+	Version int                  `json:"version"`
+	Add     []RelationshipTarget `json:"add,omitempty"`
+	Remove  []RelationshipTarget `json:"remove,omitempty"`
+}
+
+type RelationshipTarget struct {
+	Target Target `json:"target"`
+	URL    string `json:"url,omitempty"`
 }
 
 // RelationshipAuthority binds a production relationship target to the exact
@@ -101,30 +125,32 @@ type EndpointResult struct {
 }
 
 type OperationResult struct {
-	ID           string           `json:"id"`
-	Kind         string           `json:"kind"`
-	Status       string           `json:"status"`
-	Atomic       bool             `json:"atomic"`
-	CommentID    int64            `json:"comment_id,omitempty"`
-	URL          string           `json:"url,omitempty"`
-	BeforeDigest string           `json:"before_digest"`
-	AfterDigest  string           `json:"after_digest"`
-	Endpoints    []EndpointResult `json:"endpoints,omitempty"`
-	Message      string           `json:"message,omitempty"`
+	ID           string                          `json:"id"`
+	Kind         string                          `json:"kind"`
+	Status       string                          `json:"status"`
+	Atomic       bool                            `json:"atomic"`
+	Guarantee    github.CommentMutationGuarantee `json:"guarantee,omitempty"`
+	CommentID    int64                           `json:"comment_id,omitempty"`
+	URL          string                          `json:"url,omitempty"`
+	BeforeDigest string                          `json:"before_digest"`
+	AfterDigest  string                          `json:"after_digest"`
+	Endpoints    []EndpointResult                `json:"endpoints,omitempty"`
+	Message      string                          `json:"message,omitempty"`
 }
 
 type Result struct {
-	OK         bool              `json:"ok"`
-	PlanDigest string            `json:"plan_digest"`
-	Checkpoint string            `json:"checkpoint,omitempty"`
-	Atomic     bool              `json:"atomic"`
-	Created    int               `json:"created"`
-	Updated    int               `json:"updated"`
-	Unchanged  int               `json:"unchanged"`
-	Conflicted int               `json:"conflicted"`
-	Pending    int               `json:"pending"`
-	Operations []OperationResult `json:"operations"`
-	Change     any               `json:"change,omitempty"`
+	OK          bool              `json:"ok"`
+	PlanDigest  string            `json:"plan_digest"`
+	Checkpoint  string            `json:"checkpoint,omitempty"`
+	Atomic      bool              `json:"atomic"`
+	Created     int               `json:"created"`
+	Updated     int               `json:"updated"`
+	Unchanged   int               `json:"unchanged"`
+	Conflicted  int               `json:"conflicted"`
+	Pending     int               `json:"pending"`
+	Remediation string            `json:"remediation,omitempty"`
+	Operations  []OperationResult `json:"operations"`
+	Change      any               `json:"change,omitempty"`
 }
 
 func Digest(plan Plan) (string, error) {
@@ -138,7 +164,7 @@ func Digest(plan Plan) (string, error) {
 }
 
 func Validate(plan Plan) ([]Operation, string, error) {
-	if plan.Version != PlanVersion {
+	if plan.Version != LegacyPlanVersion && plan.Version != PlanVersion2 {
 		return nil, "", fmt.Errorf("unsupported plan version %d", plan.Version)
 	}
 	if strings.TrimSpace(plan.Repo) == "" || len(plan.Operations) == 0 {
@@ -180,11 +206,21 @@ func Validate(plan Plan) ([]Operation, string, error) {
 				return nil, "", fmt.Errorf("operation %s: desired status is required", op.ID)
 			}
 		case "link":
+			if plan.Version != LegacyPlanVersion {
+				return nil, "", fmt.Errorf("operation %s: legacy link is only valid in plan version 1", op.ID)
+			}
 			if op.Desired.Peer == nil {
 				return nil, "", fmt.Errorf("operation %s: desired peer is required", op.ID)
 			}
 			if err := validateTarget(*op.Desired.Peer); err != nil {
 				return nil, "", fmt.Errorf("operation %s peer: %w", op.ID, err)
+			}
+		case "relationship-update":
+			if plan.Version != PlanVersion2 {
+				return nil, "", fmt.Errorf("operation %s: relationship-update requires plan version %d", op.ID, PlanVersion2)
+			}
+			if err := validateRelationshipUpdate(op); err != nil {
+				return nil, "", fmt.Errorf("operation %s: %w", op.ID, err)
 			}
 		default:
 			return nil, "", fmt.Errorf("operation %s: unsupported kind %q", op.ID, op.Kind)
@@ -193,7 +229,8 @@ func Validate(plan Plan) ([]Operation, string, error) {
 			return nil, "", fmt.Errorf("operation %s: carrier-authorized backlink requires a link", op.ID)
 		}
 		if op.Precondition.RelationshipAuthority != nil &&
-			(op.Kind != "link" || !op.Desired.CarrierAuthorizedBacklink || op.Precondition.AcceptedReceipt == nil) {
+			(op.Precondition.AcceptedReceipt == nil || (op.Kind != "relationship-update" &&
+				(op.Kind != "link" || !op.Desired.CarrierAuthorizedBacklink))) {
 			return nil, "", fmt.Errorf("operation %s: resolved relationship authority requires an accepted receipt backlink", op.ID)
 		}
 		if op.Precondition.RepresentationVersion < 0 || (op.Precondition.RepresentationVersion > 0 && op.Precondition.BodyDigest != "") {
@@ -214,7 +251,7 @@ func Validate(plan Plan) ([]Operation, string, error) {
 			case "transition":
 				if strings.ToLower(strings.TrimSpace(op.Desired.Status)) != "done" || op.Desired.Body != "" ||
 					op.Desired.BodyFile != "" || op.Desired.Handoff != "" || op.Desired.AppendHandoff ||
-					len(op.Desired.PRLinks) != 0 || len(op.Desired.RelatedLinks) != 0 || op.Desired.Peer != nil ||
+					len(op.Desired.PRLinks) != 0 || len(op.Desired.RelatedLinks) != 0 || op.Desired.Peer != nil || op.Desired.RelationshipUpdate != nil ||
 					op.Desired.CarrierAuthorizedBacklink {
 					return nil, "", fmt.Errorf("operation %s: accepted receipt precondition may only assert the carrier's immutable done status", op.ID)
 				}
@@ -245,6 +282,25 @@ func Validate(plan Plan) ([]Operation, string, error) {
 					if expected.AssignmentID != "" && (expected.AssignmentID != authority.AssignmentID ||
 						expected.AssignmentDigest != authority.AssignmentDigest || expected.Generation != authority.AssignmentGeneration) {
 						return nil, "", fmt.Errorf("operation %s: accepted receipt and relationship assignment authority differ", op.ID)
+					}
+				}
+			case "relationship-update":
+				if op.Desired.RelationshipUpdate == nil || op.Desired.Peer != nil || op.Desired.Body != "" ||
+					op.Desired.BodyFile != "" || op.Desired.Status != "" || op.Desired.Handoff != "" ||
+					op.Desired.AppendHandoff || len(op.Desired.PRLinks) != 0 || len(op.Desired.RelatedLinks) != 0 ||
+					op.Desired.CarrierAuthorizedBacklink {
+					return nil, "", fmt.Errorf("operation %s: accepted receipt relationship-update may only mutate the carrier owner URL set", op.ID)
+				}
+				for _, relationship := range append(append([]RelationshipTarget(nil), op.Desired.RelationshipUpdate.Add...), op.Desired.RelationshipUpdate.Remove...) {
+					peerType := strings.ToUpper(strings.TrimSpace(relationship.Target.Type))
+					if sameProjectionTarget(op.Target, relationship.Target) ||
+						(!relationshipTargets[expected.Role]["coverage"][peerType] && !relationshipTargets[expected.Role]["current"][peerType]) {
+						return nil, "", fmt.Errorf("operation %s: accepted %s receipt cannot authorize a %s relationship target", op.ID, expected.Role, peerType)
+					}
+				}
+				if authority := op.Precondition.RelationshipAuthority; authority != nil {
+					if err := validateRelationshipAuthority(*expected, authority, false); err != nil {
+						return nil, "", fmt.Errorf("operation %s: %w", op.ID, err)
 					}
 				}
 			default:
@@ -293,6 +349,53 @@ func Validate(plan Plan) ([]Operation, string, error) {
 		return nil, "", fmt.Errorf("operation dependency cycle detected")
 	}
 	return ordered, digest, nil
+}
+
+func validateRelationshipAuthority(expected model.AcceptedReceiptAuthority, authority *RelationshipAuthority, requirePeer bool) error {
+	if authority == nil || authority.AssignmentProcess == nil || strings.TrimSpace(authority.CarrierURL) == "" ||
+		strings.TrimSpace(authority.AssignmentProcessURL) == "" || !projectionDigest.MatchString(authority.CarrierBodyDigest) ||
+		!projectionDigest.MatchString(authority.AssignmentProcessBodyDigest) || !projectionReceiptID.MatchString(authority.AssignmentID) ||
+		!projectionDigest.MatchString(authority.AssignmentDigest) || authority.AssignmentGeneration == 0 {
+		return fmt.Errorf("resolved relationship authority is invalid")
+	}
+	if requirePeer && strings.TrimSpace(authority.PeerURL) == "" {
+		return fmt.Errorf("resolved relationship peer authority is invalid")
+	}
+	if err := validateTarget(*authority.AssignmentProcess); err != nil {
+		return fmt.Errorf("assignment process: %w", err)
+	}
+	if expected.AssignmentID != "" && (expected.AssignmentID != authority.AssignmentID ||
+		expected.AssignmentDigest != authority.AssignmentDigest || expected.Generation != authority.AssignmentGeneration) {
+		return fmt.Errorf("accepted receipt and relationship assignment authority differ")
+	}
+	return nil
+}
+
+func validateRelationshipUpdate(op Operation) error {
+	update := op.Desired.RelationshipUpdate
+	if update == nil || update.Version != RelationshipUpdateVersion || len(update.Add)+len(update.Remove) == 0 {
+		return fmt.Errorf("relationship_update version %d with at least one target is required", RelationshipUpdateVersion)
+	}
+	if len(update.Add)+len(update.Remove) > 64 {
+		return fmt.Errorf("relationship update target bound exceeded")
+	}
+	seen := map[string]string{}
+	for action, values := range map[string][]RelationshipTarget{"add": update.Add, "remove": update.Remove} {
+		for _, relationship := range values {
+			if err := validateTarget(relationship.Target); err != nil {
+				return fmt.Errorf("%s target: %w", action, err)
+			}
+			key := targetKey(relationship.Target)
+			if prior := seen[key]; prior != "" && prior != action {
+				return fmt.Errorf("target %s appears in both add and remove", key)
+			}
+			seen[key] = action
+			if strings.TrimSpace(relationship.URL) != "" && model.NormalizeURL(relationship.URL) != relationship.URL {
+				return fmt.Errorf("%s target %s URL must be canonical", action, relationship.Target.ID)
+			}
+		}
+	}
+	return nil
 }
 
 func validReceiptRole(role assignment.Role) bool {

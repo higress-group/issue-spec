@@ -56,7 +56,7 @@ func TestReadReconcilePlanRejectsUnknownField(t *testing.T) {
 }
 
 func TestReadReceiptProjectionRejectsReceiptContentAndCompilesIdentityOnly(t *testing.T) {
-	valid := `{"version":1,"repo":"o/r","hostname":"issues.example","proposal":7,"issue":9,"allow_nonatomic":true,"accepted_receipts":[{` +
+	valid := `{"version":2,"repo":"o/r","hostname":"issues.example","proposal":7,"issue":9,"allow_nonatomic":true,"accepted_receipts":[{` +
 		`"role":"review","carrier":{"type":"REVIEW","id":"REVIEW-001"},"receipt_id":"receipt-review-1",` +
 		`"receipt_digest":"` + strings.Repeat("a", 64) + `","generation":1,` +
 		`"lifecycle":[{"target":{"type":"REVIEW","id":"REVIEW-001"},"status":"done"}],` +
@@ -67,7 +67,7 @@ func TestReadReceiptProjectionRejectsReceiptContentAndCompilesIdentityOnly(t *te
 		t.Fatal(err)
 	}
 	plan, err := reconcile.CompileReceiptProjection(projection)
-	if err != nil || !plan.AllowNonAtomic || len(plan.Operations) != 3 || plan.Operations[0].Precondition.AcceptedReceipt == nil {
+	if err != nil || !plan.AllowNonAtomic || len(plan.Operations) != 2 || plan.Operations[0].Precondition.AcceptedReceipt == nil {
 		t.Fatalf("plan=%+v err=%v", plan, err)
 	}
 	for _, forbidden := range []string{"subject_revision", "provenance", "assurance", "content", "evidence_refs"} {
@@ -129,7 +129,7 @@ func TestResolveReceiptRelationshipAuthorityUsesBoundChangeAndImmutableAssignmen
 		297: {Number: 297, HTMLURL: "https://github.com/o/r/issues/297", Body: "<!-- issue-spec:issue=implement change=change-295 version=1 -->\n- Design Issue: 296"},
 		305: {Number: 305, HTMLURL: "https://github.com/o/r/issues/305", Body: "<!-- issue-spec:issue=proposal change=change-295 version=1 -->"},
 	}
-	projection := reconcile.ReceiptProjection{Version: 1, Repo: "o/r", Hostname: "github.com", Proposal: 295, Issue: 297,
+	projection := reconcile.ReceiptProjection{Version: reconcile.ReceiptProjectionVersion, Repo: "o/r", Hostname: "github.com", Proposal: 295, Issue: 297,
 		AcceptedReceipts: []reconcile.AcceptedReceiptProjection{{Role: assignment.RoleVerification,
 			Carrier: reconcile.Target{Type: "VERIFY", ID: "VERIFY-036"}, ReceiptID: receiptID, ReceiptDigest: receiptDigest, Generation: 1,
 			Lifecycle:       []reconcile.ReceiptLifecycle{{Target: reconcile.Target{Type: "VERIFY", ID: "VERIFY-036"}, Status: "done"}},
@@ -158,12 +158,20 @@ func TestResolveReceiptRelationshipAuthorityUsesBoundChangeAndImmutableAssignmen
 		t.Fatal(err)
 	}
 	for _, operation := range plan.Operations {
-		if operation.Kind != "link" {
+		if operation.Kind != "relationship-update" {
 			continue
 		}
 		authority := operation.Precondition.RelationshipAuthority
+		allURLs := operation.Desired.RelationshipUpdate != nil
+		if allURLs {
+			for _, relationship := range operation.Desired.RelationshipUpdate.Add {
+				allURLs = allURLs && relationship.URL != ""
+			}
+		}
 		if authority == nil || authority.AssignmentProcess.ID != "PROCESS-036" ||
 			authority.AssignmentID != assignmentID || authority.CarrierURL != baseComments[297][1].HTMLURL ||
+			operation.Desired.Peer != nil || operation.Desired.RelationshipUpdate == nil ||
+			len(operation.Desired.RelationshipUpdate.Add) != 3 || !allURLs ||
 			strings.Contains(verifyBody, "issuecomment-1") || strings.Contains(verifyBody, "issuecomment-5") {
 			t.Fatalf("resolved authority=%+v carrier=%s", authority, verifyBody)
 		}
