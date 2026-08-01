@@ -223,6 +223,7 @@ func TestBuildMinimalFinalEvidenceProjectsSharedRoleReceiptsFromIssuingAssignmen
 	}
 	for _, target := range fixture.targetProcessIDs {
 		seen := map[gates.FinalEvidenceKind]bool{}
+		seenReviewTest, seenVerificationTest := false, false
 		for _, record := range snapshot.Records {
 			if record.ProcessID != target {
 				continue
@@ -233,9 +234,33 @@ func TestBuildMinimalFinalEvidenceProjectsSharedRoleReceiptsFromIssuingAssignmen
 				if record.AssignmentProcessID != fixture.reviewProcessID {
 					t.Fatalf("projected REVIEW changed assignment authority: %+v", record)
 				}
-			case gates.FinalEvidenceVerification, gates.FinalEvidenceTest:
+			case gates.FinalEvidenceVerification:
 				if record.AssignmentProcessID != fixture.verifyProcessID {
 					t.Fatalf("projected VERIFY changed assignment authority: %+v", record)
+				}
+			case gates.FinalEvidenceTest:
+				switch record.TestAuthorityRole {
+				case assignment.RoleReview:
+					seenReviewTest = true
+					if record.AssignmentProcessID != fixture.reviewProcessID ||
+						!strings.HasPrefix(record.Source, "accepted-review-receipt:") ||
+						len(record.ReceiptDigest) != 64 || record.AssignmentGeneration != 1 ||
+						record.SubjectRevision != fixture.subject || record.AssignedSelector == nil ||
+						record.ResolvedRevision != fixture.subject {
+						t.Fatalf("projected review test changed assignment/source authority: %+v", record)
+					}
+					resolved, err := assignment.ResolveTestSelector(*record.AssignedSelector, record.ResolvedRevision)
+					if err != nil || resolved.Command != record.ExecutedCommand {
+						t.Fatalf("projected review test lost reproducible command identity: %+v err=%v", record, err)
+					}
+				case assignment.RoleVerification:
+					seenVerificationTest = true
+					if record.AssignmentProcessID != fixture.verifyProcessID ||
+						!strings.HasPrefix(record.Source, "accepted-verification-receipt:") {
+						t.Fatalf("projected verification test changed assignment/source authority: %+v", record)
+					}
+				default:
+					t.Fatalf("projected test lacks explicit authority role: %+v", record)
 				}
 			}
 		}
@@ -244,7 +269,100 @@ func TestBuildMinimalFinalEvidenceProjectsSharedRoleReceiptsFromIssuingAssignmen
 				t.Fatalf("target %s lacks projected %s evidence: %+v", target, kind, snapshot.Records)
 			}
 		}
+		if !seenReviewTest || !seenVerificationTest {
+			t.Fatalf("target %s lacks role-separated review/verification tests: %+v", target, snapshot.Records)
+		}
 	}
+}
+
+func TestBuildMinimalFinalEvidenceReviewTestCarrierTamperingFailsClosed(t *testing.T) {
+	otherSubject := strings.Repeat("c", 40)
+	for name, mutate := range map[string]func(*acceptedReviewReceipt){
+		"changed selector": func(value *acceptedReviewReceipt) {
+			changed := cloneFinalTestSelector(*value.Tests[0].AssignedSelector)
+			changed.Command += " --changed"
+			resolved, err := assignment.ResolveTestSelector(changed, value.SubjectRevision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			value.Tests[0].AssignedSelector = &changed
+			value.Tests[0].Command = resolved.Command
+		},
+		"changed command":  func(value *acceptedReviewReceipt) { value.Tests[0].Command += " --forged" },
+		"changed revision": func(value *acceptedReviewReceipt) { value.Tests[0].ResolvedRevision = otherSubject },
+		"failed":           func(value *acceptedReviewReceipt) { value.Tests[0].Outcome = assignment.TestFailed },
+		"skipped":          func(value *acceptedReviewReceipt) { value.Tests[0].Outcome = assignment.TestSkipped },
+		"wrong assurance": func(value *acceptedReviewReceipt) {
+			value.Tests[0].Assurance = assignment.AssuranceProviderOwned
+		},
+		"duplicate": func(value *acceptedReviewReceipt) {
+			value.Tests = append(value.Tests, value.Tests[0])
+		},
+		"extra": func(value *acceptedReviewReceipt) {
+			value.Tests = append(value.Tests, acceptedReviewTest{ID: "extra", Command: "go test ./extra",
+				Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported})
+		},
+		"wrong assignment": func(value *acceptedReviewReceipt) { value.AssignmentID = "assignment-review-other" },
+		"wrong digest":     func(value *acceptedReviewReceipt) { value.AssignmentDigest = strings.Repeat("f", 64) },
+		"wrong generation": func(value *acceptedReviewReceipt) { value.AssignmentGeneration++ },
+		"wrong subject":    func(value *acceptedReviewReceipt) { value.SubjectRevision = otherSubject },
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newMultiCarrierRoleEvidenceFixture(t)
+			mutateReviewCarrier(t, &fixture, mutate)
+			snapshot := fixture.snapshot()
+			for _, record := range snapshot.Records {
+				if record.Kind == gates.FinalEvidenceTest && record.TestAuthorityRole == assignment.RoleReview {
+					t.Fatalf("tampered review test entered final evidence: %+v", record)
+				}
+			}
+		})
+	}
+
+	t.Run("legacy marker without tests", func(t *testing.T) {
+		fixture := newMultiCarrierRoleEvidenceFixture(t)
+		mutateReviewCarrier(t, &fixture, func(value *acceptedReviewReceipt) { value.Tests = nil })
+		snapshot := fixture.snapshot()
+		if !snapshot.Index.Passed {
+			t.Fatalf("historical compact review marker became unreadable: %+v", snapshot.Index)
+		}
+		reviewSeen := false
+		for _, record := range snapshot.Records {
+			reviewSeen = reviewSeen || record.Kind == gates.FinalEvidenceReview
+			if record.Kind == gates.FinalEvidenceTest && record.TestAuthorityRole == assignment.RoleReview {
+				t.Fatalf("historical marker without tests supplied test evidence: %+v", record)
+			}
+		}
+		if !reviewSeen {
+			t.Fatal("historical marker without tests no longer supplies its accepted review verdict")
+		}
+	})
+}
+
+func mutateReviewCarrier(t *testing.T, fixture *multiCarrierRoleEvidenceFixture,
+	mutate func(*acceptedReviewReceipt)) {
+	t.Helper()
+	for index := range fixture.artifacts {
+		artifact := &fixture.artifacts[index]
+		if artifact.Comment.Type != "REVIEW" {
+			continue
+		}
+		authority, found, err := parseAcceptedReviewReceipt(artifact.Comment.Body)
+		if err != nil || !found {
+			t.Fatalf("parse accepted review carrier: found=%t err=%v", found, err)
+		}
+		mutate(&authority)
+		raw, err := json.Marshal(authority)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := strings.Index(artifact.Comment.Body, acceptedReviewReceiptStart)
+		end := strings.Index(artifact.Comment.Body, acceptedReviewReceiptEnd) + len(acceptedReviewReceiptEnd)
+		block := acceptedReviewReceiptStart + "\n" + string(raw) + "\n" + acceptedReviewReceiptEnd
+		artifact.Comment = model.ParseTypedComment(artifact.Comment.Body[:start] + block + artifact.Comment.Body[end:])
+		return
+	}
+	t.Fatal("fixture lacks accepted REVIEW carrier")
 }
 
 func TestBuildMinimalFinalEvidenceRoleAuthorityMismatchFailsClosedForReviewAndVerify(t *testing.T) {
@@ -291,11 +409,14 @@ func TestBuildMinimalFinalEvidenceRoleAuthorityMismatchFailsClosedForReviewAndVe
 					if !target {
 						continue
 					}
-					if role == assignment.RoleReview && record.Kind == gates.FinalEvidenceReview {
+					if role == assignment.RoleReview && (record.Kind == gates.FinalEvidenceReview ||
+						(record.Kind == gates.FinalEvidenceTest && record.TestAuthorityRole == assignment.RoleReview)) {
 						t.Fatalf("mismatched REVIEW authority entered target evidence: %+v", record)
 					}
 					if role == assignment.RoleVerification &&
-						(record.Kind == gates.FinalEvidenceVerification || record.Kind == gates.FinalEvidenceTest || record.Kind == gates.FinalEvidenceCheck) {
+						(record.Kind == gates.FinalEvidenceVerification ||
+							(record.Kind == gates.FinalEvidenceTest && record.TestAuthorityRole == assignment.RoleVerification) ||
+							record.Kind == gates.FinalEvidenceCheck) {
 						t.Fatalf("mismatched VERIFY authority entered target evidence: %+v", record)
 					}
 				}
@@ -331,9 +452,15 @@ func newMultiCarrierRoleEvidenceFixture(t *testing.T) multiCarrierRoleEvidenceFi
 	reviewProcess := finalEvidenceRoleProcess(t, fixture.reviewProcessID, assignment.RoleReview, fixture.specID)
 	verifyProcess := finalEvidenceRoleProcess(t, fixture.verifyProcessID, assignment.RoleVerification, fixture.specID)
 
+	reviewSelector := assignment.TestSelector{ID: "review-durable",
+		Command: "issue-spec durable-spec check --repo o/r --proposal 381 --root . --json",
+		RevisionBinding: &assignment.RevisionBinding{Source: assignment.RevisionBindingSourceSubjectRevision,
+			Argument: assignment.RevisionBindingArgumentSubject}}
+	reviewTest := resolvedCommandTestResult(t, reviewSelector, fixture.subject)
 	reviewAssignment := testReviewAssignment(t, fixture.subject)
 	reviewAssignment.ID, reviewAssignment.ProcessID = "assignment-review-shared-1", fixture.reviewProcessID
-	reviewReceipt := testSealedReviewReceiptForAssignment(t, reviewAssignment, nil)
+	reviewAssignment.Review.RequiredTests = []assignment.TestSelector{reviewSelector}
+	reviewReceipt := testSealedReviewReceiptForAssignment(t, reviewAssignment, []assignment.TestResult{reviewTest})
 	reviewBody, err := renderSubmittedReview("REVIEW-913", fixture.reviewProcessID, reviewProcess.URL,
 		"https://example.test/pull/7", []string{fixture.specURL}, reviewReceipt)
 	if err != nil {
@@ -385,7 +512,7 @@ func newMultiCarrierRoleEvidenceFixture(t *testing.T) multiCarrierRoleEvidenceFi
 	fixture.inputs = append(fixture.inputs, gates.ProcessEvidenceInput{Process: reviewProcess, ActiveSpecs: activeSpecs,
 		AuthorAgentsBySpec: authors, ActiveAssignment: &gates.ActiveAssignmentEvidence{ProcessID: fixture.reviewProcessID,
 			AssignmentID: reviewAssignment.ID, AssignmentDigest: reviewDigest, Generation: 1,
-			Role: assignment.RoleReview, SubjectRevision: fixture.subject},
+			Role: assignment.RoleReview, SubjectRevision: fixture.subject, RequiredTests: []assignment.TestSelector{reviewSelector}},
 		Reviews: []gates.ReviewEvidence{{ProcessID: fixture.reviewProcessID, SpecID: fixture.specID, URL: review.URL,
 			Done: true, ReviewerAgent: "Independent Reviewer", SubjectRevision: fixture.subject, Trusted: true}}})
 	verifyDigest, err := assignment.AssignmentDigest(verifyAssignment)

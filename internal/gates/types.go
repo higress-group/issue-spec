@@ -181,6 +181,7 @@ type FinalEvidenceRecord struct {
 	AssignmentID         string                    `json:"assignment_id,omitempty"`
 	AssignmentDigest     string                    `json:"assignment_digest,omitempty"`
 	AssignmentGeneration uint64                    `json:"assignment_generation,omitempty"`
+	TestAuthorityRole    assignment.Role           `json:"test_authority_role,omitempty"`
 	AssignedSelector     *assignment.TestSelector  `json:"assigned_selector,omitempty"`
 	ResolvedRevision     string                    `json:"resolved_revision,omitempty"`
 	ExecutedCommand      string                    `json:"executed_command,omitempty"`

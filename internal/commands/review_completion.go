@@ -36,7 +36,17 @@ type acceptedReviewReceipt struct {
 	SubjectRevision      string                   `json:"subject_revision"`
 	Verdict              assignment.ReviewVerdict `json:"verdict"`
 	FindingIDs           []string                 `json:"finding_ids,omitempty"`
+	Tests                []acceptedReviewTest     `json:"tests,omitempty"`
 	Provenance           assignment.Provenance    `json:"provenance"`
+}
+
+type acceptedReviewTest struct {
+	ID               string                   `json:"id"`
+	Command          string                   `json:"command"`
+	AssignedSelector *assignment.TestSelector `json:"assigned_selector,omitempty"`
+	ResolvedRevision string                   `json:"resolved_revision,omitempty"`
+	Outcome          assignment.TestOutcome   `json:"outcome"`
+	Assurance        assignment.Assurance     `json:"assurance"`
 }
 
 func validateReviewReceiptBinding(receipt assignment.Receipt, sealed assignment.Assignment,
@@ -116,7 +126,17 @@ func acceptedReviewReceiptFrom(receipt assignment.Receipt) acceptedReviewReceipt
 	for _, finding := range receipt.Review.Findings {
 		result.FindingIDs = append(result.FindingIDs, finding.ID)
 	}
+	for _, test := range receipt.Tests {
+		projected := acceptedReviewTest{ID: test.ID, Command: test.Command,
+			ResolvedRevision: test.ResolvedRevision, Outcome: test.Outcome, Assurance: test.Assurance}
+		if test.AssignedSelector != nil {
+			selector := cloneFinalTestSelector(*test.AssignedSelector)
+			projected.AssignedSelector = &selector
+		}
+		result.Tests = append(result.Tests, projected)
+	}
 	sort.Strings(result.FindingIDs)
+	sort.Slice(result.Tests, func(i, j int) bool { return result.Tests[i].ID < result.Tests[j].ID })
 	return result
 }
 

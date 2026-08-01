@@ -1129,14 +1129,28 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 				}
 				writer := strings.ToLower(strings.TrimSpace(authority.Provenance.Writer))
 				independent = writer != "" && !input.AuthorAgentsBySpec[evidence.SpecID][writer]
-				record := CanonicalEvidenceRecord{ProcessID: processID, SpecID: evidence.SpecID, Kind: CanonicalEvidenceReview,
+				base := CanonicalEvidenceRecord{ProcessID: processID, SpecID: evidence.SpecID,
 					Authority: CanonicalEvidenceRoleOwned, EvidenceID: authority.ReceiptID, ReceiptID: authority.ReceiptID,
 					ReceiptDigest: authority.ReceiptDigest, AssignmentProcessID: assignmentProcessID, AssignmentID: authority.AssignmentID,
 					AssignmentDigest: authority.AssignmentDigest, AssignmentGeneration: authority.AssignmentGeneration,
 					SubjectRevision: revision, URL: artifact.URL,
 					Source: "accepted-review-receipt:self-reported", Trusted: true}
-				addTargets(record, roleOwnedEvidenceTargets(inputs, assignmentProcessID, evidence.URL, evidence.SpecID,
-					assignment.RoleReview), "", independent)
+				targets := roleOwnedEvidenceTargets(inputs, assignmentProcessID, evidence.URL, evidence.SpecID,
+					assignment.RoleReview)
+				review := base
+				review.Kind, review.EvidenceID = CanonicalEvidenceReview, authority.ReceiptID
+				addTargets(review, targets, "", independent)
+				for _, test := range authority.Tests {
+					record := base
+					record.Kind, record.EvidenceID = CanonicalEvidenceTest, authority.ReceiptID+":test:"+test.ID
+					record.TestID, record.TestAuthorityRole = test.ID, assignment.RoleReview
+					record.ResolvedRevision, record.ExecutedCommand = test.ResolvedRevision, test.Command
+					if test.AssignedSelector != nil {
+						selector := cloneFinalTestSelector(*test.AssignedSelector)
+						record.AssignedSelector = &selector
+					}
+					addTargets(record, targets, test.ID, independent)
+				}
 				continue
 			}
 			if !evidence.Trusted || evidence.SubjectRevision != revision {
@@ -1189,7 +1203,8 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 			for _, test := range authority.Tests {
 				record := base
 				record.Kind, record.EvidenceID = CanonicalEvidenceTest, authority.ReceiptID+":test:"+test.ID
-				record.TestID, record.ResolvedRevision, record.ExecutedCommand = test.ID, test.ResolvedRevision, test.Command
+				record.TestID, record.TestAuthorityRole = test.ID, assignment.RoleVerification
+				record.ResolvedRevision, record.ExecutedCommand = test.ResolvedRevision, test.Command
 				if test.AssignedSelector != nil {
 					selector := cloneFinalTestSelector(*test.AssignedSelector)
 					record.AssignedSelector = &selector
@@ -1263,7 +1278,8 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 				Independent: meta.independent, AssignmentProcessID: record.AssignmentProcessID,
 				ReceiptID: record.ReceiptID, ReceiptDigest: record.ReceiptDigest, AssignmentID: record.AssignmentID,
 				AssignmentDigest: record.AssignmentDigest, AssignmentGeneration: record.AssignmentGeneration,
-				AssignedSelector: record.AssignedSelector, ResolvedRevision: record.ResolvedRevision,
+				TestAuthorityRole: record.TestAuthorityRole,
+				AssignedSelector:  record.AssignedSelector, ResolvedRevision: record.ResolvedRevision,
 				ExecutedCommand: record.ExecutedCommand, CheckSelector: record.CheckSelector})
 		}
 	}
@@ -1453,7 +1469,34 @@ func exactAcceptedReviewCarrier(artifact model.Artifact, expectedRevision string
 		!strings.EqualFold(writer, strings.TrimSpace(artifact.Comment.Agent)) || strings.EqualFold(writer, "Coordinator") {
 		return acceptedReviewReceipt{}, false
 	}
+	seenTests := map[string]bool{}
+	for _, test := range authority.Tests {
+		if strings.TrimSpace(test.ID) == "" || strings.TrimSpace(test.Command) == "" || seenTests[test.ID] ||
+			test.Outcome != assignment.TestPassed || test.Assurance != assignment.AssuranceSelfReported ||
+			!exactAcceptedReviewTest(test, expectedRevision) {
+			return acceptedReviewReceipt{}, false
+		}
+		seenTests[test.ID] = true
+	}
 	return authority, true
+}
+
+func exactAcceptedReviewTest(test acceptedReviewTest, expectedRevision string) bool {
+	hasSelector := test.AssignedSelector != nil
+	hasRevision := strings.TrimSpace(test.ResolvedRevision) != ""
+	if hasSelector != hasRevision {
+		return false
+	}
+	if !hasSelector {
+		selector := assignment.TestSelector{ID: test.ID, Command: test.Command}
+		return assignment.ValidateTestSelectorRevisionContract(assignment.RoleReview, expectedRevision, selector) == nil
+	}
+	if test.AssignedSelector.ID != test.ID ||
+		assignment.ValidateTestSelectorRevisionContract(assignment.RoleReview, expectedRevision, *test.AssignedSelector) != nil {
+		return false
+	}
+	resolved, err := assignment.ResolveTestSelector(*test.AssignedSelector, test.ResolvedRevision)
+	return err == nil && strings.EqualFold(test.ResolvedRevision, expectedRevision) && test.Command == resolved.Command
 }
 
 func consumeAcceptedVerificationEvidence(inputs []gates.ProcessEvidenceInput, artifacts []model.Artifact,

@@ -29,7 +29,8 @@ func TestReviewReceiptBindingAndImmutableProjection(t *testing.T) {
 		t.Fatalf("changed=%t err=%v", changed, err)
 	}
 	parsed, found, err := parseAcceptedReviewReceipt(stamped)
-	if err != nil || !found || parsed.ReceiptDigest != receipt.ReceiptDigest || parsed.Verdict != assignment.ReviewApprove {
+	if err != nil || !found || parsed.ReceiptDigest != receipt.ReceiptDigest || parsed.Verdict != assignment.ReviewApprove ||
+		len(parsed.Tests) != 0 {
 		t.Fatalf("parsed=%+v found=%t err=%v", parsed, found, err)
 	}
 	if retry, changed, err := stampAcceptedReviewReceipt(stamped, projected); err != nil || changed || retry != stamped {
@@ -39,6 +40,49 @@ func TestReviewReceiptBindingAndImmutableProjection(t *testing.T) {
 	other.ReceiptID = "receipt-review-other"
 	if _, _, err := stampAcceptedReviewReceipt(stamped, other); err == nil || !strings.Contains(err.Error(), "immutable") {
 		t.Fatalf("conflicting accepted receipt error=%v", err)
+	}
+}
+
+func TestAcceptedReviewReceiptProjectionPreservesExactTests(t *testing.T) {
+	subject := strings.Repeat("b", 40)
+	bound := assignment.TestSelector{ID: "durable", Command: "issue-spec durable-spec check --repo o/r --proposal 9 --root . --json",
+		RevisionBinding: &assignment.RevisionBinding{Source: assignment.RevisionBindingSourceSubjectRevision,
+			Argument: assignment.RevisionBindingArgumentSubject}}
+	literal := assignment.TestSelector{ID: "unit", Command: "go test ./internal/commands"}
+	sealed := testReviewAssignment(t, subject)
+	sealed.Review.RequiredTests = []assignment.TestSelector{literal, bound}
+	receipt := testSealedReviewReceiptForAssignment(t, sealed, []assignment.TestResult{
+		{ID: literal.ID, Command: literal.Command, Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported},
+		resolvedCommandTestResult(t, bound, subject),
+	})
+
+	projected := acceptedReviewReceiptFrom(receipt)
+	resolved, err := assignment.ResolveTestSelector(bound, subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projected.Tests) != 2 || projected.Tests[0].ID != bound.ID || projected.Tests[1].ID != literal.ID ||
+		projected.Tests[0].AssignedSelector == nil || projected.Tests[0].ResolvedRevision != subject ||
+		projected.Tests[0].Command != resolved.Command || projected.Tests[0].Outcome != assignment.TestPassed ||
+		projected.Tests[0].Assurance != assignment.AssuranceSelfReported {
+		t.Fatalf("compact review tests lost exact receipt identity: %+v", projected.Tests)
+	}
+	var receiptBoundSelector *assignment.TestSelector
+	for _, test := range receipt.Tests {
+		if test.ID == bound.ID {
+			receiptBoundSelector = test.AssignedSelector
+		}
+	}
+	if receiptBoundSelector == nil || projected.Tests[0].AssignedSelector == receiptBoundSelector {
+		t.Fatal("compact review projection retained a mutable selector pointer")
+	}
+	body, changed, err := stampAcceptedReviewReceipt("canonical REVIEW\n", projected)
+	if err != nil || !changed {
+		t.Fatalf("stamp changed=%t err=%v", changed, err)
+	}
+	parsed, found, err := parseAcceptedReviewReceipt(body)
+	if err != nil || !found || len(parsed.Tests) != 2 || parsed.Tests[0].ResolvedRevision != subject {
+		t.Fatalf("parsed=%+v found=%t err=%v", parsed, found, err)
 	}
 }
 

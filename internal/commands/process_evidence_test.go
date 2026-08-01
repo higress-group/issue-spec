@@ -1152,15 +1152,79 @@ func TestCanonicalEvidenceIndexPreservesActiveLiteralSelectorIdentity(t *testing
 	}
 }
 
+func TestCanonicalEvidenceIndexSeparatesReviewAndVerificationTestAuthority(t *testing.T) {
+	revision := strings.Repeat("b", 40)
+	selector := assignment.TestSelector{ID: "durable",
+		Command: "issue-spec durable-spec check --repo o/r --proposal 381 --root . --json",
+		RevisionBinding: &assignment.RevisionBinding{Source: assignment.RevisionBindingSourceSubjectRevision,
+			Argument: assignment.RevisionBindingArgumentSubject}}
+	for _, role := range []assignment.Role{assignment.RoleReview, assignment.RoleVerification} {
+		t.Run(string(role), func(t *testing.T) {
+			active := gates.ActiveAssignmentEvidence{ProcessID: "PROCESS-001", AssignmentID: "assignment-1",
+				AssignmentDigest: strings.Repeat("d", 64), Generation: 1, Role: role,
+				SubjectRevision: revision, RequiredTests: []assignment.TestSelector{selector}}
+			record := canonicalActiveTestEvidence(t, active, 1, active.AssignmentID, active.AssignmentDigest,
+				"receipt-current", selector, revision)
+			activeByProcess := map[string]gates.ActiveAssignmentEvidence{active.ProcessID: active}
+			if index, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{record}, revision,
+				activeByProcess, MaxCanonicalEvidenceIndexEntries); err != nil || index.Len() != 1 {
+				t.Fatalf("%s test authority rejected: index=%+v err=%v", role, index, err)
+			}
+
+			wrongRole := cloneCanonicalEvidenceRecord(record)
+			if role == assignment.RoleReview {
+				wrongRole.TestAuthorityRole = assignment.RoleVerification
+			} else {
+				wrongRole.TestAuthorityRole = assignment.RoleReview
+			}
+			if _, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{wrongRole}, revision,
+				activeByProcess, MaxCanonicalEvidenceIndexEntries); err == nil {
+				t.Fatal("test authority role did not join to the active assignment role")
+			}
+
+			wrongSource := cloneCanonicalEvidenceRecord(record)
+			if role == assignment.RoleReview {
+				wrongSource.Source = "accepted-verification-receipt:self-reported-tests"
+			} else {
+				wrongSource.Source = "accepted-review-receipt:self-reported"
+			}
+			if _, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{wrongSource}, revision,
+				activeByProcess, MaxCanonicalEvidenceIndexEntries); err == nil {
+				t.Fatal("test authority role accepted the other role's receipt source")
+			}
+
+			extra := cloneCanonicalEvidenceRecord(record)
+			extra.TestID, extra.EvidenceID = "extra", "receipt-current:test:extra"
+			extra.AssignedSelector = nil
+			extra.ResolvedRevision = ""
+			extra.ExecutedCommand = "go test ./extra"
+			if _, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{extra}, revision,
+				activeByProcess, MaxCanonicalEvidenceIndexEntries); err == nil {
+				t.Fatal("unassigned extra test entered the canonical index")
+			}
+		})
+	}
+
+	nonTest := canonicalRoleEvidence("PROCESS-001", "SPEC-001", "receipt-1", CanonicalEvidenceReview)
+	nonTest.TestAuthorityRole = assignment.RoleReview
+	if _, err := BuildCanonicalEvidenceIndex([]CanonicalEvidenceRecord{nonTest}, "head-current"); err == nil {
+		t.Fatal("non-test evidence carried a test authority role")
+	}
+}
+
 func canonicalActiveTestEvidence(t *testing.T, active gates.ActiveAssignmentEvidence, generation uint64,
 	assignmentID, assignmentDigest, receiptID string, selector assignment.TestSelector, revision string) CanonicalEvidenceRecord {
 	t.Helper()
+	source := "accepted-verification-receipt:self-reported-tests"
+	if active.Role == assignment.RoleReview {
+		source = "accepted-review-receipt:self-reported"
+	}
 	record := CanonicalEvidenceRecord{ProcessID: "PROCESS-900", SpecID: "SPEC-001", Kind: CanonicalEvidenceTest,
 		Authority: CanonicalEvidenceRoleOwned, EvidenceID: receiptID + ":test:" + selector.ID,
 		ReceiptID: receiptID, ReceiptDigest: strings.Repeat("a", 64), AssignmentProcessID: active.ProcessID,
 		AssignmentID: assignmentID, AssignmentDigest: assignmentDigest, AssignmentGeneration: generation,
-		SubjectRevision: revision, TestID: selector.ID, ExecutedCommand: selector.Command,
-		Source: "accepted-verification-receipt:self-reported-tests", Trusted: true}
+		SubjectRevision: revision, TestID: selector.ID, TestAuthorityRole: active.Role, ExecutedCommand: selector.Command,
+		Source: source, Trusted: true}
 	if selector.RevisionBinding != nil {
 		resolved, err := assignment.ResolveTestSelector(selector, revision)
 		if err != nil {

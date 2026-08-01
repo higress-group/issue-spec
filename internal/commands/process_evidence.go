@@ -61,6 +61,7 @@ type CanonicalEvidenceRecord struct {
 	AssignmentGeneration uint64
 	SubjectRevision      string
 	TestID               string
+	TestAuthorityRole    assignment.Role
 	AssignedSelector     *assignment.TestSelector
 	ResolvedRevision     string
 	ExecutedCommand      string
@@ -195,6 +196,8 @@ func selectActiveAssignmentEvidence(record CanonicalEvidenceRecord, active map[s
 	wantRole := assignment.RoleVerification
 	if record.Kind == CanonicalEvidenceReview {
 		wantRole = assignment.RoleReview
+	} else if record.Kind == CanonicalEvidenceTest {
+		wantRole = record.TestAuthorityRole
 	}
 	if authority.Role != wantRole {
 		return false, fmt.Errorf("canonical evidence %q uses active %s assignment for %s evidence", record.EvidenceID, authority.Role, record.Kind)
@@ -204,10 +207,18 @@ func selectActiveAssignmentEvidence(record CanonicalEvidenceRecord, active map[s
 		if err != nil || !ok {
 			return false, fmt.Errorf("canonical evidence %q has invalid stable selector or expanded command: %v", record.EvidenceID, err)
 		}
+		assigned := false
 		for _, required := range authority.RequiredTests {
-			if required.ID == selector.ID && !assignment.TestSelectorIdentityEqual(required, selector) {
+			if required.ID != selector.ID {
+				continue
+			}
+			assigned = true
+			if !assignment.TestSelectorIdentityEqual(required, selector) {
 				return false, fmt.Errorf("canonical evidence %q changes the active assignment selector identity", record.EvidenceID)
 			}
+		}
+		if !assigned {
+			return false, fmt.Errorf("canonical evidence %q is not assigned by the active %s assignment", record.EvidenceID, authority.Role)
 		}
 	}
 	if record.Kind == CanonicalEvidenceCheck && record.AssignmentProcessID != "" {
@@ -228,7 +239,7 @@ func canonicalEvidenceTestSelector(record CanonicalEvidenceRecord, expectedRevis
 		if record.ResolvedRevision != "" {
 			return assignment.TestSelector{}, false, errors.New("literal selector carries a resolved revision")
 		}
-		if err := assignment.ValidateTestSelectorRevisionContract(assignment.RoleVerification, expectedRevision, selector); err != nil {
+		if err := assignment.ValidateTestSelectorRevisionContract(record.TestAuthorityRole, expectedRevision, selector); err != nil {
 			return assignment.TestSelector{}, false, err
 		}
 		return selector, true, nil
@@ -237,7 +248,7 @@ func canonicalEvidenceTestSelector(record CanonicalEvidenceRecord, expectedRevis
 	if selector.ID != record.TestID {
 		return assignment.TestSelector{}, false, errors.New("assigned selector id differs from test id")
 	}
-	if err := assignment.ValidateTestSelectorRevisionContract(assignment.RoleVerification, expectedRevision, selector); err != nil {
+	if err := assignment.ValidateTestSelectorRevisionContract(record.TestAuthorityRole, expectedRevision, selector); err != nil {
 		return assignment.TestSelector{}, false, err
 	}
 	resolved, err := assignment.ResolveTestSelector(selector, record.ResolvedRevision)
@@ -267,6 +278,13 @@ func validateCanonicalEvidenceRecord(record CanonicalEvidenceRecord, expectedRev
 		strings.TrimSpace(record.Source) == "" || record.Source != strings.TrimSpace(record.Source) {
 		return fmt.Errorf("canonical evidence %q is missing exact-current canonical identity", record.EvidenceID)
 	}
+	if record.Kind == CanonicalEvidenceTest {
+		if record.TestAuthorityRole != assignment.RoleReview && record.TestAuthorityRole != assignment.RoleVerification {
+			return fmt.Errorf("canonical evidence %q has invalid test authority role %q", record.EvidenceID, record.TestAuthorityRole)
+		}
+	} else if record.TestAuthorityRole != "" {
+		return fmt.Errorf("canonical evidence %q carries test authority on non-test evidence", record.EvidenceID)
+	}
 	switch record.Authority {
 	case CanonicalEvidenceRoleOwned:
 		if strings.TrimSpace(record.ReceiptID) == "" || record.ReceiptID != strings.TrimSpace(record.ReceiptID) ||
@@ -279,7 +297,12 @@ func validateCanonicalEvidenceRecord(record CanonicalEvidenceRecord, expectedRev
 			return fmt.Errorf("canonical evidence %q has invalid assignment PROCESS identity", record.EvidenceID)
 		}
 		validSource := (record.Kind == CanonicalEvidenceReview && strings.HasPrefix(record.Source, "accepted-review-receipt:")) ||
-			(record.Kind != CanonicalEvidenceReview && strings.HasPrefix(record.Source, "accepted-verification-receipt:"))
+			(record.Kind == CanonicalEvidenceTest && record.TestAuthorityRole == assignment.RoleReview &&
+				strings.HasPrefix(record.Source, "accepted-review-receipt:")) ||
+			(record.Kind == CanonicalEvidenceTest && record.TestAuthorityRole == assignment.RoleVerification &&
+				strings.HasPrefix(record.Source, "accepted-verification-receipt:")) ||
+			(record.Kind != CanonicalEvidenceReview && record.Kind != CanonicalEvidenceTest &&
+				strings.HasPrefix(record.Source, "accepted-verification-receipt:"))
 		if !validSource {
 			return fmt.Errorf("canonical evidence %q is not sourced from an accepted role-owned receipt", record.EvidenceID)
 		}
@@ -323,7 +346,7 @@ func canonicalEvidenceIdentity(record CanonicalEvidenceRecord) string {
 	return strings.Join([]string{string(record.Kind), string(record.Authority), record.EvidenceID,
 		record.ReceiptID, record.ReceiptDigest, record.AssignmentID, record.AssignmentDigest,
 		fmt.Sprint(record.AssignmentGeneration), record.AssignmentProcessID,
-		strings.ToLower(strings.TrimSpace(record.SubjectRevision)), record.TestID, string(selectorJSON),
+		strings.ToLower(strings.TrimSpace(record.SubjectRevision)), record.TestID, string(record.TestAuthorityRole), string(selectorJSON),
 		record.ResolvedRevision, record.ExecutedCommand, string(checkJSON), record.URL, record.Source}, "\x00")
 }
 

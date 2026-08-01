@@ -307,6 +307,20 @@ func (e *evaluator) evaluateFinalEvidence(planning finalPlanning) {
 
 func validateFinalEvidenceAssignment(record FinalEvidenceRecord, inputs map[string]ProcessEvidenceInput,
 	expectedRevision string, activeReceipts map[string]string) error {
+	if record.Kind == FinalEvidenceTest {
+		if record.TestAuthorityRole != assignment.RoleReview && record.TestAuthorityRole != assignment.RoleVerification {
+			return fmt.Errorf("test evidence has invalid authority role %q", record.TestAuthorityRole)
+		}
+		prefix := "accepted-verification-receipt:"
+		if record.TestAuthorityRole == assignment.RoleReview {
+			prefix = "accepted-review-receipt:"
+		}
+		if !strings.HasPrefix(record.Source, prefix) {
+			return fmt.Errorf("%s test evidence has incompatible source %q", record.TestAuthorityRole, record.Source)
+		}
+	} else if record.TestAuthorityRole != "" {
+		return errors.New("non-test evidence carries test authority role")
+	}
 	hasAssignment := record.AssignmentProcessID != "" || record.ReceiptID != "" || record.ReceiptDigest != "" ||
 		record.AssignmentID != "" || record.AssignmentDigest != "" || record.AssignmentGeneration != 0
 	if !hasAssignment {
@@ -333,6 +347,8 @@ func validateFinalEvidenceAssignment(record FinalEvidenceRecord, inputs map[stri
 	wantRole := assignment.RoleVerification
 	if record.Kind == FinalEvidenceReview {
 		wantRole = assignment.RoleReview
+	} else if record.Kind == FinalEvidenceTest {
+		wantRole = record.TestAuthorityRole
 	}
 	if active.Role != wantRole {
 		return fmt.Errorf("%s evidence cannot use %s assignment", record.Kind, active.Role)
@@ -369,7 +385,7 @@ func validateFinalEvidenceAssignment(record FinalEvidenceRecord, inputs map[stri
 		if record.ResolvedRevision == "" {
 			return errors.New("bound selector lacks resolved revision")
 		}
-		if err := assignment.ValidateTestSelectorRevisionContract(assignment.RoleVerification, expectedRevision, selector); err != nil {
+		if err := assignment.ValidateTestSelectorRevisionContract(record.TestAuthorityRole, expectedRevision, selector); err != nil {
 			return err
 		}
 		resolved, err := assignment.ResolveTestSelector(selector, record.ResolvedRevision)
@@ -380,14 +396,22 @@ func validateFinalEvidenceAssignment(record FinalEvidenceRecord, inputs map[stri
 		if record.ResolvedRevision != "" {
 			return errors.New("literal selector carries resolved revision")
 		}
-		if err := assignment.ValidateTestSelectorRevisionContract(assignment.RoleVerification, expectedRevision, selector); err != nil {
+		if err := assignment.ValidateTestSelectorRevisionContract(record.TestAuthorityRole, expectedRevision, selector); err != nil {
 			return err
 		}
 	}
+	assigned := false
 	for _, required := range active.RequiredTests {
-		if required.ID == selector.ID && !assignment.TestSelectorIdentityEqual(required, selector) {
+		if required.ID != selector.ID {
+			continue
+		}
+		assigned = true
+		if !assignment.TestSelectorIdentityEqual(required, selector) {
 			return errors.New("stable selector differs from the active assignment")
 		}
+	}
+	if !assigned {
+		return errors.New("test selector is not required by the active assignment")
 	}
 	return nil
 }

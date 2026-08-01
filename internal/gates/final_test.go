@@ -195,10 +195,23 @@ func TestFinalEvidenceAssignmentJoinReproducesActiveBoundTest(t *testing.T) {
 		Source: "accepted-verification-receipt:self-reported-tests", AssignmentProcessID: active.ProcessID,
 		ReceiptID: "receipt-2", ReceiptDigest: strings.Repeat("a", 64), AssignmentID: active.AssignmentID,
 		AssignmentDigest: active.AssignmentDigest, AssignmentGeneration: active.Generation,
-		AssignedSelector: &assigned, ResolvedRevision: revision, ExecutedCommand: resolved.Command}
+		TestAuthorityRole: assignment.RoleVerification,
+		AssignedSelector:  &assigned, ResolvedRevision: revision, ExecutedCommand: resolved.Command}
 	inputs := map[string]ProcessEvidenceInput{active.ProcessID: {ActiveAssignment: active}}
 	if err := validateFinalEvidenceAssignment(record, inputs, revision, map[string]string{}); err != nil {
 		t.Fatal(err)
+	}
+	reviewActive := *active
+	reviewActive.ProcessID, reviewActive.AssignmentID = "PROCESS-010", "assignment-review-2"
+	reviewActive.Role = assignment.RoleReview
+	reviewRecord := record
+	reviewRecord.AssignmentProcessID, reviewRecord.AssignmentID = reviewActive.ProcessID, reviewActive.AssignmentID
+	reviewRecord.TestAuthorityRole = assignment.RoleReview
+	reviewRecord.Source = "accepted-review-receipt:self-reported"
+	if err := validateFinalEvidenceAssignment(reviewRecord,
+		map[string]ProcessEvidenceInput{reviewActive.ProcessID: {ActiveAssignment: &reviewActive}},
+		revision, map[string]string{}); err != nil {
+		t.Fatalf("review-backed final test was rejected: %v", err)
 	}
 	for name, mutate := range map[string]func(*FinalEvidenceRecord){
 		"wrong generation": func(value *FinalEvidenceRecord) { value.AssignmentGeneration-- },
@@ -209,6 +222,12 @@ func TestFinalEvidenceAssignmentJoinReproducesActiveBoundTest(t *testing.T) {
 			value.AssignedSelector = &changed
 		},
 		"wrong expanded command": func(value *FinalEvidenceRecord) { value.ExecutedCommand += " --forged" },
+		"wrong test role":        func(value *FinalEvidenceRecord) { value.TestAuthorityRole = assignment.RoleReview },
+		"wrong receipt source":   func(value *FinalEvidenceRecord) { value.Source = "accepted-review-receipt:self-reported" },
+		"unassigned extra": func(value *FinalEvidenceRecord) {
+			value.Name, value.EvidenceID = "extra", "receipt-2:test:extra"
+			value.AssignedSelector, value.ResolvedRevision, value.ExecutedCommand = nil, "", "go test ./extra"
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := record
@@ -297,7 +316,7 @@ func minimalFinalSnapshot(t *testing.T, mode Mode) Snapshot {
 			Records: []FinalEvidenceRecord{
 				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceReview, EvidenceID: "review-1", SubjectRevision: minimalFinalRevision, Source: "accepted-review-receipt:review-1", Independent: true},
 				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceVerification, EvidenceID: "verify-1", SubjectRevision: minimalFinalRevision, Source: "accepted-verification-receipt:verify-1", Independent: true},
-				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceTest, EvidenceID: "verify-1:test:unit", Name: "unit", SubjectRevision: minimalFinalRevision, Source: "accepted-verification-receipt:verify-1", Independent: true},
+				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceTest, EvidenceID: "verify-1:test:unit", Name: "unit", SubjectRevision: minimalFinalRevision, Source: "accepted-verification-receipt:verify-1", Independent: true, TestAuthorityRole: assignment.RoleVerification},
 				{ProcessID: "PROCESS-001", SpecID: "SPEC-001", Kind: FinalEvidenceCheck, EvidenceID: "verify-1:check:github:test", Name: "github\x00test", SubjectRevision: minimalFinalRevision, Source: "accepted-verification-receipt:verify-1", Independent: true},
 			},
 		},
