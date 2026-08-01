@@ -18,7 +18,6 @@ import (
 )
 
 const (
-	MaxPreviews   = 8
 	MaxSourceSize = 256 * 1024
 	DefaultHeight = 480
 	MinHeight     = 240
@@ -156,11 +155,6 @@ func ParseWithSource(body, sourceLocator string) Result {
 			addDiagnostic(&result.Descriptors[index], "duplicate_id", fmt.Sprintf("html-preview id %q is duplicated", id))
 		}
 	}
-	if len(result.Descriptors) > MaxPreviews {
-		for i := range result.Descriptors {
-			addDiagnostic(&result.Descriptors[i], "preview_count_exceeded", fmt.Sprintf("body contains %d html-preview blocks; maximum is %d", len(result.Descriptors), MaxPreviews))
-		}
-	}
 	for i := range result.Descriptors {
 		result.Descriptors[i].Executable = len(result.Descriptors[i].Diagnostics) == 0
 	}
@@ -191,7 +185,7 @@ func SemanticView(body string) string {
 }
 
 // Select returns the exact source for one uniquely identified executable
-// preview. Unknown, duplicate, malformed, unsupported, unclosed, excessive, or
+// preview. Unknown, duplicate, malformed, unsupported, unclosed, or
 // oversized previews fail closed.
 func (r Result) Select(id string) (Selection, error) {
 	id = strings.TrimSpace(id)

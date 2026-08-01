@@ -245,7 +245,7 @@ Generate `projection.md` in this shape:
 ```
 ````
 
-Use a stable preview ID for the logical phase view. Metadata accepts only `id`, `version`, `title`, and `height`; IDs use lowercase letters, digits, and hyphens, `version` is `1`, title is at most 120 Unicode scalar values, and height is clamped to 240–720. Keep a body to at most eight previews and each preview source below 256 KiB.
+Use a stable preview ID for the logical phase view. Metadata accepts only `id`, `version`, `title`, and `height`; IDs use lowercase letters, digits, and hyphens, `version` is `1`, title is at most 120 Unicode scalar values, and height is clamped to 240–720. Each preview source must remain below 256 KiB; preview count does not determine executability.
 
 ## Sandbox and accessibility
 
@@ -275,7 +275,7 @@ Before upsert:
 - [ ] Implement estimates and Agent/parallelism suggestions do not define PROCESS semantics, readiness, or gates.
 - [ ] The preview uses one stable ID, valid metadata, inline assets, no network dependencies, and no manually authored projection/typed marker.
 - [ ] The page works with keyboard, visible focus, narrow width, 200% zoom, reduced motion, and long text.
-- [ ] Source size and preview-count limits are respected.
+- [ ] Per-preview source-size limits are respected.
 - [ ] `--source-digest` covers the authoritative input manifest, not the generated projection.
 
 After upsert:
