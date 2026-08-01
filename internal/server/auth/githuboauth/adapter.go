@@ -40,6 +40,46 @@ type Config struct {
 
 const maxUserResponseBytes = 1 << 20
 
+type CallbackFailureClass string
+
+const (
+	CallbackTokenExchangeFailed             CallbackFailureClass = "github_token_exchange_failed"
+	CallbackTokenIncorrectClientCredentials CallbackFailureClass = "github_token_incorrect_client_credentials"
+	CallbackTokenRedirectURIMismatch        CallbackFailureClass = "github_token_redirect_uri_mismatch"
+	CallbackTokenBadVerificationCode        CallbackFailureClass = "github_token_bad_verification_code"
+	CallbackTokenUnverifiedUserEmail        CallbackFailureClass = "github_token_unverified_user_email"
+)
+
+type tokenExchangeError struct{ cause error }
+
+func (e *tokenExchangeError) Error() string { return "githuboauth: token exchange failed" }
+
+// CallbackFailure returns only stable, non-secret diagnostics. Provider error
+// descriptions and response bodies are deliberately excluded because they may
+// contain callback or operator-controlled data.
+func CallbackFailure(err error) (CallbackFailureClass, bool) {
+	var exchangeErr *tokenExchangeError
+	if !errors.As(err, &exchangeErr) {
+		return "", false
+	}
+	var retrieveErr *oauth2.RetrieveError
+	if !errors.As(exchangeErr.cause, &retrieveErr) {
+		return CallbackTokenExchangeFailed, true
+	}
+	switch strings.TrimSpace(retrieveErr.ErrorCode) {
+	case "incorrect_client_credentials", "invalid_client":
+		return CallbackTokenIncorrectClientCredentials, true
+	case "redirect_uri_mismatch":
+		return CallbackTokenRedirectURIMismatch, true
+	case "bad_verification_code", "invalid_grant":
+		return CallbackTokenBadVerificationCode, true
+	case "unverified_user_email":
+		return CallbackTokenUnverifiedUserEmail, true
+	default:
+		return CallbackTokenExchangeFailed, true
+	}
+}
+
 type AdmissionRequest struct {
 	Client    *http.Client
 	Identity  serverauth.ExternalIdentity
@@ -123,7 +163,7 @@ func (a *Adapter) Callback(ctx context.Context, state, code, browserNonce string
 	}
 	token, err := a.oauth.Exchange(ctx, code, oauth2.SetAuthURLParam("code_verifier", tx.PKCEVerifier))
 	if err != nil {
-		return CallbackResult{}, fmt.Errorf("githuboauth: code exchange failed: %w", err)
+		return CallbackResult{}, &tokenExchangeError{cause: err}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.userURL, nil)
 	if err != nil {
