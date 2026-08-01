@@ -687,66 +687,59 @@ For every revision-sensitive required test or check, the issue-spec workflow MUS
 Source SPEC comments:
 - https://github.com/higress-group/issue-spec/issues/381#issuecomment-5151641246
 
-### Requirement: Role-owned completion publishes self-validating receipt evidence
+### Requirement: Role-owned completion creates canonical receipts without manual framing
 
-A non-Coordinator implementation, review, or verification role MUST complete
-from its sealed packet and immutable Git tree with `issue-spec role complete`.
-The command MUST accept only the role's closed semantic decision, derive every
-mechanical receipt fact, execute every sealed test, seal the existing
-`issue-spec.receipt/v1` model, publish outside the managed tree atomically, and
-strictly re-read the same logical identity before reporting success.
-Coordinator acceptance MUST remain a separate recomputing authority and MUST
-NOT repair, normalize, or reseal producer evidence.
+The issue-spec CLI MUST provide a role-owned completion operation that derives every mechanical receipt fact from the sealed assignment and authoritative workspace or snapshot, executes exactly the sealed required tests, combines only closed role-specific semantic input, and emits one atomically written self-validating receipt whose digest uses the shared canonical logical representation and is independent of output-file framing. Coordinator-owned acceptance MUST remain separate, MUST recompute all applicable invariants, and MUST NOT repair, reseal, or strengthen rejected role evidence.
 
 #### Scenario: implementation role completes with one command
 
-- **WHEN** a worker has its final clean one-commit DCO result and closed implementation decision
-- **THEN** role completion derives its revision and paths, runs all focused tests, and returns one bounded self-validating receipt identity
-
-#### Scenario: sealed tests cannot be replaced by the caller
-
-- **WHEN** role completion executes required tests
-- **THEN** selector identity and command come only from the sealed role payload, with bound selectors resolved against the authoritative revision
-
-#### Scenario: failed execution emits no acceptable receipt
-
-- **WHEN** packet, decision, Git observation, selector resolution, or test execution fails
-- **THEN** no newly acceptable success receipt is published
-
-#### Scenario: output is atomic and self-validating
-
-- **WHEN** all role observations and tests pass
-- **THEN** a mode-0600 same-directory temporary file is synchronized, renamed, strictly re-read, and compared with the in-memory identity before success
-
-#### Scenario: canonical digest ignores JSON file framing
-
-- **WHEN** the same logical receipt is framed with LF, CRLF, indentation, or trailing JSON whitespace
-- **THEN** read-only inspection reports the same recomputed digest while semantic tamper, unknown fields, or additional JSON values fail
-
-#### Scenario: Coordinator validation does not repair role evidence
-
-- **WHEN** Coordinator acceptance reads a role receipt with bad structure, digest, revision, paths, tests, or provenance
-- **THEN** acceptance fails without modifying or resealing that receipt
-
-#### Scenario: existing receipt contracts remain compatible
-
-- **WHEN** a historical valid version-1 receipt is parsed or accepted
-- **THEN** its canonical logical bytes and existing acceptance behavior remain unchanged
+- **WHEN** an implementation Worker has a valid active assignment, a clean managed worktree with one DCO result commit, owned changed paths, and passing sealed required tests
+- **THEN** one role-owned completion command derives the assignment identity, generation, base and result revisions, changed paths, exact test evidence, and provenance, and emits a receipt accepted by independent workspace completion validation
 
 #### Scenario: review and verification preserve role decisions
 
-- **WHEN** independent review or verification completes at an exact detached subject
-- **THEN** the role-owned verdict/findings or summary is preserved while tests, check selectors, revision, and provenance are derived mechanically
+- **WHEN** a Reviewer or Verifier supplies the closed semantic fields allowed for its role while completing an immutable assigned subject
+- **THEN** the CLI preserves those role-owned decisions, derives all mechanical identity and test fields from the sealed packet and snapshot, and rejects unknown or role-incompatible input fields
+
+#### Scenario: sealed tests cannot be replaced by the caller
+
+- **WHEN** a caller attempts to omit, add, duplicate, replace, or claim the outcome of a required test or to supply an arbitrary command or revision
+- **THEN** role completion fails closed and does not emit an acceptable success receipt
+
+#### Scenario: canonical digest ignores JSON file framing
+
+- **WHEN** the same valid receipt data is serialized with LF, CRLF, or trailing whitespace outside the top-level JSON value
+- **THEN** parsing and shared canonical re-serialization produce the same logical receipt digest, while any semantic field change produces a different digest or validation failure
+
+#### Scenario: output is atomic and self-validating
+
+- **WHEN** role completion reports success
+- **THEN** the final receipt has been atomically published, re-read, parsed, and verified by the same binary with a recomputed digest equal to the embedded digest
+
+#### Scenario: failed execution emits no acceptable receipt
+
+- **WHEN** a required test fails, the workspace is dirty, commit or ownership policy fails, assignment identity is stale, or revision binding cannot be resolved exactly
+- **THEN** the command exits non-zero with bounded diagnostics and Coordinator acceptance cannot treat its output as successful evidence
+
+#### Scenario: Coordinator validation does not repair role evidence
+
+- **WHEN** workspace complete, review submit, verify submit, or read-only receipt verification observes a missing field, bad digest, stale generation, mismatched revision, or altered test result
+- **THEN** the validator reports the mismatch and remediation without editing, resealing, or replacing the role-owned receipt
+
+#### Scenario: existing receipt contracts remain compatible
+
+- **WHEN** an existing valid version-1 receipt is submitted through the current Coordinator acceptance path
+- **THEN** it remains readable and acceptable under the same trust and exactness rules without historical receipt rewriting
 
 #### Scenario: generated role guidance uses the bounded command
 
-- **WHEN** Apply, Review, or Verify role guidance is generated
-- **THEN** it creates only the closed decision JSON, invokes `issue-spec role complete`, and leaves acceptance and lifecycle mutation to the Coordinator
+- **WHEN** Apply, Review, or Verify role instructions are generated after the role-owned completion operation is available
+- **THEN** the instructions invoke the bounded CLI operation, omit hand-written receipt schema and shell hashing recipes, and ask the role to return only the compact command result and human summary
 
 #### Scenario: instruction compaction is regression tested
 
-- **WHEN** representative generated role packets are compared with the former manual evidence recipe
-- **THEN** each new role packet retains trust, revision, test, and failure constraints with fewer measured bytes
+- **WHEN** representative generated Apply, Review, and Verify packets and handoffs are measured before and after adoption
+- **THEN** fixture-based byte or token estimates demonstrate reduced normal role context and output while every receipt, provenance, revision, test, and acceptance invariant remains enforced by the CLI
 
-Source SPEC:
-- https://github.com/higress-group/issue-spec/issues/396#SPEC-396001
+Source SPEC comments:
+- https://github.com/higress-group/issue-spec/issues/396#issuecomment-5152395123
