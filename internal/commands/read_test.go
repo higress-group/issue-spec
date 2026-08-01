@@ -183,6 +183,45 @@ func TestResolveTargetComment(t *testing.T) {
 	}
 }
 
+func TestReadIssueExpansionBasePreservesExplicitProfile(t *testing.T) {
+	application := newApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	tests := []struct {
+		name      string
+		profile   string
+		host      string
+		commentID int64
+		want      string
+	}{
+		{
+			name: "default GitHub profile remains implicit",
+			host: "github.com",
+			want: "issue-spec read issue --repo ingress/agentgress --issue 1",
+		},
+		{
+			name:      "explicit self-hosted profile",
+			profile:   "team",
+			host:      "github.com",
+			commentID: 8942418941409397,
+			want:      "issue-spec --profile team read issue --repo ingress/agentgress --issue 1 --comment 8942418941409397",
+		},
+		{
+			name:    "explicit profile and hostname",
+			profile: "staging",
+			host:    "issues.example.test",
+			want:    "issue-spec --profile staging read issue --repo ingress/agentgress --issue 1 --hostname issues.example.test",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			application.profileName = test.profile
+			got := application.readIssueExpansionBase("ingress/agentgress", test.host, 1, test.commentID)
+			if got != test.want {
+				t.Fatalf("expansion base = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestReadIssueTypedOnlyOmitsHumanComments(t *testing.T) {
 	var out bytes.Buffer
 	app := newApp(strings.NewReader(""), &out, &bytes.Buffer{})
