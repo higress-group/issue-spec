@@ -486,11 +486,13 @@ func (e *evaluator) evaluateCanonical() {
 func (e *evaluator) evaluateTraceability() {
 	report := e.snapshot.Traceability.Report
 	if !e.snapshot.Traceability.Observed {
-		if !e.snapshot.Relationships.Observed {
+		if !e.snapshot.Relationships.Required {
 			report = model.VerifyTraceability(e.snapshot.Artifacts)
 		} else {
 			var indexErr error
-			if e.snapshot.Relationships.Error != "" {
+			if !e.snapshot.Relationships.Observed {
+				indexErr = errors.New("not observed")
+			} else if e.snapshot.Relationships.Error != "" {
 				indexErr = errors.New(e.snapshot.Relationships.Error)
 			}
 			report = model.VerifyTraceabilityWithRelationships(e.snapshot.Artifacts,

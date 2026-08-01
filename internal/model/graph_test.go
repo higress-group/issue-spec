@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -41,6 +42,28 @@ func TestVerifyTraceabilityCanonicalOwnerEdgesIgnoreReverseBacklinks(t *testing.
 	missingOwner := VerifyTraceabilityWithRelationships(artifacts, edges[:1], nil)
 	if missingOwner.OK || !containsVerifyError(missingOwner.Errors, "Parent TASK TASK-001 is missing its canonical TASK URL") {
 		t.Fatalf("missing canonical owner edge did not fail closed: %+v", missingOwner)
+	}
+}
+
+func TestVerifyTraceabilityRelationshipFailureCannotUseLegacyBacklinks(t *testing.T) {
+	spec := Artifact{Issue: 1, URL: "https://example.test/issues/1#spec",
+		Comment: TypedComment{Type: "SPEC", ID: "SPEC-001", Status: "confirmed"}}
+	taskBody, err := EnsureTypedBody("TASK", "TASK-001", "### Covers\n\n- SPEC-001",
+		BodyOptions{Status: "done", Links: map[string][]string{"Related Comments": {spec.URL}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := Artifact{Issue: 3, URL: "https://example.test/issues/3#task", Comment: ParseTypedComment(taskBody)}
+	// The old model-only reader accepts this exact owner backlink. Indexed
+	// readers must retain the construction error instead of invoking it.
+	if legacy := VerifyTraceability([]Artifact{spec, task}); !legacy.OK {
+		t.Fatalf("fixture did not reproduce legacy authority: %+v", legacy)
+	}
+	indexErr := errors.New("relationship_ambiguous: duplicate physical link")
+	report := VerifyTraceabilityWithRelationships([]Artifact{spec, task}, nil, indexErr)
+	if report.OK || !containsVerifyError(report.Errors, indexErr.Error()) ||
+		!containsVerifyError(report.Errors, "missing its canonical SPEC URL") {
+		t.Fatalf("indexed reader recovered from its construction failure: %+v", report)
 	}
 }
 

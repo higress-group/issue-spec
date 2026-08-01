@@ -916,11 +916,9 @@ func buildFinalVerifyReport(artifacts []model.Artifact, _ string, opts finalVeri
 	relationshipIndex, relationshipErr := relationships.BuildIndex(gateArtifacts)
 	traceability := model.VerifyReport{OK: true}
 	if !useMinimalFinal {
-		traceability = model.VerifyTraceability(artifacts)
-		if relationshipErr == nil {
-			traceability = mergeVerifyReports(traceability,
-				model.VerifyTraceabilityWithRelationships(gateArtifacts, commandTraceabilityEdges(relationshipIndex), nil))
-		}
+		traceability = model.VerifyTraceabilityWithRelationships(gateArtifacts,
+			commandTraceabilityEdges(relationshipIndex), relationshipErr)
+		traceability = mergeVerifyReports(traceability, excludedProcessTraceability(artifacts, gateArtifacts))
 	}
 	report := finalVerifyReport{
 		Traceability:      traceability,
@@ -1017,7 +1015,7 @@ func buildFinalVerifyReport(artifacts []model.Artifact, _ string, opts finalVeri
 		Target: target, Mode: gates.ModeAuthoritative, Artifacts: gateArtifacts,
 		Canonical:                gates.CanonicalFacts{Observed: true, Diagnostics: canonical},
 		Traceability:             gates.TraceabilityFacts{Observed: true, Report: traceability},
-		Relationships:            gates.RelationshipFacts{Observed: relationshipErr == nil, Index: relationshipIndex},
+		Relationships:            observedRelationshipFacts(relationshipIndex, relationshipErr),
 		Remote:                   remote,
 		ProcessEvidence:          processEvidence,
 		FinalEvidence:            finalEvidence,

@@ -82,6 +82,94 @@ func TestStatusFullAndCompactShareBoundedRelationshipIndex(t *testing.T) {
 	}
 }
 
+func TestStatusFullAndCompactPreserveRelationshipIndexFailure(t *testing.T) {
+	artifacts := relationshipIndexFailureArtifacts(t)
+	full := summarizeStatusForGate("o/r", 1, 2, 3, gates.TargetImplement, artifacts, workflow.Plan{})
+	if full.OK || full.Traceability.OK || !verifyReportContains(full.Traceability, relationships.ErrAmbiguous.Error()) {
+		t.Fatalf("full status did not fail closed on relationship ambiguity: %+v", full)
+	}
+	if !gateDiagnosticContains(full.Gate.Diagnostics, gates.CodeTraceabilityInvalid, relationships.ErrAmbiguous.Error()) {
+		t.Fatalf("full gate lost relationship failure: %+v", full.Gate.Diagnostics)
+	}
+
+	compact := gates.ProjectCompactSummary(full.Gate, full.Counts, nil,
+		gates.Remediation{CommandFamily: "status"}, full.Relationships)
+	if compact.OK != full.OK || !compactHasBlocker(compact, gates.CodeTraceabilityInvalid) {
+		t.Fatalf("compact decision/blocker drifted from full: full=%+v compact=%+v", full.Gate, compact)
+	}
+}
+
+func TestRunVerifyLinksPreservesRelationshipIndexFailure(t *testing.T) {
+	t.Setenv(auth.ConfigDirEnv, t.TempDir())
+	t.Setenv(auth.ProfileEnv, auth.DefaultProfileName)
+	artifacts := relationshipIndexFailureArtifacts(t)
+	comments := map[int][]github.Comment{}
+	for index, artifact := range artifacts {
+		comments[artifact.Issue] = append(comments[artifact.Issue], github.Comment{
+			ID: int64(index + 1), HTMLURL: artifact.URL, Body: artifact.Comment.Body,
+		})
+	}
+	backend := fakeGitHubBackend{
+		info: github.BackendInfo{Name: "rest", Kind: "rest", Host: "github.com"},
+		getIssue: func(_ context.Context, _ string, issue int) (github.Issue, error) {
+			return github.Issue{Number: issue, HTMLURL: fmt.Sprintf("https://example.test/issues/%d", issue)}, nil
+		},
+		listIssueComments: func(_ context.Context, _ string, issue int) ([]github.Comment, error) {
+			return comments[issue], nil
+		},
+	}
+	var out, errOut bytes.Buffer
+	application := newApp(strings.NewReader(""), &out, &errOut)
+	application.selectGitHubBackend = ghSelection
+	application.newGitHubBackend = func(context.Context, auth.GitHubBackendSelection) (github.Backend, error) {
+		return backend, nil
+	}
+	code := application.runVerifyLinks(t.Context(), []string{
+		"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--json",
+	})
+	if code != 1 || errOut.Len() != 0 {
+		t.Fatalf("verify-links code=%d stderr=%q output=%q", code, errOut.String(), out.String())
+	}
+	var result struct {
+		model.VerifyReport
+		Relationships relationships.Index `json:"relationships"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.OK || !verifyReportContains(result.VerifyReport, relationships.ErrAmbiguous.Error()) ||
+		len(result.Relationships.Edges) != 0 {
+		t.Fatalf("verify-links recovered through legacy references: %+v", result)
+	}
+}
+
+func verifyReportContains(report model.VerifyReport, text string) bool {
+	for _, message := range report.Errors {
+		if strings.Contains(message, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func gateDiagnosticContains(diagnostics []gates.Diagnostic, code, text string) bool {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Code == code && strings.Contains(diagnostic.Message, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func compactHasBlocker(summary gates.CompactSummary, code string) bool {
+	for _, blocker := range summary.Blockers {
+		if blocker.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRunStatusSummaryIsAdditiveAndExitEquivalent(t *testing.T) {
 	args := []string{"--repo", "o/r", "--proposal", "1", "--design", "2", "--implement", "3", "--gate", "final", "--json"}
 	fullApp, fullOut, fullErr := newGitHubVerifyWithoutPRApp(t, canonicalProcessContentWithClass(model.ProcessExecutionVerification))
@@ -214,7 +302,7 @@ func statusAcceptedVerificationArtifacts(t *testing.T, revision, prURL string) [
 	spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-spec"
 	task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-	task.URL = "https://github.com/o/r/issues/2#issuecomment-task"
+	task.URL = "https://github.com/o/r/issues/3#issuecomment-task"
 	process := statusWorkspaceProcess(t, model.ProcessExecutionChangeBearing, revision)
 	process.URL = "https://github.com/o/r/issues/3#issuecomment-process"
 	linkArtifacts(t, &spec, &task)
@@ -236,6 +324,7 @@ func statusAcceptedVerificationArtifacts(t *testing.T, revision, prURL string) [
 	}
 	verify := model.Artifact{Issue: 3, CommentID: 4, URL: "https://github.com/o/r/issues/3#issuecomment-verify",
 		Comment: model.ParseTypedComment(verifyBody)}
+	canonicalizeVerificationFixture(t, &verify, process, spec)
 	return []model.Artifact{spec, task, process, verify}
 }
 
@@ -432,7 +521,7 @@ func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *te
 				spec := typedArtifact(t, 1, "SPEC", "SPEC-001", "confirmed", "## Requirement: X\n\nX MUST work.\n\n### Scenario: ok\n\n- **WHEN** x\n- **THEN** y")
 				spec.URL = "https://github.com/o/r/issues/1#issuecomment-1"
 				task := typedArtifact(t, 2, "TASK", "TASK-001", "done", canonicalTaskContent)
-				task.URL = "https://github.com/o/r/issues/2#issuecomment-2"
+				task.URL = "https://github.com/o/r/issues/3#issuecomment-2"
 				process := statusWorkspaceProcess(t, class, strings.Repeat("a", 40))
 				process.URL = "https://github.com/o/r/issues/3#issuecomment-3"
 				verify := typedArtifact(t, 3, "VERIFY", "VERIFY-001", "done", canonicalVerifyContent)
@@ -470,7 +559,7 @@ func TestStatusExplicitWorkspaceProcessEvidenceMatchesVerifyByClassAndGate(t *te
 func TestStatusDefaultProcessEvidenceDoesNotOverrideCollectedEvidence(t *testing.T) {
 	const (
 		specURL    = "https://github.com/o/r/issues/1#issuecomment-1"
-		taskURL    = "https://github.com/o/r/issues/2#issuecomment-2"
+		taskURL    = "https://github.com/o/r/issues/3#issuecomment-2"
 		processURL = "https://github.com/o/r/issues/3#issuecomment-3"
 		prURL      = "https://github.com/o/r/pull/7"
 	)
@@ -520,7 +609,7 @@ func TestStatusDefaultProcessEvidenceDoesNotOverrideCollectedEvidence(t *testing
 func TestStatusSurfacesCoordinatorAuthoredChangeBearingEvidence(t *testing.T) {
 	const (
 		specURL = "https://github.com/o/r/issues/1#issuecomment-1"
-		taskURL = "https://github.com/o/r/issues/2#issuecomment-2"
+		taskURL = "https://github.com/o/r/issues/3#issuecomment-2"
 		prURL   = "https://github.com/o/r/pull/7"
 	)
 	process := typedArtifactWithAgent(t, 3, "PROCESS", "PROCESS-001", "done", "Coordinator",
@@ -955,7 +1044,7 @@ func persistedCrossIssueProcessReplacement(t *testing.T) ([]model.Artifact, stri
 	current := typedArtifact(t, 3, "PROCESS", "PROCESS-001", "done", canonicalProcessContentWithClass(model.ProcessExecutionOrchestration))
 	foreign := typedArtifact(t, 1, "PROCESS", "PROCESS-900", "done", canonicalProcessContentWithClass(model.ProcessExecutionOrchestration))
 	spec.URL = "https://github.com/o/r/issues/1#issuecomment-spec"
-	task.URL = "https://github.com/o/r/issues/2#issuecomment-task"
+	task.URL = "https://github.com/o/r/issues/3#issuecomment-task"
 	current.URL = "https://github.com/o/r/issues/3#issuecomment-current"
 	foreign.URL = "https://github.com/o/r/issues/1#issuecomment-foreign"
 	linkArtifacts(t, &spec, &task)

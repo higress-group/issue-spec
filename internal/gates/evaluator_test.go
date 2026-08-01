@@ -53,6 +53,51 @@ func TestEvaluateStageRequirements(t *testing.T) {
 	}
 }
 
+func TestEvaluateRequiredUnobservedRelationshipIndexFailsClosed(t *testing.T) {
+	report, err := Evaluate(Snapshot{Target: TargetProposal, Mode: ModeForecast,
+		Relationships: RelationshipFacts{Required: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Ready || !hasDiagnosticMessage(report.Diagnostics, CodeTraceabilityInvalid,
+		"canonical relationship index: not observed") {
+		t.Fatalf("required unobserved relationship index used legacy inference: %+v", report)
+	}
+}
+
+func TestEvaluateRelationshipIndexErrorsRemainExplicitBlockers(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+	}{
+		{name: "ambiguous", message: "relationship_ambiguous: duplicate physical link"},
+		{name: "bounded", message: "relationship_bound_exceeded: physical links exceed 20000"},
+		{name: "wrong role", message: "relationship_target_invalid: TASK endpoint has the wrong issue role"},
+		{name: "unresolved", message: "relationship_target_invalid: related URL does not resolve"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			report, err := Evaluate(Snapshot{Target: TargetProposal, Mode: ModeForecast,
+				Relationships: RelationshipFacts{Required: true, Observed: true, Error: test.message}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Ready || !hasDiagnosticMessage(report.Diagnostics, CodeTraceabilityInvalid, test.message) {
+				t.Fatalf("relationship index error was not an explicit blocker: %+v", report)
+			}
+		})
+	}
+}
+
+func hasDiagnosticMessage(diagnostics []Diagnostic, code, message string) bool {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Code == code && strings.Contains(diagnostic.Message, message) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestEvaluateLocallyKnowableFinalRules(t *testing.T) {
 	spec := artifact(t, "SPEC", "SPEC-001", "draft", specLogical)
 	question := artifact(t, "QUESTION", "QUESTION-001", "blocked", "## Question\n\nReady?")

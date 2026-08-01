@@ -64,8 +64,12 @@ func evaluateMinimalFinal(snapshot Snapshot) Report {
 func (e *evaluator) evaluateFinalPlanning() finalPlanning {
 	result := finalPlanning{specs: map[string]model.Artifact{}, tasks: map[string]model.Artifact{},
 		processes: map[string]model.Artifact{}, processSpecs: map[string][]string{}}
-	if e.snapshot.Relationships.Observed && e.snapshot.Relationships.Error != "" {
-		e.add(CodeFinalPlanningInvalid, "canonical relationship index: "+e.snapshot.Relationships.Error,
+	if e.snapshot.Relationships.Required && (!e.snapshot.Relationships.Observed || e.snapshot.Relationships.Error != "") {
+		current := e.snapshot.Relationships.Error
+		if current == "" {
+			current = "not observed"
+		}
+		e.add(CodeFinalPlanningInvalid, "canonical relationship index: "+current,
 			ArtifactRef{}, "invalid", "bounded canonical relationship index", "relationship-detail")
 	}
 	seen := map[string]model.Artifact{}
@@ -133,7 +137,10 @@ func (e *evaluator) evaluateFinalPlanning() finalPlanning {
 				continue
 			}
 			linked := linksIdentifyArtifact(task.Comment.Links["Related Comments"], spec)
-			if e.snapshot.Relationships.Observed {
+			if e.snapshot.Relationships.Required {
+				linked = false
+			}
+			if e.snapshot.Relationships.Required && e.snapshot.Relationships.Observed && e.snapshot.Relationships.Error == "" {
 				linked = relationshipIndexHas(e.snapshot.Relationships.Index, relationships.TaskCoversSpec, taskID, specID)
 			}
 			if !linked {
@@ -152,7 +159,10 @@ func (e *evaluator) evaluateFinalPlanning() finalPlanning {
 		}
 		parentID := parents[0]
 		linked := linksIdentifyArtifact(process.Comment.Links["Related Comments"], result.tasks[parentID])
-		if e.snapshot.Relationships.Observed {
+		if e.snapshot.Relationships.Required {
+			linked = false
+		}
+		if e.snapshot.Relationships.Required && e.snapshot.Relationships.Observed && e.snapshot.Relationships.Error == "" {
 			linked = relationshipIndexHas(e.snapshot.Relationships.Index, relationships.ProcessParentTask, processID, parentID)
 		}
 		if !linked {

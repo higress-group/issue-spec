@@ -217,6 +217,7 @@ type TraceabilityFacts struct {
 // artifact snapshot. It is candidate coverage only; evidence authority remains
 // in FinalEvidence and ProcessEvidence.
 type RelationshipFacts struct {
+	Required bool                `json:"required,omitempty"`
 	Observed bool                `json:"observed"`
 	Index    relationships.Index `json:"index"`
 	Error    string              `json:"error,omitempty"`

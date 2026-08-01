@@ -178,10 +178,7 @@ func (a *app) runVerifyLinks(ctx context.Context, args []string) int {
 		return 1
 	}
 	index, indexErr := relationships.BuildIndex(artifacts)
-	report := model.VerifyTraceability(artifacts)
-	if indexErr == nil {
-		report = model.VerifyTraceabilityWithRelationships(artifacts, commandTraceabilityEdges(index), nil)
-	}
+	report := model.VerifyTraceabilityWithRelationships(artifacts, commandTraceabilityEdges(index), indexErr)
 	if *jsonOut {
 		if code := a.outputJSON(struct {
 			model.VerifyReport
@@ -269,11 +266,9 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 	}
 	report := model.VerifyReport{OK: true}
 	if !useMinimalFinal {
-		report = model.VerifyTraceability(artifacts)
-		if relationshipErr == nil {
-			report = mergeVerifyReports(report,
-				model.VerifyTraceabilityWithRelationships(gateArtifacts, commandTraceabilityEdges(relationshipIndex), nil))
-		}
+		report = model.VerifyTraceabilityWithRelationships(gateArtifacts,
+			commandTraceabilityEdges(relationshipIndex), relationshipErr)
+		report = mergeVerifyReports(report, excludedProcessTraceability(artifacts, gateArtifacts))
 	}
 	var diagnostics []metadataDiagnostic
 	workflowFacts := gates.WorkflowFacts{Required: true, Known: true, Valid: workflowErr == nil && !workflowPlan.HasErrors()}
@@ -298,7 +293,7 @@ func summarizeStatusForGate(repo string, proposal, design, implement int, target
 		Answers:                  collection.Answers,
 		Canonical:                gates.CanonicalFacts{Observed: true, Diagnostics: malformed},
 		Traceability:             gates.TraceabilityFacts{Observed: true, Report: report},
-		Relationships:            gates.RelationshipFacts{Observed: relationshipErr == nil, Index: relationshipIndex},
+		Relationships:            observedRelationshipFacts(relationshipIndex, relationshipErr),
 		Workflow:                 workflowFacts,
 		Remote:                   collection.Remote,
 		ProcessEvidence:          processEvidence,
@@ -341,6 +336,48 @@ func commandTraceabilityEdges(index relationships.Index) []model.TraceabilityEdg
 		result = append(result, model.TraceabilityEdge{Kind: string(edge.Kind), OwnerID: edge.Owner.ID, TargetID: edge.Target.ID})
 	}
 	return result
+}
+
+func observedRelationshipFacts(index relationships.Index, err error) gates.RelationshipFacts {
+	facts := gates.RelationshipFacts{Required: true, Observed: true, Index: index}
+	if err != nil {
+		facts.Error = err.Error()
+	}
+	return facts
+}
+
+func excludedProcessTraceability(all, scoped []model.Artifact) model.VerifyReport {
+	included := map[string]bool{}
+	for _, artifact := range scoped {
+		if artifact.Comment.Type == "PROCESS" {
+			included[artifact.URL+"\x00"+artifact.Comment.ID] = true
+		}
+	}
+	excludedByID := map[string]model.Artifact{}
+	for _, artifact := range all {
+		if artifact.Comment.Type == "PROCESS" && !included[artifact.URL+"\x00"+artifact.Comment.ID] {
+			excludedByID[artifact.Comment.ID] = artifact
+		}
+	}
+	report := model.VerifyReport{OK: true}
+	for _, artifact := range scoped {
+		if artifact.Comment.Type != "PROCESS" {
+			continue
+		}
+		replacement, found, err := model.ParseSupersededBy(artifact.Comment.Body, artifact.Comment.ID)
+		if err != nil || !found {
+			continue
+		}
+		excluded, ok := excludedByID[replacement.ProcessID]
+		if !ok || excluded.URL != replacement.URL {
+			continue
+		}
+		report.Errors = append(report.Errors, fmt.Sprintf(
+			"%s is outside the selected Implement issue and excluded from canonical relationship authority", excluded.Comment.ID))
+	}
+	sort.Strings(report.Errors)
+	report.OK = len(report.Errors) == 0
+	return report
 }
 
 func mergeVerifyReports(values ...model.VerifyReport) model.VerifyReport {

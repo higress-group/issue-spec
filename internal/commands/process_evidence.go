@@ -534,6 +534,9 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 		input := gates.ProcessEvidenceInput{Process: process, RequiredPRURL: prURL, ActiveSpecs: activeSpecs, TaskURLs: taskURLs,
 			RequiredRevision: requiredRevision, AuthorAgentsBySpec: authorAgentsBySpec,
 			ActiveAssignment: activeAssignmentEvidence(process)}
+		if relationshipErr != nil {
+			input.RelationshipError = relationshipErr.Error()
+		}
 		for _, comment := range reviewComments {
 			marker, ok, err := model.FindRationaleMarker(comment.Body)
 			if err != nil || !ok || marker.Process != process.Comment.ID {
@@ -577,6 +580,9 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 			}
 		}
 		for _, artifact := range reviews {
+			if relationshipErr != nil {
+				continue
+			}
 			if externalReview != nil && strings.TrimSpace(prURL) == "" {
 				coverage, covered := explicitExternalReviewCoverage(artifact, processes, activeSpecs, inactiveSpecURLs)
 				if !covered || coverage.ReviewProcessID != process.Comment.ID {
@@ -591,19 +597,13 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 				}
 				continue
 			}
-			coversProcess := artifactReferencesProcess(artifact, process)
-			if relationshipErr == nil {
-				coversProcess = canonicalCoverageTarget(relationshipIndex,
-					relationships.ReviewCoversProcess, artifact.Comment.ID, process.Comment.ID)
-			}
+			coversProcess := canonicalCoverageTarget(relationshipIndex,
+				relationships.ReviewCoversProcess, artifact.Comment.ID, process.Comment.ID)
 			if !coversProcess {
 				continue
 			}
 			for specID := range activeSpecs {
-				coversSpec := artifactReferencesSpec(artifact, specID, activeSpecs[specID])
-				if relationshipErr == nil {
-					coversSpec = canonicalCoverageTarget(relationshipIndex, relationships.ReviewCoversSpec, artifact.Comment.ID, specID)
-				}
+				coversSpec := canonicalCoverageTarget(relationshipIndex, relationships.ReviewCoversSpec, artifact.Comment.ID, specID)
 				if coversSpec {
 					revision, trusted, source := reviewArtifactRevision(artifact, prURL, review, input.External, process.Comment.ID, specID)
 					input.Reviews = append(input.Reviews, gates.ReviewEvidence{ProcessID: process.Comment.ID, SpecID: specID, URL: artifact.URL,
@@ -618,19 +618,16 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 			}
 		}
 		for _, artifact := range verifications {
-			coversProcess := artifactReferencesProcess(artifact, process)
-			if relationshipErr == nil {
-				coversProcess = canonicalCoverageTarget(relationshipIndex,
-					relationships.VerifyCoversProcess, artifact.Comment.ID, process.Comment.ID)
+			if relationshipErr != nil {
+				continue
 			}
+			coversProcess := canonicalCoverageTarget(relationshipIndex,
+				relationships.VerifyCoversProcess, artifact.Comment.ID, process.Comment.ID)
 			if !coversProcess {
 				continue
 			}
 			for specID := range activeSpecs {
-				coversSpec := artifactReferencesSpec(artifact, specID, activeSpecs[specID])
-				if relationshipErr == nil {
-					coversSpec = canonicalCoverageTarget(relationshipIndex, relationships.VerifyCoversSpec, artifact.Comment.ID, specID)
-				}
+				coversSpec := canonicalCoverageTarget(relationshipIndex, relationships.VerifyCoversSpec, artifact.Comment.ID, specID)
 				if coversSpec {
 					input.Verifications = append(input.Verifications, gates.VerificationEvidence{ProcessID: process.Comment.ID,
 						SpecID: specID, URL: artifact.URL, Done: true, TestEvidence: processTestEvidencePattern.MatchString(artifact.Comment.Body), Source: "typed-verify"})

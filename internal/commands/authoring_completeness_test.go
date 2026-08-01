@@ -122,7 +122,7 @@ func TestRunStatusReportsAuthoringDiagnosticsWithoutBlocking(t *testing.T) {
 func TestRunVerifyReportsAuthoringDiagnosticsWithoutBlocking(t *testing.T) {
 	const (
 		specURL    = "https://github.com/o/r/issues/1#issuecomment-1"
-		taskURL    = "https://github.com/o/r/issues/2#issuecomment-2"
+		taskURL    = "https://github.com/o/r/issues/3#issuecomment-2"
 		processURL = "https://github.com/o/r/issues/3#issuecomment-3"
 		verifyURL  = "https://github.com/o/r/issues/3#issuecomment-4"
 	)
@@ -144,10 +144,8 @@ func TestRunVerifyReportsAuthoringDiagnosticsWithoutBlocking(t *testing.T) {
 			switch issue {
 			case 1:
 				return []github.Comment{spec}, nil
-			case 2:
-				return []github.Comment{task}, nil
 			case 3:
-				return []github.Comment{process, verify}, nil
+				return []github.Comment{task, process, verify}, nil
 			}
 			return nil, nil
 		}
