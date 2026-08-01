@@ -13,6 +13,7 @@ import (
 	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
+	"github.com/higress-group/issue-spec/internal/processworkspace"
 )
 
 func TestFilterSharedVerificationIdentitySupportsAcceptedAndManualSelfReportedPerPair(t *testing.T) {
@@ -1078,6 +1079,78 @@ func TestCanonicalEvidenceIndexHasFixedUpperBound(t *testing.T) {
 	}
 	if _, err := buildCanonicalEvidenceIndex(records, "head-current", 1); err == nil || !strings.Contains(err.Error(), "bounded limit 1") {
 		t.Fatalf("bounded index accepted excess entries: %v", err)
+	}
+}
+
+func TestActiveAssignmentEvidenceUsesOnlyDurableSelectorAuthorityAndLegacyFailsClosed(t *testing.T) {
+	revision := strings.Repeat("b", 40)
+	testSelector := assignment.TestSelector{ID: "unit", Command: "go test ./internal/commands"}
+	checkSelector := assignment.CheckSelector{Provider: "code.example", Name: "branch-policy"}
+	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion,
+		AssignmentID: "assignment-active-1", Digest: strings.Repeat("d", 64), Role: assignment.RoleVerification,
+		SubjectRevision: revision, Generation: 4, SelectorAuthority: &processworkspace.AssignmentSelectorAuthority{
+			Tests: []assignment.TestSelector{testSelector}, Checks: []assignment.CheckSelector{checkSelector}}}
+	workspace := processworkspace.PortableLease{SchemaVersion: processworkspace.LeaseSchemaVersion, WorkspaceID: "ws-active",
+		Repository: "o/r", ProcessID: "PROCESS-001", ExecutionClass: processworkspace.ExecutionVerification,
+		Mode: processworkspace.ModeSnapshot, BaseSHA: revision, DetachedRevision: revision, RuntimeNamespace: "ws-active",
+		State: processworkspace.StatePrepared, CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(), Assignment: binding}
+	section, err := model.RenderProcessWorkspaceSection(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processBody := "## Process: selector authority\n\n### Execution Class\n\n- verification\n\n" + section + "\n\n### Handoff\n\nverify"
+	process := model.Artifact{URL: "https://example.test/process/1", Comment: model.TypedComment{ID: "PROCESS-001", Body: processBody,
+		Assignment: &assignment.ProcessInput{RequiredTests: []assignment.TestSelector{{ID: "forged", Command: "go test ./forged"}},
+			RequiredChecks: []assignment.CheckSelector{{Provider: "forged.example", Name: "forged"}}}}}
+	active := activeAssignmentEvidence(process)
+	if active == nil || active.AssignmentID != binding.AssignmentID || len(active.RequiredTests) != 1 ||
+		!assignment.TestSelectorIdentityEqual(active.RequiredTests[0], testSelector) || len(active.RequiredChecks) != 1 ||
+		active.RequiredChecks[0] != checkSelector {
+		t.Fatalf("active authority was not restored from durable binding: %+v", active)
+	}
+	activeByProcess := map[string]gates.ActiveAssignmentEvidence{active.ProcessID: *active}
+	testRecord := canonicalActiveTestEvidence(t, *active, active.Generation, active.AssignmentID, active.AssignmentDigest,
+		"receipt-active", testSelector, revision)
+	checkRecord := CanonicalEvidenceRecord{ProcessID: "PROCESS-900", SpecID: "SPEC-001", Kind: CanonicalEvidenceCheck,
+		Authority: CanonicalEvidenceRoleOwned, EvidenceID: "receipt-active:check:branch-policy", ReceiptID: "receipt-active",
+		ReceiptDigest: strings.Repeat("a", 64), AssignmentProcessID: active.ProcessID, AssignmentID: active.AssignmentID,
+		AssignmentDigest: active.AssignmentDigest, AssignmentGeneration: active.Generation, SubjectRevision: revision,
+		CheckSelector: &checkSelector, Source: "accepted-verification-receipt:self-reported-checks", Trusted: true}
+	index, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{testRecord, checkRecord}, revision,
+		activeByProcess, MaxCanonicalEvidenceIndexEntries)
+	if err != nil || index.Len() != 2 {
+		t.Fatalf("durably assigned evidence index=%+v err=%v", index, err)
+	}
+
+	unassignedCheck := checkRecord
+	other := assignment.CheckSelector{Provider: "code.example", Name: "not-assigned"}
+	unassignedCheck.CheckSelector = &other
+	unassignedCheck.EvidenceID = "receipt-active:check:not-assigned"
+	if _, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{unassignedCheck}, revision,
+		activeByProcess, MaxCanonicalEvidenceIndexEntries); err == nil || !strings.Contains(err.Error(), "not assigned") {
+		t.Fatalf("unassigned check entered active final index: %v", err)
+	}
+
+	historical := *binding
+	historical.SelectorAuthority = nil
+	workspace.Assignment = &historical
+	historicalSection, err := model.RenderProcessWorkspaceSection(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	process.Comment.Body = "## Process: selector authority\n\n### Execution Class\n\n- verification\n\n" + historicalSection + "\n\n### Handoff\n\nverify"
+	legacyActive := activeAssignmentEvidence(process)
+	if legacyActive == nil || legacyActive.AssignmentID != historical.AssignmentID || len(legacyActive.RequiredTests) != 0 || len(legacyActive.RequiredChecks) != 0 {
+		t.Fatalf("historical binding identity disappeared or gained selector authority: %+v", legacyActive)
+	}
+	legacyMap := map[string]gates.ActiveAssignmentEvidence{legacyActive.ProcessID: *legacyActive}
+	if _, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{testRecord}, revision,
+		legacyMap, MaxCanonicalEvidenceIndexEntries); err == nil || !strings.Contains(err.Error(), "not assigned") {
+		t.Fatalf("historical missing selector authority admitted role-owned test evidence: %v", err)
+	}
+	if _, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{checkRecord}, revision,
+		legacyMap, MaxCanonicalEvidenceIndexEntries); err == nil || !strings.Contains(err.Error(), "not assigned") {
+		t.Fatalf("historical missing selector authority admitted role-owned check evidence: %v", err)
 	}
 }
 

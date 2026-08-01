@@ -26,6 +26,114 @@ func assignmentDesignContext() *assignment.DesignContext {
 	}
 }
 
+func selectorBindingAssignment(role assignment.Role) assignment.Assignment {
+	value := assignment.Assignment{SchemaVersion: assignment.AssignmentSchemaVersion, ID: "selector-binding-1", Role: role,
+		Repository: "o/r", Issue: 383, ProcessID: "PROCESS-383",
+		Scenarios: []assignment.ScenarioRef{{SpecID: "SPEC-383", Scenario: "compiler selectors stay bound"}},
+		Policy:    assignment.Policy{RequireExactRevision: true}, ResultSchemaVersion: assignment.ReceiptSchemaVersion}
+	switch role {
+	case assignment.RoleImplementation:
+		value.BaseRevision = baseSHA
+		value.DesignContext = assignmentDesignContext()
+		value.Implementation = &assignment.ImplementationPayload{Objective: "bind implementation selectors", Branch: "worker",
+			WriteOwnership: []string{"internal/processworkspace/**"}, Commit: assignment.CommitPolicy{RequireSingleCommit: true},
+			FocusedTests: []assignment.TestSelector{{ID: "z-unit", Command: "go test ./z"}, {ID: "a-unit", Command: "go test ./a"}}}
+	case assignment.RoleReview:
+		value.SubjectRevision = resultSHA
+		value.DesignContext = assignmentDesignContext()
+		value.Review = &assignment.ReviewPayload{SnapshotRevision: resultSHA, DiffBaseRevision: baseSHA,
+			Authors: []string{"Worker"}, Scope: []string{"internal/processworkspace/**"},
+			RequiredTests: []assignment.TestSelector{{ID: "z-review", Command: "go test ./z"}, {ID: "a-review", Command: "go test ./a"}}}
+	case assignment.RoleVerification:
+		value.SubjectRevision = resultSHA
+		value.Verification = &assignment.VerificationPayload{SubjectRevision: resultSHA,
+			RequiredTests: []assignment.TestSelector{{ID: "workflow", Command: "go test ./workflow"}, {ID: assignment.DurableSpecTestID,
+				Command: "issue-spec durable-spec check --repo o/r --proposal 383 --root . --json", RevisionBinding: &assignment.RevisionBinding{
+					Source: assignment.RevisionBindingSourceSubjectRevision, Argument: assignment.RevisionBindingArgumentSubject}}},
+			RequiredChecks: []assignment.CheckSelector{{Provider: "z.code.example", Name: "workflow"}, {Provider: "code.example", Name: "durable"}}}
+	}
+	return value
+}
+
+func TestAssignmentBindingBindsCanonicalSelectorAuthorityForEveryRole(t *testing.T) {
+	for _, role := range []assignment.Role{assignment.RoleImplementation, assignment.RoleReview, assignment.RoleVerification} {
+		t.Run(string(role), func(t *testing.T) {
+			value := selectorBindingAssignment(role)
+			binding, err := NewAssignmentBinding(value, 7)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if binding.SelectorAuthority == nil || binding.Generation != 7 || len(binding.SelectorAuthority.Tests) != 2 {
+				t.Fatalf("selector authority=%+v", binding)
+			}
+			if binding.SelectorAuthority.Tests[0].ID > binding.SelectorAuthority.Tests[1].ID {
+				t.Fatalf("test selectors are not canonical: %+v", binding.SelectorAuthority.Tests)
+			}
+			if role == assignment.RoleVerification {
+				if len(binding.SelectorAuthority.Checks) != 2 || binding.SelectorAuthority.Checks[0].Provider != "code.example" {
+					t.Fatalf("verification checks are not complete and canonical: %+v", binding.SelectorAuthority.Checks)
+				}
+			} else if len(binding.SelectorAuthority.Checks) != 0 {
+				t.Fatalf("%s binding acquired provider checks: %+v", role, binding.SelectorAuthority.Checks)
+			}
+			if err := ValidateAssignmentBindingMatchesAssignment(binding, value, 7); err != nil {
+				t.Fatalf("binding no longer matches compiled assignment: %v", err)
+			}
+		})
+	}
+
+	for _, role := range []assignment.Role{assignment.RoleImplementation, assignment.RoleReview} {
+		value := selectorBindingAssignment(role)
+		if role == assignment.RoleImplementation {
+			value.Implementation.FocusedTests = nil
+		} else {
+			value.Review.RequiredTests = nil
+		}
+		binding, err := NewAssignmentBinding(value, 1)
+		if err != nil || binding.SelectorAuthority == nil || len(binding.SelectorAuthority.Tests) != 0 || len(binding.SelectorAuthority.Checks) != 0 {
+			t.Fatalf("new empty %s binding must carry authoritative empty projection: binding=%+v err=%v", role, binding, err)
+		}
+	}
+}
+
+func TestAssignmentBindingSelectorAuthorityIsStructuralImmutableAndFailClosed(t *testing.T) {
+	value := selectorBindingAssignment(assignment.RoleVerification)
+	binding, err := NewAssignmentBinding(value, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := cloneAssignmentBinding(&binding)
+	if !AssignmentBindingEqual(&binding, clone) || binding.SelectorAuthority == clone.SelectorAuthority ||
+		binding.SelectorAuthority.Tests[0].RevisionBinding == clone.SelectorAuthority.Tests[0].RevisionBinding {
+		t.Fatalf("binding clone is not structurally equal and deeply independent: original=%+v clone=%+v", binding, clone)
+	}
+	clone.SelectorAuthority.Tests[0].Command += " --tampered"
+	if AssignmentBindingEqual(&binding, clone) {
+		t.Fatal("selector authority comparison ignored a command mutation")
+	}
+	if err := ValidateAssignmentBindingMatchesAssignment(*clone, value, 1); err == nil || !strings.Contains(err.Error(), "selector authority") {
+		t.Fatalf("tampered selector authority matched compiled assignment: %v", err)
+	}
+
+	unsorted := cloneAssignmentBinding(&binding)
+	unsorted.SelectorAuthority.Tests[0], unsorted.SelectorAuthority.Tests[1] = unsorted.SelectorAuthority.Tests[1], unsorted.SelectorAuthority.Tests[0]
+	lease := PortableLease{SchemaVersion: LeaseSchemaVersion, WorkspaceID: "ws-selector-binding", Repository: "o/r", ProcessID: "PROCESS-383",
+		ExecutionClass: ExecutionVerification, Mode: ModeSnapshot, BaseSHA: resultSHA, DetachedRevision: resultSHA,
+		RuntimeNamespace: "ws-selector-binding", State: StatePrepared, CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(), Assignment: unsorted}
+	if err := validateAssignmentBinding(lease); err == nil || !strings.Contains(err.Error(), "canonical and sorted") {
+		t.Fatalf("noncanonical durable selector authority was accepted: %v", err)
+	}
+
+	historical := cloneAssignmentBinding(&binding)
+	historical.SelectorAuthority = nil
+	if !assignmentBindingCoreEqual(binding, *historical) || AssignmentBindingEqual(&binding, historical) {
+		t.Fatal("historical missing projection was treated as newly bound authority")
+	}
+	if _, err := selectorAuthorityFromAssignment(assignment.Assignment{Role: assignment.RoleImplementation}); err == nil {
+		t.Fatal("missing role payload did not fail closed")
+	}
+}
+
 func TestPortableLeaseValidationAndLifecycle(t *testing.T) {
 	now := time.Unix(1000, 0).UTC()
 	lease := portableLease("ws-1", "PROCESS-001", "branch-1", []string{"internal/processworkspace/**"}, now)

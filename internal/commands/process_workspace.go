@@ -153,8 +153,5 @@ func validateIntegrationConvergence(remote processworkspace.PortableLease, local
 }
 
 func samePortableAssignmentBinding(left, right *processworkspace.AssignmentBinding) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return *left == *right
+	return processworkspace.AssignmentBindingEqual(left, right)
 }

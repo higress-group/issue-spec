@@ -226,6 +226,16 @@ func selectActiveAssignmentEvidence(record CanonicalEvidenceRecord, active map[s
 			strings.TrimSpace(record.CheckSelector.Name) == "" {
 			return false, fmt.Errorf("canonical evidence %q lacks exact accepted check selector identity", record.EvidenceID)
 		}
+		assigned := false
+		for _, required := range authority.RequiredChecks {
+			if required == *record.CheckSelector {
+				assigned = true
+				break
+			}
+		}
+		if !assigned {
+			return false, fmt.Errorf("canonical evidence %q is not assigned by the active verification assignment", record.EvidenceID)
+		}
 	}
 	return true, nil
 }
@@ -638,9 +648,9 @@ func activeAssignmentEvidence(process model.Artifact) *gates.ActiveAssignmentEvi
 	result := &gates.ActiveAssignmentEvidence{ProcessID: process.Comment.ID, AssignmentID: binding.AssignmentID,
 		AssignmentDigest: binding.Digest, Generation: binding.Generation, Role: binding.Role,
 		SubjectRevision: binding.SubjectRevision}
-	if process.Comment.Assignment != nil {
-		result.RequiredTests = cloneCanonicalTestSelectors(process.Comment.Assignment.RequiredTests)
-		result.RequiredChecks = append([]assignment.CheckSelector(nil), process.Comment.Assignment.RequiredChecks...)
+	if binding.SelectorAuthority != nil {
+		result.RequiredTests = cloneCanonicalTestSelectors(binding.SelectorAuthority.Tests)
+		result.RequiredChecks = append([]assignment.CheckSelector(nil), binding.SelectorAuthority.Checks...)
 	}
 	return result
 }

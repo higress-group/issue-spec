@@ -149,12 +149,8 @@ func validateStrictCompletionAssignmentBinding(lease LocalLease) error {
 	if binding == nil || lease.Assignment == nil {
 		return errors.New("completion requires the authoritative persisted assignment binding")
 	}
-	assignmentDigest, err := assignment.AssignmentDigest(*lease.Assignment)
-	if err != nil {
+	if err := ValidateAssignmentBindingMatchesAssignment(*binding, *lease.Assignment, binding.Generation); err != nil {
 		return fmt.Errorf("completion requires a strict current assignment: %w", err)
-	}
-	if assignmentDigest != binding.Digest {
-		return errors.New("completion assignment digest differs from the authoritative persisted binding")
 	}
 	return nil
 }

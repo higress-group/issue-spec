@@ -274,9 +274,26 @@ func (s *Store) UpdateAtGeneration(ctx context.Context, expected uint64, workspa
 // identity before any caller can publish or deliver a packet. A normal retry
 // reuses the same binding; advancing generation is an explicit CAS operation.
 func (s *Store) BindAssignment(ctx context.Context, workspaceID string, value assignment.Assignment, redispatch bool, expectedAssignmentGeneration *uint64) (LocalLease, error) {
-	digest, err := assignment.AssignmentDigest(value)
+	return s.bindAssignment(ctx, workspaceID, value, redispatch, expectedAssignmentGeneration, nil)
+}
+
+// recoverAssignment restores the full local assignment behind an already
+// durable remote binding without upgrading that binding's historical shape.
+func (s *Store) recoverAssignment(ctx context.Context, workspaceID string, value assignment.Assignment, binding AssignmentBinding) (LocalLease, error) {
+	return s.bindAssignment(ctx, workspaceID, value, false, nil, &binding)
+}
+
+func (s *Store) bindAssignment(ctx context.Context, workspaceID string, value assignment.Assignment, redispatch bool,
+	expectedAssignmentGeneration *uint64, recovery *AssignmentBinding) (LocalLease, error) {
+	bindingValue, err := NewAssignmentBinding(value, 1)
 	if err != nil {
 		return LocalLease{}, err
+	}
+	if recovery != nil {
+		if err := ValidateAssignmentBindingMatchesAssignment(*recovery, value, recovery.Generation); err != nil {
+			return LocalLease{}, fmt.Errorf("assignment recovery binding mismatch: %w", err)
+		}
+		bindingValue = *cloneAssignmentBinding(recovery)
 	}
 	var result LocalLease
 	err = s.withLock(ctx, func() error {
@@ -291,13 +308,19 @@ func (s *Store) BindAssignment(ctx context.Context, workspaceID string, value as
 		if original.Portable.State != StatePrepared {
 			return fmt.Errorf("assignment issuance requires prepared lease, current state is %s", original.Portable.State)
 		}
-		binding := &AssignmentBinding{SchemaVersion: value.SchemaVersion, AssignmentID: value.ID, Digest: digest, Role: value.Role,
-			BaseRevision: value.BaseRevision, SubjectRevision: value.SubjectRevision, Generation: 1}
+		binding := cloneAssignmentBinding(&bindingValue)
 		current := original.Portable.Assignment
 		if current != nil {
-			binding.Generation = current.Generation
+			if recovery != nil && !AssignmentBindingEqual(current, recovery) {
+				return errors.New("assignment recovery binding conflicts with the persisted local binding")
+			}
+			if recovery == nil {
+				binding.Generation = current.Generation
+			}
 			if !redispatch {
-				if sameAssignmentBinding(*current, *binding) {
+				exactRetry := AssignmentBindingEqual(current, binding)
+				legacyRetry := current.SelectorAuthority == nil && assignmentBindingCoreEqual(*current, *binding)
+				if exactRetry || legacyRetry {
 					if original.Assignment == nil {
 						original.Assignment = &value
 					} else if !sameAssignment(*original.Assignment, value) {
@@ -305,6 +328,9 @@ func (s *Store) BindAssignment(ctx context.Context, workspaceID string, value as
 					} else {
 						result = cloneLocalLease(original)
 						return nil
+					}
+					if legacyRetry {
+						binding = cloneAssignmentBinding(current)
 					}
 				} else {
 					return errors.New("assignment binding conflict: requested assignment differs; use explicit redispatch with the current generation")
@@ -345,10 +371,6 @@ func (s *Store) BindAssignment(ctx context.Context, workspaceID string, value as
 		return nil
 	})
 	return result, err
-}
-
-func sameAssignmentBinding(left, right AssignmentBinding) bool {
-	return left == right
 }
 
 func sameAssignment(left, right assignment.Assignment) bool {
@@ -759,10 +781,7 @@ func validateImmutableLease(before, after PortableLease) error {
 }
 
 func equalAssignmentBinding(left, right *AssignmentBinding) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return *left == *right
+	return AssignmentBindingEqual(left, right)
 }
 
 func validateWorktreePathMutation(before, after LocalLease) error {
@@ -814,10 +833,7 @@ func cloneLocalLease(lease LocalLease) LocalLease {
 	result.Portable.WriteOwnership = append([]string(nil), lease.Portable.WriteOwnership...)
 	result.Portable.SharedTouchpoints = append([]string(nil), lease.Portable.SharedTouchpoints...)
 	result.Portable.RuntimeResources = append([]RuntimeResource(nil), lease.Portable.RuntimeResources...)
-	if lease.Portable.Assignment != nil {
-		binding := *lease.Portable.Assignment
-		result.Portable.Assignment = &binding
-	}
+	result.Portable.Assignment = cloneAssignmentBinding(lease.Portable.Assignment)
 	if lease.Assignment != nil {
 		value := *lease.Assignment
 		result.Assignment = &value

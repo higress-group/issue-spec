@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/higress-group/issue-spec/internal/assignment"
+	"github.com/higress-group/issue-spec/internal/gates"
 	"github.com/higress-group/issue-spec/internal/github"
 	"github.com/higress-group/issue-spec/internal/model"
 	"github.com/higress-group/issue-spec/internal/processworkspace"
@@ -68,7 +69,8 @@ func TestWorkspaceResultFileParsingAndCompletionConvergence(t *testing.T) {
 
 	now := time.Unix(100, 0).UTC()
 	binding := &processworkspace.AssignmentBinding{SchemaVersion: assignment.AssignmentSchemaVersion, AssignmentID: receipt.AssignmentID,
-		Digest: receipt.AssignmentDigest, Role: assignment.RoleImplementation, BaseRevision: base, Generation: 1}
+		Digest: receipt.AssignmentDigest, Role: assignment.RoleImplementation, BaseRevision: base, Generation: 1,
+		SelectorAuthority: &processworkspace.AssignmentSelectorAuthority{}}
 	remote := processworkspace.PortableLease{SchemaVersion: 1, WorkspaceID: "ws-process-004", Repository: "o/r", ProcessID: "PROCESS-004",
 		ExecutionClass: processworkspace.ExecutionChangeBearing, Mode: processworkspace.ModeWritable, BaseSHA: base, Branch: "worker",
 		WriteOwnership: []string{"internal/commands/**"}, RuntimeNamespace: "ws-process-004", Assignment: binding,
@@ -82,6 +84,13 @@ func TestWorkspaceResultFileParsingAndCompletionConvergence(t *testing.T) {
 		Digest: strings.Repeat("d", 64), Role: binding.Role, BaseRevision: binding.BaseRevision, Generation: binding.Generation}
 	if err := validateCompletionConvergence(drifted, local, "o/r"); err == nil || !strings.Contains(err.Error(), "assignment binding") {
 		t.Fatalf("binding drift accepted: %v", err)
+	}
+	drifted = remote
+	drifted.Assignment = &processworkspace.AssignmentBinding{SchemaVersion: binding.SchemaVersion, AssignmentID: binding.AssignmentID,
+		Digest: binding.Digest, Role: binding.Role, BaseRevision: binding.BaseRevision, Generation: binding.Generation,
+		SelectorAuthority: &processworkspace.AssignmentSelectorAuthority{Tests: []assignment.TestSelector{{ID: "extra", Command: "go test ./extra"}}}}
+	if err := validateCompletionConvergence(drifted, local, "o/r"); err == nil || !strings.Contains(err.Error(), "assignment binding") {
+		t.Fatalf("remote/local selector authority disagreement accepted: %v", err)
 	}
 }
 
@@ -450,6 +459,92 @@ func TestWorkspacePrepareEmitsProjectVerifierPolicyForGeneratedAndAssignmentFile
 	})
 }
 
+func TestCompiledVerifierSelectorAuthoritySurvivesBindWorkspaceRoundTripAndActiveFinalIndex(t *testing.T) {
+	repo, _ := workspaceGitRepository(t)
+	baseline := installWorkspaceVerifierWorkflow(t, repo)
+	subject := commitWorkspaceVerificationSubject(t, repo)
+	scenario := assignment.ScenarioRef{SpecID: "SPEC-001", Scenario: "compiled selectors remain final authority"}
+	selectedTest := assignment.TestSelector{ID: "z-project-unit", Command: "go test ./project/..."}
+	selectedCheck := assignment.CheckSelector{Provider: "z.code.example", Name: "branch-policy"}
+	processBody, err := templates.ProcessComment(templates.ProcessCommentOptions{Common: templates.CommonOptions{ID: "PROCESS-004", Status: "in-progress"},
+		Input: templates.ProcessInput{Title: "bind compiled verifier policy", ParentTask: "TASK-002", ExecutionClass: model.ProcessExecutionVerification,
+			WriteOwnership: []string{"internal/commands/**"}, Covers: []string{scenario.SpecID}, Handoff: "verify",
+			Assignment: &assignment.ProcessInput{RequiredTests: []assignment.TestSelector{selectedTest}, RequiredChecks: []assignment.CheckSelector{selectedCheck}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := newWorkspaceCASBackend(processBody)
+	now := time.Unix(100, 0).UTC()
+	lease := processworkspace.LocalLease{Portable: processworkspace.PortableLease{SchemaVersion: processworkspace.LeaseSchemaVersion,
+		WorkspaceID: "ws-selector-e2e", Repository: "o/r", ProcessID: "PROCESS-004", ExecutionClass: processworkspace.ExecutionVerification,
+		Mode: processworkspace.ModeSnapshot, BaseSHA: subject, DetachedRevision: subject, RuntimeNamespace: "ws-selector-e2e",
+		State: processworkspace.StatePrepared, CreatedAt: now, UpdatedAt: now}, IntegrationRoot: repo, WorktreePath: t.TempDir(),
+		Owner: processworkspace.LeaseOwner{CoordinatorID: "coordinator", Token: "selector-e2e", AcquiredAt: now}}
+	compiled, err := compileWorkspaceAssignment(t.Context(), backend, "o/r", 177, "PROCESS-004", model.ProcessExecutionVerification,
+		processBody, lease, "", baseline, []assignment.ScenarioRef{scenario}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := processworkspace.OpenStore(t.TempDir(), processworkspace.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(t.Context(), lease); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := store.BindAssignment(t.Context(), lease.Portable.WorkspaceID, compiled, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound.Portable.Assignment == nil || bound.Portable.Assignment.SelectorAuthority == nil {
+		t.Fatalf("BindAssignment omitted compiled selector authority: %+v", bound.Portable.Assignment)
+	}
+	transition, err := model.ApplyTypedTransition(processBody, model.TransitionRequest{ExpectedType: "PROCESS", ExpectedID: "PROCESS-004", Workspace: &bound.Portable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := model.ParseProcessWorkspace("PROCESS-004", "https://example.test/process/4", transition.Body)
+	if parsed.Blocking() || parsed.Workspace == nil || !processworkspace.AssignmentBindingEqual(parsed.Workspace.Assignment, bound.Portable.Assignment) {
+		t.Fatalf("Workspace render/parse changed bound selector authority: %+v", parsed)
+	}
+	process := model.Artifact{URL: "https://example.test/process/4", Comment: model.ParseTypedComment(transition.Body)}
+	active := activeAssignmentEvidence(process)
+	if active == nil || len(active.RequiredTests) != 2 || len(active.RequiredChecks) != 2 {
+		t.Fatalf("active final authority is incomplete: %+v", active)
+	}
+	var durable assignment.TestSelector
+	for _, selector := range active.RequiredTests {
+		if selector.ID == assignment.DurableSpecTestID {
+			durable = selector
+		}
+	}
+	workflowCheck := assignment.CheckSelector{Provider: "code.example", Name: "route-owner-policy"}
+	if durable.ID == "" || durable.RevisionBinding == nil || active.RequiredTests[1].ID != selectedTest.ID {
+		t.Fatalf("durable and caller tests were not both restored: %+v", active.RequiredTests)
+	}
+	workflowCheckFound, selectedCheckFound := false, false
+	for _, selector := range active.RequiredChecks {
+		workflowCheckFound = workflowCheckFound || selector == workflowCheck
+		selectedCheckFound = selectedCheckFound || selector == selectedCheck
+	}
+	if !workflowCheckFound || !selectedCheckFound {
+		t.Fatalf("workflow-added and caller checks were not both restored: %+v", active.RequiredChecks)
+	}
+
+	testRecord := canonicalActiveTestEvidence(t, *active, active.Generation, active.AssignmentID, active.AssignmentDigest,
+		"receipt-selector-e2e", durable, subject)
+	checkRecord := CanonicalEvidenceRecord{ProcessID: "PROCESS-900", SpecID: scenario.SpecID, Kind: CanonicalEvidenceCheck,
+		Authority: CanonicalEvidenceRoleOwned, EvidenceID: "receipt-selector-e2e:check:route-owner-policy",
+		ReceiptID: "receipt-selector-e2e", ReceiptDigest: strings.Repeat("a", 64), AssignmentProcessID: active.ProcessID,
+		AssignmentID: active.AssignmentID, AssignmentDigest: active.AssignmentDigest, AssignmentGeneration: active.Generation,
+		SubjectRevision: subject, CheckSelector: &workflowCheck, Source: "accepted-verification-receipt:self-reported-checks", Trusted: true}
+	index, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{testRecord, checkRecord}, subject,
+		map[string]gates.ActiveAssignmentEvidence{active.ProcessID: *active}, MaxCanonicalEvidenceIndexEntries)
+	if err != nil || index.Len() != 2 {
+		t.Fatalf("compiled durable/workflow selector evidence did not enter active final index: index=%+v err=%v", index, err)
+	}
+}
+
 func TestDeriveReviewAssignmentIncludesDeleteOnlyScope(t *testing.T) {
 	repo, base := workspaceGitRepository(t)
 	workspaceGit(t, repo, "rm", "README.md")
@@ -578,13 +673,17 @@ func TestWorkspacePreparePersistsAssignmentBeforePacketAndRedispatchesExplicitly
 		t.Fatalf("first assignment=%+v", first.Assignment)
 	}
 	remote := model.ParseProcessWorkspace("PROCESS-004", "", backend.body)
-	if remote.Blocking() || remote.Workspace == nil || remote.Workspace.Assignment == nil || remote.Workspace.Assignment.Generation != 1 {
+	if remote.Blocking() || remote.Workspace == nil || remote.Workspace.Assignment == nil || remote.Workspace.Assignment.Generation != 1 ||
+		remote.Workspace.Assignment.SelectorAuthority == nil {
 		t.Fatalf("remote binding=%+v", remote)
 	}
 	manager := openWorkspaceManager(t, repo, root)
 	local, found, err := manager.Store.Get(t.Context(), first.WorkspaceID)
 	if err != nil || !found || local.Assignment == nil || local.Portable.Assignment == nil {
 		t.Fatalf("local assignment persisted found=%v lease=%+v err=%v", found, local, err)
+	}
+	if !processworkspace.AssignmentBindingEqual(remote.Workspace.Assignment, local.Portable.Assignment) {
+		t.Fatalf("remote/local assignment authority differs: remote=%+v local=%+v", remote.Workspace.Assignment, local.Portable.Assignment)
 	}
 
 	app, out, errOut = transitionAppWithError(backend)
@@ -765,7 +864,7 @@ func assertRemoteHasNoImplementationReceiptAuthority(t *testing.T, body string, 
 	}
 }
 func TestWorkspacePrepareRemoteOnlyAssignmentRecoveryProvesBindingBeforeMutation(t *testing.T) {
-	for _, name := range []string{"match", "mismatch", "generation-mismatch", "local-only"} {
+	for _, name := range []string{"match", "mismatch", "selector-mismatch", "generation-mismatch", "local-only"} {
 		t.Run(name, func(t *testing.T) {
 			repo, base := workspaceGitRepository(t)
 			specBody, err := templates.SpecComment(templates.SpecCommentOptions{Common: templates.CommonOptions{ID: "SPEC-001", Status: "confirmed"},
@@ -825,6 +924,10 @@ func TestWorkspacePrepareRemoteOnlyAssignmentRecoveryProvesBindingBeforeMutation
 				remoteLease := local.Portable
 				remoteLease.Assignment = &processworkspace.AssignmentBinding{SchemaVersion: value.SchemaVersion, AssignmentID: value.ID,
 					Digest: digest, Role: value.Role, BaseRevision: value.BaseRevision, SubjectRevision: value.SubjectRevision, Generation: generation}
+				if name == "selector-mismatch" {
+					remoteLease.Assignment.SelectorAuthority = &processworkspace.AssignmentSelectorAuthority{Tests: []assignment.TestSelector{
+						{ID: "forged", Command: "go test ./forged"}}}
+				}
 				transition, err := model.ApplyTypedTransition(backend.body, model.TransitionRequest{ExpectedType: "PROCESS", ExpectedID: "PROCESS-004", Workspace: &remoteLease})
 				if err != nil {
 					t.Fatal(err)
@@ -852,7 +955,7 @@ func TestWorkspacePrepareRemoteOnlyAssignmentRecoveryProvesBindingBeforeMutation
 				}
 				return
 			}
-			if name == "mismatch" || name == "generation-mismatch" {
+			if name == "mismatch" || name == "selector-mismatch" || name == "generation-mismatch" {
 				if code == 0 || backend.writes != 0 || after.Assignment != nil || after.Portable.Assignment != nil {
 					t.Fatalf("mismatch mutated state code=%d writes=%d lease=%+v out=%s err=%s", code, backend.writes, after, out.String(), errOut.String())
 				}
@@ -863,7 +966,8 @@ func TestWorkspacePrepareRemoteOnlyAssignmentRecoveryProvesBindingBeforeMutation
 				return
 			}
 			if code != 0 || after.Assignment == nil || after.Portable.Assignment == nil ||
-				after.Portable.Assignment.Digest != digest || after.Portable.Assignment.Generation != 1 {
+				after.Portable.Assignment.Digest != digest || after.Portable.Assignment.Generation != 1 ||
+				after.Portable.Assignment.SelectorAuthority != nil {
 				t.Fatalf("matching recovery code=%d writes=%d lease=%+v out=%s err=%s", code, backend.writes, after, out.String(), errOut.String())
 			}
 			remote := model.ParseProcessWorkspace("PROCESS-004", "", backend.body)
