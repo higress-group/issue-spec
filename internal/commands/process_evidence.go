@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/codereview"
 	coreevidence "github.com/higress-group/issue-spec/internal/evidence"
 	"github.com/higress-group/issue-spec/internal/finalization"
@@ -47,19 +48,26 @@ const (
 // evidence ID and source. Trusted is explicit so prose-derived candidates
 // cannot accidentally enter the final index.
 type CanonicalEvidenceRecord struct {
-	ProcessID        string
-	SpecID           string
-	Kind             CanonicalEvidenceKind
-	Authority        CanonicalEvidenceAuthority
-	EvidenceID       string
-	ReceiptID        string
-	ReceiptDigest    string
-	AssignmentID     string
-	AssignmentDigest string
-	SubjectRevision  string
-	URL              string
-	Source           string
-	Trusted          bool
+	ProcessID            string
+	SpecID               string
+	Kind                 CanonicalEvidenceKind
+	Authority            CanonicalEvidenceAuthority
+	EvidenceID           string
+	ReceiptID            string
+	ReceiptDigest        string
+	AssignmentProcessID  string
+	AssignmentID         string
+	AssignmentDigest     string
+	AssignmentGeneration uint64
+	SubjectRevision      string
+	TestID               string
+	AssignedSelector     *assignment.TestSelector
+	ResolvedRevision     string
+	ExecutedCommand      string
+	CheckSelector        *assignment.CheckSelector
+	URL                  string
+	Source               string
+	Trusted              bool
 }
 
 type CanonicalEvidenceKey struct {
@@ -83,6 +91,11 @@ func BuildCanonicalEvidenceIndex(records []CanonicalEvidenceRecord, expectedRevi
 }
 
 func buildCanonicalEvidenceIndex(records []CanonicalEvidenceRecord, expectedRevision string, limit int) (CanonicalEvidenceIndex, error) {
+	return buildCanonicalEvidenceIndexForAssignments(records, expectedRevision, nil, limit)
+}
+
+func buildCanonicalEvidenceIndexForAssignments(records []CanonicalEvidenceRecord, expectedRevision string,
+	active map[string]gates.ActiveAssignmentEvidence, limit int) (CanonicalEvidenceIndex, error) {
 	expectedRevision = strings.TrimSpace(expectedRevision)
 	if expectedRevision == "" {
 		return CanonicalEvidenceIndex{}, errors.New("canonical evidence index requires an exact subject revision")
@@ -93,25 +106,45 @@ func buildCanonicalEvidenceIndex(records []CanonicalEvidenceRecord, expectedRevi
 	index := CanonicalEvidenceIndex{entries: map[CanonicalEvidenceKey][]CanonicalEvidenceRecord{}}
 	receiptIdentityByID := map[string]string{}
 	assignmentIdentityByID := map[string]string{}
+	receiptByActiveAssignment := map[string]string{}
 	providerIdentityByID := map[string]string{}
 	seenEntry := map[string]bool{}
-	for _, record := range records {
+	for _, original := range records {
+		record := cloneCanonicalEvidenceRecord(original)
+		eligible, err := selectActiveAssignmentEvidence(record, active, expectedRevision)
+		if err != nil {
+			return CanonicalEvidenceIndex{}, err
+		}
+		if !eligible {
+			continue
+		}
 		if err := validateCanonicalEvidenceRecord(record, expectedRevision); err != nil {
 			return CanonicalEvidenceIndex{}, err
 		}
 		identity := canonicalEvidenceIdentity(record)
 		if record.Authority == CanonicalEvidenceRoleOwned {
 			receiptIdentity := strings.Join([]string{record.ReceiptDigest, record.AssignmentID,
-				record.AssignmentDigest, strings.ToLower(strings.TrimSpace(record.SubjectRevision))}, "\x00")
+				record.AssignmentDigest, fmt.Sprint(record.AssignmentGeneration),
+				strings.ToLower(strings.TrimSpace(record.SubjectRevision))}, "\x00")
 			if previous, exists := receiptIdentityByID[record.ReceiptID]; exists && previous != receiptIdentity {
 				return CanonicalEvidenceIndex{}, fmt.Errorf("canonical evidence %q has conflicting receipt identity or digest", record.EvidenceID)
 			}
 			receiptIdentityByID[record.ReceiptID] = receiptIdentity
-			assignmentIdentity := record.AssignmentDigest + "\x00" + strings.ToLower(strings.TrimSpace(record.SubjectRevision))
+			assignmentIdentity := strings.Join([]string{record.AssignmentDigest, fmt.Sprint(record.AssignmentGeneration),
+				strings.ToLower(strings.TrimSpace(record.SubjectRevision))}, "\x00")
 			if previous, exists := assignmentIdentityByID[record.AssignmentID]; exists && previous != assignmentIdentity {
 				return CanonicalEvidenceIndex{}, fmt.Errorf("canonical evidence %q has conflicting assignment identity or digest", record.EvidenceID)
 			}
 			assignmentIdentityByID[record.AssignmentID] = assignmentIdentity
+			if record.AssignmentProcessID != "" {
+				assignmentSlot := record.AssignmentProcessID + "\x00" + record.AssignmentID + "\x00" +
+					record.AssignmentDigest + "\x00" + fmt.Sprint(record.AssignmentGeneration)
+				receiptIdentity := record.ReceiptID + "\x00" + record.ReceiptDigest
+				if previous, exists := receiptByActiveAssignment[assignmentSlot]; exists && previous != receiptIdentity {
+					return CanonicalEvidenceIndex{}, fmt.Errorf("canonical evidence %q duplicates the active assignment generation with a conflicting receipt", record.EvidenceID)
+				}
+				receiptByActiveAssignment[assignmentSlot] = receiptIdentity
+			}
 		} else {
 			providerKey := record.Source + "\x00" + record.EvidenceID
 			if previous, exists := providerIdentityByID[providerKey]; exists && previous != identity {
@@ -139,6 +172,84 @@ func buildCanonicalEvidenceIndex(records []CanonicalEvidenceRecord, expectedRevi
 	return index, nil
 }
 
+func selectActiveAssignmentEvidence(record CanonicalEvidenceRecord, active map[string]gates.ActiveAssignmentEvidence,
+	expectedRevision string) (bool, error) {
+	if record.AssignmentProcessID == "" || len(active) == 0 {
+		return true, nil
+	}
+	authority, managed := active[record.AssignmentProcessID]
+	if !managed {
+		return true, nil
+	}
+	if record.AssignmentGeneration < authority.Generation {
+		return false, nil
+	}
+	if record.AssignmentGeneration > authority.Generation {
+		return false, fmt.Errorf("canonical evidence %q is from future assignment generation %d; active generation is %d",
+			record.EvidenceID, record.AssignmentGeneration, authority.Generation)
+	}
+	if record.AssignmentID != authority.AssignmentID || record.AssignmentDigest != authority.AssignmentDigest ||
+		record.SubjectRevision != authority.SubjectRevision || record.SubjectRevision != expectedRevision {
+		return false, fmt.Errorf("canonical evidence %q conflicts with the active assignment identity, digest, or subject", record.EvidenceID)
+	}
+	wantRole := assignment.RoleVerification
+	if record.Kind == CanonicalEvidenceReview {
+		wantRole = assignment.RoleReview
+	}
+	if authority.Role != wantRole {
+		return false, fmt.Errorf("canonical evidence %q uses active %s assignment for %s evidence", record.EvidenceID, authority.Role, record.Kind)
+	}
+	if record.Kind == CanonicalEvidenceTest {
+		selector, ok, err := canonicalEvidenceTestSelector(record, expectedRevision)
+		if err != nil || !ok {
+			return false, fmt.Errorf("canonical evidence %q has invalid stable selector or expanded command: %v", record.EvidenceID, err)
+		}
+		for _, required := range authority.RequiredTests {
+			if required.ID == selector.ID && !assignment.TestSelectorIdentityEqual(required, selector) {
+				return false, fmt.Errorf("canonical evidence %q changes the active assignment selector identity", record.EvidenceID)
+			}
+		}
+	}
+	if record.Kind == CanonicalEvidenceCheck && record.AssignmentProcessID != "" {
+		if record.CheckSelector == nil || strings.TrimSpace(record.CheckSelector.Provider) == "" ||
+			strings.TrimSpace(record.CheckSelector.Name) == "" {
+			return false, fmt.Errorf("canonical evidence %q lacks exact accepted check selector identity", record.EvidenceID)
+		}
+	}
+	return true, nil
+}
+
+func canonicalEvidenceTestSelector(record CanonicalEvidenceRecord, expectedRevision string) (assignment.TestSelector, bool, error) {
+	if record.Kind != CanonicalEvidenceTest {
+		return assignment.TestSelector{}, false, nil
+	}
+	if record.AssignedSelector == nil {
+		selector := assignment.TestSelector{ID: record.TestID, Command: record.ExecutedCommand}
+		if record.ResolvedRevision != "" {
+			return assignment.TestSelector{}, false, errors.New("literal selector carries a resolved revision")
+		}
+		if err := assignment.ValidateTestSelectorRevisionContract(assignment.RoleVerification, expectedRevision, selector); err != nil {
+			return assignment.TestSelector{}, false, err
+		}
+		return selector, true, nil
+	}
+	selector := cloneFinalTestSelector(*record.AssignedSelector)
+	if selector.ID != record.TestID {
+		return assignment.TestSelector{}, false, errors.New("assigned selector id differs from test id")
+	}
+	if err := assignment.ValidateTestSelectorRevisionContract(assignment.RoleVerification, expectedRevision, selector); err != nil {
+		return assignment.TestSelector{}, false, err
+	}
+	resolved, err := assignment.ResolveTestSelector(selector, record.ResolvedRevision)
+	if err != nil {
+		return assignment.TestSelector{}, false, err
+	}
+	if record.ResolvedRevision != expectedRevision || record.ExecutedCommand != resolved.Command {
+		return assignment.TestSelector{}, false, errors.New("resolved revision or executed command differs from deterministic expansion")
+	}
+	return selector, true, nil
+}
+
 func validateCanonicalEvidenceRecord(record CanonicalEvidenceRecord, expectedRevision string) error {
 	if !record.Trusted {
 		return fmt.Errorf("canonical evidence %q is not validated and trusted", record.EvidenceID)
@@ -161,8 +272,11 @@ func validateCanonicalEvidenceRecord(record CanonicalEvidenceRecord, expectedRev
 		if strings.TrimSpace(record.ReceiptID) == "" || record.ReceiptID != strings.TrimSpace(record.ReceiptID) ||
 			strings.TrimSpace(record.AssignmentID) == "" || record.AssignmentID != strings.TrimSpace(record.AssignmentID) ||
 			!canonicalEvidenceDigestPattern.MatchString(record.ReceiptDigest) ||
-			!canonicalEvidenceDigestPattern.MatchString(record.AssignmentDigest) {
+			!canonicalEvidenceDigestPattern.MatchString(record.AssignmentDigest) || record.AssignmentGeneration == 0 {
 			return fmt.Errorf("canonical evidence %q has invalid role-owned receipt identity", record.EvidenceID)
+		}
+		if record.AssignmentProcessID != "" && !externalProcessIDPattern.MatchString(record.AssignmentProcessID) {
+			return fmt.Errorf("canonical evidence %q has invalid assignment PROCESS identity", record.EvidenceID)
 		}
 		validSource := (record.Kind == CanonicalEvidenceReview && strings.HasPrefix(record.Source, "accepted-review-receipt:")) ||
 			(record.Kind != CanonicalEvidenceReview && strings.HasPrefix(record.Source, "accepted-verification-receipt:"))
@@ -170,7 +284,8 @@ func validateCanonicalEvidenceRecord(record CanonicalEvidenceRecord, expectedRev
 			return fmt.Errorf("canonical evidence %q is not sourced from an accepted role-owned receipt", record.EvidenceID)
 		}
 	case CanonicalEvidenceProviderOwned:
-		if record.ReceiptID != "" || record.ReceiptDigest != "" || record.AssignmentID != "" || record.AssignmentDigest != "" {
+		if record.ReceiptID != "" || record.ReceiptDigest != "" || record.AssignmentProcessID != "" ||
+			record.AssignmentID != "" || record.AssignmentDigest != "" || record.AssignmentGeneration != 0 {
 			return fmt.Errorf("canonical evidence %q mixes provider and role-owned identity", record.EvidenceID)
 		}
 		if !canonicalProviderEvidenceSource(record.Source) {
@@ -178,6 +293,16 @@ func validateCanonicalEvidenceRecord(record CanonicalEvidenceRecord, expectedRev
 		}
 	default:
 		return fmt.Errorf("canonical evidence %q has no canonical authority", record.EvidenceID)
+	}
+	if record.Kind == CanonicalEvidenceTest {
+		if _, ok, err := canonicalEvidenceTestSelector(record, expectedRevision); err != nil || !ok {
+			return fmt.Errorf("canonical evidence %q has invalid test selector identity: %v", record.EvidenceID, err)
+		}
+	} else if record.TestID != "" || record.AssignedSelector != nil || record.ResolvedRevision != "" || record.ExecutedCommand != "" {
+		return fmt.Errorf("canonical evidence %q carries test identity on non-test evidence", record.EvidenceID)
+	}
+	if record.Kind != CanonicalEvidenceCheck && record.CheckSelector != nil {
+		return fmt.Errorf("canonical evidence %q carries check identity on non-check evidence", record.EvidenceID)
 	}
 	return nil
 }
@@ -193,16 +318,38 @@ func canonicalProviderEvidenceSource(source string) bool {
 }
 
 func canonicalEvidenceIdentity(record CanonicalEvidenceRecord) string {
+	selectorJSON, _ := json.Marshal(record.AssignedSelector)
+	checkJSON, _ := json.Marshal(record.CheckSelector)
 	return strings.Join([]string{string(record.Kind), string(record.Authority), record.EvidenceID,
 		record.ReceiptID, record.ReceiptDigest, record.AssignmentID, record.AssignmentDigest,
-		strings.ToLower(strings.TrimSpace(record.SubjectRevision)), record.URL, record.Source}, "\x00")
+		fmt.Sprint(record.AssignmentGeneration), record.AssignmentProcessID,
+		strings.ToLower(strings.TrimSpace(record.SubjectRevision)), record.TestID, string(selectorJSON),
+		record.ResolvedRevision, record.ExecutedCommand, string(checkJSON), record.URL, record.Source}, "\x00")
 }
 
 func (index CanonicalEvidenceIndex) Len() int { return index.count }
 
 func (index CanonicalEvidenceIndex) Records(processID, specID string, kind CanonicalEvidenceKind) []CanonicalEvidenceRecord {
 	key := CanonicalEvidenceKey{ProcessID: processID, SpecID: specID, Kind: kind}
-	return append([]CanonicalEvidenceRecord(nil), index.entries[key]...)
+	values := index.entries[key]
+	result := make([]CanonicalEvidenceRecord, len(values))
+	for item := range values {
+		result[item] = cloneCanonicalEvidenceRecord(values[item])
+	}
+	return result
+}
+
+func cloneCanonicalEvidenceRecord(record CanonicalEvidenceRecord) CanonicalEvidenceRecord {
+	clone := record
+	if record.AssignedSelector != nil {
+		selector := cloneFinalTestSelector(*record.AssignedSelector)
+		clone.AssignedSelector = &selector
+	}
+	if record.CheckSelector != nil {
+		selector := *record.CheckSelector
+		clone.CheckSelector = &selector
+	}
+	return clone
 }
 
 // activeProcessIDs is the command layer's only PROCESS activity projection.
@@ -349,7 +496,8 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 	inputs := make([]gates.ProcessEvidenceInput, 0, len(processes))
 	for _, process := range processes {
 		input := gates.ProcessEvidenceInput{Process: process, RequiredPRURL: prURL, ActiveSpecs: activeSpecs, TaskURLs: taskURLs,
-			RequiredRevision: requiredRevision, AuthorAgentsBySpec: authorAgentsBySpec}
+			RequiredRevision: requiredRevision, AuthorAgentsBySpec: authorAgentsBySpec,
+			ActiveAssignment: activeAssignmentEvidence(process)}
 		for _, comment := range reviewComments {
 			marker, ok, err := model.FindRationaleMarker(comment.Body)
 			if err != nil || !ok || marker.Process != process.Comment.ID {
@@ -456,6 +604,30 @@ func buildProcessEvidenceInputsWithExternalReview(artifacts []model.Artifact, pr
 	}
 	filterSharedVerificationIdentity(inputs, verifications, authorAgentsByProcessSpec, requiredRevision)
 	return inputs
+}
+
+func activeAssignmentEvidence(process model.Artifact) *gates.ActiveAssignmentEvidence {
+	workspace := model.ParseProcessWorkspace(process.Comment.ID, process.URL, process.Comment.Body)
+	if workspace.Blocking() || workspace.Workspace == nil || workspace.Workspace.Assignment == nil {
+		return nil
+	}
+	binding := workspace.Workspace.Assignment
+	result := &gates.ActiveAssignmentEvidence{ProcessID: process.Comment.ID, AssignmentID: binding.AssignmentID,
+		AssignmentDigest: binding.Digest, Generation: binding.Generation, Role: binding.Role,
+		SubjectRevision: binding.SubjectRevision}
+	if process.Comment.Assignment != nil {
+		result.RequiredTests = cloneCanonicalTestSelectors(process.Comment.Assignment.RequiredTests)
+		result.RequiredChecks = append([]assignment.CheckSelector(nil), process.Comment.Assignment.RequiredChecks...)
+	}
+	return result
+}
+
+func cloneCanonicalTestSelectors(values []assignment.TestSelector) []assignment.TestSelector {
+	result := make([]assignment.TestSelector, len(values))
+	for index, value := range values {
+		result[index] = cloneFinalTestSelector(value)
+	}
+	return result
 }
 
 func addProcessSpecAgent(values map[string]map[string]map[string]bool, processID, specID, agent string) {

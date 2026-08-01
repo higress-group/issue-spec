@@ -1081,6 +1081,99 @@ func TestCanonicalEvidenceIndexHasFixedUpperBound(t *testing.T) {
 	}
 }
 
+func TestCanonicalEvidenceIndexSelectsOnlyExactActiveAssignmentGeneration(t *testing.T) {
+	revision := strings.Repeat("b", 40)
+	selector := assignment.TestSelector{ID: "durable", Command: "issue-spec durable-spec check --repo o/r --proposal 381 --root . --json",
+		RevisionBinding: &assignment.RevisionBinding{Source: assignment.RevisionBindingSourceSubjectRevision,
+			Argument: assignment.RevisionBindingArgumentSubject}}
+	active := gates.ActiveAssignmentEvidence{ProcessID: "PROCESS-001", AssignmentID: "assignment-2",
+		AssignmentDigest: strings.Repeat("d", 64), Generation: 2, Role: assignment.RoleVerification,
+		SubjectRevision: revision, RequiredTests: []assignment.TestSelector{selector}}
+	historical := canonicalActiveTestEvidence(t, active, 1, "assignment-1", strings.Repeat("c", 64), "receipt-history", selector, revision)
+	current := canonicalActiveTestEvidence(t, active, 2, active.AssignmentID, active.AssignmentDigest, "receipt-current", selector, revision)
+	index, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{historical, current}, revision,
+		map[string]gates.ActiveAssignmentEvidence{active.ProcessID: active}, MaxCanonicalEvidenceIndexEntries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := index.Records("PROCESS-900", "SPEC-001", CanonicalEvidenceTest)
+	if index.Len() != 1 || len(records) != 1 || records[0].ReceiptID != "receipt-current" ||
+		records[0].AssignmentGeneration != 2 || records[0].ResolvedRevision != revision {
+		t.Fatalf("active-generation selection=%+v len=%d", records, index.Len())
+	}
+
+	for name, mutate := range map[string]func(*CanonicalEvidenceRecord){
+		"future generation": func(record *CanonicalEvidenceRecord) { record.AssignmentGeneration = 3 },
+		"wrong digest":      func(record *CanonicalEvidenceRecord) { record.AssignmentDigest = strings.Repeat("e", 64) },
+		"wrong subject":     func(record *CanonicalEvidenceRecord) { record.SubjectRevision = strings.Repeat("a", 40) },
+		"changed selector": func(record *CanonicalEvidenceRecord) {
+			changed := cloneFinalTestSelector(*record.AssignedSelector)
+			changed.Command += " --changed"
+			resolved, err := assignment.ResolveTestSelector(changed, revision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record.AssignedSelector = &changed
+			record.ExecutedCommand = resolved.Command
+		},
+		"changed expanded command": func(record *CanonicalEvidenceRecord) { record.ExecutedCommand += " --forged" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := cloneCanonicalEvidenceRecord(current)
+			mutate(&candidate)
+			if _, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{candidate}, revision,
+				map[string]gates.ActiveAssignmentEvidence{active.ProcessID: active}, MaxCanonicalEvidenceIndexEntries); err == nil {
+				t.Fatal("mismatched active-generation evidence entered the canonical index")
+			}
+		})
+	}
+
+	duplicate := cloneCanonicalEvidenceRecord(current)
+	duplicate.EvidenceID, duplicate.ReceiptID = "receipt-other:test:durable", "receipt-other"
+	duplicate.ReceiptDigest = strings.Repeat("f", 64)
+	if _, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{current, duplicate}, revision,
+		map[string]gates.ActiveAssignmentEvidence{active.ProcessID: active}, MaxCanonicalEvidenceIndexEntries); err == nil ||
+		!strings.Contains(err.Error(), "duplicates the active assignment generation") {
+		t.Fatalf("duplicate active receipt error=%v", err)
+	}
+}
+
+func TestCanonicalEvidenceIndexPreservesActiveLiteralSelectorIdentity(t *testing.T) {
+	revision := strings.Repeat("b", 40)
+	literal := assignment.TestSelector{ID: "unit", Command: "go test ./internal/gates"}
+	active := gates.ActiveAssignmentEvidence{ProcessID: "PROCESS-001", AssignmentID: "assignment-1",
+		AssignmentDigest: strings.Repeat("d", 64), Generation: 1, Role: assignment.RoleVerification,
+		SubjectRevision: revision, RequiredTests: []assignment.TestSelector{literal}}
+	record := canonicalActiveTestEvidence(t, active, 1, active.AssignmentID, active.AssignmentDigest, "receipt-current", literal, revision)
+	index, err := buildCanonicalEvidenceIndexForAssignments([]CanonicalEvidenceRecord{record}, revision,
+		map[string]gates.ActiveAssignmentEvidence{active.ProcessID: active}, MaxCanonicalEvidenceIndexEntries)
+	if err != nil || index.Len() != 1 || index.Records("PROCESS-900", "SPEC-001", CanonicalEvidenceTest)[0].ExecutedCommand != literal.Command {
+		t.Fatalf("literal active selector index=%+v err=%v", index, err)
+	}
+}
+
+func canonicalActiveTestEvidence(t *testing.T, active gates.ActiveAssignmentEvidence, generation uint64,
+	assignmentID, assignmentDigest, receiptID string, selector assignment.TestSelector, revision string) CanonicalEvidenceRecord {
+	t.Helper()
+	record := CanonicalEvidenceRecord{ProcessID: "PROCESS-900", SpecID: "SPEC-001", Kind: CanonicalEvidenceTest,
+		Authority: CanonicalEvidenceRoleOwned, EvidenceID: receiptID + ":test:" + selector.ID,
+		ReceiptID: receiptID, ReceiptDigest: strings.Repeat("a", 64), AssignmentProcessID: active.ProcessID,
+		AssignmentID: assignmentID, AssignmentDigest: assignmentDigest, AssignmentGeneration: generation,
+		SubjectRevision: revision, TestID: selector.ID, ExecutedCommand: selector.Command,
+		Source: "accepted-verification-receipt:self-reported-tests", Trusted: true}
+	if selector.RevisionBinding != nil {
+		resolved, err := assignment.ResolveTestSelector(selector, revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assigned := cloneFinalTestSelector(resolved.AssignedSelector)
+		record.AssignedSelector = &assigned
+		record.ResolvedRevision = resolved.ResolvedRevision
+		record.ExecutedCommand = resolved.Command
+	}
+	return record
+}
+
 func canonicalRoleEvidence(processID, specID, receiptID string, kind CanonicalEvidenceKind) CanonicalEvidenceRecord {
 	source := "accepted-verification-receipt:self-reported-tests"
 	if kind == CanonicalEvidenceReview {
@@ -1089,6 +1182,6 @@ func canonicalRoleEvidence(processID, specID, receiptID string, kind CanonicalEv
 	return CanonicalEvidenceRecord{ProcessID: processID, SpecID: specID, Kind: kind,
 		Authority: CanonicalEvidenceRoleOwned, EvidenceID: receiptID, ReceiptID: receiptID,
 		ReceiptDigest: strings.Repeat("a", 64), AssignmentID: "assignment-1",
-		AssignmentDigest: strings.Repeat("b", 64), SubjectRevision: "head-current",
+		AssignmentDigest: strings.Repeat("b", 64), AssignmentGeneration: 1, SubjectRevision: "head-current",
 		URL: "https://example/evidence/" + receiptID, Source: source, Trusted: true}
 }

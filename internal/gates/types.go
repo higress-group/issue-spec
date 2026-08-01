@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
@@ -166,14 +167,24 @@ type FinalSubject struct {
 // accepted by the commands-layer canonical evidence index. The final evaluator
 // never reparses prose or writes evidence back to PROCESS.
 type FinalEvidenceRecord struct {
-	ProcessID       string            `json:"process_id"`
-	SpecID          string            `json:"spec_id"`
-	Kind            FinalEvidenceKind `json:"kind"`
-	EvidenceID      string            `json:"evidence_id"`
-	Name            string            `json:"name,omitempty"`
-	SubjectRevision string            `json:"subject_revision"`
-	Source          string            `json:"source"`
-	Independent     bool              `json:"independent,omitempty"`
+	ProcessID            string                    `json:"process_id"`
+	SpecID               string                    `json:"spec_id"`
+	Kind                 FinalEvidenceKind         `json:"kind"`
+	EvidenceID           string                    `json:"evidence_id"`
+	Name                 string                    `json:"name,omitempty"`
+	SubjectRevision      string                    `json:"subject_revision"`
+	Source               string                    `json:"source"`
+	Independent          bool                      `json:"independent,omitempty"`
+	AssignmentProcessID  string                    `json:"assignment_process_id,omitempty"`
+	ReceiptID            string                    `json:"receipt_id,omitempty"`
+	ReceiptDigest        string                    `json:"receipt_digest,omitempty"`
+	AssignmentID         string                    `json:"assignment_id,omitempty"`
+	AssignmentDigest     string                    `json:"assignment_digest,omitempty"`
+	AssignmentGeneration uint64                    `json:"assignment_generation,omitempty"`
+	AssignedSelector     *assignment.TestSelector  `json:"assigned_selector,omitempty"`
+	ResolvedRevision     string                    `json:"resolved_revision,omitempty"`
+	ExecutedCommand      string                    `json:"executed_command,omitempty"`
+	CheckSelector        *assignment.CheckSelector `json:"check_selector,omitempty"`
 }
 
 // FinalEvidenceSnapshot contains only exact-current facts consumed by

@@ -138,6 +138,83 @@ func TestBuildMinimalFinalEvidenceIndexesAcceptedRecordsWithoutProcessWrites(t *
 	}
 }
 
+func TestBuildMinimalFinalEvidenceIgnoresSupersededGenerationAndSelectsActiveBoundReceipt(t *testing.T) {
+	subject := strings.Repeat("b", 40)
+	selector := assignment.TestSelector{ID: "durable", Command: "issue-spec durable-spec check --repo o/r --proposal 381 --root . --json",
+		RevisionBinding: &assignment.RevisionBinding{Source: assignment.RevisionBindingSourceSubjectRevision,
+			Argument: assignment.RevisionBindingArgumentSubject}}
+	processBody, err := model.EnsureTypedBody("PROCESS", "PROCESS-901",
+		"## Process: verify active generation\n\n### Parent TASK\n\n- TASK-001\n\n### Execution Class\n\n- verification\n\n### Covers\n\n- SPEC-001\n\n### Handoff\n\nN/A",
+		model.BodyOptions{Status: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := model.Artifact{URL: "https://example.test/process/901", Comment: model.ParseTypedComment(processBody)}
+	currentAssignment := testVerificationAssignment(t, subject, []assignment.TestResult{resolvedCommandTestResult(t, selector, subject)}, nil)
+	currentAssignment.ID = "assignment-active-2"
+	currentDigest, err := assignment.AssignmentDigest(currentAssignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldAssignment := currentAssignment
+	oldAssignment.ID = "assignment-history-1"
+
+	makeReceipt := func(t *testing.T, sealed assignment.Assignment, generation uint64, id string,
+		outcome assignment.TestOutcome) assignment.Receipt {
+		t.Helper()
+		result := resolvedCommandTestResult(t, selector, subject)
+		result.Outcome = outcome
+		receipt := testSealedVerificationReceiptForAssignmentGeneration(t, sealed, generation,
+			[]assignment.TestResult{result}, nil)
+		receipt.ID, receipt.ReceiptDigest = id, ""
+		receipt, err := assignment.SealReceipt(receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return receipt
+	}
+	makeCarrier := func(t *testing.T, id string, receipt assignment.Receipt) model.Artifact {
+		t.Helper()
+		body, err := renderSubmittedVerification(id, process.URL, []string{"SPEC-001"}, receipt, nil,
+			testVerificationSubmission("Verifier"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return model.Artifact{URL: "https://example.test/verify/" + id, Comment: model.ParseTypedComment(body)}
+	}
+	historicalFailure := makeCarrier(t, "VERIFY-901", makeReceipt(t, oldAssignment, 1, "receipt-failed-1", assignment.TestFailed))
+	historicalSupplement := makeCarrier(t, "VERIFY-902", makeReceipt(t, oldAssignment, 1, "receipt-supplement-1", assignment.TestPassed))
+	current := makeCarrier(t, "VERIFY-903", makeReceipt(t, currentAssignment, 2, "receipt-active-2", assignment.TestPassed))
+	input := gates.ProcessEvidenceInput{Process: process, ActiveSpecs: map[string]string{"SPEC-001": "https://example.test/spec/1"},
+		ActiveAssignment: &gates.ActiveAssignmentEvidence{ProcessID: process.Comment.ID,
+			AssignmentID: currentAssignment.ID, AssignmentDigest: currentDigest, Generation: 2,
+			Role: assignment.RoleVerification, SubjectRevision: subject, RequiredTests: []assignment.TestSelector{selector}},
+		Verifications: []gates.VerificationEvidence{
+			{ProcessID: process.Comment.ID, SpecID: "SPEC-001", URL: historicalFailure.URL, Done: true,
+				SubjectRevision: subject, Trusted: true, Source: "accepted-verification-receipt:self-reported-tests"},
+			{ProcessID: process.Comment.ID, SpecID: "SPEC-001", URL: historicalSupplement.URL, Done: true,
+				SubjectRevision: subject, Trusted: true, Source: "accepted-verification-receipt:self-reported-tests"},
+			{ProcessID: process.Comment.ID, SpecID: "SPEC-001", URL: current.URL, Done: true,
+				SubjectRevision: subject, Trusted: true, Source: "accepted-verification-receipt:self-reported-tests"},
+		}}
+	snapshot := buildMinimalFinalEvidence([]model.Artifact{process, historicalFailure, historicalSupplement, current},
+		[]gates.ProcessEvidenceInput{input}, gates.FinalSubject{Required: true, Known: true, Trusted: true,
+			Kind: "pull_request", URL: "https://example.test/pull/7", Revision: subject, Source: "github-pull-request-head:7"})
+	if !snapshot.Index.Passed || len(snapshot.Records) != 2 {
+		t.Fatalf("active generation snapshot index=%+v records=%+v", snapshot.Index, snapshot.Records)
+	}
+	for _, record := range snapshot.Records {
+		if record.ReceiptID != "receipt-active-2" || record.AssignmentID != currentAssignment.ID ||
+			record.AssignmentGeneration != 2 || record.AssignmentProcessID != process.Comment.ID {
+			t.Fatalf("superseded generation entered final snapshot: %+v", record)
+		}
+		if record.Kind == gates.FinalEvidenceTest && (record.AssignedSelector == nil ||
+			record.ResolvedRevision != subject || !assignment.TestSelectorIdentityEqual(*record.AssignedSelector, selector)) {
+			t.Fatalf("active bound test lost stable/executed identity: %+v", record)
+		}
+	}
+}
+
 func TestVerificationReceiptBindingRejectsUntrustedLocalCompletion(t *testing.T) {
 	valid := testSealedVerificationReceipt(t, []assignment.TestResult{{ID: "unit", Command: "go test ./...",
 		Outcome: assignment.TestPassed, Assurance: assignment.AssuranceSelfReported}}, nil)
@@ -716,13 +793,18 @@ func testSealedVerificationReceipt(t *testing.T, tests []assignment.TestResult,
 
 func testSealedVerificationReceiptForAssignment(t *testing.T, sealedAssignment assignment.Assignment,
 	tests []assignment.TestResult, selectors []assignment.CheckSelector) assignment.Receipt {
+	return testSealedVerificationReceiptForAssignmentGeneration(t, sealedAssignment, 1, tests, selectors)
+}
+
+func testSealedVerificationReceiptForAssignmentGeneration(t *testing.T, sealedAssignment assignment.Assignment,
+	generation uint64, tests []assignment.TestResult, selectors []assignment.CheckSelector) assignment.Receipt {
 	t.Helper()
 	digest, err := assignment.AssignmentDigest(sealedAssignment)
 	if err != nil {
 		t.Fatal(err)
 	}
 	value := assignment.Receipt{SchemaVersion: assignment.ReceiptSchemaVersion, ID: "receipt-verification-1",
-		AssignmentID: sealedAssignment.ID, AssignmentDigest: digest, AssignmentGeneration: 1,
+		AssignmentID: sealedAssignment.ID, AssignmentDigest: digest, AssignmentGeneration: generation,
 		Role: assignment.RoleVerification, ResultSchemaVersion: assignment.ReceiptSchemaVersion,
 		SubjectRevision: sealedAssignment.SubjectRevision, Tests: tests,
 		Provenance: assignment.Provenance{Route: assignment.RouteRoleOwned, Assurance: assignment.AssuranceSelfReported,

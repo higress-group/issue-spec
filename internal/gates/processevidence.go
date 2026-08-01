@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/higress-group/issue-spec/internal/assignment"
 	"github.com/higress-group/issue-spec/internal/model"
 )
 
@@ -84,6 +85,21 @@ type ExternalProcessEvidence struct {
 	Source             string   `json:"source,omitempty"`
 }
 
+// ActiveAssignmentEvidence is the exact portable role assignment authority
+// projected from one managed PROCESS. Complete assignment bodies stay in the
+// workspace store; final selection needs only this immutable identity plus the
+// structured PROCESS selectors used for exact stable-identity matching.
+type ActiveAssignmentEvidence struct {
+	ProcessID        string                     `json:"process_id"`
+	AssignmentID     string                     `json:"assignment_id"`
+	AssignmentDigest string                     `json:"assignment_digest"`
+	Generation       uint64                     `json:"generation"`
+	Role             assignment.Role            `json:"role"`
+	SubjectRevision  string                     `json:"subject_revision,omitempty"`
+	RequiredTests    []assignment.TestSelector  `json:"required_tests,omitempty"`
+	RequiredChecks   []assignment.CheckSelector `json:"required_checks,omitempty"`
+}
+
 type CodeChangeRationaleEvidence struct {
 	ProcessID          string `json:"process_id"`
 	SpecID             string `json:"spec_id"`
@@ -99,8 +115,9 @@ type CodeChangeRationaleEvidence struct {
 }
 
 type ProcessEvidenceInput struct {
-	Process       model.Artifact `json:"process"`
-	RequiredPRURL string         `json:"required_pr_url,omitempty"`
+	Process          model.Artifact            `json:"process"`
+	RequiredPRURL    string                    `json:"required_pr_url,omitempty"`
+	ActiveAssignment *ActiveAssignmentEvidence `json:"active_assignment,omitempty"`
 	// RequiredRevision is the authoritative PR/provider head that review
 	// evidence must cover. When present, review satisfaction is evaluated per
 	// SPEC so one current carrier cannot hide another SPEC's stale evidence.

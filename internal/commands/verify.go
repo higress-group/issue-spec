@@ -45,10 +45,12 @@ type acceptedVerificationReceipt struct {
 }
 
 type acceptedVerificationTest struct {
-	ID        string                 `json:"id"`
-	Command   string                 `json:"command"`
-	Outcome   assignment.TestOutcome `json:"outcome"`
-	Assurance assignment.Assurance   `json:"assurance"`
+	ID               string                   `json:"id"`
+	Command          string                   `json:"command"`
+	AssignedSelector *assignment.TestSelector `json:"assigned_selector,omitempty"`
+	ResolvedRevision string                   `json:"resolved_revision,omitempty"`
+	Outcome          assignment.TestOutcome   `json:"outcome"`
+	Assurance        assignment.Assurance     `json:"assurance"`
 }
 
 type observedVerificationCheck struct {
@@ -410,12 +412,26 @@ func acceptedVerificationReceiptFrom(receipt assignment.Receipt,
 		AssignmentGeneration: receipt.AssignmentGeneration, SubjectRevision: receipt.SubjectRevision,
 		Checks: append([]observedVerificationCheck(nil), checks...), Provenance: receipt.Provenance, Submission: &evidence}
 	for _, test := range receipt.Tests {
-		result.Tests = append(result.Tests, acceptedVerificationTest{ID: test.ID, Command: test.Command,
-			Outcome: test.Outcome, Assurance: test.Assurance})
+		projected := acceptedVerificationTest{ID: test.ID, Command: test.Command,
+			ResolvedRevision: test.ResolvedRevision, Outcome: test.Outcome, Assurance: test.Assurance}
+		if test.AssignedSelector != nil {
+			selector := cloneFinalTestSelector(*test.AssignedSelector)
+			projected.AssignedSelector = &selector
+		}
+		result.Tests = append(result.Tests, projected)
 	}
 	sort.Slice(result.Tests, func(i, j int) bool { return result.Tests[i].ID < result.Tests[j].ID })
 	sortObservedVerificationChecks(result.Checks)
 	return result
+}
+
+func cloneFinalTestSelector(value assignment.TestSelector) assignment.TestSelector {
+	clone := value
+	if value.RevisionBinding != nil {
+		binding := *value.RevisionBinding
+		clone.RevisionBinding = &binding
+	}
+	return clone
 }
 
 func stampAcceptedVerificationReceipt(body string, receipt acceptedVerificationReceipt) (string, bool, error) {
@@ -1071,6 +1087,12 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 	}
 	var records []CanonicalEvidenceRecord
 	metadata := map[string]finalEvidenceMetadata{}
+	activeAssignments := map[string]gates.ActiveAssignmentEvidence{}
+	for _, input := range inputs {
+		if input.ActiveAssignment != nil {
+			activeAssignments[input.ActiveAssignment.ProcessID] = *input.ActiveAssignment
+		}
+	}
 	add := func(record CanonicalEvidenceRecord, name string, independent bool) {
 		records = append(records, record)
 		metadata[finalEvidenceMetadataKey(record)] = finalEvidenceMetadata{name: name, independent: independent}
@@ -1097,8 +1119,9 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 				independent = writer != "" && !input.AuthorAgentsBySpec[evidence.SpecID][writer]
 				addCovered(CanonicalEvidenceRecord{ProcessID: processID, SpecID: evidence.SpecID, Kind: CanonicalEvidenceReview,
 					Authority: CanonicalEvidenceRoleOwned, EvidenceID: authority.ReceiptID, ReceiptID: authority.ReceiptID,
-					ReceiptDigest: authority.ReceiptDigest, AssignmentID: authority.AssignmentID,
-					AssignmentDigest: authority.AssignmentDigest, SubjectRevision: revision, URL: artifact.URL,
+					ReceiptDigest: authority.ReceiptDigest, AssignmentProcessID: processID, AssignmentID: authority.AssignmentID,
+					AssignmentDigest: authority.AssignmentDigest, AssignmentGeneration: authority.AssignmentGeneration,
+					SubjectRevision: revision, URL: artifact.URL,
 					Source: "accepted-review-receipt:self-reported", Trusted: true}, "", independent)
 				continue
 			}
@@ -1127,8 +1150,9 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 			independent := writer != "" && !input.AuthorAgentsBySpec[evidence.SpecID][writer]
 			base := CanonicalEvidenceRecord{ProcessID: processID, SpecID: evidence.SpecID,
 				Authority: CanonicalEvidenceRoleOwned, ReceiptID: authority.ReceiptID,
-				ReceiptDigest: authority.ReceiptDigest, AssignmentID: authority.AssignmentID,
-				AssignmentDigest: authority.AssignmentDigest, SubjectRevision: revision, URL: artifact.URL,
+				ReceiptDigest: authority.ReceiptDigest, AssignmentProcessID: processID, AssignmentID: authority.AssignmentID,
+				AssignmentDigest: authority.AssignmentDigest, AssignmentGeneration: authority.AssignmentGeneration,
+				SubjectRevision: revision, URL: artifact.URL,
 				Source: evidence.Source, Trusted: true}
 			verification := base
 			verification.Kind, verification.EvidenceID = CanonicalEvidenceVerification, authority.ReceiptID
@@ -1136,12 +1160,19 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 			for _, test := range authority.Tests {
 				record := base
 				record.Kind, record.EvidenceID = CanonicalEvidenceTest, authority.ReceiptID+":test:"+test.ID
+				record.TestID, record.ResolvedRevision, record.ExecutedCommand = test.ID, test.ResolvedRevision, test.Command
+				if test.AssignedSelector != nil {
+					selector := cloneFinalTestSelector(*test.AssignedSelector)
+					record.AssignedSelector = &selector
+				}
 				addCovered(record, test.ID, independent)
 			}
 			for _, check := range authority.Checks {
 				record := base
 				record.Kind, record.EvidenceID = CanonicalEvidenceCheck,
 					authority.ReceiptID+":check:"+check.Provider+":"+check.Name
+				selector := assignment.CheckSelector{Provider: check.Provider, Name: check.Name}
+				record.CheckSelector = &selector
 				addCovered(record, check.Provider+"\x00"+check.Name, independent)
 			}
 		}
@@ -1180,7 +1211,7 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 			}
 		}
 	}
-	index, err := BuildCanonicalEvidenceIndex(records, revision)
+	index, err := buildCanonicalEvidenceIndexForAssignments(records, revision, activeAssignments, MaxCanonicalEvidenceIndexEntries)
 	result.Index.Passed = err == nil
 	if err != nil {
 		result.Index.Current = err.Error()
@@ -1200,7 +1231,11 @@ func buildMinimalFinalEvidence(artifacts []model.Artifact, inputs []gates.Proces
 			result.Records = append(result.Records, gates.FinalEvidenceRecord{ProcessID: record.ProcessID,
 				SpecID: record.SpecID, Kind: gates.FinalEvidenceKind(record.Kind), EvidenceID: record.EvidenceID,
 				Name: meta.name, SubjectRevision: record.SubjectRevision, Source: record.Source,
-				Independent: meta.independent})
+				Independent: meta.independent, AssignmentProcessID: record.AssignmentProcessID,
+				ReceiptID: record.ReceiptID, ReceiptDigest: record.ReceiptDigest, AssignmentID: record.AssignmentID,
+				AssignmentDigest: record.AssignmentDigest, AssignmentGeneration: record.AssignmentGeneration,
+				AssignedSelector: record.AssignedSelector, ResolvedRevision: record.ResolvedRevision,
+				ExecutedCommand: record.ExecutedCommand, CheckSelector: record.CheckSelector})
 		}
 	}
 	sort.Slice(result.Records, func(i, j int) bool {
@@ -1311,6 +1346,12 @@ func consumeAcceptedVerificationEvidence(inputs []gates.ProcessEvidenceInput, ar
 			if !ok {
 				continue
 			}
+			authority, found, err := parseAcceptedVerificationReceipt(artifact.Comment.Body)
+			if err != nil || !found || !acceptedAssignmentMatchesActive(inputs[inputIndex].ActiveAssignment,
+				assignment.RoleVerification, authority.AssignmentID, authority.AssignmentDigest,
+				authority.AssignmentGeneration, authority.SubjectRevision) {
+				continue
+			}
 			evidence.SubjectRevision = expectedRevision
 			evidence.Trusted = true
 			evidence.TestEvidence = true
@@ -1323,6 +1364,17 @@ func consumeAcceptedVerificationEvidence(inputs []gates.ProcessEvidenceInput, ar
 		}
 	}
 	return inputs
+}
+
+func acceptedAssignmentMatchesActive(active *gates.ActiveAssignmentEvidence, role assignment.Role,
+	assignmentID, digest string, generation uint64, subject string) bool {
+	// Unmanaged historical/manual workflows have no portable binding. Their
+	// existing literal receipt behavior remains readable and eligible.
+	if active == nil {
+		return true
+	}
+	return active.Role == role && active.AssignmentID == assignmentID && active.AssignmentDigest == digest &&
+		active.Generation == generation && active.SubjectRevision == subject
 }
 
 func exactAcceptedVerificationCarrier(artifact model.Artifact, expectedRevision string) (string, bool, bool, bool) {
@@ -1358,6 +1410,9 @@ func exactAcceptedVerificationCarrier(artifact model.Artifact, expectedRevision 
 			test.Outcome != assignment.TestPassed || test.Assurance != assignment.AssuranceSelfReported {
 			return "", false, false, false
 		}
+		if !exactAcceptedVerificationTest(test, expectedRevision) {
+			return "", false, false, false
+		}
 		seenTests[test.ID] = true
 	}
 	seenChecks := map[string]bool{}
@@ -1386,6 +1441,24 @@ func exactAcceptedVerificationCarrier(artifact model.Artifact, expectedRevision 
 	default:
 		return "accepted-verification-receipt:provider-checks", false, true, true
 	}
+}
+
+func exactAcceptedVerificationTest(test acceptedVerificationTest, expectedRevision string) bool {
+	hasSelector := test.AssignedSelector != nil
+	hasRevision := strings.TrimSpace(test.ResolvedRevision) != ""
+	if hasSelector != hasRevision {
+		return false
+	}
+	if !hasSelector {
+		selector := assignment.TestSelector{ID: test.ID, Command: test.Command}
+		return assignment.ValidateTestSelectorRevisionContract(assignment.RoleVerification, expectedRevision, selector) == nil
+	}
+	if test.AssignedSelector.ID != test.ID ||
+		assignment.ValidateTestSelectorRevisionContract(assignment.RoleVerification, expectedRevision, *test.AssignedSelector) != nil {
+		return false
+	}
+	resolved, err := assignment.ResolveTestSelector(*test.AssignedSelector, test.ResolvedRevision)
+	return err == nil && strings.EqualFold(test.ResolvedRevision, expectedRevision) && test.Command == resolved.Command
 }
 
 func mergeCarrierRevisionFacts(collected, supplied map[string]gates.CarrierRevisionFact) map[string]gates.CarrierRevisionFact {
